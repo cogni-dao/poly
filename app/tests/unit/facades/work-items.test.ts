@@ -275,7 +275,7 @@ describe("app/_facades/work/items.server", () => {
   });
 
   describe("patchWorkItem", () => {
-    it("fetches current revision, patches through WorkItemCommandPort, and returns a contract DTO", async () => {
+    it("verifies the item exists, patches through WorkItemCommandPort, and returns a contract DTO", async () => {
       const patchedItem: WorkItem = {
         ...SAMPLE_WORK_ITEM,
         title: "Updated task",
@@ -295,7 +295,6 @@ describe("app/_facades/work/items.server", () => {
       expect(mockPort.get).toHaveBeenCalledWith(toWorkItemId("task.0001"));
       expect(mockCommand.patch).toHaveBeenCalledWith({
         id: toWorkItemId("task.0001"),
-        expectedRevision: "2",
         set: {
           title: "Updated task",
           labels: ["updated"],

@@ -191,7 +191,6 @@ export async function patchWorkItem(
 
   const item = await container.workItemCommand.patch({
     id: toWorkItemId(input.id),
-    expectedRevision: String(current.revision),
     set: {
       ...(input.set.title !== undefined && { title: input.set.title }),
       ...(input.set.summary !== undefined && { summary: input.set.summary }),

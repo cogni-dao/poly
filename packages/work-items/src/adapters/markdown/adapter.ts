@@ -386,7 +386,7 @@ export class MarkdownWorkItemAdapter
 
   async patch(input: {
     id: WorkItemId;
-    expectedRevision: Revision;
+    expectedRevision?: Revision;
     set?: Partial<
       Pick<
         WorkItem,
@@ -411,7 +411,7 @@ export class MarkdownWorkItemAdapter
 
     const result = await atomicWrite(
       entry.filePath,
-      input.expectedRevision,
+      input.expectedRevision ?? entry.revision,
       (raw) => {
         if (input.set) {
           const mapped = workItemFieldsToRaw(input.set);
