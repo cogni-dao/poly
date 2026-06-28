@@ -62,13 +62,13 @@ export interface HeroContent {
 }
 
 export const HERO: HeroContent = {
-  statusLabel: "Template online",
-  headlineTop: "Choose a niche.",
-  headlineAccent: "Launch its AI node.",
+  statusLabel: "Scanning markets",
+  headlineTop: "Bet smarter.",
+  headlineAccent: "Together.",
   subhead:
-    "Spawn this template, give the node a mission, and set an AI to work in public. Contributors earn governance tokens, then vote on the agent's roadmap, priorities, and budget.",
-  primaryCta: "Try the template",
-  ctaTagline: "Pick the mission. Train the agent. Govern the budget.",
+    "A community-built AI that researches, monitors, and signals across Polymarket, Kalshi, and more. You stay in control.",
+  primaryCta: "Sign in",
+  ctaTagline: "Teach it. Guide it. Profit with it.",
 };
 
 /* ─── HERO LINKS ──────────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ export const HERO: HeroContent = {
  */
 export const HERO_LINKS = {
   chatUrl: "https://discord.gg/3b9sSyhZ4z",
-  sourceUrl: "https://github.com/cogni-dao/cogni",
+  sourceUrl: "https://github.com/cogni-dao/poly",
 } as const;
 
 /* ─── AGENT STREAM ────────────────────────────────────────────────────────
@@ -100,38 +100,38 @@ export interface StreamEvent {
 }
 
 /** Label shown in the stream header next to the spinner. */
-export const AGENT_STREAM_SUBJECT = "cogni/node";
+export const AGENT_STREAM_SUBJECT = "cogni/poly-brain";
 
 export const AGENT_STREAM_SEQUENCES: StreamEvent[][] = [
   [
     {
       id: "a1",
       type: "thinking",
-      text: "Reading the niche brief: independent coffee shops in Nashville",
+      text: "Checking macro calendar for upcoming catalysts...",
       at: 0,
     },
     {
       id: "a2",
       type: "searching",
-      text: "Scanning local calendars, review sites, and supplier chatter",
+      text: "Scanning Kalshi climate markets - 23 active contracts",
       at: 1800,
     },
     {
       id: "a3",
       type: "analyzing",
-      text: "Mapping demand spikes against staffing and inventory risks",
+      text: "NOAA updated Gulf SST anomaly to +1.8C - comparing to hurricane model base rates",
       at: 3400,
     },
     {
       id: "a4",
       type: "signal",
-      text: "Signal: weekend event cluster likely to strain 5 shops. Drafting an action plan.",
+      text: 'Signal: "Cat 5 hurricane hits US" - Kalshi 41c, model says 46c. Moderate edge detected.',
       at: 5600,
     },
     {
       id: "a5",
       type: "done",
-      text: "Pass complete. Recommendation queued for token-holder review.",
+      text: "Scan complete. 1 signal generated, 23 markets reviewed.",
       at: 7200,
     },
   ],
@@ -139,31 +139,31 @@ export const AGENT_STREAM_SEQUENCES: StreamEvent[][] = [
     {
       id: "b1",
       type: "thinking",
-      text: "Checking governance priorities from the latest member vote...",
+      text: "Reviewing Fed futures curve vs Kalshi rate-cut pricing...",
       at: 0,
     },
     {
       id: "b2",
       type: "searching",
-      text: "Ranking requested work by impact, cost, and mission fit",
+      text: "Pulling CME FedWatch probabilities and CPI trend data",
       at: 2000,
     },
     {
       id: "b3",
       type: "analyzing",
-      text: "Estimating budget needed for the next agent capability",
+      text: 'Kalshi "June cut" at 62c - FedWatch implies 68%. Spread: 6c mispricing.',
       at: 3800,
     },
     {
       id: "b4",
       type: "signal",
-      text: "Signal: route automation beats dashboard polish this epoch.",
+      text: 'Signal: "Fed cuts at June meeting" - Buy Yes at 62c, target 68c. High confidence.',
       at: 5400,
     },
     {
       id: "b5",
       type: "done",
-      text: "Pass complete. Draft budget proposal ready for governance.",
+      text: "Scan complete. 1 signal generated, 8 markets reviewed.",
       at: 6800,
     },
   ],
@@ -171,26 +171,32 @@ export const AGENT_STREAM_SEQUENCES: StreamEvent[][] = [
     {
       id: "c1",
       type: "thinking",
-      text: "Tallying contribution receipts for the current epoch...",
+      text: "Monitoring Polymarket tech category for new listings...",
       at: 0,
     },
     {
       id: "c2",
       type: "searching",
-      text: "Matching merged work, reviewed signals, and verified outcomes",
+      text: "3 new markets detected - GPT-5, Apple AI, Anthropic funding round",
       at: 1600,
     },
     {
       id: "c3",
       type: "analyzing",
-      text: "Calculating token weights before the next priority vote",
+      text: "GPT-5 before July: 34c. No credible leaks. Historical AI release markets have 12% optimism bias.",
       at: 3200,
     },
     {
       id: "c4",
+      type: "analyzing",
+      text: "Anthropic $10B+ round: 78c. Multiple credible sources. Fair price - no actionable edge.",
+      at: 4800,
+    },
+    {
+      id: "c5",
       type: "done",
-      text: "Pass complete. Governance distribution ready to review.",
-      at: 5000,
+      text: "Scan complete. 0 signals - no edge detected in current tech markets.",
+      at: 6200,
     },
   ],
 ];
@@ -226,76 +232,77 @@ export interface ShowcaseItem {
 }
 
 export const SHOWCASE_SECTION = {
-  eyebrow: "Launch pattern",
-  heading: "A full node, ready to specialize.",
+  eyebrow: "Live coverage",
+  heading: "One bot. Every market.",
   subhead:
-    "The layout is already here: mission intake, agent work, contribution accounting, and governance. Swap in your niche, copy, and colors — then let the node start producing useful work.",
+    "It goes where the signal is. Cross-platform research means you never miss a mispricing, regardless of where it surfaces.",
 } as const;
 
 export const SHOWCASE_CATEGORIES = [
   "All",
-  "Niche",
-  "Agent",
-  "Tokens",
-  "Governance",
+  "Economics",
+  "Tech",
+  "Crypto",
+  "Climate",
+  "Politics",
 ] as const;
 
 export const SHOWCASE_ITEMS: ShowcaseItem[] = [
   {
     id: "1",
-    title: "Pick a narrow mission the AI can actually serve",
-    category: "Niche",
-    source: "Node brief",
-    metric: "1",
-    change: 12,
+    title: "Fed cuts rates at June meeting?",
+    category: "Economics",
+    source: "Kalshi",
+    metric: "62%",
+    change: 4,
     outcomes: [
-      { label: "Focused", value: 82 },
-      { label: "Vague", value: 18 },
+      { label: "Yes", value: 62 },
+      { label: "No", value: 38 },
     ],
-    footerLeft: "Coffee, local policy, markets",
-    footerRight: "First decision",
+    footerLeft: "$4.2M Vol.",
+    footerRight: "Resolves Jun 18",
   },
   {
     id: "2",
-    title: "Set the agent loose on research, monitoring, and action",
-    category: "Agent",
-    source: "Mission loop",
-    metric: "24/7",
-    change: 9,
+    title: "GPT-5 released before July 2026?",
+    category: "Tech",
+    source: "Polymarket",
+    metric: "34%",
+    change: -2,
     outcomes: [
-      { label: "Autonomous", value: 74 },
-      { label: "Manual", value: 26 },
+      { label: "Yes", value: 34 },
+      { label: "No", value: 66 },
     ],
-    footerLeft: "Watchlists + workflows",
-    footerRight: "Always on",
+    footerLeft: "$1.8M Vol.",
+    footerRight: "Resolves Jul 1",
   },
   {
     id: "3",
-    title: "Reward useful work with governance token weight",
-    category: "Tokens",
-    source: "Activity ledger",
-    metric: "100%",
-    change: 6,
+    title: "Bitcoin above $150k by EOY?",
+    category: "Crypto",
+    source: "Polymarket",
+    metric: "28%",
+    change: 7,
     outcomes: [
-      { label: "Earned", value: 68 },
-      { label: "Unclaimed", value: 32 },
+      { label: "Yes", value: 28 },
+      { label: "No", value: 72 },
     ],
-    footerLeft: "Receipts, reviews, outcomes",
-    footerRight: "Epoch based",
+    footerLeft: "$12.4M Vol.",
+    footerRight: "Resolves Dec 31",
   },
   {
     id: "4",
-    title: "Vote on what the AI should learn and fund next",
-    category: "Governance",
-    source: "Treasury + roadmap",
-    metric: "DAO",
-    change: 5,
+    title: "Category 5 hurricane hits US in 2026?",
+    category: "Climate",
+    source: "Kalshi",
+    metric: "41%",
+    change: -1,
     outcomes: [
-      { label: "Members", value: 79 },
-      { label: "Founder", value: 21 },
+      { label: "Yes", value: 41 },
+      { label: "No", value: 59 },
     ],
-    footerLeft: "Priorities + budget",
-    footerRight: "Next vote",
+    footerLeft: "$890K Vol.",
+    footerRight: "Resolves Nov 30",
   },
 ];
 
@@ -323,16 +330,16 @@ export interface FeedSignal {
 }
 
 export const FEED_SECTION = {
-  eyebrow: "Example node loop",
-  heading: "From blank template to governed AI.",
+  eyebrow: "Brain activity",
+  heading: "What the bot is thinking.",
   subhead:
-    "This default feed shows the shape of a real node: pick a niche, make the AI useful, account for work, and let token holders steer what happens next.",
+    "Live output from Cogni's analysis engine. Every signal is public. See exactly what it sees and why.",
 } as const;
 
 /** The status-bar verbs and the running totals shown above the feed. */
 export const FEED_STATUS = {
-  scannedLabel: "template events",
-  signalsLabel: "launch steps",
+  scannedLabel: "markets",
+  signalsLabel: "signals today",
   startScanned: 2847,
   signalsToday: 12,
 } as const;
@@ -340,50 +347,50 @@ export const FEED_STATUS = {
 export const FEED_SIGNALS: FeedSignal[] = [
   {
     id: "s1",
-    title: "Niche selected: Nashville independent coffee ops",
-    category: "Niche",
-    source: "Launch brief",
+    title: "Fed cuts rates at June meeting?",
+    category: "Economics",
+    source: "Kalshi",
     direction: "positive",
-    confidence: 86,
+    confidence: 74,
     thesis:
-      "The mission is narrow enough for the agent to monitor real-world sources and broad enough for contributors to improve the playbook.",
-    sources: ["Node brief", "Local events", "Operator handoff"],
+      "CPI trend + Fed language shift in May minutes suggests high probability of 25bp cut. Market underpricing relative to futures curve.",
+    sources: ["Fed Minutes", "BLS CPI Report", "CME FedWatch"],
     timestamp: "2m ago",
   },
   {
     id: "s2",
-    title: "Agent run proposed: event-driven staffing forecast",
-    category: "Agent",
-    source: "Mission loop",
+    title: "Category 5 hurricane hits US in 2026?",
+    category: "Climate",
+    source: "Kalshi",
     direction: "positive",
-    confidence: 72,
+    confidence: 61,
     thesis:
-      "A focused forecast is an early useful behavior: clear inputs, visible outputs, and an outcome the community can judge.",
-    sources: ["Event feeds", "Store hours", "Past signals"],
+      "NOAA seasonal outlook + unusually warm Gulf SSTs tracking above 2005 analogs. Historical base rate ~15% but current conditions elevate to ~35-45%.",
+    sources: ["NOAA Outlook", "SST Data", "Historical Analogs"],
     timestamp: "8m ago",
   },
   {
     id: "s3",
-    title: "Contribution receipts ready for token accounting",
-    category: "Tokens",
-    source: "Activity ledger",
-    direction: "neutral",
-    confidence: 69,
+    title: "Bitcoin above $150k by EOY?",
+    category: "Crypto",
+    source: "Polymarket",
+    direction: "negative",
+    confidence: 58,
     thesis:
-      "Useful work should become governance weight only after it is reviewable: merged changes, verified research, and accepted operations all leave receipts.",
-    sources: ["PR history", "Review notes", "Activity ledger"],
+      "On-chain metrics show distribution phase. ETF inflow momentum decelerating. 28c seems fair. No edge detected. Monitoring for re-entry below 20c.",
+    sources: ["Glassnode", "ETF Flow Data", "On-chain Analytics"],
     timestamp: "14m ago",
   },
   {
     id: "s4",
-    title: "First governance question drafted",
-    category: "Governance",
-    source: "Roadmap",
-    direction: "positive",
-    confidence: 76,
+    title: "GPT-5 released before July 2026?",
+    category: "Tech",
+    source: "Polymarket",
+    direction: "negative",
+    confidence: 67,
     thesis:
-      "Token holders should decide whether the next budget goes to better source coverage, stronger automation, or a public dashboard.",
-    sources: ["Treasury", "Roadmap", "Member requests"],
+      "No credible leak or announcement. OpenAI roadmap suggests H2 earliest. Current 34c likely overpriced given historical AI-release optimism bias.",
+    sources: ["OpenAI Blog", "Insider Reports", "Release History"],
     timestamp: "21m ago",
   },
 ];
@@ -397,10 +404,10 @@ export interface StatItem {
 }
 
 export const STATS: StatItem[] = [
-  { value: "1", label: "Niche" },
-  { value: "1", label: "Mission" },
-  { value: "24/7", label: "AI Worker" },
-  { value: "DAO", label: "Governance" },
+  { value: "2,847", label: "Markets scanned" },
+  { value: "12", label: "Signals today" },
+  { value: "3", label: "Platforms watched" },
+  { value: "24/7", label: "Agent coverage" },
 ];
 
 /* ─── STREAM ICONS ────────────────────────────────────────────────────────

@@ -55,13 +55,13 @@ const ChatWelcomeWithHint = () => (
   <div className="mx-auto flex h-full w-full max-w-[var(--thread-max-width)] flex-col items-center justify-center">
     <div className="flex flex-col justify-center gap-1 px-8">
       <div className="fade-in slide-in-from-bottom-2 animate-in text-lg text-muted-foreground/65 duration-300 ease-out sm:text-2xl">
-        Clone this living mind
+        Track the market
       </div>
       <div className="fade-in slide-in-from-bottom-2 animate-in text-lg text-muted-foreground/65 delay-100 duration-300 ease-out sm:text-2xl">
-        Teach it what your people need
+        Ask for catalysts, pricing context, or an explainable signal
       </div>
       <div className="fade-in slide-in-from-bottom-2 animate-in text-lg text-muted-foreground/65 delay-200 duration-300 ease-out sm:text-2xl">
-        Intelligence, shared.
+        Community research, governed in public.
       </div>
     </div>
   </div>

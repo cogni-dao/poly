@@ -34,8 +34,9 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "Cogni",
-  description: "Web3 Gov + Web2 AI",
+  title: "Cogni Poly",
+  description:
+    "Community-built AI for prediction market research across Polymarket, Kalshi, and more.",
 };
 
 // See operator/app/src/app/layout.tsx for rationale — `headers()` in the
