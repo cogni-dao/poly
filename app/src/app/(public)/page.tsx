@@ -3,22 +3,20 @@
 
 /**
  * Module: `@app/(public)/page`
- * Purpose: Public landing page — a full, multi-section homepage (hero + live agent
- *   stream, showcase cards, activity feed, stats). Redirects signed-in users to /chat.
+ * Purpose: Homepage with hero section and feature showcase. Redirects signed-in users to /dashboard (poly hub, task.0361).
  * Scope: Server component that checks session and redirects or renders landing page. Does not handle authentication logic — proxy.ts handles primary auth routing; server-side check here is defense-in-depth.
- * Invariants: Responsive design. All editable copy/data lives in src/features/home/content.ts.
+ * Invariants: Responsive design; uses Hero layout component.
  * Side-effects: IO (session check, redirect)
- * Links: src/features/home/content.ts, src/features/home/components/*
+ * Links: src/components/kit/sections/Hero.tsx, src/features/home/components/*
  * @public
  */
 
 import { redirect } from "next/navigation";
 import type { ReactElement } from "react";
 
-import { ActivityFeed } from "@/features/home/components/ActivityFeed";
-import { HomeStats } from "@/features/home/components/HomeStats";
-import { LandingHero } from "@/features/home/components/LandingHero";
-import { ShowcaseCards } from "@/features/home/components/ShowcaseCards";
+import { BrainFeed } from "@/components/BrainFeed";
+import { Hero } from "@/components/Hero";
+import { MarketCards } from "@/components/MarketCards";
 import { getServerSessionUser } from "@/lib/auth/server";
 
 import { AuthRedirect } from "./AuthRedirect";
@@ -26,16 +24,15 @@ import { AuthRedirect } from "./AuthRedirect";
 export default async function HomePage(): Promise<ReactElement> {
   const user = await getServerSessionUser();
   if (user) {
-    redirect("/chat");
+    redirect("/dashboard");
   }
 
   return (
     <div className="flex min-h-screen flex-col">
       <AuthRedirect />
-      <LandingHero />
-      <ShowcaseCards />
-      <ActivityFeed />
-      <HomeStats />
+      <Hero />
+      <MarketCards />
+      <BrainFeed />
     </div>
   );
 }
