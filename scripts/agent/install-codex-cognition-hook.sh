@@ -134,7 +134,8 @@ HOOK
 chmod +x "$HOOK_PATH"
 touch "$CONFIG_PATH"
 
-if ! grep -Fq 'BEGIN COGNI CODEX COGNITION HOOK' "$CONFIG_PATH"; then
+if ! grep -Fq 'BEGIN COGNI CODEX COGNITION HOOK' "$CONFIG_PATH" &&
+  ! grep -Fq "$HOOK_PATH" "$CONFIG_PATH"; then
   escaped_hook_path="${HOOK_PATH//\\/\\\\}"
   escaped_hook_path="${escaped_hook_path//\"/\\\"}"
   cat >>"$CONFIG_PATH" <<EOF
