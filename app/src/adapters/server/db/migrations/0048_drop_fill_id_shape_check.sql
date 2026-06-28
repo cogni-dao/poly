@@ -1,0 +1,1 @@
+ALTER TABLE "poly_copy_trade_fills" DROP CONSTRAINT "poly_copy_trade_fills_fill_id_shape";

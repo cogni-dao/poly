@@ -1,0 +1,10 @@
+-- Migration: Resync the drizzle snapshot baseline to current reality. NO-OP SQL by design.
+--
+-- Why this exists: the snapshot chain was frozen at 0023. Hand-written
+-- migrations after legacy 0058 plus the current 0059 RLS repair do not change
+-- Drizzle-managed table shape. This migration ships a fresh 0060_snapshot.json
+-- so future `db:generate` produces a clean, minimal diff.
+--
+-- The SQL is intentionally empty: fresh DBs apply 0000..0059 before this file,
+-- and deployed DBs already have those schema changes. This is only a snapshot
+-- baseline repair, enforced going forward by scripts/db/check-generate-clean.mjs.

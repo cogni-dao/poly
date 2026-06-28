@@ -1,0 +1,2 @@
+ALTER TABLE "poly_copy_trade_targets" ADD COLUMN "target_scale" numeric(8, 7) DEFAULT '0.0005' NOT NULL;--> statement-breakpoint
+ALTER TABLE "poly_copy_trade_targets" ADD CONSTRAINT "poly_copy_trade_targets_target_scale_range" CHECK ("poly_copy_trade_targets"."target_scale" > 0 AND "poly_copy_trade_targets"."target_scale" <= 1);

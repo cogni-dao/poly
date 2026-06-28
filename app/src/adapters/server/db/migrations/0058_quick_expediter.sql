@@ -1,0 +1,4 @@
+ALTER TABLE "poly_copy_trade_targets" DROP CONSTRAINT "poly_copy_trade_targets_sizing_policy_kind_check";--> statement-breakpoint
+ALTER TABLE "poly_copy_trade_targets" DROP CONSTRAINT "poly_copy_trade_targets_position_gap_requires_range_knobs";--> statement-breakpoint
+ALTER TABLE "poly_copy_trade_targets" ADD CONSTRAINT "poly_copy_trade_targets_sizing_policy_kind_check" CHECK ("poly_copy_trade_targets"."sizing_policy_kind" IN ('auto','min_bet','target_percentile_scaled','position_gap','mirror_fill_exact'));--> statement-breakpoint
+ALTER TABLE "poly_copy_trade_targets" ADD CONSTRAINT "poly_copy_trade_targets_position_gap_requires_range_knobs" CHECK ("poly_copy_trade_targets"."sizing_policy_kind" <> 'position_gap' OR "poly_copy_trade_targets"."disabled_at" IS NOT NULL OR ("poly_copy_trade_targets"."target_range_max_usdc" IS NOT NULL AND "poly_copy_trade_targets"."mirror_max_alloc_per_condition_usdc" IS NOT NULL));
