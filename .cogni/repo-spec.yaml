@@ -15,7 +15,18 @@ scope_key: "default"
 
 intent:
   name: poly
-  mission: "Define poly's one-line mission here — refine in .cogni/repo-spec.yaml (surfaced at session start)."
+  hook: "Community AI for prediction markets"
+  mission: "Cogni Poly is a community-built AI for prediction market research, monitoring cross-platform catalysts and surfacing explainable signals while token holders steer priorities."
+  brand:
+    icon: Crosshair
+    color: "#22c55e"
+
+governance:
+  dao_contract: "0x8a018d191f7135dbf1adc5fa5a76e46cf02cc69c"
+  plugin_contract: "0xfa4e08aed196f64a4bd66c82616c956c42c6d160"
+  signal_contract: "0x99ae96f6f04b0276571d5a6df24021585477797f"
+  chain_id: "8453"
+  base_url: "https://proposal.cognidao.org"
 
 cogni_dao:
   dao_contract: "0x8a018d191f7135dbf1adc5fa5a76e46cf02cc69c"

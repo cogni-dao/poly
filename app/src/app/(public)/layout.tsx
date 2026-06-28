@@ -14,19 +14,15 @@
 import type { ReactNode } from "react";
 
 import { AppFooter, AppHeader } from "@/features/layout";
-import { getBrandMark } from "@/shared/config/repoSpec.server";
 
 export default function PublicLayout({
   children,
 }: Readonly<{
   children: ReactNode;
 }>): ReactNode {
-  // Server-side, build-safe repo-spec read; passed to the (client) header as a
-  // serializable prop so the header never imports server-only repo-spec IO.
-  const brandMark = getBrandMark();
   return (
     <div className="flex min-h-screen flex-col">
-      <AppHeader brandMark={brandMark} />
+      <AppHeader />
       <main className="flex-1">{children}</main>
       <AppFooter />
     </div>

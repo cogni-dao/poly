@@ -1,48 +1,146 @@
-// SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
-// SPDX-FileCopyrightText: 2025 Cogni-DAO
-
-/**
- * Module: `@features/home/components/AgentStream`
- * Purpose: Live "agent console" embedded in the hero. Replays simulated reasoning
- *   sequences to show the node working in real time, then loops.
- * Scope: Presentational. Reads all copy from `../content`. No real IO.
- * Invariants: Cleans up its timers on unmount / sequence change.
- * Side-effects: timers (setTimeout) for the streaming animation
- * Links: src/features/home/content.ts, src/features/home/components/LandingHero.tsx
- */
-
 "use client";
 
-import { cn } from "@cogni/node-ui-kit/util/cn";
 import { AnimatePresence, motion } from "framer-motion";
-import { CheckCircle, Loader2 } from "lucide-react";
+import {
+  Activity,
+  BrainCircuit,
+  CheckCircle,
+  Loader2,
+  Search,
+} from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useRef, useState } from "react";
 
-import {
-  AGENT_STREAM_SEQUENCES,
-  AGENT_STREAM_SUBJECT,
-  STREAM_ICONS,
-  type StreamEvent,
-} from "../content";
+import { cn } from "../lib/cn";
+
+/* ─── Types ─────────────────────────────────────── */
+
+interface StreamEvent {
+  id: string;
+  type: "thinking" | "searching" | "analyzing" | "signal" | "done";
+  text: string;
+  timestamp: number;
+}
+
+/* ─── Simulated stream events ───────────────────── */
+
+const STREAM_SEQUENCES: StreamEvent[][] = [
+  [
+    {
+      id: "a1",
+      type: "thinking",
+      text: "Checking macro calendar for upcoming catalysts...",
+      timestamp: 0,
+    },
+    {
+      id: "a2",
+      type: "searching",
+      text: "Scanning Kalshi climate markets — 23 active contracts",
+      timestamp: 1800,
+    },
+    {
+      id: "a3",
+      type: "analyzing",
+      text: "NOAA updated Gulf SST anomaly to +1.8C — comparing to hurricane model base rates",
+      timestamp: 3400,
+    },
+    {
+      id: "a4",
+      type: "signal",
+      text: 'Signal: "Cat 5 hurricane hits US" — Kalshi 41c, model says 46c. Moderate edge detected.',
+      timestamp: 5600,
+    },
+    {
+      id: "a5",
+      type: "done",
+      text: "Scan complete. 1 signal generated, 23 markets reviewed.",
+      timestamp: 7200,
+    },
+  ],
+  [
+    {
+      id: "b1",
+      type: "thinking",
+      text: "Reviewing Fed futures curve vs Kalshi rate-cut pricing...",
+      timestamp: 0,
+    },
+    {
+      id: "b2",
+      type: "searching",
+      text: "Pulling CME FedWatch probabilities and CPI trend data",
+      timestamp: 2000,
+    },
+    {
+      id: "b3",
+      type: "analyzing",
+      text: 'Kalshi "June cut" at 62c — FedWatch implies 68%. Spread: 6c mispricing.',
+      timestamp: 3800,
+    },
+    {
+      id: "b4",
+      type: "signal",
+      text: 'Signal: "Fed cuts at June meeting" — Buy Yes at 62c, target 68c. High confidence.',
+      timestamp: 5400,
+    },
+    {
+      id: "b5",
+      type: "done",
+      text: "Scan complete. 1 signal generated, 8 markets reviewed.",
+      timestamp: 6800,
+    },
+  ],
+  [
+    {
+      id: "c1",
+      type: "thinking",
+      text: "Monitoring Polymarket tech category for new listings...",
+      timestamp: 0,
+    },
+    {
+      id: "c2",
+      type: "searching",
+      text: "3 new markets detected — GPT-5, Apple AI, Anthropic funding round",
+      timestamp: 1600,
+    },
+    {
+      id: "c3",
+      type: "analyzing",
+      text: "GPT-5 before July: 34c. No credible leaks. Historical AI release markets have 12% optimism bias.",
+      timestamp: 3200,
+    },
+    {
+      id: "c4",
+      type: "analyzing",
+      text: "Anthropic $10B+ round: 78c. Multiple credible sources. Fair price — no actionable edge.",
+      timestamp: 4800,
+    },
+    {
+      id: "c5",
+      type: "done",
+      text: "Scan complete. 0 signals — no edge detected in current tech markets.",
+      timestamp: 6200,
+    },
+  ],
+];
+
+/* ─── Event icon ────────────────────────────────── */
 
 function EventIcon({ type }: { type: StreamEvent["type"] }): ReactElement {
-  const Icon = STREAM_ICONS[type];
-  return (
-    <Icon
-      className={cn(
-        "size-3",
-        type === "analyzing" || type === "signal"
-          ? "text-success"
-          : type === "done"
-            ? "text-muted-foreground"
-            : type === "thinking"
-              ? "text-primary"
-              : "text-muted-foreground"
-      )}
-    />
-  );
+  switch (type) {
+    case "thinking":
+      return <BrainCircuit className="size-3 text-primary" />;
+    case "searching":
+      return <Search className="size-3 text-muted-foreground" />;
+    case "analyzing":
+      return <Activity className="size-3 text-up" />;
+    case "signal":
+      return <Activity className="size-3 text-up" />;
+    case "done":
+      return <CheckCircle className="size-3 text-muted-foreground" />;
+  }
 }
+
+/* ─── Main component ────────────────────────────── */
 
 export function AgentStream(): ReactElement {
   const [events, setEvents] = useState<StreamEvent[]>([]);
@@ -51,8 +149,7 @@ export function AgentStream(): ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const sequence =
-      AGENT_STREAM_SEQUENCES[seqIdx % AGENT_STREAM_SEQUENCES.length];
+    const sequence = STREAM_SEQUENCES[seqIdx % STREAM_SEQUENCES.length];
     if (!sequence) return;
     const timeouts: ReturnType<typeof setTimeout>[] = [];
 
@@ -63,21 +160,22 @@ export function AgentStream(): ReactElement {
       timeouts.push(
         setTimeout(() => {
           setEvents((prev) => [...prev, event]);
-        }, event.at)
+        }, event.timestamp)
       );
     }
 
+    // After sequence ends, pause then start next
     const lastEvent = sequence[sequence.length - 1];
     if (!lastEvent) return;
     timeouts.push(
       setTimeout(() => {
         setIsStreaming(false);
-      }, lastEvent.at + 500)
+      }, lastEvent.timestamp + 500)
     );
     timeouts.push(
       setTimeout(() => {
         setSeqIdx((prev) => prev + 1);
-      }, lastEvent.at + 4000)
+      }, lastEvent.timestamp + 4000)
     );
 
     return () => {
@@ -85,6 +183,7 @@ export function AgentStream(): ReactElement {
     };
   }, [seqIdx]);
 
+  // Auto-scroll to bottom when new events arrive
   const eventCount = events.length;
   // biome-ignore lint/correctness/useExhaustiveDependencies: eventCount triggers scroll
   useEffect(() => {
@@ -110,12 +209,12 @@ export function AgentStream(): ReactElement {
               <CheckCircle className="size-3 text-muted-foreground" />
             )}
             <span className="font-mono text-muted-foreground text-xs uppercase tracking-wider">
-              {isStreaming ? "Agent running" : "Pass complete"}
+              {isStreaming ? "Agent running" : "Scan complete"}
             </span>
           </div>
           <div className="flex-1" />
           <span className="font-mono text-muted-foreground/50 text-xs">
-            {AGENT_STREAM_SUBJECT}
+            cogni/brain
           </span>
         </div>
 
@@ -137,7 +236,7 @@ export function AgentStream(): ReactElement {
                   className={cn(
                     "font-mono text-xs leading-relaxed",
                     event.type === "signal"
-                      ? "text-success"
+                      ? "text-up"
                       : event.type === "done"
                         ? "text-muted-foreground/60"
                         : "text-muted-foreground"
