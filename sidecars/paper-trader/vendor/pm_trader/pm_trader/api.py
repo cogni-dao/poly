@@ -1,0 +1,460 @@
+"""Polymarket HTTP client for Gamma and CLOB APIs.
+
+Fetches market data, order books, prices, fees, and tick sizes from
+the public Polymarket APIs.  Market metadata is cached in SQLite;
+prices and order books are NEVER cached (always live).
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from datetime import datetime, timezone
+
+import httpx
+
+from pm_trader.db import Database
+from pm_trader.models import (
+    ApiError,
+    Market,
+    MarketNotFoundError,
+    OrderBook,
+    OrderBookLevel,
+)
+
+GAMMA_BASE = "https://gamma-api.polymarket.com"
+CLOB_BASE = "https://clob.polymarket.com"
+# Data-API serves market-level trade prints. Cogni-poly local patch (bug.5005).
+DATA_API_BASE = "https://data-api.polymarket.com"
+
+CACHE_TTL_SECONDS = 300  # 5 minutes for market metadata
+
+_TIMEOUT = httpx.Timeout(10.0)
+
+
+class PolymarketClient:
+    """HTTP client for Polymarket public APIs."""
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+        self._http = httpx.Client(timeout=_TIMEOUT)
+
+    def close(self) -> None:
+        self._http.close()
+
+    # ------------------------------------------------------------------
+    # Cache helpers
+    # ------------------------------------------------------------------
+
+    def _get_cached(self, key: str) -> dict | list | None:
+        """Return cached value if it exists and is within TTL."""
+        row = self.db.conn.execute(
+            "SELECT data, fetched_at FROM market_cache WHERE cache_key = ?",
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        fetched_at = datetime.fromisoformat(row["fetched_at"])
+        if not fetched_at.tzinfo:
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        age = (now - fetched_at).total_seconds()
+        if age > CACHE_TTL_SECONDS:
+            return None
+        return json.loads(row["data"])
+
+    def _set_cached(self, key: str, data: dict | list) -> None:
+        self.db.set_cache(key, data)
+
+    # ------------------------------------------------------------------
+    # Gamma API — market discovery
+    # ------------------------------------------------------------------
+
+    def _gamma_get(self, path: str, params: dict | None = None) -> list | dict:
+        """Make a GET request to the Gamma API."""
+        url = f"{GAMMA_BASE}{path}"
+        try:
+            resp = self._http.get(url, params=params)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            raise ApiError(
+                f"Gamma API error: {e.response.status_code} {e.response.text[:200]}",
+                status_code=e.response.status_code,
+            ) from e
+        except httpx.RequestError as e:
+            raise ApiError(f"Gamma API request failed: {e}") from e
+
+    def _clob_get(self, path: str, params: dict | None = None) -> dict | list:
+        """Make a GET request to the CLOB API."""
+        url = f"{CLOB_BASE}{path}"
+        try:
+            resp = self._http.get(url, params=params)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            raise ApiError(
+                f"CLOB API error: {e.response.status_code} {e.response.text[:200]}",
+                status_code=e.response.status_code,
+            ) from e
+        except httpx.RequestError as e:
+            raise ApiError(f"CLOB API request failed: {e}") from e
+
+    def _data_api_get(self, path: str, params: dict | None = None) -> list | dict:
+        """Make a GET request to the Polymarket Data API.
+
+        Cogni-poly local patch (bug.5005). Used by ``get_trades_since`` to
+        scan recent trade prints between fill-loop polls so resting limit
+        orders can be matched as makers, not only as snapshot takers.
+        """
+        url = f"{DATA_API_BASE}{path}"
+        try:
+            resp = self._http.get(url, params=params)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            raise ApiError(
+                f"Data API error: {e.response.status_code} {e.response.text[:200]}",
+                status_code=e.response.status_code,
+            ) from e
+        except httpx.RequestError as e:
+            raise ApiError(f"Data API request failed: {e}") from e
+
+    # ------------------------------------------------------------------
+    # Market resolution (slug or condition_id → Market)
+    # ------------------------------------------------------------------
+
+    def get_market(self, slug_or_id: str) -> Market:
+        """Resolve a slug or condition_id to a full Market object.
+
+        Market metadata is cached for 5 minutes.  Tries slug first
+        (Gamma API), then condition_id (CLOB API).
+        """
+        cache_key = f"market:{slug_or_id}"
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return _parse_market(cached)
+
+        # Try by slug first (Gamma API)
+        data = self._gamma_get("/markets", params={"slug": slug_or_id})
+        if isinstance(data, list) and len(data) > 0:
+            market_data = data[0]
+            self._set_cached(cache_key, market_data)
+            return _parse_market(market_data)
+        if isinstance(data, dict) and _has_condition_id(data):
+            self._set_cached(cache_key, data)
+            return _parse_market(data)
+
+        # Try by condition_id via CLOB API (reliable exact match)
+        if slug_or_id.startswith("0x"):
+            try:
+                clob_data = self._clob_get(f"/markets/{slug_or_id}")
+                if isinstance(clob_data, dict) and clob_data.get("condition_id"):
+                    # CLOB returns tokens with outcome/token_id — enrich with Gamma data
+                    market = _parse_clob_market(clob_data)
+                    # Try to get full Gamma data using the slug from CLOB
+                    if market.slug:
+                        try:
+                            gamma_data = self._gamma_get(
+                                "/markets", params={"slug": market.slug}
+                            )
+                            if isinstance(gamma_data, list) and len(gamma_data) > 0:
+                                self._set_cached(cache_key, gamma_data[0])
+                                return _parse_market(gamma_data[0])
+                        except Exception:
+                            pass
+                    # Fall back to CLOB-only data
+                    self._set_cached(cache_key, clob_data)
+                    return market
+            except ApiError:
+                pass
+
+        raise MarketNotFoundError(slug_or_id)
+
+    def list_markets(
+        self, *, limit: int = 20, sort_by: str = "volume"
+    ) -> list[Market]:
+        """List active markets sorted by volume or liquidity."""
+        params: dict = {
+            "limit": limit,
+            "active": "true",
+            "closed": "false",
+        }
+        if sort_by == "volume":
+            params["order"] = "volume"
+            params["ascending"] = "false"
+        elif sort_by == "liquidity":
+            params["order"] = "liquidity"
+            params["ascending"] = "false"
+
+        data = self._gamma_get("/markets", params=params)
+        if not isinstance(data, list):
+            return []
+        return [_parse_market(m) for m in data if _has_condition_id(m)]
+
+    def search_markets(self, query: str, *, limit: int = 10) -> list[Market]:
+        """Search markets by text query."""
+        data = self._gamma_get(
+            "/markets", params={"_q": query, "limit": limit}
+        )
+        if not isinstance(data, list):
+            return []
+        return [_parse_market(m) for m in data if _has_condition_id(m)]
+
+    # ------------------------------------------------------------------
+    # CLOB API — prices, order book, fees, tick size
+    # ------------------------------------------------------------------
+
+    def get_order_book(self, token_id: str) -> OrderBook:
+        """Fetch the live order book for a token.  NEVER cached."""
+        data = self._clob_get("/book", params={"token_id": token_id})
+        return _parse_order_book(data)
+
+    def get_midpoint(self, token_id: str) -> float:
+        """Fetch the live midpoint price for a token.  NEVER cached."""
+        data = self._clob_get("/midpoint", params={"token_id": token_id})
+        return float(data.get("mid", 0.0))
+
+    def get_fee_rate(self, token_id: str) -> int:
+        """Fetch the fee rate in bps for a token.  Cached 5 min."""
+        cache_key = f"fee_rate:{token_id}"
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return int(cached.get("fee_rate_bps", 0))
+
+        data = self._clob_get("/fee-rate", params={"token_id": token_id})
+        fee_bps = int(data.get("fee_rate_bps", 0))
+        self._set_cached(cache_key, {"fee_rate_bps": fee_bps})
+        return fee_bps
+
+    def get_tick_size(self, token_id: str) -> float:
+        """Fetch the tick size for a token.  Cached 5 min."""
+        cache_key = f"tick_size:{token_id}"
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return float(cached.get("minimum_tick_size", 0.01))
+
+        data = self._clob_get("/tick-size", params={"token_id": token_id})
+        tick = float(data.get("minimum_tick_size", 0.01))
+        self._set_cached(cache_key, {"minimum_tick_size": tick})
+        return tick
+
+    # ------------------------------------------------------------------
+    # Convenience: get everything needed for a trade
+    # ------------------------------------------------------------------
+
+    def get_trade_context(
+        self, slug_or_id: str, outcome: str
+    ) -> tuple[Market, OrderBook, int]:
+        """Return (Market, OrderBook, fee_rate_bps) for a trade.
+
+        - Market metadata is cached.
+        - Order book is always live.
+        - Fee rate is cached.
+        """
+        market = self.get_market(slug_or_id)
+        token_id = market.get_token_id(outcome)
+        book = self.get_order_book(token_id)
+        fee_rate = self.get_fee_rate(token_id)
+        return market, book, fee_rate
+
+    # ------------------------------------------------------------------
+    # Trade prints — Cogni-poly local patch (bug.5005)
+    # ------------------------------------------------------------------
+
+    def get_trades_since(
+        self,
+        condition_id: str,
+        token_id: str,
+        since_ts: float,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Return market-level trade prints on ``token_id`` newer than ``since_ts``.
+
+        Hits Polymarket Data API ``GET /trades?market=<conditionId>`` and
+        filters in-client to ``asset == token_id`` and ``timestamp > since_ts``.
+        The data-api endpoint returns trades for the whole condition (both
+        YES + NO tokens); we keep only the side the caller asked about.
+
+        Used by ``Engine.check_orders`` to simulate maker-style fills (resting
+        limits matched by ambient taker flow) which the snapshot-book fill
+        model alone cannot capture for limit-maker strategies. See bug.5005.
+
+        Notes
+        -----
+        - ``limit`` is bounded small by default. Polymarket's ``/trades`` cache
+          serves stale pages at higher limits — verified up to 2 min behind at
+          limit=1000 vs limit=20 for an active trader (cogni's TS data-api
+          client carries the same note). Callers needing deeper history should
+          paginate, not raise the limit.
+        - Each trade's ``side`` field is the **taker** side. For a paper BUY
+          limit at price L (sitting as a resting maker bid), only ``SELL``-taker
+          trades at ``price <= L`` would have matched our bid. The engine
+          applies that filter, not this client.
+        - Returns raw dicts (no pydantic schema); the engine consumes only
+          ``price``, ``size``, ``side``, ``asset``, ``timestamp``.
+        - On any HTTP / parse error, raises ``ApiError`` — callers (the engine's
+          maker-fill branch) catch and degrade gracefully per the bug.5005
+          GRACEFUL_DEGRADATION_ON_API_ERROR invariant.
+        """
+        params = {"market": condition_id, "limit": limit}
+        data = self._data_api_get("/trades", params=params)
+        if not isinstance(data, list):
+            return []
+
+        trades: list[dict] = []
+        for raw in data:
+            if not isinstance(raw, dict):
+                continue
+            if raw.get("asset") != token_id:
+                continue
+            try:
+                ts = float(raw.get("timestamp", 0))
+                price = float(raw.get("price", 0))
+                size = float(raw.get("size", 0))
+            except (TypeError, ValueError):
+                continue
+            if ts <= since_ts or price <= 0 or size <= 0:
+                continue
+            side = raw.get("side")
+            if side not in ("BUY", "SELL"):
+                continue
+            trades.append({
+                "price": price,
+                "size": size,
+                "side": side,
+                "asset": token_id,
+                "timestamp": ts,
+            })
+        return trades
+
+
+# ---------------------------------------------------------------------------
+# Parsing helpers
+# ---------------------------------------------------------------------------
+
+
+def _has_condition_id(data: dict) -> bool:
+    """Check if a response dict has a condition ID (camelCase or snake_case)."""
+    return bool(data.get("conditionId") or data.get("condition_id"))
+
+
+def _parse_clob_market(data: dict) -> Market:
+    """Parse a CLOB /markets/{condition_id} response into a Market."""
+    tokens_raw = data.get("tokens", [])
+    if isinstance(tokens_raw, str):
+        tokens_raw = json.loads(tokens_raw)
+
+    tokens = []
+    for t in tokens_raw:
+        tokens.append({
+            "token_id": t.get("token_id", ""),
+            "outcome": t.get("outcome", ""),
+        })
+
+    def _to_bool(val) -> bool:
+        if isinstance(val, str):
+            return val.lower() == "true"
+        return bool(val)
+
+    return Market(
+        condition_id=data.get("condition_id", ""),
+        slug=data.get("market_slug", ""),
+        question=data.get("question", ""),
+        description=data.get("description", ""),
+        outcomes=[t.get("outcome", "") for t in tokens] or ["Yes", "No"],
+        outcome_prices=[0.0, 0.0],  # CLOB doesn't return prices here
+        tokens=tokens,
+        active=_to_bool(data.get("active", True)),
+        closed=_to_bool(data.get("closed", False)),
+        end_date=data.get("end_date_iso", ""),
+        tick_size=float(data.get("minimum_tick_size", 0.01) or 0.01),
+    )
+
+
+def _parse_market(data: dict) -> Market:
+    """Parse a Gamma API market response into a Market dataclass.
+
+    Handles both camelCase (live API) and snake_case (cached/test) field names.
+    """
+    # Parse outcomes — can be JSON string or list
+    outcomes_raw = data.get("outcomes", [])
+    if isinstance(outcomes_raw, str):
+        outcomes_raw = json.loads(outcomes_raw)
+    outcomes = outcomes_raw if outcomes_raw else ["Yes", "No"]
+
+    # Parse outcome prices — can be JSON string or list
+    outcome_prices_raw = data.get("outcomePrices", data.get("outcome_prices", []))
+    if isinstance(outcome_prices_raw, str):
+        outcome_prices_raw = json.loads(outcome_prices_raw)
+    outcome_prices = [float(p) for p in outcome_prices_raw] if outcome_prices_raw else [0.0, 0.0]
+
+    # Parse tokens — Gamma API uses clobTokenIds (JSON string of IDs matching outcomes order)
+    # Also support the tokens list format used in tests/cache
+    tokens = []
+    clob_token_ids_raw = data.get("clobTokenIds")
+    tokens_raw = data.get("tokens")
+
+    if clob_token_ids_raw:
+        # Real Gamma API format: clobTokenIds is a JSON string like '["id1", "id2"]'
+        if isinstance(clob_token_ids_raw, str):
+            clob_token_ids_raw = json.loads(clob_token_ids_raw)
+        for i, token_id in enumerate(clob_token_ids_raw):
+            outcome_name = outcomes[i] if i < len(outcomes) else f"Outcome{i}"
+            tokens.append({
+                "token_id": str(token_id),
+                "outcome": outcome_name,
+            })
+    elif tokens_raw:
+        # Test/cached format: list of {"token_id": ..., "outcome": ...}
+        if isinstance(tokens_raw, str):
+            tokens_raw = json.loads(tokens_raw)
+        for t in tokens_raw:
+            tokens.append({
+                "token_id": t.get("token_id", ""),
+                "outcome": t.get("outcome", ""),
+            })
+
+    # condition_id: Gamma uses conditionId (camelCase)
+    condition_id = data.get("conditionId", data.get("condition_id", ""))
+
+    # tick size: Gamma uses orderPriceMinTickSize
+    tick_size_raw = data.get("orderPriceMinTickSize",
+                             data.get("minimum_tick_size", 0.01))
+    tick_size = float(tick_size_raw) if tick_size_raw else 0.01
+
+    return Market(
+        condition_id=condition_id,
+        slug=data.get("slug", ""),
+        question=data.get("question", ""),
+        description=data.get("description", ""),
+        outcomes=outcomes,
+        outcome_prices=outcome_prices,
+        tokens=tokens,
+        active=bool(data.get("active", False)),
+        closed=bool(data.get("closed", False)),
+        volume=float(data.get("volume", 0) or 0),
+        liquidity=float(data.get("liquidity", 0) or 0),
+        end_date=data.get("endDateIso", data.get("end_date_iso", data.get("end_date", ""))),
+        fee_rate_bps=int(data.get("fee_rate_bps", 0) or 0),
+        tick_size=tick_size,
+    )
+
+
+def _parse_order_book(data: dict) -> OrderBook:
+    """Parse a CLOB /book response into an OrderBook dataclass."""
+    bids = []
+    for entry in data.get("bids", []):
+        bids.append(OrderBookLevel(
+            price=float(entry.get("price", 0)),
+            size=float(entry.get("size", 0)),
+        ))
+
+    asks = []
+    for entry in data.get("asks", []):
+        asks.append(OrderBookLevel(
+            price=float(entry.get("price", 0)),
+            size=float(entry.get("size", 0)),
+        ))
+
+    return OrderBook(bids=bids, asks=asks)

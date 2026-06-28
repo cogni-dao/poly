@@ -204,6 +204,19 @@ export const serverSchema = z.object({
   KALSHI_API_KEY: optionalString,
   KALSHI_API_SECRET: optionalString,
 
+  // Paper trading sidecar. The service must be reachable only through pod
+  // loopback; operator deploy wiring injects a second container into the app
+  // pod, not a Service or Ingress.
+  PAPER_SIDECAR_URL: z
+    .string()
+    .url()
+    .default("http://127.0.0.1:9100"),
+  PAPER_ENFORCE_MODE: z.enum(["disabled", "paper", "live"]).default("paper"),
+  PAPER_LIVE_TRADING_APPROVED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+
   // Redis (stream plane — ephemeral only)
   // Per unified-graph-launch spec: REDIS_IS_STREAM_PLANE
   // Default: localhost for host-mode dev; docker-compose overrides to redis://redis:6379
@@ -290,6 +303,7 @@ export function serverEnv(): ServerEnv {
       // Cross-field invariants (beyond Zod schema)
       // Per DATABASE_RLS_SPEC.md design decision 7: enforce role separation at boot
       assertEnvInvariants(parsed);
+      assertPaperTradingEnv(parsed);
 
       // Per DATABASE_RLS_SPEC.md §SSL_REQUIRED_NON_LOCAL: reject non-localhost
       // PostgreSQL URLs without sslmode= to prevent credential sniffing.
@@ -389,3 +403,28 @@ export function serverEnv(): ServerEnv {
 }
 
 export type { ServerEnv };
+
+function assertPaperTradingEnv(env: {
+  DEPLOY_ENVIRONMENT?: string | undefined;
+  PAPER_ENFORCE_MODE: "disabled" | "paper" | "live";
+  PAPER_LIVE_TRADING_APPROVED: boolean;
+}): void {
+  const deployEnv = (env.DEPLOY_ENVIRONMENT ?? "").toLowerCase();
+  const isCandidateOrPreview =
+    deployEnv.startsWith("candidate") || deployEnv === "preview";
+
+  if (isCandidateOrPreview && env.PAPER_ENFORCE_MODE !== "paper") {
+    throw new Error(
+      `${env.DEPLOY_ENVIRONMENT} must set PAPER_ENFORCE_MODE=paper; live trading is not allowed in candidate/preview.`
+    );
+  }
+
+  if (
+    env.PAPER_ENFORCE_MODE === "live" &&
+    env.PAPER_LIVE_TRADING_APPROVED !== true
+  ) {
+    throw new Error(
+      "PAPER_ENFORCE_MODE=live requires PAPER_LIVE_TRADING_APPROVED=true. Production live trading remains disabled unless explicitly approved."
+    );
+  }
+}
