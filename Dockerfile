@@ -94,6 +94,13 @@ COPY --from=builder --chown=nextjs:nodejs /app/app/public ./app/public
 # Repo-spec: DAO config (node_id, chain, governance).
 COPY --from=builder --chown=nextjs:nodejs /app/.cogni ./.cogni
 
+# Work coordination ledger. The runtime work-item adapter is markdown-backed
+# for this bootstrap phase, so candidate/prod must ship the seeded ledger and
+# leave the directory writable for claim/heartbeat/create operations.
+COPY --from=builder --chown=nextjs:nodejs /app/work ./work
+RUN mkdir -p /app/work/items /app/work/projects \
+  && chown -R nextjs:nodejs /app/work
+
 # Postgres migrator: base node-app deployment runs `node $NODE_NAME/app/migrate.mjs $NODE_NAME/app/migrations`
 # as an initContainer. The runner needs the shared wrapper + this node's migrations folder
 # colocated at the expected paths. Mirrors operator/Dockerfile (task.0370 step 1).
