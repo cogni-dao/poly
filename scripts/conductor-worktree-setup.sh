@@ -141,7 +141,7 @@ register_auth_root_cogni_agent() {
 }
 
 ensure_auth_root_cogni_env() {
-  local lock_dir
+  local lock_dir=""
 
   if [[ -z "$AUTH_ROOT" ]]; then
     warn "no auth root resolved; cannot auto-register COGNI_NODE_API_KEY safely"
@@ -162,7 +162,8 @@ ensure_auth_root_cogni_env() {
     warn "$AUTH_ROOT/.env.cogni still missing COGNI_NODE_API_KEY after waiting for another setup"
     exit 1
   fi
-  trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
+  trap '[[ -n "${COGNI_NODE_KEY_LOCK_DIR:-}" ]] && rmdir "$COGNI_NODE_KEY_LOCK_DIR" 2>/dev/null || true' EXIT
+  COGNI_NODE_KEY_LOCK_DIR="$lock_dir"
 
   if auth_root_has_node_cogni_key; then
     return
