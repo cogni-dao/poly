@@ -17,7 +17,7 @@
  * @public
  */
 
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { WorkItemCommandPort, WorkItemQueryPort } from "../../ports.js";
 import { isValidTransition } from "../../transitions.js";
@@ -310,6 +310,7 @@ export class MarkdownWorkItemAdapter
   // ── CommandPort ────────────────────────────────────
 
   async create(input: {
+    id?: WorkItemId;
     type: WorkItemType;
     title: string;
     summary?: string;
@@ -320,21 +321,33 @@ export class MarkdownWorkItemAdapter
     labels?: string[];
     assignees?: SubjectRef[];
     node?: string;
+    status?: WorkItemStatus;
+    priority?: number;
+    rank?: number;
+    estimate?: number;
   }): Promise<WorkItem> {
-    const { id, numStr } = await allocateNextId(this.workDir, input.type);
+    const allocated = input.id
+      ? { id: input.id, numStr: (input.id as string).split(".").at(-1) ?? "0000" }
+      : await allocateNextId(this.workDir, input.type);
+    if (input.id) {
+      const existing = await findById(this.workDir, input.id);
+      if (existing) {
+        throw new Error(`Work item already exists: ${input.id as string}`);
+      }
+    }
     const slug = slugify(input.title);
-    const filename = `${input.type}.${numStr}.${slug}.md`;
+    const filename = `${input.type}.${allocated.numStr}.${slug}.md`;
     const today = new Date().toISOString().slice(0, 10);
 
     const raw: Record<string, unknown> = {
-      id: workItemIdToRaw(id),
+      id: workItemIdToRaw(allocated.id),
       type: input.type,
       title: input.title,
-      status: "needs_triage",
+      status: input.status ?? "needs_triage",
       actor: "either",
-      priority: 0,
-      rank: 99,
-      estimate: 0,
+      priority: input.priority ?? 0,
+      rank: input.rank ?? 99,
+      estimate: input.estimate ?? 0,
       summary: input.summary ?? "",
       outcome: input.outcome ?? "",
       spec_refs: input.specRefs ?? [],
@@ -364,6 +377,7 @@ export class MarkdownWorkItemAdapter
     const itemsDir = path.join(this.workDir, "work", "items");
     const filePath = path.join(itemsDir, filename);
     assertContained(filePath, itemsDir);
+    await mkdir(itemsDir, { recursive: true });
     await writeFile(filePath, content, "utf8");
 
     const parsed = parseFrontmatter(content);

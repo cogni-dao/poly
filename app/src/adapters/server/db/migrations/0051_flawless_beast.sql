@@ -1,0 +1,2 @@
+ALTER TABLE "poly_copy_trade_targets" ADD COLUMN "sizing_policy_kind" text DEFAULT 'auto' NOT NULL;--> statement-breakpoint
+ALTER TABLE "poly_copy_trade_targets" ADD CONSTRAINT "poly_copy_trade_targets_sizing_policy_kind_check" CHECK ("poly_copy_trade_targets"."sizing_policy_kind" IN ('auto','min_bet','target_percentile_scaled'));
