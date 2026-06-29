@@ -21,6 +21,32 @@ import { verifyDoltgresSchema } from "./verify-doltgres-schema.mjs";
 
 const NODE = `${process.env.NODE_NAME?.trim() || "unknown"}-doltgres`;
 
+const BASE_DOMAIN_SEEDS = [
+  {
+    id: "meta",
+    name: "Meta",
+    description: "Knowledge about the knowledge system itself.",
+  },
+  {
+    id: "prediction-market",
+    name: "Prediction Markets",
+    description:
+      "Polymarket and adjacent prediction-market knowledge — base rates, market structure, calibration.",
+  },
+  {
+    id: "infrastructure",
+    name: "Infrastructure",
+    description:
+      "Runtime, deploy, observability, and capacity knowledge for Cogni nodes.",
+  },
+  {
+    id: "governance",
+    name: "Governance",
+    description:
+      "DAO formation, attribution, voting, and operator/node contracts.",
+  },
+];
+
 const url = process.env.DATABASE_URL?.trim();
 if (!url) {
   console.error(`FATAL(${NODE}): DATABASE_URL is required`);
@@ -120,6 +146,24 @@ async function applyPending(sql, folder) {
   return applied;
 }
 
+async function seedBaseDomains(sql) {
+  let inserted = 0;
+  for (const domain of BASE_DOMAIN_SEEDS) {
+    const existing = await sql.unsafe(
+      `SELECT id FROM domains WHERE id = ${sqlEscape(domain.id)} LIMIT 1`
+    );
+    if (existing.length > 0) continue;
+    await sql.unsafe(
+      [
+        "INSERT INTO domains (id, name, description, confidence_pct)",
+        `VALUES (${sqlEscape(domain.id)}, ${sqlEscape(domain.name)}, ${sqlEscape(domain.description)}, 80)`,
+      ].join(" ")
+    );
+    inserted += 1;
+  }
+  return inserted;
+}
+
 async function withConnection(fn) {
   const sql = postgres(url, {
     max: 1,
@@ -140,11 +184,13 @@ try {
     console.log(
       `✓ ${NODE} schema verified against snapshot ${verifyResult.latestTag} (${verifyResult.tablesChecked} table(s))`
     );
-    await sql`SELECT dolt_commit('-Am', 'migration: drizzle-kit batch')`;
-    return applied;
+    const seeded = await seedBaseDomains(sql);
+    console.log(`✓ ${NODE} base domains seeded (${seeded} inserted)`);
+    await sql`SELECT dolt_commit('-Am', 'migration: drizzle-kit batch + base domain seeds')`;
+    return { applied, seeded };
   });
   console.log(
-    `✅ ${NODE} migrate complete: ${result} migration(s) applied + verified + dolt_commit stamped in ${Date.now() - t0}ms`
+    `✅ ${NODE} migrate complete: ${result.applied} migration(s) applied, ${result.seeded} domain seed(s) inserted + verified + dolt_commit stamped in ${Date.now() - t0}ms`
   );
 } catch (err) {
   console.error(`FATAL(${NODE}): migrate failed:`, err);
