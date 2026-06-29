@@ -13,7 +13,7 @@
 
 import type { ComponentType } from "react";
 
-import { DiscordIcon, GitHubIcon } from "@/components";
+import { GitHubIcon } from "@/components";
 
 export interface FooterLink {
   label: string;
@@ -47,8 +47,8 @@ export const FOOTER_COLUMNS: FooterColumn[] = [
     title: "About",
     links: [
       {
-        label: "Documentation",
-        href: "https://github.com/cogni-DAO/cogni-template",
+        label: "Repository",
+        href: "https://github.com/cogni-dao/poly",
         external: true,
       },
     ],
@@ -58,12 +58,7 @@ export const FOOTER_COLUMNS: FooterColumn[] = [
     links: [
       {
         label: "GitHub",
-        href: "https://github.com/cogni-DAO/cogni-template",
-        external: true,
-      },
-      {
-        label: "Discord",
-        href: "https://discord.gg/3b9sSyhZ4z",
+        href: "https://github.com/cogni-dao/poly",
         external: true,
       },
     ],
@@ -73,12 +68,7 @@ export const FOOTER_COLUMNS: FooterColumn[] = [
 export const SOCIAL_LINKS: SocialLink[] = [
   {
     label: "GitHub",
-    href: "https://github.com/cogni-DAO/cogni-template",
+    href: "https://github.com/cogni-dao/poly",
     icon: GitHubIcon,
-  },
-  {
-    label: "Discord",
-    href: "https://discord.gg/3b9sSyhZ4z",
-    icon: DiscordIcon,
   },
 ];

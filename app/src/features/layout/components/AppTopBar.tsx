@@ -29,9 +29,10 @@ export function AppTopBar(): ReactElement {
 
       <div className="flex items-center gap-2 sm:gap-3">
         <a
-          href="https://github.com/cogni-dao"
+          href="https://github.com/cogni-dao/poly"
           target="_blank"
           rel="noopener noreferrer"
+          aria-label="Poly on GitHub"
           className="hidden text-muted-foreground transition-colors hover:text-foreground lg:inline-flex"
         >
           <Github className="size-4" strokeWidth={1.5} />
