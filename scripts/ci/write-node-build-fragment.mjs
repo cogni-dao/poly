@@ -1,14 +1,22 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const required = ["OUTPUT_FILE", "TARGET", "IMAGE_NAME", "IMAGE_TAG", "SOURCE_SHA"];
+const required = [
+  "OUTPUT_FILE",
+  "TARGET",
+  "IMAGE_NAME",
+  "IMAGE_TAG",
+  "SOURCE_SHA",
+];
 for (const key of required) {
   if (!process.env[key]) {
     throw new Error(`${key} is required`);
   }
 }
 
-const imageName = process.env.IMAGE_NAME.toLowerCase();
+const imageName = (
+  process.env.TARGET_IMAGE_NAME ?? process.env.IMAGE_NAME
+).toLowerCase();
 const imageTag = process.env.IMAGE_TAG;
 const sourceSha = process.env.SOURCE_SHA;
 const tag = `${imageName}:${imageTag}`;
