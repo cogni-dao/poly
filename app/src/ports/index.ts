@@ -108,6 +108,11 @@ export {
 	normalizeErrorToExecutionCode,
 } from "./llm.port";
 export type {
+	MarketOutcomeKind,
+	MarketOutcomesPort,
+	MarketOutcomeUpsertInput,
+} from "./market-outcomes.port";
+export type {
 	InstantQueryParams,
 	MetricsQueryPort,
 	MetricTemplate,
@@ -151,6 +156,19 @@ export {
 	type PaymentErrorCode,
 	TxHashAlreadyBoundPortError,
 } from "./payment-attempt.port";
+export type {
+	ProviderFundingContext,
+	ProviderFundingOutcome,
+	ProviderFundingPort,
+} from "./provider-funding.port";
+export {
+	type EnqueueRedeemJobInput,
+	type EnqueueRedeemJobResult,
+	type KnownRedeemCondition,
+	RedeemJobNotFoundPortError,
+	type RedeemJobsPort,
+	type RedeemSubscriptionId,
+} from "./redeem-jobs.port";
 export type {
 	ProxyBillingEntry,
 	SandboxErrorCode,
