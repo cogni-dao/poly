@@ -17,12 +17,8 @@ export * from "./attribution";
 export * from "./auth";
 export * from "./billing";
 export * from "./connections";
-export * from "./copy-trade";
 export * from "./identity";
-export * from "./poly-redeem-jobs";
+// poly-copy-trade relocated to nodes/poly/app/src/shared/db/copy-trade.ts (task.0322)
 export * from "./profile";
 export * from "./refs";
 export * from "./scheduling";
-export * from "./trader-activity";
-export * from "./wallet-connections";
-export * from "./wallet-grants";

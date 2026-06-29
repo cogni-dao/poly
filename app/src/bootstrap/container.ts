@@ -57,7 +57,7 @@ import {
 import { numberToPpm } from "@cogni/operator-wallet";
 import { PrivyOperatorWalletAdapter } from "@cogni/operator-wallet/adapters/privy";
 import type { ScheduleControlPort } from "@cogni/scheduler-core";
-import type { WorkItemCommandPort, WorkItemQueryPort } from "@cogni/work-items";
+import type { WorkItemQueryPort } from "@cogni/work-items";
 import { MarkdownWorkItemAdapter } from "@cogni/work-items/markdown";
 import {
 	Client as TemporalClient,
@@ -230,8 +230,6 @@ export interface Container {
 	attributionStore: AttributionStore;
 	/** Work item queries — reads from markdown files via WorkItemQueryPort */
 	workItemQuery: WorkItemQueryPort;
-	/** Work item commands — writes to markdown files via WorkItemCommandPort */
-	workItemCommand: WorkItemCommandPort;
 	/** Run event streaming — publish/subscribe via Redis Streams */
 	runStream: RunStreamPort;
 	/** Node-level event streaming — undefined when REDIS_URL not set */
@@ -841,7 +839,6 @@ function createContainer(): Container {
 		),
 		attributionStore: new DrizzleAttributionAdapter(serviceDb, getScopeId()),
 		workItemQuery: workItemAdapter,
-		workItemCommand: workItemAdapter,
 		runStream,
 		nodeStream,
 		get webhookRegistrations() {
