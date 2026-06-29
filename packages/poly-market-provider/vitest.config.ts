@@ -26,7 +26,7 @@ export default defineProject({
     }),
   ],
   test: {
-    name: "poly-market-provider",
+    name: "market-provider",
     globals: true,
     environment: "node",
     include: ["tests/**/*.{test,spec}.{ts,tsx}"],
