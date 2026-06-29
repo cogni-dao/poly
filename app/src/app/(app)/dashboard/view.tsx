@@ -22,14 +22,19 @@ import type {
   TimeRange,
   WorkItemDto,
 } from "@cogni/node-contracts";
-import { cn } from "@cogni/node-ui-kit/util/cn";
-import { useQuery } from "@tanstack/react-query";
-import { Radio } from "lucide-react";
+import {
+  useIsFetching,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { Radio, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import type { ReactElement } from "react";
 import { useState } from "react";
 import {
   Badge,
+  Button,
   Card,
   CardContent,
   CardHeader,
@@ -50,10 +55,16 @@ import {
   buildGroupedChartData,
 } from "@/components/kit/data-display/activity-chart-utils";
 import type { RunCardData } from "@/components/kit/data-display/RunCard";
+import { cn } from "@/shared/util/cn";
 import { fetchActivity } from "../activity/_api/fetchActivity";
 import { WorkItemDetail } from "../work/_components/WorkItemDetail";
 import { StatusPill, TypeIcon } from "../work/_components/work-item-icons";
+import { postPolymarketRefresh } from "./_api/fetchPolymarketRefresh";
 import { fetchRuns } from "./_api/fetchRuns";
+import { CopyTargetControlPanel } from "./_components/CopyTargetControlPanel";
+import { ExecutionActivityCard } from "./_components/ExecutionActivityCard";
+import { OperatorWalletChartsRow } from "./_components/OperatorWalletChartsRow";
+import { TradingWalletCard } from "./_components/TradingWalletCard";
 
 type Tab = "user" | "system";
 
@@ -166,6 +177,7 @@ async function fetchWorkItems(): Promise<{ items: WorkItemDto[] }> {
 /* ─── main view ─── */
 
 export function DashboardView(): ReactElement {
+  const queryClient = useQueryClient();
   const [tab, setTab] = useState<Tab>("user");
   const [activityRange, setActivityRange] = useState<TimeRange>("1d");
   const [activityGroupBy, setActivityGroupBy] = useState<
@@ -202,6 +214,25 @@ export function DashboardView(): ReactElement {
     gcTime: 5 * 60_000,
     retry: 2,
   });
+
+  const polymarketFetches =
+    useIsFetching({ queryKey: ["dashboard-trading-wallet", "read_model"] }) +
+    useIsFetching({ queryKey: ["dashboard-wallet-execution", "read_model"] }) +
+    useIsFetching({ queryKey: ["poly-wallet-status"] });
+  const refreshPolymarket = useMutation({
+    mutationFn: postPolymarketRefresh,
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["dashboard-trading-wallet"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["dashboard-wallet-execution"],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["poly-wallet-status"] });
+    },
+  });
+  const isRefreshingPolymarket =
+    refreshPolymarket.isPending || polymarketFetches > 0;
 
   const runs = runsData?.runs ? sortRuns(runsData.runs) : [];
   const agents = dedupeByThread(runs);
@@ -257,31 +288,56 @@ export function DashboardView(): ReactElement {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <h1 className="font-bold text-2xl tracking-tight">Dashboard</h1>
-          {activeCount > 0 && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-0.5 font-medium text-sm text-success">
-              <Radio className="size-3.5 animate-pulse" />
-              {activeCount} active
-            </span>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {activeCount > 0 && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-0.5 font-medium text-sm text-success">
+                <Radio className="size-3.5 animate-pulse" />
+                {activeCount} agent{activeCount === 1 ? "" : "s"} live
+              </span>
+            )}
+          </div>
         </div>
-        <ToggleGroup
-          type="single"
-          value={tab}
-          onValueChange={(v) => {
-            if (v) setTab(v as Tab);
-          }}
-          className="rounded-lg border"
-        >
-          <ToggleGroupItem value="user" className="px-3 text-xs">
-            My Runs
-          </ToggleGroupItem>
-          <ToggleGroupItem value="system" className="px-3 text-xs">
-            System Runs
-          </ToggleGroupItem>
-        </ToggleGroup>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            icon
+            aria-label="Refresh Polymarket data"
+            title="Refresh Polymarket data"
+            onClick={() => refreshPolymarket.mutate()}
+            disabled={isRefreshingPolymarket}
+            className="size-8 px-0"
+          >
+            <RefreshCw
+              className={cn("size-4", isRefreshingPolymarket && "animate-spin")}
+            />
+          </Button>
+          <ToggleGroup
+            type="single"
+            value={tab}
+            onValueChange={(v) => {
+              if (v) setTab(v as Tab);
+            }}
+            className="rounded-lg border"
+          >
+            <ToggleGroupItem value="user" className="px-3 text-xs">
+              My Runs
+            </ToggleGroupItem>
+            <ToggleGroupItem value="system" className="px-3 text-xs">
+              System Runs
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
       </div>
 
-      {/* Two-column top section: Agents + Work */}
+      {/* Polymarket primary section (top of fold) */}
+      <CopyTargetControlPanel />
+      <TradingWalletCard />
+      <OperatorWalletChartsRow />
+      <ExecutionActivityCard />
+
+      {/* Two-column section: Agents + Work (demoted below the Polymarket cards) */}
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Left — Agents */}
         <Card>
