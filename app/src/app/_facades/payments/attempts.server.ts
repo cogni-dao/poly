@@ -18,7 +18,7 @@ import type {
 	PaymentStatusOutput,
 	PaymentSubmitOutput,
 } from "@cogni/node-contracts";
-import type { SessionUser } from "@cogni/node-shared";
+import type { SessionUser } from "@cogni/node-shared/auth/session";
 import { getAddress } from "viem";
 import { type Container, getContainer } from "@/bootstrap/container";
 import type { PostCreditFundingDeps } from "@/features/payments/application/confirmCreditsPurchase";

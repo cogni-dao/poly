@@ -25,8 +25,8 @@ import { createHash } from "node:crypto";
 import { AiExecutionError } from "@cogni/ai-core";
 import { toUserId } from "@cogni/ids";
 import type { ChatCompletionOutput, ChatMessage } from "@cogni/node-contracts";
-import type { SessionUser } from "@cogni/node-shared";
-import { EVENT_NAMES } from "@cogni/node-shared";
+import type { SessionUser } from "@cogni/node-shared/auth/session";
+import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
 import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 import {
   getContainer,

@@ -15,7 +15,7 @@
  * @public
  */
 
-import { EVENT_NAMES } from "@cogni/node-shared";
+import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
 import type {
   LoggerPort,
   MetricsPort,

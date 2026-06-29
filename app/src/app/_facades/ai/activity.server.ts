@@ -24,7 +24,7 @@ import {
   type aiActivityOperation,
   STEP_MS,
 } from "@cogni/node-contracts";
-import type { SessionUser } from "@cogni/node-shared";
+import type { SessionUser } from "@cogni/node-shared/auth/session";
 import type { z } from "zod";
 import { resolveActivityDeps } from "@/bootstrap/container";
 import { validateActivityRange } from "@/features/ai/public.server";

@@ -22,7 +22,7 @@
 
 import { withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
-import type { SessionUser } from "@cogni/node-shared";
+import type { SessionUser } from "@cogni/node-shared/auth/session";
 import { polyWalletGrants } from "@cogni/poly-db-schema";
 import type {
   PolyWalletGrantsErrorCode,

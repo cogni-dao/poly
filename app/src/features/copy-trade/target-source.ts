@@ -33,7 +33,7 @@ import type { ActorId } from "@cogni/ids";
 import {
   COGNI_SYSTEM_BILLING_ACCOUNT_ID,
   COGNI_SYSTEM_PRINCIPAL_USER_ID,
-} from "@cogni/node-shared";
+} from "@cogni/node-shared/constants";
 import {
   polyCopyTradeTargets,
   polyWalletConnections,

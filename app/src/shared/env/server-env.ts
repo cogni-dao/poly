@@ -244,6 +244,24 @@ export const serverSchema = z.object({
   PRIVY_APP_SECRET: optionalString,
   PRIVY_SIGNING_KEY: optionalString,
 
+  // Poly tenant trading wallets - Optional.
+  // Separate from operator-wallet Privy credentials. Routes fail closed when
+  // unset so candidate-a can render Poly surfaces without enabling execution.
+  PRIVY_USER_WALLETS_APP_ID: optionalString,
+  PRIVY_USER_WALLETS_APP_SECRET: optionalString,
+  PRIVY_USER_WALLETS_SIGNING_KEY: optionalString,
+  POLY_WALLET_AEAD_KEY_HEX: optionalString,
+  POLY_WALLET_AEAD_KEY_ID: optionalString,
+
+  // Polymarket / paper execution knobs - Optional.
+  POLYGON_RPC_URL: optionalUrl,
+  POLY_CLOB_HOST: optionalUrl,
+  POLY_CLOB_GEO_BLOCK_TOKEN: optionalString,
+  PAPER_SIDECAR_URL: optionalUrl,
+  PAPER_ENFORCE_MODE: z
+    .preprocess(emptyToUndefined, z.enum(["paper"]).optional())
+    .optional(),
+
   // Operator wallet top-up cap (USD)
   // Per operator-wallet.md: MAX_TOPUP_CAP — per-tx ceiling for OpenRouter top-ups.
   OPERATOR_MAX_TOPUP_USD: z.coerce.number().positive().default(500),

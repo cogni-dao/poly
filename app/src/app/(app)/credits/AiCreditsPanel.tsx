@@ -16,7 +16,10 @@
 
 "use client";
 
-import { isValidAmountInput, parseDollarsToCents } from "@cogni/node-shared";
+import {
+  isValidAmountInput,
+  parseDollarsToCents,
+} from "@cogni/node-shared/utils/money";
 import { useQueryClient } from "@tanstack/react-query";
 import { Info } from "lucide-react";
 import type { ReactElement } from "react";

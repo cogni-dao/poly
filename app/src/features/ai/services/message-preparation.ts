@@ -30,7 +30,7 @@ import {
   computePromptHash,
   DEFAULT_MAX_TOKENS,
   DEFAULT_TEMPERATURE,
-} from "@cogni/node-shared";
+} from "@cogni/node-shared/ai";
 
 /**
  * Result of message preparation.

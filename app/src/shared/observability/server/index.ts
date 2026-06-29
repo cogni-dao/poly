@@ -10,14 +10,28 @@
  * @public
  */
 
+import type { Logger } from "pino";
+
+import type { EventBase, EventName } from "../events";
+
+import { logEvent as logSharedEvent } from "@cogni/node-shared/observability/server";
+
+export function logEvent(
+  logger: Logger,
+  eventName: EventName,
+  fields: EventBase & Record<string, unknown>,
+  message?: string
+): void {
+  logSharedEvent(logger, eventName as never, fields, message);
+}
+
 // Extracted to @cogni/node-shared
 export {
-  logEvent,
   logRequestEnd,
   logRequestError,
   logRequestStart,
   logRequestWarn,
-} from "@cogni/node-shared";
+} from "@cogni/node-shared/observability/server";
 // App-local (pino runtime, prom-client runtime)
 export * from "./logger";
 export * from "./metrics";

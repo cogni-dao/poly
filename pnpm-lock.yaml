@@ -113,6 +113,21 @@ importers:
       '@cogni/operator-wallet':
         specifier: workspace:*
         version: link:../packages/operator-wallet
+      '@cogni/poly-ai-tools':
+        specifier: workspace:^
+        version: link:../packages/poly-ai-tools
+      '@cogni/poly-db-schema':
+        specifier: workspace:^
+        version: link:../packages/poly-db-schema
+      '@cogni/poly-market-provider':
+        specifier: workspace:^
+        version: link:../packages/poly-market-provider
+      '@cogni/poly-node-contracts':
+        specifier: workspace:^
+        version: link:../packages/poly-node-contracts
+      '@cogni/poly-wallet':
+        specifier: workspace:^
+        version: link:../packages/poly-wallet
       '@cogni/repo-spec':
         specifier: workspace:*
         version: link:../packages/repo-spec
@@ -158,6 +173,15 @@ importers:
       '@opentelemetry/sdk-node':
         specifier: ^0.208.0
         version: 0.208.0(@opentelemetry/api@1.9.1)
+      '@polymarket/clob-client':
+        specifier: 5.8.1
+        version: 5.8.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@polymarket/clob-client-v2':
+        specifier: ^1.0.2
+        version: 1.0.6(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+      '@privy-io/node':
+        specifier: ^0.10.1
+        version: 0.10.1(@solana/kit@5.5.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(viem@2.39.3(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3))
       '@radix-ui/react-avatar':
         specifier: ^1.1.11
         version: 1.1.11(@types/react-dom@19.2.3(@types/react@19.2.16))(@types/react@19.2.16)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
@@ -987,6 +1011,19 @@ importers:
       vitest:
         specifier: ^4.0.9
         version: 4.1.8(@opentelemetry/api@1.9.1)(@types/node@22.19.19)(happy-dom@20.10.2(bufferutil@4.1.0)(utf-8-validate@5.0.10))(jsdom@27.4.0(@noble/hashes@1.8.0)(bufferutil@4.1.0)(utf-8-validate@5.0.10))(vite@7.3.5(@types/node@22.19.19)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0))
+
+  packages/poly-db-schema:
+    dependencies:
+      drizzle-orm:
+        specifier: ^0.44.7
+        version: 0.44.7(@opentelemetry/api@1.9.1)(postgres@3.4.9)
+    devDependencies:
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.15)(tsx@4.22.4)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5
+        version: 5.9.3
 
   packages/poly-market-provider:
     dependencies:
@@ -2937,8 +2974,15 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  '@polymarket/builder-signing-sdk@1.0.0':
+    resolution: {integrity: sha512-LNHc8Ox+2ITM6+VIEH5LH3SVh9ScE2mOUAJI789YfyNqhF4n1cNulk35Hb6IZfy1xtNfcEfNotanPLa/U8dCaw==}
+
   '@polymarket/clob-client-v2@1.0.6':
     resolution: {integrity: sha512-Y6LefFNuxRs95fLq0m9W9EBjoM2w7EVgtsUGLydjlUFVGBeGhHOa8vll6+C6UZVnQEbdWE6i6hYRCwJE/ZVNKQ==}
+    engines: {node: '>=20.10'}
+
+  '@polymarket/clob-client@5.8.1':
+    resolution: {integrity: sha512-beKC4KPc9dYyFV9wFhKiGoA16q5xWz4PjkYcnEs3BzpsOKjGQGRlZQ7KQD4HQKUd3HC5RLQT0lqWHrFyaI+2fQ==}
     engines: {node: '>=20.10'}
 
   '@privy-io/node@0.10.1':
@@ -5378,6 +5422,9 @@ packages:
 
   brorand@1.1.0:
     resolution: {integrity: sha512-cKV8tMCEpQs4hK/ik71d6LrPOnpkpGBR0wzxqr68g2m/LB2GxVYQroAjMJZRVM1Y4BCjCKc3vAamxSzOY2RP+w==}
+
+  browser-or-node@2.1.1:
+    resolution: {integrity: sha512-8CVjaLJGuSKMVTxJ2DpBl5XnlNDiT4cQFeuCJJrvJmts9YrTZDizTX7PjC2s6W4x+MBGZeEY6dGMrF04/6Hgqg==}
 
   browser-or-node@3.0.0:
     resolution: {integrity: sha512-iczIdVJzGEYhP5DqQxYM9Hh7Ztpqqi+CXZpSmX8ALFs9ecXkQIeqRyM6TfxEfMVpwhl3dSuDvxdzzo9sUOIVBQ==}
@@ -11473,6 +11520,12 @@ snapshots:
     dependencies:
       playwright: 1.61.0
 
+  '@polymarket/builder-signing-sdk@1.0.0':
+    dependencies:
+      axios: 1.16.0
+    transitivePeerDependencies:
+      - debug
+
   '@polymarket/clob-client-v2@1.0.6(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@3.25.76)':
     dependencies:
       '@ethersproject/providers': 5.8.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)
@@ -11481,6 +11534,34 @@ snapshots:
       browser-or-node: 3.0.0
       tslib: 2.8.1
       viem: 2.52.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@3.25.76)
+    transitivePeerDependencies:
+      - bufferutil
+      - debug
+      - typescript
+      - utf-8-validate
+      - zod
+
+  '@polymarket/clob-client-v2@1.0.6(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
+    dependencies:
+      '@ethersproject/providers': 5.8.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)
+      '@ethersproject/wallet': 5.8.0
+      axios: 1.16.0
+      browser-or-node: 3.0.0
+      tslib: 2.8.1
+      viem: 2.52.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+    transitivePeerDependencies:
+      - bufferutil
+      - debug
+      - typescript
+      - utf-8-validate
+      - zod
+
+  '@polymarket/clob-client@5.8.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)':
+    dependencies:
+      '@polymarket/builder-signing-sdk': 1.0.0
+      axios: 1.16.0
+      browser-or-node: 2.1.1
+      viem: 2.52.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)
     transitivePeerDependencies:
       - bufferutil
       - debug
@@ -14915,6 +14996,8 @@ snapshots:
       balanced-match: 1.0.2
 
   brorand@1.1.0: {}
+
+  browser-or-node@2.1.1: {}
 
   browser-or-node@3.0.0: {}
 

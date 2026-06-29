@@ -12,7 +12,8 @@
  * @public
  */
 
-import { CHAINS, EVENT_NAMES } from "@cogni/node-shared";
+import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
+import { CHAINS } from "@cogni/node-shared/web3";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/core";
 import type { Logger } from "pino";

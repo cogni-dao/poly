@@ -24,7 +24,7 @@
 
 import { withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
-import { EVENT_NAMES } from "@cogni/node-shared";
+import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
 import {
   polyCopyTradeDecisions,
   polyCopyTradeFills,
@@ -122,7 +122,7 @@ export interface OrderLedgerDeps {
    * `NodePgDatabase` cast on this field was a TypeScript fiction, not a
    * real driver split.
    */
-  db: PostgresJsDatabase;
+  db: PostgresJsDatabase<Record<string, unknown>>;
   /**
    * Drizzle client wired to the RLS-enforced `app_user` role. Used by every
    * read on the `TenantOrderLedger` returned by `forTenant(ctx)` — wrapped
@@ -136,7 +136,7 @@ export interface OrderLedgerDeps {
    * `forTenant(...)` surface from having to wire it; calling `forTenant(ctx)`
    * without `appDb` throws at runtime with a clear error.
    */
-  appDb?: PostgresJsDatabase;
+  appDb?: PostgresJsDatabase<Record<string, unknown>>;
   /** Pino logger. Bind `component: "order-ledger"` at the caller if desired. */
   logger: Logger;
   /**

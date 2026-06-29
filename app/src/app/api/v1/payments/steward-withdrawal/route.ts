@@ -19,7 +19,7 @@
  * @public
  */
 
-import { EVENT_NAMES } from "@cogni/node-shared";
+import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionUser } from "@/app/_lib/auth/session";

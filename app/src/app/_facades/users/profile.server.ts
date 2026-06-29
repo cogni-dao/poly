@@ -20,7 +20,7 @@ import type {
   ProfileUpdateInput,
   ProfileUpdateOutput,
 } from "@cogni/node-contracts";
-import type { SessionUser } from "@cogni/node-shared";
+import type { SessionUser } from "@cogni/node-shared/auth/session";
 import { eq } from "drizzle-orm";
 import { resolveAppDb } from "@/bootstrap/container";
 import { userBindings, userProfiles, users } from "@/shared/db/schema";

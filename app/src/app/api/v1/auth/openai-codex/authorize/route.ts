@@ -13,7 +13,7 @@
  * @public
  */
 
-import { EVENT_NAMES } from "@cogni/node-shared";
+import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
 import { NextResponse } from "next/server";
 import { getServerSessionUser } from "@/lib/auth/server";
 import { makeLogger } from "@/shared/observability";
