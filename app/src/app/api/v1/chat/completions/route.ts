@@ -20,7 +20,7 @@ import {
   type ChatCompletionChunk,
   chatCompletionsContract,
 } from "@cogni/node-contracts";
-import { ChatValidationError } from "@cogni/node-shared";
+import { ChatValidationError } from "@cogni/node-shared/errors";
 import { NextResponse } from "next/server";
 import {
   chatCompletion,

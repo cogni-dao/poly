@@ -27,7 +27,6 @@ export const tsupConfig = defineConfig({
   clean: false, // preserve .d.ts files from tsc -b (incremental builds)
   sourcemap: true,
   platform: "neutral",
-  external: ["@polymarket/clob-client-v2", "viem", "zod"],
 });
 
 // biome-ignore lint/style/noDefaultExport: required by tsup

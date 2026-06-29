@@ -25,7 +25,7 @@ import {
   type StandardLoggingPayloadBilling,
 } from "@cogni/node-contracts";
 import type { RunContext, UsageFact } from "@cogni/node-core";
-import { COGNI_SYSTEM_BILLING_ACCOUNT_ID } from "@cogni/node-shared";
+import { COGNI_SYSTEM_BILLING_ACCOUNT_ID } from "@cogni/node-shared/constants";
 import { NextResponse } from "next/server";
 import type { Logger } from "pino";
 import { getContainer } from "@/bootstrap/container";

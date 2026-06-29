@@ -15,13 +15,12 @@
 /* eslint-disable boundaries/no-unknown-files */
 
 import nodeCrypto, { randomUUID } from "node:crypto";
+import { AnalyticsEvents, capture } from "@cogni/node-shared/analytics";
 import {
-  AnalyticsEvents,
-  capture,
   isFailedIntent,
   isPendingIntent,
   linkIntentStore,
-} from "@cogni/node-shared";
+} from "@cogni/node-shared/auth";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import type { NextAuthOptions } from "next-auth";
 import Credentials from "next-auth/providers/credentials";

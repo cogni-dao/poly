@@ -24,7 +24,7 @@ import {
   DomainsCreateResponseSchema,
   DomainsListResponseSchema,
 } from "@cogni/node-contracts";
-import type { SessionUser } from "@cogni/node-shared";
+import type { SessionUser } from "@cogni/node-shared/auth/session";
 import { NextResponse } from "next/server";
 
 import { getContainer } from "@/bootstrap/container";

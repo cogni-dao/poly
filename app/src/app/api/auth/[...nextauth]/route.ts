@@ -13,7 +13,7 @@
  * @public
  */
 
-import { type LinkIntent, linkIntentStore } from "@cogni/node-shared";
+import { type LinkIntent, linkIntentStore } from "@cogni/node-shared/auth/link-intent-store";
 import type { NextRequest } from "next/server";
 import NextAuth from "next-auth";
 import { decode } from "next-auth/jwt";

@@ -8,7 +8,27 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./analytics": "./src/analytics/index.ts",
+    "./ai": "./src/ai/index.ts",
+    "./auth": "./src/auth/index.ts",
+    "./auth/link-intent-store": "./src/auth/link-intent-store.ts",
+    "./auth/scheduler-token": "./src/auth/scheduler-token.ts",
+    "./auth/session": "./src/auth/session.ts",
+    "./constants": "./src/constants/index.ts",
+    "./crypto/aead": "./src/crypto/aead.ts",
+    "./errors": "./src/errors/index.ts",
+    "./observability": "./src/observability/index.ts",
+    "./observability/client": "./src/observability/client/index.ts",
+    "./observability/context": "./src/observability/context/index.ts",
+    "./observability/events/ai": "./src/observability/events/ai.ts",
+    "./observability/events": "./src/observability/events/index.ts",
+    "./observability/events/payments": "./src/observability/events/payments.ts",
+    "./observability/server": "./src/observability/server/index.ts",
+    "./time/time-range": "./src/time/time-range.ts",
+    "./util": "./src/util/index.ts",
+    "./utils/money": "./src/utils/money.ts",
+    "./web3": "./src/web3/index.ts"
   },
   "types": "./dist/index.d.ts",
   "files": [

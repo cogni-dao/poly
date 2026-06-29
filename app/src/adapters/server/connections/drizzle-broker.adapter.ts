@@ -18,7 +18,11 @@
 import { withTenantScope } from "@cogni/db-client";
 import { connections } from "@cogni/db-schema";
 import type { ActorId } from "@cogni/ids";
-import { type AeadAAD, aeadDecrypt, aeadEncrypt } from "@cogni/node-shared";
+import {
+  type AeadAAD,
+  aeadDecrypt,
+  aeadEncrypt,
+} from "@cogni/node-shared/crypto/aead";
 import { and, eq, isNull } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { Logger } from "pino";

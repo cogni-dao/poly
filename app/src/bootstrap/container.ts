@@ -45,11 +45,8 @@ import {
 	wrapPushSafe,
 } from "@cogni/knowledge-store/adapters/doltgres";
 import { parseMcpConfigFromEnv } from "@cogni/langgraph-graphs";
-import {
-	COGNI_SYSTEM_PRINCIPAL_USER_ID,
-	initAnalytics,
-	shutdownAnalytics,
-} from "@cogni/node-shared";
+import { initAnalytics, shutdownAnalytics } from "@cogni/node-shared/analytics";
+import { COGNI_SYSTEM_PRINCIPAL_USER_ID } from "@cogni/node-shared/constants";
 import {
 	type NodeStreamPort,
 	RedisNodeStreamAdapter,
@@ -128,6 +125,11 @@ import { createWebSearchCapability } from "@/bootstrap/capabilities/web-search";
 import { createWorkItemCapability } from "@/bootstrap/capabilities/work-item";
 import type { RateLimitBypassConfig } from "@/bootstrap/http/wrapPublicRoute";
 import { startProcessHealthPublisher } from "@/bootstrap/publishers";
+import type { RedeemPipelineHandles } from "@/bootstrap/redeem-pipeline";
+import {
+	createOrderLedger,
+	type OrderLedger,
+} from "@/features/trading";
 import type {
 	AccountService,
 	AiTelemetryPort,
@@ -250,6 +252,14 @@ export interface Container {
 	modelCatalog: ModelCatalogPort;
 	/** Provider resolver — resolves providerKey to ModelProviderPort for runtime dispatch */
 	providerResolver: ModelProviderResolverPort;
+	/** Service-role DB for explicitly cross-tenant/system Poly read models. */
+	serviceDb: Database;
+	/** Poly copy-trade/order ledger. Cross-tenant root surface; tenant calls use forTenant(ctx). */
+	orderLedger: OrderLedger;
+	/** Redeem pipeline handles keyed by billing account id; empty when pipelines are not running in this process. */
+	redeemPipelineFor(billingAccountId: string): RedeemPipelineHandles | undefined;
+	/** Best-effort cache invalidation for per-tenant trade executors. */
+	invalidatePolyTradeExecutorFor(billingAccountId: string): void;
 }
 
 // Feature-specific dependency types
@@ -526,6 +536,13 @@ function createContainer(): Container {
 	const serviceDb = getServiceDb();
 	const paymentAttemptServiceRepository =
 		new ServiceDrizzlePaymentAttemptRepository(serviceDb);
+	const orderLedger = createOrderLedger({
+		db: serviceDb,
+		appDb: db,
+		logger: log.child({ component: "order-ledger" }),
+		paperEnforceMode: env.PAPER_ENFORCE_MODE,
+	});
+	const redeemPipelines = new Map<string, RedeemPipelineHandles>();
 
 	// User-facing scheduling (appDb, RLS enforced)
 	const executionGrantPort = new DrizzleExecutionGrantUserAdapter(
@@ -853,6 +870,15 @@ function createContainer(): Container {
 			? new SplitTreasurySettlementAdapter(operatorWallet, USDC_TOKEN_ADDRESS)
 			: undefined,
 		connectionBroker,
+		serviceDb,
+		orderLedger,
+		redeemPipelineFor: (billingAccountId: string) =>
+			redeemPipelines.get(billingAccountId),
+		invalidatePolyTradeExecutorFor: (_billingAccountId: string) => {
+			// Trade executors are constructed lazily by the route/job slices that
+			// need them. No process-wide executor cache is booted in candidate
+			// unless wallet execution is explicitly wired.
+		},
 		// Multi-provider model ports
 		...(() => {
 			const platformProvider = new PlatformModelProvider(llmService);

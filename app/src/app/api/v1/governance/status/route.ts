@@ -16,7 +16,7 @@
 
 import { toUserId } from "@cogni/ids";
 import { governanceStatusOperation } from "@cogni/node-contracts";
-import { COGNI_SYSTEM_PRINCIPAL_USER_ID } from "@cogni/node-shared";
+import { COGNI_SYSTEM_PRINCIPAL_USER_ID } from "@cogni/node-shared/constants";
 import { NextResponse } from "next/server";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";

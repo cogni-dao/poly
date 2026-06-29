@@ -20,7 +20,7 @@ import {
   toReviewSubjectOverrides,
 } from "@cogni/attribution-ledger";
 import { signDataOperation } from "@cogni/node-contracts";
-import { CHAIN_ID } from "@cogni/node-shared";
+import { CHAIN_ID } from "@cogni/node-shared/web3";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { checkApprover } from "@/app/api/v1/attribution/_lib/approver-guard";

@@ -24,7 +24,7 @@ export default defineProject({
   plugins: [
     tsconfigPaths({
       // Use repo root tsconfig for @cogni/* workspace resolution
-      projects: [path.resolve(__dirname, "../../tsconfig.json")],
+      projects: [path.resolve(__dirname, "../../../../../../tsconfig.json")],
     }),
   ],
   test: {

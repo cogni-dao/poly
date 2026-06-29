@@ -12,11 +12,7 @@
  * @public
  */
 
-import {
-  CHAIN_ID,
-  MIN_CONFIRMATIONS,
-  USDC_TOKEN_ADDRESS,
-} from "@cogni/node-shared";
+import { CHAIN_ID, MIN_CONFIRMATIONS, USDC_TOKEN_ADDRESS } from "@cogni/node-shared/web3";
 import { getAddress, parseEventLogs } from "viem";
 import type {
   OnChainVerifier,

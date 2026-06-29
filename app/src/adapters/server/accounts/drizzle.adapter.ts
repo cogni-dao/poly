@@ -32,7 +32,8 @@ import {
 } from "@cogni/financial-ledger";
 import { type ActorId, type UserId, userActor } from "@cogni/ids";
 import type { SourceSystem } from "@cogni/node-core";
-import { EVENT_NAMES, isValidUuid } from "@cogni/node-shared";
+import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
+import { isValidUuid } from "@cogni/node-shared/util";
 import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import type { Database } from "@/adapters/server/db/client";
 import {

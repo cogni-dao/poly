@@ -19,7 +19,7 @@ import {
   InternalValidateGrantInputSchema,
   type InternalValidateGrantOutput,
 } from "@cogni/node-contracts";
-import { verifySchedulerBearer } from "@cogni/node-shared";
+import { verifySchedulerBearer } from "@cogni/node-shared/auth/scheduler-token";
 import { NextResponse } from "next/server";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";

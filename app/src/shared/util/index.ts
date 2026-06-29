@@ -12,6 +12,6 @@
 
 // Extracted to @cogni/node-shared
 // NOTE: accountId.ts uses node:crypto — import directly, not through barrel
-export { isValidUuid } from "@cogni/node-shared";
+export { isValidUuid } from "@cogni/node-shared/util";
 // App-local (clsx + tailwind-merge UI dep)
 export { cn } from "./cn";
