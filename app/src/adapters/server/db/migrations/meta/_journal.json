@@ -428,6 +428,13 @@
       "when": 1781330689657,
       "tag": "0060_resync_snapshot_baseline",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1782738900000,
+      "tag": "0061_poly_runtime_schema_repair",
+      "breakpoints": true
     }
   ]
 }
