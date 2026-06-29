@@ -43,3 +43,7 @@ Do not touch: migrations, package internals except API type consumption, server 
 Shared seam: consumes task.5005 APIs and posts live proof.
 
 Gate: screenshot comparison against legacy, CI green, candidate flight, `/version.buildSha`, `/readyz`, at least one feature route, Loki request evidence, and `/validate-candidate`.
+
+## PR / Links
+
+- Handoff: [handoff](../handoffs/task.5006.handoff.md)
