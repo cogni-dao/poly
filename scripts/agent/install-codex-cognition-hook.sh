@@ -119,8 +119,10 @@ Do not continue silently. Tell the user that session cognition did not load and
 ask them to bootstrap the node credentials, then restart or resume the agent.
 
 Most common fixes:
-- register a NODE agent via /api/v1/agent/register
-- save COGNI_NODE_API_KEY in the clone-root .env.cogni
+- register a NODE agent on THIS node's hub (same host as the URL above), not the
+  apex: POST ${url%/cognition}/agent/register — an apex-registered key gets a 401
+  "Session required" here
+- save the returned apiKey as COGNI_NODE_API_KEY in the clone-root .env.cogni
 - for Codex, run pnpm codex:cognition:install once and trust the user-level hook with /hooks
 
 If the agent received no bootstrap message at all, the hook probably did not run
@@ -139,7 +141,7 @@ if ! grep -Fq 'BEGIN COGNI CODEX COGNITION HOOK' "$CONFIG_PATH"; then
 
 # BEGIN COGNI CODEX COGNITION HOOK
 [[hooks.SessionStart]]
-matcher = "startup|resume"
+matcher = "startup|resume|clear|compact"
 
 [[hooks.SessionStart.hooks]]
 type = "command"

@@ -110,18 +110,45 @@ auth_root_has_node_cogni_key() {
   [[ -n "$key" ]]
 }
 
+# THIS node's own hub base URL, derived from .cogni/repo-spec.yaml intent.name —
+# the same derivation scripts/agent/session-cognition.sh uses to fetch the bundle.
+# The registered agent MUST live on the same hub that serves the session-cognition
+# bundle: an agent registered at the apex (cognidao.org) is not a valid principal
+# at a node subdomain and its key gets a 401 "Session required" there. The apex
+# node (operator / cogni-template) is its own hub, so it stays on cognidao.org.
+node_hub_base_url() {
+  local spec="$WORKSPACE_ROOT/.cogni/repo-spec.yaml"
+  local slug=""
+
+  if [[ -f "$spec" ]]; then
+    slug="$(awk '
+      /^intent:/ { in_intent = 1; next }
+      in_intent && /^[^[:space:]]/ { in_intent = 0 }
+      in_intent && /^[[:space:]]+name:/ {
+        sub(/^[[:space:]]+name:[[:space:]]*/, ""); gsub(/["'\''"]/, ""); print; exit
+      }
+    ' "$spec" 2>/dev/null)"
+  fi
+
+  case "$slug" in
+    operator | cogni-template | "") printf 'https://cognidao.org' ;;
+    *) printf 'https://%s.cognidao.org' "$slug" ;;
+  esac
+}
+
 register_auth_root_cogni_agent() {
   local env_file="$AUTH_ROOT/.env.cogni"
-  local agent_name response key
+  local agent_name response key base_url
 
   if ! command -v curl >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
     warn "curl and jq are required to auto-register Cogni credentials"
     return 1
   fi
 
+  base_url="$(node_hub_base_url)"
   agent_name="${USER:-agent}-conductor-$(hostname -s 2>/dev/null || printf 'local')-$(date -u +%Y%m%dT%H%M%SZ)"
   response="$(
-    curl -fsS --max-time 10 -X POST https://cognidao.org/api/v1/agent/register \
+    curl -fsS --max-time 10 -X POST "$base_url/api/v1/agent/register" \
       -H 'content-type: application/json' \
       -d "$(jq -cn --arg name "$agent_name" '{name:$name}')"
   )" || return 1
@@ -172,7 +199,7 @@ ensure_auth_root_cogni_env() {
   if register_auth_root_cogni_agent; then
     printf 'registered Cogni NODE agent and saved COGNI_NODE_API_KEY in %s\n' "$AUTH_ROOT/.env.cogni"
   else
-    warn "could not auto-register Cogni NODE agent; run /api/v1/agent/register and save COGNI_NODE_API_KEY in $AUTH_ROOT/.env.cogni"
+    warn "could not auto-register Cogni NODE agent; POST $(node_hub_base_url)/api/v1/agent/register and save COGNI_NODE_API_KEY in $AUTH_ROOT/.env.cogni"
     exit 1
   fi
 }

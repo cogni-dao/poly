@@ -4,11 +4,17 @@
 # stdout, which Codex injects as developer context (developers.openai.com/codex/hooks).
 # Same mechanism + matcher shape as the Claude Code hook; both call one shared script.
 #
+# Match ALL four Codex SessionStart sources (startup|resume|clear|compact), not just
+# startup|resume: after a `compact` (context compaction) or `clear` Codex drops the
+# original session-start injection, so without them the agent loses its cognition
+# mid-session and only ever "had it on the first message". This mirrors the Claude
+# hook, which gets every source for free via its empty (all-sources) matcher.
+#
 # ONE-TIME TRUST: project-local hooks run only after you trust the .codex/ layer —
 # approve once with `/hooks` in Codex (or `--dangerously-bypass-hook-trust` for CI).
 
 [[hooks.SessionStart]]
-matcher = "startup|resume"
+matcher = "startup|resume|clear|compact"
 
 [[hooks.SessionStart.hooks]]
 type = "command"
