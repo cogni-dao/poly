@@ -40,7 +40,7 @@ knowledge:
   remote:
     provider: dolthub
     owner: "cogni-dao"
-    repo: "knowledge-poly"
+    repo: "poly"
     url: "https://doltremoteapi.dolthub.com/cogni-dao/knowledge-poly"
     custody: cogni-owned
 
