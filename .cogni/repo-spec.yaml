@@ -35,15 +35,6 @@ cogni_dao:
   chain_id: "8453"
   base_url: "https://proposal.cognidao.org"
 
-knowledge:
-  database: "knowledge_poly"
-  remote:
-    provider: dolthub
-    owner: "cogni-dao"
-    repo: "knowledge-poly"
-    url: "https://doltremoteapi.dolthub.com/cogni-dao/knowledge-poly"
-    custody: cogni-owned
-
 # Activity ledger ingestion + approver allowlist.
 # `approvers` gates the `(admin)/` route group and write routes under
 # `/api/v1/attribution/*`. Replace with the fork's DAO-owner wallet(s) when
