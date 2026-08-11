@@ -1,6 +1,23 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2025 Cogni-DAO
 
+/**
+ * Module: `@app/api/v1/poly/wallet/status`
+ * Purpose: HTTP GET — read whether the calling user has an active (non-revoked)
+ *   `poly_wallet_connections` row and whether Polymarket approvals are stamped
+ *   (`trading_ready`). DB-only via `getConnectionSummary` — no Privy round-trip.
+ * Scope: Read-only status surface for the `/profile` and Money pages and API
+ *   validation. Does not provision wallets, set allowances, or move funds.
+ * Invariants:
+ *   - TENANT_SCOPED: tenant derived from the authenticated session's billing account.
+ *   - STATUS_REFLECTS_ACTIVE_CONNECTION: `connected=true` when an un-revoked
+ *     connection row exists; `trading_ready` from `trading_approvals_ready_at`.
+ *     Privy / decrypt validation happens on `resolve` / `authorizeIntent`, not here.
+ * Side-effects: IO (DB reads only).
+ * Links: docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
+ * @public
+ */
+
 import { toUserId } from "@cogni/ids";
 import {
   type PolyWalletStatusOutput,
@@ -49,6 +66,8 @@ export const GET = wrapRouteHandlerWithLogging(
       throw err;
     }
 
+    // DB-only summary (no Privy round-trip). Keeps the page-render cost low
+    // and surfaces `trading_ready` for the Money-page "Enable Trading" CTA.
     const summary = await adapter.getConnectionSummary(account.id);
     const payload: PolyWalletStatusOutput = summary
       ? {

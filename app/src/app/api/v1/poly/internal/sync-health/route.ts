@@ -2,32 +2,52 @@
 // SPDX-FileCopyrightText: 2025 Cogni-DAO
 
 /**
- * Module: `@app/api/v1/poly/internal/sync-health/route`
- * Purpose: Read-only Poly sync health endpoint.
- * Scope: Authenticated aggregate health route. Does not query user data or mutate state.
- * Invariants: READ_ONLY_BOOTSTRAP, NO_TRADING_SIDE_EFFECTS.
- * Side-effects: HTTP response only.
+ * Module: `@app/api/v1/poly/internal/sync-health`
+ * Purpose: HTTP GET — aggregate sync-freshness stats for the order reconciler. Suitable for a Grafana alert rule and a dashboard freshness banner.
+ * Scope: No auth — aggregate-only, no PII, no wallet addresses.
+ * Invariants:
+ *   - SYNC_HEALTH_IS_PUBLIC — response is Zod-validated against PolySyncHealthResponseSchema before returning.
+ *   - No user scoping — this endpoint is internal metrics only.
+ *   - NO_AUTH_INTENTIONAL — this route intentionally has no authentication. It returns aggregate-only
+ *     stats (counts + timestamps), no PII or wallet addresses. Auth was reviewed and deferred
+ *     (task.0328 rev1 — follow-up slice may add internal token if threat model changes).
+ * Side-effects: IO (one DB SELECT via service-role client + in-process clock read).
+ * Notes: reconciler_last_tick_at is null when the reconciler is not running (Polymarket creds absent) or has not completed a tick yet.
+ *   This node does not wire the order-reconciler handle into the container, so
+ *   `reconciler_last_tick_at` is always null here (reconciler not running).
+ * Links: work/items/task.0328.md, docs/spec/poly-copy-trade-execution.md
  * @public
  */
 
+import { PolySyncHealthResponseSchema } from "@cogni/poly-node-contracts";
 import { NextResponse } from "next/server";
-import { getSessionUser } from "@/app/_lib/auth/session";
+import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 
 export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
 
 export const GET = wrapRouteHandlerWithLogging(
   {
-    routeId: "poly.internal.sync-health",
-    auth: { mode: "required", getSessionUser },
+    routeId: "poly.internal.sync_health",
+    auth: { mode: "none" },
   },
-  async () => {
-    return NextResponse.json({
-      oldest_synced_row_age_ms: null,
-      rows_stale_over_60s: 0,
-      rows_never_synced: 0,
-      reconciler_last_tick_at: null,
-    });
+  async (ctx) => {
+    try {
+      const container = getContainer();
+      const summary = await container.orderLedger.syncHealthSummary();
+
+      const body = PolySyncHealthResponseSchema.parse({
+        ...summary,
+        reconciler_last_tick_at: null,
+      });
+
+      return NextResponse.json(body);
+    } catch (err: unknown) {
+      ctx.log.error(
+        { event: "sync_health_error", err: String(err) },
+        "sync-health query failed"
+      );
+      return NextResponse.json({ error: "sync_health_error" }, { status: 500 });
+    }
   }
 );
