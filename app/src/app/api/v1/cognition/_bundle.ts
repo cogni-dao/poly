@@ -10,10 +10,10 @@
  * Invariants:
  *   - IRREDUCIBLE_INVARIANTS_ALWAYS_PRESENT: the constant is the one piece of
  *     cognition that must render even when the hub is empty/unreachable.
- *   - INDEX_FIRST: renders pointers (id + title + recall path), never full entry
- *     bodies. The ONE bounded exception is a single current-node orientation
- *     excerpt (the map an agent needs to start, not just the constitution) —
- *     capped at ORIENTATION_EXCERPT_MAX chars, one entry, never a full body.
+ *   - ORIENTATION_LOADED_IN_FULL: renders pointers (id + title + recall path)
+ *     for skills/domains, but the current-node `<slug>-agent-orientation` entry
+ *     is rendered IN FULL — the bootstrap IS the agent's operating map, so the
+ *     git skeleton stays minimal and the Dolt orientation carries the substance.
  * Side-effects: none
  * Links: docs/spec/node-baas-architecture.md
  * @internal
@@ -31,11 +31,11 @@ import type {
  * domain expertise) is delivered live from the knowledge hub on top of this.
  */
 export const SESSION_BOOTSTRAP_INVARIANTS: readonly string[] = [
-	"Adopt exactly ONE work item and ONE node per session (single-node-scope is a CI gate); claim + heartbeat + link the PR via /api/v1/work/items/{id}/{claims,heartbeat,pr}; coordination.nextAction is authoritative.",
-	"RECALL the node knowledge hub before designing, researching, or coding — both merged (/api/v1/knowledge?domain=) and your own open contribution branch — and refine in place over creating new.",
-	"Git path: push a same-repo feature branch, open a PR, and let CI verify the exact head (gh pr checks). Flight that PR head to candidate-a before merge. The operator is the deploy plane only — flight, logs, secrets — not where code, work items, or knowledge live.",
-	"Definition of Done = validated on candidate-a, not merely merged: flight the PR, exercise the live deployed surface, read your own request back from Loki at the deployed SHA, and post a /validate-candidate scorecard — that posted scorecard is the merge gate.",
-	"Recall this node's <slug>-agent-orientation entry for the operating map — architecture and observability standards, what's safe to run, what can break prod/candidate, and what to recall next — and refine it in the hub as the node changes.",
+	"ONE work item + ONE node per session (CI-gated). Claim, heartbeat, and link your PR at /api/v1/work/items/{id}; coordination.nextAction is authoritative.",
+	"Recall before you write. Search the hub first — merged (/api/v1/knowledge?domain=) and your own open branch — and refine in place over adding new.",
+	"Ship via PR: same-repo branch → CI green (gh pr checks) → flight to candidate → merge. The operator is the deploy plane (flight, logs, secrets); code, work, and knowledge live in the node repo + hub.",
+	"Done = validated on candidate, not merged. Flight, exercise the live surface, read your request back from Loki at that SHA, and post a /validate-candidate scorecard — the merge gate.",
+	"Your <slug>-agent-orientation is the operating map: recall it first, refine it as the node changes.",
 ];
 
 const COGNITION_ENTRY_TYPES: ReadonlySet<string> = new Set([
@@ -57,32 +57,10 @@ export function escapeCell(value: string | null | undefined): string {
 		.trim();
 }
 
-/** Max length of the bounded orientation excerpt (INDEX_FIRST carve-out). */
-export const ORIENTATION_EXCERPT_MAX = 480;
-
-/** A single current-node orientation entry surfaced as a bounded excerpt. */
-export interface OrientationExcerpt {
+/** The current-node orientation entry — rendered in full as the session map. */
+export interface OrientationEntry {
 	id: string;
-	excerpt: string;
-}
-
-/**
- * Bounded first-section excerpt of an orientation entry body — the agent's
- * map, not a docs dump. Takes the leading paragraph, flattens whitespace, and
- * caps length so the bundle stays INDEX_FIRST.
- */
-export function excerptFromContent(
-	content: string,
-	maxChars: number = ORIENTATION_EXCERPT_MAX,
-): string {
-	const firstBlock =
-		content
-			.trim()
-			.split(/\n{2,}/)[0]
-			?.trim() ?? "";
-	const flat = firstBlock.replace(/\s*\r?\n\s*/g, " ").trim();
-	if (flat.length <= maxChars) return flat;
-	return `${flat.slice(0, maxChars).trimEnd()}…`;
+	content: string;
 }
 
 export interface RenderBundleInput {
@@ -95,8 +73,8 @@ export interface RenderBundleInput {
 	toolingInvariants: readonly string[];
 	skillsIndex: readonly CognitionSkillPointer[];
 	domainPointers: readonly CognitionDomainPointer[];
-	/** The current node's `<slug>-agent-orientation` excerpt, or null if unseeded. */
-	orientation: OrientationExcerpt | null;
+	/** The current node's `<slug>-agent-orientation` entry (full), or null if unseeded. */
+	orientation: OrientationEntry | null;
 }
 
 /**
@@ -131,6 +109,12 @@ export function renderBundleMarkdown(input: RenderBundleInput): string {
 		.map((line, i) => `${i + 1}. ${line}`)
 		.join("\n");
 
+	// The node's candidate (pre-merge flight slot) — where "validated on
+	// candidate" happens. operator is the primary test apex; every other node is
+	// a slugged test host. Concrete so agents stop guessing the hostname.
+	const candidateHost =
+		name === "operator" ? "test.cognidao.org" : `${name}-test.cognidao.org`;
+
 	const skillRows =
 		skillsIndex.length > 0
 			? skillsIndex
@@ -150,17 +134,12 @@ export function renderBundleMarkdown(input: RenderBundleInput): string {
 					.join("\n")
 			: "| _(none)_ | | |";
 
-	// The map, not just the constitution: one bounded current-node orientation
-	// excerpt (INDEX_FIRST carve-out). Falls back to a seed prompt when unset so
-	// the convention surfaces even before the entry exists.
+	// The map, not just the constitution: the current-node orientation entry
+	// rendered IN FULL — the bootstrap IS the orientation (no second recall).
+	// Falls back to a seed prompt when unset so the convention surfaces even
+	// before the entry exists.
 	const orientationLines = orientation
-		? [
-				"## Orientation — recall this first",
-				"",
-				orientation.excerpt,
-				"",
-				`_Current-node operating map. Recall \`${orientation.id}\` for the full context (where to edit, what not to run, what can break prod/candidate, what to recall next), and refine it when repo layout, scripts, CI, deploy, auth, or validation change._`,
-			]
+		? ["## Orientation — recall this first", "", orientation.content]
 		: [
 				"## Orientation — recall this first",
 				"",
@@ -176,9 +155,11 @@ export function renderBundleMarkdown(input: RenderBundleInput): string {
 		"",
 		...orientationLines,
 		"",
-		"## Tooling invariants (irreducible session contract)",
+		"## Tooling invariants",
 		"",
 		invariants,
+		"",
+		`_Your candidate (flight + validate target): \`https://${candidateHost}\` · Loki namespace \`cogni-candidate-a\`._`,
 		"",
 		"## Skills index (recall full content from the hub before acting)",
 		"",
