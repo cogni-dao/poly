@@ -127,6 +127,10 @@ import type { RateLimitBypassConfig } from "@/bootstrap/http/wrapPublicRoute";
 import { startProcessHealthPublisher } from "@/bootstrap/publishers";
 import type { RedeemPipelineHandles } from "@/bootstrap/redeem-pipeline";
 import {
+	type CopyTradeTargetSource,
+	dbTargetSource,
+} from "@/features/copy-trade/target-source";
+import {
 	createOrderLedger,
 	type OrderLedger,
 } from "@/features/trading";
@@ -256,6 +260,8 @@ export interface Container {
 	serviceDb: Database;
 	/** Poly copy-trade/order ledger. Cross-tenant root surface; tenant calls use forTenant(ctx). */
 	orderLedger: OrderLedger;
+	/** Copy-trade target source (DB-backed). Reads per-user target rows for HTTP routes. */
+	copyTradeTargetSource: CopyTradeTargetSource;
 	/** Redeem pipeline handles keyed by billing account id; empty when pipelines are not running in this process. */
 	redeemPipelineFor(billingAccountId: string): RedeemPipelineHandles | undefined;
 	/** Best-effort cache invalidation for per-tenant trade executors. */
@@ -541,6 +547,23 @@ function createContainer(): Container {
 		appDb: db,
 		logger: log.child({ component: "order-ledger" }),
 		paperEnforceMode: env.PAPER_ENFORCE_MODE,
+	});
+	// DB-backed copy-trade target source. Candidate/preview always have a real
+	// Postgres, so there's no need for an in-memory env fallback here.
+	const copyTradeTargetSource: CopyTradeTargetSource = dbTargetSource({
+		appDb:
+			db as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
+				Record<string, unknown>
+			>,
+		serviceDb:
+			serviceDb as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
+				Record<string, unknown>
+			>,
+		// PAPER_ENFORCE_MODE=paper routes every placement through the paper
+		// sidecar (no wallet signing), so skip the wallet_connections +
+		// wallet_grants activation joins so targets activate without Privy
+		// onboarding the user doesn't need for paper.
+		paperEnforced: env.PAPER_ENFORCE_MODE === "paper",
 	});
 	const redeemPipelines = new Map<string, RedeemPipelineHandles>();
 
@@ -872,6 +895,7 @@ function createContainer(): Container {
 		connectionBroker,
 		serviceDb,
 		orderLedger,
+		copyTradeTargetSource,
 		redeemPipelineFor: (billingAccountId: string) =>
 			redeemPipelines.get(billingAccountId),
 		invalidatePolyTradeExecutorFor: (_billingAccountId: string) => {
