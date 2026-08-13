@@ -144,6 +144,25 @@ export function governanceScheduleId(charter: string): string {
 }
 
 /**
+ * True for a schedule id this node's flat governance sync OWNS: the two-segment
+ * `governance:{charter}` form produced by {@link governanceScheduleId}.
+ *
+ * CROSS_TENANT_PRUNE (bug.5009): all nodes in an env share ONE Temporal namespace
+ * and each boot-syncs into it. The operator creates node-scoped dispatch schedules
+ * `governance:{nodeId}:{charter}` (THREE segments) to collect INTO each node. A node's
+ * prune must NEVER pause those — only its own two-segment ids — or every node's
+ * boot-sync pauses its siblings' (and its own) dispatch schedules, and a paused
+ * schedule skips its cron (still fires on manual trigger), so epochs only ever
+ * appear on an operator boot-kick. Node ids are UUIDs (no colons), so segment count
+ * cleanly distinguishes `governance:{charter}` (own) from `governance:{nodeId}:{charter}`.
+ */
+export function isOwnGovernanceScheduleId(scheduleId: string): boolean {
+  return (
+    scheduleId.startsWith("governance:") && scheduleId.split(":").length === 2
+  );
+}
+
+/**
  * Checks whether the desired schedule config differs from the current Temporal state.
  * NOTE: cron comparison is skipped when desc.cron is null (Temporal compiles crons
  * to calendars, so the original string isn't available). Input + timezone cover
@@ -314,10 +333,17 @@ export async function syncGovernanceSchedules(
     }
   }
 
-  // 3. Prune: pause governance schedules not in current config
+  // 3. Prune: pause governance schedules not in current config — but ONLY the
+  // ones THIS node owns (its flat `governance:{charter}` ids). The shared Temporal
+  // namespace also holds the operator's node-scoped `governance:{nodeId}:{charter}`
+  // dispatch schedules; pausing those (CROSS_TENANT_PRUNE / bug.5009) is what stopped
+  // beacon/poly prod epochs from self-sustaining. See {@link isOwnGovernanceScheduleId}.
   const allGovernanceIds = await deps.listGovernanceScheduleIds();
   for (const existingId of allGovernanceIds) {
-    if (!configScheduleIds.has(existingId)) {
+    if (
+      isOwnGovernanceScheduleId(existingId) &&
+      !configScheduleIds.has(existingId)
+    ) {
       try {
         await scheduleControl.pauseSchedule(existingId);
         await deps.disableSchedule(existingId);
