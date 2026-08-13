@@ -7,7 +7,8 @@
  * Scope: Implements ExecutionGrantUserPort and ExecutionGrantWorkerPort with Drizzle ORM. Does not contain business logic.
  * Invariants:
  * - Per GRANT_NOT_SESSION: Grants are durable, not session-based
- * - Per GRANT_SCOPES_CONSTRAIN_GRAPHS: Scope format is "graph:execute:{graphId}"
+ * - Per GRANT_SCOPES_CONSTRAIN_ACTIONS (M2, task.5029): scopes are generalized strings — "graph:execute:{graphId}" (graphs) or "task:dispatch:{nodeId}:{route}" (node tasks)
+ * - Per GRANT_NODE_BINDING (M1, task.5029): validation asserts the grant is bound to the dispatched nodeId — a node-task scope embeds its nodeId, so a grant minted for node A cannot authorize a dispatch to node B
  * - withTenantScope called on every method (uniform invariant, no-op on serviceDb)
  * Side-effects: IO (database operations)
  * Links: ports/scheduling/execution-grant.port.ts, docs/spec/scheduler.md
@@ -67,15 +68,35 @@ function validateGrantFields(
   return toGrant(row);
 }
 
-function checkGrantScopes(
+/**
+ * Generalized scope check (M2, task.5029). Accepts a grant when its scopes
+ * carry ANY of:
+ *  - the exact `requiredScope`,
+ *  - the node-task wildcard `task:dispatch:{nodeId}:*` (when `requiredScope`
+ *    is a node-task dispatch for `nodeId`), or
+ *  - the graph wildcard `graph:execute:*`.
+ *
+ * `nodeId` is the node the worker is dispatching for. For node-task scopes the
+ * nodeId is embedded in `requiredScope` (`task:dispatch:{nodeId}:{route}`), so
+ * a grant minted for node A can never authorize a dispatch to node B. On
+ * mismatch throw `GrantScopeMismatchError` (unchanged from the graph-only path).
+ */
+function checkGrantScope(
   grant: ExecutionGrant,
-  graphId: string
+  nodeId: string,
+  requiredScope: string
 ): ExecutionGrant {
-  const hasWildcard = grant.scopes.includes("graph:execute:*");
-  const hasSpecificScope = grant.scopes.includes(`graph:execute:${graphId}`);
+  const hasExact = grant.scopes.includes(requiredScope);
 
-  if (!hasWildcard && !hasSpecificScope) {
-    throw new GrantScopeMismatchError(grant.id, graphId, grant.scopes);
+  const nodeTaskPrefix = `task:dispatch:${nodeId}:`;
+  const hasNodeTaskWildcard =
+    requiredScope.startsWith(nodeTaskPrefix) &&
+    grant.scopes.includes(`${nodeTaskPrefix}*`);
+
+  const hasGraphWildcard = grant.scopes.includes("graph:execute:*");
+
+  if (!hasExact && !hasNodeTaskWildcard && !hasGraphWildcard) {
+    throw new GrantScopeMismatchError(grant.id, requiredScope, grant.scopes);
   }
 
   return grant;
@@ -250,16 +271,32 @@ export class DrizzleExecutionGrantWorkerAdapter
     });
   }
 
+  async validateGrantForScope(
+    actorId: ActorId,
+    nodeId: string,
+    grantId: string,
+    requiredScope: string
+  ): Promise<ExecutionGrant> {
+    const grant = await this.validateGrant(actorId, grantId);
+    this.logger.info(
+      { grantId, nodeId, requiredScope },
+      "Validated execution grant for scope"
+    );
+    return checkGrantScope(grant, nodeId, requiredScope);
+  }
+
   async validateGrantForGraph(
     actorId: ActorId,
     grantId: string,
     graphId: string
   ): Promise<ExecutionGrant> {
-    const grant = await this.validateGrant(actorId, grantId);
-    this.logger.info(
-      { grantId, graphId },
-      "Validated execution grant for graph"
+    // Back-compat: graph scopes carry no node binding, so pass an empty nodeId
+    // (the node-task wildcard branch never matches a `graph:execute:*` scope).
+    return this.validateGrantForScope(
+      actorId,
+      "",
+      grantId,
+      `graph:execute:${graphId}`
     );
-    return checkGrantScopes(grant, graphId);
   }
 }

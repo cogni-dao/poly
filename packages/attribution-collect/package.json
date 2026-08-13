@@ -1,0 +1,35 @@
+{
+  "name": "@cogni/attribution-collect",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "postbuild": "node -e \"const fs=require('fs'); if(!fs.existsSync('dist/index.js')){console.error('ERROR: dist/index.js missing'); process.exit(1)}\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cogni/attribution-ledger": "workspace:*",
+    "@cogni/attribution-pipeline-contracts": "workspace:*",
+    "@cogni/attribution-pipeline-plugins": "workspace:*",
+    "@cogni/ingestion-core": "workspace:*",
+    "viem": "^2.0.0"
+  },
+  "devDependencies": {
+    "pino": "^9",
+    "tsup": "^8.5.1",
+    "typescript": "^5"
+  }
+}

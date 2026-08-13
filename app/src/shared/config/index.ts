@@ -19,6 +19,7 @@ export {
 	getDaoTreasuryAddress,
 	getGovernanceConfig,
 	getLedgerApprovers,
+	getLedgerConfig,
 	getNodeId,
 	getNodeMission,
 	getNodeName,

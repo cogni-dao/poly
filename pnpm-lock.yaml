@@ -59,9 +59,15 @@ importers:
       '@cogni/aragon-osx':
         specifier: workspace:*
         version: link:../packages/aragon-osx
+      '@cogni/attribution-collect':
+        specifier: workspace:*
+        version: link:../packages/attribution-collect
       '@cogni/attribution-ledger':
         specifier: workspace:*
         version: link:../packages/attribution-ledger
+      '@cogni/attribution-pipeline-plugins':
+        specifier: workspace:*
+        version: link:../packages/attribution-pipeline-plugins
       '@cogni/cogni-contracts':
         specifier: workspace:*
         version: link:../packages/cogni-contracts
@@ -526,7 +532,70 @@ importers:
         specifier: ^2.0.0
         version: 2.39.3(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)
 
+  packages/attribution-collect:
+    dependencies:
+      '@cogni/attribution-ledger':
+        specifier: workspace:*
+        version: link:../attribution-ledger
+      '@cogni/attribution-pipeline-contracts':
+        specifier: workspace:*
+        version: link:../attribution-pipeline-contracts
+      '@cogni/attribution-pipeline-plugins':
+        specifier: workspace:*
+        version: link:../attribution-pipeline-plugins
+      '@cogni/ingestion-core':
+        specifier: workspace:*
+        version: link:../ingestion-core
+      viem:
+        specifier: ^2.0.0
+        version: 2.39.3(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+    devDependencies:
+      pino:
+        specifier: ^9
+        version: 9.14.0
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.15)(tsx@4.22.4)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5
+        version: 5.9.3
+
   packages/attribution-ledger:
+    devDependencies:
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.15)(tsx@4.22.4)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5
+        version: 5.9.3
+
+  packages/attribution-pipeline-contracts:
+    dependencies:
+      '@cogni/attribution-ledger':
+        specifier: workspace:*
+        version: link:../attribution-ledger
+      zod:
+        specifier: ^4.1.12
+        version: 4.4.3
+    devDependencies:
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.15)(tsx@4.22.4)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5
+        version: 5.9.3
+
+  packages/attribution-pipeline-plugins:
+    dependencies:
+      '@cogni/attribution-ledger':
+        specifier: workspace:*
+        version: link:../attribution-ledger
+      '@cogni/attribution-pipeline-contracts':
+        specifier: workspace:*
+        version: link:../attribution-pipeline-contracts
+      zod:
+        specifier: ^4.1.12
+        version: 4.4.3
     devDependencies:
       tsup:
         specifier: ^8.5.1
