@@ -350,6 +350,56 @@ describe("syncGovernanceSchedules", () => {
     );
   });
 
+  // CROSS_TENANT_PRUNE (bug.5009): the shared Temporal namespace also holds the
+  // operator's node-scoped `governance:{nodeId}:{charter}` dispatch schedules. A
+  // node's flat prune MUST NOT pause them — doing so stopped forks' prod epochs
+  // from self-sustaining (a paused schedule skips its cron).
+  const DISPATCH_ID = "governance:11111111-2222-4333-8444-555555555555:ledger_ingest";
+
+  it("does NOT pause the operator's node-scoped dispatch schedule", async () => {
+    deps = makeMockDeps({
+      listGovernanceScheduleIds: vi
+        .fn()
+        .mockResolvedValue(["governance:community", DISPATCH_ID]),
+    });
+
+    const result = await syncGovernanceSchedules(
+      makeConfig([
+        { charter: "COMMUNITY", cron: "0 */6 * * *", entrypoint: "COMMUNITY" },
+      ]),
+      deps
+    );
+
+    expect(result.paused).toEqual([]);
+    expect(deps.scheduleControl.pauseSchedule).not.toHaveBeenCalledWith(
+      DISPATCH_ID
+    );
+  });
+
+  it("still prunes its own stale flat id while ignoring a dispatch schedule", async () => {
+    deps = makeMockDeps({
+      listGovernanceScheduleIds: vi
+        .fn()
+        .mockResolvedValue([
+          "governance:community",
+          "governance:old-charter",
+          DISPATCH_ID,
+        ]),
+    });
+
+    const result = await syncGovernanceSchedules(
+      makeConfig([
+        { charter: "COMMUNITY", cron: "0 */6 * * *", entrypoint: "COMMUNITY" },
+      ]),
+      deps
+    );
+
+    expect(result.paused).toEqual(["governance:old-charter"]);
+    expect(deps.scheduleControl.pauseSchedule).not.toHaveBeenCalledWith(
+      DISPATCH_ID
+    );
+  });
+
   it("handles externally deleted schedules during prune gracefully", async () => {
     deps = makeMockDeps({
       listGovernanceScheduleIds: vi
