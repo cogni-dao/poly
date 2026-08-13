@@ -22,6 +22,10 @@ import type {
 } from "@cogni/ai-tools";
 import { CORE_TOOL_BUNDLE } from "@cogni/ai-tools";
 import type { AttributionStore } from "@cogni/attribution-ledger";
+import {
+	createDefaultRegistries,
+	type DefaultRegistries,
+} from "@cogni/attribution-pipeline-plugins";
 import { DrizzleAttributionAdapter } from "@cogni/db-client";
 import type { FinancialLedgerPort } from "@cogni/financial-ledger";
 import { createTigerBeetleAdapter } from "@cogni/financial-ledger/adapters";
@@ -165,6 +169,7 @@ import type {
 } from "@/ports/server";
 import {
 	getDaoTreasuryAddress,
+	getLedgerConfig,
 	getNodeId,
 	getOperatorWalletConfig,
 	getPaymentConfig,
@@ -244,6 +249,18 @@ export interface Container {
 	nodeStream: NodeStreamPort | undefined;
 	/** Webhook source registrations — normalizers for webhook ingestion */
 	webhookRegistrations: ReadonlyMap<string, DataSourceRegistration>;
+	/**
+	 * Attribution pipeline registries (selection policies, enrichers, allocators,
+	 * profiles) built from repo-spec excludedLogins/sourceRefs. Consumed by the
+	 * in-process collect pass (attribution.collect.internal route).
+	 */
+	registries: DefaultRegistries;
+	/**
+	 * Source registrations usable by the in-process collect pass. On a node this is
+	 * the webhook-only set (no poll adapter) — collect skips polling and runs over
+	 * receipts already delivered via the Phase-1 receipt seam.
+	 */
+	sourceRegistrations: ReadonlyMap<string, DataSourceRegistration>;
 	/** Financial ledger — undefined when TIGERBEETLE_ADDRESS not set */
 	financialLedger: FinancialLedgerPort | undefined;
 	/** Operator wallet — undefined when PRIVY_APP_ID not set */
@@ -383,6 +400,35 @@ function getWebhookRegistrations(): ReadonlyMap<
 		_webhookRegistrations = registrations;
 	}
 	return _webhookRegistrations;
+}
+
+/** Lazy singleton for attribution pipeline registries (built from repo-spec). */
+let _collectRegistries: DefaultRegistries | null = null;
+
+/**
+ * Build the attribution pipeline registries for the in-process collect pass.
+ * excludedLogins + sourceRefs are read from repo-spec activity_sources the same
+ * way the scheduler-worker does (fail-open: absent ledger config → empty filters).
+ */
+function getCollectRegistries(): DefaultRegistries {
+	if (!_collectRegistries) {
+		const ledgerConfig = getLedgerConfig();
+		const excludedLogins = ledgerConfig
+			? Object.values(ledgerConfig.activitySources).flatMap(
+					(s) => s.excludedLogins ?? [],
+				)
+			: [];
+		const sourceRefs = ledgerConfig
+			? Object.values(ledgerConfig.activitySources).flatMap(
+					(s) => s.sourceRefs ?? [],
+				)
+			: [];
+		_collectRegistries = createDefaultRegistries({
+			excludedLogins,
+			sourceRefs,
+		});
+	}
+	return _collectRegistries;
 }
 
 function createContainer(): Container {
@@ -885,6 +931,14 @@ function createContainer(): Container {
 		runStream,
 		nodeStream,
 		get webhookRegistrations() {
+			return getWebhookRegistrations();
+		},
+		get registries() {
+			return getCollectRegistries();
+		},
+		// Collect over webhook-delivered receipts: reuse the webhook-only registrations.
+		// No poll adapter → runCollectPass skips polling and selects delivered receipts.
+		get sourceRegistrations() {
 			return getWebhookRegistrations();
 		},
 		financialLedger,
