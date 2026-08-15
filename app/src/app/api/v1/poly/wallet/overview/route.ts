@@ -33,7 +33,7 @@ import {
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
 import { getTradingWalletPnlHistory } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
-import { sumCashOnChain } from "../_lib/cash-on-chain";
+import { sumCashOnChain, sumWalletTotal } from "../_lib/cash-on-chain";
 import {
   DASHBOARD_LEDGER_POSITION_LIMIT,
   DASHBOARD_LEDGER_POSITION_STATUSES,
@@ -226,10 +226,10 @@ export const GET = wrapRouteHandlerWithLogging(
       cashOnChain !== null
         ? roundToCents(Math.max(0, cashOnChain - positionSummary.lockedUsdc))
         : cashOnChain;
-    const total =
-      cashOnChain !== null && positionsMtm !== null
-        ? roundToCents(cashOnChain + positionsMtm)
-        : null;
+    // TOTAL_IS_CASH_NULL_SAFE (see sumWalletTotal): gate on cash only; absent
+    // positions contribute 0, not null, so a funded wallet is never "empty".
+    const totalRaw = sumWalletTotal(cashOnChain, positionsMtm);
+    const total = totalRaw !== null ? roundToCents(totalRaw) : null;
     let pnlHistory: PolyWalletOverviewOutput["pnlHistory"] = [];
     if (freshness === "live") {
       try {
