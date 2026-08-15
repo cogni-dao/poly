@@ -4,7 +4,7 @@
 /**
  * Module: `@features/layout/components/AppHeader`
  * Purpose: Application header for poly node — logo, treasury, GitHub, wallet, theme.
- * Scope: Public-page header. Node-specific branding (Activity icon + cogni/poly).
+ * Scope: Public-page header. Node-specific branding (Crosshair icon + cogni/poly).
  * Invariants: No horizontal overflow; matches operator AppHeader layout pattern.
  * Side-effects: none
  * Links: docs/guides/new-node-styling.md
@@ -13,7 +13,7 @@
 
 "use client";
 
-import { Activity, Github } from "lucide-react";
+import { Crosshair, Github } from "lucide-react";
 import Link from "next/link";
 import type { ReactElement } from "react";
 
@@ -42,7 +42,7 @@ export function AppHeader(): ReactElement {
               aria-current="page"
               className="flex min-w-0 items-center gap-2 pl-4 sm:pl-0"
             >
-              <Activity className="size-5 shrink-0 text-primary" />
+              <Crosshair className="size-5 shrink-0 text-primary" />
               <span className="hidden truncate font-bold text-xl md:inline">
                 cogni<span className="text-primary">/poly</span>
               </span>
