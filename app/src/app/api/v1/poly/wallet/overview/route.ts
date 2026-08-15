@@ -226,9 +226,15 @@ export const GET = wrapRouteHandlerWithLogging(
       cashOnChain !== null
         ? roundToCents(Math.max(0, cashOnChain - positionSummary.lockedUsdc))
         : cashOnChain;
+    // TOTAL_IS_CASH_NULL_SAFE: total is gated on cash only, never on
+    // positionsMtm. positionsMtm is null whenever the position cache is
+    // stale/absent (the common case for a funded wallet that isn't a tracked
+    // trader) — ANDing it into the gate zeroed usdc_total for a wallet that
+    // actually holds cash, so the dashboard falsely showed "empty" (the sibling
+    // of the pUSD-collateral bug). Missing positions contribute 0, not null.
     const total =
-      cashOnChain !== null && positionsMtm !== null
-        ? roundToCents(cashOnChain + positionsMtm)
+      cashOnChain !== null
+        ? roundToCents(cashOnChain + (positionsMtm ?? 0))
         : null;
     let pnlHistory: PolyWalletOverviewOutput["pnlHistory"] = [];
     if (freshness === "live") {
