@@ -33,6 +33,7 @@ import {
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
 import { getTradingWalletPnlHistory } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
+import { sumCashOnChain } from "../_lib/cash-on-chain";
 import {
   DASHBOARD_LEDGER_POSITION_LIMIT,
   DASHBOARD_LEDGER_POSITION_STATUSES,
@@ -209,13 +210,18 @@ export const GET = wrapRouteHandlerWithLogging(
     // `balances.usdcE` and `balances.pusd` are the wallet's two on-chain cash
     // balances (USDC.e bridged + Polymarket V2 pUSD). Both are spendable from
     // the dashboard's perspective: pUSD funds CLOB BUYs directly; USDC.e is
-    // wrapped to pUSD by the auto-wrap loop when consent is on.
+    // wrapped to pUSD by the auto-wrap loop when consent is on. Post the
+    // 2026-04-28 collateral cutover, pUSD is where a funded wallet's balance
+    // actually lives, so it MUST be summed into cash — reading only USDC.e
+    // reports a funded wallet as empty (the pUSD-collateral bug).
     // Open orders are software-level reservations, so DB-derived locked USDC is
     // already part of the on-chain cash balance.
-    const cashOnChain =
-      balances.usdcE !== null && balances.pusd !== null
-        ? balances.usdcE + balances.pusd
-        : null;
+    // COLLATERAL_SUM_IS_NULL_SAFE: sum whichever legs read successfully; a
+    // single failed RPC read (one token null, the other a real balance) must
+    // never zero out the wallet. Cash is null only when NO on-chain read
+    // succeeded (both null → RPC down / unconfigured), so the dashboard
+    // degrades to "—" instead of falsely claiming an empty wallet.
+    const cashOnChain = sumCashOnChain(balances.usdcE, balances.pusd);
     const usdcAvailable =
       cashOnChain !== null
         ? roundToCents(Math.max(0, cashOnChain - positionSummary.lockedUsdc))

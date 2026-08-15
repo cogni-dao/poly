@@ -5,7 +5,7 @@
  * Module: `@app/(app)/credits/TradingWalletPanel`
  * Purpose: Money page panel hosting the whole trading-wallet lifecycle —
  *   create (inline `TradingWalletConnectFlow` when `configured && !connected`),
- *   fund (USDC.e / POL readout + Polygon bridge link), enable trading
+ *   fund (pUSD / USDC.e / POL readout + Polygon bridge link), enable trading
  *   (`TradingReadinessSection`, task.0355), withdraw dialog, and stubbed fund
  *   button (task.0352).
  * Scope: Client component. React Query fetches `/wallet/status` + `/wallet/balances`;
@@ -217,8 +217,8 @@ export function TradingWalletPanel(): ReactElement {
           ) : null}
 
           <p className="text-muted-foreground text-xs leading-snug">
-            Send USDC.e on Polygon to your trading-wallet address above — any
-            wallet or{" "}
+            Fund with pUSD (Polymarket&apos;s collateral) or USDC.e on Polygon —
+            send to your trading-wallet address above from any wallet or{" "}
             <a
               href="https://portal.polygon.technology/bridge"
               target="_blank"

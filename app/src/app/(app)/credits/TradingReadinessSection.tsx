@@ -99,7 +99,7 @@ export function TradingReadinessSection(
       : "border-warning/40 bg-warning/10 text-warning";
     const sub = props.isFunded
       ? "Approvals signed in-app"
-      : "Approvals signed · add USDC.e to trade";
+      : "Approvals signed · add pUSD or USDC.e to trade";
     const subTone = props.isFunded ? "text-success/70" : "text-warning/80";
     return (
       <div

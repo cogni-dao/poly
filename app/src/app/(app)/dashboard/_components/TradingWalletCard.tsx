@@ -20,9 +20,11 @@
  *   - STATE_DRIVEN_UI (task.0361): the onboarding CTA is derived from
  *     `poly.wallet.status.v1`; no persisted onboarding-progress.
  *   - FUNDED_GATES_LIVE (task.0365): when approvals are signed but the
- *     wallet has zero USDC.e, the card surfaces an "Add USDC.e" CTA in
- *     place of the balance breakdown — silent zeros let users assume
- *     "trading is on" when they actually can't place a single order.
+ *     wallet holds zero USD collateral (pUSD + USDC.e both zero), the card
+ *     surfaces a fund CTA in place of the balance breakdown — silent zeros
+ *     let users assume "trading is on" when they actually can't place a
+ *     single order. Post the 2026-04-28 cutover pUSD is the real collateral,
+ *     so the empty check MUST include pUSD, not USDC.e alone.
  * Side-effects: IO (via React Query).
  * Links: work/items/task.0361.poly-first-user-onboarding-flow-v0.md
  * @public
@@ -172,7 +174,7 @@ export function TradingWalletCard(): ReactElement {
           />
         ) : (data.usdc_total ?? 0) <= 0 ? (
           <OnboardingCta
-            message="Wallet is empty — send USDC.e on Polygon to start trading."
+            message="Wallet is empty — add USD collateral (pUSD or USDC.e) on Polygon to start trading."
             ctaLabel="Fund wallet →"
             href="/credits"
           />
