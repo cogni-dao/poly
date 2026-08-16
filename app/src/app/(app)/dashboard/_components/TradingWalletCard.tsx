@@ -174,7 +174,7 @@ export function TradingWalletCard(): ReactElement {
           />
         ) : (data.usdc_total ?? 0) <= 0 ? (
           <OnboardingCta
-            message="Wallet is empty — add USD collateral (pUSD or USDC.e) on Polygon to start trading."
+            message="Wallet is empty — add USD collateral (pUSD, USDC.e, or native USDC) on Polygon to start trading."
             ctaLabel="Fund wallet →"
             href="/credits"
           />
