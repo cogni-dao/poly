@@ -39,14 +39,15 @@ export interface TradingReadinessSectionProps {
   /** From `poly.wallet.status.v1` — drives the initial view. */
   readonly tradingReady: boolean;
   /**
-   * Whether the wallet has any USDC.e (`> 0`). When `tradingReady && !isFunded`
-   * the "Trading enabled" pill recolors to warning/yellow (FUNDED_RECOLOR,
-   * task.0365) — approvals alone are not enough to actually place an order.
+   * Whether the wallet has any spendable cash — USDC.e + native USDC + pUSD
+   * (`> 0`). When `tradingReady && !isFunded` the "Trading enabled" pill
+   * recolors to warning/yellow (FUNDED_RECOLOR, task.0365) — approvals alone
+   * are not enough to actually place an order.
    */
   readonly isFunded: boolean;
   /** Decimal POL on Polygon. `null` on unknown / RPC error. */
   readonly polBalance: number | null;
-  /** Decimal USDC.e. `null` on unknown. Informational (not gated on). */
+  /** Total spendable cash (USDC.e + native USDC + pUSD). `null` on unknown. Informational (not gated on). */
   readonly usdcBalance: number | null;
 }
 
@@ -99,7 +100,7 @@ export function TradingReadinessSection(
       : "border-warning/40 bg-warning/10 text-warning";
     const sub = props.isFunded
       ? "Approvals signed in-app"
-      : "Approvals signed · add pUSD or USDC.e to trade";
+      : "Approvals signed · add pUSD, USDC.e, or native USDC to trade";
     const subTone = props.isFunded ? "text-success/70" : "text-warning/80";
     return (
       <div

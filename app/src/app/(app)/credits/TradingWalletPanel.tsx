@@ -5,7 +5,7 @@
  * Module: `@app/(app)/credits/TradingWalletPanel`
  * Purpose: Money page panel hosting the whole trading-wallet lifecycle —
  *   create (inline `TradingWalletConnectFlow` when `configured && !connected`),
- *   fund (pUSD / USDC.e / POL readout + Polygon bridge link), enable trading
+ *   fund (pUSD / USDC.e / native USDC / POL readout + Polygon bridge link), enable trading
  *   (`TradingReadinessSection`, task.0355), withdraw dialog, and stubbed fund
  *   button (task.0352).
  * Scope: Client component. React Query fetches `/wallet/status` + `/wallet/balances`;
@@ -78,6 +78,20 @@ function formatDecimal(n: number | null, fractionDigits: number): string {
   });
 }
 
+/**
+ * True when at least one cash leg (USDC.e / native USDC / pUSD) read
+ * successfully. Null-safe like the server's `sumCashOnChain`: a single failed
+ * RPC leg must not force the aggregate to "—" when another leg has a balance.
+ */
+function hasAnyCash(balances: PolyWalletBalancesOutput | undefined): boolean {
+  if (!balances) return false;
+  return (
+    balances.usdc_e !== null ||
+    balances.usdc_native !== null ||
+    balances.pusd !== null
+  );
+}
+
 const stubBtn =
   "w-full cursor-not-allowed rounded-md border border-border/60 bg-muted/50 px-3 py-2 font-medium text-muted-foreground text-sm";
 
@@ -147,13 +161,21 @@ export function TradingWalletPanel(): ReactElement {
       ) : (
         <div className="flex flex-col gap-3">
           {/* Balances immediately above stub actions — compact, no semantic mix-up */}
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <div className="rounded-md bg-muted/40 px-3 py-2">
               <div className="text-muted-foreground text-xs uppercase tracking-wide">
                 USDC.e
               </div>
               <div className="font-semibold text-xl tabular-nums tracking-tight">
                 {formatDecimal(balances?.usdc_e ?? null, 2)}
+              </div>
+            </div>
+            <div className="rounded-md bg-muted/40 px-3 py-2">
+              <div className="text-muted-foreground text-xs uppercase tracking-wide">
+                USDC
+              </div>
+              <div className="font-semibold text-xl tabular-nums tracking-tight">
+                {formatDecimal(balances?.usdc_native ?? null, 2)}
               </div>
             </div>
             <div className="rounded-md bg-muted/40 px-3 py-2">
@@ -175,11 +197,18 @@ export function TradingWalletPanel(): ReactElement {
           </div>
           <TradingReadinessSection
             tradingReady={status.trading_ready}
-            isFunded={(balances?.usdc_e ?? 0) + (balances?.pusd ?? 0) > 0}
+            isFunded={
+              (balances?.usdc_e ?? 0) +
+                (balances?.usdc_native ?? 0) +
+                (balances?.pusd ?? 0) >
+              0
+            }
             polBalance={balances?.pol ?? null}
             usdcBalance={
-              balances?.usdc_e !== null && balances?.usdc_e !== undefined
-                ? balances.usdc_e + (balances.pusd ?? 0)
+              hasAnyCash(balances)
+                ? (balances?.usdc_e ?? 0) +
+                  (balances?.usdc_native ?? 0) +
+                  (balances?.pusd ?? 0)
                 : null
             }
           />
@@ -217,8 +246,9 @@ export function TradingWalletPanel(): ReactElement {
           ) : null}
 
           <p className="text-muted-foreground text-xs leading-snug">
-            Fund with pUSD (Polymarket&apos;s collateral) or USDC.e on Polygon —
-            send to your trading-wallet address above from any wallet or{" "}
+            Fund with pUSD (Polymarket&apos;s collateral), USDC.e, or native USDC
+            on Polygon — send to your trading-wallet address above from any
+            wallet or{" "}
             <a
               href="https://portal.polygon.technology/bridge"
               target="_blank"
