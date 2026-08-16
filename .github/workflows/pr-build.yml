@@ -183,24 +183,25 @@ jobs:
         id: image
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: ./Dockerfile
-          target: runner
+          context: ${{ matrix.target == 'paper-trader' && './sidecars/paper-trader' || '.' }}
+          file: ${{ matrix.target == 'paper-trader' && './sidecars/paper-trader/Dockerfile' || './Dockerfile' }}
+          target: ${{ matrix.target == 'paper-trader' && 'base' || 'runner' }}
           push: ${{ needs.resolve.outputs.should_push == 'true' }}
-          tags: ${{ needs.resolve.outputs.image_name }}:${{ needs.resolve.outputs.image_tag }}
+          tags: ${{ matrix.target == 'paper-trader' && format('{0}-paper-trader:{1}', needs.resolve.outputs.image_name, needs.resolve.outputs.image_tag) || format('{0}:{1}', needs.resolve.outputs.image_name, needs.resolve.outputs.image_tag) }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.resolve.outputs.source_sha }}
           build-args: |
             BUILD_SHA=${{ needs.resolve.outputs.source_sha }}
-          cache-from: type=gha,scope=node-template-app
-          cache-to: type=gha,mode=max,scope=node-template-app
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
 
       - name: Write build fragment
         env:
           OUTPUT_FILE: ${{ runner.temp }}/build-fragment-${{ matrix.target }}.json
           TARGET: ${{ matrix.target }}
           IMAGE_NAME: ${{ needs.resolve.outputs.image_name }}
+          TARGET_IMAGE_NAME: ${{ matrix.target == 'paper-trader' && format('{0}-paper-trader', needs.resolve.outputs.image_name) || needs.resolve.outputs.image_name }}
           IMAGE_TAG: ${{ needs.resolve.outputs.image_tag }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           DIGEST: ${{ steps.image.outputs.digest }}
