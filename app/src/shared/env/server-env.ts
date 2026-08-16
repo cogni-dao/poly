@@ -255,12 +255,28 @@ export const serverSchema = z.object({
 
   // Polymarket / paper execution knobs - Optional.
   POLYGON_RPC_URL: optionalUrl,
+  // WSS endpoint for the copy-trade chain fill source (viem watchContractEvent
+  // via eth_subscribe). Falls back to deriving wss:// from POLYGON_RPC_URL.
+  POLYGON_RPC_WSS_URL: optionalUrl,
   POLY_CLOB_HOST: optionalUrl,
   POLY_CLOB_GEO_BLOCK_TOKEN: optionalString,
   PAPER_SIDECAR_URL: optionalUrl,
   PAPER_ENFORCE_MODE: z
     .preprocess(emptyToUndefined, z.enum(["paper"]).optional())
     .optional(),
+  // Grace window (ms) before a not_found CLOB order is promoted to canceled by
+  // the order reconciler. Default 15 min (task.0328 GRACE_WINDOW_IS_CONFIG).
+  POLY_CLOB_NOT_FOUND_GRACE_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(900_000),
+  // Per-asset price-history writer. Gated OFF by default; enable only where the
+  // read-model is needed AND the asset set is small (bug.5172 OOM guard).
+  POLY_PRICE_HISTORY_WRITER_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 
   // Operator wallet top-up cap (USD)
   // Per operator-wallet.md: MAX_TOPUP_CAP — per-tx ceiling for OpenRouter top-ups.
