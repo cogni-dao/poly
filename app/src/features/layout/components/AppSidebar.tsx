@@ -90,18 +90,18 @@ export function AppSidebar(): ReactElement {
       <SidebarHeader className="h-16 shrink-0 justify-center">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild tooltip="Cogni">
+            <SidebarMenuButton size="lg" asChild tooltip="Poly">
               <Link href="/chat">
                 <div className="flex aspect-square size-8 items-center justify-center">
                   <Image
                     src="/TransparentBrainOnly.png"
-                    alt="Cogni"
+                    alt="Poly"
                     width={24}
                     height={24}
                   />
                 </div>
-                <span className="truncate font-bold text-gradient-accent">
-                  Cogni
+                <span className="truncate font-bold">
+                  cogni<span className="text-primary">/poly</span>
                 </span>
               </Link>
             </SidebarMenuButton>

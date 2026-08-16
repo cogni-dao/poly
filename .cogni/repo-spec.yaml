@@ -18,7 +18,7 @@ intent:
   hook: "Community AI for prediction markets"
   mission: "Cogni Poly is a community-built AI for prediction market research, monitoring cross-platform catalysts and surfacing explainable signals while token holders steer priorities."
   brand:
-    icon: Crosshair
+    icon: Brain
     color: "#22c55e"
 
 governance:
