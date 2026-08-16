@@ -17,12 +17,12 @@ import {
   BookOpen,
   Briefcase,
   CreditCard,
-  Crosshair,
   Github,
   LayoutDashboard,
   Shield,
   Vote,
 } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -90,10 +90,15 @@ export function AppSidebar(): ReactElement {
       <SidebarHeader className="h-16 shrink-0 justify-center">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild tooltip="Cogni Poly">
+            <SidebarMenuButton size="lg" asChild tooltip="Poly">
               <Link href="/chat">
-                <div className="flex aspect-square size-8 items-center justify-center text-primary">
-                  <Crosshair className="size-5" />
+                <div className="flex aspect-square size-8 items-center justify-center">
+                  <Image
+                    src="/TransparentBrainOnly.png"
+                    alt="Poly"
+                    width={24}
+                    height={24}
+                  />
                 </div>
                 <span className="truncate font-bold">
                   cogni<span className="text-primary">/poly</span>
