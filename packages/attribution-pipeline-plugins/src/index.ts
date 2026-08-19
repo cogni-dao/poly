@@ -16,6 +16,27 @@
  * @public
  */
 
+// Finalize-in-process (story.5007) — atomic statement/liability seal + reconciliation
+export {
+  type FinalizeDistributionConfigResolver,
+  FinalizeEpochError,
+  type FinalizeEpochErrorCode,
+  type FinalizeEpochInput,
+  type FinalizeEpochOutput,
+  type FinalizeLogger,
+  isFinalizeEpochError,
+  type RunFinalizeEpochDeps,
+  runFinalizeEpoch,
+} from "./finalize/run-finalize-epoch";
+export {
+  type ReconcileSettlementsResult,
+  retryPendingSettlements,
+  type RunReconcileSettlementsDeps,
+  runReconcileSettlements,
+  type SettlementLogger,
+  type SettlementReconcileTrigger,
+} from "./settlement/run-reconcile-settlements";
+export { assertSettlementGovernanceTargetSafe } from "./settlement/governance-target-guard";
 export { createEchoAdapter } from "./plugins/echo/adapter";
 // Echo plugin
 export {

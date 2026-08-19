@@ -23,6 +23,41 @@ vi.mock("@/app/_facades/treasury/snapshot.server", () => ({
   getTreasurySnapshotFacade: vi.fn(),
 }));
 
+// Mock the DI container so wrapPublicRoute's lazy init never touches the real
+// composition root. Without this, getContainer() runs the full createContainer()
+// path (repo-spec parse, DB clients, adapter wiring) on first request; any failure
+// there (e.g. a fresh-node repo-spec the template schema can't parse) makes
+// wrapPublicRoute return 503 (CONTAINER_INIT_FAILED) BEFORE the route handler runs,
+// so the contract behavior under test is never reached (bug.5032 / bug.5033).
+// wrapPublicRoute reads container.config.{rateLimitBypass,DEPLOY_ENVIRONMENT};
+// wrapRouteHandlerWithLogging reads container.{log,clock}.
+vi.mock("@/bootstrap/container", () => ({
+  getContainer: vi.fn(() => ({
+    log: {
+      child: vi.fn(() => ({
+        info: vi.fn(),
+        error: vi.fn(),
+        warn: vi.fn(),
+        debug: vi.fn(),
+      })),
+      info: vi.fn(),
+      error: vi.fn(),
+      warn: vi.fn(),
+      debug: vi.fn(),
+    },
+    clock: { now: vi.fn(() => new Date("2025-01-01T00:00:00Z")) },
+    config: {
+      rateLimitBypass: {
+        enabled: true,
+        headerName: "x-stack-test",
+        headerValue: "1",
+      },
+      DEPLOY_ENVIRONMENT: "test",
+      unhandledErrorPolicy: "rethrow",
+    },
+  })),
+}));
+
 // Mock serverEnv to avoid env validation errors in tests
 // Uses shared fixture to ensure all required fields are present
 vi.mock("@/shared/env", () => ({

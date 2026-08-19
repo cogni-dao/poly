@@ -36,13 +36,13 @@ export async function createBinding(
   provider: "wallet" | "discord" | "github" | "google",
   externalId: string,
   payload: Record<string, unknown>
-): Promise<void> {
+): Promise<{ readonly created: boolean; readonly eventId: string | null }> {
   const bindingId = randomUUID();
   const eventId = randomUUID();
 
   // Single transaction: binding INSERT + identity_event INSERT.
   // If the binding already exists (idempotent case), skip both.
-  await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
     const [inserted] = await tx
       .insert(userBindings)
       .values({
@@ -64,6 +64,9 @@ export async function createBinding(
         eventType: "bind",
         payload: { provider, external_id: externalId, ...payload },
       });
+      return { created: true, eventId } as const;
     }
+
+    return { created: false, eventId: null } as const;
   });
 }

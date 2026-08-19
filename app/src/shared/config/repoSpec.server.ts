@@ -13,11 +13,14 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { CHAIN_ID } from "@cogni/node-shared/web3";
+import { CHAIN_ID } from "@cogni/node-shared";
 import {
 	type DaoConfig,
+	extractChainId,
 	extractDaoConfig,
+	extractDaoTokenDistributionConfig,
 	extractDaoTreasuryAddress,
+	extractDistributorAddress,
 	extractGovernanceConfig,
 	extractLedgerApprovers,
 	extractLedgerConfig,
@@ -264,6 +267,61 @@ export function getDaoConfig(): DaoConfig | null {
 	const spec = loadRepoSpec();
 	cachedDaoConfig = extractDaoConfig(spec);
 	return cachedDaoConfig;
+}
+
+// ---------------------------------------------------------------------------
+// Tokenomics — token / distributor / chain (finalize-in-process R3 fold)
+// ---------------------------------------------------------------------------
+
+/**
+ * The node's token / distributor / chain identity, read from repo-spec
+ * (governance.token_contract, distributions.distributor_address, governance.chain_id).
+ * Manifest-independent: reflects tokenomics as soon as a DAO is formed + a distributor
+ * is deployed, INDEPENDENT of whether any epoch has been finalized.
+ */
+export interface NodeTokenomicsConfig {
+	/** Governance ERC20 token (governance.token_contract); null until on-chain. */
+	readonly tokenAddress: string | null;
+	/** Cumulative Merkle distributor (distributions.distributor_address); null until deployed. */
+	readonly distributorAddress: string | null;
+	/** EVM chain id (governance.chain_id). */
+	readonly chainId: number;
+	/** `distributions.status: active` in the node's own repo-spec (setup step-1 complete). */
+	readonly distributionsActive: boolean;
+}
+
+let cachedNodeTokenomicsConfig: NodeTokenomicsConfig | null = null;
+
+/**
+ * The node's token / distributor / chain from repo-spec (governance.token_contract,
+ * distributions.distributor_address, governance.chain_id). Manifest-independent.
+ */
+export function getNodeTokenomicsConfig(): NodeTokenomicsConfig {
+	if (cachedNodeTokenomicsConfig) return cachedNodeTokenomicsConfig;
+
+	const spec = loadRepoSpec();
+	cachedNodeTokenomicsConfig = {
+		tokenAddress: spec.governance?.token_contract ?? null,
+		distributorAddress: extractDistributorAddress(spec) ?? null,
+		chainId: extractChainId(spec),
+		distributionsActive: spec.distributions?.status === "active",
+	};
+	return cachedNodeTokenomicsConfig;
+}
+
+let cachedEmissionsHolder: string | null | undefined;
+
+/**
+ * DAO that mints + owns the distributor (governance.emissions_holder), from the node's
+ * OWN repo-spec. Null until distributions are activated. Feeds the finalize fold's
+ * bug.5020 execute-guard on the baked-fallback path.
+ */
+export function getEmissionsHolderAddress(): string | null {
+	if (cachedEmissionsHolder !== undefined) return cachedEmissionsHolder;
+	const spec = loadRepoSpec();
+	cachedEmissionsHolder =
+		extractDaoTokenDistributionConfig(spec)?.emissionsHolderAddress ?? null;
+	return cachedEmissionsHolder;
 }
 
 let cachedLedgerApprovers: string[] | null = null;

@@ -4,7 +4,7 @@
 /**
  * Module: `@cogni/db-schema/attribution`
  * Purpose: Five-stage epoch ledger schema for auditable activity-based credit distribution.
- * Scope: Defines all ledger tables (epochs, ingestion_receipts, epoch_selection, epoch_user_projections, epoch_evaluations, ingestion_cursors, epoch_pool_components, epoch_review_subject_overrides, epoch_final_claimant_allocations, epoch_statements, epoch_statement_signatures). Does not contain queries, business logic, or I/O.
+ * Scope: Defines all ledger tables, including claimant liabilities and append-only global distribution settlement revisions. Does not contain queries, business logic, or I/O.
  * Invariants:
  * - All credit/unit columns use BIGINT (ALL_MATH_BIGINT).
  * - Ingestion layer (ingestion_receipts, epoch_pool_components) are append-only (DB triggers in migration).
@@ -30,6 +30,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   primaryKey,
   text,
@@ -586,3 +587,254 @@ export const epochStatementSignatures = pgTable(
     ),
   ]
 );
+
+// ---------------------------------------------------------------------------
+// Distribution manifest tables (DAO token merkle claim persistence — R3/R4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Epoch distribution manifests — persisted `DaoTokenMerkleDistribution` headers.
+ * One per epoch (scoped to node+scope), keyed (node_id, scope_id, epoch_id).
+ * Stores the merkle root, the on-chain claim parameters (chain_id, token_address,
+ * distribution_amount), and the statement_hash lineage that the manifest was built
+ * from (DISTRIBUTION_STATEMENT_LINEAGE). distributor_address is NULL until the
+ * MerkleDistributor contract is deployed for this epoch.
+ * Per-leaf {index, account, amount, proof[]} rows live in epoch_distribution_leaves.
+ * No FK to users — leaves are keyed by EVM account address, not a user UUID.
+ */
+export const epochDistributionManifests = pgTable(
+  "epoch_distribution_manifests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    nodeId: uuid("node_id").notNull(),
+    scopeId: uuid("scope_id").notNull(),
+    epochId: bigint("epoch_id", { mode: "bigint" })
+      .notNull()
+      .references(() => epochs.id),
+    distributionId: text("distribution_id").notNull(),
+    statementHash: text("statement_hash").notNull(),
+    merkleRoot: text("merkle_root").notNull(),
+    chainId: bigint("chain_id", { mode: "bigint" }).notNull(),
+    tokenAddress: text("token_address").notNull(),
+    // ERC20 base-unit (wei) token amounts — uint256-scale. MUST be numeric, not
+    // bigint: cumulativeTotal = credits × 10^18 overflows int64 for any pool ≥ ~9
+    // credits (bigint max ≈ 9.2×10^18). numeric(mode:bigint) round-trips as bigint.
+    distributionAmount: numeric("distribution_amount", {
+      mode: "bigint",
+    }).notNull(),
+    totalAllocated: numeric("total_allocated", { mode: "bigint" }).notNull(),
+    // NULL until the on-chain MerkleDistributor contract is deployed for this epoch.
+    distributorAddress: text("distributor_address"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // One manifest per epoch per tenant scope (DISTRIBUTION_ONE_PER_EPOCH).
+    uniqueIndex("epoch_distribution_manifests_node_scope_epoch_unique").on(
+      table.nodeId,
+      table.scopeId,
+      table.epochId
+    ),
+    index("epoch_distribution_manifests_epoch_idx").on(table.epochId),
+  ]
+);
+
+/**
+ * Epoch distribution leaves — per-claimant merkle leaf + proof.
+ * One row per leaf in the manifest's merkle tree. account is an EVM address
+ * (lowercased into account_lower for case-insensitive claimant lookup). amount is
+ * the ERC20 base-unit claim amount; proof_json is the ordered sibling-hash array
+ * the claim contract verifies against merkle_root.
+ */
+export const epochDistributionLeaves = pgTable(
+  "epoch_distribution_leaves",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    nodeId: uuid("node_id").notNull(),
+    manifestId: uuid("manifest_id")
+      .notNull()
+      .references(() => epochDistributionManifests.id, { onDelete: "cascade" }),
+    epochId: bigint("epoch_id", { mode: "bigint" })
+      .notNull()
+      .references(() => epochs.id),
+    leafIndex: integer("leaf_index").notNull(),
+    claimantKey: text("claimant_key").notNull(),
+    account: text("account").notNull(),
+    accountLower: text("account_lower").notNull(),
+    // ERC20 base-unit (wei) claim amount — uint256-scale; MUST be numeric (int64
+    // overflows: a single claimant's cumulative = credits × 10^18). numeric with
+    // mode:bigint round-trips as a JS bigint, so the adapter mapping is unchanged.
+    amount: numeric("amount", { mode: "bigint" }).notNull(),
+    leafHash: text("leaf_hash").notNull(),
+    proofJson: jsonb("proof_json").$type<string[]>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // One leaf per index per manifest.
+    uniqueIndex("epoch_distribution_leaves_manifest_index_unique").on(
+      table.manifestId,
+      table.leafIndex
+    ),
+    // Claimant proof lookup by (manifest, lowercased account).
+    uniqueIndex("epoch_distribution_leaves_manifest_account_unique").on(
+      table.manifestId,
+      table.accountLower
+    ),
+    index("epoch_distribution_leaves_epoch_idx").on(table.epochId),
+  ]
+);
+
+// ---------------------------------------------------------------------------
+// Global settlement revisions (late-linked claimant settlement)
+// ---------------------------------------------------------------------------
+
+/**
+ * Append-only cumulative distribution roots for a node+scope settlement stream.
+ * Each revision replaces the claimable root globally; `mintDelta` is only the
+ * newly resolved liability amount while `cumulativeTotal` is the full root sum.
+ */
+export const distributionSettlementRevisions = pgTable(
+  "distribution_settlement_revisions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    nodeId: uuid("node_id").notNull(),
+    scopeId: uuid("scope_id").notNull(),
+    sequence: bigint("sequence", { mode: "bigint" }).notNull(),
+    previousRevisionId: uuid("previous_revision_id").references(
+      // biome-ignore lint/suspicious/noExplicitAny: Drizzle self-referencing FK requires explicit type to break circular inference
+      (): any => distributionSettlementRevisions.id
+    ),
+    previousMerkleRoot: text("previous_merkle_root"),
+    distributionId: text("distribution_id").notNull(),
+    statementHash: text("statement_hash").notNull(),
+    merkleRoot: text("merkle_root").notNull(),
+    chainId: bigint("chain_id", { mode: "bigint" }).notNull(),
+    tokenAddress: text("token_address").notNull(),
+    distributorAddress: text("distributor_address"),
+    mintDelta: numeric("mint_delta", { mode: "bigint" }).notNull(),
+    cumulativeTotal: numeric("cumulative_total", {
+      mode: "bigint",
+    }).notNull(),
+    triggerKind: text("trigger_kind").notNull(),
+    triggerRef: text("trigger_ref").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("distribution_settlement_revisions_stream_sequence_unique").on(
+      table.nodeId,
+      table.scopeId,
+      table.sequence
+    ),
+    uniqueIndex("distribution_settlement_revisions_previous_unique").on(
+      table.previousRevisionId
+    ),
+    uniqueIndex("distribution_settlement_revisions_genesis_unique")
+      .on(table.nodeId, table.scopeId)
+      .where(sql`${table.previousRevisionId} IS NULL`),
+    uniqueIndex("distribution_settlement_revisions_root_unique").on(
+      table.nodeId,
+      table.scopeId,
+      table.merkleRoot
+    ),
+    check(
+      "distribution_settlement_revisions_sequence_positive",
+      sql`${table.sequence} > 0`
+    ),
+    check(
+      "distribution_settlement_revisions_amounts_nonnegative",
+      sql`${table.mintDelta} >= 0 AND ${table.cumulativeTotal} >= 0`
+    ),
+    check(
+      "distribution_settlement_revisions_chain_shape",
+      sql`(${table.previousRevisionId} IS NULL AND ${table.previousMerkleRoot} IS NULL AND ${table.sequence} = 1) OR (${table.previousRevisionId} IS NOT NULL AND ${table.previousMerkleRoot} IS NOT NULL AND ${table.sequence} > 1)`
+    ),
+  ]
+).enableRLS();
+
+/**
+ * Token-atomic debt fixed at source-epoch finalization. The source and amount
+ * never change; settlement is the sole nullable-to-non-null state transition.
+ */
+export const claimantLiabilities = pgTable(
+  "claimant_liabilities",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    nodeId: uuid("node_id").notNull(),
+    scopeId: uuid("scope_id").notNull(),
+    sourceEpochId: bigint("source_epoch_id", { mode: "bigint" })
+      .notNull()
+      .references(() => epochs.id),
+    statementId: uuid("statement_id")
+      .notNull()
+      .references(() => epochStatements.id),
+    claimantKey: text("claimant_key").notNull(),
+    amountAtomic: numeric("amount_atomic", { mode: "bigint" }).notNull(),
+    receiptIdsJson: jsonb("receipt_ids_json").$type<string[]>().notNull(),
+    settledRevisionId: uuid("settled_revision_id").references(
+      () => distributionSettlementRevisions.id
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("claimant_liabilities_source_claimant_unique").on(
+      table.sourceEpochId,
+      table.claimantKey
+    ),
+    index("claimant_liabilities_pending_stream_idx")
+      .on(table.nodeId, table.scopeId)
+      .where(sql`${table.settledRevisionId} IS NULL`),
+    check(
+      "claimant_liabilities_amount_positive",
+      sql`${table.amountAtomic} > 0`
+    ),
+  ]
+).enableRLS();
+
+/** Complete cumulative leaf/proof snapshot for one settlement revision. */
+export const distributionSettlementLeaves = pgTable(
+  "distribution_settlement_leaves",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    revisionId: uuid("revision_id")
+      .notNull()
+      .references(() => distributionSettlementRevisions.id),
+    leafIndex: integer("leaf_index").notNull(),
+    claimantKey: text("claimant_key").notNull(),
+    account: text("account").notNull(),
+    accountLower: text("account_lower").notNull(),
+    cumulativeAmount: numeric("cumulative_amount", {
+      mode: "bigint",
+    }).notNull(),
+    deltaAmount: numeric("delta_amount", { mode: "bigint" }).notNull(),
+    receiptIdsJson: jsonb("receipt_ids_json").$type<string[]>().notNull(),
+    leafHash: text("leaf_hash").notNull(),
+    proofJson: jsonb("proof_json").$type<string[]>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("distribution_settlement_leaves_revision_index_unique").on(
+      table.revisionId,
+      table.leafIndex
+    ),
+    uniqueIndex("distribution_settlement_leaves_revision_account_unique").on(
+      table.revisionId,
+      table.accountLower
+    ),
+    check(
+      "distribution_settlement_leaves_amounts_nonnegative",
+      sql`${table.cumulativeAmount} >= 0 AND ${table.deltaAmount} >= 0 AND ${table.deltaAmount} <= ${table.cumulativeAmount}`
+    ),
+  ]
+).enableRLS();

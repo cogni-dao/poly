@@ -92,6 +92,10 @@ describe("OAuth signIn callback — early-return branches", () => {
 // --- WalletRequiredError guard test ---
 
 // Additional mocks for the facade under test
+vi.mock("@/bootstrap/settlement-runtime", () => ({
+  reconcileSettlementsAfterBinding: vi.fn(),
+}));
+
 vi.mock("@/bootstrap/container", () => ({
   getContainer: () => ({
     accountsForUser: vi.fn().mockReturnValue({}),

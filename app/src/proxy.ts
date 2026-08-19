@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { type NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
 
+import { authOptions, authSecret } from "@/auth";
 import { getNodeId } from "@/shared/config";
 import { EVENT_NAMES, makeLogger } from "@/shared/observability";
 
@@ -129,7 +130,7 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
 		pathname === "/" ||
 		isAppRoute(pathname) ||
 		(pathname.startsWith("/api/v1/") && !isAgentBearerRequest);
-	const tokenSecret = process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET ?? "";
+	const tokenSecret = authSecret || authOptions.secret;
 
 	if (
 		!tokenSecret &&

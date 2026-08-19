@@ -25,7 +25,7 @@ import {
   DEFAULT_MAX_TOKENS,
   DEFAULT_TEMPERATURE,
   scrubStringContent,
-} from "@cogni/node-shared/ai";
+} from "@cogni/node-shared";
 import {
   createParser,
   type EventSourceMessage,

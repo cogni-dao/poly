@@ -106,6 +106,16 @@ export const governanceSpecSchema = z.object({
     .string()
     .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address")
     .optional(),
+  /** Aragon GovernanceERC20 token address used for contributor distributions */
+  token_contract: z
+    .string()
+    .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address")
+    .optional(),
+  /** DAO-controlled holder/vault containing minted token inventory for emissions */
+  emissions_holder: z
+    .string()
+    .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address")
+    .optional(),
   /** Proposal launcher base URL (for deep links) */
   base_url: z.string().url().optional(),
   /** Governance council schedules (cron-triggered charters) */
@@ -339,12 +349,26 @@ function isDoltHubRemoteUrl(value: string): boolean {
  * Schema for the node-local knowledge plane declaration.
  * Credentials are never stored here; the repo-spec only pins the Cogni-owned
  * DoltHub repository identity that this node mirrors to.
+ *
+ * `repo` accepts any lowercase kebab DoltHub repo name. Two shapes exist in the
+ * fleet: freshly minted nodes ship the bare node slug (dolt name == git name,
+ * e.g. `toks3` — the operator retired the `knowledge-` prefix at mint), while
+ * older live forks (habitat/blue/oss) still ship legacy `knowledge-<slug>`.
+ * The node app MUST tolerate both: this schema runs inside container init, so a
+ * rejected shape here turns EVERY public route into a 503
+ * (CONTAINER_INIT_FAILED) on an otherwise-healthy node (bug.5033). Naming
+ * policy is the operator's mint-time concern, not a node-runtime gate.
  */
 export const knowledgeRemoteSpecSchema = z
   .object({
     provider: z.literal("dolthub"),
     owner: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/),
-    repo: z.string().regex(/^knowledge-[a-z][a-z0-9-]{0,63}$/),
+    repo: z
+      .string()
+      .regex(
+        /^[a-z][a-z0-9-]{0,63}$/,
+        "knowledge.remote.repo must be a lowercase kebab DoltHub repo name (bare node slug, e.g. `toks3`; legacy `knowledge-<slug>` also accepted)"
+      ),
     url: z.string().refine(isDoltHubRemoteUrl, {
       message:
         "DoltHub remote URL must be https://doltremoteapi.dolthub.com/<owner>/<repo> with no credentials",
@@ -579,6 +603,35 @@ export const repoSpecSchema = z
     payments: z
       .object({
         status: z.enum(["pending_activation", "active"]),
+      })
+      .optional(),
+
+    /** Token distribution activation status — active only after DAO-controlled minted inventory is verified */
+    distributions: z
+      .object({
+        status: z.enum(["pending_activation", "active"]),
+        claim_contract_pattern: z
+          .enum([
+            "uniswap.merkle-distributor.v1",
+            "1inch.cumulative-merkle-drop.v1",
+          ])
+          .optional(),
+        /**
+         * The ONE cumulative Merkle distributor deployed for this node at
+         * distributions activation (R2). DAO-owned (ownership transferred to
+         * `governance.dao_contract` post-deploy). Epoch finalization (R3) resolves
+         * this address, calls `setMerkleRoot` per epoch, and mints only the delta —
+         * there is no per-epoch redeploy. Recorded once and treated as immutable.
+         */
+        distributor_address: z
+          .string()
+          .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address")
+          .optional(),
+        /** Deploy transaction hash for the distributor (audit/provenance). */
+        distributor_deploy_tx: z
+          .string()
+          .regex(/^0x[0-9a-fA-F]{64}$/, "Invalid tx hash")
+          .optional(),
       })
       .optional(),
 
