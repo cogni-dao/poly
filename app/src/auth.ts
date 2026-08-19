@@ -15,12 +15,13 @@
 /* eslint-disable boundaries/no-unknown-files */
 
 import nodeCrypto, { randomUUID } from "node:crypto";
-import { AnalyticsEvents, capture } from "@cogni/node-shared/analytics";
 import {
+  AnalyticsEvents,
+  capture,
   isFailedIntent,
   isPendingIntent,
   linkIntentStore,
-} from "@cogni/node-shared/auth";
+} from "@cogni/node-shared";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import type { NextAuthOptions } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
@@ -31,6 +32,7 @@ import { getCsrfToken } from "next-auth/react";
 import { SiweMessage } from "siwe";
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
 import { createBinding } from "@/adapters/server/identity/create-binding";
+import { reconcileSettlementsAfterBinding } from "@/bootstrap/settlement-runtime";
 import { isLedgerApprover } from "@/shared/config";
 import {
   identityEvents,
@@ -389,11 +391,30 @@ export const authOptions: NextAuthOptions = {
       }
 
       if (verifiedUserId) {
-        await createBinding(db, verifiedUserId, provider, externalId, {
-          method: "oauth_link",
-          login: profileData?.login ?? profileData?.username ?? null,
-          name: profileData?.name ?? null,
-        });
+        const binding = await createBinding(
+          db,
+          verifiedUserId,
+          provider,
+          externalId,
+          {
+            method: "oauth_link",
+            login: profileData?.login ?? profileData?.username ?? null,
+            name: profileData?.name ?? null,
+          }
+        );
+
+        // The binding is authoritative once committed. Reconciliation is an
+        // idempotent repair trigger and must never roll back a successful link.
+        if (binding.created && binding.eventId) {
+          try {
+            await reconcileSettlementsAfterBinding(binding.eventId, getLog());
+          } catch (error) {
+            getLog().warn(
+              { error, provider, eventId: binding.eventId },
+              "[OAuth] Settlement reconciliation failed — binding preserved"
+            );
+          }
+        }
 
         user.id = verifiedUserId;
         // Preserve walletAddress in the session

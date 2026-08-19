@@ -16,7 +16,7 @@
  * @public
  */
 
-import type { SessionUser } from "@cogni/node-shared/auth/session";
+import type { SessionUser } from "@cogni/node-shared";
 import { type NextRequest, NextResponse } from "next/server";
 import type { Container } from "@/bootstrap/container";
 import { withRootSpan } from "@/bootstrap/otel";

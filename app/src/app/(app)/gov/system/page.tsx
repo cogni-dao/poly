@@ -3,9 +3,10 @@
 
 /**
  * Module: `@app/(app)/gov/system/page`
- * Purpose: Server entrypoint for system activity page within governance.
- * Scope: Server component only; delegates all client behavior to GovernanceView. Does not perform data fetching.
- * Invariants: Auth enforced by (app) layout guard.
+ * Purpose: Server entrypoint for the system activity page within governance.
+ * Scope: Server component; delegates client behavior to GovernanceView. No data fetching.
+ * Invariants: Auth enforced by (app) layout guard. One-time node and distribution setup belongs to
+ *   the Cogni Operator node page; this child-node route is activity-only.
  * Side-effects: none (server render only)
  * Links: docs/spec/governance-status-api.md
  * @public

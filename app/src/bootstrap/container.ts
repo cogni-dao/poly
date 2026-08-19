@@ -25,8 +25,16 @@ import type { AttributionStore } from "@cogni/attribution-ledger";
 import {
 	createDefaultRegistries,
 	type DefaultRegistries,
+	type FinalizeEpochInput,
+	type FinalizeEpochOutput,
+	type FinalizeLogger,
+	type RunFinalizeEpochDeps,
+	runFinalizeEpoch,
 } from "@cogni/attribution-pipeline-plugins";
-import { DrizzleAttributionAdapter } from "@cogni/db-client";
+import {
+	DrizzleAttributionAdapter,
+	DrizzleClaimantWalletResolver,
+} from "@cogni/db-client";
 import type { FinancialLedgerPort } from "@cogni/financial-ledger";
 import { createTigerBeetleAdapter } from "@cogni/financial-ledger/adapters";
 import type { UserId } from "@cogni/ids";
@@ -49,17 +57,19 @@ import {
 	wrapPushSafe,
 } from "@cogni/knowledge-store/adapters/doltgres";
 import { parseMcpConfigFromEnv } from "@cogni/langgraph-graphs";
-import { initAnalytics, shutdownAnalytics } from "@cogni/node-shared/analytics";
-import { COGNI_SYSTEM_PRINCIPAL_USER_ID } from "@cogni/node-shared/constants";
+import {
+	COGNI_SYSTEM_PRINCIPAL_USER_ID,
+	initAnalytics,
+	shutdownAnalytics,
+} from "@cogni/node-shared";
 import {
 	type NodeStreamPort,
 	RedisNodeStreamAdapter,
 } from "@cogni/node-streams";
 import { numberToPpm } from "@cogni/operator-wallet";
 import { PrivyOperatorWalletAdapter } from "@cogni/operator-wallet/adapters/privy";
-import { noopMetrics as noopMetricsForExecutor } from "@cogni/poly-market-provider";
 import type { ScheduleControlPort } from "@cogni/scheduler-core";
-import type { WorkItemCommandPort, WorkItemQueryPort } from "@cogni/work-items";
+import type { WorkItemQueryPort } from "@cogni/work-items";
 import { MarkdownWorkItemAdapter } from "@cogni/work-items/markdown";
 import {
 	Client as TemporalClient,
@@ -120,10 +130,6 @@ import {
 import { createToolBindings } from "@/bootstrap/ai/tool-bindings";
 import { createBoundToolSource } from "@/bootstrap/ai/tool-source.factory";
 import {
-	createPolyTradeExecutorFactory,
-	type PolyTradeExecutor,
-} from "@/bootstrap/capabilities/poly-trade-executor";
-import {
 	createMetricsCapability,
 	derivePrometheusQueryUrl,
 } from "@/bootstrap/capabilities/metrics";
@@ -133,29 +139,7 @@ import { stubVcsCapability } from "@/bootstrap/capabilities/vcs";
 import { createWebSearchCapability } from "@/bootstrap/capabilities/web-search";
 import { createWorkItemCapability } from "@/bootstrap/capabilities/work-item";
 import type { RateLimitBypassConfig } from "@/bootstrap/http/wrapPublicRoute";
-import {
-	type AutoWrapJobHandle,
-	startAutoWrap,
-} from "@/bootstrap/jobs/auto-wrap.job";
-import { startMirrorPoll } from "@/bootstrap/jobs/copy-trade-mirror.job";
-import {
-	type OrderReconcilerHandle,
-	startOrderReconciler,
-} from "@/bootstrap/jobs/order-reconciler.job";
-import {
-	getPolyTraderWalletAdapter,
-	WalletAdapterUnconfiguredError,
-} from "@/bootstrap/poly-trader-wallet";
 import { startProcessHealthPublisher } from "@/bootstrap/publishers";
-import type { RedeemPipelineHandles } from "@/bootstrap/redeem-pipeline";
-import {
-	type CopyTradeTargetSource,
-	dbTargetSource,
-} from "@/features/copy-trade/target-source";
-import {
-	createOrderLedger,
-	type OrderLedger,
-} from "@/features/trading";
 import type {
 	AccountService,
 	AiTelemetryPort,
@@ -187,8 +171,10 @@ import type {
 } from "@/ports/server";
 import {
 	getDaoTreasuryAddress,
+	getEmissionsHolderAddress,
 	getLedgerConfig,
 	getNodeId,
+	getNodeTokenomicsConfig,
 	getOperatorWalletConfig,
 	getPaymentConfig,
 	getScopeId,
@@ -196,7 +182,6 @@ import {
 } from "@/shared/config";
 import { serverEnv } from "@/shared/env/server-env";
 import { makeLogger } from "@/shared/observability";
-import { EVENT_NAMES } from "@/shared/observability/events";
 import { USDC_TOKEN_ADDRESS } from "@/shared/web3";
 import type { EvmOnchainClient } from "@/shared/web3/onchain/evm-onchain-client.interface";
 
@@ -260,8 +245,6 @@ export interface Container {
 	attributionStore: AttributionStore;
 	/** Work item queries — reads from markdown files via WorkItemQueryPort */
 	workItemQuery: WorkItemQueryPort;
-	/** Work item commands — writes to markdown files via WorkItemCommandPort */
-	workItemCommand: WorkItemCommandPort;
 	/** Run event streaming — publish/subscribe via Redis Streams */
 	runStream: RunStreamPort;
 	/** Node-level event streaming — undefined when REDIS_URL not set */
@@ -292,16 +275,6 @@ export interface Container {
 	modelCatalog: ModelCatalogPort;
 	/** Provider resolver — resolves providerKey to ModelProviderPort for runtime dispatch */
 	providerResolver: ModelProviderResolverPort;
-	/** Service-role DB for explicitly cross-tenant/system Poly read models. */
-	serviceDb: Database;
-	/** Poly copy-trade/order ledger. Cross-tenant root surface; tenant calls use forTenant(ctx). */
-	orderLedger: OrderLedger;
-	/** Copy-trade target source (DB-backed). Reads per-user target rows for HTTP routes. */
-	copyTradeTargetSource: CopyTradeTargetSource;
-	/** Redeem pipeline handles keyed by billing account id; empty when pipelines are not running in this process. */
-	redeemPipelineFor(billingAccountId: string): RedeemPipelineHandles | undefined;
-	/** Best-effort cache invalidation for per-tenant trade executors. */
-	invalidatePolyTradeExecutorFor(billingAccountId: string): void;
 }
 
 // Feature-specific dependency types
@@ -332,23 +305,6 @@ let _workflowClientPromise: Promise<{
 	client: WorkflowClient;
 	taskQueue: string;
 }> | null = null;
-// Reconciler handle — set when the reconciler starts (async boot path).
-// Null until Polymarket creds are present and the async initialiser fires.
-let _reconcilerHandle: OrderReconcilerHandle | null = null;
-// Target-set reconciler handle — separate from the ledger-order reconciler
-// above. Starts/stops per-target mirror polls to match the active target set
-// every 30s (bug.0338 / POLL_RECONCILES_PER_TICK).
-let _targetsReconcilerStop: (() => void) | null = null;
-// Auto-wrap job handle (task.0429). Set when Privy + AEAD configured.
-let _autoWrapHandle: AutoWrapJobHandle | null = null;
-// Resting-sweep job stop fn (task.5001). Set after the mirror reconciler boots.
-let _restingSweepStop: (() => void) | null = null;
-// Live observed-trader job stop fn (task.5005). Public Data API only.
-let _traderObservationStop: (() => void) | null = null;
-// Condition-iterating market outcome writer (task.5016). CLOB public client.
-let _marketOutcomeStop: (() => void) | null = null;
-// Per-asset price-history mirror job stop fn (task.5018). Public CLOB only.
-let _priceHistoryStop: (() => void) | null = null;
 
 /**
  * Get the singleton container instance.
@@ -368,55 +324,6 @@ export function getContainer(): Container {
 export function resetContainer(): void {
 	_container = null;
 	_webhookRegistrations = null;
-	_reconcilerHandle = null;
-	if (_targetsReconcilerStop) {
-		try {
-			_targetsReconcilerStop();
-		} catch {
-			// Best-effort — tests re-create the container; nothing blocks here.
-		}
-		_targetsReconcilerStop = null;
-	}
-	if (_autoWrapHandle) {
-		try {
-			_autoWrapHandle.stop();
-		} catch {
-			// Best-effort.
-		}
-		_autoWrapHandle = null;
-	}
-	if (_restingSweepStop) {
-		try {
-			_restingSweepStop();
-		} catch {
-			// Best-effort.
-		}
-		_restingSweepStop = null;
-	}
-	if (_traderObservationStop) {
-		try {
-			_traderObservationStop();
-		} catch {
-			// Best-effort.
-		}
-		_traderObservationStop = null;
-	}
-	if (_marketOutcomeStop) {
-		try {
-			_marketOutcomeStop();
-		} catch {
-			// Best-effort.
-		}
-		_marketOutcomeStop = null;
-	}
-	if (_priceHistoryStop) {
-		try {
-			_priceHistoryStop();
-		} catch {
-			// Best-effort.
-		}
-		_priceHistoryStop = null;
-	}
 	if (_temporalConnection) {
 		void _temporalConnection.close();
 	}
@@ -514,6 +421,54 @@ function getCollectRegistries(): DefaultRegistries {
 		});
 	}
 	return _collectRegistries;
+}
+
+/**
+ * Assemble deps for IN-PROCESS epoch finalization (story.5007 — finalize-in-process).
+ * The node runs `runFinalizeEpoch` synchronously in its own finalize route on its OWN
+ * service DB + repo-spec, retiring the Temporal FinalizeEpochWorkflow round-trip (no
+ * ledger-tasks queue, no cross-scope theft). All adapter/registry wiring lives here —
+ * the route boundary forbids adapter imports.
+ *
+ * - `attributionStore` = service DB (BYPASSRLS) scoped adapter.
+ * - `walletResolver` built only when a token is configured; else the R3 fold no-ops.
+ * - `distributionConfigClient` = null. A node finalizes only its OWN epochs, so the
+ *   baked tokenomics from its OWN repo-spec are already authoritative (no per-node
+ *   gateway — that is an operator-only concept). The bug.5020 execute-guard still
+ *   fires on the baked emissions-holder / non-production runtime.
+ */
+function buildFinalizeEpochDeps(logger: FinalizeLogger): RunFinalizeEpochDeps {
+	const serviceDb = getServiceDb();
+	const tokenomics = getNodeTokenomicsConfig();
+	return {
+		attributionStore: new DrizzleAttributionAdapter(serviceDb, getScopeId()),
+		registries: getCollectRegistries(),
+		nodeId: getNodeId(),
+		scopeId: getScopeId(),
+		chainId: tokenomics.chainId,
+		tokenAddress: tokenomics.tokenAddress,
+		distributorAddress: tokenomics.distributorAddress,
+		emissionsHolderAddress: getEmissionsHolderAddress(),
+		walletResolver: tokenomics.tokenAddress
+			? new DrizzleClaimantWalletResolver(serviceDb)
+			: null,
+		distributionConfigClient: null,
+		deploymentEnvironment: serverEnv().DEPLOY_ENVIRONMENT,
+		logger,
+	};
+}
+
+/**
+ * Run epoch finalization IN-PROCESS (story.5007). Thin composition-root wrapper the
+ * finalize route calls instead of dispatching a Temporal FinalizeEpochWorkflow — keeps
+ * the route free of adapter/package wiring (route boundary). Idempotent: a re-POST
+ * repairs; the fold FREEZE (bug.5022) preserves a published manifest.
+ */
+export async function finalizeEpochInProcess(
+	input: FinalizeEpochInput,
+	logger: FinalizeLogger,
+): Promise<FinalizeEpochOutput> {
+	return runFinalizeEpoch(buildFinalizeEpochDeps(logger), input);
 }
 
 function createContainer(): Container {
@@ -673,628 +628,6 @@ function createContainer(): Container {
 	const serviceDb = getServiceDb();
 	const paymentAttemptServiceRepository =
 		new ServiceDrizzlePaymentAttemptRepository(serviceDb);
-	const orderLedger = createOrderLedger({
-		db: serviceDb,
-		appDb: db,
-		logger: log.child({ component: "order-ledger" }),
-		paperEnforceMode: env.PAPER_ENFORCE_MODE,
-	});
-	// DB-backed copy-trade target source. Candidate/preview always have a real
-	// Postgres, so there's no need for an in-memory env fallback here.
-	const copyTradeTargetSource: CopyTradeTargetSource = dbTargetSource({
-		appDb:
-			db as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
-				Record<string, unknown>
-			>,
-		serviceDb:
-			serviceDb as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
-				Record<string, unknown>
-			>,
-		// PAPER_ENFORCE_MODE=paper routes every placement through the paper
-		// sidecar (no wallet signing), so skip the wallet_connections +
-		// wallet_grants activation joins so targets activate without Privy
-		// onboarding the user doesn't need for paper.
-		paperEnforced: env.PAPER_ENFORCE_MODE === "paper",
-	});
-	const redeemPipelines = new Map<string, RedeemPipelineHandles>();
-
-	// Per-tenant trade-executor factory. Lazily constructs a
-	// `PolyTradeExecutor` for a given `billingAccountId`. Uses the per-user
-	// Privy app (`PRIVY_USER_WALLETS_*`) — distinct from the operator-wallet
-	// Privy app used by `OperatorWalletPort`. Undefined when any of those
-	// envs are missing; callers degrade gracefully (no mirror polls, no
-	// order reconciler). Sole placement path post Stage 4 purge — the former
-	// single-operator `polyTradeBundle` is gone and will not come back.
-	const polyTradeExecutorFactory:
-		| ReturnType<typeof createPolyTradeExecutorFactory>
-		| undefined = (() => {
-		try {
-			const walletPort = getPolyTraderWalletAdapter(log);
-			return createPolyTradeExecutorFactory({
-				walletPort,
-				logger: log,
-				metrics: noopMetricsForExecutor,
-				host: env.POLY_CLOB_HOST,
-				polygonRpcUrl: env.POLYGON_RPC_URL,
-				paperSidecarUrl: env.PAPER_SIDECAR_URL,
-				paperEnforceMode: env.PAPER_ENFORCE_MODE,
-			});
-		} catch (err) {
-			if (err instanceof WalletAdapterUnconfiguredError) {
-				log.info(
-					{ missing: err.message },
-					"per-tenant poly-trade executor not configured (PRIVY_USER_WALLETS_* or POLY_WALLET_AEAD_* missing)",
-				);
-				return undefined;
-			}
-			throw err;
-		}
-	})();
-
-	// Autonomous 30s mirror poll per target wallet. A target-set reconciler
-	// ticks `copyTradeTargetSource.listAllActive()` every 30s and diffs the
-	// result against running per-target polls — so a user POSTing a tracked
-	// wallet begins copy-trading within one tick, with no pod restart
-	// (bug.0338 / POLL_RECONCILES_PER_TICK). One `startMirrorPoll` per active
-	// (tenant × wallet); exactly one `startOrderReconciler` process-wide
-	// (per-tenant dispatch is internal, routed through the executor factory).
-	//
-	// Post-cutover gate: the poll + reconciler start iff
-	// `polyTradeExecutorFactory` exists, i.e. `PRIVY_USER_WALLETS_*` and
-	// `POLY_WALLET_AEAD_*` are configured. Daily/hourly USDC caps live in
-	// each tenant's `poly_wallet_grants` and are enforced by `authorizeIntent`
-	// on the hot path inside `PolyTradeExecutor.placeIntent`.
-	// bug.0438: copy-trade has no per-tenant kill-switch; the gate is the
-	// active-target × active-connection × active-grant join inside `listAllActive`.
-	if (polyTradeExecutorFactory !== undefined) {
-		const executorFactory = polyTradeExecutorFactory;
-		// Lazy-load the poll wiring so its transitive imports (Data-API HTTP
-		// client, Drizzle queries) don't run on pods without Polymarket creds.
-		void (async () => {
-			try {
-				const { createPolymarketChainActivitySource } = await import(
-					"@/features/wallet-watch"
-				);
-				const { PolymarketDataApiClient } = await import(
-					"@cogni/poly-market-provider/adapters/polymarket"
-				);
-				// task.5043 / bug.5049 — Polygon `OrderFilled` chain logs are the
-				// wallet-watch source. bug.5051: use a WebSocket transport so viem's
-				// `watchContractEvent` uses `eth_subscribe` (push, server-side
-				// filter). HTTP transport falls back to `eth_newFilter` +
-				// `eth_getFilterChanges` polling — Alchemy GCs the filter and viem
-				// 2.39 does not recreate it, costing ~98% of events.
-				const polygonWssUrl =
-					env.POLYGON_RPC_WSS_URL ??
-					// `https://…` → `wss://…`, `http://…` → `ws://…`, anything else
-					// (already `ws://` or `wss://`) passes through.
-					env.POLYGON_RPC_URL?.replace(/^http(s?):\/\//, "ws$1://");
-				if (!polygonWssUrl) {
-					log.warn(
-						{
-							event: "poly.mirror.chain_source.disabled",
-							reason:
-								"POLYGON_RPC_WSS_URL (or derivable POLYGON_RPC_URL) missing",
-						},
-						"copy-trade mirror not started — Polygon WSS endpoint required for the chain fill source",
-					);
-					return;
-				}
-				const { createPublicClient, webSocket } = await import("viem");
-				const { polygon } = await import("viem/chains");
-				const chainPublicClient = createPublicClient({
-					chain: polygon,
-					transport: webSocket(polygonWssUrl),
-				});
-				// noopMetrics for v0 — real prom-client wiring folds into a follow-up
-				// once the `poly_mirror_*` series has a Grafana dashboard to back it.
-				const { noopMetrics } = await import("@cogni/poly-market-provider");
-				const {
-					buildMirrorTargetConfig,
-					targetConditionPositionFromDataApiPositions,
-				} = await import("@/bootstrap/jobs/copy-trade-mirror.job");
-				const { startCopyTradeReconciler } = await import(
-					"@/bootstrap/copy-trade-reconciler"
-				);
-				const dataApiClient = new PolymarketDataApiClient();
-
-				// task.5014 — per-(billing, target, condition) baseline writer. Run
-				// under `withTenantScope(appDb, createdByUserId)` so RLS clamps the
-				// INSERT/SELECT to the calling tenant (mirrors the order-ledger
-				// tenant surface pattern). `INSERT ... ON CONFLICT DO NOTHING
-				// RETURNING` captures the row when fresh; on conflict, the SELECT
-				// reads back the persisted baseline. Either branch returns the
-				// canonical number the planner divides delta against.
-				const { polyCopyTargetConditionBaseline } = await import(
-					"@cogni/poly-db-schema"
-				);
-				const { withTenantScope } = await import("@cogni/db-client");
-				const { and, eq } = await import("drizzle-orm");
-				const baselineAppDb =
-					db as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
-						Record<string, unknown>
-					>;
-				async function getOrInsertConditionBaseline(params: {
-					createdByUserId: string;
-					billingAccountId: string;
-					targetId: string;
-					conditionId: string;
-					observedTargetUsdc: number;
-					capturedAtFillId: string;
-				}): Promise<number | undefined> {
-					try {
-						const actor = userActor(toUserId(params.createdByUserId));
-						return await withTenantScope(baselineAppDb, actor, async (tx) => {
-							const inserted = await tx
-								.insert(polyCopyTargetConditionBaseline)
-								.values({
-									billingAccountId: params.billingAccountId,
-									targetId: params.targetId,
-									conditionId: params.conditionId,
-									baselineTargetPositionUsdc:
-										params.observedTargetUsdc.toFixed(2),
-									capturedAtFillId: params.capturedAtFillId,
-								})
-								.onConflictDoNothing()
-								.returning({
-									baseline:
-										polyCopyTargetConditionBaseline.baselineTargetPositionUsdc,
-								});
-							if (inserted[0]) return Number(inserted[0].baseline);
-							const existing = await tx
-								.select({
-									baseline:
-										polyCopyTargetConditionBaseline.baselineTargetPositionUsdc,
-								})
-								.from(polyCopyTargetConditionBaseline)
-								.where(
-									and(
-										eq(
-											polyCopyTargetConditionBaseline.billingAccountId,
-											params.billingAccountId,
-										),
-										eq(
-											polyCopyTargetConditionBaseline.targetId,
-											params.targetId,
-										),
-										eq(
-											polyCopyTargetConditionBaseline.conditionId,
-											params.conditionId,
-										),
-									),
-								)
-								.limit(1);
-							return existing[0] ? Number(existing[0].baseline) : undefined;
-						});
-					} catch (err) {
-						log.warn(
-							{
-								event: "poly.mirror.condition_baseline.write_failed",
-								billing_account_id: params.billingAccountId,
-								target_id: params.targetId,
-								condition_id: params.conditionId,
-								err: err instanceof Error ? err.message : String(err),
-							},
-							"baseline upsert failed; planner will skip before_baseline_snapshot this tick",
-						);
-						return undefined;
-					}
-				}
-				// pino's Logger is structurally compatible with LoggerPort's subset
-				// (debug/info/warn/error/child with object + optional msg).
-				const mirrorLogger =
-					log as unknown as import("@cogni/poly-market-provider").LoggerPort;
-
-				// Ledger reconciler — syncs open/pending rows from CLOB getOrder,
-				// dispatched per tenant. Each ledger row carries its
-				// `billing_account_id`; the reconciler routes `getOrder` through the
-				// per-tenant `PolyTradeExecutor` so we hit the right CLOB API creds
-				// (each tenant's creds are derived from their Privy signer). One
-				// reconciler runs on the pod; per-tenant dispatch is internal.
-				_reconcilerHandle = startOrderReconciler({
-					ledger: orderLedger,
-					getOrderForTenant: async (billingAccountId, orderId) => {
-						const executor =
-							await executorFactory.getPolyTradeExecutorFor(billingAccountId);
-						return executor.getOrder(orderId);
-					},
-					logger: mirrorLogger,
-					metrics: noopMetrics,
-					notFoundGraceMs: env.POLY_CLOB_NOT_FOUND_GRACE_MS,
-				});
-
-				// Target-set reconciler — ticks listAllActive every 30s, starts/stops
-				// per-wallet polls to match. First tick fires immediately. See
-				// docs/spec/poly-tenant-and-collateral.md § POLL_RECONCILES_PER_TICK.
-				//
-				// `listAllActive` joins `poly_wallet_connections` +
-				// `poly_wallet_grants`, so the reconciler only hands us tenants that
-				// have (a) an active trading wallet and (b) an active grant. Each
-				// per-tenant poll routes placements through the per-tenant
-				// `PolyTradeExecutor`, which wraps every `placeOrder` with
-				// `authorizeIntent` so scope + cap + grant-revoke checks run on the
-				// hot path.
-				_targetsReconcilerStop = startCopyTradeReconciler({
-					targetSource: copyTradeTargetSource,
-					startPollForTarget: (enumeratedTarget) => {
-						const targetWallet = enumeratedTarget.targetWallet;
-						// MODE_STAMPED_AT_LEDGER_FROM_ENV — the ledger reads
-						// PAPER_ENFORCE_MODE once at construction and stamps every fill /
-						// decision row with the env-derived mode. No need to thread mode
-						// through `MirrorTargetConfig`; the planner + pipeline are mode-
-						// agnostic. Pair with PAPER_DISPATCH_IS_ENV_ONLY
-						// (poly-trade-executor.ts).
-						const target = buildMirrorTargetConfig({
-							targetWallet,
-							billingAccountId: enumeratedTarget.billingAccountId,
-							createdByUserId: enumeratedTarget.createdByUserId,
-							mirrorFilterPercentile: enumeratedTarget.mirrorFilterPercentile,
-							mirrorMaxUsdcPerTrade: enumeratedTarget.mirrorMaxUsdcPerTrade,
-							sizingPolicyKind: enumeratedTarget.sizingPolicyKind,
-							...(enumeratedTarget.targetRangeMaxUsdc !== null
-								? { targetRangeMaxUsdc: enumeratedTarget.targetRangeMaxUsdc }
-								: {}),
-							...(enumeratedTarget.mirrorMaxAllocPerConditionUsdc !== null
-								? {
-										mirrorMaxAllocPerConditionUsdc:
-											enumeratedTarget.mirrorMaxAllocPerConditionUsdc,
-									}
-								: {}),
-						});
-						const source = createPolymarketChainActivitySource({
-							publicClient: chainPublicClient,
-							client: dataApiClient,
-							wallet: targetWallet,
-							logger: mirrorLogger,
-							metrics: noopMetrics,
-						});
-
-						// Build once per (tenant × target). Executor is cached across
-						// ticks inside the factory keyed on billingAccountId.
-						let cachedExecutor: PolyTradeExecutor | null = null;
-						const getExecutor = async (): Promise<PolyTradeExecutor> => {
-							if (cachedExecutor) return cachedExecutor;
-							cachedExecutor = await executorFactory.getPolyTradeExecutorFor(
-								enumeratedTarget.billingAccountId,
-							);
-							return cachedExecutor;
-						};
-
-						let stopPoll: (() => void) | null = null;
-						try {
-							stopPoll = startMirrorPoll({
-								target,
-								source,
-								ledger: orderLedger,
-								placeIntent: async (intent) => {
-									const executor = await getExecutor();
-									return executor.placeIntent(intent);
-								},
-								cancelOrder: async (orderId) => {
-									const executor = await getExecutor();
-									return executor.cancelOrder(orderId);
-								},
-								getMarketConstraints: async (tokenId) => {
-									const executor = await getExecutor();
-									return executor.getMarketConstraints(tokenId);
-								},
-								getTargetConditionPosition: async (params) => {
-									const positions = await dataApiClient.listUserPositions(
-										params.targetWallet,
-										{
-											market: params.conditionId,
-											sizeThreshold: 0,
-										},
-									);
-									return targetConditionPositionFromDataApiPositions(
-										params.conditionId,
-										positions,
-									);
-								},
-								getOrInsertConditionBaseline: async (params) =>
-									getOrInsertConditionBaseline({
-										createdByUserId: enumeratedTarget.createdByUserId,
-										billingAccountId: params.billingAccountId,
-										targetId: params.targetId,
-										conditionId: params.conditionId,
-										observedTargetUsdc: params.observedTargetUsdc,
-										capturedAtFillId: params.capturedAtFillId,
-									}),
-								closePosition: async (params) => {
-									const executor = await getExecutor();
-									return executor.closePosition(params);
-								},
-								getOperatorPositions: async () => {
-									const executor = await getExecutor();
-									const positions = await executor.listPositions();
-									return positions.map((p) => ({
-										asset: p.asset,
-										size: p.size,
-									}));
-								},
-								logger: mirrorLogger,
-								metrics: noopMetrics,
-							});
-						} catch (err) {
-							source.stop();
-							throw err;
-						}
-						return () => {
-							stopPoll?.();
-							source.stop();
-						};
-					},
-					logger: mirrorLogger,
-				});
-			} catch (err: unknown) {
-				log.error(
-					{
-						event: EVENT_NAMES.POLY_MIRROR_POLL_BOOT_FAILED,
-						errorCode: "boot_init_failed",
-						err: err instanceof Error ? err.message : String(err),
-					},
-					"mirror poll boot failed — continuing without autonomous mirror",
-				);
-			}
-
-			// task.5001 — TTL sweep for resting `mirror_limit` orders. One job
-			// process-wide. Cancels rows whose `created_at < now() - 20m` and whose
-			// `status IN ('pending','open','partial')`. Independent of the mirror
-			// tick — covers the case the target never sends a SELL signal.
-			try {
-				const { startRestingSweep } = await import(
-					"@/bootstrap/jobs/poly-mirror-resting-sweep.job"
-				);
-				const { noopMetrics: noopMetricsForSweep } = await import(
-					"@cogni/poly-market-provider"
-				);
-				const sweepLogger =
-					log as unknown as import("@cogni/poly-market-provider").LoggerPort;
-				_restingSweepStop = startRestingSweep({
-					ledger: orderLedger,
-					cancelOrderFor: async (billing_account_id) => {
-						const exec =
-							await executorFactory.getPolyTradeExecutorFor(billing_account_id);
-						return exec.cancelOrder.bind(exec);
-					},
-					logger: sweepLogger,
-					metrics: noopMetricsForSweep,
-				});
-			} catch (err: unknown) {
-				log.error(
-					{
-						event: EVENT_NAMES.POLY_MIRROR_POLL_BOOT_FAILED,
-						errorCode: "resting_sweep_boot_failed",
-						err: err instanceof Error ? err.message : String(err),
-					},
-					"mirror resting-sweep boot failed — continuing without TTL cleanup",
-				);
-			}
-
-			// task.0429 — auto-wrap consent loop. One job process-wide, gated on
-			// Privy + AEAD (executor factory existence) AND POLYGON_RPC_URL — the
-			// adapter's `wrapIdleUsdcE` needs RPC to read balances and submit txs.
-			// Without RPC, every tick would throw; cleaner to skip startup entirely.
-			if (!env.POLYGON_RPC_URL) {
-				log.info(
-					{ reason: "polygon_rpc_unconfigured" },
-					"auto-wrap job not started (POLYGON_RPC_URL missing)",
-				);
-			} else {
-				try {
-					const { polyWalletConnections } = await import(
-						"@cogni/poly-db-schema"
-					);
-					const { and, isNotNull, isNull } = await import("drizzle-orm");
-					const { noopMetrics: noopMetricsForAutoWrap } = await import(
-						"@cogni/poly-market-provider"
-					);
-					// Same pino-as-LoggerPort cast as the mirror block above; that
-					// declaration is scoped to its own try/catch so we re-cast here.
-					const autoWrapLogger =
-						log as unknown as import("@cogni/poly-market-provider").LoggerPort;
-					_autoWrapHandle = startAutoWrap({
-						walletPort: getPolyTraderWalletAdapter(log),
-						listEligible: async (limit) => {
-							const rows = await serviceDb
-								.select({
-									billingAccountId: polyWalletConnections.billingAccountId,
-								})
-								.from(polyWalletConnections)
-								.where(
-									and(
-										isNull(polyWalletConnections.revokedAt),
-										isNull(polyWalletConnections.autoWrapRevokedAt),
-										isNotNull(polyWalletConnections.autoWrapConsentAt),
-									),
-								)
-								.limit(limit);
-							return rows.map((r) => ({
-								billingAccountId: r.billingAccountId,
-							}));
-						},
-						logger: autoWrapLogger,
-						metrics: noopMetricsForAutoWrap,
-					});
-				} catch (err: unknown) {
-					log.error(
-						{
-							errorCode: "auto_wrap_boot_failed",
-							err: err instanceof Error ? err.message : String(err),
-						},
-						"auto-wrap job boot failed — continuing without auto-wrap",
-					);
-				}
-			}
-		})();
-	} else {
-		log.info(
-			{
-				event: EVENT_NAMES.POLY_MIRROR_POLL_SKIPPED,
-				has_executor_factory: false,
-			},
-			"mirror poll + order reconciler not started (PRIVY_USER_WALLETS_* or POLY_WALLET_AEAD_* missing)",
-		);
-	}
-
-	// task.5005 — live-forward trader observation. Independent of copy-trade
-	// execution credentials: it observes public wallet activity for RN1,
-	// swisstony, and Cogni wallets so research query windows have stored facts.
-	void (async () => {
-		try {
-			const { startTraderObservationJob } = await import(
-				"@/bootstrap/jobs/trader-observation.job"
-			);
-			const { PolymarketDataApiClient, PolymarketUserPnlClient } = await import(
-				"@cogni/poly-market-provider/adapters/polymarket"
-			);
-			const { noopMetrics: noopMetricsForObservation } = await import(
-				"@cogni/poly-market-provider"
-			);
-			const observerLogger =
-				log as unknown as import("@cogni/poly-market-provider").LoggerPort;
-			_traderObservationStop = startTraderObservationJob({
-				db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
-					Record<string, unknown>
-				>,
-				client: new PolymarketDataApiClient(),
-				userPnlClient: new PolymarketUserPnlClient(),
-				logger: observerLogger,
-				metrics: noopMetricsForObservation,
-			});
-		} catch (err: unknown) {
-			log.error(
-				{
-					event: "poly.trader.observe",
-					phase: "boot_failed",
-					err: err instanceof Error ? err.message : String(err),
-				},
-				"trader observation job boot failed — continuing without observed trader read model",
-			);
-		}
-	})();
-
-	// task.5016 — sibling condition-iterating writer. Polls Polymarket CLOB
-	// `/markets/{conditionId}` for resolution outcomes and upserts into
-	// `poly_market_outcomes` so CP4 (snapshot/distributions) and CP6
-	// (trader-comparison resolution swap) can read from the DB.
-	void (async () => {
-		try {
-			const { startMarketOutcomeJob } = await import(
-				"@/bootstrap/jobs/market-outcome.job"
-			);
-			const { PolymarketClobPublicClient } = await import(
-				"@cogni/poly-market-provider/adapters/polymarket"
-			);
-			const { noopMetrics: noopMetricsForOutcomes } = await import(
-				"@cogni/poly-market-provider"
-			);
-			const outcomeLogger =
-				log as unknown as import("@cogni/poly-market-provider").LoggerPort;
-			_marketOutcomeStop = startMarketOutcomeJob({
-				db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
-					Record<string, unknown>
-				>,
-				clobClient: new PolymarketClobPublicClient(),
-				logger: outcomeLogger,
-				metrics: noopMetricsForOutcomes,
-			});
-		} catch (err: unknown) {
-			log.error(
-				{
-					event: "poly.market-outcome.boot_failed",
-					phase: "boot_failed",
-					err: err instanceof Error ? err.message : String(err),
-				},
-				"market outcome job boot failed — continuing without condition-iterating writer",
-			);
-		}
-	})();
-
-	// task.5018 (CP7) — per-asset price-history mirror. Sibling of the
-	// trader-observation tick. Polls CLOB `/prices-history` for every asset that
-	// appears in `poly_trader_current_positions WHERE active=true` UNION recent
-	// fills, two fidelities per asset, every 5 minutes. Closes the
-	// PAGE_LOAD_DB_ONLY_EXCEPT_PRICE_HISTORY carve-out from CP5.
-	// bug.5172 — price-history writer is gated OFF by default. It ran ungated on
-	// every env and OOM-crashlooped prod + preview (full `interval=max` refetch
-	// per asset every 5 min). Only boot it where explicitly enabled.
-	if (!env.POLY_PRICE_HISTORY_WRITER_ENABLED) {
-		log.info(
-			{ event: "poly.market-price-history.disabled" },
-			"price-history writer disabled (POLY_PRICE_HISTORY_WRITER_ENABLED!=true) — page-load reads serve existing rows",
-		);
-	} else
-		void (async () => {
-			try {
-				const { startPriceHistoryJob } = await import(
-					"@/bootstrap/jobs/price-history.job"
-				);
-				const { PolymarketClobPublicClient } = await import(
-					"@cogni/poly-market-provider/adapters/polymarket"
-				);
-				const { noopMetrics: noopMetricsForPriceHistory } = await import(
-					"@cogni/poly-market-provider"
-				);
-				const priceHistoryLogger =
-					log as unknown as import("@cogni/poly-market-provider").LoggerPort;
-				_priceHistoryStop = startPriceHistoryJob({
-					db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
-						Record<string, unknown>
-					>,
-					clobClient: new PolymarketClobPublicClient(),
-					logger: priceHistoryLogger,
-					metrics: noopMetricsForPriceHistory,
-				});
-			} catch (err: unknown) {
-				log.error(
-					{
-						event: "poly.market-price-history.error",
-						phase: "boot_failed",
-						err: err instanceof Error ? err.message : String(err),
-					},
-					"price-history job boot failed — continuing without price-history read model",
-				);
-			}
-		})();
-
-	// task.0388 + task.0412 — event-driven redeem pipeline. Replaces the
-	// deleted `runRedeemSweep` polling loop. One pipeline per active
-	// `poly_wallet_connections` row at boot (multi-tenant fan-out); skipped
-	// when the trader-wallet adapter is unconfigured. Fire-and-forget like
-	// the mirror loop above; the per-tenant map is read via a getter on the
-	// container so routes pick up entries once boot completes.
-	if (env.POLYGON_RPC_URL) {
-		const polygonRpcUrl = env.POLYGON_RPC_URL;
-		void (async () => {
-			try {
-				const walletPort = getPolyTraderWalletAdapter(log);
-				const { startRedeemPipelines } = await import("./redeem-pipeline");
-				const map = await startRedeemPipelines({
-					serviceDb,
-					orderLedger,
-					walletPort,
-					polygonRpcUrl,
-					log,
-				});
-				for (const [accountId, handles] of map) {
-					redeemPipelines.set(accountId, handles);
-				}
-			} catch (err) {
-				if (err instanceof WalletAdapterUnconfiguredError) {
-					log.info(
-						{ missing: err.message },
-						"redeem pipeline not started (PRIVY_USER_WALLETS_* or POLY_WALLET_AEAD_* missing)",
-					);
-				} else {
-					log.error(
-						{ err: err instanceof Error ? err.message : String(err) },
-						"redeem pipeline boot failed — continuing without autonomous redeems",
-					);
-				}
-			}
-		})();
-	}
 
 	// User-facing scheduling (appDb, RLS enforced)
 	const executionGrantPort = new DrizzleExecutionGrantUserAdapter(
@@ -1610,7 +943,6 @@ function createContainer(): Container {
 		),
 		attributionStore: new DrizzleAttributionAdapter(serviceDb, getScopeId()),
 		workItemQuery: workItemAdapter,
-		workItemCommand: workItemAdapter,
 		runStream,
 		nodeStream,
 		get webhookRegistrations() {
@@ -1630,16 +962,6 @@ function createContainer(): Container {
 			? new SplitTreasurySettlementAdapter(operatorWallet, USDC_TOKEN_ADDRESS)
 			: undefined,
 		connectionBroker,
-		serviceDb,
-		orderLedger,
-		copyTradeTargetSource,
-		redeemPipelineFor: (billingAccountId: string) =>
-			redeemPipelines.get(billingAccountId),
-		invalidatePolyTradeExecutorFor(billingAccountId: string) {
-			polyTradeExecutorFactory?.invalidatePolyTradeExecutorFor(
-				billingAccountId,
-			);
-		},
 		// Multi-provider model ports
 		...(() => {
 			const platformProvider = new PlatformModelProvider(llmService);

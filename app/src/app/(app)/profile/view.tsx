@@ -614,6 +614,16 @@ export function ProfileView(): ReactElement {
     profile?.linkedProviders.find((p) => p.provider === providerId)
       ?.providerLogin ?? null;
 
+  const initiateProviderLink = async (providerId: string) => {
+    const res = await fetch(`/api/auth/link/${providerId}`, {
+      method: "POST",
+    });
+    if (!res.ok) return;
+    signIn(providerId, {
+      callbackUrl: `/profile?linked=${providerId}`,
+    });
+  };
+
   return (
     <PageContainer maxWidth="2xl">
       {/* Page heading */}
@@ -696,23 +706,26 @@ export function ProfileView(): ReactElement {
             label={label}
             description={description}
           >
-            {isLinked && login ? (
-              <ConnectedBadge login={login} />
-            ) : isLinked ? (
-              <ConnectedBadge login="Connected" />
+            {isLinked ? (
+              <div className="flex items-center gap-2">
+                <ConnectedBadge login={login ?? "Connected"} />
+                {walletAddress &&
+                id === "github" &&
+                configuredProviders.has(id) ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => initiateProviderLink(id)}
+                  >
+                    Link another GitHub
+                  </Button>
+                ) : null}
+              </div>
             ) : (
               <Button
                 variant="outline"
                 size="sm"
-                onClick={async () => {
-                  const res = await fetch(`/api/auth/link/${id}`, {
-                    method: "POST",
-                  });
-                  if (!res.ok) return;
-                  signIn(id, {
-                    callbackUrl: `/profile?linked=${id}`,
-                  });
-                }}
+                onClick={() => initiateProviderLink(id)}
               >
                 Link
               </Button>
