@@ -33,10 +33,23 @@ import type {
 export const SESSION_BOOTSTRAP_INVARIANTS: readonly string[] = [
 	"ONE work item + ONE node per session (CI-gated). Claim, heartbeat, and link your PR at /api/v1/work/items/{id}; coordination.nextAction is authoritative.",
 	"Recall before you write. Search the hub first — merged (/api/v1/knowledge?domain=) and your own open branch — and refine in place over adding new.",
-	"Ship via PR: same-repo branch → CI green (gh pr checks) → flight to candidate → merge. The operator is the deploy plane (flight, logs, secrets); code, work, and knowledge live in the node repo + hub.",
+	"Ship via PR: same-repo branch → CI green → flight to candidate → merge. The operator is the deploy plane (flight, logs, secrets); code, work, and knowledge live in the node repo + hub. Watch each async gate (CI, flight, deploy) the ONE portable way — see <watch-gate> below.",
 	"Done = validated on candidate, not merged. Flight, exercise the live surface, read your request back from Loki at that SHA, and post a /validate-candidate scorecard — the merge gate.",
 	"Your <slug>-agent-orientation is the operating map: recall it first, refine it as the node changes.",
 ];
+
+/**
+ * How to watch an async CI/CD gate — the ONE portable technique, tagged for
+ * machine parse + recall. Code-owned (survives an empty hub) and XML-structured
+ * so any harness (Claude, Codex, OpenAI, plain shell) extracts the exact command
+ * without prose parsing. Deliberately terse: five tagged atoms, no run-on prose.
+ */
+export const SESSION_WATCH_GATE = `<watch-gate rule="ONE blocking command; its exit code or matched value IS the verdict — no harness-specific monitor/background/notification primitive, never fire-and-forget, re-read the ground-truth signal before reporting">
+  <ci-green>gh pr checks {PR} --watch --fail-fast — blocks; 0=all pass, nonzero=failed. NOT --required (omits real gates, e.g. build). Re-read after (one-shot 8=pending) — finished ≠ green.</ci-green>
+  <flight-landed>poll curl -s {candidate}/version until .buildSha == PR-head SHA → then /validate-candidate. Bound it; no match = flight FAILED, report not hang. host: {node}-test.cognidao.org.</flight-landed>
+  <deploy-landed>poll curl -s {target}/version until .buildSha == promoted SHA; bound, report on no-match. host: {node-}{preview,}cognidao.org.</deploy-landed>
+  <truth>/version.buildSha is the only ground truth — CI and workflow "success" can lie.</truth>
+</watch-gate>`;
 
 const COGNITION_ENTRY_TYPES: ReadonlySet<string> = new Set([
 	"skill",
@@ -160,6 +173,10 @@ export function renderBundleMarkdown(input: RenderBundleInput): string {
 		invariants,
 		"",
 		`_Your candidate (flight + validate target): \`https://${candidateHost}\` · Loki namespace \`cogni-candidate-a\`._`,
+		"",
+		"## Watch an async gate — CI · flight · deploy",
+		"",
+		SESSION_WATCH_GATE,
 		"",
 		"## Skills index (recall full content from the hub before acting)",
 		"",
