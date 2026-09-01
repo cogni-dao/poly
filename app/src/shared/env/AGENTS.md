@@ -109,6 +109,9 @@ Optional:
 - PROMETHEUS_READ_PASSWORD - Basic auth password for Prometheus queries (read-only token)
 - ANALYTICS_K_THRESHOLD (int, default 50) - K-anonymity threshold for public analytics
 - ANALYTICS_QUERY_TIMEOUT_MS (int, default 5000) - Prometheus query timeout
+- PAPER_SIDECAR_URL (url, default http://127.0.0.1:9100) - pod-loopback URL for the paper trading sidecar
+- PAPER_ENFORCE_MODE (disabled|paper|live, default paper) - candidate/preview must be paper; live requires explicit approval
+- PAPER_LIVE_TRADING_APPROVED (true|false, default false) - guardrail for any future production live mode
 
 **Public client (client.ts)**
 

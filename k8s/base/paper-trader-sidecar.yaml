@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# SPDX-FileCopyrightText: 2025 Cogni-DAO
+#
+# Node-owned base container declaration for the paper-trader sidecar.
+# Operator overlays must inject this container into the Poly app Deployment pod
+# and substitute the image from the node PR build manifest target
+# `paper-trader`. Do not create a Kubernetes Service or Ingress for this
+# sidecar; the app reaches it through PAPER_SIDECAR_URL on pod loopback.
+apiVersion: cogni.dev/v1alpha1
+kind: NodeSidecarContainer
+metadata:
+  name: poly-paper-trader
+  labels:
+    app.kubernetes.io/name: poly
+    app.kubernetes.io/component: paper-trader
+spec:
+  targetDeployment: poly
+  buildTarget: paper-trader
+  container:
+    name: paper-trader
+    image: ghcr.io/cogni-dao/poly-paper-trader:replace-by-build-manifest
+    imagePullPolicy: IfNotPresent
+    ports:
+      - name: http-loopback
+        containerPort: 9100
+        protocol: TCP
+    env:
+      - name: NODE_ID
+        value: poly
+      - name: PM_TRADER_ACCOUNT
+        value: cogni-paper
+      - name: PM_TRADER_DATA_DIR
+        value: /tmp/pm_trader
+      - name: PAPER_CHECK_ORDERS_INTERVAL_SECONDS
+        value: "30"
+      - name: PAPER_ENFORCE_MODE
+        value: paper
+    readinessProbe:
+      exec:
+        command:
+          - python
+          - -c
+          - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/readyz', timeout=2).read()"
+      initialDelaySeconds: 5
+      periodSeconds: 10
+    livenessProbe:
+      exec:
+        command:
+          - python
+          - -c
+          - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/healthz', timeout=2).read()"
+      initialDelaySeconds: 10
+      periodSeconds: 10
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL

@@ -1,0 +1,9 @@
+# setuptools / pip install build artifacts — never commit. These get
+# created if anyone runs `pip install ./vendor/pm_trader` locally to
+# sanity-check the install path; the canonical install happens inside
+# the sidecar Dockerfile and produces no artifacts in the source tree.
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/

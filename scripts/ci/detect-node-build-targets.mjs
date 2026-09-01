@@ -2,11 +2,12 @@ import { appendFileSync } from "node:fs";
 
 const repository = process.env.GITHUB_REPOSITORY ?? "unknown/node";
 const repoName = repository.split("/").at(-1) ?? "node";
-const target = repoName.toLowerCase();
+const appTarget = repoName.toLowerCase();
+const targets = [appTarget, "paper-trader"];
 
 writeOutput("has_targets", "true");
-writeOutput("targets", target);
-writeOutput("targets_json", JSON.stringify([target]));
+writeOutput("targets", targets.join(","));
+writeOutput("targets_json", JSON.stringify(targets));
 
 function writeOutput(key, value) {
   if (!process.env.GITHUB_OUTPUT) {

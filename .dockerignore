@@ -22,6 +22,7 @@
 # CI and docs are not needed in app images
 .github
 docs
+sidecars
 *.md
 !work/
 !work/items/
