@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "cogni.node-repo-policy.v1",
+  "ruleset": {
+    "name": "main-pr-and-standard-ci",
+    "target": "default_branch",
+    "enforcement": "active",
+    "pullRequest": {
+      "allowedMergeMethods": ["squash"],
+      "dismissStaleReviewsOnPush": false,
+      "requireCodeOwnerReview": false,
+      "requireLastPushApproval": false,
+      "requiredApprovingReviewCount": 0,
+      "requiredReviewThreadResolution": false
+    },
+    "requiredStatusChecks": {
+      "doNotEnforceOnCreate": false,
+      "strict": false,
+      "contexts": ["unit", "component", "static", "manifest"]
+    },
+    "bypassActors": []
+  }
+}

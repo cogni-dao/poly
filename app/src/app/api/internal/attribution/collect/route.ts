@@ -32,6 +32,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import { reconcilePendingSettlements } from "@/bootstrap/settlement-runtime";
 import {
   getLedgerApprovers,
   getLedgerConfig,
@@ -142,6 +143,7 @@ export const POST = wrapRouteHandlerWithLogging(
           scopeId,
           chainId: CHAIN_ID,
           logger: log,
+          retryPendingSettlements: () => reconcilePendingSettlements(log),
         },
         config,
         parsed.data.asOfIso ?? new Date().toISOString()

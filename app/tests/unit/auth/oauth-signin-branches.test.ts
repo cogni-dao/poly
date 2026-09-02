@@ -3,9 +3,9 @@
 
 /**
  * Module: `@tests/unit/auth/oauth-signin-branches`
- * Purpose: Unit tests for OAuth signIn callback early-return branches and WalletRequiredError guard.
- * Scope: Tests pure branch logic (no DB needed). Mocks DB and adapter imports to prevent connections. Does not test DB-interacting paths.
- * Invariants: SIWE/null account → true; unknown provider → false; null wallet → WalletRequiredError.
+ * Purpose: Unit tests for OAuth provider registration, signIn callback early-return branches, and WalletRequiredError guard.
+ * Scope: Tests auth configuration and pure branch logic (no DB needed). Mocks DB and adapter imports to prevent connections. Does not test DB-interacting paths.
+ * Invariants: Node-local GitHub OAuth is never registered; SIWE/null account → true; unknown provider → false; null wallet → WalletRequiredError.
  * Side-effects: none
  * Links: src/auth.ts (signIn callback), src/features/payments/errors.ts
  * @public
@@ -14,6 +14,11 @@
 import { TEST_USER_ID_1 } from "@tests/_fakes/ids";
 import type { Account, User } from "next-auth";
 import { describe, expect, it, vi } from "vitest";
+
+vi.hoisted(() => {
+  vi.stubEnv("GH_OAUTH_CLIENT_ID", "stale-child-client-id");
+  vi.stubEnv("GH_OAUTH_CLIENT_SECRET", "stale-child-client-secret");
+});
 
 // --- Mocks (must precede imports of modules under test) ---
 
@@ -49,6 +54,14 @@ import { authOptions } from "@/auth";
 
 // biome-ignore lint/style/noNonNullAssertion: test setup — callbacks and signIn are always defined in authOptions
 const signIn = authOptions.callbacks!.signIn!;
+
+describe("OAuth provider registration", () => {
+  it("does not register node-local GitHub OAuth when stale credentials exist", () => {
+    expect(authOptions.providers.map((provider) => provider.id)).not.toContain(
+      "github"
+    );
+  });
+});
 
 describe("OAuth signIn callback — early-return branches", () => {
   it("passes through SIWE (credentials) provider", async () => {
@@ -92,6 +105,10 @@ describe("OAuth signIn callback — early-return branches", () => {
 // --- WalletRequiredError guard test ---
 
 // Additional mocks for the facade under test
+vi.mock("@/bootstrap/settlement-runtime", () => ({
+  reconcileSettlementsAfterBinding: vi.fn(),
+}));
+
 vi.mock("@/bootstrap/container", () => ({
   getContainer: () => ({
     accountsForUser: vi.fn().mockReturnValue({}),

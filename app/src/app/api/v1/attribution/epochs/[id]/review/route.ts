@@ -11,6 +11,7 @@
  * @public
  */
 
+import { createEnrichmentActivities } from "@cogni/attribution-collect";
 import {
   computeApproverSetHash,
   computeWeightConfigHash,
@@ -24,7 +25,11 @@ import { checkApprover } from "@/app/api/v1/attribution/_lib/approver-guard";
 import { toEpochDto } from "@/app/api/v1/public/attribution/_lib/attribution-dto";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
-import { getLedgerApprovers } from "@/shared/config";
+import {
+  getLedgerApprovers,
+  getLedgerConfig,
+  getNodeId,
+} from "@/shared/config";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -54,7 +59,8 @@ export const POST = wrapRouteHandlerWithLogging<{
     const approvers = getLedgerApprovers();
     const approverSetHash = await computeApproverSetHash(approvers);
 
-    const store = getContainer().attributionStore;
+    const container = getContainer();
+    const store = container.attributionStore;
 
     // Load epoch to get weightConfig for CONFIG_LOCKED_AT_REVIEW
     const existing = await store.getEpoch(epochId);
@@ -67,16 +73,47 @@ export const POST = wrapRouteHandlerWithLogging<{
     const weightConfigHash = await computeWeightConfigHash(
       existing.weightConfig
     );
-    // V0: derive from first source's attribution_pipeline or default
-    const allocationAlgoRef = deriveAllocationAlgoRef("cogni-v0.0");
+    const ledgerConfig = getLedgerConfig();
+    const firstSource = ledgerConfig
+      ? Object.values(ledgerConfig.activitySources)[0]
+      : undefined;
+    const attributionPipeline = firstSource?.attributionPipeline;
+    if (!attributionPipeline) {
+      return NextResponse.json(
+        { error: "Attribution pipeline is not configured" },
+        { status: 503 }
+      );
+    }
+    const allocationAlgoRef = deriveAllocationAlgoRef(attributionPipeline);
 
-    const epoch = await store.closeIngestion(
+    // REVIEW_SNAPSHOT_ATOMIC: build the final evaluation snapshot, then freeze
+    // evaluations + claimants + epoch pins in one store transaction. Re-posting
+    // this route repairs unsigned review epochs created by the former partial
+    // close path without re-resolving claimant identity.
+    const enrichment = createEnrichmentActivities({
+      attributionStore: store,
+      nodeId: getNodeId(),
+      logger: ctx.log,
+      registries: container.registries,
+    });
+    const { evaluations, artifactsHash } =
+      await enrichment.buildLockedEvaluations({
+        epochId: id,
+        attributionPipeline,
+      });
+
+    const epoch = await store.closeIngestionWithEvaluations({
       epochId,
       approvers,
       approverSetHash,
       allocationAlgoRef,
-      weightConfigHash
-    );
+      weightConfigHash,
+      evaluations: evaluations.map((evaluation) => ({
+        ...evaluation,
+        epochId: BigInt(evaluation.epochId),
+      })),
+      artifactsHash,
+    });
 
     ctx.log.info(
       { epochId: id, approverSetHash: `${approverSetHash.slice(0, 12)}...` },

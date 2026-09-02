@@ -16,7 +16,7 @@
  * - USER_PROJECTIONS_RECOMPUTABLE: upsertUserProjections updates projected_units/receipt_count and never stores signed final units.
  * - POOL_LOCKED_AT_REVIEW: insertPoolComponent rejects inserts when epoch status != 'open'. Idempotent via ON CONFLICT DO NOTHING + SELECT fallback; returns { component, created }.
  * - CONFIG_LOCKED_AT_REVIEW: closeIngestion pins allocationAlgoRef + weightConfigHash.
- * - EVALUATION_FINAL_ATOMIC: closeIngestionWithEvaluations inserts locked evaluations + sets artifacts_hash + transitions epoch in one transaction.
+ * - REVIEW_SNAPSHOT_ATOMIC: closeIngestionWithEvaluations locks claimant rows, inserts locked evaluations, sets artifacts_hash, and transitions epoch in one transaction. Re-posting an unsigned review repairs a legacy partial snapshot without changing its pinned config.
  * - EPOCH_CLOSE_ON_TRANSITION: transitionEpochForWindow closes stale open epoch + creates new epoch in one DB transaction.
  * - STATEMENT_LINES_BOUNDARY_CLONE: toStatementLinesJson converts readonly statement lines to mutable Drizzle-compatible JSONB at the adapter boundary.
  * Side-effects: IO (database operations)
@@ -24,7 +24,15 @@
  * @public
  */
 
+import {
+  hashCumulativeClaimLeaf,
+  type Hex,
+  type HexAddress,
+  verifyCumulativeMerkleProof,
+} from "@cogni/aragon-osx";
 import type {
+  AppendSettlementRevisionParams,
+  AppendSettlementRevisionResult,
   AttributionEpoch,
   AttributionEvaluation,
   AttributionPoolComponent,
@@ -33,11 +41,16 @@ import type {
   AttributionStatementLineRecord,
   AttributionStatementSignature,
   AttributionStore,
+  ClaimantLiabilityRecord,
   CloseIngestionWithEvaluationsParams,
+  DistributionClaimRecord,
+  DistributionLeafRecord,
+  DistributionManifestRecord,
   EpochUserProjection,
   FinalClaimantAllocationRecord,
   IngestionCursor,
   IngestionReceipt,
+  InsertDistributionManifestParams,
   InsertFinalClaimantAllocationParams,
   InsertPoolComponentParams,
   InsertReceiptClaimantsParams,
@@ -49,6 +62,8 @@ import type {
   PoolComponentInsertResult,
   ReceiptClaimantsRecord,
   ReviewSubjectOverrideRecord,
+  SettlementLeafRecord,
+  SettlementRevisionRecord,
   SelectedReceiptForAllocation,
   SelectedReceiptForAttribution,
   SelectedReceiptWithMetadata,
@@ -66,6 +81,11 @@ import {
   type EpochStatus,
 } from "@cogni/attribution-ledger";
 import {
+  claimantLiabilities,
+  distributionSettlementLeaves,
+  distributionSettlementRevisions,
+  epochDistributionLeaves,
+  epochDistributionManifests,
   epochEvaluations,
   epochFinalClaimantAllocations,
   epochPoolComponents,
@@ -81,8 +101,10 @@ import {
 } from "@cogni/db-schema/attribution";
 import { userBindings } from "@cogni/db-schema/identity";
 import { userProfiles } from "@cogni/db-schema/profile";
+import { users } from "@cogni/db-schema/refs";
 import {
   and,
+  desc,
   eq,
   gte,
   inArray,
@@ -228,6 +250,97 @@ function toStatement(
     reviewOverrides: row.reviewOverridesJson ?? null,
     supersedesStatementId: row.supersedesStatementId,
     createdAt: row.createdAt,
+  };
+}
+
+function toDistributionManifest(
+  row: typeof epochDistributionManifests.$inferSelect
+): DistributionManifestRecord {
+  return {
+    id: row.id,
+    nodeId: row.nodeId,
+    scopeId: row.scopeId,
+    epochId: row.epochId,
+    distributionId: row.distributionId,
+    statementHash: row.statementHash,
+    merkleRoot: row.merkleRoot,
+    chainId: Number(row.chainId),
+    tokenAddress: row.tokenAddress,
+    distributionAmount: row.distributionAmount,
+    totalAllocated: row.totalAllocated,
+    distributorAddress: row.distributorAddress,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toDistributionLeaf(
+  row: typeof epochDistributionLeaves.$inferSelect
+): DistributionLeafRecord {
+  return {
+    index: row.leafIndex,
+    claimantKey: row.claimantKey,
+    account: row.account,
+    amount: row.amount,
+    leafHash: row.leafHash,
+    proof: row.proofJson,
+  };
+}
+
+function toClaimantLiability(
+  row: typeof claimantLiabilities.$inferSelect
+): ClaimantLiabilityRecord {
+  return {
+    id: row.id,
+    nodeId: row.nodeId,
+    scopeId: row.scopeId,
+    sourceEpochId: row.sourceEpochId,
+    statementId: row.statementId,
+    claimantKey: row.claimantKey,
+    amountAtomic: row.amountAtomic,
+    receiptIds: row.receiptIdsJson,
+    settledRevisionId: row.settledRevisionId,
+    createdAt: row.createdAt,
+  };
+}
+
+function toSettlementRevision(
+  row: typeof distributionSettlementRevisions.$inferSelect
+): SettlementRevisionRecord {
+  return {
+    id: row.id,
+    nodeId: row.nodeId,
+    scopeId: row.scopeId,
+    sequence: row.sequence,
+    previousRevisionId: row.previousRevisionId,
+    previousMerkleRoot: row.previousMerkleRoot,
+    distributionId: row.distributionId,
+    statementHash: row.statementHash,
+    merkleRoot: row.merkleRoot,
+    chainId: Number(row.chainId),
+    tokenAddress: row.tokenAddress,
+    distributorAddress: row.distributorAddress,
+    mintDelta: row.mintDelta,
+    cumulativeTotal: row.cumulativeTotal,
+    triggerKind: row.triggerKind,
+    triggerRef: row.triggerRef,
+    createdAt: row.createdAt,
+  };
+}
+
+function toSettlementLeaf(
+  row: typeof distributionSettlementLeaves.$inferSelect
+): SettlementLeafRecord {
+  return {
+    revisionId: row.revisionId,
+    index: row.leafIndex,
+    claimantKey: row.claimantKey,
+    account: row.account,
+    cumulativeAmount: row.cumulativeAmount,
+    deltaAmount: row.deltaAmount,
+    receiptIds: row.receiptIdsJson,
+    leafHash: row.leafHash,
+    proof: row.proofJson,
   };
 }
 
@@ -578,19 +691,35 @@ export class DrizzleAttributionAdapter implements AttributionStore {
         .where(
           and(eq(epochs.id, params.epochId), eq(epochs.scopeId, this.scopeId))
         )
-        .limit(1);
+        .limit(1)
+        .for("update");
       if (!epochRows[0]) {
         throw new EpochNotFoundError(params.epochId.toString());
       }
-      if (epochRows[0].status !== "open") {
-        // Idempotent: already in review/finalized → return as-is
-        if (
-          epochRows[0].status === "review" ||
-          epochRows[0].status === "finalized"
-        ) {
-          return toEpoch(epochRows[0]);
-        }
+      const current = epochRows[0];
+      if (current.status === "finalized") {
+        // A signed/finalized snapshot is immutable; never repair it in place.
+        return toEpoch(current);
+      }
+      if (current.status !== "open" && current.status !== "review") {
         throw new EpochNotOpenError(params.epochId.toString());
+      }
+
+      if (current.status === "review") {
+        // REVIEW_REPAIR_PRESERVES_AUTHORITY: an idempotent repair may fill the
+        // claimant/evaluation snapshot only when its already-pinned authority
+        // exactly matches this request. Never silently re-pin an epoch.
+        if (
+          current.approverSetHash !== params.approverSetHash ||
+          current.allocationAlgoRef !== params.allocationAlgoRef ||
+          current.weightConfigHash !== params.weightConfigHash ||
+          (current.artifactsHash !== null &&
+            current.artifactsHash !== params.artifactsHash)
+        ) {
+          throw new Error(
+            `closeIngestionWithEvaluations: review snapshot mismatch for epoch ${params.epochId.toString()}`
+          );
+        }
       }
 
       // 2. Insert locked evaluations
@@ -616,7 +745,68 @@ export class DrizzleAttributionAdapter implements AttributionStore {
           });
       }
 
-      // 3. Transition epoch open → review with config pins + artifacts_hash
+      // 3. Freeze the claimant snapshot in the SAME transaction as review.
+      // The former manual-review path only flipped the epoch status, leaving
+      // correct claimant rows in draft and making sign-data fail later.
+      await tx
+        .update(epochReceiptClaimants)
+        .set({ status: "locked" })
+        .where(
+          and(
+            eq(epochReceiptClaimants.epochId, params.epochId),
+            eq(epochReceiptClaimants.status, "draft")
+          )
+        );
+
+      // Fail before review if any included selection lacks a locked claimant.
+      // explodeToClaimants remains fail-closed; this is the lifecycle gate that
+      // prevents the invalid state from being created in the first place.
+      const missingClaimants = await tx
+        .select({ receiptId: epochSelection.receiptId })
+        .from(epochSelection)
+        .leftJoin(
+          epochReceiptClaimants,
+          and(
+            eq(epochReceiptClaimants.epochId, epochSelection.epochId),
+            eq(epochReceiptClaimants.receiptId, epochSelection.receiptId),
+            eq(epochReceiptClaimants.status, "locked")
+          )
+        )
+        .where(
+          and(
+            eq(epochSelection.epochId, params.epochId),
+            eq(epochSelection.included, true),
+            isNull(epochReceiptClaimants.id)
+          )
+        )
+        .limit(1);
+      if (missingClaimants[0]) {
+        throw new Error(
+          `closeIngestionWithEvaluations: included receipt "${missingClaimants[0].receiptId}" has no claimant snapshot`
+        );
+      }
+
+      if (current.status === "review") {
+        // Existing unsigned reviews may have been created by the old partial
+        // close path. Persist only the missing artifacts hash; pins stay frozen.
+        if (current.artifactsHash === null) {
+          const [repaired] = await tx
+            .update(epochs)
+            .set({ artifactsHash: params.artifactsHash })
+            .where(
+              and(
+                eq(epochs.id, params.epochId),
+                eq(epochs.scopeId, this.scopeId),
+                eq(epochs.status, "review")
+              )
+            )
+            .returning();
+          if (repaired) return toEpoch(repaired);
+        }
+        return toEpoch(current);
+      }
+
+      // 4. Transition epoch open → review with config pins + artifacts_hash
       const [updated] = await tx
         .update(epochs)
         .set({
@@ -703,6 +893,44 @@ export class DrizzleAttributionAdapter implements AttributionStore {
               epochEvaluations.status,
             ],
           });
+      }
+
+      // Freeze claimant drafts inside the same transaction as the stale epoch
+      // transition. The activity layer formerly did this in a separate call,
+      // leaving a crash window between claimant lock and epoch close.
+      await tx
+        .update(epochReceiptClaimants)
+        .set({ status: "locked" })
+        .where(
+          and(
+            eq(epochReceiptClaimants.epochId, params.closeParams.epochId),
+            eq(epochReceiptClaimants.status, "draft")
+          )
+        );
+
+      const missingClaimants = await tx
+        .select({ receiptId: epochSelection.receiptId })
+        .from(epochSelection)
+        .leftJoin(
+          epochReceiptClaimants,
+          and(
+            eq(epochReceiptClaimants.epochId, epochSelection.epochId),
+            eq(epochReceiptClaimants.receiptId, epochSelection.receiptId),
+            eq(epochReceiptClaimants.status, "locked")
+          )
+        )
+        .where(
+          and(
+            eq(epochSelection.epochId, params.closeParams.epochId),
+            eq(epochSelection.included, true),
+            isNull(epochReceiptClaimants.id)
+          )
+        )
+        .limit(1);
+      if (missingClaimants[0]) {
+        throw new Error(
+          `transitionEpochForWindow: included receipt "${missingClaimants[0].receiptId}" has no claimant snapshot`
+        );
       }
 
       // Transition stale epoch open → review
@@ -1336,12 +1564,581 @@ export class DrizzleAttributionAdapter implements AttributionStore {
     return rows[0] ? toStatement(rows[0]) : null;
   }
 
+  // ── Distribution manifest ─────────────────────────────────
+
+  /**
+   * Upsert the merkle distribution manifest + its leaves for an epoch.
+   * Atomic: replaces the manifest header and all leaf rows in one transaction
+   * (idempotent re-runs overwrite). Scope-gated via the epoch.
+   * DISTRIBUTION_READ_WRITE_ONLY: persists a prebuilt manifest; never builds the tree.
+   */
+  async upsertDistributionManifest(
+    params: InsertDistributionManifestParams
+  ): Promise<DistributionManifestRecord> {
+    await this.resolveEpochScoped(params.epochId);
+    return await this.db.transaction(async (tx) => {
+      const [manifest] = await tx
+        .insert(epochDistributionManifests)
+        .values({
+          nodeId: params.nodeId,
+          scopeId: params.scopeId,
+          epochId: params.epochId,
+          distributionId: params.distributionId,
+          statementHash: params.statementHash,
+          merkleRoot: params.merkleRoot,
+          chainId: BigInt(params.chainId),
+          tokenAddress: params.tokenAddress,
+          distributionAmount: params.distributionAmount,
+          totalAllocated: params.totalAllocated,
+          distributorAddress: params.distributorAddress ?? null,
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: [
+            epochDistributionManifests.nodeId,
+            epochDistributionManifests.scopeId,
+            epochDistributionManifests.epochId,
+          ],
+          set: {
+            distributionId: params.distributionId,
+            statementHash: params.statementHash,
+            merkleRoot: params.merkleRoot,
+            chainId: BigInt(params.chainId),
+            tokenAddress: params.tokenAddress,
+            distributionAmount: params.distributionAmount,
+            totalAllocated: params.totalAllocated,
+            distributorAddress: params.distributorAddress ?? null,
+            updatedAt: new Date(),
+          },
+        })
+        .returning();
+      if (!manifest) {
+        throw new Error("upsertDistributionManifest: UPSERT returned no rows");
+      }
+
+      // Replace leaves wholesale — manifest is the unit of idempotency.
+      await tx
+        .delete(epochDistributionLeaves)
+        .where(eq(epochDistributionLeaves.manifestId, manifest.id));
+
+      if (params.leaves.length > 0) {
+        await tx.insert(epochDistributionLeaves).values(
+          params.leaves.map((leaf) => ({
+            nodeId: params.nodeId,
+            manifestId: manifest.id,
+            epochId: params.epochId,
+            leafIndex: leaf.index,
+            claimantKey: leaf.claimantKey,
+            account: leaf.account,
+            accountLower: leaf.account.toLowerCase(),
+            amount: leaf.amount,
+            leafHash: leaf.leafHash,
+            proofJson: [...leaf.proof],
+          }))
+        );
+      }
+
+      return toDistributionManifest(manifest);
+    });
+  }
+
+  async getDistributionManifestForEpoch(
+    epochId: bigint
+  ): Promise<DistributionManifestRecord | null> {
+    await this.resolveEpochScoped(epochId);
+    const rows = await this.db
+      .select()
+      .from(epochDistributionManifests)
+      .where(eq(epochDistributionManifests.epochId, epochId))
+      .limit(1);
+    return rows[0] ? toDistributionManifest(rows[0]) : null;
+  }
+
+  async getDistributionClaimForAccount(
+    epochId: bigint,
+    account: string
+  ): Promise<DistributionClaimRecord | null> {
+    await this.resolveEpochScoped(epochId);
+    const [manifestRow] = await this.db
+      .select()
+      .from(epochDistributionManifests)
+      .where(eq(epochDistributionManifests.epochId, epochId))
+      .limit(1);
+    if (!manifestRow) return null;
+
+    const [leafRow] = await this.db
+      .select()
+      .from(epochDistributionLeaves)
+      .where(
+        and(
+          eq(epochDistributionLeaves.manifestId, manifestRow.id),
+          eq(epochDistributionLeaves.accountLower, account.toLowerCase())
+        )
+      )
+      .limit(1);
+    if (!leafRow) return null;
+
+    return {
+      epochId: manifestRow.epochId,
+      merkleRoot: manifestRow.merkleRoot,
+      distributorAddress: manifestRow.distributorAddress,
+      chainId: Number(manifestRow.chainId),
+      tokenAddress: manifestRow.tokenAddress,
+      leaf: toDistributionLeaf(leafRow),
+    };
+  }
+
+  async getDistributionLeavesForEpoch(
+    epochId: bigint
+  ): Promise<readonly DistributionLeafRecord[]> {
+    await this.resolveEpochScoped(epochId);
+    const [manifestRow] = await this.db
+      .select()
+      .from(epochDistributionManifests)
+      .where(eq(epochDistributionManifests.epochId, epochId))
+      .limit(1);
+    if (!manifestRow) return [];
+
+    const leafRows = await this.db
+      .select()
+      .from(epochDistributionLeaves)
+      .where(eq(epochDistributionLeaves.manifestId, manifestRow.id));
+    return leafRows.map(toDistributionLeaf);
+  }
+
+  // ── Global settlement revisions ───────────────────────────
+
+  async listPendingClaimantLiabilities(
+    nodeId: string,
+    scopeId: string
+  ): Promise<readonly ClaimantLiabilityRecord[]> {
+    if (scopeId !== this.scopeId) return [];
+    const rows = await this.db
+      .select()
+      .from(claimantLiabilities)
+      .where(
+        and(
+          eq(claimantLiabilities.nodeId, nodeId),
+          eq(claimantLiabilities.scopeId, scopeId),
+          isNull(claimantLiabilities.settledRevisionId)
+        )
+      );
+    return rows.map(toClaimantLiability);
+  }
+
+  async getLatestSettlementRevision(
+    nodeId: string,
+    scopeId: string
+  ): Promise<SettlementRevisionRecord | null> {
+    if (scopeId !== this.scopeId) return null;
+    const [row] = await this.db
+      .select()
+      .from(distributionSettlementRevisions)
+      .where(
+        and(
+          eq(distributionSettlementRevisions.nodeId, nodeId),
+          eq(distributionSettlementRevisions.scopeId, scopeId)
+        )
+      )
+      .orderBy(desc(distributionSettlementRevisions.sequence))
+      .limit(1);
+    return row ? toSettlementRevision(row) : null;
+  }
+
+  async getSettlementRevision(
+    revisionId: string
+  ): Promise<SettlementRevisionRecord | null> {
+    const [row] = await this.db
+      .select()
+      .from(distributionSettlementRevisions)
+      .where(
+        and(
+          eq(distributionSettlementRevisions.id, revisionId),
+          eq(distributionSettlementRevisions.scopeId, this.scopeId)
+        )
+      )
+      .limit(1);
+    return row ? toSettlementRevision(row) : null;
+  }
+
+  async getSettlementRevisionByMerkleRoot(
+    nodeId: string,
+    scopeId: string,
+    merkleRoot: string
+  ): Promise<SettlementRevisionRecord | null> {
+    if (scopeId !== this.scopeId) return null;
+    const [row] = await this.db
+      .select()
+      .from(distributionSettlementRevisions)
+      .where(
+        and(
+          eq(distributionSettlementRevisions.nodeId, nodeId),
+          eq(distributionSettlementRevisions.scopeId, scopeId),
+          eq(distributionSettlementRevisions.merkleRoot, merkleRoot)
+        )
+      )
+      .limit(1);
+    return row ? toSettlementRevision(row) : null;
+  }
+
+  async getSettlementLeavesForRevision(
+    revisionId: string
+  ): Promise<readonly SettlementLeafRecord[]> {
+    const revision = await this.getSettlementRevision(revisionId);
+    if (!revision) return [];
+    const rows = await this.db
+      .select()
+      .from(distributionSettlementLeaves)
+      .where(eq(distributionSettlementLeaves.revisionId, revisionId))
+      .orderBy(distributionSettlementLeaves.leafIndex);
+    return rows.map(toSettlementLeaf);
+  }
+
+  async getSettlementClaimForAccount(
+    revisionId: string,
+    account: string
+  ): Promise<{
+    readonly revision: SettlementRevisionRecord;
+    readonly leaf: SettlementLeafRecord;
+  } | null> {
+    const revision = await this.getSettlementRevision(revisionId);
+    if (!revision) return null;
+    const [row] = await this.db
+      .select()
+      .from(distributionSettlementLeaves)
+      .where(
+        and(
+          eq(distributionSettlementLeaves.revisionId, revisionId),
+          eq(distributionSettlementLeaves.accountLower, account.toLowerCase())
+        )
+      )
+      .limit(1);
+    return row ? { revision, leaf: toSettlementLeaf(row) } : null;
+  }
+
+  async appendSettlementRevisionAtomic(
+    params: AppendSettlementRevisionParams
+  ): Promise<AppendSettlementRevisionResult> {
+    if (params.scopeId !== this.scopeId) return { status: "conflict" };
+    if (!Number.isSafeInteger(params.chainId) || params.chainId < 0) {
+      throw new Error("appendSettlementRevisionAtomic: invalid chainId");
+    }
+    if (params.mintDelta <= 0n || params.cumulativeTotal <= 0n) {
+      throw new Error(
+        "appendSettlementRevisionAtomic: settlement amounts must be positive"
+      );
+    }
+
+    return await this.db.transaction(async (tx) => {
+      // Serialize this node+scope stream. Hash collisions only over-serialize.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`${params.nodeId}:${params.scopeId}`}, 0))`
+      );
+
+      const [previousRow] = await tx
+        .select()
+        .from(distributionSettlementRevisions)
+        .where(
+          and(
+            eq(distributionSettlementRevisions.nodeId, params.nodeId),
+            eq(distributionSettlementRevisions.scopeId, params.scopeId)
+          )
+        )
+        .orderBy(desc(distributionSettlementRevisions.sequence))
+        .limit(1);
+
+      if ((previousRow?.id ?? null) !== params.expectedPreviousRevisionId) {
+        return { status: "conflict" } as const;
+      }
+      if (
+        previousRow &&
+        (previousRow.chainId !== BigInt(params.chainId) ||
+          previousRow.tokenAddress.toLowerCase() !==
+            params.tokenAddress.toLowerCase() ||
+          (previousRow.distributorAddress?.toLowerCase() ?? null) !==
+            (params.distributorAddress?.toLowerCase() ?? null))
+      ) {
+        throw new Error(
+          "appendSettlementRevisionAtomic: deployment identity changed within settlement stream"
+        );
+      }
+
+      const expectedCumulative =
+        (previousRow?.cumulativeTotal ?? 0n) + params.mintDelta;
+      if (expectedCumulative !== params.cumulativeTotal) {
+        throw new Error(
+          "appendSettlementRevisionAtomic: cumulativeTotal does not equal prior total plus mintDelta"
+        );
+      }
+
+      const liabilityIds = params.resolutions.map((item) => item.liabilityId);
+      if (
+        liabilityIds.length === 0 ||
+        new Set(liabilityIds).size !== liabilityIds.length
+      ) {
+        throw new Error(
+          "appendSettlementRevisionAtomic: resolutions must contain distinct liabilities"
+        );
+      }
+      const liabilityRows = await tx
+        .select()
+        .from(claimantLiabilities)
+        .where(
+          and(
+            inArray(claimantLiabilities.id, liabilityIds),
+            eq(claimantLiabilities.nodeId, params.nodeId),
+            eq(claimantLiabilities.scopeId, params.scopeId),
+            isNull(claimantLiabilities.settledRevisionId)
+          )
+        )
+        .for("update");
+      if (liabilityRows.length !== liabilityIds.length) {
+        return { status: "conflict" } as const;
+      }
+
+      const liabilitiesById = new Map(
+        liabilityRows.map((row) => [row.id, row] as const)
+      );
+      let liabilityTotal = 0n;
+      const deltaByAccount = new Map<string, bigint>();
+      const receiptsByAccount = new Map<string, Set<string>>();
+      for (const resolution of params.resolutions) {
+        const liability = liabilitiesById.get(resolution.liabilityId);
+        if (!liability) return { status: "conflict" } as const;
+
+        const claimantUserId = liability.claimantKey.startsWith("user:")
+          ? liability.claimantKey.slice("user:".length)
+          : null;
+        if (claimantUserId) {
+          if (claimantUserId !== resolution.resolvedUserId) {
+            return { status: "conflict" } as const;
+          }
+        } else {
+          const identityMatch = /^identity:([^:]+):(.+)$/.exec(
+            liability.claimantKey
+          );
+          if (!identityMatch) return { status: "conflict" } as const;
+          const provider = identityMatch[1];
+          const externalId = identityMatch[2];
+          if (!provider || !externalId) {
+            return { status: "conflict" } as const;
+          }
+          const [binding] = await tx
+            .select({ userId: userBindings.userId })
+            .from(userBindings)
+            .where(
+              and(
+                eq(userBindings.provider, provider),
+                eq(userBindings.externalId, externalId)
+              )
+            )
+            .limit(1)
+            .for("share");
+          if (binding?.userId !== resolution.resolvedUserId) {
+            return { status: "conflict" } as const;
+          }
+        }
+
+        const normalizedAccount = resolution.account.toLowerCase();
+        const walletBindings = await tx
+          .select({ externalId: userBindings.externalId })
+          .from(userBindings)
+          .where(
+            and(
+              eq(userBindings.userId, resolution.resolvedUserId),
+              eq(userBindings.provider, "wallet")
+            )
+          )
+          .for("share");
+        const [userRow] = await tx
+          .select({ walletAddress: users.walletAddress })
+          .from(users)
+          .where(eq(users.id, resolution.resolvedUserId))
+          .limit(1)
+          .for("share");
+        const ownsAccount =
+          walletBindings.some(
+            (binding) => binding.externalId.toLowerCase() === normalizedAccount
+          ) || userRow?.walletAddress?.toLowerCase() === normalizedAccount;
+        if (!ownsAccount) return { status: "conflict" } as const;
+
+        liabilityTotal += liability.amountAtomic;
+        deltaByAccount.set(
+          normalizedAccount,
+          (deltaByAccount.get(normalizedAccount) ?? 0n) + liability.amountAtomic
+        );
+        const receiptSet =
+          receiptsByAccount.get(normalizedAccount) ?? new Set<string>();
+        for (const receiptId of liability.receiptIdsJson) {
+          receiptSet.add(receiptId);
+        }
+        receiptsByAccount.set(normalizedAccount, receiptSet);
+      }
+      if (liabilityTotal !== params.mintDelta) {
+        throw new Error(
+          "appendSettlementRevisionAtomic: liabilities do not sum to mintDelta"
+        );
+      }
+
+      const previousLeaves = previousRow
+        ? await tx
+            .select()
+            .from(distributionSettlementLeaves)
+            .where(eq(distributionSettlementLeaves.revisionId, previousRow.id))
+        : [];
+      const expectedByAccount = new Map<
+        string,
+        { cumulative: bigint; delta: bigint; receipts: Set<string> }
+      >();
+      for (const leaf of previousLeaves) {
+        expectedByAccount.set(leaf.accountLower, {
+          cumulative: leaf.cumulativeAmount,
+          delta: 0n,
+          receipts: new Set(leaf.receiptIdsJson),
+        });
+      }
+      for (const [account, delta] of deltaByAccount) {
+        const expected = expectedByAccount.get(account) ?? {
+          cumulative: 0n,
+          delta: 0n,
+          receipts: new Set<string>(),
+        };
+        expected.cumulative += delta;
+        expected.delta += delta;
+        for (const receiptId of receiptsByAccount.get(account) ?? []) {
+          expected.receipts.add(receiptId);
+        }
+        expectedByAccount.set(account, expected);
+      }
+
+      const seenAccounts = new Set<string>();
+      const seenIndexes = new Set<number>();
+      let leafTotal = 0n;
+      let leafDeltaTotal = 0n;
+      for (const leaf of params.leaves) {
+        const account = leaf.account.toLowerCase();
+        const expected = expectedByAccount.get(account);
+        const expectedLeafHash = hashCumulativeClaimLeaf(
+          leaf.account as HexAddress,
+          leaf.cumulativeAmount
+        );
+        const hasValidProof = verifyCumulativeMerkleProof(
+          leaf.leafHash as Hex,
+          leaf.proof as readonly Hex[],
+          params.merkleRoot as Hex
+        );
+        if (
+          !expected ||
+          seenAccounts.has(account) ||
+          seenIndexes.has(leaf.index) ||
+          leaf.leafHash.toLowerCase() !== expectedLeafHash.toLowerCase() ||
+          !hasValidProof ||
+          leaf.cumulativeAmount !== expected.cumulative ||
+          leaf.deltaAmount !== expected.delta ||
+          JSON.stringify([...leaf.receiptIds].sort()) !==
+            JSON.stringify([...expected.receipts].sort())
+        ) {
+          throw new Error(
+            "appendSettlementRevisionAtomic: leaves are not the complete expected cumulative snapshot"
+          );
+        }
+        seenAccounts.add(account);
+        seenIndexes.add(leaf.index);
+        leafTotal += leaf.cumulativeAmount;
+        leafDeltaTotal += leaf.deltaAmount;
+      }
+      for (let index = 0; index < params.leaves.length; index += 1) {
+        if (!seenIndexes.has(index)) {
+          throw new Error(
+            "appendSettlementRevisionAtomic: leaf indexes must be contiguous from zero"
+          );
+        }
+      }
+      if (
+        seenAccounts.size !== expectedByAccount.size ||
+        leafTotal !== params.cumulativeTotal ||
+        leafDeltaTotal !== params.mintDelta
+      ) {
+        throw new Error(
+          "appendSettlementRevisionAtomic: leaf totals do not match revision totals"
+        );
+      }
+
+      const [revisionRow] = await tx
+        .insert(distributionSettlementRevisions)
+        .values({
+          nodeId: params.nodeId,
+          scopeId: params.scopeId,
+          sequence: (previousRow?.sequence ?? 0n) + 1n,
+          previousRevisionId: previousRow?.id ?? null,
+          previousMerkleRoot: previousRow?.merkleRoot ?? null,
+          distributionId: params.distributionId,
+          statementHash: params.statementHash,
+          merkleRoot: params.merkleRoot,
+          chainId: BigInt(params.chainId),
+          tokenAddress: params.tokenAddress,
+          distributorAddress: params.distributorAddress ?? null,
+          mintDelta: params.mintDelta,
+          cumulativeTotal: params.cumulativeTotal,
+          triggerKind: params.triggerKind,
+          triggerRef: params.triggerRef,
+        })
+        .returning();
+      if (!revisionRow) {
+        throw new Error(
+          "appendSettlementRevisionAtomic: revision insert returned no row"
+        );
+      }
+
+      await tx.insert(distributionSettlementLeaves).values(
+        params.leaves.map((leaf) => ({
+          revisionId: revisionRow.id,
+          leafIndex: leaf.index,
+          claimantKey: leaf.claimantKey,
+          account: leaf.account,
+          accountLower: leaf.account.toLowerCase(),
+          cumulativeAmount: leaf.cumulativeAmount,
+          deltaAmount: leaf.deltaAmount,
+          receiptIdsJson: [...leaf.receiptIds].sort(),
+          leafHash: leaf.leafHash,
+          proofJson: [...leaf.proof],
+        }))
+      );
+
+      const settledRows = await tx
+        .update(claimantLiabilities)
+        .set({ settledRevisionId: revisionRow.id })
+        .where(
+          and(
+            inArray(claimantLiabilities.id, liabilityIds),
+            isNull(claimantLiabilities.settledRevisionId)
+          )
+        )
+        .returning({ id: claimantLiabilities.id });
+      if (settledRows.length !== liabilityIds.length) {
+        throw new Error(
+          "appendSettlementRevisionAtomic: liability state changed under stream lock"
+        );
+      }
+
+      return {
+        status: "appended",
+        revision: toSettlementRevision(revisionRow),
+      } as const;
+    });
+  }
+
   // ── Atomic finalize ────────────────────────────────────────
 
   async finalizeEpochAtomic(params: {
     epochId: bigint;
     poolTotal: bigint;
     finalClaimantAllocations: readonly InsertFinalClaimantAllocationParams[];
+    claimantLiabilities: readonly {
+      readonly claimantKey: string;
+      readonly amountAtomic: bigint;
+      readonly receiptIds: readonly string[];
+    }[];
     statement: Omit<InsertStatementParams, "epochId">;
     signature: Omit<InsertSignatureParams, "statementId">;
     expectedFinalAllocationSetHash: string;
@@ -1488,6 +2285,117 @@ export class DrizzleAttributionAdapter implements AttributionStore {
               updatedAt: new Date(),
             },
           });
+      }
+
+      const atomicUnitsPerCredit = 10n ** 18n;
+      const expectedLiabilities = new Map<
+        string,
+        { amountAtomic: bigint; receiptIds: string[] }
+      >();
+      for (const line of statementRow.statementLinesJson) {
+        let creditAmount: bigint;
+        try {
+          creditAmount = BigInt(line.credit_amount);
+        } catch {
+          throw new Error(
+            `finalizeEpochAtomic: invalid signed credit amount for ${line.claimant_key}`
+          );
+        }
+        if (creditAmount < 0n) {
+          throw new Error(
+            `finalizeEpochAtomic: negative signed credit amount for ${line.claimant_key}`
+          );
+        }
+        if (creditAmount === 0n) continue;
+        const receiptIds = [...new Set(line.receipt_ids)].sort();
+        if (
+          expectedLiabilities.has(line.claimant_key) ||
+          receiptIds.length !== line.receipt_ids.length
+        ) {
+          throw new Error(
+            `finalizeEpochAtomic: signed statement has duplicate liability data for ${line.claimant_key}`
+          );
+        }
+        expectedLiabilities.set(line.claimant_key, {
+          amountAtomic: creditAmount * atomicUnitsPerCredit,
+          receiptIds,
+        });
+      }
+
+      const suppliedLiabilities = new Map(
+        params.claimantLiabilities.map(
+          (liability) => [liability.claimantKey, liability] as const
+        )
+      );
+      if (
+        suppliedLiabilities.size !== params.claimantLiabilities.length ||
+        suppliedLiabilities.size !== expectedLiabilities.size
+      ) {
+        throw new Error(
+          "finalizeEpochAtomic: claimant liability set does not match signed statement"
+        );
+      }
+      for (const [claimantKey, expected] of expectedLiabilities) {
+        const supplied = suppliedLiabilities.get(claimantKey);
+        const suppliedReceiptIds = supplied
+          ? [...new Set(supplied.receiptIds)].sort()
+          : [];
+        if (
+          !supplied ||
+          supplied.amountAtomic !== expected.amountAtomic ||
+          suppliedReceiptIds.length !== supplied.receiptIds.length ||
+          JSON.stringify(suppliedReceiptIds) !==
+            JSON.stringify(expected.receiptIds)
+        ) {
+          throw new Error(
+            `finalizeEpochAtomic: claimant liability does not match signed statement for ${claimantKey}`
+          );
+        }
+      }
+
+      for (const liability of params.claimantLiabilities) {
+        const receiptIds = [...new Set(liability.receiptIds)].sort();
+        await tx
+          .insert(claimantLiabilities)
+          .values({
+            nodeId: epochRow.nodeId,
+            scopeId: epochRow.scopeId,
+            sourceEpochId: params.epochId,
+            statementId: statementRow.id,
+            claimantKey: liability.claimantKey,
+            amountAtomic: liability.amountAtomic,
+            receiptIdsJson: receiptIds,
+          })
+          .onConflictDoNothing({
+            target: [
+              claimantLiabilities.sourceEpochId,
+              claimantLiabilities.claimantKey,
+            ],
+          });
+
+        const [persistedLiability] = await tx
+          .select()
+          .from(claimantLiabilities)
+          .where(
+            and(
+              eq(claimantLiabilities.sourceEpochId, params.epochId),
+              eq(claimantLiabilities.claimantKey, liability.claimantKey)
+            )
+          )
+          .limit(1);
+        if (
+          !persistedLiability ||
+          persistedLiability.nodeId !== epochRow.nodeId ||
+          persistedLiability.scopeId !== epochRow.scopeId ||
+          persistedLiability.statementId !== statementRow.id ||
+          persistedLiability.amountAtomic !== liability.amountAtomic ||
+          JSON.stringify(persistedLiability.receiptIdsJson) !==
+            JSON.stringify(receiptIds)
+        ) {
+          throw new Error(
+            `finalizeEpochAtomic: claimant liability divergence for ${liability.claimantKey}`
+          );
+        }
       }
 
       // 2d/3b. Upsert signature — ON CONFLICT (statement_id, signer_wallet) DO NOTHING
@@ -1837,7 +2745,7 @@ export class DrizzleAttributionAdapter implements AttributionStore {
     receiptId: string,
     included: boolean
   ): Promise<void> {
-    await this.resolveEpochScoped(epochId);
+    await this.validateEpochIds([epochId]);
     await this.db
       .update(epochSelection)
       .set({ included, updatedAt: new Date() })

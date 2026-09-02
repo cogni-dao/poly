@@ -3,13 +3,13 @@
 
 /**
  * Module: `@tests/stack/setup/wait-for-probes`
- * Purpose: Global setup for stack tests - ensures /livez and /readyz pass before running tests.
- * Scope: Polls liveness then readiness probes with explicit budgets; fails fast if probes don't pass. Does not run functional tests.
- * Invariants: Must run before any stack tests execute; /readyz is prerequisite for functional tests.
+ * Purpose: Global setup for stack tests - ensures /livez and deep /readyz pass before running tests.
+ * Scope: Polls liveness then strict substrate readiness with explicit budgets; fails fast if probes don't pass. Does not run functional tests.
+ * Invariants: Must run before any stack tests execute; /readyz?deep=1 is prerequisite for functional tests.
  *             Uses AbortController with timeouts that exceed the /readyz handler's internal budgets (~13s).
  * Side-effects: IO (HTTP probe requests to TEST_BASE_URL)
- * Notes: Implements CI contract: livez (10-20s, fail-fast) then readyz (60-120s, correctness gate).
- *        Validates /readyz contract (status === 'healthy'); prints response body on failures.
+ * Notes: Implements CI contract: livez (10-20s, fail-fast) then deep readyz (60-120s, correctness gate).
+ *        Validates /readyz?deep=1 contract (status === 'healthy'); prints response body on failures.
  * Links: vitest.stack.config.mts, docs/spec/health-probes.md, meta.readyz.read.v1.contract
  * @internal
  */
@@ -182,9 +182,11 @@ export default async function waitForProbes() {
     probeName: "Liveness",
   });
 
-  // Step 2: Poll /readyz (correctness gate, validate contract)
-  const readyzUrl = new URL("/readyz", baseUrl).toString();
-  console.log(`\n2️⃣  Polling /readyz (${READYZ_BUDGET_MS / 1000}s budget)...`);
+  // Step 2: Poll deep /readyz (full-substrate correctness gate)
+  const readyzUrl = new URL("/readyz?deep=1", baseUrl).toString();
+  console.log(
+    `\n2️⃣  Polling /readyz?deep=1 (${READYZ_BUDGET_MS / 1000}s budget)...`
+  );
   await pollEndpoint({
     url: readyzUrl,
     budgetMs: READYZ_BUDGET_MS,
@@ -195,7 +197,7 @@ export default async function waitForProbes() {
       const result = metaReadyzOutputSchema.safeParse(json);
       if (!result.success) {
         throw new Error(
-          `Invalid /readyz payload: ${JSON.stringify(result.error.issues)}`
+          `Invalid /readyz?deep=1 payload: ${JSON.stringify(result.error.issues)}`
         );
       }
       if (result.data.status !== "healthy") {

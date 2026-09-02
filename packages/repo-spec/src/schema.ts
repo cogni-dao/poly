@@ -106,6 +106,16 @@ export const governanceSpecSchema = z.object({
     .string()
     .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address")
     .optional(),
+  /** Aragon GovernanceERC20 token address used for contributor distributions */
+  token_contract: z
+    .string()
+    .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address")
+    .optional(),
+  /** DAO-controlled holder/vault containing minted token inventory for emissions */
+  emissions_holder: z
+    .string()
+    .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address")
+    .optional(),
   /** Proposal launcher base URL (for deep links) */
   base_url: z.string().url().optional(),
   /** Governance council schedules (cron-triggered charters) */
@@ -228,6 +238,194 @@ export const nodeSchedulesSchema = z
 
 export type NodeSchedules = z.infer<typeof nodeSchedulesSchema>;
 
+// ---------------------------------------------------------------------------
+// Provider-neutral node service deployment (story.5016 / task.5065)
+// ---------------------------------------------------------------------------
+
+const serviceNameSchema = z
+  .string()
+  .regex(
+    /^[a-z][a-z0-9-]{0,62}$/,
+    "service and artifact names must be DNS-safe lowercase tokens (max 63 chars)"
+  );
+
+const serviceEnvKeySchema = z
+  .string()
+  .regex(
+    /^[A-Z][A-Z0-9_]{0,63}$/,
+    "service environment keys must be uppercase names"
+  );
+
+export const nodeServiceSecretRefSchema = z
+  .object({ key: serviceEnvKeySchema })
+  .strict();
+
+export type NodeServiceSecretRefSpec = z.infer<
+  typeof nodeServiceSecretRefSchema
+>;
+
+const relativeBuildPathSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine(
+    (value) =>
+      !value.startsWith("/") &&
+      !value.includes("\\") &&
+      !value.split("/").includes(".."),
+    "build paths must be repo-relative and must not traverse parents"
+  );
+
+/** Stable, source-repo-owned instructions for building one service artifact. */
+export const nodeServiceArtifactSchema = z
+  .object({
+    /** Stable logical artifact identity; becomes the bundle lookup key. */
+    name: serviceNameSchema,
+    /** Docker build context, relative to the source repository root. */
+    context: relativeBuildPathSchema.default("."),
+    /** Dockerfile path, relative to the source repository root. */
+    dockerfile: relativeBuildPathSchema.default("Dockerfile"),
+    /** Optional multi-stage Docker target. */
+    target: z.string().min(1).max(128).optional(),
+  })
+  .strict();
+
+export type NodeServiceArtifactSpec = z.infer<typeof nodeServiceArtifactSchema>;
+
+/**
+ * Bounded v0 resource request for one app-tier service.
+ * `storage_mi` is ephemeral workload storage. Persistent volumes, replication,
+ * backups, and stateful lifecycle are intentionally absent from this contract.
+ */
+export const nodeServiceResourcesSchema = z
+  .object({
+    // Broad sanity bounds prevent malformed requests; environment/provider
+    // admission policy owns practical quotas and may be much smaller.
+    cpu_units: z.number().min(0.1).max(64),
+    memory_mi: z.number().int().min(128).max(262144),
+    storage_mi: z.number().int().min(128).max(1048576),
+  })
+  .strict();
+
+export type NodeServiceResourcesSpec = z.infer<
+  typeof nodeServiceResourcesSchema
+>;
+
+/**
+ * One app-tier service declared by a sovereign node.
+ *
+ * `bind_host` is intentionally a fixed literal, not a placement knob: sibling
+ * containers can reach the process only when it listens beyond loopback.
+ */
+export const nodeServiceSpecSchema = z
+  .object({
+    name: serviceNameSchema,
+    artifact: nodeServiceArtifactSchema,
+    command: z.array(z.string().min(1).max(1024)).min(1).max(32).optional(),
+    args: z.array(z.string().max(4096)).max(64).optional(),
+    port: z.number().int().min(1).max(65535),
+    visibility: z.enum(["public", "private"]),
+    /** Git-owned environment variable → sibling service references. */
+    bindings: z
+      .record(serviceEnvKeySchema, serviceNameSchema)
+      .refine((bindings) => Object.keys(bindings).length <= 16, {
+        message: "A service may declare at most 16 sibling bindings",
+      })
+      .default({}),
+    /** Value-free logical secret needs; scope is derived outside Git. */
+    secret_refs: z
+      .array(nodeServiceSecretRefSchema)
+      .max(32)
+      .refine(
+        (refs) => new Set(refs.map((ref) => ref.key)).size === refs.length,
+        "secret_refs keys must be unique"
+      )
+      .default([]),
+    bind_host: z.literal("0.0.0.0").default("0.0.0.0"),
+    /** Explicit for every declared service; environment policy owns recommended sizes. */
+    resources: nodeServiceResourcesSchema,
+  })
+  .strict();
+
+export type NodeServiceSpec = z.infer<typeof nodeServiceSpecSchema>;
+
+/** Exactly one service owns public ingress; siblings use service-name DNS. */
+export const nodeDeploymentSchema = z
+  .object({
+    services: z.array(nodeServiceSpecSchema).min(1).max(8),
+  })
+  .strict()
+  .superRefine((deployment, ctx) => {
+    const serviceNames = deployment.services.map((service) => service.name);
+    if (new Set(serviceNames).size !== serviceNames.length) {
+      ctx.addIssue({ code: "custom", message: "Duplicate deployment service names" });
+    }
+
+    const artifactsByName = new Map<
+      string,
+      (typeof deployment.services)[number]["artifact"]
+    >();
+    deployment.services.forEach((service, index) => {
+      const prior = artifactsByName.get(service.artifact.name);
+      if (
+        prior &&
+        (prior.context !== service.artifact.context ||
+          prior.dockerfile !== service.artifact.dockerfile ||
+          prior.target !== service.artifact.target)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["services", index, "artifact"],
+          message:
+            "Services reusing an artifact name must use identical build instructions",
+        });
+      } else {
+        artifactsByName.set(service.artifact.name, service.artifact);
+      }
+      const bindingKeys = new Set(Object.keys(service.bindings));
+      const conflictingSecret = service.secret_refs.find((ref) =>
+        bindingKeys.has(ref.key)
+      );
+      if (conflictingSecret) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["services", index, "secret_refs"],
+          message: `${conflictingSecret.key} cannot be both a sibling binding and a secret ref`,
+        });
+      }
+    });
+
+    if (
+      deployment.services.filter((service) => service.visibility === "public")
+        .length !== 1
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "deployment.services must contain exactly one public service",
+      });
+    }
+
+    deployment.services.forEach((service, index) => {
+      Object.entries(service.bindings).forEach(([envName, target]) => {
+        if (target === service.name) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["services", index, "bindings", envName],
+            message: "A service binding cannot target itself",
+          });
+        } else if (!serviceNames.includes(target)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["services", index, "bindings", envName],
+            message: `Service binding target is not declared: ${target}`,
+          });
+        }
+      });
+    });
+  });
+
+export type NodeDeploymentSpec = z.infer<typeof nodeDeploymentSchema>;
+
 /**
  * Schema for activity_ledger section — epoch and ingestion configuration.
  */
@@ -339,12 +537,26 @@ function isDoltHubRemoteUrl(value: string): boolean {
  * Schema for the node-local knowledge plane declaration.
  * Credentials are never stored here; the repo-spec only pins the Cogni-owned
  * DoltHub repository identity that this node mirrors to.
+ *
+ * `repo` accepts any lowercase kebab DoltHub repo name. Two shapes exist in the
+ * fleet: freshly minted nodes ship the bare node slug (dolt name == git name,
+ * e.g. `toks3` — the operator retired the `knowledge-` prefix at mint), while
+ * older live forks (habitat/blue/oss) still ship legacy `knowledge-<slug>`.
+ * The node app MUST tolerate both: this schema runs inside container init, so a
+ * rejected shape here turns EVERY public route into a 503
+ * (CONTAINER_INIT_FAILED) on an otherwise-healthy node (bug.5033). Naming
+ * policy is the operator's mint-time concern, not a node-runtime gate.
  */
 export const knowledgeRemoteSpecSchema = z
   .object({
     provider: z.literal("dolthub"),
     owner: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/),
-    repo: z.string().regex(/^knowledge-[a-z][a-z0-9-]{0,63}$/),
+    repo: z
+      .string()
+      .regex(
+        /^[a-z][a-z0-9-]{0,63}$/,
+        "knowledge.remote.repo must be a lowercase kebab DoltHub repo name (bare node slug, e.g. `toks3`; legacy `knowledge-<slug>` also accepted)"
+      ),
     url: z.string().refine(isDoltHubRemoteUrl, {
       message:
         "DoltHub remote URL must be https://doltremoteapi.dolthub.com/<owner>/<repo> with no credentials",
@@ -582,6 +794,35 @@ export const repoSpecSchema = z
       })
       .optional(),
 
+    /** Token distribution activation status — active only after DAO-controlled minted inventory is verified */
+    distributions: z
+      .object({
+        status: z.enum(["pending_activation", "active"]),
+        claim_contract_pattern: z
+          .enum([
+            "uniswap.merkle-distributor.v1",
+            "1inch.cumulative-merkle-drop.v1",
+          ])
+          .optional(),
+        /**
+         * The ONE cumulative Merkle distributor deployed for this node at
+         * distributions activation (R2). DAO-owned (ownership transferred to
+         * `governance.dao_contract` post-deploy). Epoch finalization (R3) resolves
+         * this address, calls `setMerkleRoot` per epoch, and mints only the delta —
+         * there is no per-epoch redeploy. Recorded once and treated as immutable.
+         */
+        distributor_address: z
+          .string()
+          .regex(/^0x[0-9a-fA-F]{40}$/, "Invalid EVM address")
+          .optional(),
+        /** Deploy transaction hash for the distributor (audit/provenance). */
+        distributor_deploy_tx: z
+          .string()
+          .regex(/^0x[0-9a-fA-F]{64}$/, "Invalid tx hash")
+          .optional(),
+      })
+      .optional(),
+
     /** Payment configuration (optional — populated by node:activate-payments) */
     payments_in: z
       .object({
@@ -620,6 +861,9 @@ export const repoSpecSchema = z
      * node-author-facing contract (route XOR graph; no operator vocab leak).
      */
     schedules: nodeSchedulesSchema.optional().default([]),
+
+    /** Provider-neutral app-tier services; omission keeps the legacy app. */
+    deployment: nodeDeploymentSchema.optional(),
 
     /** PR review on/off + model selection (optional — defaults to enabled). */
     review: reviewConfigSchema.optional(),

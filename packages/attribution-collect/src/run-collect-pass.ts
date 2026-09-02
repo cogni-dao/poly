@@ -9,6 +9,7 @@
  *   - SEQUENCE_MIRRORS_WORKFLOW: same activity order as CollectEpochWorkflow and its two stage children.
  *   - WEBHOOK_ONLY_SKIPS_POLL: a source with no poll adapter (webhook-only, the spawned-node shape) is skipped for polling; its receipts already arrived via the Phase-1 receipt seam, so the pass proceeds to select/enrich/allocate over receipts already in the DB. Never throws on a missing poll adapter.
  *   - NODE_SCOPED: nodeId + scopeId flow from deps into the activity factories.
+ *   - SETTLEMENT_RETRY_BEST_EFFORT: each normal pass retries durable pending liabilities without blocking collection.
  * Side-effects: IO (database, GitHub API when a poll adapter is present)
  * Links: docs/design/attribution-operator-gateway.md, packages/temporal-workflows/src/workflows/collect-epoch.workflow.ts
  * @public
@@ -28,7 +29,10 @@ import type { AttributionIngestRunV1 } from "./contract";
  * The enrichment activities consume a subset of these (attributionStore, nodeId,
  * logger, registries).
  */
-export type RunCollectPassDeps = AttributionActivityDeps;
+export interface RunCollectPassDeps extends AttributionActivityDeps {
+  /** Runtime-wired settlement retry. Failure is logged and never blocks collection. */
+  readonly retryPendingSettlements?: () => Promise<unknown>;
+}
 
 /** Best-effort summary echoed back by the dispatch route. */
 export interface CollectPassSummary {
@@ -57,6 +61,18 @@ export async function runCollectPass(
   asOfIso: string
 ): Promise<CollectPassSummary> {
   const { logger } = deps;
+
+  try {
+    await deps.retryPendingSettlements?.();
+  } catch (err) {
+    logger.warn(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        event: "attribution.settlement_retry_failed",
+      },
+      "Pending settlement retry failed — collection continues"
+    );
+  }
 
   const ledger = createAttributionActivities(deps);
   const enrichment = createEnrichmentActivities({

@@ -20,6 +20,52 @@ import type { Database } from "@cogni/db-client";
 
 import { identityEvents, userBindings } from "@/shared/db/schema";
 
+export type BindingTransaction = Parameters<
+  Parameters<Database["transaction"]>[0]
+>[0];
+
+type BindingProvider = "wallet" | "discord" | "github" | "google";
+
+/**
+ * Transaction-scoped binding write for callers that must compose binding
+ * creation with another atomic state transition (for example nonce
+ * redemption). Returns true only when a new binding and evidence event were
+ * inserted.
+ */
+export async function createBindingInTransaction(
+  tx: BindingTransaction,
+  userId: string,
+  provider: BindingProvider,
+  externalId: string,
+  payload: Record<string, unknown>
+): Promise<{ readonly created: boolean; readonly eventId: string | null }> {
+  const bindingId = randomUUID();
+  const eventId = randomUUID();
+
+  const [inserted] = await tx
+    .insert(userBindings)
+    .values({
+      id: bindingId,
+      userId,
+      provider,
+      externalId,
+    })
+    .onConflictDoNothing({
+      target: [userBindings.provider, userBindings.externalId],
+    })
+    .returning({ id: userBindings.id });
+
+  if (!inserted) return { created: false, eventId: null };
+
+  await tx.insert(identityEvents).values({
+    id: eventId,
+    userId,
+    eventType: "bind",
+    payload: { provider, external_id: externalId, ...payload },
+  });
+  return { created: true, eventId };
+}
+
 /**
  * Creates a user binding and records a corresponding identity event.
  * Idempotent: if the (provider, external_id) pair already exists, both INSERTs are skipped.
@@ -33,37 +79,19 @@ import { identityEvents, userBindings } from "@/shared/db/schema";
 export async function createBinding(
   db: Database,
   userId: string,
-  provider: "wallet" | "discord" | "github" | "google",
+  provider: BindingProvider,
   externalId: string,
   payload: Record<string, unknown>
-): Promise<void> {
-  const bindingId = randomUUID();
-  const eventId = randomUUID();
-
+): Promise<{ readonly created: boolean; readonly eventId: string | null }> {
   // Single transaction: binding INSERT + identity_event INSERT.
   // If the binding already exists (idempotent case), skip both.
-  await db.transaction(async (tx) => {
-    const [inserted] = await tx
-      .insert(userBindings)
-      .values({
-        id: bindingId,
-        userId,
-        provider,
-        externalId,
-      })
-      .onConflictDoNothing({
-        target: [userBindings.provider, userBindings.externalId],
-      })
-      .returning({ id: userBindings.id });
-
-    // Only record the event if a new binding was actually created
-    if (inserted) {
-      await tx.insert(identityEvents).values({
-        id: eventId,
-        userId,
-        eventType: "bind",
-        payload: { provider, external_id: externalId, ...payload },
-      });
-    }
+  return db.transaction(async (tx) => {
+    return createBindingInTransaction(
+      tx,
+      userId,
+      provider,
+      externalId,
+      payload
+    );
   });
 }
