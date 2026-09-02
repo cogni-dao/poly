@@ -14,6 +14,7 @@
 import type {
   GateConfig,
   KnowledgeSpec,
+  NodeDeploymentSpec,
   NodeRegistryEntry,
   OperatorWalletSpec,
   RepoSpec,
@@ -100,6 +101,49 @@ export interface NodeScheduleConfig {
 
 export type KnowledgeConfig = KnowledgeSpec;
 
+export interface NodeServiceConfig {
+  readonly name: string;
+  readonly artifact: {
+    readonly name: string;
+    readonly context: string;
+    readonly dockerfile: string;
+    readonly target?: string;
+  };
+  readonly command?: readonly string[];
+  readonly args?: readonly string[];
+  readonly port: number;
+  readonly visibility: "public" | "private";
+  readonly bindings: Readonly<Record<string, string>>;
+  readonly secretRefs: readonly { readonly key: string }[];
+  readonly bindHost: "0.0.0.0";
+  readonly internalUrl: string;
+  readonly resources: {
+    readonly cpuUnits: number;
+    readonly memoryMi: number;
+    readonly storageMi: number;
+  };
+}
+
+const LEGACY_DEFAULT_DEPLOYMENT: NodeDeploymentSpec = {
+  services: [
+    {
+      name: "app",
+      artifact: {
+        name: "app",
+        context: ".",
+        dockerfile: "Dockerfile",
+        target: "runner",
+      },
+      port: 3200,
+      visibility: "public",
+      bindings: {},
+      secret_refs: [],
+      bind_host: "0.0.0.0",
+      resources: { cpu_units: 2, memory_mi: 2048, storage_mi: 4096 },
+    },
+  ],
+};
+
 // ---------------------------------------------------------------------------
 // Identity accessors
 // ---------------------------------------------------------------------------
@@ -115,6 +159,35 @@ export function extractNodeId(spec: RepoSpec): string {
  */
 export function extractNodeName(spec: RepoSpec): string {
   return spec.intent?.name ?? spec.node_id;
+}
+
+/** Resolve the Git-declared service graph, preserving the legacy app default. */
+export function extractNodeServices(
+  spec: RepoSpec
+): readonly NodeServiceConfig[] {
+  const deployment = spec.deployment ?? LEGACY_DEFAULT_DEPLOYMENT;
+  return deployment.services.map((service) => ({
+    name: service.name,
+    artifact: {
+      name: service.artifact.name,
+      context: service.artifact.context,
+      dockerfile: service.artifact.dockerfile,
+      ...(service.artifact.target ? { target: service.artifact.target } : {}),
+    },
+    ...(service.command ? { command: service.command } : {}),
+    ...(service.args ? { args: service.args } : {}),
+    port: service.port,
+    visibility: service.visibility,
+    bindings: service.bindings,
+    secretRefs: service.secret_refs,
+    bindHost: service.bind_host,
+    internalUrl: `http://${service.name}:${service.port}`,
+    resources: {
+      cpuUnits: service.resources.cpu_units,
+      memoryMi: service.resources.memory_mi,
+      storageMi: service.resources.storage_mi,
+    },
+  }));
 }
 
 /** One-line node mission from `intent.mission`, or null when undeclared. */
@@ -406,6 +479,73 @@ export function extractDaoConfig(spec: RepoSpec): DaoConfig | null {
     chain_id: String(dao.chain_id),
     ...(dao.base_url ? { base_url: dao.base_url } : {}),
   };
+}
+
+export interface DaoTokenDistributionConfig {
+  readonly chainId: number;
+  readonly tokenAddress: string;
+  readonly emissionsHolderAddress: string;
+  readonly claimContractPattern:
+    | "uniswap.merkle-distributor.v1"
+    | "1inch.cumulative-merkle-drop.v1";
+  /**
+   * The ONE cumulative Merkle distributor for this node (R2 deploy).
+   * Undefined until distributions activation records it. Epoch finalization (R3)
+   * resolves this as the terminal fallback when no manifest yet exists.
+   */
+  readonly distributorAddress?: string;
+}
+
+/**
+ * Extract active DAO token distribution config from repo-spec.
+ * Returns undefined until the node has explicitly activated distributions and
+ * published the token + DAO-controlled emissions holder addresses.
+ */
+export function extractDaoTokenDistributionConfig(
+  spec: RepoSpec,
+  expectedChainId?: number
+): DaoTokenDistributionConfig | undefined {
+  if (spec.distributions?.status !== "active") return undefined;
+
+  const chainId = extractChainId(spec);
+  if (expectedChainId !== undefined && chainId !== expectedChainId) {
+    throw new Error(
+      `[repo-spec] Chain mismatch: repo-spec declares ${chainId}, app requires ${expectedChainId}`
+    );
+  }
+
+  const tokenAddress = spec.governance.token_contract;
+  const emissionsHolderAddress = spec.governance.emissions_holder;
+  if (!tokenAddress || !emissionsHolderAddress) {
+    throw new Error(
+      "[repo-spec] distributions.status is active but governance.token_contract or governance.emissions_holder is missing"
+    );
+  }
+
+  return {
+    chainId,
+    tokenAddress,
+    emissionsHolderAddress,
+    claimContractPattern:
+      spec.distributions.claim_contract_pattern ??
+      "uniswap.merkle-distributor.v1",
+    ...(spec.distributions.distributor_address
+      ? { distributorAddress: spec.distributions.distributor_address }
+      : {}),
+  };
+}
+
+/**
+ * Extract the ONE cumulative distributor address recorded at distributions
+ * activation (R2). Returns undefined until an address is recorded. This is the
+ * terminal fallback for epoch-finalization distributor resolution (R3): the
+ * FIRST epoch has no prior/current manifest, so it reads the address from here.
+ * Does NOT require `distributions.status: active` — the address is recorded at
+ * the same moment activation flips to active, but reading it should not couple
+ * to status so a partially-recorded spec still resolves the contract.
+ */
+export function extractDistributorAddress(spec: RepoSpec): string | undefined {
+  return spec.distributions?.distributor_address ?? undefined;
 }
 
 /**
