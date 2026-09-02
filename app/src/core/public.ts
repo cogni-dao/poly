@@ -16,7 +16,3 @@ export * from "@cogni/node-core";
 
 // Node-specific core domain goes below this line.
 // Example: export { ReservationModel } from "./reservations/model";
-export * from "./redeem/derive-negrisk-amounts";
-export * from "./redeem/error-classification";
-export * from "./redeem/transitions";
-export * from "./redeem/types";

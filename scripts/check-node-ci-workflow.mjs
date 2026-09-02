@@ -4,10 +4,12 @@ import { parse } from "yaml";
 const CI_WORKFLOW_PATH = ".github/workflows/ci.yaml";
 const PR_BUILD_WORKFLOW_PATH = ".github/workflows/pr-build.yml";
 const PR_LINT_WORKFLOW_PATH = ".github/workflows/pr-lint.yaml";
+const REPO_POLICY_PATH = ".cogni/repo-policy.json";
 
 const ciWorkflow = readWorkflow(CI_WORKFLOW_PATH);
 const prBuildWorkflow = readWorkflow(PR_BUILD_WORKFLOW_PATH);
 const prLintWorkflow = readWorkflow(PR_LINT_WORKFLOW_PATH);
+const repoPolicy = JSON.parse(readFileSync(REPO_POLICY_PATH, "utf8"));
 
 function readWorkflow(path) {
   return parse(readFileSync(path, "utf8"));
@@ -61,6 +63,152 @@ function expectNoWorkflowDispatch(path, workflow) {
   const triggers = expectOwnKey(path, workflow, "on", "workflow");
   if (Object.hasOwn(triggers ?? {}, "workflow_dispatch")) {
     fail(path, "workflow must not use workflow_dispatch as launch or image evidence");
+  }
+}
+
+function requiredCheckContexts(policy) {
+  expectEqual(
+    REPO_POLICY_PATH,
+    policy?.schemaVersion,
+    "cogni.node-repo-policy.v1",
+    "schemaVersion"
+  );
+  expectEqual(
+    REPO_POLICY_PATH,
+    policy?.ruleset?.target,
+    "default_branch",
+    "ruleset.target"
+  );
+  expectEqual(
+    REPO_POLICY_PATH,
+    policy?.ruleset?.enforcement,
+    "active",
+    "ruleset.enforcement"
+  );
+  const bypassActors = policy?.ruleset?.bypassActors;
+  if (!Array.isArray(bypassActors) || bypassActors.length !== 0) {
+    fail(REPO_POLICY_PATH, "ruleset.bypassActors must be an empty array");
+  }
+  const contexts = policy?.ruleset?.requiredStatusChecks?.contexts;
+  if (
+    !Array.isArray(contexts) ||
+    contexts.length === 0 ||
+    contexts.some(
+      (context) => typeof context !== "string" || context.length === 0
+    ) ||
+    new Set(contexts).size !== contexts.length
+  ) {
+    fail(
+      REPO_POLICY_PATH,
+      "ruleset.requiredStatusChecks.contexts must be non-empty unique strings"
+    );
+    return [];
+  }
+  return contexts;
+}
+
+// GitHub names a check run after the job's static `name` when one is present, and
+// falls back to the job ID otherwise. Matching a required context against the job ID
+// alone is therefore unsound: adding `name: Unit Tests` to job `unit` leaves the job
+// ID intact while the emitted context becomes "Unit Tests" — the required check
+// `unit` then never reports and the ruleset deadlocks the repo. Resolve the effective
+// name the same way GitHub does.
+function effectiveCheckName(jobId, job) {
+  const declared = job?.name;
+  return typeof declared === "string" && declared.length > 0 ? declared : jobId;
+}
+
+// A required context must resolve to ONE statically-known check name. Expressions are
+// interpolated at run time and matrices fan one job out into `name (value)` per leg,
+// so neither can be proven to emit the exact context this policy requires.
+function unprovableCheckNameReason(jobId, job) {
+  if (String(job?.name ?? "").includes("${{")) {
+    return "declares a templated `name:` whose emitted check context cannot be resolved statically";
+  }
+  if (job?.strategy?.matrix !== undefined) {
+    return "uses `strategy.matrix`, which emits one check per matrix leg rather than the bare context";
+  }
+  return null;
+}
+
+function findRequiredCheckProviders(workflows, context) {
+  const providers = [];
+  for (const { path, workflow } of workflows) {
+    for (const [jobId, job] of Object.entries(workflow?.jobs ?? {})) {
+      if (effectiveCheckName(jobId, job) === context) {
+        providers.push({ path, workflow, jobId, job });
+      }
+    }
+  }
+  return providers;
+}
+
+function assertRequiredChecksRunOnReviewEvents(policy, workflows) {
+  for (const context of requiredCheckContexts(policy)) {
+    const providers = findRequiredCheckProviders(workflows, context);
+    if (providers.length !== 1) {
+      // Name the near-miss explicitly: a job whose ID matches but whose `name:` has
+      // been changed is the exact drift this check exists to catch, and "found 0" on
+      // its own sends the reader hunting for a deleted job.
+      const renamed = workflows.flatMap(({ path, workflow }) =>
+        Object.entries(workflow?.jobs ?? {})
+          .filter(([jobId, job]) => jobId === context && effectiveCheckName(jobId, job) !== context)
+          .map(([jobId, job]) => `${path} job ${jobId} now emits ${JSON.stringify(effectiveCheckName(jobId, job))}`)
+      );
+      fail(
+        REPO_POLICY_PATH,
+        `required check ${JSON.stringify(context)} must be emitted by exactly one job; found ${providers.length}` +
+          (renamed.length ? ` (${renamed.join("; ")})` : "")
+      );
+      continue;
+    }
+    const [{ path, workflow, jobId, job }] = providers;
+    const unprovable = unprovableCheckNameReason(jobId, job);
+    if (unprovable) {
+      fail(path, `required check ${JSON.stringify(context)} ${unprovable}`);
+    }
+    expectTrigger(path, workflow, "pull_request");
+    expectTrigger(path, workflow, "merge_group");
+    const jobIf = String(job?.if ?? "");
+    if (
+      jobIf.includes("github.event_name") ||
+      jobIf.includes("github.event.action")
+    ) {
+      fail(
+        path,
+        `required job ${JSON.stringify(context)} must not conditionally disappear for a review event`
+      );
+    }
+  }
+}
+
+// A required context that can SKIP is a required context that can pass while nothing
+// ran — GitHub scores a skipped required check as success. Any required job whose
+// upstream deps are themselves optional must therefore run under a bare `always()`
+// and assert those deps itself, rather than gating its own `if` on their results.
+function assertRequiredChecksFailClosed(policy, workflows) {
+  for (const context of requiredCheckContexts(policy)) {
+    const providers = findRequiredCheckProviders(workflows, context);
+    if (providers.length !== 1) continue; // already reported by the emitter check
+    const [{ path, job }] = providers;
+    if (!Object.hasOwn(job ?? {}, "if")) continue; // no condition: cannot skip
+    const condition = String(job.if).replace(/\s+/g, " ").trim();
+    if (condition === "always()") continue;
+    if (condition.includes("needs.") && condition.includes(".result")) {
+      fail(
+        path,
+        `required check ${JSON.stringify(context)} gates its own \`if\` on upstream ` +
+          `results (${JSON.stringify(condition)}); it would SKIP on upstream failure and ` +
+          "GitHub scores a skipped required check as SUCCESS. Use `if: always()` and " +
+          "assert the upstream results in a failing step instead."
+      );
+      continue;
+    }
+    fail(
+      path,
+      `required check ${JSON.stringify(context)} declares a conditional \`if\` ` +
+        `(${JSON.stringify(condition)}); a required check must not be skippable`
+    );
   }
 }
 
@@ -136,6 +284,7 @@ const detectJob = prBuildWorkflow?.jobs?.detect;
 if (!detectJob) fail(PR_BUILD_WORKFLOW_PATH, "jobs must include detect");
 expectEqual(PR_BUILD_WORKFLOW_PATH, detectJob?.needs, "resolve", "jobs.detect.needs");
 const detectSteps = Array.isArray(detectJob?.steps) ? detectJob.steps : [];
+expectStep(PR_BUILD_WORKFLOW_PATH, detectSteps, "Typecheck package closure");
 expectStep(PR_BUILD_WORKFLOW_PATH, detectSteps, "Detect node image targets");
 
 const buildJob = prBuildWorkflow?.jobs?.build;
@@ -146,10 +295,20 @@ if (!Array.isArray(buildJob?.needs) || buildJob.needs.join(",") !== "resolve,det
 expectEqual(PR_BUILD_WORKFLOW_PATH, buildJob?.strategy?.["fail-fast"], false, "jobs.build.strategy.fail-fast");
 const buildSteps = Array.isArray(buildJob?.steps) ? buildJob.steps : [];
 expectStep(PR_BUILD_WORKFLOW_PATH, buildSteps, "Checkout");
-expectStep(PR_BUILD_WORKFLOW_PATH, buildSteps, "Install");
-expectStep(PR_BUILD_WORKFLOW_PATH, buildSteps, "Typecheck package closure");
 expectStep(PR_BUILD_WORKFLOW_PATH, buildSteps, "Login to GHCR");
-expectStep(PR_BUILD_WORKFLOW_PATH, buildSteps, "Build app image");
+const imageBuildStep = expectStep(PR_BUILD_WORKFLOW_PATH, buildSteps, "Build app image");
+expectEqual(
+  PR_BUILD_WORKFLOW_PATH,
+  imageBuildStep?.with?.context,
+  "${{ matrix.target.context }}",
+  "declared artifact build context"
+);
+expectEqual(
+  PR_BUILD_WORKFLOW_PATH,
+  imageBuildStep?.with?.file,
+  "${{ matrix.target.dockerfile }}",
+  "declared artifact Dockerfile"
+);
 expectStep(PR_BUILD_WORKFLOW_PATH, buildSteps, "Write build fragment");
 expectStep(PR_BUILD_WORKFLOW_PATH, buildSteps, "Upload build fragment");
 
@@ -160,9 +319,76 @@ if (!Array.isArray(manifestJob?.needs) || manifestJob.needs.join(",") !== "resol
 }
 const manifestSteps = Array.isArray(manifestJob?.steps) ? manifestJob.steps : [];
 expectStep(PR_BUILD_WORKFLOW_PATH, manifestSteps, "Download build fragments");
-expectStep(PR_BUILD_WORKFLOW_PATH, manifestSteps, "Write build manifest");
+expectStep(PR_BUILD_WORKFLOW_PATH, manifestSteps, "Build repo-spec contract");
+const setupOrasStep = expectStep(PR_BUILD_WORKFLOW_PATH, manifestSteps, "Set up ORAS");
+expectEqual(
+  PR_BUILD_WORKFLOW_PATH,
+  setupOrasStep?.if,
+  "needs.resolve.outputs.should_push == 'true'",
+  "ORAS setup trust gate"
+);
+const writeManifestStep = expectStep(
+  PR_BUILD_WORKFLOW_PATH,
+  manifestSteps,
+  "Write build manifest"
+);
+expectEqual(
+  PR_BUILD_WORKFLOW_PATH,
+  writeManifestStep?.env?.EMIT_BUNDLE,
+  "${{ needs.resolve.outputs.should_push }}",
+  "trusted bundle publication gate"
+);
+const publishBundleStep = expectStep(
+  PR_BUILD_WORKFLOW_PATH,
+  manifestSteps,
+  "Publish immutable node artifact bundle"
+);
+expectEqual(
+  PR_BUILD_WORKFLOW_PATH,
+  publishBundleStep?.if,
+  "needs.resolve.outputs.should_push == 'true'",
+  "OCI bundle publication trust gate"
+);
+expectIncludes(
+  PR_BUILD_WORKFLOW_PATH,
+  publishBundleStep?.run,
+  "oras push",
+  "OCI bundle publisher"
+);
+expectIncludes(
+  PR_BUILD_WORKFLOW_PATH,
+  publishBundleStep?.run,
+  ":bundle-sha-${SOURCE_SHA}",
+  "deterministic source-SHA bundle tag"
+);
+expectIncludes(
+  PR_BUILD_WORKFLOW_PATH,
+  publishBundleStep?.run,
+  "node-artifact-bundle.json:${PAYLOAD_MEDIA_TYPE}",
+  "canonical OCI payload filename"
+);
 expectStep(PR_BUILD_WORKFLOW_PATH, manifestSteps, "Upload build manifest");
+const uploadBundleStep = expectStep(
+  PR_BUILD_WORKFLOW_PATH,
+  manifestSteps,
+  "Upload node artifact bundle"
+);
+expectEqual(
+  PR_BUILD_WORKFLOW_PATH,
+  uploadBundleStep?.if,
+  "needs.resolve.outputs.should_push == 'true'",
+  "immutable bundle upload trust gate"
+);
 
 expectEqual(PR_LINT_WORKFLOW_PATH, prLintWorkflow?.name, "Lint PR", "workflow name");
 expectTrigger(PR_LINT_WORKFLOW_PATH, prLintWorkflow, "pull_request");
 expectNoWorkflowDispatch(PR_LINT_WORKFLOW_PATH, prLintWorkflow);
+
+const REQUIRED_CHECK_WORKFLOWS = [
+  { path: CI_WORKFLOW_PATH, workflow: ciWorkflow },
+  { path: PR_BUILD_WORKFLOW_PATH, workflow: prBuildWorkflow },
+  { path: PR_LINT_WORKFLOW_PATH, workflow: prLintWorkflow },
+];
+
+assertRequiredChecksRunOnReviewEvents(repoPolicy, REQUIRED_CHECK_WORKFLOWS);
+assertRequiredChecksFailClosed(repoPolicy, REQUIRED_CHECK_WORKFLOWS);

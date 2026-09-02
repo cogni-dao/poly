@@ -3,77 +3,102 @@
 
 /**
  * Module: `@features/layout/components/AppHeader`
- * Purpose: Application header for poly node — logo, treasury, GitHub, wallet, theme.
- * Scope: Public-page header. Node-specific branding (Activity icon + cogni/poly).
- * Invariants: No horizontal overflow; matches operator AppHeader layout pattern.
+ * Purpose: Application header composing kit components and feature-specific widgets.
+ * Scope: Public-page header. Renders logo, treasury, socials, session-aware account slot, theme toggle. Does not handle routing or analytics.
+ * Invariants: No horizontal overflow; min-w-0/truncate/shrink-0 guards; GitHub hidden <lg; theme hidden <md; treasury always visible.
  * Side-effects: none
- * Links: docs/guides/new-node-styling.md
+ * Notes: Lives in features/layout as app-shell composition that knows about treasury, account chrome, etc.
+ * Links: src/features/layout/components/AccountSlot.tsx, src/styles/tailwind.css, docs/spec/onchain-readers.md
  * @public
  */
 
 "use client";
 
-import { Activity, Github } from "lucide-react";
+import { Github } from "lucide-react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import type { ReactElement } from "react";
-
-import { WalletConnectButton } from "@/components/kit/auth/WalletConnectButton";
-import { ModeToggle } from "@/components/kit/inputs/ModeToggle";
+import { ModeToggle } from "@/components";
 import { TreasuryBadge } from "@/features/treasury/components/TreasuryBadge";
+import { resolveBrandIcon } from "@/shared/brand/brandIcons";
+import type { BrandMark } from "@/shared/config/repoSpec.server";
+import { AccountSlot } from "./AccountSlot";
 
-export function AppHeader(): ReactElement {
-  return (
-    <header className="border-border border-b bg-background py-3">
-      <a
-        href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:rounded focus:bg-background focus:p-2 focus:text-foreground"
-      >
-        Skip to main content
-      </a>
-      <div className="mx-auto w-full max-w-7xl px-4 sm:px-6">
-        <div className="flex items-center justify-between gap-2 sm:gap-4">
-          {/* Left side: Logo + Treasury */}
-          <nav
-            aria-label="Primary"
-            className="flex min-w-0 items-center gap-3 sm:gap-4"
-          >
-            <Link
-              href="/"
-              aria-current="page"
-              className="flex min-w-0 items-center gap-2 pl-4 sm:pl-0"
-            >
-              <Activity className="size-5 shrink-0 text-primary" />
-              <span className="hidden truncate font-bold text-xl md:inline">
-                cogni<span className="text-primary">/poly</span>
-              </span>
-            </Link>
+/**
+ * Routes that ARE a sign-in. Offering "Connect" here is offering the thing the person
+ * is already halfway through — on the attestation gate it sits next to "Continue" and
+ * reads as a second, competing choice.
+ */
+const SIGNIN_FLOW_PREFIX = "/auth/attest";
 
-            <div className="flex">
-              <TreasuryBadge />
-            </div>
-          </nav>
+export function AppHeader({
+	brandMark,
+}: {
+	brandMark: BrandMark;
+}): ReactElement {
+	const inSignInFlow = usePathname()?.startsWith(SIGNIN_FLOW_PREFIX) ?? false;
+	// Brand mark resolved from this node's repo-spec (passed by the server layout —
+	// serializable {slug,icon,color}). Single source for the icon + color; forks set
+	// the repo-spec fields and never hand-edit this JSX. Icon name → component here.
+	const BrandIcon = resolveBrandIcon(brandMark.icon);
+	const brandColor = brandMark.color ?? undefined;
+	const slug = brandMark.slug;
 
-          {/* Right side: GitHub + Wallet + Theme */}
-          <div className="flex shrink-0 items-center gap-3">
-            <a
-              href="https://github.com/cogni-dao"
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="Cogni on GitHub"
-              className="hidden text-muted-foreground transition-colors hover:text-foreground lg:inline-flex"
-            >
-              <Github className="size-4" strokeWidth={1.5} aria-hidden="true" />
-            </a>
+	return (
+		<header className="border-border border-b bg-background py-3">
+			<a
+				href="#main"
+				className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:rounded focus:bg-background focus:p-2 focus:text-foreground"
+			>
+				Skip to main content
+			</a>
+			<div className="mx-auto w-full max-w-7xl px-4 sm:px-6">
+				<div className="flex items-center justify-between gap-2 sm:gap-4">
+					{/* Left side: Logo + Treasury */}
+					<nav
+						aria-label="Primary"
+						className="flex min-w-0 items-center gap-3 sm:gap-4"
+					>
+						<Link
+							href="/"
+							aria-current="page"
+							className="flex min-w-0 items-center gap-2 pl-4 sm:pl-0"
+						>
+							<BrandIcon
+								className="size-6 shrink-0"
+								color={brandColor}
+								strokeWidth={2}
+								aria-hidden="true"
+							/>
+							<span className="hidden truncate font-bold text-xl md:inline">
+								cogni
+								<span className="text-gradient-accent">/{slug}</span>
+							</span>
+						</Link>
 
-            <WalletConnectButton variant="compact" className="sm:hidden" />
-            <div data-wallet-slot="desktop" className="hidden sm:flex">
-              <WalletConnectButton variant="default" />
-            </div>
+						<div className="flex">
+							<TreasuryBadge />
+						</div>
+					</nav>
 
-            <ModeToggle className="hidden md:flex" />
-          </div>
-        </div>
-      </div>
-    </header>
-  );
+					{/* Right side: GitHub + Wallet + Theme */}
+					<div className="flex shrink-0 items-center gap-3">
+						<a
+							href="https://github.com/cogni-dao"
+							target="_blank"
+							rel="noopener noreferrer"
+							aria-label="Cogni on GitHub"
+							className="hidden text-muted-foreground transition-colors hover:text-foreground lg:inline-flex"
+						>
+							<Github className="size-4" strokeWidth={1.5} aria-hidden="true" />
+						</a>
+
+						{inSignInFlow ? null : <AccountSlot showAppLink />}
+
+						<ModeToggle className="hidden md:flex" />
+					</div>
+				</div>
+			</div>
+		</header>
+	);
 }
