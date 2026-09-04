@@ -256,9 +256,10 @@ export interface PolyTraderWalletPort {
 
   /**
    * Read-only on-chain balance snapshot for the tenant's trading wallet on
-   * Polygon: native POL gas + USDC.e (`0x2791Bca1…`, the Polymarket quote
-   * token). Returns `null` when no connection row exists for the tenant
-   * (PROVISION_FIRST). A connection that exists but partially fails RPC
+   * Polygon: native POL gas + USDC.e (`0x2791Bca1…`, bridged) + native USDC
+   * (`0x3c499c54…`, Circle-issued) + pUSD (Polymarket V2 collateral). All three
+   * stables are spendable cash. Returns `null` when no connection row exists
+   * for the tenant (PROVISION_FIRST). A connection that exists but partially fails RPC
    * reads returns partial values with `errors[]` populated, never throws —
    * matches the fail-soft contract of `resolve()` for read surfaces.
    *
@@ -269,8 +270,14 @@ export interface PolyTraderWalletPort {
    */
   getBalances(billingAccountId: string): Promise<{
     readonly address: `0x${string}`;
-    /** Decimal USDC.e. `null` when the RPC read failed. */
+    /** Decimal USDC.e (bridged). `null` when the RPC read failed. */
     readonly usdcE: number | null;
+    /**
+     * Decimal native (Circle-issued) USDC. The Collateral Onramp now accepts
+     * native USDC as a deposit source too, so it is a third spendable cash leg.
+     * `null` when the RPC read failed.
+     */
+    readonly usdcNative: number | null;
     /** Decimal pUSD (Polymarket V2 collateral). `null` when the RPC read failed. */
     readonly pusd: number | null;
     /** Decimal native POL. `null` when the RPC read failed. */
