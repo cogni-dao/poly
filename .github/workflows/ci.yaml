@@ -42,6 +42,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install pinned Foundry
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
+        with:
+          version: v1.7.1
+
+      - name: Verify publish-condition artifact and behavior
+        run: pnpm --filter @cogni/cogni-contracts check:solidity
+
       - name: Build workspace packages
         run: pnpm packages:build
 
@@ -74,9 +82,8 @@ jobs:
         run: pnpm test:ci
 
   component:
-    # Skip on merge_group: kept off the required-status-checks path so the
-    # queue doesn't re-run testcontainers on every rebased candidate.
-    if: github.event_name != 'merge_group'
+    # Required by .cogni/repo-policy.json on both pull_request and merge_group.
+    # A required job must never disappear from a merge-queue candidate.
     runs-on: ubuntu-latest # GitHub-hosted runners provide Docker for testcontainers
     needs: static
     steps:
