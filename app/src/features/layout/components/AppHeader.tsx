@@ -3,17 +3,18 @@
 
 /**
  * Module: `@features/layout/components/AppHeader`
- * Purpose: Application header for poly node — logo, treasury, GitHub, wallet, theme.
- * Scope: Public-page header. Node-specific branding (Activity icon + cogni/poly).
- * Invariants: No horizontal overflow; matches operator AppHeader layout pattern.
+ * Purpose: Application header composing kit components and feature-specific widgets.
+ * Scope: Public-page header. Renders logo, treasury, socials, session-aware account slot, theme toggle. Does not handle routing or analytics.
+ * Invariants: No horizontal overflow; min-w-0/truncate/shrink-0 guards; GitHub hidden <lg; theme hidden <md; treasury always visible.
  * Side-effects: none
- * Links: docs/guides/new-node-styling.md
+ * Notes: Lives in features/layout as app-shell composition that knows about treasury, account chrome, etc.
+ * Links: src/features/layout/components/AccountSlot.tsx, src/styles/tailwind.css, docs/spec/onchain-readers.md
  * @public
  */
 
 "use client";
 
-import { Activity, Github } from "lucide-react";
+import { Github } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactElement } from "react";
