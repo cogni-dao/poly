@@ -46,6 +46,9 @@ Pure parsing and typed extraction for `.cogni/repo-spec.yaml` — the governance
   - `extractLedgerApprovers(spec)` — Lowercased EVM approver addresses
   - `extractKnowledgeConfig(spec)` — Node-local knowledge DB + Cogni-owned DoltHub mirror declaration
   - `extractNodeId(spec)` — Node identity UUID
+  - `extractNodeServices(spec)` — Provider-neutral app service graph with legacy one-app default
+  - `extractNodeArtifactBuilds(spec)` — Unique declared artifact build instructions for CI
+  - `buildNodeArtifactBundle(...)` / `resolveNodeArtifactBundle(...)` — Atomic immutable source-SHA service bundle
   - `extractNodes(spec)` — Node registry entries (operator-only, returns `[]` for non-operator specs)
   - `extractNodePath(spec, nodeId)` — Resolve a node UUID to its registered relative path; returns `null` on miss (caller decides fallback)
   - `extractOwningNode(spec, paths)` — Paths → owning domain. Returns `single | conflict | miss`. Operator is a sovereign domain (catches `nodes/operator/**`, `packages/`, `.github/`, root configs); cross-domain mixing returns `conflict`. On `conflict`, the result also carries `operatorPaths` + `operatorNodeId` so downstream formatters can render the diagnostic without re-classifying. Bounded ride-along carve-out via `rideAlongApplied` flag (currently `pnpm-lock.yaml`, `work/**`, `docs/**`, `.claude/skills/poly-dev-manager/SKILL.md`, exact single-node-scope policy maintenance files, and the fast-check root app Vitest config exception). Mirrors `tests/ci-invariants/classify.ts` per spec § Single-Domain Scope.
@@ -53,7 +56,7 @@ Pure parsing and typed extraction for `.cogni/repo-spec.yaml` — the governance
   - `extractScopeId(spec)` — Scope identity UUID (throws if missing)
   - `extractChainId(spec)` — Numeric chain ID from governance section
   - Zod schemas: `repoSpecSchema`, `nodeRegistryEntrySchema`, `creditsTopupSpecSchema`, `governanceScheduleSchema`, etc.
-  - Types: `RepoSpec`, `NodeRegistryEntry`, `InboundPaymentConfig`, `GovernanceConfig`, `GovernanceSchedule`, `LedgerConfig`, `LedgerPoolConfig`
+  - Types: `RepoSpec`, `NodeDeploymentSpec`, `NodeArtifactBundle`, `NodeRegistryEntry`, `InboundPaymentConfig`, `GovernanceConfig`, `GovernanceSchedule`, `LedgerConfig`, `LedgerPoolConfig`
 - **Subpath `@cogni/repo-spec/testing`** — test-only fixtures; never imported from production code:
   - `TEST_NODE_IDS`, `TEST_NODE_ENTRIES`, `TEST_SCOPE_ID`, `TEST_CHAIN_ID`, `TEST_RECEIVING_ADDRESS`, `TEST_APPROVER_ADDRESS`
   - `buildTestRepoSpec(overrides?)` — parsed `RepoSpec` from minimal-valid input + overrides

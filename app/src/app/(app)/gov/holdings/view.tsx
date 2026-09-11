@@ -3,10 +3,10 @@
 
 /**
  * Module: `@app/(app)/gov/holdings/view`
- * Purpose: Client component displaying cumulative credit holdings with pie chart and compact table.
- * Scope: Renders holdings data fetched via useHoldings hook. Does not perform server-side logic or direct DB access.
+ * Purpose: Client component displaying cumulative credit holdings with pie chart and compact table, plus the R4 cumulative token-claim affordance.
+ * Scope: Renders holdings data fetched via useHoldings hook and embeds CumulativeClaimPanel (connect wallet → claim). Does not perform server-side logic or direct DB access.
  * Invariants: BigInt credits displayed via Number() for presentation only. No credit math in UI.
- * Side-effects: IO (via useHoldings hook)
+ * Side-effects: IO (via useHoldings hook); blockchain read/write via the embedded claim panel.
  * Links: docs/spec/epoch-ledger.md, src/features/governance/types.ts
  * @public
  */
@@ -27,6 +27,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components";
+import { CumulativeClaimPanel } from "@/features/governance/components/CumulativeClaimPanel";
 import { HoldingRow } from "@/features/governance/components/HoldingCard";
 import { useHoldings } from "@/features/governance/hooks/useHoldings";
 import { buildPieChartData } from "@/features/governance/lib/build-pie-data";
@@ -130,6 +131,10 @@ export function HoldingsView(): ReactElement {
           </CardContent>
         </Card>
       </div>
+
+      {/* R4 claim-read: connect a wallet and claim the cumulative token allocation
+          (a single claim releases every unclaimed epoch). */}
+      <CumulativeClaimPanel />
 
       <div>
         <h2 className="mb-3 font-semibold text-lg">Ownership Distribution</h2>

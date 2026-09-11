@@ -177,6 +177,30 @@ describe("proxy — API route protection", () => {
 		expect(mockGetToken).not.toHaveBeenCalled();
 	});
 
+	it("allows the attestation start leg without auth — it IS the sign-in bootstrap", async () => {
+		// task.5042. Someone signing in with GitHub has no session yet, so gating this
+		// leg on one deadlocks: it is the request that gets them a session. Caught by
+		// live validation — the route was made session-optional but the proxy still
+		// 401'd it at the perimeter.
+		mockGetToken.mockResolvedValue(null);
+
+		const res = await proxy(
+			makeRequest("/api/v1/identity/bindings/import/start"),
+		);
+
+		expect(res.status).toBe(200);
+		expect(mockGetToken).not.toHaveBeenCalled();
+	});
+
+	it("still rejects the sibling import leg unauthenticated", async () => {
+		// Only the START leg is public. Redeeming a token must keep its session gate.
+		mockGetToken.mockResolvedValue(null);
+
+		const res = await proxy(makeRequest("/api/v1/identity/bindings/import"));
+
+		expect(res.status).toBe(401);
+	});
+
 	it("rejects unauthenticated on /api/v1/cognition", async () => {
 		mockGetToken.mockResolvedValue(null);
 

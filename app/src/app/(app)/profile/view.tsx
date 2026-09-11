@@ -4,7 +4,7 @@
 /**
  * Module: `@app/(app)/profile/view`
  * Purpose: Client component for user profile settings — display name, avatar color, and linked accounts.
- * Scope: Reads/updates user profile via /api/v1/users/me; does not handle OAuth flow directly or manage session persistence.
+ * Scope: Reads/updates user profile via /api/v1/users/me; does not handle OAuth flow directly or manage session persistence. Also handles the operator attestation return leg (#attestation=<jwt> → POST /api/v1/identity/bindings/import) and the "Verify GitHub via hub" fallback when node-local GitHub OAuth is unconfigured (task.5024).
  * Invariants: Requires authenticated session (enforced by parent layout); avatar color updates reflected in session via update().
  * Side-effects: IO (fetch API, session update, navigation for OAuth linking)
  * Links: src/contracts/users.profile.v1.contract.ts, src/app/api/v1/users/me/route.ts
@@ -30,6 +30,7 @@ import {
   GoogleIcon,
   PageContainer,
 } from "@/components";
+import { Spinner } from "@cogni/node-ui-kit/shadcn/spinner";
 import { OpenAIIcon } from "@/features/ai/icons/providers/OpenAIIcon";
 
 /* ─── Types ────────────────────────────────────────────────────────── */
@@ -185,19 +186,43 @@ const FEEDBACK_MESSAGES: Record<
     text: "Account linking failed. Please try again.",
     variant: "error",
   },
+  invalid_token: {
+    text: "GitHub verification token was invalid or expired. Please try again.",
+    variant: "error",
+  },
+  jwks_unavailable: {
+    text: "Could not reach the verification hub. Please try again later.",
+    variant: "error",
+  },
 };
+
+/** Attestation error codes surfaced verbatim as feedback banners. */
+const ATTESTATION_ERROR_CODES = new Set([
+  "invalid_token",
+  "jwks_unavailable",
+  "already_linked",
+]);
 
 function FeedbackBanner({
   linkedProvider,
+  linkedLogin,
   error,
 }: {
   linkedProvider: string | null;
+  linkedLogin: string | null;
   error: string | null;
 }): ReactElement | null {
   if (linkedProvider) {
     return (
       <div className="rounded-md border border-primary/30 bg-primary/5 px-4 py-3 text-foreground text-sm">
-        Successfully linked your {linkedProvider} account.
+        {linkedLogin ? (
+          <>
+            Verified <strong>{linkedProvider} @{linkedLogin}</strong> on this
+            node. Contributions by that account can now be claimed here.
+          </>
+        ) : (
+          <>Successfully linked your {linkedProvider} account.</>
+        )}
       </div>
     );
   }
@@ -523,6 +548,7 @@ export function ProfileView(): ReactElement {
   const [configuredProviders, setConfiguredProviders] = useState<Set<string>>(
     new Set()
   );
+  const [providersLoaded, setProvidersLoaded] = useState(false);
   const [chatGptConnected, setChatGptConnected] = useState(false);
   const [chatGptLoading, setChatGptLoading] = useState(false);
   const [ollamaConnected, setOllamaConnected] = useState(false);
@@ -531,9 +557,11 @@ export function ProfileView(): ReactElement {
   const [ollamaUrl, setOllamaUrl] = useState("");
   const [ollamaApiKey, setOllamaApiKey] = useState("");
   const [ollamaError, setOllamaError] = useState("");
+  const [attestationStarting, setAttestationStarting] = useState(false);
 
   // Read feedback query params and strip them to prevent re-display on refresh
   const linkedProvider = searchParams.get("linked");
+  const linkedLogin = searchParams.get("login");
   const error = searchParams.get("error");
 
   useEffect(() => {
@@ -546,6 +574,54 @@ export function ProfileView(): ReactElement {
       router.replace("/profile");
     }
   }, [linkedProvider, error, router, updateSession]);
+
+  // Operator attestation return leg (task.5024): the hub redirects back with
+  // #attestation=<jwt>. Auto-POST it to the import route, then replace the
+  // URL (full navigation) so the token never lingers in history and the
+  // existing ?linked= / ?error= feedback + profile refetch path is reused.
+  const [attestationImporting, setAttestationImporting] = useState(false);
+  const attestationHandled = useRef(false);
+  useEffect(() => {
+    if (attestationHandled.current) return;
+    const hash = window.location.hash;
+    if (!hash.startsWith("#attestation=")) return;
+    attestationHandled.current = true;
+    setAttestationImporting(true);
+
+    void (async () => {
+      try {
+        const token = decodeURIComponent(hash.slice("#attestation=".length));
+        const res = await fetch("/api/v1/identity/bindings/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        });
+        if (res.ok) {
+          // Name the account that was actually bound — a generic "verified" is
+          // exactly what hid the wrong-account bug on the 2026-08-19 candidate.
+          const bound: { githubLogin?: string | null } | null = await res
+            .json()
+            .catch(() => null);
+          const login = bound?.githubLogin;
+          window.location.replace(
+            login
+              ? `/profile?linked=GitHub&login=${encodeURIComponent(login)}`
+              : "/profile?linked=GitHub"
+          );
+          return;
+        }
+        const data: { errorCode?: string } | null = await res
+          .json()
+          .catch(() => null);
+        const code = data?.errorCode ?? "";
+        window.location.replace(
+          `/profile?error=${ATTESTATION_ERROR_CODES.has(code) ? code : "link_failed"}`
+        );
+      } catch {
+        window.location.replace("/profile?error=link_failed");
+      }
+    })();
+  }, []);
 
   // Fetch profile data + configured providers in parallel
   useEffect(() => {
@@ -577,6 +653,7 @@ export function ProfileView(): ReactElement {
           Object.keys(providers).filter((id) => id !== "credentials")
         );
         setConfiguredProviders(ids);
+        setProvidersLoaded(true);
       })
       .catch(() => {
         // Provider fetch failed — show nothing rather than broken links
@@ -614,6 +691,32 @@ export function ProfileView(): ReactElement {
     profile?.linkedProviders.find((p) => p.provider === providerId)
       ?.providerLogin ?? null;
 
+  const initiateProviderLink = async (providerId: string) => {
+    const res = await fetch(`/api/auth/link/${providerId}`, {
+      method: "POST",
+    });
+    if (!res.ok) return;
+    signIn(providerId, {
+      callbackUrl: `/profile?linked=${providerId}`,
+    });
+  };
+
+  // Return leg from the operator identity broker: the page would otherwise render
+  // an empty profile for the duration of the import POST and then hard-navigate,
+  // which read as a blank flash. Show the shared Spinner and say what is happening.
+  if (attestationImporting) {
+    return (
+      <PageContainer maxWidth="2xl">
+        <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3">
+          <Spinner className="size-6 text-muted-foreground" />
+          <p className="text-muted-foreground text-sm">
+            Recording your verified GitHub account on this node…
+          </p>
+        </div>
+      </PageContainer>
+    );
+  }
+
   return (
     <PageContainer maxWidth="2xl">
       {/* Page heading */}
@@ -621,7 +724,11 @@ export function ProfileView(): ReactElement {
       <div className="border-border border-b" />
 
       {/* Feedback banner for linking results */}
-      <FeedbackBanner linkedProvider={linkedProvider} error={error} />
+      <FeedbackBanner
+        error={error}
+        linkedLogin={linkedLogin}
+        linkedProvider={linkedProvider}
+      />
 
       {/* ── Profile section (display name + avatar color, no divider between) ── */}
 
@@ -696,23 +803,26 @@ export function ProfileView(): ReactElement {
             label={label}
             description={description}
           >
-            {isLinked && login ? (
-              <ConnectedBadge login={login} />
-            ) : isLinked ? (
-              <ConnectedBadge login="Connected" />
+            {isLinked ? (
+              <div className="flex items-center gap-2">
+                <ConnectedBadge login={login ?? "Connected"} />
+                {walletAddress &&
+                id === "github" &&
+                configuredProviders.has(id) ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => initiateProviderLink(id)}
+                  >
+                    Link another GitHub
+                  </Button>
+                ) : null}
+              </div>
             ) : (
               <Button
                 variant="outline"
                 size="sm"
-                onClick={async () => {
-                  const res = await fetch(`/api/auth/link/${id}`, {
-                    method: "POST",
-                  });
-                  if (!res.ok) return;
-                  signIn(id, {
-                    callbackUrl: `/profile?linked=${id}`,
-                  });
-                }}
+                onClick={() => initiateProviderLink(id)}
               >
                 Link
               </Button>
@@ -720,6 +830,52 @@ export function ProfileView(): ReactElement {
           </SettingRow>
         );
       })}
+
+      {/* GitHub when node-local OAuth is not configured (task.5024): the operator
+          hub runs the authorization and redirects back with #attestation=<jwt> for the
+          auto-import effect above. Copy deliberately matches OAUTH_PROVIDERS above —
+          "Link your GitHub account." / "Link" — because the operator hop is OUR
+          plumbing, not something a contributor should have to understand. Any wording
+          that leaks it ("verify via this environment's operator hub") is a bug. */}
+      {providersLoaded &&
+        !configuredProviders.has("github") &&
+        !linkedProviderIds.has("github") && (
+          <SettingRow
+            icon={<GitHubIcon className="size-5" />}
+            label="GitHub"
+            description="Link your GitHub account."
+          >
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={attestationStarting}
+              onClick={() => {
+                setAttestationStarting(true);
+                void fetch("/api/v1/identity/bindings/import/start", {
+                  method: "POST",
+                })
+                  .then(async (res) => {
+                    if (!res.ok) throw new Error("start failed");
+                    const data = (await res.json()) as { authorizeUrl: string };
+                    window.location.assign(data.authorizeUrl);
+                  })
+                  .catch(() => {
+                    setAttestationStarting(false);
+                    window.location.assign("/profile?error=link_failed");
+                  });
+              }}
+            >
+              {attestationStarting ? (
+                <>
+                  <Spinner />
+                  Redirecting to GitHub…
+                </>
+              ) : (
+                "Link"
+              )}
+            </Button>
+          </SettingRow>
+        )}
 
       {/* ── AI Providers (BYO-AI) ── */}
 

@@ -3,11 +3,11 @@
 
 /**
  * Module: `@features/governance/hooks/useSignEpoch`
- * Purpose: Orchestrates EIP-712 epoch signing flow — fetch sign-data, wallet signature, POST finalize.
+ * Purpose: Orchestrates EIP-712 epoch signing flow — seal review snapshot, fetch sign-data, wallet signature, POST finalize.
  * Scope: Client-side state machine for sign & finalize. Does not access database or server-side logic.
- * Invariants: WRITE_ROUTES_APPROVER_GATED (server enforces), SIGNATURE_SCOPE_BOUND (sign-data includes all scope fields).
+ * Invariants: WRITE_ROUTES_APPROVER_GATED (server enforces), SIGNATURE_SCOPE_BOUND, SIGNATURE_DEPLOYMENT_BOUND (server-supplied environment is signed).
  * Side-effects: IO (HTTP fetch, wagmi wallet signing)
- * Links: src/contracts/attribution.sign-data.v1.contract.ts, src/contracts/attribution.finalize-epoch.v1.contract.ts
+ * Links: packages/node-contracts/src/attribution.sign-data.v2.contract.ts, packages/node-contracts/src/attribution.finalize-epoch.v1.contract.ts
  * @public
  */
 
@@ -30,6 +30,12 @@ interface SignDataResponse {
     nodeId: string;
     scopeId: string;
     epochId: string;
+    deploymentEnvironment:
+      | "local"
+      | "test"
+      | "candidate-a"
+      | "preview"
+      | "production";
     finalAllocationSetHash: string;
     poolTotalCredits: string;
   };
@@ -142,6 +148,23 @@ async function fetchSignData(epochId: string): Promise<SignDataResponse> {
   return res.json() as Promise<SignDataResponse>;
 }
 
+/**
+ * Idempotently seal (or repair) the unsigned review snapshot before typed data
+ * is built. This keeps sign-data GET read-only while recovering reviews created
+ * by the former manual open→review path that did not lock claimant rows.
+ */
+async function sealReviewSnapshot(epochId: string): Promise<void> {
+  const res = await fetch(`/api/v1/attribution/epochs/${epochId}/review`, {
+    method: "POST",
+    credentials: "same-origin",
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`${res.status}: ${body}`);
+  }
+}
+
 async function postFinalize(
   epochId: string,
   signature: string
@@ -176,11 +199,14 @@ export function useSignEpoch(epochId: string): UseSignEpochReturn {
     if (internal.phase !== "IDLE") return;
 
     try {
-      // 1. Fetch EIP-712 typed data from server
+      // 1. Idempotently seal/repair the unsigned review snapshot.
       dispatch({ type: "START_FETCH" });
+      await sealReviewSnapshot(epochId);
+
+      // 2. Fetch EIP-712 typed data from server.
       const typedData = await fetchSignData(epochId);
 
-      // 2. Request wallet signature
+      // 3. Request wallet signature
       dispatch({ type: "DATA_FETCHED" });
       const signature = await signTypedDataAsync({
         domain: typedData.domain,
@@ -189,7 +215,7 @@ export function useSignEpoch(epochId: string): UseSignEpochReturn {
         message: typedData.message,
       });
 
-      // 3. POST signature to finalize endpoint
+      // 4. POST signature to finalize endpoint
       dispatch({ type: "SIGNATURE_RECEIVED" });
       const result = await postFinalize(epochId, signature);
 

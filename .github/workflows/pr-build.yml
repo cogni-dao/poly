@@ -134,8 +134,25 @@ jobs:
           repository: ${{ needs.resolve.outputs.checkout_repo }}
           ref: ${{ needs.resolve.outputs.checkout_ref }}
 
+      - name: Set up pnpm
+        uses: pnpm/action-setup@c5ba7f7862a0f64c1b1a05fbac13e0b8e86ba08c # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck package closure
+        run: pnpm check
+
       - name: Detect node image targets
         id: detect
+        env:
+          IMAGE_NAME: ${{ needs.resolve.outputs.image_name }}
         run: node scripts/ci/detect-node-build-targets.mjs
 
   build:
@@ -147,6 +164,97 @@ jobs:
       matrix:
         target: ${{ fromJson(needs.detect.outputs.targets_json) }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
+        with:
+          repository: ${{ needs.resolve.outputs.checkout_repo }}
+          ref: ${{ needs.resolve.outputs.checkout_ref }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: needs.resolve.outputs.should_push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build app image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.target.context }}
+          file: ${{ matrix.target.dockerfile }}
+          target: ${{ matrix.target.target }}
+          push: ${{ needs.resolve.outputs.should_push == 'true' }}
+          tags: ${{ matrix.target.image_name }}:${{ needs.resolve.outputs.image_tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ needs.resolve.outputs.checkout_repo }}
+            org.opencontainers.image.revision=${{ needs.resolve.outputs.source_sha }}
+          build-args: |
+            BUILD_SHA=${{ needs.resolve.outputs.source_sha }}
+          cache-from: type=gha,scope=node-template-${{ matrix.target.artifact }}
+          cache-to: type=gha,mode=max,scope=node-template-${{ matrix.target.artifact }}
+
+      - name: Write build fragment
+        env:
+          OUTPUT_FILE: ${{ runner.temp }}/build-fragment-${{ matrix.target.artifact }}.json
+          TARGET: ${{ matrix.target.legacy_target }}
+          ARTIFACT_NAME: ${{ matrix.target.artifact }}
+          IMAGE_NAME: ${{ matrix.target.image_name }}
+          IMAGE_TAG: ${{ needs.resolve.outputs.image_tag }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          REPOSITORY: ${{ github.repository }}
+        run: node scripts/ci/write-node-build-fragment.mjs
+
+      - name: Upload build fragment
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pr-build-fragment-${{ matrix.target.artifact }}-${{ needs.resolve.outputs.source_sha }}
+          path: ${{ runner.temp }}/build-fragment-${{ matrix.target.artifact }}.json
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  # `manifest` is a REQUIRED status check on every spawned node repo
+  # (.cogni/repo-policy.json). GitHub scores a SKIPPED required check as SUCCESS, so
+  # this job must never skip: gating it on upstream success meant a failed `detect` or
+  # `build` silently satisfied the required set and a broken image could merge.
+  # `detect` and `build` are deliberately not themselves required (they are
+  # change-scoped and skip legitimately), which is exactly why the fail-closed
+  # assertion has to live here, in the one job the ruleset always waits on.
+  manifest:
+    needs: [resolve, detect, build]
+    if: always()
+    runs-on: ubuntu-latest
+    outputs:
+      bundle_digest_ref: ${{ steps.publish_bundle.outputs.bundle_digest_ref }}
+    steps:
+      - name: Assert upstream build succeeded
+        env:
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
+          DETECT_RESULT: ${{ needs.detect.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          fail=0
+          # `build` skips legitimately when detect finds no affected targets.
+          for pair in "resolve:$RESOLVE_RESULT:success" \
+                      "detect:$DETECT_RESULT:success" \
+                      "build:$BUILD_RESULT:success|skipped"; do
+            job=${pair%%:*}; rest=${pair#*:}; result=${rest%%:*}; allowed=${rest#*:}
+            case "|$allowed|" in
+              *"|$result|"*) echo "  $job = $result (ok)" ;;
+              *) echo "::error::required upstream job '$job' finished as '$result'; allowed: ${allowed//|/, }"; fail=1 ;;
+            esac
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::manifest fails closed — a required check must not pass on a broken build"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
         with:
@@ -165,70 +273,20 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck package closure
-        run: pnpm check
+      - name: Build repo-spec contract
+        run: pnpm --filter @cogni/repo-spec build
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up ORAS
+        if: needs.resolve.outputs.should_push == 'true'
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
 
-      - name: Login to GHCR
+      - name: Login to GHCR for bundle publication
         if: needs.resolve.outputs.should_push == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build app image
-        id: image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          target: runner
-          push: ${{ needs.resolve.outputs.should_push == 'true' }}
-          tags: ${{ needs.resolve.outputs.image_name }}:${{ needs.resolve.outputs.image_tag }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ needs.resolve.outputs.source_sha }}
-          build-args: |
-            BUILD_SHA=${{ needs.resolve.outputs.source_sha }}
-          cache-from: type=gha,scope=node-template-app
-          cache-to: type=gha,mode=max,scope=node-template-app
-
-      - name: Write build fragment
-        env:
-          OUTPUT_FILE: ${{ runner.temp }}/build-fragment-${{ matrix.target }}.json
-          TARGET: ${{ matrix.target }}
-          IMAGE_NAME: ${{ needs.resolve.outputs.image_name }}
-          IMAGE_TAG: ${{ needs.resolve.outputs.image_tag }}
-          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
-          DIGEST: ${{ steps.image.outputs.digest }}
-          REPOSITORY: ${{ github.repository }}
-        run: node scripts/ci/write-node-build-fragment.mjs
-
-      - name: Upload build fragment
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: pr-build-fragment-${{ matrix.target }}-${{ needs.resolve.outputs.source_sha }}
-          path: ${{ runner.temp }}/build-fragment-${{ matrix.target }}.json
-          retention-days: 1
-          if-no-files-found: error
-          overwrite: true
-
-  manifest:
-    needs: [resolve, detect, build]
-    if: |
-      always() &&
-      needs.detect.result == 'success' &&
-      (needs.build.result == 'success' || needs.build.result == 'skipped')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
-        with:
-          repository: ${{ needs.resolve.outputs.checkout_repo }}
-          ref: ${{ needs.resolve.outputs.checkout_ref }}
 
       - name: Download build fragments
         if: needs.detect.outputs.has_targets == 'true'
@@ -242,21 +300,64 @@ jobs:
         env:
           FRAGMENTS_DIR: ${{ runner.temp }}/build-fragments
           MANIFEST_FILE: ${{ runner.temp }}/build-manifest.json
+          BUNDLE_FILE: ${{ runner.temp }}/node-artifact-bundle.json
           IMAGE_NAME: ${{ needs.resolve.outputs.image_name }}
           IMAGE_TAG: ${{ needs.resolve.outputs.image_tag }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           REPOSITORY: ${{ github.repository }}
+          SOURCE_REPOSITORY: ${{ needs.resolve.outputs.checkout_repo }}
+          EMIT_BUNDLE: ${{ needs.resolve.outputs.should_push }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           WORKFLOW_NAME: ${{ github.workflow }}
           REF_NAME: ${{ needs.resolve.outputs.ref_name }}
         run: node scripts/ci/write-node-build-manifest.mjs
 
+      - name: Publish immutable node artifact bundle
+        id: publish_bundle
+        if: needs.resolve.outputs.should_push == 'true'
+        working-directory: ${{ runner.temp }}
+        env:
+          MANIFEST_FILE: ${{ runner.temp }}/build-manifest.json
+          BUNDLE_FILE: ${{ runner.temp }}/node-artifact-bundle.json
+          BUNDLE_REPOSITORY: ${{ needs.resolve.outputs.image_name }}
+          SOURCE_REPOSITORY: ${{ needs.resolve.outputs.checkout_repo }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          ARTIFACT_TYPE: application/vnd.cogni.node-artifact-bundle.v1
+          PAYLOAD_MEDIA_TYPE: application/vnd.cogni.node-artifact-bundle.v1+json
+        run: |
+          set -euo pipefail
+          bundle_tag_ref="${BUNDLE_REPOSITORY}:bundle-sha-${SOURCE_SHA}"
+          oras push "$bundle_tag_ref" \
+            --artifact-type "$ARTIFACT_TYPE" \
+            --annotation "org.opencontainers.image.source=https://github.com/${SOURCE_REPOSITORY}" \
+            --annotation "org.opencontainers.image.revision=${SOURCE_SHA}" \
+            "node-artifact-bundle.json:${PAYLOAD_MEDIA_TYPE}"
+          bundle_digest="$(oras resolve "$bundle_tag_ref")"
+          if [[ ! "$bundle_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::ORAS returned an invalid bundle digest: $bundle_digest"
+            exit 1
+          fi
+          BUNDLE_TAG_REF="$bundle_tag_ref" BUNDLE_DIGEST="$bundle_digest" \
+            node "$GITHUB_WORKSPACE/scripts/ci/record-node-bundle-publication.mjs"
+          echo "bundle_digest_ref=${BUNDLE_REPOSITORY}@${bundle_digest}" >> "$GITHUB_OUTPUT"
+          echo "Published ${BUNDLE_REPOSITORY}@${bundle_digest}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload build manifest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: build-manifest-${{ needs.resolve.outputs.source_sha }}
           path: ${{ runner.temp }}/build-manifest.json
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Upload node artifact bundle
+        if: needs.resolve.outputs.should_push == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: node-artifact-bundle-${{ needs.resolve.outputs.source_sha }}
+          path: ${{ runner.temp }}/node-artifact-bundle.json
           retention-days: 7
           if-no-files-found: error
           overwrite: true

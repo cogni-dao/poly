@@ -21,11 +21,11 @@ export * from "./ai.agents.v1.contract";
 // with ai.completions.v1.contract (TS2308). The completions ChatMessage
 // (OpenAI-compatible format) is the one used by consumers.
 export {
-	AssistantUiInputSchema,
-	aiChatOperation,
-	type ChatInput,
-	ChatMessageSchema,
-	type ChatOutput,
+  AssistantUiInputSchema,
+  aiChatOperation,
+  type ChatInput,
+  ChatMessageSchema,
+  type ChatOutput,
 } from "./ai.chat.v1.contract";
 export * from "./ai.completions.v1.contract";
 export * from "./ai.models.v1.contract";
@@ -37,15 +37,18 @@ export * from "./analytics.summary.v1.contract";
 export * from "./attribution.collect-trigger.v1.contract";
 export * from "./attribution.epoch-activity.v1.contract";
 export * from "./attribution.epoch-claimants.v1.contract";
+export * from "./attribution.epoch-distribution.v1.contract";
 export * from "./attribution.epoch-statement.v1.contract";
 export * from "./attribution.epoch-user-projections.v1.contract";
 export * from "./attribution.finalize-epoch.v1.contract";
+export * from "./attribution.latest-distribution.v1.contract";
 export * from "./attribution.list-epochs.v1.contract";
 export * from "./attribution.receipts.internal.v1.contract";
 export * from "./attribution.record-pool-component.v1.contract";
 export * from "./attribution.review-epoch.v1.contract";
 export * from "./attribution.review-subject-overrides.v1.contract";
 export * from "./attribution.sign-data.v1.contract";
+export * from "./attribution.sign-data.v2.contract";
 // ── Billing ─────────────────────────────────────────────────────────────────
 export * from "./billing-ingest.internal.v1.contract";
 // ── Cognition (session-start substrate bundle) ──────────────────────────────
@@ -60,6 +63,7 @@ export * from "./grants.validate.internal.v1.contract";
 export * from "./graph-runs.create.internal.v1.contract";
 export * from "./graph-runs.update.internal.v1.contract";
 export * from "./graphs.run.internal.v1.contract";
+export * from "./identity.attestation.v1.contract";
 // ── HTTP (ts-rest router + OpenAPI) ─────────────────────────────────────────
 export * from "./http/openapi.v1";
 export * from "./http/router.v1";

@@ -132,10 +132,32 @@ Files:
 
 Tailor the default graph and graph list to the node's domain. Prediction-market nodes should expose market-analysis prompts and graphs; reservation nodes should expose reservation workflows; general nodes can keep `langgraph:brain`.
 
+## The README is yours
+
+A minted node ships node-template's `README.md`, which opens `# node-template` and then
+describes the template — layout conventions, image tags, what the deploy plane omits.
+Rewrite it to describe YOUR node.
+
+**Why this is a first-class step and not a nicety.** The README is the first thing a
+human or an agent reads on the repo, so it is identity in exactly the sense
+`.cogni/sync-manifest.yaml` uses the word. That file's rule is:
+
+> a node's IDENTITY and PRESENTATION are its own; the shell and the contracts are not.
+
+`README.md` is therefore carved out as Tier-3 (`node_local`), the same treatment
+`app/src/styles/tailwind.css` received after every sync overwrote each fork's design
+tokens with node-template's. Tier-3 means node-template never clobbers your copy — so
+unlike the app shell, this file is safe to diverge and yours to own.
+
+**Source the mission from one place.** Lead with `.cogni/repo-spec.yaml` `intent.mission`,
+the same field feeding the homepage hero. Two hand-written descriptions of the same node
+drift; one source cannot.
+
 ## Checklist
 
 - [ ] Update logo or icon in header and sidebar.
 - [ ] Update visible node name and external links.
+- [ ] Rewrite `README.md` (see "The README is yours" below).
 - [ ] Pick a primary hue and update `tailwind.css` light and dark variables.
 - [ ] Set `layout.tsx` metadata.
 - [ ] Customize the public homepage by rewriting `app/src/features/home/content.ts` (hero, agent stream, showcase cards, activity feed, stats).

@@ -19,14 +19,14 @@
 import type { InferSelectModel } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import {
-  check,
-  index,
-  jsonb,
-  pgPolicy,
-  pgTable,
-  text,
-  timestamp,
-  uniqueIndex,
+	check,
+	index,
+	jsonb,
+	pgPolicy,
+	pgTable,
+	text,
+	timestamp,
+	uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 import { users } from "./refs";
@@ -37,30 +37,30 @@ import { users } from "./refs";
  * UNIQUE(provider, external_id) enforces NO_AUTO_MERGE at the DB level.
  */
 export const userBindings = pgTable(
-  "user_bindings",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id")
-      .notNull()
-      .references(() => users.id),
-    provider: text("provider").notNull(),
-    externalId: text("external_id").notNull(),
-    providerLogin: text("provider_login"),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (table) => [
-    check(
-      "user_bindings_provider_check",
-      sql`${table.provider} IN ('wallet', 'discord', 'github', 'google')`
-    ),
-    uniqueIndex("user_bindings_provider_external_id_unique").on(
-      table.provider,
-      table.externalId
-    ),
-    index("user_bindings_user_id_idx").on(table.userId),
-  ]
+	"user_bindings",
+	{
+		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id),
+		provider: text("provider").notNull(),
+		externalId: text("external_id").notNull(),
+		providerLogin: text("provider_login"),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.notNull()
+			.defaultNow(),
+	},
+	(table) => [
+		check(
+			"user_bindings_provider_check",
+			sql`${table.provider} IN ('wallet', 'discord', 'github', 'google')`,
+		),
+		uniqueIndex("user_bindings_provider_external_id_unique").on(
+			table.provider,
+			table.externalId,
+		),
+		index("user_bindings_user_id_idx").on(table.userId),
+	],
 ).enableRLS();
 
 /**
@@ -70,30 +70,30 @@ export const userBindings = pgTable(
  * the link is rejected — never silently falls through to new-user creation.
  */
 export const linkTransactions = pgTable(
-  "link_transactions",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id")
-      .notNull()
-      .references(() => users.id),
-    provider: text("provider").notNull(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    consumedAt: timestamp("consumed_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (table) => [
-    check(
-      "link_transactions_provider_check",
-      sql`${table.provider} IN ('github', 'discord', 'google')`
-    ),
-    index("link_transactions_user_id_idx").on(table.userId),
-    pgPolicy("tenant_isolation", {
-      using: sql`${table.userId} = current_setting('app.current_user_id', true)`,
-      withCheck: sql`${table.userId} = current_setting('app.current_user_id', true)`,
-    }),
-  ]
+	"link_transactions",
+	{
+		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id),
+		provider: text("provider").notNull(),
+		expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+		consumedAt: timestamp("consumed_at", { withTimezone: true }),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.notNull()
+			.defaultNow(),
+	},
+	(table) => [
+		check(
+			"link_transactions_provider_check",
+			sql`${table.provider} IN ('github', 'discord', 'google')`,
+		),
+		index("link_transactions_user_id_idx").on(table.userId),
+		pgPolicy("tenant_isolation", {
+			using: sql`${table.userId} = current_setting('app.current_user_id', true)`,
+			withCheck: sql`${table.userId} = current_setting('app.current_user_id', true)`,
+		}),
+	],
 ).enableRLS();
 
 export type LinkTransaction = InferSelectModel<typeof linkTransactions>;
@@ -104,23 +104,59 @@ export type LinkTransaction = InferSelectModel<typeof linkTransactions>;
  * Revocation creates a new event, never deletes rows.
  */
 export const identityEvents = pgTable(
-  "identity_events",
-  {
-    id: text("id").primaryKey(),
-    userId: text("user_id")
-      .notNull()
-      .references(() => users.id),
-    eventType: text("event_type").notNull(),
-    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (table) => [
-    check(
-      "identity_events_event_type_check",
-      sql`${table.eventType} IN ('bind', 'revoke', 'merge')`
-    ),
-    index("identity_events_user_id_idx").on(table.userId),
-  ]
+	"identity_events",
+	{
+		id: text("id").primaryKey(),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id),
+		eventType: text("event_type").notNull(),
+		payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.notNull()
+			.defaultNow(),
+	},
+	(table) => [
+		check(
+			"identity_events_event_type_check",
+			sql`${table.eventType} IN ('bind', 'revoke', 'merge')`,
+		),
+		index("identity_events_user_id_idx").on(table.userId),
+	],
 ).enableRLS();
+
+/**
+ * Pre-session challenges for operator-attested GitHub SIGN-IN (task.5042).
+ *
+ * Distinct from `link_transactions` on purpose. That table is the LINK flow's nonce and
+ * is structurally user-owned — `user_id` is NOT NULL, references `users`, and carries an
+ * RLS policy keyed on `app.current_user_id`. A sign-in challenge is minted BEFORE any
+ * local user exists, so it cannot borrow that row shape without weakening a live policy.
+ *
+ * Stores the nonce HASH, never the nonce: the plaintext travels in the URL and inside the
+ * operator's signed attestation, so a database read must not be enough to replay one.
+ * The browser holds the plaintext in an HttpOnly cookie, and `authorize()` requires the
+ * cookie to match the attestation's `nonce` claim (SIGNIN_NONCE_IS_COOKIE_BOUND) — without
+ * that pairing a leaked attestation would mint a session on its own.
+ *
+ * Service-role only. RLS is enabled with NO policy, which is deny-all for `app_user`.
+ */
+export const identitySigninChallenges = pgTable(
+	"identity_signin_challenges",
+	{
+		id: text("id").primaryKey(),
+		nonceHash: text("nonce_hash").notNull().unique(),
+		expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+		consumedAt: timestamp("consumed_at", { withTimezone: true }),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.notNull()
+			.defaultNow(),
+	},
+	(table) => [
+		index("identity_signin_challenges_expires_at_idx").on(table.expiresAt),
+	],
+).enableRLS();
+
+export type IdentitySigninChallenge = InferSelectModel<
+	typeof identitySigninChallenges
+>;

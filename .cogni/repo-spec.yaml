@@ -71,3 +71,33 @@ gates:
   - type: ai-rule
     with:
       rule_file: repo-goal-alignment.yaml
+
+# Akash lane (story.5016). Declares WHAT this node runs so the operator can
+# render a provider-neutral workload. Emitted verbatim by
+# `renderNodeDeploymentYaml()` in @cogni/repo-spec -- the SAME renderer the node
+# scaffolder mints from and that `assertDeclaredNodeDeployment` prints when a
+# node is missing one. One renderer, no hand-authored drift.
+deployment:
+  services:
+    - name: app
+      artifact:
+        name: app
+        context: .
+        dockerfile: Dockerfile
+        target: runner
+      port: 3200
+      visibility: public
+      runtime_profile: cogni-node-app-v1
+      bindings: {}
+      secret_refs:
+        - key: AUTH_SECRET
+        - key: DATABASE_URL
+        - key: DATABASE_SERVICE_URL
+        - key: LITELLM_VIRTUAL_KEY
+        - key: SCHEDULER_API_TOKEN
+        - key: BILLING_INGEST_TOKEN
+      bind_host: 0.0.0.0
+      resources:
+        cpu_units: 2
+        memory_mi: 2048
+        storage_mi: 4096
