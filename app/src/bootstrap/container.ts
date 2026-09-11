@@ -25,8 +25,16 @@ import type { AttributionStore } from "@cogni/attribution-ledger";
 import {
 	createDefaultRegistries,
 	type DefaultRegistries,
+	type FinalizeEpochInput,
+	type FinalizeEpochOutput,
+	type FinalizeLogger,
+	type RunFinalizeEpochDeps,
+	runFinalizeEpoch,
 } from "@cogni/attribution-pipeline-plugins";
-import { DrizzleAttributionAdapter } from "@cogni/db-client";
+import {
+	DrizzleAttributionAdapter,
+	DrizzleClaimantWalletResolver,
+} from "@cogni/db-client";
 import type { FinancialLedgerPort } from "@cogni/financial-ledger";
 import { createTigerBeetleAdapter } from "@cogni/financial-ledger/adapters";
 import type { UserId } from "@cogni/ids";
@@ -187,8 +195,10 @@ import type {
 } from "@/ports/server";
 import {
 	getDaoTreasuryAddress,
+	getEmissionsHolderAddress,
 	getLedgerConfig,
 	getNodeId,
+	getNodeTokenomicsConfig,
 	getOperatorWalletConfig,
 	getPaymentConfig,
 	getScopeId,
@@ -514,6 +524,54 @@ function getCollectRegistries(): DefaultRegistries {
 		});
 	}
 	return _collectRegistries;
+}
+
+/**
+ * Assemble deps for IN-PROCESS epoch finalization (story.5007 — finalize-in-process).
+ * The node runs `runFinalizeEpoch` synchronously in its own finalize route on its OWN
+ * service DB + repo-spec, retiring the Temporal FinalizeEpochWorkflow round-trip (no
+ * ledger-tasks queue, no cross-scope theft). All adapter/registry wiring lives here —
+ * the route boundary forbids adapter imports.
+ *
+ * - `attributionStore` = service DB (BYPASSRLS) scoped adapter.
+ * - `walletResolver` built only when a token is configured; else the R3 fold no-ops.
+ * - `distributionConfigClient` = null. A node finalizes only its OWN epochs, so the
+ *   baked tokenomics from its OWN repo-spec are already authoritative (no per-node
+ *   gateway — that is an operator-only concept). The bug.5020 execute-guard still
+ *   fires on the baked emissions-holder / non-production runtime.
+ */
+function buildFinalizeEpochDeps(logger: FinalizeLogger): RunFinalizeEpochDeps {
+	const serviceDb = getServiceDb();
+	const tokenomics = getNodeTokenomicsConfig();
+	return {
+		attributionStore: new DrizzleAttributionAdapter(serviceDb, getScopeId()),
+		registries: getCollectRegistries(),
+		nodeId: getNodeId(),
+		scopeId: getScopeId(),
+		chainId: tokenomics.chainId,
+		tokenAddress: tokenomics.tokenAddress,
+		distributorAddress: tokenomics.distributorAddress,
+		emissionsHolderAddress: getEmissionsHolderAddress(),
+		walletResolver: tokenomics.tokenAddress
+			? new DrizzleClaimantWalletResolver(serviceDb)
+			: null,
+		distributionConfigClient: null,
+		deploymentEnvironment: serverEnv().DEPLOY_ENVIRONMENT,
+		logger,
+	};
+}
+
+/**
+ * Run epoch finalization IN-PROCESS (story.5007). Thin composition-root wrapper the
+ * finalize route calls instead of dispatching a Temporal FinalizeEpochWorkflow — keeps
+ * the route free of adapter/package wiring (route boundary). Idempotent: a re-POST
+ * repairs; the fold FREEZE (bug.5022) preserves a published manifest.
+ */
+export async function finalizeEpochInProcess(
+	input: FinalizeEpochInput,
+	logger: FinalizeLogger,
+): Promise<FinalizeEpochOutput> {
+	return runFinalizeEpoch(buildFinalizeEpochDeps(logger), input);
 }
 
 function createContainer(): Container {

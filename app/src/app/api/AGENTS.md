@@ -45,6 +45,8 @@ HTTP API endpoints using Next.js App Router. Contract-validated entry points tha
   - `/api/v1/chat/completions` [POST] - OpenAI-compatible chat completions (streaming + non-streaming, `cogni_status` extension); see [completions spec](../../../docs/spec/completions-api.md)
   - `/api/v1/ai/chat` [POST] - streaming chat with server-authoritative thread persistence
   - `/api/v1/activity` [GET]
+  - `/api/v1/identity/bindings/import/start` [POST] - mint a session-owned nonce and return the pinned operator broker URL
+  - `/api/v1/identity/bindings/import` [POST] - verify and consume an operator identity attestation into this node's binding ledger
   - `/api/v1/public/attribution/epochs` [GET] - closed epochs list (public, no auth)
   - `/api/v1/public/attribution/epochs/[id]/user-projections` [GET] - closed epoch user projections (public)
   - `/api/v1/public/attribution/epochs/[id]/claimants` [GET] - closed epoch claimant attribution (public)

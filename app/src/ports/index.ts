@@ -128,6 +128,12 @@ export type {
 	TemplateQueryResult,
 	TemplateSummary,
 } from "./metrics-query.port";
+export type {
+	AttestedGithubBindingEvidence,
+	GithubBindingOwner,
+	IdentityBindingRepositoryPort,
+	IdentityBindingTransactionPort,
+} from "./identity-binding.port";
 export type { ModelCatalogPort } from "./model-catalog.port";
 export type {
 	ModelOption,

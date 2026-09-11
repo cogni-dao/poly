@@ -42,9 +42,9 @@ function createMockDb() {
   const mockDb = {
     transaction: vi
       .fn()
-      .mockImplementation(async (cb: (tx: unknown) => Promise<void>) => {
+      .mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
         insertCallCount = 0;
-        await cb(mockTx);
+        return cb(mockTx);
       }),
     // biome-ignore lint/suspicious/noExplicitAny: Mocking complex DB type
   } as unknown as any;
@@ -68,13 +68,14 @@ describe("createBinding", () => {
   });
 
   it("inserts binding + identity event for new binding", async () => {
-    await createBinding(mockDb, "user-123", "wallet", "0xabc", {
+    const result = await createBinding(mockDb, "user-123", "wallet", "0xabc", {
       method: "siwe",
       domain: "example.com",
     });
 
     // Transaction was opened
     expect(mockDb.transaction).toHaveBeenCalledOnce();
+    expect(result).toEqual({ created: true, eventId: expect.any(String) });
 
     // Two inserts: binding + event
     expect(mockTx.insert).toHaveBeenCalledTimes(2);
@@ -101,12 +102,13 @@ describe("createBinding", () => {
     // Simulate ON CONFLICT DO NOTHING — returning() yields empty array
     bindingInsertChain.returning.mockResolvedValue([]);
 
-    await createBinding(mockDb, "user-123", "wallet", "0xabc", {
+    const result = await createBinding(mockDb, "user-123", "wallet", "0xabc", {
       method: "siwe",
     });
 
     // Only one insert (the binding attempt), no event insert
     expect(mockTx.insert).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ created: false, eventId: null });
   });
 
   it("passes correct provider and externalId to binding values", async () => {

@@ -41,6 +41,7 @@ import {
   computeWeightConfigHash,
   estimatePoolComponentsV0,
   explodeToClaimants,
+  parseEIP712DeploymentEnvironment,
   sha256OfCanonicalJson,
   toReviewSubjectOverrides,
   validateWeightConfig,
@@ -59,6 +60,8 @@ import type {
 import type { Logger } from "pino";
 import { verifyTypedData } from "viem";
 
+const TOKEN_BASE_UNITS = 10n ** 18n;
+
 /**
  * Dependencies injected into ledger activities at worker creation.
  */
@@ -69,6 +72,8 @@ export interface AttributionActivityDeps {
   readonly nodeId: string;
   readonly scopeId: string;
   readonly chainId: number;
+  /** Server runtime authority for deployment-bound EIP-712 v2 finalization. */
+  readonly deploymentEnvironment?: string | undefined;
   readonly logger: Logger;
 }
 
@@ -300,6 +305,7 @@ export function createAttributionActivities(deps: AttributionActivityDeps) {
     nodeId,
     scopeId,
     chainId,
+    deploymentEnvironment: unvalidatedDeploymentEnvironment,
     logger,
   } = deps;
 
@@ -971,24 +977,14 @@ export function createAttributionActivities(deps: AttributionActivityDeps) {
    * Atomic epoch transition: close stale open epoch (if any) + get-or-create epoch for the given window.
    * Single DB transaction — no race window between close and create.
    * Computes config hashes internally (crypto not safe in Temporal workflow code).
-   * Locks claimant rows for stale epoch before transition.
+   * Claimant locking is part of the store's atomic transition transaction.
    */
   async function transitionEpochForWindow(
     input: TransitionEpochForWindowInput
   ): Promise<TransitionEpochForWindowOutput> {
     const { closeParams: inputClose } = input;
 
-    // Lock claimants for stale epoch before the atomic transition
     const staleEpochId = BigInt(inputClose.staleEpochId);
-    const lockedCount =
-      await attributionStore.lockClaimantsForEpoch(staleEpochId);
-    logger.info(
-      {
-        staleEpochId: inputClose.staleEpochId,
-        lockedClaimants: lockedCount,
-      },
-      "Claimant rows locked for stale epoch"
-    );
 
     // Compute hashes from raw values (crypto happens here, not in workflow)
     validateWeightConfig(inputClose.staleWeightConfig);
@@ -1059,6 +1055,11 @@ export function createAttributionActivities(deps: AttributionActivityDeps) {
   async function finalizeEpoch(
     input: FinalizeEpochInput
   ): Promise<FinalizeEpochOutput> {
+    // Legacy activity path remains fail-closed even though new nodes finalize
+    // in-process through runFinalizeEpoch.
+    const deploymentEnvironment = parseEIP712DeploymentEnvironment(
+      unvalidatedDeploymentEnvironment
+    );
     const epochId = BigInt(input.epochId);
 
     logger.info(
@@ -1107,6 +1108,13 @@ export function createAttributionActivities(deps: AttributionActivityDeps) {
           poolTotalCredits: existing.poolTotalCredits,
           statementLines: existing.statementLines,
         },
+        claimantLiabilities: existing.statementLines
+          .filter((line) => BigInt(line.credit_amount) > 0n)
+          .map((line) => ({
+            claimantKey: line.claimant_key,
+            amountAtomic: BigInt(line.credit_amount) * TOKEN_BASE_UNITS,
+            receiptIds: [...line.receipt_ids].sort(),
+          })),
         signature: {
           nodeId,
           signerWallet: input.signerAddress,
@@ -1241,6 +1249,7 @@ export function createAttributionActivities(deps: AttributionActivityDeps) {
       nodeId,
       scopeId,
       epochId: input.epochId,
+      deploymentEnvironment,
       finalAllocationSetHash,
       poolTotalCredits: poolTotal.toString(),
       chainId,
@@ -1290,6 +1299,13 @@ export function createAttributionActivities(deps: AttributionActivityDeps) {
           reviewOverrides:
             reviewOverrideSnapshots.length > 0 ? reviewOverrideSnapshots : null,
         },
+        claimantLiabilities: statementLines
+          .filter((line) => line.creditAmount > 0n)
+          .map((line) => ({
+            claimantKey: line.claimantKey,
+            amountAtomic: line.creditAmount * TOKEN_BASE_UNITS,
+            receiptIds: [...line.receiptIds].sort(),
+          })),
         signature: {
           nodeId,
           signerWallet: input.signerAddress,

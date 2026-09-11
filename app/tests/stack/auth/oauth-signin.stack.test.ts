@@ -32,8 +32,9 @@ import { identityEvents, userBindings, users } from "@/shared/db/schema";
 // vi.mock factories are hoisted — no top-level variable references allowed inside them.
 
 // Control link intent per test via vi.hoisted
-const { mockGetStore } = vi.hoisted(() => ({
+const { mockGetStore, mockReconcileSettlementsAfterBinding } = vi.hoisted(() => ({
   mockGetStore: vi.fn().mockReturnValue(null),
+  mockReconcileSettlementsAfterBinding: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock(import("@cogni/node-shared"), async (importOriginal) => ({
@@ -44,6 +45,10 @@ vi.mock(import("@cogni/node-shared"), async (importOriginal) => ({
 // Stub getCsrfToken (imported at module level by auth.ts, not used in OAuth path)
 vi.mock("next-auth/react", () => ({
   getCsrfToken: vi.fn(),
+}));
+
+vi.mock("@/bootstrap/settlement-runtime", () => ({
+  reconcileSettlementsAfterBinding: mockReconcileSettlementsAfterBinding,
 }));
 
 // Stub logger to prevent env validation at module load
@@ -103,6 +108,7 @@ describe("OAuth signIn callback — DB paths", () => {
 
   afterEach(() => {
     mockGetStore.mockReturnValue(null);
+    mockReconcileSettlementsAfterBinding.mockClear();
   });
 
   it("creates new user with atomic user+binding+event rows", async () => {
@@ -133,6 +139,10 @@ describe("OAuth signIn callback — DB paths", () => {
     });
     expect(binding).toBeDefined();
     expect(binding?.userId).toBe(userId);
+    // Plain OAuth sign-in creates a wallet-less identity only. It must not
+    // reconcile that identity into an unrelated wallet user's settlement.
+    expect(userRow?.walletAddress).toBeNull();
+    expect(mockReconcileSettlementsAfterBinding).not.toHaveBeenCalled();
 
     // Verify identity event
     const event = await db.query.identityEvents.findFirst({
@@ -225,6 +235,11 @@ describe("OAuth signIn callback — DB paths", () => {
     });
     expect(binding).toBeDefined();
     expect(binding?.userId).toBe(TEST_USER_ID_2);
+    expect(mockReconcileSettlementsAfterBinding).toHaveBeenCalledOnce();
+    expect(mockReconcileSettlementsAfterBinding).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Object)
+    );
   });
 
   it("is idempotent when link intent matches existing binding", async () => {
@@ -263,6 +278,7 @@ describe("OAuth signIn callback — DB paths", () => {
       where: eq(userBindings.userId, TEST_USER_ID_3),
     });
     expect(bindingsAfter.length).toBe(bindingsBefore.length);
+    expect(mockReconcileSettlementsAfterBinding).not.toHaveBeenCalled();
   });
 
   it("rejects link intent when binding owned by different user (NO_AUTO_MERGE)", async () => {

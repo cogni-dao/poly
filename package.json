@@ -8,7 +8,7 @@
     "build:packages": "pnpm -r --if-present --filter \"./packages/**\" --filter \"./graphs\" build && tsc -b packages/*/tsconfig.json packages/langgraph-graphs/tsconfig.build.json packages/doltgres-schema/tsconfig.json",
     "packages:build": "pnpm build:packages",
     "build:app": "pnpm --filter @cogni/node-template-app build",
-    "check:workflow": "node scripts/check-node-ci-workflow.mjs",
+    "check:workflow": "node scripts/check-node-ci-workflow.mjs && node scripts/check-node-ci-workflow.test.mjs",
     "conductor:setup": "bash scripts/conductor-worktree-setup.sh",
     "codex:cognition:install": "bash scripts/agent/install-codex-cognition-hook.sh",
     "db:generate": "tsx node_modules/drizzle-kit/bin.cjs generate --config=drizzle.config.ts",

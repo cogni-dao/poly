@@ -48,9 +48,19 @@ const AGENT_BEARER_PREFIX = "Bearer cogni_ag_sk_v1_";
 function isPublicApiRoute(pathname: string): boolean {
 	// Agent register is the one bootstrap seam left open: register → key →
 	// everything else (cognition included) requires that principal.
+	//
+	// The attestation START leg is the HUMAN bootstrap seam, for the same reason
+	// (task.5042): someone signing in with GitHub has no session yet, so requiring
+	// one here is a deadlock — it is the request that gets them a session. Safe to
+	// expose because the leg reads nothing and returns nothing sensitive: it mints
+	// a single-use challenge and hands back a URL built entirely from THIS node's
+	// own configured origin and node id. Nothing about who is asking changes it.
+	// The signed-in LINK mode of the same route still resolves its session inside
+	// the handler, so nothing is weakened for that path.
 	return (
 		pathname.startsWith("/api/v1/public/") ||
-		pathname === "/api/v1/agent/register"
+		pathname === "/api/v1/agent/register" ||
+		pathname === "/api/v1/identity/bindings/import/start"
 	);
 }
 

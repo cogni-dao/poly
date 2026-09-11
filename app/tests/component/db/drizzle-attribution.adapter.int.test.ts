@@ -11,6 +11,7 @@
  * @public
  */
 
+import { buildDaoTokenCumulativeDistribution } from "@cogni/aragon-osx";
 import {
   EpochNotFoundError,
   EpochNotInReviewError,
@@ -956,6 +957,13 @@ describe("DrizzleAttributionAdapter (Component)", () => {
         receipt_ids: ["receipt-2"],
       },
     ];
+    const CLAIMANT_LIABILITIES = STATEMENT_LINES.filter(
+      (line) => BigInt(line.credit_amount) > 0n
+    ).map((line) => ({
+      claimantKey: line.claimant_key,
+      amountAtomic: BigInt(line.credit_amount) * 10n ** 18n,
+      receiptIds: [...line.receipt_ids].sort(),
+    }));
 
     function makeAtomicParams(epochId: bigint) {
       return {
@@ -967,6 +975,7 @@ describe("DrizzleAttributionAdapter (Component)", () => {
             epochId,
           })
         ),
+        claimantLiabilities: CLAIMANT_LIABILITIES,
         statement: {
           nodeId: TEST_NODE_ID,
           finalAllocationSetHash: HASH,
@@ -1132,6 +1141,179 @@ describe("DrizzleAttributionAdapter (Component)", () => {
       await expect(adapter.finalizeEpochAtomic(divergeParams)).rejects.toThrow(
         /signature divergence/
       );
+    });
+
+    it("rejects omitted or repriced liabilities against the signed statement", async () => {
+      const epoch = await adapter.createEpoch({
+        nodeId: TEST_NODE_ID,
+        scopeId: TEST_SCOPE_ID,
+        ...epochWindow(26),
+        weightConfig: TEST_WEIGHT_CONFIG,
+      });
+      await adapter.closeIngestion(
+        epoch.id,
+        [],
+        "liability-mismatch-approver",
+        "weight-sum-v0",
+        "liability-mismatch-wch"
+      );
+
+      const params = makeAtomicParams(epoch.id);
+      await expect(
+        adapter.finalizeEpochAtomic({
+          ...params,
+          claimantLiabilities: params.claimantLiabilities.slice(1),
+        })
+      ).rejects.toThrow(/liability set does not match signed statement/);
+
+      await expect(
+        adapter.finalizeEpochAtomic({
+          ...params,
+          claimantLiabilities: params.claimantLiabilities.map(
+            (liability, index) =>
+              index === 0
+                ? { ...liability, amountAtomic: liability.amountAtomic + 1n }
+                : liability
+          ),
+        })
+      ).rejects.toThrow(/liability does not match signed statement/);
+
+      expect((await adapter.getEpoch(epoch.id))?.status).toBe("review");
+      await adapter.finalizeEpochAtomic(params);
+    });
+
+    it("validates merkle data before settling and serializes competing revisions", async () => {
+      const epoch = await adapter.createEpoch({
+        nodeId: TEST_NODE_ID,
+        scopeId: TEST_SCOPE_ID,
+        ...epochWindow(27),
+        weightConfig: TEST_WEIGHT_CONFIG,
+      });
+      await adapter.closeIngestion(
+        epoch.id,
+        [],
+        "settlement-boundary-approver",
+        "weight-sum-v0",
+        "settlement-boundary-wch"
+      );
+
+      const claimantKey = `user:${actor.user.id}`;
+      const walletAddress = actor.user.walletAddress;
+      if (!walletAddress) throw new Error("expected actor wallet address");
+      const amountAtomic = 10_000n * 10n ** 18n;
+      const { statement } = await adapter.finalizeEpochAtomic({
+        ...makeAtomicParams(epoch.id),
+        finalClaimantAllocations: [
+          {
+            nodeId: TEST_NODE_ID,
+            epochId: epoch.id,
+            claimantKey,
+            claimant: { kind: "user", userId: actor.user.id },
+            finalUnits: 10_000n,
+            receiptIds: ["settlement-boundary-receipt"],
+          },
+        ],
+        claimantLiabilities: [
+          {
+            claimantKey,
+            amountAtomic,
+            receiptIds: ["settlement-boundary-receipt"],
+          },
+        ],
+        statement: {
+          nodeId: TEST_NODE_ID,
+          finalAllocationSetHash: HASH,
+          poolTotalCredits: 10_000n,
+          statementLines: [
+            {
+              claimant_key: claimantKey,
+              claimant: { kind: "user", userId: actor.user.id },
+              final_units: "10000",
+              pool_share: "1.000000",
+              credit_amount: "10000",
+              receipt_ids: ["settlement-boundary-receipt"],
+            },
+          ],
+        },
+      });
+      const liability = (
+        await adapter.listPendingClaimantLiabilities(
+          TEST_NODE_ID,
+          TEST_SCOPE_ID
+        )
+      ).find((item) => item.sourceEpochId === epoch.id);
+      if (!liability) throw new Error("expected pending claimant liability");
+
+      const distribution = buildDaoTokenCumulativeDistribution({
+        distributionId: "settlement-boundary-distribution",
+        nodeId: TEST_NODE_ID,
+        scopeId: TEST_SCOPE_ID,
+        statementHash: statement.finalAllocationSetHash,
+        chainId: 8453,
+        tokenAddress: "0x1111111111111111111111111111111111111111",
+        priorCumulative: [],
+        epochDeltas: [
+          {
+            claimantKey,
+            account: walletAddress as `0x${string}`,
+            deltaAmount: amountAtomic,
+            receiptIds: ["settlement-boundary-receipt"],
+          },
+        ],
+      });
+      const appendParams = {
+        nodeId: TEST_NODE_ID,
+        scopeId: TEST_SCOPE_ID,
+        expectedPreviousRevisionId: null,
+        distributionId: distribution.distributionId,
+        statementHash: distribution.statementHash,
+        merkleRoot: distribution.merkleRoot,
+        chainId: distribution.chainId,
+        tokenAddress: distribution.tokenAddress,
+        distributorAddress: "0x2222222222222222222222222222222222222222",
+        mintDelta: distribution.mintDelta,
+        cumulativeTotal: distribution.cumulativeTotal,
+        triggerKind: "component_test",
+        triggerRef: epoch.id.toString(),
+        leaves: distribution.leaves,
+        resolutions: [
+          {
+            liabilityId: liability.id,
+            resolvedUserId: actor.user.id,
+            account: walletAddress,
+          },
+        ],
+      };
+
+      await expect(
+        adapter.appendSettlementRevisionAtomic({
+          ...appendParams,
+          leaves: appendParams.leaves.map((leaf) => ({
+            ...leaf,
+            leafHash:
+              "0x0000000000000000000000000000000000000000000000000000000000000000",
+          })),
+        })
+      ).rejects.toThrow(
+        /leaves are not the complete expected cumulative snapshot/
+      );
+      expect(
+        (
+          await adapter.listPendingClaimantLiabilities(
+            TEST_NODE_ID,
+            TEST_SCOPE_ID
+          )
+        ).some((item) => item.id === liability.id)
+      ).toBe(true);
+
+      const results = await Promise.all([
+        adapter.appendSettlementRevisionAtomic(appendParams),
+        adapter.appendSettlementRevisionAtomic(appendParams),
+      ]);
+      expect(results.map((result) => result.status).sort()).toEqual([
+        "appended",
+        "conflict",
+      ]);
     });
 
     it("open epoch → throws EpochNotOpenError", async () => {
@@ -1386,6 +1568,17 @@ describe("DrizzleAttributionAdapter (Component)", () => {
         }),
       ]);
 
+      await adapter.upsertDraftClaimants({
+        nodeId: TEST_NODE_ID,
+        epochId: closeEpochId,
+        receiptId: `eval-close-receipt-${closeEpochId}-1`,
+        resolverRef: "cogni.default-author.v0",
+        algoRef: "default-author-v0",
+        inputsHash: "eval-close-claimant-hash",
+        claimantKeys: [`user:${actor.user.id}`],
+        createdBy: "system",
+      });
+
       await adapter.insertUserProjections([
         makeUserProjection({
           nodeId: TEST_NODE_ID,
@@ -1444,6 +1637,15 @@ describe("DrizzleAttributionAdapter (Component)", () => {
       expect(all).toHaveLength(2);
       const statuses = all.map((e) => e.status).sort();
       expect(statuses).toEqual(["draft", "locked"]);
+
+      const lockedClaimants = await adapter.loadLockedClaimants(closeEpochId);
+      expect(lockedClaimants).toHaveLength(1);
+      expect(lockedClaimants[0]?.receiptId).toBe(
+        `eval-close-receipt-${closeEpochId}-1`
+      );
+      expect(lockedClaimants[0]?.claimantKeys).toEqual([
+        `user:${actor.user.id}`,
+      ]);
     });
 
     it("idempotent on already-reviewed epoch", async () => {
@@ -1460,6 +1662,136 @@ describe("DrizzleAttributionAdapter (Component)", () => {
       });
 
       expect(result.status).toBe("review");
+    });
+
+    it("repairs draft claimants on an idempotent close of a legacy review epoch", async () => {
+      const legacyEpoch = await adapter.createEpoch({
+        nodeId: TEST_NODE_ID,
+        scopeId: TEST_SCOPE_ID,
+        ...epochWindow(44),
+        weightConfig: TEST_WEIGHT_CONFIG,
+      });
+      const receiptId = `legacy-review-receipt-${legacyEpoch.id}`;
+      const { periodStart, periodEnd } = epochWindow(44);
+      const eventTime = new Date(
+        (periodStart.getTime() + periodEnd.getTime()) / 2
+      );
+      await adapter.insertIngestionReceipts([
+        makeIngestionReceipt({
+          receiptId,
+          nodeId: TEST_NODE_ID,
+          eventTime,
+          retrievedAt: eventTime,
+        }),
+      ]);
+      await adapter.insertSelectionDoNothing([
+        makeSelectionAuto({
+          nodeId: TEST_NODE_ID,
+          epochId: legacyEpoch.id,
+          receiptId,
+          userId: actor.user.id,
+          included: true,
+        }),
+      ]);
+      await adapter.upsertDraftClaimants({
+        nodeId: TEST_NODE_ID,
+        epochId: legacyEpoch.id,
+        receiptId,
+        resolverRef: "cogni.default-author.v0",
+        algoRef: "default-author-v0",
+        inputsHash: "legacy-review-claimant-hash",
+        claimantKeys: [`user:${actor.user.id}`],
+        createdBy: "system",
+      });
+
+      await adapter.closeIngestion(
+        legacyEpoch.id,
+        [],
+        "legacy-review-approver-hash",
+        "weight-sum-v0",
+        "legacy-review-weight-hash"
+      );
+      expect(await adapter.loadLockedClaimants(legacyEpoch.id)).toHaveLength(0);
+
+      const repaired = await adapter.closeIngestionWithEvaluations({
+        epochId: legacyEpoch.id,
+        approvers: [],
+        approverSetHash: "legacy-review-approver-hash",
+        allocationAlgoRef: "weight-sum-v0",
+        weightConfigHash: "legacy-review-weight-hash",
+        evaluations: [],
+        artifactsHash: "legacy-review-artifacts-hash",
+      });
+
+      expect(repaired.status).toBe("review");
+      expect(repaired.artifactsHash).toBe("legacy-review-artifacts-hash");
+      const locked = await adapter.loadLockedClaimants(legacyEpoch.id);
+      expect(locked).toHaveLength(1);
+      expect(locked[0]?.receiptId).toBe(receiptId);
+    });
+
+    it("rolls back when an included receipt has no claimant snapshot", async () => {
+      const incompleteEpoch = await adapter.createEpoch({
+        nodeId: TEST_NODE_ID,
+        scopeId: TEST_SCOPE_ID,
+        ...epochWindow(45),
+        weightConfig: TEST_WEIGHT_CONFIG,
+      });
+      const receiptId = `missing-claimant-receipt-${incompleteEpoch.id}`;
+      const { periodStart, periodEnd } = epochWindow(45);
+      const eventTime = new Date(
+        (periodStart.getTime() + periodEnd.getTime()) / 2
+      );
+      await adapter.insertIngestionReceipts([
+        makeIngestionReceipt({
+          receiptId,
+          nodeId: TEST_NODE_ID,
+          eventTime,
+          retrievedAt: eventTime,
+        }),
+      ]);
+      await adapter.insertSelectionDoNothing([
+        makeSelectionAuto({
+          nodeId: TEST_NODE_ID,
+          epochId: incompleteEpoch.id,
+          receiptId,
+          userId: actor.user.id,
+          included: true,
+        }),
+      ]);
+      const closeParams = {
+        epochId: incompleteEpoch.id,
+        approvers: [],
+        approverSetHash: "missing-claimant-approver-hash",
+        allocationAlgoRef: "weight-sum-v0",
+        weightConfigHash: "missing-claimant-weight-hash",
+        evaluations: [
+          makeEvaluation({ epochId: incompleteEpoch.id, status: "locked" }),
+        ],
+        artifactsHash: "missing-claimant-artifacts-hash",
+      };
+
+      await expect(
+        adapter.closeIngestionWithEvaluations(closeParams)
+      ).rejects.toThrow(
+        `included receipt "${receiptId}" has no claimant snapshot`
+      );
+      expect((await adapter.getEpoch(incompleteEpoch.id))?.status).toBe("open");
+      expect(
+        await adapter.getEvaluation(incompleteEpoch.id, evalRef, "locked")
+      ).toBeNull();
+
+      await adapter.upsertDraftClaimants({
+        nodeId: TEST_NODE_ID,
+        epochId: incompleteEpoch.id,
+        receiptId,
+        resolverRef: "cogni.default-author.v0",
+        algoRef: "default-author-v0",
+        inputsHash: "missing-claimant-repair-hash",
+        claimantKeys: [`user:${actor.user.id}`],
+        createdBy: "system",
+      });
+      await adapter.closeIngestionWithEvaluations(closeParams);
     });
 
     it("throws EpochNotFoundError for wrong scope", async () => {

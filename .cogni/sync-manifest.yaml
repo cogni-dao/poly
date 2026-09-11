@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# SPDX-FileCopyrightText: 2026 Cogni-DAO
+#
+# Tier-3 (`node_local`) declaration for fork-sync.
+#
+# node-template is AUTHORITATIVE for Tier-2 shared substrate: its blob overwrites the
+# fork's on every sync, which is what keeps the fleet current. Anything listed here is
+# EXEMPT from that — the fork's own copy is restored and never clobbered.
+#
+# The rule for what belongs here: a node's IDENTITY and PRESENTATION are its own; the
+# shell and the contracts are not. A node owns its homepage, its brand, its persona. It
+# does not own the app shell, platform routes, or shared components — carving those out
+# strands a fork at a stale version and breaks it against changed shared props.
+#
+# Until this file existed, `resolveNodeLocalPaths` fell back to a hardcoded floor in the
+# operator. That floor omitted `app/src/styles/tailwind.css`, so every sync rewrote every
+# fork's design tokens to node-template's: levelup's brand hue went 150 (its #349866
+# Sprout green) -> 217 (node-template blue) on 2026-08-28, and poly lost its green the
+# same way (task.5016). The theme file is identity, not substrate.
+node_local:
+  # The node's homepage — its face. Deliberately NOT the whole `(public)/` group: the
+  # generic shell (layout/error/loading/AuthRedirect) and platform routes MUST stay
+  # synced so they track shared contracts.
+  - "app/src/app/(public)/page.tsx"
+  # Home/landing feature surface (components, copy, hero).
+  - "app/src/features/home/**"
+  # Design tokens. Colours, radii, accent stops — a node's visual identity lives here,
+  # so node-template must never overwrite it.
+  - "app/src/styles/tailwind.css"
+  # Branding assets / theme extensions.
+  - "app/src/styles/branding/**"
+  - "app/src/app/branding/**"
+  - "public/branding/**"
+  # Node identity + persona.
+  - ".cogni/repo-spec.yaml"
+  - ".cogni/persona/**"
+  # Spawned-node secret names, targets, and OpenBao paths are node identity.
+  - "k8s/external-secrets/**"
+  # The repo's front page — the same call as `tailwind.css` above, for the same reason.
+  # Until this was carved out, every minted node shipped
+  # node-template's README and could not durably fix it: a node that rewrote its own
+  # had it overwritten on the next sync. So `cogni-dao/levelup` — live in all three
+  # envs with a fully branded homepage — still opened "# node-template" and then
+  # described the template it was minted from. A README is the first thing a human or
+  # an agent reads on the repo; by the rule above it is identity, not substrate.
+  - "README.md"

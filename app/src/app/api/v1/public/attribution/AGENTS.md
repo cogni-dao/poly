@@ -34,6 +34,8 @@ Public (unauthenticated) HTTP endpoints for finalized attribution data. Exposes 
   - `GET /api/v1/public/attribution/epochs/[id]/user-projections` — user projections for a finalized epoch
   - `GET /api/v1/public/attribution/epochs/[id]/claimants` — claimant-aware finalized attribution for a finalized epoch
   - `GET /api/v1/public/attribution/epochs/[id]/statement` — payout statement (null if none)
+  - `GET /api/v1/public/attribution/epochs/[id]/distribution` — live-root cumulative claim proof scoped to a finalized epoch
+  - `GET /api/v1/public/attribution/distribution/latest` — live-root cumulative claim proof for an account
 - **Files considered API:** `epochs/route.ts`, `epochs/[id]/user-projections/route.ts`, `epochs/[id]/claimants/route.ts`, `epochs/[id]/statement/route.ts`
 
 ## Ports
