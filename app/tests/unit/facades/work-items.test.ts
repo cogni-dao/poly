@@ -13,9 +13,15 @@
 
 import {
   WorkItemDtoSchema,
+  workItemsCreateOperation,
   workItemsListOperation,
+  workItemsPatchOperation,
 } from "@cogni/node-contracts";
-import type { WorkItem, WorkItemQueryPort } from "@cogni/work-items";
+import type {
+  WorkItem,
+  WorkItemCommandPort,
+  WorkItemQueryPort,
+} from "@cogni/work-items";
 import { toWorkItemId } from "@cogni/work-items";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -24,7 +30,17 @@ vi.mock("@/bootstrap/container", () => ({
   getContainer: vi.fn(),
 }));
 
-import { getWorkItem, listWorkItems } from "@/app/_facades/work/items.server";
+import {
+  claimWorkItem,
+  createWorkItem,
+  getWorkItem,
+  heartbeatWorkItem,
+  listWorkItems,
+  patchWorkItem,
+  releaseWorkItem,
+  UnsupportedWorkItemPatchFieldsError,
+  WorkItemNotFoundError,
+} from "@/app/_facades/work/items.server";
 import { getContainer } from "@/bootstrap/container";
 
 const mockGetContainer = vi.mocked(getContainer);
@@ -41,6 +57,7 @@ const SAMPLE_WORK_ITEM: WorkItem = {
   outcome: "Expected outcome",
   projectId: toWorkItemId("proj.test"),
   parentId: undefined,
+  node: "poly",
   assignees: [{ kind: "user", userId: "u1" }],
   externalRefs: [{ system: "github", kind: "pr" }],
   labels: ["test", "api"],
@@ -62,17 +79,35 @@ function createMockPort(): WorkItemQueryPort {
   return {
     list: vi.fn(),
     get: vi.fn(),
+    listRelations: vi.fn(),
+  };
+}
+
+function createMockCommandPort(): WorkItemCommandPort {
+  return {
+    create: vi.fn(),
+    patch: vi.fn(),
+    transitionStatus: vi.fn(),
+    setAssignees: vi.fn(),
+    upsertRelation: vi.fn(),
+    removeRelation: vi.fn(),
+    upsertExternalRef: vi.fn(),
+    claim: vi.fn(),
+    release: vi.fn(),
   };
 }
 
 describe("app/_facades/work/items.server", () => {
   let mockPort: ReturnType<typeof createMockPort>;
+  let mockCommand: ReturnType<typeof createMockCommandPort>;
 
   beforeEach(() => {
     vi.resetAllMocks();
     mockPort = createMockPort();
+    mockCommand = createMockCommandPort();
     mockGetContainer.mockReturnValue({
       workItemQuery: mockPort,
+      workItemCommand: mockCommand,
     } as never);
   });
 
@@ -108,6 +143,7 @@ describe("app/_facades/work/items.server", () => {
       expect(dto?.rank).toBe(5);
       expect(dto?.estimate).toBe(3);
       expect(dto?.projectId).toBe("proj.test");
+      expect(dto?.node).toBe("poly");
       expect(dto?.assignees).toEqual([{ kind: "user", userId: "u1" }]);
       expect(dto?.labels).toEqual(["test", "api"]);
       expect(dto?.revision).toBe(2);
@@ -209,6 +245,188 @@ describe("app/_facades/work/items.server", () => {
       await getWorkItem("task.0001");
 
       expect(mockPort.get).toHaveBeenCalledWith(toWorkItemId("task.0001"));
+    });
+  });
+
+  describe("createWorkItem", () => {
+    it("creates through WorkItemCommandPort and returns a contract DTO", async () => {
+      vi.mocked(mockCommand.create).mockResolvedValue(SAMPLE_WORK_ITEM);
+
+      const result = await createWorkItem({
+        type: "task",
+        title: "Sample task",
+        summary: "A test summary",
+        projectId: "proj.test",
+        labels: ["test", "api"],
+        priority: 1,
+      });
+
+      expect(mockCommand.create).toHaveBeenCalledWith({
+        type: "task",
+        title: "Sample task",
+        summary: "A test summary",
+        projectId: toWorkItemId("proj.test"),
+        labels: ["test", "api"],
+        priority: 1,
+      });
+      expect(result.id).toBe("task.0001");
+      expect(() => workItemsCreateOperation.output.parse(result)).not.toThrow();
+    });
+  });
+
+  describe("patchWorkItem", () => {
+    it("verifies the item exists, patches through WorkItemCommandPort, and returns a contract DTO", async () => {
+      const patchedItem: WorkItem = {
+        ...SAMPLE_WORK_ITEM,
+        title: "Updated task",
+        revision: 3,
+      };
+      vi.mocked(mockPort.get).mockResolvedValue(SAMPLE_WORK_ITEM);
+      vi.mocked(mockCommand.patch).mockResolvedValue(patchedItem);
+
+      const result = await patchWorkItem({
+        id: "task.0001",
+        set: {
+          title: "Updated task",
+          labels: ["updated"],
+        },
+      });
+
+      expect(mockPort.get).toHaveBeenCalledWith(toWorkItemId("task.0001"));
+      expect(mockCommand.patch).toHaveBeenCalledWith({
+        id: toWorkItemId("task.0001"),
+        set: {
+          title: "Updated task",
+          labels: ["updated"],
+        },
+      });
+      expect(result.title).toBe("Updated task");
+      expect(result.revision).toBe(3);
+      expect(() => workItemsPatchOperation.output.parse(result)).not.toThrow();
+    });
+
+    it("throws WorkItemNotFoundError when the item does not exist", async () => {
+      vi.mocked(mockPort.get).mockResolvedValue(null);
+
+      await expect(
+        patchWorkItem({ id: "task.9999", set: { title: "Missing" } })
+      ).rejects.toBeInstanceOf(WorkItemNotFoundError);
+      expect(mockCommand.patch).not.toHaveBeenCalled();
+    });
+
+    it("rejects patch fields not supported by the current command port", async () => {
+      await expect(
+        patchWorkItem({
+          id: "task.0001",
+          set: { deployVerified: true },
+        })
+      ).rejects.toBeInstanceOf(UnsupportedWorkItemPatchFieldsError);
+      expect(mockPort.get).not.toHaveBeenCalled();
+      expect(mockCommand.patch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("coordination commands", () => {
+    it("claims through WorkItemCommandPort and returns a contract DTO", async () => {
+      const claimedItem: WorkItem = {
+        ...SAMPLE_WORK_ITEM,
+        claimedByRun: "run-123",
+        claimedAt: "2026-01-03T00:00:00.000Z",
+        lastCommand: "/implement",
+      };
+      vi.mocked(mockPort.get).mockResolvedValue(SAMPLE_WORK_ITEM);
+      vi.mocked(mockCommand.claim).mockResolvedValue(claimedItem);
+
+      const result = await claimWorkItem({
+        id: "task.0001",
+        runId: "run-123",
+        command: "/implement",
+      });
+
+      expect(mockPort.get).toHaveBeenCalledWith(toWorkItemId("task.0001"));
+      expect(mockCommand.claim).toHaveBeenCalledWith({
+        id: toWorkItemId("task.0001"),
+        runId: "run-123",
+        command: "/implement",
+      });
+      expect(result.claimedByRun).toBe("run-123");
+      expect(result.lastCommand).toBe("/implement");
+      expect(() => WorkItemDtoSchema.parse(result)).not.toThrow();
+    });
+
+    it("releases through WorkItemCommandPort and returns a contract DTO", async () => {
+      const currentItem: WorkItem = {
+        ...SAMPLE_WORK_ITEM,
+        claimedByRun: "run-123",
+        claimedAt: "2026-01-03T00:00:00.000Z",
+        lastCommand: "/implement",
+      };
+      vi.mocked(mockPort.get).mockResolvedValue(currentItem);
+      vi.mocked(mockCommand.release).mockResolvedValue(SAMPLE_WORK_ITEM);
+
+      const result = await releaseWorkItem({
+        id: "task.0001",
+        runId: "run-123",
+      });
+
+      expect(mockPort.get).toHaveBeenCalledWith(toWorkItemId("task.0001"));
+      expect(mockCommand.release).toHaveBeenCalledWith({
+        id: toWorkItemId("task.0001"),
+        runId: "run-123",
+      });
+      expect(result.claimedByRun).toBeUndefined();
+      expect(() => WorkItemDtoSchema.parse(result)).not.toThrow();
+    });
+
+    it("heartbeats by refreshing claim with the current last command", async () => {
+      const currentItem: WorkItem = {
+        ...SAMPLE_WORK_ITEM,
+        claimedByRun: "run-123",
+        claimedAt: "2026-01-03T00:00:00.000Z",
+        lastCommand: "/implement",
+      };
+      const heartbeatItem: WorkItem = {
+        ...currentItem,
+        claimedAt: "2026-01-03T00:01:00.000Z",
+      };
+      vi.mocked(mockPort.get).mockResolvedValue(currentItem);
+      vi.mocked(mockCommand.claim).mockResolvedValue(heartbeatItem);
+
+      const result = await heartbeatWorkItem({
+        id: "task.0001",
+        runId: "run-123",
+      });
+
+      expect(mockPort.get).toHaveBeenCalledWith(toWorkItemId("task.0001"));
+      expect(mockCommand.claim).toHaveBeenCalledWith({
+        id: toWorkItemId("task.0001"),
+        runId: "run-123",
+        command: "/implement",
+      });
+      expect(result.claimedAt).toBe("2026-01-03T00:01:00.000Z");
+      expect(() => WorkItemDtoSchema.parse(result)).not.toThrow();
+    });
+
+    it("heartbeats with the literal fallback command when no previous command exists", async () => {
+      const heartbeatItem: WorkItem = {
+        ...SAMPLE_WORK_ITEM,
+        claimedByRun: "run-123",
+        claimedAt: "2026-01-03T00:01:00.000Z",
+        lastCommand: "heartbeat",
+      };
+      vi.mocked(mockPort.get).mockResolvedValue(SAMPLE_WORK_ITEM);
+      vi.mocked(mockCommand.claim).mockResolvedValue(heartbeatItem);
+
+      await heartbeatWorkItem({
+        id: "task.0001",
+        runId: "run-123",
+      });
+
+      expect(mockCommand.claim).toHaveBeenCalledWith({
+        id: toWorkItemId("task.0001"),
+        runId: "run-123",
+        command: "heartbeat",
+      });
     });
   });
 });

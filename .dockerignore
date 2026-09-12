@@ -23,6 +23,11 @@
 .github
 docs
 *.md
+!work/
+!work/items/
+!work/items/*.md
+!work/projects/
+!work/projects/*.md
 
 # Keep runtime DB scripts, but omit non-runtime scripts if a fork adds them.
 scripts/ci

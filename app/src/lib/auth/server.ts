@@ -11,7 +11,7 @@
  * @public
  */
 
-import type { SessionUser } from "@cogni/node-shared";
+import type { SessionUser } from "@cogni/node-shared/auth/session";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/auth";
 

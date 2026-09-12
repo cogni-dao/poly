@@ -14,7 +14,7 @@
 
 import { toUserId } from "@cogni/ids";
 import type { CreditsSummaryOutput } from "@cogni/node-contracts";
-import type { SessionUser } from "@cogni/node-shared";
+import type { SessionUser } from "@cogni/node-shared/auth/session";
 import { getContainer } from "@/bootstrap/container";
 import { AuthUserNotFoundError } from "@/features/payments/errors";
 import { getCreditsSummary } from "@/features/payments/services/creditsSummary";

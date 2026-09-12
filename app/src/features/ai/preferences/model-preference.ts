@@ -12,7 +12,8 @@
  * @internal
  */
 
-import { clientLogger, EVENT_NAMES } from "@cogni/node-shared";
+import * as clientLogger from "@cogni/node-shared/observability/client";
+import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
 
 const STORAGE_KEY = "cogni.chat.preferredModelId";
 

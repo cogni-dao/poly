@@ -12,7 +12,7 @@
  */
 
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks ---
 
@@ -20,11 +20,6 @@ const mockGetToken = vi.fn();
 
 vi.mock("next-auth/jwt", () => ({
 	getToken: (...args: unknown[]) => mockGetToken(...args),
-}));
-
-vi.mock("@/auth", () => ({
-	authSecret: "test-secret",
-	authOptions: { secret: "test-secret" },
 }));
 
 // Perimeter observability — keep this a true unit (no pino/prom-client) and
@@ -42,6 +37,20 @@ vi.mock("@/shared/config", () => ({
 import { proxy } from "@/proxy";
 
 // --- Helpers ---
+
+const originalAuthSecret = process.env.AUTH_SECRET;
+
+beforeEach(() => {
+	process.env.AUTH_SECRET = "test-secret";
+});
+
+afterAll(() => {
+	if (originalAuthSecret === undefined) {
+		delete process.env.AUTH_SECRET;
+		return;
+	}
+	process.env.AUTH_SECRET = originalAuthSecret;
+});
 
 function makeRequest(path: string): NextRequest {
 	return new NextRequest(new URL(path, "http://localhost:3000"));

@@ -26,7 +26,7 @@ import {
   CHAINS,
   GOVERNANCE_ERC20_ABI,
   TOKEN_VOTING_ABI,
-} from "@cogni/node-shared";
+} from "@cogni/node-shared/web3";
 import { NextResponse } from "next/server";
 import { v5 as uuidv5 } from "uuid";
 import { createPublicClient, http } from "viem";

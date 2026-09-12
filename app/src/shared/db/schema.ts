@@ -17,8 +17,13 @@ export * from "@cogni/db-schema/attribution";
 // Domain slices
 export * from "@cogni/db-schema/auth";
 export * from "@cogni/db-schema/billing";
+export * from "@cogni/db-schema/copy-trade";
 export * from "@cogni/db-schema/identity";
+export * from "@cogni/db-schema/poly-redeem-jobs";
 export * from "@cogni/db-schema/profile";
 // Core FK targets (users, billingAccounts)
 export * from "@cogni/db-schema/refs";
 export * from "@cogni/db-schema/scheduling";
+export * from "@cogni/db-schema/trader-activity";
+export * from "@cogni/db-schema/wallet-connections";
+export * from "@cogni/db-schema/wallet-grants";

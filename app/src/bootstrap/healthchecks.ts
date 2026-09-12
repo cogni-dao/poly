@@ -11,7 +11,7 @@
  * @public
  */
 
-import { COGNI_SYSTEM_BILLING_ACCOUNT_ID } from "@cogni/node-shared";
+import { COGNI_SYSTEM_BILLING_ACCOUNT_ID } from "@cogni/node-shared/constants";
 import type { ServiceAccountService } from "@/ports";
 
 /**

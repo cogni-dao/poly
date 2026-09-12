@@ -11,7 +11,7 @@
  * @public
  */
 
-import { CHAINS } from "@cogni/node-shared";
+import { CHAINS } from "@cogni/node-shared/web3";
 import type { PublicClient } from "viem";
 
 // ---------------------------------------------------------------------------

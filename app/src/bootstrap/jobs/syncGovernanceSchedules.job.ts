@@ -18,7 +18,7 @@ import { toUserId } from "@cogni/ids";
 import {
   COGNI_SYSTEM_BILLING_ACCOUNT_ID,
   COGNI_SYSTEM_PRINCIPAL_USER_ID,
-} from "@cogni/node-shared";
+} from "@cogni/node-shared/constants";
 import { syncGovernanceSchedules } from "@cogni/scheduler-core";
 import cronParser from "cron-parser";
 import { and, eq } from "drizzle-orm";

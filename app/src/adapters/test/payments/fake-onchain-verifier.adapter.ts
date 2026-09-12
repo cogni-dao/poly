@@ -12,7 +12,7 @@
  * @public
  */
 
-import { MIN_CONFIRMATIONS } from "@cogni/node-shared";
+import { MIN_CONFIRMATIONS } from "@cogni/node-shared/web3";
 import type {
   OnChainVerifier,
   PaymentErrorCode,

@@ -16,7 +16,10 @@
  */
 
 import { chatCompletionsContract } from "@cogni/node-contracts";
-import { ChatErrorCode, ChatValidationError } from "@cogni/node-shared";
+import {
+  ChatErrorCode,
+  ChatValidationError,
+} from "@cogni/node-shared/errors";
 import {
   createCompletionRequest,
   createMockAccountServiceWithDefaults,

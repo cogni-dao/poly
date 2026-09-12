@@ -14,7 +14,7 @@ Event name registry as single source of truth. Prevents ad-hoc event strings and
 ## Pointers
 
 - [Parent AGENTS.md](../AGENTS.md)
-- [Observability finish-pass command](../../../../../../.claude/commands/observability.md)
+- [Observability](../../../../../../docs/spec/observability.md)
 
 ## Boundaries
 

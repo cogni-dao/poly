@@ -19,7 +19,8 @@ import type {
   PaymentSubmitInput,
   PaymentSubmitOutput,
 } from "@cogni/node-contracts";
-import { clientLogger, EVENT_NAMES } from "@cogni/node-shared";
+import * as clientLogger from "@cogni/node-shared/observability/client";
+import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
 
 type ApiSuccess<T> = { ok: true; data: T };
 type ApiError = { ok: false; error: string; errorCode?: string };

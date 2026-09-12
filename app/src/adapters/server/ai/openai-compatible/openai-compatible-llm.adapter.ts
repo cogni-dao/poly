@@ -20,7 +20,7 @@ import {
   computePromptHash,
   DEFAULT_MAX_TOKENS,
   DEFAULT_TEMPERATURE,
-} from "@cogni/node-shared";
+} from "@cogni/node-shared/ai";
 import { createParser, type EventSourceMessage } from "eventsource-parser";
 import { humanizeModelId } from "@/adapters/server/ai/providers/openai-compatible.provider";
 import {

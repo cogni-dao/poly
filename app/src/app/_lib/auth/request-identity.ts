@@ -26,7 +26,7 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { SessionUser } from "@cogni/node-shared";
+import type { SessionUser } from "@cogni/node-shared/auth/session";
 import { headers } from "next/headers";
 import { getServerSessionUser } from "@/lib/auth/server";
 import { serverEnv } from "@/shared/env/server";

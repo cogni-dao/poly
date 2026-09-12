@@ -47,7 +47,7 @@ import {
   type PrincipalAuthSource,
   sessionUserToPrincipal,
 } from "@cogni/knowledge-store";
-import type { SessionUser } from "@cogni/node-shared";
+import type { SessionUser } from "@cogni/node-shared/auth/session";
 import { NextResponse } from "next/server";
 
 import { getContainer } from "@/bootstrap/container";

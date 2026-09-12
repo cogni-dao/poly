@@ -28,7 +28,7 @@ import {
 import { withTenantScope } from "@cogni/db-client";
 import { type UserId, userActor } from "@cogni/ids";
 import type { OwnershipSummaryOutput } from "@cogni/node-contracts";
-import type { SessionUser } from "@cogni/node-shared";
+import type { SessionUser } from "@cogni/node-shared/auth/session";
 import { eq } from "drizzle-orm";
 import { getContainer, resolveAppDb } from "@/bootstrap/container";
 import { getNodeId } from "@/shared/config";

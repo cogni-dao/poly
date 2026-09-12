@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 import { withTenantScope } from "@cogni/db-client";
 import { connections } from "@cogni/db-schema";
 import { type UserId, userActor } from "@cogni/ids";
-import { aeadEncrypt } from "@cogni/node-shared";
+import { aeadEncrypt } from "@cogni/node-shared/crypto/aead";
 import { and, eq, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { z } from "zod";

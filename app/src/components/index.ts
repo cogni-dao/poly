@@ -164,5 +164,25 @@ export {
 } from "./kit/typography/CodeHero";
 export { HeroActionWords } from "./kit/typography/HeroActionWords";
 export { Prompt } from "./kit/typography/Prompt";
+export {
+  AddressChip,
+  type AddressChipProps,
+  CopyAddressButton,
+  type CopyAddressButtonProps,
+  formatShortWallet,
+  type WithdrawalAssetOption,
+  WithdrawalFlowDialog,
+  type WithdrawalFlowDialogProps,
+  type WithdrawalSubmitInput,
+  type WithdrawalSubmitResult,
+} from "./kit/wallet";
+export {
+  type ChartConfig,
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  ChartTooltipContent,
+} from "./vendor/shadcn/chart";
 
 export { Markdown } from "./markdown";

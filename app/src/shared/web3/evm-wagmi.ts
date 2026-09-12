@@ -12,7 +12,7 @@
  * @public
  */
 
-import { ACTIVE_CHAIN_KEY, type ChainKey } from "@cogni/node-shared";
+import { ACTIVE_CHAIN_KEY, type ChainKey } from "@cogni/node-shared/web3";
 import type { Chain } from "wagmi/chains";
 import { base, sepolia } from "wagmi/chains";
 
