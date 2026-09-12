@@ -49,8 +49,8 @@ Server-side logging and metrics utilities. Pino logging with sync mode; Promethe
   - `setBuildInfo(version, commitSha)` - Set build info at runtime
   - `statusBucket(status)`, `classifyLlmError(error)` - Metric helpers
   - `LlmErrorCode` - Error code type
-- **Env/Config keys:** `PINO_LOG_LEVEL`, `NODE_ENV`, `SERVICE_NAME`, `VITEST`, `APP_BUILD_SHA`
-- **Files considered API:** `index.ts`, `logger.ts`, `logEvent.ts`, `helpers.ts`, `metrics.ts`
+- **Env/Config keys:** `PINO_LOG_LEVEL`, `NODE_ENV`, `SERVICE_NAME`, `VITEST`, `APP_BUILD_SHA`; lease log push (bug.5127, operator-injected only): `LOKI_PUSH_URL` (gate), `LOKI_PUSH_USER`, `LOKI_PUSH_PASSWORD`, `LOKI_PUSH_SOURCE`, `NODE_NAME`, `DEPLOY_ENVIRONMENT`, `COGNI_NODE_ID`
+- **Files considered API:** `index.ts`, `logger.ts`, `logEvent.ts`, `helpers.ts`, `metrics.ts`, `loki-push-stream.ts`
 
 ## Ports
 
@@ -80,7 +80,7 @@ logEvent(logger, EVENT_NAMES.ADAPTER_LITELLM_STREAM_RESULT, {
 
 - Sync mode: `pino.destination({ sync: true, minLength: 0 })` prevents buffering
 - Fail-closed reqId: logEvent() throws in tests (VITEST=true), logs error elsewhere
-- No worker transports - JSON stdout only
+- No worker transports - JSON stdout only; on lease deployments (`LOKI_PUSH_URL` set by the operator) stdout is additionally teed to the in-process, fail-open, memory-capped Loki push sink (`loki-push-stream.ts`)
 
 ## Dependencies
 
