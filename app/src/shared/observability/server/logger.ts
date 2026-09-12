@@ -6,6 +6,8 @@
  * Purpose: Pino logger factory - JSON-only stdout emission.
  * Scope: Create configured pino loggers. Does not handle request-scoped logging.
  * Invariants: Always emits JSON to stdout; no worker transports; env label added by Alloy. Safe to call at module scope (no env validation).
+ *   On lease deployments (LOKI_PUSH_URL injected by the operator, bug.5127) stdout is additionally teed to the in-process,
+ *   fail-open Loki push sink — stdout emission is unchanged and the sink can never crash or block the app.
  * Side-effects: none
  * Notes: Use makeLogger for app logger; use makeNoopLogger for tests. Formatting via external pipe (pino-pretty).
  * Notes: Reads logging-specific env vars directly (NODE_ENV, PINO_LOG_LEVEL, SERVICE_NAME) without serverEnv() to avoid triggering full env validation at module load time.
@@ -16,6 +18,7 @@
 import type { Logger } from "pino";
 import pino from "pino";
 
+import { getLokiPushStream } from "./loki-push-stream";
 import { REDACT_PATHS } from "./redact";
 
 export type { Logger } from "pino";
@@ -43,13 +46,27 @@ export function makeLogger(bindings?: Record<string, unknown>): Logger {
   // Always emit JSON to stdout (fd 1)
   // Sync mode + zero buffering until proven stable (prevents delayed/missing logs under SSE)
   // Formatting happens externally (pipe to pino-pretty if desired)
+  const stdout = pino.destination({
+    dest: 1,
+    sync: true,
+    minLength: 0,
+  });
+
+  // Lease deployments only (bug.5127): when the operator injected LOKI_PUSH_URL,
+  // tee every line to the in-process Loki push sink. Absent that env (k3s,
+  // local, tests) this is exactly the historical single-destination logger.
+  const lokiPush = getLokiPushStream();
   return pino(
     config,
-    pino.destination({
-      dest: 1,
-      sync: true,
-      minLength: 0,
-    })
+    lokiPush
+      ? pino.multistream(
+          [
+            { level: pinoLogLevel as pino.Level, stream: stdout },
+            { level: pinoLogLevel as pino.Level, stream: lokiPush },
+          ],
+          { dedupe: false }
+        )
+      : stdout
   );
 }
 
