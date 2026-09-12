@@ -3,7 +3,7 @@
 
 /**
  * Module: `@contracts/poly.wallet.balances.v1.contract`
- * Purpose: Contract for the calling user's Polymarket trading-wallet on-chain balance snapshot (USDC.e + POL on Polygon), returning the funder address and partial-failure-tolerant balance numbers.
+ * Purpose: Contract for the calling user's Polymarket trading-wallet on-chain balance snapshot (USDC.e + native USDC + pUSD + POL on Polygon), returning the funder address and partial-failure-tolerant balance numbers.
  * Scope: GET /api/v1/poly/wallet/balances. Schema-only. TENANT_SCOPED (session auth). Does not provision wallets, does not move funds, does not modify allowance state, does not write any DB rows.
  * Invariants: PARTIAL_FAILURE_NEVER_THROWS; READ_ONLY (no signing, no Privy call); distinct from the legacy operator-only `/balance` (singular).
  * Side-effects: none
@@ -21,14 +21,16 @@ export const polyWalletBalancesOperation = {
   summary:
     "Read the calling user's Polymarket trading wallet on-chain balances",
   description:
-    "Returns the user's per-tenant trading-wallet address plus USDC.e and native POL balances on Polygon. `connected=false` when the user has not yet provisioned a wallet; individual RPC failures surface in `errors[]`.",
+    "Returns the user's per-tenant trading-wallet address plus USDC.e, native USDC, pUSD and native POL balances on Polygon. `connected=false` when the user has not yet provisioned a wallet; individual RPC failures surface in `errors[]`.",
   input: z.object({}),
   output: z.object({
     configured: z.boolean(),
     connected: z.boolean(),
     address: walletAddressSchema.nullable(),
-    /** USDC.e on Polygon, decimal form (not atomic). `null` on RPC failure. */
+    /** USDC.e (bridged) on Polygon, decimal form (not atomic). `null` on RPC failure. */
     usdc_e: z.number().nullable(),
+    /** Native (Circle-issued) USDC on Polygon, decimal form. `null` on RPC failure. */
+    usdc_native: z.number().nullable(),
     /** pUSD on Polygon, decimal form. `null` on RPC failure. */
     pusd: z.number().nullable(),
     /** Native POL on Polygon, decimal form. `null` on RPC failure. */
