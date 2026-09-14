@@ -9,7 +9,7 @@
 
 ## Purpose
 
-Public (unauthenticated) pages wrapped in `AppHeader` + `AppFooter` shell. Server-side session check redirects signed-in users to `/dashboard`. Primary auth routing enforced at proxy level (`src/proxy.ts`).
+Public (unauthenticated) pages wrapped in `AppHeader` + `AppFooter` shell. Server-side session check redirects signed-in users to `/chat`. Primary auth routing enforced at proxy level (`src/proxy.ts`).
 
 ## Pointers
 
@@ -29,14 +29,14 @@ Public (unauthenticated) pages wrapped in `AppHeader` + `AppFooter` shell. Serve
 ## Public Surface
 
 - **Exports:** none
-- **Routes:** `/` (homepage — redirects signed-in users to `/dashboard`)
+- **Routes:** `/` (homepage — redirects signed-in users to `/chat`)
 - **Files considered API:** `layout.tsx`, `page.tsx`
-- **Client transition helper:** `AuthRedirect.tsx` overlays SIWE completion and hard-navigates to `/dashboard`.
+- **Deleted:** `AuthRedirect.tsx` — replaced by server-side proxy routing
 
 ## Responsibilities
 
-- This directory **does**: Render the public page shell (header + footer), redirect authenticated users to `/dashboard` via server-side session check (defense-in-depth; proxy.ts is the primary authority), and use `AuthRedirect` to complete SIWE transitions.
-- This directory **does not**: Handle authentication, render protected content, or manage session state.
+- This directory **does**: Render the public page shell (header + footer), redirect authenticated users to `/chat` via server-side session check (defense-in-depth; proxy.ts is the primary authority).
+- This directory **does not**: Handle authentication, render protected content, manage session state, perform client-side redirects.
 
 ## Usage
 
@@ -48,12 +48,12 @@ pnpm build   # build for production
 ## Standards
 
 - Server-side redirect (`getServerSessionUser` + `redirect()`) is defense-in-depth; `proxy.ts` handles primary auth routing.
-- Client-side auth transition redirects are limited to `AuthRedirect`; proxy.ts remains the access-control authority.
+- No client-side auth redirects — proxy.ts is the single authority for auth routing.
 - No auth guard — pages render for unauthenticated visitors.
 
 ## Dependencies
 
-- **Internal:** `@/features/layout` (AppHeader, AppFooter), `@/components` (Hero, MarketCards, BrainFeed), `@/lib/auth/server` (getServerSessionUser)
+- **Internal:** `@/features/layout` (AppHeader, AppFooter), `@/features/home` (LandingHero, ShowcaseCards, ActivityFeed, HomeStats — all copy/data in `content.ts`), `@/lib/auth/server` (getServerSessionUser)
 - **External:** next, react
 
 ## Change Protocol
@@ -63,4 +63,4 @@ pnpm build   # build for production
 
 ## Notes
 
-- `AuthRedirect` is retained for the legacy Poly homepage SIWE transition and redirects to `/dashboard`.
+- `AuthRedirect` was deleted in task.0111 — its client-side `useSession()` redirect caused loops with `(app)/layout.tsx`'s guard. Proxy.ts now handles all auth routing server-side.
