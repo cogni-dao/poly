@@ -48,7 +48,6 @@ Drizzle ORM table definitions for all database domains. Provides type-safe schem
   - `@cogni/db-schema/ai-threads` - Thread persistence table (UIMessage[] JSONB, RLS, optimistic concurrency)
   - `@cogni/db-schema/identity` - Identity binding tables (`userBindings`, `linkTransactions`, `identityEvents`)
   - `@cogni/db-schema/attribution` - Attribution pipeline tables (`epochs`, `ingestionReceipts`, `epochSelection`, `epochReceiptClaimants`, `epochUserProjections`, `epochReviewSubjectOverrides`, `epochFinalClaimantAllocations`, `ingestionCursors`, `epochPoolComponents`, `epochStatements`, `epochStatementSignatures`)
-  - Poly-local slices: `@cogni/db-schema/copy-trade`, `@cogni/db-schema/poly-redeem-jobs`, `@cogni/db-schema/trader-activity`, `@cogni/db-schema/wallet-connections`, `@cogni/db-schema/wallet-grants`
 - **Files considered API:** All `src/*.ts` files via package.json exports
 
 ## Ports
@@ -92,4 +91,3 @@ pnpm --filter @cogni/db-schema build
 - Schedule tables support Temporal migration (execution_requests for idempotency)
 - `billing.ts` includes `llmChargeDetails` (1:1 with charge_receipts, PK/FK cascade) for model/tokens/provider/latency/graphId
 - `charge_receipts.receipt_kind` distinguishes receipt types (e.g. "llm")
-- Poly-local table slices are included here in this standalone Poly repo so the root Drizzle config sees both platform core tables and Poly tables.
