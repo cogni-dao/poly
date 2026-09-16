@@ -5,8 +5,8 @@
 
 /**
  * Module: `@features/governance/components/ExecuteDistributionPanel`
- * Purpose: Node-owner PER-EPOCH PUBLISH surface on the finalized-epoch governance view. Publishing is
- *   a SINGLE clean action — once the node is set up, each epoch publishes in one transaction with NO
+ * Purpose: Node-owner LATEST-GLOBAL-SETTLEMENT publish surface. Publishing is
+ *   a SINGLE clean action — once the node is set up, a settlement publishes in one transaction with NO
  *   vote: the wallet calls the DAO DIRECTLY, `DAO.execute(callId, [mint, setMerkleRoot], 0)`. There is
  *   no authorize step here — the one-time SCOPED grant lives on the canonical Cogni Operator node
  *   page. This child-node panel only PUBLISHES.
@@ -19,7 +19,7 @@
  *     one transaction, no vote; labeled as such. Never called a "proposal".
  *   - SETUP_GATES_PUBLISH: read DAO.hasPermission(DAO, wallet, EXECUTE_PERMISSION, <probe>). NOT granted ⇒
  *     do NOT offer authorize here; show a quiet "finish distribution setup" notice. Granted ⇒ the single
- *     "Publish distribution" button. The authorize governance step lives in Operator setup, never here.
+ *     publish button. The authorize governance step lives in Operator setup, never here.
  *   - TWO_ACTIONS_ORDERED: [0] token.mint(distributor, mintDelta) then [1] distributor.setMerkleRoot(root),
  *     both run as msg.sender=DAO (DAO holds MINT + owns the distributor).
  *   - ALL_MATH_BIGINT: mintDelta stays bigint (BigInt(payload.mintDelta)); formatted only at display.
@@ -34,8 +34,16 @@
 
 import { CUMULATIVE_MERKLE_DISTRIBUTOR_ABI } from "@cogni/cogni-contracts";
 import { getTransactionExplorerUrl } from "@cogni/node-shared";
+import { useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { type ReactNode, useCallback, useMemo } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { encodeFunctionData, parseAbi } from "viem";
 import {
   useAccount,
@@ -76,25 +84,47 @@ const DISTRIBUTOR_MERKLE_ROOT_ABI = parseAbi([
 export function ExecuteDistributionPanel({
   epochId,
   operatorSetupUrl,
+  onConfirmed,
 }: {
   /** Finalized epoch id (decimal string). */
   epochId: string;
   /** Canonical operator-owned one-time setup surface for this node. */
   operatorSetupUrl: string;
+  /** Optional workspace-level terminal feedback that survives lifecycle advancement. */
+  onConfirmed?: (explorerUrl: string) => void;
 }) {
   const { payload, notReady, isLoading, error } =
     useExecuteDistribution(epochId);
+  const [confirmedExplorerUrl, setConfirmedExplorerUrl] = useState<
+    string | null
+  >(null);
+  const handleConfirmed = useCallback(
+    (explorerUrl: string) => {
+      setConfirmedExplorerUrl(explorerUrl);
+      onConfirmed?.(explorerUrl);
+    },
+    [onConfirmed]
+  );
 
   return (
     <Card className="border-border/50 bg-card/50">
       <CardHeader>
-        <CardTitle>Publish distribution</CardTitle>
+        <CardTitle>Publish latest settlement</CardTitle>
         <CardDescription>
-          Publish this epoch&apos;s claim root on-chain.
+          Put the latest global settlement on-chain so every proven allocation
+          can be claimed.
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {isLoading ? (
+        {confirmedExplorerUrl ? (
+          <Alert>
+            <AlertTitle>Latest settlement published</AlertTitle>
+            <AlertDescription>
+              The transaction is confirmed.{" "}
+              <TxLink url={confirmedExplorerUrl}>View transaction</TxLink>
+            </AlertDescription>
+          </Alert>
+        ) : isLoading ? (
           <p className="text-muted-foreground text-sm">
             Loading distribution payload&hellip;
           </p>
@@ -112,6 +142,7 @@ export function ExecuteDistributionPanel({
           <PublishBody
             payload={payload}
             operatorSetupUrl={operatorSetupUrl}
+            onConfirmed={handleConfirmed}
           />
         )}
       </CardContent>
@@ -141,11 +172,11 @@ function NotReadyNotice({
   const copy: Record<string, { title: string; body: string }> = {
     epoch_not_finalized: {
       title: "Epoch not finalized yet",
-      body: "Finalize this epoch before executing its distribution.",
+      body: "Finalize the selected epoch before publishing the latest global settlement.",
     },
     no_settlement_revision: {
-      title: "No distribution built yet",
-      body: "No wallet-resolved settlement is ready to publish yet.",
+      title: "No settlement built yet",
+      body: "No wallet-resolved global settlement is ready to publish yet.",
     },
     negative_mint_delta: {
       title: "Nothing to mint",
@@ -188,9 +219,11 @@ function NotReadyNotice({
 function PublishBody({
   payload,
   operatorSetupUrl,
+  onConfirmed,
 }: {
   payload: ExecuteDistributionPayload;
   operatorSetupUrl: string;
+  onConfirmed: (explorerUrl: string) => void;
 }) {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
@@ -269,6 +302,7 @@ function PublishBody({
           mintDelta={mintDelta}
           address={address}
           chainName={chainName}
+          onConfirmed={onConfirmed}
         />
       ) : (
         <OperatorSetupNotice
@@ -319,12 +353,16 @@ function PublishStep({
   mintDelta,
   address,
   chainName,
+  onConfirmed,
 }: {
   payload: ExecuteDistributionPayload;
   mintDelta: bigint;
   address: `0x${string}`;
   chainName: string;
+  onConfirmed: (explorerUrl: string) => void;
 }) {
+  const queryClient = useQueryClient();
+  const refetchedConfirmation = useRef(false);
   const {
     writeContract,
     isPending,
@@ -337,7 +375,7 @@ function PublishStep({
   // IDEMPOTENCY GUARD (bug: a re-publish re-minted the delta into the distributor). Read the
   // distributor's LIVE merkle root; if it already equals this epoch's root, the epoch is already
   // published — minting again would strand tokens with no matching claim. Never emit the tx.
-  const { data: onChainRoot } = useReadContract({
+  const { data: onChainRoot, refetch: refetchOnChainRoot } = useReadContract({
     abi: DISTRIBUTOR_MERKLE_ROOT_ABI,
     address: payload.distributorAddress,
     functionName: "merkleRoot",
@@ -353,6 +391,40 @@ function PublishStep({
   const explorerUrl = txHash
     ? getTransactionExplorerUrl(payload.chainId, txHash)
     : null;
+
+  useEffect(() => {
+    if (!isConfirmed || !explorerUrl || refetchedConfirmation.current) return;
+    refetchedConfirmation.current = true;
+    onConfirmed(explorerUrl);
+    void (async () => {
+      try {
+        await Promise.all([
+          refetchOnChainRoot(),
+          queryClient.refetchQueries({
+            queryKey: [
+              "governance",
+              "execute-distribution",
+              payload.epochId,
+            ],
+          }),
+        ]);
+        await queryClient.refetchQueries({
+          queryKey: ["governance", "finish-epoch"],
+        });
+      } catch {
+        await queryClient.invalidateQueries({
+          queryKey: ["governance", "finish-epoch"],
+        });
+      }
+    })().catch(() => undefined);
+  }, [
+    explorerUrl,
+    isConfirmed,
+    onConfirmed,
+    payload.epochId,
+    queryClient,
+    refetchOnChainRoot,
+  ]);
 
   // TWO_ACTIONS_ORDERED: [0] mint the delta into the distributor, then [1] set the
   // new cumulative root. Built identically to before; run as msg.sender=DAO on execute.
@@ -398,7 +470,7 @@ function PublishStep({
       <Alert>
         <AlertTitle>Published</AlertTitle>
         <AlertDescription>
-          This epoch&apos;s claim root is live on {chainName}.{" "}
+          The latest global settlement is live on {chainName}.{" "}
           {explorerUrl && <TxLink url={explorerUrl}>View transaction</TxLink>}
         </AlertDescription>
       </Alert>
@@ -415,12 +487,12 @@ function PublishStep({
           ? "Confirm in wallet…"
           : isConfirming
             ? "Publishing…"
-            : "Publish distribution"}
+            : "Publish latest settlement"}
       </Button>
 
       {nothingToMint ? (
         <p className="text-muted-foreground text-sm">
-          Nothing to mint for this epoch (zero delta).
+          Nothing to mint for the latest settlement (zero delta).
         </p>
       ) : null}
 
@@ -482,7 +554,9 @@ function DistributionSummary({
 }) {
   return (
     <div className="border-border rounded-lg border p-5">
-      <p className="text-muted-foreground text-sm">Minting this epoch</p>
+      <p className="text-muted-foreground text-sm">
+        Minting for the latest settlement
+      </p>
       <p className="text-2xl font-bold tracking-tight">
         {formatAmount(mintDelta)}
       </p>

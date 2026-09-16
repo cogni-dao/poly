@@ -1314,6 +1314,20 @@ describe("DrizzleAttributionAdapter (Component)", () => {
         "appended",
         "conflict",
       ]);
+
+      const lifecycleLiabilities = await adapter.listClaimantLiabilities(
+        TEST_NODE_ID,
+        TEST_SCOPE_ID
+      );
+      expect(
+        lifecycleLiabilities.find((item) => item.id === liability.id)
+      ).toMatchObject({
+        settledRevisionId: expect.any(String),
+        settledRevisionSequence: 1n,
+      });
+      await expect(
+        adapter.listClaimantLiabilities(TEST_NODE_ID, OTHER_SCOPE_ID)
+      ).resolves.toEqual([]);
     });
 
     it("open epoch → throws EpochNotOpenError", async () => {

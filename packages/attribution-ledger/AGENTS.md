@@ -44,7 +44,7 @@ Pure domain logic for the attribution ledger — shared between the Next.js app 
   - `FinalizedAllocation`, `StatementLineItem` — Legacy user-only compatibility types retained while app/core barrels still re-export them
   - `AttributionStore` — Composed port interface for ledger persistence
   - `EpochReader`, `EpochWriter`, `ReceiptStore`, `SelectionReader`, `SelectionWriter`, `SelectionStore`, `EvaluationStore`, `ProjectionStore`, `ClaimantStore`, `CursorStore`, `PoolStore`, `StatementStore`, `OverrideStore`, `FinalAllocationStore`, `IdentityResolver` — Narrow ledger store sub-interfaces for scoped consumers
-  - `AttributionEpoch`, `IngestionReceipt`, `EpochUserProjection`, `FinalClaimantAllocationRecord`, `IngestionCursor`, `AttributionPoolComponent`, `AttributionStatement`, `AttributionStatementSignature`, `AttributionEvaluation`, `ReviewSubjectOverrideRecord` — Read-side record types
+  - `AttributionEpoch`, `IngestionReceipt`, `EpochUserProjection`, `FinalClaimantAllocationRecord`, `IngestionCursor`, `AttributionPoolComponent`, `AttributionStatement`, `AttributionStatementSignature`, `AttributionEvaluation`, `ReviewSubjectOverrideRecord`, `ClaimantLiabilityLifecycleRecord` — Read-side record types
   - `InsertReceiptParams`, `InsertUserProjectionParams`, `InsertFinalClaimantAllocationParams`, `InsertPoolComponentParams`, `InsertStatementParams`, `InsertSignatureParams`, `UpsertReviewSubjectOverrideParams`, `UpsertEvaluationParams`, `CloseIngestionWithEvaluationsParams` — Write-side param types
   - `PoolComponentInsertResult` — Return type for idempotent `insertPoolComponent` (`{ component, created }`)
   - `computeEpochWindowV1()` — Pure, deterministic epoch window computation (Monday-aligned UTC). Safe in Temporal workflow code.
@@ -72,6 +72,7 @@ Pure domain logic for the attribution ledger — shared between the Next.js app 
   - `computeArtifactsHash()` — SHA-256 of sorted locked artifact tuples
   - `validateArtifactRef()`, `validateArtifactEnvelope()` — Artifact metadata/hash validation (pure)
   - `computeEnricherInputsHash()` — Deterministic inputs hash for enrichers (base shape + extensions)
+  - `deriveSettlementLifecycle()` — Pure per-epoch settlement/publication coverage derived from revision sequence
   - `createValidatedAttributionStore()` — Wraps `AttributionStore` with envelope validation on artifact writes
   - `explodeToClaimants()` — Joins receipt weights × locked claimant records → FinalClaimantAllocation[]
   - `computeAttributionStatementLines()` — Canonical claimant-aware statement line computation

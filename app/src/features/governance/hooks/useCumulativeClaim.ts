@@ -20,6 +20,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { useReadContract } from "wagmi";
 
+import { ERC20_ABI } from "@/shared/web3";
+
 /** Endpoint variant: latest cumulative manifest, or a specific epoch's manifest. */
 type ClaimSource = { kind: "latest" } | { kind: "epoch"; epochId: string };
 
@@ -60,11 +62,22 @@ export interface CumulativeClaimState {
   readonly cumulativeClaimed: bigint | undefined;
   /** claimable = cumulativeAmount − cumulativeClaimed, clamped ≥ 0. */
   readonly claimable: bigint | undefined;
+  /** Connected wallet's current governance-token balance. */
+  readonly tokenBalance: bigint | undefined;
+  /** ERC20 decimals used to format allocation and balance values. */
+  readonly tokenDecimals: number;
+  readonly isTokenBalanceLoading: boolean;
+  readonly tokenBalanceError: Error | null;
   readonly isLoading: boolean;
   readonly isClaimedLoading: boolean;
   readonly error: Error | null;
-  /** Re-read cumulativeClaimed (call after a claim tx confirms). */
-  readonly refetchClaimed: () => void;
+  /** Await both chain reads after a claim confirms. */
+  readonly refetchAfterClaim: () => Promise<void>;
+}
+
+export interface TokenReadTarget {
+  readonly tokenAddress: string | null;
+  readonly chainId: number;
 }
 
 /**
@@ -76,7 +89,8 @@ export interface CumulativeClaimState {
 export function useCumulativeClaim(
   account: string | undefined,
   source: ClaimSource = { kind: "latest" },
-  enabled = true
+  enabled = true,
+  configuredToken?: TokenReadTarget
 ): CumulativeClaimState {
   const normalized = account?.toLowerCase();
   const active = enabled && Boolean(normalized);
@@ -93,6 +107,9 @@ export function useCumulativeClaim(
   });
 
   const distributor = claim?.distributor as `0x${string}` | null | undefined;
+  const tokenAddress = (claim?.tokenAddress ??
+    configuredToken?.tokenAddress) as `0x${string}` | null | undefined;
+  const tokenChainId = claim?.chainId ?? configuredToken?.chainId;
 
   // On-chain cumulativeClaimed(account) — the source of truth for what's already
   // been paid out. claimable is derived against the off-chain cumulativeAmount.
@@ -107,6 +124,28 @@ export function useCumulativeClaim(
     args: [normalized as `0x${string}`],
     chainId: claim?.chainId,
     query: { enabled: active && Boolean(distributor) && Boolean(claim) },
+  });
+
+  const { data: decimals } = useReadContract({
+    abi: ERC20_ABI,
+    address: tokenAddress ?? undefined,
+    functionName: "decimals",
+    chainId: tokenChainId,
+    query: { enabled: active && Boolean(tokenAddress) },
+  });
+
+  const {
+    data: tokenBalance,
+    isLoading: isTokenBalanceLoading,
+    error: tokenBalanceError,
+    refetch: refetchTokenBalance,
+  } = useReadContract({
+    abi: ERC20_ABI,
+    address: tokenAddress ?? undefined,
+    functionName: "balanceOf",
+    args: [normalized as `0x${string}`],
+    chainId: tokenChainId,
+    query: { enabled: active && Boolean(tokenAddress) },
   });
 
   const claimable = useMemo<bigint | undefined>(() => {
@@ -124,11 +163,15 @@ export function useCumulativeClaim(
     claim: claim ?? null,
     cumulativeClaimed,
     claimable,
+    tokenBalance,
+    tokenDecimals: decimals ?? 18,
+    isTokenBalanceLoading,
+    tokenBalanceError,
     isLoading,
     isClaimedLoading,
     error: error as Error | null,
-    refetchClaimed: () => {
-      void refetch();
+    refetchAfterClaim: async () => {
+      await Promise.all([refetch(), refetchTokenBalance()]);
     },
   };
 }

@@ -127,6 +127,9 @@ export type EpochClaimantDto =
 
 /** Minimal claimant line item shape from the epoch-claimants API. */
 export interface EpochClaimantLineItemDto {
+  /** Current linked owner for read-model grouping; never a payout authority. */
+  readonly canonicalOwnerKey: string;
+  /** Immutable claimant key from this epoch's finalized statement. */
   readonly claimantKey: string;
   readonly claimant: EpochClaimantDto;
   readonly displayName: string | null;

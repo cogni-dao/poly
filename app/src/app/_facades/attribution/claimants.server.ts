@@ -39,6 +39,7 @@ function toLineItemDto(params: {
   receiptIds: readonly string[];
 }): EpochClaimantLineItemDto {
   return {
+    canonicalOwnerKey: claimantKey(params.claimant),
     claimantKey: claimantKey(params.claimant),
     claimant: params.claimant,
     displayName: params.displayName,
@@ -73,7 +74,8 @@ function parseClaimantItemsFromStatement(
     }
 
     parsedItems.push({
-      claimantKey: claimantKey(item.claimant),
+      canonicalOwnerKey: item.claimant_key,
+      claimantKey: item.claimant_key,
       claimant: item.claimant,
       displayName: null,
       isLinked: item.claimant.kind === "user",
@@ -148,6 +150,7 @@ async function enrichClaimantPresentation(
     if (item.claimant.kind === "user") {
       return {
         ...item,
+        canonicalOwnerKey: `user:${item.claimant.userId}`,
         displayName:
           userDisplayNames.get(item.claimant.userId) ?? receiptLogin ?? null,
         isLinked: true,
@@ -173,6 +176,7 @@ async function enrichClaimantPresentation(
 
     return {
       ...item,
+      canonicalOwnerKey: `user:${resolvedUserId}`,
       displayName:
         userDisplayNames.get(resolvedUserId) ??
         item.claimant.providerLogin ??

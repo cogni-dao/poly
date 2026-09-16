@@ -456,6 +456,12 @@ export interface ClaimantLiabilityRecord {
   readonly createdAt: Date;
 }
 
+/** Liability read model enriched with the immutable revision that settled it. */
+export interface ClaimantLiabilityLifecycleRecord
+  extends ClaimantLiabilityRecord {
+  readonly settledRevisionSequence: bigint | null;
+}
+
 /** Append-only header for one global cumulative settlement root. */
 export interface SettlementRevisionRecord {
   readonly id: string;
@@ -559,6 +565,11 @@ export interface DistributionManifestStore {
 
 /** Exactly-once write and revision-addressed read surface for claimant settlement. */
 export interface SettlementStore {
+  listClaimantLiabilities(
+    nodeId: string,
+    scopeId: string
+  ): Promise<readonly ClaimantLiabilityLifecycleRecord[]>;
+
   listPendingClaimantLiabilities(
     nodeId: string,
     scopeId: string

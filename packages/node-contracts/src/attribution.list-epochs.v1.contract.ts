@@ -28,6 +28,7 @@ export const EpochSchema = z.object({
   periodEnd: z.string().datetime(),
   weightConfig: z.record(z.string(), z.number()),
   poolTotalCredits: z.string().nullable(), // bigint as string
+  approvers: z.array(z.string()).nullable(),
   openedAt: z.string().datetime(),
   closedAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),

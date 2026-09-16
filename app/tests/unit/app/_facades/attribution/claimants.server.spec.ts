@@ -131,6 +131,7 @@ describe("readFinalizedEpochClaimants", () => {
     const result = await readFinalizedEpochClaimants(1n);
 
     expect(result.items).toHaveLength(1);
+    expect(result.items[0].canonicalOwnerKey).toBe("user:user-1");
     expect(result.items[0].claimantKey).toBe("user:user-1");
     expect(result.poolTotalCredits).toBe("10000");
     expect(mockStore.loadLockedClaimants).toHaveBeenCalledWith(1n);
@@ -164,9 +165,86 @@ describe("readFinalizedEpochClaimants", () => {
     const result = await readFinalizedEpochClaimants(1n);
 
     expect(result.items).toHaveLength(1);
+    expect(result.items[0].canonicalOwnerKey).toBe("user:user-1");
     expect(result.items[0].claimantKey).toBe("user:user-1");
     // Should NOT fall through to loadLockedClaimants
     expect(mockStore.loadLockedClaimants).not.toHaveBeenCalled();
+  });
+
+  it("preserves a historical claimant while projecting its current canonical owner", async () => {
+    const historicalClaimant = {
+      kind: "identity" as const,
+      provider: "github",
+      externalId: "295942454",
+      providerLogin: "flock-leader",
+    };
+    const ownerId = "a5ee0c8f-d07c-42cb-821d-df67b2dd0367";
+    mockStore = makeStore({
+      getStatementForEpoch: vi.fn().mockResolvedValue({
+        id: "stmt-2",
+        nodeId: NODE_ID,
+        epochId: 1n,
+        finalAllocationSetHash: "hash",
+        poolTotalCredits: 10000n,
+        statementLines: [
+          {
+            claimant_key: "identity:github:295942454",
+            claimant: historicalClaimant,
+            final_units: "1000",
+            pool_share: "1.000000",
+            credit_amount: "10000",
+            receipt_ids: ["receipt-1"],
+          },
+        ],
+        reviewOverridesJson: null,
+        supersedesStatementId: null,
+        createdAt: new Date(),
+      }),
+      resolveIdentities: vi
+        .fn()
+        .mockResolvedValue(new Map([["295942454", ownerId]])),
+      getUserDisplayNames: vi
+        .fn()
+        .mockResolvedValue(new Map([[ownerId, "flock-leader"]])),
+    });
+
+    const result = await readFinalizedEpochClaimants(1n);
+
+    expect(result.items[0]).toMatchObject({
+      canonicalOwnerKey: `user:${ownerId}`,
+      claimantKey: "identity:github:295942454",
+      claimant: historicalClaimant,
+      displayName: "flock-leader",
+      isLinked: true,
+      amountCredits: "10000",
+    });
+  });
+
+  it("keeps an unresolved identity as its own canonical owner", async () => {
+    mockStore = makeStore({
+      getFinalClaimantAllocationsForEpoch: vi.fn().mockResolvedValue([
+        {
+          claimantKey: "identity:github:42",
+          claimant: {
+            kind: "identity",
+            provider: "github",
+            externalId: "42",
+            providerLogin: "unlinked-user",
+          },
+          finalUnits: 1000n,
+          receiptIds: ["receipt-42"],
+        },
+      ]),
+    });
+
+    const result = await readFinalizedEpochClaimants(1n);
+
+    expect(result.items[0]).toMatchObject({
+      canonicalOwnerKey: "identity:github:42",
+      claimantKey: "identity:github:42",
+      displayName: "unlinked-user",
+      isLinked: false,
+    });
   });
 
   it("throws for non-finalized epochs", async () => {

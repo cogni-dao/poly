@@ -3,26 +3,16 @@
 
 /**
  * Module: `@app/(app)/gov/system/page`
- * Purpose: Server entrypoint for the system activity page within governance.
- * Scope: Server component; delegates client behavior to GovernanceView. No data fetching.
- * Invariants: Auth enforced by (app) layout guard. One-time node and distribution setup belongs to
- *   the Cogni Operator node page; this child-node route is activity-only.
- * Side-effects: none (server render only)
- * Links: docs/spec/governance-status-api.md
+ * Purpose: Preserve old Governance System links by redirecting to the dashboard.
+ * Scope: Route compatibility only. The obsolete System view no longer exists.
+ * Invariants: SYSTEM_SURFACE_REMOVED, PERMANENT_REDIRECT.
+ * Side-effects: navigation redirect
+ * Links: task.5038
  * @public
  */
 
-import type { ReactElement } from "react";
-import { Suspense } from "react";
+import { permanentRedirect } from "next/navigation";
 
-import { PageSkeleton } from "@/components";
-
-import { GovernanceView } from "./view";
-
-export default function SystemActivityPage(): ReactElement {
-  return (
-    <Suspense fallback={<PageSkeleton />}>
-      <GovernanceView />
-    </Suspense>
-  );
+export default function SystemActivityPage(): never {
+  permanentRedirect("/dashboard");
 }

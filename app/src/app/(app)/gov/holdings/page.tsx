@@ -13,8 +13,16 @@
 
 import type { ReactElement } from "react";
 
+import { getNodeTokenomicsConfig } from "@/shared/config/repoSpec.server";
+
 import { HoldingsView } from "./view";
 
 export default function HoldingsPage(): ReactElement {
-  return <HoldingsView />;
+  const tokenomics = getNodeTokenomicsConfig();
+  return (
+    <HoldingsView
+      tokenAddress={tokenomics.tokenAddress}
+      chainId={tokenomics.chainId}
+    />
+  );
 }
