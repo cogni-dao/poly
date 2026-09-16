@@ -34,6 +34,9 @@ export const EpochClaimantSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const EpochClaimantLineItemSchema = z.object({
+  /** Current linked owner for read-model grouping; never a signed or settlement key. */
+  canonicalOwnerKey: z.string(),
+  /** Immutable claimant key recorded in the finalized epoch statement. */
   claimantKey: z.string(),
   claimant: EpochClaimantSchema,
   displayName: z.string().nullable(),

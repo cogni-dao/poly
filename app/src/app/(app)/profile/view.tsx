@@ -14,7 +14,8 @@
 "use client";
 
 import { useConnectModal } from "@rainbow-me/rainbowkit";
-import { Check, Server as ServerIcon } from "lucide-react";
+import { ArrowRight, Check, Server as ServerIcon } from "lucide-react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { signIn, useSession } from "next-auth/react";
 import type { ReactElement, ReactNode } from "react";
@@ -45,29 +46,6 @@ interface ProfileData {
   avatarColor: string | null;
   resolvedDisplayName: string;
   linkedProviders: LinkedProvider[];
-}
-
-interface OwnershipAttribution {
-  epochId: string;
-  epochStatus: "open" | "review" | "finalized";
-  subjectRef: string;
-  source: string | null;
-  eventType: string | null;
-  units: string;
-  matchedBy: string;
-  eventTime: string | null;
-  artifactUrl: string | null;
-}
-
-interface OwnershipSummary {
-  totalUnits: string;
-  finalizedUnits: string;
-  pendingUnits: string;
-  finalizedSharePercent: number;
-  epochsMatched: number;
-  matchedAttributionCount: number;
-  linkedIdentityCount: number;
-  recentAttributions: OwnershipAttribution[];
 }
 
 /* ─── Preset avatar color palette ─────────────────────────────────── */
@@ -164,12 +142,6 @@ function ConnectedBadge({ login }: { login: string }): ReactElement {
       </span>
     </div>
   );
-}
-
-function formatUnits(units: string): string {
-  const value = Number(units);
-  if (!Number.isFinite(value)) return units;
-  return value.toLocaleString();
 }
 
 /* ─── Feedback banner ──────────────────────────────────────────────── */
@@ -543,7 +515,6 @@ export function ProfileView(): ReactElement {
   const searchParams = useSearchParams();
 
   const [profile, setProfile] = useState<ProfileData | null>(null);
-  const [ownership, setOwnership] = useState<OwnershipSummary | null>(null);
   const [selectedColor, setSelectedColor] = useState("#6366f1");
   const [configuredProviders, setConfiguredProviders] = useState<Set<string>>(
     new Set()
@@ -635,15 +606,6 @@ export function ProfileView(): ReactElement {
       })
       .catch(() => {
         // Profile fetch failed — page still renders with session data
-      });
-
-    fetch("/api/v1/users/me/ownership")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: OwnershipSummary | null) => {
-        if (data) setOwnership(data);
-      })
-      .catch(() => {
-        // Ownership fetch failed — profile settings remain usable
       });
 
     fetch("/api/auth/providers")
@@ -1101,49 +1063,13 @@ export function ProfileView(): ReactElement {
 
       <SectionHeading>Ownership</SectionHeading>
 
-      <div className="space-y-4 py-5">
-        {/* Attribution summary */}
-        <div>
-          <h3 className="mb-3 font-medium text-muted-foreground text-xs uppercase tracking-wide">
-            Attribution
-          </h3>
-          <div className="rounded-lg border border-border p-4">
-            <div className="flex items-baseline justify-between gap-4">
-              <div>
-                <div className="font-semibold text-2xl text-foreground tabular-nums">
-                  {ownership?.finalizedSharePercent?.toFixed(2) ?? "0.00"}%
-                </div>
-                <div className="mt-1 text-muted-foreground text-sm">
-                  Ownership across {ownership?.epochsMatched ?? 0} epoch
-                  {(ownership?.epochsMatched ?? 0) === 1 ? "" : "s"}
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="font-medium text-foreground text-sm tabular-nums">
-                  {formatUnits(ownership?.finalizedUnits ?? "0")} finalized
-                </div>
-                {Number(ownership?.pendingUnits ?? "0") > 0 && (
-                  <div className="text-muted-foreground text-xs tabular-nums">
-                    +{formatUnits(ownership?.pendingUnits ?? "0")} pending
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* On-chain distributions placeholder */}
-        <div>
-          <h3 className="mb-3 font-medium text-muted-foreground text-xs uppercase tracking-wide">
-            On-Chain Distributions
-          </h3>
-          <div className="rounded-lg border border-border p-6 text-center">
-            <p className="text-muted-foreground text-sm">
-              No on-chain distributions yet. Token distributions will appear
-              here once enabled.
-            </p>
-          </div>
-        </div>
+      <div className="py-5">
+        <Button variant="outline" asChild>
+          <Link href="/gov/holdings">
+            View Ownership
+            <ArrowRight className="size-4" aria-hidden="true" />
+          </Link>
+        </Button>
       </div>
     </PageContainer>
   );

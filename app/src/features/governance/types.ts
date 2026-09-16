@@ -74,13 +74,12 @@ export interface EpochView {
 
 /** A single user's cumulative holdings. */
 export interface HoldingView {
-  readonly claimantKey: string;
+  /** Stable owner identity. Display names are labels only and may collide. */
+  readonly canonicalOwnerKey: string;
   readonly claimantKind: "user" | "identity";
   readonly isLinked: boolean;
   readonly displayName: string | null;
   readonly claimantLabel: string;
-  readonly avatar: string;
-  readonly color: string;
   readonly totalCredits: string;
   readonly ownershipPercent: number;
   readonly epochsContributed: number;

@@ -21,6 +21,7 @@ describe("ledger.epoch-claimants.v1 contract", () => {
       poolTotalCredits: "10000",
       items: [
         {
+          canonicalOwnerKey: "user:user-1",
           claimantKey: "user:user-1",
           claimant: {
             kind: "user",
@@ -34,6 +35,7 @@ describe("ledger.epoch-claimants.v1 contract", () => {
           receiptIds: ["r1", "r2"],
         },
         {
+          canonicalOwnerKey: "identity:github:42",
           claimantKey: "identity:github:42",
           claimant: {
             kind: "identity",
@@ -61,6 +63,7 @@ describe("ledger.epoch-claimants.v1 contract", () => {
         poolTotalCredits: "10000",
         items: [
           {
+            canonicalOwnerKey: "user:user-1",
             claimantKey: "user:user-1",
             totalUnits: "100",
             share: "1.000000",

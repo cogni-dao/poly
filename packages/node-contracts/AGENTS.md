@@ -40,6 +40,10 @@ All contract files re-exported via `src/index.ts`. Selective re-export for `ai.c
 
 - `identity.attestation.v1.contract` — frozen operator↔node identity protocol, canonical HTTPS-origin schema, and cross-repository protocol fingerprint
 
+**Attribution lifecycle contracts:**
+
+- `attribution.settlement-lifecycle.v1.contract` — authenticated read of live/latest settlement revisions and per-epoch publication coverage
+
 **Internal scheduler-worker → node-app contracts (task.0280):**
 
 - `graphs.run.internal.v1.contract` — `POST /api/internal/graphs/{graphId}/runs` (executeGraphActivity)

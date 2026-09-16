@@ -4,9 +4,8 @@
 /**
  * Module: `@app/(app)/gov/loading`
  * Purpose: Section-level Suspense fallback covering `/gov`,
- *   `/gov/epoch`, `/gov/holdings`, `/gov/review`, `/gov/system`. All
- *   four sub-pages are table-dominant; one section skeleton avoids
- *   four near-identical files.
+ *   `/gov/epoch`, `/gov/holdings`, and `/gov/review`. One shared section
+ *   skeleton avoids near-identical route files.
  * Scope: Server component, layout-preserving inside `(app)/gov/layout.tsx`.
  * Invariants: Outer matches gov page renders. Table dominant.
  * Side-effects: none

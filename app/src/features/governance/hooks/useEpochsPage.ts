@@ -23,11 +23,17 @@ import {
   composeEpochView,
   composeEpochViewFromClaimants,
 } from "@/features/governance/lib/compose-epoch";
+import {
+  type SettlementLifecycleEvidence,
+  UNKNOWN_SETTLEMENT_LIFECYCLE,
+} from "@/features/governance/lib/epoch-lifecycle-state";
 import type { EpochView } from "@/features/governance/types";
 
 export interface EpochsPageData {
   readonly current: EpochView | null;
   readonly pastEpochs: readonly EpochView[];
+  /** One fail-closed page read shared by every current and historical rail. */
+  readonly settlementLifecycle: SettlementLifecycleEvidence;
 }
 
 const limit = pLimit(3);
@@ -85,9 +91,14 @@ async function composePastEpoch(epoch: EpochDto): Promise<EpochView> {
 }
 
 async function fetchEpochsPage(): Promise<EpochsPageData> {
-  const { epochs } = await fetchJson<{ epochs: EpochDto[] }>(
-    "/api/v1/attribution/epochs?limit=200"
-  );
+  const [{ epochs }, settlementLifecycle] = await Promise.all([
+    fetchJson<{ epochs: EpochDto[] }>(
+      "/api/v1/attribution/epochs?limit=200"
+    ),
+    fetchJson<SettlementLifecycleEvidence>(
+      "/api/v1/attribution/settlement-lifecycle"
+    ).catch(() => UNKNOWN_SETTLEMENT_LIFECYCLE),
+  ]);
 
   // Find the current epoch: prefer open, fall back to most recent review
   const current =
@@ -108,7 +119,7 @@ async function fetchEpochsPage(): Promise<EpochsPageData> {
     Promise.all(past.map((epoch) => limit(() => composePastEpoch(epoch)))),
   ]);
 
-  return { current: currentView, pastEpochs: pastViews };
+  return { current: currentView, pastEpochs: pastViews, settlementLifecycle };
 }
 
 export function useEpochsPage(): UseQueryResult<EpochsPageData, Error> {

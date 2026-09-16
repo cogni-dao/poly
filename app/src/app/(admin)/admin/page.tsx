@@ -12,7 +12,6 @@
  */
 
 import {
-	Activity,
 	ChevronRight,
 	FileSignature,
 	Layers,
@@ -28,9 +27,9 @@ import { getServerSessionUser } from "@/lib/auth/server";
 
 const PRIMARY_ACTION = {
 	href: "/gov/review",
-	title: "Epoch Review & Sign",
+	title: "Finish Epoch",
 	description:
-		"Review pending epoch ledgers, adjust per-contribution weights, and sign to finalize. EIP-712 typed-data flow.",
+		"Open the oldest review, sign and finalize it, then publish the latest global settlement.",
 	icon: FileSignature,
 } as const;
 
@@ -43,15 +42,9 @@ const GOVERNANCE_VIEWS = [
 	},
 	{
 		href: "/gov/holdings",
-		title: "Holdings",
+		title: "Ownership",
 		description: "Aggregated attribution shares across claimants.",
 		icon: PieChart,
-	},
-	{
-		href: "/gov/system",
-		title: "Governance System",
-		description: "Schedule, sync status, and on-chain signal execution.",
-		icon: Activity,
 	},
 ] as const;
 

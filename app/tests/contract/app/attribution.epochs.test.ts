@@ -25,6 +25,7 @@ describe("ledger.list-epochs.v1 contract", () => {
           periodEnd: "2026-02-08T00:00:00.000Z",
           weightConfig: { pull_requests: 1, reviews: 2 },
           poolTotalCredits: "10000",
+          approvers: ["0x1111111111111111111111111111111111111111"],
           openedAt: "2026-02-01T00:00:00.000Z",
           closedAt: "2026-02-08T00:00:00.000Z",
           createdAt: "2026-02-01T00:00:00.000Z",
@@ -71,6 +72,7 @@ describe("ledger.list-epochs.v1 contract", () => {
           periodEnd: "2026-02-08T00:00:00.000Z",
           weightConfig: {},
           poolTotalCredits: "123456789012345",
+          approvers: null,
           openedAt: "2026-02-01T00:00:00.000Z",
           closedAt: "2026-02-08T00:00:00.000Z",
           createdAt: "2026-02-01T00:00:00.000Z",
@@ -81,5 +83,29 @@ describe("ledger.list-epochs.v1 contract", () => {
     const parsed = listEpochsOperation.output.parse(data);
     expect(typeof parsed.epochs[0].id).toBe("string");
     expect(typeof parsed.epochs[0].poolTotalCredits).toBe("string");
+  });
+
+  it("exposes the approver set pinned when review opened", () => {
+    const parsed = listEpochsOperation.output.parse({
+      epochs: [
+        {
+          id: "1",
+          status: "review",
+          periodStart: "2026-02-01T00:00:00.000Z",
+          periodEnd: "2026-02-08T00:00:00.000Z",
+          weightConfig: {},
+          poolTotalCredits: null,
+          approvers: ["0x1111111111111111111111111111111111111111"],
+          openedAt: "2026-02-01T00:00:00.000Z",
+          closedAt: null,
+          createdAt: "2026-02-01T00:00:00.000Z",
+        },
+      ],
+      total: 1,
+    });
+
+    expect(parsed.epochs[0].approvers).toEqual([
+      "0x1111111111111111111111111111111111111111",
+    ]);
   });
 });

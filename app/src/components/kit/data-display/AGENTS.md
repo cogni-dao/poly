@@ -37,7 +37,7 @@ Reusable kit components for displaying data including badges, avatars, scroll ar
 
 ## Public Surface
 
-- **Exports (via ../index.ts):** ActivityChart, Avatar, Badge, DiscordIcon, EthereumIcon, ExpandableTableRow, GitHubIcon, GoogleIcon, GithubButton, ProviderIconProps, ScrollArea, TerminalFrame
+- **Exports (via `@/components`):** ActivityChart, Avatar, Badge, DiscordIcon, EthereumIcon, ExpandableTableRow, GitHubIcon, GoogleIcon, GithubButton, LifecycleProgress, PhaseList, ProviderIconProps, ScrollArea, TerminalFrame
 - **Files considered API:** All \*.tsx files in this directory
 
 ## Responsibilities
@@ -88,3 +88,4 @@ import { ScrollArea, Badge, Avatar } from "@/components/kit/data-display";
 - Avatar handles loading states and fallbacks
 - GithubButton is a specialized display component for repo links
 - TerminalFrame provides styled container for terminal output
+- LifecycleProgress is a read-only, text-labelled checkpoint rail; domain state and actions stay in callers

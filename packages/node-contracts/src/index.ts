@@ -47,6 +47,7 @@ export * from "./attribution.receipts.internal.v1.contract";
 export * from "./attribution.record-pool-component.v1.contract";
 export * from "./attribution.review-epoch.v1.contract";
 export * from "./attribution.review-subject-overrides.v1.contract";
+export * from "./attribution.settlement-lifecycle.v1.contract";
 export * from "./attribution.sign-data.v1.contract";
 export * from "./attribution.sign-data.v2.contract";
 // ── Billing ─────────────────────────────────────────────────────────────────

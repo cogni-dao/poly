@@ -48,7 +48,7 @@ Database client factory and Drizzle adapter implementations for scheduling and l
   - `DrizzleScheduleUserAdapter`, `DrizzleScheduleWorkerAdapter` — schedule adapters (split by trust boundary)
   - `DrizzleExecutionGrantUserAdapter`, `DrizzleExecutionGrantWorkerAdapter` — grant adapters (split by trust boundary)
   - `DrizzleExecutionRequestAdapter`, `DrizzleGraphRunAdapter` (canonical), `DrizzleScheduleRunAdapter` (deprecated alias)
-  - `DrizzleAttributionAdapter` — ledger adapter (shared by app + worker, uses serviceDb/BYPASSRLS). Constructor takes `scopeId`; all epochId-based methods enforce scope via `resolveEpochScoped()` (SCOPE_GATED_QUERIES).
+  - `DrizzleAttributionAdapter` — ledger adapter (shared by app + worker, uses serviceDb/BYPASSRLS). Constructor takes `scopeId`; all epochId-based methods enforce scope via `resolveEpochScoped()`, and settlement lifecycle reads require matching node + scope (SCOPE_GATED_QUERIES).
   - Re-exports from `@cogni/db-schema` (tables, types)
 - **Exports (sub-path `@cogni/db-client/service`):**
   - `createServiceDbClient(url)` — client factory for `app_service` role (BYPASSRLS)

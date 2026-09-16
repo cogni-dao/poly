@@ -19,7 +19,7 @@
 
 import { CUMULATIVE_MERKLE_DISTRIBUTOR_ABI } from "@cogni/cogni-contracts";
 import { getTransactionExplorerUrl } from "@cogni/node-shared";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   useAccount,
   useChainId,
@@ -42,15 +42,21 @@ import {
 } from "@/components";
 import { useCumulativeClaim } from "@/features/governance/hooks/useCumulativeClaim";
 import { getChainName } from "@/features/governance/lib/proposal-utils";
+import { formatTokenAmount } from "@/features/governance/lib/token-display";
 
 export function CumulativeClaimPanel({
   bare = false,
+  tokenAddress = null,
+  chainId,
 }: {
   /**
    * Render without the outer Card chrome (header/border) — for embedding inside an existing
    * SectionCard (e.g. YourPositionPanel) so the claim UX reads as a flat section, not a card-in-card.
    */
   bare?: boolean;
+  /** Public node token identity, so balance remains readable without a claim leaf. */
+  tokenAddress?: string | null;
+  chainId?: number;
 } = {}) {
   const { address, isConnected } = useAccount();
 
@@ -63,7 +69,11 @@ export function CumulativeClaimPanel({
         <WalletConnectButton />
       </div>
     ) : (
-      <ConnectedClaim account={address} />
+      <ConnectedClaim
+        account={address}
+        tokenAddress={tokenAddress}
+        configuredChainId={chainId}
+      />
     );
 
   if (bare) {
@@ -93,16 +103,35 @@ export function CumulativeClaimPanel({
   );
 }
 
-function ConnectedClaim({ account }: { account: `0x${string}` }) {
+function ConnectedClaim({
+  account,
+  tokenAddress,
+  configuredChainId,
+}: {
+  account: `0x${string}`;
+  tokenAddress: string | null;
+  configuredChainId: number | undefined;
+}) {
   const {
     claim,
     cumulativeClaimed,
     claimable,
+    tokenBalance,
+    tokenDecimals,
+    isTokenBalanceLoading,
+    tokenBalanceError,
     isLoading,
     isClaimedLoading,
     error,
-    refetchClaimed,
-  } = useCumulativeClaim(account);
+    refetchAfterClaim,
+  } = useCumulativeClaim(
+    account,
+    { kind: "latest" },
+    true,
+    configuredChainId
+      ? { tokenAddress, chainId: configuredChainId }
+      : undefined
+  );
 
   const chainId = useChainId();
   const { switchChain } = useSwitchChain();
@@ -114,16 +143,25 @@ function ConnectedClaim({ account }: { account: `0x${string}` }) {
   } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed } =
     useWaitForTransactionReceipt({ hash: txHash });
+  const [refreshState, setRefreshState] = useState<
+    "idle" | "refreshing" | "complete"
+  >("idle");
 
-  // HONEST_STATE: re-read cumulativeClaimed once the claim tx confirms so
-  // claimable collapses to 0 until the next cumulative root is published.
+  // Confirmation is terminal immediately. Chain reads must both settle before
+  // the component can leave the terminal state (a remount starts a fresh read).
   useEffect(() => {
-    if (isConfirmed) refetchClaimed();
-  }, [isConfirmed, refetchClaimed]);
+    if (!isConfirmed || refreshState !== "idle") return;
+    setRefreshState("refreshing");
+    void refetchAfterClaim().finally(() => setRefreshState("complete"));
+  }, [isConfirmed, refreshState, refetchAfterClaim]);
 
   const distributor = (claim?.distributor ?? null) as `0x${string}` | null;
   const isCorrectChain = claim ? chainId === claim.chainId : true;
-  const chainName = claim ? getChainName(claim.chainId) : "";
+  const chainName = claim
+    ? getChainName(claim.chainId)
+    : configuredChainId
+      ? getChainName(configuredChainId)
+      : "";
   const explorerUrl =
     txHash && claim ? getTransactionExplorerUrl(claim.chainId, txHash) : null;
 
@@ -164,29 +202,67 @@ function ConnectedClaim({ account }: { account: `0x${string}` }) {
   // No leaf for this wallet in the latest manifest → no allocation.
   if (!claim) {
     return (
-      <Alert>
-        <AlertTitle>No allocation for this wallet</AlertTitle>
-        <AlertDescription>
-          This wallet has no cumulative token allocation yet. If you contributed
-          with a different wallet, connect that one.
-        </AlertDescription>
-      </Alert>
+      <div className="space-y-5">
+        <AllocationSummary
+          tokenBalance={tokenBalance}
+          tokenConfigured={Boolean(tokenAddress)}
+          isTokenBalanceLoading={isTokenBalanceLoading}
+          tokenBalanceError={tokenBalanceError}
+          cumulativeAmount={undefined}
+          cumulativeClaimed={undefined}
+          claimable={undefined}
+          chainName={chainName}
+          decimals={tokenDecimals}
+        />
+        <Alert>
+          <AlertTitle>No allocation for this wallet</AlertTitle>
+          <AlertDescription>
+            Your token balance is shown above, but this wallet has no cumulative
+            allocation yet. If you contributed with a different wallet, connect
+            that one.
+          </AlertDescription>
+        </Alert>
+      </div>
     );
   }
 
   const cumulativeAmount = BigInt(claim.amount);
+  const showConfirmed = isConfirmed || refreshState !== "idle";
 
   return (
     <div className="space-y-5">
       <AllocationSummary
+        tokenBalance={tokenBalance}
+        tokenConfigured={Boolean(claim.tokenAddress || tokenAddress)}
+        isTokenBalanceLoading={isTokenBalanceLoading}
+        tokenBalanceError={tokenBalanceError}
         cumulativeAmount={cumulativeAmount}
         cumulativeClaimed={cumulativeClaimed}
         claimable={claimable}
         chainName={chainName}
+        decimals={tokenDecimals}
       />
 
-      {/* Distributor not yet recorded (R2 repo-spec distributorAddress). */}
-      {!distributor ? (
+      {showConfirmed ? (
+        <Alert>
+          <AlertTitle>Tokens claimed</AlertTitle>
+          <AlertDescription>
+            {refreshState === "refreshing"
+              ? "Confirmed. Refreshing your token balance and claimed amount…"
+              : `Your claim confirmed on ${chainName}.`}{" "}
+            {explorerUrl && (
+              <a
+                href={explorerUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline transition-colors hover:text-foreground"
+              >
+                View transaction
+              </a>
+            )}
+          </AlertDescription>
+        </Alert>
+      ) : !distributor ? (
         <Alert>
           <AlertTitle>Claiming not open yet</AlertTitle>
           <AlertDescription>
@@ -220,7 +296,7 @@ function ConnectedClaim({ account }: { account: `0x${string}` }) {
               ? "Confirm in wallet…"
               : isConfirming
                 ? "Claiming…"
-                : `Claim ${formatAmount(claimable)}`}
+                : `Claim ${formatTokenAmount(claimable, tokenDecimals)}`}
           </Button>
 
           {explorerUrl && (isPending || isConfirming) && (
@@ -238,26 +314,7 @@ function ConnectedClaim({ account }: { account: `0x${string}` }) {
         </>
       )}
 
-      {isConfirmed && (
-        <Alert>
-          <AlertTitle>Tokens claimed</AlertTitle>
-          <AlertDescription>
-            Your claim confirmed on {chainName}.{" "}
-            {explorerUrl && (
-              <a
-                href={explorerUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline transition-colors hover:text-foreground"
-              >
-                View transaction
-              </a>
-            )}
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {writeError && (
+      {writeError && !showConfirmed && (
         <Alert variant="destructive">
           <AlertTitle>Claim failed</AlertTitle>
           <AlertDescription>
@@ -274,35 +331,72 @@ function ConnectedClaim({ account }: { account: `0x${string}` }) {
 }
 
 function AllocationSummary({
+  tokenBalance,
+  tokenConfigured,
+  isTokenBalanceLoading,
+  tokenBalanceError,
   cumulativeAmount,
   cumulativeClaimed,
   claimable,
   chainName,
+  decimals,
 }: {
-  cumulativeAmount: bigint;
+  tokenBalance: bigint | undefined;
+  tokenConfigured: boolean;
+  isTokenBalanceLoading: boolean;
+  tokenBalanceError: Error | null;
+  cumulativeAmount: bigint | undefined;
   cumulativeClaimed: bigint | undefined;
   claimable: bigint | undefined;
   chainName: string;
+  decimals: number;
 }) {
   return (
-    <div className="rounded-lg border border-border p-5">
-      <p className="text-muted-foreground text-sm">Claimable now</p>
-      <p className="font-bold text-2xl tracking-tight">
-        {claimable === undefined ? "…" : formatAmount(claimable)}
-      </p>
-      <dl className="mt-3 space-y-1 text-muted-foreground text-sm">
-        <div className="flex justify-between gap-4">
-          <dt>Cumulative allocation</dt>
-          <dd className="font-mono">{formatAmount(cumulativeAmount)}</dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt>Already claimed</dt>
-          <dd className="font-mono">
-            {cumulativeClaimed === undefined
+    <div className="space-y-4">
+      <dl className="grid grid-cols-2 gap-3">
+        <PositionMetric
+          label="Token balance"
+          value={
+            !tokenConfigured
+              ? "Not configured"
+              : isTokenBalanceLoading
+                ? "…"
+                : tokenBalanceError || tokenBalance === undefined
+                  ? "Unavailable"
+                  : formatTokenAmount(tokenBalance, decimals)
+          }
+        />
+        <PositionMetric
+          label="Claimable now"
+          value={
+            cumulativeAmount === undefined
+              ? "Not available"
+              : claimable === undefined
               ? "…"
-              : formatAmount(cumulativeClaimed)}
-          </dd>
-        </div>
+              : formatTokenAmount(claimable, decimals)
+          }
+          emphasized
+        />
+        <PositionMetric
+          label="Cumulative entitlement"
+          value={
+            cumulativeAmount === undefined
+              ? "No allocation"
+              : formatTokenAmount(cumulativeAmount, decimals)
+          }
+        />
+        <PositionMetric
+          label="Already claimed"
+          value={
+            cumulativeAmount === undefined
+              ? "Not available"
+              : cumulativeClaimed === undefined
+              ? "…"
+              : formatTokenAmount(cumulativeClaimed, decimals)
+          }
+        />
+      </dl>
+      <dl className="text-muted-foreground text-sm">
         {chainName && (
           <div className="flex justify-between gap-4">
             <dt>Network</dt>
@@ -314,13 +408,27 @@ function AllocationSummary({
   );
 }
 
-/** Format an 18-decimal base-unit amount for display, trimming trailing zeros. */
-function formatAmount(base: bigint): string {
-  const DECIMALS = 18n;
-  const divisor = 10n ** DECIMALS;
-  const whole = base / divisor;
-  const frac = base % divisor;
-  if (frac === 0n) return `${whole.toLocaleString()} tokens`;
-  const fracStr = frac.toString().padStart(18, "0").replace(/0+$/, "");
-  return `${whole.toLocaleString()}.${fracStr.slice(0, 4)} tokens`;
+function PositionMetric({
+  label,
+  value,
+  emphasized = false,
+}: {
+  label: string;
+  value: string;
+  emphasized?: boolean;
+}) {
+  return (
+    <div
+      className={
+        emphasized
+          ? "min-w-0 rounded-lg border border-primary/40 bg-primary/5 p-3"
+          : "min-w-0 rounded-lg border border-border p-3"
+      }
+    >
+      <dt className="text-muted-foreground text-xs">{label}</dt>
+      <dd className="mt-1 break-words font-semibold text-foreground text-sm tabular-nums sm:text-base">
+        {value}
+      </dd>
+    </div>
+  );
 }

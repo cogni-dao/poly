@@ -41,6 +41,7 @@ import type {
   AttributionStatementLineRecord,
   AttributionStatementSignature,
   AttributionStore,
+  ClaimantLiabilityLifecycleRecord,
   ClaimantLiabilityRecord,
   CloseIngestionWithEvaluationsParams,
   DistributionClaimRecord,
@@ -1707,6 +1708,45 @@ export class DrizzleAttributionAdapter implements AttributionStore {
   }
 
   // ── Global settlement revisions ───────────────────────────
+
+  async listClaimantLiabilities(
+    nodeId: string,
+    scopeId: string
+  ): Promise<readonly ClaimantLiabilityLifecycleRecord[]> {
+    if (scopeId !== this.scopeId) return [];
+    const rows = await this.db
+      .select({
+        liability: claimantLiabilities,
+        settledRevisionSequence: distributionSettlementRevisions.sequence,
+      })
+      .from(claimantLiabilities)
+      .leftJoin(
+        distributionSettlementRevisions,
+        and(
+          eq(
+            claimantLiabilities.settledRevisionId,
+            distributionSettlementRevisions.id
+          ),
+          eq(distributionSettlementRevisions.nodeId, nodeId),
+          eq(distributionSettlementRevisions.scopeId, scopeId)
+        )
+      )
+      .where(
+        and(
+          eq(claimantLiabilities.nodeId, nodeId),
+          eq(claimantLiabilities.scopeId, scopeId)
+        )
+      )
+      .orderBy(
+        claimantLiabilities.sourceEpochId,
+        claimantLiabilities.createdAt,
+        claimantLiabilities.id
+      );
+    return rows.map((row) => ({
+      ...toClaimantLiability(row.liability),
+      settledRevisionSequence: row.settledRevisionSequence,
+    }));
+  }
 
   async listPendingClaimantLiabilities(
     nodeId: string,

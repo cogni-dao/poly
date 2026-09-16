@@ -3,11 +3,11 @@
 
 /**
  * Module: `@app/(app)/gov/review/view`
- * Purpose: Client component for epoch review admin page — review contributions, adjust weights via review-subject overrides, sign & finalize.
- * Scope: Composition of EpochDetail + useSignEpoch + useReviewEpochs + useReviewSubjectOverrides. Does not perform server-side logic or direct DB access.
- * Invariants: WRITE_ROUTES_APPROVER_GATED (UI gate via isApprover prop, server enforces). BigInt units displayed via Number() for presentation only.
- * Side-effects: IO (via hooks — review-subject-overrides CRUD, sign-data, finalize)
- * Links: src/features/governance/types.ts, work/items/task.0119.epoch-signer-ui.md
+ * Purpose: Single admin workspace for opening, finalizing, and publishing the oldest unfinished epoch work.
+ * Scope: Composes existing governance hooks and actions. Does not perform server-side logic or construct transactions.
+ * Invariants: OLDEST_FIRST, ONE_PRIMARY_ACTION, PINNED_APPROVERS_CAN_FINISH, WRITE_ROUTES_APPROVER_GATED.
+ * Side-effects: IO (via existing review, finalize, and publish hooks)
+ * Links: src/features/governance/hooks/useFinishEpochWorkspace.ts, task.5038
  * @public
  */
 
@@ -27,15 +27,33 @@ import {
 } from "lucide-react";
 import type { ReactElement } from "react";
 import { useCallback, useMemo, useState } from "react";
-import { Badge, Button, Input, TableCell, TableRow } from "@/components";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  Badge,
+  Button,
+  Input,
+  type Phase,
+  PhaseList,
+  TableCell,
+  TableRow,
+} from "@/components";
 import {
   receiptTitle,
   TYPE_ICONS,
   TYPE_LABELS,
 } from "@/features/governance/components/ContributionRow";
 import { EpochDetail } from "@/features/governance/components/EpochDetail";
+import { EpochReviewAction } from "@/features/governance/components/EpochReviewAction";
+import { ExecuteDistributionPanel } from "@/features/governance/components/ExecuteDistributionPanel";
 import { SourceBadge } from "@/features/governance/components/SourceBadge";
-import { useReviewEpochs } from "@/features/governance/hooks/useReviewEpochs";
+import {
+  type FinishEpochSelection,
+  isEligibleForFinishEpochWork,
+  useFinishEpochWorkspace,
+} from "@/features/governance/hooks/useFinishEpochWorkspace";
+import { useOpenEpochReview } from "@/features/governance/hooks/useOpenEpochReview";
 import {
   type ReviewSubjectOverrideView,
   useReviewSubjectOverrides,
@@ -49,26 +67,75 @@ import type {
 } from "@/features/governance/types";
 
 interface ReviewViewProps {
-  readonly isApprover: boolean;
+  readonly walletAddress: string | null;
+  readonly isCurrentApprover: boolean;
+  readonly operatorSetupUrl: string;
 }
 
-export function ReviewView({ isApprover }: ReviewViewProps): ReactElement {
-  const { data: reviewEpochs, isLoading, error } = useReviewEpochs();
-
-  if (!isApprover) {
-    return (
-      <div className="bg-card flex flex-col items-center justify-center gap-4 rounded-lg border p-12 text-center">
-        <Lock className="text-muted-foreground h-10 w-10" />
-        <div>
-          <h2 className="text-lg font-semibold">Not Authorized</h2>
-          <p className="text-muted-foreground mt-1 text-sm">
-            Only ledger approvers can access the epoch review page. Connect an
-            approver wallet via SIWE to proceed.
-          </p>
-        </div>
-      </div>
-    );
+function workflowPhases(
+  selection: FinishEpochSelection | null,
+  lifecycleUnavailable: boolean,
+  recentlyPublished: boolean
+): readonly Phase[] {
+  if (recentlyPublished) {
+    return [
+      { label: "Open review", state: "done" },
+      { label: "Sign and finalize", state: "done" },
+      {
+        label: "Publish",
+        state: "done",
+        detail: "Latest global settlement confirmed",
+      },
+    ];
   }
+  if (!selection) {
+    return [
+      { label: "Open review", state: "done" },
+      { label: "Sign and finalize", state: "done" },
+      {
+        label: "Publish",
+        state: lifecycleUnavailable ? "error" : "done",
+        detail: lifecycleUnavailable
+          ? "Couldn’t verify the latest global settlement."
+          : "The latest global settlement is live.",
+      },
+    ];
+  }
+  if (selection.kind === "open_review") {
+    return [
+      { label: "Open review", state: "active", detail: "Next action" },
+      { label: "Sign and finalize", state: "pending" },
+      { label: "Publish", state: "pending" },
+    ];
+  }
+  if (selection.kind === "finalize") {
+    return [
+      { label: "Open review", state: "done" },
+      { label: "Sign and finalize", state: "active", detail: "Next action" },
+      { label: "Publish", state: "pending" },
+    ];
+  }
+  return [
+    { label: "Open review", state: "done" },
+    { label: "Sign and finalize", state: "done" },
+    {
+      label: "Publish",
+      state: "active",
+      detail: "Publish the latest global settlement",
+    },
+  ];
+}
+
+export function ReviewView({
+  walletAddress,
+  isCurrentApprover,
+  operatorSetupUrl,
+}: ReviewViewProps): ReactElement {
+  const { data, isLoading, error } = useFinishEpochWorkspace();
+  const openReview = useOpenEpochReview();
+  const [publishedExplorerUrl, setPublishedExplorerUrl] = useState<
+    string | null
+  >(null);
 
   if (error) {
     return (
@@ -83,7 +150,7 @@ export function ReviewView({ isApprover }: ReviewViewProps): ReactElement {
     );
   }
 
-  if (isLoading || !reviewEpochs) {
+  if (isLoading || !data) {
     return (
       <div className="animate-pulse space-y-6">
         <div className="bg-muted h-8 w-64 rounded-md" />
@@ -92,29 +159,156 @@ export function ReviewView({ isApprover }: ReviewViewProps): ReactElement {
     );
   }
 
+  const { selection, epochView, lifecycleUnavailable } = data;
+  const canAct = selection
+    ? isEligibleForFinishEpochWork({
+        selection,
+        walletAddress,
+        isCurrentApprover,
+      })
+    : false;
+  const period = selection
+    ? `${new Date(selection.epoch.periodStart).toLocaleDateString()} — ${new Date(
+        selection.epoch.periodEnd
+      ).toLocaleDateString()}`
+    : null;
+
   return (
-    <div className="space-y-6">
+    <main className="mx-auto w-full max-w-4xl space-y-6">
+      <header className="space-y-2">
+        <h1 className="font-bold text-3xl tracking-tight">Finish epoch</h1>
+        <p className="max-w-2xl text-muted-foreground text-sm">
+          One workspace for the next review, finalization, or publication step.
+        </p>
+      </header>
+
+      <section
+        aria-labelledby="finish-progress-title"
+        aria-live="polite"
+        className="rounded-lg border bg-card p-4 sm:p-6"
+      >
+        <div className="mb-4 space-y-1">
+          <h2 id="finish-progress-title" className="font-semibold">
+            {selection ? `Epoch #${selection.epoch.id}` : "All epoch work"}
+          </h2>
+          {period ? (
+            <p className="text-muted-foreground text-sm">{period}</p>
+          ) : null}
+        </div>
+        <PhaseList
+          phases={workflowPhases(
+            selection,
+            lifecycleUnavailable,
+            publishedExplorerUrl !== null
+          )}
+        />
+      </section>
+
+      {publishedExplorerUrl ? (
+        <Alert>
+          <AlertTitle>Latest settlement published</AlertTitle>
+          <AlertDescription>
+            The transaction is confirmed.{" "}
+            <a
+              href={publishedExplorerUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary underline-offset-4 hover:underline"
+            >
+              View transaction
+            </a>
+          </AlertDescription>
+        </Alert>
+      ) : !selection ? (
+        lifecycleUnavailable ? (
+          <Alert variant="destructive" role="alert">
+            <AlertTitle>Couldn’t verify publication</AlertTitle>
+            <AlertDescription>
+              Review and finalization are caught up, but the latest global
+              settlement could not be checked. No publish action is available.
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <div className="flex items-start gap-3 rounded-lg border bg-card p-5">
+            <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" />
+            <div>
+              <h2 className="font-semibold">All caught up</h2>
+              <p className="mt-1 text-muted-foreground text-sm">
+                There is no ended epoch to review and the latest global
+                settlement is published.
+              </p>
+            </div>
+          </div>
+        )
+      ) : (
+        <div className="space-y-4">
+          {!canAct ? <LockedActionNotice selection={selection} /> : null}
+
+          {selection.kind === "open_review" && epochView ? (
+            <div className="space-y-4">
+              <EpochDetail epoch={epochView} />
+              {canAct ? (
+                <EpochReviewAction
+                  status="open"
+                  reviewReady
+                  isApprover
+                  isPending={openReview.isPending}
+                  error={openReview.error}
+                  onOpen={() => openReview.mutate(selection.epoch.id)}
+                  onContinue={() => undefined}
+                />
+              ) : null}
+            </div>
+          ) : null}
+
+          {selection.kind === "finalize" && epochView ? (
+            canAct ? (
+              <ReviewEpochSection epoch={epochView} />
+            ) : (
+              <EpochDetail epoch={epochView} />
+            )
+          ) : null}
+
+          {selection.kind === "publish" ? (
+            <div className="space-y-4">
+              {selection.lifecycle ? (
+                <p className="text-muted-foreground text-sm">
+                  {selection.lifecycle.publishedLiabilityCount === null
+                    ? "Publication coverage is unknown. The chain read will verify safety before any action appears."
+                    : `${selection.lifecycle.publishedLiabilityCount} of ${selection.lifecycle.settledLiabilityCount} settled allocations are published.`}
+                </p>
+              ) : null}
+              {canAct ? (
+                <ExecuteDistributionPanel
+                  epochId={selection.epoch.id}
+                  operatorSetupUrl={operatorSetupUrl}
+                  onConfirmed={setPublishedExplorerUrl}
+                />
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      )}
+    </main>
+  );
+}
+
+function LockedActionNotice({
+  selection,
+}: {
+  readonly selection: FinishEpochSelection;
+}): ReactElement {
+  return (
+    <div className="flex items-start gap-3 rounded-lg border bg-card p-4">
+      <Lock className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
       <div>
-        <h1 className="mb-1 text-3xl font-bold tracking-tight">Epoch Review</h1>
-        <p className="text-muted-foreground text-sm">
-          Review contributions, adjust weights, and sign to finalize.
+        <h2 className="font-semibold">View only</h2>
+        <p className="mt-1 text-muted-foreground text-sm">
+          {selection.kind === "open_review"
+            ? "A current ledger approver must open this review."
+            : "A current or pinned approver must complete this step."}
         </p>
       </div>
-
-      {reviewEpochs.length === 0 ? (
-        <div className="bg-card rounded-lg border p-12 text-center">
-          <p className="text-muted-foreground">
-            No epochs currently in review.
-          </p>
-          <p className="text-muted-foreground mt-2 text-sm">
-            Epochs will appear here when they transition from open to review.
-          </p>
-        </div>
-      ) : (
-        reviewEpochs.map((epoch) => (
-          <ReviewEpochSection key={epoch.id} epoch={epoch} />
-        ))
-      )}
     </div>
   );
 }
@@ -178,7 +372,6 @@ function ReviewEpochSection({
         renderExpandedRows={renderExpandedRows}
       />
 
-      {/* Sign & Finalize action */}
       <div className="bg-card flex flex-wrap items-center gap-3 rounded-lg border p-4">
         {state.phase === "IDLE" && (
           <Button onClick={handleSign}>
@@ -206,7 +399,7 @@ function ReviewEpochSection({
         {state.phase === "ERROR" && (
           <div className="flex items-center gap-3">
             <div className="text-destructive text-sm">{state.errorMessage}</div>
-            <Button variant="outline" size="sm" onClick={reset}>
+            <Button size="sm" onClick={reset}>
               Try Again
             </Button>
           </div>
@@ -302,8 +495,8 @@ function ReviewReceiptRow({
                 </>
               )}
             </div>
-            <div className="flex items-end gap-2 pl-1">
-              <div className="flex-1">
+            <div className="flex flex-col items-stretch gap-2 pl-1 sm:flex-row sm:items-end">
+              <div className="min-w-0 flex-1">
                 <label
                   htmlFor={`override-units-${receipt.receiptId}`}
                   className="text-muted-foreground mb-1 block text-xs"
@@ -319,10 +512,9 @@ function ReviewReceiptRow({
                   onChange={(e) => setEditUnits(e.target.value)}
                   onClick={(e) => e.stopPropagation()}
                   placeholder="e.g. 500"
-                  className="h-7 text-xs"
                 />
               </div>
-              <div className="flex-2">
+              <div className="min-w-0 flex-1">
                 <label
                   htmlFor={`override-reason-${receipt.receiptId}`}
                   className="text-muted-foreground mb-1 block text-xs"
@@ -336,12 +528,12 @@ function ReviewReceiptRow({
                   onChange={(e) => setEditReason(e.target.value)}
                   onClick={(e) => e.stopPropagation()}
                   placeholder="e.g. trivial fix"
-                  className="h-7 text-xs"
                 />
               </div>
               <Button
                 size="sm"
-                className="h-7 px-2"
+                variant="outline"
+                className="min-h-11 w-full sm:w-auto"
                 onClick={(e) => {
                   e.stopPropagation();
                   void handleSave();
@@ -358,7 +550,8 @@ function ReviewReceiptRow({
               <Button
                 size="sm"
                 variant="outline"
-                className="h-7 px-2"
+                className="min-h-11 w-full sm:w-auto"
+                aria-label="Cancel weight adjustment"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleCancel();
@@ -444,7 +637,8 @@ function ReviewReceiptRow({
             <Button
               size="sm"
               variant="ghost"
-              className="h-6 px-1.5"
+              className="min-h-11 min-w-11 px-2"
+              aria-label="Adjust weight"
               onClick={(e) => {
                 e.stopPropagation();
                 handleStartEdit();
@@ -457,7 +651,8 @@ function ReviewReceiptRow({
               <Button
                 size="sm"
                 variant="ghost"
-                className="text-muted-foreground hover:text-destructive h-6 px-1.5"
+                className="min-h-11 min-w-11 text-muted-foreground hover:text-destructive"
+                aria-label="Reset to original weight"
                 onClick={(e) => {
                   e.stopPropagation();
                   void handleRemove();

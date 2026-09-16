@@ -113,6 +113,17 @@ export { Badge } from "./kit/data-display/Badge";
 export { ExpandableTableRow } from "./kit/data-display/ExpandableTableRow";
 export { GithubButton } from "./kit/data-display/GithubButton";
 export {
+  LifecycleProgress,
+  type LifecycleProgressProps,
+  type LifecycleProgressState,
+  type LifecycleProgressStep,
+} from "./kit/data-display/LifecycleProgress";
+export {
+  type Phase,
+  PhaseList,
+  type PhaseState,
+} from "./kit/data-display/PhaseList";
+export {
   PieChart,
   type PieChartDatum,
 } from "./kit/data-display/PieChart";
