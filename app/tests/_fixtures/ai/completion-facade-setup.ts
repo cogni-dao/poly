@@ -178,6 +178,36 @@ export function createRunStreamMock(options: RunStreamMockOptions = {}) {
   };
 }
 
+/** In-memory execution idempotency port for completion facade tests. */
+export function createExecutionRequestPortMock() {
+  const claims = new Map<string, { requestHash: string; runId: string }>();
+  return {
+    checkIdempotency: vi.fn(async (key: string, requestHash: string) => {
+      const existing = claims.get(key);
+      if (!existing) return { status: "new" as const };
+      if (existing.requestHash !== requestHash) {
+        return {
+          status: "mismatch" as const,
+          existingHash: existing.requestHash,
+          providedHash: requestHash,
+        };
+      }
+      return {
+        status: "pending" as const,
+        request: { ...existing, idempotencyKey: key },
+      };
+    }),
+    createPendingRequest: vi.fn(
+      async (key: string, requestHash: string, runId: string) => {
+        if (claims.has(key)) throw new Error("duplicate claim");
+        claims.set(key, { requestHash, runId });
+      }
+    ),
+    finalizeRequest: vi.fn(),
+    storeRequest: vi.fn(),
+  };
+}
+
 /**
  * Create a mock getTemporalWorkflowClient return value.
  * Single source of truth for the { client, taskQueue } shape.
@@ -208,6 +238,7 @@ export function createContainerMock(
     getTemporalWorkflowClient: async () => createTemporalClientMock(),
     getContainer: () => ({
       runStream: createRunStreamMock(streamOptions),
+      executionRequestPort: createExecutionRequestPortMock(),
     }),
   };
 }

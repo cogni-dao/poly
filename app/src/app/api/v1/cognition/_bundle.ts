@@ -31,7 +31,7 @@ import type {
  * domain expertise) is delivered live from the knowledge hub on top of this.
  */
 export const SESSION_BOOTSTRAP_INVARIANTS: readonly string[] = [
-	"ONE work item + ONE node per session (CI-gated). Claim, heartbeat, and link your PR at /api/v1/work/items/{id}; coordination.nextAction is authoritative.",
+	"ONE work item + ONE node per session (CI-gated) — it IS your plan. Claim it, write your definition of done as an ordered checklist in `outcome` BEFORE you act, and refine it IN PLACE as rungs land — `outcome` is GET-readable, so a plan or 'path forward' lives THERE, never only in chat. Heartbeat; link your PR; coordination.nextAction is authoritative.",
 	"Recall before you write. Search the hub first — merged (/api/v1/knowledge?domain=) and your own open branch — and refine in place over adding new.",
 	"Ship via PR: same-repo branch → CI green → flight to candidate → merge. The operator is the deploy plane (flight, logs, secrets); code, work, and knowledge live in the node repo + hub. Watch each async gate (CI, flight, deploy) the ONE portable way — see <watch-gate> below.",
 	"Done = validated on candidate, not merged. Flight, exercise the live surface, read your request back from Loki at that SHA, and post a /validate-candidate scorecard — the merge gate.",

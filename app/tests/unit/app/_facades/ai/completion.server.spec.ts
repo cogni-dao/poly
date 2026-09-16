@@ -27,6 +27,7 @@ import { makeNoopLogger } from "@/shared/observability";
 // Mock serverEnv (following pattern from completion.test.ts)
 vi.mock("@/shared/env", () => ({
   serverEnv: () => ({
+    AUTH_SECRET: "test-auth-secret-at-least-32-characters",
     USER_PRICE_MARKUP_FACTOR: 1.5,
   }),
 }));

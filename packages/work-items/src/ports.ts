@@ -55,7 +55,7 @@ export interface WorkItemCommandPort {
 
   patch(input: {
     id: WorkItemId;
-    expectedRevision?: Revision;
+    expectedRevision: Revision;
     set?: Partial<
       Pick<
         WorkItem,

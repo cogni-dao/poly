@@ -22,11 +22,11 @@ import { DomainAlreadyRegisteredError } from "@cogni/knowledge-store";
 import {
   DomainsCreateRequestSchema,
   DomainsCreateResponseSchema,
-  DomainsListResponseSchema,
 } from "@cogni/node-contracts";
-import type { SessionUser } from "@cogni/node-shared/auth/session";
+import type { SessionUser } from "@cogni/node-shared";
 import { NextResponse } from "next/server";
 
+import { loadDomains } from "@/app/(app)/knowledge/_server/loaders";
 import { getContainer } from "@/bootstrap/container";
 
 function port() {
@@ -48,8 +48,7 @@ export async function handleList(
       { error: "knowledge store not configured" },
       { status: 503 }
     );
-  const domains = await p.listDomainsFull();
-  return NextResponse.json(DomainsListResponseSchema.parse({ domains }));
+  return NextResponse.json(await loadDomains(p));
 }
 
 export async function handleCreate(
