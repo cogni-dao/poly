@@ -36,6 +36,10 @@
   --color-syntax-string: hsl(var(--syntax-string));
   --color-syntax-keyword: hsl(var(--syntax-keyword));
 
+  /* Poly-specific: market card probability colors */
+  --color-up: hsl(var(--color-up));
+  --color-down: hsl(var(--color-down));
+
   /* Sidebar colors */
   --color-sidebar: hsl(var(--sidebar));
   --color-sidebar-foreground: hsl(var(--sidebar-foreground));
@@ -154,6 +158,10 @@
     --syntax-string: 27 87% 67%; /* orange/peach - strings & variables */
     --syntax-keyword: 10 50% 50%; /* red/brown - keywords */
 
+    /* Poly: market card probability */
+    --color-up: 152 60% 48%;
+    --color-down: 0 72% 56%;
+
     /* Accent gradient stops (aligned with poly brand hue 164) */
     --accent-from: 164 80% 42%;
     --accent-to: 164 95% 62%;
@@ -174,7 +182,7 @@
     --sidebar-border: 214.3 31.8% 91.4%;
     --sidebar-ring: 222.2 84% 4.9%;
 
-    --radius: 0.5rem;
+    --radius: 0.75rem;
 
     --success: var(--color-emerald-500);
 
@@ -202,16 +210,16 @@
     --popover-foreground: 215 20.2% 76.1%;
     --primary: 160 65% 45%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 217.2 32.6% 17.5%;
+    --secondary: 164 25% 17%;
     --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 9%;
-    --muted-foreground: 215 20.2% 76.1%;
-    --accent: 217.2 32.6% 17.5%;
+    --muted: 164 25% 9%;
+    --muted-foreground: 164 15% 65%;
+    --accent: 164 25% 17%;
     --accent-foreground: 210 40% 98%;
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: var(--color-red-600);
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
+    --border: 164 25% 17%;
+    --input: 164 25% 17%;
     --ring: 160 65% 45%;
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
@@ -227,6 +235,10 @@
     --syntax-string: 20 90% 80%; /* peach/orange - strings & variables */
     --syntax-keyword: 220 100% 65%; /* blue - keywords */
 
+    /* Poly: market card probability */
+    --color-up: 152 60% 48%;
+    --color-down: 0 65% 55%;
+
     /* Accent gradient stops (aligned with poly brand hue 164, darker for dark mode) */
     --accent-from: 164 75% 38%;
     --accent-to: 164 90% 55%;
@@ -237,7 +249,7 @@
     --sidebar-foreground: 210 40% 98%;
     --sidebar-primary: 160 65% 45%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 217.2 32.6% 17.5%;
+    --sidebar-accent: 164 25% 17%;
     --sidebar-accent-foreground: 210 40% 98%;
     --sidebar-border: 217.2 32.6% 17.5%;
     --sidebar-ring: 164 70% 40%;
