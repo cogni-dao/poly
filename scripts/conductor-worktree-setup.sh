@@ -102,12 +102,46 @@ refresh_auth_root_main() {
   }
 }
 
-auth_root_has_node_cogni_key() {
-  local env_file="$AUTH_ROOT/.env.cogni"
-  local key
+# HTTP status the node hub returns for a bearer against its cognition endpoint —
+# the same endpoint the session-start loader reads. "000" on network failure.
+node_key_http_status() {
+  local key="$1"
+  local base_url
+  base_url="$(node_hub_base_url)"
+  curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
+    -H "Authorization: Bearer ${key}" "$base_url/api/v1/cognition" 2>/dev/null || printf '000'
+}
 
-  key="$(read_env_file_value COGNI_NODE_API_KEY "$env_file")"
-  [[ -n "$key" ]]
+# Classify the auth-root NODE key against the hub that actually serves cognition:
+#   valid    -> 2xx, the hub accepts it (nothing to do)
+#   invalid  -> 401/403, present but rejected (the apex-key symptom); re-register
+#   missing  -> no key on file
+#   unknown  -> timeout / 5xx / offline; can't prove it bad, so keep it (no churn)
+auth_root_node_key_state() {
+  local key status
+  key="$(read_env_file_value COGNI_NODE_API_KEY "$AUTH_ROOT/.env.cogni")"
+  [[ -n "$key" ]] || { printf 'missing'; return; }
+  status="$(node_key_http_status "$key")"
+  case "$status" in
+    2*) printf 'valid' ;;
+    401 | 403) printf 'invalid' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+# Comment out any existing COGNI_NODE_API_KEY lines so a freshly registered key
+# (appended after) is the one read: read_env_file_value and the session-start
+# loader both take the FIRST match, so a stale line left in place shadows the fix.
+neutralize_stale_node_key() {
+  local env_file="$1"
+  local tmp
+  [[ -f "$env_file" ]] || return 0
+  tmp="${env_file}.tmp.$$"
+  awk '
+    /^[[:space:]]*COGNI_NODE_API_KEY=/ { print "# stale (rejected by node hub): " $0; next }
+    { print }
+  ' "$env_file" >"$tmp" && mv "$tmp" "$env_file"
+  chmod 600 "$env_file" 2>/dev/null || true
 }
 
 # THIS node's own hub base URL, derived from .cogni/repo-spec.yaml intent.name —
@@ -168,14 +202,22 @@ register_auth_root_cogni_agent() {
 }
 
 ensure_auth_root_cogni_env() {
-  local lock_dir
+  local lock_dir state
 
   if [[ -z "$AUTH_ROOT" ]]; then
     warn "no auth root resolved; cannot auto-register COGNI_NODE_API_KEY safely"
     exit 1
   fi
 
-  if auth_root_has_node_cogni_key; then
+  # A valid key needs nothing. An UNKNOWN state (network/5xx) is left alone so a
+  # flaky hub never churns a working key. Only missing/invalid keys fall through
+  # to (re)registration.
+  state="$(auth_root_node_key_state)"
+  if [[ "$state" == "valid" ]]; then
+    return
+  fi
+  if [[ "$state" == "unknown" ]]; then
+    warn "could not validate COGNI_NODE_API_KEY against $(node_hub_base_url) (network?); keeping existing key"
     return
   fi
 
@@ -184,18 +226,26 @@ ensure_auth_root_cogni_env() {
   if ! mkdir "$lock_dir" 2>/dev/null; then
     for _ in {1..20}; do
       sleep 1
-      auth_root_has_node_cogni_key && return
+      [[ "$(auth_root_node_key_state)" == "valid" ]] && return
     done
-    warn "$AUTH_ROOT/.env.cogni still missing COGNI_NODE_API_KEY after waiting for another setup"
+    warn "$AUTH_ROOT/.env.cogni still lacks a hub-valid COGNI_NODE_API_KEY after waiting for another setup"
     exit 1
   fi
   trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
 
-  if auth_root_has_node_cogni_key; then
+  # Re-check under the lock — another setup may have healed it meanwhile.
+  state="$(auth_root_node_key_state)"
+  if [[ "$state" == "valid" ]]; then
     return
   fi
 
-  warn "$AUTH_ROOT/.env.cogni missing COGNI_NODE_API_KEY; attempting NODE agent registration"
+  if [[ "$state" == "invalid" ]]; then
+    warn "$AUTH_ROOT/.env.cogni COGNI_NODE_API_KEY rejected by $(node_hub_base_url) (401/403 — apex-key symptom); neutralizing and re-registering"
+    neutralize_stale_node_key "$AUTH_ROOT/.env.cogni"
+  else
+    warn "$AUTH_ROOT/.env.cogni missing COGNI_NODE_API_KEY; attempting NODE agent registration"
+  fi
+
   if register_auth_root_cogni_agent; then
     printf 'registered Cogni NODE agent and saved COGNI_NODE_API_KEY in %s\n' "$AUTH_ROOT/.env.cogni"
   else
@@ -219,10 +269,24 @@ link_from_auth_root() {
   fi
 
   if [[ -e "$name" && ! -L "$name" ]]; then
-    # A real (non-symlink) file is the source of truth — e.g. a node ships its own
-    # node-scoped .env.cogni that must not be replaced by the auth-root copy.
-    warn "$name is a real file, not a symlink; keeping it and skipping the auth-root link"
-    return
+    # A real (non-symlink) file here is one of two things: (a) a node's own bespoke
+    # source of truth, or (b) a Conductor copy-on-create snapshot that has since
+    # gone stale and now SHADOWS the canonical auth-root file — the bug that leaves
+    # worktrees on a dead key. Only .env.cogni carries a checkable credential, so
+    # keep it when its own key still validates; otherwise back it up and relink.
+    if [[ "$name" == ".env.cogni" ]]; then
+      local local_key
+      local_key="$(read_env_file_value COGNI_NODE_API_KEY "$name")"
+      if [[ -n "$local_key" && "$(node_key_http_status "$local_key")" == 2* ]]; then
+        warn "$name is a real file with a hub-valid node key; keeping it, skipped auth-root link"
+        return
+      fi
+      mv "$name" "$name.pre-link.bak" 2>/dev/null || true
+      warn "$name was a stale/invalid real copy; backed up to $name.pre-link.bak and relinked to $src_path"
+    else
+      warn "$name is a real file, not a symlink; keeping it and skipping the auth-root link"
+      return
+    fi
   fi
 
   ln -sfn "$src_path" "$name"
