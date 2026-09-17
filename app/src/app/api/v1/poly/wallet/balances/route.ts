@@ -3,9 +3,9 @@
 
 /**
  * Module: `@app/api/v1/poly/wallet/balances`
- * Purpose: HTTP GET — on-chain balance snapshot (USDC.e + POL on Polygon) for
- *   the calling user's Polymarket trading wallet. Powers the Money page's
- *   trading-wallet panel.
+ * Purpose: HTTP GET — on-chain balance snapshot (USDC.e + native USDC + pUSD +
+ *   POL on Polygon) for the calling user's Polymarket trading wallet. Powers
+ *   the Money page's trading-wallet panel.
  * Scope: Read-only. Does not provision wallets, set allowances, or move funds.
  *   Distinct from the legacy operator-only `/balance` (singular) route.
  * Invariants:
@@ -59,6 +59,7 @@ export const GET = wrapRouteHandlerWithLogging(
           connected: false,
           address: null,
           usdc_e: null,
+          usdc_native: null,
           pusd: null,
           pol: null,
           errors: [],
@@ -78,6 +79,7 @@ export const GET = wrapRouteHandlerWithLogging(
         connected: false,
         address: null,
         usdc_e: null,
+        usdc_native: null,
         pusd: null,
         pol: null,
         errors: [],
@@ -92,6 +94,7 @@ export const GET = wrapRouteHandlerWithLogging(
         billing_account_id: account.id,
         funder_address: balances.address,
         usdc_e: balances.usdcE,
+        usdc_native: balances.usdcNative,
         pusd: balances.pusd,
         pol: balances.pol,
         error_count: balances.errors.length,
@@ -104,6 +107,7 @@ export const GET = wrapRouteHandlerWithLogging(
       connected: true,
       address: balances.address,
       usdc_e: balances.usdcE,
+      usdc_native: balances.usdcNative,
       pusd: balances.pusd,
       pol: balances.pol,
       errors: [...balances.errors],

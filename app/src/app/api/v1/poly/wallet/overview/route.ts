@@ -207,21 +207,27 @@ export const GET = wrapRouteHandlerWithLogging(
         ? roundToCents(currentPositionSummary.positionsMtm)
         : null;
 
-    // `balances.usdcE` and `balances.pusd` are the wallet's two on-chain cash
-    // balances (USDC.e bridged + Polymarket V2 pUSD). Both are spendable from
-    // the dashboard's perspective: pUSD funds CLOB BUYs directly; USDC.e is
-    // wrapped to pUSD by the auto-wrap loop when consent is on. Post the
-    // 2026-04-28 collateral cutover, pUSD is where a funded wallet's balance
-    // actually lives, so it MUST be summed into cash — reading only USDC.e
-    // reports a funded wallet as empty (the pUSD-collateral bug).
+    // `balances.usdcE`, `balances.usdcNative` and `balances.pusd` are the
+    // wallet's three on-chain cash balances (bridged USDC.e + native Circle
+    // USDC + Polymarket V2 pUSD). All are spendable from the dashboard's
+    // perspective: pUSD funds CLOB BUYs directly; both USDC vintages are
+    // accepted deposit sources the Onramp wraps into pUSD. Post the 2026-04-28
+    // collateral cutover, pUSD is where a funded wallet's balance actually
+    // lives, so it MUST be summed into cash — reading only USDC.e reports a
+    // funded wallet as empty (the pUSD-collateral bug); omitting native USDC
+    // does the same for a native-USDC deposit (bug.5026).
     // Open orders are software-level reservations, so DB-derived locked USDC is
     // already part of the on-chain cash balance.
     // COLLATERAL_SUM_IS_NULL_SAFE: sum whichever legs read successfully; a
-    // single failed RPC read (one token null, the other a real balance) must
+    // single failed RPC read (one token null, another a real balance) must
     // never zero out the wallet. Cash is null only when NO on-chain read
-    // succeeded (both null → RPC down / unconfigured), so the dashboard
+    // succeeded (all null → RPC down / unconfigured), so the dashboard
     // degrades to "—" instead of falsely claiming an empty wallet.
-    const cashOnChain = sumCashOnChain(balances.usdcE, balances.pusd);
+    const cashOnChain = sumCashOnChain(
+      balances.usdcE,
+      balances.pusd,
+      balances.usdcNative
+    );
     const usdcAvailable =
       cashOnChain !== null
         ? roundToCents(Math.max(0, cashOnChain - positionSummary.lockedUsdc))
