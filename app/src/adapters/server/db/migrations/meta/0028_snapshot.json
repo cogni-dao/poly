@@ -1,6 +1,6 @@
 {
-  "id": "ea474d13-72cf-47d1-81d7-a2e13c6db4e4",
-  "prevId": "6dae8ba3-e339-427f-a4fa-0711d1a37f8d",
+  "id": "c39e4c22-c510-4d7c-b765-f74ef4d36c1d",
+  "prevId": "16cb3cc3-43ac-42fb-9ec5-d0dd83d3a38f",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -113,7 +113,9 @@
           "name": "tenant_isolation",
           "as": "PERMISSIVE",
           "for": "ALL",
-          "to": ["public"],
+          "to": [
+            "public"
+          ],
           "using": "\"owner_user_id\" = current_setting('app.current_user_id', true)",
           "withCheck": "\"owner_user_id\" = current_setting('app.current_user_id', true)"
         }
@@ -358,7 +360,9 @@
         "ai_invocation_summaries_invocation_id_unique": {
           "name": "ai_invocation_summaries_invocation_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["invocation_id"]
+          "columns": [
+            "invocation_id"
+          ]
         }
       },
       "policies": {},
@@ -488,8 +492,12 @@
           "name": "epoch_evaluations_epoch_id_epochs_id_fk",
           "tableFrom": "epoch_evaluations",
           "tableTo": "epochs",
-          "columnsFrom": ["epoch_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "epoch_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -614,8 +622,12 @@
           "name": "epoch_final_claimant_allocations_epoch_id_epochs_id_fk",
           "tableFrom": "epoch_final_claimant_allocations",
           "tableTo": "epochs",
-          "columnsFrom": ["epoch_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "epoch_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -715,8 +727,12 @@
           "name": "epoch_pool_components_epoch_id_epochs_id_fk",
           "tableFrom": "epoch_pool_components",
           "tableTo": "epochs",
-          "columnsFrom": ["epoch_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "epoch_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -924,8 +940,12 @@
           "name": "epoch_receipt_claimants_epoch_id_epochs_id_fk",
           "tableFrom": "epoch_receipt_claimants",
           "tableTo": "epochs",
-          "columnsFrom": ["epoch_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "epoch_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1046,8 +1066,12 @@
           "name": "epoch_review_subject_overrides_epoch_id_epochs_id_fk",
           "tableFrom": "epoch_review_subject_overrides",
           "tableTo": "epochs",
-          "columnsFrom": ["epoch_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "epoch_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1170,8 +1194,12 @@
           "name": "epoch_selection_epoch_id_epochs_id_fk",
           "tableFrom": "epoch_selection",
           "tableTo": "epochs",
-          "columnsFrom": ["epoch_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "epoch_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -1179,8 +1207,12 @@
           "name": "epoch_selection_user_id_users_id_fk",
           "tableFrom": "epoch_selection",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1261,8 +1293,12 @@
           "name": "epoch_statement_signatures_statement_id_epoch_statements_id_fk",
           "tableFrom": "epoch_statement_signatures",
           "tableTo": "epoch_statements",
-          "columnsFrom": ["statement_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "statement_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1362,8 +1398,12 @@
           "name": "epoch_statements_epoch_id_epochs_id_fk",
           "tableFrom": "epoch_statements",
           "tableTo": "epochs",
-          "columnsFrom": ["epoch_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "epoch_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -1371,8 +1411,12 @@
           "name": "epoch_statements_supersedes_statement_id_epoch_statements_id_fk",
           "tableFrom": "epoch_statements",
           "tableTo": "epoch_statements",
-          "columnsFrom": ["supersedes_statement_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "supersedes_statement_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1482,8 +1526,12 @@
           "name": "epoch_user_projections_epoch_id_epochs_id_fk",
           "tableFrom": "epoch_user_projections",
           "tableTo": "epochs",
-          "columnsFrom": ["epoch_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "epoch_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -1491,8 +1539,12 @@
           "name": "epoch_user_projections_user_id_users_id_fk",
           "tableFrom": "epoch_user_projections",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1734,7 +1786,13 @@
       "compositePrimaryKeys": {
         "ingestion_cursors_node_id_scope_id_source_stream_source_ref_pk": {
           "name": "ingestion_cursors_node_id_scope_id_source_stream_source_ref_pk",
-          "columns": ["node_id", "scope_id", "source", "stream", "source_ref"]
+          "columns": [
+            "node_id",
+            "scope_id",
+            "source",
+            "stream",
+            "source_ref"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -1895,7 +1953,10 @@
       "compositePrimaryKeys": {
         "ingestion_receipts_node_id_receipt_id_pk": {
           "name": "ingestion_receipts_node_id_receipt_id_pk",
-          "columns": ["node_id", "receipt_id"]
+          "columns": [
+            "node_id",
+            "receipt_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -1951,7 +2012,9 @@
         "users_wallet_address_unique": {
           "name": "users_wallet_address_unique",
           "nullsNotDistinct": false,
-          "columns": ["wallet_address"]
+          "columns": [
+            "wallet_address"
+          ]
         }
       },
       "policies": {},
@@ -2024,8 +2087,12 @@
           "name": "billing_accounts_owner_user_id_users_id_fk",
           "tableFrom": "billing_accounts",
           "tableTo": "users",
-          "columnsFrom": ["owner_user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -2035,12 +2102,16 @@
         "billing_accounts_owner_user_id_unique": {
           "name": "billing_accounts_owner_user_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["owner_user_id"]
+          "columns": [
+            "owner_user_id"
+          ]
         },
         "billing_accounts_slug_unique": {
           "name": "billing_accounts_slug_unique",
           "nullsNotDistinct": false,
-          "columns": ["slug"]
+          "columns": [
+            "slug"
+          ]
         }
       },
       "policies": {},
@@ -2286,8 +2357,12 @@
           "name": "charge_receipts_billing_account_id_billing_accounts_id_fk",
           "tableFrom": "charge_receipts",
           "tableTo": "billing_accounts",
-          "columnsFrom": ["billing_account_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "billing_account_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -2295,8 +2370,12 @@
           "name": "charge_receipts_virtual_key_id_virtual_keys_id_fk",
           "tableFrom": "charge_receipts",
           "tableTo": "virtual_keys",
-          "columnsFrom": ["virtual_key_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "virtual_key_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -2445,8 +2524,12 @@
           "name": "credit_ledger_billing_account_id_billing_accounts_id_fk",
           "tableFrom": "credit_ledger",
           "tableTo": "billing_accounts",
-          "columnsFrom": ["billing_account_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "billing_account_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -2454,8 +2537,12 @@
           "name": "credit_ledger_virtual_key_id_virtual_keys_id_fk",
           "tableFrom": "credit_ledger",
           "tableTo": "virtual_keys",
-          "columnsFrom": ["virtual_key_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "virtual_key_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -2525,8 +2612,12 @@
           "name": "llm_charge_details_charge_receipt_id_charge_receipts_id_fk",
           "tableFrom": "llm_charge_details",
           "tableTo": "charge_receipts",
-          "columnsFrom": ["charge_receipt_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "charge_receipt_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -2538,7 +2629,9 @@
           "name": "tenant_isolation",
           "as": "PERMISSIVE",
           "for": "ALL",
-          "to": ["public"],
+          "to": [
+            "public"
+          ],
           "using": "EXISTS (\n        SELECT 1 FROM charge_receipts cr\n        JOIN billing_accounts ba ON ba.id = cr.billing_account_id\n        WHERE cr.id = \"llm_charge_details\".\"charge_receipt_id\"\n          AND ba.owner_user_id = current_setting('app.current_user_id', true)\n      )"
         }
       },
@@ -2720,8 +2813,12 @@
           "name": "payment_attempts_billing_account_id_billing_accounts_id_fk",
           "tableFrom": "payment_attempts",
           "tableTo": "billing_accounts",
-          "columnsFrom": ["billing_account_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "billing_account_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -2815,8 +2912,12 @@
           "name": "payment_events_attempt_id_payment_attempts_id_fk",
           "tableFrom": "payment_events",
           "tableTo": "payment_attempts",
-          "columnsFrom": ["attempt_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "attempt_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -2931,7 +3032,9 @@
         "provider_funding_attempts_payment_intent_id_unique": {
           "name": "provider_funding_attempts_payment_intent_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["payment_intent_id"]
+          "columns": [
+            "payment_intent_id"
+          ]
         }
       },
       "policies": {},
@@ -2990,8 +3093,12 @@
           "name": "virtual_keys_billing_account_id_billing_accounts_id_fk",
           "tableFrom": "virtual_keys",
           "tableTo": "billing_accounts",
-          "columnsFrom": ["billing_account_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "billing_account_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -3132,8 +3239,12 @@
           "name": "connections_billing_account_id_billing_accounts_id_fk",
           "tableFrom": "connections",
           "tableTo": "billing_accounts",
-          "columnsFrom": ["billing_account_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "billing_account_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -3141,8 +3252,12 @@
           "name": "connections_created_by_user_id_users_id_fk",
           "tableFrom": "connections",
           "tableTo": "users",
-          "columnsFrom": ["created_by_user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "created_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -3150,8 +3265,12 @@
           "name": "connections_revoked_by_user_id_users_id_fk",
           "tableFrom": "connections",
           "tableTo": "users",
-          "columnsFrom": ["revoked_by_user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "revoked_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -3229,8 +3348,12 @@
           "name": "identity_events_user_id_users_id_fk",
           "tableFrom": "identity_events",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -3310,8 +3433,12 @@
           "name": "link_transactions_user_id_users_id_fk",
           "tableFrom": "link_transactions",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -3323,7 +3450,9 @@
           "name": "tenant_isolation",
           "as": "PERMISSIVE",
           "for": "ALL",
-          "to": ["public"],
+          "to": [
+            "public"
+          ],
           "using": "\"link_transactions\".\"user_id\" = current_setting('app.current_user_id', true)",
           "withCheck": "\"link_transactions\".\"user_id\" = current_setting('app.current_user_id', true)"
         }
@@ -3421,8 +3550,12 @@
           "name": "user_bindings_user_id_users_id_fk",
           "tableFrom": "user_bindings",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -3474,8 +3607,12 @@
           "name": "user_profiles_user_id_users_id_fk",
           "tableFrom": "user_profiles",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -3581,8 +3718,12 @@
           "name": "execution_grants_user_id_users_id_fk",
           "tableFrom": "execution_grants",
           "tableTo": "users",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -3590,8 +3731,12 @@
           "name": "execution_grants_billing_account_id_billing_accounts_id_fk",
           "tableFrom": "execution_grants",
           "tableTo": "billing_accounts",
-          "columnsFrom": ["billing_account_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "billing_account_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -3893,8 +4038,12 @@
           "name": "graph_runs_schedule_id_schedules_id_fk",
           "tableFrom": "graph_runs",
           "tableTo": "schedules",
-          "columnsFrom": ["schedule_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "schedule_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -4066,8 +4215,12 @@
           "name": "schedules_owner_user_id_users_id_fk",
           "tableFrom": "schedules",
           "tableTo": "users",
-          "columnsFrom": ["owner_user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "owner_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -4075,8 +4228,12 @@
           "name": "schedules_execution_grant_id_execution_grants_id_fk",
           "tableFrom": "schedules",
           "tableTo": "execution_grants",
-          "columnsFrom": ["execution_grant_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "execution_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -4086,306 +4243,6 @@
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": true
-    },
-    "public.poly_copy_trade_config": {
-      "name": "poly_copy_trade_config",
-      "schema": "",
-      "columns": {
-        "singleton_id": {
-          "name": "singleton_id",
-          "type": "smallint",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "enabled": {
-          "name": "enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_by": {
-          "name": "updated_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'system'"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "poly_copy_trade_config_singleton": {
-          "name": "poly_copy_trade_config_singleton",
-          "value": "\"poly_copy_trade_config\".\"singleton_id\" = 1"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.poly_copy_trade_decisions": {
-      "name": "poly_copy_trade_decisions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "target_id": {
-          "name": "target_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "fill_id": {
-          "name": "fill_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "intent": {
-          "name": "intent",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "receipt": {
-          "name": "receipt",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "decided_at": {
-          "name": "decided_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "poly_copy_trade_decisions_decided_at_idx": {
-          "name": "poly_copy_trade_decisions_decided_at_idx",
-          "columns": [
-            {
-              "expression": "decided_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "poly_copy_trade_decisions_target_fill_idx": {
-          "name": "poly_copy_trade_decisions_target_fill_idx",
-          "columns": [
-            {
-              "expression": "target_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "fill_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "poly_copy_trade_decisions_outcome_check": {
-          "name": "poly_copy_trade_decisions_outcome_check",
-          "value": "\"poly_copy_trade_decisions\".\"outcome\" IN ('placed','skipped','error')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.poly_copy_trade_fills": {
-      "name": "poly_copy_trade_fills",
-      "schema": "",
-      "columns": {
-        "target_id": {
-          "name": "target_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "fill_id": {
-          "name": "fill_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "observed_at": {
-          "name": "observed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "client_order_id": {
-          "name": "client_order_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "order_id": {
-          "name": "order_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "attributes": {
-          "name": "attributes",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "synced_at": {
-          "name": "synced_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "poly_copy_trade_fills_observed_at_idx": {
-          "name": "poly_copy_trade_fills_observed_at_idx",
-          "columns": [
-            {
-              "expression": "observed_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "poly_copy_trade_fills_client_order_id_idx": {
-          "name": "poly_copy_trade_fills_client_order_id_idx",
-          "columns": [
-            {
-              "expression": "client_order_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_poly_copy_trade_fills_synced_at": {
-          "name": "idx_poly_copy_trade_fills_synced_at",
-          "columns": [
-            {
-              "expression": "synced_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "poly_copy_trade_fills_order_id_unique": {
-          "name": "poly_copy_trade_fills_order_id_unique",
-          "columns": [
-            {
-              "expression": "order_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"poly_copy_trade_fills\".\"order_id\" IS NOT NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "poly_copy_trade_fills_target_id_fill_id_pk": {
-          "name": "poly_copy_trade_fills_target_id_fill_id_pk",
-          "columns": ["target_id", "fill_id"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "poly_copy_trade_fills_fill_id_shape": {
-          "name": "poly_copy_trade_fills_fill_id_shape",
-          "value": "\"poly_copy_trade_fills\".\"fill_id\" ~ '^(data-api|clob-ws):.+'"
-        },
-        "poly_copy_trade_fills_status_check": {
-          "name": "poly_copy_trade_fills_status_check",
-          "value": "\"poly_copy_trade_fills\".\"status\" IN ('pending','open','filled','partial','canceled','error')"
-        }
-      },
-      "isRLSEnabled": false
     }
   },
   "enums": {},

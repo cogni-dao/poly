@@ -18,7 +18,7 @@ import {
   InternalUpdateGraphRunInputSchema,
   type InternalUpdateGraphRunOutput,
 } from "@cogni/node-contracts";
-import { verifySchedulerBearer } from "@cogni/node-shared/auth/scheduler-token";
+import { verifySchedulerBearer } from "@cogni/node-shared";
 import { NextResponse } from "next/server";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";

@@ -32,6 +32,6 @@ export {
   TOKEN_VOTING_VERSION_TAG,
   USDC_TOKEN_ADDRESS,
   VERIFY_THROTTLE_SECONDS,
-} from "@cogni/node-shared/web3";
+} from "@cogni/node-shared";
 // App-local (wagmi/chains runtime dep)
 export * from "./evm-wagmi";

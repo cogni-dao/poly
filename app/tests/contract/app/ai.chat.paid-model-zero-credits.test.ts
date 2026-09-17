@@ -64,6 +64,12 @@ vi.mock("@/shared/ai/model-catalog.server", () => ({
   isModelFree: vi.fn(),
 }));
 
+vi.mock("@/shared/env", () => ({
+  serverEnv: () => ({
+    AUTH_SECRET: "test-auth-secret-at-least-32-characters",
+  }),
+}));
+
 import {
   completion,
   completionStream,

@@ -131,9 +131,34 @@ export const httpRequestDurationMs = getOrCreateHistogram(
 
 export const aiChatStreamDurationMs = getOrCreateHistogram(
   "ai_chat_stream_duration_ms",
-  "AI chat stream duration in milliseconds (from response_started to stream_closed)",
+  "AI chat response-body stream duration in milliseconds (from body execution to stream closed)",
   [] as const,
   [100, 500, 1000, 2500, 5000, 10000, 30000, 60000]
+);
+
+export const aiChatPhaseDurationMs = getOrCreateHistogram(
+  "ai_chat_phase_duration_ms",
+  "AI chat request phase duration in milliseconds",
+  ["phase"] as const,
+  [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000]
+);
+
+export const aiChatDuplicateTurnsTotal = getOrCreateCounter(
+  "ai_chat_duplicate_turns_total",
+  "Total idempotent chat turn retries suppressed before execution",
+  [] as const
+);
+
+export const aiChatPersistenceFailuresTotal = getOrCreateCounter(
+  "ai_chat_persistence_failures_total",
+  "Total stateful assistant transcript persistence failures",
+  [] as const
+);
+
+export const aiChatTerminalPublishFailuresTotal = getOrCreateCounter(
+  "ai_chat_terminal_publish_failures_total",
+  "Total terminal chat stream publication failures",
+  [] as const
 );
 
 // =============================================================================
