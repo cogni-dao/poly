@@ -88,9 +88,32 @@ deployment:
       port: 3200
       visibility: public
       runtime_profile: cogni-node-app-v1
-      bindings: {}
+      bindings:
+        # Operator resolves this to the paper-trader sidecar's URL. The app only
+        # ROUTES to it when PAPER_ENFORCE_MODE=paper (set per-env, candidate/
+        # preview only); the live builder ignores it, so prod stays live-CLOB.
+        PAPER_SIDECAR_URL: paper-trader
       bind_host: 0.0.0.0
       resources:
         cpu_units: 2
         memory_mi: 2048
         storage_mi: 4096
+    # Paper-trading sidecar (as-built from cogni-poly). FastAPI wrapper over the
+    # vendored polymarket-paper-trader; the app's buildPaperOnlyExecutor talks to
+    # it over PAPER_SIDECAR_URL. Private (loopback-tier); no runtime_profile (not
+    # a cogni-node-app). NOTE: no env-gate field exists yet, so this currently
+    # deploys in every env — it stays idle in prod (paper mode is off there).
+    - name: paper-trader
+      artifact:
+        name: paper-trader
+        context: sidecars/paper-trader
+        dockerfile: Dockerfile
+      port: 9100
+      visibility: private
+      bindings: {}
+      secret_refs: []
+      bind_host: 0.0.0.0
+      resources:
+        cpu_units: 0.5
+        memory_mi: 384
+        storage_mi: 1024
