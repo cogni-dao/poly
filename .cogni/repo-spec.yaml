@@ -107,7 +107,10 @@ deployment:
       artifact:
         name: paper-trader
         context: sidecars/paper-trader
-        dockerfile: Dockerfile
+        # dockerfile is repo-root-relative (like the app's); COPY paths inside it
+        # resolve against `context`. Build the `base` runtime stage, not `test`.
+        dockerfile: sidecars/paper-trader/Dockerfile
+        target: base
       port: 9100
       visibility: private
       bindings: {}
