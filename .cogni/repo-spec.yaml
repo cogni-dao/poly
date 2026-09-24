@@ -93,6 +93,23 @@ deployment:
         # ROUTES to it when PAPER_ENFORCE_MODE=paper (set per-env, candidate/
         # preview only); the live builder ignores it, so prod stays live-CLOB.
         PAPER_SIDECAR_URL: paper-trader
+      # Node-owned secret env the akash lease must map into the app container.
+      # The runtime_profile injects the A1 baseline (AUTH_SECRET, DATABASE_URL,
+      # EVM_RPC_URL, …) automatically — those are NOT listed here (operator #40
+      # pruned them; listing profile keys is redundant). These are the A2 node
+      # secrets the profile does NOT know about: the per-tenant Polymarket
+      # trading-wallet creds + the paper-mode switch. Values are written per-env
+      # via self-serve `POST /nodes/{id}/secrets`; each key resolves from this
+      # node's OpenBao bank (`cogni/<env>/poly/<KEY>`). PAPER_ENFORCE_MODE is the
+      # domino: without it in the pod, `getPolyTraderWalletAdapter` throws, the
+      # executor factory is undefined, and no mirror poll runs (bug.5253).
+      secret_refs:
+        - key: PAPER_ENFORCE_MODE
+        - key: POLYGON_RPC_URL
+        - key: PRIVY_USER_WALLETS_APP_ID
+        - key: PRIVY_USER_WALLETS_APP_SECRET
+        - key: PRIVY_USER_WALLETS_SIGNING_KEY
+        - key: POLY_WALLET_AEAD_KEY_ID
       bind_host: 0.0.0.0
       resources:
         cpu_units: 2
