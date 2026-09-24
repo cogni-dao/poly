@@ -103,6 +103,10 @@ deployment:
       # node's OpenBao bank (`cogni/<env>/poly/<KEY>`). PAPER_ENFORCE_MODE is the
       # domino: without it in the pod, `getPolyTraderWalletAdapter` throws, the
       # executor factory is undefined, and no mirror poll runs (bug.5253).
+      # NOTE (BRANCH_HEAD_IS_LEASE): akash leases redeploy only when the
+      # deploy/<env>-<node> branch head moves. After writing new secret VALUES,
+      # a fresh source SHA is required to force ArgoCD to redeploy the lease so
+      # the pod re-reads the ESO-synced secret — a same-SHA re-flight is a no-op.
       secret_refs:
         - key: PAPER_ENFORCE_MODE
         - key: POLYGON_RPC_URL
