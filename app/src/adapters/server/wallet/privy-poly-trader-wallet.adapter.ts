@@ -137,6 +137,15 @@ const CREDENTIAL_PROVIDER = "polymarket_clob";
 /** USDC.e on Polygon mainnet — Polymarket's quote token. Pinned here so the */
 /* adapter never has to guess which stable it's reading. */
 const USDC_E_POLYGON = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" as Address;
+/**
+ * Native (Circle-issued) USDC on Polygon mainnet. Polymarket's Collateral
+ * Onramp now accepts BOTH this token and bridged USDC.e as deposit sources,
+ * auto-wrapping either into pUSD. A native-USDC deposit is otherwise invisible
+ * to this app (funded wallet shows empty — same shape as the pUSD bug), so we
+ * read it and surface it as spendable cash. Public token address, not a secret.
+ */
+const USDC_NATIVE_POLYGON =
+  "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359" as Address;
 const USDC_DECIMALS = 6;
 const POL_DECIMALS = 18;
 const ERC20_BALANCEOF_ABI = parseAbi([
@@ -540,6 +549,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
   async getBalances(billingAccountId: string): Promise<{
     address: `0x${string}`;
     usdcE: number | null;
+    usdcNative: number | null;
     pusd: number | null;
     pol: number | null;
     errors: readonly string[];
@@ -548,26 +558,35 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     if (!address) return null;
 
     const errors: string[] = [];
-    const [usdcE, pusd, pol] = await this.readPolygonBalances(address, errors);
-    return { address, usdcE, pusd, pol, errors };
+    const [usdcE, usdcNative, pusd, pol] = await this.readPolygonBalances(
+      address,
+      errors
+    );
+    return { address, usdcE, usdcNative, pusd, pol, errors };
   }
 
   private async readPolygonBalances(
     addr: `0x${string}`,
     errors: string[]
-  ): Promise<[number | null, number | null, number | null]> {
+  ): Promise<[number | null, number | null, number | null, number | null]> {
     if (!this.polygonRpcUrl) {
       errors.push("polygon_rpc_unconfigured");
-      return [null, null, null];
+      return [null, null, null, null];
     }
     try {
       const client = createPublicClient({
         chain: polygon,
         transport: http(this.polygonRpcUrl),
       });
-      const [usdcERaw, pusdRaw, polRaw] = await Promise.all([
+      const [usdcERaw, usdcNativeRaw, pusdRaw, polRaw] = await Promise.all([
         client.readContract({
           address: USDC_E_POLYGON,
+          abi: ERC20_BALANCEOF_ABI,
+          functionName: "balanceOf",
+          args: [addr],
+        }),
+        client.readContract({
+          address: USDC_NATIVE_POLYGON,
           abi: ERC20_BALANCEOF_ABI,
           functionName: "balanceOf",
           args: [addr],
@@ -581,13 +600,19 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         client.getBalance({ address: addr }),
       ]);
       const usdcE = Number(formatUnits(usdcERaw, USDC_DECIMALS));
+      const usdcNative = Number(formatUnits(usdcNativeRaw, USDC_DECIMALS));
       const pusd = Number(formatUnits(pusdRaw, USDC_DECIMALS));
-      return [usdcE, pusd, Number(formatUnits(polRaw, POL_DECIMALS))];
+      return [
+        usdcE,
+        usdcNative,
+        pusd,
+        Number(formatUnits(polRaw, POL_DECIMALS)),
+      ];
     } catch (err) {
       errors.push(
         `polygon_rpc: ${err instanceof Error ? err.message : String(err)}`
       );
-      return [null, null, null];
+      return [null, null, null, null];
     }
   }
 
@@ -2277,6 +2302,11 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
   // task.0429 — auto-wrap consent loop
   // ────────────────────────────────────────────────────────────────────────
 
+  // NATIVE_USDC_WRAP_DEFERRED (bug.5030): this path wraps idle USDC.e only.
+  // bug.5026's read-fix surfaces native USDC (0x3c499c54…) as spendable cash,
+  // but auto-wrapping it needs a native-USDC → onramp approval leg in
+  // `ensureTradingApprovals` + onramp-support verification, so it is a focused
+  // follow-up (bug.5030), not silently dropped.
   async wrapIdleUsdcE(billingAccountId: string): Promise<WrapIdleUsdcEResult> {
     const rows = await this.serviceDb
       .select({
