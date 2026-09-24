@@ -93,6 +93,22 @@ deployment:
         # ROUTES to it when PAPER_ENFORCE_MODE=paper (set per-env, candidate/
         # preview only); the live builder ignores it, so prod stays live-CLOB.
         PAPER_SIDECAR_URL: paper-trader
+      # Node-owned secrets injected from the per-env bank (values set via the
+      # operator secrets API, never in git). The runtime_profile supplies the
+      # standard app secrets (AUTH_SECRET/DATABASE_URL/EVM_RPC_URL/...); these are
+      # the poly-specific extras the copy-trade executor + paper flow need.
+      # POLY_WALLET_AEAD_KEY_HEX is substrate-managed and intentionally NOT
+      # declared here — in PAPER_ENFORCE_MODE=paper the wallet adapter is stubbed
+      # (getPolyTraderWalletAdapter) so the live AEAD key isn't required.
+      # PAPER_ENFORCE_MODE must be per-env (paper on candidate/preview ONLY, never
+      # prod) — its value lives in each env's bank, not this git-tracked list.
+      secret_refs:
+        - key: PAPER_ENFORCE_MODE
+        - key: POLYGON_RPC_URL
+        - key: PRIVY_USER_WALLETS_APP_ID
+        - key: PRIVY_USER_WALLETS_APP_SECRET
+        - key: PRIVY_USER_WALLETS_SIGNING_KEY
+        - key: POLY_WALLET_AEAD_KEY_ID
       bind_host: 0.0.0.0
       resources:
         cpu_units: 2
