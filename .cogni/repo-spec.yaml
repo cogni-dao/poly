@@ -122,8 +122,10 @@ deployment:
     # Paper-trading sidecar (as-built from cogni-poly). FastAPI wrapper over the
     # vendored polymarket-paper-trader; the app's buildPaperOnlyExecutor talks to
     # it over PAPER_SIDECAR_URL. Private (loopback-tier); no runtime_profile (not
-    # a cogni-node-app). NOTE: no env-gate field exists yet, so this currently
-    # deploys in every env — it stays idle in prod (paper mode is off there).
+    # a cogni-node-app). Gated to the paper-trading envs via `envs` (story.5043):
+    # production runs live-CLOB (PAPER_ENFORCE_MODE=live) and never routes to the
+    # sidecar, so excluding it keeps prod a 1-service akash lease that ships
+    # in-place — no lease re-mint (prod is the activity_env and cannot re-mint).
     - name: paper-trader
       artifact:
         name: paper-trader
@@ -134,6 +136,9 @@ deployment:
         target: base
       port: 9100
       visibility: private
+      # story.5043 per-service env gate: deploy the sidecar ONLY where paper mode
+      # runs. Absent = every env; listing these two excludes production.
+      envs: [candidate-a, preview]
       bindings: {}
       secret_refs: []
       bind_host: 0.0.0.0
