@@ -40,6 +40,25 @@ export class WalletAdapterUnconfiguredError extends Error {
 
 let cached: PrivyPolyTraderWalletAdapter | null = null;
 
+/**
+ * Paper-mode stub for the live tenant-wallet adapter. In PAPER_ENFORCE_MODE=paper
+ * the executor factory + mirror poll must boot without live-wallet creds (Privy +
+ * substrate-managed AEAD), because `buildPaperOnlyExecutor` never resolves a wallet
+ * (it places through the paper sidecar with a noop signer). Every method throws if
+ * actually invoked — which paper flows never do. bug.5253.
+ */
+function createPaperUnusableWalletAdapter(
+  missing: string[]
+): PrivyPolyTraderWalletAdapter {
+  return new Proxy({} as PrivyPolyTraderWalletAdapter, {
+    get() {
+      return () => {
+        throw new WalletAdapterUnconfiguredError(missing);
+      };
+    },
+  });
+}
+
 export function createRealClobCredsFactory({
   logger,
   polygonRpcUrl,
@@ -159,6 +178,22 @@ export function getPolyTraderWalletAdapter(
     !aeadKeyHex ||
     !aeadKeyId
   ) {
+    // PAPER_UNUSED_WALLET (bug.5253): in PAPER_ENFORCE_MODE=paper the live tenant
+    // wallet is never resolved — `buildPaperOnlyExecutor` skips `resolve` +
+    // `authorizeIntent` and places through the paper sidecar with a noop signer.
+    // The live-wallet creds (Privy + the substrate-managed AEAD key) are
+    // intentionally absent on candidate/preview, so a missing adapter must NOT
+    // block the executor factory (otherwise no mirror poll runs → paper can't
+    // place). Return a stub that throws only if a method is actually invoked
+    // (it isn't, in paper mode). Live mode still requires full config.
+    if (env.PAPER_ENFORCE_MODE === "paper") {
+      logger.info(
+        { missing },
+        "paper mode: live wallet adapter unconfigured; using paper-unusable stub (never resolved)"
+      );
+      cached = createPaperUnusableWalletAdapter(missing);
+      return cached;
+    }
     throw new WalletAdapterUnconfiguredError(missing);
   }
 
