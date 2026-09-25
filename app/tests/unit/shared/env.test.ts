@@ -129,6 +129,52 @@ describe("env schemas", () => {
     expect(env.DATABASE_URL).toBe("sqlite://build.db");
   });
 
+  // PAPER_ENFORCE_MODE regression (prod 503 / CONTAINER_INIT_FAILED).
+  // `.cogni/repo-spec.yaml` documents production as `PAPER_ENFORCE_MODE=live`
+  // and OpenBao holds that literal, but the schema only admitted "paper" — so
+  // the value the deploy contract prescribes bricked container init on every
+  // API route. The wire accepts unset | "live" | "paper"; code sees only
+  // `"paper" | undefined`.
+  describe("PAPER_ENFORCE_MODE", () => {
+    async function parseWith(value: string | undefined) {
+      Object.assign(process.env, {
+        ...BASE_VALID_ENV,
+        LITELLM_MASTER_KEY: "adminkey",
+        NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: "test-project-id",
+      });
+      if (value === undefined) {
+        // biome-ignore lint/performance/noDelete: env cleanup for this case
+        delete process.env.PAPER_ENFORCE_MODE;
+      } else {
+        process.env.PAPER_ENFORCE_MODE = value;
+      }
+      const { serverEnv } = await import("@/shared/env/server");
+      return serverEnv();
+    }
+
+    it("accepts the production value 'live' and normalizes it to undefined", async () => {
+      const env = await parseWith("live");
+      expect(env.PAPER_ENFORCE_MODE).toBeUndefined();
+    });
+
+    it("keeps 'paper' so paper-only envs still short-circuit the live executor", async () => {
+      const env = await parseWith("paper");
+      expect(env.PAPER_ENFORCE_MODE).toBe("paper");
+    });
+
+    it("treats unset and empty as undefined", async () => {
+      expect((await parseWith(undefined)).PAPER_ENFORCE_MODE).toBeUndefined();
+      vi.resetModules();
+      expect((await parseWith("")).PAPER_ENFORCE_MODE).toBeUndefined();
+    });
+
+    it("still hard-fails an unrecognized value rather than assuming live", async () => {
+      // Fail-safe direction: a typo must refuse to boot, never silently route
+      // a paper-only env onto the live CLOB with real USDC.
+      await expect(parseWith("papper")).rejects.toThrow();
+    });
+  });
+
   // TODO: this fail-fast test being flaky
   it.skip("throws when required server vars are missing", async () => {
     Object.assign(process.env, {
