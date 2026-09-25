@@ -261,9 +261,20 @@ export const serverSchema = z.object({
   POLY_CLOB_HOST: optionalUrl,
   POLY_CLOB_GEO_BLOCK_TOKEN: optionalString,
   PAPER_SIDECAR_URL: optionalUrl,
+  // Tri-state ON THE WIRE, binary IN CODE. The deployed secret value is one of
+  // unset | "live" | "paper" — `.cogni/repo-spec.yaml` documents production as
+  // `PAPER_ENFORCE_MODE=live`, and OpenBao holds that literal. Only "paper" is
+  // meaningful to consumers, so "live" normalizes to `undefined` and the
+  // exported type stays `"paper" | undefined` (no downstream churn).
+  //
+  // Why this is not `.catch(undefined)`: an unrecognized value (a typo like
+  // "papper") MUST still hard-fail. Failing open on this knob would silently
+  // route a paper-only env onto the live CLOB with real USDC. Fail-safe for
+  // PAPER_ENFORCE_MODE is "refuse to boot", never "assume live".
   PAPER_ENFORCE_MODE: z
-    .preprocess(emptyToUndefined, z.enum(["paper"]).optional())
-    .optional(),
+    .preprocess(emptyToUndefined, z.enum(["paper", "live"]).optional())
+    .optional()
+    .transform((v) => (v === "paper" ? ("paper" as const) : undefined)),
   // Grace window (ms) before a not_found CLOB order is promoted to canceled by
   // the order reconciler. Default 15 min (task.0328 GRACE_WINDOW_IS_CONFIG).
   POLY_CLOB_NOT_FOUND_GRACE_MS: z.coerce
