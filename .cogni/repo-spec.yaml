@@ -114,6 +114,12 @@ deployment:
         - key: PRIVY_USER_WALLETS_APP_SECRET
         - key: PRIVY_USER_WALLETS_SIGNING_KEY
         - key: POLY_WALLET_AEAD_KEY_ID
+        # Substrate-managed (source: agent, auto-generated in OpenBao — never
+        # self-serve set; 403 key_reserved is correct). Declared here so the
+        # operator projects it into the pod: without it the live-CLOB executor
+        # throws WalletAdapterUnconfigured and no mirror poll runs. Required for
+        # prod live trading (paper mode's stub covers its absence; live does not).
+        - key: POLY_WALLET_AEAD_KEY_HEX
       bind_host: 0.0.0.0
       resources:
         cpu_units: 2
