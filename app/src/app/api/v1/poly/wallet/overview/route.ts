@@ -13,6 +13,13 @@
  *   - CURRENT_ONLY: all values describe the current wallet state only.
  *   - PARTIAL_FAILURE_NEVER_THROWS: upstream failures degrade to nullable
  *     fields plus warnings while the route stays 200.
+ *   - COALESCED_PAYLOAD (task.5013): the post-auth payload computation is
+ *     wrapped in the in-process `coalesce` TTL cache
+ *     (`DASHBOARD_ROUTE_CACHE_TTL_MS` = 5s), keyed by billing account +
+ *     interval + freshness. Concurrent requests share one computation;
+ *     thrown errors are never cached. Invalidated by POST /wallet/refresh
+ *     via `invalidateDashboardRouteCaches`. SINGLE_REPLICA cache — see
+ *     `@features/wallet-analysis/server/coalesce`.
  * Side-effects: IO (DB read, Polygon RPC, optional Data API).
  * @public
  */
@@ -30,10 +37,15 @@ import {
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
+import { coalesce } from "@/features/wallet-analysis/server/coalesce";
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
 import { getTradingWalletPnlHistory } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 import { sumCashOnChain, sumWalletTotal } from "../_lib/cash-on-chain";
+import {
+  DASHBOARD_ROUTE_CACHE_TTL_MS,
+  overviewRouteCacheKey,
+} from "../_lib/dashboard-route-cache";
 import {
   DASHBOARD_LEDGER_POSITION_LIMIT,
   DASHBOARD_LEDGER_POSITION_STATUSES,
@@ -83,224 +95,232 @@ export const GET = wrapRouteHandlerWithLogging(
         interval: url.searchParams.get("interval") ?? undefined,
         freshness: url.searchParams.get("freshness") ?? undefined,
       });
-    const capturedAt = new Date().toISOString();
-
     const container = getContainer();
     const account = await container
       .accountsForUser(toUserId(sessionUser.id))
       .getOrCreateBillingAccountForUser({ userId: sessionUser.id });
 
-    let adapter: ReturnType<typeof getPolyTraderWalletAdapter>;
-    try {
-      adapter = getPolyTraderWalletAdapter(ctx.log);
-    } catch (err) {
-      if (err instanceof WalletAdapterUnconfiguredError) {
-        logOverviewComplete(ctx, startedAtMs, {
-          status: "wallet_adapter_unconfigured",
-          interval,
-          freshness,
-          connected: false,
-          warnings: 1,
-          openOrders: null,
-          positionsMtm: null,
-          lockedUsdc: null,
-          pnlPoints: 0,
-        });
-        return NextResponse.json(
-          emptyPayload(interval, capturedAt, {
-            configured: false,
+    // COALESCED_PAYLOAD (task.5013): everything below — adapter resolution,
+    // balances, position read models, pnl history — runs at most once per
+    // (billing account, interval, freshness) key per TTL window; concurrent
+    // requests await the same in-flight computation. Errors reject the
+    // in-flight promise and are evicted (never cached); partial-success
+    // payloads carrying warnings ARE cached for the short TTL by design.
+    const payload = await coalesce<PolyWalletOverviewOutput>(
+      overviewRouteCacheKey(account.id, interval, freshness),
+      async () => {
+        const capturedAt = new Date().toISOString();
+
+        let adapter: ReturnType<typeof getPolyTraderWalletAdapter>;
+        try {
+          adapter = getPolyTraderWalletAdapter(ctx.log);
+        } catch (err) {
+          if (err instanceof WalletAdapterUnconfiguredError) {
+            logOverviewComplete(ctx, startedAtMs, {
+              status: "wallet_adapter_unconfigured",
+              interval,
+              freshness,
+              connected: false,
+              warnings: 1,
+              openOrders: null,
+              positionsMtm: null,
+              lockedUsdc: null,
+              pnlPoints: 0,
+            });
+            return emptyPayload(interval, capturedAt, {
+              configured: false,
+              freshness,
+              warnings: [
+                {
+                  code: "wallet_adapter_unconfigured",
+                  message:
+                    "Trading-wallet adapter is not configured on this pod yet.",
+                },
+              ],
+            });
+          }
+          throw err;
+        }
+
+        const balances = await adapter.getBalances(account.id);
+        if (!balances) {
+          logOverviewComplete(ctx, startedAtMs, {
+            status: "no_trading_wallet",
+            interval,
+            freshness,
+            connected: false,
+            warnings: 1,
+            openOrders: null,
+            positionsMtm: null,
+            lockedUsdc: null,
+            pnlPoints: 0,
+          });
+          return emptyPayload(interval, capturedAt, {
             freshness,
             warnings: [
               {
-                code: "wallet_adapter_unconfigured",
+                code: "no_trading_wallet",
                 message:
-                  "Trading-wallet adapter is not configured on this pod yet.",
+                  "No Polymarket trading wallet is provisioned for this account yet.",
               },
             ],
-          })
-        );
-      }
-      throw err;
-    }
+          });
+        }
 
-    const balances = await adapter.getBalances(account.id);
-    if (!balances) {
-      logOverviewComplete(ctx, startedAtMs, {
-        status: "no_trading_wallet",
-        interval,
-        freshness,
-        connected: false,
-        warnings: 1,
-        openOrders: null,
-        positionsMtm: null,
-        lockedUsdc: null,
-        pnlPoints: 0,
-      });
-      return NextResponse.json(
-        emptyPayload(interval, capturedAt, {
+        const warnings: PolyWalletOverviewOutput["warnings"] = [
+          ...balances.errors.map((message) => ({
+            code: "balances_partial",
+            message,
+          })),
+        ];
+
+        const capturedAtDate = new Date(capturedAt);
+        let positionSummary = summarizeLedgerOrders([], capturedAtDate);
+        let currentPositionSummary: {
+          positionsMtm: number;
+          syncedAt: string | null;
+          syncAgeMs: number | null;
+          stale: boolean;
+        } | null = null;
+        try {
+          const rows = await container.orderLedger.listTenantPositions({
+            billing_account_id: account.id,
+            statuses: [...DASHBOARD_LEDGER_POSITION_STATUSES],
+            limit: DASHBOARD_LEDGER_POSITION_LIMIT,
+          });
+          positionSummary = summarizeLedgerOrders(rows, capturedAtDate);
+        } catch (err) {
+          warnings.push({
+            code: "positions_read_model_unavailable",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+
+        try {
+          const currentPositions = await readCurrentWalletPositionModel({
+            db: container.serviceDb,
+            walletAddress: balances.address,
+            capturedAt: capturedAtDate,
+          });
+          if (
+            !currentPositions.warnings.some(
+              (warning) => warning.code === "current_positions_wallet_missing"
+            )
+          ) {
+            currentPositionSummary = currentPositions.summary;
+          }
+          warnings.push(...currentPositions.warnings);
+        } catch (err) {
+          warnings.push({
+            code: "current_positions_read_model_unavailable",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        // Cash is live RPC; positionsMtm is a DB cache. A stale cache + live cash
+        // mis-attributes new mirror buys (cash debited, position not yet in DB) as
+        // wallet shrinkage. Null > stale, so the dashboard degrades to "—".
+        const positionsMtm =
+          currentPositionSummary !== null && !currentPositionSummary.stale
+            ? roundToCents(currentPositionSummary.positionsMtm)
+            : null;
+
+        // `balances.usdcE` and `balances.pusd` are the wallet's two on-chain cash
+        // balances (USDC.e bridged + Polymarket V2 pUSD). Both are spendable from
+        // the dashboard's perspective: pUSD funds CLOB BUYs directly; USDC.e is
+        // wrapped to pUSD by the auto-wrap loop when consent is on. Post the
+        // 2026-04-28 collateral cutover, pUSD is where a funded wallet's balance
+        // actually lives, so it MUST be summed into cash — reading only USDC.e
+        // reports a funded wallet as empty (the pUSD-collateral bug).
+        // Open orders are software-level reservations, so DB-derived locked USDC is
+        // already part of the on-chain cash balance.
+        // COLLATERAL_SUM_IS_NULL_SAFE: sum whichever legs read successfully; a
+        // single failed RPC read (one token null, the other a real balance) must
+        // never zero out the wallet. Cash is null only when NO on-chain read
+        // succeeded (both null → RPC down / unconfigured), so the dashboard
+        // degrades to "—" instead of falsely claiming an empty wallet.
+        const cashOnChain = sumCashOnChain(balances.usdcE, balances.pusd);
+        const usdcAvailable =
+          cashOnChain !== null
+            ? roundToCents(Math.max(0, cashOnChain - positionSummary.lockedUsdc))
+            : cashOnChain;
+        // TOTAL_IS_CASH_NULL_SAFE (see sumWalletTotal): gate on cash only; absent
+        // positions contribute 0, not null, so a funded wallet is never "empty".
+        const totalRaw = sumWalletTotal(cashOnChain, positionsMtm);
+        const total = totalRaw !== null ? roundToCents(totalRaw) : null;
+        let pnlHistory: PolyWalletOverviewOutput["pnlHistory"] = [];
+        if (freshness === "live") {
+          try {
+            pnlHistory = await getTradingWalletPnlHistory({
+              db: container.serviceDb,
+              address: balances.address,
+              interval,
+              capturedAt,
+            });
+          } catch (err) {
+            warnings.push({
+              code: "pnl_history_unavailable",
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+
+        logOverviewComplete(ctx, startedAtMs, {
+          status: warnings.some(
+            (warning) => warning.code === "positions_read_model_unavailable"
+          )
+            ? "positions_read_model_unavailable"
+            : warnings.some(
+                  (warning) =>
+                    warning.code === "current_positions_read_model_unavailable"
+                )
+              ? "current_positions_read_model_unavailable"
+              : warnings.some(
+                    (warning) => warning.code === "current_positions_stale"
+                  )
+                ? "current_positions_stale"
+                : warnings.some(
+                      (warning) => warning.code === "pnl_history_unavailable"
+                    )
+                  ? "pnl_history_unavailable"
+                  : warnings.some((warning) => warning.code === "balances_partial")
+                    ? "balances_partial"
+                    : "ok",
+          interval,
           freshness,
-          warnings: [
-            {
-              code: "no_trading_wallet",
-              message:
-                "No Polymarket trading wallet is provisioned for this account yet.",
-            },
-          ],
-        })
-      );
-    }
+          connected: true,
+          warnings: warnings.length,
+          openOrders: positionSummary.openOrders,
+          positionsMtm,
+          lockedUsdc: positionSummary.lockedUsdc,
+          pnlPoints: pnlHistory.length,
+        });
 
-    const warnings: PolyWalletOverviewOutput["warnings"] = [
-      ...balances.errors.map((message) => ({
-        code: "balances_partial",
-        message,
-      })),
-    ];
-
-    const capturedAtDate = new Date(capturedAt);
-    let positionSummary = summarizeLedgerOrders([], capturedAtDate);
-    let currentPositionSummary: {
-      positionsMtm: number;
-      syncedAt: string | null;
-      syncAgeMs: number | null;
-      stale: boolean;
-    } | null = null;
-    try {
-      const rows = await container.orderLedger.listTenantPositions({
-        billing_account_id: account.id,
-        statuses: [...DASHBOARD_LEDGER_POSITION_STATUSES],
-        limit: DASHBOARD_LEDGER_POSITION_LIMIT,
-      });
-      positionSummary = summarizeLedgerOrders(rows, capturedAtDate);
-    } catch (err) {
-      warnings.push({
-        code: "positions_read_model_unavailable",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    try {
-      const currentPositions = await readCurrentWalletPositionModel({
-        db: container.serviceDb,
-        walletAddress: balances.address,
-        capturedAt: capturedAtDate,
-      });
-      if (
-        !currentPositions.warnings.some(
-          (warning) => warning.code === "current_positions_wallet_missing"
-        )
-      ) {
-        currentPositionSummary = currentPositions.summary;
-      }
-      warnings.push(...currentPositions.warnings);
-    } catch (err) {
-      warnings.push({
-        code: "current_positions_read_model_unavailable",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-    // Cash is live RPC; positionsMtm is a DB cache. A stale cache + live cash
-    // mis-attributes new mirror buys (cash debited, position not yet in DB) as
-    // wallet shrinkage. Null > stale, so the dashboard degrades to "—".
-    const positionsMtm =
-      currentPositionSummary !== null && !currentPositionSummary.stale
-        ? roundToCents(currentPositionSummary.positionsMtm)
-        : null;
-
-    // `balances.usdcE` and `balances.pusd` are the wallet's two on-chain cash
-    // balances (USDC.e bridged + Polymarket V2 pUSD). Both are spendable from
-    // the dashboard's perspective: pUSD funds CLOB BUYs directly; USDC.e is
-    // wrapped to pUSD by the auto-wrap loop when consent is on. Post the
-    // 2026-04-28 collateral cutover, pUSD is where a funded wallet's balance
-    // actually lives, so it MUST be summed into cash — reading only USDC.e
-    // reports a funded wallet as empty (the pUSD-collateral bug).
-    // Open orders are software-level reservations, so DB-derived locked USDC is
-    // already part of the on-chain cash balance.
-    // COLLATERAL_SUM_IS_NULL_SAFE: sum whichever legs read successfully; a
-    // single failed RPC read (one token null, the other a real balance) must
-    // never zero out the wallet. Cash is null only when NO on-chain read
-    // succeeded (both null → RPC down / unconfigured), so the dashboard
-    // degrades to "—" instead of falsely claiming an empty wallet.
-    const cashOnChain = sumCashOnChain(balances.usdcE, balances.pusd);
-    const usdcAvailable =
-      cashOnChain !== null
-        ? roundToCents(Math.max(0, cashOnChain - positionSummary.lockedUsdc))
-        : cashOnChain;
-    // TOTAL_IS_CASH_NULL_SAFE (see sumWalletTotal): gate on cash only; absent
-    // positions contribute 0, not null, so a funded wallet is never "empty".
-    const totalRaw = sumWalletTotal(cashOnChain, positionsMtm);
-    const total = totalRaw !== null ? roundToCents(totalRaw) : null;
-    let pnlHistory: PolyWalletOverviewOutput["pnlHistory"] = [];
-    if (freshness === "live") {
-      try {
-        pnlHistory = await getTradingWalletPnlHistory({
-          db: container.serviceDb,
+        return polyWalletOverviewOperation.output.parse({
+          configured: true,
+          connected: true,
+          freshness,
           address: balances.address,
           interval,
           capturedAt,
+          pol_gas: balances.pol,
+          usdc_available: usdcAvailable,
+          usdc_locked: positionSummary.lockedUsdc,
+          usdc_positions_mtm: positionsMtm,
+          usdc_total: total,
+          open_orders: positionSummary.openOrders,
+          positions_synced_at:
+            currentPositionSummary?.syncedAt ?? positionSummary.syncedAt,
+          positions_sync_age_ms:
+            currentPositionSummary?.syncAgeMs ?? positionSummary.syncAgeMs,
+          positions_stale: currentPositionSummary?.stale ?? positionSummary.stale,
+          pnlHistory,
+          warnings,
         });
-      } catch (err) {
-        warnings.push({
-          code: "pnl_history_unavailable",
-          message: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
-    logOverviewComplete(ctx, startedAtMs, {
-      status: warnings.some(
-        (warning) => warning.code === "positions_read_model_unavailable"
-      )
-        ? "positions_read_model_unavailable"
-        : warnings.some(
-              (warning) =>
-                warning.code === "current_positions_read_model_unavailable"
-            )
-          ? "current_positions_read_model_unavailable"
-          : warnings.some(
-                (warning) => warning.code === "current_positions_stale"
-              )
-            ? "current_positions_stale"
-            : warnings.some(
-                  (warning) => warning.code === "pnl_history_unavailable"
-                )
-              ? "pnl_history_unavailable"
-              : warnings.some((warning) => warning.code === "balances_partial")
-                ? "balances_partial"
-                : "ok",
-      interval,
-      freshness,
-      connected: true,
-      warnings: warnings.length,
-      openOrders: positionSummary.openOrders,
-      positionsMtm,
-      lockedUsdc: positionSummary.lockedUsdc,
-      pnlPoints: pnlHistory.length,
-    });
-
-    return NextResponse.json(
-      polyWalletOverviewOperation.output.parse({
-        configured: true,
-        connected: true,
-        freshness,
-        address: balances.address,
-        interval,
-        capturedAt,
-        pol_gas: balances.pol,
-        usdc_available: usdcAvailable,
-        usdc_locked: positionSummary.lockedUsdc,
-        usdc_positions_mtm: positionsMtm,
-        usdc_total: total,
-        open_orders: positionSummary.openOrders,
-        positions_synced_at:
-          currentPositionSummary?.syncedAt ?? positionSummary.syncedAt,
-        positions_sync_age_ms:
-          currentPositionSummary?.syncAgeMs ?? positionSummary.syncAgeMs,
-        positions_stale: currentPositionSummary?.stale ?? positionSummary.stale,
-        pnlHistory,
-        warnings,
-      })
+      },
+      DASHBOARD_ROUTE_CACHE_TTL_MS
     );
+
+    return NextResponse.json(payload);
   }
 );
 

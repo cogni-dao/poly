@@ -7,6 +7,10 @@
  *   wallet data. Reconciles the DB current-position model from Polymarket's
  *   Data API, updates legacy ledger rows used for order lifecycle overlays,
  *   then clears process caches and warms the non-CLOB execution slice.
+ *   Evicts both the address-keyed wallet-analysis slice caches and the
+ *   billing-account-keyed coalesced dashboard route payloads
+ *   (/wallet/overview, /wallet/execution — task.5013), the latter again
+ *   after all writes so refreshed data is served immediately.
  * Scope: Session-auth, tenant-scoped. This is an explicit mutation, not a
  *   page-load dependency; bounded CLOB/Data-API reads are allowed here to
  *   refresh the durable ledger read model.
@@ -45,6 +49,7 @@ import {
 } from "@/features/wallet-analysis/server/wallet-analysis-service";
 import { serverEnv } from "@/shared/env/server-env";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
+import { invalidateDashboardRouteCaches } from "../_lib/dashboard-route-cache";
 import {
   DASHBOARD_LEDGER_POSITION_LIMIT,
   hasPositionExposure,
@@ -171,6 +176,7 @@ export const POST = wrapRouteHandlerWithLogging(
     }
 
     invalidateWalletAnalysisCaches(address);
+    invalidateDashboardRouteCaches(account.id);
 
     const warnings: PolyWalletRefreshOutput["warnings"] = [];
     let executionCapturedAt: string | null = null;
@@ -406,6 +412,12 @@ export const POST = wrapRouteHandlerWithLogging(
         message: err instanceof Error ? err.message : String(err),
       });
     }
+
+    // Evict again after all writes: a dashboard GET that raced the refresh
+    // may have re-cached a pre-refresh payload for the 5s route TTL
+    // (task.5013). Post-write eviction guarantees the next dashboard read
+    // recomputes from the refreshed read models.
+    invalidateDashboardRouteCaches(account.id);
 
     logWalletRefreshComplete(ctx, startedAtMs, {
       status: "ok",
