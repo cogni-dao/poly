@@ -3,8 +3,10 @@
 
 /**
  * Module: `@app/(app)/dashboard/_hooks/useTradingWalletOverview`
- * Purpose: Progressive trading-wallet summary query: current cash/read-model
- * balances first, live Polymarket valuation and P/L chart second.
+ * Purpose: Trading-wallet summary query. Single `live` fetch per tick — the
+ * read-model variant runs the same balances/positions work and only omits the
+ * P/L history block, so pairing it with a live fetch doubled the route's
+ * Polygon RPC + ledger reads for no extra data (task.5009).
  * Scope: Client-side React Query composition only. No route logic.
  * Side-effects: IO (HTTP fetch via React Query).
  * Links: docs/spec/poly-copy-trade-execution.md
@@ -28,19 +30,9 @@ export function useTradingWalletOverview(
   data: PolyWalletOverviewOutput | undefined;
   isLoading: boolean;
   isError: boolean;
-  isLiveEnriching: boolean;
 } {
-  const readModelQuery = useQuery({
-    queryKey: ["dashboard-trading-wallet", "read_model", interval],
-    queryFn: () => fetchTradingWallet(interval, { freshness: "read_model" }),
-    refetchInterval: TRADING_WALLET_OVERVIEW_REFETCH_MS,
-    staleTime: 60_000,
-    gcTime: 5 * 60_000,
-    retry: 1,
-  });
-
-  const liveQuery = useQuery({
-    queryKey: ["dashboard-trading-wallet", "live", interval],
+  const query = useQuery({
+    queryKey: ["dashboard-trading-wallet", interval],
     queryFn: () => fetchTradingWallet(interval, { freshness: "live" }),
     refetchInterval: TRADING_WALLET_OVERVIEW_REFETCH_MS,
     staleTime: 60_000,
@@ -48,23 +40,9 @@ export function useTradingWalletOverview(
     retry: 1,
   });
 
-  const readModelData = readModelQuery.data;
-  const readModelIsStale =
-    readModelData?.freshness === "read_model" &&
-    readModelData.connected &&
-    readModelData.positions_stale;
-  const data =
-    liveQuery.data ??
-    (readModelIsStale && !liveQuery.isError ? undefined : readModelData);
-
   return {
-    data,
-    isLoading:
-      data === undefined && (readModelQuery.isLoading || liveQuery.isLoading),
-    isError: data === undefined && readModelQuery.isError && liveQuery.isError,
-    isLiveEnriching:
-      data !== undefined &&
-      data.freshness === "read_model" &&
-      liveQuery.isFetching,
+    data: query.data,
+    isLoading: query.isLoading,
+    isError: query.isError,
   };
 }
