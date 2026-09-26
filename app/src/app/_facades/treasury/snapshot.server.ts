@@ -13,8 +13,7 @@
  */
 
 import type { TreasurySnapshotResponseV1 } from "@cogni/node-contracts";
-import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
-import { CHAIN_ID } from "@cogni/node-shared/web3";
+import { CHAIN_ID, EVENT_NAMES } from "@cogni/node-shared";
 import { getContainer } from "@/bootstrap/container";
 import { getDaoConfig } from "@/shared/config/repoSpec.server";
 import type { RequestContext } from "@/shared/observability";

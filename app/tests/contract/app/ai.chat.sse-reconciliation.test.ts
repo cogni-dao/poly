@@ -86,6 +86,12 @@ vi.mock("@/shared/ai/model-catalog.server", () => ({
   getDefaults: vi.fn(),
 }));
 
+vi.mock("@/shared/env", () => ({
+  serverEnv: () => ({
+    AUTH_SECRET: "test-auth-secret-at-least-32-characters",
+  }),
+}));
+
 // Mock observability (metrics)
 vi.mock("@/shared/observability", async (importOriginal) => {
   const orig = (await importOriginal()) as Record<string, unknown>;

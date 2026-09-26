@@ -3,7 +3,7 @@
 
 /**
  * Module: `@app/layout`
- * Purpose: Root layout for the Poly node with font configuration and global styles.
+ * Purpose: Root layout for the node-template (used as scaffold for new nodes) with font configuration and global styles.
  * Scope: Async server component. Reads request cookies, computes wagmi `initialState`,
  *   passes it to the client `Providers` so `<WagmiProvider>` hydrates without mismatch
  *   (per https://wagmi.sh/react/guides/ssr).
@@ -34,9 +34,8 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "Cogni Poly — Community AI Prediction Trading",
-  description:
-    "Community-pooled AI trading across Polymarket, Kalshi, and more. Transparent, DAO-governed, collectively intelligent.",
+  title: "Cogni",
+  description: "Web3 Gov + Web2 AI",
 };
 
 // See operator/app/src/app/layout.tsx for rationale — `headers()` in the
