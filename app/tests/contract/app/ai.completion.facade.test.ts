@@ -19,14 +19,39 @@ const startMock = vi.fn().mockResolvedValue({});
 
 // vi.mock factories are hoisted — can't reference module imports.
 // Keep inline; fixture used in non-hoisted test helpers.
-vi.mock("@/bootstrap/container", () => ({
-  resolveAiAdapterDeps: vi.fn(),
-  getTemporalWorkflowClient: vi.fn(async () => ({
-    client: { start: startMock },
-    taskQueue: "scheduler-tasks",
-  })),
-  getContainer: vi.fn(() => ({
-    runStream: {
+vi.mock("@/bootstrap/container", () => {
+  const claims = new Map<string, { requestHash: string; runId: string }>();
+  const executionRequestPort = {
+    checkIdempotency: vi.fn(async (key: string, requestHash: string) => {
+      const existing = claims.get(key);
+      if (!existing) return { status: "new" as const };
+      if (existing.requestHash !== requestHash) {
+        return {
+          status: "mismatch" as const,
+          existingHash: existing.requestHash,
+          providedHash: requestHash,
+        };
+      }
+      return {
+        status: "pending" as const,
+        request: { ...existing, idempotencyKey: key },
+      };
+    }),
+    createPendingRequest: vi.fn(
+      async (key: string, requestHash: string, runId: string) => {
+        claims.set(key, { requestHash, runId });
+      }
+    ),
+  };
+  return {
+    resolveAiAdapterDeps: vi.fn(),
+    getTemporalWorkflowClient: vi.fn(async () => ({
+      client: { start: startMock },
+      taskQueue: "scheduler-tasks",
+    })),
+    getContainer: vi.fn(() => ({
+      executionRequestPort,
+      runStream: {
       subscribe: async function* () {
         yield {
           id: "1-0",
@@ -45,14 +70,19 @@ vi.mock("@/bootstrap/container", () => ({
           },
         };
       },
-    },
-  })),
-}));
+      },
+    })),
+  };
+});
 
 vi.mock("@/shared/config", () => ({
   getNodeId: () => "node_template",
 }));
+vi.mock("@/shared/env", () => ({
+  serverEnv: () => ({ AUTH_SECRET: "stable-completion-idempotency-secret" }),
+}));
 
+import { createExecutionRequestPortMock } from "@tests/_fixtures/ai/completion-facade-setup";
 import { resolveAiAdapterDeps } from "@/bootstrap/container";
 
 const mockResolveAiAdapterDeps = vi.mocked(resolveAiAdapterDeps);
@@ -104,7 +134,8 @@ describe("app/_facades/ai/completion.server", () => {
     });
 
     const { getContainer } = await import("@/bootstrap/container");
-    vi.mocked(getContainer).mockReturnValueOnce({
+    vi.mocked(getContainer).mockReturnValue({
+      executionRequestPort: createExecutionRequestPortMock(),
       runStream: createRunStreamMock({
         responseContent: "",
         emitError: "internal",

@@ -25,7 +25,7 @@ import {
   computePromptHash,
   DEFAULT_MAX_TOKENS,
   DEFAULT_TEMPERATURE,
-} from "@cogni/node-shared/ai";
+} from "@cogni/node-shared";
 import type { Logger } from "pino";
 import type { StreamFinalResult } from "@/features/ai/types";
 import type {
