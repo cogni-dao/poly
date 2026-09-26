@@ -890,10 +890,10 @@ async function readFillRollups(params: {
     FROM poly_trader_fills f
     JOIN poly_trader_wallets w ON w.id = f.trader_wallet_id
     LEFT JOIN poly_market_outcomes pmo
-      ON lower(pmo.condition_id) = lower(f.condition_id)
+      ON pmo.condition_id = f.condition_id
      AND pmo.token_id = f.token_id
     WHERE f.condition_id IN (${conditionList})
-      AND lower(w.wallet_address) IN (${walletList})
+      AND w.wallet_address IN (${walletList})
     GROUP BY lower(w.wallet_address), f.condition_id, f.token_id, pmo.outcome
   `)) as unknown as ReadonlyArray<{
     wallet_address: string | null;

@@ -109,15 +109,15 @@ export async function readCurrentWalletPositionModel(params: {
         ON p.trader_wallet_id = w.id
        AND ${liveCurrentPositionSql("p")}
       LEFT JOIN poly_redeem_jobs r
-        ON lower(r.funder_address) = lower(w.wallet_address)
-       AND lower(r.condition_id) = lower(p.condition_id)
+        ON lower(r.funder_address) = w.wallet_address
+       AND lower(r.condition_id) = p.condition_id
        AND r.position_id = p.token_id
       LEFT JOIN poly_market_outcomes pmo
-        ON lower(pmo.condition_id) = lower(p.condition_id)
+        ON pmo.condition_id = p.condition_id
        AND pmo.token_id = p.token_id
       LEFT JOIN poly_market_metadata pmm
         ON pmm.condition_id = p.condition_id
-      WHERE lower(w.wallet_address) = lower(${params.walletAddress})
+      WHERE w.wallet_address = lower(${params.walletAddress})
         AND w.kind = 'cogni_wallet'
         AND w.active_for_research = true
         AND w.disabled_at IS NULL

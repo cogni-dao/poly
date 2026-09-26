@@ -92,7 +92,7 @@ export async function readWalletTokenPnlMap(params: {
           )::numeric AS net_shares
         FROM poly_trader_fills f
         JOIN poly_trader_wallets w ON w.id = f.trader_wallet_id
-        WHERE lower(w.wallet_address) = lower(${params.walletAddress})
+        WHERE w.wallet_address = lower(${params.walletAddress})
         GROUP BY f.condition_id, f.token_id
       ),
       current_mark AS (
@@ -102,7 +102,7 @@ export async function readWalletTokenPnlMap(params: {
           COALESCE(SUM(p.current_value_usdc::numeric), 0) AS current_value_usdc
         FROM poly_trader_current_positions p
         JOIN poly_trader_wallets w ON w.id = p.trader_wallet_id
-        WHERE lower(w.wallet_address) = lower(${params.walletAddress})
+        WHERE w.wallet_address = lower(${params.walletAddress})
           AND ${liveCurrentPositionSql("p")}
         GROUP BY p.condition_id, p.token_id
       )
@@ -119,7 +119,7 @@ export async function readWalletTokenPnlMap(params: {
         ON cm.condition_id = fa.condition_id
        AND cm.token_id = fa.token_id
       LEFT JOIN poly_market_outcomes pmo
-        ON lower(pmo.condition_id) = lower(fa.condition_id)
+        ON pmo.condition_id = fa.condition_id
        AND pmo.token_id = fa.token_id
     `)
   );
