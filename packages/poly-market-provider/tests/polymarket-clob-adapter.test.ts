@@ -325,6 +325,37 @@ describe("classifyClobFailure (bug.0335 diagnostics)", () => {
     expect(details.reason).toMatch(/empty_error_fields/);
   });
 
+  it("keeps the raw CLOB text + http status from the v2 `{error,status}` envelope (bug.5256)", () => {
+    // `clob-client-v2` swallows a non-2xx into `{error: <body>, status: <code>}`
+    // (its `http-helpers` `errorHandling`). Prod 2026-09-26 logged
+    // `response_keys=[error,status] reason="unknown"` for every prod rejection —
+    // the one string that says WHY was classified and then dropped.
+    const details = classifyClobFailure({
+      error: "a CLOB message we have no pattern for",
+      status: 403,
+    });
+    expect(details.error_code).toBe(POLY_CLOB_ERROR_CODES.unknown);
+    expect(details.error_text).toBe("a CLOB message we have no pattern for");
+    expect(details.http_status).toBe(403);
+    expect(details.response_keys).toEqual(["error", "status"]);
+  });
+
+  it("serializes an object-shaped `error` body instead of dropping it", () => {
+    const details = classifyClobFailure({
+      error: { detail: "upstream said no", code: 42 },
+      status: 500,
+    });
+    expect(details.error_text).toBe(
+      '{"detail":"upstream said no","code":42}'
+    );
+    expect(details.http_status).toBe(500);
+  });
+
+  it("truncates error_text so a stray HTML edge-block body can't flood the log", () => {
+    const details = classifyClobFailure({ error: "x".repeat(5000) });
+    expect(details.error_text).toHaveLength(300);
+  });
+
   it("maps 'not enough balance' → insufficient_balance", () => {
     const details = classifyClobFailure({
       success: false,
