@@ -618,6 +618,7 @@ export class PolymarketClobAdapter implements MarketProviderPort {
           http_status: details.http_status,
           response_keys: details.response_keys,
           reason: details.reason,
+          error_text: details.error_text,
           error_class: details.error_class,
           stack_top: details.stack_top,
         },
@@ -741,6 +742,7 @@ export class PolymarketClobAdapter implements MarketProviderPort {
           http_status: details.http_status,
           response_keys: details.response_keys,
           reason: details.reason,
+          error_text: details.error_text,
         },
         `sellPositionAtMarket: ${result}`
       );
@@ -1213,6 +1215,17 @@ export interface ClobFailureDetails {
    * adapter-side classification miss.
    */
   stack_top?: string;
+  /**
+   * RAW_REJECTION_TEXT_IS_LOG_ONLY (bug.5256) — the CLOB's own error text,
+   * truncated to `MAX_ERROR_TEXT_LEN`. `clob-client-v2` swallows non-2xx
+   * responses into `{error, status}` (see `errorHandling` in its
+   * `http-helpers`), so `error_code: "unknown"` used to be a dead end: the one
+   * string that says WHY was classified and then dropped. Emitted on the
+   * `poly.clob.place` error log so `unknown` rejections are diagnosable from
+   * Loki alone. NOT persisted to the `poly_copy_trade_decisions` receipt —
+   * docs/spec/observability.md keeps raw SDK text out of durable rows.
+   */
+  error_text?: string;
 }
 
 export class ClobRejectionError extends Error {
@@ -1277,11 +1290,7 @@ export function classifyClobFailure(response: unknown): ClobFailureDetails {
   }
   const r = response as Record<string, unknown>;
   const response_keys = Object.keys(r);
-  const errorText =
-    (typeof r.errorMsg === "string" && r.errorMsg) ||
-    (typeof r.error === "string" && r.error) ||
-    (typeof r.message === "string" && r.message) ||
-    "";
+  const errorText = readClobErrorText(r);
   if (response_keys.length === 0) {
     return {
       error_code: POLY_CLOB_ERROR_CODES.emptyResponse,
@@ -1294,7 +1303,44 @@ export function classifyClobFailure(response: unknown): ClobFailureDetails {
   const reason = errorText
     ? error_code
     : `empty_error_fields:[${response_keys.join(",")}]`;
-  return { error_code, response_keys, reason };
+  // `clob-client-v2` stuffs the HTTP status of a swallowed axios error onto
+  // `status` alongside `error`. Surface it so an edge/geo/auth block (403)
+  // is distinguishable from a CLOB-side validation reject (400).
+  const http_status = typeof r.status === "number" ? r.status : undefined;
+  return {
+    error_code,
+    response_keys,
+    reason,
+    ...(http_status !== undefined ? { http_status } : {}),
+    ...(errorText !== "" ? { error_text: errorText } : {}),
+  };
+}
+
+/** Cap on `error_text` — enough for a CLOB message or an edge-block body prefix. */
+const MAX_ERROR_TEXT_LEN = 300;
+
+/**
+ * Pull the CLOB's error text out of a rejection body, whatever shape it took.
+ * Polymarket's own rejects are `{errorMsg}`; `clob-client-v2` wraps non-2xx
+ * responses as `{error, status}` where `error` is either the raw string body
+ * (plain-text / HTML edge blocks) or the upstream JSON object. The object case
+ * is JSON-stringified rather than dropped — dropping it is what made
+ * `reason: "unknown"` undiagnosable.
+ */
+function readClobErrorText(r: Record<string, unknown>): string {
+  for (const candidate of [r.errorMsg, r.error, r.message]) {
+    if (typeof candidate === "string" && candidate !== "") {
+      return candidate.slice(0, MAX_ERROR_TEXT_LEN);
+    }
+    if (candidate !== null && typeof candidate === "object") {
+      try {
+        return JSON.stringify(candidate).slice(0, MAX_ERROR_TEXT_LEN);
+      } catch {
+        return "unserializable_error_object";
+      }
+    }
+  }
+  return "";
 }
 
 /**
@@ -1393,7 +1439,14 @@ export function mapOrderResponseToReceipt(
   if (r.success === false || !placedOrderId) {
     const details = classifyClobFailure(response);
     throw new ClobRejectionError(
-      `PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=${details.error_code}, response_keys=[${details.response_keys.join(",")}], reason="${details.reason ?? ""}")`,
+      // RAW_TEXT_RIDES_THE_MESSAGE (bug.5256) — `error_text` is appended to the
+      // message, not just carried on `details`, because the message is what
+      // reaches the two surfaces an operator actually reads: the pipeline's
+      // `poly.mirror.decision` `errorMessage` field (bug.5060) and the durable
+      // `poly_copy_trade_fills.error` column via `markError`. Without it, the
+      // CLOB's own words live only on the sibling `poly.clob.place` line and
+      // never reach the ledger row a dashboard could render.
+      `PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=${details.error_code}, response_keys=[${details.response_keys.join(",")}], reason="${details.reason ?? ""}", clob_error="${details.error_text ?? ""}")`,
       details
     );
   }

@@ -522,6 +522,9 @@ async function processFill(
     target: deps.target,
     targetPosition,
     wrongSideHoldingDetected,
+    min_shares,
+    min_usdc_notional,
+    tick_size,
   });
 
   // bug.5048 — fire the wrong-side counter + WARN log when option C taken.
@@ -796,6 +799,9 @@ function buildDecisionLogFields(args: {
   target: MirrorTargetConfig;
   targetPosition: TargetConditionPositionView | undefined;
   wrongSideHoldingDetected?: boolean;
+  min_shares?: number | undefined;
+  min_usdc_notional?: number | undefined;
+  tick_size?: number | undefined;
 }): Record<string, unknown> {
   const {
     branch,
@@ -804,6 +810,9 @@ function buildDecisionLogFields(args: {
     target,
     targetPosition,
     wrongSideHoldingDetected,
+    min_shares,
+    min_usdc_notional,
+    tick_size,
   } = args;
   const tokenId =
     typeof fill.attributes?.asset === "string" ? fill.attributes.asset : "";
@@ -836,6 +845,25 @@ function buildDecisionLogFields(args: {
       "statistic" in target.sizing
         ? target.sizing.statistic.max_target_usdc
         : null,
+    // FLOOR_FIELDS_EXPLAIN_BELOW_MARKET_MIN (bug.5256) — `below_market_min`
+    // used to be unfalsifiable from logs alone: the skip is decided by
+    // `floor_usdc` vs `mirror_max_usdc_per_trade`, and NEITHER input to
+    // `floor_usdc` was emitted. Prod 2026-09-26 burned a session guessing
+    // whether an $5 cap sat under the market's floor. `floor_usdc` mirrors
+    // `applyMarketFloors`'s own `max(minShares × price, minUsdcNotional)` so
+    // a reader can compare it against the cap in one glance.
+    min_shares: min_shares ?? null,
+    min_usdc_notional: min_usdc_notional ?? null,
+    tick_size: tick_size ?? null,
+    fill_price: fill.price,
+    floor_usdc:
+      min_usdc_notional === undefined
+        ? null
+        : Number(
+            Math.max((min_shares ?? 0) * fill.price, min_usdc_notional).toFixed(
+              4
+            )
+          ),
   };
 }
 
