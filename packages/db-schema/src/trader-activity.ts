@@ -21,6 +21,7 @@ import {
   boolean,
   check,
   index,
+  integer,
   jsonb,
   numeric,
   pgTable,
@@ -418,6 +419,74 @@ export const polyMarketMetadata = pgTable(
   ]
 );
 
+/**
+ * Observation read-model for the dashboard/research "Top Wallets" leaderboard
+ * (bug.5017). One row per `(time_period, order_by, wallet_address)` — the
+ * Polymarket `/v1/leaderboard` entry plus the `/trades`-count enrichment the
+ * UI consumes. Written only by the top-wallet-stats tick; page-load reads go
+ * through `readTopTradersFromDb` (PAGE_LOAD_DB_ONLY). No tenant FK → no RLS,
+ * matching the other `poly_trader_*` / `poly_market_*` observation tables.
+ * `raw` preserves the full vendor leaderboard entry per the
+ * persist-the-payload rule.
+ *
+ * @public
+ */
+export const polyTopWalletStats = pgTable(
+  "poly_top_wallet_stats",
+  {
+    /** Leaderboard window: DAY / WEEK / MONTH / ALL. */
+    timePeriod: text("time_period").notNull(),
+    /** Leaderboard sort metric: PNL / VOL. */
+    orderBy: text("order_by").notNull(),
+    /** On-chain Polygon proxy-wallet address (0x…40 hex). */
+    walletAddress: text("wallet_address").notNull(),
+    /** 1-indexed rank within this (time_period, order_by) board. */
+    rank: integer("rank").notNull(),
+    /** Vendor username; empty string when unset (reader falls back to address). */
+    userName: text("user_name").notNull().default(""),
+    volumeUsdc: numeric("volume_usdc", { precision: 20, scale: 8 }).notNull(),
+    pnlUsdc: numeric("pnl_usdc", { precision: 20, scale: 8 }).notNull(),
+    /** Derived at write time: pnl/vol*100; NULL when volume is 0. */
+    roiPct: numeric("roi_pct", { precision: 18, scale: 8 }),
+    /** `/trades?user=…&limit=500` count; lower bound when capped. */
+    numTrades: integer("num_trades").notNull().default(0),
+    /** True when the /trades pagination cap was hit — actual count ≥ numTrades. */
+    numTradesCapped: boolean("num_trades_capped").notNull().default(false),
+    /** Polymarket verified-badge flag. */
+    verified: boolean("verified").notNull().default(false),
+    /** Full vendor leaderboard entry preserved for forward-compatible access. */
+    raw: jsonb("raw").$type<Record<string, unknown>>(),
+    /** Wall-clock time of the most recent refresh for this row. */
+    capturedAt: timestamp("captured_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.timePeriod, table.orderBy, table.walletAddress],
+    }),
+    check(
+      "poly_top_wallet_stats_time_period_check",
+      sql`${table.timePeriod} IN ('DAY','WEEK','MONTH','ALL')`
+    ),
+    check(
+      "poly_top_wallet_stats_order_by_check",
+      sql`${table.orderBy} IN ('PNL','VOL')`
+    ),
+    check(
+      "poly_top_wallet_stats_wallet_shape",
+      sql`${table.walletAddress} ~ '^0x[a-fA-F0-9]{40}$'`
+    ),
+    check("poly_top_wallet_stats_rank_positive", sql`${table.rank} > 0`),
+    // Read path: WHERE (time_period, order_by) ORDER BY rank LIMIT n.
+    index("poly_top_wallet_stats_board_rank_idx").on(
+      table.timePeriod,
+      table.orderBy,
+      table.rank
+    ),
+  ]
+);
+
 export const polyMarketPriceHistory = pgTable(
   "poly_market_price_history",
   {
@@ -460,3 +529,5 @@ export type NewPolyMarketPriceHistoryPoint =
   typeof polyMarketPriceHistory.$inferInsert;
 export type PolyMarketMetadata = typeof polyMarketMetadata.$inferSelect;
 export type NewPolyMarketMetadata = typeof polyMarketMetadata.$inferInsert;
+export type PolyTopWalletStat = typeof polyTopWalletStats.$inferSelect;
+export type NewPolyTopWalletStat = typeof polyTopWalletStats.$inferInsert;
