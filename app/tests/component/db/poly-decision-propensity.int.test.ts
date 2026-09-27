@@ -3,17 +3,17 @@
 
 /**
  * Module: `@tests/component/db/poly-decision-propensity.int.test`
- * Purpose: Prove migration 0063 against a REAL Postgres — the t1 exploration columns exist, round-trip, and their CHECK constraints actually reject malformed exploration metadata. A unit test cannot prove any of this; only the database can.
+ * Purpose: Prove migration 0064 against a REAL Postgres — the t1 exploration columns exist, round-trip, and their CHECK constraints actually reject malformed exploration metadata. A unit test cannot prove any of this; only the database can.
  * Scope: `poly_copy_trade_decisions.{exploration_arm,propensity}` + the three CHECKs. Does NOT test the planner or the pipeline.
  * Invariants proven:
- *   - MIGRATION_0063_APPLIED — selecting the columns succeeds against the migrated DB, so the column exists in deployed SQL and not only in TS.
+ *   - MIGRATION_0064_APPLIED — selecting the columns succeeds against the migrated DB, so the column exists in deployed SQL and not only in TS.
  *   - PROPENSITY_PAIRED_WITH_ARM — arm-without-propensity and propensity-without-arm are BOTH rejected at the DB, so no estimator can ever read a half-written pair.
  *   - PROPENSITY_RANGE — 0 (divides by zero in IPS) and >1 (not a probability) are rejected.
  *   - DETERMINISTIC_ROWS_STILL_WRITE — a pre-t1 shaped row (both NULL) is still accepted, so the migration is backward compatible.
  * Side-effects: IO (testcontainers Postgres)
  * Notes: Uses typed drizzle inserts/selects throughout — no raw SQL — so the
  *        assertions do not depend on driver-specific result shapes.
- * Links: app/src/adapters/server/db/migrations/0063_solid_katie_power.sql, packages/db-schema/src/copy-trade.ts
+ * Links: app/src/adapters/server/db/migrations/0064_eminent_living_tribunal.sql, packages/db-schema/src/copy-trade.ts
  * @public
  */
 
@@ -59,7 +59,7 @@ function insertDecision(over: {
     });
 }
 
-describe("poly_copy_trade_decisions exploration columns (migration 0063)", () => {
+describe("poly_copy_trade_decisions exploration columns (migration 0064)", () => {
   beforeAll(async () => {
     const seedDb = getSeedDb();
     userId = randomUUID();
@@ -74,8 +74,8 @@ describe("poly_copy_trade_decisions exploration columns (migration 0063)", () =>
     });
   });
 
-  it("MIGRATION_0063_APPLIED — the columns are selectable on the live schema", async () => {
-    // If 0063 did not apply, Postgres raises `column ... does not exist` here.
+  it("MIGRATION_0064_APPLIED — the columns are selectable on the live schema", async () => {
+    // If 0064 did not apply, Postgres raises `column ... does not exist` here.
     const rows = await getSeedDb()
       .select({
         arm: polyCopyTradeDecisions.explorationArm,
