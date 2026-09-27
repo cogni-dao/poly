@@ -95,7 +95,12 @@ export class PolymarketUserPnlClient {
   async getUserPnl(
     wallet: string,
     params: GetUserPnlParams,
-    opts?: { logger?: UserPnlOutboundLogger; component?: string }
+    opts?: {
+      logger?: UserPnlOutboundLogger;
+      component?: string;
+      /** Cooperative cancellation — aborts the underlying fetch (task.5015). */
+      signal?: AbortSignal | undefined;
+    }
   ): Promise<PolymarketUserPnlPoint[]> {
     assertWallet(wallet);
 
@@ -114,13 +119,21 @@ export class PolymarketUserPnlClient {
       ...(params.fidelity !== undefined ? { fidelity: params.fidelity } : {}),
     });
 
-    const json = await this.fetchJson(url);
+    const json = await this.fetchJson(url, opts?.signal);
     return PolymarketUserPnlResponseSchema.parse(json);
   }
 
-  private async fetchJson(url: URL): Promise<unknown> {
+  /**
+   * `signal` (task.5015): optional caller-owned cancellation, combined with
+   * the per-request timeout controller; caller aborts reject distinctly from
+   * timeouts.
+   */
+  private async fetchJson(url: URL, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const onCallerAbort = () => controller.abort();
+    signal?.addEventListener("abort", onCallerAbort, { once: true });
     try {
       const response = await this.fetchImpl(url.toString(), {
         signal: controller.signal,
@@ -132,6 +145,11 @@ export class PolymarketUserPnlClient {
       }
       return await response.json();
     } catch (err) {
+      if (signal?.aborted) {
+        throw new Error(
+          `Polymarket user-pnl API request aborted by caller (${url.pathname})`
+        );
+      }
       if (err instanceof Error && err.name === "AbortError") {
         throw new Error(
           `Polymarket user-pnl API timeout after ${this.timeoutMs}ms (${url.pathname})`
@@ -140,6 +158,7 @@ export class PolymarketUserPnlClient {
       throw err;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onCallerAbort);
     }
   }
 }

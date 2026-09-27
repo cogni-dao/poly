@@ -7,6 +7,8 @@
  * Scope: Feature service. Caller injects DB/client/logger; this module does not construct runtime dependencies or own scheduling.
  * Invariants:
  *   - LIVE_FORWARD_COLLECTION: polls `active_for_research` wallets and stores facts for later query windows.
+ *   - BOUNDED_PARALLEL_WALLETS: the per-wallet loop fans out through `pLimit(WALLET_OBSERVE_CONCURRENCY)` (task.5015) — at most 3 wallets in flight; one wallet's failure never kills the tick.
+ *   - COOPERATIVE_CANCELLATION: `deps.signal` (armed by the job's tick timeout) is checked before each wallet and between upstream pages, and is passed to every Polymarket fetch; an aborted wallet is counted `walletsAborted`, writes no cursor-error row, and post-loop prunes/metadata refresh are skipped so the abandoned tick settles quickly.
  *   - SAME_OBSERVED_TRADE_TABLE: target and Cogni public wallet trades are both stored in `poly_trader_fills`.
  *   - WATERMARKED_INGESTION: reads newest-to-prior-watermark and advances cursor only after DB upserts complete.
  *   - PNL_INGEST_INDEPENDENT: per-wallet user-pnl ingest runs after observation regardless of observe outcome; failures bump `errors` and continue. Retention prune runs once per tick after all wallets.
@@ -15,7 +17,7 @@
  *     deactivate Cogni-wallet current-position rows unless an injected
  *     authority classifies the missing row terminal.
  * Side-effects: IO through injected Data API client + optional user-pnl client + injected DB.
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012
+ * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5015
  * @public
  */
 
@@ -53,6 +55,7 @@ import {
 } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import pLimit from "p-limit";
 import { refreshMarketMetadata } from "./poly-market-metadata-service";
 import {
   fetchAndPersistTradingWalletPnlHistory,
@@ -85,6 +88,13 @@ const SNAPSHOT_RETENTION_DAYS = 35;
 const SNAPSHOT_PRUNE_BATCH_SIZE = 5_000;
 /** Batches per tick; a backlog drains across ticks instead of in one stall. */
 const SNAPSHOT_PRUNE_MAX_BATCHES = 10;
+/**
+ * Max wallets observed in parallel per tick (task.5015). 3 keeps the tick's
+ * worst-case Data-API rate well under the `pLimit(4)` ≈ 24 rps ceiling
+ * spike.5001 measured for the CLOB jobs while collapsing tick duration from
+ * O(wallets) serial to O(wallets / 3).
+ */
+const WALLET_OBSERVE_CONCURRENCY = 3;
 
 export interface TraderObservationTickDeps {
   db: Db;
@@ -96,10 +106,20 @@ export interface TraderObservationTickDeps {
   maxPages?: number;
   positionMaxPages?: number;
   positionPollMs?: number;
+  /**
+   * Cooperative cancellation (task.5015). Armed by the job's tick timeout;
+   * checked before each wallet and between upstream pages, and passed to
+   * every Polymarket fetch so in-flight requests abort too.
+   */
+  signal?: AbortSignal | undefined;
 }
 
 export interface TraderObservationTickResult {
   wallets: number;
+  /** Wallets whose per-wallet work ran to completion (possibly with logged errors). */
+  walletsProcessed: number;
+  /** Wallets skipped or interrupted because `signal` aborted mid-tick. */
+  walletsAborted: number;
   fills: number;
   positions: number;
   pnlPoints: number;
@@ -136,9 +156,58 @@ export type MissingCurrentPositionDecision =
   | { kind: "deactivate"; reason: "zero_balance" | "dust" }
   | { kind: "preserve"; reason: "actionable" | "authority_unavailable" };
 
+/**
+ * Bounded-parallel fan-out with cooperative cancellation (task.5015).
+ * Generic so unit tests exercise the concurrency/abort/error contract with
+ * fake wallet fns; `runTraderObservationTick` is the only production caller.
+ *
+ * Contract:
+ * - At most `concurrency` `run` invocations are in flight at once.
+ * - `signal.aborted` is checked before each wallet starts; wallets not yet
+ *   started when the signal fires never run (counted `aborted`).
+ * - A rejection from `run` while the signal is aborted counts that wallet
+ *   `aborted` (the abort interrupted it) and is swallowed.
+ * - Any other rejection is routed to `onError` — one wallet's failure never
+ *   rejects the loop or affects sibling wallets (counted `processed`).
+ */
+export async function runBoundedWalletLoop<W>(input: {
+  wallets: readonly W[];
+  concurrency: number;
+  signal?: AbortSignal | undefined;
+  run: (wallet: W) => Promise<void>;
+  onError?: (wallet: W, err: unknown) => void;
+}): Promise<{ processed: number; aborted: number }> {
+  const limit = pLimit(Math.max(1, input.concurrency));
+  let processed = 0;
+  let aborted = 0;
+  await Promise.all(
+    input.wallets.map((wallet) =>
+      limit(async () => {
+        if (input.signal?.aborted) {
+          aborted += 1;
+          return;
+        }
+        try {
+          await input.run(wallet);
+          processed += 1;
+        } catch (err: unknown) {
+          if (input.signal?.aborted) {
+            aborted += 1;
+            return;
+          }
+          processed += 1;
+          input.onError?.(wallet, err);
+        }
+      })
+    )
+  );
+  return { processed, aborted };
+}
+
 export async function runTraderObservationTick(
   deps: TraderObservationTickDeps
 ): Promise<TraderObservationTickResult> {
+  const tickStartedAt = Date.now();
   const log = deps.logger.child({
     component: "trader-observation",
   });
@@ -159,54 +228,85 @@ export async function runTraderObservationTick(
   let pnlPoints = 0;
   let errors = 0;
 
-  for (const wallet of wallets) {
-    try {
-      const result = await observeWallet({ ...deps, wallet, logger: log });
-      fills += result.fills;
-      positions += result.positions;
-    } catch (err: unknown) {
-      errors += 1;
-      log.error(
-        {
-          event: "poly.trader.observe",
-          phase: "error",
-          trader_wallet_id: wallet.id,
-          wallet: wallet.walletAddress,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        "trader observation failed"
-      );
-      await markCursorError(deps.db, wallet.id, err);
-    }
-    if (deps.userPnlClient) {
+  // task.5015: bounded-parallel wallet fan-out. Per-wallet error isolation is
+  // preserved — each phase catches its own errors and continues — EXCEPT when
+  // `deps.signal` has aborted: abort-induced rejections are rethrown so the
+  // loop counts the wallet aborted without writing a cursor-error row.
+  const loop = await runBoundedWalletLoop({
+    wallets,
+    concurrency: WALLET_OBSERVE_CONCURRENCY,
+    signal: deps.signal,
+    run: async (wallet) => {
       try {
-        const pnlResult = await fetchAndPersistTradingWalletPnlHistory({
-          db: deps.db,
-          traderWalletId: wallet.id,
-          walletAddress: wallet.walletAddress as `0x${string}`,
-          client: deps.userPnlClient,
-          logger: log,
-          component: "trader-observation",
-        });
-        pnlPoints += pnlResult.inserted;
+        const result = await observeWallet({ ...deps, wallet, logger: log });
+        fills += result.fills;
+        positions += result.positions;
       } catch (err: unknown) {
+        if (deps.signal?.aborted) throw err;
         errors += 1;
         log.error(
           {
             event: "poly.trader.observe",
-            phase: "user_pnl_error",
+            phase: "error",
             trader_wallet_id: wallet.id,
             wallet: wallet.walletAddress,
             err: err instanceof Error ? err.message : String(err),
           },
-          "trader user-pnl ingest failed"
+          "trader observation failed"
         );
+        await markCursorError(deps.db, wallet.id, err);
       }
-    }
-  }
+      if (deps.userPnlClient) {
+        try {
+          const pnlResult = await fetchAndPersistTradingWalletPnlHistory({
+            db: deps.db,
+            traderWalletId: wallet.id,
+            walletAddress: wallet.walletAddress as `0x${string}`,
+            client: deps.userPnlClient,
+            logger: log,
+            component: "trader-observation",
+            signal: deps.signal,
+          });
+          pnlPoints += pnlResult.inserted;
+        } catch (err: unknown) {
+          if (deps.signal?.aborted) throw err;
+          errors += 1;
+          log.error(
+            {
+              event: "poly.trader.observe",
+              phase: "user_pnl_error",
+              trader_wallet_id: wallet.id,
+              wallet: wallet.walletAddress,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "trader user-pnl ingest failed"
+          );
+        }
+      }
+    },
+    onError: (wallet, err) => {
+      // Defensive: `run` handles its own errors; anything escaping here is a
+      // failure of the error-handling path itself (e.g. markCursorError).
+      errors += 1;
+      log.error(
+        {
+          event: "poly.trader.observe",
+          phase: "wallet_loop_error",
+          trader_wallet_id: wallet.id,
+          wallet: wallet.walletAddress,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "trader observation wallet loop escaped error"
+      );
+    },
+  });
+
+  // Abandoned tick (job timeout fired): skip the post-loop maintenance so the
+  // promise settles quickly — no orphan writers past the next tick start.
+  const tickAborted = deps.signal?.aborted === true;
 
   let prunedPnlPoints = 0;
-  if (deps.userPnlClient) {
+  if (deps.userPnlClient && !tickAborted) {
     try {
       const prune = await pruneOldTradingWalletPnlPoints(deps.db);
       prunedPnlPoints = prune.deleted;
@@ -226,35 +326,39 @@ export async function runTraderObservationTick(
   // Runs once per tick after all wallets, mirroring the pnl-points prune;
   // NOT gated on `userPnlClient` because snapshots are written regardless.
   let prunedPositionSnapshots = 0;
-  try {
-    const prune = await pruneOldPositionSnapshots(deps.db);
-    prunedPositionSnapshots = prune.deleted;
-  } catch (err: unknown) {
-    log.warn(
-      {
-        event: "poly.trader.observe",
-        phase: "position_snapshot_prune_error",
-        err: err instanceof Error ? err.message : String(err),
-      },
-      "trader position-snapshot prune failed"
-    );
+  if (!tickAborted) {
+    try {
+      const prune = await pruneOldPositionSnapshots(deps.db);
+      prunedPositionSnapshots = prune.deleted;
+    } catch (err: unknown) {
+      log.warn(
+        {
+          event: "poly.trader.observe",
+          phase: "position_snapshot_prune_error",
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "trader position-snapshot prune failed"
+      );
+    }
   }
 
   // Project the latest /positions raw JSONB into `poly_market_metadata` so
   // readers JOIN one canonical typed row per market instead of scraping
   // `poly_trader_current_positions.raw->>'endDate'`. Pure SQL — no HTTP.
   // Soft-failures so a projection error never aborts the wallet tick.
-  try {
-    await refreshMarketMetadata({ db: deps.db, logger: log });
-  } catch (err: unknown) {
-    log.warn(
-      {
-        event: "poly.trader.observe",
-        phase: "market_metadata_error",
-        err: err instanceof Error ? err.message : String(err),
-      },
-      "market metadata refresh failed"
-    );
+  if (!tickAborted) {
+    try {
+      await refreshMarketMetadata({ db: deps.db, logger: log });
+    } catch (err: unknown) {
+      log.warn(
+        {
+          event: "poly.trader.observe",
+          phase: "market_metadata_error",
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "market metadata refresh failed"
+      );
+    }
   }
 
   log.info(
@@ -262,6 +366,9 @@ export async function runTraderObservationTick(
       event: "poly.trader.observe",
       phase: "tick_ok",
       wallets: wallets.length,
+      wallets_processed: loop.processed,
+      wallets_aborted: loop.aborted,
+      tick_ms: Date.now() - tickStartedAt,
       fills,
       positions,
       pnl_points: pnlPoints,
@@ -274,6 +381,8 @@ export async function runTraderObservationTick(
 
   return {
     wallets: wallets.length,
+    walletsProcessed: loop.processed,
+    walletsAborted: loop.aborted,
     fills,
     positions,
     pnlPoints,
@@ -413,6 +522,7 @@ async function observeWallet(
     wallet: PolyTraderWallet;
   }
 ): Promise<{ fills: number; positions: number }> {
+  const startedAt = Date.now();
   const cursor = await deps.db
     .select()
     .from(polyTraderIngestionCursors)
@@ -434,6 +544,7 @@ async function observeWallet(
     metrics: deps.metrics,
     limit: deps.tradePageLimit ?? DEFAULT_TRADE_PAGE_LIMIT,
     maxPages: deps.maxPages ?? DEFAULT_MAX_PAGES,
+    signal: deps.signal,
   });
   const observed = await source.fetchSince(since);
   const insertedFills = await upsertObservedFills(
@@ -443,6 +554,10 @@ async function observeWallet(
   );
   const positionResult = await observePositionsIfDue(deps).catch(
     async (err: unknown) => {
+      // task.5015: an abort-interrupted position fetch is cancellation, not a
+      // wallet failure — rethrow so the loop counts it aborted with no
+      // cursor-error write.
+      if (deps.signal?.aborted) throw err;
       deps.logger.error(
         {
           event: "poly.trader.observe",
@@ -505,6 +620,7 @@ async function observeWallet(
       positions_complete: positionResult.complete,
       positions_skipped: positionResult.skipped,
       new_since: observed.newSince,
+      duration_ms: Date.now() - startedAt,
     },
     "trader wallet observed"
   );
@@ -581,6 +697,7 @@ async function observePositionsIfDue(
     client: deps.client,
     walletAddress: deps.wallet.walletAddress,
     maxPages: deps.positionMaxPages ?? DEFAULT_POSITION_MAX_PAGES,
+    signal: deps.signal,
   });
   const result = await persistObservedCurrentPositions(
     deps.db,
@@ -865,16 +982,20 @@ export async function fetchTraderPositionsPages(params: {
   client: PolymarketDataApiClient;
   walletAddress: string;
   maxPages: number;
+  /** Cooperative cancellation (task.5015): checked before each page and passed to the fetch. */
+  signal?: AbortSignal | undefined;
 }): Promise<{ positions: PolymarketUserPosition[]; complete: boolean }> {
   const maxPages = Math.max(1, params.maxPages);
   const positions: PolymarketUserPosition[] = [];
   for (let page = 0; page < maxPages; page += 1) {
+    params.signal?.throwIfAborted();
     const pagePositions = await params.client.listUserPositions(
       params.walletAddress,
       {
         sizeThreshold: 0,
         limit: POSITION_FETCH_LIMIT,
         offset: page * POSITION_FETCH_LIMIT,
+        signal: params.signal,
       }
     );
     positions.push(...pagePositions);

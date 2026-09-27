@@ -80,6 +80,11 @@ export interface PolymarketActivitySourceDeps {
    * watermark.
    */
   maxPages?: number;
+  /**
+   * Cooperative cancellation (task.5015): checked before each page and passed
+   * to the underlying Data-API fetch so an in-flight request aborts too.
+   */
+  signal?: AbortSignal | undefined;
 }
 
 export function createPolymarketActivitySource(
@@ -107,9 +112,16 @@ export function createPolymarketActivitySource(
       > = [];
       let reachedSince = false;
       for (let page = 0; page < maxPages; page += 1) {
-        const params: { sinceTs?: number; limit: number; offset: number } = {
+        deps.signal?.throwIfAborted();
+        const params: {
+          sinceTs?: number;
+          limit: number;
+          offset: number;
+          signal?: AbortSignal | undefined;
+        } = {
           limit: pageLimit,
           offset: page * pageLimit,
+          signal: deps.signal,
         };
         if (since !== undefined) params.sinceTs = since;
         const pageTrades = await deps.client.listUserActivity(

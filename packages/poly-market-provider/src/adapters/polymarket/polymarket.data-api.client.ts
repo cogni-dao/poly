@@ -110,6 +110,8 @@ export interface ListUserActivityParams {
   offset?: number;
   /** Only return trades at or after this unix-seconds timestamp. */
   sinceTs?: number;
+  /** Cooperative cancellation — aborts the underlying fetch (task.5015). */
+  signal?: AbortSignal | undefined;
 }
 
 export interface ListUserTradesParams {
@@ -121,6 +123,8 @@ export interface ListUserTradesParams {
   sinceTs?: number;
   /** When true, only include fills where the user was the TAKER. Default: false (includes maker fills — required for position tracking). */
   takerOnly?: boolean;
+  /** Cooperative cancellation — aborts the underlying fetch (task.5015). */
+  signal?: AbortSignal | undefined;
 }
 
 export interface ListUserPositionsParams {
@@ -132,6 +136,8 @@ export interface ListUserPositionsParams {
   limit?: number;
   /** Optional offset for pagination. */
   offset?: number;
+  /** Cooperative cancellation — aborts the underlying fetch (task.5015). */
+  signal?: AbortSignal | undefined;
 }
 
 export interface ListActivityParams {
@@ -238,7 +244,7 @@ export class PolymarketDataApiClient {
       url.searchParams.set("offset", String(params.offset));
     }
 
-    const json = await this.fetchJson(url);
+    const json = await this.fetchJson(url, params?.signal);
     const trades = PolymarketUserTradesResponseSchema.parse(json);
 
     if (params?.sinceTs !== undefined) {
@@ -266,7 +272,7 @@ export class PolymarketDataApiClient {
       url.searchParams.set("offset", String(params.offset));
     }
 
-    const json = await this.fetchJson(url);
+    const json = await this.fetchJson(url, params?.signal);
     return PolymarketUserPositionsResponseSchema.parse(json);
   }
 
@@ -431,9 +437,18 @@ export class PolymarketDataApiClient {
     return parsed.profiles;
   }
 
-  private async fetchJson(url: URL): Promise<unknown> {
+  /**
+   * `signal` (task.5015): optional caller-owned cancellation, combined with
+   * the per-request timeout controller. Caller aborts (e.g. the trader
+   * observation tick timing out) reject distinctly from timeouts so callers
+   * can classify them.
+   */
+  private async fetchJson(url: URL, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const onCallerAbort = () => controller.abort();
+    signal?.addEventListener("abort", onCallerAbort, { once: true });
     try {
       const response = await this.fetchImpl(url.toString(), {
         signal: controller.signal,
@@ -445,6 +460,11 @@ export class PolymarketDataApiClient {
       }
       return await response.json();
     } catch (err) {
+      if (signal?.aborted) {
+        throw new Error(
+          `Polymarket Data API request aborted by caller (${url.pathname})`
+        );
+      }
       if (err instanceof Error && err.name === "AbortError") {
         throw new Error(
           `Polymarket Data API timeout after ${this.timeoutMs}ms (${url.pathname})`
@@ -453,6 +473,7 @@ export class PolymarketDataApiClient {
       throw err;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onCallerAbort);
     }
   }
 }
