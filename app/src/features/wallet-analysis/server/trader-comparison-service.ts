@@ -9,12 +9,16 @@
  *   - PNL_SINGLE_SOURCE: delegates to `getPnlSlice`, the same Polymarket-native source used by wallet analysis.
  *   - TRADE_FLOW_FROM_OBSERVATIONS: counts/notional are SQL windows over `poly_trader_fills`.
  *   - PAGE_LOAD_DB_ONLY: market resolutions read from `poly_market_outcomes` (CP3 writer); no synchronous CLOB call on render.
- * Side-effects: DB reads plus the upstream P/L read performed by `getPnlSlice`.
- * Links: nodes/poly/packages/node-contracts/src/poly.research-trader-comparison.v1.contract.ts, work/items/task.5012
+ *   - AGGREGATE_IN_SQL (bug.5008): the trade-size/P-L histogram is computed entirely in Postgres.
+ *     No raw fill rows reach V8 — only ≤20 bucket rows per wallet. The legacy JS aggregation is
+ *     preserved verbatim as a test-only parity oracle in `tests/_fixtures/poly/trade-size-pnl-oracle.ts`.
+ *   - SNAPSHOT_CONSISTENT_BUNDLE: the per-wallet summary + size-P/L queries run inside one
+ *     repeatable-read read-only transaction so histogram counts reconcile with summary totals.
+ * Side-effects: DB reads plus the DB-backed P/L read performed by `getPnlSlice`.
+ * Links: nodes/poly/packages/node-contracts/src/poly.research-trader-comparison.v1.contract.ts, work/items/task.5012, work/items/bug.5008
  * @public
  */
 
-import type { MarketResolutionInput } from "@cogni/poly-market-provider/analysis";
 import type {
   PolyResearchTraderComparisonResponse,
   PolyResearchTraderComparisonTrader,
@@ -53,29 +57,22 @@ type TradeSummaryRow = {
   market_count: string | number | null;
 };
 
-type TradeSizePnlFillRow = {
-  condition_id: string | null;
-  token_id: string | null;
-  side: string | null;
-  price: string | number | null;
-  shares: string | number | null;
-  size_usdc: string | number | null;
-  observed_at: Date | string | null;
+/** One SQL-aggregated size-percentile bucket row. At most 20 rows reach V8 per wallet. */
+export type TradeSizePnlBucketRow = {
+  bucket_index: string | number | null;
+  buy_count: string | number | null;
+  buy_usdc: string | number | null;
+  min_size_usdc: string | number | null;
+  max_size_usdc: string | number | null;
+  hedge_buy_count: string | number | null;
+  hedge_buy_usdc: string | number | null;
+  pending_count: string | number | null;
+  resolved_count: string | number | null;
+  pnl_usdc: string | number | null;
+  win_count: string | number | null;
+  loss_count: string | number | null;
+  flat_count: string | number | null;
 };
-
-type TradeSizePnlFill = {
-  conditionId: string;
-  tokenId: string;
-  side: "BUY" | "SELL";
-  price: number;
-  shares: number;
-  sizeUsdc: number;
-  observedAt: Date;
-};
-
-type ResolutionReader = (
-  conditionId: string
-) => Promise<MarketResolutionInput | null>;
 
 const SIZE_BUCKET_STEP = 5;
 const SIZE_BUCKET_COUNT = 100 / SIZE_BUCKET_STEP;
@@ -83,22 +80,17 @@ const SIZE_BUCKET_COUNT = 100 / SIZE_BUCKET_STEP;
 export async function getTraderComparison(
   db: Db,
   wallets: readonly TraderComparisonInput[],
-  interval: PolyWalletOverviewInterval,
-  opts: { readResolution?: ResolutionReader | undefined } = {}
+  interval: PolyWalletOverviewInterval
 ): Promise<PolyResearchTraderComparisonResponse> {
   const capturedAt = new Date().toISOString();
   const warnings: PolyResearchTraderComparisonWarning[] = [];
   const windowStartIso = windowStartFor(interval).toISOString();
-  const readResolution =
-    opts.readResolution ??
-    ((conditionId) => readResolutionFromDb(db, conditionId));
 
   const traders = await Promise.all(
     wallets.slice(0, 3).map(async (wallet) => {
       const address = wallet.address.toLowerCase();
-      const [summary, tradeSizePnl, pnlResult] = await Promise.all([
-        readTradeSummary(db, address, windowStartIso),
-        readTradeSizePnl(db, address, windowStartIso, readResolution),
+      const [bundle, pnlResult] = await Promise.all([
+        readTradeBundle(db, address, windowStartIso),
         getPnlSlice(db, address, interval),
       ]);
       const pnlHistory =
@@ -115,8 +107,8 @@ export async function getTraderComparison(
         address,
         fallbackLabel: wallet.label,
         interval,
-        summary,
-        tradeSizePnl,
+        summary: bundle.summary,
+        tradeSizePnl: bundle.tradeSizePnl,
         pnlHistory,
       });
     })
@@ -130,41 +122,202 @@ export async function getTraderComparison(
   };
 }
 
-async function readTradeSizePnl(
+/**
+ * Runs the per-wallet summary + size-P/L aggregate queries in one repeatable-read,
+ * read-only transaction so both aggregates observe the same snapshot (a fill landing
+ * mid-bundle cannot make the histogram disagree with the summary totals).
+ */
+async function readTradeBundle(
   db: Db,
   address: string,
-  windowStartIso: string,
-  readResolution: ResolutionReader
+  windowStartIso: string
+): Promise<{
+  summary: TradeSummaryRow | null;
+  tradeSizePnl: PolyResearchTraderSizePnl;
+}> {
+  return (db as PostgresJsDatabase<Record<string, unknown>>).transaction(
+    async (tx) => {
+      const txDb = tx as unknown as Db;
+      const summary = await readTradeSummary(txDb, address, windowStartIso);
+      const tradeSizePnl = await readTradeSizePnl(
+        txDb,
+        address,
+        windowStartIso
+      );
+      return { summary, tradeSizePnl };
+    },
+    { isolationLevel: "repeatable read", accessMode: "read only" }
+  );
+}
+
+/**
+ * SQL-aggregated replacement for the legacy JS trade-size/P-L reducer (bug.5008).
+ *
+ * The whole computation stays in Postgres; only ≤20 bucket rows are hydrated.
+ * Aggregate groups, one CTE each:
+ *   - `windowed_buys`     — the time-windowed BUY fills, ranked by fill size.
+ *   - `token_flows`       — FULL-HISTORY buy/sell USDC + shares per token that received
+ *                           a windowed buy (the legacy JS computed token P/L over the
+ *                           wallet's entire fill history; only bucket membership was windowed).
+ *   - `condition_closed`  — per-condition resolution status from `poly_market_outcomes`,
+ *                           joined ONCE (exact-match on condition_id — stored values are
+ *                           normalized; see market-exposure-service.ts precedent. No lower()).
+ *   - `token_pnls`        — per-token resolved flag + realized pnl (sell + winner payout − buy).
+ *   - `condition_token_costs` / `hedge_tokens` — full-history BUY cost per (condition, token);
+ *                           the single cheapest token of a multi-token condition is the hedge
+ *                           when strictly cheaper than the most expensive one.
+ *   - `bucketed` + final SELECT — per-bucket counts/sums/min/max.
+ *
+ * Percentile-method note (skill: data-research §6): the legacy JS did NOT compute a quantile
+ * value, so neither PERCENTILE_CONT nor PERCENTILE_DISC applies. It bucketed by rank:
+ * `floor((index / n) * 20)` over buys sorted ascending by size. That is not `width_bucket`
+ * (value-based edges) and not `ntile` (ntile packs remainders into the leading buckets;
+ * the JS formula spreads sparse counts across the range, e.g. 7 buys land in buckets
+ * 0,2,5,8,11,14,17). We replicate the exact JS float expression with float8 math so the
+ * bucket assignment is bit-identical to the oracle.
+ *
+ * Ties in size_usdc break by observed_at (the legacy stable sort preserved the
+ * observed_at-ASC input order), then id for determinism.
+ */
+export async function readTradeSizePnl(
+  db: Db,
+  address: string,
+  windowStartIso: string
 ): Promise<PolyResearchTraderSizePnl> {
   const rows = (await db.execute(sql`
-    SELECT
-      f.condition_id,
-      f.token_id,
-      f.side,
-      f.price,
-      f.shares,
-      f.size_usdc,
-      f.observed_at
-    FROM poly_trader_wallets w
-    INNER JOIN poly_trader_fills f
-      ON f.trader_wallet_id = w.id
-    WHERE w.wallet_address = ${address}
-    ORDER BY f.observed_at ASC
-  `)) as unknown as TradeSizePnlFillRow[];
-  const fills = rows.flatMap(toTradeSizePnlFill);
-  if (fills.length === 0) return emptyTradeSizePnl();
-
-  const resolutions = new Map<string, MarketResolutionInput>();
-  const conditionIds = [...new Set(fills.map((fill) => fill.conditionId))];
-  await Promise.all(
-    conditionIds.map((conditionId) =>
-      readResolution(conditionId).then((resolution) => {
-        if (resolution) resolutions.set(conditionId, resolution);
-      })
+    WITH windowed_buys AS (
+      SELECT
+        f.condition_id,
+        f.token_id,
+        f.size_usdc AS size_usdc,
+        (ROW_NUMBER() OVER (ORDER BY f.size_usdc ASC, f.observed_at ASC, f.id ASC) - 1) AS rank0,
+        COUNT(*) OVER () AS total_buys
+      FROM poly_trader_wallets w
+      INNER JOIN poly_trader_fills f
+        ON f.trader_wallet_id = w.id
+      WHERE w.wallet_address = ${address}
+        AND f.side = 'BUY'
+        AND f.observed_at >= ${windowStartIso}::timestamptz
+    ),
+    token_flows AS (
+      SELECT
+        f.token_id,
+        MIN(f.condition_id) AS condition_id,
+        COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'BUY'), 0) AS buy_usdc,
+        COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'SELL'), 0) AS sell_usdc,
+        COALESCE(SUM(f.shares) FILTER (WHERE f.side = 'BUY'), 0) AS buy_shares,
+        COALESCE(SUM(f.shares) FILTER (WHERE f.side = 'SELL'), 0) AS sell_shares
+      FROM poly_trader_wallets w
+      INNER JOIN poly_trader_fills f
+        ON f.trader_wallet_id = w.id
+      WHERE w.wallet_address = ${address}
+        AND f.token_id IN (SELECT DISTINCT token_id FROM windowed_buys)
+      GROUP BY f.token_id
+    ),
+    condition_closed AS (
+      SELECT
+        o.condition_id,
+        BOOL_AND(o.outcome <> 'unknown') AS closed
+      FROM poly_market_outcomes o
+      WHERE o.condition_id IN (SELECT DISTINCT condition_id FROM windowed_buys)
+      GROUP BY o.condition_id
+    ),
+    token_pnls AS (
+      SELECT
+        tf.token_id,
+        tf.buy_usdc,
+        (COALESCE(cc.closed, false) AND o.token_id IS NOT NULL) AS resolved,
+        CASE
+          WHEN COALESCE(cc.closed, false) AND o.token_id IS NOT NULL
+          THEN tf.sell_usdc
+               + CASE
+                   WHEN (tf.buy_shares - tf.sell_shares) > 0 AND o.outcome = 'winner'
+                   THEN tf.buy_shares - tf.sell_shares
+                   ELSE 0
+                 END
+               - tf.buy_usdc
+          ELSE 0
+        END AS pnl
+      FROM token_flows tf
+      LEFT JOIN condition_closed cc
+        ON cc.condition_id = tf.condition_id
+      LEFT JOIN poly_market_outcomes o
+        ON o.condition_id = tf.condition_id
+        AND o.token_id = tf.token_id
+    ),
+    condition_token_costs AS (
+      SELECT
+        f.condition_id,
+        f.token_id,
+        SUM(f.size_usdc) AS buy_usdc,
+        MIN(f.observed_at) AS first_buy_at
+      FROM poly_trader_wallets w
+      INNER JOIN poly_trader_fills f
+        ON f.trader_wallet_id = w.id
+      WHERE w.wallet_address = ${address}
+        AND f.side = 'BUY'
+        AND f.condition_id IN (SELECT DISTINCT condition_id FROM windowed_buys)
+      GROUP BY f.condition_id, f.token_id
+    ),
+    hedge_tokens AS (
+      SELECT token_id
+      FROM (
+        SELECT
+          token_id,
+          buy_usdc,
+          ROW_NUMBER() OVER (
+            PARTITION BY condition_id
+            ORDER BY buy_usdc ASC, first_buy_at ASC
+          ) AS cost_rank,
+          COUNT(*) OVER (PARTITION BY condition_id) AS token_count,
+          MAX(buy_usdc) OVER (PARTITION BY condition_id) AS max_cost
+        FROM condition_token_costs
+      ) ranked
+      WHERE cost_rank = 1
+        AND token_count >= 2
+        AND buy_usdc < max_cost
+    ),
+    contributions AS (
+      SELECT
+        -- Exact replica of the legacy JS Math.floor((index / Math.max(1, n)) * 20),
+        -- capped at 19: float8 division/multiplication is IEEE-754 double, identical to V8.
+        LEAST(
+          19,
+          FLOOR((b.rank0::float8 / GREATEST(b.total_buys, 1)::float8) * 20)
+        )::int AS bucket_index,
+        b.size_usdc,
+        tp.resolved,
+        -- Legacy JS: (fill.sizeUsdc / Math.max(tokenPnl.buyUsdc, 1)) * tokenPnl.pnl
+        (b.size_usdc / GREATEST(tp.buy_usdc, 1) * tp.pnl) AS pnl_contribution,
+        (h.token_id IS NOT NULL) AS is_hedge
+      FROM windowed_buys b
+      INNER JOIN token_pnls tp
+        ON tp.token_id = b.token_id
+      LEFT JOIN hedge_tokens h
+        ON h.token_id = b.token_id
     )
-  );
+    SELECT
+      c.bucket_index,
+      COUNT(*)::int AS buy_count,
+      SUM(c.size_usdc) AS buy_usdc,
+      MIN(c.size_usdc) AS min_size_usdc,
+      MAX(c.size_usdc) AS max_size_usdc,
+      COUNT(*) FILTER (WHERE c.is_hedge)::int AS hedge_buy_count,
+      COALESCE(SUM(c.size_usdc) FILTER (WHERE c.is_hedge), 0) AS hedge_buy_usdc,
+      COUNT(*) FILTER (WHERE NOT c.resolved)::int AS pending_count,
+      COUNT(*) FILTER (WHERE c.resolved)::int AS resolved_count,
+      COALESCE(SUM(c.pnl_contribution) FILTER (WHERE c.resolved), 0) AS pnl_usdc,
+      COUNT(*) FILTER (WHERE c.resolved AND c.pnl_contribution > 0.5)::int AS win_count,
+      COUNT(*) FILTER (WHERE c.resolved AND c.pnl_contribution < -0.5)::int AS loss_count,
+      COUNT(*) FILTER (
+        WHERE c.resolved AND c.pnl_contribution >= -0.5 AND c.pnl_contribution <= 0.5
+      )::int AS flat_count
+    FROM contributions c
+    GROUP BY c.bucket_index
+    ORDER BY c.bucket_index
+  `)) as unknown as TradeSizePnlBucketRow[];
 
-  return buildTradeSizePnl(fills, resolutions, new Date(windowStartIso));
+  return buildTradeSizePnlFromBucketRows(rows);
 }
 
 async function readTradeSummary(
@@ -243,59 +396,41 @@ function toTrader(params: {
   };
 }
 
-function buildTradeSizePnl(
-  fills: readonly TradeSizePnlFill[],
-  resolutions: ReadonlyMap<string, MarketResolutionInput>,
-  windowStart: Date
+/**
+ * Maps the ≤20 SQL bucket rows onto the fixed 20-bucket contract shape, then applies
+ * the same finalize (rounding, avg, winRate) and totals reduction the legacy JS used.
+ * Totals intentionally sum the ROUNDED bucket values — identical to the legacy reducer,
+ * proven by the parity oracle test.
+ * Exported for unit tests; only `readTradeSizePnl` calls it in production.
+ */
+export function buildTradeSizePnlFromBucketRows(
+  rows: readonly TradeSizePnlBucketRow[]
 ): PolyResearchTraderSizePnl {
-  const hedgeTokenIds = classifyHedgeTokenIds(fills);
-  const tokenPnls = computeTokenPnls(fills, resolutions);
-  const buys = fills
-    .filter((fill) => fill.side === "BUY" && fill.observedAt >= windowStart)
-    .sort((a, b) => a.sizeUsdc - b.sizeUsdc);
   const buckets = emptyTradeSizePnl().buckets.map((bucket) => ({ ...bucket }));
-
-  buys.forEach((fill, index) => {
-    const bucketIndex = Math.min(
-      SIZE_BUCKET_COUNT - 1,
-      Math.floor((index / Math.max(1, buys.length)) * SIZE_BUCKET_COUNT)
-    );
-    const bucket = buckets[bucketIndex];
-    if (!bucket) return;
-    const tokenPnl = tokenPnls.get(fill.tokenId);
-    const pnl = tokenPnl
-      ? (fill.sizeUsdc / Math.max(tokenPnl.buyUsdc, 1)) * tokenPnl.pnl
-      : 0;
-    const resolved = Boolean(tokenPnl?.resolved);
-    bucket.buyCount += 1;
-    bucket.buyUsdc += fill.sizeUsdc;
-    bucket.avgSizeUsdc += fill.sizeUsdc;
-    bucket.minSizeUsdc =
-      bucket.buyCount === 1
-        ? fill.sizeUsdc
-        : Math.min(bucket.minSizeUsdc, fill.sizeUsdc);
-    bucket.maxSizeUsdc = Math.max(bucket.maxSizeUsdc, fill.sizeUsdc);
-    if (hedgeTokenIds.has(fill.tokenId)) {
-      bucket.hedgeBuyCount += 1;
-      bucket.hedgeBuyUsdc += fill.sizeUsdc;
-    }
-    if (!resolved) {
-      bucket.pendingCount += 1;
-      return;
-    }
-    bucket.resolvedCount += 1;
-    bucket.pnlUsdc += pnl;
-    if (pnl > 0.5) bucket.winCount += 1;
-    else if (pnl < -0.5) bucket.lossCount += 1;
-    else bucket.flatCount += 1;
-  });
+  for (const row of rows) {
+    const bucket = buckets[toInteger(row.bucket_index)];
+    if (!bucket) continue;
+    bucket.buyCount = toInteger(row.buy_count);
+    bucket.buyUsdc = toNumber(row.buy_usdc);
+    // Legacy JS accumulated avgSizeUsdc and buyUsdc from the same per-fill sizes;
+    // the finalize step below divides by buyCount.
+    bucket.avgSizeUsdc = toNumber(row.buy_usdc);
+    bucket.minSizeUsdc = toNumber(row.min_size_usdc);
+    bucket.maxSizeUsdc = toNumber(row.max_size_usdc);
+    bucket.hedgeBuyCount = toInteger(row.hedge_buy_count);
+    bucket.hedgeBuyUsdc = toNumber(row.hedge_buy_usdc);
+    bucket.pendingCount = toInteger(row.pending_count);
+    bucket.resolvedCount = toInteger(row.resolved_count);
+    bucket.pnlUsdc = toNumber(row.pnl_usdc);
+    bucket.winCount = toInteger(row.win_count);
+    bucket.lossCount = toInteger(row.loss_count);
+    bucket.flatCount = toInteger(row.flat_count);
+  }
 
   const finalized = buckets.map((bucket) => ({
     ...bucket,
     avgSizeUsdc:
-      bucket.buyCount > 0
-        ? roundMoney(bucket.avgSizeUsdc / bucket.buyCount)
-        : 0,
+      bucket.buyCount > 0 ? roundMoney(bucket.avgSizeUsdc / bucket.buyCount) : 0,
     minSizeUsdc: bucket.buyCount > 0 ? roundMoney(bucket.minSizeUsdc) : 0,
     maxSizeUsdc: bucket.buyCount > 0 ? roundMoney(bucket.maxSizeUsdc) : 0,
     buyUsdc: roundMoney(bucket.buyUsdc),
@@ -388,153 +523,6 @@ function emptyTradeSizePnl(): PolyResearchTraderSizePnl {
     hedgeBuyUsdc: 0,
     buckets,
   };
-}
-
-function computeTokenPnls(
-  fills: readonly TradeSizePnlFill[],
-  resolutions: ReadonlyMap<string, MarketResolutionInput>
-): Map<string, { buyUsdc: number; pnl: number; resolved: boolean }> {
-  const tokens = new Map<
-    string,
-    {
-      conditionId: string;
-      buyUsdc: number;
-      sellUsdc: number;
-      buyShares: number;
-      sellShares: number;
-    }
-  >();
-  for (const fill of fills) {
-    const existing = tokens.get(fill.tokenId) ?? {
-      conditionId: fill.conditionId,
-      buyUsdc: 0,
-      sellUsdc: 0,
-      buyShares: 0,
-      sellShares: 0,
-    };
-    if (fill.side === "BUY") {
-      existing.buyUsdc += fill.sizeUsdc;
-      existing.buyShares += fill.shares;
-    } else {
-      existing.sellUsdc += fill.sizeUsdc;
-      existing.sellShares += fill.shares;
-    }
-    tokens.set(fill.tokenId, existing);
-  }
-
-  const out = new Map<
-    string,
-    { buyUsdc: number; pnl: number; resolved: boolean }
-  >();
-  for (const [tokenId, token] of tokens.entries()) {
-    const resolution = resolutions.get(token.conditionId);
-    const tokenInfo = resolution?.tokens.find((x) => x.token_id === tokenId);
-    if (!resolution?.closed || !tokenInfo) {
-      out.set(tokenId, {
-        buyUsdc: token.buyUsdc,
-        pnl: 0,
-        resolved: false,
-      });
-      continue;
-    }
-    const held = token.buyShares - token.sellShares;
-    const payout = held > 0 && tokenInfo.winner ? held : 0;
-    out.set(tokenId, {
-      buyUsdc: token.buyUsdc,
-      pnl: token.sellUsdc + payout - token.buyUsdc,
-      resolved: true,
-    });
-  }
-  return out;
-}
-
-function classifyHedgeTokenIds(
-  fills: readonly TradeSizePnlFill[]
-): ReadonlySet<string> {
-  const byCondition = new Map<string, Map<string, number>>();
-  for (const fill of fills) {
-    if (fill.side !== "BUY") continue;
-    const condition =
-      byCondition.get(fill.conditionId) ?? new Map<string, number>();
-    condition.set(
-      fill.tokenId,
-      (condition.get(fill.tokenId) ?? 0) + fill.sizeUsdc
-    );
-    byCondition.set(fill.conditionId, condition);
-  }
-
-  const hedgeTokenIds = new Set<string>();
-  for (const tokenCosts of byCondition.values()) {
-    if (tokenCosts.size < 2) continue;
-    const ranked = [...tokenCosts.entries()].sort((a, b) => a[1] - b[1]);
-    const hedge = ranked[0];
-    const primary = ranked.at(-1);
-    if (hedge && primary && hedge[1] < primary[1]) {
-      hedgeTokenIds.add(hedge[0]);
-    }
-  }
-  return hedgeTokenIds;
-}
-
-function toTradeSizePnlFill(row: TradeSizePnlFillRow): TradeSizePnlFill[] {
-  if (!row.condition_id || !row.token_id) return [];
-  const side = row.side === "BUY" || row.side === "SELL" ? row.side : null;
-  const observedAt =
-    row.observed_at instanceof Date
-      ? row.observed_at
-      : row.observed_at
-        ? new Date(row.observed_at)
-        : null;
-  const price = toNumber(row.price);
-  const shares = toNumber(row.shares);
-  const sizeUsdc = toNumber(row.size_usdc);
-  if (
-    !side ||
-    !observedAt ||
-    Number.isNaN(observedAt.getTime()) ||
-    price <= 0 ||
-    shares <= 0 ||
-    sizeUsdc <= 0
-  ) {
-    return [];
-  }
-  return [
-    {
-      conditionId: row.condition_id,
-      tokenId: row.token_id,
-      side,
-      price,
-      shares,
-      sizeUsdc,
-      observedAt,
-    },
-  ];
-}
-
-type MarketOutcomeRow = {
-  token_id: string | null;
-  outcome: string | null;
-};
-
-async function readResolutionFromDb(
-  db: Db,
-  conditionId: string
-): Promise<MarketResolutionInput | null> {
-  const rows = (await db.execute(sql`
-    SELECT token_id, outcome
-    FROM poly_market_outcomes
-    WHERE condition_id = ${conditionId}
-  `)) as unknown as MarketOutcomeRow[];
-  if (rows.length === 0) return null;
-  const closed = rows.every(
-    (r) => r.outcome !== "unknown" && r.outcome !== null
-  );
-  const tokens = rows
-    .filter((r): r is { token_id: string; outcome: string } =>
-      Boolean(r.token_id)
-    )
-    .map((r) => ({ token_id: r.token_id, winner: r.outcome === "winner" }));
-  return { closed, tokens };
 }
 
 export function computeWindowedPnl(
