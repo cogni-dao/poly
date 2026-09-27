@@ -359,6 +359,8 @@ let _traderObservationStop: (() => void) | null = null;
 let _marketOutcomeStop: (() => void) | null = null;
 // Per-asset price-history mirror job stop fn (task.5018). Public CLOB only.
 let _priceHistoryStop: (() => void) | null = null;
+// Top-wallets leaderboard mirror job stop fn (bug.5017). Public Data API only.
+let _topWalletStatsStop: (() => void) | null = null;
 
 /**
  * Get the singleton container instance.
@@ -426,6 +428,14 @@ export function resetContainer(): void {
 			// Best-effort.
 		}
 		_priceHistoryStop = null;
+	}
+	if (_topWalletStatsStop) {
+		try {
+			_topWalletStatsStop();
+		} catch {
+			// Best-effort.
+		}
+		_topWalletStatsStop = null;
 	}
 	if (_temporalConnection) {
 		void _temporalConnection.close();
@@ -1312,6 +1322,48 @@ function createContainer(): Container {
 						err: err instanceof Error ? err.message : String(err),
 					},
 					"price-history job boot failed — continuing without price-history read model",
+				);
+			}
+		})();
+
+	// bug.5017 — top-wallets leaderboard mirror. The Top Wallets card
+	// (`GET /api/v1/poly/top-wallets`) reads only `poly_top_wallet_stats`
+	// (PAGE_LOAD_DB_ONLY); this every-15-min tick is the sole Polymarket
+	// caller for that data. Default ON; the gate exists as an emergency brake.
+	if (!env.POLY_TOP_WALLET_STATS_WRITER_ENABLED) {
+		log.info(
+			{ event: "poly.top-wallet-stats.disabled" },
+			"top-wallet-stats writer disabled (POLY_TOP_WALLET_STATS_WRITER_ENABLED=false) — page-load reads serve existing rows",
+		);
+	} else
+		void (async () => {
+			try {
+				const { startTopWalletStatsJob } = await import(
+					"@/bootstrap/jobs/top-wallet-stats.job"
+				);
+				const { PolymarketDataApiClient: TopWalletsDataApiClient } =
+					await import("@cogni/poly-market-provider/adapters/polymarket");
+				const { noopMetrics: noopMetricsForTopWallets } = await import(
+					"@cogni/poly-market-provider"
+				);
+				const topWalletsLogger =
+					log as unknown as import("@cogni/poly-market-provider").LoggerPort;
+				_topWalletStatsStop = startTopWalletStatsJob({
+					db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
+						Record<string, unknown>
+					>,
+					dataApiClient: new TopWalletsDataApiClient(),
+					logger: topWalletsLogger,
+					metrics: noopMetricsForTopWallets,
+				});
+			} catch (err: unknown) {
+				log.error(
+					{
+						event: "poly.top-wallet-stats.boot_failed",
+						phase: "boot_failed",
+						err: err instanceof Error ? err.message : String(err),
+					},
+					"top-wallet-stats job boot failed — continuing without leaderboard read model",
 				);
 			}
 		})();

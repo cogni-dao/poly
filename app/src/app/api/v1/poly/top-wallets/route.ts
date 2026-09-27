@@ -8,16 +8,20 @@
  * Invariants:
  *   - AUTH_REQUIRED: Internal dashboard endpoint; session user must be present.
  *   - CAPABILITY_NOT_ADAPTER: Route calls WalletCapability; never imports the Data API client directly.
- *   - READ_ONLY: Proxies a public read-only endpoint.
- *   - NO_SECRETS: Polymarket Data API is public — no credentials touched.
- * Side-effects: IO (HTTP via capability)
- * Links: [createWalletCapability](../../../../../../bootstrap/capabilities/wallet.ts), work/items/task.0315
+ *   - PAGE_LOAD_DB_ONLY (bug.5017): the capability reads only
+ *     `poly_top_wallet_stats`; the Polymarket fan-out lives in the
+ *     top-wallet-stats job. Cold start (table not yet populated) returns
+ *     200 with an empty `traders` list — never an upstream fallback.
+ *   - READ_ONLY: Single bounded SELECT per request.
+ * Side-effects: IO (DB read via capability)
+ * Links: [createWalletCapability](../../../../../bootstrap/capabilities/wallet.ts), work/items/task.0315, work/items/bug.5017
  * @public
  */
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createWalletCapability } from "@/bootstrap/capabilities/wallet";
+import { resolveServiceDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { getServerSessionUser } from "@/lib/auth/server";
 
@@ -32,7 +36,7 @@ const QuerySchema = z.object({
 });
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 10; // seconds — bounds the Polymarket Data API leaderboard fetch
+export const maxDuration = 10; // seconds — generous bound for a single indexed SELECT
 
 export const GET = wrapRouteHandlerWithLogging(
   {
@@ -54,7 +58,11 @@ export const GET = wrapRouteHandlerWithLogging(
       );
     }
 
-    const walletCapability = createWalletCapability();
+    const db =
+      resolveServiceDb() as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
+        Record<string, unknown>
+      >;
+    const walletCapability = createWalletCapability({ db });
     const result = await walletCapability.listTopTraders({
       timePeriod: parsed.data.timePeriod ?? "WEEK",
       orderBy: parsed.data.orderBy ?? "PNL",

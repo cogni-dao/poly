@@ -289,6 +289,14 @@ export const serverSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
+  // Top-wallets leaderboard mirror (bug.5017). Default ON: the Top Wallets
+  // card reads only from `poly_top_wallet_stats`, so disabling the writer
+  // leaves the card serving stale (or, pre-first-tick, empty) rows.
+  POLY_TOP_WALLET_STATS_WRITER_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+
   // Operator wallet top-up cap (USD)
   // Per operator-wallet.md: MAX_TOPUP_CAP — per-tx ceiling for OpenRouter top-ups.
   OPERATOR_MAX_TOPUP_USD: z.coerce.number().positive().default(500),
