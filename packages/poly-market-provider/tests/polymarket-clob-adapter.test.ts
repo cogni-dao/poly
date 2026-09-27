@@ -340,6 +340,16 @@ describe("classifyClobFailure (bug.0335 diagnostics)", () => {
     expect(details.response_keys).toEqual(["error", "status"]);
   });
 
+  it("carries the CLOB text into the thrown message so it reaches the ledger row", () => {
+    // The message — not `details` — is what `mirror-pipeline` logs as
+    // `errorMessage` and what `markError` writes to
+    // `poly_copy_trade_fills.error`. An operator reading either surface must
+    // see the CLOB's own words. bug.5256.
+    expect(() =>
+      mapOrderResponseToReceipt({ error: "some upstream refusal", status: 403 }, BASE_INTENT)
+    ).toThrow(/clob_error="some upstream refusal"/);
+  });
+
   it("serializes an object-shaped `error` body instead of dropping it", () => {
     const details = classifyClobFailure({
       error: { detail: "upstream said no", code: 42 },

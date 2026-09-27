@@ -1439,7 +1439,14 @@ export function mapOrderResponseToReceipt(
   if (r.success === false || !placedOrderId) {
     const details = classifyClobFailure(response);
     throw new ClobRejectionError(
-      `PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=${details.error_code}, response_keys=[${details.response_keys.join(",")}], reason="${details.reason ?? ""}")`,
+      // RAW_TEXT_RIDES_THE_MESSAGE (bug.5256) — `error_text` is appended to the
+      // message, not just carried on `details`, because the message is what
+      // reaches the two surfaces an operator actually reads: the pipeline's
+      // `poly.mirror.decision` `errorMessage` field (bug.5060) and the durable
+      // `poly_copy_trade_fills.error` column via `markError`. Without it, the
+      // CLOB's own words live only on the sibling `poly.clob.place` line and
+      // never reach the ledger row a dashboard could render.
+      `PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=${details.error_code}, response_keys=[${details.response_keys.join(",")}], reason="${details.reason ?? ""}", clob_error="${details.error_text ?? ""}")`,
       details
     );
   }
