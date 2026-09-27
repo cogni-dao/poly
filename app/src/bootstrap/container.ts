@@ -12,6 +12,7 @@
  * @public
  */
 
+import { hostname } from "node:os";
 import type { ToolSourcePort } from "@cogni/ai-core";
 import type {
 	EdoCapability,
@@ -118,6 +119,7 @@ import {
 } from "@/adapters/server/ai/providers";
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
 import { getServiceReadDb } from "@/adapters/server/db/drizzle.service-read-client";
+import { createJobLeaderLockSession } from "@/adapters/server/db/job-leader-lock.client";
 import { ServiceDrizzlePaymentAttemptRepository } from "@/adapters/server/payments/drizzle-payment-attempt.adapter";
 import { SplitTreasurySettlementAdapter } from "@/adapters/server/treasury/split-treasury-settlement.adapter";
 import {
@@ -147,6 +149,7 @@ import {
 	startAutoWrap,
 } from "@/bootstrap/jobs/auto-wrap.job";
 import { startMirrorPoll } from "@/bootstrap/jobs/copy-trade-mirror.job";
+import { startJobLeaderElector } from "@/bootstrap/jobs/job-leader-elector";
 import {
 	type OrderReconcilerHandle,
 	startOrderReconciler,
@@ -363,30 +366,43 @@ let _priceHistoryStop: (() => void) | null = null;
 // Top-wallets leaderboard mirror job stop fn (bug.5017). Public Data API only.
 let _topWalletStatsStop: (() => void) | null = null;
 
-/**
- * Get the singleton container instance.
- * Lazily initializes on first access.
- */
-export function getContainer(): Container {
-	if (!_container) {
-		_container = createContainer();
-	}
-	return _container;
-}
+// task.5016 — job-runner leader election. All background-job starts flow
+// through ONE seam (`startBackgroundJobs` inside createContainer), wrapped by
+// the advisory-lock elector when JOB_LEADER_ELECTION_ENABLED (default ON).
+//
+// _jobsEpoch makes start/stop idempotent against the fire-and-forget async
+// boot IIFEs below: `stopAllJobHandles()` bumps the epoch, and every IIFE
+// re-checks its captured epoch before storing a freshly created handle — a
+// leadership loss that lands mid-boot stops the newborn job instead of
+// leaking it past the stop sweep.
+let _jobsEpoch = 0;
+// Closure-bound stop for jobs whose handles live inside createContainer
+// (redeem pipelines map). Set by createContainer; used by resetContainer.
+let _stopBackgroundJobs: (() => void) | null = null;
+// Elector handle stop — resolves after the lock connection is released.
+let _jobLeaderElectorStop: (() => Promise<void>) | null = null;
 
 /**
- * Reset the singleton container.
- * For tests only - allows fresh container between test runs.
+ * Stop + clear every module-scoped background-job handle. Bumps `_jobsEpoch`
+ * first so in-flight async job boots self-cancel instead of re-registering.
+ * Safe to call repeatedly and when nothing is running (LOSS_STOPS_JOBS /
+ * IDEMPOTENT_TRANSITIONS — see jobs/job-leader-elector.ts).
  */
-export function resetContainer(): void {
-	_container = null;
-	_webhookRegistrations = null;
-	_reconcilerHandle = null;
+function stopAllJobHandles(): void {
+	_jobsEpoch += 1;
+	if (_reconcilerHandle) {
+		try {
+			_reconcilerHandle.stop();
+		} catch {
+			// Best-effort — stop errors must not block the sweep.
+		}
+		_reconcilerHandle = null;
+	}
 	if (_targetsReconcilerStop) {
 		try {
 			_targetsReconcilerStop();
 		} catch {
-			// Best-effort — tests re-create the container; nothing blocks here.
+			// Best-effort.
 		}
 		_targetsReconcilerStop = null;
 	}
@@ -437,6 +453,45 @@ export function resetContainer(): void {
 			// Best-effort.
 		}
 		_topWalletStatsStop = null;
+	}
+}
+
+/**
+ * Get the singleton container instance.
+ * Lazily initializes on first access.
+ */
+export function getContainer(): Container {
+	if (!_container) {
+		_container = createContainer();
+	}
+	return _container;
+}
+
+/**
+ * Reset the singleton container.
+ * For tests only - allows fresh container between test runs.
+ */
+export function resetContainer(): void {
+	_container = null;
+	_webhookRegistrations = null;
+	// task.5016 — retire the elector first (releases the advisory lock,
+	// fire-and-forget: tests re-create containers; nothing blocks here), then
+	// sweep every job. _stopBackgroundJobs also covers the closure-scoped
+	// redeem pipelines; the module-level sweep is the fallback when the
+	// container was never fully created.
+	if (_jobLeaderElectorStop) {
+		void _jobLeaderElectorStop().catch(() => {});
+		_jobLeaderElectorStop = null;
+	}
+	if (_stopBackgroundJobs) {
+		try {
+			_stopBackgroundJobs();
+		} catch {
+			// Best-effort — tests re-create the container; nothing blocks here.
+		}
+		_stopBackgroundJobs = null;
+	} else {
+		stopAllJobHandles();
 	}
 	if (_temporalConnection) {
 		void _temporalConnection.close();
@@ -800,6 +855,16 @@ function createContainer(): Container {
 		}
 	})();
 
+	// ─── task.5016: THE background-job start seam ────────────────────────────
+	// Every in-process background job starts inside startBackgroundJobs() and
+	// stops via stopBackgroundJobs() — one leadership domain. When
+	// JOB_LEADER_ELECTION_ENABLED (default ON) the advisory-lock elector below
+	// decides when these run; when OFF they start unconditionally at boot,
+	// exactly the pre-task.5016 behavior. `epoch` is captured at start so the
+	// async boot IIFEs can detect a stop that raced them and retire their
+	// freshly created handle instead of leaking it (see stopAllJobHandles).
+	const startBackgroundJobs = (): void => {
+		const epoch = _jobsEpoch;
 	// Autonomous 30s mirror poll per target wallet. A target-set reconciler
 	// ticks `copyTradeTargetSource.listAllActive()` every 30s and diffs the
 	// result against running per-target polls — so a user POSTing a tracked
@@ -960,7 +1025,7 @@ function createContainer(): Container {
 				// per-tenant `PolyTradeExecutor` so we hit the right CLOB API creds
 				// (each tenant's creds are derived from their Privy signer). One
 				// reconciler runs on the pod; per-tenant dispatch is internal.
-				_reconcilerHandle = startOrderReconciler({
+				const reconcilerHandle = startOrderReconciler({
 					ledger: orderLedger,
 					getOrderForTenant: async (billingAccountId, orderId) => {
 						const executor =
@@ -971,6 +1036,12 @@ function createContainer(): Container {
 					metrics: noopMetrics,
 					notFoundGraceMs: env.POLY_CLOB_NOT_FOUND_GRACE_MS,
 				});
+				// task.5016 — leadership was lost while this boot was in flight.
+				if (epoch !== _jobsEpoch) {
+					reconcilerHandle.stop();
+					return;
+				}
+				_reconcilerHandle = reconcilerHandle;
 
 				// Target-set reconciler — ticks listAllActive every 30s, starts/stops
 				// per-wallet polls to match. First tick fires immediately. See
@@ -983,7 +1054,7 @@ function createContainer(): Container {
 				// `PolyTradeExecutor`, which wraps every `placeOrder` with
 				// `authorizeIntent` so scope + cap + grant-revoke checks run on the
 				// hot path.
-				_targetsReconcilerStop = startCopyTradeReconciler({
+				const targetsReconcilerStop = startCopyTradeReconciler({
 					targetSource: copyTradeTargetSource,
 					startPollForTarget: (enumeratedTarget) => {
 						const targetWallet = enumeratedTarget.targetWallet;
@@ -1095,6 +1166,12 @@ function createContainer(): Container {
 					},
 					logger: mirrorLogger,
 				});
+				// task.5016 — leadership was lost while this boot was in flight.
+				if (epoch !== _jobsEpoch) {
+					targetsReconcilerStop();
+					return;
+				}
+				_targetsReconcilerStop = targetsReconcilerStop;
 			} catch (err: unknown) {
 				log.error(
 					{
@@ -1119,7 +1196,7 @@ function createContainer(): Container {
 				);
 				const sweepLogger =
 					log as unknown as import("@cogni/poly-market-provider").LoggerPort;
-				_restingSweepStop = startRestingSweep({
+				const restingSweepStop = startRestingSweep({
 					ledger: orderLedger,
 					cancelOrderFor: async (billing_account_id) => {
 						const exec =
@@ -1129,6 +1206,12 @@ function createContainer(): Container {
 					logger: sweepLogger,
 					metrics: noopMetricsForSweep,
 				});
+				// task.5016 — leadership was lost while this boot was in flight.
+				if (epoch !== _jobsEpoch) {
+					restingSweepStop();
+					return;
+				}
+				_restingSweepStop = restingSweepStop;
 			} catch (err: unknown) {
 				log.error(
 					{
@@ -1162,7 +1245,7 @@ function createContainer(): Container {
 					// declaration is scoped to its own try/catch so we re-cast here.
 					const autoWrapLogger =
 						log as unknown as import("@cogni/poly-market-provider").LoggerPort;
-					_autoWrapHandle = startAutoWrap({
+					const autoWrapHandle = startAutoWrap({
 						walletPort: getPolyTraderWalletAdapter(log),
 						listEligible: async (limit) => {
 							const rows = await serviceDb
@@ -1185,6 +1268,12 @@ function createContainer(): Container {
 						logger: autoWrapLogger,
 						metrics: noopMetricsForAutoWrap,
 					});
+					// task.5016 — leadership was lost while this boot was in flight.
+					if (epoch !== _jobsEpoch) {
+						autoWrapHandle.stop();
+						return;
+					}
+					_autoWrapHandle = autoWrapHandle;
 				} catch (err: unknown) {
 					log.error(
 						{
@@ -1222,7 +1311,7 @@ function createContainer(): Container {
 			);
 			const observerLogger =
 				log as unknown as import("@cogni/poly-market-provider").LoggerPort;
-			_traderObservationStop = startTraderObservationJob({
+			const traderObservationStop = startTraderObservationJob({
 				db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
 					Record<string, unknown>
 				>,
@@ -1231,6 +1320,12 @@ function createContainer(): Container {
 				logger: observerLogger,
 				metrics: noopMetricsForObservation,
 			});
+			// task.5016 — leadership was lost while this boot was in flight.
+			if (epoch !== _jobsEpoch) {
+				traderObservationStop();
+				return;
+			}
+			_traderObservationStop = traderObservationStop;
 		} catch (err: unknown) {
 			log.error(
 				{
@@ -1260,7 +1355,7 @@ function createContainer(): Container {
 			);
 			const outcomeLogger =
 				log as unknown as import("@cogni/poly-market-provider").LoggerPort;
-			_marketOutcomeStop = startMarketOutcomeJob({
+			const marketOutcomeStop = startMarketOutcomeJob({
 				db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
 					Record<string, unknown>
 				>,
@@ -1268,6 +1363,12 @@ function createContainer(): Container {
 				logger: outcomeLogger,
 				metrics: noopMetricsForOutcomes,
 			});
+			// task.5016 — leadership was lost while this boot was in flight.
+			if (epoch !== _jobsEpoch) {
+				marketOutcomeStop();
+				return;
+			}
+			_marketOutcomeStop = marketOutcomeStop;
 		} catch (err: unknown) {
 			log.error(
 				{
@@ -1307,7 +1408,7 @@ function createContainer(): Container {
 				);
 				const priceHistoryLogger =
 					log as unknown as import("@cogni/poly-market-provider").LoggerPort;
-				_priceHistoryStop = startPriceHistoryJob({
+				const priceHistoryStop = startPriceHistoryJob({
 					db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
 						Record<string, unknown>
 					>,
@@ -1315,6 +1416,12 @@ function createContainer(): Container {
 					logger: priceHistoryLogger,
 					metrics: noopMetricsForPriceHistory,
 				});
+				// task.5016 — leadership was lost while this boot was in flight.
+				if (epoch !== _jobsEpoch) {
+					priceHistoryStop();
+					return;
+				}
+				_priceHistoryStop = priceHistoryStop;
 			} catch (err: unknown) {
 				log.error(
 					{
@@ -1349,7 +1456,7 @@ function createContainer(): Container {
 				);
 				const topWalletsLogger =
 					log as unknown as import("@cogni/poly-market-provider").LoggerPort;
-				_topWalletStatsStop = startTopWalletStatsJob({
+				const topWalletStatsStop = startTopWalletStatsJob({
 					db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
 						Record<string, unknown>
 					>,
@@ -1357,6 +1464,12 @@ function createContainer(): Container {
 					logger: topWalletsLogger,
 					metrics: noopMetricsForTopWallets,
 				});
+				// task.5016 — leadership was lost while this boot was in flight.
+				if (epoch !== _jobsEpoch) {
+					topWalletStatsStop();
+					return;
+				}
+				_topWalletStatsStop = topWalletStatsStop;
 			} catch (err: unknown) {
 				log.error(
 					{
@@ -1388,6 +1501,17 @@ function createContainer(): Container {
 					polygonRpcUrl,
 					log,
 				});
+				// task.5016 — leadership was lost while this boot was in flight.
+				if (epoch !== _jobsEpoch) {
+					for (const handles of map.values()) {
+						try {
+							handles.stop();
+						} catch {
+							// Best-effort.
+						}
+					}
+					return;
+				}
 				for (const [accountId, handles] of map) {
 					redeemPipelines.set(accountId, handles);
 				}
@@ -1405,6 +1529,60 @@ function createContainer(): Container {
 				}
 			}
 		})();
+	}
+	}; // ─── end startBackgroundJobs ─────────────────────────────────────────
+
+	// Stop everything startBackgroundJobs started, including the per-tenant
+	// redeem pipelines whose handles live in this closure. stopAllJobHandles()
+	// bumps _jobsEpoch first, so any job boot still in flight self-cancels.
+	const stopBackgroundJobs = (): void => {
+		stopAllJobHandles();
+		for (const handles of redeemPipelines.values()) {
+			try {
+				handles.stop();
+			} catch {
+				// Best-effort.
+			}
+		}
+		redeemPipelines.clear();
+	};
+	_stopBackgroundJobs = stopBackgroundJobs;
+
+	// task.5016 — single-writer gate for the seam above. Default ON: only the
+	// pod holding pg_try_advisory_lock(hashtext('poly:job-runner')) — taken on
+	// a DEDICATED max:1 connection, never the shared pools — runs background
+	// jobs; other pods stand by and retry, promoting automatically when the
+	// leader dies (session death releases the lock server-side). OFF is the
+	// single-pod kill-switch: jobs start unconditionally, pre-task.5016
+	// behavior. NOTE: this elects WRITERS only — the in-process dashboard
+	// coalesce caches stay per-replica (perf-only degradation; see
+	// dashboard-route-cache.ts).
+	if (!env.JOB_LEADER_ELECTION_ENABLED) {
+		log.info(
+			{ event: "jobs.leader_election.disabled" },
+			"JOB_LEADER_ELECTION_ENABLED=false — starting background jobs unconditionally (single-pod mode)",
+		);
+		startBackgroundJobs();
+	} else {
+		const elector = startJobLeaderElector({
+			createSession: () =>
+				createJobLeaderLockSession({
+					connectionString: env.DATABASE_SERVICE_URL,
+				}),
+			startJobs: startBackgroundJobs,
+			stopJobs: stopBackgroundJobs,
+			logger: log.child({ component: "job-leader-elector" }),
+			instanceId: `${hostname()}#${process.pid}`,
+		});
+		_jobLeaderElectorStop = elector.stop;
+		// Release the advisory lock promptly on graceful shutdown so a standby
+		// pod promotes immediately instead of waiting for TCP keepalive to
+		// notice the dead session.
+		const stopElectorOnExit = () => {
+			void elector.stop();
+		};
+		process.on("SIGTERM", stopElectorOnExit);
+		process.on("SIGINT", stopElectorOnExit);
 	}
 
 	// User-facing scheduling (appDb, RLS enforced)

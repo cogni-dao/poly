@@ -49,6 +49,11 @@ export const CORE_TEST_ENV = {
   // PostHog product analytics (required — test values, events silently dropped)
   POSTHOG_API_KEY: "phc_test_key",
   POSTHOG_HOST: "http://localhost:18000",
+  // task.5016 — use the documented single-pod kill-switch in tests so
+  // createContainer() starts jobs unconditionally (pre-election behavior) and
+  // never opens a leader-lock connection. The election tests construct their
+  // own electors directly against the testcontainer.
+  JOB_LEADER_ELECTION_ENABLED: "false",
 } as const;
 
 /**

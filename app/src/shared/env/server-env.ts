@@ -317,6 +317,17 @@ export const serverSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
 
+  // task.5016 — single-writer leader election for ALL in-process background
+  // jobs. Default ON: every pod runs the elector and only the holder of
+  // pg_try_advisory_lock(hashtext('poly:job-runner')) starts jobs, making a
+  // second replica safe (standby, not double-writer). Kill-switch: set
+  // "false" in a single-pod env to start jobs unconditionally at boot,
+  // exactly as before task.5016 (also what the test fixtures do).
+  JOB_LEADER_ELECTION_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+
   // Operator wallet top-up cap (USD)
   // Per operator-wallet.md: MAX_TOPUP_CAP — per-tx ceiling for OpenRouter top-ups.
   OPERATOR_MAX_TOPUP_USD: z.coerce.number().positive().default(500),

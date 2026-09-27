@@ -15,10 +15,15 @@
  *     1. app pool        (app_user, RLS)          — `DB_POOL_MAX`,         default 10, application_name `cogni_template_app`
  *     2. service pool    (app_service, BYPASSRLS) — `DB_SERVICE_POOL_MAX`, default 10, application_name `cogni_service` (background jobs + writers)
  *     3. service-read pool (app_service, BYPASSRLS) — `DB_READ_POOL_MAX`,  default 5,  application_name `cogni_service_read` (dashboard/research reads)
- *   Worst-case backends per pod = DB_POOL_MAX + DB_SERVICE_POOL_MAX + DB_READ_POOL_MAX
- *   (defaults: 10 + 10 + 5 = 25). Size against Postgres `max_connections`
+ *   Plus ONE dedicated leader-election connection (task.5016) outside these
+ *   pools: a `max: 1` postgres-js client pinned via `reserve()` holding the
+ *   session-level job-runner advisory lock, application_name
+ *   `cogni_job_leader` (see app/src/adapters/server/db/job-leader-lock.client.ts;
+ *   absent when JOB_LEADER_ELECTION_ENABLED=false).
+ *   Worst-case backends per pod = DB_POOL_MAX + DB_SERVICE_POOL_MAX + DB_READ_POOL_MAX + 1
+ *   (defaults: 10 + 10 + 5 + 1 = 26). Size against Postgres `max_connections`
  *   (default 100) minus superuser_reserved_connections and any other clients
- *   (migrations, ops psql, other pods): pods × 25 must stay comfortably below
+ *   (migrations, ops psql, other pods): pods × 26 must stay comfortably below
  *   that budget. Tune per-env via the three env vars validated in
  *   `app/src/shared/env/server-env.ts` — this package never reads process.env.
  * Links: docs/spec/database-rls.md
