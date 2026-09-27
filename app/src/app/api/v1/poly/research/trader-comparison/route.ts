@@ -17,7 +17,7 @@ import {
 } from "@cogni/poly-node-contracts";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
-import { resolveServiceDb } from "@/bootstrap/container";
+import { resolveServiceReadDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { getTraderComparison } from "@/features/wallet-analysis/server/trader-comparison-service";
 import {
@@ -59,7 +59,7 @@ export const GET = wrapRouteHandlerWithLogging(
     }
 
     const db =
-      resolveServiceDb() as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
+      resolveServiceReadDb() as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
         Record<string, unknown>
       >;
     let response: Awaited<ReturnType<typeof getTraderComparison>>;

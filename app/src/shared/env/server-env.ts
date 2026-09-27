@@ -97,6 +97,26 @@ export const serverSchema = z.object({
   // app_service role (BYPASSRLS) — used by auth, workers, bootstrap
   DATABASE_SERVICE_URL: z.string().url(),
 
+  // DB pool sizing (task.5014) — per-pool postgres-js `max`, non-secret env.
+  // Three pools per pod: app (RLS), service (jobs/writers), service-read
+  // (dashboard/research reads off a separate BYPASSRLS pool so jobs can't
+  // starve them). Worst-case backends per pod = sum of the three (defaults
+  // 10 + 10 + 5 = 25); size against Postgres max_connections. Backend math
+  // lives in packages/db-client/src/build-client.ts.
+  // emptyToUndefined: compose passes "" through for unset vars — treat as default.
+  DB_POOL_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(10)
+  ),
+  DB_SERVICE_POOL_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(10)
+  ),
+  DB_READ_POOL_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(5)
+  ),
+
   // NextAuth secret (required for JWT signing)
   AUTH_SECRET: z.string().min(32),
 

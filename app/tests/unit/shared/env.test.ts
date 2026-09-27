@@ -175,6 +175,68 @@ describe("env schemas", () => {
     });
   });
 
+  // DB pool sizing (task.5014) — env-tunable per-pool postgres-js `max`.
+  describe("DB pool sizing env", () => {
+    async function parseWith(
+      overrides: Record<string, string | undefined> = {}
+    ) {
+      Object.assign(process.env, BASE_VALID_ENV);
+      for (const key of [
+        "DB_POOL_MAX",
+        "DB_SERVICE_POOL_MAX",
+        "DB_READ_POOL_MAX",
+      ]) {
+        // biome-ignore lint/performance/noDelete: env cleanup per test case
+        delete process.env[key];
+        const value = overrides[key];
+        if (value !== undefined) process.env[key] = value;
+      }
+      const { serverEnv } = await import("@/shared/env/server");
+      return serverEnv();
+    }
+
+    it("defaults to 10/10/5 when unset", async () => {
+      const env = await parseWith();
+      expect(env.DB_POOL_MAX).toBe(10);
+      expect(env.DB_SERVICE_POOL_MAX).toBe(10);
+      expect(env.DB_READ_POOL_MAX).toBe(5);
+    });
+
+    it("coerces numeric strings", async () => {
+      const env = await parseWith({
+        DB_POOL_MAX: "12",
+        DB_SERVICE_POOL_MAX: "8",
+        DB_READ_POOL_MAX: "3",
+      });
+      expect(env.DB_POOL_MAX).toBe(12);
+      expect(env.DB_SERVICE_POOL_MAX).toBe(8);
+      expect(env.DB_READ_POOL_MAX).toBe(3);
+    });
+
+    it("treats empty string as unset (compose passes '' through)", async () => {
+      const env = await parseWith({
+        DB_POOL_MAX: "",
+        DB_SERVICE_POOL_MAX: "",
+        DB_READ_POOL_MAX: "",
+      });
+      expect(env.DB_POOL_MAX).toBe(10);
+      expect(env.DB_SERVICE_POOL_MAX).toBe(10);
+      expect(env.DB_READ_POOL_MAX).toBe(5);
+    });
+
+    it("rejects non-positive and non-numeric values", async () => {
+      await expect(parseWith({ DB_POOL_MAX: "0" })).rejects.toThrow();
+      vi.resetModules();
+      await expect(parseWith({ DB_READ_POOL_MAX: "-2" })).rejects.toThrow();
+      vi.resetModules();
+      await expect(
+        parseWith({ DB_SERVICE_POOL_MAX: "lots" })
+      ).rejects.toThrow();
+      vi.resetModules();
+      await expect(parseWith({ DB_POOL_MAX: "2.5" })).rejects.toThrow();
+    });
+  });
+
   // TODO: this fail-fast test being flaky
   it.skip("throws when required server vars are missing", async () => {
     Object.assign(process.env, {

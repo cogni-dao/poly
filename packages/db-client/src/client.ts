@@ -14,9 +14,13 @@
  * @public
  */
 
-import { buildClient, type Database } from "./build-client";
+import {
+  type BuildClientOptions,
+  buildClient,
+  type Database,
+} from "./build-client";
 
-export type { Database };
+export type { BuildClientOptions, Database };
 
 /**
  * Simple logger interface for optional logging in adapters.
@@ -32,7 +36,13 @@ export interface LoggerLike {
 /**
  * Creates a Drizzle database client for the `app_user` role (RLS enforced).
  * Use this for all user-facing request paths.
+ *
+ * @param options - Pool tuning; `max` is env-derived at the app layer
+ *   (`DB_POOL_MAX`, default 10). See build-client.ts header for backend math.
  */
-export function createAppDbClient(connectionString: string) {
-  return buildClient(connectionString, "cogni_template_app");
+export function createAppDbClient(
+  connectionString: string,
+  options: BuildClientOptions = {}
+) {
+  return buildClient(connectionString, "cogni_template_app", options);
 }

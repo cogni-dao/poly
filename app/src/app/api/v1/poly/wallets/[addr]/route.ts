@@ -21,7 +21,7 @@ import {
 } from "@cogni/poly-node-contracts";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
-import { getContainer, resolveServiceDb } from "@/bootstrap/container";
+import { getContainer, resolveServiceReadDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import {
   getPolyTraderWalletAdapter,
@@ -89,7 +89,7 @@ export const GET = wrapRouteHandlerWithLogging<{
       wantBalance ||
       wantSnapshot ||
       wantDistributions
-        ? (resolveServiceDb() as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
+        ? (resolveServiceReadDb() as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
             Record<string, unknown>
           >)
         : null;

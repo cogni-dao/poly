@@ -23,7 +23,9 @@ let _db: Database | null = null;
 
 function createDb(): Database {
   if (!_db) {
-    _db = createAppDbClient(serverEnv().DATABASE_URL);
+    const env = serverEnv();
+    // Pool budget: DB_POOL_MAX (default 10). Backend math: packages/db-client/src/build-client.ts.
+    _db = createAppDbClient(env.DATABASE_URL, { max: env.DB_POOL_MAX });
   }
   return _db;
 }
