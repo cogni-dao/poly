@@ -9,7 +9,10 @@
  * Scope: `provisionWithGrant` (atomic wallet + default-grant write under an
  *   advisory-lock, idempotent across retries), `resolve`, `getAddress`,
  *   `getBalances` (DB address + optional Polygon RPC via `POLYGON_RPC_URL`
- *   for USDC.e + POL display on the Money page), `authorizeIntent` (trading-
+ *   for USDC.e + pUSD + POL display; reads go through one shared
+ *   PublicClient with a bounded per-attempt timeout — see
+ *   `BALANCE_RPC_TIMEOUT_MS` — and degrade to null legs + a `polygon_rpc:`
+ *   error on failure, task.5010), `authorizeIntent` (trading-
  *   readiness + scope + cap + active-grant checks; mints the branded
  *   `AuthorizedSigningContext`), `withdraw` (typed USDC.e / pUSD unwrap / POL
  *   withdrawals), `ensureTradingApprovals` (idempotent 6-step
@@ -138,6 +141,14 @@ const CREDENTIAL_PROVIDER = "polymarket_clob";
 /* adapter never has to guess which stable it's reading. */
 const USDC_E_POLYGON = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" as Address;
 const USDC_DECIMALS = 6;
+
+/**
+ * Per-attempt HTTP timeout for the dashboard balance reads (task.5010).
+ * With `retryCount: 1` the worst case is ~2 attempts × 3s — a slow Polygon
+ * RPC degrades the read to null legs + a `polygon_rpc:` error instead of
+ * hanging the overview route's first paint.
+ */
+const BALANCE_RPC_TIMEOUT_MS = 3_000;
 const POL_DECIMALS = 18;
 const ERC20_BALANCEOF_ABI = parseAbi([
   "function balanceOf(address owner) view returns (uint256)",
@@ -552,6 +563,30 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     return { address, usdcE, pusd, pol, errors };
   }
 
+  /**
+   * Lazily-built, adapter-scoped viem PublicClient for balance reads. The
+   * adapter itself is memoized in bootstrap, so this is one client per
+   * process instead of one per `getBalances` call. Transport is bounded by
+   * `BALANCE_RPC_TIMEOUT_MS` per attempt with a single retry, so a slow
+   * Polygon RPC can never hang the dashboard route — the read throws,
+   * `readPolygonBalances` catches, and the caller degrades to null legs +
+   * a `polygon_rpc:` error (PARTIAL_FAILURE_NEVER_THROWS upstream).
+   */
+  private balancePublicClient: PublicClient | null = null;
+
+  private getBalancePublicClient(rpcUrl: string): PublicClient {
+    if (!this.balancePublicClient) {
+      this.balancePublicClient = createPublicClient({
+        chain: polygon,
+        transport: http(rpcUrl, {
+          timeout: BALANCE_RPC_TIMEOUT_MS,
+          retryCount: 1,
+        }),
+      });
+    }
+    return this.balancePublicClient;
+  }
+
   private async readPolygonBalances(
     addr: `0x${string}`,
     errors: string[]
@@ -561,10 +596,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       return [null, null, null];
     }
     try {
-      const client = createPublicClient({
-        chain: polygon,
-        transport: http(this.polygonRpcUrl),
-      });
+      const client = this.getBalancePublicClient(this.polygonRpcUrl);
       const [usdcERaw, pusdRaw, polRaw] = await Promise.all([
         client.readContract({
           address: USDC_E_POLYGON,

@@ -31,6 +31,13 @@ export const PolyWalletOverviewIntervalSchema = z.enum([
 export type PolyWalletOverviewInterval = z.infer<
   typeof PolyWalletOverviewIntervalSchema
 >;
+/**
+ * Freshness selector. `live` computes the Polymarket-native pnlHistory;
+ * `read_model` skips it (empty array) and serves DB read-models only. NOTE:
+ * on-chain cash/gas balances are served from a short-TTL (~30s) server-side
+ * cache under BOTH values (task.5010) — `live` does not force an on-demand
+ * Polygon RPC read; POST /wallet/refresh is the fresh-balance escape hatch.
+ */
 export const PolyWalletDataFreshnessSchema = z.enum(["read_model", "live"]);
 export type PolyWalletDataFreshness = z.infer<
   typeof PolyWalletDataFreshnessSchema

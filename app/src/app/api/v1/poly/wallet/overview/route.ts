@@ -20,6 +20,18 @@
  *     thrown errors are never cached. Invalidated by POST /wallet/refresh
  *     via `invalidateDashboardRouteCaches`. SINGLE_REPLICA cache — see
  *     `@features/wallet-analysis/server/coalesce`.
+ *   - BALANCES_OFF_FIRST_PAINT (task.5010): the on-chain balance read
+ *     (`adapter.getBalances` → 3 Polygon RPC calls) sits behind its own
+ *     longer-TTL cache entry (`coalesceWalletBalances`,
+ *     `WALLET_BALANCES_CACHE_TTL_MS` = 30s), so a cold/expired route-cache
+ *     hit is served from warm balances instead of blocking first paint on
+ *     chain RPC. Displayed cash/gas may therefore be up to 30s stale under
+ *     BOTH freshness values (`read_model` and `live` differ only in
+ *     pnlHistory computation — the response shape is unchanged). POST
+ *     /wallet/refresh evicts the balances key, so the refresh button
+ *     always yields fresh on-chain numbers. Degraded reads (RPC error or
+ *     timeout → null legs + `balances_partial` warning) are never pinned
+ *     for the 30s TTL (BALANCES_DEGRADED_NOT_CACHED).
  * Side-effects: IO (DB read, Polygon RPC, optional Data API).
  * @public
  */
@@ -43,6 +55,7 @@ import { getTradingWalletPnlHistory } from "@/features/wallet-analysis/server/tr
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 import { sumCashOnChain, sumWalletTotal } from "../_lib/cash-on-chain";
 import {
+  coalesceWalletBalances,
   DASHBOARD_ROUTE_CACHE_TTL_MS,
   overviewRouteCacheKey,
 } from "../_lib/dashboard-route-cache";
@@ -142,7 +155,12 @@ export const GET = wrapRouteHandlerWithLogging(
           throw err;
         }
 
-        const balances = await adapter.getBalances(account.id);
+        // BALANCES_OFF_FIRST_PAINT (task.5010): 30s-TTL cached + coalesced;
+        // a cold route-cache hit reuses warm balances instead of blocking on
+        // 3 Polygon RPC calls. Refresh evicts; degraded reads aren't cached.
+        const balances = await coalesceWalletBalances(account.id, () =>
+          adapter.getBalances(account.id)
+        );
         if (!balances) {
           logOverviewComplete(ctx, startedAtMs, {
             status: "no_trading_wallet",
