@@ -120,6 +120,8 @@ export async function fetchAndPersistTradingWalletPnlHistory(input: {
   client?: PolymarketUserPnlClient;
   logger?: UserPnlOutboundLogger;
   component?: string;
+  /** Cooperative cancellation (task.5015): checked between interval plans and passed to the upstream fetch. */
+  signal?: AbortSignal | undefined;
 }): Promise<{ inserted: number; fidelities: Fidelity[] }> {
   const client = input.client ?? getUserPnlClient();
   const plans: Array<{
@@ -134,18 +136,22 @@ export async function fetchAndPersistTradingWalletPnlHistory(input: {
   let inserted = 0;
   const fidelities: Fidelity[] = [];
   for (const plan of plans) {
+    input.signal?.throwIfAborted();
     const points = await client.getUserPnl(
       input.walletAddress,
       {
         interval: plan.interval,
         fidelity: plan.upstreamFidelity,
       },
-      input.logger
-        ? {
-            logger: input.logger,
-            component: input.component ?? "trader-observation",
-          }
-        : undefined
+      {
+        signal: input.signal,
+        ...(input.logger
+          ? {
+              logger: input.logger,
+              component: input.component ?? "trader-observation",
+            }
+          : {}),
+      }
     );
     if (points.length === 0) continue;
     // bug.5011: upstream returns the current bucket twice during the active
