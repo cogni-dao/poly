@@ -17,8 +17,14 @@
  *   (invalidation side).
  * Invariants:
  *   - SINGLE_REPLICA: keys live in the in-process TTL cache (see
- *     `@features/wallet-analysis/server/coalesce`); nothing enforces this
- *     at boot — scaling past one replica degrades to per-replica caches.
+ *     `@features/wallet-analysis/server/coalesce`). As of task.5016,
+ *     background WRITERS are single-pod via job-runner leader election
+ *     (`@bootstrap/jobs/job-leader-elector`), but these read caches remain
+ *     per-replica — scaling past one replica degrades to per-replica
+ *     caches (lower hit rate, ~N× recompute; perf-only, never
+ *     correctness: keys are tenant-scoped and recomputed from the DB, and
+ *     `REFRESH_INVALIDATES` only evicts on the replica that served the
+ *     POST, so cross-replica staleness is bounded by the TTLs below).
  *   - TENANT_KEYED: every key embeds the billing account id, so one
  *     tenant's cached payload can never be served to another tenant.
  *   - ERRORS_NOT_CACHED: `coalesce` evicts rejected fetchers

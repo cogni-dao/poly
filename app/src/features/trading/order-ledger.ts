@@ -747,6 +747,22 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         // which is correct in both cases — under withTenantScope it holds
         // for the entire RLS-scoped tx, serializing concurrent inserts on
         // the same (billing, market, token) tuple as intended.
+        //
+        // ADVISORY_KEYSPACE (task.5016): session-level and xact-level
+        // advisory locks share ONE keyspace, so these hashtext(int4) keys
+        // coexist with the repo's long-lived session locks:
+        //   - hashtext('poly:job-runner')  — job-runner leader election,
+        //     held for the leader pod's whole lifetime
+        //     (bootstrap/jobs/job-leader-elector.ts)
+        //   - hashtext('governance_sync')  — transient, per sync run
+        //     (bootstrap/jobs/syncGovernanceSchedules.job.ts)
+        // If hashtext('poly:job-runner') ever collided with a
+        // `billing:market:token` key here, this xact lock would block for
+        // the leader's entire session. Accepted: probability is ~2^-32 per
+        // distinct tuple (hashtext → int4) and the blast radius is one
+        // tuple's cap-check serialization, not correctness. The two fixed
+        // string keys are asserted non-colliding in
+        // tests/component/jobs/job-leader-election.int.test.ts.
         await db.transaction(async (tx: AnyDb) => {
           await tx.execute(
             sql`SELECT pg_advisory_xact_lock(hashtext(${`${input.billing_account_id}:${input.intent.market_id}:${lockToken}`}))`

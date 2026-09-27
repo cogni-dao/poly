@@ -6,7 +6,7 @@
  * Purpose: Tiny module-scoped TTL cache that also coalesces concurrent requests for the same key — N callers waiting on the same key share one in-flight fetch.
  * Scope: Pure utility. Does not know about wallets, slices, HTTP, or React. Module-scope state means one instance per Node process; cache survives only while the process lives.
  * Invariants:
- *   - SINGLE_REPLICA: cache lives in-process; corruption on >1 replica is asserted at boot in `instrumentation.ts`.
+ *   - SINGLE_REPLICA: cache lives in-process and stays per-replica even now that background WRITERS are single-pod via leader election (task.5016, `@bootstrap/jobs/job-leader-elector`). >1 replica degrades hit rate only (each replica recomputes from the DB) — a perf, not correctness, concern.
  *   - CONCURRENT_DEDUP: simultaneous calls for the same key resolve to one fetcher invocation.
  *   - FAILED_FETCH_NOT_CACHED: rejected fetchers are evicted so the next caller retries.
  * Side-effects: holds a Map in module scope; no I/O of its own.
