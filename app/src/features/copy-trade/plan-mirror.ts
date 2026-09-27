@@ -28,6 +28,8 @@ import {
 } from "@cogni/poly-market-provider";
 
 import type {
+  ExplorationOutcome,
+  ExplorationPolicy,
   MirrorPlan,
   MirrorReason,
   PlacementPolicy,
@@ -401,6 +403,7 @@ export function planMirrorFromFill(input: PlanMirrorInput): MirrorPlan {
     min_usdc_notional,
     tick_size,
     now_ms,
+    exploration_draw,
   } = input;
 
   // Idempotency gate. Two checks, both correct:
@@ -477,17 +480,32 @@ export function planMirrorFromFill(input: PlanMirrorInput): MirrorPlan {
     };
   }
 
-  if (!decision.sizing.ok) {
+  // t1 — randomized entry (ε-flip). Runs AFTER every hard gate and BEFORE the
+  // plan is materialized, so exploration can only ever move the pXX *policy*
+  // decision, never a safety one.
+  const { sizing, exploration } = applyEntryExploration({
+    policy: config.exploration,
+    draw: exploration_draw,
+    positionBranch: decision.position_branch,
+    sizing: decision.sizing,
+    sizingPolicy: config.sizing,
+    price: normalizedPrice.price,
+    minShares: min_shares,
+    minUsdcNotional: min_usdc_notional,
+  });
+
+  if (!sizing.ok) {
     return {
       kind: "skip",
-      reason: decision.sizing.reason,
+      reason: sizing.reason,
       position_branch: decision.position_branch,
+      ...(exploration ? { exploration } : {}),
     };
   }
 
   const intent = buildIntent(
     fill,
-    decision.sizing.size_usdc,
+    sizing.size_usdc,
     client_order_id,
     config.placement,
     decision.position_branch,
@@ -500,6 +518,107 @@ export function planMirrorFromFill(input: PlanMirrorInput): MirrorPlan {
     position_branch: decision.position_branch,
     intent,
     wrong_side_holding_detected: decision.wrong_side_holding_detected,
+    ...(exploration ? { exploration } : {}),
+  };
+}
+
+/**
+ * Per-trade ceiling for the policies that carry one. Total by construction:
+ * `position_gap` / `mirror_fill_exact` are uncapped per-condition by design
+ * (see `applySizingPolicy`), so they report `+Infinity`.
+ */
+function maxUsdcPerConditionFor(policy: SizingPolicy): number {
+  switch (policy.kind) {
+    case "min_bet":
+    case "target_percentile":
+    case "target_percentile_scaled":
+      return policy.max_usdc_per_condition;
+    default:
+      return Number.POSITIVE_INFINITY;
+  }
+}
+
+/**
+ * t1 — ε-flip randomization of the ENTRY decision, with the exact propensity of
+ * the action taken.
+ *
+ * Eligibility is deliberately narrow. Exploration fires only when ALL hold:
+ *
+ *   1. `policy.enabled` and `policy.epsilon > 0` — ε=0 is treated as disabled
+ *      rather than logged as a degenerate propensity of 1, which would imply
+ *      support this policy does not have.
+ *   2. `draw !== undefined` — a caller that forgot to draw degrades to
+ *      deterministic instead of randomizing without a logged propensity.
+ *   3. `positionBranch === 'new_entry'` — layer / hedge / sell_close are
+ *      path-dependent on our own position and therefore off-support for
+ *      off-policy evaluation. Randomizing them would produce propensities that
+ *      no estimator can use.
+ *   4. The sizing outcome is either a clean `ok` or exactly
+ *      `below_target_percentile` — i.e. the pXX *policy* threshold. Every other
+ *      skip is a safety or platform limit, not a choice: `already_placed` and
+ *      `market_past_end_date` and `price_outside_clob_bounds` returned upstream
+ *      (flipping them means a duplicate order or a bet on a resolved market),
+ *      and `below_market_min` / `position_cap_reached` are exchange floors and
+ *      risk caps.
+ *
+ * NOTE on the explore→place path: it re-sizes at the market floor (the smallest
+ * defensible bet), not at the pXX-scaled notional — the whole point is that we
+ * do not believe the pXX gate here, so we take the cheapest possible probe. If
+ * that floor is unreachable the realized action is a `below_market_min` skip
+ * while the arm stays `explore`; the propensity describes the decision to
+ * attempt, and downstream estimators condition on the realized action.
+ */
+function applyEntryExploration(params: {
+  policy: ExplorationPolicy | undefined;
+  draw: number | undefined;
+  positionBranch: PositionBranch;
+  sizing: SizingResult;
+  sizingPolicy: SizingPolicy;
+  price: number;
+  minShares: number | undefined;
+  minUsdcNotional: number | undefined;
+}): { sizing: SizingResult; exploration: ExplorationOutcome | undefined } {
+  const { policy, draw, positionBranch, sizing } = params;
+  const inert = { sizing, exploration: undefined } as const;
+
+  if (policy?.enabled !== true || policy.epsilon <= 0) return inert;
+  if (draw === undefined || !Number.isFinite(draw) || draw < 0 || draw >= 1) {
+    return inert;
+  }
+  if (positionBranch !== "new_entry") return inert;
+  if (!sizing.ok && sizing.reason !== "below_target_percentile") return inert;
+
+  if (draw >= policy.epsilon) {
+    return {
+      sizing,
+      exploration: { arm: "greedy", propensity: 1 - policy.epsilon },
+    };
+  }
+
+  const exploration: ExplorationOutcome = {
+    arm: "explore",
+    propensity: policy.epsilon,
+  };
+
+  // Greedy said place ⇒ flipped arm skips, reusing the pXX reason code so the
+  // skip histogram stays on the existing bounded enum.
+  if (sizing.ok) {
+    return {
+      sizing: { ok: false, reason: "below_target_percentile" },
+      exploration,
+    };
+  }
+
+  // Greedy said skip (below pXX) ⇒ flipped arm probes at the market floor.
+  return {
+    sizing: applyMarketFloors(
+      params.minUsdcNotional,
+      params.price,
+      params.minShares,
+      params.minUsdcNotional,
+      maxUsdcPerConditionFor(params.sizingPolicy)
+    ),
+    exploration,
   };
 }
 

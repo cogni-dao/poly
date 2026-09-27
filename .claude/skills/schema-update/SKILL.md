@@ -1,6 +1,6 @@
 ---
 name: schema-update
-description: Use any time you are about to add, change, or migrate a Postgres or Doltgres table in this node — editing schema TS under `packages/db-schema/src` or `packages/doltgres-schema/src`, running `drizzle-kit generate`, writing a migration `.sql`, touching `meta/_journal.json` / `*_snapshot.json`, adding row-level security / tenant isolation (a table with a FK to `users` or `billing_accounts`), or debugging a migration that didn't apply on candidate. Mandatory before any schema edit. Covers the RLS-first rule + the component gate that enforces it.
+description: Use any time you are about to add, change, or migrate a Postgres or Doltgres table in this node — editing schema TS under `packages/db-schema/src`, `packages/poly-db-schema/src`, or `packages/doltgres-schema/src`, running `drizzle-kit generate`, writing a migration `.sql`, touching `meta/_journal.json` / `*_snapshot.json`, adding row-level security / tenant isolation (a table with a FK to `users` or `billing_accounts`), or debugging a migration that didn't apply on candidate. Mandatory before any schema edit. Covers the RLS-first rule + the component gate that enforces it.
 ---
 
 # schema-update
@@ -15,6 +15,35 @@ This node is a single repo (no monorepo `nodes/<node>/` tree). Two data planes:
 | Doltgres | `packages/doltgres-schema/src/`| `app/src/adapters/server/db/doltgres-migrations` | AI-written knowledge (`knowledge_*` tables) |
 
 drizzle-kit reads these via `drizzle.config.ts` (Postgres) and `drizzle.doltgres.config.ts` (Doltgres). Both require `DATABASE_URL` in the environment.
+
+## ⚠️ Poly's Postgres slices exist in TWO packages — edit both
+
+This is a port artifact (`3fa499e` seeded `db-schema`; `0638967` added
+`poly-db-schema`), never reconciled. Both copies are **live at runtime**, and
+only one drives migrations:
+
+| Copy | Role | Consumed by |
+| --- | --- | --- |
+| `packages/db-schema/src/<slice>.ts` | **drizzle-kit globs this** (`drizzle.config.ts:29`) → owns the migration | also runtime-live via `app/src/shared/db/schema.ts` |
+| `packages/poly-db-schema/src/<slice>.ts` | **no** migration effect | imported directly by ~25 files, e.g. `order-ledger.ts` |
+
+Duplicated slices: `copy-trade.ts`, `poly-redeem-jobs.ts`, `trader-activity.ts`,
+`wallet-connections.ts`, `wallet-grants.ts`.
+
+**Rule: apply the identical edit to both copies.** The only sanctioned difference
+is the `* Module: `@cogni/{db-schema,poly-db-schema}/<slice>`` doc line.
+
+- Edit only `poly-db-schema` → types compile, **no migration** → prod throws
+  `column "X" does not exist` (failure mode #3).
+- Edit only `db-schema` → migration ships, the 25 direct importers don't see the
+  column.
+
+Enforced by `app/tests/unit/schema/poly-schema-duplication.test.ts` in the
+`unit` lane (verified to fail on injected drift). If that test is red, you
+edited one copy.
+
+Non-poly slices (`ai.ts`, `auth.ts`, `billing.ts`, `identity.ts`, …) exist only
+in `packages/db-schema/src/` — edit once.
 
 ## Postgres — the only path
 
@@ -95,7 +124,7 @@ When you do need a new Doltgres table:
 
 1. **Future-dated / non-monotonic `when`** silently no-ops your migration on candidate. The app pod has the schema code; the DB doesn't have the column. Symptom: `PostgresError: column "X" does not exist` shortly into deploy.
 2. **Hand-authored when auto-gen would have worked** — broke the snapshot chain, missed the journal entry, or both.
-3. **Schema edited under `app/src/...`** instead of `packages/*-schema/src/` — drizzle config doesn't see it; `generate` produces no diff.
+3. **Schema edited in the wrong place, or in only one of the two copies.** Under `app/src/...` → drizzle config doesn't see it, `generate` produces no diff. For a poly slice, editing only `poly-db-schema` produces the same no-diff outcome; editing only `db-schema` leaves the 25 direct importers stale. See the dual-package section above.
 4. **Unintended `DROP TABLE` committed unread** — orphan/out-of-tree tables vanish on next migrate.
 5. **Pushed with `--no-verify`** — skipped validation, shipped a broken chain.
 
@@ -115,7 +144,8 @@ node scripts/db/verify-doltgres-schema.mjs       # drift check
 Layout:
 
 ```
-packages/db-schema/src/                              Postgres schema (operational)
+packages/db-schema/src/                              Postgres schema — drizzle-kit globs THIS (owns migrations)
+packages/poly-db-schema/src/                         DUPLICATE of poly slices — runtime importers; edit in lockstep
 packages/doltgres-schema/src/                        Doltgres schema (AI knowledge)
 drizzle.config.ts / drizzle.doltgres.config.ts       drizzle-kit CLI boundary (need DATABASE_URL)
 app/src/adapters/server/db/migrations/               Postgres history (.sql + meta/)
