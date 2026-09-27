@@ -989,6 +989,10 @@ function createContainer(): Container {
 							mirrorFilterPercentile: enumeratedTarget.mirrorFilterPercentile,
 							mirrorMaxUsdcPerTrade: enumeratedTarget.mirrorMaxUsdcPerTrade,
 							sizingPolicyKind: enumeratedTarget.sizingPolicyKind,
+							// t1 EXPLORATION_IS_PAPER_ONLY — same env-derived boolean the
+							// target enumerator uses above; randomized entry never reaches
+							// the live CLOB.
+							paperEnforced: env.PAPER_ENFORCE_MODE === "paper",
 							...(enumeratedTarget.targetRangeMaxUsdc !== null
 								? { targetRangeMaxUsdc: enumeratedTarget.targetRangeMaxUsdc }
 								: {}),

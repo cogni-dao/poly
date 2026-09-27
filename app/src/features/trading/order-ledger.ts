@@ -830,6 +830,14 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       receipt: input.receipt,
       decidedAt: input.decided_at,
       mode: effectiveMode,
+      // t1 — PROPENSITY_PAIRED_WITH_ARM. Normalize `undefined` to explicit
+      // NULL so a deterministic decision writes a clean pair of NULLs rather
+      // than relying on column defaults.
+      explorationArm: input.exploration_arm ?? null,
+      propensity:
+        input.propensity === undefined || input.propensity === null
+          ? null
+          : String(input.propensity),
     });
   }
 
