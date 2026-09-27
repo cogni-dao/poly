@@ -35,7 +35,7 @@ import type {
   PolyWalletOverviewInterval,
   PolyWalletOverviewPnlPoint,
 } from "@cogni/poly-node-contracts";
-import { and, asc, eq, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gte, lt, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { dedupeByKey } from "./observation-helpers";
@@ -81,6 +81,12 @@ export async function getTradingWalletPnlHistory(input: {
   const traderWalletId = wallet[0]?.id;
   if (!traderWalletId) return [];
 
+  // task.5018: push the window's `ts >=` bound into SQL so Postgres returns
+  // only the windowed rows instead of the wallet's entire stored series.
+  // `windowStart` is the same cutoff `filterPnlHistory` applies (null for
+  // ALL / unparseable capturedAt = no bound), so the JS filter below is a
+  // no-op refinement kept for the floor-to-second edge (see pnlWindowStart).
+  const windowStart = pnlWindowStart(input.interval, capturedAt);
   const rows = await input.db
     .select({
       ts: polyTraderUserPnlPoints.ts,
@@ -90,7 +96,8 @@ export async function getTradingWalletPnlHistory(input: {
     .where(
       and(
         eq(polyTraderUserPnlPoints.traderWalletId, traderWalletId),
-        eq(polyTraderUserPnlPoints.fidelity, fidelity)
+        eq(polyTraderUserPnlPoints.fidelity, fidelity),
+        windowStart ? gte(polyTraderUserPnlPoints.ts, windowStart) : undefined
       )
     )
     .orderBy(asc(polyTraderUserPnlPoints.ts));
@@ -206,6 +213,24 @@ function readFidelityForInterval(
     case "ALL":
       return DAY_FIDELITY;
   }
+}
+
+/**
+ * SQL-pushdown twin of `filterPnlHistory` (task.5018): the timestamptz cutoff
+ * for the requested interval, or null when there is no bound (ALL, or an
+ * unparseable capturedAt — the same cases where `filterPnlHistory` returns
+ * the series unfiltered). The SQL bound `ts >= cutoff` is a superset of the
+ * JS predicate `floor(ts/1s)*1s >= cutoff` (flooring only moves timestamps
+ * earlier), so applying both yields byte-identical output to JS-only.
+ */
+function pnlWindowStart(
+  interval: PolyWalletOverviewInterval,
+  capturedAtIso: string
+): Date | null {
+  if (interval === "ALL") return null;
+  const capturedAtMs = new Date(capturedAtIso).getTime();
+  if (!Number.isFinite(capturedAtMs)) return null;
+  return new Date(windowStartMs(interval, capturedAtMs));
 }
 
 function filterPnlHistory(
