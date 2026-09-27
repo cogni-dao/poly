@@ -117,6 +117,7 @@ import {
 	PlatformModelProvider,
 } from "@/adapters/server/ai/providers";
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
+import { getServiceReadDb } from "@/adapters/server/db/drizzle.service-read-client";
 import { ServiceDrizzlePaymentAttemptRepository } from "@/adapters/server/payments/drizzle-payment-attempt.adapter";
 import { SplitTreasurySettlementAdapter } from "@/adapters/server/treasury/split-treasury-settlement.adapter";
 import {
@@ -1779,7 +1780,18 @@ export function resolveAppDb(): Database {
 
 /**
  * Resolve serviceDb for pre-auth or system-level writes that must bypass RLS.
+ * Background jobs and writers stay on this pool (DB_SERVICE_POOL_MAX).
  */
 export function resolveServiceDb(): Database {
 	return getServiceDb();
+}
+
+/**
+ * Resolve the service READ pool (BYPASSRLS, same app_service credentials as
+ * resolveServiceDb but a separate postgres-js pool: DB_READ_POOL_MAX, default 5,
+ * application_name cogni_service_read). Dashboard/research READ routes use this
+ * so background jobs cannot starve them (task.5014). Never use for writes/jobs.
+ */
+export function resolveServiceReadDb(): Database {
+	return getServiceReadDb();
 }
