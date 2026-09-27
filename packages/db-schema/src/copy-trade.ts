@@ -250,6 +250,18 @@ export const polyCopyTradeFills = pgTable(
     index("poly_copy_trade_fills_billing_account_idx").on(
       table.billingAccountId
     ),
+    // Tenant recent-orders reads (`listRecent` / `listTenantPositions`):
+    // `WHERE billing_account_id = ? ORDER BY observed_at DESC LIMIT n`.
+    index("poly_copy_trade_fills_billing_observed_idx").on(
+      table.billingAccountId,
+      table.observedAt.desc()
+    ),
+    // Reconciler cross-tenant scan (`listOpenOrPending`, every 60s):
+    // `WHERE status IN ('pending','open') AND created_at < … ORDER BY created_at`.
+    index("poly_copy_trade_fills_status_created_idx").on(
+      table.status,
+      table.createdAt
+    ),
     // Executor-bug canary — Polymarket order ids are unique by construction, so
     // two fills ever carrying the same `order_id` indicates the mirror path
     // double-submitted. Partial index skips the (common) null rows.

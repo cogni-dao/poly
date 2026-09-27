@@ -144,6 +144,10 @@ export const polyTraderFills = pgTable(
       table.conditionId,
       table.tokenId
     ),
+    // Cross-wallet time-window scans: market-outcome tick (last-30d condition
+    // enumeration) and price-history tick (last-7d asset enumeration) filter
+    // on observed_at alone, with no trader_wallet_id predicate.
+    index("poly_trader_fills_observed_at_idx").on(table.observedAt),
   ]
 );
 
@@ -194,6 +198,17 @@ export const polyTraderPositionSnapshots = pgTable(
     index("poly_trader_position_snapshots_latest_idx").on(
       table.traderWalletId,
       table.capturedAt
+    ),
+    // market-exposure `readTargetLegs`: DISTINCT ON (trader_wallet_id,
+    // condition_id, token_id) … ORDER BY captured_at DESC, driven by a
+    // `condition_id IN (…)` page filter. condition_id leads because the
+    // wallet-led prefix already exists on the `_hash_idx` unique index;
+    // trailing captured_at DESC serves each group's newest-first read.
+    index("poly_trader_position_snapshots_market_latest_idx").on(
+      table.conditionId,
+      table.traderWalletId,
+      table.tokenId,
+      table.capturedAt.desc()
     ),
   ]
 );
@@ -251,6 +266,13 @@ export const polyTraderCurrentPositions = pgTable(
       table.conditionId,
       table.tokenId
     ),
+    // Cross-wallet `active = true` scans (price-history asset enumeration,
+    // metadata projector, and the live-position staleness predicate's
+    // `last_observed_at >= NOW() - 6h` range). Partial on active=true so the
+    // index stays small as terminal rows accumulate.
+    index("poly_trader_current_positions_active_observed_idx")
+      .on(table.lastObservedAt)
+      .where(sql`${table.active} = true`),
   ]
 );
 
@@ -324,11 +346,6 @@ export const polyTraderUserPnlPoints = pgTable(
     check(
       "poly_trader_user_pnl_points_fidelity_check",
       sql`${table.fidelity} IN ('1h','1d')`
-    ),
-    index("poly_trader_user_pnl_points_read_idx").on(
-      table.traderWalletId,
-      table.fidelity,
-      table.ts
     ),
   ]
 );
@@ -409,11 +426,6 @@ export const polyMarketPriceHistory = pgTable(
     check(
       "poly_market_price_history_fidelity_check",
       sql`${table.fidelity} IN ('1h','1d')`
-    ),
-    index("poly_market_price_history_read_idx").on(
-      table.asset,
-      table.fidelity,
-      table.ts
     ),
   ]
 );
