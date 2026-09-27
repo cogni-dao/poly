@@ -10,6 +10,7 @@
  *   - SAME_OBSERVED_TRADE_TABLE: target and Cogni public wallet trades are both stored in `poly_trader_fills`.
  *   - WATERMARKED_INGESTION: reads newest-to-prior-watermark and advances cursor only after DB upserts complete.
  *   - PNL_INGEST_INDEPENDENT: per-wallet user-pnl ingest runs after observation regardless of observe outcome; failures bump `errors` and continue. Retention prune runs once per tick after all wallets.
+ *   - SNAPSHOTS_ARE_POSITION_CHANGES: `poly_trader_position_snapshots` rows are written only when a position-defining field changes (see `hashPosition`); mark-to-market history lives in `poly_market_price_history` + `poly_trader_user_pnl_points`, live marks in `poly_trader_current_positions`. Retention (`pruneOldPositionSnapshots`) drops >35d rows in bounded batches but always keeps each group's newest row.
  *   - COGNI_POSITION_ABSENCE_NEEDS_AUTHORITY: complete Data API polls do not
  *     deactivate Cogni-wallet current-position rows unless an injected
  *     authority classifies the missing row terminal.
@@ -70,6 +71,20 @@ const POSITION_FETCH_LIMIT = 500;
 const DEFAULT_POSITION_MAX_PAGES = 10;
 const DEFAULT_POSITION_POLL_MS = 5 * 60 * 1000;
 const TENANT_TRADING_WALLET_LABEL = "Tenant trading wallet";
+/**
+ * Snapshot rows older than this are pruned by the tick (task.5012). 35 days
+ * matches the `1h` retention standard on `poly_trader_user_pnl_points` and
+ * `poly_market_price_history`. The latest row per (wallet, condition, token)
+ * is NEVER pruned regardless of age — SNAPSHOTS_ARE_DURABLE_TRUTH in
+ * `market-exposure-service.ts` reads it as the only surviving record of an
+ * exited position, and post-hash-change (see `hashPosition`) a *held*
+ * position that simply hasn't changed in >35d also has no newer row.
+ */
+const SNAPSHOT_RETENTION_DAYS = 35;
+/** Per-DELETE row bound so pruning a huge backlog never holds locks long. */
+const SNAPSHOT_PRUNE_BATCH_SIZE = 5_000;
+/** Batches per tick; a backlog drains across ticks instead of in one stall. */
+const SNAPSHOT_PRUNE_MAX_BATCHES = 10;
 
 export interface TraderObservationTickDeps {
   db: Db;
@@ -89,6 +104,7 @@ export interface TraderObservationTickResult {
   positions: number;
   pnlPoints: number;
   prunedPnlPoints: number;
+  prunedPositionSnapshots: number;
   errors: number;
 }
 
@@ -206,6 +222,24 @@ export async function runTraderObservationTick(
     }
   }
 
+  // Retention (task.5012): bounded prune of mark-churn snapshot history.
+  // Runs once per tick after all wallets, mirroring the pnl-points prune;
+  // NOT gated on `userPnlClient` because snapshots are written regardless.
+  let prunedPositionSnapshots = 0;
+  try {
+    const prune = await pruneOldPositionSnapshots(deps.db);
+    prunedPositionSnapshots = prune.deleted;
+  } catch (err: unknown) {
+    log.warn(
+      {
+        event: "poly.trader.observe",
+        phase: "position_snapshot_prune_error",
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "trader position-snapshot prune failed"
+    );
+  }
+
   // Project the latest /positions raw JSONB into `poly_market_metadata` so
   // readers JOIN one canonical typed row per market instead of scraping
   // `poly_trader_current_positions.raw->>'endDate'`. Pure SQL — no HTTP.
@@ -232,6 +266,7 @@ export async function runTraderObservationTick(
       positions,
       pnl_points: pnlPoints,
       pruned_pnl_points: prunedPnlPoints,
+      pruned_position_snapshots: prunedPositionSnapshots,
       errors,
     },
     "trader observation tick complete"
@@ -243,6 +278,7 @@ export async function runTraderObservationTick(
     positions,
     pnlPoints,
     prunedPnlPoints,
+    prunedPositionSnapshots,
     errors,
   };
 }
@@ -888,7 +924,24 @@ function positionCostUsdc(
   return Math.max(0, position.size * position.avgPrice);
 }
 
-function hashPosition(position: PolymarketUserPosition): string {
+/**
+ * Content hash for snapshot dedupe (`onConflictDoNothing` on
+ * `poly_trader_position_snapshots_hash_idx`). Covers ONLY position-defining
+ * fields: `conditionId`, `asset`, `size`, `avgPrice`, `initialValue`.
+ *
+ * Mark-to-market fields (`currentValue`, `curPrice`) are deliberately
+ * EXCLUDED (task.5012): including them made every 5-min poll of an active
+ * position in a liquid market produce a new full-JSONB row (~288 rows/day/
+ * position) because the mark always moves. Mark-to-market history is
+ * delegated to `poly_market_price_history` + `poly_trader_user_pnl_points`;
+ * live marks for still-held positions come from
+ * `poly_trader_current_positions` (upserted fresh every tick). A snapshot
+ * row therefore means "the position itself changed", and its embedded
+ * `current_value_usdc`/`raw.currentValue` are only the mark as of that
+ * change — readers needing a live mark must join current_positions (see
+ * `market-exposure-service.ts` `readTargetLegs`).
+ */
+export function hashPosition(position: PolymarketUserPosition): string {
   return createHash("sha256")
     .update(
       JSON.stringify({
@@ -897,11 +950,66 @@ function hashPosition(position: PolymarketUserPosition): string {
         size: position.size,
         avgPrice: position.avgPrice,
         initialValue: position.initialValue,
-        currentValue: position.currentValue,
-        curPrice: position.curPrice,
       })
     )
     .digest("hex");
+}
+
+/**
+ * Retention helper (task.5012): prune `poly_trader_position_snapshots` rows
+ * older than {@link SNAPSHOT_RETENTION_DAYS}, EXCEPT the newest row of each
+ * (trader_wallet_id, condition_id, token_id) group — that row is the durable
+ * last-observed record `readTargetLegs` depends on (see the retention-days
+ * docstring). Deletes run in `batchSize`-bounded statements, at most
+ * `maxBatches` per call, so the first prune of a multi-million-row backlog
+ * never holds a long-running delete; the remainder drains on later ticks.
+ *
+ * Index support: the candidate scan (`captured_at < cutoff`) uses
+ * `poly_trader_position_snapshots_captured_at_idx`; the has-newer-row probe
+ * uses `poly_trader_position_snapshots_market_latest_idx`.
+ */
+export async function pruneOldPositionSnapshots(
+  db: Db,
+  options?: { batchSize?: number; maxBatches?: number }
+): Promise<{ deleted: number; exhaustedBudget: boolean }> {
+  const batchSize = options?.batchSize ?? SNAPSHOT_PRUNE_BATCH_SIZE;
+  const maxBatches = options?.maxBatches ?? SNAPSHOT_PRUNE_MAX_BATCHES;
+  // ISO string + explicit cast: postgres-js cannot serialize a raw Date
+  // parameter through `db.execute(sql...)` (no drizzle column mapper here).
+  const cutoff = new Date(
+    Date.now() - SNAPSHOT_RETENTION_DAYS * 86_400_000
+  ).toISOString();
+  let deleted = 0;
+  for (let batch = 0; batch < maxBatches; batch += 1) {
+    const result = await db.execute(sql`
+      DELETE FROM poly_trader_position_snapshots
+      WHERE id IN (
+        SELECT s.id
+        FROM poly_trader_position_snapshots s
+        WHERE s.captured_at < ${cutoff}::timestamptz
+          AND EXISTS (
+            SELECT 1
+            FROM poly_trader_position_snapshots newer
+            WHERE newer.trader_wallet_id = s.trader_wallet_id
+              AND newer.condition_id = s.condition_id
+              AND newer.token_id = s.token_id
+              AND newer.captured_at > s.captured_at
+          )
+        LIMIT ${batchSize}
+      )
+    `);
+    // drizzle returns driver-specific shapes; cast loosely for
+    // postgres-js (`count`) / node-postgres (`rowCount`) parity.
+    const rowCount =
+      (result as unknown as { rowCount?: number; count?: number }).rowCount ??
+      (result as unknown as { rowCount?: number; count?: number }).count ??
+      0;
+    deleted += rowCount;
+    if (rowCount < batchSize) {
+      return { deleted, exhaustedBudget: false };
+    }
+  }
+  return { deleted, exhaustedBudget: true };
 }
 
 function readString(

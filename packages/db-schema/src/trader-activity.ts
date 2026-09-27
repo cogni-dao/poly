@@ -210,6 +210,14 @@ export const polyTraderPositionSnapshots = pgTable(
       table.tokenId,
       table.capturedAt.desc()
     ),
+    // Retention pruner (task.5012): the candidate scan is a bare
+    // `captured_at < cutoff` with no wallet/condition predicate. Neither
+    // `_latest_idx` (trader_wallet_id-led) nor `_market_latest_idx`
+    // (condition_id-led) can serve a leading captured_at range, so without
+    // this the every-30s prune check seq-scans the whole table.
+    index("poly_trader_position_snapshots_captured_at_idx").on(
+      table.capturedAt
+    ),
   ]
 );
 

@@ -18,22 +18,31 @@
  *   - SERVER_SIDE_PIVOT: per-participant primary/hedge/net shape is computed
  *     here, never client-side. Same shape will feed Research views once
  *     `poly_market_outcomes` is populated.
- *   - SNAPSHOTS_ARE_DURABLE_TRUTH: target legs are read from
+ *   - SNAPSHOTS_ARE_DURABLE_TRUTH: target legs are anchored on
  *     `poly_trader_position_snapshots` (append-only history) rather than
  *     `poly_trader_current_positions`, because the sync deactivates and zeros
  *     out target rows once Polymarket Data API stops returning a position
  *     (post-resolution / post-redeem). Snapshots preserve the last observed
  *     `(shares, cost_basis_usdc, current_value_usdc)` so attribution survives
  *     target exit by any means.
+ *   - LIVE_MARK_FROM_CURRENT_POSITIONS (task.5012): snapshots are written
+ *     only on position-defining changes (`hashPosition` excludes
+ *     currentValue/curPrice), so a still-held position's latest snapshot has
+ *     a stale mark. `readTargetLegs` joins `poly_trader_current_positions`
+ *     and uses its `current_value_usdc` while the row is `active`, falling
+ *     back to the snapshot's last-observed value once deactivated. Shares /
+ *     cost basis / avg price stay snapshot-sourced — they are hash-covered
+ *     and therefore always fresh in the latest snapshot.
  *   - TARGET_LEGS_FROM_SNAPSHOTS: every active copy-target whose latest
  *     snapshot covers a condition we hold surfaces as a leg, regardless of
  *     whether we've mirrored a fill from that target on that condition. The
  *     "Markets" lens compares us against the targets we follow — gating on
  *     per-condition fills throws away DB-persisted positions and produces
  *     bogus solo-market percentages.
- *   - SERVER_SIDE_LIFECYCLE: a leg's lifecycle is `"active"` if the latest
- *     snapshot still shows positive current value, otherwise `"inactive"`
- *     (target observed but no longer held). Once `poly_market_outcomes` is
+ *   - SERVER_SIDE_LIFECYCLE: a leg's lifecycle is `"active"` if its
+ *     current-positions row is active with positive live value (snapshot
+ *     value fallback when no current-positions row exists), otherwise
+ *     `"inactive"` (target observed but no longer held). Once `poly_market_outcomes` is
  *     populated, resolved legs get joined in to promote `active`/`inactive`
  *     → `winner`/`loser`/`resolved`.
  *   - SINGLE_BASIS_SNAPSHOT_COST: per-position cost basis, P/L, and return %
@@ -354,16 +363,35 @@ async function readTargetLegs(params: {
       COALESCE(NULLIF(ls.raw->>'outcome', ''), 'UNKNOWN') AS outcome,
       ls.shares,
       ls.cost_basis_usdc,
-      ls.current_value_usdc,
+      -- LIVE_MARK_FROM_CURRENT_POSITIONS (task.5012): snapshots are only
+      -- written on position-defining changes, so a still-held position's
+      -- latest snapshot carries a stale mark. Prefer the live mark from
+      -- poly_trader_current_positions while the row is active; fall back to
+      -- the snapshot's last-observed value once the sync deactivates it
+      -- (exit/resolution) — SNAPSHOTS_ARE_DURABLE_TRUTH.
+      CASE WHEN cp.active THEN cp.current_value_usdc::numeric
+           ELSE ls.current_value_usdc END AS current_value_usdc,
       ls.avg_price,
-      ls.last_observed_at,
-      CASE WHEN ls.current_value_usdc > 0 THEN 'active' ELSE 'inactive' END
-        AS lifecycle
+      CASE WHEN cp.active THEN cp.last_observed_at
+           ELSE ls.last_observed_at END AS last_observed_at,
+      CASE
+        WHEN cp.active IS TRUE THEN
+          CASE WHEN cp.current_value_usdc::numeric > 0
+               THEN 'active' ELSE 'inactive' END
+        WHEN cp.active IS FALSE THEN 'inactive'
+        ELSE
+          CASE WHEN ls.current_value_usdc > 0
+               THEN 'active' ELSE 'inactive' END
+      END AS lifecycle
     FROM latest_snapshots ls
     JOIN active_targets a ON a.trader_wallet_id = ls.trader_wallet_id
+    LEFT JOIN poly_trader_current_positions cp
+      ON cp.trader_wallet_id = ls.trader_wallet_id
+      AND cp.condition_id = ls.condition_id
+      AND cp.token_id = ls.token_id
     LEFT JOIN poly_market_metadata pmm
       ON pmm.condition_id = ls.condition_id
-    ORDER BY ls.current_value_usdc DESC NULLS LAST
+    ORDER BY current_value_usdc DESC NULLS LAST
   `)) as unknown as TargetPositionRow[];
 
   return rows.flatMap((row) => {

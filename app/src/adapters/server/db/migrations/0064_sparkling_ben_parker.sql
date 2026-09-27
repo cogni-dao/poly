@@ -1,0 +1,1 @@
+CREATE INDEX "poly_trader_position_snapshots_captured_at_idx" ON "poly_trader_position_snapshots" USING btree ("captured_at");
