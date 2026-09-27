@@ -9,9 +9,7 @@ import { TradesPerDayChart } from "@/features/wallet-analysis";
 import { useDashboardExecution } from "../_hooks/useDashboardExecution";
 
 export function OperatorWalletChartsRow(): ReactElement {
-  const { data, isLoading, isError } = useDashboardExecution({
-    includeLive: false,
-  });
+  const { data, isLoading, isError } = useDashboardExecution();
 
   const dailyCounts = (data?.dailyTradeCounts ?? []).map((point) => ({
     d: point.day.slice(5),

@@ -93,7 +93,6 @@ export function TradingWalletCard(): ReactElement {
     staleTime: 10_000,
     gcTime: 60_000,
     retry: 1,
-    enabled: data?.connected === true,
   });
 
   const lowGas = data?.connected === true && (data.pol_gas ?? 0) <= 0.1;

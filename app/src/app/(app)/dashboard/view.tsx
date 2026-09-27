@@ -190,7 +190,12 @@ export function DashboardView(): ReactElement {
   const { data: runsData, isLoading: runsLoading } = useQuery({
     queryKey: ["dashboard-runs", tab],
     queryFn: () => fetchRuns({ tab, limit: 5 }),
-    refetchInterval: 5_000,
+    // Poll fast only while a run is active; idle dashboards were issuing a
+    // full /runs round-trip every 5s regardless (task.5009).
+    refetchInterval: (query) =>
+      query.state.data?.runs?.some((r) => r.status === "running")
+        ? 5_000
+        : 30_000,
     staleTime: 3_000,
     gcTime: 60_000,
   });
@@ -216,8 +221,8 @@ export function DashboardView(): ReactElement {
   });
 
   const polymarketFetches =
-    useIsFetching({ queryKey: ["dashboard-trading-wallet", "read_model"] }) +
-    useIsFetching({ queryKey: ["dashboard-wallet-execution", "read_model"] }) +
+    useIsFetching({ queryKey: ["dashboard-trading-wallet"] }) +
+    useIsFetching({ queryKey: ["dashboard-wallet-execution"] }) +
     useIsFetching({ queryKey: ["poly-wallet-status"] });
   const refreshPolymarket = useMutation({
     mutationFn: postPolymarketRefresh,
