@@ -287,6 +287,12 @@ async function readSummary(
   comparisonWalletId: string | null,
   windowStartIso: string
 ): Promise<SummaryRow[]> {
+  // task.5018: wallet filter is pushed into the CTE so Postgres never
+  // DISTINCT-ONs other tenants' positions. DISTINCT ON groups are keyed by
+  // trader_wallet_id, so pre-filtering to the two wallets the outer query
+  // reads is result-identical. A NULL comparisonWalletId param makes
+  // `IN (target, NULL)` degrade to target-only, which matches the outer
+  // FILTER clauses summing nothing for a NULL comparison wallet.
   return (await db.execute(sql`
     WITH latest_positions AS (
       SELECT DISTINCT ON (p.trader_wallet_id, p.condition_id, p.token_id)
@@ -296,6 +302,7 @@ async function readSummary(
       FROM poly_trader_current_positions p
       JOIN poly_trader_wallets w ON w.id = p.trader_wallet_id
       WHERE ${liveCurrentPositionSql("p")}
+        AND p.trader_wallet_id IN (${targetWalletId}, ${comparisonWalletId})
       ORDER BY p.trader_wallet_id, p.condition_id, p.token_id, p.last_observed_at DESC
     )
       SELECT
@@ -358,6 +365,9 @@ async function readActiveGaps(
   targetWalletId: string,
   comparisonWalletId: string | null
 ): Promise<ActiveGapRow[]> {
+  // task.5018: pushdown as in readSummary. Both wallets are genuinely needed
+  // here — `latest` feeds the target rows (outer WHERE) AND the cogni CTE
+  // (comparison wallet) — so the filter is the two-wallet IN, not target-only.
   return (await db.execute(sql`
     WITH latest AS (
       SELECT DISTINCT ON (p.trader_wallet_id, p.condition_id, p.token_id)
@@ -369,6 +379,7 @@ async function readActiveGaps(
       FROM poly_trader_current_positions p
       JOIN poly_trader_wallets w ON w.id = p.trader_wallet_id
       WHERE ${liveCurrentPositionSql("p")}
+        AND p.trader_wallet_id IN (${targetWalletId}, ${comparisonWalletId})
       ORDER BY p.trader_wallet_id, p.condition_id, p.token_id, p.last_observed_at DESC
     ),
     cogni AS (
