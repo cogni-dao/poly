@@ -22,6 +22,14 @@
  *     and trade cadence only.
  *   - BOUNDED_HISTORY_PAYLOAD: closed/redeemed history is preview data for the
  *     dashboard, not an unbounded archive export.
+ *   - COALESCED_PAYLOAD (task.5013): the post-auth payload computation is
+ *     wrapped in the in-process `coalesce` TTL cache
+ *     (`DASHBOARD_ROUTE_CACHE_TTL_MS` = 5s), keyed by billing account only —
+ *     `freshness` never gates computation here and is re-stamped per request.
+ *     Concurrent requests share one computation; thrown errors are never
+ *     cached. Invalidated by POST /wallet/refresh via
+ *     `invalidateDashboardRouteCaches`. SINGLE_REPLICA cache — see
+ *     `@features/wallet-analysis/server/coalesce`.
  * Side-effects: IO (DB read, optional Polymarket Data API + CLOB public reads).
  * Links: nodes/poly/packages/node-contracts/src/poly.wallet.execution.v1.contract.ts,
  *        docs/spec/poly-tenant-and-collateral.md,
@@ -43,6 +51,7 @@ import {
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
+import { coalesce } from "@/features/wallet-analysis/server/coalesce";
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
 import { buildMarketExposureGroups } from "@/features/wallet-analysis/server/market-exposure-service";
 import {
@@ -50,6 +59,10 @@ import {
   readWalletTokenPnlMap,
 } from "@/features/wallet-analysis/server/realized-pnl-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
+import {
+  DASHBOARD_ROUTE_CACHE_TTL_MS,
+  executionRouteCacheKey,
+} from "../_lib/dashboard-route-cache";
 import {
   coalesceWalletExecutionPositions,
   DASHBOARD_LEDGER_POSITION_LIMIT,
@@ -97,236 +110,248 @@ export const GET = wrapRouteHandlerWithLogging(
       .accountsForUser(toUserId(sessionUser.id))
       .getOrCreateBillingAccountForUser({ userId: sessionUser.id });
 
-    let adapter: ReturnType<typeof getPolyTraderWalletAdapter>;
-    try {
-      adapter = getPolyTraderWalletAdapter(ctx.log);
-    } catch (err) {
-      if (err instanceof WalletAdapterUnconfiguredError) {
+    // COALESCED_PAYLOAD (task.5013): everything below — adapter resolution,
+    // realized P/L, ledger + current-position read models, market groups —
+    // runs at most once per billing account per TTL window; concurrent
+    // requests await the same in-flight computation. Errors reject the
+    // in-flight promise and are evicted (never cached); partial-success
+    // payloads carrying warnings ARE cached for the short TTL by design.
+    // `freshness` never gates computation on this route, so it is excluded
+    // from the key and re-stamped on the response below.
+    const payload = await coalesce<PolyWalletExecutionOutput>(
+      executionRouteCacheKey(account.id),
+      async () => {
+        let adapter: ReturnType<typeof getPolyTraderWalletAdapter>;
+        try {
+          adapter = getPolyTraderWalletAdapter(ctx.log);
+        } catch (err) {
+          if (err instanceof WalletAdapterUnconfiguredError) {
+            logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
+              reqId: ctx.reqId,
+              routeId: ctx.routeId,
+              status: "wallet_adapter_unconfigured",
+              durationMs: Math.round(performance.now() - startedAtMs),
+              outcome: "success",
+              freshness,
+              live_positions: 0,
+              closed_positions: 0,
+              daily_trade_days: 0,
+              warnings: 1,
+            });
+            return emptyPayload(freshness, {
+              code: "wallet_adapter_unconfigured",
+              message: "Trading-wallet adapter is not configured on this pod yet.",
+            });
+          }
+          throw err;
+        }
+
+        const address = await adapter.getAddress(account.id);
+        if (!address) {
+          logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
+            reqId: ctx.reqId,
+            routeId: ctx.routeId,
+            status: "no_trading_wallet",
+            durationMs: Math.round(performance.now() - startedAtMs),
+            outcome: "success",
+            freshness,
+            live_positions: 0,
+            closed_positions: 0,
+            daily_trade_days: 0,
+            warnings: 1,
+          });
+          return emptyPayload(freshness, {
+            code: "no_trading_wallet",
+            message:
+              "No Polymarket trading wallet is provisioned for this account. Connect one from the Money page.",
+          });
+        }
+
+        const capturedAt = new Date();
+        const warnings: Array<{ code: string; message: string }> = [];
+        let livePositions: PolyWalletExecutionOutput["live_positions"] = [];
+        let closedPositions: PolyWalletExecutionOutput["closed_positions"] = [];
+        let dailyTradeCounts: Array<{ day: string; n: number }> = [];
+        const ledgerLiveByAsset = new Map<
+          string,
+          PolyWalletExecutionOutput["live_positions"][number]
+        >();
+        // Canonical fills + outcomes realized-P/L for this wallet. Fetched
+        // once and threaded into every consumer so the dashboard's positions
+        // list, markets aggregator, and ledger overlay all derive P/L from
+        // the same source. Soft-fails to an empty map — read-models then fall
+        // back to unrealized MTM, preserving pre-fix display rather than 500.
+        const realizedPnlMap = await readWalletTokenPnlMap({
+          db: container.serviceDb,
+          walletAddress: address,
+        }).catch((err: unknown) => {
+          warnings.push({
+            code: "realized_pnl_unavailable",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          return new Map();
+        });
+        try {
+          const [rows, dailyCountsFromDb] = await Promise.all([
+            container.orderLedger.listTenantPositions({
+              billing_account_id: account.id,
+              statuses: [...DASHBOARD_LEDGER_POSITION_STATUSES],
+              limit: DASHBOARD_LEDGER_POSITION_LIMIT,
+            }),
+            container.orderLedger.dailyTradeCounts({
+              billing_account_id: account.id,
+              capturedAt,
+              windowDays: DASHBOARD_TRADE_COUNT_WINDOW_DAYS,
+            }),
+          ]);
+          dailyTradeCounts = dailyCountsFromDb;
+          const positions = rows.map((row) =>
+            toWalletExecutionPosition(row, capturedAt)
+          );
+          // Realized P/L is overlaid LATER (after all sources are merged) so
+          // the additive `mergeWalletExecutionPosition` can't double-count a
+          // token-level credit that's already applied to both the ledger row
+          // and the current-position row.
+          const ledgerLivePositions = coalesceWalletExecutionPositions(
+            positions
+              .filter((position) => position.status !== "closed")
+              .filter((position) => position.currentValue > 0)
+          );
+          for (const position of ledgerLivePositions) {
+            ledgerLiveByAsset.set(position.asset, position);
+          }
+          closedPositions = coalesceWalletExecutionPositions(
+            positions.filter((position) => position.status === "closed")
+          );
+        } catch (err) {
+          warnings.push({
+            code: "positions_read_model_unavailable",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+
+        try {
+          const currentPositions = await readCurrentWalletPositionModel({
+            db: container.serviceDb,
+            walletAddress: address,
+            capturedAt,
+          });
+          const currentLivePositions = currentPositions.positions.filter(
+            (position) => position.status !== "closed" && position.currentValue > 0
+          );
+          const currentClosedPositions = currentPositions.positions.filter(
+            (position) => position.status === "closed" || position.currentValue <= 0
+          );
+          livePositions = currentLivePositions.map((position) => {
+            const ledgerPosition = ledgerLiveByAsset.get(position.asset);
+            if (ledgerPosition === undefined) return position;
+            return {
+              ...position,
+              status: ledgerPosition.status,
+              lifecycleState: ledgerPosition.lifecycleState,
+              openedAt: ledgerPosition.openedAt,
+              closedAt: ledgerPosition.closedAt,
+              gameStartTime: position.gameStartTime ?? ledgerPosition.gameStartTime,
+              heldMinutes: ledgerPosition.heldMinutes,
+              timeline:
+                ledgerPosition.timeline.length > 0
+                  ? ledgerPosition.timeline
+                  : position.timeline,
+              events:
+                ledgerPosition.events.length > 0
+                  ? ledgerPosition.events
+                  : position.events,
+            };
+          });
+          const currentAssets = new Set(
+            currentPositions.positions.map((position) => position.asset)
+          );
+          closedPositions = coalesceWalletExecutionPositions(
+            [
+              ...closedPositions.filter(
+                (position) => !currentAssets.has(position.asset)
+              ),
+              ...currentClosedPositions,
+            ].filter((position) => position.status === "closed")
+          );
+          warnings.push(...currentPositions.warnings);
+        } catch (err) {
+          warnings.push({
+            code: "current_positions_read_model_unavailable",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        // Single overlay point. Both `livePositions` and `closedPositions`
+        // arrived here from a merge that summed per-row unrealized P/L;
+        // applying the canonical fills+outcomes P/L here is the single source
+        // of truth for the dashboard. The markets aggregator below has its
+        // own rollup query and is independent of this overlay.
+        livePositions = applyRealizedPnl(livePositions, realizedPnlMap);
+        closedPositions = applyRealizedPnl(closedPositions, realizedPnlMap);
+        const marketGroups = await buildMarketExposureGroups({
+          db: container.serviceDb,
+          billingAccountId: account.id,
+          walletAddress: address,
+          livePositions,
+          closedPositions,
+        }).catch((err: unknown) => {
+          warnings.push({
+            code: "market_exposure_unavailable",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          return [];
+        });
+
+        const closedPositionsForResponse = closedPositions.slice(
+          0,
+          EXECUTION_HISTORY_LIMIT
+        );
+
         logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
           reqId: ctx.reqId,
           routeId: ctx.routeId,
-          status: "wallet_adapter_unconfigured",
+          status: warnings.some(
+            (warning) => warning.code === "positions_read_model_unavailable"
+          )
+            ? "positions_read_model_unavailable"
+            : warnings.some(
+                  (warning) =>
+                    warning.code === "current_positions_read_model_unavailable"
+                )
+              ? "current_positions_read_model_unavailable"
+              : warnings.some(
+                    (warning) => warning.code === "current_positions_stale"
+                  )
+                ? "current_positions_stale"
+                : "ok",
           durationMs: Math.round(performance.now() - startedAtMs),
           outcome: "success",
           freshness,
-          live_positions: 0,
-          closed_positions: 0,
-          daily_trade_days: 0,
-          warnings: 1,
+          live_positions: livePositions.length,
+          market_groups: marketGroups.length,
+          closed_positions: closedPositionsForResponse.length,
+          closed_positions_total: closedPositions.length,
+          daily_trade_days: dailyTradeCounts.length,
+          warnings: warnings.length,
         });
-        return NextResponse.json(
-          emptyPayload(freshness, {
-            code: "wallet_adapter_unconfigured",
-            message:
-              "Trading-wallet adapter is not configured on this pod yet.",
-          })
-        );
-      }
-      throw err;
-    }
 
-    const address = await adapter.getAddress(account.id);
-    if (!address) {
-      logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
-        reqId: ctx.reqId,
-        routeId: ctx.routeId,
-        status: "no_trading_wallet",
-        durationMs: Math.round(performance.now() - startedAtMs),
-        outcome: "success",
-        freshness,
-        live_positions: 0,
-        closed_positions: 0,
-        daily_trade_days: 0,
-        warnings: 1,
-      });
-      return NextResponse.json(
-        emptyPayload(freshness, {
-          code: "no_trading_wallet",
-          message:
-            "No Polymarket trading wallet is provisioned for this account. Connect one from the Money page.",
-        })
-      );
-    }
-
-    const capturedAt = new Date();
-    const warnings: Array<{ code: string; message: string }> = [];
-    let livePositions: PolyWalletExecutionOutput["live_positions"] = [];
-    let closedPositions: PolyWalletExecutionOutput["closed_positions"] = [];
-    let dailyTradeCounts: Array<{ day: string; n: number }> = [];
-    const ledgerLiveByAsset = new Map<
-      string,
-      PolyWalletExecutionOutput["live_positions"][number]
-    >();
-    // Canonical fills + outcomes realized-P/L for this wallet. Fetched
-    // once and threaded into every consumer so the dashboard's positions
-    // list, markets aggregator, and ledger overlay all derive P/L from
-    // the same source. Soft-fails to an empty map — read-models then fall
-    // back to unrealized MTM, preserving pre-fix display rather than 500.
-    const realizedPnlMap = await readWalletTokenPnlMap({
-      db: container.serviceDb,
-      walletAddress: address,
-    }).catch((err: unknown) => {
-      warnings.push({
-        code: "realized_pnl_unavailable",
-        message: err instanceof Error ? err.message : String(err),
-      });
-      return new Map();
-    });
-    try {
-      const [rows, dailyCountsFromDb] = await Promise.all([
-        container.orderLedger.listTenantPositions({
-          billing_account_id: account.id,
-          statuses: [...DASHBOARD_LEDGER_POSITION_STATUSES],
-          limit: DASHBOARD_LEDGER_POSITION_LIMIT,
-        }),
-        container.orderLedger.dailyTradeCounts({
-          billing_account_id: account.id,
-          capturedAt,
-          windowDays: DASHBOARD_TRADE_COUNT_WINDOW_DAYS,
-        }),
-      ]);
-      dailyTradeCounts = dailyCountsFromDb;
-      const positions = rows.map((row) =>
-        toWalletExecutionPosition(row, capturedAt)
-      );
-      // Realized P/L is overlaid LATER (after all sources are merged) so
-      // the additive `mergeWalletExecutionPosition` can't double-count a
-      // token-level credit that's already applied to both the ledger row
-      // and the current-position row.
-      const ledgerLivePositions = coalesceWalletExecutionPositions(
-        positions
-          .filter((position) => position.status !== "closed")
-          .filter((position) => position.currentValue > 0)
-      );
-      for (const position of ledgerLivePositions) {
-        ledgerLiveByAsset.set(position.asset, position);
-      }
-      closedPositions = coalesceWalletExecutionPositions(
-        positions.filter((position) => position.status === "closed")
-      );
-    } catch (err) {
-      warnings.push({
-        code: "positions_read_model_unavailable",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    try {
-      const currentPositions = await readCurrentWalletPositionModel({
-        db: container.serviceDb,
-        walletAddress: address,
-        capturedAt,
-      });
-      const currentLivePositions = currentPositions.positions.filter(
-        (position) => position.status !== "closed" && position.currentValue > 0
-      );
-      const currentClosedPositions = currentPositions.positions.filter(
-        (position) => position.status === "closed" || position.currentValue <= 0
-      );
-      livePositions = currentLivePositions.map((position) => {
-        const ledgerPosition = ledgerLiveByAsset.get(position.asset);
-        if (ledgerPosition === undefined) return position;
-        return {
-          ...position,
-          status: ledgerPosition.status,
-          lifecycleState: ledgerPosition.lifecycleState,
-          openedAt: ledgerPosition.openedAt,
-          closedAt: ledgerPosition.closedAt,
-          gameStartTime: position.gameStartTime ?? ledgerPosition.gameStartTime,
-          heldMinutes: ledgerPosition.heldMinutes,
-          timeline:
-            ledgerPosition.timeline.length > 0
-              ? ledgerPosition.timeline
-              : position.timeline,
-          events:
-            ledgerPosition.events.length > 0
-              ? ledgerPosition.events
-              : position.events,
-        };
-      });
-      const currentAssets = new Set(
-        currentPositions.positions.map((position) => position.asset)
-      );
-      closedPositions = coalesceWalletExecutionPositions(
-        [
-          ...closedPositions.filter(
-            (position) => !currentAssets.has(position.asset)
-          ),
-          ...currentClosedPositions,
-        ].filter((position) => position.status === "closed")
-      );
-      warnings.push(...currentPositions.warnings);
-    } catch (err) {
-      warnings.push({
-        code: "current_positions_read_model_unavailable",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-    // Single overlay point. Both `livePositions` and `closedPositions`
-    // arrived here from a merge that summed per-row unrealized P/L;
-    // applying the canonical fills+outcomes P/L here is the single source
-    // of truth for the dashboard. The markets aggregator below has its
-    // own rollup query and is independent of this overlay.
-    livePositions = applyRealizedPnl(livePositions, realizedPnlMap);
-    closedPositions = applyRealizedPnl(closedPositions, realizedPnlMap);
-    const marketGroups = await buildMarketExposureGroups({
-      db: container.serviceDb,
-      billingAccountId: account.id,
-      walletAddress: address,
-      livePositions,
-      closedPositions,
-    }).catch((err: unknown) => {
-      warnings.push({
-        code: "market_exposure_unavailable",
-        message: err instanceof Error ? err.message : String(err),
-      });
-      return [];
-    });
-
-    const closedPositionsForResponse = closedPositions.slice(
-      0,
-      EXECUTION_HISTORY_LIMIT
+        return PolyWalletExecutionOutputSchema.parse({
+          address: address.toLowerCase(),
+          freshness,
+          capturedAt: capturedAt.toISOString(),
+          dailyTradeCounts,
+          live_positions: livePositions,
+          market_groups: marketGroups,
+          closed_positions: closedPositionsForResponse,
+          warnings,
+        });
+      },
+      DASHBOARD_ROUTE_CACHE_TTL_MS
     );
 
-    logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
-      reqId: ctx.reqId,
-      routeId: ctx.routeId,
-      status: warnings.some(
-        (warning) => warning.code === "positions_read_model_unavailable"
-      )
-        ? "positions_read_model_unavailable"
-        : warnings.some(
-              (warning) =>
-                warning.code === "current_positions_read_model_unavailable"
-            )
-          ? "current_positions_read_model_unavailable"
-          : warnings.some(
-                (warning) => warning.code === "current_positions_stale"
-              )
-            ? "current_positions_stale"
-            : "ok",
-      durationMs: Math.round(performance.now() - startedAtMs),
-      outcome: "success",
-      freshness,
-      live_positions: livePositions.length,
-      market_groups: marketGroups.length,
-      closed_positions: closedPositionsForResponse.length,
-      closed_positions_total: closedPositions.length,
-      daily_trade_days: dailyTradeCounts.length,
-      warnings: warnings.length,
-    });
-
-    return NextResponse.json(
-      PolyWalletExecutionOutputSchema.parse({
-        address: address.toLowerCase(),
-        freshness,
-        capturedAt: capturedAt.toISOString(),
-        dailyTradeCounts,
-        live_positions: livePositions,
-        market_groups: marketGroups,
-        closed_positions: closedPositionsForResponse,
-        warnings,
-      })
-    );
+    // `freshness` is echo-only on this route (never gates computation), and
+    // the cache key excludes it — re-stamp per request so a cache hit never
+    // echoes another request's freshness value.
+    return NextResponse.json({ ...payload, freshness });
   }
 );
