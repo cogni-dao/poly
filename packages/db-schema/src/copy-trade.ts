@@ -352,6 +352,31 @@ export const polyCopyTradeDecisions = pgTable(
      * real-money trades as paper is worse than the analytics gap.
      */
     mode: text("mode").notNull().default("live"),
+    /**
+     * Exploration arm of the randomized entry policy: `'greedy'` (took the
+     * deterministic action) or `'explore'` (flipped it). NULL when exploration
+     * was disabled for this decision — which is every pre-t1 row and every
+     * decision on a deploy where the entry gate runs deterministically.
+     *
+     * Why this exists (t1): the deterministic policy logs propensities of
+     * exactly 0/1, so off-policy evaluation of ANY other config is
+     * unidentified outside the logged policy's support (Bottou et al.,
+     * Counterfactual Reasoning and Learning Systems, JMLR 2013 — "always
+     * randomize something and log the propensity"). Without this column,
+     * every week of mirror history is permanently unusable for learning.
+     */
+    explorationArm: text("exploration_arm"),
+    /**
+     * P(action taken | state) under the randomized policy that produced this
+     * decision. Under the ε-flip policy this is `1 - ε` for `greedy` and `ε`
+     * for `explore`. Required for IPS / doubly-robust estimators; a decision
+     * without it cannot be reweighted.
+     *
+     * PROPENSITY_PAIRED_WITH_ARM — non-null exactly when `exploration_arm` is
+     * non-null, enforced by CHECK. Half-written exploration metadata is worse
+     * than none: it silently biases every estimator that reads it.
+     */
+    propensity: numeric("propensity", { precision: 9, scale: 8 }),
   },
   (table) => [
     index("poly_copy_trade_decisions_decided_at_idx").on(table.decidedAt),
@@ -369,6 +394,27 @@ export const polyCopyTradeDecisions = pgTable(
     check(
       "poly_copy_trade_decisions_mode_check",
       sql`${table.mode} IN ('live','paper')`
+    ),
+    check(
+      "poly_copy_trade_decisions_exploration_arm_check",
+      sql`${table.explorationArm} IS NULL OR ${table.explorationArm} IN ('greedy','explore')`
+    ),
+    // PROPENSITY_PAIRED_WITH_ARM: both set or both NULL. An arm without a
+    // propensity is unusable for OPE; a propensity without an arm is unattributable.
+    check(
+      "poly_copy_trade_decisions_propensity_paired",
+      sql`(${table.explorationArm} IS NULL) = (${table.propensity} IS NULL)`
+    ),
+    // A zero propensity would divide by zero in IPS; a >1 propensity is not a probability.
+    check(
+      "poly_copy_trade_decisions_propensity_range",
+      sql`${table.propensity} IS NULL OR (${table.propensity} > 0 AND ${table.propensity} <= 1)`
+    ),
+    // OPE scan key: exploration-bearing decisions for one tenant over a window.
+    index("poly_copy_trade_decisions_exploration_idx").on(
+      table.billingAccountId,
+      table.explorationArm,
+      table.decidedAt
     ),
   ]
 );

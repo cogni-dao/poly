@@ -219,6 +219,17 @@ export function sizingPolicyKindForTargetWallet(
  *
  * @public
  */
+/**
+ * t1 — ε for the randomized entry gate. 10% of eligible entry decisions are
+ * flipped, which buys two-sided support on the pXX threshold at a cost that is
+ * exactly zero because exploration only ever runs where the executor is the
+ * paper sidecar (see `paperEnforced` below).
+ *
+ * Tuning this later means an env var; it is a literal now so t1 adds no deploy
+ * surface and cannot brick a container on a bad value (cf. PAPER_ENFORCE_MODE).
+ */
+const DEFAULT_EXPLORATION_EPSILON = 0.1;
+
 export function buildMirrorTargetConfig(params: {
   targetWallet: `0x${string}`;
   billingAccountId: string;
@@ -245,6 +256,15 @@ export function buildMirrorTargetConfig(params: {
    * task.5014.
    */
   mirrorMaxAllocPerConditionUsdc?: number;
+  /**
+   * t1 — true when `PAPER_ENFORCE_MODE=paper`, i.e. every placement routes to
+   * the paper sidecar. This is the ONLY switch that turns randomized entry on.
+   *
+   * EXPLORATION_IS_PAPER_ONLY: randomization deliberately cannot reach live
+   * money. The caller passes the same env-derived boolean the target enumerator
+   * already uses (`container.ts`), so paper-vs-live has one derivation, not two.
+   */
+  paperEnforced?: boolean;
 }): MirrorTargetConfig {
   const mirrorFilterPercentile =
     params.mirrorFilterPercentile ?? DEFAULT_CONVICTION_FILTER_PERCENTILE;
@@ -295,6 +315,20 @@ export function buildMirrorTargetConfig(params: {
     ...(!isSelfContainedPolicy &&
     snapshotForTargetWallet(params.targetWallet) !== undefined
       ? { position_followup: DEFAULT_POSITION_FOLLOWUP_POLICY }
+      : {}),
+    // t1 — randomized entry. Two conditions, both required:
+    //   1. `paperEnforced` — never on live money (EXPLORATION_IS_PAPER_ONLY).
+    //   2. not a self-contained policy — `mirror_fill_exact` and `position_gap`
+    //      exist to measure verbatim / gap-proportional mirroring, and flipping
+    //      their entries would corrupt the very quantity they measure. Same
+    //      reasoning as the bug.5048 gates above.
+    ...(params.paperEnforced === true && !isSelfContainedPolicy
+      ? {
+          exploration: {
+            enabled: true,
+            epsilon: DEFAULT_EXPLORATION_EPSILON,
+          },
+        }
       : {}),
   };
 }

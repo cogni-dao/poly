@@ -294,6 +294,19 @@ export interface RecordDecisionInput extends TenantBinding {
   intent: Record<string, unknown>;
   receipt: Record<string, unknown> | null;
   decided_at: Date;
+  /**
+   * t1 — arm of the randomized entry policy, or absent/null when the decision
+   * was deterministic. Written verbatim to
+   * `poly_copy_trade_decisions.exploration_arm`.
+   */
+  exploration_arm?: "greedy" | "explore" | null;
+  /**
+   * t1 — P(action taken | state) under the randomized policy. MUST be present
+   * exactly when `exploration_arm` is; the DB CHECK
+   * `poly_copy_trade_decisions_propensity_paired` rejects a half-written pair
+   * rather than letting a biased estimator read it later.
+   */
+  propensity?: number | null;
 }
 
 /**

@@ -207,6 +207,47 @@ export type PositionFollowupPolicy = z.infer<
  * per-tenant scaffolding defaults; daily / hourly caps now live on the
  * tenant's `poly_wallet_grants` row and are enforced by `authorizeIntent`.
  */
+/**
+ * t1 — ε-flip exploration on the ENTRY gate only.
+ *
+ * Why this exists: the deterministic policy logs propensities of exactly 0/1,
+ * so off-policy evaluation of any other config is unidentified outside the
+ * logged policy's support (Bottou et al., *Counterfactual Reasoning and
+ * Learning Systems*, JMLR 2013 — "always randomize something and log the
+ * propensity"). Without randomization every week of mirror history is
+ * permanently unusable for learning, which is why this ships before the
+ * evaluator rather than after it.
+ *
+ * Policy: with probability `epsilon`, FLIP the deterministic entry decision;
+ * otherwise take it. Propensity of the action actually taken is therefore
+ * `epsilon` (explore) or `1 - epsilon` (greedy) — exact, not estimated.
+ *
+ * Deliberately NOT ε-greedy-over-uniform: ε-flip wastes no draws re-selecting
+ * the greedy action and yields the two clean propensity values above.
+ */
+export const ExplorationPolicySchema = z.object({
+  /** Master switch. False ⇒ identical behavior to `exploration: undefined`. */
+  enabled: z.boolean(),
+  /**
+   * Flip probability. Capped at 0.5 — above that the "exploration" arm is the
+   * majority policy, which is a different experiment than this one.
+   */
+  epsilon: z.number().min(0).max(0.5),
+});
+export type ExplorationPolicy = z.infer<typeof ExplorationPolicySchema>;
+
+/**
+ * Which arm of the randomized entry policy produced a decision, plus the
+ * probability of the action taken. Written to
+ * `poly_copy_trade_decisions.{exploration_arm,propensity}`.
+ */
+export const ExplorationOutcomeSchema = z.object({
+  arm: z.enum(["greedy", "explore"]),
+  /** P(action taken | state). `1 - epsilon` for greedy, `epsilon` for explore. */
+  propensity: z.number().gt(0).max(1),
+});
+export type ExplorationOutcome = z.infer<typeof ExplorationOutcomeSchema>;
+
 export const MirrorTargetConfigSchema = z.object({
   /** Synthetic UUID (deterministic from target wallet) for `client_order_id` correlation. */
   target_id: z.string().uuid(),
@@ -245,6 +286,11 @@ export const MirrorTargetConfigSchema = z.object({
    * slippage.
    */
   vwap_tolerance: z.number().min(0).max(1).optional(),
+  /**
+   * t1 — randomized-entry exploration. Undefined ⇒ the entry gate runs fully
+   * deterministically (legacy behavior) and no propensity is logged.
+   */
+  exploration: ExplorationPolicySchema.optional(),
 });
 export type MirrorTargetConfig = z.infer<typeof MirrorTargetConfigSchema>;
 
@@ -546,11 +592,18 @@ export type MirrorPlan =
        * log. Optional; absent on legacy paths. OPTION_C_TOLERATES_MULTI_TARGET.
        */
       wrong_side_holding_detected?: boolean;
+      /**
+       * t1 — present iff randomized entry was active for this decision.
+       * Absent on every deterministic path (and every follow-up branch).
+       */
+      exploration?: ExplorationOutcome;
     }
   | {
       kind: "skip";
       reason: Exclude<MirrorReason, "ok" | "sell_closed_position">;
       position_branch: PositionBranch;
+      /** t1 — see the `place` branch. */
+      exploration?: ExplorationOutcome;
     };
 
 /** Inputs to `planMirrorFromFill()` — bundled for clarity + testability. */
@@ -585,6 +638,15 @@ export interface PlanMirrorInput {
    * planner does not read the system clock itself.
    */
   now_ms?: number | undefined;
+  /**
+   * t1 — uniform draw in [0, 1) supplied by the CALLER, never generated here.
+   * Keeps `PLAN_IS_PURE` intact (same input ⇒ same output) and makes every
+   * randomized decision exactly replayable from the logged draw. Absent ⇒
+   * exploration is skipped even when `config.exploration.enabled` is true, so
+   * a caller that forgets to draw degrades to deterministic rather than
+   * silently randomizing without a logged propensity.
+   */
+  exploration_draw?: number | undefined;
 }
 
 /**

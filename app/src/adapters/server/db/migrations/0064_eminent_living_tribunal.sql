@@ -1,0 +1,6 @@
+ALTER TABLE "poly_copy_trade_decisions" ADD COLUMN "exploration_arm" text;--> statement-breakpoint
+ALTER TABLE "poly_copy_trade_decisions" ADD COLUMN "propensity" numeric(9, 8);--> statement-breakpoint
+CREATE INDEX "poly_copy_trade_decisions_exploration_idx" ON "poly_copy_trade_decisions" USING btree ("billing_account_id","exploration_arm","decided_at");--> statement-breakpoint
+ALTER TABLE "poly_copy_trade_decisions" ADD CONSTRAINT "poly_copy_trade_decisions_exploration_arm_check" CHECK ("poly_copy_trade_decisions"."exploration_arm" IS NULL OR "poly_copy_trade_decisions"."exploration_arm" IN ('greedy','explore'));--> statement-breakpoint
+ALTER TABLE "poly_copy_trade_decisions" ADD CONSTRAINT "poly_copy_trade_decisions_propensity_paired" CHECK (("poly_copy_trade_decisions"."exploration_arm" IS NULL) = ("poly_copy_trade_decisions"."propensity" IS NULL));--> statement-breakpoint
+ALTER TABLE "poly_copy_trade_decisions" ADD CONSTRAINT "poly_copy_trade_decisions_propensity_range" CHECK ("poly_copy_trade_decisions"."propensity" IS NULL OR ("poly_copy_trade_decisions"."propensity" > 0 AND "poly_copy_trade_decisions"."propensity" <= 1));

@@ -233,6 +233,13 @@ export interface MirrorPipelineDeps {
   /** Clock injection — tests pin `Date`. Default = real `Date`. */
   clock?: () => Date;
   /**
+   * t1 — uniform [0,1) source for randomized entry, mirroring the `clock`
+   * seam. Injected so `runMirrorTick` stays deterministic under test and so
+   * the planner itself never touches a global RNG (PLAN_IS_PURE). Defaults to
+   * `Math.random` in production.
+   */
+  random?: () => number;
+  /**
    * Optional — SELL-to-close path. Routes through the per-tenant executor's
    * `closePosition` which authorizes + caps + signs. When absent, SELL fills
    * degrade to `skip/sell_without_position` (never open a short).
@@ -260,6 +267,7 @@ export interface MirrorPipelineDeps {
  */
 export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
   const clock = deps.clock ?? (() => new Date());
+  const random = deps.random ?? Math.random;
   const log = deps.logger.child({
     component: "mirror-pipeline",
     target_id: deps.target.target_id,
@@ -290,7 +298,7 @@ export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
   deps.setCursor(result.newSince);
 
   for (const fill of result.fills) {
-    await processFill(fill, deps, clock, log);
+    await processFill(fill, deps, clock, random, log);
   }
 }
 
@@ -298,6 +306,7 @@ async function processFill(
   fill: import("@cogni/poly-market-provider").Fill,
   deps: MirrorPipelineDeps,
   clock: () => Date,
+  random: () => number,
   parentLog: LoggerPort
 ): Promise<void> {
   // bug.5022 — construct the TenantContext envelope ONCE at the top of
@@ -464,6 +473,12 @@ async function processFill(
     );
   }
 
+  // t1 — draw ONCE per fill, before planning, and only when this target has
+  // randomized entry enabled. Drawing unconditionally would advance the RNG on
+  // deterministic targets for no reason and make their traces harder to replay.
+  const exploration_draw =
+    deps.target.exploration?.enabled === true ? random() : undefined;
+
   const plan = planMirrorFromFill({
     fill,
     config: deps.target,
@@ -487,7 +502,21 @@ async function processFill(
     min_usdc_notional,
     tick_size,
     now_ms: Date.now(),
+    exploration_draw,
   });
+
+  // t1 — fold the exploration outcome into the shared decision base so all
+  // downstream `recordDecision` sites for this fill (skip, already_resting, and
+  // every branch inside `executeMirrorOrder`) carry the SAME arm + propensity.
+  // Augmenting here rather than at each call site is what makes it impossible
+  // to log a placed order without the propensity that produced it.
+  const decisionCtx = plan.exploration
+    ? {
+        ...decisionBase,
+        exploration_arm: plan.exploration.arm,
+        propensity: plan.exploration.propensity,
+      }
+    : decisionBase;
 
   // task.5014 — emit `poly.mirror.range_breach` when target's delta-since-
   // baseline meets-or-exceeds the per-target range ceiling. Operator's signal
@@ -555,7 +584,7 @@ async function processFill(
   if (plan.kind === "skip") {
     emitDecisionMetric(deps.metrics, "skipped", plan.reason, source, placement);
     await tenantLedger.recordDecision({
-      ...decisionBase,
+      ...decisionCtx,
       outcome: "skipped",
       reason: plan.reason,
       intent: buildDecisionIntentBlob(
@@ -601,7 +630,7 @@ async function processFill(
         placement
       );
       await tenantLedger.recordDecision({
-        ...decisionBase,
+        ...decisionCtx,
         outcome: "skipped",
         reason: "already_resting",
         intent: buildDecisionIntentBlob(
@@ -655,7 +684,7 @@ async function processFill(
     deps,
     fill,
     client_order_id,
-    decisionBase,
+    decisionCtx,
     source,
     placement,
     plan.intent,
