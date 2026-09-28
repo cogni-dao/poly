@@ -347,7 +347,11 @@ export async function runTraderObservationTick(
   if (deps.userPnlClient && !tickAborted) {
     stage("prune_pnl_points");
     try {
-      const prune = await pruneOldTradingWalletPnlPoints(deps.db);
+      const prune = await withStatementTimeout(
+        deps.db,
+        OBSERVATION_STATEMENT_TIMEOUT_MS,
+        (tx) => pruneOldTradingWalletPnlPoints(tx)
+      );
       prunedPnlPoints = prune.deleted;
     } catch (err: unknown) {
       log.warn(
@@ -368,7 +372,14 @@ export async function runTraderObservationTick(
   if (!tickAborted) {
     stage("prune_position_snapshots");
     try {
-      const prune = await pruneOldPositionSnapshots(deps.db);
+      // bug.5297 — prod stage telemetry named this stage as a hang site (3x).
+      // The tick's abort cannot reach a running DELETE, so Postgres enforces
+      // the ceiling instead.
+      const prune = await withStatementTimeout(
+        deps.db,
+        OBSERVATION_STATEMENT_TIMEOUT_MS,
+        (tx) => pruneOldPositionSnapshots(tx)
+      );
       prunedPositionSnapshots = prune.deleted;
     } catch (err: unknown) {
       log.warn(
@@ -389,7 +400,12 @@ export async function runTraderObservationTick(
   if (!tickAborted) {
     stage("refresh_market_metadata");
     try {
-      await refreshMarketMetadata({ db: deps.db, logger: log });
+      // bug.5297 — named as a hang site (2x) by the same telemetry.
+      await withStatementTimeout(
+        deps.db,
+        OBSERVATION_STATEMENT_TIMEOUT_MS,
+        (tx) => refreshMarketMetadata({ db: tx, logger: log })
+      );
     } catch (err: unknown) {
       log.warn(
         {
@@ -1130,6 +1146,44 @@ export function hashPosition(position: PolymarketUserPosition): string {
  * `poly_trader_position_snapshots_captured_at_idx`; the has-newer-row probe
  * uses `poly_trader_position_snapshots_market_latest_idx`.
  */
+/**
+ * Per-statement ceiling for the observation loop's maintenance writes
+ * (bug.5297). These run inside a tick whose abort CANNOT reach them —
+ * drizzle/postgres-js take no `AbortSignal` — so the only thing that can stop a
+ * wedged one is Postgres itself.
+ *
+ * Aimed, not guessed: prod stage telemetry (added for bug.5273) named the
+ * hanging stages as `prune_position_snapshots` (3x) and
+ * `refresh_market_metadata` (2x), and the operator's VM evidence independently
+ * showed those same tables wedged — `poly_trader_position_snapshots` INSERTs at
+ * 729s and autovacuum on `poly_trader_current_positions` blocked 1240s.
+ *
+ * Well under TICK_TIMEOUT_MS (120s) so the statement dies before the tick does:
+ * a killed statement is a logged, bounded failure the next tick retries, while
+ * a wedged one holds locks and stacks writes until the box swaps.
+ */
+export const OBSERVATION_STATEMENT_TIMEOUT_MS = 30_000;
+
+/**
+ * Run `fn` with a session-local `statement_timeout`. SET LOCAL is
+ * transaction-scoped, so the ceiling cannot leak to other pool users — the
+ * pool is shared with request-path reads that must not inherit it.
+ */
+export async function withStatementTimeout<T>(
+  db: Db,
+  timeoutMs: number,
+  fn: (tx: Db) => Promise<T>
+): Promise<T> {
+  return await (db as unknown as {
+    transaction: <R>(cb: (tx: Db) => Promise<R>) => Promise<R>;
+  }).transaction(async (tx) => {
+    await tx.execute(
+      sql.raw(`SET LOCAL statement_timeout = ${Math.trunc(timeoutMs)}`)
+    );
+    return await fn(tx);
+  });
+}
+
 export async function pruneOldPositionSnapshots(
   db: Db,
   options?: { batchSize?: number; maxBatches?: number }
