@@ -159,8 +159,37 @@ export function createRealClobCredsFactory({
   };
 }
 
-const PUSD_POLYGON =
-  "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB" as const;
+const PUSD_POLYGON = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB" as const;
+
+export async function createOfficialDepositWalletClient({
+  signer,
+  clobCreds,
+  polygonRpcUrl,
+}: {
+  signer: LocalAccount;
+  clobCreds: PolyClobApiKeyCreds;
+  polygonRpcUrl: string;
+}) {
+  const walletClient = createWalletClient({
+    // biome-ignore lint/suspicious/noExplicitAny: Privy/viem peer minor drift
+    account: signer as any,
+    chain: polygon,
+    transport: http(polygonRpcUrl),
+  });
+  const polySigner = polymarketSignerFrom(walletClient);
+  const eoaClient = await createSecureClient({
+    signer: polySigner,
+    wallet: signer.address,
+    credentials: clobCreds as never,
+  });
+  const builderCredentials = await createBuilderApiKey(eoaClient);
+  const depositClient = await createSecureClient({
+    signer: polySigner,
+    credentials: clobCreds as never,
+    apiKey: builderApiKey(builderCredentials),
+  });
+  return { depositClient, eoaClient };
+}
 
 /**
  * Canonical V2 onboarding proved against production CLOB: Privy signer EOA →
@@ -180,24 +209,12 @@ export function createOfficialDepositWalletFactory({
     clobCreds: PolyClobApiKeyCreds,
     options: { readonly transferExistingPusd: boolean }
   ): Promise<{ funderAddress: `0x${string}` }> => {
-    const walletClient = createWalletClient({
-      // biome-ignore lint/suspicious/noExplicitAny: Privy/viem peer minor drift
-      account: signer as any,
-      chain: polygon,
-      transport: http(polygonRpcUrl),
-    });
-    const polySigner = polymarketSignerFrom(walletClient);
-    const eoaClient = await createSecureClient({
-      signer: polySigner,
-      wallet: signer.address,
-      credentials: clobCreds as never,
-    });
-    const builderCredentials = await createBuilderApiKey(eoaClient);
-    const depositClient = await createSecureClient({
-      signer: polySigner,
-      credentials: clobCreds as never,
-      apiKey: builderApiKey(builderCredentials),
-    });
+    const { depositClient, eoaClient } =
+      await createOfficialDepositWalletClient({
+        signer,
+        clobCreds,
+        polygonRpcUrl,
+      });
 
     if (options.transferExistingPusd) {
       const publicClient = createPublicClient({
@@ -231,6 +248,42 @@ export function createOfficialDepositWalletFactory({
       "poly.wallet.deposit_wallet.ready"
     );
     return { funderAddress: depositClient.account.wallet };
+  };
+}
+
+export function createOfficialDepositWalletTransferFactory({
+  polygonRpcUrl,
+}: {
+  polygonRpcUrl: string;
+}) {
+  return async (
+    signer: LocalAccount,
+    clobCreds: PolyClobApiKeyCreds,
+    input: {
+      readonly expectedFunderAddress: `0x${string}`;
+      readonly tokenAddress: `0x${string}`;
+      readonly recipientAddress: `0x${string}`;
+      readonly amount: bigint;
+    }
+  ): Promise<`0x${string}`> => {
+    const { depositClient } = await createOfficialDepositWalletClient({
+      signer,
+      clobCreds,
+      polygonRpcUrl,
+    });
+    if (
+      depositClient.account.wallet.toLowerCase() !==
+      input.expectedFunderAddress.toLowerCase()
+    ) {
+      throw new Error("Deposit Wallet address does not match persisted funder");
+    }
+    const handle = await depositClient.transferErc20({
+      amount: input.amount,
+      recipientAddress: input.recipientAddress,
+      tokenAddress: input.tokenAddress,
+    });
+    const outcome = await handle.wait();
+    return outcome.transactionHash;
   };
 }
 
@@ -315,6 +368,9 @@ export function getPolyTraderWalletAdapter(
     clobCredsRotator: clobCreds.rotate,
     prepareDepositWallet: createOfficialDepositWalletFactory({
       logger,
+      polygonRpcUrl,
+    }),
+    transferDepositWalletToken: createOfficialDepositWalletTransferFactory({
       polygonRpcUrl,
     }),
     polygonRpcUrl,

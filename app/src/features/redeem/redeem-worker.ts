@@ -123,10 +123,12 @@ export interface RedeemWorkerDeps {
   billingAccountId: string;
   publicClient: PublicClient;
   walletClient: WalletClient;
-  /** EOA holding the redeemable positions. */
+  /** Account holding the redeemable positions (EOA or V2 Deposit Wallet). */
   funderAddress: `0x${string}`;
   /** Account object the wallet client signs with (must be non-null). */
   account: Account;
+  /** Official gasless Deposit Wallet redemption; omitted for legacy EOA rows. */
+  redeemPosition?: (positionId: string) => Promise<`0x${string}`>;
   logger: LoggerLike;
   /** N=5 hard-pinned for v0.2 (FINALITY_IS_FIXED_N). */
   finalityBlocks: bigint;
@@ -319,7 +321,9 @@ export class RedeemWorker {
 
     let txHash: `0x${string}`;
     try {
-      if (args.kind === "ctf") {
+      if (this.deps.redeemPosition) {
+        txHash = await this.deps.redeemPosition(job.positionId);
+      } else if (args.kind === "ctf") {
         // bug.0428: collateralToken from the job row (set at enqueue).
         txHash = await this.deps.walletClient.writeContract({
           address: POLYGON_CONDITIONAL_TOKENS,
