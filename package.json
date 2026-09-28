@@ -16,8 +16,8 @@
     "db:check:drizzle": "DATABASE_URL=postgres://check@localhost:0/check tsx node_modules/drizzle-kit/bin.cjs check --config=drizzle.config.ts",
     "db:check:generate-clean": "node scripts/db/check-generate-clean.mjs",
     "db:migrate:direct": "tsx node_modules/drizzle-kit/bin.cjs migrate --config=drizzle.config.ts",
-    "typecheck": "pnpm --filter @cogni/node-template-graphs typecheck && pnpm --filter @cogni/node-template-doltgres-schema typecheck && pnpm --filter @cogni/node-template-app typecheck",
-    "test": "pnpm --filter @cogni/node-template-graphs test && pnpm --filter @cogni/node-template-app test",
+    "typecheck": "pnpm --filter @cogni/poly-graphs typecheck && pnpm --filter @cogni/node-template-doltgres-schema typecheck && pnpm --filter @cogni/node-template-app typecheck",
+    "test": "pnpm --filter @cogni/poly-graphs test && pnpm --filter @cogni/node-template-app test",
     "test:ci": "pnpm test",
     "test:component": "pnpm --filter @cogni/node-template-app test:component",
     "check": "pnpm check:workflow && pnpm db:check && pnpm packages:build && pnpm typecheck && pnpm test:ci"

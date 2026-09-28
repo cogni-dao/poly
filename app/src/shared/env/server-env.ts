@@ -97,6 +97,26 @@ export const serverSchema = z.object({
   // app_service role (BYPASSRLS) — used by auth, workers, bootstrap
   DATABASE_SERVICE_URL: z.string().url(),
 
+  // DB pool sizing (task.5014) — per-pool postgres-js `max`, non-secret env.
+  // Three pools per pod: app (RLS), service (jobs/writers), service-read
+  // (dashboard/research reads off a separate BYPASSRLS pool so jobs can't
+  // starve them). Worst-case backends per pod = sum of the three (defaults
+  // 10 + 10 + 5 = 25); size against Postgres max_connections. Backend math
+  // lives in packages/db-client/src/build-client.ts.
+  // emptyToUndefined: compose passes "" through for unset vars — treat as default.
+  DB_POOL_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(10)
+  ),
+  DB_SERVICE_POOL_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(10)
+  ),
+  DB_READ_POOL_MAX: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().positive().default(5)
+  ),
+
   // NextAuth secret (required for JWT signing)
   AUTH_SECRET: z.string().min(32),
 
@@ -243,6 +263,70 @@ export const serverSchema = z.object({
   PRIVY_APP_ID: optionalString,
   PRIVY_APP_SECRET: optionalString,
   PRIVY_SIGNING_KEY: optionalString,
+
+  // Poly tenant trading wallets - Optional.
+  // Separate from operator-wallet Privy credentials. Routes fail closed when
+  // unset so candidate-a can render Poly surfaces without enabling execution.
+  PRIVY_USER_WALLETS_APP_ID: optionalString,
+  PRIVY_USER_WALLETS_APP_SECRET: optionalString,
+  PRIVY_USER_WALLETS_SIGNING_KEY: optionalString,
+  POLY_WALLET_AEAD_KEY_HEX: optionalString,
+  POLY_WALLET_AEAD_KEY_ID: optionalString,
+
+  // Polymarket / paper execution knobs - Optional.
+  POLYGON_RPC_URL: optionalUrl,
+  // WSS endpoint for the copy-trade chain fill source (viem watchContractEvent
+  // via eth_subscribe). Falls back to deriving wss:// from POLYGON_RPC_URL.
+  POLYGON_RPC_WSS_URL: optionalUrl,
+  POLY_CLOB_HOST: optionalUrl,
+  POLY_CLOB_GEO_BLOCK_TOKEN: optionalString,
+  PAPER_SIDECAR_URL: optionalUrl,
+  // Tri-state ON THE WIRE, binary IN CODE. The deployed secret value is one of
+  // unset | "live" | "paper" — `.cogni/repo-spec.yaml` documents production as
+  // `PAPER_ENFORCE_MODE=live`, and OpenBao holds that literal. Only "paper" is
+  // meaningful to consumers, so "live" normalizes to `undefined` and the
+  // exported type stays `"paper" | undefined` (no downstream churn).
+  //
+  // Why this is not `.catch(undefined)`: an unrecognized value (a typo like
+  // "papper") MUST still hard-fail. Failing open on this knob would silently
+  // route a paper-only env onto the live CLOB with real USDC. Fail-safe for
+  // PAPER_ENFORCE_MODE is "refuse to boot", never "assume live".
+  PAPER_ENFORCE_MODE: z
+    .preprocess(emptyToUndefined, z.enum(["paper", "live"]).optional())
+    .optional()
+    .transform((v) => (v === "paper" ? ("paper" as const) : undefined)),
+  // Grace window (ms) before a not_found CLOB order is promoted to canceled by
+  // the order reconciler. Default 15 min (task.0328 GRACE_WINDOW_IS_CONFIG).
+  POLY_CLOB_NOT_FOUND_GRACE_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(900_000),
+  // Per-asset price-history writer. Gated OFF by default; enable only where the
+  // read-model is needed AND the asset set is small (bug.5172 OOM guard).
+  POLY_PRICE_HISTORY_WRITER_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+
+  // Top-wallets leaderboard mirror (bug.5017). Default ON: the Top Wallets
+  // card reads only from `poly_top_wallet_stats`, so disabling the writer
+  // leaves the card serving stale (or, pre-first-tick, empty) rows.
+  POLY_TOP_WALLET_STATS_WRITER_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+
+  // task.5016 — single-writer leader election for ALL in-process background
+  // jobs. Default ON: every pod runs the elector and only the holder of
+  // pg_try_advisory_lock(hashtext('poly:job-runner')) starts jobs, making a
+  // second replica safe (standby, not double-writer). Kill-switch: set
+  // "false" in a single-pod env to start jobs unconditionally at boot,
+  // exactly as before task.5016 (also what the test fixtures do).
+  JOB_LEADER_ELECTION_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
 
   // Operator wallet top-up cap (USD)
   // Per operator-wallet.md: MAX_TOPUP_CAP — per-tx ceiling for OpenRouter top-ups.
