@@ -4,11 +4,14 @@
 /**
  * Module: `@cogni/poly-market-provider/adapters/polymarket/clob`
  * Purpose: Polymarket CLOB Run-phase adapter — place / cancel / status orders via `@polymarket/clob-client`.
- * Scope: Trade-only adapter. Constructor injects a `ClobSigner` (viem WalletClient) + L2 API creds + host + chainId + funder EOA. Does not list markets (use the Gamma `PolymarketAdapter` for reads). Does not load env, does not create the signer, does not know about Privy.
+ * Scope: Trade-only adapter. Constructor injects a signer, L2 API creds, host,
+ *   chainId, and active funder account. Does not list markets (use the Gamma
+ *   `PolymarketAdapter` for reads). Does not load env or know about Privy.
  * Invariants:
  *   - PACKAGES_NO_ENV — all config via constructor.
  *   - SIGNER_VIA_LOCAL_ACCOUNT — caller passes a viem `LocalAccount` wrapped in a `WalletClient`. No custom signer port.
- *   - EOA_PATH_ONLY — signatureType defaults to `SignatureType.EOA`. Safe-proxy accounts are out of scope (see task.0315 Phase 1 "Custody model").
+ *   - V2_DEPOSIT_WALLET — production injects the official unified SDK client
+ *     for POLY_1271 order signing; direct EOA remains a compatibility fallback.
  *   - REALIZED_FROM_AMOUNTS (bug.5018) — `mapOrderResponseToReceipt` surfaces `fill_price` (USDC/shares VWAP) and `total_shares` from CLOB `makingAmount`/`takingAmount`; `mapOpenOrderToReceipt` does the same when `size_matched > 0`. Both leave the fields `undefined` when no real match occurred (status open / canceled with 0 fills). `fees_usdc` is undefined on real prod responses today (CLOB does not surface fees on OrderResponse); the schema accepts a `fee` field for forward-compat + the equivalence-test stub.
  * Side-effects: IO (HTTPS to the Polymarket CLOB).
  * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 CP3.2), docs/spec/poly-paper-trading-shortcomings.md (bug.5018 — adapter symmetry)
@@ -289,18 +292,24 @@ export function readPolyPlacement(intent: OrderIntent): PolyPlacement {
 }
 
 export interface PolymarketClobAdapterConfig {
-  /** viem `WalletClient` (or ethers v5 `Signer`) — holds the Polymarket EOA. */
+  /** viem `WalletClient` (or ethers v5 `Signer`) — controls the account. */
   signer: ClobSigner;
   /** L2 API creds from `createOrDeriveApiKey` (task.0315 CP2.5). */
   creds: ApiKeyCreds;
-  /** Funder EOA — for EOA-path accounts this equals the signer address. */
+  /** Active funder: V2 Deposit Wallet in production, signer for legacy EOA. */
   funderAddress: `0x${string}`;
   /** Override CLOB host (default: https://clob.polymarket.com). */
   host?: string;
   /** Chain id — defaults to Polygon mainnet (137). */
   chainId?: Chain;
-  /** Signature type — defaults to EOA. Safe-proxy path is out of scope for P1. */
+  /** Legacy-client signature type; production V2 uses POLY_1271. */
   signatureType?: SignatureTypeV2;
+  /**
+   * Official unified SDK client for V2 Deposit Wallet (POLY_1271) signing.
+   * When present, order creation/posting uses this client; the transitional
+   * clob-client-v2 remains only for reads and legacy EOA compatibility.
+   */
+  v2OrderClient?: PolymarketV2OrderClient;
   /**
    * Structured-log sink. Defaults to a no-op; the node-app bootstrap should
    * pass a pino child logger bound with `{component: "poly-clob-adapter"}`.
@@ -319,6 +328,65 @@ export interface PolymarketClobAdapterConfig {
    * Dashboards reference the names in `POLY_CLOB_METRICS`.
    */
   metrics?: MetricsPort;
+}
+
+interface PolymarketV2AcceptedOrder {
+  readonly ok: true;
+  readonly orderId: string;
+  readonly status: string;
+  readonly makingAmount: string;
+  readonly takingAmount: string;
+}
+
+interface PolymarketV2RejectedOrder {
+  readonly ok: false;
+  readonly code: string;
+  readonly message: string;
+}
+
+type PolymarketV2OrderResponse =
+  | PolymarketV2AcceptedOrder
+  | PolymarketV2RejectedOrder;
+
+export interface PolymarketV2OrderClient {
+  cancelOrder?(request: { orderId: string }): Promise<unknown>;
+  placeLimitOrder(request: {
+    assetId: string;
+    postOnly?: boolean;
+    price: number | string;
+    side: "BUY" | "SELL";
+    size: number | string;
+  }): Promise<PolymarketV2OrderResponse>;
+  placeMarketOrder(
+    request:
+      | {
+          assetId: string;
+          amount: number | string;
+          maxPrice?: number | string;
+          orderType?: "FAK" | "FOK";
+          side: "BUY";
+        }
+      | {
+          assetId: string;
+          minPrice?: number | string;
+          orderType?: "FAK" | "FOK";
+          shares: number | string;
+          side: "SELL";
+        }
+  ): Promise<PolymarketV2OrderResponse>;
+}
+
+function mapV2OrderResponse(response: PolymarketV2OrderResponse): unknown {
+  if (!response.ok) {
+    return { success: false, errorMsg: response.message, code: response.code };
+  }
+  return {
+    success: true,
+    orderID: response.orderId,
+    status: response.status,
+    makingAmount: response.makingAmount,
+    takingAmount: response.takingAmount,
+  };
 }
 
 export interface PolymarketMarketSellParams {
@@ -354,11 +422,13 @@ export class PolymarketClobAdapter implements MarketProviderPort {
   private readonly log: LoggerPort;
   private readonly metrics: MetricsPort;
   private readonly chainId: Chain;
+  private readonly v2OrderClient: PolymarketV2OrderClient | undefined;
 
   constructor(config: PolymarketClobAdapterConfig) {
     installClobSdkDiagnosticSuppression();
     this.funderAddress = config.funderAddress;
     this.chainId = config.chainId ?? Chain.POLYGON;
+    this.v2OrderClient = config.v2OrderClient;
     this.client = new ClobClient({
       host: config.host ?? DEFAULT_CLOB_HOST,
       chain: this.chainId,
@@ -503,37 +573,65 @@ export class PolymarketClobAdapter implements MarketProviderPort {
       let response: unknown;
       if (placement === "limit") {
         orderTypeUsed = OrderType.GTC;
-        response = await withSuppressedClobSdkDiagnostics(() =>
-          this.client.createAndPostOrder(
-            {
-              tokenID: tokenId,
-              price: limitPrice,
-              size: shareSize,
-              side,
-              feeRateBps,
-            },
-            { tickSize, negRisk },
-            OrderType.GTC,
-            postOnly,
-            false
-          )
-        );
+        response = this.v2OrderClient
+          ? mapV2OrderResponse(
+              await this.v2OrderClient.placeLimitOrder({
+                assetId: tokenId,
+                price: limitPrice,
+                size: shareSize,
+                side: intent.side,
+                postOnly,
+              })
+            )
+          : await withSuppressedClobSdkDiagnostics(() =>
+              this.client.createAndPostOrder(
+                {
+                  tokenID: tokenId,
+                  price: limitPrice,
+                  size: shareSize,
+                  side,
+                  feeRateBps,
+                },
+                { tickSize, negRisk },
+                OrderType.GTC,
+                postOnly,
+                false
+              )
+            );
       } else {
         orderTypeUsed = OrderType.FOK;
         const marketAmount = intent.side === "BUY" ? effectiveUsdc : shareSize;
-        response = await withSuppressedClobSdkDiagnostics(() =>
-          this.client.createAndPostMarketOrder(
-            {
-              tokenID: tokenId,
-              price: limitPrice,
-              amount: marketAmount,
-              side,
-              feeRateBps,
-            },
-            { tickSize, negRisk },
-            OrderType.FOK
-          )
-        );
+        response = this.v2OrderClient
+          ? mapV2OrderResponse(
+              intent.side === "BUY"
+                ? await this.v2OrderClient.placeMarketOrder({
+                    assetId: tokenId,
+                    amount: marketAmount,
+                    maxPrice: limitPrice,
+                    orderType: "FOK",
+                    side: "BUY",
+                  })
+                : await this.v2OrderClient.placeMarketOrder({
+                    assetId: tokenId,
+                    minPrice: limitPrice,
+                    orderType: "FOK",
+                    shares: marketAmount,
+                    side: "SELL",
+                  })
+            )
+          : await withSuppressedClobSdkDiagnostics(() =>
+              this.client.createAndPostMarketOrder(
+                {
+                  tokenID: tokenId,
+                  price: limitPrice,
+                  amount: marketAmount,
+                  side,
+                  feeRateBps,
+                },
+                { tickSize, negRisk },
+                OrderType.FOK
+              )
+            );
       }
 
       const receipt = mapOrderResponseToReceipt(response, intent);
@@ -669,18 +767,30 @@ export class PolymarketClobAdapter implements MarketProviderPort {
         );
       }
 
-      const response: unknown = await withSuppressedClobSdkDiagnostics(() =>
-        this.client.createAndPostMarketOrder(
-          {
-            tokenID: params.tokenId,
-            amount: params.shares,
-            side: Side.SELL,
-            feeRateBps,
-          },
-          { tickSize, negRisk },
-          params.orderType ?? OrderType.FAK
-        )
-      );
+      const response: unknown = this.v2OrderClient
+        ? mapV2OrderResponse(
+            await this.v2OrderClient.placeMarketOrder({
+              assetId: params.tokenId,
+              shares: params.shares,
+              side: "SELL",
+              orderType:
+                (params.orderType ?? OrderType.FAK) === OrderType.FOK
+                  ? "FOK"
+                  : "FAK",
+            })
+          )
+        : await withSuppressedClobSdkDiagnostics(() =>
+            this.client.createAndPostMarketOrder(
+              {
+                tokenID: params.tokenId,
+                amount: params.shares,
+                side: Side.SELL,
+                feeRateBps,
+              },
+              { tickSize, negRisk },
+              params.orderType ?? OrderType.FAK
+            )
+          );
 
       const receipt = mapOrderResponseToReceipt(response, {
         provider: "polymarket",
@@ -758,9 +868,13 @@ export class PolymarketClobAdapter implements MarketProviderPort {
       "cancelOrder: start"
     );
     try {
-      await withSuppressedClobSdkDiagnostics(() =>
-        this.client.cancelOrder({ orderID: orderId })
-      );
+      if (this.v2OrderClient?.cancelOrder) {
+        await this.v2OrderClient.cancelOrder({ orderId });
+      } else {
+        await withSuppressedClobSdkDiagnostics(() =>
+          this.client.cancelOrder({ orderID: orderId })
+        );
+      }
       const duration_ms = Date.now() - start;
       this.metrics.incr(POLY_CLOB_METRICS.cancelTotal, { result: "ok" });
       this.metrics.observeDurationMs(

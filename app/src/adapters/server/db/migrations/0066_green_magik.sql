@@ -1,0 +1,2 @@
+ALTER TABLE "poly_wallet_connections" ADD COLUMN "funder_address" text;--> statement-breakpoint
+ALTER TABLE "poly_wallet_connections" ADD CONSTRAINT "poly_wallet_connections_funder_address_shape" CHECK ("poly_wallet_connections"."funder_address" IS NULL OR "poly_wallet_connections"."funder_address" ~ '^0x[a-fA-F0-9]{40}$');

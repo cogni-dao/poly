@@ -15,10 +15,22 @@
  */
 
 import { polyWalletConnections } from "@cogni/poly-db-schema";
+import type { PolyClobApiKeyCreds } from "@cogni/poly-wallet";
+import { createSecureClient } from "@polymarket/client";
+import { createBuilderApiKey } from "@polymarket/client/actions";
+import { builderApiKey } from "@polymarket/client/node";
+import { signerFrom as polymarketSignerFrom } from "@polymarket/client/viem";
 import { PrivyClient } from "@privy-io/node";
 import { desc, eq } from "drizzle-orm";
 import type { Logger } from "pino";
-import type { LocalAccount } from "viem";
+import {
+  createPublicClient,
+  createWalletClient,
+  erc20Abi,
+  http,
+  type LocalAccount,
+} from "viem";
+import { polygon } from "viem/chains";
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
 import { PrivyPolyTraderWalletAdapter } from "@/adapters/server/wallet";
 import {
@@ -147,6 +159,81 @@ export function createRealClobCredsFactory({
   };
 }
 
+const PUSD_POLYGON =
+  "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB" as const;
+
+/**
+ * Canonical V2 onboarding proved against production CLOB: Privy signer EOA →
+ * account-minted Builder key → deterministic Deposit Wallet → gasless trading
+ * approvals. Existing pUSD is moved only from the explicit enable-trading
+ * migration path.
+ */
+export function createOfficialDepositWalletFactory({
+  logger,
+  polygonRpcUrl,
+}: {
+  logger: Logger;
+  polygonRpcUrl: string;
+}) {
+  return async (
+    signer: LocalAccount,
+    clobCreds: PolyClobApiKeyCreds,
+    options: { readonly transferExistingPusd: boolean }
+  ): Promise<{ funderAddress: `0x${string}` }> => {
+    const walletClient = createWalletClient({
+      // biome-ignore lint/suspicious/noExplicitAny: Privy/viem peer minor drift
+      account: signer as any,
+      chain: polygon,
+      transport: http(polygonRpcUrl),
+    });
+    const polySigner = polymarketSignerFrom(walletClient);
+    const eoaClient = await createSecureClient({
+      signer: polySigner,
+      wallet: signer.address,
+      credentials: clobCreds as never,
+    });
+    const builderCredentials = await createBuilderApiKey(eoaClient);
+    const depositClient = await createSecureClient({
+      signer: polySigner,
+      credentials: clobCreds as never,
+      apiKey: builderApiKey(builderCredentials),
+    });
+
+    if (options.transferExistingPusd) {
+      const publicClient = createPublicClient({
+        chain: polygon,
+        transport: http(polygonRpcUrl),
+      });
+      const balance = await publicClient.readContract({
+        address: PUSD_POLYGON,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [signer.address],
+      });
+      if (balance > 0n) {
+        const transfer = await eoaClient.transferErc20({
+          amount: balance,
+          recipientAddress: depositClient.account.wallet,
+          tokenAddress: PUSD_POLYGON,
+        });
+        await transfer.wait();
+      }
+    }
+
+    await depositClient.setupTradingApprovals();
+    logger.info(
+      {
+        component: "poly-trader-wallet-bootstrap",
+        signer_address: signer.address,
+        funder_address: depositClient.account.wallet,
+        migrated_existing_pusd: options.transferExistingPusd,
+      },
+      "poly.wallet.deposit_wallet.ready"
+    );
+    return { funderAddress: depositClient.account.wallet };
+  };
+}
+
 /**
  * Lazy-construct + memoize the adapter. Follow-up will move this into the
  * main container; standalone factory keeps the first flight-able commit small.
@@ -165,18 +252,21 @@ export function getPolyTraderWalletAdapter(
   const signingKey = env.PRIVY_USER_WALLETS_SIGNING_KEY;
   const aeadKeyHex = env.POLY_WALLET_AEAD_KEY_HEX;
   const aeadKeyId = env.POLY_WALLET_AEAD_KEY_ID;
+  const polygonRpcUrl = env.POLYGON_RPC_URL;
   if (!appId) missing.push("PRIVY_USER_WALLETS_APP_ID");
   if (!appSecret) missing.push("PRIVY_USER_WALLETS_APP_SECRET");
   if (!signingKey) missing.push("PRIVY_USER_WALLETS_SIGNING_KEY");
   if (!aeadKeyHex) missing.push("POLY_WALLET_AEAD_KEY_HEX");
   if (!aeadKeyId) missing.push("POLY_WALLET_AEAD_KEY_ID");
+  if (!polygonRpcUrl) missing.push("POLYGON_RPC_URL");
   if (
     missing.length ||
     !appId ||
     !appSecret ||
     !signingKey ||
     !aeadKeyHex ||
-    !aeadKeyId
+    !aeadKeyId ||
+    !polygonRpcUrl
   ) {
     // PAPER_UNUSED_WALLET (bug.5253): in PAPER_ENFORCE_MODE=paper the live tenant
     // wallet is never resolved — `buildPaperOnlyExecutor` skips `resolve` +
@@ -211,7 +301,7 @@ export function getPolyTraderWalletAdapter(
 
   const clobCreds = createRealClobCredsFactory({
     logger,
-    polygonRpcUrl: env.POLYGON_RPC_URL,
+    polygonRpcUrl,
     geoBlockToken: env.POLY_CLOB_GEO_BLOCK_TOKEN,
   });
 
@@ -223,7 +313,11 @@ export function getPolyTraderWalletAdapter(
     encryptionKeyId: aeadKeyId,
     clobCredsFactory: clobCreds.derive,
     clobCredsRotator: clobCreds.rotate,
-    polygonRpcUrl: env.POLYGON_RPC_URL,
+    prepareDepositWallet: createOfficialDepositWalletFactory({
+      logger,
+      polygonRpcUrl,
+    }),
+    polygonRpcUrl,
     logger,
   });
   return cached;
