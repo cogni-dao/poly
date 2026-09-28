@@ -21,6 +21,7 @@ import {
   PolymarketLeaderboardEntrySchema,
 } from "../src/adapters/polymarket/index.js";
 import {
+  __polyDataApiInflightForTests,
   __resetPolyDataApiCooldownForTests,
   parseRetryAfterMs,
   PolyDataApiRateLimitedError,
@@ -602,5 +603,74 @@ describe("process-wide 429 cooldown (bug.5284)", () => {
     expect(parseRetryAfterMs("garbage")).toBe(5000);
     expect(parseRetryAfterMs("-5")).toBe(5000);
     expect(parseRetryAfterMs("99999")).toBe(30000);
+  });
+});
+
+describe("process-wide in-flight cap (bug.5286)", () => {
+  beforeEach(() => {
+    __resetPolyDataApiCooldownForTests();
+  });
+
+  it("caps concurrent upstream requests across INSTANCES, so a burst cannot all reach upstream", async () => {
+    // Prod 08cedd2 showed 429s arriving in SAME-MILLISECOND clusters: the herd
+    // was already in flight when the first 429 returned, so the cooldown closed
+    // behind them. Capping in-flight is the only thing that bounds the head.
+    let peak = 0;
+    let concurrent = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const fetchImpl = (async () => {
+      concurrent += 1;
+      peak = Math.max(peak, concurrent);
+      await gate;
+      concurrent -= 1;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => null },
+        json: async () => [],
+      };
+    }) as unknown as typeof fetch;
+
+    // Six requests spread over three DIFFERENT client instances — the real
+    // shape, since the app constructs one client per consumer.
+    const clients = [0, 1, 2].map(
+      () => new PolymarketDataApiClient({ fetch: fetchImpl })
+    );
+    const wallets = "0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
+    const calls = clients.flatMap((c) => [
+      c.listUserActivity(wallets),
+      c.listUserActivity(wallets),
+    ]);
+
+    await vi.waitFor(() => expect(peak).toBeGreaterThan(0));
+    expect(__polyDataApiInflightForTests().queued).toBeGreaterThan(0);
+    release();
+    await Promise.all(calls);
+
+    // The assertion that matters: upstream never saw more than the cap at once.
+    expect(peak).toBeLessThanOrEqual(2);
+  });
+
+  it("releases its slot when the cooldown rejects a queued request", async () => {
+    // A queued request that finds the cooldown open must not leak its slot,
+    // or the cap would permanently shrink after any rate-limit event.
+    const fetchImpl = (async () => ({
+      ok: false,
+      status: 429,
+      statusText: "Too Many Requests",
+      headers: { get: () => null },
+      json: async () => ({}),
+    })) as unknown as typeof fetch;
+    const c = new PolymarketDataApiClient({ fetch: fetchImpl });
+    const w = "0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
+    await expect(c.listUserActivity(w)).rejects.toThrow(/429/);
+    await expect(c.listUserActivity(w)).rejects.toThrow(
+      PolyDataApiRateLimitedError
+    );
+    expect(__polyDataApiInflightForTests()).toEqual({ inFlight: 0, queued: 0 });
   });
 });
