@@ -28,7 +28,7 @@
 import { polyTraderWallets } from "@cogni/poly-db-schema/trader-activity";
 import type { PolymarketDataApiClient } from "@cogni/poly-market-provider/adapters/polymarket";
 import { describe, expect, it, vi } from "vitest";
-import { runTraderObservationTick } from "@/features/wallet-analysis/server/trader-observation-service";
+import { runTraderObservationTick, pruneOldPositionSnapshots } from "@/features/wallet-analysis/server/trader-observation-service";
 
 const WALLET_A = `0x${"a".repeat(40)}`;
 const WALLET_B = `0x${"b".repeat(40)}`;
@@ -274,5 +274,71 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
       wallets_processed: 0,
       wallets_aborted: 2,
     });
+  });
+});
+
+describe("pruneOldPositionSnapshots stage deadline (bug.5300)", () => {
+  // The loop also exits when a batch deletes fewer rows than batchSize, so the
+  // fakes must report a FULL batch (rowCount === batchSize) to keep it looping.
+  const fullBatch = (batchSize: number) => ({ rowCount: batchSize });
+
+  it("stops starting batches once the stage budget is spent", async () => {
+    // bug.5297 capped each STATEMENT at 30s, which cannot bound a LOOP:
+    // maxBatches(10) x 30s = 300s, still 2.5x the 120s tick budget, with every
+    // statement legally under its ceiling. Prod confirmed it — tick timeouts
+    // still at prune_position_snapshots with ZERO statement-timeout errors.
+    let batches = 0;
+    const db = {
+      execute: async () => {
+        batches += 1;
+        await new Promise((r) => setTimeout(r, 12));
+        return fullBatch(5);
+      },
+    } as never;
+
+    const result = await pruneOldPositionSnapshots(db, {
+      batchSize: 5,
+      maxBatches: 10,
+      deadlineMs: 10,
+    });
+
+    // Full batches every time, so ONLY the deadline can stop it — and it must,
+    // well before maxBatches.
+    expect(batches).toBe(1);
+    expect(result.exhaustedBudget).toBe(true);
+    expect(result.deleted).toBe(5);
+  });
+
+  it("without a deadline, batch count remains the only bound (unchanged)", async () => {
+    let batches = 0;
+    const db = {
+      execute: async () => {
+        batches += 1;
+        return fullBatch(5);
+      },
+    } as never;
+    const result = await pruneOldPositionSnapshots(db, {
+      batchSize: 5,
+      maxBatches: 4,
+    });
+    expect(batches).toBe(4);
+    expect(result.exhaustedBudget).toBe(true);
+  });
+
+  it("a short batch still ends the prune before the deadline (pre-existing exit preserved)", async () => {
+    let batches = 0;
+    const db = {
+      execute: async () => {
+        batches += 1;
+        return { rowCount: 1 };
+      },
+    } as never;
+    const result = await pruneOldPositionSnapshots(db, {
+      batchSize: 5,
+      maxBatches: 10,
+      deadlineMs: 60_000,
+    });
+    expect(batches).toBe(1);
+    expect(result.exhaustedBudget).toBe(false);
   });
 });
