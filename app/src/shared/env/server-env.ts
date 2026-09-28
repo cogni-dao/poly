@@ -308,6 +308,21 @@ export const serverSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
+  // Live-forward trader observation writer (bug.5297). Default ON so
+  // production keeps collecting; set false on NON-PROD lanes to stop them
+  // spending production's IO headroom.
+  //
+  // Why this lever exists: by custody (bug.5206) the candidate-a and preview
+  // poly DATABASES live on the PRODUCTION VM. So each non-prod lane's
+  // observation loop writes to prod's disk for zero user value. The operator
+  // measured swap-thrash waves at load 34-42 / 60-80% iowait with poly writes
+  // in WAL waits on ALL THREE lanes simultaneously, taking the actuator's
+  // allocation ledger down with them.
+  POLY_TRADER_OBSERVATION_WRITER_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+
   // Top-wallets leaderboard mirror (bug.5017). Default ON: the Top Wallets
   // card reads only from `poly_top_wallet_stats`, so disabling the writer
   // leaves the card serving stale (or, pre-first-tick, empty) rows.

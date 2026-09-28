@@ -1313,6 +1313,21 @@ function createContainer(): Container {
 	// swisstony, and Cogni wallets so research query windows have stored facts.
 	void (async () => {
 		try {
+			// bug.5297 — non-prod lanes' DBs live on the PROD VM by custody
+			// (bug.5206), so their observation writes consume production IO for
+			// zero user value. This lever lets the operator stop that per lane
+			// without a code change; prod keeps its default of ON.
+			if (!env.POLY_TRADER_OBSERVATION_WRITER_ENABLED) {
+				log.warn(
+					{
+						event: "poly.trader.observe",
+						phase: "writer_disabled",
+						reason: "POLY_TRADER_OBSERVATION_WRITER_ENABLED=false",
+					},
+					"trader observation writer DISABLED by env — no observation/snapshot/metadata writes from this lane",
+				);
+				return;
+			}
 			const { startTraderObservationJob } = await import(
 				"@/bootstrap/jobs/trader-observation.job"
 			);
