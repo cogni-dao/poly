@@ -172,6 +172,72 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     expect(walletError?.[0]).toMatchObject({ wallet: WALLET_B });
   });
 
+  it("reports every stage it enters, in order, so a hung tick is diagnosable (bug.5273)", async () => {
+    // The job holds the latest stage in a plain variable OUTSIDE its
+    // timeout/grace race, because a tick that never settles returns nothing
+    // and its `wallets*` log fields are all null. Observed on prod 51bd530:
+    // `settled_after_abort: false` with every field null — the stall could not
+    // be localized. `sync_tenant_wallets` / `select_wallets` in that field is
+    // the signal that the tick hung in a pre-loop DB call, which takes no
+    // AbortSignal under drizzle/postgres-js.
+    const { db } = createFakeDb([walletRow("wallet-a", WALLET_A)]);
+    const logger = makeLogger();
+    const client = {
+      listUserActivity: vi.fn(async () => []),
+      listUserPositions: vi.fn(async () => []),
+    } as unknown as PolymarketDataApiClient;
+    const stages: string[] = [];
+
+    await runTraderObservationTick({
+      db,
+      client,
+      logger: logger as never,
+      metrics,
+      onStage: (stage) => {
+        stages.push(stage);
+      },
+    });
+
+    // The two pre-loop DB stages must be reported BEFORE the loop — that
+    // ordering is the whole diagnostic value.
+    expect(stages.slice(0, 3)).toEqual([
+      "sync_tenant_wallets",
+      "select_wallets",
+      "wallet_loop",
+    ]);
+    expect(stages).toContain("prune_position_snapshots");
+    expect(stages).toContain("refresh_market_metadata");
+  });
+
+  it("stops reporting stages at the wallet loop when the signal is already aborted (bug.5273)", async () => {
+    // Abort must not advance past the loop into the prunes — otherwise a
+    // hung-tick stage reading would point at maintenance work that never ran.
+    const { db } = createFakeDb([walletRow("wallet-a", WALLET_A)]);
+    const logger = makeLogger();
+    const client = {
+      listUserActivity: vi.fn(async () => []),
+      listUserPositions: vi.fn(async () => []),
+    } as unknown as PolymarketDataApiClient;
+    const controller = new AbortController();
+    controller.abort(new Error("tick timeout"));
+    const stages: string[] = [];
+
+    await runTraderObservationTick({
+      db,
+      client,
+      logger: logger as never,
+      metrics,
+      signal: controller.signal,
+      onStage: (stage) => {
+        stages.push(stage);
+      },
+    });
+
+    expect(stages).toContain("wallet_loop");
+    expect(stages).not.toContain("prune_position_snapshots");
+    expect(stages).not.toContain("refresh_market_metadata");
+  });
+
   it("counts all wallets aborted and skips prunes/metadata when the signal is aborted", async () => {
     const { db, executeCalls } = createFakeDb([
       walletRow("wallet-a", WALLET_A),

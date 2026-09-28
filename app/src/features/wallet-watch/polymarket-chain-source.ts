@@ -51,6 +51,9 @@ export const WALLET_WATCH_CHAIN_METRICS = {
   metadataRefreshTotal: "poly_mirror_chain_metadata_refresh_total",
   /** `poly_mirror_chain_metadata_refresh_duration_ms{trigger}` — round-trip + parse for the position snapshot. */
   metadataRefreshDurationMs: "poly_mirror_chain_metadata_refresh_duration_ms",
+  /** `poly_mirror_chain_metadata_refresh_throttled_total{trigger}` — a `cache_miss` refresh suppressed by the cooldown (bug.5276). Rising alongside flat `metadata_unresolved` is the healthy shape: we stopped paying `/positions` for tokenIds that cannot resolve. */
+  metadataRefreshThrottledTotal:
+    "poly_mirror_chain_metadata_refresh_throttled_total",
   /** `poly_mirror_chain_block_timestamp_fallback_total` — `getBlock` failed; observed_at fell back to wall-clock. Non-zero → Polygon RPC degradation; lag histogram under-reports by ≤ ~2 s for the duration. */
   blockTimestampFallbackTotal:
     "poly_mirror_chain_block_timestamp_fallback_total",
@@ -58,6 +61,14 @@ export const WALLET_WATCH_CHAIN_METRICS = {
 
 /** Default cadence for `listUserPositions` refresh. Matches the legacy WS source's `refreshAssetsIntervalMs`. */
 const DEFAULT_REFRESH_ASSETS_INTERVAL_MS = 60_000;
+/**
+ * Minimum gap between `cache_miss`-triggered metadata refreshes (bug.5276).
+ * Sized well under `DEFAULT_REFRESH_ASSETS_INTERVAL_MS` so a genuinely new
+ * tokenId still resolves quickly, but far above fill arrival rate so a burst of
+ * fills on unresolvable tokenIds collapses to one `/positions` walk instead of
+ * one per fill.
+ */
+const CACHE_MISS_REFRESH_COOLDOWN_MS = 60_000;
 /** Default heartbeat info-log cadence (ms). Loki absence-alert key. */
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -226,6 +237,24 @@ export function createPolymarketChainActivitySource(
   let fillsEmittedWindow = 0;
   let lastLogAt: number | null = null;
   let refreshInFlight: Promise<void> | null = null;
+  /**
+   * CACHE_MISS_REFRESH_IS_RATE_LIMITED (bug.5276) — wall-clock of the last
+   * completed metadata refresh, used to throttle the `cache_miss` trigger ONLY.
+   *
+   * Every fill whose tokenId misses `tokenMeta` fired a full PAGINATED
+   * `/positions` walk. A tokenId that can never resolve — the wallet has since
+   * exited that position, so it is absent from `/positions` entirely — misses
+   * forever, so each of its fills re-triggered the whole walk. Prod measured 29
+   * distinct permanently-unresolvable tokenIds driving 180 `metadata_unresolved`
+   * events in 55min, and Polymarket answered with `429 Too Many Requests
+   * (/positions)`. The walk cannot fix an absent position, so repeating it is
+   * pure cost: burnt rate-limit budget for a guaranteed miss.
+   *
+   * `cold_start` and `interval` are deliberately NOT throttled — they are
+   * already bounded (once, and by `refreshIntervalMs`) and are how genuinely
+   * new tokens enter the cache.
+   */
+  let lastRefreshCompletedAt = 0;
 
   async function getBlockTimestamp(
     blockNumber: bigint | null | undefined
@@ -256,6 +285,21 @@ export function createPolymarketChainActivitySource(
     trigger: "interval" | "cache_miss" | "cold_start"
   ): Promise<void> {
     if (refreshInFlight) return refreshInFlight;
+    // Throttle cache-miss-driven refreshes. A miss within the cooldown means a
+    // refresh already ran recently and still did not produce this tokenId, so
+    // walking `/positions` again cannot resolve it — skip and let the caller
+    // record `metadata_unresolved` as before. Behaviour on resolvable tokens is
+    // unchanged beyond a bounded delay: `interval` still refreshes on schedule.
+    if (
+      trigger === "cache_miss" &&
+      Date.now() - lastRefreshCompletedAt < CACHE_MISS_REFRESH_COOLDOWN_MS
+    ) {
+      deps.metrics.incr(
+        WALLET_WATCH_CHAIN_METRICS.metadataRefreshThrottledTotal,
+        { trigger }
+      );
+      return;
+    }
     refreshInFlight = (async () => {
       const start = Date.now();
       try {
@@ -300,6 +344,9 @@ export function createPolymarketChainActivitySource(
           "polymarket-chain-source: metadata refresh failed"
         );
       } finally {
+        // Stamped on success AND failure: a 429 is exactly when we must back
+        // off, so a failed walk still opens the cooldown window.
+        lastRefreshCompletedAt = Date.now();
         refreshInFlight = null;
       }
     })();

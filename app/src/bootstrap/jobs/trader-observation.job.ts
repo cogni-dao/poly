@@ -22,7 +22,10 @@ import type {
 } from "@cogni/poly-market-provider/adapters/polymarket";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { runTraderObservationTick } from "@/features/wallet-analysis/server/trader-observation-service";
+import {
+  runTraderObservationTick,
+  type TraderObservationStage,
+} from "@/features/wallet-analysis/server/trader-observation-service";
 
 type Db =
   | NodePgDatabase<Record<string, unknown>>
@@ -81,9 +84,19 @@ export function startTraderObservationJob(
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
     const TIMED_OUT = Symbol("tick-timed-out");
+    // STAGE_SURVIVES_A_HUNG_TICK (bug.5273) — held OUTSIDE the race below. The
+    // timeout log's `wallets*` fields all come from the tick's return value, so
+    // a tick that never settles reported nothing but nulls and the stall was
+    // undiagnosable (prod 51bd530: `settled_after_abort: false`, every field
+    // null). A plain mutable variable is the only thing guaranteed readable
+    // when the promise itself is abandoned.
+    let lastStage: TraderObservationStage | "not_started" = "not_started";
     const tickPromise = runTraderObservationTick({
       ...deps,
       signal: controller.signal,
+      onStage: (next) => {
+        lastStage = next;
+      },
     });
     try {
       const raced = await Promise.race([
@@ -129,6 +142,10 @@ export function startTraderObservationJob(
             timeout_ms: TICK_TIMEOUT_MS,
             tick_ms: Date.now() - tickStartedAt,
             settled_after_abort: settled.settled,
+            // bug.5273 — the stage is authoritative even when `settled.result`
+            // is undefined. `sync_tenant_wallets` / `select_wallets` here means
+            // the tick hung in a pre-loop DB call, which takes no AbortSignal.
+            stage: lastStage,
             wallets: settled.result?.wallets ?? null,
             wallets_completed: settled.result?.walletsProcessed ?? null,
             wallets_remaining: settled.result?.walletsAborted ?? null,
