@@ -18,8 +18,10 @@
 
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
+  date,
   index,
   integer,
   jsonb,
@@ -149,7 +151,136 @@ export const polyTraderFills = pgTable(
     // enumeration) and price-history tick (last-7d asset enumeration) filter
     // on observed_at alone, with no trader_wallet_id predicate.
     index("poly_trader_fills_observed_at_idx").on(table.observedAt),
+    // Rollup-writer batch walk + reader tail scans
+    // (task.research-rollup-read-models): the incremental fill-rollup
+    // accumulator orders NEW fills by insertion key `(created_at, id)` per
+    // wallet, and the rollup-backed readers scan the not-yet-rolled tail with
+    // `(created_at, id) > (watermark_ts, watermark_id)`. Row-constructor
+    // comparisons are btree-servable only with this exact column order.
+    index("poly_trader_fills_trader_created_idx").on(
+      table.traderWalletId,
+      table.createdAt,
+      table.id
+    ),
   ]
+);
+
+/**
+ * Incremental per-(wallet, market, token, UTC-day) rollup of
+ * `poly_trader_fills`, written ONLY by the fill-rollup accumulator inside the
+ * trader-observation tick (plus the boot backfill walker that reuses the same
+ * accumulate function). One row per (trader_wallet_id, condition_id, token_id,
+ * day-of-observed_at-UTC) carrying additive sums/counts and monotone
+ * MIN/MAX observation bounds, so research readers aggregate O(unique
+ * position-days) rows instead of O(fills) (task.research-rollup-read-models;
+ * the 25-60s full-history scans measured on prod 2026-09-28).
+ *
+ * Idempotency contract: rows are only ever advanced through the accumulate
+ * upsert (`fill_count = fill_count + EXCLUDED.fill_count`, LEAST/GREATEST for
+ * the observation bounds) inside the same transaction that moves the wallet's
+ * `poly_trader_fill_rollup_cursors` watermark — a fill is counted exactly once
+ * or the whole batch rolls back.
+ *
+ * No tenant FK → no RLS, matching the other `poly_trader_*` observation
+ * tables.
+ *
+ * @public
+ */
+export const polyTraderFillRollupsDaily = pgTable(
+  "poly_trader_fill_rollups_daily",
+  {
+    traderWalletId: uuid("trader_wallet_id")
+      .notNull()
+      .references(() => polyTraderWallets.id, { onDelete: "cascade" }),
+    conditionId: text("condition_id").notNull(),
+    tokenId: text("token_id").notNull(),
+    /** UTC calendar day of `poly_trader_fills.observed_at`. */
+    day: date("day").notNull(),
+    fillCount: integer("fill_count").notNull(),
+    buyCount: integer("buy_count").notNull(),
+    sellCount: integer("sell_count").notNull(),
+    buyUsdc: numeric("buy_usdc", { precision: 20, scale: 8 }).notNull(),
+    sellUsdc: numeric("sell_usdc", { precision: 20, scale: 8 }).notNull(),
+    buyShares: numeric("buy_shares", { precision: 20, scale: 8 }).notNull(),
+    sellShares: numeric("sell_shares", { precision: 20, scale: 8 }).notNull(),
+    /** Earliest BUY fill observed this day; NULL when the day has no BUYs. */
+    firstBuyObservedAt: timestamp("first_buy_observed_at", {
+      withTimezone: true,
+    }),
+    firstObservedAt: timestamp("first_observed_at", {
+      withTimezone: true,
+    }).notNull(),
+    lastObservedAt: timestamp("last_observed_at", {
+      withTimezone: true,
+    }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.traderWalletId, table.conditionId, table.tokenId, table.day],
+    }),
+    check(
+      "poly_trader_fill_rollups_daily_counts_nonnegative",
+      sql`${table.fillCount} >= 0 AND ${table.buyCount} >= 0 AND ${table.sellCount} >= 0`
+    ),
+    check(
+      "poly_trader_fill_rollups_daily_sums_nonnegative",
+      sql`${table.buyUsdc} >= 0 AND ${table.sellUsdc} >= 0 AND ${table.buyShares} >= 0 AND ${table.sellShares} >= 0`
+    ),
+    // Windowed readers (benchmark 1D/1W/1M, overlap, comparison summary)
+    // range-scan `trader_wallet_id = $1 AND day >= $2`; the PK leads with
+    // wallet but buries `day` last, so the range needs its own prefix.
+    index("poly_trader_fill_rollups_daily_wallet_day_idx").on(
+      table.traderWalletId,
+      table.day
+    ),
+    // trader-comparison token flows: `trader_wallet_id = $1 AND token_id IN
+    // (windowed tokens)` GROUP BY token_id — narrow windows probe a small
+    // token set directly instead of scanning every wallet rollup row.
+    index("poly_trader_fill_rollups_daily_wallet_token_idx").on(
+      table.traderWalletId,
+      table.tokenId
+    ),
+  ]
+);
+
+/**
+ * Per-wallet watermark for the fill-rollup accumulator. `(last_created_at,
+ * last_fill_id)` is the insertion key of the LAST `poly_trader_fills` row
+ * folded into `poly_trader_fill_rollups_daily`; fills with a strictly greater
+ * `(created_at, id)` tuple are not yet rolled up (readers treat them as the
+ * live "tail"). The row is advanced only inside the accumulate transaction
+ * (SELECT ... FOR UPDATE serializes concurrent accumulators per wallet);
+ * `last_fill_id` defaults to the zero UUID so tuple comparisons never see
+ * NULL. Soundness of the watermark depends on per-wallet fills writers being
+ * serialized (single observation tick, guard held until writers settle —
+ * bug.5297), which makes `created_at` (= insert-transaction start time)
+ * monotone per wallet across commits.
+ *
+ * @public
+ */
+export const polyTraderFillRollupCursors = pgTable(
+  "poly_trader_fill_rollup_cursors",
+  {
+    traderWalletId: uuid("trader_wallet_id")
+      .primaryKey()
+      .references(() => polyTraderWallets.id, { onDelete: "cascade" }),
+    lastCreatedAt: timestamp("last_created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`'epoch'::timestamptz`),
+    lastFillId: uuid("last_fill_id")
+      .notNull()
+      .default(sql`'00000000-0000-0000-0000-000000000000'::uuid`),
+    /** Lifetime count of fills folded in — observability only. */
+    rolledFillCount: bigint("rolled_fill_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  }
 );
 
 export const polyTraderPositionSnapshots = pgTable(
@@ -511,6 +642,14 @@ export type PolyTraderWallet = typeof polyTraderWallets.$inferSelect;
 export type NewPolyTraderWallet = typeof polyTraderWallets.$inferInsert;
 export type PolyTraderFill = typeof polyTraderFills.$inferSelect;
 export type NewPolyTraderFill = typeof polyTraderFills.$inferInsert;
+export type PolyTraderFillRollupDaily =
+  typeof polyTraderFillRollupsDaily.$inferSelect;
+export type NewPolyTraderFillRollupDaily =
+  typeof polyTraderFillRollupsDaily.$inferInsert;
+export type PolyTraderFillRollupCursor =
+  typeof polyTraderFillRollupCursors.$inferSelect;
+export type NewPolyTraderFillRollupCursor =
+  typeof polyTraderFillRollupCursors.$inferInsert;
 export type PolyTraderPositionSnapshot =
   typeof polyTraderPositionSnapshots.$inferSelect;
 export type NewPolyTraderPositionSnapshot =
