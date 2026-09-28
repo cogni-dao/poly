@@ -43,13 +43,34 @@ case "$node_slug" in
   *) URL="https://${node_slug}.cognidao.org/api/v1/cognition" ;;
 esac
 
+fetch_bundle() {
+  key="$1"
+  if [ -n "$key" ]; then
+    curl -fsS --max-time 6 -H "Authorization: Bearer ${key}" "$URL" 2>/dev/null | jq -r '.markdown // empty' 2>/dev/null
+  else
+    curl -fsS --max-time 6 "$URL" 2>/dev/null | jq -r '.markdown // empty' 2>/dev/null
+  fi
+}
+
 # Bearer = this node's NODE account key (environment first, then ./.env.cogni).
 AGENT_KEY="${COGNI_NODE_API_KEY:-$(read_env_file_value COGNI_NODE_API_KEY)}"
+bundle="$(fetch_bundle "$AGENT_KEY")"
 
-if [ -n "$AGENT_KEY" ]; then
-  bundle="$(curl -fsS --max-time 6 -H "Authorization: Bearer ${AGENT_KEY}" "$URL" 2>/dev/null | jq -r '.markdown // empty' 2>/dev/null)"
-else
-  bundle="$(curl -fsS --max-time 6 "$URL" 2>/dev/null | jq -r '.markdown // empty' 2>/dev/null)"
+# Defense in depth: a Conductor worktree can hold a stale COPIED .env.cogni that
+# shadows the canonical auth-root (main checkout) file. If the local key yielded
+# nothing, retry with the auth-root key — derived from git, no hardcoded path —
+# before degrading to the self-serve prompt.
+if [ -z "$bundle" ]; then
+  common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+  if [ -n "$common_dir" ]; then
+    auth_root="$(cd "$(dirname "$common_dir")" 2>/dev/null && pwd || true)"
+    if [ -n "$auth_root" ] && [ "$auth_root" != "$(pwd)" ]; then
+      auth_key="$(read_env_file_value COGNI_NODE_API_KEY "$auth_root/.env.cogni")"
+      if [ -n "$auth_key" ] && [ "$auth_key" != "$AGENT_KEY" ]; then
+        bundle="$(fetch_bundle "$auth_key")"
+      fi
+    fi
+  fi
 fi
 
 if [ -n "$bundle" ]; then
