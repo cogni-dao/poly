@@ -16,7 +16,7 @@ scope_key: "default"
 intent:
   name: poly
   hook: "Community AI for prediction markets"
-  mission: "Cogni Poly is a community-built AI for prediction market research, monitoring cross-platform catalysts and surfacing explainable signals while token holders steer priorities."
+  mission: "Cogni Poly is a multi-experimental, community-steered AI searching for the best ways to profit consistently and ethically on prediction markets — explainable signals, ground-truth evidence, token holders steer priorities. A standing sub-quest: explore how prediction markets and their profits can be used ethically, for good."
   brand:
     icon: Activity
     color: "#22c55e"
