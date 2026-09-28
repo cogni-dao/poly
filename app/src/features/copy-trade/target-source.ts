@@ -408,7 +408,29 @@ async function explainExcludedTargets(
     const excluded = diag.filter(
       (r) => !r.has_live_connection || !r.has_live_grant
     );
-    if (excluded.length === 0) return;
+    // HEALTHY_PATH_IS_AUDIBLE (bug.5298) — this used to `return` silently when
+    // nothing was excluded, which made ZERO `target_excluded` lines ambiguous
+    // between three states I could not tell apart on prod: (a) the enumerator
+    // ran and excluded nothing, (b) the enumerator never ran, (c) `deps.logger`
+    // was absent so this block was skipped. I asserted (a) from that silence
+    // and was wrong to — it is exactly the silent-absence trap this whole
+    // diagnostic exists to cure, committed inside the cure.
+    //
+    // One heartbeat per enumeration makes the healthy pass VISIBLE, so absence
+    // now means "not running" rather than "fine". Cheap: one line per mirror
+    // poll, with the counts that make a tenant dropping out immediately legible.
+    if (excluded.length === 0) {
+      log.info(
+        {
+          event: "poly.copy_trade.enumeration",
+          active_targets: activeCount,
+          candidate_targets: diag.length,
+          excluded_targets: 0,
+        },
+        "copy-trade: target enumeration healthy — no active target excluded"
+      );
+      return;
+    }
 
     for (const r of excluded) {
       const reason = !r.has_live_connection
