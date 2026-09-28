@@ -40,6 +40,19 @@ describe("ai.chat.v1 contract validation", () => {
       expect(result.success).toBe(true);
     });
 
+    it("accepts stable client message and run identities", () => {
+      const result = AssistantUiInputSchema.safeParse({
+        message: "Retry-safe hello",
+        modelRef: { providerKey: "platform", modelId: "gpt-4" },
+        graphName: "sandbox:agent",
+        stateKey: "thread-123",
+        messageId: "message-123",
+        runId: "123e4567-e89b-42d3-a456-426614174000",
+      });
+
+      expect(result.success).toBe(true);
+    });
+
     it("accepts message at max length (16000 chars)", () => {
       const payload = {
         message: "x".repeat(16_000),
@@ -130,6 +143,25 @@ describe("ai.chat.v1 contract validation", () => {
 
       const result = AssistantUiInputSchema.safeParse(payload);
       expect(result.success).toBe(false);
+    });
+
+    it("rejects unsafe messageId and non-UUID runId", () => {
+      const base = {
+        message: "Hello",
+        modelRef: { providerKey: "platform", modelId: "gpt-4" },
+        graphName: "chat",
+      };
+
+      expect(
+        AssistantUiInputSchema.safeParse({
+          ...base,
+          messageId: "message with spaces",
+        }).success
+      ).toBe(false);
+      expect(
+        AssistantUiInputSchema.safeParse({ ...base, runId: "not-a-uuid" })
+          .success
+      ).toBe(false);
     });
 
     it("rejects old messages[] format", () => {

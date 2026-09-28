@@ -30,7 +30,7 @@ import {
   InternalGraphRunInputSchema,
   type InternalGraphRunOutput,
 } from "@cogni/node-contracts";
-import { AnalyticsEvents, capture } from "@cogni/node-shared/analytics";
+import { AnalyticsEvents, capture } from "@cogni/node-shared";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getContainer } from "@/bootstrap/container";
@@ -40,14 +40,16 @@ import {
 } from "@/bootstrap/graph-executor.factory";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import {
-  assembleAssistantMessage,
   executeStream,
-  redactSecretsInMessages,
 } from "@/features/ai/public.server";
 import { commitUsageFact } from "@/features/ai/services/billing";
 import { preflightCreditCheck } from "@/features/ai/services/preflight-credit-check";
 import type { PreflightCreditCheckFn } from "@/ports";
-import { isInsufficientCreditsPortError, ThreadConflictError } from "@/ports";
+import { isInsufficientCreditsPortError } from "@/ports";
+import {
+  persistAssistantThenPublishTerminal,
+  TerminalPublicationError,
+} from "@/app/_lib/ai/durable-chat-terminal";
 import {
   isGrantExpiredError,
   isGrantNotFoundError,
@@ -55,6 +57,11 @@ import {
   isGrantScopeMismatchError,
 } from "@/ports/server";
 import { serverEnv } from "@/shared/env";
+import {
+  aiChatPersistenceFailuresTotal,
+  aiChatPhaseDurationMs,
+  aiChatTerminalPublishFailuresTotal,
+} from "@/shared/observability";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -212,7 +219,15 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
     const runId = providedRunId ?? randomUUID();
 
     // --- 5. Compute request hash for idempotency ---
-    const requestHash = computeRequestHash(graphId, input);
+    // API completions preclaim the slot before Temporal start and pass the
+    // canonical hash through the workflow. Scheduled runs compute it here.
+    const suppliedRequestHash =
+      typeof input.executionRequestHash === "string" &&
+      /^[0-9a-f]{64}$/.test(input.executionRequestHash)
+        ? input.executionRequestHash
+        : undefined;
+    const requestHash =
+      suppliedRequestHash ?? computeRequestHash(graphId, input);
 
     // --- 6. Check idempotency ---
     const idempotencyResult =
@@ -247,22 +262,29 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       }
     }
 
+    let requestAlreadyClaimed = false;
     if (idempotencyResult.status === "pending") {
       // Execution in progress - return 409 Conflict to signal retry later
       const pending = idempotencyResult.request;
-      log.info(
-        { idempotencyKey, runId: pending.runId },
-        "Execution already in progress"
-      );
-      return NextResponse.json(
-        {
-          error: "Execution in progress",
-          message:
-            "Request with this Idempotency-Key is currently being processed",
-          runId: pending.runId,
-        },
-        { status: 409 }
-      );
+      if (suppliedRequestHash && pending.runId === runId) {
+        // The completion facade durably claimed this exact request before
+        // starting Temporal. This workflow owns the pending record.
+        requestAlreadyClaimed = true;
+      } else {
+        log.info(
+          { idempotencyKey, runId: pending.runId },
+          "Execution already in progress"
+        );
+        return NextResponse.json(
+          {
+            error: "Execution in progress",
+            message:
+              "Request with this Idempotency-Key is currently being processed",
+            runId: pending.runId,
+          },
+          { status: 409 }
+        );
+      }
     }
 
     if (idempotencyResult.status === "mismatch") {
@@ -394,6 +416,14 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
     // --- 9. Execute graph ---
     // Use OTel trace ID (same one passed to executor, used by Langfuse decorator)
     const traceId = ctx.traceId;
+    const chatRequestId =
+      typeof input.chatRequestId === "string" ? input.chatRequestId : undefined;
+    const chatMessageId =
+      typeof input.chatMessageId === "string" ? input.chatMessageId : undefined;
+    const chatWorkflowId =
+      typeof input.chatWorkflowId === "string"
+        ? input.chatWorkflowId
+        : undefined;
 
     log.info(
       { graphId, runId, executionGrantId, idempotencyKey, traceId },
@@ -402,12 +432,14 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
 
     // --- 9a. Create pending idempotency record BEFORE execution ---
     // This ensures the record exists even if execution fails/times out
-    await container.executionRequestPort.createPendingRequest(
-      idempotencyKey,
-      requestHash,
-      runId,
-      traceId
-    );
+    if (!requestAlreadyClaimed) {
+      await container.executionRequestPort.createPendingRequest(
+        idempotencyKey,
+        requestHash,
+        runId,
+        traceId
+      );
+    }
 
     // --- 9b. Patch stateKey onto graph_runs record (bug.0197) ---
     // stateKey is derived here (internal API) but graph_runs was created by
@@ -612,94 +644,92 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
 
       final = await result.final;
 
-      // Enrich and publish the buffered done event with usage from GraphFinal.
-      if (pendingDone) {
+      if (final.ok && !pendingDone) {
+        throw new Error("Successful graph stream completed without done event");
+      }
+
+      // Terminal success is observable only after the stateful transcript is durable.
+      if (pendingDone && final.ok) {
+        const assistantPersistStartMs = performance.now();
         try {
           const enriched = {
             ...pendingDone,
-            ...(final.ok && final.usage ? { usage: final.usage } : {}),
-            ...(final.ok && final.finishReason
-              ? { finishReason: final.finishReason }
-              : {}),
+            ...(final.usage ? { usage: final.usage } : {}),
+            ...(final.finishReason ? { finishReason: final.finishReason } : {}),
           };
-          await runStream.publish(runId, enriched);
-          await runStream.expire(runId, RUN_STREAM_DEFAULT_TTL_SECONDS);
-        } catch (publishErr) {
-          log.warn(
-            { runId, err: publishErr },
-            "Redis publish of enriched done failed"
-          );
-        }
-      }
-
-      // --- Thread persistence (PERSIST_AFTER_PUMP) ---
-      // Per STATEKEY_NULLABLE: only persist when stateKey + user context present.
-      // Per TERMINAL_ONLY_PERSIST: assembler returns null if no assistant_final.
-      // Per IDEMPOTENT_THREAD_PERSIST: message ID = assistant-{runId}, skip if already in thread.
-      if (stateKey && actorUserId) {
-        try {
-          const assistantMsg = assembleAssistantMessage(
+          await persistAssistantThenPublishTerminal({
             runId,
-            accumulatedEvents
-          );
-          if (assistantMsg) {
-            const threadPersistence = container.threadPersistenceForUser(
-              toUserId(actorUserId)
-            );
-            const existing = await threadPersistence.loadThread(
-              actorUserId,
-              stateKey
-            );
-
-            // Idempotent guard: skip if this run's assistant message is already persisted
-            const alreadyPersisted = existing.some(
-              (m) => m.id === assistantMsg.id
-            );
-            if (!alreadyPersisted) {
-              const thread = [...existing, assistantMsg];
-              try {
-                await threadPersistence.saveThread(
-                  actorUserId,
+            ...(stateKey ? { stateKey } : {}),
+            ...(actorUserId ? { actorUserId } : {}),
+            accumulatedEvents,
+            threadPersistenceForUser: (userId) =>
+              container.threadPersistenceForUser(userId),
+            onPersisted: ({ messageCount, attempt }) => {
+              aiChatPhaseDurationMs.observe(
+                { phase: "assistant_persist" },
+                performance.now() - assistantPersistStartMs
+              );
+              log.info(
+                {
+                  reqId: chatRequestId ?? ctx.reqId,
                   stateKey,
-                  redactSecretsInMessages(thread),
-                  existing.length
+                  messageId: chatMessageId,
+                  runId,
+                  workflowId: chatWorkflowId,
+                  messageCount,
+                  attempt,
+                },
+                "ai.chat_assistant_persisted"
+              );
+            },
+            publishTerminal: async () => {
+              await runStream.publish(runId, enriched);
+              try {
+                await runStream.expire(
+                  runId,
+                  RUN_STREAM_DEFAULT_TTL_SECONDS
                 );
-                log.info(
-                  { runId, stateKey, messageCount: thread.length },
-                  "Thread persisted by execution layer"
+              } catch (expireErr) {
+                log.warn(
+                  { runId, err: expireErr },
+                  "Redis expiry after terminal publication failed"
                 );
-              } catch (persistErr) {
-                if (persistErr instanceof ThreadConflictError) {
-                  // Retry once with fresh load (concurrent write from chat route Phase 1)
-                  const reloaded = await threadPersistence.loadThread(
-                    actorUserId,
-                    stateKey
-                  );
-                  if (!reloaded.some((m) => m.id === assistantMsg.id)) {
-                    await threadPersistence.saveThread(
-                      actorUserId,
-                      stateKey,
-                      redactSecretsInMessages([...reloaded, assistantMsg]),
-                      reloaded.length
-                    );
-                    log.info(
-                      { runId, stateKey },
-                      "Thread persisted (retry after conflict)"
-                    );
-                  }
-                } else {
-                  throw persistErr;
-                }
               }
-            }
+              log.info(
+                {
+                  reqId: chatRequestId ?? ctx.reqId,
+                  stateKey,
+                  messageId: chatMessageId,
+                  runId,
+                  workflowId: chatWorkflowId,
+                },
+                "ai.chat_terminal_published"
+              );
+            },
+          });
+        } catch (terminalError) {
+          if (terminalError instanceof TerminalPublicationError) {
+            aiChatTerminalPublishFailuresTotal.inc();
+          } else {
+            aiChatPersistenceFailuresTotal.inc();
+            aiChatPhaseDurationMs.observe(
+              { phase: "assistant_persist" },
+              performance.now() - assistantPersistStartMs
+            );
           }
-        } catch (threadErr) {
-          // Thread persistence failure must not block execution result.
-          // Billing + run record are more critical; log and continue.
           log.error(
-            { runId, stateKey, err: threadErr },
-            "Thread persistence failed — execution result unaffected"
+            {
+              runId,
+              stateKey,
+              phase:
+                terminalError instanceof TerminalPublicationError
+                  ? "terminal_publish"
+                  : "assistant_persist",
+              err: terminalError,
+            },
+            "Durable chat terminal failed — suppressing run success"
           );
+          throw terminalError;
         }
       }
     } catch (error) {
@@ -709,7 +739,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
 
       log.warn(
         { runId, graphId, errorCode, err: error },
-        "Graph execution rejected before start"
+        "Graph execution failed before durable terminal publication"
       );
 
       // Publish error to Redis so facade subscribers don't hang.
@@ -722,7 +752,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       } catch (publishErr) {
         log.warn(
           { runId, err: publishErr },
-          "Redis error publish failed after preflight rejection"
+          "Redis error publish failed after graph execution failure"
         );
       }
 

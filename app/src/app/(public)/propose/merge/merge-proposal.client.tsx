@@ -13,7 +13,7 @@
  * @public
  */
 
-import { getDaoUrl } from "@cogni/node-shared/web3";
+import { getDaoUrl } from "@cogni/node-shared";
 import { useSearchParams } from "next/navigation";
 import { useMemo } from "react";
 import { encodeFunctionData } from "viem";

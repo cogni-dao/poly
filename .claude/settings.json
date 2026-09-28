@@ -6,7 +6,7 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "bash scripts/agent/session-cognition.sh"
+						"command": "bash \"$(git rev-parse --show-toplevel)/scripts/agent/session-cognition.sh\""
 					}
 				]
 			}
