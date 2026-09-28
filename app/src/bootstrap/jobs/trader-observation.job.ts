@@ -80,6 +80,9 @@ export function startTraderObservationJob(
     }
     running = true;
     const tickStartedAt = Date.now();
+    // bug.5297 — set when an abandoned tick keeps the guard so the `finally`
+    // below must NOT clear it; the late-settle handler owns the release.
+    let guardHeld = false;
     const controller = new AbortController();
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -130,10 +133,38 @@ export function startTraderObservationJob(
             graceTimer.unref?.();
           }),
         ]);
-        if (!settled.settled) {
-          // Abandoned-but-aborted: swallow the eventual settle so an
-          // unhandled rejection can't crash the process.
-          tickPromise.catch(() => undefined);
+          if (!settled.settled) {
+          // GUARD_HELD_UNTIL_WRITERS_SETTLE (bug.5297) — an abandoned tick's
+          // DB writes DO NOT STOP. drizzle/postgres-js take no AbortSignal, so
+          // aborting the signal ends our *waiting*, not the INSERT. Releasing
+          // `running` here let the next poll stack MORE concurrent writes on
+          // top of the still-running ones, with nothing bounding the pile-up.
+          //
+          // Measured on the prod VM 2026-09-28: 12x INSERT into
+          // poly_trader_current_positions at 589s, 6x into
+          // poly_trader_position_snapshots at 729s, autovacuum wedged 1240s,
+          // 28 active poly connections, swap 2G/2G full, load 38-42, 80-85%
+          // iowait. Ticks never overlapped logically — the guard worked — but
+          // their WRITERS did, unboundedly.
+          //
+          // So we keep the guard HELD and release it only when the promise
+          // truly settles. A skipped tick is free; an unbounded write pile-up
+          // took down a shared box. `guardHeld` makes the finally below
+          // conditional instead of unconditional.
+          guardHeld = true;
+          void tickPromise
+            .catch(() => undefined)
+            .finally(() => {
+              running = false;
+              log.warn(
+                {
+                  event: "poly.trader.observe",
+                  phase: "tick_released_late",
+                  tick_ms: Date.now() - tickStartedAt,
+                },
+                "trader observation tick finally settled; guard released — ticks were skipped until now by design"
+              );
+            });
         }
         log.error(
           {
@@ -167,7 +198,9 @@ export function startTraderObservationJob(
     } finally {
       clearTimeout(timeoutTimer);
       clearTimeout(graceTimer);
-      running = false;
+      // bug.5297 — do NOT release while an abandoned tick's writers may still
+      // be in flight; its late-settle handler releases instead.
+      if (!guardHeld) running = false;
     }
   }
 
