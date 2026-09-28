@@ -231,7 +231,15 @@ expectStep(CI_WORKFLOW_PATH, staticSteps, "Workflow contract check");
 
 const unitJob = ciWorkflow?.jobs?.unit;
 if (!unitJob) fail(CI_WORKFLOW_PATH, "jobs must include unit");
-expectEqual(CI_WORKFLOW_PATH, unitJob?.needs, "static", "jobs.unit.needs");
+// unit runs in PARALLEL with static (no `needs: static`): it does its own
+// install + packages:build (asserted below), so gating on static only serialized
+// the fast gate onto the critical path for a fail-fast the merge queue re-checks.
+// The required-check contract (static/unit/component exist + are required) is
+// enforced via repo-policy requiredStatusChecks, independent of job ordering.
+// Contract: unit must NOT depend on static (keeps the parallel shape uniform).
+if (Object.hasOwn(unitJob, "needs")) {
+  fail(CI_WORKFLOW_PATH, `jobs.unit must run in parallel (no \`needs\`); got ${JSON.stringify(unitJob.needs)}`);
+}
 const unitSteps = Array.isArray(unitJob?.steps) ? unitJob.steps : [];
 expectStep(CI_WORKFLOW_PATH, unitSteps, "Install dependencies");
 expectStep(CI_WORKFLOW_PATH, unitSteps, "Build workspace packages");

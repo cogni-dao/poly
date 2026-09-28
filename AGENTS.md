@@ -11,9 +11,11 @@
 
 A SessionStart hook ([`.claude/settings.json`](.claude/settings.json) for Claude Code,
 [`.codex/config.toml`](.codex/config.toml) for Codex) runs the shared loader
-[`scripts/agent/session-cognition.sh`](scripts/agent/session-cognition.sh), which pulls a
+[`scripts/agent/session-cognition.sh`](scripts/agent/session-cognition.sh), which presents a
 **cognition bundle** — tooling invariants + a live skills index + knowledge-domain pointers —
-and injects it into context. Codex needs a one-time trust (`/hooks`).
+from a durable local cache, refreshes it asynchronously, and injects it into
+context. The 16 KiB ceiling fails closed rather than truncating instructions.
+Codex needs a one-time trust (`/hooks`).
 
 - The loader derives `https://<node-slug>.cognidao.org/api/v1/cognition` from
   `.cogni/repo-spec.yaml` `intent.name` and recalls **this node's own hub** with

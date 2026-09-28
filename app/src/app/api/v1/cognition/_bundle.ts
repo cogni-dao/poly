@@ -25,13 +25,37 @@ import type {
 } from "@cogni/node-contracts";
 
 /**
+ * Hard ceiling for model-visible SessionStart context.
+ *
+ * Codex's repo hook opts out of its approximate token spill so the middle of
+ * the orientation can never disappear. That is safe only while the producer
+ * enforces a strict bound. Keep the shell loader's value identical: the API
+ * rejects growth at the source, and the loader independently protects stale
+ * or foreign caches.
+ */
+export const SESSION_COGNITION_MAX_BYTES = 16 * 1024;
+
+/** Reject an oversized bundle rather than silently removing arbitrary text. */
+export function assertBundleWithinBudget(markdown: string): void {
+	// Shell command substitution strips trailing newlines; the presenter then
+	// restores exactly one. Count that exact model-visible stdout shape here.
+	const presented = `${markdown.replace(/\n+$/, "")}\n`;
+	const bytes = new TextEncoder().encode(presented).byteLength;
+	if (bytes > SESSION_COGNITION_MAX_BYTES) {
+		throw new Error(
+			`Session cognition bundle is ${bytes} bytes; maximum is ${SESSION_COGNITION_MAX_BYTES}`,
+		);
+	}
+}
+
+/**
  * The irreducible session contract. This is the ONLY cognition that is
  * code-owned rather than hub-delivered: it must survive an empty or unreachable
  * hub so every session still bootstraps. Everything expandable (skills, guides,
  * domain expertise) is delivered live from the knowledge hub on top of this.
  */
 export const SESSION_BOOTSTRAP_INVARIANTS: readonly string[] = [
-	"ONE work item + ONE node per session (CI-gated). Claim, heartbeat, and link your PR at /api/v1/work/items/{id}; coordination.nextAction is authoritative.",
+	"ONE work item + ONE node per session (CI-gated) — it IS your plan. Claim it, write your definition of done as an ordered checklist in `outcome` BEFORE you act, and refine it IN PLACE as rungs land — `outcome` is GET-readable, so a plan or 'path forward' lives THERE, never only in chat. Heartbeat; link your PR; coordination.nextAction is authoritative.",
 	"Recall before you write. Search the hub first — merged (/api/v1/knowledge?domain=) and your own open branch — and refine in place over adding new.",
 	"Ship via PR: same-repo branch → CI green → flight to candidate → merge. The operator is the deploy plane (flight, logs, secrets); code, work, and knowledge live in the node repo + hub. Watch each async gate (CI, flight, deploy) the ONE portable way — see <watch-gate> below.",
 	"Done = validated on candidate, not merged. Flight, exercise the live surface, read your request back from Loki at that SHA, and post a /validate-candidate scorecard — the merge gate.",
@@ -74,6 +98,43 @@ export function escapeCell(value: string | null | undefined): string {
 export interface OrientationEntry {
 	id: string;
 	content: string;
+}
+
+/** Minimal read surface `resolveOrientation` needs from the knowledge store. */
+export interface OrientationLookupPort {
+	getKnowledge(
+		id: string,
+	): Promise<{ id: string; content: string } | null | undefined>;
+}
+
+/**
+ * Resolve the current-node orientation entry by direct id lookup.
+ *
+ * The domain scan that feeds the skills index only reads the newest
+ * PER_DOMAIN_LIMIT rows per domain, so once a domain outgrows the limit an
+ * older `<slug>-agent-orientation` entry silently drops out of the scan and
+ * the bundle reports it as unseeded (bug.5280). Direct lookup by exact id is
+ * the ground truth; the scan result is only a fallback for suffix-named
+ * entries, and the generic starter seed every node inherits comes last.
+ */
+export async function resolveOrientation(
+	port: OrientationLookupPort,
+	exactOrientationId: string,
+	scannedOrientationId: string | null,
+): Promise<OrientationEntry | null> {
+	const candidates = [
+		exactOrientationId,
+		scannedOrientationId,
+		"cogni-agent-orientation",
+	];
+	for (const id of candidates) {
+		if (!id) continue;
+		const entry = await port.getKnowledge(id);
+		if (entry) {
+			return { id: entry.id, content: entry.content };
+		}
+	}
+	return null;
 }
 
 export interface RenderBundleInput {

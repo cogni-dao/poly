@@ -20,16 +20,12 @@ import { serverEnv } from "@/shared/env";
 
 // Lazy service-role connection (BYPASSRLS) for auth, workers, and bootstrap.
 // DATABASE_SERVICE_URL is required in all environments (no fallback).
-// Read-path service queries use the separate pool in drizzle.service-read-client.ts.
 let _serviceDb: Database | null = null;
 
 function createServiceDb(): Database {
   if (!_serviceDb) {
     const env = serverEnv();
-    // Pool budget: DB_SERVICE_POOL_MAX (default 10). Backend math: packages/db-client/src/build-client.ts.
-    _serviceDb = createServiceDbClient(env.DATABASE_SERVICE_URL, {
-      max: env.DB_SERVICE_POOL_MAX,
-    });
+    _serviceDb = createServiceDbClient(env.DATABASE_SERVICE_URL);
   }
   return _serviceDb;
 }
