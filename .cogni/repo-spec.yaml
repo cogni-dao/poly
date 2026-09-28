@@ -114,12 +114,6 @@ deployment:
         - key: PRIVY_USER_WALLETS_APP_SECRET
         - key: PRIVY_USER_WALLETS_SIGNING_KEY
         - key: POLY_WALLET_AEAD_KEY_ID
-        # bug.5270 — CLOB base-URL override for the ORDER path. Unset = direct to
-        # clob.polymarket.com. Declared (not valued) so an operator can point prod
-        # at a permitted-region reverse proxy without a code change when the pod's
-        # egress is geoblocked (`403 Trading restricted in your region`). Optional:
-        # absent/empty keeps the direct default, so declaring it is behaviour-neutral.
-        - key: POLY_CLOB_HOST
         # Substrate-managed (source: agent, auto-generated in OpenBao — never
         # self-serve set; 403 key_reserved is correct). Declared here so the
         # operator projects it into the pod: without it the live-CLOB executor
