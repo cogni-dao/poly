@@ -378,7 +378,10 @@ export async function runTraderObservationTick(
       const prune = await withStatementTimeout(
         deps.db,
         OBSERVATION_STATEMENT_TIMEOUT_MS,
-        (tx) => pruneOldPositionSnapshots(tx)
+        (tx) =>
+          pruneOldPositionSnapshots(tx, {
+            deadlineMs: OBSERVATION_STAGE_DEADLINE_MS,
+          })
       );
       prunedPositionSnapshots = prune.deleted;
     } catch (err: unknown) {
@@ -1165,6 +1168,16 @@ export function hashPosition(position: PolymarketUserPosition): string {
 export const OBSERVATION_STATEMENT_TIMEOUT_MS = 30_000;
 
 /**
+ * Wall-clock budget for ONE maintenance stage (bug.5300). Sized so that even a
+ * stage that uses its whole budget leaves the 120s tick room to finish the
+ * others: 3 maintenance stages x 30s = 90s < TICK_TIMEOUT_MS.
+ *
+ * This is the bound `statement_timeout` could not provide — see
+ * OBSERVATION_STATEMENT_TIMEOUT_MS.
+ */
+export const OBSERVATION_STAGE_DEADLINE_MS = 30_000;
+
+/**
  * Run `fn` with a session-local `statement_timeout`. SET LOCAL is
  * transaction-scoped, so the ceiling cannot leak to other pool users — the
  * pool is shared with request-path reads that must not inherit it.
@@ -1186,10 +1199,29 @@ export async function withStatementTimeout<T>(
 
 export async function pruneOldPositionSnapshots(
   db: Db,
-  options?: { batchSize?: number; maxBatches?: number }
+  options?: {
+    batchSize?: number;
+    maxBatches?: number;
+    /**
+     * STAGE_DEADLINE_BOUNDS_THE_LOOP (bug.5300) — wall-clock ceiling for the
+     * WHOLE stage. A per-statement `statement_timeout` cannot bound a loop:
+     * bug.5297's 30s cap left a worst case of maxBatches x 30s = 300s, still
+     * 2.5x over the 120s tick budget, with every individual statement legally
+     * under its ceiling. Prod f695861 proved it — 10 tick timeouts still at
+     * `prune_position_snapshots`, and ZERO statement-timeout errors, which is
+     * exactly the signature of a loop whose statements are each fine.
+     *
+     * Absent, behaviour is unchanged (batch count is the only bound).
+     */
+    deadlineMs?: number;
+  }
 ): Promise<{ deleted: number; exhaustedBudget: boolean }> {
   const batchSize = options?.batchSize ?? SNAPSHOT_PRUNE_BATCH_SIZE;
   const maxBatches = options?.maxBatches ?? SNAPSHOT_PRUNE_MAX_BATCHES;
+  const deadline =
+    options?.deadlineMs === undefined
+      ? undefined
+      : Date.now() + options.deadlineMs;
   // ISO string + explicit cast: postgres-js cannot serialize a raw Date
   // parameter through `db.execute(sql...)` (no drizzle column mapper here).
   const cutoff = new Date(
@@ -1197,6 +1229,13 @@ export async function pruneOldPositionSnapshots(
   ).toISOString();
   let deleted = 0;
   for (let batch = 0; batch < maxBatches; batch += 1) {
+    // Stop STARTING new batches once the stage has spent its budget. Checked
+    // before the statement, never mid-statement: a half-killed DELETE would
+    // leave the prune non-idempotent, and the next tick resumes from the same
+    // cutoff anyway, so stopping early only defers work.
+    if (deadline !== undefined && Date.now() >= deadline) {
+      return { deleted, exhaustedBudget: true };
+    }
     const result = await db.execute(sql`
       DELETE FROM poly_trader_position_snapshots
       WHERE id IN (
