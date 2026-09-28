@@ -60,6 +60,55 @@ import {
  */
 let cooldownUntilMs = 0;
 
+/**
+ * PROCESS_WIDE_INFLIGHT_CAP (bug.5286) — the cooldown alone guards the wrong
+ * moment, and prod proved it.
+ *
+ * Post-deploy 429 timestamps on 08cedd2 arrive in SAME-MILLISECOND clusters
+ * separated by long gaps:
+ *   18:43:19.656 / 18:43:19.666      (gap 0.0s)
+ *   18:45:46.102 / .105 / .107       (gap 0.0s, 146s after the previous cluster)
+ *   18:55:42.186 / .187 / .201       (gap 0.0s, 452s later)
+ * `cooldown active` fired 17 times, so the gate works — but a cooldown is
+ * check-then-act: the concurrent requests are ALREADY IN FLIGHT when the first
+ * 429 returns, so the whole herd fails together before `cooldownUntilMs` is
+ * ever set. The gate closes after the herd is through, and its 5s window has
+ * long expired by the time the next cluster arrives 90-450s later.
+ *
+ * A cooldown bounds the TAIL. Only an in-flight cap bounds the HEAD. This
+ * semaphore is process-wide for the same reason the cooldown is: Polymarket
+ * limits per-IP, and the app builds 7+ independent client instances.
+ *
+ * Not a replacement for per-job concurrency (`pLimit`) — those bound ONE job's
+ * fan-out; nothing bounded the SUM across jobs, which is what upstream sees.
+ */
+const MAX_INFLIGHT = 2;
+let inFlight = 0;
+const waiters: Array<() => void> = [];
+
+async function acquireSlot(): Promise<void> {
+  if (inFlight < MAX_INFLIGHT) {
+    inFlight += 1;
+    return;
+  }
+  await new Promise<void>((resolve) => waiters.push(resolve));
+  inFlight += 1;
+}
+
+function releaseSlot(): void {
+  inFlight -= 1;
+  const next = waiters.shift();
+  if (next) next();
+}
+
+/** Test seam — observe saturation without exporting the mutable counters. */
+export function __polyDataApiInflightForTests(): {
+  inFlight: number;
+  queued: number;
+} {
+  return { inFlight, queued: waiters.length };
+}
+
 /** Fallback when the 429 carries no usable `Retry-After`. */
 const DEFAULT_429_COOLDOWN_MS = 5_000;
 /** Ceiling, so a hostile or malformed `Retry-After` cannot wedge reads. */
@@ -88,6 +137,8 @@ export function parseRetryAfterMs(header: string | null): number {
 /** Test seam — reset the process-wide cooldown between cases. */
 export function __resetPolyDataApiCooldownForTests(): void {
   cooldownUntilMs = 0;
+  inFlight = 0;
+  waiters.length = 0;
 }
 
 export class PolyDataApiValidationError extends Error {
@@ -503,6 +554,17 @@ export class PolymarketDataApiClient {
     if (remainingMs > 0) {
       throw new PolyDataApiRateLimitedError(url.pathname, remainingMs);
     }
+    // bug.5286 — bound concurrent in-flight requests across the whole process,
+    // so a burst cannot all reach upstream before the first 429 comes back.
+    await acquireSlot();
+    // Re-check after queueing: a request that waited for a slot may find the
+    // cooldown opened by whichever request was ahead of it. This is the check
+    // the pre-queue test cannot make, and it is where the herd gets stopped.
+    const afterWaitMs = cooldownUntilMs - Date.now();
+    if (afterWaitMs > 0) {
+      releaseSlot();
+      throw new PolyDataApiRateLimitedError(url.pathname, afterWaitMs);
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const onCallerAbort = () => controller.abort();
@@ -541,6 +603,7 @@ export class PolymarketDataApiClient {
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onCallerAbort);
+      releaseSlot();
     }
   }
 }
