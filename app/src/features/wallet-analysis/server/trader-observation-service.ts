@@ -112,7 +112,33 @@ export interface TraderObservationTickDeps {
    * every Polymarket fetch so in-flight requests abort too.
    */
   signal?: AbortSignal | undefined;
+  /**
+   * STAGE_SURVIVES_A_HUNG_TICK (bug.5273) — called as the tick enters each
+   * stage. The job holds the value in a plain variable OUTSIDE the
+   * timeout/grace race, so a tick that never settles still reports where it
+   * hung. Without it the timeout log's `wallets*` fields are all `null`
+   * (they come from the tick's return value, which a hung tick never
+   * produces) and the stall is undiagnosable — observed on prod 51bd530,
+   * `settled_after_abort: false`, every field null.
+   */
+  onStage?: ((stage: TraderObservationStage) => void) | undefined;
 }
+
+/**
+ * Stages of one observation tick, in execution order. `sync_tenant_wallets`
+ * and `select_wallets` run BEFORE the bounded wallet loop and are plain DB
+ * calls — drizzle/postgres-js take no `AbortSignal`, so an abort cannot
+ * interrupt them. They are the prime suspects for a hung tick precisely
+ * because a hang there leaves every loop counter unset.
+ */
+export type TraderObservationStage =
+  | "sync_tenant_wallets"
+  | "select_wallets"
+  | "wallet_loop"
+  | "prune_pnl_points"
+  | "prune_position_snapshots"
+  | "refresh_market_metadata"
+  | "done";
 
 export interface TraderObservationTickResult {
   wallets: number;
@@ -211,7 +237,18 @@ export async function runTraderObservationTick(
   const log = deps.logger.child({
     component: "trader-observation",
   });
+  const stage = (next: TraderObservationStage): void => deps.onStage?.(next);
+  // NOTE (bug.5273): deliberately NO abort short-circuit between these two
+  // stages. An abort check here cannot interrupt the in-flight query anyway
+  // (drizzle/postgres-js take no AbortSignal), and returning early loses the
+  // wallet count that `runBoundedWalletLoop` is contracted to report as
+  // `walletsAborted` — see the task.5015 abort test. The loop already handles
+  // an aborted signal, and the post-loop stages are gated on `tickAborted`.
+  // Bounding a hung pre-loop query needs a Postgres `statement_timeout`, not a
+  // JS check; stage reporting is what makes that hang visible in the first place.
+  stage("sync_tenant_wallets");
   await syncActiveTenantWallets(deps.db);
+  stage("select_wallets");
   const wallets = await deps.db
     .select()
     .from(polyTraderWallets)
@@ -232,6 +269,7 @@ export async function runTraderObservationTick(
   // preserved — each phase catches its own errors and continues — EXCEPT when
   // `deps.signal` has aborted: abort-induced rejections are rethrown so the
   // loop counts the wallet aborted without writing a cursor-error row.
+  stage("wallet_loop");
   const loop = await runBoundedWalletLoop({
     wallets,
     concurrency: WALLET_OBSERVE_CONCURRENCY,
@@ -307,6 +345,7 @@ export async function runTraderObservationTick(
 
   let prunedPnlPoints = 0;
   if (deps.userPnlClient && !tickAborted) {
+    stage("prune_pnl_points");
     try {
       const prune = await pruneOldTradingWalletPnlPoints(deps.db);
       prunedPnlPoints = prune.deleted;
@@ -327,6 +366,7 @@ export async function runTraderObservationTick(
   // NOT gated on `userPnlClient` because snapshots are written regardless.
   let prunedPositionSnapshots = 0;
   if (!tickAborted) {
+    stage("prune_position_snapshots");
     try {
       const prune = await pruneOldPositionSnapshots(deps.db);
       prunedPositionSnapshots = prune.deleted;
@@ -347,6 +387,7 @@ export async function runTraderObservationTick(
   // `poly_trader_current_positions.raw->>'endDate'`. Pure SQL — no HTTP.
   // Soft-failures so a projection error never aborts the wallet tick.
   if (!tickAborted) {
+    stage("refresh_market_metadata");
     try {
       await refreshMarketMetadata({ db: deps.db, logger: log });
     } catch (err: unknown) {
