@@ -819,6 +819,10 @@ function createContainer(): Container {
 		// wallet_grants activation joins so targets activate without Privy
 		// onboarding the user doesn't need for paper.
 		paperEnforced: env.PAPER_ENFORCE_MODE === "paper",
+		// bug.5288 — without this the enumerator's INNER joins drop a tenant
+		// silently: trading halts and looks identical to idle. Wired so an
+		// expired grant names itself in the logs.
+		logger: log.child({ component: "copy-trade-target-source" }),
 	});
 	const redeemPipelines = new Map<string, RedeemPipelineHandles>();
 
