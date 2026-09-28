@@ -88,6 +88,18 @@ const TRADES_ENRICHMENT_LIMIT = 500;
 /** Upstream concurrency cap — spike.5001 measured pLimit(4) as 429-safe. */
 const DEFAULT_CONCURRENCY = 4;
 
+/**
+ * Is this upstream error a rate limit? Matches on the message because the
+ * Data-API client surfaces status in text (`Polymarket Data API error: 429 Too
+ * Many Requests (/trades)`) rather than a typed status field. Deliberately
+ * narrow — a false positive costs one cycle of enrichment freshness, a false
+ * negative keeps spending a third party's rate-limit budget on calls that
+ * cannot succeed. bug.5283.
+ */
+export function isUpstreamRateLimit(message: string): boolean {
+  return /\b429\b|too many requests/i.test(message);
+}
+
 const WALLET_SHAPE = /^0x[a-fA-F0-9]{40}$/;
 
 export interface TopWalletStatsTickDeps {
@@ -110,6 +122,13 @@ export interface TopWalletStatsTickResult {
   walletsEnriched: number;
   /** Wallets whose /trades enrichment failed (numTrades persisted as 0). */
   enrichmentErrors: number;
+  /**
+   * Wallets whose `/trades` enrichment was SKIPPED because upstream had already
+   * rate-limited us this run (bug.5283). Distinct from `enrichmentErrors`: these
+   * calls were never issued, which is the point — see
+   * `STOP_ON_RATE_LIMIT_DO_NOT_DRAIN`.
+   */
+  enrichmentSkippedRateLimited: number;
   /** Rows upserted across all boards. */
   upserted: number;
   /** Rows pruned (wallets that left a board). */
@@ -254,9 +273,30 @@ export async function runTopWalletStatsTick(
   }
   const numTradesByWallet = new Map<string, number>();
   let enrichmentErrors = 0;
+  let enrichmentSkippedRateLimited = 0;
+  // STOP_ON_RATE_LIMIT_DO_NOT_DRAIN (bug.5283) — once upstream has answered 429,
+  // every remaining `/trades` call is both futile and harmful, so we stop issuing
+  // them for the rest of this run.
+  //
+  // Before this, a 429 was swallowed per-wallet and the fan-out kept going at full
+  // `pLimit` rate, so a tripped limit produced a BURST of failures rather than a
+  // pause: prod logged 10 distinct `429 Too Many Requests (/trades)` at the SAME
+  // SECOND (2026-09-28T05:37:31). Draining the queue into a limit we have already
+  // hit cannot succeed — the only thing it changes is how much of a third party's
+  // budget we spend failing. spike.5001 measured pLimit(4) as 429-safe; prod
+  // disagrees, and this makes the disagreement self-correcting instead of loud.
+  //
+  // The next scheduled run retries from scratch, so this costs at most one cycle
+  // of freshness on the skipped wallets.
+  let rateLimited = false;
   await Promise.all(
     Array.from(uniqueWallets, (wallet) =>
       limit(async () => {
+        if (rateLimited) {
+          enrichmentSkippedRateLimited += 1;
+          numTradesByWallet.set(wallet, 0);
+          return;
+        }
         try {
           const trades = await client.listUserActivity(wallet, {
             limit: TRADES_ENRICHMENT_LIMIT,
@@ -265,11 +305,14 @@ export async function runTopWalletStatsTick(
         } catch (err: unknown) {
           enrichmentErrors += 1;
           numTradesByWallet.set(wallet, 0);
+          const message = err instanceof Error ? err.message : String(err);
+          if (isUpstreamRateLimit(message)) rateLimited = true;
           log.warn(
             {
               event: "poly.top-wallet-stats.enrichment_failed",
               wallet,
-              err: err instanceof Error ? err.message : String(err),
+              rate_limited: isUpstreamRateLimit(message),
+              err: message,
             },
             "top-wallet-stats: /trades enrichment failed; numTrades persisted as 0"
           );
@@ -277,6 +320,17 @@ export async function runTopWalletStatsTick(
       })
     )
   );
+  if (rateLimited) {
+    log.warn(
+      {
+        event: "poly.top-wallet-stats.rate_limited",
+        wallets_total: uniqueWallets.size,
+        enrichment_errors: enrichmentErrors,
+        skipped: enrichmentSkippedRateLimited,
+      },
+      "top-wallet-stats: upstream rate-limited /trades; stopped enriching for this run"
+    );
+  }
 
   // 3. Per successfully fetched board: upsert current rows, then prune rows
   //    for wallets no longer on that board — atomically, so a reader never
@@ -348,8 +402,10 @@ export async function runTopWalletStatsTick(
   const result: TopWalletStatsTickResult = {
     boards: boards.length,
     boardErrors,
-    walletsEnriched: uniqueWallets.size - enrichmentErrors,
+    walletsEnriched:
+      uniqueWallets.size - enrichmentErrors - enrichmentSkippedRateLimited,
     enrichmentErrors,
+    enrichmentSkippedRateLimited,
     upserted,
     pruned,
   };
