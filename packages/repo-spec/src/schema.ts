@@ -249,6 +249,15 @@ const serviceNameSchema = z
     "service and artifact names must be DNS-safe lowercase tokens (max 63 chars)"
   );
 
+/** Deployment environments a private service may be gated to. */
+export const deploymentEnvNameSchema = z.enum([
+  "candidate-a",
+  "preview",
+  "production",
+]);
+
+export type DeploymentEnvName = z.infer<typeof deploymentEnvNameSchema>;
+
 const serviceEnvKeySchema = z
   .string()
   .regex(
@@ -332,6 +341,8 @@ export const nodeServiceSpecSchema = z
     args: z.array(z.string().max(4096)).max(64).optional(),
     port: z.number().int().min(1).max(65535),
     visibility: z.enum(["public", "private"]),
+    /** Optional non-empty deployment-environment allow-list for private services. */
+    envs: z.array(deploymentEnvNameSchema).min(1).optional(),
     /** Explicit non-provider compatibility selector; absent stays generic. */
     runtime_profile: nodeServiceRuntimeProfileSchema.optional(),
     /** Git-owned environment variable → sibling service references. */
@@ -436,6 +447,14 @@ export const nodeDeploymentSchema = z
           path: ["services", index, "runtime_profile"],
           message:
             "cogni-node-app-v1 runtime_profile requires the public service",
+        });
+      }
+      if (service.visibility === "public" && service.envs) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["services", index, "envs"],
+          message:
+            "the public service must deploy to every environment and cannot declare `envs`",
         });
       }
     });

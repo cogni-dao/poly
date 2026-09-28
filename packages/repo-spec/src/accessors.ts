@@ -113,6 +113,8 @@ export interface NodeServiceConfig {
   readonly args?: readonly string[];
   readonly port: number;
   readonly visibility: "public" | "private";
+  /** Optional deployment-environment allow-list; absent deploys everywhere. */
+  readonly envs?: readonly ("candidate-a" | "preview" | "production")[];
   readonly runtimeProfile?: "cogni-node-app-v1";
   readonly bindings: Readonly<Record<string, string>>;
   readonly secretRefs: readonly { readonly key: string }[];
@@ -179,6 +181,7 @@ export function extractNodeServices(
     ...(service.args ? { args: service.args } : {}),
     port: service.port,
     visibility: service.visibility,
+    ...(service.envs ? { envs: service.envs } : {}),
     ...(service.runtime_profile
       ? { runtimeProfile: service.runtime_profile }
       : {}),
