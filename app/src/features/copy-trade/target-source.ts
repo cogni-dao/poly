@@ -28,6 +28,7 @@
  * @public
  */
 
+import { type LoggerPort } from "@cogni/poly-market-provider";
 import { withTenantScope } from "@cogni/db-client";
 import type { ActorId } from "@cogni/ids";
 import {
@@ -191,6 +192,12 @@ export interface DbTargetSourceDeps {
    */
   serviceDb: PostgresJsDatabase<Record<string, unknown>>;
   /**
+   * Optional. When present, `listAllActive` explains WHY a live tenant was
+   * excluded (bug.5288). Optional so existing constructions keep working —
+   * absence costs only the diagnostic, never correctness.
+   */
+  logger?: LoggerPort | undefined;
+  /**
    * When true, `listAllActive` skips the wallet_connections + wallet_grants
    * joins. The deploy-wide `PAPER_ENFORCE_MODE=paper` makes every placement
    * route through the paper sidecar (no signing → no trader wallet needed),
@@ -316,6 +323,21 @@ export function dbTargetSource(
             .where(isNull(polyCopyTradeTargets.disabledAt))
             .orderBy(polyCopyTradeTargets.createdAt);
 
+      // EXCLUSION_IS_EXPLAINED (bug.5288) — the live-mode joins above are INNER
+      // joins, so a tenant whose grant expired is not "skipped" or "errored";
+      // it simply stops being enumerated. Trading halts and looks IDENTICAL to
+      // idle. Prod 2026-09-28: `poly.mirror.decision` went to ZERO and the
+      // owner's funded tenant vanished from the stream with no log line
+      // anywhere, while its wallet kept reporting healthy in the same window.
+      //
+      // Grants are TIME-BOUNDED BY DESIGN (`expires_at` IS the safety
+      // mechanism), so this is not an edge case — every live tenant reaches it
+      // eventually. One bounded query over a small table buys the operator the
+      // reason. Diagnostic only: never changes which targets are returned.
+      if (!deps.paperEnforced && deps.logger) {
+        await explainExcludedTargets(deps, rows.length);
+      }
+
       return rows.map((r) => ({
         billingAccountId: r.billing_account_id,
         createdByUserId: r.created_by_user_id,
@@ -334,6 +356,89 @@ export function dbTargetSource(
       }));
     },
   };
+}
+
+
+/**
+ * Emit one WARN per non-disabled target that the live-mode joins excluded,
+ * naming WHICH condition failed. bug.5288.
+ *
+ * Deliberately a separate LEFT-JOIN query rather than converting the
+ * enumerator itself: the enumerator is on the mirror's hot path and its
+ * semantics are load-bearing, so the diagnostic must not be able to change
+ * which tenants trade. `activeCount` short-circuits the common healthy case.
+ */
+async function explainExcludedTargets(
+  deps: DbTargetSourceDeps,
+  activeCount: number
+): Promise<void> {
+  const log = deps.logger;
+  if (!log) return;
+  try {
+    const diag = (await deps.serviceDb.execute(sql`
+      SELECT t.billing_account_id,
+             t.target_wallet,
+             (c.id IS NOT NULL) AS has_live_connection,
+             (g.id IS NOT NULL) AS has_live_grant,
+             g_any.expires_at    AS latest_grant_expires_at
+        FROM poly_copy_trade_targets t
+        LEFT JOIN poly_wallet_connections c
+          ON c.billing_account_id = t.billing_account_id
+         AND c.revoked_at IS NULL
+        LEFT JOIN poly_wallet_grants g
+          ON g.wallet_connection_id = c.id
+         AND g.revoked_at IS NULL
+         AND (g.expires_at IS NULL OR g.expires_at > now())
+        LEFT JOIN LATERAL (
+          SELECT g2.expires_at
+            FROM poly_wallet_grants g2
+           WHERE g2.wallet_connection_id = c.id
+           ORDER BY g2.expires_at DESC NULLS FIRST
+           LIMIT 1
+        ) g_any ON TRUE
+       WHERE t.disabled_at IS NULL
+    `)) as unknown as Array<{
+      billing_account_id: string;
+      target_wallet: string;
+      has_live_connection: boolean;
+      has_live_grant: boolean;
+      latest_grant_expires_at: string | null;
+    }>;
+
+    const excluded = diag.filter(
+      (r) => !r.has_live_connection || !r.has_live_grant
+    );
+    if (excluded.length === 0) return;
+
+    for (const r of excluded) {
+      const reason = !r.has_live_connection
+        ? "no_live_wallet_connection"
+        : "grant_revoked_or_expired";
+      log.warn(
+        {
+          event: "poly.copy_trade.target_excluded",
+          billing_account_id: r.billing_account_id,
+          target_wallet: r.target_wallet,
+          reason,
+          latest_grant_expires_at: r.latest_grant_expires_at,
+          active_targets: activeCount,
+          excluded_targets: excluded.length,
+        },
+        `copy-trade: active target excluded from the mirror (${reason}) — this tenant will not trade`
+      );
+    }
+  } catch (err: unknown) {
+    // Diagnostic only. It must never take the mirror down; a failure here
+    // costs visibility, not trading.
+    log.warn(
+      {
+        event: "poly.copy_trade.target_excluded",
+        phase: "diagnostic_failed",
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "copy-trade: could not compute target-exclusion reasons"
+    );
+  }
 }
 
 /**
