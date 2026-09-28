@@ -114,6 +114,13 @@ deployment:
         - key: PRIVY_USER_WALLETS_APP_SECRET
         - key: PRIVY_USER_WALLETS_SIGNING_KEY
         - key: POLY_WALLET_AEAD_KEY_ID
+        # bug.5297 — per-lane switch for the trader-observation writer. Values
+        # ALREADY EXIST in all three lanes before this declaration lands
+        # (prod=true, candidate-a=false, preview=false), because
+        # assert-target-substrate verifies a declared key against the bank of
+        # the lane being promoted — declaring with a value missing in ANY
+        # asserted lane is what broke every poly promote in bug.5277.
+        - key: POLY_TRADER_OBSERVATION_WRITER_ENABLED
         # Substrate-managed (source: agent, auto-generated in OpenBao — never
         # self-serve set; 403 key_reserved is correct). Declared here so the
         # operator projects it into the pod: without it the live-CLOB executor
