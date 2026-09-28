@@ -838,7 +838,6 @@ function createContainer(): Container {
 				walletPort,
 				logger: log,
 				metrics: noopMetricsForExecutor,
-				host: env.POLY_CLOB_HOST,
 				polygonRpcUrl: env.POLYGON_RPC_URL,
 				paperSidecarUrl: env.PAPER_SIDECAR_URL,
 				paperEnforceMode: env.PAPER_ENFORCE_MODE,

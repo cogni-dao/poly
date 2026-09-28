@@ -344,6 +344,12 @@ async function buildExecutor(
     parseAbi,
   } = await import("viem");
   const { polygon } = await import("viem/chains");
+  const [{ createSecureClient }, { signerFrom }, { SignatureTypeV2 }] =
+    await Promise.all([
+      import("@polymarket/client"),
+      import("@polymarket/client/viem"),
+      import("@polymarket/clob-client-v2"),
+    ]);
 
   // biome-ignore lint/suspicious/noExplicitAny: cross-peerDep viem type drift
   const accountAny: any = resolved.account;
@@ -361,6 +367,19 @@ async function buildExecutor(
   ]);
   // biome-ignore lint/suspicious/noExplicitAny: cross-peerDep viem type drift
   const signerAny: any = walletClient;
+  const officialSigner = signerFrom(walletClient);
+  const v2OrderClient = await createSecureClient({
+    signer: officialSigner,
+    wallet: resolved.funderAddress,
+    credentials: {
+      key: resolved.clobCreds.key,
+      secret: resolved.clobCreds.secret,
+      passphrase: resolved.clobCreds.passphrase,
+    } as never,
+  });
+  const usesDepositWallet =
+    resolved.funderAddress.toLowerCase() !==
+    resolved.account.address.toLowerCase();
 
   const loggerPort = adaptLogger(
     deps.logger.child({
@@ -377,6 +396,10 @@ async function buildExecutor(
       passphrase: resolved.clobCreds.passphrase,
     },
     funderAddress: resolved.funderAddress,
+    signatureType: usesDepositWallet
+      ? SignatureTypeV2.POLY_1271
+      : SignatureTypeV2.EOA,
+    v2OrderClient: v2OrderClient as never,
     host: deps.host ?? DEFAULT_CLOB_HOST,
     logger: loggerPort,
     metrics: deps.metrics,

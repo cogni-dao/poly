@@ -25,6 +25,7 @@ import {
   POLY_CLOB_ERROR_CODES,
   POLY_CLOB_METRICS,
   PolymarketClobAdapter,
+  type PolymarketV2OrderClient,
   sanitizeClobDiagnosticText,
   withSuppressedClobSdkDiagnostics,
 } from "../src/adapters/polymarket/polymarket.clob.adapter.js";
@@ -490,7 +491,8 @@ describe("PolymarketClobAdapter", () => {
       getOrderBook?: ReturnType<typeof vi.fn>;
       getOpenOrders?: ReturnType<typeof vi.fn>;
     },
-    observability?: { logger?: LoggerPort; metrics?: MetricsPort }
+    observability?: { logger?: LoggerPort; metrics?: MetricsPort },
+    v2OrderClient?: PolymarketV2OrderClient
   ) {
     stub.getTickSize ??= vi.fn().mockResolvedValue("0.01");
     stub.getNegRisk ??= vi.fn().mockResolvedValue(false);
@@ -517,8 +519,84 @@ describe("PolymarketClobAdapter", () => {
     adapter.log = observability?.logger ?? noopLogger;
     // @ts-expect-error — test injection
     adapter.metrics = observability?.metrics ?? noopMetrics;
+    // @ts-expect-error — test injection
+    adapter.v2OrderClient = v2OrderClient;
     return adapter;
   }
+
+  it("routes a post-only limit order through the official V2 client", async () => {
+    const placeLimitOrder = vi.fn().mockResolvedValue({
+      ok: true,
+      orderId: "0xv2limit",
+      status: "live",
+      makingAmount: "0",
+      takingAmount: "0",
+    });
+    const v2OrderClient = {
+      placeLimitOrder,
+      placeMarketOrder: vi.fn(),
+    } satisfies PolymarketV2OrderClient;
+    const legacyLimit = vi.fn();
+    const adapter = makeAdapter(
+      { createAndPostOrder: legacyLimit },
+      undefined,
+      v2OrderClient
+    );
+
+    const receipt = await adapter.placeOrder({
+      ...BASE_INTENT,
+      attributes: { ...BASE_INTENT.attributes, post_only: true },
+    });
+
+    expect(placeLimitOrder).toHaveBeenCalledWith({
+      assetId: BASE_INTENT.attributes?.token_id,
+      price: 0.5,
+      size: 2,
+      side: "BUY",
+      postOnly: true,
+    });
+    expect(legacyLimit).not.toHaveBeenCalled();
+    expect(receipt).toMatchObject({ order_id: "0xv2limit", status: "open" });
+  });
+
+  it("routes a market SELL through the official V2 client with shares and floor", async () => {
+    const placeMarketOrder = vi.fn().mockResolvedValue({
+      ok: true,
+      orderId: "0xv2sell",
+      status: "matched",
+      makingAmount: "2",
+      takingAmount: "1",
+    });
+    const v2OrderClient = {
+      placeLimitOrder: vi.fn(),
+      placeMarketOrder,
+    } satisfies PolymarketV2OrderClient;
+    const legacyMarket = vi.fn();
+    const adapter = makeAdapter(
+      { createAndPostMarketOrder: legacyMarket },
+      undefined,
+      v2OrderClient
+    );
+
+    const receipt = await adapter.placeOrder({
+      ...BASE_INTENT,
+      side: "SELL",
+    });
+
+    expect(placeMarketOrder).toHaveBeenCalledWith({
+      assetId: BASE_INTENT.attributes?.token_id,
+      minPrice: 0.5,
+      orderType: "FOK",
+      shares: 2,
+      side: "SELL",
+    });
+    expect(legacyMarket).not.toHaveBeenCalled();
+    expect(receipt).toMatchObject({
+      order_id: "0xv2sell",
+      status: "filled",
+      filled_size_usdc: 1,
+    });
+  });
 
   it("placeOrder uses market FOK by default (BUY: amount=USDC) and echoes client_order_id (bug.0405)", async () => {
     const createAndPostMarketOrder = vi.fn().mockResolvedValue({
@@ -651,6 +729,25 @@ describe("PolymarketClobAdapter", () => {
     const adapter = makeAdapter({ cancelOrder });
     await adapter.cancelOrder("0xorder");
     expect(cancelOrder).toHaveBeenCalledWith({ orderID: "0xorder" });
+  });
+
+  it("cancelOrder uses the official V2 client when configured", async () => {
+    const legacyCancel = vi.fn();
+    const v2Cancel = vi.fn().mockResolvedValue({ canceled: ["0xorder"] });
+    const adapter = makeAdapter(
+      { cancelOrder: legacyCancel },
+      undefined,
+      {
+        cancelOrder: v2Cancel,
+        placeLimitOrder: vi.fn(),
+        placeMarketOrder: vi.fn(),
+      }
+    );
+
+    await adapter.cancelOrder("0xorder");
+
+    expect(v2Cancel).toHaveBeenCalledWith({ orderId: "0xorder" });
+    expect(legacyCancel).not.toHaveBeenCalled();
   });
 
   it("sellPositionAtMarket posts a market SELL using the exact share balance", async () => {

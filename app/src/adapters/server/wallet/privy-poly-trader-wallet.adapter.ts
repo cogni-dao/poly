@@ -254,6 +254,27 @@ export interface DefaultGrantInput {
   readonly dailyUsdcCap: number;
 }
 
+export interface PreparedPolyDepositWallet {
+  readonly funderAddress: `0x${string}`;
+}
+
+export type PreparePolyDepositWallet = (
+  signer: LocalAccount,
+  clobCreds: PolyClobApiKeyCreds,
+  options: { readonly transferExistingPusd: boolean }
+) => Promise<PreparedPolyDepositWallet>;
+
+export type TransferPolyDepositWalletToken = (
+  signer: LocalAccount,
+  clobCreds: PolyClobApiKeyCreds,
+  input: {
+    readonly expectedFunderAddress: `0x${string}`;
+    readonly tokenAddress: Address;
+    readonly recipientAddress: Address;
+    readonly amount: bigint;
+  }
+) => Promise<Hex>;
+
 /**
  * Drizzle's transaction handle is structurally the same as `Database` for
  * the CRUD surface we use (select / insert / update / execute) but omits
@@ -308,6 +329,13 @@ export interface PrivyPolyTraderWalletAdapterConfig {
     currentCreds: PolyClobApiKeyCreds
   ) => Promise<PolyClobApiKeyCreds>;
   /**
+   * Official Polymarket V2 Deposit Wallet bootstrap. Production injects this;
+   * tests may omit it to exercise the legacy direct-EOA mechanics in isolation.
+   */
+  prepareDepositWallet?: PreparePolyDepositWallet;
+  /** Gasless ERC-20 transfer from an official V2 Deposit Wallet. */
+  transferDepositWalletToken?: TransferPolyDepositWalletToken;
+  /**
    * Polygon RPC URL used by `getBalances`. Optional: when absent, `getBalances`
    * returns the address with `null` USDC.e/POL and an RPC-unconfigured error
    * instead of failing hard — keeps the Money page legible on pods that
@@ -330,6 +358,10 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     signer: LocalAccount,
     currentCreds: PolyClobApiKeyCreds
   ) => Promise<PolyClobApiKeyCreds>;
+  private readonly prepareDepositWallet: PreparePolyDepositWallet | undefined;
+  private readonly transferDepositWalletToken:
+    | TransferPolyDepositWalletToken
+    | undefined;
   private readonly polygonRpcUrl: string | undefined;
   private readonly log: Logger;
 
@@ -347,6 +379,8 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       (async () => {
         throw new Error("PrivyPolyTraderWalletAdapter: CLOB rotator missing");
       });
+    this.prepareDepositWallet = config.prepareDepositWallet;
+    this.transferDepositWalletToken = config.transferDepositWalletToken;
     this.polygonRpcUrl = config.polygonRpcUrl;
     this.log = config.logger.child({
       component: "PrivyPolyTraderWalletAdapter",
@@ -429,7 +463,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       context: {
         account,
         clobCreds,
-        funderAddress: getAddress(row.address),
+        funderAddress: getAddress(row.funderAddress ?? row.address),
         connectionId: row.id,
       },
     };
@@ -482,6 +516,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         id: polyWalletConnections.id,
         billingAccountId: polyWalletConnections.billingAccountId,
         address: polyWalletConnections.address,
+        funderAddress: polyWalletConnections.funderAddress,
       })
       .from(polyWalletConnections)
       .where(
@@ -501,7 +536,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       );
       return null;
     }
-    return getAddress(row.address);
+    return getAddress(row.funderAddress ?? row.address);
   }
 
   async getConnectionSummary(billingAccountId: string): Promise<{
@@ -516,6 +551,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         id: polyWalletConnections.id,
         billingAccountId: polyWalletConnections.billingAccountId,
         address: polyWalletConnections.address,
+        funderAddress: polyWalletConnections.funderAddress,
         tradingApprovalsReadyAt: polyWalletConnections.tradingApprovalsReadyAt,
         autoWrapConsentAt: polyWalletConnections.autoWrapConsentAt,
         autoWrapRevokedAt: polyWalletConnections.autoWrapRevokedAt,
@@ -540,7 +576,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     }
     return {
       connectionId: row.id,
-      funderAddress: getAddress(row.address),
+      funderAddress: getAddress(row.funderAddress ?? row.address),
       tradingApprovalsReadyAt: row.tradingApprovalsReadyAt,
       autoWrapConsentAt:
         row.autoWrapRevokedAt === null ? row.autoWrapConsentAt : null,
@@ -766,7 +802,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         signingContext: {
           account,
           clobCreds,
-          funderAddress: getAddress(row.address),
+          funderAddress: getAddress(row.funderAddress ?? row.address),
           connectionId: row.id,
         },
         isIdempotentHit: true,
@@ -788,7 +824,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
 
     const privyWallet = await this.privyClient
       .wallets()
-      .create({ chain_type: "ethereum" }, { idempotencyKey });
+      .create({ chain_type: "ethereum", idempotency_key: idempotencyKey });
 
     const rawFreshAccount = createViemAccount(this.privyClient, {
       walletId: privyWallet.id,
@@ -799,6 +835,11 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     const account: any = rawFreshAccount;
 
     const clobCreds = await this.clobCredsFactory(account);
+    const preparedDepositWallet = this.prepareDepositWallet
+      ? await this.prepareDepositWallet(account, clobCreds, {
+          transferExistingPusd: false,
+        })
+      : { funderAddress: getAddress(privyWallet.address) };
 
     const [{ gen_id }] = (await tx.execute<{ gen_id: string }>(
       sql`SELECT gen_random_uuid()::text AS gen_id`
@@ -821,10 +862,12 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       createdByUserId: input.createdByUserId,
       privyWalletId: privyWallet.id,
       address: getAddress(privyWallet.address),
+      funderAddress: preparedDepositWallet.funderAddress,
       chainId: 137,
       clobApiKeyCiphertext: ciphertext,
       encryptionKeyId: this.encryptionKeyId,
       allowanceState: null,
+      tradingApprovalsReadyAt: this.prepareDepositWallet ? new Date() : null,
       custodialConsentAcceptedAt: consent.acceptedAt,
       custodialConsentActorKind: consent.actorKind,
       custodialConsentActorId: consent.actorId,
@@ -834,7 +877,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       {
         billing_account_id: input.billingAccountId,
         connection_id: gen_id,
-        funder_address: getAddress(privyWallet.address),
+        funder_address: preparedDepositWallet.funderAddress,
         generation,
       },
       "poly.wallet.provision — created per-tenant Privy trading wallet"
@@ -844,7 +887,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       signingContext: {
         account,
         clobCreds,
-        funderAddress: getAddress(privyWallet.address),
+        funderAddress: preparedDepositWallet.funderAddress,
         connectionId: gen_id,
       },
       isIdempotentHit: false,
@@ -962,6 +1005,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         .select({
           id: polyWalletConnections.id,
           billingAccountId: polyWalletConnections.billingAccountId,
+          funderAddress: polyWalletConnections.funderAddress,
           tradingApprovalsReadyAt:
             polyWalletConnections.tradingApprovalsReadyAt,
         })
@@ -995,7 +1039,10 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
           "backend_unreachable"
         );
       }
-      if (!connection.tradingApprovalsReadyAt) {
+      if (
+        !connection.tradingApprovalsReadyAt ||
+        (this.prepareDepositWallet && !connection.funderAddress)
+      ) {
         return this.denyAuthorization(
           billingAccountId,
           intent,
@@ -1212,6 +1259,94 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         ),
         { code: "polygon_rpc_unconfigured" as EnableTradingPreflightError }
       );
+    }
+
+    if (this.prepareDepositWallet) {
+      const signerAddress = getAddress(signingContext.account.address);
+      const transferExistingPusd =
+        signingContext.funderAddress.toLowerCase() ===
+        signerAddress.toLowerCase();
+      const prepared = await this.prepareDepositWallet(
+        signingContext.account,
+        signingContext.clobCreds,
+        { transferExistingPusd }
+      );
+      const readyAt = new Date();
+      await this.serviceDb
+        .update(polyWalletConnections)
+        .set({
+          funderAddress: prepared.funderAddress,
+          tradingApprovalsReadyAt: readyAt,
+        })
+        .where(
+          and(
+            eq(polyWalletConnections.id, signingContext.connectionId),
+            eq(polyWalletConnections.billingAccountId, billingAccountId),
+            isNull(polyWalletConnections.revokedAt)
+          )
+        );
+
+      const publicClient = createPublicClient({
+        chain: polygon,
+        transport: http(this.polygonRpcUrl),
+      });
+      const polRaw = await publicClient.getBalance({ address: signerAddress });
+      const polBalance = Number(formatUnits(polRaw, POL_DECIMALS));
+      const steps: TradingApprovalStep[] = [
+        ...USDC_E_SPENDERS.map((sp) => ({
+          kind: "erc20_approve" as const,
+          label: sp.label,
+          tokenContract: USDC_E_POLYGON,
+          operator: sp.address,
+          state: "satisfied" as const,
+          txHash: null,
+          error: null,
+        })),
+        {
+          kind: "collateral_wrap" as const,
+          label: "Move existing pUSD into Deposit Wallet",
+          tokenContract: PUSD_POLYGON,
+          operator: prepared.funderAddress,
+          state: "satisfied" as const,
+          txHash: null,
+          error: null,
+        },
+        ...PUSD_SPENDERS.map((sp) => ({
+          kind: "erc20_approve" as const,
+          label: sp.label,
+          tokenContract: PUSD_POLYGON,
+          operator: sp.address,
+          state: "satisfied" as const,
+          txHash: null,
+          error: null,
+        })),
+        ...CTF_OPERATORS.map((op) => ({
+          kind: "ctf_set_approval_for_all" as const,
+          label: op.label,
+          tokenContract: CTF_POLYGON,
+          operator: op.address,
+          state: "satisfied" as const,
+          txHash: null,
+          error: null,
+        })),
+      ];
+      this.log.info(
+        {
+          billing_account_id: billingAccountId,
+          connection_id: signingContext.connectionId,
+          signer_address: signerAddress,
+          funder_address: prepared.funderAddress,
+          migrated_from_eoa: transferExistingPusd,
+        },
+        "poly.wallet.enable_trading.deposit_wallet_ready"
+      );
+      return {
+        ready: true,
+        address: prepared.funderAddress,
+        polBalance,
+        steps,
+        readyAt,
+      };
     }
 
     const address = signingContext.funderAddress;
@@ -1957,8 +2092,25 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       chain: polygon,
       transport: http(this.polygonRpcUrl),
     });
+    const signerAddress = getAddress(signingContext.account.address);
+    const usesDepositWallet =
+      signerAddress.toLowerCase() !==
+      signingContext.funderAddress.toLowerCase();
 
     if (input.asset === "usdc_e") {
+      if (usesDepositWallet) {
+        return this.withdrawDepositWalletErc20({
+          publicClient,
+          signingContext,
+          billingAccountId: input.billingAccountId,
+          requestedByUserId: input.requestedByUserId,
+          token: USDC_E_POLYGON,
+          asset: "usdc_e",
+          deliveredAsset: "usdc_e",
+          destination,
+          amountAtomic: input.amountAtomic,
+        });
+      }
       return this.withdrawErc20({
         publicClient,
         walletClient,
@@ -1974,6 +2126,27 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     }
 
     if (input.asset === "pusd") {
+      if (usesDepositWallet) {
+        const transferHash = await this.transferFromDepositWallet({
+          publicClient,
+          signingContext,
+          token: PUSD_POLYGON,
+          recipient: signerAddress,
+          amountAtomic: input.amountAtomic,
+        });
+        return this.withdrawPusdViaOfframp({
+          publicClient,
+          walletClient,
+          signingContext,
+          billingAccountId: input.billingAccountId,
+          requestedByUserId: input.requestedByUserId,
+          destination,
+          amountAtomic: input.amountAtomic,
+          sourceAddress: signingContext.funderAddress,
+          offrampSourceAddress: signerAddress,
+          priorTxHashes: [transferHash],
+        });
+      }
       return this.withdrawPusdViaOfframp({
         publicClient,
         walletClient,
@@ -1982,6 +2155,9 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         requestedByUserId: input.requestedByUserId,
         destination,
         amountAtomic: input.amountAtomic,
+        sourceAddress: signingContext.funderAddress,
+        offrampSourceAddress: signingContext.funderAddress,
+        priorTxHashes: [],
       });
     }
 
@@ -1993,7 +2169,84 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       requestedByUserId: input.requestedByUserId,
       destination,
       amountAtomic: input.amountAtomic,
+      sourceAddress: signerAddress,
     });
+  }
+
+  private async withdrawDepositWalletErc20(input: {
+    publicClient: PublicClient;
+    signingContext: PolyTraderSigningContext;
+    billingAccountId: string;
+    requestedByUserId: string;
+    token: Address;
+    asset: "usdc_e";
+    deliveredAsset: "usdc_e";
+    destination: Address;
+    amountAtomic: bigint;
+  }): Promise<PolyWalletWithdrawalResult> {
+    const txHash = await this.transferFromDepositWallet({
+      publicClient: input.publicClient,
+      signingContext: input.signingContext,
+      token: input.token,
+      recipient: input.destination,
+      amountAtomic: input.amountAtomic,
+    });
+    this.logWithdrawal({
+      billingAccountId: input.billingAccountId,
+      connectionId: input.signingContext.connectionId,
+      requestedByUserId: input.requestedByUserId,
+      asset: input.asset,
+      deliveredAsset: input.deliveredAsset,
+      sourceAddress: input.signingContext.funderAddress,
+      destination: input.destination,
+      amountAtomic: input.amountAtomic,
+      txHashes: [txHash],
+    });
+    return {
+      asset: input.asset,
+      deliveredAsset: input.deliveredAsset,
+      sourceAddress: input.signingContext.funderAddress,
+      destination: input.destination,
+      amountAtomic: input.amountAtomic,
+      primaryTxHash: txHash,
+      txHashes: [txHash],
+    };
+  }
+
+  private async transferFromDepositWallet(input: {
+    publicClient: PublicClient;
+    signingContext: PolyTraderSigningContext;
+    token: Address;
+    recipient: Address;
+    amountAtomic: bigint;
+  }): Promise<Hex> {
+    if (!this.transferDepositWalletToken) {
+      throw Object.assign(
+        new Error("withdraw: Deposit Wallet transfer action is unavailable"),
+        { code: "deposit_wallet_action_unconfigured" }
+      );
+    }
+    const balance = await input.publicClient.readContract({
+      address: input.token,
+      abi: ERC20_BALANCEOF_ABI,
+      functionName: "balanceOf",
+      args: [input.signingContext.funderAddress],
+    });
+    if (balance < input.amountAtomic) {
+      throw Object.assign(new Error("withdraw: insufficient token balance"), {
+        code: "insufficient_balance",
+      });
+    }
+    return this.transferDepositWalletToken(
+      input.signingContext.account,
+      input.signingContext.clobCreds,
+      {
+        expectedFunderAddress: input.signingContext.funderAddress,
+        tokenAddress: input.token,
+        recipientAddress: input.recipient,
+        amount: input.amountAtomic,
+      }
+    );
   }
 
   private async withdrawErc20(input: {
@@ -2058,19 +2311,22 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     requestedByUserId: string;
     destination: Address;
     amountAtomic: bigint;
+    sourceAddress: Address;
+    offrampSourceAddress: Address;
+    priorTxHashes: readonly Hex[];
   }): Promise<PolyWalletWithdrawalResult> {
     const [balance, allowance] = await Promise.all([
       input.publicClient.readContract({
         address: PUSD_POLYGON,
         abi: ERC20_BALANCEOF_ABI,
         functionName: "balanceOf",
-        args: [input.signingContext.funderAddress],
+        args: [input.offrampSourceAddress],
       }),
       input.publicClient.readContract({
         address: PUSD_POLYGON,
         abi: erc20Abi,
         functionName: "allowance",
-        args: [input.signingContext.funderAddress, COLLATERAL_OFFRAMP_POLYGON],
+        args: [input.offrampSourceAddress, COLLATERAL_OFFRAMP_POLYGON],
       }),
     ]);
     if (balance < input.amountAtomic) {
@@ -2079,7 +2335,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       });
     }
 
-    const txHashes: `0x${string}`[] = [];
+    const txHashes: `0x${string}`[] = [...input.priorTxHashes];
     if (allowance < input.amountAtomic) {
       // biome-ignore lint/suspicious/noExplicitAny: cross-peerDep viem type drift
       const approveHash: Hex = await (input.walletClient.writeContract as any)({
@@ -2108,7 +2364,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       requestedByUserId: input.requestedByUserId,
       asset: "pusd",
       deliveredAsset: "usdc_e",
-      sourceAddress: input.signingContext.funderAddress,
+      sourceAddress: input.sourceAddress,
       destination: input.destination,
       amountAtomic: input.amountAtomic,
       txHashes,
@@ -2116,7 +2372,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     return {
       asset: "pusd",
       deliveredAsset: "usdc_e",
-      sourceAddress: input.signingContext.funderAddress,
+      sourceAddress: input.sourceAddress,
       destination: input.destination,
       amountAtomic: input.amountAtomic,
       primaryTxHash: unwrapHash,
@@ -2132,13 +2388,14 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     requestedByUserId: string;
     destination: Address;
     amountAtomic: bigint;
+    sourceAddress: Address;
   }): Promise<PolyWalletWithdrawalResult> {
     const balance = await input.publicClient.getBalance({
-      address: input.signingContext.funderAddress,
+      address: input.sourceAddress,
     });
     const [gas, gasPrice] = await Promise.all([
       input.publicClient.estimateGas({
-        account: input.signingContext.funderAddress,
+        account: input.sourceAddress,
         to: input.destination,
         value: input.amountAtomic,
       }),
@@ -2166,7 +2423,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       requestedByUserId: input.requestedByUserId,
       asset: "pol",
       deliveredAsset: "pol",
-      sourceAddress: input.signingContext.funderAddress,
+      sourceAddress: input.sourceAddress,
       destination: input.destination,
       amountAtomic: input.amountAtomic,
       txHashes: [txHash],
@@ -2174,7 +2431,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     return {
       asset: "pol",
       deliveredAsset: "pol",
-      sourceAddress: input.signingContext.funderAddress,
+      sourceAddress: input.sourceAddress,
       destination: input.destination,
       amountAtomic: input.amountAtomic,
       primaryTxHash: txHash,
@@ -2299,7 +2556,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       return {
         account,
         clobCreds,
-        funderAddress: getAddress(row.address),
+        funderAddress: getAddress(row.funderAddress ?? row.address),
         connectionId: row.id,
       };
     });

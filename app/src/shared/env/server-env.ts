@@ -278,7 +278,6 @@ export const serverSchema = z.object({
   // WSS endpoint for the copy-trade chain fill source (viem watchContractEvent
   // via eth_subscribe). Falls back to deriving wss:// from POLYGON_RPC_URL.
   POLYGON_RPC_WSS_URL: optionalUrl,
-  POLY_CLOB_HOST: optionalUrl,
   POLY_CLOB_GEO_BLOCK_TOKEN: optionalString,
   PAPER_SIDECAR_URL: optionalUrl,
   // Tri-state ON THE WIRE, binary IN CODE. The deployed secret value is one of

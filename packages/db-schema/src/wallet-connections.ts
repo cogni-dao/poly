@@ -21,8 +21,8 @@
  *   - SEPARATE_PRIVY_APP: privy_wallet_id references the USER-WALLETS Privy
  *     app only. The app-layer adapter enforces this; the DB cannot.
  *   - APPROVALS_BEFORE_PLACE: trading_approvals_ready_at is the on-chain
- *     readiness stamp for the six Polymarket approvals (3× USDC.e approve +
- *     3× CTF setApprovalForAll). authorizeIntent fails-closed when NULL.
+ *     readiness stamp for the official V2 Deposit Wallet approval workflow.
+ *     authorizeIntent fails-closed when NULL.
  *     Cleared app-side alongside revoked_at so a fresh post-revoke row
  *     re-runs the approvals flow.
  * Side-effects: none (schema only)
@@ -72,8 +72,14 @@ export const polyWalletConnections = pgTable(
     createdByUserId: text("created_by_user_id").notNull(),
     /** Privy server-wallet id in the USER-WALLETS Privy app. */
     privyWalletId: text("privy_wallet_id").notNull(),
-    /** Checksummed EOA address. */
+    /** Checksummed Privy signer EOA address. */
     address: text("address").notNull(),
+    /**
+     * Active Polymarket account/funder. New V2 wallets use the deterministic
+     * Deposit Wallet; null marks a legacy EOA row that must be migrated by the
+     * explicit enable-trading flow before new orders are authorized.
+     */
+    funderAddress: text("funder_address"),
     /** 137 = Polygon mainnet today. */
     chainId: integer("chain_id").notNull().default(137),
     /** AEAD ciphertext of the JSON-serialized ApiKeyCreds. */
@@ -95,8 +101,8 @@ export const polyWalletConnections = pgTable(
       .defaultNow(),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     /**
-     * Stamped by `PrivyPolyTraderWalletAdapter.ensureTradingApprovals` once all
-     * six Polymarket on-chain approvals resolve to max / approved. `null`
+     * Stamped by `PrivyPolyTraderWalletAdapter.ensureTradingApprovals` once the
+     * official V2 Deposit Wallet setup and approvals complete. `null`
      * means the wallet is provisioned but cannot yet trade — the
      * `APPROVALS_BEFORE_PLACE` invariant on `authorizeIntent` fail-closes.
      */
@@ -142,6 +148,10 @@ export const polyWalletConnections = pgTable(
     addressShape: check(
       "poly_wallet_connections_address_shape",
       sql`${table.address} ~ '^0x[a-fA-F0-9]{40}$'`,
+    ),
+    funderAddressShape: check(
+      "poly_wallet_connections_funder_address_shape",
+      sql`${table.funderAddress} IS NULL OR ${table.funderAddress} ~ '^0x[a-fA-F0-9]{40}$'`,
     ),
     privyWalletIdNonempty: check(
       "poly_wallet_connections_privy_wallet_id_nonempty",

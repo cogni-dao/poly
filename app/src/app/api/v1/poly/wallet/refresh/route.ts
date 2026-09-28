@@ -196,7 +196,6 @@ export const POST = wrapRouteHandlerWithLogging(
         walletPort: adapter,
         logger: ctx.log,
         metrics: noopMetrics,
-        host: env.POLY_CLOB_HOST,
         polygonRpcUrl: env.POLYGON_RPC_URL,
         paperSidecarUrl: env.PAPER_SIDECAR_URL,
         paperEnforceMode: env.PAPER_ENFORCE_MODE,
