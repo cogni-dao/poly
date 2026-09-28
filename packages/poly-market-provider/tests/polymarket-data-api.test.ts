@@ -14,12 +14,17 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PolyDataApiValidationError,
   PolymarketDataApiClient,
   PolymarketLeaderboardEntrySchema,
 } from "../src/adapters/polymarket/index.js";
+import {
+  __resetPolyDataApiCooldownForTests,
+  parseRetryAfterMs,
+  PolyDataApiRateLimitedError,
+} from "../src/adapters/polymarket/polymarket.data-api.client.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -552,5 +557,50 @@ describe("PolymarketDataApiClient Zod envelope", () => {
     await expect(
       client.getHolders("0xabc", { limit: 10 })
     ).rejects.toBeInstanceOf(PolyDataApiValidationError);
+  });
+});
+
+describe("process-wide 429 cooldown (bug.5284)", () => {
+  beforeEach(() => {
+    __resetPolyDataApiCooldownForTests();
+  });
+
+  it("stops a SECOND client instance from calling after the first is 429'd", async () => {
+    // The whole point: the app builds 7+ independent clients, but Polymarket
+    // limits per-IP. Per-instance state cannot see the limit another instance
+    // just tripped — which is why per-job breakers for wallet-watch (bug.5276)
+    // and top-wallet-stats (bug.5283) still left a third caller 429ing.
+    const firstFetch = vi.fn(async () => ({
+      ok: false,
+      status: 429,
+      statusText: "Too Many Requests",
+      headers: { get: () => null },
+      json: async () => ({}),
+    })) as unknown as typeof fetch;
+    const secondFetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => null },
+      json: async () => [],
+    })) as unknown as typeof fetch;
+
+    const a = new PolymarketDataApiClient({ fetch: firstFetch });
+    await expect(a.listUserActivity("0x2005d16a84ceefa912d4e380cd32e7ff827875ea")).rejects.toThrow(/429/);
+
+    const b = new PolymarketDataApiClient({ fetch: secondFetch });
+    await expect(b.listUserActivity("0x2005d16a84ceefa912d4e380cd32e7ff827875ea")).rejects.toThrow(
+      PolyDataApiRateLimitedError
+    );
+    // The decisive assertion — the second client never issued a request.
+    expect(secondFetch).not.toHaveBeenCalled();
+  });
+
+  it("honours Retry-After and caps it so a bad header cannot wedge reads", () => {
+    expect(parseRetryAfterMs("2")).toBe(2000);
+    expect(parseRetryAfterMs(null)).toBe(5000);
+    expect(parseRetryAfterMs("garbage")).toBe(5000);
+    expect(parseRetryAfterMs("-5")).toBe(5000);
+    expect(parseRetryAfterMs("99999")).toBe(30000);
   });
 });
