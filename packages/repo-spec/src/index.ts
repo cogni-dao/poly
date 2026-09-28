@@ -83,6 +83,8 @@ export {
   aiRuleGateSchema,
   type CreditsTopupSpec,
   creditsTopupSpecSchema,
+  type DeploymentEnvName,
+  deploymentEnvNameSchema,
   type GateConfig,
   type GovernanceScheduleSpec,
   type GovernanceSpec,
@@ -132,3 +134,4 @@ export {
   type ThresholdCriterion,
   thresholdCriterionSchema,
 } from "./schema.js";
+
