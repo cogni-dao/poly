@@ -94,13 +94,6 @@ COPY --from=builder --chown=nextjs:nodejs /app/app/public ./app/public
 # Repo-spec: DAO config (node_id, chain, governance).
 COPY --from=builder --chown=nextjs:nodejs /app/.cogni ./.cogni
 
-# Work coordination ledger. The runtime work-item adapter is markdown-backed
-# for this bootstrap phase, so candidate/prod must ship the seeded ledger and
-# leave the directory writable for claim/heartbeat/create operations.
-COPY --from=builder --chown=nextjs:nodejs /app/work ./work
-RUN mkdir -p /app/work/items /app/work/projects \
-  && chown -R nextjs:nodejs /app/work
-
 # Postgres migrator: base node-app deployment runs `node $NODE_NAME/app/migrate.mjs $NODE_NAME/app/migrations`
 # as an initContainer. The runner needs the shared wrapper + this node's migrations folder
 # colocated at the expected paths. Mirrors operator/Dockerfile (task.0370 step 1).
@@ -139,6 +132,15 @@ COPY --from=builder --chown=nextjs:nodejs /app/config/mcp.servers.json ./app/con
 # No default: if CI forgets to pass the arg, APP_BUILD_SHA is empty and the pod visibly reports it.
 ARG BUILD_SHA
 ENV APP_BUILD_SHA=$BUILD_SHA
+
+# bug.5183: bake a SHA-addressed marker into the static layer so the external
+# candidate gate can prove the served browser assets and `/version` came from
+# the same image. The SHA-unique path also prevents cross-build cache aliasing.
+RUN if [ -n "$BUILD_SHA" ]; then \
+      mkdir -p ./app/public/__cogni-build && \
+      printf '%s' "$BUILD_SHA" > "./app/public/__cogni-build/${BUILD_SHA}.txt" && \
+      chown -R nextjs:nodejs ./app/public/__cogni-build; \
+    fi
 
 USER nextjs
 

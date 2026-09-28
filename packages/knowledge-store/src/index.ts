@@ -119,6 +119,13 @@ export {
   classifyResolutionStrategy,
   type ResolverTarget,
 } from "./domain/resolver-dispatch.js";
+// Knowledge-graph view model (shared assembly, no N+1)
+export {
+  buildKnowledgeGraph,
+  type KnowledgeGraphEdge,
+  type KnowledgeGraphModel,
+  type KnowledgeGraphNode,
+} from "./domain/knowledge-graph.js";
 // Domain types & schemas
 export {
   type Citation,

@@ -20,11 +20,12 @@ import {
   type ChatCompletionChunk,
   chatCompletionsContract,
 } from "@cogni/node-contracts";
-import { ChatValidationError } from "@cogni/node-shared/errors";
+import { ChatValidationError } from "@cogni/node-shared";
 import { NextResponse } from "next/server";
 import {
   chatCompletion,
   chatCompletionStream,
+  CompletionIdempotencyConflictError,
   toOpenAiFinishReason,
 } from "@/app/_facades/ai/completion.server";
 import { executionErrorToOpenAiError } from "@/app/_facades/ai/execution-error-mapper";
@@ -67,6 +68,16 @@ function handleRouteError(
   ctx: RequestContext,
   error: unknown
 ): NextResponse | null {
+  if (error instanceof CompletionIdempotencyConflictError) {
+    logRequestWarn(ctx.log, error, "IDEMPOTENCY_CONFLICT");
+    return openAiError(
+      error.message,
+      "invalid_request_error",
+      409,
+      "idempotency_conflict"
+    );
+  }
+
   // Zod validation errors
   if (error && typeof error === "object" && "issues" in error) {
     logRequestWarn(ctx.log, error, "VALIDATION_ERROR");
@@ -288,27 +299,45 @@ function createOpenAiSseStream(
 
         // Await final result for finish_reason and usage
         const result = await final;
-        const finishReason = result.ok
-          ? toOpenAiFinishReason(result.finishReason)
-          : "stop";
-
         if (!result.ok) {
           log.error({ error: result.error }, "Stream completed with error");
+          const mapped = executionErrorToOpenAiError(result.error);
+          logEvent(log, EVENT_NAMES.AI_COMPLETION, {
+            reqId: completionId.replace("chatcmpl-", ""),
+            routeId: "chat.completions",
+            streaming: true,
+            model,
+            outcome: "error",
+            finishReason: "error",
+          });
+          controller.enqueue(
+            encoder.encode(
+              sseEncode(
+                JSON.stringify({
+                  error: {
+                    message: mapped.message,
+                    type: mapped.type,
+                    param: null,
+                    code: result.error,
+                  },
+                })
+              )
+            )
+          );
+          controller.close();
+          return;
         }
+        const finishReason = toOpenAiFinishReason(result.finishReason);
 
         logEvent(log, EVENT_NAMES.AI_COMPLETION, {
           reqId: completionId.replace("chatcmpl-", ""),
           routeId: "chat.completions",
           streaming: true,
           model,
-          outcome: result.ok ? "success" : "error",
+          outcome: "success",
           finishReason,
-          ...(result.ok
-            ? {
-                promptTokens: result.usage.promptTokens,
-                completionTokens: result.usage.completionTokens,
-              }
-            : {}),
+          promptTokens: result.usage.promptTokens,
+          completionTokens: result.usage.completionTokens,
         });
 
         // Final chunk with finish_reason
