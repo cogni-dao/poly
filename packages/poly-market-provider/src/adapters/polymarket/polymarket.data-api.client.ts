@@ -37,6 +37,59 @@ import {
  * Thrown when a Data API response fails Zod validation at the client boundary.
  * Stable envelope so downstream agents can catch schema drift distinctly from HTTP failures.
  */
+/**
+ * PROCESS_WIDE_429_COOLDOWN (bug.5284) — module-scoped, deliberately NOT a
+ * class field.
+ *
+ * Polymarket rate-limits by IP/account, so the budget is shared by the whole
+ * PROCESS. But the app constructs SEVEN-PLUS independent
+ * `PolymarketDataApiClient` instances (container, redeem-pipeline, trade
+ * executor x2, wallet refresh route, redeem route, top-wallet-stats job…), so
+ * per-instance state cannot see the limit the other six just tripped.
+ *
+ * Prod evidence: after the per-job breakers for wallet-watch (bug.5276) and
+ * top-wallet-stats (bug.5283) shipped, `/trades` 429s continued from a THIRD
+ * caller — `trader-observation` — because each job only throttles itself.
+ * Measured 0.62/min across 2 components. Per-job fixes cannot converge; one
+ * shared gate can.
+ *
+ * Fail-fast during cooldown is the point: the request would 429 anyway, so
+ * skipping it costs the caller nothing and stops us spending a third party's
+ * budget to be told "no" again. Every current caller already treats Data-API
+ * errors as best-effort.
+ */
+let cooldownUntilMs = 0;
+
+/** Fallback when the 429 carries no usable `Retry-After`. */
+const DEFAULT_429_COOLDOWN_MS = 5_000;
+/** Ceiling, so a hostile or malformed `Retry-After` cannot wedge reads. */
+const MAX_429_COOLDOWN_MS = 30_000;
+
+/** Thrown instead of issuing a call while the shared cooldown is active. */
+export class PolyDataApiRateLimitedError extends Error {
+  readonly retryAfterMs: number;
+  constructor(pathname: string, retryAfterMs: number) {
+    super(
+      `Polymarket Data API rate-limit cooldown active; skipped ${pathname} (retry in ${retryAfterMs}ms)`
+    );
+    this.name = "PolyDataApiRateLimitedError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/** Parse `Retry-After` (delta-seconds only; HTTP-date is not used by this API). */
+export function parseRetryAfterMs(header: string | null): number {
+  if (!header) return DEFAULT_429_COOLDOWN_MS;
+  const seconds = Number.parseInt(header.trim(), 10);
+  if (!Number.isFinite(seconds) || seconds <= 0) return DEFAULT_429_COOLDOWN_MS;
+  return Math.min(seconds * 1000, MAX_429_COOLDOWN_MS);
+}
+
+/** Test seam — reset the process-wide cooldown between cases. */
+export function __resetPolyDataApiCooldownForTests(): void {
+  cooldownUntilMs = 0;
+}
+
 export class PolyDataApiValidationError extends Error {
   readonly code = "VALIDATION_FAILED" as const;
   constructor(
@@ -445,6 +498,11 @@ export class PolymarketDataApiClient {
    */
   private async fetchJson(url: URL, signal?: AbortSignal): Promise<unknown> {
     signal?.throwIfAborted();
+    // bug.5284 — refuse to add load while upstream is still rate-limiting us.
+    const remainingMs = cooldownUntilMs - Date.now();
+    if (remainingMs > 0) {
+      throw new PolyDataApiRateLimitedError(url.pathname, remainingMs);
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const onCallerAbort = () => controller.abort();
@@ -454,6 +512,15 @@ export class PolymarketDataApiClient {
         signal: controller.signal,
       });
       if (!response.ok) {
+        if (response.status === 429) {
+          // Open the shared gate for EVERY client in this process, not just
+          // this instance — the limit is per-IP, so the others are about to
+          // hit the same wall.
+          const waitMs = parseRetryAfterMs(
+            response.headers?.get?.("retry-after") ?? null
+          );
+          cooldownUntilMs = Date.now() + waitMs;
+        }
         throw new Error(
           `Polymarket Data API error: ${response.status} ${response.statusText} (${url.pathname})`
         );
