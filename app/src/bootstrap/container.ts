@@ -367,6 +367,8 @@ let _priceHistoryStop: (() => void) | null = null;
 let _topWalletStatsStop: (() => void) | null = null;
 // One-shot research prewarm stop fn (fix/research-route-caching). DB only.
 let _researchPrewarmStop: (() => void) | null = null;
+// One-shot fill-rollup backfill walker (task.research-rollup-read-models). DB only.
+let _fillRollupBackfillStop: (() => void) | null = null;
 
 // task.5016 — job-runner leader election. All background-job starts flow
 // through ONE seam (`startBackgroundJobs` inside createContainer), wrapped by
@@ -463,6 +465,14 @@ function stopAllJobHandles(): void {
 			// Best-effort.
 		}
 		_researchPrewarmStop = null;
+	}
+	if (_fillRollupBackfillStop) {
+		try {
+			_fillRollupBackfillStop();
+		} catch {
+			// Best-effort.
+		}
+		_fillRollupBackfillStop = null;
 	}
 }
 
@@ -1549,6 +1559,48 @@ function createContainer(): Container {
 						err: err instanceof Error ? err.message : String(err),
 					},
 					"research prewarm boot failed — first research views pay the cold aggregate",
+				);
+			}
+		})();
+
+	// task.research-rollup-read-models — one-shot boot walker draining
+	// historical `poly_trader_fills` into `poly_trader_fill_rollups_daily`.
+	// Resumable at the per-wallet watermark; a caught-up run is one bounded
+	// probe per wallet. Steady-state freshness is owned by the observation
+	// tick's per-wallet accumulate (ROLLUPS_FOLLOW_FILLS), so this job only
+	// matters for the initial drain and after long tick outages. DB-only.
+	if (!env.POLY_FILL_ROLLUP_BACKFILL_ENABLED) {
+		log.info(
+			{ event: "poly.fill_rollup.backfill_disabled" },
+			"fill-rollup backfill disabled (POLY_FILL_ROLLUP_BACKFILL_ENABLED=false) — rollup readers serve the live tail for unrolled history",
+		);
+	} else
+		void (async () => {
+			try {
+				const { startFillRollupBackfill } = await import(
+					"@/bootstrap/jobs/fill-rollup-backfill.job"
+				);
+				const backfillLogger =
+					log as unknown as import("@cogni/poly-market-provider").LoggerPort;
+				const fillRollupBackfillStop = startFillRollupBackfill({
+					db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
+						Record<string, unknown>
+					>,
+					logger: backfillLogger,
+				});
+				// task.5016 — leadership was lost while this boot was in flight.
+				if (epoch !== _jobsEpoch) {
+					fillRollupBackfillStop();
+					return;
+				}
+				_fillRollupBackfillStop = fillRollupBackfillStop;
+			} catch (err: unknown) {
+				log.error(
+					{
+						event: "poly.fill_rollup.backfill_boot_failed",
+						err: err instanceof Error ? err.message : String(err),
+					},
+					"fill-rollup backfill boot failed — resumable on next boot; readers serve the live tail",
 				);
 			}
 		})();

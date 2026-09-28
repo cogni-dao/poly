@@ -3,13 +3,14 @@
 
 /**
  * Module: `@features/wallet-analysis/server/research-read-cache`
- * Purpose: INTERIM serve-stale-while-revalidate wrappers for the four research
- *   reads that are per-request SQL aggregations over the full fills history
- *   (millions of rows post-backfill) and measured 25–31s on prod 2026-09-28
- *   (build 08cedd2): snapshot slice (26.5s), copy-target benchmark (28.1s),
- *   target overlap (25.0s), trader comparison (~31s → edge 520). Repeat views
- *   become instant; first views still pay the aggregate once (or are prewarmed
- *   at boot by `@bootstrap/jobs/research-prewarm.job`).
+ * Purpose: Serve-stale-while-revalidate wrappers for the four research reads
+ *   (snapshot, copy-target benchmark, target overlap, trader comparison).
+ *   Originally shipped as the INTERIM mitigation for 25-31s full-history
+ *   aggregations (prod 2026-09-28, build 08cedd2); since
+ *   task.research-rollup-read-models moved those reads onto
+ *   `poly_trader_fill_rollups_daily`, these are cheap-hit caches over fast
+ *   queries — kept because request coalescing + SWR still absorb refresh
+ *   bursts for free.
  * Scope: Thin caching seam between routes/prewarm and the underlying services.
  *   Owns cache keys + freshness policy only; no SQL, no HTTP.
  * Invariants:
@@ -22,8 +23,10 @@
  *   - KEYS_COVER_ALL_INPUTS: every input that changes the computed payload is
  *     in the key — benchmark includes the per-user comparison wallet, trader
  *     comparison includes the ordered wallet+label list.
- *   - INTERIM_ONLY: the proper fix is tick-written rollup tables (separate
- *     design); delete this module when those land.
+ *   - CHEAP_HIT_CACHE (task.research-rollup-read-models): the underlying
+ *     services are rollup-backed and fast; this layer is retained for
+ *     request coalescing + burst absorption, not as the latency fix. Safe to
+ *     shrink TTLs or delete once candidate timings confirm sub-second reads.
  * Side-effects: none of its own (delegates to `coalesce.ts` module-scope Map).
  * Links: src/features/wallet-analysis/server/coalesce.ts,
  *   src/bootstrap/jobs/research-prewarm.job.ts, work/items/bug.5012

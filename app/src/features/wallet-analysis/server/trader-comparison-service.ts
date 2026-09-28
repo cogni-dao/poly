@@ -14,6 +14,11 @@
  *     preserved verbatim as a test-only parity oracle in `tests/_fixtures/poly/trade-size-pnl-oracle.ts`.
  *   - SNAPSHOT_CONSISTENT_BUNDLE: the per-wallet summary + size-P/L queries run inside one
  *     repeatable-read read-only transaction so histogram counts reconcile with summary totals.
+ *   - ROLLUP_BACKED_FULL_HISTORY (task.research-rollup-read-models): the full-history CTEs
+ *     (`token_flows`, `condition_token_costs`) and the windowed summary read
+ *     `poly_trader_fill_rollups_daily` (+ unrolled tail) via `fill-rollup-service` helpers.
+ *     Only `windowed_buys` still touches raw fills — the rank bucketing is per-fill by
+ *     definition and window-dependent, so it cannot be pre-bucketed.
  *   - PER_WALLET_TIME_BUDGET (interim, 2026-09-28): each wallet's aggregate races a time budget
  *     (`opts.perWalletBudgetMs`, default 25s, env `POLY_RESEARCH_WALLET_BUDGET_MS`). A wallet
  *     that exceeds it is OMITTED from `traders` and surfaced as a `wallet_budget_exceeded`
@@ -36,6 +41,10 @@ import type {
 import { sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import {
+  EPOCH_ISO,
+  windowedFillFlowsSelect,
+} from "./fill-rollup-service";
 import { getPnlSlice } from "./wallet-analysis-service";
 
 type Db =
@@ -271,6 +280,30 @@ export async function readTradeSizePnl(
   address: string,
   windowStartIso: string
 ): Promise<PolyResearchTraderSizePnl> {
+  // task.research-rollup-read-models: the full-history CTEs (`token_flows`,
+  // `condition_token_costs`) now read `poly_trader_fill_rollups_daily`
+  // (+ the not-yet-rolled tail) via `windowedFillFlowsSelect(EPOCH)` — the
+  // 100-1000x smaller derived table — instead of re-scanning the wallet's
+  // entire fill history. `windowed_buys` stays per-fill BY DESIGN: the
+  // bit-exact rank bucketing (floor((i/n)*20) over buys sorted by size)
+  // needs individual fill sizes and cannot be pre-bucketed (window-dependent
+  // ranks); see the work-item design doc.
+  const walletRows = (await db.execute(sql`
+    SELECT w.id FROM poly_trader_wallets w WHERE w.wallet_address = ${address} LIMIT 1
+  `)) as unknown as
+    | Array<Record<string, unknown>>
+    | { rows?: Array<Record<string, unknown>> };
+  const walletList = Array.isArray(walletRows)
+    ? walletRows
+    : (walletRows.rows ?? []);
+  const walletId = walletList[0]?.id;
+  if (typeof walletId !== "string") {
+    return buildTradeSizePnlFromBucketRows([]);
+  }
+  const flows = windowedFillFlowsSelect({
+    walletIds: [walletId],
+    windowStartIso: EPOCH_ISO,
+  });
   const rows = (await db.execute(sql`
     WITH windowed_buys AS (
       SELECT
@@ -279,27 +312,23 @@ export async function readTradeSizePnl(
         f.size_usdc AS size_usdc,
         (ROW_NUMBER() OVER (ORDER BY f.size_usdc ASC, f.observed_at ASC, f.id ASC) - 1) AS rank0,
         COUNT(*) OVER () AS total_buys
-      FROM poly_trader_wallets w
-      INNER JOIN poly_trader_fills f
-        ON f.trader_wallet_id = w.id
-      WHERE w.wallet_address = ${address}
+      FROM poly_trader_fills f
+      WHERE f.trader_wallet_id = ${walletId}::uuid
         AND f.side = 'BUY'
         AND f.observed_at >= ${windowStartIso}::timestamptz
     ),
+    all_flows AS (${flows}),
     token_flows AS (
       SELECT
-        f.token_id,
-        MIN(f.condition_id) AS condition_id,
-        COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'BUY'), 0) AS buy_usdc,
-        COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'SELL'), 0) AS sell_usdc,
-        COALESCE(SUM(f.shares) FILTER (WHERE f.side = 'BUY'), 0) AS buy_shares,
-        COALESCE(SUM(f.shares) FILTER (WHERE f.side = 'SELL'), 0) AS sell_shares
-      FROM poly_trader_wallets w
-      INNER JOIN poly_trader_fills f
-        ON f.trader_wallet_id = w.id
-      WHERE w.wallet_address = ${address}
-        AND f.token_id IN (SELECT DISTINCT token_id FROM windowed_buys)
-      GROUP BY f.token_id
+        fl.token_id,
+        MIN(fl.condition_id) AS condition_id,
+        COALESCE(SUM(fl.buy_usdc), 0) AS buy_usdc,
+        COALESCE(SUM(fl.sell_usdc), 0) AS sell_usdc,
+        COALESCE(SUM(fl.buy_shares), 0) AS buy_shares,
+        COALESCE(SUM(fl.sell_shares), 0) AS sell_shares
+      FROM all_flows fl
+      WHERE fl.token_id IN (SELECT DISTINCT token_id FROM windowed_buys)
+      GROUP BY fl.token_id
     ),
     condition_closed AS (
       SELECT
@@ -333,18 +362,18 @@ export async function readTradeSizePnl(
         AND o.token_id = tf.token_id
     ),
     condition_token_costs AS (
+      -- Legacy grouped BUY fills only; flow rows carry per-side sums, so
+      -- SUM(buy_usdc) + MIN(first_buy_observed_at) reproduce it exactly and
+      -- the HAVING drops (condition, token) groups that never had a BUY.
       SELECT
-        f.condition_id,
-        f.token_id,
-        SUM(f.size_usdc) AS buy_usdc,
-        MIN(f.observed_at) AS first_buy_at
-      FROM poly_trader_wallets w
-      INNER JOIN poly_trader_fills f
-        ON f.trader_wallet_id = w.id
-      WHERE w.wallet_address = ${address}
-        AND f.side = 'BUY'
-        AND f.condition_id IN (SELECT DISTINCT condition_id FROM windowed_buys)
-      GROUP BY f.condition_id, f.token_id
+        fl.condition_id,
+        fl.token_id,
+        SUM(fl.buy_usdc) AS buy_usdc,
+        MIN(fl.first_buy_observed_at) AS first_buy_at
+      FROM all_flows fl
+      WHERE fl.condition_id IN (SELECT DISTINCT condition_id FROM windowed_buys)
+      GROUP BY fl.condition_id, fl.token_id
+      HAVING SUM(fl.buy_count) > 0
     ),
     hedge_tokens AS (
       SELECT token_id
@@ -407,38 +436,80 @@ export async function readTradeSizePnl(
   return buildTradeSizePnlFromBucketRows(rows);
 }
 
-async function readTradeSummary(
+/**
+ * Rollup-backed since task.research-rollup-read-models: windowed counts/
+ * notional/market-count come from `poly_trader_fill_rollups_daily`
+ * (+ boundary/tail fills) instead of the legacy LEFT JOIN aggregate that
+ * walked every fill row in the window (the wallet's whole history on ALL).
+ * Two statements inside the caller's repeatable-read `readTradeBundle`
+ * transaction, so they share one snapshot with the size-P/L query.
+ *
+ * @internal — exported for the rollup parity tests only.
+ */
+export async function readTradeSummary(
   db: Db,
   address: string,
   windowStartIso: string
 ): Promise<TradeSummaryRow | null> {
-  const rows = (await db.execute(sql`
+  const metaRows = (await db.execute(sql`
     SELECT
       w.id,
       w.label,
       w.kind,
       w.first_observed_at,
       c.last_success_at,
-      c.status,
-      COALESCE(COUNT(f.id), 0) AS trade_count,
-      COALESCE(COUNT(f.id) FILTER (WHERE f.side = 'BUY'), 0) AS buy_count,
-      COALESCE(COUNT(f.id) FILTER (WHERE f.side = 'SELL'), 0) AS sell_count,
-      COALESCE(SUM(f.size_usdc::numeric), 0) AS notional_usdc,
-      COALESCE(SUM(f.size_usdc::numeric) FILTER (WHERE f.side = 'BUY'), 0) AS buy_usdc,
-      COALESCE(SUM(f.size_usdc::numeric) FILTER (WHERE f.side = 'SELL'), 0) AS sell_usdc,
-      COALESCE(COUNT(DISTINCT f.condition_id), 0) AS market_count
+      c.status
     FROM poly_trader_wallets w
     LEFT JOIN poly_trader_ingestion_cursors c
       ON c.trader_wallet_id = w.id
       AND c.source = 'data-api-trades'
-    LEFT JOIN poly_trader_fills f
-      ON f.trader_wallet_id = w.id
-      AND f.observed_at >= ${windowStartIso}::timestamptz
     WHERE w.wallet_address = ${address}
-    GROUP BY w.id, w.label, w.kind, w.first_observed_at, c.last_success_at, c.status
     LIMIT 1
-  `)) as unknown as TradeSummaryRow[];
-  return rows[0] ?? null;
+  `)) as unknown as
+    | Array<Record<string, unknown>>
+    | { rows?: Array<Record<string, unknown>> };
+  const metaList = Array.isArray(metaRows) ? metaRows : (metaRows.rows ?? []);
+  const meta = metaList[0];
+  if (!meta || typeof meta.id !== "string") return null;
+
+  const flows = windowedFillFlowsSelect({
+    walletIds: [meta.id],
+    windowStartIso,
+  });
+  const aggRows = (await db.execute(sql`
+    SELECT
+      COALESCE(SUM(fl.fill_count), 0) AS trade_count,
+      COALESCE(SUM(fl.buy_count), 0) AS buy_count,
+      COALESCE(SUM(fl.sell_count), 0) AS sell_count,
+      COALESCE(SUM(fl.buy_usdc + fl.sell_usdc), 0) AS notional_usdc,
+      COALESCE(SUM(fl.buy_usdc), 0) AS buy_usdc,
+      COALESCE(SUM(fl.sell_usdc), 0) AS sell_usdc,
+      COUNT(DISTINCT fl.condition_id) AS market_count
+    FROM (${flows}) fl
+  `)) as unknown as
+    | Array<Record<string, unknown>>
+    | { rows?: Array<Record<string, unknown>> };
+  const aggList = Array.isArray(aggRows) ? aggRows : (aggRows.rows ?? []);
+  const agg = aggList[0] ?? {};
+
+  return {
+    id: meta.id,
+    label: String(meta.label ?? ""),
+    kind: String(meta.kind ?? ""),
+    first_observed_at:
+      (meta.first_observed_at as Date | string | null | undefined) ?? null,
+    last_success_at:
+      (meta.last_success_at as Date | string | null | undefined) ?? null,
+    status: (meta.status as string | null | undefined) ?? null,
+    trade_count: (agg.trade_count as string | number | null | undefined) ?? 0,
+    buy_count: (agg.buy_count as string | number | null | undefined) ?? 0,
+    sell_count: (agg.sell_count as string | number | null | undefined) ?? 0,
+    notional_usdc:
+      (agg.notional_usdc as string | number | null | undefined) ?? 0,
+    buy_usdc: (agg.buy_usdc as string | number | null | undefined) ?? 0,
+    sell_usdc: (agg.sell_usdc as string | number | null | undefined) ?? 0,
+    market_count: (agg.market_count as string | number | null | undefined) ?? 0,
+  };
 }
 
 function toTrader(params: {

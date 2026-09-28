@@ -11,6 +11,7 @@
  *   - COOPERATIVE_CANCELLATION: `deps.signal` (armed by the job's tick timeout) is checked before each wallet and between upstream pages, and is passed to every Polymarket fetch; an aborted wallet is counted `walletsAborted`, writes no cursor-error row, and post-loop prunes/metadata refresh are skipped so the abandoned tick settles quickly.
  *   - SAME_OBSERVED_TRADE_TABLE: target and Cogni public wallet trades are both stored in `poly_trader_fills`.
  *   - WATERMARKED_INGESTION: reads newest-to-prior-watermark and advances cursor only after DB upserts complete.
+ *   - ROLLUPS_FOLLOW_FILLS (task.research-rollup-read-models): after each wallet's fills upsert, the tick folds new fills into `poly_trader_fill_rollups_daily` via `accumulateFillRollups` (bounded batches, `skipIfLocked` so a running boot backfill wins the cursor). DB-only; failures log + count `errors` without failing the wallet.
  *   - PNL_INGEST_INDEPENDENT: per-wallet user-pnl ingest runs after observation regardless of observe outcome; failures bump `errors` and continue. Retention prune runs once per tick after all wallets.
  *   - SNAPSHOTS_ARE_POSITION_CHANGES: `poly_trader_position_snapshots` rows are written only when a position-defining field changes (see `hashPosition`); mark-to-market history lives in `poly_market_price_history` + `poly_trader_user_pnl_points`, live marks in `poly_trader_current_positions`. Retention (`pruneOldPositionSnapshots`) drops >35d rows in bounded batches but always keeps each group's newest row.
  *   - COGNI_POSITION_ABSENCE_NEEDS_AUTHORITY: complete Data API polls do not
@@ -56,6 +57,10 @@ import {
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import pLimit from "p-limit";
+import {
+  accumulateFillRollups,
+  TICK_ROLLUP_MAX_BATCHES,
+} from "./fill-rollup-service";
 import { refreshMarketMetadata } from "./poly-market-metadata-service";
 import {
   fetchAndPersistTradingWalletPnlHistory,
@@ -148,6 +153,8 @@ export interface TraderObservationTickResult {
   walletsAborted: number;
   fills: number;
   positions: number;
+  /** Fills folded into `poly_trader_fill_rollups_daily` this tick. */
+  rollupFills: number;
   pnlPoints: number;
   prunedPnlPoints: number;
   prunedPositionSnapshots: number;
@@ -279,6 +286,7 @@ export async function runTraderObservationTick(
 
   let fills = 0;
   let positions = 0;
+  let rollupFills = 0;
   let pnlPoints = 0;
   let errors = 0;
 
@@ -296,6 +304,7 @@ export async function runTraderObservationTick(
         const result = await observeWallet({ ...deps, wallet, logger: log });
         fills += result.fills;
         positions += result.positions;
+        rollupFills += result.rollupFills;
       } catch (err: unknown) {
         if (deps.signal?.aborted) throw err;
         errors += 1;
@@ -448,6 +457,7 @@ export async function runTraderObservationTick(
       tick_ms: Date.now() - tickStartedAt,
       fills,
       positions,
+      rollup_fills: rollupFills,
       pnl_points: pnlPoints,
       pruned_pnl_points: prunedPnlPoints,
       pruned_position_snapshots: prunedPositionSnapshots,
@@ -462,6 +472,7 @@ export async function runTraderObservationTick(
     walletsAborted: loop.aborted,
     fills,
     positions,
+    rollupFills,
     pnlPoints,
     prunedPnlPoints,
     prunedPositionSnapshots,
@@ -598,7 +609,7 @@ async function observeWallet(
   deps: TraderObservationTickDeps & {
     wallet: PolyTraderWallet;
   }
-): Promise<{ fills: number; positions: number }> {
+): Promise<{ fills: number; positions: number; rollupFills: number }> {
   const startedAt = Date.now();
   const cursor = await deps.db
     .select()
@@ -699,6 +710,50 @@ async function observeWallet(
       },
     });
 
+  // ROLLUPS_FOLLOW_FILLS: fold this wallet's new fills into the daily rollup
+  // AFTER the fills upsert settles (per-wallet writer serialization is what
+  // makes the insertion-key watermark sound — see fill-rollup-service.ts).
+  // Bounded batches per tick; a boot backfill holding the cursor wins via
+  // NOWAIT-skip. DB-only, so a failure is logged and never fails the wallet
+  // or writes a cursor-error row.
+  let rollupFills = 0;
+  if (!deps.signal?.aborted) {
+    try {
+      const rollup = await accumulateFillRollups(deps.db, {
+        traderWalletId: deps.wallet.id,
+        maxBatches: TICK_ROLLUP_MAX_BATCHES,
+        skipIfLocked: true,
+        signal: deps.signal,
+      });
+      rollupFills = rollup.fills;
+      if (!rollup.caughtUp || rollup.batches > 1) {
+        deps.logger.info(
+          {
+            event: "poly.fill_rollup.tick_accumulate",
+            trader_wallet_id: deps.wallet.id,
+            wallet: deps.wallet.walletAddress,
+            fills: rollup.fills,
+            batches: rollup.batches,
+            caught_up: rollup.caughtUp,
+            skipped_locked: rollup.skippedLocked,
+          },
+          "fill-rollup tick accumulate draining backlog"
+        );
+      }
+    } catch (err: unknown) {
+      if (deps.signal?.aborted) throw err;
+      deps.logger.warn(
+        {
+          event: "poly.fill_rollup.tick_accumulate_error",
+          trader_wallet_id: deps.wallet.id,
+          wallet: deps.wallet.walletAddress,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "fill-rollup tick accumulate failed — readers fall back to the live tail"
+      );
+    }
+  }
+
   deps.logger.info(
     {
       event: "poly.trader.observe",
@@ -710,13 +765,14 @@ async function observeWallet(
       positions: positionResult.positions,
       positions_complete: positionResult.complete,
       positions_skipped: positionResult.skipped,
+      rollup_fills: rollupFills,
       new_since: observed.newSince,
       duration_ms: Date.now() - startedAt,
     },
     "trader wallet observed"
   );
 
-  return { fills: insertedFills, positions: positionResult.positions };
+  return { fills: insertedFills, positions: positionResult.positions, rollupFills };
 }
 
 async function upsertObservedFills(

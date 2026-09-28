@@ -4,10 +4,11 @@
 /**
  * Module: `@bootstrap/jobs/research-prewarm.job`
  * Purpose: ONE-SHOT boot prewarm of the SWR-cached research aggregates
- *   (`research-read-cache.ts`) for the two primary research wallets, so first
- *   views after a deploy don't pay the 25-31s cold aggregate (prod-measured
- *   2026-09-28, build 08cedd2). Interim mitigation only — the real fix is
- *   tick-written rollup tables (separate design).
+ *   (`research-read-cache.ts`) for the two primary research wallets.
+ *   DEMOTED (task.research-rollup-read-models): the underlying reads are now
+ *   rollup-backed (`poly_trader_fill_rollups_daily`) and expected sub-second,
+ *   so this prewarm is a minor first-paint nicety, not a latency shield.
+ *   Candidate for deletion once candidate timings confirm the rollup reads.
  * Scope: Wiring + sequencing only. Caller injects DB + logger; the cached
  *   wrappers own keys/freshness; the services own the SQL.
  * Invariants:

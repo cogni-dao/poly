@@ -26,6 +26,10 @@ import { and, eq, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { liveCurrentPositionSql } from "./current-position-staleness";
+import {
+  windowedFillCountsSelect,
+  windowedFillFlowsSelect,
+} from "./fill-rollup-service";
 import type { SliceResult } from "./wallet-analysis-service";
 
 type Db =
@@ -281,7 +285,8 @@ function hedgePolicyFromRows(
   };
 }
 
-async function readSummary(
+/** @internal — exported for the rollup parity tests only. */
+export async function readSummary(
   db: Db,
   targetWalletId: string,
   comparisonWalletId: string | null,
@@ -293,6 +298,15 @@ async function readSummary(
   // reads is result-identical. A NULL comparisonWalletId param makes
   // `IN (target, NULL)` degrade to target-only, which matches the outer
   // FILTER clauses summing nothing for a NULL comparison wallet.
+  //
+  // task.research-rollup-read-models: the windowed trade counts come from
+  // `poly_trader_fill_rollups_daily` (+ boundary/tail fills) instead of the
+  // legacy COUNT(*) scalar subselects that walked millions of fill rows on
+  // the ALL window. Exact-equivalence proven by the rollup parity suite.
+  const windowCounts = windowedFillCountsSelect({
+    walletIds: [targetWalletId, comparisonWalletId],
+    windowStartIso,
+  });
   return (await db.execute(sql`
     WITH latest_positions AS (
       SELECT DISTINCT ON (p.trader_wallet_id, p.condition_id, p.token_id)
@@ -304,46 +318,58 @@ async function readSummary(
       WHERE ${liveCurrentPositionSql("p")}
         AND p.trader_wallet_id IN (${targetWalletId}, ${comparisonWalletId})
       ORDER BY p.trader_wallet_id, p.condition_id, p.token_id, p.last_observed_at DESC
-    )
+    ),
+    window_counts AS (${windowCounts})
       SELECT
         COALESCE(SUM(current_value_usdc) FILTER (WHERE trader_wallet_id = ${targetWalletId}), 0) AS target_open_value_usdc,
         COALESCE(SUM(current_value_usdc) FILTER (WHERE trader_wallet_id = ${comparisonWalletId}), 0) AS cogni_open_value_usdc,
-        (SELECT COUNT(*) FROM poly_trader_fills WHERE trader_wallet_id = ${targetWalletId} AND observed_at >= ${windowStartIso}::timestamptz) AS target_trades,
-        (SELECT COUNT(*) FROM poly_trader_fills WHERE trader_wallet_id = ${comparisonWalletId} AND observed_at >= ${windowStartIso}::timestamptz) AS cogni_trades
+        COALESCE((SELECT wc.trade_count FROM window_counts wc WHERE wc.trader_wallet_id = ${targetWalletId}::uuid), 0) AS target_trades,
+        COALESCE((SELECT wc.trade_count FROM window_counts wc WHERE wc.trader_wallet_id = ${comparisonWalletId}::uuid), 0) AS cogni_trades
       FROM latest_positions
   `)) as unknown as SummaryRow[];
 }
 
-async function readMarketRows(
+/**
+ * Rollup-backed since task.research-rollup-read-models: per-(condition,
+ * token) windowed sums come from `poly_trader_fill_rollups_daily` day-rows
+ * (+ boundary/tail fills) via `windowedFillFlowsSelect`, replacing the legacy
+ * windowed GROUP BY over raw fills (a full-history scan on the ALL window).
+ * `size_usdc = buy + sell` and `shares = buy + sell` reproduce the legacy
+ * side-agnostic sums exactly (numeric addition is exact).
+ *
+ * @internal — exported for the rollup parity tests only.
+ */
+export async function readMarketRows(
   db: Db,
   targetWalletId: string,
   comparisonWalletId: string | null,
   windowStartIso: string
 ): Promise<BenchmarkMarketRow[]> {
+  const flows = windowedFillFlowsSelect({
+    walletIds: [targetWalletId, comparisonWalletId],
+    windowStartIso,
+  });
   return (await db.execute(sql`
-    WITH target AS (
+    WITH flows AS (${flows}),
+    target AS (
       SELECT
-        condition_id,
-        token_id,
-        SUM(size_usdc::numeric) AS size_usdc,
-        SUM(shares::numeric) AS shares,
-        SUM(size_usdc::numeric) / NULLIF(SUM(shares::numeric), 0) AS vwap
-      FROM poly_trader_fills
-      WHERE trader_wallet_id = ${targetWalletId}
-        AND observed_at >= ${windowStartIso}::timestamptz
-      GROUP BY condition_id, token_id
+        fl.condition_id,
+        fl.token_id,
+        (fl.buy_usdc + fl.sell_usdc) AS size_usdc,
+        (fl.buy_shares + fl.sell_shares) AS shares,
+        (fl.buy_usdc + fl.sell_usdc) / NULLIF(fl.buy_shares + fl.sell_shares, 0) AS vwap
+      FROM flows fl
+      WHERE fl.trader_wallet_id = ${targetWalletId}::uuid
     ),
     cogni AS (
       SELECT
-        f.condition_id,
-        f.token_id,
-        SUM(f.size_usdc::numeric) AS size_usdc,
-        SUM(f.shares::numeric) AS shares,
-        SUM(f.size_usdc::numeric) / NULLIF(SUM(f.shares::numeric), 0) AS vwap
-      FROM poly_trader_fills f
-      WHERE f.trader_wallet_id = ${comparisonWalletId}
-        AND f.observed_at >= ${windowStartIso}::timestamptz
-      GROUP BY f.condition_id, f.token_id
+        fl.condition_id,
+        fl.token_id,
+        (fl.buy_usdc + fl.sell_usdc) AS size_usdc,
+        (fl.buy_shares + fl.sell_shares) AS shares,
+        (fl.buy_usdc + fl.sell_usdc) / NULLIF(fl.buy_shares + fl.sell_shares, 0) AS vwap
+      FROM flows fl
+      WHERE fl.trader_wallet_id = ${comparisonWalletId}::uuid
     )
     SELECT
       target.condition_id,

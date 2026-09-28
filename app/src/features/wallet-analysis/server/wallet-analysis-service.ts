@@ -14,6 +14,7 @@
  *   - PARTIAL_FAILURE_NEVER_THROWS: each slice returns a `{ value | warning }` result; the route surfaces warnings without 5xx-ing.
  *   - CLOB_HISTORY_OPEN_ONLY: `getPriceHistory` is fetched only for open/redeemable positions; closed positions use trade-derived timelines only.
  *   - PAGE_LOAD_DB_ONLY (task.5018 CP7): `getExecutionSlice` reads price-history from `poly_market_price_history` (DB-backed). The price-history bootstrap job is the only writer. Closes the `PAGE_LOAD_DB_ONLY_EXCEPT_PRICE_HISTORY` carve-out from CP5 — every wallet-analysis page-load surface is now DB-only.
+ *   - ROLLUP_BACKED_SNAPSHOT (task.research-rollup-read-models): `getSnapshotSlice`'s per-position aggregate and 30-day activity count read `poly_trader_fill_rollups_daily` (+ unrolled tail) via `fill-rollup-service` — no full fills-history scan on the request path. Parity vs the legacy full-scan SQL is enforced by the component rollup parity suite.
  * Side-effects: IO (DB reads only post-CP7; trader-observation + market-outcome + price-history ticks are the only writers).
  * Notes: Cache is process-scoped — see `instrumentation.ts` single-replica boot assert.
  * Links: docs/design/wallet-analysis-components.md, nodes/poly/packages/market-provider/src/analysis/wallet-metrics.ts, nodes/poly/packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts, nodes/poly/packages/node-contracts/src/poly.wallet.execution.v1.contract.ts, work/items/task.5012, work/items/task.5015
@@ -56,6 +57,11 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { clearTtlCacheByPrefix, coalesce } from "./coalesce";
 import { liveCurrentPositions } from "./current-position-staleness";
+import {
+  EPOCH_ISO,
+  windowedFillCountsSelect,
+  windowedFillFlowsSelect,
+} from "./fill-rollup-service";
 import {
   pickStoredPriceHistoryFidelity,
   readPriceHistoryFromDb,
@@ -391,24 +397,43 @@ export type PositionAggregate = {
   lastTs: number;
 };
 
-async function readPositionAggregatesFromDb(
+/**
+ * Rollup-backed since task.research-rollup-read-models: aggregates
+ * `poly_trader_fill_rollups_daily` day-rows (plus the not-yet-rolled fill
+ * tail — READERS_ADD_THE_TAIL in fill-rollup-service.ts) instead of scanning
+ * the wallet's full fill history (26.5-57s on prod RN1, 2026-09-28). Output
+ * is exactly equivalent to the legacy full-scan GROUP BY, proven by the
+ * component parity suite against the preserved oracle
+ * (`@tests/_fixtures/poly/research-live-scan-oracles`).
+ *
+ * @internal — exported for the rollup parity tests only.
+ */
+export async function readPositionAggregatesFromDb(
   db: Db,
   walletAddrLower: string
 ): Promise<PositionAggregate[]> {
+  const walletRows = await db
+    .select({ id: polyTraderWallets.id })
+    .from(polyTraderWallets)
+    .where(eq(polyTraderWallets.walletAddress, walletAddrLower))
+    .limit(1);
+  const walletId = walletRows[0]?.id;
+  if (!walletId) return [];
+  const flows = windowedFillFlowsSelect({
+    walletIds: [walletId],
+    windowStartIso: EPOCH_ISO,
+  });
   const rows = (await db.execute(sql`
     SELECT
-      f.condition_id AS "conditionId",
-      f.token_id AS "tokenId",
-      COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'BUY'), 0)::float8  AS "buyUsdc",
-      COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'SELL'), 0)::float8 AS "sellUsdc",
-      COALESCE(SUM(f.shares)    FILTER (WHERE f.side = 'BUY'), 0)::float8  AS "buyShares",
-      COALESCE(SUM(f.shares)    FILTER (WHERE f.side = 'SELL'), 0)::float8 AS "sellShares",
-      COALESCE(EXTRACT(EPOCH FROM MIN(f.observed_at) FILTER (WHERE f.side = 'BUY')), -1)::float8 AS "firstBuyTs",
-      EXTRACT(EPOCH FROM MAX(f.observed_at))::float8 AS "lastTs"
-    FROM ${polyTraderFills} f
-    INNER JOIN ${polyTraderWallets} w ON w.id = f.trader_wallet_id
-    WHERE w.wallet_address = ${walletAddrLower}
-    GROUP BY f.condition_id, f.token_id
+      fl.condition_id AS "conditionId",
+      fl.token_id AS "tokenId",
+      fl.buy_usdc::float8 AS "buyUsdc",
+      fl.sell_usdc::float8 AS "sellUsdc",
+      fl.buy_shares::float8 AS "buyShares",
+      fl.sell_shares::float8 AS "sellShares",
+      COALESCE(EXTRACT(EPOCH FROM fl.first_buy_observed_at), -1)::float8 AS "firstBuyTs",
+      EXTRACT(EPOCH FROM fl.last_observed_at)::float8 AS "lastTs"
+    FROM (${flows}) fl
   `)) as unknown as {
     rows?: Array<Record<string, unknown>>;
   };
@@ -491,18 +516,44 @@ async function readDailyCountsFromDb(
 /**
  * Single-row activity summary: rolling 30-day count + latest fill timestamp.
  * Drives `tradesPerDay30d` and `daysSinceLastTrade` without scanning fills in JS.
+ *
+ * Rollup-backed since task.research-rollup-read-models: the legacy shape
+ * FILTERed the 30-day count with no WHERE bound, so Postgres walked the
+ * wallet's ENTIRE fill history per request. The 30-day count now sums rollup
+ * day-rows (+ boundary/tail fills); `latestTs` is a bounded index MAX on
+ * `(trader_wallet_id, observed_at)`. The window start moves from SQL `now()`
+ * to JS `Date.now()` — a sub-millisecond boundary shift with no consumer
+ * (`tradesPerDay30d` is rounded to 2dp).
  */
 async function readActivityCountsFromDb(
   db: Db,
   walletAddrLower: string
 ): Promise<{ recent30: number; latestTs: number }> {
+  const walletRows = await db
+    .select({ id: polyTraderWallets.id })
+    .from(polyTraderWallets)
+    .where(eq(polyTraderWallets.walletAddress, walletAddrLower))
+    .limit(1);
+  const walletId = walletRows[0]?.id;
+  if (!walletId) return { recent30: 0, latestTs: 0 };
+  const windowStartIso = new Date(
+    Date.now() - 30 * 24 * 60 * 60 * 1000
+  ).toISOString();
+  const counts = windowedFillCountsSelect({
+    walletIds: [walletId],
+    windowStartIso,
+  });
   const rows = (await db.execute(sql`
     SELECT
-      COALESCE(COUNT(*) FILTER (WHERE f.observed_at >= now() - INTERVAL '30 days'), 0)::int AS "recent30",
-      COALESCE(EXTRACT(EPOCH FROM MAX(f.observed_at)), 0)::float8 AS "latestTs"
-    FROM ${polyTraderFills} f
-    INNER JOIN ${polyTraderWallets} w ON w.id = f.trader_wallet_id
-    WHERE w.wallet_address = ${walletAddrLower}
+      COALESCE((SELECT wc.trade_count FROM (${counts}) wc), 0)::int AS "recent30",
+      COALESCE(
+        EXTRACT(EPOCH FROM (
+          SELECT MAX(f.observed_at)
+          FROM ${polyTraderFills} f
+          WHERE f.trader_wallet_id = ${walletId}::uuid
+        )),
+        0
+      )::float8 AS "latestTs"
   `)) as unknown as { rows?: Array<Record<string, unknown>> };
   const list = Array.isArray(rows) ? rows : (rows.rows ?? []);
   const r = (list[0] as Record<string, unknown> | undefined) ?? {};
