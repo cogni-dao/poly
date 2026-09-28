@@ -21,12 +21,12 @@
  * @public
  */
 
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { AiExecutionError } from "@cogni/ai-core";
 import { toUserId } from "@cogni/ids";
 import type { ChatCompletionOutput, ChatMessage } from "@cogni/node-contracts";
-import type { SessionUser } from "@cogni/node-shared/auth/session";
-import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
+import type { SessionUser } from "@cogni/node-shared";
+import { EVENT_NAMES } from "@cogni/node-shared";
 import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 import {
   getContainer,
@@ -45,13 +45,18 @@ import {
   isVirtualKeyNotFoundPortError,
 } from "@/ports";
 import { getNodeId } from "@/shared/config";
-import type { RequestContext } from "@/shared/observability";
+import { serverEnv } from "@/shared/env";
+import {
+  aiChatPhaseDurationMs,
+  type RequestContext,
+} from "@/shared/observability";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Default graph for requests that don't specify one
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_GRAPH_NAME = "langgraph:default";
+const FIRST_EVENT_DEADLINE_MS = 20_000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Message conversion: OpenAI → internal MessageDto
@@ -108,6 +113,22 @@ export interface CompletionInput {
   stateKey?: string;
   /** Idempotency key for workflow start dedupe */
   idempotencyKey?: string;
+  /** Server-authoritative, tenant-scoped run identity for stream reconnection. */
+  serverRunId?: string;
+  /** Stable chat user-message identity for cross-plane correlation. */
+  messageId?: string;
+  /**
+   * `first-event` preserves synchronous preflight/error semantics. UI chat may
+   * opt into `workflow-start` so HTTP headers return immediately after durable acceptance.
+   */
+  acceptanceMode?: "first-event" | "workflow-start";
+}
+
+export class CompletionIdempotencyConflictError extends Error {
+  constructor() {
+    super("Idempotency key was already used for a different completion request");
+    this.name = "CompletionIdempotencyConflictError";
+  }
 }
 
 function toDeterministicRunId(seed: string): string {
@@ -122,6 +143,53 @@ function toDeterministicRunId(seed: string): string {
   const p4 = `${variantNibble}${hex.slice(17, 20)}`;
   const p5 = hex.slice(20, 32);
   return `${p1}-${p2}-${p3}-${p4}-${p5}`;
+}
+
+/** Scope the global execution_requests key before Temporal/internal execution. */
+export function scopeExecutionIdempotencyKey(
+  nodeId: string,
+  billingAccountId: string,
+  actorUserId: string,
+  callerKey: string
+): string {
+  const digest = createHash("sha256")
+    .update(`${nodeId}:${billingAccountId}:${actorUserId}:${callerKey}`, "utf8")
+    .digest("hex");
+  return `ai:${digest}`;
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, canonicalize(nested)])
+    );
+  }
+  return value;
+}
+
+export function completionRequestHash(input: {
+  graphId: string;
+  messages: MessageDto[];
+  modelRef: import("@cogni/ai-core").ModelRef;
+  stateKey?: string;
+}, key: string): string {
+  return createHmac("sha256", key)
+    .update("completion-request:v1\0", "utf8")
+    .update(
+      JSON.stringify(
+        canonicalize({
+          graphId: input.graphId,
+          messages: input.messages,
+          modelRef: input.modelRef,
+          stateKey: input.stateKey ?? null,
+        })
+      ),
+      "utf8"
+    )
+    .digest("hex");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -320,10 +388,13 @@ export async function completionStream(
 ): Promise<{
   stream: AsyncIterable<AiEvent>;
   final: Promise<StreamFinalResult>;
+  runId: string;
+  workflowId: string;
 }> {
   const userId = toUserId(input.sessionUser.id);
   const { accountService } = resolveAiAdapterDeps(userId);
 
+  const billingStartMs = performance.now();
   const billingAccount = await getOrCreateBillingAccountForUser(
     accountService,
     {
@@ -333,23 +404,81 @@ export async function completionStream(
         : {}),
     }
   );
+  aiChatPhaseDurationMs.observe(
+    { phase: "billing_resolve" },
+    performance.now() - billingStartMs
+  );
 
   const graphId = input.graphName.includes(":")
     ? input.graphName
     : `langgraph:${input.graphName}`;
-  const idempotencyKey = input.idempotencyKey ?? `api:${ctx.reqId}`;
-  const workflowId = `graph-run:${billingAccount.id}:${idempotencyKey}`;
-  const runId = toDeterministicRunId(`${workflowId}:${graphId}`);
+  const nodeId = getNodeId();
+  const callerIdempotencyKey = input.idempotencyKey ?? `api:${ctx.reqId}`;
+  const idempotencyKey = scopeExecutionIdempotencyKey(
+    nodeId,
+    billingAccount.id,
+    input.sessionUser.id,
+    callerIdempotencyKey
+  );
+  const workflowId = `graph-run:${idempotencyKey}`;
+  const runId =
+    input.serverRunId ?? toDeterministicRunId(`${workflowId}:${graphId}`);
+  const requestHash = completionRequestHash(
+    {
+      graphId,
+      messages: input.messages,
+      modelRef: input.modelRef,
+      ...(input.stateKey ? { stateKey: input.stateKey } : {}),
+    },
+    serverEnv().AUTH_SECRET
+  );
+
+  // Claim the global execution_requests slot before Temporal starts. Recheck
+  // after INSERT so concurrent different-payload callers cannot both proceed.
+  const executionRequests = getContainer().executionRequestPort;
+  let idempotency = await executionRequests.checkIdempotency(
+    idempotencyKey,
+    requestHash
+  );
+  if (idempotency.status === "new") {
+    let createError: unknown;
+    try {
+      await executionRequests.createPendingRequest(
+        idempotencyKey,
+        requestHash,
+        runId,
+        ctx.traceId
+      );
+    } catch (error) {
+      createError = error;
+    }
+    idempotency = await executionRequests.checkIdempotency(
+      idempotencyKey,
+      requestHash
+    );
+    if (idempotency.status === "new") {
+      throw (
+        createError ?? new Error("Execution idempotency claim was not persisted")
+      );
+    }
+  }
+  if (
+    idempotency.status === "mismatch" ||
+    idempotency.request.runId !== runId
+  ) {
+    throw new CompletionIdempotencyConflictError();
+  }
 
   const { client: workflowClient, taskQueue } =
     await getTemporalWorkflowClient();
+  const temporalStartMs = performance.now();
   try {
     await workflowClient.start("GraphRunWorkflow", {
       taskQueue,
       workflowId,
       args: [
         {
-          nodeId: getNodeId(),
+          nodeId,
           graphId,
           executionGrantId: null,
           input: {
@@ -359,6 +488,10 @@ export async function completionStream(
             actorUserId: input.sessionUser.id,
             billingAccountId: billingAccount.id,
             virtualKeyId: billingAccount.defaultVirtualKeyId,
+            chatRequestId: ctx.reqId,
+            chatMessageId: input.messageId,
+            chatWorkflowId: workflowId,
+            executionRequestHash: requestHash,
           },
           runKind: "user_immediate" as const,
           triggerSource: "api",
@@ -373,22 +506,55 @@ export async function completionStream(
       throw error;
     }
   }
+  aiChatPhaseDurationMs.observe(
+    { phase: "temporal_start" },
+    performance.now() - temporalStartMs
+  );
 
   const runStream = getContainer().runStream;
-  const signal = input.abortSignal ?? new AbortController().signal;
-  const rawSubscription = runStream.subscribe(runId, signal);
-  const iterator = rawSubscription[Symbol.asyncIterator]();
-
-  // First-event peek: if the first event is a terminal error (e.g. insufficient_credits),
-  // throw AiExecutionError BEFORE the caller commits SSE headers.
-  // Mid-stream errors are fine — 200 is already sent, error arrives in the stream.
-  const first = await iterator.next();
-  if (first.done) {
-    throw new AiExecutionError("internal");
+  const subscriptionAbort = new AbortController();
+  const abortSubscription = () => subscriptionAbort.abort();
+  if (input.abortSignal?.aborted) {
+    subscriptionAbort.abort();
+  } else {
+    input.abortSignal?.addEventListener("abort", abortSubscription, {
+      once: true,
+    });
   }
-  const firstEvent = first.value.event;
-  if (firstEvent.type === "error") {
-    throw new AiExecutionError(firstEvent.error);
+  const rawSubscription = runStream.subscribe(
+    runId,
+    subscriptionAbort.signal
+  );
+  const iterator = rawSubscription[Symbol.asyncIterator]();
+  const acceptedAtMs = performance.now();
+
+  let prefetchedEntry: Awaited<ReturnType<typeof iterator.next>> | undefined;
+  if ((input.acceptanceMode ?? "first-event") === "first-event") {
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      deadline = setTimeout(() => resolve("timeout"), FIRST_EVENT_DEADLINE_MS);
+    });
+    const first = await Promise.race([iterator.next(), timeout]);
+    if (deadline) clearTimeout(deadline);
+    if (first === "timeout") {
+      subscriptionAbort.abort();
+      throw new AiExecutionError("timeout");
+    }
+    if (first.done) {
+      subscriptionAbort.abort();
+      throw new AiExecutionError(
+        input.abortSignal?.aborted ? "aborted" : "internal"
+      );
+    }
+    aiChatPhaseDurationMs.observe(
+      { phase: "accepted_to_first_event" },
+      performance.now() - acceptedAtMs
+    );
+    if (first.value.event.type === "error") {
+      subscriptionAbort.abort();
+      throw new AiExecutionError(first.value.event.error);
+    }
+    prefetchedEntry = first;
   }
 
   let resolveFinal: ((value: StreamFinalResult) => void) | undefined;
@@ -403,7 +569,6 @@ export async function completionStream(
       function: { name: string; arguments: string };
     }> = [];
 
-    // Process first event (already peeked and validated as non-error)
     function processEvent(event: AiEvent) {
       if (event.type === "tool_call_start") {
         toolCalls.push({
@@ -434,10 +599,6 @@ export async function completionStream(
       }
     }
 
-    // Yield peeked first event
-    processEvent(firstEvent);
-    yield firstEvent;
-
     function failStream(errorCode: string) {
       ctx.log.warn(
         {
@@ -451,14 +612,49 @@ export async function completionStream(
       resolveFinal?.({ ok: false, requestId: runId, error: "internal" });
     }
 
-    // Continue with remaining events
     let sawTerminal = false;
+    let sawFirstEvent = prefetchedEntry !== undefined;
     try {
-      let next = await iterator.next();
-      while (!next.done) {
+      while (true) {
+        let next: Awaited<ReturnType<typeof iterator.next>>;
+
+        if (prefetchedEntry) {
+          next = prefetchedEntry;
+          prefetchedEntry = undefined;
+        } else if (!sawFirstEvent) {
+          let deadline: ReturnType<typeof setTimeout> | undefined;
+          const timeout = new Promise<"timeout">((resolve) => {
+            deadline = setTimeout(
+              () => resolve("timeout"),
+              FIRST_EVENT_DEADLINE_MS
+            );
+          });
+          const first = await Promise.race([iterator.next(), timeout]);
+          if (deadline) clearTimeout(deadline);
+          if (first === "timeout") {
+            subscriptionAbort.abort();
+            const timeoutEvent: AiEvent = {
+              type: "error",
+              error: "timeout",
+            };
+            sawTerminal = true;
+            processEvent(timeoutEvent);
+            yield timeoutEvent;
+            return;
+          }
+          next = first;
+          sawFirstEvent = true;
+          aiChatPhaseDurationMs.observe(
+            { phase: "accepted_to_first_event" },
+            performance.now() - acceptedAtMs
+          );
+        } else {
+          next = await iterator.next();
+        }
+
+        if (next.done) break;
         const event = next.value.event;
         if (event.type === "usage_report") {
-          next = await iterator.next();
           continue;
         }
         if (event.type === "done" || event.type === "error") {
@@ -466,15 +662,24 @@ export async function completionStream(
         }
         processEvent(event);
         yield event;
-        next = await iterator.next();
       }
       if (!sawTerminal) {
-        failStream("stream_ended_no_terminal");
+        if (input.abortSignal?.aborted) {
+          resolveFinal?.({ ok: false, requestId: runId, error: "aborted" });
+        } else {
+          failStream("stream_ended_no_terminal");
+        }
       }
     } catch {
-      failStream("stream_subscribe_error");
+      if (input.abortSignal?.aborted) {
+        resolveFinal?.({ ok: false, requestId: runId, error: "aborted" });
+      } else {
+        failStream("stream_subscribe_error");
+      }
+    } finally {
+      input.abortSignal?.removeEventListener("abort", abortSubscription);
     }
   })();
 
-  return { stream, final };
+  return { stream, final, runId, workflowId };
 }

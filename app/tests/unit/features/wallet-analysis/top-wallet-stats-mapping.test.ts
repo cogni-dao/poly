@@ -20,7 +20,7 @@
 
 import type { PolymarketLeaderboardEntry } from "@cogni/poly-market-provider/adapters/polymarket";
 import { describe, expect, it } from "vitest";
-import { mapLeaderboardEntryToRow } from "@/features/wallet-analysis/server/top-wallet-stats-service";
+import { mapLeaderboardEntryToRow, isUpstreamRateLimit } from "@/features/wallet-analysis/server/top-wallet-stats-service";
 
 const WALLET = `0x${"ab".repeat(20)}`;
 const CAPTURED_AT = new Date("2026-09-26T00:00:00Z");
@@ -113,5 +113,36 @@ describe("mapLeaderboardEntryToRow", () => {
   it("preserves the full vendor payload in raw", () => {
     const e = entry({ xUsername: "xhandle", profileImage: "http://img" });
     expect(map(e)?.raw).toEqual(e);
+  });
+});
+
+describe("isUpstreamRateLimit (bug.5283)", () => {
+  it("recognises the verbatim production 429 message", () => {
+    // Exact string prod logged 10 times in the SAME second (05:37:31) while the
+    // fan-out kept draining into the limit. If this stops matching, the circuit
+    // breaker silently stops breaking and we resume burning Polymarket's budget.
+    expect(
+      isUpstreamRateLimit(
+        "Polymarket Data API error: 429 Too Many Requests (/trades)"
+      )
+    ).toBe(true);
+  });
+
+  it("matches the textual form too", () => {
+    expect(isUpstreamRateLimit("Too Many Requests")).toBe(true);
+    expect(isUpstreamRateLimit("too many requests")).toBe(true);
+  });
+
+  it("does NOT trip on unrelated failures", () => {
+    // A false positive only costs one cycle of enrichment freshness, but it
+    // should still not fire for ordinary errors — otherwise one flaky wallet
+    // silently disables enrichment for the whole run.
+    expect(isUpstreamRateLimit("fetch failed")).toBe(false);
+    expect(isUpstreamRateLimit("Polymarket Data API error: 500")).toBe(false);
+    expect(isUpstreamRateLimit("timeout after 5000ms")).toBe(false);
+  });
+
+  it("does not trip on a 429 embedded in a larger number", () => {
+    expect(isUpstreamRateLimit("wallet 0x4290 returned 503")).toBe(false);
   });
 });

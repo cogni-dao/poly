@@ -46,3 +46,4 @@ export function createAppDbClient(
 ) {
   return buildClient(connectionString, "cogni_template_app", options);
 }
+

@@ -113,11 +113,7 @@ export interface NodeServiceConfig {
   readonly args?: readonly string[];
   readonly port: number;
   readonly visibility: "public" | "private";
-  /**
-   * Per-service deployment-environment allow-list (story.5043). Absent = deploy to every
-   * environment. When present, the manifest builder DROPS this service from any environment
-   * not listed here (see buildComputeWorkloadManifest).
-   */
+  /** Optional deployment-environment allow-list; absent deploys everywhere. */
   readonly envs?: readonly ("candidate-a" | "preview" | "production")[];
   readonly runtimeProfile?: "cogni-node-app-v1";
   readonly bindings: Readonly<Record<string, string>>;
@@ -941,3 +937,4 @@ export function resolveRulePath(owningNode: OwningNode): string {
   }
   return `${owningNode.path}/.cogni/rules`;
 }
+

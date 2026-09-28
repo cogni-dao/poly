@@ -53,6 +53,10 @@ export interface ChatRequestOptions {
   graphName?: string;
   /** Optional state key for multi-turn conversations */
   stateKey?: string;
+  /** Optional stable message identity for idempotent retries. */
+  messageId?: string;
+  /** Optional stable graph-run identity for stream reconnection. */
+  runId?: string;
 }
 
 /**
@@ -120,6 +124,8 @@ export function createChatRequest(options: ChatRequestOptions = {}): {
   modelRef: { providerKey: string; modelId: string; connectionId?: string };
   graphName: string;
   stateKey?: string;
+  messageId?: string;
+  runId?: string;
 } {
   const base = {
     message: options.message ?? "Hello",
@@ -134,6 +140,8 @@ export function createChatRequest(options: ChatRequestOptions = {}): {
   return {
     ...base,
     ...(options.stateKey && { stateKey: options.stateKey }),
+    ...(options.messageId && { messageId: options.messageId }),
+    ...(options.runId && { runId: options.runId }),
   };
 }
 

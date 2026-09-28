@@ -13,8 +13,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
-import { logEvent } from "@cogni/node-shared/observability/server";
+import { EVENT_NAMES, logEvent } from "@cogni/node-shared";
 import type { Rule } from "@cogni/repo-spec";
 import {
   extractDaoConfig,
