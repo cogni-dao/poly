@@ -365,6 +365,8 @@ let _marketOutcomeStop: (() => void) | null = null;
 let _priceHistoryStop: (() => void) | null = null;
 // Top-wallets leaderboard mirror job stop fn (bug.5017). Public Data API only.
 let _topWalletStatsStop: (() => void) | null = null;
+// One-shot research prewarm stop fn (fix/research-route-caching). DB only.
+let _researchPrewarmStop: (() => void) | null = null;
 
 // task.5016 — job-runner leader election. All background-job starts flow
 // through ONE seam (`startBackgroundJobs` inside createContainer), wrapped by
@@ -453,6 +455,14 @@ function stopAllJobHandles(): void {
 			// Best-effort.
 		}
 		_topWalletStatsStop = null;
+	}
+	if (_researchPrewarmStop) {
+		try {
+			_researchPrewarmStop();
+		} catch {
+			// Best-effort.
+		}
+		_researchPrewarmStop = null;
 	}
 }
 
@@ -1478,6 +1488,49 @@ function createContainer(): Container {
 						err: err instanceof Error ? err.message : String(err),
 					},
 					"top-wallet-stats job boot failed — continuing without leaderboard read model",
+				);
+			}
+		})();
+
+	// fix/research-route-caching — one-shot boot prewarm of the SWR-cached
+	// research aggregates (snapshot/benchmark for the two primary research
+	// wallets, target-overlap, trader-comparison). Serialized pLimit(1); no
+	// recurring loop. Runs through this jobs seam so only the task.5016 job
+	// leader prewarms (the coalesce cache is per-replica — prod is
+	// single-replica today, so leader == the serving pod).
+	if (!env.POLY_RESEARCH_PREWARM_ENABLED) {
+		log.info(
+			{ event: "poly.research-prewarm.disabled" },
+			"research prewarm disabled (POLY_RESEARCH_PREWARM_ENABLED=false) — first research views pay the cold aggregate",
+		);
+	} else
+		void (async () => {
+			try {
+				const { startResearchPrewarm } = await import(
+					"@/bootstrap/jobs/research-prewarm.job"
+				);
+				const prewarmLogger =
+					log as unknown as import("@cogni/poly-market-provider").LoggerPort;
+				const researchPrewarmStop = startResearchPrewarm({
+					db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
+						Record<string, unknown>
+					>,
+					logger: prewarmLogger,
+				});
+				// task.5016 — leadership was lost while this boot was in flight.
+				if (epoch !== _jobsEpoch) {
+					researchPrewarmStop();
+					return;
+				}
+				_researchPrewarmStop = researchPrewarmStop;
+			} catch (err: unknown) {
+				log.error(
+					{
+						event: "poly.research-prewarm.boot_failed",
+						phase: "boot_failed",
+						err: err instanceof Error ? err.message : String(err),
+					},
+					"research prewarm boot failed — first research views pay the cold aggregate",
 				);
 			}
 		})();

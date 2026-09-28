@@ -149,6 +149,10 @@ export function invalidateWalletAnalysisCaches(addr: string): void {
     clearTtlCacheByPrefix(`trades:${address}`);
     clearTtlCacheByPrefix(`execution-trades:${address}`);
     clearTtlCacheByPrefix(`pnl:${address}:`);
+    // Interim SWR research caches (research-read-cache.ts) — a close/redeem
+    // write must not leave a 60min-stale snapshot/benchmark for this wallet.
+    clearTtlCacheByPrefix(`research:snapshot:${address}`);
+    clearTtlCacheByPrefix(`research:benchmark:${address}:`);
   }
 }
 
