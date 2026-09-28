@@ -607,8 +607,8 @@ importers:
         specifier: workspace:*
         version: link:../attribution-pipeline-contracts
       viem:
-        specifier: ^2.21.0
-        version: 2.39.3(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)
+        specifier: 2.46.3
+        version: 2.46.3(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.4.3)
       zod:
         specifier: ^4.1.12
         version: 4.4.3
