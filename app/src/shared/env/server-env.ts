@@ -316,6 +316,24 @@ export const serverSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
 
+  // Interim research-read latency mitigation (fix/research-route-caching).
+  // One-shot boot prewarm of the four SWR-cached research aggregates
+  // (snapshot/benchmark for the two primary research wallets, target-overlap,
+  // trader-comparison) so first views don't pay the 25-31s cold aggregate.
+  // Default ON; runs on the job leader only (jobs seam, task.5016).
+  POLY_RESEARCH_PREWARM_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+  // Per-wallet time budget (ms) for the trader-comparison aggregate. Past it
+  // the wallet is omitted with a `wallet_budget_exceeded` warning (200, not a
+  // 520). Default sits just under the edge's ~30s kill window.
+  POLY_RESEARCH_WALLET_BUDGET_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(25_000),
+
   // task.5016 — single-writer leader election for ALL in-process background
   // jobs. Default ON: every pod runs the elector and only the holder of
   // pg_try_advisory_lock(hashtext('poly:job-runner')) starts jobs, making a

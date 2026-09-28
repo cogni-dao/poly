@@ -14,6 +14,12 @@
  *     preserved verbatim as a test-only parity oracle in `tests/_fixtures/poly/trade-size-pnl-oracle.ts`.
  *   - SNAPSHOT_CONSISTENT_BUNDLE: the per-wallet summary + size-P/L queries run inside one
  *     repeatable-read read-only transaction so histogram counts reconcile with summary totals.
+ *   - PER_WALLET_TIME_BUDGET (interim, 2026-09-28): each wallet's aggregate races a time budget
+ *     (`opts.perWalletBudgetMs`, default 25s, env `POLY_RESEARCH_WALLET_BUDGET_MS`). A wallet
+ *     that exceeds it is OMITTED from `traders` and surfaced as a `wallet_budget_exceeded`
+ *     warning on the partial-failure-200 path — prod measured ~31s on the worst wallet and the
+ *     edge killed the response with a 520. The budget does NOT cancel the underlying SQL; it
+ *     only bounds the HTTP response. The real fix is tick-written rollup tables (separate design).
  * Side-effects: DB reads plus the DB-backed P/L read performed by `getPnlSlice`.
  * Links: nodes/poly/packages/node-contracts/src/poly.research-trader-comparison.v1.contract.ts, work/items/task.5012, work/items/bug.5008
  * @public
@@ -77,49 +83,130 @@ export type TradeSizePnlBucketRow = {
 const SIZE_BUCKET_STEP = 5;
 const SIZE_BUCKET_COUNT = 100 / SIZE_BUCKET_STEP;
 
+/**
+ * Default per-wallet aggregation budget. Prod (2026-09-28, build 08cedd2)
+ * measured ~31s on the worst wallet — past the edge's ~30s 520 cutoff — so the
+ * default sits just under it. Env-tunable via `POLY_RESEARCH_WALLET_BUDGET_MS`.
+ */
+export const DEFAULT_TRADER_COMPARISON_WALLET_BUDGET_MS = 25_000;
+
+/** Warning code emitted when a wallet's aggregate exceeds the time budget. */
+export const TRADER_COMPARISON_BUDGET_WARNING_CODE = "wallet_budget_exceeded";
+
+class TraderComparisonBudgetExceededError extends Error {
+  constructor(budgetMs: number) {
+    super(`trader-comparison wallet aggregate exceeded ${budgetMs}ms budget`);
+    this.name = "TraderComparisonBudgetExceededError";
+  }
+}
+
 export async function getTraderComparison(
   db: Db,
   wallets: readonly TraderComparisonInput[],
-  interval: PolyWalletOverviewInterval
+  interval: PolyWalletOverviewInterval,
+  opts: { perWalletBudgetMs?: number } = {}
 ): Promise<PolyResearchTraderComparisonResponse> {
   const capturedAt = new Date().toISOString();
+  const budgetMs =
+    opts.perWalletBudgetMs ?? DEFAULT_TRADER_COMPARISON_WALLET_BUDGET_MS;
   const warnings: PolyResearchTraderComparisonWarning[] = [];
   const windowStartIso = windowStartFor(interval).toISOString();
 
-  const traders = await Promise.all(
+  const results = await Promise.all(
     wallets.slice(0, 3).map(async (wallet) => {
       const address = wallet.address.toLowerCase();
-      const [bundle, pnlResult] = await Promise.all([
-        readTradeBundle(db, address, windowStartIso),
-        getPnlSlice(db, address, interval),
-      ]);
-      const pnlHistory =
-        pnlResult.kind === "ok" ? [...pnlResult.value.history] : [];
-      if (pnlResult.kind === "warn") {
-        warnings.push({
-          wallet: address as `0x${string}`,
-          code: pnlResult.warning.code,
-          message: pnlResult.warning.message,
-        });
+      try {
+        const computed = await withBudget(
+          budgetMs,
+          computeTrader(db, wallet, address, interval, windowStartIso)
+        );
+        // Merge only when the wallet beat the budget — a late-completing
+        // computation must not mutate an already-returned warnings array.
+        warnings.push(...computed.warnings);
+        return computed.trader;
+      } catch (err) {
+        if (err instanceof TraderComparisonBudgetExceededError) {
+          warnings.push({
+            wallet: address as `0x${string}`,
+            code: TRADER_COMPARISON_BUDGET_WARNING_CODE,
+            message: `Aggregation for ${address} exceeded the ${budgetMs}ms budget and was omitted from this response. Retry later or narrow the interval.`,
+          });
+          return null;
+        }
+        throw err;
       }
-
-      return toTrader({
-        address,
-        fallbackLabel: wallet.label,
-        interval,
-        summary: bundle.summary,
-        tradeSizePnl: bundle.tradeSizePnl,
-        pnlHistory,
-      });
     })
   );
 
   return {
     interval,
     capturedAt,
-    traders,
+    traders: results.filter((t) => t !== null),
     warnings,
   };
+}
+
+/** Per-wallet aggregate (bundle + P/L) with its own warnings, merged by the caller only when it wins the budget race. */
+async function computeTrader(
+  db: Db,
+  wallet: TraderComparisonInput,
+  address: string,
+  interval: PolyWalletOverviewInterval,
+  windowStartIso: string
+): Promise<{
+  trader: PolyResearchTraderComparisonTrader;
+  warnings: PolyResearchTraderComparisonWarning[];
+}> {
+  const warnings: PolyResearchTraderComparisonWarning[] = [];
+  const [bundle, pnlResult] = await Promise.all([
+    readTradeBundle(db, address, windowStartIso),
+    getPnlSlice(db, address, interval),
+  ]);
+  const pnlHistory = pnlResult.kind === "ok" ? [...pnlResult.value.history] : [];
+  if (pnlResult.kind === "warn") {
+    warnings.push({
+      wallet: address as `0x${string}`,
+      code: pnlResult.warning.code,
+      message: pnlResult.warning.message,
+    });
+  }
+
+  return {
+    trader: toTrader({
+      address,
+      fallbackLabel: wallet.label,
+      interval,
+      summary: bundle.summary,
+      tradeSizePnl: bundle.tradeSizePnl,
+      pnlHistory,
+    }),
+    warnings,
+  };
+}
+
+/**
+ * Race `work` against the time budget. On timeout, rejects with
+ * `TraderComparisonBudgetExceededError`; `work`'s eventual settlement is
+ * absorbed by the already-settled promise (no unhandled rejection). Does NOT
+ * cancel the underlying query — interim mitigation only.
+ */
+function withBudget<T>(budgetMs: number, work: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new TraderComparisonBudgetExceededError(budgetMs));
+    }, budgetMs);
+    timer.unref?.();
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    );
+  });
 }
 
 /**

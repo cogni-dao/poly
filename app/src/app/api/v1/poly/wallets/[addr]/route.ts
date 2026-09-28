@@ -8,6 +8,11 @@
  * Invariants: Any 0x address → 200 (slice availability decides what's populated). 401 when unauthenticated. Address normalized to lowercase by the contract before any handler logic runs.
  * Side-effects: IO (Polymarket Data API + CLOB public + public user-pnl via the service layer).
  * Notes: Cache + concurrency + reuse-mandate live in the service module.
+ *   INTERIM (2026-09-28): the `snapshot` and `benchmark` slices are full-history SQL aggregates
+ *   (26.5s / 28.1s measured on prod) and are served through the serve-stale-while-revalidate
+ *   cache in `research-read-cache.ts` (5min fresh / 60min serve-stale). Staleness is acceptable —
+ *   these are research aggregates over observed history. The real fix is tick-written rollup
+ *   tables (separate design). Other slices are untouched.
  * Links: docs/design/wallet-analysis-components.md, nodes/poly/packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts
  * @public
  */
@@ -27,12 +32,14 @@ import {
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
-import { getBenchmarkSlice } from "@/features/wallet-analysis/server/copy-target-benchmark-service";
+import {
+  getBenchmarkSliceCached,
+  getSnapshotSliceCached,
+} from "@/features/wallet-analysis/server/research-read-cache";
 import {
   getBalanceSlice,
   getDistributionsSlice,
   getPnlSlice,
-  getSnapshotSlice,
   getTradesSlice,
 } from "@/features/wallet-analysis/server/wallet-analysis-service";
 
@@ -99,7 +106,9 @@ export const GET = wrapRouteHandlerWithLogging<{
 
     const [snapshotR, tradesR, balanceR, pnlR, distributionsR, benchmarkR] =
       await Promise.all([
-        wantSnapshot && serviceDb ? getSnapshotSlice(serviceDb, addr) : null,
+        wantSnapshot && serviceDb
+          ? getSnapshotSliceCached(serviceDb, addr)
+          : null,
         wantTrades && serviceDb ? getTradesSlice(serviceDb, addr) : null,
         wantBalance && serviceDb ? getBalanceSlice(serviceDb, addr) : null,
         wantPnl && serviceDb ? getPnlSlice(serviceDb, addr, interval) : null,
@@ -107,7 +116,7 @@ export const GET = wrapRouteHandlerWithLogging<{
           ? getDistributionsSlice(serviceDb, addr, distributionMode)
           : null,
         wantBenchmark && serviceDb
-          ? getBenchmarkSlice(serviceDb, addr, interval, {
+          ? getBenchmarkSliceCached(serviceDb, addr, interval, {
               comparisonWalletAddress,
             })
           : null,

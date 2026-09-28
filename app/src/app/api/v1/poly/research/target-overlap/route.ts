@@ -10,6 +10,12 @@
  *   - AUTH_REQUIRED: research surface is protected.
  *   - SAVED_FACTS_ONLY: reads Postgres observed trader facts; no live upstream
  *     Polymarket calls on page load.
+ *   - SWR_CACHED_INTERIM (2026-09-28): the overlap aggregate scans the full
+ *     fills history (25.0s measured on prod) and is served through the
+ *     serve-stale-while-revalidate cache in `research-read-cache.ts`
+ *     (5min fresh / 60min serve-stale, keyed per interval). Staleness is
+ *     acceptable — this is a research aggregate over observed history. The
+ *     real fix is tick-written rollup tables (separate design).
  * Side-effects: DB reads only.
  * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005
  * @public
@@ -23,7 +29,7 @@ import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { resolveServiceReadDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
-import { getTargetOverlapSlice } from "@/features/wallet-analysis/server/target-overlap-service";
+import { getTargetOverlapSliceCached } from "@/features/wallet-analysis/server/research-read-cache";
 
 export const dynamic = "force-dynamic";
 
@@ -47,7 +53,7 @@ export const GET = wrapRouteHandlerWithLogging(
       resolveServiceReadDb() as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
         Record<string, unknown>
       >;
-    const overlap = await getTargetOverlapSlice(db, parsed.data.interval);
+    const overlap = await getTargetOverlapSliceCached(db, parsed.data.interval);
     return NextResponse.json(
       PolyResearchTargetOverlapResponseSchema.parse(overlap)
     );
