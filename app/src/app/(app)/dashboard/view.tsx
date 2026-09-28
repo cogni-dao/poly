@@ -63,6 +63,7 @@ import { postPolymarketRefresh } from "./_api/fetchPolymarketRefresh";
 import { fetchRuns } from "./_api/fetchRuns";
 import { CopyTargetControlPanel } from "./_components/CopyTargetControlPanel";
 import { ExecutionActivityCard } from "./_components/ExecutionActivityCard";
+import { MirrorAttemptsCard } from "./_components/MirrorAttemptsCard";
 import { OperatorWalletChartsRow } from "./_components/OperatorWalletChartsRow";
 import { TradingWalletCard } from "./_components/TradingWalletCard";
 
@@ -341,6 +342,7 @@ export function DashboardView(): ReactElement {
       <TradingWalletCard />
       <OperatorWalletChartsRow />
       <ExecutionActivityCard />
+      <MirrorAttemptsCard />
 
       {/* Two-column section: Agents + Work (demoted below the Polymarket cards) */}
       <div className="grid gap-6 lg:grid-cols-2">
