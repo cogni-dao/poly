@@ -937,3 +937,4 @@ export function resolveRulePath(owningNode: OwningNode): string {
   }
   return `${owningNode.path}/.cogni/rules`;
 }
+
