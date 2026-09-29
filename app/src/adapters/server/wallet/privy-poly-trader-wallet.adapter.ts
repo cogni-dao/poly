@@ -523,6 +523,94 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     };
   }
 
+  /**
+   * REPAIR_ONLY_WHAT_IS_BROKEN (bug.5305) — re-derive CLOB API creds for an
+   * EXISTING connection whose stored ciphertext can no longer be decrypted.
+   *
+   * Prod signature this exists for: `aead_decrypt ... [key_id=current]` — the
+   * row names the key id in use, yet the bytes behind that id no longer
+   * authenticate it, so there is no known-good key to restore. Without this,
+   * the only path back was `provision`, which mints a NEW Privy wallet and
+   * strands the funded one.
+   *
+   * Safe because a Polymarket L2 API key is derived from a wallet SIGNATURE:
+   * `clobCredsFactory` needs the signer only, never the old creds. The wallet,
+   * its address and its balances are untouched; only the credential blob is
+   * rewritten. (`rotateClobCreds` cannot do this — it decrypts the current
+   * creds first, so it is blocked by the very fault it would repair.)
+   *
+   * REFUSES to run when the existing creds still decrypt, so it can never be
+   * used to churn working credentials.
+   */
+  async repairClobCreds(
+    billingAccountId: string
+  ): Promise<
+    | { ok: true; connectionId: string }
+    | { ok: false; reason: "no_connection" | "creds_already_valid" }
+  > {
+    const rows = await this.serviceDb
+      .select()
+      .from(polyWalletConnections)
+      .where(
+        and(
+          eq(polyWalletConnections.billingAccountId, billingAccountId),
+          isNull(polyWalletConnections.revokedAt)
+        )
+      )
+      .limit(1);
+    const row = rows[0];
+    if (!row) return { ok: false, reason: "no_connection" };
+
+    const aad: AeadAAD = {
+      billing_account_id: row.billingAccountId,
+      connection_id: row.id,
+      provider: CREDENTIAL_PROVIDER,
+    };
+    try {
+      this.decryptCreds(row.clobApiKeyCiphertext, aad);
+      // Readable creds are working creds — replacing them would invalidate a
+      // live Polymarket API key for no reason.
+      return { ok: false, reason: "creds_already_valid" };
+    } catch {
+      // Expected: this is the fault we are here to repair.
+    }
+
+    const rawAccount = createViemAccount(this.privyClient, {
+      walletId: row.privyWalletId,
+      address: row.address as `0x${string}`,
+      authorizationContext: this.authorizationContext,
+    });
+    // biome-ignore lint/suspicious/noExplicitAny: cross-peerDep viem type drift
+    const account: any = rawAccount;
+    const clobCreds = await this.clobCredsFactory(account);
+
+    await this.serviceDb
+      .update(polyWalletConnections)
+      .set({
+        clobApiKeyCiphertext: aeadEncrypt(
+          JSON.stringify(clobCreds),
+          aad,
+          this.encryptionKey
+        ),
+        // Stamp the key actually used, so a future mismatch is attributable.
+        encryptionKeyId: this.encryptionKeyId,
+      })
+      .where(eq(polyWalletConnections.id, row.id));
+
+    this.log.warn(
+      {
+        event: EVENT_NAMES.ADAPTER_POLY_WALLET_RESOLVE_ERROR,
+        dep: "poly_wallet_connections",
+        billing_account_id: billingAccountId,
+        connection_id: row.id,
+        reasonCode: "clob_creds_repaired",
+        detail: `re-derived under key_id=${this.encryptionKeyId}`,
+      },
+      "poly wallet: re-derived unreadable CLOB creds for existing connection"
+    );
+    return { ok: true, connectionId: row.id };
+  }
+
   private logResolveFailure(
     billingAccountId: string,
     result: Exclude<ResolveSigningContextResult, { ok: true }>
