@@ -19,6 +19,7 @@
  */
 
 import {
+  Activity,
   Boxes,
   Brain,
   Crosshair,
@@ -35,6 +36,7 @@ import {
 
 /** Curated brand-icon set — keyed by the PascalCase Lucide name stored in repo-spec. */
 const BRAND_ICONS = {
+  Activity,
   Boxes,
   Brain,
   Crosshair,
@@ -53,5 +55,7 @@ export const FALLBACK_BRAND_ICON: LucideIcon = Hexagon;
 /** Resolve a repo-spec `brand.icon` name to its Lucide component, or the neutral fallback. */
 export function resolveBrandIcon(name: string | null | undefined): LucideIcon {
   if (!name) return FALLBACK_BRAND_ICON;
-  return (BRAND_ICONS as Record<string, LucideIcon>)[name] ?? FALLBACK_BRAND_ICON;
+  return (
+    (BRAND_ICONS as Record<string, LucideIcon>)[name] ?? FALLBACK_BRAND_ICON
+  );
 }
