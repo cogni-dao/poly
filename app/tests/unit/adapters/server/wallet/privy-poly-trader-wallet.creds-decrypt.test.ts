@@ -33,11 +33,12 @@ const AAD = {
 } as const;
 
 /** Thenable-chain fake db resolving one un-revoked connection row. */
-function fakeDb(clobApiKeyCiphertext: Buffer) {
+function fakeDb(clobApiKeyCiphertext: Buffer, rowKeyId = "test-key-id") {
   const row = {
     id: CONNECTION_ID,
     billingAccountId: BILLING_ACCOUNT,
     clobApiKeyCiphertext,
+    encryptionKeyId: rowKeyId,
     privyWalletId: "privy-wallet-1",
     address: ADDRESS,
     revokedAt: null,
@@ -55,7 +56,7 @@ function fakeDb(clobApiKeyCiphertext: Buffer) {
   return { select: () => chain } as never;
 }
 
-function buildAdapter(ciphertext: Buffer) {
+function buildAdapter(ciphertext: Buffer, rowKeyId?: string) {
   const leafLogger = {
     info: vi.fn(),
     warn: vi.fn(),
@@ -66,7 +67,7 @@ function buildAdapter(ciphertext: Buffer) {
   const adapter = new PrivyPolyTraderWalletAdapter({
     privyClient: {} as never,
     privySigningKey: "test-authorization-key",
-    serviceDb: fakeDb(ciphertext),
+    serviceDb: fakeDb(ciphertext, rowKeyId),
     encryptionKey: KEY,
     encryptionKeyId: "test-key-id",
     clobCredsFactory: async () => {
@@ -108,6 +109,29 @@ describe("clob_creds_invalid names the failing decrypt stage (bug.5304)", () => 
       billing_account_id: BILLING_ACCOUNT,
     });
     expect(String(line.detail)).toMatch(/^aead_decrypt: /);
+    // Same key id, so the operator learns the key is NOT the variable here.
+    expect(String(line.detail)).toContain("[key_id=current]");
+  });
+
+  it("names a stale key id, which decides rotation vs re-provision", async () => {
+    // The whole point: an AEAD failure on a row encrypted under a RETIRED key
+    // is a restore/rotate problem. Without the key id it is indistinguishable
+    // from a corrupt row, whose remedy would destroy recoverable credentials.
+    const { adapter, leafLogger } = buildAdapter(
+      aeadEncrypt(
+        JSON.stringify({ key: "k", secret: "s", passphrase: "p" }),
+        AAD,
+        Buffer.alloc(32, 9)
+      ),
+      "retired-key-2025"
+    );
+
+    await expect(adapter.resolve(BILLING_ACCOUNT)).resolves.toBeNull();
+
+    const line = resolveErrorCall(leafLogger);
+    expect(String(line.detail)).toContain(
+      "[key_id=stale(row=retired-key-2025,current=test-key-id)]"
+    );
   });
 
   it("reports json_parse WITHOUT echoing the decrypted plaintext", async () => {

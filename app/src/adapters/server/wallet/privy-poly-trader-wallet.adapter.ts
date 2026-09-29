@@ -471,11 +471,24 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         provider: CREDENTIAL_PROVIDER,
       });
     } catch (err: unknown) {
+      // KEY_ID_DECIDES_THE_REMEDY (bug.5304): the row records which key-ring id
+      // encrypted it, so an AEAD failure is DECIDABLE rather than guessed — a
+      // mismatch is a rotation/restore problem, a match points at the ciphertext
+      // or the AAD instead. Key ids are identifiers, not secrets.
+      // Appended for `aead_decrypt` ONLY: the later stages prove decryption
+      // succeeded, so the key is known-good there and the note would be noise.
+      const described = ClobCredsDecryptError.describe(err);
+      const keyIdNote =
+        err instanceof ClobCredsDecryptError && err.stage === "aead_decrypt"
+          ? row.encryptionKeyId === this.encryptionKeyId
+            ? " [key_id=current]"
+            : ` [key_id=stale(row=${row.encryptionKeyId},current=${this.encryptionKeyId})]`
+          : "";
       return {
         ok: false,
         reason: "clob_creds_invalid",
         connectionId: row.id,
-        detail: ClobCredsDecryptError.describe(err),
+        detail: `${described}${keyIdNote}`,
       };
     }
 
