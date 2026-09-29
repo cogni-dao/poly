@@ -28,7 +28,11 @@
 import { polyTraderWallets } from "@cogni/poly-db-schema/trader-activity";
 import type { PolymarketDataApiClient } from "@cogni/poly-market-provider/adapters/polymarket";
 import { describe, expect, it, vi } from "vitest";
-import { runTraderObservationTick, pruneOldPositionSnapshots } from "@/features/wallet-analysis/server/trader-observation-service";
+import {
+  OBSERVATION_STATEMENT_TIMEOUT_MS,
+  pruneOldPositionSnapshots,
+  runTraderObservationTick,
+} from "@/features/wallet-analysis/server/trader-observation-service";
 
 const WALLET_A = `0x${"a".repeat(40)}`;
 const WALLET_B = `0x${"b".repeat(40)}`;
@@ -84,16 +88,36 @@ function createFakeDb(walletRows: unknown[]) {
     };
     return chain;
   };
-  const db = {
+  // `SET LOCAL statement_timeout` is bookkeeping, not maintenance work, so it
+  // is recorded separately — otherwise it would leak into `executeCalls` and
+  // silently defeat the ABORT_SKIPS_MAINTENANCE assertion, which proves the
+  // prune/metadata statements are skipped by counting execute calls.
+  const timeoutStatements: string[] = [];
+  const isStatementTimeout = (query: unknown): boolean => {
+    try {
+      return JSON.stringify(query)?.includes("statement_timeout") === true;
+    } catch {
+      return false;
+    }
+  };
+  const db: Record<string, unknown> = {
     select: () => makeChain("select"),
     insert: () => makeChain("insert"),
     update: () => makeChain("update"),
     execute: async (query: unknown) => {
+      if (isStatementTimeout(query)) {
+        timeoutStatements.push(JSON.stringify(query));
+        return { rowCount: 0 };
+      }
       executeCalls.push(query);
       return { rowCount: 0 };
     },
   };
-  return { db: db as never, executeCalls };
+  // withStatementTimeout runs its body inside a transaction; the fake hands
+  // back the same chain so the body's queries behave identically.
+  db.transaction = async (cb: (tx: unknown) => Promise<unknown>) =>
+    await cb(db);
+  return { db: db as never, executeCalls, timeoutStatements };
 }
 
 function makeLogger() {
@@ -170,6 +194,49 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
       (call) => (call[0] as { phase?: string }).phase === "error"
     );
     expect(walletError?.[0]).toMatchObject({ wallet: WALLET_B });
+  });
+
+  it("bounds the pre-loop DB stages with a statement_timeout, since no signal can interrupt them (bug.5297)", async () => {
+    // `sync_tenant_wallets` and `select_wallets` run BEFORE the bounded wallet
+    // loop, and drizzle/postgres-js accept no AbortSignal — so an abort sets a
+    // flag those two stages cannot observe. Only a server-side
+    // `statement_timeout` bounds them; without it either can hold the tick past
+    // its 120s budget, which is what `stage=select_wallets` on a hung tick
+    // means.
+    //
+    // Asserted by ORDER, not by count: the post-loop prune/metadata stages have
+    // been wrapped since bug.5297's first pass, so counting `SET LOCAL`s over
+    // the whole tick passes with or without this fix. What only holds once the
+    // PRE-loop stages are wrapped is that timeouts are already in place before
+    // the first wallet touches upstream.
+    const { db, timeoutStatements } = createFakeDb([
+      walletRow("wallet-a", WALLET_A),
+    ]);
+    const logger = makeLogger();
+    let timeoutsBeforeFirstWalletCall = -1;
+    const client = {
+      listUserActivity: vi.fn(async () => {
+        if (timeoutsBeforeFirstWalletCall < 0) {
+          timeoutsBeforeFirstWalletCall = timeoutStatements.length;
+        }
+        return [];
+      }),
+      listUserPositions: vi.fn(async () => []),
+    } as unknown as PolymarketDataApiClient;
+
+    const result = await runTraderObservationTick({
+      db,
+      client,
+      logger: logger as never,
+      metrics,
+    });
+
+    expect(result).toMatchObject({ wallets: 1, walletsProcessed: 1 });
+    // Both pre-loop stages bounded before any wallet work began.
+    expect(timeoutsBeforeFirstWalletCall).toBeGreaterThanOrEqual(2);
+    for (const statement of timeoutStatements) {
+      expect(statement).toContain(String(OBSERVATION_STATEMENT_TIMEOUT_MS));
+    }
   });
 
   it("reports every stage it enters, in order, so a hung tick is diagnosable (bug.5273)", async () => {

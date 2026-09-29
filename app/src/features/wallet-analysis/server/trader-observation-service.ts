@@ -246,19 +246,36 @@ export async function runTraderObservationTick(
   // an aborted signal, and the post-loop stages are gated on `tickAborted`.
   // Bounding a hung pre-loop query needs a Postgres `statement_timeout`, not a
   // JS check; stage reporting is what makes that hang visible in the first place.
+  // BOUND_THE_PRE_LOOP_STAGES (bug.5297): these run BEFORE the bounded wallet
+  // loop and, being plain DB work, cannot be interrupted by `deps.signal` at
+  // all — drizzle/postgres-js accept no AbortSignal. A `statement_timeout` is
+  // the only thing that bounds them, and without it either one can hold the
+  // whole tick past its 120s budget while the abort flag is set and ignored.
+  // Wrapping the sync in one transaction is also a consistency win: its upsert
+  // and its disable-missing pass are now atomic, so a failure between them can
+  // no longer leave wallets both enabled and orphaned.
   stage("sync_tenant_wallets");
-  await syncActiveTenantWallets(deps.db);
+  await withStatementTimeout(
+    deps.db,
+    OBSERVATION_STATEMENT_TIMEOUT_MS,
+    async (tx) => await syncActiveTenantWallets(tx)
+  );
   stage("select_wallets");
-  const wallets = await deps.db
-    .select()
-    .from(polyTraderWallets)
-    .where(
-      and(
-        eq(polyTraderWallets.activeForResearch, true),
-        isNull(polyTraderWallets.disabledAt)
-      )
-    )
-    .orderBy(polyTraderWallets.kind, polyTraderWallets.label);
+  const wallets = await withStatementTimeout(
+    deps.db,
+    OBSERVATION_STATEMENT_TIMEOUT_MS,
+    async (tx) =>
+      await tx
+        .select()
+        .from(polyTraderWallets)
+        .where(
+          and(
+            eq(polyTraderWallets.activeForResearch, true),
+            isNull(polyTraderWallets.disabledAt)
+          )
+        )
+        .orderBy(polyTraderWallets.kind, polyTraderWallets.label)
+  );
 
   let fills = 0;
   let positions = 0;
@@ -607,10 +624,15 @@ async function observeWallet(
     signal: deps.signal,
   });
   const observed = await source.fetchSince(since);
-  const insertedFills = await upsertObservedFills(
+  // Bulk write, one row per observed fill — the largest DB unit in the wallet
+  // loop and the last unbounded one now that the upstream reads honour the
+  // signal (bug.5297). Per-wallet transaction, deliberately NOT a stage-wide
+  // one: a timeout must cost this wallet's writes only, never roll back the
+  // wallets that already succeeded.
+  const insertedFills = await withStatementTimeout(
     deps.db,
-    deps.wallet.id,
-    observed.fills
+    OBSERVATION_STATEMENT_TIMEOUT_MS,
+    async (tx) => await upsertObservedFills(tx, deps.wallet.id, observed.fills)
   );
   const positionResult = await observePositionsIfDue(deps).catch(
     async (err: unknown) => {
@@ -759,10 +781,15 @@ async function observePositionsIfDue(
     maxPages: deps.positionMaxPages ?? DEFAULT_POSITION_MAX_PAGES,
     signal: deps.signal,
   });
-  const result = await persistObservedCurrentPositions(
+  // Only this call site is wrapped. `observePositionsNow` passes an optional
+  // `classifyMissingPosition` callback, and holding a transaction open across
+  // caller-supplied (possibly network-bound) work would be worse than the hang
+  // this bounds.
+  const result = await withStatementTimeout(
     deps.db,
-    deps.wallet,
-    pageResult
+    OBSERVATION_STATEMENT_TIMEOUT_MS,
+    async (tx) =>
+      await persistObservedCurrentPositions(tx, deps.wallet, pageResult)
   );
   return {
     positions: result.positionRows,
