@@ -287,11 +287,15 @@ describe("pruneOldPositionSnapshots stage deadline (bug.5300)", () => {
     // maxBatches(10) x 30s = 300s, still 2.5x the 120s tick budget, with every
     // statement legally under its ceiling. Prod confirmed it — tick timeouts
     // still at prune_position_snapshots with ZERO statement-timeout errors.
+    // Clock is driven, not raced: the earlier version slept 12ms per batch
+    // against a 10ms real deadline, which under full-suite load could expire
+    // before the first batch and report `batches: 0`.
+    let clock = 1_000;
     let batches = 0;
     const db = {
       execute: async () => {
         batches += 1;
-        await new Promise((r) => setTimeout(r, 12));
+        clock += 12;
         return fullBatch(5);
       },
     } as never;
@@ -300,6 +304,7 @@ describe("pruneOldPositionSnapshots stage deadline (bug.5300)", () => {
       batchSize: 5,
       maxBatches: 10,
       deadlineMs: 10,
+      now: () => clock,
     });
 
     // Full batches every time, so ONLY the deadline can stop it — and it must,

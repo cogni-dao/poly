@@ -733,6 +733,61 @@ describe("process-wide in-flight cap (bug.5286)", () => {
     expect(__polyDataApiInflightForTests()).toEqual({ inFlight: 0, queued: 0 });
   });
 
+  it("does not run out the request timeout when the signal aborts exactly at the slot handoff (bug.5301)", async () => {
+    // The one ordering the queue-abort fix cannot reject: releaseSlot() hands
+    // this caller the slot synchronously, so it must take it (rejecting would
+    // leak the slot) and reaches the fetch already aborted. `addEventListener`
+    // does not fire for an already-aborted signal, so without the explicit
+    // re-check this request would sit for the full timeoutMs — the same hang,
+    // moved one line down.
+    const fetchImpl = ((_url: string, init: { signal: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        const fail = (): void =>
+          reject(
+            Object.assign(new Error("aborted"), { name: "AbortError" })
+          );
+        // Real fetch checks `aborted` up front; a listener alone would hang.
+        if (init.signal.aborted) {
+          fail();
+          return;
+        }
+        init.signal.addEventListener("abort", fail, { once: true });
+      })) as unknown as typeof fetch;
+
+    const c = new PolymarketDataApiClient({
+      fetch: fetchImpl,
+      // Long enough that falling through to the timeout would fail the test
+      // rather than pass slowly.
+      timeoutMs: 60_000,
+    });
+    const w = "0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
+    const controller = new AbortController();
+    // The saturating pair gets its own signal: with `timeoutMs` set to 60s they
+    // would otherwise only settle on the timer, long after this test ends.
+    const saturating = new AbortController();
+    const inflight = [
+      c.listUserActivity(w, { signal: saturating.signal }),
+      c.listUserActivity(w, { signal: saturating.signal }),
+    ];
+    const queued = c.listUserActivity(w, { signal: controller.signal });
+    await vi.waitFor(() =>
+      expect(__polyDataApiInflightForTests().queued).toBe(1)
+    );
+
+    // Same synchronous turn: the slot is handed over AND the caller aborts.
+    __polyDataApiSlotsForTests.release();
+    controller.abort();
+
+    await expect(queued).rejects.toThrow(/aborted by caller/);
+    // Slot returned despite the abort, so the cap is not permanently shrunk.
+    expect(__polyDataApiInflightForTests().queued).toBe(0);
+
+    saturating.abort();
+    const settled = await Promise.allSettled(inflight);
+    expect(settled.every((r) => r.status === "rejected")).toBe(true);
+    __resetPolyDataApiCooldownForTests();
+  });
+
   it("releases its slot when the cooldown rejects a queued request", async () => {
     // A queued request that finds the cooldown open must not leak its slot,
     // or the cap would permanently shrink after any rate-limit event.

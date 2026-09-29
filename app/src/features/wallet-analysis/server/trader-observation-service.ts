@@ -1214,14 +1214,20 @@ export async function pruneOldPositionSnapshots(
      * Absent, behaviour is unchanged (batch count is the only bound).
      */
     deadlineMs?: number;
+    /**
+     * Clock seam. The deadline is wall-clock by nature, so a test that races a
+     * real `setTimeout` against a real `Date.now()` is flaky under load — it
+     * can spend the whole budget before the first batch even starts. Tests
+     * drive time explicitly instead. Production leaves this unset.
+     */
+    now?: () => number;
   }
 ): Promise<{ deleted: number; exhaustedBudget: boolean }> {
   const batchSize = options?.batchSize ?? SNAPSHOT_PRUNE_BATCH_SIZE;
   const maxBatches = options?.maxBatches ?? SNAPSHOT_PRUNE_MAX_BATCHES;
+  const now = options?.now ?? Date.now;
   const deadline =
-    options?.deadlineMs === undefined
-      ? undefined
-      : Date.now() + options.deadlineMs;
+    options?.deadlineMs === undefined ? undefined : now() + options.deadlineMs;
   // ISO string + explicit cast: postgres-js cannot serialize a raw Date
   // parameter through `db.execute(sql...)` (no drizzle column mapper here).
   const cutoff = new Date(
@@ -1233,7 +1239,7 @@ export async function pruneOldPositionSnapshots(
     // before the statement, never mid-statement: a half-killed DELETE would
     // leave the prune non-idempotent, and the next tick resumes from the same
     // cutoff anyway, so stopping early only defers work.
-    if (deadline !== undefined && Date.now() >= deadline) {
+    if (deadline !== undefined && now() >= deadline) {
       return { deleted, exhaustedBudget: true };
     }
     const result = await db.execute(sql`

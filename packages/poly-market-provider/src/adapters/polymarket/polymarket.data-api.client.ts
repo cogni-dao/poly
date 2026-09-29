@@ -5,8 +5,8 @@
  * Module: `@cogni/poly-market-provider/adapters/polymarket/polymarket.data-api.client`
  * Purpose: Client for the public Polymarket Data API + Gamma handle resolver — leaderboard, user activity / trades / positions / value, market holders + trades, username search.
  * Scope: HTTP fetch + Zod validation. Does not load env, does not manage credentials, does not place orders, does not implement `MarketProviderPort`.
- * Invariants: PACKAGES_NO_ENV, READ_ONLY, CONTRACT_IS_SOT.
- * Side-effects: IO (HTTP fetch to https://data-api.polymarket.com and https://gamma-api.polymarket.com)
+ * Invariants: PACKAGES_NO_ENV, READ_ONLY, CONTRACT_IS_SOT, PROCESS_WIDE_RATE_GATE (the 429 cooldown and the in-flight cap are module-scoped on purpose — Polymarket limits per-IP and the app builds one client per consumer; both honour the caller's AbortSignal).
+ * Side-effects: IO (HTTP fetch to https://data-api.polymarket.com and https://gamma-api.polymarket.com), mutates the module-scoped cooldown + in-flight counters
  * Links: work/items/task.0315.poly-copy-trade-prototype.md, work/items/task.0386.poly-agent-wallet-research-v0.md, docs/research/poly-copy-trading-wallets.md
  * @public
  */
@@ -116,11 +116,9 @@ async function acquireSlot(signal?: AbortSignal): Promise<void> {
       // here would leak that slot for the life of the process.
       if (index === -1) return;
       waiters.splice(index, 1);
-      reject(
-        signal?.reason instanceof Error
-          ? signal.reason
-          : new Error("aborted while queued for a Data API slot")
-      );
+      // Plain Error: `fetchJson` rewraps this with the pathname, and the raw
+      // `signal.reason` never reaches a caller.
+      reject(new Error("aborted while queued for a Data API slot"));
     };
     waiters.push(grant);
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -189,7 +187,9 @@ export function parseRetryAfterMs(header: string | null): number {
 export function __resetPolyDataApiCooldownForTests(): void {
   cooldownUntilMs = 0;
   inFlight = 0;
-  waiters.length = 0;
+  // Resolve rather than drop: a parked waiter silently removed from the queue
+  // would never settle, hanging whichever test left it there.
+  while (waiters.length > 0) waiters.shift()?.();
 }
 
 export class PolyDataApiValidationError extends Error {
@@ -631,6 +631,13 @@ export class PolymarketDataApiClient {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const onCallerAbort = () => controller.abort();
     signal?.addEventListener("abort", onCallerAbort, { once: true });
+    // ALREADY_ABORTED_IS_NOT_A_LISTENER_EVENT (bug.5301): `addEventListener` on
+    // an already-aborted signal never fires, which would leave this request
+    // running to the full `timeoutMs` on a signal nobody will re-fire. Reachable
+    // deterministically: a caller granted its slot in the same turn its signal
+    // aborts takes the slot (rejecting there would leak it) and arrives here
+    // already aborted.
+    if (signal?.aborted) controller.abort();
     try {
       const response = await this.fetchImpl(url.toString(), {
         signal: controller.signal,
