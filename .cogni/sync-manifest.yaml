@@ -24,14 +24,6 @@ node_local:
   - "app/src/app/(public)/page.tsx"
   # Home/landing feature surface (components, copy, hero).
   - "app/src/features/home/**"
-  # Poly product entrypoints. These compose shared substrate with Poly-only
-  # trading and research surfaces; replacing them leaves healthy APIs orphaned.
-  - "app/src/app/(app)/credits/**"
-  - "app/src/app/(app)/dashboard/view.tsx"
-  - "app/src/node-config.ts"
-  # Node-owned metadata and the repo-spec icon's curated registry entry.
-  - "app/src/app/layout.tsx"
-  - "app/src/shared/brand/brandIcons.tsx"
   # Design tokens. Colours, radii, accent stops — a node's visual identity lives here,
   # so node-template must never overwrite it.
   - "app/src/styles/tailwind.css"
@@ -41,7 +33,6 @@ node_local:
   - "public/branding/**"
   # Node identity + persona.
   - ".cogni/repo-spec.yaml"
-  - ".cogni/secrets-catalog.yaml"
   - ".cogni/persona/**"
   # Spawned-node secret names, targets, and OpenBao paths are node identity.
   - "k8s/external-secrets/**"

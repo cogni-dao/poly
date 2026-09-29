@@ -24,47 +24,47 @@ import { TradingWalletPanel } from "./TradingWalletPanel";
 type MobileTab = "credits" | "wallet";
 
 export function CreditsPageClient(): ReactElement {
-	const [mobileTab, setMobileTab] = useState<MobileTab>("credits");
+  const [mobileTab, setMobileTab] = useState<MobileTab>("credits");
 
-	return (
-		<PageContainer maxWidth="2xl">
-			<div className="mb-4 flex gap-2 md:hidden">
-				<button
-					type="button"
-					onClick={() => setMobileTab("credits")}
-					className={cn(
-						"flex-1 rounded-md px-3 py-2 font-medium text-sm",
-						mobileTab === "credits"
-							? "bg-primary text-primary-foreground"
-							: "bg-muted text-muted-foreground",
-					)}
-					aria-pressed={mobileTab === "credits"}
-				>
-					AI Credits
-				</button>
-				<button
-					type="button"
-					onClick={() => setMobileTab("wallet")}
-					className={cn(
-						"flex-1 rounded-md px-3 py-2 font-medium text-sm",
-						mobileTab === "wallet"
-							? "bg-primary text-primary-foreground"
-							: "bg-muted text-muted-foreground",
-					)}
-					aria-pressed={mobileTab === "wallet"}
-				>
-					Trading wallet
-				</button>
-			</div>
+  return (
+    <PageContainer maxWidth="2xl">
+      <div className="mb-4 flex gap-2 md:hidden">
+        <button
+          type="button"
+          onClick={() => setMobileTab("credits")}
+          className={cn(
+            "flex-1 rounded-md px-3 py-2 font-medium text-sm",
+            mobileTab === "credits"
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-muted-foreground",
+          )}
+          aria-pressed={mobileTab === "credits"}
+        >
+          AI Credits
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobileTab("wallet")}
+          className={cn(
+            "flex-1 rounded-md px-3 py-2 font-medium text-sm",
+            mobileTab === "wallet"
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-muted-foreground",
+          )}
+          aria-pressed={mobileTab === "wallet"}
+        >
+          Trading wallet
+        </button>
+      </div>
 
-			<div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-				<div className={cn(mobileTab === "credits" ? "" : "hidden md:block")}>
-					<AiCreditsPanel />
-				</div>
-				<div className={cn(mobileTab === "wallet" ? "" : "hidden md:block")}>
-					<TradingWalletPanel />
-				</div>
-			</div>
-		</PageContainer>
-	);
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+        <div className={cn(mobileTab === "credits" ? "" : "hidden md:block")}>
+          <AiCreditsPanel />
+        </div>
+        <div className={cn(mobileTab === "wallet" ? "" : "hidden md:block")}>
+          <TradingWalletPanel />
+        </div>
+      </div>
+    </PageContainer>
+  );
 }

@@ -41,7 +41,7 @@ export const FOOTER_COLUMNS: FooterColumn[] = [
       { label: "Knowledge", href: "/knowledge" },
       { label: "Activity", href: "/activity" },
       { label: "Governance", href: "/gov" },
-      { label: "Credits", href: "/credits" },
+      { label: "Money", href: "/credits" },
     ],
   },
   {

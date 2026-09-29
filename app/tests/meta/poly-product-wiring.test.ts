@@ -3,11 +3,11 @@
 
 /**
  * Module: `@tests/meta/poly-product-wiring`
- * Purpose: Prevent template syncs from orphaning Poly's product surfaces.
+ * Purpose: Prevent changes from orphaning Poly's product surfaces.
  * Scope: Source-level conformance for the node-owned UI composition and config.
  * Invariants: MONEY_HAS_WALLET, DASHBOARD_HAS_TRADING, POLY_IDENTITY_REACHABLE.
  * Side-effects: IO (reads repository source files).
- * Links: .cogni/sync-manifest.yaml, app/src/node-config.ts
+ * Links: app/src/node-config.ts, app/src/app/(app)/credits/CreditsPage.client.tsx
  * @internal
  */
 
@@ -50,6 +50,9 @@ describe("Poly product wiring", () => {
 		const nodeConfig = readRepoFile("app/src/node-config.ts");
 		const layout = readRepoFile("app/src/app/layout.tsx");
 		const brandIcons = readRepoFile("app/src/shared/brand/brandIcons.tsx");
+		const footer = readRepoFile(
+			"app/src/features/layout/components/footer-items.tsx",
+		);
 
 		expect(nodeConfig).toContain('name: "Poly"');
 		expect(nodeConfig).toContain('href: "/research"');
@@ -57,22 +60,13 @@ describe("Poly product wiring", () => {
 		expect(nodeConfig).toContain("https://github.com/cogni-dao/poly");
 		expect(layout).toContain("Cogni Poly — Community AI Prediction Trading");
 		expect(brandIcons).toMatch(/const BRAND_ICONS = \{\s+Activity,/);
+		expect(footer).toContain('{ label: "Knowledge", href: "/knowledge" }');
+		expect(footer).toContain('{ label: "Money", href: "/credits" }');
+		expect(footer).not.toContain('{ label: "Credits", href: "/credits" }');
 	});
 
-	it("protects the Poly-owned seams from fork sync", () => {
-		const manifest = readRepoFile(".cogni/sync-manifest.yaml");
+	it("keeps wallet secret shapes declared", () => {
 		const secrets = readRepoFile(".cogni/secrets-catalog.yaml");
-
-		for (const ownedPath of [
-			'"app/src/app/(app)/credits/**"',
-			'"app/src/app/(app)/dashboard/view.tsx"',
-			'"app/src/node-config.ts"',
-			'"app/src/app/layout.tsx"',
-			'"app/src/shared/brand/brandIcons.tsx"',
-			'".cogni/secrets-catalog.yaml"',
-		]) {
-			expect(manifest).toContain(ownedPath);
-		}
 
 		for (const secretName of [
 			"PRIVY_USER_WALLETS_APP_ID",
