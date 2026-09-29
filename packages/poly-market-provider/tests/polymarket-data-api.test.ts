@@ -22,6 +22,7 @@ import {
 } from "../src/adapters/polymarket/index.js";
 import {
   __polyDataApiInflightForTests,
+  __polyDataApiSlotsForTests,
   __resetPolyDataApiCooldownForTests,
   parseRetryAfterMs,
   PolyDataApiRateLimitedError,
@@ -653,6 +654,138 @@ describe("process-wide in-flight cap (bug.5286)", () => {
 
     // The assertion that matters: upstream never saw more than the cap at once.
     expect(peak).toBeLessThanOrEqual(2);
+  });
+
+  it("abandons a QUEUED request when the caller aborts, instead of calling upstream anyway (bug.5301)", async () => {
+    // The wallet_loop hang: the tick's 120s timeout fires while a read is
+    // parked in the slot queue. Before this fix the waiter stayed parked, then
+    // issued its request after the tick had already been abandoned, so the
+    // tick could not settle and upstream was hit for nothing.
+    let upstreamCalls = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const fetchImpl = (async () => {
+      upstreamCalls += 1;
+      await gate;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => null },
+        json: async () => [],
+      };
+    }) as unknown as typeof fetch;
+
+    const c = new PolymarketDataApiClient({ fetch: fetchImpl });
+    const w = "0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
+    // Saturate the cap, then queue one more behind it with its own signal.
+    const inflight = [c.listUserActivity(w), c.listUserActivity(w)];
+    const controller = new AbortController();
+    const queued = c.listUserActivity(w, { signal: controller.signal });
+
+    await vi.waitFor(() =>
+      expect(__polyDataApiInflightForTests().queued).toBe(1)
+    );
+    expect(upstreamCalls).toBe(2);
+
+    controller.abort();
+    // It rejects promptly — without waiting for a slot it will never use.
+    await expect(queued).rejects.toThrow(/aborted by caller while queued/);
+    expect(upstreamCalls).toBe(2);
+    expect(__polyDataApiInflightForTests().queued).toBe(0);
+
+    release();
+    await Promise.all(inflight);
+    // The abandoned waiter left the accounting clean, so the cap still holds.
+    expect(__polyDataApiInflightForTests()).toEqual({ inFlight: 0, queued: 0 });
+  });
+
+  it("never exceeds the cap while handing a released slot to a waiter (bug.5301)", async () => {
+    // releaseSlot() used to decrement BEFORE resolving the waiter, so for one
+    // microtask `inFlight` under-reported by one. A caller arriving in that
+    // window saw room and took a third concurrent slot — the cap bug.5286
+    // exists to enforce, breached by its own release path.
+    const { acquire, release } = __polyDataApiSlotsForTests;
+    await acquire();
+    await acquire();
+    expect(__polyDataApiInflightForTests().inFlight).toBe(2);
+
+    const queued = acquire();
+    await vi.waitFor(() =>
+      expect(__polyDataApiInflightForTests().queued).toBe(1)
+    );
+
+    // Release hands the slot to the waiter; a fresh caller arrives in the SAME
+    // synchronous turn, before the waiter's continuation can run.
+    release();
+    const fresh = acquire();
+    await queued;
+
+    expect(__polyDataApiInflightForTests().inFlight).toBeLessThanOrEqual(2);
+    expect(__polyDataApiInflightForTests().queued).toBe(1);
+
+    release();
+    await fresh;
+    release();
+    release();
+    expect(__polyDataApiInflightForTests()).toEqual({ inFlight: 0, queued: 0 });
+  });
+
+  it("does not run out the request timeout when the signal aborts exactly at the slot handoff (bug.5301)", async () => {
+    // The one ordering the queue-abort fix cannot reject: releaseSlot() hands
+    // this caller the slot synchronously, so it must take it (rejecting would
+    // leak the slot) and reaches the fetch already aborted. `addEventListener`
+    // does not fire for an already-aborted signal, so without the explicit
+    // re-check this request would sit for the full timeoutMs — the same hang,
+    // moved one line down.
+    const fetchImpl = ((_url: string, init: { signal: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        const fail = (): void =>
+          reject(
+            Object.assign(new Error("aborted"), { name: "AbortError" })
+          );
+        // Real fetch checks `aborted` up front; a listener alone would hang.
+        if (init.signal.aborted) {
+          fail();
+          return;
+        }
+        init.signal.addEventListener("abort", fail, { once: true });
+      })) as unknown as typeof fetch;
+
+    const c = new PolymarketDataApiClient({
+      fetch: fetchImpl,
+      // Long enough that falling through to the timeout would fail the test
+      // rather than pass slowly.
+      timeoutMs: 60_000,
+    });
+    const w = "0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
+    const controller = new AbortController();
+    // The saturating pair gets its own signal: with `timeoutMs` set to 60s they
+    // would otherwise only settle on the timer, long after this test ends.
+    const saturating = new AbortController();
+    const inflight = [
+      c.listUserActivity(w, { signal: saturating.signal }),
+      c.listUserActivity(w, { signal: saturating.signal }),
+    ];
+    const queued = c.listUserActivity(w, { signal: controller.signal });
+    await vi.waitFor(() =>
+      expect(__polyDataApiInflightForTests().queued).toBe(1)
+    );
+
+    // Same synchronous turn: the slot is handed over AND the caller aborts.
+    __polyDataApiSlotsForTests.release();
+    controller.abort();
+
+    await expect(queued).rejects.toThrow(/aborted by caller/);
+    // Slot returned despite the abort, so the cap is not permanently shrunk.
+    expect(__polyDataApiInflightForTests().queued).toBe(0);
+
+    saturating.abort();
+    const settled = await Promise.allSettled(inflight);
+    expect(settled.every((r) => r.status === "rejected")).toBe(true);
+    __resetPolyDataApiCooldownForTests();
   });
 
   it("releases its slot when the cooldown rejects a queued request", async () => {

@@ -5,8 +5,8 @@
  * Module: `@cogni/poly-market-provider/adapters/polymarket/polymarket.data-api.client`
  * Purpose: Client for the public Polymarket Data API + Gamma handle resolver — leaderboard, user activity / trades / positions / value, market holders + trades, username search.
  * Scope: HTTP fetch + Zod validation. Does not load env, does not manage credentials, does not place orders, does not implement `MarketProviderPort`.
- * Invariants: PACKAGES_NO_ENV, READ_ONLY, CONTRACT_IS_SOT.
- * Side-effects: IO (HTTP fetch to https://data-api.polymarket.com and https://gamma-api.polymarket.com)
+ * Invariants: PACKAGES_NO_ENV, READ_ONLY, CONTRACT_IS_SOT, PROCESS_WIDE_RATE_GATE (the 429 cooldown and the in-flight cap are module-scoped on purpose — Polymarket limits per-IP and the app builds one client per consumer; both honour the caller's AbortSignal).
+ * Side-effects: IO (HTTP fetch to https://data-api.polymarket.com and https://gamma-api.polymarket.com), mutates the module-scoped cooldown + in-flight counters
  * Links: work/items/task.0315.poly-copy-trade-prototype.md, work/items/task.0386.poly-agent-wallet-research-v0.md, docs/research/poly-copy-trading-wallets.md
  * @public
  */
@@ -86,20 +86,69 @@ const MAX_INFLIGHT = 2;
 let inFlight = 0;
 const waiters: Array<() => void> = [];
 
-async function acquireSlot(): Promise<void> {
+/**
+ * ABORTABLE_QUEUE_WAIT (bug.5301) — the queue must observe the caller's signal.
+ *
+ * bug.5286 added the cap but awaited the queue with a bare promise, so an
+ * aborted caller stayed parked until some unrelated request released a slot,
+ * and then issued its request anyway. Two consequences, both observed as
+ * `wallet_loop` hangs: the abandoned trader-observation tick cannot settle
+ * (`settled_after_abort:false`, `tick_ms` ~= timeout + grace), and we spend a
+ * third party's budget on a result nobody will read. The whole point of
+ * threading `signal` through every fetch (task.5015) is defeated if the
+ * limiter in front of those fetches ignores it.
+ */
+async function acquireSlot(signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   if (inFlight < MAX_INFLIGHT) {
     inFlight += 1;
     return;
   }
-  await new Promise<void>((resolve) => waiters.push(resolve));
-  inFlight += 1;
+  await new Promise<void>((resolve, reject) => {
+    const grant = (): void => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const onAbort = (): void => {
+      const index = waiters.indexOf(grant);
+      // Still queued -> give up our place. Already shifted out -> releaseSlot()
+      // has handed us the slot synchronously, so we must take it; rejecting
+      // here would leak that slot for the life of the process.
+      if (index === -1) return;
+      waiters.splice(index, 1);
+      // Plain Error: `fetchJson` rewraps this with the pathname, and the raw
+      // `signal.reason` never reaches a caller.
+      reject(new Error("aborted while queued for a Data API slot"));
+    };
+    waiters.push(grant);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function releaseSlot(): void {
-  inFlight -= 1;
+  // SLOT_TRANSFER (bug.5301): hand the slot straight to the next waiter rather
+  // than decrementing and letting the waiter re-increment. The decrement-then-
+  // resolve order left `inFlight` one below the true count until the waiter's
+  // continuation ran, and a fresh caller arriving in that window saw room and
+  // claimed a third slot — the cap bug.5286 exists to enforce, breached by its
+  // own release path.
   const next = waiters.shift();
-  if (next) next();
+  if (next) {
+    next();
+    return;
+  }
+  inFlight -= 1;
 }
+
+/**
+ * Test seam — drive the semaphore directly. The release-to-waiter handoff race
+ * (bug.5301) lasts one microtask and cannot be hit deterministically through
+ * the public client surface, so the invariant is asserted at this layer.
+ */
+export const __polyDataApiSlotsForTests = {
+  acquire: (signal?: AbortSignal): Promise<void> => acquireSlot(signal),
+  release: (): void => releaseSlot(),
+};
 
 /** Test seam — observe saturation without exporting the mutable counters. */
 export function __polyDataApiInflightForTests(): {
@@ -138,7 +187,9 @@ export function parseRetryAfterMs(header: string | null): number {
 export function __resetPolyDataApiCooldownForTests(): void {
   cooldownUntilMs = 0;
   inFlight = 0;
-  waiters.length = 0;
+  // Resolve rather than drop: a parked waiter silently removed from the queue
+  // would never settle, hanging whichever test left it there.
+  while (waiters.length > 0) waiters.shift()?.();
 }
 
 export class PolyDataApiValidationError extends Error {
@@ -556,7 +607,18 @@ export class PolymarketDataApiClient {
     }
     // bug.5286 — bound concurrent in-flight requests across the whole process,
     // so a burst cannot all reach upstream before the first 429 comes back.
-    await acquireSlot();
+    try {
+      await acquireSlot(signal);
+    } catch (err) {
+      // Only an abort rejects here; surface it in the same shape as a
+      // mid-flight caller abort so callers classify it identically.
+      if (signal?.aborted) {
+        throw new Error(
+          `Polymarket Data API request aborted by caller while queued (${url.pathname})`
+        );
+      }
+      throw err;
+    }
     // Re-check after queueing: a request that waited for a slot may find the
     // cooldown opened by whichever request was ahead of it. This is the check
     // the pre-queue test cannot make, and it is where the herd gets stopped.
@@ -569,6 +631,13 @@ export class PolymarketDataApiClient {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const onCallerAbort = () => controller.abort();
     signal?.addEventListener("abort", onCallerAbort, { once: true });
+    // ALREADY_ABORTED_IS_NOT_A_LISTENER_EVENT (bug.5301): `addEventListener` on
+    // an already-aborted signal never fires, which would leave this request
+    // running to the full `timeoutMs` on a signal nobody will re-fire. Reachable
+    // deterministically: a caller granted its slot in the same turn its signal
+    // aborts takes the slot (rejecting there would leak it) and arrives here
+    // already aborted.
+    if (signal?.aborted) controller.abort();
     try {
       const response = await this.fetchImpl(url.toString(), {
         signal: controller.signal,
