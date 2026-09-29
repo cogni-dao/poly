@@ -3,7 +3,7 @@
 
 /**
  * Module: `@app/layout`
- * Purpose: Root layout for the node-template (used as scaffold for new nodes) with font configuration and global styles.
+ * Purpose: Root layout for the Poly node with font configuration and global styles.
  * Scope: Async server component. Reads request cookies, computes wagmi `initialState`,
  *   passes it to the client `Providers` so `<WagmiProvider>` hydrates without mismatch
  *   (per https://wagmi.sh/react/guides/ssr).
@@ -30,12 +30,13 @@ import { wagmiConfig } from "@/shared/web3/wagmi.config";
 import { Providers } from "./providers.client";
 
 const manrope = Manrope({
-  subsets: ["latin"],
+	subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
-  title: "Cogni",
-  description: "Web3 Gov + Web2 AI",
+	title: "Cogni Poly — Community AI Prediction Trading",
+	description:
+		"Community-steered AI searching for consistent, ethical prediction-market profits with explainable signals and ground-truth evidence.",
 };
 
 // See operator/app/src/app/layout.tsx for rationale — `headers()` in the
@@ -44,40 +45,40 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 async function readCookieHeaderSafely(): Promise<string | null> {
-  try {
-    return (await headers()).get("cookie");
-  } catch {
-    return null;
-  }
+	try {
+		return (await headers()).get("cookie");
+	} catch {
+		return null;
+	}
 }
 
 export default async function RootLayout({
-  children,
+	children,
 }: Readonly<{
-  children: ReactNode;
+	children: ReactNode;
 }>) {
-  const initialState = cookieToInitialState(
-    wagmiConfig,
-    await readCookieHeaderSafely()
-  );
+	const initialState = cookieToInitialState(
+		wagmiConfig,
+		await readCookieHeaderSafely(),
+	);
 
-  return (
-    <html lang="en" className={manrope.className} suppressHydrationWarning>
-      <head>
-        <Script src="/theme-init.js" strategy="beforeInteractive" />
-      </head>
-      <body className="min-h-dvh bg-background text-foreground antialiased">
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="dark"
-          enableSystem
-          disableTransitionOnChange
-        >
-          <Providers initialState={initialState}>
-            <div id="main">{children}</div>
-          </Providers>
-        </ThemeProvider>
-      </body>
-    </html>
-  );
+	return (
+		<html lang="en" className={manrope.className} suppressHydrationWarning>
+			<head>
+				<Script src="/theme-init.js" strategy="beforeInteractive" />
+			</head>
+			<body className="min-h-dvh bg-background text-foreground antialiased">
+				<ThemeProvider
+					attribute="class"
+					defaultTheme="dark"
+					enableSystem
+					disableTransitionOnChange
+				>
+					<Providers initialState={initialState}>
+						<div id="main">{children}</div>
+					</Providers>
+				</ThemeProvider>
+			</body>
+		</html>
+	);
 }

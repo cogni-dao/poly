@@ -19,32 +19,34 @@
  */
 
 import {
-  Boxes,
-  Brain,
-  Crosshair,
-  Gamepad2,
-  GitFork,
-  GitMerge,
-  Hexagon,
-  type LucideIcon,
-  RadioTower,
-  Shield,
-  Sprout,
-  Waypoints,
+	Activity,
+	Boxes,
+	Brain,
+	Crosshair,
+	Gamepad2,
+	GitFork,
+	GitMerge,
+	Hexagon,
+	type LucideIcon,
+	RadioTower,
+	Shield,
+	Sprout,
+	Waypoints,
 } from "lucide-react";
 
 /** Curated brand-icon set — keyed by the PascalCase Lucide name stored in repo-spec. */
 const BRAND_ICONS = {
-  Boxes,
-  Brain,
-  Crosshair,
-  Gamepad2,
-  GitFork,
-  GitMerge,
-  RadioTower,
-  Shield,
-  Sprout,
-  Waypoints,
+	Activity,
+	Boxes,
+	Brain,
+	Crosshair,
+	Gamepad2,
+	GitFork,
+	GitMerge,
+	RadioTower,
+	Shield,
+	Sprout,
+	Waypoints,
 } as const satisfies Record<string, LucideIcon>;
 
 /** Neutral mark when a node has not declared `brand.icon` (or names an unbundled icon). */
@@ -52,6 +54,8 @@ export const FALLBACK_BRAND_ICON: LucideIcon = Hexagon;
 
 /** Resolve a repo-spec `brand.icon` name to its Lucide component, or the neutral fallback. */
 export function resolveBrandIcon(name: string | null | undefined): LucideIcon {
-  if (!name) return FALLBACK_BRAND_ICON;
-  return (BRAND_ICONS as Record<string, LucideIcon>)[name] ?? FALLBACK_BRAND_ICON;
+	if (!name) return FALLBACK_BRAND_ICON;
+	return (
+		(BRAND_ICONS as Record<string, LucideIcon>)[name] ?? FALLBACK_BRAND_ICON
+	);
 }

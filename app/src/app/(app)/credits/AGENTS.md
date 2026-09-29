@@ -9,7 +9,9 @@
 
 ## Purpose
 
-Protected credits page composition and payment widget wiring. Server component loads repo-spec-driven widget config; client component renders DePay widget and payment flows.
+Protected Money page on the stable `/credits` route. It composes the generic AI
+credits panel with Poly's per-tenant trading-wallet lifecycle. The wallet panel
+is the first-user path for provisioning, funding, approvals, and withdrawals.
 
 ## Pointers
 
@@ -39,22 +41,28 @@ Protected credits page composition and payment widget wiring. Server component l
 ## Public Surface
 
 - **Exports:** none
-- **Route:** `/credits` (server page + client composition)
-- **Files considered API:** `page.tsx`, `CreditsPage.client.tsx`
+- **Route:** `/credits` (sidebar label: Money)
+- **Files considered API:** `page.tsx`, `CreditsPage.client.tsx`,
+  `AiCreditsPanel.tsx`, `TradingWalletPanel.tsx`,
+  `TradingWalletConnectFlow.tsx`, `TradingWalletWithdrawDialog.tsx`,
+  `TradingReadinessSection.tsx`
 
 ## Responsibilities
 
-- **Does:** Fetch widget config server-side via `@/shared/config` (repo-spec), render credits UI, pass config to client DePay widget, trigger confirm calls.
-- **Does not:** Read env vars or repo-spec on the client; hardcode wallets or chain IDs; bypass confirm endpoint/business logic.
+- **Does:** Render the responsive AI credits + trading-wallet composition.
+- **Does not:** Read env vars on the client; hardcode wallets or chain IDs;
+  bypass wallet API contracts.
 
 ## Usage
 
-- Server page calls `getPaymentConfig()` and passes props to `CreditsPageClient`.
-- Client component renders payment UI with provided chainId/receivingAddress and calls confirm endpoint on success.
+- `CreditsPageClient` renders both panels on desktop and a two-tab switcher on mobile.
+- `TradingWalletPanel` must remain rendered here; orphaning it removes the only
+  production wallet onboarding path while leaving its APIs deceptively healthy.
 
 ## Standards
 
-- Payment configuration must come from repo-spec via `getPaymentConfig()`; no env overrides or client-side file reads.
+- Payment and wallet configuration must come from their server APIs; no env
+  overrides or client-side file reads.
 
 ## Dependencies
 
