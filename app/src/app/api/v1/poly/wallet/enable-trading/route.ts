@@ -84,7 +84,44 @@ export const POST = wrapRouteHandlerWithLogging(
     }
 
     try {
-      const result = await adapter.ensureTradingApprovals(account.id);
+      let result: Awaited<ReturnType<typeof adapter.ensureTradingApprovals>>;
+      try {
+        result = await adapter.ensureTradingApprovals(account.id);
+      } catch (firstErr: unknown) {
+        // SELF_HEAL_UNREADABLE_CREDS (bug.5305). Observed on prod 0a9ae6d:
+        // `clob_creds_invalid` with `aead_decrypt ... [key_id=current]` every
+        // 60s, so the executor never resolves and no order can be placed
+        // (bug.5304). The stored blob is unrecoverable, but a Polymarket L2 API
+        // key is derived from a wallet SIGNATURE, so it can be re-minted for the
+        // SAME wallet — no funds move and no wallet is created.
+        //
+        // Gated behind this tenant-authenticated action on purpose: a credential
+        // rewrite happens because a human asked to enable trading, never from a
+        // background job. `repairClobCreds` refuses when the creds still decrypt,
+        // so a healthy tenant clicking this can never lose a live API key.
+        //
+        // Derivation follows the deliberate v1 "manual green chain"
+        // (bug.5028) — the same path whose creds placed and cancelled a real
+        // order in bug.5285 — so this repairs onto the proven ceremony.
+        const code =
+          (firstErr as { code?: string } | undefined)?.code ?? "unknown_error";
+        if (code !== "clob_creds_invalid") throw firstErr;
+        const repair = await adapter.repairClobCreds(account.id);
+        if (!repair.ok) throw firstErr;
+        ctx.log.warn(
+          {
+            event: EVENT_NAMES.POLY_WALLET_ENABLE_TRADING_COMPLETE,
+            reqId: ctx.reqId,
+            routeId: ctx.routeId,
+            outcome: "repaired_clob_creds",
+            billing_account_id: account.id,
+            connection_id: repair.connectionId,
+          },
+          "poly wallet: re-derived unreadable CLOB creds, retrying approvals"
+        );
+        // One retry only — a second failure is a real fault, not a stale blob.
+        result = await adapter.ensureTradingApprovals(account.id);
+      }
       logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_ENABLE_TRADING_COMPLETE, {
         reqId: ctx.reqId,
         routeId: ctx.routeId,
