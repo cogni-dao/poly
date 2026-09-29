@@ -629,11 +629,20 @@ async function observeWallet(
   // signal (bug.5297). Per-wallet transaction, deliberately NOT a stage-wide
   // one: a timeout must cost this wallet's writes only, never roll back the
   // wallets that already succeeded.
-  const insertedFills = await withStatementTimeout(
-    deps.db,
-    OBSERVATION_STATEMENT_TIMEOUT_MS,
-    async (tx) => await upsertObservedFills(tx, deps.wallet.id, observed.fills)
-  );
+  // Guarded on non-empty: `upsertObservedFills` returns 0 without touching the
+  // DB when there are no fills, which is the common case on a quiet tick, and
+  // wrapping that unconditionally would spend BEGIN + SET LOCAL + COMMIT to do
+  // nothing. Unlike the positions writer below, which still reconciles stale
+  // rows when upstream returns nothing, this one has no empty-input work.
+  const insertedFills =
+    observed.fills.length === 0
+      ? 0
+      : await withStatementTimeout(
+          deps.db,
+          OBSERVATION_STATEMENT_TIMEOUT_MS,
+          async (tx) =>
+            await upsertObservedFills(tx, deps.wallet.id, observed.fills)
+        );
   const positionResult = await observePositionsIfDue(deps).catch(
     async (err: unknown) => {
       // task.5015: an abort-interrupted position fetch is cancellation, not a
