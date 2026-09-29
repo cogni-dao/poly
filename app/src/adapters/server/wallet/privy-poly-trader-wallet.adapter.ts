@@ -297,7 +297,47 @@ type ResolveSigningContextResult =
       ok: false;
       reason: ResolveSigningContextFailureReason;
       connectionId?: string;
+      /**
+       * Which step of credential decryption failed, when `reason` is
+       * `clob_creds_invalid`. Three unrelated faults collapse into that one
+       * code and each needs a DIFFERENT remedy, so the code alone is not
+       * actionable — see `ClobCredsDecryptStage`.
+       */
+      detail?: string;
     };
+
+/**
+ * DECRYPT_FAILURE_IS_NOT_ONE_FAULT (bug.5304) — `clob_creds_invalid` is
+ * reachable three ways, and the operator cannot pick a remedy without knowing
+ * which:
+ *
+ * - `aead_decrypt`: wrong encryption key, rotated key, altered AAD
+ *   (billing_account_id / connection_id / provider), or tampered ciphertext.
+ *   Remedy: restore/rotate the key, or re-encrypt the row.
+ * - `json_parse`: decrypted, but the plaintext is not JSON. Remedy: re-provision
+ *   the connection; the stored blob is wrong, not the key.
+ * - `missing_fields`: decrypted and parsed, but a required CLOB field is absent.
+ *   Remedy: re-derive CLOB creds for the wallet.
+ */
+type ClobCredsDecryptStage = "aead_decrypt" | "json_parse" | "missing_fields";
+
+class ClobCredsDecryptError extends Error {
+  readonly stage: ClobCredsDecryptStage;
+  /** Sanitized, NEVER derived from plaintext — see `describe`. */
+  readonly detail: string;
+  constructor(stage: ClobCredsDecryptStage, detail: string) {
+    super(`CLOB creds decrypt failed at ${stage}: ${detail}`);
+    this.name = "ClobCredsDecryptError";
+    this.stage = stage;
+    this.detail = detail;
+  }
+  static describe(err: unknown): string {
+    if (err instanceof ClobCredsDecryptError) {
+      return `${err.stage}: ${err.detail}`;
+    }
+    return "unknown_error";
+  }
+}
 
 export interface PrivyPolyTraderWalletAdapterConfig {
   /**
@@ -430,11 +470,25 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         connection_id: row.id,
         provider: CREDENTIAL_PROVIDER,
       });
-    } catch {
+    } catch (err: unknown) {
+      // KEY_ID_DECIDES_THE_REMEDY (bug.5304): the row records which key-ring id
+      // encrypted it, so an AEAD failure is DECIDABLE rather than guessed — a
+      // mismatch is a rotation/restore problem, a match points at the ciphertext
+      // or the AAD instead. Key ids are identifiers, not secrets.
+      // Appended for `aead_decrypt` ONLY: the later stages prove decryption
+      // succeeded, so the key is known-good there and the note would be noise.
+      const described = ClobCredsDecryptError.describe(err);
+      const keyIdNote =
+        err instanceof ClobCredsDecryptError && err.stage === "aead_decrypt"
+          ? row.encryptionKeyId === this.encryptionKeyId
+            ? " [key_id=current]"
+            : ` [key_id=stale(row=${row.encryptionKeyId},current=${this.encryptionKeyId})]`
+          : "";
       return {
         ok: false,
         reason: "clob_creds_invalid",
         connectionId: row.id,
+        detail: `${described}${keyIdNote}`,
       };
     }
 
@@ -481,6 +535,9 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         billing_account_id: billingAccountId,
         connection_id: result.connectionId ?? null,
         reasonCode: result.reason,
+        // Present only for clob_creds_invalid; names the failing step so the
+        // remedy is selectable from the log line alone (bug.5304).
+        detail: result.detail ?? null,
       },
       EVENT_NAMES.ADAPTER_POLY_WALLET_RESOLVE_ERROR
     );
@@ -2777,10 +2834,36 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
   // ────────────────────────────────────────────────────────────────────────
 
   private decryptCreds(ciphertext: Buffer, aad: AeadAAD): PolyClobApiKeyCreds {
-    const plaintext = aeadDecrypt(ciphertext, aad, this.encryptionKey);
-    const parsed = JSON.parse(plaintext) as PolyClobApiKeyCreds;
-    if (!parsed.key || !parsed.secret || !parsed.passphrase) {
-      throw new Error("decrypted CLOB creds missing required fields");
+    let plaintext: string;
+    try {
+      plaintext = aeadDecrypt(ciphertext, aad, this.encryptionKey);
+    } catch (err: unknown) {
+      // Node's AEAD failure messages ("Unsupported state or unable to
+      // authenticate data") describe the cipher state, never the plaintext, so
+      // they are safe to surface and are the most diagnostic signal we have.
+      throw new ClobCredsDecryptError(
+        "aead_decrypt",
+        err instanceof Error ? err.message : "non-error thrown"
+      );
+    }
+    let parsed: PolyClobApiKeyCreds;
+    try {
+      parsed = JSON.parse(plaintext) as PolyClobApiKeyCreds;
+    } catch {
+      // Deliberately NO message: `JSON.parse` quotes the offending input, which
+      // here is decrypted credential material. The stage alone is enough to
+      // pick the remedy, and leaking a secret into logs is not worth more.
+      throw new ClobCredsDecryptError("json_parse", "plaintext is not JSON");
+    }
+    const missing = (["key", "secret", "passphrase"] as const).filter(
+      (field) => !parsed[field]
+    );
+    if (missing.length > 0) {
+      // Field NAMES only — never their values.
+      throw new ClobCredsDecryptError(
+        "missing_fields",
+        `absent: ${missing.join(",")}`
+      );
     }
     return parsed;
   }
