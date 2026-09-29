@@ -86,20 +86,71 @@ const MAX_INFLIGHT = 2;
 let inFlight = 0;
 const waiters: Array<() => void> = [];
 
-async function acquireSlot(): Promise<void> {
+/**
+ * ABORTABLE_QUEUE_WAIT (bug.5301) — the queue must observe the caller's signal.
+ *
+ * bug.5286 added the cap but awaited the queue with a bare promise, so an
+ * aborted caller stayed parked until some unrelated request released a slot,
+ * and then issued its request anyway. Two consequences, both observed as
+ * `wallet_loop` hangs: the abandoned trader-observation tick cannot settle
+ * (`settled_after_abort:false`, `tick_ms` ~= timeout + grace), and we spend a
+ * third party's budget on a result nobody will read. The whole point of
+ * threading `signal` through every fetch (task.5015) is defeated if the
+ * limiter in front of those fetches ignores it.
+ */
+async function acquireSlot(signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   if (inFlight < MAX_INFLIGHT) {
     inFlight += 1;
     return;
   }
-  await new Promise<void>((resolve) => waiters.push(resolve));
-  inFlight += 1;
+  await new Promise<void>((resolve, reject) => {
+    const grant = (): void => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const onAbort = (): void => {
+      const index = waiters.indexOf(grant);
+      // Still queued -> give up our place. Already shifted out -> releaseSlot()
+      // has handed us the slot synchronously, so we must take it; rejecting
+      // here would leak that slot for the life of the process.
+      if (index === -1) return;
+      waiters.splice(index, 1);
+      reject(
+        signal?.reason instanceof Error
+          ? signal.reason
+          : new Error("aborted while queued for a Data API slot")
+      );
+    };
+    waiters.push(grant);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function releaseSlot(): void {
-  inFlight -= 1;
+  // SLOT_TRANSFER (bug.5301): hand the slot straight to the next waiter rather
+  // than decrementing and letting the waiter re-increment. The decrement-then-
+  // resolve order left `inFlight` one below the true count until the waiter's
+  // continuation ran, and a fresh caller arriving in that window saw room and
+  // claimed a third slot — the cap bug.5286 exists to enforce, breached by its
+  // own release path.
   const next = waiters.shift();
-  if (next) next();
+  if (next) {
+    next();
+    return;
+  }
+  inFlight -= 1;
 }
+
+/**
+ * Test seam — drive the semaphore directly. The release-to-waiter handoff race
+ * (bug.5301) lasts one microtask and cannot be hit deterministically through
+ * the public client surface, so the invariant is asserted at this layer.
+ */
+export const __polyDataApiSlotsForTests = {
+  acquire: (signal?: AbortSignal): Promise<void> => acquireSlot(signal),
+  release: (): void => releaseSlot(),
+};
 
 /** Test seam — observe saturation without exporting the mutable counters. */
 export function __polyDataApiInflightForTests(): {
@@ -556,7 +607,18 @@ export class PolymarketDataApiClient {
     }
     // bug.5286 — bound concurrent in-flight requests across the whole process,
     // so a burst cannot all reach upstream before the first 429 comes back.
-    await acquireSlot();
+    try {
+      await acquireSlot(signal);
+    } catch (err) {
+      // Only an abort rejects here; surface it in the same shape as a
+      // mid-flight caller abort so callers classify it identically.
+      if (signal?.aborted) {
+        throw new Error(
+          `Polymarket Data API request aborted by caller while queued (${url.pathname})`
+        );
+      }
+      throw err;
+    }
     // Re-check after queueing: a request that waited for a slot may find the
     // cooldown opened by whichever request was ahead of it. This is the check
     // the pre-queue test cannot make, and it is where the herd gets stopped.
