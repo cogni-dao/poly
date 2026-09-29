@@ -87,7 +87,7 @@ let inFlight = 0;
 const waiters: Array<() => void> = [];
 
 /**
- * ABORTABLE_QUEUE_WAIT (bug.5301) — the queue must observe the caller's signal.
+ * ABORTABLE_QUEUE_WAIT (bug.5297) — the queue must observe the caller's signal.
  *
  * bug.5286 added the cap but awaited the queue with a bare promise, so an
  * aborted caller stayed parked until some unrelated request released a slot,
@@ -126,7 +126,7 @@ async function acquireSlot(signal?: AbortSignal): Promise<void> {
 }
 
 function releaseSlot(): void {
-  // SLOT_TRANSFER (bug.5301): hand the slot straight to the next waiter rather
+  // SLOT_TRANSFER (bug.5286): hand the slot straight to the next waiter rather
   // than decrementing and letting the waiter re-increment. The decrement-then-
   // resolve order left `inFlight` one below the true count until the waiter's
   // continuation ran, and a fresh caller arriving in that window saw room and
@@ -142,7 +142,7 @@ function releaseSlot(): void {
 
 /**
  * Test seam — drive the semaphore directly. The release-to-waiter handoff race
- * (bug.5301) lasts one microtask and cannot be hit deterministically through
+ * (bug.5286) lasts one microtask and cannot be hit deterministically through
  * the public client surface, so the invariant is asserted at this layer.
  */
 export const __polyDataApiSlotsForTests = {
@@ -631,7 +631,7 @@ export class PolymarketDataApiClient {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const onCallerAbort = () => controller.abort();
     signal?.addEventListener("abort", onCallerAbort, { once: true });
-    // ALREADY_ABORTED_IS_NOT_A_LISTENER_EVENT (bug.5301): `addEventListener` on
+    // ALREADY_ABORTED_IS_NOT_A_LISTENER_EVENT (bug.5297): `addEventListener` on
     // an already-aborted signal never fires, which would leave this request
     // running to the full `timeoutMs` on a signal nobody will re-fire. Reachable
     // deterministically: a caller granted its slot in the same turn its signal

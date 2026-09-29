@@ -277,7 +277,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
   });
 });
 
-describe("pruneOldPositionSnapshots stage deadline (bug.5300)", () => {
+describe("pruneOldPositionSnapshots stage deadline (bug.5297)", () => {
   // The loop also exits when a batch deletes fewer rows than batchSize, so the
   // fakes must report a FULL batch (rowCount === batchSize) to keep it looping.
   const fullBatch = (batchSize: number) => ({ rowCount: batchSize });

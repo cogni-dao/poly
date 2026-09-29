@@ -1168,7 +1168,7 @@ export function hashPosition(position: PolymarketUserPosition): string {
 export const OBSERVATION_STATEMENT_TIMEOUT_MS = 30_000;
 
 /**
- * Wall-clock budget for ONE maintenance stage (bug.5300). Sized so that even a
+ * Wall-clock budget for ONE maintenance stage (bug.5297). Sized so that even a
  * stage that uses its whole budget leaves the 120s tick room to finish the
  * others: 3 maintenance stages x 30s = 90s < TICK_TIMEOUT_MS.
  *
@@ -1203,7 +1203,7 @@ export async function pruneOldPositionSnapshots(
     batchSize?: number;
     maxBatches?: number;
     /**
-     * STAGE_DEADLINE_BOUNDS_THE_LOOP (bug.5300) — wall-clock ceiling for the
+     * STAGE_DEADLINE_BOUNDS_THE_LOOP (bug.5297) — wall-clock ceiling for the
      * WHOLE stage. A per-statement `statement_timeout` cannot bound a loop:
      * bug.5297's 30s cap left a worst case of maxBatches x 30s = 300s, still
      * 2.5x over the 120s tick budget, with every individual statement legally
