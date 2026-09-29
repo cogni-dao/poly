@@ -656,7 +656,7 @@ describe("process-wide in-flight cap (bug.5286)", () => {
     expect(peak).toBeLessThanOrEqual(2);
   });
 
-  it("abandons a QUEUED request when the caller aborts, instead of calling upstream anyway (bug.5301)", async () => {
+  it("abandons a QUEUED request when the caller aborts, instead of calling upstream anyway (bug.5297)", async () => {
     // The wallet_loop hang: the tick's 120s timeout fires while a read is
     // parked in the slot queue. Before this fix the waiter stayed parked, then
     // issued its request after the tick had already been abandoned, so the
@@ -702,7 +702,7 @@ describe("process-wide in-flight cap (bug.5286)", () => {
     expect(__polyDataApiInflightForTests()).toEqual({ inFlight: 0, queued: 0 });
   });
 
-  it("never exceeds the cap while handing a released slot to a waiter (bug.5301)", async () => {
+  it("never exceeds the cap while handing a released slot to a waiter (bug.5286)", async () => {
     // releaseSlot() used to decrement BEFORE resolving the waiter, so for one
     // microtask `inFlight` under-reported by one. A caller arriving in that
     // window saw room and took a third concurrent slot — the cap bug.5286
@@ -733,7 +733,7 @@ describe("process-wide in-flight cap (bug.5286)", () => {
     expect(__polyDataApiInflightForTests()).toEqual({ inFlight: 0, queued: 0 });
   });
 
-  it("does not run out the request timeout when the signal aborts exactly at the slot handoff (bug.5301)", async () => {
+  it("does not run out the request timeout when the signal aborts exactly at the slot handoff (bug.5297)", async () => {
     // The one ordering the queue-abort fix cannot reject: releaseSlot() hands
     // this caller the slot synchronously, so it must take it (rejecting would
     // leak the slot) and reaches the fetch already aborted. `addEventListener`
