@@ -49,9 +49,6 @@ describe("Poly product wiring", () => {
 	it("keeps Poly identity and research reachable", () => {
 		const nodeConfig = readRepoFile("app/src/node-config.ts");
 		const layout = readRepoFile("app/src/app/layout.tsx");
-		const authRedirect = readRepoFile(
-			"app/src/app/(public)/AuthRedirect.tsx",
-		);
 		const brandIcons = readRepoFile("app/src/shared/brand/brandIcons.tsx");
 		const footer = readRepoFile(
 			"app/src/features/layout/components/footer-items.tsx",
@@ -62,12 +59,21 @@ describe("Poly product wiring", () => {
 		expect(nodeConfig).toContain('href: "/credits", label: "Money"');
 		expect(nodeConfig).toContain("https://github.com/cogni-dao/poly");
 		expect(layout).toContain("Cogni Poly — Community AI Prediction Trading");
-		expect(authRedirect).toContain('window.location.replace("/dashboard")');
-		expect(authRedirect).not.toContain('window.location.replace("/chat")');
 		expect(brandIcons).toMatch(/const BRAND_ICONS = \{\s+Activity,/);
 		expect(footer).toContain('{ label: "Knowledge", href: "/knowledge" }');
 		expect(footer).toContain('{ label: "Money", href: "/credits" }');
 		expect(footer).not.toContain('{ label: "Credits", href: "/credits" }');
+	});
+
+	it("keeps every homepage auth transition on the Poly dashboard", () => {
+		const publicPage = readRepoFile("app/src/app/(public)/page.tsx");
+		const authRedirect = readRepoFile(
+			"app/src/app/(public)/AuthRedirect.tsx",
+		);
+
+		expect(publicPage).toContain('redirect("/dashboard")');
+		expect(authRedirect).toContain('window.location.replace("/dashboard")');
+		expect(authRedirect).not.toContain('window.location.replace("/chat")');
 	});
 
 	it("keeps wallet secret shapes declared", () => {
