@@ -82,6 +82,87 @@ describe("PolymarketUserPnlClient.getUserPnl", () => {
     expect(call).toContain("fidelity=1d");
   });
 
+  it("logs the OUTCOME of a fetch, not just the attempt (bug.5306)", async () => {
+    // Prod emitted 120 `outbound` lines in 11min with no way to tell a healthy
+    // P/L feed from a dead one — success had to be inferred from the observation
+    // job's insert counts, one layer up and one job away.
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(WEEK_FIXTURE));
+    const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
+    const info = vi.fn();
+    const warn = vi.fn();
+
+    await client.getUserPnl(
+      wallet,
+      { interval: "1w", fidelity: "1d" },
+      { logger: { info, warn }, component: "trader-observation" }
+    );
+
+    const events = info.mock.calls.map((c) => c[0].event);
+    expect(events).toContain("poly.user-pnl.outbound");
+    expect(events).toContain("poly.user-pnl.result");
+    const result = info.mock.calls.find(
+      (c) => c[0].event === "poly.user-pnl.result"
+    )?.[0];
+    expect(result).toMatchObject({
+      outcome: "ok",
+      component: "trader-observation",
+      wallet,
+      interval: "1w",
+      points: WEEK_FIXTURE.length,
+    });
+    expect(result.duration_ms).toBeTypeOf("number");
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed fetch via warn, and still rethrows", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      statusText: "Bad Gateway",
+      json: async () => ({}),
+    });
+    const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
+    const info = vi.fn();
+    const warn = vi.fn();
+
+    await expect(
+      client.getUserPnl(
+        wallet,
+        { interval: "all" },
+        { logger: { info, warn }, component: "trader-observation" }
+      )
+    ).rejects.toThrow(/502/);
+
+    // The caller still sees the throw; the log is additive, not a swallow.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({
+      event: "poly.user-pnl.result",
+      outcome: "error",
+    });
+    expect(String(warn.mock.calls[0]?.[0].err)).toContain("502");
+  });
+
+  it("falls back to info when the logger has no warn", async () => {
+    // A minimal logger must not silently drop the outcome.
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "Server Error",
+      json: async () => ({}),
+    });
+    const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
+    const info = vi.fn();
+
+    await expect(
+      client.getUserPnl(wallet, { interval: "all" }, { logger: { info } })
+    ).rejects.toThrow(/500/);
+
+    const errEvents = info.mock.calls.filter(
+      (c) => c[0].event === "poly.user-pnl.result" && c[0].outcome === "error"
+    );
+    expect(errEvents).toHaveLength(1);
+  });
+
   it("supports empty histories without fabricating points", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(EMPTY_FIXTURE));
     const client = new PolymarketUserPnlClient({ fetch: fetchImpl });

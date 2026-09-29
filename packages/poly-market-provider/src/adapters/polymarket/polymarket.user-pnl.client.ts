@@ -71,14 +71,46 @@ export interface GetUserPnlParams {
  * `poly.user-pnl.outbound` event per fetch — used to assert PAGE_LOAD_DB_ONLY
  * (task.5012) by tagging caller component (e.g. `trader-observation`).
  */
+// Type ALIAS, not interface: only alias object types get an implicit index
+// signature, which is what makes these assignable to `LoggerPort`'s
+// `Record<string, unknown>` parameter. An interface here breaks every caller
+// that passes a pino-shaped logger.
+export type UserPnlOutboundEvent = {
+  event: "poly.user-pnl.outbound";
+  component: string;
+  wallet: string;
+  interval: PolymarketUserPnlInterval;
+  fidelity?: PolymarketUserPnlFidelity;
+};
+
+/**
+ * OUTCOME_NOT_JUST_ATTEMPT (bug.5306) — the `outbound` event above records that
+ * a fetch was STARTED and nothing about how it ended, so a degraded P/L feed is
+ * indistinguishable from a healthy one in the logs. Prod showed 120 `outbound`
+ * lines in 11 minutes with no way to tell success from failure; the only proof
+ * ingestion worked came from the observation tick's insert counts, one layer up
+ * and one job away. This event closes that.
+ */
+export type UserPnlResultEvent = {
+  event: "poly.user-pnl.result";
+  component: string;
+  wallet: string;
+  interval: PolymarketUserPnlInterval;
+  fidelity?: PolymarketUserPnlFidelity;
+  outcome: "ok" | "error";
+  duration_ms: number;
+  /** Points returned, on `ok`. Zero is a legitimate answer, not a failure. */
+  points?: number;
+  /** Message only, on `error`. This client's messages carry status/timeout and
+   *  the pathname — never wallet secrets or response bodies. */
+  err?: string;
+};
+
 export interface UserPnlOutboundLogger {
-  info(payload: {
-    event: "poly.user-pnl.outbound";
-    component: string;
-    wallet: string;
-    interval: PolymarketUserPnlInterval;
-    fidelity?: PolymarketUserPnlFidelity;
-  }): void;
+  info(payload: UserPnlOutboundEvent | UserPnlResultEvent): void;
+  /** Failures land here when the logger has it; `info` is the fallback, so a
+   *  minimal logger still gets the outcome rather than silently dropping it. */
+  warn?(payload: UserPnlResultEvent): void;
 }
 
 export class PolymarketUserPnlClient {
@@ -119,8 +151,38 @@ export class PolymarketUserPnlClient {
       ...(params.fidelity !== undefined ? { fidelity: params.fidelity } : {}),
     });
 
-    const json = await this.fetchJson(url, opts?.signal);
-    return PolymarketUserPnlResponseSchema.parse(json);
+    const startedAt = Date.now();
+    const base = {
+      component: opts?.component ?? "unknown",
+      wallet,
+      interval: params.interval,
+      ...(params.fidelity !== undefined ? { fidelity: params.fidelity } : {}),
+    } as const;
+    try {
+      const json = await this.fetchJson(url, opts?.signal);
+      const points = PolymarketUserPnlResponseSchema.parse(json);
+      opts?.logger?.info({
+        event: "poly.user-pnl.result",
+        ...base,
+        outcome: "ok",
+        duration_ms: Date.now() - startedAt,
+        points: points.length,
+      });
+      return points;
+    } catch (err: unknown) {
+      const payload: UserPnlResultEvent = {
+        event: "poly.user-pnl.result",
+        ...base,
+        outcome: "error",
+        duration_ms: Date.now() - startedAt,
+        err: err instanceof Error ? err.message : "non-error thrown",
+      };
+      // Prefer `warn` so a failing feed is filterable by level, but never lose
+      // the event when the caller's logger lacks it.
+      if (opts?.logger?.warn) opts.logger.warn(payload);
+      else opts?.logger?.info(payload);
+      throw err;
+    }
   }
 
   /**
