@@ -15,8 +15,8 @@
  *     wallet or SIWE/user identity binding is touched.
  *   - NO_STRANDED_FUNDS — the reset refuses while the Deposit Wallet holds any
  *     USDC.e / pUSD / POL, unless the operator explicitly passes
- *     `accept_residual_dust`. A balance read that ERRORS is treated as
- *     non-zero (fail-closed), never as zero.
+ *     `accept_residual_dust`. A balance read that ERRORS always blocks reset
+ *     (fail-closed) and cannot be overridden as dust.
  *   - NO_UNSETTLED_ORDERS — the reset refuses while any mirror fill row for
  *     the tenant is still `pending | open | partial`, so a revoke can never
  *     orphan a resting CLOB order.
@@ -43,8 +43,8 @@ export const polyWalletResetConnectionOperation = {
     billing_account_id: z.string().min(1),
     /**
      * Acknowledge that the Deposit Wallet still holds a residual amount the
-     * owner has accepted as unrecoverable dust. Without this, any non-zero or
-     * unreadable balance blocks the reset (NO_STRANDED_FUNDS).
+     * owner has accepted as unrecoverable dust. This never overrides an
+     * unreadable balance; read errors always block (NO_STRANDED_FUNDS).
      */
     accept_residual_dust: z.boolean().default(false),
   }),

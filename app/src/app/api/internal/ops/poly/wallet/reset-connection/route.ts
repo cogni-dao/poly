@@ -13,8 +13,8 @@
  *     standard operator token, already valued in every deployed lane. No
  *     bespoke per-feature token.
  *   - NO_STRANDED_FUNDS: refuses while the Deposit Wallet holds USDC.e / pUSD
- *     / POL unless `accept_residual_dust` is set. An ERRORED balance read is
- *     treated as non-zero, never as zero.
+ *     / POL unless `accept_residual_dust` is set. An ERRORED balance read
+ *     always blocks reset and cannot be overridden as dust.
  *   - NO_UNSETTLED_ORDERS: refuses while any mirror fill is pending | open |
  *     partial, so a revoke cannot orphan a resting CLOB order.
  *   - REVOKE_NEVER_DELETES: history, the Privy wallet, and the SIWE/user
@@ -257,14 +257,29 @@ export const POST = wrapRouteHandlerWithLogging(
       );
     }
 
-    if (!accept_residual_dust && (balanceUnreadable || hasResidualBalance)) {
+    if (balanceUnreadable) {
       return emit(
         {
           billing_account_id: billingAccountId,
           outcome: "blocked",
-          blocked_reason: balanceUnreadable
-            ? "balance_read_failed"
-            : "residual_balance",
+          blocked_reason: "balance_read_failed",
+          connection: connectionSummary,
+          balances,
+          unsettled_fill_count: unsettledFillCount,
+          grants_revoked_count: 0,
+          targets_disabled_count: 0,
+          reprovision_available_in_seconds: 0,
+        },
+        409
+      );
+    }
+
+    if (!accept_residual_dust && hasResidualBalance) {
+      return emit(
+        {
+          billing_account_id: billingAccountId,
+          outcome: "blocked",
+          blocked_reason: "residual_balance",
           connection: connectionSummary,
           balances,
           unsettled_fill_count: unsettledFillCount,
