@@ -139,6 +139,7 @@ export const serverSchema = z.object({
   // Internal ops token - Bearer auth for deploy-time internal operations endpoints
   // Optional in schema to avoid breaking environments that do not use ops endpoints.
   INTERNAL_OPS_TOKEN: z.string().min(32).optional(),
+  POLY_WALLET_RECOVERY_OPS_TOKEN: z.string().min(32).optional(),
 
   // Governance schedules - Deploy-time schedule sync control
   // When false, governance schedule sync job is skipped (prevents duplicate ops in preview)

@@ -172,6 +172,12 @@ export interface PolyWalletWithdrawalInput {
   readonly destination: `0x${string}`;
   /** Atomic units. USDC.e/pUSD use 6 decimals; POL uses 18 decimals. */
   readonly amountAtomic: bigint;
+  /**
+   * Internal recovery-only native sweep. When true with `asset: "pol"`, the
+   * adapter derives the largest safely transferable amount at signing time.
+   * Product routes never set this flag.
+   */
+  readonly sweepNative?: boolean;
   readonly requestedByUserId: string;
 }
 

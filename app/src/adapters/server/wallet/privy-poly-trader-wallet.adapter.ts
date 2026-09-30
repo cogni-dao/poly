@@ -261,7 +261,10 @@ export interface PreparedPolyDepositWallet {
 export type PreparePolyDepositWallet = (
   signer: LocalAccount,
   clobCreds: PolyClobApiKeyCreds,
-  options: { readonly transferExistingPusd: boolean }
+  options: {
+    readonly transferExistingPusd: boolean;
+    readonly setupTradingApprovals: boolean;
+  }
 ) => Promise<PreparedPolyDepositWallet>;
 
 export type TransferPolyDepositWalletToken = (
@@ -271,6 +274,25 @@ export type TransferPolyDepositWalletToken = (
     readonly expectedFunderAddress: `0x${string}`;
     readonly tokenAddress: Address;
     readonly recipientAddress: Address;
+    readonly amount: bigint;
+  }
+) => Promise<Hex>;
+
+export type TransferPolyDepositWalletNative = (
+  signer: LocalAccount,
+  clobCreds: PolyClobApiKeyCreds,
+  input: {
+    readonly expectedFunderAddress: `0x${string}`;
+    readonly recipientAddress: Address;
+    readonly amount: bigint;
+  }
+) => Promise<Hex>;
+
+export type WrapPolyDepositWalletUsdcE = (
+  signer: LocalAccount,
+  clobCreds: PolyClobApiKeyCreds,
+  input: {
+    readonly expectedFunderAddress: `0x${string}`;
     readonly amount: bigint;
   }
 ) => Promise<Hex>;
@@ -375,6 +397,10 @@ export interface PrivyPolyTraderWalletAdapterConfig {
   prepareDepositWallet?: PreparePolyDepositWallet;
   /** Gasless ERC-20 transfer from an official V2 Deposit Wallet. */
   transferDepositWalletToken?: TransferPolyDepositWalletToken;
+  /** Gasless native POL transfer from an official V2 Deposit Wallet. */
+  transferDepositWalletNative?: TransferPolyDepositWalletNative;
+  /** Gasless USDC.e → pUSD wrap from an official V2 Deposit Wallet. */
+  wrapDepositWalletUsdcE?: WrapPolyDepositWalletUsdcE;
   /**
    * Polygon RPC URL used by `getBalances`. Optional: when absent, `getBalances`
    * returns the address with `null` USDC.e/POL and an RPC-unconfigured error
@@ -402,6 +428,12 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
   private readonly transferDepositWalletToken:
     | TransferPolyDepositWalletToken
     | undefined;
+  private readonly transferDepositWalletNative:
+    | TransferPolyDepositWalletNative
+    | undefined;
+  private readonly wrapDepositWalletUsdcE:
+    | WrapPolyDepositWalletUsdcE
+    | undefined;
   private readonly polygonRpcUrl: string | undefined;
   private readonly log: Logger;
 
@@ -421,6 +453,8 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       });
     this.prepareDepositWallet = config.prepareDepositWallet;
     this.transferDepositWalletToken = config.transferDepositWalletToken;
+    this.transferDepositWalletNative = config.transferDepositWalletNative;
+    this.wrapDepositWalletUsdcE = config.wrapDepositWalletUsdcE;
     this.polygonRpcUrl = config.polygonRpcUrl;
     this.log = config.logger.child({
       component: "PrivyPolyTraderWalletAdapter",
@@ -983,6 +1017,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     const preparedDepositWallet = this.prepareDepositWallet
       ? await this.prepareDepositWallet(account, clobCreds, {
           transferExistingPusd: false,
+          setupTradingApprovals: false,
         })
       : { funderAddress: getAddress(privyWallet.address) };
 
@@ -1012,7 +1047,10 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       clobApiKeyCiphertext: ciphertext,
       encryptionKeyId: this.encryptionKeyId,
       allowanceState: null,
-      tradingApprovalsReadyAt: this.prepareDepositWallet ? new Date() : null,
+      // bug.5311: wallet creation and custody approval are separate user
+      // actions. The explicit /enable-trading ceremony is the only writer of
+      // this readiness stamp, including for V2 Deposit Wallets.
+      tradingApprovalsReadyAt: null,
       custodialConsentAcceptedAt: consent.acceptedAt,
       custodialConsentActorKind: consent.actorKind,
       custodialConsentActorId: consent.actorId,
@@ -1414,7 +1452,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       const prepared = await this.prepareDepositWallet(
         signingContext.account,
         signingContext.clobCreds,
-        { transferExistingPusd }
+        { transferExistingPusd, setupTradingApprovals: true }
       );
       const readyAt = new Date();
       await this.serviceDb
@@ -2306,6 +2344,17 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       });
     }
 
+    if (usesDepositWallet) {
+      return this.withdrawDepositWalletNative({
+        publicClient,
+        signingContext,
+        billingAccountId: input.billingAccountId,
+        requestedByUserId: input.requestedByUserId,
+        destination,
+        amountAtomic: input.amountAtomic,
+        sweepNative: input.sweepNative ?? false,
+      });
+    }
     return this.withdrawNativePol({
       publicClient,
       walletClient,
@@ -2315,6 +2364,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       destination,
       amountAtomic: input.amountAtomic,
       sourceAddress: signerAddress,
+      sweepNative: input.sweepNative ?? false,
     });
   }
 
@@ -2534,6 +2584,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     destination: Address;
     amountAtomic: bigint;
     sourceAddress: Address;
+    sweepNative: boolean;
   }): Promise<PolyWalletWithdrawalResult> {
     const balance = await input.publicClient.getBalance({
       address: input.sourceAddress,
@@ -2542,11 +2593,22 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       input.publicClient.estimateGas({
         account: input.sourceAddress,
         to: input.destination,
-        value: input.amountAtomic,
+        value: input.sweepNative ? 1n : input.amountAtomic,
       }),
       input.publicClient.getGasPrice(),
     ]);
-    const required = input.amountAtomic + gas * gasPrice;
+    const gasCost = gas * gasPrice;
+    const amountAtomic = input.sweepNative
+      ? balance > gasCost
+        ? balance - gasCost
+        : 0n
+      : input.amountAtomic;
+    const required = amountAtomic + gasCost;
+    if (amountAtomic <= 0n) {
+      throw Object.assign(new Error("withdraw: no POL remains after gas"), {
+        code: "insufficient_balance",
+      });
+    }
     if (balance < required) {
       throw Object.assign(
         new Error("withdraw: insufficient POL for value plus gas"),
@@ -2559,7 +2621,8 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     // biome-ignore lint/suspicious/noExplicitAny: cross-peerDep viem type drift
     const txHash: Hex = await (input.walletClient.sendTransaction as any)({
       to: input.destination,
-      value: input.amountAtomic,
+      value: amountAtomic,
+      ...(input.sweepNative ? { gas, gasPrice } : {}),
     });
     await this.confirmWithdrawalTx(input.publicClient, txHash);
     this.logWithdrawal({
@@ -2570,7 +2633,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       deliveredAsset: "pol",
       sourceAddress: input.sourceAddress,
       destination: input.destination,
-      amountAtomic: input.amountAtomic,
+      amountAtomic,
       txHashes: [txHash],
     });
     return {
@@ -2578,7 +2641,62 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       deliveredAsset: "pol",
       sourceAddress: input.sourceAddress,
       destination: input.destination,
-      amountAtomic: input.amountAtomic,
+      amountAtomic,
+      primaryTxHash: txHash,
+      txHashes: [txHash],
+    };
+  }
+
+  private async withdrawDepositWalletNative(input: {
+    publicClient: PublicClient;
+    signingContext: PolyTraderSigningContext;
+    billingAccountId: string;
+    requestedByUserId: string;
+    destination: Address;
+    amountAtomic: bigint;
+    sweepNative: boolean;
+  }): Promise<PolyWalletWithdrawalResult> {
+    if (!this.transferDepositWalletNative) {
+      throw Object.assign(
+        new Error("withdraw: Deposit Wallet native transfer is unavailable"),
+        { code: "deposit_wallet_action_unconfigured" }
+      );
+    }
+    const balance = await input.publicClient.getBalance({
+      address: input.signingContext.funderAddress,
+    });
+    const amountAtomic = input.sweepNative ? balance : input.amountAtomic;
+    if (amountAtomic <= 0n || balance < amountAtomic) {
+      throw Object.assign(new Error("withdraw: insufficient POL balance"), {
+        code: "insufficient_balance",
+      });
+    }
+    const txHash = await this.transferDepositWalletNative(
+      input.signingContext.account,
+      input.signingContext.clobCreds,
+      {
+        expectedFunderAddress: input.signingContext.funderAddress,
+        recipientAddress: input.destination,
+        amount: amountAtomic,
+      }
+    );
+    this.logWithdrawal({
+      billingAccountId: input.billingAccountId,
+      connectionId: input.signingContext.connectionId,
+      requestedByUserId: input.requestedByUserId,
+      asset: "pol",
+      deliveredAsset: "pol",
+      sourceAddress: input.signingContext.funderAddress,
+      destination: input.destination,
+      amountAtomic,
+      txHashes: [txHash],
+    });
+    return {
+      asset: "pol",
+      deliveredAsset: "pol",
+      sourceAddress: input.signingContext.funderAddress,
+      destination: input.destination,
+      amountAtomic,
       primaryTxHash: txHash,
       txHashes: [txHash],
     };
@@ -2798,20 +2916,45 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       };
     }
 
-    const walletClient: WalletClient = createWalletClient({
+    const signerAddress = getAddress(signingContext.account.address);
+    const usesDepositWallet =
+      signerAddress.toLowerCase() !==
+      signingContext.funderAddress.toLowerCase();
+    let txHash: Hex;
+    if (usesDepositWallet) {
+      if (!this.wrapDepositWalletUsdcE) {
+        throw new Error(
+          "wrapIdleUsdcE: Deposit Wallet gasless wrapper is not configured"
+        );
+      }
+      // bug.5310: the USDC.e and user-funded POL live at the Deposit Wallet,
+      // not at the hidden Privy signer EOA. Submit through the official
+      // relayer-backed POLY_1271 workflow so the Deposit Wallet is the caller.
+      txHash = await this.wrapDepositWalletUsdcE(
+        signingContext.account,
+        signingContext.clobCreds,
+        {
+          expectedFunderAddress: signingContext.funderAddress,
+          amount: balanceAtomic,
+        }
+      );
+    } else {
+      const walletClient: WalletClient = createWalletClient({
+        // biome-ignore lint/suspicious/noExplicitAny: cross-peerDep viem type drift
+        account: signingContext.account as any,
+        chain: polygon,
+        transport: http(this.polygonRpcUrl),
+      });
+      // Legacy direct-EOA connections still own their balance and gas at the
+      // signer address, so their pinned direct call remains correct.
       // biome-ignore lint/suspicious/noExplicitAny: cross-peerDep viem type drift
-      account: signingContext.account as any,
-      chain: polygon,
-      transport: http(this.polygonRpcUrl),
-    });
-
-    // biome-ignore lint/suspicious/noExplicitAny: cross-peerDep viem type drift
-    const txHash: Hex = await (walletClient.writeContract as any)({
-      address: COLLATERAL_ONRAMP_POLYGON,
-      abi: COLLATERAL_ONRAMP_WRAP_ABI,
-      functionName: "wrap",
-      args: [USDC_E_POLYGON, signingContext.funderAddress, balanceAtomic],
-    });
+      txHash = await (walletClient.writeContract as any)({
+        address: COLLATERAL_ONRAMP_POLYGON,
+        abi: COLLATERAL_ONRAMP_WRAP_ABI,
+        functionName: "wrap",
+        args: [USDC_E_POLYGON, signingContext.funderAddress, balanceAtomic],
+      });
+    }
     this.log.info(
       {
         billing_account_id: billingAccountId,
