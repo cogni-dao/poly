@@ -176,12 +176,6 @@ export function TradingWalletPanel(): ReactElement {
           <TradingReadinessSection
             tradingReady={status.trading_ready}
             isFunded={(balances?.usdc_e ?? 0) + (balances?.pusd ?? 0) > 0}
-            polBalance={balances?.pol ?? null}
-            usdcBalance={
-              balances?.usdc_e !== null && balances?.usdc_e !== undefined
-                ? balances.usdc_e + (balances.pusd ?? 0)
-                : null
-            }
           />
 
           {status.trading_ready ? (
