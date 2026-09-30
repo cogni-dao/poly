@@ -6,12 +6,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	createSecureClientMock,
 	createBuilderApiKeyMock,
+	prepareGaslessTransactionMock,
 	transferErc20Mock,
+	setupTradingApprovalsMock,
+	getAddressMock,
+	signTypedDataMock,
+	signMessageMock,
 	waitMock,
 } = vi.hoisted(() => ({
 	createSecureClientMock: vi.fn(),
 	createBuilderApiKeyMock: vi.fn(),
+	prepareGaslessTransactionMock: vi.fn(),
 	transferErc20Mock: vi.fn(),
+	setupTradingApprovalsMock: vi.fn(),
+	getAddressMock: vi.fn(),
+	signTypedDataMock: vi.fn(),
+	signMessageMock: vi.fn(),
 	waitMock: vi.fn(),
 }));
 
@@ -20,6 +30,7 @@ vi.mock("@polymarket/client", () => ({
 }));
 vi.mock("@polymarket/client/actions", () => ({
 	createBuilderApiKey: createBuilderApiKeyMock,
+	prepareGaslessTransaction: prepareGaslessTransactionMock,
 }));
 vi.mock("@polymarket/client/node", () => ({
 	builderApiKey: vi.fn((credentials) => credentials),
@@ -35,7 +46,12 @@ vi.mock("viem", async (importOriginal) => {
 	};
 });
 
-import { createOfficialDepositWalletTransferFactory } from "@/bootstrap/poly-trader-wallet";
+import {
+	createOfficialDepositWalletFactory,
+	createOfficialDepositWalletNativeTransferFactory,
+	createOfficialDepositWalletTransferFactory,
+	createOfficialDepositWalletWrapFactory,
+} from "@/bootstrap/poly-trader-wallet";
 
 const SIGNER = "0x1111111111111111111111111111111111111111" as const;
 const FUNDER = "0x2222222222222222222222222222222222222222" as const;
@@ -48,6 +64,10 @@ describe("official Deposit Wallet transfer factory", () => {
 		vi.clearAllMocks();
 		waitMock.mockResolvedValue({ transactionHash: TX_HASH });
 		transferErc20Mock.mockResolvedValue({ wait: waitMock });
+		setupTradingApprovalsMock.mockResolvedValue(undefined);
+		getAddressMock.mockResolvedValue(SIGNER);
+		signTypedDataMock.mockResolvedValue(`0x${"ab".repeat(65)}`);
+		signMessageMock.mockResolvedValue(`0x${"ef".repeat(65)}`);
 		createBuilderApiKeyMock.mockResolvedValue({
 			key: "builder-key",
 			secret: "builder-secret",
@@ -57,6 +77,12 @@ describe("official Deposit Wallet transfer factory", () => {
 			.mockResolvedValueOnce({ account: { wallet: SIGNER } })
 			.mockResolvedValueOnce({
 				account: { wallet: FUNDER },
+				signer: {
+					getAddress: getAddressMock,
+					signTypedData: signTypedDataMock,
+					signMessage: signMessageMock,
+				},
+				setupTradingApprovals: setupTradingApprovalsMock,
 				transferErc20: transferErc20Mock,
 			});
 	});
@@ -104,5 +130,131 @@ describe("official Deposit Wallet transfer factory", () => {
 			),
 		).rejects.toThrow("does not match persisted funder");
 		expect(transferErc20Mock).not.toHaveBeenCalled();
+	});
+
+	it("submits USDC.e wrapping through the Deposit Wallet gasless workflow", async () => {
+		async function* gaslessWorkflow() {
+			yield {
+				kind: "signGaslessTypedData" as const,
+				payload: { domain: {}, types: {}, primaryType: "Call", message: {} },
+			};
+			return { wait: waitMock };
+		}
+		prepareGaslessTransactionMock.mockResolvedValue(gaslessWorkflow());
+		const wrap = createOfficialDepositWalletWrapFactory({
+			polygonRpcUrl: "https://polygon.example.test",
+		});
+
+		const result = await wrap(
+			{ address: SIGNER } as never,
+			{ key: "k", secret: "s", passphrase: "p" },
+			{ expectedFunderAddress: FUNDER, amount: 100_000_000n },
+		);
+
+		expect(prepareGaslessTransactionMock).toHaveBeenCalledWith(
+			expect.objectContaining({ account: { wallet: FUNDER } }),
+				expect.objectContaining({
+				calls: [
+					expect.objectContaining({
+						to: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+					}),
+					expect.objectContaining({
+						to: "0x93070a847efEf7F70739046A929D47a521F5B8ee",
+					}),
+				],
+			}),
+		);
+		expect(signTypedDataMock).toHaveBeenCalledOnce();
+		expect(waitMock).toHaveBeenCalledOnce();
+		expect(result).toBe(TX_HASH);
+	});
+
+	it("sweeps native POL through a value-bearing Deposit Wallet call", async () => {
+		async function* gaslessWorkflow() {
+			yield {
+				kind: "signGaslessMessage" as const,
+				payload: `0x${"12".repeat(32)}`,
+			};
+			return { wait: waitMock };
+		}
+		prepareGaslessTransactionMock.mockResolvedValue(gaslessWorkflow());
+		const transfer = createOfficialDepositWalletNativeTransferFactory({
+			polygonRpcUrl: "https://polygon.example.test",
+		});
+
+		const result = await transfer(
+			{ address: SIGNER } as never,
+			{ key: "k", secret: "s", passphrase: "p" },
+			{
+				expectedFunderAddress: FUNDER,
+				recipientAddress: RECIPIENT,
+				amount: 5_000_000_000_000_000_000n,
+			},
+		);
+
+		expect(prepareGaslessTransactionMock).toHaveBeenCalledWith(
+			expect.objectContaining({ account: { wallet: FUNDER } }),
+			{
+				calls: [
+					{
+						to: RECIPIENT,
+						data: "0x",
+						value: 5_000_000_000_000_000_000n,
+					},
+				],
+				metadata: "Recover native POL from Deposit Wallet",
+			},
+		);
+		expect(signMessageMock).toHaveBeenCalledOnce();
+		expect(waitMock).toHaveBeenCalledOnce();
+		expect(result).toBe(TX_HASH);
+	});
+});
+
+describe("official Deposit Wallet onboarding factory", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		createBuilderApiKeyMock.mockResolvedValue({
+			key: "builder-key",
+			secret: "builder-secret",
+			passphrase: "builder-passphrase",
+		});
+		createSecureClientMock
+			.mockResolvedValueOnce({ account: { wallet: SIGNER } })
+			.mockResolvedValueOnce({
+				account: { wallet: FUNDER },
+				setupTradingApprovals: setupTradingApprovalsMock,
+			});
+	});
+
+	it("derives the funder during create without consuming the approval ceremony", async () => {
+		const prepare = createOfficialDepositWalletFactory({
+			logger: { info: vi.fn() } as never,
+			polygonRpcUrl: "https://polygon.example.test",
+		});
+
+		const result = await prepare(
+			{ address: SIGNER } as never,
+			{ key: "k", secret: "s", passphrase: "p" },
+			{ transferExistingPusd: false, setupTradingApprovals: false },
+		);
+
+		expect(result).toEqual({ funderAddress: FUNDER });
+		expect(setupTradingApprovalsMock).not.toHaveBeenCalled();
+	});
+
+	it("runs approvals only from the explicit enable-trading ceremony", async () => {
+		const prepare = createOfficialDepositWalletFactory({
+			logger: { info: vi.fn() } as never,
+			polygonRpcUrl: "https://polygon.example.test",
+		});
+
+		await prepare(
+			{ address: SIGNER } as never,
+			{ key: "k", secret: "s", passphrase: "p" },
+			{ transferExistingPusd: false, setupTradingApprovals: true },
+		);
+
+		expect(setupTradingApprovalsMock).toHaveBeenCalledOnce();
 	});
 });

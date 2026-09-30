@@ -16,8 +16,15 @@
 
 import { polyWalletConnections } from "@cogni/poly-db-schema";
 import type { PolyClobApiKeyCreds } from "@cogni/poly-wallet";
-import { createSecureClient } from "@polymarket/client";
-import { createBuilderApiKey } from "@polymarket/client/actions";
+import {
+  createSecureClient,
+  type Signer,
+  type TransactionHandle,
+} from "@polymarket/client";
+import {
+  createBuilderApiKey,
+  prepareGaslessTransaction,
+} from "@polymarket/client/actions";
 import { builderApiKey } from "@polymarket/client/node";
 import { signerFrom as polymarketSignerFrom } from "@polymarket/client/viem";
 import { PrivyClient } from "@privy-io/node";
@@ -26,9 +33,11 @@ import type { Logger } from "pino";
 import {
   createPublicClient,
   createWalletClient,
+  encodeFunctionData,
   erc20Abi,
   http,
   type LocalAccount,
+  parseAbi,
 } from "viem";
 import { polygon } from "viem/chains";
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
@@ -160,6 +169,42 @@ export function createRealClobCredsFactory({
 }
 
 const PUSD_POLYGON = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB" as const;
+const USDC_E_POLYGON =
+  "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" as const;
+const COLLATERAL_ONRAMP_POLYGON =
+  "0x93070a847efEf7F70739046A929D47a521F5B8ee" as const;
+const COLLATERAL_ONRAMP_WRAP_ABI = parseAbi([
+  "function wrap(address asset, address to, uint256 amount)",
+]);
+
+async function completeGaslessWorkflow(
+  workflow: Awaited<ReturnType<typeof prepareGaslessTransaction>>,
+  signer: Signer
+): Promise<TransactionHandle> {
+  let result = await workflow.next();
+  while (!result.done) {
+    try {
+      switch (result.value.kind) {
+        case "requestAddress":
+          result = await workflow.next(await signer.getAddress());
+          break;
+        case "signGaslessTypedData":
+          result = await workflow.next(
+            await signer.signTypedData(result.value.payload)
+          );
+          break;
+        case "signGaslessMessage":
+          result = await workflow.next(
+            await signer.signMessage(result.value.payload)
+          );
+          break;
+      }
+    } catch (error) {
+      result = await workflow.throw(error);
+    }
+  }
+  return result.value;
+}
 
 export async function createOfficialDepositWalletClient({
   signer,
@@ -207,7 +252,10 @@ export function createOfficialDepositWalletFactory({
   return async (
     signer: LocalAccount,
     clobCreds: PolyClobApiKeyCreds,
-    options: { readonly transferExistingPusd: boolean }
+    options: {
+      readonly transferExistingPusd: boolean;
+      readonly setupTradingApprovals: boolean;
+    }
   ): Promise<{ funderAddress: `0x${string}` }> => {
     const { depositClient, eoaClient } =
       await createOfficialDepositWalletClient({
@@ -237,7 +285,9 @@ export function createOfficialDepositWalletFactory({
       }
     }
 
-    await depositClient.setupTradingApprovals();
+    if (options.setupTradingApprovals) {
+      await depositClient.setupTradingApprovals();
+    }
     logger.info(
       {
         component: "poly-trader-wallet-bootstrap",
@@ -245,7 +295,9 @@ export function createOfficialDepositWalletFactory({
         funder_address: depositClient.account.wallet,
         migrated_existing_pusd: options.transferExistingPusd,
       },
-      "poly.wallet.deposit_wallet.ready"
+      options.setupTradingApprovals
+        ? "poly.wallet.deposit_wallet.ready"
+        : "poly.wallet.deposit_wallet.derived"
     );
     return { funderAddress: depositClient.account.wallet };
   };
@@ -282,6 +334,109 @@ export function createOfficialDepositWalletTransferFactory({
       recipientAddress: input.recipientAddress,
       tokenAddress: input.tokenAddress,
     });
+    const outcome = await handle.wait();
+    return outcome.transactionHash;
+  };
+}
+
+export function createOfficialDepositWalletNativeTransferFactory({
+  polygonRpcUrl,
+}: {
+  polygonRpcUrl: string;
+}) {
+  return async (
+    signer: LocalAccount,
+    clobCreds: PolyClobApiKeyCreds,
+    input: {
+      readonly expectedFunderAddress: `0x${string}`;
+      readonly recipientAddress: `0x${string}`;
+      readonly amount: bigint;
+    }
+  ): Promise<`0x${string}`> => {
+    const { depositClient } = await createOfficialDepositWalletClient({
+      signer,
+      clobCreds,
+      polygonRpcUrl,
+    });
+    if (
+      depositClient.account.wallet.toLowerCase() !==
+      input.expectedFunderAddress.toLowerCase()
+    ) {
+      throw new Error("Deposit Wallet address does not match persisted funder");
+    }
+    const workflow = await prepareGaslessTransaction(depositClient, {
+      calls: [
+        {
+          to: input.recipientAddress,
+          data: "0x",
+          value: input.amount,
+        },
+      ],
+      metadata: "Recover native POL from Deposit Wallet",
+    });
+    const handle = await completeGaslessWorkflow(
+      workflow,
+      depositClient.signer
+    );
+    const outcome = await handle.wait();
+    return outcome.transactionHash;
+  };
+}
+
+export function createOfficialDepositWalletWrapFactory({
+  polygonRpcUrl,
+}: {
+  polygonRpcUrl: string;
+}) {
+  return async (
+    signer: LocalAccount,
+    clobCreds: PolyClobApiKeyCreds,
+    input: {
+      readonly expectedFunderAddress: `0x${string}`;
+      readonly amount: bigint;
+    }
+  ): Promise<`0x${string}`> => {
+    const { depositClient } = await createOfficialDepositWalletClient({
+      signer,
+      clobCreds,
+      polygonRpcUrl,
+    });
+    if (
+      depositClient.account.wallet.toLowerCase() !==
+      input.expectedFunderAddress.toLowerCase()
+    ) {
+      throw new Error("Deposit Wallet address does not match persisted funder");
+    }
+
+    const workflow = await prepareGaslessTransaction(depositClient, {
+      calls: [
+        {
+          to: USDC_E_POLYGON,
+          data: encodeFunctionData({
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [COLLATERAL_ONRAMP_POLYGON, input.amount],
+          }),
+        },
+        {
+          to: COLLATERAL_ONRAMP_POLYGON,
+          data: encodeFunctionData({
+            abi: COLLATERAL_ONRAMP_WRAP_ABI,
+            functionName: "wrap",
+            args: [
+              USDC_E_POLYGON,
+              input.expectedFunderAddress,
+              input.amount,
+            ],
+          }),
+        },
+      ],
+      metadata: "Wrap Deposit Wallet USDC.e to pUSD",
+    });
+    const handle = await completeGaslessWorkflow(
+      workflow,
+      depositClient.signer
+    );
     const outcome = await handle.wait();
     return outcome.transactionHash;
   };
@@ -371,6 +526,11 @@ export function getPolyTraderWalletAdapter(
       polygonRpcUrl,
     }),
     transferDepositWalletToken: createOfficialDepositWalletTransferFactory({
+      polygonRpcUrl,
+    }),
+    transferDepositWalletNative:
+      createOfficialDepositWalletNativeTransferFactory({ polygonRpcUrl }),
+    wrapDepositWalletUsdcE: createOfficialDepositWalletWrapFactory({
       polygonRpcUrl,
     }),
     polygonRpcUrl,
