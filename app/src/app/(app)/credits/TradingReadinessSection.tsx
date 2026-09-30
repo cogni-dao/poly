@@ -3,34 +3,43 @@
 
 /**
  * Module: `@app/(app)/credits/TradingReadinessSection`
- * Purpose: One-click "Enable Trading" surface on the Money page. Mirrors
- *   Polymarket's own onboarding modal (Deploy ✓ / Sign ✓ / Approve ⬜) but
- *   collapses step 1 (Deploy) and step 2 (Sign) — our adapter already covers
- *   them on /connect — leaving only the 6-target Approve Tokens ceremony
- *   rendered as per-pill progress.
+ * Purpose: "Enable Trading" surface on the Money page — renders the 8-step
+ *   Polymarket approvals ceremony as visible per-step progress.
  * Scope: Client component. POSTs /api/v1/poly/wallet/enable-trading via
- *   React Query mutation; invalidates `poly-wallet-status` on success so
- *   the "✓ Trading enabled" badge replaces the button without a reload.
+ *   React Query mutation; invalidates `poly-wallet-status` on success.
  * Invariants:
  *   - IDEMPOTENT_CTA: POSTing is safe at any time — backend skips satisfied
  *     targets. No client-side lockout beyond React Query's inflight flag.
  *   - PARTIAL_FAILURE_VISIBLE: per-step `state` surfaces as colored pills
  *     even when the overall outcome is `ready: false` — user sees which
  *     approval failed and retries.
- *   - FUNDED_RECOLOR (task.0365): the same compact "Trading enabled" badge
- *     swaps green tokens for warning/yellow tokens when `isFunded=false`.
- *     Same pill, same shape, same one line — just a different color says
- *     "approvals on-chain, but you have $0 USDC.e so you can't trade yet".
+ *   - CEREMONY_VISIBLE_ON_CLICK (bug.5311): clicking Enable trading renders
+ *     the step list immediately in `pending`, before the response lands, so
+ *     the ceremony is never an opaque spinner. `CEREMONY_STEP_LABELS` mirrors
+ *     the adapter's pinned step order; it carries labels only, never
+ *     addresses (APPROVAL_TARGETS_PINNED stays server-side).
+ *   - RESULT_PERSISTS (bug.5311): a successful run keeps its returned
+ *     checkmarks on screen instead of collapsing straight to a one-line
+ *     badge. The compact badge is for steady state only — readiness that came
+ *     from `/status` with no fresh mutation in this session.
+ *   - NO_GAS_PREFLIGHT (bug.5310): canonical V2 approvals are relayer-paid
+ *     gasless from the Deposit Wallet, so there is NO client-side POL
+ *     balance gate. A pUSD-funded Deposit Wallet holding 0 POL must still be
+ *     able to click Enable trading.
+ *   - FUNDED_RECOLOR (task.0365): the compact badge swaps green for warning
+ *     tokens when `isFunded=false` — "approvals on-chain, but $0 to trade".
  * Side-effects: IO (POST enable-trading; React Query cache invalidation).
  * Links: nodes/poly/packages/node-contracts/src/poly.wallet.enable-trading.v1.contract.ts,
- *        work/items/task.0355.poly-trading-wallet-enable-trading.md,
- *        work/items/task.0365.poly-onboarding-ux-polish-v0-1.md
+ *        work/items/bug.5310, work/items/bug.5311
  * @public
  */
 
 "use client";
 
-import type { PolyWalletEnableTradingOutput } from "@cogni/poly-node-contracts";
+import type {
+  PolyWalletEnableTradingOutput,
+  PolyWalletEnableTradingStep,
+} from "@cogni/poly-node-contracts";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
 import type { ReactElement } from "react";
@@ -39,18 +48,61 @@ export interface TradingReadinessSectionProps {
   /** From `poly.wallet.status.v1` — drives the initial view. */
   readonly tradingReady: boolean;
   /**
-   * Whether the wallet has any USDC.e (`> 0`). When `tradingReady && !isFunded`
-   * the "Trading enabled" pill recolors to warning/yellow (FUNDED_RECOLOR,
-   * task.0365) — approvals alone are not enough to actually place an order.
+   * Whether the wallet holds any collateral (USDC.e + pUSD `> 0`). When
+   * `tradingReady && !isFunded` the badge recolors to warning (FUNDED_RECOLOR).
    */
   readonly isFunded: boolean;
-  /** Decimal POL on Polygon. `null` on unknown / RPC error. */
-  readonly polBalance: number | null;
-  /** Decimal USDC.e. `null` on unknown. Informational (not gated on). */
-  readonly usdcBalance: number | null;
 }
 
-const MIN_POL_FOR_ENABLE = 0.02;
+/**
+ * Display-only mirror of the adapter's pinned ceremony order, used to render
+ * `pending` rows the instant the user clicks — the server returns all 8 steps
+ * at once, so without this the ceremony would be invisible while in flight.
+ * Labels only: the pinned spender/operator addresses stay server-side.
+ */
+const CEREMONY_STEP_LABELS: readonly string[] = [
+  "USDC.e → Onramp",
+  "Move existing pUSD into Deposit Wallet",
+  "pUSD → Exchange (V2)",
+  "pUSD → Neg-Risk Exchange (V2)",
+  "pUSD → Neg-Risk Adapter",
+  "CTF → Exchange (V2)",
+  "CTF → Neg-Risk Exchange (V2)",
+  "CTF → Neg-Risk Adapter",
+];
+
+/** Client-side render state: the wire contract has no `pending`. */
+type DisplayStepState = PolyWalletEnableTradingStep["state"] | "pending";
+
+type DisplayStep = {
+  readonly key: string;
+  readonly label: string;
+  readonly state: DisplayStepState;
+  readonly txHash: string | null;
+  readonly error: string | null;
+};
+
+const PENDING_STEPS: readonly DisplayStep[] = CEREMONY_STEP_LABELS.map(
+  (label, i) => ({
+    key: `pending:${i}`,
+    label,
+    state: "pending" as const,
+    txHash: null,
+    error: null,
+  })
+);
+
+function toDisplaySteps(
+  steps: PolyWalletEnableTradingOutput["steps"]
+): readonly DisplayStep[] {
+  return steps.map((step, i) => ({
+    key: `${step.kind}:${step.operator}:${i}`,
+    label: step.label,
+    state: step.state,
+    txHash: step.tx_hash,
+    error: step.error,
+  }));
+}
 
 async function postEnableTrading(): Promise<PolyWalletEnableTradingOutput> {
   const res = await fetch("/api/v1/poly/wallet/enable-trading", {
@@ -72,28 +124,21 @@ export function TradingReadinessSection(
     mutationFn: postEnableTrading,
     onSuccess: (result) => {
       if (result.ready) {
-        // Bust status immediately so the "✓ Trading enabled" badge swaps in.
+        // Bust status so the rest of the page reflects readiness. The step
+        // rows stay on screen regardless (RESULT_PERSISTS).
         qc.invalidateQueries({ queryKey: ["poly-wallet-status"] });
       }
     },
   });
 
-  // The most recent mutation result wins the render — partial failures show
-  // their step pills until the user clicks again.
   const result = mutation.data;
-  const derivedReady = result?.ready ?? props.tradingReady;
   const inFlight = mutation.isPending;
-  const insufficientGas =
-    !derivedReady &&
-    props.polBalance !== null &&
-    props.polBalance < MIN_POL_FOR_ENABLE;
+  const derivedReady = result?.ready ?? props.tradingReady;
 
-  // Compact confirmation: either steady state (no mutation) OR the most recent
-  // mutation succeeded end-to-end (`result.ready === true`). Without the
-  // latter, a fresh successful "Enable trading" click would keep rendering the
-  // big authorize-box with step rows until the user hard-refreshed the page.
-  if (derivedReady && !inFlight && (!result || result.ready)) {
-    // FUNDED_RECOLOR: same shape, swap success → warning tokens when $0.
+  // RESULT_PERSISTS: collapse to the compact badge ONLY in steady state —
+  // readiness from `/status` with no mutation attempted in this session. Once
+  // the user has clicked, the returned checkmarks stay visible.
+  if (props.tradingReady && !result && !inFlight && !mutation.isError) {
     const tone = props.isFunded
       ? "border-success/30 bg-success/10 text-success"
       : "border-warning/40 bg-warning/10 text-warning";
@@ -112,23 +157,38 @@ export function TradingReadinessSection(
     );
   }
 
+  // CEREMONY_VISIBLE_ON_CLICK: pending rows during flight, real rows after.
+  const displaySteps: readonly DisplayStep[] | null = inFlight
+    ? PENDING_STEPS
+    : result
+      ? toDisplaySteps(result.steps)
+      : null;
+
+  const heading = inFlight
+    ? "Authorizing trading…"
+    : derivedReady
+      ? "Trading enabled"
+      : "Authorize trading";
+
+  const subheading = inFlight
+    ? "Signing approvals from your trading wallet. No gas needed — Polymarket's relayer pays."
+    : derivedReady
+      ? "Polymarket approvals are on-chain. We signed them from your trading wallet—no browser wallet."
+      : "8 approvals, server-signed from your trading wallet. No extension popup, no gas.";
+
   return (
     <div className="flex flex-col gap-3 rounded-md border border-primary/30 bg-primary/5 px-4 py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-1">
-          <span className="font-semibold text-sm">
-            {derivedReady ? "Trading enabled" : "Authorize trading"}
-          </span>
+          <span className="font-semibold text-sm">{heading}</span>
           <span className="text-muted-foreground text-xs leading-snug">
-            {derivedReady
-              ? "Polymarket approvals are on-chain. We signed them from your trading wallet—no browser wallet."
-              : "~6 approval txs from this wallet, server-signed. No extension popup."}
+            {subheading}
           </span>
         </div>
         <button
           type="button"
           onClick={() => mutation.mutate()}
-          disabled={inFlight || insufficientGas}
+          disabled={inFlight}
           className="inline-flex items-center gap-2 whitespace-nowrap rounded-md bg-primary px-4 py-2 font-medium text-primary-foreground text-sm shadow-sm hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {inFlight ? (
@@ -144,13 +204,7 @@ export function TradingReadinessSection(
         </button>
       </div>
 
-      {insufficientGas ? (
-        <div className="rounded-md bg-warning/15 px-3 py-2 text-warning text-xs">
-          At least {MIN_POL_FOR_ENABLE} POL for gas (enable sends several txs).
-        </div>
-      ) : null}
-
-      {result ? <StepRows steps={result.steps} /> : null}
+      {displaySteps ? <StepRows steps={displaySteps} /> : null}
 
       {mutation.isError ? (
         <div className="rounded-md bg-destructive/10 px-3 py-2 text-destructive text-xs">
@@ -164,25 +218,22 @@ export function TradingReadinessSection(
 function StepRows({
   steps,
 }: {
-  steps: PolyWalletEnableTradingOutput["steps"];
+  steps: readonly DisplayStep[];
 }): ReactElement {
   return (
     <ul className="flex flex-col gap-1.5">
       {steps.map((step) => (
-        <li
-          key={`${step.kind}:${step.operator}`}
-          className="flex items-center gap-2 text-xs"
-        >
+        <li key={step.key} className="flex items-center gap-2 text-xs">
           <StateIcon state={step.state} />
           <span className="flex-1 truncate">{step.label}</span>
-          {step.tx_hash ? (
+          {step.txHash ? (
             <a
-              href={`https://polygonscan.com/tx/${step.tx_hash}`}
+              href={`https://polygonscan.com/tx/${step.txHash}`}
               target="_blank"
               rel="noreferrer noopener"
               className="truncate font-mono text-muted-foreground text-xs underline-offset-2 hover:underline"
             >
-              {step.tx_hash.slice(0, 10)}…
+              {step.txHash.slice(0, 10)}…
             </a>
           ) : null}
           {step.error ? (
@@ -196,16 +247,15 @@ function StepRows({
   );
 }
 
-function StateIcon({
-  state,
-}: {
-  state: PolyWalletEnableTradingOutput["steps"][number]["state"];
-}): ReactElement {
+function StateIcon({ state }: { state: DisplayStepState }): ReactElement {
   if (state === "satisfied" || state === "set") {
     return <CheckCircle2 size={14} className="text-success" />;
   }
   if (state === "failed") {
     return <XCircle size={14} className="text-destructive" />;
+  }
+  if (state === "pending") {
+    return <Loader2 size={14} className="animate-spin text-primary" />;
   }
   // "skipped" — pre-flight gate not met, rendered as dim circle.
   return <Circle size={14} className="text-muted-foreground" />;

@@ -179,6 +179,8 @@ export const EVENT_NAMES = {
 	POLY_WALLET_EXECUTION_COMPLETE: "feature.poly_wallet_execution.complete",
 	POLY_WALLET_ROTATE_CLOB_CREDS_COMPLETE:
 		"poly.wallet.rotate_clob_creds.complete",
+	POLY_WALLET_RESET_CONNECTION_COMPLETE:
+		"poly.wallet.reset_connection.complete",
 	ADAPTER_ORDER_LEDGER_SNAPSHOT_ERROR: "adapter.order_ledger.snapshot_error",
 
 	// Poly reconciler not-found branch (task.0328 CP2)
