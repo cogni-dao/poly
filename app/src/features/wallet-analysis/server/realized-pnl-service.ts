@@ -4,16 +4,22 @@
 /**
  * Module: `@features/wallet-analysis/server/realized-pnl-service`
  * Purpose: Canonical per-`(conditionId, tokenId)` realized P/L for one
- *   wallet, fed by `poly_trader_fills` + `poly_market_outcomes` +
- *   `poly_trader_current_positions`. Single source of truth for the
- *   dashboard's positions list, markets aggregator, and any future
- *   historical-analysis surface.
+ *   wallet, fed by `poly_trader_fill_rollups_daily` (+ the unrolled fill
+ *   tail) + `poly_market_outcomes` + `poly_trader_current_positions`.
+ *   Single source of truth for the dashboard's positions list, markets
+ *   aggregator, and any future historical-analysis surface.
  * Scope: Read-only DB aggregation + math composition. No upstream API
  *   calls; no writers. Math itself lives in `market-return-math`.
  * Invariants:
- *   - SINGLE_BOUNDED_QUERY: one SQL aggregation per call, GROUP BY
- *     `(condition_id, token_id)`. Never hydrates raw fills row-by-row
- *     into V8 (data-research skill — bug.5012 class avoidance).
+ *   - SINGLE_BOUNDED_QUERY: one SQL aggregation per call (plus a 1-row
+ *     wallet-id resolution), GROUP BY `(condition_id, token_id)`. Never
+ *     hydrates raw fills row-by-row into V8 (data-research skill —
+ *     bug.5012 class avoidance).
+ *   - ROLLUP_BACKED_FULL_HISTORY: the fills aggregation reads rollup
+ *     day-rows + the not-yet-rolled tail (`windowedFillFlowsSelect`,
+ *     EPOCH window) instead of scanning lifetime fills; exactly
+ *     output-equivalent in every rollup state (READERS_ADD_THE_TAIL,
+ *     proven by the fill-rollup-read-parity component suite).
  *   - OUTCOME_AUTHORITATIVE: when `poly_market_outcomes` classifies the
  *     token as winner/loser, `computeRealizedPnl` derives realized P/L
  *     from outcome alone — `currentMarkValue` is only consulted for
@@ -35,6 +41,7 @@ import type { WalletExecutionPosition } from "@cogni/poly-node-contracts";
 import { type SQL, sql } from "drizzle-orm";
 
 import { liveCurrentPositionSql } from "./current-position-staleness";
+import { EPOCH_ISO, windowedFillFlowsSelect } from "./fill-rollup-service";
 import { computeRealizedPnl, type MarketOutcome } from "./market-return-math";
 
 type Db = {
@@ -76,24 +83,29 @@ export async function readWalletTokenPnlMap(params: {
   db: Db;
   walletAddress: string;
 }): Promise<Map<string, WalletTokenPnl>> {
+  // Rollup-backed since the dashboard floor audit (wave C): the fills_agg
+  // CTE previously re-aggregated the wallet's ENTIRE fill history per
+  // request. It now sums `poly_trader_fill_rollups_daily` day-rows plus the
+  // not-yet-rolled fill tail via `windowedFillFlowsSelect(EPOCH)` —
+  // READERS_ADD_THE_TAIL keeps the output exactly equal to the legacy
+  // full-history scan in every rollup state (parity: fill-rollup-read-parity
+  // component suite vs the preserved live-scan oracle).
+  const walletId = await resolveTraderWalletId(params.db, params.walletAddress);
+  if (walletId === null) return new Map();
+  const flows = windowedFillFlowsSelect({
+    walletIds: [walletId],
+    windowStartIso: EPOCH_ISO,
+  });
   const rows = normalizeRows<Row>(
     await params.db.execute(sql`
       WITH fills_agg AS (
         SELECT
-          f.condition_id,
-          f.token_id,
-          COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'BUY'), 0)::numeric
-            AS total_buy_notional,
-          COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'SELL'), 0)::numeric
-            AS realized_cash,
-          (
-            COALESCE(SUM(f.shares) FILTER (WHERE f.side = 'BUY'), 0)
-            - COALESCE(SUM(f.shares) FILTER (WHERE f.side = 'SELL'), 0)
-          )::numeric AS net_shares
-        FROM poly_trader_fills f
-        JOIN poly_trader_wallets w ON w.id = f.trader_wallet_id
-        WHERE w.wallet_address = lower(${params.walletAddress})
-        GROUP BY f.condition_id, f.token_id
+          fl.condition_id,
+          fl.token_id,
+          fl.buy_usdc::numeric AS total_buy_notional,
+          fl.sell_usdc::numeric AS realized_cash,
+          (fl.buy_shares - fl.sell_shares)::numeric AS net_shares
+        FROM (${flows}) fl
       ),
       current_mark AS (
         SELECT
@@ -162,6 +174,28 @@ export async function readWalletTokenPnlMap(params: {
 
 export function tokenPnlKey(conditionId: string, tokenId: string): string {
   return `${conditionId.toLowerCase()}:${tokenId}`;
+}
+
+/**
+ * Wallet-address → `poly_trader_wallets.id` resolution used by the rollup
+ * readers (`windowedFillFlowsSelect` keys on trader_wallet_id). Addresses in
+ * `poly_trader_wallets` are stored lowercase; callers may pass any casing.
+ * Returns null when the wallet has never been observed — legacy behavior was
+ * an empty aggregation, so callers return an empty map.
+ */
+async function resolveTraderWalletId(
+  db: Db,
+  walletAddress: string
+): Promise<string | null> {
+  const rows = normalizeRows<{ id: string | null }>(
+    await db.execute(sql`
+      SELECT w.id
+      FROM poly_trader_wallets w
+      WHERE w.wallet_address = lower(${walletAddress})
+      LIMIT 1
+    `)
+  );
+  return rows[0]?.id ?? null;
 }
 
 /**

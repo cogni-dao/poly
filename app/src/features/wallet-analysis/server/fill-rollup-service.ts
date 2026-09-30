@@ -435,12 +435,27 @@ export function windowedFillCountsSelect(params: {
 export function windowedFillFlowsSelect(params: {
   walletIds: ReadonlyArray<string | null>;
   windowStartIso: string;
+  /**
+   * Optional condition scope. When set (non-empty), every part of the
+   * three-way split (rolled days, boundary fragment, unrolled tail) is
+   * filtered to `condition_id IN (...)` so the union stays exactly
+   * output-equivalent to filtering the legacy full fills scan. `undefined`
+   * or `[]` means no condition filter (existing callers unchanged).
+   */
+  conditionIds?: ReadonlyArray<string>;
 }): SQL {
   const bounds = rollupWindowBounds(params.windowStartIso);
   const ids = sql.join(
     params.walletIds.map((id) => sql`${id}::uuid`),
     sql`, `
   );
+  const conditionFilter = (column: SQL): SQL =>
+    params.conditionIds !== undefined && params.conditionIds.length > 0
+      ? sql` AND ${column} IN (${sql.join(
+          params.conditionIds.map((c) => sql`${c}`),
+          sql`, `
+        )})`
+      : sql``;
   return sql`
     SELECT
       parts.trader_wallet_id,
@@ -464,7 +479,7 @@ export function windowedFillFlowsSelect(params: {
         r.first_buy_observed_at, r.first_observed_at, r.last_observed_at
       FROM poly_trader_fill_rollups_daily r
       WHERE r.trader_wallet_id IN (${ids})
-        AND r.day >= ${bounds.rollupFromDay}::date
+        AND r.day >= ${bounds.rollupFromDay}::date${conditionFilter(sql`r.condition_id`)}
       UNION ALL
       SELECT
         f.trader_wallet_id, f.condition_id, f.token_id,
@@ -481,7 +496,7 @@ export function windowedFillFlowsSelect(params: {
       FROM poly_trader_fills f
       WHERE f.trader_wallet_id IN (${ids})
         AND f.observed_at >= ${params.windowStartIso}::timestamptz
-        AND f.observed_at < ${bounds.rollupFromIso}::timestamptz
+        AND f.observed_at < ${bounds.rollupFromIso}::timestamptz${conditionFilter(sql`f.condition_id`)}
       UNION ALL
       SELECT
         f.trader_wallet_id, f.condition_id, f.token_id,
@@ -503,7 +518,7 @@ export function windowedFillFlowsSelect(params: {
         AND (f.created_at, f.id) > (
           COALESCE(c.last_created_at, 'epoch'::timestamptz),
           COALESCE(c.last_fill_id, ${ROLLUP_ZERO_UUID}::uuid)
-        )
+        )${conditionFilter(sql`f.condition_id`)}
     ) parts
     GROUP BY parts.trader_wallet_id, parts.condition_id, parts.token_id
   `;

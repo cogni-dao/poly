@@ -92,7 +92,8 @@
  *     `edgeGapUsdc` puts the worst leak on top.
  * Side-effects: DB read across `poly_copy_trade_targets`,
  *   `poly_trader_wallets`, `poly_trader_position_snapshots`,
- *   `poly_trader_fills`. No upstream Polymarket calls.
+ *   `poly_trader_fill_rollups_daily` (+ the unrolled `poly_trader_fills`
+ *   tail). No upstream Polymarket calls.
  * Links: docs/spec/poly-copy-trade-execution.md
  * @internal
  */
@@ -106,6 +107,7 @@ import type {
 } from "@cogni/poly-node-contracts";
 import { type SQL, sql } from "drizzle-orm";
 
+import { EPOCH_ISO, windowedFillFlowsSelect } from "./fill-rollup-service";
 import {
   blendTargetReturns,
   computeRealizedPnl,
@@ -161,7 +163,8 @@ type RawLeg = {
   redemptionProceedsUsdc: number;
 };
 
-type FillRollup = {
+/** @internal — exported for the rollup parity tests only. */
+export type FillRollup = {
   totalBuyNotional: number;
   realizedCash: number;
   netShares: number;
@@ -879,7 +882,8 @@ function sumValue(legs: readonly RawLeg[]): number {
   return legs.reduce((sum, leg) => sum + leg.currentValueUsdc, 0);
 }
 
-function rollupKey(
+/** @internal — exported for the rollup parity tests only. */
+export function rollupKey(
   walletAddress: string,
   conditionId: string,
   tokenId: string
@@ -889,11 +893,20 @@ function rollupKey(
 
 /**
  * Aggregate `(totalBuyNotional, realizedCash, netShares, marketOutcome)`
- * per `(wallet, condition, token)` from `poly_trader_fills`, joined to
- * `poly_trader_wallets` so callers can supply wallet addresses (lowercased)
+ * per `(wallet, condition, token)`, joined to `poly_trader_wallets` so
+ * callers can supply wallet addresses (any casing; stored lowercase)
  * without needing trader-wallet UUIDs, and LEFT-JOINed to
  * `poly_market_outcomes` so each rollup carries its winner/loser/unknown
  * classification.
+ *
+ * Rollup-backed since the dashboard floor audit (wave C): previously a
+ * condition-scoped GROUP BY over raw `poly_trader_fills` for our wallet ∪
+ * every target wallet — unbounded in lifetime fills per condition. Now sums
+ * `poly_trader_fill_rollups_daily` day-rows + the not-yet-rolled fill tail
+ * via `windowedFillFlowsSelect(EPOCH, conditionIds)`; READERS_ADD_THE_TAIL
+ * keeps the output exactly equal to the legacy scan in every rollup state
+ * (parity: fill-rollup-read-parity component suite vs the preserved
+ * live-scan oracle).
  *
  * Per-token (not per-condition) is required because CTF redemption pays
  * the winning token at $1/share while the losing token pays $0;
@@ -901,8 +914,10 @@ function rollupKey(
  *
  * Bounded SQL aggregation per data-research skill — V8 hydrates one row
  * per (wallet, condition, token), never raw fills.
+ *
+ * @internal — exported for the rollup parity tests only.
  */
-async function readFillRollups(params: {
+export async function readFillRollups(params: {
   db: Db;
   conditions: readonly string[];
   walletAddresses: readonly string[];
@@ -910,36 +925,40 @@ async function readFillRollups(params: {
   if (params.conditions.length === 0 || params.walletAddresses.length === 0) {
     return new Map();
   }
-  const conditionList = sql.join(
-    params.conditions.map((c) => sql`${c}`),
-    sql`, `
-  );
   const walletList = sql.join(
-    params.walletAddresses.map((w) => sql`${w.toLowerCase()}`),
+    [...new Set(params.walletAddresses.map((w) => w.toLowerCase()))].map(
+      (w) => sql`${w}`
+    ),
     sql`, `
   );
+  const walletRows = (await params.db.execute(sql`
+    SELECT w.id
+    FROM poly_trader_wallets w
+    WHERE w.wallet_address IN (${walletList})
+  `)) as unknown as ReadonlyArray<{ id: string | null }>;
+  const walletIds = walletRows
+    .map((row) => row.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  if (walletIds.length === 0) return new Map();
+  const flows = windowedFillFlowsSelect({
+    walletIds,
+    windowStartIso: EPOCH_ISO,
+    conditionIds: params.conditions,
+  });
   const rows = (await params.db.execute(sql`
     SELECT
       lower(w.wallet_address) AS wallet_address,
-      f.condition_id,
-      f.token_id,
-      COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'BUY'), 0)::numeric
-        AS total_buy_notional,
-      COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'SELL'), 0)::numeric
-        AS realized_cash,
-      (
-        COALESCE(SUM(f.shares) FILTER (WHERE f.side = 'BUY'), 0)
-        - COALESCE(SUM(f.shares) FILTER (WHERE f.side = 'SELL'), 0)
-      )::numeric AS net_shares,
+      fl.condition_id,
+      fl.token_id,
+      fl.buy_usdc::numeric AS total_buy_notional,
+      fl.sell_usdc::numeric AS realized_cash,
+      (fl.buy_shares - fl.sell_shares)::numeric AS net_shares,
       pmo.outcome AS market_outcome
-    FROM poly_trader_fills f
-    JOIN poly_trader_wallets w ON w.id = f.trader_wallet_id
+    FROM (${flows}) fl
+    JOIN poly_trader_wallets w ON w.id = fl.trader_wallet_id
     LEFT JOIN poly_market_outcomes pmo
-      ON pmo.condition_id = f.condition_id
-     AND pmo.token_id = f.token_id
-    WHERE f.condition_id IN (${conditionList})
-      AND w.wallet_address IN (${walletList})
-    GROUP BY lower(w.wallet_address), f.condition_id, f.token_id, pmo.outcome
+      ON pmo.condition_id = fl.condition_id
+     AND pmo.token_id = fl.token_id
   `)) as unknown as ReadonlyArray<{
     wallet_address: string | null;
     condition_id: string | null;

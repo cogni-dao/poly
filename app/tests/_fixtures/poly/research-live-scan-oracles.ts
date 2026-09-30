@@ -4,13 +4,18 @@
 /**
  * Module: `@tests/_fixtures/poly/research-live-scan-oracles`
  * Purpose: Test-only parity oracles for the rollup migration
- *   (task.research-rollup-read-models). These are VERBATIM copies of the
- *   pre-rollup full-fills-scan SQL readers that the four research services
- *   used through commit 51f1cb8: snapshot position aggregates
- *   (`wallet-analysis-service.readPositionAggregatesFromDb`), benchmark
- *   summary + market rows (`copy-target-benchmark-service`), target-overlap
- *   rows (`target-overlap-service.readOverlapRows`), and the
- *   trader-comparison trade summary (`trader-comparison-service.readTradeSummary`).
+ *   (task.research-rollup-read-models + dashboard floor audit wave C).
+ *   These are VERBATIM copies of the pre-rollup full-fills-scan SQL readers:
+ *   the four research services through commit 51f1cb8 — snapshot position
+ *   aggregates (`wallet-analysis-service.readPositionAggregatesFromDb`),
+ *   benchmark summary + market rows (`copy-target-benchmark-service`),
+ *   target-overlap rows (`target-overlap-service.readOverlapRows`), the
+ *   trader-comparison trade summary
+ *   (`trader-comparison-service.readTradeSummary`) — plus the two dashboard
+ *   live-scans ported in wave C: the wallet token-P/L fills aggregation
+ *   (`realized-pnl-service.readWalletTokenPnlMap`) and the market-exposure
+ *   per-(wallet, condition, token) fill rollup
+ *   (`market-exposure-service.readFillRollups`).
  * Scope: Oracle SQL only. No caching, no composition — the parity tests run
  *   these against the same seeded testcontainers Postgres as the rollup-backed
  *   readers and require exact equality.
@@ -265,6 +270,130 @@ export async function readOverlapRowsOracle(
 }
 
 export type TradeSummaryOracleRow = Record<string, unknown>;
+
+export type WalletTokenPnlOracleRow = {
+  condition_id: string | null;
+  token_id: string | null;
+  total_buy_notional: string | number | null;
+  realized_cash: string | number | null;
+  net_shares: string | number | null;
+  current_value_usdc: string | number | null;
+  market_outcome: string | null;
+};
+
+/**
+ * Legacy `realized-pnl-service.readWalletTokenPnlMap` SQL — full-history
+ * SUM/FILTER over every fill the wallet ever had, GROUP BY
+ * `(condition_id, token_id)`, with the current-mark CTE + outcomes join.
+ * Preserved verbatim from the pre-wave-C reader.
+ */
+export async function readWalletTokenPnlOracle(
+  db: Db,
+  walletAddress: string
+): Promise<WalletTokenPnlOracleRow[]> {
+  const rows = await db.execute(sql`
+    WITH fills_agg AS (
+      SELECT
+        f.condition_id,
+        f.token_id,
+        COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'BUY'), 0)::numeric
+          AS total_buy_notional,
+        COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'SELL'), 0)::numeric
+          AS realized_cash,
+        (
+          COALESCE(SUM(f.shares) FILTER (WHERE f.side = 'BUY'), 0)
+          - COALESCE(SUM(f.shares) FILTER (WHERE f.side = 'SELL'), 0)
+        )::numeric AS net_shares
+      FROM poly_trader_fills f
+      JOIN poly_trader_wallets w ON w.id = f.trader_wallet_id
+      WHERE w.wallet_address = lower(${walletAddress})
+      GROUP BY f.condition_id, f.token_id
+    ),
+    current_mark AS (
+      SELECT
+        p.condition_id,
+        p.token_id,
+        COALESCE(SUM(p.current_value_usdc::numeric), 0) AS current_value_usdc
+      FROM poly_trader_current_positions p
+      JOIN poly_trader_wallets w ON w.id = p.trader_wallet_id
+      WHERE w.wallet_address = lower(${walletAddress})
+        AND ${liveCurrentPositionSql("p")}
+      GROUP BY p.condition_id, p.token_id
+    )
+    SELECT
+      fa.condition_id,
+      fa.token_id,
+      fa.total_buy_notional,
+      fa.realized_cash,
+      fa.net_shares,
+      COALESCE(cm.current_value_usdc, 0) AS current_value_usdc,
+      pmo.outcome AS market_outcome
+    FROM fills_agg fa
+    LEFT JOIN current_mark cm
+      ON cm.condition_id = fa.condition_id
+     AND cm.token_id = fa.token_id
+    LEFT JOIN poly_market_outcomes pmo
+      ON pmo.condition_id = fa.condition_id
+     AND pmo.token_id = fa.token_id
+  `);
+  return listFromExecute(rows) as unknown as WalletTokenPnlOracleRow[];
+}
+
+export type MarketFillRollupOracleRow = {
+  wallet_address: string | null;
+  condition_id: string | null;
+  token_id: string | null;
+  total_buy_notional: string | number | null;
+  realized_cash: string | number | null;
+  net_shares: string | number | null;
+  market_outcome: string | null;
+};
+
+/**
+ * Legacy `market-exposure-service.readFillRollups` SQL — our wallet ∪ target
+ * wallets aggregated per `(wallet, condition, token)` over raw
+ * `poly_trader_fills` with a `condition_id IN (...)` filter. Preserved
+ * verbatim from the pre-wave-C reader (caller lowercased the addresses).
+ */
+export async function readMarketFillRollupsOracle(
+  db: Db,
+  conditions: readonly string[],
+  walletAddresses: readonly string[]
+): Promise<MarketFillRollupOracleRow[]> {
+  if (conditions.length === 0 || walletAddresses.length === 0) return [];
+  const conditionList = sql.join(
+    conditions.map((c) => sql`${c}`),
+    sql`, `
+  );
+  const walletList = sql.join(
+    walletAddresses.map((w) => sql`${w.toLowerCase()}`),
+    sql`, `
+  );
+  const rows = await db.execute(sql`
+    SELECT
+      lower(w.wallet_address) AS wallet_address,
+      f.condition_id,
+      f.token_id,
+      COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'BUY'), 0)::numeric
+        AS total_buy_notional,
+      COALESCE(SUM(f.size_usdc) FILTER (WHERE f.side = 'SELL'), 0)::numeric
+        AS realized_cash,
+      (
+        COALESCE(SUM(f.shares) FILTER (WHERE f.side = 'BUY'), 0)
+        - COALESCE(SUM(f.shares) FILTER (WHERE f.side = 'SELL'), 0)
+      )::numeric AS net_shares,
+      pmo.outcome AS market_outcome
+    FROM poly_trader_fills f
+    JOIN poly_trader_wallets w ON w.id = f.trader_wallet_id
+    LEFT JOIN poly_market_outcomes pmo
+      ON pmo.condition_id = f.condition_id
+     AND pmo.token_id = f.token_id
+    WHERE f.condition_id IN (${conditionList})
+      AND w.wallet_address IN (${walletList})
+    GROUP BY lower(w.wallet_address), f.condition_id, f.token_id, pmo.outcome
+  `);
+  return listFromExecute(rows) as unknown as MarketFillRollupOracleRow[];
+}
 
 /** Legacy trader-comparison summary — windowed LEFT JOIN aggregate over fills. */
 export async function readTradeSummaryOracle(

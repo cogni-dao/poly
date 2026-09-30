@@ -4,8 +4,11 @@
 /**
  * Module: `@tests/component/db/fill-rollup-read-parity`
  * Purpose: Parity oracle suite for the rollup-backed research readers
- *   (task.research-rollup-read-models). Each rollup-backed reader must be
- *   exactly output-equivalent to the preserved legacy full-scan SQL
+ *   (task.research-rollup-read-models) plus the two dashboard live-scans
+ *   ported in the dashboard floor audit wave C
+ *   (`realized-pnl-service.readWalletTokenPnlMap`,
+ *   `market-exposure-service.readFillRollups`). Each rollup-backed reader
+ *   must be exactly output-equivalent to the preserved legacy full-scan SQL
  *   (`@tests/_fixtures/poly/research-live-scan-oracles`) — and to the legacy
  *   JS trade-size/P-L reducer — in EVERY rollup state:
  *     cold    (no rollups: everything served from the fill tail),
@@ -34,9 +37,11 @@ import {
 import {
   readBenchmarkMarketRowsOracle,
   readBenchmarkSummaryOracle,
+  readMarketFillRollupsOracle,
   readOverlapRowsOracle,
   readPositionAggregatesOracle,
   readTradeSummaryOracle,
+  readWalletTokenPnlOracle,
 } from "@tests/_fixtures/poly/research-live-scan-oracles";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { inArray } from "drizzle-orm";
@@ -55,6 +60,17 @@ import {
   accumulateFillRollups,
   EPOCH_ISO,
 } from "@/features/wallet-analysis/server/fill-rollup-service";
+import {
+  type FillRollup,
+  readFillRollups,
+  rollupKey,
+} from "@/features/wallet-analysis/server/market-exposure-service";
+import { computeRealizedPnl } from "@/features/wallet-analysis/server/market-return-math";
+import {
+  readWalletTokenPnlMap,
+  tokenPnlKey,
+  type WalletTokenPnl,
+} from "@/features/wallet-analysis/server/realized-pnl-service";
 import { readOverlapRows } from "@/features/wallet-analysis/server/target-overlap-service";
 import {
   readTradeSizePnl,
@@ -265,6 +281,94 @@ async function assertParity(allFills: readonly FillSeed[]): Promise<void> {
       expect(actualPnl).toEqual(expectedPnl);
     }
   }
+
+  // 5. wave C: realized-pnl token map (full history) vs preserved live-scan.
+  // Mixed-case input exercises the lower() address resolution both paths use.
+  for (const address of [TARGET_ADDRESS, COGNI_ADDRESS.toUpperCase()]) {
+    const actual = await readWalletTokenPnlMap({ db, walletAddress: address });
+    const expected = new Map<string, WalletTokenPnl>();
+    for (const row of await readWalletTokenPnlOracle(db, address)) {
+      if (row.condition_id === null || row.token_id === null) continue;
+      const totalBuyNotional = toNum(row.total_buy_notional) ?? 0;
+      if (totalBuyNotional <= 0) continue;
+      const realizedCash = toNum(row.realized_cash) ?? 0;
+      const netShares = toNum(row.net_shares) ?? 0;
+      const currentMarkUsdc = toNum(row.current_value_usdc) ?? 0;
+      const marketOutcome =
+        row.market_outcome === "winner" ||
+        row.market_outcome === "loser" ||
+        row.market_outcome === "unknown"
+          ? row.market_outcome
+          : null;
+      const { pnlUsd, pnlPct, redemptionProceeds } = computeRealizedPnl({
+        totalBuyNotional,
+        realizedCash,
+        currentMarkValue: currentMarkUsdc,
+        netShares,
+        marketOutcome,
+      });
+      expected.set(tokenPnlKey(row.condition_id, row.token_id), {
+        conditionId: row.condition_id,
+        tokenId: row.token_id,
+        totalBuyNotionalUsdc: totalBuyNotional,
+        realizedCashUsdc: realizedCash,
+        netShares,
+        currentMarkUsdc,
+        marketOutcome,
+        redemptionProceedsUsdc: redemptionProceeds,
+        pnlUsd,
+        pnlPct,
+      });
+    }
+    expect(actual).toEqual(expected);
+  }
+
+  // 6. wave C: market-exposure per-(wallet, condition, token) fill rollups vs
+  // preserved live-scan. Condition subset exercises the additive
+  // `conditionIds` filter (cp3 excluded); the unknown address + duplicate
+  // mixed-case address exercise resolution dedupe (legacy: no rows either).
+  const rollupConditions = ["cp1", "cp2", "cp4"] as const;
+  const rollupWallets = [
+    TARGET_ADDRESS,
+    COGNI_ADDRESS.toUpperCase(),
+    COGNI_ADDRESS,
+    "0xfe99fe99fe99fe99fe99fe99fe99fe99fe99fe99",
+  ] as const;
+  const actualRollups = await readFillRollups({
+    db,
+    conditions: rollupConditions,
+    walletAddresses: rollupWallets,
+  });
+  const expectedRollups = new Map<string, FillRollup>();
+  for (const row of await readMarketFillRollupsOracle(
+    db,
+    rollupConditions,
+    rollupWallets
+  )) {
+    if (
+      row.wallet_address === null ||
+      row.condition_id === null ||
+      row.token_id === null
+    ) {
+      continue;
+    }
+    expectedRollups.set(
+      rollupKey(row.wallet_address, row.condition_id, row.token_id),
+      {
+        totalBuyNotional: toNum(row.total_buy_notional) ?? 0,
+        realizedCash: toNum(row.realized_cash) ?? 0,
+        netShares: toNum(row.net_shares) ?? 0,
+        marketOutcome:
+          row.market_outcome === "winner" ||
+          row.market_outcome === "loser" ||
+          row.market_outcome === "unknown"
+            ? row.market_outcome
+            : null,
+      }
+    );
+  }
+  expect(expectedRollups.size).toBeGreaterThan(0);
+  expect(actualRollups).toEqual(expectedRollups);
 }
 
 describe("fill-rollup read parity (task.research-rollup-read-models)", () => {
