@@ -110,6 +110,10 @@ deployment:
       secret_refs:
         - key: PAPER_ENFORCE_MODE
         - key: POLYGON_RPC_URL
+        # Dedicated bearer token for the narrow, audited internal wallet-fund
+        # recovery route. Declaring the catalog shape alone does not project a
+        # value into the Akash workload; this service ref is load-bearing.
+        - key: POLY_WALLET_RECOVERY_OPS_TOKEN
         - key: PRIVY_USER_WALLETS_APP_ID
         - key: PRIVY_USER_WALLETS_APP_SECRET
         - key: PRIVY_USER_WALLETS_SIGNING_KEY
