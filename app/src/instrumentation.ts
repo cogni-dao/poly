@@ -13,12 +13,16 @@
  *   - P0 has NO OTel exporter (IDs + Langfuse only; no Tempo/Grafana traces yet)
  * Side-effects: IO (OTel SDK global state initialization)
  * Notes: Next.js calls register() once per Node.js process on startup.
- * Links: AI_SETUP_SPEC.md, bootstrap/otel.ts for span helpers
+ * Links: AI_SETUP_SPEC.md, bootstrap/otel.ts for span helpers, src/lib/egress-geoblock.ts (story.5050)
  * @public
  */
 
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import pino from "pino";
+import {
+  resolveEgressAssertionConfig,
+  runEgressGeoblockAssertion,
+} from "@/lib/egress-geoblock";
 import {
   resolveBootSyncConfig,
   runGovernanceBootSync,
@@ -131,25 +135,26 @@ export async function register(): Promise<void> {
   await initOtelSdk();
   logAppStarted();
 
-  // IN_WORKLOAD_EGRESS_IS_THE_ONLY_PROOF (story.5050, bug.5270): a provider's
-  // advertised region and its Console ipCountryCode describe INGRESS; they do
-  // not prove the workload's outbound identity. Polymarket geoblocks EGRESS,
-  // so the only admissible evidence that this lease can trade is Polymarket's
-  // own verdict observed from inside it. Logged at boot, with no auth, so the
-  // answer is readable from Loki alone — an operator deciding a provider move
-  // should never need a node secret to see it.
-  // Fire-and-forget + fail-soft, matching the boot-sync probe below.
   // biome-ignore lint/style/noProcessEnv: startup check before the config framework
-  if (process.env.APP_ENV !== "test") {
-    void logEgressGeoblockVerdict();
+  const bootEnv = process.env;
+
+  // IN_WORKLOAD_EGRESS_IS_THE_ONLY_PROOF (story.5050): a provider's advertised
+  // region and `required_placement_countries` describe INGRESS; they do not prove
+  // the outbound identity this workload presents to Polymarket, which geoblocks by
+  // EGRESS IP. So we ask Polymarket, from inside the lease, and latch `/readyz`
+  // dead when it says blocked — the operator's boot SLO then refuses this lease and
+  // re-mints elsewhere. Boot-window-bounded, N-consecutive, unreachable-is-not-blocked;
+  // see src/lib/egress-geoblock.ts. Fire-and-forget + fail-soft. Skipped in test.
+  if (bootEnv.APP_ENV !== "test") {
+    void runEgressGeoblockAssertion(resolveEgressAssertionConfig(bootEnv)).catch(
+      () => {}
+    );
   }
 
   // Self-register governance + ledger(epoch) Temporal schedules at boot, so a node (incl. a
   // forked node-template) goes live without an operator/deploy-pipeline step. Replaces the
   // removed `scripts/ci/deploy.sh` Step 10.1. Fire-and-forget + fail-soft; the helper retries
   // while the HTTP server binds. Skipped in test.
-  // biome-ignore lint/style/noProcessEnv: startup check before the config framework
-  const bootEnv = process.env;
   if (bootEnv.APP_ENV !== "test") {
     void runGovernanceBootSync(resolveBootSyncConfig(bootEnv)).catch(() => {});
   }
@@ -215,55 +220,3 @@ export function getOtelSdk(): NodeSDK | null {
  * is never recorded as "not blocked", because that is the reading that would
  * falsely green-light a live order.
  */
-async function logEgressGeoblockVerdict(): Promise<void> {
-  const bootLogger = pino({
-    base: {
-      app: "cogni-template",
-      // biome-ignore lint/style/noProcessEnv: startup log before config framework
-      service: process.env.SERVICE_NAME ?? "app",
-    },
-    messageKey: "msg",
-    timestamp: pino.stdTimeFunctions.isoTime,
-  });
-  let blocked: boolean | null = null;
-  let ip: string | null = null;
-  let country: string | null = null;
-  let region: string | null = null;
-  let errorClass: string | null = null;
-  try {
-    const res = await fetch("https://polymarket.com/api/geoblock", {
-      cache: "no-store",
-      signal: AbortSignal.timeout(8_000),
-    });
-    if (!res.ok) {
-      errorClass = `oracle_http_${res.status}`;
-    } else {
-      const body = (await res.json()) as Record<string, unknown>;
-      blocked = typeof body.blocked === "boolean" ? body.blocked : null;
-      if (blocked === null) errorClass = "oracle_shape_unexpected";
-      ip = typeof body.ip === "string" ? body.ip : null;
-      country = typeof body.country === "string" ? body.country : null;
-      region = typeof body.region === "string" ? body.region : null;
-    }
-  } catch (error) {
-    errorClass =
-      error instanceof Error && error.name === "TimeoutError"
-        ? "oracle_timeout"
-        : "oracle_unreachable";
-  }
-  bootLogger.info(
-    {
-      event: "poly.egress.geoblock",
-      blocked,
-      egress_ip: ip,
-      egress_country: country,
-      egress_region: region,
-      ...(errorClass ? { error_class: errorClass } : {}),
-    },
-    blocked === false
-      ? "egress permitted by Polymarket"
-      : blocked === true
-        ? "egress BLOCKED by Polymarket — this lease cannot open orders"
-        : "egress geoblock probe inconclusive"
-  );
-}
