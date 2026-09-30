@@ -22,14 +22,22 @@
  *     and trade cadence only.
  *   - BOUNDED_HISTORY_PAYLOAD: closed/redeemed history is preview data for the
  *     dashboard, not an unbounded archive export.
- *   - COALESCED_PAYLOAD (task.5013): the post-auth payload computation is
- *     wrapped in the in-process `coalesce` TTL cache
- *     (`DASHBOARD_ROUTE_CACHE_TTL_MS` = 5s), keyed by billing account only —
- *     `freshness` never gates computation here and is re-stamped per request.
- *     Concurrent requests share one computation; thrown errors are never
- *     cached. Invalidated by POST /wallet/refresh via
+ *   - COALESCED_PAYLOAD (task.5013, SWR since the dashboard read-path
+ *     floor fix): the post-auth payload computation is wrapped in the
+ *     in-process `coalesceSwr` cache (fresh 20s / stale 5min via
+ *     `coalesceDashboardRoutePayload`), keyed by billing account only —
+ *     `freshness` never gates computation here and is re-stamped per
+ *     request. The dashboard's 30s tick serves the previous payload
+ *     instantly and kicks one background recompute. Concurrent requests
+ *     share one computation; thrown errors are never cached. The
+ *     `listTenantPositions` + `readCurrentWalletPositionModel` reads are
+ *     additionally shared with the overview route via their own SWR
+ *     entries. Invalidated by POST /wallet/refresh via
  *     `invalidateDashboardRouteCaches`. SINGLE_REPLICA cache — see
  *     `@features/wallet-analysis/server/coalesce`.
+ *   - CACHED_TENANT_RESOLUTION: the billing-account id is resolved through
+ *     the short-TTL `resolveBillingAccountId` cache (identity is immutable
+ *     per user), so a warm request runs zero pre-cache DB round-trips.
  * Side-effects: IO (DB read, optional Polymarket Data API + CLOB public reads).
  * Links: nodes/poly/packages/node-contracts/src/poly.wallet.execution.v1.contract.ts,
  *        docs/spec/poly-tenant-and-collateral.md,
@@ -37,7 +45,6 @@
  * @public
  */
 
-import { toUserId } from "@cogni/ids";
 import {
   type PolyWalletExecutionOutput,
   PolyWalletExecutionOutputSchema,
@@ -51,7 +58,6 @@ import {
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
-import { coalesce } from "@/features/wallet-analysis/server/coalesce";
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
 import { buildMarketExposureGroups } from "@/features/wallet-analysis/server/market-exposure-service";
 import {
@@ -59,8 +65,11 @@ import {
   readWalletTokenPnlMap,
 } from "@/features/wallet-analysis/server/realized-pnl-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
+import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
 import {
-  DASHBOARD_ROUTE_CACHE_TTL_MS,
+  coalesceCurrentWalletPositions,
+  coalesceDashboardRoutePayload,
+  coalesceTenantLedgerPositions,
   executionRouteCacheKey,
 } from "../_lib/dashboard-route-cache";
 import {
@@ -106,20 +115,23 @@ export const GET = wrapRouteHandlerWithLogging(
     });
 
     const container = getContainer();
-    const account = await container
-      .accountsForUser(toUserId(sessionUser.id))
-      .getOrCreateBillingAccountForUser({ userId: sessionUser.id });
+    // CACHED_TENANT_RESOLUTION: warm hit = 0 DB round-trips; cold hit = one
+    // transaction-free SELECT (create branch only on genuine first request).
+    const billingAccountId = await resolveBillingAccountId(
+      container.serviceAccountService,
+      sessionUser.id
+    );
 
-    // COALESCED_PAYLOAD (task.5013): everything below — adapter resolution,
-    // realized P/L, ledger + current-position read models, market groups —
-    // runs at most once per billing account per TTL window; concurrent
-    // requests await the same in-flight computation. Errors reject the
-    // in-flight promise and are evicted (never cached); partial-success
-    // payloads carrying warnings ARE cached for the short TTL by design.
-    // `freshness` never gates computation on this route, so it is excluded
-    // from the key and re-stamped on the response below.
-    const payload = await coalesce<PolyWalletExecutionOutput>(
-      executionRouteCacheKey(account.id),
+    // COALESCED_PAYLOAD (task.5013, SWR): everything below — adapter
+    // resolution, realized P/L, ledger + current-position read models,
+    // market groups — is served from cache when fresh; a stale hit (every
+    // 30s dashboard tick) returns the previous payload and kicks ONE
+    // background recompute. Errors reject the in-flight promise and are
+    // evicted (never cached); partial-success payloads carrying warnings
+    // ARE cached by design. `freshness` never gates computation on this
+    // route, so it is excluded from the key and re-stamped below.
+    const payload = await coalesceDashboardRoutePayload<PolyWalletExecutionOutput>(
+      executionRouteCacheKey(billingAccountId),
       async () => {
         let adapter: ReturnType<typeof getPolyTraderWalletAdapter>;
         try {
@@ -146,7 +158,7 @@ export const GET = wrapRouteHandlerWithLogging(
           throw err;
         }
 
-        const address = await adapter.getAddress(account.id);
+        const address = await adapter.getAddress(billingAccountId);
         if (!address) {
           logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
             reqId: ctx.reqId,
@@ -192,14 +204,18 @@ export const GET = wrapRouteHandlerWithLogging(
           return new Map();
         });
         try {
+          // SHARED_READ: byte-identical to the overview route's ledger
+          // read — one SWR entry serves both routes (dashboard floor fix).
           const [rows, dailyCountsFromDb] = await Promise.all([
-            container.orderLedger.listTenantPositions({
-              billing_account_id: account.id,
-              statuses: [...DASHBOARD_LEDGER_POSITION_STATUSES],
-              limit: DASHBOARD_LEDGER_POSITION_LIMIT,
-            }),
+            coalesceTenantLedgerPositions(billingAccountId, () =>
+              container.orderLedger.listTenantPositions({
+                billing_account_id: billingAccountId,
+                statuses: [...DASHBOARD_LEDGER_POSITION_STATUSES],
+                limit: DASHBOARD_LEDGER_POSITION_LIMIT,
+              })
+            ),
             container.orderLedger.dailyTradeCounts({
-              billing_account_id: account.id,
+              billing_account_id: billingAccountId,
               capturedAt,
               windowDays: DASHBOARD_TRADE_COUNT_WINDOW_DAYS,
             }),
@@ -231,11 +247,18 @@ export const GET = wrapRouteHandlerWithLogging(
         }
 
         try {
-          const currentPositions = await readCurrentWalletPositionModel({
-            db: container.serviceDb,
-            walletAddress: address,
-            capturedAt,
-          });
+          // SHARED_READ: same model the overview route reads — one
+          // SWR entry serves both routes (dashboard floor fix).
+          const currentPositions = await coalesceCurrentWalletPositions(
+            billingAccountId,
+            address,
+            () =>
+              readCurrentWalletPositionModel({
+                db: container.serviceDb,
+                walletAddress: address,
+                capturedAt,
+              })
+          );
           const currentLivePositions = currentPositions.positions.filter(
             (position) => position.status !== "closed" && position.currentValue > 0
           );
@@ -290,7 +313,7 @@ export const GET = wrapRouteHandlerWithLogging(
         closedPositions = applyRealizedPnl(closedPositions, realizedPnlMap);
         const marketGroups = await buildMarketExposureGroups({
           db: container.serviceDb,
-          billingAccountId: account.id,
+          billingAccountId,
           walletAddress: address,
           livePositions,
           closedPositions,
@@ -345,8 +368,7 @@ export const GET = wrapRouteHandlerWithLogging(
           closed_positions: closedPositionsForResponse,
           warnings,
         });
-      },
-      DASHBOARD_ROUTE_CACHE_TTL_MS
+      }
     );
 
     // `freshness` is echo-only on this route (never gates computation), and

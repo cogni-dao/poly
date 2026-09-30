@@ -6,11 +6,16 @@
  * Purpose: Cache keys, TTLs, and invalidation for the coalesced dashboard
  *   route payloads (`/wallet/overview`, `/wallet/execution`) and the
  *   on-chain wallet-balances read. The routes recompute ~7 heavy statements
- *   per request; wrapping the post-auth payload computation in `coalesce`
- *   collapses a burst of requests into one computation per key per TTL
- *   window (task.5013). Balances additionally get their own longer-TTL
- *   entry so a cold route-cache hit does not block first paint on Polygon
- *   RPC (task.5010).
+ *   per request; wrapping the post-auth payload computation in `coalesceSwr`
+ *   serves the previous payload instantly on every dashboard tick and kicks
+ *   at most one background recompute per key (task.5013; SWR swap in the
+ *   dashboard read-path floor fix — the old blocking 5s TTL hit ~0% of the
+ *   client's 30s refetch ticks). Balances additionally get their own
+ *   longer-TTL entry so a cold route-cache hit does not block first paint
+ *   on Polygon RPC (task.5010). The two reads both routes perform
+ *   byte-identically (`listTenantPositions`,
+ *   `readCurrentWalletPositionModel`) each get ONE shared SWR entry so an
+ *   initial page load computes them once, not twice.
  * Scope: Key/TTL helpers over the wallet-analysis process TTL cache plus
  *   the balances coalescing wrapper. No IO of its own. Consumed by the
  *   overview + execution routes (read side) and the refresh route
@@ -27,10 +32,17 @@
  *     POST, so cross-replica staleness is bounded by the TTLs below).
  *   - TENANT_KEYED: every key embeds the billing account id, so one
  *     tenant's cached payload can never be served to another tenant.
- *   - ERRORS_NOT_CACHED: `coalesce` evicts rejected fetchers
+ *   - ERRORS_NOT_CACHED: `coalesce`/`coalesceSwr` evict rejected fetchers
  *     (FAILED_FETCH_NOT_CACHED), so only successfully computed payloads —
  *     including partial-success payloads that degrade to warnings — are
- *     ever cached.
+ *     ever cached. In SWR mode a failed BACKGROUND refresh keeps the
+ *     prior stale value (bounded by the stale horizon) and re-arms.
+ *   - SWR_TICKS_SERVE_STALE: route payloads + shared reads use
+ *     `coalesceSwr` (fresh 20s/15s, stale 5min) so the dashboard's 30s
+ *     refetch tick is a stale-serve + one background recompute, never a
+ *     blocking recompute. Displayed positions/orders may therefore be up
+ *     to one tick older than the DB; POST /wallet/refresh evicts all keys
+ *     for users who need synchronous freshness.
  *   - BALANCES_DEGRADED_NOT_CACHED: `coalesceWalletBalances` immediately
  *     evicts null (no wallet) and partial (RPC error/timeout leg) results,
  *     so a transient Polygon RPC blip is never pinned for the 30s balances
@@ -49,27 +61,55 @@
 import {
   clearTtlCacheByPrefix,
   coalesce,
+  coalesceSwr,
 } from "@/features/wallet-analysis/server/coalesce";
 
 /**
- * TTL for cached dashboard route payloads. Short enough that a manual
- * browser reload after ~5s sees fresh data; long enough to absorb the
- * dashboard's parallel-widget request bursts.
+ * Fresh window for cached dashboard route payloads: a hit younger than
+ * this is served with no recompute at all. Chosen below the client's 30s
+ * refetch cadence so a manual reload shortly after a tick is still warm,
+ * while every 30s tick lands in the stale window (serve-stale + one
+ * background recompute) instead of blocking on the ~7-statement payload.
  */
-export const DASHBOARD_ROUTE_CACHE_TTL_MS = 5_000;
+export const DASHBOARD_ROUTE_CACHE_FRESH_MS = 20_000;
+
+/**
+ * Serve-stale horizon for route payloads. A hit older than
+ * `DASHBOARD_ROUTE_CACHE_FRESH_MS` but younger than this is returned
+ * instantly while a single background refresh recomputes; beyond it the
+ * entry is dead and the request blocks on a fresh compute. 5min bounds the
+ * worst-case display staleness after a quiet period (mirrors the
+ * research-read-cache SWR pattern, with much tighter windows).
+ */
+export const DASHBOARD_ROUTE_CACHE_STALE_MS = 5 * 60_000;
 
 /**
  * TTL for cached on-chain wallet balances (task.5010). Deliberately longer
- * than the route-payload TTL so a cold/expired route-cache hit is served
- * from warm balances instead of blocking first paint on 3 Polygon RPC
- * calls. 30s staleness is the accepted display bound for wallet cash/gas;
- * POST /wallet/refresh evicts this key for users who need fresher numbers.
+ * than the route-payload fresh window so a cold/expired route-cache hit is
+ * served from warm balances instead of blocking first paint on 3 Polygon
+ * RPC calls. 30s staleness is the accepted display bound for wallet
+ * cash/gas; POST /wallet/refresh evicts this key for users who need
+ * fresher numbers.
  */
 export const WALLET_BALANCES_CACHE_TTL_MS = 30_000;
+
+/**
+ * Fresh window for the two DB reads shared by BOTH dashboard routes
+ * (`listTenantPositions` + `readCurrentWalletPositionModel`). Short —
+ * these back real-money position displays — but wide enough that the
+ * overview and execution routes' initial-load recomputes (and their
+ * background SWR refreshes) reuse one read instead of issuing it twice.
+ */
+export const DASHBOARD_SHARED_READ_FRESH_MS = 15_000;
+
+/** Serve-stale horizon for the shared reads; same bound as the payloads. */
+export const DASHBOARD_SHARED_READ_STALE_MS = 5 * 60_000;
 
 const OVERVIEW_KEY_PREFIX = "route:wallet-overview:";
 const EXECUTION_KEY_PREFIX = "route:wallet-execution:";
 const BALANCES_KEY_PREFIX = "balances:";
+const LEDGER_POSITIONS_KEY_PREFIX = "ledger-positions:";
+const CURRENT_POSITIONS_KEY_PREFIX = "current-positions:";
 
 /**
  * Overview payloads vary by interval (pnl chart window) and freshness
@@ -95,6 +135,81 @@ export function executionRouteCacheKey(billingAccountId: string): string {
 /** Cache key for one tenant's on-chain wallet balances (task.5010). */
 export function walletBalancesCacheKey(billingAccountId: string): string {
   return `${BALANCES_KEY_PREFIX}${billingAccountId}`;
+}
+
+/** Cache key for the tenant's shared `listTenantPositions` ledger read. */
+export function tenantLedgerPositionsCacheKey(
+  billingAccountId: string
+): string {
+  return `${LEDGER_POSITIONS_KEY_PREFIX}${billingAccountId}`;
+}
+
+/**
+ * Cache key for the shared `readCurrentWalletPositionModel` read. Prefixed
+ * by billing account (so refresh invalidation can evict by tenant prefix)
+ * and suffixed by the wallet address the model is actually keyed on.
+ */
+export function currentWalletPositionsCacheKey(
+  billingAccountId: string,
+  walletAddress: string
+): string {
+  return `${CURRENT_POSITIONS_KEY_PREFIX}${billingAccountId}:${walletAddress.toLowerCase()}`;
+}
+
+/**
+ * SWR-cache one dashboard route payload (overview or execution). Fresh
+ * hits recompute nothing; stale hits (every 30s dashboard tick) serve the
+ * previous payload instantly and kick exactly one background recompute;
+ * thrown errors are never cached (FAILED_FETCH_NOT_CACHED). Partial-success
+ * payloads carrying warnings ARE cached, same as the pre-SWR behavior.
+ */
+export async function coalesceDashboardRoutePayload<T>(
+  key: string,
+  fetcher: () => Promise<T>
+): Promise<T> {
+  return coalesceSwr(key, fetcher, {
+    freshMs: DASHBOARD_ROUTE_CACHE_FRESH_MS,
+    staleMs: DASHBOARD_ROUTE_CACHE_STALE_MS,
+  });
+}
+
+/**
+ * SWR-cache the tenant's `listTenantPositions` ledger read — the overview
+ * and execution routes issue this call byte-identically, so one shared
+ * entry halves the DB reads on an initial page load. Callers must not
+ * mutate the returned rows (both routes only map them).
+ */
+export async function coalesceTenantLedgerPositions<T>(
+  billingAccountId: string,
+  fetcher: () => Promise<T>
+): Promise<T> {
+  return coalesceSwr(tenantLedgerPositionsCacheKey(billingAccountId), fetcher, {
+    freshMs: DASHBOARD_SHARED_READ_FRESH_MS,
+    staleMs: DASHBOARD_SHARED_READ_STALE_MS,
+  });
+}
+
+/**
+ * SWR-cache the shared `readCurrentWalletPositionModel` read (same
+ * dedupe rationale as `coalesceTenantLedgerPositions`). The cached model
+ * bakes in the `capturedAt` of the request that computed it; its
+ * staleness fields therefore lag by at most
+ * `DASHBOARD_SHARED_READ_FRESH_MS` — negligible against the model's own
+ * 10min staleness threshold. Callers must not mutate the returned model.
+ */
+export async function coalesceCurrentWalletPositions<T>(
+  billingAccountId: string,
+  walletAddress: string,
+  fetcher: () => Promise<T>
+): Promise<T> {
+  return coalesceSwr(
+    currentWalletPositionsCacheKey(billingAccountId, walletAddress),
+    fetcher,
+    {
+      freshMs: DASHBOARD_SHARED_READ_FRESH_MS,
+      staleMs: DASHBOARD_SHARED_READ_STALE_MS,
+    }
+  );
 }
 
 /**
@@ -123,7 +238,8 @@ export async function coalesceWalletBalances<
 
 /**
  * Evict every cached dashboard route payload for one tenant, plus the
- * tenant's cached on-chain balances (task.5010). Called by
+ * tenant's cached on-chain balances (task.5010) and the shared
+ * ledger-positions / current-positions read entries. Called by
  * POST /wallet/refresh (sibling of `invalidateWalletAnalysisCaches`, which
  * evicts the address-keyed slice caches).
  *
@@ -135,6 +251,8 @@ export function invalidateDashboardRouteCaches(
   return (
     clearTtlCacheByPrefix(`${OVERVIEW_KEY_PREFIX}${billingAccountId}`) +
     clearTtlCacheByPrefix(`${EXECUTION_KEY_PREFIX}${billingAccountId}`) +
-    clearTtlCacheByPrefix(`${BALANCES_KEY_PREFIX}${billingAccountId}`)
+    clearTtlCacheByPrefix(`${BALANCES_KEY_PREFIX}${billingAccountId}`) +
+    clearTtlCacheByPrefix(`${LEDGER_POSITIONS_KEY_PREFIX}${billingAccountId}`) +
+    clearTtlCacheByPrefix(`${CURRENT_POSITIONS_KEY_PREFIX}${billingAccountId}`)
   );
 }

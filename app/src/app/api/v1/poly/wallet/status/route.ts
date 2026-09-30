@@ -18,7 +18,6 @@
  * @public
  */
 
-import { toUserId } from "@cogni/ids";
 import {
   type PolyWalletStatusOutput,
   polyWalletStatusOperation,
@@ -31,6 +30,7 @@ import {
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
+import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -41,9 +41,12 @@ export const GET = wrapRouteHandlerWithLogging(
     if (!sessionUser) throw new Error("sessionUser required");
 
     const container = getContainer();
-    const account = await container
-      .accountsForUser(toUserId(sessionUser.id))
-      .getOrCreateBillingAccountForUser({ userId: sessionUser.id });
+    // CACHED_TENANT_RESOLUTION (dashboard floor fix): warm hit = 0 DB
+    // round-trips; cold hit = one transaction-free SELECT.
+    const billingAccountId = await resolveBillingAccountId(
+      container.serviceAccountService,
+      sessionUser.id
+    );
 
     let adapter: ReturnType<typeof getPolyTraderWalletAdapter>;
     try {
@@ -68,7 +71,7 @@ export const GET = wrapRouteHandlerWithLogging(
 
     // DB-only summary (no Privy round-trip). Keeps the page-render cost low
     // and surfaces `trading_ready` for the Money-page "Enable Trading" CTA.
-    const summary = await adapter.getConnectionSummary(account.id);
+    const summary = await adapter.getConnectionSummary(billingAccountId);
     const payload: PolyWalletStatusOutput = summary
       ? {
           configured: true,

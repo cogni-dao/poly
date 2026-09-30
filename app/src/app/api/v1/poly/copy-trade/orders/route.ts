@@ -15,7 +15,6 @@
  * @public
  */
 
-import { toUserId } from "@cogni/ids";
 import {
   type PolyCopyTradeOrderRow,
   polyCopyTradeOrdersOperation,
@@ -26,6 +25,7 @@ import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import type { LedgerRow } from "@/features/trading";
 import { logRequestWarn, type RequestContext } from "@/shared/observability";
+import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
 
 export const dynamic = "force-dynamic";
 
@@ -107,16 +107,18 @@ export const GET = wrapRouteHandlerWithLogging(
 
       const container = getContainer();
       // Resolve (or lazily create) the caller's billing account so the ledger
-      // read is clamped to their tenant. Mirrors targets-route.ts.
-      const account = await container
-        .accountsForUser(toUserId(sessionUser.id))
-        .getOrCreateBillingAccountForUser({ userId: sessionUser.id });
+      // read is clamped to their tenant. CACHED_TENANT_RESOLUTION (dashboard
+      // floor fix): warm hit = 0 DB round-trips.
+      const billingAccountId = await resolveBillingAccountId(
+        container.serviceAccountService,
+        sessionUser.id
+      );
 
       const listOpts: {
         billing_account_id: string;
         limit?: number;
         target_id?: string;
-      } = { billing_account_id: account.id };
+      } = { billing_account_id: billingAccountId };
       if (input.limit !== undefined) listOpts.limit = input.limit;
       if (input.target_id !== undefined) listOpts.target_id = input.target_id;
       const rows = await container.orderLedger.listRecent(listOpts);

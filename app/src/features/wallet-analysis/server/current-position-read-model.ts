@@ -14,6 +14,9 @@
  *   - OBSERVER_OWNS_UPSTREAM_PAGING: this module performs no Polymarket HTTP.
  *   - COMPLETE_POLLS_DEACTIVATE: missing rows are trusted only because the
  *     observer deactivates them after complete paged polls.
+ *   - RAW_NEVER_SELECTED_WHOLESALE: the Data-API `raw` jsonb is projected
+ *     to 7 scalar `raw->>` fields in SQL (dashboard read-path floor fix);
+ *     the full blob never crosses the wire or gets decoded in V8.
  * Side-effects: DB read only.
  * Links: work/items/task.5007.poly-tenant-current-position-reconciler.md
  * @public
@@ -44,7 +47,18 @@ type CurrentPositionRow = {
   avg_price: string | number | null;
   last_observed_at: Date | string | null;
   first_observed_at: Date | string | null;
-  raw: Record<string, unknown> | null;
+  /**
+   * Scalar `raw->>` projections. The Data-API `raw` jsonb blob is never
+   * selected wholesale (dashboard read-path floor fix) — only these
+   * bounded text fields leave SQL; V8 no longer decodes the full blob.
+   */
+  raw_cur_price: string | null;
+  raw_end_date: string | null;
+  raw_title: string | null;
+  raw_event_title: string | null;
+  raw_slug: string | null;
+  raw_event_slug: string | null;
+  raw_outcome: string | null;
   cursor_last_success_at: Date | string | null;
   cursor_status: string | null;
   redeem_status: string | null;
@@ -90,7 +104,17 @@ export async function readCurrentWalletPositionModel(params: {
         p.avg_price,
         p.last_observed_at,
         p.first_observed_at,
-        p.raw,
+        -- Scalar raw->> projections only — 5 of the old wholesale-raw
+        -- fields duplicate the joined poly_market_metadata and are kept
+        -- solely as first-deploy fallbacks; extracting them in SQL keeps
+        -- the (potentially large) Data-API blob out of the wire + V8.
+        p.raw->>'curPrice' AS raw_cur_price,
+        p.raw->>'endDate' AS raw_end_date,
+        p.raw->>'title' AS raw_title,
+        p.raw->>'eventTitle' AS raw_event_title,
+        p.raw->>'slug' AS raw_slug,
+        p.raw->>'eventSlug' AS raw_event_slug,
+        p.raw->>'outcome' AS raw_outcome,
         c.last_success_at AS cursor_last_success_at,
         c.status AS cursor_status,
         r.status AS redeem_status,
@@ -186,14 +210,13 @@ function rowToExecutionPosition(
   capturedAt: Date
 ): WalletExecutionPosition[] {
   if (row.condition_id === null || row.token_id === null) return [];
-  const raw = isRecord(row.raw) ? row.raw : {};
   const shares = toNumber(row.shares);
   const currentValue = toNumber(row.current_value_usdc);
   if (shares <= 0 || currentValue < 0) return [];
   const costBasis = toNumber(row.cost_basis_usdc);
   const avgPrice = positiveOrNull(toNumber(row.avg_price));
   const currentPrice =
-    positiveOrNull(readNumber(raw, "curPrice")) ??
+    positiveOrNull(numberFromText(row.raw_cur_price)) ??
     positiveOrNull(currentValue / shares) ??
     0;
   const entryPrice =
@@ -210,8 +233,7 @@ function rowToExecutionPosition(
   // not regress the dashboard. The fallback can be dropped in a follow-up
   // once `poly_market_metadata` is fully backfilled in prod.
   const endDate =
-    isoOrNull(row.metadata_end_date) ??
-    isoString(readOptionalString(raw, "endDate"));
+    isoOrNull(row.metadata_end_date) ?? isoString(optionalText(row.raw_end_date));
   const syncAgeMs = Math.max(0, capturedAt.getTime() - Date.parse(observedAt));
   const status = deriveCurrentPositionStatus({
     currentValue,
@@ -235,25 +257,26 @@ function rowToExecutionPosition(
       // landed with `marketTitle = ""` would render as empty instead of
       // hitting the JSONB fallback. `nonEmpty` collapses both null and ""
       // to undefined; mirrors the SQL `NULLIF(pmm.col, '')` pattern used
-      // in `market-exposure-service.ts`.
+      // in `market-exposure-service.ts`. The raw_* fallbacks are the SQL
+      // scalar projections of the old `raw->>` reads (same values).
       marketTitle:
         nonEmpty(row.metadata_market_title) ??
-        readOptionalString(raw, "title") ??
+        optionalText(row.raw_title) ??
         "Polymarket",
       eventTitle:
         nonEmpty(row.metadata_event_title) ??
-        readOptionalString(raw, "eventTitle") ??
+        optionalText(row.raw_event_title) ??
         null,
       marketSlug:
         nonEmpty(row.metadata_market_slug) ??
-        readOptionalString(raw, "slug") ??
+        optionalText(row.raw_slug) ??
         null,
       eventSlug:
         nonEmpty(row.metadata_event_slug) ??
-        readOptionalString(raw, "eventSlug") ??
+        optionalText(row.raw_event_slug) ??
         null,
-      marketUrl: marketUrl(raw),
-      outcome: readOptionalString(raw, "outcome") ?? "UNKNOWN",
+      marketUrl: marketUrl(row.raw_event_slug, row.raw_slug),
+      outcome: optionalText(row.raw_outcome) ?? "UNKNOWN",
       status,
       lifecycleState: row.redeem_lifecycle_state,
       openedAt,
@@ -357,9 +380,12 @@ function normalizeRows<T>(result: unknown): T[] {
   return [];
 }
 
-function marketUrl(raw: Record<string, unknown>): string | null {
-  const eventSlug = readOptionalString(raw, "eventSlug");
-  const slug = readOptionalString(raw, "slug");
+function marketUrl(
+  rawEventSlug: string | null,
+  rawSlug: string | null
+): string | null {
+  const eventSlug = optionalText(rawEventSlug);
+  const slug = optionalText(rawSlug);
   if (!eventSlug || !slug) return null;
   return `https://polymarket.com/event/${eventSlug}/${slug}`;
 }
@@ -387,17 +413,21 @@ function toNumber(value: string | number | null): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-function readNumber(record: Record<string, unknown>, key: string): number {
-  const value = record[key];
-  const n = typeof value === "number" ? value : Number(value);
+/**
+ * Numeric parse of a SQL `raw->>…` text projection. Mirrors the old
+ * in-V8 `readNumber(raw, key)` semantics: absent/malformed → 0.
+ */
+function numberFromText(value: string | null): number {
+  if (value === null) return 0;
+  const n = Number(value);
   return Number.isFinite(n) ? n : 0;
 }
 
-function readOptionalString(
-  record: Record<string, unknown>,
-  key: string
-): string | undefined {
-  const value = record[key];
+/**
+ * Non-empty text of a SQL `raw->>…` projection, or undefined. Mirrors the
+ * old in-V8 `readOptionalString(raw, key)` semantics for `??` chains.
+ */
+function optionalText(value: string | null): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
@@ -408,10 +438,6 @@ function readOptionalString(
 function nonEmpty(value: string | null): string | undefined {
   if (value === null || value.length === 0) return undefined;
   return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function positiveOrNull(value: number): number | null {
