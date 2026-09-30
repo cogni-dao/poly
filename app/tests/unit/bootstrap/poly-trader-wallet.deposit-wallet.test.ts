@@ -36,7 +36,11 @@ vi.mock("@polymarket/client/node", () => ({
 	builderApiKey: vi.fn((credentials) => credentials),
 }));
 vi.mock("@polymarket/client/viem", () => ({
-	signerFrom: vi.fn(() => ({ __signer: true })),
+	signerFrom: vi.fn(() => ({
+		getAddress: getAddressMock,
+		signTypedData: signTypedDataMock,
+		signMessage: signMessageMock,
+	})),
 }));
 vi.mock("viem", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("viem")>();

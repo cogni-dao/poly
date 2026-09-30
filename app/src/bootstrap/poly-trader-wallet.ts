@@ -233,7 +233,7 @@ export async function createOfficialDepositWalletClient({
     credentials: clobCreds as never,
     apiKey: builderApiKey(builderCredentials),
   });
-  return { depositClient, eoaClient };
+  return { depositClient, eoaClient, polySigner };
 }
 
 /**
@@ -353,11 +353,12 @@ export function createOfficialDepositWalletNativeTransferFactory({
       readonly amount: bigint;
     }
   ): Promise<`0x${string}`> => {
-    const { depositClient } = await createOfficialDepositWalletClient({
-      signer,
-      clobCreds,
-      polygonRpcUrl,
-    });
+    const { depositClient, polySigner } =
+      await createOfficialDepositWalletClient({
+        signer,
+        clobCreds,
+        polygonRpcUrl,
+      });
     if (
       depositClient.account.wallet.toLowerCase() !==
       input.expectedFunderAddress.toLowerCase()
@@ -374,10 +375,7 @@ export function createOfficialDepositWalletNativeTransferFactory({
       ],
       metadata: "Recover native POL from Deposit Wallet",
     });
-    const handle = await completeGaslessWorkflow(
-      workflow,
-      depositClient.signer
-    );
+    const handle = await completeGaslessWorkflow(workflow, polySigner);
     const outcome = await handle.wait();
     return outcome.transactionHash;
   };
@@ -396,11 +394,12 @@ export function createOfficialDepositWalletWrapFactory({
       readonly amount: bigint;
     }
   ): Promise<`0x${string}`> => {
-    const { depositClient } = await createOfficialDepositWalletClient({
-      signer,
-      clobCreds,
-      polygonRpcUrl,
-    });
+    const { depositClient, polySigner } =
+      await createOfficialDepositWalletClient({
+        signer,
+        clobCreds,
+        polygonRpcUrl,
+      });
     if (
       depositClient.account.wallet.toLowerCase() !==
       input.expectedFunderAddress.toLowerCase()
@@ -433,10 +432,7 @@ export function createOfficialDepositWalletWrapFactory({
       ],
       metadata: "Wrap Deposit Wallet USDC.e to pUSD",
     });
-    const handle = await completeGaslessWorkflow(
-      workflow,
-      depositClient.signer
-    );
+    const handle = await completeGaslessWorkflow(workflow, polySigner);
     const outcome = await handle.wait();
     return outcome.transactionHash;
   };
