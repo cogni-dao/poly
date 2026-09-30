@@ -40,6 +40,7 @@ import { eq, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { liveCurrentPositionSql } from "./current-position-staleness";
+import { windowedFillFlowsSelect } from "./fill-rollup-service";
 
 type Db =
   | NodePgDatabase<Record<string, unknown>>
@@ -111,12 +112,28 @@ async function readWalletId(
   return rows[0] ?? null;
 }
 
-async function readOverlapRows(
+/**
+ * Rollup-backed since task.research-rollup-read-models: the `volumes` CTE
+ * joins per-(wallet, condition, token) windowed flows from
+ * `poly_trader_fill_rollups_daily` (+ boundary/tail fills,
+ * `windowedFillFlowsSelect`) instead of the raw `poly_trader_fills` join that
+ * re-scanned both wallets' full histories on every request (25s on prod).
+ * `buy_usdc + sell_usdc` per flow row reproduces the legacy side-agnostic
+ * `SUM(size_usdc)` exactly; markets with no windowed fills produce no volumes
+ * row, matching the legacy inner join.
+ *
+ * @internal — exported for the rollup parity tests only.
+ */
+export async function readOverlapRows(
   db: Db,
   rn1WalletId: string | null,
   swisstonyWalletId: string | null,
   windowStartIso: string
 ): Promise<OverlapAggRow[]> {
+  const flows = windowedFillFlowsSelect({
+    walletIds: [rn1WalletId, swisstonyWalletId],
+    windowStartIso,
+  });
   return (await db.execute(sql`
     WITH current_positions AS (
       SELECT
@@ -151,29 +168,28 @@ async function readOverlapRows(
       WHERE wallet_key IS NOT NULL
       GROUP BY condition_id
     ),
+    flows AS (${flows}),
     volumes AS (
       SELECT
         m.bucket,
-        COALESCE(SUM(f.size_usdc::numeric) FILTER (
+        COALESCE(SUM(fl.buy_usdc + fl.sell_usdc) FILTER (
           WHERE (m.bucket = 'rn1_only' OR m.bucket = 'shared')
-            AND f.trader_wallet_id = ${rn1WalletId}
+            AND fl.trader_wallet_id = ${rn1WalletId}::uuid
         ), 0)
-        + COALESCE(SUM(f.size_usdc::numeric) FILTER (
+        + COALESCE(SUM(fl.buy_usdc + fl.sell_usdc) FILTER (
           WHERE (m.bucket = 'swisstony_only' OR m.bucket = 'shared')
-            AND f.trader_wallet_id = ${swisstonyWalletId}
+            AND fl.trader_wallet_id = ${swisstonyWalletId}::uuid
         ), 0) AS fill_volume_usdc,
-        COALESCE(SUM(f.size_usdc::numeric) FILTER (
+        COALESCE(SUM(fl.buy_usdc + fl.sell_usdc) FILTER (
           WHERE (m.bucket = 'rn1_only' OR m.bucket = 'shared')
-            AND f.trader_wallet_id = ${rn1WalletId}
+            AND fl.trader_wallet_id = ${rn1WalletId}::uuid
         ), 0) AS rn1_fill_volume_usdc,
-        COALESCE(SUM(f.size_usdc::numeric) FILTER (
+        COALESCE(SUM(fl.buy_usdc + fl.sell_usdc) FILTER (
           WHERE (m.bucket = 'swisstony_only' OR m.bucket = 'shared')
-            AND f.trader_wallet_id = ${swisstonyWalletId}
+            AND fl.trader_wallet_id = ${swisstonyWalletId}::uuid
         ), 0) AS swisstony_fill_volume_usdc
       FROM markets m
-      JOIN poly_trader_fills f ON f.condition_id = m.condition_id
-        AND f.trader_wallet_id IN (${rn1WalletId}, ${swisstonyWalletId})
-        AND f.observed_at >= ${windowStartIso}::timestamptz
+      JOIN flows fl ON fl.condition_id = m.condition_id
       GROUP BY m.bucket
     )
     SELECT

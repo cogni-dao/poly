@@ -340,6 +340,14 @@ export const serverSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+  // task.research-rollup-read-models — one-shot boot walker that drains
+  // historical fills into `poly_trader_fill_rollups_daily`. Cheap no-op once
+  // caught up (the observation tick keeps rollups fresh); the gate is an
+  // emergency brake for the initial multi-million-row drain.
+  POLY_FILL_ROLLUP_BACKFILL_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
   // Per-wallet time budget (ms) for the trader-comparison aggregate. Past it
   // the wallet is omitted with a `wallet_budget_exceeded` warning (200, not a
   // 520). Default sits just under the edge's ~30s kill window.
