@@ -221,8 +221,8 @@ export function TradingWalletPanel(): ReactElement {
             >
               Polygon Portal bridge
             </a>
-            . You also need ~0.2 POL for gas. One-click deposit/withdraw flows
-            next.
+            . No POL needed — approvals and transfers are relayer-paid from the
+            Deposit Wallet. One-click deposit/withdraw flows next.
           </p>
         </div>
       )}
