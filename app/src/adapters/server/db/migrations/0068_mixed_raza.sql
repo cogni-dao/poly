@@ -1,0 +1,1 @@
+CREATE INDEX "poly_redeem_jobs_lower_funder_condition_position_idx" ON "poly_redeem_jobs" USING btree (lower("funder_address"),lower("condition_id"),"position_id");

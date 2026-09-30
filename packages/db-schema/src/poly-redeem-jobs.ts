@@ -121,6 +121,21 @@ export const polyRedeemJobs = pgTable(
     funderConditionUnique: uniqueIndex(
       "poly_redeem_jobs_funder_condition_uq",
     ).on(table.funderAddress, table.conditionId),
+    /**
+     * Serves the dashboard read-model join (`current-position-read-model.ts`):
+     * `ON lower(r.funder_address) = w.wallet_address AND lower(r.condition_id)
+     * = p.condition_id AND r.position_id = p.token_id`. Writers store EIP-55
+     * checksummed addresses while `poly_trader_wallets.wallet_address` is
+     * lowercase, so `lower()` in the join is load-bearing — the expression
+     * index makes it an index lookup instead of a per-request full seq scan.
+     */
+    funderConditionPositionLowerIdx: index(
+      "poly_redeem_jobs_lower_funder_condition_position_idx",
+    ).on(
+      sql`lower(${table.funderAddress})`,
+      sql`lower(${table.conditionId})`,
+      table.positionId,
+    ),
     pendingIdx: index("poly_redeem_jobs_pending_idx")
       .on(table.enqueuedAt)
       .where(sql`status = 'pending'`),
