@@ -173,8 +173,13 @@ const USDC_E_POLYGON =
   "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" as const;
 const COLLATERAL_ONRAMP_POLYGON =
   "0x93070a847efEf7F70739046A929D47a521F5B8ee" as const;
+const COLLATERAL_OFFRAMP_POLYGON =
+  "0x2957922Eb93258b93368531d39fAcCA3B4dC5854" as const;
 const COLLATERAL_ONRAMP_WRAP_ABI = parseAbi([
   "function wrap(address asset, address to, uint256 amount)",
+]);
+const COLLATERAL_OFFRAMP_UNWRAP_ABI = parseAbi([
+  "function unwrap(address asset, address to, uint256 amount)",
 ]);
 
 async function completeGaslessWorkflow(
@@ -438,6 +443,60 @@ export function createOfficialDepositWalletWrapFactory({
   };
 }
 
+export function createOfficialDepositWalletUnwrapFactory({
+  polygonRpcUrl,
+}: {
+  polygonRpcUrl: string;
+}) {
+  return async (
+    signer: LocalAccount,
+    clobCreds: PolyClobApiKeyCreds,
+    input: {
+      readonly expectedFunderAddress: `0x${string}`;
+      readonly recipientAddress: `0x${string}`;
+      readonly amount: bigint;
+    }
+  ): Promise<`0x${string}`> => {
+    const { depositClient, polySigner } =
+      await createOfficialDepositWalletClient({
+        signer,
+        clobCreds,
+        polygonRpcUrl,
+      });
+    if (
+      depositClient.account.wallet.toLowerCase() !==
+      input.expectedFunderAddress.toLowerCase()
+    ) {
+      throw new Error("Deposit Wallet address does not match persisted funder");
+    }
+
+    const workflow = await prepareGaslessTransaction(depositClient, {
+      calls: [
+        {
+          to: PUSD_POLYGON,
+          data: encodeFunctionData({
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [COLLATERAL_OFFRAMP_POLYGON, input.amount],
+          }),
+        },
+        {
+          to: COLLATERAL_OFFRAMP_POLYGON,
+          data: encodeFunctionData({
+            abi: COLLATERAL_OFFRAMP_UNWRAP_ABI,
+            functionName: "unwrap",
+            args: [USDC_E_POLYGON, input.recipientAddress, input.amount],
+          }),
+        },
+      ],
+      metadata: "Recover Deposit Wallet pUSD as USDC.e",
+    });
+    const handle = await completeGaslessWorkflow(workflow, polySigner);
+    const outcome = await handle.wait();
+    return outcome.transactionHash;
+  };
+}
+
 /**
  * Lazy-construct + memoize the adapter. Follow-up will move this into the
  * main container; standalone factory keeps the first flight-able commit small.
@@ -527,6 +586,9 @@ export function getPolyTraderWalletAdapter(
     transferDepositWalletNative:
       createOfficialDepositWalletNativeTransferFactory({ polygonRpcUrl }),
     wrapDepositWalletUsdcE: createOfficialDepositWalletWrapFactory({
+      polygonRpcUrl,
+    }),
+    unwrapDepositWalletPusd: createOfficialDepositWalletUnwrapFactory({
       polygonRpcUrl,
     }),
     polygonRpcUrl,

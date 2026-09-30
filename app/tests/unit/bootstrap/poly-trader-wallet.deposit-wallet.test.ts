@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { encodeFunctionData, erc20Abi, parseAbi } from "viem";
 
 const {
 	createSecureClientMock,
@@ -54,6 +55,7 @@ import {
 	createOfficialDepositWalletFactory,
 	createOfficialDepositWalletNativeTransferFactory,
 	createOfficialDepositWalletTransferFactory,
+	createOfficialDepositWalletUnwrapFactory,
 	createOfficialDepositWalletWrapFactory,
 } from "@/bootstrap/poly-trader-wallet";
 
@@ -167,6 +169,67 @@ describe("official Deposit Wallet transfer factory", () => {
 					}),
 				],
 			}),
+		);
+		expect(signTypedDataMock).toHaveBeenCalledOnce();
+		expect(waitMock).toHaveBeenCalledOnce();
+		expect(result).toBe(TX_HASH);
+	});
+
+	it("unwraps Deposit Wallet pUSD directly to recipient USDC.e", async () => {
+		async function* gaslessWorkflow() {
+			yield {
+				kind: "signGaslessTypedData" as const,
+				payload: { domain: {}, types: {}, primaryType: "Call", message: {} },
+			};
+			return { wait: waitMock };
+		}
+		prepareGaslessTransactionMock.mockResolvedValue(gaslessWorkflow());
+		const unwrap = createOfficialDepositWalletUnwrapFactory({
+			polygonRpcUrl: "https://polygon.example.test",
+		});
+
+		const result = await unwrap(
+			{ address: SIGNER } as never,
+			{ key: "k", secret: "s", passphrase: "p" },
+			{
+				expectedFunderAddress: FUNDER,
+				recipientAddress: RECIPIENT,
+				amount: 100_000_000n,
+			},
+		);
+
+		expect(prepareGaslessTransactionMock).toHaveBeenCalledWith(
+			expect.objectContaining({ account: { wallet: FUNDER } }),
+			{
+				calls: [
+					{
+						to: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+						data: encodeFunctionData({
+							abi: erc20Abi,
+							functionName: "approve",
+							args: [
+								"0x2957922Eb93258b93368531d39fAcCA3B4dC5854",
+								100_000_000n,
+							],
+						}),
+					},
+					{
+						to: "0x2957922Eb93258b93368531d39fAcCA3B4dC5854",
+						data: encodeFunctionData({
+							abi: parseAbi([
+								"function unwrap(address asset, address to, uint256 amount)",
+							]),
+							functionName: "unwrap",
+							args: [
+								"0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+								RECIPIENT,
+								100_000_000n,
+							],
+						}),
+					},
+				],
+				metadata: "Recover Deposit Wallet pUSD as USDC.e",
+			},
 		);
 		expect(signTypedDataMock).toHaveBeenCalledOnce();
 		expect(waitMock).toHaveBeenCalledOnce();

@@ -297,6 +297,16 @@ export type WrapPolyDepositWalletUsdcE = (
   }
 ) => Promise<Hex>;
 
+export type UnwrapPolyDepositWalletPusd = (
+  signer: LocalAccount,
+  clobCreds: PolyClobApiKeyCreds,
+  input: {
+    readonly expectedFunderAddress: `0x${string}`;
+    readonly recipientAddress: Address;
+    readonly amount: bigint;
+  }
+) => Promise<Hex>;
+
 /**
  * Drizzle's transaction handle is structurally the same as `Database` for
  * the CRUD surface we use (select / insert / update / execute) but omits
@@ -401,6 +411,8 @@ export interface PrivyPolyTraderWalletAdapterConfig {
   transferDepositWalletNative?: TransferPolyDepositWalletNative;
   /** Gasless USDC.e → pUSD wrap from an official V2 Deposit Wallet. */
   wrapDepositWalletUsdcE?: WrapPolyDepositWalletUsdcE;
+  /** Gasless pUSD → USDC.e withdrawal from an official V2 Deposit Wallet. */
+  unwrapDepositWalletPusd?: UnwrapPolyDepositWalletPusd;
   /**
    * Polygon RPC URL used by `getBalances`. Optional: when absent, `getBalances`
    * returns the address with `null` USDC.e/POL and an RPC-unconfigured error
@@ -434,6 +446,9 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
   private readonly wrapDepositWalletUsdcE:
     | WrapPolyDepositWalletUsdcE
     | undefined;
+  private readonly unwrapDepositWalletPusd:
+    | UnwrapPolyDepositWalletPusd
+    | undefined;
   private readonly polygonRpcUrl: string | undefined;
   private readonly log: Logger;
 
@@ -455,6 +470,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     this.transferDepositWalletToken = config.transferDepositWalletToken;
     this.transferDepositWalletNative = config.transferDepositWalletNative;
     this.wrapDepositWalletUsdcE = config.wrapDepositWalletUsdcE;
+    this.unwrapDepositWalletPusd = config.unwrapDepositWalletPusd;
     this.polygonRpcUrl = config.polygonRpcUrl;
     this.log = config.logger.child({
       component: "PrivyPolyTraderWalletAdapter",
@@ -2310,24 +2326,13 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
 
     if (input.asset === "pusd") {
       if (usesDepositWallet) {
-        const transferHash = await this.transferFromDepositWallet({
+        return this.withdrawDepositWalletPusd({
           publicClient,
-          signingContext,
-          token: PUSD_POLYGON,
-          recipient: signerAddress,
-          amountAtomic: input.amountAtomic,
-        });
-        return this.withdrawPusdViaOfframp({
-          publicClient,
-          walletClient,
           signingContext,
           billingAccountId: input.billingAccountId,
           requestedByUserId: input.requestedByUserId,
           destination,
           amountAtomic: input.amountAtomic,
-          sourceAddress: signingContext.funderAddress,
-          offrampSourceAddress: signerAddress,
-          priorTxHashes: [transferHash],
         });
       }
       return this.withdrawPusdViaOfframp({
@@ -2400,6 +2405,62 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     return {
       asset: input.asset,
       deliveredAsset: input.deliveredAsset,
+      sourceAddress: input.signingContext.funderAddress,
+      destination: input.destination,
+      amountAtomic: input.amountAtomic,
+      primaryTxHash: txHash,
+      txHashes: [txHash],
+    };
+  }
+
+  private async withdrawDepositWalletPusd(input: {
+    publicClient: PublicClient;
+    signingContext: PolyTraderSigningContext;
+    billingAccountId: string;
+    requestedByUserId: string;
+    destination: Address;
+    amountAtomic: bigint;
+  }): Promise<PolyWalletWithdrawalResult> {
+    if (!this.unwrapDepositWalletPusd) {
+      throw Object.assign(
+        new Error("withdraw: Deposit Wallet pUSD offramp is unavailable"),
+        { code: "deposit_wallet_action_unconfigured" }
+      );
+    }
+    const balance = await input.publicClient.readContract({
+      address: PUSD_POLYGON,
+      abi: ERC20_BALANCEOF_ABI,
+      functionName: "balanceOf",
+      args: [input.signingContext.funderAddress],
+    });
+    if (balance < input.amountAtomic) {
+      throw Object.assign(new Error("withdraw: insufficient pUSD balance"), {
+        code: "insufficient_balance",
+      });
+    }
+    const txHash = await this.unwrapDepositWalletPusd(
+      input.signingContext.account,
+      input.signingContext.clobCreds,
+      {
+        expectedFunderAddress: input.signingContext.funderAddress,
+        recipientAddress: input.destination,
+        amount: input.amountAtomic,
+      }
+    );
+    this.logWithdrawal({
+      billingAccountId: input.billingAccountId,
+      connectionId: input.signingContext.connectionId,
+      requestedByUserId: input.requestedByUserId,
+      asset: "pusd",
+      deliveredAsset: "usdc_e",
+      sourceAddress: input.signingContext.funderAddress,
+      destination: input.destination,
+      amountAtomic: input.amountAtomic,
+      txHashes: [txHash],
+    });
+    return {
+      asset: "pusd",
+      deliveredAsset: "usdc_e",
       sourceAddress: input.signingContext.funderAddress,
       destination: input.destination,
       amountAtomic: input.amountAtomic,
