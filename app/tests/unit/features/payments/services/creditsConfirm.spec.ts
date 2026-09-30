@@ -30,6 +30,7 @@ function createMockServiceAccountService(): ServiceAccountService {
   return {
     getBillingAccountById: vi.fn(),
     getOrCreateBillingAccountForUser: vi.fn(),
+    findBillingAccountIdForUser: vi.fn().mockResolvedValue(null),
     creditAccount: vi.fn().mockResolvedValue({ newBalance: 0 }),
     findCreditLedgerEntryByReference: vi.fn().mockResolvedValue(null),
   };

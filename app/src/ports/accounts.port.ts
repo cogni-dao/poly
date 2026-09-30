@@ -182,6 +182,16 @@ export interface ServiceAccountService {
   }): Promise<BillingAccount>;
 
   /**
+   * Transaction-free, read-only lookup of the billing-account id owned by
+   * `userId`. Exactly one SELECT — no BEGIN/COMMIT, no `virtual_keys`
+   * lookup — for hot read paths (poly dashboard routes) that only need the
+   * tenant id, not `defaultVirtualKeyId`/`balanceCredits`. Returns null
+   * when the user has no billing account yet; callers fall back to
+   * `getOrCreateBillingAccountForUser` for the create branch.
+   */
+  findBillingAccountIdForUser(userId: string): Promise<string | null>;
+
+  /**
    * Credit billing account for system-level operations (e.g., revenue share bonus).
    * Uses BYPASSRLS — not scoped to a user's RLS context.
    */

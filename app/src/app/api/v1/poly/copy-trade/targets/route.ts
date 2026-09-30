@@ -47,6 +47,7 @@ import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer, resolveAppDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { sizingPolicyKindForTargetWallet } from "@/bootstrap/jobs/copy-trade-mirror.job";
+import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
 
 export const dynamic = "force-dynamic";
 
@@ -126,9 +127,12 @@ export const GET = wrapRouteHandlerWithLogging(
     const container = getContainer();
 
     // Resolve the user's billing account (defense-in-depth target).
-    const account = await container
-      .accountsForUser(toUserId(sessionUser.id))
-      .getOrCreateBillingAccountForUser({ userId: sessionUser.id });
+    // CACHED_TENANT_RESOLUTION (dashboard floor fix): read path only —
+    // the POST below keeps the original uncached floor.
+    const billingAccountId = await resolveBillingAccountId(
+      container.serviceAccountService,
+      sessionUser.id
+    );
 
     const rows = await container.copyTradeTargetSource.listForActor(
       userActor(toUserId(sessionUser.id))
@@ -144,7 +148,7 @@ export const GET = wrapRouteHandlerWithLogging(
       buildTargetView({
         id: row.id,
         targetWallet: row.targetWallet,
-        billingAccountId: account.id,
+        billingAccountId,
         createdByUserId: sessionUser.id,
         mirrorFilterPercentile: row.mirrorFilterPercentile,
         mirrorMaxUsdcPerTrade: row.mirrorMaxUsdcPerTrade,

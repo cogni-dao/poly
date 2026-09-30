@@ -13,13 +13,21 @@
  *   - CURRENT_ONLY: all values describe the current wallet state only.
  *   - PARTIAL_FAILURE_NEVER_THROWS: upstream failures degrade to nullable
  *     fields plus warnings while the route stays 200.
- *   - COALESCED_PAYLOAD (task.5013): the post-auth payload computation is
- *     wrapped in the in-process `coalesce` TTL cache
- *     (`DASHBOARD_ROUTE_CACHE_TTL_MS` = 5s), keyed by billing account +
- *     interval + freshness. Concurrent requests share one computation;
- *     thrown errors are never cached. Invalidated by POST /wallet/refresh
- *     via `invalidateDashboardRouteCaches`. SINGLE_REPLICA cache — see
+ *   - COALESCED_PAYLOAD (task.5013, SWR since the dashboard read-path
+ *     floor fix): the post-auth payload computation is wrapped in the
+ *     in-process `coalesceSwr` cache (fresh 20s / stale 5min via
+ *     `coalesceDashboardRoutePayload`), keyed by billing account +
+ *     interval + freshness. The dashboard's 30s tick serves the previous
+ *     payload instantly and kicks one background recompute. Concurrent
+ *     requests share one computation; thrown errors are never cached. The
+ *     `listTenantPositions` + `readCurrentWalletPositionModel` reads are
+ *     additionally shared with the execution route via their own SWR
+ *     entries. Invalidated by POST /wallet/refresh via
+ *     `invalidateDashboardRouteCaches`. SINGLE_REPLICA cache — see
  *     `@features/wallet-analysis/server/coalesce`.
+ *   - CACHED_TENANT_RESOLUTION: the billing-account id is resolved through
+ *     the short-TTL `resolveBillingAccountId` cache (identity is immutable
+ *     per user), so a warm request runs zero pre-cache DB round-trips.
  *   - BALANCES_OFF_FIRST_PAINT (task.5010): the on-chain balance read
  *     (`adapter.getBalances` → 3 Polygon RPC calls) sits behind its own
  *     longer-TTL cache entry (`coalesceWalletBalances`,
@@ -36,7 +44,6 @@
  * @public
  */
 
-import { toUserId } from "@cogni/ids";
 import {
   type PolyWalletOverviewOutput,
   polyWalletOverviewOperation,
@@ -49,14 +56,16 @@ import {
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
-import { coalesce } from "@/features/wallet-analysis/server/coalesce";
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
 import { getTradingWalletPnlHistory } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
+import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
 import { sumCashOnChain, sumWalletTotal } from "../_lib/cash-on-chain";
 import {
+  coalesceCurrentWalletPositions,
+  coalesceDashboardRoutePayload,
+  coalesceTenantLedgerPositions,
   coalesceWalletBalances,
-  DASHBOARD_ROUTE_CACHE_TTL_MS,
   overviewRouteCacheKey,
 } from "../_lib/dashboard-route-cache";
 import {
@@ -109,18 +118,22 @@ export const GET = wrapRouteHandlerWithLogging(
         freshness: url.searchParams.get("freshness") ?? undefined,
       });
     const container = getContainer();
-    const account = await container
-      .accountsForUser(toUserId(sessionUser.id))
-      .getOrCreateBillingAccountForUser({ userId: sessionUser.id });
+    // CACHED_TENANT_RESOLUTION: warm hit = 0 DB round-trips; cold hit = one
+    // transaction-free SELECT (create branch only on genuine first request).
+    const billingAccountId = await resolveBillingAccountId(
+      container.serviceAccountService,
+      sessionUser.id
+    );
 
-    // COALESCED_PAYLOAD (task.5013): everything below — adapter resolution,
-    // balances, position read models, pnl history — runs at most once per
-    // (billing account, interval, freshness) key per TTL window; concurrent
-    // requests await the same in-flight computation. Errors reject the
+    // COALESCED_PAYLOAD (task.5013, SWR): everything below — adapter
+    // resolution, balances, position read models, pnl history — is served
+    // from cache when fresh; a stale hit (every 30s dashboard tick) returns
+    // the previous payload and kicks ONE background recompute per
+    // (billing account, interval, freshness) key. Errors reject the
     // in-flight promise and are evicted (never cached); partial-success
-    // payloads carrying warnings ARE cached for the short TTL by design.
-    const payload = await coalesce<PolyWalletOverviewOutput>(
-      overviewRouteCacheKey(account.id, interval, freshness),
+    // payloads carrying warnings ARE cached by design.
+    const payload = await coalesceDashboardRoutePayload<PolyWalletOverviewOutput>(
+      overviewRouteCacheKey(billingAccountId, interval, freshness),
       async () => {
         const capturedAt = new Date().toISOString();
 
@@ -158,8 +171,8 @@ export const GET = wrapRouteHandlerWithLogging(
         // BALANCES_OFF_FIRST_PAINT (task.5010): 30s-TTL cached + coalesced;
         // a cold route-cache hit reuses warm balances instead of blocking on
         // 3 Polygon RPC calls. Refresh evicts; degraded reads aren't cached.
-        const balances = await coalesceWalletBalances(account.id, () =>
-          adapter.getBalances(account.id)
+        const balances = await coalesceWalletBalances(billingAccountId, () =>
+          adapter.getBalances(billingAccountId)
         );
         if (!balances) {
           logOverviewComplete(ctx, startedAtMs, {
@@ -201,11 +214,15 @@ export const GET = wrapRouteHandlerWithLogging(
           stale: boolean;
         } | null = null;
         try {
-          const rows = await container.orderLedger.listTenantPositions({
-            billing_account_id: account.id,
-            statuses: [...DASHBOARD_LEDGER_POSITION_STATUSES],
-            limit: DASHBOARD_LEDGER_POSITION_LIMIT,
-          });
+          // SHARED_READ: byte-identical to the execution route's ledger
+          // read — one SWR entry serves both routes (dashboard floor fix).
+          const rows = await coalesceTenantLedgerPositions(billingAccountId, () =>
+            container.orderLedger.listTenantPositions({
+              billing_account_id: billingAccountId,
+              statuses: [...DASHBOARD_LEDGER_POSITION_STATUSES],
+              limit: DASHBOARD_LEDGER_POSITION_LIMIT,
+            })
+          );
           positionSummary = summarizeLedgerOrders(rows, capturedAtDate);
         } catch (err) {
           warnings.push({
@@ -215,11 +232,18 @@ export const GET = wrapRouteHandlerWithLogging(
         }
 
         try {
-          const currentPositions = await readCurrentWalletPositionModel({
-            db: container.serviceDb,
-            walletAddress: balances.address,
-            capturedAt: capturedAtDate,
-          });
+          // SHARED_READ: same model the execution route reads — one
+          // SWR entry serves both routes (dashboard floor fix).
+          const currentPositions = await coalesceCurrentWalletPositions(
+            billingAccountId,
+            balances.address,
+            () =>
+              readCurrentWalletPositionModel({
+                db: container.serviceDb,
+                walletAddress: balances.address,
+                capturedAt: capturedAtDate,
+              })
+          );
           if (
             !currentPositions.warnings.some(
               (warning) => warning.code === "current_positions_wallet_missing"
@@ -334,8 +358,7 @@ export const GET = wrapRouteHandlerWithLogging(
           pnlHistory,
           warnings,
         });
-      },
-      DASHBOARD_ROUTE_CACHE_TTL_MS
+      }
     );
 
     return NextResponse.json(payload);

@@ -319,7 +319,15 @@ async function readTargetLegs(params: {
         AND w.disabled_at IS NULL
     ),
     latest_snapshots AS (
-      SELECT DISTINCT ON (s.trader_wallet_id, s.condition_id, s.token_id)
+      -- DISTINCT ON + ORDER BY are condition_id-led ON PURPOSE: the column
+      -- order matches poly_trader_position_snapshots_market_latest_idx
+      -- (condition_id, trader_wallet_id, token_id, captured_at DESC —
+      -- migration 0063) so the index serves the sort instead of a full
+      -- re-sort of the scanned snapshots. Result-identical to the previous
+      -- wallet-led order: the DISTINCT ON key SET is the same, only the
+      -- column order differs. Only the bounded scalar raw->> projections
+      -- below leave the CTE — never the whole Data-API raw jsonb blob.
+      SELECT DISTINCT ON (s.condition_id, s.trader_wallet_id, s.token_id)
         s.trader_wallet_id,
         s.condition_id,
         s.token_id,
@@ -328,11 +336,19 @@ async function readTargetLegs(params: {
         s.current_value_usdc::numeric AS current_value_usdc,
         s.avg_price::numeric AS avg_price,
         s.captured_at AS last_observed_at,
-        s.raw
+        s.raw->>'title' AS raw_title,
+        s.raw->>'eventTitle' AS raw_event_title,
+        s.raw->>'slug' AS raw_slug,
+        s.raw->>'eventSlug' AS raw_event_slug,
+        s.raw->>'outcome' AS raw_outcome
       FROM poly_trader_position_snapshots s
       WHERE s.condition_id IN (${conditionList})
         AND s.trader_wallet_id IN (SELECT trader_wallet_id FROM active_targets)
-      ORDER BY s.trader_wallet_id, s.condition_id, s.token_id, s.captured_at DESC
+      -- DESC NULLS LAST (not bare DESC = NULLS FIRST) so the pathkeys
+      -- match the index's "captured_at DESC NULLS LAST" exactly.
+      -- captured_at is NOT NULL, so this cannot change results.
+      ORDER BY s.condition_id, s.trader_wallet_id, s.token_id,
+        s.captured_at DESC NULLS LAST
     )
     SELECT
       a.wallet_address,
@@ -340,27 +356,28 @@ async function readTargetLegs(params: {
       ls.condition_id,
       ls.token_id,
       -- Canonical Gamma metadata via poly_market_metadata; fall back to
-      -- legacy raw->>… JSONB scrape so the first deploy (empty metadata
+      -- the legacy raw_* scalar projections (extracted in the CTE above —
+      -- never the wholesale raw jsonb) so the first deploy (empty metadata
       -- table) does not regress. Drop the fallback once the metadata
       -- table is fully backfilled.
       COALESCE(
         NULLIF(pmm.market_title, ''),
-        NULLIF(ls.raw->>'title', ''),
+        NULLIF(ls.raw_title, ''),
         'Polymarket'
       ) AS market_title,
       COALESCE(
         NULLIF(pmm.event_title, ''),
-        NULLIF(ls.raw->>'eventTitle', '')
+        NULLIF(ls.raw_event_title, '')
       ) AS event_title,
       COALESCE(
         NULLIF(pmm.market_slug, ''),
-        NULLIF(ls.raw->>'slug', '')
+        NULLIF(ls.raw_slug, '')
       ) AS market_slug,
       COALESCE(
         NULLIF(pmm.event_slug, ''),
-        NULLIF(ls.raw->>'eventSlug', '')
+        NULLIF(ls.raw_event_slug, '')
       ) AS event_slug,
-      COALESCE(NULLIF(ls.raw->>'outcome', ''), 'UNKNOWN') AS outcome,
+      COALESCE(NULLIF(ls.raw_outcome, ''), 'UNKNOWN') AS outcome,
       ls.shares,
       ls.cost_basis_usdc,
       -- LIVE_MARK_FROM_CURRENT_POSITIONS (task.5012): snapshots are only

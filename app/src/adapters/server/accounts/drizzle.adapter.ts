@@ -761,6 +761,25 @@ export class ServiceDrizzleAccountService implements ServiceAccountService {
     };
   }
 
+  /**
+   * Read path for hot routes: one SELECT on `billing_accounts` by owner,
+   * no transaction, no `virtual_keys` join (dashboard read paths only need
+   * the tenant id). Null on miss — caller decides whether to create.
+   */
+  async findBillingAccountIdForUser(userId: string): Promise<string | null> {
+    if (!isValidUuid(userId)) {
+      const dbFingerprint = getDbFingerprint(serverEnv().DATABASE_SERVICE_URL);
+      throw new Error(
+        `BUG: expected valid UUID v4 for owner_user_id, got: ${userId}. DB: ${dbFingerprint}`
+      );
+    }
+    const account = await this.db.query.billingAccounts.findFirst({
+      columns: { id: true },
+      where: eq(billingAccounts.ownerUserId, userId),
+    });
+    return account?.id ?? null;
+  }
+
   async getOrCreateBillingAccountForUser({
     userId,
     displayName,

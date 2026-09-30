@@ -963,8 +963,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           )
         : eq(polyCopyTradeFills.billingAccountId, opts.billing_account_id);
 
+      // Explicit projection (dashboard floor fix) — see LEDGER_ROW_COLUMNS.
       const rows = await deps.db
-        .select()
+        .select(LEDGER_ROW_COLUMNS)
         .from(polyCopyTradeFills)
         .where(whereClause)
         .orderBy(desc(polyCopyTradeFills.observedAt))
@@ -979,8 +980,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       const limit = opts.limit ?? DEFAULT_LIST_LIMIT;
       const statuses = opts.statuses ?? ["open", "filled", "partial"];
 
+      // Explicit projection (dashboard floor fix) — see LEDGER_ROW_COLUMNS.
       const rows = await deps.db
-        .select()
+        .select(LEDGER_ROW_COLUMNS)
         .from(polyCopyTradeFills)
         .where(
           and(
@@ -1318,7 +1320,47 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
   return root;
 }
 
-function mapLedgerRow(r: typeof polyCopyTradeFills.$inferSelect): LedgerRow {
+/**
+ * Explicit projection for `LedgerRow`-producing reads (dashboard floor
+ * fix): exactly the columns `mapLedgerRow` consumes. Excluded on purpose:
+ * `createdByUserId`, `marketId`, `price`, `shares`, `feesUsdc` — no
+ * `LedgerRow` consumer reads them (market/condition ids come from
+ * `attributes`). `attributes` itself is selected whole: it is a curated,
+ * bounded set of scalar display fields (`insertPending` writes ~17 short
+ * keys; `markError` caps `error` at 512 chars) that the read mappers
+ * (`toWalletExecutionPosition`, `summarizeLedgerOrders`, the orders route)
+ * consume nearly in full via the generic `readLedger*` helpers — there is
+ * no raw-debug blob inside it to strip, so per-path jsonb fragments would
+ * add brittleness for no byte savings.
+ */
+const LEDGER_ROW_COLUMNS = {
+  targetId: polyCopyTradeFills.targetId,
+  fillId: polyCopyTradeFills.fillId,
+  observedAt: polyCopyTradeFills.observedAt,
+  clientOrderId: polyCopyTradeFills.clientOrderId,
+  orderId: polyCopyTradeFills.orderId,
+  status: polyCopyTradeFills.status,
+  positionLifecycle: polyCopyTradeFills.positionLifecycle,
+  attributes: polyCopyTradeFills.attributes,
+  syncedAt: polyCopyTradeFills.syncedAt,
+  createdAt: polyCopyTradeFills.createdAt,
+  updatedAt: polyCopyTradeFills.updatedAt,
+  billingAccountId: polyCopyTradeFills.billingAccountId,
+  mode: polyCopyTradeFills.mode,
+};
+
+/**
+ * Narrowed row shape for `mapLedgerRow` — a full `$inferSelect` row is
+ * assignable, so callers using `.select()` keep working. Exported for the
+ * projection-equivalence unit test only.
+ * @internal
+ */
+export type LedgerSelectedRow = Pick<
+  typeof polyCopyTradeFills.$inferSelect,
+  keyof typeof LEDGER_ROW_COLUMNS
+>;
+
+export function mapLedgerRow(r: LedgerSelectedRow): LedgerRow {
   return {
     target_id: r.targetId,
     fill_id: r.fillId,
