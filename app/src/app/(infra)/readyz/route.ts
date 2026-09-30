@@ -4,14 +4,14 @@
 /**
  * Module: `@app/readyz`
  * Purpose: HTTP readiness endpoint. The default (k8s probe) path answers only "can this pod serve HTTP?" — local serving readiness: env, runtime secrets, system tenant.
- * Scope: Validates env + runtime secrets + system tenant (fatal). Checks EVM RPC, Temporal, and scheduler-worker connectivity but treats transient failures as NON-FATAL on the default probe (logged, still 200). `?deep=1` restores hard substrate assertion for provisioning / stack-test smoke checks.
- * Invariants: Always returns valid readyz schema; force-dynamic runtime. Every managed non-test node requires and exercises EVM RPC even before payment activation. The default path does not drain the fleet for a transient upstream failure (incident 2026-06-26: scheduler-worker hiccup → fleet-wide 502); `?deep=1` forces a live RPC read and makes EVM RPC, Temporal, and scheduler-worker failures fatal (503).
+ * Scope: Validates env + runtime secrets + system tenant (fatal). Checks EVM RPC, Temporal, and scheduler-worker connectivity but treats transient failures as NON-FATAL on the default probe (logged, still 200). `?deep=1` restores hard substrate assertion for provisioning / stack-test smoke checks. Also reads (never runs) the boot-time Polymarket egress assertion latch.
+ * Invariants: EGRESS_GEOBLOCK_LATCH_IS_FATAL: when the boot-time egress assertion latched (N consecutive literal `blocked:true` verdicts from Polymarket inside the boot window), this endpoint 503s with reason `EGRESS_GEOBLOCKED` so the operator's boot SLO refuses the lease and re-mints elsewhere (story.5050). That latch is sticky, boot-window-bounded and never set by an unreachable oracle, so it cannot reproduce the 2026-06-26 drain; this route only READS it and performs zero IO for it. Always returns valid readyz schema; force-dynamic runtime. Every managed non-test node requires and exercises EVM RPC even before payment activation. The default path does not drain the fleet for a transient upstream failure (incident 2026-06-26: scheduler-worker hiccup → fleet-wide 502); `?deep=1` forces a live RPC read and makes EVM RPC, Temporal, and scheduler-worker failures fatal (503).
  * Side-effects: IO (HTTP response, structured logging, network calls to RPC and Temporal)
  * Notes: Used by Docker HEALTHCHECK, deployment validation, K8s readiness probes.
  *        HTTP status is primary truth: 200 = ready, 503 = not ready.
  *        Provisioning / smoke checks that must assert the substrate is up call `/readyz?deep=1`.
  *        Logs readiness failures for deployment debugging.
- * Links: `@contracts/meta.readyz.read.v1.contract`, src/shared/env/invariants.ts, src/app/(infra)/livez/route.ts
+ * Links: `@contracts/meta.readyz.read.v1.contract`, src/shared/env/invariants.ts, src/app/(infra)/livez/route.ts, src/lib/egress-geoblock.ts, work/items/story.5050, knowledge entry `node-choose-placement-region`
  * @public
  */
 
@@ -20,6 +20,7 @@ import { NextResponse } from "next/server";
 import { getContainer } from "@/bootstrap/container";
 import { verifySystemTenant } from "@/bootstrap/healthchecks";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import { getEgressGeoblockLatch } from "@/lib/egress-geoblock";
 import { EnvValidationError, serverEnv } from "@/shared/env";
 import {
   assertEvmRpcConfig,
@@ -144,6 +145,41 @@ export const GET = wrapRouteHandlerWithLogging(
         process.env.npm_package_version || "unknown",
         env.APP_BUILD_SHA || "unknown"
       );
+
+      // Polymarket egress assertion (story.5050, knowledge `node-choose-placement-region`).
+      // Country placement narrows the bid pool; it does NOT prove this pod's outbound
+      // identity. The boot probe asked Polymarket directly from inside the lease. If it
+      // latched, this lease can never place an order — fail the probe so the operator's
+      // boot SLO refuses cutover and re-mints on another provider.
+      // ZERO IO: cached latch read only, k8s hits this endpoint constantly.
+      const egress = getEgressGeoblockLatch();
+      if (egress.latched) {
+        ctx.log.error(
+          {
+            event: "poly.egress.geoblock.latched",
+            severity: "critical",
+            reason: "EGRESS_GEOBLOCKED",
+            dependency: "polymarket-egress",
+            egress_ip: egress.egressIp,
+            egress_country: egress.egressCountry,
+            egress_region: egress.egressRegion,
+            latched_at: egress.latchedAt,
+          },
+          "readiness check failed: Polymarket geoblocks this lease's egress — refusing cutover so the lease is re-minted elsewhere"
+        );
+        return new NextResponse(
+          JSON.stringify({
+            status: "error",
+            reason: "EGRESS_GEOBLOCKED",
+            message:
+              "Polymarket geoblocks this pod's outbound path; this lease cannot place orders",
+          }),
+          {
+            status: 503, // Service Unavailable - not ready
+            headers: { "content-type": "application/json" },
+          }
+        );
+      }
 
       // MVP readiness: Validate env + runtime secrets + EVM RPC + Temporal connectivity
       assertRuntimeSecrets(env);
