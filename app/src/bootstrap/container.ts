@@ -1563,8 +1563,10 @@ function createContainer(): Container {
 			}
 		})();
 
-	// task.research-rollup-read-models — one-shot boot walker draining
-	// historical `poly_trader_fills` into `poly_trader_fill_rollups_daily`.
+	// task.research-rollup-read-models — boot walker draining historical
+	// `poly_trader_fills` into `poly_trader_fill_rollups_daily`, with a
+	// bounded exponential-backoff retry on a failed run (boot-window failures
+	// like bug.5293/bug.5314 no longer forfeit the backfill until next deploy).
 	// Resumable at the per-wallet watermark; a caught-up run is one bounded
 	// probe per wallet. Steady-state freshness is owned by the observation
 	// tick's per-wallet accumulate (ROLLUPS_FOLLOW_FILLS), so this job only
@@ -1587,6 +1589,12 @@ function createContainer(): Container {
 						Record<string, unknown>
 					>,
 					logger: backfillLogger,
+					// fix/backfill-retry-backoff — re-checked before every retry
+					// attempt: env gate still on AND this pod still holds the
+					// task.5016 jobs epoch (the elector may have demoted us during
+					// the backoff window; stopJobs() also aborts the loop directly).
+					shouldRetry: () =>
+						env.POLY_FILL_ROLLUP_BACKFILL_ENABLED && epoch === _jobsEpoch,
 				});
 				// task.5016 — leadership was lost while this boot was in flight.
 				if (epoch !== _jobsEpoch) {

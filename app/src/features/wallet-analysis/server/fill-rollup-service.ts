@@ -244,6 +244,9 @@ function isLockNotAvailable(err: unknown): boolean {
   return code === LOCK_NOT_AVAILABLE;
 }
 
+/** Cap on per-wallet error messages surfaced in the backfill result. */
+const MAX_REPORTED_BACKFILL_ERRORS = 5;
+
 export interface BackfillFillRollupsResult {
   wallets: number;
   walletsCompleted: number;
@@ -251,6 +254,14 @@ export interface BackfillFillRollupsResult {
   batches: number;
   /** False when stopped early (signal) before every wallet caught up. */
   completed: boolean;
+  /**
+   * First few per-wallet error messages (capped). Per-wallet failures are
+   * swallowed here (RESUMABLE at the watermark), so without this the boot
+   * job's retry loop could not classify an all-wallets failure — e.g. the
+   * rollup relation missing because the pod's migration lagged the image
+   * (operator bug.5314).
+   */
+  errors: string[];
 }
 
 /**
@@ -281,6 +292,7 @@ export async function backfillFillRollups(
   let batches = 0;
   let walletsCompleted = 0;
   let stopped = false;
+  const errors: string[] = [];
 
   await Promise.all(
     wallets.map((wallet) =>
@@ -313,12 +325,15 @@ export async function backfillFillRollups(
             "fill-rollup backfill wallet pass complete"
           );
         } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (errors.length < MAX_REPORTED_BACKFILL_ERRORS)
+            errors.push(message);
           log.error(
             {
               event: "poly.fill_rollup.backfill_wallet_error",
               trader_wallet_id: wallet.id,
               wallet: wallet.address,
-              err: err instanceof Error ? err.message : String(err),
+              err: message,
             },
             "fill-rollup backfill wallet failed — resumable at watermark"
           );
@@ -333,6 +348,7 @@ export async function backfillFillRollups(
     fills,
     batches,
     completed: !stopped && walletsCompleted === wallets.length,
+    errors,
   };
 }
 
