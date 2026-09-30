@@ -132,12 +132,12 @@ export async function register(): Promise<void> {
   logAppStarted();
 
   // IN_WORKLOAD_EGRESS_IS_THE_ONLY_PROOF (story.5050, bug.5270): a provider's
-  // advertised region and its Console ipCountryCode describe INGRESS, and we
-  // have measured ingress geo and egress NAT disagreeing. Polymarket geoblocks
-  // EGRESS, so the only admissible evidence that this lease can trade is
-  // Polymarket's own verdict observed from inside it. Logged at boot, with no
-  // auth, so the answer is readable from Loki alone — an operator deciding a
-  // provider move should never need a node secret to see it.
+  // advertised region and its Console ipCountryCode describe INGRESS; they do
+  // not prove the workload's outbound identity. Polymarket geoblocks EGRESS,
+  // so the only admissible evidence that this lease can trade is Polymarket's
+  // own verdict observed from inside it. Logged at boot, with no auth, so the
+  // answer is readable from Loki alone — an operator deciding a provider move
+  // should never need a node secret to see it.
   // Fire-and-forget + fail-soft, matching the boot-sync probe below.
   // biome-ignore lint/style/noProcessEnv: startup check before the config framework
   if (process.env.APP_ENV !== "test") {
