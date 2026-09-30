@@ -32,6 +32,7 @@ export * from "./poly.wallet.grants.v1.contract";
 export * from "./poly.wallet.overview.v1.contract";
 export * from "./poly.wallet.position-actions.v1.contract";
 export * from "./poly.wallet.refresh.v1.contract";
+export * from "./poly.wallet.reset-connection.v1.contract";
 export * from "./poly.wallet.recover.v1.contract";
 export * from "./poly.wallet.withdraw.v1.contract";
 export * from "./poly.wallet-analysis.v1.contract";
