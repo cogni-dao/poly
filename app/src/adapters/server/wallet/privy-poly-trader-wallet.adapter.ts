@@ -647,6 +647,10 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       })
       .where(eq(polyWalletConnections.id, row.id));
 
+    // Re-arm the MIRROR_FLOOD_GUARD throttle for this connection: the creds are
+    // readable again, so a future decrypt fault on it should warn afresh.
+    this.loggedPermanentCredsFaults.delete(row.id);
+
     this.log.warn(
       {
         event: EVENT_NAMES.ADAPTER_POLY_WALLET_RESOLVE_ERROR,
@@ -661,11 +665,56 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     return { ok: true, connectionId: row.id };
   }
 
+  /**
+   * MIRROR_FLOOD_GUARD — connections already logged this process for the
+   * permanent, operator-fixable `clob_creds_invalid` fault (stale/rotated AEAD
+   * key, malformed ciphertext, or missing creds fields). The mirror
+   * re-resolves every tenant on every poll, so a connection whose stored CLOB
+   * creds can no longer be decrypted would otherwise emit one ERROR per minute
+   * forever (prod: tenant 207795de, `aead_decrypt ... [key_id=current]`). Such
+   * a connection cannot recover on retry — only `repairClobCreds` or a
+   * re-provision clears it — so re-logging it at ERROR every tick is pure
+   * noise. We emit it ONCE per connection per process at WARN and suppress the
+   * rest. Transient faults (`backend_unreachable`) are never throttled.
+   */
+  private readonly loggedPermanentCredsFaults = new Set<string>();
+
   private logResolveFailure(
     billingAccountId: string,
     result: Exclude<ResolveSigningContextResult, { ok: true }>
   ): void {
     if (result.reason === "no_connection") return;
+
+    // `clob_creds_invalid` is a PERMANENT condition (wrong/rotated key, bad
+    // ciphertext, or malformed creds) — it cannot clear on retry, so the
+    // mirror's per-poll re-resolve turns it into a per-minute ERROR flood. Skip
+    // the connection cleanly (the caller already treats a null resolve as a
+    // deny) and log at WARN at most once per connection per process rather than
+    // ERROR every tick. The operator still gets the stage-level `detail`
+    // (bug.5304) once, which is all that is actionable.
+    if (result.reason === "clob_creds_invalid") {
+      const throttleKey = result.connectionId ?? billingAccountId;
+      if (this.loggedPermanentCredsFaults.has(throttleKey)) return;
+      this.loggedPermanentCredsFaults.add(throttleKey);
+      this.log.warn(
+        {
+          event: EVENT_NAMES.ADAPTER_POLY_WALLET_RESOLVE_ERROR,
+          dep: "poly_wallet_connections",
+          billing_account_id: billingAccountId,
+          connection_id: result.connectionId ?? null,
+          reasonCode: result.reason,
+          // Names the failing decrypt step so the remedy is selectable from the
+          // log line alone (bug.5304).
+          detail: result.detail ?? null,
+          // Logged once per connection per process to stop the flood; a reset
+          // (`repairClobCreds`) re-arms the warning for this connection.
+          throttled: true,
+        },
+        "poly wallet: CLOB creds un-decryptable — connection needs repair/reset; skipping (logged once per connection per process)"
+      );
+      return;
+    }
+
     this.log.error(
       {
         event: EVENT_NAMES.ADAPTER_POLY_WALLET_RESOLVE_ERROR,
@@ -673,8 +722,6 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         billing_account_id: billingAccountId,
         connection_id: result.connectionId ?? null,
         reasonCode: result.reason,
-        // Present only for clob_creds_invalid; names the failing step so the
-        // remedy is selectable from the log line alone (bug.5304).
         detail: result.detail ?? null,
       },
       EVENT_NAMES.ADAPTER_POLY_WALLET_RESOLVE_ERROR
