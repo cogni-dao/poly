@@ -247,6 +247,51 @@ describe("GET /readyz async substrate contract", () => {
     );
   });
 
+  it("stays healthy on the default probe when Temporal throws a RAW timeout (bug.5343)", async () => {
+    // Regression for bug.5343: the Temporal check raised a bare timeout Error
+    // (NOT an InfraConnectivityError), which escaped the non-fatal branch and
+    // became a fatal 503 INTERNAL_ERROR ~15s into the probe — draining the
+    // fleet on a Temporal blip. The default probe must swallow ANY check
+    // failure, log critical, and stay ready.
+    mocks.assertTemporalConnectivity.mockRejectedValue(
+      new Error("Temporal connection timeout")
+    );
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: "healthy",
+      buildSha: "readyz-contract-sha",
+    });
+    expect(mocks.verifySystemTenant).toHaveBeenCalledOnce();
+    expect(mocks.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "substrate.temporal.unreachable",
+        severity: "critical",
+        reason: "INFRA_UNREACHABLE",
+        dependency: "temporal",
+        message: "Temporal connection timeout",
+      }),
+      expect.stringContaining("MISSION-CRITICAL async substrate down")
+    );
+  });
+
+  it("returns 503 from the deep probe when Temporal throws a RAW timeout (bug.5343)", async () => {
+    // Same raw error, but `?deep=1` still hard-fails so provisioning / stack
+    // smoke checks cannot pass while Temporal is down.
+    mocks.assertTemporalConnectivity.mockRejectedValue(
+      new Error("Temporal connection timeout")
+    );
+
+    const response = await GET(request("/readyz?deep=1"));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ status: "error" });
+    expect(mocks.assertSchedulerWorkerConnectivity).not.toHaveBeenCalled();
+    expect(mocks.verifySystemTenant).not.toHaveBeenCalled();
+  });
+
   it("returns 503 from the deep probe when Temporal is unavailable", async () => {
     mocks.assertTemporalConnectivity.mockRejectedValue(
       new InfraConnectivityError("Temporal is unavailable")
