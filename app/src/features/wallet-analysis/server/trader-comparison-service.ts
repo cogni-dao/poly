@@ -20,11 +20,11 @@
  *     Only `windowed_buys` still touches raw fills — the rank bucketing is per-fill by
  *     definition and window-dependent, so it cannot be pre-bucketed.
  *   - PER_WALLET_TIME_BUDGET (interim, 2026-09-28): each wallet's aggregate races a time budget
- *     (`opts.perWalletBudgetMs`, default 25s, env `POLY_RESEARCH_WALLET_BUDGET_MS`). A wallet
+ *     (`opts.perWalletBudgetMs`, default 8s, env `POLY_RESEARCH_WALLET_BUDGET_MS`). A wallet
  *     that exceeds it is OMITTED from `traders` and surfaced as a `wallet_budget_exceeded`
- *     warning on the partial-failure-200 path — prod measured ~31s on the worst wallet and the
- *     edge killed the response with a 520. The budget does NOT cancel the underlying SQL; it
- *     only bounds the HTTP response. The real fix is tick-written rollup tables (separate design).
+ *     warning on the partial-failure-200 path. The same value is installed as a transaction-local
+ *     Postgres `statement_timeout`, so losing the JS race also cancels the underlying SQL instead
+ *     of leaving it to consume I/O for minutes. The real fix remains complete tick-written rollups.
  * Side-effects: DB reads plus the DB-backed P/L read performed by `getPnlSlice`.
  * Links: nodes/poly/packages/node-contracts/src/poly.research-trader-comparison.v1.contract.ts, work/items/task.5012, work/items/bug.5008
  * @public
@@ -94,10 +94,12 @@ const SIZE_BUCKET_COUNT = 100 / SIZE_BUCKET_STEP;
 
 /**
  * Default per-wallet aggregation budget. Prod (2026-09-28, build 08cedd2)
- * measured ~31s on the worst wallet — past the edge's ~30s 520 cutoff — so the
- * default sits just under it. Env-tunable via `POLY_RESEARCH_WALLET_BUDGET_MS`.
+ * measured ~31s on the worst wallet. The original 25s JS-only budget let the
+ * abandoned SQL run for minutes and starve readiness. Eight seconds returns a
+ * pool slot before the 15s boot-SLO probe fails. Env-tunable via
+ * `POLY_RESEARCH_WALLET_BUDGET_MS`.
  */
-export const DEFAULT_TRADER_COMPARISON_WALLET_BUDGET_MS = 25_000;
+export const DEFAULT_TRADER_COMPARISON_WALLET_BUDGET_MS = 8_000;
 
 /** Warning code emitted when a wallet's aggregate exceeds the time budget. */
 export const TRADER_COMPARISON_BUDGET_WARNING_CODE = "wallet_budget_exceeded";
@@ -107,6 +109,15 @@ class TraderComparisonBudgetExceededError extends Error {
     super(`trader-comparison wallet aggregate exceeded ${budgetMs}ms budget`);
     this.name = "TraderComparisonBudgetExceededError";
   }
+}
+
+function isStatementTimeout(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    error.code === "57014" &&
+    error.message.includes("statement timeout")
+  );
 }
 
 export async function getTraderComparison(
@@ -127,14 +138,17 @@ export async function getTraderComparison(
       try {
         const computed = await withBudget(
           budgetMs,
-          computeTrader(db, wallet, address, interval, windowStartIso)
+          computeTrader(db, wallet, address, interval, windowStartIso, budgetMs)
         );
         // Merge only when the wallet beat the budget — a late-completing
         // computation must not mutate an already-returned warnings array.
         warnings.push(...computed.warnings);
         return computed.trader;
       } catch (err) {
-        if (err instanceof TraderComparisonBudgetExceededError) {
+        if (
+          err instanceof TraderComparisonBudgetExceededError ||
+          isStatementTimeout(err)
+        ) {
           warnings.push({
             wallet: address as `0x${string}`,
             code: TRADER_COMPARISON_BUDGET_WARNING_CODE,
@@ -161,14 +175,15 @@ async function computeTrader(
   wallet: TraderComparisonInput,
   address: string,
   interval: PolyWalletOverviewInterval,
-  windowStartIso: string
+  windowStartIso: string,
+  budgetMs: number
 ): Promise<{
   trader: PolyResearchTraderComparisonTrader;
   warnings: PolyResearchTraderComparisonWarning[];
 }> {
   const warnings: PolyResearchTraderComparisonWarning[] = [];
   const [bundle, pnlResult] = await Promise.all([
-    readTradeBundle(db, address, windowStartIso),
+    readTradeBundle(db, address, windowStartIso, budgetMs),
     getPnlSlice(db, address, interval),
   ]);
   const pnlHistory = pnlResult.kind === "ok" ? [...pnlResult.value.history] : [];
@@ -196,8 +211,9 @@ async function computeTrader(
 /**
  * Race `work` against the time budget. On timeout, rejects with
  * `TraderComparisonBudgetExceededError`; `work`'s eventual settlement is
- * absorbed by the already-settled promise (no unhandled rejection). Does NOT
- * cancel the underlying query — interim mitigation only.
+ * absorbed by the already-settled promise (no unhandled rejection). The
+ * bundle's matching Postgres statement_timeout cancels the aggregate at the
+ * same ceiling.
  */
 function withBudget<T>(budgetMs: number, work: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -226,7 +242,8 @@ function withBudget<T>(budgetMs: number, work: Promise<T>): Promise<T> {
 async function readTradeBundle(
   db: Db,
   address: string,
-  windowStartIso: string
+  windowStartIso: string,
+  statementTimeoutMs: number
 ): Promise<{
   summary: TradeSummaryRow | null;
   tradeSizePnl: PolyResearchTraderSizePnl;
@@ -234,6 +251,11 @@ async function readTradeBundle(
   return (db as PostgresJsDatabase<Record<string, unknown>>).transaction(
     async (tx) => {
       const txDb = tx as unknown as Db;
+      await txDb.execute(
+        sql.raw(
+          `SET LOCAL statement_timeout = ${Math.max(1, Math.trunc(statementTimeoutMs))}`
+        )
+      );
       const summary = await readTradeSummary(txDb, address, windowStartIso);
       const tradeSizePnl = await readTradeSizePnl(
         txDb,

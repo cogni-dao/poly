@@ -27,6 +27,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { liveCurrentPositionSql } from "./current-position-staleness";
 import {
+  withResearchReadTimeout,
   windowedFillCountsSelect,
   windowedFillFlowsSelect,
 } from "./fill-rollup-service";
@@ -76,7 +77,9 @@ export async function getBenchmarkSlice(
   try {
     return {
       kind: "ok",
-      value: await readBenchmark(db, addr.toLowerCase(), interval, opts),
+      value: await withResearchReadTimeout(db, async (tx) =>
+        readBenchmark(tx, addr.toLowerCase(), interval, opts)
+      ),
     };
   } catch (err) {
     return {
@@ -133,25 +136,32 @@ async function readBenchmark(
     });
   }
 
-  const [summaryRows, marketRows, gapRows, hedgePolicyRows] = await Promise.all(
-    [
-      readSummary(db, wallet.id, comparisonWallet?.id ?? null, windowStartIso),
-      wallet.kind === "copy_target"
-        ? readMarketRows(
-            db,
-            wallet.id,
-            comparisonWallet?.id ?? null,
-            windowStartIso
-          )
-        : Promise.resolve([]),
-      wallet.kind === "copy_target"
-        ? readActiveGaps(db, wallet.id, comparisonWallet?.id ?? null)
-        : [],
-      wallet.kind === "copy_target"
-        ? readHedgePolicyRows(db, wallet.id)
-        : Promise.resolve([]),
-    ]
+  // One benchmark request used to fan four potentially tail-scanning queries
+  // across the pool. Run them sequentially on the bounded transaction: this
+  // is a degradable research slice, not a reason to starve trading/readiness.
+  const summaryRows = await readSummary(
+    db,
+    wallet.id,
+    comparisonWallet?.id ?? null,
+    windowStartIso
   );
+  const marketRows =
+    wallet.kind === "copy_target"
+      ? await readMarketRows(
+          db,
+          wallet.id,
+          comparisonWallet?.id ?? null,
+          windowStartIso
+        )
+      : [];
+  const gapRows =
+    wallet.kind === "copy_target"
+      ? await readActiveGaps(db, wallet.id, comparisonWallet?.id ?? null)
+      : [];
+  const hedgePolicyRows =
+    wallet.kind === "copy_target"
+      ? await readHedgePolicyRows(db, wallet.id)
+      : [];
 
   const summary = summaryRows[0] ?? {
     target_open_value_usdc: 0,

@@ -65,6 +65,17 @@ export const EPOCH_ISO = "1970-01-01T00:00:00.000Z";
 export const DEFAULT_ROLLUP_BATCH_SIZE = 5_000;
 
 /**
+ * Hard ceiling for request-path research statements.
+ *
+ * The research routes intentionally degrade to slice warnings, so letting one
+ * scan occupy a pool connection for minutes is strictly worse than cancelling
+ * it. Keep this below the edge/readiness timeout: a dashboard request may use
+ * every pool slot, and readiness must get a slot back before the boot SLO
+ * declares a healthy replacement workload dead.
+ */
+export const RESEARCH_READ_STATEMENT_TIMEOUT_MS = 8_000;
+
+/**
  * Batch budget per observation tick per wallet. Normal ticks ingest well under
  * one batch of new fills; the budget only matters while a wallet's history is
  * still draining (backfill job down), where 4x5k per 30s tick still converges.
@@ -83,6 +94,26 @@ export interface AccumulateFillRollupsResult {
   caughtUp: boolean;
   /** True when `skipIfLocked` was set and another accumulator held the cursor. */
   skippedLocked: boolean;
+}
+
+/**
+ * Run request-path research reads with a Postgres-enforced statement ceiling.
+ * SET LOCAL is transaction-scoped, so the timeout cannot leak through the
+ * shared pool into trading or background jobs.
+ */
+export async function withResearchReadTimeout<T>(
+  db: Db,
+  fn: (tx: Db) => Promise<T>,
+  timeoutMs = RESEARCH_READ_STATEMENT_TIMEOUT_MS
+): Promise<T> {
+  return await (db as unknown as {
+    transaction: <R>(cb: (tx: Db) => Promise<R>) => Promise<R>;
+  }).transaction(async (tx) => {
+    await tx.execute(
+      sql.raw(`SET LOCAL statement_timeout = ${Math.trunc(timeoutMs)}`)
+    );
+    return await fn(tx);
+  });
 }
 
 /**
