@@ -81,7 +81,6 @@ describe("Poly product wiring", () => {
 		const repoSpec = readRepoFile(".cogni/repo-spec.yaml");
 
 		for (const secretName of [
-			"POLY_WALLET_RECOVERY_OPS_TOKEN",
 			"PRIVY_USER_WALLETS_APP_ID",
 			"PRIVY_USER_WALLETS_APP_SECRET",
 			"PRIVY_USER_WALLETS_SIGNING_KEY",
@@ -91,7 +90,6 @@ describe("Poly product wiring", () => {
 		]) {
 			expect(secrets).toContain(`name: ${secretName}`);
 		}
-
-		expect(repoSpec).toContain("- key: POLY_WALLET_RECOVERY_OPS_TOKEN");
+		expect(repoSpec).not.toContain("OPS_TOKEN");
 	});
 });

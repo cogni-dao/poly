@@ -5,14 +5,14 @@
  * Module: `@contracts/poly.wallet.connection.v1.contract`
  * Purpose: Contract for provisioning, ops rotation, and reading a Polymarket trading wallet connection.
  * Scope: `POST /api/v1/poly/wallet/connect`,
- *   `POST /api/internal/ops/poly/wallet/rotate-clob-creds`, and
+ *   `POST /api/internal/node-actions/poly/wallet/rotate-clob-creds`, and
  *   `GET /api/v1/poly/wallet/status`. Schema-only. Does not place trades,
  *   set allowances, or move funds.
  * Invariants:
  *   - TENANT_SCOPED: user routes are session-authenticated and derive the
  *     tenant from the authenticated user; request bodies cannot override it.
- *   - OPS_ONLY_ROTATION: CLOB credential rotation is an internal one-time ops
- *     action behind `INTERNAL_OPS_TOKEN`, not a user-facing product control.
+ *   - RBAC_ONLY_ROTATION: CLOB credential rotation requires a short-lived,
+ *     action-bound operator assertion after an OpenFGA `node.repair` allow.
  *   - CUSTODIAL_CONSENT: connect requires explicit acknowledgement.
  *   - STATUS_REFLECTS_ACTIVE_CONNECTION: `connected=true` means there is an
  *     un-revoked `poly_wallet_connections` row for the tenant (DB-only read via

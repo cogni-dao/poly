@@ -2,16 +2,15 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
 /**
- * Module: `@app/api/internal/ops/poly/wallet/reset-connection`
+ * Module: `@app/api/internal/node-actions/poly/wallet/reset-connection`
  * Purpose: Audited operator reset of ONE tenant's Polymarket wallet
  *   connection, so the owner can re-provision a fresh canonical V2 Deposit
  *   Wallet through the normal product UI.
- * Scope: Bearer-auth POST endpoint for operators. Delegates the revoke to
+ * Scope: Operator-asserted POST endpoint. Delegates the revoke to
  *   `PolyTraderWalletPort.revoke`; tombstones copy targets directly.
  * Invariants:
- *   - INTERNAL_OPS_AUTH: requires Bearer INTERNAL_OPS_TOKEN — the node's
- *     standard operator token, already valued in every deployed lane. No
- *     bespoke per-feature token.
+ *   - ASSERTION_BOUND: requires a consume-once node.action.v1 assertion for
+ *     poly.wallet.reset_connection before any state read or mutation.
  *   - NO_STRANDED_FUNDS: refuses while the Deposit Wallet holds USDC.e / pUSD
  *     / POL unless `accept_residual_dust` is set. An ERRORED balance read
  *     always blocks reset and cannot be overridden as dust.
@@ -30,7 +29,6 @@
  * @internal
  */
 
-import { timingSafeEqual } from "node:crypto";
 import {
   polyCopyTradeFills,
   polyCopyTradeTargets,
@@ -43,6 +41,7 @@ import {
 } from "@cogni/poly-node-contracts";
 import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { verifyOperatorNodeAction } from "@/app/_lib/auth/operator-node-action";
 import { getContainer, resolveServiceDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import {
@@ -50,34 +49,13 @@ import {
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
-import { serverEnv } from "@/shared/env";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const MAX_AUTH_HEADER_LENGTH = 512;
-const MAX_TOKEN_LENGTH = 256;
-
 /** Canonical OrderStatus values that mean "still resting at the CLOB". */
 const UNSETTLED_STATUSES = ["pending", "open", "partial"] as const;
-
-function safeCompare(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
-
-function extractBearerToken(authHeader: string | null): string | null {
-  if (!authHeader) return null;
-  if (authHeader.length > MAX_AUTH_HEADER_LENGTH) return null;
-  const trimmed = authHeader.trim();
-  if (!trimmed.toLowerCase().startsWith("bearer ")) return null;
-  const token = trimmed.slice(7).trim();
-  if (token.length > MAX_TOKEN_LENGTH) return null;
-  return token;
-}
 
 async function parseBody(request: Request): Promise<unknown> {
   try {
@@ -88,24 +66,20 @@ async function parseBody(request: Request): Promise<unknown> {
 }
 
 export const POST = wrapRouteHandlerWithLogging(
-  { routeId: "poly.wallet.reset_connection.ops", auth: { mode: "none" } },
+  {
+    routeId: "poly.wallet.reset_connection.node_action",
+    auth: { mode: "none" },
+  },
   async (ctx, request) => {
-    const env = serverEnv();
-    const configuredToken = env.INTERNAL_OPS_TOKEN;
-    if (!configuredToken) {
-      ctx.log.error("INTERNAL_OPS_TOKEN not configured");
+    const verified = await verifyOperatorNodeAction(request, {
+      action: "poly.wallet.reset_connection",
+      target: "/api/internal/node-actions/poly/wallet/reset-connection",
+    });
+    if (!verified.ok) {
       return NextResponse.json(
-        { error: "service_not_configured" },
-        { status: 500 }
+        { error: verified.errorCode },
+        { status: verified.errorCode === "verification_unavailable" ? 503 : 401 }
       );
-    }
-
-    const providedToken = extractBearerToken(
-      request.headers.get("authorization")
-    );
-    if (!providedToken || !safeCompare(providedToken, configuredToken)) {
-      ctx.log.warn("Invalid or missing INTERNAL_OPS_TOKEN");
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
 
     const parsed = polyWalletResetConnectionOperation.input.safeParse(
