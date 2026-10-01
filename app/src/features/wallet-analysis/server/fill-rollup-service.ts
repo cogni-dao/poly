@@ -167,13 +167,22 @@ async function runAccumulateBatch(
       ${lockClause}
     ),
     batch AS (
+      -- LATERAL is load-bearing: it makes the cursor tuple a parameterized
+      -- Index Cond on (trader_wallet_id, created_at, id). A plain join makes
+      -- Postgres scan every already-rolled fill and apply the tuple as a Join
+      -- Filter, turning each incremental batch into a growing history scan.
       SELECT f.condition_id, f.token_id, f.side, f.size_usdc, f.shares,
              f.observed_at, f.created_at, f.id
-      FROM poly_trader_fills f, cur
-      WHERE f.trader_wallet_id = ${traderWalletId}::uuid
-        AND (f.created_at, f.id) > (cur.last_created_at, cur.last_fill_id)
-      ORDER BY f.created_at ASC, f.id ASC
-      LIMIT ${batchSize}
+      FROM cur
+      CROSS JOIN LATERAL (
+        SELECT f.condition_id, f.token_id, f.side, f.size_usdc, f.shares,
+               f.observed_at, f.created_at, f.id
+        FROM poly_trader_fills f
+        WHERE f.trader_wallet_id = ${traderWalletId}::uuid
+          AND (f.created_at, f.id) > (cur.last_created_at, cur.last_fill_id)
+        ORDER BY f.created_at ASC, f.id ASC
+        LIMIT ${batchSize}
+      ) f
     ),
     folded AS (
       INSERT INTO poly_trader_fill_rollups_daily AS r (

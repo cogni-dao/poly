@@ -15,6 +15,7 @@
 
 import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
+import { accumulateFillRollups } from "@/features/wallet-analysis/server/fill-rollup-service";
 import { runMarketOutcomeTick } from "@/features/wallet-analysis/server/market-outcome-service";
 import { refreshMarketMetadata } from "@/features/wallet-analysis/server/poly-market-metadata-service";
 
@@ -93,5 +94,22 @@ describe("market metadata refresh", () => {
     expect(query).not.toMatch(
       /poly_market_metadata\.raw[\s\S]*IS DISTINCT FROM ROW/
     );
+  });
+});
+
+describe("fill-rollup accumulator", () => {
+  it("seeks above the cursor through a lateral index condition", async () => {
+    const db = captureDb([]);
+
+    await accumulateFillRollups(db as never, {
+      traderWalletId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    });
+
+    const batchQuery = db.captured[1] ?? "";
+    expect(batchQuery).toContain("CROSS JOIN LATERAL");
+    expect(batchQuery).toMatch(
+      /WHERE f\.trader_wallet_id = \$\d+::uuid\s+AND \(f\.created_at, f\.id\) > \(cur\.last_created_at, cur\.last_fill_id\)/
+    );
+    expect(batchQuery).not.toMatch(/FROM poly_trader_fills f, cur/);
   });
 });
