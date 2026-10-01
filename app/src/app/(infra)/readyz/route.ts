@@ -113,20 +113,28 @@ async function assertSubstrate(
     await check();
   } catch (error) {
     if (opts.deep) throw error; // explicit deep probe: hard-fail (503)
-    if (error instanceof InfraConnectivityError) {
-      opts.ctx.log.error(
-        {
-          event: opts.event,
-          severity: "critical",
-          reason: error.code,
-          dependency: opts.dependency,
-          message: error.message,
-        },
-        `readiness: ${opts.dependency} unreachable — MISSION-CRITICAL async substrate down (AI/chat is dispatched through Temporal). Returning ready: probe stays non-fatal so the fleet is not drained; the critical alert + request-time 503 cover it.`
-      );
-      return;
-    }
-    throw error; // unexpected error type → fall through to default 503 handling
+    // bug.5343: the default probe is NON-FATAL for ANY substrate failure, not
+    // just `InfraConnectivityError`. A raw timeout / AbortError from the
+    // connectivity check (not wrapped into InfraConnectivityError) must NOT
+    // escape to the generic handler and turn into a fatal 503 INTERNAL_ERROR —
+    // that is exactly the fleet-draining regression this branch exists to
+    // prevent (incident 2026-06-26). Log critical + stay ready regardless of
+    // the thrown error's type; `?deep=1` still hard-fails above.
+    const reason =
+      error instanceof InfraConnectivityError
+        ? error.code
+        : "INFRA_UNREACHABLE";
+    const message = error instanceof Error ? error.message : String(error);
+    opts.ctx.log.error(
+      {
+        event: opts.event,
+        severity: "critical",
+        reason,
+        dependency: opts.dependency,
+        message,
+      },
+      `readiness: ${opts.dependency} unreachable — MISSION-CRITICAL async substrate down (AI/chat is dispatched through Temporal). Returning ready: probe stays non-fatal so the fleet is not drained; the critical alert + request-time 503 cover it.`
+    );
   }
 }
 

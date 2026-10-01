@@ -78,8 +78,11 @@ function buildAdapter(ciphertext: Buffer, rowKeyId?: string) {
   return { adapter, leafLogger };
 }
 
-function resolveErrorCall(leafLogger: { error: ReturnType<typeof vi.fn> }) {
-  const calls = leafLogger.error.mock.calls.filter(
+// `clob_creds_invalid` is a permanent, operator-fixable fault; the adapter
+// logs it at WARN (throttled once per connection per process) rather than ERROR
+// every mirror poll, so the stage-naming assertions read the warn sink.
+function resolveErrorCall(leafLogger: { warn: ReturnType<typeof vi.fn> }) {
+  const calls = leafLogger.warn.mock.calls.filter(
     (call) =>
       (call[0] as { event?: string }).event ===
       "adapter.poly_wallet.resolve_error"
