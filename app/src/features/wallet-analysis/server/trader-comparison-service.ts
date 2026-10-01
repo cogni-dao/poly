@@ -111,6 +111,15 @@ class TraderComparisonBudgetExceededError extends Error {
   }
 }
 
+function isStatementTimeout(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    error.code === "57014" &&
+    error.message.includes("statement timeout")
+  );
+}
+
 export async function getTraderComparison(
   db: Db,
   wallets: readonly TraderComparisonInput[],
@@ -136,7 +145,10 @@ export async function getTraderComparison(
         warnings.push(...computed.warnings);
         return computed.trader;
       } catch (err) {
-        if (err instanceof TraderComparisonBudgetExceededError) {
+        if (
+          err instanceof TraderComparisonBudgetExceededError ||
+          isStatementTimeout(err)
+        ) {
           warnings.push({
             wallet: address as `0x${string}`,
             code: TRADER_COMPARISON_BUDGET_WARNING_CODE,

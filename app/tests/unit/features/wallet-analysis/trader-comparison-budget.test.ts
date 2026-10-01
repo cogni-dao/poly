@@ -47,6 +47,25 @@ function fastEmptyDb(): FakeDb {
   } as unknown as FakeDb;
 }
 
+/** A Db whose aggregate is cancelled by the matching Postgres timeout. */
+function statementTimeoutDb(): FakeDb {
+  let calls = 0;
+  const tx = {
+    execute: async () => {
+      calls += 1;
+      if (calls === 1) return [];
+      throw Object.assign(
+        new Error("canceling statement due to statement timeout"),
+        { code: "57014" }
+      );
+    },
+  };
+  return {
+    transaction: async (fn: (value: typeof tx) => Promise<unknown>) => fn(tx),
+    execute: async () => [],
+  } as unknown as FakeDb;
+}
+
 describe("getTraderComparison per-wallet time budget", () => {
   it("a wallet exceeding the budget is omitted with a wallet_budget_exceeded warning (200 shape)", async () => {
     const response = await getTraderComparison(
@@ -65,6 +84,26 @@ describe("getTraderComparison per-wallet time budget", () => {
 
     // The route 200s exactly this schema — a budget-degraded response must
     // stay contract-valid (partial-failure-200, never a 5xx/520).
+    expect(() =>
+      PolyResearchTraderComparisonResponseSchema.parse(response)
+    ).not.toThrow();
+  });
+
+  it("a Postgres statement timeout follows the same partial-warning path", async () => {
+    const response = await getTraderComparison(
+      statementTimeoutDb(),
+      [{ address: RN1, label: "RN1" }],
+      "ALL",
+      { perWalletBudgetMs: 5_000 }
+    );
+
+    expect(response.traders).toHaveLength(0);
+    expect(response.warnings).toContainEqual(
+      expect.objectContaining({
+        wallet: RN1,
+        code: TRADER_COMPARISON_BUDGET_WARNING_CODE,
+      })
+    );
     expect(() =>
       PolyResearchTraderComparisonResponseSchema.parse(response)
     ).not.toThrow();
