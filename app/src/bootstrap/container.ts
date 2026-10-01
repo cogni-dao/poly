@@ -98,6 +98,7 @@ import {
 	type MimirAdapterConfig,
 	MimirMetricsAdapter,
 	RedisRunStreamAdapter,
+	RedisNodeActionReplayAdapter,
 	SystemClock,
 	TemporalScheduleControlAdapter,
 	UserDrizzleAccountService,
@@ -129,6 +130,7 @@ import {
 	getTestOperatorWallet,
 } from "@/adapters/test";
 import { createToolBindings } from "@/bootstrap/ai/tool-bindings";
+import { startGovernanceSyncOnBoot } from "@/bootstrap/startup-reconcile";
 import { createBoundToolSource } from "@/bootstrap/ai/tool-source.factory";
 import {
 	createPolyTradeExecutorFactory,
@@ -185,6 +187,7 @@ import type {
 	PaymentAttemptServiceRepository,
 	PaymentAttemptUserRepository,
 	RunStreamPort,
+	NodeActionReplayPort,
 	ServiceAccountService,
 	ThreadPersistencePort,
 	TreasuryReadPort,
@@ -283,6 +286,7 @@ export interface Container {
 	runStream: RunStreamPort;
 	/** Node-level event streaming — undefined when REDIS_URL not set */
 	nodeStream: NodeStreamPort | undefined;
+	nodeActionReplay: NodeActionReplayPort;
 	/** Webhook source registrations — normalizers for webhook ingestion */
 	webhookRegistrations: ReadonlyMap<string, DataSourceRegistration>;
 	/**
@@ -516,6 +520,7 @@ function stopAllJobHandles(): void {
 export function getContainer(): Container {
 	if (!_container) {
 		_container = createContainer();
+		startGovernanceSyncOnBoot();
 	}
 	return _container;
 }
@@ -2136,6 +2141,7 @@ function createContainer(): Container {
 	});
 	const runStream = new RedisRunStreamAdapter(redisClient);
 	const nodeStream = new RedisNodeStreamAdapter(redisClient);
+	const nodeActionReplay = new RedisNodeActionReplayAdapter(redisClient);
 
 	// Process health publisher (node-local metrics only — external sources use Temporal)
 	const publisherAbort = new AbortController();
@@ -2193,6 +2199,7 @@ function createContainer(): Container {
 		doltgresWorkItems: workItemAdapter,
 		runStream,
 		nodeStream,
+		nodeActionReplay,
 		get webhookRegistrations() {
 			return getWebhookRegistrations();
 		},

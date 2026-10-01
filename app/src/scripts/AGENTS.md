@@ -30,7 +30,7 @@ Note: This directory currently has no governance sync entrypoint file; sync is t
 ## Public Surface
 
 - **Exports:** none (entry points only)
-- **CLI (if any):** `pnpm governance:schedules:sync` (curl to internal ops endpoint)
+- **CLI (if any):** none
 
 ## Responsibilities
 
@@ -40,12 +40,11 @@ Note: This directory currently has no governance sync entrypoint file; sync is t
 ## Usage
 
 ```bash
-pnpm governance:schedules:sync
 ```
 
 ## Standards
 
-- `governance:schedules:sync` triggers `/api/internal/ops/governance/schedules/sync`
+- Governance schedules reconcile directly at app boot; there is no HTTP trigger.
 
 ## Dependencies
 

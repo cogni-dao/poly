@@ -2,13 +2,14 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
 /**
- * Module: `@app/api/internal/ops/poly/wallet/rotate-clob-creds`
+ * Module: `@app/api/internal/node-actions/poly/wallet/rotate-clob-creds`
  * Purpose: Internal operations endpoint that rotates encrypted per-tenant
  *   Polymarket CLOB L2 API credentials after exposure or controlled maintenance.
- * Scope: Bearer-auth POST endpoint for operators. Delegates credential work to
+ * Scope: Operator-asserted POST endpoint. Delegates credential work to
  *   `PolyTraderWalletPort.rotateClobCreds`; never returns key material.
  * Invariants:
- *   - INTERNAL_OPS_AUTH: Requires Bearer INTERNAL_OPS_TOKEN.
+ *   - ASSERTION_BOUND: requires a consume-once node.action.v1 assertion for
+ *     poly.wallet.rotate_clob_creds before any credential work.
  *   - OPS_ONLY_ROTATION: no product UI/session-auth route exposes this action.
  *   - NO_SECRET_EGRESS: response includes ids + wallet address only; logs carry
  *     counts/error classes only.
@@ -18,7 +19,6 @@
  * @internal
  */
 
-import { timingSafeEqual } from "node:crypto";
 import { polyWalletConnections } from "@cogni/poly-db-schema";
 import {
   type PolyWalletRotateClobCredsOutput,
@@ -26,44 +26,21 @@ import {
 } from "@cogni/poly-node-contracts";
 import { asc, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { verifyOperatorNodeAction } from "@/app/_lib/auth/operator-node-action";
 import { getContainer, resolveServiceDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import {
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
-import { serverEnv } from "@/shared/env";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const MAX_AUTH_HEADER_LENGTH = 512;
-const MAX_TOKEN_LENGTH = 256;
-
 type RotateTarget = {
   readonly billingAccountId: string;
 };
-
-function safeCompare(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
-
-function extractBearerToken(authHeader: string | null): string | null {
-  if (!authHeader) return null;
-  if (authHeader.length > MAX_AUTH_HEADER_LENGTH) return null;
-
-  const trimmed = authHeader.trim();
-  if (!trimmed.toLowerCase().startsWith("bearer ")) return null;
-
-  const token = trimmed.slice(7).trim();
-  if (token.length > MAX_TOKEN_LENGTH) return null;
-
-  return token;
-}
 
 function classifyRotationError(error: unknown): string {
   const code = (error as { code?: unknown } | undefined)?.code;
@@ -110,24 +87,20 @@ async function resolveTargets(input: {
 }
 
 export const POST = wrapRouteHandlerWithLogging(
-  { routeId: "poly.wallet.rotate_clob_creds.ops", auth: { mode: "none" } },
+  {
+    routeId: "poly.wallet.rotate_clob_creds.node_action",
+    auth: { mode: "none" },
+  },
   async (ctx, request) => {
-    const env = serverEnv();
-    const configuredToken = env.INTERNAL_OPS_TOKEN;
-    if (!configuredToken) {
-      ctx.log.error("INTERNAL_OPS_TOKEN not configured");
+    const verified = await verifyOperatorNodeAction(request, {
+      action: "poly.wallet.rotate_clob_creds",
+      target: "/api/internal/node-actions/poly/wallet/rotate-clob-creds",
+    });
+    if (!verified.ok) {
       return NextResponse.json(
-        { error: "service_not_configured" },
-        { status: 500 }
+        { error: verified.errorCode },
+        { status: verified.errorCode === "verification_unavailable" ? 503 : 401 }
       );
-    }
-
-    const providedToken = extractBearerToken(
-      request.headers.get("authorization")
-    );
-    if (!providedToken || !safeCompare(providedToken, configuredToken)) {
-      ctx.log.warn("Invalid or missing INTERNAL_OPS_TOKEN");
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
 
     const parsed = polyWalletRotateClobCredsOperation.input.safeParse(

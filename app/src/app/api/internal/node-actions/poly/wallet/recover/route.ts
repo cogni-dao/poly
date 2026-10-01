@@ -8,7 +8,6 @@
  * confirmation. It never revokes, unlinks, or deletes a wallet.
  */
 
-import { timingSafeEqual } from "node:crypto";
 import {
   polyCopyTradeFills,
   polyCopyTradeTargets,
@@ -20,29 +19,16 @@ import {
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getAddress } from "viem";
+import { verifyOperatorNodeAction } from "@/app/_lib/auth/operator-node-action";
 import { resolveServiceDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import {
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
-import { serverEnv } from "@/shared/env";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-function safeTokenEqual(a: string, b: string): boolean {
-  const left = Buffer.from(a, "utf8");
-  const right = Buffer.from(b, "utf8");
-  return left.length === right.length && timingSafeEqual(left, right);
-}
-
-function bearerToken(request: Request): string | null {
-  const header = request.headers.get("authorization");
-  if (!header || header.length > 512) return null;
-  const match = /^Bearer\s+(.{32,256})$/i.exec(header.trim());
-  return match?.[1] ?? null;
-}
 
 function errorCode(error: unknown): string {
   const code = (error as { code?: unknown } | undefined)?.code;
@@ -50,18 +36,17 @@ function errorCode(error: unknown): string {
 }
 
 export const POST = wrapRouteHandlerWithLogging(
-  { routeId: "poly.wallet.recover.ops", auth: { mode: "none" } },
+  { routeId: "poly.wallet.recover.node_action", auth: { mode: "none" } },
   async (ctx, request) => {
-    const configuredToken = serverEnv().POLY_WALLET_RECOVERY_OPS_TOKEN;
-    const providedToken = bearerToken(request);
-    if (!configuredToken) {
+    const verified = await verifyOperatorNodeAction(request, {
+      action: "poly.wallet.recover_funds",
+      target: "/api/internal/node-actions/poly/wallet/recover",
+    });
+    if (!verified.ok) {
       return NextResponse.json(
-        { error: "service_not_configured" },
-        { status: 503 }
+        { error: verified.errorCode },
+        { status: verified.errorCode === "verification_unavailable" ? 503 : 401 }
       );
-    }
-    if (!providedToken || !safeTokenEqual(providedToken, configuredToken)) {
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
 
     const parsed = polyWalletRecoverOperation.input.safeParse(
@@ -157,7 +142,7 @@ export const POST = wrapRouteHandlerWithLogging(
         amountAtomic:
           body.amount_atomic === "max" ? 1n : BigInt(body.amount_atomic),
         sweepNative: body.amount_atomic === "max",
-        requestedByUserId: `internal-ops:${ctx.reqId}`,
+        requestedByUserId: verified.claims.actorId,
       });
 
     try {

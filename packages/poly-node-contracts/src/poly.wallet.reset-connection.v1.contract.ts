@@ -6,7 +6,7 @@
  * Purpose: Contract for the audited operator reset of ONE tenant's Polymarket
  *   wallet connection, so the owner can re-provision a fresh canonical V2
  *   Deposit Wallet through the normal product UI.
- * Scope: `POST /api/v1/.../internal/ops/poly/wallet/reset-connection`.
+ * Scope: `POST /api/internal/node-actions/poly/wallet/reset-connection`.
  *   Schema-only. Moves no funds and deletes no history.
  * Invariants:
  *   - REVOKE_NEVER_DELETES — reset revokes the ACTIVE connection + grants and
