@@ -7,8 +7,8 @@
  *          `/markets/{conditionId}` for resolution outcomes and writes them into
  *          `poly_market_outcomes`. Iterates conditions (not wallets) so the table
  *          stays fresh for every `(condition_id, token_id)` touched by an active
- *          wallet — current open positions plus fills observed within the last
- *          30 days.
+ *          wallet — current open positions plus fill rollups observed within
+ *          the last 30 days.
  * Scope: Feature service. Caller injects DB/clobClient/logger/metrics; the
  *        bootstrap job owns scheduling.
  * Invariants:
@@ -20,8 +20,12 @@
  *   - BATCH_BOUNDED: per-tick batch capped (default 100) to bound runtime.
  *     Remaining stale conditions roll over to the next tick.
  *   - BACKFILL_ONCE: when `includeBackfill=true` the tick drops the 30-day
- *     observed-fills filter and walks the full historical condition set;
+ *     rollup filter and walks the full historical condition set;
  *     callers flip the flag back to false after the first complete run.
+ *   - NO_RAW_FILL_SCAN: condition discovery reads the compact daily rollup,
+ *     never the multi-million-row raw fills table. The observation writer
+ *     folds fills into the rollup before this independent background tick;
+ *     active positions cover the live condition set while that fold settles.
  * Side-effects: IO via injected DB + injected CLOB client.
  * Links: work/items/task.5012, work/items/task.5016, work/items/spike.5001
  * @public
@@ -91,9 +95,9 @@ export async function runMarketOutcomeTick(
   const batchSize = deps.batchSize ?? DEFAULT_BATCH_SIZE;
   const includeBackfill = deps.includeBackfill ?? false;
 
-  const fillsFilter = includeBackfill
+  const rollupFilter = includeBackfill
     ? sql``
-    : sql`WHERE observed_at > now() - INTERVAL '30 days'`;
+    : sql`WHERE last_observed_at > now() - INTERVAL '30 days'`;
   // In backfill mode, the drain criterion is "every active condition has been
   // resolved at least once" — so we filter to never-resolved rows only. This
   // is reachable: once every active condition has an outcome row, the query
@@ -106,13 +110,13 @@ export async function runMarketOutcomeTick(
 
   const candidates = (await deps.db.execute(sql`
     WITH active_conditions AS (
-      SELECT DISTINCT condition_id, token_id
+      SELECT condition_id, token_id
       FROM poly_trader_current_positions
       WHERE active = true
       UNION
-      SELECT DISTINCT condition_id, token_id
-      FROM poly_trader_fills
-      ${fillsFilter}
+      SELECT condition_id, token_id
+      FROM poly_trader_fill_rollups_daily
+      ${rollupFilter}
     )
     SELECT a.condition_id, a.token_id
     FROM active_conditions a

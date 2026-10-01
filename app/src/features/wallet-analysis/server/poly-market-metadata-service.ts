@@ -20,6 +20,8 @@
  *     row sourced from the most recently observed position wins
  *     (DISTINCT ON + ORDER BY last_observed_at DESC). Market-level fields
  *     are stable across traders, so this is deterministic in practice.
+ *   - WRITE_ONLY_ON_CHANGE: stable typed metadata is compared null-safely;
+ *     unchanged rows do not rewrite `raw`/`fetched_at` every observation tick.
  * Side-effects: DB write (`poly_market_metadata`).
  * Links: nodes/poly/packages/db-schema/src/trader-activity.ts (table).
  * @internal
@@ -48,51 +50,91 @@ export type RefreshMarketMetadataResult = {
 
 /**
  * Refresh `poly_market_metadata` by projecting position-raw JSONB into typed
- * columns. Single-statement upsert; idempotent modulo the `fetched_at`
- * timestamp.
+ * columns. Single-statement upsert; unchanged metadata performs zero writes.
  */
 export async function refreshMarketMetadata(deps: {
   db: Db;
   logger: LoggerPort;
 }): Promise<RefreshMarketMetadataResult> {
-  let written = 0;
   try {
-    const result = await deps.db.execute<{ condition_id: string }>(sql`
-      INSERT INTO poly_market_metadata (
-        condition_id,
-        market_title,
-        market_slug,
-        event_title,
-        event_slug,
-        end_date,
-        raw,
-        fetched_at
+    const result = await deps.db.execute<{
+      scanned: number | string;
+      written: number | string;
+    }>(sql`
+      WITH candidates AS MATERIALIZED (
+        SELECT DISTINCT ON (condition_id)
+          condition_id,
+          NULLIF(raw->>'title', '')                AS market_title,
+          NULLIF(raw->>'slug', '')                 AS market_slug,
+          NULLIF(raw->>'eventTitle', '')           AS event_title,
+          NULLIF(raw->>'eventSlug', '')            AS event_slug,
+          NULLIF(raw->>'endDate', '')::timestamptz AS end_date,
+          raw
+        FROM poly_trader_current_positions
+        WHERE active = true
+          AND raw IS NOT NULL
+          AND condition_id <> ''
+        ORDER BY condition_id, last_observed_at DESC
+      ),
+      upserted AS (
+        INSERT INTO poly_market_metadata (
+          condition_id,
+          market_title,
+          market_slug,
+          event_title,
+          event_slug,
+          end_date,
+          raw,
+          fetched_at
+        )
+        SELECT
+          condition_id,
+          market_title,
+          market_slug,
+          event_title,
+          event_slug,
+          end_date,
+          raw,
+          now()
+        FROM candidates
+        ON CONFLICT (condition_id) DO UPDATE SET
+          market_title = EXCLUDED.market_title,
+          market_slug  = EXCLUDED.market_slug,
+          event_title  = EXCLUDED.event_title,
+          event_slug   = EXCLUDED.event_slug,
+          end_date     = EXCLUDED.end_date,
+          raw          = EXCLUDED.raw,
+          fetched_at   = EXCLUDED.fetched_at
+        WHERE ROW(
+          poly_market_metadata.market_title,
+          poly_market_metadata.market_slug,
+          poly_market_metadata.event_title,
+          poly_market_metadata.event_slug,
+          poly_market_metadata.end_date
+        ) IS DISTINCT FROM ROW(
+          EXCLUDED.market_title,
+          EXCLUDED.market_slug,
+          EXCLUDED.event_title,
+          EXCLUDED.event_slug,
+          EXCLUDED.end_date
+        )
+        RETURNING 1
       )
-      SELECT DISTINCT ON (condition_id)
-        condition_id,
-        NULLIF(raw->>'title', '')                       AS market_title,
-        NULLIF(raw->>'slug', '')                        AS market_slug,
-        NULLIF(raw->>'eventTitle', '')                  AS event_title,
-        NULLIF(raw->>'eventSlug', '')                   AS event_slug,
-        NULLIF(raw->>'endDate', '')::timestamptz        AS end_date,
-        raw,
-        now()                                           AS fetched_at
-      FROM poly_trader_current_positions
-      WHERE active = true
-        AND raw IS NOT NULL
-        AND condition_id <> ''
-      ORDER BY condition_id, last_observed_at DESC
-      ON CONFLICT (condition_id) DO UPDATE SET
-        market_title = EXCLUDED.market_title,
-        market_slug  = EXCLUDED.market_slug,
-        event_title  = EXCLUDED.event_title,
-        event_slug   = EXCLUDED.event_slug,
-        end_date     = EXCLUDED.end_date,
-        raw          = EXCLUDED.raw,
-        fetched_at   = EXCLUDED.fetched_at
-      RETURNING condition_id
+      SELECT
+        (SELECT COUNT(*)::int FROM candidates) AS scanned,
+        (SELECT COUNT(*)::int FROM upserted) AS written
     `);
-    written = extractRowCount(result);
+    const counts = extractCounts(result);
+    deps.logger.info(
+      {
+        event: "poly.market_metadata.refresh",
+        phase: "tick_ok",
+        scanned: counts.scanned,
+        written: counts.written,
+      },
+      "market metadata refresh complete"
+    );
+    return counts;
   } catch (err: unknown) {
     deps.logger.warn(
       {
@@ -104,30 +146,25 @@ export async function refreshMarketMetadata(deps: {
     );
     return { scanned: 0, written: 0 };
   }
-  deps.logger.info(
-    {
-      event: "poly.market_metadata.refresh",
-      phase: "tick_ok",
-      scanned: written,
-      written,
-    },
-    "market metadata refresh complete"
-  );
-  return { scanned: written, written };
 }
 
 /**
  * `db.execute` returns different shapes across the two drizzle drivers
  * (`postgres-js` returns an array-like; `node-postgres` returns a `QueryResult`
- * with `.rows`). Both are RETURNING-aware — we count the returned rows.
+ * with `.rows`). Normalize the single aggregate row from either driver.
  */
-function extractRowCount(result: unknown): number {
-  if (Array.isArray(result)) return result.length;
+function extractCounts(result: unknown): RefreshMarketMetadataResult {
+  let rows: unknown[] = [];
+  if (Array.isArray(result)) rows = result;
   if (result && typeof result === "object") {
-    const rows = (result as { rows?: unknown }).rows;
-    if (Array.isArray(rows)) return rows.length;
-    const rowCount = (result as { rowCount?: unknown }).rowCount;
-    if (typeof rowCount === "number") return rowCount;
+    const resultRows = (result as { rows?: unknown }).rows;
+    if (Array.isArray(resultRows)) rows = resultRows;
   }
-  return 0;
+  const first = rows[0] as
+    | { scanned?: number | string; written?: number | string }
+    | undefined;
+  return {
+    scanned: Number(first?.scanned ?? 0),
+    written: Number(first?.written ?? 0),
+  };
 }
