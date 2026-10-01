@@ -15,7 +15,11 @@
 
 import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
-import { accumulateFillRollups } from "@/features/wallet-analysis/server/fill-rollup-service";
+import {
+  accumulateFillRollups,
+  RESEARCH_READ_STATEMENT_TIMEOUT_MS,
+  withResearchReadTimeout,
+} from "@/features/wallet-analysis/server/fill-rollup-service";
 import { runMarketOutcomeTick } from "@/features/wallet-analysis/server/market-outcome-service";
 import { refreshMarketMetadata } from "@/features/wallet-analysis/server/poly-market-metadata-service";
 
@@ -111,5 +115,30 @@ describe("fill-rollup accumulator", () => {
       /WHERE f\.trader_wallet_id = \$\d+::uuid\s+AND \(f\.created_at, f\.id\) > \(cur\.last_created_at, cur\.last_fill_id\)/
     );
     expect(batchQuery).not.toMatch(/FROM poly_trader_fills f, cur/);
+  });
+});
+
+describe("research read load bound", () => {
+  it("sets a transaction-local statement timeout before request-path reads", async () => {
+    const captured: string[] = [];
+    const tx = {
+      execute: async (query: unknown) => {
+        captured.push(new PgDialect().sqlToQuery(query as never).sql);
+        return [];
+      },
+    };
+    const db = {
+      transaction: async (fn: (value: typeof tx) => Promise<unknown>) => fn(tx),
+    };
+
+    const result = await withResearchReadTimeout(
+      db as never,
+      async () => "bounded"
+    );
+
+    expect(result).toBe("bounded");
+    expect(captured).toEqual([
+      `SET LOCAL statement_timeout = ${RESEARCH_READ_STATEMENT_TIMEOUT_MS}`,
+    ]);
   });
 });

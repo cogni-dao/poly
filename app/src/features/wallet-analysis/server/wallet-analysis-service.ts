@@ -59,6 +59,7 @@ import { clearTtlCacheByPrefix, coalesce } from "./coalesce";
 import { liveCurrentPositions } from "./current-position-staleness";
 import {
   EPOCH_ISO,
+  withResearchReadTimeout,
   windowedFillCountsSelect,
   windowedFillFlowsSelect,
 } from "./fill-rollup-service";
@@ -256,11 +257,21 @@ export async function getSnapshotSlice(
     // (1) Per-(condition_id, token_id) aggregates ≈ unique-market count.
     // (2) Daily counts for the SNAPSHOT_DAILY_WINDOW (14 rows).
     // (3) 30-day count + latest timestamp + total fill count (1 row).
-    const [positions, dailyRows, activity] = await Promise.all([
-      readPositionAggregatesFromDb(db, lower),
-      readDailyCountsFromDb(db, lower, SNAPSHOT_DAILY_WINDOW),
-      readActivityCountsFromDb(db, lower),
-    ]);
+    // These can all touch the not-yet-rolled tail. Keep them on one bounded
+    // connection instead of fanning three scans across the pool at once.
+    const { positions, dailyRows, activity } = await withResearchReadTimeout(
+      db,
+      async (tx) => {
+        const positions = await readPositionAggregatesFromDb(tx, lower);
+        const dailyRows = await readDailyCountsFromDb(
+          tx,
+          lower,
+          SNAPSHOT_DAILY_WINDOW
+        );
+        const activity = await readActivityCountsFromDb(tx, lower);
+        return { positions, dailyRows, activity };
+      }
+    );
     const cids = [...new Set(positions.map((p) => p.conditionId))];
     // Pick the most-recent candidate condition_ids for `topMarkets`; overfetch
     // a small buffer so the displayed list still reaches `topLimit` even when
