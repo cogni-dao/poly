@@ -259,10 +259,12 @@ export function TradingWalletCard(): ReactElement {
                 No P/L history has been recorded for this interval yet.
               </p>
             ) : null}
-            <WalletProfitLossCard
-              history={data.pnlHistory}
-              interval={interval}
-            />
+            {!pnlHistoryUnavailable ? (
+              <WalletProfitLossCard
+                history={data.pnlHistory}
+                interval={interval}
+              />
+            ) : null}
           </div>
         )}
       </CardContent>

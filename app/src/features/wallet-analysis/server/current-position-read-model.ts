@@ -128,8 +128,26 @@ export async function readCurrentWalletPositionModel(params: {
         pmm.event_title AS metadata_event_title,
         pmm.event_slug AS metadata_event_slug,
         pmm.end_date AS metadata_end_date,
-        count(p.token_id) OVER () AS total_active_rows,
-        coalesce(sum(p.current_value_usdc) OVER (), 0) AS total_positions_mtm
+        count(p.token_id) FILTER (
+          WHERE p.current_value_usdc > 0
+            AND (
+              (pmo.outcome = 'winner' AND r.lifecycle_state IS DISTINCT FROM 'redeemed')
+              OR (
+                coalesce(pmo.outcome, 'unknown') NOT IN ('winner', 'loser')
+                AND coalesce(r.lifecycle_state, '') NOT IN ('redeemed', 'loser', 'dust', 'closed')
+              )
+            )
+        ) OVER () AS total_active_rows,
+        coalesce(sum(p.current_value_usdc) FILTER (
+          WHERE p.current_value_usdc > 0
+            AND (
+              (pmo.outcome = 'winner' AND r.lifecycle_state IS DISTINCT FROM 'redeemed')
+              OR (
+                coalesce(pmo.outcome, 'unknown') NOT IN ('winner', 'loser')
+                AND coalesce(r.lifecycle_state, '') NOT IN ('redeemed', 'loser', 'dust', 'closed')
+              )
+            )
+        ) OVER (), 0) AS total_positions_mtm
       FROM poly_trader_wallets w
       LEFT JOIN poly_trader_ingestion_cursors c
         ON c.trader_wallet_id = w.id

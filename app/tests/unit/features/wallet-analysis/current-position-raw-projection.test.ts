@@ -164,7 +164,9 @@ describe("current-position read model raw->> projection equivalence", () => {
     expect(model.positions).toHaveLength(1);
     expect(model.summary.activeRows).toBe(501);
     expect(model.summary.positionsMtm).toBe(1234.5);
-    expect(db.captured[0]).toContain("limit $1");
+    expect(db.captured[0]).toMatch(/LIMIT \$\d+/);
+    expect(db.captured[0]).toContain("p.current_value_usdc > 0");
+    expect(db.captured[0]).toContain("NOT IN ('redeemed', 'loser', 'dust', 'closed')");
   });
 
   it("SQL projects the 7 scalar raw->> paths and never selects raw wholesale", async () => {

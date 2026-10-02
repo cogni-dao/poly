@@ -317,6 +317,12 @@ function PositionsPanel({
       "current_positions_stale",
     ].includes(warning.code)
   );
+  const previewTruncated = warnings.some(
+    (warning) => warning.code === "positions_preview_truncated"
+  );
+  const otherWarnings = warnings.some(
+    (warning) => warning.code !== "positions_preview_truncated"
+  );
 
   return (
     <div className="space-y-3 px-5 pb-4">
@@ -332,7 +338,11 @@ function PositionsPanel({
             Open positions are unavailable because the wallet position model
             could not be read. This is not a zero-position result.
           </p>
-        ) : isLive && warnings.length > 0 ? (
+        ) : isLive && previewTruncated ? (
+          <p className="text-muted-foreground text-xs">
+            Showing a bounded preview; the Live count is the exact full inventory.
+          </p>
+        ) : isLive && otherWarnings ? (
           <p className="text-muted-foreground text-xs">
             Some upstream data is temporarily unavailable, so a few rows may
             render with a shorter trace.

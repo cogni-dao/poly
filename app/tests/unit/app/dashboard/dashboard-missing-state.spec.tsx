@@ -197,6 +197,7 @@ describe("dashboard missing read-model states", () => {
 
     expect(screen.getByText(/saved observation is stale/i)).toBeInTheDocument();
     expect(screen.queryByText(/until this trading wallet is present/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("pnl chart")).not.toBeInTheDocument();
   });
 
   it.each([
@@ -230,4 +231,29 @@ describe("dashboard missing read-model states", () => {
       ).toBeInTheDocument();
     }
   );
+
+  it("labels a bounded position preview without calling it an upstream failure", () => {
+    state.execution = {
+      address: "0x1111111111111111111111111111111111111111",
+      freshness: "read_model",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      dailyTradeCounts: [],
+      live_positions: [],
+      live_position_count: 501,
+      market_groups: [],
+      closed_positions: [],
+      warnings: [
+        {
+          code: "positions_preview_truncated",
+          message: "Showing 500 of 501 open positions.",
+        },
+      ],
+    };
+
+    render(<ExecutionActivityCard />);
+
+    expect(screen.getByRole("button", { name: /Live.*501/i })).toBeInTheDocument();
+    expect(screen.getByText(/bounded preview/i)).toBeInTheDocument();
+    expect(screen.queryByText(/upstream data is temporarily unavailable/i)).not.toBeInTheDocument();
+  });
 });
