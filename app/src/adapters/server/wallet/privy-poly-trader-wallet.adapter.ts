@@ -207,6 +207,26 @@ const CTF_SET_APPROVAL_ABI = parseAbi([
 ]);
 
 /**
+ * SINGLE_TRADING_ADDRESS_RESOLUTION — the one place that turns a
+ * `poly_wallet_connections` row into the address Polymarket holds positions
+ * at. `funder_address` is the V2 deterministic trading wallet; `address` is
+ * the Privy signer EOA, which only signs. Rows minted before the V2 split
+ * (migration 0066, 2026-09-28) have a null `funder_address` and a signer that
+ * WAS the funder, which is the only reason this coalesce exists — backfilling
+ * the column and making it `NOT NULL` deletes it.
+ *
+ * Every consumer — `getAddress`, `listActiveTradingAddresses` — goes through
+ * here. Re-deriving it anywhere else is how the observer and the executor
+ * drifted onto two different wallets.
+ */
+function resolveTradingAddress(row: {
+  address: string;
+  funderAddress: string | null;
+}): `0x${string}` {
+  return getAddress(row.funderAddress ?? row.address);
+}
+
+/**
  * Minimum POL balance required before we start submitting approval txs.
  * Empirically each tx is ~35k gas @ ~30 gwei ≈ 0.001 POL; 6 txs + headroom
  * for gas-price spikes ≈ 0.02 POL. We gate on 0.02 to keep the UX error
@@ -778,7 +798,34 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       );
       return null;
     }
-    return getAddress(row.funderAddress ?? row.address);
+    return resolveTradingAddress(row);
+  }
+
+  async listActiveTradingAddresses(): Promise<readonly string[]> {
+    return [
+      ...new Set(
+        (await this.listActiveTradingWallets()).map((wallet) =>
+          wallet.address.toLowerCase()
+        )
+      ),
+    ];
+  }
+
+  async listActiveTradingWallets(): Promise<
+    readonly { billingAccountId: string; address: `0x${string}` }[]
+  > {
+    const rows = await this.serviceDb
+      .select({
+        billingAccountId: polyWalletConnections.billingAccountId,
+        address: polyWalletConnections.address,
+        funderAddress: polyWalletConnections.funderAddress,
+      })
+      .from(polyWalletConnections)
+      .where(isNull(polyWalletConnections.revokedAt));
+    return rows.map((row) => ({
+      billingAccountId: row.billingAccountId,
+      address: resolveTradingAddress(row),
+    }));
   }
 
   async getConnectionSummary(billingAccountId: string): Promise<{
@@ -873,9 +920,8 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       errors.push("polygon_rpc_unconfigured");
       return [null, null, null];
     }
-    try {
-      const client = this.getBalancePublicClient(this.polygonRpcUrl);
-      const [usdcERaw, pusdRaw, polRaw] = await Promise.all([
+    const client = this.getBalancePublicClient(this.polygonRpcUrl);
+    const [usdcEResult, pusdResult, polResult] = await Promise.allSettled([
         client.readContract({
           address: USDC_E_POLYGON,
           abi: ERC20_BALANCEOF_ABI,
@@ -889,16 +935,25 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
           args: [addr],
         }),
         client.getBalance({ address: addr }),
-      ]);
-      const usdcE = Number(formatUnits(usdcERaw, USDC_DECIMALS));
-      const pusd = Number(formatUnits(pusdRaw, USDC_DECIMALS));
-      return [usdcE, pusd, Number(formatUnits(polRaw, POL_DECIMALS))];
-    } catch (err) {
+    ]);
+    const readLeg = <T>(
+      name: string,
+      result: PromiseSettledResult<T>,
+      decimals: number
+    ): number | null => {
+      if (result.status === "fulfilled") {
+        return Number(formatUnits(result.value as bigint, decimals));
+      }
       errors.push(
-        `polygon_rpc: ${err instanceof Error ? err.message : String(err)}`
+        `${name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
       );
-      return [null, null, null];
-    }
+      return null;
+    };
+    return [
+      readLeg("usdce_rpc", usdcEResult, USDC_DECIMALS),
+      readLeg("pusd_rpc", pusdResult, USDC_DECIMALS),
+      readLeg("pol_rpc", polResult, POL_DECIMALS),
+    ];
   }
 
   async provision(input: {

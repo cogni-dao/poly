@@ -16,7 +16,10 @@
 
 "use client";
 
-import type { PolyWalletOverviewInterval } from "@cogni/poly-node-contracts";
+import type {
+  PolyWalletOverviewInterval,
+  WalletAnalysisWarning,
+} from "@cogni/poly-node-contracts";
 import type { ReactElement, ReactNode } from "react";
 
 import { Card, CardContent, CardHeader } from "@/components";
@@ -48,6 +51,7 @@ export type WalletAnalysisViewProps = {
   variant?: WalletAnalysisVariant | undefined;
   size?: WalletAnalysisSize | undefined;
   isLoading?: WalletAnalysisLoadingState | undefined;
+  warnings?: readonly WalletAnalysisWarning[] | undefined;
   capturedAt?: string | undefined;
   rankBadge?: string | undefined;
   pnlInterval?: PolyWalletOverviewInterval | undefined;
@@ -63,6 +67,7 @@ export function WalletAnalysisView({
   variant = "page",
   size = "default",
   isLoading,
+  warnings,
   capturedAt,
   rankBadge,
   pnlInterval,
@@ -74,6 +79,7 @@ export function WalletAnalysisView({
       <ResearchDeepDiveVariant
         data={data}
         isLoading={isLoading}
+        warnings={warnings}
         capturedAt={capturedAt}
         pnlInterval={pnlInterval}
         onPnlIntervalChange={onPnlIntervalChange}
@@ -89,6 +95,7 @@ export function WalletAnalysisView({
         data={data}
         size="default"
         isLoading={isLoading}
+        warnings={warnings}
         pnlInterval={pnlInterval}
         onPnlIntervalChange={onPnlIntervalChange}
         headerActions={headerActions}
@@ -100,6 +107,7 @@ export function WalletAnalysisView({
       data={data}
       size={size}
       isLoading={isLoading}
+      warnings={warnings}
       rankBadge={rankBadge}
       pnlInterval={pnlInterval}
       onPnlIntervalChange={onPnlIntervalChange}
@@ -112,6 +120,7 @@ function PageVariant({
   data,
   size,
   isLoading,
+  warnings,
   rankBadge,
   pnlInterval,
   onPnlIntervalChange,
@@ -120,6 +129,7 @@ function PageVariant({
   data: WalletAnalysisData;
   size: WalletAnalysisSize;
   isLoading?: WalletAnalysisLoadingState | undefined;
+  warnings?: readonly WalletAnalysisWarning[] | undefined;
   rankBadge?: string | undefined;
   pnlInterval?: PolyWalletOverviewInterval | undefined;
   onPnlIntervalChange?:
@@ -128,6 +138,9 @@ function PageVariant({
   headerActions?: ReactNode | undefined;
 }): ReactElement {
   const isHero = size === "hero";
+  const snapshotWarning = warnings?.find((item) => item.slice === "snapshot");
+  const balanceWarning = warnings?.find((item) => item.slice === "balance");
+  const pnlWarning = warnings?.find((item) => item.slice === "pnl");
   return (
     <Card
       className={
@@ -156,11 +169,20 @@ function PageVariant({
       </CardHeader>
 
       <CardContent className="flex flex-col gap-6 pt-0">
-        <StatGrid snapshot={data.snapshot} isLoading={isLoading?.snapshot} />
-
-        {(data.balance || isLoading?.balance) && (
-          <BalanceBar balance={data.balance} isLoading={isLoading?.balance} />
+        {snapshotWarning ? (
+          <UnavailableNotice label="Snapshot" message={snapshotWarning.message} />
+        ) : (
+          <StatGrid snapshot={data.snapshot} isLoading={isLoading?.snapshot} />
         )}
+
+        {balanceWarning ? (
+          <UnavailableNotice
+            label="Balance"
+            message={balanceWarning.message}
+          />
+        ) : (data.balance || isLoading?.balance) ? (
+          <BalanceBar balance={data.balance} isLoading={isLoading?.balance} />
+        ) : null}
 
         {pnlInterval && onPnlIntervalChange ? (
           <TimeWindowHeader
@@ -171,13 +193,15 @@ function PageVariant({
           />
         ) : null}
 
-        {(data.pnl || isLoading?.pnl || pnlInterval) && (
+        {pnlWarning ? (
+          <UnavailableNotice label="P/L" message={pnlWarning.message} />
+        ) : (data.pnl || isLoading?.pnl || pnlInterval) ? (
           <WalletProfitLossCard
             history={data.pnl?.history}
             interval={pnlInterval ?? data.pnl?.interval ?? "ALL"}
             isLoading={isLoading?.pnl}
           />
-        )}
+        ) : null}
 
         {(data.benchmark || isLoading?.benchmark) && (
           <CopyTargetBenchmarkBlock
@@ -202,6 +226,7 @@ function PageVariant({
 function ResearchDeepDiveVariant({
   data,
   isLoading,
+  warnings,
   capturedAt,
   pnlInterval,
   onPnlIntervalChange,
@@ -209,6 +234,7 @@ function ResearchDeepDiveVariant({
 }: {
   data: WalletAnalysisData;
   isLoading?: WalletAnalysisLoadingState | undefined;
+  warnings?: readonly WalletAnalysisWarning[] | undefined;
   capturedAt?: string | undefined;
   pnlInterval?: PolyWalletOverviewInterval | undefined;
   onPnlIntervalChange?:
@@ -216,6 +242,10 @@ function ResearchDeepDiveVariant({
     | undefined;
   headerActions?: ReactNode | undefined;
 }): ReactElement {
+  const snapshotWarning = warnings?.find((item) => item.slice === "snapshot");
+  const tradesWarning = warnings?.find((item) => item.slice === "trades");
+  const balanceWarning = warnings?.find((item) => item.slice === "balance");
+  const pnlWarning = warnings?.find((item) => item.slice === "pnl");
   return (
     <Card className="relative overflow-hidden border-primary/20">
       <CardHeader className="gap-3">
@@ -229,7 +259,11 @@ function ResearchDeepDiveVariant({
       </CardHeader>
 
       <CardContent className="flex flex-col gap-6 pt-0">
-        <StatGrid snapshot={data.snapshot} isLoading={isLoading?.snapshot} />
+        {snapshotWarning ? (
+          <UnavailableNotice label="Snapshot" message={snapshotWarning.message} />
+        ) : (
+          <StatGrid snapshot={data.snapshot} isLoading={isLoading?.snapshot} />
+        )}
 
         {(data.benchmark || isLoading?.benchmark) && (
           <CopyTargetBenchmarkBlock
@@ -246,7 +280,9 @@ function ResearchDeepDiveVariant({
         )}
 
         <div className="grid gap-6 xl:grid-cols-3">
-          {(data.pnl || isLoading?.pnl || pnlInterval) && (
+          {pnlWarning ? (
+            <UnavailableNotice label="P/L" message={pnlWarning.message} />
+          ) : (data.pnl || isLoading?.pnl || pnlInterval) ? (
             <div className="flex flex-col gap-4 xl:col-span-2">
               {pnlInterval && onPnlIntervalChange ? (
                 <TimeWindowHeader
@@ -262,19 +298,31 @@ function ResearchDeepDiveVariant({
                 isLoading={isLoading?.pnl}
               />
             </div>
-          )}
+          ) : null}
 
           <div className="flex flex-col gap-4">
-            {(data.balance || isLoading?.balance) && (
+            {balanceWarning ? (
+              <UnavailableNotice
+                label="Balance"
+                message={balanceWarning.message}
+              />
+            ) : (data.balance || isLoading?.balance) ? (
               <BalanceBar
                 balance={data.balance}
                 isLoading={isLoading?.balance}
               />
+            ) : null}
+            {tradesWarning ? (
+              <UnavailableNotice
+                label="Trade history"
+                message={tradesWarning.message}
+              />
+            ) : (
+              <TradesPerDayChart
+                daily={data.trades?.dailyCounts}
+                isLoading={isLoading?.trades}
+              />
             )}
-            <TradesPerDayChart
-              daily={data.trades?.dailyCounts}
-              isLoading={isLoading?.trades}
-            />
             {capturedAt ? (
               <p className="text-muted-foreground text-xs">
                 Captured {capturedAt}
@@ -284,6 +332,21 @@ function ResearchDeepDiveVariant({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function UnavailableNotice({
+  label,
+  message,
+}: {
+  label: string;
+  message: string;
+}): ReactElement {
+  return (
+    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
+      <p className="font-medium text-sm">{label} unavailable</p>
+      <p className="mt-1 text-muted-foreground text-xs">{message}</p>
+    </div>
   );
 }
 

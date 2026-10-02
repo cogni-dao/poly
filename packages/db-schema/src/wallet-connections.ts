@@ -39,13 +39,16 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
+  pgPolicy,
   text,
   timestamp,
   uniqueIndex,
   uuid,
   customType,
 } from "drizzle-orm/pg-core";
+import { billingAccounts } from "./refs";
 
 const bytea = customType<{ data: Buffer; notNull: true; default: false }>({
   dataType() {
@@ -200,6 +203,49 @@ export const polyWalletConnections = pgTable(
       ),
   }),
 );
+
+/** Latest off-render Polygon balance observation for one tenant wallet. */
+export const polyWalletBalanceSnapshots = pgTable(
+  "poly_wallet_balance_snapshots",
+  {
+    billingAccountId: text("billing_account_id")
+      .primaryKey()
+      .references(() => billingAccounts.id, { onDelete: "cascade" }),
+    address: text("address").notNull(),
+    usdcE: numeric("usdc_e", { precision: 20, scale: 8 }),
+    pusd: numeric("pusd", { precision: 20, scale: 8 }),
+    pol: numeric("pol", { precision: 30, scale: 18 }),
+    status: text("status").notNull(),
+    errors: jsonb("errors").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check(
+      "poly_wallet_balance_snapshots_address_shape",
+      sql`${table.address} ~ '^0x[a-fA-F0-9]{40}$'`
+    ),
+    check(
+      "poly_wallet_balance_snapshots_status_check",
+      sql`${table.status} IN ('ok','partial','error')`
+    ),
+    check(
+      "poly_wallet_balance_snapshots_nonnegative",
+      sql`(${table.usdcE} IS NULL OR ${table.usdcE} >= 0) AND (${table.pusd} IS NULL OR ${table.pusd} >= 0) AND (${table.pol} IS NULL OR ${table.pol} >= 0)`
+    ),
+    check(
+      "poly_wallet_balance_snapshots_status_values",
+      sql`(${table.status} = 'ok' AND num_nonnulls(${table.usdcE}, ${table.pusd}, ${table.pol}) = 3) OR (${table.status} = 'partial' AND num_nonnulls(${table.usdcE}, ${table.pusd}, ${table.pol}) BETWEEN 1 AND 2) OR (${table.status} = 'error' AND num_nonnulls(${table.usdcE}, ${table.pusd}, ${table.pol}) = 0)`
+    ),
+    pgPolicy("tenant_isolation", {
+      for: "all",
+      using: sql`${table.billingAccountId} IN (SELECT id FROM billing_accounts WHERE owner_user_id = current_setting('app.current_user_id', true))`,
+      withCheck: sql`${table.billingAccountId} IN (SELECT id FROM billing_accounts WHERE owner_user_id = current_setting('app.current_user_id', true))`,
+    }),
+  ]
+).enableRLS();
 
 export type PolyWalletConnectionRow = typeof polyWalletConnections.$inferSelect;
 export type PolyWalletConnectionInsert =

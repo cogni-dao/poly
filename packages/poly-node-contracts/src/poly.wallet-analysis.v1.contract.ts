@@ -205,7 +205,9 @@ export type WalletAnalysisTrades = z.infer<typeof WalletAnalysisTradesSchema>;
 
 /**
  * Balance slice.
- * - Any wallet: `positions` + `total` are populated from the public Data-API `/positions` endpoint.
+ * - Any observed wallet: `positions` + `total` are populated from the saved
+ *   `poly_trader_current_positions` mirror. Missing/not-ready saved facts omit
+ *   this slice and add a warning; they never become numeric zero.
  * - Operator wallet only: `available` + `locked` are populated via CLOB API; also `available` contributes to `total`.
  */
 export const WalletAnalysisBalanceSchema = z.object({
@@ -310,9 +312,9 @@ export const WalletAnalysisQuerySchema = z.object({
   include: z.array(WalletAnalysisSliceSchema).nonempty().default(["snapshot"]),
   interval: PolyWalletOverviewIntervalSchema.optional().default("ALL"),
   /**
-   * Source mode for the `distributions` slice. `live` always succeeds for any
-   * 0x address; `historical` reads saved observed trader fills from the
-   * service database when the wallet is on the research roster.
+   * Presentation mode for the `distributions` slice. Both values read saved
+   * observed fills; an unobserved/not-ready wallet yields a warning instead of
+   * a fabricated empty distribution.
    */
   distributionMode: z.enum(["live", "historical"]).optional().default("live"),
 });
@@ -322,7 +324,7 @@ export const polyWalletAnalysisOperation = {
   id: "poly.wallet-analysis.v1",
   summary: "Wallet analysis — deterministic metrics, trades, and balance",
   description:
-    "Single route covering any 0x Polymarket wallet. Slice-scoped via `include` (snapshot, trades, balance, pnl, distributions, benchmark). On-demand slices read public Polymarket APIs; historical distributions and benchmarks read saved observed trader facts when available. Balance is positions-only for non-operator wallets. Each slice is independently optional in the response; partial failure surfaces via `warnings`.",
+    "Single route covering any 0x Polymarket wallet. Slice-scoped via `include` (snapshot, trades, balance, pnl, distributions, benchmark). All page-load slices read saved observed facts only. An address that is not actively observed, or whose source has not completed successfully, returns an explicit warning and omits the affected slice instead of fabricating empty arrays or zero balances. Balance is positions-only for non-operator wallets.",
   input: z.object({
     addr: PolyAddressSchema,
     query: WalletAnalysisQuerySchema,

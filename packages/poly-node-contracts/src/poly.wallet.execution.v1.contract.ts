@@ -334,6 +334,8 @@ export const PolyWalletExecutionOutputSchema = z.object({
   dailyTradeCounts: z.array(WalletExecutionDailyCountSchema),
   /** Currently held positions (status open or redeemable). Powers the Open tab. */
   live_positions: z.array(WalletExecutionPositionSchema),
+  /** Exact DB count; live_positions is a bounded preview. */
+  live_position_count: z.number().int().nonnegative().optional(),
   /** Event/market grouped exposure for comparing our positions with active copy targets. */
   market_groups: z.array(WalletExecutionMarketGroupSchema),
   /** Trade-derived closed position history. Powers the Position History tab. */

@@ -15,6 +15,9 @@ export function OperatorWalletChartsRow(): ReactElement {
     d: point.day.slice(5),
     n: point.n,
   }));
+  const dailyCountsUnavailable = data?.warnings.some(
+    (warning) => warning.code === "daily_trade_counts_unavailable"
+  );
 
   return (
     <Card>
@@ -22,6 +25,10 @@ export function OperatorWalletChartsRow(): ReactElement {
         {isError ? (
           <div className="flex h-44 items-center justify-center text-center text-muted-foreground text-sm">
             Couldn&apos;t load trade volume. Will retry shortly.
+          </div>
+        ) : dailyCountsUnavailable ? (
+          <div className="flex h-44 items-center justify-center text-center text-muted-foreground text-sm">
+            Trade history is temporarily unavailable. This is not a zero-trade result.
           </div>
         ) : !isLoading && dailyCounts.length === 0 ? (
           <div className="flex h-44 items-center justify-center text-center text-muted-foreground text-sm">
