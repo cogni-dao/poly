@@ -3,11 +3,11 @@
 
 /**
  * Module: `@features/wallet-analysis/server/wallet-analysis-service`
- * Purpose: Service layer feeding `/api/v1/poly/wallets/[addr]` (snapshot, trades, balance, pnl slices) and `/api/v1/poly/wallet/execution` (live/closed position split). The `pnl`, `trades`, `balance`, and `execution` (positions+trades) slices are DB-only reads (PAGE_LOAD_DB_ONLY — task.5012 CP1/CP2/CP5). Snapshot and distributions(live) still hit Data API + CLOB; CP4 moves those to DB. CLOB `getPriceHistory` per open position remains live (`PAGE_LOAD_DB_ONLY_EXCEPT_PRICE_HISTORY`, closed by CP7).
+ * Purpose: Service layer feeding `/api/v1/poly/wallets/[addr]` (snapshot, trades, balance, pnl slices) and `/api/v1/poly/wallet/execution` (live/closed position split). Every render-path slice is a DB-only saved-facts read; upstream Data API/CLOB/user-P&L calls belong to observation jobs and explicit refresh mutations.
  * Scope: Compute + I/O only. Does not authenticate, does not parse HTTP. Returns Zod-validated slice values per the wallet-analysis v1 and execution v1 contracts.
  * Invariants:
  *   - REUSE_PACKAGE_CLIENTS: all upstream HTTP goes through `@cogni/poly-market-provider` clients — no fetch in this file.
- *   - DETERMINISTIC_METRICS: snapshot math is identical to `computeWalletMetrics` (spike.0323 v3) for the trade-derived fields it surfaces (winrate, duration, activity counts). PnL-class outputs (`realizedPnlUsdc` etc.) of `computeWalletMetrics` are deliberately not surfaced; PnL is sourced from the `pnl` slice (task.0389).
+ *   - DETERMINISTIC_METRICS: snapshot winrate, duration, and activity math is identical to `computeWalletMetrics` (spike.0323 v3). Current open-position count/cost come from the saved current-position model because a forward-only fill corpus cannot reconstruct pre-enrollment holdings. PnL-class outputs (`realizedPnlUsdc` etc.) of `computeWalletMetrics` are deliberately not surfaced; PnL is sourced from the `pnl` slice (task.0389).
  *   - PNL_NOT_IN_SNAPSHOT: `getSnapshotSlice` does not return any PnL field. Headline PnL on the wallet research surface is derived from `getPnlSlice` (DB-backed `poly_trader_user_pnl_points`, written by the trader-observation tick) — single source, reconciles with the chart by construction.
  *   - PAGE_LOAD_DB_ONLY (task.5012): every slice except `getExecutionSlice`'s CLOB price-history call is DB-only. `getPnlSlice` reads `poly_trader_user_pnl_points`; `getTradesSlice` + `getSnapshotSlice` + `getDistributionsSlice` read `poly_trader_fills` + `poly_market_outcomes`; `getBalanceSlice` + `getExecutionSlice` read `poly_trader_current_positions` + `poly_trader_fills`. Conditions absent from `poly_market_outcomes` are treated as unresolved (open positions).
  *   - PAGE_LOAD_DB_ONLY_EXCEPT_PRICE_HISTORY (task.5012 CP5): `getExecutionSlice` still calls CLOB `getPriceHistory` per open position — bounded v0 carve-out, removed by CP7's `poly_market_price_history` mirror.
@@ -26,6 +26,7 @@ import {
   polyMarketOutcomes,
   polyTraderCurrentPositions,
   polyTraderFills,
+  polyTraderIngestionCursors,
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
 import type {
@@ -52,7 +53,7 @@ import type {
   WalletExecutionPosition,
   WalletExecutionWarning,
 } from "@cogni/poly-node-contracts";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { clearTtlCacheByPrefix, coalesce } from "./coalesce";
@@ -67,7 +68,7 @@ import {
   pickStoredPriceHistoryFidelity,
   readPriceHistoryFromDb,
 } from "./price-history-service";
-import { getTradingWalletPnlHistory } from "./trading-wallet-overview-service";
+import { getTradingWalletPnlHistoryRead } from "./trading-wallet-overview-service";
 
 /** Cache TTL for every slice. Matches design doc 30 s. */
 const SLICE_TTL_MS = 30_000;
@@ -142,6 +143,103 @@ export type SliceResult<T> =
   | { kind: "ok"; value: T }
   | { kind: "warn"; warning: WalletAnalysisWarning };
 
+type SavedFactsSource = "data-api-trades" | "data-api-positions";
+
+export type SavedFactsAvailability =
+  | { kind: "ready"; walletId: string }
+  | { kind: "wallet_missing" }
+  | {
+      kind: "source_not_ready";
+      source: SavedFactsSource;
+      cursorStatus: string | null;
+    };
+
+export interface SavedFactsAvailabilityRow {
+  walletId: string;
+  cursorStatus: string | null;
+  lastSuccessAt: Date | null;
+}
+
+/** Pure classification seam used by the bounded DB reader below. */
+export function classifySavedFactsAvailability(
+  row: SavedFactsAvailabilityRow | undefined,
+  source: SavedFactsSource
+): SavedFactsAvailability {
+  if (!row) return { kind: "wallet_missing" };
+  if (row.cursorStatus !== "ok" || row.lastSuccessAt === null) {
+    return {
+      kind: "source_not_ready",
+      source,
+      cursorStatus: row.cursorStatus,
+    };
+  }
+  return { kind: "ready", walletId: row.walletId };
+}
+
+/**
+ * Constant-cardinality proof that an empty saved-facts slice is a real observed
+ * empty result, not an address that has never been ingested.
+ *
+ * A wallet row proves enrollment. A successful source cursor proves that the
+ * relevant upstream collection completed at least once. Only `status=ok`
+ * authorizes numeric zero / empty arrays; partial, stale, errored, and never-run
+ * sources remain explicitly unavailable.
+ */
+export async function readSavedFactsAvailability(
+  db: Db,
+  addr: string,
+  source: SavedFactsSource
+): Promise<SavedFactsAvailability> {
+  const rows = await db
+    .select({
+      walletId: polyTraderWallets.id,
+      cursorStatus: polyTraderIngestionCursors.status,
+      lastSuccessAt: polyTraderIngestionCursors.lastSuccessAt,
+    })
+    .from(polyTraderWallets)
+    .leftJoin(
+      polyTraderIngestionCursors,
+      and(
+        eq(polyTraderIngestionCursors.traderWalletId, polyTraderWallets.id),
+        eq(polyTraderIngestionCursors.source, source)
+      )
+    )
+    .where(
+      and(
+        eq(polyTraderWallets.walletAddress, addr.toLowerCase()),
+        eq(polyTraderWallets.activeForResearch, true),
+        isNull(polyTraderWallets.disabledAt)
+      )
+    )
+    .limit(1);
+  return classifySavedFactsAvailability(rows[0], source);
+}
+
+function savedFactsWarning(
+  slice: WalletAnalysisWarning["slice"],
+  availability: Exclude<SavedFactsAvailability, { kind: "ready" }>
+): SliceResult<never> {
+  if (availability.kind === "wallet_missing") {
+    return {
+      kind: "warn",
+      warning: {
+        slice,
+        code: "wallet_not_observed",
+        message:
+          "This wallet is not enrolled in the active saved-facts observer; empty data would not be authoritative.",
+      },
+    };
+  }
+  return {
+    kind: "warn",
+    warning: {
+      slice,
+      code: "saved_facts_not_ready",
+      message: `${availability.source} has not completed successfully for this wallet (status=${availability.cursorStatus ?? "missing"}).`,
+    },
+  };
+}
+
 /**
  * Evict wallet-scoped slices after a close/redeem write so the next dashboard
  * refetch does not reuse stale process cache entries.
@@ -176,6 +274,14 @@ export async function getTradesSlice(
   addr: string
 ): Promise<SliceResult<WalletAnalysisTrades>> {
   try {
+    const availability = await readSavedFactsAvailability(
+      db,
+      addr,
+      "data-api-trades"
+    );
+    if (availability.kind !== "ready") {
+      return savedFactsWarning("trades", availability);
+    }
     const rows = await db
       .select({
         observedAt: polyTraderFills.observedAt,
@@ -242,26 +348,45 @@ function extractTitle(raw: Record<string, unknown> | null): string {
 }
 
 /**
- * Compute the snapshot (deterministic metrics) slice. PAGE_LOAD_DB_ONLY (task.5012 CP4):
- * trades come from `poly_trader_fills`, resolutions come from `poly_market_outcomes`.
- * Conditions missing from the outcomes table are treated as unresolved by
- * `computeWalletMetrics` (they remain in `openPositions`).
+ * Compute the snapshot (deterministic metrics) slice. PAGE_LOAD_DB_ONLY
+ * (task.5012 CP4): activity metrics come from `poly_trader_fills`, resolutions
+ * from `poly_market_outcomes`, and the current open book from
+ * `poly_trader_current_positions`. The latter is authoritative for holdings
+ * opened before this observer's forward-only fill history began.
  */
 export async function getSnapshotSlice(
   db: Db,
   addr: string
 ): Promise<SliceResult<WalletAnalysisSnapshot>> {
   try {
+    const tradeAvailability = await readSavedFactsAvailability(
+      db,
+      addr,
+      "data-api-trades"
+    );
+    if (tradeAvailability.kind !== "ready") {
+      return savedFactsWarning("snapshot", tradeAvailability);
+    }
+    const positionAvailability = await readSavedFactsAvailability(
+      db,
+      addr,
+      "data-api-positions"
+    );
+    if (positionAvailability.kind !== "ready") {
+      return savedFactsWarning("snapshot", positionAvailability);
+    }
     const lower = addr.toLowerCase();
-    // Three small SQL aggregations — none of them load raw fills.
+    // Four small SQL aggregations — none of them load raw fills/positions.
     // (1) Per-(condition_id, token_id) aggregates ≈ unique-market count.
     // (2) Daily counts for the SNAPSHOT_DAILY_WINDOW (14 rows).
     // (3) 30-day count + latest timestamp + total fill count (1 row).
+    // (4) Current open-position count + cost basis (1 row). This is the
+    //     authoritative current book; fill history can be intentionally
+    //     forward-only and therefore cannot prove current holdings.
     // These can all touch the not-yet-rolled tail. Keep them on one bounded
-    // connection instead of fanning three scans across the pool at once.
-    const { positions, dailyRows, activity } = await withResearchReadTimeout(
-      db,
-      async (tx) => {
+    // connection instead of fanning four scans across the pool at once.
+    const { positions, dailyRows, activity, currentBook } =
+      await withResearchReadTimeout(db, async (tx) => {
         const positions = await readPositionAggregatesFromDb(tx, lower);
         const dailyRows = await readDailyCountsFromDb(
           tx,
@@ -269,9 +394,9 @@ export async function getSnapshotSlice(
           SNAPSHOT_DAILY_WINDOW
         );
         const activity = await readActivityCountsFromDb(tx, lower);
-        return { positions, dailyRows, activity };
-      }
-    );
+        const currentBook = await readCurrentBookSummaryFromDb(tx, lower);
+        return { positions, dailyRows, activity, currentBook };
+      });
     const cids = [...new Set(positions.map((p) => p.conditionId))];
     // Pick the most-recent candidate condition_ids for `topMarkets`; overfetch
     // a small buffer so the displayed list still reaches `topLimit` even when
@@ -303,8 +428,8 @@ export async function getSnapshotSlice(
         losses: m.losses,
         trueWinRatePct: m.trueWinRatePct,
         medianDurationHours: m.medianDurationHours,
-        openPositions: m.openPositions,
-        openNetCostUsdc: m.openNetCostUsdc,
+        openPositions: currentBook.openPositions,
+        openNetCostUsdc: currentBook.openNetCostUsdc,
         uniqueMarkets: m.uniqueMarkets,
         tradesPerDay30d: m.tradesPerDay30d,
         daysSinceLastTrade: Number.isFinite(m.daysSinceLastTrade)
@@ -326,6 +451,40 @@ export async function getSnapshotSlice(
 }
 
 /**
+ * Constant-cardinality current-book aggregate for snapshot headline fields.
+ * The forward-only fill corpus is valid for activity metrics, but it cannot
+ * reconstruct positions opened before enrollment. The current-position mirror
+ * is the saved Data-API fact that can.
+ */
+async function readCurrentBookSummaryFromDb(
+  db: Db,
+  walletAddrLower: string
+): Promise<{ openPositions: number; openNetCostUsdc: number }> {
+  const rows = await db
+    .select({
+      openPositions: sql<number>`count(*)::int`,
+      openNetCostUsdc: sql<number>`
+        coalesce(sum(${polyTraderCurrentPositions.costBasisUsdc}), 0)::float8
+      `,
+    })
+    .from(polyTraderCurrentPositions)
+    .innerJoin(
+      polyTraderWallets,
+      eq(polyTraderWallets.id, polyTraderCurrentPositions.traderWalletId)
+    )
+    .where(
+      and(
+        eq(polyTraderWallets.walletAddress, walletAddrLower),
+        liveCurrentPositions()
+      )
+    );
+  return {
+    openPositions: Number(rows[0]?.openPositions ?? 0),
+    openNetCostUsdc: Math.round(Number(rows[0]?.openNetCostUsdc ?? 0)),
+  };
+}
+
+/**
  * Distributions slice — order-flow histograms (DCA depth, trade size, entry
  * price, DCA window, hour-of-day, event clustering) with won/lost/pending
  * outcome split. PAGE_LOAD_DB_ONLY (task.5012 CP4): trades from
@@ -339,6 +498,14 @@ export async function getDistributionsSlice(
   mode: "live" | "historical"
 ): Promise<SliceResult<WalletAnalysisDistributions>> {
   try {
+    const availability = await readSavedFactsAvailability(
+      db,
+      addr,
+      "data-api-trades"
+    );
+    if (availability.kind !== "ready") {
+      return savedFactsWarning("distributions", availability);
+    }
     const trades = await coalesce(
       `historical-trader-fills:${addr}`,
       async () => {
@@ -992,6 +1159,14 @@ export async function getBalanceSlice(
   addr: string
 ): Promise<SliceResult<WalletAnalysisBalance>> {
   try {
+    const availability = await readSavedFactsAvailability(
+      db,
+      addr,
+      "data-api-positions"
+    );
+    if (availability.kind !== "ready") {
+      return savedFactsWarning("balance", availability);
+    }
     const rows = await coalesce(
       `db-balance:${addr}`,
       () => readCurrentPositionsFromDb(db, addr),
@@ -1073,17 +1248,31 @@ export async function getPnlSlice(
 ): Promise<SliceResult<WalletAnalysisPnl>> {
   const computedAt = new Date().toISOString();
   try {
-    const history = await getTradingWalletPnlHistory({
+    const pnlRead = await getTradingWalletPnlHistoryRead({
       db,
       address: addr as `0x${string}`,
       interval,
       capturedAt: computedAt,
     });
+    if (pnlRead.status === "wallet_missing") {
+      return savedFactsWarning("pnl", { kind: "wallet_missing" });
+    }
+    if (pnlRead.status === "no_history") {
+      return {
+        kind: "warn",
+        warning: {
+          slice: "pnl",
+          code: "pnl_history_not_recorded",
+          message:
+            "This wallet is enrolled, but no saved P/L points exist for the selected interval.",
+        },
+      };
+    }
     return {
       kind: "ok",
       value: {
         interval,
-        history,
+        history: pnlRead.points,
         computedAt,
       },
     };

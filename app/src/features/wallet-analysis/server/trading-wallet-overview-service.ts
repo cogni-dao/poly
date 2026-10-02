@@ -37,7 +37,7 @@ import type {
   PolyWalletOverviewInterval,
   PolyWalletOverviewPnlPoint,
 } from "@cogni/poly-node-contracts";
-import { and, asc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gte, isNull, lt, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { dedupeByKey } from "./observation-helpers";
@@ -97,7 +97,13 @@ export async function getTradingWalletPnlHistoryRead(input: {
   const wallet = await input.db
     .select({ id: polyTraderWallets.id })
     .from(polyTraderWallets)
-    .where(eq(polyTraderWallets.walletAddress, input.address.toLowerCase()))
+    .where(
+      and(
+        eq(polyTraderWallets.walletAddress, input.address.toLowerCase()),
+        eq(polyTraderWallets.activeForResearch, true),
+        isNull(polyTraderWallets.disabledAt)
+      )
+    )
     .limit(1);
   const traderWalletId = wallet[0]?.id;
   if (!traderWalletId) return { points: [], status: "wallet_missing" };
