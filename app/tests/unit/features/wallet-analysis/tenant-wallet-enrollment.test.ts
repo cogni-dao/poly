@@ -3,40 +3,39 @@
 
 /**
  * Module: `@tests/unit/features/wallet-analysis/tenant-wallet-enrollment`
- * Purpose: Prove OBSERVE_THE_FUNDER — `syncActiveTenantWallets` enrolls the
- *          address that actually holds Polymarket positions (`funder_address`)
- *          rather than the Privy signer EOA (`address`).
+ * Purpose: Prove OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM — `syncActiveTenantWallets`
+ *          enrolls exactly the addresses the injected port reader returns, and
+ *          derives nothing itself.
  * Scope: Unit test over a thenable-chain fake db that records the rows handed
- *        to `.values()`. No SQL executes; what is under test is *which value*
- *        the enrollment writes, which the recorded payload proves exactly.
+ *        to `.values()`. No SQL executes; what is under test is *which*
+ *        addresses the enrollment writes, which the recorded payload proves.
+ *        The address *resolution* is the adapter's and is proven there.
  * Invariants:
- *   - FUNDER_WINS: `funder_address` present → it is the enrolled wallet, and
- *     the signer EOA is never enrolled.
- *   - PRE_V2_FALLBACK: `funder_address` null → `address` is enrolled, so
- *     connections minted before the V2 split keep working.
- *   - DEDUPED: two connections resolving to one funder enroll one row.
+ *   - PORT_IS_THE_SOURCE: whatever the reader returns is what gets enrolled —
+ *     no local re-derivation from `poly_wallet_connections`.
+ *   - RETIRES_THE_REST: addresses absent from the reader are swept by
+ *     `disableMissingTenantWallets`, which is how stale signer-EOA rows go.
+ *   - EMPTY_IS_NOT_A_WIPE_SKIP: zero active tenants still runs the sweep.
  * Side-effects: none
  * Links: src/features/wallet-analysis/server/trader-observation-service.ts,
- *        src/adapters/server/wallet/privy-poly-trader-wallet.adapter.ts
+ *        packages/poly-wallet/src/port/poly-trader-wallet.port.ts
  * @public
  */
 
 import { describe, expect, it } from "vitest";
 import { syncActiveTenantWallets } from "@/features/wallet-analysis/server/trader-observation-service";
 
-type Connection = { address: string; funderAddress: string | null };
-
-const SIGNER = `0x${"d9".repeat(20)}`;
-const FUNDER = `0x${"8c".repeat(20)}`;
-const LEGACY = `0x${"3d".repeat(20)}`;
+const FUNDER_A = `0x${"8c".repeat(20)}`.toLowerCase();
+const FUNDER_B = `0x${"3d".repeat(20)}`.toLowerCase();
 
 /**
- * Thenable-chain fake db: selects resolve the seeded connection rows, and
- * every `.values()` payload is recorded so the test can assert the enrolled
- * wallet addresses.
+ * Thenable-chain fake db: records every `.values()` payload (the enrollment
+ * upsert) and every `.set()` payload (the disable sweep) so the test can
+ * assert both halves of the sync.
  */
-function createFakeDb(connections: readonly Connection[]) {
+function createFakeDb() {
   const insertedValues: Array<Array<{ walletAddress: string }>> = [];
+  const updateSets: unknown[] = [];
   const makeChain = (kind: "select" | "insert" | "update") => {
     // biome-ignore lint/suspicious/noExplicitAny: duck-typed drizzle chain
     const chain: any = {};
@@ -47,7 +46,6 @@ function createFakeDb(connections: readonly Connection[]) {
       "limit",
       "onConflictDoNothing",
       "onConflictDoUpdate",
-      "set",
       "returning",
     ]) {
       chain[method] = () => chain;
@@ -56,15 +54,15 @@ function createFakeDb(connections: readonly Connection[]) {
       insertedValues.push(rows);
       return chain;
     };
+    chain.set = (payload: unknown) => {
+      if (kind === "update") updateSets.push(payload);
+      return chain;
+    };
     // biome-ignore lint/suspicious/noThenProperty: fake drizzle chain must be thenable to emulate awaitable query builders
     chain.then = (
       onFulfilled?: (value: unknown) => unknown,
       onRejected?: (err: unknown) => unknown
-    ) =>
-      Promise.resolve(kind === "select" ? connections : []).then(
-        onFulfilled,
-        onRejected
-      );
+    ) => Promise.resolve([]).then(onFulfilled, onRejected);
     return chain;
   };
   const db = {
@@ -72,58 +70,55 @@ function createFakeDb(connections: readonly Connection[]) {
     insert: () => makeChain("insert"),
     update: () => makeChain("update"),
   };
-  return { db: db as never, insertedValues };
+  return { db: db as never, insertedValues, updateSets };
 }
 
-function enrolledAddresses(
+const enrolled = (
   insertedValues: Array<Array<{ walletAddress: string }>>
-): string[] {
-  return insertedValues.flat().map((row) => row.walletAddress);
-}
+): string[] => insertedValues.flat().map((row) => row.walletAddress);
 
-describe("syncActiveTenantWallets — OBSERVE_THE_FUNDER", () => {
-  it("enrolls the funder, not the signer EOA, for a V2 connection", async () => {
-    const { db, insertedValues } = createFakeDb([
-      { address: SIGNER, funderAddress: FUNDER },
-    ]);
+describe("syncActiveTenantWallets — OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM", () => {
+  it("enrolls exactly what the port reader returns", async () => {
+    const { db, insertedValues } = createFakeDb();
 
-    await syncActiveTenantWallets(db);
+    await syncActiveTenantWallets(db, async () => [FUNDER_A, FUNDER_B]);
 
-    // The funder is the wallet every dashboard/research read resolves via
-    // `getAddress()` (`funder_address ?? address`); enrolling the signer left
-    // the position read model with no row and blanked the dashboard.
-    expect(enrolledAddresses(insertedValues)).toEqual([FUNDER.toLowerCase()]);
-    expect(enrolledAddresses(insertedValues)).not.toContain(
-      SIGNER.toLowerCase()
-    );
+    expect(enrolled(insertedValues)).toEqual([FUNDER_A, FUNDER_B]);
   });
 
-  it("falls back to the signer address when no funder is set", async () => {
-    const { db, insertedValues } = createFakeDb([
-      { address: LEGACY, funderAddress: null },
-    ]);
+  it("marks every enrolled wallet active for research", async () => {
+    const { db, insertedValues } = createFakeDb();
 
-    await syncActiveTenantWallets(db);
+    await syncActiveTenantWallets(db, async () => [FUNDER_A]);
 
-    expect(enrolledAddresses(insertedValues)).toEqual([LEGACY.toLowerCase()]);
+    // A row that exists but is `active_for_research = false` is invisible to
+    // `readCurrentWalletPositionModel`, which is the same blank dashboard.
+    expect(insertedValues.flat()[0]).toMatchObject({
+      walletAddress: FUNDER_A,
+      kind: "cogni_wallet",
+      activeForResearch: true,
+      disabledAt: null,
+    });
   });
 
-  it("enrolls one row when two connections resolve to the same funder", async () => {
-    const { db, insertedValues } = createFakeDb([
-      { address: SIGNER, funderAddress: FUNDER },
-      { address: LEGACY, funderAddress: FUNDER },
-    ]);
+  it("runs the retire sweep and enrolls nothing when no tenant is active", async () => {
+    const { db, insertedValues, updateSets } = createFakeDb();
 
-    await syncActiveTenantWallets(db);
-
-    expect(enrolledAddresses(insertedValues)).toEqual([FUNDER.toLowerCase()]);
-  });
-
-  it("writes nothing when there are no active connections", async () => {
-    const { db, insertedValues } = createFakeDb([]);
-
-    await syncActiveTenantWallets(db);
+    await syncActiveTenantWallets(db, async () => []);
 
     expect(insertedValues).toEqual([]);
+    expect(updateSets).toHaveLength(1);
+    expect(updateSets[0]).toMatchObject({ activeForResearch: false });
+  });
+
+  it("retires wallets the reader no longer lists", async () => {
+    const { db, updateSets } = createFakeDb();
+
+    await syncActiveTenantWallets(db, async () => [FUNDER_A]);
+
+    // The sweep is what removes a pre-V2 signer-EOA row once the funder has
+    // taken its place.
+    expect(updateSets).toHaveLength(1);
+    expect(updateSets[0]).toMatchObject({ activeForResearch: false });
   });
 });

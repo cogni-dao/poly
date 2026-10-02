@@ -25,6 +25,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
   runTraderObservationTick,
+  type TenantTradingAddressReader,
   type TraderObservationStage,
 } from "@/features/wallet-analysis/server/trader-observation-service";
 
@@ -58,6 +59,11 @@ export interface TraderObservationJobDeps {
   db: Db;
   client: PolymarketDataApiClient;
   userPnlClient?: PolymarketUserPnlClient;
+  /**
+   * Bound to `PolyTraderWalletPort.listActiveTradingAddresses` by the
+   * container — see OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM in the service.
+   */
+  listActiveTradingAddresses: TenantTradingAddressReader;
   logger: LoggerPort;
   metrics: MetricsPort;
   pollMs?: number;

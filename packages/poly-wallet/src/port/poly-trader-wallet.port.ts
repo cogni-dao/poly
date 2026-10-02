@@ -236,6 +236,20 @@ export interface PolyTraderWalletPort {
   getAddress(billingAccountId: string): Promise<`0x${string}` | null>;
 
   /**
+   * Every unrevoked tenant's trading-wallet address, lowercased.
+   *
+   * Same resolution as `getAddress()`, applied across all tenants. Exists so
+   * the observation side can enroll exactly the wallets the executor signs
+   * from: the two sets are derived from one implementation and cannot drift.
+   * Re-deriving the address from `poly_wallet_connections` outside this port
+   * is what let the observer poll the signer EOA while trading ran from the
+   * funder, blanking the dashboard for every V2 tenant.
+   *
+   * DB-only (no Privy, no RPC, no decryption).
+   */
+  listActiveTradingAddresses(): Promise<readonly string[]>;
+
+  /**
    * Read-only summary of the tenant's active connection — connection id,
    * funder address, and the APPROVALS_BEFORE_PLACE readiness stamp.
    * DB-only (no Privy, no RPC, no decryption) so the Money / Profile pages

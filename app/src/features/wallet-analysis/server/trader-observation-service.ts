@@ -14,11 +14,17 @@
  *   - ROLLUPS_FOLLOW_FILLS (task.research-rollup-read-models): after each wallet's fills upsert, the tick folds new fills into `poly_trader_fill_rollups_daily` via `accumulateFillRollups` (bounded batches, `skipIfLocked` so a running boot backfill wins the cursor). DB-only; failures log + count `errors` without failing the wallet.
  *   - PNL_INGEST_INDEPENDENT: per-wallet user-pnl ingest runs after observation regardless of observe outcome; failures bump `errors` and continue. Retention prune runs once per tick after all wallets.
  *   - SNAPSHOTS_ARE_POSITION_CHANGES: `poly_trader_position_snapshots` rows are written only when a position-defining field changes (see `hashPosition`); mark-to-market history lives in `poly_market_price_history` + `poly_trader_user_pnl_points`, live marks in `poly_trader_current_positions`. Retention (`pruneOldPositionSnapshots`) drops >35d rows in bounded batches but always keeps each group's newest row.
- *   - OBSERVE_THE_FUNDER: tenant enrollment reads `funder_address ?? address`
- *     off `poly_wallet_connections` — byte-identical to
- *     `PolyTraderWalletPort.getAddress()`, which is how every dashboard and
- *     research read resolves a tenant's wallet. V2 connections split signer
- *     from funder; enrolling the signer observes a wallet that never trades.
+ *   - OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM: tenant enrollment takes its
+ *     address set from the injected `listActiveTradingAddresses` reader —
+ *     `PolyTraderWalletPort.listActiveTradingAddresses()` in production — and
+ *     never derives it from `poly_wallet_connections` itself. The port owns
+ *     the one resolution; two derivations drifted the observer onto the Privy
+ *     signer EOA while trading ran from the V2 funder, so the position read
+ *     model found no row and the dashboard reported a funded wallet as empty.
+ *   - ENROLLMENT_FAILURE_IS_NOT_A_WIPE: the reader runs before any write, so a
+ *     failed read enrolls and retires nothing. The tick logs
+ *     `sync_tenant_wallets_failed`, counts one `error`, and still observes the
+ *     already-enrolled wallets — losing enrollment is the outage, not the fix.
  *   - COGNI_POSITION_ABSENCE_NEEDS_AUTHORITY: complete Data API polls do not
  *     deactivate Cogni-wallet current-position rows unless an injected
  *     authority classifies the missing row terminal.
@@ -37,7 +43,6 @@ import {
   polyTraderPositionSnapshots,
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
-import { polyWalletConnections } from "@cogni/poly-db-schema/wallet-connections";
 import type {
   Fill,
   LoggerPort,
@@ -106,10 +111,25 @@ const SNAPSHOT_PRUNE_MAX_BATCHES = 10;
  */
 const WALLET_OBSERVE_CONCURRENCY = 3;
 
+/**
+ * Supplies the lowercased trading-wallet address of every unrevoked tenant.
+ * Production binds `PolyTraderWalletPort.listActiveTradingAddresses`; the port
+ * is the only thing allowed to know how a connection row resolves to an
+ * address (see OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM).
+ */
+export type TenantTradingAddressReader = () => Promise<readonly string[]>;
+
 export interface TraderObservationTickDeps {
   db: Db;
   client: PolymarketDataApiClient;
   userPnlClient?: PolymarketUserPnlClient;
+  /**
+   * Tenant trading wallets to enroll for observation. Required — the tick
+   * cannot enroll what it cannot resolve, and defaulting it to a local
+   * `poly_wallet_connections` read is exactly the second derivation this
+   * invariant exists to forbid.
+   */
+  listActiveTradingAddresses: TenantTradingAddressReader;
   logger: LoggerPort;
   metrics: MetricsPort;
   tradePageLimit?: number;
@@ -281,11 +301,32 @@ export async function runTraderObservationTick(
   // and its disable-missing pass are now atomic, so a failure between them can
   // no longer leave wallets both enabled and orphaned.
   stage("sync_tenant_wallets");
-  await withStatementTimeout(
-    deps.db,
-    OBSERVATION_STATEMENT_TIMEOUT_MS,
-    async (tx) => await syncActiveTenantWallets(tx)
-  );
+  // ENROLLMENT_FAILURE_IS_NOT_A_WIPE — the reader is a port call, so it can
+  // fail for reasons the DB cannot (unconfigured wallet adapter in paper mode,
+  // a Privy-app misconfig). It runs BEFORE any write, so a throw leaves
+  // enrollment untouched; the tick must then carry on observing the wallets
+  // already enrolled rather than die. Treating this as fatal would stop
+  // observation entirely — the same blank dashboard, by a different route.
+  // Audible, never silent: its own log phase plus the tick's `errors` count.
+  let syncTenantWalletsFailed = false;
+  try {
+    await withStatementTimeout(
+      deps.db,
+      OBSERVATION_STATEMENT_TIMEOUT_MS,
+      async (tx) =>
+        await syncActiveTenantWallets(tx, deps.listActiveTradingAddresses)
+    );
+  } catch (err: unknown) {
+    syncTenantWalletsFailed = true;
+    log.error(
+      {
+        event: "poly.trader.observe",
+        phase: "sync_tenant_wallets_failed",
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "trader observation: tenant wallet enrollment failed; observing the already-enrolled set"
+    );
+  }
   stage("select_wallets");
   const wallets = await withStatementTimeout(
     deps.db,
@@ -307,7 +348,7 @@ export async function runTraderObservationTick(
   let positions = 0;
   let rollupFills = 0;
   let pnlPoints = 0;
-  let errors = 0;
+  let errors = syncTenantWalletsFailed ? 1 : 0;
 
   // task.5015: bounded-parallel wallet fan-out. Per-wallet error isolation is
   // preserved — each phase catches its own errors and continues — EXCEPT when
@@ -529,34 +570,15 @@ export async function refreshCurrentPositionsForWallet(params: {
  * Enroll every unrevoked tenant connection as an observed `cogni_wallet` and
  * retire the rows that no longer correspond to an active connection.
  *
- * Exported for the OBSERVE_THE_FUNDER proof — `runTraderObservationTick` is
- * the only production caller.
+ * Exported for the OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM proof —
+ * `runTraderObservationTick` is the only production caller.
  */
-export async function syncActiveTenantWallets(db: Db): Promise<void> {
+export async function syncActiveTenantWallets(
+  db: Db,
+  listActiveTradingAddresses: TenantTradingAddressReader
+): Promise<void> {
   const now = new Date();
-  const activeConnections = await db
-    .select({
-      address: polyWalletConnections.address,
-      funderAddress: polyWalletConnections.funderAddress,
-    })
-    .from(polyWalletConnections)
-    .where(isNull(polyWalletConnections.revokedAt));
-  // OBSERVE_THE_FUNDER: enroll the address that actually holds positions on
-  // Polymarket, not the Privy signer EOA. V2 connections split the two
-  // (`funder_address` is the deterministic trading wallet; `address` only
-  // signs), and every dashboard/research read resolves the wallet through
-  // `PolyTraderWalletPort.getAddress()` — which returns `funder_address ??
-  // address`. Enrolling `address` alone made the observer poll a wallet that
-  // never trades, so `readCurrentWalletPositionModel` found no row and the
-  // dashboard reported a funded wallet as "—" positions / cash-only total.
-  // Mirror `getAddress()`'s coalesce exactly so the two can never diverge.
-  const observedAddresses = [
-    ...new Set(
-      activeConnections.map((connection) =>
-        (connection.funderAddress ?? connection.address).toLowerCase()
-      )
-    ),
-  ];
+  const observedAddresses = await listActiveTradingAddresses();
   if (observedAddresses.length === 0) {
     await disableMissingTenantWallets(db, [], now);
     return;
