@@ -25,6 +25,9 @@
  *     let users assume "trading is on" when they actually can't place a
  *     single order. Post the 2026-04-28 cutover pUSD is the real collateral,
  *     so the empty check MUST include pUSD, not USDC.e alone.
+ *   - UNKNOWN_IS_NOT_ZERO: absent/stale position or P/L read models render an
+ *     explicit unavailable state. A nullable total never triggers the empty
+ *     wallet CTA and cash-only is never presented as Total.
  * Side-effects: IO (via React Query).
  * Links: work/items/task.0361.poly-first-user-onboarding-flow-v0.md
  * @public
@@ -97,6 +100,24 @@ export function TradingWalletCard(): ReactElement {
 
   const lowGas = data?.connected === true && (data.pol_gas ?? 0) <= 0.1;
   const noGas = data?.connected === true && (data.pol_gas ?? 0) <= 0;
+  const positionInventoryUnavailable = data?.warnings.some((warning) =>
+    [
+      "current_positions_wallet_missing",
+      "current_positions_read_model_unavailable",
+      "current_positions_stale",
+    ].includes(warning.code)
+  );
+  const pnlHistoryUnavailable = data?.warnings.some((warning) =>
+    ["pnl_history_wallet_missing", "pnl_history_unavailable"].includes(
+      warning.code
+    )
+  );
+  const pnlHistoryEmpty = data?.warnings.some(
+    (warning) => warning.code === "pnl_history_empty"
+  );
+  const hasPartialWarning = data?.warnings.some(
+    (warning) => warning.code !== "pnl_history_empty"
+  );
   const fullBreakdown = hasOverviewBreakdown(data)
     ? {
         available: data.usdc_available,
@@ -114,7 +135,7 @@ export function TradingWalletCard(): ReactElement {
             Trading Wallet
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            {data?.warnings?.length ? (
+            {hasPartialWarning ? (
               <span
                 className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground"
                 title="Some wallet reads are partial. Values may be incomplete."
@@ -171,7 +192,7 @@ export function TradingWalletCard(): ReactElement {
             ctaLabel="Enable trading →"
             href="/credits"
           />
-        ) : (data.usdc_total ?? 0) <= 0 ? (
+        ) : data.usdc_total !== null && data.usdc_total <= 0 ? (
           <OnboardingCta
             message="Wallet is empty — add USD collateral (pUSD or USDC.e) on Polygon to start trading."
             ctaLabel="Fund wallet →"
@@ -179,6 +200,15 @@ export function TradingWalletCard(): ReactElement {
           />
         ) : (
           <div className="space-y-5 py-1">
+            {positionInventoryUnavailable ? (
+              <p
+                className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
+                role="status"
+              >
+                Position data is unavailable or stale. Available cash is shown,
+                but Total is withheld until holdings are known.
+              </p>
+            ) : null}
             {fullBreakdown ? (
               <div className="space-y-3">
                 <BalanceBar balance={fullBreakdown ?? undefined} />
@@ -209,6 +239,16 @@ export function TradingWalletCard(): ReactElement {
               onIntervalChange={setInterval}
               pnlHistory={data.pnlHistory}
             />
+            {pnlHistoryUnavailable ? (
+              <p className="text-muted-foreground text-xs" role="status">
+                P/L history is unavailable until this trading wallet is present
+                in the observer read model.
+              </p>
+            ) : pnlHistoryEmpty ? (
+              <p className="text-muted-foreground text-xs" role="status">
+                No P/L history has been recorded for this interval yet.
+              </p>
+            ) : null}
             <WalletProfitLossCard
               history={data.pnlHistory}
               interval={interval}

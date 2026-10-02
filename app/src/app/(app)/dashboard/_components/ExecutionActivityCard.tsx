@@ -18,6 +18,9 @@
  *     rows until the next live_positions refetch confirms they are gone.
  *     Applies only when statusFilter==="live"; closed rows are sourced
  *     from closed_positions which is unaffected by close-action latency.
+ *   - MISSING_MODEL_IS_NOT_EMPTY: when the current-position read model is
+ *     unavailable, the Live count and empty state render as unavailable rather
+ *     than claiming there are zero open positions.
  * Side-effects: IO (React Query), clipboard (user-triggered).
  * Links: [fetchExecution](../_api/fetchExecution.ts)
  * @public
@@ -304,6 +307,12 @@ function PositionsPanel({
 
   const isLive = statusFilter === "live";
   const positions = isLive ? openPositions : closedPositions;
+  const positionInventoryUnavailable = warnings.some((warning) =>
+    [
+      "current_positions_wallet_missing",
+      "current_positions_read_model_unavailable",
+    ].includes(warning.code)
+  );
 
   return (
     <div className="space-y-3 px-5 pb-4">
@@ -311,7 +320,15 @@ function PositionsPanel({
         <h3 className="font-semibold text-muted-foreground text-xs uppercase tracking-wider">
           Positions
         </h3>
-        {isLive && warnings.length > 0 ? (
+        {isLive && positionInventoryUnavailable ? (
+          <p
+            className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
+            role="status"
+          >
+            Open positions are unavailable because the wallet position model
+            could not be read. This is not a zero-position result.
+          </p>
+        ) : isLive && warnings.length > 0 ? (
           <p className="text-muted-foreground text-xs">
             Some upstream data is temporarily unavailable, so a few rows may
             render with a shorter trace.
@@ -322,11 +339,13 @@ function PositionsPanel({
             {positionActionError}
           </p>
         ) : null}
-        <PositionsDeltaDistribution
-          positions={positions}
-          groups={groups}
-          statusFilter={statusFilter}
-        />
+        {!isLive || !positionInventoryUnavailable ? (
+          <PositionsDeltaDistribution
+            positions={positions}
+            groups={groups}
+            statusFilter={statusFilter}
+          />
+        ) : null}
         <div className="flex flex-wrap items-center gap-2">
           <ToggleGroup
             type="single"
@@ -343,7 +362,7 @@ function PositionsPanel({
             <ToggleGroupItem value="live" className="gap-1.5">
               <span className="text-xs">Live</span>
               <span className="font-mono text-muted-foreground text-xs tabular-nums">
-                ({openPositions.length})
+                ({positionInventoryUnavailable ? "—" : openPositions.length})
               </span>
             </ToggleGroupItem>
             <ToggleGroupItem value="closed" className="gap-1.5">
@@ -358,7 +377,11 @@ function PositionsPanel({
           <PositionsTable
             positions={positions}
             isLoading={isLoading}
-            emptyMessage="No open positions."
+            emptyMessage={
+              positionInventoryUnavailable
+                ? "Open positions unavailable."
+                : "No open positions."
+            }
             onPositionAction={onPositionAction}
             pendingActionPositionId={pendingActionPositionId}
           />

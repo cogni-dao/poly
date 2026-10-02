@@ -57,7 +57,7 @@ import {
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
-import { getTradingWalletPnlHistory } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
+import { getTradingWalletPnlHistoryRead } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
 import { sumCashOnChain, sumWalletTotal } from "../_lib/cash-on-chain";
@@ -285,19 +285,34 @@ export const GET = wrapRouteHandlerWithLogging(
           cashOnChain !== null
             ? roundToCents(Math.max(0, cashOnChain - positionSummary.lockedUsdc))
             : cashOnChain;
-        // TOTAL_IS_CASH_NULL_SAFE (see sumWalletTotal): gate on cash only; absent
-        // positions contribute 0, not null, so a funded wallet is never "empty".
+        // TOTAL_REQUIRES_COMPLETE_INVENTORY (see sumWalletTotal): cash remains
+        // independently visible, but a cash-only subtotal must never be labeled
+        // Total while the position inventory is absent or stale.
         const totalRaw = sumWalletTotal(cashOnChain, positionsMtm);
         const total = totalRaw !== null ? roundToCents(totalRaw) : null;
         let pnlHistory: PolyWalletOverviewOutput["pnlHistory"] = [];
         if (freshness === "live") {
           try {
-            pnlHistory = await getTradingWalletPnlHistory({
+            const pnlRead = await getTradingWalletPnlHistoryRead({
               db: container.serviceDb,
               address: balances.address,
               interval,
               capturedAt,
             });
+            pnlHistory = pnlRead.points;
+            if (pnlRead.status === "wallet_missing") {
+              warnings.push({
+                code: "pnl_history_wallet_missing",
+                message:
+                  "P/L history is unavailable because this trading wallet is not enrolled in the observer read model.",
+              });
+            } else if (pnlRead.status === "empty") {
+              warnings.push({
+                code: "pnl_history_empty",
+                message:
+                  "This observed wallet has no saved P/L history for the selected interval yet.",
+              });
+            }
           } catch (err) {
             warnings.push({
               code: "pnl_history_unavailable",
@@ -313,20 +328,34 @@ export const GET = wrapRouteHandlerWithLogging(
             ? "positions_read_model_unavailable"
             : warnings.some(
                   (warning) =>
-                    warning.code === "current_positions_read_model_unavailable"
+                    warning.code === "current_positions_wallet_missing"
                 )
-              ? "current_positions_read_model_unavailable"
+              ? "current_positions_wallet_missing"
               : warnings.some(
-                    (warning) => warning.code === "current_positions_stale"
+                    (warning) =>
+                      warning.code ===
+                      "current_positions_read_model_unavailable"
                   )
-                ? "current_positions_stale"
+                ? "current_positions_read_model_unavailable"
                 : warnings.some(
-                      (warning) => warning.code === "pnl_history_unavailable"
+                      (warning) => warning.code === "current_positions_stale"
                     )
-                  ? "pnl_history_unavailable"
-                  : warnings.some((warning) => warning.code === "balances_partial")
-                    ? "balances_partial"
-                    : "ok",
+                  ? "current_positions_stale"
+                  : warnings.some(
+                        (warning) =>
+                          warning.code === "pnl_history_unavailable" ||
+                          warning.code === "pnl_history_wallet_missing"
+                      )
+                    ? "pnl_history_unavailable"
+                    : warnings.some(
+                          (warning) => warning.code === "pnl_history_empty"
+                        )
+                      ? "pnl_history_empty"
+                      : warnings.some(
+                            (warning) => warning.code === "balances_partial"
+                          )
+                        ? "balances_partial"
+                        : "ok",
           interval,
           freshness,
           connected: true,

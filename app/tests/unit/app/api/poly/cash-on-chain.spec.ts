@@ -48,26 +48,27 @@ describe("sumCashOnChain", () => {
 });
 
 describe("sumWalletTotal", () => {
-  it("returns cash when positions are unknown (null) — the funded-wallet-shows-empty bug", () => {
-    // Real user wallet: $1,132.40 cash, no cached positions (not a tracked
-    // trader). usdc_total MUST be the cash, not null → dashboard is not "empty".
-    expect(sumWalletTotal(1132.4, null)).toBe(1132.4);
+  it("withholds Total when positions are unknown", () => {
+    // Cash remains independently visible as Available. Calling this cash-only
+    // subtotal "Total" would under-report a wallet that holds positions.
+    expect(sumWalletTotal(1132.4, null)).toBeNull();
   });
 
   it("adds marked-to-market positions to cash when both are known", () => {
     expect(sumWalletTotal(1132.4, 50)).toBe(1182.4);
   });
 
-  it("returns 0 (not null) for a read-but-empty wallet with no positions", () => {
-    expect(sumWalletTotal(0, null)).toBe(0);
+  it("returns 0 for a read-and-known-empty wallet", () => {
+    expect(sumWalletTotal(0, 0)).toBe(0);
   });
 
   it("returns positions-only value when cash is zero", () => {
     expect(sumWalletTotal(0, 50)).toBe(50);
   });
 
-  it("returns null only when cash could not be read (RPC down)", () => {
+  it("returns null whenever either half of the inventory is unknown", () => {
     expect(sumWalletTotal(null, 50)).toBeNull();
+    expect(sumWalletTotal(50, null)).toBeNull();
     expect(sumWalletTotal(null, null)).toBeNull();
   });
 });
