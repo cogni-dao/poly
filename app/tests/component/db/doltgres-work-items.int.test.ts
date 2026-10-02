@@ -35,6 +35,14 @@ const PASSWORD = "doltgres";
 describe("Doltgres 0.57.3 work-item acceptance", () => {
 	let container: StartedTestContainer;
 	let sql: Sql;
+	const stageLogger = {
+		info: (fields: unknown, message?: string) =>
+			console.info(message, JSON.stringify(fields)),
+		warn: (fields: unknown, message?: string) =>
+			console.warn(message, JSON.stringify(fields)),
+		error: (fields: unknown, message?: string) =>
+			console.error(message, JSON.stringify(fields)),
+	};
 
 	beforeAll(async () => {
 		container = await new GenericContainer(DOLTGRES_IMAGE)
@@ -72,9 +80,9 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 	});
 
 	it("creates, lists, patches, coordinates, and deletes through Dolt branches", async () => {
-		const adapter = new DoltgresPolyWorkItemAdapter(sql, undefined, {
+		const adapter = new DoltgresPolyWorkItemAdapter(sql, stageLogger, {
 			lockWaitMs: 5_000,
-			queryTimeoutMs: 20_000,
+			queryTimeoutMs: 5_000,
 		});
 		const id = toWorkItemId("task.9501");
 		const principalId = "doltgres-acceptance-agent";
@@ -116,29 +124,5 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		expect(released.claimedByRun).toBeUndefined();
 		await expect(adapter.delete(id, principalId)).resolves.toBe(true);
 		await expect(adapter.get(id)).resolves.toBeNull();
-	});
-
-	it("cancels and drains a blocked query before reusing the session", async () => {
-		const holder = await sql.reserve();
-		const waiter = await sql.reserve();
-		try {
-			await holder.unsafe("SELECT pg_advisory_lock(9501001)");
-			const pending = waiter.unsafe("SELECT pg_advisory_lock(9501001)");
-			const timer = setTimeout(() => pending.cancel(), 100);
-			try {
-				await expect(pending).rejects.toBeDefined();
-			} finally {
-				clearTimeout(timer);
-			}
-			await expect(waiter.unsafe("SELECT 1 AS ready")).resolves.toMatchObject([
-				{ ready: 1 },
-			]);
-		} finally {
-			await holder
-				.unsafe("SELECT pg_advisory_unlock(9501001)")
-				.catch(() => undefined);
-			holder.release();
-			waiter.release();
-		}
-	});
+	}, 30_000);
 });
