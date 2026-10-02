@@ -6,22 +6,22 @@
     "treeRoot": "nodes/poly"
   },
   "policySha256": "cc0f1f13d7e108b07823f2c37d188d2c5fa4773866b20c587f997b6faba4cbb8",
-  "targetTreeDigest": "ed2f01ee43d74fdde001dd15f95831a6086775692292cc2ef38d52a8fd498fba",
+  "targetTreeDigest": "96cf7fb64b78e59021c52b21ae6280de1def35fdf9b35e3f493f7105841372ec",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1055,
-    "unresolved": 599,
+    "targetOnlyFiles": 1057,
+    "unresolved": 602,
     "byStatus": {
-      "exact": 1137,
-      "missing": 267,
-      "review_required": 332
+      "exact": 1134,
+      "missing": 263,
+      "review_required": 339
     },
     "unresolvedByPriority": {
-      "P0": 23,
+      "P0": 24,
       "P1": 49,
       "P2": 280,
-      "P3": 247
+      "P3": 249
     },
     "behavioralGates": 7,
     "unresolvedBehavioralGates": 7
@@ -760,10 +760,10 @@
       "sourceBlob": "c416e74003141034a7e474b30ea7e455cb8da9da",
       "sourcePath": "app/src/adapters/server/db/AGENTS.md",
       "targetPath": "app/src/adapters/server/db/AGENTS.md",
-      "targetBlob": "c416e74003141034a7e474b30ea7e455cb8da9da",
+      "targetBlob": "fac18f3803d196f822c6772a8f5a62ccec48f8a7",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
-      "status": "exact"
+      "status": "review_required"
     },
     {
       "mode": "100644",
@@ -810,7 +810,7 @@
       "sourceBlob": "220eec1ce91357f15c41f56d211282c22191b6e3",
       "sourcePath": "app/src/adapters/server/db/doltgres-migrations/meta/_journal.json",
       "targetPath": "app/src/adapters/server/db/doltgres-migrations/meta/_journal.json",
-      "targetBlob": "76ea1e9cd20d210b1cbf3e26e944b80197bd07bd",
+      "targetBlob": "cf21af5691529be24ff8c6798d775fadc0873a7b",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "status": "review_required"
@@ -830,10 +830,10 @@
       "sourceBlob": "ae024fffb5fabbfaec875ea7e0187139fb525bdc",
       "sourcePath": "app/src/adapters/server/db/doltgres-migrations/meta/0001_snapshot.json",
       "targetPath": "app/src/adapters/server/db/doltgres-migrations/meta/0001_snapshot.json",
-      "targetBlob": null,
+      "targetBlob": "8126def392d956380af81cd756d5141245a3fd72",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
-      "status": "missing"
+      "status": "review_required"
     },
     {
       "mode": "100644",
@@ -860,20 +860,20 @@
       "sourceBlob": "740a4e68a2f6c899c1e69fd244998cdbf2a76def",
       "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
       "targetPath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
-      "targetBlob": null,
+      "targetBlob": "3bea26f1382a7ac2e0169ca2b55d4ab095e97907",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
-      "status": "missing"
+      "status": "review_required"
     },
     {
       "mode": "100644",
       "sourceBlob": "bbb809a573ba86d91283316891f1976f19a46ddf",
       "sourcePath": "app/src/adapters/server/db/doltgres/work-items-cursor.ts",
       "targetPath": "app/src/adapters/server/db/doltgres/work-items-cursor.ts",
-      "targetBlob": null,
+      "targetBlob": "0877830747a5ff19183c0ddf4d8f4dd4e277c816",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
-      "status": "missing"
+      "status": "review_required"
     },
     {
       "mode": "100644",
@@ -2790,7 +2790,7 @@
       "sourceBlob": "c2e4b22af7ebe47cf05ed05b27556d7eb75a6a81",
       "sourcePath": "app/src/app/_facades/work/items.server.ts",
       "targetPath": "app/src/app/_facades/work/items.server.ts",
-      "targetBlob": "c1515d59d27ef3d4e8dfb7aa872fceaa0c815704",
+      "targetBlob": "ef186c76ebb3aa2a866e2dcb2385daea93228a5d",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -3890,7 +3890,7 @@
       "sourceBlob": "cfb6927e58e7382543937df5300137e81d293059",
       "sourcePath": "app/src/app/api/AGENTS.md",
       "targetPath": "app/src/app/api/AGENTS.md",
-      "targetBlob": "dd75104d89eeffdf4e8e51e12ae9fb407eb63cc0",
+      "targetBlob": "bfbf183e97ddb0d2d1e7777d4576ddf72c3f647f",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "status": "review_required"
@@ -4810,7 +4810,7 @@
       "sourceBlob": "1270400e122b2d56cb56e83b0aa522cd9d212fd9",
       "sourcePath": "app/src/app/api/v1/work/items/[id]/route.ts",
       "targetPath": "app/src/app/api/v1/work/items/[id]/route.ts",
-      "targetBlob": "02c22da69dc98c6ae95836b5cc34219b70af2485",
+      "targetBlob": "6c28c2649317e2674e6dfaec02c6f1d35d7b33da",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -4820,7 +4820,7 @@
       "sourceBlob": "2652ea23be26d9f8fe3de8071084a861edd13957",
       "sourcePath": "app/src/app/api/v1/work/items/route.ts",
       "targetPath": "app/src/app/api/v1/work/items/route.ts",
-      "targetBlob": "d10e742abbd6ccdcb579394e433c27c553aeb82b",
+      "targetBlob": "18c6cc26fac5ab5271007b910f5c1cd2d6004402",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -5290,7 +5290,7 @@
       "sourceBlob": "07d0b8969e5edc5914865113dd8e7949443bbf48",
       "sourcePath": "app/src/bootstrap/container.ts",
       "targetPath": "app/src/bootstrap/container.ts",
-      "targetBlob": "05e3568cb9b96902f53cc7b61d0197ae795949b3",
+      "targetBlob": "672a28d2641a76cc8c7e2346394c6b413b77765a",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -6810,10 +6810,10 @@
       "sourceBlob": "7592382dad0a0a4a605c66a7be81164ff26a12cf",
       "sourcePath": "app/src/contracts/AGENTS.md",
       "targetPath": "app/src/contracts/AGENTS.md",
-      "targetBlob": "7592382dad0a0a4a605c66a7be81164ff26a12cf",
+      "targetBlob": "2b438be51603179fc03fbb8f9703292aaad9b934",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
-      "status": "exact"
+      "status": "review_required"
     },
     {
       "mode": "100644",
@@ -9580,10 +9580,10 @@
       "sourceBlob": "c16eaad98d90d141912f56d8576385ec43f7389a",
       "sourcePath": "app/src/ports/work-items-doltgres.port.ts",
       "targetPath": "app/src/ports/work-items-doltgres.port.ts",
-      "targetBlob": "c16eaad98d90d141912f56d8576385ec43f7389a",
+      "targetBlob": "139f1c67c68161265f84f7ee3ce4578b186e9e31",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
-      "status": "exact"
+      "status": "review_required"
     },
     {
       "mode": "100644",
@@ -12650,10 +12650,10 @@
       "sourceBlob": "7bf79b60ac9ff733d21b9e819bb737a172572cfe",
       "sourcePath": "app/tests/unit/adapters/work-items-cursor.test.ts",
       "targetPath": "app/tests/unit/adapters/work-items-cursor.test.ts",
-      "targetBlob": null,
+      "targetBlob": "547be16b51ceb28427e9f640f92764b813106ba7",
       "priority": "P2",
       "priorityLabel": "proof and secondary product surfaces",
-      "status": "missing"
+      "status": "review_required"
     },
     {
       "mode": "100644",
@@ -13100,7 +13100,7 @@
       "sourceBlob": "d358bd3a67249855c8e65c2071cfc7ab450659b9",
       "sourcePath": "app/tests/unit/facades/work-items.test.ts",
       "targetPath": "app/tests/unit/facades/work-items.test.ts",
-      "targetBlob": "6bc571fe7814dd90cf8f93fafde447b899b5d603",
+      "targetBlob": "49c50a6065d4813cf54a764da23b05e55e92cc54",
       "priority": "P2",
       "priorityLabel": "proof and secondary product surfaces",
       "status": "review_required"
@@ -17646,6 +17646,9 @@
       "targetPath": "app/src/adapters/server/db/doltgres-migrations/0000_init.sql"
     },
     {
+      "targetPath": "app/src/adapters/server/db/doltgres-migrations/0001_work_item_ownership_leases.sql"
+    },
+    {
       "targetPath": "app/src/adapters/server/db/drizzle.service-read-client.ts"
     },
     {
@@ -18177,6 +18180,9 @@
       "targetPath": "app/tests/unit/adapters/server/wallet/privy-poly-trader-wallet.resolve-flood-guard.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/adapters/work-items-adapter.test.ts"
+    },
+    {
       "targetPath": "app/tests/unit/app/_facades/ai/completion-stream-acceptance.spec.ts"
     },
     {
@@ -18202,6 +18208,9 @@
     },
     {
       "targetPath": "app/tests/unit/app/api/poly/wallet/dashboard-route-cache.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/api/work-items-item.route.test.ts"
     },
     {
       "targetPath": "app/tests/unit/app/dashboard/mirror-attempts-error-summary.test.ts"
@@ -20605,9 +20614,6 @@
     },
     {
       "targetPath": "work/items/task.5345.enforce-deterministic-port-ledger.md"
-    },
-    {
-      "targetPath": "work/items/task.5346.make-dashboard-missing-data-explicit.md"
     },
     {
       "targetPath": "work/items/task.research-rollup-read-models.md"

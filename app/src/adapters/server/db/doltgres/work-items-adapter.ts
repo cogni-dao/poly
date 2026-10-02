@@ -69,6 +69,25 @@ export class DoltCommitFailedError extends Error {
 	}
 }
 
+export class DoltOperationFailedError extends Error {
+	constructor(operation: "dolt_add" | "dolt_checkout") {
+		super(`${operation} did not report success`);
+		this.name = "DoltOperationFailedError";
+	}
+}
+
+export class DoltCleanupFailedError extends Error {
+	constructor(
+		public readonly operationError: unknown,
+		public readonly cleanupError: unknown,
+	) {
+		super("Dolt work-item mutation failed and targeted cleanup also failed", {
+			cause: operationError,
+		});
+		this.name = "DoltCleanupFailedError";
+	}
+}
+
 function escapeValue(value: unknown): string {
 	if (value === null || value === undefined) return "NULL";
 	if (typeof value === "number") {
@@ -194,6 +213,21 @@ function doltCommitHash(rows: unknown): string {
 	return normalized;
 }
 
+function assertDoltStatus(
+	rows: unknown,
+	field: "dolt_add" | "dolt_checkout",
+): void {
+	if (!Array.isArray(rows) || rows.length === 0) {
+		throw new DoltOperationFailedError(field);
+	}
+	const value = (rows[0] as Record<string, unknown>)[field];
+	const raw = Array.isArray(value) ? value[0] : value;
+	const statusMatch = String(raw ?? "").match(/^[({]?\s*(-?\d+)/);
+	if (!statusMatch || Number(statusMatch[1]) !== 0) {
+		throw new DoltOperationFailedError(field);
+	}
+}
+
 const PATCH_COLUMNS: Record<keyof WorkItemsPatchSet, string> = {
 	title: "title",
 	summary: "summary",
@@ -217,6 +251,8 @@ const PATCH_COLUMNS: Record<keyof WorkItemsPatchSet, string> = {
 export class DoltgresPolyWorkItemAdapter
 	implements WorkItemsDoltgresPort, WorkItemQueryPort
 {
+	private cleanupFailure: DoltCleanupFailedError | undefined;
+
 	constructor(private readonly sql: Sql) {}
 
 	private async mutate<T>(
@@ -230,17 +266,41 @@ export class DoltgresPolyWorkItemAdapter
 			releaseQueue = resolve;
 		});
 		await previous.catch(() => undefined);
+		if (this.cleanupFailure) {
+			releaseQueue();
+			throw this.cleanupFailure;
+		}
 
 		let conn: ReservedSql | undefined;
 		try {
 			conn = await this.sql.reserve();
 			const result = await fn(conn);
-			await conn.unsafe("SELECT dolt_add('work_items')");
-			const rows = await conn.unsafe(
-				`SELECT dolt_commit('-m', ${escapeValue(`${COMMIT_TAG}: ${message} by actor:${requirePrincipal(principalId)}`)})`,
-			);
-			doltCommitHash(rows);
-			return result;
+			try {
+				const addRows = await conn.unsafe("SELECT dolt_add('work_items')");
+				assertDoltStatus(addRows, "dolt_add");
+				const commitRows = await conn.unsafe(
+					`SELECT dolt_commit('-m', ${escapeValue(`${COMMIT_TAG}: ${message} by actor:${requirePrincipal(principalId)}`)})`,
+				);
+				doltCommitHash(commitRows);
+				return result;
+			} catch (operationError) {
+				try {
+					// Doltgres documents table-form checkout as restoring only the
+					// named table to HEAD. This clears this failed work_items write
+					// without a branch-wide hard reset or touching other tables.
+					const cleanupRows = await conn.unsafe(
+						"SELECT dolt_checkout('work_items')",
+					);
+					assertDoltStatus(cleanupRows, "dolt_checkout");
+				} catch (cleanupError) {
+					this.cleanupFailure = new DoltCleanupFailedError(
+						operationError,
+						cleanupError,
+					);
+					throw this.cleanupFailure;
+				}
+				throw operationError;
+			}
 		} finally {
 			conn?.release();
 			releaseQueue();

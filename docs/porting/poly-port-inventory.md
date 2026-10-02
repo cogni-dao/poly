@@ -21,23 +21,23 @@ Run `pnpm poly:port:refresh -- --legacy-repo /path/to/legacy-monorepo` after a r
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1055 |
-| Unresolved legacy files | 599 |
+| Current-only files | 1057 |
+| Unresolved legacy files | 602 |
 | Behavioral parity gates | 7 |
 | Unresolved behavioral gates | 7 |
 
 | State | Count |
 | --- | ---: |
-| exact | 1137 |
-| missing | 267 |
-| review_required | 332 |
+| exact | 1134 |
+| missing | 263 |
+| review_required | 339 |
 
 | Priority | Unresolved |
 | --- | ---: |
-| P0 | 23 |
+| P0 | 24 |
 | P1 | 49 |
 | P2 | 280 |
-| P3 | 247 |
+| P3 | 249 |
 
 ## Behavioral parity gates
 
@@ -63,9 +63,10 @@ The first 100 unresolved files are shown. Ordering is deterministic: product foc
 | P0 | review_required | `app/src/app/api/v1/work/items/route.ts` | `app/src/app/api/v1/work/items/route.ts` |
 | P0 | review_required | `app/src/app/_facades/work/items.server.ts` | `app/src/app/_facades/work/items.server.ts` |
 | P0 | missing | `app/src/adapters/server/db/doltgres/client.ts` | `app/src/adapters/server/db/doltgres/client.ts` |
-| P0 | missing | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` |
-| P0 | missing | `app/src/adapters/server/db/doltgres/work-items-cursor.ts` | `app/src/adapters/server/db/doltgres/work-items-cursor.ts` |
+| P0 | review_required | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` |
+| P0 | review_required | `app/src/adapters/server/db/doltgres/work-items-cursor.ts` | `app/src/adapters/server/db/doltgres/work-items-cursor.ts` |
 | P0 | review_required | `app/src/bootstrap/container.ts` | `app/src/bootstrap/container.ts` |
+| P0 | review_required | `app/src/ports/work-items-doltgres.port.ts` | `app/src/ports/work-items-doltgres.port.ts` |
 | P0 | review_required | `app/src/features/wallet-analysis/server/trader-observation-service.ts` | `app/src/features/wallet-analysis/server/trader-observation-service.ts` |
 | P0 | review_required | `app/src/features/wallet-analysis/server/current-position-read-model.ts` | `app/src/features/wallet-analysis/server/current-position-read-model.ts` |
 | P0 | review_required | `app/src/app/api/v1/poly/wallet/overview/route.ts` | `app/src/app/api/v1/poly/wallet/overview/route.ts` |
@@ -158,4 +159,3 @@ The first 100 unresolved files are shown. Ordering is deterministic: product foc
 | P2 | missing | `app/tests/contract/app/poly.wallet.dashboard-db-read.routes.test.ts` | `app/tests/contract/app/poly.wallet.dashboard-db-read.routes.test.ts` |
 | P2 | missing | `app/tests/contract/app/poly.wallet.enable-trading.route.test.ts` | `app/tests/contract/app/poly.wallet.enable-trading.route.test.ts` |
 | P2 | missing | `app/tests/contract/app/poly.wallet.position-actions.routes.test.ts` | `app/tests/contract/app/poly.wallet.position-actions.routes.test.ts` |
-| P2 | missing | `app/tests/contract/app/poly.wallet.withdraw.route.test.ts` | `app/tests/contract/app/poly.wallet.withdraw.route.test.ts` |

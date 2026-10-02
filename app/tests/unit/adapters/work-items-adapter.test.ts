@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
 	DoltCommitFailedError,
+	DoltCleanupFailedError,
 	DoltgresPolyWorkItemAdapter,
 	WorkItemAuthorizationError,
 	WorkItemLeaseConflictError,
@@ -69,6 +70,10 @@ function successfulMutation(query: string): unknown[] {
 	if (query.startsWith("SELECT dolt_commit")) {
 		return [{ dolt_commit: "abc123" }];
 	}
+	if (query.startsWith("SELECT dolt_add")) return [{ dolt_add: 0 }];
+	if (query.startsWith("SELECT dolt_checkout")) {
+		return [{ dolt_checkout: [0, "restored work_items"] }];
+	}
 	return [];
 }
 
@@ -113,7 +118,11 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 	it("fails closed when Dolt does not return a commit hash", async () => {
 		const fake = fakeSql((query) => {
 			if (query.startsWith("UPDATE work_items")) return [{ ...ROW }];
+			if (query.startsWith("SELECT dolt_add")) return [{ dolt_add: 0 }];
 			if (query.startsWith("SELECT dolt_commit")) return [{}];
+			if (query.startsWith("SELECT dolt_checkout")) {
+				return [{ dolt_checkout: [0, "restored work_items"] }];
+			}
 			return [];
 		});
 		const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
@@ -124,6 +133,108 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 				"agent-1",
 			),
 		).rejects.toBeInstanceOf(DoltCommitFailedError);
+		expect(fake.reservedQueries.at(-1)).toBe(
+			"SELECT dolt_checkout('work_items')",
+		);
+	});
+
+	it("cleans the table when targeted staging reports failure", async () => {
+		const fake = fakeSql((query) => {
+			if (query.startsWith("UPDATE work_items")) return [{ ...ROW }];
+			if (query.startsWith("SELECT dolt_add")) return [{ dolt_add: 1 }];
+			if (query.startsWith("SELECT dolt_checkout")) {
+				return [{ dolt_checkout: [0, "restored work_items"] }];
+			}
+			return [];
+		});
+		const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
+
+		await expect(
+			adapter.patch(
+				{ id: toWorkItemId("task.5001"), set: { title: "Secure" } },
+				"agent-1",
+			),
+		).rejects.toThrow("dolt_add did not report success");
+		expect(fake.reservedQueries).toEqual([
+			expect.stringMatching(/^UPDATE work_items/),
+			"SELECT dolt_add('work_items')",
+			"SELECT dolt_checkout('work_items')",
+		]);
+	});
+
+	it("cleans a failed commit before the next mutation can be committed", async () => {
+		let workingTitle: string | undefined;
+		let stagedTitle: string | undefined;
+		let commitAttempt = 0;
+		const committedTitles: string[] = [];
+		const fake = fakeSql((query) => {
+			if (query.startsWith("UPDATE work_items")) {
+				workingTitle = query.includes("title = 'First'") ? "First" : "Second";
+				return [{ ...ROW, title: workingTitle }];
+			}
+			if (query.startsWith("SELECT dolt_add")) {
+				stagedTitle = workingTitle;
+				return [{ dolt_add: 0 }];
+			}
+			if (query.startsWith("SELECT dolt_commit")) {
+				commitAttempt += 1;
+				if (commitAttempt === 1) throw new Error("injected commit failure");
+				if (stagedTitle) committedTitles.push(stagedTitle);
+				workingTitle = undefined;
+				stagedTitle = undefined;
+				return [{ dolt_commit: "second-hash" }];
+			}
+			if (query === "SELECT dolt_checkout('work_items')") {
+				workingTitle = undefined;
+				stagedTitle = undefined;
+				return [{ dolt_checkout: [0, "restored work_items"] }];
+			}
+			return [];
+		});
+		const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
+
+		await expect(
+			adapter.patch(
+				{ id: toWorkItemId("task.5001"), set: { title: "First" } },
+				"agent-1",
+			),
+		).rejects.toThrow("injected commit failure");
+		await adapter.patch(
+			{ id: toWorkItemId("task.5001"), set: { title: "Second" } },
+			"agent-1",
+		);
+
+		expect(committedTitles).toEqual(["Second"]);
+		expect(fake.reservedQueries).toContain(
+			"SELECT dolt_checkout('work_items')",
+		);
+	});
+
+	it("poisons the adapter when targeted cleanup fails", async () => {
+		let commitAttempts = 0;
+		const fake = fakeSql((query) => {
+			if (query.startsWith("UPDATE work_items")) return [{ ...ROW }];
+			if (query.startsWith("SELECT dolt_add")) return [{ dolt_add: 0 }];
+			if (query.startsWith("SELECT dolt_commit")) {
+				commitAttempts += 1;
+				throw new Error("injected commit failure");
+			}
+			if (query.startsWith("SELECT dolt_checkout")) {
+				throw new Error("injected cleanup failure");
+			}
+			return [];
+		});
+		const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
+		const patch = () =>
+			adapter.patch(
+				{ id: toWorkItemId("task.5001"), set: { title: "Never commit" } },
+				"agent-1",
+			);
+
+		await expect(patch()).rejects.toBeInstanceOf(DoltCleanupFailedError);
+		await expect(patch()).rejects.toBeInstanceOf(DoltCleanupFailedError);
+		expect(commitAttempts).toBe(1);
+		expect(fake.reservations).toBe(1);
 	});
 
 	it("fails closed when a different creator patches an existing item", async () => {
@@ -225,6 +336,7 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 			if (query.startsWith("SELECT dolt_commit")) {
 				return [{ dolt_commit: "abc123" }];
 			}
+			if (query.startsWith("SELECT dolt_add")) return [{ dolt_add: 0 }];
 			return [];
 		});
 		const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
