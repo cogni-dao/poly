@@ -1,0 +1,177 @@
+{
+  "version": 1,
+  "source": {
+    "repository": "https://github.com/Cogni-DAO/cogni-poly.git",
+    "revision": "95a934e57d51b99aa9891fc8084d20c13d0ed78a",
+    "treeRoot": "nodes/poly"
+  },
+  "pathMappings": [
+    {
+      "sourcePrefix": "packages/ai-tools/",
+      "targetPrefix": "packages/poly-ai-tools/"
+    },
+    {
+      "sourcePrefix": "packages/db-schema/",
+      "targetPrefix": "packages/poly-db-schema/"
+    },
+    {
+      "sourcePrefix": "packages/market-provider/",
+      "targetPrefix": "packages/poly-market-provider/"
+    },
+    {
+      "sourcePrefix": "packages/node-contracts/",
+      "targetPrefix": "packages/poly-node-contracts/"
+    },
+    {
+      "sourcePrefix": "packages/wallet/",
+      "targetPrefix": "packages/poly-wallet/"
+    }
+  ],
+  "priorityRules": [
+    {
+      "priority": "P0",
+      "label": "coordination and runtime truth",
+      "prefixes": [
+        "app/src/app/_facades/work/items.server.ts",
+        "app/src/app/api/v1/work/items/",
+        "app/src/adapters/server/db/doltgres/",
+        "app/src/bootstrap/container.ts",
+        "app/src/ports/work-items-doltgres.port.ts",
+        "app/src/features/wallet-analysis/server/current-position-read-model.ts",
+        "app/src/features/wallet-analysis/server/trader-observation-service.ts",
+        "app/src/app/api/v1/poly/wallet/overview/route.ts",
+        "app/src/app/api/v1/poly/wallet/execution/route.ts",
+        "app/src/app/api/v1/poly/wallet/_lib/cash-on-chain.ts"
+      ]
+    },
+    {
+      "priority": "P0",
+      "label": "visible product parity",
+      "prefixes": [
+        "app/src/app/(app)/dashboard/",
+        "app/src/app/(app)/research/",
+        "app/src/app/(app)/_components/",
+        "app/src/features/wallet-analysis/components/",
+        "app/src/app/(app)/credits/Trading",
+        "app/src/features/layout/components/"
+      ]
+    },
+    {
+      "priority": "P1",
+      "label": "live trading and data contracts",
+      "prefixes": [
+        "app/src/app/api/v1/poly/",
+        "app/src/bootstrap/capabilities/poly",
+        "app/src/bootstrap/jobs/copy-trade",
+        "app/src/features/copy-trade/",
+        "app/src/features/trading/",
+        "app/src/features/wallet-analysis/server/",
+        "app/src/features/wallet-watch/",
+        "packages/ai-tools/",
+        "packages/db-schema/",
+        "packages/market-provider/",
+        "packages/node-contracts/",
+        "packages/wallet/"
+      ]
+    },
+    {
+      "priority": "P2",
+      "label": "proof and secondary product surfaces",
+      "prefixes": [
+        "app/tests/",
+        "graphs/",
+        "research/",
+        "sidecars/"
+      ]
+    }
+  ],
+  "queueOrder": [
+    "app/src/app/api/v1/work/items/",
+    "app/src/app/_facades/work/items.server.ts",
+    "app/src/adapters/server/db/doltgres/",
+    "app/src/bootstrap/container.ts",
+    "app/src/ports/work-items-doltgres.port.ts",
+    "app/src/features/wallet-analysis/server/trader-observation-service.ts",
+    "app/src/features/wallet-analysis/server/current-position-read-model.ts",
+    "app/src/app/api/v1/poly/wallet/overview/route.ts",
+    "app/src/app/api/v1/poly/wallet/execution/route.ts",
+    "app/src/app/api/v1/poly/wallet/_lib/cash-on-chain.ts",
+    "app/src/app/(app)/dashboard/page.tsx",
+    "app/src/app/(app)/dashboard/view.tsx",
+    "app/src/app/(app)/dashboard/_components/",
+    "app/src/app/(app)/dashboard/_api/",
+    "app/src/app/(app)/research/page.tsx",
+    "app/src/app/(app)/research/view.tsx",
+    "app/src/app/(app)/research/",
+    "app/src/features/wallet-analysis/components/",
+    "app/src/app/(app)/_components/",
+    "app/src/app/(app)/credits/Trading",
+    "app/src/features/layout/components/",
+    "app/src/app/api/v1/poly/",
+    "app/src/features/copy-trade/",
+    "app/src/features/trading/",
+    "app/src/features/wallet-analysis/server/",
+    "app/src/features/wallet-watch/",
+    "packages/"
+  ],
+  "behavioralGates": [
+    {
+      "id": "dashboard.wallet_identity",
+      "priority": "P0",
+      "status": "in_progress",
+      "owner": "derekg1729/overnight-trading-loss-audit@66a4ce5",
+      "requirement": "The observer and every dashboard read model use the same tenant trading identity: funder_address when present, otherwise the legacy signer address.",
+      "evidence": "Current production observed the Privy signer EOA while balance and position reads used the funder wallet; the active fix enrolls funder_address and retires the stale signer row."
+    },
+    {
+      "id": "dashboard.open_positions",
+      "priority": "P0",
+      "status": "failing",
+      "owner": "task.5008",
+      "requirement": "Open-position count, market value, and execution live count for the trading wallet match an independent Polygon/Data-API oracle and never silently collapse to zero.",
+      "evidence": "Production screenshot reports no open positions while independent evidence reports approximately $45.49 across live positions."
+    },
+    {
+      "id": "dashboard.wallet_total",
+      "priority": "P0",
+      "status": "failing",
+      "owner": "task.5008",
+      "requirement": "Total wallet value is cash plus marked positions; if positions are unavailable, Total is unknown or explicitly labeled partial and is never a cash-only value presented as total.",
+      "evidence": "Production displayed Total $0.53 while position data was absent and real positions were approximately $45.49."
+    },
+    {
+      "id": "dashboard.pnl_history",
+      "priority": "P0",
+      "status": "failing",
+      "owner": "task.5008",
+      "requirement": "P/L history resolves the actual trading wallet and distinguishes missing observation data from a true zero history.",
+      "evidence": "The same signer-versus-funder key mismatch affects wallet lookup for P/L history."
+    },
+    {
+      "id": "hub.work_item_create",
+      "priority": "P0",
+      "status": "failing",
+      "owner": "task.5001",
+      "requirement": "Authenticated POST /api/v1/work/items returns 201 and creates a hub work item in Doltgres.",
+      "evidence": "Production currently returns HTTP 405 because the collection route exports GET only."
+    },
+    {
+      "id": "hub.work_item_mutation",
+      "priority": "P0",
+      "status": "failing",
+      "owner": "task.5001",
+      "requirement": "Authenticated PATCH and DELETE use the Dolt-backed command adapter, and mutations remain present after a pod restart.",
+      "evidence": "The item route exports GET only and the current container wires MarkdownWorkItemAdapter for commands."
+    },
+    {
+      "id": "hub.work_item_source_of_truth",
+      "priority": "P0",
+      "status": "failing",
+      "owner": "task.5001",
+      "requirement": "The deployed hub reads and writes work items through Doltgres; repository Markdown is an explicitly temporary manager fallback, not runtime persistence.",
+      "evidence": "Merge d685fc8 (node-template upstream #32) replaced the legacy Dolt CRUD seams with a GET-only Markdown-backed path."
+    }
+  ],
+  "acceptedAdaptations": [],
+  "retiredSourceFiles": []
+}

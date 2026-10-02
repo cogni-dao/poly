@@ -7,8 +7,8 @@ actor: ai
 priority: 1
 rank: 10
 estimate: 3
-summary: "Before agents can coordinate through the hub, POST/PATCH/claim/heartbeat/link endpoints must work on https://poly.cognidao.org/api/v1/work/items. Current evidence: production GET works and pre-PR POST returned HTTP 405 on 2026-06-28; candidate-a at 670d6ad authenticated with a candidate-issued agent key but POST returned HTTP 500 because the runtime image did not ship/writable-mount work/items."
-outcome: "Local routes/facades/tests are implemented, and candidate-a proved build/read/auth at 670d6ad. Follow-up in this task: ship work/items into the runner image, chown /app/work for the non-root runtime, re-flight candidate-a, and prove create/patch/claim/heartbeat/coordination over HTTP before marking done."
+summary: "Restore the legacy Dolt-backed work-item command plane removed by node-template merge #32; production currently exposes GET only and returns HTTP 405 for POST."
+outcome: "Authenticated create/patch/delete/claim/heartbeat/coordination use Doltgres, survive a pod restart, and never depend on a writable runtime Markdown directory."
 spec_refs:
   - packages/node-contracts/src/work.items.create.v1.contract.ts
   - packages/node-contracts/src/work.items.patch.v1.contract.ts
@@ -25,7 +25,7 @@ revision: 0
 blocked_by: null
 deploy_verified: false
 created: 2026-06-28
-updated: 2026-06-28
+updated: 2026-10-02
 labels:
   - poly-launch
   - coordination
@@ -36,8 +36,10 @@ node: poly
 
 # Restore node work-item write and coordination endpoints
 
-Owns: work-item HTTP routes, facades, contracts, and tests.
+Owns: work-item HTTP routes, facade, Doltgres adapter/port/container wiring, contracts, and tests.
 
 Do not touch: legacy Poly product port files, db migration history, trading features, operator infra.
 
-Gate: authenticated candidate-a curl can list seeded story/task IDs, create a story, create a child task, patch status/summary, claim/heartbeat/link a PR, and read coordination state from the live Poly node. Then repeat on production after merge/promote.
+Root cause: commit `d685fc8` (`chore: merge node-template upstream (#32)`) replaced the legacy collection POST and item PATCH/DELETE seams and removed concrete Dolt adapter wiring. The current container wires `MarkdownWorkItemAdapter`; merely restoring POST would write an ephemeral runtime filesystem and does not repair the hub.
+
+Gate: authenticated candidate curl can create a story and child task, patch status/summary, claim/heartbeat/link a PR, delete a disposable test item, and read coordination state. Direct Dolt evidence must show the same rows, and they must remain after a pod restart. Repeat on production after merge/promote. Repository Markdown is only the user-authorized temporary manager fallback.
