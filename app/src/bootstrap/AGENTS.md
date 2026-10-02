@@ -49,6 +49,7 @@ System setup installers were moved to `scripts/bootstrap/` and are out of scope 
 - **Exports:**
   - `verifySystemTenant(serviceAccountService)` - Startup healthcheck: fails fast if cogni_system billing account missing (per SYSTEM_TENANT_STARTUP_CHECK)
   - `runGovernanceSchedulesSyncJob()` - Job: advisory lock + governance schedule sync via container
+  - `startGovernanceSyncOnBoot(log)` - Direct, bounded, observable schedule reconcile at process startup
   - `getContainer()` - Singleton DI container with logger and config
   - `resetContainer()` - Reset singleton (tests only)
   - `Container` interface - Ports + logger + config (includes accountsForUser(userId), serviceAccountService, metricsQuery, metricsCapability, repoCapability, toolSource, threadPersistenceForUser(userId), modelCatalog, providerResolver; no usageService)
@@ -66,6 +67,7 @@ System setup installers were moved to `scripts/bootstrap/` and are out of scope 
   - `makeWrapPublicRoute()` - Pure factory for testing (from `http/wrapPublicRoute`)
   - `RateLimitBypassConfig` - Test bypass config type (from `http/wrapPublicRoute`)
   - `TokenBucketRateLimiter`, `publicApiLimiter`, `extractClientIp` - Rate limiting utilities (from `http/`)
+  - `createPolyWalletResetStateAdapter()` - RLS-scoped wallet-reset state adapter factory
 - **Env/Config keys:** none (uses `@/shared/env`)
 - **Files considered API:** `container.ts`, `graph-executor.factory.ts`, `agent-discovery.ts`, `identity.ts`, `http/index.ts`, `http/wrapPublicRoute.ts`, `http/rateLimiter.ts`
 

@@ -13,3 +13,4 @@
 
 export type { PrivyPolyTraderWalletAdapterConfig } from "./privy-poly-trader-wallet.adapter";
 export { PrivyPolyTraderWalletAdapter } from "./privy-poly-trader-wallet.adapter";
+export { DrizzlePolyWalletResetStateAdapter } from "./drizzle-poly-wallet-reset-state.adapter";

@@ -16,13 +16,9 @@ const FOREIGN_ACCOUNT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const resolveBillingAccountId = vi.fn();
 const checkConnectRateLimit = vi.fn();
 const getPolyTraderWalletAdapter = vi.fn();
-const select = vi.fn();
-
-const emptySelect = {
-  from: vi.fn().mockReturnThis(),
-  where: vi.fn().mockReturnThis(),
-  limit: vi.fn(async () => []),
-};
+const createPolyWalletResetStateAdapter = vi.fn();
+const resetWalletConnection = vi.fn();
+const invalidatePolyTradeExecutorFor = vi.fn();
 
 vi.mock("@/app/api/v1/poly/_lib/billing-account-cache", () => ({
   resolveBillingAccountId: (...args: unknown[]) =>
@@ -32,9 +28,8 @@ vi.mock("@/app/api/v1/poly/_lib/billing-account-cache", () => ({
 vi.mock("@/bootstrap/container", () => ({
   getContainer: () => ({
     serviceAccountService: { marker: "session-account-service" },
-    invalidatePolyTradeExecutorFor: vi.fn(),
+    invalidatePolyTradeExecutorFor,
   }),
-  resolveServiceDb: () => ({ select }),
 }));
 
 vi.mock("@/bootstrap/poly-trader-wallet", () => ({
@@ -42,7 +37,14 @@ vi.mock("@/bootstrap/poly-trader-wallet", () => ({
     checkConnectRateLimit(...args),
   getPolyTraderWalletAdapter: (...args: unknown[]) =>
     getPolyTraderWalletAdapter(...args),
+  createPolyWalletResetStateAdapter: () =>
+    createPolyWalletResetStateAdapter(),
   WalletAdapterUnconfiguredError: class extends Error {},
+}));
+
+vi.mock("@/features/wallet-recovery/reset-wallet-connection", () => ({
+  resetWalletConnection: (...args: unknown[]) =>
+    resetWalletConnection(...args),
 }));
 
 vi.mock("@/bootstrap/http", () => ({
@@ -84,10 +86,27 @@ function request(body: unknown): Request {
 describe("POST /api/v1/poly/wallet/reset-connection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    select.mockReturnValue(emptySelect);
     resolveBillingAccountId.mockResolvedValue(OWN_ACCOUNT);
     checkConnectRateLimit.mockResolvedValue({ retryAfterSeconds: 0 });
     getPolyTraderWalletAdapter.mockReturnValue({});
+    createPolyWalletResetStateAdapter.mockReturnValue({});
+    resetWalletConnection.mockResolvedValue({
+      billingAccountId: OWN_ACCOUNT,
+      outcome: "no_active_connection",
+      blockedReason: null,
+      connection: null,
+      balances: {
+        usdcE: null,
+        pusd: null,
+        pol: null,
+        readErrors: [],
+      },
+      unsettledOrderCount: 0,
+      openPositionCount: 0,
+      grantsRevokedCount: 0,
+      targetsDisabledCount: 0,
+      reprovisionAvailableInSeconds: 0,
+    });
   });
 
   it("rejects a caller-supplied billing account before any account lookup", async () => {
@@ -101,7 +120,7 @@ describe("POST /api/v1/poly/wallet/reset-connection", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "invalid_reset_request" });
     expect(resolveBillingAccountId).not.toHaveBeenCalled();
-    expect(select).not.toHaveBeenCalled();
+    expect(resetWalletConnection).not.toHaveBeenCalled();
   });
 
   it("derives the only reachable account from the authenticated session", async () => {
@@ -114,6 +133,17 @@ describe("POST /api/v1/poly/wallet/reset-connection", () => {
     expect(resolveBillingAccountId).toHaveBeenCalledWith(
       expect.anything(),
       USER_ID
+    );
+    expect(resetWalletConnection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: expect.anything(),
+        wallet: expect.anything(),
+        now: expect.any(Function),
+      }),
+      expect.objectContaining({
+        userId: USER_ID,
+        billingAccountId: OWN_ACCOUNT,
+      })
     );
     expect(await response.json()).toMatchObject({
       billing_account_id: OWN_ACCOUNT,

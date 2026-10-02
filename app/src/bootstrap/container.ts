@@ -517,7 +517,7 @@ function stopAllJobHandles(): void {
 export function getContainer(): Container {
 	if (!_container) {
 		_container = createContainer();
-		startGovernanceSyncOnBoot();
+		startGovernanceSyncOnBoot(_container.log);
 	}
 	return _container;
 }
