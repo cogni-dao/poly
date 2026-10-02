@@ -48,16 +48,21 @@ import {
   type PolyWalletOverviewOutput,
   polyWalletOverviewOperation,
 } from "@cogni/poly-node-contracts";
+import { withTenantScope } from "@cogni/db-client";
+import { toUserId, userActor } from "@cogni/ids";
+import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer } from "@/bootstrap/container";
+import { resolveAppDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
-import {
-  getPolyTraderWalletAdapter,
-  WalletAdapterUnconfiguredError,
-} from "@/bootstrap/poly-trader-wallet";
+import { isPolyTraderWalletConfigured } from "@/bootstrap/poly-trader-wallet";
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
 import { getTradingWalletPnlHistoryRead } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
+import {
+  readWalletBalanceFact,
+  WALLET_BALANCE_FRESHNESS_MS,
+} from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
 import {
@@ -69,7 +74,6 @@ import {
   coalesceCurrentWalletPositions,
   coalesceDashboardRoutePayload,
   coalesceTenantLedgerPositions,
-  coalesceWalletBalances,
   overviewRouteCacheKey,
 } from "../_lib/dashboard-route-cache";
 import {
@@ -139,77 +143,79 @@ export const GET = wrapRouteHandlerWithLogging(
     const payload = await coalesceDashboardRoutePayload<PolyWalletOverviewOutput>(
       overviewRouteCacheKey(billingAccountId, interval, freshness),
       async () => {
-        const capturedAt = new Date().toISOString();
-
-        let adapter: ReturnType<typeof getPolyTraderWalletAdapter>;
-        try {
-          adapter = getPolyTraderWalletAdapter(ctx.log);
-        } catch (err) {
-          if (err instanceof WalletAdapterUnconfiguredError) {
-            logOverviewComplete(ctx, startedAtMs, {
-              status: "wallet_adapter_unconfigured",
-              interval,
-              freshness,
-              connected: false,
-              warnings: 1,
-              openOrders: null,
-              positionsMtm: null,
-              lockedUsdc: null,
-              pnlPoints: 0,
-            });
-            return emptyPayload(interval, capturedAt, {
-              configured: false,
-              freshness,
-              warnings: [
-                {
-                  code: "wallet_adapter_unconfigured",
-                  message:
-                    "Trading-wallet adapter is not configured on this pod yet.",
-                },
-              ],
-            });
-          }
-          throw err;
-        }
-
-        // BALANCES_OFF_FIRST_PAINT (task.5010): 30s-TTL cached + coalesced;
-        // a cold route-cache hit reuses warm balances instead of blocking on
-        // 3 Polygon RPC calls. Refresh evicts; degraded reads aren't cached.
-        const balances = await coalesceWalletBalances(billingAccountId, () =>
-          adapter.getBalances(billingAccountId)
+        const requestedAt = new Date();
+        const appDb = resolveAppDb() as unknown as PostgresJsDatabase<
+          Record<string, unknown>
+        >;
+        const balances = await withTenantScope(
+          appDb,
+          userActor(toUserId(sessionUser.id)),
+          async (tx) => readWalletBalanceFact(tx, billingAccountId)
         );
-        if (!balances) {
+        if (balances.kind !== "available") {
           logOverviewComplete(ctx, startedAtMs, {
-            status: "no_trading_wallet",
+            status:
+              balances.kind === "no_wallet"
+                ? "no_trading_wallet"
+                : "balance_snapshot_missing",
             interval,
             freshness,
-            connected: false,
+            connected: balances.kind === "missing",
             warnings: 1,
             openOrders: null,
             positionsMtm: null,
             lockedUsdc: null,
             pnlPoints: 0,
           });
-          return emptyPayload(interval, capturedAt, {
+          return emptyPayload(interval, requestedAt.toISOString(), {
+            configured: isPolyTraderWalletConfigured(),
+            connected: balances.kind === "missing",
+            address: balances.kind === "missing" ? balances.address : null,
             freshness,
             warnings: [
               {
-                code: "no_trading_wallet",
+                code:
+                  balances.kind === "no_wallet"
+                    ? "no_trading_wallet"
+                    : "balance_snapshot_missing",
                 message:
-                  "No Polymarket trading wallet is provisioned for this account yet.",
+                  balances.kind === "no_wallet"
+                    ? "No Polymarket trading wallet is provisioned for this account."
+                    : "No persisted wallet balance observation is available yet; this is not a zero balance.",
               },
             ],
           });
         }
 
+        const balanceAgeMs = Math.max(
+          0,
+          requestedAt.getTime() - balances.observedAt.getTime()
+        );
+        const balanceStale = balanceAgeMs > WALLET_BALANCE_FRESHNESS_MS;
+        const balanceObservedAt = balances.observedAt.toISOString();
+        const capturedAt = requestedAt.toISOString();
         const warnings: PolyWalletOverviewOutput["warnings"] = [
           ...balances.errors.map((message) => ({
-            code: "balances_partial",
+            code:
+              balances.status === "error"
+                ? "balances_unavailable"
+                : "balances_partial",
             message,
           })),
         ];
+        if (balanceStale) {
+          warnings.push({
+            code: "balances_stale",
+            message: `Wallet balances are older than the 10-minute freshness window (observed ${balanceObservedAt}).`,
+          });
+        } else if (balances.status === "error") {
+          warnings.push({
+            code: "balances_unavailable",
+            message: "All persisted on-chain balance legs are unavailable.",
+          });
+        }
 
-        const capturedAtDate = new Date(capturedAt);
+        const capturedAtDate = requestedAt;
         // Null means the ledger read itself failed. A successful read with no
         // rows produces a real zero summary; those states must not collapse.
         let positionSummary: ReturnType<typeof summarizeLedgerOrders> | null =
@@ -287,7 +293,9 @@ export const GET = wrapRouteHandlerWithLogging(
         // never zero out the wallet. Cash is null only when NO on-chain read
         // succeeded (both null → RPC down / unconfigured), so the dashboard
         // degrades to "—" instead of falsely claiming an empty wallet.
-        const cashOnChain = sumCashOnChain(balances.usdcE, balances.pusd);
+        const cashOnChain = balanceStale
+          ? null
+          : sumCashOnChain(balances.usdcE, balances.pusd);
         const availableRaw = availableCashAfterReservations(
           cashOnChain,
           positionSummary?.lockedUsdc ?? null
@@ -383,13 +391,13 @@ export const GET = wrapRouteHandlerWithLogging(
         });
 
         return polyWalletOverviewOperation.output.parse({
-          configured: true,
+          configured: isPolyTraderWalletConfigured(),
           connected: true,
           freshness,
           address: balances.address,
           interval,
           capturedAt,
-          pol_gas: balances.pol,
+          pol_gas: balanceStale ? null : balances.pol,
           usdc_available: usdcAvailable,
           usdc_locked: positionSummary?.lockedUsdc ?? null,
           usdc_positions_mtm: positionsMtm,

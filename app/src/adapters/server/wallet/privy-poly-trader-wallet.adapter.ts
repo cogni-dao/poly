@@ -802,16 +802,30 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
   }
 
   async listActiveTradingAddresses(): Promise<readonly string[]> {
+    return [
+      ...new Set(
+        (await this.listActiveTradingWallets()).map((wallet) =>
+          wallet.address.toLowerCase()
+        )
+      ),
+    ];
+  }
+
+  async listActiveTradingWallets(): Promise<
+    readonly { billingAccountId: string; address: `0x${string}` }[]
+  > {
     const rows = await this.serviceDb
       .select({
+        billingAccountId: polyWalletConnections.billingAccountId,
         address: polyWalletConnections.address,
         funderAddress: polyWalletConnections.funderAddress,
       })
       .from(polyWalletConnections)
       .where(isNull(polyWalletConnections.revokedAt));
-    return [
-      ...new Set(rows.map((row) => resolveTradingAddress(row).toLowerCase())),
-    ];
+    return rows.map((row) => ({
+      billingAccountId: row.billingAccountId,
+      address: resolveTradingAddress(row),
+    }));
   }
 
   async getConnectionSummary(billingAccountId: string): Promise<{
@@ -906,9 +920,8 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       errors.push("polygon_rpc_unconfigured");
       return [null, null, null];
     }
-    try {
-      const client = this.getBalancePublicClient(this.polygonRpcUrl);
-      const [usdcERaw, pusdRaw, polRaw] = await Promise.all([
+    const client = this.getBalancePublicClient(this.polygonRpcUrl);
+    const [usdcEResult, pusdResult, polResult] = await Promise.allSettled([
         client.readContract({
           address: USDC_E_POLYGON,
           abi: ERC20_BALANCEOF_ABI,
@@ -922,16 +935,25 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
           args: [addr],
         }),
         client.getBalance({ address: addr }),
-      ]);
-      const usdcE = Number(formatUnits(usdcERaw, USDC_DECIMALS));
-      const pusd = Number(formatUnits(pusdRaw, USDC_DECIMALS));
-      return [usdcE, pusd, Number(formatUnits(polRaw, POL_DECIMALS))];
-    } catch (err) {
+    ]);
+    const readLeg = <T>(
+      name: string,
+      result: PromiseSettledResult<T>,
+      decimals: number
+    ): number | null => {
+      if (result.status === "fulfilled") {
+        return Number(formatUnits(result.value as bigint, decimals));
+      }
       errors.push(
-        `polygon_rpc: ${err instanceof Error ? err.message : String(err)}`
+        `${name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
       );
-      return [null, null, null];
-    }
+      return null;
+    };
+    return [
+      readLeg("usdce_rpc", usdcEResult, USDC_DECIMALS),
+      readLeg("pusd_rpc", pusdResult, USDC_DECIMALS),
+      readLeg("pol_rpc", polResult, POL_DECIMALS),
+    ];
   }
 
   async provision(input: {

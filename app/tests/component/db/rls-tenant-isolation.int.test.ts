@@ -29,6 +29,7 @@ import {
 import {
   aiThreads,
   billingAccounts,
+  polyWalletBalanceSnapshots,
   users,
   virtualKeys,
 } from "@/shared/db/schema";
@@ -108,6 +109,14 @@ describe("RLS Tenant Isolation", () => {
       billingAccountId: tenantA.billingAccountId,
       isDefault: true,
     });
+    await seedDb.insert(polyWalletBalanceSnapshots).values({
+      billingAccountId: tenantA.billingAccountId,
+      address: `0x${"a".repeat(40)}`,
+      pusd: "11.5",
+      status: "partial",
+      errors: ["usdce_rpc unavailable"],
+      observedAt: new Date(),
+    });
 
     await seedDb.insert(users).values({
       id: tenantB.userId,
@@ -127,6 +136,14 @@ describe("RLS Tenant Isolation", () => {
       id: tenantB.virtualKeyId,
       billingAccountId: tenantB.billingAccountId,
       isDefault: true,
+    });
+    await seedDb.insert(polyWalletBalanceSnapshots).values({
+      billingAccountId: tenantB.billingAccountId,
+      address: `0x${"b".repeat(40)}`,
+      pusd: "22.5",
+      status: "partial",
+      errors: [],
+      observedAt: new Date(),
     });
 
     // Seed ai_threads for both tenants
@@ -208,6 +225,30 @@ describe("RLS Tenant Isolation", () => {
       );
       const ids = rows.map((r) => r.id);
       expect(ids).not.toContain(tenantB.virtualKeyId);
+    });
+  });
+
+  describe("poly_wallet_balance_snapshots - account isolation", () => {
+    it("each user sees only their own persisted balance fact", async () => {
+      const rowsA = await withTenantScope(db, tenantA.userId, (tx) =>
+        tx.select().from(polyWalletBalanceSnapshots)
+      );
+      const rowsB = await withTenantScope(db, tenantB.userId, (tx) =>
+        tx.select().from(polyWalletBalanceSnapshots)
+      );
+      expect(rowsA.map((row) => row.billingAccountId)).toEqual([
+        tenantA.billingAccountId,
+      ]);
+      expect(rowsB.map((row) => row.billingAccountId)).toEqual([
+        tenantB.billingAccountId,
+      ]);
+    });
+
+    it("returns no balance facts without tenant context", async () => {
+      const rows = await withoutTenantScope(db, (tx) =>
+        tx.select().from(polyWalletBalanceSnapshots)
+      );
+      expect(rows).toHaveLength(0);
     });
   });
 

@@ -249,6 +249,14 @@ export interface PolyTraderWalletPort {
    */
   listActiveTradingAddresses(): Promise<readonly string[]>;
 
+  /** Tenant ids paired with the exact active funder address; DB-only. */
+  listActiveTradingWallets(): Promise<
+    readonly {
+      readonly billingAccountId: string;
+      readonly address: `0x${string}`;
+    }[]
+  >;
+
   /**
    * Read-only summary of the tenant's active connection — connection id,
    * funder address, and the APPROVALS_BEFORE_PLACE readiness stamp.

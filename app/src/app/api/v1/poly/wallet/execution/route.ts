@@ -203,10 +203,8 @@ export const GET = wrapRouteHandlerWithLogging(
           });
           return new Map();
         });
-        try {
-          // SHARED_READ: byte-identical to the overview route's ledger
-          // read — one SWR entry serves both routes (dashboard floor fix).
-          const [rows, dailyCountsFromDb] = await Promise.all([
+        {
+          const [rowsResult, dailyCountsResult] = await Promise.allSettled([
             coalesceTenantLedgerPositions(billingAccountId, () =>
               container.orderLedger.listTenantPositions({
                 billing_account_id: billingAccountId,
@@ -220,30 +218,46 @@ export const GET = wrapRouteHandlerWithLogging(
               windowDays: DASHBOARD_TRADE_COUNT_WINDOW_DAYS,
             }),
           ]);
-          dailyTradeCounts = dailyCountsFromDb;
-          const positions = rows.map((row) =>
-            toWalletExecutionPosition(row, capturedAt)
-          );
-          // Realized P/L is overlaid LATER (after all sources are merged) so
-          // the additive `mergeWalletExecutionPosition` can't double-count a
-          // token-level credit that's already applied to both the ledger row
-          // and the current-position row.
-          const ledgerLivePositions = coalesceWalletExecutionPositions(
-            positions
-              .filter((position) => position.status !== "closed")
-              .filter((position) => position.currentValue > 0)
-          );
-          for (const position of ledgerLivePositions) {
-            ledgerLiveByAsset.set(position.asset, position);
+          if (dailyCountsResult.status === "fulfilled") {
+            dailyTradeCounts = dailyCountsResult.value;
+          } else {
+            warnings.push({
+              code: "daily_trade_counts_unavailable",
+              message:
+                dailyCountsResult.reason instanceof Error
+                  ? dailyCountsResult.reason.message
+                  : String(dailyCountsResult.reason),
+            });
           }
-          closedPositions = coalesceWalletExecutionPositions(
-            positions.filter((position) => position.status === "closed")
-          );
-        } catch (err) {
-          warnings.push({
-            code: "positions_read_model_unavailable",
-            message: err instanceof Error ? err.message : String(err),
-          });
+          if (rowsResult.status === "rejected") {
+            warnings.push({
+              code: "positions_read_model_unavailable",
+              message:
+                rowsResult.reason instanceof Error
+                  ? rowsResult.reason.message
+                  : String(rowsResult.reason),
+            });
+          } else {
+            const rows = rowsResult.value;
+            const positions = rows.map((row) =>
+              toWalletExecutionPosition(row, capturedAt)
+            );
+            // Realized P/L is overlaid LATER (after all sources are merged) so
+            // the additive `mergeWalletExecutionPosition` can't double-count a
+            // token-level credit that's already applied to both the ledger row
+            // and the current-position row.
+            const ledgerLivePositions = coalesceWalletExecutionPositions(
+              positions
+                .filter((position) => position.status !== "closed")
+                .filter((position) => position.currentValue > 0)
+            );
+            for (const position of ledgerLivePositions) {
+              ledgerLiveByAsset.set(position.asset, position);
+            }
+            closedPositions = coalesceWalletExecutionPositions(
+              positions.filter((position) => position.status === "closed")
+            );
+          }
         }
 
         try {

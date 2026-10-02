@@ -64,6 +64,8 @@ export interface TraderObservationJobDeps {
    * container — see OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM in the service.
    */
   listActiveTradingAddresses: TenantTradingAddressReader;
+  /** Off-render Polygon reads persisted for DB-only dashboard GETs. */
+  refreshBalanceFacts?: () => Promise<void>;
   logger: LoggerPort;
   metrics: MetricsPort;
   pollMs?: number;
@@ -75,6 +77,7 @@ export function startTraderObservationJob(
   const pollMs = deps.pollMs ?? OBSERVATION_POLL_MS;
   const log = deps.logger.child({ component: "trader-observation-job" });
   let running = false;
+  let balanceRefreshRunning = false;
   // prod EXPLAIN 2026-10-01 — seed to "now" so the first prune fires one full interval after
   // boot, never on the boot tick itself (see RETENTION_PRUNE_INTERVAL_MS).
   let lastRetentionPruneAt = Date.now();
@@ -97,6 +100,24 @@ export function startTraderObservationJob(
       return;
     }
     running = true;
+    if (deps.refreshBalanceFacts && !balanceRefreshRunning) {
+      balanceRefreshRunning = true;
+      void deps
+        .refreshBalanceFacts()
+        .catch((err) => {
+          log.error(
+            {
+              event: "poly.wallet.balance.observe",
+              phase: "error",
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "wallet balance snapshot refresh failed"
+          );
+        })
+        .finally(() => {
+          balanceRefreshRunning = false;
+        });
+    }
     const tickStartedAt = Date.now();
     // prod EXPLAIN 2026-10-01 — run the retention prunes at most once per
     // RETENTION_PRUNE_INTERVAL_MS. Stamp the clock at the decision point (not

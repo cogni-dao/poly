@@ -1353,6 +1353,9 @@ function createContainer(): Container {
 			// resolver of a tenant's trading address, so the observer enrolls
 			// exactly the wallets the executor signs from.
 			const observationWalletPort = getPolyTraderWalletAdapter(log);
+			const { persistWalletBalanceFact } = await import(
+				"@/features/wallet-analysis/server/wallet-balance-snapshot-service"
+			);
 			const traderObservationStop = startTraderObservationJob({
 				db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
 					Record<string, unknown>
@@ -1361,6 +1364,30 @@ function createContainer(): Container {
 				userPnlClient: new PolymarketUserPnlClient(),
 				listActiveTradingAddresses: () =>
 					observationWalletPort.listActiveTradingAddresses(),
+				refreshBalanceFacts: async () => {
+					const wallets = await observationWalletPort.listActiveTradingWallets();
+					for (let offset = 0; offset < wallets.length; offset += 3) {
+						await Promise.allSettled(
+							wallets.slice(offset, offset + 3).map(async (wallet) => {
+								const balances = await observationWalletPort.getBalances(
+									wallet.billingAccountId,
+								);
+								if (!balances) return;
+								if (
+									balances.address.toLowerCase() !== wallet.address.toLowerCase()
+								) {
+									throw new Error(
+										"wallet balance address changed during observation",
+									);
+								}
+								await persistWalletBalanceFact(serviceDb, {
+									billingAccountId: wallet.billingAccountId,
+									...balances,
+								});
+							}),
+						);
+					}
+				},
 				logger: observerLogger,
 				metrics: noopMetricsForObservation,
 			});
