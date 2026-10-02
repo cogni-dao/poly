@@ -168,6 +168,19 @@ export async function readCurrentWalletPositionModel(params: {
         AND w.kind = 'cogni_wallet'
         AND w.active_for_research = true
         AND w.disabled_at IS NULL
+        AND (
+          p.token_id IS NULL
+          OR (
+            p.current_value_usdc > 0
+            AND (
+              (pmo.outcome = 'winner' AND r.lifecycle_state IS DISTINCT FROM 'redeemed')
+              OR (
+                coalesce(pmo.outcome, 'unknown') NOT IN ('winner', 'loser')
+                AND coalesce(r.lifecycle_state, '') NOT IN ('redeemed', 'loser', 'dust', 'closed')
+              )
+            )
+          )
+        )
       ORDER BY p.current_value_usdc DESC NULLS LAST, p.last_observed_at DESC NULLS LAST
       LIMIT ${POSITION_PREVIEW_LIMIT}
     `)
