@@ -2,7 +2,7 @@
 id: task.5001
 type: task
 title: Restore node work-item write and coordination endpoints
-status: needs_implement
+status: in_progress
 actor: ai
 priority: 1
 rank: 10
@@ -18,8 +18,8 @@ assignees: []
 credit: null
 project: null
 parent: story.5000
-branch: null
-pr: null
+branch: fix/task.5001-dolt-work-item-crud
+pr: 111
 reviewer: null
 revision: 0
 blocked_by: null
@@ -41,5 +41,7 @@ Owns: work-item HTTP routes, facade, Doltgres adapter/port/container wiring, con
 Do not touch: legacy Poly product port files, db migration history, trading features, operator infra.
 
 Root cause: commit `d685fc8` (`chore: merge node-template upstream (#32)`) replaced the legacy collection POST and item PATCH/DELETE seams and removed concrete Dolt adapter wiring. The current container wires `MarkdownWorkItemAdapter`; merely restoring POST would write an ephemeral runtime filesystem and does not repair the hub.
+
+Active checkpoint: draft PR #111 at `ab203a8` restores the Dolt adapter/cursor, facade and container wiring, collection POST, item PATCH/DELETE, and keeps coordination commands on the durable command port. Focused adapter/facade coverage is green; full CI and deployed restart proof remain.
 
 Gate: authenticated candidate curl can create a story and child task, patch status/summary, claim/heartbeat/link a PR, delete a disposable test item, and read coordination state. Direct Dolt evidence must show the same rows, and they must remain after a pod restart. Repeat on production after merge/promote. Repository Markdown is only the user-authorized temporary manager fallback.

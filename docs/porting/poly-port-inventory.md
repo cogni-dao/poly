@@ -49,9 +49,9 @@ File equality is necessary but not sufficient. These gates prevent an adapted im
 | P0 | failing | `dashboard.pnl_history` | `PR #110 @ da738a8` | P/L history resolves the actual trading wallet and distinguishes missing observation data from a true zero history. |
 | P0 | in_progress | `dashboard.wallet_identity` | `PR #109 @ a5f85ca` | The observer and every dashboard read model use the same tenant trading identity: funder_address when present, otherwise the legacy signer address. |
 | P0 | failing | `dashboard.wallet_total` | `PR #110 @ da738a8` | Total wallet value is cash plus marked positions; if positions are unavailable, Total is unknown or explicitly labeled partial and is never a cash-only value presented as total. |
-| P0 | failing | `hub.work_item_create` | `task.5001` | Authenticated POST /api/v1/work/items returns 201 and creates a hub work item in Doltgres. |
-| P0 | failing | `hub.work_item_mutation` | `task.5001` | Authenticated PATCH and DELETE use the Dolt-backed command adapter, and mutations remain present after a pod restart. |
-| P0 | failing | `hub.work_item_source_of_truth` | `task.5001` | The deployed hub reads and writes work items through Doltgres; repository Markdown is an explicitly temporary manager fallback, not runtime persistence. |
+| P0 | failing | `hub.work_item_create` | `PR #111 @ ab203a8` | Authenticated POST /api/v1/work/items returns 201 and creates a hub work item in Doltgres. |
+| P0 | failing | `hub.work_item_mutation` | `PR #111 @ ab203a8` | Authenticated PATCH and DELETE use the Dolt-backed command adapter, and mutations remain present after a pod restart. |
+| P0 | failing | `hub.work_item_source_of_truth` | `PR #111 @ ab203a8` | The deployed hub reads and writes work items through Doltgres; repository Markdown is an explicitly temporary manager fallback, not runtime persistence. |
 
 ## Prioritized port queue
 

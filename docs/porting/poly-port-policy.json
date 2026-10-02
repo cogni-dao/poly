@@ -151,7 +151,7 @@
       "id": "hub.work_item_create",
       "priority": "P0",
       "status": "failing",
-      "owner": "task.5001",
+      "owner": "PR #111 @ ab203a8",
       "requirement": "Authenticated POST /api/v1/work/items returns 201 and creates a hub work item in Doltgres.",
       "evidence": "Production currently returns HTTP 405 because the collection route exports GET only."
     },
@@ -159,7 +159,7 @@
       "id": "hub.work_item_mutation",
       "priority": "P0",
       "status": "failing",
-      "owner": "task.5001",
+      "owner": "PR #111 @ ab203a8",
       "requirement": "Authenticated PATCH and DELETE use the Dolt-backed command adapter, and mutations remain present after a pod restart.",
       "evidence": "The item route exports GET only and the current container wires MarkdownWorkItemAdapter for commands."
     },
@@ -167,7 +167,7 @@
       "id": "hub.work_item_source_of_truth",
       "priority": "P0",
       "status": "failing",
-      "owner": "task.5001",
+      "owner": "PR #111 @ ab203a8",
       "requirement": "The deployed hub reads and writes work items through Doltgres; repository Markdown is an explicitly temporary manager fallback, not runtime persistence.",
       "evidence": "Merge d685fc8 (node-template upstream #32) replaced the legacy Dolt CRUD seams with a GET-only Markdown-backed path."
     }
