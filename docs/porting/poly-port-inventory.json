@@ -5,7 +5,7 @@
     "revision": "95a934e57d51b99aa9891fc8084d20c13d0ed78a",
     "treeRoot": "nodes/poly"
   },
-  "policySha256": "33916ff3082e3f826fc08a2ead4a417e48199bc6205cdce54d70092ce7dc5f6a",
+  "policySha256": "cc0f1f13d7e108b07823f2c37d188d2c5fa4773866b20c587f997b6faba4cbb8",
   "targetTreeDigest": "ed2f01ee43d74fdde001dd15f95831a6086775692292cc2ef38d52a8fd498fba",
   "summary": {
     "sourceFiles": 1736,
@@ -31,7 +31,7 @@
       "id": "dashboard.wallet_identity",
       "priority": "P0",
       "status": "in_progress",
-      "owner": "PR #109 @ a5f85ca",
+      "owner": "PR #110 @ 6a58cb2",
       "requirement": "The observer and every dashboard read model use the same tenant trading identity: funder_address when present, otherwise the legacy signer address.",
       "evidence": "Current production observed the Privy signer EOA while balance and position reads used the funder wallet; the active fix enrolls funder_address and retires the stale signer row."
     },
@@ -39,7 +39,7 @@
       "id": "dashboard.open_positions",
       "priority": "P0",
       "status": "failing",
-      "owner": "PR #110 @ da738a8",
+      "owner": "PR #110 @ 6a58cb2",
       "requirement": "Open-position count, market value, and execution live count for the trading wallet match an independent Polygon/Data-API oracle and never silently collapse to zero.",
       "evidence": "Production screenshot reports no open positions while independent evidence reports approximately $45.49 across live positions."
     },
@@ -47,7 +47,7 @@
       "id": "dashboard.wallet_total",
       "priority": "P0",
       "status": "failing",
-      "owner": "PR #110 @ da738a8",
+      "owner": "PR #110 @ 6a58cb2",
       "requirement": "Total wallet value is cash plus marked positions; if positions are unavailable, Total is unknown or explicitly labeled partial and is never a cash-only value presented as total.",
       "evidence": "Production displayed Total $0.53 while position data was absent and real positions were approximately $45.49."
     },
@@ -55,7 +55,7 @@
       "id": "dashboard.pnl_history",
       "priority": "P0",
       "status": "failing",
-      "owner": "PR #110 @ da738a8",
+      "owner": "PR #110 @ 6a58cb2",
       "requirement": "P/L history resolves the actual trading wallet and distinguishes missing observation data from a true zero history.",
       "evidence": "The same signer-versus-funder key mismatch affects wallet lookup for P/L history."
     },
