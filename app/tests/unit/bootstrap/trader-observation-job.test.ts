@@ -226,4 +226,40 @@ describe("trader-observation job cancellation (task.5015)", () => {
     expect(logCalls(logger.error, "tick_error")).toHaveLength(0);
     stop();
   });
+
+  // RETENTION_PRUNE_CADENCE (prod EXPLAIN 2026-10-01) — the retention prunes must not run on
+  // every 30s poll. Prod EXPLAIN showed the snapshot prune burning 30-72s of
+  // disk I/O per tick to delete zero rows; gating the cadence removes that.
+  it("gates the retention prune: off on boot and every tick until the interval elapses, then exactly one run", async () => {
+    const logger = makeLogger();
+    tickMock.mockResolvedValue(tickResult());
+
+    const stop = startTraderObservationJob(makeDeps(logger, 30_000));
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Boot tick does NOT run the prune (never pile prune load onto a restart).
+    expect(
+      (tickMock.mock.calls[0]?.[0] as TraderObservationTickDeps)
+        .runRetentionPrune
+    ).toBe(false);
+
+    // Every tick for the first 29 minutes keeps skipping the prune.
+    await vi.advanceTimersByTimeAsync(29 * 60_000);
+    expect(
+      tickMock.mock.calls.every(
+        (call) =>
+          (call[0] as TraderObservationTickDeps).runRetentionPrune === false
+      )
+    ).toBe(true);
+
+    // Crossing the 30-min retention interval triggers exactly one prune run;
+    // subsequent ticks in the window back off again.
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    const pruneRuns = tickMock.mock.calls.filter(
+      (call) =>
+        (call[0] as TraderObservationTickDeps).runRetentionPrune === true
+    );
+    expect(pruneRuns).toHaveLength(1);
+    stop();
+  });
 });

@@ -10,6 +10,7 @@
  *   - TICK_IS_SELF_HEALING: escaped errors are logged and the interval continues.
  *   - TICK_TIMEOUT_IS_REAL_CANCELLATION (task.5015): the tick timeout aborts an AbortSignal threaded through the tick into per-wallet work and Polymarket fetches. The aborted tick settles cooperatively (logged as `tick_timeout` with wallets completed/remaining); only if it still hasn't settled after a short grace window is the promise abandoned — and even then its writers are signal-stopped, so no orphan writes past the next tick start.
  *   - USER_PNL_OPTIONAL: `userPnlClient` is optional; when omitted (e.g. in component tests), the tick skips the user-pnl read model writer and prune entirely.
+ *   - RETENTION_PRUNE_CADENCE (prod EXPLAIN 2026-10-01): the two retention prunes run at most once per RETENTION_PRUNE_INTERVAL_MS (via `runRetentionPrune`), never every poll, and never on the boot tick — prod EXPLAIN showed the snapshot prune burning 30-72s of disk I/O per tick to delete zero rows on a bloated heap.
  * Side-effects: starts a timer, performs IO through injected deps.
  * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5015
  * @internal
@@ -42,6 +43,14 @@ const TICK_TIMEOUT_MS = 120_000;
 // stall (e.g. a wedged DB write) so `running` still releases well before the
 // next 30s tick.
 const TICK_ABORT_SETTLE_GRACE_MS = 5_000;
+// RETENTION_PRUNE_INTERVAL_MS (prod EXPLAIN 2026-10-01) — the two retention prunes run at most
+// this often, NOT every OBSERVATION_POLL_MS tick. A 35-day retention window is
+// indifferent to a 30s vs 30-min cadence, and prod EXPLAIN (2026-10-01) showed
+// the snapshot prune spending 30-72s of disk I/O per tick to delete ZERO rows
+// on a bloated heap. Gating the cadence removes ~60x of that wasted load. The
+// first prune fires one interval AFTER boot (not on boot) so a crash-looping
+// pod never piles prune load onto an already-stressed DB at restart.
+const RETENTION_PRUNE_INTERVAL_MS = 30 * 60_000;
 
 export type TraderObservationJobStopFn = () => void;
 
@@ -60,6 +69,9 @@ export function startTraderObservationJob(
   const pollMs = deps.pollMs ?? OBSERVATION_POLL_MS;
   const log = deps.logger.child({ component: "trader-observation-job" });
   let running = false;
+  // prod EXPLAIN 2026-10-01 — seed to "now" so the first prune fires one full interval after
+  // boot, never on the boot tick itself (see RETENTION_PRUNE_INTERVAL_MS).
+  let lastRetentionPruneAt = Date.now();
 
   log.info(
     {
@@ -80,6 +92,13 @@ export function startTraderObservationJob(
     }
     running = true;
     const tickStartedAt = Date.now();
+    // prod EXPLAIN 2026-10-01 — run the retention prunes at most once per
+    // RETENTION_PRUNE_INTERVAL_MS. Stamp the clock at the decision point (not
+    // on completion) so a prune that is cancelled or is a no-op still backs
+    // off a full interval instead of re-firing next tick.
+    const runRetentionPrune =
+      tickStartedAt - lastRetentionPruneAt >= RETENTION_PRUNE_INTERVAL_MS;
+    if (runRetentionPrune) lastRetentionPruneAt = tickStartedAt;
     // bug.5297 — set when an abandoned tick keeps the guard so the `finally`
     // below must NOT clear it; the late-settle handler owns the release.
     let guardHeld = false;
@@ -96,6 +115,7 @@ export function startTraderObservationJob(
     let lastStage: TraderObservationStage | "not_started" = "not_started";
     const tickPromise = runTraderObservationTick({
       ...deps,
+      runRetentionPrune,
       signal: controller.signal,
       onStage: (next) => {
         lastStage = next;

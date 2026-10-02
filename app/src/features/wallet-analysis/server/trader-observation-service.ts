@@ -127,6 +127,20 @@ export interface TraderObservationTickDeps {
    * `settled_after_abort: false`, every field null.
    */
   onStage?: ((stage: TraderObservationStage) => void) | undefined;
+  /**
+   * RETENTION_PRUNE_ON_A_SLOW_CADENCE (prod EXPLAIN 2026-10-01) — the job gates the two
+   * retention prunes (pnl-points + position-snapshots) to a slow interval
+   * instead of running them on every 30s poll. Prod `EXPLAIN (ANALYZE,
+   * BUFFERS)` 2026-10-01: the snapshot prune is fully index-driven yet spends
+   * 30-72s of disk I/O per tick to delete ZERO rows, because the outer index
+   * scan must heap-visit 127k candidate rows over a heavily bloated heap. The
+   * fix for the *shape* is bloat/autovacuum (substrate-owned); the fix for the
+   * *cadence* is here — a 35-day retention window needs nothing near a 30s
+   * cadence, so re-running a multi-second no-op every tick is pure waste.
+   * Omitted or `true`: run the prunes this tick (preserves existing/test
+   * behaviour). `false`: skip both prune stages this tick.
+   */
+  runRetentionPrune?: boolean;
 }
 
 /**
@@ -370,7 +384,7 @@ export async function runTraderObservationTick(
   const tickAborted = deps.signal?.aborted === true;
 
   let prunedPnlPoints = 0;
-  if (deps.userPnlClient && !tickAborted) {
+  if (deps.userPnlClient && !tickAborted && deps.runRetentionPrune !== false) {
     stage("prune_pnl_points");
     try {
       const prune = await withStatementTimeout(
@@ -395,7 +409,7 @@ export async function runTraderObservationTick(
   // Runs once per tick after all wallets, mirroring the pnl-points prune;
   // NOT gated on `userPnlClient` because snapshots are written regardless.
   let prunedPositionSnapshots = 0;
-  if (!tickAborted) {
+  if (!tickAborted && deps.runRetentionPrune !== false) {
     stage("prune_position_snapshots");
     try {
       // bug.5297 — prod stage telemetry named this stage as a hang site (3x).
