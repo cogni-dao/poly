@@ -55,6 +55,8 @@ const fullRow = {
   metadata_event_title: null,
   metadata_event_slug: null,
   metadata_end_date: null,
+  total_active_rows: 1,
+  total_positions_mtm: "6.5",
 };
 
 /** Row with NO raw fields at all — every raw-derived default must fire. */
@@ -147,6 +149,22 @@ describe("current-position read model raw->> projection equivalence", () => {
       // curPrice absent → currentValue / shares fallback.
       currentPrice: 0.65,
     });
+  });
+
+  it("preserves the exact SQL window count beyond the bounded preview", async () => {
+    const db = fakeDb([
+      { ...fullRow, total_active_rows: 501, total_positions_mtm: "1234.5" },
+    ]);
+    const model = await readCurrentWalletPositionModel({
+      db,
+      walletAddress: WALLET,
+      capturedAt: CAPTURED_AT,
+    });
+
+    expect(model.positions).toHaveLength(1);
+    expect(model.summary.activeRows).toBe(501);
+    expect(model.summary.positionsMtm).toBe(1234.5);
+    expect(db.captured[0]).toContain("limit $1");
   });
 
   it("SQL projects the 7 scalar raw->> paths and never selects raw wholesale", async () => {

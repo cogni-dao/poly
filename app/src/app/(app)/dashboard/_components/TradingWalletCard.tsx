@@ -118,6 +118,9 @@ export function TradingWalletCard(): ReactElement {
       "pnl_history_stale",
     ].includes(warning.code)
   );
+  const pnlHistoryStale = data?.warnings.some(
+    (warning) => warning.code === "pnl_history_stale"
+  );
   const pnlHistoryMissing = data?.warnings.some(
     (warning) => warning.code === "pnl_history_no_history"
   );
@@ -247,8 +250,9 @@ export function TradingWalletCard(): ReactElement {
             />
             {pnlHistoryUnavailable ? (
               <p className="text-muted-foreground text-xs" role="status">
-                P/L history is unavailable until this trading wallet is present
-                in the observer read model.
+                {pnlHistoryStale
+                  ? "P/L history is unavailable because the saved observation is stale."
+                  : "P/L history is unavailable until this trading wallet is present in the observer read model."}
               </p>
             ) : pnlHistoryMissing ? (
               <p className="text-muted-foreground text-xs" role="status">

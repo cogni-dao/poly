@@ -203,6 +203,7 @@ export function ExecutionActivityCard(): ReactElement {
         {view === "positions" ? (
           <PositionsPanel
             openPositions={openPositions}
+            livePositionCount={executionData?.live_position_count}
             closedPositions={closedPositions}
             groups={executionData?.market_groups ?? []}
             warnings={executionData?.warnings ?? []}
@@ -273,6 +274,7 @@ function MarketGroupsPanel({
 
 function PositionsPanel({
   openPositions,
+  livePositionCount,
   closedPositions,
   groups,
   warnings,
@@ -283,6 +285,7 @@ function PositionsPanel({
   positionActionError,
 }: {
   openPositions: readonly WalletPosition[];
+  livePositionCount?: number | undefined;
   closedPositions: readonly WalletPosition[];
   groups: readonly WalletExecutionMarketGroup[];
   warnings: readonly { code: string; message: string }[];
@@ -363,7 +366,7 @@ function PositionsPanel({
             <ToggleGroupItem value="live" className="gap-1.5">
               <span className="text-xs">Live</span>
               <span className="font-mono text-muted-foreground text-xs tabular-nums">
-                ({positionInventoryUnavailable ? "—" : openPositions.length})
+                ({positionInventoryUnavailable ? "—" : (livePositionCount ?? openPositions.length)})
               </span>
             </ToggleGroupItem>
             <ToggleGroupItem value="closed" className="gap-1.5">

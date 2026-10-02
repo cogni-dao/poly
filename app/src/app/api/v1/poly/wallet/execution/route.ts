@@ -182,6 +182,7 @@ export const GET = wrapRouteHandlerWithLogging(
         const capturedAt = new Date();
         const warnings: Array<{ code: string; message: string }> = [];
         let livePositions: PolyWalletExecutionOutput["live_positions"] = [];
+        let livePositionCount: number | undefined;
         let closedPositions: PolyWalletExecutionOutput["closed_positions"] = [];
         let dailyTradeCounts: Array<{ day: string; n: number }> = [];
         const ledgerLiveByAsset = new Map<
@@ -276,6 +277,13 @@ export const GET = wrapRouteHandlerWithLogging(
           const currentLivePositions = currentPositions.positions.filter(
             (position) => position.status !== "closed" && position.currentValue > 0
           );
+          livePositionCount = currentPositions.summary.activeRows;
+          if (livePositionCount > currentLivePositions.length) {
+            warnings.push({
+              code: "positions_preview_truncated",
+              message: `Showing ${currentLivePositions.length} of ${livePositionCount} open positions.`,
+            });
+          }
           const currentClosedPositions = currentPositions.positions.filter(
             (position) => position.status === "closed" || position.currentValue <= 0
           );
@@ -378,6 +386,7 @@ export const GET = wrapRouteHandlerWithLogging(
           capturedAt: capturedAt.toISOString(),
           dailyTradeCounts,
           live_positions: livePositions,
+          live_position_count: livePositionCount,
           market_groups: marketGroups,
           closed_positions: closedPositionsForResponse,
           warnings,
