@@ -374,6 +374,10 @@ export const GET = wrapRouteHandlerWithLogging(
                       )
                     ? "pnl_history_unavailable"
                     : warnings.some(
+                          (warning) => warning.code === "pnl_history_stale"
+                        )
+                      ? "pnl_history_stale"
+                    : warnings.some(
                           (warning) =>
                             warning.code === "pnl_history_no_history"
                         )
