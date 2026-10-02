@@ -36,6 +36,20 @@ export class WorkItemNotFoundError extends Error {
   }
 }
 
+export class WorkItemForbiddenError extends Error {
+  constructor(id: string) {
+    super(`Not authorized to mutate work item: ${id}`);
+    this.name = "WorkItemForbiddenError";
+  }
+}
+
+export class WorkItemLeaseConflictError extends Error {
+  constructor(id: string) {
+    super(`Work item is claimed by another principal or lease: ${id}`);
+    this.name = "WorkItemLeaseConflictError";
+  }
+}
+
 export class WorkItemsBackendNotReadyError extends Error {
   constructor(message: string) {
     super(message);
@@ -110,13 +124,6 @@ function toDto(item: WorkItem): WorkItemDto {
   };
 }
 
-function authorTagFromSession(user: {
-  id: string;
-  displayName: string | null;
-}): string {
-  return `actor:${user.displayName?.trim() || user.id}`;
-}
-
 type StripUndefined<T> = {
   [K in keyof T]?: Exclude<T[K], undefined>;
 };
@@ -132,8 +139,19 @@ function dropUndefined<T extends Record<string, unknown>>(
 }
 
 function rethrowBackendError(error: unknown): never {
+  const message = (error as Error)?.message ?? "";
+  const notFound = /^Work item not found: (.+)$/.exec(message);
+  if (notFound) throw new WorkItemNotFoundError(notFound[1]);
   if ((error as Error)?.name === "DoltgresNotConfiguredError") {
     throw new WorkItemsBackendNotReadyError((error as Error).message);
+  }
+  if ((error as Error)?.name === "WorkItemAuthorizationError") {
+    const id = (error as { id?: string }).id ?? "unknown";
+    throw new WorkItemForbiddenError(id);
+  }
+  if ((error as Error)?.name === "WorkItemLeaseConflictError") {
+    const id = (error as { id?: string }).id ?? "unknown";
+    throw new WorkItemLeaseConflictError(id);
   }
   throw error;
 }
@@ -180,7 +198,7 @@ export async function getWorkItem(id: string): Promise<WorkItemDto | null> {
 
 export async function createWorkItem(
   input: ContractCreateInput,
-  sessionUser: { id: string; displayName: string | null }
+  sessionUser: { id: string }
 ): Promise<WorkItemDto> {
   const container = getContainer();
   try {
@@ -206,7 +224,7 @@ export async function createWorkItem(
         ...(input.rank !== undefined && { rank: input.rank }),
         ...(input.estimate !== undefined && { estimate: input.estimate }),
       },
-      authorTagFromSession(sessionUser)
+      sessionUser.id
     );
     return toDto(item);
   } catch (error) {
@@ -216,13 +234,13 @@ export async function createWorkItem(
 
 export async function patchWorkItem(
   input: ContractPatchInput,
-  sessionUser: { id: string; displayName: string | null }
+  sessionUser: { id: string }
 ): Promise<WorkItemDto> {
   const container = getContainer();
   try {
     const item = await container.doltgresWorkItems.patch(
       { id: toWorkItemId(input.id), set: dropUndefined(input.set) },
-      authorTagFromSession(sessionUser)
+      sessionUser.id
     );
     return toDto(item);
   } catch (error) {
@@ -235,13 +253,13 @@ export async function patchWorkItem(
 
 export async function deleteWorkItem(
   id: string,
-  sessionUser: { id: string; displayName: string | null }
+  sessionUser: { id: string }
 ): Promise<boolean> {
   const container = getContainer();
   try {
     return await container.doltgresWorkItems.delete(
       toWorkItemId(id),
-      authorTagFromSession(sessionUser)
+      sessionUser.id
     );
   } catch (error) {
     rethrowBackendError(error);
@@ -252,6 +270,7 @@ export async function claimWorkItem(input: {
   id: string;
   runId: string;
   command: string;
+  principalId: string;
 }): Promise<WorkItemDto> {
   const container = getContainer();
   try {
@@ -259,6 +278,7 @@ export async function claimWorkItem(input: {
       id: toWorkItemId(input.id),
       runId: input.runId,
       command: input.command,
+      principalId: input.principalId,
     });
     return toDto(item);
   } catch (error) {
@@ -272,12 +292,14 @@ export async function claimWorkItem(input: {
 export async function releaseWorkItem(input: {
   id: string;
   runId: string;
+  principalId: string;
 }): Promise<WorkItemDto> {
   const container = getContainer();
   try {
     const item = await container.doltgresWorkItems.release({
       id: toWorkItemId(input.id),
       runId: input.runId,
+      principalId: input.principalId,
     });
     return toDto(item);
   } catch (error) {
@@ -292,17 +314,15 @@ export async function heartbeatWorkItem(input: {
   id: string;
   runId: string;
   command?: string;
+  principalId: string;
 }): Promise<WorkItemDto> {
   const container = getContainer();
   try {
-    const current = await container.doltgresWorkItems.get(
-      toWorkItemId(input.id)
-    );
-    if (!current) throw new WorkItemNotFoundError(input.id);
-    const item = await container.doltgresWorkItems.claim({
+    const item = await container.doltgresWorkItems.heartbeat({
       id: toWorkItemId(input.id),
       runId: input.runId,
-      command: input.command ?? current.lastCommand ?? "heartbeat",
+      ...(input.command !== undefined && { command: input.command }),
+      principalId: input.principalId,
     });
     return toDto(item);
   } catch (error) {

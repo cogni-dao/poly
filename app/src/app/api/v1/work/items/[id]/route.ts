@@ -21,6 +21,7 @@ import {
   deleteWorkItem,
   getWorkItem,
   patchWorkItem,
+  WorkItemForbiddenError,
   WorkItemNotFoundError,
   WorkItemsBackendNotReadyError,
 } from "@/app/_facades/work/items.server";
@@ -81,9 +82,21 @@ export const PATCH = wrapRouteHandlerWithLogging<{
     } catch {
       return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
     }
+    if (
+      typeof body === "object" &&
+      body !== null &&
+      "id" in body &&
+      body.id !== undefined &&
+      body.id !== id
+    ) {
+      return NextResponse.json(
+        { error: "body id must match path id" },
+        { status: 400 }
+      );
+    }
     const parsed = workItemsPatchOperation.input.safeParse({
-      id,
       ...(typeof body === "object" && body !== null ? body : {}),
+      id,
     });
     if (!parsed.success) {
       return NextResponse.json(
@@ -95,13 +108,15 @@ export const PATCH = wrapRouteHandlerWithLogging<{
     try {
       const patched = await patchWorkItem(parsed.data, {
         id: sessionUser.id,
-        displayName: sessionUser.displayName,
       });
       ctx.log.info({ workItemId: id }, "work.items.patch_success");
       return NextResponse.json(workItemsPatchOperation.output.parse(patched));
     } catch (error) {
       if (error instanceof WorkItemNotFoundError) {
         return NextResponse.json({ error: error.message }, { status: 404 });
+      }
+      if (error instanceof WorkItemForbiddenError) {
+        return NextResponse.json({ error: error.message }, { status: 403 });
       }
       if (error instanceof WorkItemsBackendNotReadyError) {
         return NextResponse.json({ error: error.message }, { status: 503 });
@@ -132,7 +147,6 @@ export const DELETE = wrapRouteHandlerWithLogging<{
     try {
       const deleted = await deleteWorkItem(id, {
         id: sessionUser.id,
-        displayName: sessionUser.displayName,
       });
       if (!deleted) {
         return NextResponse.json(
@@ -145,6 +159,9 @@ export const DELETE = wrapRouteHandlerWithLogging<{
         workItemsDeleteOperation.output.parse({ id, deleted: true })
       );
     } catch (error) {
+      if (error instanceof WorkItemForbiddenError) {
+        return NextResponse.json({ error: error.message }, { status: 403 });
+      }
       if (error instanceof WorkItemsBackendNotReadyError) {
         return NextResponse.json({ error: error.message }, { status: 503 });
       }

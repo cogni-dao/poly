@@ -341,9 +341,7 @@ export type ActivityDeps = {
 	accountService: AccountService;
 };
 
-type RuntimeWorkItemAdapter = WorkItemsDoltgresPort &
-	WorkItemQueryPort &
-	WorkItemCommandPort;
+type RuntimeWorkItemAdapter = WorkItemsDoltgresPort & WorkItemQueryPort;
 
 function createUnavailableWorkItemAdapter(): RuntimeWorkItemAdapter {
 	return new Proxy(
@@ -358,6 +356,19 @@ function createUnavailableWorkItemAdapter(): RuntimeWorkItemAdapter {
 			},
 		}
 	) as RuntimeWorkItemAdapter;
+}
+
+function createUnavailableWorkItemCommand(): WorkItemCommandPort {
+	return new Proxy(
+		{},
+		{
+			get: () => async () => {
+				throw new Error(
+					"Authenticated work-item mutations must use the HTTP command plane.",
+				);
+			},
+		},
+	) as WorkItemCommandPort;
 }
 
 // Module-level singleton
@@ -1779,6 +1790,7 @@ function createContainer(): Container {
 	// closed instead of silently writing ephemeral markdown inside the pod.
 	let workItemAdapter: RuntimeWorkItemAdapter =
 		createUnavailableWorkItemAdapter();
+	const workItemCommand = createUnavailableWorkItemCommand();
 
 	// ScheduleCapability for AI tools (reads actorUserId from ALS at invocation time)
 	const scheduleCapability = createScheduleCapability({
@@ -1806,7 +1818,12 @@ function createContainer(): Container {
 			connectionString: env.DOLTGRES_URL,
 			applicationName: `cogni_knowledge_${env.SERVICE_NAME ?? "app"}`,
 		});
-		workItemAdapter = new DoltgresPolyWorkItemAdapter(doltClient);
+		const workItemClient = buildDoltgresClient({
+			connectionString: env.DOLTGRES_URL,
+			applicationName: `cogni_work_items_${env.SERVICE_NAME ?? "app"}`,
+			max: 1,
+		});
+		workItemAdapter = new DoltgresPolyWorkItemAdapter(workItemClient);
 		const knowledgePort = new DoltgresKnowledgeStoreAdapter({
 			sql: doltClient,
 		});
@@ -1881,7 +1898,7 @@ function createContainer(): Container {
 
 	const workItemCapability = createWorkItemCapability({
 		workItemQuery: workItemAdapter,
-		workItemCommand: workItemAdapter,
+		workItemCommand,
 	});
 
 	// ToolSource with real implementations (per CAPABILITY_INJECTION)
@@ -2054,7 +2071,7 @@ function createContainer(): Container {
 		),
 		attributionStore: new DrizzleAttributionAdapter(serviceDb, getScopeId()),
 		workItemQuery: workItemAdapter,
-		workItemCommand: workItemAdapter,
+		workItemCommand,
 		doltgresWorkItems: workItemAdapter,
 		runStream,
 		nodeStream,

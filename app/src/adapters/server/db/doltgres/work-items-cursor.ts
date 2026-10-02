@@ -43,10 +43,33 @@ export function decodeCursor(raw: string): WorkItemCursor {
 	}
 
 	const value = parsed as Record<string, unknown>;
-	const p = value.p === null ? null : Number(value.p);
-	const r = value.r === null ? null : Number(value.r);
-	if (p !== null && !Number.isFinite(p)) throw new InvalidCursorError();
-	if (r !== null && !Number.isFinite(r)) throw new InvalidCursorError();
+	const p = value.p === null ? null : value.p;
+	const r = value.r === null ? null : value.r;
+	if (p !== null && (!Number.isInteger(p) || Number(p) < 0)) {
+		throw new InvalidCursorError();
+	}
+	if (r !== null && (!Number.isInteger(r) || Number(r) < 0)) {
+		throw new InvalidCursorError();
+	}
+	if (typeof value.ts !== "string") throw new InvalidCursorError();
+	const timestamp = new Date(value.ts);
+	if (
+		!Number.isFinite(timestamp.getTime()) ||
+		timestamp.toISOString() !== value.ts
+	) {
+		throw new InvalidCursorError();
+	}
+	if (
+		typeof value.id !== "string" ||
+		!/^(task|bug|story|spike|subtask)\.\d+$/.test(value.id)
+	) {
+		throw new InvalidCursorError();
+	}
 
-	return { p, r, ts: String(value.ts), id: String(value.id) };
+	return {
+		p: p as number | null,
+		r: r as number | null,
+		ts: value.ts,
+		id: value.id,
+	};
 }

@@ -72,6 +72,7 @@ function createMockPort() {
     patch: vi.fn(),
     delete: vi.fn(),
     claim: vi.fn(),
+    heartbeat: vi.fn(),
     release: vi.fn(),
   };
 }
@@ -224,18 +225,18 @@ describe("app/_facades/work/items.server", () => {
   });
 
   describe("writes", () => {
-    it("creates in Doltgres with an attributed author", async () => {
+    it("creates in Doltgres with immutable principal attribution", async () => {
       mockPort.create.mockResolvedValue(SAMPLE_WORK_ITEM);
 
       const result = await createWorkItem(
         { type: "task", title: "Sample task", node: "poly" },
-        { id: "agent-1", displayName: "Codex" }
+        { id: "agent-1" }
       );
 
       expect(result.id).toBe("task.0001");
       expect(mockPort.create).toHaveBeenCalledWith(
         { type: "task", title: "Sample task", node: "poly" },
-        "actor:Codex"
+        "agent-1"
       );
     });
 
@@ -247,7 +248,7 @@ describe("app/_facades/work/items.server", () => {
 
       await patchWorkItem(
         { id: "task.0001", set: { deployVerified: true, blockedBy: null } },
-        { id: "agent-1", displayName: null }
+        { id: "agent-1" }
       );
 
       expect(mockPort.patch).toHaveBeenCalledWith(
@@ -255,7 +256,7 @@ describe("app/_facades/work/items.server", () => {
           id: toWorkItemId("task.0001"),
           set: { deployVerified: true, blockedBy: null },
         },
-        "actor:agent-1"
+        "agent-1"
       );
     });
   });

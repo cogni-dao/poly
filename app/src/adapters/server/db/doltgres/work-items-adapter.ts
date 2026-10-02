@@ -1,21 +1,13 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2025 Cogni-DAO
 
-/**
- * Doltgres-backed work-item adapter.
- *
- * This is the sole runtime read/write authority for deployed work items. Every
- * mutation is followed by a Dolt commit so state survives application pods and
- * remains attributable in Dolt history.
- */
+/** Doltgres runtime authority for deployed work items. */
 
 import type {
 	ActorKind,
 	ExternalRef,
-	Revision,
 	SubjectRef,
 	WorkItem,
-	WorkItemCommandPort,
 	WorkItemId,
 	WorkItemQueryPort,
 	WorkItemStatus,
@@ -23,8 +15,8 @@ import type {
 	WorkQuery,
 	WorkRelation,
 } from "@cogni/work-items";
-import { isValidTransition, toWorkItemId } from "@cogni/work-items";
-import type { Sql } from "postgres";
+import { toWorkItemId } from "@cogni/work-items";
+import type { ReservedSql, Sql } from "postgres";
 
 import type {
 	WorkItemsCreateInput,
@@ -40,8 +32,14 @@ import {
 } from "./work-items-cursor";
 
 const ID_FLOOR = 5000;
+const AUTO_ID_RETRIES = 5;
+const CLAIM_TTL_SECONDS = 300;
 const COMMIT_TAG = "task.5001";
-const DEFAULT_AUTHOR = "actor:system";
+
+// Dolt's working set is branch-scoped rather than connection-scoped. Serialize
+// every mutation in this process; the container also gives this adapter a
+// dedicated max:1 client so reads cannot join an in-flight stage/commit unit.
+let mutationTail: Promise<void> = Promise.resolve();
 
 export class WorkItemAlreadyExistsError extends Error {
 	constructor(public readonly id: string) {
@@ -50,10 +48,24 @@ export class WorkItemAlreadyExistsError extends Error {
 	}
 }
 
-export class WorkItemRevisionConflictError extends Error {
+export class WorkItemAuthorizationError extends Error {
 	constructor(public readonly id: string) {
-		super(`work item '${id}' changed before this update`);
-		this.name = "WorkItemRevisionConflictError";
+		super(`Not authorized to mutate work item: ${id}`);
+		this.name = "WorkItemAuthorizationError";
+	}
+}
+
+export class WorkItemLeaseConflictError extends Error {
+	constructor(public readonly id: string) {
+		super(`Work item is claimed by another principal or lease: ${id}`);
+		this.name = "WorkItemLeaseConflictError";
+	}
+}
+
+export class DoltCommitFailedError extends Error {
+	constructor() {
+		super("Dolt work-item commit did not return a commit hash");
+		this.name = "DoltCommitFailedError";
 	}
 }
 
@@ -69,6 +81,12 @@ function escapeValue(value: unknown): string {
 		return `'${JSON.stringify(value).replace(/\0/g, "").replace(/'/g, "''")}'::jsonb`;
 	}
 	return `'${String(value).replace(/\0/g, "").replace(/'/g, "''")}'`;
+}
+
+function requirePrincipal(principalId: string): string {
+	const value = principalId.trim();
+	if (!value) throw new WorkItemAuthorizationError("unknown");
+	return value;
 }
 
 function actorOf(value: unknown): ActorKind {
@@ -104,6 +122,7 @@ function optionalWorkItemId(value: unknown): WorkItemId | undefined {
 }
 
 function rowToWorkItem(row: Record<string, unknown>): WorkItem {
+	const claimIsActive = row.claim_active !== false;
 	const item: Record<string, unknown> = {
 		id: toWorkItemId(String(row.id)),
 		type: String(row.type) as WorkItemType,
@@ -133,9 +152,11 @@ function rowToWorkItem(row: Record<string, unknown>): WorkItem {
 		pr: optionalString(row.pr),
 		reviewer: optionalString(row.reviewer),
 		blockedBy: optionalWorkItemId(row.blocked_by),
-		claimedByRun: optionalString(row.claimed_by_run),
-		claimedAt: optionalString(row.claimed_at),
-		lastCommand: optionalString(row.last_command),
+		claimedByRun: claimIsActive
+			? optionalString(row.claimed_by_run)
+			: undefined,
+		claimedAt: claimIsActive ? optionalString(row.claimed_at) : undefined,
+		lastCommand: claimIsActive ? optionalString(row.last_command) : undefined,
 	};
 	for (const [key, value] of Object.entries(optional)) {
 		if (value !== undefined) item[key] = value;
@@ -148,6 +169,29 @@ function parseSuffix(id: string, type: WorkItemType): number | null {
 	if (!id.startsWith(prefix)) return null;
 	const tail = id.slice(prefix.length);
 	return /^\d+$/.test(tail) ? Number.parseInt(tail, 10) : null;
+}
+
+function isDuplicateError(error: unknown): boolean {
+	const candidate = error as { code?: string; message?: string };
+	return (
+		candidate.code === "23505" ||
+		/duplicate|unique|already exists/i.test(candidate.message ?? "")
+	);
+}
+
+function doltCommitHash(rows: unknown): string {
+	if (!Array.isArray(rows) || rows.length === 0)
+		throw new DoltCommitFailedError();
+	const value = (rows[0] as Record<string, unknown>).dolt_commit;
+	const raw = Array.isArray(value) ? value[0] : value;
+	const normalized = String(raw ?? "")
+		.replace(/^\{/, "")
+		.replace(/\}$/, "")
+		.trim();
+	if (!normalized || normalized === "undefined" || normalized === "null") {
+		throw new DoltCommitFailedError();
+	}
+	return normalized;
 }
 
 const PATCH_COLUMNS: Record<keyof WorkItemsPatchSet, string> = {
@@ -170,26 +214,49 @@ const PATCH_COLUMNS: Record<keyof WorkItemsPatchSet, string> = {
 	blockedBy: "blocked_by",
 };
 
-type CommandPatchInput = Parameters<WorkItemCommandPort["patch"]>[0];
-
 export class DoltgresPolyWorkItemAdapter
-	implements WorkItemsDoltgresPort, WorkItemQueryPort, WorkItemCommandPort
+	implements WorkItemsDoltgresPort, WorkItemQueryPort
 {
 	constructor(private readonly sql: Sql) {}
 
-	private async commit(message: string, authorTag: string): Promise<void> {
-		await this.sql.unsafe(
-			`SELECT dolt_commit('-Am', ${escapeValue(`${COMMIT_TAG}: ${message} by ${authorTag}`)})`,
+	private async mutate<T>(
+		message: string,
+		principalId: string,
+		fn: (conn: ReservedSql) => Promise<T>,
+	): Promise<T> {
+		const previous = mutationTail;
+		let releaseQueue = () => undefined;
+		mutationTail = new Promise<void>((resolve) => {
+			releaseQueue = resolve;
+		});
+		await previous.catch(() => undefined);
+
+		let conn: ReservedSql | undefined;
+		try {
+			conn = await this.sql.reserve();
+			const result = await fn(conn);
+			await conn.unsafe("SELECT dolt_add('work_items')");
+			const rows = await conn.unsafe(
+				`SELECT dolt_commit('-m', ${escapeValue(`${COMMIT_TAG}: ${message} by actor:${requirePrincipal(principalId)}`)})`,
+			);
+			doltCommitHash(rows);
+			return result;
+		} finally {
+			conn?.release();
+			releaseQueue();
+		}
+	}
+
+	private async getWith(conn: Pick<ReservedSql, "unsafe">, id: WorkItemId) {
+		const rows = await conn.unsafe(
+			`SELECT *, (claim_expires_at IS NOT NULL AND claim_expires_at > NOW()) AS claim_active FROM work_items WHERE id = ${escapeValue(id as string)} LIMIT 1`,
 		);
+		return rows.length > 0 ? (rows[0] as Record<string, unknown>) : undefined;
 	}
 
 	async get(id: WorkItemId): Promise<WorkItem | null> {
-		const rows = await this.sql.unsafe(
-			`SELECT * FROM work_items WHERE id = ${escapeValue(id as string)} LIMIT 1`,
-		);
-		return rows.length > 0
-			? rowToWorkItem(rows[0] as Record<string, unknown>)
-			: null;
+		const row = await this.getWith(this.sql, id);
+		return row ? rowToWorkItem(row) : null;
 	}
 
 	async list(query: WorkQuery = {}): Promise<{
@@ -211,8 +278,6 @@ export class DoltgresPolyWorkItemAdapter
 				`status IN (${query.statuses.map(escapeValue).join(", ")})`,
 			);
 		}
-		// The shared work_items schema has no actor column yet; every persisted
-		// item therefore has the domain default `either`.
 		if (query.actor && query.actor !== "either") conditions.push("FALSE");
 		if (query.projectId) {
 			conditions.push(`project_id = ${escapeValue(query.projectId as string)}`);
@@ -232,31 +297,25 @@ export class DoltgresPolyWorkItemAdapter
 			const cursor = decodeCursor(query.cursor);
 			const priority = cursor.p ?? 999;
 			const rank = cursor.r ?? 999;
-			const timestamp = escapeValue(cursor.ts);
-			const id = escapeValue(cursor.id);
 			conditions.push(
-				`(` +
-					`COALESCE(priority,999) > ${priority}` +
+				`(COALESCE(priority,999) > ${priority}` +
 					` OR (COALESCE(priority,999) = ${priority} AND COALESCE(rank,999) > ${rank})` +
-					` OR (COALESCE(priority,999) = ${priority} AND COALESCE(rank,999) = ${rank} AND created_at < ${timestamp})` +
-					` OR (COALESCE(priority,999) = ${priority} AND COALESCE(rank,999) = ${rank} AND created_at = ${timestamp} AND id > ${id})` +
-					`)`,
+					` OR (COALESCE(priority,999) = ${priority} AND COALESCE(rank,999) = ${rank} AND created_at < ${escapeValue(cursor.ts)})` +
+					` OR (COALESCE(priority,999) = ${priority} AND COALESCE(rank,999) = ${rank} AND created_at = ${escapeValue(cursor.ts)} AND id > ${escapeValue(cursor.id)}))`,
 			);
 		}
 
-		const where =
-			conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+		const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 		const limit = Math.min(Math.max(query.limit ?? 100, 1), 500);
 		const rows = (await this.sql.unsafe(
-			`SELECT * FROM work_items ${where} ORDER BY COALESCE(priority, 999) ASC, COALESCE(rank, 999) ASC, created_at DESC, id ASC LIMIT ${limit + 1}`,
+			`SELECT *, (claim_expires_at IS NOT NULL AND claim_expires_at > NOW()) AS claim_active FROM work_items ${where} ORDER BY COALESCE(priority, 999) ASC, COALESCE(rank, 999) ASC, created_at DESC, id ASC LIMIT ${limit + 1}`,
 		)) as ReadonlyArray<Record<string, unknown>>;
 		const hasMore = rows.length > limit;
 		const pageRows = hasMore ? rows.slice(0, limit) : rows;
 		const items = pageRows.map(rowToWorkItem);
-
 		let endCursor: string | null = null;
-		if (hasMore && pageRows.length > 0) {
-			const last = pageRows[pageRows.length - 1] as Record<string, unknown>;
+		if (hasMore && pageRows.length) {
+			const last = pageRows[pageRows.length - 1];
 			const cursor: WorkItemCursor = {
 				p: optionalNumber(last.priority) ?? null,
 				r: optionalNumber(last.rank) ?? null,
@@ -268,7 +327,6 @@ export class DoltgresPolyWorkItemAdapter
 			};
 			endCursor = encodeCursor(cursor);
 		}
-
 		return {
 			items,
 			pageInfo: { endCursor, hasMore },
@@ -278,221 +336,228 @@ export class DoltgresPolyWorkItemAdapter
 
 	async create(
 		input: WorkItemsCreateInput,
-		authorTag = DEFAULT_AUTHOR,
+		principalId: string,
 	): Promise<WorkItem> {
-		let allocatedId: string;
-		if (input.id) {
-			const requested = String(input.id);
-			if (!requested.startsWith(`${input.type}.`)) {
-				throw new Error(
-					`Provided id '${requested}' does not match type '${input.type}'`,
+		const principal = requirePrincipal(principalId);
+		return this.mutate("create work item", principal, async (conn) => {
+			const insert = async (allocatedId: string) => {
+				const columns = [
+					"id",
+					"type",
+					"title",
+					"status",
+					"node",
+					"created_by_principal_id",
+				];
+				const values = [
+					escapeValue(allocatedId),
+					escapeValue(input.type),
+					escapeValue(input.title),
+					escapeValue(input.status ?? "needs_triage"),
+					escapeValue(input.node ?? "shared"),
+					escapeValue(principal),
+				];
+				const add = (column: string, value: unknown) => {
+					if (value === undefined) return;
+					columns.push(column);
+					values.push(escapeValue(value));
+				};
+				add("summary", input.summary);
+				add("outcome", input.outcome);
+				add("project_id", input.projectId);
+				add("parent_id", input.parentId);
+				add("priority", input.priority);
+				add("rank", input.rank);
+				add("estimate", input.estimate);
+				add("assignees", input.assignees);
+				add("labels", input.labels);
+				add("spec_refs", input.specRefs);
+				const rows = await conn.unsafe(
+					`INSERT INTO work_items (${columns.join(", ")}) VALUES (${values.join(", ")}) RETURNING *, FALSE AS claim_active`,
 				);
-			}
-			if (await this.get(toWorkItemId(requested))) {
-				throw new WorkItemAlreadyExistsError(requested);
-			}
-			allocatedId = requested;
-		} else {
-			const idRows = await this.sql.unsafe(
-				`SELECT id FROM work_items WHERE type = ${escapeValue(input.type)}`,
-			);
-			let maxSuffix = ID_FLOOR - 1;
-			for (const row of idRows as ReadonlyArray<Record<string, unknown>>) {
-				const suffix = parseSuffix(String(row.id), input.type);
-				if (suffix !== null && suffix > maxSuffix) maxSuffix = suffix;
-			}
-			allocatedId = `${input.type}.${String(maxSuffix + 1).padStart(4, "0")}`;
-		}
+				const row = rows[0] as Record<string, unknown> | undefined;
+				if (!row) throw new Error("INSERT returned no row");
+				return rowToWorkItem(row);
+			};
 
-		const columns = ["id", "type", "title", "status", "node"];
-		const values = [
-			escapeValue(allocatedId),
-			escapeValue(input.type),
-			escapeValue(input.title),
-			escapeValue(input.status ?? "needs_triage"),
-			escapeValue(input.node ?? "shared"),
-		];
-		const add = (column: string, value: unknown) => {
-			if (value === undefined) return;
-			columns.push(column);
-			values.push(escapeValue(value));
-		};
-		add("summary", input.summary);
-		add("outcome", input.outcome);
-		add("project_id", input.projectId);
-		add("parent_id", input.parentId);
-		add("priority", input.priority);
-		add("rank", input.rank);
-		add("estimate", input.estimate);
-		add("assignees", input.assignees);
-		add("labels", input.labels);
-		add("spec_refs", input.specRefs);
+			if (input.id) {
+				const requested = String(input.id);
+				if (!requested.startsWith(`${input.type}.`)) {
+					throw new Error(
+						`Provided id '${requested}' does not match type '${input.type}'`,
+					);
+				}
+				try {
+					return await insert(requested);
+				} catch (error) {
+					if (isDuplicateError(error))
+						throw new WorkItemAlreadyExistsError(requested);
+					throw error;
+				}
+			}
 
-		const rows = await this.sql.unsafe(
-			`INSERT INTO work_items (${columns.join(", ")}) VALUES (${values.join(", ")}) RETURNING *`,
-		);
-		const row = rows[0] as Record<string, unknown> | undefined;
-		if (!row) throw new Error("INSERT returned no row");
-		await this.commit(`create ${allocatedId}`, authorTag);
-		return rowToWorkItem(row);
+			for (let attempt = 0; attempt < AUTO_ID_RETRIES; attempt += 1) {
+				const idRows = await conn.unsafe(
+					`SELECT id FROM work_items WHERE type = ${escapeValue(input.type)}`,
+				);
+				let maxSuffix = ID_FLOOR - 1;
+				for (const row of idRows as ReadonlyArray<Record<string, unknown>>) {
+					const suffix = parseSuffix(String(row.id), input.type);
+					if (suffix !== null && suffix > maxSuffix) maxSuffix = suffix;
+				}
+				const allocatedId = `${input.type}.${String(maxSuffix + 1).padStart(4, "0")}`;
+				try {
+					return await insert(allocatedId);
+				} catch (error) {
+					if (!isDuplicateError(error)) throw error;
+					if (attempt === AUTO_ID_RETRIES - 1) {
+						throw new WorkItemAlreadyExistsError(allocatedId);
+					}
+				}
+			}
+			throw new Error("Unable to allocate work item id");
+		});
 	}
 
 	async patch(
-		input: WorkItemsPatchInput | CommandPatchInput,
-		authorTag = DEFAULT_AUTHOR,
+		input: WorkItemsPatchInput,
+		principalId: string,
 	): Promise<WorkItem> {
-		const set = input.set ?? {};
+		const principal = requirePrincipal(principalId);
 		const clauses: string[] = [];
 		for (const [key, column] of Object.entries(PATCH_COLUMNS) as [
 			keyof WorkItemsPatchSet,
 			string,
 		][]) {
-			const value = (set as WorkItemsPatchSet)[key];
+			const value = input.set[key];
 			if (value !== undefined)
 				clauses.push(`${column} = ${escapeValue(value)}`);
 		}
-		if (clauses.length === 0) {
-			const current = await this.get(input.id);
-			if (!current)
-				throw new Error(`Work item not found: ${input.id as string}`);
-			return current;
-		}
-
-		clauses.push("revision = revision + 1", "updated_at = NOW()");
-		const expectedRevision =
-			"expectedRevision" in input
-				? ` AND revision = ${escapeValue(Number(input.expectedRevision))}`
-				: "";
-		const rows = await this.sql.unsafe(
-			`UPDATE work_items SET ${clauses.join(", ")} WHERE id = ${escapeValue(input.id as string)}${expectedRevision} RETURNING *`,
-		);
-		const row = rows[0] as Record<string, unknown> | undefined;
-		if (!row) {
-			const exists = await this.get(input.id);
-			if (exists && expectedRevision) {
-				throw new WorkItemRevisionConflictError(input.id as string);
-			}
-			throw new Error(`Work item not found: ${input.id as string}`);
-		}
-		await this.commit(`patch ${input.id as string}`, authorTag);
-		return rowToWorkItem(row);
-	}
-
-	async delete(id: WorkItemId, authorTag: string): Promise<boolean> {
-		const rows = await this.sql.unsafe(
-			`DELETE FROM work_items WHERE id = ${escapeValue(id as string)} RETURNING id`,
-		);
-		if (rows.length === 0) return false;
-		await this.commit(`delete ${id as string}`, authorTag);
-		return true;
-	}
-
-	async transitionStatus(input: {
-		id: WorkItemId;
-		expectedRevision: Revision;
-		toStatus: WorkItemStatus;
-		reason?: string;
-		blockedBy?: WorkItemId;
-	}): Promise<WorkItem> {
-		const current = await this.get(input.id);
-		if (!current) throw new Error(`Work item not found: ${input.id as string}`);
-		if (!isValidTransition(current.status, input.toStatus)) {
-			throw new Error(
-				`Invalid work item status transition: ${current.status} -> ${input.toStatus}`,
+		if (!clauses.length) {
+			const rows = await this.sql.unsafe(
+				`SELECT *, (claim_expires_at IS NOT NULL AND claim_expires_at > NOW()) AS claim_active FROM work_items WHERE id = ${escapeValue(input.id as string)} AND created_by_principal_id = ${escapeValue(principal)} LIMIT 1`,
 			);
+			if (rows.length) return rowToWorkItem(rows[0] as Record<string, unknown>);
+			await this.throwMissingOrUnauthorized(this.sql, input.id);
 		}
-		return this.patch({
-			id: input.id,
-			expectedRevision: input.expectedRevision,
-			set: {
-				status: input.toStatus,
-				...(input.blockedBy && { blockedBy: input.blockedBy }),
+
+		return this.mutate(
+			`patch ${input.id as string}`,
+			principal,
+			async (conn) => {
+				clauses.push("revision = revision + 1", "updated_at = NOW()");
+				const rows = await conn.unsafe(
+					`UPDATE work_items SET ${clauses.join(", ")} WHERE id = ${escapeValue(input.id as string)} AND created_by_principal_id = ${escapeValue(principal)} RETURNING *, (claim_expires_at IS NOT NULL AND claim_expires_at > NOW()) AS claim_active`,
+				);
+				const row = rows[0] as Record<string, unknown> | undefined;
+				if (!row) await this.throwMissingOrUnauthorized(conn, input.id);
+				return rowToWorkItem(row as Record<string, unknown>);
 			},
-		} as WorkItemsPatchInput & { expectedRevision: Revision });
-	}
-
-	async setAssignees(input: {
-		id: WorkItemId;
-		expectedRevision: Revision;
-		assignees: SubjectRef[];
-	}): Promise<WorkItem> {
-		return this.updateJsonField(
-			input.id,
-			"assignees",
-			input.assignees,
-			input.expectedRevision,
-			"set assignees",
 		);
 	}
 
-	async upsertExternalRef(input: {
-		id: WorkItemId;
-		expectedRevision: Revision;
-		ref: ExternalRef;
-	}): Promise<WorkItem> {
-		const current = await this.get(input.id);
-		if (!current) throw new Error(`Work item not found: ${input.id as string}`);
-		const refs = [...current.externalRefs];
-		const index = refs.findIndex(
-			(ref) => ref.system === input.ref.system && ref.kind === input.ref.kind,
+	async delete(id: WorkItemId, principalId: string): Promise<boolean> {
+		const principal = requirePrincipal(principalId);
+		const current = await this.sql.unsafe(
+			`SELECT created_by_principal_id FROM work_items WHERE id = ${escapeValue(id as string)} LIMIT 1`,
 		);
-		if (index >= 0) refs[index] = input.ref;
-		else refs.push(input.ref);
-		return this.updateJsonField(
-			input.id,
-			"external_refs",
-			refs,
-			input.expectedRevision,
-			"upsert external ref",
-		);
-	}
-
-	private async updateJsonField(
-		id: WorkItemId,
-		column: "assignees" | "external_refs",
-		value: unknown,
-		expectedRevision: Revision,
-		action: string,
-	): Promise<WorkItem> {
-		const rows = await this.sql.unsafe(
-			`UPDATE work_items SET ${column} = ${escapeValue(value)}, revision = revision + 1, updated_at = NOW() WHERE id = ${escapeValue(id as string)} AND revision = ${escapeValue(Number(expectedRevision))} RETURNING *`,
-		);
-		const row = rows[0] as Record<string, unknown> | undefined;
-		if (!row) {
-			if (await this.get(id))
-				throw new WorkItemRevisionConflictError(id as string);
-			throw new Error(`Work item not found: ${id as string}`);
+		if (!current.length) return false;
+		if (String(current[0]?.created_by_principal_id ?? "") !== principal) {
+			throw new WorkItemAuthorizationError(id as string);
 		}
-		await this.commit(`${action} ${id as string}`, DEFAULT_AUTHOR);
-		return rowToWorkItem(row);
+		return this.mutate(`delete ${id as string}`, principal, async (conn) => {
+			const rows = await conn.unsafe(
+				`DELETE FROM work_items WHERE id = ${escapeValue(id as string)} AND created_by_principal_id = ${escapeValue(principal)} RETURNING id`,
+			);
+			if (!rows.length) throw new WorkItemAuthorizationError(id as string);
+			return true;
+		});
+	}
+
+	private async throwMissingOrUnauthorized(
+		conn: Pick<ReservedSql, "unsafe"> | Sql,
+		id: WorkItemId,
+	): Promise<never> {
+		if (await this.getWith(conn as Pick<ReservedSql, "unsafe">, id)) {
+			throw new WorkItemAuthorizationError(id as string);
+		}
+		throw new Error(`Work item not found: ${id as string}`);
 	}
 
 	async claim(input: {
 		id: WorkItemId;
 		runId: string;
 		command: string;
+		principalId: string;
 	}): Promise<WorkItem> {
-		const rows = await this.sql.unsafe(
-			`UPDATE work_items SET claimed_by_run = ${escapeValue(input.runId)}, claimed_at = NOW(), last_command = ${escapeValue(input.command)}, revision = revision + 1, updated_at = NOW() WHERE id = ${escapeValue(input.id as string)} RETURNING *`,
+		const principal = requirePrincipal(input.principalId);
+		return this.mutate(
+			`claim ${input.id as string}`,
+			principal,
+			async (conn) => {
+				const rows = await conn.unsafe(
+				`UPDATE work_items SET claimed_by_run = ${escapeValue(input.runId)}, claim_owner_principal_id = ${escapeValue(principal)}, claimed_at = NOW(), claim_expires_at = NOW() + INTERVAL '${CLAIM_TTL_SECONDS} seconds', last_command = ${escapeValue(input.command)}, revision = revision + 1, updated_at = NOW() WHERE id = ${escapeValue(input.id as string)} AND (claim_expires_at IS NULL OR claim_expires_at <= NOW() OR (claim_owner_principal_id = ${escapeValue(principal)} AND claimed_by_run = ${escapeValue(input.runId)})) RETURNING *, TRUE AS claim_active`,
+				);
+				const row = rows[0] as Record<string, unknown> | undefined;
+				if (!row) await this.throwLeaseConflictOrMissing(conn, input.id);
+				return rowToWorkItem(row as Record<string, unknown>);
+			},
 		);
-		const row = rows[0] as Record<string, unknown> | undefined;
-		if (!row) throw new Error(`Work item not found: ${input.id as string}`);
-		await this.commit(`claim ${input.id as string}`, `run:${input.runId}`);
-		return rowToWorkItem(row);
 	}
 
-	async release(input: { id: WorkItemId; runId: string }): Promise<WorkItem> {
-		const rows = await this.sql.unsafe(
-			`UPDATE work_items SET claimed_by_run = NULL, claimed_at = NULL, revision = revision + 1, updated_at = NOW() WHERE id = ${escapeValue(input.id as string)} AND claimed_by_run = ${escapeValue(input.runId)} RETURNING *`,
+	async heartbeat(input: {
+		id: WorkItemId;
+		runId: string;
+		command?: string;
+		principalId: string;
+	}): Promise<WorkItem> {
+		const principal = requirePrincipal(input.principalId);
+		return this.mutate(
+			`heartbeat ${input.id as string}`,
+			principal,
+			async (conn) => {
+				const command =
+					input.command === undefined
+						? ""
+						: `, last_command = ${escapeValue(input.command)}`;
+				const rows = await conn.unsafe(
+					`UPDATE work_items SET claim_expires_at = NOW() + INTERVAL '${CLAIM_TTL_SECONDS} seconds'${command}, revision = revision + 1, updated_at = NOW() WHERE id = ${escapeValue(input.id as string)} AND claim_owner_principal_id = ${escapeValue(principal)} AND claimed_by_run = ${escapeValue(input.runId)} AND claim_expires_at > NOW() RETURNING *, TRUE AS claim_active`,
+				);
+				const row = rows[0] as Record<string, unknown> | undefined;
+				if (!row) await this.throwLeaseConflictOrMissing(conn, input.id);
+				return rowToWorkItem(row as Record<string, unknown>);
+			},
 		);
-		const row = rows[0] as Record<string, unknown> | undefined;
-		if (row) {
-			await this.commit(`release ${input.id as string}`, `run:${input.runId}`);
-			return rowToWorkItem(row);
+	}
+
+	async release(input: {
+		id: WorkItemId;
+		runId: string;
+		principalId: string;
+	}): Promise<WorkItem> {
+		const principal = requirePrincipal(input.principalId);
+		return this.mutate(
+			`release ${input.id as string}`,
+			principal,
+			async (conn) => {
+				const rows = await conn.unsafe(
+					`UPDATE work_items SET claimed_by_run = NULL, claim_owner_principal_id = NULL, claimed_at = NULL, claim_expires_at = NULL, revision = revision + 1, updated_at = NOW() WHERE id = ${escapeValue(input.id as string)} AND claim_owner_principal_id = ${escapeValue(principal)} AND claimed_by_run = ${escapeValue(input.runId)} RETURNING *, FALSE AS claim_active`,
+				);
+				const row = rows[0] as Record<string, unknown> | undefined;
+				if (!row) await this.throwLeaseConflictOrMissing(conn, input.id);
+				return rowToWorkItem(row as Record<string, unknown>);
+			},
+		);
+	}
+
+	private async throwLeaseConflictOrMissing(
+		conn: Pick<ReservedSql, "unsafe">,
+		id: WorkItemId,
+	): Promise<never> {
+		if (await this.getWith(conn, id)) {
+			throw new WorkItemLeaseConflictError(id as string);
 		}
-		const current = await this.get(input.id);
-		if (!current) throw new Error(`Work item not found: ${input.id as string}`);
-		return current;
+		throw new Error(`Work item not found: ${id as string}`);
 	}
 
 	async listRelations(id: WorkItemId): Promise<WorkRelation[]> {
@@ -518,46 +583,5 @@ export class DoltgresPolyWorkItemAdapter
 			}
 		}
 		return relations;
-	}
-
-	async upsertRelation(relation: WorkRelation): Promise<void> {
-		const column =
-			relation.type === "parent_of"
-				? "parent_id"
-				: relation.type === "blocks"
-					? "blocked_by"
-					: null;
-		if (!column) {
-			throw new Error(`Doltgres work_items cannot persist ${relation.type}`);
-		}
-		const rows = await this.sql.unsafe(
-			`UPDATE work_items SET ${column} = ${escapeValue(relation.fromId as string)}, revision = revision + 1, updated_at = NOW() WHERE id = ${escapeValue(relation.toId as string)} RETURNING id`,
-		);
-		if (rows.length === 0) {
-			throw new Error(`Work item not found: ${relation.toId as string}`);
-		}
-		await this.commit(
-			`upsert ${relation.type} ${relation.fromId as string}->${relation.toId as string}`,
-			DEFAULT_AUTHOR,
-		);
-	}
-
-	async removeRelation(relation: WorkRelation): Promise<void> {
-		const column =
-			relation.type === "parent_of"
-				? "parent_id"
-				: relation.type === "blocks"
-					? "blocked_by"
-					: null;
-		if (!column) return;
-		const rows = await this.sql.unsafe(
-			`UPDATE work_items SET ${column} = NULL, revision = revision + 1, updated_at = NOW() WHERE id = ${escapeValue(relation.toId as string)} AND ${column} = ${escapeValue(relation.fromId as string)} RETURNING id`,
-		);
-		if (rows.length > 0) {
-			await this.commit(
-				`remove ${relation.type} ${relation.fromId as string}->${relation.toId as string}`,
-				DEFAULT_AUTHOR,
-			);
-		}
 	}
 }
