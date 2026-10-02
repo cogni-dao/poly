@@ -37,11 +37,6 @@ Note: This directory currently has no governance sync entrypoint file; sync is t
 - This directory **does**: Host script-facing conventions
 - This directory **does not**: Contain governance schedule sync runtime logic
 
-## Usage
-
-```bash
-```
-
 ## Standards
 
 - Governance schedules reconcile directly at app boot; there is no HTTP trigger.

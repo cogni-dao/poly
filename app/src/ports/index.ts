@@ -147,6 +147,11 @@ export type {
 	VerificationStatus,
 } from "./onchain-verifier.port";
 export type { OperatorWalletPort } from "./operator-wallet.port";
+export type {
+	PolyWalletResetConnection,
+	PolyWalletResetState,
+	PolyWalletResetStatePort,
+} from "./poly-wallet-reset.port";
 export {
 	type CreatePaymentAttemptParams,
 	isPaymentAttemptNotFoundPortError,

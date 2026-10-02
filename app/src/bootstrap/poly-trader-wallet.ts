@@ -40,8 +40,12 @@ import {
   parseAbi,
 } from "viem";
 import { polygon } from "viem/chains";
+import { getAppDb } from "@/adapters/server/db/drizzle.client";
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
-import { PrivyPolyTraderWalletAdapter } from "@/adapters/server/wallet";
+import {
+  DrizzlePolyWalletResetStateAdapter,
+  PrivyPolyTraderWalletAdapter,
+} from "@/adapters/server/wallet";
 import {
   classifyClobCredentialRotationError,
   createOrDerivePolymarketApiKeyForSigner,
@@ -600,6 +604,10 @@ export function getPolyTraderWalletAdapter(
 /** For tests only — clears the memoized instance. */
 export function __resetPolyTraderWalletAdapterForTests(): void {
   cached = null;
+}
+
+export function createPolyWalletResetStateAdapter(): DrizzlePolyWalletResetStateAdapter {
+  return new DrizzlePolyWalletResetStateAdapter(getAppDb());
 }
 
 /**

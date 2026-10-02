@@ -58,6 +58,9 @@ jobs:
       - name: Workflow contract check
         run: pnpm check:workflow
 
+      - name: Reject retired operations bearer tokens
+        run: bash scripts/ci/tests/no-legacy-ops-token.test.sh
+
   unit:
     runs-on: ubuntu-latest
     # No `needs: static`: unit does its own install + packages:build and consumes
