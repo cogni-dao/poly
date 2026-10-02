@@ -209,6 +209,36 @@ describe("dashboard missing read-model states", () => {
     expect(screen.queryByText("No P/L history yet.")).not.toBeInTheDocument();
   });
 
+  it("explains a P/L read failure without claiming observer absence", () => {
+    state.overview = {
+      configured: true,
+      connected: true,
+      freshness: "read_model",
+      address: "0x1111111111111111111111111111111111111111",
+      interval: "1W",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      pol_gas: 1,
+      usdc_available: 3.78,
+      usdc_locked: 0,
+      usdc_positions_mtm: 45.49,
+      usdc_total: 49.27,
+      open_orders: 0,
+      positions_synced_at: "2026-10-02T12:00:00.000Z",
+      positions_sync_age_ms: 0,
+      positions_stale: false,
+      pnlHistory: [],
+      warnings: [{ code: "pnl_history_unavailable", message: "read failed" }],
+    };
+
+    render(<TradingWalletCard />);
+
+    expect(screen.getByText(/saved read failed/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/until this trading wallet is present/i)
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("No P/L history yet.")).not.toBeInTheDocument();
+  });
+
   it.each([
     "current_positions_wallet_missing",
     "current_positions_stale",
