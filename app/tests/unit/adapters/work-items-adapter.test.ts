@@ -9,6 +9,7 @@ import {
 	DirtyWorkItemsMainError,
 	DoltCommitFailedError,
 	DoltgresPolyWorkItemAdapter,
+	ForeignMergeInProgressError,
 	WorkItemAuthorizationError,
 	WorkItemLeaseConflictError,
 } from "@/adapters/server/db/doltgres/work-items-adapter";
@@ -46,10 +47,24 @@ function protocolResponse(query: string): unknown[] {
 		return [{ dolt_checkout: [0, "checked out"] }];
 	}
 	if (query === "SELECT table_name FROM dolt.status") return [];
+	if (query.includes("FROM dolt.merge_status")) {
+		return [
+			{
+				is_merging: false,
+				source: null,
+				source_commit: null,
+				target: null,
+				unmerged_tables: null,
+			},
+		];
+	}
 	if (query === "SELECT name FROM dolt.branches") return [];
 	if (query.startsWith("SELECT dolt_branch")) return [{ dolt_branch: 0 }];
 	if (query === "SELECT dolt_merge('--abort')")
 		return [{ dolt_merge: ["", false, 0, ""] }];
+	if (query.startsWith("SELECT dolt_merge_base")) {
+		return [{ dolt_merge_base: "branch-commit" }];
+	}
 	if (query.startsWith("SELECT dolt_merge")) {
 		return [{ dolt_merge: ["merge-hash", true, 0, ""] }];
 	}
@@ -240,6 +255,72 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		expect(readIndex).toBeGreaterThan(cleanupIndex);
 	});
 
+	it("aborts a persisted work-item merge before restart reconciliation", async () => {
+		let mergeActive = true;
+		const fake = fakeSql((query) => {
+			if (query.includes("FROM dolt.merge_status")) {
+				return [
+					mergeActive
+						? {
+								is_merging: true,
+								source: "work-item-op/orphaned",
+								source_commit: "orphan-commit",
+								target: "refs/heads/main",
+								unmerged_tables: "work_items",
+							}
+						: { is_merging: false },
+				];
+			}
+			if (query === "SELECT dolt_merge('--abort')") {
+				mergeActive = false;
+				return [{ dolt_merge: ["", false, 0, "aborted"] }];
+			}
+			if (query === "SELECT name FROM dolt.branches") {
+				return [{ name: "main" }, { name: "work-item-op/orphaned" }];
+			}
+			if (query.includes("SELECT *,")) return [ROW];
+			return undefined;
+		});
+		const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
+
+		await expect(adapter.get(toWorkItemId("task.5001"))).resolves.toMatchObject(
+			{
+				id: "task.5001",
+			},
+		);
+		const abortIndex = fake.reservedQueries.indexOf(
+			"SELECT dolt_merge('--abort')",
+		);
+		const readIndex = fake.reservedQueries.findIndex((query) =>
+			query.includes("FROM work_items WHERE id"),
+		);
+		expect(abortIndex).toBeGreaterThan(-1);
+		expect(readIndex).toBeGreaterThan(abortIndex);
+	});
+
+	it("does not abort a persisted merge owned by another subsystem", async () => {
+		const fake = fakeSql((query) => {
+			if (query.includes("FROM dolt.merge_status")) {
+				return [
+					{
+						is_merging: true,
+						source: "contrib/agent-1",
+						source_commit: "contrib-commit",
+						target: "refs/heads/main",
+						unmerged_tables: "knowledge",
+					},
+				];
+			}
+			return undefined;
+		});
+		const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
+
+		await expect(adapter.get(toWorkItemId("task.5001"))).rejects.toBeInstanceOf(
+			ForeignMergeInProgressError,
+		);
+		expect(fake.reservedQueries).not.toContain("SELECT dolt_merge('--abort')");
+	});
+
 	it("fails reads closed when main has dirty work_items state", async () => {
 		const fake = fakeSql((query) => {
 			if (query === "SELECT table_name FROM dolt.status") {
@@ -287,6 +368,9 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 				if (commitAttempt === 1) throw new Error("injected commit failure");
 				return [{ dolt_commit: `commit-${commitAttempt}` }];
 			}
+			if (query.startsWith("SELECT dolt_merge_base")) {
+				return [{ dolt_merge_base: `commit-${commitAttempt}` }];
+			}
 			const merge = /dolt_merge\('([^']+)'\)/.exec(query);
 			if (merge?.[1]) {
 				const title = titles.get(merge[1]);
@@ -316,6 +400,159 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 
 		expect(mergedTitles).toEqual(["Second"]);
 		expect(deletedBranches).toHaveLength(2);
+	});
+
+	it.each(["status", "branch-delete"] as const)(
+		"returns success after a durable merge even when %s housekeeping fails",
+		async (failure) => {
+			let statusCalls = 0;
+			const fake = fakeSql((query) => {
+				if (query.startsWith("UPDATE work_items")) {
+					return [{ ...ROW, revision: 2, claim_active: true }];
+				}
+				if (query.startsWith("SELECT dolt_commit")) {
+					return [{ dolt_commit: "branch-commit" }];
+				}
+				if (query === "SELECT table_name FROM dolt.status") {
+					statusCalls += 1;
+					return failure === "status" && statusCalls > 1
+						? [{ table_name: "public.work_items" }]
+						: [];
+				}
+				if (
+					failure === "branch-delete" &&
+					query.includes("dolt_branch('-D', 'work-item-op/")
+				) {
+					throw new Error("branch cleanup unavailable");
+				}
+				return undefined;
+			});
+			const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
+
+			await expect(
+				adapter.patch(
+					{ id: toWorkItemId("task.5001"), set: { title: "Durable" } },
+					"agent-1",
+				),
+			).resolves.toMatchObject({ revision: 2 });
+			expect(fake.reservations).toBe(1);
+		},
+	);
+
+	it.each(["create", "patch", "delete"] as const)(
+		"does not replay an ambiguously acknowledged %s already reachable from main",
+		async (operation) => {
+			let mutationCount = 0;
+			const fake = fakeSql((query) => {
+				if (
+					query.startsWith("INSERT INTO work_items") ||
+					query.startsWith("UPDATE work_items") ||
+					query.startsWith("DELETE FROM work_items")
+				) {
+					mutationCount += 1;
+					if (query.startsWith("DELETE")) return [{ id: "task.5001" }];
+					return [{ ...ROW, revision: 2, claim_active: true }];
+				}
+				if (query.startsWith("SELECT dolt_commit")) {
+					return [{ dolt_commit: "branch-commit" }];
+				}
+				if (query.startsWith("SELECT dolt_merge_base")) {
+					return [{ dolt_merge_base: "branch-commit" }];
+				}
+				if (/^SELECT dolt_merge\('work-item-op\//.test(query)) {
+					throw new Error("connection dropped after merge response");
+				}
+				return undefined;
+			});
+			const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
+			const result =
+				operation === "create"
+					? await adapter.create(
+							{ id: "task.5001", type: "task", title: "Create once" },
+							"agent-1",
+						)
+					: operation === "patch"
+						? await adapter.patch(
+								{
+									id: toWorkItemId("task.5001"),
+									set: { title: "Patch once" },
+								},
+								"agent-1",
+							)
+						: await adapter.delete(toWorkItemId("task.5001"), "agent-1");
+
+			expect(result).toBeTruthy();
+			expect(mutationCount).toBe(1);
+			expect(fake.reservations).toBe(1);
+		},
+	);
+
+	it("does not retry a generic merge error proven uncommitted", async () => {
+		let mutationCount = 0;
+		const fake = fakeSql((query) => {
+			if (query.startsWith("UPDATE work_items")) {
+				mutationCount += 1;
+				return [{ ...ROW, revision: 2, claim_active: true }];
+			}
+			if (query.startsWith("SELECT dolt_commit")) {
+				return [{ dolt_commit: "branch-commit" }];
+			}
+			if (query.startsWith("SELECT dolt_merge_base")) {
+				return [{ dolt_merge_base: "main-before-branch" }];
+			}
+			if (/^SELECT dolt_merge\('work-item-op\//.test(query)) {
+				throw new Error("generic merge transport failure");
+			}
+			return undefined;
+		});
+		const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
+
+		await expect(
+			adapter.patch(
+				{ id: toWorkItemId("task.5001"), set: { title: "Once" } },
+				"agent-1",
+			),
+		).rejects.toThrow("generic merge transport failure");
+		expect(mutationCount).toBe(1);
+		expect(fake.reservations).toBe(1);
+	});
+
+	it("retries only a merge conflict proven not reachable from main", async () => {
+		let mutationCount = 0;
+		let mergeAttempts = 0;
+		const fake = fakeSql((query) => {
+			if (query.startsWith("UPDATE work_items")) {
+				mutationCount += 1;
+				return [{ ...ROW, revision: 2, claim_active: true }];
+			}
+			if (query.startsWith("SELECT dolt_commit")) {
+				return [{ dolt_commit: "branch-commit" }];
+			}
+			if (query.startsWith("SELECT dolt_merge_base")) {
+				return [
+					{
+						dolt_merge_base:
+							mergeAttempts === 1 ? "main-before-branch" : "branch-commit",
+					},
+				];
+			}
+			if (/^SELECT dolt_merge\('work-item-op\//.test(query)) {
+				mergeAttempts += 1;
+				if (mergeAttempts === 1) throw new Error("merge conflict");
+				return [{ dolt_merge: ["merge-hash", true, 0, ""] }];
+			}
+			return undefined;
+		});
+		const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
+
+		await expect(
+			adapter.patch(
+				{ id: toWorkItemId("task.5001"), set: { title: "Retry" } },
+				"agent-1",
+			),
+		).resolves.toMatchObject({ revision: 2 });
+		expect(mutationCount).toBe(2);
+		expect(fake.reservations).toBe(2);
 	});
 
 	it("fails closed when Dolt does not return a branch commit hash", async () => {

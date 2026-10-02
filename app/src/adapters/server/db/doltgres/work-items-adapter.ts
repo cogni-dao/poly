@@ -82,6 +82,13 @@ export class DirtyWorkItemsMainError extends Error {
 	}
 }
 
+export class ForeignMergeInProgressError extends Error {
+	constructor() {
+		super("main has a merge in progress not owned by the work-item adapter");
+		this.name = "ForeignMergeInProgressError";
+	}
+}
+
 export class WorkItemMergeConflictError extends Error {
 	constructor() {
 		super("work_items operation branch conflicted while merging to main");
@@ -248,6 +255,31 @@ function parseDoltMerge(rows: unknown): { hash: string; conflicts: number } {
 	return { hash, conflicts };
 }
 
+function doltScalar(rows: unknown, field: string): string {
+	if (!Array.isArray(rows) || rows.length === 0) {
+		throw new DoltOperationFailedError(field);
+	}
+	const value = (rows[0] as Record<string, unknown>)[field];
+	const raw = Array.isArray(value) ? value[0] : value;
+	const normalized = String(raw ?? "")
+		.replace(/^\{/, "")
+		.replace(/\}$/, "")
+		.trim();
+	if (!normalized || normalized === "undefined" || normalized === "null") {
+		throw new DoltOperationFailedError(field);
+	}
+	return normalized;
+}
+
+function isMergeConflict(error: unknown): boolean {
+	return (
+		error instanceof WorkItemMergeConflictError ||
+		/conflict|constraint violation/i.test(
+			error instanceof Error ? error.message : String(error),
+		)
+	);
+}
+
 const PATCH_COLUMNS: Record<keyof WorkItemsPatchSet, string> = {
 	title: "title",
 	summary: "summary",
@@ -299,6 +331,7 @@ export class DoltgresPolyWorkItemAdapter
 		await conn.unsafe("ROLLBACK").catch(() => undefined);
 		const checkoutRows = await conn.unsafe("SELECT dolt_checkout('main')");
 		assertDoltStatus(checkoutRows, "dolt_checkout");
+		await this.abortOwnedMergeIfPresent(conn);
 		await this.assertMainClean(conn);
 
 		const branchRows = (await conn.unsafe(
@@ -312,6 +345,46 @@ export class DoltgresPolyWorkItemAdapter
 			);
 			assertDoltStatus(deleteRows, "dolt_branch");
 		}
+	}
+
+	private async mergeState(
+		conn: ReservedSql,
+	): Promise<Record<string, unknown> | undefined> {
+		const rows = (await conn.unsafe(
+			"SELECT is_merging, source, source_commit, target, unmerged_tables FROM dolt.merge_status",
+		)) as ReadonlyArray<Record<string, unknown>>;
+		return rows.find((row) => row.is_merging === true);
+	}
+
+	private async abortOwnedMergeIfPresent(
+		conn: ReservedSql,
+		expectedBranch?: string,
+	): Promise<boolean> {
+		const state = await this.mergeState(conn);
+		if (!state) return false;
+		const source = String(state.source ?? "");
+		const target = String(state.target ?? "");
+		const owned =
+			source.startsWith(OP_BRANCH_PREFIX) &&
+			(expectedBranch === undefined || source === expectedBranch) &&
+			(target === "main" || target === "refs/heads/main");
+		if (!owned) throw new ForeignMergeInProgressError();
+
+		await conn.unsafe("SELECT dolt_merge('--abort')");
+		if (await this.mergeState(conn)) {
+			throw new DoltOperationFailedError("dolt_merge --abort");
+		}
+		return true;
+	}
+
+	private async branchCommitIsOnMain(
+		conn: ReservedSql,
+		branchCommit: string,
+	): Promise<boolean> {
+		const rows = await conn.unsafe(
+			`SELECT dolt_merge_base('main', ${escapeValue(branchCommit)}) AS dolt_merge_base`,
+		);
+		return doltScalar(rows, "dolt_merge_base") === branchCommit;
 	}
 
 	private async assertMainClean(conn: ReservedSql): Promise<void> {
@@ -394,27 +467,46 @@ export class DoltgresPolyWorkItemAdapter
 				mergeRows = await conn.unsafe(
 					`SELECT dolt_merge(${escapeValue(branch)})`,
 				);
-			} catch {
-				await conn
-					.unsafe("SELECT dolt_merge('--abort')")
-					.catch(() => undefined);
+				const merge = parseDoltMerge(mergeRows);
+				if (merge.conflicts > 0) throw new WorkItemMergeConflictError();
+			} catch (mergeError) {
+				// DOLT_MERGE implicitly commits. A transport error can therefore arrive
+				// after main moved. Reachability is the authority: never replay a
+				// create/update/delete whose branch commit is already on main.
+				if (await this.branchCommitIsOnMain(conn, branchCommit)) {
+					await this.postMergeHousekeeping(conn, branch).catch(() => undefined);
+					return result;
+				}
+				const aborted = await this.abortOwnedMergeIfPresent(conn, branch);
+				if (aborted || isMergeConflict(mergeError)) {
+					throw new WorkItemMergeConflictError();
+				}
+				throw mergeError;
+			}
+			if (!(await this.branchCommitIsOnMain(conn, branchCommit))) {
 				throw new WorkItemMergeConflictError();
 			}
-			const merge = parseDoltMerge(mergeRows);
-			if (!merge.hash || !branchCommit) throw new WorkItemMergeConflictError();
-			await this.assertMainClean(conn);
-			await this.deleteOperationBranch(conn, branch);
+			// The merge is now durable. Cleanup is repairable housekeeping and must
+			// not turn a committed mutation into an API failure that callers replay.
+			await this.postMergeHousekeeping(conn, branch).catch(() => undefined);
 			return result;
 		} catch (error) {
 			if (transactionOpen) {
 				await conn.unsafe("ROLLBACK").catch(() => undefined);
 			}
-			await conn.unsafe("SELECT dolt_merge('--abort')").catch(() => undefined);
 			await this.returnToMainAndDeleteBranch(conn, branch).catch(
 				() => undefined,
 			);
 			throw error;
 		}
+	}
+
+	private async postMergeHousekeeping(
+		conn: ReservedSql,
+		branch: string,
+	): Promise<void> {
+		await this.assertMainClean(conn);
+		await this.deleteOperationBranch(conn, branch);
 	}
 
 	private async returnToMainAndDeleteBranch(
