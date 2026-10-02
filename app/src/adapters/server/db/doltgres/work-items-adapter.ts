@@ -247,8 +247,14 @@ function parseDoltMerge(rows: unknown): { hash: string; conflicts: number } {
 				.replace(/^[({]/, "")
 				.replace(/[})]$/, "")
 				.split(",");
+	// Doltgres 0.56 returns exactly [hash, fast_forward, conflicts, message].
+	// A partial acknowledgement is ambiguous: reject it so the caller proves
+	// branch-commit reachability before it can report success or retry.
+	if (parts.length !== 4) {
+		throw new WorkItemMergeConflictError();
+	}
 	const hash = String(parts[0] ?? "").trim();
-	const conflicts = Number(parts[2] ?? 0);
+	const conflicts = Number(parts[2]);
 	if (!hash || !Number.isFinite(conflicts) || conflicts > 0) {
 		throw new WorkItemMergeConflictError();
 	}

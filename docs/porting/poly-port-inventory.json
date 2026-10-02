@@ -6,7 +6,7 @@
     "treeRoot": "nodes/poly"
   },
   "policySha256": "cc0f1f13d7e108b07823f2c37d188d2c5fa4773866b20c587f997b6faba4cbb8",
-  "targetTreeDigest": "7a69024aa6922a245f3ac66d76eabc26e0668b6cd78e27235c47c020ad18c810",
+  "targetTreeDigest": "3ed985f5a3b72f1d1a2dbaafec573f4f4e3198886e50c67bd5e3651dba265364",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
@@ -860,7 +860,7 @@
       "sourceBlob": "740a4e68a2f6c899c1e69fd244998cdbf2a76def",
       "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
       "targetPath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
-      "targetBlob": "a63df00190156568838893c680857c6659e4ef25",
+      "targetBlob": "bed06ac860cdf12f9c7b12f5f654d0f285133162",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"

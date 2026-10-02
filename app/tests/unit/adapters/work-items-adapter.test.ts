@@ -488,6 +488,40 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		},
 	);
 
+	it("proves reachability before accepting a truncated merge acknowledgement", async () => {
+		let mutationCount = 0;
+		const fake = fakeSql((query) => {
+			if (query.startsWith("UPDATE work_items")) {
+				mutationCount += 1;
+				return [{ ...ROW, revision: 2, claim_active: true }];
+			}
+			if (query.startsWith("SELECT dolt_commit")) {
+				return [{ dolt_commit: "branch-commit" }];
+			}
+			if (query.startsWith("SELECT dolt_merge_base")) {
+				return [{ dolt_merge_base: "branch-commit" }];
+			}
+			if (/^SELECT dolt_merge\('work-item-op\//.test(query)) {
+				return [{ dolt_merge: ["hash-only"] }];
+			}
+			return undefined;
+		});
+		const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
+
+		await expect(
+			adapter.patch(
+				{ id: toWorkItemId("task.5001"), set: { title: "Once" } },
+				"agent-1",
+			),
+		).resolves.toMatchObject({ revision: 2 });
+		expect(mutationCount).toBe(1);
+		expect(
+			fake.reservedQueries.some((query) =>
+				query.startsWith("SELECT dolt_merge_base"),
+			),
+		).toBe(true);
+	});
+
 	it("does not retry a generic merge error proven uncommitted", async () => {
 		let mutationCount = 0;
 		const fake = fakeSql((query) => {
