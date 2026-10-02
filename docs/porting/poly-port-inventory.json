@@ -6,11 +6,11 @@
     "treeRoot": "nodes/poly"
   },
   "policySha256": "cc0f1f13d7e108b07823f2c37d188d2c5fa4773866b20c587f997b6faba4cbb8",
-  "targetTreeDigest": "3ed985f5a3b72f1d1a2dbaafec573f4f4e3198886e50c67bd5e3651dba265364",
+  "targetTreeDigest": "9f59b1a88b83e73a72dc872793d563b734d554f7a358df87bc33a80897d8c9c4",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1055,
+    "targetOnlyFiles": 1057,
     "unresolved": 602,
     "byStatus": {
       "exact": 1134,
@@ -140,7 +140,7 @@
       "sourceBlob": "5ba3239ed6d31c1f1d3fe37b8768cd300a86dcf5",
       "sourcePath": "app/package.json",
       "targetPath": "app/package.json",
-      "targetBlob": "884dedd9ac23841e0cf6709ba3095c6fba626404",
+      "targetBlob": "fd65afc66f6317cbd815fff85eaa5628337061e1",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "status": "review_required"
@@ -860,7 +860,7 @@
       "sourceBlob": "740a4e68a2f6c899c1e69fd244998cdbf2a76def",
       "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
       "targetPath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
-      "targetBlob": "bed06ac860cdf12f9c7b12f5f654d0f285133162",
+      "targetBlob": "ef913a49a981fb4f94e269b1d0f161aecf3ff750",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -2790,7 +2790,7 @@
       "sourceBlob": "c2e4b22af7ebe47cf05ed05b27556d7eb75a6a81",
       "sourcePath": "app/src/app/_facades/work/items.server.ts",
       "targetPath": "app/src/app/_facades/work/items.server.ts",
-      "targetBlob": "c65ca2c85b484fc373b73228b5b01554ff49954c",
+      "targetBlob": "b9abf464300ad7788f178f85fc8f4a23e4fecd86",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -5290,7 +5290,7 @@
       "sourceBlob": "07d0b8969e5edc5914865113dd8e7949443bbf48",
       "sourcePath": "app/src/bootstrap/container.ts",
       "targetPath": "app/src/bootstrap/container.ts",
-      "targetBlob": "672a28d2641a76cc8c7e2346394c6b413b77765a",
+      "targetBlob": "45327631fd4628af632f30bc864efc5113236aca",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -13100,7 +13100,7 @@
       "sourceBlob": "d358bd3a67249855c8e65c2071cfc7ab450659b9",
       "sourcePath": "app/tests/unit/facades/work-items.test.ts",
       "targetPath": "app/tests/unit/facades/work-items.test.ts",
-      "targetBlob": "49c50a6065d4813cf54a764da23b05e55e92cc54",
+      "targetBlob": "0abd55ddd816e6b1c199372ec4cc95132c2c82b3",
       "priority": "P2",
       "priorityLabel": "proof and secondary product surfaces",
       "status": "review_required"
@@ -14320,7 +14320,7 @@
       "sourceBlob": "8a65fce6f4408eb12b8ac15336897af7b6dcc94f",
       "sourcePath": "app/vitest.component.config.mts",
       "targetPath": "app/vitest.component.config.mts",
-      "targetBlob": "baac0e771400b74f279fe29b99b96b1c2cf6e403",
+      "targetBlob": "2f28d4da64d94662d244ac1ee339d226d42e51b6",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "status": "review_required"
@@ -18108,6 +18108,9 @@
       "targetPath": "app/tests/_fixtures/poly/trade-size-pnl-oracle.ts"
     },
     {
+      "targetPath": "app/tests/component/db/doltgres-work-items.int.test.ts"
+    },
+    {
       "targetPath": "app/tests/component/db/fill-rollup-read-parity.int.test.ts"
     },
     {
@@ -18361,6 +18364,9 @@
     },
     {
       "targetPath": "app/tests/unit/shared/observability/loki-push-stream.test.ts"
+    },
+    {
+      "targetPath": "app/vitest.doltgres.config.mts"
     },
     {
       "targetPath": "conductor.json"

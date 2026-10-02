@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.app.json --noEmit",
     "test": "vitest run",
     "test:component": "vitest run --config vitest.component.config.mts",
+    "test:doltgres": "vitest run --config vitest.doltgres.config.mts",
     "test:external": "vitest run --config vitest.external.config.mts",
     "test:external:money": "vitest run --config vitest.external-money.config.mts"
   },
@@ -151,6 +152,7 @@
     "happy-dom": "^20.8.9",
     "jsdom": "^27.1.0",
     "next-test-api-route-handler": "^5.0.3",
+    "testcontainers": "11.14.0",
     "undici": "^7.24.0",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^4.0.9"

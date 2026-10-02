@@ -142,7 +142,11 @@ function rethrowBackendError(error: unknown): never {
 	const message = (error as Error)?.message ?? "";
 	const notFound = /^Work item not found: (.+)$/.exec(message);
 	if (notFound?.[1]) throw new WorkItemNotFoundError(notFound[1]);
-	if ((error as Error)?.name === "DoltgresNotConfiguredError") {
+	if (
+		(error as Error)?.name === "DoltgresNotConfiguredError" ||
+		(error as Error)?.name === "WorkItemsBusyError" ||
+		(error as Error)?.name === "DoltMergeOutcomeUnknownError"
+	) {
 		throw new WorkItemsBackendNotReadyError((error as Error).message);
 	}
 	if ((error as Error)?.name === "WorkItemAuthorizationError") {

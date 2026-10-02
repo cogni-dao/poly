@@ -1823,7 +1823,10 @@ function createContainer(): Container {
 			applicationName: `cogni_work_items_${env.SERVICE_NAME ?? "app"}`,
 			max: 1,
 		});
-		workItemAdapter = new DoltgresPolyWorkItemAdapter(workItemClient);
+		workItemAdapter = new DoltgresPolyWorkItemAdapter(
+			workItemClient,
+			log.child({ component: "doltgres-work-items" }),
+		);
 		const knowledgePort = new DoltgresKnowledgeStoreAdapter({
 			sql: doltClient,
 		});

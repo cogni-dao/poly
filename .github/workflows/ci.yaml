@@ -118,3 +118,6 @@ jobs:
 
       - name: Component tests (testcontainers)
         run: pnpm test:component
+
+      - name: Doltgres 0.57.3 work-item acceptance
+        run: pnpm --filter @cogni/node-template-app test:doltgres

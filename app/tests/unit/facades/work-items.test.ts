@@ -29,6 +29,7 @@ import {
   getWorkItem,
   listWorkItems,
   patchWorkItem,
+  WorkItemsBackendNotReadyError,
 } from "@/app/_facades/work/items.server";
 import { getContainer } from "@/bootstrap/container";
 
@@ -225,6 +226,19 @@ describe("app/_facades/work/items.server", () => {
   });
 
   describe("writes", () => {
+    it("maps bounded adapter contention to backend-not-ready", async () => {
+      const busy = new Error("Work-item store is busy; retry shortly");
+      busy.name = "WorkItemsBusyError";
+      mockPort.create.mockRejectedValue(busy);
+
+      await expect(
+        createWorkItem(
+          { type: "task", title: "Sample task", node: "poly" },
+          { id: "agent-1" }
+        )
+      ).rejects.toBeInstanceOf(WorkItemsBackendNotReadyError);
+    });
+
     it("creates in Doltgres with immutable principal attribution", async () => {
       mockPort.create.mockResolvedValue(SAMPLE_WORK_ITEM);
 

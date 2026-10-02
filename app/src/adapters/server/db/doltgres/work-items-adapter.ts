@@ -17,6 +17,7 @@ import type {
 	WorkRelation,
 } from "@cogni/work-items";
 import { toWorkItemId } from "@cogni/work-items";
+import type { Logger } from "pino";
 import type { ReservedSql, Sql } from "postgres";
 
 import type {
@@ -39,6 +40,34 @@ const COMMIT_TAG = "task.5001";
 const GLOBAL_LOCK_KEY = 5_001_001;
 const OP_BRANCH_PREFIX = "work-item-op/";
 const MERGE_RETRIES = 3;
+const LOCK_WAIT_MS = 2_000;
+const LOCK_RETRY_MS = 50;
+const QUERY_TIMEOUT_MS = 5_000;
+
+type WorkItemLogger = Pick<Logger, "info" | "warn" | "error">;
+
+interface AdapterOptions {
+	readonly lockWaitMs?: number;
+	readonly lockRetryMs?: number;
+	readonly queryTimeoutMs?: number;
+}
+
+interface OperationContext {
+	readonly operationId: string;
+	readonly operation: string;
+	branch?: string;
+}
+
+interface WorkItemConnection {
+	readonly context: OperationContext;
+	unsafe(query: string): Promise<ReadonlyArray<Record<string, unknown>>>;
+}
+
+const noopLogger: WorkItemLogger = {
+	info: () => undefined,
+	warn: () => undefined,
+	error: () => undefined,
+};
 
 export class WorkItemAlreadyExistsError extends Error {
 	constructor(public readonly id: string) {
@@ -93,6 +122,22 @@ export class WorkItemMergeConflictError extends Error {
 	constructor() {
 		super("work_items operation branch conflicted while merging to main");
 		this.name = "WorkItemMergeConflictError";
+	}
+}
+
+export class WorkItemsBusyError extends Error {
+	constructor(message = "Work-item store is busy; retry shortly") {
+		super(message);
+		this.name = "WorkItemsBusyError";
+	}
+}
+
+class DoltMergeOutcomeUnknownError extends WorkItemsBusyError {
+	constructor() {
+		super(
+			"Work-item merge outcome is unknown; adapter requires reconciliation",
+		);
+		this.name = "DoltMergeOutcomeUnknownError";
 	}
 }
 
@@ -306,35 +351,216 @@ const PATCH_COLUMNS: Record<keyof WorkItemsPatchSet, string> = {
 	blockedBy: "blocked_by",
 };
 
+function queryStage(query: string): string {
+	if (query.startsWith("SELECT pg_try_advisory_lock")) return "lock.try";
+	if (query.startsWith("SELECT pg_advisory_unlock")) return "lock.release";
+	if (query.includes("dolt_checkout('-b'")) return "branch.create";
+	if (query === "SELECT dolt_checkout('main')") return "main.checkout";
+	if (query.startsWith("SELECT dolt_commit")) return "branch.commit";
+	if (query.startsWith("SELECT dolt_merge_base")) return "merge.reachability";
+	if (query === "SELECT dolt_merge('--abort')") return "merge.abort";
+	if (query.startsWith("SELECT dolt_merge")) return "merge.apply";
+	if (query.startsWith("SELECT dolt_branch")) return "branch.delete";
+	if (query.includes("FROM dolt.merge_status")) return "merge.status";
+	if (query === "SELECT table_name FROM dolt.status") return "main.status";
+	if (query === "SELECT name FROM dolt.branches") return "branches.list";
+	if (query.startsWith("INSERT INTO work_items")) return "dml.create";
+	if (query.startsWith("UPDATE work_items")) return "dml.update";
+	if (query.startsWith("DELETE FROM work_items")) return "dml.delete";
+	if (query.includes("FROM work_items")) return "dml.read";
+	return "sql.other";
+}
+
+function doltBoolean(rows: unknown, field: string): boolean {
+	if (!Array.isArray(rows) || rows.length === 0) return false;
+	const value = (rows[0] as Record<string, unknown>)[field];
+	const raw = Array.isArray(value) ? value[0] : value;
+	return raw === true || raw === 1 || String(raw).toLowerCase() === "true";
+}
+
+function sleep(milliseconds: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function errorFields(error: unknown): Record<string, unknown> {
+	return error instanceof Error
+		? { errorName: error.name, errorMessage: error.message }
+		: { errorMessage: String(error) };
+}
+
 export class DoltgresPolyWorkItemAdapter
 	implements WorkItemsDoltgresPort, WorkItemQueryPort
 {
-	constructor(private readonly sql: Sql) {}
+	private operationActive = false;
+	private poisoned = false;
+	private readonly logger: WorkItemLogger;
+	private readonly lockWaitMs: number;
+	private readonly lockRetryMs: number;
+	private readonly queryTimeoutMs: number;
 
-	private async withGlobalLock<T>(
-		fn: (conn: ReservedSql) => Promise<T>,
-	): Promise<T> {
-		const conn = await this.sql.reserve();
-		let locked = false;
+	constructor(
+		private readonly sql: Sql,
+		logger: WorkItemLogger = noopLogger,
+		options: AdapterOptions = {},
+	) {
+		this.logger = logger;
+		this.lockWaitMs = options.lockWaitMs ?? LOCK_WAIT_MS;
+		this.lockRetryMs = options.lockRetryMs ?? LOCK_RETRY_MS;
+		this.queryTimeoutMs = options.queryTimeoutMs ?? QUERY_TIMEOUT_MS;
+	}
+
+	private logStage(
+		level: "info" | "warn" | "error",
+		context: OperationContext,
+		stage: string,
+		state: "start" | "complete" | "error",
+		fields: Record<string, unknown> = {},
+	): void {
+		this.logger[level](
+			{
+				event: `adapter.work_items.stage_${state}`,
+				component: "doltgres-work-items",
+				operationId: context.operationId,
+				operation: context.operation,
+				stage,
+				...fields,
+			},
+			`work_items ${stage} ${state}`,
+		);
+	}
+
+	private async executeQuery(
+		conn: ReservedSql,
+		context: OperationContext,
+		query: string,
+	): Promise<ReadonlyArray<Record<string, unknown>>> {
+		const stage = queryStage(query);
+		const startedAt = Date.now();
+		let timedOut = false;
+		const branch = /'(work-item-op\/[^']+)'/.exec(query)?.[1] ?? context.branch;
+		const queryFields = branch ? { branch } : {};
+		this.logStage("info", context, stage, "start", queryFields);
+		const pending = conn.unsafe(query);
+		const timer = setTimeout(() => {
+			timedOut = true;
+			pending.cancel();
+		}, this.queryTimeoutMs);
 		try {
-			await conn.unsafe(`SELECT pg_advisory_lock(${GLOBAL_LOCK_KEY})`);
-			locked = true;
-			await this.reconcileUnderLock(conn);
-			return await fn(conn);
-		} finally {
-			if (locked) {
-				try {
-					await conn.unsafe(`SELECT pg_advisory_unlock(${GLOBAL_LOCK_KEY})`);
-				} catch {
-					// A dead session releases its advisory locks server-side.
-				}
+			const rows = (await pending) as ReadonlyArray<Record<string, unknown>>;
+			this.logStage("info", context, stage, "complete", {
+				...queryFields,
+				durationMs: Date.now() - startedAt,
+			});
+			return rows;
+		} catch (error) {
+			this.logStage("error", context, stage, "error", {
+				...queryFields,
+				durationMs: Date.now() - startedAt,
+				timedOut,
+				...errorFields(error),
+			});
+			if (timedOut) {
+				throw new WorkItemsBusyError(
+					`Work-item store timed out during ${stage}; retry shortly`,
+				);
 			}
-			conn.release();
+			throw error;
+		} finally {
+			clearTimeout(timer);
 		}
 	}
 
-	private async reconcileUnderLock(conn: ReservedSql): Promise<void> {
-		await conn.unsafe("ROLLBACK").catch(() => undefined);
+	private instrumentConnection(
+		conn: ReservedSql,
+		context: OperationContext,
+	): WorkItemConnection {
+		return {
+			context,
+			unsafe: (query) => this.executeQuery(conn, context, query),
+		};
+	}
+
+	private async withGlobalLock<T>(
+		operation: string,
+		fn: (conn: WorkItemConnection) => Promise<T>,
+	): Promise<T> {
+		if (this.poisoned) {
+			throw new WorkItemsBusyError(
+				"Work-item store requires restart reconciliation",
+			);
+		}
+		if (this.operationActive) throw new WorkItemsBusyError();
+		this.operationActive = true;
+		const context = { operationId: randomUUID(), operation };
+		const reserveStartedAt = Date.now();
+		this.logStage("info", context, "connection.reserve", "start");
+		let rawConn: ReservedSql | undefined;
+		let locked = false;
+		try {
+			rawConn = await this.sql.reserve();
+			this.logStage("info", context, "connection.reserve", "complete", {
+				durationMs: Date.now() - reserveStartedAt,
+			});
+			const conn = this.instrumentConnection(rawConn, context);
+			locked = await this.acquireGlobalLock(conn, context);
+			await this.reconcileUnderLock(conn);
+			return await fn(conn);
+		} catch (error) {
+			this.logStage("error", context, "operation", "error", {
+				durationMs: Date.now() - reserveStartedAt,
+				...errorFields(error),
+			});
+			throw error;
+		} finally {
+			if (locked && rawConn) {
+				try {
+					await this.executeQuery(
+						rawConn,
+						context,
+						`SELECT pg_advisory_unlock(${GLOBAL_LOCK_KEY})`,
+					);
+				} catch (unlockError) {
+					// Never return a session that may still own the global lock to the
+					// pool. This client is dedicated to work items, so terminating it is
+					// the fail-closed recovery; restart constructs a fresh client.
+					this.poisoned = true;
+					this.logStage("error", context, "connection.terminate", "error", {
+						...errorFields(unlockError),
+					});
+					await rawConn.end({ timeout: 0 }).catch(() => undefined);
+					rawConn = undefined;
+				}
+			}
+			rawConn?.release();
+			this.operationActive = false;
+		}
+	}
+
+	private async acquireGlobalLock(
+		conn: WorkItemConnection,
+		context: OperationContext,
+	): Promise<boolean> {
+		const deadline = Date.now() + this.lockWaitMs;
+		do {
+			const rows = await conn.unsafe(
+				`SELECT pg_try_advisory_lock(${GLOBAL_LOCK_KEY})`,
+			);
+			if (doltBoolean(rows, "pg_try_advisory_lock")) return true;
+			if (Date.now() >= deadline) {
+				this.logStage("warn", context, "lock.acquire", "error", {
+					durationMs: this.lockWaitMs,
+					reason: "contended",
+				});
+				throw new WorkItemsBusyError();
+			}
+			await sleep(
+				Math.min(this.lockRetryMs, Math.max(0, deadline - Date.now())),
+			);
+		} while (Date.now() <= deadline);
+		throw new WorkItemsBusyError();
+	}
+
+	private async reconcileUnderLock(conn: WorkItemConnection): Promise<void> {
 		const checkoutRows = await conn.unsafe("SELECT dolt_checkout('main')");
 		assertDoltStatus(checkoutRows, "dolt_checkout");
 		await this.abortOwnedMergeIfPresent(conn);
@@ -354,7 +580,7 @@ export class DoltgresPolyWorkItemAdapter
 	}
 
 	private async mergeState(
-		conn: ReservedSql,
+		conn: WorkItemConnection,
 	): Promise<Record<string, unknown> | undefined> {
 		const rows = (await conn.unsafe(
 			"SELECT is_merging, source, source_commit, target, unmerged_tables FROM dolt.merge_status",
@@ -363,7 +589,7 @@ export class DoltgresPolyWorkItemAdapter
 	}
 
 	private async abortOwnedMergeIfPresent(
-		conn: ReservedSql,
+		conn: WorkItemConnection,
 		expectedBranch?: string,
 	): Promise<boolean> {
 		const state = await this.mergeState(conn);
@@ -384,7 +610,7 @@ export class DoltgresPolyWorkItemAdapter
 	}
 
 	private async branchCommitIsOnMain(
-		conn: ReservedSql,
+		conn: WorkItemConnection,
 		branchCommit: string,
 	): Promise<boolean> {
 		const rows = await conn.unsafe(
@@ -393,7 +619,7 @@ export class DoltgresPolyWorkItemAdapter
 		return doltScalar(rows, "dolt_merge_base") === branchCommit;
 	}
 
-	private async assertMainClean(conn: ReservedSql): Promise<void> {
+	private async assertMainClean(conn: WorkItemConnection): Promise<void> {
 		const rows = (await conn.unsafe(
 			"SELECT table_name FROM dolt.status",
 		)) as ReadonlyArray<Record<string, unknown>>;
@@ -411,13 +637,13 @@ export class DoltgresPolyWorkItemAdapter
 	private async mutate<T>(
 		message: string,
 		principalId: string,
-		fn: (conn: ReservedSql) => Promise<T>,
+		fn: (conn: WorkItemConnection) => Promise<T>,
 		shouldCommit: (result: T) => boolean = () => true,
 	): Promise<T> {
 		let lastConflict: unknown;
 		for (let attempt = 0; attempt < MERGE_RETRIES; attempt += 1) {
 			try {
-				return await this.withGlobalLock((conn) =>
+				return await this.withGlobalLock(message, (conn) =>
 					this.mutateOnBranch(
 						conn,
 						message,
@@ -435,36 +661,29 @@ export class DoltgresPolyWorkItemAdapter
 	}
 
 	private async mutateOnBranch<T>(
-		conn: ReservedSql,
+		conn: WorkItemConnection,
 		message: string,
 		principalId: string,
-		fn: (conn: ReservedSql) => Promise<T>,
+		fn: (conn: WorkItemConnection) => Promise<T>,
 		shouldCommit: (result: T) => boolean,
 	): Promise<T> {
 		const branch = `${OP_BRANCH_PREFIX}${randomUUID()}`;
+		conn.context.branch = branch;
 		const createRows = await conn.unsafe(
 			`SELECT dolt_checkout('-b', ${escapeValue(branch)}, 'main')`,
 		);
 		assertDoltStatus(createRows, "dolt_checkout");
 
-		let transactionOpen = false;
 		try {
-			await conn.unsafe("BEGIN");
-			transactionOpen = true;
 			const result = await fn(conn);
 			if (!shouldCommit(result)) {
-				await conn.unsafe("ROLLBACK");
-				transactionOpen = false;
 				await this.returnToMainAndDeleteBranch(conn, branch);
 				return result;
 			}
-			const addRows = await conn.unsafe("SELECT dolt_add('work_items')");
-			assertDoltStatus(addRows, "dolt_add");
 			const commitRows = await conn.unsafe(
-				`SELECT dolt_commit('-m', ${escapeValue(`${COMMIT_TAG}: ${message} by actor:${principalId}`)})`,
+				`SELECT dolt_commit('-Am', ${escapeValue(`${COMMIT_TAG}: ${message} by actor:${principalId}`)})`,
 			);
 			const branchCommit = doltCommitHash(commitRows);
-			transactionOpen = false; // DOLT_COMMIT implicitly commits the SQL tx.
 
 			const mainRows = await conn.unsafe("SELECT dolt_checkout('main')");
 			assertDoltStatus(mainRows, "dolt_checkout");
@@ -479,7 +698,23 @@ export class DoltgresPolyWorkItemAdapter
 				// DOLT_MERGE implicitly commits. A transport error can therefore arrive
 				// after main moved. Reachability is the authority: never replay a
 				// create/update/delete whose branch commit is already on main.
-				if (await this.branchCommitIsOnMain(conn, branchCommit)) {
+				let reachable: boolean;
+				try {
+					reachable = await this.branchCommitIsOnMain(conn, branchCommit);
+				} catch (proofError) {
+					this.poisoned = true;
+					this.logger.error(
+						{
+							event: "adapter.work_items.merge_outcome_unknown",
+							component: "doltgres-work-items",
+							branch,
+							...errorFields(proofError),
+						},
+						"work_items merge reachability could not be proven",
+					);
+					throw new DoltMergeOutcomeUnknownError();
+				}
+				if (reachable) {
 					await this.postMergeHousekeeping(conn, branch).catch(() => undefined);
 					return result;
 				}
@@ -494,8 +729,8 @@ export class DoltgresPolyWorkItemAdapter
 			await this.postMergeHousekeeping(conn, branch).catch(() => undefined);
 			return result;
 		} catch (error) {
-			if (transactionOpen) {
-				await conn.unsafe("ROLLBACK").catch(() => undefined);
+			if (error instanceof DoltMergeOutcomeUnknownError) {
+				throw error;
 			}
 			await this.returnToMainAndDeleteBranch(conn, branch).catch(
 				() => undefined,
@@ -505,7 +740,7 @@ export class DoltgresPolyWorkItemAdapter
 	}
 
 	private async postMergeHousekeeping(
-		conn: ReservedSql,
+		conn: WorkItemConnection,
 		branch: string,
 	): Promise<void> {
 		await this.assertMainClean(conn);
@@ -513,7 +748,7 @@ export class DoltgresPolyWorkItemAdapter
 	}
 
 	private async returnToMainAndDeleteBranch(
-		conn: ReservedSql,
+		conn: WorkItemConnection,
 		branch: string,
 	): Promise<void> {
 		const checkoutRows = await conn.unsafe("SELECT dolt_checkout('main')");
@@ -523,7 +758,7 @@ export class DoltgresPolyWorkItemAdapter
 	}
 
 	private async deleteOperationBranch(
-		conn: ReservedSql,
+		conn: WorkItemConnection,
 		branch: string,
 	): Promise<void> {
 		const rows = await conn.unsafe(
@@ -533,12 +768,12 @@ export class DoltgresPolyWorkItemAdapter
 	}
 
 	private async readOnCleanMain<T>(
-		fn: (conn: ReservedSql) => Promise<T>,
+		fn: (conn: WorkItemConnection) => Promise<T>,
 	): Promise<T> {
-		return this.withGlobalLock(fn);
+		return this.withGlobalLock("read work items", fn);
 	}
 
-	private async getWith(conn: Pick<ReservedSql, "unsafe">, id: WorkItemId) {
+	private async getWith(conn: WorkItemConnection, id: WorkItemId) {
 		const rows = await conn.unsafe(
 			`SELECT *, (claim_expires_at IS NOT NULL AND claim_expires_at > NOW()) AS claim_active FROM work_items WHERE id = ${escapeValue(id as string)} LIMIT 1`,
 		);
@@ -636,64 +871,50 @@ export class DoltgresPolyWorkItemAdapter
 		principalId: string,
 	): Promise<WorkItem> {
 		const principal = requirePrincipal(principalId);
-		return this.mutate("create work item", principal, async (conn) => {
-			const insert = async (allocatedId: string) => {
-				const columns = [
-					"id",
-					"type",
-					"title",
-					"status",
-					"node",
-					"created_by_principal_id",
-				];
-				const values = [
-					escapeValue(allocatedId),
-					escapeValue(input.type),
-					escapeValue(input.title),
-					escapeValue(input.status ?? "needs_triage"),
-					escapeValue(input.node ?? "shared"),
-					escapeValue(principal),
-				];
-				const add = (column: string, value: unknown) => {
-					if (value === undefined) return;
-					columns.push(column);
-					values.push(escapeValue(value));
-				};
-				add("summary", input.summary);
-				add("outcome", input.outcome);
-				add("project_id", input.projectId);
-				add("parent_id", input.parentId);
-				add("priority", input.priority);
-				add("rank", input.rank);
-				add("estimate", input.estimate);
-				add("assignees", input.assignees);
-				add("labels", input.labels);
-				add("spec_refs", input.specRefs);
-				const rows = await conn.unsafe(
-					`INSERT INTO work_items (${columns.join(", ")}) VALUES (${values.join(", ")}) RETURNING *, FALSE AS claim_active`,
-				);
-				const row = rows[0] as Record<string, unknown> | undefined;
-				if (!row) throw new Error("INSERT returned no row");
-				return rowToWorkItem(row);
-			};
-
-			if (input.id) {
-				const requested = String(input.id);
-				if (!requested.startsWith(`${input.type}.`)) {
-					throw new Error(
-						`Provided id '${requested}' does not match type '${input.type}'`,
+		const createOnce = (allocatedId?: string) =>
+			this.mutate("create work item", principal, async (conn) => {
+				const insert = async (allocatedId: string) => {
+					const columns = [
+						"id",
+						"type",
+						"title",
+						"status",
+						"node",
+						"created_by_principal_id",
+					];
+					const values = [
+						escapeValue(allocatedId),
+						escapeValue(input.type),
+						escapeValue(input.title),
+						escapeValue(input.status ?? "needs_triage"),
+						escapeValue(input.node ?? "shared"),
+						escapeValue(principal),
+					];
+					const add = (column: string, value: unknown) => {
+						if (value === undefined) return;
+						columns.push(column);
+						values.push(escapeValue(value));
+					};
+					add("summary", input.summary);
+					add("outcome", input.outcome);
+					add("project_id", input.projectId);
+					add("parent_id", input.parentId);
+					add("priority", input.priority);
+					add("rank", input.rank);
+					add("estimate", input.estimate);
+					add("assignees", input.assignees);
+					add("labels", input.labels);
+					add("spec_refs", input.specRefs);
+					const rows = await conn.unsafe(
+						`INSERT INTO work_items (${columns.join(", ")}) VALUES (${values.join(", ")}) RETURNING *, FALSE AS claim_active`,
 					);
-				}
-				try {
-					return await insert(requested);
-				} catch (error) {
-					if (isDuplicateError(error))
-						throw new WorkItemAlreadyExistsError(requested);
-					throw error;
-				}
-			}
+					const row = rows[0] as Record<string, unknown> | undefined;
+					if (!row) throw new Error("INSERT returned no row");
+					return rowToWorkItem(row);
+				};
 
-			for (let attempt = 0; attempt < AUTO_ID_RETRIES; attempt += 1) {
+				if (allocatedId) return insert(allocatedId);
+
 				const idRows = await conn.unsafe(
 					`SELECT id FROM work_items WHERE type = ${escapeValue(input.type)}`,
 				);
@@ -702,22 +923,47 @@ export class DoltgresPolyWorkItemAdapter
 					const suffix = parseSuffix(String(row.id), input.type);
 					if (suffix !== null && suffix > maxSuffix) maxSuffix = suffix;
 				}
-				const allocatedId = `${input.type}.${String(maxSuffix + 1).padStart(4, "0")}`;
-				await conn.unsafe("SAVEPOINT work_item_auto_id");
+				const nextId = `${input.type}.${String(maxSuffix + 1).padStart(4, "0")}`;
 				try {
-					const item = await insert(allocatedId);
-					await conn.unsafe("RELEASE SAVEPOINT work_item_auto_id");
-					return item;
+					return await insert(nextId);
 				} catch (error) {
-					if (!isDuplicateError(error)) throw error;
-					await conn.unsafe("ROLLBACK TO SAVEPOINT work_item_auto_id");
-					if (attempt === AUTO_ID_RETRIES - 1) {
-						throw new WorkItemAlreadyExistsError(allocatedId);
+					if (isDuplicateError(error)) {
+						throw new WorkItemAlreadyExistsError(nextId);
 					}
+					throw error;
 				}
+			});
+
+		if (input.id) {
+			const requested = String(input.id);
+			if (!requested.startsWith(`${input.type}.`)) {
+				throw new Error(
+					`Provided id '${requested}' does not match type '${input.type}'`,
+				);
 			}
-			throw new Error("Unable to allocate work item id");
-		});
+			try {
+				return await createOnce(requested);
+			} catch (error) {
+				if (isDuplicateError(error)) {
+					throw new WorkItemAlreadyExistsError(requested);
+				}
+				throw error;
+			}
+		}
+
+		let lastCollisionId = `${input.type}.${ID_FLOOR}`;
+		for (let attempt = 0; attempt < AUTO_ID_RETRIES; attempt += 1) {
+			try {
+				return await createOnce();
+			} catch (error) {
+				if (!isDuplicateError(error)) throw error;
+				const match = /work item id '([^']+)'/.exec(
+					error instanceof Error ? error.message : "",
+				);
+				if (match?.[1]) lastCollisionId = match[1];
+			}
+		}
+		throw new WorkItemAlreadyExistsError(lastCollisionId);
 	}
 
 	async patch(
@@ -780,10 +1026,10 @@ export class DoltgresPolyWorkItemAdapter
 	}
 
 	private async throwMissingOrUnauthorized(
-		conn: Pick<ReservedSql, "unsafe"> | Sql,
+		conn: WorkItemConnection,
 		id: WorkItemId,
 	): Promise<never> {
-		if (await this.getWith(conn as Pick<ReservedSql, "unsafe">, id)) {
+		if (await this.getWith(conn, id)) {
 			throw new WorkItemAuthorizationError(id as string);
 		}
 		throw new Error(`Work item not found: ${id as string}`);
@@ -856,7 +1102,7 @@ export class DoltgresPolyWorkItemAdapter
 	}
 
 	private async throwLeaseConflictOrMissing(
-		conn: Pick<ReservedSql, "unsafe">,
+		conn: WorkItemConnection,
 		id: WorkItemId,
 	): Promise<never> {
 		if (await this.getWith(conn, id)) {
