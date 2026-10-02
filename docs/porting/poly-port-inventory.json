@@ -5,12 +5,12 @@
     "revision": "95a934e57d51b99aa9891fc8084d20c13d0ed78a",
     "treeRoot": "nodes/poly"
   },
-  "policySha256": "55c9de866a933850f8b3170e914b6971fe7aa7502ca38e9e42a9ef18f3c610c2",
-  "targetTreeDigest": "fe2eebbaf8a6554e3c56fb329160c933d6c6ef6352969fc34006a47cb62d3750",
+  "policySha256": "be3540174ec16ecd1b348501c78c2b06b216d2da2a0ecb95dc81b4c2fb2ec783",
+  "targetTreeDigest": "af0ad1abfd576c1d7620c1b8622ca0acb7f1d1db07b29866732dc5d10ea0a1e9",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1056,
+    "targetOnlyFiles": 1054,
     "unresolved": 599,
     "byStatus": {
       "exact": 1137,
@@ -31,7 +31,7 @@
       "id": "dashboard.wallet_identity",
       "priority": "P0",
       "status": "in_progress",
-      "owner": "derekg1729/overnight-trading-loss-audit@66a4ce5",
+      "owner": "PR #109 @ a5f85ca",
       "requirement": "The observer and every dashboard read model use the same tenant trading identity: funder_address when present, otherwise the legacy signer address.",
       "evidence": "Current production observed the Privy signer EOA while balance and position reads used the funder wallet; the active fix enrolls funder_address and retires the stale signer row."
     },
@@ -18701,7 +18701,7 @@
     },
     {
       "targetPath": "docs/porting/poly-port-policy.json",
-      "targetBlob": "f33ac52553ebbda5f7ba0034709ecad0f0bb641f"
+      "targetBlob": "14cca3b91c2307d8a9c7eb732c638ccc2d8a8dc8"
     },
     {
       "targetPath": "docs/spec/knowledge-syntropy.md",
@@ -21652,16 +21652,8 @@
       "targetBlob": "f1a5adc29a0b3ef31d0ca882340cc73efe8d4ea2"
     },
     {
-      "targetPath": "work/items/task.5008.restore-dashboard-wallet-truth.md",
-      "targetBlob": null
-    },
-    {
-      "targetPath": "work/items/task.5009.enforce-deterministic-port-ledger.md",
-      "targetBlob": null
-    },
-    {
       "targetPath": "work/items/task.5344.restore-dashboard-wallet-truth.md",
-      "targetBlob": "597f7a13c4ad29d3684eca27b6f9a75a97223306"
+      "targetBlob": "219854cc6cab97a633de54640465e54f861c2f73"
     },
     {
       "targetPath": "work/items/task.5345.enforce-deterministic-port-ledger.md",

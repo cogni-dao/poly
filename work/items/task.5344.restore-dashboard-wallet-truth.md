@@ -20,7 +20,7 @@ credit: null
 project: null
 parent: story.5000
 branch: derekg1729/overnight-trading-loss-audit
-pr: null
+pr: 109
 reviewer: null
 revision: 0
 blocked_by: null
@@ -47,6 +47,6 @@ Owns: wallet observation enrollment, current-position/P&L identity resolution, o
 
 Do not touch: mirror sizing, cash-reserve gates, order placement, work-item APIs, or the port-ledger generator.
 
-Active checkpoint: `derekg1729/overnight-trading-loss-audit@66a4ce5` fixes observer enrollment and covers funder preference, legacy fallback, dedupe, and stale signer retirement. Review/extend that branch rather than duplicating its files.
+Active checkpoint: PR #109 at `derekg1729/overnight-trading-loss-audit@a5f85ca` centralizes trading-address resolution in the wallet port and fixes observer enrollment with focused coverage. Review/extend that branch rather than duplicating its files.
 
 Gate: on candidate, the dashboard and its overview/execution APIs for `0x8ca45685c5827f7ACFdd890214180C4EA9d0Bf58` must match a timestamped independent Polygon/Polymarket oracle for free cash, open-position count, position mark-to-market, and total within a documented tolerance. P/L must distinguish unavailable from true zero. Capture API output and a screenshot before production promotion.
