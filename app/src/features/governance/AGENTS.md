@@ -43,7 +43,7 @@ Governance feature slice — schedule sync, governance status dashboard, claiman
 - **Exports (signal):** `parseCogniAction()`, `parseRepoRef()`, `COGNI_TOPIC0`, `resolveAction()`, `mergeChange()`, `grantCollaborator()`, `revokeCollaborator()`
 - **Routes (app pages):** `/gov` (overview), `/gov/epoch` (current + historical lifecycle and contribution sync), `/gov/holdings` (aggregated), `/gov/review` (Finish Epoch admin workspace — open review, sign/finalize, publish)
 - **Routes (API — in `src/app/api/v1/attribution/`):** `GET /epochs`, `POST /epochs/:id/review`, `GET /epochs/:id/user-projections`, `GET /epochs/:id/statement`, `GET /epochs/:id/claimants`, `GET /epochs/:id/activity`, `GET /epochs/:id/sign-data`, `GET|PATCH|DELETE /epochs/:id/review-subject-overrides`
-- **CLI:** `pnpm governance:schedules:sync`, `pnpm db:seed`, `pnpm dev:setup`
+- **CLI:** `pnpm db:seed`, `pnpm dev:setup`
 - **Env/Config keys:** `.cogni/repo-spec.yaml` → `governance.schedules` + `governance` DAO identity fields (signal contract, chain_id, etc.)
 
 ## Ports
@@ -60,7 +60,6 @@ Governance feature slice — schedule sync, governance status dashboard, claiman
 
 ```bash
 pnpm test tests/unit/features/governance/  # unit tests
-pnpm governance:schedules:sync             # trigger internal route (app must be running)
 pnpm dev:setup                             # db:setup + db:setup:test + gov schedule sync
 ```
 

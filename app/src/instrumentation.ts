@@ -23,10 +23,6 @@ import {
   resolveEgressAssertionConfig,
   runEgressGeoblockAssertion,
 } from "@/lib/egress-geoblock";
-import {
-  resolveBootSyncConfig,
-  runGovernanceBootSync,
-} from "@/lib/governance-boot-sync";
 
 let sdk: NodeSDK | null = null;
 
@@ -149,14 +145,6 @@ export async function register(): Promise<void> {
     void runEgressGeoblockAssertion(resolveEgressAssertionConfig(bootEnv)).catch(
       () => {}
     );
-  }
-
-  // Self-register governance + ledger(epoch) Temporal schedules at boot, so a node (incl. a
-  // forked node-template) goes live without an operator/deploy-pipeline step. Replaces the
-  // removed `scripts/ci/deploy.sh` Step 10.1. Fire-and-forget + fail-soft; the helper retries
-  // while the HTTP server binds. Skipped in test.
-  if (bootEnv.APP_ENV !== "test") {
-    void runGovernanceBootSync(resolveBootSyncConfig(bootEnv)).catch(() => {});
   }
 
   // Dev mode (not test): warn if LiteLLM has stale test config from a previous session.

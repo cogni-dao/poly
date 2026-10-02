@@ -308,16 +308,6 @@ export interface PolyTraderWalletPort {
   }): Promise<PolyTraderSigningContext>;
 
   /**
-   * Mark a connection revoked. Halt-future-only; in-flight orders complete.
-   * Does NOT delete the backend wallet or sweep funds. Next `provision`
-   * creates a new connection with a new address.
-   */
-  revoke(input: {
-    billingAccountId: string;
-    revokedByUserId: string;
-  }): Promise<void>;
-
-  /**
    * Resolve + grant-check in one call. The only source of
    * `AuthorizedSigningContext`, which `placeOrder` requires.
    */
