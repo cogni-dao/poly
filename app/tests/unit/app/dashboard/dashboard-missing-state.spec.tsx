@@ -76,11 +76,16 @@ vi.mock("@/components", () => ({
   ),
 }));
 
-vi.mock("@/features/wallet-analysis", () => ({
-  BalanceBar: () => <div>balance bar</div>,
-  TimeWindowHeader: () => <div>time window</div>,
-  WalletProfitLossCard: () => <div>pnl chart</div>,
-}));
+vi.mock("@/features/wallet-analysis", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("@/features/wallet-analysis")
+  >();
+  return {
+    ...actual,
+    BalanceBar: () => <div>balance bar</div>,
+    TimeWindowHeader: () => <div>time window</div>,
+  };
+});
 
 vi.mock("@/app/(app)/_components/markets-table", () => ({
   MarketsDeltaDistribution: () => <div>market distribution</div>,
@@ -196,8 +201,12 @@ describe("dashboard missing read-model states", () => {
     render(<TradingWalletCard />);
 
     expect(screen.getByText(/saved observation is stale/i)).toBeInTheDocument();
-    expect(screen.queryByText(/until this trading wallet is present/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("pnl chart")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/until this trading wallet is present/i)
+    ).not.toBeInTheDocument();
+    // Use the real WalletProfitLossCard here: stale availability must prevent
+    // its empty-series fallback from contradicting the explicit stale state.
+    expect(screen.queryByText("No P/L history yet.")).not.toBeInTheDocument();
   });
 
   it.each([
