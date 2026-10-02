@@ -483,9 +483,6 @@ export class DoltgresPolyWorkItemAdapter
 				}
 				throw mergeError;
 			}
-			if (!(await this.branchCommitIsOnMain(conn, branchCommit))) {
-				throw new WorkItemMergeConflictError();
-			}
 			// The merge is now durable. Cleanup is repairable housekeeping and must
 			// not turn a committed mutation into an API failure that callers replay.
 			await this.postMergeHousekeeping(conn, branch).catch(() => undefined);

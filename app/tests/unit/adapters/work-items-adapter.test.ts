@@ -155,6 +155,7 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		expect(joined).toContain("SELECT dolt_add('work_items')");
 		expect(joined).toContain("SELECT dolt_commit('-m'");
 		expect(joined).toContain("SELECT dolt_merge('work-item-op/");
+		expect(joined).not.toContain("SELECT dolt_merge_base");
 		expect(joined).toContain("SELECT dolt_branch('-D', 'work-item-op/");
 		expect(joined).toContain("SELECT pg_advisory_unlock(5001001)");
 		expect(joined).not.toContain("-A");

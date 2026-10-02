@@ -6,11 +6,11 @@
     "treeRoot": "nodes/poly"
   },
   "policySha256": "cc0f1f13d7e108b07823f2c37d188d2c5fa4773866b20c587f997b6faba4cbb8",
-  "targetTreeDigest": "ac2ff311f2cc3383b5c516af52c63a9a9ede59f85738e4b66e9749b4ac514208",
+  "targetTreeDigest": "7a69024aa6922a245f3ac66d76eabc26e0668b6cd78e27235c47c020ad18c810",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1057,
+    "targetOnlyFiles": 1055,
     "unresolved": 602,
     "byStatus": {
       "exact": 1134,
@@ -860,7 +860,7 @@
       "sourceBlob": "740a4e68a2f6c899c1e69fd244998cdbf2a76def",
       "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
       "targetPath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
-      "targetBlob": "4cf20633ef289b361e765b9920b5ac5cd8f6a22b",
+      "targetBlob": "a63df00190156568838893c680857c6659e4ef25",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -20608,12 +20608,6 @@
     },
     {
       "targetPath": "work/items/task.5007.restore-selective-data-and-paper-trading-last.md"
-    },
-    {
-      "targetPath": "work/items/task.5344.restore-dashboard-wallet-truth.md"
-    },
-    {
-      "targetPath": "work/items/task.5345.enforce-deterministic-port-ledger.md"
     },
     {
       "targetPath": "work/items/task.research-rollup-read-models.md"
