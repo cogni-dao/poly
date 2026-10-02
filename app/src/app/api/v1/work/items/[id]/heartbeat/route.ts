@@ -6,7 +6,7 @@
  * Purpose: HTTP endpoint for refreshing a work-item claim heartbeat.
  * Scope: Auth-protected POST endpoint. Does not contain business logic.
  * Invariants: VALIDATE_IO, PORT_VIA_FACADE
- * Side-effects: IO (HTTP response, filesystem write via port)
+ * Side-effects: IO (HTTP response, Doltgres write via port)
  * @public
  */
 
@@ -16,6 +16,7 @@ import { z } from "zod";
 import {
   heartbeatWorkItem,
   WorkItemNotFoundError,
+  WorkItemsBackendNotReadyError,
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -31,7 +32,10 @@ const HeartbeatRequestSchema = z.object({
 export const POST = wrapRouteHandlerWithLogging<{
   params: Promise<{ id: string }>;
 }>(
-  { routeId: "work.items.heartbeat", auth: { mode: "required", getSessionUser } },
+  {
+    routeId: "work.items.heartbeat",
+    auth: { mode: "required", getSessionUser },
+  },
   async (ctx, request, _sessionUser, context) => {
     if (!context) throw new Error("context required for dynamic routes");
     const { id } = await context.params;
@@ -64,6 +68,9 @@ export const POST = wrapRouteHandlerWithLogging<{
     } catch (error) {
       if (error instanceof WorkItemNotFoundError) {
         return NextResponse.json({ error: error.message }, { status: 404 });
+      }
+      if (error instanceof WorkItemsBackendNotReadyError) {
+        return NextResponse.json({ error: error.message }, { status: 503 });
       }
       throw error;
     }

@@ -4,7 +4,7 @@
 /**
  * Module: `@tests/unit/facades/work-items`
  * Purpose: Unit test for work items facade — verifies DTO mapping and port delegation.
- * Scope: Mocks container and WorkItemQueryPort. Tests listWorkItems and getWorkItem.
+ * Scope: Mocks the Doltgres port and verifies read/write delegation.
  * Invariants: PORT_VIA_CONTAINER, CONTRACTS_ARE_TRUTH
  * Side-effects: none
  * Links: src/app/_facades/work/items.server.ts
@@ -15,7 +15,7 @@ import {
   WorkItemDtoSchema,
   workItemsListOperation,
 } from "@cogni/node-contracts";
-import type { WorkItem, WorkItemQueryPort } from "@cogni/work-items";
+import type { WorkItem } from "@cogni/work-items";
 import { toWorkItemId } from "@cogni/work-items";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -24,7 +24,12 @@ vi.mock("@/bootstrap/container", () => ({
   getContainer: vi.fn(),
 }));
 
-import { getWorkItem, listWorkItems } from "@/app/_facades/work/items.server";
+import {
+  createWorkItem,
+  getWorkItem,
+  listWorkItems,
+  patchWorkItem,
+} from "@/app/_facades/work/items.server";
 import { getContainer } from "@/bootstrap/container";
 
 const mockGetContainer = vi.mocked(getContainer);
@@ -41,6 +46,7 @@ const SAMPLE_WORK_ITEM: WorkItem = {
   outcome: "Expected outcome",
   projectId: toWorkItemId("proj.test"),
   parentId: undefined,
+  node: "poly",
   assignees: [{ kind: "user", userId: "u1" }],
   externalRefs: [{ system: "github", kind: "pr" }],
   labels: ["test", "api"],
@@ -58,10 +64,15 @@ const SAMPLE_WORK_ITEM: WorkItem = {
   updatedAt: "2026-01-02",
 };
 
-function createMockPort(): WorkItemQueryPort {
+function createMockPort() {
   return {
     list: vi.fn(),
     get: vi.fn(),
+    create: vi.fn(),
+    patch: vi.fn(),
+    delete: vi.fn(),
+    claim: vi.fn(),
+    release: vi.fn(),
   };
 }
 
@@ -72,7 +83,7 @@ describe("app/_facades/work/items.server", () => {
     vi.resetAllMocks();
     mockPort = createMockPort();
     mockGetContainer.mockReturnValue({
-      workItemQuery: mockPort,
+      doltgresWorkItems: mockPort,
     } as never);
   });
 
@@ -209,6 +220,43 @@ describe("app/_facades/work/items.server", () => {
       await getWorkItem("task.0001");
 
       expect(mockPort.get).toHaveBeenCalledWith(toWorkItemId("task.0001"));
+    });
+  });
+
+  describe("writes", () => {
+    it("creates in Doltgres with an attributed author", async () => {
+      mockPort.create.mockResolvedValue(SAMPLE_WORK_ITEM);
+
+      const result = await createWorkItem(
+        { type: "task", title: "Sample task", node: "poly" },
+        { id: "agent-1", displayName: "Codex" }
+      );
+
+      expect(result.id).toBe("task.0001");
+      expect(mockPort.create).toHaveBeenCalledWith(
+        { type: "task", title: "Sample task", node: "poly" },
+        "actor:Codex"
+      );
+    });
+
+    it("passes extended patch fields to Doltgres", async () => {
+      mockPort.patch.mockResolvedValue({
+        ...SAMPLE_WORK_ITEM,
+        deployVerified: true,
+      });
+
+      await patchWorkItem(
+        { id: "task.0001", set: { deployVerified: true, blockedBy: null } },
+        { id: "agent-1", displayName: null }
+      );
+
+      expect(mockPort.patch).toHaveBeenCalledWith(
+        {
+          id: toWorkItemId("task.0001"),
+          set: { deployVerified: true, blockedBy: null },
+        },
+        "actor:agent-1"
+      );
     });
   });
 });

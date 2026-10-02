@@ -6,30 +6,28 @@
  * Purpose: Server-side facade for work item read/write operations.
  * Scope: Maps Work item ports to contract DTOs. Does not contain business logic.
  * Invariants: PORT_VIA_CONTAINER, CONTRACTS_ARE_TRUTH
- * Side-effects: IO (filesystem read/write via port)
+ * Side-effects: IO (Doltgres read/write via port)
  * Links: [work.items.list.v1.contract](../../../contracts/work.items.list.v1.contract.ts)
  * @internal
  */
 
 import type {
+  WorkItemsCreateInput as ContractCreateInput,
+  WorkItemsPatchInput as ContractPatchInput,
   WorkItemDto,
-  WorkItemsCreateInput,
-  WorkItemsCreateOutput,
   WorkItemsListInput,
   WorkItemsListOutput,
-  WorkItemsPatchInput,
-  WorkItemsPatchOutput,
 } from "@cogni/node-contracts";
-import type { WorkItem, WorkItemId } from "@cogni/work-items";
+import type { WorkItem } from "@cogni/work-items";
 import { toWorkItemId } from "@cogni/work-items";
 import { getContainer } from "@/bootstrap/container";
 
-const PATCH_UNSUPPORTED_BY_COMMAND_PORT = [
-  "blockedBy",
-  "deployVerified",
-  "parentId",
-  "projectId",
-] as const satisfies readonly (keyof WorkItemsPatchInput["set"])[];
+export class InvalidCursorError extends Error {
+  constructor(message = "invalid cursor") {
+    super(message);
+    this.name = "InvalidCursorError";
+  }
+}
 
 export class WorkItemNotFoundError extends Error {
   constructor(id: string) {
@@ -38,13 +36,10 @@ export class WorkItemNotFoundError extends Error {
   }
 }
 
-export class UnsupportedWorkItemPatchFieldsError extends Error {
-  readonly fields: string[];
-
-  constructor(fields: string[]) {
-    super(`Unsupported work item patch fields: ${fields.join(", ")}`);
-    this.name = "UnsupportedWorkItemPatchFieldsError";
-    this.fields = fields;
+export class WorkItemsBackendNotReadyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkItemsBackendNotReadyError";
   }
 }
 
@@ -115,101 +110,142 @@ function toDto(item: WorkItem): WorkItemDto {
   };
 }
 
+function authorTagFromSession(user: {
+  id: string;
+  displayName: string | null;
+}): string {
+  return `actor:${user.displayName?.trim() || user.id}`;
+}
+
+type StripUndefined<T> = {
+  [K in keyof T]?: Exclude<T[K], undefined>;
+};
+
+function dropUndefined<T extends Record<string, unknown>>(
+  value: T
+): StripUndefined<T> {
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (item !== undefined) result[key] = item;
+  }
+  return result as StripUndefined<T>;
+}
+
+function rethrowBackendError(error: unknown): never {
+  if ((error as Error)?.name === "DoltgresNotConfiguredError") {
+    throw new WorkItemsBackendNotReadyError((error as Error).message);
+  }
+  throw error;
+}
+
 export async function listWorkItems(
   input: WorkItemsListInput
 ): Promise<WorkItemsListOutput> {
   const container = getContainer();
-  const result = await container.workItemQuery.list({
-    ...(input.types && {
-      types: input.types as WorkItem["type"][],
-    }),
-    ...(input.statuses && {
-      statuses: input.statuses as WorkItem["status"][],
-    }),
-    ...(input.text && { text: input.text }),
-    ...(input.actor && { actor: input.actor as WorkItem["actor"] }),
-    ...(input.projectId && { projectId: toWorkItemId(input.projectId) }),
-    ...(input.limit && { limit: input.limit }),
-  });
-
-  return {
-    items: result.items.map(toDto),
-    nextCursor: result.nextCursor,
-  };
+  try {
+    const result = await container.doltgresWorkItems.list({
+      ...(input.types && { types: input.types as WorkItem["type"][] }),
+      ...(input.statuses && {
+        statuses: input.statuses as WorkItem["status"][],
+      }),
+      ...(input.text && { text: input.text }),
+      ...(input.actor && { actor: input.actor as WorkItem["actor"] }),
+      ...(input.projectId && { projectId: toWorkItemId(input.projectId) }),
+      ...(input.node && { node: input.node }),
+      ...(input.limit && { limit: input.limit }),
+      ...(input.cursor && { cursor: input.cursor }),
+    });
+    return {
+      items: result.items.map(toDto),
+      pageInfo: result.pageInfo,
+      ...(result.nextCursor && { nextCursor: result.nextCursor }),
+    };
+  } catch (error) {
+    if ((error as Error)?.name === "InvalidCursorError") {
+      throw new InvalidCursorError((error as Error).message);
+    }
+    rethrowBackendError(error);
+  }
 }
 
 export async function getWorkItem(id: string): Promise<WorkItemDto | null> {
   const container = getContainer();
-  const item = await container.workItemQuery.get(id as WorkItemId);
-  return item ? toDto(item) : null;
+  try {
+    const item = await container.doltgresWorkItems.get(toWorkItemId(id));
+    return item ? toDto(item) : null;
+  } catch (error) {
+    rethrowBackendError(error);
+  }
 }
 
 export async function createWorkItem(
-  input: WorkItemsCreateInput
-): Promise<WorkItemsCreateOutput> {
+  input: ContractCreateInput,
+  sessionUser: { id: string; displayName: string | null }
+): Promise<WorkItemDto> {
   const container = getContainer();
-  const item = await container.workItemCommand.create({
-    ...(input.id && { id: toWorkItemId(input.id) }),
-    type: input.type,
-    title: input.title,
-    ...(input.summary !== undefined && { summary: input.summary }),
-    ...(input.outcome !== undefined && { outcome: input.outcome }),
-    ...(input.specRefs !== undefined && { specRefs: input.specRefs }),
-    ...(input.projectId !== undefined && {
-      projectId: toWorkItemId(input.projectId),
-    }),
-    ...(input.parentId !== undefined && {
-      parentId: toWorkItemId(input.parentId),
-    }),
-    ...(input.labels !== undefined && { labels: input.labels }),
-    ...(input.assignees !== undefined && { assignees: input.assignees }),
-    ...(input.node !== undefined && { node: input.node }),
-    ...(input.status !== undefined && { status: input.status }),
-    ...(input.priority !== undefined && { priority: input.priority }),
-    ...(input.rank !== undefined && { rank: input.rank }),
-    ...(input.estimate !== undefined && { estimate: input.estimate }),
-  });
-
-  return toDto(item);
+  try {
+    const item = await container.doltgresWorkItems.create(
+      {
+        ...(input.id && { id: toWorkItemId(input.id) }),
+        type: input.type,
+        title: input.title,
+        ...(input.summary !== undefined && { summary: input.summary }),
+        ...(input.outcome !== undefined && { outcome: input.outcome }),
+        ...(input.specRefs !== undefined && { specRefs: input.specRefs }),
+        ...(input.projectId !== undefined && {
+          projectId: toWorkItemId(input.projectId),
+        }),
+        ...(input.parentId !== undefined && {
+          parentId: toWorkItemId(input.parentId),
+        }),
+        ...(input.labels !== undefined && { labels: input.labels }),
+        ...(input.assignees !== undefined && { assignees: input.assignees }),
+        ...(input.node !== undefined && { node: input.node }),
+        ...(input.status !== undefined && { status: input.status }),
+        ...(input.priority !== undefined && { priority: input.priority }),
+        ...(input.rank !== undefined && { rank: input.rank }),
+        ...(input.estimate !== undefined && { estimate: input.estimate }),
+      },
+      authorTagFromSession(sessionUser)
+    );
+    return toDto(item);
+  } catch (error) {
+    rethrowBackendError(error);
+  }
 }
 
 export async function patchWorkItem(
-  input: WorkItemsPatchInput
-): Promise<WorkItemsPatchOutput> {
-  const unsupportedFields = PATCH_UNSUPPORTED_BY_COMMAND_PORT.filter(
-    (field) => field in input.set
-  );
-  if (unsupportedFields.length > 0) {
-    throw new UnsupportedWorkItemPatchFieldsError([...unsupportedFields]);
-  }
-
+  input: ContractPatchInput,
+  sessionUser: { id: string; displayName: string | null }
+): Promise<WorkItemDto> {
   const container = getContainer();
-  const current = await container.workItemQuery.get(toWorkItemId(input.id));
-  if (!current) {
-    throw new WorkItemNotFoundError(input.id);
+  try {
+    const item = await container.doltgresWorkItems.patch(
+      { id: toWorkItemId(input.id), set: dropUndefined(input.set) },
+      authorTagFromSession(sessionUser)
+    );
+    return toDto(item);
+  } catch (error) {
+    if ((error as Error)?.message === `Work item not found: ${input.id}`) {
+      throw new WorkItemNotFoundError(input.id);
+    }
+    rethrowBackendError(error);
   }
+}
 
-  const item = await container.workItemCommand.patch({
-    id: toWorkItemId(input.id),
-    expectedRevision: String(current.revision),
-    set: {
-      ...(input.set.title !== undefined && { title: input.set.title }),
-      ...(input.set.summary !== undefined && { summary: input.set.summary }),
-      ...(input.set.outcome !== undefined && { outcome: input.set.outcome }),
-      ...(input.set.estimate !== undefined && { estimate: input.set.estimate }),
-      ...(input.set.priority !== undefined && { priority: input.set.priority }),
-      ...(input.set.rank !== undefined && { rank: input.set.rank }),
-      ...(input.set.status !== undefined && { status: input.set.status }),
-      ...(input.set.specRefs !== undefined && { specRefs: input.set.specRefs }),
-      ...(input.set.labels !== undefined && { labels: input.set.labels }),
-      ...(input.set.branch !== undefined && { branch: input.set.branch }),
-      ...(input.set.pr !== undefined && { pr: input.set.pr }),
-      ...(input.set.reviewer !== undefined && { reviewer: input.set.reviewer }),
-      ...(input.set.node !== undefined && { node: input.set.node }),
-    },
-  });
-
-  return toDto(item);
+export async function deleteWorkItem(
+  id: string,
+  sessionUser: { id: string; displayName: string | null }
+): Promise<boolean> {
+  const container = getContainer();
+  try {
+    return await container.doltgresWorkItems.delete(
+      toWorkItemId(id),
+      authorTagFromSession(sessionUser)
+    );
+  } catch (error) {
+    rethrowBackendError(error);
+  }
 }
 
 export async function claimWorkItem(input: {
@@ -218,18 +254,19 @@ export async function claimWorkItem(input: {
   command: string;
 }): Promise<WorkItemDto> {
   const container = getContainer();
-  const current = await container.workItemQuery.get(toWorkItemId(input.id));
-  if (!current) {
-    throw new WorkItemNotFoundError(input.id);
+  try {
+    const item = await container.doltgresWorkItems.claim({
+      id: toWorkItemId(input.id),
+      runId: input.runId,
+      command: input.command,
+    });
+    return toDto(item);
+  } catch (error) {
+    if ((error as Error)?.message === `Work item not found: ${input.id}`) {
+      throw new WorkItemNotFoundError(input.id);
+    }
+    rethrowBackendError(error);
   }
-
-  const item = await container.workItemCommand.claim({
-    id: toWorkItemId(input.id),
-    runId: input.runId,
-    command: input.command,
-  });
-
-  return toDto(item);
 }
 
 export async function releaseWorkItem(input: {
@@ -237,17 +274,18 @@ export async function releaseWorkItem(input: {
   runId: string;
 }): Promise<WorkItemDto> {
   const container = getContainer();
-  const current = await container.workItemQuery.get(toWorkItemId(input.id));
-  if (!current) {
-    throw new WorkItemNotFoundError(input.id);
+  try {
+    const item = await container.doltgresWorkItems.release({
+      id: toWorkItemId(input.id),
+      runId: input.runId,
+    });
+    return toDto(item);
+  } catch (error) {
+    if ((error as Error)?.message === `Work item not found: ${input.id}`) {
+      throw new WorkItemNotFoundError(input.id);
+    }
+    rethrowBackendError(error);
   }
-
-  const item = await container.workItemCommand.release({
-    id: toWorkItemId(input.id),
-    runId: input.runId,
-  });
-
-  return toDto(item);
 }
 
 export async function heartbeatWorkItem(input: {
@@ -256,37 +294,42 @@ export async function heartbeatWorkItem(input: {
   command?: string;
 }): Promise<WorkItemDto> {
   const container = getContainer();
-  const current = await container.workItemQuery.get(toWorkItemId(input.id));
-  if (!current) {
-    throw new WorkItemNotFoundError(input.id);
+  try {
+    const current = await container.doltgresWorkItems.get(
+      toWorkItemId(input.id)
+    );
+    if (!current) throw new WorkItemNotFoundError(input.id);
+    const item = await container.doltgresWorkItems.claim({
+      id: toWorkItemId(input.id),
+      runId: input.runId,
+      command: input.command ?? current.lastCommand ?? "heartbeat",
+    });
+    return toDto(item);
+  } catch (error) {
+    if (error instanceof WorkItemNotFoundError) throw error;
+    rethrowBackendError(error);
   }
-
-  const item = await container.workItemCommand.claim({
-    id: toWorkItemId(input.id),
-    runId: input.runId,
-    command: input.command ?? current.lastCommand ?? "heartbeat",
-  });
-
-  return toDto(item);
 }
 
 export async function getWorkItemCoordination(
   id: string
 ): Promise<WorkItemCoordinationDto> {
   const container = getContainer();
-  const current = await container.workItemQuery.get(toWorkItemId(id));
-  if (!current) {
-    throw new WorkItemNotFoundError(id);
+  try {
+    const current = await container.doltgresWorkItems.get(toWorkItemId(id));
+    if (!current) throw new WorkItemNotFoundError(id);
+    return {
+      nextAction: nextActionForWorkItem(current),
+      session: {
+        status: current.claimedByRun ? "active" : "none",
+        claimedByRun: current.claimedByRun ?? null,
+        claimedByDisplayName: current.claimedByRun ?? null,
+        claimedAt: current.claimedAt ?? null,
+        lastCommand: current.lastCommand ?? null,
+      },
+    };
+  } catch (error) {
+    if (error instanceof WorkItemNotFoundError) throw error;
+    rethrowBackendError(error);
   }
-
-  return {
-    nextAction: nextActionForWorkItem(current),
-    session: {
-      status: current.claimedByRun ? "active" : "none",
-      claimedByRun: current.claimedByRun ?? null,
-      claimedByDisplayName: current.claimedByRun ?? null,
-      claimedAt: current.claimedAt ?? null,
-      lastCommand: current.lastCommand ?? null,
-    },
-  };
 }

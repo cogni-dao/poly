@@ -6,7 +6,7 @@
  * Purpose: HTTP endpoint for claiming and releasing work items.
  * Scope: Auth-protected POST/DELETE endpoints. Does not contain business logic.
  * Invariants: VALIDATE_IO, PORT_VIA_FACADE
- * Side-effects: IO (HTTP response, filesystem write via port)
+ * Side-effects: IO (HTTP response, Doltgres write via port)
  * @public
  */
 
@@ -17,6 +17,7 @@ import {
   claimWorkItem,
   releaseWorkItem,
   WorkItemNotFoundError,
+  WorkItemsBackendNotReadyError,
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -64,6 +65,9 @@ export const POST = wrapRouteHandlerWithLogging<{
       if (error instanceof WorkItemNotFoundError) {
         return NextResponse.json({ error: error.message }, { status: 404 });
       }
+      if (error instanceof WorkItemsBackendNotReadyError) {
+        return NextResponse.json({ error: error.message }, { status: 503 });
+      }
       throw error;
     }
   }
@@ -95,6 +99,9 @@ export const DELETE = wrapRouteHandlerWithLogging<{
     } catch (error) {
       if (error instanceof WorkItemNotFoundError) {
         return NextResponse.json({ error: error.message }, { status: 404 });
+      }
+      if (error instanceof WorkItemsBackendNotReadyError) {
+        return NextResponse.json({ error: error.message }, { status: 503 });
       }
       throw error;
     }

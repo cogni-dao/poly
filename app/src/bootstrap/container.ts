@@ -69,7 +69,6 @@ import { PrivyOperatorWalletAdapter } from "@cogni/operator-wallet/adapters/priv
 import { noopMetrics as noopMetricsForExecutor } from "@cogni/poly-market-provider";
 import type { ScheduleControlPort } from "@cogni/scheduler-core";
 import type { WorkItemCommandPort, WorkItemQueryPort } from "@cogni/work-items";
-import { MarkdownWorkItemAdapter } from "@cogni/work-items/markdown";
 import {
 	Client as TemporalClient,
 	Connection as TemporalConnection,
@@ -119,6 +118,7 @@ import {
 } from "@/adapters/server/ai/providers";
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
 import { getServiceReadDb } from "@/adapters/server/db/drizzle.service-read-client";
+import { DoltgresPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
 import { createJobLeaderLockSession } from "@/adapters/server/db/job-leader-lock.client";
 import { ServiceDrizzlePaymentAttemptRepository } from "@/adapters/server/payments/drizzle-payment-attempt.adapter";
 import { SplitTreasurySettlementAdapter } from "@/adapters/server/treasury/split-treasury-settlement.adapter";
@@ -197,6 +197,7 @@ import type {
 	GraphRunRepository,
 	ScheduleUserPort,
 } from "@/ports/server";
+import type { WorkItemsDoltgresPort } from "@/ports/work-items-doltgres.port";
 import {
 	getDaoTreasuryAddress,
 	getEmissionsHolderAddress,
@@ -272,10 +273,12 @@ export interface Container {
 	governanceStatus: GovernanceStatusPort;
 	/** Epoch ledger store — shared by app and scheduler-worker */
 	attributionStore: AttributionStore;
-	/** Work item queries — reads from markdown files via WorkItemQueryPort */
+	/** Work item queries — deployed source of truth is the node's Doltgres hub. */
 	workItemQuery: WorkItemQueryPort;
-	/** Work item commands — writes to markdown files via WorkItemCommandPort */
+	/** Work item commands — deployed source of truth is the node's Doltgres hub. */
 	workItemCommand: WorkItemCommandPort;
+	/** Extended CRUD surface used by the authenticated work-item HTTP API. */
+	doltgresWorkItems: WorkItemsDoltgresPort;
 	/** Run event streaming — publish/subscribe via Redis Streams */
 	runStream: RunStreamPort;
 	/** Node-level event streaming — undefined when REDIS_URL not set */
@@ -337,6 +340,25 @@ export type AiAdapterDeps = {
 export type ActivityDeps = {
 	accountService: AccountService;
 };
+
+type RuntimeWorkItemAdapter = WorkItemsDoltgresPort &
+	WorkItemQueryPort &
+	WorkItemCommandPort;
+
+function createUnavailableWorkItemAdapter(): RuntimeWorkItemAdapter {
+	return new Proxy(
+		{},
+		{
+			get: () => async () => {
+				const error = new Error(
+					"Work-item hub is not configured. Set DOLTGRES_URL."
+				);
+				error.name = "DoltgresNotConfiguredError";
+				throw error;
+			},
+		}
+	) as RuntimeWorkItemAdapter;
+}
 
 // Module-level singleton
 let _container: Container | null = null;
@@ -1753,14 +1775,10 @@ function createContainer(): Container {
 	// RepoCapability for AI tools (requires COGNI_REPO_PATH)
 	const repoCapability = createRepoCapability(env);
 
-	// WorkItemCapability for AI tools (delegates to markdown adapter ports)
-	const workItemAdapter = new MarkdownWorkItemAdapter(
-		env.COGNI_REPO_ROOT ?? "/nonexistent",
-	);
-	const workItemCapability = createWorkItemCapability({
-		workItemQuery: workItemAdapter,
-		workItemCommand: workItemAdapter,
-	});
+	// Deployed work items are Dolt-backed. When the hub is unavailable, fail
+	// closed instead of silently writing ephemeral markdown inside the pod.
+	let workItemAdapter: RuntimeWorkItemAdapter =
+		createUnavailableWorkItemAdapter();
 
 	// ScheduleCapability for AI tools (reads actorUserId from ALS at invocation time)
 	const scheduleCapability = createScheduleCapability({
@@ -1788,6 +1806,7 @@ function createContainer(): Container {
 			connectionString: env.DOLTGRES_URL,
 			applicationName: `cogni_knowledge_${env.SERVICE_NAME ?? "app"}`,
 		});
+		workItemAdapter = new DoltgresPolyWorkItemAdapter(doltClient);
 		const knowledgePort = new DoltgresKnowledgeStoreAdapter({
 			sql: doltClient,
 		});
@@ -1859,6 +1878,11 @@ function createContainer(): Container {
 		knowledgeStorePort = undefined;
 		log.warn("Knowledge store not configured (DOLTGRES_URL not set)");
 	}
+
+	const workItemCapability = createWorkItemCapability({
+		workItemQuery: workItemAdapter,
+		workItemCommand: workItemAdapter,
+	});
 
 	// ToolSource with real implementations (per CAPABILITY_INJECTION)
 	const toolBindings = createToolBindings({
@@ -2031,6 +2055,7 @@ function createContainer(): Container {
 		attributionStore: new DrizzleAttributionAdapter(serviceDb, getScopeId()),
 		workItemQuery: workItemAdapter,
 		workItemCommand: workItemAdapter,
+		doltgresWorkItems: workItemAdapter,
 		runStream,
 		nodeStream,
 		get webhookRegistrations() {

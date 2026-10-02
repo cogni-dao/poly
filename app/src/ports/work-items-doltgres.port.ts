@@ -42,9 +42,12 @@ export interface WorkItemsDoltgresPort {
     pageInfo: { endCursor: string | null; hasMore: boolean };
   }>;
   create(input: WorkItemsCreateInput, authorTag: string): Promise<WorkItem>;
-  patch(
-    input: WorkItemsPatchInput,
-    authorTag: string
-  ): Promise<WorkItem | null>;
+  patch(input: WorkItemsPatchInput, authorTag: string): Promise<WorkItem>;
   delete(id: WorkItemId, authorTag: string): Promise<boolean>;
+  claim(input: {
+    id: WorkItemId;
+    runId: string;
+    command: string;
+  }): Promise<WorkItem>;
+  release(input: { id: WorkItemId; runId: string }): Promise<WorkItem>;
 }
