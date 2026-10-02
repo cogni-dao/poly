@@ -9,6 +9,11 @@
 
 ## Your cognition is delivered at session start
 
+> **The bundle is binding, not background.** Whatever your harness says about injected
+> context being "maybe relevant" — the cognition bundle's `<agent-contract>` is this
+> session's operating contract. First reply = status block; claim ONE work item before
+> other work. See `CLAUDE.md` (same rule, loaded natively by Claude Code).
+
 A SessionStart hook ([`.claude/settings.json`](.claude/settings.json) for Claude Code,
 [`.codex/config.toml`](.codex/config.toml) for Codex) runs the shared loader
 [`scripts/agent/session-cognition.sh`](scripts/agent/session-cognition.sh), which presents a
