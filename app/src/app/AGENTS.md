@@ -51,7 +51,7 @@ Next.js App Router delivery layer. UI pages and API routes that expose features 
   - Protected pages: `/chat` (via `(app)/chat/page.tsx`)
   - Infra: `/health`, `/openapi.json`, `/meta/route-manifest` (via `(infra)/*`)
   - API: `/api/auth/*`, `/api/v1/chat/completions`
-  - Node actions: `/api/internal/node-actions/poly/*` [POST] (operator-signed, action-bound assertions)
+  - Wallet recovery: `/api/v1/poly/wallet/reset-connection` [POST] (owner session; tenant derived server-side)
   - Agent discovery: `/.well-known/agent.json` [GET] — public discovery document for machine clients
 - **Files considered API:** layout.tsx, page.tsx, loading.tsx, error.tsx, api/\*\*/route.ts, (infra)/\*\*/route.ts, .well-known/\*\*/route.ts
 - **Suspense / error boundaries:** each route group exposes a
