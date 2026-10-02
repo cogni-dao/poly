@@ -170,8 +170,7 @@ export async function readCurrentWalletPositionModel(params: {
     rows.length > 0 &&
     (syncAgeMs === null ||
       syncAgeMs > POSITION_STALE_MS ||
-      cursorStatus === "partial" ||
-      cursorStatus === "error");
+      cursorStatus !== "ok");
   const warnings: WalletExecutionWarning[] = [];
   if (rows.length === 0) {
     warnings.push({
@@ -183,9 +182,9 @@ export async function readCurrentWalletPositionModel(params: {
     warnings.push({
       code: "current_positions_stale",
       message:
-        cursorStatus === "partial"
-          ? "Current positions are from a partial upstream position poll."
-          : "Current-position read model is older than the freshness window.",
+        syncAgeMs !== null && syncAgeMs > POSITION_STALE_MS
+          ? "Current-position read model is older than the 10-minute freshness window."
+          : `Current positions are unavailable because the observer cursor is ${cursorStatus ?? "missing"}.`,
     });
   }
 

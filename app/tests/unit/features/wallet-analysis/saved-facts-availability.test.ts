@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import { classifySavedFactsAvailability } from "@/features/wallet-analysis/server/wallet-analysis-service";
 
 describe("classifySavedFactsAvailability", () => {
+  const now = new Date("2026-10-02T12:05:00.000Z");
   it("distinguishes a missing observer wallet from observed-empty", () => {
     expect(
       classifySavedFactsAvailability(undefined, "data-api-positions")
@@ -32,12 +33,15 @@ describe("classifySavedFactsAvailability", () => {
             cursorStatus,
             lastSuccessAt: new Date("2026-10-02T12:00:00.000Z"),
           },
-          "data-api-positions"
+          "data-api-positions",
+          now
         )
       ).toEqual({
         kind: "source_not_ready",
         source: "data-api-positions",
         cursorStatus,
+        lastSuccessAt: new Date("2026-10-02T12:00:00.000Z"),
+        reason: "status",
       });
     }
   );
@@ -52,6 +56,25 @@ describe("classifySavedFactsAvailability", () => {
       kind: "source_not_ready",
       source: "data-api-trades",
       cursorStatus: "ok",
+      lastSuccessAt: null,
+      reason: "missing_timestamp",
+    });
+  });
+
+  it("expires a formerly successful cursor after the freshness window", () => {
+    const lastSuccessAt = new Date("2026-10-02T11:54:59.000Z");
+    expect(
+      classifySavedFactsAvailability(
+        { walletId: "wallet-1", cursorStatus: "ok", lastSuccessAt },
+        "data-api-positions",
+        now
+      )
+    ).toEqual({
+      kind: "source_not_ready",
+      source: "data-api-positions",
+      cursorStatus: "ok",
+      lastSuccessAt,
+      reason: "expired",
     });
   });
 
@@ -63,8 +86,13 @@ describe("classifySavedFactsAvailability", () => {
           cursorStatus: "ok",
           lastSuccessAt: new Date("2026-10-02T12:00:00.000Z"),
         },
-        "data-api-positions"
+        "data-api-positions",
+        now
       )
-    ).toEqual({ kind: "ready", walletId: "wallet-1" });
+    ).toEqual({
+      kind: "ready",
+      walletId: "wallet-1",
+      lastSuccessAt: new Date("2026-10-02T12:00:00.000Z"),
+    });
   });
 });

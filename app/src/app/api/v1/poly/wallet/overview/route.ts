@@ -321,6 +321,12 @@ export const GET = wrapRouteHandlerWithLogging(
                 message:
                   "No saved P/L history is available for the selected interval yet.",
               });
+            } else if (pnlRead.status === "stale") {
+              pnlHistory = [];
+              warnings.push({
+                code: "pnl_history_stale",
+                message: `Saved P/L history is older than the 10-minute freshness window (last observed ${pnlRead.observedAt ?? "unknown"}).`,
+              });
             }
           } catch (err) {
             warnings.push({

@@ -19,7 +19,7 @@ const ADDRESS = "0x1111111111111111111111111111111111111111" as const;
 
 function pnlReadDb(input: {
   walletRows: Array<{ id: string }>;
-  pnlRows?: Array<{ ts: Date; pnlUsdc: string }>;
+  pnlRows?: Array<{ ts: Date; pnlUsdc: string; observedAt: Date }>;
 }) {
   let selectNumber = 0;
   return {
@@ -37,7 +37,7 @@ function pnlReadDb(input: {
       return {
         from: () => ({
           where: () => ({
-            orderBy: async () => input.pnlRows ?? [],
+            orderBy: () => ({ limit: async () => input.pnlRows ?? [] }),
           }),
         }),
       };
@@ -76,18 +76,41 @@ describe("getTradingWalletPnlHistoryRead", () => {
     const ts = new Date("2026-10-02T12:00:00.000Z");
     const db = pnlReadDb({
       walletRows: [{ id: "wallet-1" }],
-      pnlRows: [{ ts, pnlUsdc: "0" }],
+      pnlRows: [{ ts, pnlUsdc: "0", observedAt: ts }],
     });
 
     const result = await getTradingWalletPnlHistoryRead({
       db: db as never,
       address: ADDRESS,
       interval: "ALL",
+      capturedAt: "2026-10-02T12:05:00.000Z",
     });
 
     expect(result).toEqual({
       points: [{ ts: ts.toISOString(), pnl: 0 }],
       status: "available",
+      observedAt: ts.toISOString(),
+    });
+  });
+
+  it("does not expose points whose ingestion observation is stale", async () => {
+    const ts = new Date("2026-10-02T11:00:00.000Z");
+    const db = pnlReadDb({
+      walletRows: [{ id: "wallet-1" }],
+      pnlRows: [{ ts, pnlUsdc: "4.25", observedAt: ts }],
+    });
+
+    const result = await getTradingWalletPnlHistoryRead({
+      db: db as never,
+      address: ADDRESS,
+      interval: "ALL",
+      capturedAt: "2026-10-02T12:05:00.000Z",
+    });
+
+    expect(result).toEqual({
+      points: [],
+      status: "stale",
+      observedAt: ts.toISOString(),
     });
   });
 });

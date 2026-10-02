@@ -146,13 +146,18 @@ export type SliceResult<T> =
 type SavedFactsSource = "data-api-trades" | "data-api-positions";
 
 export type SavedFactsAvailability =
-  | { kind: "ready"; walletId: string }
+  | { kind: "ready"; walletId: string; lastSuccessAt: Date }
   | { kind: "wallet_missing" }
   | {
       kind: "source_not_ready";
       source: SavedFactsSource;
       cursorStatus: string | null;
+      lastSuccessAt: Date | null;
+      reason: "status" | "missing_timestamp" | "expired";
     };
+
+/** Same bounded freshness budget used by the tenant current-position model. */
+export const SAVED_FACTS_FRESHNESS_MS = 10 * 60_000;
 
 export interface SavedFactsAvailabilityRow {
   walletId: string;
@@ -163,7 +168,8 @@ export interface SavedFactsAvailabilityRow {
 /** Pure classification seam used by the bounded DB reader below. */
 export function classifySavedFactsAvailability(
   row: SavedFactsAvailabilityRow | undefined,
-  source: SavedFactsSource
+  source: SavedFactsSource,
+  now = new Date()
 ): SavedFactsAvailability {
   if (!row) return { kind: "wallet_missing" };
   if (row.cursorStatus !== "ok" || row.lastSuccessAt === null) {
@@ -171,9 +177,24 @@ export function classifySavedFactsAvailability(
       kind: "source_not_ready",
       source,
       cursorStatus: row.cursorStatus,
+      lastSuccessAt: row.lastSuccessAt,
+      reason: row.lastSuccessAt === null ? "missing_timestamp" : "status",
     };
   }
-  return { kind: "ready", walletId: row.walletId };
+  if (now.getTime() - row.lastSuccessAt.getTime() > SAVED_FACTS_FRESHNESS_MS) {
+    return {
+      kind: "source_not_ready",
+      source,
+      cursorStatus: row.cursorStatus,
+      lastSuccessAt: row.lastSuccessAt,
+      reason: "expired",
+    };
+  }
+  return {
+    kind: "ready",
+    walletId: row.walletId,
+    lastSuccessAt: row.lastSuccessAt,
+  };
 }
 
 /**
@@ -219,24 +240,26 @@ function savedFactsWarning(
   slice: WalletAnalysisWarning["slice"],
   availability: Exclude<SavedFactsAvailability, { kind: "ready" }>
 ): SliceResult<never> {
+  const issue = savedFactsIssue(availability);
+  return { kind: "warn", warning: { slice, ...issue } };
+}
+
+function savedFactsIssue(
+  availability: Exclude<SavedFactsAvailability, { kind: "ready" }>
+): WalletExecutionWarning {
   if (availability.kind === "wallet_missing") {
     return {
-      kind: "warn",
-      warning: {
-        slice,
-        code: "wallet_not_observed",
-        message:
-          "This wallet is not enrolled in the active saved-facts observer; empty data would not be authoritative.",
-      },
+      code: "wallet_not_observed",
+      message:
+        "This wallet is not enrolled in the active saved-facts observer; empty data would not be authoritative.",
     };
   }
   return {
-    kind: "warn",
-    warning: {
-      slice,
-      code: "saved_facts_not_ready",
-      message: `${availability.source} has not completed successfully for this wallet (status=${availability.cursorStatus ?? "missing"}).`,
-    },
+    code: "saved_facts_not_ready",
+    message:
+      availability.reason === "expired"
+        ? `${availability.source} saved facts are older than the 10-minute freshness window (last success ${availability.lastSuccessAt?.toISOString() ?? "unknown"}).`
+        : `${availability.source} has not completed successfully for this wallet (status=${availability.cursorStatus ?? "missing"}).`,
   };
 }
 
@@ -328,7 +351,7 @@ export async function getTradesSlice(
         recent,
         dailyCounts,
         topMarkets,
-        computedAt: new Date().toISOString(),
+        computedAt: availability.lastSuccessAt.toISOString(),
       },
     };
   } catch (err) {
@@ -437,7 +460,12 @@ export async function getSnapshotSlice(
           : 0,
         topMarkets: [...m.topMarkets],
         dailyCounts: m.dailyCounts.map((d) => ({ day: d.day, n: d.n })),
-        computedAt: new Date().toISOString(),
+        computedAt: new Date(
+          Math.min(
+            tradeAvailability.lastSuccessAt.getTime(),
+            positionAvailability.lastSuccessAt.getTime()
+          )
+        ).toISOString(),
         // task.0333 swaps this for a Dolt read; null is a fine v0 default.
         hypothesisMd: null,
       },
@@ -532,7 +560,7 @@ export async function getDistributionsSlice(
         topEvents: [...summary.topEvents],
         pendingShare: summary.pendingShare,
         quantiles: summary.quantiles,
-        computedAt: new Date().toISOString(),
+        computedAt: availability.lastSuccessAt.toISOString(),
       },
     };
   } catch (err) {
@@ -1183,7 +1211,7 @@ export async function getBalanceSlice(
         positions: positionsValue,
         total: positionsValue,
         isOperator: false,
-        computedAt: new Date().toISOString(),
+        computedAt: availability.lastSuccessAt.toISOString(),
       },
     };
   } catch (err) {
@@ -1246,25 +1274,30 @@ export async function getPnlSlice(
   addr: string,
   interval: PolyWalletOverviewInterval
 ): Promise<SliceResult<WalletAnalysisPnl>> {
-  const computedAt = new Date().toISOString();
+  const requestedAt = new Date().toISOString();
   try {
     const pnlRead = await getTradingWalletPnlHistoryRead({
       db,
       address: addr as `0x${string}`,
       interval,
-      capturedAt: computedAt,
+      capturedAt: requestedAt,
     });
     if (pnlRead.status === "wallet_missing") {
       return savedFactsWarning("pnl", { kind: "wallet_missing" });
     }
-    if (pnlRead.status === "no_history") {
+    if (pnlRead.status === "no_history" || pnlRead.status === "stale") {
       return {
         kind: "warn",
         warning: {
           slice: "pnl",
-          code: "pnl_history_not_recorded",
+          code:
+            pnlRead.status === "stale"
+              ? "pnl_history_stale"
+              : "pnl_history_not_recorded",
           message:
-            "This wallet is enrolled, but no saved P/L points exist for the selected interval.",
+            pnlRead.status === "stale"
+              ? `Saved P/L facts are older than the 10-minute freshness window (last observed ${pnlRead.observedAt ?? "unknown"}).`
+              : "This wallet is enrolled, but no saved P/L points exist for the selected interval.",
         },
       };
     }
@@ -1273,7 +1306,7 @@ export async function getPnlSlice(
       value: {
         interval,
         history: pnlRead.points,
-        computedAt,
+        computedAt: pnlRead.observedAt ?? requestedAt,
       },
     };
   } catch (err) {
@@ -1296,9 +1329,49 @@ export async function getExecutionSlice(
     assets?: readonly string[];
   } = {}
 ): Promise<PolyWalletExecutionOutput> {
-  const capturedAt = new Date().toISOString();
   const warnings: WalletExecutionWarning[] = [];
   const includeTrades = opts.includeTrades ?? true;
+  const requestedAt = new Date();
+
+  const availabilityResults = await Promise.allSettled([
+    readSavedFactsAvailability(db, addr, "data-api-positions"),
+    includeTrades
+      ? readSavedFactsAvailability(db, addr, "data-api-trades")
+      : Promise.resolve(null),
+  ]);
+  for (const result of availabilityResults) {
+    if (result.status === "rejected") {
+      warnings.push({
+        code: "saved_facts_availability_unavailable",
+        message:
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason),
+      });
+    } else if (result.value !== null && result.value.kind !== "ready") {
+      warnings.push(savedFactsIssue(result.value));
+    }
+  }
+  const readySources = availabilityResults.flatMap((result) =>
+    result.status === "fulfilled" && result.value?.kind === "ready"
+      ? [result.value]
+      : []
+  );
+  if (warnings.length > 0) {
+    return {
+      address: addr.toLowerCase() as PolyWalletExecutionOutput["address"],
+      freshness: "read_model",
+      capturedAt: requestedAt.toISOString(),
+      dailyTradeCounts: [],
+      live_positions: [],
+      market_groups: [],
+      closed_positions: [],
+      warnings,
+    };
+  }
+  const capturedAt = new Date(
+    Math.min(...readySources.map((source) => source.lastSuccessAt.getTime()))
+  ).toISOString();
 
   const [positionsResult, tradesResult] = await Promise.allSettled([
     coalesce(
@@ -1331,7 +1404,7 @@ export async function getExecutionSlice(
   }
   if (tradesResult.status === "rejected") {
     warnings.push({
-      code: "trades_unavailable",
+      code: "daily_trade_counts_unavailable",
       message:
         tradesResult.reason instanceof Error
           ? tradesResult.reason.message
@@ -1419,7 +1492,7 @@ export async function getExecutionSlice(
 
   return {
     address: addr.toLowerCase() as PolyWalletExecutionOutput["address"],
-    freshness: "live",
+    freshness: "read_model",
     capturedAt,
     dailyTradeCounts: dailyTradeCountsResult,
     live_positions: liveForResponse.map(toExecutionContractPosition),

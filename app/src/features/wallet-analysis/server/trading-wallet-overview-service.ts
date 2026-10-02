@@ -37,7 +37,7 @@ import type {
   PolyWalletOverviewInterval,
   PolyWalletOverviewPnlPoint,
 } from "@cogni/poly-node-contracts";
-import { and, asc, eq, gte, isNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lt, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { dedupeByKey } from "./observation-helpers";
@@ -52,6 +52,8 @@ const DAY_FIDELITY: Fidelity = "1d";
 
 /** `1h` rows older than this are pruned by the writer's tick. */
 const HOUR_FIDELITY_RETENTION_DAYS = 35;
+const PNL_READ_LIMIT = 2_000;
+const PNL_FRESHNESS_MS = 10 * 60_000;
 
 let userPnlClient: PolymarketUserPnlClient | undefined;
 
@@ -69,11 +71,13 @@ export function __setTradingWalletOverviewUserPnlClientForTests(
 export type TradingWalletPnlHistoryStatus =
   | "available"
   | "no_history"
+  | "stale"
   | "wallet_missing";
 
 export interface TradingWalletPnlHistoryRead {
   points: PolyWalletOverviewPnlPoint[];
   status: TradingWalletPnlHistoryStatus;
+  observedAt?: string;
 }
 
 /**
@@ -118,6 +122,7 @@ export async function getTradingWalletPnlHistoryRead(input: {
     .select({
       ts: polyTraderUserPnlPoints.ts,
       pnlUsdc: polyTraderUserPnlPoints.pnlUsdc,
+      observedAt: polyTraderUserPnlPoints.observedAt,
     })
     .from(polyTraderUserPnlPoints)
     .where(
@@ -127,7 +132,15 @@ export async function getTradingWalletPnlHistoryRead(input: {
         windowStart ? gte(polyTraderUserPnlPoints.ts, windowStart) : undefined
       )
     )
-    .orderBy(asc(polyTraderUserPnlPoints.ts));
+    .orderBy(desc(polyTraderUserPnlPoints.ts))
+    .limit(PNL_READ_LIMIT);
+
+  rows.reverse();
+  const latestObservedAt = rows.reduce<Date | null>(
+    (latest, row) =>
+      latest === null || row.observedAt > latest ? row.observedAt : latest,
+    null
+  );
 
   const points: PolymarketUserPnlPoint[] = rows.map((row) => ({
     t: Math.floor(row.ts.getTime() / 1_000),
@@ -139,10 +152,17 @@ export async function getTradingWalletPnlHistoryRead(input: {
       pnl: roundUsd(point.p),
     })
   );
-  return {
-    points: history,
-    status: history.length > 0 ? "available" : "no_history",
-  };
+  if (history.length === 0 || latestObservedAt === null) {
+    return { points: [], status: "no_history" };
+  }
+  const observedAt = latestObservedAt.toISOString();
+  if (
+    new Date(capturedAt).getTime() - latestObservedAt.getTime() >
+    PNL_FRESHNESS_MS
+  ) {
+    return { points: [], status: "stale", observedAt };
+  }
+  return { points: history, status: "available", observedAt };
 }
 
 /**
