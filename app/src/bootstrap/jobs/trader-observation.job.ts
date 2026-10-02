@@ -61,9 +61,11 @@ export interface TraderObservationJobDeps {
   userPnlClient?: PolymarketUserPnlClient;
   /**
    * Bound to `PolyTraderWalletPort.listActiveTradingAddresses` by the
-   * container — see OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM in the service.
+   * container when a wallet adapter exists on this lane. Omitted otherwise —
+   * see OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM in the service: target
+   * observation must not die because the tenant wallet plane is absent.
    */
-  listActiveTradingAddresses: TenantTradingAddressReader;
+  listActiveTradingAddresses?: TenantTradingAddressReader | undefined;
   logger: LoggerPort;
   metrics: MetricsPort;
   pollMs?: number;

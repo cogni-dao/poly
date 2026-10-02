@@ -1352,15 +1352,40 @@ function createContainer(): Container {
 			// OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM — the wallet port is the single
 			// resolver of a tenant's trading address, so the observer enrolls
 			// exactly the wallets the executor signs from.
-			const observationWalletPort = getPolyTraderWalletAdapter(log);
+			//
+			// Resolved defensively: this block is documented above as
+			// INDEPENDENT of copy-trade execution credentials, because it also
+			// observes the copy TARGETS. `getPolyTraderWalletAdapter` throws when
+			// Privy/AEAD config is absent, and letting that escape would stop
+			// RN1/swisstony observation on any lane without wallet creds — a
+			// bigger outage than the tenant-enrollment gap it is here to close.
+			let observationWalletPort: ReturnType<
+				typeof getPolyTraderWalletAdapter
+			> | null = null;
+			try {
+				observationWalletPort = getPolyTraderWalletAdapter(log);
+			} catch (err: unknown) {
+				log.warn(
+					{
+						event: "poly.trader.observe",
+						phase: "wallet_port_unavailable",
+						err: err instanceof Error ? err.message : String(err),
+					},
+					"trader observation: no wallet port on this lane — target observation continues, tenant enrollment skipped",
+				);
+			}
 			const traderObservationStop = startTraderObservationJob({
 				db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
 					Record<string, unknown>
 				>,
 				client: new PolymarketDataApiClient(),
 				userPnlClient: new PolymarketUserPnlClient(),
-				listActiveTradingAddresses: () =>
-					observationWalletPort.listActiveTradingAddresses(),
+				...(observationWalletPort === null
+					? {}
+					: {
+							listActiveTradingAddresses: () =>
+								observationWalletPort.listActiveTradingAddresses(),
+						}),
 				logger: observerLogger,
 				metrics: noopMetricsForObservation,
 			});

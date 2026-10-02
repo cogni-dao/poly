@@ -21,6 +21,9 @@
  *     the one resolution; two derivations drifted the observer onto the Privy
  *     signer EOA while trading ran from the V2 funder, so the position read
  *     model found no row and the dashboard reported a funded wallet as empty.
+ *     The reader is OPTIONAL: this tick also observes the copy TARGETS, which
+ *     have nothing to do with tenant creds, so it must never be coupled to the
+ *     wallet plane. Absent → enrollment is skipped, never run with an empty set.
  *   - ENROLLMENT_FAILURE_IS_NOT_A_WIPE: the reader runs before any write, so a
  *     failed read enrolls and retires nothing. The tick logs
  *     `sync_tenant_wallets_failed`, counts one `error`, and still observes the
@@ -124,12 +127,13 @@ export interface TraderObservationTickDeps {
   client: PolymarketDataApiClient;
   userPnlClient?: PolymarketUserPnlClient;
   /**
-   * Tenant trading wallets to enroll for observation. Required — the tick
-   * cannot enroll what it cannot resolve, and defaulting it to a local
-   * `poly_wallet_connections` read is exactly the second derivation this
-   * invariant exists to forbid.
+   * Tenant trading wallets to enroll for observation. OPTIONAL because this
+   * tick must never depend on the wallet plane: it also observes the copy
+   * TARGETS (RN1, swisstony), which have nothing to do with tenant creds.
+   * Absent (no wallet adapter on this lane) → enrollment is SKIPPED, not run
+   * with an empty set, which would retire every enrolled wallet.
    */
-  listActiveTradingAddresses: TenantTradingAddressReader;
+  listActiveTradingAddresses?: TenantTradingAddressReader | undefined;
   logger: LoggerPort;
   metrics: MetricsPort;
   tradePageLimit?: number;
@@ -309,23 +313,34 @@ export async function runTraderObservationTick(
   // observation entirely — the same blank dashboard, by a different route.
   // Audible, never silent: its own log phase plus the tick's `errors` count.
   let syncTenantWalletsFailed = false;
-  try {
-    await withStatementTimeout(
-      deps.db,
-      OBSERVATION_STATEMENT_TIMEOUT_MS,
-      async (tx) =>
-        await syncActiveTenantWallets(tx, deps.listActiveTradingAddresses)
-    );
-  } catch (err: unknown) {
-    syncTenantWalletsFailed = true;
-    log.error(
+  const tenantAddressReader = deps.listActiveTradingAddresses;
+  if (tenantAddressReader === undefined) {
+    log.info(
       {
         event: "poly.trader.observe",
-        phase: "sync_tenant_wallets_failed",
-        err: err instanceof Error ? err.message : String(err),
+        phase: "sync_tenant_wallets_skipped",
+        reason: "no_wallet_port_on_this_lane",
       },
-      "trader observation: tenant wallet enrollment failed; observing the already-enrolled set"
+      "trader observation: no wallet port; skipping tenant enrollment and observing the already-enrolled set"
     );
+  } else {
+    try {
+      await withStatementTimeout(
+        deps.db,
+        OBSERVATION_STATEMENT_TIMEOUT_MS,
+        async (tx) => await syncActiveTenantWallets(tx, tenantAddressReader)
+      );
+    } catch (err: unknown) {
+      syncTenantWalletsFailed = true;
+      log.error(
+        {
+          event: "poly.trader.observe",
+          phase: "sync_tenant_wallets_failed",
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "trader observation: tenant wallet enrollment failed; observing the already-enrolled set"
+      );
+    }
   }
   stage("select_wallets");
   const wallets = await withStatementTimeout(
@@ -578,7 +593,15 @@ export async function syncActiveTenantWallets(
   listActiveTradingAddresses: TenantTradingAddressReader
 ): Promise<void> {
   const now = new Date();
-  const observedAddresses = await listActiveTradingAddresses();
+  // `poly_trader_wallets.wallet_address` is a lowercase key — the read model
+  // matches it with `w.wallet_address = lower($1)`. Normalising here (not
+  // trusting the reader's casing) is column hygiene, not a second derivation
+  // of WHICH address: a checksummed row would silently never match again.
+  const observedAddresses = [
+    ...new Set(
+      (await listActiveTradingAddresses()).map((addr) => addr.toLowerCase())
+    ),
+  ];
   if (observedAddresses.length === 0) {
     await disableMissingTenantWallets(db, [], now);
     return;
