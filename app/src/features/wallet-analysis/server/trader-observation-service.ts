@@ -14,6 +14,11 @@
  *   - ROLLUPS_FOLLOW_FILLS (task.research-rollup-read-models): after each wallet's fills upsert, the tick folds new fills into `poly_trader_fill_rollups_daily` via `accumulateFillRollups` (bounded batches, `skipIfLocked` so a running boot backfill wins the cursor). DB-only; failures log + count `errors` without failing the wallet.
  *   - PNL_INGEST_INDEPENDENT: per-wallet user-pnl ingest runs after observation regardless of observe outcome; failures bump `errors` and continue. Retention prune runs once per tick after all wallets.
  *   - SNAPSHOTS_ARE_POSITION_CHANGES: `poly_trader_position_snapshots` rows are written only when a position-defining field changes (see `hashPosition`); mark-to-market history lives in `poly_market_price_history` + `poly_trader_user_pnl_points`, live marks in `poly_trader_current_positions`. Retention (`pruneOldPositionSnapshots`) drops >35d rows in bounded batches but always keeps each group's newest row.
+ *   - OBSERVE_THE_FUNDER: tenant enrollment reads `funder_address ?? address`
+ *     off `poly_wallet_connections` — byte-identical to
+ *     `PolyTraderWalletPort.getAddress()`, which is how every dashboard and
+ *     research read resolves a tenant's wallet. V2 connections split signer
+ *     from funder; enrolling the signer observes a wallet that never trades.
  *   - COGNI_POSITION_ABSENCE_NEEDS_AUTHORITY: complete Data API polls do not
  *     deactivate Cogni-wallet current-position rows unless an injected
  *     authority classifies the missing row terminal.
@@ -520,15 +525,39 @@ export async function refreshCurrentPositionsForWallet(params: {
   });
 }
 
-async function syncActiveTenantWallets(db: Db): Promise<void> {
+/**
+ * Enroll every unrevoked tenant connection as an observed `cogni_wallet` and
+ * retire the rows that no longer correspond to an active connection.
+ *
+ * Exported for the OBSERVE_THE_FUNDER proof — `runTraderObservationTick` is
+ * the only production caller.
+ */
+export async function syncActiveTenantWallets(db: Db): Promise<void> {
   const now = new Date();
   const activeConnections = await db
     .select({
       address: polyWalletConnections.address,
+      funderAddress: polyWalletConnections.funderAddress,
     })
     .from(polyWalletConnections)
     .where(isNull(polyWalletConnections.revokedAt));
-  if (activeConnections.length === 0) {
+  // OBSERVE_THE_FUNDER: enroll the address that actually holds positions on
+  // Polymarket, not the Privy signer EOA. V2 connections split the two
+  // (`funder_address` is the deterministic trading wallet; `address` only
+  // signs), and every dashboard/research read resolves the wallet through
+  // `PolyTraderWalletPort.getAddress()` — which returns `funder_address ??
+  // address`. Enrolling `address` alone made the observer poll a wallet that
+  // never trades, so `readCurrentWalletPositionModel` found no row and the
+  // dashboard reported a funded wallet as "—" positions / cash-only total.
+  // Mirror `getAddress()`'s coalesce exactly so the two can never diverge.
+  const observedAddresses = [
+    ...new Set(
+      activeConnections.map((connection) =>
+        (connection.funderAddress ?? connection.address).toLowerCase()
+      )
+    ),
+  ];
+  if (observedAddresses.length === 0) {
     await disableMissingTenantWallets(db, [], now);
     return;
   }
@@ -536,8 +565,8 @@ async function syncActiveTenantWallets(db: Db): Promise<void> {
   await db
     .insert(polyTraderWallets)
     .values(
-      activeConnections.map((connection) => ({
-        walletAddress: connection.address.toLowerCase(),
+      observedAddresses.map((walletAddress) => ({
+        walletAddress,
         kind: "cogni_wallet",
         label: TENANT_TRADING_WALLET_LABEL,
         activeForResearch: true,
@@ -555,11 +584,9 @@ async function syncActiveTenantWallets(db: Db): Promise<void> {
         updatedAt: now,
       },
     });
-  await disableMissingTenantWallets(
-    db,
-    activeConnections.map((connection) => connection.address.toLowerCase()),
-    now
-  );
+  // Stale signer-EOA rows enrolled by the pre-V2 behavior fall out of this
+  // list and get deactivated here — the sweep that retires them.
+  await disableMissingTenantWallets(db, observedAddresses, now);
 }
 
 async function upsertCogniObservedWallet(
