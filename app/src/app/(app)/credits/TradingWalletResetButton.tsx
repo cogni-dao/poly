@@ -21,6 +21,10 @@ function blockedMessage(
       return "Balances could not be verified. Reset is blocked to protect your funds; retry shortly.";
     case "unsettled_orders":
       return "Open or pending orders still exist. Cancel or settle them before resetting.";
+    case "open_positions":
+      return "This wallet still owns an open or redeemable position. Close or redeem it before resetting.";
+    case "copy_targets_disabled":
+      return "Copy targets were disabled. Wait one minute for in-flight activity to settle, then retry the reset.";
     default:
       return "The wallet connection could not be reset.";
   }

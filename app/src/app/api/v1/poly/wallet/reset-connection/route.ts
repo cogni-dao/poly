@@ -3,57 +3,40 @@
 
 /**
  * Module: `@app/api/v1/poly/wallet/reset-connection`
- * Purpose: Let an authenticated owner safely reset their own Polymarket wallet
- *   connection before re-provisioning through the normal product UI.
- * Scope: Session-authenticated POST. Derives the billing account from the
- *   authenticated user, delegates revoke, and tombstones copy targets.
+ * Purpose: Let an authenticated owner safely reset their own empty, idle
+ *   Polymarket wallet connection before normal UI reprovisioning.
+ * Scope: Auth, contract mapping, tenant derivation, and feature invocation.
  * Invariants:
- *   - TENANT_FROM_SESSION: billing account comes only from the authenticated
- *     user. No tenant identifier crosses the wire.
- *   - NO_STRANDED_FUNDS: refuses while the Deposit Wallet holds USDC.e / pUSD
- *     / POL. An ERRORED balance read always blocks reset.
- *   - NO_UNSETTLED_ORDERS: refuses while any mirror fill is pending | open |
- *     partial, so a revoke cannot orphan a resting CLOB order.
- *   - REVOKE_NEVER_DELETES: history, the Privy wallet, and the SIWE/user
- *     identity binding are all preserved. `revokedByUserId` is the connection's
- *     authenticated session user — never an operator or caller-supplied id.
- *   - NO_FUND_MOVEMENT: this route never transfers, wraps, or withdraws.
- *   - SINGLE_TENANT_ONLY: the route can address only the caller's billing
- *     account. There is no "reset all" or account selector.
- * Side-effects: DB writes (connection + grants revoke, copy-target tombstone),
- *   process-local executor cache invalidation. Reads Polygon for balances.
- * Links: docs/spec/poly-tenant-and-collateral.md, work/items/bug.5310
- * @internal
+ *   - TENANT_FROM_SESSION: no tenant identifier crosses the wire.
+ *   - NO_FUND_MOVEMENT: the feature only revokes; it never transfers assets.
+ *   - FAIL_CLOSED: unreadable balances, funds, positions, orders, or active
+ *     copy targets prevent an immediate revoke.
+ * Side-effects: Delegates tenant-scoped DB and Polygon reads plus revoke.
+ * Links: docs/spec/poly-tenant-and-collateral.md, task.5167
+ * @public
  */
 
-import {
-  polyCopyTradeFills,
-  polyCopyTradeTargets,
-  polyWalletConnections,
-  polyWalletGrants,
-} from "@cogni/poly-db-schema";
+import { toUserId, userActor } from "@cogni/ids";
 import {
   type PolyWalletResetConnectionOutput,
   polyWalletResetConnectionOperation,
 } from "@cogni/poly-node-contracts";
-import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
-import { getContainer, resolveServiceDb } from "@/bootstrap/container";
+import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import {
   checkConnectRateLimit,
+  createPolyWalletResetStateAdapter,
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
+import { resetWalletConnection } from "@/features/wallet-recovery/reset-wallet-connection";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-/** Canonical OrderStatus values that mean "still resting at the CLOB". */
-const UNSETTLED_STATUSES = ["pending", "open", "partial"] as const;
 
 async function parseBody(request: Request): Promise<unknown> {
   try {
@@ -74,20 +57,22 @@ export const POST = wrapRouteHandlerWithLogging(
       await parseBody(request)
     );
     if (!parsed.success) {
-      return NextResponse.json({ error: "invalid_reset_request" }, { status: 400 });
+      return NextResponse.json(
+        { error: "invalid_reset_request" },
+        { status: 400 }
+      );
     }
 
-    const start = performance.now();
-    const serviceDb = resolveServiceDb();
+    const startedAt = performance.now();
     const container = getContainer();
     const billingAccountId = await resolveBillingAccountId(
       container.serviceAccountService,
       sessionUser.id
     );
 
-    let adapter: ReturnType<typeof getPolyTraderWalletAdapter>;
+    let wallet: ReturnType<typeof getPolyTraderWalletAdapter>;
     try {
-      adapter = getPolyTraderWalletAdapter(ctx.log);
+      wallet = getPolyTraderWalletAdapter(ctx.log);
     } catch (error) {
       if (error instanceof WalletAdapterUnconfiguredError) {
         return NextResponse.json(
@@ -98,214 +83,71 @@ export const POST = wrapRouteHandlerWithLogging(
       throw error;
     }
 
-    const emit = (
-      payload: PolyWalletResetConnectionOutput,
-      status: number
-    ): NextResponse => {
-      logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_RESET_CONNECTION_COMPLETE, {
-        reqId: ctx.reqId,
-        routeId: ctx.routeId,
-        status,
-        durationMs: Math.round(performance.now() - start),
-        outcome: payload.outcome === "reset" ? "success" : "skipped",
-        billing_account_id: billingAccountId,
-        user_id: sessionUser.id,
-        reset_outcome: payload.outcome,
-        ...(payload.blocked_reason
-          ? { errorCode: payload.blocked_reason }
-          : {}),
-        unsettled_fill_count: payload.unsettled_fill_count,
-        grants_revoked_count: payload.grants_revoked_count,
-        targets_disabled_count: payload.targets_disabled_count,
-      });
-      return NextResponse.json(
-        polyWalletResetConnectionOperation.output.parse(payload),
-        { status }
-      );
-    };
-
-    // --- Inventory the active connection (read-only) -----------------------
-    const [active] = await serviceDb
-      .select({
-        id: polyWalletConnections.id,
-        address: polyWalletConnections.address,
-        funderAddress: polyWalletConnections.funderAddress,
-      })
-      .from(polyWalletConnections)
-      .where(
-        and(
-          eq(polyWalletConnections.billingAccountId, billingAccountId),
-          isNull(polyWalletConnections.revokedAt)
-        )
-      )
-      .limit(1);
-
-    const emptyBalances = {
-      usdc_e: null,
-      pusd: null,
-      pol: null,
-      read_errors: [] as string[],
-    };
-
-    if (!active) {
-      const rateLimit = await checkConnectRateLimit(billingAccountId);
-      return emit(
-        {
-          billing_account_id: billingAccountId,
-          outcome: "no_active_connection",
-          blocked_reason: null,
-          connection: null,
-          balances: emptyBalances,
-          unsettled_fill_count: 0,
-          grants_revoked_count: 0,
-          targets_disabled_count: 0,
-          reprovision_available_in_seconds: rateLimit.retryAfterSeconds,
-        },
-        200
-      );
-    }
-
-    const connectionSummary = {
-      connection_id: active.id,
-      funder_address: active.funderAddress,
-      signer_address: active.address,
-      revoked_at: null as string | null,
-    };
-
-    // --- Precondition: no unsettled mirror orders -------------------------
-    const [unsettledRow] = await serviceDb
-      .select({ c: count() })
-      .from(polyCopyTradeFills)
-      .where(
-        and(
-          eq(polyCopyTradeFills.billingAccountId, billingAccountId),
-          inArray(polyCopyTradeFills.status, [...UNSETTLED_STATUSES])
-        )
-      );
-    const unsettledFillCount = Number(unsettledRow?.c ?? 0);
-
-    // --- Precondition: no recoverable balance left behind -----------------
-    const balancesRead = await adapter.getBalances(billingAccountId);
-    const balances = {
-      usdc_e: balancesRead?.usdcE ?? null,
-      pusd: balancesRead?.pusd ?? null,
-      pol: balancesRead?.pol ?? null,
-      read_errors: [...(balancesRead?.errors ?? [])],
-    };
-    // Fail-closed: an unreadable balance is NOT a zero balance.
-    const balanceUnreadable =
-      balancesRead === null ||
-      balances.read_errors.length > 0 ||
-      balances.usdc_e === null ||
-      balances.pusd === null ||
-      balances.pol === null;
-    const hasResidualBalance =
-      (balances.usdc_e ?? 0) > 0 ||
-      (balances.pusd ?? 0) > 0 ||
-      (balances.pol ?? 0) > 0;
-
-    if (unsettledFillCount > 0) {
-      return emit(
-        {
-          billing_account_id: billingAccountId,
-          outcome: "blocked",
-          blocked_reason: "unsettled_orders",
-          connection: connectionSummary,
-          balances,
-          unsettled_fill_count: unsettledFillCount,
-          grants_revoked_count: 0,
-          targets_disabled_count: 0,
-          reprovision_available_in_seconds: 0,
-        },
-        409
-      );
-    }
-
-    if (balanceUnreadable) {
-      return emit(
-        {
-          billing_account_id: billingAccountId,
-          outcome: "blocked",
-          blocked_reason: "balance_read_failed",
-          connection: connectionSummary,
-          balances,
-          unsettled_fill_count: unsettledFillCount,
-          grants_revoked_count: 0,
-          targets_disabled_count: 0,
-          reprovision_available_in_seconds: 0,
-        },
-        409
-      );
-    }
-
-    if (hasResidualBalance) {
-      return emit(
-        {
-          billing_account_id: billingAccountId,
-          outcome: "blocked",
-          blocked_reason: "residual_balance",
-          connection: connectionSummary,
-          balances,
-          unsettled_fill_count: unsettledFillCount,
-          grants_revoked_count: 0,
-          targets_disabled_count: 0,
-          reprovision_available_in_seconds: 0,
-        },
-        409
-      );
-    }
-
-    // --- Mutate: disable targets, then revoke connection + grants ---------
-    // Targets first: a disabled target cannot enqueue new mirror work while
-    // the revoke lands.
-    const disabledTargets = await serviceDb
-      .update(polyCopyTradeTargets)
-      .set({ disabledAt: new Date() })
-      .where(
-        and(
-          eq(polyCopyTradeTargets.billingAccountId, billingAccountId),
-          isNull(polyCopyTradeTargets.disabledAt)
-        )
-      )
-      .returning({ id: polyCopyTradeTargets.id });
-
-    const [grantRow] = await serviceDb
-      .select({ c: count() })
-      .from(polyWalletGrants)
-      .where(
-        and(
-          eq(polyWalletGrants.billingAccountId, billingAccountId),
-          isNull(polyWalletGrants.revokedAt)
-        )
-      );
-    const activeGrantCount = Number(grantRow?.c ?? 0);
-
-    // Transactional: flips revokedAt, clears the readiness stamp in the same
-    // transaction (APPROVALS_BEFORE_PLACE cannot leak across a revoke), and
-    // cascades the grants.
-    await adapter.revoke({
-      billingAccountId,
-      revokedByUserId: sessionUser.id,
-    });
-    container.invalidatePolyTradeExecutorFor(billingAccountId);
-
-    const rateLimit = await checkConnectRateLimit(billingAccountId);
-    return emit(
+    const result = await resetWalletConnection(
       {
-        billing_account_id: billingAccountId,
-        outcome: "reset",
-        blocked_reason: null,
-        connection: {
-          ...connectionSummary,
-          revoked_at: new Date().toISOString(),
-        },
-        balances,
-        unsettled_fill_count: 0,
-        grants_revoked_count: activeGrantCount,
-        targets_disabled_count: disabledTargets.length,
-        reprovision_available_in_seconds: rateLimit.retryAfterSeconds,
+        state: createPolyWalletResetStateAdapter(),
+        wallet,
+        getReprovisionWaitSeconds: async (accountId) =>
+          (await checkConnectRateLimit(accountId)).retryAfterSeconds,
+        now: () => new Date(),
       },
-      200
+      {
+        actorId: userActor(toUserId(sessionUser.id)),
+        userId: sessionUser.id,
+        billingAccountId,
+      }
+    );
+
+    if (result.outcome === "reset") {
+      container.invalidatePolyTradeExecutorFor(billingAccountId);
+    }
+
+    const payload: PolyWalletResetConnectionOutput = {
+      billing_account_id: result.billingAccountId,
+      outcome: result.outcome,
+      blocked_reason: result.blockedReason,
+      connection: result.connection
+        ? {
+            connection_id: result.connection.connectionId,
+            funder_address: result.connection.funderAddress,
+            signer_address: result.connection.signerAddress,
+            revoked_at: result.connection.revokedAt?.toISOString() ?? null,
+          }
+        : null,
+      balances: {
+        usdc_e: result.balances.usdcE,
+        pusd: result.balances.pusd,
+        pol: result.balances.pol,
+        read_errors: [...result.balances.readErrors],
+      },
+      unsettled_fill_count: result.unsettledOrderCount,
+      open_position_count: result.openPositionCount,
+      grants_revoked_count: result.grantsRevokedCount,
+      targets_disabled_count: result.targetsDisabledCount,
+      reprovision_available_in_seconds:
+        result.reprovisionAvailableInSeconds,
+    };
+    const status = result.outcome === "blocked" ? 409 : 200;
+
+    logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_RESET_CONNECTION_COMPLETE, {
+      reqId: ctx.reqId,
+      routeId: ctx.routeId,
+      status,
+      durationMs: Math.round(performance.now() - startedAt),
+      outcome: result.outcome === "reset" ? "success" : "skipped",
+      billing_account_id: billingAccountId,
+      user_id: sessionUser.id,
+      reset_outcome: result.outcome,
+      ...(result.blockedReason ? { errorCode: result.blockedReason } : {}),
+      unsettled_fill_count: result.unsettledOrderCount,
+      open_position_count: result.openPositionCount,
+      grants_revoked_count: result.grantsRevokedCount,
+      targets_disabled_count: result.targetsDisabledCount,
+    });
+
+    return NextResponse.json(
+      polyWalletResetConnectionOperation.output.parse(payload),
+      { status }
     );
   }
 );

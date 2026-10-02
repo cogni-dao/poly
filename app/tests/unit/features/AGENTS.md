@@ -64,3 +64,4 @@ pnpm test tests/unit/features/use-cases.test.ts
 
 - Focus on testing use case orchestration logic
 - Mock all external dependencies via ports
+- **Last reviewed:** 2026-10-01

@@ -42,11 +42,6 @@ Job modules that wire business logic to the application container for ops-trigge
 - This directory **does**: Acquire advisory locks, resolve container deps, call service functions
 - This directory **does not**: Contain business logic, expose HTTP routes, manage process lifecycle
 
-## Usage
-
-```bash
-```
-
 ## Standards
 
 - Jobs use `pg_advisory_lock` for single-writer safety
