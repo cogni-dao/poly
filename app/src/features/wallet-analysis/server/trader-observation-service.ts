@@ -411,6 +411,7 @@ export async function runTraderObservationTick(
   let prunedPositionSnapshots = 0;
   if (!tickAborted && deps.runRetentionPrune !== false) {
     stage("prune_position_snapshots");
+    const pruneStartedAt = Date.now();
     try {
       // bug.5297 — prod stage telemetry named this stage as a hang site (3x).
       // The tick's abort cannot reach a running DELETE, so Postgres enforces
@@ -424,11 +425,32 @@ export async function runTraderObservationTick(
           })
       );
       prunedPositionSnapshots = prune.deleted;
+      // RETENTION_PRUNE_IS_OBSERVABLE (follow-up to #102) — before this, the
+      // prune's ONLY log was the error path, and tick_ok's
+      // `pruned_position_snapshots=0` could not distinguish "ran, nothing to
+      // prune" from "skipped by cadence". That ambiguity made the 2026-10-01
+      // DB-starvation incident unverifiable in Loki and forced a hand-run
+      // pg_stat_activity sampler + EXPLAIN. One structured line per RUN makes
+      // the ~30-min cadence a Loki query (run lines spaced ~30 min apart, not
+      // every 30s tick) and records whether the stage exhausted its budget.
+      log.info(
+        {
+          event: "poly.trader.observe",
+          phase: "retention_prune",
+          outcome: "ran",
+          deleted: prune.deleted,
+          exhausted_budget: prune.exhaustedBudget,
+          duration_ms: Date.now() - pruneStartedAt,
+        },
+        "trader position-snapshot retention prune ran"
+      );
     } catch (err: unknown) {
       log.warn(
         {
           event: "poly.trader.observe",
           phase: "position_snapshot_prune_error",
+          outcome: "error",
+          duration_ms: Date.now() - pruneStartedAt,
           err: err instanceof Error ? err.message : String(err),
         },
         "trader position-snapshot prune failed"
