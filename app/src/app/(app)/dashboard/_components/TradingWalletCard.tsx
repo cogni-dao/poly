@@ -98,11 +98,12 @@ export function TradingWalletCard(): ReactElement {
     retry: 1,
   });
 
-  const hasGasReading = data?.pol_gas !== null && data?.pol_gas !== undefined;
+  const gasReading = data?.pol_gas;
+  const hasGasReading = gasReading !== null && gasReading !== undefined;
   const lowGas =
-    data?.connected === true && hasGasReading && data.pol_gas <= 0.1;
+    data?.connected === true && hasGasReading && gasReading <= 0.1;
   const noGas =
-    data?.connected === true && hasGasReading && data.pol_gas <= 0;
+    data?.connected === true && hasGasReading && gasReading <= 0;
   const positionInventoryUnavailable = data?.warnings.some((warning) =>
     [
       "current_positions_wallet_missing",

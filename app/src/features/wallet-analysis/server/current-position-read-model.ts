@@ -197,12 +197,17 @@ export async function readCurrentWalletPositionModel(params: {
   return {
     positions,
     summary: {
-      positionsMtm: roundToCents(toNumber(rows[0]?.total_positions_mtm)),
+      positionsMtm: roundToCents(
+        toNumber(rows[0]?.total_positions_mtm ?? null)
+      ),
       syncedAt:
         latestSyncMs !== null ? new Date(latestSyncMs).toISOString() : null,
       syncAgeMs,
       stale,
-      activeRows: Math.max(0, Math.trunc(toNumber(rows[0]?.total_active_rows))),
+      activeRows: Math.max(
+        0,
+        Math.trunc(toNumber(rows[0]?.total_active_rows ?? null))
+      ),
     },
     warnings,
   };
