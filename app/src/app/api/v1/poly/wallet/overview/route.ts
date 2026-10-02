@@ -152,15 +152,12 @@ export const GET = wrapRouteHandlerWithLogging(
           userActor(toUserId(sessionUser.id)),
           async (tx) => readWalletBalanceFact(tx, billingAccountId)
         );
-        if (balances.kind !== "available") {
+        if (balances.kind === "no_wallet") {
           logOverviewComplete(ctx, startedAtMs, {
-            status:
-              balances.kind === "no_wallet"
-                ? "no_trading_wallet"
-                : "balance_snapshot_missing",
+            status: "no_trading_wallet",
             interval,
             freshness,
-            connected: balances.kind === "missing",
+            connected: false,
             warnings: 1,
             openOrders: null,
             positionsMtm: null,
@@ -169,46 +166,51 @@ export const GET = wrapRouteHandlerWithLogging(
           });
           return emptyPayload(interval, requestedAt.toISOString(), {
             configured: isPolyTraderWalletConfigured(),
-            connected: balances.kind === "missing",
-            address: balances.kind === "missing" ? balances.address : null,
+            connected: false,
+            address: null,
             freshness,
             warnings: [
               {
-                code:
-                  balances.kind === "no_wallet"
-                    ? "no_trading_wallet"
-                    : "balance_snapshot_missing",
+                code: "no_trading_wallet",
                 message:
-                  balances.kind === "no_wallet"
-                    ? "No Polymarket trading wallet is provisioned for this account."
-                    : "No persisted wallet balance observation is available yet; this is not a zero balance.",
+                  "No Polymarket trading wallet is provisioned for this account.",
               },
             ],
           });
         }
 
-        const balanceAgeMs = Math.max(
-          0,
-          requestedAt.getTime() - balances.observedAt.getTime()
-        );
-        const balanceStale = balanceAgeMs > WALLET_BALANCE_FRESHNESS_MS;
-        const balanceObservedAt = balances.observedAt.toISOString();
+        const balanceStale =
+          balances.kind === "available" &&
+          requestedAt.getTime() - balances.observedAt.getTime() >
+            WALLET_BALANCE_FRESHNESS_MS;
         const capturedAt = requestedAt.toISOString();
-        const warnings: PolyWalletOverviewOutput["warnings"] = [
-          ...balances.errors.map((message) => ({
-            code:
-              balances.status === "error"
-                ? "balances_unavailable"
-                : "balances_partial",
-            message,
-          })),
-        ];
-        if (balanceStale) {
+        const warnings: PolyWalletOverviewOutput["warnings"] = [];
+        if (balances.kind === "missing") {
+          warnings.push({
+            code: "balance_snapshot_missing",
+            message:
+              "No persisted wallet balance observation is available yet; this is not a zero balance.",
+          });
+        } else {
+          warnings.push(
+            ...balances.errors.map((message: string) => ({
+              code:
+                balances.status === "error"
+                  ? "balances_unavailable"
+                  : "balances_partial",
+              message,
+            }))
+          );
+        }
+        if (balances.kind === "available" && balanceStale) {
           warnings.push({
             code: "balances_stale",
-            message: `Wallet balances are older than the 10-minute freshness window (observed ${balanceObservedAt}).`,
+            message: `Wallet balances are older than the 10-minute freshness window (observed ${balances.observedAt.toISOString()}).`,
           });
-        } else if (balances.status === "error") {
+        } else if (
+          balances.kind === "available" &&
+          balances.status === "error"
+        ) {
           warnings.push({
             code: "balances_unavailable",
             message: "All persisted on-chain balance legs are unavailable.",
@@ -293,7 +295,7 @@ export const GET = wrapRouteHandlerWithLogging(
         // never zero out the wallet. Cash is null only when NO on-chain read
         // succeeded (both null → RPC down / unconfigured), so the dashboard
         // degrades to "—" instead of falsely claiming an empty wallet.
-        const cashOnChain = balanceStale
+        const cashOnChain = balances.kind !== "available" || balanceStale
           ? null
           : sumCashOnChain(balances.usdcE, balances.pusd);
         const availableRaw = availableCashAfterReservations(
@@ -397,7 +399,10 @@ export const GET = wrapRouteHandlerWithLogging(
           address: balances.address,
           interval,
           capturedAt,
-          pol_gas: balanceStale ? null : balances.pol,
+          pol_gas:
+            balances.kind !== "available" || balanceStale
+              ? null
+              : balances.pol,
           usdc_available: usdcAvailable,
           usdc_locked: positionSummary?.lockedUsdc ?? null,
           usdc_positions_mtm: positionsMtm,

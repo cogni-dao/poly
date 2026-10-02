@@ -5,7 +5,7 @@
 import {
   polyWalletBalanceSnapshots,
   polyWalletConnections,
-} from "@cogni/poly-db-schema/wallet-connections";
+} from "@cogni/db-schema/wallet-connections";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";

@@ -36,6 +36,7 @@ type Db = {
 };
 
 const POSITION_STALE_MS = 10 * 60_000;
+const POSITION_PREVIEW_LIMIT = 500;
 const OBSERVATION_SOURCE = "data-api-positions";
 
 type CurrentPositionRow = {
@@ -74,6 +75,8 @@ type CurrentPositionRow = {
   metadata_event_title: string | null;
   metadata_event_slug: string | null;
   metadata_end_date: Date | string | null;
+  total_active_rows: string | number;
+  total_positions_mtm: string | number;
 };
 
 export interface CurrentWalletPositionReadModel {
@@ -124,7 +127,9 @@ export async function readCurrentWalletPositionModel(params: {
         pmm.market_slug AS metadata_market_slug,
         pmm.event_title AS metadata_event_title,
         pmm.event_slug AS metadata_event_slug,
-        pmm.end_date AS metadata_end_date
+        pmm.end_date AS metadata_end_date,
+        count(p.token_id) OVER () AS total_active_rows,
+        coalesce(sum(p.current_value_usdc) OVER (), 0) AS total_positions_mtm
       FROM poly_trader_wallets w
       LEFT JOIN poly_trader_ingestion_cursors c
         ON c.trader_wallet_id = w.id
@@ -146,6 +151,7 @@ export async function readCurrentWalletPositionModel(params: {
         AND w.active_for_research = true
         AND w.disabled_at IS NULL
       ORDER BY p.current_value_usdc DESC NULLS LAST, p.last_observed_at DESC NULLS LAST
+      LIMIT ${POSITION_PREVIEW_LIMIT}
     `)
   );
 
@@ -191,14 +197,12 @@ export async function readCurrentWalletPositionModel(params: {
   return {
     positions,
     summary: {
-      positionsMtm: roundToCents(
-        positions.reduce((sum, position) => sum + position.currentValue, 0)
-      ),
+      positionsMtm: roundToCents(toNumber(rows[0]?.total_positions_mtm)),
       syncedAt:
         latestSyncMs !== null ? new Date(latestSyncMs).toISOString() : null,
       syncAgeMs,
       stale,
-      activeRows: positions.length,
+      activeRows: Math.max(0, Math.trunc(toNumber(rows[0]?.total_active_rows))),
     },
     warnings,
   };

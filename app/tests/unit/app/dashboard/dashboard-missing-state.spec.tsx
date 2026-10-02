@@ -145,6 +145,33 @@ describe("dashboard missing read-model states", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not label an unavailable POL reading as no gas", () => {
+    state.overview = {
+      configured: true,
+      connected: true,
+      freshness: "read_model",
+      address: "0x1111111111111111111111111111111111111111",
+      interval: "1W",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      pol_gas: null,
+      usdc_available: null,
+      usdc_locked: null,
+      usdc_positions_mtm: null,
+      usdc_total: null,
+      open_orders: null,
+      positions_synced_at: null,
+      positions_sync_age_ms: null,
+      positions_stale: false,
+      pnlHistory: [],
+      warnings: [{ code: "balances_stale", message: "balance unavailable" }],
+    };
+
+    render(<TradingWalletCard />);
+
+    expect(screen.queryByText("no gas")).not.toBeInTheDocument();
+    expect(screen.queryByText("low gas")).not.toBeInTheDocument();
+  });
+
   it.each([
     "current_positions_wallet_missing",
     "current_positions_stale",

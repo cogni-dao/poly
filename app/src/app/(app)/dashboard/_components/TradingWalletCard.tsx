@@ -98,8 +98,11 @@ export function TradingWalletCard(): ReactElement {
     retry: 1,
   });
 
-  const lowGas = data?.connected === true && (data.pol_gas ?? 0) <= 0.1;
-  const noGas = data?.connected === true && (data.pol_gas ?? 0) <= 0;
+  const hasGasReading = data?.pol_gas !== null && data?.pol_gas !== undefined;
+  const lowGas =
+    data?.connected === true && hasGasReading && data.pol_gas <= 0.1;
+  const noGas =
+    data?.connected === true && hasGasReading && data.pol_gas <= 0;
   const positionInventoryUnavailable = data?.warnings.some((warning) =>
     [
       "current_positions_wallet_missing",
@@ -108,9 +111,11 @@ export function TradingWalletCard(): ReactElement {
     ].includes(warning.code)
   );
   const pnlHistoryUnavailable = data?.warnings.some((warning) =>
-    ["pnl_history_wallet_missing", "pnl_history_unavailable"].includes(
-      warning.code
-    )
+    [
+      "pnl_history_wallet_missing",
+      "pnl_history_unavailable",
+      "pnl_history_stale",
+    ].includes(warning.code)
   );
   const pnlHistoryMissing = data?.warnings.some(
     (warning) => warning.code === "pnl_history_no_history"

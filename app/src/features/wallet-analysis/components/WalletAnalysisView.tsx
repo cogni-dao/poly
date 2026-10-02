@@ -139,6 +139,7 @@ function PageVariant({
 }): ReactElement {
   const isHero = size === "hero";
   const snapshotWarning = warnings?.find((item) => item.slice === "snapshot");
+  const balanceWarning = warnings?.find((item) => item.slice === "balance");
   const pnlWarning = warnings?.find((item) => item.slice === "pnl");
   return (
     <Card
@@ -174,9 +175,14 @@ function PageVariant({
           <StatGrid snapshot={data.snapshot} isLoading={isLoading?.snapshot} />
         )}
 
-        {(data.balance || isLoading?.balance) && (
+        {balanceWarning ? (
+          <UnavailableNotice
+            label="Balance"
+            message={balanceWarning.message}
+          />
+        ) : (data.balance || isLoading?.balance) ? (
           <BalanceBar balance={data.balance} isLoading={isLoading?.balance} />
-        )}
+        ) : null}
 
         {pnlInterval && onPnlIntervalChange ? (
           <TimeWindowHeader
@@ -238,6 +244,7 @@ function ResearchDeepDiveVariant({
 }): ReactElement {
   const snapshotWarning = warnings?.find((item) => item.slice === "snapshot");
   const tradesWarning = warnings?.find((item) => item.slice === "trades");
+  const balanceWarning = warnings?.find((item) => item.slice === "balance");
   const pnlWarning = warnings?.find((item) => item.slice === "pnl");
   return (
     <Card className="relative overflow-hidden border-primary/20">
@@ -294,12 +301,17 @@ function ResearchDeepDiveVariant({
           ) : null}
 
           <div className="flex flex-col gap-4">
-            {(data.balance || isLoading?.balance) && (
+            {balanceWarning ? (
+              <UnavailableNotice
+                label="Balance"
+                message={balanceWarning.message}
+              />
+            ) : (data.balance || isLoading?.balance) ? (
               <BalanceBar
                 balance={data.balance}
                 isLoading={isLoading?.balance}
               />
-            )}
+            ) : null}
             {tradesWarning ? (
               <UnavailableNotice
                 label="Trade history"
