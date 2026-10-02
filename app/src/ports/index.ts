@@ -141,7 +141,6 @@ export type {
 	ProviderContext,
 } from "./model-provider.port";
 export type { ModelProviderResolverPort } from "./model-provider-resolver.port";
-export type { NodeActionReplayPort } from "./node-action-replay.port";
 export type {
 	OnChainVerifier,
 	VerificationResult,

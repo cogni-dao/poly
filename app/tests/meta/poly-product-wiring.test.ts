@@ -26,10 +26,15 @@ describe("Poly product wiring", () => {
 		const credits = readRepoFile(
 			"app/src/app/(app)/credits/CreditsPage.client.tsx",
 		);
+		const walletPanel = readRepoFile(
+			"app/src/app/(app)/credits/TradingWalletPanel.tsx",
+		);
 
 		expect(credits).toContain('from "./TradingWalletPanel"');
 		expect(credits).toContain("<TradingWalletPanel />");
 		expect(credits).toContain("<AiCreditsPanel />");
+		expect(walletPanel).toContain('from "./TradingWalletResetButton"');
+		expect(walletPanel).toContain("<TradingWalletResetButton");
 	});
 
 	it("keeps trading controls rendered on the dashboard", () => {

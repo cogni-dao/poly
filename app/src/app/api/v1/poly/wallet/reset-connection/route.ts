@@ -2,27 +2,24 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
 /**
- * Module: `@app/api/internal/node-actions/poly/wallet/reset-connection`
- * Purpose: Audited operator reset of ONE tenant's Polymarket wallet
- *   connection, so the owner can re-provision a fresh canonical V2 Deposit
- *   Wallet through the normal product UI.
- * Scope: Operator-asserted POST endpoint. Delegates the revoke to
- *   `PolyTraderWalletPort.revoke`; tombstones copy targets directly.
+ * Module: `@app/api/v1/poly/wallet/reset-connection`
+ * Purpose: Let an authenticated owner safely reset their own Polymarket wallet
+ *   connection before re-provisioning through the normal product UI.
+ * Scope: Session-authenticated POST. Derives the billing account from the
+ *   authenticated user, delegates revoke, and tombstones copy targets.
  * Invariants:
- *   - ASSERTION_BOUND: requires a consume-once node.action.v1 assertion for
- *     poly.wallet.reset_connection before any state read or mutation.
+ *   - TENANT_FROM_SESSION: billing account comes only from the authenticated
+ *     user. No tenant identifier crosses the wire.
  *   - NO_STRANDED_FUNDS: refuses while the Deposit Wallet holds USDC.e / pUSD
- *     / POL unless `accept_residual_dust` is set. An ERRORED balance read
- *     always blocks reset and cannot be overridden as dust.
+ *     / POL. An ERRORED balance read always blocks reset.
  *   - NO_UNSETTLED_ORDERS: refuses while any mirror fill is pending | open |
  *     partial, so a revoke cannot orphan a resting CLOB order.
  *   - REVOKE_NEVER_DELETES: history, the Privy wallet, and the SIWE/user
  *     identity binding are all preserved. `revokedByUserId` is the connection's
- *     own `createdByUserId` — the reset attributes to the owning user, and
- *     never invents or reassigns an identity.
+ *     authenticated session user — never an operator or caller-supplied id.
  *   - NO_FUND_MOVEMENT: this route never transfers, wraps, or withdraws.
- *   - SINGLE_TENANT_ONLY: `billing_account_id` is required. There is no
- *     "reset all" — blast radius is one tenant per call, by construction.
+ *   - SINGLE_TENANT_ONLY: the route can address only the caller's billing
+ *     account. There is no "reset all" or account selector.
  * Side-effects: DB writes (connection + grants revoke, copy-target tombstone),
  *   process-local executor cache invalidation. Reads Polygon for balances.
  * Links: docs/spec/poly-tenant-and-collateral.md, work/items/bug.5310
@@ -41,7 +38,7 @@ import {
 } from "@cogni/poly-node-contracts";
 import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { verifyOperatorNodeAction } from "@/app/_lib/auth/operator-node-action";
+import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer, resolveServiceDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import {
@@ -50,6 +47,7 @@ import {
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
+import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -67,33 +65,25 @@ async function parseBody(request: Request): Promise<unknown> {
 
 export const POST = wrapRouteHandlerWithLogging(
   {
-    routeId: "poly.wallet.reset_connection.node_action",
-    auth: { mode: "none" },
+    routeId: "poly.wallet.reset_connection",
+    auth: { mode: "required", getSessionUser },
   },
-  async (ctx, request) => {
-    const verified = await verifyOperatorNodeAction(request, {
-      action: "poly.wallet.reset_connection",
-      target: "/api/internal/node-actions/poly/wallet/reset-connection",
-    });
-    if (!verified.ok) {
-      return NextResponse.json(
-        { error: verified.errorCode },
-        { status: verified.errorCode === "verification_unavailable" ? 503 : 401 }
-      );
-    }
-
+  async (ctx, request, sessionUser) => {
+    if (!sessionUser) throw new Error("sessionUser required");
     const parsed = polyWalletResetConnectionOperation.input.safeParse(
       await parseBody(request)
     );
     if (!parsed.success) {
       return NextResponse.json({ error: "invalid_reset_request" }, { status: 400 });
     }
-    const { billing_account_id: billingAccountId, accept_residual_dust } =
-      parsed.data;
 
     const start = performance.now();
     const serviceDb = resolveServiceDb();
     const container = getContainer();
+    const billingAccountId = await resolveBillingAccountId(
+      container.serviceAccountService,
+      sessionUser.id
+    );
 
     let adapter: ReturnType<typeof getPolyTraderWalletAdapter>;
     try {
@@ -119,6 +109,7 @@ export const POST = wrapRouteHandlerWithLogging(
         durationMs: Math.round(performance.now() - start),
         outcome: payload.outcome === "reset" ? "success" : "skipped",
         billing_account_id: billingAccountId,
+        user_id: sessionUser.id,
         reset_outcome: payload.outcome,
         ...(payload.blocked_reason
           ? { errorCode: payload.blocked_reason }
@@ -139,7 +130,6 @@ export const POST = wrapRouteHandlerWithLogging(
         id: polyWalletConnections.id,
         address: polyWalletConnections.address,
         funderAddress: polyWalletConnections.funderAddress,
-        createdByUserId: polyWalletConnections.createdByUserId,
       })
       .from(polyWalletConnections)
       .where(
@@ -248,7 +238,7 @@ export const POST = wrapRouteHandlerWithLogging(
       );
     }
 
-    if (!accept_residual_dust && hasResidualBalance) {
+    if (hasResidualBalance) {
       return emit(
         {
           billing_account_id: billingAccountId,
@@ -295,7 +285,7 @@ export const POST = wrapRouteHandlerWithLogging(
     // cascades the grants.
     await adapter.revoke({
       billingAccountId,
-      revokedByUserId: active.createdByUserId,
+      revokedByUserId: sessionUser.id,
     });
     container.invalidatePolyTradeExecutorFor(billingAccountId);
 

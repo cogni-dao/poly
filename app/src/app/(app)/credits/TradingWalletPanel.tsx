@@ -7,7 +7,8 @@
  *   create (inline `TradingWalletConnectFlow` when `configured && !connected`),
  *   fund (pUSD / USDC.e / POL readout + Polygon bridge link), enable trading
  *   (`TradingReadinessSection`, task.0355), withdraw dialog, and stubbed fund
- *   button (task.0352).
+ *   button (task.0352). An explicit owner-only reset escape hatch revokes an
+ *   empty broken connection so the normal connect flow can reprovision it.
  * Scope: Client component. React Query fetches `/wallet/status` + `/wallet/balances`;
  *   reads the session via `next-auth/react` only to surface `userId` to the
  *   inline connect flow. On `onConnected`, invalidates `poly-wallet-status`
@@ -48,6 +49,7 @@ import { AddressChip, Card, HintText } from "@/components";
 import { AutoWrapToggle } from "./AutoWrapToggle";
 import { TradingReadinessSection } from "./TradingReadinessSection";
 import { TradingWalletConnectFlow } from "./TradingWalletConnectFlow";
+import { TradingWalletResetButton } from "./TradingWalletResetButton";
 import { TradingWalletWithdrawDialog } from "./TradingWalletWithdrawDialog";
 
 async function fetchWalletStatus(): Promise<PolyWalletStatusOutput> {
@@ -203,6 +205,19 @@ export function TradingWalletPanel(): ReactElement {
             </button>
             <TradingWalletWithdrawDialog balances={balances} />
           </div>
+
+          <TradingWalletResetButton
+            onReset={() => {
+              void Promise.all([
+                queryClient.invalidateQueries({
+                  queryKey: POLY_WALLET_STATUS_QUERY_KEY,
+                }),
+                queryClient.invalidateQueries({
+                  queryKey: ["poly-wallet-balances"],
+                }),
+              ]);
+            }}
+          />
 
           {balances && balances.errors.length > 0 ? (
             <HintText icon={<Info size={16} />}>
