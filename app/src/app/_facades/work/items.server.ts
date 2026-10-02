@@ -3,33 +3,40 @@
 
 /**
  * Module: `@app/_facades/work/items.server`
- * Purpose: Server-side facade for work item read/write operations.
- * Scope: Maps Work item ports to contract DTOs. Does not contain business logic.
- * Invariants: PORT_VIA_CONTAINER, CONTRACTS_ARE_TRUTH
- * Side-effects: IO (filesystem read/write via port)
- * Links: [work.items.list.v1.contract](../../../contracts/work.items.list.v1.contract.ts)
+ * Purpose: Server-side facade for work item read/write operations across the markdown + Doltgres surfaces.
+ * Scope: Maps port results to contract DTOs and merges node-local Doltgres rows with legacy markdown rows.
+ * Invariants: PORT_VIA_CONTAINER (no direct adapter imports), CONTRACTS_ARE_TRUTH, NODE_STORE_IS_LOCAL.
+ * Side-effects: IO (filesystem read via port; database read/write via Doltgres port)
+ * Links: contracts/work.items.{list,get,create,patch}.v1.contract
  * @internal
  */
 
 import type {
+  WorkItemsCreateInput as ContractCreateInput,
+  WorkItemsPatchInput as ContractPatchInput,
   WorkItemDto,
-  WorkItemsCreateInput,
-  WorkItemsCreateOutput,
   WorkItemsListInput,
   WorkItemsListOutput,
-  WorkItemsPatchInput,
-  WorkItemsPatchOutput,
 } from "@cogni/node-contracts";
 import type { WorkItem, WorkItemId } from "@cogni/work-items";
 import { toWorkItemId } from "@cogni/work-items";
+
 import { getContainer } from "@/bootstrap/container";
 
-const PATCH_UNSUPPORTED_BY_COMMAND_PORT = [
-  "blockedBy",
-  "deployVerified",
-  "parentId",
-  "projectId",
-] as const satisfies readonly (keyof WorkItemsPatchInput["set"])[];
+/**
+ * Thrown when the opaque pagination cursor cannot be decoded — translated
+ * to HTTP 400 in the route layer instead of the wrapper's generic 500.
+ * The adapter's cursor codec throws a structurally identical error
+ * (`name === "InvalidCursorError"`); the facade detects by name and
+ * rethrows its own copy so the app layer doesn't have to import from
+ * `@/adapters/**` (forbidden by `no-restricted-imports`).
+ */
+export class InvalidCursorError extends Error {
+  constructor(message = "invalid cursor") {
+    super(message);
+    this.name = "InvalidCursorError";
+  }
+}
 
 export class WorkItemNotFoundError extends Error {
   constructor(id: string) {
@@ -38,13 +45,10 @@ export class WorkItemNotFoundError extends Error {
   }
 }
 
-export class UnsupportedWorkItemPatchFieldsError extends Error {
-  readonly fields: string[];
-
-  constructor(fields: string[]) {
-    super(`Unsupported work item patch fields: ${fields.join(", ")}`);
-    this.name = "UnsupportedWorkItemPatchFieldsError";
-    this.fields = fields;
+export class WorkItemsBackendNotReadyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkItemsBackendNotReadyError";
   }
 }
 
@@ -115,101 +119,185 @@ function toDto(item: WorkItem): WorkItemDto {
   };
 }
 
+function authorTagFromSession(user: {
+  id: string;
+  displayName: string | null;
+}): string {
+  const handle = user.displayName?.trim() || user.id;
+  return `actor:${handle}`;
+}
+
+type StripUndefined<T> = {
+  [K in keyof T]?: Exclude<T[K], undefined>;
+};
+
+function dropUndefined<T extends Record<string, unknown>>(
+  obj: T
+): StripUndefined<T> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out as StripUndefined<T>;
+}
+
 export async function listWorkItems(
   input: WorkItemsListInput
 ): Promise<WorkItemsListOutput> {
   const container = getContainer();
-  const result = await container.workItemQuery.list({
-    ...(input.types && {
-      types: input.types as WorkItem["type"][],
-    }),
-    ...(input.statuses && {
-      statuses: input.statuses as WorkItem["status"][],
-    }),
+  const queryShared = {
+    ...(input.types && { types: input.types as WorkItem["type"][] }),
+    ...(input.statuses && { statuses: input.statuses as WorkItem["status"][] }),
     ...(input.text && { text: input.text }),
     ...(input.actor && { actor: input.actor as WorkItem["actor"] }),
     ...(input.projectId && { projectId: toWorkItemId(input.projectId) }),
+    ...(input.node && { node: input.node }),
     ...(input.limit && { limit: input.limit }),
-  });
+    ...(input.cursor && { cursor: input.cursor }),
+  };
+
+  // Pagination strategy:
+  //   - Doltgres is the cursor-paginated source of truth (post-#1144 importer
+  //     back-fills markdown items into Doltgres at their original IDs).
+  //   - On the first page (no cursor) we ALSO query the markdown adapter so
+  //     any items that haven't been imported yet still appear. Doltgres rows
+  //     win on id conflict (single-source dedup).
+  //   - Merged page is truncated to `limit` so the response never overflows.
+  //   - hasMore tracks Doltgres only — markdown is finite/small and only
+  //     contributes to page 1; once Doltgres exhausts pagination ends.
+  //   - Markdown-only items that overflow page 1 are dropped from the response;
+  //     this is acceptable because markdown is being deprecated and the
+  //     importer back-fill closes the gap.
+  let dgItems: WorkItem[] = [];
+  let endCursor: string | null = null;
+  let hasMore = false;
+
+  try {
+    const dgResult = await container.doltgresWorkItems.list(queryShared);
+    dgItems = [...dgResult.items];
+    endCursor = dgResult.pageInfo.endCursor;
+    hasMore = dgResult.pageInfo.hasMore;
+  } catch (e) {
+    const name = (e as Error)?.name;
+    if (name === "InvalidCursorError") {
+      throw new InvalidCursorError((e as Error).message);
+    }
+    if (name !== "DoltgresNotConfiguredError") throw e;
+  }
+
+  let merged: WorkItem[] = dgItems;
+  if (!input.cursor) {
+    const mdResult = await container.workItemQuery.list(queryShared);
+    const dgIds = new Set(dgItems.map((i) => i.id as string));
+    const mdOnly = mdResult.items.filter((i) => !dgIds.has(i.id as string));
+    merged = [...dgItems, ...mdOnly];
+  }
+
+  const requestedLimit = input.limit ?? 100;
+  if (merged.length > requestedLimit) {
+    merged = merged.slice(0, requestedLimit);
+  }
 
   return {
-    items: result.items.map(toDto),
-    nextCursor: result.nextCursor,
+    items: merged.map(toDto),
+    pageInfo: { endCursor, hasMore },
+    ...(endCursor !== null && { nextCursor: endCursor }),
   };
 }
 
 export async function getWorkItem(id: string): Promise<WorkItemDto | null> {
   const container = getContainer();
-  const item = await container.workItemQuery.get(id as WorkItemId);
-  return item ? toDto(item) : null;
+  // Doltgres-first: legacy markdown IDs (e.g. bug.0002) can also live in Doltgres
+  // after the markdown→Doltgres import (task.5002). Fall back to markdown only when
+  // Doltgres returns null, so unimported legacy IDs still resolve during transition.
+  try {
+    const item = await container.doltgresWorkItems.get(toWorkItemId(id));
+    if (item) return toDto(item);
+  } catch (e) {
+    if ((e as Error)?.name !== "DoltgresNotConfiguredError") throw e;
+  }
+  const mdItem = await container.workItemQuery.get(id as WorkItemId);
+  return mdItem ? toDto(mdItem) : null;
 }
 
 export async function createWorkItem(
-  input: WorkItemsCreateInput
-): Promise<WorkItemsCreateOutput> {
+  input: ContractCreateInput,
+  sessionUser: { id: string; displayName: string | null }
+): Promise<WorkItemDto> {
   const container = getContainer();
-  const item = await container.workItemCommand.create({
-    ...(input.id && { id: toWorkItemId(input.id) }),
-    type: input.type,
-    title: input.title,
-    ...(input.summary !== undefined && { summary: input.summary }),
-    ...(input.outcome !== undefined && { outcome: input.outcome }),
-    ...(input.specRefs !== undefined && { specRefs: input.specRefs }),
-    ...(input.projectId !== undefined && {
-      projectId: toWorkItemId(input.projectId),
-    }),
-    ...(input.parentId !== undefined && {
-      parentId: toWorkItemId(input.parentId),
-    }),
-    ...(input.labels !== undefined && { labels: input.labels }),
-    ...(input.assignees !== undefined && { assignees: input.assignees }),
-    ...(input.node !== undefined && { node: input.node }),
-    ...(input.status !== undefined && { status: input.status }),
-    ...(input.priority !== undefined && { priority: input.priority }),
-    ...(input.rank !== undefined && { rank: input.rank }),
-    ...(input.estimate !== undefined && { estimate: input.estimate }),
-  });
-
-  return toDto(item);
+  try {
+    const created = await container.doltgresWorkItems.create(
+      {
+        type: input.type,
+        title: input.title,
+        ...(input.id !== undefined && { id: toWorkItemId(input.id) }),
+        ...(input.summary !== undefined && { summary: input.summary }),
+        ...(input.outcome !== undefined && { outcome: input.outcome }),
+        ...(input.specRefs !== undefined && { specRefs: input.specRefs }),
+        ...(input.projectId !== undefined && {
+          projectId: toWorkItemId(input.projectId),
+        }),
+        ...(input.parentId !== undefined && {
+          parentId: toWorkItemId(input.parentId),
+        }),
+        ...(input.labels !== undefined && { labels: input.labels }),
+        ...(input.assignees !== undefined && { assignees: input.assignees }),
+        ...(input.node !== undefined && { node: input.node }),
+        ...(input.status !== undefined && { status: input.status }),
+        ...(input.priority !== undefined && { priority: input.priority }),
+        ...(input.rank !== undefined && { rank: input.rank }),
+        ...(input.estimate !== undefined && { estimate: input.estimate }),
+      },
+      authorTagFromSession(sessionUser)
+    );
+    return toDto(created);
+  } catch (e) {
+    if ((e as Error)?.name === "DoltgresNotConfiguredError") {
+      throw new WorkItemsBackendNotReadyError((e as Error).message);
+    }
+    throw e;
+  }
 }
 
 export async function patchWorkItem(
-  input: WorkItemsPatchInput
-): Promise<WorkItemsPatchOutput> {
-  const unsupportedFields = PATCH_UNSUPPORTED_BY_COMMAND_PORT.filter(
-    (field) => field in input.set
-  );
-  if (unsupportedFields.length > 0) {
-    throw new UnsupportedWorkItemPatchFieldsError([...unsupportedFields]);
-  }
-
+  input: ContractPatchInput,
+  sessionUser: { id: string; displayName: string | null }
+): Promise<WorkItemDto> {
   const container = getContainer();
-  const current = await container.workItemQuery.get(toWorkItemId(input.id));
-  if (!current) {
-    throw new WorkItemNotFoundError(input.id);
+  try {
+    const patched = await container.doltgresWorkItems.patch(
+      {
+        id: toWorkItemId(input.id),
+        set: dropUndefined(input.set),
+      },
+      authorTagFromSession(sessionUser)
+    );
+    if (!patched) throw new WorkItemNotFoundError(input.id);
+    return toDto(patched);
+  } catch (e) {
+    if ((e as Error)?.name === "DoltgresNotConfiguredError") {
+      throw new WorkItemsBackendNotReadyError((e as Error).message);
+    }
+    throw e;
   }
+}
 
-  const item = await container.workItemCommand.patch({
-    id: toWorkItemId(input.id),
-    expectedRevision: String(current.revision),
-    set: {
-      ...(input.set.title !== undefined && { title: input.set.title }),
-      ...(input.set.summary !== undefined && { summary: input.set.summary }),
-      ...(input.set.outcome !== undefined && { outcome: input.set.outcome }),
-      ...(input.set.estimate !== undefined && { estimate: input.set.estimate }),
-      ...(input.set.priority !== undefined && { priority: input.set.priority }),
-      ...(input.set.rank !== undefined && { rank: input.set.rank }),
-      ...(input.set.status !== undefined && { status: input.set.status }),
-      ...(input.set.specRefs !== undefined && { specRefs: input.set.specRefs }),
-      ...(input.set.labels !== undefined && { labels: input.set.labels }),
-      ...(input.set.branch !== undefined && { branch: input.set.branch }),
-      ...(input.set.pr !== undefined && { pr: input.set.pr }),
-      ...(input.set.reviewer !== undefined && { reviewer: input.set.reviewer }),
-      ...(input.set.node !== undefined && { node: input.set.node }),
-    },
-  });
-
-  return toDto(item);
+export async function deleteWorkItem(
+  id: string,
+  sessionUser: { id: string; displayName: string | null }
+): Promise<boolean> {
+  const container = getContainer();
+  try {
+    return await container.doltgresWorkItems.delete(
+      toWorkItemId(id),
+      authorTagFromSession(sessionUser)
+    );
+  } catch (e) {
+    if ((e as Error)?.name === "DoltgresNotConfiguredError") {
+      throw new WorkItemsBackendNotReadyError((e as Error).message);
+    }
+    throw e;
+  }
 }
 
 export async function claimWorkItem(input: {

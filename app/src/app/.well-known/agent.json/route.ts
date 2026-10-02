@@ -18,7 +18,12 @@
  * @public
  */
 
+import {
+	workItemsCreateOperation,
+	workItemsPatchOperation,
+} from "@cogni/node-contracts";
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import {
 	getNodeBrandColor,
 	getNodeBrandIcon,
@@ -72,6 +77,7 @@ export async function GET(request: Request) {
 		registrationUrl: `${origin}/api/v1/agent/register`,
 		auth: { type: "bearer", keyPrefix: "cogni_ag_sk_v1_" },
 		endpoints: {
+			openapi: `${origin}/openapi.json`,
 			completions: `${origin}/api/v1/chat/completions`,
 			graphs: `${origin}/api/v1/ai/agents`,
 			runs: `${origin}/api/v1/agent/runs`,
@@ -79,6 +85,23 @@ export async function GET(request: Request) {
 			// Cognition substrate: session-start bundle (invariants + live skills
 			// index + domain pointers). A SessionStart hook fetches + injects it.
 			cognition: `${origin}/api/v1/cognition`,
+			workItems: `${origin}/api/v1/work/items`,
+		},
+		actions: {
+			createWorkItem: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/work/items`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(workItemsCreateOperation.input),
+				outputSchema: z.toJSONSchema(workItemsCreateOperation.output),
+			},
+			updateWorkItem: {
+				method: "PATCH",
+				endpoint: `${origin}/api/v1/work/items/{id}`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(workItemsPatchOperation.input),
+				outputSchema: z.toJSONSchema(workItemsPatchOperation.output),
+			},
 		},
 		cognition: {
 			bootstrapUrl: `${origin}/api/v1/cognition`,
