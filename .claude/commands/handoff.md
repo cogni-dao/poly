@@ -1,40 +1,44 @@
-It's time to hand this work off to a new agent. They arrive with ZERO chat context but WITH the auto-delivered orientation — so never restate the contract, the north star, or generic process. Hand off only what this session knows that the substrate doesn't yet.
+It's time to hand this project off to a new developer. Assume they have no context of the task you've been working on, but avoid over-prescribing implementation details. Focus on the mission, goals, functional requirements, validation proof, and pointers to documentation + important files + functions.
 
-**The handoff is not a document. It is (1) dolt brought current + (2) one copy/paste block.** A handoff that lives in a repo file or chat transcript is lost; `work/handoffs/` is retired — never write there.
+Persist the handoff into the dolt work item — not a repo file (`work/handoffs/` is retired). First make dolt accurate, then emit the copy/paste block below.
 
-## Step 1 — persist to dolt FIRST (progress only counts once persisted)
-
-1. **Work item is the briefing.** `PATCH /api/v1/work/items/{id}`:
-   - `outcome` = the ordered `done =` checklist, current: each rung marked proven (with its live evidence — URL, sha, log line) or pending. The next agent's plan IS this list.
-   - `summary` = highest-signal state only: branch, PR, the one blocker, the wrong turns already ruled out (so they aren't repeated). High signal, low noise — delete stale text, don't append.
-   - Link the PR. If the claim lease will expire, say so in `summary`.
-2. **Designs, if cleanly applicable.** A design/knowledge entry this session proved wrong or sharpened → refine it in place via your open contribution (refine > new). Do NOT dump session narrative into the hub; only what clears the syntropy bar.
-3. **Uncommitted evidence dies with you.** Findings that exist only in chat → into `outcome`/`summary`/contribution now, before writing the block.
-
-## Step 2 — the copy/paste block (the ONLY user-facing output)
-
-End with exactly one fenced block, ≤25 lines, nothing above or below it. No decorative headings, no prose summary. Shape:
-
-```text
-🎯 <e2e goal, ≤12 words — identical to the work item's>
-done = <the measurable live proof>
-
-state: <branch> · <PR #N + CI/flight status> · worktree <abs path>
-Δ this session: <2-3 terse lines: proven rungs · ruled-out paths · the one blocker + who unblocks>
-
-read first, in order:
-1. work item: <https://poly.cognidao.org/api/v1/work/items/{id}>        — your plan lives in `outcome`
-2. inbox: <https://poly.cognidao.org/knowledge/inbox/{contributionId}>  — open branch: <one-line what/why>
-3. hub entry: <id + URL>                                                — <one-line why it matters here>
-4. repo skill: <name>                                                   — <one-line why>
-
-first action: <ONE concrete command/step bridging reading → owning>. From there you're in charge — `outcome` is the success criterion.
-```
+- `PATCH /api/v1/work/items/{id}` with `{set:{...}}`:
+  - `outcome` = **Goal** + **E2E validation** + **Design / Implementation Target** + **Next Actions** as an ordered checklist — each rung marked proven (with evidence link) or pending. This is the next developer's plan.
+  - `summary` = **Mission/Pickup** + **Current State** facts: branch, PRs, what is done, what is blocked, wrong turns already ruled out. Rewrite in place, don't append.
+- If a hub design/knowledge entry was sharpened or disproven this session, refine it in place via your open contribution.
 
 Rules:
-- Enumerate EVERY open inbox contribution and work item the next agent must read — a pointer they don't get is work they redo.
-- List only skills/entries load-bearing for THIS task (the orientation already routes everything else).
-- `first action` must be executable cold. If it's human-blocked (grant, merge, decision), say what blocks and who unblocks — never hand off a bounce.
-- Brevity is the contract: every line the next agent must read costs them context budget. When in doubt, move detail into the work item's `outcome` and point at it.
+
+- High signal, low noise; no pasted logs/transcripts
+- Link to files/commits/PRs instead of copying code
+- Use "New mission:" only when this is truly new work; otherwise use "Mission:" or "Pickup:" and state what the next developer owns now.
+- **Goal** describes the desired end state and includes the clear E2E validation signal. If deploy behavior is in scope, explicitly say what candidate-a flight proof looks like, including the expected URL, `/version` field, SHA/ref match, workflow, or promoted lane evidence.
+- **Design / Implementation Target** is numbered requirements, outcome-oriented: what must be true, what must not regress, and what boundaries must hold.
+
+Example tone and structure (for the work item's `outcome`):
+
+```text
+Goal:
+Node-template/resy/canary must not inherit operator lifecycle graphs. Operator owns PR Manager, GitHub lifecycle, deploy orchestration, and VCS-backed agent flows. Spawned node repos should have their own node-safe graph bundle at repo root and receive graph/template updates over time via fork/template pulls, not by sharing operator graph catalog discovery.
+
+E2E validation:
+Operator can still discover and run PR Manager. node-template/resy/canary cannot discover or route to PR Manager/operator lifecycle graphs. If this work changes deploy behavior, candidate-a proof must show the relevant workflow run, deployed lane URL, and `/version` SHA/ref match.
+
+Design / implementation target:
+1. Split graph discovery by runtime.
+2. Add tests proving operator graph availability and node runtime graph absence.
+3. Keep scope to graph/package isolation.
+```
+
+## Final output to the user
+
+End with a fenced block the incoming developer can paste or read cold — no prose summary above it, no decorative headings. The block is the handoff. Include, in this order:
+
+1. **Worktree** — absolute path (`pwd` output).
+2. **Branch** — current branch (`git branch --show-current`) and upstream (`git rev-parse --abbrev-ref @{u}` if it exists).
+3. **Pointers** — the primary briefing, each with a one-line why: the work item URL (`https://poly.cognidao.org/api/v1/work/items/{id}` — the plan is `outcome`), every open inbox contribution they must read (`https://poly.cognidao.org/knowledge/inbox/{contributionId}`), and the 2–3 critical docs/skills/files.
+4. **Immediate next action** — always of the shape: _"Read the work item + <supporting docs>, then <the first concrete thing to do>, and from there you are in charge."_ The work item is the primary briefing; the next-action line is the bridge from "read the briefing" into "you own this now." If the immediate next action is blocked by something only a human can resolve (missing auth, revoked access, decision the agent cannot make), say what is blocking and who unblocks — do not hand the loop to the next agent only to have them bounce.
+
+This is the high-leverage surface of the handoff — the incoming agent should know where they are, what the primary briefing is, and what to do within the first 10 seconds.
 
 ARGUMENTS: $ARGUMENTS
