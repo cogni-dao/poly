@@ -43,6 +43,8 @@ const MERGE_RETRIES = 3;
 const LOCK_WAIT_MS = 2_000;
 const LOCK_RETRY_MS = 50;
 const QUERY_TIMEOUT_MS = 5_000;
+const CANCEL_GRACE_MS = 1_000;
+const RESERVE_TIMEOUT_MS = 5_000;
 
 type WorkItemLogger = Pick<Logger, "info" | "warn" | "error">;
 
@@ -50,6 +52,8 @@ interface AdapterOptions {
 	readonly lockWaitMs?: number;
 	readonly lockRetryMs?: number;
 	readonly queryTimeoutMs?: number;
+	readonly cancelGraceMs?: number;
+	readonly reserveTimeoutMs?: number;
 }
 
 interface OperationContext {
@@ -397,6 +401,8 @@ export class DoltgresPolyWorkItemAdapter
 	private readonly lockWaitMs: number;
 	private readonly lockRetryMs: number;
 	private readonly queryTimeoutMs: number;
+	private readonly cancelGraceMs: number;
+	private readonly reserveTimeoutMs: number;
 
 	constructor(
 		private readonly sql: Sql,
@@ -407,6 +413,8 @@ export class DoltgresPolyWorkItemAdapter
 		this.lockWaitMs = options.lockWaitMs ?? LOCK_WAIT_MS;
 		this.lockRetryMs = options.lockRetryMs ?? LOCK_RETRY_MS;
 		this.queryTimeoutMs = options.queryTimeoutMs ?? QUERY_TIMEOUT_MS;
+		this.cancelGraceMs = options.cancelGraceMs ?? CANCEL_GRACE_MS;
+		this.reserveTimeoutMs = options.reserveTimeoutMs ?? RESERVE_TIMEOUT_MS;
 	}
 
 	private logStage(
@@ -429,6 +437,25 @@ export class DoltgresPolyWorkItemAdapter
 		);
 	}
 
+	private async terminateClient(
+		context: OperationContext,
+		stage: string,
+		reason: string,
+	): Promise<void> {
+		this.poisoned = true;
+		this.logStage("error", context, "connection.terminate", "error", {
+			failedStage: stage,
+			reason,
+		});
+		await this.sql.end({ timeout: 0 }).catch((error) => {
+			this.logStage("error", context, "connection.terminate", "error", {
+				failedStage: stage,
+				reason: "terminate_failed",
+				...errorFields(error),
+			});
+		});
+	}
+
 	private async executeQuery(
 		conn: ReservedSql,
 		context: OperationContext,
@@ -441,12 +468,32 @@ export class DoltgresPolyWorkItemAdapter
 		const queryFields = branch ? { branch } : {};
 		this.logStage("info", context, stage, "start", queryFields);
 		const pending = conn.unsafe(query);
-		const timer = setTimeout(() => {
+		let forceTimer: ReturnType<typeof setTimeout> | undefined;
+		const cancelTimer = setTimeout(() => {
 			timedOut = true;
-			pending.cancel();
+			try {
+				pending.cancel();
+			} catch (cancelError) {
+				this.logStage("error", context, stage, "error", {
+					...queryFields,
+					timedOut: true,
+					cancelFailed: true,
+					...errorFields(cancelError),
+				});
+				void this.terminateClient(context, stage, "cancel_threw");
+				return;
+			}
+			forceTimer = setTimeout(() => {
+				void this.terminateClient(context, stage, "cancel_drain_timeout");
+			}, this.cancelGraceMs);
 		}, this.queryTimeoutMs);
 		try {
 			const rows = (await pending) as ReadonlyArray<Record<string, unknown>>;
+			if (timedOut) {
+				throw new WorkItemsBusyError(
+					`Work-item store timed out during ${stage}; retry shortly`,
+				);
+			}
 			this.logStage("info", context, stage, "complete", {
 				...queryFields,
 				durationMs: Date.now() - startedAt,
@@ -466,7 +513,8 @@ export class DoltgresPolyWorkItemAdapter
 			}
 			throw error;
 		} finally {
-			clearTimeout(timer);
+			clearTimeout(cancelTimer);
+			if (forceTimer) clearTimeout(forceTimer);
 		}
 	}
 
@@ -496,8 +544,37 @@ export class DoltgresPolyWorkItemAdapter
 		this.logStage("info", context, "connection.reserve", "start");
 		let rawConn: ReservedSql | undefined;
 		let locked = false;
+		let reserveTimedOut = false;
+		const reserveTimer = setTimeout(() => {
+			reserveTimedOut = true;
+			void this.terminateClient(
+				context,
+				"connection.reserve",
+				"reserve_timeout",
+			);
+		}, this.reserveTimeoutMs);
 		try {
-			rawConn = await this.sql.reserve();
+			try {
+				rawConn = await this.sql.reserve();
+			} catch (error) {
+				if (reserveTimedOut) {
+					throw new WorkItemsBusyError(
+						"Work-item store timed out reserving a connection; retry shortly",
+					);
+				}
+				throw error;
+			}
+			if (reserveTimedOut) {
+				await this.terminateClient(
+					context,
+					"connection.reserve",
+					"reserve_completed_after_timeout",
+				);
+				throw new WorkItemsBusyError(
+					"Work-item store timed out reserving a connection; retry shortly",
+				);
+			}
+			clearTimeout(reserveTimer);
 			this.logStage("info", context, "connection.reserve", "complete", {
 				durationMs: Date.now() - reserveStartedAt,
 			});
@@ -512,6 +589,7 @@ export class DoltgresPolyWorkItemAdapter
 			});
 			throw error;
 		} finally {
+			clearTimeout(reserveTimer);
 			if (locked && rawConn) {
 				try {
 					await this.executeQuery(
@@ -519,15 +597,11 @@ export class DoltgresPolyWorkItemAdapter
 						context,
 						`SELECT pg_advisory_unlock(${GLOBAL_LOCK_KEY})`,
 					);
-				} catch (unlockError) {
+				} catch {
 					// Never return a session that may still own the global lock to the
 					// pool. This client is dedicated to work items, so terminating it is
 					// the fail-closed recovery; restart constructs a fresh client.
-					this.poisoned = true;
-					this.logStage("error", context, "connection.terminate", "error", {
-						...errorFields(unlockError),
-					});
-					await rawConn.end({ timeout: 0 }).catch(() => undefined);
+					await this.terminateClient(context, "lock.release", "unlock_failed");
 					rawConn = undefined;
 				}
 			}

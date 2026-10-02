@@ -365,6 +365,88 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		expect(released).toBe(true);
 	});
 
+	it("force-terminates and poisons the client when cancellation does not drain", async () => {
+		let rejectBlocked: ((error: Error) => void) | undefined;
+		let terminated = false;
+		let released = false;
+		const rejectedPending = (error: Error) => {
+			const pending = Promise.reject(error) as Promise<unknown[]> & {
+				cancel(): void;
+			};
+			pending.cancel = () => undefined;
+			return pending;
+		};
+		const sql = {
+			reserve: async () => ({
+				unsafe: (query: string) => {
+					if (terminated)
+						return rejectedPending(new Error("client terminated"));
+					if (query.startsWith("UPDATE work_items")) {
+						const pending = new Promise<unknown[]>((_, reject) => {
+							rejectBlocked = reject;
+						}) as Promise<unknown[]> & { cancel(): void };
+						pending.cancel = () => undefined;
+						return pending;
+					}
+					const result = Promise.resolve(protocolResponse(query)) as Promise<
+						unknown[]
+					> & { cancel(): void };
+					result.cancel = () => undefined;
+					return result;
+				},
+				release: () => {
+					released = true;
+				},
+			}),
+			end: async () => {
+				terminated = true;
+				rejectBlocked?.(new Error("connection destroyed"));
+			},
+		} as unknown as Sql;
+		const adapter = new DoltgresPolyWorkItemAdapter(sql, undefined, {
+			queryTimeoutMs: 5,
+			cancelGraceMs: 5,
+		});
+
+		await expect(
+			adapter.patch(
+				{ id: toWorkItemId("task.5001"), set: { title: "Wedge" } },
+				"agent-1",
+			),
+		).rejects.toBeInstanceOf(WorkItemsBusyError);
+		await expect(adapter.get(toWorkItemId("task.5001"))).rejects.toBeInstanceOf(
+			WorkItemsBusyError,
+		);
+		expect(terminated).toBe(true);
+		expect(released).toBe(false);
+	});
+
+	it("force-terminates and poisons a connection reservation that never settles", async () => {
+		let rejectReserve: ((error: Error) => void) | undefined;
+		let terminated = false;
+		const sql = {
+			reserve: () =>
+				new Promise<never>((_, reject) => {
+					rejectReserve = reject;
+				}),
+			end: async () => {
+				terminated = true;
+				rejectReserve?.(new Error("pool terminated"));
+			},
+		} as unknown as Sql;
+		const adapter = new DoltgresPolyWorkItemAdapter(sql, undefined, {
+			reserveTimeoutMs: 5,
+		});
+
+		await expect(adapter.get(toWorkItemId("task.5001"))).rejects.toBeInstanceOf(
+			WorkItemsBusyError,
+		);
+		await expect(adapter.get(toWorkItemId("task.5001"))).rejects.toBeInstanceOf(
+			WorkItemsBusyError,
+		);
+		expect(terminated).toBe(true);
+	});
+
 	it("deletes stale operation branches before serving a read", async () => {
 		const fake = fakeSql((query) => {
 			if (query === "SELECT name FROM dolt.branches") {
