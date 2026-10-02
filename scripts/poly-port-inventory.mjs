@@ -273,10 +273,7 @@ function buildInventoryFromSource(policy, sourceEntries) {
 
   const targetOnly = currentFiles()
     .filter((targetPath) => !targetPaths.has(targetPath))
-    .map((targetPath) => ({
-      targetPath,
-      targetBlob: worktreeBlobHash(targetPath),
-    }));
+    .map((targetPath) => ({ targetPath }));
 
   const policyContents = readFileSync(policyPath);
   return {
@@ -286,11 +283,6 @@ function buildInventoryFromSource(policy, sourceEntries) {
     targetTreeDigest: sha256(
       entries
         .map(({ targetPath, targetBlob }) => `${targetPath}\0${targetBlob ?? "-"}`)
-        .concat(
-          targetOnly.map(
-            ({ targetPath, targetBlob }) => `${targetPath}\0${targetBlob ?? "-"}`
-          )
-        )
         .sort()
         .join("\n")
     ),
