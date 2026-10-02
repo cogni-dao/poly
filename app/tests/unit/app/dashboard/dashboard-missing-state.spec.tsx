@@ -145,32 +145,35 @@ describe("dashboard missing read-model states", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders missing live positions as unavailable, not Live(0) or empty", () => {
-    state.execution = {
-      address: "0x1111111111111111111111111111111111111111",
-      freshness: "live",
-      capturedAt: "2026-10-02T12:00:00.000Z",
-      dailyTradeCounts: [],
-      live_positions: [],
-      market_groups: [],
-      closed_positions: [],
-      warnings: [
-        {
-          code: "current_positions_wallet_missing",
-          message: "observer missing",
-        },
-      ],
-    };
+  it.each([
+    "current_positions_wallet_missing",
+    "current_positions_stale",
+  ])(
+    "renders %s live positions as unavailable, not Live(0) or empty",
+    (warningCode) => {
+      state.execution = {
+        address: "0x1111111111111111111111111111111111111111",
+        freshness: "live",
+        capturedAt: "2026-10-02T12:00:00.000Z",
+        dailyTradeCounts: [],
+        live_positions: [],
+        market_groups: [],
+        closed_positions: [],
+        warnings: [{ code: warningCode, message: "position model unavailable" }],
+      };
 
-    render(<ExecutionActivityCard />);
+      render(<ExecutionActivityCard />);
 
-    expect(
-      screen.getByRole("button", { name: /Live.*—/i })
-    ).toBeInTheDocument();
-    expect(screen.getByText("Open positions unavailable.")).toBeInTheDocument();
-    expect(screen.queryByText("No open positions.")).not.toBeInTheDocument();
-    expect(
-      screen.getByText(/This is not a zero-position result/i)
-    ).toBeInTheDocument();
-  });
+      expect(
+        screen.getByRole("button", { name: /Live.*—/i })
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText("Open positions unavailable.")
+      ).toBeInTheDocument();
+      expect(screen.queryByText("No open positions.")).not.toBeInTheDocument();
+      expect(
+        screen.getByText(/This is not a zero-position result/i)
+      ).toBeInTheDocument();
+    }
+  );
 });

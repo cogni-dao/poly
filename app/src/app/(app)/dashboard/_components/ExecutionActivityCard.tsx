@@ -311,6 +311,7 @@ function PositionsPanel({
     [
       "current_positions_wallet_missing",
       "current_positions_read_model_unavailable",
+      "current_positions_stale",
     ].includes(warning.code)
   );
 

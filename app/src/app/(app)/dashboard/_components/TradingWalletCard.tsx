@@ -112,11 +112,11 @@ export function TradingWalletCard(): ReactElement {
       warning.code
     )
   );
-  const pnlHistoryEmpty = data?.warnings.some(
-    (warning) => warning.code === "pnl_history_empty"
+  const pnlHistoryMissing = data?.warnings.some(
+    (warning) => warning.code === "pnl_history_no_history"
   );
   const hasPartialWarning = data?.warnings.some(
-    (warning) => warning.code !== "pnl_history_empty"
+    (warning) => warning.code !== "pnl_history_no_history"
   );
   const fullBreakdown = hasOverviewBreakdown(data)
     ? {
@@ -244,7 +244,7 @@ export function TradingWalletCard(): ReactElement {
                 P/L history is unavailable until this trading wallet is present
                 in the observer read model.
               </p>
-            ) : pnlHistoryEmpty ? (
+            ) : pnlHistoryMissing ? (
               <p className="text-muted-foreground text-xs" role="status">
                 No P/L history has been recorded for this interval yet.
               </p>

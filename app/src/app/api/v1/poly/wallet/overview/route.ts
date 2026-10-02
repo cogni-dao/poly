@@ -60,7 +60,11 @@ import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/serve
 import { getTradingWalletPnlHistoryRead } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
-import { sumCashOnChain, sumWalletTotal } from "../_lib/cash-on-chain";
+import {
+  availableCashAfterReservations,
+  sumCashOnChain,
+  sumWalletTotal,
+} from "../_lib/cash-on-chain";
 import {
   coalesceCurrentWalletPositions,
   coalesceDashboardRoutePayload,
@@ -206,7 +210,10 @@ export const GET = wrapRouteHandlerWithLogging(
         ];
 
         const capturedAtDate = new Date(capturedAt);
-        let positionSummary = summarizeLedgerOrders([], capturedAtDate);
+        // Null means the ledger read itself failed. A successful read with no
+        // rows produces a real zero summary; those states must not collapse.
+        let positionSummary: ReturnType<typeof summarizeLedgerOrders> | null =
+          null;
         let currentPositionSummary: {
           positionsMtm: number;
           syncedAt: string | null;
@@ -281,10 +288,12 @@ export const GET = wrapRouteHandlerWithLogging(
         // succeeded (both null → RPC down / unconfigured), so the dashboard
         // degrades to "—" instead of falsely claiming an empty wallet.
         const cashOnChain = sumCashOnChain(balances.usdcE, balances.pusd);
+        const availableRaw = availableCashAfterReservations(
+          cashOnChain,
+          positionSummary?.lockedUsdc ?? null
+        );
         const usdcAvailable =
-          cashOnChain !== null
-            ? roundToCents(Math.max(0, cashOnChain - positionSummary.lockedUsdc))
-            : cashOnChain;
+          availableRaw !== null ? roundToCents(availableRaw) : null;
         // TOTAL_REQUIRES_COMPLETE_INVENTORY (see sumWalletTotal): cash remains
         // independently visible, but a cash-only subtotal must never be labeled
         // Total while the position inventory is absent or stale.
@@ -306,11 +315,11 @@ export const GET = wrapRouteHandlerWithLogging(
                 message:
                   "P/L history is unavailable because this trading wallet is not enrolled in the observer read model.",
               });
-            } else if (pnlRead.status === "empty") {
+            } else if (pnlRead.status === "no_history") {
               warnings.push({
-                code: "pnl_history_empty",
+                code: "pnl_history_no_history",
                 message:
-                  "This observed wallet has no saved P/L history for the selected interval yet.",
+                  "No saved P/L history is available for the selected interval yet.",
               });
             }
           } catch (err) {
@@ -348,9 +357,10 @@ export const GET = wrapRouteHandlerWithLogging(
                       )
                     ? "pnl_history_unavailable"
                     : warnings.some(
-                          (warning) => warning.code === "pnl_history_empty"
+                          (warning) =>
+                            warning.code === "pnl_history_no_history"
                         )
-                      ? "pnl_history_empty"
+                      ? "pnl_history_no_history"
                       : warnings.some(
                             (warning) => warning.code === "balances_partial"
                           )
@@ -360,9 +370,9 @@ export const GET = wrapRouteHandlerWithLogging(
           freshness,
           connected: true,
           warnings: warnings.length,
-          openOrders: positionSummary.openOrders,
+          openOrders: positionSummary?.openOrders ?? null,
           positionsMtm,
-          lockedUsdc: positionSummary.lockedUsdc,
+          lockedUsdc: positionSummary?.lockedUsdc ?? null,
           pnlPoints: pnlHistory.length,
         });
 
@@ -375,15 +385,20 @@ export const GET = wrapRouteHandlerWithLogging(
           capturedAt,
           pol_gas: balances.pol,
           usdc_available: usdcAvailable,
-          usdc_locked: positionSummary.lockedUsdc,
+          usdc_locked: positionSummary?.lockedUsdc ?? null,
           usdc_positions_mtm: positionsMtm,
           usdc_total: total,
-          open_orders: positionSummary.openOrders,
+          open_orders: positionSummary?.openOrders ?? null,
           positions_synced_at:
-            currentPositionSummary?.syncedAt ?? positionSummary.syncedAt,
+            currentPositionSummary?.syncedAt ??
+            positionSummary?.syncedAt ??
+            null,
           positions_sync_age_ms:
-            currentPositionSummary?.syncAgeMs ?? positionSummary.syncAgeMs,
-          positions_stale: currentPositionSummary?.stale ?? positionSummary.stale,
+            currentPositionSummary?.syncAgeMs ??
+            positionSummary?.syncAgeMs ??
+            null,
+          positions_stale:
+            currentPositionSummary?.stale ?? positionSummary?.stale ?? false,
           pnlHistory,
           warnings,
         });

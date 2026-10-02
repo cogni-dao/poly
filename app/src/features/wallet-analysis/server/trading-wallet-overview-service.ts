@@ -68,7 +68,7 @@ export function __setTradingWalletOverviewUserPnlClientForTests(
 
 export type TradingWalletPnlHistoryStatus =
   | "available"
-  | "empty"
+  | "no_history"
   | "wallet_missing";
 
 export interface TradingWalletPnlHistoryRead {
@@ -81,8 +81,10 @@ export interface TradingWalletPnlHistoryRead {
  *
  * `wallet_missing` means the observer has no active identity row for this
  * address and an empty series must not be presented as a real zero history.
- * `empty` means the wallet is enrolled but no points exist for the requested
- * fidelity/window. `available` includes an all-zero series: zero is data.
+ * `no_history` means the wallet is enrolled but no persisted points exist for
+ * the requested fidelity/window. Enrollment alone is not an ingestion-success
+ * marker, so this state makes no stronger claim. `available` includes an
+ * all-zero series: a persisted zero-valued point is data.
  */
 export async function getTradingWalletPnlHistoryRead(input: {
   db: Db;
@@ -133,7 +135,7 @@ export async function getTradingWalletPnlHistoryRead(input: {
   );
   return {
     points: history,
-    status: history.length > 0 ? "available" : "empty",
+    status: history.length > 0 ? "available" : "no_history",
   };
 }
 

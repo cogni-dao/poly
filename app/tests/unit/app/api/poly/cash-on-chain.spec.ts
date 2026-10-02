@@ -15,6 +15,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  availableCashAfterReservations,
   sumCashOnChain,
   sumWalletTotal,
 } from "@/app/api/v1/poly/wallet/_lib/cash-on-chain";
@@ -44,6 +45,20 @@ describe("sumCashOnChain", () => {
 
   it("returns 0 (not null) when both legs read as an empty wallet", () => {
     expect(sumCashOnChain(0, 0)).toBe(0);
+  });
+});
+
+describe("availableCashAfterReservations", () => {
+  it("subtracts known resting-order reservations", () => {
+    expect(availableCashAfterReservations(50, 7.5)).toBe(42.5);
+  });
+
+  it("withholds Available when the ledger reservation read failed", () => {
+    expect(availableCashAfterReservations(50, null)).toBeNull();
+  });
+
+  it("never reports negative available cash", () => {
+    expect(availableCashAfterReservations(5, 7.5)).toBe(0);
   });
 });
 

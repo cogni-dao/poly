@@ -4,7 +4,7 @@
 /**
  * Module: `trading-wallet-overview-read.test`
  * Purpose: Prove the dashboard P/L reader distinguishes missing observation
- *   state, an observed empty history, and a real zero-valued history.
+ *   state, no persisted history, and a real zero-valued history.
  * Scope: Unit test with a fluent DB test double; no database or upstream IO.
  * Invariants: MISSING_IS_NOT_EMPTY, ZERO_IS_DATA, PAGE_LOAD_DB_ONLY.
  * Side-effects: none
@@ -59,7 +59,7 @@ describe("getTradingWalletPnlHistoryRead", () => {
     expect(db.select).toHaveBeenCalledTimes(1);
   });
 
-  it("reports empty only after the wallet observer row is known", async () => {
+  it("reports no_history without claiming observation succeeded", async () => {
     const db = pnlReadDb({ walletRows: [{ id: "wallet-1" }] });
 
     const result = await getTradingWalletPnlHistoryRead({
@@ -68,7 +68,7 @@ describe("getTradingWalletPnlHistoryRead", () => {
       interval: "ALL",
     });
 
-    expect(result).toEqual({ points: [], status: "empty" });
+    expect(result).toEqual({ points: [], status: "no_history" });
     expect(db.select).toHaveBeenCalledTimes(2);
   });
 

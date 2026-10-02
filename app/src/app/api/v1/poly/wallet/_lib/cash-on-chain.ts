@@ -16,6 +16,8 @@
  *     wallet. Returns null only when NO leg read succeeded (both null → RPC
  *     down / unconfigured), so the dashboard degrades to "—" rather than
  *     falsely claiming an empty wallet.
+ *   - AVAILABLE_REQUIRES_LEDGER: spendable cash is unknown when resting-order
+ *     reservations could not be read; failed IO never becomes zero locked.
  *   - TOTAL_REQUIRES_COMPLETE_INVENTORY: the wallet total is reported only
  *     when both cash and marked positions are known. Cash-only is a useful
  *     subtotal, but labeling it "Total" understates a funded wallet that holds
@@ -38,6 +40,19 @@ export function sumCashOnChain(
 ): number | null {
   if (usdcE === null && pusd === null) return null;
   return (usdcE ?? 0) + (pusd ?? 0);
+}
+
+/**
+ * Subtract software-level resting-order reservations from on-chain cash.
+ * A failed ledger read makes `lockedUsdc` unknown; returning cash unchanged in
+ * that state would falsely label a subtotal as Available.
+ */
+export function availableCashAfterReservations(
+  cashOnChain: number | null,
+  lockedUsdc: number | null
+): number | null {
+  if (cashOnChain === null || lockedUsdc === null) return null;
+  return Math.max(0, cashOnChain - lockedUsdc);
 }
 
 /**

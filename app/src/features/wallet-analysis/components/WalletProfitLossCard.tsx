@@ -7,9 +7,8 @@
  * Scope: Presentational only. Accepts props; does not fetch and no longer renders an interval selector.
  * Invariants:
  *   - PNL_NOT_NAV: plots Polymarket P/L, not wallet balance.
- *   - ZERO_BASELINE_WHEN_EMPTY: funded or watched wallets with no P/L history
- *     render a flat zero-state chart panel instead of a null chart hole. The
- *     headline rule is separate — see `HEADLINE_IS_WINDOWED_DELTA` below.
+ *   - SAVED_ZERO_IS_DATA: one persisted zero-valued point renders `$0.00` and
+ *     a recorded-point state, never the no-history state.
  *   - HEADLINE_IS_WINDOWED_DELTA: the big PnL number is `last.pnl − first.pnl`
  *     of the current interval's series — the chart's start-to-end change. The
  *     upstream `series[last].p` is lifetime cumulative regardless of `interval`,
@@ -64,6 +63,7 @@ export function WalletProfitLossCard({
   }
 
   const windowedPnl = computeWindowedPnl(history);
+  const hasHistory = (history?.length ?? 0) > 0;
   const accentClass =
     windowedPnl === null
       ? "text-muted-foreground"
@@ -154,7 +154,9 @@ export function WalletProfitLossCard({
           <div className="absolute inset-x-6 bottom-14 h-10 rounded-md bg-primary/15 blur-xl" />
           <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-primary/10 to-transparent" />
           <div className="absolute right-4 bottom-4 text-muted-foreground text-xs">
-            No P/L history yet.
+            {hasHistory
+              ? "One P/L observation recorded; more are needed for a chart."
+              : "No P/L history yet."}
           </div>
         </div>
       )}
@@ -164,8 +166,9 @@ export function WalletProfitLossCard({
 
 /**
  * Windowed PnL = `last.pnl − first.pnl` of the upstream series for the current
- * interval. Returns `null` when the history is empty or has fewer than two
- * points (single-point series can't express a delta). Caller renders "—".
+ * interval. Returns `null` when history is empty. A single non-zero cumulative
+ * point cannot express a windowed delta and also returns null; a persisted
+ * zero-valued point is a complete zero baseline and returns 0.
  *
  * Invariant `HEADLINE_IS_WINDOWED_DELTA` (task.0389) — `series[last].p` alone
  * is lifetime cumulative regardless of `interval`, so this delta is the only
@@ -174,7 +177,8 @@ export function WalletProfitLossCard({
 export function computeWindowedPnl(
   history: readonly WalletPnlHistoryPoint[] | undefined
 ): number | null {
-  if (!history || history.length < 2) return null;
+  if (!history || history.length === 0) return null;
+  if (history.length === 1) return history[0]?.pnl === 0 ? 0 : null;
   const first = history[0]?.pnl ?? 0;
   const last = history[history.length - 1]?.pnl ?? 0;
   return last - first;
