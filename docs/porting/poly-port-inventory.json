@@ -5,12 +5,12 @@
     "revision": "95a934e57d51b99aa9891fc8084d20c13d0ed78a",
     "treeRoot": "nodes/poly"
   },
-  "policySha256": "5d44842f63e5a922284583d5782a922f0875b8e9a46ec74dfa475649fd66149f",
-  "targetTreeDigest": "3117fe442c85ee1cdc7dd92cfcc56934312f09e4b8e298e8b22d44c3bad5ee8a",
+  "policySha256": "55c9de866a933850f8b3170e914b6971fe7aa7502ca38e9e42a9ef18f3c610c2",
+  "targetTreeDigest": "fe2eebbaf8a6554e3c56fb329160c933d6c6ef6352969fc34006a47cb62d3750",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1054,
+    "targetOnlyFiles": 1056,
     "unresolved": 599,
     "byStatus": {
       "exact": 1137,
@@ -39,7 +39,7 @@
       "id": "dashboard.open_positions",
       "priority": "P0",
       "status": "failing",
-      "owner": "task.5008",
+      "owner": "task.5344",
       "requirement": "Open-position count, market value, and execution live count for the trading wallet match an independent Polygon/Data-API oracle and never silently collapse to zero.",
       "evidence": "Production screenshot reports no open positions while independent evidence reports approximately $45.49 across live positions."
     },
@@ -47,7 +47,7 @@
       "id": "dashboard.wallet_total",
       "priority": "P0",
       "status": "failing",
-      "owner": "task.5008",
+      "owner": "task.5344",
       "requirement": "Total wallet value is cash plus marked positions; if positions are unavailable, Total is unknown or explicitly labeled partial and is never a cash-only value presented as total.",
       "evidence": "Production displayed Total $0.53 while position data was absent and real positions were approximately $45.49."
     },
@@ -55,7 +55,7 @@
       "id": "dashboard.pnl_history",
       "priority": "P0",
       "status": "failing",
-      "owner": "task.5008",
+      "owner": "task.5344",
       "requirement": "P/L history resolves the actual trading wallet and distinguishes missing observation data from a true zero history.",
       "evidence": "The same signer-versus-funder key mismatch affects wallet lookup for P/L history."
     },
@@ -18701,7 +18701,7 @@
     },
     {
       "targetPath": "docs/porting/poly-port-policy.json",
-      "targetBlob": "05689887ff7605b8f819c88965774d394a230f8c"
+      "targetBlob": "f33ac52553ebbda5f7ba0034709ecad0f0bb641f"
     },
     {
       "targetPath": "docs/spec/knowledge-syntropy.md",
@@ -21653,11 +21653,19 @@
     },
     {
       "targetPath": "work/items/task.5008.restore-dashboard-wallet-truth.md",
-      "targetBlob": "68abf484532e8a3e742810a2adc937aa8528334d"
+      "targetBlob": null
     },
     {
       "targetPath": "work/items/task.5009.enforce-deterministic-port-ledger.md",
-      "targetBlob": "9a4668ec31e643d7bbebcc584f33848fa5ea622f"
+      "targetBlob": null
+    },
+    {
+      "targetPath": "work/items/task.5344.restore-dashboard-wallet-truth.md",
+      "targetBlob": "597f7a13c4ad29d3684eca27b6f9a75a97223306"
+    },
+    {
+      "targetPath": "work/items/task.5345.enforce-deterministic-port-ledger.md",
+      "targetBlob": "c6ecc0c856882a9656377ff08eb5fa1e08cec1f6"
     },
     {
       "targetPath": "work/items/task.research-rollup-read-models.md",

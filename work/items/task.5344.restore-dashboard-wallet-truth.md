@@ -1,5 +1,5 @@
 ---
-id: task.5008
+id: task.5344
 type: task
 title: Restore trading-wallet positions value and P/L truth
 status: in_progress

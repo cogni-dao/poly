@@ -21,7 +21,7 @@ Run `pnpm poly:port:refresh -- --legacy-repo /path/to/legacy-monorepo` after a r
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1054 |
+| Current-only files | 1056 |
 | Unresolved legacy files | 599 |
 | Behavioral parity gates | 7 |
 | Unresolved behavioral gates | 7 |
@@ -45,10 +45,10 @@ File equality is necessary but not sufficient. These gates prevent an adapted im
 
 | Priority | State | Gate | Owner | Required invariant |
 | --- | --- | --- | --- | --- |
-| P0 | failing | `dashboard.open_positions` | `task.5008` | Open-position count, market value, and execution live count for the trading wallet match an independent Polygon/Data-API oracle and never silently collapse to zero. |
-| P0 | failing | `dashboard.pnl_history` | `task.5008` | P/L history resolves the actual trading wallet and distinguishes missing observation data from a true zero history. |
+| P0 | failing | `dashboard.open_positions` | `task.5344` | Open-position count, market value, and execution live count for the trading wallet match an independent Polygon/Data-API oracle and never silently collapse to zero. |
+| P0 | failing | `dashboard.pnl_history` | `task.5344` | P/L history resolves the actual trading wallet and distinguishes missing observation data from a true zero history. |
 | P0 | in_progress | `dashboard.wallet_identity` | `derekg1729/overnight-trading-loss-audit@66a4ce5` | The observer and every dashboard read model use the same tenant trading identity: funder_address when present, otherwise the legacy signer address. |
-| P0 | failing | `dashboard.wallet_total` | `task.5008` | Total wallet value is cash plus marked positions; if positions are unavailable, Total is unknown or explicitly labeled partial and is never a cash-only value presented as total. |
+| P0 | failing | `dashboard.wallet_total` | `task.5344` | Total wallet value is cash plus marked positions; if positions are unavailable, Total is unknown or explicitly labeled partial and is never a cash-only value presented as total. |
 | P0 | failing | `hub.work_item_create` | `task.5001` | Authenticated POST /api/v1/work/items returns 201 and creates a hub work item in Doltgres. |
 | P0 | failing | `hub.work_item_mutation` | `task.5001` | Authenticated PATCH and DELETE use the Dolt-backed command adapter, and mutations remain present after a pod restart. |
 | P0 | failing | `hub.work_item_source_of_truth` | `task.5001` | The deployed hub reads and writes work items through Doltgres; repository Markdown is an explicitly temporary manager fallback, not runtime persistence. |
