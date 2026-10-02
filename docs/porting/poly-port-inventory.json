@@ -5,7 +5,7 @@
     "revision": "95a934e57d51b99aa9891fc8084d20c13d0ed78a",
     "treeRoot": "nodes/poly"
   },
-  "policySha256": "2ad2e0d143778580d8adcb5a0013aed26c7865af19da4dd44f998ba333ba86ca",
+  "policySha256": "3973ddbaccb5c2857d031d10296176a9402bf428cdd50d991fd6e0017af81029",
   "targetTreeDigest": "ed2f01ee43d74fdde001dd15f95831a6086775692292cc2ef38d52a8fd498fba",
   "summary": {
     "sourceFiles": 1736,
@@ -39,7 +39,7 @@
       "id": "dashboard.open_positions",
       "priority": "P0",
       "status": "failing",
-      "owner": "task.5346",
+      "owner": "PR #110 @ da738a8",
       "requirement": "Open-position count, market value, and execution live count for the trading wallet match an independent Polygon/Data-API oracle and never silently collapse to zero.",
       "evidence": "Production screenshot reports no open positions while independent evidence reports approximately $45.49 across live positions."
     },
@@ -47,7 +47,7 @@
       "id": "dashboard.wallet_total",
       "priority": "P0",
       "status": "failing",
-      "owner": "task.5346",
+      "owner": "PR #110 @ da738a8",
       "requirement": "Total wallet value is cash plus marked positions; if positions are unavailable, Total is unknown or explicitly labeled partial and is never a cash-only value presented as total.",
       "evidence": "Production displayed Total $0.53 while position data was absent and real positions were approximately $45.49."
     },
@@ -55,7 +55,7 @@
       "id": "dashboard.pnl_history",
       "priority": "P0",
       "status": "failing",
-      "owner": "task.5346",
+      "owner": "PR #110 @ da738a8",
       "requirement": "P/L history resolves the actual trading wallet and distinguishes missing observation data from a true zero history.",
       "evidence": "The same signer-versus-funder key mismatch affects wallet lookup for P/L history."
     },

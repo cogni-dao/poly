@@ -49,6 +49,6 @@ Do not touch: mirror sizing, cash-reserve gates, order placement, work-item APIs
 
 Active checkpoint: PR #109 at `derekg1729/overnight-trading-loss-audit@a5f85ca` centralizes trading-address resolution in the wallet port and fixes observer enrollment with focused coverage. Review/extend that branch rather than duplicating its files.
 
-Acceptance audit: address resolution is necessary but not sufficient. `task.5346` owns the stacked missing-data semantics slice: unknown totals, missing P/L, and false zero-position UI states.
+Acceptance audit: address resolution is necessary but not sufficient. `task.5346` is implemented in stacked PR #110 at `da738a8`: unknown totals, missing P/L, and false zero-position UI states.
 
 Gate: on candidate, the dashboard and its overview/execution APIs for `0x8ca45685c5827f7ACFdd890214180C4EA9d0Bf58` must match a timestamped independent Polygon/Polymarket oracle for free cash, open-position count, position mark-to-market, and total within a documented tolerance. P/L must distinguish unavailable from true zero. Capture API output and a screenshot before production promotion.
