@@ -61,6 +61,7 @@ import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/serve
 import { getTradingWalletPnlHistoryRead } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
 import {
   readWalletBalanceFact,
+  hasTradingWallet,
   WALLET_BALANCE_FRESHNESS_MS,
 } from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
@@ -152,7 +153,7 @@ export const GET = wrapRouteHandlerWithLogging(
           userActor(toUserId(sessionUser.id)),
           async (tx) => readWalletBalanceFact(tx, billingAccountId)
         );
-        if (balances.kind === "no_wallet") {
+        if (!hasTradingWallet(balances)) {
           logOverviewComplete(ctx, startedAtMs, {
             status: "no_trading_wallet",
             interval,

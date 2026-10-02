@@ -97,7 +97,33 @@ export async function persistWalletBalanceFact(
     });
 }
 
-export async function readWalletBalanceFact(db: Db, billingAccountId: string) {
+export type WalletBalanceRead =
+  | { kind: "no_wallet" }
+  | { kind: "missing"; address: `0x${string}` }
+  | ({ kind: "available" } & Awaited<ReturnType<typeof availableBalanceRow>>);
+
+function availableBalanceRow(row: typeof polyWalletBalanceSnapshots.$inferSelect) {
+  return {
+    address: row.address as `0x${string}`,
+    usdcE: row.usdcE === null ? null : Number(row.usdcE),
+    pusd: row.pusd === null ? null : Number(row.pusd),
+    pol: row.pol === null ? null : Number(row.pol),
+    status: row.status as "ok" | "partial" | "error",
+    errors: row.errors,
+    observedAt: row.observedAt,
+  };
+}
+
+export function hasTradingWallet(
+  read: WalletBalanceRead
+): read is Exclude<WalletBalanceRead, { kind: "no_wallet" }> {
+  return read.kind !== "no_wallet";
+}
+
+export async function readWalletBalanceFact(
+  db: Db,
+  billingAccountId: string
+): Promise<WalletBalanceRead> {
   const rows = await db
     .select({
       address: sql<string>`lower(coalesce(${polyWalletConnections.funderAddress}, ${polyWalletConnections.address}))`,
@@ -130,12 +156,6 @@ export async function readWalletBalanceFact(db: Db, billingAccountId: string) {
   }
   return {
     kind: "available" as const,
-    address: row.address as `0x${string}`,
-    usdcE: row.usdcE === null ? null : Number(row.usdcE),
-    pusd: row.pusd === null ? null : Number(row.pusd),
-    pol: row.pol === null ? null : Number(row.pol),
-    status: row.status as "ok" | "partial" | "error",
-    errors: row.errors,
-    observedAt: row.observedAt,
+    ...availableBalanceRow(row),
   };
 }

@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyWalletBalanceStatus,
+  hasTradingWallet,
   refreshWalletBalanceFacts,
 } from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
 
@@ -31,6 +32,18 @@ describe("classifyWalletBalanceStatus", () => {
         errors: ["polygon rpc unavailable"],
       })
     ).toBe("error");
+  });
+});
+
+describe("hasTradingWallet", () => {
+  it("continues dependent slices when an active wallet lacks only its balance snapshot", () => {
+    expect(
+      hasTradingWallet({
+        kind: "missing",
+        address: "0x1111111111111111111111111111111111111111",
+      })
+    ).toBe(true);
+    expect(hasTradingWallet({ kind: "no_wallet" })).toBe(false);
   });
 });
 
