@@ -25,6 +25,34 @@ export type WalletBalanceFact = {
   errors: readonly string[];
 };
 
+export async function refreshWalletBalanceFacts(input: {
+  wallets: readonly { billingAccountId: string; address: `0x${string}` }[];
+  read: (billingAccountId: string) => Promise<Omit<WalletBalanceFact, "billingAccountId"> | null>;
+  persist: (fact: WalletBalanceFact) => Promise<void>;
+  concurrency?: number;
+}): Promise<{ succeeded: number; failed: number }> {
+  const concurrency = Math.max(1, input.concurrency ?? 3);
+  let succeeded = 0;
+  let failed = 0;
+  for (let offset = 0; offset < input.wallets.length; offset += concurrency) {
+    const results = await Promise.allSettled(
+      input.wallets.slice(offset, offset + concurrency).map(async (wallet) => {
+        const balances = await input.read(wallet.billingAccountId);
+        if (!balances) throw new Error("active wallet balance read returned null");
+        if (balances.address.toLowerCase() !== wallet.address.toLowerCase()) {
+          throw new Error("wallet balance address changed during observation");
+        }
+        await input.persist({ billingAccountId: wallet.billingAccountId, ...balances });
+      })
+    );
+    for (const result of results) {
+      if (result.status === "fulfilled") succeeded += 1;
+      else failed += 1;
+    }
+  }
+  return { succeeded, failed };
+}
+
 export function classifyWalletBalanceStatus(
   fact: Pick<WalletBalanceFact, "usdcE" | "pusd" | "pol" | "errors">
 ): "ok" | "partial" | "error" {

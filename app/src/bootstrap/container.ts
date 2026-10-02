@@ -1353,7 +1353,7 @@ function createContainer(): Container {
 			// resolver of a tenant's trading address, so the observer enrolls
 			// exactly the wallets the executor signs from.
 			const observationWalletPort = getPolyTraderWalletAdapter(log);
-			const { persistWalletBalanceFact } = await import(
+			const { persistWalletBalanceFact, refreshWalletBalanceFacts } = await import(
 				"@/features/wallet-analysis/server/wallet-balance-snapshot-service"
 			);
 			const traderObservationStop = startTraderObservationJob({
@@ -1366,27 +1366,13 @@ function createContainer(): Container {
 					observationWalletPort.listActiveTradingAddresses(),
 				refreshBalanceFacts: async () => {
 					const wallets = await observationWalletPort.listActiveTradingWallets();
-					for (let offset = 0; offset < wallets.length; offset += 3) {
-						await Promise.allSettled(
-							wallets.slice(offset, offset + 3).map(async (wallet) => {
-								const balances = await observationWalletPort.getBalances(
-									wallet.billingAccountId,
-								);
-								if (!balances) return;
-								if (
-									balances.address.toLowerCase() !== wallet.address.toLowerCase()
-								) {
-									throw new Error(
-										"wallet balance address changed during observation",
-									);
-								}
-								await persistWalletBalanceFact(serviceDb, {
-									billingAccountId: wallet.billingAccountId,
-									...balances,
-								});
-							}),
-						);
-					}
+					await refreshWalletBalanceFacts({
+						wallets,
+						read: (billingAccountId) =>
+							observationWalletPort.getBalances(billingAccountId),
+						persist: (fact) => persistWalletBalanceFact(serviceDb, fact),
+						concurrency: 3,
+					});
 				},
 				logger: observerLogger,
 				metrics: noopMetricsForObservation,
