@@ -6,10 +6,12 @@
 import type { ReactElement } from "react";
 import { Card, CardContent } from "@/components";
 import { TradesPerDayChart } from "@/features/wallet-analysis";
-import { useDashboardExecution } from "../_hooks/useDashboardExecution";
+import { useWalletDashboard } from "../_hooks/useWalletDashboard";
 
 export function OperatorWalletChartsRow(): ReactElement {
-  const { data, isLoading, isError } = useDashboardExecution();
+  const dashboard = useWalletDashboard();
+  const data = dashboard.data?.execution;
+  const { isLoading, isError } = dashboard;
 
   const dailyCounts = (data?.dailyTradeCounts ?? []).map((point) => ({
     d: point.day.slice(5),

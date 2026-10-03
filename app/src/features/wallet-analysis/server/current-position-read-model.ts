@@ -87,6 +87,10 @@ export interface CurrentWalletPositionReadModel {
     syncAgeMs: number | null;
     stale: boolean;
     activeRows: number;
+    /** False until the observer has completed at least one successful publish. */
+    hasSuccessfulObservation: boolean;
+    /** Cursor state is preserved so callers distinguish partial from stale/error. */
+    cursorStatus: string | null;
   };
   warnings: WalletExecutionWarning[];
 }
@@ -203,9 +207,13 @@ export async function readCurrentWalletPositionModel(params: {
   const cursorStatus = rows.find(
     (row) => row.cursor_status !== null
   )?.cursor_status;
+  const hasSuccessfulObservation = rows.some(
+    (row) => row.cursor_last_success_at !== null
+  );
   const stale =
     rows.length > 0 &&
-    (syncAgeMs === null ||
+    (!hasSuccessfulObservation ||
+      syncAgeMs === null ||
       syncAgeMs > POSITION_STALE_MS ||
       cursorStatus !== "ok");
   const warnings: WalletExecutionWarning[] = [];
@@ -214,6 +222,18 @@ export async function readCurrentWalletPositionModel(params: {
       code: "current_positions_wallet_missing",
       message:
         "No active DB observer wallet row is available for this trading wallet.",
+    });
+  } else if (!hasSuccessfulObservation) {
+    warnings.push({
+      code: "current_positions_never_observed",
+      message:
+        "No successful current-position observation has been published for this wallet.",
+    });
+  } else if (cursorStatus === "partial") {
+    warnings.push({
+      code: "current_positions_partial",
+      message:
+        "The latest current-position observation was incomplete; last-known rows are retained.",
     });
   } else if (stale) {
     warnings.push({
@@ -239,6 +259,8 @@ export async function readCurrentWalletPositionModel(params: {
         0,
         Math.trunc(toNumber(rows[0]?.total_active_rows ?? null))
       ),
+      hasSuccessfulObservation,
+      cursorStatus: cursorStatus ?? null,
     },
     warnings,
   };

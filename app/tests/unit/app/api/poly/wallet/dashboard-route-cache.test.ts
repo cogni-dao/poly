@@ -36,6 +36,7 @@ import {
   coalesceCurrentWalletPositions,
   coalesceDashboardRoutePayload,
   coalesceTenantLedgerPositions,
+  coalesceUnifiedDashboard,
   coalesceWalletBalances,
   currentWalletPositionsCacheKey,
   DASHBOARD_ROUTE_CACHE_FRESH_MS,
@@ -45,6 +46,8 @@ import {
   invalidateDashboardRouteCaches,
   overviewRouteCacheKey,
   tenantLedgerPositionsCacheKey,
+  UNIFIED_DASHBOARD_CACHE_TTL_MS,
+  unifiedDashboardCacheKey,
   WALLET_BALANCES_CACHE_TTL_MS,
   walletBalancesCacheKey,
 } from "@/app/api/v1/poly/wallet/_lib/dashboard-route-cache";
@@ -53,6 +56,41 @@ import { clearTtlCache } from "@/features/wallet-analysis/server/coalesce";
 const ACCOUNT_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ACCOUNT_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const WALLET = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+
+describe("unified wallet dashboard hard cache", () => {
+  beforeEach(() => clearTtlCache());
+  afterEach(() => vi.useRealTimers());
+
+  it("coalesces one tenant+interval snapshot but never serves past the hard TTL", async () => {
+    vi.useFakeTimers();
+    let generation = 0;
+    const fetcher = vi.fn(async () => ({ snapshotId: `snapshot-${++generation}` }));
+    const key = unifiedDashboardCacheKey(ACCOUNT_A, "1W");
+    const [first, concurrent] = await Promise.all([
+      coalesceUnifiedDashboard(key, fetcher),
+      coalesceUnifiedDashboard(key, fetcher),
+    ]);
+    expect(concurrent).toBe(first);
+    expect(fetcher).toHaveBeenCalledOnce();
+
+    vi.advanceTimersByTime(UNIFIED_DASHBOARD_CACHE_TTL_MS + 1);
+    const next = await coalesceUnifiedDashboard(key, fetcher);
+    expect(next).toEqual({ snapshotId: "snapshot-2" });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("manual refresh evicts the unified tenant prefix without crossing tenants", async () => {
+    const fetcherA = vi.fn(async () => "a");
+    const fetcherB = vi.fn(async () => "b");
+    await coalesceUnifiedDashboard(unifiedDashboardCacheKey(ACCOUNT_A, "1W"), fetcherA);
+    await coalesceUnifiedDashboard(unifiedDashboardCacheKey(ACCOUNT_B, "1W"), fetcherB);
+    invalidateDashboardRouteCaches(ACCOUNT_A);
+    await coalesceUnifiedDashboard(unifiedDashboardCacheKey(ACCOUNT_A, "1W"), fetcherA);
+    await coalesceUnifiedDashboard(unifiedDashboardCacheKey(ACCOUNT_B, "1W"), fetcherB);
+    expect(fetcherA).toHaveBeenCalledTimes(2);
+    expect(fetcherB).toHaveBeenCalledOnce();
+  });
+});
 
 /** Let the void background-refresh promise inside coalesceSwr settle. */
 async function flushMicrotasks(): Promise<void> {

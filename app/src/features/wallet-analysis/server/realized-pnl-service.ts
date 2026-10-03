@@ -82,6 +82,11 @@ type Row = {
 export async function readWalletTokenPnlMap(params: {
   db: Db;
   walletAddress: string;
+  /**
+   * Optional dashboard projection bound. The aggregation may scan its
+   * rollup-backed source, but Postgres only returns the displayed tuple set.
+   */
+  positionKeys?: readonly { conditionId: string; tokenId: string }[];
 }): Promise<Map<string, WalletTokenPnl>> {
   // Rollup-backed since the dashboard floor audit (wave C): the fills_agg
   // CTE previously re-aggregated the wallet's ENTIRE fill history per
@@ -96,6 +101,16 @@ export async function readWalletTokenPnlMap(params: {
     walletIds: [walletId],
     windowStartIso: EPOCH_ISO,
   });
+  if (params.positionKeys?.length === 0) return new Map();
+  const displayedKeyPredicate = params.positionKeys
+    ? sql.join(
+        params.positionKeys.map(
+          (key) =>
+            sql`(fa.condition_id = ${key.conditionId} AND fa.token_id = ${key.tokenId})`
+        ),
+        sql` OR `
+      )
+    : null;
   const rows = normalizeRows<Row>(
     await params.db.execute(sql`
       WITH fills_agg AS (
@@ -133,6 +148,9 @@ export async function readWalletTokenPnlMap(params: {
       LEFT JOIN poly_market_outcomes pmo
         ON pmo.condition_id = fa.condition_id
        AND pmo.token_id = fa.token_id
+      ${displayedKeyPredicate === null
+        ? sql``
+        : sql`WHERE (${displayedKeyPredicate})`}
     `)
   );
 

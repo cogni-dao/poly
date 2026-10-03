@@ -189,6 +189,30 @@ type TargetPositionRow = {
   lifecycle: string | null;
 };
 
+type BoundedTargetParticipantRow = {
+  total_participants: string | number | null;
+  group_truncated: boolean | null;
+  group_key: string | null;
+  wallet_address: string | null;
+  label: string | null;
+  condition_id: string | null;
+  legs: unknown;
+};
+
+type BoundedTargetLeg = Omit<
+  TargetPositionRow,
+  "wallet_address" | "label" | "condition_id"
+>;
+
+export type BoundedMarketExposureRead = {
+  groups: WalletExecutionMarketGroup[];
+  truncated: boolean;
+};
+
+const BOUNDED_GROUP_LIMIT = 200;
+const BOUNDED_TARGETS_PER_GROUP = 10;
+const BOUNDED_PARTICIPANT_ROW_LIMIT = 2_200;
+
 export async function buildMarketExposureGroups(params: {
   db: Db;
   billingAccountId: string;
@@ -221,6 +245,77 @@ export async function buildMarketExposureGroups(params: {
   const enrichedLegs = rawLegs.map((leg) => enrichLegWithRollup(leg, rollups));
 
   return groupParticipants(enrichedLegs, rollups);
+}
+
+/**
+ * Dashboard-only bounded variant. It preserves the default reader's exact
+ * cost/P-L/primary+hedge semantics, but selects target participants in SQL
+ * before any target legs or rollups cross into V8.
+ */
+export async function buildBoundedMarketExposureGroups(params: {
+  db: Db;
+  billingAccountId: string;
+  walletAddress: string;
+  livePositions: readonly WalletExecutionPosition[];
+  closedPositions?: readonly WalletExecutionPosition[];
+}): Promise<BoundedMarketExposureRead> {
+  const closedPositions = params.closedPositions ?? [];
+  const allOurLegs = [
+    ...buildOurLegs(params.livePositions, params.walletAddress, "live"),
+    ...buildOurLegs(closedPositions, params.walletAddress, "closed"),
+  ];
+  if (allOurLegs.length === 0) return { groups: [], truncated: false };
+
+  const grouped = new Map<string, RawLeg[]>();
+  for (const leg of allOurLegs) {
+    const key = leg.eventSlug ? `event:${leg.eventSlug}` : `condition:${leg.conditionId}`;
+    const bucket = grouped.get(key) ?? [];
+    bucket.push(leg);
+    grouped.set(key, bucket);
+  }
+  const selected = [...grouped.entries()]
+    .sort(
+      (left, right) =>
+        sumValue(right[1]) - sumValue(left[1]) || left[0].localeCompare(right[0])
+    )
+    .slice(0, BOUNDED_GROUP_LIMIT);
+  const ourLegs = selected.flatMap(([, legs]) => legs);
+  const conditionGroup = new Map<string, string>();
+  for (const [groupKey, legs] of selected) {
+    for (const leg of legs) conditionGroup.set(leg.conditionId, groupKey);
+  }
+  const ownParticipantRows = new Set(
+    ourLegs.map((leg) => `${leg.walletAddress}:${leg.conditionId}`)
+  ).size;
+  const targetBudget = Math.max(
+    0,
+    BOUNDED_PARTICIPANT_ROW_LIMIT - ownParticipantRows
+  );
+  const targetRead = await readBoundedTargetLegs({
+    db: params.db,
+    billingAccountId: params.billingAccountId,
+    conditionGroup,
+    participantLimit: targetBudget,
+  });
+  const rawLegs = [...ourLegs, ...targetRead.legs];
+  const rollups = await readFillRollups({
+    db: params.db,
+    conditions: [...conditionGroup.keys()],
+    walletAddresses: [...new Set(rawLegs.map((leg) => leg.walletAddress))],
+    positionKeys: rawLegs.map((leg) => ({
+      walletAddress: leg.walletAddress,
+      conditionId: leg.conditionId,
+      tokenId: leg.tokenId,
+    })),
+  });
+  const enrichedLegs = rawLegs.map((leg) => enrichLegWithRollup(leg, rollups));
+  return {
+    groups: groupParticipants(enrichedLegs, rollups).slice(0, BOUNDED_GROUP_LIMIT),
+    truncated:
+      grouped.size > BOUNDED_GROUP_LIMIT ||
+      targetRead.totalParticipants > targetRead.hydratedParticipants ||
+      targetRead.groupTruncated,
+  };
 }
 
 /**
@@ -456,6 +551,208 @@ async function readTargetLegs(params: {
       },
     ];
   });
+}
+
+async function readBoundedTargetLegs(params: {
+  db: Db;
+  billingAccountId: string;
+  conditionGroup: ReadonlyMap<string, string>;
+  participantLimit: number;
+}): Promise<{
+  legs: RawLeg[];
+  totalParticipants: number;
+  hydratedParticipants: number;
+  groupTruncated: boolean;
+}> {
+  if (params.conditionGroup.size === 0 || params.participantLimit <= 0) {
+    return {
+      legs: [],
+      totalParticipants: 0,
+      hydratedParticipants: 0,
+      groupTruncated: false,
+    };
+  }
+  const selectedConditions = sql.join(
+    [...params.conditionGroup.entries()].map(
+      ([conditionId, groupKey]) => sql`(${conditionId}, ${groupKey})`
+    ),
+    sql`, `
+  );
+  const rows = (await params.db.execute(sql`
+    WITH selected_conditions(condition_id, group_key) AS (
+      VALUES ${selectedConditions}
+    ), active_targets AS (
+      SELECT
+        lower(t.target_wallet) AS wallet_address,
+        w.id AS trader_wallet_id,
+        COALESCE(NULLIF(w.label, ''), 'Copy target') AS label
+      FROM poly_copy_trade_targets t
+      JOIN poly_trader_wallets w ON lower(w.wallet_address) = lower(t.target_wallet)
+      WHERE t.billing_account_id = ${params.billingAccountId}
+        AND t.disabled_at IS NULL
+        AND w.disabled_at IS NULL
+    ), latest AS (
+      SELECT DISTINCT ON (s.condition_id, s.trader_wallet_id, s.token_id)
+        sc.group_key,
+        s.trader_wallet_id,
+        s.condition_id,
+        s.token_id,
+        s.shares::numeric AS shares,
+        s.cost_basis_usdc::numeric AS cost_basis_usdc,
+        s.current_value_usdc::numeric AS snapshot_value_usdc,
+        s.avg_price::numeric AS avg_price,
+        s.captured_at,
+        s.raw->>'title' AS raw_title,
+        s.raw->>'eventTitle' AS raw_event_title,
+        s.raw->>'slug' AS raw_slug,
+        s.raw->>'eventSlug' AS raw_event_slug,
+        s.raw->>'outcome' AS raw_outcome
+      FROM selected_conditions sc
+      JOIN poly_trader_position_snapshots s ON s.condition_id = sc.condition_id
+      WHERE s.trader_wallet_id IN (SELECT trader_wallet_id FROM active_targets)
+      ORDER BY s.condition_id, s.trader_wallet_id, s.token_id, s.captured_at DESC NULLS LAST
+    ), projected AS (
+      SELECT
+        l.group_key,
+        a.wallet_address,
+        a.label,
+        l.condition_id,
+        l.token_id,
+        COALESCE(NULLIF(pmm.market_title, ''), NULLIF(l.raw_title, ''), 'Polymarket') AS market_title,
+        COALESCE(NULLIF(pmm.event_title, ''), NULLIF(l.raw_event_title, '')) AS event_title,
+        COALESCE(NULLIF(pmm.market_slug, ''), NULLIF(l.raw_slug, '')) AS market_slug,
+        COALESCE(NULLIF(pmm.event_slug, ''), NULLIF(l.raw_event_slug, '')) AS event_slug,
+        COALESCE(NULLIF(l.raw_outcome, ''), 'UNKNOWN') AS outcome,
+        l.shares,
+        l.cost_basis_usdc,
+        CASE WHEN cp.active THEN cp.current_value_usdc::numeric ELSE l.snapshot_value_usdc END AS current_value_usdc,
+        l.avg_price,
+        CASE WHEN cp.active THEN cp.last_observed_at ELSE l.captured_at END AS last_observed_at,
+        CASE
+          WHEN cp.active IS TRUE THEN
+            CASE WHEN cp.current_value_usdc::numeric > 0
+                 THEN 'active' ELSE 'inactive' END
+          WHEN cp.active IS FALSE THEN 'inactive'
+          ELSE
+            CASE WHEN l.snapshot_value_usdc > 0
+                 THEN 'active' ELSE 'inactive' END
+        END AS lifecycle,
+        ROW_NUMBER() OVER (
+          PARTITION BY l.group_key, a.wallet_address, l.condition_id
+          ORDER BY l.cost_basis_usdc DESC, l.token_id
+        ) AS leg_rank
+      FROM latest l
+      JOIN active_targets a ON a.trader_wallet_id = l.trader_wallet_id
+      LEFT JOIN poly_trader_current_positions cp
+        ON cp.trader_wallet_id = l.trader_wallet_id
+       AND cp.condition_id = l.condition_id
+       AND cp.token_id = l.token_id
+      LEFT JOIN poly_market_metadata pmm ON pmm.condition_id = l.condition_id
+    ), participants AS (
+      SELECT
+        group_key,
+        wallet_address,
+        label,
+        condition_id,
+        SUM(current_value_usdc) AS participant_value,
+        jsonb_agg(
+          jsonb_build_object(
+            'token_id', token_id,
+            'market_title', market_title,
+            'event_title', event_title,
+            'market_slug', market_slug,
+            'event_slug', event_slug,
+            'outcome', outcome,
+            'shares', shares,
+            'cost_basis_usdc', cost_basis_usdc,
+            'current_value_usdc', current_value_usdc,
+            'avg_price', avg_price,
+            'last_observed_at', last_observed_at,
+            'lifecycle', lifecycle
+          ) ORDER BY cost_basis_usdc DESC, token_id
+        ) FILTER (WHERE leg_rank <= 2) AS legs
+      FROM projected
+      WHERE leg_rank <= 2
+      GROUP BY group_key, wallet_address, label, condition_id
+    ), ranked AS (
+      SELECT
+        participants.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY group_key
+          ORDER BY participant_value DESC, wallet_address, condition_id
+        ) AS group_rank,
+        COUNT(*) OVER (PARTITION BY group_key) AS group_participant_count
+      FROM participants
+    ), per_group_bounded AS (
+      SELECT * FROM ranked WHERE group_rank <= ${BOUNDED_TARGETS_PER_GROUP}
+    ), counted AS (
+      SELECT
+        per_group_bounded.*,
+        COUNT(*) OVER () AS total_participants,
+        BOOL_OR(group_participant_count > ${BOUNDED_TARGETS_PER_GROUP}) OVER () AS group_truncated
+      FROM per_group_bounded
+    )
+    SELECT
+      total_participants,
+      group_truncated,
+      group_key,
+      wallet_address,
+      label,
+      condition_id,
+      legs
+    FROM counted
+    ORDER BY participant_value DESC, wallet_address, condition_id
+    LIMIT ${Math.max(0, Math.trunc(params.participantLimit))}
+  `)) as unknown as BoundedTargetParticipantRow[];
+
+  const legs: RawLeg[] = [];
+  for (const row of rows) {
+    if (
+      row.wallet_address === null ||
+      row.condition_id === null ||
+      !Array.isArray(row.legs)
+    ) {
+      continue;
+    }
+    for (const value of row.legs.slice(0, 2)) {
+      if (!value || typeof value !== "object") continue;
+      const leg = value as BoundedTargetLeg;
+      if (typeof leg.token_id !== "string" || leg.token_id.length === 0) continue;
+      const shares = toNumber(leg.shares);
+      const costBasisUsdc = toNumber(leg.cost_basis_usdc);
+      const currentValueUsdc = toNumber(leg.current_value_usdc);
+      const avgPrice = nullableNumber(leg.avg_price);
+      legs.push({
+        side: "copy_target",
+        source: "trader_current_positions",
+        label: row.label ?? "Copy target",
+        walletAddress: row.wallet_address.toLowerCase(),
+        conditionId: row.condition_id,
+        tokenId: leg.token_id,
+        marketTitle: leg.market_title ?? "Polymarket",
+        eventTitle: leg.event_title,
+        marketSlug: leg.market_slug,
+        eventSlug: leg.event_slug,
+        outcome: leg.outcome ?? "UNKNOWN",
+        shares,
+        costBasisUsdc,
+        currentValueUsdc,
+        vwap: positionVwap(costBasisUsdc, shares, avgPrice),
+        avgPrice,
+        lifecycle: leg.lifecycle === "inactive" ? "inactive" : "active",
+        lastObservedAt: isoOrNull(leg.last_observed_at),
+        ourPositionStatus: null,
+        pnlUsdc: roundMoney(currentValueUsdc - costBasisUsdc),
+        redemptionProceedsUsdc: 0,
+      });
+    }
+  }
+  return {
+    legs,
+    totalParticipants: toNumber(rows[0]?.total_participants),
+    hydratedParticipants: rows.length,
+    groupTruncated: rows[0]?.group_truncated === true,
+  };
 }
 
 function groupParticipants(
@@ -921,6 +1218,12 @@ export async function readFillRollups(params: {
   db: Db;
   conditions: readonly string[];
   walletAddresses: readonly string[];
+  /** Optional dashboard bound: hydrate only already-selected participant legs. */
+  positionKeys?: readonly {
+    walletAddress: string;
+    conditionId: string;
+    tokenId: string;
+  }[];
 }): Promise<Map<string, FillRollup>> {
   if (params.conditions.length === 0 || params.walletAddresses.length === 0) {
     return new Map();
@@ -940,6 +1243,16 @@ export async function readFillRollups(params: {
     .map((row) => row.id)
     .filter((id): id is string => typeof id === "string" && id.length > 0);
   if (walletIds.length === 0) return new Map();
+  if (params.positionKeys?.length === 0) return new Map();
+  const selectedKeyRows = params.positionKeys
+    ? sql.join(
+        params.positionKeys.map(
+          (key) =>
+            sql`(${key.walletAddress.toLowerCase()}, ${key.conditionId}, ${key.tokenId})`
+        ),
+        sql`, `
+      )
+    : null;
   const flows = windowedFillFlowsSelect({
     walletIds,
     windowStartIso: EPOCH_ISO,
@@ -956,6 +1269,12 @@ export async function readFillRollups(params: {
       pmo.outcome AS market_outcome
     FROM (${flows}) fl
     JOIN poly_trader_wallets w ON w.id = fl.trader_wallet_id
+    ${selectedKeyRows === null
+      ? sql``
+      : sql`JOIN (VALUES ${selectedKeyRows}) AS selected_keys(wallet_address, condition_id, token_id)
+          ON selected_keys.wallet_address = lower(w.wallet_address)
+         AND selected_keys.condition_id = fl.condition_id
+         AND selected_keys.token_id = fl.token_id`}
     LEFT JOIN poly_market_outcomes pmo
       ON pmo.condition_id = fl.condition_id
      AND pmo.token_id = fl.token_id

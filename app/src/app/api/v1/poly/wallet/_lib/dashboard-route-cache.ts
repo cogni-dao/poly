@@ -110,6 +110,24 @@ const EXECUTION_KEY_PREFIX = "route:wallet-execution:";
 const BALANCES_KEY_PREFIX = "balances:";
 const LEDGER_POSITIONS_KEY_PREFIX = "ledger-positions:";
 const CURRENT_POSITIONS_KEY_PREFIX = "current-positions:";
+const UNIFIED_DASHBOARD_KEY_PREFIX = "route:wallet-dashboard:";
+
+/** Hard TTL for the coherent snapshot: never serves stale while recomputing. */
+export const UNIFIED_DASHBOARD_CACHE_TTL_MS = 15_000;
+
+export function unifiedDashboardCacheKey(
+  billingAccountId: string,
+  interval: string
+): string {
+  return `${UNIFIED_DASHBOARD_KEY_PREFIX}${billingAccountId}:${interval}`;
+}
+
+export async function coalesceUnifiedDashboard<T>(
+  key: string,
+  fetcher: () => Promise<T>
+): Promise<T> {
+  return coalesce(key, fetcher, UNIFIED_DASHBOARD_CACHE_TTL_MS);
+}
 
 /**
  * Overview payloads vary by interval (pnl chart window) and freshness
@@ -253,6 +271,7 @@ export function invalidateDashboardRouteCaches(
     clearTtlCacheByPrefix(`${EXECUTION_KEY_PREFIX}${billingAccountId}`) +
     clearTtlCacheByPrefix(`${BALANCES_KEY_PREFIX}${billingAccountId}`) +
     clearTtlCacheByPrefix(`${LEDGER_POSITIONS_KEY_PREFIX}${billingAccountId}`) +
-    clearTtlCacheByPrefix(`${CURRENT_POSITIONS_KEY_PREFIX}${billingAccountId}`)
+    clearTtlCacheByPrefix(`${CURRENT_POSITIONS_KEY_PREFIX}${billingAccountId}`) +
+    clearTtlCacheByPrefix(`${UNIFIED_DASHBOARD_KEY_PREFIX}${billingAccountId}`)
   );
 }

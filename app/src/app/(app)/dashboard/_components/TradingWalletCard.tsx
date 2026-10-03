@@ -35,14 +35,10 @@
 
 "use client";
 
-import type {
-  PolyWalletOverviewInterval,
-  PolyWalletStatusOutput,
-} from "@cogni/poly-node-contracts";
+import type { PolyWalletStatusOutput } from "@cogni/poly-node-contracts";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import type { ReactElement } from "react";
-import { useState } from "react";
 import {
   AddressChip,
   Card,
@@ -55,7 +51,7 @@ import {
   WalletProfitLossCard,
 } from "@/features/wallet-analysis";
 import { cn } from "@/shared/util/cn";
-import { useTradingWalletOverview } from "../_hooks/useTradingWalletOverview";
+import { useWalletDashboard } from "../_hooks/useWalletDashboard";
 import { TradingWalletBalanceBar } from "./TradingWalletBalanceBar";
 
 function formatDecimal(n: number | null, fractionDigits: number): string {
@@ -67,20 +63,17 @@ function formatDecimal(n: number | null, fractionDigits: number): string {
 }
 
 async function fetchWalletStatus(): Promise<PolyWalletStatusOutput> {
-  const res = await fetch("/api/v1/poly/wallet/status", {
+  const response = await fetch("/api/v1/poly/wallet/status", {
     credentials: "include",
   });
-  if (!res.ok) {
-    throw new Error(`wallet status failed: ${res.status}`);
-  }
-  return (await res.json()) as PolyWalletStatusOutput;
+  if (!response.ok) throw new Error(`wallet status failed: ${response.status}`);
+  return (await response.json()) as PolyWalletStatusOutput;
 }
 
 export function TradingWalletCard(): ReactElement {
-  const [interval, setInterval] = useState<PolyWalletOverviewInterval>("1W");
-  const { data, isLoading, isError } = useTradingWalletOverview(interval);
-  // Shares the "poly-wallet-status" key with /credits, so navigating between
-  // pages hits the cache rather than refetching.
+  const dashboard = useWalletDashboard();
+  const data = dashboard.data?.overview;
+  const { interval, setInterval, isLoading, isError } = dashboard;
   const { data: statusData } = useQuery({
     queryKey: ["poly-wallet-status"],
     queryFn: fetchWalletStatus,
