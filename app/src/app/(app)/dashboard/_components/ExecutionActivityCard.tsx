@@ -284,11 +284,10 @@ function MarketGroupsPanel({
         </h3>
         {exposureUnavailable ? (
           <p
-            className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
+            className="py-6 text-center text-muted-foreground text-sm"
             role="status"
           >
-            Market exposure is temporarily unavailable. This is not a
-            zero-exposure result.
+            Market exposure temporarily unavailable.
           </p>
         ) : (
           <>
@@ -378,24 +377,7 @@ function PositionsPanel({
         <h3 className="font-semibold text-muted-foreground text-xs uppercase tracking-wider">
           Positions
         </h3>
-        {isLive && liveInventoryUnavailable ? (
-          <p
-            className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
-            role="status"
-          >
-            Open positions are unavailable because the wallet position model
-            could not be read. This is not a zero-position result.
-          </p>
-        ) : !isLive && closedInventoryUnavailable ? (
-          <p
-            className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
-            role="status"
-          >
-            Closed position history is unavailable or incomplete because a
-            saved position model could not be read. This is not a zero-history
-            result.
-          </p>
-        ) : isLive && previewTruncated ? (
+        {isLive && previewTruncated ? (
           <p className="text-muted-foreground text-xs">
             Showing a bounded preview; the Live count is the exact full inventory.
           </p>

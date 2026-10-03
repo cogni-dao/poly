@@ -170,13 +170,49 @@ describe("dashboard missing read-model states", () => {
 
     expect(screen.getByText("$3.78")).toBeInTheDocument();
     expect(screen.getByText("Total").parentElement).toHaveTextContent("Total—");
+    expect(
+      screen.getByRole("img", {
+        name: /Balance composition; Available: \$3\.78; Locked: \$0\.00; Positions: unavailable; Total: unavailable/i,
+      })
+    ).toBeInTheDocument();
+    expect(screen.getByTitle("Available balance")).toHaveClass("bg-success/70");
+    expect(screen.getByTitle("Locked balance")).toHaveClass("bg-warning/70");
+    expect(screen.getByTitle("Positions balance")).toHaveClass(
+      "bg-[hsl(var(--chart-1))]/70"
+    );
     expect(screen.queryByText(/Wallet is empty/i)).not.toBeInTheDocument();
     expect(
-      screen.getByText(/Total is withheld until holdings are known/i)
+      screen.getByText("P/L temporarily unavailable.")
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/P\/L history is unavailable until/i)
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/Total is withheld/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/observer read model/i)).not.toBeInTheDocument();
+  });
+
+  it("reuses the legacy balance bar for a complete wallet breakdown", () => {
+    state.overview = {
+      configured: true,
+      connected: true,
+      freshness: "read_model",
+      address: "0x1111111111111111111111111111111111111111",
+      interval: "1W",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      pol_gas: 1,
+      usdc_available: 3.78,
+      usdc_locked: 2,
+      usdc_positions_mtm: 45.49,
+      usdc_total: 51.27,
+      open_orders: 1,
+      positions_synced_at: "2026-10-02T12:00:00.000Z",
+      positions_sync_age_ms: 0,
+      positions_stale: false,
+      pnlHistory: [],
+      warnings: [],
+    };
+
+    render(<TradingWalletCard />);
+
+    expect(screen.getByText("balance bar")).toBeInTheDocument();
+    expect(screen.getByText("1 open order")).toBeInTheDocument();
   });
 
   it("does not label an unavailable POL reading as no gas", () => {
@@ -206,7 +242,7 @@ describe("dashboard missing read-model states", () => {
     expect(screen.queryByText("low gas")).not.toBeInTheDocument();
   });
 
-  it("explains stale P/L as stale rather than observer-missing", () => {
+  it("keeps stale P/L concise without rendering a false empty chart", () => {
     state.overview = {
       configured: true,
       connected: true,
@@ -229,16 +265,14 @@ describe("dashboard missing read-model states", () => {
 
     render(<TradingWalletCard />);
 
-    expect(screen.getByText(/saved observation is stale/i)).toBeInTheDocument();
-    expect(
-      screen.queryByText(/until this trading wallet is present/i)
-    ).not.toBeInTheDocument();
+    expect(screen.getByText("P/L temporarily unavailable.")).toBeInTheDocument();
+    expect(screen.queryByText(/saved observation/i)).not.toBeInTheDocument();
     // Use the real WalletProfitLossCard here: stale availability must prevent
     // its empty-series fallback from contradicting the explicit stale state.
     expect(screen.queryByText("No P/L history yet.")).not.toBeInTheDocument();
   });
 
-  it("explains a P/L read failure without claiming observer absence", () => {
+  it("keeps a P/L read failure concise without claiming observer absence", () => {
     state.overview = {
       configured: true,
       connected: true,
@@ -261,10 +295,9 @@ describe("dashboard missing read-model states", () => {
 
     render(<TradingWalletCard />);
 
-    expect(screen.getByText(/saved read failed/i)).toBeInTheDocument();
-    expect(
-      screen.queryByText(/until this trading wallet is present/i)
-    ).not.toBeInTheDocument();
+    expect(screen.getByText("P/L temporarily unavailable.")).toBeInTheDocument();
+    expect(screen.queryByText(/saved read/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/observer/i)).not.toBeInTheDocument();
     expect(screen.queryByText("No P/L history yet.")).not.toBeInTheDocument();
   });
 
@@ -294,9 +327,8 @@ describe("dashboard missing read-model states", () => {
         screen.getByText("Open positions unavailable.")
       ).toBeInTheDocument();
       expect(screen.queryByText("No open positions.")).not.toBeInTheDocument();
-      expect(
-        screen.getByText(/This is not a zero-position result/i)
-      ).toBeInTheDocument();
+      expect(screen.queryByText(/not a zero-position/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/position model/i)).not.toBeInTheDocument();
     }
   );
 
@@ -368,7 +400,7 @@ describe("dashboard missing read-model states", () => {
     fireEvent.click(screen.getByRole("button", { name: /Closed/i }));
 
     expect(screen.getByRole("button", { name: /Closed.*—/i })).toBeInTheDocument();
-    expect(screen.getByText(/not a zero-history result/i)).toBeInTheDocument();
+    expect(screen.queryByText(/not a zero-history/i)).not.toBeInTheDocument();
     expect(
       screen.getByText("Closed position history unavailable.")
     ).toBeInTheDocument();
@@ -393,7 +425,10 @@ describe("dashboard missing read-model states", () => {
     render(<ExecutionActivityCard />);
     fireEvent.click(screen.getByRole("button", { name: "Markets" }));
 
-    expect(screen.getByText(/not a zero-exposure result/i)).toBeInTheDocument();
+    expect(
+      screen.getByText("Market exposure temporarily unavailable.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/not a zero-exposure/i)).not.toBeInTheDocument();
     expect(screen.queryByText("market distribution")).not.toBeInTheDocument();
     expect(screen.queryByText("markets table")).not.toBeInTheDocument();
   });
@@ -401,7 +436,10 @@ describe("dashboard missing read-model states", () => {
   it.each([
     ["wallet_adapter_unconfigured", /history is unavailable on this deployment/i],
     ["no_trading_wallet", /Connect a trading wallet from Money/i],
-    ["daily_trade_counts_unavailable", /not a zero-trade result/i],
+    [
+      "daily_trade_counts_unavailable",
+      /Trade history is temporarily unavailable/i,
+    ],
   ])("does not call %s an empty trade history", (code, copy) => {
     state.execution = {
       address: "0x0000000000000000000000000000000000000000",
@@ -418,5 +456,6 @@ describe("dashboard missing read-model states", () => {
 
     expect(screen.getByText(copy)).toBeInTheDocument();
     expect(screen.queryByText("No trade history yet.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/not a zero-trade/i)).not.toBeInTheDocument();
   });
 });
