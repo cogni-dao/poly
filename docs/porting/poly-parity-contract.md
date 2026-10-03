@@ -28,7 +28,7 @@ The source revision, subtree object, subtree root, and file count are one indivi
 - `upgraded`: a deliberate current implementation satisfies an explicit, hash-pinned resolution record and its candidate/production proof obligations.
 - `retired`: removal satisfies an explicit, source-pinned resolution record and proves the behavior is intentionally obsolete or replaced.
 
-Every resolution record names exactly one source path and includes the expected source/target blobs and modes, rationale, behavior expectation, and proof references. A changed hash or mode invalidates the record. Every one of the 79 P0/P1 divergences belongs to exactly one delivery group.
+Every resolution record names exactly one source path and includes the expected source/target blobs and modes, rationale, behavior expectation, applicable behavior-gate IDs, and candidate/production proof references pinned to build SHA and observation time. A changed hash or mode invalidates the record. Every one of the 79 P0/P1 divergences belongs to exactly one delivery group.
 
 ## Delivery groups
 
