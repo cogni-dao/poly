@@ -51,7 +51,7 @@ export function OperatorWalletChartsRow(): ReactElement {
             className="flex h-44 items-center justify-center text-center text-muted-foreground text-sm"
             role="status"
           >
-            Trade history is temporarily unavailable. This is not a zero-trade result.
+            Trade history is temporarily unavailable.
           </div>
         ) : !isLoading && dailyCounts.length === 0 ? (
           <div className="flex h-44 items-center justify-center text-center text-muted-foreground text-sm">

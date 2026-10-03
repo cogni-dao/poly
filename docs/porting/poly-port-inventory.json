@@ -13,11 +13,11 @@
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
   "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "8707d4a22e167da927bf41a277454fd7a0ed414868385a15aee54fe685928edd",
+  "targetTreeDigest": "dc551f2cdbd5a61c2fa3e3dc1af9e8c0414baf24a92761dd9aa4fde1bbc4dec7",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1069,
+    "targetOnlyFiles": 1070,
     "unresolved": 602,
     "byStatus": {
       "exact": 1126,
@@ -265,7 +265,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "7bf9a74fbc2b2af062e72090126e24a036e4c852283a63bf990b4b7ef2efd09e",
+      "currentTargetDigest": "29f4105407b92c47bf36692be4b0984113fd8864af26e2cf3b129ba70ce0560b",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -287,7 +287,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "7bf9a74fbc2b2af062e72090126e24a036e4c852283a63bf990b4b7ef2efd09e",
+      "currentTargetDigest": "29f4105407b92c47bf36692be4b0984113fd8864af26e2cf3b129ba70ce0560b",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -309,7 +309,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "7bf9a74fbc2b2af062e72090126e24a036e4c852283a63bf990b4b7ef2efd09e",
+      "currentTargetDigest": "29f4105407b92c47bf36692be4b0984113fd8864af26e2cf3b129ba70ce0560b",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -4609,7 +4609,7 @@
       "sourceBlob": "5b00a5697517aa73727a4879895724f6da5484ce",
       "sourcePath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
-      "targetBlob": "7f039dc9fdfee7e5ed108f59cf86207d0e436dc2",
+      "targetBlob": "42d94d59554448065f0f2c5f649305e9706d0aac",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -4623,7 +4623,7 @@
       "sourceBlob": "0456032db2a64923b5a71400f8b0a24a0c4fec36",
       "sourcePath": "app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx",
-      "targetBlob": "0302e968b5416644b6215b99a8804b14a379ff80",
+      "targetBlob": "e8756c9f72681fb27ee3e5ff28b3e837cc28d22e",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -4637,7 +4637,7 @@
       "sourceBlob": "df6c6e3b9e0ebb1a2447db59c9f425e76f8d089d",
       "sourcePath": "app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx",
-      "targetBlob": "1dfd440c6f2228163c3f061c1bbd2e3c3176acf3",
+      "targetBlob": "43f4b52275f8498f6bb219fea62ab89c2947edec",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -25500,6 +25500,9 @@
     },
     {
       "targetPath": "app/src/app/(app)/dashboard/_components/MirrorAttemptsCard.tsx"
+    },
+    {
+      "targetPath": "app/src/app/(app)/dashboard/_components/TradingWalletBalanceBar.tsx"
     },
     {
       "targetPath": "app/src/app/(app)/knowledge/[id]/page.tsx"
