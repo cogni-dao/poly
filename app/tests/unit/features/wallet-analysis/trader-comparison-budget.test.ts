@@ -131,14 +131,15 @@ describe("getTraderComparison per-wallet time budget", () => {
 
   it("a slow wallet does not block a fast one — partial results survive", async () => {
     // One shared getTraderComparison call over two wallets: the fast wallet
-    // lands, the hanging wallet degrades to a warning.
+    // lands, the hanging wallet degrades to a warning. Each wallet now opens
+    // one bounded transaction for trade aggregates and one for saved P/L.
     const fast = fastEmptyDb();
     const hang = hangingDb();
     let calls = 0;
     const mixedDb = {
       transaction: (...args: unknown[]) => {
         calls += 1;
-        const target = calls === 1 ? fast : hang;
+        const target = calls <= 2 ? fast : hang;
         return (
           target as unknown as {
             transaction: (...a: unknown[]) => Promise<unknown>;

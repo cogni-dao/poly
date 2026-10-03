@@ -13,11 +13,11 @@
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
   "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "58228e62885e29446cfc8fd15ac9d5c905e1124cdf67334dabf3b9502e135467",
+  "targetTreeDigest": "801dd3ae3417103768ae76bbcb1be4311b8227e211789b38317007eceaad76eb",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1072,
+    "targetOnlyFiles": 1074,
     "unresolved": 602,
     "byStatus": {
       "exact": 1126,
@@ -243,7 +243,7 @@
         "app/src/features/wallet-analysis/server/wallet-analysis-service.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "b4eabeaed3461b1156d8fa497ebad18670b17a10dd6898fe502276e42c01e421",
+      "currentTargetDigest": "d8f53637b87174de5a2545b8f1da46074b468af52e1874548673c13a8db08254",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -13447,7 +13447,7 @@
       "sourceBlob": "3429957ab591dc4ce944af612f0ab26a95791db5",
       "sourcePath": "app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts",
-      "targetBlob": "ad0ce3cf0c8be4688b862fdcb34c9c45303a016b",
+      "targetBlob": "7bac754ac208ade04baf84452378aa41aea50e28",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -13461,7 +13461,7 @@
       "sourceBlob": "3b5a7ebe52c427322736b688d339cd85792f90c5",
       "sourcePath": "app/src/features/wallet-analysis/server/wallet-analysis-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/wallet-analysis-service.ts",
-      "targetBlob": "62c627235ed57b1d7ed3fc2037df48f48a36fe8c",
+      "targetBlob": "51d019276e6d004223d82c94024ca6f39b3829ec",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -25886,6 +25886,9 @@
       "targetPath": "app/tests/component/db/position-snapshot-retention.int.test.ts"
     },
     {
+      "targetPath": "app/tests/component/db/recent-trades-query-plan.int.test.ts"
+    },
+    {
       "targetPath": "app/tests/component/db/top-wallet-stats.int.test.ts"
     },
     {
@@ -26088,6 +26091,9 @@
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/observation-wallet-loop.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/wallet-analysis/recent-trades-read-budget.test.ts"
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/saved-facts-availability.test.ts"

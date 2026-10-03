@@ -19,7 +19,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1072 |
+| Current-only files | 1074 |
 | Unresolved legacy files | 602 |
 | P0/P1 mission files resolved | 8/79 |
 | Behavioral gates passed | 3/7 |
@@ -195,8 +195,8 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `ea0f16ca8443df059ce3c73876e2eee60ad5bbd2` | `app/src/features/wallet-analysis/server/realized-pnl-service.ts` | `100644` | `b7780979d5729a2076f39be81f5bd1c4942bf7d2` | `app/src/features/wallet-analysis/server/realized-pnl-service.ts` |
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `03a2ce211aa8c297b86415c441f3a3757b33939f` | `app/src/features/wallet-analysis/server/target-overlap-service.ts` | `100644` | `5f8c35c201172a8a4c4d54dc6b2eecd24ecc6aff` | `app/src/features/wallet-analysis/server/target-overlap-service.ts` |
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `93b201ce8d291c0120fc2d85c2f4c54894d30d9c` | `app/src/features/wallet-analysis/server/trader-comparison-service.ts` | `100644` | `8cbd7b4b83bee63552cb405a4e01a09eb0c9ab49` | `app/src/features/wallet-analysis/server/trader-comparison-service.ts` |
-| P1 | unresolved | content_differs | `saved-facts` | `100644` | `3429957ab591dc4ce944af612f0ab26a95791db5` | `app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts` | `100644` | `ad0ce3cf0c8be4688b862fdcb34c9c45303a016b` | `app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts` |
-| P1 | unresolved | content_differs | `saved-facts` | `100644` | `3b5a7ebe52c427322736b688d339cd85792f90c5` | `app/src/features/wallet-analysis/server/wallet-analysis-service.ts` | `100644` | `62c627235ed57b1d7ed3fc2037df48f48a36fe8c` | `app/src/features/wallet-analysis/server/wallet-analysis-service.ts` |
+| P1 | unresolved | content_differs | `saved-facts` | `100644` | `3429957ab591dc4ce944af612f0ab26a95791db5` | `app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts` | `100644` | `7bac754ac208ade04baf84452378aa41aea50e28` | `app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts` |
+| P1 | unresolved | content_differs | `saved-facts` | `100644` | `3b5a7ebe52c427322736b688d339cd85792f90c5` | `app/src/features/wallet-analysis/server/wallet-analysis-service.ts` | `100644` | `51d019276e6d004223d82c94024ca6f39b3829ec` | `app/src/features/wallet-analysis/server/wallet-analysis-service.ts` |
 | P1 | exact | — | — | `100644` | `564923f87e8b85adfe25dd85eb2e801b79371671` | `app/src/features/wallet-analysis/server/copy-trade-pnl-service.ts` | `100644` | `564923f87e8b85adfe25dd85eb2e801b79371671` | `app/src/features/wallet-analysis/server/copy-trade-pnl-service.ts` |
 | P1 | exact | — | — | `100644` | `b9bb434314938596f4038149d18baf3f4bc6d957` | `app/src/features/wallet-analysis/server/current-position-staleness.ts` | `100644` | `b9bb434314938596f4038149d18baf3f4bc6d957` | `app/src/features/wallet-analysis/server/current-position-staleness.ts` |
 | P1 | exact | — | — | `100644` | `765e52cb8b7f6aabd8f5a57513fe419048f16cfa` | `app/src/features/wallet-analysis/server/market-return-math.ts` | `100644` | `765e52cb8b7f6aabd8f5a57513fe419048f16cfa` | `app/src/features/wallet-analysis/server/market-return-math.ts` |

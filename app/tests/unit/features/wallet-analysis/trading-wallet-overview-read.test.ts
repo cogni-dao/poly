@@ -12,7 +12,10 @@
  * @vitest-environment node
  */
 
+import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it, vi } from "vitest";
+import { RESEARCH_READ_STATEMENT_TIMEOUT_MS } from "@/features/wallet-analysis/server/fill-rollup-service";
+import { getPnlSlice } from "@/features/wallet-analysis/server/wallet-analysis-service";
 import { getTradingWalletPnlHistoryRead } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
 
 const ADDRESS = "0x1111111111111111111111111111111111111111" as const;
@@ -22,26 +25,39 @@ function pnlReadDb(input: {
   pnlRows?: Array<{ ts: Date; pnlUsdc: string; observedAt: Date }>;
 }) {
   let selectNumber = 0;
-  return {
-    select: vi.fn(() => {
-      selectNumber += 1;
-      if (selectNumber === 1) {
-        return {
-          from: () => ({
-            where: () => ({
-              limit: async () => input.walletRows,
-            }),
-          }),
-        };
-      }
+  const captured: string[] = [];
+  const select = vi.fn(() => {
+    selectNumber += 1;
+    if (selectNumber === 1) {
       return {
         from: () => ({
           where: () => ({
-            orderBy: () => ({ limit: async () => input.pnlRows ?? [] }),
+            limit: async () => input.walletRows,
           }),
         }),
       };
-    }),
+    }
+    return {
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({ limit: async () => input.pnlRows ?? [] }),
+        }),
+      }),
+    };
+  });
+  const tx = {
+    select,
+    execute: async (query: unknown) => {
+      captured.push(new PgDialect().sqlToQuery(query as never).sql);
+      return [];
+    },
+  };
+  return {
+    captured,
+    select,
+    transaction: vi.fn(
+      async (fn: (value: typeof tx) => Promise<unknown>) => await fn(tx)
+    ),
   };
 }
 
@@ -57,6 +73,9 @@ describe("getTradingWalletPnlHistoryRead", () => {
 
     expect(result).toEqual({ points: [], status: "wallet_missing" });
     expect(db.select).toHaveBeenCalledTimes(1);
+    expect(db.captured).toEqual([
+      `SET LOCAL statement_timeout = ${RESEARCH_READ_STATEMENT_TIMEOUT_MS}`,
+    ]);
   });
 
   it("reports no_history without claiming observation succeeded", async () => {
@@ -111,6 +130,25 @@ describe("getTradingWalletPnlHistoryRead", () => {
       points: [],
       status: "stale",
       observedAt: ts.toISOString(),
+    });
+  });
+
+  it("turns a P/L statement timeout into an explicit slice warning", async () => {
+    const db = {
+      transaction: async () => {
+        throw new Error("canceling statement due to statement timeout");
+      },
+    };
+
+    const result = await getPnlSlice(db as never, ADDRESS, "ALL");
+
+    expect(result).toEqual({
+      kind: "warn",
+      warning: {
+        slice: "pnl",
+        code: "upstream_failed",
+        message: "canceling statement due to statement timeout",
+      },
     });
   });
 });
