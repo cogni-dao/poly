@@ -13,7 +13,7 @@
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
   "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "a852e644f7456826950ee83a4bb49bbfbcc911e73f2fe5b5ecb749d17eb7ddd2",
+  "targetTreeDigest": "8707d4a22e167da927bf41a277454fd7a0ed414868385a15aee54fe685928edd",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
@@ -243,7 +243,7 @@
         "app/src/features/wallet-analysis/server/wallet-analysis-service.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "d8f53637b87174de5a2545b8f1da46074b468af52e1874548673c13a8db08254",
+      "currentTargetDigest": "4bf60ffa464f1fcc34784ddd284ae3548d2b58b004f65e05516c3904d172a89e",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -13461,7 +13461,7 @@
       "sourceBlob": "3b5a7ebe52c427322736b688d339cd85792f90c5",
       "sourcePath": "app/src/features/wallet-analysis/server/wallet-analysis-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/wallet-analysis-service.ts",
-      "targetBlob": "51d019276e6d004223d82c94024ca6f39b3829ec",
+      "targetBlob": "fa1bdb1b25fe57063d6d5804806889df60ef9864",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
