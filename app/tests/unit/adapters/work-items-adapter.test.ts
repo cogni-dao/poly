@@ -148,7 +148,7 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		);
 
 		expect(fake.reservations).toBe(1);
-		expect(fake.poolQueries).toEqual([]);
+		expect(fake.poolQueries).toEqual(["SELECT 1 AS work_items_ready"]);
 		const joined = fake.reservedQueries.join("\n");
 		expect(joined).toContain("SELECT pg_try_advisory_lock(5001001)");
 		expect(joined).toMatch(/dolt_checkout\('-b', 'work-item-op\//);
@@ -208,9 +208,7 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		});
 
 		const sql = {
-			unsafe: async () => {
-				throw new Error("pooled SQL must not be used");
-			},
+			unsafe: async (query: string) => protocolResponse(query),
 			reserve: async () => ({
 				unsafe: async (query: string) => {
 					if (query.startsWith("SELECT pg_try_advisory_lock")) {
@@ -323,76 +321,26 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		await patch;
 	});
 
-	it("cancels and drains a timed-out SQL statement before releasing its session", async () => {
-		let cancelled = false;
-		let released = false;
-		const sql = {
-			reserve: async () => ({
-				unsafe: (query: string) => {
-					if (query.startsWith("UPDATE work_items")) {
-						let rejectPending: ((error: Error) => void) | undefined;
-						const pending = new Promise<unknown[]>((_, reject) => {
-							rejectPending = reject;
-						}) as Promise<unknown[]> & { cancel(): void };
-						pending.cancel = () => {
-							cancelled = true;
-							rejectPending?.(new Error("cancelled"));
-						};
-						return pending;
-					}
-					const result = Promise.resolve(protocolResponse(query)) as Promise<
-						unknown[]
-					> & { cancel(): void };
-					result.cancel = () => undefined;
-					return result;
-				},
-				release: () => {
-					released = true;
-				},
-			}),
-		} as unknown as Sql;
-		const adapter = new DoltgresPolyWorkItemAdapter(sql, undefined, {
-			queryTimeoutMs: 5,
-		});
-
-		await expect(
-			adapter.patch(
-				{ id: toWorkItemId("task.5001"), set: { title: "Timeout" } },
-				"agent-1",
-			),
-		).rejects.toBeInstanceOf(WorkItemsBusyError);
-		expect(cancelled).toBe(true);
-		expect(released).toBe(true);
-	});
-
-	it("force-terminates and poisons the client when cancellation does not drain", async () => {
+	it("hard-terminates a timed-out pool and recovers on a fresh client", async () => {
 		let rejectBlocked: ((error: Error) => void) | undefined;
 		let terminated = false;
 		let released = false;
-		const rejectedPending = (error: Error) => {
-			const pending = Promise.reject(error) as Promise<unknown[]> & {
-				cancel(): void;
-			};
-			pending.cancel = () => undefined;
-			return pending;
-		};
+		let recreated = 0;
+		const fresh = fakeSql((query) => {
+			if (query.includes("SELECT *,")) return [ROW];
+			return undefined;
+		});
 		const sql = {
+			unsafe: async (query: string) => protocolResponse(query),
 			reserve: async () => ({
 				unsafe: (query: string) => {
-					if (terminated)
-						return rejectedPending(new Error("client terminated"));
+					if (terminated) return Promise.reject(new Error("client terminated"));
 					if (query.startsWith("UPDATE work_items")) {
-						const pending = new Promise<unknown[]>((_, reject) => {
+						return new Promise<unknown[]>((_, reject) => {
 							rejectBlocked = reject;
-						}) as Promise<unknown[]> & { cancel(): void };
-						pending.cancel = () => undefined;
-						return pending;
+						});
 					}
-					const result = Promise.resolve(protocolResponse(query)) as Promise<
-						unknown[]
-					> & { cancel(): void };
-					result.cancel = () => undefined;
-					return result;
+					return Promise.resolve(protocolResponse(query));
 				},
 				release: () => {
 					released = true;
@@ -405,7 +353,10 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		} as unknown as Sql;
 		const adapter = new DoltgresPolyWorkItemAdapter(sql, undefined, {
 			queryTimeoutMs: 5,
-			cancelGraceMs: 5,
+			recreateClient: () => {
+				recreated += 1;
+				return fresh.sql;
+			},
 		});
 
 		await expect(
@@ -414,17 +365,22 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 				"agent-1",
 			),
 		).rejects.toBeInstanceOf(WorkItemsBusyError);
-		await expect(adapter.get(toWorkItemId("task.5001"))).rejects.toBeInstanceOf(
-			WorkItemsBusyError,
+		await expect(adapter.get(toWorkItemId("task.5001"))).resolves.toMatchObject(
+			{
+				id: "task.5001",
+			},
 		);
 		expect(terminated).toBe(true);
 		expect(released).toBe(false);
+		expect(recreated).toBe(1);
+		expect(fresh.reservations).toBe(1);
 	});
 
 	it("force-terminates and poisons a connection reservation that never settles", async () => {
 		let rejectReserve: ((error: Error) => void) | undefined;
 		let terminated = false;
 		const sql = {
+			unsafe: async (query: string) => protocolResponse(query),
 			reserve: () =>
 				new Promise<never>((_, reject) => {
 					rejectReserve = reject;

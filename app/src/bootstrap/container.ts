@@ -1814,18 +1814,22 @@ function createContainer(): Container {
 	let knowledgeContributionService: ContributionService | undefined;
 	let knowledgeStorePort: KnowledgeStorePort | undefined;
 	if (env.DOLTGRES_URL) {
+		const doltgresUrl = env.DOLTGRES_URL;
 		const doltClient = buildDoltgresClient({
-			connectionString: env.DOLTGRES_URL,
+			connectionString: doltgresUrl,
 			applicationName: `cogni_knowledge_${env.SERVICE_NAME ?? "app"}`,
 		});
-		const workItemClient = buildDoltgresClient({
-			connectionString: env.DOLTGRES_URL,
-			applicationName: `cogni_work_items_${env.SERVICE_NAME ?? "app"}`,
-			max: 1,
-		});
+		const buildWorkItemClient = () =>
+			buildDoltgresClient({
+				connectionString: doltgresUrl,
+				applicationName: `cogni_work_items_${env.SERVICE_NAME ?? "app"}`,
+				max: 1,
+			});
+		const workItemClient = buildWorkItemClient();
 		workItemAdapter = new DoltgresPolyWorkItemAdapter(
 			workItemClient,
 			log.child({ component: "doltgres-work-items" }),
+			{ recreateClient: buildWorkItemClient },
 		);
 		const knowledgePort = new DoltgresKnowledgeStoreAdapter({
 			sql: doltClient,

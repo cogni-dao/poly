@@ -16,7 +16,10 @@ import {
 } from "testcontainers";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { DoltgresPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
+import {
+	DoltgresPolyWorkItemAdapter,
+	WorkItemsBusyError,
+} from "@/adapters/server/db/doltgres/work-items-adapter";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../..");
@@ -35,6 +38,7 @@ const PASSWORD = "doltgres";
 describe("Doltgres 0.57.3 work-item acceptance", () => {
 	let container: StartedTestContainer;
 	let sql: Sql;
+	let dbUrl: string;
 	const stageLogger = {
 		info: (fields: unknown, message?: string) =>
 			console.info(message, JSON.stringify(fields)),
@@ -58,7 +62,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		const host = container.getHost();
 		const port = container.getMappedPort(5432);
 		const baseUrl = `postgresql://postgres:${PASSWORD}@${host}:${port}/postgres`;
-		const dbUrl = `postgresql://postgres:${PASSWORD}@${host}:${port}/${DB_NAME}`;
+		dbUrl = `postgresql://postgres:${PASSWORD}@${host}:${port}/${DB_NAME}`;
 		const bootstrap = postgres(baseUrl, { max: 1, fetch_types: false });
 		try {
 			await bootstrap.unsafe(`CREATE DATABASE ${DB_NAME}`);
@@ -71,7 +75,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			encoding: "utf8",
 			stdio: "pipe",
 		});
-		sql = postgres(dbUrl, { max: 2, fetch_types: false });
+		sql = postgres(dbUrl, { max: 1, fetch_types: false });
 	}, 180_000);
 
 	afterAll(async () => {
@@ -80,9 +84,16 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 	});
 
 	it("creates, lists, patches, coordinates, and deletes through Dolt branches", async () => {
+		const createWorkItemClient = () =>
+			postgres(dbUrl, { max: 1, fetch_types: false });
 		const adapter = new DoltgresPolyWorkItemAdapter(sql, stageLogger, {
-			lockWaitMs: 5_000,
+			lockWaitMs: 250,
+			lockRetryMs: 25,
 			queryTimeoutMs: 5_000,
+			recreateClient: () => {
+				sql = createWorkItemClient();
+				return sql;
+			},
 		});
 		const id = toWorkItemId("task.9501");
 		const principalId = "doltgres-acceptance-agent";
@@ -99,6 +110,64 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			principalId,
 		);
 		expect(patched.title).toBe("Doltgres accepted");
+
+		const blocker = createWorkItemClient();
+		try {
+			await blocker.unsafe("SELECT pg_advisory_lock(5001001)");
+			await expect(adapter.get(id)).rejects.toBeInstanceOf(WorkItemsBusyError);
+		} finally {
+			await blocker
+				.unsafe("SELECT pg_advisory_unlock(5001001)")
+				.catch(() => undefined);
+			await blocker.end({ timeout: 0 });
+		}
+
+		const maintenance = createWorkItemClient();
+		try {
+			await maintenance.unsafe(
+				"SELECT dolt_checkout('-b', 'work-item-op/acceptance-orphan', 'main')",
+			);
+			await maintenance.unsafe("SELECT dolt_checkout('main')");
+		} finally {
+			await maintenance.end({ timeout: 0 });
+		}
+
+		const oldPool = sql;
+		const lockHolder = createWorkItemClient();
+		try {
+			await lockHolder.unsafe("SELECT pg_advisory_lock(9501002)");
+			const blockedQuery = oldPool.unsafe("SELECT pg_advisory_lock(9501002)");
+			const blockedResult = blockedQuery.then(
+				() => undefined,
+				(error) => error,
+			);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			const recoveryAttempt = adapter.get(id);
+			const destroyTimer = setTimeout(() => {
+				void oldPool.end({ timeout: 0 });
+			}, 100);
+			await expect(blockedResult).resolves.toBeInstanceOf(Error);
+			await expect(recoveryAttempt).rejects.toBeInstanceOf(WorkItemsBusyError);
+			clearTimeout(destroyTimer);
+		} finally {
+			await oldPool.end({ timeout: 0 });
+			await lockHolder
+				.unsafe("SELECT pg_advisory_unlock(9501002)")
+				.catch(() => undefined);
+			await lockHolder.end({ timeout: 0 });
+		}
+
+		await expect(adapter.get(id)).resolves.toMatchObject({ id });
+		const verifier = createWorkItemClient();
+		try {
+			await expect(
+				verifier.unsafe(
+					"SELECT name FROM dolt.branches WHERE name = 'work-item-op/acceptance-orphan'",
+				),
+			).resolves.toHaveLength(0);
+		} finally {
+			await verifier.end({ timeout: 0 });
+		}
 
 		const claimed = await adapter.claim({
 			id,
@@ -124,5 +193,5 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		expect(released.claimedByRun).toBeUndefined();
 		await expect(adapter.delete(id, principalId)).resolves.toBe(true);
 		await expect(adapter.get(id)).resolves.toBeNull();
-	}, 30_000);
+	}, 60_000);
 });
