@@ -6,11 +6,11 @@
     "treeRoot": "nodes/poly"
   },
   "policySha256": "cc0f1f13d7e108b07823f2c37d188d2c5fa4773866b20c587f997b6faba4cbb8",
-  "targetTreeDigest": "f5aa7fa9eaa499d73abf73dd81826ae6a2c2b23a77b73d315e6a7dcc3aab4114",
+  "targetTreeDigest": "5fcaea1f26adb4af43b4dd3f21c9bd37f46076a80fbb2d6af0ef51fdbecb882c",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1068,
+    "targetOnlyFiles": 1070,
     "unresolved": 610,
     "byStatus": {
       "exact": 1126,
@@ -2830,7 +2830,7 @@
       "sourceBlob": "240967ec2d52eeb4267901274a8677eeca6eee38",
       "sourcePath": "app/src/app/.well-known/agent.json/route.ts",
       "targetPath": "app/src/app/.well-known/agent.json/route.ts",
-      "targetBlob": "e854b7832fd6ff2cdaca94c060b61472f4c438ee",
+      "targetBlob": "3593fc10027f4fc92b2d616b812ebf33953da7cf",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "status": "review_required"
@@ -17856,10 +17856,16 @@
       "targetPath": "app/src/app/(app)/knowledge/view.tsx"
     },
     {
+      "targetPath": "app/src/app/(infra)/openapi.json/route.test.ts"
+    },
+    {
       "targetPath": "app/src/app/(public)/auth/attest/complete/page.tsx"
     },
     {
       "targetPath": "app/src/app/(public)/auth/attest/complete/view.tsx"
+    },
+    {
+      "targetPath": "app/src/app/.well-known/agent.json/route.test.ts"
     },
     {
       "targetPath": "app/src/app/_facades/identity/operator-attested-binding.server.ts"
