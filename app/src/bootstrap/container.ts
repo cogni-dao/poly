@@ -1382,12 +1382,31 @@ function createContainer(): Container {
 			);
 			const observerLogger =
 				log as unknown as import("@cogni/poly-market-provider").LoggerPort;
+			// OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM — the wallet port is the single
+			// resolver of a tenant's trading address, so the observer enrolls
+			// exactly the wallets the executor signs from.
+			const observationWalletPort = getPolyTraderWalletAdapter(log);
+			const { persistWalletBalanceFact, refreshWalletBalanceFacts } = await import(
+				"@/features/wallet-analysis/server/wallet-balance-snapshot-service"
+			);
 			const traderObservationStop = startTraderObservationJob({
 				db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
 					Record<string, unknown>
 				>,
 				client: new PolymarketDataApiClient(),
 				userPnlClient: new PolymarketUserPnlClient(),
+				listActiveTradingAddresses: () =>
+					observationWalletPort.listActiveTradingAddresses(),
+				refreshBalanceFacts: async () => {
+					const wallets = await observationWalletPort.listActiveTradingWallets();
+					await refreshWalletBalanceFacts({
+						wallets,
+						read: (billingAccountId) =>
+							observationWalletPort.getBalances(billingAccountId),
+						persist: (fact) => persistWalletBalanceFact(serviceDb, fact),
+						concurrency: 3,
+					});
+				},
 				logger: observerLogger,
 				metrics: noopMetricsForObservation,
 			});

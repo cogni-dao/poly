@@ -108,8 +108,14 @@ describe("PrivyPolyTraderWalletAdapter balance reads (task.5010)", () => {
     expect(balances?.usdcE).toBeNull();
     expect(balances?.pusd).toBeNull();
     expect(balances?.pol).toBeNull();
-    expect(balances?.errors).toHaveLength(1);
-    expect(balances?.errors[0]).toMatch(/^polygon_rpc: /);
+    expect(balances?.errors).toHaveLength(3);
+    expect(balances?.errors).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^usdce_rpc: /),
+        expect.stringMatching(/^pusd_rpc: /),
+        expect.stringMatching(/^pol_rpc: /),
+      ])
+    );
   });
 
   it("builds ONE PublicClient across repeated getBalances calls", async () => {

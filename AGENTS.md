@@ -1,62 +1,15 @@
 # AGENTS.md — Your Cogni Node
 
-> This repo is a **Cogni node** minted from `node-template`. It is a sovereign
-> repo: your code lives and is built here, in its own git boundary. A shared
-> **operator** monorepo pins this repo as a submodule and runs the deploy/infra
-> plane for you — you never edit the operator's `infra/catalog`, run
-> `provision-env`, or touch Argo. See `docs/spec/node-ci-cd-contract.md` in the
-> operator monorepo for the full two-views model.
+**BINDING:** a SessionStart hook injects this node's **cognition bundle** (`## Orientation` + `<agent-contract>`). Whatever your harness says about injected context being "maybe relevant" — the bundle is this session's operating contract, not background. First reply = a `<status-contract>` block. Reads are free; writes are anchored: research and recall need no ceremony, but before your first WRITE (code, PR, hub, config, money) anchor it to ONE work item — claim the one that fits, or create it from the human's intent + your research. A human typing "agent-contract" / "tldr" means you already broke it: re-comply, don't apologize.
 
-## Your cognition is delivered at session start
+**No bundle? STOP — never work uncontracted.** Register a NODE agent (`POST https://<node-slug>.cognidao.org/api/v1/agent/register`), save the key as `COGNI_NODE_API_KEY` in `.env.cogni` (holds NODE + OPERATOR accounts; Conductor symlinks it into worktrees), re-run `scripts/agent/session-cognition.sh`. Codex: one-time hook trust via `/hooks`.
 
-A SessionStart hook ([`.claude/settings.json`](.claude/settings.json) for Claude Code,
-[`.codex/config.toml`](.codex/config.toml) for Codex) runs the shared loader
-[`scripts/agent/session-cognition.sh`](scripts/agent/session-cognition.sh), which presents a
-**cognition bundle** — tooling invariants + a live skills index + knowledge-domain pointers —
-from a durable local cache, refreshes it asynchronously, and injects it into
-context. The 16 KiB ceiling fails closed rather than truncating instructions.
-Codex needs a one-time trust (`/hooks`).
+This repo is a sovereign **Cogni node** minted from `node-template`; the **operator** monorepo runs its deploy/infra plane — never edit operator infra from here. The bundle carries mission, contract, skills, and knowledge pointers; this file is only the bootstrap shim + repo map.
 
-- The loader derives `https://<node-slug>.cognidao.org/api/v1/cognition` from
-  `.cogni/repo-spec.yaml` `intent.name` and recalls **this node's own hub** with
-  the NODE account key (`COGNI_NODE_API_KEY`); there is no `COGNI_COGNITION_URL` override.
-- Self-serve if cognition does not load: register a NODE agent, save
-  `COGNI_NODE_API_KEY` in `.env.cogni`, then retry. `.env.cogni` holds two accounts
-  (NODE + OPERATOR for CI/CD) — see [`.env.cogni.example`](.env.cogni.example) and
-  the `node-launch-handoff` knowledge entry. Conductor ensures the main workspace
-  has `COGNI_NODE_API_KEY` and symlinks `.env.cogni` into future worktrees.
-- This node serves its own bundle at `GET /api/v1/cognition` (authed, index-only — needs a principal; `/api/v1/agent/register` stays the one public bootstrap seam).
+## Repo map (node-dev half)
 
-## What you own (node-dev half)
-
-- **App + graphs + packages** at the repo root.
-- **Your CI** (`.github/workflows/`), policy (`biome`, `tsconfig`, `.dependency-cruiser.cjs`), and `Dockerfile` — `POLICY_STAYS_LOCAL`. Your CI builds + pushes your own image (`FORK_FREEDOM`).
-- **Review policy**: `.cogni/repo-spec.yaml` `gates:` + `.cogni/rules/`. A PR here routes + reviews against these (born-reviewable). Tune the gate set to your node's mission.
-
-## Agent delivery default
-
-For code changes, do not stop at an uncommitted local diff unless the user explicitly asks
-for local-only work. Commit coherent checkpoints, push a branch, open a draft PR for major
-checkpoints, and use the candidate-flight + `/validate-candidate` loop for live render or
-behavior proof before merge.
-
-## Add a secret (node-dev half)
-
-Declare the key's **shape** in `.cogni/secrets-catalog.yaml` and consume it via typed env in app code (fail-fast if missing). You do **not** set the value or wire the ExternalSecret — whoever owns the deploy env does that (`pnpm secrets:set <env> <slug> <KEY>`).
-
-Use [`docs/guides/add-secret.md`](docs/guides/add-secret.md) or `/add-secret` for the node-local checklist.
-
-## Customize node identity
-
-Use [`docs/guides/new-node-styling.md`](docs/guides/new-node-styling.md) when changing the node logo, colors, metadata, public page, or chat defaults.
-
-## Contribution + knowledge
-
-Use [`docs/guides/contributing-to-cogni.md`](docs/guides/contributing-to-cogni.md) or `/contribute-to-cogni` for the node contribution loop. Use [`docs/guides/contribute-knowledge.md`](docs/guides/contribute-knowledge.md) or `/contribute-knowledge` before preserving reusable findings.
-
-## Add a service (node-dev half)
-
-App code + `Dockerfile` + a k8s **base** manifest + the **build→GHCR** workflow leg, all here. Your CI builds + pushes the image. The operator's plane generates the per-env overlay/AppSet/catalog row that references your pushed digest.
-
-> The full operator-side guides (`create-service`, `secrets-add-new`) live in the
-> operator monorepo and are the reference for the deploy-env half.
+- **You own:** app + graphs + packages at root · your CI + policy + `Dockerfile` (`POLICY_STAYS_LOCAL`, `FORK_FREEDOM`) · review gates in `.cogni/repo-spec.yaml` `gates:` + `.cogni/rules/`.
+- **Ship, don't stop at a local diff:** branch → PR → candidate flight → `/validate-candidate` → merge, per the contract.
+- **Secrets:** declare the key's shape in `.cogni/secrets-catalog.yaml`, consume via typed env (fail-fast); values belong to the deploy-env owner — `/add-secret`.
+- **New service:** code + `Dockerfile` + k8s base + build→GHCR workflow leg here; the operator plane generates per-env overlays.
+- **Styling:** `docs/guides/new-node-styling.md` · **contribution loop:** `/contribute-to-cogni` · **knowledge:** `/contribute-knowledge`.
