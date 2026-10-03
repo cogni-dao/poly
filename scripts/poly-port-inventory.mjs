@@ -22,18 +22,37 @@ const generatedPaths = new Set([
   "docs/porting/poly-port-inventory.md",
 ]);
 const priorityRank = { P0: 0, P1: 1, P2: 2, P3: 3 };
-const statusRank = {
-  approval_stale: 0,
-  missing: 1,
-  review_required: 2,
-  exact: 3,
-  adapted: 3,
-  retired: 3,
-};
+const statusRank = { unresolved: 0, exact: 1, upgraded: 2, retired: 3 };
+const terminalStatuses = new Set(["exact", "upgraded", "retired"]);
+const resolutionOutcomes = new Set(["exact", "upgraded", "retired"]);
+const gitModes = new Set(["100644", "100755", "120000"]);
+const proofEnvironments = new Set(["candidate", "production"]);
+const expectedMissionScope = { P0: 28, P1: 51 };
+const expectedDeliveryGroupIds = [
+  "dashboard-truth",
+  "hub-control-plane",
+  "p1-execution-wallet",
+  "p1-provider-foundation",
+  "p1-research-reads",
+  "saved-facts",
+  "visible-p0",
+];
+const expectedBehavioralGateIds = [
+  "dashboard.open_positions",
+  "dashboard.pnl_history",
+  "dashboard.wallet_identity",
+  "dashboard.wallet_total",
+  "hub.work_item_create",
+  "hub.work_item_mutation",
+  "hub.work_item_source_of_truth",
+];
 
-function fail(message) {
-  process.stderr.write(`${message}\n`);
-  process.exit(1);
+function invariant(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+export function compareText(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function run(command, args, cwd = repoRoot) {
@@ -60,6 +79,39 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function sourceEntryDigest(entries) {
+  return sha256(
+    entries
+      .map(
+        ({ sourcePath, sourceMode, sourceBlob }) =>
+          `${sourcePath}\0${sourceMode}\0${sourceBlob}`
+      )
+      .sort(compareText)
+      .join("\n")
+  );
+}
+
+export function validateSourceIdentity(policy, revision, treeObject) {
+  invariant(revision === policy.source.revision, "Policy revision did not resolve exactly");
+  invariant(
+    treeObject === policy.source.treeObject,
+    `Legacy subtree is ${treeObject}, expected ${policy.source.treeObject}`
+  );
+}
+
+export function validateSourceEntries(policy, sourceEntries) {
+  invariant(
+    sourceEntries.length === policy.source.fileCount,
+    `Legacy source contains ${sourceEntries.length} files, expected ${policy.source.fileCount}`
+  );
+  invariant(
+    sourceEntryDigest(sourceEntries) === policy.source.entryDigest,
+    "Legacy source entry digest differs from the pinned path+mode+blob manifest"
+  );
+  const uniqueSourcePaths = new Set(sourceEntries.map(({ sourcePath }) => sourcePath));
+  invariant(uniqueSourcePaths.size === sourceEntries.length, "Duplicate legacy source path");
+}
+
 function gitBlobHash(value) {
   const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
   return createHash("sha1")
@@ -68,29 +120,25 @@ function gitBlobHash(value) {
     .digest("hex");
 }
 
-function worktreeBlobHash(relativePath) {
-  const absolutePath = path.join(repoRoot, relativePath);
-  if (!existsSync(absolutePath)) return null;
+export function worktreeFile(relativePath, root = repoRoot) {
+  const absolutePath = path.join(root, relativePath);
+  if (!existsSync(absolutePath)) return { blob: null, mode: null };
   const stat = lstatSync(absolutePath);
-  if (stat.isSymbolicLink()) return gitBlobHash(readlinkSync(absolutePath));
-  if (!stat.isFile()) return null;
-  return gitBlobHash(readFileSync(absolutePath));
+  if (stat.isSymbolicLink()) {
+    return { blob: gitBlobHash(readlinkSync(absolutePath)), mode: "120000" };
+  }
+  if (!stat.isFile()) return { blob: null, mode: null };
+  return {
+    blob: gitBlobHash(readFileSync(absolutePath)),
+    mode: stat.mode & 0o111 ? "100755" : "100644",
+  };
 }
 
 function currentFiles() {
-  const output = runBuffer("git", [
-    "ls-files",
-    "-z",
-    "--cached",
-    "--others",
-    "--exclude-standard",
-  ]);
-  return output
-    .toString("utf8")
-    .split("\0")
-    .filter(Boolean)
+  const output = runBuffer("git", ["ls-files", "-z", "--cached"]);
+  return [...new Set(output.toString("utf8").split("\0").filter(Boolean))]
     .filter((file) => !generatedPaths.has(file))
-    .sort();
+    .sort(compareText);
 }
 
 function sourceFiles(legacyRepo, revision, treeRoot) {
@@ -106,26 +154,38 @@ function sourceFiles(legacyRepo, revision, treeRoot) {
     .filter(Boolean)
     .map((record) => {
       const match = record.match(/^(\d+) blob ([0-9a-f]{40})\t(.+)$/s);
-      if (!match) fail(`Unsupported legacy tree entry: ${record}`);
-      const [, mode, sourceBlob, fullPath] = match;
-      if (!fullPath.startsWith(prefix)) {
-        fail(`Legacy path escaped ${treeRoot}: ${fullPath}`);
-      }
+      invariant(match, `Unsupported legacy tree entry: ${record}`);
+      const [, sourceMode, sourceBlob, fullPath] = match;
+      invariant(
+        fullPath.startsWith(prefix),
+        `Legacy path escaped ${treeRoot}: ${fullPath}`
+      );
       return {
-        mode,
+        sourceMode,
         sourceBlob,
         sourcePath: fullPath.slice(prefix.length),
       };
     })
-    .sort((a, b) => a.sourcePath.localeCompare(b.sourcePath));
+    .sort((a, b) => compareText(a.sourcePath, b.sourcePath));
 }
 
-function mappedTargetPath(sourcePath, policy) {
+export function mappedTargetPath(sourcePath, policy) {
   const rule = [...policy.pathMappings]
     .sort((a, b) => b.sourcePrefix.length - a.sourcePrefix.length)
     .find(({ sourcePrefix }) => sourcePath.startsWith(sourcePrefix));
-  if (!rule) return sourcePath;
-  return `${rule.targetPrefix}${sourcePath.slice(rule.sourcePrefix.length)}`;
+  return rule
+    ? `${rule.targetPrefix}${sourcePath.slice(rule.sourcePrefix.length)}`
+    : sourcePath;
+}
+
+export function mappedSourceTargets(sourceEntries, policy) {
+  const targetPaths = new Set();
+  return sourceEntries.map(({ sourcePath }) => {
+    const targetPath = mappedTargetPath(sourcePath, policy);
+    invariant(!targetPaths.has(targetPath), `More than one legacy file maps to ${targetPath}`);
+    targetPaths.add(targetPath);
+    return { sourcePath, targetPath };
+  });
 }
 
 function priorityFor(sourcePath, policy) {
@@ -144,109 +204,423 @@ function queueOrderFor(sourcePath, policy) {
   return index === -1 ? policy.queueOrder.length : index;
 }
 
-function validatePolicy(policy) {
-  if (policy.version !== 1) fail(`Unsupported policy version: ${policy.version}`);
-  const duplicateMappings = policy.pathMappings
-    .map(({ sourcePrefix }) => sourcePrefix)
-    .filter((value, index, all) => all.indexOf(value) !== index);
-  if (duplicateMappings.length > 0) {
-    fail(`Duplicate source path mappings: ${duplicateMappings.join(", ")}`);
+function validateProof(proof, context, { gate = false } = {}) {
+  for (const field of ["environment", "reference"]) {
+    invariant(proof?.[field], `${context} proof missing ${field}`);
   }
-  for (const approval of policy.acceptedAdaptations) {
+  invariant(
+    proofEnvironments.has(proof.environment),
+    `${context} proof has unsupported environment: ${proof.environment}`
+  );
+  invariant(
+    /^[0-9a-f]{40}$/.test(proof.buildSha ?? ""),
+    `${context} proof missing buildSha`
+  );
+  invariant(
+    typeof proof.observedAt === "string" && !Number.isNaN(Date.parse(proof.observedAt)),
+    `${context} proof missing observedAt`
+  );
+  invariant(
+    /^[0-9a-f]{64}$/.test(proof.expectedTargetDigest ?? ""),
+    `${context} proof missing expectedTargetDigest`
+  );
+  const notApplicable = new Set(proof.notApplicable ?? []);
+  let evidenceAxes = 0;
+  for (const [axis, field] of [
+    ["api", "apiRefs"],
+    ["ui", "uiRefs"],
+    ["loki", "lokiRefs"],
+    ["oracle", "oracleRefs"],
+  ]) {
+    invariant(Array.isArray(proof[field]), `${context} proof missing ${field}`);
+    invariant(
+      (proof[field].length > 0) !== notApplicable.has(axis),
+      `${context} proof must provide ${field} or mark ${axis} notApplicable`
+    );
+    invariant(
+      proof[field].every((reference) => typeof reference === "string" && reference.length > 0),
+      `${context} proof has invalid ${field}`
+    );
+    if (proof[field].length > 0) evidenceAxes += 1;
+  }
+  invariant(evidenceAxes > 0, `${context} proof has no evidence axis`);
+  if (!gate) {
+    invariant(proof.kind, `${context} proof missing kind`);
+  }
+}
+
+function validateProofCoverage(proofs, environments, context, options) {
+  const seen = new Set();
+  for (const proof of proofs) {
+    validateProof(proof, context, options);
+    invariant(
+      !seen.has(proof.environment),
+      `${context} has duplicate ${proof.environment} proof`
+    );
+    seen.add(proof.environment);
+  }
+  for (const environment of environments) {
+    invariant(
+      seen.has(environment),
+      `${context} is missing required ${environment} proof`
+    );
+  }
+}
+
+export function validatePolicy(
+  policy,
+  { root = repoRoot, checkContract = true } = {}
+) {
+  invariant(policy.version === 2, `Unsupported policy version: ${policy.version}`);
+  for (const field of [
+    "repository",
+    "revision",
+    "treeRoot",
+    "treeObject",
+    "fileCount",
+    "entryDigest",
+  ]) {
+    invariant(policy.source?.[field], `Policy source missing ${field}`);
+  }
+  invariant(
+    /^[0-9a-f]{40}$/.test(policy.source.revision),
+    "Policy revision must be a full commit SHA"
+  );
+  invariant(
+    /^[0-9a-f]{40}$/.test(policy.source.treeObject),
+    "Policy treeObject must be a full Git object SHA"
+  );
+  invariant(
+    Number.isInteger(policy.source.fileCount) && policy.source.fileCount > 0,
+    "Policy source fileCount must be a positive integer"
+  );
+  invariant(
+    /^[0-9a-f]{64}$/.test(policy.source.entryDigest),
+    "Policy source entryDigest must be a SHA-256 digest"
+  );
+  invariant(policy.contract?.path, "Policy contract missing path");
+  invariant(
+    /^[0-9a-f]{64}$/.test(policy.contract?.sha256 ?? ""),
+    "Policy contract missing sha256"
+  );
+  if (checkContract) {
+    const contractPath = path.join(root, policy.contract.path);
+    invariant(existsSync(contractPath), `Parity contract missing: ${policy.contract.path}`);
+    invariant(
+      sha256(readFileSync(contractPath)) === policy.contract.sha256,
+      "Immutable parity contract hash changed"
+    );
+  }
+
+  const mappingPrefixes = policy.pathMappings.map(({ sourcePrefix }) => sourcePrefix);
+  invariant(
+    new Set(mappingPrefixes).size === mappingPrefixes.length,
+    "Duplicate source path mapping"
+  );
+  for (const rule of policy.priorityRules) {
+    invariant(Object.hasOwn(priorityRank, rule.priority), `Bad priority ${rule.priority}`);
+    invariant(rule.label && rule.prefixes?.length, `Incomplete ${rule.priority} rule`);
+  }
+
+  const groups = new Map();
+  const groupedPaths = new Map();
+  for (const group of policy.deliveryGroups ?? []) {
     for (const field of [
-      "sourcePath",
-      "targetPath",
-      "expectedSourceBlob",
-      "expectedTargetBlob",
-      "rationale",
-      "validation",
+      "id",
+      "label",
+      "behaviorExpectation",
+      "resolutionProofMode",
     ]) {
-      if (!approval[field]) fail(`Accepted adaptation missing ${field}`);
+      invariant(group[field], `Delivery group missing ${field}`);
+    }
+    invariant(!groups.has(group.id), `Duplicate delivery group: ${group.id}`);
+    groups.set(group.id, group);
+    invariant(
+      ["gate+file", "file-only"].includes(group.resolutionProofMode),
+      `${group.id} has unsupported resolutionProofMode`
+    );
+    invariant(group.sourcePaths?.length, `${group.id} has no source paths`);
+    invariant(
+      group.requiredProofEnvironments?.length,
+      `${group.id} has no proof environments`
+    );
+    invariant(
+      JSON.stringify(group.requiredProofEnvironments) ===
+        JSON.stringify(["candidate", "production"]),
+      `${group.id} must require exactly candidate and production proofs`
+    );
+    for (const environment of group.requiredProofEnvironments) {
+      invariant(
+        proofEnvironments.has(environment),
+        `${group.id} has unsupported proof environment: ${environment}`
+      );
+    }
+    for (const sourcePath of group.sourcePaths) {
+      invariant(
+        !groupedPaths.has(sourcePath),
+        `${sourcePath} belongs to both ${groupedPaths.get(sourcePath)} and ${group.id}`
+      );
+      groupedPaths.set(sourcePath, group.id);
     }
   }
-  for (const retirement of policy.retiredSourceFiles) {
+  invariant(
+    JSON.stringify([...groups.keys()].sort(compareText)) ===
+      JSON.stringify(expectedDeliveryGroupIds),
+    "Delivery group IDs differ from the locked contract"
+  );
+
+  const resolutions = new Set();
+  for (const resolution of policy.resolutions ?? []) {
+    const context = `Resolution ${resolution.sourcePath ?? "<unknown>"}`;
     for (const field of [
       "sourcePath",
-      "expectedSourceBlob",
+      "deliveryGroup",
+      "outcome",
+      "source",
       "rationale",
-      "validation",
+      "behaviorExpectation",
+      "behaviorGateIds",
+      "proofs",
     ]) {
-      if (!retirement[field]) fail(`Retired source file missing ${field}`);
+      invariant(resolution[field], `${context} missing ${field}`);
     }
+    invariant(!resolutions.has(resolution.sourcePath), `${context} is duplicated`);
+    resolutions.add(resolution.sourcePath);
+    invariant(
+      groupedPaths.get(resolution.sourcePath) === resolution.deliveryGroup,
+      `${context} is orphaned from delivery group ${resolution.deliveryGroup}`
+    );
+    invariant(resolutionOutcomes.has(resolution.outcome), `${context} has bad outcome`);
+    invariant(Array.isArray(resolution.behaviorGateIds), `${context} has bad behaviorGateIds`);
+    invariant(
+      /^[0-9a-f]{40}$/.test(resolution.source.blob ?? "") &&
+        gitModes.has(resolution.source.mode),
+      `${context} has invalid source pin`
+    );
+    if (resolution.outcome === "retired") {
+      invariant(resolution.target === null, `${context} retirement target must be null`);
+    } else {
+      invariant(
+        resolution.target?.path &&
+          /^[0-9a-f]{40}$/.test(resolution.target?.blob ?? "") &&
+          gitModes.has(resolution.target?.mode),
+        `${context} has invalid target pin`
+      );
+    }
+    validateProofCoverage(
+      resolution.proofs,
+      groups.get(resolution.deliveryGroup).requiredProofEnvironments,
+      context
+    );
   }
+
   const gateIds = new Set();
-  for (const gate of policy.behavioralGates) {
+  for (const gate of policy.behavioralGates ?? []) {
+    const context = `Behavioral gate ${gate.id ?? "<unknown>"}`;
     for (const field of [
       "id",
       "priority",
-      "status",
-      "owner",
+      "deliveryGroup",
       "requirement",
-      "evidence",
+      "coveredSourcePaths",
+      "proofs",
     ]) {
-      if (!gate[field]) fail(`Behavioral gate missing ${field}`);
+      invariant(gate[field], `${context} missing ${field}`);
     }
-    if (gateIds.has(gate.id)) fail(`Duplicate behavioral gate: ${gate.id}`);
+    invariant(!Object.hasOwn(gate, "status"), `${context} status must be derived`);
+    invariant(!gateIds.has(gate.id), `Duplicate behavioral gate: ${gate.id}`);
     gateIds.add(gate.id);
-    if (!Object.hasOwn(priorityRank, gate.priority)) {
-      fail(`Unsupported behavioral gate priority: ${gate.priority}`);
+    invariant(Object.hasOwn(priorityRank, gate.priority), `${context} has bad priority`);
+    invariant(groups.has(gate.deliveryGroup), `${context} has unknown delivery group`);
+    invariant(gate.coveredSourcePaths.length > 0, `${context} covers no paths`);
+    for (const sourcePath of gate.coveredSourcePaths) {
+      invariant(
+        groupedPaths.get(sourcePath) === gate.deliveryGroup,
+        `${context} covers ${sourcePath} outside ${gate.deliveryGroup}`
+      );
     }
-    if (!["failing", "in_progress", "passed"].includes(gate.status)) {
-      fail(`Unsupported behavioral gate status: ${gate.status}`);
+    const gateProofEnvironments = new Set();
+    for (const proof of gate.proofs) {
+      validateProof(proof, context, { gate: true });
+      invariant(
+        !gateProofEnvironments.has(proof.environment),
+        `${context} has duplicate ${proof.environment} proof`
+      );
+      gateProofEnvironments.add(proof.environment);
     }
   }
+  invariant(
+    JSON.stringify([...gateIds].sort(compareText)) ===
+      JSON.stringify(expectedBehavioralGateIds),
+    "Behavioral gate IDs differ from the locked seven-gate contract"
+  );
+  for (const resolution of policy.resolutions ?? []) {
+    const context = `Resolution ${resolution.sourcePath}`;
+    const group = groups.get(resolution.deliveryGroup);
+    if (group.resolutionProofMode === "gate+file") {
+      invariant(resolution.behaviorGateIds.length > 0, `${context} must cover a behavior gate`);
+    }
+    invariant(
+      new Set(resolution.behaviorGateIds).size === resolution.behaviorGateIds.length,
+      `${context} has duplicate behaviorGateIds`
+    );
+    for (const gateId of resolution.behaviorGateIds) {
+      invariant(gateIds.has(gateId), `${context} references unknown gate ${gateId}`);
+      const gate = policy.behavioralGates.find(({ id }) => id === gateId);
+      invariant(
+        gate.deliveryGroup === resolution.deliveryGroup,
+        `${context} references gate ${gateId} outside ${resolution.deliveryGroup}`
+      );
+      invariant(
+        gate.coveredSourcePaths.includes(resolution.sourcePath),
+        `${context} is not covered by gate ${gateId}`
+      );
+    }
+  }
+  return { groups, groupedPaths };
 }
 
-function classify(entry, targetBlob, policy) {
-  const approval = policy.acceptedAdaptations.find(
-    ({ sourcePath }) => sourcePath === entry.sourcePath
-  );
-  const retirement = policy.retiredSourceFiles.find(
-    ({ sourcePath }) => sourcePath === entry.sourcePath
-  );
-
-  if (approval) {
-    const currentTargetPath = entry.targetPath;
-    const isCurrent =
-      approval.targetPath === currentTargetPath &&
-      approval.expectedSourceBlob === entry.sourceBlob &&
-      approval.expectedTargetBlob === targetBlob;
-    return isCurrent ? "adapted" : "approval_stale";
-  }
-  if (retirement) {
-    const isCurrent =
-      retirement.expectedSourceBlob === entry.sourceBlob && targetBlob === null;
-    return isCurrent ? "retired" : "approval_stale";
-  }
-  if (targetBlob === null) return "missing";
-  return targetBlob === entry.sourceBlob ? "exact" : "review_required";
+function resolutionByPath(policy) {
+  return new Map(policy.resolutions.map((resolution) => [resolution.sourcePath, resolution]));
 }
 
-function summarize(entries, targetOnly, behavioralGates) {
+export function classifyEntry(entry, target, resolution, deliveryGroup) {
+  if (!resolution) {
+    if (deliveryGroup) {
+      return {
+        status: "unresolved",
+        unresolvedReason:
+          target.blob === null
+            ? "missing_target"
+            : target.blob === entry.sourceBlob && target.mode === entry.sourceMode
+              ? "resolution_missing"
+              : target.blob !== entry.sourceBlob
+                ? "content_differs"
+                : "mode_differs",
+      };
+    }
+    if (target.blob === null) {
+      return { status: "unresolved", unresolvedReason: "missing_target" };
+    }
+    return target.blob === entry.sourceBlob && target.mode === entry.sourceMode
+      ? { status: "exact", unresolvedReason: null }
+      : {
+          status: "unresolved",
+          unresolvedReason:
+            target.blob !== entry.sourceBlob ? "content_differs" : "mode_differs",
+        };
+  }
+
+  const sourcePinCurrent =
+    resolution.source.blob === entry.sourceBlob &&
+    resolution.source.mode === entry.sourceMode;
+  if (!sourcePinCurrent) {
+    return { status: "unresolved", unresolvedReason: "approval_stale" };
+  }
+  const currentTargetDigest = sha256(
+    `${entry.sourcePath}\0${entry.targetPath}\0${target.mode ?? "-"}\0${target.blob ?? "-"}`
+  );
+  if (
+    resolution.proofs.some(
+      (proof) => proof.expectedTargetDigest !== currentTargetDigest
+    )
+  ) {
+    return { status: "unresolved", unresolvedReason: "approval_stale" };
+  }
+  if (resolution.outcome === "retired") {
+    if (target.blob !== null || target.mode !== null) {
+      return { status: "unresolved", unresolvedReason: "approval_stale" };
+    }
+    return { status: "retired", unresolvedReason: null };
+  }
+  if (
+    resolution.target.path !== entry.targetPath ||
+    resolution.target.blob !== target.blob ||
+    resolution.target.mode !== target.mode
+  ) {
+    return { status: "unresolved", unresolvedReason: "approval_stale" };
+  }
+  const byteAndModeExact =
+    target.blob === entry.sourceBlob && target.mode === entry.sourceMode;
+  if (
+    (resolution.outcome === "exact" && !byteAndModeExact) ||
+    (resolution.outcome === "upgraded" && byteAndModeExact)
+  ) {
+    return { status: "unresolved", unresolvedReason: "approval_stale" };
+  }
+  return { status: resolution.outcome, unresolvedReason: null };
+}
+
+export function coveredTargetsDigest(sourcePaths, entries) {
+  const byPath = new Map(entries.map((entry) => [entry.sourcePath, entry]));
+  return sha256(
+    sourcePaths
+      .map((sourcePath) => {
+        const entry = byPath.get(sourcePath);
+        invariant(entry, `Gate coverage path is missing: ${sourcePath}`);
+        return `${sourcePath}\0${entry.targetPath}\0${entry.targetMode ?? "-"}\0${entry.targetBlob ?? "-"}`;
+      })
+      .sort(compareText)
+      .join("\n")
+  );
+}
+
+export function deriveBehavioralGates(policy, entries) {
+  const groups = new Map(policy.deliveryGroups.map((group) => [group.id, group]));
+  return policy.behavioralGates.map((gate) => {
+    const currentTargetDigest = coveredTargetsDigest(gate.coveredSourcePaths, entries);
+    const group = groups.get(gate.deliveryGroup);
+    const currentProofs = gate.proofs.filter(
+      (proof) => proof.expectedTargetDigest === currentTargetDigest
+    );
+    const currentEnvironments = new Set(
+      currentProofs.map((proof) => proof.environment)
+    );
+    const missing = group.requiredProofEnvironments.filter(
+      (environment) => !currentEnvironments.has(environment)
+    );
+    return {
+      ...gate,
+      currentTargetDigest,
+      status: missing.length === 0 ? "passed" : "unresolved",
+      unresolvedReason:
+        missing.length === 0
+          ? null
+          : gate.proofs.length === 0
+            ? "proof_missing"
+            : "proof_stale_or_incomplete",
+    };
+  });
+}
+
+function summarize(entries, targetOnly, behavioralGates, deliveryGroups) {
   const byStatus = {};
   const unresolvedByPriority = {};
   for (const entry of entries) {
     byStatus[entry.status] = (byStatus[entry.status] ?? 0) + 1;
-    if (["missing", "review_required", "approval_stale"].includes(entry.status)) {
+    if (entry.status === "unresolved") {
       unresolvedByPriority[entry.priority] =
         (unresolvedByPriority[entry.priority] ?? 0) + 1;
     }
   }
+  const missionEntries = entries.filter(({ deliveryGroup }) => deliveryGroup);
   return {
     sourceFiles: entries.length,
     mappedTargets: new Set(entries.map(({ targetPath }) => targetPath)).size,
     targetOnlyFiles: targetOnly.length,
-    unresolved: entries.filter(({ status }) =>
-      ["missing", "review_required", "approval_stale"].includes(status)
-    ).length,
+    unresolved: entries.filter(({ status }) => status === "unresolved").length,
     byStatus: Object.fromEntries(
-      Object.entries(byStatus).sort(([a], [b]) => a.localeCompare(b))
+      Object.entries(byStatus).sort(([a], [b]) => compareText(a, b))
     ),
     unresolvedByPriority: Object.fromEntries(
       Object.entries(unresolvedByPriority).sort(
         ([a], [b]) => priorityRank[a] - priorityRank[b]
       )
     ),
+    missionFiles: missionEntries.length,
+    missionResolved: missionEntries.filter(({ status }) => terminalStatuses.has(status))
+      .length,
+    deliveryGroups: deliveryGroups.length,
     behavioralGates: behavioralGates.length,
     unresolvedBehavioralGates: behavioralGates.filter(
       ({ status }) => status !== "passed"
@@ -254,73 +628,154 @@ function summarize(entries, targetOnly, behavioralGates) {
   };
 }
 
-function buildInventoryFromSource(policy, sourceEntries) {
-  const targetPaths = new Set();
-  const entries = sourceEntries.map((source) => {
-    const targetPath = mappedTargetPath(source.sourcePath, policy);
-    if (targetPaths.has(targetPath)) {
-      fail(`More than one legacy file maps to ${targetPath}`);
-    }
-    targetPaths.add(targetPath);
-    const targetBlob = worktreeBlobHash(targetPath);
+function validateMissionScope(policy, entries) {
+  const byPath = new Map(entries.map((entry) => [entry.sourcePath, entry]));
+  const grouped = policy.deliveryGroups.flatMap((group) =>
+    group.sourcePaths.map((sourcePath) => ({ sourcePath, group: group.id }))
+  );
+  const counts = { P0: 0, P1: 0 };
+  for (const { sourcePath, group } of grouped) {
+    const entry = byPath.get(sourcePath);
+    invariant(entry, `${group} contains orphaned source path: ${sourcePath}`);
+    invariant(
+      entry.priority === "P0" || entry.priority === "P1",
+      `${group} contains non-P0/P1 path: ${sourcePath}`
+    );
+    counts[entry.priority] += 1;
+  }
+  for (const priority of ["P0", "P1"]) {
+    invariant(
+      counts[priority] === expectedMissionScope[priority],
+      `Mission ${priority} scope is ${counts[priority]}, expected ${expectedMissionScope[priority]}`
+    );
+  }
+  for (const resolution of policy.resolutions) {
+    invariant(
+      byPath.has(resolution.sourcePath),
+      `Resolution source is absent from the pinned tree: ${resolution.sourcePath}`
+    );
+  }
+}
+
+export function buildInventoryFromSource(policy, sourceEntries, options = {}) {
+  const { groupedPaths } = validatePolicy(policy, options);
+  const canonicalSourceEntries = [...sourceEntries].sort((a, b) =>
+    compareText(a.sourcePath, b.sourcePath)
+  );
+  validateSourceEntries(policy, canonicalSourceEntries);
+  const resolutions = resolutionByPath(policy);
+  const mappedTargets = mappedSourceTargets(canonicalSourceEntries, policy);
+  const targetPaths = new Set(mappedTargets.map(({ targetPath }) => targetPath));
+  const entries = canonicalSourceEntries.map((source, index) => {
+    const targetPath = mappedTargets[index].targetPath;
+    const target = worktreeFile(targetPath, options.root ?? repoRoot);
     const priority = priorityFor(source.sourcePath, policy);
-    const base = { ...source, targetPath, targetBlob, ...priority };
+    const deliveryGroup = groupedPaths.get(source.sourcePath) ?? null;
+    const base = {
+      ...source,
+      targetPath,
+      targetBlob: target.blob,
+      targetMode: target.mode,
+      ...priority,
+      deliveryGroup,
+    };
+    const result = classifyEntry(
+      base,
+      target,
+      resolutions.get(source.sourcePath),
+      deliveryGroup
+    );
+    const resolution = resolutions.get(source.sourcePath);
     return {
       ...base,
-      status: classify(base, targetBlob, policy),
+      ...result,
+      resolution: resolution
+        ? {
+            rationale: resolution.rationale,
+            behaviorExpectation: resolution.behaviorExpectation,
+            behaviorGateIds: resolution.behaviorGateIds,
+            proofs: resolution.proofs,
+          }
+        : null,
     };
   });
+  validateMissionScope(policy, entries);
 
   const targetOnly = currentFiles()
     .filter((targetPath) => !targetPaths.has(targetPath))
     .map((targetPath) => ({ targetPath }));
+  const behavioralGates = deriveBehavioralGates(policy, entries);
+  const deliveryGroups = policy.deliveryGroups.map((group) => {
+    const groupEntries = entries.filter(({ deliveryGroup }) => deliveryGroup === group.id);
+    const groupGates = behavioralGates.filter(
+      ({ deliveryGroup }) => deliveryGroup === group.id
+    );
+    return {
+      id: group.id,
+      label: group.label,
+      behaviorExpectation: group.behaviorExpectation,
+      resolutionProofMode: group.resolutionProofMode,
+      requiredProofEnvironments: group.requiredProofEnvironments,
+      sourcePaths: group.sourcePaths,
+      files: groupEntries.length,
+      resolved: groupEntries.filter(({ status }) => terminalStatuses.has(status)).length,
+      gates: groupGates.length,
+      gatesPassed: groupGates.filter(({ status }) => status === "passed").length,
+    };
+  });
 
-  const policyContents = readFileSync(policyPath);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: policy.source,
-    policySha256: sha256(policyContents),
+    contract: policy.contract,
+    policySha256: sha256(readFileSync(options.policyPath ?? policyPath)),
     targetTreeDigest: sha256(
       entries
-        .map(({ targetPath, targetBlob }) => `${targetPath}\0${targetBlob ?? "-"}`)
-        .sort()
+        .map(
+          ({ targetPath, targetBlob, targetMode }) =>
+            `${targetPath}\0${targetMode ?? "-"}\0${targetBlob ?? "-"}`
+        )
+        .sort(compareText)
         .join("\n")
     ),
-    summary: summarize(entries, targetOnly, policy.behavioralGates),
-    behavioralGates: policy.behavioralGates,
+    summary: summarize(entries, targetOnly, behavioralGates, deliveryGroups),
+    deliveryGroups,
+    behavioralGates,
     entries,
     targetOnly,
   };
 }
 
 function rebuildInventory(policy, inventory) {
+  invariant(inventory.schemaVersion === 2, "Inventory schema must be v2");
+  invariant(
+    JSON.stringify(inventory.source) === JSON.stringify(policy.source),
+    "Inventory source pin differs from policy"
+  );
   const sourceEntries = inventory.entries.map(
-    ({ mode, sourceBlob, sourcePath }) => ({ mode, sourceBlob, sourcePath })
+    ({ sourceMode, sourceBlob, sourcePath }) => ({
+      sourceMode,
+      sourceBlob,
+      sourcePath,
+    })
   );
   return buildInventoryFromSource(policy, sourceEntries);
 }
 
-function unresolvedQueue(inventory, policy) {
-  return inventory.entries
-    .filter(({ status }) =>
-      ["missing", "review_required", "approval_stale"].includes(status)
-    )
-    .sort((a, b) => {
-      return (
-        priorityRank[a.priority] - priorityRank[b.priority] ||
-        queueOrderFor(a.sourcePath, policy) -
-          queueOrderFor(b.sourcePath, policy) ||
-        statusRank[a.status] - statusRank[b.status] ||
-        a.sourcePath.localeCompare(b.sourcePath)
-      );
-    });
+function sortedEntries(entries, policy) {
+  return [...entries].sort(
+    (a, b) =>
+      priorityRank[a.priority] - priorityRank[b.priority] ||
+      queueOrderFor(a.sourcePath, policy) - queueOrderFor(b.sourcePath, policy) ||
+      statusRank[a.status] - statusRank[b.status] ||
+      compareText(a.sourcePath, b.sourcePath)
+  );
 }
 
-function markdown(inventory, policy) {
+export function markdown(inventory, policy) {
   const { summary } = inventory;
-  const queue = unresolvedQueue(inventory, policy);
-  const statusRows = Object.entries(summary.byStatus)
-    .map(([status, count]) => `| ${status} | ${count} |`)
+  const statusRows = ["exact", "upgraded", "retired", "unresolved"]
+    .map((status) => `| ${status} | ${summary.byStatus[status] ?? 0} |`)
     .join("\n");
   const priorityRows = ["P0", "P1", "P2", "P3"]
     .map(
@@ -328,41 +783,44 @@ function markdown(inventory, policy) {
         `| ${priority} | ${summary.unresolvedByPriority[priority] ?? 0} |`
     )
     .join("\n");
-  const queueRows = queue
-    .slice(0, 100)
+  const deliveryRows = inventory.deliveryGroups
     .map(
-      ({ priority, status, sourcePath, targetPath }) =>
-        `| ${priority} | ${status} | \`${sourcePath}\` | \`${targetPath}\` |`
+      (group) =>
+        `| \`${group.id}\` | ${group.resolved}/${group.files} | ${group.gatesPassed}/${group.gates} | ${group.label} |`
     )
     .join("\n");
   const behavioralRows = [...inventory.behavioralGates]
     .sort(
       (a, b) =>
         priorityRank[a.priority] - priorityRank[b.priority] ||
-        a.id.localeCompare(b.id)
+        compareText(a.id, b.id)
     )
     .map(
-      ({ priority, status, id, owner, requirement }) =>
-        `| ${priority} | ${status} | \`${id}\` | \`${owner}\` | ${requirement} |`
+      ({ priority, status, id, deliveryGroup, requirement }) =>
+        `| ${priority} | ${status} | \`${id}\` | \`${deliveryGroup}\` | ${requirement} |`
+    )
+    .join("\n");
+  const fileRows = sortedEntries(inventory.entries, policy)
+    .map(
+      (entry) =>
+        `| ${entry.priority} | ${entry.status} | ${entry.unresolvedReason ?? "—"} | ${entry.deliveryGroup ? `\`${entry.deliveryGroup}\`` : "—"} | \`${entry.sourceMode}\` | \`${entry.sourceBlob}\` | \`${entry.sourcePath}\` | ${entry.targetMode ? `\`${entry.targetMode}\`` : "—"} | ${entry.targetBlob ? `\`${entry.targetBlob}\`` : "—"} | \`${entry.targetPath}\` |`
     )
     .join("\n");
 
   return `<!-- Generated by scripts/poly-port-inventory.mjs. Do not edit by hand. -->
 # Poly legacy → node-repo port inventory
 
-Legacy source is pinned to \`${inventory.source.revision}\` under \`${inventory.source.treeRoot}\`. The JSON ledger beside this report is the complete, deterministic source-to-target map; this page is its human review queue.
+Legacy source is pinned to \`${inventory.source.revision}\`, subtree \`${inventory.source.treeObject}\`, under \`${inventory.source.treeRoot}\` (${inventory.source.fileCount} files). The immutable completion boundary is [poly-parity-contract.md](./poly-parity-contract.md).
 
-## Contract
+## Resolution contract
 
-- \`exact\`: Git blob bytes match, including explicit package relocations.
-- \`review_required\`: both files exist but differ; it is not parity until reviewed.
-- \`missing\`: the legacy file has no target.
-- \`adapted\`: an intentional improvement is hash-pinned in the policy with rationale and validation evidence.
-- \`retired\`: removal is hash-pinned and justified in the policy.
-- \`approval_stale\`: an approved source or target hash changed and must be reviewed again.
-- Current-only files are recorded in JSON; they are not evidence that a legacy file was ported.
+- \`exact\`, \`upgraded\`, and \`retired\` are terminal only when the v2 policy's structured resolution and proof requirements are satisfied for mission files.
+- \`unresolved\` covers missing targets, unreviewed differences, absent resolution records, and incomplete or stale behavior evidence.
+- Source and target Git blobs **and file modes** are pinned. Drift invalidates a resolution.
+- Gate status is derived from candidate/production proof records and the digest of every covered target; it is never hand-authored.
+- Current-only files remain recorded in JSON and do not prove a legacy file was ported.
 
-Run \`pnpm poly:port:refresh -- --legacy-repo /path/to/legacy-monorepo\` after a reviewed port checkpoint. Run \`pnpm poly:port:verify\` to prove this ledger matches the current worktree.
+Run \`pnpm poly:port:verify\` for deterministic ledger integrity, \`pnpm poly:port:check-group -- GROUP\` for one lane, and \`pnpm poly:port:complete -- --through P1\` for the locked mission gate.
 
 ## Progress
 
@@ -372,8 +830,8 @@ Run \`pnpm poly:port:refresh -- --legacy-repo /path/to/legacy-monorepo\` after a
 | Unique mapped target paths | ${summary.mappedTargets} |
 | Current-only files | ${summary.targetOnlyFiles} |
 | Unresolved legacy files | ${summary.unresolved} |
-| Behavioral parity gates | ${summary.behavioralGates} |
-| Unresolved behavioral gates | ${summary.unresolvedBehavioralGates} |
+| P0/P1 mission files resolved | ${summary.missionResolved}/${summary.missionFiles} |
+| Behavioral gates passed | ${summary.behavioralGates - summary.unresolvedBehavioralGates}/${summary.behavioralGates} |
 
 | State | Count |
 | --- | ---: |
@@ -383,21 +841,25 @@ ${statusRows}
 | --- | ---: |
 ${priorityRows}
 
+## Delivery groups
+
+| Group | Files resolved | Gates passed | Outcome |
+| --- | ---: | ---: | --- |
+${deliveryRows}
+
 ## Behavioral parity gates
 
-File equality is necessary but not sufficient. These gates prevent an adapted implementation from being marked complete while user-visible semantics differ from the legacy product or external ground truth.
-
-| Priority | State | Gate | Owner | Required invariant |
+| Priority | State | Gate | Delivery group | Required invariant |
 | --- | --- | --- | --- | --- |
 ${behavioralRows || "| — | — | — | — | No behavioral gates |"}
 
-## Prioritized port queue
+## Complete legacy file table
 
-The first 100 unresolved files are shown. Ordering is deterministic: product focus, missing-before-different, then path. P0 is visible dashboard/research/wallet UI parity; P1 is live trading/data-contract parity. Coordinate P1 edits with the active trading-loss diagnosis.
+All ${summary.sourceFiles} files are shown. Ordering is deterministic: priority, Pareto queue, state, then source path. P2/P3 remain visible even though the current completion gate stops after P1.
 
-| Priority | State | Legacy source | Current target |
-| --- | --- | --- | --- |
-${queueRows || "| — | — | No unresolved files | — |"}
+| Priority | State | Unresolved reason | Delivery group | Source mode | Source blob | Legacy source | Target mode | Target blob | Current target |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+${fileRows}
 `;
 }
 
@@ -405,57 +867,273 @@ function stableJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
-const [, , command, ...args] = process.argv;
-const policy = readJson(policyPath);
-validatePolicy(policy);
-
-if (command === "refresh") {
-  const repoFlag = args.indexOf("--legacy-repo");
-  const legacyRepo =
-    repoFlag >= 0 ? args[repoFlag + 1] : process.env.POLY_LEGACY_REPO;
-  if (!legacyRepo) {
-    fail("refresh requires --legacy-repo PATH or POLY_LEGACY_REPO");
-  }
-  const legacyTop = run("git", ["rev-parse", "--show-toplevel"], legacyRepo);
-  const revision = run("git", ["rev-parse", policy.source.revision], legacyTop);
-  if (revision !== policy.source.revision) {
-    fail(`Policy revision must be a full commit SHA; resolved ${revision}`);
-  }
-  const sources = sourceFiles(
-    legacyTop,
-    policy.source.revision,
-    policy.source.treeRoot
-  );
-  const inventory = buildInventoryFromSource(policy, sources);
-  writeFileSync(inventoryPath, stableJson(inventory));
-  writeFileSync(reportPath, markdown(inventory, policy));
-  process.stdout.write(
-    `refreshed ${inventory.summary.sourceFiles} legacy files; ${inventory.summary.unresolved} unresolved\n`
-  );
-} else if (command === "verify") {
-  if (!existsSync(inventoryPath) || !existsSync(reportPath)) {
-    fail("Inventory is missing; run poly:port:refresh first");
-  }
-  const committed = readJson(inventoryPath);
-  const rebuilt = rebuildInventory(policy, committed);
-  const expectedJson = stableJson(rebuilt);
-  const expectedReport = markdown(rebuilt, policy);
+export function verificationProblems(
+  committedJson,
+  committedReport,
+  rebuilt,
+  policy
+) {
   const problems = [];
-  if (readFileSync(inventoryPath, "utf8") !== expectedJson) {
+  if (committedJson !== stableJson(rebuilt)) {
     problems.push("JSON ledger is stale");
   }
-  if (readFileSync(reportPath, "utf8") !== expectedReport) {
+  if (committedReport !== markdown(rebuilt, policy)) {
     problems.push("Markdown report is stale");
   }
-  if (problems.length > 0) {
-    fail(`${problems.join("; ")}. Run poly:port:refresh.`);
-  }
-  process.stdout.write(
-    `verified ${rebuilt.summary.sourceFiles} legacy files; ${rebuilt.summary.unresolved} unresolved\n`
+  const staleApprovals = rebuilt.entries.filter(
+    ({ unresolvedReason }) => unresolvedReason === "approval_stale"
   );
-} else if (command === "summary") {
-  const inventory = readJson(inventoryPath);
-  process.stdout.write(`${JSON.stringify(inventory.summary, null, 2)}\n`);
-} else {
-  fail("usage: poly-port-inventory.mjs <refresh|verify|summary>");
+  if (staleApprovals.length > 0) {
+    problems.push(
+      `stale approvals: ${staleApprovals.map(({ sourcePath }) => sourcePath).join(", ")}`
+    );
+  }
+  const staleGateProofs = rebuilt.behavioralGates.filter(
+    ({ unresolvedReason }) => unresolvedReason === "proof_stale_or_incomplete"
+  );
+  if (staleGateProofs.length > 0) {
+    problems.push(
+      `stale behavioral proofs: ${staleGateProofs.map(({ id }) => id).join(", ")}`
+    );
+  }
+  return problems;
+}
+
+function verifiedInventory(policy) {
+  invariant(existsSync(inventoryPath) && existsSync(reportPath), "Inventory is missing");
+  const committedJson = readFileSync(inventoryPath, "utf8");
+  const committed = JSON.parse(committedJson);
+  const committedReport = readFileSync(reportPath, "utf8");
+  const rebuilt = rebuildInventory(policy, committed);
+  const problems = verificationProblems(
+    committedJson,
+    committedReport,
+    rebuilt,
+    policy
+  );
+  invariant(problems.length === 0, `${problems.join("; ")}. Run poly:port:refresh.`);
+  return rebuilt;
+}
+
+export function groupProblems(inventory, groupId) {
+  const group = inventory.deliveryGroups.find(({ id }) => id === groupId);
+  invariant(group, `Unknown delivery group: ${groupId}`);
+  const problems = inventory.entries
+    .filter(({ deliveryGroup, status }) => deliveryGroup === groupId && status === "unresolved")
+    .map(({ sourcePath, unresolvedReason }) => `${sourcePath}: ${unresolvedReason}`);
+  problems.push(
+    ...inventory.behavioralGates
+      .filter(({ deliveryGroup, status }) => deliveryGroup === groupId && status !== "passed")
+      .map(({ id, unresolvedReason }) => `${id}: ${unresolvedReason}`)
+  );
+  return problems;
+}
+
+export function completionProblems(inventory, through) {
+  invariant(Object.hasOwn(priorityRank, through), `Unsupported priority: ${through}`);
+  const ceiling = priorityRank[through];
+  const problems = inventory.entries
+    .filter(
+      ({ priority, status }) =>
+        priorityRank[priority] <= ceiling && status === "unresolved"
+    )
+    .map(({ sourcePath, unresolvedReason }) => `${sourcePath}: ${unresolvedReason}`);
+  problems.push(
+    ...inventory.behavioralGates
+      .filter(
+        ({ priority, status }) =>
+          priorityRank[priority] <= ceiling && status !== "passed"
+      )
+      .map(({ id, unresolvedReason }) => `${id}: ${unresolvedReason}`)
+  );
+  return problems;
+}
+
+export function regressionProblems(base, current) {
+  const problems = [];
+  if (JSON.stringify(base.source) !== JSON.stringify(current.source)) {
+    problems.push("source pin changed");
+  }
+  if (JSON.stringify(base.contract) !== JSON.stringify(current.contract)) {
+    problems.push("immutable contract path or hash changed");
+  }
+  const currentGroups = new Map(
+    current.deliveryGroups.map((group) => [group.id, group])
+  );
+  const baseGroups = new Set(base.deliveryGroups.map((group) => group.id));
+  for (const oldGroup of base.deliveryGroups) {
+    const newGroup = currentGroups.get(oldGroup.id);
+    if (!newGroup) {
+      problems.push(`delivery group removed: ${oldGroup.id}`);
+      continue;
+    }
+    for (const field of [
+      "resolutionProofMode",
+      "requiredProofEnvironments",
+      "sourcePaths",
+      "behaviorExpectation",
+    ]) {
+      if (JSON.stringify(oldGroup[field]) !== JSON.stringify(newGroup[field])) {
+        problems.push(`delivery group ${field} changed: ${oldGroup.id}`);
+      }
+    }
+  }
+  for (const group of current.deliveryGroups) {
+    if (!baseGroups.has(group.id)) problems.push(`delivery group added: ${group.id}`);
+  }
+  const currentByPath = new Map(current.entries.map((entry) => [entry.sourcePath, entry]));
+  for (const oldEntry of base.entries) {
+    const newEntry = currentByPath.get(oldEntry.sourcePath);
+    if (!newEntry) {
+      problems.push(`source path removed: ${oldEntry.sourcePath}`);
+      continue;
+    }
+    if (
+      priorityRank[oldEntry.priority] <= priorityRank.P1 &&
+      oldEntry.priority !== newEntry.priority
+    ) {
+      problems.push(`P0/P1 priority changed: ${oldEntry.sourcePath}`);
+    }
+    if (oldEntry.deliveryGroup && oldEntry.deliveryGroup !== newEntry.deliveryGroup) {
+      problems.push(`delivery group changed: ${oldEntry.sourcePath}`);
+    }
+    if (terminalStatuses.has(oldEntry.status) && !terminalStatuses.has(newEntry.status)) {
+      problems.push(`terminal resolution regressed: ${oldEntry.sourcePath}`);
+    }
+  }
+  const currentGate = new Map(current.behavioralGates.map((gate) => [gate.id, gate]));
+  const baseGates = new Set(base.behavioralGates.map((gate) => gate.id));
+  for (const gate of base.behavioralGates) {
+    const newGate = currentGate.get(gate.id);
+    if (!newGate) {
+      problems.push(`behavioral gate removed: ${gate.id}`);
+      continue;
+    }
+    for (const field of [
+      "priority",
+      "deliveryGroup",
+      "requirement",
+      "coveredSourcePaths",
+    ]) {
+      if (JSON.stringify(gate[field]) !== JSON.stringify(newGate[field])) {
+        problems.push(`behavioral gate ${field} changed: ${gate.id}`);
+      }
+    }
+    if (gate.status === "passed" && newGate.status !== "passed") {
+      problems.push(`behavioral gate regressed: ${gate.id}`);
+    }
+  }
+  for (const gate of current.behavioralGates) {
+    if (!baseGates.has(gate.id)) problems.push(`behavioral gate added: ${gate.id}`);
+  }
+  return problems;
+}
+
+function flagValue(args, flag) {
+  const clean = args.filter((arg) => arg !== "--");
+  const index = clean.indexOf(flag);
+  return index >= 0 ? clean[index + 1] : null;
+}
+
+function positional(args) {
+  return args.filter((arg) => arg !== "--" && !arg.startsWith("--"));
+}
+
+function main() {
+  const [, , command, ...args] = process.argv;
+  const policy = readJson(policyPath);
+  validatePolicy(policy);
+
+  if (command === "refresh") {
+    const legacyRepo = flagValue(args, "--legacy-repo") ?? process.env.POLY_LEGACY_REPO;
+    invariant(legacyRepo, "refresh requires --legacy-repo PATH or POLY_LEGACY_REPO");
+    const legacyTop = run("git", ["rev-parse", "--show-toplevel"], legacyRepo);
+    const revision = run("git", ["rev-parse", policy.source.revision], legacyTop);
+    const treeObject = run(
+      "git",
+      ["rev-parse", `${policy.source.revision}:${policy.source.treeRoot}`],
+      legacyTop
+    );
+    validateSourceIdentity(policy, revision, treeObject);
+    const sources = sourceFiles(legacyTop, policy.source.revision, policy.source.treeRoot);
+    const inventory = buildInventoryFromSource(policy, sources);
+    writeFileSync(inventoryPath, stableJson(inventory));
+    writeFileSync(reportPath, markdown(inventory, policy));
+    process.stdout.write(
+      `refreshed ${inventory.summary.sourceFiles} legacy files; mission ${inventory.summary.missionResolved}/${inventory.summary.missionFiles}; ${inventory.summary.unresolved} unresolved\n`
+    );
+    return;
+  }
+
+  if (command === "verify") {
+    const inventory = verifiedInventory(policy);
+    process.stdout.write(
+      `verified ${inventory.summary.sourceFiles} legacy files; mission ${inventory.summary.missionResolved}/${inventory.summary.missionFiles}; ${inventory.summary.unresolved} unresolved\n`
+    );
+    return;
+  }
+
+  if (command === "summary") {
+    process.stdout.write(`${JSON.stringify(readJson(inventoryPath).summary, null, 2)}\n`);
+    return;
+  }
+
+  if (command === "regression") {
+    const baseRef = flagValue(args, "--base");
+    invariant(baseRef, "regression requires --base REF");
+    const current = verifiedInventory(policy);
+    const base = JSON.parse(
+      run("git", ["show", `${baseRef}:docs/porting/poly-port-inventory.json`])
+    );
+    if (base.schemaVersion !== 2) {
+      process.stdout.write(`verified current inventory; ${baseRef} predates schema v2\n`);
+      return;
+    }
+    const problems = regressionProblems(base, current);
+    invariant(problems.length === 0, `Parity regression:\n${problems.join("\n")}`);
+    process.stdout.write(`no parity regression against ${baseRef}\n`);
+    return;
+  }
+
+  if (command === "check-group") {
+    const [groupId] = positional(args);
+    invariant(groupId, "check-group requires GROUP");
+    const inventory = verifiedInventory(policy);
+    const problems = groupProblems(inventory, groupId);
+    invariant(problems.length === 0, `${groupId} is incomplete:\n${problems.join("\n")}`);
+    process.stdout.write(`${groupId} is complete\n`);
+    return;
+  }
+
+  if (command === "complete") {
+    const through = flagValue(args, "--through");
+    invariant(through, "complete requires --through P0|P1|P2|P3");
+    const inventory = verifiedInventory(policy);
+    const problems = completionProblems(inventory, through);
+    invariant(problems.length === 0, `Parity is incomplete through ${through}:\n${problems.join("\n")}`);
+    const lowerPriorityRemaining = inventory.entries.filter(
+      ({ priority, status }) =>
+        priorityRank[priority] > priorityRank[through] && status === "unresolved"
+    ).length;
+    process.stdout.write(
+      `parity complete through ${through}; ${lowerPriorityRemaining} lower-priority files remain visible\n`
+    );
+    return;
+  }
+
+  throw new Error(
+    "usage: poly-port-inventory.mjs <refresh|verify|summary|regression|check-group|complete>"
+  );
+}
+
+const isMain = process.argv[1]
+  ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  : false;
+if (isMain) {
+  try {
+    main();
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
 }

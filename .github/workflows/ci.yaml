@@ -31,6 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@c5ba7f7862a0f64c1b1a05fbac13e0b8e86ba08c # v4
 
@@ -58,6 +60,9 @@ jobs:
 
       - name: Workflow contract check
         run: pnpm check:workflow
+
+      - name: Poly parity contract check
+        run: pnpm poly:port:test && pnpm poly:port:verify && pnpm poly:port:regression -- --base origin/main
 
   unit:
     runs-on: ubuntu-latest
