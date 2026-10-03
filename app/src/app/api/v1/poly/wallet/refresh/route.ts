@@ -43,6 +43,7 @@ import {
   type PositionActionability,
 } from "@/features/trading";
 import { refreshCurrentPositionsForWallet } from "@/features/wallet-analysis/server/trader-observation-service";
+import { persistWalletBalanceFact } from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
 import {
   getExecutionSlice,
   invalidateWalletAnalysisCaches,
@@ -189,6 +190,21 @@ export const POST = wrapRouteHandlerWithLogging(
     let onchainDustCount = 0;
     let onchainActionableCount = 0;
     let upstreamErrorCount = 0;
+
+    try {
+      const balances = await adapter.getBalances(account.id);
+      if (balances) {
+        await persistWalletBalanceFact(container.serviceDb, {
+          billingAccountId: account.id,
+          ...balances,
+        });
+      }
+    } catch (err) {
+      warnings.push({
+        code: "balance_snapshot_refresh_unavailable",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     try {
       const env = serverEnv();

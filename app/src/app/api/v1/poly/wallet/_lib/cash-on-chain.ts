@@ -16,9 +16,12 @@
  *     wallet. Returns null only when NO leg read succeeded (both null → RPC
  *     down / unconfigured), so the dashboard degrades to "—" rather than
  *     falsely claiming an empty wallet.
- *   - TOTAL_IS_CASH_NULL_SAFE: the wallet total is gated on cash only, never on
- *     positions. Absent/stale positions contribute 0, not null — ANDing them
- *     into the gate zeroed a funded wallet's total (sibling of the pUSD bug).
+ *   - AVAILABLE_REQUIRES_LEDGER: spendable cash is unknown when resting-order
+ *     reservations could not be read; failed IO never becomes zero locked.
+ *   - TOTAL_REQUIRES_COMPLETE_INVENTORY: the wallet total is reported only
+ *     when both cash and marked positions are known. Cash-only is a useful
+ *     subtotal, but labeling it "Total" understates a funded wallet that holds
+ *     positions.
  * Side-effects: none
  * Links: docs/spec/poly-tenant-and-collateral.md
  * @internal
@@ -40,24 +43,36 @@ export function sumCashOnChain(
 }
 
 /**
+ * Subtract software-level resting-order reservations from on-chain cash.
+ * A failed ledger read makes `lockedUsdc` unknown; returning cash unchanged in
+ * that state would falsely label a subtotal as Available.
+ */
+export function availableCashAfterReservations(
+  cashOnChain: number | null,
+  lockedUsdc: number | null
+): number | null {
+  if (cashOnChain === null || lockedUsdc === null) return null;
+  return Math.max(0, cashOnChain - lockedUsdc);
+}
+
+/**
  * Combine spendable on-chain cash with marked-to-market position value into the
  * wallet's total.
  *
- * `positionsMtm` is null whenever the position cache is stale/absent — the
- * common case for a funded wallet that is not itself a tracked trader — and MUST
- * NOT zero the total. ANDing it into the gate zeroed `usdc_total` for a wallet
- * that actually holds cash, so the dashboard falsely showed "empty". Missing
- * positions contribute 0; the total is null only when there is no on-chain cash
- * read at all (RPC down / unconfigured).
+ * `positionsMtm` is null whenever the position cache is stale/absent. In that
+ * state, cash is still reported independently as `usdc_available`, but the
+ * combined total is unknown. Treating unknown positions as zero produces a
+ * plausible-looking cash-only number under the "Total" label and hides the
+ * exact observer failure the dashboard needs to surface.
  *
  * @param cashOnChain combined USDC.e + pUSD cash in whole tokens, or null when no leg read
  * @param positionsMtm marked-to-market position value, or null when the cache is stale/absent
- * @returns cash + positions in whole tokens, or null only when cash could not be read
+ * @returns cash + positions in whole tokens, or null when either input is unknown
  */
 export function sumWalletTotal(
   cashOnChain: number | null,
   positionsMtm: number | null
 ): number | null {
-  if (cashOnChain === null) return null;
-  return cashOnChain + (positionsMtm ?? 0);
+  if (cashOnChain === null || positionsMtm === null) return null;
+  return cashOnChain + positionsMtm;
 }

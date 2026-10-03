@@ -5,7 +5,7 @@
 ## Metadata
 
 - **Owners:** @derek @core-dev
-- **Last reviewed:** 2026-10-02
+- **Last reviewed:** 2026-09-15
 - **Status:** draft
 
 ## Purpose
@@ -60,8 +60,9 @@ HTTP API endpoints using Next.js App Router. Contract-validated entry points tha
   - `/api/v1/attribution/epochs/[id]/pool-components` [POST] - record pool component (SIWE + approver)
   - `/api/v1/users/me` [GET, PATCH] - current profile
   - `/api/v1/users/me/ownership` [GET] - current ownership summary derived from linked identities
-  - `/api/v1/work/items` [GET, POST] - list or create node-local Dolt work items (SIWE or agent bearer auth)
-  - `/api/v1/work/items/[id]` [GET, PATCH, DELETE] - read, update, or delete a node-local Dolt work item (SIWE or agent bearer auth)
+  - `/api/v1/work/items` [GET, POST] - list/create Dolt-backed work items (SIWE or node-agent auth)
+  - `/api/v1/work/items/[id]` [GET, PATCH, DELETE] - read/update/delete a Dolt-backed work item (SIWE or node-agent auth)
+  - `/api/v1/work/items/[id]/{claims,heartbeat,coordination}` - Dolt-backed agent coordination state
   - `/api/v1/agent/register` [POST] - unauthenticated machine actor registration (returns Bearer API key)
   - `/api/v1/agent/runs` [GET] - machine-authenticated run list
   - `/api/v1/agent/runs/[runId]/stream` [GET] - machine-authenticated run stream SSE

@@ -61,12 +61,3 @@ export {
   type ScheduleWorkerPort,
   type UpdateScheduleInput,
 } from "@cogni/scheduler-core";
-
-// Shared node-local Doltgres work-item surface. Every sovereign node wires
-// this port to its own knowledge_<slug> store.
-export type {
-  WorkItemsCreateInput,
-  WorkItemsDoltgresPort,
-  WorkItemsPatchInput,
-  WorkItemsPatchSet,
-} from "@cogni/work-items/adapters/doltgres";

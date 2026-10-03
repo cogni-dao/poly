@@ -31,18 +31,6 @@ export const tsupConfig = defineConfig([
     sourcemap: true,
     platform: "node",
   },
-  {
-    entry: ["src/adapters/doltgres/index.ts"],
-    outDir: "dist/adapters/doltgres",
-    format: ["esm"],
-    dts: false,
-    clean: false,
-    sourcemap: true,
-    platform: "node",
-    // postgres.js is the caller's client; this adapter only consumes the `Sql`
-    // type and must never bundle a driver copy of its own.
-    external: ["postgres"],
-  },
 ]);
 
 export default tsupConfig;

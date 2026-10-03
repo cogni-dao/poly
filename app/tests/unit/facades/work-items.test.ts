@@ -4,7 +4,7 @@
 /**
  * Module: `@tests/unit/facades/work-items`
  * Purpose: Unit test for work items facade — verifies DTO mapping and port delegation.
- * Scope: Mocks container and WorkItemQueryPort. Tests listWorkItems and getWorkItem.
+ * Scope: Mocks the Doltgres port and verifies read/write delegation.
  * Invariants: PORT_VIA_CONTAINER, CONTRACTS_ARE_TRUTH
  * Side-effects: none
  * Links: src/app/_facades/work/items.server.ts
@@ -15,7 +15,7 @@ import {
   WorkItemDtoSchema,
   workItemsListOperation,
 } from "@cogni/node-contracts";
-import type { WorkItem, WorkItemQueryPort } from "@cogni/work-items";
+import type { WorkItem } from "@cogni/work-items";
 import { toWorkItemId } from "@cogni/work-items";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -24,7 +24,13 @@ vi.mock("@/bootstrap/container", () => ({
   getContainer: vi.fn(),
 }));
 
-import { getWorkItem, listWorkItems } from "@/app/_facades/work/items.server";
+import {
+  createWorkItem,
+  getWorkItem,
+  listWorkItems,
+  patchWorkItem,
+  WorkItemsBackendNotReadyError,
+} from "@/app/_facades/work/items.server";
 import { getContainer } from "@/bootstrap/container";
 
 const mockGetContainer = vi.mocked(getContainer);
@@ -41,6 +47,7 @@ const SAMPLE_WORK_ITEM: WorkItem = {
   outcome: "Expected outcome",
   projectId: toWorkItemId("proj.test"),
   parentId: undefined,
+  node: "poly",
   assignees: [{ kind: "user", userId: "u1" }],
   externalRefs: [{ system: "github", kind: "pr" }],
   labels: ["test", "api"],
@@ -58,45 +65,27 @@ const SAMPLE_WORK_ITEM: WorkItem = {
   updatedAt: "2026-01-02",
 };
 
-function createMockPort(): WorkItemQueryPort {
+function createMockPort() {
   return {
     list: vi.fn(),
     get: vi.fn(),
-  };
-}
-
-type DoltgresMock = {
-  list: ReturnType<typeof vi.fn>;
-  get: ReturnType<typeof vi.fn>;
-  create: ReturnType<typeof vi.fn>;
-  patch: ReturnType<typeof vi.fn>;
-};
-
-function createDoltgresMock(): DoltgresMock {
-  // Default behavior: doltgres returns empty so the facade tests focus on
-  // markdown path + DTO mapping.
-  return {
-    list: vi.fn().mockResolvedValue({
-      items: [],
-      pageInfo: { endCursor: null, hasMore: false },
-    }),
-    get: vi.fn(),
     create: vi.fn(),
     patch: vi.fn(),
+    delete: vi.fn(),
+    claim: vi.fn(),
+    heartbeat: vi.fn(),
+    release: vi.fn(),
   };
 }
 
 describe("app/_facades/work/items.server", () => {
   let mockPort: ReturnType<typeof createMockPort>;
-  let mockDoltgres: DoltgresMock;
 
   beforeEach(() => {
     vi.resetAllMocks();
     mockPort = createMockPort();
-    mockDoltgres = createDoltgresMock();
     mockGetContainer.mockReturnValue({
-      workItemQuery: mockPort,
-      doltgresWorkItems: mockDoltgres,
+      doltgresWorkItems: mockPort,
     } as never);
   });
 
@@ -196,36 +185,14 @@ describe("app/_facades/work/items.server", () => {
       expect(result.items).toEqual([]);
     });
 
-    it("passes through nextCursor and pageInfo from doltgres", async () => {
+    it("passes through nextCursor", async () => {
       vi.mocked(mockPort.list).mockResolvedValue({
         items: [],
-        nextCursor: undefined,
-      });
-      mockDoltgres.list.mockResolvedValue({
-        items: [],
-        pageInfo: { endCursor: "cursor-xyz", hasMore: true },
+        nextCursor: "cursor-xyz",
       });
 
       const result = await listWorkItems({});
-      expect(result.pageInfo).toEqual({
-        endCursor: "cursor-xyz",
-        hasMore: true,
-      });
       expect(result.nextCursor).toBe("cursor-xyz");
-    });
-
-    it("forwards cursor to doltgres and skips markdown source", async () => {
-      mockDoltgres.list.mockResolvedValue({
-        items: [],
-        pageInfo: { endCursor: null, hasMore: false },
-      });
-
-      await listWorkItems({ cursor: "encoded-cursor" });
-
-      expect(mockPort.list).not.toHaveBeenCalled();
-      expect(mockDoltgres.list).toHaveBeenCalledWith(
-        expect.objectContaining({ cursor: "encoded-cursor" })
-      );
     });
   });
 
@@ -255,6 +222,56 @@ describe("app/_facades/work/items.server", () => {
       await getWorkItem("task.0001");
 
       expect(mockPort.get).toHaveBeenCalledWith(toWorkItemId("task.0001"));
+    });
+  });
+
+  describe("writes", () => {
+    it("maps bounded adapter contention to backend-not-ready", async () => {
+      const busy = new Error("Work-item store is busy; retry shortly");
+      busy.name = "WorkItemsBusyError";
+      mockPort.create.mockRejectedValue(busy);
+
+      await expect(
+        createWorkItem(
+          { type: "task", title: "Sample task", node: "poly" },
+          { id: "agent-1" }
+        )
+      ).rejects.toBeInstanceOf(WorkItemsBackendNotReadyError);
+    });
+
+    it("creates in Doltgres with immutable principal attribution", async () => {
+      mockPort.create.mockResolvedValue(SAMPLE_WORK_ITEM);
+
+      const result = await createWorkItem(
+        { type: "task", title: "Sample task", node: "poly" },
+        { id: "agent-1" }
+      );
+
+      expect(result.id).toBe("task.0001");
+      expect(mockPort.create).toHaveBeenCalledWith(
+        { type: "task", title: "Sample task", node: "poly" },
+        "agent-1"
+      );
+    });
+
+    it("passes extended patch fields to Doltgres", async () => {
+      mockPort.patch.mockResolvedValue({
+        ...SAMPLE_WORK_ITEM,
+        deployVerified: true,
+      });
+
+      await patchWorkItem(
+        { id: "task.0001", set: { deployVerified: true, blockedBy: null } },
+        { id: "agent-1" }
+      );
+
+      expect(mockPort.patch).toHaveBeenCalledWith(
+        {
+          id: toWorkItemId("task.0001"),
+          set: { deployVerified: true, blockedBy: null },
+        },
+        "agent-1"
+      );
     });
   });
 });

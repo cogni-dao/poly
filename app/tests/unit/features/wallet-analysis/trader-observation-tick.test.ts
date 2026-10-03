@@ -162,6 +162,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     const result = await runTraderObservationTick({
       db,
       client,
+      listActiveTradingAddresses: async () => [],
       logger: logger as never,
       metrics,
     });
@@ -227,6 +228,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     const result = await runTraderObservationTick({
       db,
       client,
+      listActiveTradingAddresses: async () => [],
       logger: logger as never,
       metrics,
     });
@@ -258,6 +260,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     await runTraderObservationTick({
       db,
       client,
+      listActiveTradingAddresses: async () => [],
       logger: logger as never,
       metrics,
       onStage: (stage) => {
@@ -292,6 +295,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     await runTraderObservationTick({
       db,
       client,
+      listActiveTradingAddresses: async () => [],
       logger: logger as never,
       metrics,
       signal: controller.signal,
@@ -321,6 +325,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     const result = await runTraderObservationTick({
       db,
       client,
+      listActiveTradingAddresses: async () => [],
       logger: logger as never,
       metrics,
       signal: controller.signal,

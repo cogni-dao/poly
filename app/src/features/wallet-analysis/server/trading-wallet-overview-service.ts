@@ -10,6 +10,8 @@
  * Invariants:
  *   - PNL_NOT_NAV: the returned series is Polymarket P/L, not reconstructed wallet balance.
  *   - EMPTY_IS_HONEST: zero stored points returns `[]` — readers do not fall back to live HTTP.
+ *   - MISSING_IS_NOT_EMPTY: the structured reader distinguishes an absent
+ *     observer wallet from an observed wallet with no saved P/L points.
  *   - PAGE_LOAD_DB_ONLY: `getTradingWalletPnlHistory` is a pure DB read; only `fetchAndPersist*` calls `/user-pnl`.
  *   - INTERVAL_DERIVED_FROM_TIMESERIES: rows are stored at two fidelities; the reader picks the densest fidelity covering the requested window.
  *   - FIDELITY_PLAN: writer ingests `1h@1w` and `1d@all`. Reader maps `1D`/`1W` → `1h` rows and `1M`/`1Y`/`YTD`/`ALL` → `1d` rows.
@@ -35,7 +37,7 @@ import type {
   PolyWalletOverviewInterval,
   PolyWalletOverviewPnlPoint,
 } from "@cogni/poly-node-contracts";
-import { and, asc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lt, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { dedupeByKey } from "./observation-helpers";
@@ -50,6 +52,8 @@ const DAY_FIDELITY: Fidelity = "1d";
 
 /** `1h` rows older than this are pruned by the writer's tick. */
 const HOUR_FIDELITY_RETENTION_DAYS = 35;
+const PNL_READ_LIMIT = 2_000;
+const PNL_FRESHNESS_MS = 10 * 60_000;
 
 let userPnlClient: PolymarketUserPnlClient | undefined;
 
@@ -64,22 +68,49 @@ export function __setTradingWalletOverviewUserPnlClientForTests(
   userPnlClient = client;
 }
 
-/** DB-backed page-load read. Empty array when no rows are stored. */
-export async function getTradingWalletPnlHistory(input: {
+export type TradingWalletPnlHistoryStatus =
+  | "available"
+  | "no_history"
+  | "stale"
+  | "wallet_missing";
+
+export interface TradingWalletPnlHistoryRead {
+  points: PolyWalletOverviewPnlPoint[];
+  status: TradingWalletPnlHistoryStatus;
+  observedAt?: string;
+}
+
+/**
+ * DB-backed page-load read with explicit availability state.
+ *
+ * `wallet_missing` means the observer has no active identity row for this
+ * address and an empty series must not be presented as a real zero history.
+ * `no_history` means the wallet is enrolled but no persisted points exist for
+ * the requested fidelity/window. Enrollment alone is not an ingestion-success
+ * marker, so this state makes no stronger claim. `available` includes an
+ * all-zero series: a persisted zero-valued point is data.
+ */
+export async function getTradingWalletPnlHistoryRead(input: {
   db: Db;
   address: `0x${string}`;
   interval: PolyWalletOverviewInterval;
   capturedAt?: string;
-}): Promise<PolyWalletOverviewPnlPoint[]> {
+}): Promise<TradingWalletPnlHistoryRead> {
   const capturedAt = input.capturedAt ?? new Date().toISOString();
   const fidelity = readFidelityForInterval(input.interval);
   const wallet = await input.db
     .select({ id: polyTraderWallets.id })
     .from(polyTraderWallets)
-    .where(eq(polyTraderWallets.walletAddress, input.address.toLowerCase()))
+    .where(
+      and(
+        eq(polyTraderWallets.walletAddress, input.address.toLowerCase()),
+        eq(polyTraderWallets.activeForResearch, true),
+        isNull(polyTraderWallets.disabledAt)
+      )
+    )
     .limit(1);
   const traderWalletId = wallet[0]?.id;
-  if (!traderWalletId) return [];
+  if (!traderWalletId) return { points: [], status: "wallet_missing" };
 
   // task.5018: push the window's `ts >=` bound into SQL so Postgres returns
   // only the windowed rows instead of the wallet's entire stored series.
@@ -91,6 +122,7 @@ export async function getTradingWalletPnlHistory(input: {
     .select({
       ts: polyTraderUserPnlPoints.ts,
       pnlUsdc: polyTraderUserPnlPoints.pnlUsdc,
+      observedAt: polyTraderUserPnlPoints.observedAt,
     })
     .from(polyTraderUserPnlPoints)
     .where(
@@ -100,16 +132,51 @@ export async function getTradingWalletPnlHistory(input: {
         windowStart ? gte(polyTraderUserPnlPoints.ts, windowStart) : undefined
       )
     )
-    .orderBy(asc(polyTraderUserPnlPoints.ts));
+    .orderBy(desc(polyTraderUserPnlPoints.ts))
+    .limit(PNL_READ_LIMIT);
+
+  rows.reverse();
+  const latestObservedAt = rows.reduce<Date | null>(
+    (latest, row) =>
+      latest === null || row.observedAt > latest ? row.observedAt : latest,
+    null
+  );
 
   const points: PolymarketUserPnlPoint[] = rows.map((row) => ({
     t: Math.floor(row.ts.getTime() / 1_000),
     p: Number(row.pnlUsdc),
   }));
-  return filterPnlHistory(points, input.interval, capturedAt).map((point) => ({
-    ts: new Date(point.t * 1_000).toISOString(),
-    pnl: roundUsd(point.p),
-  }));
+  const history = filterPnlHistory(points, input.interval, capturedAt).map(
+    (point) => ({
+      ts: new Date(point.t * 1_000).toISOString(),
+      pnl: roundUsd(point.p),
+    })
+  );
+  if (history.length === 0 || latestObservedAt === null) {
+    return { points: [], status: "no_history" };
+  }
+  const observedAt = latestObservedAt.toISOString();
+  if (
+    new Date(capturedAt).getTime() - latestObservedAt.getTime() >
+    PNL_FRESHNESS_MS
+  ) {
+    return { points: [], status: "stale", observedAt };
+  }
+  return { points: history, status: "available", observedAt };
+}
+
+/**
+ * Compatibility reader for non-dashboard consumers that only need points.
+ * Dashboard routes use `getTradingWalletPnlHistoryRead` so missing observer
+ * state survives the service boundary as an explicit warning.
+ */
+export async function getTradingWalletPnlHistory(input: {
+  db: Db;
+  address: `0x${string}`;
+  interval: PolyWalletOverviewInterval;
+  capturedAt?: string;
+}): Promise<PolyWalletOverviewPnlPoint[]> {
+  return (await getTradingWalletPnlHistoryRead(input)).points;
 }
 
 /** Writer: fetch live `/user-pnl` at both fidelities for one wallet and upsert. */

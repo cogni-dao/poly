@@ -61,6 +61,19 @@ export class WalletAdapterUnconfiguredError extends Error {
 
 let cached: PrivyPolyTraderWalletAdapter | null = null;
 
+/** Pure local-config readiness check for DB-only status/read routes. */
+export function isPolyTraderWalletConfigured(): boolean {
+  const env = serverEnv();
+  return Boolean(
+    env.PRIVY_USER_WALLETS_APP_ID &&
+      env.PRIVY_USER_WALLETS_APP_SECRET &&
+      env.PRIVY_USER_WALLETS_SIGNING_KEY &&
+      env.POLY_WALLET_AEAD_KEY_HEX &&
+      env.POLY_WALLET_AEAD_KEY_ID &&
+      env.POLYGON_RPC_URL
+  );
+}
+
 /**
  * Paper-mode stub for the live tenant-wallet adapter. In PAPER_ENFORCE_MODE=paper
  * the executor factory + mirror poll must boot without live-wallet creds (Privy +

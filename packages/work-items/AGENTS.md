@@ -9,7 +9,7 @@
 
 ## Purpose
 
-Work item port interfaces, domain types, and storage adapters for structured work item management. Root entry (`@cogni/work-items`) exports pure types/interfaces. Adapter entries expose the legacy markdown implementation and the shared Doltgres implementation used by every node-owned work-item store.
+Work item port interfaces, domain types, and the markdown file-backed adapter for structured work item management. Root entry (`@cogni/work-items`) exports pure types/interfaces. Adapter entry (`@cogni/work-items/markdown`) exports `MarkdownWorkItemAdapter` for reading/writing `work/items/*.md` frontmatter.
 
 ## Pointers
 
@@ -51,16 +51,12 @@ Work item port interfaces, domain types, and storage adapters for structured wor
   - `MarkdownWorkItemAdapter` — implements QueryPort + CommandPort against markdown files
   - `StaleRevisionError` — thrown on optimistic concurrency conflict
   - `InvalidTransitionError` — thrown on invalid status transition
-- **Exports (adapter `@cogni/work-items/adapters/doltgres`):**
-  - `DoltgresWorkItemAdapter` — node-local query/create/patch/delete implementation
-  - `DoltgresWorkItemAdapterOptions` — per-store allocator configuration (`idFloor`)
-  - cursor codec + Doltgres port/error types
-- **Files considered API:** `src/index.ts`, `src/adapters/markdown/index.ts`, `src/adapters/doltgres/index.ts`
+- **Files considered API:** `src/index.ts` (root barrel), `src/adapters/markdown/index.ts` (adapter barrel)
 
 ## Ports
 
 - **Uses ports:** none
-- **Implements ports:** `WorkItemQueryPort`, `WorkItemCommandPort` (via MarkdownWorkItemAdapter and DoltgresWorkItemAdapter)
+- **Implements ports:** `WorkItemQueryPort`, `WorkItemCommandPort` (via MarkdownWorkItemAdapter)
 
 ## Responsibilities
 
@@ -78,7 +74,7 @@ pnpm vitest run packages/work-items/tests/
 ## Standards
 
 - Root entry: no I/O, no `@/`, no `src/`, no framework imports (pure types)
-- Adapter entries: I/O allowed, but no `@/` or app `src/` imports
+- Adapter entry: I/O allowed (filesystem), but no `@/` or `src/` imports
 - No `as WorkItemId` casts outside test fixtures — use `toWorkItemId()` at boundaries
 
 ## Dependencies

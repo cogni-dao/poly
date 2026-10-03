@@ -36,6 +36,7 @@ type Db = {
 };
 
 const POSITION_STALE_MS = 10 * 60_000;
+const POSITION_PREVIEW_LIMIT = 500;
 const OBSERVATION_SOURCE = "data-api-positions";
 
 type CurrentPositionRow = {
@@ -74,6 +75,8 @@ type CurrentPositionRow = {
   metadata_event_title: string | null;
   metadata_event_slug: string | null;
   metadata_end_date: Date | string | null;
+  total_active_rows: string | number;
+  total_positions_mtm: string | number;
 };
 
 export interface CurrentWalletPositionReadModel {
@@ -124,7 +127,27 @@ export async function readCurrentWalletPositionModel(params: {
         pmm.market_slug AS metadata_market_slug,
         pmm.event_title AS metadata_event_title,
         pmm.event_slug AS metadata_event_slug,
-        pmm.end_date AS metadata_end_date
+        pmm.end_date AS metadata_end_date,
+        count(p.token_id) FILTER (
+          WHERE p.current_value_usdc > 0
+            AND (
+              (pmo.outcome = 'winner' AND r.lifecycle_state IS DISTINCT FROM 'redeemed')
+              OR (
+                coalesce(pmo.outcome, 'unknown') NOT IN ('winner', 'loser')
+                AND coalesce(r.lifecycle_state, '') NOT IN ('redeemed', 'loser', 'dust', 'closed')
+              )
+            )
+        ) OVER () AS total_active_rows,
+        coalesce(sum(p.current_value_usdc) FILTER (
+          WHERE p.current_value_usdc > 0
+            AND (
+              (pmo.outcome = 'winner' AND r.lifecycle_state IS DISTINCT FROM 'redeemed')
+              OR (
+                coalesce(pmo.outcome, 'unknown') NOT IN ('winner', 'loser')
+                AND coalesce(r.lifecycle_state, '') NOT IN ('redeemed', 'loser', 'dust', 'closed')
+              )
+            )
+        ) OVER (), 0) AS total_positions_mtm
       FROM poly_trader_wallets w
       LEFT JOIN poly_trader_ingestion_cursors c
         ON c.trader_wallet_id = w.id
@@ -145,7 +168,21 @@ export async function readCurrentWalletPositionModel(params: {
         AND w.kind = 'cogni_wallet'
         AND w.active_for_research = true
         AND w.disabled_at IS NULL
+        AND (
+          p.token_id IS NULL
+          OR (
+            p.current_value_usdc > 0
+            AND (
+              (pmo.outcome = 'winner' AND r.lifecycle_state IS DISTINCT FROM 'redeemed')
+              OR (
+                coalesce(pmo.outcome, 'unknown') NOT IN ('winner', 'loser')
+                AND coalesce(r.lifecycle_state, '') NOT IN ('redeemed', 'loser', 'dust', 'closed')
+              )
+            )
+          )
+        )
       ORDER BY p.current_value_usdc DESC NULLS LAST, p.last_observed_at DESC NULLS LAST
+      LIMIT ${POSITION_PREVIEW_LIMIT}
     `)
   );
 
@@ -170,8 +207,7 @@ export async function readCurrentWalletPositionModel(params: {
     rows.length > 0 &&
     (syncAgeMs === null ||
       syncAgeMs > POSITION_STALE_MS ||
-      cursorStatus === "partial" ||
-      cursorStatus === "error");
+      cursorStatus !== "ok");
   const warnings: WalletExecutionWarning[] = [];
   if (rows.length === 0) {
     warnings.push({
@@ -183,9 +219,9 @@ export async function readCurrentWalletPositionModel(params: {
     warnings.push({
       code: "current_positions_stale",
       message:
-        cursorStatus === "partial"
-          ? "Current positions are from a partial upstream position poll."
-          : "Current-position read model is older than the freshness window.",
+        syncAgeMs !== null && syncAgeMs > POSITION_STALE_MS
+          ? "Current-position read model is older than the 10-minute freshness window."
+          : `Current positions are unavailable because the observer cursor is ${cursorStatus ?? "missing"}.`,
     });
   }
 
@@ -193,13 +229,16 @@ export async function readCurrentWalletPositionModel(params: {
     positions,
     summary: {
       positionsMtm: roundToCents(
-        positions.reduce((sum, position) => sum + position.currentValue, 0)
+        toNumber(rows[0]?.total_positions_mtm ?? null)
       ),
       syncedAt:
         latestSyncMs !== null ? new Date(latestSyncMs).toISOString() : null,
       syncAgeMs,
       stale,
-      activeRows: positions.length,
+      activeRows: Math.max(
+        0,
+        Math.trunc(toNumber(rows[0]?.total_active_rows ?? null))
+      ),
     },
     warnings,
   };

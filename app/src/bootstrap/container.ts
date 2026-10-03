@@ -69,8 +69,6 @@ import { PrivyOperatorWalletAdapter } from "@cogni/operator-wallet/adapters/priv
 import { noopMetrics as noopMetricsForExecutor } from "@cogni/poly-market-provider";
 import type { ScheduleControlPort } from "@cogni/scheduler-core";
 import type { WorkItemCommandPort, WorkItemQueryPort } from "@cogni/work-items";
-import { DoltgresWorkItemAdapter } from "@cogni/work-items/adapters/doltgres";
-import { MarkdownWorkItemAdapter } from "@cogni/work-items/markdown";
 import {
 	Client as TemporalClient,
 	Connection as TemporalConnection,
@@ -120,6 +118,7 @@ import {
 } from "@/adapters/server/ai/providers";
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
 import { getServiceReadDb } from "@/adapters/server/db/drizzle.service-read-client";
+import { DoltgresPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
 import { createJobLeaderLockSession } from "@/adapters/server/db/job-leader-lock.client";
 import { ServiceDrizzlePaymentAttemptRepository } from "@/adapters/server/payments/drizzle-payment-attempt.adapter";
 import { SplitTreasurySettlementAdapter } from "@/adapters/server/treasury/split-treasury-settlement.adapter";
@@ -197,8 +196,8 @@ import type {
 	ExecutionRequestPort,
 	GraphRunRepository,
 	ScheduleUserPort,
-	WorkItemsDoltgresPort,
 } from "@/ports/server";
+import type { WorkItemsDoltgresPort } from "@/ports/work-items-doltgres.port";
 import {
 	getDaoTreasuryAddress,
 	getEmissionsHolderAddress,
@@ -217,13 +216,6 @@ import { USDC_TOKEN_ADDRESS } from "@/shared/web3";
 import type { EvmOnchainClient } from "@/shared/web3/onchain/evm-onchain-client.interface";
 
 export type UnhandledErrorPolicy = "rethrow" | "respond_500";
-
-class DoltgresNotConfiguredError extends Error {
-	constructor() {
-		super("Doltgres is not configured for this node. Set DOLTGRES_URL to enable the work-items API.");
-		this.name = "DoltgresNotConfiguredError";
-	}
-}
 
 export interface ContainerConfig {
 	/** How to handle unhandled errors in route wrappers: rethrow for dev/test, respond_500 for production safety */
@@ -281,11 +273,11 @@ export interface Container {
 	governanceStatus: GovernanceStatusPort;
 	/** Epoch ledger store — shared by app and scheduler-worker */
 	attributionStore: AttributionStore;
-	/** Work item queries — reads from markdown files via WorkItemQueryPort */
+	/** Work item queries — deployed source of truth is the node's Doltgres hub. */
 	workItemQuery: WorkItemQueryPort;
-	/** Legacy work item lease commands for Poly coordination routes. */
+	/** Work item commands — deployed source of truth is the node's Doltgres hub. */
 	workItemCommand: WorkItemCommandPort;
-	/** Node-local Doltgres work-item query/create/patch/delete surface. */
+	/** Extended CRUD surface used by the authenticated work-item HTTP API. */
 	doltgresWorkItems: WorkItemsDoltgresPort;
 	/** Run event streaming — publish/subscribe via Redis Streams */
 	runStream: RunStreamPort;
@@ -348,6 +340,36 @@ export type AiAdapterDeps = {
 export type ActivityDeps = {
 	accountService: AccountService;
 };
+
+type RuntimeWorkItemAdapter = WorkItemsDoltgresPort & WorkItemQueryPort;
+
+function createUnavailableWorkItemAdapter(): RuntimeWorkItemAdapter {
+	return new Proxy(
+		{},
+		{
+			get: () => async () => {
+				const error = new Error(
+					"Work-item hub is not configured. Set DOLTGRES_URL."
+				);
+				error.name = "DoltgresNotConfiguredError";
+				throw error;
+			},
+		}
+	) as RuntimeWorkItemAdapter;
+}
+
+function createUnavailableWorkItemCommand(): WorkItemCommandPort {
+	return new Proxy(
+		{},
+		{
+			get: () => async () => {
+				throw new Error(
+					"Authenticated work-item mutations must use the HTTP command plane.",
+				);
+			},
+		},
+	) as WorkItemCommandPort;
+}
 
 // Module-level singleton
 let _container: Container | null = null;
@@ -1360,12 +1382,31 @@ function createContainer(): Container {
 			);
 			const observerLogger =
 				log as unknown as import("@cogni/poly-market-provider").LoggerPort;
+			// OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM — the wallet port is the single
+			// resolver of a tenant's trading address, so the observer enrolls
+			// exactly the wallets the executor signs from.
+			const observationWalletPort = getPolyTraderWalletAdapter(log);
+			const { persistWalletBalanceFact, refreshWalletBalanceFacts } = await import(
+				"@/features/wallet-analysis/server/wallet-balance-snapshot-service"
+			);
 			const traderObservationStop = startTraderObservationJob({
 				db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
 					Record<string, unknown>
 				>,
 				client: new PolymarketDataApiClient(),
 				userPnlClient: new PolymarketUserPnlClient(),
+				listActiveTradingAddresses: () =>
+					observationWalletPort.listActiveTradingAddresses(),
+				refreshBalanceFacts: async () => {
+					const wallets = await observationWalletPort.listActiveTradingWallets();
+					await refreshWalletBalanceFacts({
+						wallets,
+						read: (billingAccountId) =>
+							observationWalletPort.getBalances(billingAccountId),
+						persist: (fact) => persistWalletBalanceFact(serviceDb, fact),
+						concurrency: 3,
+					});
+				},
 				logger: observerLogger,
 				metrics: noopMetricsForObservation,
 			});
@@ -1764,14 +1805,11 @@ function createContainer(): Container {
 	// RepoCapability for AI tools (requires COGNI_REPO_PATH)
 	const repoCapability = createRepoCapability(env);
 
-	// WorkItemCapability for AI tools (delegates to markdown adapter ports)
-	const workItemAdapter = new MarkdownWorkItemAdapter(
-		env.COGNI_REPO_ROOT ?? "/nonexistent",
-	);
-	const workItemCapability = createWorkItemCapability({
-		workItemQuery: workItemAdapter,
-		workItemCommand: workItemAdapter,
-	});
+	// Deployed work items are Dolt-backed. When the hub is unavailable, fail
+	// closed instead of silently writing ephemeral markdown inside the pod.
+	let workItemAdapter: RuntimeWorkItemAdapter =
+		createUnavailableWorkItemAdapter();
+	const workItemCommand = createUnavailableWorkItemCommand();
 
 	// ScheduleCapability for AI tools (reads actorUserId from ALS at invocation time)
 	const scheduleCapability = createScheduleCapability({
@@ -1794,15 +1832,24 @@ function createContainer(): Container {
 	let edoCapability: EdoCapability;
 	let knowledgeContributionService: ContributionService | undefined;
 	let knowledgeStorePort: KnowledgeStorePort | undefined;
-	let doltgresWorkItems: WorkItemsDoltgresPort;
 	if (env.DOLTGRES_URL) {
+		const doltgresUrl = env.DOLTGRES_URL;
 		const doltClient = buildDoltgresClient({
-			connectionString: env.DOLTGRES_URL,
+			connectionString: doltgresUrl,
 			applicationName: `cogni_knowledge_${env.SERVICE_NAME ?? "app"}`,
 		});
-		// Node stores start their allocator at 1; operator alone reserves the
-		// imported legacy range below 5000.
-		doltgresWorkItems = new DoltgresWorkItemAdapter(doltClient);
+		const buildWorkItemClient = () =>
+			buildDoltgresClient({
+				connectionString: doltgresUrl,
+				applicationName: `cogni_work_items_${env.SERVICE_NAME ?? "app"}`,
+				max: 1,
+			});
+		const workItemClient = buildWorkItemClient();
+		workItemAdapter = new DoltgresPolyWorkItemAdapter(
+			workItemClient,
+			log.child({ component: "doltgres-work-items" }),
+			{ recreateClient: buildWorkItemClient },
+		);
 		const knowledgePort = new DoltgresKnowledgeStoreAdapter({
 			sql: doltClient,
 		});
@@ -1872,18 +1919,13 @@ function createContainer(): Container {
 		};
 		knowledgeContributionService = undefined;
 		knowledgeStorePort = undefined;
-		const notConfiguredWorkItems = () => {
-			throw new DoltgresNotConfiguredError();
-		};
-		doltgresWorkItems = {
-			get: notConfiguredWorkItems,
-			list: notConfiguredWorkItems,
-			create: notConfiguredWorkItems,
-			patch: notConfiguredWorkItems,
-			delete: notConfiguredWorkItems,
-		};
 		log.warn("Knowledge store not configured (DOLTGRES_URL not set)");
 	}
+
+	const workItemCapability = createWorkItemCapability({
+		workItemQuery: workItemAdapter,
+		workItemCommand,
+	});
 
 	// ToolSource with real implementations (per CAPABILITY_INJECTION)
 	const toolBindings = createToolBindings({
@@ -2055,8 +2097,8 @@ function createContainer(): Container {
 		),
 		attributionStore: new DrizzleAttributionAdapter(serviceDb, getScopeId()),
 		workItemQuery: workItemAdapter,
-		workItemCommand: workItemAdapter,
-		doltgresWorkItems,
+		workItemCommand,
+		doltgresWorkItems: workItemAdapter,
 		runStream,
 		nodeStream,
 		get webhookRegistrations() {

@@ -53,7 +53,7 @@ export function WalletAnalysisSurface({
   const [interval, setInterval] = useState<PolyWalletOverviewInterval>("ALL");
   const includeDistributions =
     includeDistributionsProp ?? (variant === "page" || variant === "compact");
-  const { data, isLoading } = useWalletAnalysis(addr, enabled, {
+  const { data, isLoading, warnings } = useWalletAnalysis(addr, enabled, {
     interval,
     includeDistributions,
     distributionMode:
@@ -66,6 +66,7 @@ export function WalletAnalysisSurface({
       variant={variant}
       size={size}
       isLoading={isLoading}
+      warnings={warnings}
       capturedAt={new Date().toISOString().slice(0, 16).replace("T", " ")}
       pnlInterval={interval}
       onPnlIntervalChange={setInterval}
