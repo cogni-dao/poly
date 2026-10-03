@@ -159,7 +159,7 @@ export const GET = wrapRouteHandlerWithLogging(
             interval,
             freshness,
             connected: false,
-            warnings: 1,
+            warnings: ["no_trading_wallet"],
             openOrders: null,
             positionsMtm: null,
             lockedUsdc: null,
@@ -390,7 +390,7 @@ export const GET = wrapRouteHandlerWithLogging(
           interval,
           freshness,
           connected: true,
-          warnings: warnings.length,
+          warnings: warnings.map((warning) => warning.code),
           openOrders: positionSummary?.openOrders ?? null,
           positionsMtm,
           lockedUsdc: positionSummary?.lockedUsdc ?? null,
@@ -445,28 +445,48 @@ function logOverviewComplete(
     interval: PolyWalletOverviewOutput["interval"];
     freshness: PolyWalletOverviewOutput["freshness"];
     connected: boolean;
-    warnings: number;
+    warnings: readonly string[];
     openOrders: number | null;
     positionsMtm: number | null;
     lockedUsdc: number | null;
     pnlPoints: number;
   }
 ): void {
+  const diagnostics = overviewCompletionDiagnostics(
+    fields.status,
+    fields.warnings
+  );
   logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_OVERVIEW_COMPLETE, {
     reqId: ctx.reqId,
     routeId: ctx.routeId,
-    status: fields.status,
+    status: diagnostics.status,
     durationMs: Math.round(performance.now() - startedAtMs),
     outcome: "success",
     interval: fields.interval,
     freshness: fields.freshness,
     connected: fields.connected,
-    warnings: fields.warnings,
+    warnings: diagnostics.warnings,
+    warning_codes: diagnostics.warning_codes,
     open_orders: fields.openOrders,
     positions_mtm: fields.positionsMtm,
     locked_usdc: fields.lockedUsdc,
     pnl_points: fields.pnlPoints,
   });
+}
+
+export function overviewCompletionDiagnostics(
+  status: string,
+  warningCodes: readonly string[]
+): { status: string; warnings: number; warning_codes: string[] } {
+  const normalizedWarningCodes = [...new Set(warningCodes)].sort();
+  return {
+    status:
+      normalizedWarningCodes.length > 0 && status === "ok"
+        ? "degraded"
+        : status,
+    warnings: warningCodes.length,
+    warning_codes: normalizedWarningCodes,
+  };
 }
 
 function roundToCents(value: number): number {
