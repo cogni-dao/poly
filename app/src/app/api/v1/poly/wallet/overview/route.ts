@@ -82,6 +82,7 @@ import {
   DASHBOARD_LEDGER_POSITION_STATUSES,
   summarizeLedgerOrders,
 } from "../_lib/ledger-positions";
+import { walletCompletionDiagnostics } from "../_lib/wallet-completion-diagnostics";
 
 export const dynamic = "force-dynamic";
 
@@ -452,7 +453,7 @@ function logOverviewComplete(
     pnlPoints: number;
   }
 ): void {
-  const diagnostics = overviewCompletionDiagnostics(
+  const diagnostics = walletCompletionDiagnostics(
     fields.status,
     fields.warnings
   );
@@ -472,21 +473,6 @@ function logOverviewComplete(
     locked_usdc: fields.lockedUsdc,
     pnl_points: fields.pnlPoints,
   });
-}
-
-export function overviewCompletionDiagnostics(
-  status: string,
-  warningCodes: readonly string[]
-): { status: string; warnings: number; warning_codes: string[] } {
-  const normalizedWarningCodes = [...new Set(warningCodes)].sort();
-  return {
-    status:
-      normalizedWarningCodes.length > 0 && status === "ok"
-        ? "degraded"
-        : status,
-    warnings: warningCodes.length,
-    warning_codes: normalizedWarningCodes,
-  };
 }
 
 function roundToCents(value: number): number {
