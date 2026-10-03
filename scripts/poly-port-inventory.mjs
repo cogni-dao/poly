@@ -589,7 +589,7 @@ export function buildInventoryFromSource(policy, sourceEntries, options = {}) {
 
   const targetOnly = currentFiles()
     .filter((targetPath) => !targetPaths.has(targetPath))
-    .map((targetPath) => ({ targetPath, ...worktreeFile(targetPath, options.root ?? repoRoot) }));
+    .map((targetPath) => ({ targetPath }));
   const behavioralGates = deriveBehavioralGates(policy, entries);
   const deliveryGroups = policy.deliveryGroups.map((group) => {
     const groupEntries = entries.filter(({ deliveryGroup }) => deliveryGroup === group.id);
