@@ -6,7 +6,7 @@
  * Purpose: HTTP endpoint for refreshing a work-item claim heartbeat.
  * Scope: Auth-protected POST endpoint. Does not contain business logic.
  * Invariants: VALIDATE_IO, PORT_VIA_FACADE
- * Side-effects: IO (HTTP response, filesystem write via port)
+ * Side-effects: IO (HTTP response, Doltgres write via port)
  * @public
  */
 
@@ -15,7 +15,9 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
   heartbeatWorkItem,
+  WorkItemLeaseConflictError,
   WorkItemNotFoundError,
+  WorkItemsBackendNotReadyError,
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -31,9 +33,15 @@ const HeartbeatRequestSchema = z.object({
 export const POST = wrapRouteHandlerWithLogging<{
   params: Promise<{ id: string }>;
 }>(
-  { routeId: "work.items.heartbeat", auth: { mode: "required", getSessionUser } },
-  async (ctx, request, _sessionUser, context) => {
+  {
+    routeId: "work.items.heartbeat",
+    auth: { mode: "required", getSessionUser },
+  },
+  async (ctx, request, sessionUser, context) => {
     if (!context) throw new Error("context required for dynamic routes");
+    if (!sessionUser) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    }
     const { id } = await context.params;
 
     let body: unknown;
@@ -55,6 +63,7 @@ export const POST = wrapRouteHandlerWithLogging<{
         ...(parsed.data.command !== undefined && {
           command: parsed.data.command,
         }),
+        principalId: sessionUser.id,
       });
       ctx.log.info(
         { workItemId: id, runId: parsed.data.runId },
@@ -64,6 +73,12 @@ export const POST = wrapRouteHandlerWithLogging<{
     } catch (error) {
       if (error instanceof WorkItemNotFoundError) {
         return NextResponse.json({ error: error.message }, { status: 404 });
+      }
+      if (error instanceof WorkItemLeaseConflictError) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+      if (error instanceof WorkItemsBackendNotReadyError) {
+        return NextResponse.json({ error: error.message }, { status: 503 });
       }
       throw error;
     }

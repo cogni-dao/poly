@@ -8,6 +8,13 @@
       "when": 1780105323212,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790977072974,
+      "tag": "0001_work_item_ownership_leases",
+      "breakpoints": true
     }
   ]
 }

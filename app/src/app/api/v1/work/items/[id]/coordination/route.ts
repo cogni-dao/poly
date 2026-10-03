@@ -6,7 +6,7 @@
  * Purpose: HTTP endpoint for reading work-item coordination state.
  * Scope: Auth-protected GET endpoint. Does not contain business logic.
  * Invariants: VALIDATE_IO, PORT_VIA_FACADE
- * Side-effects: IO (HTTP response, filesystem read via port)
+ * Side-effects: IO (HTTP response, Doltgres read via port)
  * @public
  */
 
@@ -14,6 +14,7 @@ import { NextResponse } from "next/server";
 import {
   getWorkItemCoordination,
   WorkItemNotFoundError,
+  WorkItemsBackendNotReadyError,
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -39,6 +40,9 @@ export const GET = wrapRouteHandlerWithLogging<{
     } catch (error) {
       if (error instanceof WorkItemNotFoundError) {
         return NextResponse.json({ error: error.message }, { status: 404 });
+      }
+      if (error instanceof WorkItemsBackendNotReadyError) {
+        return NextResponse.json({ error: error.message }, { status: 503 });
       }
       throw error;
     }
