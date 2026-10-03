@@ -17,7 +17,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1078,
+    "targetOnlyFiles": 1069,
     "unresolved": 602,
     "byStatus": {
       "exact": 1126,
@@ -28400,34 +28400,7 @@
       "targetPath": "work/handoffs/poly-live-trading-diagnosis.handoff.md"
     },
     {
-      "targetPath": "work/handoffs/task.5006.handoff.md"
-    },
-    {
       "targetPath": "work/items/bug.prod-promotion-provenance.md"
-    },
-    {
-      "targetPath": "work/items/story.5000.poly-fully-online-live-and-paper-trading.md"
-    },
-    {
-      "targetPath": "work/items/task.5001.restore-node-work-item-writes.md"
-    },
-    {
-      "targetPath": "work/items/task.5002.verify-baseline-and-port-manifest.md"
-    },
-    {
-      "targetPath": "work/items/task.5003.port-legacy-schema-and-migrations.md"
-    },
-    {
-      "targetPath": "work/items/task.5004.port-poly-packages.md"
-    },
-    {
-      "targetPath": "work/items/task.5005.port-runtime-apis-and-jobs.md"
-    },
-    {
-      "targetPath": "work/items/task.5006.port-ui-graphs-and-candidate-proof.md"
-    },
-    {
-      "targetPath": "work/items/task.5007.restore-selective-data-and-paper-trading-last.md"
     },
     {
       "targetPath": "work/items/task.research-rollup-read-models.md"
