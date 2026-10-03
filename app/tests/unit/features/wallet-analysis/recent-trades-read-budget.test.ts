@@ -80,4 +80,70 @@ describe("recent trades read budget", () => {
       },
     });
   });
+
+  it("normalizes raw Postgres timestamp strings before mapping trades", async () => {
+    const observedAt = "2026-10-03T17:00:00.000Z";
+    const lastSuccessAt = new Date("2026-10-03T17:01:00.000Z");
+    let executeCount = 0;
+    const tx = {
+      execute: async () => {
+        executeCount += 1;
+        if (executeCount === 1) return [];
+        return {
+          rows: [
+            {
+              conditionId: "condition-1",
+              tokenId: "token-1",
+              side: "BUY",
+              price: "0.5",
+              shares: "4",
+              observedAt,
+              raw: null,
+            },
+          ],
+        };
+      },
+      select: () => ({
+        from: () => ({
+          leftJoin: () => ({
+            where: () => ({
+              limit: async () => [
+                {
+                  walletId: WALLET_ID,
+                  cursorStatus: "ok",
+                  lastSuccessAt,
+                },
+              ],
+            }),
+          }),
+        }),
+      }),
+    };
+    const db = {
+      transaction: async (fn: (value: typeof tx) => Promise<unknown>) =>
+        await fn(tx),
+    };
+
+    const result = await getTradesSlice(db as never, ADDRESS);
+
+    expect(result).toEqual({
+      kind: "ok",
+      value: {
+        recent: [
+          {
+            timestampSec: Date.parse(observedAt) / 1_000,
+            side: "BUY",
+            conditionId: "condition-1",
+            asset: "token-1",
+            size: 4,
+            price: 0.5,
+            marketTitle: null,
+          },
+        ],
+        dailyCounts: expect.any(Array),
+        topMarkets: [],
+        computedAt: lastSuccessAt.toISOString(),
+      },
+    });
+  });
 });

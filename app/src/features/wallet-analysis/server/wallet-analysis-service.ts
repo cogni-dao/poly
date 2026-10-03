@@ -122,6 +122,10 @@ type HistoricalFillRow = {
   raw: Record<string, unknown> | null;
 };
 
+type RawHistoricalFillRow = Omit<HistoricalFillRow, "observedAt"> & {
+  observedAt: Date | string;
+};
+
 /**
  * Module-singleton CLOB public client — retained as a no-op test surface
  * after CP7 swapped the price-history call to a DB read. The CLOB client
@@ -370,7 +374,18 @@ async function readRecentTradesFromDb(
     recentTradesSelect(traderWalletId)
   )) as unknown as { rows?: Array<Record<string, unknown>> };
   const rows = Array.isArray(result) ? result : (result.rows ?? []);
-  return rows as HistoricalFillRow[];
+  return (rows as RawHistoricalFillRow[]).map((row) => ({
+    ...row,
+    observedAt: normalizeRawObservedAt(row.observedAt),
+  }));
+}
+
+function normalizeRawObservedAt(value: Date | string): Date {
+  const observedAt = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(observedAt.getTime())) {
+    throw new Error("Invalid observedAt timestamp returned by Postgres");
+  }
+  return observedAt;
 }
 
 /** Exact production SELECT, exported so the component lane can EXPLAIN it. */
