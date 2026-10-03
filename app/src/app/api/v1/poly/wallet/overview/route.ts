@@ -82,6 +82,7 @@ import {
   DASHBOARD_LEDGER_POSITION_STATUSES,
   summarizeLedgerOrders,
 } from "../_lib/ledger-positions";
+import { walletCompletionDiagnostics } from "../_lib/wallet-completion-diagnostics";
 
 export const dynamic = "force-dynamic";
 
@@ -159,7 +160,7 @@ export const GET = wrapRouteHandlerWithLogging(
             interval,
             freshness,
             connected: false,
-            warnings: 1,
+            warnings: ["no_trading_wallet"],
             openOrders: null,
             positionsMtm: null,
             lockedUsdc: null,
@@ -390,7 +391,7 @@ export const GET = wrapRouteHandlerWithLogging(
           interval,
           freshness,
           connected: true,
-          warnings: warnings.length,
+          warnings: warnings.map((warning) => warning.code),
           openOrders: positionSummary?.openOrders ?? null,
           positionsMtm,
           lockedUsdc: positionSummary?.lockedUsdc ?? null,
@@ -445,23 +446,28 @@ function logOverviewComplete(
     interval: PolyWalletOverviewOutput["interval"];
     freshness: PolyWalletOverviewOutput["freshness"];
     connected: boolean;
-    warnings: number;
+    warnings: readonly string[];
     openOrders: number | null;
     positionsMtm: number | null;
     lockedUsdc: number | null;
     pnlPoints: number;
   }
 ): void {
+  const diagnostics = walletCompletionDiagnostics(
+    fields.status,
+    fields.warnings
+  );
   logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_OVERVIEW_COMPLETE, {
     reqId: ctx.reqId,
     routeId: ctx.routeId,
-    status: fields.status,
+    status: diagnostics.status,
     durationMs: Math.round(performance.now() - startedAtMs),
     outcome: "success",
     interval: fields.interval,
     freshness: fields.freshness,
     connected: fields.connected,
-    warnings: fields.warnings,
+    warnings: diagnostics.warnings,
+    warning_codes: diagnostics.warning_codes,
     open_orders: fields.openOrders,
     positions_mtm: fields.positionsMtm,
     locked_usdc: fields.lockedUsdc,

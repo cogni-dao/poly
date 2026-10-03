@@ -13,11 +13,11 @@
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
   "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "801dd3ae3417103768ae76bbcb1be4311b8227e211789b38317007eceaad76eb",
+  "targetTreeDigest": "8707d4a22e167da927bf41a277454fd7a0ed414868385a15aee54fe685928edd",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1074,
+    "targetOnlyFiles": 1078,
     "unresolved": 602,
     "byStatus": {
       "exact": 1126,
@@ -243,7 +243,7 @@
         "app/src/features/wallet-analysis/server/wallet-analysis-service.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "d8f53637b87174de5a2545b8f1da46074b468af52e1874548673c13a8db08254",
+      "currentTargetDigest": "4bf60ffa464f1fcc34784ddd284ae3548d2b58b004f65e05516c3904d172a89e",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -265,7 +265,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "5311a2b87b50770c46c39b069178a032b02816cbb5b025d0a08edd5715d4b047",
+      "currentTargetDigest": "7bf9a74fbc2b2af062e72090126e24a036e4c852283a63bf990b4b7ef2efd09e",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -287,7 +287,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "5311a2b87b50770c46c39b069178a032b02816cbb5b025d0a08edd5715d4b047",
+      "currentTargetDigest": "7bf9a74fbc2b2af062e72090126e24a036e4c852283a63bf990b4b7ef2efd09e",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -309,7 +309,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "5311a2b87b50770c46c39b069178a032b02816cbb5b025d0a08edd5715d4b047",
+      "currentTargetDigest": "7bf9a74fbc2b2af062e72090126e24a036e4c852283a63bf990b4b7ef2efd09e",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -4399,7 +4399,7 @@
       "sourceBlob": "1895025daad31c00372675e30489bcd63288fc59",
       "sourcePath": "app/src/app/(app)/credits/TradingReadinessSection.tsx",
       "targetPath": "app/src/app/(app)/credits/TradingReadinessSection.tsx",
-      "targetBlob": "f2ff42efa8758291eb9b8603a29b2f0de31b5dde",
+      "targetBlob": "9520e582de5d913cb757ac1d34e751494bcf8f76",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -4427,7 +4427,7 @@
       "sourceBlob": "01e0d00afe45710b135f5aba15298ed0d2a75033",
       "sourcePath": "app/src/app/(app)/credits/TradingWalletPanel.tsx",
       "targetPath": "app/src/app/(app)/credits/TradingWalletPanel.tsx",
-      "targetBlob": "40d51ce4d62152b2fc834e41f69d176335a49ab8",
+      "targetBlob": "2b772dada8ad7a5b9c9cdfc64abd3373ad4f2bf9",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -4609,7 +4609,7 @@
       "sourceBlob": "5b00a5697517aa73727a4879895724f6da5484ce",
       "sourcePath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
-      "targetBlob": "afad4e8cd1cc802d2e299a6fce467cd8054e0560",
+      "targetBlob": "7f039dc9fdfee7e5ed108f59cf86207d0e436dc2",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -4623,7 +4623,7 @@
       "sourceBlob": "0456032db2a64923b5a71400f8b0a24a0c4fec36",
       "sourcePath": "app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx",
-      "targetBlob": "35c705ea333ec6e7e172c038f4729a24bc95af9b",
+      "targetBlob": "0302e968b5416644b6215b99a8804b14a379ff80",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -6801,7 +6801,7 @@
       "sourceBlob": "a33340e087d3510cda2aa7deb41766984ead14a3",
       "sourcePath": "app/src/app/api/v1/poly/internal/sync-health/route.ts",
       "targetPath": "app/src/app/api/v1/poly/internal/sync-health/route.ts",
-      "targetBlob": "26e2ddf37a29851d720fd4b5398387f6625cc3fc",
+      "targetBlob": "a2ac93d686bea44bee7fd282e73f6e5d45488dc0",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -6983,7 +6983,7 @@
       "sourceBlob": "0edc7d6a040fa5382d9fb75333630e1b5bd06b7f",
       "sourcePath": "app/src/app/api/v1/poly/wallet/execution/route.ts",
       "targetPath": "app/src/app/api/v1/poly/wallet/execution/route.ts",
-      "targetBlob": "82d237eda1c9c0328ac2ebf43cc5a3b947556d56",
+      "targetBlob": "b66434a5f3980d2b22a1e6790a895dc1d0b3bf11",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
@@ -7011,7 +7011,7 @@
       "sourceBlob": "d51bb4d969c8fb4ac45d08cbd90ffe3023f14876",
       "sourcePath": "app/src/app/api/v1/poly/wallet/overview/route.ts",
       "targetPath": "app/src/app/api/v1/poly/wallet/overview/route.ts",
-      "targetBlob": "eac588ba5739f04e99da903a812e789055715626",
+      "targetBlob": "8497af45a16dba438c2ad4201076060b65883626",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
@@ -12117,7 +12117,7 @@
       "sourceBlob": "4b6c1b7fb8ee301e67a361d96e8036652292fea7",
       "sourcePath": "app/src/features/layout/components/AppSidebar.tsx",
       "targetPath": "app/src/features/layout/components/AppSidebar.tsx",
-      "targetBlob": "56a966231749bb3ba64e729ebcf36070f385406c",
+      "targetBlob": "7a8157e79c63ac11b14dfcddcf5c7a618756af26",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -13461,7 +13461,7 @@
       "sourceBlob": "3b5a7ebe52c427322736b688d339cd85792f90c5",
       "sourcePath": "app/src/features/wallet-analysis/server/wallet-analysis-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/wallet-analysis-service.ts",
-      "targetBlob": "51d019276e6d004223d82c94024ca6f39b3829ec",
+      "targetBlob": "fa1bdb1b25fe57063d6d5804806889df60ef9864",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -25739,6 +25739,9 @@
       "targetPath": "app/src/app/api/v1/poly/wallet/_lib/dashboard-route-cache.ts"
     },
     {
+      "targetPath": "app/src/app/api/v1/poly/wallet/_lib/wallet-completion-diagnostics.ts"
+    },
+    {
       "targetPath": "app/src/app/api/v1/public/attribution/distribution/latest/route.ts"
     },
     {
@@ -25982,10 +25985,19 @@
       "targetPath": "app/tests/unit/app/api/poly/cash-on-chain.spec.ts"
     },
     {
+      "targetPath": "app/tests/unit/app/api/poly/sync-health.route.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/api/poly/wallet-route-observability.test.ts"
+    },
+    {
       "targetPath": "app/tests/unit/app/api/poly/wallet/dashboard-route-cache.test.ts"
     },
     {
       "targetPath": "app/tests/unit/app/api/work-items-item.route.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/credits/trading-wallet-states.spec.tsx"
     },
     {
       "targetPath": "app/tests/unit/app/dashboard/dashboard-missing-state.spec.tsx"

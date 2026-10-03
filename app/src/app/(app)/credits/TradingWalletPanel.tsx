@@ -78,6 +78,18 @@ function formatDecimal(n: number | null, fractionDigits: number): string {
   });
 }
 
+export function classifyFundingState(
+  balances: PolyWalletBalancesOutput | undefined
+): "funded" | "unfunded" | "unknown" {
+  if (!balances) return "unknown";
+  if ((balances.usdc_e ?? 0) > 0 || (balances.pusd ?? 0) > 0) {
+    return "funded";
+  }
+  return balances.usdc_e !== null && balances.pusd !== null
+    ? "unfunded"
+    : "unknown";
+}
+
 const stubBtn =
   "w-full cursor-not-allowed rounded-md border border-border/60 bg-muted/50 px-3 py-2 font-medium text-muted-foreground text-sm";
 
@@ -111,6 +123,7 @@ export function TradingWalletPanel(): ReactElement {
 
   const status = statusQuery.data;
   const balances = balancesQuery.data;
+  const fundingState = classifyFundingState(balances);
 
   return (
     <Card className="flex flex-col gap-4 p-5 md:p-6">
@@ -125,6 +138,10 @@ export function TradingWalletPanel(): ReactElement {
 
       {statusQuery.isLoading ? (
         <div className="h-14 animate-pulse rounded bg-muted" />
+      ) : statusQuery.isError ? (
+        <p className="text-muted-foreground text-sm" role="status">
+          Trading-wallet status is temporarily unavailable. Retrying shortly.
+        </p>
       ) : !status?.configured ? (
         <p className="text-muted-foreground text-sm">
           Trading wallet not enabled on this deployment.
@@ -175,7 +192,7 @@ export function TradingWalletPanel(): ReactElement {
           </div>
           <TradingReadinessSection
             tradingReady={status.trading_ready}
-            isFunded={(balances?.usdc_e ?? 0) + (balances?.pusd ?? 0) > 0}
+            fundingState={fundingState}
           />
 
           {status.trading_ready ? (
@@ -204,9 +221,15 @@ export function TradingWalletPanel(): ReactElement {
             <TradingWalletWithdrawDialog balances={balances} />
           </div>
 
-          {balances && balances.errors.length > 0 ? (
+          {balancesQuery.isError ? (
             <HintText icon={<Info size={16} />}>
-              Partial read — retrying.
+              Balance read unavailable — funding status is unknown. Approvals
+              remain available while this retries.
+            </HintText>
+          ) : balances && balances.errors.length > 0 ? (
+            <HintText icon={<Info size={16} />}>
+              Partial balance read — unknown values stay unavailable while
+              this retries.
             </HintText>
           ) : null}
 

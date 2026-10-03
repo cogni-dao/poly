@@ -13,7 +13,7 @@
  * @vitest-environment jsdom
  */
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -55,26 +55,53 @@ vi.mock("@/app/(app)/dashboard/_api/fetchPositionActions", () => ({
   postRedeemPosition: vi.fn(),
 }));
 
-vi.mock("@/components", () => ({
-  AddressChip: ({ address }: { address: string }) => <span>{address}</span>,
-  Card: ({ children }: { children: ReactNode }) => (
-    <section>{children}</section>
-  ),
-  CardContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  CardHeader: ({ children }: { children: ReactNode }) => (
-    <header>{children}</header>
-  ),
-  CardTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
-  ToggleGroup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  ToggleGroupItem: ({
-    children,
-    ...props
-  }: ButtonHTMLAttributes<HTMLButtonElement> & { value: string }) => (
-    <button type="button" {...props}>
-      {children}
-    </button>
-  ),
-}));
+vi.mock("@/components", async () => {
+  const React = await import("react");
+  const ToggleGroupContext = React.createContext<
+    ((value: string) => void) | undefined
+  >(undefined);
+
+  return {
+    AddressChip: ({ address }: { address: string }) => <span>{address}</span>,
+    Card: ({ children }: { children: ReactNode }) => (
+      <section>{children}</section>
+    ),
+    CardContent: ({ children }: { children: ReactNode }) => (
+      <div>{children}</div>
+    ),
+    CardHeader: ({ children }: { children: ReactNode }) => (
+      <header>{children}</header>
+    ),
+    CardTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
+    ToggleGroup: ({
+      children,
+      onValueChange,
+    }: {
+      children: ReactNode;
+      onValueChange?: (value: string) => void;
+    }) => (
+      <ToggleGroupContext.Provider value={onValueChange}>
+        <div>{children}</div>
+      </ToggleGroupContext.Provider>
+    ),
+    ToggleGroupItem: ({
+      children,
+      value,
+      ...props
+    }: ButtonHTMLAttributes<HTMLButtonElement> & { value: string }) => {
+      const onValueChange = React.useContext(ToggleGroupContext);
+      return (
+        <button
+          type="button"
+          {...props}
+          onClick={() => onValueChange?.(value)}
+        >
+          {children}
+        </button>
+      );
+    },
+  };
+});
 
 vi.mock("@/features/wallet-analysis", async (importOriginal) => {
   const actual = await importOriginal<
@@ -84,6 +111,7 @@ vi.mock("@/features/wallet-analysis", async (importOriginal) => {
     ...actual,
     BalanceBar: () => <div>balance bar</div>,
     TimeWindowHeader: () => <div>time window</div>,
+    TradesPerDayChart: () => <div>trade volume chart</div>,
   };
 });
 
@@ -104,6 +132,7 @@ vi.mock("@/app/(app)/_components/positions-table", () => ({
 }));
 
 import { ExecutionActivityCard } from "@/app/(app)/dashboard/_components/ExecutionActivityCard";
+import { OperatorWalletChartsRow } from "@/app/(app)/dashboard/_components/OperatorWalletChartsRow";
 import { TradingWalletCard } from "@/app/(app)/dashboard/_components/TradingWalletCard";
 
 describe("dashboard missing read-model states", () => {
@@ -294,5 +323,100 @@ describe("dashboard missing read-model states", () => {
     expect(screen.getByRole("button", { name: /Live.*501/i })).toBeInTheDocument();
     expect(screen.getByText(/bounded preview/i)).toBeInTheDocument();
     expect(screen.queryByText(/upstream data is temporarily unavailable/i)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "wallet_adapter_unconfigured",
+      /execution is unavailable on this deployment/i,
+    ],
+    ["no_trading_wallet", /Connect a trading wallet from Money/i],
+  ])("renders %s as unavailable instead of empty execution", (code, copy) => {
+    state.execution = {
+      address: "0x0000000000000000000000000000000000000000",
+      freshness: "read_model",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      dailyTradeCounts: [],
+      live_positions: [],
+      market_groups: [],
+      closed_positions: [],
+      warnings: [{ code, message: "unavailable" }],
+    };
+
+    render(<ExecutionActivityCard />);
+
+    expect(screen.getByText(copy)).toBeInTheDocument();
+    expect(screen.queryByText("No open positions.")).not.toBeInTheDocument();
+  });
+
+  it("renders unavailable closed history as unknown rather than zero", () => {
+    state.execution = {
+      address: "0x1111111111111111111111111111111111111111",
+      freshness: "read_model",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      dailyTradeCounts: [],
+      live_positions: [],
+      live_position_count: 0,
+      market_groups: [],
+      closed_positions: [],
+      warnings: [
+        { code: "positions_read_model_unavailable", message: "read failed" },
+      ],
+    };
+
+    render(<ExecutionActivityCard />);
+    fireEvent.click(screen.getByRole("button", { name: /Closed/i }));
+
+    expect(screen.getByRole("button", { name: /Closed.*—/i })).toBeInTheDocument();
+    expect(screen.getByText(/not a zero-history result/i)).toBeInTheDocument();
+    expect(
+      screen.getByText("Closed position history unavailable.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No closed positions yet.")).not.toBeInTheDocument();
+  });
+
+  it("suppresses false-zero market visuals when exposure is unavailable", () => {
+    state.execution = {
+      address: "0x1111111111111111111111111111111111111111",
+      freshness: "read_model",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      dailyTradeCounts: [],
+      live_positions: [],
+      live_position_count: 0,
+      market_groups: [],
+      closed_positions: [],
+      warnings: [
+        { code: "market_exposure_unavailable", message: "read failed" },
+      ],
+    };
+
+    render(<ExecutionActivityCard />);
+    fireEvent.click(screen.getByRole("button", { name: "Markets" }));
+
+    expect(screen.getByText(/not a zero-exposure result/i)).toBeInTheDocument();
+    expect(screen.queryByText("market distribution")).not.toBeInTheDocument();
+    expect(screen.queryByText("markets table")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["wallet_adapter_unconfigured", /history is unavailable on this deployment/i],
+    ["no_trading_wallet", /Connect a trading wallet from Money/i],
+    ["daily_trade_counts_unavailable", /not a zero-trade result/i],
+  ])("does not call %s an empty trade history", (code, copy) => {
+    state.execution = {
+      address: "0x0000000000000000000000000000000000000000",
+      freshness: "read_model",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      dailyTradeCounts: [],
+      live_positions: [],
+      market_groups: [],
+      closed_positions: [],
+      warnings: [{ code, message: "unavailable" }],
+    };
+
+    render(<OperatorWalletChartsRow />);
+
+    expect(screen.getByText(copy)).toBeInTheDocument();
+    expect(screen.queryByText("No trade history yet.")).not.toBeInTheDocument();
   });
 });

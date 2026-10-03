@@ -56,6 +56,17 @@ import { useDashboardExecution } from "../_hooks/useDashboardExecution";
 
 type ExecutionView = "positions" | "markets";
 
+const LIVE_POSITION_UNAVAILABLE_CODES = new Set([
+  "current_positions_wallet_missing",
+  "current_positions_read_model_unavailable",
+  "current_positions_stale",
+]);
+
+const CLOSED_POSITION_UNAVAILABLE_CODES = new Set([
+  "positions_read_model_unavailable",
+  ...LIVE_POSITION_UNAVAILABLE_CODES,
+]);
+
 export function ExecutionActivityCard(): ReactElement {
   const queryClient = useQueryClient();
   const [view, setView] = useState<ExecutionView>("positions");
@@ -130,6 +141,11 @@ export function ExecutionActivityCard(): ReactElement {
     isLoading: isExecutionLoading,
     isError: isExecutionError,
   } = useDashboardExecution({ onLiveData: reconcileRecentlyClosed });
+  const accessWarning = executionData?.warnings.find((warning) =>
+    ["wallet_adapter_unconfigured", "no_trading_wallet"].includes(
+      warning.code
+    )
+  );
 
   const openPositions = useMemo<WalletPosition[]>(
     () =>
@@ -200,7 +216,16 @@ export function ExecutionActivityCard(): ReactElement {
       </CardHeader>
 
       <CardContent className="p-0">
-        {view === "positions" ? (
+        {accessWarning ? (
+          <p
+            className="px-5 py-6 text-center text-muted-foreground text-sm"
+            role="status"
+          >
+            {accessWarning.code === "no_trading_wallet"
+              ? "Connect a trading wallet from Money to see execution activity."
+              : "Trading-wallet execution is unavailable on this deployment."}
+          </p>
+        ) : view === "positions" ? (
           <PositionsPanel
             openPositions={openPositions}
             livePositionCount={executionData?.live_position_count}
@@ -247,26 +272,38 @@ function MarketGroupsPanel({
     );
   }
 
+  const exposureUnavailable = warnings.some(
+    (warning) => warning.code === "market_exposure_unavailable"
+  );
+
   return (
     <div className="space-y-3 px-5 pb-4">
       <div className="space-y-2">
         <h3 className="font-semibold text-muted-foreground text-xs uppercase tracking-wider">
           Markets
         </h3>
-        {warnings.some(
-          (warning) => warning.code === "market_exposure_unavailable"
-        ) ? (
-          <p className="text-muted-foreground text-xs">
-            Copy-target overlays are temporarily unavailable.
+        {exposureUnavailable ? (
+          <p
+            className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
+            role="status"
+          >
+            Market exposure is temporarily unavailable. This is not a
+            zero-exposure result.
           </p>
-        ) : null}
-        <MarketsDeltaDistribution groups={groups} statusFilter={statusFilter} />
-        <MarketsTable
-          groups={groups}
-          isLoading={isLoading}
-          statusFilter={statusFilter}
-          onStatusFilterChange={setStatusFilter}
-        />
+        ) : (
+          <>
+            <MarketsDeltaDistribution
+              groups={groups}
+              statusFilter={statusFilter}
+            />
+            <MarketsTable
+              groups={groups}
+              isLoading={isLoading}
+              statusFilter={statusFilter}
+              onStatusFilterChange={setStatusFilter}
+            />
+          </>
+        )}
       </div>
     </div>
   );
@@ -310,18 +347,29 @@ function PositionsPanel({
 
   const isLive = statusFilter === "live";
   const positions = isLive ? openPositions : closedPositions;
-  const positionInventoryUnavailable = warnings.some((warning) =>
-    [
-      "current_positions_wallet_missing",
-      "current_positions_read_model_unavailable",
-      "current_positions_stale",
-    ].includes(warning.code)
+  const liveInventoryUnavailable = warnings.some((warning) =>
+    LIVE_POSITION_UNAVAILABLE_CODES.has(warning.code)
   );
+  const closedInventoryUnavailable = warnings.some((warning) =>
+    CLOSED_POSITION_UNAVAILABLE_CODES.has(warning.code)
+  );
+  const selectedInventoryUnavailable = isLive
+    ? liveInventoryUnavailable
+    : closedInventoryUnavailable;
   const previewTruncated = warnings.some(
     (warning) => warning.code === "positions_preview_truncated"
   );
   const otherWarnings = warnings.some(
-    (warning) => warning.code !== "positions_preview_truncated"
+    (warning) =>
+      ![
+        "positions_preview_truncated",
+        "market_exposure_unavailable",
+        "daily_trade_counts_unavailable",
+      ].includes(warning.code) &&
+      !(isLive
+        ? LIVE_POSITION_UNAVAILABLE_CODES
+        : CLOSED_POSITION_UNAVAILABLE_CODES
+      ).has(warning.code)
   );
 
   return (
@@ -330,7 +378,7 @@ function PositionsPanel({
         <h3 className="font-semibold text-muted-foreground text-xs uppercase tracking-wider">
           Positions
         </h3>
-        {isLive && positionInventoryUnavailable ? (
+        {isLive && liveInventoryUnavailable ? (
           <p
             className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
             role="status"
@@ -338,11 +386,20 @@ function PositionsPanel({
             Open positions are unavailable because the wallet position model
             could not be read. This is not a zero-position result.
           </p>
+        ) : !isLive && closedInventoryUnavailable ? (
+          <p
+            className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
+            role="status"
+          >
+            Closed position history is unavailable or incomplete because a
+            saved position model could not be read. This is not a zero-history
+            result.
+          </p>
         ) : isLive && previewTruncated ? (
           <p className="text-muted-foreground text-xs">
             Showing a bounded preview; the Live count is the exact full inventory.
           </p>
-        ) : isLive && otherWarnings ? (
+        ) : otherWarnings ? (
           <p className="text-muted-foreground text-xs">
             Some upstream data is temporarily unavailable, so a few rows may
             render with a shorter trace.
@@ -353,7 +410,7 @@ function PositionsPanel({
             {positionActionError}
           </p>
         ) : null}
-        {!isLive || !positionInventoryUnavailable ? (
+        {!selectedInventoryUnavailable ? (
           <PositionsDeltaDistribution
             positions={positions}
             groups={groups}
@@ -376,13 +433,15 @@ function PositionsPanel({
             <ToggleGroupItem value="live" className="gap-1.5">
               <span className="text-xs">Live</span>
               <span className="font-mono text-muted-foreground text-xs tabular-nums">
-                ({positionInventoryUnavailable ? "—" : (livePositionCount ?? openPositions.length)})
+                ({liveInventoryUnavailable
+                  ? "—"
+                  : (livePositionCount ?? openPositions.length)})
               </span>
             </ToggleGroupItem>
             <ToggleGroupItem value="closed" className="gap-1.5">
               <span className="text-xs">Closed</span>
               <span className="font-mono text-muted-foreground text-xs tabular-nums">
-                ({closedPositions.length})
+                ({closedInventoryUnavailable ? "—" : closedPositions.length})
               </span>
             </ToggleGroupItem>
           </ToggleGroup>
@@ -392,7 +451,7 @@ function PositionsPanel({
             positions={positions}
             isLoading={isLoading}
             emptyMessage={
-              positionInventoryUnavailable
+              liveInventoryUnavailable
                 ? "Open positions unavailable."
                 : "No open positions."
             }
@@ -404,7 +463,11 @@ function PositionsPanel({
             positions={positions}
             isLoading={isLoading}
             variant="history"
-            emptyMessage="No closed positions yet."
+            emptyMessage={
+              closedInventoryUnavailable
+                ? "Closed position history unavailable."
+                : "No closed positions yet."
+            }
           />
         )}
       </div>

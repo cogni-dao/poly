@@ -79,6 +79,7 @@ import {
   DASHBOARD_TRADE_COUNT_WINDOW_DAYS,
   toWalletExecutionPosition,
 } from "../_lib/ledger-positions";
+import { walletCompletionDiagnostics } from "../_lib/wallet-completion-diagnostics";
 
 export const dynamic = "force-dynamic";
 
@@ -141,14 +142,16 @@ export const GET = wrapRouteHandlerWithLogging(
             logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
               reqId: ctx.reqId,
               routeId: ctx.routeId,
-              status: "wallet_adapter_unconfigured",
+              ...walletCompletionDiagnostics(
+                "wallet_adapter_unconfigured",
+                ["wallet_adapter_unconfigured"]
+              ),
               durationMs: Math.round(performance.now() - startedAtMs),
               outcome: "success",
               freshness,
               live_positions: 0,
               closed_positions: 0,
               daily_trade_days: 0,
-              warnings: 1,
             });
             return emptyPayload(freshness, {
               code: "wallet_adapter_unconfigured",
@@ -163,14 +166,15 @@ export const GET = wrapRouteHandlerWithLogging(
           logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
             reqId: ctx.reqId,
             routeId: ctx.routeId,
-            status: "no_trading_wallet",
+            ...walletCompletionDiagnostics("no_trading_wallet", [
+              "no_trading_wallet",
+            ]),
             durationMs: Math.round(performance.now() - startedAtMs),
             outcome: "success",
             freshness,
             live_positions: 0,
             closed_positions: 0,
             daily_trade_days: 0,
-            warnings: 1,
           });
           return emptyPayload(freshness, {
             code: "no_trading_wallet",
@@ -355,20 +359,24 @@ export const GET = wrapRouteHandlerWithLogging(
         logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
           reqId: ctx.reqId,
           routeId: ctx.routeId,
-          status: warnings.some(
-            (warning) => warning.code === "positions_read_model_unavailable"
-          )
-            ? "positions_read_model_unavailable"
-            : warnings.some(
-                  (warning) =>
-                    warning.code === "current_positions_read_model_unavailable"
-                )
-              ? "current_positions_read_model_unavailable"
+          ...walletCompletionDiagnostics(
+            warnings.some(
+              (warning) => warning.code === "positions_read_model_unavailable"
+            )
+              ? "positions_read_model_unavailable"
               : warnings.some(
-                    (warning) => warning.code === "current_positions_stale"
+                    (warning) =>
+                      warning.code ===
+                      "current_positions_read_model_unavailable"
                   )
-                ? "current_positions_stale"
-                : "ok",
+                ? "current_positions_read_model_unavailable"
+                : warnings.some(
+                      (warning) => warning.code === "current_positions_stale"
+                    )
+                  ? "current_positions_stale"
+                  : "ok",
+            warnings.map((warning) => warning.code)
+          ),
           durationMs: Math.round(performance.now() - startedAtMs),
           outcome: "success",
           freshness,
@@ -377,7 +385,6 @@ export const GET = wrapRouteHandlerWithLogging(
           closed_positions: closedPositionsForResponse.length,
           closed_positions_total: closedPositions.length,
           daily_trade_days: dailyTradeCounts.length,
-          warnings: warnings.length,
         });
 
         return PolyWalletExecutionOutputSchema.parse({

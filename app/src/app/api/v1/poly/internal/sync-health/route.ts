@@ -11,15 +11,17 @@
  *   - NO_AUTH_INTENTIONAL — this route intentionally has no authentication. It returns aggregate-only
  *     stats (counts + timestamps), no PII or wallet addresses. Auth was reviewed and deferred
  *     (task.0328 rev1 — follow-up slice may add internal token if threat model changes).
- * Side-effects: IO (one DB SELECT via service-role client + in-process clock read).
- * Notes: reconciler_last_tick_at is null when the reconciler is not running (Polymarket creds absent) or has not completed a tick yet.
- *   This node does not wire the order-reconciler handle into the container, so
- *   `reconciler_last_tick_at` is always null here (reconciler not running).
+ * Side-effects: IO (two DB SELECTs via the service-role client).
+ * Notes: reconciler_last_tick_at is the latest durable `synced_at` written by
+ *   the reconciler after a typed CLOB response. It is null when no ledger row
+ *   has ever completed reconciliation.
  * Links: work/items/task.0328.md, docs/spec/poly-copy-trade-execution.md
  * @public
  */
 
 import { PolySyncHealthResponseSchema } from "@cogni/poly-node-contracts";
+import { polyCopyTradeFills } from "@cogni/poly-db-schema/copy-trade";
+import { max } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -34,11 +36,19 @@ export const GET = wrapRouteHandlerWithLogging(
   async (ctx) => {
     try {
       const container = getContainer();
-      const summary = await container.orderLedger.syncHealthSummary();
+      const [summary, activityRows] = await Promise.all([
+        container.orderLedger.syncHealthSummary(),
+        container.serviceDb
+          .select({
+            reconcilerLastTickAt: max(polyCopyTradeFills.syncedAt),
+          })
+          .from(polyCopyTradeFills),
+      ]);
+      const reconcilerLastTickAt = activityRows[0]?.reconcilerLastTickAt ?? null;
 
       const body = PolySyncHealthResponseSchema.parse({
         ...summary,
-        reconciler_last_tick_at: null,
+        reconciler_last_tick_at: reconcilerLastTickAt?.toISOString() ?? null,
       });
 
       return NextResponse.json(body);
