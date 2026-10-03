@@ -297,32 +297,24 @@ export async function getTradesSlice(
   addr: string
 ): Promise<SliceResult<WalletAnalysisTrades>> {
   try {
-    const availability = await readSavedFactsAvailability(
-      db,
-      addr,
-      "data-api-trades"
-    );
+    const boundedRead = await withResearchReadTimeout(db, async (tx) => {
+      const availability = await readSavedFactsAvailability(
+        tx,
+        addr,
+        "data-api-trades"
+      );
+      return {
+        availability,
+        rows:
+          availability.kind === "ready"
+            ? await readRecentTradesFromDb(tx, availability.walletId)
+            : [],
+      };
+    });
+    const { availability, rows } = boundedRead;
     if (availability.kind !== "ready") {
       return savedFactsWarning("trades", availability);
     }
-    const rows = await db
-      .select({
-        observedAt: polyTraderFills.observedAt,
-        side: polyTraderFills.side,
-        conditionId: polyTraderFills.conditionId,
-        tokenId: polyTraderFills.tokenId,
-        shares: polyTraderFills.shares,
-        price: polyTraderFills.price,
-        raw: polyTraderFills.raw,
-      })
-      .from(polyTraderFills)
-      .innerJoin(
-        polyTraderWallets,
-        eq(polyTraderFills.traderWalletId, polyTraderWallets.id)
-      )
-      .where(eq(polyTraderWallets.walletAddress, addr.toLowerCase()))
-      .orderBy(desc(polyTraderFills.observedAt))
-      .limit(TRADE_FETCH_LIMIT);
 
     const trades = rows.map((row) => ({
       timestamp: Math.floor(row.observedAt.getTime() / 1_000),
@@ -360,6 +352,36 @@ export async function getTradesSlice(
       warning: warning("trades", err),
     };
   }
+}
+
+/**
+ * Recent fills seek directly by the observer UUID returned by the availability
+ * read. Keeping the address join out of this LIMIT query gives Postgres the
+ * exact `(trader_wallet_id, observed_at)` index predicate even for sparse
+ * wallets whose total fill count never reaches the limit.
+ *
+ * @internal
+ */
+async function readRecentTradesFromDb(
+  db: Db,
+  traderWalletId: string
+): Promise<HistoricalFillRow[]> {
+  const result = (await db.execute(sql`
+    SELECT
+      f.condition_id AS "conditionId",
+      f.token_id AS "tokenId",
+      f.side,
+      f.price,
+      f.shares,
+      f.observed_at AS "observedAt",
+      f.raw
+    FROM ${polyTraderFills} f
+    WHERE f.trader_wallet_id = ${traderWalletId}::uuid
+    ORDER BY f.observed_at DESC
+    LIMIT ${TRADE_FETCH_LIMIT}
+  `)) as unknown as { rows?: Array<Record<string, unknown>> };
+  const rows = Array.isArray(result) ? result : (result.rows ?? []);
+  return rows as HistoricalFillRow[];
 }
 
 function extractTitle(raw: Record<string, unknown> | null): string {

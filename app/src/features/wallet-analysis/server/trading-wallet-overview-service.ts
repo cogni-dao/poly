@@ -40,6 +40,7 @@ import type {
 import { and, desc, eq, gte, isNull, lt, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { withResearchReadTimeout } from "./fill-rollup-service";
 import { dedupeByKey } from "./observation-helpers";
 
 type Db =
@@ -98,42 +99,49 @@ export async function getTradingWalletPnlHistoryRead(input: {
 }): Promise<TradingWalletPnlHistoryRead> {
   const capturedAt = input.capturedAt ?? new Date().toISOString();
   const fidelity = readFidelityForInterval(input.interval);
-  const wallet = await input.db
-    .select({ id: polyTraderWallets.id })
-    .from(polyTraderWallets)
-    .where(
-      and(
-        eq(polyTraderWallets.walletAddress, input.address.toLowerCase()),
-        eq(polyTraderWallets.activeForResearch, true),
-        isNull(polyTraderWallets.disabledAt)
-      )
-    )
-    .limit(1);
-  const traderWalletId = wallet[0]?.id;
-  if (!traderWalletId) return { points: [], status: "wallet_missing" };
+  const { traderWalletId, rows } = await withResearchReadTimeout(
+    input.db,
+    async (tx) => {
+      const wallet = await tx
+        .select({ id: polyTraderWallets.id })
+        .from(polyTraderWallets)
+        .where(
+          and(
+            eq(polyTraderWallets.walletAddress, input.address.toLowerCase()),
+            eq(polyTraderWallets.activeForResearch, true),
+            isNull(polyTraderWallets.disabledAt)
+          )
+        )
+        .limit(1);
+      const traderWalletId = wallet[0]?.id;
+      if (!traderWalletId) return { traderWalletId: undefined, rows: [] };
 
-  // task.5018: push the window's `ts >=` bound into SQL so Postgres returns
-  // only the windowed rows instead of the wallet's entire stored series.
-  // `windowStart` is the same cutoff `filterPnlHistory` applies (null for
-  // ALL / unparseable capturedAt = no bound), so the JS filter below is a
-  // no-op refinement kept for the floor-to-second edge (see pnlWindowStart).
-  const windowStart = pnlWindowStart(input.interval, capturedAt);
-  const rows = await input.db
-    .select({
-      ts: polyTraderUserPnlPoints.ts,
-      pnlUsdc: polyTraderUserPnlPoints.pnlUsdc,
-      observedAt: polyTraderUserPnlPoints.observedAt,
-    })
-    .from(polyTraderUserPnlPoints)
-    .where(
-      and(
-        eq(polyTraderUserPnlPoints.traderWalletId, traderWalletId),
-        eq(polyTraderUserPnlPoints.fidelity, fidelity),
-        windowStart ? gte(polyTraderUserPnlPoints.ts, windowStart) : undefined
-      )
-    )
-    .orderBy(desc(polyTraderUserPnlPoints.ts))
-    .limit(PNL_READ_LIMIT);
+      // task.5018: push the window's `ts >=` bound into SQL so Postgres returns
+      // only the windowed rows instead of the wallet's entire stored series.
+      // `windowStart` is the same cutoff `filterPnlHistory` applies (null for
+      // ALL / unparseable capturedAt = no bound), so the JS filter below is a
+      // no-op refinement kept for the floor-to-second edge (see pnlWindowStart).
+      const windowStart = pnlWindowStart(input.interval, capturedAt);
+      const rows = await tx
+        .select({
+          ts: polyTraderUserPnlPoints.ts,
+          pnlUsdc: polyTraderUserPnlPoints.pnlUsdc,
+          observedAt: polyTraderUserPnlPoints.observedAt,
+        })
+        .from(polyTraderUserPnlPoints)
+        .where(
+          and(
+            eq(polyTraderUserPnlPoints.traderWalletId, traderWalletId),
+            eq(polyTraderUserPnlPoints.fidelity, fidelity),
+            windowStart ? gte(polyTraderUserPnlPoints.ts, windowStart) : undefined
+          )
+        )
+        .orderBy(desc(polyTraderUserPnlPoints.ts))
+        .limit(PNL_READ_LIMIT);
+      return { traderWalletId, rows };
+    }
+  );
+  if (!traderWalletId) return { points: [], status: "wallet_missing" };
 
   rows.reverse();
   const latestObservedAt = rows.reduce<Date | null>(
