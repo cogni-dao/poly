@@ -18,6 +18,12 @@ export function OperatorWalletChartsRow(): ReactElement {
   const dailyCountsUnavailable = data?.warnings.some(
     (warning) => warning.code === "daily_trade_counts_unavailable"
   );
+  const walletAdapterUnavailable = data?.warnings.some(
+    (warning) => warning.code === "wallet_adapter_unconfigured"
+  );
+  const tradingWalletMissing = data?.warnings.some(
+    (warning) => warning.code === "no_trading_wallet"
+  );
 
   return (
     <Card>
@@ -26,8 +32,25 @@ export function OperatorWalletChartsRow(): ReactElement {
           <div className="flex h-44 items-center justify-center text-center text-muted-foreground text-sm">
             Couldn&apos;t load trade volume. Will retry shortly.
           </div>
+        ) : walletAdapterUnavailable ? (
+          <div
+            className="flex h-44 items-center justify-center text-center text-muted-foreground text-sm"
+            role="status"
+          >
+            Trading-wallet history is unavailable on this deployment.
+          </div>
+        ) : tradingWalletMissing ? (
+          <div
+            className="flex h-44 items-center justify-center text-center text-muted-foreground text-sm"
+            role="status"
+          >
+            Connect a trading wallet from Money to see trade history.
+          </div>
         ) : dailyCountsUnavailable ? (
-          <div className="flex h-44 items-center justify-center text-center text-muted-foreground text-sm">
+          <div
+            className="flex h-44 items-center justify-center text-center text-muted-foreground text-sm"
+            role="status"
+          >
             Trade history is temporarily unavailable. This is not a zero-trade result.
           </div>
         ) : !isLoading && dailyCounts.length === 0 ? (

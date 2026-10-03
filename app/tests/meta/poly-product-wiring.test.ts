@@ -48,6 +48,9 @@ describe("Poly product wiring", () => {
 
 	it("keeps Poly identity and research reachable", () => {
 		const nodeConfig = readRepoFile("app/src/node-config.ts");
+		const sidebar = readRepoFile(
+			"app/src/features/layout/components/AppSidebar.tsx",
+		);
 		const layout = readRepoFile("app/src/app/layout.tsx");
 		const brandIcons = readRepoFile("app/src/shared/brand/brandIcons.tsx");
 		const footer = readRepoFile(
@@ -58,6 +61,17 @@ describe("Poly product wiring", () => {
 		expect(nodeConfig).toContain('href: "/research"');
 		expect(nodeConfig).toContain('href: "/credits", label: "Money"');
 		expect(nodeConfig).toContain("https://github.com/cogni-dao/poly");
+		expect(sidebar).toContain('from "@/node-config"');
+		expect(sidebar).toContain("nodeConfig.logo.href");
+		expect(sidebar).toContain("nodeConfig.logo.src");
+		expect(sidebar).toContain("nodeConfig.name");
+		expect(sidebar).toContain("nodeConfig.navItems.filter");
+		expect(sidebar).toContain("...configuredNavItems");
+		expect(sidebar).toContain("nodeConfig.externalLinks.map");
+		expect(sidebar).toContain('href: "/knowledge"');
+		expect(sidebar).toContain('href: "/admin"');
+		expect(sidebar).toContain("isApprover");
+		expect(sidebar).not.toContain("cogni-template");
 		expect(layout).toContain("Cogni Poly — Community AI Prediction Trading");
 		expect(brandIcons).toMatch(/const BRAND_ICONS = \{\s+Activity,/);
 		expect(footer).toContain('{ label: "Knowledge", href: "/knowledge" }');
