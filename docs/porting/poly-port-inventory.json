@@ -13,11 +13,11 @@
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
   "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "dc551f2cdbd5a61c2fa3e3dc1af9e8c0414baf24a92761dd9aa4fde1bbc4dec7",
+  "targetTreeDigest": "c7c7d8de7c60858aa58decf3330ae3f2019d73a9bf91d1ae4c54ca483636686f",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1070,
+    "targetOnlyFiles": 1085,
     "unresolved": 602,
     "byStatus": {
       "exact": 1126,
@@ -243,7 +243,7 @@
         "app/src/features/wallet-analysis/server/wallet-analysis-service.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "4bf60ffa464f1fcc34784ddd284ae3548d2b58b004f65e05516c3904d172a89e",
+      "currentTargetDigest": "9ffb6b07cfe814acbfe28a510d13121c468eab870c4bd07e0d3f7630597dc863",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -265,7 +265,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "29f4105407b92c47bf36692be4b0984113fd8864af26e2cf3b129ba70ce0560b",
+      "currentTargetDigest": "95d63ef4d6f7fd405240a6be3b3b35224399c498ca30244c7aec9788139ad66f",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -287,7 +287,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "29f4105407b92c47bf36692be4b0984113fd8864af26e2cf3b129ba70ce0560b",
+      "currentTargetDigest": "95d63ef4d6f7fd405240a6be3b3b35224399c498ca30244c7aec9788139ad66f",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -309,7 +309,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "29f4105407b92c47bf36692be4b0984113fd8864af26e2cf3b129ba70ce0560b",
+      "currentTargetDigest": "95d63ef4d6f7fd405240a6be3b3b35224399c498ca30244c7aec9788139ad66f",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -4609,7 +4609,7 @@
       "sourceBlob": "5b00a5697517aa73727a4879895724f6da5484ce",
       "sourcePath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
-      "targetBlob": "42d94d59554448065f0f2c5f649305e9706d0aac",
+      "targetBlob": "348bd91ad327f3ff8990aa7c837670e25ded701e",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -4623,7 +4623,7 @@
       "sourceBlob": "0456032db2a64923b5a71400f8b0a24a0c4fec36",
       "sourcePath": "app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx",
-      "targetBlob": "e8756c9f72681fb27ee3e5ff28b3e837cc28d22e",
+      "targetBlob": "619e528ce78abe25ca3e54a47107b0c1ca1aa522",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -4637,7 +4637,7 @@
       "sourceBlob": "df6c6e3b9e0ebb1a2447db59c9f425e76f8d089d",
       "sourcePath": "app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx",
-      "targetBlob": "43f4b52275f8498f6bb219fea62ab89c2947edec",
+      "targetBlob": "1b2a90bee69968d39df52b0712a1484c4814d89e",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -4721,7 +4721,7 @@
       "sourceBlob": "617c839f1c01f51d317eae4235ec9f0c7e169cb3",
       "sourcePath": "app/src/app/(app)/dashboard/view.tsx",
       "targetPath": "app/src/app/(app)/dashboard/view.tsx",
-      "targetBlob": "d466bcb3357b257f0cc2279ed1edc5f0862345e2",
+      "targetBlob": "c94211ba1831731d6ff7b030ac5f68586fcf15a6",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -7053,7 +7053,7 @@
       "sourceBlob": "94f881b3841d574fcdfa27f2d818368ed83fe4a7",
       "sourcePath": "app/src/app/api/v1/poly/wallet/refresh/route.ts",
       "targetPath": "app/src/app/api/v1/poly/wallet/refresh/route.ts",
-      "targetBlob": "a99af2ed57b15d58831e1fbda14e3a4cb01874e2",
+      "targetBlob": "fe31d3a93757926a22ecc9c0b418b4e3d5acf960",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -8351,7 +8351,7 @@
       "sourceBlob": "1f82a9e5294f806c15ed13941b07685443c85b03",
       "sourcePath": "app/src/bootstrap/jobs/trader-observation.job.ts",
       "targetPath": "app/src/bootstrap/jobs/trader-observation.job.ts",
-      "targetBlob": "32b555fedbf55d65d2d75cd17a89c7e206fd8910",
+      "targetBlob": "abe877d53fdbbe3a8650a29938250f1ba4295860",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -13279,7 +13279,7 @@
       "sourceBlob": "dcb6e95fa747b4c8b46048d1e72b7978600d8367",
       "sourcePath": "app/src/features/wallet-analysis/server/current-position-read-model.ts",
       "targetPath": "app/src/features/wallet-analysis/server/current-position-read-model.ts",
-      "targetBlob": "57ce5a7e993cedb07ab2f3e9deb043019a4820c7",
+      "targetBlob": "83b175fce3e7316c33857ea0b26801c849879747",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
@@ -13307,7 +13307,7 @@
       "sourceBlob": "39f5da2a98a92ec6bfbcb89e0510b0c4a573fa2d",
       "sourcePath": "app/src/features/wallet-analysis/server/market-exposure-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/market-exposure-service.ts",
-      "targetBlob": "87a38ab348d9e44d1bd63f5531c0e66c7cf114b6",
+      "targetBlob": "613e171f2f36258b01fcabf9b654b0410619fcf3",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -13391,7 +13391,7 @@
       "sourceBlob": "ea0f16ca8443df059ce3c73876e2eee60ad5bbd2",
       "sourcePath": "app/src/features/wallet-analysis/server/realized-pnl-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/realized-pnl-service.ts",
-      "targetBlob": "b7780979d5729a2076f39be81f5bd1c4942bf7d2",
+      "targetBlob": "bf763aed61aa82baffca3f6f6b787a8eefd94793",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -13433,7 +13433,7 @@
       "sourceBlob": "a02432ecc12b785d71a637725c6ee1ea7ad3c649",
       "sourcePath": "app/src/features/wallet-analysis/server/trader-observation-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/trader-observation-service.ts",
-      "targetBlob": "45b2cd3c8a5abd96875a46cd4e925899a9b4d705",
+      "targetBlob": "f81e9b1a7200e2d1f40d65a18a7a2cf58a114c89",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
@@ -14589,7 +14589,7 @@
       "sourceBlob": "35824c215ad1e94b317e3d6eceb2b8e819e9ff42",
       "sourcePath": "app/src/shared/observability/events/index.ts",
       "targetPath": "app/src/shared/observability/events/index.ts",
-      "targetBlob": "7d3ec994926492eb8237848ff95a6017c1f4e3c3",
+      "targetBlob": "bb626f61742b22501fcc2a31743c85fe3fc012dd",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -22611,7 +22611,7 @@
       "sourceBlob": "b33210d619d6272495e199c179513ced3e528887",
       "sourcePath": "packages/node-contracts/src/index.ts",
       "targetPath": "packages/poly-node-contracts/src/index.ts",
-      "targetBlob": "257fa1f9e7435fd18776af924024f9245ecd05d9",
+      "targetBlob": "184c8f5cd14ee060dada4749165146f1af6ef76b",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -25499,10 +25499,16 @@
       "targetPath": "app/src/app/(app)/dashboard/_api/fetchCopyTradeOrders.ts"
     },
     {
+      "targetPath": "app/src/app/(app)/dashboard/_api/fetchWalletDashboard.ts"
+    },
+    {
       "targetPath": "app/src/app/(app)/dashboard/_components/MirrorAttemptsCard.tsx"
     },
     {
       "targetPath": "app/src/app/(app)/dashboard/_components/TradingWalletBalanceBar.tsx"
+    },
+    {
+      "targetPath": "app/src/app/(app)/dashboard/_hooks/useWalletDashboard.tsx"
     },
     {
       "targetPath": "app/src/app/(app)/knowledge/[id]/page.tsx"
@@ -25745,6 +25751,9 @@
       "targetPath": "app/src/app/api/v1/poly/wallet/_lib/wallet-completion-diagnostics.ts"
     },
     {
+      "targetPath": "app/src/app/api/v1/poly/wallet/dashboard/route.ts"
+    },
+    {
       "targetPath": "app/src/app/api/v1/public/attribution/distribution/latest/route.ts"
     },
     {
@@ -25841,7 +25850,13 @@
       "targetPath": "app/src/features/wallet-analysis/server/fill-rollup-service.ts"
     },
     {
+      "targetPath": "app/src/features/wallet-analysis/server/position-balance-authority.ts"
+    },
+    {
       "targetPath": "app/src/features/wallet-analysis/server/research-read-cache.ts"
+    },
+    {
+      "targetPath": "app/src/features/wallet-analysis/server/tenant-wallet-dashboard-service.ts"
     },
     {
       "targetPath": "app/src/features/wallet-analysis/server/top-wallet-stats-service.ts"
@@ -25889,6 +25904,9 @@
       "targetPath": "app/tests/component/db/fill-rollup-writer.int.test.ts"
     },
     {
+      "targetPath": "app/tests/component/db/position-observation-writer.int.test.ts"
+    },
+    {
       "targetPath": "app/tests/component/db/position-snapshot-retention.int.test.ts"
     },
     {
@@ -25902,6 +25920,15 @@
     },
     {
       "targetPath": "app/tests/component/db/wallet-analysis-pushdown.int.test.ts"
+    },
+    {
+      "targetPath": "app/tests/component/db/wallet-dashboard-closed-parity.int.test.ts"
+    },
+    {
+      "targetPath": "app/tests/component/db/wallet-dashboard-order-aggregate.int.test.ts"
+    },
+    {
+      "targetPath": "app/tests/component/db/wallet-dashboard-snapshot.int.test.ts"
     },
     {
       "targetPath": "app/tests/component/jobs/job-leader-election.int.test.ts"
@@ -25997,6 +26024,9 @@
       "targetPath": "app/tests/unit/app/api/poly/wallet/dashboard-route-cache.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/app/api/poly/wallet/dashboard.route.test.ts"
+    },
+    {
       "targetPath": "app/tests/unit/app/api/work-items-item.route.test.ts"
     },
     {
@@ -26007,6 +26037,9 @@
     },
     {
       "targetPath": "app/tests/unit/app/dashboard/mirror-attempts-error-summary.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/dashboard/wallet-dashboard-provider.spec.tsx"
     },
     {
       "targetPath": "app/tests/unit/app/governance/epoch-page-wiring.test.tsx"
@@ -26099,6 +26132,9 @@
       "targetPath": "app/tests/unit/features/wallet-analysis/hash-position.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/features/wallet-analysis/market-exposure-bounded.test.ts"
+    },
+    {
       "targetPath": "app/tests/unit/features/wallet-analysis/market-exposure-snapshot-sql.test.ts"
     },
     {
@@ -26106,6 +26142,9 @@
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/observation-wallet-loop.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/wallet-analysis/position-balance-authority.test.ts"
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/recent-trades-read-budget.test.ts"
@@ -26133,6 +26172,9 @@
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/wallet-balance-snapshot.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/wallet-analysis/wallet-dashboard-contract.test.ts"
     },
     {
       "targetPath": "app/tests/unit/features/wallet-watch/chain-source-metadata-cooldown.test.ts"
@@ -28203,6 +28245,9 @@
     },
     {
       "targetPath": "packages/poly-market-provider/tests/fixtures/polymarket-user-pnl-week.json"
+    },
+    {
+      "targetPath": "packages/poly-node-contracts/src/poly.wallet.dashboard.v1.contract.ts"
     },
     {
       "targetPath": "packages/poly-node-contracts/src/poly.wallet.recover.v1.contract.ts"
