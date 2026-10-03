@@ -20,6 +20,7 @@ import { describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
   overview: undefined as unknown,
   execution: undefined as unknown,
+  actionsAllowed: true,
 }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -34,19 +35,21 @@ vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
 
-vi.mock("@/app/(app)/dashboard/_hooks/useTradingWalletOverview", () => ({
-  useTradingWalletOverview: () => ({
-    data: state.overview,
+vi.mock("@/app/(app)/dashboard/_hooks/useWalletDashboard", () => ({
+  WALLET_DASHBOARD_QUERY_KEY: "dashboard-wallet-snapshot",
+  useWalletDashboard: () => ({
+    data:
+      state.overview === undefined && state.execution === undefined
+        ? undefined
+        : {
+            overview: state.overview,
+            execution: state.execution,
+            facts: { positions: { actionsAllowed: state.actionsAllowed } },
+          },
     isLoading: false,
     isError: false,
-  }),
-}));
-
-vi.mock("@/app/(app)/dashboard/_hooks/useDashboardExecution", () => ({
-  useDashboardExecution: () => ({
-    data: state.execution,
-    isLoading: false,
-    isError: false,
+    interval: "1W",
+    setInterval: vi.fn(),
   }),
 }));
 
@@ -125,10 +128,17 @@ vi.mock("@/app/(app)/_components/positions-table", () => ({
   PositionsTable: ({
     positions,
     emptyMessage,
+    onPositionAction,
   }: {
     positions: unknown[];
     emptyMessage: string;
-  }) => <div>{positions.length === 0 ? emptyMessage : "position rows"}</div>,
+    onPositionAction?: unknown;
+  }) => (
+    <div>
+      {positions.length === 0 ? emptyMessage : "position rows"}
+      {onPositionAction ? <button type="button">position action</button> : null}
+    </div>
+  ),
 }));
 
 import { ExecutionActivityCard } from "@/app/(app)/dashboard/_components/ExecutionActivityCard";
@@ -242,6 +252,68 @@ describe("dashboard missing read-model states", () => {
     expect(screen.queryByText("low gas")).not.toBeInTheDocument();
   });
 
+  it("shows deployment readiness truth instead of exposing an unusable wallet", () => {
+    state.overview = {
+      configured: false,
+      connected: true,
+      freshness: "read_model",
+      address: "0x1111111111111111111111111111111111111111",
+      interval: "1W",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      pol_gas: 1,
+      usdc_available: 10,
+      usdc_locked: 0,
+      usdc_positions_mtm: 2,
+      usdc_total: 12,
+      open_orders: 0,
+      positions_synced_at: "2026-10-02T12:00:00.000Z",
+      positions_sync_age_ms: 0,
+      positions_stale: false,
+      pnlHistory: [],
+      warnings: [
+        { code: "wallet_adapter_unconfigured", message: "unconfigured" },
+      ],
+    };
+
+    render(<TradingWalletCard />);
+    expect(
+      screen.getByText("Trading-wallet adapter is not configured on this pod yet.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("balance bar")).not.toBeInTheDocument();
+  });
+
+  it("hides execution rows and freshness copy when the adapter is unconfigured", () => {
+    state.overview = {
+      configured: false,
+      connected: true,
+      warnings: [
+        { code: "wallet_adapter_unconfigured", message: "unconfigured" },
+      ],
+    };
+    state.execution = {
+      address: "0x1111111111111111111111111111111111111111",
+      freshness: "read_model",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      dailyTradeCounts: [],
+      live_positions: [{ positionId: "historical-position" }],
+      live_position_count: 1,
+      market_groups: [],
+      closed_positions: [],
+      closed_position_count: 0,
+      warnings: [],
+    };
+    state.actionsAllowed = false;
+
+    render(<ExecutionActivityCard />);
+    expect(
+      screen.getByText("Trading-wallet execution is unavailable on this deployment.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("position rows")).not.toBeInTheDocument();
+    expect(screen.queryByText(/actions are paused/i)).not.toBeInTheDocument();
+    state.actionsAllowed = true;
+    state.overview = undefined;
+  });
+
   it("keeps stale P/L concise without rendering a false empty chart", () => {
     state.overview = {
       configured: true,
@@ -301,12 +373,7 @@ describe("dashboard missing read-model states", () => {
     expect(screen.queryByText("No P/L history yet.")).not.toBeInTheDocument();
   });
 
-  it.each([
-    "current_positions_wallet_missing",
-    "current_positions_stale",
-  ])(
-    "renders %s live positions as unavailable, not Live(0) or empty",
-    (warningCode) => {
+  it("renders never-observed live positions as unavailable, not Live(0) or empty", () => {
       state.execution = {
         address: "0x1111111111111111111111111111111111111111",
         freshness: "live",
@@ -315,7 +382,7 @@ describe("dashboard missing read-model states", () => {
         live_positions: [],
         market_groups: [],
         closed_positions: [],
-        warnings: [{ code: warningCode, message: "position model unavailable" }],
+        warnings: [{ code: "current_positions_never_observed", message: "position model unavailable" }],
       };
 
       render(<ExecutionActivityCard />);
@@ -329,8 +396,31 @@ describe("dashboard missing read-model states", () => {
       expect(screen.queryByText("No open positions.")).not.toBeInTheDocument();
       expect(screen.queryByText(/not a zero-position/i)).not.toBeInTheDocument();
       expect(screen.queryByText(/position model/i)).not.toBeInTheDocument();
-    }
-  );
+  });
+
+  it("retains stale exact count while suppressing position actions", () => {
+    state.actionsAllowed = false;
+    state.execution = {
+      address: "0x1111111111111111111111111111111111111111",
+      freshness: "read_model",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      dailyTradeCounts: [],
+      live_positions: [{ positionId: "stale-position" }],
+      live_position_count: 3,
+      market_groups: [],
+      closed_positions: [],
+      closed_position_count: 0,
+      warnings: [{ code: "current_positions_stale", message: "stale" }],
+    };
+
+    render(<ExecutionActivityCard />);
+
+    expect(screen.getByRole("button", { name: /Live.*3/i })).toBeInTheDocument();
+    expect(screen.getByText(/actions are paused/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "position action" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Open positions unavailable.")).not.toBeInTheDocument();
+    state.actionsAllowed = true;
+  });
 
   it("labels a bounded position preview without calling it an upstream failure", () => {
     state.execution = {
@@ -392,7 +482,7 @@ describe("dashboard missing read-model states", () => {
       market_groups: [],
       closed_positions: [],
       warnings: [
-        { code: "positions_read_model_unavailable", message: "read failed" },
+        { code: "history_unavailable", message: "read failed" },
       ],
     };
 
@@ -431,6 +521,58 @@ describe("dashboard missing read-model states", () => {
     expect(screen.queryByText(/not a zero-exposure/i)).not.toBeInTheDocument();
     expect(screen.queryByText("market distribution")).not.toBeInTheDocument();
     expect(screen.queryByText("markets table")).not.toBeInTheDocument();
+  });
+
+  it("visibly labels a bounded market preview", () => {
+    state.execution = {
+      address: "0x1111111111111111111111111111111111111111",
+      freshness: "read_model",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      dailyTradeCounts: [],
+      live_positions: [],
+      live_position_count: 0,
+      market_groups: [],
+      closed_positions: [],
+      closed_position_count: 0,
+      warnings: [
+        { code: "market_exposure_preview_truncated", message: "bounded" },
+      ],
+    };
+
+    render(<ExecutionActivityCard />);
+    fireEvent.click(screen.getByRole("button", { name: "Markets" }));
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Showing a bounded market-comparison preview."
+    );
+  });
+
+  it("shows the wallet partial badge for malformed order amounts", () => {
+    state.overview = {
+      configured: true,
+      connected: true,
+      freshness: "read_model",
+      address: "0x1111111111111111111111111111111111111111",
+      interval: "1W",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      pol_gas: 1,
+      usdc_available: null,
+      usdc_locked: null,
+      usdc_positions_mtm: 2,
+      usdc_total: null,
+      open_orders: 1,
+      positions_synced_at: "2026-10-02T12:00:00.000Z",
+      positions_sync_age_ms: 0,
+      positions_stale: false,
+      pnlHistory: [],
+      warnings: [
+        { code: "orders_malformed_numeric", message: "malformed" },
+      ],
+    };
+
+    render(<TradingWalletCard />);
+    expect(screen.getByText("partial")).toBeInTheDocument();
+    expect(screen.getByText("1 open order")).toBeInTheDocument();
   });
 
   it.each([

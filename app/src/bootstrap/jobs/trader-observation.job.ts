@@ -25,6 +25,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
   runTraderObservationTick,
+  type PositionBalanceBatchReader,
   type TenantTradingAddressReader,
   type TraderObservationStage,
 } from "@/features/wallet-analysis/server/trader-observation-service";
@@ -64,6 +65,8 @@ export interface TraderObservationJobDeps {
    * container — see OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM in the service.
    */
   listActiveTradingAddresses: TenantTradingAddressReader;
+  /** Polygon CTF batch authority for omitted current positions. */
+  readPositionBalances?: PositionBalanceBatchReader;
   /** Off-render Polygon reads persisted for DB-only dashboard GETs. */
   refreshBalanceFacts?: () => Promise<void>;
   logger: LoggerPort;

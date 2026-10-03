@@ -61,6 +61,11 @@ import { WorkItemDetail } from "../work/_components/WorkItemDetail";
 import { StatusPill, TypeIcon } from "../work/_components/work-item-icons";
 import { postPolymarketRefresh } from "./_api/fetchPolymarketRefresh";
 import { fetchRuns } from "./_api/fetchRuns";
+import {
+  WalletDashboardProvider,
+  WALLET_DASHBOARD_QUERY_KEY,
+  invalidateWalletDashboardSnapshot,
+} from "./_hooks/useWalletDashboard";
 import { CopyTargetControlPanel } from "./_components/CopyTargetControlPanel";
 import { ExecutionActivityCard } from "./_components/ExecutionActivityCard";
 import { MirrorAttemptsCard } from "./_components/MirrorAttemptsCard";
@@ -222,18 +227,12 @@ export function DashboardView(): ReactElement {
   });
 
   const polymarketFetches =
-    useIsFetching({ queryKey: ["dashboard-trading-wallet"] }) +
-    useIsFetching({ queryKey: ["dashboard-wallet-execution"] }) +
+    useIsFetching({ queryKey: [WALLET_DASHBOARD_QUERY_KEY] }) +
     useIsFetching({ queryKey: ["poly-wallet-status"] });
   const refreshPolymarket = useMutation({
     mutationFn: postPolymarketRefresh,
     onSettled: () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["dashboard-trading-wallet"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["dashboard-wallet-execution"],
-      });
+      void invalidateWalletDashboardSnapshot(queryClient);
       void queryClient.invalidateQueries({ queryKey: ["poly-wallet-status"] });
     },
   });
@@ -339,9 +338,11 @@ export function DashboardView(): ReactElement {
 
       {/* Polymarket primary section (top of fold) */}
       <CopyTargetControlPanel />
-      <TradingWalletCard />
-      <OperatorWalletChartsRow />
-      <ExecutionActivityCard />
+      <WalletDashboardProvider>
+        <TradingWalletCard />
+        <OperatorWalletChartsRow />
+        <ExecutionActivityCard />
+      </WalletDashboardProvider>
       <MirrorAttemptsCard />
 
       {/* Two-column section: Agents + Work (demoted below the Polymarket cards) */}

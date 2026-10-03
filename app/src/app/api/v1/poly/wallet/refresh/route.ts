@@ -43,6 +43,7 @@ import {
   type PositionActionability,
 } from "@/features/trading";
 import { refreshCurrentPositionsForWallet } from "@/features/wallet-analysis/server/trader-observation-service";
+import { createPolygonPositionBalanceBatchReader } from "@/features/wallet-analysis/server/position-balance-authority";
 import { persistWalletBalanceFact } from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
 import {
   getExecutionSlice,
@@ -208,6 +209,11 @@ export const POST = wrapRouteHandlerWithLogging(
 
     try {
       const env = serverEnv();
+      const readPositionBalances = env.POLYGON_RPC_URL
+        ? createPolygonPositionBalanceBatchReader({
+            rpcUrl: env.POLYGON_RPC_URL,
+          })
+        : undefined;
       const executorFactory = createPolyTradeExecutorFactory({
         walletPort: adapter,
         logger: ctx.log,
@@ -257,19 +263,8 @@ export const POST = wrapRouteHandlerWithLogging(
         >,
         client: new PolymarketDataApiClient(),
         walletAddress: address,
-        classifyMissingPosition: async ({ tokenId }) => {
-          const actionability = await classifyAssetWithPositions(tokenId, []);
-          if (actionability.kind === "onchain_zero") {
-            return { kind: "deactivate", reason: "zero_balance" };
-          }
-          if (actionability.kind === "onchain_dust") {
-            return { kind: "deactivate", reason: "dust" };
-          }
-          if (actionability.kind === "upstream_error") {
-            return { kind: "preserve", reason: "authority_unavailable" };
-          }
-          return { kind: "preserve", reason: "actionable" };
-        },
+        ...(readPositionBalances === undefined ? {} : { readPositionBalances }),
+        logger: ctx.log,
       }).then(
         (result) => ({ ok: true as const, result }),
         (err: unknown) => ({ ok: false as const, err })
@@ -376,14 +371,9 @@ export const POST = wrapRouteHandlerWithLogging(
             }
             if (actionability.kind === "onchain_dust") {
               onchainDustCount += 1;
-              if (lifecycleClassifiedAssets.has(tokenId)) return 0;
-              lifecycleClassifiedAssets.add(tokenId);
-              return container.orderLedger.markPositionLifecycleByAsset({
-                billing_account_id: account.id,
-                token_id: tokenId,
-                lifecycle: "dust",
-                updated_at: new Date(),
-              });
+              // Any non-zero ERC1155 balance remains held. A product-level
+              // dust label is not chain authority for closure/deactivation.
+              return 0;
             }
             if (actionability.kind === "upstream_error") {
               upstreamErrorCount += 1;
