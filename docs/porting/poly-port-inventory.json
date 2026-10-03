@@ -6,22 +6,22 @@
     "treeRoot": "nodes/poly"
   },
   "policySha256": "cc0f1f13d7e108b07823f2c37d188d2c5fa4773866b20c587f997b6faba4cbb8",
-  "targetTreeDigest": "dee74eb35ebd6aa766a7986b712263ba39f58749cb3fb6861000abb8321e36da",
+  "targetTreeDigest": "f5aa7fa9eaa499d73abf73dd81826ae6a2c2b23a77b73d315e6a7dcc3aab4114",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1057,
-    "unresolved": 602,
+    "targetOnlyFiles": 1068,
+    "unresolved": 610,
     "byStatus": {
-      "exact": 1134,
+      "exact": 1126,
       "missing": 263,
-      "review_required": 339
+      "review_required": 347
     },
     "unresolvedByPriority": {
-      "P0": 24,
-      "P1": 49,
-      "P2": 280,
-      "P3": 249
+      "P0": 28,
+      "P1": 51,
+      "P2": 281,
+      "P3": 250
     },
     "behavioralGates": 7,
     "unresolvedBehavioralGates": 7
@@ -1490,7 +1490,7 @@
       "sourceBlob": "888987037701e67c4772de6490a7904173e41e5d",
       "sourcePath": "app/src/adapters/server/db/migrations/meta/_journal.json",
       "targetPath": "app/src/adapters/server/db/migrations/meta/_journal.json",
-      "targetBlob": "773bcb674d689d2e1f69ff700c280cff5a281fd2",
+      "targetBlob": "626e240c3bfc14d65f3b5c1901518cba8598d22d",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "status": "review_required"
@@ -2370,7 +2370,7 @@
       "sourceBlob": "7cdc0e8bb5d105831e0d85156c07d2867b959802",
       "sourcePath": "app/src/adapters/server/wallet/privy-poly-trader-wallet.adapter.ts",
       "targetPath": "app/src/adapters/server/wallet/privy-poly-trader-wallet.adapter.ts",
-      "targetBlob": "27c2dc4a2719894743907f4ad8eba71f14e30309",
+      "targetBlob": "6d2457f45c78281efdc3251b9bb7c50840d8b20c",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "status": "review_required"
@@ -3240,17 +3240,17 @@
       "sourceBlob": "5b00a5697517aa73727a4879895724f6da5484ce",
       "sourcePath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
-      "targetBlob": "5b00a5697517aa73727a4879895724f6da5484ce",
+      "targetBlob": "afad4e8cd1cc802d2e299a6fce467cd8054e0560",
       "priority": "P0",
       "priorityLabel": "visible product parity",
-      "status": "exact"
+      "status": "review_required"
     },
     {
       "mode": "100644",
       "sourceBlob": "0456032db2a64923b5a71400f8b0a24a0c4fec36",
       "sourcePath": "app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx",
-      "targetBlob": "e34bb57f7eb2d674e7f5ad807fe14db341ac5cb3",
+      "targetBlob": "35c705ea333ec6e7e172c038f4729a24bc95af9b",
       "priority": "P0",
       "priorityLabel": "visible product parity",
       "status": "review_required"
@@ -3260,7 +3260,7 @@
       "sourceBlob": "df6c6e3b9e0ebb1a2447db59c9f425e76f8d089d",
       "sourcePath": "app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx",
-      "targetBlob": "a568da6083f027ae84faf44f1aef67ae018d8f9b",
+      "targetBlob": "1dfd440c6f2228163c3f061c1bbd2e3c3176acf3",
       "priority": "P0",
       "priorityLabel": "visible product parity",
       "status": "review_required"
@@ -4580,7 +4580,7 @@
       "sourceBlob": "0edc7d6a040fa5382d9fb75333630e1b5bd06b7f",
       "sourcePath": "app/src/app/api/v1/poly/wallet/execution/route.ts",
       "targetPath": "app/src/app/api/v1/poly/wallet/execution/route.ts",
-      "targetBlob": "a35011b5ca9d79c169c307a28c545e5c57b472de",
+      "targetBlob": "82d237eda1c9c0328ac2ebf43cc5a3b947556d56",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -4600,7 +4600,7 @@
       "sourceBlob": "d51bb4d969c8fb4ac45d08cbd90ffe3023f14876",
       "sourcePath": "app/src/app/api/v1/poly/wallet/overview/route.ts",
       "targetPath": "app/src/app/api/v1/poly/wallet/overview/route.ts",
-      "targetBlob": "d7b5660c010b3528709b207d1edaa929b1ed0f33",
+      "targetBlob": "eac588ba5739f04e99da903a812e789055715626",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -4630,7 +4630,7 @@
       "sourceBlob": "94f881b3841d574fcdfa27f2d818368ed83fe4a7",
       "sourcePath": "app/src/app/api/v1/poly/wallet/refresh/route.ts",
       "targetPath": "app/src/app/api/v1/poly/wallet/refresh/route.ts",
-      "targetBlob": "374c7d795f263221969715b4843980c08cf7ee11",
+      "targetBlob": "a99af2ed57b15d58831e1fbda14e3a4cb01874e2",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
       "status": "review_required"
@@ -4660,7 +4660,7 @@
       "sourceBlob": "fea2d2db89937d84be344be7d156bb4763a782d5",
       "sourcePath": "app/src/app/api/v1/poly/wallets/[addr]/route.ts",
       "targetPath": "app/src/app/api/v1/poly/wallets/[addr]/route.ts",
-      "targetBlob": "aca731682c6b7a9dbdcd73ccd3d3d83df905652d",
+      "targetBlob": "22bf74e6e0ac32595898609570ffa836a3d16888",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
       "status": "review_required"
@@ -5290,7 +5290,7 @@
       "sourceBlob": "07d0b8969e5edc5914865113dd8e7949443bbf48",
       "sourcePath": "app/src/bootstrap/container.ts",
       "targetPath": "app/src/bootstrap/container.ts",
-      "targetBlob": "4e911623cac6700c55fa5e529e39bc2f058fe453",
+      "targetBlob": "fb101b66145a970a9c04633ae0d123b9e721d6b5",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -5450,7 +5450,7 @@
       "sourceBlob": "1f82a9e5294f806c15ed13941b07685443c85b03",
       "sourcePath": "app/src/bootstrap/jobs/trader-observation.job.ts",
       "targetPath": "app/src/bootstrap/jobs/trader-observation.job.ts",
-      "targetBlob": "514501e62c19d95bc766a664207ec349e54a88f1",
+      "targetBlob": "32b555fedbf55d65d2d75cd17a89c7e206fd8910",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "status": "review_required"
@@ -5470,7 +5470,7 @@
       "sourceBlob": "830960cbcf0436552613bedce6ab2238588af6e8",
       "sourcePath": "app/src/bootstrap/poly-trader-wallet.ts",
       "targetPath": "app/src/bootstrap/poly-trader-wallet.ts",
-      "targetBlob": "5e00fb6074329e35b33cb6ac1f3fbbf4ef895371",
+      "targetBlob": "ae0d1deeba05fa2e7ed1809ab06389eaf518a138",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "status": "review_required"
@@ -8710,10 +8710,10 @@
       "sourceBlob": "d0fa8dfbf7e576c493524607a6dac39b784ebd97",
       "sourcePath": "app/src/features/wallet-analysis/client/use-wallet-analysis.ts",
       "targetPath": "app/src/features/wallet-analysis/client/use-wallet-analysis.ts",
-      "targetBlob": "d0fa8dfbf7e576c493524607a6dac39b784ebd97",
+      "targetBlob": "e8b81ba1d92f8cb197941e405717b254b976d711",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
-      "status": "exact"
+      "status": "review_required"
     },
     {
       "mode": "100644",
@@ -8870,20 +8870,20 @@
       "sourceBlob": "aa3f0c8b2be9367c48b942f3fdd3879304c406b3",
       "sourcePath": "app/src/features/wallet-analysis/components/WalletAnalysisSurface.tsx",
       "targetPath": "app/src/features/wallet-analysis/components/WalletAnalysisSurface.tsx",
-      "targetBlob": "aa3f0c8b2be9367c48b942f3fdd3879304c406b3",
+      "targetBlob": "eed8cf836f4e02296d6a13c7036e0ed5e28fbe10",
       "priority": "P0",
       "priorityLabel": "visible product parity",
-      "status": "exact"
+      "status": "review_required"
     },
     {
       "mode": "100644",
       "sourceBlob": "1944156dbbd2e3f55b78d99edf9dc22ea1c8d28e",
       "sourcePath": "app/src/features/wallet-analysis/components/WalletAnalysisView.tsx",
       "targetPath": "app/src/features/wallet-analysis/components/WalletAnalysisView.tsx",
-      "targetBlob": "1944156dbbd2e3f55b78d99edf9dc22ea1c8d28e",
+      "targetBlob": "a2d57949950cf49e6ca4b17d063720480fdfca5f",
       "priority": "P0",
       "priorityLabel": "visible product parity",
-      "status": "exact"
+      "status": "review_required"
     },
     {
       "mode": "100644",
@@ -8910,10 +8910,10 @@
       "sourceBlob": "2a71e567a3f0acb19c025925b4f3f322b872b277",
       "sourcePath": "app/src/features/wallet-analysis/components/WalletProfitLossCard.tsx",
       "targetPath": "app/src/features/wallet-analysis/components/WalletProfitLossCard.tsx",
-      "targetBlob": "2a71e567a3f0acb19c025925b4f3f322b872b277",
+      "targetBlob": "da3d164cad33f9118c9eba38f16635afb4ad72f1",
       "priority": "P0",
       "priorityLabel": "visible product parity",
-      "status": "exact"
+      "status": "review_required"
     },
     {
       "mode": "100644",
@@ -8970,7 +8970,7 @@
       "sourceBlob": "dcb6e95fa747b4c8b46048d1e72b7978600d8367",
       "sourcePath": "app/src/features/wallet-analysis/server/current-position-read-model.ts",
       "targetPath": "app/src/features/wallet-analysis/server/current-position-read-model.ts",
-      "targetBlob": "27671f836110c31f7e58664a205b6e3beee91321",
+      "targetBlob": "57ce5a7e993cedb07ab2f3e9deb043019a4820c7",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -9080,7 +9080,7 @@
       "sourceBlob": "a02432ecc12b785d71a637725c6ee1ea7ad3c649",
       "sourcePath": "app/src/features/wallet-analysis/server/trader-observation-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/trader-observation-service.ts",
-      "targetBlob": "04511ca93799fdb95965650d7970da48e905bafc",
+      "targetBlob": "45b2cd3c8a5abd96875a46cd4e925899a9b4d705",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "status": "review_required"
@@ -9090,7 +9090,7 @@
       "sourceBlob": "3429957ab591dc4ce944af612f0ab26a95791db5",
       "sourcePath": "app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts",
-      "targetBlob": "5aafffe9f61981d4fc1434d4cbfe7b9a3eaa3db1",
+      "targetBlob": "ad0ce3cf0c8be4688b862fdcb34c9c45303a016b",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
       "status": "review_required"
@@ -9100,7 +9100,7 @@
       "sourceBlob": "3b5a7ebe52c427322736b688d339cd85792f90c5",
       "sourcePath": "app/src/features/wallet-analysis/server/wallet-analysis-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/wallet-analysis-service.ts",
-      "targetBlob": "90e7bd1ae64d663219a05996bd1c7ff8a92ba6c8",
+      "targetBlob": "62c627235ed57b1d7ed3fc2037df48f48a36fe8c",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
       "status": "review_required"
@@ -10870,10 +10870,10 @@
       "sourceBlob": "b30739cf29aaed23237b998467e5e822ecdc41a4",
       "sourcePath": "app/tests/component/db/rls-tenant-isolation.int.test.ts",
       "targetPath": "app/tests/component/db/rls-tenant-isolation.int.test.ts",
-      "targetBlob": "b30739cf29aaed23237b998467e5e822ecdc41a4",
+      "targetBlob": "15be41f46fd460535e6348defcac6f61e2af992b",
       "priority": "P2",
       "priorityLabel": "proof and secondary product surfaces",
-      "status": "exact"
+      "status": "review_required"
     },
     {
       "mode": "100644",
@@ -15690,10 +15690,10 @@
       "sourceBlob": "6ff8e1f4c57b07edcb68073e5fcc84943c2568fa",
       "sourcePath": "packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts",
       "targetPath": "packages/poly-node-contracts/src/poly.wallet-analysis.v1.contract.ts",
-      "targetBlob": "6ff8e1f4c57b07edcb68073e5fcc84943c2568fa",
+      "targetBlob": "ab0eb29653737ac46a22d1236afa6622b2ac99b4",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
-      "status": "exact"
+      "status": "review_required"
     },
     {
       "mode": "100644",
@@ -15750,10 +15750,10 @@
       "sourceBlob": "04ba8532a4c4e366b9651838b1101f7795308257",
       "sourcePath": "packages/node-contracts/src/poly.wallet.execution.v1.contract.ts",
       "targetPath": "packages/poly-node-contracts/src/poly.wallet.execution.v1.contract.ts",
-      "targetBlob": "04ba8532a4c4e366b9651838b1101f7795308257",
+      "targetBlob": "c0489888e5c0e23282cb1c508f16c4c31e044611",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
-      "status": "exact"
+      "status": "review_required"
     },
     {
       "mode": "100644",
@@ -15880,7 +15880,7 @@
       "sourceBlob": "8055709c847a2b9ce36c86dcb484ab6e31391d15",
       "sourcePath": "packages/wallet/src/port/poly-trader-wallet.port.ts",
       "targetPath": "packages/poly-wallet/src/port/poly-trader-wallet.port.ts",
-      "targetBlob": "ba2d2bc68bdb9f7af61f79497e7ea1d31b6da52c",
+      "targetBlob": "842e2f896d0cf2c4022f673ab367f5090c161b75",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
       "status": "review_required"
@@ -17685,6 +17685,9 @@
       "targetPath": "app/src/adapters/server/db/migrations/0068_mixed_raza.sql"
     },
     {
+      "targetPath": "app/src/adapters/server/db/migrations/0069_cheerful_dark_beast.sql"
+    },
+    {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0060_snapshot.json"
     },
     {
@@ -17707,6 +17710,9 @@
     },
     {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0068_snapshot.json"
+    },
+    {
+      "targetPath": "app/src/adapters/server/db/migrations/meta/0069_snapshot.json"
     },
     {
       "targetPath": "app/src/adapters/server/identity/identity-binding.adapter.ts"
@@ -18078,6 +18084,9 @@
       "targetPath": "app/src/features/wallet-analysis/server/top-wallet-stats-service.ts"
     },
     {
+      "targetPath": "app/src/features/wallet-analysis/server/wallet-balance-snapshot-service.ts"
+    },
+    {
       "targetPath": "app/src/lib/egress-geoblock.ts"
     },
     {
@@ -18183,6 +18192,9 @@
       "targetPath": "app/tests/unit/adapters/server/wallet/privy-poly-trader-wallet.resolve-flood-guard.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/adapters/server/wallet/privy-poly-trader-wallet.trading-addresses.test.ts"
+    },
+    {
       "targetPath": "app/tests/unit/adapters/work-items-adapter.test.ts"
     },
     {
@@ -18214,6 +18226,9 @@
     },
     {
       "targetPath": "app/tests/unit/app/api/work-items-item.route.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/dashboard/dashboard-missing-state.spec.tsx"
     },
     {
       "targetPath": "app/tests/unit/app/dashboard/mirror-attempts-error-summary.test.ts"
@@ -18294,6 +18309,12 @@
       "targetPath": "app/tests/unit/features/trading/ledger-row-projection.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/features/wallet-analysis/WalletAnalysisView-missing.test.tsx"
+    },
+    {
+      "targetPath": "app/tests/unit/features/wallet-analysis/WalletProfitLossCard.spec.tsx"
+    },
+    {
       "targetPath": "app/tests/unit/features/wallet-analysis/coalesce-swr.test.ts"
     },
     {
@@ -18312,6 +18333,12 @@
       "targetPath": "app/tests/unit/features/wallet-analysis/observation-wallet-loop.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/features/wallet-analysis/saved-facts-availability.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/wallet-analysis/tenant-wallet-enrollment.test.ts"
+    },
+    {
       "targetPath": "app/tests/unit/features/wallet-analysis/top-wallet-stats-mapping.test.ts"
     },
     {
@@ -18322,6 +18349,12 @@
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/trader-observation-tick.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/wallet-analysis/trading-wallet-overview-read.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/wallet-analysis/wallet-balance-snapshot.test.ts"
     },
     {
       "targetPath": "app/tests/unit/features/wallet-watch/chain-source-metadata-cooldown.test.ts"

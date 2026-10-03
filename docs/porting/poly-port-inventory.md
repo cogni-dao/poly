@@ -21,23 +21,23 @@ Run `pnpm poly:port:refresh -- --legacy-repo /path/to/legacy-monorepo` after a r
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1057 |
-| Unresolved legacy files | 602 |
+| Current-only files | 1068 |
+| Unresolved legacy files | 610 |
 | Behavioral parity gates | 7 |
 | Unresolved behavioral gates | 7 |
 
 | State | Count |
 | --- | ---: |
-| exact | 1134 |
+| exact | 1126 |
 | missing | 263 |
-| review_required | 339 |
+| review_required | 347 |
 
 | Priority | Unresolved |
 | --- | ---: |
-| P0 | 24 |
-| P1 | 49 |
-| P2 | 280 |
-| P3 | 249 |
+| P0 | 28 |
+| P1 | 51 |
+| P2 | 281 |
+| P3 | 250 |
 
 ## Behavioral parity gates
 
@@ -72,8 +72,12 @@ The first 100 unresolved files are shown. Ordering is deterministic: product foc
 | P0 | review_required | `app/src/app/api/v1/poly/wallet/overview/route.ts` | `app/src/app/api/v1/poly/wallet/overview/route.ts` |
 | P0 | review_required | `app/src/app/api/v1/poly/wallet/execution/route.ts` | `app/src/app/api/v1/poly/wallet/execution/route.ts` |
 | P0 | review_required | `app/src/app/(app)/dashboard/view.tsx` | `app/src/app/(app)/dashboard/view.tsx` |
+| P0 | review_required | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` |
 | P0 | review_required | `app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx` | `app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx` |
 | P0 | review_required | `app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx` | `app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx` |
+| P0 | review_required | `app/src/features/wallet-analysis/components/WalletAnalysisSurface.tsx` | `app/src/features/wallet-analysis/components/WalletAnalysisSurface.tsx` |
+| P0 | review_required | `app/src/features/wallet-analysis/components/WalletAnalysisView.tsx` | `app/src/features/wallet-analysis/components/WalletAnalysisView.tsx` |
+| P0 | review_required | `app/src/features/wallet-analysis/components/WalletProfitLossCard.tsx` | `app/src/features/wallet-analysis/components/WalletProfitLossCard.tsx` |
 | P0 | review_required | `app/src/app/(app)/credits/TradingReadinessSection.tsx` | `app/src/app/(app)/credits/TradingReadinessSection.tsx` |
 | P0 | review_required | `app/src/app/(app)/credits/TradingWalletPanel.tsx` | `app/src/app/(app)/credits/TradingWalletPanel.tsx` |
 | P0 | review_required | `app/src/features/layout/components/AppHeader.tsx` | `app/src/features/layout/components/AppHeader.tsx` |
@@ -127,6 +131,8 @@ The first 100 unresolved files are shown. Ordering is deterministic: product foc
 | P1 | review_required | `packages/market-provider/tests/polymarket-data-api.test.ts` | `packages/poly-market-provider/tests/polymarket-data-api.test.ts` |
 | P1 | review_required | `packages/market-provider/tests/polymarket-user-pnl.test.ts` | `packages/poly-market-provider/tests/polymarket-user-pnl.test.ts` |
 | P1 | review_required | `packages/node-contracts/src/index.ts` | `packages/poly-node-contracts/src/index.ts` |
+| P1 | review_required | `packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts` | `packages/poly-node-contracts/src/poly.wallet-analysis.v1.contract.ts` |
+| P1 | review_required | `packages/node-contracts/src/poly.wallet.execution.v1.contract.ts` | `packages/poly-node-contracts/src/poly.wallet.execution.v1.contract.ts` |
 | P1 | review_required | `packages/node-contracts/src/poly.wallet.overview.v1.contract.ts` | `packages/poly-node-contracts/src/poly.wallet.overview.v1.contract.ts` |
 | P1 | review_required | `packages/node-contracts/tsconfig.json` | `packages/poly-node-contracts/tsconfig.json` |
 | P1 | review_required | `packages/wallet/package.json` | `packages/poly-wallet/package.json` |
@@ -153,9 +159,3 @@ The first 100 unresolved files are shown. Ordering is deterministic: product foc
 | P2 | missing | `app/tests/component/wallet-analysis/snapshot-distributions-db.int.test.ts` | `app/tests/component/wallet-analysis/snapshot-distributions-db.int.test.ts` |
 | P2 | missing | `app/tests/component/wallet-analysis/target-overlap-pnl-source.int.test.ts` | `app/tests/component/wallet-analysis/target-overlap-pnl-source.int.test.ts` |
 | P2 | missing | `app/tests/component/wallet-analysis/trader-comparison-resolution.int.test.ts` | `app/tests/component/wallet-analysis/trader-comparison-resolution.int.test.ts` |
-| P2 | missing | `app/tests/component/wallet-analysis/trader-observation-service.int.test.ts` | `app/tests/component/wallet-analysis/trader-observation-service.int.test.ts` |
-| P2 | missing | `app/tests/component/wallet-analysis/trading-wallet-pnl-history.int.test.ts` | `app/tests/component/wallet-analysis/trading-wallet-pnl-history.int.test.ts` |
-| P2 | missing | `app/tests/component/wallet/privy-poly-trader-wallet.adapter.int.test.ts` | `app/tests/component/wallet/privy-poly-trader-wallet.adapter.int.test.ts` |
-| P2 | missing | `app/tests/contract/app/poly.wallet.dashboard-db-read.routes.test.ts` | `app/tests/contract/app/poly.wallet.dashboard-db-read.routes.test.ts` |
-| P2 | missing | `app/tests/contract/app/poly.wallet.enable-trading.route.test.ts` | `app/tests/contract/app/poly.wallet.enable-trading.route.test.ts` |
-| P2 | missing | `app/tests/contract/app/poly.wallet.position-actions.routes.test.ts` | `app/tests/contract/app/poly.wallet.position-actions.routes.test.ts` |
