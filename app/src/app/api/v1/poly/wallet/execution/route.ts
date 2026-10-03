@@ -79,6 +79,7 @@ import {
   DASHBOARD_TRADE_COUNT_WINDOW_DAYS,
   toWalletExecutionPosition,
 } from "../_lib/ledger-positions";
+import { walletCompletionDiagnostics } from "../_lib/wallet-completion-diagnostics";
 
 export const dynamic = "force-dynamic";
 
@@ -141,7 +142,7 @@ export const GET = wrapRouteHandlerWithLogging(
             logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
               reqId: ctx.reqId,
               routeId: ctx.routeId,
-              ...executionCompletionDiagnostics(
+              ...walletCompletionDiagnostics(
                 "wallet_adapter_unconfigured",
                 ["wallet_adapter_unconfigured"]
               ),
@@ -165,7 +166,7 @@ export const GET = wrapRouteHandlerWithLogging(
           logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
             reqId: ctx.reqId,
             routeId: ctx.routeId,
-            ...executionCompletionDiagnostics("no_trading_wallet", [
+            ...walletCompletionDiagnostics("no_trading_wallet", [
               "no_trading_wallet",
             ]),
             durationMs: Math.round(performance.now() - startedAtMs),
@@ -358,7 +359,7 @@ export const GET = wrapRouteHandlerWithLogging(
         logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
           reqId: ctx.reqId,
           routeId: ctx.routeId,
-          ...executionCompletionDiagnostics(
+          ...walletCompletionDiagnostics(
             warnings.some(
               (warning) => warning.code === "positions_read_model_unavailable"
             )
@@ -406,22 +407,3 @@ export const GET = wrapRouteHandlerWithLogging(
     return NextResponse.json({ ...payload, freshness });
   }
 );
-
-export function executionCompletionDiagnostics(
-  status: string,
-  warningCodes: readonly string[]
-): {
-  status: string;
-  warnings: number;
-  warning_codes: string[];
-} {
-  const normalizedWarningCodes = [...new Set(warningCodes)].sort();
-  return {
-    status:
-      normalizedWarningCodes.length > 0 && status === "ok"
-        ? "degraded"
-        : status,
-    warnings: warningCodes.length,
-    warning_codes: normalizedWarningCodes,
-  };
-}
