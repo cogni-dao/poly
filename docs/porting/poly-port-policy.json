@@ -1,9 +1,16 @@
 {
-  "version": 1,
+  "version": 2,
   "source": {
     "repository": "https://github.com/Cogni-DAO/cogni-poly.git",
     "revision": "95a934e57d51b99aa9891fc8084d20c13d0ed78a",
-    "treeRoot": "nodes/poly"
+    "treeRoot": "nodes/poly",
+    "treeObject": "0e10d2baa4acbf50914476562c06788ff2a3d040",
+    "fileCount": 1736,
+    "entryDigest": "69e4ca164104ed6f1d6e8dde8337274acc09b0be3cf1b3d983d1bc64cc82309e"
+  },
+  "contract": {
+    "path": "docs/porting/poly-parity-contract.md",
+    "sha256": "002c360e800517f9f69a7c8e18c31d9b13a1641d2a0ef6f708699da49c11a609"
   },
   "pathMappings": [
     {
@@ -114,64 +121,448 @@
     "app/src/features/wallet-watch/",
     "packages/"
   ],
+  "deliveryGroups": [
+    {
+      "id": "hub-control-plane",
+      "label": "Hub control-plane proof",
+      "behaviorExpectation": "Authenticated Hub work-item CRUD, claim/heartbeat, reads, deletion, and restart persistence use Doltgres.",
+      "requiredProofEnvironments": ["candidate", "production"],
+      "sourcePaths": [
+        "app/src/adapters/server/db/doltgres/client.ts",
+        "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
+        "app/src/adapters/server/db/doltgres/work-items-cursor.ts",
+        "app/src/app/_facades/work/items.server.ts",
+        "app/src/app/api/v1/work/items/[id]/route.ts",
+        "app/src/app/api/v1/work/items/route.ts",
+        "app/src/bootstrap/container.ts",
+        "app/src/ports/work-items-doltgres.port.ts"
+      ]
+    },
+    {
+      "id": "saved-facts",
+      "label": "Saved-fact reliability",
+      "behaviorExpectation": "The actual tenant trading wallet has bounded, fresh saved-fact reads that reconcile to Polygon and Data-API truth.",
+      "requiredProofEnvironments": ["candidate", "production"],
+      "sourcePaths": [
+        "app/src/features/wallet-analysis/server/current-position-read-model.ts",
+        "app/src/features/wallet-analysis/server/trader-observation-service.ts",
+        "app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts",
+        "app/src/features/wallet-analysis/server/wallet-analysis-service.ts"
+      ]
+    },
+    {
+      "id": "dashboard-truth",
+      "label": "Dashboard truth",
+      "behaviorExpectation": "Wallet APIs and cards show the independently verified wallet identity, cash, positions, total, execution rows, and P/L without false zeroes.",
+      "requiredProofEnvironments": ["candidate", "production"],
+      "sourcePaths": [
+        "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
+        "app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx",
+        "app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx",
+        "app/src/app/(app)/dashboard/_hooks/useDashboardExecution.ts",
+        "app/src/app/(app)/dashboard/_hooks/useTradingWalletOverview.ts",
+        "app/src/app/api/v1/poly/wallet/execution/route.ts",
+        "app/src/app/api/v1/poly/wallet/overview/route.ts",
+        "packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts",
+        "packages/node-contracts/src/poly.wallet.execution.v1.contract.ts",
+        "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
+      ]
+    },
+    {
+      "id": "visible-p0",
+      "label": "Visible P0 parity",
+      "behaviorExpectation": "Authenticated desktop and mobile dashboard, wallet-analysis, credits, and layout behavior is exact or deliberately upgraded.",
+      "requiredProofEnvironments": ["candidate", "production"],
+      "sourcePaths": [
+        "app/src/app/(app)/credits/TradingReadinessSection.tsx",
+        "app/src/app/(app)/credits/TradingWalletPanel.tsx",
+        "app/src/app/(app)/dashboard/view.tsx",
+        "app/src/features/layout/components/AppHeader.tsx",
+        "app/src/features/layout/components/AppSidebar.tsx",
+        "app/src/features/layout/components/AppTopBar.tsx",
+        "app/src/features/layout/components/footer-items.tsx",
+        "app/src/features/layout/components/UserAvatarMenu.tsx",
+        "app/src/features/wallet-analysis/components/WalletAnalysisSurface.tsx",
+        "app/src/features/wallet-analysis/components/WalletAnalysisView.tsx",
+        "app/src/features/wallet-analysis/components/WalletProfitLossCard.tsx"
+      ]
+    },
+    {
+      "id": "p1-provider-foundation",
+      "label": "P1 provider foundation",
+      "behaviorExpectation": "Polymarket provider and contract boundaries preserve Data-API, CLOB, activity, and user-P/L semantics with observable failures.",
+      "requiredProofEnvironments": ["candidate", "production"],
+      "sourcePaths": [
+        "packages/ai-tools/tsconfig.json",
+        "packages/market-provider/AGENTS.md",
+        "packages/market-provider/package.json",
+        "packages/market-provider/src/adapters/polymarket/index.ts",
+        "packages/market-provider/src/adapters/polymarket/polymarket.activity-source.ts",
+        "packages/market-provider/src/adapters/polymarket/polymarket.clob.adapter.ts",
+        "packages/market-provider/src/adapters/polymarket/polymarket.data-api.client.ts",
+        "packages/market-provider/src/adapters/polymarket/polymarket.user-pnl.client.ts",
+        "packages/market-provider/tests/order-flow-distributions.test.ts",
+        "packages/market-provider/tests/polymarket-clob-adapter.test.ts",
+        "packages/market-provider/tests/polymarket-data-api.test.ts",
+        "packages/market-provider/tests/polymarket-user-pnl.test.ts",
+        "packages/node-contracts/src/index.ts",
+        "packages/node-contracts/tsconfig.json"
+      ]
+    },
+    {
+      "id": "p1-execution-wallet",
+      "label": "P1 execution and wallet",
+      "behaviorExpectation": "Copy-trade, wallet, executor, ledger, schema, and chain-source paths preserve authorization, idempotency, caps, and explicit decision outcomes.",
+      "requiredProofEnvironments": ["candidate", "production"],
+      "sourcePaths": [
+        "app/src/app/api/v1/poly/copy-trade/orders/route.ts",
+        "app/src/app/api/v1/poly/copy-trade/targets/route.ts",
+        "app/src/app/api/v1/poly/internal/sync-health/route.ts",
+        "app/src/app/api/v1/poly/wallet/positions/close/route.ts",
+        "app/src/app/api/v1/poly/wallet/refresh/route.ts",
+        "app/src/app/api/v1/poly/wallet/status/route.ts",
+        "app/src/bootstrap/capabilities/poly-trade-executor.ts",
+        "app/src/features/copy-trade/mirror-pipeline.ts",
+        "app/src/features/copy-trade/target-source.ts",
+        "app/src/features/trading/clob-executor.ts",
+        "app/src/features/trading/order-ledger.ts",
+        "app/src/features/wallet-watch/polymarket-chain-source.ts",
+        "packages/db-schema/src/copy-trade.ts",
+        "packages/db-schema/src/poly-redeem-jobs.ts",
+        "packages/db-schema/src/trader-activity.ts",
+        "packages/db-schema/src/wallet-connections.ts",
+        "packages/wallet/package.json",
+        "packages/wallet/src/port/poly-trader-wallet.port.ts"
+      ]
+    },
+    {
+      "id": "p1-research-reads",
+      "label": "P1 research and read paths",
+      "behaviorExpectation": "Research and analysis paths use bounded saved-fact reads and expose partial failure instead of false completeness or zero.",
+      "requiredProofEnvironments": ["candidate", "production"],
+      "sourcePaths": [
+        "app/src/app/api/v1/poly/research/copy-trade-pnl/route.ts",
+        "app/src/app/api/v1/poly/research/paper-sidecar/[endpoint]/route.ts",
+        "app/src/app/api/v1/poly/research/target-overlap/route.ts",
+        "app/src/app/api/v1/poly/research/trader-comparison/route.ts",
+        "app/src/app/api/v1/poly/top-wallets/route.ts",
+        "app/src/app/api/v1/poly/wallets/[addr]/route.ts",
+        "app/src/features/wallet-analysis/server/coalesce.ts",
+        "app/src/features/wallet-analysis/server/copy-target-benchmark-service.ts",
+        "app/src/features/wallet-analysis/server/market-exposure-service.ts",
+        "app/src/features/wallet-analysis/server/market-outcome-service.ts",
+        "app/src/features/wallet-analysis/server/poly-market-metadata-service.ts",
+        "app/src/features/wallet-analysis/server/realized-pnl-service.ts",
+        "app/src/features/wallet-analysis/server/target-overlap-service.ts",
+        "app/src/features/wallet-analysis/server/trader-comparison-service.ts"
+      ]
+    }
+  ],
   "behavioralGates": [
     {
       "id": "dashboard.wallet_identity",
       "priority": "P0",
-      "status": "in_progress",
-      "owner": "PR #110 @ 6a58cb2",
+      "deliveryGroup": "saved-facts",
       "requirement": "The observer and every dashboard read model use the same tenant trading identity: funder_address when present, otherwise the legacy signer address.",
-      "evidence": "Current production observed the Privy signer EOA while balance and position reads used the funder wallet; the active fix enrolls funder_address and retires the stale signer row."
+      "coveredSourcePaths": [
+        "app/src/features/wallet-analysis/server/current-position-read-model.ts",
+        "app/src/features/wallet-analysis/server/trader-observation-service.ts",
+        "app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts",
+        "app/src/features/wallet-analysis/server/wallet-analysis-service.ts"
+      ],
+      "proofs": []
     },
     {
       "id": "dashboard.open_positions",
       "priority": "P0",
-      "status": "failing",
-      "owner": "PR #110 @ 6a58cb2",
-      "requirement": "Open-position count, market value, and execution live count for the trading wallet match an independent Polygon/Data-API oracle and never silently collapse to zero.",
-      "evidence": "Production screenshot reports no open positions while independent evidence reports approximately $45.49 across live positions."
+      "deliveryGroup": "dashboard-truth",
+      "requirement": "Open-position count, market value, and execution live count match an independent Polygon/Data-API oracle and never silently collapse to zero.",
+      "coveredSourcePaths": [
+        "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
+        "app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx",
+        "app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx",
+        "app/src/app/(app)/dashboard/_hooks/useDashboardExecution.ts",
+        "app/src/app/(app)/dashboard/_hooks/useTradingWalletOverview.ts",
+        "app/src/app/api/v1/poly/wallet/execution/route.ts",
+        "app/src/app/api/v1/poly/wallet/overview/route.ts",
+        "packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts",
+        "packages/node-contracts/src/poly.wallet.execution.v1.contract.ts",
+        "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
+      ],
+      "proofs": []
     },
     {
       "id": "dashboard.wallet_total",
       "priority": "P0",
-      "status": "failing",
-      "owner": "PR #110 @ 6a58cb2",
-      "requirement": "Total wallet value is cash plus marked positions; if positions are unavailable, Total is unknown or explicitly labeled partial and is never a cash-only value presented as total.",
-      "evidence": "Production displayed Total $0.53 while position data was absent and real positions were approximately $45.49."
+      "deliveryGroup": "dashboard-truth",
+      "requirement": "Total wallet value is cash plus marked positions; unavailable positions make Total unknown or explicitly partial, never a cash-only total.",
+      "coveredSourcePaths": [
+        "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
+        "app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx",
+        "app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx",
+        "app/src/app/(app)/dashboard/_hooks/useDashboardExecution.ts",
+        "app/src/app/(app)/dashboard/_hooks/useTradingWalletOverview.ts",
+        "app/src/app/api/v1/poly/wallet/execution/route.ts",
+        "app/src/app/api/v1/poly/wallet/overview/route.ts",
+        "packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts",
+        "packages/node-contracts/src/poly.wallet.execution.v1.contract.ts",
+        "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
+      ],
+      "proofs": []
     },
     {
       "id": "dashboard.pnl_history",
       "priority": "P0",
-      "status": "failing",
-      "owner": "PR #110 @ 6a58cb2",
-      "requirement": "P/L history resolves the actual trading wallet and distinguishes missing observation data from a true zero history.",
-      "evidence": "The same signer-versus-funder key mismatch affects wallet lookup for P/L history."
+      "deliveryGroup": "dashboard-truth",
+      "requirement": "P/L history resolves the actual trading wallet and distinguishes missing observation data from a measured zero history.",
+      "coveredSourcePaths": [
+        "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
+        "app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx",
+        "app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx",
+        "app/src/app/(app)/dashboard/_hooks/useDashboardExecution.ts",
+        "app/src/app/(app)/dashboard/_hooks/useTradingWalletOverview.ts",
+        "app/src/app/api/v1/poly/wallet/execution/route.ts",
+        "app/src/app/api/v1/poly/wallet/overview/route.ts",
+        "packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts",
+        "packages/node-contracts/src/poly.wallet.execution.v1.contract.ts",
+        "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
+      ],
+      "proofs": []
     },
     {
       "id": "hub.work_item_create",
       "priority": "P0",
-      "status": "failing",
-      "owner": "PR #111 @ ab203a8",
-      "requirement": "Authenticated POST /api/v1/work/items returns 201 and creates a hub work item in Doltgres.",
-      "evidence": "Production currently returns HTTP 405 because the collection route exports GET only."
+      "deliveryGroup": "hub-control-plane",
+      "requirement": "Authenticated POST /api/v1/work/items returns 201 and creates a Hub work item in Doltgres.",
+      "coveredSourcePaths": [
+        "app/src/adapters/server/db/doltgres/client.ts",
+        "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
+        "app/src/adapters/server/db/doltgres/work-items-cursor.ts",
+        "app/src/app/_facades/work/items.server.ts",
+        "app/src/app/api/v1/work/items/[id]/route.ts",
+        "app/src/app/api/v1/work/items/route.ts",
+        "app/src/bootstrap/container.ts",
+        "app/src/ports/work-items-doltgres.port.ts"
+      ],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "eb9bd390623d664bb3c50b7125fdb637f2970d3b",
+          "observedAt": "2026-10-03T02:47:15Z",
+          "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528",
+          "expectedTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
+          "apiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"],
+          "uiRefs": [],
+          "lokiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"],
+          "oracleRefs": [],
+          "notApplicable": ["ui", "oracle"]
+        },
+        {
+          "environment": "production",
+          "buildSha": "506063969498571c786ef2cc41c8ff0e0f356b2f",
+          "observedAt": "2026-10-03T02:47:15Z",
+          "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528",
+          "expectedTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
+          "apiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"],
+          "uiRefs": [],
+          "lokiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"],
+          "oracleRefs": [],
+          "notApplicable": ["ui", "oracle"]
+        }
+      ]
     },
     {
       "id": "hub.work_item_mutation",
       "priority": "P0",
-      "status": "failing",
-      "owner": "PR #111 @ ab203a8",
-      "requirement": "Authenticated PATCH and DELETE use the Dolt-backed command adapter, and mutations remain present after a pod restart.",
-      "evidence": "The item route exports GET only and the current container wires MarkdownWorkItemAdapter for commands."
+      "deliveryGroup": "hub-control-plane",
+      "requirement": "Authenticated PATCH and DELETE use the Dolt-backed command adapter and mutations persist across a deployment restart.",
+      "coveredSourcePaths": [
+        "app/src/adapters/server/db/doltgres/client.ts",
+        "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
+        "app/src/adapters/server/db/doltgres/work-items-cursor.ts",
+        "app/src/app/_facades/work/items.server.ts",
+        "app/src/app/api/v1/work/items/[id]/route.ts",
+        "app/src/app/api/v1/work/items/route.ts",
+        "app/src/bootstrap/container.ts",
+        "app/src/ports/work-items-doltgres.port.ts"
+      ],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "eb9bd390623d664bb3c50b7125fdb637f2970d3b",
+          "observedAt": "2026-10-03T02:47:15Z",
+          "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528",
+          "expectedTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
+          "apiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"],
+          "uiRefs": [],
+          "lokiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"],
+          "oracleRefs": [],
+          "notApplicable": ["ui", "oracle"]
+        },
+        {
+          "environment": "production",
+          "buildSha": "506063969498571c786ef2cc41c8ff0e0f356b2f",
+          "observedAt": "2026-10-03T02:47:15Z",
+          "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528",
+          "expectedTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
+          "apiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"],
+          "uiRefs": [],
+          "lokiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"],
+          "oracleRefs": [],
+          "notApplicable": ["ui", "oracle"]
+        }
+      ]
     },
     {
       "id": "hub.work_item_source_of_truth",
       "priority": "P0",
-      "status": "failing",
-      "owner": "PR #111 @ ab203a8",
-      "requirement": "The deployed hub reads and writes work items through Doltgres; repository Markdown is an explicitly temporary manager fallback, not runtime persistence.",
-      "evidence": "Merge d685fc8 (node-template upstream #32) replaced the legacy Dolt CRUD seams with a GET-only Markdown-backed path."
+      "deliveryGroup": "hub-control-plane",
+      "requirement": "The deployed Hub reads and writes work items through Doltgres; repository Markdown is not runtime persistence.",
+      "coveredSourcePaths": [
+        "app/src/adapters/server/db/doltgres/client.ts",
+        "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
+        "app/src/adapters/server/db/doltgres/work-items-cursor.ts",
+        "app/src/app/_facades/work/items.server.ts",
+        "app/src/app/api/v1/work/items/[id]/route.ts",
+        "app/src/app/api/v1/work/items/route.ts",
+        "app/src/bootstrap/container.ts",
+        "app/src/ports/work-items-doltgres.port.ts"
+      ],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "eb9bd390623d664bb3c50b7125fdb637f2970d3b",
+          "observedAt": "2026-10-03T02:47:15Z",
+          "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528",
+          "expectedTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
+          "apiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"],
+          "uiRefs": [],
+          "lokiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"],
+          "oracleRefs": [],
+          "notApplicable": ["ui", "oracle"]
+        },
+        {
+          "environment": "production",
+          "buildSha": "506063969498571c786ef2cc41c8ff0e0f356b2f",
+          "observedAt": "2026-10-03T02:47:15Z",
+          "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528",
+          "expectedTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
+          "apiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"],
+          "uiRefs": [],
+          "lokiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"],
+          "oracleRefs": [],
+          "notApplicable": ["ui", "oracle"]
+        }
+      ]
     }
   ],
-  "acceptedAdaptations": [],
-  "retiredSourceFiles": []
+  "resolutions": [
+    {
+      "sourcePath": "app/src/adapters/server/db/doltgres/client.ts",
+      "deliveryGroup": "hub-control-plane",
+      "outcome": "retired",
+      "source": {
+        "blob": "3ffb39ed6070376bd16b13358b0a58a89ff915c3",
+        "mode": "100644"
+      },
+      "target": null,
+      "rationale": "The legacy local Dolt client wrapper is superseded by the shared buildDoltgresClient wiring used by the node container.",
+      "behaviorExpectation": "Hub work-item operations use the shared pooled Doltgres client without a duplicate local client module.",
+      "proofs": [
+        { "environment": "candidate", "kind": "api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" },
+        { "environment": "production", "kind": "passive-api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" }
+      ]
+    },
+    {
+      "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
+      "deliveryGroup": "hub-control-plane",
+      "outcome": "upgraded",
+      "source": { "blob": "740a4e68a2f6c899c1e69fd244998cdbf2a76def", "mode": "100644" },
+      "target": { "path": "app/src/adapters/server/db/doltgres/work-items-adapter.ts", "blob": "d3076c17b720b12f68204a442d54a53012deb560", "mode": "100644" },
+      "rationale": "The node-local adapter adds guarded Dolt branch operations, lease commands, timeouts, and recovery required by the current Hub contract.",
+      "behaviorExpectation": "CRUD and coordination operations commit safely and remain observable across retries and restarts.",
+      "proofs": [
+        { "environment": "candidate", "kind": "api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" },
+        { "environment": "production", "kind": "passive-api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" }
+      ]
+    },
+    {
+      "sourcePath": "app/src/adapters/server/db/doltgres/work-items-cursor.ts",
+      "deliveryGroup": "hub-control-plane",
+      "outcome": "upgraded",
+      "source": { "blob": "bbb809a573ba86d91283316891f1976f19a46ddf", "mode": "100644" },
+      "target": { "path": "app/src/adapters/server/db/doltgres/work-items-cursor.ts", "blob": "0877830747a5ff19183c0ddf4d8f4dd4e277c816", "mode": "100644" },
+      "rationale": "Cursor encoding is adapted to the current work-item query contract and deterministic page ordering.",
+      "behaviorExpectation": "Hub list pagination remains stable and round-trips through the current API contract.",
+      "proofs": [
+        { "environment": "candidate", "kind": "api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" },
+        { "environment": "production", "kind": "passive-api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" }
+      ]
+    },
+    {
+      "sourcePath": "app/src/app/_facades/work/items.server.ts",
+      "deliveryGroup": "hub-control-plane",
+      "outcome": "upgraded",
+      "source": { "blob": "c2e4b22af7ebe47cf05ed05b27556d7eb75a6a81", "mode": "100644" },
+      "target": { "path": "app/src/app/_facades/work/items.server.ts", "blob": "b9abf464300ad7788f178f85fc8f4a23e4fecd86", "mode": "100644" },
+      "rationale": "The facade now exposes authenticated CRUD and coordination semantics while translating current adapter failures into stable API errors.",
+      "behaviorExpectation": "Reads, writes, claims, heartbeats, and releases use one Doltgres-backed authority.",
+      "proofs": [
+        { "environment": "candidate", "kind": "api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" },
+        { "environment": "production", "kind": "passive-api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" }
+      ]
+    },
+    {
+      "sourcePath": "app/src/app/api/v1/work/items/[id]/route.ts",
+      "deliveryGroup": "hub-control-plane",
+      "outcome": "upgraded",
+      "source": { "blob": "1270400e122b2d56cb56e83b0aa522cd9d212fd9", "mode": "100644" },
+      "target": { "path": "app/src/app/api/v1/work/items/[id]/route.ts", "blob": "6c28c2649317e2674e6dfaec02c6f1d35d7b33da", "mode": "100644" },
+      "rationale": "The item route is upgraded from legacy shapes to the current authenticated GET, PATCH, and DELETE contracts.",
+      "behaviorExpectation": "Single-item reads and authorized mutations return stable status codes and persisted state.",
+      "proofs": [
+        { "environment": "candidate", "kind": "api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" },
+        { "environment": "production", "kind": "passive-api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" }
+      ]
+    },
+    {
+      "sourcePath": "app/src/app/api/v1/work/items/route.ts",
+      "deliveryGroup": "hub-control-plane",
+      "outcome": "upgraded",
+      "source": { "blob": "2652ea23be26d9f8fe3de8071084a861edd13957", "mode": "100644" },
+      "target": { "path": "app/src/app/api/v1/work/items/route.ts", "blob": "18c6cc26fac5ab5271007b910f5c1cd2d6004402", "mode": "100644" },
+      "rationale": "The collection route adds authenticated creation while retaining bounded discovery under current contracts.",
+      "behaviorExpectation": "POST creates a persisted item and GET discovers it through the same Hub authority.",
+      "proofs": [
+        { "environment": "candidate", "kind": "api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" },
+        { "environment": "production", "kind": "passive-api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" }
+      ]
+    },
+    {
+      "sourcePath": "app/src/bootstrap/container.ts",
+      "deliveryGroup": "hub-control-plane",
+      "outcome": "upgraded",
+      "source": { "blob": "07d0b8969e5edc5914865113dd8e7949443bbf48", "mode": "100644" },
+      "target": { "path": "app/src/bootstrap/container.ts", "blob": "fb101b66145a970a9c04633ae0d123b9e721d6b5", "mode": "100644" },
+      "rationale": "The current container composes shared node capabilities and wires the node-local Doltgres adapter as runtime authority.",
+      "behaviorExpectation": "Deployed Hub reads and writes fail explicitly when Doltgres is unavailable and never fall back to Markdown persistence.",
+      "proofs": [
+        { "environment": "candidate", "kind": "api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" },
+        { "environment": "production", "kind": "passive-api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" }
+      ]
+    },
+    {
+      "sourcePath": "app/src/ports/work-items-doltgres.port.ts",
+      "deliveryGroup": "hub-control-plane",
+      "outcome": "upgraded",
+      "source": { "blob": "c16eaad98d90d141912f56d8576385ec43f7389a", "mode": "100644" },
+      "target": { "path": "app/src/ports/work-items-doltgres.port.ts", "blob": "139f1c67c68161265f84f7ee3ce4578b186e9e31", "mode": "100644" },
+      "rationale": "The port derives command shapes from the current shared work-item package and adds explicit coordination operations.",
+      "behaviorExpectation": "The adapter boundary remains typed for CRUD and claim lifecycle behavior exercised by the deployed Hub.",
+      "proofs": [
+        { "environment": "candidate", "kind": "api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" },
+        { "environment": "production", "kind": "passive-api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528" }
+      ]
+    }
+  ]
 }
