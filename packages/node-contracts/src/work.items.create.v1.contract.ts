@@ -3,12 +3,12 @@
 
 /**
  * Module: `@contracts/work.items.create.v1.contract`
- * Purpose: Operation contract for creating a new work item via the operator API. Server allocates ID in the reserved 5000+ range (task.0423).
+ * Purpose: Operation contract for creating a work item in the serving node's own Dolt store.
  * Scope: Provides Zod schema and types for work item create wire format. Does not contain business logic.
  * Invariants:
  *   - Contract remains stable; breaking changes require new version
  *   - All consumers use z.infer types
- *   - ID is server-allocated by default; client-supplied `id` is allowed for ID-preserving bulk imports (legacy markdown corpus → Doltgres). Server validates the format and rejects collisions with existing rows.
+ *   - ID is server-allocated per node store by default; client-supplied `id` is allowed for ID-preserving bulk imports. Server validates the format and rejects collisions with existing rows.
  *   - status defaults to "needs_triage" if not provided
  *   - node defaults to "shared"
  * Side-effects: none
@@ -44,7 +44,7 @@ export const workItemsCreateOperation = {
   id: "work.items.create.v1",
   summary: "Create a new work item",
   description:
-    "Creates a new work item in operator's Doltgres knowledge_operator database. Server allocates an ID in the reserved 5000+ range per type (e.g. task.5000+). Returns the full created row.",
+    "Creates a new work item in the serving node's own Doltgres knowledge store. The server allocates an ID per type and returns the full created row.",
   input: z.object({
     id: z
       .string()

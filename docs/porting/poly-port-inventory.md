@@ -21,7 +21,7 @@ Run `pnpm poly:port:refresh -- --legacy-repo /path/to/legacy-monorepo` after a r
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1068 |
+| Current-only files | 1070 |
 | Unresolved legacy files | 610 |
 | Behavioral parity gates | 7 |
 | Unresolved behavioral gates | 7 |
