@@ -83,7 +83,7 @@ describe("recent trades read budget", () => {
 
   it("normalizes raw Postgres timestamp strings before mapping trades", async () => {
     const observedAt = "2026-10-03T17:00:00.000Z";
-    const lastSuccessAt = new Date("2026-10-03T17:01:00.000Z");
+    const lastSuccessAt = new Date();
     let executeCount = 0;
     const tx = {
       execute: async () => {
