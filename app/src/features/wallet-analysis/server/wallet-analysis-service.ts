@@ -53,7 +53,7 @@ import type {
   WalletExecutionPosition,
   WalletExecutionWarning,
 } from "@cogni/poly-node-contracts";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { clearTtlCacheByPrefix, coalesce } from "./coalesce";
@@ -366,7 +366,16 @@ async function readRecentTradesFromDb(
   db: Db,
   traderWalletId: string
 ): Promise<HistoricalFillRow[]> {
-  const result = (await db.execute(sql`
+  const result = (await db.execute(
+    recentTradesSelect(traderWalletId)
+  )) as unknown as { rows?: Array<Record<string, unknown>> };
+  const rows = Array.isArray(result) ? result : (result.rows ?? []);
+  return rows as HistoricalFillRow[];
+}
+
+/** Exact production SELECT, exported so the component lane can EXPLAIN it. */
+export function recentTradesSelect(traderWalletId: string): SQL {
+  return sql`
     SELECT
       f.condition_id AS "conditionId",
       f.token_id AS "tokenId",
@@ -379,9 +388,7 @@ async function readRecentTradesFromDb(
     WHERE f.trader_wallet_id = ${traderWalletId}::uuid
     ORDER BY f.observed_at DESC
     LIMIT ${TRADE_FETCH_LIMIT}
-  `)) as unknown as { rows?: Array<Record<string, unknown>> };
-  const rows = Array.isArray(result) ? result : (result.rows ?? []);
-  return rows as HistoricalFillRow[];
+  `;
 }
 
 function extractTitle(raw: Record<string, unknown> | null): string {
