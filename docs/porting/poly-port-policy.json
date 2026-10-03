@@ -578,6 +578,908 @@
         { "environment": "candidate", "buildSha": "eb9bd390623d664bb3c50b7125fdb637f2970d3b", "observedAt": "2026-10-03T02:14:00Z", "kind": "api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964486263", "expectedTargetDigest": "978362a99c36d974d3fb6f196c752b37a5793c44536d82c69814a8ec1c8f6ac8", "apiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964486263"], "uiRefs": [], "lokiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964486263"], "oracleRefs": [], "notApplicable": ["ui", "oracle"] },
         { "environment": "production", "buildSha": "506063969498571c786ef2cc41c8ff0e0f356b2f", "observedAt": "2026-10-03T02:47:15Z", "kind": "passive-api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528", "expectedTargetDigest": "978362a99c36d974d3fb6f196c752b37a5793c44536d82c69814a8ec1c8f6ac8", "apiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"], "uiRefs": [], "lokiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"], "oracleRefs": [], "notApplicable": ["ui", "oracle"] }
       ]
+    },
+    {
+      "sourcePath": "app/src/features/wallet-analysis/server/trader-observation-service.ts",
+      "deliveryGroup": "saved-facts",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "a02432ecc12b785d71a637725c6ee1ea7ad3c649",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "app/src/features/wallet-analysis/server/trader-observation-service.ts",
+        "blob": "45b2cd3c8a5abd96875a46cd4e925899a9b4d705",
+        "mode": "100644"
+      },
+      "rationale": "The observer is upgraded to enroll the canonical active trading addresses exposed by the wallet port, persist complete saved facts, and align its identity with execution instead of independently reconstructing a signer address that can diverge from a V2 deposit wallet.",
+      "behaviorExpectation": "Every unrevoked tenant is observed under the same lowercased funder address returned to trading, revoked tenants are absent, successful cursors advance only after persistence, and an upstream failure remains observable without fabricating freshness.",
+      "behaviorGateIds": [
+        "dashboard.wallet_identity"
+      ],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-api+remote-contract-tests",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "f48abce5983e397e40cfd3ff474faeff27c039ef0c017a204f7922eab73e3216"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "passive-api+loki+oracle",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/110#issuecomment-5963531675"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [
+            "https://github.com/cogni-dao/poly/pull/110#issuecomment-5963531675",
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/pull/110#issuecomment-5963531675"
+          ],
+          "notApplicable": [
+            "ui"
+          ],
+          "expectedTargetDigest": "f48abce5983e397e40cfd3ff474faeff27c039ef0c017a204f7922eab73e3216"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/ai-tools/tsconfig.json",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "d15e5ebc8b6d3fdc57a84004866d5542fd8af358",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-ai-tools/tsconfig.json",
+        "blob": "b932f5684cae330ae49da081790ce568397c181d",
+        "mode": "100644"
+      },
+      "rationale": "The renamed poly AI-tools package updates its TypeScript project references to the current poly provider and contract package paths so provider-backed tools compile against the sovereign node package graph.",
+      "behaviorExpectation": "TypeScript resolves every referenced project from the renamed poly packages and emits the same public AI-tool types without reaching legacy package paths.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-deploy+remote-static",
+          "reference": "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "c15daa07a309894c675eb80d1b23d0d7ac216fa8451a1e6218fb7686644d3e54"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "exact-production-build+remote-static",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "c15daa07a309894c675eb80d1b23d0d7ac216fa8451a1e6218fb7686644d3e54"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/market-provider/AGENTS.md",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "652d59ab651f1f1b807befe0540f21633dd98b48",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-market-provider/AGENTS.md",
+        "blob": "bf05579c7624b0bda0ced23617246cb17e0fd270",
+        "mode": "100644"
+      },
+      "rationale": "The provider ownership instructions are adapted from the legacy monorepo location to the sovereign poly package path while retaining the package's typed provider boundary and no-environment ownership rules.",
+      "behaviorExpectation": "A contributor following the nearest instructions works in packages/poly-market-provider and preserves the declared provider/adapter boundaries rather than editing a nonexistent legacy path.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-source+deploy",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "e56fe78ac87c3176e64b52d2c20034e045270ef960c0d0ef7c1dbc22372c1e71"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "exact-production-source+deploy",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "e56fe78ac87c3176e64b52d2c20034e045270ef960c0d0ef7c1dbc22372c1e71"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/market-provider/package.json",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "18527933c43fe4b1c79da66b6ee8fc9408ded1f8",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-market-provider/package.json",
+        "blob": "d40efbb4f4717136fd8fcf05af12c55ce2ba313c",
+        "mode": "100644"
+      },
+      "rationale": "The provider package manifest is upgraded for the current poly package graph and adds the official Polymarket V2 client dependencies needed by the funder-aware CLOB adapter while retaining existing exports and scripts.",
+      "behaviorExpectation": "The package resolves its current workspace dependencies and official V2 order-client APIs, and consumers continue importing the declared provider entry points.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-build+remote-static",
+          "reference": "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845440/job/111255490576",
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "d913bc1fe266352e4386649a9f1b0714742b7b805fb38c47b4c5b9a2f3d14003"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "passive-production+remote-build",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [],
+          "uiRefs": [],
+          "lokiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845440/job/111255490576"
+          ],
+          "notApplicable": [
+            "api",
+            "ui"
+          ],
+          "expectedTargetDigest": "d913bc1fe266352e4386649a9f1b0714742b7b805fb38c47b4c5b9a2f3d14003"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/market-provider/src/adapters/polymarket/index.ts",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "86b016fb9515be80553f57ac7caed6e7d7c9c151",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-market-provider/src/adapters/polymarket/index.ts",
+        "blob": "931ad7d292bd742cae5b15efcd7a267080c60326",
+        "mode": "100644"
+      },
+      "rationale": "The Polymarket adapter index exports the new V2 order-client boundary and related types so bootstrap code can inject the official secure client without importing adapter internals.",
+      "behaviorExpectation": "Consumers can import the V2 client interface and adapter symbols from the supported Polymarket entry point, while all legacy exports remain available.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-remote-static+unit",
+          "reference": "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625",
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "20842898cd6dce67826c0c8cd81bb1710e63245f9718aeaefea1550ae45ad514"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "passive-production-provider",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [],
+          "uiRefs": [],
+          "lokiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625"
+          ],
+          "notApplicable": [
+            "api",
+            "ui"
+          ],
+          "expectedTargetDigest": "20842898cd6dce67826c0c8cd81bb1710e63245f9718aeaefea1550ae45ad514"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/market-provider/src/adapters/polymarket/polymarket.clob.adapter.ts",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "6ccd383a25108394566bb2892fc877542d27c737",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-market-provider/src/adapters/polymarket/polymarket.clob.adapter.ts",
+        "blob": "546004e7c98e73caac6405b9cd929a0f43dbb600",
+        "mode": "100644"
+      },
+      "rationale": "The CLOB adapter adds the official V2 limit-order/cancel client path, funder-aware signature configuration, richer bounded failure classification, and normalized receipts while retaining the provider port and authorized executor seam.",
+      "behaviorExpectation": "Injected V2 clients receive the exact asset, side, price, size, and post-only intent; successful responses map to stable receipts; rejection text/status is bounded and observable; cancel uses the same V2 client; legacy fallback remains contract-compatible.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-remote-contract-tests",
+          "reference": "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "3d9635751f8765d24c054561bc8a100bca3e1a609927940f6203660067d2edf0"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "passive-loki+remote-contract-tests",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [],
+          "uiRefs": [],
+          "lokiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "api",
+            "ui"
+          ],
+          "expectedTargetDigest": "3d9635751f8765d24c054561bc8a100bca3e1a609927940f6203660067d2edf0"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/market-provider/src/adapters/polymarket/polymarket.data-api.client.ts",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "e79e1755d64983146254063e17e82dba423dd17f",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-market-provider/src/adapters/polymarket/polymarket.data-api.client.ts",
+        "blob": "2c023d33f0b4a23c48eeb52840575e789dd4fb80",
+        "mode": "100644"
+      },
+      "rationale": "The Data-API client adds a process-wide per-IP concurrency gate, Retry-After cooldown, timeout/caller cancellation composition, and abort-aware queue cleanup across activity, trades, and positions reads.",
+      "behaviorExpectation": "Concurrent client instances never exceed the shared in-flight cap, a 429 blocks new grants for the parsed retry interval, queued/in-flight aborts release their slots, and successful payloads retain the same Zod-validated pagination semantics.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-remote-contract-tests",
+          "reference": "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "823fc1518f0e6169fd974ff04e31e5ad7ed8fe5f2ffec0a5fc37d6e12a144872"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "passive-api+loki+oracle",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui"
+          ],
+          "expectedTargetDigest": "823fc1518f0e6169fd974ff04e31e5ad7ed8fe5f2ffec0a5fc37d6e12a144872"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/market-provider/src/adapters/polymarket/polymarket.user-pnl.client.ts",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "f5077fd5826e0cc3f75d9c1f9b4d14db4d8910fe",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-market-provider/src/adapters/polymarket/polymarket.user-pnl.client.ts",
+        "blob": "cc2e57ecdef8d846b1832a38d3d5030e3eeb410c",
+        "mode": "100644"
+      },
+      "rationale": "The user-P/L client adds caller cancellation plus structured outbound/result events with duration, point count, and bounded error context so saved-fact ingestion failures are observable rather than silent.",
+      "behaviorExpectation": "Success emits one outbound and one ok result event with point count; failure or abort emits an error result and rejects without returning fabricated history; response parsing remains contract-valid.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-remote-contract-tests",
+          "reference": "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "730f7629041801616d7616bfbc01009d0351c66d7a833561f4d454c1d8ac287d"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "passive-api+oracle+remote-contract-tests",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "730f7629041801616d7616bfbc01009d0351c66d7a833561f4d454c1d8ac287d"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/market-provider/tests/order-flow-distributions.test.ts",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "595c80cded2e14faf0554c9fbacd2bb40104d4ee",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-market-provider/tests/order-flow-distributions.test.ts",
+        "blob": "a2f570ac6ac1bf67047a5bdcaeca0637103c5cbc",
+        "mode": "100644"
+      },
+      "rationale": "The order-flow distribution tests are adapted to current numeric expectations/package ownership while preserving the legacy aggregation oracle for provider analytics.",
+      "behaviorExpectation": "Representative order-flow fixtures produce the current deterministic distribution values and fail on semantic drift rather than package-path drift.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-remote-unit",
+          "reference": "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "770c58d5be63e23908b4607afc01b26f1c2375e1b5dd76612a59ce322a74374f"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "exact-production-build+remote-unit",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "770c58d5be63e23908b4607afc01b26f1c2375e1b5dd76612a59ce322a74374f"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/market-provider/tests/polymarket-clob-adapter.test.ts",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "329b4988bcdf0f167b7b57260340a02be33885fc",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-market-provider/tests/polymarket-clob-adapter.test.ts",
+        "blob": "a4af2d79d487f1cf95984a0c330d64990751ee0b",
+        "mode": "100644"
+      },
+      "rationale": "The CLOB adapter suite is expanded to prove V2 placement/cancellation mapping and bounded diagnostics in addition to preserving legacy adapter behavior.",
+      "behaviorExpectation": "Tests reject oversized error leakage, assert exact V2 limit-order arguments and receipt mapping, and assert V2 cancellation receives the expected order id.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-remote-unit",
+          "reference": "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "0f3e3e0c2bf9e3360edc8c51d1cf28c53d2ff2be1cd1227189b5ed5095b5fd57"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "passive-loki+remote-unit",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [],
+          "uiRefs": [],
+          "lokiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "api",
+            "ui"
+          ],
+          "expectedTargetDigest": "0f3e3e0c2bf9e3360edc8c51d1cf28c53d2ff2be1cd1227189b5ed5095b5fd57"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/market-provider/tests/polymarket-data-api.test.ts",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "6f544dbb8419100f103bb245bcf1bec737345756",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-market-provider/tests/polymarket-data-api.test.ts",
+        "blob": "5104d45ee2b16a1b3f4e9ccea478d5ff06b2b4e5",
+        "mode": "100644"
+      },
+      "rationale": "The Data-API suite is expanded to cover the shared concurrency gate, 429 cooldown, Retry-After parsing, timeout, queued abort, in-flight abort, and slot cleanup across client instances.",
+      "behaviorExpectation": "Focused cases prove the cap is process-wide, every termination path returns in-flight/queued counts to zero, cooldown prevents premature fetches, and valid payload parsing remains unchanged.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-remote-unit",
+          "reference": "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "bd2215164ffaf8c46cad8b7113221d7949d08eade8a0538c7c1e98e6b29593b0"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "passive-api+oracle+remote-unit",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "bd2215164ffaf8c46cad8b7113221d7949d08eade8a0538c7c1e98e6b29593b0"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/market-provider/tests/polymarket-user-pnl.test.ts",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "578e2bf84d057cabaaa1ca26c8678c7dd03fa7ab",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-market-provider/tests/polymarket-user-pnl.test.ts",
+        "blob": "57092a22adcb3195dff82ecebb17effee9d7fe45",
+        "mode": "100644"
+      },
+      "rationale": "The user-P/L suite is expanded for success/error observability and cancellation while retaining fixture-based parsing coverage.",
+      "behaviorExpectation": "Focused cases prove paired outbound/result events, correct ok/error fields, caller abort propagation, and no false history on failure.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-remote-unit",
+          "reference": "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "085241233c0806cb2e1bf081ff298430eaa49f89f3d16ce217c07237a9ced4ff"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "passive-api+oracle+remote-unit",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "085241233c0806cb2e1bf081ff298430eaa49f89f3d16ce217c07237a9ced4ff"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/node-contracts/src/index.ts",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "b33210d619d6272495e199c179513ced3e528887",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-node-contracts/src/index.ts",
+        "blob": "257fa1f9e7435fd18776af924024f9245ecd05d9",
+        "mode": "100644"
+      },
+      "rationale": "The node-contracts barrel exports the current reset-connection and recovery wallet contracts so app and package consumers use one supported public contract surface.",
+      "behaviorExpectation": "Both wallet operations resolve from @cogni/poly-node-contracts while every legacy barrel export remains available.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-remote-static+api",
+          "reference": "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "0bf27285167250d42758b5932c0d27ffac0b850a402ed8892d4cd728cbeb8581"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "exact-production-api+remote-static",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "0bf27285167250d42758b5932c0d27ffac0b850a402ed8892d4cd728cbeb8581"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts",
+      "deliveryGroup": "dashboard-truth",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "6ff8e1f4c57b07edcb68073e5fcc84943c2568fa",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-node-contracts/src/poly.wallet-analysis.v1.contract.ts",
+        "blob": "ab0eb29653737ac46a22d1236afa6622b2ac99b4",
+        "mode": "100644"
+      },
+      "rationale": "The wallet-analysis contract documents and enforces saved-facts-only page loads: missing or unready observation sources omit affected slices with warnings rather than returning empty distributions or numeric zero, and distribution mode is presentation rather than an upstream-selection switch.",
+      "behaviorExpectation": "Both distribution modes read persisted observations; an unobserved address yields a typed warning and no fabricated slice; populated balance positions/total validate as nonnegative numbers while independently optional slices remain schema-valid.",
+      "behaviorGateIds": [
+        "dashboard.open_positions",
+        "dashboard.pnl_history",
+        "dashboard.wallet_total"
+      ],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "6ab986dec41f95b02767121ccc00b6328f7c01cc",
+          "observedAt": "2026-10-02T23:49:00Z",
+          "kind": "api+loki+remote-contract-tests",
+          "reference": "https://github.com/cogni-dao/poly/pull/110#issuecomment-5963260330",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/110#issuecomment-5963260330"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [
+            "https://github.com/cogni-dao/poly/pull/110#issuecomment-5963260330"
+          ],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790762"
+          ],
+          "notApplicable": [
+            "ui"
+          ],
+          "expectedTargetDigest": "ddff5699bcbd9fcb4248d5e6c61564faf469c31e2d8e809e25c0bd6bf0f5142d"
+        },
+        {
+          "environment": "production",
+          "buildSha": "c4233b2eeb249f9c6c4bad1b76e8d396c6fb0b50",
+          "observedAt": "2026-10-03T00:18:31Z",
+          "kind": "passive-api+loki+oracle",
+          "reference": "https://github.com/cogni-dao/poly/pull/110#issuecomment-5963531675",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/110#issuecomment-5963531675"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [
+            "https://github.com/cogni-dao/poly/pull/110#issuecomment-5963531675"
+          ],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/pull/110#issuecomment-5963531675"
+          ],
+          "notApplicable": [
+            "ui"
+          ],
+          "expectedTargetDigest": "ddff5699bcbd9fcb4248d5e6c61564faf469c31e2d8e809e25c0bd6bf0f5142d"
+        }
+      ]
+    },
+    {
+      "sourcePath": "packages/node-contracts/tsconfig.json",
+      "deliveryGroup": "p1-provider-foundation",
+      "outcome": "upgraded",
+      "source": {
+        "blob": "8fbff563c0ab299d936edf9b62c6b9ac75da3145",
+        "mode": "100644"
+      },
+      "target": {
+        "path": "packages/poly-node-contracts/tsconfig.json",
+        "blob": "625b44c6d4a273b3a4b64ddebead173892397ca3",
+        "mode": "100644"
+      },
+      "rationale": "The renamed poly node-contracts project updates TypeScript references to the current package locations so contract compilation is isolated from legacy monorepo paths.",
+      "behaviorExpectation": "All referenced projects resolve from the sovereign poly workspace and the contract package emits the same public schema/type entry points.",
+      "behaviorGateIds": [],
+      "proofs": [
+        {
+          "environment": "candidate",
+          "buildSha": "2fb765141005c0058c4d4d6a4929f2745f7fa4b6",
+          "observedAt": "2026-10-03T17:58:41Z",
+          "kind": "exact-sha-deploy+remote-static",
+          "reference": "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5971914304"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "45bb5621487789fee0fe650d128e59c0ea5ddf071da10127226ed5c5c123fe46"
+        },
+        {
+          "environment": "production",
+          "buildSha": "0d022a3a0c438cf5ade1c63da88f26c9ebc36358",
+          "observedAt": "2026-10-03T18:25:30Z",
+          "kind": "exact-production-build+remote-static",
+          "reference": "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388",
+          "apiRefs": [
+            "https://github.com/cogni-dao/poly/pull/118#issuecomment-5972154388"
+          ],
+          "uiRefs": [],
+          "lokiRefs": [],
+          "oracleRefs": [
+            "https://github.com/cogni-dao/poly/actions/runs/37140845495/job/111254790625"
+          ],
+          "notApplicable": [
+            "ui",
+            "loki"
+          ],
+          "expectedTargetDigest": "45bb5621487789fee0fe650d128e59c0ea5ddf071da10127226ed5c5c123fe46"
+        }
+      ]
     }
   ]
 }

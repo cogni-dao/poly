@@ -20,21 +20,21 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
 | Current-only files | 1070 |
-| Unresolved legacy files | 602 |
-| P0/P1 mission files resolved | 8/79 |
+| Unresolved legacy files | 587 |
+| P0/P1 mission files resolved | 23/79 |
 | Behavioral gates passed | 3/7 |
 
 | State | Count |
 | --- | ---: |
 | exact | 1126 |
-| upgraded | 7 |
+| upgraded | 22 |
 | retired | 1 |
-| unresolved | 602 |
+| unresolved | 587 |
 
 | Priority | Unresolved |
 | --- | ---: |
-| P0 | 20 |
-| P1 | 51 |
+| P0 | 19 |
+| P1 | 37 |
 | P2 | 281 |
 | P3 | 250 |
 
@@ -43,10 +43,10 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | Group | Files resolved | Gates passed | Outcome |
 | --- | ---: | ---: | --- |
 | `hub-control-plane` | 8/8 | 3/3 | Hub control-plane proof |
-| `saved-facts` | 0/4 | 0/1 | Saved-fact reliability |
-| `dashboard-truth` | 0/10 | 0/3 | Dashboard truth |
+| `saved-facts` | 1/4 | 0/1 | Saved-fact reliability |
+| `dashboard-truth` | 1/10 | 0/3 | Dashboard truth |
 | `visible-p0` | 0/11 | 0/0 | Visible P0 parity |
-| `p1-provider-foundation` | 0/14 | 0/0 | P1 provider foundation |
+| `p1-provider-foundation` | 13/14 | 0/0 | P1 provider foundation |
 | `p1-execution-wallet` | 0/18 | 0/0 | P1 execution and wallet |
 | `p1-research-reads` | 0/14 | 0/0 | P1 research and read paths |
 
@@ -76,7 +76,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P0 | retired | — | `hub-control-plane` | `100644` | `3ffb39ed6070376bd16b13358b0a58a89ff915c3` | `app/src/adapters/server/db/doltgres/client.ts` | — | — | `app/src/adapters/server/db/doltgres/client.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `07d0b8969e5edc5914865113dd8e7949443bbf48` | `app/src/bootstrap/container.ts` | `100644` | `fb101b66145a970a9c04633ae0d123b9e721d6b5` | `app/src/bootstrap/container.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `c16eaad98d90d141912f56d8576385ec43f7389a` | `app/src/ports/work-items-doltgres.port.ts` | `100644` | `139f1c67c68161265f84f7ee3ce4578b186e9e31` | `app/src/ports/work-items-doltgres.port.ts` |
-| P0 | unresolved | content_differs | `saved-facts` | `100644` | `a02432ecc12b785d71a637725c6ee1ea7ad3c649` | `app/src/features/wallet-analysis/server/trader-observation-service.ts` | `100644` | `45b2cd3c8a5abd96875a46cd4e925899a9b4d705` | `app/src/features/wallet-analysis/server/trader-observation-service.ts` |
+| P0 | upgraded | — | `saved-facts` | `100644` | `a02432ecc12b785d71a637725c6ee1ea7ad3c649` | `app/src/features/wallet-analysis/server/trader-observation-service.ts` | `100644` | `45b2cd3c8a5abd96875a46cd4e925899a9b4d705` | `app/src/features/wallet-analysis/server/trader-observation-service.ts` |
 | P0 | unresolved | content_differs | `saved-facts` | `100644` | `dcb6e95fa747b4c8b46048d1e72b7978600d8367` | `app/src/features/wallet-analysis/server/current-position-read-model.ts` | `100644` | `57ce5a7e993cedb07ab2f3e9deb043019a4820c7` | `app/src/features/wallet-analysis/server/current-position-read-model.ts` |
 | P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `d51bb4d969c8fb4ac45d08cbd90ffe3023f14876` | `app/src/app/api/v1/poly/wallet/overview/route.ts` | `100644` | `8497af45a16dba438c2ad4201076060b65883626` | `app/src/app/api/v1/poly/wallet/overview/route.ts` |
 | P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `0edc7d6a040fa5382d9fb75333630e1b5bd06b7f` | `app/src/app/api/v1/poly/wallet/execution/route.ts` | `100644` | `b66434a5f3980d2b22a1e6790a895dc1d0b3bf11` | `app/src/app/api/v1/poly/wallet/execution/route.ts` |
@@ -206,27 +206,13 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P1 | exact | — | — | `100644` | `2d00819f967c4ef7c9591de17064fa9091855b24` | `app/src/features/wallet-watch/AGENTS.md` | `100644` | `2d00819f967c4ef7c9591de17064fa9091855b24` | `app/src/features/wallet-watch/AGENTS.md` |
 | P1 | exact | — | — | `100644` | `156f592009cb9ef445b55172d966c404785adc1c` | `app/src/features/wallet-watch/index.ts` | `100644` | `156f592009cb9ef445b55172d966c404785adc1c` | `app/src/features/wallet-watch/index.ts` |
 | P1 | exact | — | — | `100644` | `0fa244b96ab20cebda30f4d6c38411428a699fa1` | `app/src/features/wallet-watch/types.ts` | `100644` | `0fa244b96ab20cebda30f4d6c38411428a699fa1` | `app/src/features/wallet-watch/types.ts` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `d15e5ebc8b6d3fdc57a84004866d5542fd8af358` | `packages/ai-tools/tsconfig.json` | `100644` | `b932f5684cae330ae49da081790ce568397c181d` | `packages/poly-ai-tools/tsconfig.json` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `645f5ecfe7e455ddf07bc6f28ff05956c89a56f7` | `packages/db-schema/src/copy-trade.ts` | `100644` | `3052415a09fd4aed5d35c7491451ff4d781ee4a9` | `packages/poly-db-schema/src/copy-trade.ts` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `f3571d8a8cd7c3be70c13ad2246b912f2a289b1f` | `packages/db-schema/src/poly-redeem-jobs.ts` | `100644` | `e9fea6794edb2c352cff774272b9a7faa0220351` | `packages/poly-db-schema/src/poly-redeem-jobs.ts` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `4218872509984bcebe9506785bcdf838396ef7bf` | `packages/db-schema/src/trader-activity.ts` | `100644` | `7f238aa801bbe01269cfc6742039f23c04995e4c` | `packages/poly-db-schema/src/trader-activity.ts` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `29eb0390447c95953ad954c0aff46c54e84aa1da` | `packages/db-schema/src/wallet-connections.ts` | `100644` | `0f03e6c5bd6768857db452a604f039f67bdad3e2` | `packages/poly-db-schema/src/wallet-connections.ts` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `652d59ab651f1f1b807befe0540f21633dd98b48` | `packages/market-provider/AGENTS.md` | `100644` | `bf05579c7624b0bda0ced23617246cb17e0fd270` | `packages/poly-market-provider/AGENTS.md` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `18527933c43fe4b1c79da66b6ee8fc9408ded1f8` | `packages/market-provider/package.json` | `100644` | `d40efbb4f4717136fd8fcf05af12c55ce2ba313c` | `packages/poly-market-provider/package.json` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `86b016fb9515be80553f57ac7caed6e7d7c9c151` | `packages/market-provider/src/adapters/polymarket/index.ts` | `100644` | `931ad7d292bd742cae5b15efcd7a267080c60326` | `packages/poly-market-provider/src/adapters/polymarket/index.ts` |
 | P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `68e0441f17c54790229e71c814352cebb61d9019` | `packages/market-provider/src/adapters/polymarket/polymarket.activity-source.ts` | `100644` | `547e4009f82e81cc3906855266a0f16ab4a08260` | `packages/poly-market-provider/src/adapters/polymarket/polymarket.activity-source.ts` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `6ccd383a25108394566bb2892fc877542d27c737` | `packages/market-provider/src/adapters/polymarket/polymarket.clob.adapter.ts` | `100644` | `546004e7c98e73caac6405b9cd929a0f43dbb600` | `packages/poly-market-provider/src/adapters/polymarket/polymarket.clob.adapter.ts` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `e79e1755d64983146254063e17e82dba423dd17f` | `packages/market-provider/src/adapters/polymarket/polymarket.data-api.client.ts` | `100644` | `2c023d33f0b4a23c48eeb52840575e789dd4fb80` | `packages/poly-market-provider/src/adapters/polymarket/polymarket.data-api.client.ts` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `f5077fd5826e0cc3f75d9c1f9b4d14db4d8910fe` | `packages/market-provider/src/adapters/polymarket/polymarket.user-pnl.client.ts` | `100644` | `cc2e57ecdef8d846b1832a38d3d5030e3eeb410c` | `packages/poly-market-provider/src/adapters/polymarket/polymarket.user-pnl.client.ts` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `595c80cded2e14faf0554c9fbacd2bb40104d4ee` | `packages/market-provider/tests/order-flow-distributions.test.ts` | `100644` | `a2f570ac6ac1bf67047a5bdcaeca0637103c5cbc` | `packages/poly-market-provider/tests/order-flow-distributions.test.ts` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `329b4988bcdf0f167b7b57260340a02be33885fc` | `packages/market-provider/tests/polymarket-clob-adapter.test.ts` | `100644` | `a4af2d79d487f1cf95984a0c330d64990751ee0b` | `packages/poly-market-provider/tests/polymarket-clob-adapter.test.ts` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `6f544dbb8419100f103bb245bcf1bec737345756` | `packages/market-provider/tests/polymarket-data-api.test.ts` | `100644` | `5104d45ee2b16a1b3f4e9ccea478d5ff06b2b4e5` | `packages/poly-market-provider/tests/polymarket-data-api.test.ts` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `578e2bf84d057cabaaa1ca26c8678c7dd03fa7ab` | `packages/market-provider/tests/polymarket-user-pnl.test.ts` | `100644` | `57092a22adcb3195dff82ecebb17effee9d7fe45` | `packages/poly-market-provider/tests/polymarket-user-pnl.test.ts` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `b33210d619d6272495e199c179513ced3e528887` | `packages/node-contracts/src/index.ts` | `100644` | `257fa1f9e7435fd18776af924024f9245ecd05d9` | `packages/poly-node-contracts/src/index.ts` |
-| P1 | unresolved | content_differs | `dashboard-truth` | `100644` | `6ff8e1f4c57b07edcb68073e5fcc84943c2568fa` | `packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts` | `100644` | `ab0eb29653737ac46a22d1236afa6622b2ac99b4` | `packages/poly-node-contracts/src/poly.wallet-analysis.v1.contract.ts` |
 | P1 | unresolved | content_differs | `dashboard-truth` | `100644` | `04ba8532a4c4e366b9651838b1101f7795308257` | `packages/node-contracts/src/poly.wallet.execution.v1.contract.ts` | `100644` | `c0489888e5c0e23282cb1c508f16c4c31e044611` | `packages/poly-node-contracts/src/poly.wallet.execution.v1.contract.ts` |
 | P1 | unresolved | content_differs | `dashboard-truth` | `100644` | `4e8994b4ed00c88659ed3422814e3833797fc74a` | `packages/node-contracts/src/poly.wallet.overview.v1.contract.ts` | `100644` | `fee25b5aa8f2db0b458c44ef580151c9f6d4b7b4` | `packages/poly-node-contracts/src/poly.wallet.overview.v1.contract.ts` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `8fbff563c0ab299d936edf9b62c6b9ac75da3145` | `packages/node-contracts/tsconfig.json` | `100644` | `625b44c6d4a273b3a4b64ddebead173892397ca3` | `packages/poly-node-contracts/tsconfig.json` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `a6aa4c9b325932ff0b0001094b3d3194ccb21782` | `packages/wallet/package.json` | `100644` | `5b2e8a4e37f4a3863cc96352d883e00188fa3cb1` | `packages/poly-wallet/package.json` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `8055709c847a2b9ce36c86dcb484ab6e31391d15` | `packages/wallet/src/port/poly-trader-wallet.port.ts` | `100644` | `842e2f896d0cf2c4022f673ab367f5090c161b75` | `packages/poly-wallet/src/port/poly-trader-wallet.port.ts` |
 | P1 | exact | — | — | `100644` | `1e19a864b7e15de6908f3dbb6e8f83afe3723f3f` | `packages/ai-tools/AGENTS.md` | `100644` | `1e19a864b7e15de6908f3dbb6e8f83afe3723f3f` | `packages/poly-ai-tools/AGENTS.md` |
@@ -328,6 +314,20 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P1 | exact | — | — | `100644` | `2ea01d8e17c22e5f12248b72ed773b942c7428d5` | `packages/wallet/src/port/index.ts` | `100644` | `2ea01d8e17c22e5f12248b72ed773b942c7428d5` | `packages/poly-wallet/src/port/index.ts` |
 | P1 | exact | — | — | `100644` | `a2624f363dde910bb1ee39ec6a69a2c381a05dc0` | `packages/wallet/tsconfig.json` | `100644` | `a2624f363dde910bb1ee39ec6a69a2c381a05dc0` | `packages/poly-wallet/tsconfig.json` |
 | P1 | exact | — | — | `100644` | `24ec5a18be27916d50dcb6a790d69eff185ff264` | `packages/wallet/tsup.config.ts` | `100644` | `24ec5a18be27916d50dcb6a790d69eff185ff264` | `packages/poly-wallet/tsup.config.ts` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `d15e5ebc8b6d3fdc57a84004866d5542fd8af358` | `packages/ai-tools/tsconfig.json` | `100644` | `b932f5684cae330ae49da081790ce568397c181d` | `packages/poly-ai-tools/tsconfig.json` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `652d59ab651f1f1b807befe0540f21633dd98b48` | `packages/market-provider/AGENTS.md` | `100644` | `bf05579c7624b0bda0ced23617246cb17e0fd270` | `packages/poly-market-provider/AGENTS.md` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `18527933c43fe4b1c79da66b6ee8fc9408ded1f8` | `packages/market-provider/package.json` | `100644` | `d40efbb4f4717136fd8fcf05af12c55ce2ba313c` | `packages/poly-market-provider/package.json` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `86b016fb9515be80553f57ac7caed6e7d7c9c151` | `packages/market-provider/src/adapters/polymarket/index.ts` | `100644` | `931ad7d292bd742cae5b15efcd7a267080c60326` | `packages/poly-market-provider/src/adapters/polymarket/index.ts` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `6ccd383a25108394566bb2892fc877542d27c737` | `packages/market-provider/src/adapters/polymarket/polymarket.clob.adapter.ts` | `100644` | `546004e7c98e73caac6405b9cd929a0f43dbb600` | `packages/poly-market-provider/src/adapters/polymarket/polymarket.clob.adapter.ts` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `e79e1755d64983146254063e17e82dba423dd17f` | `packages/market-provider/src/adapters/polymarket/polymarket.data-api.client.ts` | `100644` | `2c023d33f0b4a23c48eeb52840575e789dd4fb80` | `packages/poly-market-provider/src/adapters/polymarket/polymarket.data-api.client.ts` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `f5077fd5826e0cc3f75d9c1f9b4d14db4d8910fe` | `packages/market-provider/src/adapters/polymarket/polymarket.user-pnl.client.ts` | `100644` | `cc2e57ecdef8d846b1832a38d3d5030e3eeb410c` | `packages/poly-market-provider/src/adapters/polymarket/polymarket.user-pnl.client.ts` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `595c80cded2e14faf0554c9fbacd2bb40104d4ee` | `packages/market-provider/tests/order-flow-distributions.test.ts` | `100644` | `a2f570ac6ac1bf67047a5bdcaeca0637103c5cbc` | `packages/poly-market-provider/tests/order-flow-distributions.test.ts` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `329b4988bcdf0f167b7b57260340a02be33885fc` | `packages/market-provider/tests/polymarket-clob-adapter.test.ts` | `100644` | `a4af2d79d487f1cf95984a0c330d64990751ee0b` | `packages/poly-market-provider/tests/polymarket-clob-adapter.test.ts` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `6f544dbb8419100f103bb245bcf1bec737345756` | `packages/market-provider/tests/polymarket-data-api.test.ts` | `100644` | `5104d45ee2b16a1b3f4e9ccea478d5ff06b2b4e5` | `packages/poly-market-provider/tests/polymarket-data-api.test.ts` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `578e2bf84d057cabaaa1ca26c8678c7dd03fa7ab` | `packages/market-provider/tests/polymarket-user-pnl.test.ts` | `100644` | `57092a22adcb3195dff82ecebb17effee9d7fe45` | `packages/poly-market-provider/tests/polymarket-user-pnl.test.ts` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `b33210d619d6272495e199c179513ced3e528887` | `packages/node-contracts/src/index.ts` | `100644` | `257fa1f9e7435fd18776af924024f9245ecd05d9` | `packages/poly-node-contracts/src/index.ts` |
+| P1 | upgraded | — | `dashboard-truth` | `100644` | `6ff8e1f4c57b07edcb68073e5fcc84943c2568fa` | `packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts` | `100644` | `ab0eb29653737ac46a22d1236afa6622b2ac99b4` | `packages/poly-node-contracts/src/poly.wallet-analysis.v1.contract.ts` |
+| P1 | upgraded | — | `p1-provider-foundation` | `100644` | `8fbff563c0ab299d936edf9b62c6b9ac75da3145` | `packages/node-contracts/tsconfig.json` | `100644` | `625b44c6d4a273b3a4b64ddebead173892397ca3` | `packages/poly-node-contracts/tsconfig.json` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `371c9e867cffa38c52709ec8e74bdc6cfdcc1378` | `app/src/bootstrap/capabilities/poly-trade-executor.ts` | `100644` | `146917484ef05320af6c74484ff48b0c7914675e` | `app/src/bootstrap/capabilities/poly-trade-executor.ts` |
 | P1 | exact | — | — | `100644` | `8dcf97afed21fc81b70b0ac94eddcc1bc033f87b` | `app/src/bootstrap/capabilities/poly-clob-creds.ts` | `100644` | `8dcf97afed21fc81b70b0ac94eddcc1bc033f87b` | `app/src/bootstrap/capabilities/poly-clob-creds.ts` |
 | P1 | exact | — | — | `100644` | `9b131a336eda3c41464fd69b3da1f6ee8a60dcee` | `app/src/bootstrap/capabilities/poly-research.ts` | `100644` | `9b131a336eda3c41464fd69b3da1f6ee8a60dcee` | `app/src/bootstrap/capabilities/poly-research.ts` |
