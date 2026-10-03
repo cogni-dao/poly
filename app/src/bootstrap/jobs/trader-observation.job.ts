@@ -23,12 +23,14 @@ import type {
 } from "@cogni/poly-market-provider/adapters/polymarket";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { createPolygonPositionBalanceBatchReader } from "@/features/wallet-analysis/server/position-balance-authority";
 import {
   runTraderObservationTick,
   type PositionBalanceBatchReader,
   type TenantTradingAddressReader,
   type TraderObservationStage,
 } from "@/features/wallet-analysis/server/trader-observation-service";
+import { serverEnv } from "@/shared/env/server-env";
 
 type Db =
   | NodePgDatabase<Record<string, unknown>>
@@ -77,6 +79,14 @@ export interface TraderObservationJobDeps {
 export function startTraderObservationJob(
   deps: TraderObservationJobDeps
 ): TraderObservationJobStopFn {
+  const readPositionBalances =
+    deps.readPositionBalances ??
+    (() => {
+      const rpcUrl = serverEnv().POLYGON_RPC_URL;
+      return rpcUrl
+        ? createPolygonPositionBalanceBatchReader({ rpcUrl })
+        : undefined;
+    })();
   const pollMs = deps.pollMs ?? OBSERVATION_POLL_MS;
   const log = deps.logger.child({ component: "trader-observation-job" });
   let running = false;
@@ -145,6 +155,7 @@ export function startTraderObservationJob(
     let lastStage: TraderObservationStage | "not_started" = "not_started";
     const tickPromise = runTraderObservationTick({
       ...deps,
+      ...(readPositionBalances === undefined ? {} : { readPositionBalances }),
       runRetentionPrune,
       signal: controller.signal,
       onStage: (next) => {

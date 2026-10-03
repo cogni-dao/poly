@@ -5,11 +5,13 @@
 import { polyCopyTradeFills } from "@cogni/db-schema/copy-trade";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq } from "drizzle-orm";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { billingAccounts, users } from "@/shared/db/schema";
 import { readClosedPositionSummary } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 
 const TENANT = "wallet-dashboard-closed-parity";
 const TARGET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const USER = "wallet-dashboard-closed-parity-user";
 const OBSERVED = new Date("2026-10-03T12:00:00.000Z");
 
 type OracleRow = {
@@ -121,15 +123,26 @@ describe("wallet dashboard closed SQL parity", () => {
     },
   ];
 
+  beforeAll(async () => {
+    await db.insert(users).values({ id: USER, name: USER });
+    await db.insert(billingAccounts).values({
+      id: TENANT,
+      ownerUserId: USER,
+      balanceCredits: 0n,
+    });
+  });
+
   afterAll(async () => {
     await db.delete(polyCopyTradeFills).where(eq(polyCopyTradeFills.billingAccountId, TENANT));
+    await db.delete(billingAccounts).where(eq(billingAccounts.id, TENANT));
+    await db.delete(users).where(eq(users.id, USER));
   });
 
   it("matches the pure tuple oracle and deterministic fallback-key ordering", async () => {
     await db.insert(polyCopyTradeFills).values(
       rows.map((row) => ({
         billingAccountId: TENANT,
-        createdByUserId: "wallet-dashboard-test-user",
+        createdByUserId: USER,
         targetId: TARGET,
         fillId: row.fillId,
         marketId: row.marketId,

@@ -28,7 +28,7 @@ import {
   polyTraderPositionSnapshots,
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   refreshCurrentPositionsForWallet,
@@ -509,41 +509,17 @@ describe("serialized position-observation writer", () => {
     await seedCurrent(wallet.id, "501");
     await seedLoser("501");
     const db = getSeedDb();
-    await db.execute(sql.raw(`
-      CREATE OR REPLACE FUNCTION test_fail_position_cursor_publish()
-      RETURNS trigger LANGUAGE plpgsql AS $$
-      BEGIN
-        IF NEW.source = 'data-api-positions' AND NEW.status = 'ok' THEN
-          RAISE EXCEPTION 'injected cursor publish failure';
-        END IF;
-        RETURN NEW;
-      END;
-      $$;
-    `));
-    await db.execute(sql.raw(`
-      CREATE TRIGGER test_fail_position_cursor_publish_trigger
-      BEFORE INSERT OR UPDATE ON poly_trader_ingestion_cursors
-      FOR EACH ROW EXECUTE FUNCTION test_fail_position_cursor_publish();
-    `));
-
-    try {
-      await expect(
-        refreshCurrentPositionsForWallet({
-          db: db as unknown as WriterDb,
-          client: clientReturning(async () => [position("501"), position("502")]),
-          walletAddress: wallet.address,
-          readPositionBalances: async () => [],
-        })
-      ).rejects.toThrow("injected cursor publish failure");
-    } finally {
-      await db.execute(sql.raw(`
-        DROP TRIGGER IF EXISTS test_fail_position_cursor_publish_trigger
-          ON poly_trader_ingestion_cursors;
-      `));
-      await db.execute(sql.raw(`
-        DROP FUNCTION IF EXISTS test_fail_position_cursor_publish();
-      `));
-    }
+    await expect(
+      refreshCurrentPositionsForWallet({
+        db: db as unknown as WriterDb,
+        client: clientReturning(async () => [position("501"), position("502")]),
+        walletAddress: wallet.address,
+        readPositionBalances: async () => [],
+        beforePositionCursorPublish: () => {
+          throw new Error("injected cursor publish failure");
+        },
+      })
+    ).rejects.toThrow("injected cursor publish failure");
 
     const current = await db
       .select()
@@ -553,8 +529,21 @@ describe("serialized position-observation writer", () => {
       .select()
       .from(polyTraderPositionSnapshots)
       .where(eq(polyTraderPositionSnapshots.traderWalletId, wallet.id));
+    const [cursor] = await db
+      .select()
+      .from(polyTraderIngestionCursors)
+      .where(
+        and(
+          eq(polyTraderIngestionCursors.traderWalletId, wallet.id),
+          eq(polyTraderIngestionCursors.source, "data-api-positions")
+        )
+      );
     expect(current).toHaveLength(1);
     expect(current[0]).toMatchObject({ tokenId: "501", active: true });
     expect(snapshots).toHaveLength(0);
+    expect(cursor).toMatchObject({
+      status: "ok",
+      lastSuccessAt: wallet.lastSuccessAt,
+    });
   });
 });

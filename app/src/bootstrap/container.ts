@@ -1380,16 +1380,6 @@ function createContainer(): Container {
 			const { noopMetrics: noopMetricsForObservation } = await import(
 				"@cogni/poly-market-provider"
 			);
-			const positionAuthorityRpcUrl = env.POLYGON_RPC_URL;
-			const readPositionBalances = positionAuthorityRpcUrl
-				? (
-						await import(
-							"@/features/wallet-analysis/server/position-balance-authority"
-						)
-					).createPolygonPositionBalanceBatchReader({
-						rpcUrl: positionAuthorityRpcUrl,
-					})
-				: undefined;
 			const observerLogger =
 				log as unknown as import("@cogni/poly-market-provider").LoggerPort;
 			// OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM — the wallet port is the single
@@ -1407,9 +1397,6 @@ function createContainer(): Container {
 				userPnlClient: new PolymarketUserPnlClient(),
 				listActiveTradingAddresses: () =>
 					observationWalletPort.listActiveTradingAddresses(),
-				...(readPositionBalances === undefined
-					? {}
-					: { readPositionBalances }),
 				refreshBalanceFacts: async () => {
 					const wallets = await observationWalletPort.listActiveTradingWallets();
 					await refreshWalletBalanceFacts({

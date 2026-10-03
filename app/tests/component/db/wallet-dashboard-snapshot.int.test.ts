@@ -245,7 +245,9 @@ describe("wallet dashboard coherent snapshot", () => {
   }, 60_000);
 
   afterAll(async () => {
+    await db.delete(polyCopyTradeTargets).where(inArray(polyCopyTradeTargets.billingAccountId, [TENANT_A, TENANT_B]));
     await db.delete(polyCopyTradeFills).where(inArray(polyCopyTradeFills.billingAccountId, [TENANT_A, TENANT_B]));
+    await db.delete(billingAccounts).where(inArray(billingAccounts.id, [TENANT_A, TENANT_B]));
     await db.delete(users).where(inArray(users.id, [USER_A, USER_B]));
     await db.delete(polyTraderWallets).where(inArray(polyTraderWallets.id, [walletA.id, walletB.id, ...targetWalletIds]));
   });
@@ -394,12 +396,17 @@ describe("wallet dashboard coherent snapshot", () => {
       const targetRows = group.lines.flatMap((line) => line.participants).filter((row) => row.side === "copy_target");
       expect(targetRows.length).toBeLessThanOrEqual(10);
     }
-    const pivot = participants.find(
-      (row) => row.label === "Bounded target 0" && row.primary?.conditionId === "bounded-condition-0"
+    const pivotLine = bounded.groups
+      .flatMap((group) => group.lines)
+      .find((line) => line.conditionId === "bounded-condition-0");
+    const pivot = pivotLine?.participants.find(
+      (row) => row.label === "Bounded target 0" && row.conditionId === "bounded-condition-0"
     );
     expect(pivot?.primary?.lifecycle).toBe("active");
     expect(pivot?.hedge).not.toBeNull();
-    expect(pivot?.grossBuyNotionalUsdc).not.toBe(pivot?.entryValueUsdc);
+    expect(pivotLine?.targetGrossBuyNotionalUsdc).not.toBe(
+      pivotLine?.targetEntryValueUsdc
+    );
 
     const one = [{
       ...positions[0]!,

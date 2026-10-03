@@ -617,6 +617,8 @@ export async function refreshCurrentPositionsForWallet(params: {
   walletAddress: string;
   positionMaxPages?: number;
   readPositionBalances?: PositionBalanceBatchReader;
+  /** @internal deterministic fault seam for atomic-publication component tests. */
+  beforePositionCursorPublish?: () => void | Promise<void>;
   logger?: LoggerPort;
   signal?: AbortSignal | undefined;
 }): Promise<CurrentPositionRefreshResult> {
@@ -634,6 +636,9 @@ export async function refreshCurrentPositionsForWallet(params: {
     ...(params.readPositionBalances === undefined
       ? {}
       : { readPositionBalances: params.readPositionBalances }),
+    ...(params.beforePositionCursorPublish === undefined
+      ? {}
+      : { beforePositionCursorPublish: params.beforePositionCursorPublish }),
     ...(params.logger === undefined ? {} : { logger: params.logger }),
     ...(params.signal === undefined ? {} : { signal: params.signal }),
   });
@@ -1001,6 +1006,7 @@ async function observePositionsNow(deps: {
   wallet: PolyTraderWallet;
   positionMaxPages?: number;
   readPositionBalances?: PositionBalanceBatchReader;
+  beforePositionCursorPublish?: () => void | Promise<void>;
   logger?: LoggerPort;
   signal?: AbortSignal | undefined;
 }): Promise<CurrentPositionRefreshResult> {
@@ -1010,6 +1016,7 @@ async function observePositionsNow(deps: {
     wallet: deps.wallet,
     maxPages: deps.positionMaxPages ?? DEFAULT_POSITION_MAX_PAGES,
     readPositionBalances: deps.readPositionBalances,
+    beforePositionCursorPublish: deps.beforePositionCursorPublish,
     logger: deps.logger,
     signal: deps.signal,
   });
@@ -1032,6 +1039,7 @@ async function observePositionsSerialized(deps: {
   maxPages: number;
   signal?: AbortSignal | undefined;
   readPositionBalances?: PositionBalanceBatchReader | undefined;
+  beforePositionCursorPublish?: (() => void | Promise<void>) | undefined;
   logger?: LoggerPort | undefined;
 }): Promise<PersistedCurrentPositions & {
   failureReason?: PositionObservationFailureReason;
@@ -1215,6 +1223,7 @@ async function observePositionsSerialized(deps: {
       wallet: deps.wallet,
       prepared: { state, positions: pageResult.positions, omitted },
       signal: deps.signal,
+      beforePositionCursorPublish: deps.beforePositionCursorPublish,
     });
     if (published === "superseded") continue;
     logPositionPublication(deps, {
@@ -1585,6 +1594,7 @@ async function publishPreparedPositions(input: {
   wallet: PolyTraderWallet;
   prepared: PreparedPositionPublication;
   signal?: AbortSignal | undefined;
+  beforePositionCursorPublish?: (() => void | Promise<void>) | undefined;
 }): Promise<PersistedCurrentPositions | "superseded"> {
   input.signal?.throwIfAborted();
   return await withStatementTimeout(
@@ -1617,7 +1627,8 @@ async function publishPreparedPositions(input: {
       return await persistPreparedCurrentPositions(
         tx,
         input.wallet,
-        input.prepared
+        input.prepared,
+        input.beforePositionCursorPublish
       );
     }
   );
@@ -1639,7 +1650,8 @@ function samePositionKeys(
 async function persistPreparedCurrentPositions(
   db: Db,
   wallet: PolyTraderWallet,
-  prepared: PreparedPositionPublication
+  prepared: PreparedPositionPublication,
+  beforePositionCursorPublish?: () => void | Promise<void>
 ): Promise<PersistedCurrentPositions> {
   const positions = prepared.positions;
   const capturedAt = new Date(prepared.state.capturedAt);
@@ -1763,6 +1775,12 @@ async function persistPreparedCurrentPositions(
         )
     `);
   }
+
+  // This hook deliberately executes after every current/snapshot/terminal
+  // write but before the cursor write, inside the same transaction. Component
+  // tests use it to prove a cursor-publication failure rolls the whole bundle
+  // back without requiring privileged trigger DDL.
+  await beforePositionCursorPublish?.();
 
   await db
     .insert(polyTraderIngestionCursors)

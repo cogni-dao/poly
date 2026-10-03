@@ -5,21 +5,39 @@
 import { polyCopyTradeFills } from "@cogni/db-schema/copy-trade";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { inArray } from "drizzle-orm";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { billingAccounts, users } from "@/shared/db/schema";
 import { readOrderSummary } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 
 const TENANT_A = "wallet-dashboard-orders-a";
 const TENANT_B = "wallet-dashboard-orders-b";
 const TARGET = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const USER_A = "wallet-dashboard-orders-user-a";
+const USER_B = "wallet-dashboard-orders-user-b";
 const CAPTURED_AT = "2026-10-03T12:00:00.000Z";
 
 describe("wallet dashboard order aggregate", () => {
   const db = getSeedDb();
 
+  beforeAll(async () => {
+    await db.insert(users).values([
+      { id: USER_A, name: USER_A },
+      { id: USER_B, name: USER_B },
+    ]);
+    await db.insert(billingAccounts).values([
+      { id: TENANT_A, ownerUserId: USER_A, balanceCredits: 0n },
+      { id: TENANT_B, ownerUserId: USER_B, balanceCredits: 0n },
+    ]);
+  });
+
   afterAll(async () => {
     await db
       .delete(polyCopyTradeFills)
       .where(inArray(polyCopyTradeFills.billingAccountId, [TENANT_A, TENANT_B]));
+    await db
+      .delete(billingAccounts)
+      .where(inArray(billingAccounts.id, [TENANT_A, TENANT_B]));
+    await db.delete(users).where(inArray(users.id, [USER_A, USER_B]));
   });
 
   it("returns an exact >2,000 count, isolates tenants, and never coerces malformed BUY notional to zero", async () => {
@@ -27,7 +45,7 @@ describe("wallet dashboard order aggregate", () => {
     await db.insert(polyCopyTradeFills).values(
       Array.from({ length: 2_001 }, (_, index) => ({
         billingAccountId: TENANT_A,
-        createdByUserId: "wallet-dashboard-test-user",
+        createdByUserId: USER_A,
         targetId: TARGET,
         fillId: `fill-${index}`,
         marketId: `market-${index}`,
@@ -45,7 +63,7 @@ describe("wallet dashboard order aggregate", () => {
     );
     await db.insert(polyCopyTradeFills).values({
       billingAccountId: TENANT_B,
-      createdByUserId: "wallet-dashboard-test-user",
+      createdByUserId: USER_B,
       targetId: TARGET,
       fillId: "other-fill",
       marketId: "other-market",
