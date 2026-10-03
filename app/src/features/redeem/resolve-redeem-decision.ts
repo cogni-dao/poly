@@ -176,24 +176,36 @@ export async function resolveRedeemCandidatesForCondition(deps: {
       negativeRisk: match.negativeRisk ?? false,
     });
 
-    // bug.0428: probe only for vanilla CTF redeems; NegRiskAdapter ignores collateralToken.
+    // bug.0428: probe only for vanilla CTF redeems; NegRiskAdapter ignores
+    // collateralToken. bug.5027: on a probe RPC-read failure, downgrade the
+    // redeem to `skip:read_failed` — a transient, never-persisted decision the
+    // three redeem layers (subscriber re-fire, ~10-min catchup, hourly Layer-3
+    // diff) re-evaluate — rather than enqueuing a redeem with a guessed
+    // collateral (a pUSD winner tagged USDC.e zero-burns `redeemPositions`).
     const negativeRisk = match.negativeRisk ?? false;
-    const collateralToken =
-      decision.kind === "redeem" && !negativeRisk
-        ? await inferCollateralTokenForPosition({
-            publicClient: deps.publicClient,
-            conditionId,
-            outcomeIndex: match.outcomeIndex,
-            expectedPositionId: positionId,
-          })
-        : POLYGON_USDC_E;
+    let effectiveDecision = decision;
+    let collateralToken: `0x${string}` = POLYGON_USDC_E;
+    if (decision.kind === "redeem" && !negativeRisk) {
+      const probe = await inferCollateralTokenForPosition({
+        publicClient: deps.publicClient,
+        conditionId,
+        outcomeIndex: match.outcomeIndex,
+        expectedPositionId: positionId,
+      });
+      if (probe.ok) {
+        collateralToken = probe.collateralToken;
+      } else {
+        // Defer: retry re-probes once the RPC recovers. bug.5027.
+        effectiveDecision = { kind: "skip", reason: "read_failed" };
+      }
+    }
 
     out.push({
       conditionId,
       outcomeIndex: match.outcomeIndex,
       positionId,
       negativeRisk,
-      decision,
+      decision: effectiveDecision,
       collateralToken,
       payoutNumerator:
         reads[1]?.status === "success" ? (reads[1].result as bigint) : null,
