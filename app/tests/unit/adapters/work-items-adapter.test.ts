@@ -166,7 +166,7 @@ function makeReconciliationHarness({
 	};
 }
 
-function makeBlockedHeartbeatAdapter(queueWaitMs: number) {
+function makeBlockedHeartbeatAdapter(queueWaitMs?: number) {
 	let releaseHeartbeat: (rows: unknown[]) => void = () => undefined;
 	const heartbeatGate = new Promise<unknown[]>((resolve) => {
 		releaseHeartbeat = resolve;
@@ -191,9 +191,11 @@ function makeBlockedHeartbeatAdapter(queueWaitMs: number) {
 		return undefined;
 	});
 	return {
-		adapter: new DoltgresPolyWorkItemAdapter(fake.sql, undefined, {
-			queueWaitMs,
-		}),
+		adapter: new DoltgresPolyWorkItemAdapter(
+			fake.sql,
+			undefined,
+			queueWaitMs === undefined ? {} : { queueWaitMs },
+		),
 		fake,
 		releaseHeartbeat: () =>
 			releaseHeartbeat([
@@ -627,6 +629,94 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 				query.startsWith("UPDATE work_items SET claim_expires_at = NOW()"),
 			),
 		).toBe(false);
+	});
+
+	it("keeps the default queue wait bounded at 30 seconds", async () => {
+		const { adapter, fake, releaseHeartbeat } = makeBlockedHeartbeatAdapter();
+		const heartbeat = adapter.heartbeat({
+			id: toWorkItemId("task.5001"),
+			runId: "run-1",
+			principalId: "agent-1",
+		});
+		await waitForQuery(fake.reservedQueries, (query) =>
+			query.startsWith("UPDATE work_items SET claim_expires_at = NOW()"),
+		);
+
+		vi.useFakeTimers();
+		try {
+			const queryCountBeforeQueuedRead = fake.reservedQueries.length;
+			let readOutcome: "pending" | "resolved" | "rejected" = "pending";
+			const queuedRead = adapter.get(toWorkItemId("task.5001"));
+			void queuedRead.then(
+				() => {
+					readOutcome = "resolved";
+				},
+				() => {
+					readOutcome = "rejected";
+				},
+			);
+
+			await vi.advanceTimersByTimeAsync(29_999);
+			expect(readOutcome).toBe("pending");
+			expect(fake.reservedQueries).toHaveLength(queryCountBeforeQueuedRead);
+
+			await vi.advanceTimersByTimeAsync(1);
+			await expect(queuedRead).rejects.toMatchObject({
+				name: "WorkItemsBusyError",
+				message: "Work-item store queue wait timed out; retry shortly",
+			});
+		} finally {
+			releaseHeartbeat();
+			await heartbeat;
+			vi.useRealTimers();
+		}
+	});
+
+	it("serves 20 queued reads after waiting beyond the retired 2 second default", async () => {
+		const { adapter, fake, releaseHeartbeat } = makeBlockedHeartbeatAdapter();
+		const heartbeat = adapter.heartbeat({
+			id: toWorkItemId("task.5001"),
+			runId: "run-1",
+			principalId: "agent-1",
+		});
+		await waitForQuery(fake.reservedQueries, (query) =>
+			query.startsWith("UPDATE work_items SET claim_expires_at = NOW()"),
+		);
+
+		vi.useFakeTimers();
+		try {
+			const queryCountBeforeQueuedReads = fake.reservedQueries.length;
+			const outcomes = Array<"pending" | "resolved" | "rejected">(20).fill(
+				"pending",
+			);
+			const reads = outcomes.map((_, index) => {
+				const read = adapter.get(toWorkItemId("task.5001"));
+				void read.then(
+					() => {
+						outcomes[index] = "resolved";
+					},
+					() => {
+						outcomes[index] = "rejected";
+					},
+				);
+				return read;
+			});
+
+			await vi.advanceTimersByTimeAsync(2_001);
+			expect(outcomes.every((outcome) => outcome === "pending")).toBe(true);
+			expect(fake.reservedQueries).toHaveLength(queryCountBeforeQueuedReads);
+
+			releaseHeartbeat();
+			await heartbeat;
+			const results = await Promise.all(reads);
+			expect(results).toHaveLength(20);
+			expect(outcomes.every((outcome) => outcome === "resolved")).toBe(true);
+			expect(results.every((result) => result?.id === "task.5001")).toBe(true);
+		} finally {
+			releaseHeartbeat();
+			await heartbeat;
+			vi.useRealTimers();
+		}
 	});
 
 	it("returns bounded busy and skips an abandoned queue ticket", async () => {
