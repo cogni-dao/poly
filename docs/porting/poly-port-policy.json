@@ -14,6 +14,10 @@
   },
   "pathMappings": [
     {
+      "sourcePrefix": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
+      "targetPrefix": "packages/work-items/src/adapters/doltgres/adapter.ts"
+    },
+    {
       "sourcePrefix": "packages/ai-tools/",
       "targetPrefix": "packages/poly-ai-tools/"
     },
@@ -469,25 +473,25 @@
       "prNumber": 124,
       "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
       "target": {
-        "path": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
-        "blob": "bb781919853958974bedca0e63af96adf30a88a0",
+        "path": "packages/work-items/src/adapters/doltgres/adapter.ts",
+        "blob": "513533c12800e7f7d7ee90a6039df4b878365e6d",
         "mode": "100644",
-        "digest": "4bda293af9ba6c3400ca78aef1bfe800b63f6e2f234a7bd8ea4cc690b968e359"
+        "digest": "6899993939d36acea8f06fcbab0272079f6131ad4fde98b81a9bea31990c74f3"
       },
       "gateTargets": [
         {
           "id": "hub.work_item_create",
-          "targetDigest": "ec272247b8df7717ded44977e09c3cb1781dcb28f4441361316506c0a782d294",
+          "targetDigest": "d3fa52b8697cef7347cbb0d79d98218ab134d963bbc994f4c8b2e6c35a18fcb9",
           "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
         },
         {
           "id": "hub.work_item_mutation",
-          "targetDigest": "ec272247b8df7717ded44977e09c3cb1781dcb28f4441361316506c0a782d294",
+          "targetDigest": "d3fa52b8697cef7347cbb0d79d98218ab134d963bbc994f4c8b2e6c35a18fcb9",
           "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
         },
         {
           "id": "hub.work_item_source_of_truth",
-          "targetDigest": "ec272247b8df7717ded44977e09c3cb1781dcb28f4441361316506c0a782d294",
+          "targetDigest": "d3fa52b8697cef7347cbb0d79d98218ab134d963bbc994f4c8b2e6c35a18fcb9",
           "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
         }
       ],
@@ -519,8 +523,8 @@
       "deliveryGroup": "hub-control-plane",
       "outcome": "upgraded",
       "source": { "blob": "740a4e68a2f6c899c1e69fd244998cdbf2a76def", "mode": "100644" },
-      "target": { "path": "app/src/adapters/server/db/doltgres/work-items-adapter.ts", "blob": "bb781919853958974bedca0e63af96adf30a88a0", "mode": "100644" },
-      "rationale": "The node-local adapter adds guarded Dolt branch operations, lease commands, timeouts, and recovery required by the current Hub contract.",
+      "target": { "path": "packages/work-items/src/adapters/doltgres/adapter.ts", "blob": "513533c12800e7f7d7ee90a6039df4b878365e6d", "mode": "100644" },
+      "rationale": "Poly consumes the byte-identical shared Doltgres adapter; node-specific allocator and logger choices are constructor options in the bootstrap container.",
       "behaviorExpectation": "CRUD and coordination operations commit safely and remain observable across retries and restarts.",
       "behaviorGateIds": ["hub.work_item_create", "hub.work_item_mutation", "hub.work_item_source_of_truth"],
       "proofs": [
