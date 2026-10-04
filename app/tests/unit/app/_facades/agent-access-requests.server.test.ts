@@ -5,22 +5,30 @@
  * Module: `@tests/unit/app/_facades/agent-access-requests.server`
  * Purpose: Prove approval links use canonical config and fail before DB writes.
  * Scope: Facade orchestration with transaction/service dependencies mocked.
- * Invariants: hostile request hosts are not an input; missing APP_BASE_URL
- *   cannot leave an unrecoverable pending request.
+ * Invariants: hostile request hosts are not an input; explicit APP_BASE_URL
+ *   wins; DOMAIN fallback follows the fleet host convention; missing canonical
+ *   config cannot leave an unrecoverable pending request.
  * Side-effects: none
  * @internal
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { createRequest, env, withTenantScope } = vi.hoisted(() => ({
+const { createRequest, env, nodeName, withTenantScope } = vi.hoisted(() => ({
   createRequest: vi.fn(),
-  env: { APP_BASE_URL: "https://poly.example.test" as string | undefined },
+  env: {
+    APP_BASE_URL: "https://poly.example.test" as string | undefined,
+    DOMAIN: undefined as string | undefined,
+  },
+  nodeName: { value: "poly" },
   withTenantScope: vi.fn(),
 }));
 
 vi.mock("@/shared/env/server", () => ({
   serverEnv: () => env,
+}));
+vi.mock("@/shared/config/repoSpec.server", () => ({
+  getNodeName: () => nodeName.value,
 }));
 vi.mock("@cogni/db-client", () => ({
   withTenantScope: (...args: unknown[]) => withTenantScope(...args),
@@ -65,6 +73,8 @@ describe("agent access request facade approval URL", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     env.APP_BASE_URL = "https://poly.example.test";
+    env.DOMAIN = undefined;
+    nodeName.value = "poly";
     createRequest.mockResolvedValue(requestDto);
     withTenantScope.mockImplementation(
       async (_db: unknown, _actor: unknown, fn: (tx: unknown) => unknown) =>
@@ -72,7 +82,9 @@ describe("agent access request facade approval URL", () => {
     );
   });
 
-  it("uses only APP_BASE_URL for the cross-party approval link", async () => {
+  it("prefers APP_BASE_URL over DOMAIN for the cross-party approval link", async () => {
+    env.DOMAIN = "attacker.example";
+
     const result = await createAgentAccessRequestFacade(
       sessionUser,
       { expires_at: requestDto.expires_at },
@@ -86,8 +98,8 @@ describe("agent access request facade approval URL", () => {
     expect(withTenantScope).toHaveBeenCalledTimes(1);
   });
 
-  it("fails before opening a DB transaction when APP_BASE_URL is absent", async () => {
-    env.APP_BASE_URL = undefined;
+  it("rejects a non-origin APP_BASE_URL before opening a DB transaction", async () => {
+    env.APP_BASE_URL = "https://poly.example.test/untrusted-base?next=phish";
 
     await expect(
       createAgentAccessRequestFacade(
@@ -95,7 +107,54 @@ describe("agent access request facade approval URL", () => {
         { expires_at: requestDto.expires_at },
         logger as never
       )
-    ).rejects.toThrow("APP_BASE_URL is required");
+    ).rejects.toThrow("APP_BASE_URL must be a canonical HTTP(S) URL");
+    expect(withTenantScope).not.toHaveBeenCalled();
+    expect(createRequest).not.toHaveBeenCalled();
+  });
+
+  it("derives the candidate node origin from repo-spec slug and DOMAIN", async () => {
+    env.APP_BASE_URL = undefined;
+    env.DOMAIN = "test.cognidao.org";
+
+    const result = await createAgentAccessRequestFacade(
+      sessionUser,
+      { expires_at: requestDto.expires_at },
+      logger as never
+    );
+
+    expect(result.approval_url).toMatch(
+      /^https:\/\/poly-test\.cognidao\.org\/profile#agent-request=/
+    );
+    expect(withTenantScope).toHaveBeenCalledTimes(1);
+  });
+
+  it("derives the production node origin from repo-spec slug and DOMAIN", async () => {
+    env.APP_BASE_URL = undefined;
+    env.DOMAIN = "cognidao.org";
+
+    const result = await createAgentAccessRequestFacade(
+      sessionUser,
+      { expires_at: requestDto.expires_at },
+      logger as never
+    );
+
+    expect(result.approval_url).toMatch(
+      /^https:\/\/poly\.cognidao\.org\/profile#agent-request=/
+    );
+    expect(withTenantScope).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails before opening a DB transaction when canonical config is absent", async () => {
+    env.APP_BASE_URL = undefined;
+    env.DOMAIN = undefined;
+
+    await expect(
+      createAgentAccessRequestFacade(
+        sessionUser,
+        { expires_at: requestDto.expires_at },
+        logger as never
+      )
+    ).rejects.toThrow("APP_BASE_URL or DOMAIN is required");
     expect(withTenantScope).not.toHaveBeenCalled();
     expect(createRequest).not.toHaveBeenCalled();
   });

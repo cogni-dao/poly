@@ -34,10 +34,12 @@ import {
   pollAgentAccessRequest,
   previewAgentAccessRequest,
 } from "@/features/agent-grants/agent-access-request-service";
+import { getNodeName } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env/server";
 import { EVENT_NAMES } from "@/shared/observability";
 
 const APPROVAL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const DNS_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export type AgentAccessRequestFacadeErrorCode =
   | "invalid_request"
@@ -69,6 +71,59 @@ function displayNameFor(sessionUser: SessionUser): string {
   return name || `Agent ${sessionUser.id.slice(0, 8)}`;
 }
 
+function canonicalHttpOrigin(configuredUrl: string): string {
+  const url = new URL(configuredUrl);
+  if (
+    (url.protocol !== "https:" && url.protocol !== "http:") ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error("APP_BASE_URL must be a canonical HTTP(S) URL");
+  }
+  return url.origin;
+}
+
+function validatedDomain(configuredDomain: string): string {
+  const domain = configuredDomain.trim().toLowerCase();
+  const labels = domain.split(".");
+  if (
+    domain.length > 253 ||
+    labels.length < 2 ||
+    labels.some((label) => !DNS_LABEL_PATTERN.test(label))
+  ) {
+    throw new Error("DOMAIN must be a canonical DNS hostname");
+  }
+  return domain;
+}
+
+/**
+ * Resolve the approval origin exclusively from deployment-owned config. The
+ * non-primary node convention mirrors the operator's host_for_node helper:
+ * env-prefixed domains use `<slug>-<domain>`, root domains use
+ * `<slug>.<domain>`.
+ */
+export function resolveAgentApprovalOrigin(): string {
+  const env = serverEnv();
+  if (env.APP_BASE_URL) return canonicalHttpOrigin(env.APP_BASE_URL);
+
+  if (!env.DOMAIN) {
+    throw new Error(
+      "APP_BASE_URL or DOMAIN is required for agent approval links"
+    );
+  }
+
+  const slug = getNodeName().trim().toLowerCase();
+  if (!DNS_LABEL_PATTERN.test(slug)) {
+    throw new Error("repo-spec node name must be a canonical DNS label");
+  }
+  const domain = validatedDomain(env.DOMAIN);
+  const separator = domain.split(".").length >= 3 ? "-" : ".";
+  return `https://${slug}${separator}${domain}`;
+}
+
 function translateError(error: unknown): never {
   if (error instanceof AgentAccessRequestFacadeError) throw error;
   if (error instanceof AgentAccessRequestInvalidError) {
@@ -91,11 +146,7 @@ export async function createAgentAccessRequestFacade(
   input: PolyAgentAccessRequestCreateInput,
   logger: Logger
 ): Promise<{ request: AgentAccessRequestAgent; approval_url: string }> {
-  const appBaseUrl = serverEnv().APP_BASE_URL;
-  if (!appBaseUrl) {
-    throw new Error("APP_BASE_URL is required for agent approval links");
-  }
-  const approvalUrl = new URL("/profile", appBaseUrl);
+  const approvalUrl = new URL("/profile", resolveAgentApprovalOrigin());
   const rawToken = randomBytes(32).toString("base64url");
   const now = new Date();
   const requestedExpiry = new Date(input.expires_at);
