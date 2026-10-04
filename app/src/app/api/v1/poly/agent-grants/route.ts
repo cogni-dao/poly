@@ -5,8 +5,8 @@
  * Module: `@app/api/v1/poly/agent-grants`
  * Purpose: Owner-scoped GET/POST lifecycle for principal capability grants.
  * Scope: Auth, contract validation, facade delegation, and HTTP mapping only.
- * Invariants: accepts the shared session-or-bearer identity; tenant identity is
- *   always derived from auth, never trusted from the request body.
+ * Invariants: browser-session-only owner lifecycle; tenant identity is always
+ *   derived from auth, never trusted from the request body.
  * Side-effects: IO through the facade.
  * @public
  */
@@ -23,8 +23,8 @@ import {
   createAgentGrantFacade,
   listAgentGrantsFacade,
 } from "@/app/_facades/poly/agent-grants.server";
-import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import { getServerSessionUser } from "@/lib/auth/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -41,7 +41,7 @@ function errorResponse(
 export const GET = wrapRouteHandlerWithLogging(
   {
     routeId: "poly.agent_grants.list",
-    auth: { mode: "required", getSessionUser },
+    auth: { mode: "required", getSessionUser: getServerSessionUser },
   },
   async (_ctx, _request, sessionUser) => {
     const result = await listAgentGrantsFacade(sessionUser);
@@ -52,7 +52,7 @@ export const GET = wrapRouteHandlerWithLogging(
 export const POST = wrapRouteHandlerWithLogging(
   {
     routeId: "poly.agent_grants.create",
-    auth: { mode: "required", getSessionUser },
+    auth: { mode: "required", getSessionUser: getServerSessionUser },
   },
   async (ctx, request, sessionUser) => {
     let body: unknown;

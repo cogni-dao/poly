@@ -5,7 +5,7 @@
 ## Metadata
 
 - **Owners:** @cogni-dao
-- **Last reviewed:** 2026-10-03
+- **Last reviewed:** 2026-10-04
 - **Status:** stable
 
 ## Purpose
@@ -41,6 +41,7 @@ Drizzle ORM table definitions for all database domains. Provides type-safe schem
 ## Public Surface
 
 - **Exports (via subpath exports):**
+  - `@cogni/db-schema/agent-access-requests` - Hashed, one-time owner approval requests for agent capabilities
   - `@cogni/db-schema/agent-capability-grants` - Expiring, revocable principal delegation grants
   - `@cogni/db-schema/refs` - Core FK reference tables (`users`, `billingAccounts`)
   - `@cogni/db-schema/scheduling` - Scheduling tables (`executionGrants`, `schedules`, `graphRuns` (canonical, `scheduleRuns` deprecated alias), `executionRequests`, `GRAPH_RUN_STATUSES`, `GRAPH_RUN_KINDS`)
