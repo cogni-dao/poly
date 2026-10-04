@@ -249,6 +249,9 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		const knowledgeBranch = "knowledge-component-dirty";
 		const principalId = "doltgres-scoped-staging-agent";
 		const knowledgeSql = postgres(dbUrl, { max: 1, fetch_types: false });
+		let knowledgeSession:
+			| Awaited<ReturnType<typeof knowledgeSql.reserve>>
+			| undefined;
 		let workItemCreated = false;
 		let before = "";
 		let beforeBranches: ReadonlyArray<Record<string, unknown>> = [];
@@ -266,10 +269,14 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			beforeStatus = await sql.unsafe(
 				"SELECT table_name, staged FROM dolt.status ORDER BY table_name",
 			);
-			await knowledgeSql.unsafe(
+			// Pin checkout, dirty write, assertions, and cleanup to one Dolt session.
+			// A max:1 pool limits concurrency but does not itself reserve a session.
+			await knowledgeSql.unsafe("SELECT 1 AS knowledge_ready");
+			knowledgeSession = await knowledgeSql.reserve();
+			await knowledgeSession.unsafe(
 				`SELECT dolt_checkout('-b', '${knowledgeBranch}', 'main')`,
 			);
-			await knowledgeSql.unsafe(
+			await knowledgeSession.unsafe(
 				`INSERT INTO knowledge (id, domain, title, content, source_type) VALUES ('${knowledgeId}', 'poly', 'Dirty fixture', 'Must remain outside work-item commit', 'agent')`,
 			);
 
@@ -290,12 +297,12 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				),
 			).resolves.toHaveLength(0);
 			await expect(
-				knowledgeSql.unsafe(
+				knowledgeSession.unsafe(
 					`SELECT table_name FROM dolt.status WHERE table_name = 'knowledge'`,
 				),
 			).resolves.toHaveLength(1);
 			await expect(
-				knowledgeSql.unsafe(
+				knowledgeSession.unsafe(
 					`SELECT id FROM knowledge WHERE id = '${knowledgeId}'`,
 				),
 			).resolves.toHaveLength(1);
@@ -303,15 +310,18 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			if (workItemCreated) {
 				await adapter.delete(id, principalId).catch(() => undefined);
 			}
-			await knowledgeSql
-				.unsafe("SELECT dolt_reset('--hard', 'HEAD')")
-				.catch(() => undefined);
-			await knowledgeSql
-				.unsafe("SELECT dolt_checkout('main')")
-				.catch(() => undefined);
-			await knowledgeSql
-				.unsafe(`SELECT dolt_branch('-D', '${knowledgeBranch}')`)
-				.catch(() => undefined);
+			if (knowledgeSession) {
+				await knowledgeSession
+					.unsafe("SELECT dolt_reset('--hard', 'HEAD')")
+					.catch(() => undefined);
+				await knowledgeSession
+					.unsafe("SELECT dolt_checkout('main')")
+					.catch(() => undefined);
+				await knowledgeSession
+					.unsafe(`SELECT dolt_branch('-D', '${knowledgeBranch}')`)
+					.catch(() => undefined);
+				knowledgeSession.release();
+			}
 			await knowledgeSql.end({ timeout: 0 });
 			await sql.unsafe("SELECT dolt_checkout('main')").catch(() => undefined);
 			if (before) {
