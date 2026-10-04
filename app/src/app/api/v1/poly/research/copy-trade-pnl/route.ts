@@ -101,8 +101,10 @@ export const GET = wrapRouteHandlerWithLogging(
         });
         if (!access) return null;
 
+        const pnlDb =
+          tx as unknown as Parameters<typeof getCopyTradePnlForTenant>[0];
         const response = await getCopyTradePnlForTenant(
-          tx,
+          pnlDb,
           queryParse.data.billing_account_id,
           queryParse.data.mode,
           {

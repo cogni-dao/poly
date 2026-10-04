@@ -7,8 +7,8 @@
  *   Powers the trust-twin diff script that compares preview paper PnL vs PROD
  *   live PnL on the same target wallet config.
  * Scope: Read-only service; does not fetch upstream Polymarket, write rows, or hydrate raw fills into V8.
- *   Caller injects the app-role transaction after authorizing the explicit
- *   billing_account_id. PostgreSQL RLS remains the data-plane backstop.
+ *   Caller injects DB (service-DB so callers can pass any billing_account_id —
+ *   RLS is bypassed by design here).
  * Invariants: SQL_AGGREGATION_ONLY — one GROUP BY, no V8 reduce over raw rows;
  *   REALIZED_USES_FILLED_SIZE_USDC — sum of `attributes->>'filled_size_usdc'` for
  *   {filled,partial} (v0 paper-sidecar stamps `= intent.size_usdc` on full fills);
@@ -25,12 +25,13 @@ import type {
   PolyResearchCopyTradePnlMode,
   PolyResearchCopyTradePnlResponse,
 } from "@cogni/poly-node-contracts";
-import { and, eq, gte, lt, type SQL, sql } from "drizzle-orm";
+import { and, eq, gte, lt, sql } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 
-/** Minimal app-role transaction surface required by the bounded aggregate. */
-type CopyTradePnlDb = {
-  execute(query: SQL): Promise<unknown>;
-};
+type Db =
+  | NodePgDatabase<Record<string, unknown>>
+  | PostgresJsDatabase<Record<string, unknown>>;
 
 type MarketRowRaw = {
   market_id: string;
@@ -67,7 +68,7 @@ const toIso = (d: string | Date | null | undefined): string | null => {
 };
 
 export async function getCopyTradePnlForTenant(
-  db: CopyTradePnlDb,
+  db: Db,
   billingAccountId: string,
   mode: PolyResearchCopyTradePnlMode,
   window?: { since?: string; until?: string }
@@ -134,8 +135,7 @@ export async function getCopyTradePnlForTenant(
     ORDER BY MAX(${polyCopyTradeFills.observedAt}) DESC NULLS LAST
   `)) as unknown as { rows: MarketRowRaw[] } | MarketRowRaw[];
 
-  // postgres-js returns the array; retain `{ rows }` normalization for
-  // adapter-shaped callers without changing the aggregate contract.
+  // node-postgres returns { rows: [...] }; postgres-js returns the array.
   const list: MarketRowRaw[] = Array.isArray(rows) ? rows : (rows.rows ?? []);
 
   const markets = list.map((r) => ({

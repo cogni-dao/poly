@@ -13,21 +13,21 @@
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
   "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "a97ebde5bb5a0f382bee4ccf610dabfdac61be5c234bc44541e396715115f29b",
+  "targetTreeDigest": "7a248e572fc1f02f7226e9e04435455e21343b1903501a00fcdf1aa71a656d3b",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
     "targetOnlyFiles": 1097,
-    "unresolved": 605,
+    "unresolved": 602,
     "byStatus": {
-      "exact": 1123,
+      "exact": 1126,
       "retired": 1,
-      "unresolved": 605,
+      "unresolved": 602,
       "upgraded": 7
     },
     "unresolvedByPriority": {
       "P0": 20,
-      "P1": 54,
+      "P1": 51,
       "P2": 281,
       "P3": 250
     },
@@ -6815,7 +6815,7 @@
       "sourceBlob": "d6ca31ab3b6e99670034122959faccc516729512",
       "sourcePath": "app/src/app/api/v1/poly/research/copy-trade-pnl/route.ts",
       "targetPath": "app/src/app/api/v1/poly/research/copy-trade-pnl/route.ts",
-      "targetBlob": "80107592cfff67ccb4f87101f9a7e9057419610c",
+      "targetBlob": "a6d490dab30f16fcc665710febd622adb03076ce",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -13265,13 +13265,13 @@
       "sourceBlob": "564923f87e8b85adfe25dd85eb2e801b79371671",
       "sourcePath": "app/src/features/wallet-analysis/server/copy-trade-pnl-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/copy-trade-pnl-service.ts",
-      "targetBlob": "02ed772e230dba8505913d401c03350779a7dc93",
+      "targetBlob": "564923f87e8b85adfe25dd85eb2e801b79371671",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
       "deliveryGroup": null,
-      "status": "unresolved",
-      "unresolvedReason": "content_differs",
+      "status": "exact",
+      "unresolvedReason": null,
       "resolution": null
     },
     {
@@ -22583,13 +22583,13 @@
       "sourceBlob": "86fd7779d70a4a81a6e9d590de98ee984439687e",
       "sourcePath": "packages/node-contracts/AGENTS.md",
       "targetPath": "packages/poly-node-contracts/AGENTS.md",
-      "targetBlob": "1940fad48c73ae395b2bd8b32a1ded51f8733e54",
+      "targetBlob": "86fd7779d70a4a81a6e9d590de98ee984439687e",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
       "deliveryGroup": null,
-      "status": "unresolved",
-      "unresolvedReason": "content_differs",
+      "status": "exact",
+      "unresolvedReason": null,
       "resolution": null
     },
     {
@@ -22653,13 +22653,13 @@
       "sourceBlob": "f8ae0308d9750a7a91eef6fc47453d03504273d6",
       "sourcePath": "packages/node-contracts/src/poly.research-copy-trade-pnl.v1.contract.ts",
       "targetPath": "packages/poly-node-contracts/src/poly.research-copy-trade-pnl.v1.contract.ts",
-      "targetBlob": "3ea391ccc61f3f1430a325aa6185f84b72e26a59",
+      "targetBlob": "f8ae0308d9750a7a91eef6fc47453d03504273d6",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
       "deliveryGroup": null,
-      "status": "unresolved",
-      "unresolvedReason": "content_differs",
+      "status": "exact",
+      "unresolvedReason": null,
       "resolution": null
     },
     {
