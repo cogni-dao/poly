@@ -17,7 +17,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1085,
+    "targetOnlyFiles": 1084,
     "unresolved": 602,
     "byStatus": {
       "exact": 1126,
@@ -25341,9 +25341,6 @@
     },
     {
       "targetPath": ".codex/config.toml"
-    },
-    {
-      "targetPath": ".cogni/.cognition-cache.md"
     },
     {
       "targetPath": ".cogni/AGENTS.tmpl.md"
