@@ -53,7 +53,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1104,
+    "targetOnlyFiles": 1117,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -25718,6 +25718,9 @@
       "targetPath": "app/src/app/api/v1/attribution/settlement-lifecycle/route.ts"
     },
     {
+      "targetPath": "app/src/app/api/v1/citations/[id]/_lib/workItemPermalink.ts"
+    },
+    {
       "targetPath": "app/src/app/api/v1/citations/[id]/route.ts"
     },
     {
@@ -26063,9 +26066,6 @@
       "targetPath": "app/tests/unit/adapters/server/wallet/privy-poly-trader-wallet.trading-addresses.test.ts"
     },
     {
-      "targetPath": "app/tests/unit/adapters/work-items-adapter.test.ts"
-    },
-    {
       "targetPath": "app/tests/unit/app/_facades/ai/completion-stream-acceptance.spec.ts"
     },
     {
@@ -26124,6 +26124,9 @@
     },
     {
       "targetPath": "app/tests/unit/app/work/fetch-work-item.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/work/work-item-citation-permalink.test.ts"
     },
     {
       "targetPath": "app/tests/unit/app/work/work-item-detail.test.tsx"
@@ -28439,6 +28442,15 @@
       "targetPath": "packages/work-items/package.json"
     },
     {
+      "targetPath": "packages/work-items/src/adapters/doltgres/cursor.ts"
+    },
+    {
+      "targetPath": "packages/work-items/src/adapters/doltgres/index.ts"
+    },
+    {
+      "targetPath": "packages/work-items/src/adapters/doltgres/ports.ts"
+    },
+    {
       "targetPath": "packages/work-items/src/adapters/markdown/adapter.ts"
     },
     {
@@ -28461,6 +28473,33 @@
     },
     {
       "targetPath": "packages/work-items/src/types.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-idfloor.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-keyset.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-ownership.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-patch.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-queue.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-reconciliation.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-timeout-recovery.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-cursor.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/fake-doltgres-sql.ts"
     },
     {
       "targetPath": "packages/work-items/tests/adapters/markdown.test.ts"
