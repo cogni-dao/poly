@@ -3,17 +3,28 @@
 
 /**
  * Module: `@app/api/v1/work/items/[id]/route`
- * Purpose: HTTP endpoint for getting a single work item by ID.
- * Scope: Auth-protected GET endpoint. Does not contain business logic.
+ * Purpose: HTTP endpoints for a single Dolt-backed work item.
+ * Scope: Auth-protected GET, PATCH, and DELETE endpoints.
  * Invariants: VALIDATE_IO, CONTRACTS_ARE_TRUTH
- * Side-effects: IO (HTTP response, filesystem read via port)
- * Links: contracts/work.items.get.v1.contract
+ * Side-effects: IO (HTTP response, Doltgres read/write via port)
+ * Links: contracts/work.items.{get,patch,delete}.v1.contract
  * @public
  */
 
-import { workItemsGetOperation } from "@cogni/node-contracts";
+import {
+  workItemsDeleteOperation,
+  workItemsGetOperation,
+  workItemsPatchOperation,
+} from "@cogni/node-contracts";
 import { NextResponse } from "next/server";
-import { getWorkItem } from "@/app/_facades/work/items.server";
+import {
+  deleteWorkItem,
+  getWorkItem,
+  patchWorkItem,
+  WorkItemForbiddenError,
+  WorkItemNotFoundError,
+  WorkItemsBackendNotReadyError,
+} from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 
@@ -31,7 +42,15 @@ export const GET = wrapRouteHandlerWithLogging<{
     if (!context) throw new Error("context required for dynamic routes");
     const { id } = await context.params;
 
-    const item = await getWorkItem(id);
+    let item: Awaited<ReturnType<typeof getWorkItem>>;
+    try {
+      item = await getWorkItem(id);
+    } catch (error) {
+      if (error instanceof WorkItemsBackendNotReadyError) {
+        return NextResponse.json({ error: error.message }, { status: 503 });
+      }
+      throw error;
+    }
 
     if (!item) {
       return NextResponse.json(
@@ -43,5 +62,110 @@ export const GET = wrapRouteHandlerWithLogging<{
     ctx.log.info({ workItemId: id }, "work.items.get_success");
 
     return NextResponse.json(workItemsGetOperation.output.parse(item));
+  }
+);
+
+export const PATCH = wrapRouteHandlerWithLogging<{
+  params: Promise<{ id: string }>;
+}>(
+  { routeId: "work.items.patch", auth: { mode: "required", getSessionUser } },
+  async (ctx, request, sessionUser, context) => {
+    if (!context) throw new Error("context required for dynamic routes");
+    if (!sessionUser) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    }
+    const { id } = await context.params;
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
+    }
+    if (
+      typeof body === "object" &&
+      body !== null &&
+      "id" in body &&
+      body.id !== undefined &&
+      body.id !== id
+    ) {
+      return NextResponse.json(
+        { error: "body id must match path id" },
+        { status: 400 }
+      );
+    }
+    const parsed = workItemsPatchOperation.input.safeParse({
+      ...(typeof body === "object" && body !== null ? body : {}),
+      id,
+    });
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "invalid input", issues: parsed.error.issues },
+        { status: 400 }
+      );
+    }
+
+    try {
+      const patched = await patchWorkItem(parsed.data, {
+        id: sessionUser.id,
+      });
+      ctx.log.info({ workItemId: id }, "work.items.patch_success");
+      return NextResponse.json(workItemsPatchOperation.output.parse(patched));
+    } catch (error) {
+      if (error instanceof WorkItemNotFoundError) {
+        return NextResponse.json({ error: error.message }, { status: 404 });
+      }
+      if (error instanceof WorkItemForbiddenError) {
+        return NextResponse.json({ error: error.message }, { status: 403 });
+      }
+      if (error instanceof WorkItemsBackendNotReadyError) {
+        return NextResponse.json({ error: error.message }, { status: 503 });
+      }
+      throw error;
+    }
+  }
+);
+
+export const DELETE = wrapRouteHandlerWithLogging<{
+  params: Promise<{ id: string }>;
+}>(
+  { routeId: "work.items.delete", auth: { mode: "required", getSessionUser } },
+  async (ctx, _request, sessionUser, context) => {
+    if (!context) throw new Error("context required for dynamic routes");
+    if (!sessionUser) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    }
+    const { id } = await context.params;
+    const parsed = workItemsDeleteOperation.input.safeParse({ id });
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "invalid input", issues: parsed.error.issues },
+        { status: 400 }
+      );
+    }
+
+    try {
+      const deleted = await deleteWorkItem(id, {
+        id: sessionUser.id,
+      });
+      if (!deleted) {
+        return NextResponse.json(
+          { error: `Work item not found: ${id}` },
+          { status: 404 }
+        );
+      }
+      ctx.log.info({ workItemId: id }, "work.items.delete_success");
+      return NextResponse.json(
+        workItemsDeleteOperation.output.parse({ id, deleted: true })
+      );
+    } catch (error) {
+      if (error instanceof WorkItemForbiddenError) {
+        return NextResponse.json({ error: error.message }, { status: 403 });
+      }
+      if (error instanceof WorkItemsBackendNotReadyError) {
+        return NextResponse.json({ error: error.message }, { status: 503 });
+      }
+      throw error;
+    }
   }
 );

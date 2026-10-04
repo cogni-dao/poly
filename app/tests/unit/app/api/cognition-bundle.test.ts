@@ -77,6 +77,27 @@ describe("renderBundleMarkdown", () => {
 		);
 	});
 
+	it("always renders the node-relative work-item write seam", () => {
+		const markdown = renderBundleMarkdown({
+			...baseInput,
+			name: "poly",
+			origin: "https://poly.cognidao.org",
+			orientation: {
+				id: "poly-agent-orientation",
+				content: "Poly node operating map.",
+			},
+		});
+
+		expect(markdown).toContain("## Work items — this node's own ledger");
+		expect(markdown).toContain(
+			"POST https://poly.cognidao.org/api/v1/work/items",
+		);
+		expect(markdown).toContain(
+			"PATCH https://poly.cognidao.org/api/v1/work/items/{id}",
+		);
+		expect(markdown).toContain('{"set":{...}}');
+	});
+
 	it("renders the current-node orientation entry IN FULL above the tooling invariants", () => {
 		const fullOrientation = [
 			"**USE WHEN:** first read of every operator session.",

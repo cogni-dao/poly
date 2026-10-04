@@ -25,6 +25,9 @@
  *     let users assume "trading is on" when they actually can't place a
  *     single order. Post the 2026-04-28 cutover pUSD is the real collateral,
  *     so the empty check MUST include pUSD, not USDC.e alone.
+ *   - UNKNOWN_IS_NOT_ZERO: absent/stale position or P/L read models render an
+ *     explicit unavailable state. A nullable total never triggers the empty
+ *     wallet CTA and cash-only is never presented as Total.
  * Side-effects: IO (via React Query).
  * Links: work/items/task.0361.poly-first-user-onboarding-flow-v0.md
  * @public
@@ -32,15 +35,10 @@
 
 "use client";
 
-import type {
-  PolyWalletOverviewInterval,
-  PolyWalletOverviewOutput,
-  PolyWalletStatusOutput,
-} from "@cogni/poly-node-contracts";
+import type { PolyWalletStatusOutput } from "@cogni/poly-node-contracts";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import type { ReactElement } from "react";
-import { useState } from "react";
 import {
   AddressChip,
   Card,
@@ -49,12 +47,12 @@ import {
   CardTitle,
 } from "@/components";
 import {
-  BalanceBar,
   TimeWindowHeader,
   WalletProfitLossCard,
 } from "@/features/wallet-analysis";
 import { cn } from "@/shared/util/cn";
-import { useTradingWalletOverview } from "../_hooks/useTradingWalletOverview";
+import { useWalletDashboard } from "../_hooks/useWalletDashboard";
+import { TradingWalletBalanceBar } from "./TradingWalletBalanceBar";
 
 function formatDecimal(n: number | null, fractionDigits: number): string {
   if (n === null) return "—";
@@ -64,29 +62,18 @@ function formatDecimal(n: number | null, fractionDigits: number): string {
   });
 }
 
-function formatUsd(n: number | null): string {
-  if (n === null) return "—";
-  return `$${n.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
 async function fetchWalletStatus(): Promise<PolyWalletStatusOutput> {
-  const res = await fetch("/api/v1/poly/wallet/status", {
+  const response = await fetch("/api/v1/poly/wallet/status", {
     credentials: "include",
   });
-  if (!res.ok) {
-    throw new Error(`wallet status failed: ${res.status}`);
-  }
-  return (await res.json()) as PolyWalletStatusOutput;
+  if (!response.ok) throw new Error(`wallet status failed: ${response.status}`);
+  return (await response.json()) as PolyWalletStatusOutput;
 }
 
 export function TradingWalletCard(): ReactElement {
-  const [interval, setInterval] = useState<PolyWalletOverviewInterval>("1W");
-  const { data, isLoading, isError } = useTradingWalletOverview(interval);
-  // Shares the "poly-wallet-status" key with /credits, so navigating between
-  // pages hits the cache rather than refetching.
+  const dashboard = useWalletDashboard();
+  const data = dashboard.data?.overview;
+  const { interval, setInterval, isLoading, isError } = dashboard;
   const { data: statusData } = useQuery({
     queryKey: ["poly-wallet-status"],
     queryFn: fetchWalletStatus,
@@ -95,16 +82,31 @@ export function TradingWalletCard(): ReactElement {
     retry: 1,
   });
 
-  const lowGas = data?.connected === true && (data.pol_gas ?? 0) <= 0.1;
-  const noGas = data?.connected === true && (data.pol_gas ?? 0) <= 0;
-  const fullBreakdown = hasOverviewBreakdown(data)
-    ? {
-        available: data.usdc_available,
-        locked: data.usdc_locked,
-        positions: data.usdc_positions_mtm,
-        total: data.usdc_total,
-      }
-    : null;
+  const gasReading = data?.pol_gas;
+  const hasGasReading = gasReading !== null && gasReading !== undefined;
+  const lowGas =
+    data?.connected === true && hasGasReading && gasReading <= 0.1;
+  const noGas =
+    data?.connected === true && hasGasReading && gasReading <= 0;
+  const pnlHistoryUnavailable = data?.warnings.some((warning) =>
+    [
+      "pnl_history_wallet_missing",
+      "pnl_history_unavailable",
+      "pnl_history_stale",
+    ].includes(warning.code)
+  );
+  const pnlHistoryMissing = data?.warnings.some(
+    (warning) => warning.code === "pnl_history_no_history"
+  );
+  const hasPartialWarning = data?.warnings.some(
+    (warning) => warning.code !== "pnl_history_no_history"
+  );
+  const balance = {
+    available: data?.usdc_available ?? null,
+    locked: data?.usdc_locked ?? null,
+    positions: data?.usdc_positions_mtm ?? null,
+    total: data?.usdc_total ?? null,
+  };
 
   return (
     <Card>
@@ -114,10 +116,10 @@ export function TradingWalletCard(): ReactElement {
             Trading Wallet
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            {data?.warnings?.length ? (
+            {hasPartialWarning ? (
               <span
                 className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground"
-                title="Some wallet reads are partial. Values may be incomplete."
+                title="Some wallet values are temporarily unavailable."
               >
                 partial
               </span>
@@ -171,7 +173,7 @@ export function TradingWalletCard(): ReactElement {
             ctaLabel="Enable trading →"
             href="/credits"
           />
-        ) : (data.usdc_total ?? 0) <= 0 ? (
+        ) : data.usdc_total !== null && data.usdc_total <= 0 ? (
           <OnboardingCta
             message="Wallet is empty — add USD collateral (pUSD or USDC.e) on Polygon to start trading."
             ctaLabel="Fund wallet →"
@@ -179,61 +181,41 @@ export function TradingWalletCard(): ReactElement {
           />
         ) : (
           <div className="space-y-5 py-1">
-            {fullBreakdown ? (
-              <div className="space-y-3">
-                <BalanceBar balance={fullBreakdown ?? undefined} />
-                <div className="flex flex-wrap items-center justify-between gap-3 text-muted-foreground text-xs">
-                  <span>
-                    {data.open_orders ?? 0} open order
-                    {(data.open_orders ?? 0) === 1 ? "" : "s"}
-                  </span>
-                  <span>POL gas {formatDecimal(data.pol_gas, 4)}</span>
-                </div>
+            <div className="space-y-3">
+              <TradingWalletBalanceBar balance={balance} />
+              <div className="flex flex-wrap items-center justify-between gap-3 text-muted-foreground text-xs">
+                <span>
+                  {data.open_orders === null
+                    ? "Open orders —"
+                    : `${data.open_orders} open order${data.open_orders === 1 ? "" : "s"}`}
+                </span>
+                <span>POL gas {formatDecimal(data.pol_gas, 4)}</span>
               </div>
-            ) : (
-              <div className="grid gap-3 md:grid-cols-4">
-                <Metric
-                  label="Available"
-                  value={formatUsd(data.usdc_available)}
-                />
-                <Metric label="Locked" value={formatUsd(data.usdc_locked)} />
-                <Metric
-                  label="Positions"
-                  value={formatUsd(data.usdc_positions_mtm)}
-                />
-                <Metric label="Total" value={formatUsd(data.usdc_total)} />
-              </div>
-            )}
+            </div>
             <TimeWindowHeader
               interval={interval}
               onIntervalChange={setInterval}
               pnlHistory={data.pnlHistory}
             />
-            <WalletProfitLossCard
-              history={data.pnlHistory}
-              interval={interval}
-            />
+            {pnlHistoryUnavailable ? (
+              <p className="text-muted-foreground text-xs" role="status">
+                P/L temporarily unavailable.
+              </p>
+            ) : pnlHistoryMissing ? (
+              <p className="text-muted-foreground text-xs" role="status">
+                No P/L history has been recorded for this interval yet.
+              </p>
+            ) : null}
+            {!pnlHistoryUnavailable ? (
+              <WalletProfitLossCard
+                history={data.pnlHistory}
+                interval={interval}
+              />
+            ) : null}
           </div>
         )}
       </CardContent>
     </Card>
-  );
-}
-
-function hasOverviewBreakdown(
-  data: PolyWalletOverviewOutput | undefined
-): data is PolyWalletOverviewOutput & {
-  usdc_available: number;
-  usdc_locked: number;
-  usdc_positions_mtm: number;
-  usdc_total: number;
-} {
-  return (
-    data !== undefined &&
-    data.usdc_available !== null &&
-    data.usdc_locked !== null &&
-    data.usdc_positions_mtm !== null &&
-    data.usdc_total !== null
   );
 }
 
@@ -261,23 +243,6 @@ function OnboardingCta({
       >
         {ctaLabel}
       </Link>
-    </div>
-  );
-}
-
-function Metric({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}): ReactElement {
-  return (
-    <div className="rounded-md bg-muted/40 px-3 py-2">
-      <div className="text-muted-foreground text-xs uppercase tracking-wide">
-        {label}
-      </div>
-      <div className="font-semibold text-lg tabular-nums">{value}</div>
     </div>
   );
 }

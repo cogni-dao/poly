@@ -55,6 +55,8 @@ const fullRow = {
   metadata_event_title: null,
   metadata_event_slug: null,
   metadata_end_date: null,
+  total_active_rows: 1,
+  total_positions_mtm: "6.5",
 };
 
 /** Row with NO raw fields at all — every raw-derived default must fire. */
@@ -123,6 +125,8 @@ describe("current-position read model raw->> projection equivalence", () => {
       syncAgeMs: 5 * 60_000,
       stale: false,
       activeRows: 1,
+      hasSuccessfulObservation: true,
+      cursorStatus: "ok",
     });
     expect(model.warnings).toEqual([]);
   });
@@ -147,6 +151,59 @@ describe("current-position read model raw->> projection equivalence", () => {
       // curPrice absent → currentValue / shares fallback.
       currentPrice: 0.65,
     });
+  });
+
+  it("preserves the exact SQL window count beyond the bounded preview", async () => {
+    const db = fakeDb([
+      { ...fullRow, total_active_rows: 501, total_positions_mtm: "1234.5" },
+    ]);
+    const model = await readCurrentWalletPositionModel({
+      db,
+      walletAddress: WALLET,
+      capturedAt: CAPTURED_AT,
+    });
+
+    expect(model.positions).toHaveLength(1);
+    expect(model.summary.activeRows).toBe(501);
+    expect(model.summary.positionsMtm).toBe(1234.5);
+    expect(db.captured[0]).toMatch(/LIMIT \$\d+/);
+    expect(db.captured[0]).toContain("p.current_value_usdc > 0");
+    expect(db.captured[0]).toContain("NOT IN ('redeemed', 'loser', 'dust', 'closed')");
+  });
+
+  it("distinguishes never-observed and partial cursors from a real observed zero", async () => {
+    const neverObserved = await readCurrentWalletPositionModel({
+      db: fakeDb([
+        {
+          ...fullRow,
+          condition_id: null,
+          token_id: null,
+          cursor_last_success_at: null,
+          cursor_status: null,
+          total_active_rows: 0,
+          total_positions_mtm: 0,
+        },
+      ]),
+      walletAddress: WALLET,
+      capturedAt: CAPTURED_AT,
+    });
+    expect(neverObserved.summary.hasSuccessfulObservation).toBe(false);
+    expect(neverObserved.warnings).toContainEqual(
+      expect.objectContaining({ code: "current_positions_never_observed" })
+    );
+
+    const partial = await readCurrentWalletPositionModel({
+      db: fakeDb([{ ...fullRow, cursor_status: "partial" }]),
+      walletAddress: WALLET,
+      capturedAt: CAPTURED_AT,
+    });
+    expect(partial.summary.hasSuccessfulObservation).toBe(true);
+    expect(partial.summary.cursorStatus).toBe("partial");
+    expect(partial.summary.activeRows).toBe(1);
+    expect(partial.summary.positionsMtm).toBe(6.5);
+    expect(partial.warnings).toContainEqual(
+      expect.objectContaining({ code: "current_positions_partial" })
+    );
   });
 
   it("SQL projects the 7 scalar raw->> paths and never selects raw wholesale", async () => {

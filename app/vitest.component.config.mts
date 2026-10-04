@@ -39,7 +39,10 @@ export default defineConfig({
     // ship a job that can never go green. Forks that adopt the sandbox runtime
     // re-include this dir alongside the image build. (ripgrep tests DO run — their
     // adapter ships and CI installs the binary.)
-    exclude: ["tests/component/docker/**"],
+    exclude: [
+      "tests/component/docker/**",
+      "tests/component/db/doltgres-*.int.test.ts",
+    ],
     environment: "node",
     setupFiles: ["./tests/setup.ts"],
     globalSetup: ["./tests/component/setup/testcontainers-postgres.global.ts"],

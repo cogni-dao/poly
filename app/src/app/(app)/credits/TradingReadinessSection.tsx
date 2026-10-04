@@ -26,8 +26,9 @@
  *     gasless from the Deposit Wallet, so there is NO client-side POL
  *     balance gate. A pUSD-funded Deposit Wallet holding 0 POL must still be
  *     able to click Enable trading.
- *   - FUNDED_RECOLOR (task.0365): the compact badge swaps green for warning
- *     tokens when `isFunded=false` — "approvals on-chain, but $0 to trade".
+ *   - FUNDING_IS_TRI_STATE: the compact badge distinguishes funded, known
+ *     zero, and unavailable balance reads. Unknown never masquerades as $0
+ *     and never blocks the approval ceremony.
  * Side-effects: IO (POST enable-trading; React Query cache invalidation).
  * Links: nodes/poly/packages/node-contracts/src/poly.wallet.enable-trading.v1.contract.ts,
  *        work/items/bug.5310, work/items/bug.5311
@@ -47,11 +48,8 @@ import type { ReactElement } from "react";
 export interface TradingReadinessSectionProps {
   /** From `poly.wallet.status.v1` — drives the initial view. */
   readonly tradingReady: boolean;
-  /**
-   * Whether the wallet holds any collateral (USDC.e + pUSD `> 0`). When
-   * `tradingReady && !isFunded` the badge recolors to warning (FUNDED_RECOLOR).
-   */
-  readonly isFunded: boolean;
+  /** Known collateral state. `unknown` means one or both reads are unavailable. */
+  readonly fundingState: "funded" | "unfunded" | "unknown";
 }
 
 /**
@@ -139,13 +137,24 @@ export function TradingReadinessSection(
   // readiness from `/status` with no mutation attempted in this session. Once
   // the user has clicked, the returned checkmarks stay visible.
   if (props.tradingReady && !result && !inFlight && !mutation.isError) {
-    const tone = props.isFunded
-      ? "border-success/30 bg-success/10 text-success"
-      : "border-warning/40 bg-warning/10 text-warning";
-    const sub = props.isFunded
-      ? "Approvals signed in-app"
-      : "Approvals signed · add pUSD or USDC.e to trade";
-    const subTone = props.isFunded ? "text-success/70" : "text-warning/80";
+    const tone =
+      props.fundingState === "funded"
+        ? "border-success/30 bg-success/10 text-success"
+        : props.fundingState === "unfunded"
+          ? "border-warning/40 bg-warning/10 text-warning"
+          : "border-border bg-muted/40 text-muted-foreground";
+    const sub =
+      props.fundingState === "funded"
+        ? "Approvals signed in-app"
+        : props.fundingState === "unfunded"
+          ? "Approvals signed · add pUSD or USDC.e to trade"
+          : "Approvals signed · balance unavailable";
+    const subTone =
+      props.fundingState === "funded"
+        ? "text-success/70"
+        : props.fundingState === "unfunded"
+          ? "text-warning/80"
+          : "text-muted-foreground";
     return (
       <div
         className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${tone}`}

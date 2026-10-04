@@ -79,6 +79,7 @@ import {
   DASHBOARD_TRADE_COUNT_WINDOW_DAYS,
   toWalletExecutionPosition,
 } from "../_lib/ledger-positions";
+import { walletCompletionDiagnostics } from "../_lib/wallet-completion-diagnostics";
 
 export const dynamic = "force-dynamic";
 
@@ -141,14 +142,16 @@ export const GET = wrapRouteHandlerWithLogging(
             logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
               reqId: ctx.reqId,
               routeId: ctx.routeId,
-              status: "wallet_adapter_unconfigured",
+              ...walletCompletionDiagnostics(
+                "wallet_adapter_unconfigured",
+                ["wallet_adapter_unconfigured"]
+              ),
               durationMs: Math.round(performance.now() - startedAtMs),
               outcome: "success",
               freshness,
               live_positions: 0,
               closed_positions: 0,
               daily_trade_days: 0,
-              warnings: 1,
             });
             return emptyPayload(freshness, {
               code: "wallet_adapter_unconfigured",
@@ -163,14 +166,15 @@ export const GET = wrapRouteHandlerWithLogging(
           logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
             reqId: ctx.reqId,
             routeId: ctx.routeId,
-            status: "no_trading_wallet",
+            ...walletCompletionDiagnostics("no_trading_wallet", [
+              "no_trading_wallet",
+            ]),
             durationMs: Math.round(performance.now() - startedAtMs),
             outcome: "success",
             freshness,
             live_positions: 0,
             closed_positions: 0,
             daily_trade_days: 0,
-            warnings: 1,
           });
           return emptyPayload(freshness, {
             code: "no_trading_wallet",
@@ -182,6 +186,7 @@ export const GET = wrapRouteHandlerWithLogging(
         const capturedAt = new Date();
         const warnings: Array<{ code: string; message: string }> = [];
         let livePositions: PolyWalletExecutionOutput["live_positions"] = [];
+        let livePositionCount: number | undefined;
         let closedPositions: PolyWalletExecutionOutput["closed_positions"] = [];
         let dailyTradeCounts: Array<{ day: string; n: number }> = [];
         const ledgerLiveByAsset = new Map<
@@ -203,10 +208,8 @@ export const GET = wrapRouteHandlerWithLogging(
           });
           return new Map();
         });
-        try {
-          // SHARED_READ: byte-identical to the overview route's ledger
-          // read — one SWR entry serves both routes (dashboard floor fix).
-          const [rows, dailyCountsFromDb] = await Promise.all([
+        {
+          const [rowsResult, dailyCountsResult] = await Promise.allSettled([
             coalesceTenantLedgerPositions(billingAccountId, () =>
               container.orderLedger.listTenantPositions({
                 billing_account_id: billingAccountId,
@@ -220,30 +223,46 @@ export const GET = wrapRouteHandlerWithLogging(
               windowDays: DASHBOARD_TRADE_COUNT_WINDOW_DAYS,
             }),
           ]);
-          dailyTradeCounts = dailyCountsFromDb;
-          const positions = rows.map((row) =>
-            toWalletExecutionPosition(row, capturedAt)
-          );
-          // Realized P/L is overlaid LATER (after all sources are merged) so
-          // the additive `mergeWalletExecutionPosition` can't double-count a
-          // token-level credit that's already applied to both the ledger row
-          // and the current-position row.
-          const ledgerLivePositions = coalesceWalletExecutionPositions(
-            positions
-              .filter((position) => position.status !== "closed")
-              .filter((position) => position.currentValue > 0)
-          );
-          for (const position of ledgerLivePositions) {
-            ledgerLiveByAsset.set(position.asset, position);
+          if (dailyCountsResult.status === "fulfilled") {
+            dailyTradeCounts = dailyCountsResult.value;
+          } else {
+            warnings.push({
+              code: "daily_trade_counts_unavailable",
+              message:
+                dailyCountsResult.reason instanceof Error
+                  ? dailyCountsResult.reason.message
+                  : String(dailyCountsResult.reason),
+            });
           }
-          closedPositions = coalesceWalletExecutionPositions(
-            positions.filter((position) => position.status === "closed")
-          );
-        } catch (err) {
-          warnings.push({
-            code: "positions_read_model_unavailable",
-            message: err instanceof Error ? err.message : String(err),
-          });
+          if (rowsResult.status === "rejected") {
+            warnings.push({
+              code: "positions_read_model_unavailable",
+              message:
+                rowsResult.reason instanceof Error
+                  ? rowsResult.reason.message
+                  : String(rowsResult.reason),
+            });
+          } else {
+            const rows = rowsResult.value;
+            const positions = rows.map((row) =>
+              toWalletExecutionPosition(row, capturedAt)
+            );
+            // Realized P/L is overlaid LATER (after all sources are merged) so
+            // the additive `mergeWalletExecutionPosition` can't double-count a
+            // token-level credit that's already applied to both the ledger row
+            // and the current-position row.
+            const ledgerLivePositions = coalesceWalletExecutionPositions(
+              positions
+                .filter((position) => position.status !== "closed")
+                .filter((position) => position.currentValue > 0)
+            );
+            for (const position of ledgerLivePositions) {
+              ledgerLiveByAsset.set(position.asset, position);
+            }
+            closedPositions = coalesceWalletExecutionPositions(
+              positions.filter((position) => position.status === "closed")
+            );
+          }
         }
 
         try {
@@ -262,6 +281,13 @@ export const GET = wrapRouteHandlerWithLogging(
           const currentLivePositions = currentPositions.positions.filter(
             (position) => position.status !== "closed" && position.currentValue > 0
           );
+          livePositionCount = currentPositions.summary.activeRows;
+          if (livePositionCount > currentLivePositions.length) {
+            warnings.push({
+              code: "positions_preview_truncated",
+              message: `Showing ${currentLivePositions.length} of ${livePositionCount} open positions.`,
+            });
+          }
           const currentClosedPositions = currentPositions.positions.filter(
             (position) => position.status === "closed" || position.currentValue <= 0
           );
@@ -333,20 +359,24 @@ export const GET = wrapRouteHandlerWithLogging(
         logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
           reqId: ctx.reqId,
           routeId: ctx.routeId,
-          status: warnings.some(
-            (warning) => warning.code === "positions_read_model_unavailable"
-          )
-            ? "positions_read_model_unavailable"
-            : warnings.some(
-                  (warning) =>
-                    warning.code === "current_positions_read_model_unavailable"
-                )
-              ? "current_positions_read_model_unavailable"
+          ...walletCompletionDiagnostics(
+            warnings.some(
+              (warning) => warning.code === "positions_read_model_unavailable"
+            )
+              ? "positions_read_model_unavailable"
               : warnings.some(
-                    (warning) => warning.code === "current_positions_stale"
+                    (warning) =>
+                      warning.code ===
+                      "current_positions_read_model_unavailable"
                   )
-                ? "current_positions_stale"
-                : "ok",
+                ? "current_positions_read_model_unavailable"
+                : warnings.some(
+                      (warning) => warning.code === "current_positions_stale"
+                    )
+                  ? "current_positions_stale"
+                  : "ok",
+            warnings.map((warning) => warning.code)
+          ),
           durationMs: Math.round(performance.now() - startedAtMs),
           outcome: "success",
           freshness,
@@ -355,7 +385,6 @@ export const GET = wrapRouteHandlerWithLogging(
           closed_positions: closedPositionsForResponse.length,
           closed_positions_total: closedPositions.length,
           daily_trade_days: dailyTradeCounts.length,
-          warnings: warnings.length,
         });
 
         return PolyWalletExecutionOutputSchema.parse({
@@ -364,6 +393,7 @@ export const GET = wrapRouteHandlerWithLogging(
           capturedAt: capturedAt.toISOString(),
           dailyTradeCounts,
           live_positions: livePositions,
+          live_position_count: livePositionCount,
           market_groups: marketGroups,
           closed_positions: closedPositionsForResponse,
           warnings,

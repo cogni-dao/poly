@@ -26,6 +26,7 @@ export * from "./poly.wallet.auto-wrap.v1.contract";
 export * from "./poly.wallet.balance.v1.contract";
 export * from "./poly.wallet.balances.v1.contract";
 export * from "./poly.wallet.connection.v1.contract";
+export * from "./poly.wallet.dashboard.v1.contract";
 export * from "./poly.wallet.enable-trading.v1.contract";
 export * from "./poly.wallet.execution.v1.contract";
 export * from "./poly.wallet.grants.v1.contract";

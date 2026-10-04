@@ -18,6 +18,9 @@
  *     rows until the next live_positions refetch confirms they are gone.
  *     Applies only when statusFilter==="live"; closed rows are sourced
  *     from closed_positions which is unaffected by close-action latency.
+ *   - MISSING_MODEL_IS_NOT_EMPTY: when the current-position read model is
+ *     unavailable, the Live count and empty state render as unavailable rather
+ *     than claiming there are zero open positions.
  * Side-effects: IO (React Query), clipboard (user-triggered).
  * Links: [fetchExecution](../_api/fetchExecution.ts)
  * @public
@@ -27,7 +30,13 @@
 
 import type { WalletExecutionMarketGroup } from "@cogni/poly-node-contracts";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { type ReactElement, useCallback, useMemo, useState } from "react";
+import {
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   MarketsDeltaDistribution,
   MarketsTable,
@@ -44,14 +53,26 @@ import {
   ToggleGroupItem,
 } from "@/components";
 import type { WalletPosition } from "@/features/wallet-analysis";
-import type { fetchExecution } from "../_api/fetchExecution";
 import {
   postClosePosition,
   postRedeemPosition,
 } from "../_api/fetchPositionActions";
-import { useDashboardExecution } from "../_hooks/useDashboardExecution";
+import {
+  useWalletDashboard,
+  invalidateWalletDashboardSnapshot,
+} from "../_hooks/useWalletDashboard";
 
 type ExecutionView = "positions" | "markets";
+
+const LIVE_POSITION_UNAVAILABLE_CODES = new Set([
+  "current_positions_wallet_missing",
+  "current_positions_never_observed",
+  "current_positions_read_model_unavailable",
+]);
+
+const CLOSED_POSITION_UNAVAILABLE_CODES = new Set([
+  "history_unavailable",
+]);
 
 export function ExecutionActivityCard(): ReactElement {
   const queryClient = useQueryClient();
@@ -88,12 +109,7 @@ export function ExecutionActivityCard(): ReactElement {
           (prev) => new Set([...prev, vars.position.positionId])
         );
       }
-      void queryClient.invalidateQueries({
-        queryKey: ["dashboard-wallet-execution"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["dashboard-trading-wallet"],
-      });
+      void invalidateWalletDashboardSnapshot(queryClient);
     },
     onError: (err: unknown) => {
       setPositionActionError(err instanceof Error ? err.message : String(err));
@@ -112,21 +128,32 @@ export function ExecutionActivityCard(): ReactElement {
     [positionAction]
   );
 
-  const reconcileRecentlyClosed = useCallback(
-    (data: Awaited<ReturnType<typeof fetchExecution>>) => {
-      const liveIds = new Set(data.live_positions.map((p) => p.positionId));
-      setRecentlyClosedIds((prev) => {
-        const next = new Set([...prev].filter((id) => liveIds.has(id)));
-        return next.size === prev.size ? prev : next;
-      });
-    },
-    []
-  );
-  const {
-    data: executionData,
-    isLoading: isExecutionLoading,
-    isError: isExecutionError,
-  } = useDashboardExecution({ onLiveData: reconcileRecentlyClosed });
+  const dashboard = useWalletDashboard();
+  const executionData = dashboard.data?.execution;
+  const actionsAllowed = dashboard.data?.facts.positions.actionsAllowed === true;
+  useEffect(() => {
+    if (!executionData) return;
+    const liveIds = new Set(
+      executionData.live_positions.map((position) => position.positionId)
+    );
+    setRecentlyClosedIds((prev) => {
+      const next = new Set([...prev].filter((id) => liveIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [executionData]);
+  const isExecutionLoading = dashboard.isLoading;
+  const isExecutionError = dashboard.isError;
+  const accessWarning =
+    dashboard.data?.overview.configured === false
+      ? {
+          code: "wallet_adapter_unconfigured",
+          message: "Trading-wallet execution is unavailable on this deployment.",
+        }
+      : executionData?.warnings.find((warning) =>
+          ["wallet_adapter_unconfigured", "no_trading_wallet"].includes(
+            warning.code
+          )
+        );
 
   const openPositions = useMemo<WalletPosition[]>(
     () =>
@@ -197,15 +224,27 @@ export function ExecutionActivityCard(): ReactElement {
       </CardHeader>
 
       <CardContent className="p-0">
-        {view === "positions" ? (
+        {accessWarning ? (
+          <p
+            className="px-5 py-6 text-center text-muted-foreground text-sm"
+            role="status"
+          >
+            {accessWarning.code === "no_trading_wallet"
+              ? "Connect a trading wallet from Money to see execution activity."
+              : "Trading-wallet execution is unavailable on this deployment."}
+          </p>
+        ) : view === "positions" ? (
           <PositionsPanel
             openPositions={openPositions}
+            livePositionCount={executionData?.live_position_count}
+            closedPositionCount={executionData?.closed_position_count}
             closedPositions={closedPositions}
             groups={executionData?.market_groups ?? []}
             warnings={executionData?.warnings ?? []}
             isLoading={isExecutionLoading}
             isError={isExecutionError}
-            onPositionAction={handlePositionAction}
+            onPositionAction={actionsAllowed ? handlePositionAction : undefined}
+            actionsAllowed={actionsAllowed}
             pendingActionPositionId={pendingActionPositionId}
             positionActionError={positionActionError}
           />
@@ -243,26 +282,45 @@ function MarketGroupsPanel({
     );
   }
 
+  const exposureUnavailable = warnings.some(
+    (warning) => warning.code === "market_exposure_unavailable"
+  );
+  const exposureTruncated = warnings.some(
+    (warning) => warning.code === "market_exposure_preview_truncated"
+  );
+
   return (
     <div className="space-y-3 px-5 pb-4">
       <div className="space-y-2">
         <h3 className="font-semibold text-muted-foreground text-xs uppercase tracking-wider">
           Markets
         </h3>
-        {warnings.some(
-          (warning) => warning.code === "market_exposure_unavailable"
-        ) ? (
-          <p className="text-muted-foreground text-xs">
-            Copy-target overlays are temporarily unavailable.
+        {exposureUnavailable ? (
+          <p
+            className="py-6 text-center text-muted-foreground text-sm"
+            role="status"
+          >
+            Market exposure temporarily unavailable.
           </p>
-        ) : null}
-        <MarketsDeltaDistribution groups={groups} statusFilter={statusFilter} />
-        <MarketsTable
-          groups={groups}
-          isLoading={isLoading}
-          statusFilter={statusFilter}
-          onStatusFilterChange={setStatusFilter}
-        />
+        ) : (
+          <>
+            {exposureTruncated ? (
+              <p className="text-muted-foreground text-xs" role="status">
+                Showing a bounded market-comparison preview.
+              </p>
+            ) : null}
+            <MarketsDeltaDistribution
+              groups={groups}
+              statusFilter={statusFilter}
+            />
+            <MarketsTable
+              groups={groups}
+              isLoading={isLoading}
+              statusFilter={statusFilter}
+              onStatusFilterChange={setStatusFilter}
+            />
+          </>
+        )}
       </div>
     </div>
   );
@@ -270,25 +328,30 @@ function MarketGroupsPanel({
 
 function PositionsPanel({
   openPositions,
+  livePositionCount,
+  closedPositionCount,
   closedPositions,
   groups,
   warnings,
   isLoading,
   isError,
   onPositionAction,
+  actionsAllowed,
   pendingActionPositionId,
   positionActionError,
 }: {
   openPositions: readonly WalletPosition[];
+  livePositionCount?: number | null | undefined;
+  closedPositionCount?: number | null | undefined;
   closedPositions: readonly WalletPosition[];
   groups: readonly WalletExecutionMarketGroup[];
   warnings: readonly { code: string; message: string }[];
   isLoading: boolean;
   isError: boolean;
-  onPositionAction: (
-    position: WalletPosition,
-    action: "close" | "redeem"
-  ) => void;
+  onPositionAction?:
+    | ((position: WalletPosition, action: "close" | "redeem") => void)
+    | undefined;
+  actionsAllowed: boolean;
   pendingActionPositionId: string | null;
   positionActionError: string | null;
 }): ReactElement {
@@ -304,6 +367,30 @@ function PositionsPanel({
 
   const isLive = statusFilter === "live";
   const positions = isLive ? openPositions : closedPositions;
+  const liveInventoryUnavailable = warnings.some((warning) =>
+    LIVE_POSITION_UNAVAILABLE_CODES.has(warning.code)
+  );
+  const closedInventoryUnavailable = warnings.some((warning) =>
+    CLOSED_POSITION_UNAVAILABLE_CODES.has(warning.code)
+  );
+  const selectedInventoryUnavailable = isLive
+    ? liveInventoryUnavailable
+    : closedInventoryUnavailable;
+  const previewTruncated = warnings.some(
+    (warning) => warning.code === "positions_preview_truncated"
+  );
+  const otherWarnings = warnings.some(
+    (warning) =>
+      ![
+        "positions_preview_truncated",
+        "market_exposure_unavailable",
+        "daily_trade_counts_unavailable",
+      ].includes(warning.code) &&
+      !(isLive
+        ? LIVE_POSITION_UNAVAILABLE_CODES
+        : CLOSED_POSITION_UNAVAILABLE_CODES
+      ).has(warning.code)
+  );
 
   return (
     <div className="space-y-3 px-5 pb-4">
@@ -311,10 +398,19 @@ function PositionsPanel({
         <h3 className="font-semibold text-muted-foreground text-xs uppercase tracking-wider">
           Positions
         </h3>
-        {isLive && warnings.length > 0 ? (
+        {isLive && previewTruncated ? (
+          <p className="text-muted-foreground text-xs">
+            Showing a bounded preview; the Live count is the exact full inventory.
+          </p>
+        ) : otherWarnings ? (
           <p className="text-muted-foreground text-xs">
             Some upstream data is temporarily unavailable, so a few rows may
             render with a shorter trace.
+          </p>
+        ) : null}
+        {isLive && !actionsAllowed && !liveInventoryUnavailable ? (
+          <p className="text-muted-foreground text-xs" role="status">
+            Position actions are paused until the inventory snapshot is fresh.
           </p>
         ) : null}
         {isLive && positionActionError ? (
@@ -322,11 +418,13 @@ function PositionsPanel({
             {positionActionError}
           </p>
         ) : null}
-        <PositionsDeltaDistribution
-          positions={positions}
-          groups={groups}
-          statusFilter={statusFilter}
-        />
+        {!selectedInventoryUnavailable ? (
+          <PositionsDeltaDistribution
+            positions={positions}
+            groups={groups}
+            statusFilter={statusFilter}
+          />
+        ) : null}
         <div className="flex flex-wrap items-center gap-2">
           <ToggleGroup
             type="single"
@@ -343,13 +441,17 @@ function PositionsPanel({
             <ToggleGroupItem value="live" className="gap-1.5">
               <span className="text-xs">Live</span>
               <span className="font-mono text-muted-foreground text-xs tabular-nums">
-                ({openPositions.length})
+                ({liveInventoryUnavailable
+                  ? "—"
+                  : (livePositionCount ?? openPositions.length)})
               </span>
             </ToggleGroupItem>
             <ToggleGroupItem value="closed" className="gap-1.5">
               <span className="text-xs">Closed</span>
               <span className="font-mono text-muted-foreground text-xs tabular-nums">
-                ({closedPositions.length})
+                ({closedInventoryUnavailable
+                  ? "—"
+                  : (closedPositionCount ?? closedPositions.length)})
               </span>
             </ToggleGroupItem>
           </ToggleGroup>
@@ -358,7 +460,11 @@ function PositionsPanel({
           <PositionsTable
             positions={positions}
             isLoading={isLoading}
-            emptyMessage="No open positions."
+            emptyMessage={
+              liveInventoryUnavailable
+                ? "Open positions unavailable."
+                : "No open positions."
+            }
             onPositionAction={onPositionAction}
             pendingActionPositionId={pendingActionPositionId}
           />
@@ -367,7 +473,11 @@ function PositionsPanel({
             positions={positions}
             isLoading={isLoading}
             variant="history"
-            emptyMessage="No closed positions yet."
+            emptyMessage={
+              closedInventoryUnavailable
+                ? "Closed position history unavailable."
+                : "No closed positions yet."
+            }
           />
         )}
       </div>

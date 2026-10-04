@@ -71,6 +71,8 @@ function makeDeps(logger: ReturnType<typeof makeLogger>, pollMs: number) {
   return {
     db: {} as never,
     client: {} as never,
+    listActiveTradingAddresses: async () => [],
+    readPositionBalances: async () => [],
     logger: logger as never,
     metrics: {} as never,
     pollMs,

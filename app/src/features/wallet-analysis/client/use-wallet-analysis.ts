@@ -23,6 +23,7 @@ import type {
   WalletAnalysisResponse,
   WalletAnalysisSnapshot,
   WalletAnalysisTrades,
+  WalletAnalysisWarning,
 } from "@cogni/poly-node-contracts";
 import { useQuery } from "@tanstack/react-query";
 
@@ -70,6 +71,8 @@ export type UseWalletAnalysisOptions = {
 export type UseWalletAnalysisResult = {
   /** Always non-null — partial fields stream in as slices arrive. */
   data: WalletAnalysisData;
+  /** Slice-level saved-fact availability failures returned with HTTP 200. */
+  warnings: WalletAnalysisWarning[];
   isLoading: {
     snapshot: boolean;
     trades: boolean;
@@ -160,6 +163,14 @@ export function useWalletAnalysis(
 
   return {
     data,
+    warnings: [
+      ...(snapshot.data?.warnings ?? []),
+      ...(trades.data?.warnings ?? []),
+      ...(balance.data?.warnings ?? []),
+      ...(pnl.data?.warnings ?? []),
+      ...(distributions.data?.warnings ?? []),
+      ...(benchmark.data?.warnings ?? []),
+    ],
     isLoading: {
       snapshot: snapshot.isLoading,
       trades: trades.isLoading,

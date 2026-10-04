@@ -48,24 +48,33 @@ import {
   type PolyWalletOverviewOutput,
   polyWalletOverviewOperation,
 } from "@cogni/poly-node-contracts";
+import { withTenantScope } from "@cogni/db-client";
+import { toUserId, userActor } from "@cogni/ids";
+import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer } from "@/bootstrap/container";
+import { resolveAppDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
-import {
-  getPolyTraderWalletAdapter,
-  WalletAdapterUnconfiguredError,
-} from "@/bootstrap/poly-trader-wallet";
+import { isPolyTraderWalletConfigured } from "@/bootstrap/poly-trader-wallet";
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
-import { getTradingWalletPnlHistory } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
+import { getTradingWalletPnlHistoryRead } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
+import {
+  readWalletBalanceFact,
+  hasTradingWallet,
+  WALLET_BALANCE_FRESHNESS_MS,
+} from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
-import { sumCashOnChain, sumWalletTotal } from "../_lib/cash-on-chain";
+import {
+  availableCashAfterReservations,
+  sumCashOnChain,
+  sumWalletTotal,
+} from "../_lib/cash-on-chain";
 import {
   coalesceCurrentWalletPositions,
   coalesceDashboardRoutePayload,
   coalesceTenantLedgerPositions,
-  coalesceWalletBalances,
   overviewRouteCacheKey,
 } from "../_lib/dashboard-route-cache";
 import {
@@ -73,6 +82,7 @@ import {
   DASHBOARD_LEDGER_POSITION_STATUSES,
   summarizeLedgerOrders,
 } from "../_lib/ledger-positions";
+import { walletCompletionDiagnostics } from "../_lib/wallet-completion-diagnostics";
 
 export const dynamic = "force-dynamic";
 
@@ -135,78 +145,85 @@ export const GET = wrapRouteHandlerWithLogging(
     const payload = await coalesceDashboardRoutePayload<PolyWalletOverviewOutput>(
       overviewRouteCacheKey(billingAccountId, interval, freshness),
       async () => {
-        const capturedAt = new Date().toISOString();
-
-        let adapter: ReturnType<typeof getPolyTraderWalletAdapter>;
-        try {
-          adapter = getPolyTraderWalletAdapter(ctx.log);
-        } catch (err) {
-          if (err instanceof WalletAdapterUnconfiguredError) {
-            logOverviewComplete(ctx, startedAtMs, {
-              status: "wallet_adapter_unconfigured",
-              interval,
-              freshness,
-              connected: false,
-              warnings: 1,
-              openOrders: null,
-              positionsMtm: null,
-              lockedUsdc: null,
-              pnlPoints: 0,
-            });
-            return emptyPayload(interval, capturedAt, {
-              configured: false,
-              freshness,
-              warnings: [
-                {
-                  code: "wallet_adapter_unconfigured",
-                  message:
-                    "Trading-wallet adapter is not configured on this pod yet.",
-                },
-              ],
-            });
-          }
-          throw err;
-        }
-
-        // BALANCES_OFF_FIRST_PAINT (task.5010): 30s-TTL cached + coalesced;
-        // a cold route-cache hit reuses warm balances instead of blocking on
-        // 3 Polygon RPC calls. Refresh evicts; degraded reads aren't cached.
-        const balances = await coalesceWalletBalances(billingAccountId, () =>
-          adapter.getBalances(billingAccountId)
+        const requestedAt = new Date();
+        const appDb = resolveAppDb() as unknown as PostgresJsDatabase<
+          Record<string, unknown>
+        >;
+        const balances = await withTenantScope(
+          appDb,
+          userActor(toUserId(sessionUser.id)),
+          async (tx) => readWalletBalanceFact(tx, billingAccountId)
         );
-        if (!balances) {
+        if (!hasTradingWallet(balances)) {
           logOverviewComplete(ctx, startedAtMs, {
             status: "no_trading_wallet",
             interval,
             freshness,
             connected: false,
-            warnings: 1,
+            warnings: ["no_trading_wallet"],
             openOrders: null,
             positionsMtm: null,
             lockedUsdc: null,
             pnlPoints: 0,
           });
-          return emptyPayload(interval, capturedAt, {
+          return emptyPayload(interval, requestedAt.toISOString(), {
+            configured: isPolyTraderWalletConfigured(),
+            connected: false,
+            address: null,
             freshness,
             warnings: [
               {
                 code: "no_trading_wallet",
                 message:
-                  "No Polymarket trading wallet is provisioned for this account yet.",
+                  "No Polymarket trading wallet is provisioned for this account.",
               },
             ],
           });
         }
 
-        const warnings: PolyWalletOverviewOutput["warnings"] = [
-          ...balances.errors.map((message) => ({
-            code: "balances_partial",
-            message,
-          })),
-        ];
+        const balanceStale =
+          balances.kind === "available" &&
+          requestedAt.getTime() - balances.observedAt.getTime() >
+            WALLET_BALANCE_FRESHNESS_MS;
+        const capturedAt = requestedAt.toISOString();
+        const warnings: PolyWalletOverviewOutput["warnings"] = [];
+        if (balances.kind === "missing") {
+          warnings.push({
+            code: "balance_snapshot_missing",
+            message:
+              "No persisted wallet balance observation is available yet; this is not a zero balance.",
+          });
+        } else {
+          warnings.push(
+            ...balances.errors.map((message: string) => ({
+              code:
+                balances.status === "error"
+                  ? "balances_unavailable"
+                  : "balances_partial",
+              message,
+            }))
+          );
+        }
+        if (balances.kind === "available" && balanceStale) {
+          warnings.push({
+            code: "balances_stale",
+            message: `Wallet balances are older than the 10-minute freshness window (observed ${balances.observedAt.toISOString()}).`,
+          });
+        } else if (
+          balances.kind === "available" &&
+          balances.status === "error"
+        ) {
+          warnings.push({
+            code: "balances_unavailable",
+            message: "All persisted on-chain balance legs are unavailable.",
+          });
+        }
 
-        const capturedAtDate = new Date(capturedAt);
-        let positionSummary = summarizeLedgerOrders([], capturedAtDate);
+        const capturedAtDate = requestedAt;
+        // Null means the ledger read itself failed. A successful read with no
+        // rows produces a real zero summary; those states must not collapse.
+        let positionSummary: ReturnType<typeof summarizeLedgerOrders> | null =
+          null;
         let currentPositionSummary: {
           positionsMtm: number;
           syncedAt: string | null;
@@ -280,24 +297,49 @@ export const GET = wrapRouteHandlerWithLogging(
         // never zero out the wallet. Cash is null only when NO on-chain read
         // succeeded (both null → RPC down / unconfigured), so the dashboard
         // degrades to "—" instead of falsely claiming an empty wallet.
-        const cashOnChain = sumCashOnChain(balances.usdcE, balances.pusd);
+        const cashOnChain = balances.kind !== "available" || balanceStale
+          ? null
+          : sumCashOnChain(balances.usdcE, balances.pusd);
+        const availableRaw = availableCashAfterReservations(
+          cashOnChain,
+          positionSummary?.lockedUsdc ?? null
+        );
         const usdcAvailable =
-          cashOnChain !== null
-            ? roundToCents(Math.max(0, cashOnChain - positionSummary.lockedUsdc))
-            : cashOnChain;
-        // TOTAL_IS_CASH_NULL_SAFE (see sumWalletTotal): gate on cash only; absent
-        // positions contribute 0, not null, so a funded wallet is never "empty".
+          availableRaw !== null ? roundToCents(availableRaw) : null;
+        // TOTAL_REQUIRES_COMPLETE_INVENTORY (see sumWalletTotal): cash remains
+        // independently visible, but a cash-only subtotal must never be labeled
+        // Total while the position inventory is absent or stale.
         const totalRaw = sumWalletTotal(cashOnChain, positionsMtm);
         const total = totalRaw !== null ? roundToCents(totalRaw) : null;
         let pnlHistory: PolyWalletOverviewOutput["pnlHistory"] = [];
         if (freshness === "live") {
           try {
-            pnlHistory = await getTradingWalletPnlHistory({
+            const pnlRead = await getTradingWalletPnlHistoryRead({
               db: container.serviceDb,
               address: balances.address,
               interval,
               capturedAt,
             });
+            pnlHistory = pnlRead.points;
+            if (pnlRead.status === "wallet_missing") {
+              warnings.push({
+                code: "pnl_history_wallet_missing",
+                message:
+                  "P/L history is unavailable because this trading wallet is not enrolled in the observer read model.",
+              });
+            } else if (pnlRead.status === "no_history") {
+              warnings.push({
+                code: "pnl_history_no_history",
+                message:
+                  "No saved P/L history is available for the selected interval yet.",
+              });
+            } else if (pnlRead.status === "stale") {
+              pnlHistory = [];
+              warnings.push({
+                code: "pnl_history_stale",
+                message: `Saved P/L history is older than the 10-minute freshness window (last observed ${pnlRead.observedAt ?? "unknown"}).`,
+              });
+            }
           } catch (err) {
             warnings.push({
               code: "pnl_history_unavailable",
@@ -313,48 +355,75 @@ export const GET = wrapRouteHandlerWithLogging(
             ? "positions_read_model_unavailable"
             : warnings.some(
                   (warning) =>
-                    warning.code === "current_positions_read_model_unavailable"
+                    warning.code === "current_positions_wallet_missing"
                 )
-              ? "current_positions_read_model_unavailable"
+              ? "current_positions_wallet_missing"
               : warnings.some(
-                    (warning) => warning.code === "current_positions_stale"
+                    (warning) =>
+                      warning.code ===
+                      "current_positions_read_model_unavailable"
                   )
-                ? "current_positions_stale"
+                ? "current_positions_read_model_unavailable"
                 : warnings.some(
-                      (warning) => warning.code === "pnl_history_unavailable"
+                      (warning) => warning.code === "current_positions_stale"
                     )
-                  ? "pnl_history_unavailable"
-                  : warnings.some((warning) => warning.code === "balances_partial")
-                    ? "balances_partial"
-                    : "ok",
+                  ? "current_positions_stale"
+                  : warnings.some(
+                        (warning) =>
+                          warning.code === "pnl_history_unavailable" ||
+                          warning.code === "pnl_history_wallet_missing"
+                      )
+                    ? "pnl_history_unavailable"
+                    : warnings.some(
+                          (warning) => warning.code === "pnl_history_stale"
+                        )
+                      ? "pnl_history_stale"
+                    : warnings.some(
+                          (warning) =>
+                            warning.code === "pnl_history_no_history"
+                        )
+                      ? "pnl_history_no_history"
+                      : warnings.some(
+                            (warning) => warning.code === "balances_partial"
+                          )
+                        ? "balances_partial"
+                        : "ok",
           interval,
           freshness,
           connected: true,
-          warnings: warnings.length,
-          openOrders: positionSummary.openOrders,
+          warnings: warnings.map((warning) => warning.code),
+          openOrders: positionSummary?.openOrders ?? null,
           positionsMtm,
-          lockedUsdc: positionSummary.lockedUsdc,
+          lockedUsdc: positionSummary?.lockedUsdc ?? null,
           pnlPoints: pnlHistory.length,
         });
 
         return polyWalletOverviewOperation.output.parse({
-          configured: true,
+          configured: isPolyTraderWalletConfigured(),
           connected: true,
           freshness,
           address: balances.address,
           interval,
           capturedAt,
-          pol_gas: balances.pol,
+          pol_gas:
+            balances.kind !== "available" || balanceStale
+              ? null
+              : balances.pol,
           usdc_available: usdcAvailable,
-          usdc_locked: positionSummary.lockedUsdc,
+          usdc_locked: positionSummary?.lockedUsdc ?? null,
           usdc_positions_mtm: positionsMtm,
           usdc_total: total,
-          open_orders: positionSummary.openOrders,
+          open_orders: positionSummary?.openOrders ?? null,
           positions_synced_at:
-            currentPositionSummary?.syncedAt ?? positionSummary.syncedAt,
+            currentPositionSummary?.syncedAt ??
+            positionSummary?.syncedAt ??
+            null,
           positions_sync_age_ms:
-            currentPositionSummary?.syncAgeMs ?? positionSummary.syncAgeMs,
-          positions_stale: currentPositionSummary?.stale ?? positionSummary.stale,
+            currentPositionSummary?.syncAgeMs ??
+            positionSummary?.syncAgeMs ??
+            null,
+          positions_stale:
+            currentPositionSummary?.stale ?? positionSummary?.stale ?? false,
           pnlHistory,
           warnings,
         });
@@ -377,23 +446,28 @@ function logOverviewComplete(
     interval: PolyWalletOverviewOutput["interval"];
     freshness: PolyWalletOverviewOutput["freshness"];
     connected: boolean;
-    warnings: number;
+    warnings: readonly string[];
     openOrders: number | null;
     positionsMtm: number | null;
     lockedUsdc: number | null;
     pnlPoints: number;
   }
 ): void {
+  const diagnostics = walletCompletionDiagnostics(
+    fields.status,
+    fields.warnings
+  );
   logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_OVERVIEW_COMPLETE, {
     reqId: ctx.reqId,
     routeId: ctx.routeId,
-    status: fields.status,
+    status: diagnostics.status,
     durationMs: Math.round(performance.now() - startedAtMs),
     outcome: "success",
     interval: fields.interval,
     freshness: fields.freshness,
     connected: fields.connected,
-    warnings: fields.warnings,
+    warnings: diagnostics.warnings,
+    warning_codes: diagnostics.warning_codes,
     open_orders: fields.openOrders,
     positions_mtm: fields.positionsMtm,
     locked_usdc: fields.lockedUsdc,

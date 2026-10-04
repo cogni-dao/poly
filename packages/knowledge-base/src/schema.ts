@@ -284,8 +284,14 @@ export const workItems = pgTable(
     deployVerified: boolean("deploy_verified").notNull().default(false),
 
     // Governance runner locking (vestigial in v0)
+    // Principal ownership is immutable after create. Nullable only so existing
+    // pre-ownership rows migrate safely; mutation policy treats NULL as
+    // unowned and therefore non-mutable (fail closed).
+    createdByPrincipalId: text("created_by_principal_id"),
     claimedByRun: text("claimed_by_run"),
+    claimOwnerPrincipalId: text("claim_owner_principal_id"),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
     lastCommand: text("last_command"),
 
     // Structured arrays (jsonb for v0)

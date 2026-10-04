@@ -6,7 +6,7 @@
  * Purpose: HTTP endpoint for claiming and releasing work items.
  * Scope: Auth-protected POST/DELETE endpoints. Does not contain business logic.
  * Invariants: VALIDATE_IO, PORT_VIA_FACADE
- * Side-effects: IO (HTTP response, filesystem write via port)
+ * Side-effects: IO (HTTP response, Doltgres write via port)
  * @public
  */
 
@@ -16,7 +16,9 @@ import { z } from "zod";
 import {
   claimWorkItem,
   releaseWorkItem,
+  WorkItemLeaseConflictError,
   WorkItemNotFoundError,
+  WorkItemsBackendNotReadyError,
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -37,8 +39,11 @@ export const POST = wrapRouteHandlerWithLogging<{
   params: Promise<{ id: string }>;
 }>(
   { routeId: "work.items.claim", auth: { mode: "required", getSessionUser } },
-  async (ctx, request, _sessionUser, context) => {
+  async (ctx, request, sessionUser, context) => {
     if (!context) throw new Error("context required for dynamic routes");
+    if (!sessionUser) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    }
     const { id } = await context.params;
 
     let body: unknown;
@@ -54,7 +59,11 @@ export const POST = wrapRouteHandlerWithLogging<{
     }
 
     try {
-      const result = await claimWorkItem({ id, ...parsed.data });
+      const result = await claimWorkItem({
+        id,
+        ...parsed.data,
+        principalId: sessionUser.id,
+      });
       ctx.log.info(
         { workItemId: id, runId: parsed.data.runId },
         "work.items.claim_success"
@@ -63,6 +72,12 @@ export const POST = wrapRouteHandlerWithLogging<{
     } catch (error) {
       if (error instanceof WorkItemNotFoundError) {
         return NextResponse.json({ error: error.message }, { status: 404 });
+      }
+      if (error instanceof WorkItemLeaseConflictError) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+      if (error instanceof WorkItemsBackendNotReadyError) {
+        return NextResponse.json({ error: error.message }, { status: 503 });
       }
       throw error;
     }
@@ -73,8 +88,11 @@ export const DELETE = wrapRouteHandlerWithLogging<{
   params: Promise<{ id: string }>;
 }>(
   { routeId: "work.items.release", auth: { mode: "required", getSessionUser } },
-  async (ctx, request, _sessionUser, context) => {
+  async (ctx, request, sessionUser, context) => {
     if (!context) throw new Error("context required for dynamic routes");
+    if (!sessionUser) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    }
     const { id } = await context.params;
     const url = new URL(request.url);
 
@@ -86,7 +104,11 @@ export const DELETE = wrapRouteHandlerWithLogging<{
     }
 
     try {
-      const result = await releaseWorkItem({ id, runId: parsed.data.runId });
+      const result = await releaseWorkItem({
+        id,
+        runId: parsed.data.runId,
+        principalId: sessionUser.id,
+      });
       ctx.log.info(
         { workItemId: id, runId: parsed.data.runId },
         "work.items.release_success"
@@ -95,6 +117,12 @@ export const DELETE = wrapRouteHandlerWithLogging<{
     } catch (error) {
       if (error instanceof WorkItemNotFoundError) {
         return NextResponse.json({ error: error.message }, { status: 404 });
+      }
+      if (error instanceof WorkItemLeaseConflictError) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+      if (error instanceof WorkItemsBackendNotReadyError) {
+        return NextResponse.json({ error: error.message }, { status: 503 });
       }
       throw error;
     }
