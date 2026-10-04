@@ -12,30 +12,66 @@
     "path": "docs/porting/poly-parity-contract.md",
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
-  "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "c7c7d8de7c60858aa58decf3330ae3f2019d73a9bf91d1ae4c54ca483636686f",
+  "proofRefreshPending": [
+    {
+      "taskId": "task.5176",
+      "prNumber": 124,
+      "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
+      "target": {
+        "path": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
+        "blob": "4cb6bbc67f1d85d1e67e3ed074af08f7da439187",
+        "mode": "100644",
+        "digest": "06508118df195be9fca37ef7e32a268c65f77d24a0758e0b85310f45b6039ed1"
+      },
+      "gateTargets": [
+        {
+          "id": "hub.work_item_create",
+          "targetDigest": "510f36cb7acb73261fcf21eea7e4059b33bb0303fe980ffa19ad44295ff070a9",
+          "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
+        },
+        {
+          "id": "hub.work_item_mutation",
+          "targetDigest": "510f36cb7acb73261fcf21eea7e4059b33bb0303fe980ffa19ad44295ff070a9",
+          "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
+        },
+        {
+          "id": "hub.work_item_source_of_truth",
+          "targetDigest": "510f36cb7acb73261fcf21eea7e4059b33bb0303fe980ffa19ad44295ff070a9",
+          "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
+        }
+      ],
+      "historicalProofsDigest": "1c89771e6c555d2d1898bd672b03c331a04b1831e4ba1238e4943475e5466fe0",
+      "openedAt": "2026-10-04T03:10:00Z",
+      "requiredProofEnvironments": [
+        "candidate",
+        "production"
+      ]
+    }
+  ],
+  "policySha256": "43dda9f9ffb2ebb7315605337758a7cdd5bdc12be4542480b8a19df3d2b31f52",
+  "targetTreeDigest": "8116b9904efa7544715f1417c611cdaba10c54119657078eda7658fbc4112798",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1084,
-    "unresolved": 602,
+    "targetOnlyFiles": 1090,
+    "unresolved": 605,
     "byStatus": {
-      "exact": 1126,
+      "exact": 1124,
       "retired": 1,
-      "unresolved": 602,
-      "upgraded": 7
+      "unresolved": 605,
+      "upgraded": 6
     },
     "unresolvedByPriority": {
-      "P0": 20,
+      "P0": 21,
       "P1": 51,
       "P2": 281,
-      "P3": 250
+      "P3": 252
     },
     "missionFiles": 79,
-    "missionResolved": 8,
+    "missionResolved": 7,
     "deliveryGroups": 7,
     "behavioralGates": 7,
-    "unresolvedBehavioralGates": 4
+    "unresolvedBehavioralGates": 7
   },
   "deliveryGroups": [
     {
@@ -58,9 +94,9 @@
         "app/src/ports/work-items-doltgres.port.ts"
       ],
       "files": 8,
-      "resolved": 8,
+      "resolved": 7,
       "gates": 3,
-      "gatesPassed": 3
+      "gatesPassed": 0
     },
     {
       "id": "saved-facts",
@@ -368,9 +404,9 @@
           ]
         }
       ],
-      "currentTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
-      "status": "passed",
-      "unresolvedReason": null
+      "currentTargetDigest": "510f36cb7acb73261fcf21eea7e4059b33bb0303fe980ffa19ad44295ff070a9",
+      "status": "unresolved",
+      "unresolvedReason": "proof_refresh_pending"
     },
     {
       "id": "hub.work_item_mutation",
@@ -427,9 +463,9 @@
           ]
         }
       ],
-      "currentTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
-      "status": "passed",
-      "unresolvedReason": null
+      "currentTargetDigest": "510f36cb7acb73261fcf21eea7e4059b33bb0303fe980ffa19ad44295ff070a9",
+      "status": "unresolved",
+      "unresolvedReason": "proof_refresh_pending"
     },
     {
       "id": "hub.work_item_source_of_truth",
@@ -486,9 +522,9 @@
           ]
         }
       ],
-      "currentTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
-      "status": "passed",
-      "unresolvedReason": null
+      "currentTargetDigest": "510f36cb7acb73261fcf21eea7e4059b33bb0303fe980ffa19ad44295ff070a9",
+      "status": "unresolved",
+      "unresolvedReason": "proof_refresh_pending"
     }
   ],
   "entries": [
@@ -1639,13 +1675,13 @@
       "sourceBlob": "740a4e68a2f6c899c1e69fd244998cdbf2a76def",
       "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
       "targetPath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
-      "targetBlob": "d3076c17b720b12f68204a442d54a53012deb560",
+      "targetBlob": "4cb6bbc67f1d85d1e67e3ed074af08f7da439187",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "deliveryGroup": "hub-control-plane",
-      "status": "upgraded",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "proof_refresh_pending",
       "resolution": {
         "rationale": "The node-local adapter adds guarded Dolt branch operations, lease commands, timeouts, and recovery required by the current Hub contract.",
         "behaviorExpectation": "CRUD and coordination operations commit safely and remain observable across retries and restarts.",
@@ -4049,7 +4085,7 @@
       "sourceBlob": "a115d6ddb86f2eaeb9bc7f1f1e68a79dbdcf1489",
       "sourcePath": "app/src/app/(app)/AGENTS.md",
       "targetPath": "app/src/app/(app)/AGENTS.md",
-      "targetBlob": "c7d0da0035ac97c568d0e06b20e2cbffee1411c8",
+      "targetBlob": "91a3785d9695fc64ee5ef07a3610446be1695aa3",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -5169,13 +5205,13 @@
       "sourceBlob": "d5a0fef2ec0d8b5f0b061723b2e3382b744049a3",
       "sourcePath": "app/src/app/(app)/work/_api/fetchWorkItems.ts",
       "targetPath": "app/src/app/(app)/work/_api/fetchWorkItems.ts",
-      "targetBlob": "d5a0fef2ec0d8b5f0b061723b2e3382b744049a3",
+      "targetBlob": "554929f2d6a1dbf60f951728131a0180c5cb38ef",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "content_differs",
       "resolution": null
     },
     {
@@ -5197,7 +5233,7 @@
       "sourceBlob": "fd6bb45969f6d915bb35ef3a938e8fa30970da7a",
       "sourcePath": "app/src/app/(app)/work/_components/WorkItemDetail.tsx",
       "targetPath": "app/src/app/(app)/work/_components/WorkItemDetail.tsx",
-      "targetBlob": "4e5f912f419d2545bdbd156b34c92942e90ecddc",
+      "targetBlob": "6b64fc95c0b3e890924024a9222642cfd18e4206",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -5267,7 +5303,7 @@
       "sourceBlob": "ce3fb817c68c85dea7f277980a2679058cb5a67b",
       "sourcePath": "app/src/app/(app)/work/view.tsx",
       "targetPath": "app/src/app/(app)/work/view.tsx",
-      "targetBlob": "7ef13c641c90f1e5d48da3c80db2d4b931682c13",
+      "targetBlob": "06c7d37f57fc3cb3ef85e57a1511eac43d5915b1",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -8435,13 +8471,13 @@
       "sourceBlob": "dfd2b260afd42950e6a0c7fef00ff242764b5ea1",
       "sourcePath": "app/src/components/AGENTS.md",
       "targetPath": "app/src/components/AGENTS.md",
-      "targetBlob": "dfd2b260afd42950e6a0c7fef00ff242764b5ea1",
+      "targetBlob": "d31c43e20020f81a843e96c517afbe70f71cfc06",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "content_differs",
       "resolution": null
     },
     {
@@ -8575,7 +8611,7 @@
       "sourceBlob": "46216625fd9809b75c7a4a3051a09a538133613c",
       "sourcePath": "app/src/components/index.ts",
       "targetPath": "app/src/components/index.ts",
-      "targetBlob": "afd9dc6b9ebd9d193decc073848c2443b4046fd3",
+      "targetBlob": "5a7c9ecd394c61ce84c7248b614614a3aff8c42e",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -25613,6 +25649,12 @@
       "targetPath": "app/src/app/(app)/knowledge/view.tsx"
     },
     {
+      "targetPath": "app/src/app/(app)/work/_lib/workItemNavigation.ts"
+    },
+    {
+      "targetPath": "app/src/app/(app)/work/items/[id]/page.tsx"
+    },
+    {
       "targetPath": "app/src/app/(infra)/openapi.json/route.test.ts"
     },
     {
@@ -26043,6 +26085,18 @@
     },
     {
       "targetPath": "app/tests/unit/app/knowledge/loaders.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/work/fetch-work-item.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/work/work-item-detail.test.tsx"
+    },
+    {
+      "targetPath": "app/tests/unit/app/work/work-item-navigation.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/work/work-item-page.test.tsx"
     },
     {
       "targetPath": "app/tests/unit/auth/attested-signin.test.ts"

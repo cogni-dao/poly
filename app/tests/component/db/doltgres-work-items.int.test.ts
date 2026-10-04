@@ -246,7 +246,9 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		});
 		const id = toWorkItemId("task.9502");
 		const knowledgeId = "component-dirty-knowledge";
+		const knowledgeBranch = "knowledge-component-dirty";
 		const principalId = "doltgres-scoped-staging-agent";
+		const knowledgeSql = postgres(dbUrl, { max: 1, fetch_types: false });
 		let workItemCreated = false;
 		let before = "";
 		let beforeBranches: ReadonlyArray<Record<string, unknown>> = [];
@@ -264,7 +266,10 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			beforeStatus = await sql.unsafe(
 				"SELECT table_name, staged FROM dolt.status ORDER BY table_name",
 			);
-			await sql.unsafe(
+			await knowledgeSql.unsafe(
+				`SELECT dolt_checkout('-b', '${knowledgeBranch}', 'main')`,
+			);
+			await knowledgeSql.unsafe(
 				`INSERT INTO knowledge (id, domain, title, content, source_type) VALUES ('${knowledgeId}', 'poly', 'Dirty fixture', 'Must remain outside work-item commit', 'agent')`,
 			);
 
@@ -285,17 +290,29 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				),
 			).resolves.toHaveLength(0);
 			await expect(
-				sql.unsafe(
+				knowledgeSql.unsafe(
 					`SELECT table_name FROM dolt.status WHERE table_name = 'knowledge'`,
 				),
 			).resolves.toHaveLength(1);
 			await expect(
-				sql.unsafe(`SELECT id FROM knowledge WHERE id = '${knowledgeId}'`),
+				knowledgeSql.unsafe(
+					`SELECT id FROM knowledge WHERE id = '${knowledgeId}'`,
+				),
 			).resolves.toHaveLength(1);
 		} finally {
 			if (workItemCreated) {
 				await adapter.delete(id, principalId).catch(() => undefined);
 			}
+			await knowledgeSql
+				.unsafe("SELECT dolt_reset('--hard', 'HEAD')")
+				.catch(() => undefined);
+			await knowledgeSql
+				.unsafe("SELECT dolt_checkout('main')")
+				.catch(() => undefined);
+			await knowledgeSql
+				.unsafe(`SELECT dolt_branch('-D', '${knowledgeBranch}')`)
+				.catch(() => undefined);
+			await knowledgeSql.end({ timeout: 0 });
 			await sql.unsafe("SELECT dolt_checkout('main')").catch(() => undefined);
 			if (before) {
 				await sql.unsafe(`SELECT dolt_reset('--hard', '${before}')`);

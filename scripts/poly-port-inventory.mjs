@@ -251,20 +251,52 @@ function validateProof(proof, context, { gate = false } = {}) {
 
 function validateProofCoverage(proofs, environments, context, options) {
   const seen = new Set();
+  const coveredEnvironments = new Set();
   for (const proof of proofs) {
     validateProof(proof, context, options);
+    const proofKey = `${proof.expectedTargetDigest}:${proof.environment}`;
     invariant(
-      !seen.has(proof.environment),
-      `${context} has duplicate ${proof.environment} proof`
+      !seen.has(proofKey),
+      `${context} has duplicate ${proof.environment} proof for ${proof.expectedTargetDigest}`
     );
-    seen.add(proof.environment);
+    seen.add(proofKey);
+    coveredEnvironments.add(proof.environment);
   }
   for (const environment of environments) {
     invariant(
-      seen.has(environment),
+      coveredEnvironments.has(environment),
       `${context} is missing required ${environment} proof`
     );
   }
+}
+
+function proofHistoryDigest(proofs, currentTargetDigest) {
+  return sha256(
+    JSON.stringify(
+      proofs.filter(
+        (proof) => proof.expectedTargetDigest !== currentTargetDigest
+      )
+    )
+  );
+}
+
+function targetDigest(sourcePath, targetPath, target) {
+  return sha256(
+    `${sourcePath}\0${targetPath}\0${target.mode ?? "-"}\0${target.blob ?? "-"}`
+  );
+}
+
+function worktreeGateDigest(gate, policy, root) {
+  return sha256(
+    gate.coveredSourcePaths
+      .map((sourcePath) => {
+        const targetPath = mappedTargetPath(sourcePath, policy);
+        const target = worktreeFile(targetPath, root);
+        return `${sourcePath}\0${targetPath}\0${target.mode ?? "-"}\0${target.blob ?? "-"}`;
+      })
+      .sort(compareText)
+      .join("\n")
+  );
 }
 
 export function validatePolicy(
@@ -439,14 +471,15 @@ export function validatePolicy(
         `${context} covers ${sourcePath} outside ${gate.deliveryGroup}`
       );
     }
-    const gateProofEnvironments = new Set();
+    const gateProofKeys = new Set();
     for (const proof of gate.proofs) {
       validateProof(proof, context, { gate: true });
+      const proofKey = `${proof.expectedTargetDigest}:${proof.environment}`;
       invariant(
-        !gateProofEnvironments.has(proof.environment),
-        `${context} has duplicate ${proof.environment} proof`
+        !gateProofKeys.has(proofKey),
+        `${context} has duplicate ${proof.environment} proof for ${proof.expectedTargetDigest}`
       );
-      gateProofEnvironments.add(proof.environment);
+      gateProofKeys.add(proofKey);
     }
   }
   invariant(
@@ -477,14 +510,150 @@ export function validatePolicy(
       );
     }
   }
-  return { groups, groupedPaths };
+
+  const pendingBySource = new Map();
+  const pendingGateIds = new Set();
+  for (const marker of policy.proofRefreshPending ?? []) {
+    const context = `Proof refresh ${marker.taskId ?? "<unknown>"}`;
+    invariant(/^task\.\d+$/.test(marker.taskId ?? ""), `${context} has invalid taskId`);
+    invariant(
+      Number.isInteger(marker.prNumber) && marker.prNumber > 0,
+      `${context} has invalid prNumber`
+    );
+    invariant(
+      typeof marker.openedAt === "string" && !Number.isNaN(Date.parse(marker.openedAt)),
+      `${context} has invalid openedAt`
+    );
+    invariant(marker.sourcePath, `${context} missing sourcePath`);
+    invariant(
+      !pendingBySource.has(marker.sourcePath),
+      `${context} duplicates pending source ${marker.sourcePath}`
+    );
+    const resolution = policy.resolutions.find(
+      ({ sourcePath }) => sourcePath === marker.sourcePath
+    );
+    invariant(resolution, `${context} has no matching resolution`);
+    const group = groups.get(resolution.deliveryGroup);
+    invariant(
+      JSON.stringify(marker.requiredProofEnvironments) ===
+        JSON.stringify(group.requiredProofEnvironments),
+      `${context} proof environments differ from ${group.id}`
+    );
+    const expectedTargetPath = mappedTargetPath(marker.sourcePath, policy);
+    const currentTarget = worktreeFile(expectedTargetPath, root);
+    invariant(
+      marker.target?.path === expectedTargetPath &&
+        marker.target?.blob === currentTarget.blob &&
+        marker.target?.mode === currentTarget.mode,
+      `${context} target pin differs from the current worktree`
+    );
+    invariant(
+      marker.target.digest ===
+        targetDigest(marker.sourcePath, expectedTargetPath, currentTarget),
+      `${context} target digest is stale`
+    );
+    invariant(
+      resolution.target?.path === marker.target.path &&
+        resolution.target?.blob === marker.target.blob &&
+        resolution.target?.mode === marker.target.mode,
+      `${context} resolution target does not match the pending target`
+    );
+    invariant(
+      marker.historicalProofsDigest ===
+        proofHistoryDigest(resolution.proofs, marker.target.digest),
+      `${context} historical file proofs changed`
+    );
+    const historicalFileEnvironments = new Set(
+      resolution.proofs
+        .filter((proof) => proof.expectedTargetDigest !== marker.target.digest)
+        .map((proof) => proof.environment)
+    );
+    for (const environment of marker.requiredProofEnvironments) {
+      invariant(
+        historicalFileEnvironments.has(environment),
+        `${context} did not preserve historical ${environment} file proof`
+      );
+    }
+    const currentFileEnvironments = new Set(
+      resolution.proofs
+        .filter((proof) => proof.expectedTargetDigest === marker.target.digest)
+        .map((proof) => proof.environment)
+    );
+    invariant(
+      marker.requiredProofEnvironments.some(
+        (environment) => !currentFileEnvironments.has(environment)
+      ),
+      `${context} is complete and must remove its pending marker`
+    );
+
+    const markerGateIds = (marker.gateTargets ?? [])
+      .map(({ id }) => id)
+      .sort(compareText);
+    invariant(
+      JSON.stringify(markerGateIds) ===
+        JSON.stringify([...resolution.behaviorGateIds].sort(compareText)),
+      `${context} gate IDs differ from the affected resolution gates`
+    );
+    for (const gateTarget of marker.gateTargets) {
+      invariant(
+        !pendingGateIds.has(gateTarget.id),
+        `${context} duplicates pending gate ${gateTarget.id}`
+      );
+      const gate = policy.behavioralGates.find(({ id }) => id === gateTarget.id);
+      invariant(gate, `${context} references unknown gate ${gateTarget.id}`);
+      const currentGateDigest = worktreeGateDigest(gate, policy, root);
+      invariant(
+        gateTarget.targetDigest === currentGateDigest,
+        `${context} gate digest is stale: ${gateTarget.id}`
+      );
+      invariant(
+        gateTarget.historicalProofsDigest ===
+          proofHistoryDigest(gate.proofs, currentGateDigest),
+        `${context} historical gate proofs changed: ${gateTarget.id}`
+      );
+      const historicalGateEnvironments = new Set(
+        gate.proofs
+          .filter((proof) => proof.expectedTargetDigest !== currentGateDigest)
+          .map((proof) => proof.environment)
+      );
+      for (const environment of marker.requiredProofEnvironments) {
+        invariant(
+          historicalGateEnvironments.has(environment),
+          `${context} did not preserve historical ${environment} proof for ${gateTarget.id}`
+        );
+      }
+      const currentGateEnvironments = new Set(
+        gate.proofs
+          .filter((proof) => proof.expectedTargetDigest === currentGateDigest)
+          .map((proof) => proof.environment)
+      );
+      invariant(
+        marker.requiredProofEnvironments.some(
+          (environment) => !currentGateEnvironments.has(environment)
+        ),
+        `${context} gate ${gateTarget.id} is complete and must remove its pending marker`
+      );
+      pendingGateIds.add(gateTarget.id);
+    }
+    pendingBySource.set(marker.sourcePath, marker);
+  }
+  return { groups, groupedPaths, pendingBySource };
 }
 
 function resolutionByPath(policy) {
   return new Map(policy.resolutions.map((resolution) => [resolution.sourcePath, resolution]));
 }
 
-export function classifyEntry(entry, target, resolution, deliveryGroup) {
+export function classifyEntry(
+  entry,
+  target,
+  resolution,
+  deliveryGroup,
+  {
+    pendingMarker = null,
+    requiredProofEnvironments = ["candidate", "production"],
+  } = {}
+) {
   if (!resolution) {
     if (deliveryGroup) {
       return {
@@ -517,36 +686,49 @@ export function classifyEntry(entry, target, resolution, deliveryGroup) {
   if (!sourcePinCurrent) {
     return { status: "unresolved", unresolvedReason: "approval_stale" };
   }
-  const currentTargetDigest = sha256(
-    `${entry.sourcePath}\0${entry.targetPath}\0${target.mode ?? "-"}\0${target.blob ?? "-"}`
-  );
-  if (
-    resolution.proofs.some(
-      (proof) => proof.expectedTargetDigest !== currentTargetDigest
-    )
-  ) {
-    return { status: "unresolved", unresolvedReason: "approval_stale" };
-  }
   if (resolution.outcome === "retired") {
     if (target.blob !== null || target.mode !== null) {
       return { status: "unresolved", unresolvedReason: "approval_stale" };
     }
-    return { status: "retired", unresolvedReason: null };
-  }
-  if (
+  } else if (
     resolution.target.path !== entry.targetPath ||
     resolution.target.blob !== target.blob ||
     resolution.target.mode !== target.mode
   ) {
     return { status: "unresolved", unresolvedReason: "approval_stale" };
   }
-  const byteAndModeExact =
-    target.blob === entry.sourceBlob && target.mode === entry.sourceMode;
-  if (
-    (resolution.outcome === "exact" && !byteAndModeExact) ||
-    (resolution.outcome === "upgraded" && byteAndModeExact)
-  ) {
-    return { status: "unresolved", unresolvedReason: "approval_stale" };
+  if (resolution.outcome !== "retired") {
+    const byteAndModeExact =
+      target.blob === entry.sourceBlob && target.mode === entry.sourceMode;
+    if (
+      (resolution.outcome === "exact" && !byteAndModeExact) ||
+      (resolution.outcome === "upgraded" && byteAndModeExact)
+    ) {
+      return { status: "unresolved", unresolvedReason: "approval_stale" };
+    }
+  }
+
+  const currentTargetDigest = targetDigest(
+    entry.sourcePath,
+    entry.targetPath,
+    target
+  );
+  const currentEnvironments = new Set(
+    resolution.proofs
+      .filter((proof) => proof.expectedTargetDigest === currentTargetDigest)
+      .map((proof) => proof.environment)
+  );
+  const missingProof = requiredProofEnvironments.some(
+    (environment) => !currentEnvironments.has(environment)
+  );
+  if (missingProof) {
+    return {
+      status: "unresolved",
+      unresolvedReason:
+        pendingMarker?.target?.digest === currentTargetDigest
+          ? "proof_refresh_pending"
+          : "approval_stale",
+    };
   }
   return { status: resolution.outcome, unresolvedReason: null };
 }
@@ -567,6 +749,14 @@ export function coveredTargetsDigest(sourcePaths, entries) {
 
 export function deriveBehavioralGates(policy, entries) {
   const groups = new Map(policy.deliveryGroups.map((group) => [group.id, group]));
+  const pendingGateDigests = new Map(
+    (policy.proofRefreshPending ?? []).flatMap((marker) =>
+      marker.gateTargets.map(({ id, targetDigest }) => [
+        id,
+        targetDigest,
+      ])
+    )
+  );
   return policy.behavioralGates.map((gate) => {
     const currentTargetDigest = coveredTargetsDigest(gate.coveredSourcePaths, entries);
     const group = groups.get(gate.deliveryGroup);
@@ -586,6 +776,8 @@ export function deriveBehavioralGates(policy, entries) {
       unresolvedReason:
         missing.length === 0
           ? null
+          : pendingGateDigests.get(gate.id) === currentTargetDigest
+            ? "proof_refresh_pending"
           : gate.proofs.length === 0
             ? "proof_missing"
             : "proof_stale_or_incomplete",
@@ -658,7 +850,10 @@ function validateMissionScope(policy, entries) {
 }
 
 export function buildInventoryFromSource(policy, sourceEntries, options = {}) {
-  const { groupedPaths } = validatePolicy(policy, options);
+  const { groups, groupedPaths, pendingBySource } = validatePolicy(
+    policy,
+    options
+  );
   const canonicalSourceEntries = [...sourceEntries].sort((a, b) =>
     compareText(a.sourcePath, b.sourcePath)
   );
@@ -683,7 +878,13 @@ export function buildInventoryFromSource(policy, sourceEntries, options = {}) {
       base,
       target,
       resolutions.get(source.sourcePath),
-      deliveryGroup
+      deliveryGroup,
+      {
+        pendingMarker: pendingBySource.get(source.sourcePath),
+        requiredProofEnvironments: deliveryGroup
+          ? groups.get(deliveryGroup).requiredProofEnvironments
+          : [],
+      }
     );
     const resolution = resolutions.get(source.sourcePath);
     return {
@@ -728,6 +929,7 @@ export function buildInventoryFromSource(policy, sourceEntries, options = {}) {
     schemaVersion: 2,
     source: policy.source,
     contract: policy.contract,
+    proofRefreshPending: policy.proofRefreshPending ?? [],
     policySha256: sha256(readFileSync(options.policyPath ?? policyPath)),
     targetTreeDigest: sha256(
       entries
@@ -774,6 +976,12 @@ function sortedEntries(entries, policy) {
 
 export function markdown(inventory, policy) {
   const { summary } = inventory;
+  const pendingRows = (inventory.proofRefreshPending ?? [])
+    .map(
+      (marker) =>
+        `| \`${marker.taskId}\` | #${marker.prNumber} | \`${marker.sourcePath}\` | \`${marker.target.blob}\` | ${marker.requiredProofEnvironments.join(", ")} | ${marker.openedAt} |`
+    )
+    .join("\n");
   const statusRows = ["exact", "upgraded", "retired", "unresolved"]
     .map((status) => `| ${status} | ${summary.byStatus[status] ?? 0} |`)
     .join("\n");
@@ -818,6 +1026,7 @@ Legacy source is pinned to \`${inventory.source.revision}\`, subtree \`${invento
 - \`unresolved\` covers missing targets, unreviewed differences, absent resolution records, and incomplete or stale behavior evidence.
 - Source and target Git blobs **and file modes** are pinned. Drift invalidates a resolution.
 - Gate status is derived from candidate/production proof records and the digest of every covered target; it is never hand-authored.
+- \`proof_refresh_pending\` is an audited, exact-target unresolved state. It permits artifact generation but never counts as file/gate completion.
 - Current-only files remain recorded in JSON and do not prove a legacy file was ported.
 
 Run \`pnpm poly:port:verify\` for deterministic ledger integrity, \`pnpm poly:port:check-group -- GROUP\` for one lane, and \`pnpm poly:port:complete -- --through P1\` for the locked mission gate.
@@ -832,6 +1041,12 @@ Run \`pnpm poly:port:verify\` for deterministic ledger integrity, \`pnpm poly:po
 | Unresolved legacy files | ${summary.unresolved} |
 | P0/P1 mission files resolved | ${summary.missionResolved}/${summary.missionFiles} |
 | Behavioral gates passed | ${summary.behavioralGates - summary.unresolvedBehavioralGates}/${summary.behavioralGates} |
+
+## Audited proof refreshes
+
+| Task | PR | Source path | Current target blob | Required environments | Opened |
+| --- | ---: | --- | --- | --- | --- |
+${pendingRows || "| — | — | — | — | — | No pending proof refreshes |"}
 
 | State | Count |
 | --- | ---: |
@@ -951,6 +1166,14 @@ export function completionProblems(inventory, through) {
 
 export function regressionProblems(base, current) {
   const problems = [];
+  const pendingSources = new Set(
+    (current.proofRefreshPending ?? []).map(({ sourcePath }) => sourcePath)
+  );
+  const pendingGates = new Set(
+    (current.proofRefreshPending ?? []).flatMap((marker) =>
+      marker.gateTargets.map(({ id }) => id)
+    )
+  );
   if (JSON.stringify(base.source) !== JSON.stringify(current.source)) {
     problems.push("source pin changed");
   }
@@ -997,7 +1220,14 @@ export function regressionProblems(base, current) {
     if (oldEntry.deliveryGroup && oldEntry.deliveryGroup !== newEntry.deliveryGroup) {
       problems.push(`delivery group changed: ${oldEntry.sourcePath}`);
     }
-    if (terminalStatuses.has(oldEntry.status) && !terminalStatuses.has(newEntry.status)) {
+    if (
+      terminalStatuses.has(oldEntry.status) &&
+      !terminalStatuses.has(newEntry.status) &&
+      !(
+        newEntry.unresolvedReason === "proof_refresh_pending" &&
+        pendingSources.has(newEntry.sourcePath)
+      )
+    ) {
       problems.push(`terminal resolution regressed: ${oldEntry.sourcePath}`);
     }
   }
@@ -1019,7 +1249,14 @@ export function regressionProblems(base, current) {
         problems.push(`behavioral gate ${field} changed: ${gate.id}`);
       }
     }
-    if (gate.status === "passed" && newGate.status !== "passed") {
+    if (
+      gate.status === "passed" &&
+      newGate.status !== "passed" &&
+      !(
+        newGate.unresolvedReason === "proof_refresh_pending" &&
+        pendingGates.has(newGate.id)
+      )
+    ) {
       problems.push(`behavioral gate regressed: ${gate.id}`);
     }
   }
