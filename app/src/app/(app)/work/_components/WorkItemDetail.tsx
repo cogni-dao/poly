@@ -9,11 +9,13 @@ import {
   Markdown,
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
 } from "@/components";
 
 import { EntityCitationLinks } from "../../_components/EntityCitationLinks";
+import { isWorkItemNotFoundError } from "../_api/fetchWorkItems";
 import { StatusPill, TypeIcon } from "./work-item-icons";
 
 type SubjectRef = WorkItemDto["assignees"][number];
@@ -31,6 +33,9 @@ function assigneeLabel(a: SubjectRef): string {
 
 interface WorkItemDetailProps {
   readonly item: WorkItemDto | null;
+  readonly itemId?: string;
+  readonly isLoading?: boolean;
+  readonly error?: Error | null;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
 }
@@ -55,13 +60,49 @@ function Field({
 
 export function WorkItemDetail({
   item,
+  itemId,
+  isLoading = false,
+  error = null,
   open,
   onOpenChange,
 }: WorkItemDetailProps): ReactElement {
+  const isNotFound = isWorkItemNotFoundError(error);
+  const hasOperationalError = !isLoading && !isNotFound && (!item || !!error);
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-lg">
-        {item && (
+        {isLoading && (
+          <SheetHeader className="px-6 py-16 text-center sm:text-center">
+            <SheetTitle>Loading work item</SheetTitle>
+            <SheetDescription>
+              Loading details for {itemId ?? "the selected work item"}.
+            </SheetDescription>
+          </SheetHeader>
+        )}
+
+        {!isLoading && isNotFound && (
+          <SheetHeader className="px-6 py-16 text-center sm:text-center">
+            <SheetTitle>Work item not found</SheetTitle>
+            <SheetDescription className="text-xs leading-relaxed">
+              No work item with id <code className="font-mono">{itemId}</code>{" "}
+              exists, or it isn&apos;t visible to you.
+            </SheetDescription>
+          </SheetHeader>
+        )}
+
+        {hasOperationalError && (
+          <SheetHeader className="px-6 py-16 text-center sm:text-center">
+            <SheetTitle>Unable to load work item</SheetTitle>
+            <SheetDescription className="text-xs leading-relaxed">
+              The work-item route could not load{" "}
+              <code className="font-mono">{itemId ?? "the selected item"}</code>
+              . Try again shortly.
+            </SheetDescription>
+          </SheetHeader>
+        )}
+
+        {!isLoading && !error && item && (
           <>
             <SheetHeader>
               <div className="flex items-center gap-2">
@@ -73,6 +114,9 @@ export function WorkItemDetail({
               <SheetTitle className="text-lg leading-snug">
                 {item.title}
               </SheetTitle>
+              <SheetDescription>
+                Details for <span className="font-mono">{item.id}</span>.
+              </SheetDescription>
             </SheetHeader>
 
             <div className="mt-6 flex flex-col gap-5 px-1">
@@ -170,9 +214,9 @@ export function WorkItemDetail({
               {item.assignees.length > 0 && (
                 <Field label="Assignees">
                   <div className="flex flex-wrap gap-2">
-                    {item.assignees.map((a, i) => (
+                    {item.assignees.map((a) => (
                       <span
-                        key={`${a.kind}-${i}`}
+                        key={`${a.kind}-${assigneeLabel(a)}`}
                         className="rounded-md bg-muted px-2 py-0.5 text-xs"
                       >
                         {assigneeLabel(a)}

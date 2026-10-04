@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2025 Cogni-DAO
 
 import { toWorkItemId } from "@cogni/work-items";
-import type { Sql } from "postgres";
+import type { ReservedSql, Sql } from "postgres";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -59,7 +59,7 @@ function protocolResponse(query: string): unknown[] {
 			},
 		];
 	}
-	if (query === "SELECT name FROM dolt.branches") return [];
+	if (query === "SELECT name, hash FROM dolt.branches") return [];
 	if (query.startsWith("SELECT dolt_branch")) return [{ dolt_branch: 0 }];
 	if (query === "SELECT dolt_merge('--abort')")
 		return [{ dolt_merge: ["", false, 0, ""] }];
@@ -70,6 +70,9 @@ function protocolResponse(query: string): unknown[] {
 		return [{ dolt_merge: ["merge-hash", true, 0, ""] }];
 	}
 	if (query.startsWith("SELECT dolt_add")) return [{ dolt_add: 0 }];
+	if (query.includes("FROM work_items")) {
+		return [{ ...ROW, claim_active: false }];
+	}
 	return [];
 }
 
@@ -109,6 +112,9 @@ function fakeSql(respond: Responder): {
 }
 
 function successfulMutation(query: string): unknown[] | undefined {
+	if (query.includes("FROM work_items")) {
+		return [{ ...ROW, claim_active: false }];
+	}
 	if (query.startsWith("UPDATE work_items")) {
 		return [{ ...ROW, revision: 2, deploy_verified: true, claim_active: true }];
 	}
@@ -116,6 +122,243 @@ function successfulMutation(query: string): unknown[] | undefined {
 		return [{ dolt_commit: "branch-commit" }];
 	}
 	return undefined;
+}
+
+function makeReconciliationHarness({
+	mergeBase,
+	listError,
+	omitBranchCommit = false,
+	proofError,
+}: {
+	readonly mergeBase: string;
+	readonly listError?: Error;
+	readonly omitBranchCommit?: boolean;
+	readonly proofError?: Error;
+}) {
+	let branch: string | undefined = "work-item-op/restart-evidence";
+	const fake = fakeSql((query) => {
+		if (query === "SELECT name, hash FROM dolt.branches") {
+			if (listError) throw listError;
+			return branch
+				? [
+						{
+							name: branch,
+							hash: omitBranchCommit ? undefined : "operation-commit",
+						},
+					]
+				: [];
+		}
+		if (query.startsWith("SELECT dolt_merge_base")) {
+			if (proofError) throw proofError;
+			return [{ dolt_merge_base: mergeBase }];
+		}
+		if (query.startsWith("SELECT dolt_branch('-D'")) {
+			branch = undefined;
+			return [{ dolt_branch: [0, ""] }];
+		}
+		if (query.includes("FROM work_items")) return [];
+		return undefined;
+	});
+	return {
+		adapter: new DoltgresPolyWorkItemAdapter(fake.sql),
+		fake,
+		getBranch: () => branch,
+	};
+}
+
+function makeBlockedHeartbeatAdapter(queueWaitMs: number) {
+	let releaseHeartbeat: (rows: unknown[]) => void = () => undefined;
+	const heartbeatGate = new Promise<unknown[]>((resolve) => {
+		releaseHeartbeat = resolve;
+	});
+	const fake = fakeSql((query) => {
+		if (query.startsWith("UPDATE work_items SET claim_expires_at = NOW()")) {
+			return heartbeatGate;
+		}
+		if (query.includes("FROM work_items")) {
+			return [
+				{
+					...ROW,
+					claimed_by_run: "run-1",
+					claim_owner_principal_id: "agent-1",
+					claim_active: true,
+				},
+			];
+		}
+		if (query.startsWith("SELECT dolt_commit")) {
+			return [{ dolt_commit: "branch-commit" }];
+		}
+		return undefined;
+	});
+	return {
+		adapter: new DoltgresPolyWorkItemAdapter(fake.sql, undefined, {
+			queueWaitMs,
+		}),
+		fake,
+		releaseHeartbeat: () =>
+			releaseHeartbeat([
+				{
+					...ROW,
+					claimed_by_run: "run-1",
+					claim_owner_principal_id: "agent-1",
+					claim_active: true,
+				},
+			]),
+	};
+}
+
+async function waitForQuery(
+	queries: string[],
+	predicate: (query: string) => boolean,
+): Promise<void> {
+	for (let attempt = 0; attempt < 50; attempt += 1) {
+		if (queries.some(predicate)) return;
+		await new Promise((resolve) => setTimeout(resolve, 1));
+	}
+	throw new Error("expected query did not run");
+}
+
+function makeMergeTimeoutHarness({
+	failFreshReachability = false,
+}: {
+	readonly failFreshReachability?: boolean;
+} = {}) {
+	const state: {
+		row?: Record<string, unknown>;
+		branch?: string;
+		durable: boolean;
+		inserts: number;
+		poolBuilds: number;
+		queries: string[];
+	} = {
+		durable: false,
+		inserts: 0,
+		poolBuilds: 0,
+		queries: [],
+	};
+	const events: string[] = [];
+	const logger = {
+		info: (fields: Record<string, unknown>) =>
+			events.push(String(fields.event)),
+		warn: (fields: Record<string, unknown>) =>
+			events.push(String(fields.event)),
+		error: (fields: Record<string, unknown>) =>
+			events.push(String(fields.event)),
+	};
+
+	const buildPool = (): Sql => {
+		state.poolBuilds += 1;
+		const poolNumber = state.poolBuilds;
+		let ended = false;
+		let rejectTimedOutMerge: ((error: Error) => void) | undefined;
+		const unsafe = async (
+			query: string,
+		): Promise<ReadonlyArray<Record<string, unknown>>> => {
+			state.queries.push(`pool-${poolNumber}:${query}`);
+			if (ended) {
+				throw Object.assign(new Error("connection ended"), {
+					code: "CONNECTION_ENDED",
+				});
+			}
+			if (query === "SELECT 1 AS work_items_ready") {
+				return [{ work_items_ready: 1 }];
+			}
+			if (query.startsWith("SELECT pg_try_advisory_lock")) {
+				return [{ pg_try_advisory_lock: true }];
+			}
+			if (query.startsWith("SELECT pg_advisory_unlock")) {
+				return [{ pg_advisory_unlock: true }];
+			}
+			if (query === "SELECT dolt_checkout('main')") {
+				return [{ dolt_checkout: [0, ""] }];
+			}
+			if (query.includes("dolt_checkout('-b'")) {
+				state.branch = /'(work-item-op\/[^']+)'/.exec(query)?.[1];
+				return [{ dolt_checkout: [0, ""] }];
+			}
+			if (query === "SELECT table_name FROM dolt.status") return [];
+			if (query === "SELECT name, hash FROM dolt.branches") {
+				return state.branch
+					? [{ name: state.branch, hash: "test-commit" }]
+					: [];
+			}
+			if (query.includes("FROM dolt.merge_status")) return [];
+			if (query === "SELECT dolt_add('work_items')") {
+				return [{ dolt_add: [0, ""] }];
+			}
+			if (query.startsWith("SELECT dolt_commit")) {
+				return [{ dolt_commit: "test-commit" }];
+			}
+			if (query.startsWith("SELECT dolt_merge_base")) {
+				if (poolNumber === 2 && failFreshReachability) {
+					throw Object.assign(new Error("reachability connection ended"), {
+						code: "CONNECTION_ENDED",
+					});
+				}
+				return [{ dolt_merge_base: state.durable ? "test-commit" : "main" }];
+			}
+			if (query.startsWith("SELECT dolt_merge(")) {
+				state.durable = true;
+				if (poolNumber === 1) {
+					return await new Promise((_resolve, reject) => {
+						rejectTimedOutMerge = reject;
+					});
+				}
+				return [{ dolt_merge: ["test-merge", 0, 0, "ok"] }];
+			}
+			if (query.startsWith("SELECT dolt_branch")) {
+				state.branch = undefined;
+				return [{ dolt_branch: [0, ""] }];
+			}
+			if (query.startsWith("SELECT id FROM work_items")) {
+				return state.row ? [{ id: state.row.id }] : [];
+			}
+			if (query.startsWith("INSERT INTO work_items")) {
+				state.inserts += 1;
+				state.row = { ...ROW, id: "task.5000" };
+				return [state.row];
+			}
+			if (query.startsWith("UPDATE work_items")) {
+				state.row = {
+					...(state.row ?? ROW),
+					title: "still writable",
+					revision: 2,
+				};
+				return [state.row];
+			}
+			if (query.includes("FROM work_items")) {
+				return state.row ? [{ ...state.row, claim_active: false }] : [];
+			}
+			return [];
+		};
+		const reserved = {
+			unsafe,
+			release: () => undefined,
+		} as unknown as ReservedSql;
+		return {
+			unsafe,
+			reserve: async () => reserved,
+			end: async () => {
+				ended = true;
+				rejectTimedOutMerge?.(
+					Object.assign(new Error("merge acknowledgement timed out"), {
+						code: "CONNECTION_DESTROYED",
+					}),
+				);
+			},
+		} as unknown as Sql;
+	};
+
+	const adapter = new DoltgresPolyWorkItemAdapter(
+		buildPool(),
+		logger as never,
+		{
+			queryTimeoutMs: 5,
+			reserveTimeoutMs: 100,
+			recreateClient: buildPool,
+		},
+	);
+	return { adapter, events, state };
 }
 
 describe("DoltgresPolyWorkItemAdapter", () => {
@@ -154,8 +397,9 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		expect(joined).toMatch(/dolt_checkout\('-b', 'work-item-op\//);
 		expect(joined).not.toContain("BEGIN");
 		expect(joined).not.toContain("SAVEPOINT");
-		expect(joined).not.toContain("SELECT dolt_add");
-		expect(joined).toContain("SELECT dolt_commit('-Am'");
+		expect(joined).toContain("SELECT dolt_add('work_items')");
+		expect(joined).toContain("SELECT dolt_commit('-m'");
+		expect(joined).not.toContain("SELECT dolt_commit('-Am'");
 		expect(joined).toContain("SELECT dolt_merge('work-item-op/");
 		expect(joined).not.toContain("SELECT dolt_merge_base");
 		expect(joined).toContain("SELECT dolt_branch('-D', 'work-item-op/");
@@ -285,7 +529,7 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		);
 	});
 
-	it("rejects a read before pool reservation while a local mutation is active", async () => {
+	it("queues a read before pool reservation while a local mutation is active", async () => {
 		let signalUpdate: (() => void) | undefined;
 		let releaseUpdate: (() => void) | undefined;
 		const updateReached = new Promise<void>((resolve) => {
@@ -313,12 +557,95 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		);
 		await updateReached;
 
-		await expect(adapter.get(toWorkItemId("task.5001"))).rejects.toBeInstanceOf(
-			WorkItemsBusyError,
-		);
+		const read = adapter.get(toWorkItemId("task.5001"));
+		await new Promise((resolve) => setTimeout(resolve, 1));
 		expect(fake.reservations).toBe(1);
 		releaseUpdate?.();
-		await patch;
+		await expect(Promise.all([patch, read])).resolves.toEqual([
+			expect.objectContaining({ id: "task.5001" }),
+			expect.objectContaining({ id: "task.5001" }),
+		]);
+		expect(fake.reservations).toBe(2);
+	});
+
+	it("serves 20/20 reads queued behind a cheap stale-heartbeat preflight", async () => {
+		let releasePreflight: (rows: unknown[]) => void = () => undefined;
+		const preflightGate = new Promise<unknown[]>((resolve) => {
+			releasePreflight = resolve;
+		});
+		let blockFirstExactRead = true;
+		const claimedRow = {
+			...ROW,
+			claimed_by_run: "run-1",
+			claim_owner_principal_id: "agent-1",
+			claim_active: true,
+		};
+		const fake = fakeSql((query) => {
+			if (
+				blockFirstExactRead &&
+				query.includes("FROM work_items") &&
+				query.includes("WHERE id = 'task.5001'")
+			) {
+				blockFirstExactRead = false;
+				return preflightGate;
+			}
+			if (query.includes("FROM work_items")) return [claimedRow];
+			return undefined;
+		});
+		const adapter = new DoltgresPolyWorkItemAdapter(fake.sql, undefined, {
+			queueWaitMs: 1_000,
+		});
+
+		const staleHeartbeat = adapter.heartbeat({
+			id: toWorkItemId("task.5001"),
+			runId: "stale-run",
+			principalId: "agent-1",
+		});
+		await waitForQuery(
+			fake.reservedQueries,
+			(query) =>
+				query.includes("FROM work_items") &&
+				query.includes("WHERE id = 'task.5001'"),
+		);
+
+		const reads = Array.from({ length: 20 }, () => adapter.list());
+		releasePreflight([claimedRow]);
+
+		await expect(staleHeartbeat).rejects.toBeInstanceOf(
+			WorkItemLeaseConflictError,
+		);
+		const results = await Promise.all(reads);
+		expect(results).toHaveLength(20);
+		expect(results.every((result) => result.items.length === 1)).toBe(true);
+		expect(
+			fake.reservedQueries.some((query) =>
+				query.includes("dolt_checkout('-b'"),
+			),
+		).toBe(false);
+		expect(
+			fake.reservedQueries.some((query) =>
+				query.startsWith("UPDATE work_items SET claim_expires_at = NOW()"),
+			),
+		).toBe(false);
+	});
+
+	it("returns bounded busy and skips an abandoned queue ticket", async () => {
+		const { adapter, fake, releaseHeartbeat } = makeBlockedHeartbeatAdapter(5);
+		const heartbeat = adapter.heartbeat({
+			id: toWorkItemId("task.5001"),
+			runId: "run-1",
+			principalId: "agent-1",
+		});
+		await waitForQuery(fake.reservedQueries, (query) =>
+			query.startsWith("UPDATE work_items SET claim_expires_at = NOW()"),
+		);
+
+		const expiredWaiter = adapter.get(toWorkItemId("task.5001"));
+		await expect(expiredWaiter).rejects.toBeInstanceOf(WorkItemsBusyError);
+		const laterRead = adapter.get(toWorkItemId("task.5001"));
+		releaseHeartbeat();
+		await heartbeat;
+		await expect(laterRead).resolves.toMatchObject({ id: "task.5001" });
 	});
 
 	it("hard-terminates a timed-out pool and recovers on a fresh client", async () => {
@@ -376,6 +703,71 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		expect(fresh.reservations).toBe(1);
 	});
 
+	it("proves a durable timed-out merge on a fresh connection without replay", async () => {
+		const { adapter, events, state } = makeMergeTimeoutHarness();
+
+		await expect(
+			adapter.create({ type: "task", title: "survives timeout" }, "agent-1"),
+		).resolves.toMatchObject({ id: "task.5000" });
+		expect(state.inserts).toBe(1);
+		expect(state.poolBuilds).toBe(2);
+		expect(
+			state.queries.some((query) =>
+				query.startsWith("pool-2:SELECT dolt_merge_base"),
+			),
+		).toBe(true);
+		expect(events).toContain("adapter.work_items.stage_complete");
+
+		await expect(adapter.get(toWorkItemId("task.5000"))).resolves.toMatchObject({
+			title: "Restore hub CRUD",
+		});
+		await expect(
+			adapter.patch(
+				{
+					id: toWorkItemId("task.5000"),
+					set: { title: "still writable" },
+				},
+				"agent-1",
+			),
+		).resolves.toMatchObject({ title: "still writable" });
+		expect(state.inserts).toBe(1);
+	});
+
+	it("latches fail-closed and preserves branch evidence when fresh proof fails", async () => {
+		const { adapter, events, state } = makeMergeTimeoutHarness({
+			failFreshReachability: true,
+		});
+
+		await expect(
+			adapter.create(
+				{ type: "task", title: "ambiguous durable merge" },
+				"agent-1",
+			),
+		).rejects.toMatchObject({ name: "DoltMergeOutcomeUnknownError" });
+
+		expect(state.durable).toBe(true);
+		expect(state.inserts).toBe(1);
+		expect(state.poolBuilds).toBe(3);
+		expect(state.branch).toMatch(/^work-item-op\//);
+		expect(events).toContain("adapter.work_items.merge_outcome_unknown");
+
+		const queriesBeforeBlockedRequests = state.queries.length;
+		await expect(adapter.get(toWorkItemId("task.5000"))).rejects.toBeInstanceOf(
+			WorkItemsBusyError,
+		);
+		await expect(
+			adapter.create({ type: "task", title: "must not replay" }, "agent-1"),
+		).rejects.toBeInstanceOf(WorkItemsBusyError);
+		expect(state.queries).toHaveLength(queriesBeforeBlockedRequests);
+		expect(state.inserts).toBe(1);
+		expect(state.branch).toMatch(/^work-item-op\//);
+		expect(
+			state.queries.some((query) =>
+				query.startsWith("pool-3:SELECT dolt_branch"),
+			),
+		).toBe(false);
+	});
+
 	it("force-terminates and poisons a connection reservation that never settles", async () => {
 		let rejectReserve: ((error: Error) => void) | undefined;
 		let terminated = false;
@@ -405,8 +797,11 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 
 	it("deletes stale operation branches before serving a read", async () => {
 		const fake = fakeSql((query) => {
-			if (query === "SELECT name FROM dolt.branches") {
-				return [{ name: "main" }, { name: "work-item-op/orphaned" }];
+			if (query === "SELECT name, hash FROM dolt.branches") {
+				return [
+					{ name: "main", hash: "main-commit" },
+					{ name: "work-item-op/orphaned", hash: "branch-commit" },
+				];
 			}
 			if (query.includes("SELECT *,")) return [ROW];
 			return undefined;
@@ -424,6 +819,82 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		);
 		expect(cleanupIndex).toBeGreaterThan(-1);
 		expect(readIndex).toBeGreaterThan(cleanupIndex);
+	});
+
+	it("preserves an operation branch whose tip is not reachable from main", async () => {
+		const { adapter, fake, getBranch } = makeReconciliationHarness({
+			mergeBase: "main-commit",
+		});
+
+		await expect(adapter.get(toWorkItemId("task.5001"))).rejects.toBeInstanceOf(
+			WorkItemsBusyError,
+		);
+
+		expect(getBranch()).toBe("work-item-op/restart-evidence");
+		expect(
+			fake.reservedQueries.some((query) =>
+				query.startsWith("SELECT dolt_branch('-D'"),
+			),
+		).toBe(false);
+		expect(
+			fake.reservedQueries.some((query) => query.includes("FROM work_items")),
+		).toBe(false);
+	});
+
+	it("preserves evidence when restart reachability proof errors", async () => {
+		const { adapter, fake, getBranch } = makeReconciliationHarness({
+			mergeBase: "operation-commit",
+			proofError: new Error("proof query failed"),
+		});
+
+		await expect(adapter.get(toWorkItemId("task.5001"))).rejects.toBeInstanceOf(
+			WorkItemsBusyError,
+		);
+		expect(getBranch()).toBe("work-item-op/restart-evidence");
+		expect(
+			fake.reservedQueries.some((query) =>
+				query.startsWith("SELECT dolt_branch('-D'"),
+			),
+		).toBe(false);
+	});
+
+	it("preserves evidence when restart branch lookup errors", async () => {
+		const { adapter, fake, getBranch } = makeReconciliationHarness({
+			mergeBase: "operation-commit",
+			listError: new Error("branch lookup failed"),
+		});
+
+		await expect(adapter.get(toWorkItemId("task.5001"))).rejects.toBeInstanceOf(
+			WorkItemsBusyError,
+		);
+		expect(getBranch()).toBe("work-item-op/restart-evidence");
+		expect(
+			fake.reservedQueries.some((query) =>
+				query.startsWith("SELECT dolt_branch('-D'"),
+			),
+		).toBe(false);
+	});
+
+	it("preserves evidence when the restart branch tip is missing", async () => {
+		const { adapter, fake, getBranch } = makeReconciliationHarness({
+			mergeBase: "operation-commit",
+			omitBranchCommit: true,
+		});
+
+		await expect(adapter.get(toWorkItemId("task.5001"))).rejects.toBeInstanceOf(
+			WorkItemsBusyError,
+		);
+		expect(getBranch()).toBe("work-item-op/restart-evidence");
+		expect(
+			fake.reservedQueries.some((query) =>
+				query.startsWith("SELECT dolt_merge_base"),
+			),
+		).toBe(false);
+		expect(
+			fake.reservedQueries.some((query) =>
+				query.startsWith("SELECT dolt_branch('-D'"),
+			),
+		).toBe(false);
 	});
 
 	it("aborts a persisted work-item merge before restart reconciliation", async () => {
@@ -446,8 +917,11 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 				mergeActive = false;
 				return [{ dolt_merge: ["", false, 0, "aborted"] }];
 			}
-			if (query === "SELECT name FROM dolt.branches") {
-				return [{ name: "main" }, { name: "work-item-op/orphaned" }];
+			if (query === "SELECT name, hash FROM dolt.branches") {
+				return [
+					{ name: "main", hash: "main-commit" },
+					{ name: "work-item-op/orphaned", hash: "branch-commit" },
+				];
 			}
 			if (query.includes("SELECT *,")) return [ROW];
 			return undefined;
@@ -830,8 +1304,111 @@ describe("DoltgresPolyWorkItemAdapter", () => {
 		).rejects.toBeInstanceOf(WorkItemAuthorizationError);
 	});
 
+	it.each(["patch", "delete", "claim", "heartbeat", "release"] as const)(
+		"rejects unauthorized %s during preflight before branch creation or DML",
+		async (operation) => {
+			const fake = fakeSql((query) => {
+				if (query.includes("FROM work_items")) {
+					return [
+						{
+							...ROW,
+							claimed_by_run: "run-1",
+							claim_owner_principal_id: "agent-1",
+							claim_active: true,
+						},
+					];
+				}
+				return undefined;
+			});
+			const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
+			const id = toWorkItemId("task.5001");
+			const request =
+				operation === "patch"
+					? adapter.patch({ id, set: { title: "Stolen" } }, "agent-2")
+					: operation === "delete"
+						? adapter.delete(id, "agent-2")
+						: operation === "claim"
+							? adapter.claim({
+									id,
+									runId: "run-2",
+									command: "steal",
+									principalId: "agent-2",
+								})
+							: operation === "heartbeat"
+								? adapter.heartbeat({
+										id,
+										runId: "stale-run",
+										principalId: "agent-1",
+									})
+								: adapter.release({
+										id,
+										runId: "stale-run",
+										principalId: "agent-1",
+									});
+
+			await expect(request).rejects.toBeInstanceOf(
+				operation === "patch" || operation === "delete"
+					? WorkItemAuthorizationError
+					: WorkItemLeaseConflictError,
+			);
+			expect(
+				fake.reservedQueries.some((query) =>
+					query.includes("dolt_checkout('-b'"),
+				),
+			).toBe(false);
+			expect(
+				fake.reservedQueries.some(
+					(query) =>
+						query.startsWith("UPDATE work_items") ||
+						query.startsWith("DELETE FROM work_items"),
+				),
+			).toBe(false);
+		},
+	);
+
 	it("binds claim, heartbeat, and release to authenticated principal and run", async () => {
-		const fake = fakeSql(successfulMutation);
+		let claimed = false;
+		const fake = fakeSql((query) => {
+			if (query.includes("FROM work_items")) {
+				return [
+					{
+						...ROW,
+						claim_active: claimed,
+						claimed_by_run: claimed ? "run-1" : null,
+						claim_owner_principal_id: claimed ? "agent-1" : null,
+					},
+				];
+			}
+			if (query.startsWith("UPDATE work_items SET claimed_by_run = 'run-1'")) {
+				claimed = true;
+				return [
+					{
+						...ROW,
+						claimed_by_run: "run-1",
+						claim_owner_principal_id: "agent-1",
+						claim_active: true,
+					},
+				];
+			}
+			if (query.startsWith("UPDATE work_items SET claim_expires_at")) {
+				return [
+					{
+						...ROW,
+						claimed_by_run: "run-1",
+						claim_owner_principal_id: "agent-1",
+						claim_active: true,
+					},
+				];
+			}
+			if (query.startsWith("UPDATE work_items SET claimed_by_run = NULL")) {
+				claimed = false;
+				return [{ ...ROW, claim_active: false }];
+			}
+			if (query.startsWith("SELECT dolt_commit")) {
+				return [{ dolt_commit: "branch-commit" }];
+			}
+			return undefined;
+		});
 		const adapter = new DoltgresPolyWorkItemAdapter(fake.sql);
 		const id = toWorkItemId("task.5001");
 
