@@ -23,6 +23,7 @@ import type {
   PolyResearchCopyTradeInvestigationResponse,
 } from "@cogni/poly-node-contracts";
 import {
+  POLY_COPY_TRADE_INVESTIGATION_MAX_ACCOUNT_LEGS,
   POLY_COPY_TRADE_INVESTIGATION_MAX_LEGS_PER_PARTICIPANT,
   POLY_COPY_TRADE_INVESTIGATION_MAX_OUTCOMES,
   POLY_COPY_TRADE_INVESTIGATION_MAX_TARGETS,
@@ -251,7 +252,7 @@ export async function getCopyTradeInvestigationSummary(
   const outcomeRows = rawOutcomeRows.slice(0, POLY_COPY_TRADE_INVESTIGATION_MAX_OUTCOMES);
   const market = marketRows[0];
 
-  const mirrorRows = rowsOf<MirrorLegRow>(await db.execute(sql`
+  const rawMirrorRows = rowsOf<MirrorLegRow>(await db.execute(sql`
     WITH execution_legs AS (
     SELECT
       COALESCE(NULLIF(f.attributes->>'token_id', ''), 'unknown') AS token_id,
@@ -302,8 +303,14 @@ export async function getCopyTradeInvestigationSummary(
       AND outcome.token_id = legs.token_id
       AND outcome.updated_at <= ${capturedAt}::timestamptz
     ORDER BY legs.buy_usdc::numeric DESC, legs.token_id
-    LIMIT 4
+    LIMIT ${POLY_COPY_TRADE_INVESTIGATION_MAX_ACCOUNT_LEGS + 1}
   `));
+  const accountPositionTruncated =
+    rawMirrorRows.length > POLY_COPY_TRADE_INVESTIGATION_MAX_ACCOUNT_LEGS;
+  const mirrorRows = rawMirrorRows.slice(
+    0,
+    POLY_COPY_TRADE_INVESTIGATION_MAX_ACCOUNT_LEGS
+  );
 
   const rawTargetRows = rowsOf<TargetLegRow>(await db.execute(sql`
     WITH associated_wallets AS (
@@ -517,7 +524,13 @@ export async function getCopyTradeInvestigationSummary(
     (leg) => leg.net_shares <= 0 || leg.mark_price !== null
   );
   const facts = [
-    fact("mirror_ledger", ledgerObservedAt, capturedAt, POSITION_FRESHNESS_MS, true),
+    fact(
+      "mirror_ledger",
+      ledgerObservedAt,
+      capturedAt,
+      POSITION_FRESHNESS_MS,
+      !accountPositionTruncated
+    ),
     fact("market_prices", markObservedAt, capturedAt, MARKET_FRESHNESS_MS, marksComplete),
     fact("target_positions", targetObservedAt, capturedAt, POSITION_FRESHNESS_MS, !targetsTruncated),
     fact("market_metadata", marketObservedAt, capturedAt, MARKET_FRESHNESS_MS, market !== undefined),
@@ -556,6 +569,7 @@ export async function getCopyTradeInvestigationSummary(
     account_position: {
       source: "mirror_execution_ledger",
       legs: mirrorLegs,
+      truncated: accountPositionTruncated,
     },
     targets,
     aggregates: {
@@ -585,6 +599,7 @@ export async function getCopyTradeInvestigationSummary(
     },
     completeness: {
       complete: facts.every((entry) => entry.complete),
+      account_position_truncated: accountPositionTruncated,
       targets_truncated: targetsTruncated,
       facts,
     },
@@ -596,6 +611,16 @@ export async function getCopyTradeInvestigationEvidence(
   query: PolyResearchCopyTradeInvestigationEvidenceQuery
 ): Promise<PolyResearchCopyTradeInvestigationEvidenceResponse | null> {
   await db.execute(sql.raw(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`));
+  const clock = rowsOf<{ captured_at: Date | string }>(
+    await db.execute(sql`SELECT clock_timestamp() AS captured_at`)
+  );
+  const databaseNow = toIso(clock[0]?.captured_at);
+  if (
+    !databaseNow ||
+    Date.parse(query.captured_at) > Date.parse(databaseNow)
+  ) {
+    throw new InvalidInvestigationCapturedAtError();
+  }
   const associationFillMode = modeSql(query.mode, "f.mode");
   const associationDecisionMode = modeSql(query.mode, "d.mode");
   const associationFillWindow = windowSql(query, "f.observed_at");
@@ -918,6 +943,13 @@ export class InvalidInvestigationCursorError extends Error {
   constructor() {
     super("invalid_cursor");
     this.name = "InvalidInvestigationCursorError";
+  }
+}
+
+export class InvalidInvestigationCapturedAtError extends Error {
+  constructor() {
+    super("captured_at_must_not_be_in_the_future");
+    this.name = "InvalidInvestigationCapturedAtError";
   }
 }
 

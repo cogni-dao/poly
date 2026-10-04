@@ -68,7 +68,11 @@ const payload = {
     metadata_fetched_at: "2026-10-04T00:00:00.000Z",
     outcomes: [],
   },
-  account_position: { source: "mirror_execution_ledger" as const, legs: [] },
+  account_position: {
+    source: "mirror_execution_ledger" as const,
+    legs: [],
+    truncated: false,
+  },
   targets: [],
   aggregates: {
     fills: {
@@ -95,6 +99,7 @@ const payload = {
   },
   completeness: {
     complete: false,
+    account_position_truncated: false,
     targets_truncated: false,
     facts: [
       { source: "market_prices" as const, status: "missing" as const, observed_at: null, complete: false },

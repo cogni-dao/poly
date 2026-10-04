@@ -74,7 +74,11 @@ describe("poly copy-trade investigation contract", () => {
         metadata_fetched_at: "2026-10-04T00:00:00.000Z",
         outcomes: [],
       },
-      account_position: { source: "mirror_execution_ledger" as const, legs: [] },
+      account_position: {
+        source: "mirror_execution_ledger" as const,
+        legs: [],
+        truncated: false,
+      },
       targets: [],
       aggregates: {
         fills: {
@@ -101,6 +105,7 @@ describe("poly copy-trade investigation contract", () => {
       },
       completeness: {
         complete: false,
+        account_position_truncated: false,
         targets_truncated: false,
         facts: [
           {

@@ -20,6 +20,7 @@ import {
 } from "@/features/agent-grants/authorization";
 import {
   getCopyTradeInvestigationEvidence,
+  InvalidInvestigationCapturedAtError,
   InvalidInvestigationCursorError,
 } from "@/features/wallet-analysis/server/copy-trade-investigation-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
@@ -89,7 +90,10 @@ export const GET = wrapRouteHandlerWithLogging(
         return { access, response };
       });
     } catch (error) {
-      if (error instanceof InvalidInvestigationCursorError) {
+      if (
+        error instanceof InvalidInvestigationCursorError ||
+        error instanceof InvalidInvestigationCapturedAtError
+      ) {
         return NextResponse.json({ error: "invalid_query" }, { status: 400 });
       }
       logEvent(ctx.log, EVENT_NAMES.POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE, {

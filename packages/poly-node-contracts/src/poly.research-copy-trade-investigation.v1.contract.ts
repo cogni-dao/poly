@@ -27,6 +27,7 @@ export const POLY_COPY_TRADE_INVESTIGATION_EVIDENCE_DEFAULT_LIMIT = 100;
 export const POLY_COPY_TRADE_INVESTIGATION_EVIDENCE_MAX_LIMIT = 200;
 export const POLY_COPY_TRADE_INVESTIGATION_MAX_TARGETS = 20;
 export const POLY_COPY_TRADE_INVESTIGATION_MAX_LEGS_PER_PARTICIPANT = 2;
+export const POLY_COPY_TRADE_INVESTIGATION_MAX_ACCOUNT_LEGS = 4;
 export const POLY_COPY_TRADE_INVESTIGATION_MAX_OUTCOMES = 32;
 
 export const PolyResearchCopyTradeInvestigationQuerySchema = z
@@ -203,7 +204,10 @@ export const PolyResearchCopyTradeInvestigationResponseSchema = z.object({
   market: PolyInvestigationMarketSchema,
   account_position: z.object({
     source: z.literal("mirror_execution_ledger"),
-    legs: z.array(PolyInvestigationMirrorLegSchema).max(4),
+    legs: z
+      .array(PolyInvestigationMirrorLegSchema)
+      .max(POLY_COPY_TRADE_INVESTIGATION_MAX_ACCOUNT_LEGS),
+    truncated: z.boolean(),
   }),
   targets: z
     .array(PolyInvestigationTargetSchema)
@@ -211,6 +215,7 @@ export const PolyResearchCopyTradeInvestigationResponseSchema = z.object({
   aggregates: PolyInvestigationAggregateSchema,
   completeness: z.object({
     complete: z.boolean(),
+    account_position_truncated: z.boolean(),
     targets_truncated: z.boolean(),
     facts: z.array(PolyInvestigationFactStatusSchema),
   }),

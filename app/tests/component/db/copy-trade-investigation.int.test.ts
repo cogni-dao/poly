@@ -32,11 +32,13 @@ import {
   copyTradeDecisionEvidenceSelect,
   getCopyTradeInvestigationEvidence,
   getCopyTradeInvestigationSummary,
+  InvalidInvestigationCapturedAtError,
 } from "@/features/wallet-analysis/server/copy-trade-investigation-service";
 import { billingAccounts, users } from "@/shared/db/schema";
 
 const CONDITION_A = `quant-a-${randomUUID()}`;
 const CONDITION_B = `quant-b-${randomUUID()}`;
+const CONDITION_MULTI = `quant-multi-${randomUUID()}`;
 const TOKEN_YES = `quant-token-${randomUUID()}`;
 const TARGET_WALLET = `0x${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`.slice(0, 42);
 const future = new Date("2099-01-01T00:00:00.000Z");
@@ -180,6 +182,27 @@ describe("copy-trade investigation", () => {
           side: "BUY",
           size_usdc: "1",
           filled_size_usdc: "1",
+        },
+      })),
+      ...[0, 1, 2, 3, 4].map((index) => ({
+        billingAccountId: ownerA.billingAccountId,
+        createdByUserId: ownerA.userId,
+        targetId: fillTargetId,
+        fillId: `data-api:quant-multi-${index}`,
+        marketId: CONDITION_MULTI,
+        observedAt: new Date(`2026-10-03T13:0${index}:00.000Z`),
+        clientOrderId: `quant-multi-${index}-${randomUUID()}`,
+        status: "filled" as const,
+        positionLifecycle: "open",
+        mode: "paper" as const,
+        price: "0.10000000",
+        shares: "1.00000000",
+        feesUsdc: "0.00000000",
+        attributes: {
+          target_wallet: TARGET_WALLET,
+          token_id: `quant-multi-token-${index}`,
+          outcome: `OPTION_${index}`,
+          side: "BUY",
         },
       })),
       {
@@ -364,6 +387,57 @@ describe("copy-trade investigation", () => {
     expect(second?.items).toHaveLength(1);
     expect(second?.truncated).toBe(false);
     expect(new Set([...(first?.items ?? []), ...(second?.items ?? [])].map((item) => item.evidence_id)).size).toBe(3);
+  });
+
+  it("rejects a future evidence cutoff so page membership cannot grow after page one", async () => {
+    await expect(
+      withTenantScope(db, userActor(toUserId(delegate.userId)), (tx) =>
+        getCopyTradeInvestigationEvidence(
+          tx as unknown as Parameters<typeof getCopyTradeInvestigationEvidence>[0],
+          {
+            billing_account_id: ownerA.billingAccountId,
+            condition_id: CONDITION_A,
+            mode: "paper",
+            kind: "fills",
+            captured_at: "2099-01-01T00:00:00.000Z",
+            limit: 2,
+          }
+        )
+      )
+    ).rejects.toBeInstanceOf(InvalidInvestigationCapturedAtError);
+  });
+
+  it("fails completeness closed when account position legs exceed the response cap", async () => {
+    const result = await withTenantScope(
+      db,
+      userActor(toUserId(delegate.userId)),
+      async (tx) => {
+        const access = await resolvePerformanceRead(tx, {
+          principalId: delegate.userId,
+          billingAccountId: ownerA.billingAccountId,
+        });
+        if (!access) return null;
+        return getCopyTradeInvestigationSummary(
+          tx as unknown as Parameters<typeof getCopyTradeInvestigationSummary>[0],
+          {
+            billing_account_id: ownerA.billingAccountId,
+            condition_id: CONDITION_MULTI,
+            mode: "paper",
+          }
+        );
+      }
+    );
+
+    expect(result?.account_position.legs).toHaveLength(4);
+    expect(result?.account_position.truncated).toBe(true);
+    expect(result?.completeness.account_position_truncated).toBe(true);
+    expect(result?.completeness.facts).toContainEqual(
+      expect.objectContaining({
+        source: "mirror_ledger",
+        status: "partial",
+        complete: false,
+      })
+    );
   });
 
   it("uses the account+market expression index for the exact decision evidence query", async () => {
