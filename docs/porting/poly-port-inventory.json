@@ -13,23 +13,23 @@
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
   "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "7a248e572fc1f02f7226e9e04435455e21343b1903501a00fcdf1aa71a656d3b",
+  "targetTreeDigest": "cf42ae48ea5549be436cba091263799e12bd438fcd7a8c28830eba70b058919f",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1097,
-    "unresolved": 602,
+    "targetOnlyFiles": 1116,
+    "unresolved": 605,
     "byStatus": {
-      "exact": 1126,
+      "exact": 1123,
       "retired": 1,
-      "unresolved": 602,
+      "unresolved": 605,
       "upgraded": 7
     },
     "unresolvedByPriority": {
       "P0": 20,
-      "P1": 51,
+      "P1": 53,
       "P2": 281,
-      "P3": 250
+      "P3": 251
     },
     "missionFiles": 79,
     "missionResolved": 8,
@@ -3279,7 +3279,7 @@
       "sourceBlob": "888987037701e67c4772de6490a7904173e41e5d",
       "sourcePath": "app/src/adapters/server/db/migrations/meta/_journal.json",
       "targetPath": "app/src/adapters/server/db/migrations/meta/_journal.json",
-      "targetBlob": "debac0858e9c68c0635c49696aec9438f69db18b",
+      "targetBlob": "f47ef56a557ab5cb4df6c94b081fecccef9b6d65",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -4945,13 +4945,13 @@
       "sourceBlob": "515a22643f83c908ef505baf908712a056fe4b83",
       "sourcePath": "app/src/app/(app)/profile/_components/ApiAccessSection.tsx",
       "targetPath": "app/src/app/(app)/profile/_components/ApiAccessSection.tsx",
-      "targetBlob": "515a22643f83c908ef505baf908712a056fe4b83",
-      "targetMode": "100644",
+      "targetBlob": null,
+      "targetMode": null,
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "missing_target",
       "resolution": null
     },
     {
@@ -4973,7 +4973,7 @@
       "sourceBlob": "4d5157bdf1db4b68498b6fba640f931b94685339",
       "sourcePath": "app/src/app/(app)/profile/view.tsx",
       "targetPath": "app/src/app/(app)/profile/view.tsx",
-      "targetBlob": "f0581ceb80b66e343ade15b285e12ebb0db126d1",
+      "targetBlob": "5d3368191b6b9b18b847db210b1f43a0b5ca846e",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -5505,7 +5505,7 @@
       "sourceBlob": "240967ec2d52eeb4267901274a8677eeca6eee38",
       "sourcePath": "app/src/app/.well-known/agent.json/route.ts",
       "targetPath": "app/src/app/.well-known/agent.json/route.ts",
-      "targetBlob": "3593fc10027f4fc92b2d616b812ebf33953da7cf",
+      "targetBlob": "9cd77bd81fbd1dfa57400461a006f81d228e84f9",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -6017,7 +6017,7 @@
       "sourceBlob": "cfb6927e58e7382543937df5300137e81d293059",
       "sourcePath": "app/src/app/api/AGENTS.md",
       "targetPath": "app/src/app/api/AGENTS.md",
-      "targetBlob": "3e4ab81ff3429c73b0041e0afce149c4fb3f6055",
+      "targetBlob": "f8f36334dc4b66f9e7ab4120463f09fe70ac74e7",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -14393,7 +14393,7 @@
       "sourceBlob": "0b3a2c3e20706de2a0da40de5f03bd9f7876707b",
       "sourcePath": "app/src/shared/db/schema.ts",
       "targetPath": "app/src/shared/db/schema.ts",
-      "targetBlob": "cdc190c7f2273dcea17e88675769c03b4ee04c68",
+      "targetBlob": "1a929d7559726c8a0ea1a697f890f2acf24e4b81",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -14589,7 +14589,7 @@
       "sourceBlob": "35824c215ad1e94b317e3d6eceb2b8e819e9ff42",
       "sourcePath": "app/src/shared/observability/events/index.ts",
       "targetPath": "app/src/shared/observability/events/index.ts",
-      "targetBlob": "d751ac60fe6d99b8af4e9750a425a18ba2344737",
+      "targetBlob": "209e1adfdd4ba8fb07dbdba6b84e0e63f39c3ce5",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -22583,13 +22583,13 @@
       "sourceBlob": "86fd7779d70a4a81a6e9d590de98ee984439687e",
       "sourcePath": "packages/node-contracts/AGENTS.md",
       "targetPath": "packages/poly-node-contracts/AGENTS.md",
-      "targetBlob": "86fd7779d70a4a81a6e9d590de98ee984439687e",
+      "targetBlob": "b3fd8e7cede98cdbf1551d514e42935c2637258d",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "content_differs",
       "resolution": null
     },
     {
@@ -22611,7 +22611,7 @@
       "sourceBlob": "b33210d619d6272495e199c179513ced3e528887",
       "sourcePath": "packages/node-contracts/src/index.ts",
       "targetPath": "packages/poly-node-contracts/src/index.ts",
-      "targetBlob": "ed5c3e36919b5b6aa362d7c1655e71c89610a5da",
+      "targetBlob": "3a84cde33325283300ccf72bfac0e1c396f7a578",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -22723,13 +22723,13 @@
       "sourceBlob": "54890cd92d8571f2ec7afe7890c1f625d1b25d12",
       "sourcePath": "packages/node-contracts/src/poly.user-credentials.v1.contract.ts",
       "targetPath": "packages/poly-node-contracts/src/poly.user-credentials.v1.contract.ts",
-      "targetBlob": "54890cd92d8571f2ec7afe7890c1f625d1b25d12",
-      "targetMode": "100644",
+      "targetBlob": null,
+      "targetMode": null,
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "missing_target",
       "resolution": null
     },
     {
@@ -25439,6 +25439,9 @@
       "targetPath": "app/src/adapters/server/db/migrations/0070_first_wrecker.sql"
     },
     {
+      "targetPath": "app/src/adapters/server/db/migrations/0071_gigantic_sister_grimm.sql"
+    },
+    {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0060_snapshot.json"
     },
     {
@@ -25467,6 +25470,9 @@
     },
     {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0070_snapshot.json"
+    },
+    {
+      "targetPath": "app/src/adapters/server/db/migrations/meta/0071_snapshot.json"
     },
     {
       "targetPath": "app/src/adapters/server/identity/identity-binding.adapter.ts"
@@ -25619,6 +25625,9 @@
       "targetPath": "app/src/app/(app)/knowledge/view.tsx"
     },
     {
+      "targetPath": "app/src/app/(app)/profile/_components/AgentAccessSection.tsx"
+    },
+    {
       "targetPath": "app/src/app/(infra)/openapi.json/route.test.ts"
     },
     {
@@ -25632,6 +25641,9 @@
     },
     {
       "targetPath": "app/src/app/_facades/identity/operator-attested-binding.server.ts"
+    },
+    {
+      "targetPath": "app/src/app/_facades/poly/agent-access-requests.server.ts"
     },
     {
       "targetPath": "app/src/app/_facades/poly/agent-grants.server.ts"
@@ -25659,6 +25671,12 @@
     },
     {
       "targetPath": "app/src/app/api/internal/ops/poly/wallet/reset-connection/route.ts"
+    },
+    {
+      "targetPath": "app/src/app/api/v1/agent/access-requests/[id]/route.ts"
+    },
+    {
+      "targetPath": "app/src/app/api/v1/agent/access-requests/route.ts"
     },
     {
       "targetPath": "app/src/app/api/v1/ai/runs/[runId]/ui-stream/route.ts"
@@ -25748,6 +25766,15 @@
       "targetPath": "app/src/app/api/v1/poly/_lib/degraded.ts"
     },
     {
+      "targetPath": "app/src/app/api/v1/poly/agent-access-requests/[id]/decision/route.ts"
+    },
+    {
+      "targetPath": "app/src/app/api/v1/poly/agent-access-requests/preview/route.ts"
+    },
+    {
+      "targetPath": "app/src/app/api/v1/poly/agent-access-requests/route.ts"
+    },
+    {
       "targetPath": "app/src/app/api/v1/poly/agent-grants/[id]/route.ts"
     },
     {
@@ -25812,6 +25839,9 @@
     },
     {
       "targetPath": "app/src/features/agent-grants/AGENTS.md"
+    },
+    {
+      "targetPath": "app/src/features/agent-grants/agent-access-request-service.ts"
     },
     {
       "targetPath": "app/src/features/agent-grants/agent-grant-service.ts"
@@ -25916,6 +25946,9 @@
       "targetPath": "app/tests/_fixtures/poly/trade-size-pnl-oracle.ts"
     },
     {
+      "targetPath": "app/tests/component/db/agent-access-request-rls.int.test.ts"
+    },
+    {
       "targetPath": "app/tests/component/db/agent-capability-grant-rls.int.test.ts"
     },
     {
@@ -25958,6 +25991,9 @@
       "targetPath": "app/tests/component/jobs/job-leader-election.int.test.ts"
     },
     {
+      "targetPath": "app/tests/contract/app/agent-access-discovery.test.ts"
+    },
+    {
       "targetPath": "app/tests/contract/app/ai.chat.idempotency.test.ts"
     },
     {
@@ -25983,6 +26019,9 @@
     },
     {
       "targetPath": "app/tests/contract/app/poly.research-copy-trade-pnl.authorization.test.ts"
+    },
+    {
+      "targetPath": "app/tests/contract/poly.agent-access-requests.v1.contract.test.ts"
     },
     {
       "targetPath": "app/tests/contract/poly.agent-grants.v1.contract.test.ts"
@@ -26021,6 +26060,9 @@
       "targetPath": "app/tests/unit/adapters/work-items-adapter.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/app/_facades/agent-access-requests.server.test.ts"
+    },
+    {
       "targetPath": "app/tests/unit/app/_facades/ai/completion-stream-acceptance.spec.ts"
     },
     {
@@ -26037,6 +26079,12 @@
     },
     {
       "targetPath": "app/tests/unit/app/api/identity/bindings-import.route.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/api/poly/agent-access-requests.auth-boundary.route.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/api/poly/agent-grants.session-only.route.test.ts"
     },
     {
       "targetPath": "app/tests/unit/app/api/poly/billing-account-cache.test.ts"
@@ -26076,6 +26124,9 @@
     },
     {
       "targetPath": "app/tests/unit/app/knowledge/loaders.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/profile/agent-access-section.test.tsx"
     },
     {
       "targetPath": "app/tests/unit/auth/attested-signin.test.ts"
@@ -26901,6 +26952,9 @@
     },
     {
       "targetPath": "packages/db-schema/package.json"
+    },
+    {
+      "targetPath": "packages/db-schema/src/agent-access-requests.ts"
     },
     {
       "targetPath": "packages/db-schema/src/agent-capability-grants.ts"
@@ -28278,6 +28332,9 @@
     },
     {
       "targetPath": "packages/poly-market-provider/tests/fixtures/polymarket-user-pnl-week.json"
+    },
+    {
+      "targetPath": "packages/poly-node-contracts/src/poly.agent-access-requests.v1.contract.ts"
     },
     {
       "targetPath": "packages/poly-node-contracts/src/poly.agent-grants.v1.contract.ts"

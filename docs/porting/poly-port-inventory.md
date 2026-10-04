@@ -19,24 +19,24 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1097 |
-| Unresolved legacy files | 602 |
+| Current-only files | 1116 |
+| Unresolved legacy files | 605 |
 | P0/P1 mission files resolved | 8/79 |
 | Behavioral gates passed | 3/7 |
 
 | State | Count |
 | --- | ---: |
-| exact | 1126 |
+| exact | 1123 |
 | upgraded | 7 |
 | retired | 1 |
-| unresolved | 602 |
+| unresolved | 605 |
 
 | Priority | Unresolved |
 | --- | ---: |
 | P0 | 20 |
-| P1 | 51 |
+| P1 | 53 |
 | P2 | 281 |
-| P3 | 250 |
+| P3 | 251 |
 
 ## Delivery groups
 
@@ -222,7 +222,9 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `329b4988bcdf0f167b7b57260340a02be33885fc` | `packages/market-provider/tests/polymarket-clob-adapter.test.ts` | `100644` | `a4af2d79d487f1cf95984a0c330d64990751ee0b` | `packages/poly-market-provider/tests/polymarket-clob-adapter.test.ts` |
 | P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `6f544dbb8419100f103bb245bcf1bec737345756` | `packages/market-provider/tests/polymarket-data-api.test.ts` | `100644` | `5104d45ee2b16a1b3f4e9ccea478d5ff06b2b4e5` | `packages/poly-market-provider/tests/polymarket-data-api.test.ts` |
 | P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `578e2bf84d057cabaaa1ca26c8678c7dd03fa7ab` | `packages/market-provider/tests/polymarket-user-pnl.test.ts` | `100644` | `57092a22adcb3195dff82ecebb17effee9d7fe45` | `packages/poly-market-provider/tests/polymarket-user-pnl.test.ts` |
-| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `b33210d619d6272495e199c179513ced3e528887` | `packages/node-contracts/src/index.ts` | `100644` | `ed5c3e36919b5b6aa362d7c1655e71c89610a5da` | `packages/poly-node-contracts/src/index.ts` |
+| P1 | unresolved | content_differs | — | `100644` | `86fd7779d70a4a81a6e9d590de98ee984439687e` | `packages/node-contracts/AGENTS.md` | `100644` | `b3fd8e7cede98cdbf1551d514e42935c2637258d` | `packages/poly-node-contracts/AGENTS.md` |
+| P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `b33210d619d6272495e199c179513ced3e528887` | `packages/node-contracts/src/index.ts` | `100644` | `3a84cde33325283300ccf72bfac0e1c396f7a578` | `packages/poly-node-contracts/src/index.ts` |
+| P1 | unresolved | missing_target | — | `100644` | `54890cd92d8571f2ec7afe7890c1f625d1b25d12` | `packages/node-contracts/src/poly.user-credentials.v1.contract.ts` | — | — | `packages/poly-node-contracts/src/poly.user-credentials.v1.contract.ts` |
 | P1 | unresolved | content_differs | `dashboard-truth` | `100644` | `6ff8e1f4c57b07edcb68073e5fcc84943c2568fa` | `packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts` | `100644` | `ab0eb29653737ac46a22d1236afa6622b2ac99b4` | `packages/poly-node-contracts/src/poly.wallet-analysis.v1.contract.ts` |
 | P1 | unresolved | content_differs | `dashboard-truth` | `100644` | `04ba8532a4c4e366b9651838b1101f7795308257` | `packages/node-contracts/src/poly.wallet.execution.v1.contract.ts` | `100644` | `c0489888e5c0e23282cb1c508f16c4c31e044611` | `packages/poly-node-contracts/src/poly.wallet.execution.v1.contract.ts` |
 | P1 | unresolved | content_differs | `dashboard-truth` | `100644` | `4e8994b4ed00c88659ed3422814e3833797fc74a` | `packages/node-contracts/src/poly.wallet.overview.v1.contract.ts` | `100644` | `fee25b5aa8f2db0b458c44ef580151c9f6d4b7b4` | `packages/poly-node-contracts/src/poly.wallet.overview.v1.contract.ts` |
@@ -302,7 +304,6 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P1 | exact | — | — | `100644` | `77fc24a78944830b682945f8989907daee80bbd1` | `packages/market-provider/tsconfig.json` | `100644` | `77fc24a78944830b682945f8989907daee80bbd1` | `packages/poly-market-provider/tsconfig.json` |
 | P1 | exact | — | — | `100644` | `7088e120528dd123e0e90ee1a8bb7584a3819594` | `packages/market-provider/tsup.config.ts` | `100644` | `7088e120528dd123e0e90ee1a8bb7584a3819594` | `packages/poly-market-provider/tsup.config.ts` |
 | P1 | exact | — | — | `100644` | `d98c18a89335dcf295268364fede2d0892e3716b` | `packages/market-provider/vitest.config.ts` | `100644` | `d98c18a89335dcf295268364fede2d0892e3716b` | `packages/poly-market-provider/vitest.config.ts` |
-| P1 | exact | — | — | `100644` | `86fd7779d70a4a81a6e9d590de98ee984439687e` | `packages/node-contracts/AGENTS.md` | `100644` | `86fd7779d70a4a81a6e9d590de98ee984439687e` | `packages/poly-node-contracts/AGENTS.md` |
 | P1 | exact | — | — | `100644` | `735ff94245545f54680b9706e47c2392b8239a05` | `packages/node-contracts/package.json` | `100644` | `735ff94245545f54680b9706e47c2392b8239a05` | `packages/poly-node-contracts/package.json` |
 | P1 | exact | — | — | `100644` | `ec789a0dcc4c7eec1968b927562d0f6747013793` | `packages/node-contracts/src/poly.copy-trade.orders.v1.contract.ts` | `100644` | `ec789a0dcc4c7eec1968b927562d0f6747013793` | `packages/poly-node-contracts/src/poly.copy-trade.orders.v1.contract.ts` |
 | P1 | exact | — | — | `100644` | `48ca5757df29cd71db3a183e545d571c734d74ce` | `packages/node-contracts/src/poly.copy-trade.targets.v1.contract.ts` | `100644` | `48ca5757df29cd71db3a183e545d571c734d74ce` | `packages/poly-node-contracts/src/poly.copy-trade.targets.v1.contract.ts` |
@@ -311,7 +312,6 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P1 | exact | — | — | `100644` | `12d13fd59624833e643070bd57a7370d5f979964` | `packages/node-contracts/src/poly.research-target-overlap.v1.contract.ts` | `100644` | `12d13fd59624833e643070bd57a7370d5f979964` | `packages/poly-node-contracts/src/poly.research-target-overlap.v1.contract.ts` |
 | P1 | exact | — | — | `100644` | `7a1cb4e6b84dae7ee702702a7ac7b75057d90da1` | `packages/node-contracts/src/poly.research-trader-comparison.v1.contract.ts` | `100644` | `7a1cb4e6b84dae7ee702702a7ac7b75057d90da1` | `packages/poly-node-contracts/src/poly.research-trader-comparison.v1.contract.ts` |
 | P1 | exact | — | — | `100644` | `2a1cc7e0301f274d1450db367c5f032120f8cc7c` | `packages/node-contracts/src/poly.sync-health.v1.contract.ts` | `100644` | `2a1cc7e0301f274d1450db367c5f032120f8cc7c` | `packages/poly-node-contracts/src/poly.sync-health.v1.contract.ts` |
-| P1 | exact | — | — | `100644` | `54890cd92d8571f2ec7afe7890c1f625d1b25d12` | `packages/node-contracts/src/poly.user-credentials.v1.contract.ts` | `100644` | `54890cd92d8571f2ec7afe7890c1f625d1b25d12` | `packages/poly-node-contracts/src/poly.user-credentials.v1.contract.ts` |
 | P1 | exact | — | — | `100644` | `13cea16e3607bc212d7e30349c1dd2a1e8746bbd` | `packages/node-contracts/src/poly.wallet.auto-wrap.v1.contract.ts` | `100644` | `13cea16e3607bc212d7e30349c1dd2a1e8746bbd` | `packages/poly-node-contracts/src/poly.wallet.auto-wrap.v1.contract.ts` |
 | P1 | exact | — | — | `100644` | `5652b4fcfcd33dadca6acfde2efcbf7f51f43ac9` | `packages/node-contracts/src/poly.wallet.balance.v1.contract.ts` | `100644` | `5652b4fcfcd33dadca6acfde2efcbf7f51f43ac9` | `packages/poly-node-contracts/src/poly.wallet.balance.v1.contract.ts` |
 | P1 | exact | — | — | `100644` | `6b7ea2848916ff8feb48053c168cb3d54826b9db` | `packages/node-contracts/src/poly.wallet.balances.v1.contract.ts` | `100644` | `6b7ea2848916ff8feb48053c168cb3d54826b9db` | `packages/poly-node-contracts/src/poly.wallet.balances.v1.contract.ts` |
@@ -949,7 +949,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `65ee3d72fbbaa034381dc0fbe3af27b2015d16dd` | `app/src/adapters/server/db/drizzle.client.ts` | `100644` | `9849f9295d2638ccd2f8f2efe995c388d48bb6dd` | `app/src/adapters/server/db/drizzle.client.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `49084b4c7846d76f3f245685a3fb51ae41222498` | `app/src/adapters/server/db/drizzle.service-client.ts` | `100644` | `ab4845c7bb9ff65a472e480355700959256426ec` | `app/src/adapters/server/db/drizzle.service-client.ts` |
 | P3 | unresolved | missing_target | — | `100644` | `1c68f2a93e9c31366481e020bafb4429c7ed8e62` | `app/src/adapters/server/db/migrations/README.md` | — | — | `app/src/adapters/server/db/migrations/README.md` |
-| P3 | unresolved | content_differs | — | `100644` | `888987037701e67c4772de6490a7904173e41e5d` | `app/src/adapters/server/db/migrations/meta/_journal.json` | `100644` | `debac0858e9c68c0635c49696aec9438f69db18b` | `app/src/adapters/server/db/migrations/meta/_journal.json` |
+| P3 | unresolved | content_differs | — | `100644` | `888987037701e67c4772de6490a7904173e41e5d` | `app/src/adapters/server/db/migrations/meta/_journal.json` | `100644` | `f47ef56a557ab5cb4df6c94b081fecccef9b6d65` | `app/src/adapters/server/db/migrations/meta/_journal.json` |
 | P3 | unresolved | content_differs | — | `100644` | `e55c1089fbb846bc5c26877ab003863cf34b9f45` | `app/src/adapters/server/identity/create-binding.ts` | `100644` | `c28f7aaf935cf4a9c0b9b36147dba750e783bb2b` | `app/src/adapters/server/identity/create-binding.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `52083b0eb0c4f99b153749a4dd5646d3850eb943` | `app/src/adapters/server/index.ts` | `100644` | `ab11440f15d49f0739c745ced9b6bd336807d6ee` | `app/src/adapters/server/index.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `6af5730b065293d92c8706bfb4b4e259ce3058ab` | `app/src/adapters/server/onchain/viem-evm-onchain-client.adapter.ts` | `100644` | `20bab4a4f48f778215269cc61dbfd99e3e678044` | `app/src/adapters/server/onchain/viem-evm-onchain-client.adapter.ts` |
@@ -980,7 +980,8 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `5512e1fa921ff8310f1a16b597967e8bd6976c9a` | `app/src/app/(app)/gov/review/view.tsx` | `100644` | `e2da8acc7097f0aadfba0326c774fc0667142405` | `app/src/app/(app)/gov/review/view.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `f12f858bbf4471978a1dc82a437d8f9720bf6839` | `app/src/app/(app)/gov/system/page.tsx` | `100644` | `056513dfbc0799ecd507ff39beb30d92b82e3663` | `app/src/app/(app)/gov/system/page.tsx` |
 | P3 | unresolved | missing_target | — | `100644` | `c0b27de2e09d88013332a14ad40c93d7ed4367c6` | `app/src/app/(app)/gov/system/view.tsx` | — | — | `app/src/app/(app)/gov/system/view.tsx` |
-| P3 | unresolved | content_differs | — | `100644` | `4d5157bdf1db4b68498b6fba640f931b94685339` | `app/src/app/(app)/profile/view.tsx` | `100644` | `f0581ceb80b66e343ade15b285e12ebb0db126d1` | `app/src/app/(app)/profile/view.tsx` |
+| P3 | unresolved | missing_target | — | `100644` | `515a22643f83c908ef505baf908712a056fe4b83` | `app/src/app/(app)/profile/_components/ApiAccessSection.tsx` | — | — | `app/src/app/(app)/profile/_components/ApiAccessSection.tsx` |
+| P3 | unresolved | content_differs | — | `100644` | `4d5157bdf1db4b68498b6fba640f931b94685339` | `app/src/app/(app)/profile/view.tsx` | `100644` | `5d3368191b6b9b18b847db210b1f43a0b5ca846e` | `app/src/app/(app)/profile/view.tsx` |
 | P3 | unresolved | missing_target | — | `100644` | `add2aa91d85192821ad574e640aced757a872f85` | `app/src/app/(app)/work/_components/FacetedFilter.tsx` | — | — | `app/src/app/(app)/work/_components/FacetedFilter.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `fd6bb45969f6d915bb35ef3a938e8fa30970da7a` | `app/src/app/(app)/work/_components/WorkItemDetail.tsx` | `100644` | `4e5f912f419d2545bdbd156b34c92942e90ecddc` | `app/src/app/(app)/work/_components/WorkItemDetail.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `57ec7e35fdc16ccbc13040aa9514f01865663eaf` | `app/src/app/(app)/work/_components/columns.tsx` | `100644` | `dc622f0b2958687da1ec3a1967d7372f91d1b092` | `app/src/app/(app)/work/_components/columns.tsx` |
@@ -990,7 +991,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `d30e2380bdc5b5dd494559935bd2f564621cccc5` | `app/src/app/(public)/AGENTS.md` | `100644` | `eba28fd45915b645618ec96f16f530410e08eac0` | `app/src/app/(public)/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `a66dd96a51c34b46b3f63f74acf28a59aedd2be1` | `app/src/app/(public)/AuthRedirect.tsx` | `100644` | `06d78fdb1c68dbd5f1c742d7d8bd07fdca265bac` | `app/src/app/(public)/AuthRedirect.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `1a7753eb6fa81d7f2b650acc918782362e77b09b` | `app/src/app/(public)/layout.tsx` | `100644` | `0a6ee8f95e1cd00aa8c14d134093131916f44b65` | `app/src/app/(public)/layout.tsx` |
-| P3 | unresolved | content_differs | — | `100644` | `240967ec2d52eeb4267901274a8677eeca6eee38` | `app/src/app/.well-known/agent.json/route.ts` | `100644` | `3593fc10027f4fc92b2d616b812ebf33953da7cf` | `app/src/app/.well-known/agent.json/route.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `240967ec2d52eeb4267901274a8677eeca6eee38` | `app/src/app/.well-known/agent.json/route.ts` | `100644` | `9cd77bd81fbd1dfa57400461a006f81d228e84f9` | `app/src/app/.well-known/agent.json/route.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `b14e257ad6f9d14c6526db1bfed2eef37bde1eef` | `app/src/app/AGENTS.md` | `100644` | `e5583c13c12c3a616d2ea60969f6d7336d9616dd` | `app/src/app/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `8165f7c57d4045873efbc9539d67c03ddaec7296` | `app/src/app/_facades/AGENTS.md` | `100644` | `19bab13f14683e996afdb1e18a10f7fe0d8fbe30` | `app/src/app/_facades/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `c7982e3456b1410604028699a3c6390bfe067c9c` | `app/src/app/_facades/ai/completion.server.ts` | `100644` | `3ab33610c895519d5aabeba9a939c60529649379` | `app/src/app/_facades/ai/completion.server.ts` |
@@ -1000,7 +1001,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `b44a0b17ca42396346367406a30b00bdcea20872` | `app/src/app/_facades/poly/wallet-grants.server.ts` | `100644` | `bed00a7118658826588b88081fa16e3d57d616a8` | `app/src/app/_facades/poly/wallet-grants.server.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `92ea482ef6df1d52a15145781366db8ed25a8467` | `app/src/app/_facades/treasury/snapshot.server.ts` | `100644` | `39b08aac4fc74804f93d36036bad3486b74319a2` | `app/src/app/_facades/treasury/snapshot.server.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `ea7c3c52b3c5108523cae3c00364847c580b2584` | `app/src/app/_lib/AGENTS.md` | `100644` | `c6e0e8ff432f6198d200387d3e0f8ad29efbc6b9` | `app/src/app/_lib/AGENTS.md` |
-| P3 | unresolved | content_differs | — | `100644` | `cfb6927e58e7382543937df5300137e81d293059` | `app/src/app/api/AGENTS.md` | `100644` | `3e4ab81ff3429c73b0041e0afce149c4fb3f6055` | `app/src/app/api/AGENTS.md` |
+| P3 | unresolved | content_differs | — | `100644` | `cfb6927e58e7382543937df5300137e81d293059` | `app/src/app/api/AGENTS.md` | `100644` | `f8f36334dc4b66f9e7ab4120463f09fe70ac74e7` | `app/src/app/api/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `e2663e393881b849370816e5283645de6a5a4294` | `app/src/app/api/internal/billing/ingest/route.ts` | `100644` | `19aa2747cf82472b6657dfe32c4f88114231ef7c` | `app/src/app/api/internal/billing/ingest/route.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `e3937c5614f7d35dddb1022268171d566dc7f5e3` | `app/src/app/api/internal/grants/[grantId]/validate/route.ts` | `100644` | `1755e4d023093cde7a78b63b31039dbf1525a715` | `app/src/app/api/internal/grants/[grantId]/validate/route.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `f06d2515614796dbf1ded14f6f24a280585712e0` | `app/src/app/api/internal/graphs/[graphId]/runs/route.ts` | `100644` | `ab558caa9597aae909181ab75806b681348fa293` | `app/src/app/api/internal/graphs/[graphId]/runs/route.ts` |
@@ -1129,13 +1130,13 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `97c93a80419b2780cfc20eeeff542008ee102f5a` | `app/src/shared/config/index.ts` | `100644` | `0c922df1302becec332e2ca653ea67b0c67402bf` | `app/src/shared/config/index.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `0469f8de3364166325c266b1d311e765113139df` | `app/src/shared/config/repoSpec.server.ts` | `100644` | `daf89e58058217af32c09b406ba3683f12081965` | `app/src/shared/config/repoSpec.server.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `7c829c8d14c10936561e7ff8708c03a775a4a706` | `app/src/shared/db/AGENTS.md` | `100644` | `d675ef6e9424bdd3926ebe19c091119e0c8dab5c` | `app/src/shared/db/AGENTS.md` |
-| P3 | unresolved | content_differs | — | `100644` | `0b3a2c3e20706de2a0da40de5f03bd9f7876707b` | `app/src/shared/db/schema.ts` | `100644` | `cdc190c7f2273dcea17e88675769c03b4ee04c68` | `app/src/shared/db/schema.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `0b3a2c3e20706de2a0da40de5f03bd9f7876707b` | `app/src/shared/db/schema.ts` | `100644` | `1a929d7559726c8a0ea1a697f890f2acf24e4b81` | `app/src/shared/db/schema.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `5abf73ac763e45e652990b9ae237a3ad4af15e69` | `app/src/shared/env/AGENTS.md` | `100644` | `0db3c10e96cc2af511d28c41773f56e6c7c68c83` | `app/src/shared/env/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `1e2715436ed787ff969346c84c03bb6d82a74d2c` | `app/src/shared/env/invariants.ts` | `100644` | `9b88361183fdacf0824fd9e6df7434203163fbd2` | `app/src/shared/env/invariants.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `0e0576d830869f6fe12895c611d8bc6808818df6` | `app/src/shared/env/server-env.ts` | `100644` | `50cde75d41198e0fb0e19f310dd6d8a7871c58d8` | `app/src/shared/env/server-env.ts` |
 | P3 | unresolved | missing_target | — | `100644` | `9b7c5117790640de68ce1bb43309a812f67e1599` | `app/src/shared/hooks/useIsMobile.ts` | — | — | `app/src/shared/hooks/useIsMobile.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `75cfb90111c5e178be4dbf9abeee91c0d1db7615` | `app/src/shared/observability/events/AGENTS.md` | `100644` | `bd4fc71bb657b7f884a765ff5d8e7127277f56ab` | `app/src/shared/observability/events/AGENTS.md` |
-| P3 | unresolved | content_differs | — | `100644` | `35824c215ad1e94b317e3d6eceb2b8e819e9ff42` | `app/src/shared/observability/events/index.ts` | `100644` | `d751ac60fe6d99b8af4e9750a425a18ba2344737` | `app/src/shared/observability/events/index.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `35824c215ad1e94b317e3d6eceb2b8e819e9ff42` | `app/src/shared/observability/events/index.ts` | `100644` | `209e1adfdd4ba8fb07dbdba6b84e0e63f39c3ce5` | `app/src/shared/observability/events/index.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `9be927b53c11a92944e051761601dbc731669969` | `app/src/shared/observability/index.ts` | `100644` | `e0aca6cd5eae6165c55178e49ec203a1a6b8a7a5` | `app/src/shared/observability/index.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `e4946636ad244728aa43ac4ec46cd11c90775b51` | `app/src/shared/observability/server/AGENTS.md` | `100644` | `3d69384556845ca6aff45489c3512e4f0eca2113` | `app/src/shared/observability/server/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `b2be29ba0b4464d34d7585e7d201a5676eca6952` | `app/src/shared/observability/server/index.ts` | `100644` | `3a002069efcfc457c736ec3ac0f0bc926779a0d0` | `app/src/shared/observability/server/index.ts` |
@@ -1369,7 +1370,6 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | exact | — | — | `100644` | `befa83b937707d331de713c0d7c18375cc012bbe` | `app/src/app/(app)/gov/page.tsx` | `100644` | `befa83b937707d331de713c0d7c18375cc012bbe` | `app/src/app/(app)/gov/page.tsx` |
 | P3 | exact | — | — | `100644` | `d1372486dbac626b8c1d97c33759ce6361c351df` | `app/src/app/(app)/layout.tsx` | `100644` | `d1372486dbac626b8c1d97c33759ce6361c351df` | `app/src/app/(app)/layout.tsx` |
 | P3 | exact | — | — | `100644` | `1f8e9f082abedcbbf7a1573af29bfb3b84229b10` | `app/src/app/(app)/loading.tsx` | `100644` | `1f8e9f082abedcbbf7a1573af29bfb3b84229b10` | `app/src/app/(app)/loading.tsx` |
-| P3 | exact | — | — | `100644` | `515a22643f83c908ef505baf908712a056fe4b83` | `app/src/app/(app)/profile/_components/ApiAccessSection.tsx` | `100644` | `515a22643f83c908ef505baf908712a056fe4b83` | `app/src/app/(app)/profile/_components/ApiAccessSection.tsx` |
 | P3 | exact | — | — | `100644` | `c696978d5e2721dbe4e5f5c25e216e6f9e2c19dd` | `app/src/app/(app)/profile/page.tsx` | `100644` | `c696978d5e2721dbe4e5f5c25e216e6f9e2c19dd` | `app/src/app/(app)/profile/page.tsx` |
 | P3 | exact | — | — | `100644` | `bb73eb0bd5de2f8e62692b7c58a6518b8391a908` | `app/src/app/(app)/schedules/_api/createSchedule.ts` | `100644` | `bb73eb0bd5de2f8e62692b7c58a6518b8391a908` | `app/src/app/(app)/schedules/_api/createSchedule.ts` |
 | P3 | exact | — | — | `100644` | `953d2839fc6a08eb0bacec9efd2bf60173d71031` | `app/src/app/(app)/schedules/_api/deleteSchedule.ts` | `100644` | `953d2839fc6a08eb0bacec9efd2bf60173d71031` | `app/src/app/(app)/schedules/_api/deleteSchedule.ts` |
