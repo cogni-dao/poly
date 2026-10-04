@@ -13,11 +13,14 @@
  *   `LOKI_PUSH_URL` is only ever injected into lease workload env.
  * Invariants:
  *   - FAIL_OPEN: logging can never crash or block the app. Construction, write,
- *     and flush swallow every error; push failures DROP the batch (no requeue).
- *   - MEMORY_CAPPED: bounded entry count + bounded bytes; overflow drops the
- *     OLDEST lines and reports the drop count in the next successful batch.
+ *     and flush swallow every error; push failures retain the active batch.
+ *   - ACK_BEFORE_REMOVE: only a 2xx response retires the immutable active
+ *     batch. Every other outcome retries while this process remains alive.
+ *   - MEMORY_CAPPED: active plus queued data has bounded entries and bytes;
+ *     overflow drops only queued lines and reports the count after recovery.
  *   - NON_BLOCKING: writes are in-memory appends; network IO happens on an
- *     unref'd timer (never keeps the process alive), one request in flight.
+ *     unref'd timer (never keeps the process alive), one request in flight and
+ *     at most one retry timer.
  *   - LABELS_MATCH_READ_PATH: streams carry {service="app", service_name=<slug>,
  *     node=<nodeId>, env, source} — `service`/`node`/`env` are what the
  *     operator's node log proxy forces (observability-logs.ts), `service_name`
@@ -49,6 +52,8 @@ export interface LokiPushStream {
 const FLUSH_INTERVAL_MS = 2_000;
 /** Flush immediately once a batch reaches this many lines. */
 const MAX_BATCH_ENTRIES = 500;
+/** Keep individual Loki requests well below the total in-process byte cap. */
+const MAX_BATCH_BYTES = 262_144;
 /** Hard entry cap — beyond this the oldest lines are dropped. */
 const MAX_BUFFER_ENTRIES = 2_000;
 /** Hard byte cap across buffered lines (~1 MiB). */
@@ -57,6 +62,48 @@ const MAX_BUFFER_BYTES = 1_048_576;
 const MAX_LINE_BYTES = 32_768;
 /** Abort a hung push rather than accumulate sockets. */
 const PUSH_TIMEOUT_MS = 5_000;
+/** First retry after an unacknowledged delivery. */
+const RETRY_BASE_MS = 1_000;
+/** Maximum retry delay, including a server-provided Retry-After. */
+const RETRY_CAP_MS = 30_000;
+
+type LokiValue = [timestamp: string, line: string];
+
+interface ActiveBatch {
+  readonly values: readonly LokiValue[];
+  readonly bytes: number;
+  readonly body: string;
+  failures: number;
+}
+
+function exponentialRetryDelay(failures: number): number {
+  return Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** (failures - 1));
+}
+
+function retryAfterDelay(
+  response: Response | undefined,
+  failures: number,
+  now: () => number
+): number {
+  const fallback = exponentialRetryDelay(failures);
+  if (response?.status !== 429 && response?.status !== 503) return fallback;
+
+  const raw = response.headers.get("retry-after")?.trim();
+  if (!raw) return fallback;
+
+  let delay: number | undefined;
+  if (/^\d+$/.test(raw)) {
+    const seconds = Number(raw);
+    if (Number.isSafeInteger(seconds)) delay = seconds * 1_000;
+  } else {
+    const date = Date.parse(raw);
+    if (Number.isFinite(date)) delay = Math.max(0, date - now());
+  }
+  if (delay === undefined || !Number.isSafeInteger(delay) || delay < 0) {
+    return fallback;
+  }
+  return Math.min(RETRY_CAP_MS, Math.max(RETRY_BASE_MS, delay));
+}
 
 /**
  * Create the push stream, or `undefined` when `LOKI_PUSH_URL` is not set —
@@ -87,46 +134,182 @@ export function createLokiPushStream(
       ...(env.COGNI_NODE_ID ? { node: env.COGNI_NODE_ID } : {}),
     };
 
-    let buffer: [string, string][] = [];
+    let buffer: LokiValue[] = [];
     let bufferedBytes = 0;
     let dropped = 0;
-    let inFlight = false;
+    let recoveredFailuresPending = 0;
+    let active: ActiveBatch | undefined;
+    let requestInFlight = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const totalEntries = (): number =>
+      (active?.values.length ?? 0) + buffer.length;
+    const totalBytes = (): number => (active?.bytes ?? 0) + bufferedBytes;
+
+    const enforceCap = (): void => {
+      while (
+        totalEntries() > MAX_BUFFER_ENTRIES ||
+        totalBytes() > MAX_BUFFER_BYTES
+      ) {
+        const oldestQueued = buffer.shift();
+        if (!oldestQueued) break;
+        bufferedBytes -= oldestQueued[1].length;
+        dropped += 1;
+      }
+    };
+
+    const enqueue = (line: string): void => {
+      buffer.push([`${now()}000000`, line]);
+      bufferedBytes += line.length;
+      enforceCap();
+    };
+
+    const enqueueDiagnostics = (): void => {
+      if (dropped === 0 && recoveredFailuresPending === 0) return;
+      const timestamp = `${now()}000000`;
+      const diagnostics = (): LokiValue[] => [
+        ...(recoveredFailuresPending > 0
+          ? [
+              [
+                timestamp,
+                JSON.stringify({
+                  level: 40,
+                  msg: "loki_push_recovered",
+                  failedAttempts: recoveredFailuresPending,
+                }),
+              ] as LokiValue,
+            ]
+          : []),
+        ...(dropped > 0
+          ? [
+              [
+                timestamp,
+                JSON.stringify({
+                  level: 40,
+                  msg: "loki_push_dropped",
+                  droppedLines: dropped,
+                }),
+              ] as LokiValue,
+            ]
+          : []),
+      ];
+
+      let values = diagnostics();
+      let bytes = values.reduce((sum, [, line]) => sum + line.length, 0);
+      while (
+        buffer.length + values.length > MAX_BUFFER_ENTRIES ||
+        bufferedBytes + bytes > MAX_BUFFER_BYTES
+      ) {
+        const oldestQueued = buffer.shift();
+        if (!oldestQueued) break;
+        bufferedBytes -= oldestQueued[1].length;
+        dropped += 1;
+        values = diagnostics();
+        bytes = values.reduce((sum, [, line]) => sum + line.length, 0);
+      }
+      buffer.unshift(...values);
+      bufferedBytes += bytes;
+      dropped = 0;
+      recoveredFailuresPending = 0;
+    };
+
+    const claimBatch = (): void => {
+      enqueueDiagnostics();
+      if (buffer.length === 0) return;
+
+      const values: LokiValue[] = [];
+      let bytes = 0;
+      while (values.length < MAX_BATCH_ENTRIES && buffer.length > 0) {
+        const next = buffer[0];
+        if (!next) break;
+        if (values.length > 0 && bytes + next[1].length > MAX_BATCH_BYTES) {
+          break;
+        }
+        buffer.shift();
+        bufferedBytes -= next[1].length;
+        values.push(next);
+        bytes += next[1].length;
+      }
+      active = {
+        values,
+        bytes,
+        body: JSON.stringify({ streams: [{ stream: labels, values }] }),
+        failures: 0,
+      };
+    };
+
+    const scheduleRetry = (response?: Response): void => {
+      try {
+        if (!active || retryTimer) return;
+        active.failures += 1;
+        const delay = retryAfterDelay(response, active.failures, now);
+        retryTimer = setTimeout(() => {
+          retryTimer = undefined;
+          pushActive();
+        }, delay);
+        retryTimer.unref?.();
+      } catch {
+        // FAIL_OPEN: logging failures never surface into application behavior.
+      }
+    };
+
+    const acknowledge = (): void => {
+      const recoveredFailures = active?.failures ?? 0;
+      active = undefined;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+      }
+      if (recoveredFailures > 0) {
+        recoveredFailuresPending += recoveredFailures;
+      }
+      flush();
+    };
+
+    function pushActive(): void {
+      try {
+        if (!active || requestInFlight || retryTimer) return;
+        requestInFlight = true;
+        let request: Promise<Response>;
+        try {
+          request = fetchFn(url, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...(auth ? { authorization: auth } : {}),
+            },
+            body: active.body,
+            signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
+          });
+        } catch {
+          requestInFlight = false;
+          scheduleRetry();
+          return;
+        }
+        void Promise.resolve(request).then(
+          (response) => {
+            requestInFlight = false;
+            if (response.ok) acknowledge();
+            else scheduleRetry(response);
+          },
+          () => {
+            requestInFlight = false;
+            scheduleRetry();
+          }
+        );
+      } catch {
+        requestInFlight = false;
+        scheduleRetry();
+      }
+    }
 
     const flush = (): void => {
       try {
-        if (inFlight || buffer.length === 0) return;
-        const values = buffer;
-        buffer = [];
-        bufferedBytes = 0;
-        if (dropped > 0) {
-          values.push([
-            `${now()}000000`,
-            JSON.stringify({
-              level: 40,
-              msg: "loki_push_dropped",
-              droppedLines: dropped,
-            }),
-          ]);
-          dropped = 0;
-        }
-        inFlight = true;
-        fetchFn(url, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            ...(auth ? { authorization: auth } : {}),
-          },
-          body: JSON.stringify({ streams: [{ stream: labels, values }] }),
-          signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
-        })
-          // FAIL_OPEN: a failed push drops this batch; requeueing would defeat
-          // the memory cap and can never block or crash the app.
-          .catch(() => {})
-          .finally(() => {
-            inFlight = false;
-          });
+        if (requestInFlight || retryTimer) return;
+        if (!active) claimBatch();
+        pushActive();
       } catch {
-        inFlight = false;
+        requestInFlight = false;
       }
     };
 
@@ -141,19 +324,14 @@ export function createLokiPushStream(
             if (raw === "") continue;
             const entry =
               raw.length > MAX_LINE_BYTES ? raw.slice(0, MAX_LINE_BYTES) : raw;
-            buffer.push([`${now()}000000`, entry]);
-            bufferedBytes += entry.length;
-            while (
-              buffer.length > MAX_BUFFER_ENTRIES ||
-              bufferedBytes > MAX_BUFFER_BYTES
-            ) {
-              const oldest = buffer.shift();
-              if (!oldest) break;
-              bufferedBytes -= oldest[1].length;
-              dropped += 1;
-            }
+            enqueue(entry);
           }
-          if (buffer.length >= MAX_BATCH_ENTRIES) flush();
+          if (
+            buffer.length >= MAX_BATCH_ENTRIES ||
+            bufferedBytes >= MAX_BATCH_BYTES
+          ) {
+            flush();
+          }
         } catch {
           // FAIL_OPEN: a sink defect must never surface into app code paths.
         }
