@@ -13,23 +13,23 @@
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
   "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "cf42ae48ea5549be436cba091263799e12bd438fcd7a8c28830eba70b058919f",
+  "targetTreeDigest": "216797a1d1f78e179ffb5842170b7d8e350b9902ac2a073fb5e6f548b9bb3711",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
     "targetOnlyFiles": 1116,
-    "unresolved": 605,
+    "unresolved": 602,
     "byStatus": {
-      "exact": 1123,
+      "exact": 1126,
       "retired": 1,
-      "unresolved": 605,
+      "unresolved": 602,
       "upgraded": 7
     },
     "unresolvedByPriority": {
       "P0": 20,
-      "P1": 53,
+      "P1": 51,
       "P2": 281,
-      "P3": 251
+      "P3": 250
     },
     "missionFiles": 79,
     "missionResolved": 8,
@@ -4945,13 +4945,13 @@
       "sourceBlob": "515a22643f83c908ef505baf908712a056fe4b83",
       "sourcePath": "app/src/app/(app)/profile/_components/ApiAccessSection.tsx",
       "targetPath": "app/src/app/(app)/profile/_components/ApiAccessSection.tsx",
-      "targetBlob": null,
-      "targetMode": null,
+      "targetBlob": "515a22643f83c908ef505baf908712a056fe4b83",
+      "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "deliveryGroup": null,
-      "status": "unresolved",
-      "unresolvedReason": "missing_target",
+      "status": "exact",
+      "unresolvedReason": null,
       "resolution": null
     },
     {
@@ -22583,13 +22583,13 @@
       "sourceBlob": "86fd7779d70a4a81a6e9d590de98ee984439687e",
       "sourcePath": "packages/node-contracts/AGENTS.md",
       "targetPath": "packages/poly-node-contracts/AGENTS.md",
-      "targetBlob": "b3fd8e7cede98cdbf1551d514e42935c2637258d",
+      "targetBlob": "86fd7779d70a4a81a6e9d590de98ee984439687e",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
       "deliveryGroup": null,
-      "status": "unresolved",
-      "unresolvedReason": "content_differs",
+      "status": "exact",
+      "unresolvedReason": null,
       "resolution": null
     },
     {
@@ -22723,13 +22723,13 @@
       "sourceBlob": "54890cd92d8571f2ec7afe7890c1f625d1b25d12",
       "sourcePath": "packages/node-contracts/src/poly.user-credentials.v1.contract.ts",
       "targetPath": "packages/poly-node-contracts/src/poly.user-credentials.v1.contract.ts",
-      "targetBlob": null,
-      "targetMode": null,
+      "targetBlob": "54890cd92d8571f2ec7afe7890c1f625d1b25d12",
+      "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
       "deliveryGroup": null,
-      "status": "unresolved",
-      "unresolvedReason": "missing_target",
+      "status": "exact",
+      "unresolvedReason": null,
       "resolution": null
     },
     {
