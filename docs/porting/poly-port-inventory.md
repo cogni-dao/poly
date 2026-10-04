@@ -19,7 +19,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1116 |
+| Current-only files | 1118 |
 | Unresolved legacy files | 602 |
 | P0/P1 mission files resolved | 8/79 |
 | Behavioral gates passed | 3/7 |
@@ -949,7 +949,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `65ee3d72fbbaa034381dc0fbe3af27b2015d16dd` | `app/src/adapters/server/db/drizzle.client.ts` | `100644` | `9849f9295d2638ccd2f8f2efe995c388d48bb6dd` | `app/src/adapters/server/db/drizzle.client.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `49084b4c7846d76f3f245685a3fb51ae41222498` | `app/src/adapters/server/db/drizzle.service-client.ts` | `100644` | `ab4845c7bb9ff65a472e480355700959256426ec` | `app/src/adapters/server/db/drizzle.service-client.ts` |
 | P3 | unresolved | missing_target | — | `100644` | `1c68f2a93e9c31366481e020bafb4429c7ed8e62` | `app/src/adapters/server/db/migrations/README.md` | — | — | `app/src/adapters/server/db/migrations/README.md` |
-| P3 | unresolved | content_differs | — | `100644` | `888987037701e67c4772de6490a7904173e41e5d` | `app/src/adapters/server/db/migrations/meta/_journal.json` | `100644` | `f47ef56a557ab5cb4df6c94b081fecccef9b6d65` | `app/src/adapters/server/db/migrations/meta/_journal.json` |
+| P3 | unresolved | content_differs | — | `100644` | `888987037701e67c4772de6490a7904173e41e5d` | `app/src/adapters/server/db/migrations/meta/_journal.json` | `100644` | `c4f3fc0173526f21e56edf64fb4c5e7b9a1bcb32` | `app/src/adapters/server/db/migrations/meta/_journal.json` |
 | P3 | unresolved | content_differs | — | `100644` | `e55c1089fbb846bc5c26877ab003863cf34b9f45` | `app/src/adapters/server/identity/create-binding.ts` | `100644` | `c28f7aaf935cf4a9c0b9b36147dba750e783bb2b` | `app/src/adapters/server/identity/create-binding.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `52083b0eb0c4f99b153749a4dd5646d3850eb943` | `app/src/adapters/server/index.ts` | `100644` | `ab11440f15d49f0739c745ced9b6bd336807d6ee` | `app/src/adapters/server/index.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `6af5730b065293d92c8706bfb4b4e259ce3058ab` | `app/src/adapters/server/onchain/viem-evm-onchain-client.adapter.ts` | `100644` | `20bab4a4f48f778215269cc61dbfd99e3e678044` | `app/src/adapters/server/onchain/viem-evm-onchain-client.adapter.ts` |
