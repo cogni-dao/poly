@@ -298,7 +298,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			).resolves.toHaveLength(0);
 			await expect(
 				knowledgeSession.unsafe(
-					`SELECT table_name FROM dolt.status WHERE table_name = 'knowledge'`,
+					`SELECT table_name FROM dolt.status WHERE table_name = 'public.knowledge'`,
 				),
 			).resolves.toHaveLength(1);
 			await expect(
