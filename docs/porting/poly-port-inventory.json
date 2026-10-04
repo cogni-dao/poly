@@ -13,11 +13,11 @@
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
   "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "542f2535cd261c7b91ad91c59723a0958b8e056dd26c7d03895d2632e4518ba5",
+  "targetTreeDigest": "e5539dc2898d815848c9c05343e54554ac5ce3bfef1a352e8da0d4639d722151",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1118,
+    "targetOnlyFiles": 1126,
     "unresolved": 602,
     "byStatus": {
       "exact": 1126,
@@ -3279,7 +3279,7 @@
       "sourceBlob": "888987037701e67c4772de6490a7904173e41e5d",
       "sourcePath": "app/src/adapters/server/db/migrations/meta/_journal.json",
       "targetPath": "app/src/adapters/server/db/migrations/meta/_journal.json",
-      "targetBlob": "c4f3fc0173526f21e56edf64fb4c5e7b9a1bcb32",
+      "targetBlob": "838e637414962810ba493d027f06a6d5d1d1a0ab",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -14589,7 +14589,7 @@
       "sourceBlob": "35824c215ad1e94b317e3d6eceb2b8e819e9ff42",
       "sourcePath": "app/src/shared/observability/events/index.ts",
       "targetPath": "app/src/shared/observability/events/index.ts",
-      "targetBlob": "209e1adfdd4ba8fb07dbdba6b84e0e63f39c3ce5",
+      "targetBlob": "871e59416b39284d640c57781acfc35bed1edef5",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -21491,7 +21491,7 @@
       "sourceBlob": "645f5ecfe7e455ddf07bc6f28ff05956c89a56f7",
       "sourcePath": "packages/db-schema/src/copy-trade.ts",
       "targetPath": "packages/poly-db-schema/src/copy-trade.ts",
-      "targetBlob": "3052415a09fd4aed5d35c7491451ff4d781ee4a9",
+      "targetBlob": "3f6f55e5987f6702fe0b3b1a93d3396458eff458",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -22611,7 +22611,7 @@
       "sourceBlob": "b33210d619d6272495e199c179513ced3e528887",
       "sourcePath": "packages/node-contracts/src/index.ts",
       "targetPath": "packages/poly-node-contracts/src/index.ts",
-      "targetBlob": "3a84cde33325283300ccf72bfac0e1c396f7a578",
+      "targetBlob": "71282215240932f75838764a1d816ba616799e44",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -25787,6 +25787,12 @@
       "targetPath": "app/src/app/api/v1/poly/agent-grants/route.ts"
     },
     {
+      "targetPath": "app/src/app/api/v1/poly/research/copy-trade-investigation/evidence/route.ts"
+    },
+    {
+      "targetPath": "app/src/app/api/v1/poly/research/copy-trade-investigation/route.ts"
+    },
+    {
       "targetPath": "app/src/app/api/v1/poly/wallet/_lib/cash-on-chain.ts"
     },
     {
@@ -25904,6 +25910,9 @@
       "targetPath": "app/src/features/layout/components/AccountSlot.tsx"
     },
     {
+      "targetPath": "app/src/features/wallet-analysis/server/copy-trade-investigation-service.ts"
+    },
+    {
       "targetPath": "app/src/features/wallet-analysis/server/fill-rollup-service.ts"
     },
     {
@@ -25956,6 +25965,9 @@
     },
     {
       "targetPath": "app/tests/component/db/agent-capability-grant-rls.int.test.ts"
+    },
+    {
+      "targetPath": "app/tests/component/db/copy-trade-investigation.int.test.ts"
     },
     {
       "targetPath": "app/tests/component/db/doltgres-work-items.int.test.ts"
@@ -26024,6 +26036,9 @@
       "targetPath": "app/tests/contract/app/knowledge.read-principal.test.ts"
     },
     {
+      "targetPath": "app/tests/contract/app/poly.research-copy-trade-investigation.authorization.test.ts"
+    },
+    {
       "targetPath": "app/tests/contract/app/poly.research-copy-trade-pnl.authorization.test.ts"
     },
     {
@@ -26031,6 +26046,9 @@
     },
     {
       "targetPath": "app/tests/contract/poly.agent-grants.v1.contract.test.ts"
+    },
+    {
+      "targetPath": "app/tests/contract/poly.research-copy-trade-investigation.v1.contract.test.ts"
     },
     {
       "targetPath": "app/tests/contract/readyz-substrate.contract.test.ts"
@@ -28346,6 +28364,9 @@
       "targetPath": "packages/poly-node-contracts/src/poly.agent-grants.v1.contract.ts"
     },
     {
+      "targetPath": "packages/poly-node-contracts/src/poly.research-copy-trade-investigation.v1.contract.ts"
+    },
+    {
       "targetPath": "packages/poly-node-contracts/src/poly.wallet.dashboard.v1.contract.ts"
     },
     {
@@ -28530,6 +28551,9 @@
     },
     {
       "targetPath": "scripts/dev/capture-authed-state.mjs"
+    },
+    {
+      "targetPath": "scripts/poly-delta-investigation.ts"
     },
     {
       "targetPath": "scripts/poly-port-inventory.mjs"
