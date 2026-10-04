@@ -21,8 +21,8 @@ import {
   AgentGrantFacadeError,
   revokeAgentGrantFacade,
 } from "@/app/_facades/poly/agent-grants.server";
-import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import { getServerSessionUser } from "@/lib/auth/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -32,7 +32,7 @@ export const DELETE = wrapRouteHandlerWithLogging<{
 }>(
   {
     routeId: "poly.agent_grants.revoke",
-    auth: { mode: "required", getSessionUser },
+    auth: { mode: "required", getSessionUser: getServerSessionUser },
   },
   async (ctx, _request, sessionUser, context) => {
     if (!context) throw new Error("context required for dynamic routes");

@@ -17,6 +17,8 @@
  *   - RAW_NEVER_SELECTED_WHOLESALE: the Data-API `raw` jsonb is projected
  *     to 7 scalar `raw->>` fields in SQL (dashboard read-path floor fix);
  *     the full blob never crosses the wire or gets decoded in V8.
+ *   - DETERMINISTIC_BOUNDED_PREVIEW: equal value/time rows are ordered by
+ *     their stable condition/token identity before the 500-row limit.
  * Side-effects: DB read only.
  * Links: work/items/task.5007.poly-tenant-current-position-reconciler.md
  * @public
@@ -185,7 +187,11 @@ export async function readCurrentWalletPositionModel(params: {
             )
           )
         )
-      ORDER BY p.current_value_usdc DESC NULLS LAST, p.last_observed_at DESC NULLS LAST
+      ORDER BY
+        p.current_value_usdc DESC NULLS LAST,
+        p.last_observed_at DESC NULLS LAST,
+        p.condition_id ASC NULLS LAST,
+        p.token_id ASC NULLS LAST
       LIMIT ${POSITION_PREVIEW_LIMIT}
     `)
   );

@@ -169,6 +169,9 @@ describe("current-position read model raw->> projection equivalence", () => {
     expect(db.captured[0]).toMatch(/LIMIT \$\d+/);
     expect(db.captured[0]).toContain("p.current_value_usdc > 0");
     expect(db.captured[0]).toContain("NOT IN ('redeemed', 'loser', 'dust', 'closed')");
+    expect(db.captured[0]).toMatch(
+      /ORDER BY\s+p\.current_value_usdc DESC NULLS LAST,\s+p\.last_observed_at DESC NULLS LAST,\s+p\.condition_id ASC NULLS LAST,\s+p\.token_id ASC NULLS LAST\s+LIMIT \$\d+/
+    );
   });
 
   it("distinguishes never-observed and partial cursors from a real observed zero", async () => {

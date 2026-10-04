@@ -128,7 +128,13 @@ describe("wallet dashboard coherent snapshot", () => {
     walletB = await seedConnection({ userId: USER_B, billingAccountId: TENANT_B, address: OUR_B });
 
     await db.insert(polyTraderCurrentPositions).values(
-      Array.from({ length: 501 }, (_, index) => currentPosition(walletA.id, index))
+      Array.from({ length: 501 }, (_, index) => ({
+        ...currentPosition(walletA.id, index),
+        // condition-0 is the market shared with Tenant A's target snapshot.
+        // Rank it above the 500 equal-valued preview rows so this isolation
+        // assertion never depends on PostgreSQL's ordering of an unresolved tie.
+        ...(index === 0 ? { shares: "3", currentValueUsdc: "3" } : {}),
+      }))
     );
     await db.insert(polyCopyTradeFills).values(
       Array.from({ length: 31 }, (_, index) => ({
