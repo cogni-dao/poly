@@ -491,6 +491,13 @@
       "when": 1790980669557,
       "tag": "0069_cheerful_dark_beast",
       "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1791083106156,
+      "tag": "0070_first_wrecker",
+      "breakpoints": true
     }
   ]
 }

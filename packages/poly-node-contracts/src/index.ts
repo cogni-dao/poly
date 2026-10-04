@@ -15,6 +15,7 @@
  */
 
 export * from "./poly.copy-trade.orders.v1.contract";
+export * from "./poly.agent-grants.v1.contract";
 export * from "./poly.copy-trade.targets.v1.contract";
 export * from "./poly.research-copy-trade-pnl.v1.contract";
 export * from "./poly.research-trader-comparison.v1.contract";
