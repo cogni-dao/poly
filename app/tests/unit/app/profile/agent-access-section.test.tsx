@@ -47,6 +47,7 @@ describe("AgentAccessSection", () => {
 
 	afterEach(() => {
 		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
 	});
 
 	it("explains the approval-link flow without credential or UUID setup", async () => {
@@ -75,12 +76,21 @@ describe("AgentAccessSection", () => {
 			"",
 			`/profile#agent-request=${approvalToken}`,
 		);
+		const operationOrder: string[] = [];
+		const replaceState = window.history.replaceState.bind(window.history);
+		vi.spyOn(window.history, "replaceState").mockImplementation(
+			(...args: Parameters<History["replaceState"]>) => {
+				operationOrder.push("replaceState");
+				replaceState(...args);
+			},
+		);
 		let approved = false;
 		const fetchMock = vi.fn(
 			async (
 				input: RequestInfo | URL,
 				_init?: RequestInit,
 			): Promise<Response> => {
+				operationOrder.push("fetch");
 				const url = String(input);
 				if (url.endsWith("/preview")) {
 					return jsonResponse({ request: BASE_REQUEST });
@@ -119,6 +129,7 @@ describe("AgentAccessSection", () => {
 		render(<AgentAccessSection />);
 
 		expect(await screen.findByText("Review AI access")).toBeInTheDocument();
+		expect(operationOrder[0]).toBe("replaceState");
 		expect(screen.getByText("Research Copilot")).toBeInTheDocument();
 		expect(screen.getByText("Read performance")).toBeInTheDocument();
 		expect(window.location.hash).toBe("");

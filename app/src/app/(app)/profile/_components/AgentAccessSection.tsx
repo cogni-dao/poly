@@ -309,19 +309,20 @@ export function AgentAccessSection(): ReactElement {
 	}, []);
 
 	useEffect(() => {
-		void loadRequests();
-
 		let disposed = false;
 		let previewSequence = 0;
-		const readApprovalFragment = (): void => {
+		const takeApprovalFragment = (): string | null => {
 			const prefix = "#agent-request=";
-			if (!window.location.hash.startsWith(prefix)) return;
+			if (!window.location.hash.startsWith(prefix)) return null;
 			const token = window.location.hash.slice(prefix.length);
 			window.history.replaceState(
 				null,
 				"",
 				`${window.location.pathname}${window.location.search}`,
 			);
+			return token;
+		};
+		const previewApproval = (token: string): void => {
 			setPreview(null);
 			setPreviewError(false);
 			if (!token) {
@@ -358,8 +359,14 @@ export function AgentAccessSection(): ReactElement {
 				}
 			})();
 		};
+		const readApprovalFragment = (): void => {
+			const token = takeApprovalFragment();
+			if (token !== null) previewApproval(token);
+		};
 
+		// Consume the fragment before either request can observe it in the URL.
 		readApprovalFragment();
+		void loadRequests();
 		window.addEventListener("hashchange", readApprovalFragment);
 		return () => {
 			disposed = true;
