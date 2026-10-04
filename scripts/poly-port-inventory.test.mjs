@@ -468,13 +468,16 @@ test("reversed source input produces identical canonical inventory and full repo
   assert.equal(markdown(reversed, policy), report);
 });
 
-test("regression freezes contract, groups, gate definitions, and terminal progress", () => {
+test("regression freezes contract, groups, gate definitions, and P0/P1 terminal progress", () => {
   const current = structuredClone(inventory);
   current.contract.sha256 = "0".repeat(64);
   current.deliveryGroups[0].resolutionProofMode = "file-only";
   current.deliveryGroups[0].behaviorExpectation = "weaker";
   current.behavioralGates[0].requirement = "weaker";
-  const terminal = current.entries.find(({ status }) => status !== "unresolved");
+  const terminal = current.entries.find(
+    ({ priority, status }) =>
+      (priority === "P0" || priority === "P1") && status !== "unresolved"
+  );
   terminal.status = "unresolved";
   const problems = regressionProblems(inventory, current);
   assert.ok(problems.includes("immutable contract path or hash changed"));
@@ -494,6 +497,19 @@ test("regression freezes contract, groups, gate definitions, and terminal progre
     )
   );
   assert.ok(problems.includes(`terminal resolution regressed: ${terminal.sourcePath}`));
+});
+
+test("regression leaves non-mission P2/P3 forward differences visibly queued", () => {
+  const current = structuredClone(inventory);
+  const queued = current.entries.find(
+    ({ priority, status }) =>
+      (priority === "P2" || priority === "P3") && status !== "unresolved"
+  );
+  assert.ok(queued);
+  queued.status = "unresolved";
+  queued.unresolvedReason = "content_differs";
+
+  assert.deepEqual(regressionProblems(inventory, current), []);
 });
 
 test("regression allows only an exact validated proof-refresh transition", () => {

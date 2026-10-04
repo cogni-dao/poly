@@ -1221,6 +1221,7 @@ export function regressionProblems(base, current) {
       problems.push(`delivery group changed: ${oldEntry.sourcePath}`);
     }
     if (
+      priorityRank[oldEntry.priority] <= priorityRank.P1 &&
       terminalStatuses.has(oldEntry.status) &&
       !terminalStatuses.has(newEntry.status) &&
       !(
