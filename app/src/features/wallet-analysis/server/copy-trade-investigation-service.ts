@@ -654,7 +654,7 @@ export async function getCopyTradeInvestigationEvidence(
           target_wallet: row.target_wallet,
           fill_id: row.fill_id,
           token_id: row.token_id,
-          side: row.side === "BUY" || row.side === "SELL" ? row.side : null,
+          side: orderSide(row.side),
           status: row.status,
           price: nullableNumber(row.price),
           shares: nullableNumber(row.shares),
@@ -673,7 +673,7 @@ export async function getCopyTradeInvestigationEvidence(
           outcome: row.outcome,
           reason: row.reason,
           token_id: row.token_id,
-          side: row.side === "BUY" || row.side === "SELL" ? row.side : null,
+          side: orderSide(row.side),
           limit_price: nullableNumber(row.limit_price),
           size_usdc: nullableNumber(row.size_usdc),
           position_branch: row.position_branch,
@@ -841,7 +841,7 @@ function modeSql(mode: "live" | "paper" | "all", column: string): SQL {
 }
 
 function windowSql(
-  query: { since?: string; until?: string },
+  query: { since?: string | undefined; until?: string | undefined },
   column: string
 ): SQL {
   const lower = query.since
@@ -851,6 +851,10 @@ function windowSql(
     ? sql`${sql.raw(column)} < ${query.until}::timestamptz`
     : sql`TRUE`;
   return sql`${lower} AND ${upper}`;
+}
+
+function orderSide(value: string | null): "BUY" | "SELL" | null {
+  return value === "BUY" || value === "SELL" ? value : null;
 }
 
 function cursorPredicate(
