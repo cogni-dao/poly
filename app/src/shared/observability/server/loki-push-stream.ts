@@ -117,6 +117,7 @@ export function createLokiPushStream(
     const { env } = deps;
     const url = env.LOKI_PUSH_URL;
     if (!url) return undefined;
+    const pushUrl: string = url;
     const fetchFn = deps.fetchFn ?? globalThis.fetch;
     const now = deps.now ?? Date.now;
     const auth =
@@ -275,7 +276,7 @@ export function createLokiPushStream(
         requestInFlight = true;
         let request: Promise<Response>;
         try {
-          request = fetchFn(url, {
+          request = fetchFn(pushUrl, {
             method: "POST",
             headers: {
               "content-type": "application/json",
