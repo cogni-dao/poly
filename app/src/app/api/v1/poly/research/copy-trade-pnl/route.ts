@@ -6,25 +6,32 @@
  * Purpose: HTTP GET for the per-tenant copy-trade execution rollup that powers the trust-twin diff.
  *   Compares preview paper vs PROD live PnL on the same target wallet config.
  * Scope: Thin handler; does not aggregate in JS, write rows, or fan out upstream.
- *   Auth is any session-authed user (single-tenant Derek deploy today; tighten when
- *   another human gets creds). Tenant id is a query param so a diff script can read
- *   two tenants in one process — RLS is bypassed via service-DB by design here.
+ *   Human sessions and machine bearers use the same principal contract. Tenant id
+ *   remains explicit, but the principal must own the account or hold an active
+ *   `performance:read` grant. The aggregate runs under app-role RLS.
  * Invariants: SQL_AGGREGATION_ONLY — service is one GROUP BY, no V8 hydration;
  *   TENANT_PARAM_EXPLICIT — `billing_account_id` is required;
+ *   CAPABILITY_GATED — every denial returns the same non-disclosing 404 response;
  *   PAGE_LOAD_DB_ONLY — no upstream calls on render path.
  * Side-effects: IO (DB reads via the feature service).
  * Links: nodes/poly/packages/node-contracts/src/poly.research-copy-trade-pnl.v1.contract.ts
  * @public
  */
 
+import { withTenantScope } from "@cogni/db-client";
+import { toUserId, userActor } from "@cogni/ids";
 import {
   PolyResearchCopyTradePnlQuerySchema,
   PolyResearchCopyTradePnlResponseSchema,
 } from "@cogni/poly-node-contracts";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
-import { resolveServiceReadDb } from "@/bootstrap/container";
+import { resolveAppDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import {
+  type PerformanceReadAccess,
+  resolvePerformanceRead,
+} from "@/features/agent-grants/authorization";
 import { getCopyTradePnlForTenant } from "@/features/wallet-analysis/server/copy-trade-pnl-service";
 import {
   EVENT_NAMES,
@@ -54,6 +61,7 @@ export const GET = wrapRouteHandlerWithLogging(
         startedAt,
         status: 400,
         outcome: "error",
+        authorizationOutcome: "not_evaluated",
         errorCode: "invalid_query",
         marketsCount: 0,
         fillsCount: 0,
@@ -64,31 +72,56 @@ export const GET = wrapRouteHandlerWithLogging(
       );
     }
 
-    const db =
-      resolveServiceReadDb() as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
-        Record<string, unknown>
-      >;
+    const db = resolveAppDb();
+    const actorId = userActor(toUserId(sessionUser.id));
 
-    let response: Awaited<ReturnType<typeof getCopyTradePnlForTenant>>;
+    let authorizedResult: {
+      access: PerformanceReadAccess;
+      response: Awaited<ReturnType<typeof getCopyTradePnlForTenant>>;
+    } | null;
     try {
-      response = await getCopyTradePnlForTenant(
-        db,
-        queryParse.data.billing_account_id,
-        queryParse.data.mode,
-        {
-          ...(queryParse.data.since !== undefined
-            ? { since: queryParse.data.since }
+      authorizedResult = await withTenantScope(db, actorId, async (tx) => {
+        const access = await resolvePerformanceRead(tx, {
+          principalId: sessionUser.id,
+          billingAccountId: queryParse.data.billing_account_id,
+        });
+        logEvent(ctx.log, EVENT_NAMES.POLY_AGENT_GRANT_ACCESS_DECISION, {
+          reqId: ctx.reqId,
+          routeId: ctx.routeId,
+          outcome: access ? "allow" : "deny",
+          requiredScope: "performance:read",
+          principalId: sessionUser.id,
+          billingAccountId: queryParse.data.billing_account_id,
+          ...(access
+            ? {
+                accessKind: access.accessKind,
+                ...(access.grantId ? { grantId: access.grantId } : {}),
+              }
             : {}),
-          ...(queryParse.data.until !== undefined
-            ? { until: queryParse.data.until }
-            : {}),
-        }
-      );
+        });
+        if (!access) return null;
+
+        const response = await getCopyTradePnlForTenant(
+          tx,
+          queryParse.data.billing_account_id,
+          queryParse.data.mode,
+          {
+            ...(queryParse.data.since !== undefined
+              ? { since: queryParse.data.since }
+              : {}),
+            ...(queryParse.data.until !== undefined
+              ? { until: queryParse.data.until }
+              : {}),
+          }
+        );
+        return { access, response };
+      });
     } catch {
       logComplete(ctx, {
         startedAt,
         status: 500,
         outcome: "error",
+        authorizationOutcome: "not_evaluated",
         errorCode: "service_failed",
         marketsCount: 0,
         fillsCount: 0,
@@ -99,12 +132,28 @@ export const GET = wrapRouteHandlerWithLogging(
       );
     }
 
+    if (!authorizedResult) {
+      logComplete(ctx, {
+        startedAt,
+        status: 404,
+        outcome: "error",
+        authorizationOutcome: "denied",
+        errorCode: "not_found",
+        marketsCount: 0,
+        fillsCount: 0,
+      });
+      return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
+    const { access, response } = authorizedResult;
+
     const parsed = PolyResearchCopyTradePnlResponseSchema.safeParse(response);
     if (!parsed.success) {
       logComplete(ctx, {
         startedAt,
         status: 500,
         outcome: "error",
+        authorizationOutcome: "allowed",
+        accessKind: access.accessKind,
         errorCode: "response_validation_failed",
         marketsCount: response.markets.length,
         fillsCount: response.summary.fills_count,
@@ -119,6 +168,8 @@ export const GET = wrapRouteHandlerWithLogging(
       startedAt,
       status: 200,
       outcome: "success",
+      authorizationOutcome: "allowed",
+      accessKind: access.accessKind,
       marketsCount: parsed.data.markets.length,
       fillsCount: parsed.data.summary.fills_count,
     });
@@ -132,6 +183,8 @@ function logComplete(
     startedAt: number;
     status: number;
     outcome: "success" | "error";
+    authorizationOutcome: "not_evaluated" | "allowed" | "denied";
+    accessKind?: PerformanceReadAccess["accessKind"] | undefined;
     marketsCount: number;
     fillsCount: number;
     errorCode?: string | undefined;
@@ -143,6 +196,8 @@ function logComplete(
     status: fields.status,
     durationMs: Math.round(performance.now() - fields.startedAt),
     outcome: fields.outcome,
+    authorizationOutcome: fields.authorizationOutcome,
+    ...(fields.accessKind ? { accessKind: fields.accessKind } : {}),
     marketsCount: fields.marketsCount,
     fillsCount: fields.fillsCount,
     ...(fields.errorCode ? { errorCode: fields.errorCode } : {}),

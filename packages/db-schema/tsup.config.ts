@@ -16,6 +16,7 @@ import { defineConfig } from "tsup";
 export const tsupConfig = defineConfig({
   entry: [
     "src/index.ts",
+    "src/agent-capability-grants.ts",
     "src/refs.ts",
     "src/scheduling.ts",
     "src/auth.ts",

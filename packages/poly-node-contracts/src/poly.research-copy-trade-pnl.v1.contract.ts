@@ -7,14 +7,15 @@
  *          Enables a trust-twin (preview, mode=paper) vs PROD-Derek (mode=live) diff
  *          on positions + sized exposure without exposing per-row PII.
  * Scope: GET /api/v1/poly/research/copy-trade-pnl; does not mutate state or fan out upstream.
- *   Read-only, session-authed, tenant id provided as a query param
- *   (cross-tenant inspection — single-deploy v0).
+ *   Read-only, principal-authenticated, tenant id provided as a query param.
+ *   The caller must own the account or hold an active `performance:read` grant.
  * Invariants:
  *   - SQL_AGGREGATION_ONLY: every metric returned is a Postgres aggregate. No V8 reduce.
  *     (per `data-research` skill — bug.5012 lineage)
  *   - PAGE_LOAD_DB_ONLY: no upstream calls during render; reads `poly_copy_trade_fills`.
  *   - TENANT_PARAM_EXPLICIT: billing_account_id is a required query arg, not session-derived,
- *     so a diff script can compare two tenants in one process. Auth is "any session user".
+ *     so callers can make the account under comparison explicit. Authorization is still
+ *     account-scoped and enforced before the aggregate runs under app-role RLS.
  *   - WINDOW_ON_OBSERVED_AT: `since` / `until` filter `poly_copy_trade_fills.observed_at`
  *     (when the fill was seen on the target chain log), not `created_at` (when our
  *     mirror row was inserted). Trust-twin comparison wants the time of the real-world
@@ -116,7 +117,7 @@ export const polyResearchCopyTradePnlOperation = {
   summary:
     "Per-tenant mirror-execution rollup from poly_copy_trade_fills, grouped by (target, market)",
   description:
-    "SQL-aggregated per-market view of a tenant's copy-trade fills. Used to compare a preview paper-twin's positions + sized exposure against the same tenant pattern in PROD live mode. Realized $-PnL via market outcomes joins is a follow-up.",
+    "Capability-gated, SQL-aggregated per-market view of a tenant's copy-trade fills. The caller must own the account or hold an active performance:read grant. Used to compare a preview paper-twin's positions + sized exposure against the same tenant pattern in PROD live mode. Realized $-PnL via market outcomes joins is a follow-up.",
   input: PolyResearchCopyTradePnlQuerySchema,
   output: PolyResearchCopyTradePnlResponseSchema,
 } as const;

@@ -13,6 +13,7 @@
 
 export * from "./ai";
 export * from "./ai-threads";
+export * from "./agent-capability-grants";
 export * from "./attribution";
 export * from "./auth";
 export * from "./billing";

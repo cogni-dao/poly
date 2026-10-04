@@ -40,6 +40,7 @@ Poly-node-scoped Zod route contracts. Carved out of shared `@cogni/node-contract
 
 The `poly.*.v1.contract.ts` files re-exported via `src/index.ts`:
 
+- `poly.agent-grants.v1.contract`
 - `poly.copy-trade.orders.v1.contract`
 - `poly.copy-trade.targets.v1.contract`
 - `poly.research-trader-comparison.v1.contract` — `GET /api/v1/poly/research/trader-comparison`; up to three research wallets with Polymarket-native windowed P/L plus saved-observation fill count/notional for the research comparison board.
