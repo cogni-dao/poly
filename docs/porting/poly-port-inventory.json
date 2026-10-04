@@ -17,7 +17,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1126,
+    "targetOnlyFiles": 1128,
     "unresolved": 602,
     "byStatus": {
       "exact": 1126,
@@ -25445,6 +25445,9 @@
       "targetPath": "app/src/adapters/server/db/migrations/0072_repair_agent_access_requests.sql"
     },
     {
+      "targetPath": "app/src/adapters/server/db/migrations/0073_curved_sabretooth.sql"
+    },
+    {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0060_snapshot.json"
     },
     {
@@ -25479,6 +25482,9 @@
     },
     {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0072_snapshot.json"
+    },
+    {
+      "targetPath": "app/src/adapters/server/db/migrations/meta/0073_snapshot.json"
     },
     {
       "targetPath": "app/src/adapters/server/identity/identity-binding.adapter.ts"
