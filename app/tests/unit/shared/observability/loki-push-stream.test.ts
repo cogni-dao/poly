@@ -282,6 +282,58 @@ describe("createLokiPushStream", () => {
     ).toBe(true);
   });
 
+  it("keeps timestamps nondecreasing across an immutable retry and its recovery payload", async () => {
+    let resolveFirst: ((response: Response) => void) | undefined;
+    let request = 0;
+    let clock = 1_700_000_000_000;
+    const fetchFn = vi.fn<typeof fetch>(() => {
+      request += 1;
+      if (request === 1) {
+        return new Promise<Response>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve(new Response(null, { status: 204 }));
+    });
+    const stream = createLokiPushStream({
+      env: BASE_ENV,
+      fetchFn,
+      now: () => clock++,
+    });
+    stream?.write('{"msg":"active"}\n');
+    stream?.flushNow();
+    stream?.write('{"msg":"queued-one"}\n');
+    stream?.write('{"msg":"queued-two"}\n');
+
+    resolveFirst?.(new Response(null, { status: 500 }));
+    await settlePromises();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settlePromises();
+
+    expect(bodyAt(fetchFn, 1)).toEqual(bodyAt(fetchFn, 0));
+    const firstDelivery = bodyAt(fetchFn, 0).streams[0]?.values ?? [];
+    const recoveryDelivery = bodyAt(fetchFn, 2).streams[0]?.values ?? [];
+    expect(recoveryDelivery[0]?.[1]).toContain("loki_push_recovered");
+    expect(recoveryDelivery[0]?.[0]).toBe(recoveryDelivery[1]?.[0]);
+
+    const timestamps = [...firstDelivery, ...recoveryDelivery].map(
+      ([timestamp]) => BigInt(timestamp)
+    );
+    for (let i = 1; i < timestamps.length; i++) {
+      expect(timestamps[i]).toBeGreaterThanOrEqual(timestamps[i - 1] ?? 0n);
+    }
+    for (const body of [bodyAt(fetchFn, 0), bodyAt(fetchFn, 1), bodyAt(fetchFn, 2)]) {
+      const payloadTimestamps = (body.streams[0]?.values ?? []).map(
+        ([timestamp]) => BigInt(timestamp)
+      );
+      for (let i = 1; i < payloadTimestamps.length; i++) {
+        expect(payloadTimestamps[i]).toBeGreaterThanOrEqual(
+          payloadTimestamps[i - 1] ?? 0n
+        );
+      }
+    }
+  });
+
   it("retains a byte-identical batch after an abort timeout", async () => {
     const timeout = new AbortController();
     vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);

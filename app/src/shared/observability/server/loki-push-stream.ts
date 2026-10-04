@@ -166,7 +166,10 @@ export function createLokiPushStream(
 
     const enqueueDiagnostics = (): void => {
       if (dropped === 0 && recoveredFailuresPending === 0) return;
-      const timestamp = `${now()}000000`;
+      // Loki requires timestamps within a stream to remain nondecreasing. A
+      // recovery diagnostic is prioritized into the next payload, but it must
+      // not jump ahead of older queued lines with a newer timestamp.
+      const timestamp = buffer[0]?.[0] ?? `${now()}000000`;
       const diagnostics = (): LokiValue[] => [
         ...(recoveredFailuresPending > 0
           ? [
