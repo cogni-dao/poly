@@ -19,6 +19,7 @@ export * from "./poly.agent-access-requests.v1.contract";
 export * from "./poly.agent-grants.v1.contract";
 export * from "./poly.copy-trade.targets.v1.contract";
 export * from "./poly.research-copy-trade-pnl.v1.contract";
+export * from "./poly.research-copy-trade-investigation.v1.contract";
 export * from "./poly.research-trader-comparison.v1.contract";
 export * from "./poly.research-report.v1.contract";
 export * from "./poly.research-target-overlap.v1.contract";
