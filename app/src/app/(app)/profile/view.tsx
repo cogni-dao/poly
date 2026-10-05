@@ -34,6 +34,8 @@ import {
 import { Spinner } from "@cogni/node-ui-kit/shadcn/spinner";
 import { OpenAIIcon } from "@/features/ai/icons/providers/OpenAIIcon";
 
+import { AgentAccessSection } from "./_components/AgentAccessSection";
+
 /* ─── Types ────────────────────────────────────────────────────────── */
 
 interface LinkedProvider {
@@ -1058,6 +1060,11 @@ export function ProfileView(): ReactElement {
           </div>
         </div>
       )}
+
+      {/* ── AI access ── */}
+
+      <SectionHeading>AI Access</SectionHeading>
+      <AgentAccessSection />
 
       {/* ── Ownership ── */}
 

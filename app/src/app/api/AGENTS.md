@@ -64,10 +64,15 @@ HTTP API endpoints using Next.js App Router. Contract-validated entry points tha
   - `/api/v1/work/items/[id]` [GET, PATCH, DELETE] - read/update/delete a Dolt-backed work item (SIWE or node-agent auth)
   - `/api/v1/work/items/[id]/{claims,heartbeat,coordination}` - Dolt-backed agent coordination state
   - `/api/v1/agent/register` [POST] - unauthenticated machine actor registration (returns Bearer API key)
+  - `/api/v1/agent/access-requests` [POST] - bearer-only self request for owner-approved performance access
+  - `/api/v1/agent/access-requests/[id]` [GET] - bearer-only self poll of request lifecycle
   - `/api/v1/agent/runs` [GET] - machine-authenticated run list
   - `/api/v1/agent/runs/[runId]/stream` [GET] - machine-authenticated run stream SSE
   - `/api/v1/poly/agent-grants` [GET, POST] - owner-managed principal capability grants
   - `/api/v1/poly/agent-grants/[id]` [DELETE] - owner-only soft revocation
+  - `/api/v1/poly/agent-access-requests` [GET] - browser-owner access lifecycle list
+  - `/api/v1/poly/agent-access-requests/preview` [POST] - browser-owner approval-token preview
+  - `/api/v1/poly/agent-access-requests/[id]/decision` [POST] - browser-owner approve/deny
   - `/api/v1/ai/runs/[runId]/ui-stream` [GET] - session-authenticated AI SDK chat replay stream
 - **Files considered API:** v1/_/route.ts, admin/_/route.ts
 

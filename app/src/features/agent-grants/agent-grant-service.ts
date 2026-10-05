@@ -15,6 +15,7 @@
  */
 
 import {
+  agentAccessRequests,
   agentCapabilityGrants,
   billingAccounts,
   type AgentCapabilityGrantRow,
@@ -23,7 +24,7 @@ import type {
   AgentCapabilityGrant,
   PolyAgentGrantsCreateInput,
 } from "@cogni/poly-node-contracts";
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import type { AgentGrantTransaction } from "./authorization";
 
@@ -99,7 +100,7 @@ export async function replaceOwnedAgentGrant(
     .limit(1);
   if (!ownedAccount) return null;
 
-  await tx
+  const replaced = await tx
     .update(agentCapabilityGrants)
     .set({
       revokedAt: sql`now()`,
@@ -115,7 +116,23 @@ export async function replaceOwnedAgentGrant(
         ),
         isNull(agentCapabilityGrants.revokedAt)
       )
-    );
+    )
+    .returning({ id: agentCapabilityGrants.id });
+
+  if (replaced.length > 0) {
+    await tx
+      .update(agentAccessRequests)
+      .set({ status: "revoked", updatedAt: sql`now()` })
+      .where(
+        and(
+          inArray(
+            agentAccessRequests.approvedGrantId,
+            replaced.map(({ id }) => id)
+          ),
+          eq(agentAccessRequests.status, "approved")
+        )
+      );
+  }
 
   const [created] = await tx
     .insert(agentCapabilityGrants)
@@ -154,6 +171,18 @@ export async function revokeOwnedAgentGrant(
       )
     )
     .returning();
+
+  if (revoked) {
+    await tx
+      .update(agentAccessRequests)
+      .set({ status: "revoked", updatedAt: sql`now()` })
+      .where(
+        and(
+          eq(agentAccessRequests.approvedGrantId, revoked.id),
+          eq(agentAccessRequests.status, "approved")
+        )
+      );
+  }
 
   return revoked ? agentGrantRowToContract(revoked) : null;
 }

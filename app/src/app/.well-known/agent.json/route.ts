@@ -22,6 +22,11 @@ import {
 	workItemsCreateOperation,
 	workItemsPatchOperation,
 } from "@cogni/node-contracts";
+import {
+	polyAgentAccessRequestCreateOperation,
+	polyAgentAccessRequestPollOperation,
+	polyResearchCopyTradePnlOperation,
+} from "@cogni/poly-node-contracts";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
@@ -86,8 +91,44 @@ export async function GET(request: Request) {
 			// index + domain pointers). A SessionStart hook fetches + injects it.
 			cognition: `${origin}/api/v1/cognition`,
 			workItems: `${origin}/api/v1/work/items`,
+			agentAccessRequests: `${origin}/api/v1/agent/access-requests`,
+			copyTradePnl: `${origin}/api/v1/poly/research/copy-trade-pnl`,
 		},
 		actions: {
+			requestAgentAccess: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/access-requests`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(
+					polyAgentAccessRequestCreateOperation.input,
+				),
+				outputSchema: z.toJSONSchema(
+					polyAgentAccessRequestCreateOperation.output,
+				),
+			},
+			pollAgentAccess: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/agent/access-requests/{id}`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(
+					polyAgentAccessRequestPollOperation.input,
+				),
+				outputSchema: z.toJSONSchema(
+					polyAgentAccessRequestPollOperation.output,
+				),
+			},
+			readCopyTradePnl: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/poly/research/copy-trade-pnl`,
+				auth: {
+					type: "bearer",
+					requiredScope: "performance:read",
+				},
+				inputSchema: z.toJSONSchema(polyResearchCopyTradePnlOperation.input),
+				outputSchema: z.toJSONSchema(
+					polyResearchCopyTradePnlOperation.output,
+				),
+			},
 			createWorkItem: {
 				method: "POST",
 				endpoint: `${origin}/api/v1/work/items`,

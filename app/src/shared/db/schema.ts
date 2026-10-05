@@ -13,6 +13,7 @@
 
 export * from "@cogni/db-schema/ai";
 export * from "@cogni/db-schema/ai-threads";
+export * from "@cogni/db-schema/agent-access-requests";
 export * from "@cogni/db-schema/agent-capability-grants";
 export * from "@cogni/db-schema/attribution";
 // Domain slices

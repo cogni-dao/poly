@@ -16,6 +16,11 @@
       "import": "./dist/agent-capability-grants.js",
       "default": "./dist/agent-capability-grants.js"
     },
+    "./agent-access-requests": {
+      "types": "./dist/agent-access-requests.d.ts",
+      "import": "./dist/agent-access-requests.js",
+      "default": "./dist/agent-access-requests.js"
+    },
     "./refs": {
       "types": "./dist/refs.d.ts",
       "import": "./dist/refs.js",
@@ -92,7 +97,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "postbuild": "node -e \"const fs=require('fs'); for(const f of ['dist/index.js','dist/agent-capability-grants.js','dist/refs.js','dist/copy-trade.js','dist/poly-redeem-jobs.js','dist/trader-activity.js','dist/wallet-connections.js','dist/wallet-grants.js']){if(!fs.existsSync(f)){console.error('ERROR: '+f+' missing'); process.exit(1)}}\"",
+    "postbuild": "node -e \"const fs=require('fs'); for(const f of ['dist/index.js','dist/agent-access-requests.js','dist/agent-capability-grants.js','dist/refs.js','dist/copy-trade.js','dist/poly-redeem-jobs.js','dist/trader-activity.js','dist/wallet-connections.js','dist/wallet-grants.js']){if(!fs.existsSync(f)){console.error('ERROR: '+f+' missing'); process.exit(1)}}\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
