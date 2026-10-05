@@ -35,6 +35,7 @@ type Db = { execute(query: SQL): Promise<unknown> };
 const STATEMENT_TIMEOUT_MS = 8_000;
 const POSITION_FRESHNESS_MS = 10 * 60_000;
 const MARKET_FRESHNESS_MS = 60 * 60_000;
+const POLYMARKET_LEDGER_PREFIX = "prediction-market:polymarket:";
 
 type AssociationRow = {
   has_fill: boolean | null;
@@ -176,6 +177,9 @@ export async function getCopyTradeInvestigationSummary(
     await db.execute(sql`SELECT clock_timestamp() AS captured_at`)
   );
   const capturedAt = toIso(clock[0]?.captured_at) ?? new Date().toISOString();
+  const { marketId, conditionId } = investigationMarketIdentity(
+    query.condition_id
+  );
   const modeFilter = modeSql(query.mode, "f.mode");
   const decisionModeFilter = modeSql(query.mode, "d.mode");
   const fillWindow = windowSql(query, "f.observed_at");
@@ -186,7 +190,7 @@ export async function getCopyTradeInvestigationSummary(
       EXISTS (
         SELECT 1 FROM poly_copy_trade_fills f
         WHERE f.billing_account_id = ${query.billing_account_id}
-          AND f.market_id = ${query.condition_id}
+          AND f.market_id = ${marketId}
           AND ${modeFilter}
           AND ${fillWindow}
           AND f.observed_at <= ${capturedAt}::timestamptz
@@ -194,7 +198,7 @@ export async function getCopyTradeInvestigationSummary(
       EXISTS (
         SELECT 1 FROM poly_copy_trade_decisions d
         WHERE d.billing_account_id = ${query.billing_account_id}
-          AND d.intent->>'market_id' = ${query.condition_id}
+          AND d.intent->>'market_id' = ${marketId}
           AND ${decisionModeFilter}
           AND ${decisionWindow}
           AND d.decided_at <= ${capturedAt}::timestamptz
@@ -210,7 +214,7 @@ export async function getCopyTradeInvestigationSummary(
           AND EXISTS (
             SELECT 1 FROM poly_trader_position_snapshots s
             WHERE s.trader_wallet_id = w.id
-              AND s.condition_id = ${query.condition_id}
+              AND s.condition_id = ${conditionId}
               AND s.captured_at <= ${capturedAt}::timestamptz
           )
       ) AS has_target_position
@@ -230,7 +234,7 @@ export async function getCopyTradeInvestigationSummary(
   const marketRows = rowsOf<MarketRow>(await db.execute(sql`
     SELECT event_title, event_slug, market_title, market_slug, end_date, fetched_at
     FROM poly_market_metadata
-    WHERE condition_id = ${query.condition_id}
+    WHERE condition_id = ${conditionId}
       AND fetched_at <= ${capturedAt}::timestamptz
     LIMIT 1
   `));
@@ -243,7 +247,7 @@ export async function getCopyTradeInvestigationSummary(
       o.resolved_at,
       o.updated_at
     FROM poly_market_outcomes o
-    WHERE o.condition_id = ${query.condition_id}
+    WHERE o.condition_id = ${conditionId}
       AND o.updated_at <= ${capturedAt}::timestamptz
     ORDER BY o.token_id
     LIMIT ${POLY_COPY_TRADE_INVESTIGATION_MAX_OUTCOMES + 1}
@@ -279,7 +283,7 @@ export async function getCopyTradeInvestigationSummary(
       MAX(f.observed_at) AS last_observed_at
     FROM poly_copy_trade_fills f
     WHERE f.billing_account_id = ${query.billing_account_id}
-      AND f.market_id = ${query.condition_id}
+      AND f.market_id = ${marketId}
       AND ${modeFilter}
       AND ${fillWindow}
       AND f.observed_at <= ${capturedAt}::timestamptz
@@ -299,7 +303,7 @@ export async function getCopyTradeInvestigationSummary(
       LIMIT 1
     ) price ON TRUE
     LEFT JOIN poly_market_outcomes outcome
-      ON outcome.condition_id = ${query.condition_id}
+      ON outcome.condition_id = ${conditionId}
       AND outcome.token_id = legs.token_id
       AND outcome.updated_at <= ${capturedAt}::timestamptz
     ORDER BY legs.buy_usdc::numeric DESC, legs.token_id
@@ -317,7 +321,7 @@ export async function getCopyTradeInvestigationSummary(
       SELECT DISTINCT lower(f.attributes->>'target_wallet') AS wallet_address
       FROM poly_copy_trade_fills f
       WHERE f.billing_account_id = ${query.billing_account_id}
-        AND f.market_id = ${query.condition_id}
+        AND f.market_id = ${marketId}
         AND ${modeFilter}
         AND ${fillWindow}
         AND f.observed_at <= ${capturedAt}::timestamptz
@@ -326,7 +330,7 @@ export async function getCopyTradeInvestigationSummary(
       SELECT DISTINCT lower(d.intent->>'target_wallet') AS wallet_address
       FROM poly_copy_trade_decisions d
       WHERE d.billing_account_id = ${query.billing_account_id}
-        AND d.intent->>'market_id' = ${query.condition_id}
+        AND d.intent->>'market_id' = ${marketId}
         AND ${decisionModeFilter}
         AND ${decisionWindow}
         AND d.decided_at <= ${capturedAt}::timestamptz
@@ -355,7 +359,7 @@ export async function getCopyTradeInvestigationSummary(
           OR EXISTS (
             SELECT 1 FROM poly_trader_position_snapshots ps
             WHERE ps.trader_wallet_id = w.id
-              AND ps.condition_id = ${query.condition_id}
+              AND ps.condition_id = ${conditionId}
               AND ps.captured_at <= ${capturedAt}::timestamptz
           )
         )
@@ -386,7 +390,7 @@ export async function getCopyTradeInvestigationSummary(
       LEFT JOIN poly_market_outcomes o
         ON o.condition_id = s.condition_id
         AND o.token_id = s.token_id
-      WHERE s.condition_id = ${query.condition_id}
+      WHERE s.condition_id = ${conditionId}
         AND s.captured_at <= ${capturedAt}::timestamptz
         AND s.trader_wallet_id IN (
           SELECT trader_wallet_id FROM active_targets WHERE trader_wallet_id IS NOT NULL
@@ -450,7 +454,7 @@ export async function getCopyTradeInvestigationSummary(
       MAX(f.observed_at) AS last_observed_at
     FROM poly_copy_trade_fills f
     WHERE f.billing_account_id = ${query.billing_account_id}
-      AND f.market_id = ${query.condition_id}
+      AND f.market_id = ${marketId}
       AND ${modeFilter}
       AND ${fillWindow}
       AND f.observed_at <= ${capturedAt}::timestamptz
@@ -465,7 +469,7 @@ export async function getCopyTradeInvestigationSummary(
       MAX(d.decided_at) AS last_decided_at
     FROM poly_copy_trade_decisions d
     WHERE d.billing_account_id = ${query.billing_account_id}
-      AND d.intent->>'market_id' = ${query.condition_id}
+      AND d.intent->>'market_id' = ${marketId}
       AND ${decisionModeFilter}
       AND ${decisionWindow}
       AND d.decided_at <= ${capturedAt}::timestamptz
@@ -474,7 +478,7 @@ export async function getCopyTradeInvestigationSummary(
     SELECT COALESCE(NULLIF(d.reason, ''), d.outcome) AS reason, COUNT(*)::int AS count
     FROM poly_copy_trade_decisions d
     WHERE d.billing_account_id = ${query.billing_account_id}
-      AND d.intent->>'market_id' = ${query.condition_id}
+      AND d.intent->>'market_id' = ${marketId}
       AND ${decisionModeFilter}
       AND ${decisionWindow}
       AND d.decided_at <= ${capturedAt}::timestamptz
@@ -543,14 +547,14 @@ export async function getCopyTradeInvestigationSummary(
 
   return {
     billing_account_id: query.billing_account_id,
-    condition_id: query.condition_id,
+    condition_id: conditionId,
     mode: query.mode,
     since: query.since ?? null,
     until: query.until ?? null,
     captured_at: capturedAt,
     association_sources: associationSources,
     market: {
-      condition_id: query.condition_id,
+      condition_id: conditionId,
       event_title: market?.event_title ?? null,
       event_slug: market?.event_slug ?? null,
       market_title: market?.market_title ?? null,
@@ -621,6 +625,9 @@ export async function getCopyTradeInvestigationEvidence(
   ) {
     throw new InvalidInvestigationCapturedAtError();
   }
+  const { marketId, conditionId } = investigationMarketIdentity(
+    query.condition_id
+  );
   const associationFillMode = modeSql(query.mode, "f.mode");
   const associationDecisionMode = modeSql(query.mode, "d.mode");
   const associationFillWindow = windowSql(query, "f.observed_at");
@@ -630,7 +637,7 @@ export async function getCopyTradeInvestigationEvidence(
       EXISTS (
         SELECT 1 FROM poly_copy_trade_fills f
         WHERE f.billing_account_id = ${query.billing_account_id}
-          AND f.market_id = ${query.condition_id}
+          AND f.market_id = ${marketId}
           AND ${associationFillMode}
           AND ${associationFillWindow}
           AND f.observed_at <= ${query.captured_at}::timestamptz
@@ -638,7 +645,7 @@ export async function getCopyTradeInvestigationEvidence(
       OR EXISTS (
         SELECT 1 FROM poly_copy_trade_decisions d
         WHERE d.billing_account_id = ${query.billing_account_id}
-          AND d.intent->>'market_id' = ${query.condition_id}
+          AND d.intent->>'market_id' = ${marketId}
           AND ${associationDecisionMode}
           AND ${associationDecisionWindow}
           AND d.decided_at <= ${query.captured_at}::timestamptz
@@ -650,7 +657,7 @@ export async function getCopyTradeInvestigationEvidence(
         JOIN poly_trader_position_snapshots s ON s.trader_wallet_id = w.id
         WHERE t.billing_account_id = ${query.billing_account_id}
           AND t.disabled_at IS NULL
-          AND s.condition_id = ${query.condition_id}
+          AND s.condition_id = ${conditionId}
           AND s.captured_at <= ${query.captured_at}::timestamptz
       )
     ) AS associated
@@ -708,7 +715,7 @@ export async function getCopyTradeInvestigationEvidence(
 
   return {
     billing_account_id: query.billing_account_id,
-    condition_id: query.condition_id,
+    condition_id: conditionId,
     mode: query.mode,
     kind: query.kind,
     since: query.since ?? null,
@@ -738,6 +745,7 @@ export function copyTradeFillEvidenceSelect(
   query: PolyResearchCopyTradeInvestigationEvidenceQuery,
   cursor: InvestigationEvidenceCursor | null = null
 ): SQL {
+  const { marketId } = investigationMarketIdentity(query.condition_id);
   const modeFilter = modeSql(query.mode, "f.mode");
   const window = windowSql(query, "f.observed_at");
   return sql`
@@ -760,7 +768,7 @@ export function copyTradeFillEvidenceSelect(
       f.position_lifecycle
     FROM poly_copy_trade_fills f
     WHERE f.billing_account_id = ${query.billing_account_id}
-      AND f.market_id = ${query.condition_id}
+      AND f.market_id = ${marketId}
       AND ${modeFilter}
       AND ${window}
       AND f.observed_at <= ${query.captured_at}::timestamptz
@@ -775,6 +783,7 @@ export function copyTradeDecisionEvidenceSelect(
   query: PolyResearchCopyTradeInvestigationEvidenceQuery,
   cursor: InvestigationEvidenceCursor | null = null
 ): SQL {
+  const { marketId } = investigationMarketIdentity(query.condition_id);
   const modeFilter = modeSql(query.mode, "d.mode");
   const window = windowSql(query, "d.decided_at");
   return sql`
@@ -805,7 +814,7 @@ export function copyTradeDecisionEvidenceSelect(
       END AS target_hedge_ratio
     FROM poly_copy_trade_decisions d
     WHERE d.billing_account_id = ${query.billing_account_id}
-      AND d.intent->>'market_id' = ${query.condition_id}
+      AND d.intent->>'market_id' = ${marketId}
       AND ${modeFilter}
       AND ${window}
       AND d.decided_at <= ${query.captured_at}::timestamptz
@@ -863,6 +872,19 @@ function groupTargets(
 function modeSql(mode: "live" | "paper" | "all", column: string): SQL {
   if (mode === "all") return sql`TRUE`;
   return sql`${sql.raw(column)} = ${mode}`;
+}
+
+function investigationMarketIdentity(value: string): {
+  marketId: string;
+  conditionId: string;
+} {
+  const conditionId = value.startsWith(POLYMARKET_LEDGER_PREFIX)
+    ? value.slice(POLYMARKET_LEDGER_PREFIX.length)
+    : value;
+  return {
+    marketId: `${POLYMARKET_LEDGER_PREFIX}${conditionId}`,
+    conditionId,
+  };
 }
 
 function windowSql(

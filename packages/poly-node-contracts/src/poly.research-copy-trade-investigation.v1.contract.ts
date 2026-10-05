@@ -6,7 +6,8 @@
  * Purpose: Bounded, account-scoped saved-facts contract for one copy-trade market investigation.
  * Scope: GET summary and cursor-paginated evidence routes. No writes or upstream reads.
  * Invariants:
- *   - EXPLICIT_ACCOUNT_AND_MARKET: every request names one billing account and one condition.
+ *   - EXPLICIT_ACCOUNT_AND_MARKET: every request names one billing account and one condition;
+ *     the condition may use the production `prediction-market:polymarket:` ledger prefix.
  *   - CAPABILITY_GATED: callers need owner access or an active `performance:read` grant.
  *   - BOUNDED_EVIDENCE: evidence pages are hard-capped and use opaque keyset cursors.
  *   - SNAPSHOT_CUTOFF: `captured_at` freezes evidence membership across pages.

@@ -12,6 +12,16 @@ import { describe, expect, it } from "vitest";
 const ACCOUNT = "20000000-0000-4000-b000-000000000001";
 
 describe("poly copy-trade investigation contract", () => {
+  it("accepts the production ledger market key at the API boundary", () => {
+    expect(
+      PolyResearchCopyTradeInvestigationQuerySchema.safeParse({
+        billing_account_id: ACCOUNT,
+        condition_id: "prediction-market:polymarket:0xcondition",
+        mode: "paper",
+      }).success
+    ).toBe(true);
+  });
+
   it("compares timestamp instants rather than offset-bearing strings", () => {
     expect(
       PolyResearchCopyTradeInvestigationQuerySchema.safeParse({

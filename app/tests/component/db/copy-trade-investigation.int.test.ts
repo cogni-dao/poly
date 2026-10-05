@@ -39,6 +39,9 @@ import { billingAccounts, users } from "@/shared/db/schema";
 const CONDITION_A = `quant-a-${randomUUID()}`;
 const CONDITION_B = `quant-b-${randomUUID()}`;
 const CONDITION_MULTI = `quant-multi-${randomUUID()}`;
+const MARKET_A = `prediction-market:polymarket:${CONDITION_A}`;
+const MARKET_B = `prediction-market:polymarket:${CONDITION_B}`;
+const MARKET_MULTI = `prediction-market:polymarket:${CONDITION_MULTI}`;
 const TOKEN_YES = `quant-token-${randomUUID()}`;
 const TARGET_WALLET = `0x${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`.slice(0, 42);
 const future = new Date("2099-01-01T00:00:00.000Z");
@@ -165,7 +168,7 @@ describe("copy-trade investigation", () => {
         createdByUserId: ownerA.userId,
         targetId: fillTargetId,
         fillId: `data-api:quant-a-${index}`,
-        marketId: CONDITION_A,
+        marketId: MARKET_A,
         observedAt: new Date(`2026-10-03T12:0${5 + index}:00.000Z`),
         clientOrderId: `quant-a-${index}-${randomUUID()}`,
         orderId: `quant-order-${index}-${randomUUID()}`,
@@ -189,7 +192,7 @@ describe("copy-trade investigation", () => {
         createdByUserId: ownerA.userId,
         targetId: fillTargetId,
         fillId: `data-api:quant-multi-${index}`,
-        marketId: CONDITION_MULTI,
+        marketId: MARKET_MULTI,
         observedAt: new Date(`2026-10-03T13:0${index}:00.000Z`),
         clientOrderId: `quant-multi-${index}-${randomUUID()}`,
         status: "filled" as const,
@@ -210,7 +213,7 @@ describe("copy-trade investigation", () => {
         createdByUserId: ownerB.userId,
         targetId: randomUUID(),
         fillId: "data-api:quant-b-marker",
-        marketId: CONDITION_B,
+        marketId: MARKET_B,
         observedAt: new Date("2026-10-03T12:05:00.000Z"),
         clientOrderId: `quant-b-${randomUUID()}`,
         status: "filled" as const,
@@ -227,7 +230,7 @@ describe("copy-trade investigation", () => {
         outcome: index === 2 ? ("skipped" as const) : ("placed" as const),
         reason: index === 2 ? "below_market_min" : null,
         intent: {
-          market_id: CONDITION_A,
+          market_id: MARKET_A,
           target_wallet: TARGET_WALLET,
           token_id: TOKEN_YES,
           side: "BUY",
@@ -302,7 +305,7 @@ describe("copy-trade investigation", () => {
         tx as unknown as Parameters<typeof getCopyTradeInvestigationSummary>[0],
         {
           billing_account_id: billingAccountId,
-          condition_id: CONDITION_A,
+          condition_id: MARKET_A,
           mode: "paper",
         }
       );
@@ -317,12 +320,26 @@ describe("copy-trade investigation", () => {
     expect(delegated).not.toBeNull();
     if (!owner || !delegated) throw new Error("Expected authorized summaries");
     expect({ ...delegated, captured_at: owner.captured_at }).toEqual(owner);
+    expect(delegated.condition_id).toBe(CONDITION_A);
+    expect(delegated.market).toEqual(
+      expect.objectContaining({
+        condition_id: CONDITION_A,
+        market_title: "Quant marker market",
+      })
+    );
+    expect(delegated.market.outcomes[0]).toEqual(
+      expect.objectContaining({ token_id: TOKEN_YES, label: "YES" })
+    );
     expect(delegated.targets[0]).toEqual(
       expect.objectContaining({ target_id: targetRowId, wallet_address: TARGET_WALLET.toLowerCase() })
+    );
+    expect(delegated.targets[0]?.legs[0]).toEqual(
+      expect.objectContaining({ token_id: TOKEN_YES, shares: 20 })
     );
     expect(delegated.account_position.legs[0]).toEqual(
       expect.objectContaining({ token_id: TOKEN_YES, net_shares: 6, marked_value_usdc: 3.3 })
     );
+    expect(delegated.aggregates.decisions.count).toBe(3);
 
     expect(await summaryFor(delegate.userId, ownerB.billingAccountId)).toBeNull();
     expect(await summaryFor(wrongScope.userId, ownerA.billingAccountId)).toBeNull();
@@ -358,7 +375,7 @@ describe("copy-trade investigation", () => {
         tx as unknown as Parameters<typeof getCopyTradeInvestigationEvidence>[0],
         {
           billing_account_id: ownerA.billingAccountId,
-          condition_id: CONDITION_A,
+          condition_id: MARKET_A,
           mode: "paper",
           kind: "fills",
           captured_at: summary.captured_at,
@@ -366,6 +383,7 @@ describe("copy-trade investigation", () => {
         }
       )
     );
+    expect(first?.condition_id).toBe(CONDITION_A);
     expect(first?.items).toHaveLength(2);
     expect(first?.truncated).toBe(true);
     expect(first?.next_cursor).not.toBeNull();
@@ -375,7 +393,7 @@ describe("copy-trade investigation", () => {
         tx as unknown as Parameters<typeof getCopyTradeInvestigationEvidence>[0],
         {
           billing_account_id: ownerA.billingAccountId,
-          condition_id: CONDITION_A,
+          condition_id: MARKET_A,
           mode: "paper",
           kind: "fills",
           captured_at: summary.captured_at,
@@ -396,7 +414,7 @@ describe("copy-trade investigation", () => {
           tx as unknown as Parameters<typeof getCopyTradeInvestigationEvidence>[0],
           {
             billing_account_id: ownerA.billingAccountId,
-            condition_id: CONDITION_A,
+            condition_id: MARKET_A,
             mode: "paper",
             kind: "fills",
             captured_at: "2099-01-01T00:00:00.000Z",
@@ -421,7 +439,7 @@ describe("copy-trade investigation", () => {
           tx as unknown as Parameters<typeof getCopyTradeInvestigationSummary>[0],
           {
             billing_account_id: ownerA.billingAccountId,
-            condition_id: CONDITION_MULTI,
+            condition_id: MARKET_MULTI,
             mode: "paper",
           }
         );
@@ -443,7 +461,7 @@ describe("copy-trade investigation", () => {
   it("uses the account+market expression index for the exact decision evidence query", async () => {
     const query = copyTradeDecisionEvidenceSelect({
       billing_account_id: ownerA.billingAccountId,
-      condition_id: CONDITION_A,
+      condition_id: MARKET_A,
       mode: "paper",
       kind: "decisions",
       captured_at: "2026-10-04T00:00:00.000Z",
