@@ -12,11 +12,10 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { afterEach, describe, expect, it } from "vitest";
 import {
 	chmodSync,
-	mkdtempSync,
 	mkdirSync,
+	mkdtempSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -24,17 +23,18 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, it } from "vitest";
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(TEST_DIR, "../../..");
 const LOADER = path.join(REPO_ROOT, "scripts/agent/session-cognition.sh");
 const INSTALLER = path.join(
 	REPO_ROOT,
-	"scripts/agent/install-codex-cognition-hook.sh"
+	"scripts/agent/install-codex-cognition-hook.sh",
 );
 const CONDUCTOR_SETUP = path.join(
 	REPO_ROOT,
-	"scripts/conductor-worktree-setup.sh"
+	"scripts/conductor-worktree-setup.sh",
 );
 const MAX_BYTES = 16 * 1024;
 const CACHE_PATH = ".cogni/.cognition-cache.md";
@@ -54,10 +54,7 @@ afterEach(() => {
 
 describe("session cognition hook", () => {
 	it("never ships or trusts a git-tracked cognition snapshot", () => {
-		const gitignore = readFileSync(
-			path.join(REPO_ROOT, ".gitignore"),
-			"utf8"
-		);
+		const gitignore = readFileSync(path.join(REPO_ROOT, ".gitignore"), "utf8");
 		expect(gitignore).toContain(CACHE_PATH);
 		const tracked = execFileSync("git", ["ls-files", "--", CACHE_PATH], {
 			cwd: REPO_ROOT,
@@ -67,7 +64,7 @@ describe("session cognition hook", () => {
 			const pendingDeletion = execFileSync(
 				"git",
 				["diff", "--name-only", "--diff-filter=D", "--", CACHE_PATH],
-				{ cwd: REPO_ROOT, encoding: "utf8" }
+				{ cwd: REPO_ROOT, encoding: "utf8" },
 			).trim();
 			expect(pendingDeletion).toBe(CACHE_PATH);
 		}
@@ -84,7 +81,7 @@ describe("session cognition hook", () => {
 		mkdirSync(bin);
 		writeFileSync(
 			curl,
-			"#!/bin/sh\nprintf '%s\\n' '{\"markdown\":\"live cognition\"}'\n"
+			"#!/bin/sh\nprintf '%s\\n' '{\"markdown\":\"live cognition\"}'\n",
 		);
 		chmodSync(curl, 0o755);
 
@@ -107,7 +104,7 @@ describe("session cognition hook", () => {
 	it("opts out of Codex spilling only behind the strict loader cap", () => {
 		const config = readFileSync(
 			path.join(REPO_ROOT, ".codex/config.toml"),
-			"utf8"
+			"utf8",
 		);
 		const loader = readFileSync(LOADER, "utf8");
 
@@ -118,8 +115,25 @@ describe("session cognition hook", () => {
 
 	it("installs the stable user presenter during local Conductor setup", () => {
 		const setup = readFileSync(CONDUCTOR_SETUP, "utf8");
-		expect(setup).toContain("scripts/agent/install-codex-cognition-hook.sh");
-		expect(setup).toContain('${CONDUCTOR_IS_LOCAL:-1}');
+		const guardedInstall = [
+			`if [[ "\${CONDUCTOR_IS_LOCAL:-1}" == "1" ]]; then`,
+			"  bash scripts/agent/install-codex-cognition-hook.sh",
+			"fi",
+		].join("\n");
+		expect(setup).toContain(guardedInstall);
+		expect(setup.indexOf(guardedInstall)).toBeLessThan(
+			setup.indexOf("pnpm install --offline --frozen-lockfile"),
+		);
+	});
+
+	it("documents the node-owned Conductor bootstrap without a monorepo auth root", () => {
+		const readme = readFileSync(path.join(REPO_ROOT, "README.md"), "utf8");
+		const agents = readFileSync(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
+
+		expect(readme).toContain("COGNI_NODE_AUTH_ROOT");
+		expect(readme).not.toContain("COGNI_TEMPLATE_ROOT");
+		expect(readme).toContain("stable user-level\nCodex cognition presenter");
+		expect(agents).toContain("pnpm codex:cognition:install");
 	});
 
 	it("presents a bounded cache verbatim and rejects an oversized cache whole", () => {
@@ -135,10 +149,10 @@ describe("session cognition hook", () => {
 		mkdirSync(path.join(small, ".cogni"), { recursive: true });
 		writeFileSync(
 			path.join(small, ".cogni/.cognition-cache.md"),
-			"complete cognition\n"
+			"complete cognition\n",
 		);
 		expect(
-			execFileSync("bash", [LOADER], { cwd: small, env, encoding: "utf8" })
+			execFileSync("bash", [LOADER], { cwd: small, env, encoding: "utf8" }),
 		).toBe("complete cognition\n");
 
 		mkdirSync(path.join(root, "cogni-cognition-lock-test.lock"));
@@ -151,14 +165,14 @@ describe("session cognition hook", () => {
 					TMPDIR: root,
 				},
 				encoding: "utf8",
-			})
+			}),
 		).toBe("");
 
 		const large = path.join(root, "large");
 		mkdirSync(path.join(large, ".cogni"), { recursive: true });
 		writeFileSync(
 			path.join(large, ".cogni/.cognition-cache.md"),
-			"x".repeat(MAX_BYTES + 1)
+			"x".repeat(MAX_BYTES + 1),
 		);
 		const output = execFileSync("bash", [LOADER], {
 			cwd: large,
@@ -188,7 +202,7 @@ describe("session cognition hook", () => {
 				'type = "command"',
 				`command = "bash ${hookPath}"`,
 				'statusMessage = "Loading Cogni cognition substrate"',
-			].join("\n")
+			].join("\n"),
 		);
 
 		const env = { ...process.env, CODEX_HOME: codexHome };
@@ -203,8 +217,42 @@ describe("session cognition hook", () => {
 		expect(config).toContain("additionalContextLimit = 0");
 		expect(installedHook).toContain("cache_is_repo_tracked");
 		expect(installedHook).toContain(
-			'if [[ -s "$CACHE_FILE" ]] && ! cache_is_repo_tracked; then'
+			'if [[ -s "$CACHE_FILE" ]] && ! cache_is_repo_tracked; then',
 		);
 		execFileSync("bash", ["-n", hookPath]);
+
+		const repo = fixture();
+		const cache = path.join(repo, CACHE_PATH);
+		mkdirSync(path.dirname(cache), { recursive: true });
+		writeFileSync(
+			path.join(repo, ".cogni/repo-spec.yaml"),
+			"intent:\n  name: node-template\n",
+		);
+		writeFileSync(cache, "stale committed cognition\n");
+		execFileSync("git", ["init", "-q"], { cwd: repo });
+		execFileSync("git", ["add", CACHE_PATH], { cwd: repo });
+
+		const bin = path.join(repo, "bin");
+		const curl = path.join(bin, "curl");
+		mkdirSync(bin);
+		writeFileSync(
+			curl,
+			"#!/bin/sh\nprintf '%s\\n' '{\"markdown\":\"live cognition\"}'\n",
+		);
+		chmodSync(curl, 0o755);
+
+		const output = execFileSync("bash", [hookPath], {
+			cwd: repo,
+			env: {
+				...process.env,
+				CODEX_HOME: codexHome,
+				CODEX_THREAD_ID: "",
+				COGNI_NODE_API_KEY: "test-key",
+				PATH: `${bin}:${process.env.PATH ?? ""}`,
+			},
+			encoding: "utf8",
+		});
+		expect(output).toBe("live cognition\n");
+		expect(readFileSync(cache, "utf8")).toBe("live cognition\n");
 	});
 });
