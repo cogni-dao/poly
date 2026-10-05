@@ -53,7 +53,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1138,
+    "targetOnlyFiles": 1139,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -27909,6 +27909,9 @@
     },
     {
       "targetPath": "packages/node-contracts/src/vcs.flight.v1.contract.ts"
+    },
+    {
+      "targetPath": "packages/node-contracts/src/work.items.coordination.v1.contract.ts"
     },
     {
       "targetPath": "packages/node-contracts/src/work.items.create.v1.contract.ts"
