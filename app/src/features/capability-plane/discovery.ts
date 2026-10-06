@@ -45,6 +45,23 @@ const DISCOVERY_NAMES: Record<
     action: "readCopyTradeInvestigationEvidence",
     endpoint: "copyTradeInvestigationEvidence",
   },
+  // task.1791070959 — copy-operations reads. These entries are REQUIRED, not
+  // optional: `DISCOVERY_NAMES` is keyed by the catalog's id union, so adding a
+  // descriptor without naming it here is a compile error. That is the
+  // GENERATED_DISCOVERY invariant doing its job — a capability cannot ship
+  // unpublished.
+  "poly.account.copy-setup.v1": {
+    action: "readCopySetup",
+    endpoint: "copySetup",
+  },
+  "poly.account.recent-attempts.v1": {
+    action: "readRecentAttempts",
+    endpoint: "recentAttempts",
+  },
+  "poly.copy-trade.orders.v1": {
+    action: "readCopyTradeOrders",
+    endpoint: "copyTradeOrders",
+  },
 };
 
 export type AccountReadDiscoveryAction = {

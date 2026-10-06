@@ -27,13 +27,18 @@
  * @public
  */
 
-import type { z } from "zod";
+import { z } from "zod";
 
+import {
+  polyAccountCopySetupOperation,
+  polyAccountRecentAttemptsOperation,
+} from "./poly.account.copy-operations.v1.contract";
 import {
   PolyAccountPortfolioSnapshotOwnerQuerySchema,
   polyAccountPortfolioSnapshotOperation,
 } from "./poly.account.portfolio-snapshot.v1.contract";
 import type { AgentCapabilityScope } from "./poly.agent-grants.v1.contract";
+import { polyCopyTradeOrdersOperation } from "./poly.copy-trade.orders.v1.contract";
 import {
   polyResearchCopyTradeInvestigationEvidenceOperation,
   polyResearchCopyTradeInvestigationOperation,
@@ -128,6 +133,94 @@ export const polyAccountReadCopyTradeInvestigationEvidenceOperation =
     accountFrom: "input",
   });
 
+
+/**
+ * Copy-trade setup for the calling principal's own account (task.1791070959).
+ *
+ * `accountFrom: "input"` — the caller NAMES the account and `authorize()` then
+ * checks a grant against it. This is deliberate and security-relevant: the
+ * legacy dashboard/orders routes resolved the tenant from the caller's OWN id
+ * with no grant check, and `resolveBillingAccountId` lazily CREATES an account
+ * on miss, so a delegated agent silently received its own empty tenant instead
+ * of a denial. Sourcing the account from validated input makes that
+ * failure mode unreachable, and no GET on this plane can create an account.
+ */
+export const polyAccountReadCopySetupOperation = defineAccountReadOperation({
+  ...polyAccountCopySetupOperation,
+  requiredScope: ACCOUNT_READ_SCOPE,
+  method: "GET",
+  path: "/api/v1/poly/account/copy-setup",
+  readOnly: true,
+  accountFrom: "input",
+});
+
+/**
+ * Account-wide, cross-market mirror-attempt tape (task.1791070959). Spine is
+ * `poly_copy_trade_decisions`, so skip reasons — the majority of mirror
+ * activity — are visible for the first time.
+ */
+export const polyAccountReadRecentAttemptsOperation =
+  defineAccountReadOperation({
+    ...polyAccountRecentAttemptsOperation,
+    requiredScope: ACCOUNT_READ_SCOPE,
+    method: "GET",
+    path: "/api/v1/poly/account/recent-attempts",
+    readOnly: true,
+    accountFrom: "input",
+  });
+
+/**
+ * The legacy mirror-orders list, inverted into a plane client (task.1791070959).
+ *
+ * `accountFrom: "principal"` is FORCED here, not chosen: the underlying
+ * `poly.copy-trade.orders.v1` contract is a port-frozen `exact`/P1 entry, so its
+ * input schema cannot gain a `billing_account_id` field and the account can
+ * never arrive on the wire.
+ *
+ * Why that is delicate, stated plainly because it is sharper than "not
+ * delegable": `POST /api/v1/agent/register` calls
+ * `getOrCreateBillingAccountForUser`, so every approved agent OWNS a billing
+ * account. An OWNERSHIP-based resolution would therefore resolve a delegated
+ * agent to its own, empty account, which then passes `authorize()` as
+ * `accessKind: "owner"` — a 200 describing the wrong tenant rather than the
+ * granted account or a denial.
+ *
+ * The seam resolves by REACHABILITY for the required scope instead
+ * (`resolveSubjectAccountId`: live grants ∪ owned). Exactly one reachable
+ * account resolves; more than one returns `invalid_input`, so this operation
+ * asks the caller to name the account instead of guessing — the right outcome
+ * for an input schema that cannot carry the id; none is denied. Resolution is a
+ * plain SELECT, so unlike the `resolveBillingAccountId` call this inversion
+ * replaces, no GET here can CREATE a billing account.
+ *
+ * `poly.account.recent-attempts.v1` above remains the delegable successor for a
+ * caller that wants to name an account, and is strictly more informative
+ * because its spine is the decisions table rather than the fills ledger.
+ */
+export const polyAccountReadCopyTradeOrdersOperation =
+  defineAccountReadOperation({
+    ...polyCopyTradeOrdersOperation,
+    summary:
+      "Recent mirror order-ledger rows for the calling principal's own account",
+    /**
+     * COMPOSED, not mutated. The frozen contract declares `limit: z.number()`,
+     * and the old hand-written route coerced it with `Number(limitRaw)` before
+     * parsing. The plane's REST transport hands the descriptor raw query-string
+     * values, so a bare `z.number()` would reject every `?limit=10` as a 400.
+     * `.extend()` produces a coercing variant of the SAME shape — the inferred
+     * TypeScript type is unchanged — while the frozen literal is untouched, per
+     * COMPOSE_NEVER_MUTATE.
+     */
+    input: polyCopyTradeOrdersOperation.input.extend({
+      limit: z.coerce.number().int().positive().max(200).optional(),
+    }),
+    requiredScope: ACCOUNT_READ_SCOPE,
+    method: "GET",
+    path: "/api/v1/poly/copy-trade/orders",
+    readOnly: true,
+    accountFrom: "principal",
+  });
+
 /**
  * The portfolio snapshot — the delegable agent transport (task.1791070962).
  *
@@ -202,6 +295,9 @@ export const POLY_ACCOUNT_READ_OPERATIONS = [
   polyAccountReadCopyTradePnlOperation,
   polyAccountReadCopyTradeInvestigationOperation,
   polyAccountReadCopyTradeInvestigationEvidenceOperation,
+  polyAccountReadCopySetupOperation,
+  polyAccountReadRecentAttemptsOperation,
+  polyAccountReadCopyTradeOrdersOperation,
 ] as const;
 
 export type PolyAccountReadOperation =

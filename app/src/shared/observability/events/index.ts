@@ -54,6 +54,13 @@ export const EVENT_NAMES = {
     "feature.poly_research.copy_trade_investigation.complete",
   POLY_RESEARCH_TRADER_COMPARISON_COMPLETE:
     "feature.poly_research.trader_comparison.complete",
+
+  // Copy-operations account reads (task.1791070959). One terminal event per
+  // capability, emitted ONLY by `executeAccountRead`.
+  POLY_ACCOUNT_COPY_SETUP_COMPLETE: "feature.poly_account.copy_setup.complete",
+  POLY_ACCOUNT_RECENT_ATTEMPTS_COMPLETE:
+    "feature.poly_account.recent_attempts.complete",
+  POLY_COPY_TRADE_ORDERS_COMPLETE: "feature.poly_copy_trade.orders.complete",
   POLY_WALLET_REFRESH_COMPLETE: "feature.poly_wallet_refresh.complete",
   POLY_WALLET_DASHBOARD_COMPLETE: "feature.poly_wallet_dashboard.complete",
   POLY_WALLET_POSITIONS_CLOSE_COMPLETE:

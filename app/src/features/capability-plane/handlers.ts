@@ -61,6 +61,13 @@ export const ACCOUNT_READ_TERMINAL_EVENTS: Record<
     EVENT_NAMES.POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE,
   "poly.research-copy-trade-investigation-evidence.v1":
     EVENT_NAMES.POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE,
+  // task.1791070959 — copy-operations reads. Each gets its OWN terminal event;
+  // the two new capabilities are separate Loki streams because they have
+  // different cardinality and are alerted on differently.
+  "poly.account.copy-setup.v1": EVENT_NAMES.POLY_ACCOUNT_COPY_SETUP_COMPLETE,
+  "poly.account.recent-attempts.v1":
+    EVENT_NAMES.POLY_ACCOUNT_RECENT_ATTEMPTS_COMPLETE,
+  "poly.copy-trade.orders.v1": EVENT_NAMES.POLY_COPY_TRADE_ORDERS_COMPLETE,
 };
 
 /**
