@@ -188,6 +188,11 @@ describe("copy-trade attempt tape query plan", () => {
     await seedDb
       .delete(users)
       .where(inArray(users.id, [targetUserId, backgroundUserId]));
+    // Re-ANALYZE after removing 25k rows. The component lane is serial and
+    // shares one container, so leaving planner statistics describing a corpus
+    // that no longer exists could skew a later test's query plan. Courtesy to
+    // the shared fixture, not a correctness requirement of this test.
+    await appDb.execute(sql`ANALYZE poly_copy_trade_decisions`);
   }, 60_000);
 
   async function explain(statement: ReturnType<typeof copyTradeAttemptsSelect>) {
