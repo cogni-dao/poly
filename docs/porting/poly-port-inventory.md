@@ -20,7 +20,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1156 |
+| Current-only files | 1157 |
 | Unresolved legacy files | 605 |
 | P0/P1 mission files resolved | 7/79 |
 | Behavioral gates passed | 0/7 |
