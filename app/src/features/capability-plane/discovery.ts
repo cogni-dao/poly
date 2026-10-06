@@ -45,6 +45,10 @@ const DISCOVERY_NAMES: Record<
     action: "readCopyTradeInvestigationEvidence",
     endpoint: "copyTradeInvestigationEvidence",
   },
+  "poly.account.portfolio-snapshot.v1": {
+    action: "readAccountPortfolioSnapshot",
+    endpoint: "accountPortfolioSnapshot",
+  },
 };
 
 export type AccountReadDiscoveryAction = {

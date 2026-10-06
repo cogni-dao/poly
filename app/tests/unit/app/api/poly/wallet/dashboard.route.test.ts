@@ -1,34 +1,35 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-/** Partial component facts remain an observable HTTP 200 snapshot. */
+/**
+ * Module: `@tests/unit/app/api/poly/wallet/dashboard.route`
+ * Purpose: The dashboard route is now a THIN TRANSPORT for
+ *   `poly.account.portfolio-snapshot.v1`. These tests assert exactly that: it
+ *   forwards the session principal and the app-role handle to the capability
+ *   plane, renders each outcome, and preserves the snapshot header — and it
+ *   holds no query, no tenant resolution and no authorization of its own.
+ * Scope: Transport rendering + wiring. The authorization behaviour it depends
+ *   on is proved against the real executor in
+ *   `tests/unit/features/capability-plane/portfolio-snapshot.security.test.ts`.
+ * Links: story.5004, task.1791070962
+ * @internal
+ */
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { readDashboard, logEvent, log, validation, configured } = vi.hoisted(() => ({
-  readDashboard: vi.fn(),
-  logEvent: vi.fn(),
-  log: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
-  validation: { fails: false },
-  configured: { value: true },
-}));
+const { execute, ownerHandler, extra, log, appDb, configured } = vi.hoisted(
+  () => ({
+    execute: vi.fn(),
+    ownerHandler: vi.fn(() => "owner-handler"),
+    extra: vi.fn(() => ({ degraded: true, warningCodes: ["x"] })),
+    log: { info: vi.fn(), error: vi.fn(), warn: vi.fn() },
+    appDb: { role: "app" },
+    configured: { value: true },
+  })
+);
 
-vi.mock("@cogni/poly-node-contracts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@cogni/poly-node-contracts")>();
-  return {
-    ...actual,
-    PolyWalletDashboardOutputSchema: {
-      safeParse: (value: unknown) =>
-        validation.fails
-          ? { success: false, error: new Error("invalid response") }
-          : { success: true, data: value },
-    },
-  };
-});
 vi.mock("@/app/_lib/auth/session", () => ({ getSessionUser: vi.fn() }));
-vi.mock("@/bootstrap/container", () => ({
-  getContainer: () => ({ serviceAccountService: {} }),
-  resolveServiceReadDb: () => ({ kind: "dedicated-read-pool" }),
-}));
+vi.mock("@/bootstrap/container", () => ({ resolveAppDb: () => appDb }));
 vi.mock("@/bootstrap/http", () => ({
   wrapRouteHandlerWithLogging:
     (_config: unknown, handler: (...args: never[]) => Promise<Response>) =>
@@ -36,178 +37,199 @@ vi.mock("@/bootstrap/http", () => ({
       handler(
         { log, reqId: "request-123", routeId: "poly.wallet.dashboard" } as never,
         request as never,
-        { id: "user-1" } as never
+        { id: "11111111-1111-4111-8111-111111111111" } as never
       ),
 }));
 vi.mock("@/bootstrap/poly-trader-wallet", () => ({
   isPolyTraderWalletConfigured: () => configured.value,
 }));
-vi.mock("@/features/wallet-analysis/server/tenant-wallet-dashboard-service", () => ({
-  readTenantWalletDashboard: (...args: unknown[]) => readDashboard(...args),
+vi.mock("@/features/capability-plane", () => ({
+  ACCOUNT_READ_HTTP_STATUS: {
+    ok: 200,
+    denied: 404,
+    not_found: 404,
+    invalid_input: 400,
+    invalid_output: 500,
+    failed: 500,
+  },
+  ACCOUNT_READ_TERMINAL_EVENTS: {
+    "poly.account.portfolio-snapshot.v1": "feature.poly_wallet_dashboard.complete",
+  },
+  executeAccountRead: (...args: unknown[]) => execute(...args),
+  portfolioSnapshotExtra: (...args: unknown[]) => extra(...args),
+  portfolioSnapshotOwnerAccountReadHandler: (...args: unknown[]) =>
+    ownerHandler(...args),
 }));
-vi.mock("@/shared/env/server-env", () => ({ serverEnv: () => ({ APP_BUILD_SHA: "sha-123" }) }));
-vi.mock("@/shared/observability", () => ({
-  EVENT_NAMES: { POLY_WALLET_DASHBOARD_COMPLETE: "feature.poly_wallet_dashboard.complete" },
-  logEvent: (...args: unknown[]) => logEvent(...args),
-}));
-vi.mock("@/app/api/v1/poly/_lib/billing-account-cache", () => ({
-  resolveBillingAccountId: async () => "tenant-1",
-}));
-vi.mock("@/app/api/v1/poly/wallet/_lib/dashboard-route-cache", () => ({
-  unifiedDashboardCacheKey: () => "dashboard-key",
-  coalesceUnifiedDashboard: async (_key: string, read: () => Promise<unknown>) => read(),
+vi.mock("@/shared/env/server-env", () => ({
+  serverEnv: () => ({ APP_BUILD_SHA: "sha-123" }),
 }));
 
 import { GET } from "@/app/api/v1/poly/wallet/dashboard/route";
 
-const meta = (status: string, source: string, complete: boolean) => ({
-  status,
-  source,
-  observedAt: complete ? "2026-10-03T12:00:00.000Z" : null,
-  ageMs: complete ? 0 : null,
-  complete,
-});
+const SNAPSHOT_ID = "33333333-3333-4333-8333-333333333333";
 
-const coverageLeaf = {
-  eligible: 0,
-  comparable: 0,
-  dropped: 0,
-  sampled: 0,
-  complete: true,
-  reasons: [],
-};
-
-function partialDashboard() {
-  return {
-    snapshotId: "11111111-1111-4111-8111-111111111111",
-    capturedAt: "2026-10-03T12:00:00.000Z",
-    interval: "1W",
-    overview: {
-      configured: configured.value,
-      open_orders: 2,
-      usdc_available: null,
-      usdc_positions_mtm: 4,
-      usdc_total: null,
-    },
-    execution: {
-      live_position_count: 3,
-      closed_position_count: 7,
-      comparisonCoverage: {
-        markets: { live: coverageLeaf, closed: coverageLeaf },
-        positions: { live: coverageLeaf, closed: coverageLeaf },
-      },
-    },
-    facts: {
-      wallet: meta("fresh", "wallet_connection", true),
-      cash: meta("unavailable", "polygon_balance_snapshot", false),
-      orders: meta("partial", "local_ledger", false),
-      positions: meta("stale", "data_api_current_positions", false),
-      history: meta("fresh", "local_ledger", true),
-      pnl: meta("unavailable", "user_pnl_snapshot", false),
-      activity: meta("fresh", "local_ledger", true),
-      markets: meta("partial", "composite", false),
-      total: meta("unavailable", "composite", false),
-    },
-    warnings: [
-      { component: "cash", code: "balances_unavailable", message: "unavailable" },
-    ],
-  };
+function request(interval = "1W") {
+  return new Request(
+    `http://localhost/api/v1/poly/wallet/dashboard?interval=${interval}`
+  );
 }
 
-describe("GET /api/v1/poly/wallet/dashboard", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    readDashboard.mockReset();
-    validation.fails = false;
-    configured.value = true;
+beforeEach(() => {
+  vi.clearAllMocks();
+  configured.value = true;
+});
+
+describe("GET /api/v1/poly/wallet/dashboard — transport wiring", () => {
+  it("calls the capability plane with the owner descriptor and the APP-ROLE handle", async () => {
+    execute.mockResolvedValue({
+      status: "ok",
+      data: { snapshotId: SNAPSHOT_ID },
+      access: { accessKind: "owner", grantId: null },
+    });
+
+    await GET(request());
+
+    const args = execute.mock.calls[0]?.[0];
+    // NO_PRIVILEGED_TRANSPORT: the handle is the app-role one, so RLS stays
+    // the backstop. The old route passed `resolveServiceReadDb()` (BYPASSRLS).
+    expect(args.db).toBe(appDb);
+    expect(args.principalId).toBe("11111111-1111-4111-8111-111111111111");
+    // The account comes from the principal; the route never resolves a tenant.
+    expect(args.operation.accountFrom).toBe("principal");
+    expect(args.operation.id).toBe("poly.account.portfolio-snapshot.v1");
+    expect(args.operation.readOnly).toBe(true);
+    expect(args.operation.requiredScope).toBe("account:read");
+    expect(args.eventName).toBe("feature.poly_wallet_dashboard.complete");
   });
 
-  it("returns partial facts as 200 and emits the complete structured event", async () => {
-    readDashboard.mockResolvedValue(partialDashboard());
+  it("lifts the query string and lets the descriptor validate it", async () => {
+    execute.mockResolvedValue({
+      status: "ok",
+      data: { snapshotId: SNAPSHOT_ID },
+      access: { accessKind: "owner", grantId: null },
+    });
 
-    const response = await GET(new Request("http://localhost/api/v1/poly/wallet/dashboard?interval=1W"));
-    expect(response.status).toBe(200);
-    expect(readDashboard).toHaveBeenCalledWith(
-      expect.objectContaining({ adapterConfigured: true })
-    );
-    expect(response.headers.get("X-Wallet-Snapshot-Id")).toBe("11111111-1111-4111-8111-111111111111");
-    expect(logEvent).toHaveBeenCalledWith(
-      log,
-      "feature.poly_wallet_dashboard.complete",
-      expect.objectContaining({
-        reqId: "request-123",
-        buildSha: "sha-123",
-        snapshotId: "11111111-1111-4111-8111-111111111111",
-        cashStatus: "unavailable",
-        cashComplete: false,
-        positionStatus: "stale",
-        positionComplete: false,
-        marketsStatus: "partial",
-        marketsComplete: false,
-        totalUsdc: null,
-        warningCodes: ["balances_unavailable"],
-        status: 200,
-        outcome: "degraded",
-        degraded: true,
-      })
-    );
+    await GET(request("1M"));
+
+    // Raw, unvalidated input — the plane parses it against `operation.input`,
+    // so the transport owns no validation of its own.
+    expect(execute.mock.calls[0]?.[0].rawInput).toEqual({ interval: "1M" });
   });
 
   it("injects typed adapter readiness without invoking vendor IO", async () => {
     configured.value = false;
-    readDashboard.mockResolvedValue(partialDashboard());
-    const response = await GET(new Request("http://localhost/api/v1/poly/wallet/dashboard?interval=1W"));
+    execute.mockResolvedValue({
+      status: "ok",
+      data: { snapshotId: SNAPSHOT_ID },
+      access: { accessKind: "owner", grantId: null },
+    });
+
+    await GET(request());
+
+    expect(ownerHandler).toHaveBeenCalledWith({ adapterConfigured: false });
+  });
+
+  it("passes the build sha into the terminal-event extras", async () => {
+    execute.mockResolvedValue({
+      status: "ok",
+      data: { snapshotId: SNAPSHOT_ID },
+      access: { accessKind: "owner", grantId: null },
+    });
+
+    await GET(request());
+    const context = { status: "ok" as const, input: null, data: null };
+    execute.mock.calls[0]?.[0].extra(context);
+
+    expect(extra).toHaveBeenCalledWith(context, "sha-123");
+  });
+});
+
+describe("GET /api/v1/poly/wallet/dashboard — outcome rendering", () => {
+  it("returns the snapshot with the snapshot-id and no-store headers", async () => {
+    execute.mockResolvedValue({
+      status: "ok",
+      data: { snapshotId: SNAPSHOT_ID, overview: { usdc_total: null } },
+      access: { accessKind: "owner", grantId: null },
+    });
+
+    const response = await GET(request());
+
     expect(response.status).toBe(200);
-    expect(readDashboard).toHaveBeenCalledWith(
-      expect.objectContaining({ adapterConfigured: false })
-    );
-    expect((await response.json()).overview.configured).toBe(false);
+    expect(response.headers.get("X-Wallet-Snapshot-Id")).toBe(SNAPSHOT_ID);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("X-Request-Id")).toBe("request-123");
+    expect(await response.json()).toEqual({
+      snapshotId: SNAPSHOT_ID,
+      overview: { usdc_total: null },
+    });
   });
 
-  it("emits a stable completion event when the service/cache path fails", async () => {
-    readDashboard.mockRejectedValue(new Error("database secret detail"));
-    const response = await GET(new Request("http://localhost/api/v1/poly/wallet/dashboard?interval=1W"));
-    expect(response.status).toBe(500);
-    expect(logEvent).toHaveBeenCalledWith(
-      log,
-      "feature.poly_wallet_dashboard.complete",
-      expect.objectContaining({
-        status: 500,
-        outcome: "error",
-        errorCode: "service_failed",
-        warningCodes: [],
-      })
-    );
-    expect(JSON.stringify(logEvent.mock.calls)).not.toContain("database secret detail");
+  it("renders a denial as a non-disclosing 404", async () => {
+    execute.mockResolvedValue({ status: "denied" });
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "not_found" });
   });
 
-  it("distinguishes response validation failure from service failure", async () => {
-    readDashboard.mockResolvedValue({ invalid: true });
-    validation.fails = true;
-    const response = await GET(new Request("http://localhost/api/v1/poly/wallet/dashboard?interval=1W"));
-    expect(response.status).toBe(500);
-    expect(logEvent).toHaveBeenCalledWith(
-      log,
-      "feature.poly_wallet_dashboard.complete",
-      expect.objectContaining({
-        status: 500,
-        outcome: "error",
-        errorCode: "response_validation_failed",
-      })
-    );
+  it("renders a missing snapshot identically to a denial", async () => {
+    execute.mockResolvedValue({
+      status: "not_found",
+      access: { accessKind: "owner", grantId: null },
+    });
+    const notFound = await GET(request());
+
+    execute.mockResolvedValue({ status: "denied" });
+    const denied = await GET(request());
+
+    // FAIL_CLOSED_NON_DISCLOSING: an unauthorized principal cannot tell
+    // "exists but forbidden" from "absent".
+    expect(notFound.status).toBe(denied.status);
+    expect(await notFound.json()).toEqual(await denied.json());
   });
 
-  it("emits a completion event for invalid query input", async () => {
-    const response = await GET(new Request("http://localhost/api/v1/poly/wallet/dashboard?interval=wrong"));
+  it("renders invalid input as a 400 carrying the parse message", async () => {
+    execute.mockResolvedValue({
+      status: "invalid_input",
+      message: "interval: invalid enum value",
+    });
+
+    const response = await GET(request("wrong"));
+
     expect(response.status).toBe(400);
-    expect(logEvent).toHaveBeenCalledWith(
-      log,
-      "feature.poly_wallet_dashboard.complete",
-      expect.objectContaining({
-        status: 400,
-        outcome: "error",
-        errorCode: "invalid_query",
-      })
-    );
+    expect(await response.json()).toEqual({
+      error: "invalid_query",
+      message: "interval: invalid enum value",
+    });
+  });
+
+  it("renders a failure as a 500 that leaks nothing", async () => {
+    execute.mockResolvedValue({ status: "failed" });
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "Internal server error" });
+  });
+
+  it("renders a response-validation failure as a 500, not a partial body", async () => {
+    execute.mockResolvedValue({ status: "invalid_output" });
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "Internal server error" });
+  });
+
+  it("emits no terminal event of its own", async () => {
+    execute.mockResolvedValue({ status: "denied" });
+
+    await GET(request());
+
+    // EXACTLY_ONE_TERMINAL_EVENT lives in the executor. The transport used to
+    // hand-roll a ~70-field emit on five separate paths.
+    expect(log.info).not.toHaveBeenCalled();
+    expect(log.error).not.toHaveBeenCalled();
   });
 });

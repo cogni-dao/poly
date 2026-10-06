@@ -1,28 +1,55 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-/** Authenticated, DB-only coherent wallet-dashboard snapshot. */
-import {
-  PolyWalletDashboardOutputSchema,
-  polyWalletDashboardOperation,
-} from "@cogni/poly-node-contracts";
-import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+/**
+ * Module: `@app/api/v1/poly/wallet/dashboard/route`
+ * Purpose: Owner-session transport for `poly.account.portfolio-snapshot.v1` —
+ *   one coherent, DB-only portfolio snapshot for the signed-in tenant.
+ * Scope: Transport binding only. This module resolves a principal, names a
+ *   capability, and serializes the outcome. It holds ZERO queries and ZERO
+ *   authorization of its own.
+ * Invariants:
+ *   - ROUTE_IS_TRANSPORT_ONLY — no `db.`, no `resolveServiceDb`, no
+ *     `resolveServiceReadDb`, no tenant resolution, no cache. Every one of
+ *     those moved into the capability plane. The handle this route names is
+ *     `resolveAppDb`, so RLS stays the backstop under the read.
+ *   - NO_LAZY_ACCOUNT_ON_GET — `resolveBillingAccountId` is gone. It lazily
+ *     INSERTed a billing account on miss, which is how a delegated agent
+ *     bearer used to receive a 200 describing a brand-new empty tenant of its
+ *     own instead of a denial. The plane resolves the account with a pure
+ *     SELECT and denies when there is none.
+ *   - CAPABILITY_GATED — the account comes from the principal and goes through
+ *     `authorize()`. A principal owning no account gets the same
+ *     non-disclosing 404 as a principal naming someone else's account.
+ *   - PAGE_LOAD_DB_ONLY / SAVED_FACTS_ONLY — unchanged: no upstream API call
+ *     on render, and the whole read now additionally runs under the executor's
+ *     `REPEATABLE READ READ ONLY` snapshot.
+ *   - RESPONSE_IS_A_SUPERSET — the body is the portfolio snapshot, which is
+ *     the dashboard contract plus `readiness`. Existing clients validating
+ *     against `PolyWalletDashboardOutputSchema` are unaffected.
+ *   - SNAPSHOT_HEADER_PRESERVED — `X-Wallet-Snapshot-Id` still echoes the
+ *     snapshot id, which is why this route calls the executor directly rather
+ *     than through `accountReadGetHandler` (that adapter emits no headers).
+ * Side-effects: IO (DB reads via the capability plane).
+ * Links: packages/poly-node-contracts/src/poly.account.portfolio-snapshot.v1.contract.ts,
+ *   docs/spec/capability-plane.md, story.5004, task.1791070962
+ * @public
+ */
+
+import { polyAccountReadPortfolioSnapshotOwnerOperation } from "@cogni/poly-node-contracts";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
-import {
-  getContainer,
-  resolveServiceReadDb,
-} from "@/bootstrap/container";
+import { resolveAppDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { isPolyTraderWalletConfigured } from "@/bootstrap/poly-trader-wallet";
-import { readTenantWalletDashboard } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
-import { serverEnv } from "@/shared/env/server-env";
-import { EVENT_NAMES, logEvent } from "@/shared/observability";
-import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
 import {
-  coalesceUnifiedDashboard,
-  unifiedDashboardCacheKey,
-} from "../_lib/dashboard-route-cache";
+  ACCOUNT_READ_HTTP_STATUS,
+  ACCOUNT_READ_TERMINAL_EVENTS,
+  executeAccountRead,
+  portfolioSnapshotExtra,
+  portfolioSnapshotOwnerAccountReadHandler,
+} from "@/features/capability-plane";
+import { serverEnv } from "@/shared/env/server-env";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -33,187 +60,56 @@ export const GET = wrapRouteHandlerWithLogging(
     auth: { mode: "required", getSessionUser },
   },
   async (ctx, request, sessionUser) => {
-    const startedAt = performance.now();
     if (!sessionUser) throw new Error("sessionUser required");
-    const url = new URL(request.url);
-    const query = polyWalletDashboardOperation.input.safeParse({
-      interval: url.searchParams.get("interval") ?? undefined,
-    });
-    if (!query.success) {
-      logDashboardError(ctx, startedAt, 400, "invalid_query");
-      return NextResponse.json(
-        { error: "invalid_query", message: query.error.message },
-        { status: 400 }
-      );
-    }
 
-    let dashboard: unknown;
-    try {
-      const container = getContainer();
-      const billingAccountId = await resolveBillingAccountId(
-        container.serviceAccountService,
-        sessionUser.id
-      );
-      const db = resolveServiceReadDb() as unknown as PostgresJsDatabase<
-        Record<string, unknown>
-      >;
-      dashboard = await coalesceUnifiedDashboard(
-        unifiedDashboardCacheKey(billingAccountId, query.data.interval),
-        () =>
-          readTenantWalletDashboard({
-            db,
-            billingAccountId,
-            interval: query.data.interval,
-            adapterConfigured: isPolyTraderWalletConfigured(),
-          })
-      );
-    } catch {
-      logDashboardError(ctx, startedAt, 500, "service_failed");
-      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
-    }
-    const parsed = PolyWalletDashboardOutputSchema.safeParse(dashboard);
-    if (!parsed.success) {
-      logDashboardError(ctx, startedAt, 500, "response_validation_failed");
-      return NextResponse.json({ error: "Internal server error" }, { status: 500 });
-    }
-    const response = parsed.data;
-    const degraded =
-      response.warnings.length > 0 ||
-      Object.values(response.facts).some((fact) => fact.status !== "fresh");
+    const buildSha = serverEnv().APP_BUILD_SHA ?? "unknown";
+    const operation = polyAccountReadPortfolioSnapshotOwnerOperation;
 
-    logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_DASHBOARD_COMPLETE, {
-      reqId: ctx.reqId,
-      routeId: ctx.routeId,
-      buildSha: serverEnv().APP_BUILD_SHA ?? "unknown",
-      snapshotId: response.snapshotId,
-      capturedAt: response.capturedAt,
-      interval: response.interval,
-      walletStatus: response.facts.wallet.status,
-      walletSource: response.facts.wallet.source,
-      walletAgeMs: response.facts.wallet.ageMs,
-      walletComplete: response.facts.wallet.complete,
-      cashStatus: response.facts.cash.status,
-      cashSource: response.facts.cash.source,
-      cashAgeMs: response.facts.cash.ageMs,
-      cashComplete: response.facts.cash.complete,
-      orderStatus: response.facts.orders.status,
-      orderSource: response.facts.orders.source,
-      orderAgeMs: response.facts.orders.ageMs,
-      orderComplete: response.facts.orders.complete,
-      positionStatus: response.facts.positions.status,
-      positionSource: response.facts.positions.source,
-      positionAgeMs: response.facts.positions.ageMs,
-      positionComplete: response.facts.positions.complete,
-      historyStatus: response.facts.history.status,
-      historySource: response.facts.history.source,
-      historyAgeMs: response.facts.history.ageMs,
-      historyComplete: response.facts.history.complete,
-      pnlStatus: response.facts.pnl.status,
-      pnlSource: response.facts.pnl.source,
-      pnlAgeMs: response.facts.pnl.ageMs,
-      pnlComplete: response.facts.pnl.complete,
-      activityStatus: response.facts.activity.status,
-      activitySource: response.facts.activity.source,
-      activityAgeMs: response.facts.activity.ageMs,
-      activityComplete: response.facts.activity.complete,
-      marketsStatus: response.facts.markets.status,
-      marketsSource: response.facts.markets.source,
-      marketsAgeMs: response.facts.markets.ageMs,
-      marketsComplete: response.facts.markets.complete,
-      totalStatus: response.facts.total.status,
-      totalSource: response.facts.total.source,
-      totalAgeMs: response.facts.total.ageMs,
-      totalComplete: response.facts.total.complete,
-      openOrders: response.overview.open_orders,
-      livePositionCount: response.execution.live_position_count,
-      closedPositionCount: response.execution.closed_position_count,
-      comparisonMarketsLiveEligible:
-        response.execution.comparisonCoverage.markets.live.eligible,
-      comparisonMarketsLiveComparable:
-        response.execution.comparisonCoverage.markets.live.comparable,
-      comparisonMarketsLiveDropped:
-        response.execution.comparisonCoverage.markets.live.dropped,
-      comparisonMarketsLiveSampled:
-        response.execution.comparisonCoverage.markets.live.sampled,
-      comparisonMarketsLiveComplete:
-        response.execution.comparisonCoverage.markets.live.complete,
-      comparisonMarketsLiveReasons:
-        response.execution.comparisonCoverage.markets.live.reasons.join(","),
-      comparisonMarketsClosedEligible:
-        response.execution.comparisonCoverage.markets.closed.eligible,
-      comparisonMarketsClosedComparable:
-        response.execution.comparisonCoverage.markets.closed.comparable,
-      comparisonMarketsClosedDropped:
-        response.execution.comparisonCoverage.markets.closed.dropped,
-      comparisonMarketsClosedSampled:
-        response.execution.comparisonCoverage.markets.closed.sampled,
-      comparisonMarketsClosedComplete:
-        response.execution.comparisonCoverage.markets.closed.complete,
-      comparisonMarketsClosedReasons:
-        response.execution.comparisonCoverage.markets.closed.reasons.join(","),
-      comparisonPositionsLiveEligible:
-        response.execution.comparisonCoverage.positions.live.eligible,
-      comparisonPositionsLiveComparable:
-        response.execution.comparisonCoverage.positions.live.comparable,
-      comparisonPositionsLiveDropped:
-        response.execution.comparisonCoverage.positions.live.dropped,
-      comparisonPositionsLiveSampled:
-        response.execution.comparisonCoverage.positions.live.sampled,
-      comparisonPositionsLiveComplete:
-        response.execution.comparisonCoverage.positions.live.complete,
-      comparisonPositionsLiveReasons:
-        response.execution.comparisonCoverage.positions.live.reasons.join(","),
-      comparisonPositionsClosedEligible:
-        response.execution.comparisonCoverage.positions.closed.eligible,
-      comparisonPositionsClosedComparable:
-        response.execution.comparisonCoverage.positions.closed.comparable,
-      comparisonPositionsClosedDropped:
-        response.execution.comparisonCoverage.positions.closed.dropped,
-      comparisonPositionsClosedSampled:
-        response.execution.comparisonCoverage.positions.closed.sampled,
-      comparisonPositionsClosedComplete:
-        response.execution.comparisonCoverage.positions.closed.complete,
-      comparisonPositionsClosedReasons:
-        response.execution.comparisonCoverage.positions.closed.reasons.join(","),
-      cashUsdc: response.overview.usdc_available,
-      positionsMtmUsdc: response.overview.usdc_positions_mtm,
-      totalUsdc: response.overview.usdc_total,
-      warningCodes: response.warnings.map((entry) => entry.code),
-      durationMs: Math.round(performance.now() - startedAt),
-      status: 200,
-      outcome: degraded ? "degraded" : "success",
-      degraded,
+    const outcome = await executeAccountRead({
+      db: resolveAppDb(),
+      ctx,
+      operation,
+      principalId: sessionUser.id,
+      rawInput: Object.fromEntries(
+        new URL(request.url).searchParams.entries()
+      ),
+      eventName: ACCOUNT_READ_TERMINAL_EVENTS[operation.id],
+      handler: portfolioSnapshotOwnerAccountReadHandler({
+        adapterConfigured: isPolyTraderWalletConfigured(),
+      }),
+      extra: (context) => portfolioSnapshotExtra(context, buildSha),
     });
 
-    return NextResponse.json(response, {
-      headers: {
-        "Cache-Control": "private, no-store",
-        "X-Wallet-Snapshot-Id": response.snapshotId,
-        "X-Request-Id": ctx.reqId ?? "unknown",
-      },
-    });
+    switch (outcome.status) {
+      case "ok":
+        return NextResponse.json(outcome.data, {
+          headers: {
+            "Cache-Control": "private, no-store",
+            "X-Wallet-Snapshot-Id": outcome.data.snapshotId,
+            "X-Request-Id": ctx.reqId ?? "unknown",
+          },
+        });
+      case "invalid_input":
+        return NextResponse.json(
+          {
+            error: "invalid_query",
+            ...(outcome.message ? { message: outcome.message } : {}),
+          },
+          { status: ACCOUNT_READ_HTTP_STATUS.invalid_input }
+        );
+      case "denied":
+      case "not_found":
+        // Indistinguishable by design: "you own no account", "that account is
+        // not yours", and "no such account" are one response.
+        return NextResponse.json(
+          { error: "not_found" },
+          { status: ACCOUNT_READ_HTTP_STATUS.denied }
+        );
+      default:
+        return NextResponse.json(
+          { error: "Internal server error" },
+          { status: ACCOUNT_READ_HTTP_STATUS.failed }
+        );
+    }
   }
 );
-
-function logDashboardError(
-  ctx: {
-    log: Parameters<typeof logEvent>[0];
-    reqId: string;
-    routeId: string;
-  },
-  startedAt: number,
-  status: 400 | 500,
-  errorCode: "invalid_query" | "service_failed" | "response_validation_failed"
-): void {
-  logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_DASHBOARD_COMPLETE, {
-    reqId: ctx.reqId,
-    routeId: ctx.routeId,
-    buildSha: serverEnv().APP_BUILD_SHA ?? "unknown",
-    durationMs: Math.round(performance.now() - startedAt),
-    status,
-    outcome: "error",
-    degraded: true,
-    errorCode,
-    warningCodes: [],
-  });
-}

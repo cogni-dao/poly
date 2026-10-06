@@ -526,6 +526,13 @@
       "when": 1791109877529,
       "tag": "0074_account_read_scope_alias",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1791109877530,
+      "tag": "0075_portfolio_snapshot_delegated_select",
+      "breakpoints": true
     }
   ]
 }
