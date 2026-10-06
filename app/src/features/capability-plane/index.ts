@@ -30,6 +30,15 @@ export {
   type ExecuteAccountReadArgs,
 } from "./execute-account-read";
 export {
+  classifyRecentAttemptsError,
+  copySetupAccountReadHandler,
+  copySetupExtra,
+  copyTradeOrdersAccountReadHandler,
+  copyTradeOrdersExtra,
+  recentAttemptsAccountReadHandler,
+  recentAttemptsExtra,
+} from "./copy-operations-handlers";
+export {
   PORTFOLIO_SNAPSHOT_TERMINAL_EVENT,
   portfolioSnapshotAccountReadHandler,
   portfolioSnapshotExtra,
