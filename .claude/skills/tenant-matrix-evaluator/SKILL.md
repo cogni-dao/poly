@@ -33,7 +33,7 @@ Practical rule: **only the policy-match-to-live tenant counts as a trust twin.**
 
 - [`docs/spec/poly-tenant-matrix-evaluator.md`](../../../docs/spec/poly-tenant-matrix-evaluator.md) — spec, invariants, done condition
 - [`work/charters/POLY_ALGO_TENANT_MATRIX.md`](../../../work/charters/POLY_ALGO_TENANT_MATRIX.md) — the matrix this tool consumes
-- [`.claude/skills/delta-minimizer/SKILL.md`](../delta-minimizer/SKILL.md) — finding discipline (one primary, % confidence, file:line cite, charter class)
+- `/delta-minimizer` (Dolt-delivered skill) — finding discipline (one primary, % confidence, file:line cite, charter class)
 - [`work/charters/POLY_COPY_DELTA.md`](../../../work/charters/POLY_COPY_DELTA.md) — D-class taxonomy used in findings
 
 ## Outcome contract
@@ -108,6 +108,6 @@ Each invocation is also an opportunity to ask "is the matrix or the tool the bot
 - Spec: `docs/spec/poly-tenant-matrix-evaluator.md`
 - Charter: `work/charters/POLY_ALGO_TENANT_MATRIX.md`
 - Output dir: `research/tenant-matrix/<iso>/`
-- Sibling skills: [`/delta-minimizer`](../delta-minimizer/SKILL.md), [`/paper-trade-diff-analysis`](../paper-trade-diff-analysis/SKILL.md)
+- Sibling skills: `/delta-minimizer`, [`/paper-trade-diff-analysis`](../paper-trade-diff-analysis/SKILL.md)
 - Planner cheat-sheet: `app/src/features/copy-trade/plan-mirror.ts`
 - Postgres helper: `scripts/grafana-postgres-query.sh` (matches the tool's per-env datasource UID convention `cogni-<env>-poly-postgres`)
