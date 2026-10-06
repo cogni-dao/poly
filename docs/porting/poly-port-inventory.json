@@ -49,11 +49,11 @@
     }
   ],
   "policySha256": "3a617b3691441cd75da8898c454d62317d673a3285df2490d76207d71b77e9b3",
-  "targetTreeDigest": "e4aa5376ee770d535a1b3bfc80fa08d631fec6205eb40b7e5af7ed9fe63db5df",
+  "targetTreeDigest": "a3eee84e6c989236c00c1ed90611a3f6c4e06d6cd9f652b75637c783376a3cc5",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1159,
+    "targetOnlyFiles": 1161,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -301,7 +301,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "95d63ef4d6f7fd405240a6be3b3b35224399c498ca30244c7aec9788139ad66f",
+      "currentTargetDigest": "9d21f717d10fbfb3ec558885bb2607bb4c27498e8d6efbcc5975c98bf06c2faf",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -323,7 +323,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "95d63ef4d6f7fd405240a6be3b3b35224399c498ca30244c7aec9788139ad66f",
+      "currentTargetDigest": "9d21f717d10fbfb3ec558885bb2607bb4c27498e8d6efbcc5975c98bf06c2faf",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -345,7 +345,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "95d63ef4d6f7fd405240a6be3b3b35224399c498ca30244c7aec9788139ad66f",
+      "currentTargetDigest": "9d21f717d10fbfb3ec558885bb2607bb4c27498e8d6efbcc5975c98bf06c2faf",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -4645,7 +4645,7 @@
       "sourceBlob": "5b00a5697517aa73727a4879895724f6da5484ce",
       "sourcePath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
-      "targetBlob": "348bd91ad327f3ff8990aa7c837670e25ded701e",
+      "targetBlob": "ddecd36aa7128b566bb3bb5983cb9ef25a6fb427",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -25568,6 +25568,9 @@
       "targetPath": "app/src/app/(app)/dashboard/_components/TradingWalletBalanceBar.tsx"
     },
     {
+      "targetPath": "app/src/app/(app)/dashboard/_components/dashboard-delta-coverage.ts"
+    },
+    {
       "targetPath": "app/src/app/(app)/dashboard/_hooks/useWalletDashboard.tsx"
     },
     {
@@ -26193,6 +26196,9 @@
     },
     {
       "targetPath": "app/tests/unit/app/dashboard/dashboard-missing-state.spec.tsx"
+    },
+    {
+      "targetPath": "app/tests/unit/app/dashboard/delta-coverage.spec.ts"
     },
     {
       "targetPath": "app/tests/unit/app/dashboard/mirror-attempts-error-summary.test.ts"
