@@ -6,13 +6,16 @@
  * Purpose: HTTP GET for the research trader-comparison board.
  * Scope: Thin handler. Auth via getSessionUser, Zod query validation, service DB aggregation, response validation.
  * Invariants: Caps comparisons to three wallets through the contract; partial P/L failures return warnings with a 200.
- *   SWR_CACHED_INTERIM (2026-09-28): the per-wallet aggregate scans the full fills history
- *   (~31s measured on prod → edge 520) and is served through the serve-stale-while-revalidate
- *   cache in `research-read-cache.ts` (5min fresh / 60min serve-stale, keyed per interval +
- *   ordered wallet list). Staleness is acceptable — research aggregate over observed history.
- *   A wallet exceeding the `POLY_RESEARCH_WALLET_BUDGET_MS` budget (default 25s) is omitted
- *   with a `wallet_budget_exceeded` warning on the partial-failure-200 path instead of letting
- *   the edge 520. The real fix is tick-written rollup tables (separate design).
+ *   SWR_CACHED (2026-09-28): served through the serve-stale-while-revalidate cache in
+ *   `research-read-cache.ts` (5min fresh / 60min serve-stale, keyed per interval + ordered
+ *   wallet list). Staleness is acceptable — research aggregate over observed history.
+ *   The per-wallet aggregate is rollup-backed with the flows fragment pushed down to the
+ *   windowed-buy condition set (fix/comparison-flows-pushdown; previously it materialized the
+ *   wallet's lifetime rollup per interval — 25.7s cold for RN1 on prod 2026-10-06).
+ *   A wallet exceeding the `POLY_RESEARCH_WALLET_BUDGET_MS` budget (default 8s, matching
+ *   DEFAULT_TRADER_COMPARISON_WALLET_BUDGET_MS) is omitted with a `wallet_budget_exceeded`
+ *   warning on the partial-failure-200 path instead of letting the edge 520; budget-degraded
+ *   responses are served but never SWR-cached (DEGRADED_NOT_PINNED).
  * Side-effects: DB reads and public Polymarket P/L reads via the feature service.
  * Links: nodes/poly/packages/node-contracts/src/poly.research-trader-comparison.v1.contract.ts
  * @public
