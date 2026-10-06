@@ -20,6 +20,12 @@
  *     page loads never pay the RN1-class 5-8s cold aggregate). Exactly the two
  *     PREWARM_WALLETS at COMPARISON_DEFAULT_INTERVAL; per-user wallets and
  *     non-default intervals stay demand-driven.
+ *   - BACKGROUND_BUDGET (fix/prewarm-budget-split): comparison warms run on
+ *     the background budget lane (`POLY_RESEARCH_PREWARM_BUDGET_MS`, 45s) —
+ *     NOT the 8s request budget. Prod 4ceff2e1 proved the single-budget loop
+ *     self-defeating: cold target computes burned the request budget, degraded
+ *     results are never cached, so the prewarm could never populate the cache
+ *     it exists to fill.
  *   - ONE_SHOT_BOOT_REST: snapshot/benchmark/target-overlap are warmed once at
  *     boot only (rollup-backed and fast; SWR refreshes take over on traffic).
  *   - SERIALIZED_PLIMIT_1: boot entries AND tick entries share one pLimit(1),
@@ -131,7 +137,13 @@ export function startResearchPrewarm(
     });
   }
 
-  /** Warm exactly the two fixed comparison targets at the board default interval. */
+  /**
+   * Warm exactly the two fixed comparison targets at the board default
+   * interval, on the BACKGROUND budget lane (fix/prewarm-budget-split):
+   * prewarm computes must COMPLETE un-degraded to populate the per-wallet
+   * cache — on the request-lane 8s budget a cold RN1-class aggregate burned
+   * every tick and (DEGRADED_NOT_PINNED) nothing was ever cached.
+   */
   async function warmComparisonTargets(): Promise<boolean[]> {
     return Promise.all(
       PREWARM_WALLETS.map((w) =>
@@ -139,7 +151,8 @@ export function startResearchPrewarm(
           getComparisonWalletCached(
             deps.db,
             w.address,
-            COMPARISON_DEFAULT_INTERVAL
+            COMPARISON_DEFAULT_INTERVAL,
+            { lane: "background" }
           )
         )
       )
@@ -209,9 +222,27 @@ export function startResearchPrewarm(
       return;
     }
     tickRunning = true;
-    void warmComparisonTargets().finally(() => {
-      tickRunning = false;
-    });
+    const tickStartedAt = Date.now();
+    void warmComparisonTargets()
+      .then((oks) => {
+        // fix/prewarm-budget-split — explicit per-tick completion event. The
+        // tick previously logged only per-entry events (entry_ok/entry_failed,
+        // shared with the boot pass), so prod Loki had NO tick-scoped signal to
+        // prove the recurring loop was alive, let alone effective.
+        const ok = oks.filter(Boolean).length;
+        log.info(
+          {
+            event: "poly.research-prewarm.tick_complete",
+            ok,
+            failed: oks.length - ok,
+            duration_ms: Date.now() - tickStartedAt,
+          },
+          "comparison prewarm tick finished"
+        );
+      })
+      .finally(() => {
+        tickRunning = false;
+      });
   }, pollMs);
   handle.unref?.();
 

@@ -362,6 +362,22 @@ export const serverSchema = z.object({
     .int()
     .positive()
     .default(8_000),
+  // fix/prewarm-budget-split — BACKGROUND budget (ms) for the same per-wallet
+  // comparison aggregate when computed OFF the request path: the recurring
+  // research prewarm tick and the post-burn background heal. Prod build
+  // 4ceff2e1 (2026-10-05) measured RN1/swisstony COLD computes exceeding the
+  // 8s request budget under load; degraded results are never cached
+  // (DEGRADED_NOT_PINNED), so the prewarm's own computes burned the same 8s
+  // and the cache could never be populated — a self-defeating loop. Background
+  // computes carry no user latency SLA, so they get a generous ceiling and
+  // COMPLETE un-degraded, populating the cache that user requests then hit
+  // warm. Still budgeted (installs statement_timeout) so a runaway aggregate
+  // cannot hold a pool slot for minutes.
+  POLY_RESEARCH_PREWARM_BUDGET_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(45_000),
 
   // task.5016 — single-writer leader election for ALL in-process background
   // jobs. Default ON: every pod runs the elector and only the holder of
