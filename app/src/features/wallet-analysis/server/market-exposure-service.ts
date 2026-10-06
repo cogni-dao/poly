@@ -213,7 +213,17 @@ export type BoundedMarketExposureRead = {
   truncated: boolean;
 };
 
-type ComparisonCoverageCountRow = {
+export type ComparisonReadDiagnostics = {
+  comparisonBundleQueryMs?: number;
+  comparisonFillRollupMs?: number;
+};
+
+export type BoundedMarketExposureCoverageRead = {
+  market: BoundedMarketExposureRead;
+  counts: ComparisonCoverageCountRow[];
+};
+
+export type ComparisonCoverageCountRow = {
   entity: "markets" | "positions";
   status: WalletExecutionMarketLineStatus;
   eligible: string | number | null;
@@ -222,9 +232,23 @@ type ComparisonCoverageCountRow = {
   source_ambiguous: boolean | null;
 };
 
+type ComparisonBundleRow = Partial<
+  ComparisonCoverageCountRow & BoundedTargetParticipantRow
+> & {
+  record_kind: "count" | "participant";
+};
+
 const BOUNDED_GROUP_LIMIT = 200;
 const BOUNDED_TARGETS_PER_GROUP = 10;
 const BOUNDED_PARTICIPANT_ROW_LIMIT = 2_200;
+
+type BoundedOurExposureSelection = {
+  allOurLegs: RawLeg[];
+  ourLegs: RawLeg[];
+  conditionGroup: Map<string, string>;
+  ownParticipantRows: number;
+  groupedCount: number;
+};
 
 export async function buildMarketExposureGroups(params: {
   db: Db;
@@ -273,47 +297,28 @@ export async function buildBoundedMarketExposureGroups(params: {
   closedPositions?: readonly WalletExecutionPosition[];
 }): Promise<BoundedMarketExposureRead> {
   const closedPositions = params.closedPositions ?? [];
-  const allOurLegs = [
-    ...buildOurLegs(params.livePositions, params.walletAddress, "live"),
-    ...buildOurLegs(closedPositions, params.walletAddress, "closed"),
-  ];
-  if (allOurLegs.length === 0) return { groups: [], truncated: false };
-
-  const grouped = new Map<string, RawLeg[]>();
-  for (const leg of allOurLegs) {
-    const key = leg.eventSlug ? `event:${leg.eventSlug}` : `condition:${leg.conditionId}`;
-    const bucket = grouped.get(key) ?? [];
-    bucket.push(leg);
-    grouped.set(key, bucket);
+  const selection = selectBoundedOurExposure({
+    walletAddress: params.walletAddress,
+    livePositions: params.livePositions,
+    closedPositions,
+  });
+  if (selection.allOurLegs.length === 0) {
+    return { groups: [], truncated: false };
   }
-  const selected = [...grouped.entries()]
-    .sort(
-      (left, right) =>
-        sumValue(right[1]) - sumValue(left[1]) || left[0].localeCompare(right[0])
-    )
-    .slice(0, BOUNDED_GROUP_LIMIT);
-  const ourLegs = selected.flatMap(([, legs]) => legs);
-  const conditionGroup = new Map<string, string>();
-  for (const [groupKey, legs] of selected) {
-    for (const leg of legs) conditionGroup.set(leg.conditionId, groupKey);
-  }
-  const ownParticipantRows = new Set(
-    ourLegs.map((leg) => `${leg.walletAddress}:${leg.conditionId}`)
-  ).size;
   const targetBudget = Math.max(
     0,
-    BOUNDED_PARTICIPANT_ROW_LIMIT - ownParticipantRows
+    BOUNDED_PARTICIPANT_ROW_LIMIT - selection.ownParticipantRows
   );
   const targetRead = await readBoundedTargetLegs({
     db: params.db,
     billingAccountId: params.billingAccountId,
-    conditionGroup,
+    conditionGroup: selection.conditionGroup,
     participantLimit: targetBudget,
   });
-  const rawLegs = [...ourLegs, ...targetRead.legs];
+  const rawLegs = [...selection.ourLegs, ...targetRead.legs];
   const rollups = await readFillRollups({
     db: params.db,
-    conditions: [...conditionGroup.keys()],
+    conditions: [...selection.conditionGroup.keys()],
     walletAddresses: [...new Set(rawLegs.map((leg) => leg.walletAddress))],
     positionKeys: rawLegs.map((leg) => ({
       walletAddress: leg.walletAddress,
@@ -325,10 +330,198 @@ export async function buildBoundedMarketExposureGroups(params: {
   return {
     groups: groupParticipants(enrichedLegs, rollups).slice(0, BOUNDED_GROUP_LIMIT),
     truncated:
-      grouped.size > BOUNDED_GROUP_LIMIT ||
+      selection.groupedCount > BOUNDED_GROUP_LIMIT ||
       targetRead.totalParticipants > targetRead.hydratedParticipants ||
       targetRead.groupTruncated,
   };
+}
+
+function selectBoundedOurExposure(params: {
+  walletAddress: string;
+  livePositions: readonly WalletExecutionPosition[];
+  closedPositions: readonly WalletExecutionPosition[];
+}): BoundedOurExposureSelection {
+  const allOurLegs = [
+    ...buildOurLegs(params.livePositions, params.walletAddress, "live"),
+    ...buildOurLegs(params.closedPositions, params.walletAddress, "closed"),
+  ];
+  const grouped = new Map<string, RawLeg[]>();
+  for (const leg of allOurLegs) {
+    const key = leg.eventSlug
+      ? `event:${leg.eventSlug}`
+      : `condition:${leg.conditionId}`;
+    const bucket = grouped.get(key) ?? [];
+    bucket.push(leg);
+    grouped.set(key, bucket);
+  }
+  const selected = [...grouped.entries()]
+    .sort(
+      (left, right) =>
+        sumValue(right[1]) - sumValue(left[1]) ||
+        left[0].localeCompare(right[0])
+    )
+    .slice(0, BOUNDED_GROUP_LIMIT);
+  const ourLegs = selected.flatMap(([, legs]) => legs);
+  const conditionGroup = new Map<string, string>();
+  for (const [groupKey, legs] of selected) {
+    for (const leg of legs) conditionGroup.set(leg.conditionId, groupKey);
+  }
+  return {
+    allOurLegs,
+    ourLegs,
+    conditionGroup,
+    ownParticipantRows: new Set(
+      ourLegs.map((leg) => `${leg.walletAddress}:${leg.conditionId}`)
+    ).size,
+    groupedCount: grouped.size,
+  };
+}
+
+/**
+ * One-query non-empty dashboard comparison path. The full-population
+ * coverage aggregate and the bounded target preview share one materialized
+ * target-snapshot source, while the existing grouping and fill math remain
+ * unchanged.
+ */
+export async function buildBoundedMarketExposureWithCoverage(params: {
+  db: Db;
+  billingAccountId: string;
+  walletAddress: string;
+  livePositions: readonly WalletExecutionPosition[];
+  closedPositions?: readonly WalletExecutionPosition[];
+  diagnostics?: ComparisonReadDiagnostics;
+}): Promise<BoundedMarketExposureCoverageRead> {
+  const selection = selectBoundedOurExposure({
+    walletAddress: params.walletAddress,
+    livePositions: params.livePositions,
+    closedPositions: params.closedPositions ?? [],
+  });
+  const targetBudget = Math.max(
+    0,
+    BOUNDED_PARTICIPANT_ROW_LIMIT - selection.ownParticipantRows
+  );
+  const queryStartedAt = performance.now();
+  const rows = await readComparisonBundleRows({
+    db: params.db,
+    billingAccountId: params.billingAccountId,
+    walletAddress: params.walletAddress,
+    conditionGroup: selection.conditionGroup,
+    participantLimit: targetBudget,
+  });
+  recordComparisonDiagnostic(
+    params.diagnostics,
+    "comparisonBundleQueryMs",
+    performance.now() - queryStartedAt
+  );
+  const counts = countRowsFromBundle(rows);
+  const targetRead = boundedTargetReadFromRows(
+    participantRowsFromBundle(rows)
+  );
+  const rawLegs = [...selection.ourLegs, ...targetRead.legs];
+  const fillStartedAt = performance.now();
+  const rollups = await readFillRollups({
+    db: params.db,
+    conditions: [...selection.conditionGroup.keys()],
+    walletAddresses: [...new Set(rawLegs.map((leg) => leg.walletAddress))],
+    positionKeys: rawLegs.map((leg) => ({
+      walletAddress: leg.walletAddress,
+      conditionId: leg.conditionId,
+      tokenId: leg.tokenId,
+    })),
+  });
+  recordComparisonDiagnostic(
+    params.diagnostics,
+    "comparisonFillRollupMs",
+    performance.now() - fillStartedAt
+  );
+  const enrichedLegs = rawLegs.map((leg) =>
+    enrichLegWithRollup(leg, rollups)
+  );
+  return {
+    counts,
+    market: {
+      groups: groupParticipants(enrichedLegs, rollups).slice(
+        0,
+        BOUNDED_GROUP_LIMIT
+      ),
+      truncated:
+        selection.groupedCount > BOUNDED_GROUP_LIMIT ||
+        targetRead.totalParticipants > targetRead.hydratedParticipants ||
+        targetRead.groupTruncated,
+    },
+  };
+}
+
+function recordComparisonDiagnostic(
+  diagnostics: ComparisonReadDiagnostics | undefined,
+  key: keyof ComparisonReadDiagnostics,
+  elapsedMs: number
+): void {
+  if (!diagnostics) return;
+  try {
+    diagnostics[key] = Math.max(0, Math.round(elapsedMs));
+  } catch {
+    // Diagnostics are fail-open and can never affect the dashboard result.
+  }
+}
+
+/**
+ * Constant-cardinality identity check for an authoritatively empty inventory.
+ * It intentionally uses all physical wallet rows, including disabled/kind
+ * siblings, matching the full coverage query's ambiguity authority.
+ */
+export async function readComparisonSourceIdentityAmbiguity(params: {
+  db: Db;
+  billingAccountId: string;
+  walletAddress: string;
+}): Promise<boolean> {
+  const rows = (await params.db.execute(sql`
+    WITH canonical_wallet_identity AS (
+      SELECT count(*) > 1 AS identity_ambiguous
+      FROM poly_trader_wallets w
+      WHERE lower(w.wallet_address) = lower(${params.walletAddress})
+    ), active_target_candidates AS (
+      SELECT
+        lower(t.target_wallet) AS wallet_key,
+        (
+          count(*) OVER (PARTITION BY lower(t.target_wallet)) > 1
+          OR min(t.target_wallet) OVER (PARTITION BY lower(t.target_wallet)) <>
+            max(t.target_wallet) OVER (PARTITION BY lower(t.target_wallet))
+          OR min(w.wallet_address) OVER (PARTITION BY lower(t.target_wallet)) <>
+            max(w.wallet_address) OVER (PARTITION BY lower(t.target_wallet))
+        ) AS identity_ambiguous
+      FROM poly_copy_trade_targets t
+      JOIN poly_trader_wallets w
+        ON lower(w.wallet_address) = lower(t.target_wallet)
+      WHERE t.billing_account_id = ${params.billingAccountId}
+        AND t.disabled_at IS NULL
+    )
+    SELECT
+      own.identity_ambiguous OR
+        COALESCE(bool_or(target.identity_ambiguous), false) AS identity_ambiguous
+    FROM canonical_wallet_identity own
+    LEFT JOIN active_target_candidates target ON TRUE
+    GROUP BY own.identity_ambiguous
+  `)) as unknown as Array<{ identity_ambiguous: boolean | null }>;
+  if (typeof rows[0]?.identity_ambiguous !== "boolean") {
+    throw new Error("Comparison identity preflight returned no authority row.");
+  }
+  return rows[0].identity_ambiguous;
+}
+
+export function emptyComparisonCoverageCounts(
+  sourceAmbiguous: boolean
+): ComparisonCoverageCountRow[] {
+  return (["positions", "markets"] as const).flatMap((entity) =>
+    (["live", "closed"] as const).map((status) => ({
+      entity,
+      status,
+      eligible: 0,
+      comparable: 0,
+      ambiguous: 0,
+      source_ambiguous: sourceAmbiguous,
+    }))
+  );
 }
 
 /**
@@ -343,8 +536,36 @@ export async function readFullComparisonCoverageCounts(params: {
   billingAccountId: string;
   walletAddress: string;
 }): Promise<ComparisonCoverageCountRow[]> {
+  const rows = await readComparisonBundleRows({
+    ...params,
+    conditionGroup: new Map(),
+    participantLimit: 0,
+  });
+  return countRowsFromBundle(rows);
+}
+
+async function readComparisonBundleRows(params: {
+  db: Db;
+  billingAccountId: string;
+  walletAddress: string;
+  conditionGroup: ReadonlyMap<string, string>;
+  participantLimit: number;
+}): Promise<ComparisonBundleRow[]> {
+  // This bounded relation is consumed only by preview_* CTEs below. The
+  // eligible/position_eval/market_eval coverage chain remains full-population.
+  const selectedConditions =
+    params.conditionGroup.size === 0
+      ? sql`SELECT NULL::text AS condition_id, NULL::text AS group_key WHERE FALSE`
+      : sql`VALUES ${sql.join(
+          [...params.conditionGroup.entries()].map(
+            ([conditionId, groupKey]) => sql`(${conditionId}, ${groupKey})`
+          ),
+          sql`, `
+        )}`;
   return (await params.db.execute(sql`
-    WITH canonical_wallet_identity AS (
+    WITH selected_conditions(condition_id, group_key) AS (
+      ${selectedConditions}
+    ), canonical_wallet_identity AS (
       SELECT count(*) > 1 AS identity_ambiguous
       FROM poly_trader_wallets w
       WHERE lower(w.wallet_address) = lower(${params.walletAddress})
@@ -445,7 +666,11 @@ export async function readFullComparisonCoverageCounts(params: {
     ), metadata_ranked AS (
       SELECT
         lower(m.condition_id) AS condition_key,
+        m.market_title,
+        m.event_title,
+        m.market_slug,
         m.event_slug,
+        m.end_date,
         row_number() OVER (
           PARTITION BY lower(m.condition_id)
           ORDER BY m.fetched_at DESC, m.condition_id
@@ -536,9 +761,14 @@ export async function readFullComparisonCoverageCounts(params: {
       UNION ALL
       SELECT * FROM closed_inventory
     ), active_target_candidates AS (
+      -- Coverage authority includes every physical wallet sibling, including
+      -- disabled/kind variants. Preview eligibility remains the narrower
+      -- legacy predicate and is carried explicitly rather than conflated.
       SELECT
         lower(t.target_wallet) AS wallet_key,
         w.id AS trader_wallet_id,
+        COALESCE(NULLIF(w.label, ''), 'Copy target') AS label,
+        (w.disabled_at IS NULL) AS preview_eligible,
         (
           count(*) OVER (PARTITION BY lower(t.target_wallet)) > 1
           OR
@@ -553,7 +783,8 @@ export async function readFullComparisonCoverageCounts(params: {
       WHERE t.billing_account_id = ${params.billingAccountId}
         AND t.disabled_at IS NULL
     ), active_targets AS (
-      SELECT DISTINCT wallet_key, trader_wallet_id, identity_ambiguous
+      SELECT DISTINCT wallet_key, trader_wallet_id, label, preview_eligible,
+        identity_ambiguous
       FROM active_target_candidates
     ), source_identity AS (
       SELECT
@@ -562,28 +793,37 @@ export async function readFullComparisonCoverageCounts(params: {
       FROM our_identity o
       LEFT JOIN active_targets a ON TRUE
       GROUP BY o.identity_ambiguous
-    ), target_snapshot_ranked AS (
+    ), target_snapshot_source AS MATERIALIZED (
       SELECT
+        s.id AS snapshot_id,
         a.wallet_key,
         s.trader_wallet_id,
+        a.label,
+        a.preview_eligible,
         lower(s.condition_id) AS condition_key,
+        s.condition_id AS physical_condition,
         s.token_id,
         s.cost_basis_usdc::numeric AS cost_basis_usdc,
-        a.identity_ambiguous AS wallet_identity_ambiguous,
-        row_number() OVER (
-          PARTITION BY a.wallet_key, lower(s.condition_id), s.token_id
-          ORDER BY s.captured_at DESC, s.condition_id, s.trader_wallet_id
-        ) AS identity_rank,
-        min(s.condition_id) OVER (
-          PARTITION BY a.wallet_key, lower(s.condition_id), s.token_id
-        ) <> max(s.condition_id) OVER (
-          PARTITION BY a.wallet_key, lower(s.condition_id), s.token_id
-        ) AS condition_identity_ambiguous
+        s.captured_at,
+        a.identity_ambiguous AS wallet_identity_ambiguous
       FROM poly_trader_position_snapshots s
       JOIN active_targets a ON a.trader_wallet_id = s.trader_wallet_id
       WHERE lower(s.condition_id) IN (
         SELECT DISTINCT condition_key FROM eligible_positions
       )
+    ), target_snapshot_ranked AS (
+      SELECT
+        s.*,
+        row_number() OVER (
+          PARTITION BY s.wallet_key, s.condition_key, s.token_id
+          ORDER BY s.captured_at DESC, s.physical_condition, s.trader_wallet_id
+        ) AS identity_rank,
+        min(s.physical_condition) OVER (
+          PARTITION BY s.wallet_key, s.condition_key, s.token_id
+        ) <> max(s.physical_condition) OVER (
+          PARTITION BY s.wallet_key, s.condition_key, s.token_id
+        ) AS condition_identity_ambiguous
+      FROM target_snapshot_source s
     ), target_by_condition AS (
       SELECT
         condition_key,
@@ -634,6 +874,118 @@ export async function readFullComparisonCoverageCounts(params: {
         bool_or(l.identity_ambiguous) AS ambiguous
       FROM lines l
       GROUP BY l.group_key
+    ), preview_snapshot_ranked AS (
+      SELECT
+        s.*,
+        sc.group_key,
+        row_number() OVER (
+          PARTITION BY sc.group_key, s.wallet_key, s.condition_key, s.token_id
+          ORDER BY s.captured_at DESC NULLS LAST, s.physical_condition,
+            s.trader_wallet_id
+        ) AS preview_identity_rank
+      FROM target_snapshot_source s
+      JOIN selected_conditions sc ON sc.condition_id = s.condition_key
+      WHERE s.preview_eligible
+    ), preview_latest AS (
+      SELECT * FROM preview_snapshot_ranked WHERE preview_identity_rank = 1
+    ), preview_projected AS (
+      SELECT
+        l.group_key,
+        l.wallet_key AS wallet_address,
+        l.label,
+        l.condition_key AS condition_id,
+        l.token_id,
+        COALESCE(NULLIF(m.market_title, ''), NULLIF(d.raw->>'title', ''), 'Polymarket')
+          AS market_title,
+        COALESCE(NULLIF(m.event_title, ''), NULLIF(d.raw->>'eventTitle', ''))
+          AS event_title,
+        COALESCE(NULLIF(m.market_slug, ''), NULLIF(d.raw->>'slug', ''))
+          AS market_slug,
+        COALESCE(NULLIF(m.event_slug, ''), NULLIF(d.raw->>'eventSlug', ''))
+          AS event_slug,
+        COALESCE(NULLIF(d.raw->>'outcome', ''), 'UNKNOWN') AS outcome,
+        d.shares::numeric AS shares,
+        l.cost_basis_usdc,
+        CASE WHEN cp.active THEN cp.current_value_usdc::numeric
+             ELSE d.current_value_usdc::numeric END AS current_value_usdc,
+        d.avg_price::numeric AS avg_price,
+        CASE WHEN cp.active THEN cp.last_observed_at
+             ELSE l.captured_at END AS last_observed_at,
+        CASE
+          WHEN cp.active IS TRUE THEN
+            CASE WHEN cp.current_value_usdc::numeric > 0
+                 THEN 'active' ELSE 'inactive' END
+          WHEN cp.active IS FALSE THEN 'inactive'
+          ELSE
+            CASE WHEN d.current_value_usdc::numeric > 0
+                 THEN 'active' ELSE 'inactive' END
+        END AS lifecycle,
+        row_number() OVER (
+          PARTITION BY l.group_key, l.wallet_key, l.condition_key
+          ORDER BY l.cost_basis_usdc DESC, l.token_id
+        ) AS leg_rank
+      FROM preview_latest l
+      JOIN poly_trader_position_snapshots d ON d.id = l.snapshot_id
+      LEFT JOIN LATERAL (
+        SELECT candidate.active, candidate.current_value_usdc,
+          candidate.last_observed_at
+        FROM poly_trader_current_positions candidate
+        JOIN active_targets candidate_wallet
+          ON candidate_wallet.trader_wallet_id = candidate.trader_wallet_id
+         AND candidate_wallet.wallet_key = l.wallet_key
+         AND candidate_wallet.preview_eligible
+        WHERE lower(candidate.condition_id) = l.condition_key
+          AND candidate.token_id = l.token_id
+        ORDER BY candidate.last_observed_at DESC, candidate.condition_id,
+          candidate.trader_wallet_id
+        LIMIT 1
+      ) cp ON TRUE
+      LEFT JOIN metadata m ON m.condition_key = l.condition_key
+    ), preview_participants AS (
+      SELECT
+        group_key,
+        wallet_address,
+        label,
+        condition_id,
+        SUM(current_value_usdc) AS participant_value,
+        jsonb_agg(
+          jsonb_build_object(
+            'token_id', token_id,
+            'market_title', market_title,
+            'event_title', event_title,
+            'market_slug', market_slug,
+            'event_slug', event_slug,
+            'outcome', outcome,
+            'shares', shares,
+            'cost_basis_usdc', cost_basis_usdc,
+            'current_value_usdc', current_value_usdc,
+            'avg_price', avg_price,
+            'last_observed_at', last_observed_at,
+            'lifecycle', lifecycle
+          ) ORDER BY cost_basis_usdc DESC, token_id
+        ) FILTER (WHERE leg_rank <= 2) AS legs
+      FROM preview_projected
+      WHERE leg_rank <= 2
+      GROUP BY group_key, wallet_address, label, condition_id
+    ), preview_participants_ranked AS (
+      SELECT
+        preview_participants.*,
+        row_number() OVER (
+          PARTITION BY group_key
+          ORDER BY participant_value DESC, wallet_address, condition_id
+        ) AS group_rank,
+        count(*) OVER (PARTITION BY group_key) AS group_participant_count
+      FROM preview_participants
+    ), preview_per_group_bounded AS (
+      SELECT * FROM preview_participants_ranked
+      WHERE group_rank <= ${BOUNDED_TARGETS_PER_GROUP}
+    ), preview_counted AS (
+      SELECT
+        preview_per_group_bounded.*,
+        count(*) OVER () AS total_participants,
+        bool_or(group_participant_count > ${BOUNDED_TARGETS_PER_GROUP}) OVER ()
+          AS group_truncated
+      FROM preview_per_group_bounded
     ), buckets(entity, status) AS (
       VALUES
         ('positions'::text, 'live'::text),
@@ -658,19 +1010,80 @@ export async function readFullComparisonCoverageCounts(params: {
         count(*) FILTER (WHERE ambiguous)::int AS ambiguous
       FROM market_eval
       GROUP BY status
+    ), count_output AS (
+      SELECT
+        b.entity,
+        b.status,
+        COALESCE(c.eligible, 0)::int AS eligible,
+        COALESCE(c.comparable, 0)::int AS comparable,
+        COALESCE(c.ambiguous, 0)::int AS ambiguous,
+        s.identity_ambiguous AS source_ambiguous
+      FROM buckets b
+      LEFT JOIN counted c ON c.entity = b.entity AND c.status = b.status
+      CROSS JOIN source_identity s
+    ), preview_output AS (
+      SELECT *
+      FROM preview_counted
+      ORDER BY participant_value DESC, wallet_address, condition_id
+      LIMIT ${Math.max(0, Math.trunc(params.participantLimit))}
     )
     SELECT
-      b.entity,
-      b.status,
-      COALESCE(c.eligible, 0)::int AS eligible,
-      COALESCE(c.comparable, 0)::int AS comparable,
-      COALESCE(c.ambiguous, 0)::int AS ambiguous,
-      s.identity_ambiguous AS source_ambiguous
-    FROM buckets b
-    LEFT JOIN counted c ON c.entity = b.entity AND c.status = b.status
-    CROSS JOIN source_identity s
-    ORDER BY b.entity, b.status
-  `)) as unknown as ComparisonCoverageCountRow[];
+      'count'::text AS record_kind,
+      c.entity,
+      c.status,
+      c.eligible,
+      c.comparable,
+      c.ambiguous,
+      c.source_ambiguous,
+      NULL::bigint AS total_participants,
+      NULL::boolean AS group_truncated,
+      NULL::text AS group_key,
+      NULL::text AS wallet_address,
+      NULL::text AS label,
+      NULL::text AS condition_id,
+      NULL::jsonb AS legs
+    FROM count_output c
+    UNION ALL
+    SELECT
+      'participant'::text AS record_kind,
+      NULL::text AS entity,
+      NULL::text AS status,
+      NULL::int AS eligible,
+      NULL::int AS comparable,
+      NULL::int AS ambiguous,
+      NULL::boolean AS source_ambiguous,
+      p.total_participants,
+      p.group_truncated,
+      p.group_key,
+      p.wallet_address,
+      p.label,
+      p.condition_id,
+      p.legs
+    FROM preview_output p
+    ORDER BY record_kind, entity, status, group_key, wallet_address,
+      condition_id
+  `)) as unknown as ComparisonBundleRow[];
+}
+
+function countRowsFromBundle(
+  rows: readonly ComparisonBundleRow[]
+): ComparisonCoverageCountRow[] {
+  return rows.flatMap((row) =>
+    row.record_kind === "count" &&
+    (row.entity === "markets" || row.entity === "positions") &&
+    (row.status === "live" || row.status === "closed")
+      ? [
+          {
+            entity: row.entity,
+            status: row.status,
+            eligible: row.eligible ?? null,
+            comparable: row.comparable ?? null,
+            ambiguous: row.ambiguous ?? null,
+            source_ambiguous: row.source_ambiguous ?? null,
+          },
+        ]
+      : []
+  );
 }
 
 export function unavailableComparisonCoverage(): WalletDashboardComparisonCoverage {
@@ -1235,6 +1648,17 @@ async function readBoundedTargetLegs(params: {
     LIMIT ${Math.max(0, Math.trunc(params.participantLimit))}
   `)) as unknown as BoundedTargetParticipantRow[];
 
+  return boundedTargetReadFromRows(rows);
+}
+
+function boundedTargetReadFromRows(
+  rows: readonly BoundedTargetParticipantRow[]
+): {
+  legs: RawLeg[];
+  totalParticipants: number;
+  hydratedParticipants: number;
+  groupTruncated: boolean;
+} {
   const legs: RawLeg[] = [];
   for (const row of rows) {
     if (
@@ -1283,6 +1707,26 @@ async function readBoundedTargetLegs(params: {
     hydratedParticipants: rows.length,
     groupTruncated: rows[0]?.group_truncated === true,
   };
+}
+
+function participantRowsFromBundle(
+  rows: readonly ComparisonBundleRow[]
+): BoundedTargetParticipantRow[] {
+  return rows.flatMap((row) =>
+    row.record_kind === "participant"
+      ? [
+          {
+            total_participants: row.total_participants ?? null,
+            group_truncated: row.group_truncated ?? null,
+            group_key: row.group_key ?? null,
+            wallet_address: row.wallet_address ?? null,
+            label: row.label ?? null,
+            condition_id: row.condition_id ?? null,
+            legs: row.legs ?? null,
+          },
+        ]
+      : []
+  );
 }
 
 function groupParticipants(
