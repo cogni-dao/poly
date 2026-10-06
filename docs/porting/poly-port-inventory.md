@@ -19,7 +19,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1134 |
+| Current-only files | 1135 |
 | Unresolved legacy files | 602 |
 | P0/P1 mission files resolved | 8/79 |
 | Behavioral gates passed | 3/7 |
@@ -1132,7 +1132,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `0b3a2c3e20706de2a0da40de5f03bd9f7876707b` | `app/src/shared/db/schema.ts` | `100644` | `1a929d7559726c8a0ea1a697f890f2acf24e4b81` | `app/src/shared/db/schema.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `5abf73ac763e45e652990b9ae237a3ad4af15e69` | `app/src/shared/env/AGENTS.md` | `100644` | `0db3c10e96cc2af511d28c41773f56e6c7c68c83` | `app/src/shared/env/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `1e2715436ed787ff969346c84c03bb6d82a74d2c` | `app/src/shared/env/invariants.ts` | `100644` | `9b88361183fdacf0824fd9e6df7434203163fbd2` | `app/src/shared/env/invariants.ts` |
-| P3 | unresolved | content_differs | — | `100644` | `0e0576d830869f6fe12895c611d8bc6808818df6` | `app/src/shared/env/server-env.ts` | `100644` | `1c4d9e1b9d6f5eb2a3fd3990778f76a2c992a2ae` | `app/src/shared/env/server-env.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `0e0576d830869f6fe12895c611d8bc6808818df6` | `app/src/shared/env/server-env.ts` | `100644` | `2a35613f343c06bb78f741cb3b941ee2bf47084b` | `app/src/shared/env/server-env.ts` |
 | P3 | unresolved | missing_target | — | `100644` | `9b7c5117790640de68ce1bb43309a812f67e1599` | `app/src/shared/hooks/useIsMobile.ts` | — | — | `app/src/shared/hooks/useIsMobile.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `75cfb90111c5e178be4dbf9abeee91c0d1db7615` | `app/src/shared/observability/events/AGENTS.md` | `100644` | `bd4fc71bb657b7f884a765ff5d8e7127277f56ab` | `app/src/shared/observability/events/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `35824c215ad1e94b317e3d6eceb2b8e819e9ff42` | `app/src/shared/observability/events/index.ts` | `100644` | `871e59416b39284d640c57781acfc35bed1edef5` | `app/src/shared/observability/events/index.ts` |
