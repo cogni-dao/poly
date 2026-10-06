@@ -18,7 +18,6 @@
 "use client";
 
 import type {
-  WalletDashboardComparisonCoverageLeaf,
   WalletExecutionMarketGroup,
   WalletExecutionMarketLineStatus,
 } from "@cogni/poly-node-contracts";
@@ -30,41 +29,23 @@ import { DeltaDistribution } from "./DeltaDistribution";
 export type MarketsDeltaDistributionProps = {
   groups?: readonly WalletExecutionMarketGroup[] | undefined;
   statusFilter: WalletExecutionMarketLineStatus;
-  coverage: WalletDashboardComparisonCoverageLeaf;
 };
 
 export function MarketsDeltaDistribution({
   groups,
   statusFilter,
-  coverage,
 }: MarketsDeltaDistributionProps): ReactElement | null {
-  const { absDeltaPcts, identityAmbiguous } = useMemo(() => {
-    const selected = (groups ?? []).filter((g) => g.status === statusFilter);
-    const normalizedGroupKeys = new Set<string>();
-    let hasAmbiguousIdentity = false;
-    for (const group of selected) {
-      const key = group.groupKey.toLowerCase();
-      if (normalizedGroupKeys.has(key)) hasAmbiguousIdentity = true;
-      normalizedGroupKeys.add(key);
-    }
-    return {
-      absDeltaPcts: selected
-        .filter(
-          (g): g is WalletExecutionMarketGroup & { edgeGapPct: number } =>
-            g.edgeGapPct !== null && Number.isFinite(g.edgeGapPct)
-        )
-        .map((g) => Math.abs(g.edgeGapPct * 100)),
-      identityAmbiguous: hasAmbiguousIdentity,
-    };
+  const absDeltaPcts = useMemo(() => {
+    return (groups ?? [])
+      .filter((g) => g.status === statusFilter)
+      .filter(
+        (g): g is WalletExecutionMarketGroup & { edgeGapPct: number } =>
+          g.edgeGapPct !== null
+      )
+      .map((g) => Math.abs(g.edgeGapPct * 100));
   }, [groups, statusFilter]);
 
   return (
-    <DeltaDistribution
-      absDeltaPcts={absDeltaPcts}
-      subtitle={statusFilter}
-      coverage={coverage}
-      entityLabel="markets"
-      integrityReasons={identityAmbiguous ? ["identity_ambiguous"] : []}
-    />
+    <DeltaDistribution absDeltaPcts={absDeltaPcts} subtitle={statusFilter} />
   );
 }
