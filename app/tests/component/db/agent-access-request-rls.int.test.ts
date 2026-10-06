@@ -157,7 +157,10 @@ describe("agent access request RLS", () => {
 
     expect(approved).toMatchObject({
       id: requestId,
-      scope: "performance:read",
+      // story.5006: the wire reports the canonical name. The underlying
+      // request row still stores the legacy name (its equality CHECK was not
+      // widened) and the minted grant carries both.
+      scope: "account:read",
       status: "active",
       grant_id: grantId,
     });
@@ -178,7 +181,7 @@ describe("agent access request RLS", () => {
     expect(ownRequests).toEqual([
       {
         id: requestId,
-        scope: "performance:read",
+        scope: "account:read",
         expires_at: future.toISOString(),
         requested_at: expect.any(String),
         decided_at: expect.any(String),

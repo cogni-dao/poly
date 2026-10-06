@@ -303,24 +303,45 @@ does it become ✅ Implemented. Nothing above describes unbuilt behavior in the 
 | Element | Status | Evidence |
 | ------- | ------ | -------- |
 | Dual-principal identity resolution | ✅ Implemented | `request-identity.ts:114` (frozen) |
-| Owner-or-grant authorization helper | ✅ Implemented, scope hard-wired | `agent-grants/authorization.ts:34`, `:62` |
-| `agent_capability_grants` + RLS | ✅ Implemented | `agent-capability-grants.ts:96,103,110,122` |
-| Pure operation descriptors | ✅ Implemented (40), no `method`/`path`/`requiredScope` | `packages/poly-node-contracts/src` |
-| Generic `authorize()` seam | 📋 Contract | no `authorize(`/`requireScope` in `app/src` |
-| Thin transports, zero queries | 📋 Contract | 3 research routes still carry their own block |
-| Single scope enum | 📋 Contract | duplicated 3× today |
-| Generated discovery | 📋 Contract | `app/src/app/.well-known/agent.json/route.ts` hybrid, `:147` hard-coded |
+| `agent_capability_grants` + RLS | ✅ Implemented | `agent-capability-grants.ts` |
+| Pure operation descriptors | ✅ Implemented, plus the account-read catalog | `poly.capability-plane.v1.contract.ts` |
+| Generic `authorize()` seam | 🚧 Merged, unproven in production | `agent-grants/authorization.ts` — `authorize(tx, { principalId, accountId, requiredScope })` with alias tolerance |
+| App-local account-read executor | 🚧 Merged, unproven in production | `features/capability-plane/execute-account-read.ts` |
+| Thin transports, zero queries | 🚧 Merged for the 3 research routes | each route is now a descriptor + binding; the block and the 3 db casts are gone |
+| Single scope enum | 🚧 Merged | `AGENT_CAPABILITY_SCOPES` + the grants `CHECK`; migration `0074_account_read_scope_alias` |
+| Generated discovery | 🚧 Merged | `features/capability-plane/discovery.ts`; `agent.json` spreads the projection |
+| Dashboard routes as plane clients | 📋 Contract | `task.1791070962` / `task.1791070959` |
 | poly-brain principal propagation | 📋 Contract | `ToolInvocationContext:135` has no principal |
 | `RLS_BACKSTOP` on `poly_trader_*` | ❌ Documented exception | Carve-out 1 |
+
+🚧 means merged to `main` with CI + component-lane proof, but not yet validated at an exact SHA on
+candidate and production. Per `SPECS_ARE_AS_BUILT` these only become ✅ after `task.1791070963`
+closes the `deploy_verified` loop; the gated knowledge contribution stays gated until then.
+
+### Rename, as built
+
+`task.1791070961` landed the expand half of `performance:read` -> `account:read`:
+
+- `account:read` is canonical; `performance:read` is retained as its alias. No rows were
+  backfilled and the legacy name was not dropped — that is the later contract phase.
+- `authorize()` matches either name with array **overlap** (`&&`), and migration 0074 rewrites the
+  three delegated SELECT policy bodies on `poly_copy_trade_{fills,decisions,targets}` with the same
+  overlap, in the same migration as the `CHECK` widening and after it. Splitting those two halves
+  is the one failure that presents as "no data" rather than "denied".
+- Newly approved grants are minted with **both** names, so a grant cannot exist that `authorize()`
+  allows but RLS reads zero rows for.
+- `agent_access_requests.requested_scopes` keeps its equality `CHECK` on the legacy name alone and
+  is deliberately unwidened; the request row is tracking only, never authority.
 
 Two further as-built findings worth recording, because they are easy to mistake for compliance:
 
 - `app/src/app/api/v1/poly/research/target-overlap/route.ts:39` and
   `trader-comparison/route.ts:47` have **session auth only and no grant check at all** — they are
   not delegable reads, and they are not instances of the duplicated block.
-- The three routes that *do* carry the block are **near**-duplicated, not byte-identical: the log
-  payloads differ and `logComplete` is called with different signatures. A migration cannot assume
-  a mechanical find-and-replace.
+- The three routes that *did* carry the block were **near**-duplicated, not byte-identical: the log
+  payloads differed and `logComplete` was called with different signatures, so the migration could
+  not be a mechanical find-and-replace. Their per-route counts now arrive through the executor's
+  `extra` callback, which is what let one emitter replace three.
 
 ## Verification method
 

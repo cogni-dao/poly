@@ -7,6 +7,14 @@
  *   machine principals.
  * Scope: Schema-only GET/POST/DELETE lifecycle wire shapes.
  * Invariants: scopes are canonical and non-empty; expiry is mandatory.
+ *   SCOPE_ENUM_SINGLE_SOURCE — this list is the only definition of the scope
+ *   vocabulary; `@cogni/db-schema` mirrors it in the grants CHECK constraint.
+ *   ACCOUNT_READ_ALIAS (story.5006, expand phase) — `account:read` is the
+ *   canonical name for delegated account data reads. `performance:read` is its
+ *   retained legacy alias so the grants already issued in production keep
+ *   authorizing with no human re-approval. Dropping the alias and backfilling
+ *   rows is a later contract-phase task; until then both names are valid and
+ *   `authorize()` matches either.
  * Side-effects: none
  * @public
  */
@@ -14,6 +22,8 @@
 import { z } from "zod";
 
 export const AGENT_CAPABILITY_SCOPES = [
+  "account:read",
+  // Legacy alias of `account:read`. Retained for back-compat; do not issue.
   "performance:read",
   "research:run",
   "policy:propose",

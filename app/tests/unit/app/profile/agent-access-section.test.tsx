@@ -131,7 +131,7 @@ describe("AgentAccessSection", () => {
 		expect(await screen.findByText("Review AI access")).toBeInTheDocument();
 		expect(operationOrder[0]).toBe("replaceState");
 		expect(screen.getByText("Research Copilot")).toBeInTheDocument();
-		expect(screen.getByText("Read performance")).toBeInTheDocument();
+		expect(screen.getByText("Read account data")).toBeInTheDocument();
 		expect(window.location.hash).toBe("");
 		expect(screen.queryByText(approvalToken)).not.toBeInTheDocument();
 

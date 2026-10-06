@@ -49,11 +49,11 @@
     }
   ],
   "policySha256": "56f42128ff2b65d09c9440e7ce92ca4bd1a788f806ae96704ec08572b31cc19b",
-  "targetTreeDigest": "f91a59d218e573f56251eb80fe1fe8bf0fb680a498d09dff3a959e871480e44f",
+  "targetTreeDigest": "4dcd8819fc7911c354da1d2828393dbf18f613b8e781f95d42bebed2e85df8da",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1163,
+    "targetOnlyFiles": 1174,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -3315,7 +3315,7 @@
       "sourceBlob": "888987037701e67c4772de6490a7904173e41e5d",
       "sourcePath": "app/src/adapters/server/db/migrations/meta/_journal.json",
       "targetPath": "app/src/adapters/server/db/migrations/meta/_journal.json",
-      "targetBlob": "838e637414962810ba493d027f06a6d5d1d1a0ab",
+      "targetBlob": "645b79944e245f01526e7361bc15aec301d30b83",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -5541,7 +5541,7 @@
       "sourceBlob": "240967ec2d52eeb4267901274a8677eeca6eee38",
       "sourcePath": "app/src/app/.well-known/agent.json/route.ts",
       "targetPath": "app/src/app/.well-known/agent.json/route.ts",
-      "targetBlob": "54b1305a6ffe1369889872bba953673f5f97fe3f",
+      "targetBlob": "0c4685307fbcee7a51c21c4122504ff71be240b8",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -6011,7 +6011,7 @@
       "sourceBlob": "ea7c3c52b3c5108523cae3c00364847c580b2584",
       "sourcePath": "app/src/app/_lib/AGENTS.md",
       "targetPath": "app/src/app/_lib/AGENTS.md",
-      "targetBlob": "c6e0e8ff432f6198d200387d3e0f8ad29efbc6b9",
+      "targetBlob": "c6e702c6c2a9d03c8673999e1c7f48a6c3e9534e",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -6851,7 +6851,7 @@
       "sourceBlob": "d6ca31ab3b6e99670034122959faccc516729512",
       "sourcePath": "app/src/app/api/v1/poly/research/copy-trade-pnl/route.ts",
       "targetPath": "app/src/app/api/v1/poly/research/copy-trade-pnl/route.ts",
-      "targetBlob": "a6d490dab30f16fcc665710febd622adb03076ce",
+      "targetBlob": "5abe84cb48705503f7addb7879045b9aae11f045",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -22647,7 +22647,7 @@
       "sourceBlob": "b33210d619d6272495e199c179513ced3e528887",
       "sourcePath": "packages/node-contracts/src/index.ts",
       "targetPath": "packages/poly-node-contracts/src/index.ts",
-      "targetBlob": "71282215240932f75838764a1d816ba616799e44",
+      "targetBlob": "300afb56d6184b7e8ba75042e808e8e9364286df",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -25487,6 +25487,9 @@
       "targetPath": "app/src/adapters/server/db/migrations/0073_curved_sabretooth.sql"
     },
     {
+      "targetPath": "app/src/adapters/server/db/migrations/0074_account_read_scope_alias.sql"
+    },
+    {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0060_snapshot.json"
     },
     {
@@ -25524,6 +25527,9 @@
     },
     {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0073_snapshot.json"
+    },
+    {
+      "targetPath": "app/src/adapters/server/db/migrations/meta/0074_snapshot.json"
     },
     {
       "targetPath": "app/src/adapters/server/identity/identity-binding.adapter.ts"
@@ -25716,6 +25722,9 @@
     },
     {
       "targetPath": "app/src/app/_lib/auth/operator-attestation.ts"
+    },
+    {
+      "targetPath": "app/src/app/_lib/capability-plane/account-read-route.ts"
     },
     {
       "targetPath": "app/src/app/api/internal/attribution/collect/route.ts"
@@ -25922,6 +25931,21 @@
       "targetPath": "app/src/features/agent-grants/authorization.ts"
     },
     {
+      "targetPath": "app/src/features/capability-plane/AGENTS.md"
+    },
+    {
+      "targetPath": "app/src/features/capability-plane/discovery.ts"
+    },
+    {
+      "targetPath": "app/src/features/capability-plane/execute-account-read.ts"
+    },
+    {
+      "targetPath": "app/src/features/capability-plane/handlers.ts"
+    },
+    {
+      "targetPath": "app/src/features/capability-plane/index.ts"
+    },
+    {
       "targetPath": "app/src/features/governance/components/ContributionCreditsPanel.tsx"
     },
     {
@@ -26096,6 +26120,9 @@
       "targetPath": "app/tests/contract/app/knowledge.read-principal.test.ts"
     },
     {
+      "targetPath": "app/tests/contract/app/poly.capability-plane.descriptors.test.ts"
+    },
+    {
       "targetPath": "app/tests/contract/app/poly.research-copy-trade-investigation-evidence.observability.test.ts"
     },
     {
@@ -26268,6 +26295,9 @@
     },
     {
       "targetPath": "app/tests/unit/components/markdown.spec.tsx"
+    },
+    {
+      "targetPath": "app/tests/unit/features/capability-plane/execute-account-read.test.ts"
     },
     {
       "targetPath": "app/tests/unit/features/governance/CumulativeClaimPanel.spec.tsx"
@@ -28473,6 +28503,9 @@
     },
     {
       "targetPath": "packages/poly-node-contracts/src/poly.agent-grants.v1.contract.ts"
+    },
+    {
+      "targetPath": "packages/poly-node-contracts/src/poly.capability-plane.v1.contract.ts"
     },
     {
       "targetPath": "packages/poly-node-contracts/src/poly.research-copy-trade-investigation.v1.contract.ts"

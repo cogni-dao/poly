@@ -27,7 +27,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Database } from "@/adapters/server/db/client";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
-import { resolvePerformanceRead } from "@/features/agent-grants/authorization";
+import { authorize } from "@/features/agent-grants/authorization";
 import {
   copyTradeDecisionEvidenceSelect,
   getCopyTradeInvestigationEvidence,
@@ -87,6 +87,13 @@ describe("copy-trade investigation", () => {
       { id: ownerA.billingAccountId, ownerUserId: ownerA.userId, balanceCredits: 0n },
       { id: ownerB.billingAccountId, ownerUserId: ownerB.userId, balanceCredits: 0n },
     ]);
+    // story.5006 ALIAS PROOF: every grant below is stored under the LEGACY
+    // `performance:read` name while the reads below require the canonical
+    // `account:read`. This whole suite therefore exercises the expand-phase
+    // compatibility path end-to-end — app-side `authorize()` overlap AND the
+    // widened RLS policy bodies from migration 0074. Do not "modernize" these
+    // fixtures: that would delete the regression test for the one live
+    // production grant.
     await seedDb.insert(agentCapabilityGrants).values([
       {
         billingAccountId: ownerA.billingAccountId,
@@ -299,7 +306,11 @@ describe("copy-trade investigation", () => {
 
   async function summaryFor(principalId: string, billingAccountId: string) {
     return withTenantScope(db, userActor(toUserId(principalId)), async (tx) => {
-      const access = await resolvePerformanceRead(tx, { principalId, billingAccountId });
+      const access = await authorize(tx, {
+        principalId,
+        accountId: billingAccountId,
+        requiredScope: "account:read",
+      });
       if (!access) return null;
       return getCopyTradeInvestigationSummary(
         tx as unknown as Parameters<typeof getCopyTradeInvestigationSummary>[0],
@@ -430,9 +441,10 @@ describe("copy-trade investigation", () => {
       db,
       userActor(toUserId(delegate.userId)),
       async (tx) => {
-        const access = await resolvePerformanceRead(tx, {
+        const access = await authorize(tx, {
           principalId: delegate.userId,
-          billingAccountId: ownerA.billingAccountId,
+          accountId: ownerA.billingAccountId,
+          requiredScope: "account:read",
         });
         if (!access) return null;
         return getCopyTradeInvestigationSummary(

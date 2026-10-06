@@ -52,8 +52,11 @@ function formatDate(value: string): string {
 
 function scopeLabel(scope: AgentAccessRequestOwner["scope"]): string {
 	switch (scope) {
+		// story.5006: `performance:read` is the retained legacy alias of
+		// `account:read`. Both render the same label — they are the same grant.
+		case "account:read":
 		case "performance:read":
-			return "Read performance";
+			return "Read account data";
 	}
 }
 

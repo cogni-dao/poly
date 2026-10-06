@@ -6,8 +6,14 @@
  * Purpose: Agent-self request and browser-owner approval wire contracts.
  * Scope: Schema-only create, agent-list, poll, preview, decision, and owner-list
  *   shapes.
- * Invariants: fixed performance:read scope; no owner/account/principal IDs enter
- *   decision inputs; approval tokens never appear in response DTOs.
+ * Invariants: one fixed coarse account-read scope; no owner/account/principal
+ *   IDs enter decision inputs; approval tokens never appear in response DTOs.
+ *   ACCOUNT_READ_ALIAS (story.5006, expand phase) — the wire scope is the
+ *   two-name alias set rather than a single literal: new requests report the
+ *   canonical `account:read`, while `performance:read` stays representable so
+ *   rows and clients created before the rename keep parsing. Making this a
+ *   union is also the forcing function that makes every exhaustive `switch`
+ *   over the scope fail to compile until it handles the new name.
  * Side-effects: none
  * @public
  */
@@ -24,10 +30,22 @@ export const agentAccessRequestLifecycleStatusSchema = z.enum([
 
 export const AGENT_ACCESS_REQUEST_LIST_LIMIT = 50;
 
+/**
+ * The coarse account-read scope an access request grants, as both its canonical
+ * name and its retained legacy alias. See ACCOUNT_READ_ALIAS above.
+ */
+export const agentAccessRequestScopeSchema = z.enum([
+  "account:read",
+  "performance:read",
+]);
+export type AgentAccessRequestScope = z.infer<
+  typeof agentAccessRequestScopeSchema
+>;
+
 export const agentAccessRequestOwnerSchema = z.object({
   id: z.string().uuid(),
   agent_display_name: z.string().min(1),
-  scope: z.literal("performance:read"),
+  scope: agentAccessRequestScopeSchema,
   expires_at: z.string().datetime(),
   requested_at: z.string().datetime(),
   decided_at: z.string().datetime().nullable(),
@@ -38,7 +56,7 @@ export const agentAccessRequestOwnerSchema = z.object({
 const agentAccessRequestAgentBaseSchema = z
   .object({
     id: z.string().uuid(),
-    scope: z.literal("performance:read"),
+    scope: agentAccessRequestScopeSchema,
     expires_at: z.string().datetime(),
     requested_at: z.string().datetime(),
     decided_at: z.string().datetime().nullable(),
@@ -60,7 +78,7 @@ const approvalTokenSchema = z.string().min(32).max(512);
 
 export const polyAgentAccessRequestCreateOperation = {
   id: "poly.agent-access-requests.create.v1",
-  summary: "Request owner approval for performance read access",
+  summary: "Request owner approval for account read access",
   input: z.object({ expires_at: z.string().datetime() }).strict(),
   output: z.object({
     request: agentAccessRequestAgentSchema,
