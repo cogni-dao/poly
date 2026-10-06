@@ -49,23 +49,23 @@
     }
   ],
   "policySha256": "a3794a9aa90be191acf575468d862ecb3e1f6d46313f9a0106dfa24b159d3e7e",
-  "targetTreeDigest": "4d95234f976a9e7ab6e8d0befeb94039e8087445df84a4141edc04d3dc4d7f42",
+  "targetTreeDigest": "d97a50c61b7449ef2f3e89c57fdb22fce435db70c22245533f1014ad7638bb39",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1199,
-    "unresolved": 605,
+    "targetOnlyFiles": 1210,
+    "unresolved": 609,
     "byStatus": {
-      "exact": 1123,
+      "exact": 1119,
       "retired": 1,
-      "unresolved": 605,
+      "unresolved": 609,
       "upgraded": 7
     },
     "unresolvedByPriority": {
       "P0": 21,
       "P1": 51,
-      "P2": 281,
-      "P3": 252
+      "P2": 283,
+      "P3": 254
     },
     "missionFiles": 80,
     "missionResolved": 8,
@@ -604,7 +604,7 @@
       "sourceBlob": "5ba3239ed6d31c1f1d3fe37b8768cd300a86dcf5",
       "sourcePath": "app/package.json",
       "targetPath": "app/package.json",
-      "targetBlob": "fd65afc66f6317cbd815fff85eaa5628337061e1",
+      "targetBlob": "b78485213821f948711c01e4e9a49122089d1dc3",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -1290,7 +1290,7 @@
       "sourceBlob": "d3790bca32b25b411887ea7b7316e3afe73b3b3d",
       "sourcePath": "app/src/adapters/server/ai/langgraph/inproc-agent-catalog.provider.ts",
       "targetPath": "app/src/adapters/server/ai/langgraph/inproc-agent-catalog.provider.ts",
-      "targetBlob": "f9f28bf0289472d8d326855918c3ff78e85197ef",
+      "targetBlob": "35c132fd09ddccef2a10d9580baa81234c96d339",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -1304,7 +1304,7 @@
       "sourceBlob": "17c8accfb504a3420485d1d87dde771c934b9939",
       "sourcePath": "app/src/adapters/server/ai/langgraph/inproc.provider.ts",
       "targetPath": "app/src/adapters/server/ai/langgraph/inproc.provider.ts",
-      "targetBlob": "5e1b1019947802884140c15efb8c735d5a23ff3b",
+      "targetBlob": "bc29dcbbab497a21d71667c727985a314d4d03bf",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -7934,13 +7934,13 @@
       "sourceBlob": "d2ad3a9b959292dd6477457395c7c97ec84819b2",
       "sourcePath": "app/src/bootstrap/agent-discovery.ts",
       "targetPath": "app/src/bootstrap/agent-discovery.ts",
-      "targetBlob": "d2ad3a9b959292dd6477457395c7c97ec84819b2",
+      "targetBlob": "8f6a61278907f60da317c0c85404170240b5d9da",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "content_differs",
       "resolution": null
     },
     {
@@ -7948,13 +7948,13 @@
       "sourceBlob": "e55c9b2207bc5b0e394f4c3392a7fc079cb58349",
       "sourcePath": "app/src/bootstrap/ai/AGENTS.md",
       "targetPath": "app/src/bootstrap/ai/AGENTS.md",
-      "targetBlob": "e55c9b2207bc5b0e394f4c3392a7fc079cb58349",
+      "targetBlob": "b2f233fb49ae1ddcd7dd1cf8714a70d135c371ff",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "content_differs",
       "resolution": null
     },
     {
@@ -8236,7 +8236,7 @@
       "sourceBlob": "016b3edd05b07ec19968d24b56f1dd3e9c7ced52",
       "sourcePath": "app/src/bootstrap/graph-executor.factory.ts",
       "targetPath": "app/src/bootstrap/graph-executor.factory.ts",
-      "targetBlob": "0ee281e021c6ff16f5c3b5f20d8e2ed3e550de5b",
+      "targetBlob": "446d965fa121402177e70e5c0a5f583c995db742",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -21040,13 +21040,13 @@
       "sourceBlob": "38ececffe7362bfc91bae922296f52a8e42841f7",
       "sourcePath": "graphs/src/graphs/poly-brain/prompts.ts",
       "targetPath": "graphs/src/graphs/poly-brain/prompts.ts",
-      "targetBlob": "38ececffe7362bfc91bae922296f52a8e42841f7",
+      "targetBlob": "d093f999385e76f472f63440a1ed398bc75e2426",
       "targetMode": "100644",
       "priority": "P2",
       "priorityLabel": "proof and secondary product surfaces",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "content_differs",
       "resolution": null
     },
     {
@@ -21124,13 +21124,13 @@
       "sourceBlob": "7e88059d137ac468c7c1dae012461f911c382a5f",
       "sourcePath": "graphs/src/index.ts",
       "targetPath": "graphs/src/index.ts",
-      "targetBlob": "7e88059d137ac468c7c1dae012461f911c382a5f",
+      "targetBlob": "d61550419ca03f6f8ed5f11f11b63aa1c6759ddc",
       "targetMode": "100644",
       "priority": "P2",
       "priorityLabel": "proof and secondary product surfaces",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "content_differs",
       "resolution": null
     },
     {
@@ -25961,6 +25961,12 @@
       "targetPath": "app/src/app/opengraph-image.tsx"
     },
     {
+      "targetPath": "app/src/bootstrap/ai/node-catalog.ts"
+    },
+    {
+      "targetPath": "app/src/bootstrap/ai/principal-tool-source.ts"
+    },
+    {
       "targetPath": "app/src/bootstrap/identity.ts"
     },
     {
@@ -25998,6 +26004,15 @@
     },
     {
       "targetPath": "app/src/features/agent-grants/authorization.ts"
+    },
+    {
+      "targetPath": "app/src/features/agent-tools/AGENTS.md"
+    },
+    {
+      "targetPath": "app/src/features/agent-tools/copy-trade-orders-tool.ts"
+    },
+    {
+      "targetPath": "app/src/features/agent-tools/index.ts"
     },
     {
       "targetPath": "app/src/features/capability-plane/AGENTS.md"
@@ -26375,7 +26390,13 @@
       "targetPath": "app/tests/unit/bootstrap/job-leader-elector.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/bootstrap/node-catalog.spec.ts"
+    },
+    {
       "targetPath": "app/tests/unit/bootstrap/poly-trader-wallet.deposit-wallet.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/bootstrap/principal-tool-source.spec.ts"
     },
     {
       "targetPath": "app/tests/unit/bootstrap/publishers.test.ts"
@@ -26394,6 +26415,9 @@
     },
     {
       "targetPath": "app/tests/unit/components/markdown.spec.tsx"
+    },
+    {
+      "targetPath": "app/tests/unit/features/agent-tools/copy-trade-orders-tool.test.ts"
     },
     {
       "targetPath": "app/tests/unit/features/capability-plane/execute-account-read.test.ts"
@@ -26625,6 +26649,15 @@
     },
     {
       "targetPath": "docs/spec/temporal-patterns.md"
+    },
+    {
+      "targetPath": "graphs/src/tools/index.ts"
+    },
+    {
+      "targetPath": "graphs/src/tools/poly-account-copy-trade-orders.ts"
+    },
+    {
+      "targetPath": "graphs/tsconfig.build.json"
     },
     {
       "targetPath": "infra/compose/runtime/postgres-init/AGENTS.md"
