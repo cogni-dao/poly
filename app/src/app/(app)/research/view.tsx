@@ -20,6 +20,14 @@
  *     requires lifting state out of `ResearchBenchmarkBoard`; see bug.5026.
  *   - COPY_TARGETS_QUERY_KEY shared with the dashboard copy-target controls so flips
  *     reflect across surfaces.
+ *   - SELF_IS_TRADING_WALLET: the "You" overlay on the research benchmark board
+ *     is the app-owned per-tenant TRADING wallet from
+ *     `/api/v1/poly/wallet/status` (`funder_address`, gated on `connected`) —
+ *     the address the executor trades as and the trader-observation loop
+ *     enrolls (OBSERVE_WHAT_THE_EXECUTOR_SIGNS_FROM). NEVER the signin EOA
+ *     (`session.user.walletAddress`): the signin wallet never trades, so
+ *     probing it always returns `wallet_not_observed` and the user's own P/L
+ *     could never render. Disconnected → no "You" entry at all.
  * Side-effects: IO (React Query — fetchTopWallets, fetchCopyTargets,
  *               createCopyTarget, deleteCopyTarget).
  * @public
@@ -342,6 +350,16 @@ export function ResearchView() {
       ? addressMatch.data
       : null;
 
+  // SELF_IS_TRADING_WALLET: "You" must be the connected per-tenant TRADING
+  // wallet reported by /api/v1/poly/wallet/status — never the signin EOA.
+  // When the user has no active connection there is no "You" wallet (the
+  // signin EOA is never an observed trader wallet, so falling back to it
+  // would only ever produce `wallet_not_observed`).
+  const tradingWalletAddress =
+    walletStatus?.connected === true
+      ? (walletStatus.funder_address ?? null)
+      : null;
+
   return (
     <div className="flex flex-col gap-6 p-5 md:p-6">
       {/* Header */}
@@ -352,8 +370,8 @@ export function ResearchView() {
       </div>
 
       <ResearchBenchmarkBoard
-        userWalletAddress={walletStatus?.funder_address ?? null}
-        userWalletConnected={walletStatus?.connected === true}
+        tradingWalletAddress={tradingWalletAddress}
+        tradingWalletConnected={walletStatus?.connected === true}
         targets={targetsData?.targets ?? []}
       />
 
@@ -459,12 +477,17 @@ export function ResearchView() {
 }
 
 function ResearchBenchmarkBoard({
-  userWalletAddress,
-  userWalletConnected,
+  tradingWalletAddress,
+  tradingWalletConnected,
   targets,
 }: {
-  userWalletAddress: string | null;
-  userWalletConnected: boolean;
+  /**
+   * The connected per-tenant TRADING wallet (`funder_address` from
+   * `/api/v1/poly/wallet/status`), or `null` when disconnected.
+   * SELF_IS_TRADING_WALLET: never pass the signin EOA here.
+   */
+  tradingWalletAddress: string | null;
+  tradingWalletConnected: boolean;
   targets: readonly { target_wallet: string }[];
 }) {
   const [activeResearchView, setActiveResearchView] =
@@ -476,8 +499,8 @@ function ResearchBenchmarkBoard({
   const [pageInterval, setPageInterval] =
     useState<PolyWalletOverviewInterval>("1W");
   const comparisonWallets = useMemo(
-    () => buildComparisonWallets(userWalletAddress, targets),
-    [userWalletAddress, targets]
+    () => buildComparisonWallets(tradingWalletAddress, targets),
+    [tradingWalletAddress, targets]
   );
   const headlineWallets = useMemo(
     () => comparisonWallets.slice(0, 3),
@@ -534,7 +557,7 @@ function ResearchBenchmarkBoard({
     }));
   return (
     <section className="flex flex-col gap-3">
-      {!userWalletAddress ? (
+      {!tradingWalletAddress ? (
         <div className="flex justify-end">
           <Link
             href="/credits"
@@ -561,11 +584,11 @@ function ResearchBenchmarkBoard({
           traderInterval={pageInterval}
           onTraderIntervalChange={setPageInterval}
         />
-        {!userWalletAddress ? (
+        {!tradingWalletAddress ? (
           <p className="mt-3 text-muted-foreground text-xs">
-            {userWalletConnected
-              ? "Wallet is connected, but the funder address is not available yet."
-              : "Add your wallet to include it in overlays."}
+            {tradingWalletConnected
+              ? "Trading wallet is connected, but its address is not available yet."
+              : "Connect a trading wallet to include your own P/L in overlays."}
           </p>
         ) : null}
       </div>
@@ -595,8 +618,18 @@ function isDistributionComparisonView(
   );
 }
 
-function buildComparisonWallets(
-  userWalletAddress: string | null,
+/**
+ * Builds the ordered comparison roster for the benchmark board.
+ *
+ * SELF_IS_TRADING_WALLET: `tradingWalletAddress` is the connected per-tenant
+ * TRADING wallet (`funder_address` from `/api/v1/poly/wallet/status`) — never
+ * the signin EOA, which is never an observed trader wallet. `null`
+ * (disconnected) yields no "You" entry rather than any fallback address.
+ *
+ * Exported for unit tests only.
+ */
+export function buildComparisonWallets(
+  tradingWalletAddress: string | null,
   targets: readonly { target_wallet: string }[]
 ): readonly ResearchComparisonWallet[] {
   const wallets: ResearchComparisonWallet[] = [];
@@ -608,8 +641,8 @@ function buildComparisonWallets(
     wallets.push({ ...wallet, address: lower });
   };
 
-  if (userWalletAddress) {
-    addWallet({ label: "You", address: userWalletAddress });
+  if (tradingWalletAddress) {
+    addWallet({ label: "You", address: tradingWalletAddress });
   }
   for (const wallet of PRIMARY_RESEARCH_WALLETS) {
     addWallet(wallet);
