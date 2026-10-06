@@ -53,7 +53,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1172,
+    "targetOnlyFiles": 1177,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -25418,6 +25418,18 @@
       "targetPath": ".gitignore"
     },
     {
+      "targetPath": ".playwright-cli/network-2026-10-06T03-06-21-463Z.log"
+    },
+    {
+      "targetPath": ".playwright-cli/network-2026-10-06T03-06-23-132Z.log"
+    },
+    {
+      "targetPath": ".playwright-cli/page-2026-10-06T03-06-01-374Z.yml"
+    },
+    {
+      "targetPath": ".playwright-cli/page-2026-10-06T03-06-14-919Z.yml"
+    },
+    {
       "targetPath": "AGENTS.md"
     },
     {
@@ -28725,6 +28737,9 @@
     },
     {
       "targetPath": "scripts/dev/capture-authed-state.mjs"
+    },
+    {
+      "targetPath": "scripts/dev/siwe-login.mjs"
     },
     {
       "targetPath": "scripts/poly-delta-investigation.ts"
