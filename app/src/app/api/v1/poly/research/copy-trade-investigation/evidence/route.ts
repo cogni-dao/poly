@@ -23,7 +23,11 @@ import {
   InvalidInvestigationCapturedAtError,
   InvalidInvestigationCursorError,
 } from "@/features/wallet-analysis/server/copy-trade-investigation-service";
-import { EVENT_NAMES, logEvent } from "@/shared/observability";
+import {
+  EVENT_NAMES,
+  logEvent,
+  type RequestContext,
+} from "@/shared/observability";
 
 export const dynamic = "force-dynamic";
 
@@ -48,6 +52,13 @@ export const GET = wrapRouteHandlerWithLogging(
       limit: url.searchParams.get("limit") ?? undefined,
     });
     if (!parsedQuery.success) {
+      logComplete(ctx, startedAt, {
+        status: 400,
+        outcome: "error",
+        authorizationOutcome: "not_evaluated",
+        errorCode: "invalid_query",
+        evidenceCount: 0,
+      });
       return NextResponse.json(
         { error: "invalid_query", message: parsedQuery.error.message },
         { status: 400 }
@@ -73,14 +84,7 @@ export const GET = wrapRouteHandlerWithLogging(
           routeId: ctx.routeId,
           outcome: access ? "allow" : "deny",
           requiredScope: "performance:read",
-          principalId: sessionUser.id,
-          billingAccountId: parsedQuery.data.billing_account_id,
-          ...(access
-            ? {
-                accessKind: access.accessKind,
-                ...(access.grantId ? { grantId: access.grantId } : {}),
-              }
-            : {}),
+          ...(access ? { accessKind: access.accessKind } : {}),
         });
         if (!access) return null;
         const response = await getCopyTradeInvestigationEvidence(
@@ -94,15 +98,21 @@ export const GET = wrapRouteHandlerWithLogging(
         error instanceof InvalidInvestigationCursorError ||
         error instanceof InvalidInvestigationCapturedAtError
       ) {
+        logComplete(ctx, startedAt, {
+          status: 400,
+          outcome: "error",
+          authorizationOutcome: "allowed",
+          evidenceKind: parsedQuery.data.kind,
+          errorCode: "invalid_query",
+          evidenceCount: 0,
+        });
         return NextResponse.json({ error: "invalid_query" }, { status: 400 });
       }
-      logEvent(ctx.log, EVENT_NAMES.POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE, {
-        reqId: ctx.reqId,
-        routeId: ctx.routeId,
+      logComplete(ctx, startedAt, {
         status: 500,
-        durationMs: Math.round(performance.now() - startedAt),
         outcome: "error",
         authorizationOutcome: "not_evaluated",
+        evidenceKind: parsedQuery.data.kind,
         errorCode: "service_failed",
         evidenceCount: 0,
       });
@@ -110,14 +120,12 @@ export const GET = wrapRouteHandlerWithLogging(
     }
 
     if (!result || !result.response) {
-      logEvent(ctx.log, EVENT_NAMES.POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE, {
-        reqId: ctx.reqId,
-        routeId: ctx.routeId,
+      logComplete(ctx, startedAt, {
         status: 404,
-        durationMs: Math.round(performance.now() - startedAt),
         outcome: "error",
         authorizationOutcome: result ? "allowed" : "denied",
         ...(result ? { accessKind: result.access.accessKind } : {}),
+        evidenceKind: parsedQuery.data.kind,
         errorCode: "not_found",
         evidenceCount: 0,
       });
@@ -128,17 +136,22 @@ export const GET = wrapRouteHandlerWithLogging(
       result.response
     );
     if (!response.success) {
+      logComplete(ctx, startedAt, {
+        status: 500,
+        outcome: "error",
+        authorizationOutcome: "allowed",
+        accessKind: result.access.accessKind,
+        evidenceKind: parsedQuery.data.kind,
+        errorCode: "response_validation_failed",
+        evidenceCount: 0,
+      });
       return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
-    logEvent(ctx.log, EVENT_NAMES.POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE, {
-      reqId: ctx.reqId,
-      routeId: ctx.routeId,
+    logComplete(ctx, startedAt, {
       status: 200,
-      durationMs: Math.round(performance.now() - startedAt),
       outcome: "success",
       authorizationOutcome: "allowed",
       accessKind: result.access.accessKind,
-      conditionId: response.data.condition_id,
       evidenceKind: response.data.kind,
       evidenceCount: response.data.items.length,
       truncated: response.data.truncated,
@@ -146,3 +159,32 @@ export const GET = wrapRouteHandlerWithLogging(
     return NextResponse.json(response.data);
   }
 );
+
+function logComplete(
+  ctx: RequestContext,
+  startedAt: number,
+  fields: {
+    status: number;
+    outcome: "success" | "error";
+    authorizationOutcome: "not_evaluated" | "allowed" | "denied";
+    accessKind?: PerformanceReadAccess["accessKind"] | undefined;
+    evidenceKind?: "fills" | "decisions" | undefined;
+    errorCode?: string | undefined;
+    evidenceCount: number;
+    truncated?: boolean | undefined;
+  }
+): void {
+  logEvent(ctx.log, EVENT_NAMES.POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE, {
+    reqId: ctx.reqId,
+    routeId: ctx.routeId,
+    status: fields.status,
+    durationMs: Math.round(performance.now() - startedAt),
+    outcome: fields.outcome,
+    authorizationOutcome: fields.authorizationOutcome,
+    ...(fields.accessKind ? { accessKind: fields.accessKind } : {}),
+    ...(fields.evidenceKind ? { evidenceKind: fields.evidenceKind } : {}),
+    ...(fields.errorCode ? { errorCode: fields.errorCode } : {}),
+    evidenceCount: fields.evidenceCount,
+    ...(fields.truncated !== undefined ? { truncated: fields.truncated } : {}),
+  });
+}
