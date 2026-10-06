@@ -115,13 +115,30 @@ list by name.
     never zero and never invented. This invariant exists because an agent fabricated a wallet
     balance in production when no delegatable read existed.
 
-11. **GENERATED_DISCOVERY** — 📋 Contract. `.well-known/agent.json` is projected from the
-    descriptors, not hand-maintained. Today it is a hybrid:
-    `app/src/app/.well-known/agent.json/route.ts` generates only `inputSchema` / `outputSchema`
-    via `z.toJSONSchema(...)`, while the `endpoints` map and every `actions` entry — method,
-    URL template, `auth.requiredScope` — are hand-written per operation, with
-    `requiredScope: "performance:read"` hard-coded at `:147`. Adding a contract does **not**
-    currently publish it.
+11. **GENERATED_DISCOVERY** — ✅ Implemented. `.well-known/agent.json`'s `actions` and
+    `endpoints` are projected from `POLY_ACCOUNT_READ_OPERATIONS` — method, path,
+    `auth.requiredScope`, and both JSON schemas. The only hand-maintained values are
+    the stable public key names, and those are keyed by the catalog's id union, so
+    adding a descriptor without naming it is a compile error rather than a silent
+    omission. Two sub-invariants were earned the hard way:
+
+    - **PROJECTION_FAILURE_IS_ISOLATED** — the discovery route spreads a
+      *whole-catalog* projection, and `z.toJSONSchema` throws on anything it cannot
+      represent (most commonly a `.transform()`). Unguarded, one bad descriptor
+      blanked the document for **every** capability — which is how the portfolio
+      snapshot came to be held out of the catalog instead of published. Each
+      descriptor is now projected independently, so blast radius is one capability.
+    - **SCHEMA_DEGRADES_NEVER_LIES** — an output that cannot be projected in output
+      mode falls back to input mode, which yields the pre-transform type (for an
+      address `.toLowerCase()` that is the same `string`, so accurate rather than
+      merely permissive). It is omitted only if both modes fail, and the capability
+      still publishes its method, path and scope so it stays callable. Deliberately
+      **not** `unrepresentable: "any"`, which emits `{}` — a lossy schema
+      masquerading as a complete one.
+
+    Residual: the surrounding `identity`, `registrationUrl`, `auth.keyPrefix`,
+    `cognition`, `defaults` and `usage` sections of the document remain
+    hand-written. Only the capability surface is generated.
 
 ## Constraints
 

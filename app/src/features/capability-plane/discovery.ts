@@ -16,6 +16,19 @@
  *     anonymously or forgotten.
  *   - PUBLIC_KEY_NAMES_ARE_A_CONTRACT — `readCopyTradePnl` / `copyTradePnl`
  *     already ship to registered agents and must keep their names.
+ *   - PROJECTION_FAILURE_IS_ISOLATED — one descriptor can never blank the
+ *     document for the others. `z.toJSONSchema` throws on anything it cannot
+ *     represent (a `.transform()`, most commonly), and this projection is
+ *     spread whole into `.well-known/agent.json`, so an unguarded throw took
+ *     discovery down for EVERY capability — not just the offending one. That
+ *     is how `poly.account.portfolio-snapshot.v1` came to be deliberately held
+ *     out of the catalog. Each descriptor is now projected independently.
+ *   - SCHEMA_DEGRADES_NEVER_LIES — a schema that cannot be projected in output
+ *     mode falls back to input mode, which yields the PRE-transform type (for
+ *     an address `.toLowerCase()` that is the same `string`, so it is accurate
+ *     rather than merely permissive). Only if both modes fail is the schema
+ *     omitted — the capability still publishes its method, path and scope, so
+ *     it stays callable and discoverable. We never emit a fabricated schema.
  * Side-effects: none
  * Links: task.1791070961, app/src/app/.well-known/agent.json/route.ts
  * @public
@@ -62,6 +75,13 @@ const DISCOVERY_NAMES: Record<
     action: "readCopyTradeOrders",
     endpoint: "copyTradeOrders",
   },
+  // task.1791070962 — the portfolio snapshot, the capability the parity
+  // inventory calls the flagship read. Published now that an unprojectable
+  // output degrades instead of blanking the document.
+  "poly.account.portfolio-snapshot.v1": {
+    action: "readPortfolioSnapshot",
+    endpoint: "portfolioSnapshot",
+  },
 };
 
 export type AccountReadDiscoveryAction = {
@@ -69,9 +89,32 @@ export type AccountReadDiscoveryAction = {
   endpoint: string;
   summary: string;
   auth: { type: "bearer"; requiredScope: AccountReadOperation["requiredScope"] };
-  inputSchema: unknown;
-  outputSchema: unknown;
+  /** Omitted only when neither projection mode can represent the schema. */
+  inputSchema?: unknown;
+  outputSchema?: unknown;
 };
+
+/**
+ * Project one zod schema to JSON Schema, degrading rather than throwing.
+ *
+ * Output mode is tried first because it describes what the caller actually
+ * receives. It throws on an unrepresentable node — Zod's default is
+ * `unrepresentable: "throw"` — so we fall back to input mode, which projects
+ * the pre-transform type. Deliberately NOT `unrepresentable: "any"`: that
+ * silently emits `{}` for the offending node, which is a lossy schema
+ * masquerading as a complete one.
+ */
+function projectSchema(schema: AccountReadOperation["input"]): unknown {
+  try {
+    return z.toJSONSchema(schema);
+  } catch {
+    try {
+      return z.toJSONSchema(schema, { io: "input" });
+    } catch {
+      return undefined;
+    }
+  }
+}
 
 /** `actions` entries for every account read, projected from the descriptors. */
 export function accountReadDiscoveryActions(
@@ -79,13 +122,17 @@ export function accountReadDiscoveryActions(
 ): Record<string, AccountReadDiscoveryAction> {
   const actions: Record<string, AccountReadDiscoveryAction> = {};
   for (const operation of POLY_ACCOUNT_READ_OPERATIONS) {
+    // PROJECTION_FAILURE_IS_ISOLATED: a descriptor that cannot be projected
+    // loses only its own schemas, never the whole document.
+    const inputSchema = projectSchema(operation.input);
+    const outputSchema = projectSchema(operation.output);
     actions[DISCOVERY_NAMES[operation.id].action] = {
       method: operation.method,
       endpoint: `${origin}${operation.path}`,
       summary: operation.summary,
       auth: { type: "bearer", requiredScope: operation.requiredScope },
-      inputSchema: z.toJSONSchema(operation.input),
-      outputSchema: z.toJSONSchema(operation.output),
+      ...(inputSchema === undefined ? {} : { inputSchema }),
+      ...(outputSchema === undefined ? {} : { outputSchema }),
     };
   }
   return actions;

@@ -131,6 +131,41 @@ describe("account-read descriptors", () => {
 });
 
 describe("discovery projection", () => {
+  // PROJECTION_FAILURE_IS_ISOLATED + SCHEMA_DEGRADES_NEVER_LIES.
+  // `poly.account.portfolio-snapshot.v1` transitively contains
+  // `PolyAddressSchema`, which ends in `.transform(s => s.toLowerCase())`.
+  // Output-mode projection throws on that, and because the discovery route
+  // spreads the whole-catalog projection, publishing it previously blanked
+  // `.well-known/agent.json` for EVERY capability. These two assertions are
+  // the regression guard for that blast radius.
+  it("publishes a descriptor whose output contains a transform, without throwing", () => {
+    expect(() => accountReadDiscoveryActions(ORIGIN)).not.toThrow();
+
+    const actions = accountReadDiscoveryActions(ORIGIN);
+    const portfolio = actions.readPortfolioSnapshot;
+
+    expect(portfolio).toBeDefined();
+    expect(portfolio?.endpoint).toBe(
+      `${ORIGIN}/api/v1/poly/account/portfolio-snapshot`
+    );
+    // Degraded to input mode, not omitted and not fabricated: the pre-transform
+    // type of an address `.toLowerCase()` is the same `string`.
+    expect(portfolio?.outputSchema).toBeDefined();
+  });
+
+  it("keeps every other action intact when one output is unrepresentable", () => {
+    const actions = accountReadDiscoveryActions(ORIGIN);
+
+    // The whole point: one unprojectable descriptor must not cost the others
+    // their schemas.
+    for (const operation of POLY_ACCOUNT_READ_OPERATIONS) {
+      const action = Object.values(actions).find(
+        (candidate) => candidate.endpoint === `${ORIGIN}${operation.path}`
+      );
+      expect(action?.inputSchema).toBeDefined();
+    }
+  });
+
   it("projects one action per descriptor, with both schemas derived", () => {
     const actions = accountReadDiscoveryActions(ORIGIN);
 
