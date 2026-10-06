@@ -20,7 +20,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1173 |
+| Current-only files | 1175 |
 | Unresolved legacy files | 605 |
 | P0/P1 mission files resolved | 7/79 |
 | Behavioral gates passed | 0/7 |
@@ -89,7 +89,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `0edc7d6a040fa5382d9fb75333630e1b5bd06b7f` | `app/src/app/api/v1/poly/wallet/execution/route.ts` | `100644` | `b66434a5f3980d2b22a1e6790a895dc1d0b3bf11` | `app/src/app/api/v1/poly/wallet/execution/route.ts` |
 | P0 | exact | — | — | `100644` | `8fb41e6ff0aa02d7caed1d8acb472db21c1f4525` | `app/src/app/(app)/dashboard/page.tsx` | `100644` | `8fb41e6ff0aa02d7caed1d8acb472db21c1f4525` | `app/src/app/(app)/dashboard/page.tsx` |
 | P0 | unresolved | content_differs | `visible-p0` | `100644` | `617c839f1c01f51d317eae4235ec9f0c7e169cb3` | `app/src/app/(app)/dashboard/view.tsx` | `100644` | `c94211ba1831731d6ff7b030ac5f68586fcf15a6` | `app/src/app/(app)/dashboard/view.tsx` |
-| P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `5b00a5697517aa73727a4879895724f6da5484ce` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` | `100644` | `348bd91ad327f3ff8990aa7c837670e25ded701e` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` |
+| P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `5b00a5697517aa73727a4879895724f6da5484ce` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` | `100644` | `9f346fa8d3ac17443fd83d04dcb892f4aaefea25` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` |
 | P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `0456032db2a64923b5a71400f8b0a24a0c4fec36` | `app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx` | `100644` | `619e528ce78abe25ca3e54a47107b0c1ca1aa522` | `app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx` |
 | P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `df6c6e3b9e0ebb1a2447db59c9f425e76f8d089d` | `app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx` | `100644` | `1b2a90bee69968d39df52b0712a1484c4814d89e` | `app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx` |
 | P0 | exact | — | — | `100644` | `f0187b9efe7794f7ef385daac02f240ecbee6e3a` | `app/src/app/(app)/dashboard/_components/CopyTargetControlPanel.tsx` | `100644` | `f0187b9efe7794f7ef385daac02f240ecbee6e3a` | `app/src/app/(app)/dashboard/_components/CopyTargetControlPanel.tsx` |

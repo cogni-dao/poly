@@ -21,6 +21,9 @@
  *   - MISSING_MODEL_IS_NOT_EMPTY: when the current-position read model is
  *     unavailable, the Live count and empty state render as unavailable rather
  *     than claiming there are zero open positions.
+ *   - DELTA_COVERAGE_FAILS_CLOSED: the container renders backend-owned
+ *     population/sample coverage and invokes legacy charts only for a trusted,
+ *     internally consistent sample.
  * Side-effects: IO (React Query), clipboard (user-triggered).
  * Links: [fetchExecution](../_api/fetchExecution.ts)
  * @public
@@ -28,7 +31,10 @@
 
 "use client";
 
-import type { WalletExecutionMarketGroup } from "@cogni/poly-node-contracts";
+import type {
+  WalletDashboardComparisonCoverage,
+  WalletExecutionMarketGroup,
+} from "@cogni/poly-node-contracts";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactElement,
@@ -61,6 +67,13 @@ import {
   useWalletDashboard,
   invalidateWalletDashboardSnapshot,
 } from "../_hooks/useWalletDashboard";
+import {
+  comparisonCoverageReasonText,
+  type DeltaCoverageCounts,
+  projectMarketDeltaInput,
+  projectPositionDeltaInput,
+  resolveDeltaCoverageState,
+} from "./dashboard-delta-coverage";
 
 type ExecutionView = "positions" | "markets";
 
@@ -73,6 +86,22 @@ const LIVE_POSITION_UNAVAILABLE_CODES = new Set([
 const CLOSED_POSITION_UNAVAILABLE_CODES = new Set([
   "history_unavailable",
 ]);
+
+const COMPARISON_COVERAGE_ROW_CLASS =
+  "flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground text-xs";
+const COMPARISON_COVERAGE_VALUE_CLASS =
+  "font-mono text-foreground tabular-nums";
+const COMPARISON_WARNING_CLASS =
+  "rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-amber-700 text-xs dark:text-amber-300";
+const COMPARISON_UNAVAILABLE_CLASS =
+  "rounded border border-border bg-muted/40 px-2 py-2 text-muted-foreground text-xs";
+
+function comparisonCoverageText(
+  counts: DeltaCoverageCounts,
+  entityLabel: "markets" | "positions"
+): string {
+  return `Compared ${counts.comparable} of ${counts.eligible} ${entityLabel} · ${counts.dropped} excluded`;
+}
 
 export function ExecutionActivityCard(): ReactElement {
   const queryClient = useQueryClient();
@@ -240,6 +269,7 @@ export function ExecutionActivityCard(): ReactElement {
             closedPositionCount={executionData?.closed_position_count}
             closedPositions={closedPositions}
             groups={executionData?.market_groups ?? []}
+            comparisonCoverage={executionData?.comparisonCoverage}
             warnings={executionData?.warnings ?? []}
             isLoading={isExecutionLoading}
             isError={isExecutionError}
@@ -251,6 +281,7 @@ export function ExecutionActivityCard(): ReactElement {
         ) : (
           <MarketGroupsPanel
             groups={executionData?.market_groups ?? []}
+            comparisonCoverage={executionData?.comparisonCoverage}
             warnings={executionData?.warnings ?? []}
             isLoading={isExecutionLoading}
             isError={isExecutionError}
@@ -263,11 +294,13 @@ export function ExecutionActivityCard(): ReactElement {
 
 function MarketGroupsPanel({
   groups,
+  comparisonCoverage,
   warnings,
   isLoading,
   isError,
 }: {
   groups: readonly WalletExecutionMarketGroup[];
+  comparisonCoverage?: WalletDashboardComparisonCoverage | undefined;
   warnings: readonly { code: string; message: string }[];
   isLoading: boolean;
   isError: boolean;
@@ -288,6 +321,16 @@ function MarketGroupsPanel({
   const exposureTruncated = warnings.some(
     (warning) => warning.code === "market_exposure_preview_truncated"
   );
+  const marketDeltaInput = projectMarketDeltaInput(groups, statusFilter);
+  const marketCoverageState = resolveDeltaCoverageState({
+    coverage: comparisonCoverage?.markets[statusFilter],
+    sampleCount: marketDeltaInput.sampleCount,
+    identityAmbiguous: marketDeltaInput.identityAmbiguous,
+    inputInvalid: marketDeltaInput.inputInvalid,
+  });
+  const marketCoverageReasons = comparisonCoverageReasonText(
+    marketCoverageState.reasons
+  );
 
   return (
     <div className="space-y-3 px-5 pb-4">
@@ -305,14 +348,90 @@ function MarketGroupsPanel({
         ) : (
           <>
             {exposureTruncated ? (
-              <p className="text-muted-foreground text-xs" role="status">
+              <p className="text-muted-foreground text-xs">
                 Showing a bounded market-comparison preview.
               </p>
             ) : null}
-            <MarketsDeltaDistribution
-              groups={groups}
-              statusFilter={statusFilter}
-            />
+            {!isLoading ? (
+              marketCoverageState.kind === "empty" ? (
+                <div className="space-y-1">
+                  <div className={COMPARISON_COVERAGE_ROW_CLASS}>
+                    <span>
+                      {comparisonCoverageText(
+                        marketCoverageState.counts,
+                        "markets"
+                      )}
+                    </span>
+                    <span>
+                      Chart sample{" "}
+                      <span className={COMPARISON_COVERAGE_VALUE_CLASS}>
+                        {marketCoverageState.counts.sampled} of{" "}
+                        {marketCoverageState.counts.comparable}
+                      </span>
+                    </span>
+                  </div>
+                  <p className={COMPARISON_UNAVAILABLE_CLASS}>
+                    No eligible {statusFilter} markets.
+                  </p>
+                </div>
+              ) : marketCoverageState.kind === "unavailable" ? (
+                <p
+                  className={COMPARISON_UNAVAILABLE_CLASS}
+                  role="status"
+                  aria-label="Market delta comparison status"
+                >
+                  Delta comparison unavailable. {marketCoverageState.counts
+                    ? `${comparisonCoverageText(marketCoverageState.counts, "markets")}. Chart sample ${marketCoverageState.counts.sampled} of ${marketCoverageState.counts.comparable}.`
+                    : "Comparison coverage unavailable."}
+                  {marketCoverageState.invalid
+                    ? " Reported coverage is inconsistent."
+                    : ""}
+                  {marketCoverageReasons
+                    ? ` ${marketCoverageReasons}`
+                    : ""}
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <div className={COMPARISON_COVERAGE_ROW_CLASS}>
+                    <span>
+                      {comparisonCoverageText(
+                        marketCoverageState.counts,
+                        "markets"
+                      )}
+                    </span>
+                    <span>
+                      Chart sample{" "}
+                      <span className={COMPARISON_COVERAGE_VALUE_CLASS}>
+                        {marketCoverageState.counts.sampled} of{" "}
+                        {marketCoverageState.counts.comparable}
+                      </span>
+                    </span>
+                  </div>
+                  {marketCoverageState.kind === "partial" ? (
+                    <p
+                      className={COMPARISON_WARNING_CLASS}
+                      role="status"
+                      aria-label="Market delta comparison status"
+                    >
+                      Partial comparison.
+                      {marketCoverageState.suppressChart
+                        ? " The histogram is withheld."
+                        : ""}
+                      {marketCoverageReasons
+                        ? ` ${marketCoverageReasons}`
+                        : ""}
+                    </p>
+                  ) : null}
+                  {!marketCoverageState.suppressChart &&
+                  marketCoverageState.counts.sampled > 0 ? (
+                    <MarketsDeltaDistribution
+                      groups={marketDeltaInput.groups}
+                      statusFilter={statusFilter}
+                    />
+                  ) : null}
+                </div>
+              )
+            ) : null}
             <MarketsTable
               groups={groups}
               isLoading={isLoading}
@@ -332,6 +451,7 @@ function PositionsPanel({
   closedPositionCount,
   closedPositions,
   groups,
+  comparisonCoverage,
   warnings,
   isLoading,
   isError,
@@ -345,6 +465,7 @@ function PositionsPanel({
   closedPositionCount?: number | null | undefined;
   closedPositions: readonly WalletPosition[];
   groups: readonly WalletExecutionMarketGroup[];
+  comparisonCoverage?: WalletDashboardComparisonCoverage | undefined;
   warnings: readonly { code: string; message: string }[];
   isLoading: boolean;
   isError: boolean;
@@ -367,6 +488,20 @@ function PositionsPanel({
 
   const isLive = statusFilter === "live";
   const positions = isLive ? openPositions : closedPositions;
+  const positionDeltaInput = projectPositionDeltaInput(
+    positions,
+    groups,
+    statusFilter
+  );
+  const positionCoverageState = resolveDeltaCoverageState({
+    coverage: comparisonCoverage?.positions[statusFilter],
+    sampleCount: positionDeltaInput.sampleCount,
+    identityAmbiguous: positionDeltaInput.identityAmbiguous,
+    inputInvalid: positionDeltaInput.inputInvalid,
+  });
+  const positionCoverageReasons = comparisonCoverageReasonText(
+    positionCoverageState.reasons
+  );
   const liveInventoryUnavailable = warnings.some((warning) =>
     LIVE_POSITION_UNAVAILABLE_CODES.has(warning.code)
   );
@@ -418,12 +553,84 @@ function PositionsPanel({
             {positionActionError}
           </p>
         ) : null}
-        {!selectedInventoryUnavailable ? (
-          <PositionsDeltaDistribution
-            positions={positions}
-            groups={groups}
-            statusFilter={statusFilter}
-          />
+        {!selectedInventoryUnavailable && !isLoading ? (
+          positionCoverageState.kind === "empty" ? (
+            <div className="space-y-1">
+              <div className={COMPARISON_COVERAGE_ROW_CLASS}>
+                <span>
+                  {comparisonCoverageText(
+                    positionCoverageState.counts,
+                    "positions"
+                  )}
+                </span>
+                <span>
+                  Chart sample{" "}
+                  <span className={COMPARISON_COVERAGE_VALUE_CLASS}>
+                    {positionCoverageState.counts.sampled} of{" "}
+                    {positionCoverageState.counts.comparable}
+                  </span>
+                </span>
+              </div>
+              <p className={COMPARISON_UNAVAILABLE_CLASS}>
+                No eligible {statusFilter} positions.
+              </p>
+            </div>
+          ) : positionCoverageState.kind === "unavailable" ? (
+            <p
+              className={COMPARISON_UNAVAILABLE_CLASS}
+              role="status"
+              aria-label="Position delta comparison status"
+            >
+              Delta comparison unavailable. {positionCoverageState.counts
+                ? `${comparisonCoverageText(positionCoverageState.counts, "positions")}. Chart sample ${positionCoverageState.counts.sampled} of ${positionCoverageState.counts.comparable}.`
+                : "Comparison coverage unavailable."}
+              {positionCoverageState.invalid
+                ? " Reported coverage is inconsistent."
+                : ""}
+              {positionCoverageReasons ? ` ${positionCoverageReasons}` : ""}
+            </p>
+          ) : (
+            <div className="space-y-2">
+              <div className={COMPARISON_COVERAGE_ROW_CLASS}>
+                <span>
+                  {comparisonCoverageText(
+                    positionCoverageState.counts,
+                    "positions"
+                  )}
+                </span>
+                <span>
+                  Chart sample{" "}
+                  <span className={COMPARISON_COVERAGE_VALUE_CLASS}>
+                    {positionCoverageState.counts.sampled} of{" "}
+                    {positionCoverageState.counts.comparable}
+                  </span>
+                </span>
+              </div>
+              {positionCoverageState.kind === "partial" ? (
+                <p
+                  className={COMPARISON_WARNING_CLASS}
+                  role="status"
+                  aria-label="Position delta comparison status"
+                >
+                  Partial comparison.
+                  {positionCoverageState.suppressChart
+                    ? " The histogram is withheld."
+                    : ""}
+                  {positionCoverageReasons
+                    ? ` ${positionCoverageReasons}`
+                    : ""}
+                </p>
+              ) : null}
+              {!positionCoverageState.suppressChart &&
+              positionCoverageState.counts.sampled > 0 ? (
+                <PositionsDeltaDistribution
+                  positions={positionDeltaInput.positions}
+                  groups={positionDeltaInput.groups}
+                  statusFilter={statusFilter}
+                />
+              ) : null}
+            </div>
+          )
         ) : null}
         <div className="flex flex-wrap items-center gap-2">
           <ToggleGroup

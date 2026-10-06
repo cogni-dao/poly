@@ -542,9 +542,9 @@ describe("dashboard missing read-model states", () => {
     render(<ExecutionActivityCard />);
     fireEvent.click(screen.getByRole("button", { name: "Markets" }));
 
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Showing a bounded market-comparison preview."
-    );
+    expect(
+      screen.getByText("Showing a bounded market-comparison preview.")
+    ).toBeInTheDocument();
   });
 
   it("shows the wallet partial badge for malformed order amounts", () => {
