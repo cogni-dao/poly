@@ -30,14 +30,14 @@ const OTHER_ACCOUNT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 const {
   authorize,
-  resolvePrincipalAccountId,
+  resolveSubjectAccountId,
   readSnapshot,
   logEvent,
   log,
   fakeTx,
 } = vi.hoisted(() => ({
   authorize: vi.fn(),
-  resolvePrincipalAccountId: vi.fn(),
+  resolveSubjectAccountId: vi.fn(),
   readSnapshot: vi.fn(),
   logEvent: vi.fn(),
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -58,8 +58,8 @@ vi.mock("@cogni/db-client", () => ({
 }));
 vi.mock("@/features/agent-grants/authorization", () => ({
   authorize: (...args: unknown[]) => authorize(...args),
-  resolvePrincipalAccountId: (...args: unknown[]) =>
-    resolvePrincipalAccountId(...args),
+  resolveSubjectAccountId: (...args: unknown[]) =>
+    resolveSubjectAccountId(...args),
 }));
 vi.mock(
   "@/features/wallet-analysis/server/tenant-wallet-dashboard-service",
@@ -84,7 +84,6 @@ import { executeAccountRead } from "@/features/capability-plane/execute-account-
 import {
   portfolioSnapshotAccountReadHandler,
   portfolioSnapshotExtra,
-  portfolioSnapshotOwnerAccountReadHandler,
 } from "@/features/capability-plane/portfolio-snapshot";
 import { clearTtlCache } from "@/features/wallet-analysis/server/coalesce";
 import { portfolioSnapshotFixture } from "./portfolio-snapshot.fixture";
@@ -100,9 +99,7 @@ function runOwner(principalId: string) {
     principalId,
     rawInput: { interval: "1W" },
     eventName: TERMINAL_EVENT as never,
-    handler: portfolioSnapshotOwnerAccountReadHandler({
-      adapterConfigured: true,
-    }),
+    handler: portfolioSnapshotAccountReadHandler({ adapterConfigured: true }),
     extra: (context) => portfolioSnapshotExtra(context, "sha-test"),
   });
 }
@@ -130,7 +127,10 @@ beforeEach(() => {
   clearTtlCache();
   fakeTx.execute.mockResolvedValue([{ principal_id: OWNER }]);
   readSnapshot.mockResolvedValue(portfolioSnapshotFixture());
-  resolvePrincipalAccountId.mockResolvedValue(ACCOUNT);
+  resolveSubjectAccountId.mockResolvedValue({
+    kind: "resolved",
+    accountId: ACCOUNT,
+  });
 });
 
 describe("the delegation trap is closed", () => {
@@ -211,11 +211,15 @@ describe("the delegation trap is closed", () => {
 });
 
 describe("owner transport account resolution", () => {
-  it("denies a principal that owns no account rather than creating one", async () => {
-    // `resolvePrincipalAccountId` is a pure SELECT. The old route's
-    // `resolveBillingAccountId` INSERTed on miss, which is precisely what made
-    // the delegated path silently succeed against an empty tenant.
-    resolvePrincipalAccountId.mockResolvedValue(null);
+  it("denies a principal that can reach no account rather than creating one", async () => {
+    // Two generations of bug in one assertion. The original route called
+    // `resolveBillingAccountId`, which INSERTed a billing account on miss.
+    // Its replacement, `resolvePrincipalAccountId`, answered the wrong
+    // question — "which account does this principal OWN" — and every agent
+    // principal owns one, because `/agent/register` is unauthenticated and
+    // calls `getOrCreateBillingAccountForUser`. `resolveSubjectAccountId`
+    // asks about REACHABILITY for the required scope, so "none" is a denial.
+    resolveSubjectAccountId.mockResolvedValue({ kind: "none" });
     authorize.mockResolvedValue(null);
 
     const outcome = await runOwner(OWNER);
@@ -231,9 +235,16 @@ describe("owner transport account resolution", () => {
     const outcome = await runOwner(OWNER);
 
     expect(outcome.status).toBe("ok");
-    // Both the executor's decision and the handler's read resolve the account
-    // through the ONE shared function, so they cannot select different rows.
-    expect(resolvePrincipalAccountId).toHaveBeenCalledWith(fakeTx, OWNER);
+    // The executor resolves the SUBJECT account by reachability for the
+    // required scope — not by ownership, which would hand an agent principal
+    // its own freshly created empty tenant.
+    expect(resolveSubjectAccountId).toHaveBeenCalledWith(
+      fakeTx,
+      expect.objectContaining({
+        principalId: OWNER,
+        requiredScope: "account:read",
+      })
+    );
     expect(authorize).toHaveBeenCalledWith(
       fakeTx,
       expect.objectContaining({ accountId: ACCOUNT, principalId: OWNER })
@@ -244,11 +255,11 @@ describe("owner transport account resolution", () => {
     );
   });
 
-  it("prefers an explicitly forwarded accountId over re-resolving it", async () => {
-    // Forward-compatibility with the in-flight seam fix that passes the
-    // authorized account id to the handler as a third argument. When it is
-    // supplied, the handler must use it verbatim and NOT re-derive anything.
-    const handler = portfolioSnapshotOwnerAccountReadHandler({
+  it("takes the account ONLY from the seam, never re-resolving it", async () => {
+    // The handler receives the account `authorize()` allowed and uses it
+    // verbatim. It performs no resolution of its own, so the account the
+    // snapshot describes and the account that was authorized cannot drift.
+    const handler = portfolioSnapshotAccountReadHandler({
       adapterConfigured: true,
     });
 
@@ -259,7 +270,7 @@ describe("owner transport account resolution", () => {
     );
 
     expect(result).not.toBeNull();
-    expect(resolvePrincipalAccountId).not.toHaveBeenCalled();
+    expect(resolveSubjectAccountId).not.toHaveBeenCalled();
     expect(readSnapshot).toHaveBeenCalledWith(
       fakeTx,
       expect.objectContaining({ billingAccountId: OTHER_ACCOUNT })
@@ -317,9 +328,15 @@ describe("owner transport account resolution", () => {
       })
     );
 
-    resolvePrincipalAccountId.mockResolvedValue(ACCOUNT);
+    resolveSubjectAccountId.mockResolvedValue({
+      kind: "resolved",
+      accountId: ACCOUNT,
+    });
     const first = await runOwner(OWNER);
-    resolvePrincipalAccountId.mockResolvedValue(OTHER_ACCOUNT);
+    resolveSubjectAccountId.mockResolvedValue({
+      kind: "resolved",
+      accountId: OTHER_ACCOUNT,
+    });
     const second = await runOwner(AGENT);
 
     expect(first.status === "ok" ? first.data.snapshotId : null).toBe(
@@ -329,6 +346,79 @@ describe("owner transport account resolution", () => {
       "44444444-4444-4444-8444-444444444444"
     );
     expect(readSnapshot).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("what resolveSubjectAccountId changes on the owner transport", () => {
+  // The owner transport has no account id on the wire, so the account is
+  // resolved from the principal. These three cases pin exactly how much of the
+  // bearer hole #144 closes — because "it is fixed" is too coarse to be true.
+
+  it("fails LOUDLY instead of silently self-answering when a grantee also owns an account", async () => {
+    // THE case that actually changes. A delegated agent owns a freshly created
+    // account (`/agent/register` is unauthenticated and calls
+    // `getOrCreateBillingAccountForUser`) AND holds a grant on the owner's.
+    // Ownership-based resolution picked its OWN account and returned a 200.
+    // Reachability sees two candidates and refuses to guess.
+    resolveSubjectAccountId.mockResolvedValue({
+      kind: "ambiguous",
+      accountIds: [ACCOUNT, OTHER_ACCOUNT],
+    });
+
+    const outcome = await runOwner(AGENT);
+
+    expect(outcome.status).toBe("invalid_input");
+    expect(authorize).not.toHaveBeenCalled();
+    expect(readSnapshot).not.toHaveBeenCalled();
+    // Names the count, never the ids — otherwise the 400 becomes an account
+    // enumeration oracle.
+    const message = outcome.status === "invalid_input" ? outcome.message : "";
+    expect(message).toContain("2");
+    expect(message).not.toContain(ACCOUNT);
+    expect(message).not.toContain(OTHER_ACCOUNT);
+  });
+
+  it("resolves a grantee with no account of its own to the granted account", async () => {
+    resolveSubjectAccountId.mockResolvedValue({
+      kind: "resolved",
+      accountId: ACCOUNT,
+    });
+    authorize.mockResolvedValue({
+      accessKind: "delegated",
+      grantId: "grant-1",
+    });
+
+    const outcome = await runOwner(AGENT);
+
+    expect(outcome.status).toBe("ok");
+    expect(readSnapshot).toHaveBeenCalledWith(
+      fakeTx,
+      expect.objectContaining({ billingAccountId: ACCOUNT })
+    );
+  });
+
+  it("still answers a grantless principal about the one account it owns", async () => {
+    // RESIDUAL, and deliberately so: a principal with no grants that owns
+    // exactly one account resolves to that account and gets a 200 carrying
+    // typed nulls. This is NOT a leak and NOT fabrication — it is the correct
+    // answer to "show me my portfolio" for an empty portfolio, and it is
+    // indistinguishable from a newly signed-up human. Distinguishing them
+    // would require branching on which channel the principal arrived over,
+    // which PRINCIPAL_CARRIES_PRIVILEGE forbids. Pinned so the residual is a
+    // recorded decision rather than a surprise.
+    resolveSubjectAccountId.mockResolvedValue({
+      kind: "resolved",
+      accountId: OTHER_ACCOUNT,
+    });
+    authorize.mockResolvedValue({ accessKind: "owner", grantId: null });
+
+    const outcome = await runOwner(AGENT);
+
+    expect(outcome.status).toBe("ok");
+    expect(readSnapshot).toHaveBeenCalledWith(
+      fakeTx,
+      expect.objectContaining({ billingAccountId: OTHER_ACCOUNT })
+    );
   });
 });
 

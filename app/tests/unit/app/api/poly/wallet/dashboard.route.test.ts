@@ -57,7 +57,7 @@ vi.mock("@/features/capability-plane", () => ({
   },
   executeAccountRead: (...args: unknown[]) => execute(...args),
   portfolioSnapshotExtra: (...args: unknown[]) => extra(...args),
-  portfolioSnapshotOwnerAccountReadHandler: (...args: unknown[]) =>
+  portfolioSnapshotAccountReadHandler: (...args: unknown[]) =>
     ownerHandler(...args),
 }));
 vi.mock("@/shared/env/server-env", () => ({

@@ -55,10 +55,10 @@ export const GET = wrapRouteHandlerWithLogging(
       ],
     // Resolved per request, not at module load: the deployment flag and the
     // build sha are read when the handler runs.
-    handler: (tx, input) =>
+    handler: (tx, input, accountId) =>
       portfolioSnapshotAccountReadHandler({
         adapterConfigured: isPolyTraderWalletConfigured(),
-      })(tx, input),
+      })(tx, input, accountId),
     extra: (context) =>
       portfolioSnapshotExtra(context, serverEnv().APP_BUILD_SHA ?? "unknown"),
   })
