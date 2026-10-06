@@ -326,7 +326,7 @@ does it become ✅ Implemented. Nothing above describes unbuilt behavior in the 
 | App-local account-read executor | 🚧 Merged, unproven in production | `features/capability-plane/execute-account-read.ts` |
 | Thin transports, zero queries | 🚧 Merged for the 3 research routes | each route is now a descriptor + binding; the block and the 3 db casts are gone |
 | Single scope enum | 🚧 Merged | `AGENT_CAPABILITY_SCOPES` + the grants `CHECK`; migration `0074_account_read_scope_alias` |
-| Generated discovery | 🚧 Merged | `features/capability-plane/discovery.ts`; `agent.json` spreads the projection |
+| Generated discovery | 🚧 Merged | `features/capability-plane/discovery.ts`; per-descriptor isolation + input-mode fallback, so one unprojectable output can no longer blank the document |
 | Dashboard routes as plane clients | 📋 Contract | `task.1791070962` / `task.1791070959` |
 | poly-brain principal propagation | 📋 Contract | `ToolInvocationContext:135` has no principal |
 | `RLS_BACKSTOP` on `poly_trader_*` | ❌ Documented exception | Carve-out 1 |
