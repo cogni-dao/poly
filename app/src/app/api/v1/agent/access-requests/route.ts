@@ -26,10 +26,10 @@ import {
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 
+import { isAgentBearerRequest } from "./_bearer-transport";
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-const AGENT_TOKEN_PREFIX = "cogni_ag_sk_v1_";
 
 function errorResponse(
   error: "invalid_request" | "not_found" | "conflict",
@@ -40,23 +40,13 @@ function errorResponse(
   });
 }
 
-function isBearerRequest(request: Request): boolean {
-  const authorization = request.headers.get("authorization");
-  if (!authorization?.toLowerCase().startsWith("bearer ")) return false;
-  const credential = authorization.slice(7).trim();
-  return (
-    credential.startsWith(AGENT_TOKEN_PREFIX) &&
-    credential.length > AGENT_TOKEN_PREFIX.length
-  );
-}
-
 export const GET = wrapRouteHandlerWithLogging(
   {
     routeId: "agent.access_requests.list",
     auth: { mode: "required", getSessionUser },
   },
   async (_ctx, request, sessionUser) => {
-    if (!isBearerRequest(request)) {
+    if (!isAgentBearerRequest(request)) {
       return errorResponse("not_found", 404);
     }
 
@@ -78,7 +68,7 @@ export const POST = wrapRouteHandlerWithLogging(
     auth: { mode: "required", getSessionUser },
   },
   async (ctx, request, sessionUser) => {
-    if (!isBearerRequest(request)) {
+    if (!isAgentBearerRequest(request)) {
       return errorResponse("not_found", 404);
     }
 

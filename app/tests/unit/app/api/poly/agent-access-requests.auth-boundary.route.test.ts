@@ -130,12 +130,21 @@ describe("agent access request auth boundary", () => {
           body: JSON.stringify({ expires_at: "2026-10-20T00:00:00.000Z" }),
         })
       );
+      const pollResponse = await POLL(
+        new NextRequest(
+          `http://localhost/api/v1/agent/access-requests/${REQUEST_ID}`,
+          { headers }
+        ),
+        { params: Promise.resolve({ id: REQUEST_ID }) }
+      );
 
       expect(listResponse.status).toBe(404);
       expect(createResponse.status).toBe(404);
+      expect(pollResponse.status).toBe(404);
     }
     expect(agentListFacade).not.toHaveBeenCalled();
     expect(createFacade).not.toHaveBeenCalled();
+    expect(pollFacade).not.toHaveBeenCalled();
   });
 
   it("rejects bearer transport on owner list, preview, and decision", async () => {
