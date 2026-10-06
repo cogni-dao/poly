@@ -9,6 +9,7 @@ Legacy source is pinned to `95a934e57d51b99aa9891fc8084d20c13d0ed78a`, subtree `
 - `unresolved` covers missing targets, unreviewed differences, absent resolution records, and incomplete or stale behavior evidence.
 - Source and target Git blobs **and file modes** are pinned. Drift invalidates a resolution.
 - Gate status is derived from candidate/production proof records and the digest of every covered target; it is never hand-authored.
+- `proof_refresh_pending` is an audited, exact-target unresolved state. It permits artifact generation but never counts as file/gate completion.
 - Current-only files remain recorded in JSON and do not prove a legacy file was ported.
 
 Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:check-group -- GROUP` for one lane, and `pnpm poly:port:complete -- --through P1` for the locked mission gate.
@@ -19,30 +20,36 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1135 |
-| Unresolved legacy files | 602 |
-| P0/P1 mission files resolved | 8/79 |
-| Behavioral gates passed | 3/7 |
+| Current-only files | 1156 |
+| Unresolved legacy files | 605 |
+| P0/P1 mission files resolved | 7/79 |
+| Behavioral gates passed | 0/7 |
+
+## Audited proof refreshes
+
+| Task | PR | Source path | Current target blob | Required environments | Opened |
+| --- | ---: | --- | --- | --- | --- |
+| `task.5176` | #124 | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` | `37bcd230c39f420bf29d9fe47490fc44c0e66c5a` | candidate, production | 2026-10-04T03:10:00Z |
 
 | State | Count |
 | --- | ---: |
-| exact | 1126 |
-| upgraded | 7 |
+| exact | 1124 |
+| upgraded | 6 |
 | retired | 1 |
-| unresolved | 602 |
+| unresolved | 605 |
 
 | Priority | Unresolved |
 | --- | ---: |
-| P0 | 20 |
+| P0 | 21 |
 | P1 | 51 |
 | P2 | 281 |
-| P3 | 250 |
+| P3 | 252 |
 
 ## Delivery groups
 
 | Group | Files resolved | Gates passed | Outcome |
 | --- | ---: | ---: | --- |
-| `hub-control-plane` | 8/8 | 3/3 | Hub control-plane proof |
+| `hub-control-plane` | 7/8 | 0/3 | Hub control-plane proof |
 | `saved-facts` | 0/4 | 0/1 | Saved-fact reliability |
 | `dashboard-truth` | 0/10 | 0/3 | Dashboard truth |
 | `visible-p0` | 0/11 | 0/0 | Visible P0 parity |
@@ -58,9 +65,9 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | P0 | unresolved | `dashboard.pnl_history` | `dashboard-truth` | P/L history resolves the actual trading wallet and distinguishes missing observation data from a measured zero history. |
 | P0 | unresolved | `dashboard.wallet_identity` | `saved-facts` | The observer and every dashboard read model use the same tenant trading identity: funder_address when present, otherwise the legacy signer address. |
 | P0 | unresolved | `dashboard.wallet_total` | `dashboard-truth` | Total wallet value is cash plus marked positions; unavailable positions make Total unknown or explicitly partial, never a cash-only total. |
-| P0 | passed | `hub.work_item_create` | `hub-control-plane` | Authenticated POST /api/v1/work/items returns 201 and creates a Hub work item in Doltgres. |
-| P0 | passed | `hub.work_item_mutation` | `hub-control-plane` | Authenticated claim, heartbeat, release, PATCH, and DELETE use the Dolt-backed command adapter and mutations persist across a deployment restart. |
-| P0 | passed | `hub.work_item_source_of_truth` | `hub-control-plane` | The deployed Hub reads and writes work items through Doltgres, remains persistent across a production restart, and never uses repository Markdown as runtime persistence. |
+| P0 | unresolved | `hub.work_item_create` | `hub-control-plane` | Authenticated POST /api/v1/work/items returns 201 and creates a Hub work item in Doltgres. |
+| P0 | unresolved | `hub.work_item_mutation` | `hub-control-plane` | Authenticated claim, heartbeat, release, PATCH, and DELETE use the Dolt-backed command adapter and mutations persist across a deployment restart. |
+| P0 | unresolved | `hub.work_item_source_of_truth` | `hub-control-plane` | The deployed Hub reads and writes work items through Doltgres, remains persistent across a production restart, and never uses repository Markdown as runtime persistence. |
 
 ## Complete legacy file table
 
@@ -71,7 +78,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `1270400e122b2d56cb56e83b0aa522cd9d212fd9` | `app/src/app/api/v1/work/items/[id]/route.ts` | `100644` | `6c28c2649317e2674e6dfaec02c6f1d35d7b33da` | `app/src/app/api/v1/work/items/[id]/route.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `2652ea23be26d9f8fe3de8071084a861edd13957` | `app/src/app/api/v1/work/items/route.ts` | `100644` | `18c6cc26fac5ab5271007b910f5c1cd2d6004402` | `app/src/app/api/v1/work/items/route.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `c2e4b22af7ebe47cf05ed05b27556d7eb75a6a81` | `app/src/app/_facades/work/items.server.ts` | `100644` | `b9abf464300ad7788f178f85fc8f4a23e4fecd86` | `app/src/app/_facades/work/items.server.ts` |
-| P0 | upgraded | — | `hub-control-plane` | `100644` | `740a4e68a2f6c899c1e69fd244998cdbf2a76def` | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` | `100644` | `d3076c17b720b12f68204a442d54a53012deb560` | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` |
+| P0 | unresolved | proof_refresh_pending | `hub-control-plane` | `100644` | `740a4e68a2f6c899c1e69fd244998cdbf2a76def` | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` | `100644` | `37bcd230c39f420bf29d9fe47490fc44c0e66c5a` | `packages/work-items/src/adapters/doltgres/adapter.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `bbb809a573ba86d91283316891f1976f19a46ddf` | `app/src/adapters/server/db/doltgres/work-items-cursor.ts` | `100644` | `0877830747a5ff19183c0ddf4d8f4dd4e277c816` | `app/src/adapters/server/db/doltgres/work-items-cursor.ts` |
 | P0 | retired | — | `hub-control-plane` | `100644` | `3ffb39ed6070376bd16b13358b0a58a89ff915c3` | `app/src/adapters/server/db/doltgres/client.ts` | — | — | `app/src/adapters/server/db/doltgres/client.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `07d0b8969e5edc5914865113dd8e7949443bbf48` | `app/src/bootstrap/container.ts` | `100644` | `fb101b66145a970a9c04633ae0d123b9e721d6b5` | `app/src/bootstrap/container.ts` |
@@ -965,7 +972,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `e8158d0477f3f1e6fff1a734297b7d2b3ccc72bc` | `app/src/adapters/test/index.ts` | `100644` | `8026c4d306fd144671f28f1e103e12293d712127` | `app/src/adapters/test/index.ts` |
 | P3 | unresolved | missing_target | — | `100644` | `7f9076314afbb6f0d535cbe723d665c038c721ba` | `app/src/adapters/test/trading/fake-order-ledger.ts` | — | — | `app/src/adapters/test/trading/fake-order-ledger.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `b5afa05011cce807cd4c96483e3a066619a3d10e` | `app/src/adapters/test/wallet/fake-operator-wallet.adapter.ts` | `100644` | `416937659ae8f9c8b0824593c8608ef64934a046` | `app/src/adapters/test/wallet/fake-operator-wallet.adapter.ts` |
-| P3 | unresolved | content_differs | — | `100644` | `a115d6ddb86f2eaeb9bc7f1f1e68a79dbdcf1489` | `app/src/app/(app)/AGENTS.md` | `100644` | `c7d0da0035ac97c568d0e06b20e2cbffee1411c8` | `app/src/app/(app)/AGENTS.md` |
+| P3 | unresolved | content_differs | — | `100644` | `a115d6ddb86f2eaeb9bc7f1f1e68a79dbdcf1489` | `app/src/app/(app)/AGENTS.md` | `100644` | `91a3785d9695fc64ee5ef07a3610446be1695aa3` | `app/src/app/(app)/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `a934f2514a755808986651a08dc04942fb4408db` | `app/src/app/(app)/credits/AGENTS.md` | `100644` | `ab34f869eda3c5366d42bf3109eb9c4385f6c689` | `app/src/app/(app)/credits/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `cf33eb58283110f8892a72809829d54a82020722` | `app/src/app/(app)/credits/AiCreditsPanel.tsx` | `100644` | `d699fa759470b54ff324ae39bb55334f9d09c476` | `app/src/app/(app)/credits/AiCreditsPanel.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `20cbb2b9fbe6731e839637df4c76869e625dd3d6` | `app/src/app/(app)/credits/CreditsPage.client.tsx` | `100644` | `9b6017ffb044935b1f65ed3f2b5ff5f4b74833a1` | `app/src/app/(app)/credits/CreditsPage.client.tsx` |
@@ -981,16 +988,17 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `f12f858bbf4471978a1dc82a437d8f9720bf6839` | `app/src/app/(app)/gov/system/page.tsx` | `100644` | `056513dfbc0799ecd507ff39beb30d92b82e3663` | `app/src/app/(app)/gov/system/page.tsx` |
 | P3 | unresolved | missing_target | — | `100644` | `c0b27de2e09d88013332a14ad40c93d7ed4367c6` | `app/src/app/(app)/gov/system/view.tsx` | — | — | `app/src/app/(app)/gov/system/view.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `4d5157bdf1db4b68498b6fba640f931b94685339` | `app/src/app/(app)/profile/view.tsx` | `100644` | `5d3368191b6b9b18b847db210b1f43a0b5ca846e` | `app/src/app/(app)/profile/view.tsx` |
+| P3 | unresolved | content_differs | — | `100644` | `d5a0fef2ec0d8b5f0b061723b2e3382b744049a3` | `app/src/app/(app)/work/_api/fetchWorkItems.ts` | `100644` | `554929f2d6a1dbf60f951728131a0180c5cb38ef` | `app/src/app/(app)/work/_api/fetchWorkItems.ts` |
 | P3 | unresolved | missing_target | — | `100644` | `add2aa91d85192821ad574e640aced757a872f85` | `app/src/app/(app)/work/_components/FacetedFilter.tsx` | — | — | `app/src/app/(app)/work/_components/FacetedFilter.tsx` |
-| P3 | unresolved | content_differs | — | `100644` | `fd6bb45969f6d915bb35ef3a938e8fa30970da7a` | `app/src/app/(app)/work/_components/WorkItemDetail.tsx` | `100644` | `4e5f912f419d2545bdbd156b34c92942e90ecddc` | `app/src/app/(app)/work/_components/WorkItemDetail.tsx` |
+| P3 | unresolved | content_differs | — | `100644` | `fd6bb45969f6d915bb35ef3a938e8fa30970da7a` | `app/src/app/(app)/work/_components/WorkItemDetail.tsx` | `100644` | `6b64fc95c0b3e890924024a9222642cfd18e4206` | `app/src/app/(app)/work/_components/WorkItemDetail.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `57ec7e35fdc16ccbc13040aa9514f01865663eaf` | `app/src/app/(app)/work/_components/columns.tsx` | `100644` | `dc622f0b2958687da1ec3a1967d7372f91d1b092` | `app/src/app/(app)/work/_components/columns.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `7af8bfdfb6a40befdfbfc101e62b06c542e264a2` | `app/src/app/(app)/work/_components/work-item-icons.tsx` | `100644` | `9474da0dd77ef868eeca6fe28bb45f99e52d871d` | `app/src/app/(app)/work/_components/work-item-icons.tsx` |
-| P3 | unresolved | content_differs | — | `100644` | `ce3fb817c68c85dea7f277980a2679058cb5a67b` | `app/src/app/(app)/work/view.tsx` | `100644` | `7ef13c641c90f1e5d48da3c80db2d4b931682c13` | `app/src/app/(app)/work/view.tsx` |
+| P3 | unresolved | content_differs | — | `100644` | `ce3fb817c68c85dea7f277980a2679058cb5a67b` | `app/src/app/(app)/work/view.tsx` | `100644` | `06c7d37f57fc3cb3ef85e57a1511eac43d5915b1` | `app/src/app/(app)/work/view.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `b0135918145ae0afde1b5fe64f29ff31962ba0cc` | `app/src/app/(infra)/readyz/route.ts` | `100644` | `5518ce471d067cf376ace1ac325c5e28ad129915` | `app/src/app/(infra)/readyz/route.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `d30e2380bdc5b5dd494559935bd2f564621cccc5` | `app/src/app/(public)/AGENTS.md` | `100644` | `eba28fd45915b645618ec96f16f530410e08eac0` | `app/src/app/(public)/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `a66dd96a51c34b46b3f63f74acf28a59aedd2be1` | `app/src/app/(public)/AuthRedirect.tsx` | `100644` | `06d78fdb1c68dbd5f1c742d7d8bd07fdca265bac` | `app/src/app/(public)/AuthRedirect.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `1a7753eb6fa81d7f2b650acc918782362e77b09b` | `app/src/app/(public)/layout.tsx` | `100644` | `0a6ee8f95e1cd00aa8c14d134093131916f44b65` | `app/src/app/(public)/layout.tsx` |
-| P3 | unresolved | content_differs | — | `100644` | `240967ec2d52eeb4267901274a8677eeca6eee38` | `app/src/app/.well-known/agent.json/route.ts` | `100644` | `ef57667ccb941259a021edaae23eb695f24dfb0a` | `app/src/app/.well-known/agent.json/route.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `240967ec2d52eeb4267901274a8677eeca6eee38` | `app/src/app/.well-known/agent.json/route.ts` | `100644` | `54b1305a6ffe1369889872bba953673f5f97fe3f` | `app/src/app/.well-known/agent.json/route.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `b14e257ad6f9d14c6526db1bfed2eef37bde1eef` | `app/src/app/AGENTS.md` | `100644` | `e5583c13c12c3a616d2ea60969f6d7336d9616dd` | `app/src/app/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `8165f7c57d4045873efbc9539d67c03ddaec7296` | `app/src/app/_facades/AGENTS.md` | `100644` | `19bab13f14683e996afdb1e18a10f7fe0d8fbe30` | `app/src/app/_facades/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `c7982e3456b1410604028699a3c6390bfe067c9c` | `app/src/app/_facades/ai/completion.server.ts` | `100644` | `3ab33610c895519d5aabeba9a939c60529649379` | `app/src/app/_facades/ai/completion.server.ts` |
@@ -1033,10 +1041,11 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `1f82a9e5294f806c15ed13941b07685443c85b03` | `app/src/bootstrap/jobs/trader-observation.job.ts` | `100644` | `abe877d53fdbbe3a8650a29938250f1ba4295860` | `app/src/bootstrap/jobs/trader-observation.job.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `830960cbcf0436552613bedce6ab2238588af6e8` | `app/src/bootstrap/poly-trader-wallet.ts` | `100644` | `ae0d1deeba05fa2e7ed1809ab06389eaf518a138` | `app/src/bootstrap/poly-trader-wallet.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `f6b5638256ba59ac40f88145da6132d511b07d3c` | `app/src/bootstrap/redeem-pipeline.ts` | `100644` | `734957a77c4edb0e4d1821458a04bfc51819c5ac` | `app/src/bootstrap/redeem-pipeline.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `dfd2b260afd42950e6a0c7fef00ff242764b5ea1` | `app/src/components/AGENTS.md` | `100644` | `d31c43e20020f81a843e96c517afbe70f71cfc06` | `app/src/components/AGENTS.md` |
 | P3 | unresolved | missing_target | — | `100644` | `8957dd26ec4b7167e872a6584ef33e6d62f6716a` | `app/src/components/Content.tsx` | — | — | `app/src/components/Content.tsx` |
 | P3 | unresolved | missing_target | — | `100644` | `7f0410bea3a10339025c009a632af3b1a95cae8c` | `app/src/components/Footer.tsx` | — | — | `app/src/components/Footer.tsx` |
 | P3 | unresolved | missing_target | — | `100644` | `09d98ab3d5a3f88b2e0b81fb7a4839d18c27cfd9` | `app/src/components/Header.tsx` | — | — | `app/src/components/Header.tsx` |
-| P3 | unresolved | content_differs | — | `100644` | `46216625fd9809b75c7a4a3051a09a538133613c` | `app/src/components/index.ts` | `100644` | `afd9dc6b9ebd9d193decc073848c2443b4046fd3` | `app/src/components/index.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `46216625fd9809b75c7a4a3051a09a538133613c` | `app/src/components/index.ts` | `100644` | `5a7c9ecd394c61ce84c7248b614614a3aff8c42e` | `app/src/components/index.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `6b1b8d2421994fb36c5e002f29d4714275168adb` | `app/src/components/kit/animation/Reveal.tsx` | `100644` | `0bb333e176fcae1b2e16b9269ee7993033db5f49` | `app/src/components/kit/animation/Reveal.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `655743ff85bae7f84e1b76015c0b86ec66dcd24d` | `app/src/components/kit/auth/SignInDialog.tsx` | `100644` | `89334306ecbf66262b12137054f2da98f10855f1` | `app/src/components/kit/auth/SignInDialog.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `24fb7b72dc454bcdb1b22687ce60a6fda064c209` | `app/src/components/kit/auth/WalletConnectButton.tsx` | `100644` | `e93e6e56328f0af8a10d2f8088bc237301fa9e0a` | `app/src/components/kit/auth/WalletConnectButton.tsx` |
@@ -1378,7 +1387,6 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | exact | — | — | `100644` | `2431d7be0946f2859cdb6b4c50384ba2c9bfa16a` | `app/src/app/(app)/schedules/_api/updateSchedule.ts` | `100644` | `2431d7be0946f2859cdb6b4c50384ba2c9bfa16a` | `app/src/app/(app)/schedules/_api/updateSchedule.ts` |
 | P3 | exact | — | — | `100644` | `05884956d12fac5e490f74421344d7691ab347fd` | `app/src/app/(app)/schedules/page.tsx` | `100644` | `05884956d12fac5e490f74421344d7691ab347fd` | `app/src/app/(app)/schedules/page.tsx` |
 | P3 | exact | — | — | `100644` | `0acf3a95ba64f56f583be0ce5f711e7f41c11f79` | `app/src/app/(app)/schedules/view.tsx` | `100644` | `0acf3a95ba64f56f583be0ce5f711e7f41c11f79` | `app/src/app/(app)/schedules/view.tsx` |
-| P3 | exact | — | — | `100644` | `d5a0fef2ec0d8b5f0b061723b2e3382b744049a3` | `app/src/app/(app)/work/_api/fetchWorkItems.ts` | `100644` | `d5a0fef2ec0d8b5f0b061723b2e3382b744049a3` | `app/src/app/(app)/work/_api/fetchWorkItems.ts` |
 | P3 | exact | — | — | `100644` | `93fdc1900e516476ce8477ca012cf48c95c97e90` | `app/src/app/(app)/work/loading.tsx` | `100644` | `93fdc1900e516476ce8477ca012cf48c95c97e90` | `app/src/app/(app)/work/loading.tsx` |
 | P3 | exact | — | — | `100644` | `029ee3cf013ea85afaae2beb1e593a5f8733a8d6` | `app/src/app/(app)/work/page.tsx` | `100644` | `029ee3cf013ea85afaae2beb1e593a5f8733a8d6` | `app/src/app/(app)/work/page.tsx` |
 | P3 | exact | — | — | `100644` | `ed238e751ae927ad1495486b2b1e866263fb154f` | `app/src/app/(infra)/livez/route.ts` | `100644` | `ed238e751ae927ad1495486b2b1e866263fb154f` | `app/src/app/(infra)/livez/route.ts` |
@@ -1512,7 +1520,6 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | exact | — | — | `100644` | `924fb80777f54cfe36557017ab4d4056ca17d3f3` | `app/src/bootstrap/otel.ts` | `100644` | `924fb80777f54cfe36557017ab4d4056ca17d3f3` | `app/src/bootstrap/otel.ts` |
 | P3 | exact | — | — | `100644` | `590b64ffe099cb0718228d49b3ad98e6631a6574` | `app/src/bootstrap/publishers.ts` | `100644` | `590b64ffe099cb0718228d49b3ad98e6631a6574` | `app/src/bootstrap/publishers.ts` |
 | P3 | exact | — | — | `100644` | `3ebe37e041b95783a1cad96e3f3c3fcfdc1b6cb7` | `app/src/bootstrap/review-adapter.factory.ts` | `100644` | `3ebe37e041b95783a1cad96e3f3c3fcfdc1b6cb7` | `app/src/bootstrap/review-adapter.factory.ts` |
-| P3 | exact | — | — | `100644` | `dfd2b260afd42950e6a0c7fef00ff242764b5ea1` | `app/src/components/AGENTS.md` | `100644` | `dfd2b260afd42950e6a0c7fef00ff242764b5ea1` | `app/src/components/AGENTS.md` |
 | P3 | exact | — | — | `100644` | `e7ef6957f1ffec0af9660a56db0bcd0be977097f` | `app/src/components/AgentStream.tsx` | `100644` | `e7ef6957f1ffec0af9660a56db0bcd0be977097f` | `app/src/components/AgentStream.tsx` |
 | P3 | exact | — | — | `100644` | `bc47365e12183b1099058b52fff3da489515302d` | `app/src/components/BrainFeed.tsx` | `100644` | `bc47365e12183b1099058b52fff3da489515302d` | `app/src/components/BrainFeed.tsx` |
 | P3 | exact | — | — | `100644` | `65bb21e2a0c9d953d69e325ad74b6d46addd1c7a` | `app/src/components/Hero.tsx` | `100644` | `65bb21e2a0c9d953d69e325ad74b6d46addd1c7a` | `app/src/components/Hero.tsx` |

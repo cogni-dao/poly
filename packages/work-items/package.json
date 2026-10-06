@@ -14,6 +14,11 @@
       "types": "./dist/adapters/markdown/index.d.ts",
       "import": "./dist/adapters/markdown/index.js",
       "default": "./dist/adapters/markdown/index.js"
+    },
+    "./adapters/doltgres": {
+      "types": "./dist/adapters/doltgres/index.d.ts",
+      "import": "./dist/adapters/doltgres/index.js",
+      "default": "./dist/adapters/doltgres/index.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -23,6 +28,7 @@
   "scripts": {
     "build": "tsup",
     "postbuild": "node -e \"const fs=require('fs'); if(!fs.existsSync('dist/index.js')){console.error('ERROR: dist/index.js missing'); process.exit(1)}\"",
+    "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -30,8 +36,10 @@
     "yaml": "^2.8.3"
   },
   "devDependencies": {
+    "postgres": "^3.4.5",
     "tsup": "^8.5.1",
     "typescript": "^5",
+    "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^3.1.4"
   }
 }

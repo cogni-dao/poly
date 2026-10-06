@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
-// SPDX-FileCopyrightText: 2025 Cogni-DAO
+// SPDX-FileCopyrightText: 2026 Cogni-DAO
 
 /**
  * Module: `@app/api/v1/work/items/[id]/heartbeat/route`
- * Purpose: HTTP endpoint for refreshing a work-item claim heartbeat.
- * Scope: Auth-protected POST endpoint. Does not contain business logic.
- * Invariants: VALIDATE_IO, PORT_VIA_FACADE
- * Side-effects: IO (HTTP response, Doltgres write via port)
+ * Purpose: Authenticated work-item lease heartbeat endpoint.
+ * Scope: HTTP validation and facade delegation only.
+ * Invariants: VALIDATE_IO, CLAIM_AUTH_BINDS_PRINCIPAL_AND_RUN.
+ * Side-effects: IO (HTTP response, Doltgres mutation through facade)
  * @public
  */
 
-import { WorkItemDtoSchema } from "@cogni/node-contracts";
+import { workItemsHeartbeatOperation } from "@cogni/node-contracts";
 import { NextResponse } from "next/server";
-import { z } from "zod";
+
 import {
   heartbeatWorkItem,
   WorkItemLeaseConflictError,
@@ -24,11 +24,6 @@ import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-
-const HeartbeatRequestSchema = z.object({
-  runId: z.string().min(1),
-  command: z.string().min(1).optional(),
-});
 
 export const POST = wrapRouteHandlerWithLogging<{
   params: Promise<{ id: string }>;
@@ -48,17 +43,36 @@ export const POST = wrapRouteHandlerWithLogging<{
     try {
       body = await request.json();
     } catch {
-      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+      return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
     }
 
-    const parsed = HeartbeatRequestSchema.safeParse(body);
+    if (
+      typeof body === "object" &&
+      body !== null &&
+      "id" in body &&
+      body.id !== undefined &&
+      body.id !== id
+    ) {
+      return NextResponse.json(
+        { error: "body id must match path id" },
+        { status: 400 }
+      );
+    }
+
+    const parsed = workItemsHeartbeatOperation.input.safeParse({
+      ...(typeof body === "object" && body !== null ? body : {}),
+      id,
+    });
     if (!parsed.success) {
-      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+      return NextResponse.json(
+        { error: "invalid input", issues: parsed.error.issues },
+        { status: 400 }
+      );
     }
 
     try {
       const result = await heartbeatWorkItem({
-        id,
+        id: parsed.data.id,
         runId: parsed.data.runId,
         ...(parsed.data.command !== undefined && {
           command: parsed.data.command,
@@ -69,7 +83,9 @@ export const POST = wrapRouteHandlerWithLogging<{
         { workItemId: id, runId: parsed.data.runId },
         "work.items.heartbeat_success"
       );
-      return NextResponse.json(WorkItemDtoSchema.parse(result));
+      return NextResponse.json(
+        workItemsHeartbeatOperation.output.parse(result)
+      );
     } catch (error) {
       if (error instanceof WorkItemNotFoundError) {
         return NextResponse.json({ error: error.message }, { status: 404 });

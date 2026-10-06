@@ -234,7 +234,10 @@ test("valid upgrades and retirements become stale on any pinned drift", () => {
     outcome: "upgraded",
     source: { blob: entry.sourceBlob, mode: entry.sourceMode },
     target: { path: entry.targetPath, blob: target.blob, mode: target.mode },
-    proofs: [{ expectedTargetDigest: upgradeDigest }],
+    proofs: [
+      { environment: "candidate", expectedTargetDigest: upgradeDigest },
+      { environment: "production", expectedTargetDigest: upgradeDigest },
+    ],
   };
   assert.equal(classifyEntry(entry, target, upgrade, "lane").status, "upgraded");
   assert.equal(
@@ -255,7 +258,10 @@ test("valid upgrades and retirements become stale on any pinned drift", () => {
     outcome: "retired",
     source: { blob: entry.sourceBlob, mode: entry.sourceMode },
     target: null,
-    proofs: [{ expectedTargetDigest: retirementDigest }],
+    proofs: [
+      { environment: "candidate", expectedTargetDigest: retirementDigest },
+      { environment: "production", expectedTargetDigest: retirementDigest },
+    ],
   };
   assert.equal(
     classifyEntry(entry, { blob: null, mode: null }, retirement, "lane").status,
@@ -346,8 +352,75 @@ test("policy rejects duplicate, orphaned, and conflicting resolution ownership",
   );
 });
 
+test("proof refresh marker is exact, audited, and preserves historical evidence", () => {
+  const marker = policy.proofRefreshPending[0];
+  assert.equal(marker.taskId, "task.5176");
+  assert.equal(marker.prNumber, 124);
+  assert.doesNotThrow(() => validatePolicy(policy));
+
+  for (const mutate of [
+    (candidate) => {
+      candidate.proofRefreshPending[0].target.blob = "0".repeat(40);
+    },
+    (candidate) => {
+      candidate.proofRefreshPending[0].historicalProofsDigest = "0".repeat(64);
+    },
+    (candidate) => {
+      candidate.proofRefreshPending[0].gateTargets[0].targetDigest = "0".repeat(64);
+    },
+  ]) {
+    const candidate = structuredClone(policy);
+    mutate(candidate);
+    assert.throws(() => validatePolicy(candidate));
+  }
+});
+
+test("current candidate evidence can coexist with preserved history while production stays pending", () => {
+  const candidate = structuredClone(policy);
+  const marker = candidate.proofRefreshPending[0];
+  const resolution = candidate.resolutions.find(
+    ({ sourcePath }) => sourcePath === marker.sourcePath
+  );
+  resolution.proofs.push({
+    ...resolution.proofs[0],
+    buildSha: "1".repeat(40),
+    expectedTargetDigest: marker.target.digest,
+  });
+  for (const gateTarget of marker.gateTargets) {
+    const gate = candidate.behavioralGates.find(({ id }) => id === gateTarget.id);
+    gate.proofs.push({
+      ...gate.proofs[0],
+      buildSha: "1".repeat(40),
+      expectedTargetDigest: gateTarget.targetDigest,
+    });
+  }
+  assert.doesNotThrow(() => validatePolicy(candidate));
+  const rebuilt = buildInventoryFromSource(candidate, sourceEntries, {
+    root: repoRoot,
+    checkContract: false,
+  });
+  const entry = rebuilt.entries.find(
+    ({ sourcePath }) => sourcePath === marker.sourcePath
+  );
+  assert.equal(entry.status, "unresolved");
+  assert.equal(entry.unresolvedReason, "proof_refresh_pending");
+  for (const gateTarget of marker.gateTargets) {
+    const gate = rebuilt.behavioralGates.find(({ id }) => id === gateTarget.id);
+    assert.equal(gate.status, "unresolved");
+    assert.equal(gate.unresolvedReason, "proof_refresh_pending");
+  }
+});
+
 test("group and completion checks use files plus derived gates", () => {
-  assert.deepEqual(groupProblems(inventory, "hub-control-plane"), []);
+  const hubProblems = groupProblems(inventory, "hub-control-plane");
+  assert.ok(
+    hubProblems.includes(
+      "app/src/adapters/server/db/doltgres/work-items-adapter.ts: proof_refresh_pending"
+    )
+  );
+  assert.ok(
+    hubProblems.includes("hub.work_item_create: proof_refresh_pending")
+  );
   const problems = completionProblems(inventory, "P1");
   assert.ok(problems.length > 0);
   assert.ok(problems.some((problem) => problem.startsWith("dashboard.open_positions:")));
@@ -395,13 +468,16 @@ test("reversed source input produces identical canonical inventory and full repo
   assert.equal(markdown(reversed, policy), report);
 });
 
-test("regression freezes contract, groups, gate definitions, and terminal progress", () => {
+test("regression freezes contract, groups, gate definitions, and P0/P1 terminal progress", () => {
   const current = structuredClone(inventory);
   current.contract.sha256 = "0".repeat(64);
   current.deliveryGroups[0].resolutionProofMode = "file-only";
   current.deliveryGroups[0].behaviorExpectation = "weaker";
   current.behavioralGates[0].requirement = "weaker";
-  const terminal = current.entries.find(({ status }) => status !== "unresolved");
+  const terminal = current.entries.find(
+    ({ priority, status }) =>
+      (priority === "P0" || priority === "P1") && status !== "unresolved"
+  );
   terminal.status = "unresolved";
   const problems = regressionProblems(inventory, current);
   assert.ok(problems.includes("immutable contract path or hash changed"));
@@ -421,4 +497,44 @@ test("regression freezes contract, groups, gate definitions, and terminal progre
     )
   );
   assert.ok(problems.includes(`terminal resolution regressed: ${terminal.sourcePath}`));
+});
+
+test("regression leaves non-mission P2/P3 forward differences visibly queued", () => {
+  const current = structuredClone(inventory);
+  const queued = current.entries.find(
+    ({ priority, status }) =>
+      (priority === "P2" || priority === "P3") && status !== "unresolved"
+  );
+  assert.ok(queued);
+  queued.status = "unresolved";
+  queued.unresolvedReason = "content_differs";
+
+  assert.deepEqual(regressionProblems(inventory, current), []);
+});
+
+test("regression allows only an exact validated proof-refresh transition", () => {
+  const base = structuredClone(inventory);
+  base.proofRefreshPending = [];
+  const pendingEntry = base.entries.find(
+    ({ unresolvedReason }) => unresolvedReason === "proof_refresh_pending"
+  );
+  pendingEntry.status = "upgraded";
+  pendingEntry.unresolvedReason = null;
+  for (const gate of base.behavioralGates) {
+    if (gate.unresolvedReason === "proof_refresh_pending") {
+      gate.status = "passed";
+      gate.unresolvedReason = null;
+    }
+  }
+  assert.deepEqual(regressionProblems(base, inventory), []);
+
+  const unmarked = structuredClone(inventory);
+  unmarked.proofRefreshPending = [];
+  const problems = regressionProblems(base, unmarked);
+  assert.ok(
+    problems.includes(
+      `terminal resolution regressed: ${pendingEntry.sourcePath}`
+    )
+  );
+  assert.ok(problems.includes("behavioral gate regressed: hub.work_item_create"));
 });

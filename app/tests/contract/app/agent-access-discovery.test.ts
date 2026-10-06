@@ -74,4 +74,63 @@ describe("agent access discovery", () => {
       expect(action).toHaveProperty("outputSchema");
     }
   });
+
+  it("publishes the complete canonical work-item lifecycle", async () => {
+    const response = await GET(
+      new Request("http://0.0.0.0:3000/.well-known/agent.json", {
+        headers: {
+          "x-forwarded-host": "poly.example.test",
+          "x-forwarded-proto": "https",
+        },
+      })
+    );
+    const body = (await response.json()) as {
+      endpoints: Record<string, string>;
+      actions: Record<string, Record<string, unknown>>;
+    };
+
+    expect(body.endpoints).toMatchObject({
+      workItems: "https://poly.example.test/api/v1/work/items",
+      workItemClaims:
+        "https://poly.example.test/api/v1/work/items/{id}/claims",
+      workItemHeartbeat:
+        "https://poly.example.test/api/v1/work/items/{id}/heartbeat",
+      workItemCoordination:
+        "https://poly.example.test/api/v1/work/items/{id}/coordination",
+    });
+
+    const expected = {
+      listWorkItems: ["GET", "https://poly.example.test/api/v1/work/items"],
+      createWorkItem: ["POST", "https://poly.example.test/api/v1/work/items"],
+      getWorkItem: ["GET", "https://poly.example.test/api/v1/work/items/{id}"],
+      updateWorkItem: ["PATCH", "https://poly.example.test/api/v1/work/items/{id}"],
+      deleteWorkItem: ["DELETE", "https://poly.example.test/api/v1/work/items/{id}"],
+      claimWorkItem: [
+        "POST",
+        "https://poly.example.test/api/v1/work/items/{id}/claims",
+      ],
+      heartbeatWorkItem: [
+        "POST",
+        "https://poly.example.test/api/v1/work/items/{id}/heartbeat",
+      ],
+      releaseWorkItem: [
+        "DELETE",
+        "https://poly.example.test/api/v1/work/items/{id}/claims?runId={runId}",
+      ],
+      getWorkItemCoordination: [
+        "GET",
+        "https://poly.example.test/api/v1/work/items/{id}/coordination",
+      ],
+    } as const;
+
+    for (const [name, [method, endpoint]] of Object.entries(expected)) {
+      expect(body.actions[name]).toMatchObject({
+        method,
+        endpoint,
+        auth: { type: "bearer" },
+      });
+      expect(body.actions[name]).toHaveProperty("inputSchema");
+      expect(body.actions[name]).toHaveProperty("outputSchema");
+    }
+  });
 });

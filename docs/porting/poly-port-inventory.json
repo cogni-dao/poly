@@ -12,30 +12,66 @@
     "path": "docs/porting/poly-parity-contract.md",
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
-  "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "4dd765d2625bbfaf9b2d9014d2db4ce6045ad349aff1f197100328c059ebf62d",
+  "proofRefreshPending": [
+    {
+      "taskId": "task.5176",
+      "prNumber": 124,
+      "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
+      "target": {
+        "path": "packages/work-items/src/adapters/doltgres/adapter.ts",
+        "blob": "37bcd230c39f420bf29d9fe47490fc44c0e66c5a",
+        "mode": "100644",
+        "digest": "4d764688bf3cb509e14aa20a7786503ea8fabd63462521ec775dcfc9378ce9c1"
+      },
+      "gateTargets": [
+        {
+          "id": "hub.work_item_create",
+          "targetDigest": "ca84bd4c0d8927fdc8593174cfdae47472d1d7d54020552a12bcf6b49a8a1a3b",
+          "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
+        },
+        {
+          "id": "hub.work_item_mutation",
+          "targetDigest": "ca84bd4c0d8927fdc8593174cfdae47472d1d7d54020552a12bcf6b49a8a1a3b",
+          "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
+        },
+        {
+          "id": "hub.work_item_source_of_truth",
+          "targetDigest": "ca84bd4c0d8927fdc8593174cfdae47472d1d7d54020552a12bcf6b49a8a1a3b",
+          "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
+        }
+      ],
+      "historicalProofsDigest": "1c89771e6c555d2d1898bd672b03c331a04b1831e4ba1238e4943475e5466fe0",
+      "openedAt": "2026-10-04T03:10:00Z",
+      "requiredProofEnvironments": [
+        "candidate",
+        "production"
+      ]
+    }
+  ],
+  "policySha256": "3a617b3691441cd75da8898c454d62317d673a3285df2490d76207d71b77e9b3",
+  "targetTreeDigest": "4a8894c0da6b01d892e5b105c89151ff45a95bdeefb8a4ad5ca730dac30e3768",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1135,
-    "unresolved": 602,
+    "targetOnlyFiles": 1156,
+    "unresolved": 605,
     "byStatus": {
-      "exact": 1126,
+      "exact": 1124,
       "retired": 1,
-      "unresolved": 602,
-      "upgraded": 7
+      "unresolved": 605,
+      "upgraded": 6
     },
     "unresolvedByPriority": {
-      "P0": 20,
+      "P0": 21,
       "P1": 51,
       "P2": 281,
-      "P3": 250
+      "P3": 252
     },
     "missionFiles": 79,
-    "missionResolved": 8,
+    "missionResolved": 7,
     "deliveryGroups": 7,
     "behavioralGates": 7,
-    "unresolvedBehavioralGates": 4
+    "unresolvedBehavioralGates": 7
   },
   "deliveryGroups": [
     {
@@ -58,9 +94,9 @@
         "app/src/ports/work-items-doltgres.port.ts"
       ],
       "files": 8,
-      "resolved": 8,
+      "resolved": 7,
       "gates": 3,
-      "gatesPassed": 3
+      "gatesPassed": 0
     },
     {
       "id": "saved-facts",
@@ -368,9 +404,9 @@
           ]
         }
       ],
-      "currentTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
-      "status": "passed",
-      "unresolvedReason": null
+      "currentTargetDigest": "ca84bd4c0d8927fdc8593174cfdae47472d1d7d54020552a12bcf6b49a8a1a3b",
+      "status": "unresolved",
+      "unresolvedReason": "proof_refresh_pending"
     },
     {
       "id": "hub.work_item_mutation",
@@ -427,9 +463,9 @@
           ]
         }
       ],
-      "currentTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
-      "status": "passed",
-      "unresolvedReason": null
+      "currentTargetDigest": "ca84bd4c0d8927fdc8593174cfdae47472d1d7d54020552a12bcf6b49a8a1a3b",
+      "status": "unresolved",
+      "unresolvedReason": "proof_refresh_pending"
     },
     {
       "id": "hub.work_item_source_of_truth",
@@ -486,9 +522,9 @@
           ]
         }
       ],
-      "currentTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
-      "status": "passed",
-      "unresolvedReason": null
+      "currentTargetDigest": "ca84bd4c0d8927fdc8593174cfdae47472d1d7d54020552a12bcf6b49a8a1a3b",
+      "status": "unresolved",
+      "unresolvedReason": "proof_refresh_pending"
     }
   ],
   "entries": [
@@ -1638,16 +1674,16 @@
       "sourceMode": "100644",
       "sourceBlob": "740a4e68a2f6c899c1e69fd244998cdbf2a76def",
       "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
-      "targetPath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
-      "targetBlob": "d3076c17b720b12f68204a442d54a53012deb560",
+      "targetPath": "packages/work-items/src/adapters/doltgres/adapter.ts",
+      "targetBlob": "37bcd230c39f420bf29d9fe47490fc44c0e66c5a",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "deliveryGroup": "hub-control-plane",
-      "status": "upgraded",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "proof_refresh_pending",
       "resolution": {
-        "rationale": "The node-local adapter adds guarded Dolt branch operations, lease commands, timeouts, and recovery required by the current Hub contract.",
+        "rationale": "Poly consumes the byte-identical shared Doltgres adapter; node-specific allocator and logger choices are constructor options in the bootstrap container.",
         "behaviorExpectation": "CRUD and coordination operations commit safely and remain observable across retries and restarts.",
         "behaviorGateIds": [
           "hub.work_item_create",
@@ -4049,7 +4085,7 @@
       "sourceBlob": "a115d6ddb86f2eaeb9bc7f1f1e68a79dbdcf1489",
       "sourcePath": "app/src/app/(app)/AGENTS.md",
       "targetPath": "app/src/app/(app)/AGENTS.md",
-      "targetBlob": "c7d0da0035ac97c568d0e06b20e2cbffee1411c8",
+      "targetBlob": "91a3785d9695fc64ee5ef07a3610446be1695aa3",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -5169,13 +5205,13 @@
       "sourceBlob": "d5a0fef2ec0d8b5f0b061723b2e3382b744049a3",
       "sourcePath": "app/src/app/(app)/work/_api/fetchWorkItems.ts",
       "targetPath": "app/src/app/(app)/work/_api/fetchWorkItems.ts",
-      "targetBlob": "d5a0fef2ec0d8b5f0b061723b2e3382b744049a3",
+      "targetBlob": "554929f2d6a1dbf60f951728131a0180c5cb38ef",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "content_differs",
       "resolution": null
     },
     {
@@ -5197,7 +5233,7 @@
       "sourceBlob": "fd6bb45969f6d915bb35ef3a938e8fa30970da7a",
       "sourcePath": "app/src/app/(app)/work/_components/WorkItemDetail.tsx",
       "targetPath": "app/src/app/(app)/work/_components/WorkItemDetail.tsx",
-      "targetBlob": "4e5f912f419d2545bdbd156b34c92942e90ecddc",
+      "targetBlob": "6b64fc95c0b3e890924024a9222642cfd18e4206",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -5267,7 +5303,7 @@
       "sourceBlob": "ce3fb817c68c85dea7f277980a2679058cb5a67b",
       "sourcePath": "app/src/app/(app)/work/view.tsx",
       "targetPath": "app/src/app/(app)/work/view.tsx",
-      "targetBlob": "7ef13c641c90f1e5d48da3c80db2d4b931682c13",
+      "targetBlob": "06c7d37f57fc3cb3ef85e57a1511eac43d5915b1",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -5505,7 +5541,7 @@
       "sourceBlob": "240967ec2d52eeb4267901274a8677eeca6eee38",
       "sourcePath": "app/src/app/.well-known/agent.json/route.ts",
       "targetPath": "app/src/app/.well-known/agent.json/route.ts",
-      "targetBlob": "ef57667ccb941259a021edaae23eb695f24dfb0a",
+      "targetBlob": "54b1305a6ffe1369889872bba953673f5f97fe3f",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -8435,13 +8471,13 @@
       "sourceBlob": "dfd2b260afd42950e6a0c7fef00ff242764b5ea1",
       "sourcePath": "app/src/components/AGENTS.md",
       "targetPath": "app/src/components/AGENTS.md",
-      "targetBlob": "dfd2b260afd42950e6a0c7fef00ff242764b5ea1",
+      "targetBlob": "d31c43e20020f81a843e96c517afbe70f71cfc06",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "content_differs",
       "resolution": null
     },
     {
@@ -8575,7 +8611,7 @@
       "sourceBlob": "46216625fd9809b75c7a4a3051a09a538133613c",
       "sourcePath": "app/src/components/index.ts",
       "targetPath": "app/src/components/index.ts",
-      "targetBlob": "afd9dc6b9ebd9d193decc073848c2443b4046fd3",
+      "targetBlob": "5a7c9ecd394c61ce84c7248b614614a3aff8c42e",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -25397,6 +25433,9 @@
       "targetPath": "app/src/adapters/server/db/doltgres-migrations/0001_work_item_ownership_leases.sql"
     },
     {
+      "targetPath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts"
+    },
+    {
       "targetPath": "app/src/adapters/server/db/drizzle.service-read-client.ts"
     },
     {
@@ -25640,6 +25679,12 @@
       "targetPath": "app/src/app/(app)/profile/_components/AgentAccessSection.tsx"
     },
     {
+      "targetPath": "app/src/app/(app)/work/_lib/workItemNavigation.ts"
+    },
+    {
+      "targetPath": "app/src/app/(app)/work/items/[id]/page.tsx"
+    },
+    {
       "targetPath": "app/src/app/(infra)/openapi.json/route.test.ts"
     },
     {
@@ -25704,6 +25749,9 @@
     },
     {
       "targetPath": "app/src/app/api/v1/attribution/settlement-lifecycle/route.ts"
+    },
+    {
+      "targetPath": "app/src/app/api/v1/citations/[id]/_lib/workItemPermalink.ts"
     },
     {
       "targetPath": "app/src/app/api/v1/citations/[id]/route.ts"
@@ -26093,9 +26141,6 @@
       "targetPath": "app/tests/unit/adapters/server/wallet/privy-poly-trader-wallet.trading-addresses.test.ts"
     },
     {
-      "targetPath": "app/tests/unit/adapters/work-items-adapter.test.ts"
-    },
-    {
       "targetPath": "app/tests/unit/app/_facades/agent-access-requests.server.test.ts"
     },
     {
@@ -26163,6 +26208,21 @@
     },
     {
       "targetPath": "app/tests/unit/app/profile/agent-access-section.test.tsx"
+    },
+    {
+      "targetPath": "app/tests/unit/app/work/fetch-work-item.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/work/work-item-citation-permalink.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/work/work-item-detail.test.tsx"
+    },
+    {
+      "targetPath": "app/tests/unit/app/work/work-item-navigation.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/app/work/work-item-page.test.tsx"
     },
     {
       "targetPath": "app/tests/unit/auth/attested-signin.test.ts"
@@ -27896,6 +27956,9 @@
       "targetPath": "packages/node-contracts/src/vcs.flight.v1.contract.ts"
     },
     {
+      "targetPath": "packages/node-contracts/src/work.items.coordination.v1.contract.ts"
+    },
+    {
       "targetPath": "packages/node-contracts/src/work.items.create.v1.contract.ts"
     },
     {
@@ -28493,6 +28556,15 @@
       "targetPath": "packages/work-items/package.json"
     },
     {
+      "targetPath": "packages/work-items/src/adapters/doltgres/cursor.ts"
+    },
+    {
+      "targetPath": "packages/work-items/src/adapters/doltgres/index.ts"
+    },
+    {
+      "targetPath": "packages/work-items/src/adapters/doltgres/ports.ts"
+    },
+    {
       "targetPath": "packages/work-items/src/adapters/markdown/adapter.ts"
     },
     {
@@ -28515,6 +28587,33 @@
     },
     {
       "targetPath": "packages/work-items/src/types.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-idfloor.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-keyset.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-ownership.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-patch.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-queue.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-reconciliation.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-adapter-timeout-recovery.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/doltgres-cursor.test.ts"
+    },
+    {
+      "targetPath": "packages/work-items/tests/adapters/fake-doltgres-sql.ts"
     },
     {
       "targetPath": "packages/work-items/tests/adapters/markdown.test.ts"

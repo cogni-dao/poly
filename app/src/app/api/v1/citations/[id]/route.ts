@@ -20,6 +20,7 @@ import { getWorkItem } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import { workItemPermalink } from "./_lib/workItemPermalink";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -57,7 +58,7 @@ async function resolveEndpoint(id: string): Promise<CitationEndpoint> {
       id,
       kind: "work",
       title: item?.title ?? null,
-      href: `/work?q=${encodeURIComponent(id)}`,
+      href: workItemPermalink(id),
     };
   }
 

@@ -194,4 +194,150 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		await expect(adapter.delete(id, principalId)).resolves.toBe(true);
 		await expect(adapter.get(id)).resolves.toBeNull();
 	}, 60_000);
+
+	it("preserves an unreachable operation branch and serves after explicit cleanup", async () => {
+		const branch = "work-item-op/component-unreachable";
+		const maintenance = postgres(dbUrl, { max: 1, fetch_types: false });
+		try {
+			await maintenance.unsafe(
+				`SELECT dolt_checkout('-b', '${branch}', 'main')`,
+			);
+			await maintenance.unsafe(
+				"INSERT INTO work_items (id, type, title, status, node, created_by_principal_id) VALUES ('task.9599', 'task', 'Unreachable evidence', 'needs_implement', 'poly', 'component-agent')",
+			);
+			await maintenance.unsafe(
+				"SELECT dolt_commit('-Am', 'component unreachable evidence')",
+			);
+			await maintenance.unsafe("SELECT dolt_checkout('main')");
+
+			const adapter = new DoltgresPolyWorkItemAdapter(sql, stageLogger, {
+				lockWaitMs: 250,
+				lockRetryMs: 25,
+			});
+			await expect(
+				adapter.get(toWorkItemId("task.9599")),
+			).rejects.toBeInstanceOf(WorkItemsBusyError);
+			await expect(
+				maintenance.unsafe(
+					`SELECT name FROM dolt.branches WHERE name = '${branch}'`,
+				),
+			).resolves.toHaveLength(1);
+
+			await maintenance.unsafe(`SELECT dolt_branch('-D', '${branch}')`);
+			await expect(
+				adapter.get(toWorkItemId("task.9599")),
+			).resolves.toBeNull();
+		} finally {
+			await maintenance
+				.unsafe("SELECT dolt_checkout('main')")
+				.catch(() => undefined);
+			await maintenance
+				.unsafe(`SELECT dolt_branch('-D', '${branch}')`)
+				.catch(() => undefined);
+			await maintenance.end({ timeout: 0 });
+		}
+	}, 60_000);
+
+	it("commits only work_items while preserving and deterministically cleaning dirty knowledge", async () => {
+		const adapter = new DoltgresPolyWorkItemAdapter(sql, stageLogger, {
+			lockWaitMs: 250,
+			lockRetryMs: 25,
+			queryTimeoutMs: 5_000,
+		});
+		const id = toWorkItemId("task.9502");
+		const knowledgeId = "component-dirty-knowledge";
+		const knowledgeBranch = "knowledge-component-dirty";
+		const principalId = "doltgres-scoped-staging-agent";
+		const knowledgeSql = postgres(dbUrl, { max: 1, fetch_types: false });
+		let knowledgeSession:
+			| Awaited<ReturnType<typeof knowledgeSql.reserve>>
+			| undefined;
+		let workItemCreated = false;
+		let before = "";
+		let beforeBranches: ReadonlyArray<Record<string, unknown>> = [];
+		let beforeStatus: ReadonlyArray<Record<string, unknown>> = [];
+
+		try {
+			const beforeRows = await sql.unsafe(
+				"SELECT dolt_hashof('main') AS hash",
+			);
+			before = String(beforeRows[0]?.hash ?? "");
+			expect(before).not.toBe("");
+			beforeBranches = await sql.unsafe(
+				"SELECT name, hash FROM dolt.branches ORDER BY name",
+			);
+			beforeStatus = await sql.unsafe(
+				"SELECT table_name, staged FROM dolt.status ORDER BY table_name",
+			);
+			// Pin checkout, dirty write, assertions, and cleanup to one Dolt session.
+			// A max:1 pool limits concurrency but does not itself reserve a session.
+			await knowledgeSql.unsafe("SELECT 1 AS knowledge_ready");
+			knowledgeSession = await knowledgeSql.reserve();
+			await knowledgeSession.unsafe(
+				`SELECT dolt_checkout('-b', '${knowledgeBranch}', 'main')`,
+			);
+			await knowledgeSession.unsafe(
+				`INSERT INTO knowledge (id, domain, title, content, source_type) VALUES ('${knowledgeId}', 'poly', 'Dirty fixture', 'Must remain outside work-item commit', 'agent')`,
+			);
+
+			await adapter.create(
+				{ id, type: "task", title: "Scoped staging acceptance" },
+				principalId,
+			);
+			workItemCreated = true;
+
+			const afterRows = await sql.unsafe(
+				"SELECT dolt_hashof('main') AS hash",
+			);
+			const after = String(afterRows[0]?.hash ?? "");
+			expect(after).not.toBe(before);
+			await expect(
+				sql.unsafe(
+					`SELECT * FROM dolt_diff('${before}', '${after}', 'knowledge')`,
+				),
+			).resolves.toHaveLength(0);
+			await expect(
+				knowledgeSession.unsafe(
+					`SELECT table_name FROM dolt.status WHERE table_name = 'public.knowledge'`,
+				),
+			).resolves.toHaveLength(1);
+			await expect(
+				knowledgeSession.unsafe(
+					`SELECT id FROM knowledge WHERE id = '${knowledgeId}'`,
+				),
+			).resolves.toHaveLength(1);
+		} finally {
+			if (workItemCreated) {
+				await adapter.delete(id, principalId).catch(() => undefined);
+			}
+			if (knowledgeSession) {
+				await knowledgeSession
+					.unsafe("SELECT dolt_reset('--hard', 'HEAD')")
+					.catch(() => undefined);
+				await knowledgeSession
+					.unsafe("SELECT dolt_checkout('main')")
+					.catch(() => undefined);
+				await knowledgeSession
+					.unsafe(`SELECT dolt_branch('-D', '${knowledgeBranch}')`)
+					.catch(() => undefined);
+				knowledgeSession.release();
+			}
+			await knowledgeSql.end({ timeout: 0 });
+			await sql.unsafe("SELECT dolt_checkout('main')").catch(() => undefined);
+			if (before) {
+				await sql.unsafe(`SELECT dolt_reset('--hard', '${before}')`);
+			}
+			await expect(sql.unsafe("SELECT dolt_hashof('main') AS hash")).resolves.toEqual(
+				[{ hash: before }],
+			);
+			await expect(
+				sql.unsafe("SELECT name, hash FROM dolt.branches ORDER BY name"),
+			).resolves.toEqual(beforeBranches);
+			await expect(
+				sql.unsafe(
+					"SELECT table_name, staged FROM dolt.status ORDER BY table_name",
+				),
+			).resolves.toEqual(beforeStatus);
+		}
+	}, 60_000);
 });

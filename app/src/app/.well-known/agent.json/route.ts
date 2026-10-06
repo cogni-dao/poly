@@ -19,8 +19,15 @@
  */
 
 import {
+	workItemsClaimOperation,
+	workItemsCoordinationOperation,
 	workItemsCreateOperation,
+	workItemsDeleteOperation,
+	workItemsGetOperation,
+	workItemsHeartbeatOperation,
+	workItemsListOperation,
 	workItemsPatchOperation,
+	workItemsReleaseOperation,
 } from "@cogni/node-contracts";
 import {
 	polyAgentAccessRequestAgentListOperation,
@@ -92,6 +99,9 @@ export async function GET(request: Request) {
 			// index + domain pointers). A SessionStart hook fetches + injects it.
 			cognition: `${origin}/api/v1/cognition`,
 			workItems: `${origin}/api/v1/work/items`,
+			workItemClaims: `${origin}/api/v1/work/items/{id}/claims`,
+			workItemHeartbeat: `${origin}/api/v1/work/items/{id}/heartbeat`,
+			workItemCoordination: `${origin}/api/v1/work/items/{id}/coordination`,
 			agentAccessRequests: `${origin}/api/v1/agent/access-requests`,
 			copyTradePnl: `${origin}/api/v1/poly/research/copy-trade-pnl`,
 		},
@@ -141,6 +151,13 @@ export async function GET(request: Request) {
 					polyResearchCopyTradePnlOperation.output,
 				),
 			},
+			listWorkItems: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/work/items`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(workItemsListOperation.input),
+				outputSchema: z.toJSONSchema(workItemsListOperation.output),
+			},
 			createWorkItem: {
 				method: "POST",
 				endpoint: `${origin}/api/v1/work/items`,
@@ -148,12 +165,54 @@ export async function GET(request: Request) {
 				inputSchema: z.toJSONSchema(workItemsCreateOperation.input),
 				outputSchema: z.toJSONSchema(workItemsCreateOperation.output),
 			},
+			getWorkItem: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/work/items/{id}`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(workItemsGetOperation.input),
+				outputSchema: z.toJSONSchema(workItemsGetOperation.output),
+			},
 			updateWorkItem: {
 				method: "PATCH",
 				endpoint: `${origin}/api/v1/work/items/{id}`,
 				auth: { type: "bearer" },
 				inputSchema: z.toJSONSchema(workItemsPatchOperation.input),
 				outputSchema: z.toJSONSchema(workItemsPatchOperation.output),
+			},
+			deleteWorkItem: {
+				method: "DELETE",
+				endpoint: `${origin}/api/v1/work/items/{id}`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(workItemsDeleteOperation.input),
+				outputSchema: z.toJSONSchema(workItemsDeleteOperation.output),
+			},
+			claimWorkItem: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/work/items/{id}/claims`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(workItemsClaimOperation.input),
+				outputSchema: z.toJSONSchema(workItemsClaimOperation.output),
+			},
+			heartbeatWorkItem: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/work/items/{id}/heartbeat`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(workItemsHeartbeatOperation.input),
+				outputSchema: z.toJSONSchema(workItemsHeartbeatOperation.output),
+			},
+			releaseWorkItem: {
+				method: "DELETE",
+				endpoint: `${origin}/api/v1/work/items/{id}/claims?runId={runId}`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(workItemsReleaseOperation.input),
+				outputSchema: z.toJSONSchema(workItemsReleaseOperation.output),
+			},
+			getWorkItemCoordination: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/work/items/{id}/coordination`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(workItemsCoordinationOperation.input),
+				outputSchema: z.toJSONSchema(workItemsCoordinationOperation.output),
 			},
 		},
 		cognition: {
