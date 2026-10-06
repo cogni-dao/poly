@@ -20,8 +20,8 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1208 |
-| Unresolved legacy files | 608 |
+| Current-only files | 1210 |
+| Unresolved legacy files | 609 |
 | P0/P1 mission files resolved | 8/80 |
 | Behavioral gates passed | 0/7 |
 
@@ -33,16 +33,16 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 
 | State | Count |
 | --- | ---: |
-| exact | 1120 |
+| exact | 1119 |
 | upgraded | 7 |
 | retired | 1 |
-| unresolved | 608 |
+| unresolved | 609 |
 
 | Priority | Unresolved |
 | --- | ---: |
 | P0 | 21 |
 | P1 | 51 |
-| P2 | 282 |
+| P2 | 283 |
 | P3 | 254 |
 
 ## Delivery groups
@@ -514,6 +514,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P2 | unresolved | content_differs | — | `100644` | `7bdf47ed11d71cb678e277a8016ccd1cbee37442` | `app/tests/unit/shared/config/repoSpec.server.test.ts` | `100644` | `63579204b877f869019d8a7ef6ba2dff3dc97dd6` | `app/tests/unit/shared/config/repoSpec.server.test.ts` |
 | P2 | unresolved | missing_target | — | `100644` | `2af284ed16afcd3ebc03a4bf238b2a3ac54c727b` | `app/tests/unit/shared/env.invariants.evm-cache.spec.ts` | — | — | `app/tests/unit/shared/env.invariants.evm-cache.spec.ts` |
 | P2 | unresolved | content_differs | — | `100644` | `38ececffe7362bfc91bae922296f52a8e42841f7` | `graphs/src/graphs/poly-brain/prompts.ts` | `100644` | `d093f999385e76f472f63440a1ed398bc75e2426` | `graphs/src/graphs/poly-brain/prompts.ts` |
+| P2 | unresolved | content_differs | — | `100644` | `7e88059d137ac468c7c1dae012461f911c382a5f` | `graphs/src/index.ts` | `100644` | `d61550419ca03f6f8ed5f11f11b63aa1c6759ddc` | `graphs/src/index.ts` |
 | P2 | unresolved | missing_target | — | `100644` | `8b31cfde7e8514935bf4c6c81ed433f7423f239f` | `research/delta-minimizing/HANDOFF.md` | — | — | `research/delta-minimizing/HANDOFF.md` |
 | P2 | unresolved | missing_target | — | `100644` | `9d9d4270b58047ba460637314176b64500276ce0` | `research/delta-minimizing/atp-lajovic-altmaie-2026-05-14-2026-05-14T17-19-09/bundle.json` | — | — | `research/delta-minimizing/atp-lajovic-altmaie-2026-05-14-2026-05-14T17-19-09/bundle.json` |
 | P2 | unresolved | missing_target | — | `100644` | `f1bb9efd8d2a58fc13828759735dab7ce65e2371` | `research/delta-minimizing/atp-lajovic-altmaie-2026-05-14-2026-05-14T17-19-09/report.html` | — | — | `research/delta-minimizing/atp-lajovic-altmaie-2026-05-14-2026-05-14T17-19-09/report.html` |
@@ -865,7 +866,6 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P2 | exact | — | — | `100644` | `e4aae8abb845e553cf6c1b01319dce039ca9cb57` | `graphs/src/graphs/poly-research/output-schema.ts` | `100644` | `e4aae8abb845e553cf6c1b01319dce039ca9cb57` | `graphs/src/graphs/poly-research/output-schema.ts` |
 | P2 | exact | — | — | `100644` | `5cc44ff812488c1498c13be985218592acaba983` | `graphs/src/graphs/poly-research/prompts.ts` | `100644` | `5cc44ff812488c1498c13be985218592acaba983` | `graphs/src/graphs/poly-research/prompts.ts` |
 | P2 | exact | — | — | `100644` | `9e150936d8304be351f3f6361d1f86a2711e51cc` | `graphs/src/graphs/poly-research/tools.ts` | `100644` | `9e150936d8304be351f3f6361d1f86a2711e51cc` | `graphs/src/graphs/poly-research/tools.ts` |
-| P2 | exact | — | — | `100644` | `7e88059d137ac468c7c1dae012461f911c382a5f` | `graphs/src/index.ts` | `100644` | `7e88059d137ac468c7c1dae012461f911c382a5f` | `graphs/src/index.ts` |
 | P2 | exact | — | — | `100644` | `c7e03e14ed73e6ccb536b54c88cba2f6b5d07eff` | `graphs/tests/poly-research.test.ts` | `100644` | `c7e03e14ed73e6ccb536b54c88cba2f6b5d07eff` | `graphs/tests/poly-research.test.ts` |
 | P2 | exact | — | — | `100644` | `3e557bba13f0d7df942c04d70d0204be89c081f9` | `graphs/tsconfig.json` | `100644` | `3e557bba13f0d7df942c04d70d0204be89c081f9` | `graphs/tsconfig.json` |
 | P2 | exact | — | — | `100644` | `f496231c1f74aaa8a7c718fa992fd14227c11c9b` | `graphs/tsup.config.ts` | `100644` | `f496231c1f74aaa8a7c718fa992fd14227c11c9b` | `graphs/tsup.config.ts` |
@@ -1028,7 +1028,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `e851aec5c7bd30722ebf5275107eab16eac3ab00` | `app/src/auth.ts` | `100644` | `11a71c050324b844ec4158192066216e0b13c4e6` | `app/src/auth.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `d0157126af32bf5431a0fe1689390aced1b7970d` | `app/src/bootstrap/AGENTS.md` | `100644` | `21c093f0f60ccdf2196b393e4f33a30d012b2c39` | `app/src/bootstrap/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `d2ad3a9b959292dd6477457395c7c97ec84819b2` | `app/src/bootstrap/agent-discovery.ts` | `100644` | `8f6a61278907f60da317c0c85404170240b5d9da` | `app/src/bootstrap/agent-discovery.ts` |
-| P3 | unresolved | content_differs | — | `100644` | `e55c9b2207bc5b0e394f4c3392a7fc079cb58349` | `app/src/bootstrap/ai/AGENTS.md` | `100644` | `fbc5c914e1d5e56f410be58c640c80a4033591d1` | `app/src/bootstrap/ai/AGENTS.md` |
+| P3 | unresolved | content_differs | — | `100644` | `e55c9b2207bc5b0e394f4c3392a7fc079cb58349` | `app/src/bootstrap/ai/AGENTS.md` | `100644` | `b2f233fb49ae1ddcd7dd1cf8714a70d135c371ff` | `app/src/bootstrap/ai/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `e76a66605770a9688aadf3d8e135ab364e9ff9d6` | `app/src/bootstrap/ai/tool-bindings.ts` | `100644` | `c8e5d1df40c6797e759767849358f51088ccd5a4` | `app/src/bootstrap/ai/tool-bindings.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `a51007fbd117a4dc27de0aa8cd915b64c7aa5342` | `app/src/bootstrap/capabilities/AGENTS.md` | `100644` | `f7387dcd922fc177da152f7cfc221e2113fe9281` | `app/src/bootstrap/capabilities/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `da010b8c0ffc726ac52c103c904b707d434f9bd5` | `app/src/bootstrap/capabilities/vcs.ts` | `100644` | `24f5c239d536cded449704de1267af01b7b67e6c` | `app/src/bootstrap/capabilities/vcs.ts` |

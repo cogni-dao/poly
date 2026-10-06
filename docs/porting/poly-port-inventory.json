@@ -49,22 +49,22 @@
     }
   ],
   "policySha256": "9b181ac5914f0931291e70cfaa5e99c8bb68ad980822c0cb9eec2e160f2f53e6",
-  "targetTreeDigest": "a7efa0cd49ec6a248e6ac9dc8c19290b26673babd7b9b483d41a25c66b076764",
+  "targetTreeDigest": "212227b89bb49832c2c12328dbad5d285c0a6ee7e1a3c49dafbdb060e132174e",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1208,
-    "unresolved": 608,
+    "targetOnlyFiles": 1210,
+    "unresolved": 609,
     "byStatus": {
-      "exact": 1120,
+      "exact": 1119,
       "retired": 1,
-      "unresolved": 608,
+      "unresolved": 609,
       "upgraded": 7
     },
     "unresolvedByPriority": {
       "P0": 21,
       "P1": 51,
-      "P2": 282,
+      "P2": 283,
       "P3": 254
     },
     "missionFiles": 80,
@@ -7948,7 +7948,7 @@
       "sourceBlob": "e55c9b2207bc5b0e394f4c3392a7fc079cb58349",
       "sourcePath": "app/src/bootstrap/ai/AGENTS.md",
       "targetPath": "app/src/bootstrap/ai/AGENTS.md",
-      "targetBlob": "fbc5c914e1d5e56f410be58c640c80a4033591d1",
+      "targetBlob": "b2f233fb49ae1ddcd7dd1cf8714a70d135c371ff",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -21124,13 +21124,13 @@
       "sourceBlob": "7e88059d137ac468c7c1dae012461f911c382a5f",
       "sourcePath": "graphs/src/index.ts",
       "targetPath": "graphs/src/index.ts",
-      "targetBlob": "7e88059d137ac468c7c1dae012461f911c382a5f",
+      "targetBlob": "d61550419ca03f6f8ed5f11f11b63aa1c6759ddc",
       "targetMode": "100644",
       "priority": "P2",
       "priorityLabel": "proof and secondary product surfaces",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "content_differs",
       "resolution": null
     },
     {
@@ -26649,6 +26649,12 @@
     },
     {
       "targetPath": "docs/spec/temporal-patterns.md"
+    },
+    {
+      "targetPath": "graphs/src/tools/index.ts"
+    },
+    {
+      "targetPath": "graphs/src/tools/poly-account-copy-trade-orders.ts"
     },
     {
       "targetPath": "graphs/tsconfig.build.json"
