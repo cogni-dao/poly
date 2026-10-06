@@ -15,7 +15,10 @@ import {
 } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { isPolyTraderWalletConfigured } from "@/bootstrap/poly-trader-wallet";
-import { readTenantWalletDashboard } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
+import {
+  readTenantWalletDashboard,
+  type WalletDashboardReadDiagnostics,
+} from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 import { serverEnv } from "@/shared/env/server-env";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
@@ -48,6 +51,8 @@ export const GET = wrapRouteHandlerWithLogging(
     }
 
     let dashboard: unknown;
+    let dashboardComputed = false;
+    const readDiagnostics: WalletDashboardReadDiagnostics = {};
     try {
       const container = getContainer();
       const billingAccountId = await resolveBillingAccountId(
@@ -59,13 +64,16 @@ export const GET = wrapRouteHandlerWithLogging(
       >;
       dashboard = await coalesceUnifiedDashboard(
         unifiedDashboardCacheKey(billingAccountId, query.data.interval),
-        () =>
-          readTenantWalletDashboard({
+        () => {
+          dashboardComputed = true;
+          return readTenantWalletDashboard({
             db,
             billingAccountId,
             interval: query.data.interval,
             adapterConfigured: isPolyTraderWalletConfigured(),
-          })
+            diagnostics: readDiagnostics,
+          });
+        }
       );
     } catch {
       logDashboardError(ctx, startedAt, 500, "service_failed");
@@ -179,6 +187,18 @@ export const GET = wrapRouteHandlerWithLogging(
       positionsMtmUsdc: response.overview.usdc_positions_mtm,
       totalUsdc: response.overview.usdc_total,
       warningCodes: response.warnings.map((entry) => entry.code),
+      comparisonReadPath: dashboardComputed
+        ? (readDiagnostics.comparisonPath ?? "unknown")
+        : "cache_hit",
+      comparisonIdentityMs: readDiagnostics.comparisonIdentityMs ?? null,
+      comparisonBundleTotalMs:
+        readDiagnostics.comparisonBundleTotalMs ?? null,
+      comparisonBundleQueryMs:
+        readDiagnostics.comparisonBundleQueryMs ?? null,
+      comparisonFillRollupMs:
+        readDiagnostics.comparisonFillRollupMs ?? null,
+      comparisonFallbackMarketMs:
+        readDiagnostics.comparisonFallbackMarketMs ?? null,
       durationMs: Math.round(performance.now() - startedAt),
       status: 200,
       outcome: degraded ? "degraded" : "success",
