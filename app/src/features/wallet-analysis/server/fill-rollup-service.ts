@@ -500,6 +500,17 @@ export function windowedFillFlowsSelect(params: {
    */
   conditionIds?: ReadonlyArray<string>;
   /**
+   * Optional exact output keys, already resolved to physical wallet UUIDs.
+   * Dashboard comparison reads use this to push their bounded participant set
+   * into every UNION branch before aggregation. Other readers omit it and keep
+   * the historical condition/window shape unchanged.
+   */
+  positionKeys?: ReadonlyArray<{
+    traderWalletId: string;
+    conditionId: string;
+    tokenId: string;
+  }>;
+  /**
    * Default preserves the historical byte-for-byte `condition_id IN (…)`
    * predicate. Dashboard identity-reconciliation readers opt into the
    * case-insensitive form for legacy differently-cased saved facts.
@@ -520,7 +531,49 @@ export function windowedFillFlowsSelect(params: {
           sql`, `
         )})`
       : sql``;
+  const distinctPositionKeys = params.positionKeys
+    ? [
+        ...new Map(
+          params.positionKeys.map((key) => {
+            const conditionId = key.conditionId.toLowerCase();
+            return [
+              `${key.traderWalletId}:${conditionId}:${key.tokenId}`,
+              { ...key, conditionId },
+            ] as const;
+          })
+        ).values(),
+      ]
+    : null;
+  const requestedKeysCte =
+    distinctPositionKeys === null
+      ? sql``
+      : distinctPositionKeys.length === 0
+        ? sql`WITH requested_position_keys(trader_wallet_id, condition_id, token_id) AS (
+            SELECT NULL::uuid, NULL::text, NULL::text WHERE FALSE
+          )`
+        : sql`WITH requested_position_keys(trader_wallet_id, condition_id, token_id) AS (
+            SELECT DISTINCT trader_wallet_id, condition_id, token_id
+            FROM (VALUES ${sql.join(
+              distinctPositionKeys.map(
+                (key) =>
+                  sql`(${key.traderWalletId}::uuid, ${key.conditionId}, ${key.tokenId})`
+              ),
+              sql`, `
+            )}) AS requested(trader_wallet_id, condition_id, token_id)
+          )`;
+  const requestedKeyJoin = (
+    walletColumn: SQL,
+    conditionColumn: SQL,
+    tokenColumn: SQL
+  ): SQL =>
+    distinctPositionKeys === null
+      ? sql``
+      : sql`JOIN requested_position_keys requested
+          ON requested.trader_wallet_id = ${walletColumn}
+         AND requested.condition_id = lower(${conditionColumn})
+         AND requested.token_id = ${tokenColumn}`;
   return sql`
+    ${requestedKeysCte}
     SELECT
       parts.trader_wallet_id,
       parts.condition_id,
@@ -542,6 +595,7 @@ export function windowedFillFlowsSelect(params: {
         r.buy_usdc, r.sell_usdc, r.buy_shares, r.sell_shares,
         r.first_buy_observed_at, r.first_observed_at, r.last_observed_at
       FROM poly_trader_fill_rollups_daily r
+      ${requestedKeyJoin(sql`r.trader_wallet_id`, sql`r.condition_id`, sql`r.token_id`)}
       WHERE r.trader_wallet_id IN (${ids})
         AND r.day >= ${bounds.rollupFromDay}::date${conditionFilter(sql`r.condition_id`)}
       UNION ALL
@@ -558,6 +612,7 @@ export function windowedFillFlowsSelect(params: {
         f.observed_at,
         f.observed_at
       FROM poly_trader_fills f
+      ${requestedKeyJoin(sql`f.trader_wallet_id`, sql`f.condition_id`, sql`f.token_id`)}
       WHERE f.trader_wallet_id IN (${ids})
         AND f.observed_at >= ${params.windowStartIso}::timestamptz
         AND f.observed_at < ${bounds.rollupFromIso}::timestamptz${conditionFilter(sql`f.condition_id`)}
@@ -577,6 +632,7 @@ export function windowedFillFlowsSelect(params: {
       FROM poly_trader_fills f
       LEFT JOIN poly_trader_fill_rollup_cursors c
         ON c.trader_wallet_id = f.trader_wallet_id
+      ${requestedKeyJoin(sql`f.trader_wallet_id`, sql`f.condition_id`, sql`f.token_id`)}
       WHERE f.trader_wallet_id IN (${ids})
         AND f.observed_at >= ${bounds.rollupFromIso}::timestamptz
         AND (f.created_at, f.id) > (

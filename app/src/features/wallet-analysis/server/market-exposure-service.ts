@@ -216,7 +216,18 @@ export type BoundedMarketExposureRead = {
 export type ComparisonReadDiagnostics = {
   comparisonBundleQueryMs?: number;
   comparisonFillRollupMs?: number;
+  comparisonFallbackTargetMs?: number;
+  comparisonFallbackFillRollupMs?: number;
+  bundleQueryFailureClass?: ComparisonReadFailureClass;
+  bundleFillRollupFailureClass?: ComparisonReadFailureClass;
+  fallbackFillRollupFailureClass?: ComparisonReadFailureClass;
+  fallbackTargetFailureClass?: ComparisonReadFailureClass;
 };
+
+export type ComparisonReadFailureClass =
+  | "statement_timeout"
+  | "database_error"
+  | "unexpected_error";
 
 export type BoundedMarketExposureCoverageRead = {
   market: BoundedMarketExposureRead;
@@ -295,6 +306,7 @@ export async function buildBoundedMarketExposureGroups(params: {
   walletAddress: string;
   livePositions: readonly WalletExecutionPosition[];
   closedPositions?: readonly WalletExecutionPosition[];
+  diagnostics?: ComparisonReadDiagnostics;
 }): Promise<BoundedMarketExposureRead> {
   const closedPositions = params.closedPositions ?? [];
   const selection = selectBoundedOurExposure({
@@ -309,23 +321,57 @@ export async function buildBoundedMarketExposureGroups(params: {
     0,
     BOUNDED_PARTICIPANT_ROW_LIMIT - selection.ownParticipantRows
   );
-  const targetRead = await readBoundedTargetLegs({
-    db: params.db,
-    billingAccountId: params.billingAccountId,
-    conditionGroup: selection.conditionGroup,
-    participantLimit: targetBudget,
-  });
+  const targetStartedAt = performance.now();
+  let targetRead: Awaited<ReturnType<typeof readBoundedTargetLegs>>;
+  try {
+    targetRead = await readBoundedTargetLegs({
+      db: params.db,
+      billingAccountId: params.billingAccountId,
+      conditionGroup: selection.conditionGroup,
+      participantLimit: targetBudget,
+    });
+  } catch (error) {
+    recordComparisonDiagnostic(
+      params.diagnostics,
+      "fallbackTargetFailureClass",
+      classifyComparisonReadFailure(error)
+    );
+    throw error;
+  } finally {
+    recordComparisonDiagnostic(
+      params.diagnostics,
+      "comparisonFallbackTargetMs",
+      elapsedMs(targetStartedAt)
+    );
+  }
   const rawLegs = [...selection.ourLegs, ...targetRead.legs];
-  const rollups = await readFillRollups({
-    db: params.db,
-    conditions: [...selection.conditionGroup.keys()],
-    walletAddresses: [...new Set(rawLegs.map((leg) => leg.walletAddress))],
-    positionKeys: rawLegs.map((leg) => ({
-      walletAddress: leg.walletAddress,
-      conditionId: leg.conditionId,
-      tokenId: leg.tokenId,
-    })),
-  });
+  const fillStartedAt = performance.now();
+  let rollups: Awaited<ReturnType<typeof readFillRollups>>;
+  try {
+    rollups = await readFillRollups({
+      db: params.db,
+      conditions: [...selection.conditionGroup.keys()],
+      walletAddresses: [...new Set(rawLegs.map((leg) => leg.walletAddress))],
+      positionKeys: rawLegs.map((leg) => ({
+        walletAddress: leg.walletAddress,
+        conditionId: leg.conditionId,
+        tokenId: leg.tokenId,
+      })),
+    });
+  } catch (error) {
+    recordComparisonDiagnostic(
+      params.diagnostics,
+      "fallbackFillRollupFailureClass",
+      classifyComparisonReadFailure(error)
+    );
+    throw error;
+  } finally {
+    recordComparisonDiagnostic(
+      params.diagnostics,
+      "comparisonFallbackFillRollupMs",
+      elapsedMs(fillStartedAt)
+    );
+  }
   const enrichedLegs = rawLegs.map((leg) => enrichLegWithRollup(leg, rollups));
   return {
     groups: groupParticipants(enrichedLegs, rollups).slice(0, BOUNDED_GROUP_LIMIT),
@@ -401,39 +447,61 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
     BOUNDED_PARTICIPANT_ROW_LIMIT - selection.ownParticipantRows
   );
   const queryStartedAt = performance.now();
-  const rows = await readComparisonBundleRows({
-    db: params.db,
-    billingAccountId: params.billingAccountId,
-    walletAddress: params.walletAddress,
-    conditionGroup: selection.conditionGroup,
-    participantLimit: targetBudget,
-  });
-  recordComparisonDiagnostic(
-    params.diagnostics,
-    "comparisonBundleQueryMs",
-    performance.now() - queryStartedAt
-  );
+  let rows: ComparisonBundleRow[];
+  try {
+    rows = await readComparisonBundleRows({
+      db: params.db,
+      billingAccountId: params.billingAccountId,
+      walletAddress: params.walletAddress,
+      conditionGroup: selection.conditionGroup,
+      participantLimit: targetBudget,
+    });
+  } catch (error) {
+    recordComparisonDiagnostic(
+      params.diagnostics,
+      "bundleQueryFailureClass",
+      classifyComparisonReadFailure(error)
+    );
+    throw error;
+  } finally {
+    recordComparisonDiagnostic(
+      params.diagnostics,
+      "comparisonBundleQueryMs",
+      elapsedMs(queryStartedAt)
+    );
+  }
   const counts = countRowsFromBundle(rows);
   const targetRead = boundedTargetReadFromRows(
     participantRowsFromBundle(rows)
   );
   const rawLegs = [...selection.ourLegs, ...targetRead.legs];
   const fillStartedAt = performance.now();
-  const rollups = await readFillRollups({
-    db: params.db,
-    conditions: [...selection.conditionGroup.keys()],
-    walletAddresses: [...new Set(rawLegs.map((leg) => leg.walletAddress))],
-    positionKeys: rawLegs.map((leg) => ({
-      walletAddress: leg.walletAddress,
-      conditionId: leg.conditionId,
-      tokenId: leg.tokenId,
-    })),
-  });
-  recordComparisonDiagnostic(
-    params.diagnostics,
-    "comparisonFillRollupMs",
-    performance.now() - fillStartedAt
-  );
+  let rollups: Awaited<ReturnType<typeof readFillRollups>>;
+  try {
+    rollups = await readFillRollups({
+      db: params.db,
+      conditions: [...selection.conditionGroup.keys()],
+      walletAddresses: [...new Set(rawLegs.map((leg) => leg.walletAddress))],
+      positionKeys: rawLegs.map((leg) => ({
+        walletAddress: leg.walletAddress,
+        conditionId: leg.conditionId,
+        tokenId: leg.tokenId,
+      })),
+    });
+  } catch (error) {
+    recordComparisonDiagnostic(
+      params.diagnostics,
+      "bundleFillRollupFailureClass",
+      classifyComparisonReadFailure(error)
+    );
+    throw error;
+  } finally {
+    recordComparisonDiagnostic(
+      params.diagnostics,
+      "comparisonFillRollupMs",
+      elapsedMs(fillStartedAt)
+    );
+  }
   const enrichedLegs = rawLegs.map((leg) =>
     enrichLegWithRollup(leg, rollups)
   );
@@ -452,17 +520,35 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
   };
 }
 
-function recordComparisonDiagnostic(
+function recordComparisonDiagnostic<K extends keyof ComparisonReadDiagnostics>(
   diagnostics: ComparisonReadDiagnostics | undefined,
-  key: keyof ComparisonReadDiagnostics,
-  elapsedMs: number
+  key: K,
+  value: ComparisonReadDiagnostics[K]
 ): void {
   if (!diagnostics) return;
   try {
-    diagnostics[key] = Math.max(0, Math.round(elapsedMs));
+    diagnostics[key] = value;
   } catch {
     // Diagnostics are fail-open and can never affect the dashboard result.
   }
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.max(0, Math.round(performance.now() - startedAt));
+}
+
+function classifyComparisonReadFailure(
+  error: unknown
+): ComparisonReadFailureClass {
+  let candidate: unknown = error;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (!candidate || typeof candidate !== "object") break;
+    const record = candidate as { code?: unknown; cause?: unknown };
+    if (record.code === "57014") return "statement_timeout";
+    if (typeof record.code === "string") return "database_error";
+    candidate = record.cause;
+  }
+  return "unexpected_error";
 }
 
 /**
@@ -2214,16 +2300,43 @@ export async function readFillRollups(params: {
     sql`, `
   );
   const walletRows = (await params.db.execute(sql`
-    SELECT w.id
+    SELECT w.id, lower(w.wallet_address) AS wallet_address
     FROM poly_trader_wallets w
     WHERE lower(w.wallet_address) IN (${walletList})
     ORDER BY lower(w.wallet_address), w.updated_at DESC, w.created_at DESC, w.id
-  `)) as unknown as ReadonlyArray<{ id: string | null }>;
+  `)) as unknown as ReadonlyArray<{
+    id: string | null;
+    wallet_address: string | null;
+  }>;
   const walletIds = walletRows
     .map((row) => row.id)
     .filter((id): id is string => typeof id === "string" && id.length > 0);
   if (walletIds.length === 0) return new Map();
   if (params.positionKeys?.length === 0) return new Map();
+  const walletIdsByCanonicalAddress = new Map<string, string[]>();
+  for (const row of walletRows) {
+    if (
+      typeof row.id !== "string" ||
+      row.id.length === 0 ||
+      typeof row.wallet_address !== "string" ||
+      row.wallet_address.length === 0
+    ) {
+      continue;
+    }
+    const address = canonicalIdentity(row.wallet_address);
+    const ids = walletIdsByCanonicalAddress.get(address) ?? [];
+    ids.push(row.id);
+    walletIdsByCanonicalAddress.set(address, ids);
+  }
+  const physicalPositionKeys = params.positionKeys?.flatMap((key) =>
+    (walletIdsByCanonicalAddress.get(canonicalIdentity(key.walletAddress)) ?? []).map(
+      (traderWalletId) => ({
+        traderWalletId,
+        conditionId: canonicalIdentity(key.conditionId),
+        tokenId: key.tokenId,
+      })
+    )
+  );
   const selectedKeyRows = params.positionKeys
     ? sql.join(
         params.positionKeys.map(
@@ -2238,6 +2351,7 @@ export async function readFillRollups(params: {
     windowStartIso: EPOCH_ISO,
     conditionIds: params.conditions,
     conditionIdentity: "case_insensitive",
+    ...(physicalPositionKeys ? { positionKeys: physicalPositionKeys } : {}),
   });
   const rows = (await params.db.execute(sql`
     WITH normalized_flows AS (

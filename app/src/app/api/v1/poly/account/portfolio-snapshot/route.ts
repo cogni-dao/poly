@@ -35,6 +35,7 @@ import {
   PORTFOLIO_SNAPSHOT_TERMINAL_EVENT,
   portfolioSnapshotAccountReadHandler,
   portfolioSnapshotExtra,
+  type WalletDashboardReadDiagnostics,
 } from "@/features/capability-plane";
 import { serverEnv } from "@/shared/env/server-env";
 
@@ -50,13 +51,25 @@ export const GET = wrapRouteHandlerWithLogging(
     resolveDb: resolveAppDb,
     operation: polyAccountReadPortfolioSnapshotOperation,
     eventName: PORTFOLIO_SNAPSHOT_TERMINAL_EVENT,
-    // Resolved per request, not at module load: the deployment flag and the
-    // build sha are read when the handler runs.
-    handler: (tx, input, accountId) =>
-      portfolioSnapshotAccountReadHandler({
-        adapterConfigured: isPolyTraderWalletConfigured(),
-      })(tx, input, accountId),
-    extra: (context) =>
-      portfolioSnapshotExtra(context, serverEnv().APP_BUILD_SHA ?? "unknown"),
+    // One mutable diagnostics sink per request. The generic transport still
+    // owns auth/execute/render; this factory only binds request-local
+    // instrumentation to the shared business handler.
+    createRequestBinding: () => {
+      const diagnostics: WalletDashboardReadDiagnostics = {
+        comparisonPath: "cache_hit",
+      };
+      return {
+        handler: portfolioSnapshotAccountReadHandler({
+          adapterConfigured: isPolyTraderWalletConfigured(),
+          diagnostics,
+        }),
+        extra: (context) =>
+          portfolioSnapshotExtra(
+            context,
+            serverEnv().APP_BUILD_SHA ?? "unknown",
+            diagnostics
+          ),
+      };
+    },
   })
 );

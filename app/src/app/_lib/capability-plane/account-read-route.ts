@@ -40,7 +40,19 @@ import type { EventName, RequestContext } from "@/shared/observability";
 
 type SessionLike = { id: string } | null | undefined;
 
-export type AccountReadRouteConfig<TOperation extends AccountReadOperation> = {
+type AccountReadRouteBinding<TOperation extends AccountReadOperation> = {
+  handler: AccountReadHandler<
+    z.infer<TOperation["input"]>,
+    z.infer<TOperation["output"]>
+  >;
+  extra?: (context: {
+    status: AccountReadStatus;
+    input: z.infer<TOperation["input"]> | null;
+    data: z.infer<TOperation["output"]> | null;
+  }) => Record<string, unknown>;
+};
+
+type AccountReadRouteConfig<TOperation extends AccountReadOperation> = {
   operation: TOperation;
   /**
    * The app-role handle factory, named by the route so NO_PRIVILEGED_TRANSPORT
@@ -49,17 +61,16 @@ export type AccountReadRouteConfig<TOperation extends AccountReadOperation> = {
    */
   resolveDb: () => Database;
   eventName: EventName;
-  handler: AccountReadHandler<
-    z.infer<TOperation["input"]>,
-    z.infer<TOperation["output"]>
-  >;
   classifyError?: (error: unknown) => "invalid_input" | undefined;
-  extra?: (context: {
-    status: AccountReadStatus;
-    input: z.infer<TOperation["input"]> | null;
-    data: z.infer<TOperation["output"]> | null;
-  }) => Record<string, unknown>;
-};
+} & (
+  | (AccountReadRouteBinding<TOperation> & { createRequestBinding?: never })
+  | {
+      handler?: never;
+      extra?: never;
+      /** Build request-local handler instrumentation without mutable module state. */
+      createRequestBinding: () => AccountReadRouteBinding<TOperation>;
+    }
+);
 
 /**
  * Build the GET body for one account read. Wrap the result in
@@ -82,6 +93,8 @@ export function accountReadGetHandler<TOperation extends AccountReadOperation>(
     const rawInput = Object.fromEntries(
       new URL(request.url).searchParams.entries()
     );
+    const binding: AccountReadRouteBinding<TOperation> =
+      config.createRequestBinding ? config.createRequestBinding() : config;
 
     const outcome = await executeAccountRead({
       db: config.resolveDb(),
@@ -90,9 +103,9 @@ export function accountReadGetHandler<TOperation extends AccountReadOperation>(
       principalId: sessionUser.id,
       rawInput,
       eventName: config.eventName,
-      handler: config.handler,
+      handler: binding.handler,
       ...(config.classifyError ? { classifyError: config.classifyError } : {}),
-      ...(config.extra ? { extra: config.extra } : {}),
+      ...(binding.extra ? { extra: binding.extra } : {}),
     });
 
     switch (outcome.status) {

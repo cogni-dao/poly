@@ -230,8 +230,19 @@ export function portfolioSnapshotExtra(
     comparisonBundleTotalMs: diagnostics?.comparisonBundleTotalMs ?? null,
     comparisonBundleQueryMs: diagnostics?.comparisonBundleQueryMs ?? null,
     comparisonFillRollupMs: diagnostics?.comparisonFillRollupMs ?? null,
+    comparisonFallbackTargetMs:
+      diagnostics?.comparisonFallbackTargetMs ?? null,
+    comparisonFallbackFillRollupMs:
+      diagnostics?.comparisonFallbackFillRollupMs ?? null,
     comparisonFallbackMarketMs:
       diagnostics?.comparisonFallbackMarketMs ?? null,
+    bundleQueryFailureClass: diagnostics?.bundleQueryFailureClass ?? null,
+    bundleFillRollupFailureClass:
+      diagnostics?.bundleFillRollupFailureClass ?? null,
+    fallbackFillRollupFailureClass:
+      diagnostics?.fallbackFillRollupFailureClass ?? null,
+    fallbackTargetFailureClass:
+      diagnostics?.fallbackTargetFailureClass ?? null,
     degraded,
   };
 }

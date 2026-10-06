@@ -1,0 +1,3 @@
+CREATE INDEX "poly_trader_fill_rollups_wallet_condition_token_day_lower_idx" ON "poly_trader_fill_rollups_daily" USING btree ("trader_wallet_id",lower("condition_id"),"token_id","day");--> statement-breakpoint
+CREATE INDEX "poly_trader_fills_wallet_condition_token_observed_lower_idx" ON "poly_trader_fills" USING btree ("trader_wallet_id",lower("condition_id"),"token_id","observed_at");--> statement-breakpoint
+CREATE INDEX "poly_trader_position_snapshots_wallet_condition_latest_lc_idx" ON "poly_trader_position_snapshots" USING btree ("trader_wallet_id",lower("condition_id"),"token_id","captured_at" DESC NULLS LAST);
