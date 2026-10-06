@@ -33,6 +33,7 @@ import { z } from "zod";
 import {
   accountReadDiscoveryActions,
   accountReadDiscoveryEndpoints,
+  projectSchema,
 } from "@/features/capability-plane/discovery";
 import { ACCOUNT_READ_TERMINAL_EVENTS } from "@/features/capability-plane/handlers";
 
@@ -193,9 +194,13 @@ describe("discovery projection", () => {
         type: "bearer",
         requiredScope: "account:read",
       });
-      // Derived, not hand-authored: identical to converting the descriptor.
-      expect(action?.inputSchema).toEqual(z.toJSONSchema(operation.input));
-      expect(action?.outputSchema).toEqual(z.toJSONSchema(operation.output));
+      // Derived, not hand-authored: identical to the seam's own projection of
+      // the descriptor. Compared against `projectSchema` rather than a bare
+      // `z.toJSONSchema` so the assertion does not re-implement the
+      // output-mode -> input-mode fallback (and so it does not itself throw on
+      // a descriptor whose output contains a transform).
+      expect(action?.inputSchema).toEqual(projectSchema(operation.input));
+      expect(action?.outputSchema).toEqual(projectSchema(operation.output));
     }
   });
 

@@ -104,7 +104,9 @@ export type AccountReadDiscoveryAction = {
  * silently emits `{}` for the offending node, which is a lossy schema
  * masquerading as a complete one.
  */
-function projectSchema(schema: AccountReadOperation["input"]): unknown {
+export function projectSchema(
+  schema: AccountReadOperation["input"]
+): unknown {
   try {
     return z.toJSONSchema(schema);
   } catch {
