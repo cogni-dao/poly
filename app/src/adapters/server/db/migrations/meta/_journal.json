@@ -547,6 +547,13 @@
       "when": 1791299357856,
       "tag": "0077_pale_wallop",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1791305588505,
+      "tag": "0078_giant_justin_hammer",
+      "breakpoints": true
     }
   ]
 }

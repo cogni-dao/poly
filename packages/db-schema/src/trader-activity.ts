@@ -537,6 +537,16 @@ export const polyMarketOutcomes = pgTable(
       "poly_market_outcomes_outcome_check",
       sql`${table.outcome} IN ('winner','loser','unknown')`
     ),
+    // Dashboard readers compare canonical condition identity and then choose
+    // the newest physical row for one token. The physical condition tie-break
+    // deliberately remains in the key: mixed-case siblings must stay visible
+    // to the existing ambiguity checks rather than being collapsed at write.
+    index("poly_market_outcomes_condition_token_latest_lower_idx").on(
+      sql`lower(${table.conditionId})`,
+      table.tokenId,
+      table.updatedAt.desc(),
+      table.conditionId
+    ),
   ]
 );
 
@@ -575,6 +585,14 @@ export const polyMarketMetadata = pgTable(
   (table) => [
     index("poly_market_metadata_event_slug_idx").on(table.eventSlug),
     index("poly_market_metadata_end_date_idx").on(table.endDate),
+    // Case-insensitive dashboard joins choose the newest physical metadata
+    // row per canonical condition. Preserve the physical-id tie-break so
+    // casing ambiguity remains observable to readers.
+    index("poly_market_metadata_condition_latest_lower_idx").on(
+      sql`lower(${table.conditionId})`,
+      table.fetchedAt.desc(),
+      table.conditionId
+    ),
   ]
 );
 
