@@ -10,7 +10,7 @@
   },
   "contract": {
     "path": "docs/porting/poly-parity-contract.md",
-    "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
+    "sha256": "eeb47ab2f13fb44ac54b671600137e063e3cac7f47ab887bc0780c40fc59508d"
   },
   "proofRefreshPending": [
     {
@@ -48,7 +48,7 @@
       ]
     }
   ],
-  "policySha256": "3a617b3691441cd75da8898c454d62317d673a3285df2490d76207d71b77e9b3",
+  "policySha256": "56f42128ff2b65d09c9440e7ce92ca4bd1a788f806ae96704ec08572b31cc19b",
   "targetTreeDigest": "e4aa5376ee770d535a1b3bfc80fa08d631fec6205eb40b7e5af7ed9fe63db5df",
   "summary": {
     "sourceFiles": 1736,
