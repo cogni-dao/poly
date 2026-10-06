@@ -20,8 +20,8 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1160 |
-| Unresolved legacy files | 608 |
+| Current-only files | 1159 |
+| Unresolved legacy files | 605 |
 | P0/P1 mission files resolved | 7/79 |
 | Behavioral gates passed | 0/7 |
 
@@ -33,14 +33,14 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 
 | State | Count |
 | --- | ---: |
-| exact | 1121 |
+| exact | 1124 |
 | upgraded | 6 |
 | retired | 1 |
-| unresolved | 608 |
+| unresolved | 605 |
 
 | Priority | Unresolved |
 | --- | ---: |
-| P0 | 24 |
+| P0 | 21 |
 | P1 | 51 |
 | P2 | 281 |
 | P3 | 252 |
@@ -89,7 +89,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `0edc7d6a040fa5382d9fb75333630e1b5bd06b7f` | `app/src/app/api/v1/poly/wallet/execution/route.ts` | `100644` | `b66434a5f3980d2b22a1e6790a895dc1d0b3bf11` | `app/src/app/api/v1/poly/wallet/execution/route.ts` |
 | P0 | exact | — | — | `100644` | `8fb41e6ff0aa02d7caed1d8acb472db21c1f4525` | `app/src/app/(app)/dashboard/page.tsx` | `100644` | `8fb41e6ff0aa02d7caed1d8acb472db21c1f4525` | `app/src/app/(app)/dashboard/page.tsx` |
 | P0 | unresolved | content_differs | `visible-p0` | `100644` | `617c839f1c01f51d317eae4235ec9f0c7e169cb3` | `app/src/app/(app)/dashboard/view.tsx` | `100644` | `c94211ba1831731d6ff7b030ac5f68586fcf15a6` | `app/src/app/(app)/dashboard/view.tsx` |
-| P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `5b00a5697517aa73727a4879895724f6da5484ce` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` | `100644` | `f2a78069040ae1a84eb06f1cd837a705db6d7855` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` |
+| P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `5b00a5697517aa73727a4879895724f6da5484ce` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` | `100644` | `348bd91ad327f3ff8990aa7c837670e25ded701e` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` |
 | P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `0456032db2a64923b5a71400f8b0a24a0c4fec36` | `app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx` | `100644` | `619e528ce78abe25ca3e54a47107b0c1ca1aa522` | `app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx` |
 | P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `df6c6e3b9e0ebb1a2447db59c9f425e76f8d089d` | `app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx` | `100644` | `1b2a90bee69968d39df52b0712a1484c4814d89e` | `app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx` |
 | P0 | exact | — | — | `100644` | `f0187b9efe7794f7ef385daac02f240ecbee6e3a` | `app/src/app/(app)/dashboard/_components/CopyTargetControlPanel.tsx` | `100644` | `f0187b9efe7794f7ef385daac02f240ecbee6e3a` | `app/src/app/(app)/dashboard/_components/CopyTargetControlPanel.tsx` |
@@ -129,10 +129,10 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P0 | exact | — | — | `100644` | `266a2db78064ec170ed8a0273197c74f15187ee0` | `app/src/features/wallet-analysis/components/WalletDetailDrawer.tsx` | `100644` | `266a2db78064ec170ed8a0273197c74f15187ee0` | `app/src/features/wallet-analysis/components/WalletDetailDrawer.tsx` |
 | P0 | exact | — | — | `100644` | `7d05418ef5b2c5823419ccd9b53bc2fdd17647c0` | `app/src/features/wallet-analysis/components/WalletIdentityHeader.tsx` | `100644` | `7d05418ef5b2c5823419ccd9b53bc2fdd17647c0` | `app/src/features/wallet-analysis/components/WalletIdentityHeader.tsx` |
 | P0 | exact | — | — | `100644` | `a63dca3594a82e1115674d10d3b3f2a1fae82ab0` | `app/src/features/wallet-analysis/components/WalletQuickJump.tsx` | `100644` | `a63dca3594a82e1115674d10d3b3f2a1fae82ab0` | `app/src/features/wallet-analysis/components/WalletQuickJump.tsx` |
-| P0 | unresolved | content_differs | — | `100644` | `39da4bb03f736357bc32ad3d34ed289b49d588cd` | `app/src/app/(app)/_components/markets-table/DeltaDistribution.tsx` | `100644` | `f1930d7562ad8d1ef097dab9a81ed9dea98cff2b` | `app/src/app/(app)/_components/markets-table/DeltaDistribution.tsx` |
-| P0 | unresolved | content_differs | — | `100644` | `fdc40fbcb60b9d6ea608b4e7a1442d962f8b99f9` | `app/src/app/(app)/_components/markets-table/MarketsDeltaDistribution.tsx` | `100644` | `16f7e19bf38895f156719ae83740c35e8b344628` | `app/src/app/(app)/_components/markets-table/MarketsDeltaDistribution.tsx` |
-| P0 | unresolved | content_differs | — | `100644` | `b55753a274d8933b91723b3596ee6273eb28ee8f` | `app/src/app/(app)/_components/markets-table/PositionsDeltaDistribution.tsx` | `100644` | `dcd24a457bf32e2f8500ecdb99053f8c0d4002e3` | `app/src/app/(app)/_components/markets-table/PositionsDeltaDistribution.tsx` |
+| P0 | exact | — | — | `100644` | `39da4bb03f736357bc32ad3d34ed289b49d588cd` | `app/src/app/(app)/_components/markets-table/DeltaDistribution.tsx` | `100644` | `39da4bb03f736357bc32ad3d34ed289b49d588cd` | `app/src/app/(app)/_components/markets-table/DeltaDistribution.tsx` |
+| P0 | exact | — | — | `100644` | `fdc40fbcb60b9d6ea608b4e7a1442d962f8b99f9` | `app/src/app/(app)/_components/markets-table/MarketsDeltaDistribution.tsx` | `100644` | `fdc40fbcb60b9d6ea608b4e7a1442d962f8b99f9` | `app/src/app/(app)/_components/markets-table/MarketsDeltaDistribution.tsx` |
 | P0 | exact | — | — | `100644` | `94386876f0369e1122cf0574d35f7adab2f8bb2b` | `app/src/app/(app)/_components/markets-table/MarketsTable.tsx` | `100644` | `94386876f0369e1122cf0574d35f7adab2f8bb2b` | `app/src/app/(app)/_components/markets-table/MarketsTable.tsx` |
+| P0 | exact | — | — | `100644` | `b55753a274d8933b91723b3596ee6273eb28ee8f` | `app/src/app/(app)/_components/markets-table/PositionsDeltaDistribution.tsx` | `100644` | `b55753a274d8933b91723b3596ee6273eb28ee8f` | `app/src/app/(app)/_components/markets-table/PositionsDeltaDistribution.tsx` |
 | P0 | exact | — | — | `100644` | `d25ad45707e625da4497bfe6fdc60bb2c978d873` | `app/src/app/(app)/_components/markets-table/columns.tsx` | `100644` | `d25ad45707e625da4497bfe6fdc60bb2c978d873` | `app/src/app/(app)/_components/markets-table/columns.tsx` |
 | P0 | exact | — | — | `100644` | `49015bc4bdb3db9e7ae612a092321a39ae8114c4` | `app/src/app/(app)/_components/markets-table/index.ts` | `100644` | `49015bc4bdb3db9e7ae612a092321a39ae8114c4` | `app/src/app/(app)/_components/markets-table/index.ts` |
 | P0 | exact | — | — | `100644` | `4237b002e5fc297cb670cd7dd91c66568cfb0bbe` | `app/src/app/(app)/_components/positions-table/PositionsTable.tsx` | `100644` | `4237b002e5fc297cb670cd7dd91c66568cfb0bbe` | `app/src/app/(app)/_components/positions-table/PositionsTable.tsx` |

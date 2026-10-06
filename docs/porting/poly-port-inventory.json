@@ -49,20 +49,20 @@
     }
   ],
   "policySha256": "3a617b3691441cd75da8898c454d62317d673a3285df2490d76207d71b77e9b3",
-  "targetTreeDigest": "d6bdffba0c6b31a31d00109a80543ca6d8e92089bb4c37d3a1ea358080bd921f",
+  "targetTreeDigest": "e4aa5376ee770d535a1b3bfc80fa08d631fec6205eb40b7e5af7ed9fe63db5df",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1160,
-    "unresolved": 608,
+    "targetOnlyFiles": 1159,
+    "unresolved": 605,
     "byStatus": {
-      "exact": 1121,
+      "exact": 1124,
       "retired": 1,
-      "unresolved": 608,
+      "unresolved": 605,
       "upgraded": 6
     },
     "unresolvedByPriority": {
-      "P0": 24,
+      "P0": 21,
       "P1": 51,
       "P2": 281,
       "P3": 252
@@ -301,7 +301,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "edb0830671251fe8c804d9035bc42dcdd263b8c37d6be0055264709744ee7f1e",
+      "currentTargetDigest": "95d63ef4d6f7fd405240a6be3b3b35224399c498ca30244c7aec9788139ad66f",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -323,7 +323,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "edb0830671251fe8c804d9035bc42dcdd263b8c37d6be0055264709744ee7f1e",
+      "currentTargetDigest": "95d63ef4d6f7fd405240a6be3b3b35224399c498ca30244c7aec9788139ad66f",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -345,7 +345,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "edb0830671251fe8c804d9035bc42dcdd263b8c37d6be0055264709744ee7f1e",
+      "currentTargetDigest": "95d63ef4d6f7fd405240a6be3b3b35224399c498ca30244c7aec9788139ad66f",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -4099,13 +4099,13 @@
       "sourceBlob": "39da4bb03f736357bc32ad3d34ed289b49d588cd",
       "sourcePath": "app/src/app/(app)/_components/markets-table/DeltaDistribution.tsx",
       "targetPath": "app/src/app/(app)/_components/markets-table/DeltaDistribution.tsx",
-      "targetBlob": "f1930d7562ad8d1ef097dab9a81ed9dea98cff2b",
+      "targetBlob": "39da4bb03f736357bc32ad3d34ed289b49d588cd",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
       "deliveryGroup": null,
-      "status": "unresolved",
-      "unresolvedReason": "content_differs",
+      "status": "exact",
+      "unresolvedReason": null,
       "resolution": null
     },
     {
@@ -4113,13 +4113,13 @@
       "sourceBlob": "fdc40fbcb60b9d6ea608b4e7a1442d962f8b99f9",
       "sourcePath": "app/src/app/(app)/_components/markets-table/MarketsDeltaDistribution.tsx",
       "targetPath": "app/src/app/(app)/_components/markets-table/MarketsDeltaDistribution.tsx",
-      "targetBlob": "16f7e19bf38895f156719ae83740c35e8b344628",
+      "targetBlob": "fdc40fbcb60b9d6ea608b4e7a1442d962f8b99f9",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
       "deliveryGroup": null,
-      "status": "unresolved",
-      "unresolvedReason": "content_differs",
+      "status": "exact",
+      "unresolvedReason": null,
       "resolution": null
     },
     {
@@ -4141,13 +4141,13 @@
       "sourceBlob": "b55753a274d8933b91723b3596ee6273eb28ee8f",
       "sourcePath": "app/src/app/(app)/_components/markets-table/PositionsDeltaDistribution.tsx",
       "targetPath": "app/src/app/(app)/_components/markets-table/PositionsDeltaDistribution.tsx",
-      "targetBlob": "dcd24a457bf32e2f8500ecdb99053f8c0d4002e3",
+      "targetBlob": "b55753a274d8933b91723b3596ee6273eb28ee8f",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
       "deliveryGroup": null,
-      "status": "unresolved",
-      "unresolvedReason": "content_differs",
+      "status": "exact",
+      "unresolvedReason": null,
       "resolution": null
     },
     {
@@ -4645,7 +4645,7 @@
       "sourceBlob": "5b00a5697517aa73727a4879895724f6da5484ce",
       "sourcePath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
-      "targetBlob": "f2a78069040ae1a84eb06f1cd837a705db6d7855",
+      "targetBlob": "348bd91ad327f3ff8990aa7c837670e25ded701e",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
@@ -26193,9 +26193,6 @@
     },
     {
       "targetPath": "app/tests/unit/app/dashboard/dashboard-missing-state.spec.tsx"
-    },
-    {
-      "targetPath": "app/tests/unit/app/dashboard/delta-coverage.spec.tsx"
     },
     {
       "targetPath": "app/tests/unit/app/dashboard/mirror-attempts-error-summary.test.ts"

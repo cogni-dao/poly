@@ -62,7 +62,7 @@ describe("realized P/L identity reconciliation", () => {
       pnlUsd: 1,
       pnlPct: 100,
     });
-    expect(db.sql[1]).toContain("p.trader_wallet_id IN ($1::uuid)");
+    expect(db.sql[1]).toMatch(/p\.trader_wallet_id IN \(\$\d+::uuid\)/);
     expect(db.sql[1]).toContain("lower(candidate.condition_id) = fa.condition_id");
     expect(db.sql[1]).toContain("fa.condition_id = lower(");
   });
@@ -78,7 +78,9 @@ describe("realized P/L identity reconciliation", () => {
 
     expect(db.sql[0]).not.toContain("LIMIT 1");
     expect(db.sql[0]).not.toContain("w.kind = 'cogni_wallet'");
-    expect(db.sql[1]).toContain("p.trader_wallet_id IN ($1::uuid, $2::uuid)");
+    expect(db.sql[1]).toMatch(
+      /p\.trader_wallet_id IN \(\$\d+::uuid, \$\d+::uuid\)/
+    );
     expect(db.sql[1]).toContain(
       "PARTITION BY lower(p.condition_id), p.token_id"
     );
