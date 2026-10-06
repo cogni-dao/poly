@@ -84,12 +84,7 @@ export const GET = wrapRouteHandlerWithLogging(
           routeId: ctx.routeId,
           outcome: access ? "allow" : "deny",
           requiredScope: "performance:read",
-          ...(access
-            ? {
-                accessKind: access.accessKind,
-                ...(access.grantId ? { grantId: access.grantId } : {}),
-              }
-            : {}),
+          ...(access ? { accessKind: access.accessKind } : {}),
         });
         if (!access) return null;
         const response = await getCopyTradeInvestigationEvidence(

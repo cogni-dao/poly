@@ -142,6 +142,19 @@ export function createLokiPushStream(
     let active: ActiveBatch | undefined;
     let requestInFlight = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastIssuedTimestampNs: bigint | undefined;
+
+    // Loki requires nondecreasing values within a stream. Wall clocks can
+    // move backwards, so every newly created value advances a logical clock.
+    const issueTimestamp = (): string => {
+      const observed = BigInt(now()) * 1_000_000n;
+      const issued =
+        lastIssuedTimestampNs === undefined || observed > lastIssuedTimestampNs
+          ? observed
+          : lastIssuedTimestampNs + 1n;
+      lastIssuedTimestampNs = issued;
+      return issued.toString();
+    };
 
     const totalEntries = (): number =>
       (active?.values.length ?? 0) + buffer.length;
@@ -160,58 +173,49 @@ export function createLokiPushStream(
     };
 
     const enqueue = (line: string): void => {
-      buffer.push([`${now()}000000`, line]);
+      buffer.push([issueTimestamp(), line]);
       bufferedBytes += line.length;
       enforceCap();
     };
 
     const enqueueDiagnostics = (): void => {
       if (dropped === 0 && recoveredFailuresPending === 0) return;
-      // Loki requires timestamps within a stream to remain nondecreasing. A
-      // recovery diagnostic is prioritized into the next payload, but it must
-      // not jump ahead of older queued lines with a newer timestamp.
-      const timestamp = buffer[0]?.[0] ?? `${now()}000000`;
-      const diagnostics = (): LokiValue[] => [
+      const diagnosticLines = (): string[] => [
         ...(recoveredFailuresPending > 0
           ? [
-              [
-                timestamp,
-                JSON.stringify({
-                  level: 40,
-                  msg: "loki_push_recovered",
-                  failedAttempts: recoveredFailuresPending,
-                }),
-              ] as LokiValue,
+              JSON.stringify({
+                level: 40,
+                msg: "loki_push_recovered",
+                failedAttempts: recoveredFailuresPending,
+              }),
             ]
           : []),
         ...(dropped > 0
           ? [
-              [
-                timestamp,
-                JSON.stringify({
-                  level: 40,
-                  msg: "loki_push_dropped",
-                  droppedLines: dropped,
-                }),
-              ] as LokiValue,
+              JSON.stringify({
+                level: 40,
+                msg: "loki_push_dropped",
+                droppedLines: dropped,
+              }),
             ]
           : []),
       ];
 
-      let values = diagnostics();
-      let bytes = values.reduce((sum, [, line]) => sum + line.length, 0);
+      let lines = diagnosticLines();
+      let bytes = lines.reduce((sum, line) => sum + line.length, 0);
       while (
-        buffer.length + values.length > MAX_BUFFER_ENTRIES ||
+        buffer.length + lines.length > MAX_BUFFER_ENTRIES ||
         bufferedBytes + bytes > MAX_BUFFER_BYTES
       ) {
         const oldestQueued = buffer.shift();
         if (!oldestQueued) break;
         bufferedBytes -= oldestQueued[1].length;
         dropped += 1;
-        values = diagnostics();
-        bytes = values.reduce((sum, [, line]) => sum + line.length, 0);
+        lines = diagnosticLines();
+        bytes = lines.reduce((sum, line) => sum + line.length, 0);
       }
-      buffer.unshift(...values);
+      const values: LokiValue[] = lines.map((line) => [issueTimestamp(), line]);
+      buffer.push(...values);
       bufferedBytes += bytes;
       dropped = 0;
       recoveredFailuresPending = 0;

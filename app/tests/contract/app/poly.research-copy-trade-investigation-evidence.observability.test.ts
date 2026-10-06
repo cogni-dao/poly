@@ -93,18 +93,48 @@ function response(kind: "fills" | "decisions") {
   };
 }
 
-function completionFields() {
+function completionFields(): Record<string, unknown>[] {
   return logEvent.mock.calls
     .filter(
       ([, eventName]) =>
         eventName === "feature.poly_research.copy_trade_investigation.complete"
     )
-    .map(([, , fields]) => fields);
+    .map(([, , fields]) => fields as Record<string, unknown>);
+}
+
+function expectSingleCompletion(expected: Record<string, unknown>): void {
+  expect(completionFields()).toHaveLength(1);
+  expect(completionFields()[0]).toEqual(expect.objectContaining(expected));
+}
+
+function expectNoExplicitIdentifiers(): void {
+  const fields = logEvent.mock.calls.map(
+    ([, , eventFields]) => eventFields as Record<string, unknown>
+  );
+  for (const eventFields of fields) {
+    for (const key of [
+      "billingAccountId",
+      "conditionId",
+      "principalId",
+      "grantId",
+      "fillId",
+      "decisionId",
+      "items",
+    ]) {
+      expect(eventFields).not.toHaveProperty(key);
+    }
+  }
+  const serialized = JSON.stringify(fields);
+  expect(serialized).not.toContain(ACCOUNT);
+  expect(serialized).not.toContain(CONDITION);
+  expect(serialized).not.toContain("30000000-0000-4000-b000-000000000001");
 }
 
 describe("copy-trade investigation evidence observability", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getEvidence.mockReset();
+    resolvePerformanceRead.mockReset();
     resolvePerformanceRead.mockResolvedValue({
       accessKind: "delegated",
       grantId: "30000000-0000-4000-b000-000000000001",
@@ -115,17 +145,16 @@ describe("copy-trade investigation evidence observability", () => {
     const result = await GET(request("fills", "&limit=201"));
 
     expect(result.status).toBe(400);
-    expect(completionFields()).toContainEqual(
-      expect.objectContaining({
-        reqId: "investigation-request-1",
-        status: 400,
-        outcome: "error",
-        authorizationOutcome: "not_evaluated",
-        errorCode: "invalid_query",
-        evidenceCount: 0,
-      })
-    );
+    expectSingleCompletion({
+      reqId: "investigation-request-1",
+      status: 400,
+      outcome: "error",
+      authorizationOutcome: "not_evaluated",
+      errorCode: "invalid_query",
+      evidenceCount: 0,
+    });
     expect(resolvePerformanceRead).not.toHaveBeenCalled();
+    expectNoExplicitIdentifiers();
   });
 
   it("emits a correlated non-disclosing denial event", async () => {
@@ -135,15 +164,14 @@ describe("copy-trade investigation evidence observability", () => {
 
     expect(result.status).toBe(404);
     expect(await result.json()).toEqual({ error: "not_found" });
-    expect(completionFields()).toContainEqual(
-      expect.objectContaining({
-        reqId: "investigation-request-1",
-        status: 404,
-        authorizationOutcome: "denied",
-        evidenceKind: "fills",
-        errorCode: "not_found",
-      })
-    );
+    expectSingleCompletion({
+      reqId: "investigation-request-1",
+      status: 404,
+      authorizationOutcome: "denied",
+      evidenceKind: "fills",
+      errorCode: "not_found",
+    });
+    expectNoExplicitIdentifiers();
   });
 
   it.each(["fills", "decisions"] as const)(
@@ -154,20 +182,17 @@ describe("copy-trade investigation evidence observability", () => {
       const result = await GET(request(kind));
 
       expect(result.status).toBe(200);
-      expect(completionFields()).toContainEqual(
-        expect.objectContaining({
-          reqId: "investigation-request-1",
-          status: 200,
-          outcome: "success",
-          authorizationOutcome: "allowed",
-          accessKind: "delegated",
-          evidenceKind: kind,
-          evidenceCount: 0,
-          truncated: false,
-        })
-      );
-      expect(JSON.stringify(logEvent.mock.calls)).not.toContain(ACCOUNT);
-      expect(JSON.stringify(logEvent.mock.calls)).not.toContain(CONDITION);
+      expectSingleCompletion({
+        reqId: "investigation-request-1",
+        status: 200,
+        outcome: "success",
+        authorizationOutcome: "allowed",
+        accessKind: "delegated",
+        evidenceKind: kind,
+        evidenceCount: 0,
+        truncated: false,
+      });
+      expectNoExplicitIdentifiers();
     }
   );
 
@@ -177,17 +202,16 @@ describe("copy-trade investigation evidence observability", () => {
     const result = await GET(request("decisions"));
 
     expect(result.status).toBe(500);
-    expect(completionFields()).toContainEqual(
-      expect.objectContaining({
-        reqId: "investigation-request-1",
-        status: 500,
-        outcome: "error",
-        authorizationOutcome: "not_evaluated",
-        evidenceKind: "decisions",
-        errorCode: "service_failed",
-      })
-    );
+    expectSingleCompletion({
+      reqId: "investigation-request-1",
+      status: 500,
+      outcome: "error",
+      authorizationOutcome: "not_evaluated",
+      evidenceKind: "decisions",
+      errorCode: "service_failed",
+    });
     expect(JSON.stringify(logEvent.mock.calls)).not.toContain("database unavailable");
+    expectNoExplicitIdentifiers();
   });
 
   it("emits a correlated invalid-cursor event", async () => {
@@ -196,14 +220,60 @@ describe("copy-trade investigation evidence observability", () => {
     const result = await GET(request("fills", "&cursor=opaque"));
 
     expect(result.status).toBe(400);
-    expect(completionFields()).toContainEqual(
-      expect.objectContaining({
-        reqId: "investigation-request-1",
-        status: 400,
-        authorizationOutcome: "allowed",
-        evidenceKind: "fills",
-        errorCode: "invalid_query",
-      })
-    );
+    expectSingleCompletion({
+      reqId: "investigation-request-1",
+      status: 400,
+      authorizationOutcome: "allowed",
+      evidenceKind: "fills",
+      errorCode: "invalid_query",
+    });
+    expectNoExplicitIdentifiers();
+  });
+
+  it("emits exactly one completion for an invalid captured-at snapshot", async () => {
+    getEvidence.mockRejectedValue(new InvalidInvestigationCapturedAtError());
+
+    const result = await GET(request("decisions"));
+
+    expect(result.status).toBe(400);
+    expectSingleCompletion({
+      status: 400,
+      authorizationOutcome: "allowed",
+      evidenceKind: "decisions",
+      errorCode: "invalid_query",
+    });
+    expectNoExplicitIdentifiers();
+  });
+
+  it("emits exactly one completion when allowed evidence is absent", async () => {
+    getEvidence.mockResolvedValue(null);
+
+    const result = await GET(request("fills"));
+
+    expect(result.status).toBe(404);
+    expectSingleCompletion({
+      status: 404,
+      authorizationOutcome: "allowed",
+      accessKind: "delegated",
+      evidenceKind: "fills",
+      errorCode: "not_found",
+    });
+    expectNoExplicitIdentifiers();
+  });
+
+  it("emits exactly one completion for response validation failure", async () => {
+    getEvidence.mockResolvedValue({ invalid: true });
+
+    const result = await GET(request("fills"));
+
+    expect(result.status).toBe(500);
+    expectSingleCompletion({
+      status: 500,
+      authorizationOutcome: "allowed",
+      accessKind: "delegated",
+      evidenceKind: "fills",
+      errorCode: "response_validation_failed",
+    });
+    expectNoExplicitIdentifiers();
   });
 });

@@ -117,40 +117,153 @@ const request = (account: string) =>
     `http://localhost/api/v1/poly/research/copy-trade-investigation?billing_account_id=${account}&condition_id=condition-a&mode=paper`
   );
 
+function completionFields(): Record<string, unknown>[] {
+  return logEvent.mock.calls
+    .filter(
+      ([, eventName]) =>
+        eventName === "feature.poly_research.copy_trade_investigation.complete"
+    )
+    .map(([, , fields]) => fields as Record<string, unknown>);
+}
+
+function expectSingleCompletion(expected: Record<string, unknown>): void {
+  expect(completionFields()).toHaveLength(1);
+  expect(completionFields()[0]).toEqual(expect.objectContaining(expected));
+}
+
+function expectNoExplicitIdentifiers(): void {
+  const fields = logEvent.mock.calls.map(
+    ([, , eventFields]) => eventFields as Record<string, unknown>
+  );
+  for (const eventFields of fields) {
+    for (const key of [
+      "billingAccountId",
+      "conditionId",
+      "principalId",
+      "grantId",
+      "fillId",
+      "decisionId",
+      "items",
+    ]) {
+      expect(eventFields).not.toHaveProperty(key);
+    }
+  }
+  const serialized = JSON.stringify(fields);
+  expect(serialized).not.toContain(ACCOUNT_A);
+  expect(serialized).not.toContain(ACCOUNT_B);
+  expect(serialized).not.toContain("condition-a");
+  expect(serialized).not.toContain("30000000-0000-4000-b000-000000000001");
+}
+
 describe("copy-trade investigation authorization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    investigate.mockReset();
+    resolvePerformanceRead.mockReset();
     principal.id = "10000000-0000-4000-a000-000000000001";
+    resolvePerformanceRead.mockResolvedValue({
+      accessKind: "delegated",
+      grantId: "30000000-0000-4000-b000-000000000001",
+    });
+  });
+
+  it("emits exactly one completion for invalid input", async () => {
+    const result = await GET(request("not-an-account"));
+
+    expect(result.status).toBe(400);
+    expectSingleCompletion({
+      status: 400,
+      outcome: "error",
+      authorizationOutcome: "not_evaluated",
+      errorCode: "invalid_query",
+      evidenceCount: 0,
+    });
+    expect(resolvePerformanceRead).not.toHaveBeenCalled();
+    expectNoExplicitIdentifiers();
   });
 
   it("returns the same non-disclosing 404 for every denied account", async () => {
     resolvePerformanceRead.mockResolvedValue(null);
     const first = await GET(request(ACCOUNT_A));
+    expectSingleCompletion({
+      status: 404,
+      outcome: "error",
+      authorizationOutcome: "denied",
+      errorCode: "not_found",
+    });
+    expectNoExplicitIdentifiers();
+    logEvent.mockClear();
     const second = await GET(request(ACCOUNT_B));
     expect(first.status).toBe(404);
     expect(second.status).toBe(404);
     expect(await first.json()).toEqual({ error: "not_found" });
     expect(await second.json()).toEqual({ error: "not_found" });
     expect(investigate).not.toHaveBeenCalled();
-    expect(logEvent).toHaveBeenCalledWith(
-      {},
-      "feature.poly_research.copy_trade_investigation.complete",
-      expect.objectContaining({
-        reqId: "request-1",
-        status: 404,
-        outcome: "error",
-        authorizationOutcome: "denied",
-        errorCode: "not_found",
-      })
-    );
-    expect(JSON.stringify(logEvent.mock.calls)).not.toContain("billingAccountId");
-    expect(JSON.stringify(logEvent.mock.calls)).not.toContain("conditionId");
+    expectSingleCompletion({
+      reqId: "request-1",
+      status: 404,
+      outcome: "error",
+      authorizationOutcome: "denied",
+      errorCode: "not_found",
+    });
+    expectNoExplicitIdentifiers();
+  });
+
+  it("emits exactly one completion when allowed data is absent", async () => {
+    investigate.mockResolvedValue(null);
+
+    const result = await GET(request(ACCOUNT_A));
+
+    expect(result.status).toBe(404);
+    expectSingleCompletion({
+      status: 404,
+      authorizationOutcome: "allowed",
+      accessKind: "delegated",
+      errorCode: "not_found",
+    });
+    expectNoExplicitIdentifiers();
+  });
+
+  it("emits exactly one completion for service failure", async () => {
+    investigate.mockRejectedValue(new Error("database unavailable"));
+
+    const result = await GET(request(ACCOUNT_A));
+
+    expect(result.status).toBe(500);
+    expectSingleCompletion({
+      status: 500,
+      authorizationOutcome: "not_evaluated",
+      errorCode: "service_failed",
+    });
+    expectNoExplicitIdentifiers();
+  });
+
+  it("emits exactly one completion for response validation failure", async () => {
+    investigate.mockResolvedValue({ invalid: true });
+
+    const result = await GET(request(ACCOUNT_A));
+
+    expect(result.status).toBe(500);
+    expectSingleCompletion({
+      status: 500,
+      authorizationOutcome: "allowed",
+      accessKind: "delegated",
+      errorCode: "response_validation_failed",
+    });
+    expectNoExplicitIdentifiers();
   });
 
   it("returns the identical payload for owner and delegate access", async () => {
     investigate.mockResolvedValue(payload);
     resolvePerformanceRead.mockResolvedValueOnce({ accessKind: "owner", grantId: null });
     const owner = await GET(request(ACCOUNT_A));
+    expectSingleCompletion({
+      status: 200,
+      authorizationOutcome: "allowed",
+      accessKind: "owner",
+    });
+    expectNoExplicitIdentifiers();
+    logEvent.mockClear();
     principal.id = "10000000-0000-4000-a000-000000000002";
     resolvePerformanceRead.mockResolvedValueOnce({
       accessKind: "delegated",
@@ -166,19 +279,15 @@ describe("copy-trade investigation authorization", () => {
       condition_id: "condition-a",
       mode: "paper",
     });
-    expect(logEvent).toHaveBeenCalledWith(
-      {},
-      "feature.poly_research.copy_trade_investigation.complete",
-      expect.objectContaining({
-        reqId: "request-1",
-        status: 200,
-        outcome: "success",
-        authorizationOutcome: "allowed",
-        evidenceCount: 2,
-        complete: false,
-      })
-    );
-    expect(JSON.stringify(logEvent.mock.calls)).not.toContain(ACCOUNT_A);
-    expect(JSON.stringify(logEvent.mock.calls)).not.toContain("condition-a");
+    expectSingleCompletion({
+      reqId: "request-1",
+      status: 200,
+      outcome: "success",
+      authorizationOutcome: "allowed",
+      accessKind: "delegated",
+      evidenceCount: 2,
+      complete: false,
+    });
+    expectNoExplicitIdentifiers();
   });
 });

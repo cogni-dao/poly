@@ -253,7 +253,9 @@ describe("createLokiPushStream", () => {
       ([, line]) => line
     );
     expect(successorLines).toContain('{"queued":0}');
-    expect(successorLines?.[0]).toContain("loki_push_recovered");
+    expect(
+      successorLines?.some((line) => line.includes("loki_push_recovered"))
+    ).toBe(true);
   });
 
   it("retains a byte-identical batch after network rejection and reports recovery", async () => {
@@ -282,7 +284,7 @@ describe("createLokiPushStream", () => {
     ).toBe(true);
   });
 
-  it("keeps timestamps nondecreasing across an immutable retry and its recovery payload", async () => {
+  it("keeps normal and diagnostic timestamps increasing across clock rollback and batch boundaries", async () => {
     let resolveFirst: ((response: Response) => void) | undefined;
     let request = 0;
     let clock = 1_700_000_000_000;
@@ -298,7 +300,7 @@ describe("createLokiPushStream", () => {
     const stream = createLokiPushStream({
       env: BASE_ENV,
       fetchFn,
-      now: () => clock++,
+      now: () => clock--,
     });
     stream?.write('{"msg":"active"}\n');
     stream?.flushNow();
@@ -313,14 +315,15 @@ describe("createLokiPushStream", () => {
     expect(bodyAt(fetchFn, 1)).toEqual(bodyAt(fetchFn, 0));
     const firstDelivery = bodyAt(fetchFn, 0).streams[0]?.values ?? [];
     const recoveryDelivery = bodyAt(fetchFn, 2).streams[0]?.values ?? [];
-    expect(recoveryDelivery[0]?.[1]).toContain("loki_push_recovered");
-    expect(recoveryDelivery[0]?.[0]).toBe(recoveryDelivery[1]?.[0]);
+    expect(
+      recoveryDelivery.some(([, line]) => line.includes("loki_push_recovered"))
+    ).toBe(true);
 
     const timestamps = [...firstDelivery, ...recoveryDelivery].map(
       ([timestamp]) => BigInt(timestamp)
     );
     for (let i = 1; i < timestamps.length; i++) {
-      expect(timestamps[i]).toBeGreaterThanOrEqual(timestamps[i - 1] ?? 0n);
+      expect(timestamps[i]).toBeGreaterThan(timestamps[i - 1] ?? 0n);
     }
     for (const body of [bodyAt(fetchFn, 0), bodyAt(fetchFn, 1), bodyAt(fetchFn, 2)]) {
       const payloadTimestamps = (body.streams[0]?.values ?? []).map(
