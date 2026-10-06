@@ -3,9 +3,15 @@
 
 /**
  * Module: `@tests/component/db/agent-capability-grant-rls.int.test`
- * Purpose: Prove performance-read delegation is tenant-isolated by PostgreSQL RLS.
+ * Purpose: Prove account-read delegation is tenant-isolated by PostgreSQL RLS,
+ *   and that the `performance:read` -> `account:read` rename is bidirectionally
+ *   compatible in BOTH the app `authorize()` seam and the RLS policy bodies.
  * Scope: Real Postgres app/service roles, active and inactive grants, copy-trade fills and decisions. Does not test HTTP transport.
  * Invariants: Owners and active delegates see the same account markers; delegates never gain mutation rights or second-tenant visibility.
+ *   SCOPE_ALIAS_TOLERANCE — a grant holding only the legacy name and a grant
+ *   holding only the canonical name must BOTH authorize and BOTH read rows. A
+ *   grant that authorizes but then reads zero rows is the specific failure that
+ *   migration 0074 exists to prevent, so the two halves are asserted together.
  * Side-effects: IO (testcontainers Postgres)
  * Links: task.1791070950, packages/db-schema/src/agent-capability-grants.ts
  * @internal
@@ -18,11 +24,16 @@ import {
   polyCopyTradeFills,
 } from "@cogni/db-schema/copy-trade";
 import { toUserId, userActor } from "@cogni/ids";
+import type { AgentCapabilityScope } from "@cogni/poly-node-contracts";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { asc, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Database } from "@/adapters/server/db/client";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
+import {
+  type AgentGrantTransaction,
+  authorize,
+} from "@/features/agent-grants/authorization";
 import { billingAccounts, users } from "@/shared/db/schema";
 
 type Principal = { userId: string; name: string };
@@ -55,6 +66,9 @@ describe("agent capability grant RLS", () => {
   const ownerA = tenant("Grant owner A");
   const ownerB = tenant("Grant owner B");
   const internalAgent = principal("Internal agent");
+  // Holds ONLY the new canonical scope name — proves the widened RLS policy
+  // bodies, not merely the app-side alias table.
+  const canonicalAgent = principal("Canonical-scope agent");
   const externalAgent = principal("External agent");
   const wrongScopeAgent = principal("Wrong-scope agent");
   const expiredAgent = principal("Expired-grant agent");
@@ -63,6 +77,7 @@ describe("agent capability grant RLS", () => {
     ownerA,
     ownerB,
     internalAgent,
+    canonicalAgent,
     externalAgent,
     wrongScopeAgent,
     expiredAgent,
@@ -100,6 +115,13 @@ describe("agent capability grant RLS", () => {
         billingAccountId: ownerA.billingAccountId,
         granteePrincipalId: internalAgent.userId,
         scopes: ["performance:read"],
+        expiresAt: future,
+        createdByUserId: ownerA.userId,
+      },
+      {
+        billingAccountId: ownerA.billingAccountId,
+        granteePrincipalId: canonicalAgent.userId,
+        scopes: ["account:read"],
         expiresAt: future,
         createdByUserId: ownerA.userId,
       },
@@ -294,6 +316,72 @@ describe("agent capability grant RLS", () => {
       fills: [],
       decisions: [],
     });
+  });
+
+  async function authorizeFor(
+    userId: string,
+    accountId: string,
+    requiredScope: AgentCapabilityScope = "account:read"
+  ) {
+    return withTenantScope(db, userActor(toUserId(userId)), (tx) =>
+      authorize(tx as AgentGrantTransaction, {
+        principalId: userId,
+        accountId,
+        requiredScope,
+      })
+    );
+  }
+
+  it("authorizes the owner without a grant", async () => {
+    expect(await authorizeFor(ownerA.userId, ownerA.billingAccountId)).toEqual({
+      accessKind: "owner",
+      grantId: null,
+    });
+  });
+
+  it.each([
+    ["under the canonical scope", "account:read"],
+    ["under its own legacy name", "performance:read"],
+  ] as const)("authorizes a legacy-named grant %s", async (_label, scope) => {
+    const access = await authorizeFor(
+      internalAgent.userId,
+      ownerA.billingAccountId,
+      scope
+    );
+    expect(access?.accessKind).toBe("delegated");
+    expect(access?.grantId).toBeTruthy();
+  });
+
+  it("authorizes a canonical-named grant under the legacy scope too", async () => {
+    const access = await authorizeFor(
+      canonicalAgent.userId,
+      ownerA.billingAccountId,
+      "performance:read"
+    );
+    expect(access?.accessKind).toBe("delegated");
+  });
+
+  it("reads rows for a grant that holds ONLY the canonical scope name", async () => {
+    // The app check and RLS must agree. Had migration 0074 widened the CHECK
+    // but not the policies, authorize() above would still allow while this read
+    // returned zero rows — surfacing as "no data" rather than "denied".
+    expect(markerIds(await readMarkers(canonicalAgent.userId))).toEqual({
+      fills: [MARKER_A],
+      decisions: [DECISION_A],
+    });
+  });
+
+  it.each([
+    ["the second tenant", () => ownerB.userId],
+    ["a wrong-scope grant", () => wrongScopeAgent.userId],
+    ["an expired grant", () => expiredAgent.userId],
+    ["a revoked grant", () => revokedAgent.userId],
+  ])("denies %s with an indistinguishable null", async (_label, actor) => {
+    expect(await authorizeFor(actor(), ownerA.billingAccountId)).toBeNull();
+  });
+
+  it("denies an unknown account for an otherwise valid delegate", async () => {
+    expect(await authorizeFor(internalAgent.userId, randomUUID())).toBeNull();
   });
 
   it("returns zero rows without tenant context", async () => {

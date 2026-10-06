@@ -14,6 +14,11 @@
  *   - GRANTEE_READS: a grantee may select only grants issued directly to it.
  *   - SINGLE_CURRENT_GRANT: at most one non-revoked row exists per
  *     (billing_account_id, grantee_principal_id).
+ *   - ACCOUNT_READ_ALIAS: `account:read` is canonical for delegated account
+ *     reads; `performance:read` remains valid as its legacy alias so existing
+ *     production rows keep working. Both the app `authorize()` seam and the
+ *     delegated SELECT policies on poly_copy_trade_{fills,decisions,targets}
+ *     use array OVERLAP against the alias set, never containment of one name.
  * Side-effects: none (schema only)
  * @public
  */
@@ -33,6 +38,9 @@ import {
 import { billingAccounts, users } from "./refs";
 
 export const AGENT_CAPABILITY_SCOPE_VALUES = [
+  "account:read",
+  // Legacy alias of `account:read` (story.5006 expand phase). Retained so the
+  // grants already issued in production keep authorizing; do not issue it.
   "performance:read",
   "research:run",
   "policy:propose",
@@ -72,7 +80,7 @@ export const agentCapabilityGrants = pgTable(
     ),
     check(
       "agent_capability_grants_scopes_canonical",
-      sql`${table.scopes} <@ ARRAY['performance:read','research:run','policy:propose','paper:assign','live:approve','live:assign']::text[]`
+      sql`${table.scopes} <@ ARRAY['account:read','performance:read','research:run','policy:propose','paper:assign','live:approve','live:assign']::text[]`
     ),
     check(
       "agent_capability_grants_expiry_after_creation",

@@ -4,19 +4,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
+  authorize,
   getEvidence,
   InvalidInvestigationCapturedAtError,
   InvalidInvestigationCursorError,
   logEvent,
-  resolvePerformanceRead,
   tenantTransaction,
 } = vi.hoisted(() => ({
+  authorize: vi.fn(),
   getEvidence: vi.fn(),
   InvalidInvestigationCapturedAtError: class extends Error {},
   InvalidInvestigationCursorError: class extends Error {},
   logEvent: vi.fn(),
-  resolvePerformanceRead: vi.fn(),
-  tenantTransaction: { kind: "app-role-transaction", execute: vi.fn() },
+  tenantTransaction: {
+    kind: "app-role-transaction",
+    execute: vi.fn(async () => []),
+  },
 }));
 
 vi.mock("@/app/_lib/auth/session", () => ({ getSessionUser: vi.fn() }));
@@ -38,7 +41,7 @@ vi.mock("@/bootstrap/http", () => ({
     (request: Request) =>
       handler(
         {
-          log: {},
+          log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
           reqId: "investigation-request-1",
           routeId: "poly.research-copy-trade-investigation-evidence",
         } as never,
@@ -47,16 +50,20 @@ vi.mock("@/bootstrap/http", () => ({
       ),
 }));
 vi.mock("@/features/agent-grants/authorization", () => ({
-  resolvePerformanceRead: (...args: unknown[]) => resolvePerformanceRead(...args),
+  authorize: (...args: unknown[]) => authorize(...args),
+  resolvePrincipalAccountId: vi.fn(),
 }));
 vi.mock("@/features/wallet-analysis/server/copy-trade-investigation-service", () => ({
   getCopyTradeInvestigationEvidence: (...args: unknown[]) => getEvidence(...args),
+  getCopyTradeInvestigationSummary: vi.fn(),
   InvalidInvestigationCapturedAtError,
   InvalidInvestigationCursorError,
 }));
 vi.mock("@/shared/observability", () => ({
   EVENT_NAMES: {
     POLY_AGENT_GRANT_ACCESS_DECISION: "feature.poly_agent_grant.access_decision",
+    POLY_RESEARCH_COPY_TRADE_PNL_COMPLETE:
+      "feature.poly_research.copy_trade_pnl.complete",
     POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE:
       "feature.poly_research.copy_trade_investigation.complete",
   },
@@ -107,10 +114,14 @@ function expectSingleCompletion(expected: Record<string, unknown>): void {
   expect(completionFields()[0]).toEqual(expect.objectContaining(expected));
 }
 
+/**
+ * The TERMINAL event mirrors the response, so it must stay non-disclosing. The
+ * separate `access_decision` audit event intentionally names the principal,
+ * account and grant — story.5004 needs exact-SHA Loki proof that one specific
+ * cross-tenant read was denied, which cannot be shown without them.
+ */
 function expectNoExplicitIdentifiers(): void {
-  const fields = logEvent.mock.calls.map(
-    ([, , eventFields]) => eventFields as Record<string, unknown>
-  );
+  const fields = completionFields();
   for (const eventFields of fields) {
     for (const key of [
       "billingAccountId",
@@ -134,8 +145,8 @@ describe("copy-trade investigation evidence observability", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getEvidence.mockReset();
-    resolvePerformanceRead.mockReset();
-    resolvePerformanceRead.mockResolvedValue({
+    authorize.mockReset();
+    authorize.mockResolvedValue({
       accessKind: "delegated",
       grantId: "30000000-0000-4000-b000-000000000001",
     });
@@ -153,12 +164,12 @@ describe("copy-trade investigation evidence observability", () => {
       errorCode: "invalid_query",
       evidenceCount: 0,
     });
-    expect(resolvePerformanceRead).not.toHaveBeenCalled();
+    expect(authorize).not.toHaveBeenCalled();
     expectNoExplicitIdentifiers();
   });
 
   it("emits a correlated non-disclosing denial event", async () => {
-    resolvePerformanceRead.mockResolvedValue(null);
+    authorize.mockResolvedValue(null);
 
     const result = await GET(request("fills"));
 
@@ -206,7 +217,10 @@ describe("copy-trade investigation evidence observability", () => {
       reqId: "investigation-request-1",
       status: 500,
       outcome: "error",
-      authorizationOutcome: "not_evaluated",
+      // The executor reports the decision it already made before the handler
+      // threw; the old route blanket-logged "not_evaluated".
+      authorizationOutcome: "allowed",
+      accessKind: "delegated",
       evidenceKind: "decisions",
       errorCode: "service_failed",
     });

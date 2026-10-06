@@ -42,6 +42,8 @@ const activeGrant = {
 describe("poly agent grants v1 contract", () => {
   it("pins the complete canonical capability vocabulary", () => {
     expect(AGENT_CAPABILITY_SCOPES).toEqual([
+      // story.5006: canonical name first, its retained legacy alias second.
+      "account:read",
       "performance:read",
       "research:run",
       "policy:propose",
