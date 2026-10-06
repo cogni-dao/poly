@@ -19,21 +19,21 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1132 |
-| Unresolved legacy files | 602 |
-| P0/P1 mission files resolved | 8/79 |
-| Behavioral gates passed | 3/7 |
+| Current-only files | 1134 |
+| Unresolved legacy files | 603 |
+| P0/P1 mission files resolved | 7/79 |
+| Behavioral gates passed | 0/7 |
 
 | State | Count |
 | --- | ---: |
 | exact | 1126 |
-| upgraded | 7 |
+| upgraded | 6 |
 | retired | 1 |
-| unresolved | 602 |
+| unresolved | 603 |
 
 | Priority | Unresolved |
 | --- | ---: |
-| P0 | 20 |
+| P0 | 21 |
 | P1 | 51 |
 | P2 | 281 |
 | P3 | 250 |
@@ -42,7 +42,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 
 | Group | Files resolved | Gates passed | Outcome |
 | --- | ---: | ---: | --- |
-| `hub-control-plane` | 8/8 | 3/3 | Hub control-plane proof |
+| `hub-control-plane` | 7/8 | 0/3 | Hub control-plane proof |
 | `saved-facts` | 0/4 | 0/1 | Saved-fact reliability |
 | `dashboard-truth` | 0/10 | 0/3 | Dashboard truth |
 | `visible-p0` | 0/11 | 0/0 | Visible P0 parity |
@@ -58,9 +58,9 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | P0 | unresolved | `dashboard.pnl_history` | `dashboard-truth` | P/L history resolves the actual trading wallet and distinguishes missing observation data from a measured zero history. |
 | P0 | unresolved | `dashboard.wallet_identity` | `saved-facts` | The observer and every dashboard read model use the same tenant trading identity: funder_address when present, otherwise the legacy signer address. |
 | P0 | unresolved | `dashboard.wallet_total` | `dashboard-truth` | Total wallet value is cash plus marked positions; unavailable positions make Total unknown or explicitly partial, never a cash-only total. |
-| P0 | passed | `hub.work_item_create` | `hub-control-plane` | Authenticated POST /api/v1/work/items returns 201 and creates a Hub work item in Doltgres. |
-| P0 | passed | `hub.work_item_mutation` | `hub-control-plane` | Authenticated claim, heartbeat, release, PATCH, and DELETE use the Dolt-backed command adapter and mutations persist across a deployment restart. |
-| P0 | passed | `hub.work_item_source_of_truth` | `hub-control-plane` | The deployed Hub reads and writes work items through Doltgres, remains persistent across a production restart, and never uses repository Markdown as runtime persistence. |
+| P0 | unresolved | `hub.work_item_create` | `hub-control-plane` | Authenticated POST /api/v1/work/items returns 201 and creates a Hub work item in Doltgres. |
+| P0 | unresolved | `hub.work_item_mutation` | `hub-control-plane` | Authenticated claim, heartbeat, release, PATCH, and DELETE use the Dolt-backed command adapter and mutations persist across a deployment restart. |
+| P0 | unresolved | `hub.work_item_source_of_truth` | `hub-control-plane` | The deployed Hub reads and writes work items through Doltgres, remains persistent across a production restart, and never uses repository Markdown as runtime persistence. |
 
 ## Complete legacy file table
 
@@ -74,7 +74,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `740a4e68a2f6c899c1e69fd244998cdbf2a76def` | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` | `100644` | `d3076c17b720b12f68204a442d54a53012deb560` | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `bbb809a573ba86d91283316891f1976f19a46ddf` | `app/src/adapters/server/db/doltgres/work-items-cursor.ts` | `100644` | `0877830747a5ff19183c0ddf4d8f4dd4e277c816` | `app/src/adapters/server/db/doltgres/work-items-cursor.ts` |
 | P0 | retired | — | `hub-control-plane` | `100644` | `3ffb39ed6070376bd16b13358b0a58a89ff915c3` | `app/src/adapters/server/db/doltgres/client.ts` | — | — | `app/src/adapters/server/db/doltgres/client.ts` |
-| P0 | upgraded | — | `hub-control-plane` | `100644` | `07d0b8969e5edc5914865113dd8e7949443bbf48` | `app/src/bootstrap/container.ts` | `100644` | `fb101b66145a970a9c04633ae0d123b9e721d6b5` | `app/src/bootstrap/container.ts` |
+| P0 | unresolved | approval_stale | `hub-control-plane` | `100644` | `07d0b8969e5edc5914865113dd8e7949443bbf48` | `app/src/bootstrap/container.ts` | `100644` | `cc77962c80e3a54925dd2a570c0ea8cfa9899dea` | `app/src/bootstrap/container.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `c16eaad98d90d141912f56d8576385ec43f7389a` | `app/src/ports/work-items-doltgres.port.ts` | `100644` | `139f1c67c68161265f84f7ee3ce4578b186e9e31` | `app/src/ports/work-items-doltgres.port.ts` |
 | P0 | unresolved | content_differs | `saved-facts` | `100644` | `a02432ecc12b785d71a637725c6ee1ea7ad3c649` | `app/src/features/wallet-analysis/server/trader-observation-service.ts` | `100644` | `f81e9b1a7200e2d1f40d65a18a7a2cf58a114c89` | `app/src/features/wallet-analysis/server/trader-observation-service.ts` |
 | P0 | unresolved | content_differs | `saved-facts` | `100644` | `dcb6e95fa747b4c8b46048d1e72b7978600d8367` | `app/src/features/wallet-analysis/server/current-position-read-model.ts` | `100644` | `e8650022865a8ddb4818c7d964a93d5138768dbc` | `app/src/features/wallet-analysis/server/current-position-read-model.ts` |
@@ -154,7 +154,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `d6ca31ab3b6e99670034122959faccc516729512` | `app/src/app/api/v1/poly/research/copy-trade-pnl/route.ts` | `100644` | `a6d490dab30f16fcc665710febd622adb03076ce` | `app/src/app/api/v1/poly/research/copy-trade-pnl/route.ts` |
 | P1 | unresolved | missing_target | `p1-research-reads` | `100644` | `7c7422367779f96960c0913a364ef60781f800b3` | `app/src/app/api/v1/poly/research/paper-sidecar/[endpoint]/route.ts` | — | — | `app/src/app/api/v1/poly/research/paper-sidecar/[endpoint]/route.ts` |
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `6cf5ea35b15eafd771c4891f635de6dad3e291d0` | `app/src/app/api/v1/poly/research/target-overlap/route.ts` | `100644` | `426b51ea8fee5b44b9c09d2fb9adf3e47789b11b` | `app/src/app/api/v1/poly/research/target-overlap/route.ts` |
-| P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `c655888daa55814c9255e326b0853b77e21d6af0` | `app/src/app/api/v1/poly/research/trader-comparison/route.ts` | `100644` | `3e18d356640211abb27cf5f1562914a679e235b3` | `app/src/app/api/v1/poly/research/trader-comparison/route.ts` |
+| P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `c655888daa55814c9255e326b0853b77e21d6af0` | `app/src/app/api/v1/poly/research/trader-comparison/route.ts` | `100644` | `c67358dbb70c41316590f03e01ef2177709673ae` | `app/src/app/api/v1/poly/research/trader-comparison/route.ts` |
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `e09e3cb20b0dd6afc84be35864f78cf7ad318ea1` | `app/src/app/api/v1/poly/top-wallets/route.ts` | `100644` | `aad5707079ecd6830e4c109529cca4c091300608` | `app/src/app/api/v1/poly/top-wallets/route.ts` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `bf09a3b76f87b33ec5afbc3470df5abea3a53f67` | `app/src/app/api/v1/poly/wallet/positions/close/route.ts` | `100644` | `38389e7d663f2dad97e53c8e41458bd5f6339a59` | `app/src/app/api/v1/poly/wallet/positions/close/route.ts` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `94f881b3841d574fcdfa27f2d818368ed83fe4a7` | `app/src/app/api/v1/poly/wallet/refresh/route.ts` | `100644` | `fe31d3a93757926a22ecc9c0b418b4e3d5acf960` | `app/src/app/api/v1/poly/wallet/refresh/route.ts` |
@@ -194,7 +194,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `5408c7210ff7f30f5d79f466538da51a38966d17` | `app/src/features/wallet-analysis/server/poly-market-metadata-service.ts` | `100644` | `15fe7bf54bf3c83aa61bd74ac9c3bcec19e92a54` | `app/src/features/wallet-analysis/server/poly-market-metadata-service.ts` |
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `ea0f16ca8443df059ce3c73876e2eee60ad5bbd2` | `app/src/features/wallet-analysis/server/realized-pnl-service.ts` | `100644` | `bf763aed61aa82baffca3f6f6b787a8eefd94793` | `app/src/features/wallet-analysis/server/realized-pnl-service.ts` |
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `03a2ce211aa8c297b86415c441f3a3757b33939f` | `app/src/features/wallet-analysis/server/target-overlap-service.ts` | `100644` | `5f8c35c201172a8a4c4d54dc6b2eecd24ecc6aff` | `app/src/features/wallet-analysis/server/target-overlap-service.ts` |
-| P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `93b201ce8d291c0120fc2d85c2f4c54894d30d9c` | `app/src/features/wallet-analysis/server/trader-comparison-service.ts` | `100644` | `f01669eb061743a33c975a1718ceda896bf1a6c8` | `app/src/features/wallet-analysis/server/trader-comparison-service.ts` |
+| P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `93b201ce8d291c0120fc2d85c2f4c54894d30d9c` | `app/src/features/wallet-analysis/server/trader-comparison-service.ts` | `100644` | `61bdd6f11526c1ce86f2f96355cab2b5377e4cff` | `app/src/features/wallet-analysis/server/trader-comparison-service.ts` |
 | P1 | unresolved | content_differs | `saved-facts` | `100644` | `3429957ab591dc4ce944af612f0ab26a95791db5` | `app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts` | `100644` | `7bac754ac208ade04baf84452378aa41aea50e28` | `app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts` |
 | P1 | unresolved | content_differs | `saved-facts` | `100644` | `3b5a7ebe52c427322736b688d339cd85792f90c5` | `app/src/features/wallet-analysis/server/wallet-analysis-service.ts` | `100644` | `fa1bdb1b25fe57063d6d5804806889df60ef9864` | `app/src/features/wallet-analysis/server/wallet-analysis-service.ts` |
 | P1 | exact | — | — | `100644` | `564923f87e8b85adfe25dd85eb2e801b79371671` | `app/src/features/wallet-analysis/server/copy-trade-pnl-service.ts` | `100644` | `564923f87e8b85adfe25dd85eb2e801b79371671` | `app/src/features/wallet-analysis/server/copy-trade-pnl-service.ts` |
@@ -1132,7 +1132,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `0b3a2c3e20706de2a0da40de5f03bd9f7876707b` | `app/src/shared/db/schema.ts` | `100644` | `1a929d7559726c8a0ea1a697f890f2acf24e4b81` | `app/src/shared/db/schema.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `5abf73ac763e45e652990b9ae237a3ad4af15e69` | `app/src/shared/env/AGENTS.md` | `100644` | `0db3c10e96cc2af511d28c41773f56e6c7c68c83` | `app/src/shared/env/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `1e2715436ed787ff969346c84c03bb6d82a74d2c` | `app/src/shared/env/invariants.ts` | `100644` | `9b88361183fdacf0824fd9e6df7434203163fbd2` | `app/src/shared/env/invariants.ts` |
-| P3 | unresolved | content_differs | — | `100644` | `0e0576d830869f6fe12895c611d8bc6808818df6` | `app/src/shared/env/server-env.ts` | `100644` | `a5a738f4abb6c7d4dbb011c1e12132b2b7468022` | `app/src/shared/env/server-env.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `0e0576d830869f6fe12895c611d8bc6808818df6` | `app/src/shared/env/server-env.ts` | `100644` | `1c4d9e1b9d6f5eb2a3fd3990778f76a2c992a2ae` | `app/src/shared/env/server-env.ts` |
 | P3 | unresolved | missing_target | — | `100644` | `9b7c5117790640de68ce1bb43309a812f67e1599` | `app/src/shared/hooks/useIsMobile.ts` | — | — | `app/src/shared/hooks/useIsMobile.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `75cfb90111c5e178be4dbf9abeee91c0d1db7615` | `app/src/shared/observability/events/AGENTS.md` | `100644` | `bd4fc71bb657b7f884a765ff5d8e7127277f56ab` | `app/src/shared/observability/events/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `35824c215ad1e94b317e3d6eceb2b8e819e9ff42` | `app/src/shared/observability/events/index.ts` | `100644` | `871e59416b39284d640c57781acfc35bed1edef5` | `app/src/shared/observability/events/index.ts` |

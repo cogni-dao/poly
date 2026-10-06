@@ -398,7 +398,7 @@ let _marketOutcomeStop: (() => void) | null = null;
 let _priceHistoryStop: (() => void) | null = null;
 // Top-wallets leaderboard mirror job stop fn (bug.5017). Public Data API only.
 let _topWalletStatsStop: (() => void) | null = null;
-// One-shot research prewarm stop fn (fix/research-route-caching). DB only.
+// Research prewarm stop fn (boot pass + recurring comparison re-warm). DB only.
 let _researchPrewarmStop: (() => void) | null = null;
 // One-shot fill-rollup backfill walker (task.research-rollup-read-models). DB only.
 let _fillRollupBackfillStop: (() => void) | null = null;
@@ -1572,12 +1572,13 @@ function createContainer(): Container {
 			}
 		})();
 
-	// fix/research-route-caching — one-shot boot prewarm of the SWR-cached
-	// research aggregates (snapshot/benchmark for the two primary research
-	// wallets, target-overlap, trader-comparison). Serialized pLimit(1); no
-	// recurring loop. Runs through this jobs seam so only the task.5016 job
-	// leader prewarms (the coalesce cache is per-replica — prod is
-	// single-replica today, so leader == the serving pod).
+	// fix/research-route-caching + fix/comparison-per-wallet-cache — boot
+	// prewarm of the SWR-cached research aggregates (snapshot/benchmark for
+	// the two primary research wallets, target-overlap) plus a recurring 4min
+	// tick that keeps the two comparison targets warm per-wallet at the 1W
+	// board default. Serialized pLimit(1). Runs through this jobs seam so only
+	// the task.5016 job leader prewarms (the coalesce cache is per-replica —
+	// prod is single-replica today, so leader == the serving pod).
 	if (!env.POLY_RESEARCH_PREWARM_ENABLED) {
 		log.info(
 			{ event: "poly.research-prewarm.disabled" },
