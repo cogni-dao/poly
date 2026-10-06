@@ -112,6 +112,32 @@ describe("agent access request auth boundary", () => {
     expect(pollFacade).not.toHaveBeenCalled();
   });
 
+  it("rejects blank Bearer credentials instead of accepting session fallback", async () => {
+    for (const authorization of ["Bearer", "Bearer ", "Bearer    "]) {
+      const headers = {
+        authorization,
+        "content-type": "application/json",
+      };
+      const listResponse = await AGENT_LIST(
+        new NextRequest("http://localhost/api/v1/agent/access-requests", {
+          headers,
+        })
+      );
+      const createResponse = await CREATE(
+        new NextRequest("http://localhost/api/v1/agent/access-requests", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ expires_at: "2026-10-20T00:00:00.000Z" }),
+        })
+      );
+
+      expect(listResponse.status).toBe(404);
+      expect(createResponse.status).toBe(404);
+    }
+    expect(agentListFacade).not.toHaveBeenCalled();
+    expect(createFacade).not.toHaveBeenCalled();
+  });
+
   it("rejects bearer transport on owner list, preview, and decision", async () => {
     const headers = {
       authorization: "Bearer cogni_ag_sk_v1_machine-token",

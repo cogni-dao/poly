@@ -29,6 +29,8 @@ import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+const AGENT_TOKEN_PREFIX = "cogni_ag_sk_v1_";
+
 function errorResponse(
   error: "invalid_request" | "not_found" | "conflict",
   status: number
@@ -39,10 +41,13 @@ function errorResponse(
 }
 
 function isBearerRequest(request: Request): boolean {
-  return request.headers
-    .get("authorization")
-    ?.toLowerCase()
-    .startsWith("bearer ") === true;
+  const authorization = request.headers.get("authorization");
+  if (!authorization?.toLowerCase().startsWith("bearer ")) return false;
+  const credential = authorization.slice(7).trim();
+  return (
+    credential.startsWith(AGENT_TOKEN_PREFIX) &&
+    credential.length > AGENT_TOKEN_PREFIX.length
+  );
 }
 
 export const GET = wrapRouteHandlerWithLogging(
