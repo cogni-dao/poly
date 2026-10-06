@@ -98,6 +98,20 @@ const operation = {
   accountFrom: "input",
 } as const;
 
+// `accountFrom: "principal"` means "no account id on the wire", so its input
+// schema must NOT carry one. Reusing the `input`-mode operation here would let
+// `accountIdFromInput` satisfy the account and silently skip the principal
+// resolution under test — and would make an ambiguity assertion pass for the
+// wrong reason (schema rejection, which is also invalid_input).
+const principalOperation = {
+  ...operation,
+  id: "poly.test-principal-read.v1",
+  input: z.object({
+    limit: z.coerce.number().int().min(1).default(10),
+  }),
+  accountFrom: "principal",
+} as const;
+
 const ctx = {
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   reqId: "request-1",
@@ -235,10 +249,7 @@ describe("executeAccountRead dispatch order", () => {
     resolveSubjectAccountId.mockResolvedValue({ kind: "resolved", accountId: ACCOUNT });
     reset(DELEGATE);
 
-    await run({
-      handler,
-      operation: { ...operation, accountFrom: "principal" },
-    });
+    await run({ handler, operation: principalOperation, rawInput: {} });
 
     expect(handler).toHaveBeenCalledWith(tx, expect.anything(), ACCOUNT);
   });
@@ -246,7 +257,7 @@ describe("executeAccountRead dispatch order", () => {
   it("resolves the account from the principal when the descriptor says so", async () => {
     resolveSubjectAccountId.mockResolvedValue({ kind: "resolved", accountId: ACCOUNT });
 
-    await run({ operation: { ...operation, accountFrom: "principal" } });
+    await run({ operation: principalOperation, rawInput: {} });
 
     expect(resolveSubjectAccountId).toHaveBeenCalledWith(tx, {
       principalId: PRINCIPAL,
@@ -263,7 +274,8 @@ describe("executeAccountRead dispatch order", () => {
     resolveSubjectAccountId.mockResolvedValue({ kind: "none" });
 
     const result = await run({
-      operation: { ...operation, accountFrom: "principal" },
+      operation: principalOperation,
+      rawInput: {},
     });
 
     expect(result.status).toBe("denied");
@@ -286,11 +298,16 @@ describe("executeAccountRead dispatch order", () => {
 
     const result = await run({
       handler,
-      operation: { ...operation, accountFrom: "principal" },
+      operation: principalOperation,
       rawInput: {},
     });
 
-    expect(result.status).toBe("invalid_input");
+    // Must be ambiguity, NOT schema rejection — principalOperation's schema
+    // accepts `{}`, so reaching invalid_input proves the account was the cause.
+    expect(result).toMatchObject({
+      status: "invalid_input",
+      message: expect.stringContaining("specify billing_account_id"),
+    });
     expect(authorize).not.toHaveBeenCalled();
     expect(handler).not.toHaveBeenCalled();
     // Non-enumerating: the count may leak, the ids may not.
@@ -303,6 +320,8 @@ describe("executeAccountRead dispatch order", () => {
       rawInput: { billing_account_id: ACCOUNT },
     });
 
+    // `operation`'s schema does carry an id; a descriptor may declare
+    // `principal` and still accept an explicit subject, which must win.
     expect(resolveSubjectAccountId).not.toHaveBeenCalled();
     expect(authorize).toHaveBeenCalledWith(tx, {
       principalId: PRINCIPAL,
