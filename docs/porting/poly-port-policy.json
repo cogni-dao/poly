@@ -185,6 +185,7 @@
         "app/src/app/(app)/credits/TradingReadinessSection.tsx",
         "app/src/app/(app)/credits/TradingWalletPanel.tsx",
         "app/src/app/(app)/dashboard/view.tsx",
+        "app/src/app/(app)/research/view.tsx",
         "app/src/features/layout/components/AppHeader.tsx",
         "app/src/features/layout/components/AppSidebar.tsx",
         "app/src/features/layout/components/AppTopBar.tsx",
@@ -544,6 +545,20 @@
       "proofs": [
         { "environment": "candidate", "buildSha": "eb9bd390623d664bb3c50b7125fdb637f2970d3b", "observedAt": "2026-10-03T02:14:00Z", "kind": "api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964486263", "expectedTargetDigest": "f15a1938150bf4ec8ca4130e3406f91dbcba671a870f1f44affb45e802e54e4b", "apiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964486263"], "uiRefs": [], "lokiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964486263"], "oracleRefs": [], "notApplicable": ["ui", "oracle"] },
         { "environment": "production", "buildSha": "506063969498571c786ef2cc41c8ff0e0f356b2f", "observedAt": "2026-10-03T02:47:15Z", "kind": "passive-api+loki", "reference": "https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528", "expectedTargetDigest": "f15a1938150bf4ec8ca4130e3406f91dbcba671a870f1f44affb45e802e54e4b", "apiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"], "uiRefs": [], "lokiRefs": ["https://github.com/cogni-dao/poly/pull/114#issuecomment-5964786528"], "oracleRefs": [], "notApplicable": ["ui", "oracle"] }
+      ]
+    },
+    {
+      "sourcePath": "app/src/app/(app)/research/view.tsx",
+      "deliveryGroup": "visible-p0",
+      "outcome": "upgraded",
+      "source": { "blob": "62c8b933dc05f0517758524f481c22957417536b", "mode": "100644" },
+      "target": { "path": "app/src/app/(app)/research/view.tsx", "blob": "558e19a7ce24eebda5af7e30c213cf2f1bc28d33", "mode": "100644" },
+      "rationale": "SELF_IS_TRADING_WALLET: the research 'You' overlay is keyed on the connected per-tenant trading wallet (funder_address from /api/v1/poly/wallet/status, gated on connected), never the signin EOA, which never trades and always probes as wallet_not_observed.",
+      "behaviorExpectation": "Disconnected users see no 'You' series and a connect CTA; connected users see 'You' as their trading wallet; the signin EOA is never queried by research surfaces.",
+      "behaviorGateIds": [],
+      "proofs": [
+        { "environment": "candidate", "buildSha": "eb5ce5adddd914cdbd8927473967de54dc182e85", "observedAt": "2026-10-06T04:41:58Z", "kind": "ui", "reference": "https://github.com/cogni-dao/poly/pull/129#issuecomment-6009489119", "expectedTargetDigest": "edcf4df676bfa8db0925fa662200602bc4dfe8de1f608c9da0815659d116ca46", "apiRefs": [], "uiRefs": ["https://github.com/cogni-dao/poly/pull/129#issuecomment-6009489119"], "lokiRefs": [], "oracleRefs": [], "notApplicable": ["api", "loki", "oracle"] },
+        { "environment": "production", "buildSha": "70d3243994dfd68bb34ea0ef4285bb6dc249705c", "observedAt": "2026-10-06T04:33:00Z", "kind": "passive-ui", "reference": "https://github.com/cogni-dao/poly/pull/129#issuecomment-6009489119", "expectedTargetDigest": "edcf4df676bfa8db0925fa662200602bc4dfe8de1f608c9da0815659d116ca46", "apiRefs": [], "uiRefs": ["https://github.com/cogni-dao/poly/pull/129#issuecomment-6009489119"], "lokiRefs": [], "oracleRefs": [], "notApplicable": ["api", "loki", "oracle"] }
       ]
     },
     {

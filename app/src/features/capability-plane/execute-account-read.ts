@@ -37,6 +37,12 @@
  *     access kind and no account id in the terminal event.
  *   - NO_FABRICATED_VALUES — a handler returning null is reported as
  *     `"not_found"`; it is never coerced into zeroes or an empty snapshot.
+ *   - ACCOUNT_IS_EXPLICIT — the authorized account id is passed to the handler,
+ *     which must filter on it. RLS alone is NOT a tenant selector: a delegated
+ *     principal can see both the account it owns and every account it holds a
+ *     grant on, so an unfiltered handler would merge two accounts into one
+ *     response. Decisive for `accountFrom: "principal"` operations and for
+ *     `poly_trader_*`, which carries no RLS at all.
  * Side-effects: IO (one Postgres transaction), logging.
  * Links: story.5006, task.1791070961, @features/agent-grants/authorization
  * @public
@@ -52,7 +58,7 @@ import {
   type AccountReadAccess,
   type AgentGrantTransaction,
   authorize,
-  resolvePrincipalAccountId,
+  resolveSubjectAccountId,
 } from "@/features/agent-grants/authorization";
 import {
   EVENT_NAMES,
@@ -62,13 +68,23 @@ import {
 } from "@/shared/observability";
 
 /**
- * A feature handler. Receives ONLY validated input plus the already-authorized
- * app-role tenant transaction. Returns `null` for "no such saved fact", which
- * the executor renders as a non-disclosing not-found — never as zeroes.
+ * A feature handler. Receives ONLY validated input, the already-authorized
+ * app-role tenant transaction, and the id of the account that `authorize()`
+ * actually allowed. Returns `null` for "no such saved fact", which the executor
+ * renders as a non-disclosing not-found — never as zeroes.
+ *
+ * ACCOUNT_IS_EXPLICIT: the handler MUST filter every query by `accountId` and
+ * must never infer the tenant from RLS alone. A delegated principal's RLS
+ * legitimately spans BOTH the account it owns AND every account it holds a
+ * grant on, so an unfiltered query would merge two accounts into one response.
+ * This matters most for `accountFrom: "principal"` operations, where no account
+ * id appears on the wire, and it is load-bearing for `poly_trader_*`, which has
+ * no RLS at all (the capability is the only tenant clamp there).
  */
 export type AccountReadHandler<TInput, TOutput> = (
   tx: AgentGrantTransaction,
-  input: TInput
+  input: TInput,
+  accountId: string
 ) => Promise<TOutput | null>;
 
 /**
@@ -181,7 +197,8 @@ export async function executeAccountRead<
     access: AccountReadAccess | null;
     input: TInput | null;
     data: TOutput | null;
-  } = { access: null, input: null, data: null };
+    ambiguousAccounts: readonly string[] | null;
+  } = { access: null, input: null, data: null, ambiguousAccounts: null };
 
   // A transport's count builder must never be able to suppress the one terminal
   // event: if `extra` throws, the event still goes out, minus the extras.
@@ -245,10 +262,24 @@ export async function executeAccountRead<
           );
         }
 
-        const accountId =
-          args.operation.accountFrom === "principal"
-            ? await resolvePrincipalAccountId(tx, args.principalId)
-            : accountIdFromInput(input);
+        // An explicit subject on the wire always wins. Only when none is
+        // present does a `principal` descriptor resolve one, and per
+        // SUBJECT_IS_NOT_CALLER that means "the single account this principal
+        // can reach for this scope" — never "the account it owns", which would
+        // hand a delegated agent its own empty tenant.
+        let accountId = accountIdFromInput(input);
+        if (!accountId && args.operation.accountFrom === "principal") {
+          const subject = await resolveSubjectAccountId(tx, {
+            principalId: args.principalId,
+            requiredScope: args.operation.requiredScope,
+          });
+          if (subject.kind === "resolved") {
+            accountId = subject.accountId;
+          } else if (subject.kind === "ambiguous") {
+            // Reachable by more than one account: the caller must name it.
+            state.ambiguousAccounts = subject.accountIds;
+          }
+        }
 
         // 4. The single authorization decision, then its audit event. Emitted
         //    for allows and denials alike so every decision reaches Loki.
@@ -277,14 +308,19 @@ export async function executeAccountRead<
             : {}),
         });
 
-        if (!access) return null;
+        // `accountId` is non-null whenever `access` is, since authorize() is
+        // only reached with one; narrowing both here keeps the handler's
+        // `accountId` a plain string with no cast.
+        if (!access || !accountId) return null;
 
         // 5. ONLY NOW may an account-keyed cache be consulted.
         const cached = await args.cache?.lookup(input, access);
         if (cached != null) return { data: cached };
 
-        // 6. The handler sees only validated input and this authorized tx.
-        const result = await args.handler(tx, input);
+        // 6. The handler sees validated input, this authorized tx, and the
+        //    account authorize() allowed — per ACCOUNT_IS_EXPLICIT it must
+        //    filter on that id rather than trusting RLS to scope the tenant.
+        const result = await args.handler(tx, input, accountId);
         if (result != null) {
           await args.cache?.store?.(input, access, result);
         }
@@ -298,6 +334,16 @@ export async function executeAccountRead<
     }
     emit("failed");
     return { status: "failed" };
+  }
+
+  if (state.ambiguousAccounts) {
+    // Not a denial: the principal is authorized for several accounts and did
+    // not say which. Disclosing only the count keeps this non-enumerating.
+    emit("invalid_input");
+    return {
+      status: "invalid_input",
+      message: `This principal can read ${state.ambiguousAccounts.length} accounts; specify billing_account_id.`,
+    };
   }
 
   const access = state.access;
