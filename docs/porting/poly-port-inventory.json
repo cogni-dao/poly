@@ -53,7 +53,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1168,
+    "targetOnlyFiles": 1169,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -26484,6 +26484,9 @@
     },
     {
       "targetPath": "docs/spec/capability-plane.md"
+    },
+    {
+      "targetPath": "docs/spec/dashboard-agent-parity-inventory.md"
     },
     {
       "targetPath": "docs/spec/knowledge-syntropy.md"
