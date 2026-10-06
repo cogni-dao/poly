@@ -20,7 +20,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1210 |
+| Current-only files | 1212 |
 | Unresolved legacy files | 609 |
 | P0/P1 mission files resolved | 8/80 |
 | Behavioral gates passed | 0/7 |
@@ -216,7 +216,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `d15e5ebc8b6d3fdc57a84004866d5542fd8af358` | `packages/ai-tools/tsconfig.json` | `100644` | `b932f5684cae330ae49da081790ce568397c181d` | `packages/poly-ai-tools/tsconfig.json` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `645f5ecfe7e455ddf07bc6f28ff05956c89a56f7` | `packages/db-schema/src/copy-trade.ts` | `100644` | `3f6f55e5987f6702fe0b3b1a93d3396458eff458` | `packages/poly-db-schema/src/copy-trade.ts` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `f3571d8a8cd7c3be70c13ad2246b912f2a289b1f` | `packages/db-schema/src/poly-redeem-jobs.ts` | `100644` | `e9fea6794edb2c352cff774272b9a7faa0220351` | `packages/poly-db-schema/src/poly-redeem-jobs.ts` |
-| P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `4218872509984bcebe9506785bcdf838396ef7bf` | `packages/db-schema/src/trader-activity.ts` | `100644` | `b7f7bbb64c326d1fdfc63844d3207e0ff720e3bc` | `packages/poly-db-schema/src/trader-activity.ts` |
+| P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `4218872509984bcebe9506785bcdf838396ef7bf` | `packages/db-schema/src/trader-activity.ts` | `100644` | `4de51f2272e3983179d7e493dc8dea4bd48c0a2a` | `packages/poly-db-schema/src/trader-activity.ts` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `29eb0390447c95953ad954c0aff46c54e84aa1da` | `packages/db-schema/src/wallet-connections.ts` | `100644` | `0f03e6c5bd6768857db452a604f039f67bdad3e2` | `packages/poly-db-schema/src/wallet-connections.ts` |
 | P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `652d59ab651f1f1b807befe0540f21633dd98b48` | `packages/market-provider/AGENTS.md` | `100644` | `bf05579c7624b0bda0ced23617246cb17e0fd270` | `packages/poly-market-provider/AGENTS.md` |
 | P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `18527933c43fe4b1c79da66b6ee8fc9408ded1f8` | `packages/market-provider/package.json` | `100644` | `d40efbb4f4717136fd8fcf05af12c55ce2ba313c` | `packages/poly-market-provider/package.json` |
@@ -956,7 +956,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `65ee3d72fbbaa034381dc0fbe3af27b2015d16dd` | `app/src/adapters/server/db/drizzle.client.ts` | `100644` | `9849f9295d2638ccd2f8f2efe995c388d48bb6dd` | `app/src/adapters/server/db/drizzle.client.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `49084b4c7846d76f3f245685a3fb51ae41222498` | `app/src/adapters/server/db/drizzle.service-client.ts` | `100644` | `ab4845c7bb9ff65a472e480355700959256426ec` | `app/src/adapters/server/db/drizzle.service-client.ts` |
 | P3 | unresolved | missing_target | — | `100644` | `1c68f2a93e9c31366481e020bafb4429c7ed8e62` | `app/src/adapters/server/db/migrations/README.md` | — | — | `app/src/adapters/server/db/migrations/README.md` |
-| P3 | unresolved | content_differs | — | `100644` | `888987037701e67c4772de6490a7904173e41e5d` | `app/src/adapters/server/db/migrations/meta/_journal.json` | `100644` | `c9165c61a10f691d110a1795650e20eaaec56a32` | `app/src/adapters/server/db/migrations/meta/_journal.json` |
+| P3 | unresolved | content_differs | — | `100644` | `888987037701e67c4772de6490a7904173e41e5d` | `app/src/adapters/server/db/migrations/meta/_journal.json` | `100644` | `105a72a26eab25b1eba19e1a14661717f8ef899d` | `app/src/adapters/server/db/migrations/meta/_journal.json` |
 | P3 | unresolved | content_differs | — | `100644` | `e55c1089fbb846bc5c26877ab003863cf34b9f45` | `app/src/adapters/server/identity/create-binding.ts` | `100644` | `c28f7aaf935cf4a9c0b9b36147dba750e783bb2b` | `app/src/adapters/server/identity/create-binding.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `52083b0eb0c4f99b153749a4dd5646d3850eb943` | `app/src/adapters/server/index.ts` | `100644` | `ab11440f15d49f0739c745ced9b6bd336807d6ee` | `app/src/adapters/server/index.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `6af5730b065293d92c8706bfb4b4e259ce3058ab` | `app/src/adapters/server/onchain/viem-evm-onchain-client.adapter.ts` | `100644` | `20bab4a4f48f778215269cc61dbfd99e3e678044` | `app/src/adapters/server/onchain/viem-evm-onchain-client.adapter.ts` |

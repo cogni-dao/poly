@@ -49,11 +49,11 @@
     }
   ],
   "policySha256": "a3794a9aa90be191acf575468d862ecb3e1f6d46313f9a0106dfa24b159d3e7e",
-  "targetTreeDigest": "d97a50c61b7449ef2f3e89c57fdb22fce435db70c22245533f1014ad7638bb39",
+  "targetTreeDigest": "a6076af8eb12884e6d482e88efab75c33c961c9cbec11de43f530331e2a41c1d",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1210,
+    "targetOnlyFiles": 1212,
     "unresolved": 609,
     "byStatus": {
       "exact": 1119,
@@ -3316,7 +3316,7 @@
       "sourceBlob": "888987037701e67c4772de6490a7904173e41e5d",
       "sourcePath": "app/src/adapters/server/db/migrations/meta/_journal.json",
       "targetPath": "app/src/adapters/server/db/migrations/meta/_journal.json",
-      "targetBlob": "c9165c61a10f691d110a1795650e20eaaec56a32",
+      "targetBlob": "105a72a26eab25b1eba19e1a14661717f8ef899d",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -21614,7 +21614,7 @@
       "sourceBlob": "4218872509984bcebe9506785bcdf838396ef7bf",
       "sourcePath": "packages/db-schema/src/trader-activity.ts",
       "targetPath": "packages/poly-db-schema/src/trader-activity.ts",
-      "targetBlob": "b7f7bbb64c326d1fdfc63844d3207e0ff720e3bc",
+      "targetBlob": "4de51f2272e3983179d7e493dc8dea4bd48c0a2a",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -25544,6 +25544,9 @@
       "targetPath": "app/src/adapters/server/db/migrations/0077_pale_wallop.sql"
     },
     {
+      "targetPath": "app/src/adapters/server/db/migrations/0078_giant_justin_hammer.sql"
+    },
+    {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0060_snapshot.json"
     },
     {
@@ -25590,6 +25593,9 @@
     },
     {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0077_snapshot.json"
+    },
+    {
+      "targetPath": "app/src/adapters/server/db/migrations/meta/0078_snapshot.json"
     },
     {
       "targetPath": "app/src/adapters/server/identity/identity-binding.adapter.ts"
