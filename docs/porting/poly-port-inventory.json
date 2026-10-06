@@ -49,11 +49,11 @@
     }
   ],
   "policySha256": "9b181ac5914f0931291e70cfaa5e99c8bb68ad980822c0cb9eec2e160f2f53e6",
-  "targetTreeDigest": "4855067513b9793423162a2da9ce813e26256ee48b345c2e40b22d984c3794b3",
+  "targetTreeDigest": "94f394a41d78b8ca334c44fec518f82477fea238c1119e960738d2db814dbbdf",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1198,
+    "targetOnlyFiles": 1200,
     "unresolved": 605,
     "byStatus": {
       "exact": 1123,
@@ -3316,7 +3316,7 @@
       "sourceBlob": "888987037701e67c4772de6490a7904173e41e5d",
       "sourcePath": "app/src/adapters/server/db/migrations/meta/_journal.json",
       "targetPath": "app/src/adapters/server/db/migrations/meta/_journal.json",
-      "targetBlob": "90b931b530b68493dbad3c1b50d0fff0037433c4",
+      "targetBlob": "c9165c61a10f691d110a1795650e20eaaec56a32",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -13388,7 +13388,7 @@
       "sourceBlob": "39f5da2a98a92ec6bfbcb89e0510b0c4a573fa2d",
       "sourcePath": "app/src/features/wallet-analysis/server/market-exposure-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/market-exposure-service.ts",
-      "targetBlob": "a23762272452a910ad72bfce5355aec4cd2b8f36",
+      "targetBlob": "cbf35f9bb69e03a4e88d69d23658a49eb24379a1",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -21614,7 +21614,7 @@
       "sourceBlob": "4218872509984bcebe9506785bcdf838396ef7bf",
       "sourcePath": "packages/db-schema/src/trader-activity.ts",
       "targetPath": "packages/poly-db-schema/src/trader-activity.ts",
-      "targetBlob": "7f238aa801bbe01269cfc6742039f23c04995e4c",
+      "targetBlob": "b7f7bbb64c326d1fdfc63844d3207e0ff720e3bc",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -25544,6 +25544,9 @@
       "targetPath": "app/src/adapters/server/db/migrations/0076_copy_operations_delegated_reads.sql"
     },
     {
+      "targetPath": "app/src/adapters/server/db/migrations/0077_pale_wallop.sql"
+    },
+    {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0060_snapshot.json"
     },
     {
@@ -25587,6 +25590,9 @@
     },
     {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0075_snapshot.json"
+    },
+    {
+      "targetPath": "app/src/adapters/server/db/migrations/meta/0077_snapshot.json"
     },
     {
       "targetPath": "app/src/adapters/server/identity/identity-binding.adapter.ts"
