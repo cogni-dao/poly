@@ -17,7 +17,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1130,
+    "targetOnlyFiles": 1131,
     "unresolved": 602,
     "byStatus": {
       "exact": 1126,
@@ -25686,6 +25686,9 @@
     },
     {
       "targetPath": "app/src/app/api/v1/agent/access-requests/[id]/route.ts"
+    },
+    {
+      "targetPath": "app/src/app/api/v1/agent/access-requests/_bearer-transport.ts"
     },
     {
       "targetPath": "app/src/app/api/v1/agent/access-requests/route.ts"
