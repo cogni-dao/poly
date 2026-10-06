@@ -28,10 +28,11 @@ function keys(row: OracleRow): { condition: string; asset: string } {
   const conditionAttribute = row.attributes.condition_id;
   const tokenAttribute = row.attributes.token_id;
   return {
-    condition:
+    condition: (
       typeof conditionAttribute === "string" && conditionAttribute.length > 0
         ? conditionAttribute
-        : row.marketId.replace(/^prediction-market:polymarket:/, "") || row.fillId,
+        : row.marketId.replace(/^prediction-market:polymarket:/, "") || row.fillId
+    ).toLowerCase(),
     asset:
       typeof tokenAttribute === "string" && tokenAttribute.length > 0
         ? tokenAttribute
@@ -121,6 +122,24 @@ describe("wallet dashboard closed SQL parity", () => {
       updatedAt: OBSERVED,
       attributes: { condition_id: "condition-c", token_id: "token-d", closed_at: OBSERVED.toISOString() },
     },
+    {
+      fillId: "mixed-old",
+      marketId: "ignored",
+      clientOrderId: "client-mixed-old",
+      lifecycle: "closed",
+      observedAt: new Date("2026-10-03T10:30:00.000Z"),
+      updatedAt: new Date("2026-10-03T10:30:00.000Z"),
+      attributes: { condition_id: "CONDITION-MIXED", token_id: "token-mixed", closed_at: OBSERVED.toISOString() },
+    },
+    {
+      fillId: "mixed-new",
+      marketId: "ignored",
+      clientOrderId: "client-mixed-new",
+      lifecycle: "redeemed",
+      observedAt: new Date("2026-10-03T11:30:00.000Z"),
+      updatedAt: new Date("2026-10-03T11:30:00.000Z"),
+      attributes: { condition_id: "condition-mixed", token_id: "token-mixed", closed_at: OBSERVED.toISOString() },
+    },
   ];
 
   beforeAll(async () => {
@@ -170,5 +189,15 @@ describe("wallet dashboard closed SQL parity", () => {
       oracle.map((row) => keys(row).asset)
     );
     expect(actual.positions.some((position) => position.conditionId === "condition-a")).toBe(false);
+    expect(
+      actual.positions.filter(
+        (position) => position.conditionId === "condition-mixed"
+      )
+    ).toHaveLength(1);
+    expect(
+      actual.positions.find(
+        (position) => position.conditionId === "condition-mixed"
+      )?.positionId
+    ).toBe("condition-mixed:token-mixed");
   });
 });

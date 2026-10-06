@@ -14,6 +14,9 @@
  *   - OBSERVER_OWNS_UPSTREAM_PAGING: this module performs no Polymarket HTTP.
  *   - COMPLETE_POLLS_DEACTIVATE: missing rows are trusted only because the
  *     observer deactivates them after complete paged polls.
+ *   - CANONICAL_WALLET_SCOPE: every eligible physical wallet row sharing
+ *     the case-insensitive address is one logical wallet; positions are
+ *     globally deduped and identity ambiguity makes the fact partial.
  *   - RAW_NEVER_SELECTED_WHOLESALE: the Data-API `raw` jsonb is projected
  *     to 7 scalar `raw->>` fields in SQL (dashboard read-path floor fix);
  *     the full blob never crosses the wire or gets decoded in V8.
@@ -64,6 +67,8 @@ type CurrentPositionRow = {
   raw_outcome: string | null;
   cursor_last_success_at: Date | string | null;
   cursor_status: string | null;
+  eligible_wallet_count: string | number;
+  wallet_identity_count: string | number;
   redeem_status: string | null;
   redeem_lifecycle_state: WalletExecutionLifecycleState | null;
   market_outcome: "winner" | "loser" | "unknown" | null;
@@ -93,6 +98,8 @@ export interface CurrentWalletPositionReadModel {
     hasSuccessfulObservation: boolean;
     /** Cursor state is preserved so callers distinguish partial from stale/error. */
     cursorStatus: string | null;
+    /** More than one physical wallet row shares the logical wallet identity. */
+    identityAmbiguous: boolean;
   };
   warnings: WalletExecutionWarning[];
 }
@@ -104,8 +111,55 @@ export async function readCurrentWalletPositionModel(params: {
 }): Promise<CurrentWalletPositionReadModel> {
   const rows = normalizeRows<CurrentPositionRow>(
     await params.db.execute(sql`
+      WITH wallet_candidates AS (
+        SELECT w.*
+        FROM poly_trader_wallets w
+        WHERE lower(w.wallet_address) = lower(${params.walletAddress})
+          AND w.kind = 'cogni_wallet'
+          AND w.active_for_research = true
+          AND w.disabled_at IS NULL
+      ), canonical_wallet_identity AS (
+        SELECT count(*)::bigint AS wallet_identity_count
+        FROM poly_trader_wallets w
+        WHERE lower(w.wallet_address) = lower(${params.walletAddress})
+      ), wallet_cursor_state AS (
+        SELECT
+          count(w.id)::bigint AS eligible_wallet_count,
+          (SELECT wallet_identity_count FROM canonical_wallet_identity)
+            AS wallet_identity_count,
+          min(c.last_success_at) AS cursor_last_success_at,
+          CASE
+            WHEN count(w.id) = 0 THEN NULL
+            WHEN count(c.trader_wallet_id) < count(w.id) THEN 'partial'
+            WHEN bool_and(c.status = 'ok') THEN 'ok'
+            WHEN bool_or(c.status = 'partial') THEN 'partial'
+            WHEN bool_or(c.status = 'error') THEN 'error'
+            WHEN bool_or(c.status = 'stale') THEN 'stale'
+            ELSE 'partial'
+          END AS cursor_status
+        FROM wallet_candidates w
+        LEFT JOIN poly_trader_ingestion_cursors c
+          ON c.trader_wallet_id = w.id
+         AND c.source = ${OBSERVATION_SOURCE}
+      ), position_candidates AS (
+        SELECT
+          p.*,
+          lower(p.condition_id) AS condition_key,
+          row_number() OVER (
+            PARTITION BY lower(p.condition_id), p.token_id
+            ORDER BY p.last_observed_at DESC, w.updated_at DESC,
+              w.created_at DESC, w.id, p.condition_id
+          ) AS identity_rank
+        FROM poly_trader_current_positions p
+        JOIN wallet_candidates w ON w.id = p.trader_wallet_id
+      ), normalized_positions AS (
+        SELECT *
+        FROM position_candidates p
+        WHERE identity_rank = 1
+          AND ${liveCurrentPositionSql("p")}
+      )
       SELECT
-        p.condition_id,
+        lower(p.condition_id) AS condition_id,
         p.token_id,
         p.shares,
         p.cost_basis_usdc,
@@ -124,8 +178,10 @@ export async function readCurrentWalletPositionModel(params: {
         p.raw->>'slug' AS raw_slug,
         p.raw->>'eventSlug' AS raw_event_slug,
         p.raw->>'outcome' AS raw_outcome,
-        c.last_success_at AS cursor_last_success_at,
-        c.status AS cursor_status,
+        ws.cursor_last_success_at,
+        ws.cursor_status,
+        ws.eligible_wallet_count,
+        ws.wallet_identity_count,
         r.status AS redeem_status,
         r.lifecycle_state AS redeem_lifecycle_state,
         pmo.outcome AS market_outcome,
@@ -154,27 +210,39 @@ export async function readCurrentWalletPositionModel(params: {
               )
             )
         ) OVER (), 0) AS total_positions_mtm
-      FROM poly_trader_wallets w
-      LEFT JOIN poly_trader_ingestion_cursors c
-        ON c.trader_wallet_id = w.id
-       AND c.source = ${OBSERVATION_SOURCE}
-      LEFT JOIN poly_trader_current_positions p
-        ON p.trader_wallet_id = w.id
-       AND ${liveCurrentPositionSql("p")}
-      LEFT JOIN poly_redeem_jobs r
-        ON lower(r.funder_address) = w.wallet_address
-       AND lower(r.condition_id) = p.condition_id
-       AND r.position_id = p.token_id
-      LEFT JOIN poly_market_outcomes pmo
-        ON pmo.condition_id = p.condition_id
-       AND pmo.token_id = p.token_id
-      LEFT JOIN poly_market_metadata pmm
-        ON pmm.condition_id = p.condition_id
-      WHERE w.wallet_address = lower(${params.walletAddress})
-        AND w.kind = 'cogni_wallet'
-        AND w.active_for_research = true
-        AND w.disabled_at IS NULL
-        AND (
+      FROM wallet_cursor_state ws
+      LEFT JOIN normalized_positions p ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT candidate.status, candidate.lifecycle_state
+        FROM poly_redeem_jobs candidate
+        WHERE lower(candidate.funder_address) = lower(${params.walletAddress})
+          AND lower(candidate.condition_id) = lower(p.condition_id)
+          AND candidate.position_id = p.token_id
+        ORDER BY candidate.updated_at DESC, candidate.condition_id,
+          candidate.funder_address, candidate.id
+        LIMIT 1
+      ) r ON p.token_id IS NOT NULL
+      LEFT JOIN LATERAL (
+        SELECT candidate.outcome
+        FROM poly_market_outcomes candidate
+        WHERE lower(candidate.condition_id) = lower(p.condition_id)
+          AND candidate.token_id = p.token_id
+        ORDER BY candidate.updated_at DESC, candidate.condition_id
+        LIMIT 1
+      ) pmo ON p.token_id IS NOT NULL
+      LEFT JOIN LATERAL (
+        SELECT
+          candidate.market_title,
+          candidate.market_slug,
+          candidate.event_title,
+          candidate.event_slug,
+          candidate.end_date
+        FROM poly_market_metadata candidate
+        WHERE lower(candidate.condition_id) = lower(p.condition_id)
+        ORDER BY candidate.fetched_at DESC, candidate.condition_id
+        LIMIT 1
+      ) pmm ON p.token_id IS NOT NULL
+      WHERE (
           p.token_id IS NULL
           OR (
             p.current_value_usdc > 0
@@ -213,6 +281,15 @@ export async function readCurrentWalletPositionModel(params: {
   const cursorStatus = rows.find(
     (row) => row.cursor_status !== null
   )?.cursor_status;
+  const walletIdentityCount = Math.max(
+    0,
+    Math.trunc(toNumber(rows[0]?.wallet_identity_count ?? null))
+  );
+  const eligibleWalletCount = Math.max(
+    0,
+    Math.trunc(toNumber(rows[0]?.eligible_wallet_count ?? null))
+  );
+  const identityAmbiguous = walletIdentityCount > 1;
   const hasSuccessfulObservation = rows.some(
     (row) => row.cursor_last_success_at !== null
   );
@@ -223,32 +300,41 @@ export async function readCurrentWalletPositionModel(params: {
       syncAgeMs > POSITION_STALE_MS ||
       cursorStatus !== "ok");
   const warnings: WalletExecutionWarning[] = [];
-  if (rows.length === 0) {
+  if (eligibleWalletCount === 0) {
     warnings.push({
       code: "current_positions_wallet_missing",
       message:
         "No active DB observer wallet row is available for this trading wallet.",
     });
-  } else if (!hasSuccessfulObservation) {
-    warnings.push({
-      code: "current_positions_never_observed",
-      message:
-        "No successful current-position observation has been published for this wallet.",
-    });
-  } else if (cursorStatus === "partial") {
-    warnings.push({
-      code: "current_positions_partial",
-      message:
-        "The latest current-position observation was incomplete; last-known rows are retained.",
-    });
-  } else if (stale) {
-    warnings.push({
-      code: "current_positions_stale",
-      message:
-        syncAgeMs !== null && syncAgeMs > POSITION_STALE_MS
-          ? "Current-position read model is older than the 10-minute freshness window."
-          : `Current positions are unavailable because the observer cursor is ${cursorStatus ?? "missing"}.`,
-    });
+  } else {
+    if (identityAmbiguous) {
+      warnings.push({
+        code: "current_positions_identity_ambiguous",
+        message:
+          "Multiple saved wallet identities were reconciled; last-known positions are retained but the position fact is partial.",
+      });
+    }
+    if (!hasSuccessfulObservation) {
+      warnings.push({
+        code: "current_positions_never_observed",
+        message:
+          "No successful current-position observation has been published for this wallet.",
+      });
+    } else if (cursorStatus === "partial") {
+      warnings.push({
+        code: "current_positions_partial",
+        message:
+          "The latest current-position observation was incomplete; last-known rows are retained.",
+      });
+    } else if (stale) {
+      warnings.push({
+        code: "current_positions_stale",
+        message:
+          syncAgeMs !== null && syncAgeMs > POSITION_STALE_MS
+            ? "Current-position read model is older than the 10-minute freshness window."
+            : `Current positions are unavailable because the observer cursor is ${cursorStatus ?? "missing"}.`,
+      });
+    }
   }
 
   return {
@@ -267,6 +353,7 @@ export async function readCurrentWalletPositionModel(params: {
       ),
       hasSuccessfulObservation,
       cursorStatus: cursorStatus ?? null,
+      identityAmbiguous,
     },
     warnings,
   };
@@ -318,7 +405,7 @@ function rowToExecutionPosition(
   return [
     {
       positionId: `${row.condition_id}:${row.token_id}`,
-      conditionId: row.condition_id,
+      conditionId: row.condition_id.toLowerCase(),
       asset: row.token_id,
       // `??` only falls through on null/undefined, so a Gamma row that
       // landed with `marketTitle = ""` would render as empty instead of
