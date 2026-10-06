@@ -49,23 +49,23 @@
     }
   ],
   "policySha256": "b43abb5d3e6f699d0ab4adbe2a9f7b07e54351d84ab4fe84badce2fec92a6b8f",
-  "targetTreeDigest": "9fda67632b91f9ebd67caaf86f213ecc6ad1189509c97ea23cec274e3d31d226",
+  "targetTreeDigest": "1687034d46d5769d80068533944e7e7d7b4ecda230ac837c4f704d01d64c63e0",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
     "targetOnlyFiles": 1213,
-    "unresolved": 609,
+    "unresolved": 610,
     "byStatus": {
-      "exact": 1119,
+      "exact": 1118,
       "retired": 1,
-      "unresolved": 609,
+      "unresolved": 610,
       "upgraded": 7
     },
     "unresolvedByPriority": {
       "P0": 21,
       "P1": 51,
       "P2": 283,
-      "P3": 254
+      "P3": 255
     },
     "missionFiles": 80,
     "missionResolved": 8,
@@ -4954,13 +4954,13 @@
       "sourceBlob": "d1372486dbac626b8c1d97c33759ce6361c351df",
       "sourcePath": "app/src/app/(app)/layout.tsx",
       "targetPath": "app/src/app/(app)/layout.tsx",
-      "targetBlob": "d1372486dbac626b8c1d97c33759ce6361c351df",
+      "targetBlob": "2d4c2fb58816d2094ae5ec568d4aa7d45804384a",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "content_differs",
       "resolution": null
     },
     {
@@ -12198,7 +12198,7 @@
       "sourceBlob": "4b6c1b7fb8ee301e67a361d96e8036652292fea7",
       "sourcePath": "app/src/features/layout/components/AppSidebar.tsx",
       "targetPath": "app/src/features/layout/components/AppSidebar.tsx",
-      "targetBlob": "7a8157e79c63ac11b14dfcddcf5c7a618756af26",
+      "targetBlob": "5321d9ca71bffe4e15fa452f6816445f04cf71fa",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",

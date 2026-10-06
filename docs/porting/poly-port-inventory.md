@@ -21,7 +21,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
 | Current-only files | 1213 |
-| Unresolved legacy files | 609 |
+| Unresolved legacy files | 610 |
 | P0/P1 mission files resolved | 8/80 |
 | Behavioral gates passed | 0/7 |
 
@@ -33,17 +33,17 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 
 | State | Count |
 | --- | ---: |
-| exact | 1119 |
+| exact | 1118 |
 | upgraded | 7 |
 | retired | 1 |
-| unresolved | 609 |
+| unresolved | 610 |
 
 | Priority | Unresolved |
 | --- | ---: |
 | P0 | 21 |
 | P1 | 51 |
 | P2 | 283 |
-| P3 | 254 |
+| P3 | 255 |
 
 ## Delivery groups
 
@@ -147,7 +147,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P0 | exact | — | — | `100644` | `755b6e516cf9021ec1e72eee9d2fa87545ccc240` | `app/src/app/(app)/credits/TradingWalletConnectFlow.tsx` | `100644` | `755b6e516cf9021ec1e72eee9d2fa87545ccc240` | `app/src/app/(app)/credits/TradingWalletConnectFlow.tsx` |
 | P0 | exact | — | — | `100644` | `f1a7f0e0396f49304cfda36ac34e18fa1f654238` | `app/src/app/(app)/credits/TradingWalletWithdrawDialog.tsx` | `100644` | `f1a7f0e0396f49304cfda36ac34e18fa1f654238` | `app/src/app/(app)/credits/TradingWalletWithdrawDialog.tsx` |
 | P0 | unresolved | content_differs | `visible-p0` | `100644` | `0d4b7421c89ff40f26c03ea179a2884d648fac3e` | `app/src/features/layout/components/AppHeader.tsx` | `100644` | `39c4064c174e49e498e8a4216fcca2525450c3b7` | `app/src/features/layout/components/AppHeader.tsx` |
-| P0 | unresolved | content_differs | `visible-p0` | `100644` | `4b6c1b7fb8ee301e67a361d96e8036652292fea7` | `app/src/features/layout/components/AppSidebar.tsx` | `100644` | `7a8157e79c63ac11b14dfcddcf5c7a618756af26` | `app/src/features/layout/components/AppSidebar.tsx` |
+| P0 | unresolved | content_differs | `visible-p0` | `100644` | `4b6c1b7fb8ee301e67a361d96e8036652292fea7` | `app/src/features/layout/components/AppSidebar.tsx` | `100644` | `5321d9ca71bffe4e15fa452f6816445f04cf71fa` | `app/src/features/layout/components/AppSidebar.tsx` |
 | P0 | unresolved | content_differs | `visible-p0` | `100644` | `39d4e7c0f52dbc57e73e3d313ff47559560b9281` | `app/src/features/layout/components/AppTopBar.tsx` | `100644` | `89595a7a4d3a1ac7492240a424116b84a60d03ea` | `app/src/features/layout/components/AppTopBar.tsx` |
 | P0 | unresolved | content_differs | `visible-p0` | `100644` | `191184bb8fab0b3a6b9ae5f3a42201c22a429752` | `app/src/features/layout/components/UserAvatarMenu.tsx` | `100644` | `611b954b7d6d533216181d03fedcf794f14d2cb5` | `app/src/features/layout/components/UserAvatarMenu.tsx` |
 | P0 | unresolved | content_differs | `visible-p0` | `100644` | `e74b4f6d322c080b3e6c0f5a91ec1ea76af9fc32` | `app/src/features/layout/components/footer-items.tsx` | `100644` | `e6f0a1692d53226a884f378800b5213f06ef2130` | `app/src/features/layout/components/footer-items.tsx` |
@@ -987,6 +987,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `5512e1fa921ff8310f1a16b597967e8bd6976c9a` | `app/src/app/(app)/gov/review/view.tsx` | `100644` | `e2da8acc7097f0aadfba0326c774fc0667142405` | `app/src/app/(app)/gov/review/view.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `f12f858bbf4471978a1dc82a437d8f9720bf6839` | `app/src/app/(app)/gov/system/page.tsx` | `100644` | `056513dfbc0799ecd507ff39beb30d92b82e3663` | `app/src/app/(app)/gov/system/page.tsx` |
 | P3 | unresolved | missing_target | — | `100644` | `c0b27de2e09d88013332a14ad40c93d7ed4367c6` | `app/src/app/(app)/gov/system/view.tsx` | — | — | `app/src/app/(app)/gov/system/view.tsx` |
+| P3 | unresolved | content_differs | — | `100644` | `d1372486dbac626b8c1d97c33759ce6361c351df` | `app/src/app/(app)/layout.tsx` | `100644` | `2d4c2fb58816d2094ae5ec568d4aa7d45804384a` | `app/src/app/(app)/layout.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `4d5157bdf1db4b68498b6fba640f931b94685339` | `app/src/app/(app)/profile/view.tsx` | `100644` | `5d3368191b6b9b18b847db210b1f43a0b5ca846e` | `app/src/app/(app)/profile/view.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `d5a0fef2ec0d8b5f0b061723b2e3382b744049a3` | `app/src/app/(app)/work/_api/fetchWorkItems.ts` | `100644` | `554929f2d6a1dbf60f951728131a0180c5cb38ef` | `app/src/app/(app)/work/_api/fetchWorkItems.ts` |
 | P3 | unresolved | missing_target | — | `100644` | `add2aa91d85192821ad574e640aced757a872f85` | `app/src/app/(app)/work/_components/FacetedFilter.tsx` | — | — | `app/src/app/(app)/work/_components/FacetedFilter.tsx` |
@@ -1378,7 +1379,6 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | exact | — | — | `100644` | `7f35211b94cca588b5279f1b659455472bce33bd` | `app/src/app/(app)/credits/page.tsx` | `100644` | `7f35211b94cca588b5279f1b659455472bce33bd` | `app/src/app/(app)/credits/page.tsx` |
 | P3 | exact | — | — | `100644` | `758cd5d22567c5ceacef1a5272ce035eb0ae987b` | `app/src/app/(app)/error.tsx` | `100644` | `758cd5d22567c5ceacef1a5272ce035eb0ae987b` | `app/src/app/(app)/error.tsx` |
 | P3 | exact | — | — | `100644` | `befa83b937707d331de713c0d7c18375cc012bbe` | `app/src/app/(app)/gov/page.tsx` | `100644` | `befa83b937707d331de713c0d7c18375cc012bbe` | `app/src/app/(app)/gov/page.tsx` |
-| P3 | exact | — | — | `100644` | `d1372486dbac626b8c1d97c33759ce6361c351df` | `app/src/app/(app)/layout.tsx` | `100644` | `d1372486dbac626b8c1d97c33759ce6361c351df` | `app/src/app/(app)/layout.tsx` |
 | P3 | exact | — | — | `100644` | `1f8e9f082abedcbbf7a1573af29bfb3b84229b10` | `app/src/app/(app)/loading.tsx` | `100644` | `1f8e9f082abedcbbf7a1573af29bfb3b84229b10` | `app/src/app/(app)/loading.tsx` |
 | P3 | exact | — | — | `100644` | `515a22643f83c908ef505baf908712a056fe4b83` | `app/src/app/(app)/profile/_components/ApiAccessSection.tsx` | `100644` | `515a22643f83c908ef505baf908712a056fe4b83` | `app/src/app/(app)/profile/_components/ApiAccessSection.tsx` |
 | P3 | exact | — | — | `100644` | `c696978d5e2721dbe4e5f5c25e216e6f9e2c19dd` | `app/src/app/(app)/profile/page.tsx` | `100644` | `c696978d5e2721dbe4e5f5c25e216e6f9e2c19dd` | `app/src/app/(app)/profile/page.tsx` |
