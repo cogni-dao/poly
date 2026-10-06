@@ -59,7 +59,7 @@ import {
 import { coalescePortfolioSnapshot } from "@/features/wallet-analysis/server/portfolio-snapshot-cache";
 import { readTenantWalletDashboardIn } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 
-import type { AccountReadHandler, AccountReadStatus } from "./execute-account-read";
+import type { AccountReadStatus } from "./execute-account-read";
 
 /**
  * Deployment affordance, injected by the transport.
@@ -72,6 +72,30 @@ import type { AccountReadHandler, AccountReadStatus } from "./execute-account-re
  * affordances and neither of which confers write authority on any principal.
  */
 export type PortfolioSnapshotBinding = { adapterConfigured: boolean };
+
+/**
+ * Handler shape for this capability, widened by one optional argument.
+ *
+ * `executeAccountRead` resolves the authorized account id for authorize() but
+ * does NOT currently forward it to the handler — `AccountReadHandler` is
+ * `(tx, input)`. A seam fix to pass it as a third argument is in flight. This
+ * type is deliberately compatible with BOTH shapes: `accountId` is optional, so
+ * this remains assignable to today's two-argument `AccountReadHandler`, and it
+ * starts using the authorized id the moment the seam supplies it.
+ *
+ * Crucially, the fallback is NOT "trust RLS". Relying on RLS alone would be
+ * wrong here: a delegated agent's RLS legitimately spans its OWN billing
+ * account (as owner) AND the account it holds a grant on, so an unfiltered read
+ * would merge two tenants into one response. Worse, `poly_trader_*` has no RLS
+ * at all. Every query therefore takes the account as an explicit, required
+ * argument — see ACCOUNT_FILTER_IMPOSSIBLE_TO_OMIT above.
+ */
+export type PortfolioSnapshotHandler<TInput> = (
+  tx: AgentGrantTransaction,
+  input: TInput,
+  /** The account `authorize()` allowed, once the seam forwards it. */
+  accountId?: string
+) => Promise<PolyAccountPortfolioSnapshotOutput | null>;
 
 /**
  * The single handler body. `billingAccountId` is always the account the
@@ -115,44 +139,53 @@ async function portfolioSnapshotFor(
  */
 export function portfolioSnapshotAccountReadHandler(
   binding: PortfolioSnapshotBinding
-): AccountReadHandler<
-  PolyAccountPortfolioSnapshotQuery,
-  PolyAccountPortfolioSnapshotOutput
-> {
-  return (tx, input) =>
+): PortfolioSnapshotHandler<PolyAccountPortfolioSnapshotQuery> {
+  // `input.billing_account_id` IS the account the executor authorized for
+  // `accountFrom: "input"`, so the two agree by construction; prefer the
+  // authorized id when the seam forwards it.
+  return (tx, input, accountId) =>
     portfolioSnapshotFor(
       tx,
-      input.billing_account_id,
+      accountId ?? input.billing_account_id,
       input.interval,
       binding
     );
 }
 
 /**
- * Owner-session transport. No account on the wire, so the handler re-resolves
- * the principal's account.
+ * Owner-session transport. The dashboard has no account id on the wire — the
+ * browser never learns its own (inventory row 1.1, and there is no `whoami`
+ * yet) — so the capability is inherently `accountFrom: "principal"`.
  *
- * It calls the SAME `resolvePrincipalAccountId` the executor used for its
- * `accountFrom: "principal"` decision, against the same transaction, with the
- * same principal — read back from the tenant GUC that `withTenantScope` set.
- * Using the identical function is the point: a second, differently-written
- * lookup could in principle select a different row for a user owning more than
- * one account, and then the snapshot would describe an account that was never
- * authorized. Returning null here collapses to the same non-disclosing 404.
+ * When the seam forwards the authorized `accountId`, that is used verbatim.
+ * Until then the handler re-derives it by calling the SAME
+ * `resolvePrincipalAccountId` the executor called, on the same transaction,
+ * with the same principal — read back from the tenant GUC that
+ * `withTenantScope` set as the transaction's first statement. Using the
+ * identical function against the identical inputs is the whole point: a
+ * second, differently-written lookup could select a different row for a
+ * principal owning more than one account, and the snapshot would then describe
+ * an account that was never authorized. Either way the account is passed
+ * explicitly into every query, and a null collapses to a non-disclosing 404.
  */
 export function portfolioSnapshotOwnerAccountReadHandler(
   binding: PortfolioSnapshotBinding
-): AccountReadHandler<
-  PolyAccountPortfolioSnapshotOwnerQuery,
-  PolyAccountPortfolioSnapshotOutput
-> {
-  return async (tx, input) => {
-    const principalId = await currentTenantPrincipalId(tx);
-    if (principalId === null) return null;
-    const billingAccountId = await resolvePrincipalAccountId(tx, principalId);
+): PortfolioSnapshotHandler<PolyAccountPortfolioSnapshotOwnerQuery> {
+  return async (tx, input, accountId) => {
+    const billingAccountId = accountId ?? (await ownerAccountId(tx));
     if (billingAccountId === null) return null;
     return portfolioSnapshotFor(tx, billingAccountId, input.interval, binding);
   };
+}
+
+/** The account owned by the principal this tenant scope was opened for. */
+async function ownerAccountId(
+  tx: AgentGrantTransaction
+): Promise<string | null> {
+  const principalId = await currentTenantPrincipalId(tx);
+  return principalId === null
+    ? null
+    : resolvePrincipalAccountId(tx, principalId);
 }
 
 /**

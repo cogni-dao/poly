@@ -32,6 +32,7 @@ export {
 export {
   portfolioSnapshotAccountReadHandler,
   portfolioSnapshotExtra,
+  type PortfolioSnapshotHandler,
   portfolioSnapshotOwnerAccountReadHandler,
   type PortfolioSnapshotBinding,
 } from "./portfolio-snapshot";

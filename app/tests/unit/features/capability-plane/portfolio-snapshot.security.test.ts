@@ -244,6 +244,49 @@ describe("owner transport account resolution", () => {
     );
   });
 
+  it("prefers an explicitly forwarded accountId over re-resolving it", async () => {
+    // Forward-compatibility with the in-flight seam fix that passes the
+    // authorized account id to the handler as a third argument. When it is
+    // supplied, the handler must use it verbatim and NOT re-derive anything.
+    const handler = portfolioSnapshotOwnerAccountReadHandler({
+      adapterConfigured: true,
+    });
+
+    const result = await handler(
+      fakeTx as never,
+      { interval: "1W" },
+      OTHER_ACCOUNT
+    );
+
+    expect(result).not.toBeNull();
+    expect(resolvePrincipalAccountId).not.toHaveBeenCalled();
+    expect(readSnapshot).toHaveBeenCalledWith(
+      fakeTx,
+      expect.objectContaining({ billingAccountId: OTHER_ACCOUNT })
+    );
+  });
+
+  it("never falls back to RLS alone — the account is always an explicit filter", async () => {
+    // A delegated principal's RLS legitimately spans its own account AND the
+    // granted one, and `poly_trader_*` has no RLS at all, so an unfiltered read
+    // would merge tenants. Assert the account reaches the read model on BOTH
+    // transports, by whichever route it was obtained.
+    authorize.mockResolvedValue({ accessKind: "owner", grantId: null });
+    await runOwner(OWNER);
+    expect(readSnapshot).toHaveBeenLastCalledWith(
+      fakeTx,
+      expect.objectContaining({ billingAccountId: ACCOUNT })
+    );
+
+    clearTtlCache();
+    authorize.mockResolvedValue({ accessKind: "delegated", grantId: "g" });
+    await runAgent(AGENT, OTHER_ACCOUNT);
+    expect(readSnapshot).toHaveBeenLastCalledWith(
+      fakeTx,
+      expect.objectContaining({ billingAccountId: OTHER_ACCOUNT })
+    );
+  });
+
   it("authorizes before the cache is ever consulted, and never caches the decision", async () => {
     const order: string[] = [];
     authorize.mockImplementation(async () => {
