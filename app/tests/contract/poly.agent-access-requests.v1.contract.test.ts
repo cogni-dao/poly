@@ -11,8 +11,11 @@
  */
 
 import {
+  AGENT_ACCESS_REQUEST_LIST_LIMIT,
+  agentAccessRequestAgentSchema,
   agentAccessRequestErrorOutput,
   agentAccessRequestOwnerSchema,
+  polyAgentAccessRequestAgentListOperation,
   polyAgentAccessRequestCreateOperation,
   polyAgentAccessRequestDecisionOperation,
   polyAgentAccessRequestPollOperation,
@@ -23,6 +26,7 @@ import { describe, expect, it } from "vitest";
 
 const REQUEST_ID = "30000000-0000-4000-b000-000000000001";
 const GRANT_ID = "30000000-0000-4000-b000-000000000002";
+const ACCOUNT_ID = "30000000-0000-4000-b000-000000000003";
 const TOKEN = "a".repeat(43);
 
 const ownerRequest = {
@@ -65,10 +69,69 @@ describe("poly agent access requests v1 contract", () => {
           ...agentRequest,
           decided_at: "2026-10-04T00:05:00.000Z",
           status: "active",
-          billing_account_id: "account-owner-a",
+          billing_account_id: ACCOUNT_ID,
         },
       })
     ).toBeDefined();
+  });
+
+  it("pins a bounded self-list with account context only for active access", () => {
+    const activeRequest = {
+      id: REQUEST_ID,
+      scope: "performance:read" as const,
+      expires_at: "2026-10-20T00:00:00.000Z",
+      requested_at: "2026-10-04T00:00:00.000Z",
+      decided_at: "2026-10-04T00:05:00.000Z",
+      status: "active" as const,
+      billing_account_id: ACCOUNT_ID,
+    };
+    expect(
+      polyAgentAccessRequestAgentListOperation.output.parse({
+        requests: [
+          activeRequest,
+          {
+            ...activeRequest,
+            status: "revoked",
+            billing_account_id: null,
+          },
+        ],
+      })
+    ).toBeDefined();
+    expect(
+      agentAccessRequestAgentSchema.safeParse({
+        ...activeRequest,
+        status: "expired",
+      }).success
+    ).toBe(false);
+    expect(
+      agentAccessRequestAgentSchema.safeParse({
+        ...activeRequest,
+        owner_user_id: "secret-owner",
+      }).success
+    ).toBe(false);
+    expect(
+      polyAgentAccessRequestAgentListOperation.output.safeParse({
+        requests: Array.from(
+          { length: AGENT_ACCESS_REQUEST_LIST_LIMIT + 1 },
+          () => activeRequest
+        ),
+      }).success
+    ).toBe(false);
+  });
+
+  it("rejects query-supplied identity and account selectors on self-list", () => {
+    expect(polyAgentAccessRequestAgentListOperation.input.parse({})).toEqual(
+      {}
+    );
+    for (const input of [
+      { principal_id: "attacker-selected" },
+      { billing_account_id: ACCOUNT_ID },
+      { limit: 1 },
+    ]) {
+      expect(
+        polyAgentAccessRequestAgentListOperation.input.safeParse(input).success
+      ).toBe(false);
+    }
   });
 
   it("accepts the frozen owner preview, decision, and list shapes", () => {

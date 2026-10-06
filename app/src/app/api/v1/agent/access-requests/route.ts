@@ -3,7 +3,8 @@
 
 /**
  * Module: `@app/api/v1/agent/access-requests`
- * Purpose: Bearer-only agent creation of a self-bound access request.
+ * Purpose: Bearer-only agent creation and listing of self-bound access
+ *   requests.
  * Scope: Auth transport check, contract validation, facade delegation.
  * Invariants: requester identity comes only from the bearer token.
  * Side-effects: IO through the facade.
@@ -12,6 +13,7 @@
 
 import {
   agentAccessRequestErrorOutput,
+  polyAgentAccessRequestAgentListOperation,
   polyAgentAccessRequestCreateOperation,
 } from "@cogni/poly-node-contracts";
 import { NextResponse } from "next/server";
@@ -19,9 +21,12 @@ import { NextResponse } from "next/server";
 import {
   AgentAccessRequestFacadeError,
   createAgentAccessRequestFacade,
+  listAgentAccessRequestsFacade,
 } from "@/app/_facades/poly/agent-access-requests.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+
+import { isAgentBearerRequest } from "./_bearer-transport";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -35,15 +40,35 @@ function errorResponse(
   });
 }
 
+export const GET = wrapRouteHandlerWithLogging(
+  {
+    routeId: "agent.access_requests.list",
+    auth: { mode: "required", getSessionUser },
+  },
+  async (_ctx, request, sessionUser) => {
+    if (!isAgentBearerRequest(request)) {
+      return errorResponse("not_found", 404);
+    }
+
+    const parsed = polyAgentAccessRequestAgentListOperation.input.safeParse(
+      Object.fromEntries(new URL(request.url).searchParams.entries())
+    );
+    if (!parsed.success) return errorResponse("invalid_request", 422);
+
+    const result = await listAgentAccessRequestsFacade(sessionUser);
+    return NextResponse.json(
+      polyAgentAccessRequestAgentListOperation.output.parse(result)
+    );
+  }
+);
+
 export const POST = wrapRouteHandlerWithLogging(
   {
     routeId: "agent.access_requests.create",
     auth: { mode: "required", getSessionUser },
   },
   async (ctx, request, sessionUser) => {
-    if (
-      !request.headers.get("authorization")?.toLowerCase().startsWith("bearer ")
-    ) {
+    if (!isAgentBearerRequest(request)) {
       return errorResponse("not_found", 404);
     }
 

@@ -23,6 +23,8 @@ import {
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 
+import { isAgentBearerRequest } from "../_bearer-transport";
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
@@ -34,9 +36,7 @@ export const GET = wrapRouteHandlerWithLogging<{
     auth: { mode: "required", getSessionUser },
   },
   async (_ctx, request, sessionUser, context) => {
-    if (
-      !request.headers.get("authorization")?.toLowerCase().startsWith("bearer ")
-    ) {
+    if (!isAgentBearerRequest(request)) {
       return NextResponse.json(
         agentAccessRequestErrorOutput.parse({ error: "not_found" }),
         { status: 404 }

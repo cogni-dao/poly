@@ -21,13 +21,17 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Database } from "@/adapters/server/db/client";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
-import { decideAgentAccessRequest } from "@/features/agent-grants/agent-access-request-service";
+import {
+  decideAgentAccessRequest,
+  listAgentAccessRequests,
+} from "@/features/agent-grants/agent-access-request-service";
 import { revokeOwnedAgentGrant } from "@/features/agent-grants/agent-grant-service";
 import { billingAccounts, users } from "@/shared/db/schema";
 
 const ownerA = { userId: randomUUID(), accountId: randomUUID() };
 const ownerB = { userId: randomUUID(), accountId: randomUUID() };
 const agent = { userId: randomUUID() };
+const otherAgent = { userId: randomUUID() };
 const rawToken = "approval_token_only_the_agent_sees_123456789";
 const approvalTokenHash = createHash("sha256")
   .update(rawToken)
@@ -48,6 +52,7 @@ describe("agent access request RLS", () => {
       { id: ownerA.userId, name: "Request owner A" },
       { id: ownerB.userId, name: "Request owner B" },
       { id: agent.userId, name: "Requesting agent" },
+      { id: otherAgent.userId, name: "Other agent" },
     ]);
     await seedDb.insert(billingAccounts).values([
       {
@@ -98,7 +103,12 @@ describe("agent access request RLS", () => {
     await seedDb
       .delete(users)
       .where(
-        inArray(users.id, [ownerA.userId, ownerB.userId, agent.userId])
+        inArray(users.id, [
+          ownerA.userId,
+          ownerB.userId,
+          agent.userId,
+          otherAgent.userId,
+        ])
       );
   });
 
@@ -151,6 +161,62 @@ describe("agent access request RLS", () => {
       status: "active",
       grant_id: grantId,
     });
+  });
+
+  it("lists active account context only for the requesting principal", async () => {
+    const ownRequests = await withTenantScope(
+      db,
+      userActor(toUserId(agent.userId)),
+      (tx) => listAgentAccessRequests(tx, agent.userId)
+    );
+    const otherRequests = await withTenantScope(
+      db,
+      userActor(toUserId(otherAgent.userId)),
+      (tx) => listAgentAccessRequests(tx, otherAgent.userId)
+    );
+
+    expect(ownRequests).toEqual([
+      {
+        id: requestId,
+        scope: "performance:read",
+        expires_at: future.toISOString(),
+        requested_at: expect.any(String),
+        decided_at: expect.any(String),
+        status: "active",
+        billing_account_id: ownerA.accountId,
+      },
+    ]);
+    expect(Object.keys(ownRequests[0]!).sort()).toEqual([
+      "billing_account_id",
+      "decided_at",
+      "expires_at",
+      "id",
+      "requested_at",
+      "scope",
+      "status",
+    ]);
+    expect(otherRequests).toEqual([]);
+  });
+
+  it("hides account context when the linked grant is effectively expired", async () => {
+    const requests = await withTenantScope(
+      db,
+      userActor(toUserId(agent.userId)),
+      (tx) =>
+        listAgentAccessRequests(
+          tx,
+          agent.userId,
+          new Date("2100-01-01T00:00:00.000Z")
+        )
+    );
+
+    expect(requests).toEqual([
+      expect.objectContaining({
+        id: requestId,
+        status: "expired",
+        billing_account_id: null,
+      }),
+    ]);
   });
 
   it("makes the consumed token non-replayable and hides the binding from another owner", async () => {
@@ -314,5 +380,60 @@ describe("agent access request RLS", () => {
 
     expect(revoked?.revoked_at).not.toBeNull();
     expect(requests).toEqual([{ status: "revoked" }]);
+
+    const listed = await withTenantScope(
+      db,
+      userActor(toUserId(agent.userId)),
+      (tx) => listAgentAccessRequests(tx, agent.userId)
+    );
+    expect(listed.find(({ id }) => id === requestId)).toMatchObject({
+      status: "revoked",
+      billing_account_id: null,
+    });
+  });
+
+  it("returns a hard-bounded newest-first history", async () => {
+    const seedDb = getSeedDb();
+    const baseCreatedAt = new Date("2097-01-01T00:00:00.000Z").getTime();
+    const history = Array.from({ length: 55 }, (_, index) => ({
+      requesterPrincipalId: agent.userId,
+      requesterDisplayName: "Requesting agent",
+      requestedScopes: ["performance:read"],
+      grantExpiresAt: future,
+      approvalTokenHash: createHash("sha256")
+        .update(`history-token-${index}`)
+        .digest("hex"),
+      approvalTokenExpiresAt: tokenFuture,
+      status: "expired",
+      createdAt: new Date(baseCreatedAt + index),
+      updatedAt: new Date(baseCreatedAt + index),
+    }));
+    const inserted = await seedDb
+      .insert(agentAccessRequests)
+      .values(history)
+      .returning({
+        id: agentAccessRequests.id,
+        createdAt: agentAccessRequests.createdAt,
+      });
+    requestIds.push(...inserted.map(({ id }) => id));
+
+    const requests = await withTenantScope(
+      db,
+      userActor(toUserId(agent.userId)),
+      (tx) => listAgentAccessRequests(tx, agent.userId)
+    );
+    const expectedNewest = [...inserted]
+      .sort(
+        (left, right) =>
+          right.createdAt.getTime() - left.createdAt.getTime()
+      )
+      .slice(0, 50)
+      .map(({ id }) => id);
+
+    expect(requests).toHaveLength(50);
+    expect(requests.map(({ id }) => id)).toEqual(expectedNewest);
+    expect(
+      requests.every((request) => request.billing_account_id === null)
+    ).toBe(true);
   });
 });

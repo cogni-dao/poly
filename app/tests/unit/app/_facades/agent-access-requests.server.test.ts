@@ -3,7 +3,7 @@
 
 /**
  * Module: `@tests/unit/app/_facades/agent-access-requests.server`
- * Purpose: Prove approval links use canonical config and fail before DB writes.
+ * Purpose: Prove self-list identity binding plus canonical approval origins.
  * Scope: Facade orchestration with transaction/service dependencies mocked.
  * Invariants: hostile request hosts are not an input; explicit APP_BASE_URL
  *   wins; DOMAIN fallback follows the fleet host convention; missing canonical
@@ -14,15 +14,17 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { createRequest, env, nodeName, withTenantScope } = vi.hoisted(() => ({
-  createRequest: vi.fn(),
-  env: {
-    APP_BASE_URL: "https://poly.example.test" as string | undefined,
-    DOMAIN: undefined as string | undefined,
-  },
-  nodeName: { value: "poly" },
-  withTenantScope: vi.fn(),
-}));
+const { createRequest, env, listRequests, nodeName, withTenantScope } =
+  vi.hoisted(() => ({
+    createRequest: vi.fn(),
+    env: {
+      APP_BASE_URL: "https://poly.example.test" as string | undefined,
+      DOMAIN: undefined as string | undefined,
+    },
+    listRequests: vi.fn(),
+    nodeName: { value: "poly" },
+    withTenantScope: vi.fn(),
+  }));
 
 vi.mock("@/shared/env/server", () => ({
   serverEnv: () => env,
@@ -39,6 +41,7 @@ vi.mock("@/features/agent-grants/agent-access-request-service", () => ({
   AgentAccessRequestInvalidError: class AgentAccessRequestInvalidError extends Error {},
   createAgentAccessRequest: (...args: unknown[]) => createRequest(...args),
   decideAgentAccessRequest: vi.fn(),
+  listAgentAccessRequests: (...args: unknown[]) => listRequests(...args),
   listOwnerAgentAccessRequests: vi.fn(),
   pollAgentAccessRequest: vi.fn(),
   previewAgentAccessRequest: vi.fn(),
@@ -50,7 +53,10 @@ vi.mock("@/shared/observability", () => ({
   },
 }));
 
-import { createAgentAccessRequestFacade } from "@/app/_facades/poly/agent-access-requests.server";
+import {
+  createAgentAccessRequestFacade,
+  listAgentAccessRequestsFacade,
+} from "@/app/_facades/poly/agent-access-requests.server";
 
 const sessionUser = {
   id: "10000000-0000-4000-a000-000000000001",
@@ -76,10 +82,18 @@ describe("agent access request facade approval URL", () => {
     env.DOMAIN = undefined;
     nodeName.value = "poly";
     createRequest.mockResolvedValue(requestDto);
+    listRequests.mockResolvedValue([requestDto]);
     withTenantScope.mockImplementation(
       async (_db: unknown, _actor: unknown, fn: (tx: unknown) => unknown) =>
         fn({})
     );
+  });
+
+  it("derives self-list principal only from the authenticated identity", async () => {
+    const result = await listAgentAccessRequestsFacade(sessionUser);
+
+    expect(result).toEqual({ requests: [requestDto] });
+    expect(listRequests).toHaveBeenCalledWith({}, sessionUser.id);
   });
 
   it("prefers APP_BASE_URL over DOMAIN for the cross-party approval link", async () => {

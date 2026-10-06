@@ -4,7 +4,8 @@
 /**
  * Module: `@contracts/poly.agent-access-requests.v1.contract`
  * Purpose: Agent-self request and browser-owner approval wire contracts.
- * Scope: Schema-only create, poll, preview, decision, and owner-list shapes.
+ * Scope: Schema-only create, agent-list, poll, preview, decision, and owner-list
+ *   shapes.
  * Invariants: fixed performance:read scope; no owner/account/principal IDs enter
  *   decision inputs; approval tokens never appear in response DTOs.
  * Side-effects: none
@@ -21,6 +22,8 @@ export const agentAccessRequestLifecycleStatusSchema = z.enum([
   "revoked",
 ]);
 
+export const AGENT_ACCESS_REQUEST_LIST_LIMIT = 50;
+
 export const agentAccessRequestOwnerSchema = z.object({
   id: z.string().uuid(),
   agent_display_name: z.string().min(1),
@@ -32,15 +35,26 @@ export const agentAccessRequestOwnerSchema = z.object({
   grant_id: z.string().uuid().nullable(),
 });
 
-const agentAccessRequestAgentSchema = z.object({
-  id: z.string().uuid(),
-  scope: z.literal("performance:read"),
-  expires_at: z.string().datetime(),
-  requested_at: z.string().datetime(),
-  decided_at: z.string().datetime().nullable(),
-  status: agentAccessRequestLifecycleStatusSchema,
-  billing_account_id: z.string().min(1).nullable(),
-});
+const agentAccessRequestAgentBaseSchema = z
+  .object({
+    id: z.string().uuid(),
+    scope: z.literal("performance:read"),
+    expires_at: z.string().datetime(),
+    requested_at: z.string().datetime(),
+    decided_at: z.string().datetime().nullable(),
+  })
+  .strict();
+
+export const agentAccessRequestAgentSchema = z.discriminatedUnion("status", [
+  agentAccessRequestAgentBaseSchema.extend({
+    status: z.literal("active"),
+    billing_account_id: z.string().uuid(),
+  }),
+  agentAccessRequestAgentBaseSchema.extend({
+    status: z.enum(["pending", "expired", "denied", "revoked"]),
+    billing_account_id: z.null(),
+  }),
+]);
 
 const approvalTokenSchema = z.string().min(32).max(512);
 
@@ -59,6 +73,19 @@ export const polyAgentAccessRequestPollOperation = {
   summary: "Poll one access request owned by the calling agent",
   input: z.object({ id: z.string().uuid() }),
   output: z.object({ request: agentAccessRequestAgentSchema }),
+} as const;
+
+export const polyAgentAccessRequestAgentListOperation = {
+  id: "poly.agent-access-requests.agent-list.v1",
+  summary: "List access requests owned by the calling agent",
+  input: z.object({}).strict(),
+  output: z
+    .object({
+      requests: z
+        .array(agentAccessRequestAgentSchema)
+        .max(AGENT_ACCESS_REQUEST_LIST_LIMIT),
+    })
+    .strict(),
 } as const;
 
 export const polyAgentAccessRequestsListOperation = {

@@ -12,8 +12,8 @@ machine principals.
 - `resolvePerformanceRead(tx, input)` — owner-or-active-delegate read decision.
 - `listOwnedAgentGrants`, `replaceOwnedAgentGrant`, `revokeOwnedAgentGrant` —
   owner lifecycle operations that run inside an app-role tenant transaction.
-- `createAgentAccessRequest`, `pollAgentAccessRequest` — bearer-agent self-only
-  request lifecycle.
+- `createAgentAccessRequest`, `pollAgentAccessRequest`,
+  `listAgentAccessRequests` — bearer-agent self-only request lifecycle.
 - `previewAgentAccessRequest`, `decideAgentAccessRequest`,
   `listOwnerAgentAccessRequests` — token-bound browser-owner approval and
   lifecycle reads; grant creation commits in the same transaction as approval.

@@ -49,11 +49,11 @@
     }
   ],
   "policySha256": "3a617b3691441cd75da8898c454d62317d673a3285df2490d76207d71b77e9b3",
-  "targetTreeDigest": "75696ee4b793b3ebfa8491d895b09c5e4ffe5c3c75f035a151ab9927d657b8de",
+  "targetTreeDigest": "ea92bad8a61a038f7f84fc36296019aa3e5a5fb33aabf717280d9bc4e34fa21b",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1151,
+    "targetOnlyFiles": 1153,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -5541,7 +5541,7 @@
       "sourceBlob": "240967ec2d52eeb4267901274a8677eeca6eee38",
       "sourcePath": "app/src/app/.well-known/agent.json/route.ts",
       "targetPath": "app/src/app/.well-known/agent.json/route.ts",
-      "targetBlob": "a23c1024b0579f20663150005a76332c3c917b0b",
+      "targetBlob": "54b1305a6ffe1369889872bba953673f5f97fe3f",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -6053,7 +6053,7 @@
       "sourceBlob": "cfb6927e58e7382543937df5300137e81d293059",
       "sourcePath": "app/src/app/api/AGENTS.md",
       "targetPath": "app/src/app/api/AGENTS.md",
-      "targetBlob": "f8f36334dc4b66f9e7ab4120463f09fe70ac74e7",
+      "targetBlob": "9cef49a3f4067e67014be9190fabd0f568df800a",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -25733,6 +25733,9 @@
       "targetPath": "app/src/app/api/v1/agent/access-requests/[id]/route.ts"
     },
     {
+      "targetPath": "app/src/app/api/v1/agent/access-requests/_bearer-transport.ts"
+    },
+    {
       "targetPath": "app/src/app/api/v1/agent/access-requests/route.ts"
     },
     {
@@ -26088,6 +26091,9 @@
     },
     {
       "targetPath": "app/tests/contract/app/knowledge.read-principal.test.ts"
+    },
+    {
+      "targetPath": "app/tests/contract/app/poly.research-copy-trade-investigation-evidence.observability.test.ts"
     },
     {
       "targetPath": "app/tests/contract/app/poly.research-copy-trade-investigation.authorization.test.ts"
