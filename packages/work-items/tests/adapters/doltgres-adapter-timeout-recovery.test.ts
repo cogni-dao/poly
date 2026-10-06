@@ -40,29 +40,38 @@ const baseRow: Row = {
 interface TimeoutHarnessState {
   row?: Row;
   pendingRow?: Row;
+  branchBefore?: Row;
+  branchAfter?: Row;
   branch?: string;
   branchCommit?: string;
   durable: boolean;
   deadUnlockAttempts: number;
   inserts: number;
+  commits: number;
   mainCommits: Set<string>;
   poolBuilds: number;
   queries: string[];
+  commitMessage?: string;
+  commitDate?: string;
+  branchBase?: string;
 }
 
 function makeTimeoutHarness({
   failFreshReachability = false,
   timeoutAfterDml = false,
   timeoutFreshHousekeeping = false,
+  laterMainUpdateAfterLostAck = false,
 }: {
   readonly failFreshReachability?: boolean;
   readonly timeoutAfterDml?: boolean;
   readonly timeoutFreshHousekeeping?: boolean;
+  readonly laterMainUpdateAfterLostAck?: boolean;
 } = {}) {
   const state: TimeoutHarnessState = {
     durable: false,
     deadUnlockAttempts: 0,
     inserts: 0,
+    commits: 0,
     mainCommits: new Set(["main"]),
     poolBuilds: 0,
     queries: [],
@@ -77,6 +86,14 @@ function makeTimeoutHarness({
   const buildPool = (): Sql => {
     state.poolBuilds += 1;
     const poolNumber = state.poolBuilds;
+    if (poolNumber === 2 && laterMainUpdateAfterLostAck && state.row) {
+      state.row = {
+        ...state.row,
+        title: "later serialized update",
+        revision: Number(state.row.revision ?? 0) + 1,
+        updated_at: "2026-10-03T00:02:00.000Z",
+      };
+    }
     let ended = false;
     let rejectTimedOutMerge: ((error: Error) => void) | undefined;
     let rejectTimedOutQuery: ((error: Error) => void) | undefined;
@@ -107,21 +124,18 @@ function makeTimeoutHarness({
       if (query === "SELECT dolt_checkout('main')") {
         return [{ dolt_checkout: [0, ""] }];
       }
+      if (query === "SELECT dolt_hashof('main') AS dolt_hashof") {
+        return [{ dolt_hashof: "main" }];
+      }
       if (query.includes("dolt_checkout('-b'")) {
         state.branch = /'(work-item-op\/[^']+)'/.exec(query)?.[1];
         state.branchCommit = undefined;
+        state.branchBase = "main";
+        state.branchBefore = state.row;
+        state.branchAfter = undefined;
         return [{ dolt_checkout: [0, ""] }];
       }
       if (query === "SELECT table_name FROM dolt.status") {
-        if (
-          poolNumber === 2 &&
-          timeoutFreshHousekeeping &&
-          freshReachabilityProven
-        ) {
-          return await new Promise<Rows>((_resolve, reject) => {
-            rejectTimedOutQuery = reject;
-          });
-        }
         return [];
       }
       if (query === "SELECT name, hash FROM dolt.branches") {
@@ -139,8 +153,68 @@ function makeTimeoutHarness({
         return [{ dolt_add: [0, ""] }];
       }
       if (query.startsWith("SELECT dolt_commit")) {
-        state.branchCommit = `test-commit-${state.inserts}`;
+        state.commits += 1;
+        state.branchCommit = `test-commit-${state.commits}`;
+        state.commitMessage =
+          /SELECT dolt_commit\('-m', '(.*)'\)/.exec(query)?.[1]?.replace(/''/g, "'");
+        state.commitDate =
+          state.inserts === 1
+            ? "2026-10-03T00:01:00.000Z"
+            : "2026-10-03T00:03:00.000Z";
         return [{ dolt_commit: state.branchCommit }];
+      }
+      if (query.includes("FROM dolt.commits")) {
+        return state.branchCommit
+          ? [
+              {
+                commit_hash: state.branchCommit,
+                message: state.commitMessage,
+                date: state.commitDate,
+              },
+            ]
+          : [];
+      }
+      if (query.includes("FROM dolt.commit_ancestors")) {
+        return state.branchCommit
+          ? [
+              {
+                commit_hash: state.branchCommit,
+                parent_hash: state.branchBase,
+                parent_index: 0,
+              },
+            ]
+          : [];
+      }
+      if (query.startsWith("SELECT * FROM dolt_diff_summary")) {
+        return [
+          {
+            from_table_name: "public.work_items",
+            to_table_name: "public.work_items",
+            schema_change: false,
+            data_change: false,
+          },
+        ];
+      }
+      if (query.startsWith("SELECT * FROM dolt_diff(")) {
+        const before = state.branchBefore;
+        const after = state.branchAfter;
+        return [
+          {
+            ...Object.fromEntries(
+              Object.entries(before ?? {}).map(([key, value]) => [
+                `from_${key}`,
+                value,
+              ])
+            ),
+            ...Object.fromEntries(
+              Object.entries(after ?? {}).map(([key, value]) => [
+                `to_${key}`,
+                value,
+              ])
+            ),
+            diff_type: before ? "modified" : "added",
+          },
+        ];
       }
       if (query.startsWith("SELECT dolt_merge_base")) {
         if (poolNumber === 2 && failFreshReachability) {
@@ -159,27 +233,45 @@ function makeTimeoutHarness({
           },
         ];
       }
-      if (query.startsWith("SELECT dolt_merge(")) {
+      if (query.includes("FROM dolt_merge(")) {
         state.durable = true;
         if (state.branchCommit) state.mainCommits.add(state.branchCommit);
-        state.row = state.pendingRow;
-        state.pendingRow = undefined;
+        state.row = state.branchAfter;
         if (poolNumber === 1) {
           return await new Promise<Rows>((_resolve, reject) => {
             rejectTimedOutMerge = reject;
           });
         }
-        return [{ dolt_merge: ["test-merge", 0, 0, "ok"] }];
+        return [
+          {
+            hash: "test-merge",
+            fast_forward: 0,
+            conflicts: 0,
+            message: "ok",
+          },
+        ];
       }
       if (query.startsWith("SELECT dolt_branch")) {
+        if (
+          poolNumber === 2 &&
+          timeoutFreshHousekeeping &&
+          freshReachabilityProven
+        ) {
+          return await new Promise<Rows>((_resolve, reject) => {
+            rejectTimedOutQuery = reject;
+          });
+        }
         if (
           state.branchCommit === undefined ||
           !state.mainCommits.has(state.branchCommit)
         ) {
           state.pendingRow = undefined;
+          state.branchAfter = undefined;
         }
         state.branch = undefined;
         state.branchCommit = undefined;
+        state.branchBefore = undefined;
+        state.branchAfter = undefined;
         return [{ dolt_branch: [0, ""] }];
       }
       if (query.startsWith("SELECT id FROM work_items")) {
@@ -187,7 +279,16 @@ function makeTimeoutHarness({
       }
       if (query.startsWith("INSERT INTO work_items")) {
         state.inserts += 1;
-        state.pendingRow = { ...baseRow };
+        state.branchBefore = undefined;
+        const values =
+          /VALUES \('([^']+)', '([^']+)', '([^']+)'/.exec(query);
+        state.pendingRow = {
+          ...baseRow,
+          id: values?.[1] ?? baseRow.id,
+          type: values?.[2] ?? baseRow.type,
+          title: values?.[3] ?? baseRow.title,
+        };
+        state.branchAfter = state.pendingRow;
         return [state.pendingRow];
       }
       if (query.startsWith("UPDATE work_items")) {
@@ -195,8 +296,16 @@ function makeTimeoutHarness({
           ...(state.row ?? baseRow),
           title: "still writable",
           revision: 1,
+          updated_at: "2026-10-03T00:02:00.000Z",
         };
+        state.branchAfter = state.pendingRow;
         return [state.pendingRow];
+      }
+      if (
+        query.startsWith("SELECT * FROM work_items WHERE id") &&
+        state.row
+      ) {
+        return [state.row];
       }
       if (query.includes("FROM work_items")) {
         return state.row ? [{ ...state.row, claim_active: false }] : [];
@@ -274,6 +383,28 @@ describe("DoltgresWorkItemAdapter merge timeout recovery", () => {
     expect(state.inserts).toBe(1);
   });
 
+  it("uses historical proof after merge ACK loss even when a later commit changed the row", async () => {
+    const { adapter, state } = makeTimeoutHarness({
+      laterMainUpdateAfterLostAck: true,
+    });
+
+    await expect(
+      adapter.create(
+        { type: "task", title: "survives timeout" },
+        "principal-1"
+      )
+    ).resolves.toMatchObject({
+      id: "task.0001",
+      title: "survives timeout",
+    });
+
+    expect(state.inserts).toBe(1);
+    await expect(adapter.get(toWorkItemId("task.0001"))).resolves.toMatchObject({
+      title: "later serialized update",
+      revision: 1,
+    });
+  });
+
   it("releases the queue after a post-DML timeout destroys the locked connection", async () => {
     const { adapter, state } = makeTimeoutHarness({ timeoutAfterDml: true });
 
@@ -305,7 +436,7 @@ describe("DoltgresWorkItemAdapter merge timeout recovery", () => {
     expect(state.deadUnlockAttempts).toBe(0);
   });
 
-  it("returns through nested recovery when its locked connection is replaced", async () => {
+  it("preserves a reachable ref when fresh cleanup times out, then heals it", async () => {
     const { adapter, state } = makeTimeoutHarness({
       timeoutFreshHousekeeping: true,
     });
@@ -335,12 +466,12 @@ describe("DoltgresWorkItemAdapter merge timeout recovery", () => {
           "principal-1"
         )
       )
-    ).resolves.toMatchObject({ id: "task.0001" });
+    ).resolves.toMatchObject({ id: "bug.0001" });
     expect(state.inserts).toBe(2);
     expect(state.deadUnlockAttempts).toBe(0);
   });
 
-  it("stays fail-closed and preserves evidence when fresh proof also fails", async () => {
+  it("preserves evidence on a fresh proof failure and retries on the next request", async () => {
     const { adapter, events, state } = makeTimeoutHarness({
       failFreshReachability: true,
     });
@@ -350,29 +481,23 @@ describe("DoltgresWorkItemAdapter merge timeout recovery", () => {
         { type: "task", title: "ambiguous durable merge" },
         "principal-1"
       )
-    ).rejects.toMatchObject({ name: "DoltMergeOutcomeUnknownError" });
+    ).rejects.toBeInstanceOf(WorkItemsBusyError);
 
     expect(state.durable).toBe(true);
     expect(state.inserts).toBe(1);
     expect(state.poolBuilds).toBe(3);
     expect(state.branch).toMatch(/^work-item-op\//);
-    expect(events).toContain("adapter.work_items.merge_outcome_unknown");
+    expect(events).toContain("adapter.work_items.reconcile");
 
-    const queriesBeforeBlockedRequests = state.queries.length;
-    await expect(adapter.get(toWorkItemId("task.0001"))).rejects.toBeInstanceOf(
-      WorkItemsBusyError
-    );
-    await expect(
-      adapter.create({ type: "task", title: "must not replay" }, "principal-1")
-    ).rejects.toBeInstanceOf(WorkItemsBusyError);
-
-    expect(state.queries).toHaveLength(queriesBeforeBlockedRequests);
+    await expect(adapter.get(toWorkItemId("task.0001"))).resolves.toMatchObject({
+      id: "task.0001",
+    });
     expect(state.inserts).toBe(1);
-    expect(state.branch).toMatch(/^work-item-op\//);
+    expect(state.branch).toBeUndefined();
     expect(
       state.queries.some((query) =>
         query.startsWith("pool-3:SELECT dolt_branch")
       )
-    ).toBe(false);
+    ).toBe(true);
   });
 });

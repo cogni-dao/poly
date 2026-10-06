@@ -475,24 +475,24 @@
       "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
       "target": {
         "path": "packages/work-items/src/adapters/doltgres/adapter.ts",
-        "blob": "37bcd230c39f420bf29d9fe47490fc44c0e66c5a",
+        "blob": "47a92cad594cd84e6e438a62ea8a8440430b1ca5",
         "mode": "100644",
-        "digest": "4d764688bf3cb509e14aa20a7786503ea8fabd63462521ec775dcfc9378ce9c1"
+        "digest": "f2fe504687c4de119cbad4e7e0e600f413229f117e01bf2ba1a9937808f1c454"
       },
       "gateTargets": [
         {
           "id": "hub.work_item_create",
-          "targetDigest": "ca84bd4c0d8927fdc8593174cfdae47472d1d7d54020552a12bcf6b49a8a1a3b",
+          "targetDigest": "b6928424579c8a5bcca0a0669f8f4224e916b8aa7bc8433735db0abace5b7d2e",
           "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
         },
         {
           "id": "hub.work_item_mutation",
-          "targetDigest": "ca84bd4c0d8927fdc8593174cfdae47472d1d7d54020552a12bcf6b49a8a1a3b",
+          "targetDigest": "b6928424579c8a5bcca0a0669f8f4224e916b8aa7bc8433735db0abace5b7d2e",
           "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
         },
         {
           "id": "hub.work_item_source_of_truth",
-          "targetDigest": "ca84bd4c0d8927fdc8593174cfdae47472d1d7d54020552a12bcf6b49a8a1a3b",
+          "targetDigest": "b6928424579c8a5bcca0a0669f8f4224e916b8aa7bc8433735db0abace5b7d2e",
           "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
         }
       ],
@@ -524,7 +524,7 @@
       "deliveryGroup": "hub-control-plane",
       "outcome": "upgraded",
       "source": { "blob": "740a4e68a2f6c899c1e69fd244998cdbf2a76def", "mode": "100644" },
-      "target": { "path": "packages/work-items/src/adapters/doltgres/adapter.ts", "blob": "37bcd230c39f420bf29d9fe47490fc44c0e66c5a", "mode": "100644" },
+      "target": { "path": "packages/work-items/src/adapters/doltgres/adapter.ts", "blob": "47a92cad594cd84e6e438a62ea8a8440430b1ca5", "mode": "100644" },
       "rationale": "Poly consumes the byte-identical shared Doltgres adapter; node-specific allocator and logger choices are constructor options in the bootstrap container.",
       "behaviorExpectation": "CRUD and coordination operations commit safely and remain observable across retries and restarts.",
       "behaviorGateIds": ["hub.work_item_create", "hub.work_item_mutation", "hub.work_item_source_of_truth"],

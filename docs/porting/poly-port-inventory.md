@@ -29,7 +29,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 
 | Task | PR | Source path | Current target blob | Required environments | Opened |
 | --- | ---: | --- | --- | --- | --- |
-| `task.5176` | #124 | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` | `37bcd230c39f420bf29d9fe47490fc44c0e66c5a` | candidate, production | 2026-10-04T03:10:00Z |
+| `task.5176` | #124 | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` | `47a92cad594cd84e6e438a62ea8a8440430b1ca5` | candidate, production | 2026-10-04T03:10:00Z |
 
 | State | Count |
 | --- | ---: |
@@ -78,7 +78,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `1270400e122b2d56cb56e83b0aa522cd9d212fd9` | `app/src/app/api/v1/work/items/[id]/route.ts` | `100644` | `6c28c2649317e2674e6dfaec02c6f1d35d7b33da` | `app/src/app/api/v1/work/items/[id]/route.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `2652ea23be26d9f8fe3de8071084a861edd13957` | `app/src/app/api/v1/work/items/route.ts` | `100644` | `18c6cc26fac5ab5271007b910f5c1cd2d6004402` | `app/src/app/api/v1/work/items/route.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `c2e4b22af7ebe47cf05ed05b27556d7eb75a6a81` | `app/src/app/_facades/work/items.server.ts` | `100644` | `b9abf464300ad7788f178f85fc8f4a23e4fecd86` | `app/src/app/_facades/work/items.server.ts` |
-| P0 | unresolved | proof_refresh_pending | `hub-control-plane` | `100644` | `740a4e68a2f6c899c1e69fd244998cdbf2a76def` | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` | `100644` | `37bcd230c39f420bf29d9fe47490fc44c0e66c5a` | `packages/work-items/src/adapters/doltgres/adapter.ts` |
+| P0 | unresolved | proof_refresh_pending | `hub-control-plane` | `100644` | `740a4e68a2f6c899c1e69fd244998cdbf2a76def` | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` | `100644` | `47a92cad594cd84e6e438a62ea8a8440430b1ca5` | `packages/work-items/src/adapters/doltgres/adapter.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `bbb809a573ba86d91283316891f1976f19a46ddf` | `app/src/adapters/server/db/doltgres/work-items-cursor.ts` | `100644` | `0877830747a5ff19183c0ddf4d8f4dd4e277c816` | `app/src/adapters/server/db/doltgres/work-items-cursor.ts` |
 | P0 | retired | — | `hub-control-plane` | `100644` | `3ffb39ed6070376bd16b13358b0a58a89ff915c3` | `app/src/adapters/server/db/doltgres/client.ts` | — | — | `app/src/adapters/server/db/doltgres/client.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `07d0b8969e5edc5914865113dd8e7949443bbf48` | `app/src/bootstrap/container.ts` | `100644` | `fb101b66145a970a9c04633ae0d123b9e721d6b5` | `app/src/bootstrap/container.ts` |

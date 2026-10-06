@@ -34,12 +34,34 @@ function adapterWithQueries() {
     if (query.startsWith("SELECT id FROM work_items")) return [];
     if (query.startsWith("INSERT INTO work_items")) return [row];
     if (query.startsWith("UPDATE work_items")) {
-      return [{ ...row, claim_active: query.includes("claim_expires_at") }];
+      return [
+        {
+          ...row,
+          title: /title = '([^']*)'/.exec(query)?.[1] ?? row.title,
+          claim_active: query.includes("claim_expires_at"),
+        },
+      ];
     }
     if (query.startsWith("DELETE FROM work_items")) return [{ id: row.id }];
     if (query.includes("FROM work_items")) return [row];
     return [];
   }, queries);
+  return { adapter: new DoltgresWorkItemAdapter(sql), queries };
+}
+
+function adapterWithCoarseCommitDate() {
+  const queries: string[] = [];
+  const sql = makeFakeDoltgresSql((query) => {
+    if (query.startsWith("UPDATE work_items")) {
+      return [{ ...row, claim_active: true }];
+    }
+    if (query.includes("FROM work_items")) return [row];
+    return [];
+  }, queries, {
+    commitDate: "2026-10-02T00:01:00.000Z",
+    claimClaimedAt: "2026-10-02T00:01:00.900Z",
+    claimExpiresAt: "2026-10-02T00:06:00.000Z",
+  });
   return { adapter: new DoltgresWorkItemAdapter(sql), queries };
 }
 
@@ -96,6 +118,19 @@ describe("DoltgresWorkItemAdapter ownership and leases", () => {
     expect(heartbeat).toContain(
       "claim_owner_principal_id = 'principal-1' AND claimed_by_run = 'run-1'"
     );
+  });
+
+  it("accepts a claim in the same second as a coarse Dolt commit date", async () => {
+    const { adapter } = adapterWithCoarseCommitDate();
+
+    await expect(
+      adapter.claim({
+        id: toWorkItemId(row.id),
+        runId: "run-1",
+        command: "implement",
+        principalId: "principal-1",
+      })
+    ).resolves.toMatchObject({ claimedByRun: "run-1" });
   });
 
   it("rejects a stale heartbeat before creating an operation branch", async () => {
