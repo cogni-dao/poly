@@ -144,10 +144,30 @@ export function toContractRow(
  *
  * So the account is re-derived from `app.current_user_id` — the same session
  * variable `withTenantScope` set and the same predicate
- * `resolvePrincipalAccountId` uses. This is SCOPING, not a second authorization
- * decision: the executor has already allowed the read, and this cannot widen
- * the row set beyond what RLS permits, only narrow it to the one authorized
- * account. It is a plain SELECT and never creates an account.
+ * `resolvePrincipalAccountId` uses, so it agrees with the account the executor
+ * authorized under `accountFrom: "principal"`.
+ *
+ * ⚠️ TEMPORARY — REMOVE WHEN PR #144 LANDS. An earlier version of this comment
+ * claimed the helper "can only narrow, never widen". That defence is WRONG, and
+ * the real failure mode is narrowing to the *wrong* account:
+ * `POST /api/v1/agent/register` calls `getOrCreateBillingAccountForUser`, so
+ * EVERY approved agent owns a billing account. An ownership lookup therefore
+ * resolves a delegated agent to its OWN empty account, which then satisfies
+ * `authorize()` as `accessKind: "owner"` — a 200 describing the wrong tenant
+ * instead of the granted account or a denial. That is the very bug class this
+ * inversion was meant to close; it survives here only because the frozen
+ * orders input schema cannot carry a `billing_account_id`.
+ *
+ * PR #144 replaces this with `resolveSubjectAccountId`, which resolves by
+ * REACHABILITY for the required scope (live grants ∪ owned): exactly one ->
+ * resolved, several -> `invalid_input` naming the count but not the ids, none
+ * -> denied. For an agent holding its own account plus one grant, this route
+ * will then return a loud "name the account" 400 rather than silently reading
+ * the wrong tenant — the correct outcome for a schema that cannot carry the id.
+ * When #144 lands: delete this helper and take the account from the handler's
+ * third argument.
+ *
+ * It is a plain SELECT and never creates an account.
  */
 async function resolveOwnedAccountId(
   tx: AgentGrantTransaction
