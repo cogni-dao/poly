@@ -39,21 +39,31 @@ const baseRow: Row = {
 
 interface TimeoutHarnessState {
   row?: Row;
+  pendingRow?: Row;
   branch?: string;
+  branchCommit?: string;
   durable: boolean;
+  deadUnlockAttempts: number;
   inserts: number;
+  mainCommits: Set<string>;
   poolBuilds: number;
   queries: string[];
 }
 
 function makeTimeoutHarness({
   failFreshReachability = false,
+  timeoutAfterDml = false,
+  timeoutFreshHousekeeping = false,
 }: {
   readonly failFreshReachability?: boolean;
+  readonly timeoutAfterDml?: boolean;
+  readonly timeoutFreshHousekeeping?: boolean;
 } = {}) {
   const state: TimeoutHarnessState = {
     durable: false,
+    deadUnlockAttempts: 0,
     inserts: 0,
+    mainCommits: new Set(["main"]),
     poolBuilds: 0,
     queries: [],
   };
@@ -69,9 +79,15 @@ function makeTimeoutHarness({
     const poolNumber = state.poolBuilds;
     let ended = false;
     let rejectTimedOutMerge: ((error: Error) => void) | undefined;
+    let rejectTimedOutQuery: ((error: Error) => void) | undefined;
+    let freshReachabilityProven = false;
 
     const unsafe = async (query: string): Promise<Rows> => {
       state.queries.push(`pool-${poolNumber}:${query}`);
+      if (ended && query.startsWith("SELECT pg_advisory_unlock")) {
+        state.deadUnlockAttempts += 1;
+        return await new Promise<Rows>(() => undefined);
+      }
       if (ended) {
         const error = new Error("connection ended") as Error & {
           code: string;
@@ -93,20 +109,38 @@ function makeTimeoutHarness({
       }
       if (query.includes("dolt_checkout('-b'")) {
         state.branch = /'(work-item-op\/[^']+)'/.exec(query)?.[1];
+        state.branchCommit = undefined;
         return [{ dolt_checkout: [0, ""] }];
       }
-      if (query === "SELECT table_name FROM dolt.status") return [];
+      if (query === "SELECT table_name FROM dolt.status") {
+        if (
+          poolNumber === 2 &&
+          timeoutFreshHousekeeping &&
+          freshReachabilityProven
+        ) {
+          return await new Promise<Rows>((_resolve, reject) => {
+            rejectTimedOutQuery = reject;
+          });
+        }
+        return [];
+      }
       if (query === "SELECT name, hash FROM dolt.branches") {
         return state.branch
-          ? [{ name: state.branch, hash: "test-commit" }]
+          ? [{ name: state.branch, hash: state.branchCommit ?? "main" }]
           : [];
       }
       if (query.includes("FROM dolt.merge_status")) return [];
       if (query === "SELECT dolt_add('work_items')") {
+        if (poolNumber === 1 && timeoutAfterDml) {
+          return await new Promise<Rows>((_resolve, reject) => {
+            rejectTimedOutQuery = reject;
+          });
+        }
         return [{ dolt_add: [0, ""] }];
       }
       if (query.startsWith("SELECT dolt_commit")) {
-        return [{ dolt_commit: "test-commit" }];
+        state.branchCommit = `test-commit-${state.inserts}`;
+        return [{ dolt_commit: state.branchCommit }];
       }
       if (query.startsWith("SELECT dolt_merge_base")) {
         if (poolNumber === 2 && failFreshReachability) {
@@ -116,10 +150,20 @@ function makeTimeoutHarness({
           error.code = "CONNECTION_ENDED";
           throw error;
         }
-        return [{ dolt_merge_base: state.durable ? "test-commit" : "main" }];
+        if (poolNumber === 2) freshReachabilityProven = true;
+        const commit = /dolt_merge_base\('main', '([^']+)'\)/.exec(query)?.[1];
+        return [
+          {
+            dolt_merge_base:
+              commit && state.mainCommits.has(commit) ? commit : "main",
+          },
+        ];
       }
       if (query.startsWith("SELECT dolt_merge(")) {
         state.durable = true;
+        if (state.branchCommit) state.mainCommits.add(state.branchCommit);
+        state.row = state.pendingRow;
+        state.pendingRow = undefined;
         if (poolNumber === 1) {
           return await new Promise<Rows>((_resolve, reject) => {
             rejectTimedOutMerge = reject;
@@ -128,7 +172,14 @@ function makeTimeoutHarness({
         return [{ dolt_merge: ["test-merge", 0, 0, "ok"] }];
       }
       if (query.startsWith("SELECT dolt_branch")) {
+        if (
+          state.branchCommit === undefined ||
+          !state.mainCommits.has(state.branchCommit)
+        ) {
+          state.pendingRow = undefined;
+        }
         state.branch = undefined;
+        state.branchCommit = undefined;
         return [{ dolt_branch: [0, ""] }];
       }
       if (query.startsWith("SELECT id FROM work_items")) {
@@ -136,16 +187,16 @@ function makeTimeoutHarness({
       }
       if (query.startsWith("INSERT INTO work_items")) {
         state.inserts += 1;
-        state.row = { ...baseRow };
-        return [state.row];
+        state.pendingRow = { ...baseRow };
+        return [state.pendingRow];
       }
       if (query.startsWith("UPDATE work_items")) {
-        state.row = {
+        state.pendingRow = {
           ...(state.row ?? baseRow),
           title: "still writable",
           revision: 1,
         };
-        return [state.row];
+        return [state.pendingRow];
       }
       if (query.includes("FROM work_items")) {
         return state.row ? [{ ...state.row, claim_active: false }] : [];
@@ -167,6 +218,7 @@ function makeTimeoutHarness({
         };
         error.code = "CONNECTION_DESTROYED";
         rejectTimedOutMerge?.(error);
+        rejectTimedOutQuery?.(error);
       },
     } as unknown as Sql;
   };
@@ -178,6 +230,15 @@ function makeTimeoutHarness({
     recreateClient: buildPool,
   });
   return { adapter, events, state };
+}
+
+async function within<T>(promise: Promise<T>, milliseconds = 100): Promise<T> {
+  return await Promise.race([
+    promise,
+    new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error("test operation timed out")), milliseconds);
+    }),
+  ]);
 }
 
 describe("DoltgresWorkItemAdapter merge timeout recovery", () => {
@@ -211,6 +272,72 @@ describe("DoltgresWorkItemAdapter merge timeout recovery", () => {
       )
     ).resolves.toMatchObject({ title: "still writable" });
     expect(state.inserts).toBe(1);
+  });
+
+  it("releases the queue after a post-DML timeout destroys the locked connection", async () => {
+    const { adapter, state } = makeTimeoutHarness({ timeoutAfterDml: true });
+
+    await expect(
+      within(
+        adapter.create(
+          { type: "task", title: "times out after DML" },
+          "principal-1"
+        )
+      )
+    ).rejects.toBeInstanceOf(WorkItemsBusyError);
+
+    expect(state.inserts).toBe(1);
+    expect(state.poolBuilds).toBe(2);
+    expect(state.deadUnlockAttempts).toBe(0);
+    await expect(within(adapter.get(toWorkItemId("task.0001")))).resolves.toBe(
+      null
+    );
+    await expect(within(adapter.list())).resolves.toMatchObject({ items: [] });
+    await expect(
+      within(
+        adapter.create(
+          { type: "task", title: "successor create" },
+          "principal-1"
+        )
+      )
+    ).resolves.toMatchObject({ id: "task.0001" });
+    expect(state.inserts).toBe(2);
+    expect(state.deadUnlockAttempts).toBe(0);
+  });
+
+  it("returns through nested recovery when its locked connection is replaced", async () => {
+    const { adapter, state } = makeTimeoutHarness({
+      timeoutFreshHousekeeping: true,
+    });
+
+    await expect(
+      within(
+        adapter.create(
+          { type: "task", title: "nested recovery" },
+          "principal-1"
+        )
+      )
+    ).resolves.toMatchObject({ id: "task.0001" });
+
+    expect(state.inserts).toBe(1);
+    expect(state.poolBuilds).toBe(3);
+    expect(state.deadUnlockAttempts).toBe(0);
+    await expect(
+      within(adapter.get(toWorkItemId("task.0001")))
+    ).resolves.toMatchObject({ id: "task.0001" });
+    await expect(within(adapter.list())).resolves.toMatchObject({
+      items: [expect.objectContaining({ id: "task.0001" })],
+    });
+    await expect(
+      within(
+        adapter.create(
+          { type: "bug", title: "successor create" },
+          "principal-1"
+        )
+      )
+    ).resolves.toMatchObject({ id: "task.0001" });
+    expect(state.inserts).toBe(2);
+    expect(state.deadUnlockAttempts).toBe(0);
   });
 
   it("stays fail-closed and preserves evidence when fresh proof also fails", async () => {

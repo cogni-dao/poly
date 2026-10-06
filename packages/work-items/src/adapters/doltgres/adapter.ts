@@ -623,7 +623,12 @@ export class DoltgresWorkItemAdapter
       return await fn(conn);
     } finally {
       if (reserveTimer) clearTimeout(reserveTimer);
-      if (locked && rawConn) {
+      if (
+        locked &&
+        rawConn &&
+        this.sql === recoveryPool &&
+        !this.poisoned
+      ) {
         try {
           await this.executeQuery(
             recoveryPool,
@@ -774,7 +779,16 @@ export class DoltgresWorkItemAdapter
       throw error;
     } finally {
       if (reserveTimer) clearTimeout(reserveTimer);
-      if (locked && rawConn) {
+      // Never retain the in-process FIFO ticket while connection cleanup runs.
+      // The database advisory lock remains the cross-process authority until a
+      // healthy reserved session releases it or a terminated session dies.
+      leaveQueue();
+      if (
+        locked &&
+        rawConn &&
+        this.sql === operationPool &&
+        !this.poisoned
+      ) {
         try {
           await this.executeQuery(
             operationPool,
@@ -798,7 +812,6 @@ export class DoltgresWorkItemAdapter
       if (rawConn && this.sql === operationPool && !this.poisoned) {
         rawConn.release();
       }
-      leaveQueue();
     }
   }
 
