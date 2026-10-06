@@ -20,20 +20,20 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
 | Current-only files | 1134 |
-| Unresolved legacy files | 603 |
-| P0/P1 mission files resolved | 7/79 |
-| Behavioral gates passed | 0/7 |
+| Unresolved legacy files | 602 |
+| P0/P1 mission files resolved | 8/79 |
+| Behavioral gates passed | 3/7 |
 
 | State | Count |
 | --- | ---: |
 | exact | 1126 |
-| upgraded | 6 |
+| upgraded | 7 |
 | retired | 1 |
-| unresolved | 603 |
+| unresolved | 602 |
 
 | Priority | Unresolved |
 | --- | ---: |
-| P0 | 21 |
+| P0 | 20 |
 | P1 | 51 |
 | P2 | 281 |
 | P3 | 250 |
@@ -42,7 +42,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 
 | Group | Files resolved | Gates passed | Outcome |
 | --- | ---: | ---: | --- |
-| `hub-control-plane` | 7/8 | 0/3 | Hub control-plane proof |
+| `hub-control-plane` | 8/8 | 3/3 | Hub control-plane proof |
 | `saved-facts` | 0/4 | 0/1 | Saved-fact reliability |
 | `dashboard-truth` | 0/10 | 0/3 | Dashboard truth |
 | `visible-p0` | 0/11 | 0/0 | Visible P0 parity |
@@ -58,9 +58,9 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | P0 | unresolved | `dashboard.pnl_history` | `dashboard-truth` | P/L history resolves the actual trading wallet and distinguishes missing observation data from a measured zero history. |
 | P0 | unresolved | `dashboard.wallet_identity` | `saved-facts` | The observer and every dashboard read model use the same tenant trading identity: funder_address when present, otherwise the legacy signer address. |
 | P0 | unresolved | `dashboard.wallet_total` | `dashboard-truth` | Total wallet value is cash plus marked positions; unavailable positions make Total unknown or explicitly partial, never a cash-only total. |
-| P0 | unresolved | `hub.work_item_create` | `hub-control-plane` | Authenticated POST /api/v1/work/items returns 201 and creates a Hub work item in Doltgres. |
-| P0 | unresolved | `hub.work_item_mutation` | `hub-control-plane` | Authenticated claim, heartbeat, release, PATCH, and DELETE use the Dolt-backed command adapter and mutations persist across a deployment restart. |
-| P0 | unresolved | `hub.work_item_source_of_truth` | `hub-control-plane` | The deployed Hub reads and writes work items through Doltgres, remains persistent across a production restart, and never uses repository Markdown as runtime persistence. |
+| P0 | passed | `hub.work_item_create` | `hub-control-plane` | Authenticated POST /api/v1/work/items returns 201 and creates a Hub work item in Doltgres. |
+| P0 | passed | `hub.work_item_mutation` | `hub-control-plane` | Authenticated claim, heartbeat, release, PATCH, and DELETE use the Dolt-backed command adapter and mutations persist across a deployment restart. |
+| P0 | passed | `hub.work_item_source_of_truth` | `hub-control-plane` | The deployed Hub reads and writes work items through Doltgres, remains persistent across a production restart, and never uses repository Markdown as runtime persistence. |
 
 ## Complete legacy file table
 
@@ -74,7 +74,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `740a4e68a2f6c899c1e69fd244998cdbf2a76def` | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` | `100644` | `d3076c17b720b12f68204a442d54a53012deb560` | `app/src/adapters/server/db/doltgres/work-items-adapter.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `bbb809a573ba86d91283316891f1976f19a46ddf` | `app/src/adapters/server/db/doltgres/work-items-cursor.ts` | `100644` | `0877830747a5ff19183c0ddf4d8f4dd4e277c816` | `app/src/adapters/server/db/doltgres/work-items-cursor.ts` |
 | P0 | retired | — | `hub-control-plane` | `100644` | `3ffb39ed6070376bd16b13358b0a58a89ff915c3` | `app/src/adapters/server/db/doltgres/client.ts` | — | — | `app/src/adapters/server/db/doltgres/client.ts` |
-| P0 | unresolved | approval_stale | `hub-control-plane` | `100644` | `07d0b8969e5edc5914865113dd8e7949443bbf48` | `app/src/bootstrap/container.ts` | `100644` | `cc77962c80e3a54925dd2a570c0ea8cfa9899dea` | `app/src/bootstrap/container.ts` |
+| P0 | upgraded | — | `hub-control-plane` | `100644` | `07d0b8969e5edc5914865113dd8e7949443bbf48` | `app/src/bootstrap/container.ts` | `100644` | `fb101b66145a970a9c04633ae0d123b9e721d6b5` | `app/src/bootstrap/container.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `c16eaad98d90d141912f56d8576385ec43f7389a` | `app/src/ports/work-items-doltgres.port.ts` | `100644` | `139f1c67c68161265f84f7ee3ce4578b186e9e31` | `app/src/ports/work-items-doltgres.port.ts` |
 | P0 | unresolved | content_differs | `saved-facts` | `100644` | `a02432ecc12b785d71a637725c6ee1ea7ad3c649` | `app/src/features/wallet-analysis/server/trader-observation-service.ts` | `100644` | `f81e9b1a7200e2d1f40d65a18a7a2cf58a114c89` | `app/src/features/wallet-analysis/server/trader-observation-service.ts` |
 | P0 | unresolved | content_differs | `saved-facts` | `100644` | `dcb6e95fa747b4c8b46048d1e72b7978600d8367` | `app/src/features/wallet-analysis/server/current-position-read-model.ts` | `100644` | `e8650022865a8ddb4818c7d964a93d5138768dbc` | `app/src/features/wallet-analysis/server/current-position-read-model.ts` |

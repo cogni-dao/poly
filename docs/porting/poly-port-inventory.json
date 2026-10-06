@@ -13,29 +13,29 @@
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
   "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "c8a5139b308430b8dacaefa91d3266fb8c85e0632538f75b437319eac3a2840f",
+  "targetTreeDigest": "33b47efc28117202e5c828a05773b253e99777e3323d22c5c41e25f0e7bd25e4",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
     "targetOnlyFiles": 1134,
-    "unresolved": 603,
+    "unresolved": 602,
     "byStatus": {
       "exact": 1126,
       "retired": 1,
-      "unresolved": 603,
-      "upgraded": 6
+      "unresolved": 602,
+      "upgraded": 7
     },
     "unresolvedByPriority": {
-      "P0": 21,
+      "P0": 20,
       "P1": 51,
       "P2": 281,
       "P3": 250
     },
     "missionFiles": 79,
-    "missionResolved": 7,
+    "missionResolved": 8,
     "deliveryGroups": 7,
     "behavioralGates": 7,
-    "unresolvedBehavioralGates": 7
+    "unresolvedBehavioralGates": 4
   },
   "deliveryGroups": [
     {
@@ -58,9 +58,9 @@
         "app/src/ports/work-items-doltgres.port.ts"
       ],
       "files": 8,
-      "resolved": 7,
+      "resolved": 8,
       "gates": 3,
-      "gatesPassed": 0
+      "gatesPassed": 3
     },
     {
       "id": "saved-facts",
@@ -368,9 +368,9 @@
           ]
         }
       ],
-      "currentTargetDigest": "b4124fc5521da7d70b4fd15bb0a4659e9ba98f8b217572b33d0493928cae48a5",
-      "status": "unresolved",
-      "unresolvedReason": "proof_stale_or_incomplete"
+      "currentTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
+      "status": "passed",
+      "unresolvedReason": null
     },
     {
       "id": "hub.work_item_mutation",
@@ -427,9 +427,9 @@
           ]
         }
       ],
-      "currentTargetDigest": "b4124fc5521da7d70b4fd15bb0a4659e9ba98f8b217572b33d0493928cae48a5",
-      "status": "unresolved",
-      "unresolvedReason": "proof_stale_or_incomplete"
+      "currentTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
+      "status": "passed",
+      "unresolvedReason": null
     },
     {
       "id": "hub.work_item_source_of_truth",
@@ -486,9 +486,9 @@
           ]
         }
       ],
-      "currentTargetDigest": "b4124fc5521da7d70b4fd15bb0a4659e9ba98f8b217572b33d0493928cae48a5",
-      "status": "unresolved",
-      "unresolvedReason": "proof_stale_or_incomplete"
+      "currentTargetDigest": "6b1b110e208301d20a7f0dc15162d9d7f6b4cfd5b1aecbd992cd4fbb613b6dfe",
+      "status": "passed",
+      "unresolvedReason": null
     }
   ],
   "entries": [
@@ -8077,13 +8077,13 @@
       "sourceBlob": "07d0b8969e5edc5914865113dd8e7949443bbf48",
       "sourcePath": "app/src/bootstrap/container.ts",
       "targetPath": "app/src/bootstrap/container.ts",
-      "targetBlob": "cc77962c80e3a54925dd2a570c0ea8cfa9899dea",
+      "targetBlob": "fb101b66145a970a9c04633ae0d123b9e721d6b5",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
       "deliveryGroup": "hub-control-plane",
-      "status": "unresolved",
-      "unresolvedReason": "approval_stale",
+      "status": "upgraded",
+      "unresolvedReason": null,
       "resolution": {
         "rationale": "The current container composes shared node capabilities and wires the node-local Doltgres adapter as runtime authority.",
         "behaviorExpectation": "Deployed Hub reads and writes fail explicitly when Doltgres is unavailable and never fall back to Markdown persistence.",
