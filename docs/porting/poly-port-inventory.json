@@ -49,11 +49,11 @@
     }
   ],
   "policySha256": "9b181ac5914f0931291e70cfaa5e99c8bb68ad980822c0cb9eec2e160f2f53e6",
-  "targetTreeDigest": "d01e0adae44be8f4da48cb13d1bbeba4187c4fa9cbcd71774411b787552cde8f",
+  "targetTreeDigest": "589a77189d73cac80f7686394f67d8ffef4da54516af0380442e504a67dc88d6",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1176,
+    "targetOnlyFiles": 1187,
     "unresolved": 605,
     "byStatus": {
       "exact": 1123,
@@ -3316,7 +3316,7 @@
       "sourceBlob": "888987037701e67c4772de6490a7904173e41e5d",
       "sourcePath": "app/src/adapters/server/db/migrations/meta/_journal.json",
       "targetPath": "app/src/adapters/server/db/migrations/meta/_journal.json",
-      "targetBlob": "645b79944e245f01526e7361bc15aec301d30b83",
+      "targetBlob": "cf9ad29a4af17e10bdd018b8ff0fd3c8e3a310fe",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -22692,7 +22692,7 @@
       "sourceBlob": "b33210d619d6272495e199c179513ced3e528887",
       "sourcePath": "packages/node-contracts/src/index.ts",
       "targetPath": "packages/poly-node-contracts/src/index.ts",
-      "targetBlob": "300afb56d6184b7e8ba75042e808e8e9364286df",
+      "targetBlob": "b5a5d759ddbc7e1f5f42ecb69a6da729704f9b5f",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -25463,6 +25463,9 @@
       "targetPath": ".gitignore"
     },
     {
+      "targetPath": ".zt.mjs"
+    },
+    {
       "targetPath": "AGENTS.md"
     },
     {
@@ -25535,6 +25538,9 @@
       "targetPath": "app/src/adapters/server/db/migrations/0074_account_read_scope_alias.sql"
     },
     {
+      "targetPath": "app/src/adapters/server/db/migrations/0075_portfolio_snapshot_delegated_select.sql"
+    },
+    {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0060_snapshot.json"
     },
     {
@@ -25575,6 +25581,9 @@
     },
     {
       "targetPath": "app/src/adapters/server/db/migrations/meta/0074_snapshot.json"
+    },
+    {
+      "targetPath": "app/src/adapters/server/db/migrations/meta/0075_snapshot.json"
     },
     {
       "targetPath": "app/src/adapters/server/identity/identity-binding.adapter.ts"
@@ -25886,6 +25895,9 @@
       "targetPath": "app/src/app/api/v1/poly/_lib/degraded.ts"
     },
     {
+      "targetPath": "app/src/app/api/v1/poly/account/portfolio-snapshot/route.ts"
+    },
+    {
       "targetPath": "app/src/app/api/v1/poly/agent-access-requests/[id]/decision/route.ts"
     },
     {
@@ -25991,6 +26003,9 @@
       "targetPath": "app/src/features/capability-plane/index.ts"
     },
     {
+      "targetPath": "app/src/features/capability-plane/portfolio-snapshot.ts"
+    },
+    {
       "targetPath": "app/src/features/governance/components/ContributionCreditsPanel.tsx"
     },
     {
@@ -26043,6 +26058,9 @@
     },
     {
       "targetPath": "app/src/features/wallet-analysis/server/fill-rollup-service.ts"
+    },
+    {
+      "targetPath": "app/src/features/wallet-analysis/server/portfolio-snapshot-cache.ts"
     },
     {
       "targetPath": "app/src/features/wallet-analysis/server/position-balance-authority.ts"
@@ -26106,6 +26124,9 @@
     },
     {
       "targetPath": "app/tests/component/db/fill-rollup-writer.int.test.ts"
+    },
+    {
+      "targetPath": "app/tests/component/db/portfolio-snapshot-rls.int.test.ts"
     },
     {
       "targetPath": "app/tests/component/db/position-observation-writer.int.test.ts"
@@ -26346,6 +26367,15 @@
     },
     {
       "targetPath": "app/tests/unit/features/capability-plane/execute-account-read.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/capability-plane/portfolio-snapshot.contract.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/capability-plane/portfolio-snapshot.fixture.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/capability-plane/portfolio-snapshot.security.test.ts"
     },
     {
       "targetPath": "app/tests/unit/features/governance/CumulativeClaimPanel.spec.tsx"
@@ -28545,6 +28575,9 @@
     },
     {
       "targetPath": "packages/poly-market-provider/tests/fixtures/polymarket-user-pnl-week.json"
+    },
+    {
+      "targetPath": "packages/poly-node-contracts/src/poly.account.portfolio-snapshot.v1.contract.ts"
     },
     {
       "targetPath": "packages/poly-node-contracts/src/poly.agent-access-requests.v1.contract.ts"

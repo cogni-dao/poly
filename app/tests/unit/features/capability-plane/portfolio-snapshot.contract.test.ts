@@ -1,0 +1,169 @@
+// SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+// SPDX-FileCopyrightText: 2026 Cogni-DAO
+
+/**
+ * Module: `@tests/unit/features/capability-plane/portfolio-snapshot.contract`
+ * Purpose: Pin the descriptor-level guarantees of
+ *   `poly.account.portfolio-snapshot.v1` — the ones that make dashboard/agent
+ *   parity structural rather than something a runtime test has to chase.
+ * Scope: Pure contract assertions. No DB, no HTTP, no mocks.
+ * Links: story.5004, task.1791070962, docs/spec/capability-plane.md
+ * @internal
+ */
+
+import {
+  ACCOUNT_READ_SCOPE,
+  POLY_ACCOUNT_READ_OPERATIONS,
+  PolyAccountPortfolioSnapshotOutputSchema,
+  polyAccountReadPortfolioSnapshotOperation,
+  polyAccountReadPortfolioSnapshotOwnerOperation,
+  PolyWalletDashboardOutputSchema,
+} from "@cogni/poly-node-contracts";
+import { describe, expect, it } from "vitest";
+import { z } from "zod";
+import { accountReadDiscoveryActions } from "@/features/capability-plane/discovery";
+import { PORTFOLIO_SNAPSHOT_TERMINAL_EVENT } from "@/features/capability-plane/portfolio-snapshot";
+
+const agent = polyAccountReadPortfolioSnapshotOperation;
+const owner = polyAccountReadPortfolioSnapshotOwnerOperation;
+
+describe("poly.account.portfolio-snapshot descriptor", () => {
+  it("is ONE capability reached by two transports", () => {
+    // CAPABILITY_DEFINED_ONCE: same id, scope and output on both transports, so
+    // `operationId` in Loki and every parity assertion treat them as one.
+    expect(owner.id).toBe(agent.id);
+    expect(owner.requiredScope).toBe(agent.requiredScope);
+    expect(owner.output).toBe(agent.output);
+    expect(owner.path).not.toBe(agent.path);
+  });
+
+  it("gates on the canonical account:read scope, not the legacy name", () => {
+    expect(agent.requiredScope).toBe(ACCOUNT_READ_SCOPE);
+    expect(agent.requiredScope).toBe("account:read");
+  });
+
+  it("is honestly read-only, so REPEATABLE READ READ ONLY is not a lie", () => {
+    expect(agent.readOnly).toBe(true);
+    expect(owner.readOnly).toBe(true);
+    expect(agent.method).toBe("GET");
+  });
+
+  it("makes an agent NAME the account and an owner never need to", () => {
+    // The delegation trap: a delegated principal must not be answerable about
+    // a tenant derived from its own id. It names the account; authorize() rules.
+    expect(agent.accountFrom).toBe("input");
+    expect(agent.input.safeParse({ interval: "1W" }).success).toBe(false);
+    expect(
+      agent.input.safeParse({
+        billing_account_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }).success
+    ).toBe(true);
+
+    expect(owner.accountFrom).toBe("principal");
+    expect(owner.input.safeParse({}).success).toBe(true);
+    // An owner transport that accepted an account id on the wire would be a
+    // second way to name a tenant; it is stripped, not honoured.
+    const parsed = owner.input.parse({
+      billing_account_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    });
+    expect(parsed).not.toHaveProperty("billing_account_id");
+  });
+
+  it("defaults the interval identically on both transports", () => {
+    expect(owner.input.parse({}).interval).toBe("1W");
+    expect(
+      agent.input.parse({
+        billing_account_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }).interval
+    ).toBe("1W");
+  });
+
+  it("stays OUT of the discoverable catalog, and discovery still works", () => {
+    // Not a preference — a blocker. `accountReadDiscoveryActions` projects every
+    // catalog entry through `z.toJSONSchema(operation.output)` with Zod's
+    // default `unrepresentable: "throw"`, and this output transitively contains
+    // `PolyAddressSchema`, which ends in `.transform((s) => s.toLowerCase())`.
+    // Transforms cannot be represented in JSON Schema.
+    const ids = POLY_ACCOUNT_READ_OPERATIONS.map((operation) => operation.id);
+    expect(ids).not.toContain(agent.id);
+
+    // The decisive part: the projection must still succeed. The discovery route
+    // spreads the WHOLE catalog, so one unrepresentable descriptor takes
+    // `.well-known/agent.json` down for every capability — not just its own.
+    expect(() =>
+      accountReadDiscoveryActions("https://poly.example")
+    ).not.toThrow();
+    const actions = accountReadDiscoveryActions("https://poly.example");
+    expect(actions.readCopyTradePnl).toBeDefined();
+    expect(actions.readAccountPortfolioSnapshot).toBeUndefined();
+    // Neither transport is advertised while this is unresolved.
+    expect(JSON.stringify(actions)).not.toContain(agent.path);
+    expect(JSON.stringify(actions)).not.toContain(owner.path);
+  });
+
+  it("proves the exact reason the output cannot be projected", () => {
+    // Pinned so the blocker is reproducible and the one-line seam fix is
+    // verifiable: projecting the OUTPUT throws, projecting the INPUT does not,
+    // and projecting the output in input-mode does not either. So `io: "input"`
+    // (or `unrepresentable: "any"`) in the seam's projection is sufficient.
+    expect(() => z.toJSONSchema(agent.output)).toThrow(/[Tt]ransform/);
+    expect(() => z.toJSONSchema(agent.input)).not.toThrow();
+    expect(() => z.toJSONSchema(agent.output, { io: "input" })).not.toThrow();
+  });
+
+  it("has a terminal event, so it cannot ship unobservable", () => {
+    // Declared app-locally rather than in `ACCOUNT_READ_TERMINAL_EVENTS`,
+    // which is keyed by the catalog id union this capability is outside of.
+    expect(PORTFOLIO_SNAPSHOT_TERMINAL_EVENT).toBe(
+      "feature.poly_wallet_dashboard.complete"
+    );
+  });
+});
+
+describe("portfolio snapshot output shape", () => {
+  it("is a strict superset of the dashboard contract", () => {
+    // RESPONSE_IS_A_SUPERSET: the owner UI parses `PolyWalletDashboardOutputSchema`
+    // and zod strips unknown keys, so serving the snapshot on /wallet/dashboard
+    // cannot break an existing client.
+    const dashboardKeys = Object.keys(PolyWalletDashboardOutputSchema.shape);
+    const snapshotKeys = Object.keys(
+      PolyAccountPortfolioSnapshotOutputSchema.shape
+    );
+    for (const key of dashboardKeys) {
+      expect(snapshotKeys).toContain(key);
+    }
+    expect(snapshotKeys).toContain("readiness");
+    expect(snapshotKeys).toHaveLength(dashboardKeys.length + 1);
+  });
+
+  it("carries readiness facts but NOT the connection mutation handle", () => {
+    const readiness = Object.keys(
+      PolyAccountPortfolioSnapshotOutputSchema.shape.readiness.shape
+    );
+    expect(readiness).toEqual(
+      expect.arrayContaining([
+        "connected",
+        "funder_address",
+        "trading_ready",
+        "auto_wrap_consent_at",
+        "auto_wrap_floor_usdce_atomic",
+      ])
+    );
+    // Inventory row 2.5 is an actor-only affordance: a connection id is a
+    // mutation handle and must never be a shared account fact.
+    expect(readiness).not.toContain("connection_id");
+  });
+
+  it("degrades on a corrupt auto-wrap floor instead of failing the whole snapshot", () => {
+    // Defence in depth, not a bug fix: migration 0035 already CHECKs the
+    // column `> 0`, so `0` should be unreachable. Accepting it keeps one bad
+    // readiness field from collapsing the entire snapshot into a 500.
+    const floor =
+      PolyAccountPortfolioSnapshotOutputSchema.shape.readiness.shape
+        .auto_wrap_floor_usdce_atomic;
+    expect(floor.safeParse("0").success).toBe(true);
+    expect(floor.safeParse(null).success).toBe(true);
+    expect(floor.safeParse("00").success).toBe(false);
+    expect(floor.safeParse("-1").success).toBe(false);
+  });
+});

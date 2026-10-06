@@ -4,7 +4,8 @@
 /** Coherent, bounded, DB-only wallet-dashboard read model. */
 import { randomUUID } from "node:crypto";
 import type {
-  PolyWalletDashboardOutput,
+  PolyAccountPortfolioSnapshotOutput,
+  PolyAccountWalletReadiness,
   PolyWalletOverviewInterval,
   WalletDashboardFactMeta,
   WalletDashboardWarning,
@@ -76,6 +77,8 @@ type DailyCountRow = { day: string | null; n: string | number | null };
 
 export type WalletDashboardReadDiagnostics = {
   comparisonPath?:
+    | "cache_hit"
+    | "unknown"
     | "unavailable"
     | "zero_identity"
     | "bundle"
@@ -92,8 +95,7 @@ type OptionalRead<T> =
   | { ok: false; error: unknown };
 
 
-export async function readTenantWalletDashboard(input: {
-  db: Db;
+export type TenantWalletDashboardReadInput = {
   billingAccountId: string;
   interval: PolyWalletOverviewInterval;
   adapterConfigured: boolean;
@@ -101,572 +103,673 @@ export async function readTenantWalletDashboard(input: {
   readBalance?: (db: Db, billingAccountId: string) => Promise<WalletBalanceRead>;
   /** Bounded internal timing sink; never serialized into the public response. */
   diagnostics?: WalletDashboardReadDiagnostics;
-}): Promise<PolyWalletDashboardOutput> {
+};
+
+/**
+ * Own-transaction wrapper, retained so existing callers and the component
+ * suites keep working unchanged.
+ *
+ * SNAPSHOT_COHERENCE_IS_THE_CONTRACT: this whole read model rests on every
+ * statement seeing ONE snapshot — `snapshotId`, `capturedAt`, and the
+ * cross-fact `MAX_FACT_SKEW_MS` coherence gate behind `usdc_total` are only
+ * meaningful under `REPEATABLE READ READ ONLY`. Nesting this function inside
+ * another transaction would silently defeat that: postgres-js degrades a
+ * nested `transaction()` to a SAVEPOINT and DROPS the isolation-level and
+ * access-mode options on the floor, with no error. Callers that already own a
+ * transaction MUST therefore call {@link readTenantWalletDashboardIn} against
+ * their own already-read-only transaction, never this wrapper.
+ */
+export async function readTenantWalletDashboard(
+  input: TenantWalletDashboardReadInput & { db: Db }
+): Promise<PolyAccountPortfolioSnapshotOutput> {
   return input.db.transaction(
-    async (tx) => {
-      const db = tx as unknown as Db;
-      await db.execute(sql.raw(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`));
-      const clockRows = normalizeRows<{ captured_at: Date | string }>(
-        await db.execute(sql`SELECT clock_timestamp() AS captured_at`)
-      );
-      const capturedAt = toIso(clockRows[0]?.captured_at) ?? new Date().toISOString();
-      const capturedAtDate = new Date(capturedAt);
-      const snapshotId = randomUUID();
-      const warnings: WalletDashboardWarning[] = [];
-      if (!input.adapterConfigured) {
-        warnings.push(
-          warning(
-            "wallet",
-            "wallet_adapter_unconfigured",
-            "Trading-wallet actions are unavailable on this deployment."
-          )
-        );
-      }
-
-      const address = await readActiveWalletAddress(db, input.billingAccountId);
-      if (address === null) {
-        warnings.push(warning("wallet", "no_trading_wallet", "No trading wallet is connected."));
-        return emptyDashboard({
-          snapshotId,
-          capturedAt,
-          interval: input.interval,
-          configured: input.adapterConfigured,
-          warnings,
-        });
-      }
-
-      const balanceRead = await optionalRead(db, (savepoint) =>
-        (input.readBalance ?? readWalletBalanceFact)(savepoint, input.billingAccountId)
-      );
-      const balance: Exclude<WalletBalanceRead, { kind: "no_wallet" }> =
-        balanceRead.ok && balanceRead.value.kind !== "no_wallet"
-          ? balanceRead.value
-          : { kind: "missing", address };
-      if (!balanceRead.ok) {
-        warnings.push(readFailure("cash", "balances_unavailable", balanceRead.error));
-      } else if (balanceRead.value.kind === "no_wallet") {
-        warnings.push(
-          warning(
-            "cash",
-            "balances_unavailable",
-            "The balance reader could not resolve the active wallet inside this snapshot."
-          )
-        );
-      }
-      const orderRead = await optionalRead(db, (savepoint) =>
-        readOrderSummary(savepoint, input.billingAccountId, capturedAt)
-      );
-      const positionsRead = await optionalRead(db, (savepoint) =>
-        readCurrentWalletPositionModel({ db: savepoint, walletAddress: address, capturedAt: capturedAtDate })
-      );
-      const closedRead = await optionalRead(db, (savepoint) =>
-        readClosedPositionSummary(savepoint, input.billingAccountId, capturedAtDate)
-      );
-      const dailyRead = await optionalRead(db, (savepoint) =>
-        readDailyTradeCounts(savepoint, input.billingAccountId, capturedAtDate)
-      );
-      const pnlRead = await optionalRead(db, (savepoint) =>
-        getTradingWalletPnlHistoryRead({
-          db: savepoint,
-          address,
-          interval: input.interval,
-          capturedAt,
-        })
-      );
-
-      const orderFact = orderRead.ok
-        ? orderRead.value.malformedBuyRows > 0
-          ? {
-              ...factFromAge("local_ledger", orderRead.value.observedAt, capturedAtDate, ORDER_FRESHNESS_MS),
-              status: "partial" as const,
-              complete: false,
-            }
-          : factFromAge("local_ledger", orderRead.value.observedAt, capturedAtDate, ORDER_FRESHNESS_MS)
-        : unavailableFact("local_ledger");
-      if (!orderRead.ok) warnings.push(readFailure("orders", "orders_unavailable", orderRead.error));
-      else if (orderRead.value.malformedBuyRows > 0) {
-        warnings.push(
-          warning(
-            "orders",
-            "orders_malformed_numeric",
-            "One or more local order amounts are malformed; reserved collateral is unavailable."
-          )
-        );
-      } else if (orderFact.status === "stale") {
-        warnings.push(
-          warning(
-            "orders",
-            "orders_stale",
-            "The local order ledger has no recent synchronization timestamp."
-          )
-        );
-      }
-
-      const positionFact = positionsRead.ok
-        ? positionsRead.value.warnings.some((entry) => entry.code === "current_positions_wallet_missing") ||
-          !positionsRead.value.summary.hasSuccessfulObservation
-          ? unavailableFact("data_api_current_positions")
-          : positionsRead.value.summary.identityAmbiguous ||
-              positionsRead.value.summary.cursorStatus === "partial"
-            ? {
-                ...factFromAge(
-                  "data_api_current_positions",
-                  positionsRead.value.summary.syncedAt,
-                  capturedAtDate,
-                  POSITION_FRESHNESS_MS
-                ),
-                status: "partial" as const,
-                complete: false,
-              }
-            : positionsRead.value.summary.stale
-            ? {
-                ...factFromAge(
-                  "data_api_current_positions",
-                  positionsRead.value.summary.syncedAt,
-                  capturedAtDate,
-                  POSITION_FRESHNESS_MS
-                ),
-                status: "stale" as const,
-                complete: false,
-              }
-            : factFromAge(
-                "data_api_current_positions",
-                positionsRead.value.summary.syncedAt ?? capturedAt,
-                capturedAtDate,
-                POSITION_FRESHNESS_MS
-              )
-        : unavailableFact("data_api_current_positions");
-      if (!positionsRead.ok) {
-        warnings.push(readFailure("positions", "positions_unavailable", positionsRead.error));
-      } else {
-        warnings.push(
-          ...positionsRead.value.warnings.map((entry) => ({ component: "positions" as const, ...entry }))
-        );
-        if (
-          positionFact.status !== "unavailable" &&
-          positionsRead.value.summary.activeRows > positionsRead.value.positions.length
-        ) {
-          warnings.push(
-            warning(
-              "positions",
-              "positions_preview_truncated",
-              `Showing ${positionsRead.value.positions.length} of ${positionsRead.value.summary.activeRows} open positions.`
-            )
-          );
-        }
-      }
-
-      if (!closedRead.ok) warnings.push(readFailure("history", "history_unavailable", closedRead.error));
-
-      const activityFact = dailyRead.ok
-        ? freshFact("local_ledger", capturedAt)
-        : unavailableFact("local_ledger");
-      if (!dailyRead.ok) warnings.push(readFailure("activity", "daily_trade_counts_unavailable", dailyRead.error));
-
-      const cashFact = cashMeta(balance, capturedAtDate);
-      if (!balanceRead.ok) {
-        // The identity row is authoritative and was resolved before the
-        // component savepoint. A cash-table failure must not erase it or
-        // abort the remaining repeatable-read snapshot.
-      } else if (balance.kind === "missing") {
-        warnings.push(warning("cash", "balance_snapshot_missing", "No persisted balance observation is available; this is not a zero balance."));
-      } else {
-        for (const message of balance.errors) {
-          warnings.push(warning("cash", balance.status === "error" ? "balances_unavailable" : "balances_partial", message));
-        }
-        if (cashFact.status === "stale") {
-          warnings.push(warning("cash", "balances_stale", "The persisted Polygon cash fact is older than ten minutes."));
-        }
-      }
-
-      let livePositions =
-        positionsRead.ok && positionFact.status !== "unavailable"
-          ? positionsRead.value.positions
-          : [];
-      let closedPositions = closedRead.ok ? closedRead.value.positions : [];
-      // Market exposure needs the vendor snapshot cost basis encoded by the
-      // pre-realized-overlay `currentValue - pnlUsd` relation. The display
-      // overlay below changes pnlUsd to lifetime realized P/L and must not be
-      // fed back into market cost-basis math.
-      const marketLivePositions = livePositions;
-      const marketClosedPositions = closedPositions;
-      const displayedLivePositions = marketLivePositions.slice(
-        0,
-        LIVE_PREVIEW_LIMIT
-      );
-      const displayedClosedPositions = marketClosedPositions.slice(
-        0,
-        CLOSED_PREVIEW_LIMIT
-      );
-      const displayedKeys = [
-        ...new Map(
-          [...displayedLivePositions, ...displayedClosedPositions].map(
-            (position) => [
-              tokenPnlKey(position.conditionId, position.asset),
-              { conditionId: position.conditionId, tokenId: position.asset },
-            ] as const
-          )
-        ).values(),
-      ];
-      const realizedRead = await optionalRead(db, (savepoint) =>
-        readWalletTokenPnlMap({ db: savepoint, walletAddress: address, positionKeys: displayedKeys })
-      );
-      if (realizedRead.ok) {
-        livePositions = applyRealizedPnl(livePositions, realizedRead.value);
-        closedPositions = applyRealizedPnl(closedPositions, realizedRead.value);
-      } else {
-        warnings.push(readFailure("pnl", "realized_pnl_unavailable", realizedRead.error));
-      }
-      if (positionsRead.ok && positionsRead.value.summary.identityAmbiguous) {
-        warnings.push(
-          warning(
-            "pnl",
-            "realized_pnl_identity_ambiguous",
-            "Per-position realized P/L is best-effort because multiple saved wallet identities share this address."
-          )
-        );
-      }
-      const missingRealizedClosedCount = realizedRead.ok
-        ? displayedClosedPositions.filter(
-            (position) =>
-              !realizedRead.value.has(
-                tokenPnlKey(position.conditionId, position.asset)
-              )
-          ).length
-        : 0;
-      if (realizedRead.ok && missingRealizedClosedCount > 0) {
-        warnings.push(
-          warning(
-            "pnl",
-            "realized_pnl_incomplete",
-            `Realized P/L is missing for ${missingRealizedClosedCount} displayed closed position${missingRealizedClosedCount === 1 ? "" : "s"}; history remains partial.`
-          )
-        );
-      }
-      const historyFact = !closedRead.ok
-        ? unavailableFact("local_ledger")
-        : positionsRead.ok &&
-            !positionsRead.value.summary.identityAmbiguous &&
-            realizedRead.ok &&
-            missingRealizedClosedCount === 0
-          ? freshFact("local_ledger", capturedAt)
-          : {
-              ...freshFact("local_ledger", capturedAt),
-              status: "partial" as const,
-              complete: false,
-            };
-
-      let marketRead: OptionalRead<BoundedMarketExposureRead>;
-      let coverageRead: OptionalRead<ComparisonCoverageCountRow[]>;
-      const comparisonUnavailable = new Error(
-        "Current-position authority is unavailable."
-      );
-      if (positionFact.status === "unavailable") {
-        recordDashboardDiagnostic(
-          input.diagnostics,
-          "comparisonPath",
-          "unavailable"
-        );
-        marketRead = { ok: false, error: comparisonUnavailable };
-        coverageRead = { ok: false, error: comparisonUnavailable };
-      } else if (
-        positionsRead.ok &&
-        closedRead.ok &&
-        positionsRead.value.summary.activeRows === 0 &&
-        closedRead.value.count === 0
-      ) {
-        // Both authorities have exact full-population zero counts. Preserve
-        // the full reader's all-physical wallet/target ambiguity semantics,
-        // but avoid its inventory/snapshot CTEs entirely.
-        recordDashboardDiagnostic(
-          input.diagnostics,
-          "comparisonPath",
-          "zero_identity"
-        );
-        marketRead = { ok: true, value: { groups: [], truncated: false } };
-        const identityStartedAt = performance.now();
-        const identityRead = await optionalRead(db, (savepoint) =>
-          readComparisonSourceIdentityAmbiguity({
-            db: savepoint,
-            billingAccountId: input.billingAccountId,
-            walletAddress: address,
-          })
-        );
-        recordDashboardDiagnostic(
-          input.diagnostics,
-          "comparisonIdentityMs",
-          Math.max(0, Math.round(performance.now() - identityStartedAt))
-        );
-        coverageRead = identityRead.ok
-          ? {
-              ok: true,
-              value: emptyComparisonCoverageCounts(identityRead.value),
-            }
-          : identityRead;
-      } else {
-        recordDashboardDiagnostic(
-          input.diagnostics,
-          "comparisonPath",
-          "bundle"
-        );
-        const bundleStartedAt = performance.now();
-        const bundleRead = await optionalRead(db, (savepoint) =>
-          buildBoundedMarketExposureWithCoverage({
-            db: savepoint,
-            billingAccountId: input.billingAccountId,
-            walletAddress: address,
-            livePositions: marketLivePositions,
-            closedPositions: marketClosedPositions,
-            ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
-          })
-        );
-        recordDashboardDiagnostic(
-          input.diagnostics,
-          "comparisonBundleTotalMs",
-          Math.max(0, Math.round(performance.now() - bundleStartedAt))
-        );
-        if (bundleRead.ok) {
-          marketRead = { ok: true, value: bundleRead.value.market };
-          coverageRead = { ok: true, value: bundleRead.value.counts };
-        } else {
-          // A coverage/bundle failure may never erase the legacy-renderable
-          // market preview. Re-run only that bounded reader in a fresh
-          // savepoint; coverage remains explicitly unavailable.
-          recordDashboardDiagnostic(
-            input.diagnostics,
-            "comparisonPath",
-            "bundle_fallback"
-          );
-          const fallbackStartedAt = performance.now();
-          marketRead = await optionalRead(db, (savepoint) =>
-            buildBoundedMarketExposureGroups({
-              db: savepoint,
-              billingAccountId: input.billingAccountId,
-              walletAddress: address,
-              livePositions: marketLivePositions,
-              closedPositions: marketClosedPositions,
-            })
-          );
-          recordDashboardDiagnostic(
-            input.diagnostics,
-            "comparisonFallbackMarketMs",
-            Math.max(0, Math.round(performance.now() - fallbackStartedAt))
-          );
-          coverageRead = { ok: false, error: bundleRead.error };
-        }
-      }
-      if (!marketRead.ok) warnings.push(readFailure("markets", "market_exposure_unavailable", marketRead.error));
-      if (!coverageRead.ok) {
-        warnings.push(
-          readFailure(
-            "markets",
-            "comparison_coverage_unavailable",
-            coverageRead.error
-          )
-        );
-      }
-      if (
-        marketRead.ok &&
-        (marketRead.value.truncated ||
-          (positionsRead.ok &&
-            positionsRead.value.summary.activeRows > livePositions.length) ||
-          (closedRead.ok && closedRead.value.count > closedPositions.length))
-      ) {
-        marketRead.value.truncated = true;
-        warnings.push(warning("markets", "market_exposure_preview_truncated", "Market comparison is a bounded preview; exact position counts remain available separately."));
-      }
-      const comparisonCoverage = !marketRead.ok || !coverageRead.ok
-        ? unavailableComparisonCoverage()
-        : materializeComparisonCoverage({
-            counts: coverageRead.value,
-            groups: marketRead.value.groups,
-            livePositions: livePositions.slice(0, LIVE_PREVIEW_LIMIT),
-            closedPositions: closedPositions.slice(0, CLOSED_PREVIEW_LIMIT),
-            sourceComplete:
-              positionFact.status === "fresh" &&
-              positionFact.complete &&
-              historyFact.status === "fresh" &&
-              historyFact.complete,
-            previewTruncated: marketRead.value.truncated,
-          });
-      const comparisonCoverageUnavailable = Object.values(
-        comparisonCoverage
-      ).some((byStatus) =>
-        Object.values(byStatus).some((leaf) =>
-          leaf.reasons.includes("source_unavailable")
-        )
-      );
-      if (
-        marketRead.ok &&
-        coverageRead.ok &&
-        comparisonCoverageUnavailable
-      ) {
-        warnings.push(
-          warning(
-            "markets",
-            "comparison_coverage_invalid",
-            "Comparison coverage counts failed invariant validation."
-          )
-        );
-      }
-
-      const cashOnChain = balance.kind === "available"
-        ? nullableSum(balance.usdcE, balance.pusd)
-        : null;
-      const lockedUsdc = orderRead.ok && orderRead.value.lockedUsdc !== null
-        ? roundMoney(orderRead.value.lockedUsdc)
-        : null;
-      const availableUsdc = cashOnChain !== null && lockedUsdc !== null
-        ? roundMoney(Math.max(0, cashOnChain - lockedUsdc))
-        : null;
-      const positionsMtm = positionsRead.ok && positionFact.status !== "unavailable"
-        ? roundMoney(positionsRead.value.summary.positionsMtm)
-        : null;
-      const totalCoherent =
-        cashOnChain !== null &&
-        positionsMtm !== null &&
-        cashFact.complete &&
-        positionFact.complete &&
-        timestampsWithin(cashFact.observedAt, positionFact.observedAt, MAX_FACT_SKEW_MS);
-      const totalFact: WalletDashboardFactMeta = totalCoherent
-        ? freshFact("composite", capturedAt)
-        : unavailableFact("composite");
-      if (!totalCoherent) {
-        warnings.push(warning("wallet", "wallet_total_unavailable", "Total is hidden until cash and positions are fresh, complete, and from the same freshness window."));
-      }
-
-      const pnlFact = pnlRead.ok
-        ? pnlMeta(pnlRead.value.status, pnlRead.value.observedAt, capturedAtDate)
-        : unavailableFact("user_pnl_snapshot");
-      if (!pnlRead.ok) warnings.push(readFailure("pnl", "pnl_history_unavailable", pnlRead.error));
-      else if (pnlRead.value.status !== "available") {
-        warnings.push(warning("pnl", `pnl_history_${pnlRead.value.status}`, "Persisted P/L history is not currently available for this interval."));
-      }
-
-      return {
-        snapshotId,
-        capturedAt,
-        interval: input.interval,
-        overview: {
-          configured: input.adapterConfigured,
-          connected: true,
-          freshness: "read_model",
-          address,
-          interval: input.interval,
-          capturedAt,
-          pol_gas: balance.kind === "available" && cashFact.status !== "unavailable" ? balance.pol : null,
-          usdc_available: availableUsdc,
-          usdc_locked: lockedUsdc,
-          usdc_positions_mtm: positionsMtm,
-          usdc_total:
-            totalCoherent && cashOnChain !== null && positionsMtm !== null
-              ? roundMoney(cashOnChain + positionsMtm)
-              : null,
-          open_orders: orderRead.ok ? orderRead.value.openOrders : null,
-          positions_synced_at: positionsRead.ok ? positionsRead.value.summary.syncedAt : null,
-          positions_sync_age_ms: positionsRead.ok ? positionsRead.value.summary.syncAgeMs : null,
-          positions_stale: positionFact.status !== "fresh",
-          pnlHistory: pnlRead.ok && pnlRead.value.status === "available" ? pnlRead.value.points : [],
-          warnings: warnings
-            .filter((entry) => entry.component !== "activity" && entry.component !== "markets" && entry.component !== "history")
-            .map(({ code, message }) => ({ code, message })),
-        },
-        execution: {
-          address,
-          freshness: "read_model",
-          capturedAt,
-          dailyTradeCounts: dailyRead.ok ? dailyRead.value : [],
-          live_positions: livePositions.slice(0, LIVE_PREVIEW_LIMIT),
-          live_position_count:
-            positionsRead.ok && positionFact.status !== "unavailable"
-              ? positionsRead.value.summary.activeRows
-              : null,
-          market_groups: marketRead.ok ? marketRead.value.groups : [],
-          comparisonCoverage,
-          closed_positions: closedPositions.slice(0, CLOSED_PREVIEW_LIMIT),
-          closed_position_count: closedRead.ok ? closedRead.value.count : null,
-          warnings: warnings
-            .filter(
-              (entry) =>
-                entry.component !== "cash" &&
-                (entry.component !== "wallet" ||
-                  entry.code === "wallet_adapter_unconfigured")
-            )
-            .map(({ code, message }) => ({ code, message })),
-        },
-        facts: {
-          wallet: freshFact("wallet_connection", capturedAt),
-          cash: cashFact,
-          orders: { ...orderFact, authority: "provisional_local_ledger" },
-          positions: {
-            ...positionFact,
-            actionsAllowed:
-              input.adapterConfigured &&
-              positionFact.status === "fresh" &&
-              positionFact.complete,
-            previewLimit: LIVE_PREVIEW_LIMIT,
-          },
-          history: {
-            ...historyFact,
-            authority: "provisional_local_ledger",
-            previewLimit: CLOSED_PREVIEW_LIMIT,
-          },
-          pnl: pnlFact,
-          activity: activityFact,
-          markets: !marketRead.ok
-            ? unavailableFact("composite")
-            : marketRead.value.truncated ||
-                positionFact.status === "partial" ||
-                !coverageRead.ok ||
-                comparisonCoverageUnavailable
-              ? {
-                  ...factFromAge(
-                    "composite",
-                    positionFact.observedAt,
-                    capturedAtDate,
-                    POSITION_FRESHNESS_MS
-                  ),
-                  status: "partial",
-                  complete: false,
-                }
-              : positionFact.status === "stale"
-                ? {
-                    ...factFromAge(
-                      "composite",
-                      positionFact.observedAt,
-                      capturedAtDate,
-                      POSITION_FRESHNESS_MS
-                    ),
-                    status: "stale",
-                    complete: false,
-                  }
-                : freshFact("composite", capturedAt),
-          total: totalFact,
-        },
-        warnings,
-      };
-    },
+    async (tx) => readTenantWalletDashboardIn(tx as unknown as Db, input),
     { isolationLevel: "repeatable read", accessMode: "read only" }
   );
 }
 
-/** Essential identity lookup; all non-identity facts are isolated savepoints. */
-async function readActiveWalletAddress(
+/**
+ * The read model itself, against a caller-owned transaction.
+ *
+ * The caller owns the isolation level and access mode. The capability plane's
+ * executor sets `REPEATABLE READ READ ONLY` as the first statement after the
+ * tenant context, which is exactly the guarantee the wrapper above establishes
+ * for standalone callers — so the snapshot contract holds identically on both
+ * paths, and the owner UI and a delegated agent read one coherent cutoff.
+ */
+export async function readTenantWalletDashboardIn(
+  db: Db,
+  input: TenantWalletDashboardReadInput
+): Promise<PolyAccountPortfolioSnapshotOutput> {
+  await db.execute(sql.raw(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`));
+  const clockRows = normalizeRows<{ captured_at: Date | string }>(
+    await db.execute(sql`SELECT clock_timestamp() AS captured_at`)
+  );
+  const capturedAt = toIso(clockRows[0]?.captured_at) ?? new Date().toISOString();
+  const capturedAtDate = new Date(capturedAt);
+  const snapshotId = randomUUID();
+  const warnings: WalletDashboardWarning[] = [];
+  if (!input.adapterConfigured) {
+    warnings.push(
+      warning(
+        "wallet",
+        "wallet_adapter_unconfigured",
+        "Trading-wallet actions are unavailable on this deployment."
+      )
+    );
+  }
+
+  const connection = await readActiveWalletConnection(db, input.billingAccountId);
+  const readiness = walletReadiness(connection, capturedAt);
+  const address = connection?.address ?? null;
+  if (address === null) {
+    warnings.push(warning("wallet", "no_trading_wallet", "No trading wallet is connected."));
+    return emptyDashboard({
+      snapshotId,
+      capturedAt,
+      interval: input.interval,
+      configured: input.adapterConfigured,
+      warnings,
+      // A row may exist with an unusable address. Readiness still reports the
+      // persisted truth rather than inventing a disconnected wallet.
+      readiness,
+    });
+  }
+
+  const balanceRead = await optionalRead(db, (savepoint) =>
+    (input.readBalance ?? readWalletBalanceFact)(savepoint, input.billingAccountId)
+  );
+  const balance: Exclude<WalletBalanceRead, { kind: "no_wallet" }> =
+    balanceRead.ok && balanceRead.value.kind !== "no_wallet"
+      ? balanceRead.value
+      : { kind: "missing", address };
+  if (!balanceRead.ok) {
+    warnings.push(readFailure("cash", "balances_unavailable", balanceRead.error));
+  } else if (balanceRead.value.kind === "no_wallet") {
+    warnings.push(
+      warning(
+        "cash",
+        "balances_unavailable",
+        "The balance reader could not resolve the active wallet inside this snapshot."
+      )
+    );
+  }
+  const orderRead = await optionalRead(db, (savepoint) =>
+    readOrderSummary(savepoint, input.billingAccountId, capturedAt)
+  );
+  const positionsRead = await optionalRead(db, (savepoint) =>
+    readCurrentWalletPositionModel({ db: savepoint, walletAddress: address, capturedAt: capturedAtDate })
+  );
+  const closedRead = await optionalRead(db, (savepoint) =>
+    readClosedPositionSummary(savepoint, input.billingAccountId, capturedAtDate)
+  );
+  const dailyRead = await optionalRead(db, (savepoint) =>
+    readDailyTradeCounts(savepoint, input.billingAccountId, capturedAtDate)
+  );
+  const pnlRead = await optionalRead(db, (savepoint) =>
+    getTradingWalletPnlHistoryRead({
+      db: savepoint,
+      address,
+      interval: input.interval,
+      capturedAt,
+    })
+  );
+
+  const orderFact = orderRead.ok
+    ? orderRead.value.malformedBuyRows > 0
+      ? {
+          ...factFromAge("local_ledger", orderRead.value.observedAt, capturedAtDate, ORDER_FRESHNESS_MS),
+          status: "partial" as const,
+          complete: false,
+        }
+      : factFromAge("local_ledger", orderRead.value.observedAt, capturedAtDate, ORDER_FRESHNESS_MS)
+    : unavailableFact("local_ledger");
+  if (!orderRead.ok) warnings.push(readFailure("orders", "orders_unavailable", orderRead.error));
+  else if (orderRead.value.malformedBuyRows > 0) {
+    warnings.push(
+      warning(
+        "orders",
+        "orders_malformed_numeric",
+        "One or more local order amounts are malformed; reserved collateral is unavailable."
+      )
+    );
+  } else if (orderFact.status === "stale") {
+    warnings.push(
+      warning(
+        "orders",
+        "orders_stale",
+        "The local order ledger has no recent synchronization timestamp."
+      )
+    );
+  }
+
+  const positionFact = positionsRead.ok
+    ? positionsRead.value.warnings.some((entry) => entry.code === "current_positions_wallet_missing") ||
+      !positionsRead.value.summary.hasSuccessfulObservation
+      ? unavailableFact("data_api_current_positions")
+      : positionsRead.value.summary.identityAmbiguous ||
+          positionsRead.value.summary.cursorStatus === "partial"
+        ? {
+            ...factFromAge(
+              "data_api_current_positions",
+              positionsRead.value.summary.syncedAt,
+              capturedAtDate,
+              POSITION_FRESHNESS_MS
+            ),
+            status: "partial" as const,
+            complete: false,
+          }
+        : positionsRead.value.summary.stale
+        ? {
+            ...factFromAge(
+              "data_api_current_positions",
+              positionsRead.value.summary.syncedAt,
+              capturedAtDate,
+              POSITION_FRESHNESS_MS
+            ),
+            status: "stale" as const,
+            complete: false,
+          }
+        : factFromAge(
+            "data_api_current_positions",
+            positionsRead.value.summary.syncedAt ?? capturedAt,
+            capturedAtDate,
+            POSITION_FRESHNESS_MS
+          )
+    : unavailableFact("data_api_current_positions");
+  if (!positionsRead.ok) {
+    warnings.push(readFailure("positions", "positions_unavailable", positionsRead.error));
+  } else {
+    warnings.push(
+      ...positionsRead.value.warnings.map((entry) => ({ component: "positions" as const, ...entry }))
+    );
+    if (
+      positionFact.status !== "unavailable" &&
+      positionsRead.value.summary.activeRows > positionsRead.value.positions.length
+    ) {
+      warnings.push(
+        warning(
+          "positions",
+          "positions_preview_truncated",
+          `Showing ${positionsRead.value.positions.length} of ${positionsRead.value.summary.activeRows} open positions.`
+        )
+      );
+    }
+  }
+
+  if (!closedRead.ok) warnings.push(readFailure("history", "history_unavailable", closedRead.error));
+
+  const activityFact = dailyRead.ok
+    ? freshFact("local_ledger", capturedAt)
+    : unavailableFact("local_ledger");
+  if (!dailyRead.ok) warnings.push(readFailure("activity", "daily_trade_counts_unavailable", dailyRead.error));
+
+  const cashFact = cashMeta(balance, capturedAtDate);
+  if (!balanceRead.ok) {
+    // The identity row is authoritative and was resolved before the
+    // component savepoint. A cash-table failure must not erase it or
+    // abort the remaining repeatable-read snapshot.
+  } else if (balance.kind === "missing") {
+    warnings.push(warning("cash", "balance_snapshot_missing", "No persisted balance observation is available; this is not a zero balance."));
+  } else {
+    for (const message of balance.errors) {
+      warnings.push(warning("cash", balance.status === "error" ? "balances_unavailable" : "balances_partial", message));
+    }
+    if (cashFact.status === "stale") {
+      warnings.push(warning("cash", "balances_stale", "The persisted Polygon cash fact is older than ten minutes."));
+    }
+  }
+
+  let livePositions =
+    positionsRead.ok && positionFact.status !== "unavailable"
+      ? positionsRead.value.positions
+      : [];
+  let closedPositions = closedRead.ok ? closedRead.value.positions : [];
+  // Market exposure needs the vendor snapshot cost basis encoded by the
+  // pre-realized-overlay `currentValue - pnlUsd` relation. The display
+  // overlay below changes pnlUsd to lifetime realized P/L and must not be
+  // fed back into market cost-basis math.
+  const marketLivePositions = livePositions;
+  const marketClosedPositions = closedPositions;
+  const displayedLivePositions = marketLivePositions.slice(
+    0,
+    LIVE_PREVIEW_LIMIT
+  );
+  const displayedClosedPositions = marketClosedPositions.slice(
+    0,
+    CLOSED_PREVIEW_LIMIT
+  );
+  const displayedKeys = [
+    ...new Map(
+      [...displayedLivePositions, ...displayedClosedPositions].map(
+        (position) => [
+          tokenPnlKey(position.conditionId, position.asset),
+          { conditionId: position.conditionId, tokenId: position.asset },
+        ] as const
+      )
+    ).values(),
+  ];
+  const realizedRead = await optionalRead(db, (savepoint) =>
+    readWalletTokenPnlMap({ db: savepoint, walletAddress: address, positionKeys: displayedKeys })
+  );
+  if (realizedRead.ok) {
+    livePositions = applyRealizedPnl(livePositions, realizedRead.value);
+    closedPositions = applyRealizedPnl(closedPositions, realizedRead.value);
+  } else {
+    warnings.push(readFailure("pnl", "realized_pnl_unavailable", realizedRead.error));
+  }
+  if (positionsRead.ok && positionsRead.value.summary.identityAmbiguous) {
+    warnings.push(
+      warning(
+        "pnl",
+        "realized_pnl_identity_ambiguous",
+        "Per-position realized P/L is best-effort because multiple saved wallet identities share this address."
+      )
+    );
+  }
+  const missingRealizedClosedCount = realizedRead.ok
+    ? displayedClosedPositions.filter(
+        (position) =>
+          !realizedRead.value.has(
+            tokenPnlKey(position.conditionId, position.asset)
+          )
+      ).length
+    : 0;
+  if (realizedRead.ok && missingRealizedClosedCount > 0) {
+    warnings.push(
+      warning(
+        "pnl",
+        "realized_pnl_incomplete",
+        `Realized P/L is missing for ${missingRealizedClosedCount} displayed closed position${missingRealizedClosedCount === 1 ? "" : "s"}; history remains partial.`
+      )
+    );
+  }
+  const historyFact = !closedRead.ok
+    ? unavailableFact("local_ledger")
+    : positionsRead.ok &&
+        !positionsRead.value.summary.identityAmbiguous &&
+        realizedRead.ok &&
+        missingRealizedClosedCount === 0
+      ? freshFact("local_ledger", capturedAt)
+      : {
+          ...freshFact("local_ledger", capturedAt),
+          status: "partial" as const,
+          complete: false,
+        };
+
+  let marketRead: OptionalRead<BoundedMarketExposureRead>;
+  let coverageRead: OptionalRead<ComparisonCoverageCountRow[]>;
+  const comparisonUnavailable = new Error(
+    "Current-position authority is unavailable."
+  );
+  if (positionFact.status === "unavailable") {
+    recordDashboardDiagnostic(
+      input.diagnostics,
+      "comparisonPath",
+      "unavailable"
+    );
+    marketRead = { ok: false, error: comparisonUnavailable };
+    coverageRead = { ok: false, error: comparisonUnavailable };
+  } else if (
+    positionsRead.ok &&
+    closedRead.ok &&
+    positionsRead.value.summary.activeRows === 0 &&
+    closedRead.value.count === 0
+  ) {
+    // Both authorities have exact full-population zero counts. Preserve the
+    // full reader's all-physical wallet/target ambiguity semantics, but avoid
+    // its inventory/snapshot CTEs entirely.
+    recordDashboardDiagnostic(
+      input.diagnostics,
+      "comparisonPath",
+      "zero_identity"
+    );
+    marketRead = { ok: true, value: { groups: [], truncated: false } };
+    const identityStartedAt = performance.now();
+    const identityRead = await optionalRead(db, (savepoint) =>
+      readComparisonSourceIdentityAmbiguity({
+        db: savepoint,
+        billingAccountId: input.billingAccountId,
+        walletAddress: address,
+      })
+    );
+    recordDashboardDiagnostic(
+      input.diagnostics,
+      "comparisonIdentityMs",
+      Math.max(0, Math.round(performance.now() - identityStartedAt))
+    );
+    coverageRead = identityRead.ok
+      ? {
+          ok: true,
+          value: emptyComparisonCoverageCounts(identityRead.value),
+        }
+      : identityRead;
+  } else {
+    recordDashboardDiagnostic(input.diagnostics, "comparisonPath", "bundle");
+    const bundleStartedAt = performance.now();
+    const bundleRead = await optionalRead(db, (savepoint) =>
+      buildBoundedMarketExposureWithCoverage({
+        db: savepoint,
+        billingAccountId: input.billingAccountId,
+        walletAddress: address,
+        livePositions: marketLivePositions,
+        closedPositions: marketClosedPositions,
+        ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
+      })
+    );
+    recordDashboardDiagnostic(
+      input.diagnostics,
+      "comparisonBundleTotalMs",
+      Math.max(0, Math.round(performance.now() - bundleStartedAt))
+    );
+    if (bundleRead.ok) {
+      marketRead = { ok: true, value: bundleRead.value.market };
+      coverageRead = { ok: true, value: bundleRead.value.counts };
+    } else {
+      // A coverage/bundle failure may never erase the legacy-renderable market
+      // preview. Re-run only that bounded reader in a fresh savepoint; coverage
+      // remains explicitly unavailable.
+      recordDashboardDiagnostic(
+        input.diagnostics,
+        "comparisonPath",
+        "bundle_fallback"
+      );
+      const fallbackStartedAt = performance.now();
+      marketRead = await optionalRead(db, (savepoint) =>
+        buildBoundedMarketExposureGroups({
+          db: savepoint,
+          billingAccountId: input.billingAccountId,
+          walletAddress: address,
+          livePositions: marketLivePositions,
+          closedPositions: marketClosedPositions,
+        })
+      );
+      recordDashboardDiagnostic(
+        input.diagnostics,
+        "comparisonFallbackMarketMs",
+        Math.max(0, Math.round(performance.now() - fallbackStartedAt))
+      );
+      coverageRead = { ok: false, error: bundleRead.error };
+    }
+  }
+  if (!marketRead.ok) warnings.push(readFailure("markets", "market_exposure_unavailable", marketRead.error));
+  if (!coverageRead.ok) {
+    warnings.push(
+      readFailure(
+        "markets",
+        "comparison_coverage_unavailable",
+        coverageRead.error
+      )
+    );
+  }
+  if (
+    marketRead.ok &&
+    (marketRead.value.truncated ||
+      (positionsRead.ok &&
+        positionsRead.value.summary.activeRows > livePositions.length) ||
+      (closedRead.ok && closedRead.value.count > closedPositions.length))
+  ) {
+    marketRead.value.truncated = true;
+    warnings.push(warning("markets", "market_exposure_preview_truncated", "Market comparison is a bounded preview; exact position counts remain available separately."));
+  }
+  const comparisonCoverage = !marketRead.ok || !coverageRead.ok
+    ? unavailableComparisonCoverage()
+    : materializeComparisonCoverage({
+        counts: coverageRead.value,
+        groups: marketRead.value.groups,
+        livePositions: livePositions.slice(0, LIVE_PREVIEW_LIMIT),
+        closedPositions: closedPositions.slice(0, CLOSED_PREVIEW_LIMIT),
+        sourceComplete:
+          positionFact.status === "fresh" &&
+          positionFact.complete &&
+          historyFact.status === "fresh" &&
+          historyFact.complete,
+        previewTruncated: marketRead.value.truncated,
+      });
+  const comparisonCoverageUnavailable = Object.values(
+    comparisonCoverage
+  ).some((byStatus) =>
+    Object.values(byStatus).some((leaf) =>
+      leaf.reasons.includes("source_unavailable")
+    )
+  );
+  if (
+    marketRead.ok &&
+    coverageRead.ok &&
+    comparisonCoverageUnavailable
+  ) {
+    warnings.push(
+      warning(
+        "markets",
+        "comparison_coverage_invalid",
+        "Comparison coverage counts failed invariant validation."
+      )
+    );
+  }
+
+  const cashOnChain = balance.kind === "available"
+    ? nullableSum(balance.usdcE, balance.pusd)
+    : null;
+  const lockedUsdc = orderRead.ok && orderRead.value.lockedUsdc !== null
+    ? roundMoney(orderRead.value.lockedUsdc)
+    : null;
+  const availableUsdc = cashOnChain !== null && lockedUsdc !== null
+    ? roundMoney(Math.max(0, cashOnChain - lockedUsdc))
+    : null;
+  const positionsMtm = positionsRead.ok && positionFact.status !== "unavailable"
+    ? roundMoney(positionsRead.value.summary.positionsMtm)
+    : null;
+  const totalCoherent =
+    cashOnChain !== null &&
+    positionsMtm !== null &&
+    cashFact.complete &&
+    positionFact.complete &&
+    timestampsWithin(cashFact.observedAt, positionFact.observedAt, MAX_FACT_SKEW_MS);
+  const totalFact: WalletDashboardFactMeta = totalCoherent
+    ? freshFact("composite", capturedAt)
+    : unavailableFact("composite");
+  if (!totalCoherent) {
+    warnings.push(warning("wallet", "wallet_total_unavailable", "Total is hidden until cash and positions are fresh, complete, and from the same freshness window."));
+  }
+
+  const pnlFact = pnlRead.ok
+    ? pnlMeta(pnlRead.value.status, pnlRead.value.observedAt, capturedAtDate)
+    : unavailableFact("user_pnl_snapshot");
+  if (!pnlRead.ok) warnings.push(readFailure("pnl", "pnl_history_unavailable", pnlRead.error));
+  else if (pnlRead.value.status !== "available") {
+    warnings.push(warning("pnl", `pnl_history_${pnlRead.value.status}`, "Persisted P/L history is not currently available for this interval."));
+  }
+
+  return {
+    snapshotId,
+    capturedAt,
+    interval: input.interval,
+    readiness,
+    overview: {
+      configured: input.adapterConfigured,
+      connected: true,
+      freshness: "read_model",
+      address,
+      interval: input.interval,
+      capturedAt,
+      pol_gas: balance.kind === "available" && cashFact.status !== "unavailable" ? balance.pol : null,
+      usdc_available: availableUsdc,
+      usdc_locked: lockedUsdc,
+      usdc_positions_mtm: positionsMtm,
+      usdc_total:
+        totalCoherent && cashOnChain !== null && positionsMtm !== null
+          ? roundMoney(cashOnChain + positionsMtm)
+          : null,
+      open_orders: orderRead.ok ? orderRead.value.openOrders : null,
+      positions_synced_at: positionsRead.ok ? positionsRead.value.summary.syncedAt : null,
+      positions_sync_age_ms: positionsRead.ok ? positionsRead.value.summary.syncAgeMs : null,
+      positions_stale: positionFact.status !== "fresh",
+      pnlHistory: pnlRead.ok && pnlRead.value.status === "available" ? pnlRead.value.points : [],
+      warnings: warnings
+        .filter((entry) => entry.component !== "activity" && entry.component !== "markets" && entry.component !== "history")
+        .map(({ code, message }) => ({ code, message })),
+    },
+    execution: {
+      address,
+      freshness: "read_model",
+      capturedAt,
+      dailyTradeCounts: dailyRead.ok ? dailyRead.value : [],
+      live_positions: livePositions.slice(0, LIVE_PREVIEW_LIMIT),
+      live_position_count:
+        positionsRead.ok && positionFact.status !== "unavailable"
+          ? positionsRead.value.summary.activeRows
+          : null,
+      market_groups: marketRead.ok ? marketRead.value.groups : [],
+      comparisonCoverage,
+      closed_positions: closedPositions.slice(0, CLOSED_PREVIEW_LIMIT),
+      closed_position_count: closedRead.ok ? closedRead.value.count : null,
+      warnings: warnings
+        .filter(
+          (entry) =>
+            entry.component !== "cash" &&
+            (entry.component !== "wallet" ||
+              entry.code === "wallet_adapter_unconfigured")
+        )
+        .map(({ code, message }) => ({ code, message })),
+    },
+    facts: {
+      wallet: freshFact("wallet_connection", capturedAt),
+      cash: cashFact,
+      orders: { ...orderFact, authority: "provisional_local_ledger" },
+      positions: {
+        ...positionFact,
+        actionsAllowed:
+          input.adapterConfigured &&
+          positionFact.status === "fresh" &&
+          positionFact.complete,
+        previewLimit: LIVE_PREVIEW_LIMIT,
+      },
+      history: {
+        ...historyFact,
+        authority: "provisional_local_ledger",
+        previewLimit: CLOSED_PREVIEW_LIMIT,
+      },
+      pnl: pnlFact,
+      activity: activityFact,
+      markets: !marketRead.ok
+        ? unavailableFact("composite")
+        : marketRead.value.truncated ||
+            positionFact.status === "partial" ||
+            !coverageRead.ok ||
+            comparisonCoverageUnavailable
+          ? {
+              ...factFromAge(
+                "composite",
+                positionFact.observedAt,
+                capturedAtDate,
+                POSITION_FRESHNESS_MS
+              ),
+              status: "partial",
+              complete: false,
+            }
+          : positionFact.status === "stale"
+            ? {
+                ...factFromAge(
+                  "composite",
+                  positionFact.observedAt,
+                  capturedAtDate,
+                  POSITION_FRESHNESS_MS
+                ),
+                status: "stale",
+                complete: false,
+              }
+            : freshFact("composite", capturedAt),
+      total: totalFact,
+    },
+    warnings,
+  };
+}
+
+type ActiveWalletConnection = {
+  /** Null when the row exists but its stored address is unusable. */
+  address: `0x${string}` | null;
+  tradingReady: boolean;
+  autoWrapConsentAt: string | null;
+  autoWrapFloorUsdceAtomic: string | null;
+};
+
+/**
+ * Essential identity + readiness lookup; all non-identity facts are isolated
+ * savepoints. ONE row serves both `overview.address` and the whole `readiness`
+ * block, so the two can never describe different connections.
+ *
+ * This replaces the readiness half of `GET /wallet/status`, which reached the
+ * same columns through a BYPASSRLS service handle and a tenant resolved from
+ * the caller's own id. Here the tenant is a parameter and RLS is underneath.
+ */
+async function readActiveWalletConnection(
   db: ExecuteDb,
   billingAccountId: string
-): Promise<`0x${string}` | null> {
-  const rows = normalizeRows<{ address: string | null }>(await db.execute(sql`
-    SELECT lower(COALESCE(funder_address, address)) AS address
+): Promise<ActiveWalletConnection | null> {
+  const rows = normalizeRows<{
+    address: string | null;
+    trading_approvals_ready_at: Date | string | null;
+    auto_wrap_consent_at: Date | string | null;
+    auto_wrap_revoked_at: Date | string | null;
+    auto_wrap_floor_usdce_6dp: string | number | null;
+  }>(await db.execute(sql`
+    SELECT
+      lower(COALESCE(funder_address, address)) AS address,
+      trading_approvals_ready_at,
+      auto_wrap_consent_at,
+      auto_wrap_revoked_at,
+      auto_wrap_floor_usdce_6dp
     FROM poly_wallet_connections
     WHERE billing_account_id = ${billingAccountId}
       AND revoked_at IS NULL
     ORDER BY created_at DESC
     LIMIT 1
   `));
-  const address = rows[0]?.address;
-  return typeof address === "string" && /^0x[0-9a-f]{40}$/.test(address)
-    ? (address as `0x${string}`)
-    : null;
+  const row = rows[0];
+  if (row === undefined) return null;
+  const address = row.address;
+  const floor = row.auto_wrap_floor_usdce_6dp;
+  return {
+    address:
+      typeof address === "string" && /^0x[0-9a-f]{40}$/.test(address)
+        ? (address as `0x${string}`)
+        : null,
+    tradingReady: row.trading_approvals_ready_at !== null,
+    // A revocation nulls the consent out; the stamp itself is never rewritten.
+    autoWrapConsentAt:
+      row.auto_wrap_revoked_at === null ? toIso(row.auto_wrap_consent_at) : null,
+    autoWrapFloorUsdceAtomic:
+      floor === null || floor === undefined ? null : String(floor),
+  };
+}
+
+/**
+ * NO_FABRICATED_VALUES: with no connection row nothing is known, so every
+ * readiness value is null/false rather than a zero-shaped default, and
+ * `observedAt` stays null so a consumer can tell "no row" from "not ready".
+ */
+function walletReadiness(
+  connection: ActiveWalletConnection | null,
+  capturedAt: string
+): PolyAccountWalletReadiness {
+  if (connection === null) {
+    return {
+      connected: false,
+      funder_address: null,
+      trading_ready: false,
+      auto_wrap_consent_at: null,
+      auto_wrap_floor_usdce_atomic: null,
+      observedAt: null,
+    };
+  }
+  return {
+    connected: true,
+    funder_address: connection.address,
+    trading_ready: connection.tradingReady,
+    auto_wrap_consent_at: connection.autoWrapConsentAt,
+    auto_wrap_floor_usdce_atomic: connection.autoWrapFloorUsdceAtomic,
+    observedAt: capturedAt,
+  };
 }
 
 /** @internal Exported only for aggregate/tenant component coverage. */
@@ -942,12 +1045,13 @@ function unavailableFact(source: WalletDashboardFactMeta["source"]): WalletDashb
   return { status: "unavailable", source, observedAt: null, ageMs: null, complete: false };
 }
 
-function emptyDashboard(input: { snapshotId: string; capturedAt: string; interval: PolyWalletOverviewInterval; configured: boolean; warnings: WalletDashboardWarning[] }): PolyWalletDashboardOutput {
+function emptyDashboard(input: { snapshotId: string; capturedAt: string; interval: PolyWalletOverviewInterval; configured: boolean; warnings: WalletDashboardWarning[]; readiness: PolyAccountWalletReadiness }): PolyAccountPortfolioSnapshotOutput {
   const unavailableWallet = unavailableFact("wallet_connection");
   return {
     snapshotId: input.snapshotId,
     capturedAt: input.capturedAt,
     interval: input.interval,
+    readiness: input.readiness,
     overview: {
       configured: input.configured,
       connected: false,

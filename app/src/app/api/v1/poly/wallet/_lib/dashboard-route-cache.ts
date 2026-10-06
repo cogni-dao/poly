@@ -63,6 +63,7 @@ import {
   coalesce,
   coalesceSwr,
 } from "@/features/wallet-analysis/server/coalesce";
+import { portfolioSnapshotTenantKeyPrefix } from "@/features/wallet-analysis/server/portfolio-snapshot-cache";
 
 /**
  * Fresh window for cached dashboard route payloads: a hit younger than
@@ -110,24 +111,12 @@ const EXECUTION_KEY_PREFIX = "route:wallet-execution:";
 const BALANCES_KEY_PREFIX = "balances:";
 const LEDGER_POSITIONS_KEY_PREFIX = "ledger-positions:";
 const CURRENT_POSITIONS_KEY_PREFIX = "current-positions:";
-const UNIFIED_DASHBOARD_KEY_PREFIX = "route:wallet-dashboard:";
 
-/** Hard TTL for the coherent snapshot: never serves stale while recomputing. */
-export const UNIFIED_DASHBOARD_CACHE_TTL_MS = 15_000;
-
-export function unifiedDashboardCacheKey(
-  billingAccountId: string,
-  interval: string
-): string {
-  return `${UNIFIED_DASHBOARD_KEY_PREFIX}${billingAccountId}:${interval}`;
-}
-
-export async function coalesceUnifiedDashboard<T>(
-  key: string,
-  fetcher: () => Promise<T>
-): Promise<T> {
-  return coalesce(key, fetcher, UNIFIED_DASHBOARD_CACHE_TTL_MS);
-}
+// The coherent-snapshot key, TTL and coalescer moved down to
+// `@features/wallet-analysis/server/portfolio-snapshot-cache` (task.1791070962)
+// so the capability-plane handler can reach them without importing from
+// `app/api/**`. The key PREFIX is unchanged, so `invalidateDashboardRouteCaches`
+// below — and therefore POST /wallet/refresh — still evicts the same entries.
 
 /**
  * Overview payloads vary by interval (pnl chart window) and freshness
@@ -272,6 +261,6 @@ export function invalidateDashboardRouteCaches(
     clearTtlCacheByPrefix(`${BALANCES_KEY_PREFIX}${billingAccountId}`) +
     clearTtlCacheByPrefix(`${LEDGER_POSITIONS_KEY_PREFIX}${billingAccountId}`) +
     clearTtlCacheByPrefix(`${CURRENT_POSITIONS_KEY_PREFIX}${billingAccountId}`) +
-    clearTtlCacheByPrefix(`${UNIFIED_DASHBOARD_KEY_PREFIX}${billingAccountId}`)
+    clearTtlCacheByPrefix(portfolioSnapshotTenantKeyPrefix(billingAccountId))
   );
 }
