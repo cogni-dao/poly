@@ -52,6 +52,7 @@ import {
   PORTFOLIO_SNAPSHOT_TERMINAL_EVENT,
   portfolioSnapshotAccountReadHandler,
   portfolioSnapshotExtra,
+  type WalletDashboardReadDiagnostics,
 } from "@/features/capability-plane";
 import { serverEnv } from "@/shared/env/server-env";
 
@@ -68,6 +69,9 @@ export const GET = wrapRouteHandlerWithLogging(
 
     const buildSha = serverEnv().APP_BUILD_SHA ?? "unknown";
     const operation = polyAccountReadPortfolioSnapshotOwnerOperation;
+    const diagnostics: WalletDashboardReadDiagnostics = {
+      comparisonPath: "cache_hit",
+    };
 
     const outcome = await executeAccountRead({
       db: resolveAppDb(),
@@ -80,8 +84,9 @@ export const GET = wrapRouteHandlerWithLogging(
       eventName: PORTFOLIO_SNAPSHOT_TERMINAL_EVENT,
       handler: portfolioSnapshotAccountReadHandler({
         adapterConfigured: isPolyTraderWalletConfigured(),
+        diagnostics,
       }),
-      extra: (context) => portfolioSnapshotExtra(context, buildSha),
+      extra: (context) => portfolioSnapshotExtra(context, buildSha, diagnostics),
     });
 
     switch (outcome.status) {

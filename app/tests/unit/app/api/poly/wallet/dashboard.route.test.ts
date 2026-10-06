@@ -126,7 +126,10 @@ describe("GET /api/v1/poly/wallet/dashboard — transport wiring", () => {
 
     await GET(request());
 
-    expect(ownerHandler).toHaveBeenCalledWith({ adapterConfigured: false });
+    expect(ownerHandler).toHaveBeenCalledWith({
+      adapterConfigured: false,
+      diagnostics: { comparisonPath: "cache_hit" },
+    });
   });
 
   it("passes the build sha into the terminal-event extras", async () => {
@@ -140,7 +143,9 @@ describe("GET /api/v1/poly/wallet/dashboard — transport wiring", () => {
     const context = { status: "ok" as const, input: null, data: null };
     execute.mock.calls[0]?.[0].extra(context);
 
-    expect(extra).toHaveBeenCalledWith(context, "sha-123");
+    expect(extra).toHaveBeenCalledWith(context, "sha-123", {
+      comparisonPath: "cache_hit",
+    });
   });
 });
 

@@ -55,7 +55,10 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
 import { EVENT_NAMES, type EventName } from "@/shared/observability";
 import { coalescePortfolioSnapshot } from "@/features/wallet-analysis/server/portfolio-snapshot-cache";
-import { readTenantWalletDashboardIn } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
+import {
+  readTenantWalletDashboardIn,
+  type WalletDashboardReadDiagnostics,
+} from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 
 import type {
   AccountReadHandler,
@@ -85,7 +88,12 @@ import type {
 export const PORTFOLIO_SNAPSHOT_TERMINAL_EVENT: EventName =
   EVENT_NAMES.POLY_WALLET_DASHBOARD_COMPLETE;
 
-export type PortfolioSnapshotBinding = { adapterConfigured: boolean };
+export type PortfolioSnapshotBinding = {
+  adapterConfigured: boolean;
+  diagnostics?: WalletDashboardReadDiagnostics;
+};
+
+export type { WalletDashboardReadDiagnostics };
 
 /**
  * The single handler body. `billingAccountId` is always the account
@@ -110,8 +118,15 @@ async function portfolioSnapshotFor(
   interval: PolyAccountPortfolioSnapshotQuery["interval"],
   binding: PortfolioSnapshotBinding
 ): Promise<PolyAccountPortfolioSnapshotOutput> {
-  return coalescePortfolioSnapshot(billingAccountId, interval, () =>
-    readTenantWalletDashboardIn(
+  return coalescePortfolioSnapshot(billingAccountId, interval, () => {
+    if (binding.diagnostics) {
+      try {
+        binding.diagnostics.comparisonPath = "unknown";
+      } catch {
+        // Diagnostics are fail-open and cannot alter wallet truth.
+      }
+    }
+    return readTenantWalletDashboardIn(
       // The read model is typed against the postgres-js database handle; a
       // transaction exposes the `execute`/`select`/`transaction` surface it
       // uses but is not structurally assignable. One narrowing, at one call
@@ -121,9 +136,10 @@ async function portfolioSnapshotFor(
         billingAccountId,
         interval,
         adapterConfigured: binding.adapterConfigured,
+        ...(binding.diagnostics ? { diagnostics: binding.diagnostics } : {}),
       }
-    )
-  );
+    );
+  });
 }
 
 /**
@@ -166,7 +182,8 @@ export function portfolioSnapshotExtra(
     status: AccountReadStatus;
     data: PolyAccountPortfolioSnapshotOutput | null;
   },
-  buildSha: string
+  buildSha: string,
+  diagnostics?: WalletDashboardReadDiagnostics
 ): Record<string, unknown> {
   const response = context.data;
   if (response === null) {
@@ -208,6 +225,13 @@ export function portfolioSnapshotExtra(
     positionsMtmUsdc: response.overview.usdc_positions_mtm,
     totalUsdc: response.overview.usdc_total,
     warningCodes: response.warnings.map((entry) => entry.code),
+    comparisonReadPath: diagnostics?.comparisonPath ?? "unknown",
+    comparisonIdentityMs: diagnostics?.comparisonIdentityMs ?? null,
+    comparisonBundleTotalMs: diagnostics?.comparisonBundleTotalMs ?? null,
+    comparisonBundleQueryMs: diagnostics?.comparisonBundleQueryMs ?? null,
+    comparisonFillRollupMs: diagnostics?.comparisonFillRollupMs ?? null,
+    comparisonFallbackMarketMs:
+      diagnostics?.comparisonFallbackMarketMs ?? null,
     degraded,
   };
 }

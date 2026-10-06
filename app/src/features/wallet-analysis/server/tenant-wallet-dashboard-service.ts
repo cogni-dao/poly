@@ -16,9 +16,13 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { readCurrentWalletPositionModel } from "./current-position-read-model";
 import {
   buildBoundedMarketExposureGroups,
+  buildBoundedMarketExposureWithCoverage,
+  emptyComparisonCoverageCounts,
   materializeComparisonCoverage,
-  readFullComparisonCoverageCounts,
+  readComparisonSourceIdentityAmbiguity,
   unavailableComparisonCoverage,
+  type BoundedMarketExposureRead,
+  type ComparisonCoverageCountRow,
 } from "./market-exposure-service";
 import {
   applyRealizedPnl,
@@ -71,6 +75,25 @@ type ClosedRow = {
 
 type DailyCountRow = { day: string | null; n: string | number | null };
 
+export type WalletDashboardReadDiagnostics = {
+  comparisonPath?:
+    | "cache_hit"
+    | "unknown"
+    | "unavailable"
+    | "zero_identity"
+    | "bundle"
+    | "bundle_fallback";
+  comparisonIdentityMs?: number;
+  comparisonBundleTotalMs?: number;
+  comparisonBundleQueryMs?: number;
+  comparisonFillRollupMs?: number;
+  comparisonFallbackMarketMs?: number;
+};
+
+type OptionalRead<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: unknown };
+
 
 export type TenantWalletDashboardReadInput = {
   billingAccountId: string;
@@ -78,6 +101,8 @@ export type TenantWalletDashboardReadInput = {
   adapterConfigured: boolean;
   /** Component-test seam; production always uses the persisted balance reader. */
   readBalance?: (db: Db, billingAccountId: string) => Promise<WalletBalanceRead>;
+  /** Bounded internal timing sink; never serialized into the public response. */
+  diagnostics?: WalletDashboardReadDiagnostics;
 };
 
 /**
@@ -372,34 +397,101 @@ export async function readTenantWalletDashboardIn(
           complete: false,
         };
 
-  const marketRead =
-    positionFact.status === "unavailable"
-      ? ({
-          ok: false,
-          error: new Error("Current-position authority is unavailable."),
-        } as const)
-      : await optionalRead(db, (savepoint) =>
-          buildBoundedMarketExposureGroups({
-            db: savepoint,
-            billingAccountId: input.billingAccountId,
-            walletAddress: address,
-            livePositions: marketLivePositions,
-            closedPositions: marketClosedPositions,
-          })
-        );
-  const coverageRead =
-    positionFact.status === "unavailable"
-      ? ({
-          ok: false,
-          error: new Error("Current-position authority is unavailable."),
-        } as const)
-      : await optionalRead(db, (savepoint) =>
-          readFullComparisonCoverageCounts({
-            db: savepoint,
-            billingAccountId: input.billingAccountId,
-            walletAddress: address,
-          })
-        );
+  let marketRead: OptionalRead<BoundedMarketExposureRead>;
+  let coverageRead: OptionalRead<ComparisonCoverageCountRow[]>;
+  const comparisonUnavailable = new Error(
+    "Current-position authority is unavailable."
+  );
+  if (positionFact.status === "unavailable") {
+    recordDashboardDiagnostic(
+      input.diagnostics,
+      "comparisonPath",
+      "unavailable"
+    );
+    marketRead = { ok: false, error: comparisonUnavailable };
+    coverageRead = { ok: false, error: comparisonUnavailable };
+  } else if (
+    positionsRead.ok &&
+    closedRead.ok &&
+    positionsRead.value.summary.activeRows === 0 &&
+    closedRead.value.count === 0
+  ) {
+    // Both authorities have exact full-population zero counts. Preserve the
+    // full reader's all-physical wallet/target ambiguity semantics, but avoid
+    // its inventory/snapshot CTEs entirely.
+    recordDashboardDiagnostic(
+      input.diagnostics,
+      "comparisonPath",
+      "zero_identity"
+    );
+    marketRead = { ok: true, value: { groups: [], truncated: false } };
+    const identityStartedAt = performance.now();
+    const identityRead = await optionalRead(db, (savepoint) =>
+      readComparisonSourceIdentityAmbiguity({
+        db: savepoint,
+        billingAccountId: input.billingAccountId,
+        walletAddress: address,
+      })
+    );
+    recordDashboardDiagnostic(
+      input.diagnostics,
+      "comparisonIdentityMs",
+      Math.max(0, Math.round(performance.now() - identityStartedAt))
+    );
+    coverageRead = identityRead.ok
+      ? {
+          ok: true,
+          value: emptyComparisonCoverageCounts(identityRead.value),
+        }
+      : identityRead;
+  } else {
+    recordDashboardDiagnostic(input.diagnostics, "comparisonPath", "bundle");
+    const bundleStartedAt = performance.now();
+    const bundleRead = await optionalRead(db, (savepoint) =>
+      buildBoundedMarketExposureWithCoverage({
+        db: savepoint,
+        billingAccountId: input.billingAccountId,
+        walletAddress: address,
+        livePositions: marketLivePositions,
+        closedPositions: marketClosedPositions,
+        ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
+      })
+    );
+    recordDashboardDiagnostic(
+      input.diagnostics,
+      "comparisonBundleTotalMs",
+      Math.max(0, Math.round(performance.now() - bundleStartedAt))
+    );
+    if (bundleRead.ok) {
+      marketRead = { ok: true, value: bundleRead.value.market };
+      coverageRead = { ok: true, value: bundleRead.value.counts };
+    } else {
+      // A coverage/bundle failure may never erase the legacy-renderable market
+      // preview. Re-run only that bounded reader in a fresh savepoint; coverage
+      // remains explicitly unavailable.
+      recordDashboardDiagnostic(
+        input.diagnostics,
+        "comparisonPath",
+        "bundle_fallback"
+      );
+      const fallbackStartedAt = performance.now();
+      marketRead = await optionalRead(db, (savepoint) =>
+        buildBoundedMarketExposureGroups({
+          db: savepoint,
+          billingAccountId: input.billingAccountId,
+          walletAddress: address,
+          livePositions: marketLivePositions,
+          closedPositions: marketClosedPositions,
+        })
+      );
+      recordDashboardDiagnostic(
+        input.diagnostics,
+        "comparisonFallbackMarketMs",
+        Math.max(0, Math.round(performance.now() - fallbackStartedAt))
+      );
+      coverageRead = { ok: false, error: bundleRead.error };
+    }
+  }
   if (!marketRead.ok) warnings.push(readFailure("markets", "market_exposure_unavailable", marketRead.error));
   if (!coverageRead.ok) {
     warnings.push(
@@ -903,6 +995,19 @@ async function optionalRead<T>(
     return { ok: true, value };
   } catch (error) {
     return { ok: false, error };
+  }
+}
+
+function recordDashboardDiagnostic<K extends keyof WalletDashboardReadDiagnostics>(
+  diagnostics: WalletDashboardReadDiagnostics | undefined,
+  key: K,
+  value: WalletDashboardReadDiagnostics[K]
+): void {
+  if (!diagnostics) return;
+  try {
+    diagnostics[key] = value;
+  } catch {
+    // Observability is fail-open and cannot alter wallet truth.
   }
 }
 

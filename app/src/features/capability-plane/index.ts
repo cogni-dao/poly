@@ -43,6 +43,7 @@ export {
   portfolioSnapshotAccountReadHandler,
   portfolioSnapshotExtra,
   type PortfolioSnapshotBinding,
+  type WalletDashboardReadDiagnostics,
 } from "./portfolio-snapshot";
 export {
   ACCOUNT_READ_TERMINAL_EVENTS,
