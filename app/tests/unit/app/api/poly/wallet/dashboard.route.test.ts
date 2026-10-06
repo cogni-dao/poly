@@ -68,6 +68,15 @@ const meta = (status: string, source: string, complete: boolean) => ({
   complete,
 });
 
+const coverageLeaf = {
+  eligible: 0,
+  comparable: 0,
+  dropped: 0,
+  sampled: 0,
+  complete: true,
+  reasons: [],
+};
+
 function partialDashboard() {
   return {
     snapshotId: "11111111-1111-4111-8111-111111111111",
@@ -80,7 +89,14 @@ function partialDashboard() {
       usdc_positions_mtm: 4,
       usdc_total: null,
     },
-    execution: { live_position_count: 3, closed_position_count: 7 },
+    execution: {
+      live_position_count: 3,
+      closed_position_count: 7,
+      comparisonCoverage: {
+        markets: { live: coverageLeaf, closed: coverageLeaf },
+        positions: { live: coverageLeaf, closed: coverageLeaf },
+      },
+    },
     facts: {
       wallet: meta("fresh", "wallet_connection", true),
       cash: meta("unavailable", "polygon_balance_snapshot", false),

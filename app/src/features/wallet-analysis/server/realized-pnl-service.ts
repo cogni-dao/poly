@@ -11,8 +11,9 @@
  * Scope: Read-only DB aggregation + math composition. No upstream API
  *   calls; no writers. Math itself lives in `market-return-math`.
  * Invariants:
- *   - SINGLE_BOUNDED_QUERY: one SQL aggregation per call (plus a 1-row
- *     wallet-id resolution), GROUP BY `(condition_id, token_id)`. Never
+ *   - SINGLE_BOUNDED_QUERY: one SQL aggregation per call (plus a bounded
+ *     canonical-address wallet-id resolution), GROUP BY
+ *     `(condition_id, token_id)`. Never
  *     hydrates raw fills row-by-row into V8 (data-research skill —
  *     bug.5012 class avoidance).
  *   - ROLLUP_BACKED_FULL_HISTORY: the fills aggregation reads rollup
@@ -95,18 +96,28 @@ export async function readWalletTokenPnlMap(params: {
   // READERS_ADD_THE_TAIL keeps the output exactly equal to the legacy
   // full-history scan in every rollup state (parity: fill-rollup-read-parity
   // component suite vs the preserved live-scan oracle).
-  const walletId = await resolveTraderWalletId(params.db, params.walletAddress);
-  if (walletId === null) return new Map();
+  const walletIds = await resolveTraderWalletIds(params.db, params.walletAddress);
+  if (walletIds.length === 0) return new Map();
   const flows = windowedFillFlowsSelect({
-    walletIds: [walletId],
+    walletIds,
     windowStartIso: EPOCH_ISO,
+    ...(params.positionKeys
+      ? {
+          conditionIds: [
+            ...new Set(
+              params.positionKeys.map((key) => key.conditionId.toLowerCase())
+            ),
+          ],
+          conditionIdentity: "case_insensitive" as const,
+        }
+      : {}),
   });
   if (params.positionKeys?.length === 0) return new Map();
   const displayedKeyPredicate = params.positionKeys
     ? sql.join(
         params.positionKeys.map(
           (key) =>
-            sql`(fa.condition_id = ${key.conditionId} AND fa.token_id = ${key.tokenId})`
+            sql`(fa.condition_id = lower(${key.conditionId}) AND fa.token_id = ${key.tokenId})`
         ),
         sql` OR `
       )
@@ -115,23 +126,39 @@ export async function readWalletTokenPnlMap(params: {
     await params.db.execute(sql`
       WITH fills_agg AS (
         SELECT
-          fl.condition_id,
+          lower(fl.condition_id) AS condition_id,
           fl.token_id,
-          fl.buy_usdc::numeric AS total_buy_notional,
-          fl.sell_usdc::numeric AS realized_cash,
-          (fl.buy_shares - fl.sell_shares)::numeric AS net_shares
+          SUM(fl.buy_usdc)::numeric AS total_buy_notional,
+          SUM(fl.sell_usdc)::numeric AS realized_cash,
+          SUM(fl.buy_shares - fl.sell_shares)::numeric AS net_shares
         FROM (${flows}) fl
+        GROUP BY lower(fl.condition_id), fl.token_id
       ),
-      current_mark AS (
+      current_mark_candidates AS (
         SELECT
-          p.condition_id,
+          lower(p.condition_id) AS condition_id,
           p.token_id,
-          COALESCE(SUM(p.current_value_usdc::numeric), 0) AS current_value_usdc
+          p.current_value_usdc::numeric AS current_value_usdc,
+          p.active,
+          p.shares,
+          p.last_observed_at,
+          row_number() OVER (
+            PARTITION BY lower(p.condition_id), p.token_id
+            ORDER BY p.last_observed_at DESC, w.updated_at DESC,
+              w.created_at DESC, w.id, p.condition_id
+          ) AS identity_rank
         FROM poly_trader_current_positions p
         JOIN poly_trader_wallets w ON w.id = p.trader_wallet_id
-        WHERE w.wallet_address = lower(${params.walletAddress})
+        WHERE p.trader_wallet_id IN (${sql.join(
+          walletIds.map((walletId) => sql`${walletId}::uuid`),
+          sql`, `
+        )})
+      ),
+      current_mark AS (
+        SELECT condition_id, token_id, current_value_usdc
+        FROM current_mark_candidates p
+        WHERE identity_rank = 1
           AND ${liveCurrentPositionSql("p")}
-        GROUP BY p.condition_id, p.token_id
       )
       SELECT
         fa.condition_id,
@@ -145,9 +172,14 @@ export async function readWalletTokenPnlMap(params: {
       LEFT JOIN current_mark cm
         ON cm.condition_id = fa.condition_id
        AND cm.token_id = fa.token_id
-      LEFT JOIN poly_market_outcomes pmo
-        ON pmo.condition_id = fa.condition_id
-       AND pmo.token_id = fa.token_id
+      LEFT JOIN LATERAL (
+        SELECT candidate.outcome
+        FROM poly_market_outcomes candidate
+        WHERE lower(candidate.condition_id) = fa.condition_id
+          AND candidate.token_id = fa.token_id
+        ORDER BY candidate.updated_at DESC, candidate.condition_id
+        LIMIT 1
+      ) pmo ON TRUE
       ${displayedKeyPredicate === null
         ? sql``
         : sql`WHERE (${displayedKeyPredicate})`}
@@ -195,25 +227,27 @@ export function tokenPnlKey(conditionId: string, tokenId: string): string {
 }
 
 /**
- * Wallet-address → `poly_trader_wallets.id` resolution used by the rollup
- * readers (`windowedFillFlowsSelect` keys on trader_wallet_id). Addresses in
- * `poly_trader_wallets` are stored lowercase; callers may pass any casing.
- * Returns null when the wallet has never been observed — legacy behavior was
- * an empty aggregation, so callers return an empty map.
+ * Wallet-address → all matching `poly_trader_wallets.id` values used by the
+ * generic rollup reader (`windowedFillFlowsSelect` keys on trader_wallet_id).
+ * Kind/research state is metadata, not a distinct blockchain identity, so
+ * case siblings and historical rows are aggregated rather than discarded.
+ * Returns an empty list when the wallet has never been observed.
  */
-async function resolveTraderWalletId(
+async function resolveTraderWalletIds(
   db: Db,
   walletAddress: string
-): Promise<string | null> {
+): Promise<string[]> {
   const rows = normalizeRows<{ id: string | null }>(
     await db.execute(sql`
       SELECT w.id
       FROM poly_trader_wallets w
-      WHERE w.wallet_address = lower(${walletAddress})
-      LIMIT 1
+      WHERE lower(w.wallet_address) = lower(${walletAddress})
+      ORDER BY w.updated_at DESC, w.created_at DESC, w.id
     `)
   );
-  return rows[0]?.id ?? null;
+  return rows
+    .map((row) => row.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
 /**

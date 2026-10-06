@@ -120,6 +120,7 @@ describe("wallet dashboard coherent snapshot", () => {
   const db = getSeedDb();
   let walletA: SeededWallet;
   let walletB: SeededWallet;
+  let tenantBTargetId = "";
   const targetWalletIds: string[] = [];
   const boundedTargetWallets: Array<{ id: string; address: string }> = [];
 
@@ -167,6 +168,8 @@ describe("wallet dashboard coherent snapshot", () => {
       ])
       .returning({ id: polyTraderWallets.id, address: polyTraderWallets.walletAddress });
     targetWalletIds.push(...targets.map((row) => row.id));
+    tenantBTargetId =
+      targets.find((row) => row.address === TARGET_B)?.id ?? "";
     await db.insert(polyCopyTradeTargets).values([
       { billingAccountId: TENANT_A, createdByUserId: USER_A, targetWallet: TARGET_A },
       { billingAccountId: TENANT_B, createdByUserId: USER_B, targetWallet: TARGET_B },
@@ -270,7 +273,34 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(result.execution.closed_position_count).toBe(31);
     expect(result.execution.closed_positions).toHaveLength(30);
     expect(result.facts.positions.status).toBe("fresh");
+    expect(result.facts.history.status).toBe("partial");
     expect(result.execution.warnings.map((entry) => entry.code)).toContain("positions_preview_truncated");
+    expect(result.execution.warnings.map((entry) => entry.code)).toContain("realized_pnl_incomplete");
+    expect(result.execution.comparisonCoverage.positions.live).toEqual({
+      eligible: 501,
+      comparable: 1,
+      dropped: 500,
+      sampled: 0,
+      complete: false,
+      reasons: [
+        "source_incomplete",
+        "comparison_missing",
+        "preview_truncated",
+      ],
+    });
+    expect(result.execution.comparisonCoverage.positions.closed).toEqual({
+      eligible: 31,
+      comparable: 0,
+      dropped: 31,
+      sampled: 0,
+      complete: false,
+      reasons: [
+        "source_incomplete",
+        "comparison_missing",
+        "preview_truncated",
+      ],
+    });
+    expect(result.execution.comparisonCoverage.markets.live.eligible).toBe(501);
   }, 60_000);
 
   it("rolls back a forced cash SQL error to its savepoint and keeps later facts readable", async () => {
@@ -354,6 +384,132 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(labelsA).not.toContain("Tenant B target");
     expect(labelsB).toContain("Tenant B target");
     expect(labelsB).not.toContain("Tenant A target");
+
+    const finiteGroups = tenantB.execution.market_groups.filter(
+      (group) => group.edgeGapPct !== null && Number.isFinite(group.edgeGapPct)
+    );
+    const finiteLines = new Set(
+      tenantB.execution.market_groups.flatMap((group) =>
+        group.lines
+          .filter(
+            (line) =>
+              line.edgeGapPct !== null && Number.isFinite(line.edgeGapPct)
+          )
+          .map((line) => line.conditionId)
+      )
+    );
+    const comparablePositions = tenantB.execution.live_positions.filter(
+      (position) => finiteLines.has(position.conditionId)
+    );
+    expect(tenantB.execution.comparisonCoverage.markets.live).toMatchObject({
+      eligible: tenantB.execution.market_groups.length,
+      comparable: finiteGroups.length,
+      sampled: finiteGroups.length,
+      complete: true,
+      reasons: [],
+    });
+    expect(tenantB.execution.comparisonCoverage.positions.live).toMatchObject({
+      eligible: tenantB.execution.live_position_count,
+      comparable: comparablePositions.length,
+      sampled: comparablePositions.length,
+      complete: true,
+      reasons: [],
+    });
+  });
+
+  it("dedupes canonical condition siblings and fails their coverage closed", async () => {
+    await db.insert(polyTraderCurrentPositions).values([
+      currentPosition(walletB.id, 910, "Case-Duplicate"),
+      {
+        ...currentPosition(walletB.id, 911, "case-duplicate"),
+        tokenId: `token-${walletB.id}-910`,
+        contentHash: `hash-${walletB.id}-911-case-variant`,
+      },
+    ]);
+    await db.insert(polyTraderPositionSnapshots).values({
+      traderWalletId: tenantBTargetId,
+      conditionId: "case-duplicate",
+      tokenId: "target-case-duplicate",
+      shares: "2",
+      costBasisUsdc: "1",
+      currentValueUsdc: "2",
+      avgPrice: "0.5",
+      contentHash: "target-case-duplicate",
+      capturedAt: new Date(),
+      raw: { title: "Case duplicate", outcome: "Yes" },
+    });
+
+    try {
+      const result = await readTenantWalletDashboard({
+        db,
+        billingAccountId: TENANT_B,
+        interval: "1W",
+        adapterConfigured: true,
+      });
+      expect(
+        result.execution.live_positions.filter(
+          (position) => position.conditionId === "case-duplicate"
+        )
+      ).toHaveLength(1);
+      expect(result.execution.comparisonCoverage.positions.live.reasons).toContain(
+        "identity_ambiguous"
+      );
+    } finally {
+      await db
+        .delete(polyTraderCurrentPositions)
+        .where(
+          and(
+            eq(polyTraderCurrentPositions.traderWalletId, walletB.id),
+            inArray(polyTraderCurrentPositions.conditionId, [
+              "Case-Duplicate",
+              "case-duplicate",
+            ])
+          )
+        );
+      await db
+        .delete(polyTraderPositionSnapshots)
+        .where(eq(polyTraderPositionSnapshots.contentHash, "target-case-duplicate"));
+    }
+  });
+
+  it("detects duplicate canonical wallet identities without duplicating output", async () => {
+    const canonicalSibling = `0x${OUR_B.slice(2).toUpperCase()}`;
+    const [duplicate] = await db
+      .insert(polyTraderWallets)
+      .values({
+        walletAddress: canonicalSibling,
+        kind: "cogni_wallet",
+        label: "duplicate canonical wallet",
+        createdAt: new Date("2020-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2020-01-01T00:00:00.000Z"),
+      })
+      .returning({ id: polyTraderWallets.id });
+    if (!duplicate) throw new Error("duplicate wallet seed failed");
+
+    try {
+      const result = await readTenantWalletDashboard({
+        db,
+        billingAccountId: TENANT_B,
+        interval: "1W",
+        adapterConfigured: true,
+      });
+      expect(result.execution.live_position_count).toBe(1);
+      expect(result.execution.live_positions).toHaveLength(1);
+      expect(result.execution.comparisonCoverage.positions.live.reasons).toContain(
+        "identity_ambiguous"
+      );
+      expect(result.facts.positions.status).toBe("partial");
+      expect(result.facts.positions.complete).toBe(false);
+      expect(result.facts.positions.actionsAllowed).toBe(false);
+      expect(result.facts.history.status).toBe("partial");
+      expect(result.facts.history.complete).toBe(false);
+      expect(result.overview.usdc_total).toBeNull();
+      expect(result.execution.warnings).toContainEqual(
+        expect.objectContaining({ code: "realized_pnl_identity_ambiguous" })
+      );
+    } finally {
+      await db.delete(polyTraderWallets).where(eq(polyTraderWallets.id, duplicate.id));
+    }
   });
 
   it("enforces bounded market SQL before hydration and preserves canonical snapshot-only semantics", async () => {
@@ -468,6 +624,9 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(partial.execution.live_positions).toHaveLength(1);
     expect(partial.execution.market_groups.length).toBeGreaterThan(0);
     expect(partial.facts.markets.status).toBe("partial");
+    expect(partial.execution.comparisonCoverage.positions.live.reasons).toContain(
+      "source_incomplete"
+    );
     expect(partial.overview.usdc_positions_mtm).toBe(2);
     expect(partial.overview.usdc_total).toBeNull();
 
@@ -491,6 +650,14 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(unavailable.execution.live_position_count).toBeNull();
     expect(unavailable.execution.live_positions).toEqual([]);
     expect(unavailable.execution.market_groups).toEqual([]);
+    expect(unavailable.execution.comparisonCoverage.positions.live).toEqual({
+      eligible: null,
+      comparable: null,
+      dropped: null,
+      sampled: null,
+      complete: false,
+      reasons: ["source_unavailable"],
+    });
     expect(unavailable.overview.usdc_positions_mtm).toBeNull();
     expect(unavailable.overview.usdc_total).toBeNull();
   });

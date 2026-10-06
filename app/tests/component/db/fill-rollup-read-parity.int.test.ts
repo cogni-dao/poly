@@ -34,6 +34,7 @@ import {
   type OracleOutcomeRow,
   resolutionsFromOutcomeRows,
 } from "@tests/_fixtures/poly/trade-size-pnl-oracle";
+import type { WalletExecutionPosition } from "@cogni/poly-node-contracts";
 import {
   readBenchmarkMarketRowsOracle,
   readBenchmarkSummaryOracle,
@@ -67,6 +68,7 @@ import {
 } from "@/features/wallet-analysis/server/market-exposure-service";
 import { computeRealizedPnl } from "@/features/wallet-analysis/server/market-return-math";
 import {
+  applyRealizedPnl,
   readWalletTokenPnlMap,
   tokenPnlKey,
   type WalletTokenPnl,
@@ -134,6 +136,7 @@ const OUTCOMES: OracleOutcomeRow[] = [
   { conditionId: "cp2", tokenId: "tp2y", outcome: "winner" },
   { conditionId: "cp2", tokenId: "tp2n", outcome: "loser" },
 ];
+const MIXED_CASE_OUTCOMES = ["case-winner-a", "CASE-WINNER-B"] as const;
 
 let targetId = "";
 let cogniId = "";
@@ -426,6 +429,7 @@ describe("fill-rollup read parity (task.research-rollup-read-models)", () => {
       .where(
         inArray(polyMarketOutcomes.conditionId, [
           ...new Set(OUTCOMES.map((o) => o.conditionId)),
+          ...MIXED_CASE_OUTCOMES,
         ])
       );
   });
@@ -464,5 +468,57 @@ describe("fill-rollup read parity (task.research-rollup-read-models)", () => {
   it("tail state: fresh fills on top of a warm rollup", async () => {
     await seedFillBatch(TAIL_FILLS, "rp-tail");
     await assertParity([...FILLS, ...TAIL_FILLS]);
+  });
+
+  it("joins resolved winners and applies payout across both condition-casing schedules", async () => {
+    const db = getSeedDb();
+    await db.insert(polyTraderFills).values([
+      {
+        traderWalletId: cogniId,
+        source: "data-api",
+        nativeId: "mixed-winner-a",
+        conditionId: "CASE-WINNER-A",
+        tokenId: "winner-a",
+        side: "BUY",
+        price: "0.5",
+        shares: "2",
+        sizeUsdc: "1",
+        observedAt: new Date(),
+      },
+      {
+        traderWalletId: cogniId,
+        source: "data-api",
+        nativeId: "mixed-winner-b",
+        conditionId: "case-winner-b",
+        tokenId: "winner-b",
+        side: "BUY",
+        price: "0.5",
+        shares: "2",
+        sizeUsdc: "1",
+        observedAt: new Date(),
+      },
+    ]);
+    await db.insert(polyMarketOutcomes).values([
+      { conditionId: "case-winner-a", tokenId: "winner-a", outcome: "winner" },
+      { conditionId: "CASE-WINNER-B", tokenId: "winner-b", outcome: "winner" },
+    ]);
+
+    const pnl = await readWalletTokenPnlMap({
+      db: db as unknown as ServiceDb,
+      walletAddress: COGNI_ADDRESS.toUpperCase(),
+      positionKeys: [
+        { conditionId: "case-winner-a", tokenId: "winner-a" },
+        { conditionId: "CASE-WINNER-B", tokenId: "winner-b" },
+      ],
+    });
+    const positions = [
+      { conditionId: "case-winner-a", asset: "winner-a", pnlUsd: -1, pnlPct: -100 },
+      { conditionId: "CASE-WINNER-B", asset: "winner-b", pnlUsd: -1, pnlPct: -100 },
+    ] as WalletExecutionPosition[];
+
+    expect(applyRealizedPnl(positions, pnl).map(({ pnlUsd, pnlPct }) => ({ pnlUsd, pnlPct }))).toEqual([
+      { pnlUsd: 1, pnlPct: 100 },
+      { pnlUsd: 1, pnlPct: 100 },
+    ]);
   });
 });
