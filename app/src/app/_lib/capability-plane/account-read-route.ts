@@ -13,7 +13,8 @@
  *   query-parse path, so this adapter cannot introduce a second emit site.
  * Invariants:
  *   - TRANSPORT_NEVER_GRANTS_AUTHORITY — it forwards the session principal and
- *     nothing else; `resolveAppDb()` is the app role, never service role.
+ *     nothing else. The route names its own `resolveDb` (always `resolveAppDb`),
+ *     so this module needs no container dependency of its own.
  *   - FAIL_CLOSED_NON_DISCLOSING — denied and not-found render the identical
  *     `{"error":"not_found"}` 404, so an attacker cannot distinguish "wrong
  *     tenant" from "no such account" from "expired grant".
@@ -24,11 +25,11 @@
  * @public
  */
 
+import type { Database } from "@cogni/db-client";
 import type { AccountReadOperation } from "@cogni/poly-node-contracts";
 import { NextResponse } from "next/server";
 import type { z } from "zod";
 
-import { resolveAppDb } from "@/bootstrap/container";
 import {
   ACCOUNT_READ_HTTP_STATUS,
   type AccountReadHandler,
@@ -41,6 +42,12 @@ type SessionLike = { id: string } | null | undefined;
 
 export type AccountReadRouteConfig<TOperation extends AccountReadOperation> = {
   operation: TOperation;
+  /**
+   * The app-role handle factory, named by the route so NO_PRIVILEGED_TRANSPORT
+   * is visible at every call site. Resolved per request, never at module load.
+   * Pass `resolveAppDb`; never `resolveServiceDb` / `resolveServiceReadDb`.
+   */
+  resolveDb: () => Database;
   eventName: EventName;
   handler: AccountReadHandler<
     z.infer<TOperation["input"]>,
@@ -77,7 +84,7 @@ export function accountReadGetHandler<TOperation extends AccountReadOperation>(
     );
 
     const outcome = await executeAccountRead({
-      db: resolveAppDb(),
+      db: config.resolveDb(),
       ctx,
       operation: config.operation,
       principalId: sessionUser.id,

@@ -13,6 +13,7 @@
 import { polyAccountReadCopyTradeInvestigationOperation } from "@cogni/poly-node-contracts";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { accountReadGetHandler } from "@/app/_lib/capability-plane/account-read-route";
+import { resolveAppDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import {
   ACCOUNT_READ_TERMINAL_EVENTS,
@@ -28,6 +29,7 @@ export const GET = wrapRouteHandlerWithLogging(
     auth: { mode: "required", getSessionUser },
   },
   accountReadGetHandler({
+    resolveDb: resolveAppDb,
     operation: polyAccountReadCopyTradeInvestigationOperation,
     eventName:
       ACCOUNT_READ_TERMINAL_EVENTS[

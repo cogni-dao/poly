@@ -344,6 +344,39 @@ describe("executeAccountRead terminal event", () => {
     ]);
   });
 
+  it("never hands unvalidated data to extra", async () => {
+    // Regression: the handler returned a shape that fails `operation.output`,
+    // so `extra` must see null rather than the raw object — an `extra` written
+    // against the validated shape would otherwise read undefined fields.
+    const extra = vi.fn(() => ({ rowsCount: 0 }));
+
+    const result = await run({
+      handler: async () => ({ nope: true }),
+      extra,
+    });
+
+    expect(result).toEqual({ status: "invalid_output" });
+    expect(extra).toHaveBeenCalledWith({
+      status: "invalid_output",
+      input: { billing_account_id: ACCOUNT, limit: 10 },
+      data: null,
+    });
+  });
+
+  it("still emits the terminal event when extra throws", async () => {
+    const result = await run({
+      extra: () => {
+        throw new Error("bad count builder");
+      },
+    });
+
+    // A transport bug must not be able to suppress the one terminal event.
+    expect(result.status).toBe("ok");
+    expect(terminalEvents()).toEqual([
+      expect.objectContaining({ status: 200, extraFieldsFailed: true }),
+    ]);
+  });
+
   it("emits exactly one event when the handler throws", async () => {
     const result = await run({
       handler: async () => {

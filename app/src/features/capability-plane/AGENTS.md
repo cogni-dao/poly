@@ -25,7 +25,7 @@ the principal it carries.
   projection of the catalog into `.well-known/agent.json`.
 
 REST transport lives in `@app/_lib/capability-plane/account-read-route`; route
-modules only name a descriptor plus its binding.
+modules only name a descriptor, its binding, and `resolveDb: resolveAppDb`.
 
 ## Invariants
 
@@ -56,5 +56,6 @@ modules only name a descriptor plus its binding.
    union, so this is a compile error until you do) and its handler to
    `handlers.ts`.
 3. Add its public names to `DISCOVERY_NAMES` in `discovery.ts`.
-4. Bind a route with `accountReadGetHandler`. Add no query and no auth there.
+4. Bind a route with `accountReadGetHandler`, passing `resolveDb: resolveAppDb`.
+   Add no query and no auth there.
 5. Add delegated SELECT RLS policies for any newly read private table.

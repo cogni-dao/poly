@@ -29,8 +29,8 @@ Private app-layer helpers for route handlers. Provides server-side utilities lik
 
 ## Public Surface
 
-- **Exports:** models-cache (getCachedModels, isModelAllowed, getDefaultModelId), auth/session helpers, request-identity resolver + agent key issuer, operator attestation verifier (verifyOperatorAttestation with exact node audience/nonce claims, getOperatorIssuerUrl)
-- **Files considered API:** models-cache.ts, auth/session.ts, auth/request-identity.ts, auth/operator-attestation.ts
+- **Exports:** models-cache (getCachedModels, isModelAllowed, getDefaultModelId), auth/session helpers, request-identity resolver + agent key issuer, operator attestation verifier (verifyOperatorAttestation with exact node audience/nonce claims, getOperatorIssuerUrl), capability-plane/account-read-route (accountReadGetHandler — the one REST transport for account reads; the route injects `resolveDb`, so this directory keeps no container dependency)
+- **Files considered API:** models-cache.ts, auth/session.ts, auth/request-identity.ts, auth/operator-attestation.ts, capability-plane/account-read-route.ts
 
 ## Responsibilities
 

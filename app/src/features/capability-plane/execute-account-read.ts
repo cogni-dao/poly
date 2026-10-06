@@ -29,7 +29,10 @@
  *   - EXACTLY_ONE_TERMINAL_EVENT — this module is the only emitter of the
  *     operation's terminal event, on every path including parse and error
  *     paths. Transport-specific counts arrive through the `extra` callback, so
- *     a transport has no reason to add a second emit site of its own.
+ *     a transport has no reason to add a second emit site of its own, and a
+ *     throwing `extra` is swallowed rather than allowed to suppress the event.
+ *   - EXTRA_SEES_ONLY_VALIDATED_DATA — `extra` receives `data` only once it has
+ *     passed `operation.output`; on the invalid-output path it receives null.
  *   - FAIL_CLOSED_NON_DISCLOSING — every denial collapses to `"denied"` with no
  *     access kind and no account id in the terminal event.
  *   - NO_FABRICATED_VALUES — a handler returning null is reported as
@@ -180,11 +183,21 @@ export async function executeAccountRead<
     data: TOutput | null;
   } = { access: null, input: null, data: null };
 
+  // A transport's count builder must never be able to suppress the one terminal
+  // event: if `extra` throws, the event still goes out, minus the extras.
+  const extraFields = (status: AccountReadStatus): Record<string, unknown> => {
+    try {
+      return args.extra?.({ status, input: state.input, data: state.data }) ?? {};
+    } catch {
+      return { extraFieldsFailed: true };
+    }
+  };
+
   const emit = (status: AccountReadStatus): void => {
     logEvent(args.ctx.log, args.eventName, {
       // Transport extras come FIRST so they can never clobber an envelope
       // field — a route cannot rewrite `status` or `authorizationOutcome`.
-      ...(args.extra?.({ status, input: state.input, data: state.data }) ?? {}),
+      ...extraFields(status),
       reqId: args.ctx.reqId,
       routeId: args.ctx.routeId,
       operationId: args.operation.id,
@@ -302,7 +315,10 @@ export async function executeAccountRead<
   // 7. Output is validated against the descriptor before it leaves the node.
   const parsedOutput = args.operation.output.safeParse(handled.data);
   if (!parsedOutput.success) {
-    state.data = handled.data;
+    // `state.data` deliberately stays null. The handler returned something that
+    // does NOT satisfy the descriptor, so it is not an `OutputOf<TOperation>`
+    // and must not be handed to `extra`, which is typed for the validated
+    // shape and would read fields that are not there.
     emit("invalid_output");
     return { status: "invalid_output" };
   }
