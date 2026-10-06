@@ -36,7 +36,16 @@ const contractAmendmentLineage = [
   "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba",
   // Amendment 1: additive-only mission scope growth (amendment-exempt digest)
   "eeb47ab2f13fb44ac54b671600137e063e3cac7f47ab887bc0780c40fc59508d",
+  // Amendment 2: funder-only trading identity for dashboard.wallet_identity
+  "bad05a998c9f3b26070adc198724cce1f8f338a1e7114cc3d183b92337c790c2",
 ];
+// Amendment 2: a gate `requirement` is frozen unless the ratified lineage head that
+// re-ratifies it names the gate here. Keyed by lineage digest so an amendment can
+// never silently unfreeze a gate it did not name, and so the exemption expires the
+// moment the lineage advances again.
+const ratifiedGateRequirementAmendments = {
+  "bad05a998c9f3b26070adc198724cce1f8f338a1e7114cc3d183b92337c790c2": ["dashboard.wallet_identity"],
+};
 const expectedDeliveryGroupIds = [
   "dashboard-truth",
   "hub-control-plane",
@@ -1213,6 +1222,7 @@ export function regressionProblems(base, current, notes = []) {
   if (JSON.stringify(base.source) !== JSON.stringify(current.source)) {
     problems.push("source pin changed");
   }
+  let contractAdvancedAlongLineage = false;
   if (JSON.stringify(base.contract) !== JSON.stringify(current.contract)) {
     // Amendment 1: a contract change is legal only as a ratified lineage advance.
     const ratifiedAdvance =
@@ -1220,6 +1230,7 @@ export function regressionProblems(base, current, notes = []) {
       contractAmendmentLineage.includes(base.contract.sha256) &&
       current.contract.sha256 === contractAmendmentLineage.at(-1);
     if (ratifiedAdvance) {
+      contractAdvancedAlongLineage = true;
       notes.push("contract advanced along the ratified amendment lineage");
     } else {
       problems.push("immutable contract path or hash changed");
@@ -1311,9 +1322,20 @@ export function regressionProblems(base, current, notes = []) {
       "requirement",
       "coveredSourcePaths",
     ]) {
-      if (JSON.stringify(gate[field]) !== JSON.stringify(newGate[field])) {
-        problems.push(`behavioral gate ${field} changed: ${gate.id}`);
+      if (JSON.stringify(gate[field]) === JSON.stringify(newGate[field])) continue;
+      // Amendment 2: the one legal requirement change is a ratified lineage advance
+      // whose head names this gate. Every other field stays unconditionally frozen.
+      if (
+        field === "requirement" &&
+        contractAdvancedAlongLineage &&
+        (ratifiedGateRequirementAmendments[current.contract.sha256] ?? []).includes(
+          gate.id
+        )
+      ) {
+        notes.push(`behavioral gate requirement re-ratified: ${gate.id}`);
+        continue;
       }
+      problems.push(`behavioral gate ${field} changed: ${gate.id}`);
     }
     if (
       gate.status === "passed" &&

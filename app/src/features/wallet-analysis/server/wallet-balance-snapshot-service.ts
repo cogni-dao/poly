@@ -126,7 +126,9 @@ export async function readWalletBalanceFact(
 ): Promise<WalletBalanceRead> {
   const rows = await db
     .select({
-      address: sql<string>`lower(coalesce(${polyWalletConnections.funderAddress}, ${polyWalletConnections.address}))`,
+      // Amendment 2: funder_address alone — an unprovisioned connection must
+      // read as no_wallet, not as signer-keyed balances.
+      address: sql<string>`lower(${polyWalletConnections.funderAddress})`,
       snapshot: polyWalletBalanceSnapshots,
     })
     .from(polyWalletConnections)
@@ -138,7 +140,7 @@ export async function readWalletBalanceFact(
           polyWalletBalanceSnapshots.billingAccountId
         ),
         isNull(polyWalletConnections.revokedAt),
-        sql`lower(${polyWalletBalanceSnapshots.address}) = lower(coalesce(${polyWalletConnections.funderAddress}, ${polyWalletConnections.address}))`
+        sql`lower(${polyWalletBalanceSnapshots.address}) = lower(${polyWalletConnections.funderAddress})`
       )
     )
     .where(
@@ -150,6 +152,10 @@ export async function readWalletBalanceFact(
     .limit(1);
   const result = rows[0];
   if (!result) return { kind: "no_wallet" as const };
+  // Amendment 2: a connection with no funder_address has no trading wallet yet.
+  // Without this it would fall through as `missing` at a null address — a wallet
+  // that reads as real but has nowhere to be.
+  if (!result.address) return { kind: "no_wallet" as const };
   const row = result.snapshot;
   if (!row) {
     return { kind: "missing" as const, address: result.address as `0x${string}` };

@@ -218,13 +218,29 @@ const CTF_SET_APPROVAL_ABI = parseAbi([
  * Every consumer — `getAddress`, `listActiveTradingAddresses` — goes through
  * here. Re-deriving it anywhere else is how the observer and the executor
  * drifted onto two different wallets.
+ *
+ * Amendment 2: the trading identity is `funder_address` ALONE. Migration 0066
+ * added the column nullable with no backfill, so a null funder marks a pre-V2
+ * row — an era when the Privy signer traded directly and so WAS the funder.
+ * Polymarket no longer honours that EOA-direct path, so such a row has no
+ * usable identity until it is migrated to a V2 deposit wallet. The old
+ * `?? row.address` fallback pointed the observer and the executor at a wallet
+ * that cannot trade and reported it as if it could. Null here means
+ * unprovisioned; every caller fails closed and says so.
  */
 function resolveTradingAddress(row: {
   address: string;
   funderAddress: string | null;
-}): `0x${string}` {
-  return getAddress(row.funderAddress ?? row.address);
+}): `0x${string}` | null {
+  return row.funderAddress ? getAddress(row.funderAddress) : null;
 }
+
+/**
+ * One event for every fail-closed identity decision, so the live population of
+ * unprovisioned connections is countable from logs on the first flight. This is
+ * the number no local query can produce.
+ */
+const UNPROVISIONED_EVENT = "poly.wallet.identity_unprovisioned";
 
 /**
  * Minimum POL balance required before we start submitting approval txs.
@@ -341,6 +357,8 @@ type ResolveSigningContextFailureReason =
   | "tenant_mismatch"
   | "clob_creds_invalid"
   | "wallet_account_unavailable"
+  /** Amendment 2: the row has no `funder_address`, so there is no identity to sign as. */
+  | "funder_unprovisioned"
   | "backend_unreachable";
 
 type ResolveSigningContextResult =
@@ -372,6 +390,22 @@ type ResolveSigningContextResult =
  *   Remedy: re-derive CLOB creds for the wallet.
  */
 type ClobCredsDecryptStage = "aead_decrypt" | "json_parse" | "missing_fields";
+
+/**
+ * Amendment 2: raised where a trading identity is REQUIRED and the connection has
+ * no `funder_address`. Callers that previously received the Privy signer EOA now
+ * get a loud, typed failure instead of a confidently wrong wallet.
+ */
+export class PolyTraderWalletUnprovisionedError extends Error {
+  readonly connectionId: string;
+  constructor(connectionId: string) {
+    super(
+      `poly wallet connection ${connectionId} has no funder_address; its deposit wallet was never provisioned`
+    );
+    this.name = "PolyTraderWalletUnprovisionedError";
+    this.connectionId = connectionId;
+  }
+}
 
 class ClobCredsDecryptError extends Error {
   readonly stage: ClobCredsDecryptStage;
@@ -582,12 +616,25 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       };
     }
 
+    const funderAddress = resolveTradingAddress(row);
+    if (!funderAddress) {
+      this.log.warn(
+        { event: UNPROVISIONED_EVENT, connection_id: row.id, site: "signing" },
+        "no funder address — refusing to sign with the signer EOA"
+      );
+      return {
+        ok: false,
+        reason: "funder_unprovisioned",
+        connectionId: row.id,
+      };
+    }
+
     return {
       ok: true,
       context: {
         account,
         clobCreds,
-        funderAddress: getAddress(row.funderAddress ?? row.address),
+        funderAddress,
         connectionId: row.id,
       },
     };
@@ -822,10 +869,17 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       })
       .from(polyWalletConnections)
       .where(isNull(polyWalletConnections.revokedAt));
-    return rows.map((row) => ({
-      billingAccountId: row.billingAccountId,
-      address: resolveTradingAddress(row),
-    }));
+    return rows.flatMap((row) => {
+      const address = resolveTradingAddress(row);
+      if (!address) {
+        this.log.warn(
+          { event: UNPROVISIONED_EVENT, billing_account_id: row.billingAccountId, site: "observer" },
+          "no funder address — excluding tenant from the observed wallet set"
+        );
+        return [];
+      }
+      return [{ billingAccountId: row.billingAccountId, address }];
+    });
   }
 
   async getConnectionSummary(billingAccountId: string): Promise<{
@@ -863,9 +917,17 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       );
       return null;
     }
+    const summaryFunder = resolveTradingAddress(row);
+    if (!summaryFunder) {
+      this.log.warn(
+        { event: UNPROVISIONED_EVENT, connection_id: row.id, site: "summary" },
+        "no funder address — reporting no connection rather than the signer EOA"
+      );
+      return null;
+    }
     return {
       connectionId: row.id,
-      funderAddress: getAddress(row.funderAddress ?? row.address),
+      funderAddress: summaryFunder,
       tradingApprovalsReadyAt: row.tradingApprovalsReadyAt,
       autoWrapConsentAt:
         row.autoWrapRevokedAt === null ? row.autoWrapConsentAt : null,
@@ -1095,11 +1157,19 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       });
       // biome-ignore lint/suspicious/noExplicitAny: cross-peerDep viem type drift
       const account: any = rawIdemAccount;
+      const idemFunder = resolveTradingAddress(row);
+      if (!idemFunder) {
+        this.log.warn(
+          { event: UNPROVISIONED_EVENT, connection_id: row.id, site: "provision_idempotent" },
+          "no funder address on idempotent hit — refusing the signer EOA"
+        );
+        throw new PolyTraderWalletUnprovisionedError(row.id);
+      }
       return {
         signingContext: {
           account,
           clobCreds,
-          funderAddress: getAddress(row.funderAddress ?? row.address),
+          funderAddress: idemFunder,
           connectionId: row.id,
         },
         isIdempotentHit: true,
@@ -2979,10 +3049,18 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
           )
         );
 
+      const repairFunder = resolveTradingAddress(row);
+      if (!repairFunder) {
+        this.log.warn(
+          { event: UNPROVISIONED_EVENT, connection_id: row.id, site: "creds_repair" },
+          "no funder address — refusing to repair onto the signer EOA"
+        );
+        throw new PolyTraderWalletUnprovisionedError(row.id);
+      }
       return {
         account,
         clobCreds,
-        funderAddress: getAddress(row.funderAddress ?? row.address),
+        funderAddress: repairFunder,
         connectionId: row.id,
       };
     });

@@ -11,9 +11,13 @@
  * Scope: Unit — the service DB is a thenable-chain fake returning fixed
  *   connection rows. No Privy, no RPC, no network.
  * Invariants:
- *   - FUNDER_WINS: `funder_address` set → that is the resolved address.
- *   - PRE_V2_ROW: `funder_address` null → the signer `address`, which for rows
- *     minted before migration 0066 WAS the funder.
+ *   - FUNDER_ONLY: `funder_address` set → that is the resolved address.
+ *   - PRE_V2_ROW_IS_UNPROVISIONED (Amendment 2): `funder_address` null → null.
+ *     Such a row predates migration 0066, when the Privy signer traded directly
+ *     and so WAS the funder. Polymarket no longer honours that EOA-direct path,
+ *     so the row has no usable trading identity until it is migrated to a V2
+ *     deposit wallet. Resolving it to the signer reported a wallet that cannot
+ *     trade as if it could — the false truth the parity contract forbids.
  *   - LIST_MATCHES_GET: the list method agrees with `getAddress`, lowercased.
  *   - LIST_IS_DEDUPED: two connections on one funder yield one entry.
  * Side-effects: none
@@ -99,12 +103,21 @@ describe("PrivyPolyTraderWalletAdapter — SINGLE_TRADING_ADDRESS_RESOLUTION", (
     expect(listed).not.toContain(SIGNER.toLowerCase());
   });
 
-  it("resolves a pre-V2 connection to its signer address", async () => {
+  it("treats a pre-V2 connection as unprovisioned rather than resolving the signer", async () => {
     const adapter = buildAdapter([row("c1", SIGNER, null)]);
 
-    expect(await adapter.getAddress(BILLING_ACCOUNT)).toBe(SIGNER);
+    expect(await adapter.getAddress(BILLING_ACCOUNT)).toBeNull();
+    expect(await adapter.listActiveTradingAddresses()).toEqual([]);
+  });
+
+  it("excludes only the unprovisioned tenant from the observed wallet set", async () => {
+    const adapter = buildAdapter([
+      row("c1", SIGNER, null),
+      row("c2", SIGNER, FUNDER),
+    ]);
+
     expect(await adapter.listActiveTradingAddresses()).toEqual([
-      SIGNER.toLowerCase(),
+      FUNDER.toLowerCase(),
     ]);
   });
 

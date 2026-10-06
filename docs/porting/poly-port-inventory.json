@@ -10,7 +10,7 @@
   },
   "contract": {
     "path": "docs/porting/poly-parity-contract.md",
-    "sha256": "eeb47ab2f13fb44ac54b671600137e063e3cac7f47ab887bc0780c40fc59508d"
+    "sha256": "bad05a998c9f3b26070adc198724cce1f8f338a1e7114cc3d183b92337c790c2"
   },
   "proofRefreshPending": [
     {
@@ -48,12 +48,12 @@
       ]
     }
   ],
-  "policySha256": "a3794a9aa90be191acf575468d862ecb3e1f6d46313f9a0106dfa24b159d3e7e",
-  "targetTreeDigest": "a6076af8eb12884e6d482e88efab75c33c961c9cbec11de43f530331e2a41c1d",
+  "policySha256": "b43abb5d3e6f699d0ab4adbe2a9f7b07e54351d84ab4fe84badce2fec92a6b8f",
+  "targetTreeDigest": "9fda67632b91f9ebd67caaf86f213ecc6ad1189509c97ea23cec274e3d31d226",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1212,
+    "targetOnlyFiles": 1213,
     "unresolved": 609,
     "byStatus": {
       "exact": 1119,
@@ -272,7 +272,7 @@
       "id": "dashboard.wallet_identity",
       "priority": "P0",
       "deliveryGroup": "saved-facts",
-      "requirement": "The observer and every dashboard read model use the same tenant trading identity: funder_address when present, otherwise the legacy signer address.",
+      "requirement": "The observer and every dashboard read model resolve the tenant trading identity from funder_address alone; an absent funder is an explicit unprovisioned state and is never substituted with another address.",
       "coveredSourcePaths": [
         "app/src/features/wallet-analysis/server/current-position-read-model.ts",
         "app/src/features/wallet-analysis/server/trader-observation-service.ts",
@@ -3890,7 +3890,7 @@
       "sourceBlob": "7cdc0e8bb5d105831e0d85156c07d2867b959802",
       "sourcePath": "app/src/adapters/server/wallet/privy-poly-trader-wallet.adapter.ts",
       "targetPath": "app/src/adapters/server/wallet/privy-poly-trader-wallet.adapter.ts",
-      "targetBlob": "6d2457f45c78281efdc3251b9bb7c50840d8b20c",
+      "targetBlob": "f7cda2ca49c1327e9e3cf31a8885c06e9f10da19",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -23084,7 +23084,7 @@
       "sourceBlob": "8055709c847a2b9ce36c86dcb484ab6e31391d15",
       "sourcePath": "packages/wallet/src/port/poly-trader-wallet.port.ts",
       "targetPath": "packages/poly-wallet/src/port/poly-trader-wallet.port.ts",
-      "targetBlob": "842e2f896d0cf2c4022f673ab367f5090c161b75",
+      "targetBlob": "3d32797e726f9f9db42f434bed9aaa7c07f1a82e",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -26490,6 +26490,9 @@
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/fill-rollup-condition-identity.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/wallet-analysis/funder-only-identity.test.ts"
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/hash-position.test.ts"

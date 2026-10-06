@@ -162,6 +162,12 @@ export type EnableTradingPreflightError =
   | "clob_creds_invalid"
   | "wallet_account_unavailable"
   | "polygon_rpc_unconfigured"
+  /**
+   * Amendment 2: the connection has no `funder_address`, so there is no trading
+   * identity to approve. A pre-V2 row must be migrated to a V2 deposit wallet;
+   * approving onto the signer EOA is the path Polymarket no longer honours.
+   */
+  | "funder_unprovisioned"
   | "backend_unreachable";
 
 export type PolyWalletWithdrawalAsset = "usdc_e" | "pusd" | "pol";

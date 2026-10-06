@@ -513,6 +513,40 @@ test("regression freezes contract, groups, gate definitions, and P0/P1 terminal 
   assert.ok(problems.includes(`terminal resolution regressed: ${terminal.sourcePath}`));
 });
 
+test("Amendment 2 unfreezes a gate requirement only for the named gate on a ratified advance", () => {
+  const amendment1Digest =
+    "eeb47ab2f13fb44ac54b671600137e063e3cac7f47ab887bc0780c40fc59508d";
+  const named = "dashboard.wallet_identity";
+
+  // The real advance: Amendment 1 head -> the committed Amendment 2 head, with the
+  // named gate's requirement rewritten. Legal, and reported as a note, not a problem.
+  const base = structuredClone(inventory);
+  base.contract.sha256 = amendment1Digest;
+  base.behavioralGates.find(({ id }) => id === named).requirement =
+    "funder_address when present, otherwise the legacy signer address.";
+  assert.deepEqual(regressionProblems(base, inventory), []);
+
+  // Same ratified advance, but a gate the amendment did not name stays frozen.
+  const unnamed = structuredClone(inventory);
+  const other = unnamed.behavioralGates.find(({ id }) => id !== named);
+  other.requirement = "something else";
+  assert.ok(
+    regressionProblems(base, unnamed).includes(
+      `behavioral gate requirement changed: ${other.id}`
+    )
+  );
+
+  // The named gate without a lineage advance is still frozen: an unchanged contract
+  // pin must never carry a requirement rewrite.
+  const noAdvance = structuredClone(inventory);
+  noAdvance.behavioralGates.find(({ id }) => id === named).requirement = "drifted";
+  assert.ok(
+    regressionProblems(inventory, noAdvance).includes(
+      `behavioral gate requirement changed: ${named}`
+    )
+  );
+});
+
 test("regression leaves non-mission P2/P3 forward differences visibly queued", () => {
   const current = structuredClone(inventory);
   const queued = current.entries.find(
