@@ -19,12 +19,13 @@ import {
   billingAccounts,
   type AgentAccessRequestRow,
 } from "@cogni/db-schema";
-import type {
-  AgentAccessRequestAgent,
-  AgentAccessRequestLifecycleStatus,
-  AgentAccessRequestOwner,
-  PolyAgentAccessRequestCreateInput,
-  PolyAgentAccessRequestDecisionInput,
+import {
+  AGENT_ACCESS_REQUEST_LIST_LIMIT,
+  type AgentAccessRequestAgent,
+  type AgentAccessRequestLifecycleStatus,
+  type AgentAccessRequestOwner,
+  type PolyAgentAccessRequestCreateInput,
+  type PolyAgentAccessRequestDecisionInput,
 } from "@cogni/poly-node-contracts";
 import { and, desc, eq, gt, isNotNull, lte, sql } from "drizzle-orm";
 
@@ -107,8 +108,8 @@ export function accessRequestToAgentContract(
   entry: RequestWithGrant,
   now = new Date()
 ): AgentAccessRequestAgent {
-  const wasApproved = entry.request.approvedGrantId !== null;
-  return {
+  const status = lifecycleStatus(entry.request, entry.grant, now);
+  const common = {
     id: entry.request.id,
     scope: PERFORMANCE_READ_SCOPE,
     expires_at: toIso(entry.request.grantExpiresAt),
@@ -116,11 +117,18 @@ export function accessRequestToAgentContract(
     decided_at: entry.request.decidedAt
       ? toIso(entry.request.decidedAt)
       : null,
-    status: lifecycleStatus(entry.request, entry.grant, now),
-    billing_account_id: wasApproved
-      ? entry.request.billingAccountId
-      : null,
   };
+  if (status === "active") {
+    if (!entry.request.billingAccountId) {
+      throw new Error("Active access request is missing its billing account");
+    }
+    return {
+      ...common,
+      status,
+      billing_account_id: entry.request.billingAccountId,
+    };
+  }
+  return { ...common, status, billing_account_id: null };
 }
 
 export async function setAgentAccessTokenContext(
@@ -228,6 +236,30 @@ export async function pollAgentAccessRequest(
     )
     .limit(1);
   return entry ? accessRequestToAgentContract(entry, now) : null;
+}
+
+export async function listAgentAccessRequests(
+  tx: AgentGrantTransaction,
+  principalId: string,
+  now = new Date()
+): Promise<AgentAccessRequestAgent[]> {
+  const rows = await tx
+    .select({
+      request: agentAccessRequests,
+      grant: {
+        expiresAt: agentCapabilityGrants.expiresAt,
+        revokedAt: agentCapabilityGrants.revokedAt,
+      },
+    })
+    .from(agentAccessRequests)
+    .leftJoin(
+      agentCapabilityGrants,
+      eq(agentAccessRequests.approvedGrantId, agentCapabilityGrants.id)
+    )
+    .where(eq(agentAccessRequests.requesterPrincipalId, principalId))
+    .orderBy(desc(agentAccessRequests.createdAt), desc(agentAccessRequests.id))
+    .limit(AGENT_ACCESS_REQUEST_LIST_LIMIT);
+  return rows.map((entry) => accessRequestToAgentContract(entry, now));
 }
 
 export async function previewAgentAccessRequest(

@@ -23,6 +23,7 @@ import {
 	workItemsPatchOperation,
 } from "@cogni/node-contracts";
 import {
+	polyAgentAccessRequestAgentListOperation,
 	polyAgentAccessRequestCreateOperation,
 	polyAgentAccessRequestPollOperation,
 	polyResearchCopyTradePnlOperation,
@@ -95,6 +96,17 @@ export async function GET(request: Request) {
 			copyTradePnl: `${origin}/api/v1/poly/research/copy-trade-pnl`,
 		},
 		actions: {
+			listOwnAgentAccessRequests: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/agent/access-requests`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(
+					polyAgentAccessRequestAgentListOperation.input,
+				),
+				outputSchema: z.toJSONSchema(
+					polyAgentAccessRequestAgentListOperation.output,
+				),
+			},
 			requestAgentAccess: {
 				method: "POST",
 				endpoint: `${origin}/api/v1/agent/access-requests`,

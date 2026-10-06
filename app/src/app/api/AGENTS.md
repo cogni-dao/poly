@@ -64,7 +64,7 @@ HTTP API endpoints using Next.js App Router. Contract-validated entry points tha
   - `/api/v1/work/items/[id]` [GET, PATCH, DELETE] - read/update/delete a Dolt-backed work item (SIWE or node-agent auth)
   - `/api/v1/work/items/[id]/{claims,heartbeat,coordination}` - Dolt-backed agent coordination state
   - `/api/v1/agent/register` [POST] - unauthenticated machine actor registration (returns Bearer API key)
-  - `/api/v1/agent/access-requests` [POST] - bearer-only self request for owner-approved performance access
+  - `/api/v1/agent/access-requests` [GET, POST] - bearer-only self lifecycle list/request for owner-approved performance access
   - `/api/v1/agent/access-requests/[id]` [GET] - bearer-only self poll of request lifecycle
   - `/api/v1/agent/runs` [GET] - machine-authenticated run list
   - `/api/v1/agent/runs/[runId]/stream` [GET] - machine-authenticated run stream SSE
