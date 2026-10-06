@@ -70,7 +70,7 @@ Categorize each material divergence (use the bundle's `diffs` array, top by |Δ 
 | ------------------------ | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
 | **paper-fidelity bug**   | Twin under-fills due to a sidecar mechanic (Data-API lag, ephemeral SQLite reset, partial-fill drift). | File `task.*` / `bug.*` — fix in sidecar / overlay.                                               |
 | **structural ceiling**   | Queue position not modeled. Irreducible ~2-4% gap.                                                     | Document, do NOT "fix" — it's by design under the OSS-only constraint.                            |
-| **algorithm divergence** | Same algo, different decisions on the same target fill.                                                | Pick one market → run [`/delta-minimizer`](../delta-minimizer/SKILL.md) on it for per-market RCA. |
+| **algorithm divergence** | Same algo, different decisions on the same target fill.                                                | Pick one market → run `/delta-minimizer` on it for per-market RCA. |
 | **state mismatch**       | Live had a pre-T0 position the twin didn't, so follow-up branches diverged.                            | Expected for first 2-4 weeks; converges as pre-T0 markets resolve.                                |
 
 Edit `findings.json` in the timestamped dir — fill `bucket_breakdown`, `primary_class`, `primary_confidence` (0-100), `primary_one_liner`, optional `secondary_*`, `recommended_next_fix`, `authored_at` (ISO).
@@ -94,6 +94,6 @@ If a finding warrants a knowledge entry (e.g., a confirmed paper-fidelity bug cl
 
 ## Sibling skills
 
-- [`/delta-minimizer`](../delta-minimizer/SKILL.md) — once this skill finds a single market with a material algorithm-divergence Δ, that's the per-market root-cause loop.
+- `/delta-minimizer` — once this skill finds a single market with a material algorithm-divergence Δ, that's the per-market root-cause loop.
 - [`/poly-copy-trading`](../poly-copy-trading/SKILL.md) — for changes to the mirror algorithm itself (planner, coordinator, ledger).
 - [`/data-research`](../data-research/SKILL.md) — for new aggregation views over `poly_copy_trade_fills` / `poly_trader_*` tables (SQL-aggregation invariant, scorecard persistence).

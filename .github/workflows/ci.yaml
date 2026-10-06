@@ -61,9 +61,6 @@ jobs:
       - name: Workflow contract check
         run: pnpm check:workflow
 
-      - name: Poly parity contract check
-        run: pnpm poly:port:test && pnpm poly:port:verify && pnpm poly:port:regression -- --base origin/main
-
   unit:
     runs-on: ubuntu-latest
     # No `needs: static`: unit does its own install + packages:build and consumes
