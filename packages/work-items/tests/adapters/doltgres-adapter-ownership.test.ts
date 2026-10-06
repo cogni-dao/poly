@@ -49,6 +49,22 @@ function adapterWithQueries() {
   return { adapter: new DoltgresWorkItemAdapter(sql), queries };
 }
 
+function adapterWithCoarseCommitDate() {
+  const queries: string[] = [];
+  const sql = makeFakeDoltgresSql((query) => {
+    if (query.startsWith("UPDATE work_items")) {
+      return [{ ...row, claim_active: true }];
+    }
+    if (query.includes("FROM work_items")) return [row];
+    return [];
+  }, queries, {
+    commitDate: "2026-10-02T00:01:00.000Z",
+    claimClaimedAt: "2026-10-02T00:01:00.900Z",
+    claimExpiresAt: "2026-10-02T00:06:00.000Z",
+  });
+  return { adapter: new DoltgresWorkItemAdapter(sql), queries };
+}
+
 describe("DoltgresWorkItemAdapter ownership and leases", () => {
   it("stamps the immutable session principal on create", async () => {
     const { adapter, queries } = adapterWithQueries();
@@ -102,6 +118,19 @@ describe("DoltgresWorkItemAdapter ownership and leases", () => {
     expect(heartbeat).toContain(
       "claim_owner_principal_id = 'principal-1' AND claimed_by_run = 'run-1'"
     );
+  });
+
+  it("accepts a claim in the same second as a coarse Dolt commit date", async () => {
+    const { adapter } = adapterWithCoarseCommitDate();
+
+    await expect(
+      adapter.claim({
+        id: toWorkItemId(row.id),
+        runId: "run-1",
+        command: "implement",
+        principalId: "principal-1",
+      })
+    ).resolves.toMatchObject({ claimedByRun: "run-1" });
   });
 
   it("rejects a stale heartbeat before creating an operation branch", async () => {

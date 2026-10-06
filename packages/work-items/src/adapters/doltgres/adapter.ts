@@ -678,7 +678,11 @@ function validateTransitionMatrix(
         (proof.runId === undefined || after.claimed_by_run === proof.runId) &&
         afterClaimedAt !== undefined &&
         afterExpiry !== undefined &&
-        afterClaimedAt <= commitAt &&
+        // Doltgres may report commit metadata at whole-second precision while
+        // NOW()-backed row timestamps retain fractional precision. Compare the
+        // lower bound at the coarser authority precision so a legitimate claim
+        // in the same second is not preserved as unsafe.
+        Math.floor(afterClaimedAt / 1_000) <= Math.floor(commitAt / 1_000) &&
         commitAt < afterExpiry &&
         afterExpiry > afterClaimedAt &&
         (proof.command === undefined || after.last_command === proof.command) &&

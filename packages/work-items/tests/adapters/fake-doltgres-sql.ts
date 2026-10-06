@@ -5,9 +5,16 @@ import type { ReservedSql, Sql } from "postgres";
 
 type Rows = ReadonlyArray<Record<string, unknown>>;
 
+interface FakeDoltgresSqlOptions {
+  readonly commitDate?: string;
+  readonly claimClaimedAt?: string;
+  readonly claimExpiresAt?: string;
+}
+
 export function makeFakeDoltgresSql(
   respond: (query: string) => Rows | Promise<Rows>,
-  queries: string[]
+  queries: string[],
+  options: FakeDoltgresSqlOptions = {}
 ): Sql {
   let mainHash = "test-main";
   let branch: string | undefined;
@@ -80,7 +87,7 @@ export function makeFakeDoltgresSql(
       branchCommit = `test-commit-${operation}`;
       commitMessage =
         unquote(/SELECT dolt_commit\('-m', '(.*)'\)/.exec(query)?.[1]) ?? "";
-      commitDate = nextCommitDate(afterRow ?? beforeRow);
+      commitDate = options.commitDate ?? nextCommitDate(afterRow ?? beforeRow);
       if (afterRow && !afterRow.created_by_principal_id) {
         afterRow.created_by_principal_id = actorFromCommit();
       }
@@ -193,12 +200,16 @@ export function makeFakeDoltgresSql(
           afterRow.claim_owner_principal_id = unquote(
             /claim_owner_principal_id = '([^']*)'/.exec(query)?.[1]
           );
-          afterRow.claimed_at = new Date(
-            Date.parse(String(afterRow.updated_at)) - 1_000
-          ).toISOString();
-          afterRow.claim_expires_at = new Date(
-            Date.parse(String(afterRow.updated_at)) + 300_000
-          ).toISOString();
+          afterRow.claimed_at =
+            options.claimClaimedAt ??
+            new Date(
+              Date.parse(String(afterRow.updated_at)) - 1_000
+            ).toISOString();
+          afterRow.claim_expires_at =
+            options.claimExpiresAt ??
+            new Date(
+              Date.parse(String(afterRow.updated_at)) + 300_000
+            ).toISOString();
           afterRow.last_command = unquote(
             /last_command = '([^']*)'/.exec(query)?.[1]
           );

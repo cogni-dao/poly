@@ -19,24 +19,24 @@
       "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
       "target": {
         "path": "packages/work-items/src/adapters/doltgres/adapter.ts",
-        "blob": "05ffc158eef02995f3cff3dc11a7245fa3aa821a",
+        "blob": "47a92cad594cd84e6e438a62ea8a8440430b1ca5",
         "mode": "100644",
-        "digest": "78fa91a2ea7d48584c70f8e793f50037f8c7b1ec3582fa95afe9c77b504c7d73"
+        "digest": "f2fe504687c4de119cbad4e7e0e600f413229f117e01bf2ba1a9937808f1c454"
       },
       "gateTargets": [
         {
           "id": "hub.work_item_create",
-          "targetDigest": "43c847863a54372de0633f6091ef75db6f9c6fe0e795f824b5557fe75266eddd",
+          "targetDigest": "b6928424579c8a5bcca0a0669f8f4224e916b8aa7bc8433735db0abace5b7d2e",
           "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
         },
         {
           "id": "hub.work_item_mutation",
-          "targetDigest": "43c847863a54372de0633f6091ef75db6f9c6fe0e795f824b5557fe75266eddd",
+          "targetDigest": "b6928424579c8a5bcca0a0669f8f4224e916b8aa7bc8433735db0abace5b7d2e",
           "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
         },
         {
           "id": "hub.work_item_source_of_truth",
-          "targetDigest": "43c847863a54372de0633f6091ef75db6f9c6fe0e795f824b5557fe75266eddd",
+          "targetDigest": "b6928424579c8a5bcca0a0669f8f4224e916b8aa7bc8433735db0abace5b7d2e",
           "historicalProofsDigest": "ba16b078801ea2dab9bb9660ea5a53e476699f8e3e58f51f2ae25ce776757730"
         }
       ],
@@ -48,8 +48,8 @@
       ]
     }
   ],
-  "policySha256": "4db3671cb0c10a04d83804c6247e3547a1ed2607e9bb7080e1f30fac0abe4bc6",
-  "targetTreeDigest": "0f36a6f41f0af7b0ef77ed232a0250b32e653495c42ae85a9a70d31c78a8b79e",
+  "policySha256": "a3794a9aa90be191acf575468d862ecb3e1f6d46313f9a0106dfa24b159d3e7e",
+  "targetTreeDigest": "4d95234f976a9e7ab6e8d0befeb94039e8087445df84a4141edc04d3dc4d7f42",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
@@ -405,7 +405,7 @@
           ]
         }
       ],
-      "currentTargetDigest": "43c847863a54372de0633f6091ef75db6f9c6fe0e795f824b5557fe75266eddd",
+      "currentTargetDigest": "b6928424579c8a5bcca0a0669f8f4224e916b8aa7bc8433735db0abace5b7d2e",
       "status": "unresolved",
       "unresolvedReason": "proof_refresh_pending"
     },
@@ -464,7 +464,7 @@
           ]
         }
       ],
-      "currentTargetDigest": "43c847863a54372de0633f6091ef75db6f9c6fe0e795f824b5557fe75266eddd",
+      "currentTargetDigest": "b6928424579c8a5bcca0a0669f8f4224e916b8aa7bc8433735db0abace5b7d2e",
       "status": "unresolved",
       "unresolvedReason": "proof_refresh_pending"
     },
@@ -523,7 +523,7 @@
           ]
         }
       ],
-      "currentTargetDigest": "43c847863a54372de0633f6091ef75db6f9c6fe0e795f824b5557fe75266eddd",
+      "currentTargetDigest": "b6928424579c8a5bcca0a0669f8f4224e916b8aa7bc8433735db0abace5b7d2e",
       "status": "unresolved",
       "unresolvedReason": "proof_refresh_pending"
     }
@@ -1676,7 +1676,7 @@
       "sourceBlob": "740a4e68a2f6c899c1e69fd244998cdbf2a76def",
       "sourcePath": "app/src/adapters/server/db/doltgres/work-items-adapter.ts",
       "targetPath": "packages/work-items/src/adapters/doltgres/adapter.ts",
-      "targetBlob": "05ffc158eef02995f3cff3dc11a7245fa3aa821a",
+      "targetBlob": "47a92cad594cd84e6e438a62ea8a8440430b1ca5",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
