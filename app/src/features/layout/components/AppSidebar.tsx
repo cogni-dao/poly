@@ -5,16 +5,15 @@
  * Module: `@features/layout/components/AppSidebar`
  * Purpose: Cogni-specific sidebar composition with nav items, collapsible chat threads, and external links.
  * Scope: Composes vendor Sidebar primitives into the app sidebar. Does not handle authentication or data fetching.
- * Invariants: Admin nav item is shown only when the session wallet is a repo-spec approver (`session.user.isApprover`); the `(admin)/` layout still enforces server-side. Chat threads always visible as collapsible menu item.
+ * Invariants: The brand mark comes from repo-spec `intent.brand` via the server layout — same source as `AppHeader`, so both shells draw one identity and forks never hand-edit this JSX. Admin nav item is shown only when the session wallet is a repo-spec approver (`session.user.isApprover`); the `(admin)/` layout still enforces server-side. Chat threads always visible as collapsible menu item.
  * Side-effects: reads NextAuth session (`useSession`)
- * Links: src/components/vendor/shadcn/sidebar.tsx, src/features/ai/chat/components/ChatThreadsSidebarGroup.tsx
+ * Links: src/features/layout/components/AppHeader.tsx, src/shared/brand/brandIcons.tsx, src/components/vendor/shadcn/sidebar.tsx
  * @public
  */
 
 "use client";
 
 import { BookOpen, Shield } from "lucide-react";
-import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
@@ -34,6 +33,8 @@ import {
 } from "@/components";
 import { ChatThreadsSidebarGroup } from "@/features/ai/chat/components/ChatThreadsSidebarGroup";
 import { nodeConfig } from "@/node-config";
+import { resolveBrandIcon } from "@/shared/brand/brandIcons";
+import type { BrandMark } from "@/shared/config/repoSpec.server";
 
 const KNOWLEDGE_NAV_ITEM = {
   href: "/knowledge",
@@ -47,8 +48,15 @@ const ADMIN_NAV_ITEM = {
   icon: Shield,
 } as const;
 
-export function AppSidebar(): ReactElement {
+export function AppSidebar({
+  brandMark,
+}: {
+  brandMark: BrandMark;
+}): ReactElement {
   const pathname = usePathname();
+  // Same brand source as AppHeader: repo-spec {icon,color,slug}, resolved here from
+  // the serializable prop the server layout passes in. Icon name -> component.
+  const BrandIcon = resolveBrandIcon(brandMark.icon);
   const { data: session } = useSession();
   const isApprover = session?.user?.isApprover ?? false;
   const configuredNavItems = nodeConfig.navItems.filter(
@@ -70,22 +78,19 @@ export function AppSidebar(): ReactElement {
       <SidebarHeader className="h-16 shrink-0 justify-center">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton
-              size="lg"
-              asChild
-              tooltip={nodeConfig.name}
-            >
+            <SidebarMenuButton size="lg" asChild tooltip={`cogni/${brandMark.slug}`}>
               <Link href={nodeConfig.logo.href}>
                 <div className="flex aspect-square size-8 items-center justify-center">
-                  <Image
-                    src={nodeConfig.logo.src}
-                    alt={nodeConfig.logo.alt}
-                    width={24}
-                    height={24}
+                  <BrandIcon
+                    className="size-5 shrink-0"
+                    color={brandMark.color ?? undefined}
+                    strokeWidth={2}
+                    aria-hidden="true"
                   />
                 </div>
-                <span className="truncate font-bold text-gradient-accent">
-                  {nodeConfig.name}
+                <span className="truncate font-bold">
+                  cogni
+                  <span className="text-gradient-accent">/{brandMark.slug}</span>
                 </span>
               </Link>
             </SidebarMenuButton>
