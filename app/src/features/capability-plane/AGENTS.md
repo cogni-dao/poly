@@ -24,6 +24,13 @@ the principal it carries.
   decisive for `accountFrom: "principal"` operations (no account id on the wire)
   and for `poly_trader_*`, which has no RLS at all. Returning `null` means "no
   such saved fact" and is rendered as a non-disclosing not-found, never zeroes.
+- **SUBJECT_IS_NOT_CALLER** — for `accountFrom: "principal"`, the subject is the
+  single account the principal can *reach* for the scope (granted ∪ owned), not
+  the account it owns. Every agent from `/agent/register` owns one, so resolving
+  by ownership hands a delegate its own empty tenant and authorizes it as
+  `owner`. Reachable by several → `invalid_input` asking the caller to name one;
+  never a guess. An explicit `billing_account_id` on the wire always wins, which
+  is why agent-facing transports declare `accountFrom: "input"`.
 - `AccountReadOutcome<O>`, `AccountReadStatus`, `ACCOUNT_READ_HTTP_STATUS`,
   `ACCOUNT_READ_ERROR_CODES` — the outcome union and its renderings.
 - `ACCOUNT_READ_TERMINAL_EVENTS` + the per-capability handlers and `extra`

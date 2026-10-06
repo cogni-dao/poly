@@ -58,7 +58,7 @@ import {
   type AccountReadAccess,
   type AgentGrantTransaction,
   authorize,
-  resolvePrincipalAccountId,
+  resolveSubjectAccountId,
 } from "@/features/agent-grants/authorization";
 import {
   EVENT_NAMES,
@@ -197,7 +197,8 @@ export async function executeAccountRead<
     access: AccountReadAccess | null;
     input: TInput | null;
     data: TOutput | null;
-  } = { access: null, input: null, data: null };
+    ambiguousAccounts: readonly string[] | null;
+  } = { access: null, input: null, data: null, ambiguousAccounts: null };
 
   // A transport's count builder must never be able to suppress the one terminal
   // event: if `extra` throws, the event still goes out, minus the extras.
@@ -261,10 +262,24 @@ export async function executeAccountRead<
           );
         }
 
-        const accountId =
-          args.operation.accountFrom === "principal"
-            ? await resolvePrincipalAccountId(tx, args.principalId)
-            : accountIdFromInput(input);
+        // An explicit subject on the wire always wins. Only when none is
+        // present does a `principal` descriptor resolve one, and per
+        // SUBJECT_IS_NOT_CALLER that means "the single account this principal
+        // can reach for this scope" — never "the account it owns", which would
+        // hand a delegated agent its own empty tenant.
+        let accountId = accountIdFromInput(input);
+        if (!accountId && args.operation.accountFrom === "principal") {
+          const subject = await resolveSubjectAccountId(tx, {
+            principalId: args.principalId,
+            requiredScope: args.operation.requiredScope,
+          });
+          if (subject.kind === "resolved") {
+            accountId = subject.accountId;
+          } else if (subject.kind === "ambiguous") {
+            // Reachable by more than one account: the caller must name it.
+            state.ambiguousAccounts = subject.accountIds;
+          }
+        }
 
         // 4. The single authorization decision, then its audit event. Emitted
         //    for allows and denials alike so every decision reaches Loki.
@@ -319,6 +334,16 @@ export async function executeAccountRead<
     }
     emit("failed");
     return { status: "failed" };
+  }
+
+  if (state.ambiguousAccounts) {
+    // Not a denial: the principal is authorized for several accounts and did
+    // not say which. Disclosing only the count keeps this non-enumerating.
+    emit("invalid_input");
+    return {
+      status: "invalid_input",
+      message: `This principal can read ${state.ambiguousAccounts.length} accounts; specify billing_account_id.`,
+    };
   }
 
   const access = state.access;

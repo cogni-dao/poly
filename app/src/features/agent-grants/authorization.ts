@@ -122,11 +122,73 @@ export async function authorize(
 }
 
 /**
- * The billing account the principal owns, for operations whose descriptor
- * declares `accountFrom: "principal"` (no account id on the wire).
+ * The account a `accountFrom: "principal"` operation is ABOUT, when no account
+ * id appears on the wire.
  *
- * Returns null when the principal owns no account, which the executor renders
- * as the same non-disclosing denial.
+ * SUBJECT_IS_NOT_CALLER: "the principal's account" is NOT "the account the
+ * principal owns". Every agent minted by POST /api/v1/agent/register owns a
+ * billing account of its own, so resolving by ownership would hand a delegated
+ * agent its OWN (empty) account, authorize it as `owner`, and return a 200 full
+ * of zeroes — never the account the human actually granted, and never a denial.
+ * That is precisely the fabricated-balance failure this plane exists to remove.
+ *
+ * Semantics: collect every account this principal can reach for this scope —
+ * those behind a live, unrevoked, unexpired grant, plus the one it owns.
+ *   - exactly one  -> `resolved`. The human-owner case (no grants), and an
+ *     agent with a single grant and no account of its own.
+ *   - more than one -> `ambiguous`. NEVER guess which account was meant. A
+ *     delegated agent typically has two (its own, plus the granted one), so
+ *     guessing is how a caller silently reads the wrong tenant. The caller must
+ *     name the account explicitly; agent transports therefore declare
+ *     `accountFrom: "input"` and agents learn the id from their own approved
+ *     access-request record.
+ *   - none -> `none`, which the executor renders as the same non-disclosing
+ *     denial as any other failure.
+ *
+ * Fail loudly over conveniently: an `ambiguous` 400 telling the caller to name
+ * the account is strictly better than a 200 describing an account it did not
+ * ask about.
+ */
+export type SubjectAccountResolution =
+  | { kind: "resolved"; accountId: string }
+  | { kind: "ambiguous"; accountIds: readonly string[] }
+  | { kind: "none" };
+
+export async function resolveSubjectAccountId(
+  tx: AgentGrantTransaction,
+  input: { principalId: string; requiredScope: AgentCapabilityScope }
+): Promise<SubjectAccountResolution> {
+  const granted = await tx
+    .select({ id: agentCapabilityGrants.billingAccountId })
+    .from(agentCapabilityGrants)
+    .where(
+      and(
+        eq(agentCapabilityGrants.granteePrincipalId, input.principalId),
+        isNull(agentCapabilityGrants.revokedAt),
+        gt(agentCapabilityGrants.expiresAt, sql`now()`),
+        arrayOverlaps(agentCapabilityGrants.scopes, [
+          ...aliasesFor(input.requiredScope),
+        ])
+      )
+    );
+
+  const owned = await resolvePrincipalAccountId(tx, input.principalId);
+  const candidates = [
+    ...new Set([...granted.map((row) => row.id), ...(owned ? [owned] : [])]),
+  ];
+
+  if (candidates.length === 1) {
+    return { kind: "resolved", accountId: candidates[0] as string };
+  }
+  if (candidates.length > 1) {
+    return { kind: "ambiguous", accountIds: candidates };
+  }
+  return { kind: "none" };
+}
+
+/**
+ * The billing account the principal OWNS. Prefer `resolveSubjectAccountId` for
+ * capability dispatch — see SUBJECT_IS_NOT_CALLER above.
  */
 export async function resolvePrincipalAccountId(
   tx: AgentGrantTransaction,

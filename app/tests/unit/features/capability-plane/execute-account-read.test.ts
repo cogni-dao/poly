@@ -18,14 +18,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-const { authorize, calls, logEvent, resolvePrincipalAccountId, tx } =
+const { authorize, calls, logEvent, resolveSubjectAccountId, tx } =
   vi.hoisted(() => {
     const calls: string[] = [];
     return {
       authorize: vi.fn(),
       calls,
       logEvent: vi.fn(),
-      resolvePrincipalAccountId: vi.fn(),
+      resolveSubjectAccountId: vi.fn(),
       tx: {
         execute: vi.fn(async (query: { statement?: string }) => {
           calls.push(`execute:${query?.statement ?? "unknown"}`);
@@ -59,9 +59,9 @@ vi.mock("@/features/agent-grants/authorization", () => ({
     calls.push("authorize");
     return authorize(...args);
   },
-  resolvePrincipalAccountId: (...args: unknown[]) => {
-    calls.push("resolvePrincipalAccountId");
-    return resolvePrincipalAccountId(...args);
+  resolveSubjectAccountId: (...args: unknown[]) => {
+    calls.push("resolveSubjectAccountId");
+    return resolveSubjectAccountId(...args);
   },
 }));
 
@@ -141,7 +141,7 @@ function reset(access: unknown): void {
   vi.clearAllMocks();
   calls.length = 0;
   authorize.mockReset();
-  resolvePrincipalAccountId.mockReset();
+  resolveSubjectAccountId.mockReset();
   authorize.mockResolvedValue(access);
 }
 
@@ -232,7 +232,7 @@ describe("executeAccountRead dispatch order", () => {
   // two accounts would merge into one response.
   it("passes the principal-resolved account to the handler, not just to authorize", async () => {
     const handler = vi.fn(async () => ({ rows: ["a"] }));
-    resolvePrincipalAccountId.mockResolvedValue(ACCOUNT);
+    resolveSubjectAccountId.mockResolvedValue({ kind: "resolved", accountId: ACCOUNT });
     reset(DELEGATE);
 
     await run({
@@ -244,11 +244,14 @@ describe("executeAccountRead dispatch order", () => {
   });
 
   it("resolves the account from the principal when the descriptor says so", async () => {
-    resolvePrincipalAccountId.mockResolvedValue(ACCOUNT);
+    resolveSubjectAccountId.mockResolvedValue({ kind: "resolved", accountId: ACCOUNT });
 
     await run({ operation: { ...operation, accountFrom: "principal" } });
 
-    expect(resolvePrincipalAccountId).toHaveBeenCalledWith(tx, PRINCIPAL);
+    expect(resolveSubjectAccountId).toHaveBeenCalledWith(tx, {
+      principalId: PRINCIPAL,
+      requiredScope: "account:read",
+    });
     expect(authorize).toHaveBeenCalledWith(tx, {
       principalId: PRINCIPAL,
       accountId: ACCOUNT,
@@ -257,7 +260,7 @@ describe("executeAccountRead dispatch order", () => {
   });
 
   it("denies without authorizing when the principal owns no account", async () => {
-    resolvePrincipalAccountId.mockResolvedValue(null);
+    resolveSubjectAccountId.mockResolvedValue({ kind: "none" });
 
     const result = await run({
       operation: { ...operation, accountFrom: "principal" },
@@ -268,6 +271,44 @@ describe("executeAccountRead dispatch order", () => {
     expect(accessDecisions()).toEqual([
       expect.objectContaining({ outcome: "deny" }),
     ]);
+  });
+
+  // SUBJECT_IS_NOT_CALLER. A delegated agent usually has TWO reachable
+  // accounts — the one /agent/register minted for it, plus the granted one.
+  // Guessing is how a caller silently reads the wrong tenant, so this must be
+  // a loud invalid_input, never a 200 and never a bare denial.
+  it("asks the caller to name the account when the principal can reach several", async () => {
+    const handler = vi.fn(async () => ({ rows: ["a"] }));
+    resolveSubjectAccountId.mockResolvedValue({
+      kind: "ambiguous",
+      accountIds: [ACCOUNT, "40000000-0000-4000-b000-000000000002"],
+    });
+
+    const result = await run({
+      handler,
+      operation: { ...operation, accountFrom: "principal" },
+      rawInput: {},
+    });
+
+    expect(result.status).toBe("invalid_input");
+    expect(authorize).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+    // Non-enumerating: the count may leak, the ids may not.
+    expect(JSON.stringify(result)).not.toContain(ACCOUNT);
+  });
+
+  it("prefers an explicit account on the wire over principal resolution", async () => {
+    await run({
+      operation: { ...operation, accountFrom: "principal" },
+      rawInput: { billing_account_id: ACCOUNT },
+    });
+
+    expect(resolveSubjectAccountId).not.toHaveBeenCalled();
+    expect(authorize).toHaveBeenCalledWith(tx, {
+      principalId: PRINCIPAL,
+      accountId: ACCOUNT,
+      requiredScope: "account:read",
+    });
   });
 });
 
