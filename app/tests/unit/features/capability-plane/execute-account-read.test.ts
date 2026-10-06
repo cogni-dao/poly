@@ -214,15 +214,33 @@ describe("executeAccountRead dispatch order", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
-  it("gives the handler only validated input and the authorized transaction", async () => {
+  it("gives the handler validated input, the authorized transaction, and the authorized account", async () => {
     const handler = vi.fn(async () => ({ rows: ["a"] }));
 
     await run({ handler, rawInput: { billing_account_id: ACCOUNT, limit: "5" } });
 
-    expect(handler).toHaveBeenCalledWith(tx, {
-      billing_account_id: ACCOUNT,
-      limit: 5,
+    expect(handler).toHaveBeenCalledWith(
+      tx,
+      { billing_account_id: ACCOUNT, limit: 5 },
+      ACCOUNT
+    );
+  });
+
+  // ACCOUNT_IS_EXPLICIT. Without this the handler of an `accountFrom:
+  // "principal"` operation has no tenant selector and must fall back to RLS —
+  // which for a delegate spans its own account AND every granted account, so
+  // two accounts would merge into one response.
+  it("passes the principal-resolved account to the handler, not just to authorize", async () => {
+    const handler = vi.fn(async () => ({ rows: ["a"] }));
+    resolvePrincipalAccountId.mockResolvedValue(ACCOUNT);
+    reset(DELEGATE);
+
+    await run({
+      handler,
+      operation: { ...operation, accountFrom: "principal" },
     });
+
+    expect(handler).toHaveBeenCalledWith(tx, expect.anything(), ACCOUNT);
   });
 
   it("resolves the account from the principal when the descriptor says so", async () => {

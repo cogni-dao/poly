@@ -15,8 +15,15 @@ the principal it carries.
 - `executeAccountRead(args)` — the executor. Validates input, opens an app-role
   tenant transaction, applies read-only isolation, authorizes, consults any
   cache, runs the handler, validates output, emits exactly one terminal event.
-- `AccountReadHandler<I, O>` — `(tx, input) => Promise<O | null>`. Receives only
-  validated input and the already-authorized transaction.
+- `AccountReadHandler<I, O>` — `(tx, input, accountId) => Promise<O | null>`.
+  Receives validated input, the already-authorized app-role transaction, and the
+  account id `authorize()` allowed. **ACCOUNT_IS_EXPLICIT: filter every query by
+  that `accountId`.** RLS is a backstop, not a tenant selector — a delegated
+  principal sees both the account it owns and every account it holds a grant on,
+  so an unfiltered handler merges two accounts into one response. This is
+  decisive for `accountFrom: "principal"` operations (no account id on the wire)
+  and for `poly_trader_*`, which has no RLS at all. Returning `null` means "no
+  such saved fact" and is rendered as a non-disclosing not-found, never zeroes.
 - `AccountReadOutcome<O>`, `AccountReadStatus`, `ACCOUNT_READ_HTTP_STATUS`,
   `ACCOUNT_READ_ERROR_CODES` — the outcome union and its renderings.
 - `ACCOUNT_READ_TERMINAL_EVENTS` + the per-capability handlers and `extra`
