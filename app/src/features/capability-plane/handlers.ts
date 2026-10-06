@@ -68,6 +68,12 @@ export const ACCOUNT_READ_TERMINAL_EVENTS: Record<
   "poly.account.recent-attempts.v1":
     EVENT_NAMES.POLY_ACCOUNT_RECENT_ATTEMPTS_COMPLETE,
   "poly.copy-trade.orders.v1": EVENT_NAMES.POLY_COPY_TRADE_ORDERS_COMPLETE,
+  // task.1791070962 — the portfolio snapshot. Both of its transports (the
+  // owner dashboard and the delegated agent route) share this one event, so
+  // `operationId` identifies the capability and parity assertions compare one
+  // stream rather than two (CAPABILITY_DEFINED_ONCE).
+  "poly.account.portfolio-snapshot.v1":
+    EVENT_NAMES.POLY_WALLET_DASHBOARD_COMPLETE,
 };
 
 /**
