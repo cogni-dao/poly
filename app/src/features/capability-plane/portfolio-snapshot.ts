@@ -157,16 +157,11 @@ export function portfolioSnapshotAccountReadHandler(
  * browser never learns its own (inventory row 1.1, and there is no `whoami`
  * yet) — so the capability is inherently `accountFrom: "principal"`.
  *
- * When the seam forwards the authorized `accountId`, that is used verbatim.
- * Until then the handler re-derives it by calling the SAME
- * `resolvePrincipalAccountId` the executor called, on the same transaction,
- * with the same principal — read back from the tenant GUC that
- * `withTenantScope` set as the transaction's first statement. Using the
- * identical function against the identical inputs is the whole point: a
- * second, differently-written lookup could select a different row for a
- * principal owning more than one account, and the snapshot would then describe
- * an account that was never authorized. Either way the account is passed
- * explicitly into every query, and a null collapses to a non-disclosing 404.
+ * When the seam forwards the authorized `accountId`, that is used verbatim and
+ * is the ONLY source. The `ownerAccountId` fallback below exists solely because
+ * the current seam calls `handler(tx, input)`; it is KNOWN INSUFFICIENT and is
+ * deleted the moment the seam forwards the account (PR #144). See that
+ * function for exactly why.
  */
 export function portfolioSnapshotOwnerAccountReadHandler(
   binding: PortfolioSnapshotBinding
@@ -178,7 +173,39 @@ export function portfolioSnapshotOwnerAccountReadHandler(
   };
 }
 
-/** The account owned by the principal this tenant scope was opened for. */
+/**
+ * Mirror of the dispatch-time account resolution, for as long as the seam does
+ * not forward it. DO NOT build on this.
+ *
+ * It calls the SAME `resolvePrincipalAccountId` the executor called, on the
+ * same transaction, with the principal read back from the tenant GUC — so the
+ * handler cannot select a different row than the one `authorize()` ruled on.
+ * That makes it *consistent* with dispatch. It does NOT make it *correct*,
+ * because dispatch itself is not:
+ *
+ *   `resolvePrincipalAccountId` answers "which account does this principal
+ *   OWN", and `POST /api/v1/agent/register` — which is `auth: { mode: "none" }`,
+ *   i.e. unauthenticated — mints a fresh user and calls
+ *   `getOrCreateBillingAccountForUser` for it. So EVERY agent principal owns an
+ *   account. An agent bearer reaching this `accountFrom: "principal"` transport
+ *   (and it can: `app/_lib/auth/session.ts` re-exports `resolveRequestIdentity`,
+ *   so the route accepts bearers) therefore resolves its OWN empty account,
+ *   passes `authorize()` as `accessKind: "owner"`, and receives a 200.
+ *
+ * The blast radius is bounded but the shape is wrong: the response is the
+ * `emptyDashboard(...)` degradation — typed nulls plus a `no_trading_wallet`
+ * warning, never zeroes, and never another tenant's rows — so it does not leak
+ * and does not fabricate. But a well-formed empty answer where a denial belongs
+ * is the "misleadingly present" delegation path story.5004 exists to remove.
+ *
+ * This cannot be fixed from inside the handler: the account is chosen by the
+ * executor before the handler runs, and a transport must not branch on which
+ * channel a principal arrived over (PRINCIPAL_CARRIES_PRIVILEGE). The fix is
+ * PR #144's `resolveSubjectAccountId`, which resolves by REACHABILITY for the
+ * required scope (live grants union owned): exactly one resolves, several are
+ * `invalid_input`, none is denied. When it lands, `accountId` becomes a
+ * required parameter and this function goes away.
+ */
 async function ownerAccountId(
   tx: AgentGrantTransaction
 ): Promise<string | null> {
