@@ -12,6 +12,10 @@
  * Scope: Pure client component. No fetch.
  *   Bounded by caller-supplied array length (≤ a few hundred), no V8 risk.
  * Invariants:
+ *   - COVERAGE_IS_EXPLICIT: backend full-population eligible/comparable/dropped
+ *     counts remain visible even when the chart is a bounded sample.
+ *   - INCOMPLETE_FAILS_CLOSED: unavailable or ambiguous comparisons never
+ *     render a trustworthy-looking histogram.
  *   - ABSOLUTE_VALUE: caller passes `Math.abs` values; component does not
  *     re-abs. Sign asymmetry is the caller's concern.
  *   - BIN_BOUNDARIES_FIXED: 0, 1, 5, 10, 25, 50, 100, ∞ (% units). Driven
@@ -23,6 +27,10 @@
 
 "use client";
 
+import type {
+  WalletDashboardComparisonCoverageLeaf,
+  WalletDashboardComparisonCoverageReason,
+} from "@cogni/poly-node-contracts";
 import type { ReactElement } from "react";
 import { useMemo } from "react";
 import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from "recharts";
@@ -77,6 +85,25 @@ const STATS_ROW_CLASS =
   "flex flex-wrap gap-x-3 font-mono text-muted-foreground text-xs tabular-nums";
 const STAT_VALUE_CLASS = "text-foreground";
 const CHART_WRAPPER_CLASS = "aspect-auto h-24 w-full";
+const COVERAGE_ROW_CLASS =
+  "flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground text-xs";
+const COVERAGE_VALUE_CLASS = "font-mono text-foreground tabular-nums";
+const WARNING_CLASS =
+  "rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-amber-700 text-xs dark:text-amber-300";
+const UNAVAILABLE_CLASS =
+  "rounded border border-border bg-muted/40 px-2 py-2 text-muted-foreground text-xs";
+
+const REASON_COPY: Readonly<
+  Record<WalletDashboardComparisonCoverageReason, string>
+> = {
+  comparison_missing:
+    "Some eligible rows are missing a comparable target-versus-us delta.",
+  preview_truncated: "The chart uses a bounded preview.",
+  source_unavailable: "The comparison source is unavailable.",
+  source_incomplete: "The comparison source is stale or incomplete.",
+  identity_ambiguous:
+    "Duplicate wallet or market identities made this comparison ambiguous.",
+};
 
 export function binIndex(absDeltaPct: number): number {
   for (let i = 0; i < BINS.length; i += 1) {
@@ -101,24 +128,134 @@ export type DeltaDistributionProps = {
   absDeltaPcts: readonly number[];
   /** Right-side caption — e.g. "live · n=24" or "open positions · n=12". */
   subtitle: string;
+  /** Backend-owned, full-population comparison coverage. */
+  coverage?: WalletDashboardComparisonCoverageLeaf | undefined;
+  /** Human-readable plural, e.g. "markets" or "positions". */
+  entityLabel: string;
+  /** Client-side integrity failures that must fail the chart closed. */
+  integrityReasons?: readonly WalletDashboardComparisonCoverageReason[];
 };
+
+type CoverageState =
+  | {
+      kind: "unavailable";
+      counts: null | {
+        eligible: number;
+        comparable: number;
+        dropped: number;
+        sampled: number;
+      };
+      reasons: readonly WalletDashboardComparisonCoverageReason[];
+    }
+  | {
+      kind: "empty" | "complete" | "partial";
+      counts: {
+        eligible: number;
+        comparable: number;
+        dropped: number;
+        sampled: number;
+      };
+      reasons: readonly WalletDashboardComparisonCoverageReason[];
+    };
+
+export function resolveDeltaCoverageState({
+  absDeltaPcts,
+  coverage,
+  integrityReasons = [],
+}: Pick<
+  DeltaDistributionProps,
+  "absDeltaPcts" | "coverage" | "integrityReasons"
+>): CoverageState {
+  if (!coverage) {
+    return {
+      kind: "unavailable",
+      counts: null,
+      reasons: ["source_unavailable"],
+    };
+  }
+
+  const reasons = [...new Set([...coverage.reasons, ...integrityReasons])];
+  const rawCounts = [
+    coverage.eligible,
+    coverage.comparable,
+    coverage.dropped,
+    coverage.sampled,
+  ];
+  const allNull = rawCounts.every((value) => value === null);
+  const allNumbers = rawCounts.every(
+    (value) => typeof value === "number" && Number.isSafeInteger(value)
+  );
+
+  if (allNull) return { kind: "unavailable", counts: null, reasons };
+  if (!allNumbers) return { kind: "unavailable", counts: null, reasons };
+
+  const eligible = coverage.eligible as number;
+  const comparable = coverage.comparable as number;
+  const dropped = coverage.dropped as number;
+  const sampled = coverage.sampled as number;
+  const counts = { eligible, comparable, dropped, sampled };
+  const malformed =
+    rawCounts.some((value) => (value as number) < 0) ||
+    eligible !== comparable + dropped ||
+    sampled > comparable ||
+    sampled !== absDeltaPcts.length ||
+    absDeltaPcts.some((value) => !Number.isFinite(value));
+  const identityAmbiguous = reasons.includes("identity_ambiguous");
+  const sourceUnavailable = reasons.includes("source_unavailable");
+
+  if (malformed || identityAmbiguous || sourceUnavailable) {
+    return { kind: "unavailable", counts, reasons };
+  }
+  if (eligible === 0 && coverage.complete && reasons.length === 0) {
+    return { kind: "empty", counts, reasons };
+  }
+
+  const fullyComparable =
+    coverage.complete &&
+    dropped === 0 &&
+    sampled === comparable &&
+    reasons.length === 0;
+  return {
+    kind: fullyComparable ? "complete" : "partial",
+    counts,
+    reasons,
+  };
+}
 
 export function DeltaDistribution({
   absDeltaPcts,
   subtitle,
+  coverage,
+  entityLabel,
+  integrityReasons,
 }: DeltaDistributionProps): ReactElement | null {
-  const { bars, stats, comparable } = useMemo(() => {
+  const mergedReasons = [
+    ...(coverage?.reasons ?? []),
+    ...(integrityReasons ?? []),
+  ];
+  const chartMustBeSuppressed = mergedReasons.some((reason) =>
+    ["source_unavailable", "source_incomplete", "identity_ambiguous"].includes(
+      reason
+    )
+  );
+  const chartValues = chartMustBeSuppressed ? [] : absDeltaPcts;
+  const coverageState = resolveDeltaCoverageState({
+    absDeltaPcts: chartValues,
+    coverage,
+    ...(integrityReasons ? { integrityReasons } : {}),
+  });
+  const { bars, stats } = useMemo(() => {
     const counts = new Array(BINS.length).fill(0) as number[];
-    for (const v of absDeltaPcts) {
+    for (const v of chartValues) {
       const idx = binIndex(v);
       counts[idx] = (counts[idx] ?? 0) + 1;
     }
-    const total = absDeltaPcts.length;
+    const total = chartValues.length;
     const meanAbs =
-      total > 0 ? absDeltaPcts.reduce((s, v) => s + v, 0) / total : 0;
-    const medAbs = median(absDeltaPcts);
-    const under1 = absDeltaPcts.filter((v) => v < 1).length;
-    const under10 = absDeltaPcts.filter((v) => v < 10).length;
+      total > 0 ? chartValues.reduce((s, v) => s + v, 0) / total : 0;
+    const medAbs = median(chartValues);
+    const under1 = chartValues.filter((v) => v < 1).length;
+    const under10 = chartValues.filter((v) => v < 10).length;
     return {
       bars: BINS.map((b, i) => ({
         bin: b.label,
@@ -126,11 +263,64 @@ export function DeltaDistribution({
         fill: b.color,
       })),
       stats: { meanAbs, medAbs, under1, under10, total },
-      comparable: total,
     };
-  }, [absDeltaPcts]);
+  }, [chartValues]);
 
-  if (comparable === 0) return null;
+  if (coverageState.kind === "empty") {
+    return (
+      <div className={CONTAINER_CLASS}>
+        <p className={UNAVAILABLE_CLASS}>
+          No eligible {subtitle} {entityLabel}.
+        </p>
+      </div>
+    );
+  }
+
+  const coverageText = coverageState.counts
+    ? `Compared ${coverageState.counts.comparable} of ${coverageState.counts.eligible} ${entityLabel} · ${coverageState.counts.dropped} excluded`
+    : "Comparison coverage unavailable";
+  const reasonText = coverageState.reasons
+    .map((reason) => REASON_COPY[reason])
+    .join(" ");
+
+  if (coverageState.kind === "unavailable") {
+    return (
+      <div className={CONTAINER_CLASS} role="status">
+        <p className={UNAVAILABLE_CLASS}>
+          Delta comparison unavailable. {coverageText}.
+          {reasonText ? ` ${reasonText}` : ""}
+        </p>
+      </div>
+    );
+  }
+
+  const isPartial = coverageState.kind === "partial";
+  const showSample =
+    isPartial || coverageState.counts.sampled !== coverageState.counts.comparable;
+  const sourceIncomplete = coverageState.reasons.includes("source_incomplete");
+
+  if (sourceIncomplete) {
+    return (
+      <div className={CONTAINER_CLASS} role="status">
+        <p className={WARNING_CLASS}>
+          Partial comparison. {coverageText}. Chart sample{" "}
+          {coverageState.counts.sampled} of {coverageState.counts.comparable}.
+          The histogram is withheld. {reasonText}
+        </p>
+      </div>
+    );
+  }
+
+  if (stats.total === 0) {
+    return (
+      <div className={CONTAINER_CLASS} role="status">
+        <p className={WARNING_CLASS}>
+          Partial comparison. {coverageText}. No comparable rows are available
+          in the chart sample.{reasonText ? ` ${reasonText}` : ""}
+        </p>
+      </div>
+    );
+  }
 
   const pctUnder1 = Math.round((stats.under1 / stats.total) * 100);
   const pctUnder10 = Math.round((stats.under10 / stats.total) * 100);
@@ -161,6 +351,23 @@ export function DeltaDistribution({
           </span>
         </div>
       </div>
+      <div className={COVERAGE_ROW_CLASS}>
+        <span>{coverageText}</span>
+        {showSample ? (
+          <span>
+            Chart sample{" "}
+            <span className={COVERAGE_VALUE_CLASS}>
+              {coverageState.counts.sampled} of{" "}
+              {coverageState.counts.comparable}
+            </span>
+          </span>
+        ) : null}
+      </div>
+      {isPartial ? (
+        <p className={WARNING_CLASS} role="status">
+          Partial comparison.{reasonText ? ` ${reasonText}` : ""}
+        </p>
+      ) : null}
       <ChartContainer config={CHART_CONFIG} className={CHART_WRAPPER_CLASS}>
         <BarChart
           data={bars}
