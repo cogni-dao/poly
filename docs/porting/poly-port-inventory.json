@@ -49,7 +49,7 @@
     }
   ],
   "policySha256": "3a617b3691441cd75da8898c454d62317d673a3285df2490d76207d71b77e9b3",
-  "targetTreeDigest": "a3eee84e6c989236c00c1ed90611a3f6c4e06d6cd9f652b75637c783376a3cc5",
+  "targetTreeDigest": "f91a59d218e573f56251eb80fe1fe8bf0fb680a498d09dff3a959e871480e44f",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
@@ -301,7 +301,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "9d21f717d10fbfb3ec558885bb2607bb4c27498e8d6efbcc5975c98bf06c2faf",
+      "currentTargetDigest": "dd686baae15ab21bed1f4481c85de7ae7104300a88bc8c6e66e587ae3bc0a9bb",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -323,7 +323,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "9d21f717d10fbfb3ec558885bb2607bb4c27498e8d6efbcc5975c98bf06c2faf",
+      "currentTargetDigest": "dd686baae15ab21bed1f4481c85de7ae7104300a88bc8c6e66e587ae3bc0a9bb",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -345,7 +345,7 @@
         "packages/node-contracts/src/poly.wallet.overview.v1.contract.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "9d21f717d10fbfb3ec558885bb2607bb4c27498e8d6efbcc5975c98bf06c2faf",
+      "currentTargetDigest": "dd686baae15ab21bed1f4481c85de7ae7104300a88bc8c6e66e587ae3bc0a9bb",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -4645,7 +4645,7 @@
       "sourceBlob": "5b00a5697517aa73727a4879895724f6da5484ce",
       "sourcePath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
       "targetPath": "app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx",
-      "targetBlob": "ddecd36aa7128b566bb3bb5983cb9ef25a6fb427",
+      "targetBlob": "9f346fa8d3ac17443fd83d04dcb892f4aaefea25",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",

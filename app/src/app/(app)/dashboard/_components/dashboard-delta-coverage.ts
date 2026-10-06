@@ -196,7 +196,10 @@ export function projectMarketDeltaInput(
         ? group.edgeGapPct
         : null;
     if (group.status === statusFilter) {
-      const identity = group.groupKey.toLowerCase();
+      const groupKey =
+        typeof group.groupKey === "string" ? group.groupKey : "";
+      if (groupKey.length === 0) inputInvalid = true;
+      const identity = groupKey.toLowerCase();
       if (identities.has(identity)) identityAmbiguous = true;
       identities.add(identity);
       if (edgeGapPct !== null) sampleCount += 1;
@@ -229,7 +232,10 @@ export function projectPositionDeltaInput(
     lines: group.lines
       .filter((line) => line.status === statusFilter)
       .map((line) => {
-        const conditionId = line.conditionId.toLowerCase();
+        const rawConditionId =
+          typeof line.conditionId === "string" ? line.conditionId : "";
+        if (rawConditionId.length === 0) inputInvalid = true;
+        const conditionId = rawConditionId.toLowerCase();
         if (line.edgeGapPct !== null && !Number.isFinite(line.edgeGapPct)) {
           inputInvalid = true;
         }
@@ -251,8 +257,12 @@ export function projectPositionDeltaInput(
   }));
   const positionIdentities = new Set<string>();
   const normalizedPositions = positions.map((position) => {
-    const conditionId = position.conditionId.toLowerCase();
-    const identity = `${conditionId}\u0000${position.asset}`;
+    const rawConditionId =
+      typeof position.conditionId === "string" ? position.conditionId : "";
+    const asset = typeof position.asset === "string" ? position.asset : "";
+    if (rawConditionId.length === 0 || asset.length === 0) inputInvalid = true;
+    const conditionId = rawConditionId.toLowerCase();
+    const identity = `${conditionId}\u0000${asset}`;
     if (positionIdentities.has(identity)) identityAmbiguous = true;
     positionIdentities.add(identity);
     return { ...position, conditionId };

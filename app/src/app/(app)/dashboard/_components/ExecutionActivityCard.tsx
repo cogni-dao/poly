@@ -348,7 +348,7 @@ function MarketGroupsPanel({
         ) : (
           <>
             {exposureTruncated ? (
-              <p className="text-muted-foreground text-xs" role="status">
+              <p className="text-muted-foreground text-xs">
                 Showing a bounded market-comparison preview.
               </p>
             ) : null}
@@ -375,7 +375,11 @@ function MarketGroupsPanel({
                   </p>
                 </div>
               ) : marketCoverageState.kind === "unavailable" ? (
-                <p className={COMPARISON_UNAVAILABLE_CLASS} role="status">
+                <p
+                  className={COMPARISON_UNAVAILABLE_CLASS}
+                  role="status"
+                  aria-label="Market delta comparison status"
+                >
                   Delta comparison unavailable. {marketCoverageState.counts
                     ? `${comparisonCoverageText(marketCoverageState.counts, "markets")}. Chart sample ${marketCoverageState.counts.sampled} of ${marketCoverageState.counts.comparable}.`
                     : "Comparison coverage unavailable."}
@@ -404,7 +408,11 @@ function MarketGroupsPanel({
                     </span>
                   </div>
                   {marketCoverageState.kind === "partial" ? (
-                    <p className={COMPARISON_WARNING_CLASS} role="status">
+                    <p
+                      className={COMPARISON_WARNING_CLASS}
+                      role="status"
+                      aria-label="Market delta comparison status"
+                    >
                       Partial comparison.
                       {marketCoverageState.suppressChart
                         ? " The histogram is withheld."
@@ -568,7 +576,11 @@ function PositionsPanel({
               </p>
             </div>
           ) : positionCoverageState.kind === "unavailable" ? (
-            <p className={COMPARISON_UNAVAILABLE_CLASS} role="status">
+            <p
+              className={COMPARISON_UNAVAILABLE_CLASS}
+              role="status"
+              aria-label="Position delta comparison status"
+            >
               Delta comparison unavailable. {positionCoverageState.counts
                 ? `${comparisonCoverageText(positionCoverageState.counts, "positions")}. Chart sample ${positionCoverageState.counts.sampled} of ${positionCoverageState.counts.comparable}.`
                 : "Comparison coverage unavailable."}
@@ -595,7 +607,11 @@ function PositionsPanel({
                 </span>
               </div>
               {positionCoverageState.kind === "partial" ? (
-                <p className={COMPARISON_WARNING_CLASS} role="status">
+                <p
+                  className={COMPARISON_WARNING_CLASS}
+                  role="status"
+                  aria-label="Position delta comparison status"
+                >
                   Partial comparison.
                   {positionCoverageState.suppressChart
                     ? " The histogram is withheld."
