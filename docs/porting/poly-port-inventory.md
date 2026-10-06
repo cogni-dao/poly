@@ -20,8 +20,8 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1156 |
-| Unresolved legacy files | 605 |
+| Current-only files | 1160 |
+| Unresolved legacy files | 608 |
 | P0/P1 mission files resolved | 7/79 |
 | Behavioral gates passed | 0/7 |
 
@@ -33,14 +33,14 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 
 | State | Count |
 | --- | ---: |
-| exact | 1124 |
+| exact | 1121 |
 | upgraded | 6 |
 | retired | 1 |
-| unresolved | 605 |
+| unresolved | 608 |
 
 | Priority | Unresolved |
 | --- | ---: |
-| P0 | 21 |
+| P0 | 24 |
 | P1 | 51 |
 | P2 | 281 |
 | P3 | 252 |
@@ -84,12 +84,12 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `07d0b8969e5edc5914865113dd8e7949443bbf48` | `app/src/bootstrap/container.ts` | `100644` | `fb101b66145a970a9c04633ae0d123b9e721d6b5` | `app/src/bootstrap/container.ts` |
 | P0 | upgraded | — | `hub-control-plane` | `100644` | `c16eaad98d90d141912f56d8576385ec43f7389a` | `app/src/ports/work-items-doltgres.port.ts` | `100644` | `139f1c67c68161265f84f7ee3ce4578b186e9e31` | `app/src/ports/work-items-doltgres.port.ts` |
 | P0 | unresolved | content_differs | `saved-facts` | `100644` | `a02432ecc12b785d71a637725c6ee1ea7ad3c649` | `app/src/features/wallet-analysis/server/trader-observation-service.ts` | `100644` | `f81e9b1a7200e2d1f40d65a18a7a2cf58a114c89` | `app/src/features/wallet-analysis/server/trader-observation-service.ts` |
-| P0 | unresolved | content_differs | `saved-facts` | `100644` | `dcb6e95fa747b4c8b46048d1e72b7978600d8367` | `app/src/features/wallet-analysis/server/current-position-read-model.ts` | `100644` | `e8650022865a8ddb4818c7d964a93d5138768dbc` | `app/src/features/wallet-analysis/server/current-position-read-model.ts` |
+| P0 | unresolved | content_differs | `saved-facts` | `100644` | `dcb6e95fa747b4c8b46048d1e72b7978600d8367` | `app/src/features/wallet-analysis/server/current-position-read-model.ts` | `100644` | `79a55bdf807b9f19a832827aa923efacfa465fce` | `app/src/features/wallet-analysis/server/current-position-read-model.ts` |
 | P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `d51bb4d969c8fb4ac45d08cbd90ffe3023f14876` | `app/src/app/api/v1/poly/wallet/overview/route.ts` | `100644` | `8497af45a16dba438c2ad4201076060b65883626` | `app/src/app/api/v1/poly/wallet/overview/route.ts` |
 | P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `0edc7d6a040fa5382d9fb75333630e1b5bd06b7f` | `app/src/app/api/v1/poly/wallet/execution/route.ts` | `100644` | `b66434a5f3980d2b22a1e6790a895dc1d0b3bf11` | `app/src/app/api/v1/poly/wallet/execution/route.ts` |
 | P0 | exact | — | — | `100644` | `8fb41e6ff0aa02d7caed1d8acb472db21c1f4525` | `app/src/app/(app)/dashboard/page.tsx` | `100644` | `8fb41e6ff0aa02d7caed1d8acb472db21c1f4525` | `app/src/app/(app)/dashboard/page.tsx` |
 | P0 | unresolved | content_differs | `visible-p0` | `100644` | `617c839f1c01f51d317eae4235ec9f0c7e169cb3` | `app/src/app/(app)/dashboard/view.tsx` | `100644` | `c94211ba1831731d6ff7b030ac5f68586fcf15a6` | `app/src/app/(app)/dashboard/view.tsx` |
-| P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `5b00a5697517aa73727a4879895724f6da5484ce` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` | `100644` | `348bd91ad327f3ff8990aa7c837670e25ded701e` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` |
+| P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `5b00a5697517aa73727a4879895724f6da5484ce` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` | `100644` | `f2a78069040ae1a84eb06f1cd837a705db6d7855` | `app/src/app/(app)/dashboard/_components/ExecutionActivityCard.tsx` |
 | P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `0456032db2a64923b5a71400f8b0a24a0c4fec36` | `app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx` | `100644` | `619e528ce78abe25ca3e54a47107b0c1ca1aa522` | `app/src/app/(app)/dashboard/_components/OperatorWalletChartsRow.tsx` |
 | P0 | unresolved | content_differs | `dashboard-truth` | `100644` | `df6c6e3b9e0ebb1a2447db59c9f425e76f8d089d` | `app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx` | `100644` | `1b2a90bee69968d39df52b0712a1484c4814d89e` | `app/src/app/(app)/dashboard/_components/TradingWalletCard.tsx` |
 | P0 | exact | — | — | `100644` | `f0187b9efe7794f7ef385daac02f240ecbee6e3a` | `app/src/app/(app)/dashboard/_components/CopyTargetControlPanel.tsx` | `100644` | `f0187b9efe7794f7ef385daac02f240ecbee6e3a` | `app/src/app/(app)/dashboard/_components/CopyTargetControlPanel.tsx` |
@@ -129,10 +129,10 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P0 | exact | — | — | `100644` | `266a2db78064ec170ed8a0273197c74f15187ee0` | `app/src/features/wallet-analysis/components/WalletDetailDrawer.tsx` | `100644` | `266a2db78064ec170ed8a0273197c74f15187ee0` | `app/src/features/wallet-analysis/components/WalletDetailDrawer.tsx` |
 | P0 | exact | — | — | `100644` | `7d05418ef5b2c5823419ccd9b53bc2fdd17647c0` | `app/src/features/wallet-analysis/components/WalletIdentityHeader.tsx` | `100644` | `7d05418ef5b2c5823419ccd9b53bc2fdd17647c0` | `app/src/features/wallet-analysis/components/WalletIdentityHeader.tsx` |
 | P0 | exact | — | — | `100644` | `a63dca3594a82e1115674d10d3b3f2a1fae82ab0` | `app/src/features/wallet-analysis/components/WalletQuickJump.tsx` | `100644` | `a63dca3594a82e1115674d10d3b3f2a1fae82ab0` | `app/src/features/wallet-analysis/components/WalletQuickJump.tsx` |
-| P0 | exact | — | — | `100644` | `39da4bb03f736357bc32ad3d34ed289b49d588cd` | `app/src/app/(app)/_components/markets-table/DeltaDistribution.tsx` | `100644` | `39da4bb03f736357bc32ad3d34ed289b49d588cd` | `app/src/app/(app)/_components/markets-table/DeltaDistribution.tsx` |
-| P0 | exact | — | — | `100644` | `fdc40fbcb60b9d6ea608b4e7a1442d962f8b99f9` | `app/src/app/(app)/_components/markets-table/MarketsDeltaDistribution.tsx` | `100644` | `fdc40fbcb60b9d6ea608b4e7a1442d962f8b99f9` | `app/src/app/(app)/_components/markets-table/MarketsDeltaDistribution.tsx` |
+| P0 | unresolved | content_differs | — | `100644` | `39da4bb03f736357bc32ad3d34ed289b49d588cd` | `app/src/app/(app)/_components/markets-table/DeltaDistribution.tsx` | `100644` | `f1930d7562ad8d1ef097dab9a81ed9dea98cff2b` | `app/src/app/(app)/_components/markets-table/DeltaDistribution.tsx` |
+| P0 | unresolved | content_differs | — | `100644` | `fdc40fbcb60b9d6ea608b4e7a1442d962f8b99f9` | `app/src/app/(app)/_components/markets-table/MarketsDeltaDistribution.tsx` | `100644` | `16f7e19bf38895f156719ae83740c35e8b344628` | `app/src/app/(app)/_components/markets-table/MarketsDeltaDistribution.tsx` |
+| P0 | unresolved | content_differs | — | `100644` | `b55753a274d8933b91723b3596ee6273eb28ee8f` | `app/src/app/(app)/_components/markets-table/PositionsDeltaDistribution.tsx` | `100644` | `dcd24a457bf32e2f8500ecdb99053f8c0d4002e3` | `app/src/app/(app)/_components/markets-table/PositionsDeltaDistribution.tsx` |
 | P0 | exact | — | — | `100644` | `94386876f0369e1122cf0574d35f7adab2f8bb2b` | `app/src/app/(app)/_components/markets-table/MarketsTable.tsx` | `100644` | `94386876f0369e1122cf0574d35f7adab2f8bb2b` | `app/src/app/(app)/_components/markets-table/MarketsTable.tsx` |
-| P0 | exact | — | — | `100644` | `b55753a274d8933b91723b3596ee6273eb28ee8f` | `app/src/app/(app)/_components/markets-table/PositionsDeltaDistribution.tsx` | `100644` | `b55753a274d8933b91723b3596ee6273eb28ee8f` | `app/src/app/(app)/_components/markets-table/PositionsDeltaDistribution.tsx` |
 | P0 | exact | — | — | `100644` | `d25ad45707e625da4497bfe6fdc60bb2c978d873` | `app/src/app/(app)/_components/markets-table/columns.tsx` | `100644` | `d25ad45707e625da4497bfe6fdc60bb2c978d873` | `app/src/app/(app)/_components/markets-table/columns.tsx` |
 | P0 | exact | — | — | `100644` | `49015bc4bdb3db9e7ae612a092321a39ae8114c4` | `app/src/app/(app)/_components/markets-table/index.ts` | `100644` | `49015bc4bdb3db9e7ae612a092321a39ae8114c4` | `app/src/app/(app)/_components/markets-table/index.ts` |
 | P0 | exact | — | — | `100644` | `4237b002e5fc297cb670cd7dd91c66568cfb0bbe` | `app/src/app/(app)/_components/positions-table/PositionsTable.tsx` | `100644` | `4237b002e5fc297cb670cd7dd91c66568cfb0bbe` | `app/src/app/(app)/_components/positions-table/PositionsTable.tsx` |
@@ -196,10 +196,10 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P1 | exact | — | — | `100644` | `353b21c4445cdcb987c4b1373f6e88a75b29ece8` | `app/src/features/trading/position-actionability.ts` | `100644` | `353b21c4445cdcb987c4b1373f6e88a75b29ece8` | `app/src/features/trading/position-actionability.ts` |
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `fa2cb1b318c5c7f934f1a558845b0e7f04d14bda` | `app/src/features/wallet-analysis/server/coalesce.ts` | `100644` | `cb6f1f862576e759d8a2229dfbfc71ee939b090e` | `app/src/features/wallet-analysis/server/coalesce.ts` |
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `01a0de68157c2d3c793d13b09297e88b25c4ff20` | `app/src/features/wallet-analysis/server/copy-target-benchmark-service.ts` | `100644` | `540e7a2506ea214ad23190fcc61e0bf942ea8b31` | `app/src/features/wallet-analysis/server/copy-target-benchmark-service.ts` |
-| P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `39f5da2a98a92ec6bfbcb89e0510b0c4a573fa2d` | `app/src/features/wallet-analysis/server/market-exposure-service.ts` | `100644` | `613e171f2f36258b01fcabf9b654b0410619fcf3` | `app/src/features/wallet-analysis/server/market-exposure-service.ts` |
+| P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `39f5da2a98a92ec6bfbcb89e0510b0c4a573fa2d` | `app/src/features/wallet-analysis/server/market-exposure-service.ts` | `100644` | `ee42d4c9e3f81d2d10d114a1755136f73815e554` | `app/src/features/wallet-analysis/server/market-exposure-service.ts` |
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `e73935c93c8110f84d7db6976dc5b8ccf40a9631` | `app/src/features/wallet-analysis/server/market-outcome-service.ts` | `100644` | `0902d0bf25d44e345684aee01ce65b30508730aa` | `app/src/features/wallet-analysis/server/market-outcome-service.ts` |
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `5408c7210ff7f30f5d79f466538da51a38966d17` | `app/src/features/wallet-analysis/server/poly-market-metadata-service.ts` | `100644` | `15fe7bf54bf3c83aa61bd74ac9c3bcec19e92a54` | `app/src/features/wallet-analysis/server/poly-market-metadata-service.ts` |
-| P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `ea0f16ca8443df059ce3c73876e2eee60ad5bbd2` | `app/src/features/wallet-analysis/server/realized-pnl-service.ts` | `100644` | `bf763aed61aa82baffca3f6f6b787a8eefd94793` | `app/src/features/wallet-analysis/server/realized-pnl-service.ts` |
+| P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `ea0f16ca8443df059ce3c73876e2eee60ad5bbd2` | `app/src/features/wallet-analysis/server/realized-pnl-service.ts` | `100644` | `c74b2ce506201797ca367688eda04cdad880480a` | `app/src/features/wallet-analysis/server/realized-pnl-service.ts` |
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `03a2ce211aa8c297b86415c441f3a3757b33939f` | `app/src/features/wallet-analysis/server/target-overlap-service.ts` | `100644` | `5f8c35c201172a8a4c4d54dc6b2eecd24ecc6aff` | `app/src/features/wallet-analysis/server/target-overlap-service.ts` |
 | P1 | unresolved | content_differs | `p1-research-reads` | `100644` | `93b201ce8d291c0120fc2d85c2f4c54894d30d9c` | `app/src/features/wallet-analysis/server/trader-comparison-service.ts` | `100644` | `61bdd6f11526c1ce86f2f96355cab2b5377e4cff` | `app/src/features/wallet-analysis/server/trader-comparison-service.ts` |
 | P1 | unresolved | content_differs | `saved-facts` | `100644` | `3429957ab591dc4ce944af612f0ab26a95791db5` | `app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts` | `100644` | `7bac754ac208ade04baf84452378aa41aea50e28` | `app/src/features/wallet-analysis/server/trading-wallet-overview-service.ts` |
