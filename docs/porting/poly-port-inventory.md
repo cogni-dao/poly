@@ -20,9 +20,9 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1175 |
+| Current-only files | 1176 |
 | Unresolved legacy files | 605 |
-| P0/P1 mission files resolved | 7/79 |
+| P0/P1 mission files resolved | 8/80 |
 | Behavioral gates passed | 0/7 |
 
 ## Audited proof refreshes
@@ -33,8 +33,8 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 
 | State | Count |
 | --- | ---: |
-| exact | 1124 |
-| upgraded | 6 |
+| exact | 1123 |
+| upgraded | 7 |
 | retired | 1 |
 | unresolved | 605 |
 
@@ -52,7 +52,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | `hub-control-plane` | 7/8 | 0/3 | Hub control-plane proof |
 | `saved-facts` | 0/4 | 0/1 | Saved-fact reliability |
 | `dashboard-truth` | 0/10 | 0/3 | Dashboard truth |
-| `visible-p0` | 0/11 | 0/0 | Visible P0 parity |
+| `visible-p0` | 1/12 | 0/0 | Visible P0 parity |
 | `p1-provider-foundation` | 0/14 | 0/0 | P1 provider foundation |
 | `p1-execution-wallet` | 0/18 | 0/0 | P1 execution and wallet |
 | `p1-research-reads` | 0/14 | 0/0 | P1 research and read paths |
@@ -103,7 +103,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P0 | exact | — | — | `100644` | `8e2ee423f1c8d94d1f31b3286a3dc7d9dd5b9f17` | `app/src/app/(app)/dashboard/_api/fetchTradingWallet.ts` | `100644` | `8e2ee423f1c8d94d1f31b3286a3dc7d9dd5b9f17` | `app/src/app/(app)/dashboard/_api/fetchTradingWallet.ts` |
 | P0 | exact | — | — | `100644` | `d1f82fb534c4df1af769769bef161c3537640c18` | `app/src/app/(app)/dashboard/_api/fetchWalletGrants.ts` | `100644` | `d1f82fb534c4df1af769769bef161c3537640c18` | `app/src/app/(app)/dashboard/_api/fetchWalletGrants.ts` |
 | P0 | exact | — | — | `100644` | `802c26bb750d14db8c7deeb3592349ff8415e0f2` | `app/src/app/(app)/research/page.tsx` | `100644` | `802c26bb750d14db8c7deeb3592349ff8415e0f2` | `app/src/app/(app)/research/page.tsx` |
-| P0 | exact | — | — | `100644` | `62c8b933dc05f0517758524f481c22957417536b` | `app/src/app/(app)/research/view.tsx` | `100644` | `62c8b933dc05f0517758524f481c22957417536b` | `app/src/app/(app)/research/view.tsx` |
+| P0 | upgraded | — | `visible-p0` | `100644` | `62c8b933dc05f0517758524f481c22957417536b` | `app/src/app/(app)/research/view.tsx` | `100644` | `558e19a7ce24eebda5af7e30c213cf2f1bc28d33` | `app/src/app/(app)/research/view.tsx` |
 | P0 | exact | — | — | `100644` | `bf51102fd447ac7998183f4b3b37010eb81aaae6` | `app/src/app/(app)/research/2026-05-06/page.tsx` | `100644` | `bf51102fd447ac7998183f4b3b37010eb81aaae6` | `app/src/app/(app)/research/2026-05-06/page.tsx` |
 | P0 | exact | — | — | `100644` | `73653b491c42361ac116e2d689a0d764edc72ba3` | `app/src/app/(app)/research/2026-05-07/page.tsx` | `100644` | `73653b491c42361ac116e2d689a0d764edc72ba3` | `app/src/app/(app)/research/2026-05-07/page.tsx` |
 | P0 | exact | — | — | `100644` | `16f93daec2c5638eb45792e82f4eb4cb046d3887` | `app/src/app/(app)/research/loading.tsx` | `100644` | `16f93daec2c5638eb45792e82f4eb4cb046d3887` | `app/src/app/(app)/research/loading.tsx` |
