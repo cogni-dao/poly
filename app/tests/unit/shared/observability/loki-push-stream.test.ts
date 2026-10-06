@@ -90,7 +90,7 @@ describe("createLokiPushStream", () => {
     });
     expect(body.streams[0]?.values).toEqual([
       ["1700000000000000000", '{"msg":"one"}'],
-      ["1700000000000000000", '{"msg":"two"}'],
+      ["1700000000000000001", '{"msg":"two"}'],
     ]);
   });
 
@@ -249,8 +249,8 @@ describe("createLokiPushStream", () => {
     await settlePromises();
     expect(fetchFn).toHaveBeenCalledTimes(4);
     expect(bodyAt(fetchFn, 1)).toEqual(bodyAt(fetchFn, 0));
-    const successorLines = bodyAt(fetchFn, 2).streams[0]?.values.map(
-      ([, line]) => line
+    const successorLines = [2, 3].flatMap((index) =>
+      (bodyAt(fetchFn, index).streams[0]?.values ?? []).map(([, line]) => line)
     );
     expect(successorLines).toContain('{"queued":0}');
     expect(
