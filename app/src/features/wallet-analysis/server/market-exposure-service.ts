@@ -99,6 +99,9 @@
  */
 
 import type {
+  WalletDashboardComparisonCoverage,
+  WalletDashboardComparisonCoverageLeaf,
+  WalletDashboardComparisonCoverageReason,
   WalletExecutionMarketGroup,
   WalletExecutionMarketLeg,
   WalletExecutionMarketLineStatus,
@@ -108,6 +111,7 @@ import type {
 import { type SQL, sql } from "drizzle-orm";
 
 import { EPOCH_ISO, windowedFillFlowsSelect } from "./fill-rollup-service";
+import { liveCurrentPositionSql } from "./current-position-staleness";
 import {
   blendTargetReturns,
   computeRealizedPnl,
@@ -207,6 +211,15 @@ type BoundedTargetLeg = Omit<
 export type BoundedMarketExposureRead = {
   groups: WalletExecutionMarketGroup[];
   truncated: boolean;
+};
+
+type ComparisonCoverageCountRow = {
+  entity: "markets" | "positions";
+  status: WalletExecutionMarketLineStatus;
+  eligible: string | number | null;
+  comparable: string | number | null;
+  ambiguous: string | number | null;
+  source_ambiguous: boolean | null;
 };
 
 const BOUNDED_GROUP_LIMIT = 200;
@@ -319,6 +332,491 @@ export async function buildBoundedMarketExposureGroups(params: {
 }
 
 /**
+ * Exact, constant-cardinality comparison counts for the full saved inventory.
+ * The query mirrors `groupParticipants`' nullability rule: a delta exists only
+ * when our cost basis and at least one active target's cost basis are positive.
+ * Physical case variants are deterministically collapsed but fail closed as
+ * ambiguous instead of being silently certified as comparable.
+ */
+export async function readFullComparisonCoverageCounts(params: {
+  db: Db;
+  billingAccountId: string;
+  walletAddress: string;
+}): Promise<ComparisonCoverageCountRow[]> {
+  return (await params.db.execute(sql`
+    WITH canonical_wallet_identity AS (
+      SELECT count(*) > 1 AS identity_ambiguous
+      FROM poly_trader_wallets w
+      WHERE lower(w.wallet_address) = lower(${params.walletAddress})
+    ), wallet_scope AS (
+      SELECT
+        w.*,
+        canonical.identity_ambiguous
+      FROM poly_trader_wallets w
+      CROSS JOIN canonical_wallet_identity canonical
+      WHERE lower(w.wallet_address) = lower(${params.walletAddress})
+        AND w.kind = 'cogni_wallet'
+        AND w.active_for_research = true
+        AND w.disabled_at IS NULL
+    ), our_identity AS (
+      SELECT COALESCE(bool_or(identity_ambiguous), false) AS identity_ambiguous
+      FROM wallet_scope
+    ), live_ranked AS (
+      SELECT
+        p.*,
+        lower(p.condition_id) AS condition_key,
+        w.identity_ambiguous AS wallet_identity_ambiguous,
+        row_number() OVER (
+          PARTITION BY lower(p.condition_id), p.token_id
+          ORDER BY p.last_observed_at DESC, w.updated_at DESC,
+            w.created_at DESC, w.id, p.condition_id
+        ) AS identity_rank,
+        min(p.condition_id) OVER (
+          PARTITION BY lower(p.condition_id), p.token_id
+        ) <> max(p.condition_id) OVER (
+          PARTITION BY lower(p.condition_id), p.token_id
+        ) AS identity_ambiguous
+      FROM poly_trader_current_positions p
+      JOIN wallet_scope w ON w.id = p.trader_wallet_id
+    ), live_latest AS (
+      SELECT *
+      FROM live_ranked p
+      WHERE identity_rank = 1
+        AND ${liveCurrentPositionSql("p")}
+    ), closed_source AS (
+      SELECT
+        COALESCE(
+          NULLIF(f.attributes->>'condition_id', ''),
+          NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), ''),
+          f.fill_id
+        ) AS physical_condition,
+        COALESCE(NULLIF(f.attributes->>'token_id', ''), f.client_order_id) AS token_id,
+        f.position_lifecycle,
+        f.observed_at,
+        f.updated_at,
+        f.client_order_id,
+        NULLIF(f.attributes->>'event_slug', '') AS event_slug,
+        CASE
+          WHEN COALESCE(f.attributes->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'
+            THEN (f.attributes->>'filled_size_usdc')::numeric
+          WHEN COALESCE(f.attributes->>'size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'
+            THEN (f.attributes->>'size_usdc')::numeric
+          ELSE 0
+        END AS own_cost
+      FROM poly_copy_trade_fills f
+      WHERE f.billing_account_id = ${params.billingAccountId}
+    ), closed_ranked AS (
+      SELECT
+        s.*,
+        lower(s.physical_condition) AS condition_key,
+        row_number() OVER (
+          PARTITION BY lower(s.physical_condition), s.token_id
+          ORDER BY s.observed_at DESC, s.updated_at DESC, s.client_order_id DESC
+        ) AS identity_rank,
+        min(s.physical_condition) OVER (
+          PARTITION BY lower(s.physical_condition), s.token_id
+        ) <> max(s.physical_condition) OVER (
+          PARTITION BY lower(s.physical_condition), s.token_id
+        ) AS identity_ambiguous
+      FROM closed_source s
+      WHERE s.physical_condition IS NOT NULL AND s.token_id IS NOT NULL
+    ), relevant_conditions AS (
+      SELECT DISTINCT condition_key FROM live_latest
+      UNION
+      SELECT DISTINCT condition_key FROM closed_ranked WHERE identity_rank = 1
+    ), outcome_ranked AS (
+      SELECT
+        lower(o.condition_id) AS condition_key,
+        o.token_id,
+        o.outcome,
+        row_number() OVER (
+          PARTITION BY lower(o.condition_id), o.token_id
+          ORDER BY o.updated_at DESC, o.condition_id
+        ) AS identity_rank,
+        min(o.condition_id) OVER (
+          PARTITION BY lower(o.condition_id), o.token_id
+        ) <> max(o.condition_id) OVER (
+          PARTITION BY lower(o.condition_id), o.token_id
+        ) AS identity_ambiguous
+      FROM poly_market_outcomes o
+      JOIN relevant_conditions c ON c.condition_key = lower(o.condition_id)
+    ), outcomes AS (
+      SELECT * FROM outcome_ranked WHERE identity_rank = 1
+    ), metadata_ranked AS (
+      SELECT
+        lower(m.condition_id) AS condition_key,
+        m.event_slug,
+        row_number() OVER (
+          PARTITION BY lower(m.condition_id)
+          ORDER BY m.fetched_at DESC, m.condition_id
+        ) AS identity_rank,
+        min(m.condition_id) OVER (
+          PARTITION BY lower(m.condition_id)
+        ) <> max(m.condition_id) OVER (
+          PARTITION BY lower(m.condition_id)
+        ) AS identity_ambiguous
+      FROM poly_market_metadata m
+      JOIN relevant_conditions c ON c.condition_key = lower(m.condition_id)
+    ), metadata AS (
+      SELECT * FROM metadata_ranked WHERE identity_rank = 1
+    ), redeem_ranked AS (
+      SELECT
+        lower(r.funder_address) AS wallet_key,
+        lower(r.condition_id) AS condition_key,
+        r.position_id,
+        r.lifecycle_state,
+        row_number() OVER (
+          PARTITION BY lower(r.funder_address), lower(r.condition_id), r.position_id
+          ORDER BY r.updated_at DESC, r.condition_id, r.funder_address, r.id
+        ) AS identity_rank,
+        (
+          min(r.funder_address) OVER (
+            PARTITION BY lower(r.funder_address), lower(r.condition_id), r.position_id
+          ) <> max(r.funder_address) OVER (
+            PARTITION BY lower(r.funder_address), lower(r.condition_id), r.position_id
+          )
+          OR min(r.condition_id) OVER (
+            PARTITION BY lower(r.funder_address), lower(r.condition_id), r.position_id
+          ) <> max(r.condition_id) OVER (
+            PARTITION BY lower(r.funder_address), lower(r.condition_id), r.position_id
+          )
+        ) AS identity_ambiguous
+      FROM poly_redeem_jobs r
+      JOIN relevant_conditions c ON c.condition_key = lower(r.condition_id)
+      WHERE lower(r.funder_address) = lower(${params.walletAddress})
+    ), redeem AS (
+      SELECT * FROM redeem_ranked WHERE identity_rank = 1
+    ), live_inventory AS (
+      SELECT
+        'live'::text AS status,
+        p.condition_key,
+        p.token_id,
+        CASE
+          WHEN COALESCE(NULLIF(m.event_slug, ''), NULLIF(p.raw->>'eventSlug', '')) IS NOT NULL
+            THEN 'event:' || COALESCE(NULLIF(m.event_slug, ''), NULLIF(p.raw->>'eventSlug', ''))
+          ELSE 'condition:' || p.condition_key
+        END AS group_key,
+        p.cost_basis_usdc::numeric AS own_cost,
+        (
+          p.wallet_identity_ambiguous
+          OR p.identity_ambiguous
+          OR COALESCE(o.identity_ambiguous, false)
+          OR COALESCE(m.identity_ambiguous, false)
+          OR COALESCE(r.identity_ambiguous, false)
+        ) AS identity_ambiguous
+      FROM live_latest p
+      LEFT JOIN outcomes o
+        ON o.condition_key = p.condition_key AND o.token_id = p.token_id
+      LEFT JOIN metadata m ON m.condition_key = p.condition_key
+      LEFT JOIN redeem r
+        ON r.wallet_key = lower(${params.walletAddress})
+       AND r.condition_key = p.condition_key
+       AND r.position_id = p.token_id
+      WHERE p.current_value_usdc > 0
+        AND (
+          (o.outcome = 'winner' AND r.lifecycle_state IS DISTINCT FROM 'redeemed')
+          OR (
+            coalesce(o.outcome, 'unknown') NOT IN ('winner', 'loser')
+            AND coalesce(r.lifecycle_state, '') NOT IN ('redeemed', 'loser', 'dust', 'closed')
+          )
+        )
+    ), closed_inventory AS (
+      SELECT
+        'closed'::text AS status,
+        condition_key,
+        token_id,
+        COALESCE('event:' || event_slug, 'condition:' || condition_key) AS group_key,
+        own_cost,
+        identity_ambiguous
+      FROM closed_ranked
+      WHERE identity_rank = 1
+        AND position_lifecycle IN ('closed', 'redeemed', 'loser', 'dust')
+    ), eligible_positions AS (
+      SELECT * FROM live_inventory
+      UNION ALL
+      SELECT * FROM closed_inventory
+    ), active_target_candidates AS (
+      SELECT
+        lower(t.target_wallet) AS wallet_key,
+        w.id AS trader_wallet_id,
+        (
+          count(*) OVER (PARTITION BY lower(t.target_wallet)) > 1
+          OR
+          min(t.target_wallet) OVER (PARTITION BY lower(t.target_wallet)) <>
+            max(t.target_wallet) OVER (PARTITION BY lower(t.target_wallet))
+          OR min(w.wallet_address) OVER (PARTITION BY lower(t.target_wallet)) <>
+            max(w.wallet_address) OVER (PARTITION BY lower(t.target_wallet))
+        ) AS identity_ambiguous
+      FROM poly_copy_trade_targets t
+      JOIN poly_trader_wallets w
+        ON lower(w.wallet_address) = lower(t.target_wallet)
+      WHERE t.billing_account_id = ${params.billingAccountId}
+        AND t.disabled_at IS NULL
+    ), active_targets AS (
+      SELECT DISTINCT wallet_key, trader_wallet_id, identity_ambiguous
+      FROM active_target_candidates
+    ), source_identity AS (
+      SELECT
+        o.identity_ambiguous OR COALESCE(bool_or(a.identity_ambiguous), false)
+          AS identity_ambiguous
+      FROM our_identity o
+      LEFT JOIN active_targets a ON TRUE
+      GROUP BY o.identity_ambiguous
+    ), target_snapshot_ranked AS (
+      SELECT
+        a.wallet_key,
+        s.trader_wallet_id,
+        lower(s.condition_id) AS condition_key,
+        s.token_id,
+        s.cost_basis_usdc::numeric AS cost_basis_usdc,
+        a.identity_ambiguous AS wallet_identity_ambiguous,
+        row_number() OVER (
+          PARTITION BY a.wallet_key, lower(s.condition_id), s.token_id
+          ORDER BY s.captured_at DESC, s.condition_id, s.trader_wallet_id
+        ) AS identity_rank,
+        min(s.condition_id) OVER (
+          PARTITION BY a.wallet_key, lower(s.condition_id), s.token_id
+        ) <> max(s.condition_id) OVER (
+          PARTITION BY a.wallet_key, lower(s.condition_id), s.token_id
+        ) AS condition_identity_ambiguous
+      FROM poly_trader_position_snapshots s
+      JOIN active_targets a ON a.trader_wallet_id = s.trader_wallet_id
+      WHERE lower(s.condition_id) IN (
+        SELECT DISTINCT condition_key FROM eligible_positions
+      )
+    ), target_by_condition AS (
+      SELECT
+        condition_key,
+        SUM(cost_basis_usdc) AS target_cost,
+        bool_or(wallet_identity_ambiguous OR condition_identity_ambiguous)
+          AS identity_ambiguous
+      FROM target_snapshot_ranked
+      WHERE identity_rank = 1
+      GROUP BY condition_key
+    ), lines AS (
+      SELECT
+        p.condition_key,
+        CASE WHEN bool_or(p.status = 'live') THEN 'live' ELSE 'closed' END AS status,
+        min(p.group_key) AS group_key,
+        SUM(p.own_cost) AS own_cost,
+        COALESCE(t.target_cost, 0) AS target_cost,
+        (
+          bool_or(p.identity_ambiguous)
+          OR min(p.group_key) <> max(p.group_key)
+          OR COALESCE(t.identity_ambiguous, false)
+          OR s.identity_ambiguous
+        ) AS identity_ambiguous
+      FROM eligible_positions p
+      LEFT JOIN target_by_condition t ON t.condition_key = p.condition_key
+      CROSS JOIN source_identity s
+      GROUP BY p.condition_key, t.target_cost, t.identity_ambiguous,
+        s.identity_ambiguous
+    ), position_eval AS (
+      SELECT
+        p.status,
+        (
+          p.status = l.status
+          AND l.own_cost > 0
+          AND l.target_cost > 0
+          AND NOT (p.identity_ambiguous OR l.identity_ambiguous)
+        ) AS comparable,
+        (p.identity_ambiguous OR l.identity_ambiguous) AS ambiguous
+      FROM eligible_positions p
+      JOIN lines l ON l.condition_key = p.condition_key
+    ), market_eval AS (
+      SELECT
+        CASE WHEN bool_or(l.status = 'live') THEN 'live' ELSE 'closed' END AS status,
+        (
+          SUM(l.own_cost) > 0
+          AND SUM(l.target_cost) > 0
+          AND NOT bool_or(l.identity_ambiguous)
+        ) AS comparable,
+        bool_or(l.identity_ambiguous) AS ambiguous
+      FROM lines l
+      GROUP BY l.group_key
+    ), buckets(entity, status) AS (
+      VALUES
+        ('positions'::text, 'live'::text),
+        ('positions'::text, 'closed'::text),
+        ('markets'::text, 'live'::text),
+        ('markets'::text, 'closed'::text)
+    ), counted AS (
+      SELECT
+        'positions'::text AS entity,
+        status,
+        count(*)::int AS eligible,
+        count(*) FILTER (WHERE comparable)::int AS comparable,
+        count(*) FILTER (WHERE ambiguous)::int AS ambiguous
+      FROM position_eval
+      GROUP BY status
+      UNION ALL
+      SELECT
+        'markets'::text AS entity,
+        status,
+        count(*)::int AS eligible,
+        count(*) FILTER (WHERE comparable)::int AS comparable,
+        count(*) FILTER (WHERE ambiguous)::int AS ambiguous
+      FROM market_eval
+      GROUP BY status
+    )
+    SELECT
+      b.entity,
+      b.status,
+      COALESCE(c.eligible, 0)::int AS eligible,
+      COALESCE(c.comparable, 0)::int AS comparable,
+      COALESCE(c.ambiguous, 0)::int AS ambiguous,
+      s.identity_ambiguous AS source_ambiguous
+    FROM buckets b
+    LEFT JOIN counted c ON c.entity = b.entity AND c.status = b.status
+    CROSS JOIN source_identity s
+    ORDER BY b.entity, b.status
+  `)) as unknown as ComparisonCoverageCountRow[];
+}
+
+export function unavailableComparisonCoverage(): WalletDashboardComparisonCoverage {
+  return {
+    markets: {
+      live: unavailableCoverageLeaf(),
+      closed: unavailableCoverageLeaf(),
+    },
+    positions: {
+      live: unavailableCoverageLeaf(),
+      closed: unavailableCoverageLeaf(),
+    },
+  };
+}
+
+export function materializeComparisonCoverage(params: {
+  counts: readonly ComparisonCoverageCountRow[];
+  groups: readonly WalletExecutionMarketGroup[];
+  livePositions: readonly WalletExecutionPosition[];
+  closedPositions: readonly WalletExecutionPosition[];
+  sourceComplete: boolean;
+  previewTruncated: boolean;
+}): WalletDashboardComparisonCoverage {
+  const countsByBucket = new Map(
+    params.counts.map((row) => [`${row.entity}:${row.status}`, row] as const)
+  );
+  const marketSamples = {
+    live: params.groups.filter(
+      (group) =>
+        group.status === "live" &&
+        group.edgeGapPct !== null &&
+        Number.isFinite(group.edgeGapPct)
+    ).length,
+    closed: params.groups.filter(
+      (group) =>
+        group.status === "closed" &&
+        group.edgeGapPct !== null &&
+        Number.isFinite(group.edgeGapPct)
+    ).length,
+  };
+  const lineByCondition = new Map<
+    string,
+    | { status: WalletExecutionMarketLineStatus; edgeGapPct: number | null }
+    | null
+  >();
+  for (const group of params.groups) {
+    for (const line of group.lines) {
+      const key = canonicalIdentity(line.conditionId);
+      lineByCondition.set(
+        key,
+        lineByCondition.has(key)
+          ? null
+          : { status: line.status, edgeGapPct: line.edgeGapPct }
+      );
+    }
+  }
+  const sampledPositions = (
+    positions: readonly WalletExecutionPosition[],
+    status: WalletExecutionMarketLineStatus
+  ): number =>
+    positions.filter((position) => {
+      const line = lineByCondition.get(canonicalIdentity(position.conditionId));
+      return (
+        line !== undefined &&
+        line !== null &&
+        line.status === status &&
+        line.edgeGapPct !== null &&
+        Number.isFinite(line.edgeGapPct)
+      );
+    }).length;
+
+  const leaf = (
+    entity: "markets" | "positions",
+    status: WalletExecutionMarketLineStatus,
+    sampled: number
+  ): WalletDashboardComparisonCoverageLeaf => {
+    const row = countsByBucket.get(`${entity}:${status}`);
+    if (!row) {
+      return unavailableCoverageLeaf();
+    }
+    const eligible = parseNonnegativeInteger(row.eligible);
+    const comparable = parseNonnegativeInteger(row.comparable);
+    const ambiguous = parseNonnegativeInteger(row.ambiguous);
+    if (
+      eligible === null ||
+      comparable === null ||
+      ambiguous === null ||
+      typeof row.source_ambiguous !== "boolean" ||
+      comparable > eligible ||
+      ambiguous > eligible - comparable ||
+      !Number.isSafeInteger(sampled) ||
+      sampled < 0
+    ) {
+      return unavailableCoverageLeaf();
+    }
+    const dropped = eligible - comparable;
+    const identityAmbiguous = ambiguous > 0 || row.source_ambiguous;
+    if (!identityAmbiguous && sampled > comparable) {
+      return unavailableCoverageLeaf();
+    }
+    // Ambiguous or incomplete sources do not feed a histogram. `sampled`
+    // describes trusted finite values actually supplied to that chart, not
+    // merely finite numbers present in the bounded transport payload.
+    const trustedSampled =
+      identityAmbiguous || !params.sourceComplete ? 0 : sampled;
+    const reasons: WalletDashboardComparisonCoverageReason[] = [];
+    if (!params.sourceComplete) reasons.push("source_incomplete");
+    if (dropped > 0) reasons.push("comparison_missing");
+    if (identityAmbiguous) {
+      reasons.push("identity_ambiguous");
+    }
+    if (params.previewTruncated || sampled < comparable) {
+      reasons.push("preview_truncated");
+    }
+    return {
+      eligible,
+      comparable,
+      dropped,
+      sampled: trustedSampled,
+      complete:
+        dropped === 0 && trustedSampled === comparable && reasons.length === 0,
+      reasons,
+    };
+  };
+
+  return {
+    markets: {
+      live: leaf("markets", "live", marketSamples.live),
+      closed: leaf("markets", "closed", marketSamples.closed),
+    },
+    positions: {
+      live: leaf(
+        "positions",
+        "live",
+        sampledPositions(params.livePositions, "live")
+      ),
+      closed: leaf(
+        "positions",
+        "closed",
+        sampledPositions(params.closedPositions, "closed")
+      ),
+    },
+  };
+}
+
+/**
  * Fold fill-rollup truth (BUY notional, SELL proceeds, redemption credit)
  * into a `RawLeg`. After this pass every leg carries its realized P/L and
  * a non-zero cost basis whenever the wallet ever bought into the token —
@@ -369,7 +867,7 @@ function buildOurLegs(
       source: "ledger",
       label: "Our wallet",
       walletAddress: walletAddress.toLowerCase(),
-      conditionId: position.conditionId,
+      conditionId: canonicalIdentity(position.conditionId),
       tokenId: position.asset,
       marketTitle: position.marketTitle,
       eventTitle: position.eventTitle ?? null,
@@ -417,17 +915,15 @@ async function readTargetLegs(params: {
         AND w.disabled_at IS NULL
     ),
     latest_snapshots AS (
-      -- DISTINCT ON + ORDER BY are condition_id-led ON PURPOSE: the column
-      -- order matches poly_trader_position_snapshots_market_latest_idx
-      -- (condition_id, trader_wallet_id, token_id, captured_at DESC —
-      -- migration 0063) so the index serves the sort instead of a full
-      -- re-sort of the scanned snapshots. Result-identical to the previous
-      -- wallet-led order: the DISTINCT ON key SET is the same, only the
-      -- column order differs. Only the bounded scalar raw->> projections
-      -- below leave the CTE — never the whole Data-API raw jsonb blob.
-      SELECT DISTINCT ON (s.condition_id, s.trader_wallet_id, s.token_id)
+      -- Canonical wallet + condition identity leads DISTINCT ON so facts on
+      -- differently-cased physical sibling rows collapse deterministically.
+      -- Only bounded scalar raw->> projections leave the CTE — never the
+      -- whole Data-API raw jsonb blob.
+      SELECT DISTINCT ON (a.wallet_address, lower(s.condition_id), s.token_id)
+        a.wallet_address,
+        a.label,
         s.trader_wallet_id,
-        s.condition_id,
+        lower(s.condition_id) AS condition_id,
         s.token_id,
         s.shares::numeric AS shares,
         s.cost_basis_usdc::numeric AS cost_basis_usdc,
@@ -440,17 +936,16 @@ async function readTargetLegs(params: {
         s.raw->>'eventSlug' AS raw_event_slug,
         s.raw->>'outcome' AS raw_outcome
       FROM poly_trader_position_snapshots s
-      WHERE s.condition_id IN (${conditionList})
-        AND s.trader_wallet_id IN (SELECT trader_wallet_id FROM active_targets)
-      -- DESC NULLS LAST (not bare DESC = NULLS FIRST) so the pathkeys
-      -- match the index's "captured_at DESC NULLS LAST" exactly.
-      -- captured_at is NOT NULL, so this cannot change results.
-      ORDER BY s.condition_id, s.trader_wallet_id, s.token_id,
-        s.captured_at DESC NULLS LAST
+      JOIN active_targets a ON a.trader_wallet_id = s.trader_wallet_id
+      WHERE lower(s.condition_id) IN (${conditionList})
+      -- captured_at is NOT NULL; DESC NULLS LAST documents newest-first and
+      -- the remaining physical fields make the selected sibling stable.
+      ORDER BY a.wallet_address, lower(s.condition_id), s.token_id,
+        s.captured_at DESC NULLS LAST, s.condition_id, s.trader_wallet_id
     )
     SELECT
-      a.wallet_address,
-      a.label,
+      ls.wallet_address,
+      ls.label,
       ls.condition_id,
       ls.token_id,
       -- Canonical Gamma metadata via poly_market_metadata; fall back to
@@ -499,13 +994,27 @@ async function readTargetLegs(params: {
                THEN 'active' ELSE 'inactive' END
       END AS lifecycle
     FROM latest_snapshots ls
-    JOIN active_targets a ON a.trader_wallet_id = ls.trader_wallet_id
-    LEFT JOIN poly_trader_current_positions cp
-      ON cp.trader_wallet_id = ls.trader_wallet_id
-      AND cp.condition_id = ls.condition_id
-      AND cp.token_id = ls.token_id
-    LEFT JOIN poly_market_metadata pmm
-      ON pmm.condition_id = ls.condition_id
+    LEFT JOIN LATERAL (
+      SELECT candidate.active, candidate.current_value_usdc,
+        candidate.last_observed_at
+      FROM poly_trader_current_positions candidate
+      JOIN active_targets candidate_wallet
+        ON candidate_wallet.trader_wallet_id = candidate.trader_wallet_id
+       AND candidate_wallet.wallet_address = ls.wallet_address
+      WHERE lower(candidate.condition_id) = ls.condition_id
+        AND candidate.token_id = ls.token_id
+      ORDER BY candidate.last_observed_at DESC, candidate.condition_id,
+        candidate.trader_wallet_id
+      LIMIT 1
+    ) cp ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT candidate.market_title, candidate.event_title,
+        candidate.market_slug, candidate.event_slug
+      FROM poly_market_metadata candidate
+      WHERE lower(candidate.condition_id) = ls.condition_id
+      ORDER BY candidate.fetched_at DESC, candidate.condition_id
+      LIMIT 1
+    ) pmm ON TRUE
     ORDER BY current_value_usdc DESC NULLS LAST
   `)) as unknown as TargetPositionRow[];
 
@@ -529,7 +1038,7 @@ async function readTargetLegs(params: {
         source: "trader_current_positions",
         label: row.label ?? "Copy target",
         walletAddress: row.wallet_address.toLowerCase(),
-        conditionId: row.condition_id,
+        conditionId: canonicalIdentity(row.condition_id),
         tokenId: row.token_id,
         marketTitle: row.market_title ?? "Polymarket",
         eventTitle: row.event_title,
@@ -592,10 +1101,14 @@ async function readBoundedTargetLegs(params: {
         AND t.disabled_at IS NULL
         AND w.disabled_at IS NULL
     ), latest AS (
-      SELECT DISTINCT ON (s.condition_id, s.trader_wallet_id, s.token_id)
+      SELECT DISTINCT ON (
+        sc.group_key, a.wallet_address, lower(s.condition_id), s.token_id
+      )
         sc.group_key,
+        a.wallet_address,
+        a.label,
         s.trader_wallet_id,
-        s.condition_id,
+        lower(s.condition_id) AS condition_id,
         s.token_id,
         s.shares::numeric AS shares,
         s.cost_basis_usdc::numeric AS cost_basis_usdc,
@@ -608,14 +1121,16 @@ async function readBoundedTargetLegs(params: {
         s.raw->>'eventSlug' AS raw_event_slug,
         s.raw->>'outcome' AS raw_outcome
       FROM selected_conditions sc
-      JOIN poly_trader_position_snapshots s ON s.condition_id = sc.condition_id
-      WHERE s.trader_wallet_id IN (SELECT trader_wallet_id FROM active_targets)
-      ORDER BY s.condition_id, s.trader_wallet_id, s.token_id, s.captured_at DESC NULLS LAST
+      JOIN poly_trader_position_snapshots s
+        ON lower(s.condition_id) = sc.condition_id
+      JOIN active_targets a ON a.trader_wallet_id = s.trader_wallet_id
+      ORDER BY sc.group_key, a.wallet_address, lower(s.condition_id), s.token_id,
+        s.captured_at DESC NULLS LAST, s.condition_id, s.trader_wallet_id
     ), projected AS (
       SELECT
         l.group_key,
-        a.wallet_address,
-        a.label,
+        l.wallet_address,
+        l.label,
         l.condition_id,
         l.token_id,
         COALESCE(NULLIF(pmm.market_title, ''), NULLIF(l.raw_title, ''), 'Polymarket') AS market_title,
@@ -638,16 +1153,31 @@ async function readBoundedTargetLegs(params: {
                  THEN 'active' ELSE 'inactive' END
         END AS lifecycle,
         ROW_NUMBER() OVER (
-          PARTITION BY l.group_key, a.wallet_address, l.condition_id
+          PARTITION BY l.group_key, l.wallet_address, l.condition_id
           ORDER BY l.cost_basis_usdc DESC, l.token_id
         ) AS leg_rank
       FROM latest l
-      JOIN active_targets a ON a.trader_wallet_id = l.trader_wallet_id
-      LEFT JOIN poly_trader_current_positions cp
-        ON cp.trader_wallet_id = l.trader_wallet_id
-       AND cp.condition_id = l.condition_id
-       AND cp.token_id = l.token_id
-      LEFT JOIN poly_market_metadata pmm ON pmm.condition_id = l.condition_id
+      LEFT JOIN LATERAL (
+        SELECT candidate.active, candidate.current_value_usdc,
+          candidate.last_observed_at
+        FROM poly_trader_current_positions candidate
+        JOIN active_targets candidate_wallet
+          ON candidate_wallet.trader_wallet_id = candidate.trader_wallet_id
+         AND candidate_wallet.wallet_address = l.wallet_address
+        WHERE lower(candidate.condition_id) = l.condition_id
+          AND candidate.token_id = l.token_id
+        ORDER BY candidate.last_observed_at DESC, candidate.condition_id,
+          candidate.trader_wallet_id
+        LIMIT 1
+      ) cp ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT candidate.market_title, candidate.event_title,
+          candidate.market_slug, candidate.event_slug
+        FROM poly_market_metadata candidate
+        WHERE lower(candidate.condition_id) = l.condition_id
+        ORDER BY candidate.fetched_at DESC, candidate.condition_id
+        LIMIT 1
+      ) pmm ON TRUE
     ), participants AS (
       SELECT
         group_key,
@@ -727,7 +1257,7 @@ async function readBoundedTargetLegs(params: {
         source: "trader_current_positions",
         label: row.label ?? "Copy target",
         walletAddress: row.wallet_address.toLowerCase(),
-        conditionId: row.condition_id,
+        conditionId: canonicalIdentity(row.condition_id),
         tokenId: leg.token_id,
         marketTitle: leg.market_title ?? "Polymarket",
         eventTitle: leg.event_title,
@@ -761,9 +1291,10 @@ function groupParticipants(
 ): WalletExecutionMarketGroup[] {
   const byCondition = new Map<string, RawLeg[]>();
   for (const leg of legs) {
-    const list = byCondition.get(leg.conditionId) ?? [];
+    const conditionId = canonicalIdentity(leg.conditionId);
+    const list = byCondition.get(conditionId) ?? [];
     list.push(leg);
-    byCondition.set(leg.conditionId, list);
+    byCondition.set(conditionId, list);
   }
 
   type Line = WalletExecutionMarketGroup["lines"][number];
@@ -1185,7 +1716,11 @@ export function rollupKey(
   conditionId: string,
   tokenId: string
 ): string {
-  return `${walletAddress.toLowerCase()}:${conditionId}:${tokenId}`;
+  return `${canonicalIdentity(walletAddress)}:${canonicalIdentity(conditionId)}:${tokenId}`;
+}
+
+export function canonicalIdentity(value: string): string {
+  return value.toLowerCase();
 }
 
 /**
@@ -1237,7 +1772,8 @@ export async function readFillRollups(params: {
   const walletRows = (await params.db.execute(sql`
     SELECT w.id
     FROM poly_trader_wallets w
-    WHERE w.wallet_address IN (${walletList})
+    WHERE lower(w.wallet_address) IN (${walletList})
+    ORDER BY lower(w.wallet_address), w.updated_at DESC, w.created_at DESC, w.id
   `)) as unknown as ReadonlyArray<{ id: string | null }>;
   const walletIds = walletRows
     .map((row) => row.id)
@@ -1248,7 +1784,7 @@ export async function readFillRollups(params: {
     ? sql.join(
         params.positionKeys.map(
           (key) =>
-            sql`(${key.walletAddress.toLowerCase()}, ${key.conditionId}, ${key.tokenId})`
+            sql`(${canonicalIdentity(key.walletAddress)}, ${canonicalIdentity(key.conditionId)}, ${key.tokenId})`
         ),
         sql`, `
       )
@@ -1257,27 +1793,47 @@ export async function readFillRollups(params: {
     walletIds,
     windowStartIso: EPOCH_ISO,
     conditionIds: params.conditions,
+    conditionIdentity: "case_insensitive",
   });
   const rows = (await params.db.execute(sql`
+    WITH normalized_flows AS (
+      SELECT
+        lower(w.wallet_address) AS wallet_address,
+        lower(fl.condition_id) AS condition_id,
+        fl.token_id,
+        SUM(fl.buy_usdc)::numeric AS total_buy_notional,
+        SUM(fl.sell_usdc)::numeric AS realized_cash,
+        SUM(fl.buy_shares - fl.sell_shares)::numeric AS net_shares
+      FROM (${flows}) fl
+      JOIN poly_trader_wallets w ON w.id = fl.trader_wallet_id
+      GROUP BY lower(w.wallet_address), lower(fl.condition_id), fl.token_id
+    )
     SELECT
-      lower(w.wallet_address) AS wallet_address,
+      fl.wallet_address,
       fl.condition_id,
       fl.token_id,
-      fl.buy_usdc::numeric AS total_buy_notional,
-      fl.sell_usdc::numeric AS realized_cash,
-      (fl.buy_shares - fl.sell_shares)::numeric AS net_shares,
+      fl.total_buy_notional,
+      fl.realized_cash,
+      fl.net_shares,
       pmo.outcome AS market_outcome
-    FROM (${flows}) fl
-    JOIN poly_trader_wallets w ON w.id = fl.trader_wallet_id
+    FROM normalized_flows fl
     ${selectedKeyRows === null
       ? sql``
-      : sql`JOIN (VALUES ${selectedKeyRows}) AS selected_keys(wallet_address, condition_id, token_id)
-          ON selected_keys.wallet_address = lower(w.wallet_address)
+      : sql`JOIN (
+            SELECT DISTINCT wallet_address, condition_id, token_id
+            FROM (VALUES ${selectedKeyRows}) AS requested_keys(wallet_address, condition_id, token_id)
+          ) AS selected_keys
+          ON selected_keys.wallet_address = fl.wallet_address
          AND selected_keys.condition_id = fl.condition_id
          AND selected_keys.token_id = fl.token_id`}
-    LEFT JOIN poly_market_outcomes pmo
-      ON pmo.condition_id = fl.condition_id
-     AND pmo.token_id = fl.token_id
+    LEFT JOIN LATERAL (
+      SELECT candidate.outcome
+      FROM poly_market_outcomes candidate
+      WHERE lower(candidate.condition_id) = fl.condition_id
+        AND candidate.token_id = fl.token_id
+      ORDER BY candidate.updated_at DESC, candidate.condition_id
+      LIMIT 1
+    ) pmo ON TRUE
   `)) as unknown as ReadonlyArray<{
     wallet_address: string | null;
     condition_id: string | null;
@@ -1363,6 +1919,28 @@ function toNumber(value: string | number | null | undefined): number {
   if (value === null || value === undefined) return 0;
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseNonnegativeInteger(
+  value: string | number | null | undefined
+): number | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function unavailableCoverageLeaf(): WalletDashboardComparisonCoverageLeaf {
+  return {
+    eligible: null,
+    comparable: null,
+    dropped: null,
+    sampled: null,
+    complete: false,
+    reasons: ["source_unavailable"],
+  };
 }
 
 function nullableNumber(

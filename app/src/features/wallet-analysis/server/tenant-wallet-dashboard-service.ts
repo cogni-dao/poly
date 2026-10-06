@@ -13,10 +13,16 @@ import type {
 import { type SQL, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { readCurrentWalletPositionModel } from "./current-position-read-model";
-import { buildBoundedMarketExposureGroups } from "./market-exposure-service";
+import {
+  buildBoundedMarketExposureGroups,
+  materializeComparisonCoverage,
+  readFullComparisonCoverageCounts,
+  unavailableComparisonCoverage,
+} from "./market-exposure-service";
 import {
   applyRealizedPnl,
   readWalletTokenPnlMap,
+  tokenPnlKey,
 } from "./realized-pnl-service";
 import { getTradingWalletPnlHistoryRead } from "./trading-wallet-overview-service";
 import {
@@ -177,7 +183,8 @@ export async function readTenantWalletDashboard(input: {
         ? positionsRead.value.warnings.some((entry) => entry.code === "current_positions_wallet_missing") ||
           !positionsRead.value.summary.hasSuccessfulObservation
           ? unavailableFact("data_api_current_positions")
-          : positionsRead.value.summary.cursorStatus === "partial"
+          : positionsRead.value.summary.identityAmbiguous ||
+              positionsRead.value.summary.cursorStatus === "partial"
             ? {
                 ...factFromAge(
                   "data_api_current_positions",
@@ -226,9 +233,6 @@ export async function readTenantWalletDashboard(input: {
         }
       }
 
-      const historyFact = closedRead.ok
-        ? freshFact("local_ledger", capturedAt)
-        : unavailableFact("local_ledger");
       if (!closedRead.ok) warnings.push(readFailure("history", "history_unavailable", closedRead.error));
 
       const activityFact = dailyRead.ok
@@ -263,9 +267,24 @@ export async function readTenantWalletDashboard(input: {
       // fed back into market cost-basis math.
       const marketLivePositions = livePositions;
       const marketClosedPositions = closedPositions;
-      const displayedKeys = [...livePositions, ...closedPositions]
-        .slice(0, LIVE_PREVIEW_LIMIT + CLOSED_PREVIEW_LIMIT)
-        .map((position) => ({ conditionId: position.conditionId, tokenId: position.asset }));
+      const displayedLivePositions = marketLivePositions.slice(
+        0,
+        LIVE_PREVIEW_LIMIT
+      );
+      const displayedClosedPositions = marketClosedPositions.slice(
+        0,
+        CLOSED_PREVIEW_LIMIT
+      );
+      const displayedKeys = [
+        ...new Map(
+          [...displayedLivePositions, ...displayedClosedPositions].map(
+            (position) => [
+              tokenPnlKey(position.conditionId, position.asset),
+              { conditionId: position.conditionId, tokenId: position.asset },
+            ] as const
+          )
+        ).values(),
+      ];
       const realizedRead = await optionalRead(db, (savepoint) =>
         readWalletTokenPnlMap({ db: savepoint, walletAddress: address, positionKeys: displayedKeys })
       );
@@ -275,6 +294,44 @@ export async function readTenantWalletDashboard(input: {
       } else {
         warnings.push(readFailure("pnl", "realized_pnl_unavailable", realizedRead.error));
       }
+      if (positionsRead.ok && positionsRead.value.summary.identityAmbiguous) {
+        warnings.push(
+          warning(
+            "pnl",
+            "realized_pnl_identity_ambiguous",
+            "Per-position realized P/L is best-effort because multiple saved wallet identities share this address."
+          )
+        );
+      }
+      const missingRealizedClosedCount = realizedRead.ok
+        ? displayedClosedPositions.filter(
+            (position) =>
+              !realizedRead.value.has(
+                tokenPnlKey(position.conditionId, position.asset)
+              )
+          ).length
+        : 0;
+      if (realizedRead.ok && missingRealizedClosedCount > 0) {
+        warnings.push(
+          warning(
+            "pnl",
+            "realized_pnl_incomplete",
+            `Realized P/L is missing for ${missingRealizedClosedCount} displayed closed position${missingRealizedClosedCount === 1 ? "" : "s"}; history remains partial.`
+          )
+        );
+      }
+      const historyFact = !closedRead.ok
+        ? unavailableFact("local_ledger")
+        : positionsRead.ok &&
+            !positionsRead.value.summary.identityAmbiguous &&
+            realizedRead.ok &&
+            missingRealizedClosedCount === 0
+          ? freshFact("local_ledger", capturedAt)
+          : {
+              ...freshFact("local_ledger", capturedAt),
+              status: "partial" as const,
+              complete: false,
+            };
 
       const marketRead =
         positionFact.status === "unavailable"
@@ -291,14 +348,72 @@ export async function readTenantWalletDashboard(input: {
                 closedPositions: marketClosedPositions,
               })
             );
+      const coverageRead =
+        positionFact.status === "unavailable"
+          ? ({
+              ok: false,
+              error: new Error("Current-position authority is unavailable."),
+            } as const)
+          : await optionalRead(db, (savepoint) =>
+              readFullComparisonCoverageCounts({
+                db: savepoint,
+                billingAccountId: input.billingAccountId,
+                walletAddress: address,
+              })
+            );
       if (!marketRead.ok) warnings.push(readFailure("markets", "market_exposure_unavailable", marketRead.error));
-      else if (
-        marketRead.value.truncated ||
-        (positionsRead.ok && positionsRead.value.summary.activeRows > livePositions.length) ||
-        (closedRead.ok && closedRead.value.count > closedPositions.length)
+      if (!coverageRead.ok) {
+        warnings.push(
+          readFailure(
+            "markets",
+            "comparison_coverage_unavailable",
+            coverageRead.error
+          )
+        );
+      }
+      if (
+        marketRead.ok &&
+        (marketRead.value.truncated ||
+          (positionsRead.ok &&
+            positionsRead.value.summary.activeRows > livePositions.length) ||
+          (closedRead.ok && closedRead.value.count > closedPositions.length))
       ) {
         marketRead.value.truncated = true;
         warnings.push(warning("markets", "market_exposure_preview_truncated", "Market comparison is a bounded preview; exact position counts remain available separately."));
+      }
+      const comparisonCoverage = !marketRead.ok || !coverageRead.ok
+        ? unavailableComparisonCoverage()
+        : materializeComparisonCoverage({
+            counts: coverageRead.value,
+            groups: marketRead.value.groups,
+            livePositions: livePositions.slice(0, LIVE_PREVIEW_LIMIT),
+            closedPositions: closedPositions.slice(0, CLOSED_PREVIEW_LIMIT),
+            sourceComplete:
+              positionFact.status === "fresh" &&
+              positionFact.complete &&
+              historyFact.status === "fresh" &&
+              historyFact.complete,
+            previewTruncated: marketRead.value.truncated,
+          });
+      const comparisonCoverageUnavailable = Object.values(
+        comparisonCoverage
+      ).some((byStatus) =>
+        Object.values(byStatus).some((leaf) =>
+          leaf.reasons.includes("source_unavailable")
+        )
+      );
+      if (
+        marketRead.ok &&
+        coverageRead.ok &&
+        comparisonCoverageUnavailable
+      ) {
+        warnings.push(
+          warning(
+            "markets",
+            "comparison_coverage_invalid",
+            "Comparison coverage counts failed invariant validation."
+          )
+        );
       }
 
       const cashOnChain = balance.kind === "available"
@@ -373,6 +488,7 @@ export async function readTenantWalletDashboard(input: {
               ? positionsRead.value.summary.activeRows
               : null,
           market_groups: marketRead.ok ? marketRead.value.groups : [],
+          comparisonCoverage,
           closed_positions: closedPositions.slice(0, CLOSED_PREVIEW_LIMIT),
           closed_position_count: closedRead.ok ? closedRead.value.count : null,
           warnings: warnings
@@ -405,7 +521,10 @@ export async function readTenantWalletDashboard(input: {
           activity: activityFact,
           markets: !marketRead.ok
             ? unavailableFact("composite")
-            : marketRead.value.truncated || positionFact.status === "partial"
+            : marketRead.value.truncated ||
+                positionFact.status === "partial" ||
+                !coverageRead.ok ||
+                comparisonCoverageUnavailable
               ? {
                   ...factFromAge(
                     "composite",
@@ -533,11 +652,11 @@ export async function readClosedPositionSummary(
   const rows = normalizeRows<ClosedRow>(await db.execute(sql`
     WITH keyed AS (
       SELECT
-        COALESCE(
+        lower(COALESCE(
           NULLIF(f.attributes->>'condition_id', ''),
           NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), ''),
           f.fill_id
-        ) AS condition_key,
+        )) AS condition_key,
         COALESCE(NULLIF(f.attributes->>'token_id', ''), f.client_order_id) AS asset_key,
         f.client_order_id,
         f.position_lifecycle,
@@ -555,7 +674,7 @@ export async function readClosedPositionSummary(
         f.attributes->>'token_id' AS token_id,
         ROW_NUMBER() OVER (
           PARTITION BY
-            COALESCE(NULLIF(f.attributes->>'condition_id', ''), NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), ''), f.fill_id),
+            lower(COALESCE(NULLIF(f.attributes->>'condition_id', ''), NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), ''), f.fill_id)),
             COALESCE(NULLIF(f.attributes->>'token_id', ''), f.client_order_id)
           ORDER BY f.observed_at DESC, f.updated_at DESC, f.client_order_id DESC
         ) AS tuple_rank
@@ -632,7 +751,7 @@ function closedRowToPosition(row: ClosedRow, capturedAt: Date): WalletExecutionP
   const marketSlug = nonEmpty(row.market_slug);
   return [{
     positionId: `${row.condition_key}:${row.asset_key}`,
-    conditionId: row.condition_key,
+    conditionId: row.condition_key.toLowerCase(),
     asset: row.token_id ?? row.asset_key,
     marketTitle: nonEmpty(row.title) ?? "Polymarket",
     eventTitle: nonEmpty(row.event_title) ?? null,
@@ -749,6 +868,7 @@ function emptyDashboard(input: { snapshotId: string; capturedAt: string; interva
       live_positions: [],
       live_position_count: null,
       market_groups: [],
+      comparisonCoverage: unavailableComparisonCoverage(),
       closed_positions: [],
       closed_position_count: null,
       warnings: input.warnings.map(({ code, message }) => ({ code, message })),

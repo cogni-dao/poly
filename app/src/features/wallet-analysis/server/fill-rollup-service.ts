@@ -499,6 +499,12 @@ export function windowedFillFlowsSelect(params: {
    * or `[]` means no condition filter (existing callers unchanged).
    */
   conditionIds?: ReadonlyArray<string>;
+  /**
+   * Default preserves the historical byte-for-byte `condition_id IN (…)`
+   * predicate. Dashboard identity-reconciliation readers opt into the
+   * case-insensitive form for legacy differently-cased saved facts.
+   */
+  conditionIdentity?: "exact" | "case_insensitive";
 }): SQL {
   const bounds = rollupWindowBounds(params.windowStartIso);
   const ids = sql.join(
@@ -507,8 +513,10 @@ export function windowedFillFlowsSelect(params: {
   );
   const conditionFilter = (column: SQL): SQL =>
     params.conditionIds !== undefined && params.conditionIds.length > 0
-      ? sql` AND ${column} IN (${sql.join(
-          params.conditionIds.map((c) => sql`${c}`),
+      ? sql` AND ${params.conditionIdentity === "case_insensitive" ? sql`lower(${column})` : column} IN (${sql.join(
+          params.conditionIds.map((c) =>
+            sql`${params.conditionIdentity === "case_insensitive" ? c.toLowerCase() : c}`
+          ),
           sql`, `
         )})`
       : sql``;

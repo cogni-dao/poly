@@ -49,11 +49,11 @@
     }
   ],
   "policySha256": "56f42128ff2b65d09c9440e7ce92ca4bd1a788f806ae96704ec08572b31cc19b",
-  "targetTreeDigest": "4a8894c0da6b01d892e5b105c89151ff45a95bdeefb8a4ad5ca730dac30e3768",
+  "targetTreeDigest": "e4aa5376ee770d535a1b3bfc80fa08d631fec6205eb40b7e5af7ed9fe63db5df",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1158,
+    "targetOnlyFiles": 1161,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -279,7 +279,7 @@
         "app/src/features/wallet-analysis/server/wallet-analysis-service.ts"
       ],
       "proofs": [],
-      "currentTargetDigest": "eec491fdf121986497e1b81f4f2fdcd36ca2fd1759d6cb10ac648bbd4dfccade",
+      "currentTargetDigest": "a247fd5307cd73ec9e6aca60221e65ef2e9fe22344299119d68496e4bfa6a08d",
       "status": "unresolved",
       "unresolvedReason": "proof_missing"
     },
@@ -13315,7 +13315,7 @@
       "sourceBlob": "dcb6e95fa747b4c8b46048d1e72b7978600d8367",
       "sourcePath": "app/src/features/wallet-analysis/server/current-position-read-model.ts",
       "targetPath": "app/src/features/wallet-analysis/server/current-position-read-model.ts",
-      "targetBlob": "e8650022865a8ddb4818c7d964a93d5138768dbc",
+      "targetBlob": "79a55bdf807b9f19a832827aa923efacfa465fce",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "coordination and runtime truth",
@@ -13343,7 +13343,7 @@
       "sourceBlob": "39f5da2a98a92ec6bfbcb89e0510b0c4a573fa2d",
       "sourcePath": "app/src/features/wallet-analysis/server/market-exposure-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/market-exposure-service.ts",
-      "targetBlob": "613e171f2f36258b01fcabf9b654b0410619fcf3",
+      "targetBlob": "ee42d4c9e3f81d2d10d114a1755136f73815e554",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -13427,7 +13427,7 @@
       "sourceBlob": "ea0f16ca8443df059ce3c73876e2eee60ad5bbd2",
       "sourcePath": "app/src/features/wallet-analysis/server/realized-pnl-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/realized-pnl-service.ts",
-      "targetBlob": "bf763aed61aa82baffca3f6f6b787a8eefd94793",
+      "targetBlob": "c74b2ce506201797ca367688eda04cdad880480a",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -26306,7 +26306,13 @@
       "targetPath": "app/tests/unit/features/wallet-analysis/coalesce-swr.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/features/wallet-analysis/comparison-coverage.test.ts"
+    },
+    {
       "targetPath": "app/tests/unit/features/wallet-analysis/current-position-raw-projection.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/wallet-analysis/fill-rollup-condition-identity.test.ts"
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/hash-position.test.ts"
@@ -26325,6 +26331,9 @@
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/position-balance-authority.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/wallet-analysis/realized-pnl-identity.test.ts"
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/recent-trades-read-budget.test.ts"

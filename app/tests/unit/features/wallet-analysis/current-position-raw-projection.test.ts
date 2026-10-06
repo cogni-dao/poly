@@ -45,6 +45,8 @@ const fullRow = {
   raw_outcome: "Yes",
   cursor_last_success_at: "2026-09-29T00:05:00.000Z",
   cursor_status: "ok",
+  eligible_wallet_count: 1,
+  wallet_identity_count: 1,
   redeem_status: null,
   redeem_lifecycle_state: null,
   market_outcome: null,
@@ -127,6 +129,7 @@ describe("current-position read model raw->> projection equivalence", () => {
       activeRows: 1,
       hasSuccessfulObservation: true,
       cursorStatus: "ok",
+      identityAmbiguous: false,
     });
     expect(model.warnings).toEqual([]);
   });
@@ -169,6 +172,13 @@ describe("current-position read model raw->> projection equivalence", () => {
     expect(db.captured[0]).toMatch(/LIMIT \$\d+/);
     expect(db.captured[0]).toContain("p.current_value_usdc > 0");
     expect(db.captured[0]).toContain("NOT IN ('redeemed', 'loser', 'dust', 'closed')");
+    expect(db.captured[0]).toContain("lower(w.wallet_address) = lower(");
+    expect(db.captured[0]).toContain(
+      "PARTITION BY lower(p.condition_id), p.token_id"
+    );
+    expect(db.captured[0].indexOf("row_number() OVER")).toBeLessThan(
+      db.captured[0].indexOf("p.active = true")
+    );
     expect(db.captured[0]).toMatch(
       /ORDER BY\s+p\.current_value_usdc DESC NULLS LAST,\s+p\.last_observed_at DESC NULLS LAST,\s+p\.condition_id ASC NULLS LAST,\s+p\.token_id ASC NULLS LAST\s+LIMIT \$\d+/
     );
@@ -231,5 +241,33 @@ describe("current-position read model raw->> projection equivalence", () => {
     }
     // `p.raw` may appear only as a `p.raw->>` scalar extraction.
     expect(sqlText).not.toMatch(/p\.raw\b(?!->>)/);
+  });
+
+  it("canonicalizes emitted condition identity and joins saved facts case-insensitively", async () => {
+    const db = fakeDb([{ ...fullRow, condition_id: "MiXeD-Condition" }]);
+    const model = await readCurrentWalletPositionModel({
+      db,
+      walletAddress: WALLET.toUpperCase(),
+      capturedAt: CAPTURED_AT,
+    });
+
+    expect(model.positions[0]?.conditionId).toBe("mixed-condition");
+    const sqlText = db.captured[0] ?? "";
+    expect(sqlText).toContain("lower(candidate.condition_id) = lower(p.condition_id)");
+    expect(sqlText).toContain("lower(candidate.funder_address) = lower(");
+  });
+
+  it("coalesces wallet siblings and marks their retained position fact ambiguous", async () => {
+    const model = await readCurrentWalletPositionModel({
+      db: fakeDb([{ ...fullRow, wallet_identity_count: 2 }]),
+      walletAddress: WALLET,
+      capturedAt: CAPTURED_AT,
+    });
+
+    expect(model.positions).toHaveLength(1);
+    expect(model.summary.identityAmbiguous).toBe(true);
+    expect(model.warnings).toContainEqual(
+      expect.objectContaining({ code: "current_positions_identity_ambiguous" })
+    );
   });
 });

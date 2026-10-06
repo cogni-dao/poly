@@ -5,11 +5,8 @@
  * Module: `@tests/unit/features/wallet-analysis/market-exposure-snapshot-sql`
  * Purpose: Guard the dashboard read-path floor fixes inside
  *   `readTargetLegs`' latest_snapshots CTE:
- *   (1) DISTINCT ON + ORDER BY are condition_id-led AND use
- *       `captured_at DESC NULLS LAST`, matching
- *       `poly_trader_position_snapshots_market_latest_idx`
- *       (condition_id, trader_wallet_id, token_id, captured_at DESC NULLS
- *       LAST — migration 0063) so the index serves the sort;
+ *   (1) DISTINCT ON canonicalizes wallet + condition identity and uses
+ *       `captured_at DESC NULLS LAST` with deterministic physical tiebreaks;
  *   (2) the Data-API `raw` jsonb is projected to 5 scalar `raw->>` fields
  *       and never selected wholesale;
  *   and prove the target-leg mapping (raw fallbacks included) is unchanged
@@ -96,7 +93,7 @@ function fakeDb() {
 }
 
 describe("market-exposure latest_snapshots CTE (dashboard floor fix)", () => {
-  it("DISTINCT ON + ORDER BY are condition_id-led with DESC NULLS LAST so 0063's index serves the sort", async () => {
+  it("dedupes snapshots on canonical condition identity with a deterministic latest row", async () => {
     const db = fakeDb();
     await buildMarketExposureGroups({
       db,
@@ -106,18 +103,13 @@ describe("market-exposure latest_snapshots CTE (dashboard floor fix)", () => {
     });
 
     const snapshotSql = db.captured[0] ?? "";
-    // Column order must match poly_trader_position_snapshots_market_latest_idx
-    // (condition_id, trader_wallet_id, token_id, captured_at DESC NULLS LAST).
     expect(snapshotSql).toMatch(
-      /DISTINCT ON \(s\.condition_id, s\.trader_wallet_id, s\.token_id\)/
+      /DISTINCT ON \(a\.wallet_address, lower\(s\.condition_id\), s\.token_id\)/
     );
     expect(snapshotSql).toMatch(
-      /ORDER BY s\.condition_id, s\.trader_wallet_id, s\.token_id,\s+s\.captured_at DESC NULLS LAST/
+      /ORDER BY a\.wallet_address, lower\(s\.condition_id\), s\.token_id,\s+s\.captured_at DESC NULLS LAST, s\.condition_id, s\.trader_wallet_id/
     );
-    // The legacy wallet-led order must not resurface.
-    expect(snapshotSql).not.toMatch(
-      /DISTINCT ON \(s\.trader_wallet_id, s\.condition_id, s\.token_id\)/
-    );
+    expect(snapshotSql).toContain("WHERE lower(s.condition_id) IN");
   });
 
   it("projects 5 scalar raw->> fields and never selects the raw blob wholesale", async () => {
