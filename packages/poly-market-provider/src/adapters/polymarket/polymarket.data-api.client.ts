@@ -28,12 +28,14 @@ import {
   type PolymarketLeaderboardTimePeriod,
   type PolymarketUserPosition,
   PolymarketUserPositionsResponseSchema,
-  PolymarketUserPositionsV2ResponseSchema,
-  type PolymarketUserPositionV2,
   type PolymarketUserTrade,
   PolymarketUserTradesResponseSchema,
   UserValueResponseSchema,
 } from "./polymarket.data-api.types.js";
+import {
+  PolymarketUserPositionsV2ResponseSchema,
+  type PolymarketUserPositionV2,
+} from "./polymarket.data-api-v2.types.js";
 
 /**
  * Thrown when a Data API response fails Zod validation at the client boundary.

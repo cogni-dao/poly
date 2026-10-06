@@ -100,15 +100,19 @@ export {
   type PolymarketUserPosition,
   PolymarketUserPositionSchema,
   PolymarketUserPositionsResponseSchema,
-  PolymarketUserPositionsV2ResponseSchema,
-  type PolymarketUserPositionV2,
-  PolymarketUserPositionV2Schema,
   type PolymarketUserTrade,
   PolymarketUserTradeSchema,
   PolymarketUserTradesResponseSchema,
   UserValueEntrySchema,
   UserValueResponseSchema,
 } from "./polymarket.data-api.types.js";
+export {
+  PolymarketPositionsV2PaginationSchema,
+  PolymarketUserPositionsV2ResponseSchema,
+  type PolymarketUserPositionsV2Response,
+  type PolymarketUserPositionV2,
+  PolymarketUserPositionV2Schema,
+} from "./polymarket.data-api-v2.types.js";
 export {
   POLYGON_NEG_RISK_ADAPTER,
   polymarketNegRiskAdapterAbi,
