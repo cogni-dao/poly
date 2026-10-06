@@ -8,7 +8,16 @@
  * Invariants:
  *   - NO_LANGCHAIN_IN_SRC: No @langchain imports; delegates to package runner
  *   - GRAPH_ID_NAMESPACED: graphId format is "langgraph:${graphName}"
- *   - CATALOG_SINGLE_SOURCE_OF_TRUTH: Uses catalog from @cogni/langgraph-graphs
+ *   - NODE_RUNTIME_CATALOG_BOUNDARY: the catalog is a CONSTRUCTOR ARGUMENT, not an
+ *     import. Graph sets and per-graph tool allowlists are app runtime policy, so
+ *     the node composes them in `@bootstrap/ai/node-catalog` and injects them
+ *     here; the shared @cogni/langgraph-graphs catalog is only the default. On the
+ *     poly node that injection is what makes `langgraph:poly-brain` resolve
+ *     instead of returning `not_found`.
+ *   - TOOL_SOURCE_MAY_BE_COMPOSED: the injected toolSource is whatever bootstrap
+ *     composed, which for in-process runs is a per-request principal-scoped
+ *     overlay in front of the container source. This provider stays unaware of
+ *     principals: it resolves tool ids and nothing else.
  *   - NODE_BUNDLE_IS_CANONICAL: Resolves BoundTool from injected node bundle (CORE_TOOL_BUNDLE [+ POLY_TOOL_BUNDLE for poly]); never iterates the global TOOL_CATALOG (which is per-package and can drift behind per-node bundles).
  *   - DENY_BY_DEFAULT: Tool policy explicitly provided per graph
  *   - MCP_VIA_ASYNC_SOURCE: MCP tools resolved via async getMcpToolSource() function (shared cache with reconnect-on-error)
@@ -105,13 +114,25 @@ export class LangGraphInProcProvider implements GraphExecutorPort {
     private readonly toolSource: ToolSourcePort,
     private readonly getMcpToolSource: () => Promise<ToolSourcePort | null> = () =>
       Promise.resolve(null),
-    nodeBundle: readonly CatalogBoundTool[] = []
+    nodeBundle: readonly CatalogBoundTool[] = [],
+    /**
+     * This node's catalog, INJECTED. Per NODE_RUNTIME_CATALOG_BOUNDARY the graph
+     * set plus each graph's tool allowlist is app runtime policy, so it is
+     * composed at the bootstrap composition root (`@bootstrap/ai/node-catalog`)
+     * and handed in here. That keeps this adapter node-agnostic AND leaves the
+     * catalog free to name an app-local tool id, which it could not do if this
+     * module imported it — `adapters` must not import `features`.
+     *
+     * Defaults to the shared base catalog, so a caller with no node policy (and
+     * every existing test) behaves exactly as before.
+     */
+    catalog: LangGraphCatalog<CreateGraphFn> =
+      LANGGRAPH_CATALOG as LangGraphCatalog<CreateGraphFn>
   ) {
     this.log = makeLogger({ component: "LangGraphInProcProvider" });
     this.boundToolMap = new Map(nodeBundle.map((bt) => [bt.contract.name, bt]));
 
-    // Use catalog from package (single source of truth)
-    this.catalog = LANGGRAPH_CATALOG as LangGraphCatalog<CreateGraphFn>;
+    this.catalog = catalog;
 
     this.log.debug(
       {

@@ -10,6 +10,10 @@
  *   - DISCOVERY_PIPELINE: Route → this helper → aggregator → providers
  *   - REGISTRY_SEPARATION: Discovery providers only, never execution providers
  *   - P0_AGENT_GRAPH_IDENTITY: agentId === graphId (one agent per graph)
+ *   - NODE_RUNTIME_CATALOG_BOUNDARY: this node's catalog is injected into the
+ *     discovery provider, matching what graph-executor.factory injects into the
+ *     execution provider. Discovery and execution must not disagree on which
+ *     graphs exist.
  * Side-effects: none
  * Links: AGENT_DISCOVERY.md, agent-catalog.port.ts
  * @public
@@ -24,6 +28,8 @@ import {
 import { SandboxAgentCatalogProvider } from "@/adapters/server/sandbox/sandbox-agent-catalog.provider";
 import type { AgentDescriptor } from "@/ports";
 import { serverEnv } from "@/shared/env";
+
+import { POLY_NODE_LANGGRAPH_CATALOG } from "./ai/node-catalog";
 
 /**
  * Create discovery-only aggregator.
@@ -44,7 +50,10 @@ export function createAgentCatalog(): {
   const env = serverEnv();
   const providers: AgentCatalogProvider[] = env.LANGGRAPH_DEV_URL
     ? [new LangGraphDevAgentCatalogProvider()]
-    : [new LangGraphInProcAgentCatalogProvider()];
+    : // Per NODE_RUNTIME_CATALOG_BOUNDARY: inject THIS node's catalog so the
+      // listing matches what createInProcProvider can actually execute. Without
+      // it, `langgraph:poly-brain` is runnable but invisible to /api/v1/ai/agents.
+      [new LangGraphInProcAgentCatalogProvider(POLY_NODE_LANGGRAPH_CATALOG)];
 
   // Sandbox agents always registered — LITELLM_MASTER_KEY enforced by assertRuntimeSecrets()
   providers.push(new SandboxAgentCatalogProvider());
