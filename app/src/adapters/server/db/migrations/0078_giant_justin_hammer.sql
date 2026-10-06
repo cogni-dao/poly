@@ -1,0 +1,2 @@
+CREATE INDEX "poly_market_metadata_condition_latest_lower_idx" ON "poly_market_metadata" USING btree (lower("condition_id"),"fetched_at" DESC NULLS LAST,"condition_id");--> statement-breakpoint
+CREATE INDEX "poly_market_outcomes_condition_token_latest_lower_idx" ON "poly_market_outcomes" USING btree (lower("condition_id"),"token_id","updated_at" DESC NULLS LAST,"condition_id");
