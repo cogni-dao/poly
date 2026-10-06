@@ -49,11 +49,11 @@
     }
   ],
   "policySha256": "3a617b3691441cd75da8898c454d62317d673a3285df2490d76207d71b77e9b3",
-  "targetTreeDigest": "ea92bad8a61a038f7f84fc36296019aa3e5a5fb33aabf717280d9bc4e34fa21b",
+  "targetTreeDigest": "4a8894c0da6b01d892e5b105c89151ff45a95bdeefb8a4ad5ca730dac30e3768",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1153,
+    "targetOnlyFiles": 1156,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -6893,7 +6893,7 @@
       "sourceBlob": "c655888daa55814c9255e326b0853b77e21d6af0",
       "sourcePath": "app/src/app/api/v1/poly/research/trader-comparison/route.ts",
       "targetPath": "app/src/app/api/v1/poly/research/trader-comparison/route.ts",
-      "targetBlob": "3e18d356640211abb27cf5f1562914a679e235b3",
+      "targetBlob": "c67358dbb70c41316590f03e01ef2177709673ae",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -13455,7 +13455,7 @@
       "sourceBlob": "93b201ce8d291c0120fc2d85c2f4c54894d30d9c",
       "sourcePath": "app/src/features/wallet-analysis/server/trader-comparison-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/trader-comparison-service.ts",
-      "targetBlob": "f01669eb061743a33c975a1718ceda896bf1a6c8",
+      "targetBlob": "61bdd6f11526c1ce86f2f96355cab2b5377e4cff",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -14513,7 +14513,7 @@
       "sourceBlob": "0e0576d830869f6fe12895c611d8bc6808818df6",
       "sourcePath": "app/src/shared/env/server-env.ts",
       "targetPath": "app/src/shared/env/server-env.ts",
-      "targetBlob": "a5a738f4abb6c7d4dbb011c1e12132b2b7468022",
+      "targetBlob": "2a35613f343c06bb78f741cb3b941ee2bf47084b",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -26249,6 +26249,9 @@
       "targetPath": "app/tests/unit/bootstrap/publishers.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/bootstrap/research-prewarm-job.test.ts"
+    },
+    {
       "targetPath": "app/tests/unit/bootstrap/trader-observation-job.test.ts"
     },
     {
@@ -26327,6 +26330,9 @@
       "targetPath": "app/tests/unit/features/wallet-analysis/recent-trades-read-budget.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/features/wallet-analysis/research-read-cache-budget-lanes.test.ts"
+    },
+    {
       "targetPath": "app/tests/unit/features/wallet-analysis/research-read-cache-degraded.test.ts"
     },
     {
@@ -26340,6 +26346,9 @@
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/trade-size-pnl-bucket-mapping.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/features/wallet-analysis/trader-comparison-assembly.test.ts"
     },
     {
       "targetPath": "app/tests/unit/features/wallet-analysis/trader-comparison-budget.test.ts"

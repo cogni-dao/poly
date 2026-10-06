@@ -36,6 +36,14 @@
  *     warning on the partial-failure-200 path. The same value is installed as a transaction-local
  *     Postgres `statement_timeout`, so losing the JS race also cancels the underlying SQL instead
  *     of leaving it to consume I/O for minutes. The real fix remains complete tick-written rollups.
+ *   - PER_WALLET_UNIT (fix/comparison-per-wallet-cache): the budgeted per-wallet aggregate is
+ *     exposed as `computeTraderComparisonWallet(db, address, interval)` so the cache layer can
+ *     key on (wallet, interval) instead of the whole 3-wallet response. `getTraderComparison`
+ *     is now a thin compose: per-wallet computes + `assembleTraderComparison`.
+ *   - LABELS_ARE_PRESENTATION: request labels do NOT reach the per-wallet compute. The computed
+ *     trader's `label` is the stored observation label (or the short address), and the requested
+ *     label is re-stamped positionally at assembly — so two users naming the same wallet
+ *     differently share one cached compute.
  * Side-effects: DB reads plus the DB-backed P/L read performed by `getPnlSlice`.
  * Links: nodes/poly/packages/node-contracts/src/poly.research-trader-comparison.v1.contract.ts, work/items/task.5012, work/items/bug.5008
  * @public
@@ -65,6 +73,21 @@ type Db =
 export type TraderComparisonInput = {
   address: string;
   label?: string | undefined;
+};
+
+/**
+ * One wallet's budgeted comparison aggregate — the per-(wallet, interval)
+ * cache unit. `trader` is null when the wallet exceeded its time budget (the
+ * matching `wallet_budget_exceeded` warning is in `warnings`); non-budget
+ * warnings (e.g. `pnl_unavailable`) ride along with a non-null trader.
+ */
+export type TraderComparisonWalletResult = {
+  /** Lowercased wallet address the aggregate was computed for. */
+  address: `0x${string}`;
+  /** Compute time of THIS wallet's aggregate (cache entries age independently). */
+  capturedAt: string;
+  trader: PolyResearchTraderComparisonTrader | null;
+  warnings: PolyResearchTraderComparisonWarning[];
 };
 
 type TradeSummaryRow = {
@@ -147,59 +170,107 @@ export async function getTraderComparison(
   interval: PolyWalletOverviewInterval,
   opts: { perWalletBudgetMs?: number } = {}
 ): Promise<PolyResearchTraderComparisonResponse> {
-  const capturedAt = new Date().toISOString();
+  const inputs = wallets.slice(0, 3);
+  const results = await Promise.all(
+    inputs.map((wallet) =>
+      computeTraderComparisonWallet(db, wallet.address, interval, opts)
+    )
+  );
+  return assembleTraderComparison(interval, inputs, results);
+}
+
+/**
+ * The per-wallet cache unit (PER_WALLET_UNIT): one wallet's budgeted aggregate
+ * for one interval, label-free (LABELS_ARE_PRESENTATION). A budget/statement
+ * timeout degrades to `{trader: null}` plus a `wallet_budget_exceeded` warning
+ * instead of throwing, so the caller/cache layer can tell "degraded" (serve,
+ * never cache) from "failed" (throw, evict). `capturedAt` is the compute time —
+ * per-wallet cache entries age independently.
+ */
+export async function computeTraderComparisonWallet(
+  db: Db,
+  walletAddress: string,
+  interval: PolyWalletOverviewInterval,
+  opts: { perWalletBudgetMs?: number } = {}
+): Promise<TraderComparisonWalletResult> {
+  const address = walletAddress.toLowerCase() as `0x${string}`;
   const budgetMs =
     opts.perWalletBudgetMs ?? DEFAULT_TRADER_COMPARISON_WALLET_BUDGET_MS;
-  const warnings: PolyResearchTraderComparisonWarning[] = [];
+  const capturedAt = new Date().toISOString();
   const windowStartIso = windowStartFor(interval).toISOString();
-
-  const results = await Promise.all(
-    wallets.slice(0, 3).map(async (wallet) => {
-      const address = wallet.address.toLowerCase();
-      try {
-        const computed = await withBudget(
-          budgetMs,
-          computeTrader(db, wallet, address, interval, windowStartIso, budgetMs)
-        );
-        // Merge only when the wallet beat the budget — a late-completing
-        // computation must not mutate an already-returned warnings array.
-        warnings.push(...computed.warnings);
-        return computed.trader;
-      } catch (err) {
-        if (
-          err instanceof TraderComparisonBudgetExceededError ||
-          isStatementTimeout(err)
-        ) {
-          // Observability: name which ceiling fired — the Postgres
-          // statement_timeout (SQLSTATE 57014) or the JS budget race — so a
-          // degraded wallet in logs/payloads is attributable without a repro.
-          const cause = isStatementTimeout(err)
-            ? "sql_statement_timeout"
-            : "js_budget_race";
-          warnings.push({
-            wallet: address as `0x${string}`,
+  try {
+    const computed = await withBudget(
+      budgetMs,
+      computeTrader(db, address, interval, windowStartIso, budgetMs)
+    );
+    return {
+      address,
+      capturedAt,
+      trader: computed.trader,
+      warnings: computed.warnings,
+    };
+  } catch (err) {
+    if (
+      err instanceof TraderComparisonBudgetExceededError ||
+      isStatementTimeout(err)
+    ) {
+      // Observability: name which ceiling fired — the Postgres
+      // statement_timeout (SQLSTATE 57014) or the JS budget race — so a
+      // degraded wallet in logs/payloads is attributable without a repro.
+      const cause = isStatementTimeout(err)
+        ? "sql_statement_timeout"
+        : "js_budget_race";
+      return {
+        address,
+        capturedAt,
+        trader: null,
+        warnings: [
+          {
+            wallet: address,
             code: TRADER_COMPARISON_BUDGET_WARNING_CODE,
             message: `Aggregation for ${address} exceeded the ${budgetMs}ms budget (${cause}) and was omitted from this response. Retry later or narrow the interval.`,
-          });
-          return null;
-        }
-        throw err;
-      }
-    })
-  );
+          },
+        ],
+      };
+    }
+    throw err;
+  }
+}
 
-  return {
-    interval,
-    capturedAt,
-    traders: results.filter((t) => t !== null),
-    warnings,
-  };
+/**
+ * Cheap response assembly over per-wallet results. `results[i]` must correspond
+ * to `inputs[i]` (positional, like the request's wallet/label pairing).
+ * Re-stamps the requested label over the computed one (LABELS_ARE_PRESENTATION;
+ * the computed label is already `stored label || short address`, i.e. the legacy
+ * fallback chain's tail), drops budget-degraded wallets, merges warnings in
+ * input order, and reports the OLDEST per-wallet `capturedAt` so a response
+ * assembled from cached entries is honest about its staleness.
+ */
+export function assembleTraderComparison(
+  interval: PolyWalletOverviewInterval,
+  inputs: readonly TraderComparisonInput[],
+  results: readonly TraderComparisonWalletResult[]
+): PolyResearchTraderComparisonResponse {
+  const traders: PolyResearchTraderComparisonTrader[] = [];
+  const warnings: PolyResearchTraderComparisonWarning[] = [];
+  results.forEach((result, index) => {
+    warnings.push(...result.warnings);
+    if (!result.trader) return;
+    const requestedLabel = inputs[index]?.label?.trim();
+    traders.push(
+      requestedLabel
+        ? { ...result.trader, label: requestedLabel }
+        : result.trader
+    );
+  });
+  const capturedAt =
+    results.map((r) => r.capturedAt).sort()[0] ?? new Date().toISOString();
+  return { interval, capturedAt, traders, warnings };
 }
 
 /** Per-wallet aggregate (bundle + P/L) with its own warnings, merged by the caller only when it wins the budget race. */
 async function computeTrader(
   db: Db,
-  wallet: TraderComparisonInput,
   address: string,
   interval: PolyWalletOverviewInterval,
   windowStartIso: string,
@@ -225,7 +296,6 @@ async function computeTrader(
   return {
     trader: toTrader({
       address,
-      fallbackLabel: wallet.label,
       interval,
       summary: bundle.summary,
       tradeSizePnl: bundle.tradeSizePnl,
@@ -608,17 +678,16 @@ export async function readTradeSummary(
 
 function toTrader(params: {
   address: string;
-  fallbackLabel?: string | undefined;
   interval: PolyWalletOverviewInterval;
   summary: TradeSummaryRow | null;
   tradeSizePnl: PolyResearchTraderSizePnl;
   pnlHistory: PolyWalletOverviewPnlPoint[];
 }): PolyResearchTraderComparisonTrader {
   const summary = params.summary;
-  const label =
-    params.fallbackLabel?.trim() ||
-    summary?.label ||
-    shortAddress(params.address);
+  // LABELS_ARE_PRESENTATION: no request label here — the computed label is the
+  // legacy fallback chain's tail; `assembleTraderComparison` re-stamps the
+  // requested label over it at response assembly.
+  const label = summary?.label || shortAddress(params.address);
   return {
     address: params.address as `0x${string}`,
     label,

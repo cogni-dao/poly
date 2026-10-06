@@ -332,11 +332,12 @@ export const serverSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
 
-  // Interim research-read latency mitigation (fix/research-route-caching).
-  // One-shot boot prewarm of the four SWR-cached research aggregates
-  // (snapshot/benchmark for the two primary research wallets, target-overlap,
-  // trader-comparison) so first views don't pay the 25-31s cold aggregate.
-  // Default ON; runs on the job leader only (jobs seam, task.5016).
+  // Research prewarm (fix/research-route-caching; extended by
+  // fix/comparison-per-wallet-cache): one-shot boot warm of the SWR-cached
+  // snapshot/benchmark/target-overlap aggregates PLUS a recurring 4min tick
+  // that keeps the two fixed comparison targets (RN1, swisstony) warm at the
+  // board-default 1W interval, so no page load pays the 5-8s cold per-wallet
+  // aggregate. Default ON; runs on the job leader only (jobs seam, task.5016).
   POLY_RESEARCH_PREWARM_ENABLED: z
     .enum(["true", "false"])
     .default("true")
@@ -361,6 +362,22 @@ export const serverSchema = z.object({
     .int()
     .positive()
     .default(8_000),
+  // fix/prewarm-budget-split — BACKGROUND budget (ms) for the same per-wallet
+  // comparison aggregate when computed OFF the request path: the recurring
+  // research prewarm tick and the post-burn background heal. Prod build
+  // 4ceff2e1 (2026-10-05) measured RN1/swisstony COLD computes exceeding the
+  // 8s request budget under load; degraded results are never cached
+  // (DEGRADED_NOT_PINNED), so the prewarm's own computes burned the same 8s
+  // and the cache could never be populated — a self-defeating loop. Background
+  // computes carry no user latency SLA, so they get a generous ceiling and
+  // COMPLETE un-degraded, populating the cache that user requests then hit
+  // warm. Still budgeted (installs statement_timeout) so a runaway aggregate
+  // cannot hold a pool slot for minutes.
+  POLY_RESEARCH_PREWARM_BUDGET_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(45_000),
 
   // task.5016 — single-writer leader election for ALL in-process background
   // jobs. Default ON: every pod runs the elector and only the holder of
