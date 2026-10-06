@@ -20,7 +20,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1212 |
+| Current-only files | 1213 |
 | Unresolved legacy files | 609 |
 | P0/P1 mission files resolved | 8/80 |
 | Behavioral gates passed | 0/7 |
@@ -63,7 +63,7 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | --- | --- | --- | --- |
 | P0 | unresolved | `dashboard.open_positions` | `dashboard-truth` | Open-position count, market value, and execution live count match an independent Polygon/Data-API oracle and never silently collapse to zero. |
 | P0 | unresolved | `dashboard.pnl_history` | `dashboard-truth` | P/L history resolves the actual trading wallet and distinguishes missing observation data from a measured zero history. |
-| P0 | unresolved | `dashboard.wallet_identity` | `saved-facts` | The observer and every dashboard read model use the same tenant trading identity: funder_address when present, otherwise the legacy signer address. |
+| P0 | unresolved | `dashboard.wallet_identity` | `saved-facts` | The observer and every dashboard read model resolve the tenant trading identity from funder_address alone; an absent funder is an explicit unprovisioned state and is never substituted with another address. |
 | P0 | unresolved | `dashboard.wallet_total` | `dashboard-truth` | Total wallet value is cash plus marked positions; unavailable positions make Total unknown or explicitly partial, never a cash-only total. |
 | P0 | unresolved | `hub.work_item_create` | `hub-control-plane` | Authenticated POST /api/v1/work/items returns 201 and creates a Hub work item in Doltgres. |
 | P0 | unresolved | `hub.work_item_mutation` | `hub-control-plane` | Authenticated claim, heartbeat, release, PATCH, and DELETE use the Dolt-backed command adapter and mutations persist across a deployment restart. |
@@ -235,7 +235,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P1 | unresolved | content_differs | `dashboard-truth` | `100644` | `4e8994b4ed00c88659ed3422814e3833797fc74a` | `packages/node-contracts/src/poly.wallet.overview.v1.contract.ts` | `100644` | `fee25b5aa8f2db0b458c44ef580151c9f6d4b7b4` | `packages/poly-node-contracts/src/poly.wallet.overview.v1.contract.ts` |
 | P1 | unresolved | content_differs | `p1-provider-foundation` | `100644` | `8fbff563c0ab299d936edf9b62c6b9ac75da3145` | `packages/node-contracts/tsconfig.json` | `100644` | `625b44c6d4a273b3a4b64ddebead173892397ca3` | `packages/poly-node-contracts/tsconfig.json` |
 | P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `a6aa4c9b325932ff0b0001094b3d3194ccb21782` | `packages/wallet/package.json` | `100644` | `5b2e8a4e37f4a3863cc96352d883e00188fa3cb1` | `packages/poly-wallet/package.json` |
-| P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `8055709c847a2b9ce36c86dcb484ab6e31391d15` | `packages/wallet/src/port/poly-trader-wallet.port.ts` | `100644` | `842e2f896d0cf2c4022f673ab367f5090c161b75` | `packages/poly-wallet/src/port/poly-trader-wallet.port.ts` |
+| P1 | unresolved | content_differs | `p1-execution-wallet` | `100644` | `8055709c847a2b9ce36c86dcb484ab6e31391d15` | `packages/wallet/src/port/poly-trader-wallet.port.ts` | `100644` | `3d32797e726f9f9db42f434bed9aaa7c07f1a82e` | `packages/poly-wallet/src/port/poly-trader-wallet.port.ts` |
 | P1 | exact | — | — | `100644` | `1e19a864b7e15de6908f3dbb6e8f83afe3723f3f` | `packages/ai-tools/AGENTS.md` | `100644` | `1e19a864b7e15de6908f3dbb6e8f83afe3723f3f` | `packages/poly-ai-tools/AGENTS.md` |
 | P1 | exact | — | — | `100644` | `f5934c3f921cec03330f1feb9d1a707b67ccbed7` | `packages/ai-tools/package.json` | `100644` | `f5934c3f921cec03330f1feb9d1a707b67ccbed7` | `packages/poly-ai-tools/package.json` |
 | P1 | exact | — | — | `100644` | `6c93d4c45fbe4c5e6d8894a315122e3c630db50d` | `packages/ai-tools/src/analysis/pnl-curve-metrics.ts` | `100644` | `6c93d4c45fbe4c5e6d8894a315122e3c630db50d` | `packages/poly-ai-tools/src/analysis/pnl-curve-metrics.ts` |
@@ -967,7 +967,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `88dc5f980260ab3ef9d5648cd0005979f327beb4` | `app/src/adapters/server/sandbox/sandbox-agent-catalog.provider.ts` | `100644` | `4e884a69e6b9ec124f7b80f55c06880d100dcc6e` | `app/src/adapters/server/sandbox/sandbox-agent-catalog.provider.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `6039943681a8e0262560e1095f92f96be95c225c` | `app/src/adapters/server/sandbox/sandbox-graph.provider.ts` | `100644` | `142b264c42de4c07fec4a46ce0034998fe799b13` | `app/src/adapters/server/sandbox/sandbox-graph.provider.ts` |
 | P3 | unresolved | missing_target | — | `100644` | `2fb6dde89bb28632f13e2f7e4bb9ca083f1f06ec` | `app/src/adapters/server/treasury/openrouter-funding.adapter.ts` | — | — | `app/src/adapters/server/treasury/openrouter-funding.adapter.ts` |
-| P3 | unresolved | content_differs | — | `100644` | `7cdc0e8bb5d105831e0d85156c07d2867b959802` | `app/src/adapters/server/wallet/privy-poly-trader-wallet.adapter.ts` | `100644` | `6d2457f45c78281efdc3251b9bb7c50840d8b20c` | `app/src/adapters/server/wallet/privy-poly-trader-wallet.adapter.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `7cdc0e8bb5d105831e0d85156c07d2867b959802` | `app/src/adapters/server/wallet/privy-poly-trader-wallet.adapter.ts` | `100644` | `f7cda2ca49c1327e9e3cf31a8885c06e9f10da19` | `app/src/adapters/server/wallet/privy-poly-trader-wallet.adapter.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `3ccf24e73dd6529e09bcf121e192f50afacd1e30` | `app/src/adapters/test/AGENTS.md` | `100644` | `7624942906bfc40f6253b649bf4ecb3962166a21` | `app/src/adapters/test/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `e8158d0477f3f1e6fff1a734297b7d2b3ccc72bc` | `app/src/adapters/test/index.ts` | `100644` | `8026c4d306fd144671f28f1e103e12293d712127` | `app/src/adapters/test/index.ts` |
 | P3 | unresolved | missing_target | — | `100644` | `7f9076314afbb6f0d535cbe723d665c038c721ba` | `app/src/adapters/test/trading/fake-order-ledger.ts` | — | — | `app/src/adapters/test/trading/fake-order-ledger.ts` |

@@ -695,7 +695,7 @@ export async function readTenantWalletDashboardIn(
 }
 
 type ActiveWalletConnection = {
-  /** Null when the row exists but its stored address is unusable. */
+  /** Null when the row exists but has no usable funder address (unprovisioned). */
   address: `0x${string}` | null;
   tradingReady: boolean;
   autoWrapConsentAt: string | null;
@@ -723,7 +723,9 @@ async function readActiveWalletConnection(
     auto_wrap_floor_usdce_6dp: string | number | null;
   }>(await db.execute(sql`
     SELECT
-      lower(COALESCE(funder_address, address)) AS address,
+      -- Amendment 2: funder_address alone. A null funder is an unprovisioned
+      -- deposit wallet, and flows to a null address below, never to the signer.
+      lower(funder_address) AS address,
       trading_approvals_ready_at,
       auto_wrap_consent_at,
       auto_wrap_revoked_at,
