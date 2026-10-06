@@ -12,6 +12,11 @@
  *   the seam task's bindings do not share a file.
  * Invariants:
  *   - NO_AUTHORIZATION_HERE — `executeAccountRead` owns the single decision.
+ *   - ACCOUNT_IS_EXPLICIT — every binding forwards the executor's third
+ *     argument, the account it already resolved and authorized. No handler
+ *     re-derives a tenant. For the two `accountFrom: "input"` capabilities this
+ *     is the same value the wire carried, so it is a tightening rather than a
+ *     change; for `accountFrom: "principal"` it is the only correct source.
  *   - EXTRA_IS_COUNTS_ONLY — the `extra` builders emit cardinality and
  *     completeness flags, never account ids, wallet addresses, or cap values.
  *     A terminal event is not a data channel.
@@ -49,7 +54,7 @@ import type { AccountReadHandler, AccountReadStatus } from "./execute-account-re
 export const copySetupAccountReadHandler: AccountReadHandler<
   PolyAccountCopySetupQuery,
   PolyAccountCopySetupResponse
-> = (tx, input) => getCopySetupForAccount(tx, input);
+> = (tx, input, accountId) => getCopySetupForAccount(tx, input, accountId);
 
 /**
  * Setup counts. `capsStatus` is the discriminant only — never the cap values,
@@ -82,7 +87,8 @@ export function copySetupExtra(context: {
 export const recentAttemptsAccountReadHandler: AccountReadHandler<
   PolyAccountRecentAttemptsQuery,
   PolyAccountRecentAttemptsResponse
-> = (tx, input) => getRecentAttemptsForAccount(tx, input);
+> = (tx, input, accountId) =>
+  getRecentAttemptsForAccount(tx, input, accountId);
 
 /**
  * An unparseable cursor or a future `captured_at` is a caller problem. The
@@ -136,7 +142,8 @@ export function recentAttemptsExtra(context: {
 export const copyTradeOrdersAccountReadHandler: AccountReadHandler<
   PolyCopyTradeOrdersInput,
   PolyCopyTradeOrdersOutput
-> = (tx, input) => listCopyTradeOrdersForAccount(tx, input);
+> = (tx, input, accountId) =>
+  listCopyTradeOrdersForAccount(tx, input, accountId);
 
 export function copyTradeOrdersExtra(context: {
   status: AccountReadStatus;

@@ -182,8 +182,18 @@ function classifyWalletSafety(
  */
 export async function getCopySetupForAccount(
   tx: AgentGrantTransaction,
-  query: PolyAccountCopySetupQuery
+  rawQuery: PolyAccountCopySetupQuery,
+  accountId: string
 ): Promise<PolyAccountCopySetupResponse | null> {
+  // ACCOUNT_IS_EXPLICIT: filter on the account the executor AUTHORIZED, not on
+  // whatever the wire asked for. Under `accountFrom: "input"` these are the
+  // same value by construction, so this is belt-and-braces — but it means a
+  // future change to how the executor sources the account cannot silently make
+  // this handler read a tenant that was never authorized.
+  const query: PolyAccountCopySetupQuery = {
+    ...rawQuery,
+    billing_account_id: accountId,
+  };
   await tx.execute(
     sql.raw(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
   );

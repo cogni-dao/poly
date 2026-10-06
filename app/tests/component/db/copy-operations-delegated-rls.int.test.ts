@@ -420,6 +420,16 @@ describe("copy-operations delegated RLS", () => {
   // executor opens.
   // -----------------------------------------------------------------------
 
+  /**
+   * Calls the handlers DIRECTLY, deliberately skipping `executeAccountRead` so
+   * this file tests the database boundary rather than the dispatcher.
+   *
+   * Each call therefore passes the REQUESTED account as the authorized
+   * `accountId` third argument — including the cross-tenant cases, where
+   * `authorize()` would really have denied. That makes those assertions
+   * strictly stronger: they ask "if authorization somehow allowed this, does
+   * RLS still return nothing?" rather than merely re-testing the allow check.
+   */
   const asTx = <T>(
     userId: string,
     run: (tx: AgentGrantTransaction) => Promise<T>
@@ -432,12 +442,12 @@ describe("copy-operations delegated RLS", () => {
     const owner = await asTx(ownerA.userId, (tx) =>
       getCopySetupForAccount(tx, {
         billing_account_id: ownerA.billingAccountId,
-      })
+      }, ownerA.billingAccountId)
     );
     const delegated = await asTx(delegate.userId, (tx) =>
       getCopySetupForAccount(tx, {
         billing_account_id: ownerA.billingAccountId,
-      })
+      }, ownerA.billingAccountId)
     );
 
     expect(owner).not.toBeNull();
@@ -461,7 +471,7 @@ describe("copy-operations delegated RLS", () => {
     const leaked = await asTx(ownerB.userId, (tx) =>
       getCopySetupForAccount(tx, {
         billing_account_id: ownerA.billingAccountId,
-      })
+      }, ownerA.billingAccountId)
     );
     expect(leaked).toBeNull();
   });
@@ -470,7 +480,7 @@ describe("copy-operations delegated RLS", () => {
     const setup = await asTx(ownerB.userId, (tx) =>
       getCopySetupForAccount(tx, {
         billing_account_id: ownerB.billingAccountId,
-      })
+      }, ownerB.billingAccountId)
     );
     const policy = setup?.targets[0]?.policy;
     expect(policy?.declared_kind).toBe("auto");
@@ -486,7 +496,7 @@ describe("copy-operations delegated RLS", () => {
         mode: "all",
         outcome: "all",
         limit: 50,
-      })
+      }, ownerA.billingAccountId)
     );
     const delegated = await asTx(delegate.userId, (tx) =>
       getRecentAttemptsForAccount(tx, {
@@ -494,7 +504,7 @@ describe("copy-operations delegated RLS", () => {
         mode: "all",
         outcome: "all",
         limit: 50,
-      })
+      }, ownerA.billingAccountId)
     );
 
     expect(owner).not.toBeNull();
@@ -531,7 +541,7 @@ describe("copy-operations delegated RLS", () => {
         mode: "all",
         outcome: "all",
         limit: 1,
-      })
+      }, ownerA.billingAccountId)
     );
     expect(page).not.toBeNull();
     if (page === null) return;
@@ -552,7 +562,7 @@ describe("copy-operations delegated RLS", () => {
         limit: 1,
         captured_at: page.captured_at,
         cursor,
-      })
+      }, ownerA.billingAccountId)
     );
     expect(next?.attempts.length).toBe(1);
     expect(next?.attempts[0]?.attempt_id).not.toBe(page.attempts[0]?.attempt_id);
@@ -572,7 +582,7 @@ describe("copy-operations delegated RLS", () => {
         mode: "all",
         outcome: "placed",
         limit: 1,
-      })
+      }, ownerA.billingAccountId)
     );
     expect(page?.attempts.length).toBe(1);
     expect(page?.attempts[0]?.decision.outcome).toBe("placed");
@@ -585,7 +595,7 @@ describe("copy-operations delegated RLS", () => {
         mode: "all",
         outcome: "all",
         limit: 50,
-      })
+      }, ownerA.billingAccountId)
     );
     expect(leaked).toBeNull();
 
@@ -596,7 +606,7 @@ describe("copy-operations delegated RLS", () => {
         mode: "all",
         outcome: "all",
         limit: 50,
-      })
+      }, ownerB.billingAccountId)
     );
     expect(own?.attempts.length).toBe(1);
     expect(own?.attempts[0]?.attempt_id).toBe(decisionB);

@@ -392,8 +392,17 @@ function toAttempt(row: AttemptRow, fallbackIso: string): PolyCopyTradeAttempt {
  */
 export async function getRecentAttemptsForAccount(
   tx: AgentGrantTransaction,
-  query: PolyAccountRecentAttemptsQuery
+  rawQuery: PolyAccountRecentAttemptsQuery,
+  accountId: string
 ): Promise<PolyAccountRecentAttemptsResponse | null> {
+  // ACCOUNT_IS_EXPLICIT — see the note in `copy-setup-read`. Overriding the
+  // field here rather than threading a second parameter keeps the exported
+  // `copyTradeAttemptsSelect` signature (and its EXPLAIN test) unchanged while
+  // guaranteeing every predicate below is bound to the AUTHORIZED account.
+  const query: PolyAccountRecentAttemptsQuery = {
+    ...rawQuery,
+    billing_account_id: accountId,
+  };
   await tx.execute(
     sql.raw(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
   );

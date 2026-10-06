@@ -29,20 +29,28 @@
  *     rows existed. The predicate is pushed into the query here.
  *   - HARD_PAGE_BOUND — the limit is clamped to `ORDERS_MAX_PAGE` in this
  *     module, independent of whatever the caller asked for.
+ *   - ACCOUNT_IS_EXPLICIT — the authorized account arrives as the handler's
+ *     third argument and is never re-derived here. One source of truth for
+ *     which tenant the read describes. This module briefly did re-derive it
+ *     from `app.current_user_id` while the seam was still `(tx, input)`; that
+ *     was wrong twice over — two sources that could drift, and an
+ *     ownership-based lookup resolves a DELEGATED agent to its own empty
+ *     account (every approved agent owns one via `/agent/register`), which
+ *     then passes `authorize()` as `owner` and returns a 200 for the wrong
+ *     tenant. The seam now resolves by reachability instead.
  *   - NO_FABRICATED_VALUES — an absent attribute is `null`, never `0`.
  * Side-effects: IO (one SELECT).
  * Links: task.1791070959, story.5004, docs/spec/capability-plane.md
  * @public
  */
 
-import { billingAccounts } from "@cogni/db-schema";
 import { polyCopyTradeFills } from "@cogni/poly-db-schema/copy-trade";
 import type {
   PolyCopyTradeOrderRow,
   PolyCopyTradeOrdersInput,
   PolyCopyTradeOrdersOutput,
 } from "@cogni/poly-node-contracts";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
 
@@ -131,71 +139,32 @@ export function toContractRow(
 }
 
 /**
- * Resolve the billing account OWNED by the principal on this transaction.
+ * One bounded page of the authorized account's recent mirror orders.
  *
- * Why this exists: the capability seam's `AccountReadHandler` signature is
- * `(tx, input)`, and the frozen orders contract has no `billing_account_id`
- * input field, so the handler cannot be handed the account id the executor
- * already authorized. Relying on RLS alone would be WRONG here — the
- * `poly_copy_trade_fills_select` policy admits the principal's own account AND
- * every account they hold a grant on, so a delegate would receive two tenants'
- * rows interleaved in one response under a descriptor whose authorization was
- * evaluated against only one of them.
+ * `accountId` is the third handler argument: the account the executor ALREADY
+ * resolved and authorized. The handler does not re-derive it, so there is
+ * exactly one source of truth for which tenant this read describes.
  *
- * So the account is re-derived from `app.current_user_id` — the same session
- * variable `withTenantScope` set and the same predicate
- * `resolvePrincipalAccountId` uses, so it agrees with the account the executor
- * authorized under `accountFrom: "principal"`.
- *
- * ⚠️ TEMPORARY — REMOVE WHEN PR #144 LANDS. An earlier version of this comment
- * claimed the helper "can only narrow, never widen". That defence is WRONG, and
- * the real failure mode is narrowing to the *wrong* account:
+ * That matters more than it looks. This operation is `accountFrom: "principal"`
+ * — forced, because the frozen `poly.copy-trade.orders.v1` input schema cannot
+ * carry a `billing_account_id`. An ownership-based resolution would be wrong:
  * `POST /api/v1/agent/register` calls `getOrCreateBillingAccountForUser`, so
- * EVERY approved agent owns a billing account. An ownership lookup therefore
- * resolves a delegated agent to its OWN empty account, which then satisfies
- * `authorize()` as `accessKind: "owner"` — a 200 describing the wrong tenant
- * instead of the granted account or a denial. That is the very bug class this
- * inversion was meant to close; it survives here only because the frozen
- * orders input schema cannot carry a `billing_account_id`.
+ * every approved agent OWNS an account, and a delegated agent would resolve to
+ * its own empty one and then pass `authorize()` as `accessKind: "owner"` — a
+ * 200 describing the wrong tenant. The seam's `resolveSubjectAccountId`
+ * resolves by REACHABILITY for the required scope instead (live grants ∪
+ * owned), so an agent that can reach two accounts gets a loud `invalid_input`
+ * telling it to name one, and an agent that can reach none is denied.
  *
- * PR #144 replaces this with `resolveSubjectAccountId`, which resolves by
- * REACHABILITY for the required scope (live grants ∪ owned): exactly one ->
- * resolved, several -> `invalid_input` naming the count but not the ids, none
- * -> denied. For an agent holding its own account plus one grant, this route
- * will then return a loud "name the account" 400 rather than silently reading
- * the wrong tenant — the correct outcome for a schema that cannot carry the id.
- * When #144 lands: delete this helper and take the account from the handler's
- * third argument.
- *
- * It is a plain SELECT and never creates an account.
- */
-async function resolveOwnedAccountId(
-  tx: AgentGrantTransaction
-): Promise<string | null> {
-  const rows = await tx
-    .select({ id: billingAccounts.id })
-    .from(billingAccounts)
-    .where(
-      sql`${billingAccounts.ownerUserId} = current_setting('app.current_user_id', true)`
-    )
-    .limit(1);
-  return rows[0]?.id ?? null;
-}
-
-/**
- * One bounded page of the account's recent mirror orders.
- *
- * Returns `null` when the principal owns no billing account, which the executor
- * renders as a non-disclosing 404 — notably WITHOUT creating one, unlike the
- * `resolveBillingAccountId` call this replaces. An account with no orders yet
- * legitimately returns `{ orders: [] }`: a real answer, not a not-found.
+ * An account with no orders yet returns `{ orders: [] }` — a real answer, not a
+ * not-found. Nothing here can create a billing account.
  */
 export async function listCopyTradeOrdersForAccount(
   tx: AgentGrantTransaction,
-  query: PolyCopyTradeOrdersInput
+  query: PolyCopyTradeOrdersInput,
+  accountId: string
 ): Promise<PolyCopyTradeOrdersOutput | null> {
-  const billingAccountId = await resolveOwnedAccountId(tx);
-  if (!billingAccountId) return null;
+  const billingAccountId = accountId;
 
   const limit = Math.min(query.limit ?? ORDERS_DEFAULT_PAGE, ORDERS_MAX_PAGE);
 
