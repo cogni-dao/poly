@@ -29,6 +29,10 @@
 
 import type { z } from "zod";
 
+import {
+  PolyAccountPortfolioSnapshotOwnerQuerySchema,
+  polyAccountPortfolioSnapshotOperation,
+} from "./poly.account.portfolio-snapshot.v1.contract";
 import type { AgentCapabilityScope } from "./poly.agent-grants.v1.contract";
 import {
   polyResearchCopyTradeInvestigationEvidenceOperation,
@@ -122,6 +126,71 @@ export const polyAccountReadCopyTradeInvestigationEvidenceOperation =
     path: "/api/v1/poly/research/copy-trade-investigation/evidence",
     readOnly: true,
     accountFrom: "input",
+  });
+
+/**
+ * The portfolio snapshot — the delegable agent transport (task.1791070962).
+ *
+ * NOT a member of `POLY_ACCOUNT_READ_OPERATIONS`, and that is a blocker rather
+ * than a preference. `accountReadDiscoveryActions` projects every catalog entry
+ * through `z.toJSONSchema(operation.output)`, which Zod runs with
+ * `unrepresentable: "throw"`. This output transitively contains
+ * `PolyAddressSchema` (`poly.wallet-analysis.v1.contract.ts:30-33`), which ends
+ * in `.transform((s) => s.toLowerCase())` — at `execution.address` and again at
+ * `market_groups[].lines[].participants[].walletAddress`. A transform cannot be
+ * represented in JSON Schema, so the projection throws.
+ *
+ * The throw is not contained to this capability: the discovery route spreads the
+ * projection of the WHOLE catalog, so publishing this descriptor takes
+ * `/.well-known/agent.json` down for every capability. Staying out of the
+ * catalog keeps discovery working; the route below is still reachable with a
+ * valid bearer and a grant, exactly like the two investigation reads that are
+ * "reachable but undiscoverable" in the parity inventory.
+ *
+ * The fix is one line in the seam's projection — `z.toJSONSchema(schema,
+ * { io: "input" })`, or `{ unrepresentable: "any" }` — which is not this task's
+ * to make. See the PR body.
+ *
+ * `accountFrom: "input"` because a delegated agent MUST name the account it
+ * reads. That is the structural fix for the production incident: before this,
+ * an agent bearer calling `/wallet/dashboard` was answered about a tenant
+ * resolved from its own id, which `resolveBillingAccountId` would lazily
+ * CREATE on miss. Here the account comes from the wire and `authorize()`
+ * decides, so a principal with no grant gets the same non-disclosing 404 as a
+ * principal naming an account that does not exist.
+ */
+export const polyAccountReadPortfolioSnapshotOperation =
+  defineAccountReadOperation({
+    ...polyAccountPortfolioSnapshotOperation,
+    requiredScope: ACCOUNT_READ_SCOPE,
+    method: "GET",
+    path: "/api/v1/poly/account/portfolio-snapshot",
+    readOnly: true,
+    accountFrom: "input",
+  });
+
+/**
+ * The SAME capability over the owner-session transport: identical `id`,
+ * `requiredScope`, and output, so Loki's `operationId` and every parity
+ * assertion treat the two transports as one capability (CAPABILITY_DEFINED_ONCE).
+ *
+ * Only the account source and the input differ. The browser never learns its
+ * own `billing_account_id` (inventory row 1.1 — it is not rendered and there
+ * is no `whoami` yet), so this descriptor takes the account from the principal
+ * instead of the wire.
+ *
+ * Deliberately NOT a member of `POLY_ACCOUNT_READ_OPERATIONS`: it must not be
+ * published in `.well-known/agent.json`, because an agent calling it could only
+ * ever be answered about an account the agent itself owns — which is useless
+ * for delegation and is exactly the shape that caused the incident. Delegated
+ * principals are served by the catalog entry above.
+ */
+export const polyAccountReadPortfolioSnapshotOwnerOperation =
+  defineAccountReadOperation({
+    ...polyAccountReadPortfolioSnapshotOperation,
+    input: PolyAccountPortfolioSnapshotOwnerQuerySchema,
+    path: "/api/v1/poly/wallet/dashboard",
+    accountFrom: "principal",
   });
 
 /**
