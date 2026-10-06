@@ -17,7 +17,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1128,
+    "targetOnlyFiles": 1129,
     "unresolved": 602,
     "byStatus": {
       "exact": 1126,
@@ -26040,6 +26040,9 @@
     },
     {
       "targetPath": "app/tests/contract/app/knowledge.read-principal.test.ts"
+    },
+    {
+      "targetPath": "app/tests/contract/app/poly.research-copy-trade-investigation-evidence.observability.test.ts"
     },
     {
       "targetPath": "app/tests/contract/app/poly.research-copy-trade-investigation.authorization.test.ts"
