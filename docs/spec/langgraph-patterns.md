@@ -48,6 +48,10 @@ Define the package boundaries, execution paths, and invariants that govern LangG
 
 8. **NODE_RUNTIME_CATALOG_BOUNDARY**: App runtimes import `LANGGRAPH_CATALOG`, `LANGGRAPH_GRAPH_IDS`, and `DEFAULT_LANGGRAPH_GRAPH_ID` from their node-local graph package (`@cogni/<node>-graphs`). Shared `@cogni/langgraph-graphs` owns reusable graph implementations plus base catalogs, not app runtime policy.
 
+   As built on the poly node (`task.1791070967`): graph **factories** come from `@cogni/poly-graphs`, but the catalog that joins them to a tool allowlist is `app/src/bootstrap/ai/node-catalog.ts` — app-local, spreading the shared base rather than editing it. It has to be app-local: `core__poly_account_copy_trade_orders` is declared in `app/src` (because `packages/poly-ai-tools/src/index.ts` is port-frozen `P1`), and `PACKAGES_NO_SRC_IMPORTS` forbids a package from naming it. So no allowlist containing it can live in a package. The catalog is **injected**, not imported: `LangGraphInProcProvider` and `LangGraphInProcAgentCatalogProvider` both take it as a constructor argument defaulting to the shared base, and `graph-executor.factory.ts` / `agent-discovery.ts` pass the node's. That keeps those adapters node-agnostic and is also forced — `adapters` must not import `features`, and the catalog names an app-local tool id.
+
+   **Known gap, scoped out:** the `LANGGRAPH_DEV_URL` providers under `adapters/server/ai/langgraph/dev/` still read the shared base catalog directly, so `poly-brain` is not listed when running against a `langgraph dev` server. The in-process path — the one production and candidate use — is injected.
+
 9. **NO_PARALLEL_REQUEST_TYPES**: Providers use `GraphRunRequest`/`GraphRunResult` from `@/ports`.
 
 ## Design

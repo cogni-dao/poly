@@ -45,6 +45,7 @@
     "@cogni/operator-wallet": "workspace:*",
     "@cogni/poly-ai-tools": "workspace:^",
     "@cogni/poly-db-schema": "workspace:^",
+    "@cogni/poly-graphs": "workspace:^",
     "@cogni/poly-market-provider": "workspace:^",
     "@cogni/poly-node-contracts": "workspace:^",
     "@cogni/poly-wallet": "workspace:^",

@@ -15,6 +15,15 @@
  *   - LAZY_SANDBOX_IMPORT: Sandbox provider loaded via dynamic import() to defer dockerode native addon chain (SandboxRunnerAdapter)
  *   - MCP_NOT_SINGLETON: MCP connections use McpConnectionCache with reconnect-on-error + TTL backstop
  *   - MCP_RECONNECT_ON_ERROR: ErrorDetectingMcpToolSource invalidates cache on transport-level connection errors
+ *   - PRINCIPAL_IS_PER_REQUEST: createInProcProvider builds a principal-scoped
+ *     ToolSourcePort per request (userId closed over) and composes it in FRONT of
+ *     the module-scoped container source. This is how the capability plane's
+ *     internal-agent principal reaches a graph tool; see
+ *     ./ai/principal-tool-source and docs/spec/capability-plane.md. NEVER cache
+ *     or hoist that source.
+ *   - NODE_RUNTIME_CATALOG_BOUNDARY: graph sets come from
+ *     POLY_NODE_LANGGRAPH_CATALOG (app runtime policy), not from the shared
+ *     @cogni/langgraph-graphs base catalog.
  * Side-effects: global (module-scoped McpConnectionCache, cached sandbox provider promise)
  * Links: container.ts, NamespaceGraphRouter, GRAPH_EXECUTION.md, OBSERVABILITY.md, mcp-control-plane.md
  * @public
@@ -38,7 +47,6 @@ import {
 } from "@cogni/graph-execution-host";
 import type { UserId } from "@cogni/ids";
 import {
-  LANGGRAPH_CATALOG,
   loadMcpTools,
   McpToolSource,
   parseMcpConfigFromEnv,
@@ -63,17 +71,25 @@ import type {
 } from "@/ports";
 import { serverEnv } from "@/shared/env";
 import { makeLogger } from "@/shared/observability";
+import { POLY_NODE_LANGGRAPH_CATALOG } from "./ai/node-catalog";
+import {
+  composeToolSources,
+  createPrincipalToolSource,
+  PRINCIPAL_TOOL_BUNDLE,
+} from "./ai/principal-tool-source";
 import {
   type AiAdapterDeps,
   getContainer,
   resolveAiAdapterDeps,
+  resolveAppDb,
 } from "./container";
 
 /**
  * Factory for creating NamespaceGraphRouter with all configured providers.
  * Per UNIFIED_GRAPH_EXECUTOR: all graph execution flows through GraphExecutorPort.
  * Per ROUTING_BY_NAMESPACE_ONLY: NamespaceGraphRouter routes by graphId namespace via Map.
- * Per CATALOG_SINGLE_SOURCE_OF_TRUTH: Provider imports catalog from @cogni/langgraph-graphs.
+ * Per NODE_RUNTIME_CATALOG_BOUNDARY: providers read POLY_NODE_LANGGRAPH_CATALOG, this
+ * node's catalog, rather than the shared @cogni/langgraph-graphs base catalog.
  * Per MUTUAL_EXCLUSION: Register exactly one langgraph provider (InProc XOR Dev) based on env.
  *
  * Architecture boundary: Facade calls this factory (app → bootstrap),
@@ -96,7 +112,10 @@ export function createGraphExecutor(
   const devUrl = serverEnv().LANGGRAPH_DEV_URL;
   const langGraphProvider = devUrl
     ? createDevProvider(devUrl)
-    : createInProcProvider(deps, completionStreamFn);
+    : // `userId` is threaded in so in-process graph tools can be bound to THIS
+      // request's principal. See PRINCIPAL_IS_PER_REQUEST on
+      // createInProcProvider; this function is already called once per request.
+      createInProcProvider(deps, completionStreamFn, userId);
 
   // Build namespace → provider map
   const env = serverEnv();
@@ -518,10 +537,24 @@ export async function closeMcpConnections(): Promise<void> {
  * Create InProc provider for in-process graph execution.
  * Per CAPABILITY_INJECTION: toolSource contains real implementations with I/O.
  * MCP tools resolved via shared cache with reconnect-on-error.
+ *
+ * Per PRINCIPAL_IS_PER_REQUEST (task.1791070967): this is the composition point
+ * where the capability plane's THIRD principal is bound. `container.toolSource`
+ * is module-scoped and principal-free, and `container.ts` is a port-frozen P0
+ * entry so it cannot grow a per-request tool. The principal-scoped source is
+ * therefore built HERE — once per request, with `userId` closed over — and
+ * composed in FRONT of the container source. Nothing about it is cached: a
+ * hoisted source would answer one user's graph run with another user's
+ * authority.
+ *
+ * The matching `toolIds` allowlist lives in `POLY_NODE_LANGGRAPH_CATALOG`
+ * (app runtime policy per NODE_RUNTIME_CATALOG_BOUNDARY), so a graph only sees
+ * these tools if its catalog entry names them.
  */
 function createInProcProvider(
   deps: AiAdapterDeps,
-  completionStreamFn: CompletionStreamFn
+  completionStreamFn: CompletionStreamFn,
+  userId: UserId
 ): GraphExecutorPort {
   const container = getContainer();
   const inprocAdapter = new InProcCompletionUnitAdapter(
@@ -529,12 +562,23 @@ function createInProcProvider(
     completionStreamFn
   );
 
+  // `resolveDb` is passed as a factory, not a resolved handle: it is called per
+  // tool invocation so a long-lived run cannot pin a stale pool handle. Always
+  // the app-role pool — NO_PRIVILEGED_TRANSPORT means RLS stays the backstop
+  // under an agent-initiated read exactly as it is under the REST route.
+  const principalToolSource = createPrincipalToolSource({
+    principalId: userId,
+    resolveDb: resolveAppDb,
+    baseLog: container.log,
+  });
+
   const cache = getMcpCache();
   return new LangGraphInProcProvider(
     inprocAdapter,
-    container.toolSource,
+    composeToolSources(principalToolSource, container.toolSource),
     () => cache.getSource(),
-    [...CORE_TOOL_BUNDLE]
+    [...CORE_TOOL_BUNDLE, ...PRINCIPAL_TOOL_BUNDLE],
+    POLY_NODE_LANGGRAPH_CATALOG
   );
 }
 
@@ -544,7 +588,9 @@ function createInProcProvider(
  */
 function createDevProvider(apiUrl: string): LangGraphDevProvider {
   const client = createLangGraphDevClient({ apiUrl });
-  const availableGraphs = Object.keys(LANGGRAPH_CATALOG);
+  // Per NODE_RUNTIME_CATALOG_BOUNDARY: this node's graph set, matching what the
+  // in-proc provider executes, so the two providers never disagree on poly-brain.
+  const availableGraphs = Object.keys(POLY_NODE_LANGGRAPH_CATALOG);
   return new LangGraphDevProvider(client, { availableGraphs });
 }
 
