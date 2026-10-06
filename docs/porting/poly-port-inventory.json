@@ -49,7 +49,7 @@
     }
   ],
   "policySha256": "56f42128ff2b65d09c9440e7ce92ca4bd1a788f806ae96704ec08572b31cc19b",
-  "targetTreeDigest": "4dcd8819fc7911c354da1d2828393dbf18f613b8e781f95d42bebed2e85df8da",
+  "targetTreeDigest": "a64fac630053f61cfadeba84def92bfe36e9c4274d136f9bf029a995663773a7",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
@@ -13343,7 +13343,7 @@
       "sourceBlob": "39f5da2a98a92ec6bfbcb89e0510b0c4a573fa2d",
       "sourcePath": "app/src/features/wallet-analysis/server/market-exposure-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/market-exposure-service.ts",
-      "targetBlob": "ee42d4c9e3f81d2d10d114a1755136f73815e554",
+      "targetBlob": "a23762272452a910ad72bfce5355aec4cd2b8f36",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
