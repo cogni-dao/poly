@@ -53,14 +53,14 @@
  * @public
  */
 
+import { polyCopyTradeTargets } from "@cogni/poly-db-schema/copy-trade";
+import { polyWalletGrants } from "@cogni/poly-db-schema/wallet-grants";
 import {
   POLY_COPY_SETUP_MAX_TARGETS,
   type PolyAccountCopySetupQuery,
   type PolyAccountCopySetupResponse,
   type PolyWalletSafetyCaps,
 } from "@cogni/poly-node-contracts";
-import { polyCopyTradeTargets } from "@cogni/poly-db-schema/copy-trade";
-import { polyWalletGrants } from "@cogni/poly-db-schema/wallet-grants";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";

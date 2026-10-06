@@ -64,6 +64,9 @@ const STATEMENT_TIMEOUT_MS = 10_000;
  * the bare Polymarket conditionId. Normalised in SQL for the resolution join.
  */
 const POLYMARKET_LEDGER_PREFIX = "prediction-market:polymarket:";
+/** Anchored prefix pattern for `regexp_replace`. Precomputed so the SQL
+ * template below contains no nested template literal. */
+const LEDGER_PREFIX_PATTERN = "^" + POLYMARKET_LEDGER_PREFIX;
 
 /**
  * A tape older than this is reported `stale`. Chosen to be a few mirror poll
@@ -268,12 +271,12 @@ export function copyTradeAttemptsSelect(
       ORDER BY p.ts DESC
       LIMIT 1
     ) mark ON TRUE
-    -- Resolution availability. `poly_market_outcomes` keys on the bare
+    -- Resolution availability. poly_market_outcomes keys on the bare
     -- conditionId, so the ledger prefix is stripped here.
     LEFT JOIN poly_market_outcomes o
       ON o.condition_id = regexp_replace(
            COALESCE(NULLIF(d.intent->>'market_id', ''), f.market_id, ''),
-           ${`^${POLYMARKET_LEDGER_PREFIX}`}, ''
+           ${LEDGER_PREFIX_PATTERN}, ''
          )
      AND o.token_id = NULLIF(d.intent->>'token_id', '')
      AND o.updated_at <= ${capturedAt}::timestamptz
