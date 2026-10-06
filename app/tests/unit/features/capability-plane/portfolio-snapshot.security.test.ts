@@ -493,24 +493,47 @@ describe("the inverted transport holds no privilege of its own", () => {
     ["handler", "features/capability-plane/portfolio-snapshot.ts"],
   ];
 
+  /**
+   * Comments are stripped before scanning. These modules deliberately NAME the
+   * banned helpers in their headers to record why they are banned, and a raw
+   * text scan cannot tell an import from an explanation — the first version of
+   * this test failed on its own documentation. Stripping keeps the invariant
+   * about code while leaving the history writable.
+   */
+  function code(relativePath: string): string {
+    return readFileSync(join(root, relativePath), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/.*$/gm, "$1");
+  }
+
   it.each(sources)(
     "%s never reaches for a service-role handle or a lazy account",
     (_name, relativePath) => {
-      const source = readFileSync(join(root, relativePath), "utf8");
+      const source = code(relativePath);
       // NO_PRIVILEGED_TRANSPORT + NO_LAZY_ACCOUNT_ON_GET, enforced structurally
       // rather than by review. These are the exact names the pre-inversion
       // dashboard route used.
       expect(source).not.toContain("resolveServiceReadDb");
       expect(source).not.toContain("resolveServiceDb(");
       expect(source).not.toContain("resolveBillingAccountId");
+      // The account must come from the seam, never be re-derived here.
+      expect(source).not.toContain("resolvePrincipalAccountId");
     }
   );
 
   it("the dashboard route performs no query and no authorization itself", () => {
-    const source = readFileSync(join(root, sources[0][1]), "utf8");
+    const source = code(sources[0][1]);
     expect(source).toContain("resolveAppDb");
     expect(source).not.toContain("coalesceUnifiedDashboard");
     expect(source).not.toContain("readTenantWalletDashboard");
     expect(source).not.toMatch(/\bauthorize\(/);
+  });
+
+  it("the comment stripper does not hide real code", () => {
+    // Guards the guard: if `code()` ever over-stripped, the assertions above
+    // would silently pass on anything.
+    const source = code(sources[0][1]);
+    expect(source).toContain("executeAccountRead");
+    expect(source).toContain("wrapRouteHandlerWithLogging");
   });
 });

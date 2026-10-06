@@ -20,8 +20,9 @@ import {
   PolyWalletDashboardOutputSchema,
 } from "@cogni/poly-node-contracts";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { accountReadDiscoveryActions } from "@/features/capability-plane/discovery";
-import { ACCOUNT_READ_TERMINAL_EVENTS } from "@/features/capability-plane/handlers";
+import { PORTFOLIO_SNAPSHOT_TERMINAL_EVENT } from "@/features/capability-plane/portfolio-snapshot";
 
 const agent = polyAccountReadPortfolioSnapshotOperation;
 const owner = polyAccountReadPortfolioSnapshotOwnerOperation;
@@ -77,24 +78,43 @@ describe("poly.account.portfolio-snapshot descriptor", () => {
     ).toBe("1W");
   });
 
-  it("only the delegable transport is published for discovery", () => {
+  it("stays OUT of the discoverable catalog, and discovery still works", () => {
+    // Not a preference — a blocker. `accountReadDiscoveryActions` projects every
+    // catalog entry through `z.toJSONSchema(operation.output)` with Zod's
+    // default `unrepresentable: "throw"`, and this output transitively contains
+    // `PolyAddressSchema`, which ends in `.transform((s) => s.toLowerCase())`.
+    // Transforms cannot be represented in JSON Schema.
     const ids = POLY_ACCOUNT_READ_OPERATIONS.map((operation) => operation.id);
-    expect(ids).toContain(agent.id);
+    expect(ids).not.toContain(agent.id);
 
+    // The decisive part: the projection must still succeed. The discovery route
+    // spreads the WHOLE catalog, so one unrepresentable descriptor takes
+    // `.well-known/agent.json` down for every capability — not just its own.
+    expect(() =>
+      accountReadDiscoveryActions("https://poly.example")
+    ).not.toThrow();
     const actions = accountReadDiscoveryActions("https://poly.example");
-    const action = actions.readAccountPortfolioSnapshot;
-    expect(action).toBeDefined();
-    // GENERATED_DISCOVERY: the published method/path/scope come from the
-    // descriptor, and the ONE published path is the account-on-the-wire one.
-    expect(action?.endpoint).toBe(
-      `https://poly.example${agent.path}`
-    );
-    expect(action?.auth.requiredScope).toBe("account:read");
+    expect(actions.readCopyTradePnl).toBeDefined();
+    expect(actions.readAccountPortfolioSnapshot).toBeUndefined();
+    // Neither transport is advertised while this is unresolved.
+    expect(JSON.stringify(actions)).not.toContain(agent.path);
     expect(JSON.stringify(actions)).not.toContain(owner.path);
   });
 
+  it("proves the exact reason the output cannot be projected", () => {
+    // Pinned so the blocker is reproducible and the one-line seam fix is
+    // verifiable: projecting the OUTPUT throws, projecting the INPUT does not,
+    // and projecting the output in input-mode does not either. So `io: "input"`
+    // (or `unrepresentable: "any"`) in the seam's projection is sufficient.
+    expect(() => z.toJSONSchema(agent.output)).toThrow(/[Tt]ransform/);
+    expect(() => z.toJSONSchema(agent.input)).not.toThrow();
+    expect(() => z.toJSONSchema(agent.output, { io: "input" })).not.toThrow();
+  });
+
   it("has a terminal event, so it cannot ship unobservable", () => {
-    expect(ACCOUNT_READ_TERMINAL_EVENTS[agent.id]).toBe(
+    // Declared app-locally rather than in `ACCOUNT_READ_TERMINAL_EVENTS`,
+    // which is keyed by the catalog id union this capability is outside of.
+    expect(PORTFOLIO_SNAPSHOT_TERMINAL_EVENT).toBe(
       "feature.poly_wallet_dashboard.complete"
     );
   });

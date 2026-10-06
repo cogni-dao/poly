@@ -53,7 +53,14 @@ import {
  */
 function savedFacts(snapshot: PolyAccountPortfolioSnapshotOutput) {
   const { observedAt: _readinessObservedAt, ...readiness } = snapshot.readiness;
-  const { capturedAt: _overviewCapturedAt, ...overview } = snapshot.overview;
+  const {
+    capturedAt: _overviewCapturedAt,
+    // Derived as `capturedAt - positions_synced_at`, so it moves by the
+    // milliseconds between the two reads. Excluded for the same reason
+    // `capturedAt` is, not because it is allowed to disagree.
+    positions_sync_age_ms: _overviewSyncAge,
+    ...overview
+  } = snapshot.overview;
   const { capturedAt: _executionCapturedAt, ...execution } = snapshot.execution;
   return {
     interval: snapshot.interval,
@@ -378,16 +385,20 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
 
   describe("the new policy does not degrade the identity-read plan", () => {
     /**
-     * Adding an RLS policy changes the plan of every SELECT on the table,
+     * Adding an RLS policy rewrites the plan of every SELECT on the table,
      * because the policy expression becomes part of the query. The identity
-     * read runs on EVERY dashboard tick, so a policy that turned it into a
-     * sequential scan would be a latency regression hiding inside a security
-     * fix. This is the EXPLAIN evidence that it does not.
+     * read runs on EVERY dashboard tick, so a policy that introduced a
+     * sequential scan — of the table or of `agent_capability_grants` — would be
+     * a latency regression hiding inside a security fix.
      *
-     * The predicate matches `readActiveWalletConnection` exactly, and
-     * `poly_wallet_connections_tenant_active_idx` is a PARTIAL UNIQUE index on
-     * `(billing_account_id) WHERE revoked_at IS NULL` — so the correct plan is
-     * a single-row index scan with no sort, despite the `ORDER BY created_at`.
+     * WHAT IS ASSERTED: no sequential scan anywhere, and the grant lookup is a
+     * SubPlan rather than a per-row join. Deliberately NOT asserted: which
+     * index the planner picks. That is cost-based and fixture-size dependent —
+     * on these two-row tables Postgres picks
+     * `poly_wallet_connections_address_chain_active_idx` plus a Sort, not the
+     * `..._tenant_active_idx` an equality-on-billing_account_id predicate would
+     * use at scale. Pinning an index name here would assert a property of the
+     * fixture, not of the policy, and would break whenever statistics shift.
      */
     async function identityPlan(principalId: string): Promise<string> {
       const rows = await withTenantScope(
@@ -415,24 +426,29 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       return JSON.stringify(normalized);
     }
 
-    it("uses the partial unique tenant index for the owner", async () => {
-      const plan = await identityPlan(ownerA.userId);
-      expect(plan).toContain("poly_wallet_connections_tenant_active_idx");
-      expect(plan).not.toContain("Seq Scan");
+    it.each([
+      ["the owner", () => ownerA.userId],
+      ["a delegated principal", () => canonicalAgent.userId],
+    ])("scans no table sequentially for %s", async (_label, who) => {
+      const plan = await identityPlan(who());
+      expect(plan).toContain("Index Scan");
+      expect(plan).not.toContain('"Node Type":"Seq Scan"');
     });
 
-    it("still uses it for a delegated principal under the new policy", async () => {
+    it("evaluates both policy branches as indexed subplans, not per-row joins", async () => {
       const plan = await identityPlan(canonicalAgent.userId);
-      // The delegated EXISTS is itself an indexed probe:
-      // `agent_capability_grants_current_idx` is a partial UNIQUE index on
-      // `(billing_account_id, grantee_principal_id) WHERE revoked_at IS NULL`,
-      // and migration 0075's predicate supplies equality on both columns in
-      // that exact order plus the same `revoked_at IS NULL` — so the policy
-      // costs at most one unique index probe per candidate row, on a table
-      // that holds one row per tenant.
-      expect(plan).toContain("poly_wallet_connections_tenant_active_idx");
-      expect(plan).not.toContain("Seq Scan on poly_wallet_connections");
-      expect(plan).not.toContain("Seq Scan on agent_capability_grants");
+
+      // The owner branch and the delegated branch each collapse to a SubPlan
+      // the planner hashes and evaluates ONCE per statement — so the policy
+      // costs a constant, not one probe per candidate row. This is the real
+      // performance property of migration 0075 and it is better than a
+      // per-row index probe.
+      expect(plan).toContain("SubPlan");
+      expect(plan).toContain("billing_accounts_owner_user_id_unique");
+      expect(plan).toContain("agent_capability_grants");
+      // Neither side of the OR may fall back to a scan.
+      expect(plan).not.toContain('"Relation Name":"agent_capability_grants","Alias":"grant_row","Node Type":"Seq Scan"');
+      expect(plan).not.toContain('"Node Type":"Seq Scan"');
     });
   });
 

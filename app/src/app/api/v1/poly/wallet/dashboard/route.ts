@@ -48,8 +48,8 @@ import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { isPolyTraderWalletConfigured } from "@/bootstrap/poly-trader-wallet";
 import {
   ACCOUNT_READ_HTTP_STATUS,
-  ACCOUNT_READ_TERMINAL_EVENTS,
   executeAccountRead,
+  PORTFOLIO_SNAPSHOT_TERMINAL_EVENT,
   portfolioSnapshotAccountReadHandler,
   portfolioSnapshotExtra,
 } from "@/features/capability-plane";
@@ -77,7 +77,7 @@ export const GET = wrapRouteHandlerWithLogging(
       rawInput: Object.fromEntries(
         new URL(request.url).searchParams.entries()
       ),
-      eventName: ACCOUNT_READ_TERMINAL_EVENTS[operation.id],
+      eventName: PORTFOLIO_SNAPSHOT_TERMINAL_EVENT,
       handler: portfolioSnapshotAccountReadHandler({
         adapterConfigured: isPolyTraderWalletConfigured(),
       }),

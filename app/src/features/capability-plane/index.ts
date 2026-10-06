@@ -30,6 +30,7 @@ export {
   type ExecuteAccountReadArgs,
 } from "./execute-account-read";
 export {
+  PORTFOLIO_SNAPSHOT_TERMINAL_EVENT,
   portfolioSnapshotAccountReadHandler,
   portfolioSnapshotExtra,
   type PortfolioSnapshotBinding,

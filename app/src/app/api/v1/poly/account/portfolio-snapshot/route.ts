@@ -32,7 +32,7 @@ import { resolveAppDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { isPolyTraderWalletConfigured } from "@/bootstrap/poly-trader-wallet";
 import {
-  ACCOUNT_READ_TERMINAL_EVENTS,
+  PORTFOLIO_SNAPSHOT_TERMINAL_EVENT,
   portfolioSnapshotAccountReadHandler,
   portfolioSnapshotExtra,
 } from "@/features/capability-plane";
@@ -49,10 +49,7 @@ export const GET = wrapRouteHandlerWithLogging(
   accountReadGetHandler({
     resolveDb: resolveAppDb,
     operation: polyAccountReadPortfolioSnapshotOperation,
-    eventName:
-      ACCOUNT_READ_TERMINAL_EVENTS[
-        polyAccountReadPortfolioSnapshotOperation.id
-      ],
+    eventName: PORTFOLIO_SNAPSHOT_TERMINAL_EVENT,
     // Resolved per request, not at module load: the deployment flag and the
     // build sha are read when the handler runs.
     handler: (tx, input, accountId) =>

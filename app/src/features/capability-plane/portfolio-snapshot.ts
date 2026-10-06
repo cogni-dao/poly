@@ -53,6 +53,7 @@ import type {
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
+import { EVENT_NAMES, type EventName } from "@/shared/observability";
 import { coalescePortfolioSnapshot } from "@/features/wallet-analysis/server/portfolio-snapshot-cache";
 import { readTenantWalletDashboardIn } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 
@@ -71,6 +72,19 @@ import type {
  * `facts.positions.actionsAllowed` fields, both of which are owner-UI
  * affordances and neither of which confers write authority on any principal.
  */
+/**
+ * Terminal feature event for both transports.
+ *
+ * Declared here rather than in `ACCOUNT_READ_TERMINAL_EVENTS`, because that map
+ * is keyed by the discoverable catalog's id union and this capability is
+ * deliberately outside the catalog (see the descriptor for why). Reusing the
+ * existing dashboard event keeps the live Loki contract intact; `routeId`
+ * separates the owner and agent transports and `operationId` proves they are
+ * one capability.
+ */
+export const PORTFOLIO_SNAPSHOT_TERMINAL_EVENT: EventName =
+  EVENT_NAMES.POLY_WALLET_DASHBOARD_COMPLETE;
+
 export type PortfolioSnapshotBinding = { adapterConfigured: boolean };
 
 /**

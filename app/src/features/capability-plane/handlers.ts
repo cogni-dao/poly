@@ -61,12 +61,6 @@ export const ACCOUNT_READ_TERMINAL_EVENTS: Record<
     EVENT_NAMES.POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE,
   "poly.research-copy-trade-investigation-evidence.v1":
     EVENT_NAMES.POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE,
-  // Both portfolio-snapshot transports reuse the existing dashboard event, for
-  // the same reason the two investigation reads share one: it is the live Loki
-  // contract. `routeId` separates the owner and agent transports and
-  // `operationId` proves they are one capability.
-  "poly.account.portfolio-snapshot.v1":
-    EVENT_NAMES.POLY_WALLET_DASHBOARD_COMPLETE,
 };
 
 /**
