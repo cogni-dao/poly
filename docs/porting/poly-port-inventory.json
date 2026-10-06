@@ -53,7 +53,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1156,
+    "targetOnlyFiles": 1157,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -26451,6 +26451,9 @@
     },
     {
       "targetPath": "docs/porting/poly-port-policy.json"
+    },
+    {
+      "targetPath": "docs/spec/capability-plane.md"
     },
     {
       "targetPath": "docs/spec/knowledge-syntropy.md"
