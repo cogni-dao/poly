@@ -13,11 +13,11 @@
     "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
   },
   "policySha256": "76f54e26a941d17f17dad77aba7d74a6de148924f076bcc5914b148dc5cfdd5b",
-  "targetTreeDigest": "e5539dc2898d815848c9c05343e54554ac5ce3bfef1a352e8da0d4639d722151",
+  "targetTreeDigest": "a7a5d0085e8b7c7e0bbf4d1f0b2e797cb637a64f743ad77e909247bd81ef27c5",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1128,
+    "targetOnlyFiles": 1130,
     "unresolved": 602,
     "byStatus": {
       "exact": 1126,
@@ -6857,7 +6857,7 @@
       "sourceBlob": "c655888daa55814c9255e326b0853b77e21d6af0",
       "sourcePath": "app/src/app/api/v1/poly/research/trader-comparison/route.ts",
       "targetPath": "app/src/app/api/v1/poly/research/trader-comparison/route.ts",
-      "targetBlob": "7dedcd6f620846ae1369fa4af3fc0d5d2d485726",
+      "targetBlob": "3e18d356640211abb27cf5f1562914a679e235b3",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -13419,7 +13419,7 @@
       "sourceBlob": "93b201ce8d291c0120fc2d85c2f4c54894d30d9c",
       "sourcePath": "app/src/features/wallet-analysis/server/trader-comparison-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/trader-comparison-service.ts",
-      "targetBlob": "8cbd7b4b83bee63552cb405a4e01a09eb0c9ab49",
+      "targetBlob": "f01669eb061743a33c975a1718ceda896bf1a6c8",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -14477,7 +14477,7 @@
       "sourceBlob": "0e0576d830869f6fe12895c611d8bc6808818df6",
       "sourcePath": "app/src/shared/env/server-env.ts",
       "targetPath": "app/src/shared/env/server-env.ts",
-      "targetBlob": "50cde75d41198e0fb0e19f310dd6d8a7871c58d8",
+      "targetBlob": "a5a738f4abb6c7d4dbb011c1e12132b2b7468022",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -26261,6 +26261,9 @@
       "targetPath": "app/tests/unit/features/wallet-analysis/recent-trades-read-budget.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/features/wallet-analysis/research-read-cache-degraded.test.ts"
+    },
+    {
       "targetPath": "app/tests/unit/features/wallet-analysis/saved-facts-availability.test.ts"
     },
     {
@@ -26322,6 +26325,9 @@
     },
     {
       "targetPath": "app/tests/unit/packages/repo-spec/node-deployment.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/shared/env.server.research-budget.spec.ts"
     },
     {
       "targetPath": "app/tests/unit/shared/evm-rpc-connectivity.test.ts"

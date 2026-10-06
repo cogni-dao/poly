@@ -19,6 +19,17 @@
  *     `poly_trader_fill_rollups_daily` (+ unrolled tail) via `fill-rollup-service` helpers.
  *     Only `windowed_buys` still touches raw fills — the rank bucketing is per-fill by
  *     definition and window-dependent, so it cannot be pre-bucketed.
+ *   - CONDITION_PUSHDOWN (fix/comparison-flows-pushdown): per wallet, ONE repeatable-read
+ *     transaction, two statements. S1 reads the DISTINCT windowed-buy condition ids (bounded
+ *     by the window; dozens at 1W). S2 is the P/L statement with the flows fragment scoped to
+ *     S1's set via the existing `windowedFillFlowsSelect({ conditionIds })` param, so Postgres
+ *     prunes the rollup aggregation BEFORE materializing `all_flows` (which is referenced
+ *     twice and was otherwise materialized over the wallet's lifetime rollup rows — prod
+ *     2026-10-06 measured 25.7s cold for RN1 at 1M and 1D, burning the whole wallet budget).
+ *     Results are identical to the legacy unscoped statement: it computed lifetime flows and
+ *     then filtered to windowed-buy conditions/tokens — the restriction merely moves ahead of
+ *     materialization (and the downstream CTE filters are kept). Same-snapshot S1+S2 keeps
+ *     the derived set consistent with `windowed_buys`.
  *   - PER_WALLET_TIME_BUDGET (interim, 2026-09-28): each wallet's aggregate races a time budget
  *     (`opts.perWalletBudgetMs`, default 8s, env `POLY_RESEARCH_WALLET_BUDGET_MS`). A wallet
  *     that exceeds it is OMITTED from `traders` and surfaced as a `wallet_budget_exceeded`
@@ -93,6 +104,16 @@ const SIZE_BUCKET_STEP = 5;
 const SIZE_BUCKET_COUNT = 100 / SIZE_BUCKET_STEP;
 
 /**
+ * CONDITION_PUSHDOWN bind-parameter guard: each pushed-down condition id is a
+ * bound parameter at three places inside `windowedFillFlowsSelect`, and the
+ * pg wire protocol caps a statement at 65535 binds. 5k ids ⇒ ≤15k binds with
+ * ample headroom. Windows that exceed this are lifetime-scale, where the
+ * pushdown saves nothing — the fragment then stays unscoped (legacy shape),
+ * protected by the per-wallet budget / statement_timeout.
+ */
+const MAX_PUSHDOWN_CONDITION_IDS = 5_000;
+
+/**
  * Default per-wallet aggregation budget. Prod (2026-09-28, build 08cedd2)
  * measured ~31s on the worst wallet. The original 25s JS-only budget let the
  * abandoned SQL run for minutes and starve readiness. Eight seconds returns a
@@ -149,10 +170,16 @@ export async function getTraderComparison(
           err instanceof TraderComparisonBudgetExceededError ||
           isStatementTimeout(err)
         ) {
+          // Observability: name which ceiling fired — the Postgres
+          // statement_timeout (SQLSTATE 57014) or the JS budget race — so a
+          // degraded wallet in logs/payloads is attributable without a repro.
+          const cause = isStatementTimeout(err)
+            ? "sql_statement_timeout"
+            : "js_budget_race";
           warnings.push({
             wallet: address as `0x${string}`,
             code: TRADER_COMPARISON_BUDGET_WARNING_CODE,
-            message: `Aggregation for ${address} exceeded the ${budgetMs}ms budget and was omitted from this response. Retry later or narrow the interval.`,
+            message: `Aggregation for ${address} exceeded the ${budgetMs}ms budget (${cause}) and was omitted from this response. Retry later or narrow the interval.`,
           });
           return null;
         }
@@ -322,9 +349,54 @@ export async function readTradeSizePnl(
   if (typeof walletId !== "string") {
     return buildTradeSizePnlFromBucketRows([]);
   }
+
+  // CONDITION_PUSHDOWN S1 (fix/comparison-flows-pushdown): the windowed-buy
+  // condition set, bounded by the window (uses the (trader_wallet_id,
+  // observed_at) index; dozens of ids at 1W). Threading it into the flows
+  // fragment makes S2 read rollup rows for windowed conditions × tokens ×
+  // days-held (thousands) instead of the wallet's lifetime rollup
+  // (10^5–10^6 rows), which PG otherwise materializes in full because
+  // `all_flows` is referenced twice (token_flows + condition_token_costs) —
+  // the downstream `IN (SELECT ... FROM windowed_buys)` prunes came too late.
+  // Snapshot consistency: S1 and S2 run inside the caller's repeatable-read
+  // transaction (`readTradeBundle`), so the set matches `windowed_buys`.
+  // ALL-interval note: the pushdown is a no-op there (the windowed set
+  // converges on the lifetime set) AND `windowed_buys`' per-fill ranking is
+  // inherently O(lifetime buys) — ALL stays budget-protected. Phase 2
+  // (separate work item, not built here): a lifetime rollup level at
+  // (wallet, condition, token).
+  const conditionRows = (await db.execute(sql`
+    SELECT DISTINCT f.condition_id
+    FROM poly_trader_fills f
+    WHERE f.trader_wallet_id = ${walletId}::uuid
+      AND f.side = 'BUY'
+      AND f.observed_at >= ${windowStartIso}::timestamptz
+  `)) as unknown as
+    | Array<Record<string, unknown>>
+    | { rows?: Array<Record<string, unknown>> };
+  const conditionList = Array.isArray(conditionRows)
+    ? conditionRows
+    : (conditionRows.rows ?? []);
+  const conditionIds = conditionList
+    .map((row) => row.condition_id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  if (conditionIds.length === 0) {
+    // No windowed buys ⇒ `windowed_buys` is empty ⇒ every downstream CTE is
+    // empty ⇒ the legacy statement returned zero bucket rows. Short-circuit
+    // to the identical empty shape without materializing any flows.
+    return buildTradeSizePnlFromBucketRows([]);
+  }
   const flows = windowedFillFlowsSelect({
     walletIds: [walletId],
     windowStartIso: EPOCH_ISO,
+    // Bind-parameter guard: the condition list is inlined as parameters at
+    // three places inside the fragment. Above the cap (only wide windows on
+    // power wallets, where the pushdown is a no-op anyway) fall back to the
+    // legacy unscoped fragment — bit-identical output either way, since the
+    // downstream CTE filters below are unchanged.
+    ...(conditionIds.length <= MAX_PUSHDOWN_CONDITION_IDS
+      ? { conditionIds }
+      : {}),
   });
   const rows = (await db.execute(sql`
     WITH windowed_buys AS (

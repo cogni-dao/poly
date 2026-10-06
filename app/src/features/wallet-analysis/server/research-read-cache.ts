@@ -19,7 +19,11 @@
  *     each consuming route.
  *   - DEGRADED_NOT_PINNED: `{kind:"warn"}` slice results are served but never
  *     cached (`shouldCache`), so a transient DB failure is retried on the next
- *     request instead of being pinned for an hour.
+ *     request instead of being pinned for an hour. Trader-comparison responses
+ *     carrying a `wallet_budget_exceeded` warning follow the same rule
+ *     (`traderComparisonIsCacheable`) — a budget-degraded chart (missing
+ *     wallet) must not be SWR-pinned by prewarm or a cold request; same
+ *     pattern as BALANCES_DEGRADED_NOT_CACHED in dashboard-route-cache.ts.
  *   - KEYS_COVER_ALL_INPUTS: every input that changes the computed payload is
  *     in the key — benchmark includes the per-user comparison wallet, trader
  *     comparison includes the ordered wallet+label list.
@@ -48,6 +52,7 @@ import { getBenchmarkSlice } from "./copy-target-benchmark-service";
 import { getTargetOverlapSlice } from "./target-overlap-service";
 import {
   getTraderComparison,
+  TRADER_COMPARISON_BUDGET_WARNING_CODE,
   type TraderComparisonInput,
 } from "./trader-comparison-service";
 import {
@@ -145,12 +150,29 @@ export async function getTargetOverlapSliceCached(
 }
 
 /**
+ * DEGRADED_NOT_PINNED gate for the comparison board: cache only responses in
+ * which every requested wallet beat the budget. A `wallet_budget_exceeded`
+ * response is still served (partial-failure-200) but evicted immediately, so
+ * the next request — or the pushdown-fast recompute — retries instead of the
+ * degraded chart being pinned fresh for 5min and served stale for an hour
+ * (prewarm used to pin exactly that). Exported for unit tests.
+ */
+export function traderComparisonIsCacheable(
+  response: PolyResearchTraderComparisonResponse
+): boolean {
+  return response.warnings.every(
+    (warning) => warning.code !== TRADER_COMPARISON_BUDGET_WARNING_CODE
+  );
+}
+
+/**
  * SWR-cached `getTraderComparison`, keyed per (interval, ordered wallet+label
  * list). Applies the env-tunable per-wallet time budget
  * (`POLY_RESEARCH_WALLET_BUDGET_MS`) so a slow wallet degrades to a
  * partial-failure-200 warning instead of an edge 520. Budget-degraded
- * responses ARE cached: retrying the same >25s aggregate immediately would
- * re-time-out anyway; the background refresh retries after `freshMs`.
+ * responses are served but never cached (`traderComparisonIsCacheable`,
+ * DEGRADED_NOT_PINNED) — on a background refresh the prior complete value is
+ * kept instead.
  */
 export async function getTraderComparisonCached(
   db: Db,
@@ -163,6 +185,10 @@ export async function getTraderComparisonCached(
       getTraderComparison(db, wallets, interval, {
         perWalletBudgetMs: serverEnv().POLY_RESEARCH_WALLET_BUDGET_MS,
       }),
-    { freshMs: RESEARCH_READ_FRESH_MS, staleMs: RESEARCH_READ_STALE_MS }
+    {
+      freshMs: RESEARCH_READ_FRESH_MS,
+      staleMs: RESEARCH_READ_STALE_MS,
+      shouldCache: traderComparisonIsCacheable,
+    }
   );
 }
