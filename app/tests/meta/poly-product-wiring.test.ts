@@ -52,6 +52,9 @@ describe("Poly product wiring", () => {
 			"app/src/features/layout/components/AppSidebar.tsx",
 		);
 		const layout = readRepoFile("app/src/app/layout.tsx");
+		const appLayout = readRepoFile("app/src/app/(app)/layout.tsx");
+		const adminLayout = readRepoFile("app/src/app/(admin)/layout.tsx");
+		const repoSpec = readRepoFile(".cogni/repo-spec.yaml");
 		const brandIcons = readRepoFile("app/src/shared/brand/brandIcons.tsx");
 		const footer = readRepoFile(
 			"app/src/features/layout/components/footer-items.tsx",
@@ -63,8 +66,15 @@ describe("Poly product wiring", () => {
 		expect(nodeConfig).toContain("https://github.com/cogni-dao/poly");
 		expect(sidebar).toContain('from "@/node-config"');
 		expect(sidebar).toContain("nodeConfig.logo.href");
-		expect(sidebar).toContain("nodeConfig.logo.src");
-		expect(sidebar).toContain("nodeConfig.name");
+		// The shell's brand mark comes from repo-spec `intent.brand` via the server
+		// layout — the same source AppHeader uses — so both shells draw one identity
+		// and a fork re-brands by editing repo-spec, never this JSX.
+		expect(sidebar).toContain("resolveBrandIcon(brandMark.icon)");
+		expect(sidebar).toContain("brandMark.slug");
+		expect(sidebar).not.toContain("next/image");
+		expect(appLayout).toContain("getBrandMark()");
+		expect(adminLayout).toContain("getBrandMark()");
+		expect(repoSpec).toMatch(/brand:\s+icon: Activity/);
 		expect(sidebar).toContain("nodeConfig.navItems.filter");
 		expect(sidebar).toContain("...configuredNavItems");
 		expect(sidebar).toContain("nodeConfig.externalLinks.map");
