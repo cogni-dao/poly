@@ -26,11 +26,12 @@ function makeFakeSql(): { sql: Sql; queries: string[] } {
   const queries: string[] = [];
   const respond = (q: string): unknown[] => {
     if (q.startsWith("UPDATE work_items")) {
+      const title = /title = '([^']*)'/.exec(q)?.[1] ?? "t";
       return [
         {
           id: "bug.5005",
           type: "bug",
-          title: "t",
+          title,
           status: "needs_implement",
           node: "operator",
           actor: "either",
@@ -39,7 +40,11 @@ function makeFakeSql(): { sql: Sql; queries: string[] } {
           labels: [],
           spec_refs: [],
           revision: 0,
-          deploy_verified: true,
+          deploy_verified: q.includes("deploy_verified = TRUE"),
+          project_id: q.includes("project_id = NULL") ? null : undefined,
+          parent_id:
+            /parent_id = '([^']*)'/.exec(q)?.[1] ?? undefined,
+          blocked_by: q.includes("blocked_by = NULL") ? null : undefined,
           created_by_principal_id: "test",
           created_at: "2026-05-01",
           updated_at: "2026-05-01",

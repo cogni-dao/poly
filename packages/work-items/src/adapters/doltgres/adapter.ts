@@ -38,7 +38,6 @@ const CLAIM_TTL_SECONDS = 300;
 const COMMIT_TAG = "work-items";
 const GLOBAL_LOCK_KEY = 5_001_001;
 const OP_BRANCH_PREFIX = "work-item-op/";
-const MERGE_RETRIES = 3;
 const LOCK_WAIT_MS = 2_000;
 const LOCK_RETRY_MS = 50;
 const OPERATION_QUEUE_WAIT_MS = 30_000;
@@ -73,9 +72,62 @@ interface WorkItemConnection {
   unsafe(query: string): Promise<ReadonlyArray<Record<string, unknown>>>;
 }
 
+type MutationVerb =
+  | "create"
+  | "patch"
+  | "delete"
+  | "claim"
+  | "heartbeat"
+  | "release";
+
+interface MutationProof {
+  readonly verb: MutationVerb;
+  readonly principal: string;
+  itemId?: string;
+  beforeRow?: Record<string, unknown>;
+  afterRow?: Record<string, unknown>;
+  readonly patchValues?: Readonly<Record<string, unknown>>;
+  readonly runId?: string;
+  readonly command?: string;
+  readonly commandProvided?: boolean;
+}
+
 interface MutationOptions<T> {
-  readonly preflight?: (conn: WorkItemConnection) => Promise<void>;
+  readonly proof: MutationProof;
+  readonly preflight?: (
+    conn: WorkItemConnection,
+    proof: MutationProof
+  ) => Promise<void>;
   readonly shouldCommit?: (result: T) => boolean;
+}
+
+interface PendingBranchState<T> {
+  readonly branch: string;
+  readonly baseHash: string;
+  readonly proof: MutationProof;
+  result?: T;
+  branchCommit?: string;
+  requiresFreshOutcomeProof?: boolean;
+}
+
+interface ValidatedBranchTransition {
+  readonly branch: string;
+  readonly baseHash: string;
+  readonly tip: string;
+  readonly proof: MutationProof;
+  readonly before: RowSnapshot;
+  readonly after: RowSnapshot;
+  readonly commitAt: number;
+}
+
+class PendingBranchRecoveryError<T = unknown> extends Error {
+  constructor(
+    readonly state: PendingBranchState<T>,
+    readonly originalError: unknown
+  ) {
+    super("Work-item operation branch requires fresh-session recovery");
+    this.name = "PendingBranchRecoveryError";
+  }
 }
 
 const noopLogger: WorkItemLogger = {
@@ -296,31 +348,6 @@ function assertDoltStatus(
   }
 }
 
-function parseDoltMerge(rows: unknown): { hash: string; conflicts: number } {
-  if (!Array.isArray(rows) || rows.length === 0) {
-    throw new WorkItemMergeConflictError();
-  }
-  const value = (rows[0] as Record<string, unknown>).dolt_merge;
-  const parts = Array.isArray(value)
-    ? value
-    : String(value ?? "")
-        .replace(/^[({]/, "")
-        .replace(/[})]$/, "")
-        .split(",");
-  // Doltgres 0.56 returns exactly [hash, fast_forward, conflicts, message].
-  // A partial acknowledgement is ambiguous: reject it so the caller proves
-  // branch-commit reachability before it can report success or retry.
-  if (parts.length !== 4) {
-    throw new WorkItemMergeConflictError();
-  }
-  const hash = String(parts[0] ?? "").trim();
-  const conflicts = Number(parts[2]);
-  if (!hash || !Number.isFinite(conflicts) || conflicts > 0) {
-    throw new WorkItemMergeConflictError();
-  }
-  return { hash, conflicts };
-}
-
 function doltScalar(rows: unknown, field: string): string {
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new DoltOperationFailedError(field);
@@ -335,15 +362,6 @@ function doltScalar(rows: unknown, field: string): string {
     throw new DoltOperationFailedError(field);
   }
   return normalized;
-}
-
-function isMergeConflict(error: unknown): boolean {
-  return (
-    error instanceof WorkItemMergeConflictError ||
-    /conflict|constraint violation/i.test(
-      error instanceof Error ? error.message : String(error)
-    )
-  );
 }
 
 const PATCH_COLUMNS: Record<keyof WorkItemsPatchSet, string> = {
@@ -366,6 +384,352 @@ const PATCH_COLUMNS: Record<keyof WorkItemsPatchSet, string> = {
   blockedBy: "blocked_by",
 };
 
+const PERSISTED_WORK_ITEM_COLUMNS = [
+  "id",
+  "type",
+  "title",
+  "status",
+  "node",
+  "project_id",
+  "parent_id",
+  "priority",
+  "rank",
+  "estimate",
+  "summary",
+  "outcome",
+  "branch",
+  "pr",
+  "reviewer",
+  "revision",
+  "blocked_by",
+  "deploy_verified",
+  "claimed_by_run",
+  "claimed_at",
+  "last_command",
+  "assignees",
+  "external_refs",
+  "labels",
+  "spec_refs",
+  "created_at",
+  "updated_at",
+  "created_by_principal_id",
+  "claim_owner_principal_id",
+  "claim_expires_at",
+] as const;
+
+type PersistedColumn = (typeof PERSISTED_WORK_ITEM_COLUMNS)[number];
+type RowSnapshot = Record<PersistedColumn, unknown>;
+
+const PATCH_DB_COLUMNS = new Set<string>(Object.values(PATCH_COLUMNS));
+const IMMUTABLE_COLUMNS = new Set<string>([
+  "id",
+  "type",
+  "created_at",
+  "created_by_principal_id",
+]);
+const CLAIM_COLUMNS = new Set<string>([
+  "claimed_by_run",
+  "claim_owner_principal_id",
+  "claimed_at",
+  "claim_expires_at",
+  "last_command",
+  "revision",
+  "updated_at",
+]);
+const HEARTBEAT_COLUMNS = new Set<string>([
+  "claim_expires_at",
+  "last_command",
+  "revision",
+  "updated_at",
+]);
+const RELEASE_COLUMNS = new Set<string>([
+  "claimed_by_run",
+  "claim_owner_principal_id",
+  "claimed_at",
+  "claim_expires_at",
+  "revision",
+  "updated_at",
+]);
+
+function normalizedPersistedValue(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (
+      (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+      (trimmed.startsWith("{") && trimmed.endsWith("}"))
+    ) {
+      try {
+        return JSON.parse(trimmed) as unknown;
+      } catch {
+        return value;
+      }
+    }
+  }
+  return value ?? null;
+}
+
+function snapshotRow(
+  row: Record<string, unknown>,
+  prefix = ""
+): RowSnapshot {
+  return Object.fromEntries(
+    PERSISTED_WORK_ITEM_COLUMNS.map((column) => [
+      column,
+      normalizedPersistedValue(row[`${prefix}${column}`]),
+    ])
+  ) as RowSnapshot;
+}
+
+function snapshotsEqual(left: RowSnapshot, right: RowSnapshot): boolean {
+  return PERSISTED_WORK_ITEM_COLUMNS.every(
+    (column) =>
+      JSON.stringify(left[column]) === JSON.stringify(right[column])
+  );
+}
+
+function changedColumns(before: RowSnapshot, after: RowSnapshot): Set<string> {
+  return new Set(
+    PERSISTED_WORK_ITEM_COLUMNS.filter(
+      (column) =>
+        JSON.stringify(before[column]) !== JSON.stringify(after[column])
+    )
+  );
+}
+
+function onlyAllowedChanges(
+  changed: ReadonlySet<string>,
+  allowed: ReadonlySet<string>
+): boolean {
+  return [...changed].every((column) => allowed.has(column));
+}
+
+function asEpoch(value: unknown): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  const epoch = new Date(String(value)).getTime();
+  return Number.isFinite(epoch) ? epoch : undefined;
+}
+
+function asRevision(value: unknown): number | undefined {
+  const revision = Number(value);
+  return Number.isInteger(revision) ? revision : undefined;
+}
+
+function isNullSnapshot(snapshot: RowSnapshot): boolean {
+  return PERSISTED_WORK_ITEM_COLUMNS.every(
+    (column) => snapshot[column] === null
+  );
+}
+
+function legacyProofFromMessage(
+  message: string,
+  before: RowSnapshot,
+  after: RowSnapshot
+): MutationProof | undefined {
+  const match =
+    /^work-items: (create work item|(?:patch|delete|claim|heartbeat|release) ([^ ]+)) by actor:([^ ]+)$/.exec(
+      message
+    );
+  if (!match) return undefined;
+  const operation = match[1];
+  const explicitId = match[2];
+  const principal = match[3];
+  if (!operation || !principal) return undefined;
+  const verb = operation === "create work item" ? "create" : operation.split(" ")[0];
+  if (
+    verb !== "create" &&
+    verb !== "patch" &&
+    verb !== "delete" &&
+    verb !== "claim" &&
+    verb !== "heartbeat" &&
+    verb !== "release"
+  ) {
+    return undefined;
+  }
+  const diffId = String(
+    verb === "delete" ? before.id ?? "" : after.id ?? ""
+  );
+  if (!diffId || (explicitId && explicitId !== diffId)) return undefined;
+  return {
+    verb,
+    principal,
+    itemId: diffId,
+    beforeRow: before,
+    afterRow: after,
+  };
+}
+
+function requireNamedMerge(rows: unknown): {
+  hash: string;
+  conflicts: number;
+} {
+  if (!Array.isArray(rows) || rows.length !== 1) {
+    throw new WorkItemMergeConflictError();
+  }
+  const row = rows[0] as Record<string, unknown>;
+  const hash = String(row.hash ?? "").trim();
+  const conflicts = Number(row.conflicts);
+  if (!hash || !Number.isFinite(conflicts) || conflicts !== 0) {
+    throw new WorkItemMergeConflictError();
+  }
+  return { hash, conflicts };
+}
+
+function validateTransitionMatrix(
+  proof: MutationProof,
+  before: RowSnapshot,
+  after: RowSnapshot,
+  commitAt: number
+): boolean {
+  if (
+    proof.beforeRow &&
+    !snapshotsEqual(before, snapshotRow(proof.beforeRow))
+  ) {
+    return false;
+  }
+  if (proof.afterRow && !snapshotsEqual(after, snapshotRow(proof.afterRow))) {
+    return false;
+  }
+
+  const changed = changedColumns(before, after);
+  const beforeRevision = asRevision(before.revision);
+  const afterRevision = asRevision(after.revision);
+  const revisionAdvanced =
+    beforeRevision !== undefined && afterRevision === beforeRevision + 1;
+  const creatorBefore = String(before.created_by_principal_id ?? "");
+  const creatorAfter = String(after.created_by_principal_id ?? "");
+  const itemId = proof.itemId ?? "";
+
+  switch (proof.verb) {
+    case "create": {
+      const required = [
+        after.id,
+        after.type,
+        after.title,
+        after.status,
+        after.node,
+        after.created_at,
+        after.updated_at,
+      ];
+      return (
+        isNullSnapshot(before) &&
+        required.every((value) => value !== null && String(value).length > 0) &&
+        String(after.id) === itemId &&
+        creatorAfter === proof.principal &&
+        afterRevision === 0 &&
+        after.claimed_by_run === null &&
+        after.claimed_at === null &&
+        after.claim_owner_principal_id === null &&
+        after.claim_expires_at === null
+      );
+    }
+    case "patch": {
+      const requestedColumns = proof.patchValues
+        ? Object.keys(proof.patchValues)
+        : [...PATCH_DB_COLUMNS];
+      const allowed = new Set<string>([
+        ...requestedColumns,
+        "revision",
+        "updated_at",
+      ]);
+      return (
+        String(before.id) === itemId &&
+        String(after.id) === itemId &&
+        creatorBefore === proof.principal &&
+        creatorAfter === proof.principal &&
+        [...IMMUTABLE_COLUMNS].every(
+          (column) =>
+            JSON.stringify(before[column as PersistedColumn]) ===
+            JSON.stringify(after[column as PersistedColumn])
+        ) &&
+        changed.size > 0 &&
+        changed.has("revision") &&
+        changed.has("updated_at") &&
+        onlyAllowedChanges(changed, allowed) &&
+        revisionAdvanced &&
+        Object.entries(proof.patchValues ?? {}).every(
+          ([column, value]) =>
+            PATCH_DB_COLUMNS.has(column) &&
+            JSON.stringify(after[column as PersistedColumn]) ===
+              JSON.stringify(normalizedPersistedValue(value))
+        )
+      );
+    }
+    case "delete":
+      return (
+        String(before.id) === itemId &&
+        creatorBefore === proof.principal &&
+        isNullSnapshot(after)
+      );
+    case "claim": {
+      const beforeExpiry = asEpoch(before.claim_expires_at);
+      const afterClaimedAt = asEpoch(after.claimed_at);
+      const afterExpiry = asEpoch(after.claim_expires_at);
+      const sameLease =
+        String(before.claim_owner_principal_id ?? "") === proof.principal &&
+        String(before.claimed_by_run ?? "") === String(after.claimed_by_run ?? "");
+      return (
+        String(before.id) === itemId &&
+        String(after.id) === itemId &&
+        creatorBefore === creatorAfter &&
+        (sameLease || beforeExpiry === undefined || beforeExpiry <= commitAt) &&
+        String(after.claim_owner_principal_id ?? "") === proof.principal &&
+        String(after.claimed_by_run ?? "").length > 0 &&
+        (proof.runId === undefined || after.claimed_by_run === proof.runId) &&
+        afterClaimedAt !== undefined &&
+        afterExpiry !== undefined &&
+        afterClaimedAt <= commitAt &&
+        commitAt < afterExpiry &&
+        afterExpiry > afterClaimedAt &&
+        (proof.command === undefined || after.last_command === proof.command) &&
+        onlyAllowedChanges(changed, CLAIM_COLUMNS) &&
+        revisionAdvanced
+      );
+    }
+    case "heartbeat": {
+      const beforeExpiry = asEpoch(before.claim_expires_at);
+      const afterExpiry = asEpoch(after.claim_expires_at);
+      const leaseUnchanged =
+        before.claim_owner_principal_id === after.claim_owner_principal_id &&
+        before.claimed_by_run === after.claimed_by_run &&
+        before.claimed_at === after.claimed_at;
+      return (
+        String(before.id) === itemId &&
+        String(after.id) === itemId &&
+        String(before.claim_owner_principal_id ?? "") === proof.principal &&
+        String(before.claimed_by_run ?? "").length > 0 &&
+        (proof.runId === undefined || before.claimed_by_run === proof.runId) &&
+        leaseUnchanged &&
+        beforeExpiry !== undefined &&
+        afterExpiry !== undefined &&
+        beforeExpiry > commitAt &&
+        afterExpiry > commitAt &&
+        afterExpiry > beforeExpiry &&
+        (proof.commandProvided
+          ? after.last_command === proof.command
+          : before.last_command === after.last_command) &&
+        onlyAllowedChanges(changed, HEARTBEAT_COLUMNS) &&
+        revisionAdvanced
+      );
+    }
+    case "release":
+      return (
+        String(before.id) === itemId &&
+        String(after.id) === itemId &&
+        String(before.claim_owner_principal_id ?? "") === proof.principal &&
+        String(before.claimed_by_run ?? "").length > 0 &&
+        (proof.runId === undefined || before.claimed_by_run === proof.runId) &&
+        after.claimed_by_run === null &&
+        after.claim_owner_principal_id === null &&
+        after.claimed_at === null &&
+        after.claim_expires_at === null &&
+        before.last_command === after.last_command &&
+        onlyAllowedChanges(changed, RELEASE_COLUMNS) &&
+        revisionAdvanced
+      );
+  }
+}
+
 function queryStage(query: string): string {
   if (query.startsWith("SELECT pg_try_advisory_lock")) return "lock.try";
   if (query.startsWith("SELECT pg_advisory_unlock")) return "lock.release";
@@ -374,7 +738,8 @@ function queryStage(query: string): string {
   if (query.startsWith("SELECT dolt_commit")) return "branch.commit";
   if (query.startsWith("SELECT dolt_merge_base")) return "merge.reachability";
   if (query === "SELECT dolt_merge('--abort')") return "merge.abort";
-  if (query.startsWith("SELECT dolt_merge")) return "merge.apply";
+  if (query.startsWith("SELECT dolt_merge") || query.includes("FROM dolt_merge"))
+    return "merge.apply";
   if (query.startsWith("SELECT dolt_branch")) return "branch.delete";
   if (query.includes("FROM dolt.merge_status")) return "merge.status";
   if (query === "SELECT table_name FROM dolt.status") return "main.status";
@@ -577,81 +942,6 @@ export class DoltgresWorkItemAdapter
     };
   }
 
-  private async withFreshRecoveryLock<T>(
-    context: OperationContext,
-    fn: (conn: WorkItemConnection) => Promise<T>
-  ): Promise<T> {
-    const recoveryPool = this.sql;
-    let rawConn: ReservedSql | undefined;
-    let locked = false;
-    let reserveTimedOut = false;
-    let reserveTimer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await this.executeQuery(
-        recoveryPool,
-        recoveryPool as unknown as ReservedSql,
-        context,
-        "SELECT 1 AS work_items_ready"
-      );
-      reserveTimer = setTimeout(() => {
-        reserveTimedOut = true;
-        void this.terminateClient(
-          recoveryPool,
-          context,
-          "connection.reserve",
-          "recovery_reserve_timeout"
-        );
-      }, this.reserveTimeoutMs);
-      rawConn = await recoveryPool.reserve();
-      if (reserveTimedOut) {
-        await this.terminateClient(
-          recoveryPool,
-          context,
-          "connection.reserve",
-          "recovery_reserve_completed_after_timeout"
-        );
-        throw new WorkItemsBusyError(
-          "Work-item store timed out reserving a recovery connection"
-        );
-      }
-      if (reserveTimer) clearTimeout(reserveTimer);
-
-      const conn = this.instrumentConnection(recoveryPool, rawConn, context);
-      locked = await this.acquireGlobalLock(conn, context);
-      const checkoutRows = await conn.unsafe("SELECT dolt_checkout('main')");
-      assertDoltStatus(checkoutRows, "dolt_checkout");
-      return await fn(conn);
-    } finally {
-      if (reserveTimer) clearTimeout(reserveTimer);
-      if (
-        locked &&
-        rawConn &&
-        this.sql === recoveryPool &&
-        !this.poisoned
-      ) {
-        try {
-          await this.executeQuery(
-            recoveryPool,
-            rawConn,
-            context,
-            `SELECT pg_advisory_unlock(${GLOBAL_LOCK_KEY})`
-          );
-        } catch {
-          await this.terminateClient(
-            recoveryPool,
-            context,
-            "lock.release",
-            "recovery_unlock_failed"
-          );
-          rawConn = undefined;
-        }
-      }
-      if (rawConn && this.sql === recoveryPool && !this.poisoned) {
-        rawConn.release();
-      }
-    }
-  }
-
   private async enterOperationQueue(
     context: OperationContext
   ): Promise<() => void> {
@@ -705,13 +995,11 @@ export class DoltgresWorkItemAdapter
   }
 
   private async withGlobalLock<T>(
-    operation: string,
-    fn: (conn: WorkItemConnection) => Promise<T>
+    context: OperationContext,
+    fn: (conn: WorkItemConnection) => Promise<T>,
+    options: { readonly reconcile?: boolean } = {}
   ): Promise<T> {
-    const context = { operationId: randomUUID(), operation };
-    const leaveQueue = await this.enterOperationQueue(context);
     if (this.poisoned) {
-      leaveQueue();
       throw new WorkItemsBusyError(
         "Work-item store requires restart reconciliation"
       );
@@ -722,6 +1010,7 @@ export class DoltgresWorkItemAdapter
     let locked = false;
     let reserveTimedOut = false;
     let reserveTimer: ReturnType<typeof setTimeout> | undefined;
+    let pendingRecovery = false;
     try {
       // postgres.js 3.4.9 does not resolve reserve() on its cold-connection
       // path when fetch_types=false. A real query opens the dedicated
@@ -769,9 +1058,10 @@ export class DoltgresWorkItemAdapter
       });
       const conn = this.instrumentConnection(operationPool, rawConn, context);
       locked = await this.acquireGlobalLock(conn, context);
-      await this.reconcileUnderLock(conn);
+      if (options.reconcile !== false) await this.reconcileUnderLock(conn);
       return await fn(conn);
     } catch (error) {
+      pendingRecovery = error instanceof PendingBranchRecoveryError;
       this.logStage("error", context, "operation", "error", {
         durationMs: Date.now() - reserveStartedAt,
         ...errorFields(error),
@@ -779,10 +1069,20 @@ export class DoltgresWorkItemAdapter
       throw error;
     } finally {
       if (reserveTimer) clearTimeout(reserveTimer);
-      // Never retain the in-process FIFO ticket while connection cleanup runs.
-      // The database advisory lock remains the cross-process authority until a
-      // healthy reserved session releases it or a terminated session dies.
-      leaveQueue();
+      // A branch operation with an uncertain acknowledgement is handed to a
+      // second, fresh lock scope only after this session is definitively dead.
+      // This releases the session-scoped advisory lock and abandons any dirty
+      // working set without asking the failed connection to reconcile itself.
+      if (pendingRecovery && rawConn) {
+        await this.terminateClient(
+          operationPool,
+          context,
+          "operation.recovery_handoff",
+          "pending_branch_recovery"
+        );
+        rawConn = undefined;
+        locked = false;
+      }
       if (
         locked &&
         rawConn &&
@@ -815,6 +1115,21 @@ export class DoltgresWorkItemAdapter
     }
   }
 
+  private async withOperationQueue<T>(
+    operation: string,
+    fn: (context: OperationContext) => Promise<T>
+  ): Promise<T> {
+    const context = { operationId: randomUUID(), operation };
+    const leaveQueue = await this.enterOperationQueue(context);
+    try {
+      return await fn(context);
+    } finally {
+      // The FIFO ticket spans the original lock scope and any fresh-session
+      // recovery so an in-process successor cannot overtake reconciliation.
+      leaveQueue();
+    }
+  }
+
   private async acquireGlobalLock(
     conn: WorkItemConnection,
     context: OperationContext
@@ -839,11 +1154,438 @@ export class DoltgresWorkItemAdapter
     throw new WorkItemsBusyError();
   }
 
+  private logReconciliation(
+    level: "info" | "warn" | "error",
+    conn: WorkItemConnection,
+    fields: Record<string, unknown>
+  ): void {
+    this.logger[level](
+      {
+        event: "adapter.work_items.reconcile",
+        component: "doltgres-work-items",
+        operationId: conn.context.operationId,
+        ...fields,
+      },
+      "work_items operation branch reconciled"
+    );
+  }
+
+  private preservedBranchError(
+    branch: string,
+    error: unknown
+  ): WorkItemsBusyError {
+    return error instanceof WorkItemsBusyError
+      ? error
+      : new WorkItemsBusyError(
+          `Work-item branch ${branch} could not be safely proven; preserving evidence`
+        );
+  }
+
+  private async cleanupVerifiedBranch(
+    conn: WorkItemConnection,
+    transition: ValidatedBranchTransition,
+    startedAt: number
+  ): Promise<boolean> {
+    try {
+      await this.deleteOperationBranch(conn, transition.branch);
+      return true;
+    } catch (error) {
+      // Once reachability (and, for a fresh merge, the exact current row) is
+      // proven, ref deletion is repairable housekeeping. Returning a 503 here
+      // would invite callers to replay an already-durable PATCH/CREATE.
+      this.logReconciliation("warn", conn, {
+        branch: transition.branch,
+        baseHash: transition.baseHash,
+        tip: transition.tip,
+        verb: transition.proof.verb,
+        itemId: transition.proof.itemId,
+        classification: "cleanup_pending",
+        durationMs: Date.now() - startedAt,
+        ...errorFields(error),
+      });
+      return false;
+    }
+  }
+
+  private async operationBranchRow(
+    conn: WorkItemConnection,
+    branch: string
+  ): Promise<Record<string, unknown> | undefined> {
+    const rows = (await conn.unsafe(
+      "SELECT name, hash FROM dolt.branches"
+    )) as ReadonlyArray<Record<string, unknown>>;
+    return rows.find((row) => String(row.name ?? "") === branch);
+  }
+
+  private async validateOperationBranch(
+    conn: WorkItemConnection,
+    branch: string,
+    tip: string,
+    pending?: PendingBranchState<unknown>
+  ): Promise<ValidatedBranchTransition> {
+    const commitRows = (await conn.unsafe(
+      `SELECT * FROM dolt.commits WHERE commit_hash = ${escapeValue(tip)}`
+    )) as ReadonlyArray<Record<string, unknown>>;
+    const commit = commitRows.find(
+      (row) => String(row.commit_hash ?? "") === tip
+    );
+    const parentRows = (await conn.unsafe(
+      `SELECT * FROM dolt.commit_ancestors WHERE commit_hash = ${escapeValue(tip)}`
+    )) as ReadonlyArray<Record<string, unknown>>;
+    if (!commit || parentRows.length !== 1) {
+      throw new WorkItemsBusyError(
+        `Work-item branch ${branch} has unprovable commit evidence; preserving evidence`
+      );
+    }
+    const parent = parentRows[0];
+    if (!parent || Number(parent.parent_index) !== 0) {
+      throw new WorkItemsBusyError(
+        `Work-item branch ${branch} has non-linear history; preserving evidence`
+      );
+    }
+    const baseHash = String(parent.parent_hash ?? "");
+    if (
+      !baseHash ||
+      (pending && baseHash !== pending.baseHash) ||
+      (pending?.branchCommit && pending.branchCommit !== tip)
+    ) {
+      throw new WorkItemsBusyError(
+        `Work-item branch ${branch} moved from its frozen base; preserving evidence`
+      );
+    }
+
+    const summaries = (await conn.unsafe(
+      `SELECT * FROM dolt_diff_summary(${escapeValue(baseHash)}, ${escapeValue(tip)})`
+    )) as ReadonlyArray<Record<string, unknown>>;
+    const summary = summaries[0];
+    // Deployed Doltgres falsifies data_change=false for the real b112 one-row
+    // add. The exact row diff below is data authority; summary is schema/scope
+    // authority only (bug.5358 approved Rev3 amendment).
+    if (
+      summaries.length !== 1 ||
+      !summary ||
+      String(summary.from_table_name ?? "") !== "public.work_items" ||
+      String(summary.to_table_name ?? "") !== "public.work_items" ||
+      doltBoolean([summary], "schema_change")
+    ) {
+      throw new WorkItemsBusyError(
+        `Work-item branch ${branch} changed unsupported schema or tables; preserving evidence`
+      );
+    }
+    const diffs = (await conn.unsafe(
+      `SELECT * FROM dolt_diff(${escapeValue(baseHash)}, ${escapeValue(tip)}, 'work_items')`
+    )) as ReadonlyArray<Record<string, unknown>>;
+    if (diffs.length !== 1 || !diffs[0]) {
+      throw new WorkItemsBusyError(
+        `Work-item branch ${branch} is not an exact one-row change; preserving evidence`
+      );
+    }
+    const diff = diffs[0];
+    const before = snapshotRow(diff, "from_");
+    const after = snapshotRow(diff, "to_");
+    const commitAt = asEpoch(commit.date);
+    if (commitAt === undefined) {
+      throw new WorkItemsBusyError(
+        `Work-item branch ${branch} has no authoritative commit time; preserving evidence`
+      );
+    }
+    const proof =
+      pending?.proof ??
+      legacyProofFromMessage(String(commit.message ?? ""), before, after);
+    if (!proof || !validateTransitionMatrix(proof, before, after, commitAt)) {
+      throw new WorkItemsBusyError(
+        `Work-item branch ${branch} failed its operation proof; preserving evidence`
+      );
+    }
+    const expectedDiffType =
+      proof.verb === "create"
+        ? "added"
+        : proof.verb === "delete"
+          ? "removed"
+          : "modified";
+    if (String(diff.diff_type ?? "").toLowerCase() !== expectedDiffType) {
+      throw new WorkItemsBusyError(
+        `Work-item branch ${branch} has the wrong operation shape; preserving evidence`
+      );
+    }
+    return { branch, baseHash, tip, proof, before, after, commitAt };
+  }
+
+  private async proveFreshMergeOutcome(
+    conn: WorkItemConnection,
+    transition: ValidatedBranchTransition
+  ): Promise<void> {
+    if (!(await this.branchCommitIsOnMain(conn, transition.tip))) {
+      throw new DoltMergeOutcomeUnknownError();
+    }
+    const id = String(
+      transition.proof.verb === "delete"
+        ? transition.before.id
+        : transition.after.id
+    );
+    const rows = (await conn.unsafe(
+      `SELECT * FROM work_items WHERE id = ${escapeValue(id)} LIMIT 1`
+    )) as ReadonlyArray<Record<string, unknown>>;
+    if (transition.proof.verb === "delete") {
+      if (rows.length !== 0) throw new DoltMergeOutcomeUnknownError();
+      return;
+    }
+    if (!rows[0] || !snapshotsEqual(snapshotRow(rows[0]), transition.after)) {
+      throw new DoltMergeOutcomeUnknownError();
+    }
+  }
+
+  private async resolveOperationBranch<T>(
+    conn: WorkItemConnection,
+    branch: string,
+    pending?: PendingBranchState<T>,
+    originalError?: unknown
+  ): Promise<T | undefined> {
+    const startedAt = Date.now();
+    try {
+      const checkoutRows = await conn.unsafe("SELECT dolt_checkout('main')");
+      assertDoltStatus(checkoutRows, "dolt_checkout");
+      await this.abortOwnedMergeIfPresent(conn, branch);
+      await this.assertMainClean(conn);
+    } catch (error) {
+      this.logReconciliation("error", conn, {
+        branch,
+        classification: "preserved_unsafe",
+        durationMs: Date.now() - startedAt,
+        ...errorFields(error),
+      });
+      throw this.preservedBranchError(branch, error);
+    }
+
+    let row: Record<string, unknown> | undefined;
+    try {
+      row = await this.operationBranchRow(conn, branch);
+    } catch (error) {
+      this.logReconciliation("error", conn, {
+        branch,
+        classification: "preserved_unsafe",
+        durationMs: Date.now() - startedAt,
+        ...errorFields(error),
+      });
+      throw this.preservedBranchError(branch, error);
+    }
+    if (!row && !pending?.branchCommit) {
+      if (pending) throw originalError;
+      return undefined;
+    }
+    let tip: string;
+    try {
+      tip = row
+        ? doltScalar([row], "hash")
+        : String(pending?.branchCommit ?? "");
+    } catch (error) {
+      this.logReconciliation("error", conn, {
+        branch,
+        classification: "preserved_unsafe",
+        durationMs: Date.now() - startedAt,
+        ...errorFields(error),
+      });
+      throw this.preservedBranchError(branch, error);
+    }
+    if (pending && tip === pending.baseHash) {
+      try {
+        await this.deleteOperationBranch(conn, branch);
+      } catch (error) {
+        this.logReconciliation("error", conn, {
+          branch,
+          baseHash: pending.baseHash,
+          tip,
+          classification: "preserved_unsafe",
+          durationMs: Date.now() - startedAt,
+          ...errorFields(error),
+        });
+        throw this.preservedBranchError(branch, error);
+      }
+      this.logReconciliation("info", conn, {
+        branch,
+        baseHash: pending.baseHash,
+        tip,
+        verb: pending.proof.verb,
+        itemId: pending.proof.itemId,
+        classification: "empty_deleted",
+        durationMs: Date.now() - startedAt,
+      });
+      throw originalError;
+    }
+    if (!pending) {
+      let currentMain: string;
+      try {
+        currentMain = doltScalar(
+          await conn.unsafe("SELECT dolt_hashof('main') AS dolt_hashof"),
+          "dolt_hashof"
+        );
+      } catch (error) {
+        this.logReconciliation("error", conn, {
+          branch,
+          tip,
+          classification: "preserved_unsafe",
+          durationMs: Date.now() - startedAt,
+          ...errorFields(error),
+        });
+        throw this.preservedBranchError(branch, error);
+      }
+      if (tip === currentMain) {
+        try {
+          await this.deleteOperationBranch(conn, branch);
+        } catch (error) {
+          this.logReconciliation("error", conn, {
+            branch,
+            baseHash: currentMain,
+            tip,
+            classification: "preserved_unsafe",
+            durationMs: Date.now() - startedAt,
+            ...errorFields(error),
+          });
+          throw this.preservedBranchError(branch, error);
+        }
+        this.logReconciliation("info", conn, {
+          branch,
+          baseHash: currentMain,
+          tip,
+          classification: "empty_deleted",
+          durationMs: Date.now() - startedAt,
+        });
+        return undefined;
+      }
+    }
+
+    let reachable: boolean;
+    try {
+      reachable = await this.branchCommitIsOnMain(conn, tip);
+    } catch (error) {
+      this.logReconciliation("error", conn, {
+        branch,
+        tip,
+        classification: "preserved_unsafe",
+        durationMs: Date.now() - startedAt,
+        ...errorFields(error),
+      });
+      throw this.preservedBranchError(branch, error);
+    }
+    let transition: ValidatedBranchTransition;
+    try {
+      transition = await this.validateOperationBranch(
+        conn,
+        branch,
+        tip,
+        pending as PendingBranchState<unknown> | undefined
+      );
+    } catch (error) {
+      this.logReconciliation("error", conn, {
+        branch,
+        tip,
+        classification: "preserved_unsafe",
+        durationMs: Date.now() - startedAt,
+        ...errorFields(error),
+      });
+      throw this.preservedBranchError(branch, error);
+    }
+
+    if (reachable) {
+      if (pending?.requiresFreshOutcomeProof) {
+        try {
+          await this.proveFreshMergeOutcome(conn, transition);
+        } catch (error) {
+          this.logReconciliation("error", conn, {
+            branch,
+            baseHash: transition.baseHash,
+            tip,
+            verb: transition.proof.verb,
+            itemId: transition.proof.itemId,
+            classification: "preserved_unsafe",
+            durationMs: Date.now() - startedAt,
+            ...errorFields(error),
+          });
+          throw this.preservedBranchError(branch, error);
+        }
+      }
+      const cleaned = row
+        ? await this.cleanupVerifiedBranch(conn, transition, startedAt)
+        : true;
+      this.logReconciliation("info", conn, {
+        branch,
+        baseHash: transition.baseHash,
+        tip,
+        verb: transition.proof.verb,
+        itemId: transition.proof.itemId,
+        classification: cleaned
+          ? "reachable_cleaned"
+          : "reachable_cleanup_pending",
+        durationMs: Date.now() - startedAt,
+      });
+      return pending?.result;
+    }
+
+    let merge: { hash: string; conflicts: number };
+    try {
+      merge = requireNamedMerge(
+        await conn.unsafe(
+          `SELECT hash, fast_forward, conflicts, message FROM dolt_merge(${escapeValue(branch)})`
+        )
+      );
+    } catch (error) {
+      this.logReconciliation("error", conn, {
+        branch,
+        baseHash: transition.baseHash,
+        tip,
+        verb: transition.proof.verb,
+        itemId: transition.proof.itemId,
+        classification: "preserved_conflict",
+        durationMs: Date.now() - startedAt,
+        ...errorFields(error),
+      });
+      throw this.preservedBranchError(branch, error);
+    }
+    try {
+      await this.proveFreshMergeOutcome(conn, transition);
+    } catch (error) {
+      this.logReconciliation("error", conn, {
+        branch,
+        baseHash: transition.baseHash,
+        tip,
+        verb: transition.proof.verb,
+        itemId: transition.proof.itemId,
+        classification: "preserved_unsafe",
+        durationMs: Date.now() - startedAt,
+        ...errorFields(error),
+      });
+      throw this.preservedBranchError(branch, error);
+    }
+    const cleaned = await this.cleanupVerifiedBranch(
+      conn,
+      transition,
+      startedAt
+    );
+    this.logReconciliation("info", conn, {
+      branch,
+      baseHash: transition.baseHash,
+      tip,
+      verb: transition.proof.verb,
+      itemId: transition.proof.itemId,
+      mergeHash: merge.hash,
+      classification: "merged_verified",
+      cleanupPending: !cleaned,
+      durationMs: Date.now() - startedAt,
+    });
+    return pending?.result;
+  }
+
   private async reconcileUnderLock(conn: WorkItemConnection): Promise<void> {
-    const checkoutRows = await conn.unsafe("SELECT dolt_checkout('main')");
-    assertDoltStatus(checkoutRows, "dolt_checkout");
-    await this.abortOwnedMergeIfPresent(conn);
-    await this.assertMainClean(conn);
+    try {
+      const checkoutRows = await conn.unsafe("SELECT dolt_checkout('main')");
+      assertDoltStatus(checkoutRows, "dolt_checkout");
+      await this.abortOwnedMergeIfPresent(conn);
+      await this.assertMainClean(conn);
+    } catch {
+      throw new WorkItemsBusyError(
+        "Work-item main could not be made safe for reconciliation; retry shortly"
+      );
+    }
 
     let branchRows: ReadonlyArray<Record<string, unknown>>;
     try {
@@ -853,30 +1595,12 @@ export class DoltgresWorkItemAdapter
         "Work-item branch reconciliation could not list evidence; retry shortly"
       );
     }
-    for (const row of branchRows) {
-      const branch = String(row.name ?? "");
-      if (!branch.startsWith(OP_BRANCH_PREFIX)) continue;
-
-      let branchCommit: string;
-      let reachable: boolean;
-      try {
-        branchCommit = doltScalar([row], "hash");
-        reachable = await this.branchCommitIsOnMain(conn, branchCommit);
-      } catch {
-        throw new WorkItemsBusyError(
-          `Work-item branch ${branch} requires reconciliation proof; retry shortly`
-        );
-      }
-      if (!reachable) {
-        throw new WorkItemsBusyError(
-          `Work-item branch ${branch} is not reachable from main; preserving evidence`
-        );
-      }
-
-      const deleteRows = await conn.unsafe(
-        `SELECT dolt_branch('-D', ${escapeValue(branch)})`
-      );
-      assertDoltStatus(deleteRows, "dolt_branch");
+    const branches = branchRows
+      .map((row) => String(row.name ?? ""))
+      .filter((branch) => branch.startsWith(OP_BRANCH_PREFIX))
+      .sort();
+    for (const branch of branches) {
+      await this.resolveOperationBranch(conn, branch);
     }
   }
 
@@ -886,7 +1610,7 @@ export class DoltgresWorkItemAdapter
     const rows = (await conn.unsafe(
       "SELECT is_merging, source, source_commit, target, unmerged_tables FROM dolt.merge_status"
     )) as ReadonlyArray<Record<string, unknown>>;
-    return rows.find((row) => row.is_merging === true);
+    return rows.find((row) => doltBoolean([row], "is_merging"));
   }
 
   private async abortOwnedMergeIfPresent(
@@ -938,46 +1662,72 @@ export class DoltgresWorkItemAdapter
   private async mutate<T>(
     message: string,
     principalId: string,
-    fn: (conn: WorkItemConnection) => Promise<T>,
-    options: MutationOptions<T> = {}
+    fn: (conn: WorkItemConnection, proof: MutationProof) => Promise<T>,
+    options: MutationOptions<T>
   ): Promise<T> {
-    let lastConflict: unknown;
-    for (let attempt = 0; attempt < MERGE_RETRIES; attempt += 1) {
+    return this.withOperationQueue(message, async (context) => {
       try {
-        return await this.withGlobalLock(message, async (conn) => {
-          await options.preflight?.(conn);
+        return await this.withGlobalLock(context, async (conn) => {
+          await options.preflight?.(conn, options.proof);
           return this.mutateOnBranch(
             conn,
             message,
             requirePrincipal(principalId),
             fn,
+            options.proof,
             options.shouldCommit ?? (() => true)
           );
         });
       } catch (error) {
-        if (!(error instanceof WorkItemMergeConflictError)) throw error;
-        lastConflict = error;
+        if (!(error instanceof PendingBranchRecoveryError)) throw error;
+        const resolved = await this.withGlobalLock(
+          context,
+          (conn) =>
+            this.resolveOperationBranch(
+              conn,
+              error.state.branch,
+              error.state as PendingBranchState<T>,
+              error.originalError
+            ),
+          { reconcile: false }
+        );
+        if (resolved === undefined) {
+          throw new DoltMergeOutcomeUnknownError();
+        }
+        return resolved;
       }
-    }
-    throw lastConflict;
+    });
   }
 
   private async mutateOnBranch<T>(
     conn: WorkItemConnection,
     message: string,
     principalId: string,
-    fn: (conn: WorkItemConnection) => Promise<T>,
+    fn: (conn: WorkItemConnection, proof: MutationProof) => Promise<T>,
+    proof: MutationProof,
     shouldCommit: (result: T) => boolean
   ): Promise<T> {
+    const startedAt = Date.now();
     const branch = `${OP_BRANCH_PREFIX}${randomUUID()}`;
     conn.context.branch = branch;
-    const createRows = await conn.unsafe(
-      `SELECT dolt_checkout('-b', ${escapeValue(branch)}, 'main')`
+    const baseRows = await conn.unsafe(
+      "SELECT dolt_hashof('main') AS dolt_hashof"
     );
-    assertDoltStatus(createRows, "dolt_checkout");
-
+    const state: PendingBranchState<T> = {
+      branch,
+      baseHash: doltScalar(baseRows, "dolt_hashof"),
+      proof,
+    };
+    // Arm recovery before branch-create: the ref can be durable even when the
+    // checkout acknowledgement is lost (bug.5358 Rev3).
     try {
-      const result = await fn(conn);
+      const createRows = await conn.unsafe(
+        `SELECT dolt_checkout('-b', ${escapeValue(branch)}, 'main')`
+      );
+      assertDoltStatus(createRows, "dolt_checkout");
+
+      const result = await fn(conn, proof);
+      state.result = result;
       if (!shouldCommit(result)) {
         await this.returnToMainAndDeleteBranch(conn, branch);
         return result;
@@ -988,95 +1738,30 @@ export class DoltgresWorkItemAdapter
         `SELECT dolt_commit('-m', ${escapeValue(`${COMMIT_TAG}: ${message} by actor:${principalId}`)})`
       );
       const branchCommit = doltCommitHash(commitRows);
+      state.branchCommit = branchCommit;
 
       const mainRows = await conn.unsafe("SELECT dolt_checkout('main')");
       assertDoltStatus(mainRows, "dolt_checkout");
-      let mergeRows: unknown;
-      try {
-        mergeRows = await conn.unsafe(
-          `SELECT dolt_merge(${escapeValue(branch)})`
-        );
-        const merge = parseDoltMerge(mergeRows);
-        if (merge.conflicts > 0) throw new WorkItemMergeConflictError();
-      } catch (mergeError) {
-        // DOLT_MERGE implicitly commits. A transport error can therefore arrive
-        // after main moved. Reachability is the authority: never replay a
-        // create/update/delete whose branch commit is already on main.
-        const resolveOutcome = async (proofConn: WorkItemConnection) => {
-          let reachable: boolean;
-          try {
-            reachable = await this.branchCommitIsOnMain(
-              proofConn,
-              branchCommit
-            );
-          } catch (proofError) {
-            await this.terminateClient(
-              proofConn.pool,
-              proofConn.context,
-              "merge.reachability",
-              "outcome_unknown"
-            );
-            // The merge result is ambiguous and the operation branch is the
-            // only durable evidence. Stay fail-closed even if pool recreation
-            // succeeded so a later reconciliation cannot discard that branch
-            // or admit a replay before an operator proves the outcome.
-            this.poisoned = true;
-            this.logger.error(
-              {
-                event: "adapter.work_items.merge_outcome_unknown",
-                component: "doltgres-work-items",
-                branch,
-                ...errorFields(proofError),
-              },
-              "work_items merge reachability could not be proven"
-            );
-            throw new DoltMergeOutcomeUnknownError();
-          }
-          if (reachable) {
-            await this.postMergeHousekeeping(proofConn, branch).catch(
-              () => undefined
-            );
-            return result;
-          }
-          const aborted = await this.abortOwnedMergeIfPresent(
-            proofConn,
-            branch
-          );
-          if (aborted || isMergeConflict(mergeError)) {
-            throw new WorkItemMergeConflictError();
-          }
-          throw mergeError;
-        };
-
-        // Query timeout/terminal handling destroys the old reserved session and
-        // swaps in a recreated pool. Never ask that dead session to prove the
-        // merge outcome: reacquire serialization and prove it on a fresh one.
-        if (conn.pool !== this.sql) {
-          return await this.withFreshRecoveryLock(conn.context, resolveOutcome);
-        }
-        return await resolveOutcome(conn);
-      }
-      // The merge is now durable. Cleanup is repairable housekeeping and must
-      // not turn a committed mutation into an API failure that callers replay.
-      await this.postMergeHousekeeping(conn, branch).catch(() => undefined);
+      const transition = await this.validateOperationBranch(
+        conn,
+        branch,
+        branchCommit,
+        state as PendingBranchState<unknown>
+      );
+      requireNamedMerge(
+        await conn.unsafe(
+          `SELECT hash, fast_forward, conflicts, message FROM dolt_merge(${escapeValue(branch)})`
+        )
+      );
+      state.requiresFreshOutcomeProof = true;
+      // A merge acknowledgement alone is not success. Reachability and the
+      // exact current row are proven while serialization is still held.
+      await this.proveFreshMergeOutcome(conn, transition);
+      await this.cleanupVerifiedBranch(conn, transition, startedAt);
       return result;
     } catch (error) {
-      if (error instanceof DoltMergeOutcomeUnknownError) {
-        throw error;
-      }
-      await this.returnToMainAndDeleteBranch(conn, branch).catch(
-        () => undefined
-      );
-      throw error;
+      throw new PendingBranchRecoveryError(state, error);
     }
-  }
-
-  private async postMergeHousekeeping(
-    conn: WorkItemConnection,
-    branch: string
-  ): Promise<void> {
-    await this.assertMainClean(conn);
-    await this.deleteOperationBranch(conn, branch);
   }
 
   private async returnToMainAndDeleteBranch(
@@ -1102,7 +1787,9 @@ export class DoltgresWorkItemAdapter
   private async readOnCleanMain<T>(
     fn: (conn: WorkItemConnection) => Promise<T>
   ): Promise<T> {
-    return this.withGlobalLock("read work items", fn);
+    return this.withOperationQueue("read work items", (context) =>
+      this.withGlobalLock(context, fn)
+    );
   }
 
   private async getWith(conn: WorkItemConnection, id: WorkItemId) {
@@ -1204,7 +1891,7 @@ export class DoltgresWorkItemAdapter
   ): Promise<WorkItem> {
     const principal = requirePrincipal(principalId);
     const createOnce = (allocatedId?: string) =>
-      this.mutate("create work item", principal, async (conn) => {
+      this.mutate("create work item", principal, async (conn, proof) => {
         const insert = async (allocatedId: string) => {
           const columns = [
             "id",
@@ -1242,6 +1929,8 @@ export class DoltgresWorkItemAdapter
           );
           const row = rows[0] as Record<string, unknown> | undefined;
           if (!row) throw new Error("INSERT returned no row");
+          proof.itemId = allocatedId;
+          proof.afterRow = row;
           return rowToWorkItem(row);
         };
 
@@ -1264,6 +1953,8 @@ export class DoltgresWorkItemAdapter
           }
           throw error;
         }
+      }, {
+        proof: { verb: "create", principal },
       });
 
     if (input.id) {
@@ -1327,23 +2018,38 @@ export class DoltgresWorkItemAdapter
     return this.mutate(
       `patch ${input.id as string}`,
       principal,
-      async (conn) => {
+      async (conn, proof) => {
         clauses.push("revision = revision + 1", "updated_at = NOW()");
         const rows = await conn.unsafe(
           `UPDATE work_items SET ${clauses.join(", ")} WHERE id = ${escapeValue(input.id as string)} AND created_by_principal_id = ${escapeValue(principal)} RETURNING *, (claim_expires_at IS NOT NULL AND claim_expires_at > NOW()) AS claim_active`
         );
         const row = rows[0] as Record<string, unknown> | undefined;
         if (!row) await this.throwMissingOrUnauthorized(conn, input.id);
+        proof.afterRow = row as Record<string, unknown>;
         return rowToWorkItem(row as Record<string, unknown>);
       },
       {
-        preflight: async (conn) => {
+        proof: {
+          verb: "patch",
+          principal,
+          itemId: input.id as string,
+          patchValues: Object.fromEntries(
+            (Object.entries(PATCH_COLUMNS) as [
+              keyof WorkItemsPatchSet,
+              string,
+            ][])
+              .filter(([key]) => input.set[key] !== undefined)
+              .map(([key, column]) => [column, input.set[key]])
+          ),
+        },
+        preflight: async (conn, proof) => {
           const current = await this.getWith(conn, input.id);
           if (!current)
             throw new Error(`Work item not found: ${input.id as string}`);
           if (String(current.created_by_principal_id) !== principal) {
             throw new WorkItemAuthorizationError(input.id as string);
           }
+          proof.beforeRow = current;
         },
       }
     );
@@ -1363,7 +2069,18 @@ export class DoltgresWorkItemAdapter
         if (current) throw new WorkItemAuthorizationError(id as string);
         return false;
       },
-      { shouldCommit: Boolean }
+      {
+        proof: { verb: "delete", principal, itemId: id as string },
+        preflight: async (conn, proof) => {
+          const current = await this.getWith(conn, id);
+          if (!current) return;
+          if (String(current.created_by_principal_id) !== principal) {
+            throw new WorkItemAuthorizationError(id as string);
+          }
+          proof.beforeRow = current;
+        },
+        shouldCommit: Boolean,
+      }
     );
   }
 
@@ -1387,16 +2104,25 @@ export class DoltgresWorkItemAdapter
     return this.mutate(
       `claim ${input.id as string}`,
       principal,
-      async (conn) => {
+      async (conn, proof) => {
         const rows = await conn.unsafe(
           `UPDATE work_items SET claimed_by_run = ${escapeValue(input.runId)}, claim_owner_principal_id = ${escapeValue(principal)}, claimed_at = NOW(), claim_expires_at = NOW() + INTERVAL '${CLAIM_TTL_SECONDS} seconds', last_command = ${escapeValue(input.command)}, revision = revision + 1, updated_at = NOW() WHERE id = ${escapeValue(input.id as string)} AND (claim_expires_at IS NULL OR claim_expires_at <= NOW() OR (claim_owner_principal_id = ${escapeValue(principal)} AND claimed_by_run = ${escapeValue(input.runId)})) RETURNING *, TRUE AS claim_active`
         );
         const row = rows[0] as Record<string, unknown> | undefined;
         if (!row) await this.throwLeaseConflictOrMissing(conn, input.id);
+        proof.afterRow = row as Record<string, unknown>;
         return rowToWorkItem(row as Record<string, unknown>);
       },
       {
-        preflight: async (conn) => {
+        proof: {
+          verb: "claim",
+          principal,
+          itemId: input.id as string,
+          runId: input.runId,
+          command: input.command,
+          commandProvided: true,
+        },
+        preflight: async (conn, proof) => {
           const current = await this.getWith(conn, input.id);
           if (!current)
             throw new Error(`Work item not found: ${input.id as string}`);
@@ -1406,6 +2132,7 @@ export class DoltgresWorkItemAdapter
           if (current.claim_active !== false && !sameLease) {
             throw new WorkItemLeaseConflictError(input.id as string);
           }
+          proof.beforeRow = current;
         },
       }
     );
@@ -1421,7 +2148,7 @@ export class DoltgresWorkItemAdapter
     return this.mutate(
       `heartbeat ${input.id as string}`,
       principal,
-      async (conn) => {
+      async (conn, proof) => {
         const command =
           input.command === undefined
             ? ""
@@ -1431,10 +2158,19 @@ export class DoltgresWorkItemAdapter
         );
         const row = rows[0] as Record<string, unknown> | undefined;
         if (!row) await this.throwLeaseConflictOrMissing(conn, input.id);
+        proof.afterRow = row as Record<string, unknown>;
         return rowToWorkItem(row as Record<string, unknown>);
       },
       {
-        preflight: async (conn) => {
+        proof: {
+          verb: "heartbeat",
+          principal,
+          itemId: input.id as string,
+          runId: input.runId,
+          command: input.command,
+          commandProvided: input.command !== undefined,
+        },
+        preflight: async (conn, proof) => {
           const current = await this.getWith(conn, input.id);
           if (!current)
             throw new Error(`Work item not found: ${input.id as string}`);
@@ -1445,6 +2181,7 @@ export class DoltgresWorkItemAdapter
           if (!leaseMatches) {
             throw new WorkItemLeaseConflictError(input.id as string);
           }
+          proof.beforeRow = current;
         },
       }
     );
@@ -1459,16 +2196,23 @@ export class DoltgresWorkItemAdapter
     return this.mutate(
       `release ${input.id as string}`,
       principal,
-      async (conn) => {
+      async (conn, proof) => {
         const rows = await conn.unsafe(
           `UPDATE work_items SET claimed_by_run = NULL, claim_owner_principal_id = NULL, claimed_at = NULL, claim_expires_at = NULL, revision = revision + 1, updated_at = NOW() WHERE id = ${escapeValue(input.id as string)} AND claim_owner_principal_id = ${escapeValue(principal)} AND claimed_by_run = ${escapeValue(input.runId)} RETURNING *, FALSE AS claim_active`
         );
         const row = rows[0] as Record<string, unknown> | undefined;
         if (!row) await this.throwLeaseConflictOrMissing(conn, input.id);
+        proof.afterRow = row as Record<string, unknown>;
         return rowToWorkItem(row as Record<string, unknown>);
       },
       {
-        preflight: async (conn) => {
+        proof: {
+          verb: "release",
+          principal,
+          itemId: input.id as string,
+          runId: input.runId,
+        },
+        preflight: async (conn, proof) => {
           const current = await this.getWith(conn, input.id);
           if (!current)
             throw new Error(`Work item not found: ${input.id as string}`);
@@ -1478,6 +2222,7 @@ export class DoltgresWorkItemAdapter
           if (!leaseMatches) {
             throw new WorkItemLeaseConflictError(input.id as string);
           }
+          proof.beforeRow = current;
         },
       }
     );

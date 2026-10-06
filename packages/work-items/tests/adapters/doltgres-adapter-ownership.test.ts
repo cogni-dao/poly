@@ -34,7 +34,13 @@ function adapterWithQueries() {
     if (query.startsWith("SELECT id FROM work_items")) return [];
     if (query.startsWith("INSERT INTO work_items")) return [row];
     if (query.startsWith("UPDATE work_items")) {
-      return [{ ...row, claim_active: query.includes("claim_expires_at") }];
+      return [
+        {
+          ...row,
+          title: /title = '([^']*)'/.exec(query)?.[1] ?? row.title,
+          claim_active: query.includes("claim_expires_at"),
+        },
+      ];
     }
     if (query.startsWith("DELETE FROM work_items")) return [{ id: row.id }];
     if (query.includes("FROM work_items")) return [row];

@@ -21,14 +21,33 @@ interface ReconciliationState {
   readonly listError?: Error;
   readonly proofError?: Error;
   readonly queries: string[];
+  merged: boolean;
 }
 
+const recoveredRow = {
+  id: "task.0001",
+  type: "task",
+  title: "restart evidence",
+  status: "needs_implement",
+  node: "shared",
+  revision: 0,
+  created_by_principal_id: "principal-1",
+  created_at: "2026-10-03T00:00:00.000Z",
+  updated_at: "2026-10-03T00:00:00.000Z",
+  claimed_by_run: null,
+  claimed_at: null,
+  claim_owner_principal_id: null,
+  claim_expires_at: null,
+};
+
 function makeReconciliationHarness({
+  branchCommit = "operation-commit",
   mergeBase,
   listError,
   omitBranchCommit = false,
   proofError,
 }: {
+  readonly branchCommit?: string;
   readonly mergeBase: string;
   readonly listError?: Error;
   readonly omitBranchCommit?: boolean;
@@ -36,11 +55,12 @@ function makeReconciliationHarness({
 }) {
   const state: ReconciliationState = {
     branch: "work-item-op/restart-evidence",
-    branchCommit: omitBranchCommit ? undefined : "operation-commit",
+    branchCommit: omitBranchCommit ? undefined : branchCommit,
     mergeBase,
     listError,
     proofError,
     queries: [],
+    merged: false,
   };
 
   const unsafe = async (query: string): Promise<Rows> => {
@@ -59,6 +79,9 @@ function makeReconciliationHarness({
     }
     if (query.includes("FROM dolt.merge_status")) return [];
     if (query === "SELECT table_name FROM dolt.status") return [];
+    if (query === "SELECT dolt_hashof('main') AS dolt_hashof") {
+      return [{ dolt_hashof: "current-main" }];
+    }
     if (query === "SELECT name, hash FROM dolt.branches") {
       if (state.listError) throw state.listError;
       return state.branch
@@ -67,11 +90,67 @@ function makeReconciliationHarness({
     }
     if (query.startsWith("SELECT dolt_merge_base")) {
       if (state.proofError) throw state.proofError;
-      return [{ dolt_merge_base: state.mergeBase }];
+      return [
+        {
+          dolt_merge_base: state.merged
+            ? state.branchCommit
+            : state.mergeBase,
+        },
+      ];
+    }
+    if (query.includes("FROM dolt.commits")) {
+      return [
+        {
+          commit_hash: state.branchCommit,
+          message: "work-items: create work item by actor:principal-1",
+          date: "2026-10-03T00:01:00.000Z",
+        },
+      ];
+    }
+    if (query.includes("FROM dolt.commit_ancestors")) {
+      return [
+        {
+          commit_hash: state.branchCommit,
+          parent_hash: "main-parent",
+          parent_index: 0,
+        },
+      ];
+    }
+    if (query.startsWith("SELECT * FROM dolt_diff_summary")) {
+      return [
+        {
+          from_table_name: "public.work_items",
+          to_table_name: "public.work_items",
+          schema_change: false,
+          data_change: false,
+        },
+      ];
+    }
+    if (query.startsWith("SELECT * FROM dolt_diff(")) {
+      return [
+        {
+          ...Object.fromEntries(
+            Object.entries(recoveredRow).map(([key, value]) => [
+              `to_${key}`,
+              value,
+            ])
+          ),
+          diff_type: "added",
+        },
+      ];
+    }
+    if (query.includes("FROM dolt_merge(")) {
+      state.merged = true;
+      return [
+        { hash: "merge-commit", fast_forward: 0, conflicts: 0, message: "ok" },
+      ];
     }
     if (query.startsWith("SELECT dolt_branch('-D'")) {
       state.branch = undefined;
       return [{ dolt_branch: [0, ""] }];
+    }
+    if (query.startsWith("SELECT * FROM work_items WHERE id = 'task.0001'")) {
+      return state.merged ? [recoveredRow] : [];
     }
     if (query.includes("FROM work_items")) return [];
     return [];
@@ -91,6 +170,22 @@ function makeReconciliationHarness({
 }
 
 describe("DoltgresWorkItemAdapter restart reconciliation", () => {
+  it("deletes a restart-time empty branch only when its tip equals current main", async () => {
+    const { adapter, state } = makeReconciliationHarness({
+      branchCommit: "current-main",
+      mergeBase: "current-main",
+    });
+
+    await expect(
+      adapter.get(toWorkItemId("task.missing"))
+    ).resolves.toBeNull();
+
+    expect(state.branch).toBeUndefined();
+    expect(
+      state.queries.some((query) => query.includes("FROM dolt.commits"))
+    ).toBe(false);
+  });
+
   it("deletes a stale operation branch only after its tip is proven on main", async () => {
     const { adapter, state } = makeReconciliationHarness({
       mergeBase: "operation-commit",
@@ -109,22 +204,22 @@ describe("DoltgresWorkItemAdapter restart reconciliation", () => {
     ).toBe(true);
   });
 
-  it("preserves an operation branch whose tip is not reachable from main", async () => {
+  it("merges and verifies a valid operation branch whose tip is not yet on main", async () => {
     const { adapter, state } = makeReconciliationHarness({
       mergeBase: "main-commit",
     });
 
     await expect(
       adapter.get(toWorkItemId("task.missing"))
-    ).rejects.toBeInstanceOf(WorkItemsBusyError);
+    ).resolves.toBeNull();
 
-    expect(state.branch).toBe("work-item-op/restart-evidence");
+    expect(state.branch).toBeUndefined();
     expect(
-      state.queries.some((query) => query.startsWith("SELECT dolt_branch('-D'"))
-    ).toBe(false);
+      state.queries.some((query) => query.includes("FROM dolt_merge("))
+    ).toBe(true);
     expect(
       state.queries.some((query) => query.includes("FROM work_items"))
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("preserves evidence and fails busy when the reachability proof errors", async () => {
