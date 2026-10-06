@@ -332,11 +332,12 @@ export const serverSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
 
-  // Interim research-read latency mitigation (fix/research-route-caching).
-  // One-shot boot prewarm of the four SWR-cached research aggregates
-  // (snapshot/benchmark for the two primary research wallets, target-overlap,
-  // trader-comparison) so first views don't pay the 25-31s cold aggregate.
-  // Default ON; runs on the job leader only (jobs seam, task.5016).
+  // Research prewarm (fix/research-route-caching; extended by
+  // fix/comparison-per-wallet-cache): one-shot boot warm of the SWR-cached
+  // snapshot/benchmark/target-overlap aggregates PLUS a recurring 4min tick
+  // that keeps the two fixed comparison targets (RN1, swisstony) warm at the
+  // board-default 1W interval, so no page load pays the 5-8s cold per-wallet
+  // aggregate. Default ON; runs on the job leader only (jobs seam, task.5016).
   POLY_RESEARCH_PREWARM_ENABLED: z
     .enum(["true", "false"])
     .default("true")
