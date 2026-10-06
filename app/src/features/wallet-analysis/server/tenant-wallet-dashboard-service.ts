@@ -417,7 +417,7 @@ export async function readTenantWalletDashboard(input: {
             walletAddress: address,
             livePositions: marketLivePositions,
             closedPositions: marketClosedPositions,
-            diagnostics: input.diagnostics,
+            ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
           })
         );
         recordDashboardDiagnostic(
