@@ -27,7 +27,16 @@ const terminalStatuses = new Set(["exact", "upgraded", "retired"]);
 const resolutionOutcomes = new Set(["exact", "upgraded", "retired"]);
 const gitModes = new Set(["100644", "100755", "120000"]);
 const proofEnvironments = new Set(["candidate", "production"]);
-const expectedMissionScope = { P0: 28, P1: 51 };
+// Amendment 1: mission scope may grow additively; the ratified 28/51 split is a floor.
+const ratifiedMissionScopeFloor = { P0: 28, P1: 51 };
+// Ratified contract digests, oldest first. The head is the only valid current pin;
+// amending the contract requires appending its digest here in the same reviewed change.
+const contractAmendmentLineage = [
+  // story.5000 ratification (full-file sha256)
+  "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba",
+  // Amendment 1: additive-only mission scope growth (amendment-exempt digest)
+  "eeb47ab2f13fb44ac54b671600137e063e3cac7f47ab887bc0780c40fc59508d",
+];
 const expectedDeliveryGroupIds = [
   "dashboard-truth",
   "hub-control-plane",
@@ -77,6 +86,29 @@ function readJson(filePath) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+// Amendment 1: the contract digest excludes only explicitly marked amendment-exempt
+// regions (the derived scope-count table). Every other byte remains hash-frozen.
+export function contractDigest(content) {
+  const kept = [];
+  let exempt = false;
+  for (const line of content.split("\n")) {
+    const marker = line.trim();
+    if (marker === "<!-- amendment-exempt:begin -->") {
+      invariant(!exempt, "Nested amendment-exempt region in parity contract");
+      exempt = true;
+      continue;
+    }
+    if (marker === "<!-- amendment-exempt:end -->") {
+      invariant(exempt, "Unopened amendment-exempt end marker in parity contract");
+      exempt = false;
+      continue;
+    }
+    if (!exempt) kept.push(line);
+  }
+  invariant(!exempt, "Unterminated amendment-exempt region in parity contract");
+  return sha256(kept.join("\n"));
 }
 
 export function sourceEntryDigest(entries) {
@@ -339,8 +371,12 @@ export function validatePolicy(
     const contractPath = path.join(root, policy.contract.path);
     invariant(existsSync(contractPath), `Parity contract missing: ${policy.contract.path}`);
     invariant(
-      sha256(readFileSync(contractPath)) === policy.contract.sha256,
+      contractDigest(readFileSync(contractPath, "utf8")) === policy.contract.sha256,
       "Immutable parity contract hash changed"
+    );
+    invariant(
+      policy.contract.sha256 === contractAmendmentLineage.at(-1),
+      "Parity contract pin is not the head of the ratified amendment lineage"
     );
   }
 
@@ -837,8 +873,8 @@ function validateMissionScope(policy, entries) {
   }
   for (const priority of ["P0", "P1"]) {
     invariant(
-      counts[priority] === expectedMissionScope[priority],
-      `Mission ${priority} scope is ${counts[priority]}, expected ${expectedMissionScope[priority]}`
+      counts[priority] >= ratifiedMissionScopeFloor[priority],
+      `Mission ${priority} scope is ${counts[priority]}, below the ratified floor of ${ratifiedMissionScopeFloor[priority]}`
     );
   }
   for (const resolution of policy.resolutions) {
@@ -1164,7 +1200,7 @@ export function completionProblems(inventory, through) {
   return problems;
 }
 
-export function regressionProblems(base, current) {
+export function regressionProblems(base, current, notes = []) {
   const problems = [];
   const pendingSources = new Set(
     (current.proofRefreshPending ?? []).map(({ sourcePath }) => sourcePath)
@@ -1178,8 +1214,18 @@ export function regressionProblems(base, current) {
     problems.push("source pin changed");
   }
   if (JSON.stringify(base.contract) !== JSON.stringify(current.contract)) {
-    problems.push("immutable contract path or hash changed");
+    // Amendment 1: a contract change is legal only as a ratified lineage advance.
+    const ratifiedAdvance =
+      base.contract.path === current.contract.path &&
+      contractAmendmentLineage.includes(base.contract.sha256) &&
+      current.contract.sha256 === contractAmendmentLineage.at(-1);
+    if (ratifiedAdvance) {
+      notes.push("contract advanced along the ratified amendment lineage");
+    } else {
+      problems.push("immutable contract path or hash changed");
+    }
   }
+  const inventoryPaths = new Set(current.entries.map(({ sourcePath }) => sourcePath));
   const currentGroups = new Map(
     current.deliveryGroups.map((group) => [group.id, group])
   );
@@ -1193,11 +1239,30 @@ export function regressionProblems(base, current) {
     for (const field of [
       "resolutionProofMode",
       "requiredProofEnvironments",
-      "sourcePaths",
       "behaviorExpectation",
     ]) {
       if (JSON.stringify(oldGroup[field]) !== JSON.stringify(newGroup[field])) {
         problems.push(`delivery group ${field} changed: ${oldGroup.id}`);
+      }
+    }
+    // Amendment 1: sourcePaths may only grow. Every pre-existing path must survive
+    // (removals and renames fail) and every addition must already be a pinned
+    // inventory file. Additions are reported as informational notes.
+    const oldPaths = new Set(oldGroup.sourcePaths);
+    const newPaths = new Set(newGroup.sourcePaths);
+    const removed = oldGroup.sourcePaths.filter((p) => !newPaths.has(p));
+    if (removed.length > 0) {
+      problems.push(
+        `delivery group sourcePaths removed: ${oldGroup.id} (${removed.join(", ")})`
+      );
+    }
+    for (const added of newGroup.sourcePaths.filter((p) => !oldPaths.has(p))) {
+      if (inventoryPaths.has(added)) {
+        notes.push(`delivery group sourcePaths grew additively: ${oldGroup.id} (+${added})`);
+      } else {
+        problems.push(
+          `delivery group addition is outside the pinned inventory: ${oldGroup.id} (${added})`
+        );
       }
     }
   }
@@ -1327,8 +1392,12 @@ function main() {
       process.stdout.write(`verified current inventory; ${baseRef} predates schema v2\n`);
       return;
     }
-    const problems = regressionProblems(base, current);
+    const notes = [];
+    const problems = regressionProblems(base, current, notes);
     invariant(problems.length === 0, `Parity regression:\n${problems.join("\n")}`);
+    for (const note of notes) {
+      process.stdout.write(`note: ${note}\n`);
+    }
     process.stdout.write(`no parity regression against ${baseRef}\n`);
     return;
   }

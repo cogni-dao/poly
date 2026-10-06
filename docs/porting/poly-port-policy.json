@@ -10,7 +10,7 @@
   },
   "contract": {
     "path": "docs/porting/poly-parity-contract.md",
-    "sha256": "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba"
+    "sha256": "eeb47ab2f13fb44ac54b671600137e063e3cac7f47ab887bc0780c40fc59508d"
   },
   "pathMappings": [
     {

@@ -32,6 +32,7 @@ Every resolution record names exactly one source path and includes the expected 
 
 ## Delivery groups
 
+<!-- amendment-exempt:begin -->
 | Group | P0 | P1 | Proof outcome |
 | --- | ---: | ---: | --- |
 | `hub-control-plane` | 8 | 0 | Candidate and production CRUD, claim/heartbeat, UI/read, delete, and restart persistence |
@@ -43,6 +44,9 @@ Every resolution record names exactly one source path and includes the expected 
 | `p1-research-reads` | 0 | 14 | Candidate bounded/failure behavior plus passive production research evidence |
 | **Total** | **28** | **51** | |
 
+Scope counts mirror the current policy and may grow additively under Amendment 1. The ratified 28 P0 + 51 P1 split is a floor the scanner enforces; it can never shrink.
+<!-- amendment-exempt:end -->
+
 PR #113 owns only `trading-wallet-overview-service.ts` and `wallet-analysis-service.ts` plus focused tests. The observer and current-position read model delivered in PR #110 are classified from evidence; they are not reopened in PR #113.
 
 ## Commands
@@ -52,3 +56,9 @@ PR #113 owns only `trading-wallet-overview-service.ts` and `wallet-analysis-serv
 - `pnpm poly:port:regression -- --base REF` rejects P0/P1 scope drift or a terminal/gate regression relative to `REF`.
 - `pnpm poly:port:check-group -- GROUP` succeeds only when every file and gate in one delivery group is resolved.
 - `pnpm poly:port:complete -- --through P1` succeeds only when every P0/P1 file and behavioral gate is resolved; unresolved P2/P3 entries remain reported.
+
+## Amendments
+
+### Amendment 1 — additive-only mission scope growth
+
+PR #129 proved that a legitimately validated product divergence of a previously `exact` file could never become terminal: an `upgraded` resolution requires delivery-group membership, and the regression gate rejected any `sourcePaths` change. Delivery-group membership may now grow **additively only**: every added path must already exist in the pinned 1,736-file inventory, removals and renames still fail the regression gate, the delivery-group set and the seven behavioral gates remain frozen, and the ratified 28 P0 + 51 P1 scope is a floor that can never shrink. Only the scope-count table above is exempt from the frozen contract digest; every other section remains hash-frozen, and any future contract change requires appending a newly ratified digest to the scanner's amendment lineage in the same reviewed change.
