@@ -211,7 +211,7 @@ One plane, three principals, **no privileged back door for any of them**.
 | --------- | ---------- | ---------- | ------ |
 | Human UI | Session cookie | `getServerSessionUser()` via `resolveRequestIdentity` | ✅ Implemented |
 | External agent | API key (`cogni_ag_sk_v1_…` bearer) | bearer branch of `resolveRequestIdentity` | ✅ Implemented |
-| Internal poly-brain agent | The signed-in user's principal | 📋 Contract — propagation unbuilt | 📋 Contract |
+| Internal poly-brain agent | The signed-in user's principal | Closed over in a per-request `ToolSourcePort` (`app/src/bootstrap/ai/principal-tool-source.ts`), built from the `userId` `createGraphExecutor` already receives | 🚧 Merged, unproven in production |
 
 `app/src/app/_lib/auth/request-identity.ts` (frozen, `exact`) already unifies the first two:
 `resolveRequestIdentity()` at `:114` returns a `SessionUser` from **either** an agent bearer token
@@ -229,6 +229,39 @@ header comment forbids `accessToken`, `apiKey`, `refreshToken`, `headers`, `secr
 `app/tests/unit/security/no-secret-fields.types.test.ts`. Principal propagation therefore cannot
 be a token smuggled through the tool context. This is the same blocker that removed the trade
 tools (`bug.0319`).
+
+**How it was resolved (task.1791070967).** Not by adding a principal to `ToolInvocationContext` —
+that route was evaluated and rejected on evidence, because it delivers the principal to a layer
+that cannot forward it. `ToolImplementation.execute` in `packages/ai-tools/src/types.ts` takes
+**no ctx argument at all**, and `packages/ai-tools/src/runtime-adapter.ts` receives `_ctx` and
+deliberately discards it; making the field usable would change `execute`'s signature across every
+tool factory in `ai-tools` **and** in `packages/poly-ai-tools/src/index.ts`, which is `P1` frozen.
+
+Instead the principal is **closed over per request**. It was already in scope and nobody had used
+it: `app/src/app/api/internal/graphs/[graphId]/runs/route.ts` resolves `actorUserId` and calls
+`createGraphExecutor(executeStream, toUserId(actorUserId))`, and `createInProcProvider` inside
+`app/src/bootstrap/graph-executor.factory.ts` is constructed **once per request**. That function
+now also builds a principal-scoped `ToolSourcePort` and composes it in FRONT of the module-scoped
+`container.toolSource` — which is how a per-request tool joins the plane without editing
+`container.ts` (`P0`, frozen). Authority travels in a closure; the tool context stays
+correlation-only.
+
+Two properties make this safe rather than merely working:
+
+- **`PER_REQUEST_NEVER_MODULE_SCOPED`** — nothing about the source is cached or hoisted. A leaked
+  source would authorize correctly and answer about the *wrong human*, which no other test in CI
+  would notice, so it is pinned directly by
+  `app/tests/unit/bootstrap/principal-tool-source.spec.ts`.
+- **`OVERLAY_NEVER_SHADOWS`** — composing a principal-scoped tool id that the base source already
+  owns throws at construction rather than silently shadowing a core tool.
+
+The bound capability is `poly.copy-trade.orders.v1`, chosen because it is the catalog's only
+published `accountFrom: "principal"` descriptor: its frozen input schema has no
+`billing_account_id`, so the tool **cannot** ask the model for an account id even by accident.
+That is the structural fix for the incident that opened `story.5006`, where an agent stalled
+demanding a UUID from a human. The copy-trade **P/L** rollup was considered first and is
+unsuitable: `polyAccountReadCopyTradePnlOperation` is `accountFrom: "input"` and its schema
+*requires* `billing_account_id`.
 
 ### One authorization decision
 
@@ -328,7 +361,9 @@ does it become ✅ Implemented. Nothing above describes unbuilt behavior in the 
 | Single scope enum | 🚧 Merged | `AGENT_CAPABILITY_SCOPES` + the grants `CHECK`; migration `0074_account_read_scope_alias` |
 | Generated discovery | 🚧 Merged | `features/capability-plane/discovery.ts`; per-descriptor isolation + input-mode fallback, so one unprojectable output can no longer blank the document |
 | Dashboard routes as plane clients | 📋 Contract | `task.1791070962` / `task.1791070959` |
-| poly-brain principal propagation | 📋 Contract | `ToolInvocationContext:135` has no principal |
+| poly-brain principal propagation | 🚧 Merged, unproven in production | `bootstrap/ai/principal-tool-source.ts` — per-request `ToolSourcePort`, principal closed over |
+| `langgraph:poly-brain` reachable at all | 🚧 Merged, unproven in production | `bootstrap/ai/node-catalog.ts`; before it, the composer's `langgraph:poly-brain` returned `not_found` and the graph had never executed |
+| One account read bound as a graph tool | 🚧 Merged, unproven in production | `features/agent-tools/copy-trade-orders-tool.ts` → `poly.copy-trade.orders.v1` |
 | `RLS_BACKSTOP` on `poly_trader_*` | ❌ Documented exception | Carve-out 1 |
 
 🚧 means merged to `main` with CI + component-lane proof, but not yet validated at an exact SHA on
@@ -390,8 +425,11 @@ so nobody re-opens that question.
 
 ## Open Questions
 
-- [ ] How does the signed-in user's principal reach a graph tool, given that
-      `ToolInvocationContext` forbids credential-shaped fields and is compile-time enforced?
+- [x] ~~How does the signed-in user's principal reach a graph tool, given that
+      `ToolInvocationContext` forbids credential-shaped fields and is compile-time enforced?~~
+      **Answered (task.1791070967):** it does not travel through the tool context at all. A
+      per-request `ToolSourcePort` closes over the principal at the composition root. See
+      [The three principals](#the-three-principals).
 - [ ] Which layer owns the `account:read` ↔ `performance:read` alias during expand-then-contract,
       and when is the legacy alias dropped?
 - [ ] Should `SCOPE_ENUM_SINGLE_SOURCE` resolve toward `@cogni/poly-node-contracts` or

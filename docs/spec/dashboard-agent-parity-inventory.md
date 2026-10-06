@@ -427,11 +427,23 @@ marked `UNKNOWN — needs investigation`.
 Two residual *design* unknowns, which are decisions rather than missing facts, and which this
 inventory is not entitled to settle:
 
-- **How the poly-brain principal reaches a tool call.** `ToolInvocationContext`
-  (`packages/ai-core/src/tooling/types.ts:135`) carries no principal and forbids
-  credential-shaped fields, compile-time enforced by
-  `app/tests/unit/security/no-secret-fields.types.test.ts`. Owned by `task.1791070967`;
-  [capability-plane.md](capability-plane.md) Open Question 1.
+- ~~**How the poly-brain principal reaches a tool call.**~~ **Settled by `task.1791070967`:**
+  not through `ToolInvocationContext` at all. That type still carries no principal and still
+  forbids credential-shaped fields (compile-time enforced by
+  `app/tests/unit/security/no-secret-fields.types.test.ts`), and adding one would have been
+  useless anyway — `ToolImplementation.execute` takes no ctx argument and
+  `packages/ai-tools/src/runtime-adapter.ts` discards the one it is handed. The principal is
+  instead closed over in a per-request `ToolSourcePort`
+  (`app/src/bootstrap/ai/principal-tool-source.ts`), composed in front of
+  `container.toolSource` inside `createInProcProvider`. See
+  [capability-plane.md](capability-plane.md) § The three principals.
+
+  One correction to this inventory's framing while that work was done: `langgraph:poly-brain`
+  was not merely missing a principal, it was **unreachable**. `@cogni/poly-graphs` was not a
+  dependency of `app` and was imported nowhere in `app/src`, so the provider's catalog had no
+  `poly-brain` entry and the chat composer's `langgraph:poly-brain` option returned
+  `not_found`. Any parity claim about the poly-brain axis before this task described a code
+  path that had never executed.
 - **Which layer owns the `account:read` ↔ `performance:read` alias.** The alias itself is
   pinned in this document (`authorization.ts:62`); the *ownership* question is Open Question 2.
 

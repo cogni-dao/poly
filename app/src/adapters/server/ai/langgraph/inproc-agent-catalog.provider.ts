@@ -4,9 +4,12 @@
 /**
  * Module: `@adapters/server/ai/langgraph/inproc-agent-catalog.provider`
  * Purpose: Discovery-only provider for LangGraph in-proc catalog.
- * Scope: Implements AgentCatalogProvider for listing agents from static LANGGRAPH_CATALOG. Does NOT require execution infrastructure.
+ * Scope: Implements AgentCatalogProvider for listing agents from this node's static catalog. Does NOT require execution infrastructure.
  * Invariants:
  *   - DISCOVERY_NO_EXECUTION_DEPS: No CompletionUnitAdapter or completion deps required
+ *   - NODE_RUNTIME_CATALOG_BOUNDARY: the catalog is a constructor argument, injected
+ *     from the bootstrap composition root, so discovery lists exactly the graphs the
+ *     in-proc provider can actually execute — on the poly node, including poly-brain.
  *   - REGISTRY_SEPARATION: This provider is for discovery only, never execution
  *   - P0_AGENT_GRAPH_IDENTITY: agentId === graphId (one agent per graph)
  * Side-effects: none
@@ -31,7 +34,7 @@ export const LANGGRAPH_PROVIDER_ID = "langgraph" as const;
  *
  * Per DISCOVERY_NO_EXECUTION_DEPS: this provider does not require
  * CompletionUnitAdapter or any execution infrastructure. It only
- * reads from the static LANGGRAPH_CATALOG.
+ * reads from this node's static catalog.
  *
  * Per P0_AGENT_GRAPH_IDENTITY: agentId === graphId in P0.
  * Each catalog entry produces one agent where agentId equals the graphId.
@@ -45,7 +48,16 @@ export class LangGraphInProcAgentCatalogProvider
   readonly providerId = LANGGRAPH_PROVIDER_ID;
   private readonly agentDescriptors: readonly AgentDescriptor[];
 
-  constructor() {
+  /**
+   * @param catalog - This node's catalog, INJECTED from the bootstrap
+   *   composition root so discovery lists exactly the graphs the execution
+   *   provider can run. Defaults to the shared base catalog.
+   */
+  constructor(
+    private readonly catalog: Readonly<
+      Record<string, { displayName: string; description: string }>
+    > = LANGGRAPH_CATALOG
+  ) {
     // Build descriptors from catalog at construction time
     this.agentDescriptors = this.buildDescriptors();
   }
@@ -56,7 +68,7 @@ export class LangGraphInProcAgentCatalogProvider
    * Per LANGGRAPH_SERVER_ALIGNED: uses 'name' field (not displayName).
    */
   private buildDescriptors(): readonly AgentDescriptor[] {
-    return Object.entries(LANGGRAPH_CATALOG).map(([graphName, entry]) => {
+    return Object.entries(this.catalog).map(([graphName, entry]) => {
       const graphId = `${this.providerId}:${graphName}`;
       return {
         agentId: graphId, // P0: agentId === graphId

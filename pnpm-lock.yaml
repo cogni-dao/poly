@@ -131,6 +131,9 @@ importers:
       '@cogni/poly-db-schema':
         specifier: workspace:^
         version: link:../packages/poly-db-schema
+      '@cogni/poly-graphs':
+        specifier: workspace:^
+        version: link:../graphs
       '@cogni/poly-market-provider':
         specifier: workspace:^
         version: link:../packages/poly-market-provider
