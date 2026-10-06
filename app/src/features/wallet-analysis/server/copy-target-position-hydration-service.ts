@@ -79,7 +79,7 @@ export async function readCopyTargetPositionCohorts(db: {
       SELECT DISTINCT
         t.billing_account_id,
         lower(t.target_wallet) AS target_wallet,
-        lower(COALESCE(c.funder_address, c.address)) AS local_wallet
+        lower(c.funder_address) AS local_wallet
       FROM poly_copy_trade_targets t
       JOIN poly_wallet_connections c
         ON c.billing_account_id = t.billing_account_id
@@ -265,6 +265,7 @@ async function persistScopedTargetPositions(input: {
 	positions: readonly PolymarketUserPosition[];
 }): Promise<void> {
 	const observedAt = new Date();
+	const observedAtIso = observedAt.toISOString();
 	await (
 		input.db as unknown as {
 			transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
@@ -349,7 +350,7 @@ async function persistScopedTargetPositions(input: {
 		);
 		await tx.execute(sql`
       UPDATE poly_trader_current_positions p
-      SET active = false, last_observed_at = ${observedAt}
+      SET active = false, last_observed_at = ${observedAtIso}::timestamptz
       WHERE p.trader_wallet_id = ${wallet.id}::uuid
         AND EXISTS (
           SELECT 1

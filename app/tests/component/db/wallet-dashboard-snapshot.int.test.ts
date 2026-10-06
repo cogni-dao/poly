@@ -23,6 +23,7 @@ import {
 } from "@/shared/db/schema";
 import { readTenantWalletDashboard } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 import {
+  buildBoundedMarketExposureWithCoverage,
   buildBoundedMarketExposureGroups,
   buildMarketExposureGroups,
 } from "@/features/wallet-analysis/server/market-exposure-service";
@@ -120,6 +121,7 @@ describe("wallet dashboard coherent snapshot", () => {
   const db = getSeedDb();
   let walletA: SeededWallet;
   let walletB: SeededWallet;
+  let tenantATargetId = "";
   let tenantBTargetId = "";
   const targetWalletIds: string[] = [];
   const boundedTargetWallets: Array<{ id: string; address: string }> = [];
@@ -168,6 +170,8 @@ describe("wallet dashboard coherent snapshot", () => {
       ])
       .returning({ id: polyTraderWallets.id, address: polyTraderWallets.walletAddress });
     targetWalletIds.push(...targets.map((row) => row.id));
+    tenantATargetId =
+      targets.find((row) => row.address === TARGET_A)?.id ?? "";
     tenantBTargetId =
       targets.find((row) => row.address === TARGET_B)?.id ?? "";
     await db.insert(polyCopyTradeTargets).values([
@@ -178,13 +182,32 @@ describe("wallet dashboard coherent snapshot", () => {
       targets.map((target) => ({
         traderWalletId: target.id,
         conditionId: "condition-0",
-        tokenId: `target-token-${target.id}`,
+        tokenId: `token-${
+          target.address === TARGET_A ? walletA.id : walletB.id
+        }-0`,
         shares: "4",
         costBasisUsdc: "2",
         currentValueUsdc: "3",
         avgPrice: "0.5",
         contentHash: `target-hash-${target.id}`,
         capturedAt: new Date(),
+        raw: { title: "Market 0", eventSlug: "event-0", outcome: "Yes" },
+      }))
+    );
+    await db.insert(polyTraderCurrentPositions).values(
+      targets.map((target) => ({
+        traderWalletId: target.id,
+        conditionId: "condition-0",
+        tokenId: `token-${
+          target.address === TARGET_A ? walletA.id : walletB.id
+        }-0`,
+        active: true,
+        shares: "4",
+        costBasisUsdc: "2",
+        currentValueUsdc: "3",
+        avgPrice: "0.5",
+        contentHash: `target-hash-${target.id}`,
+        lastObservedAt: new Date(),
         raw: { title: "Market 0", eventSlug: "event-0", outcome: "Yes" },
       }))
     );
@@ -239,6 +262,21 @@ describe("wallet dashboard coherent snapshot", () => {
       raw: { title: "Bounded market 0", eventSlug: "bounded-event-0", outcome: "No" },
     });
     await db.insert(polyTraderPositionSnapshots).values(boundedSnapshots);
+    await db.insert(polyTraderCurrentPositions).values(
+      boundedSnapshots.map((snapshot) => ({
+        traderWalletId: snapshot.traderWalletId,
+        conditionId: snapshot.conditionId,
+        tokenId: snapshot.tokenId,
+        active: true,
+        shares: snapshot.shares,
+        costBasisUsdc: snapshot.costBasisUsdc,
+        currentValueUsdc: snapshot.currentValueUsdc,
+        avgPrice: snapshot.avgPrice,
+        contentHash: snapshot.contentHash,
+        lastObservedAt: new Date(),
+        raw: snapshot.raw,
+      }))
+    );
     await db.insert(polyTraderFills).values({
       traderWalletId: boundedTargets[0]!.id,
       source: "data-api",
@@ -299,6 +337,14 @@ describe("wallet dashboard coherent snapshot", () => {
         "comparison_missing",
         "preview_truncated",
       ],
+    });
+    expect(
+      result.execution.comparisonCoverage.positionClassifications
+    ).toContainEqual({
+      conditionId: "condition-0",
+      tokenId: `token-${walletA.id}-0`,
+      status: "live",
+      result: "comparable",
     });
     expect(result.execution.comparisonCoverage.markets.live.eligible).toBe(501);
   }, 60_000);
@@ -417,6 +463,149 @@ describe("wallet dashboard coherent snapshot", () => {
     });
   });
 
+  it("suppresses inactive and stale target current facts for live local rows", async () => {
+    const targetPosition = and(
+      eq(polyTraderCurrentPositions.traderWalletId, tenantATargetId),
+      eq(polyTraderCurrentPositions.conditionId, "condition-0")
+    );
+    const readDashboard = async () =>
+      readTenantWalletDashboard({
+        db,
+        billingAccountId: TENANT_A,
+        interval: "1W",
+        adapterConfigured: true,
+      });
+    const expectLiveTargetSuppressed = async () => {
+      const dashboard = await readDashboard();
+      const labels = dashboard.execution.market_groups.flatMap((group) =>
+        group.lines.flatMap((line) =>
+          line.participants.map((participant) => participant.label)
+        )
+      );
+      expect(labels).not.toContain("Tenant A target");
+      expect(dashboard.execution.comparisonCoverage.positions.live).toMatchObject({
+        eligible: 501,
+        comparable: 0,
+      });
+      expect(
+        dashboard.execution.comparisonCoverage.positionClassifications
+      ).toContainEqual({
+        conditionId: "condition-0",
+        tokenId: `token-${walletA.id}-0`,
+        status: "live",
+        result: "no_target_position",
+      });
+    };
+
+    try {
+      await db
+        .update(polyTraderCurrentPositions)
+        .set({ active: false, lastObservedAt: new Date() })
+        .where(targetPosition);
+      await expectLiveTargetSuppressed();
+
+      await db
+        .update(polyTraderCurrentPositions)
+        .set({
+          active: true,
+          lastObservedAt: new Date(Date.now() - 7 * 60 * 60_000),
+        })
+        .where(targetPosition);
+      await expectLiveTargetSuppressed();
+    } finally {
+      await db
+        .update(polyTraderCurrentPositions)
+        .set({ active: true, lastObservedAt: new Date() })
+        .where(targetPosition);
+    }
+  }, 60_000);
+
+  it("keeps an exact saved target snapshot comparable for a closed local row", async () => {
+    const contentHash = `closed-target-${randomUUID()}`;
+    await db.insert(polyTraderPositionSnapshots).values({
+      traderWalletId: tenantATargetId,
+      conditionId: "closed-condition-0",
+      tokenId: "closed-token-0",
+      shares: "4",
+      costBasisUsdc: "2",
+      currentValueUsdc: "3",
+      avgPrice: "0.5",
+      contentHash,
+      capturedAt: new Date(),
+      raw: {
+        title: "Closed market 0",
+        eventSlug: "closed-event-0",
+        outcome: "Yes",
+      },
+    });
+
+    try {
+      const targetCurrent = await db
+        .select({ tokenId: polyTraderCurrentPositions.tokenId })
+        .from(polyTraderCurrentPositions)
+        .where(
+          and(
+            eq(polyTraderCurrentPositions.traderWalletId, tenantATargetId),
+            eq(
+              polyTraderCurrentPositions.conditionId,
+              "closed-condition-0"
+            ),
+            eq(polyTraderCurrentPositions.tokenId, "closed-token-0")
+          )
+        );
+      expect(targetCurrent).toEqual([]);
+
+      const dashboard = await readTenantWalletDashboard({
+        db,
+        billingAccountId: TENANT_A,
+        interval: "1W",
+        adapterConfigured: true,
+      });
+      expect(
+        dashboard.execution.comparisonCoverage.positionClassifications
+      ).toContainEqual({
+        conditionId: "closed-condition-0",
+        tokenId: "closed-token-0",
+        status: "closed",
+        result: "comparable",
+      });
+      const closedPosition = dashboard.execution.closed_positions.find(
+        (position) => position.conditionId === "closed-condition-0"
+      );
+      expect(closedPosition).toBeDefined();
+      const bounded = await buildBoundedMarketExposureWithCoverage({
+        db,
+        billingAccountId: TENANT_A,
+        walletAddress: OUR_A,
+        livePositions: [],
+        closedPositions: [closedPosition!],
+      });
+      expect(bounded.positionClassifications).toContainEqual({
+        conditionId: "closed-condition-0",
+        tokenId: "closed-token-0",
+        status: "closed",
+        result: "comparable",
+      });
+      const line = bounded.market.groups
+        .flatMap((group) => group.lines)
+        .find((candidate) => candidate.conditionId === "closed-condition-0");
+      expect(line).toMatchObject({
+        status: "closed",
+        targetEntryValueUsdc: 2,
+        targetValueUsdc: 3,
+      });
+      expect(
+        line?.participants.some(
+          (participant) => participant.label === "Tenant A target"
+        )
+      ).toBe(true);
+    } finally {
+      await db
+        .delete(polyTraderPositionSnapshots)
+        .where(eq(polyTraderPositionSnapshots.contentHash, contentHash));
+    }
+  }, 60_000);
+
   it("dedupes canonical condition siblings and fails their coverage closed", async () => {
     await db.insert(polyTraderCurrentPositions).values([
       currentPosition(walletB.id, 910, "Case-Duplicate"),
@@ -512,7 +701,7 @@ describe("wallet dashboard coherent snapshot", () => {
     }
   });
 
-  it("enforces bounded market SQL before hydration and preserves canonical snapshot-only semantics", async () => {
+  it("enforces bounded market SQL before hydration with fresh target facts", async () => {
     const positions: WalletExecutionPosition[] = Array.from({ length: 500 }, (_, index) => ({
       positionId: `bounded-condition-${index}:our-${index}`,
       conditionId: `bounded-condition-${index}`,

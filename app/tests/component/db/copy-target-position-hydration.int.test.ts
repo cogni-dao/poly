@@ -407,6 +407,21 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		}
 	});
 
+	it("does not hydrate a signer address when the canonical funder is absent", async () => {
+		await db
+			.update(polyWalletConnections)
+			.set({ funderAddress: null })
+			.where(eq(polyWalletConnections.billingAccountId, BILLING_ID));
+		try {
+			expect(await readCopyTargetPositionCohorts(db)).toEqual([]);
+		} finally {
+			await db
+				.update(polyWalletConnections)
+				.set({ funderAddress: OUR_WALLET })
+				.where(eq(polyWalletConnections.billingAccountId, BILLING_ID));
+		}
+	});
+
 	it("requires exact condition+token and publishes only complete scoped cohorts", async () => {
 		const cohorts = await readCopyTargetPositionCohorts(db);
 		expect(cohorts).toEqual([
@@ -521,7 +536,18 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			)?.targetEntryValueUsdc,
 		).toBeNull();
 
-		await hydrateCopyTargetPositions({ db, client, logger: logger as never });
+		const omitted = await hydrateCopyTargetPositions({
+			db,
+			client,
+			logger: logger as never,
+		});
+		expect(omitted).toEqual({
+			cohorts: 1,
+			conditions: 2,
+			rows: 0,
+			errors: 0,
+		});
+		expect(logger.warn).not.toHaveBeenCalled();
 		const selectedRows = await db
 			.select({
 				tokenId: polyTraderCurrentPositions.tokenId,
@@ -555,6 +581,33 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				(row) => row.entity === "positions" && row.status === "closed",
 			),
 		).toMatchObject({ eligible: 1, comparable: 0 });
+		const boundedAfterOmission = await buildBoundedMarketExposureWithCoverage({
+			db,
+			billingAccountId: BILLING_ID,
+			walletAddress: OUR_WALLET,
+			livePositions: [],
+			closedPositions: [
+				localExecutionPosition({
+					conditionId: ZERO_VALUE_CONDITION,
+					tokenId: ZERO_VALUE_TOKEN,
+					status: "closed",
+				}),
+			],
+		});
+		expect(boundedAfterOmission.positionClassifications).toContainEqual({
+			conditionId: ZERO_VALUE_CONDITION,
+			tokenId: ZERO_VALUE_TOKEN,
+			status: "closed",
+			result: "target_entry_unavailable",
+		});
+		expect(
+			boundedAfterOmission.market.groups
+				.flatMap((group) => group.lines)
+				.find((line) => line.conditionId === ZERO_VALUE_CONDITION),
+		).toMatchObject({
+			targetEntryValueUsdc: null,
+			targetValueUsdc: 4,
+		});
 		const [unrelated] = await db
 			.select({ active: polyTraderCurrentPositions.active })
 			.from(polyTraderCurrentPositions)
