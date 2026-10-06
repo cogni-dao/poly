@@ -49,11 +49,11 @@
     }
   ],
   "policySha256": "3a617b3691441cd75da8898c454d62317d673a3285df2490d76207d71b77e9b3",
-  "targetTreeDigest": "c34b4f40c36a4a75fa61392dbe0fb2c3403b44adf2f91f483483cd2dfb7ef47c",
+  "targetTreeDigest": "75696ee4b793b3ebfa8491d895b09c5e4ffe5c3c75f035a151ab9927d657b8de",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1149,
+    "targetOnlyFiles": 1151,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -6893,7 +6893,7 @@
       "sourceBlob": "c655888daa55814c9255e326b0853b77e21d6af0",
       "sourcePath": "app/src/app/api/v1/poly/research/trader-comparison/route.ts",
       "targetPath": "app/src/app/api/v1/poly/research/trader-comparison/route.ts",
-      "targetBlob": "7dedcd6f620846ae1369fa4af3fc0d5d2d485726",
+      "targetBlob": "3e18d356640211abb27cf5f1562914a679e235b3",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -13455,7 +13455,7 @@
       "sourceBlob": "93b201ce8d291c0120fc2d85c2f4c54894d30d9c",
       "sourcePath": "app/src/features/wallet-analysis/server/trader-comparison-service.ts",
       "targetPath": "app/src/features/wallet-analysis/server/trader-comparison-service.ts",
-      "targetBlob": "8cbd7b4b83bee63552cb405a4e01a09eb0c9ab49",
+      "targetBlob": "f01669eb061743a33c975a1718ceda896bf1a6c8",
       "targetMode": "100644",
       "priority": "P1",
       "priorityLabel": "live trading and data contracts",
@@ -14513,7 +14513,7 @@
       "sourceBlob": "0e0576d830869f6fe12895c611d8bc6808818df6",
       "sourcePath": "app/src/shared/env/server-env.ts",
       "targetPath": "app/src/shared/env/server-env.ts",
-      "targetBlob": "50cde75d41198e0fb0e19f310dd6d8a7871c58d8",
+      "targetBlob": "a5a738f4abb6c7d4dbb011c1e12132b2b7468022",
       "targetMode": "100644",
       "priority": "P3",
       "priorityLabel": "remaining source parity",
@@ -26321,6 +26321,9 @@
       "targetPath": "app/tests/unit/features/wallet-analysis/recent-trades-read-budget.test.ts"
     },
     {
+      "targetPath": "app/tests/unit/features/wallet-analysis/research-read-cache-degraded.test.ts"
+    },
+    {
       "targetPath": "app/tests/unit/features/wallet-analysis/saved-facts-availability.test.ts"
     },
     {
@@ -26382,6 +26385,9 @@
     },
     {
       "targetPath": "app/tests/unit/packages/repo-spec/node-deployment.test.ts"
+    },
+    {
+      "targetPath": "app/tests/unit/shared/env.server.research-budget.spec.ts"
     },
     {
       "targetPath": "app/tests/unit/shared/evm-rpc-connectivity.test.ts"

@@ -351,12 +351,16 @@ export const serverSchema = z.object({
     .transform((v) => v === "true"),
   // Per-wallet time budget (ms) for the trader-comparison aggregate. Past it
   // the wallet is omitted with a `wallet_budget_exceeded` warning (200, not a
-  // 520). Default sits just under the edge's ~30s kill window.
+  // 520). Default MUST match DEFAULT_TRADER_COMPARISON_WALLET_BUDGET_MS
+  // (trader-comparison-service; asserted by a unit test): 8s returns a pool
+  // slot before the 15s boot-SLO probe fails. The old 25_000 default shadowed
+  // the code-side 8s (#99 never took effect in prod — every caller routes
+  // through this env value). Operators can still override per env.
   POLY_RESEARCH_WALLET_BUDGET_MS: z.coerce
     .number()
     .int()
     .positive()
-    .default(25_000),
+    .default(8_000),
 
   // task.5016 — single-writer leader election for ALL in-process background
   // jobs. Default ON: every pod runs the elector and only the holder of

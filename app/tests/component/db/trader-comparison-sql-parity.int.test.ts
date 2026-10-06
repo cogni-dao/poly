@@ -117,6 +117,126 @@ function mixedMediumCase(): FixtureCase {
   };
 }
 
+function heavyOutOfWindowCase(): FixtureCase {
+  // CONDITION_PUSHDOWN regression case (fix/comparison-flows-pushdown): the
+  // bulk of the wallet's history is OUT of the window, on conditions that get
+  // no windowed buy — exactly the rollup rows the pushdown stops
+  // materializing. The SQL must still match the oracle bit-for-bit: pruned
+  // conditions contributed nothing under the legacy unscoped statement either
+  // (post-filters dropped them), while the windowed conditions' PRE-window
+  // flows (buys, sells, hedge costs) still feed full-history token P/L.
+  const fills: FixtureFill[] = [];
+  const outcomes: OracleOutcomeRow[] = [];
+  for (let i = 0; i < 8; i += 1) {
+    const conditionId = `c15n${i}`;
+    const winner = `t15n${i}w`;
+    const loser = `t15n${i}l`;
+    for (let k = 0; k < 3; k += 1) {
+      fills.push({
+        conditionId,
+        tokenId: winner,
+        side: "BUY",
+        price: 0.5,
+        shares: 1 + k,
+        sizeUsdc: 0.25 * (4 * i + k + 1),
+        observedAt: at(-600 + i * 10 + k),
+      });
+    }
+    fills.push({
+      conditionId,
+      tokenId: winner,
+      side: "SELL",
+      price: 0.5,
+      shares: 2,
+      sizeUsdc: 1.25,
+      observedAt: at(-500 + i),
+    });
+    fills.push({
+      conditionId,
+      tokenId: loser,
+      side: "BUY",
+      price: 0.25,
+      shares: 4,
+      sizeUsdc: 1,
+      observedAt: at(-480 + i),
+    });
+    outcomes.push(
+      { conditionId, tokenId: winner, outcome: "winner" },
+      { conditionId, tokenId: loser, outcome: "loser" }
+    );
+  }
+  // c15w: windowed buys on a condition that ALSO has pre-window flows — the
+  // pushdown keeps the condition, so its full history must keep contributing.
+  fills.push(
+    {
+      conditionId: "c15w",
+      tokenId: "t15wy",
+      side: "BUY",
+      price: 0.5,
+      shares: 8,
+      sizeUsdc: 4,
+      observedAt: at(-200),
+    },
+    {
+      conditionId: "c15w",
+      tokenId: "t15wy",
+      side: "SELL",
+      price: 0.5,
+      shares: 4,
+      sizeUsdc: 2.5,
+      observedAt: at(-100),
+    },
+    {
+      conditionId: "c15w",
+      tokenId: "t15wy",
+      side: "BUY",
+      price: 0.5,
+      shares: 12,
+      sizeUsdc: 6,
+      observedAt: at(5),
+    },
+    {
+      conditionId: "c15w",
+      tokenId: "t15wy",
+      side: "BUY",
+      price: 0.5,
+      shares: 5,
+      sizeUsdc: 2.5,
+      observedAt: at(6),
+    },
+    // hedge leg: strictly cheaper token with pre-window + windowed cost
+    {
+      conditionId: "c15w",
+      tokenId: "t15wn",
+      side: "BUY",
+      price: 0.25,
+      shares: 2,
+      sizeUsdc: 0.5,
+      observedAt: at(-150),
+    },
+    {
+      conditionId: "c15w",
+      tokenId: "t15wn",
+      side: "BUY",
+      price: 0.25,
+      shares: 3,
+      sizeUsdc: 0.75,
+      observedAt: at(7),
+    }
+  );
+  outcomes.push(
+    { conditionId: "c15w", tokenId: "t15wy", outcome: "winner" },
+    { conditionId: "c15w", tokenId: "t15wn", outcome: "loser" }
+  );
+  // c15p: windowed buys with no outcome rows -> pending bucket counts
+  fills.push(...buys("c15p", "t15p", [1.5, 3.25, 9.75], 20));
+  return {
+    name: "heavy out-of-window history: condition pushdown prunes untouched conditions without changing results",
+    fills,
+    outcomes,
+  };
+}
+
 const CASES: FixtureCase[] = [
   { name: "zero fills", fills: [], outcomes: [] },
   {
@@ -369,6 +489,45 @@ const CASES: FixtureCase[] = [
     ],
   },
   mixedMediumCase(),
+  heavyOutOfWindowCase(),
+  {
+    name: "pushdown short-circuit: history exists but zero windowed buys -> empty shape",
+    fills: [
+      // resolved pre-window-only activity
+      {
+        conditionId: "c16a",
+        tokenId: "t16aw",
+        side: "BUY",
+        price: 0.5,
+        shares: 6,
+        sizeUsdc: 3,
+        observedAt: at(-300),
+      },
+      {
+        conditionId: "c16a",
+        tokenId: "t16aw",
+        side: "SELL",
+        price: 0.5,
+        shares: 3,
+        sizeUsdc: 1.75,
+        observedAt: at(-250),
+      },
+      // an in-window SELL must not create a windowed buy
+      {
+        conditionId: "c16b",
+        tokenId: "t16b",
+        side: "SELL",
+        price: 0.5,
+        shares: 2,
+        sizeUsdc: 1,
+        observedAt: at(30),
+      },
+    ],
+    outcomes: [
+      { conditionId: "c16a", tokenId: "t16aw", outcome: "winner" },
+      { conditionId: "c16a", tokenId: "t16al", outcome: "loser" },
+    ],
+  },
 ];
 
 function caseWalletAddress(index: number): string {
