@@ -50,6 +50,8 @@ export const EVENT_NAMES = {
     "feature.poly_agent_grant.access_decision",
   POLY_RESEARCH_COPY_TRADE_PNL_COMPLETE:
     "feature.poly_research.copy_trade_pnl.complete",
+  POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE:
+    "feature.poly_research.copy_trade_investigation.complete",
   POLY_RESEARCH_TRADER_COMPARISON_COMPLETE:
     "feature.poly_research.trader_comparison.complete",
   POLY_WALLET_REFRESH_COMPLETE: "feature.poly_wallet_refresh.complete",

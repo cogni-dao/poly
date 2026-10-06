@@ -35,15 +35,19 @@ This template ships a shared Conductor setup entrypoint:
 
 When a node repo minted from this template is added as a Conductor project,
 Conductor runs the setup script from the new workspace. The script refreshes
-`origin/main`, symlinks `.env.cogni` and `.local-auth` from
-`COGNI_NODE_AUTH_ROOT` or `COGNI_TEMPLATE_ROOT` when available, installs
-dependencies, builds package declarations, and writes
+`origin/main`, resolves this node's canonical main checkout from Conductor or
+git worktree metadata (override with `COGNI_NODE_AUTH_ROOT`), ensures that
+checkout has this node's `COGNI_NODE_API_KEY`, and symlinks `.env.cogni` and
+`.local-auth` from it. On local Conductor it also installs the stable user-level
+Codex cognition presenter, then installs dependencies, builds package
+declarations, and writes
 `.context/conductor-setup.json` as proof that setup ran.
 
-For a laptop that stores Cogni auth in the main monorepo checkout:
+For an unusual checkout layout where Conductor cannot resolve the node's main
+checkout automatically:
 
 ```bash
-export COGNI_TEMPLATE_ROOT="$HOME/dev/cogni-template"
+export COGNI_NODE_AUTH_ROOT="/path/to/this-node-main-checkout"
 ```
 
 The operator consumes the pushed digest and owns URL/DNS/deployment state.
