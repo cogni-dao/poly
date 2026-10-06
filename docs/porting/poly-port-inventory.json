@@ -53,7 +53,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1198,
+    "targetOnlyFiles": 1197,
     "unresolved": 605,
     "byStatus": {
       "exact": 1123,
@@ -25461,9 +25461,6 @@
     },
     {
       "targetPath": ".gitignore"
-    },
-    {
-      "targetPath": ".zt.mjs"
     },
     {
       "targetPath": "AGENTS.md"

@@ -78,34 +78,45 @@ describe("poly.account.portfolio-snapshot descriptor", () => {
     ).toBe("1W");
   });
 
-  it("stays OUT of the discoverable catalog, and discovery still works", () => {
-    // Not a preference — a blocker. `accountReadDiscoveryActions` projects every
-    // catalog entry through `z.toJSONSchema(operation.output)` with Zod's
-    // default `unrepresentable: "throw"`, and this output transitively contains
+  it("IS in the discoverable catalog, and the whole document still projects", () => {
+    // This capability was originally held OUT of the catalog, because
+    // `accountReadDiscoveryActions` projected every entry through
+    // `z.toJSONSchema(operation.output)` with Zod's default
+    // `unrepresentable: "throw"`, and this output transitively contains
     // `PolyAddressSchema`, which ends in `.transform((s) => s.toLowerCase())`.
-    // Transforms cannot be represented in JSON Schema.
+    // Publishing it blanked `.well-known/agent.json` for EVERY capability.
+    //
+    // The seam now projects each descriptor independently
+    // (PROJECTION_FAILURE_IS_ISOLATED) and falls back to input mode when output
+    // mode cannot represent a schema (SCHEMA_DEGRADES_NEVER_LIES), so the
+    // exclusion is lifted and the flagship read is discoverable.
     const ids = POLY_ACCOUNT_READ_OPERATIONS.map((operation) => operation.id);
-    expect(ids).not.toContain(agent.id);
+    expect(ids).toContain(agent.id);
 
-    // The decisive part: the projection must still succeed. The discovery route
-    // spreads the WHOLE catalog, so one unrepresentable descriptor takes
-    // `.well-known/agent.json` down for every capability — not just its own.
     expect(() =>
       accountReadDiscoveryActions("https://poly.example")
     ).not.toThrow();
     const actions = accountReadDiscoveryActions("https://poly.example");
+
+    // The agent transport is advertised...
+    expect(JSON.stringify(actions)).toContain(agent.path);
+    // ...and every other capability kept its own entry.
     expect(actions.readCopyTradePnl).toBeDefined();
-    expect(actions.readAccountPortfolioSnapshot).toBeUndefined();
-    // Neither transport is advertised while this is unresolved.
-    expect(JSON.stringify(actions)).not.toContain(agent.path);
+
+    // ...but the OWNER transport still is NOT, and that remains deliberate: an
+    // agent calling it could only ever be answered about an account the agent
+    // itself owns, which is useless for delegation and is exactly the shape
+    // that caused the production incident.
     expect(JSON.stringify(actions)).not.toContain(owner.path);
   });
 
   it("proves the exact reason the output cannot be projected", () => {
-    // Pinned so the blocker is reproducible and the one-line seam fix is
-    // verifiable: projecting the OUTPUT throws, projecting the INPUT does not,
-    // and projecting the output in input-mode does not either. So `io: "input"`
-    // (or `unrepresentable: "any"`) in the seam's projection is sufficient.
+    // Still pinned, now as the RATIONALE for the seam's fallback rather than a
+    // blocker: projecting the OUTPUT throws, projecting the INPUT does not, and
+    // projecting the output in input-mode does not either. That is exactly why
+    // `projectSchema` tries output mode first and degrades to `io: "input"`.
+    // If Zod ever learns to represent transforms, this test flips and the
+    // fallback becomes dead code — which is worth knowing.
     expect(() => z.toJSONSchema(agent.output)).toThrow(/[Tt]ransform/);
     expect(() => z.toJSONSchema(agent.input)).not.toThrow();
     expect(() => z.toJSONSchema(agent.output, { io: "input" })).not.toThrow();

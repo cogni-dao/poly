@@ -33,6 +33,7 @@ import { z } from "zod";
 import {
   accountReadDiscoveryActions,
   accountReadDiscoveryEndpoints,
+  projectSchema,
 } from "@/features/capability-plane/discovery";
 import { ACCOUNT_READ_TERMINAL_EVENTS } from "@/features/capability-plane/handlers";
 
@@ -131,6 +132,41 @@ describe("account-read descriptors", () => {
 });
 
 describe("discovery projection", () => {
+  // PROJECTION_FAILURE_IS_ISOLATED + SCHEMA_DEGRADES_NEVER_LIES.
+  // `poly.account.portfolio-snapshot.v1` transitively contains
+  // `PolyAddressSchema`, which ends in `.transform(s => s.toLowerCase())`.
+  // Output-mode projection throws on that, and because the discovery route
+  // spreads the whole-catalog projection, publishing it previously blanked
+  // `.well-known/agent.json` for EVERY capability. These two assertions are
+  // the regression guard for that blast radius.
+  it("publishes a descriptor whose output contains a transform, without throwing", () => {
+    expect(() => accountReadDiscoveryActions(ORIGIN)).not.toThrow();
+
+    const actions = accountReadDiscoveryActions(ORIGIN);
+    const portfolio = actions.readPortfolioSnapshot;
+
+    expect(portfolio).toBeDefined();
+    expect(portfolio?.endpoint).toBe(
+      `${ORIGIN}/api/v1/poly/account/portfolio-snapshot`
+    );
+    // Degraded to input mode, not omitted and not fabricated: the pre-transform
+    // type of an address `.toLowerCase()` is the same `string`.
+    expect(portfolio?.outputSchema).toBeDefined();
+  });
+
+  it("keeps every other action intact when one output is unrepresentable", () => {
+    const actions = accountReadDiscoveryActions(ORIGIN);
+
+    // The whole point: one unprojectable descriptor must not cost the others
+    // their schemas.
+    for (const operation of POLY_ACCOUNT_READ_OPERATIONS) {
+      const action = Object.values(actions).find(
+        (candidate) => candidate.endpoint === `${ORIGIN}${operation.path}`
+      );
+      expect(action?.inputSchema).toBeDefined();
+    }
+  });
+
   it("projects one action per descriptor, with both schemas derived", () => {
     const actions = accountReadDiscoveryActions(ORIGIN);
 
@@ -158,9 +194,13 @@ describe("discovery projection", () => {
         type: "bearer",
         requiredScope: "account:read",
       });
-      // Derived, not hand-authored: identical to converting the descriptor.
-      expect(action?.inputSchema).toEqual(z.toJSONSchema(operation.input));
-      expect(action?.outputSchema).toEqual(z.toJSONSchema(operation.output));
+      // Derived, not hand-authored: identical to the seam's own projection of
+      // the descriptor. Compared against `projectSchema` rather than a bare
+      // `z.toJSONSchema` so the assertion does not re-implement the
+      // output-mode -> input-mode fallback (and so it does not itself throw on
+      // a descriptor whose output contains a transform).
+      expect(action?.inputSchema).toEqual(projectSchema(operation.input));
+      expect(action?.outputSchema).toEqual(projectSchema(operation.output));
     }
   });
 
