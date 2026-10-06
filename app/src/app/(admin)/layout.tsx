@@ -16,6 +16,7 @@ import type { ReactNode } from "react";
 
 import { getServerSessionUser } from "@/lib/auth/server";
 import { isLedgerApprover } from "@/shared/config";
+import { getBrandMark } from "@/shared/config/repoSpec.server";
 import { makeLogger } from "@/shared/observability";
 
 import { AdminShell } from "./AdminShell";
@@ -36,5 +37,5 @@ export default async function AdminLayout({
   }
 
   log.info({ userId: user?.id ?? null, allowed: true }, "admin gate allowed");
-  return <AdminShell>{children}</AdminShell>;
+  return <AdminShell brandMark={getBrandMark()}>{children}</AdminShell>;
 }
