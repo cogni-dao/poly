@@ -30,6 +30,7 @@ import {
   AgentAccessRequestInvalidError,
   createAgentAccessRequest,
   decideAgentAccessRequest,
+  listAgentAccessRequests,
   listOwnerAgentAccessRequests,
   pollAgentAccessRequest,
   previewAgentAccessRequest,
@@ -198,6 +199,17 @@ export async function pollAgentAccessRequestFacade(
     throw new AgentAccessRequestFacadeError("not_found", "Request not found");
   }
   return { request };
+}
+
+export async function listAgentAccessRequestsFacade(
+  sessionUser: SessionUser
+): Promise<{ requests: AgentAccessRequestAgent[] }> {
+  const requests = await withTenantScope(
+    resolveAppDb(),
+    userActor(toUserId(sessionUser.id)),
+    (tx) => listAgentAccessRequests(tx, sessionUser.id)
+  );
+  return { requests };
 }
 
 export async function previewAgentAccessRequestFacade(

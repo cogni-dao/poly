@@ -3,7 +3,8 @@
 
 /**
  * Module: `@tests/contract/app/agent-access-discovery`
- * Purpose: Pin machine discovery for request/poll and scoped performance read.
+ * Purpose: Pin machine discovery for self-list/request/poll and scoped
+ *   performance read.
  * Scope: Public discovery JSON only; auth behavior lives in route tests.
  * Invariants: a newly registered agent can discover every next API action.
  * Side-effects: none
@@ -28,7 +29,7 @@ vi.mock("@/shared/config/repoSpec.server", () => ({
 import { GET } from "@/app/.well-known/agent.json/route";
 
 describe("agent access discovery", () => {
-  it("publishes request, poll, and scoped P/L actions with schemas", async () => {
+  it("publishes self-list, request, poll, and scoped P/L actions with schemas", async () => {
     const response = await GET(
       new Request("http://0.0.0.0:3000/.well-known/agent.json", {
         headers: {
@@ -41,6 +42,11 @@ describe("agent access discovery", () => {
       actions: Record<string, Record<string, unknown>>;
     };
 
+    expect(body.actions.listOwnAgentAccessRequests).toMatchObject({
+      method: "GET",
+      endpoint: "https://poly.example.test/api/v1/agent/access-requests",
+      auth: { type: "bearer" },
+    });
     expect(body.actions.requestAgentAccess).toMatchObject({
       method: "POST",
       endpoint: "https://poly.example.test/api/v1/agent/access-requests",
@@ -59,6 +65,7 @@ describe("agent access discovery", () => {
       auth: { type: "bearer", requiredScope: "performance:read" },
     });
     for (const action of [
+      body.actions.listOwnAgentAccessRequests,
       body.actions.requestAgentAccess,
       body.actions.pollAgentAccess,
       body.actions.readCopyTradePnl,
