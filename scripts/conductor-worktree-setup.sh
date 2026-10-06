@@ -260,9 +260,9 @@ link_from_auth_root ".env.cogni"
 link_from_auth_root ".local-auth"
 
 # Codex requires hook trust per config source. Keep one stable, user-level
-# presenter installed so every Conductor worktree inherits the already-reviewed
-# hook instead of depending on per-worktree project-hook approval.
-if [[ "${CONDUCTOR_IS_LOCAL:-1}" == "1" && -f scripts/agent/install-codex-cognition-hook.sh ]]; then
+# presenter installed so every local Conductor worktree inherits the
+# already-reviewed hook instead of depending on per-worktree project trust.
+if [[ "${CONDUCTOR_IS_LOCAL:-1}" == "1" ]]; then
   bash scripts/agent/install-codex-cognition-hook.sh
 fi
 

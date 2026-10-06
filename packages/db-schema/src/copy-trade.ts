@@ -295,6 +295,16 @@ export const polyCopyTradeFills = pgTable(
       table.mode,
       table.status
     ),
+    // story.5003 — bounded evidence tape: account + market + mode seek,
+    // followed by deterministic newest-first keyset pagination.
+    index("poly_copy_trade_fills_investigation_idx").on(
+      table.billingAccountId,
+      table.marketId,
+      table.mode,
+      table.observedAt.desc(),
+      table.targetId.desc(),
+      table.fillId.desc()
+    ),
     // fill_id format is owned by per-source helpers in @cogni/poly-market-provider.
     // Dedupe is enforced by the partial unique index on (target_id, fill_id).
     check(
@@ -361,6 +371,15 @@ export const polyCopyTradeDecisions = pgTable(
     ),
     index("poly_copy_trade_decisions_billing_account_idx").on(
       table.billingAccountId
+    ),
+    // story.5003 — decisions predate a first-class market_id column; this
+    // expression index keeps one-market evidence reads account-bounded.
+    index("poly_copy_trade_decisions_investigation_idx").on(
+      table.billingAccountId,
+      sql`(${table.intent}->>'market_id')`,
+      table.mode,
+      table.decidedAt.desc(),
+      table.id.desc()
     ),
     check(
       "poly_copy_trade_decisions_outcome_check",
