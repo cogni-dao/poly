@@ -20,8 +20,8 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 | --- | ---: |
 | Legacy source files | 1736 |
 | Unique mapped target paths | 1736 |
-| Current-only files | 1199 |
-| Unresolved legacy files | 605 |
+| Current-only files | 1208 |
+| Unresolved legacy files | 608 |
 | P0/P1 mission files resolved | 8/80 |
 | Behavioral gates passed | 0/7 |
 
@@ -33,17 +33,17 @@ Run `pnpm poly:port:verify` for deterministic ledger integrity, `pnpm poly:port:
 
 | State | Count |
 | --- | ---: |
-| exact | 1123 |
+| exact | 1120 |
 | upgraded | 7 |
 | retired | 1 |
-| unresolved | 605 |
+| unresolved | 608 |
 
 | Priority | Unresolved |
 | --- | ---: |
 | P0 | 21 |
 | P1 | 51 |
-| P2 | 281 |
-| P3 | 252 |
+| P2 | 282 |
+| P3 | 254 |
 
 ## Delivery groups
 
@@ -513,6 +513,7 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P2 | unresolved | missing_target | — | `100644` | `5dafca70596b8696c9928a77a8c57773c0c4a26f` | `app/tests/unit/scripts/tenant-matrix-evaluator.test.ts` | — | — | `app/tests/unit/scripts/tenant-matrix-evaluator.test.ts` |
 | P2 | unresolved | content_differs | — | `100644` | `7bdf47ed11d71cb678e277a8016ccd1cbee37442` | `app/tests/unit/shared/config/repoSpec.server.test.ts` | `100644` | `63579204b877f869019d8a7ef6ba2dff3dc97dd6` | `app/tests/unit/shared/config/repoSpec.server.test.ts` |
 | P2 | unresolved | missing_target | — | `100644` | `2af284ed16afcd3ebc03a4bf238b2a3ac54c727b` | `app/tests/unit/shared/env.invariants.evm-cache.spec.ts` | — | — | `app/tests/unit/shared/env.invariants.evm-cache.spec.ts` |
+| P2 | unresolved | content_differs | — | `100644` | `38ececffe7362bfc91bae922296f52a8e42841f7` | `graphs/src/graphs/poly-brain/prompts.ts` | `100644` | `d093f999385e76f472f63440a1ed398bc75e2426` | `graphs/src/graphs/poly-brain/prompts.ts` |
 | P2 | unresolved | missing_target | — | `100644` | `8b31cfde7e8514935bf4c6c81ed433f7423f239f` | `research/delta-minimizing/HANDOFF.md` | — | — | `research/delta-minimizing/HANDOFF.md` |
 | P2 | unresolved | missing_target | — | `100644` | `9d9d4270b58047ba460637314176b64500276ce0` | `research/delta-minimizing/atp-lajovic-altmaie-2026-05-14-2026-05-14T17-19-09/bundle.json` | — | — | `research/delta-minimizing/atp-lajovic-altmaie-2026-05-14-2026-05-14T17-19-09/bundle.json` |
 | P2 | unresolved | missing_target | — | `100644` | `f1bb9efd8d2a58fc13828759735dab7ce65e2371` | `research/delta-minimizing/atp-lajovic-altmaie-2026-05-14-2026-05-14T17-19-09/report.html` | — | — | `research/delta-minimizing/atp-lajovic-altmaie-2026-05-14-2026-05-14T17-19-09/report.html` |
@@ -859,7 +860,6 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P2 | exact | — | — | `100644` | `61cfc569de22e42ebbd1bdbe60c588d640911554` | `graphs/package.json` | `100644` | `61cfc569de22e42ebbd1bdbe60c588d640911554` | `graphs/package.json` |
 | P2 | exact | — | — | `100644` | `d9505feda017e91e6c43a861bb6282c440a13689` | `graphs/src/graphs/index.ts` | `100644` | `d9505feda017e91e6c43a861bb6282c440a13689` | `graphs/src/graphs/index.ts` |
 | P2 | exact | — | — | `100644` | `3dbf016d91ada41401316062116ad024c77c4aa5` | `graphs/src/graphs/poly-brain/graph.ts` | `100644` | `3dbf016d91ada41401316062116ad024c77c4aa5` | `graphs/src/graphs/poly-brain/graph.ts` |
-| P2 | exact | — | — | `100644` | `38ececffe7362bfc91bae922296f52a8e42841f7` | `graphs/src/graphs/poly-brain/prompts.ts` | `100644` | `38ececffe7362bfc91bae922296f52a8e42841f7` | `graphs/src/graphs/poly-brain/prompts.ts` |
 | P2 | exact | — | — | `100644` | `f62fad9c48588bc9b1f667777e337baecf81cebf` | `graphs/src/graphs/poly-brain/tools.ts` | `100644` | `f62fad9c48588bc9b1f667777e337baecf81cebf` | `graphs/src/graphs/poly-brain/tools.ts` |
 | P2 | exact | — | — | `100644` | `f4b188f0321d294a848136f2114a7e8fb2329145` | `graphs/src/graphs/poly-research/graph.ts` | `100644` | `f4b188f0321d294a848136f2114a7e8fb2329145` | `graphs/src/graphs/poly-research/graph.ts` |
 | P2 | exact | — | — | `100644` | `e4aae8abb845e553cf6c1b01319dce039ca9cb57` | `graphs/src/graphs/poly-research/output-schema.ts` | `100644` | `e4aae8abb845e553cf6c1b01319dce039ca9cb57` | `graphs/src/graphs/poly-research/output-schema.ts` |
@@ -933,15 +933,15 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `ae1921cbdde517a47b5c634081965251796255fb` | `.cogni/repo-spec.yaml` | `100644` | `3e0f5aca5770ffdaa63a1f6fc0aff3581b8cdad0` | `.cogni/repo-spec.yaml` |
 | P3 | unresolved | missing_target | — | `100644` | `ccf20de926c5b05e987c8a970d831a5db2ca686d` | `app/Dockerfile` | — | — | `app/Dockerfile` |
 | P3 | unresolved | content_differs | — | `100644` | `2ad90051a78634c83d790279742d6095cc6576d5` | `app/next.config.ts` | `100644` | `ddfe2c280b2f743098cc30298a21f3fda371c668` | `app/next.config.ts` |
-| P3 | unresolved | content_differs | — | `100644` | `5ba3239ed6d31c1f1d3fe37b8768cd300a86dcf5` | `app/package.json` | `100644` | `fd65afc66f6317cbd815fff85eaa5628337061e1` | `app/package.json` |
+| P3 | unresolved | content_differs | — | `100644` | `5ba3239ed6d31c1f1d3fe37b8768cd300a86dcf5` | `app/package.json` | `100644` | `b78485213821f948711c01e4e9a49122089d1dc3` | `app/package.json` |
 | P3 | unresolved | content_differs | — | `100644` | `061769b0a2cd6abf3e8d36aa01425dfd725ee002` | `app/src/AGENTS.md` | `100644` | `08441673300455274370b4ad1c4a0f88c0b57635` | `app/src/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `e13a04abf8350ecde2c235ba7ffc42c4fb635b23` | `app/src/adapters/AGENTS.md` | `100644` | `2ae971a479336320bf9be161ea455fbf0134b4fa` | `app/src/adapters/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `183b6f0c94c5455a335eec543307494dd5127027` | `app/src/adapters/server/accounts/drizzle.adapter.ts` | `100644` | `235ea8f551162d3fa9686b58d871840c80bff201` | `app/src/adapters/server/accounts/drizzle.adapter.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `6b428e89760fc7d5494734db6e12f0d2c5d31959` | `app/src/adapters/server/ai/codex/codex-llm.adapter.ts` | `100644` | `eb3bceeed24421b847551a56bfd20918d9c2c8e4` | `app/src/adapters/server/ai/codex/codex-llm.adapter.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `3b288c07a475b1ac814bc084c1538d69c50065f6` | `app/src/adapters/server/ai/langgraph/dev/client.ts` | `100644` | `4ce8892092cda0ef9b6d1c83a775c00b22e0e9e3` | `app/src/adapters/server/ai/langgraph/dev/client.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `84d0c711d7ea6d5cd92bcee7aec931dc49372f60` | `app/src/adapters/server/ai/langgraph/dev/provider.ts` | `100644` | `301a0866d77ac7f46acb0efef6b64a145c0db1fa` | `app/src/adapters/server/ai/langgraph/dev/provider.ts` |
-| P3 | unresolved | content_differs | — | `100644` | `d3790bca32b25b411887ea7b7316e3afe73b3b3d` | `app/src/adapters/server/ai/langgraph/inproc-agent-catalog.provider.ts` | `100644` | `f9f28bf0289472d8d326855918c3ff78e85197ef` | `app/src/adapters/server/ai/langgraph/inproc-agent-catalog.provider.ts` |
-| P3 | unresolved | content_differs | — | `100644` | `17c8accfb504a3420485d1d87dde771c934b9939` | `app/src/adapters/server/ai/langgraph/inproc.provider.ts` | `100644` | `5e1b1019947802884140c15efb8c735d5a23ff3b` | `app/src/adapters/server/ai/langgraph/inproc.provider.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `d3790bca32b25b411887ea7b7316e3afe73b3b3d` | `app/src/adapters/server/ai/langgraph/inproc-agent-catalog.provider.ts` | `100644` | `35c132fd09ddccef2a10d9580baa81234c96d339` | `app/src/adapters/server/ai/langgraph/inproc-agent-catalog.provider.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `17c8accfb504a3420485d1d87dde771c934b9939` | `app/src/adapters/server/ai/langgraph/inproc.provider.ts` | `100644` | `bc29dcbbab497a21d71667c727985a314d4d03bf` | `app/src/adapters/server/ai/langgraph/inproc.provider.ts` |
 | P3 | unresolved | missing_target | — | `100644` | `ddcaa0e997f83b8fe04f85ebf4430108c0260689` | `app/src/adapters/server/ai/langgraph/poly-catalog.ts` | — | — | `app/src/adapters/server/ai/langgraph/poly-catalog.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `c665922454cc55e42e61adde1d74368cf0139a28` | `app/src/adapters/server/ai/litellm.adapter.ts` | `100644` | `06db40a31202d08b05651c28dd8b76947eba5924` | `app/src/adapters/server/ai/litellm.adapter.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `5dac8b574c93c5dc2f613a38a7fbfd3c9fb48b4b` | `app/src/adapters/server/ai/openai-compatible/openai-compatible-llm.adapter.ts` | `100644` | `ec95dfe8cc716bfc686eed9e053121fb14c06412` | `app/src/adapters/server/ai/openai-compatible/openai-compatible-llm.adapter.ts` |
@@ -1027,12 +1027,14 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | unresolved | content_differs | — | `100644` | `d2b6e8a6cda830a9d300c3554ce4490106c10653` | `app/src/app/layout.tsx` | `100644` | `8990a9cad742b783f365079174a82172b0b3ec24` | `app/src/app/layout.tsx` |
 | P3 | unresolved | content_differs | — | `100644` | `e851aec5c7bd30722ebf5275107eab16eac3ab00` | `app/src/auth.ts` | `100644` | `11a71c050324b844ec4158192066216e0b13c4e6` | `app/src/auth.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `d0157126af32bf5431a0fe1689390aced1b7970d` | `app/src/bootstrap/AGENTS.md` | `100644` | `21c093f0f60ccdf2196b393e4f33a30d012b2c39` | `app/src/bootstrap/AGENTS.md` |
+| P3 | unresolved | content_differs | — | `100644` | `d2ad3a9b959292dd6477457395c7c97ec84819b2` | `app/src/bootstrap/agent-discovery.ts` | `100644` | `8f6a61278907f60da317c0c85404170240b5d9da` | `app/src/bootstrap/agent-discovery.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `e55c9b2207bc5b0e394f4c3392a7fc079cb58349` | `app/src/bootstrap/ai/AGENTS.md` | `100644` | `fbc5c914e1d5e56f410be58c640c80a4033591d1` | `app/src/bootstrap/ai/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `e76a66605770a9688aadf3d8e135ab364e9ff9d6` | `app/src/bootstrap/ai/tool-bindings.ts` | `100644` | `c8e5d1df40c6797e759767849358f51088ccd5a4` | `app/src/bootstrap/ai/tool-bindings.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `a51007fbd117a4dc27de0aa8cd915b64c7aa5342` | `app/src/bootstrap/capabilities/AGENTS.md` | `100644` | `f7387dcd922fc177da152f7cfc221e2113fe9281` | `app/src/bootstrap/capabilities/AGENTS.md` |
 | P3 | unresolved | content_differs | — | `100644` | `da010b8c0ffc726ac52c103c904b707d434f9bd5` | `app/src/bootstrap/capabilities/vcs.ts` | `100644` | `24f5c239d536cded449704de1267af01b7b67e6c` | `app/src/bootstrap/capabilities/vcs.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `9d5b9d8c1c533aadae87185c67afd6c563628258` | `app/src/bootstrap/capabilities/wallet.ts` | `100644` | `86d3a3d574a2ef5dd3a55efb448f3aa5c3098730` | `app/src/bootstrap/capabilities/wallet.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `7c44c67b4c899c033ad194419ec62e8029b5fc9b` | `app/src/bootstrap/copy-trade-reconciler.ts` | `100644` | `dbf8213c09b51f0d0b54eae8e343939a7434bbbd` | `app/src/bootstrap/copy-trade-reconciler.ts` |
-| P3 | unresolved | content_differs | — | `100644` | `016b3edd05b07ec19968d24b56f1dd3e9c7ced52` | `app/src/bootstrap/graph-executor.factory.ts` | `100644` | `0ee281e021c6ff16f5c3b5f20d8e2ed3e550de5b` | `app/src/bootstrap/graph-executor.factory.ts` |
+| P3 | unresolved | content_differs | — | `100644` | `016b3edd05b07ec19968d24b56f1dd3e9c7ced52` | `app/src/bootstrap/graph-executor.factory.ts` | `100644` | `446d965fa121402177e70e5c0a5f583c995db742` | `app/src/bootstrap/graph-executor.factory.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `2acf03122a469b71ffb48ea830a76d3fa1300c9d` | `app/src/bootstrap/http/index.ts` | `100644` | `c3eb658b95d55dd7a5c517f1feff961d907ff977` | `app/src/bootstrap/http/index.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `52b81bc5057275bf88a1017850e4d636b9e98a07` | `app/src/bootstrap/http/wrapRouteHandlerWithLogging.ts` | `100644` | `8b88fd86bacff2a2b35de1b3c280842327e12b9c` | `app/src/bootstrap/http/wrapRouteHandlerWithLogging.ts` |
 | P3 | unresolved | content_differs | — | `100644` | `a33697d139c4dcd1914db3864dbbde5b66472997` | `app/src/bootstrap/jobs/AGENTS.md` | `100644` | `2f2b8f3abb7571cb9a2ac734fe231332228de9b2` | `app/src/bootstrap/jobs/AGENTS.md` |
@@ -1501,8 +1503,6 @@ All 1736 files are shown. Ordering is deterministic: priority, Pareto queue, sta
 | P3 | exact | — | — | `100644` | `d25cf57cc00f8e08d3ec4032d2d2ec337fc5345a` | `app/src/bootstrap/__arch_probes__/pass_bootstrap_imports_shared.ts` | `100644` | `d25cf57cc00f8e08d3ec4032d2d2ec337fc5345a` | `app/src/bootstrap/__arch_probes__/pass_bootstrap_imports_shared.ts` |
 | P3 | exact | — | — | `100644` | `24f20ec6a8b4dc213e124747d21d0750e9abea6e` | `app/src/bootstrap/__arch_probes__/pass_entrypoint_imports_adapters_index.ts` | `100644` | `24f20ec6a8b4dc213e124747d21d0750e9abea6e` | `app/src/bootstrap/__arch_probes__/pass_entrypoint_imports_adapters_index.ts` |
 | P3 | exact | — | — | `100644` | `7c3e5438480cb699d9410df7390abbdfbd1904aa` | `app/src/bootstrap/__arch_probes__/pass_entrypoint_imports_test_adapters_index.ts` | `100644` | `7c3e5438480cb699d9410df7390abbdfbd1904aa` | `app/src/bootstrap/__arch_probes__/pass_entrypoint_imports_test_adapters_index.ts` |
-| P3 | exact | — | — | `100644` | `d2ad3a9b959292dd6477457395c7c97ec84819b2` | `app/src/bootstrap/agent-discovery.ts` | `100644` | `d2ad3a9b959292dd6477457395c7c97ec84819b2` | `app/src/bootstrap/agent-discovery.ts` |
-| P3 | exact | — | — | `100644` | `e55c9b2207bc5b0e394f4c3392a7fc079cb58349` | `app/src/bootstrap/ai/AGENTS.md` | `100644` | `e55c9b2207bc5b0e394f4c3392a7fc079cb58349` | `app/src/bootstrap/ai/AGENTS.md` |
 | P3 | exact | — | — | `100644` | `b09825388b4a9595ddcf638bbd31fdc30b5798d6` | `app/src/bootstrap/ai/tool-source.factory.ts` | `100644` | `b09825388b4a9595ddcf638bbd31fdc30b5798d6` | `app/src/bootstrap/ai/tool-source.factory.ts` |
 | P3 | exact | — | — | `100644` | `345c650853c25e5ba7d16216fe5bc406c7457e15` | `app/src/bootstrap/capabilities/market.ts` | `100644` | `345c650853c25e5ba7d16216fe5bc406c7457e15` | `app/src/bootstrap/capabilities/market.ts` |
 | P3 | exact | — | — | `100644` | `518fec399e9650e251cd4691084d49efc9998df4` | `app/src/bootstrap/capabilities/metrics.ts` | `100644` | `518fec399e9650e251cd4691084d49efc9998df4` | `app/src/bootstrap/capabilities/metrics.ts` |
