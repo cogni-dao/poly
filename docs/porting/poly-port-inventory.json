@@ -53,7 +53,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1174,
+    "targetOnlyFiles": 1175,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -28731,6 +28731,9 @@
     },
     {
       "targetPath": "scripts/dev/capture-authed-state.mjs"
+    },
+    {
+      "targetPath": "scripts/dev/siwe-login.mjs"
     },
     {
       "targetPath": "scripts/poly-delta-investigation.ts"
