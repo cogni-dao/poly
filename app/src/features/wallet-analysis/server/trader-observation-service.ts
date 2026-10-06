@@ -65,6 +65,7 @@ import {
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import pLimit from "p-limit";
+import { hydrateCopyTargetPositions } from "./copy-target-position-hydration-service";
 import {
   accumulateFillRollups,
   TICK_ROLLUP_MAX_BATCHES,
@@ -186,6 +187,7 @@ export type TraderObservationStage =
   | "sync_tenant_wallets"
   | "select_wallets"
   | "wallet_loop"
+  | "hydrate_copy_targets"
   | "prune_pnl_points"
   | "prune_position_snapshots"
   | "refresh_market_metadata"
@@ -199,6 +201,8 @@ export interface TraderObservationTickResult {
   walletsAborted: number;
   fills: number;
   positions: number;
+  /** Target V2 rows published from exact local execution lineage. */
+  targetPositionRows: number;
   /** Fills folded into `poly_trader_fill_rollups_daily` this tick. */
   rollupFills: number;
   pnlPoints: number;
@@ -500,6 +504,36 @@ export async function runTraderObservationTick(
   // promise settles quickly — no orphan writers past the next tick start.
   const tickAborted = deps.signal?.aborted === true;
 
+  // bug.5007 — a power target's whole-wallet V1 walk may exceed the 5,000
+  // row publication cap. Recover only conditions proven by durable local
+  // copy-fill + current-position lineage. The shared V2 reader completes all
+  // cursor/chunk walks before this off-render writer publishes any target row.
+  let targetPositionRows = 0;
+  if (!tickAborted) {
+    stage("hydrate_copy_targets");
+    try {
+      const hydration = await hydrateCopyTargetPositions({
+        db: deps.db,
+        client: deps.client,
+        logger: log,
+        ...(deps.signal === undefined ? {} : { signal: deps.signal }),
+      });
+      targetPositionRows = hydration.rows;
+      errors += hydration.errors;
+    } catch (err: unknown) {
+      if (deps.signal?.aborted) throw err;
+      errors += 1;
+      log.warn(
+        {
+          event: "poly.trader.target_positions_v2",
+          phase: "selection_failed",
+          error_class: "persistence_read_error",
+        },
+        "copy-target V2 cohort selection failed; saved facts preserved"
+      );
+    }
+  }
+
   let prunedPnlPoints = 0;
   if (deps.userPnlClient && !tickAborted && deps.runRetentionPrune !== false) {
     stage("prune_pnl_points");
@@ -588,6 +622,7 @@ export async function runTraderObservationTick(
       tick_ms: Date.now() - tickStartedAt,
       fills,
       positions,
+      target_position_rows: targetPositionRows,
       rollup_fills: rollupFills,
       pnl_points: pnlPoints,
       pruned_pnl_points: prunedPnlPoints,
@@ -603,6 +638,7 @@ export async function runTraderObservationTick(
     walletsAborted: loop.aborted,
     fills,
     positions,
+    targetPositionRows,
     rollupFills,
     pnlPoints,
     prunedPnlPoints,

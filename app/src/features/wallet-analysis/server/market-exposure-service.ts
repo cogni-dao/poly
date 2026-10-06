@@ -232,7 +232,11 @@ export type ComparisonReadFailureClass =
 export type BoundedMarketExposureCoverageRead = {
   market: BoundedMarketExposureRead;
   counts: ComparisonCoverageCountRow[];
+  positionClassifications: PositionComparisonClassification[];
 };
+
+type PositionComparisonClassification =
+  WalletDashboardComparisonCoverage["positionClassifications"][number];
 
 export type ComparisonCoverageCountRow = {
   entity: "markets" | "positions";
@@ -246,17 +250,22 @@ export type ComparisonCoverageCountRow = {
 type ComparisonBundleRow = Partial<
   ComparisonCoverageCountRow & BoundedTargetParticipantRow
 > & {
-  record_kind: "count" | "participant";
+  record_kind: "classification" | "count" | "participant";
+  token_id?: string | null;
+  classification?: PositionComparisonClassification["result"] | null;
 };
 
 const BOUNDED_GROUP_LIMIT = 200;
 const BOUNDED_TARGETS_PER_GROUP = 10;
 const BOUNDED_PARTICIPANT_ROW_LIMIT = 2_200;
+const VISIBLE_LIVE_POSITION_LIMIT = 500;
+const VISIBLE_CLOSED_POSITION_LIMIT = 30;
 
 type BoundedOurExposureSelection = {
   allOurLegs: RawLeg[];
   ourLegs: RawLeg[];
   conditionGroup: Map<string, string>;
+  conditionStatus: Map<string, WalletExecutionMarketLineStatus>;
   ownParticipantRows: number;
   groupedCount: number;
 };
@@ -278,10 +287,12 @@ export async function buildMarketExposureGroups(params: {
     ...buildOurLegs(closedPositions, params.walletAddress, "closed"),
   ];
   const conditions = [...new Set(ourLegs.map((leg) => leg.conditionId))];
+  const conditionStatus = conditionStatusFromLegs(ourLegs);
   const targetLegs = await readTargetLegs({
     db: params.db,
     billingAccountId: params.billingAccountId,
     conditions,
+    conditionStatus,
   });
   const rawLegs = [...ourLegs, ...targetLegs];
   const wallets = [...new Set(rawLegs.map((leg) => leg.walletAddress))];
@@ -344,6 +355,14 @@ export async function buildBoundedMarketExposureGroups(params: {
       elapsedMs(targetStartedAt)
     );
   }
+  targetRead = {
+    ...targetRead,
+    legs: targetRead.legs.filter(
+      (leg) =>
+        selection.conditionStatus.get(leg.conditionId) === "closed" ||
+        leg.lifecycle === "active"
+    ),
+  };
   const rawLegs = [...selection.ourLegs, ...targetRead.legs];
   const fillStartedAt = performance.now();
   let rollups: Awaited<ReturnType<typeof readFillRollups>>;
@@ -374,7 +393,10 @@ export async function buildBoundedMarketExposureGroups(params: {
   }
   const enrichedLegs = rawLegs.map((leg) => enrichLegWithRollup(leg, rollups));
   return {
-    groups: groupParticipants(enrichedLegs, rollups).slice(0, BOUNDED_GROUP_LIMIT),
+    groups: groupParticipants(enrichedLegs, rollups).slice(
+      0,
+      BOUNDED_GROUP_LIMIT
+    ),
     truncated:
       selection.groupedCount > BOUNDED_GROUP_LIMIT ||
       targetRead.totalParticipants > targetRead.hydratedParticipants ||
@@ -416,11 +438,28 @@ function selectBoundedOurExposure(params: {
     allOurLegs,
     ourLegs,
     conditionGroup,
+    conditionStatus: conditionStatusFromLegs(allOurLegs),
     ownParticipantRows: new Set(
       ourLegs.map((leg) => `${leg.walletAddress}:${leg.conditionId}`)
     ).size,
     groupedCount: grouped.size,
   };
+}
+
+function conditionStatusFromLegs(
+  legs: readonly RawLeg[]
+): Map<string, WalletExecutionMarketLineStatus> {
+  const statuses = new Map<string, WalletExecutionMarketLineStatus>();
+  for (const leg of legs) {
+    const current = statuses.get(leg.conditionId);
+    statuses.set(
+      leg.conditionId,
+      current === "live" || leg.ourPositionStatus === "live"
+        ? "live"
+        : "closed"
+    );
+  }
+  return statuses;
 }
 
 /**
@@ -455,6 +494,22 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
       walletAddress: params.walletAddress,
       conditionGroup: selection.conditionGroup,
       participantLimit: targetBudget,
+      selectedPositionKeys: [
+        ...params.livePositions
+          .slice(0, VISIBLE_LIVE_POSITION_LIMIT)
+          .map((position) => ({
+            conditionId: canonicalIdentity(position.conditionId),
+            tokenId: position.asset,
+            status: "live" as const,
+          })),
+        ...(params.closedPositions ?? [])
+          .slice(0, VISIBLE_CLOSED_POSITION_LIMIT)
+          .map((position) => ({
+            conditionId: canonicalIdentity(position.conditionId),
+            tokenId: position.asset,
+            status: "closed" as const,
+          })),
+      ],
     });
   } catch (error) {
     recordComparisonDiagnostic(
@@ -471,9 +526,7 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
     );
   }
   const counts = countRowsFromBundle(rows);
-  const targetRead = boundedTargetReadFromRows(
-    participantRowsFromBundle(rows)
-  );
+  const targetRead = boundedTargetReadFromRows(participantRowsFromBundle(rows));
   const rawLegs = [...selection.ourLegs, ...targetRead.legs];
   const fillStartedAt = performance.now();
   let rollups: Awaited<ReturnType<typeof readFillRollups>>;
@@ -502,11 +555,10 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
       elapsedMs(fillStartedAt)
     );
   }
-  const enrichedLegs = rawLegs.map((leg) =>
-    enrichLegWithRollup(leg, rollups)
-  );
+  const enrichedLegs = rawLegs.map((leg) => enrichLegWithRollup(leg, rollups));
   return {
     counts,
+    positionClassifications: classificationRowsFromBundle(rows),
     market: {
       groups: groupParticipants(enrichedLegs, rollups).slice(
         0,
@@ -626,6 +678,7 @@ export async function readFullComparisonCoverageCounts(params: {
     ...params,
     conditionGroup: new Map(),
     participantLimit: 0,
+    selectedPositionKeys: [],
   });
   return countRowsFromBundle(rows);
 }
@@ -636,6 +689,11 @@ async function readComparisonBundleRows(params: {
   walletAddress: string;
   conditionGroup: ReadonlyMap<string, string>;
   participantLimit: number;
+  selectedPositionKeys: readonly {
+    conditionId: string;
+    tokenId: string;
+    status: WalletExecutionMarketLineStatus;
+  }[];
 }): Promise<ComparisonBundleRow[]> {
   // This bounded relation is consumed only by preview_* CTEs below. The
   // eligible/position_eval/market_eval coverage chain remains full-population.
@@ -648,9 +706,21 @@ async function readComparisonBundleRows(params: {
           ),
           sql`, `
         )}`;
+  const selectedPositionKeys =
+    params.selectedPositionKeys.length === 0
+      ? sql`SELECT NULL::text AS condition_id, NULL::text AS token_id,
+          NULL::text AS status WHERE FALSE`
+      : sql`VALUES ${sql.join(
+          params.selectedPositionKeys.map(
+            (key) => sql`(${key.conditionId}, ${key.tokenId}, ${key.status})`
+          ),
+          sql`, `
+        )}`;
   return (await params.db.execute(sql`
     WITH selected_conditions(condition_id, group_key) AS (
       ${selectedConditions}
+    ), selected_position_keys(condition_id, token_id, status) AS (
+      ${selectedPositionKeys}
     ), canonical_wallet_identity AS (
       SELECT count(*) > 1 AS identity_ambiguous
       FROM poly_trader_wallets w
@@ -891,6 +961,14 @@ async function readComparisonBundleRows(params: {
         s.token_id,
         s.cost_basis_usdc::numeric AS cost_basis_usdc,
         s.captured_at,
+        EXISTS (
+          SELECT 1
+          FROM poly_trader_current_positions current_position
+          WHERE current_position.trader_wallet_id = s.trader_wallet_id
+            AND lower(current_position.condition_id) = lower(s.condition_id)
+            AND current_position.token_id = s.token_id
+            AND ${liveCurrentPositionSql("current_position")}
+        ) AS current_active,
         a.identity_ambiguous AS wallet_identity_ambiguous
       FROM poly_trader_position_snapshots s
       JOIN active_targets a ON a.trader_wallet_id = s.trader_wallet_id
@@ -910,14 +988,25 @@ async function readComparisonBundleRows(params: {
           PARTITION BY s.wallet_key, s.condition_key, s.token_id
         ) AS condition_identity_ambiguous
       FROM target_snapshot_source s
-    ), target_by_condition AS (
+    ), target_by_position AS (
       SELECT
         condition_key,
+        token_id,
         SUM(cost_basis_usdc) AS target_cost,
+        bool_or(current_active) AS current_active,
         bool_or(wallet_identity_ambiguous OR condition_identity_ambiguous)
           AS identity_ambiguous
       FROM target_snapshot_ranked
       WHERE identity_rank = 1
+      GROUP BY condition_key, token_id
+    ), target_by_condition AS (
+      SELECT
+        condition_key,
+        SUM(target_cost) AS target_cost,
+        SUM(target_cost) FILTER (WHERE current_active) AS active_target_cost,
+        bool_or(current_active) AS current_active,
+        bool_or(identity_ambiguous) AS identity_ambiguous
+      FROM target_by_position
       GROUP BY condition_key
     ), lines AS (
       SELECT
@@ -925,7 +1014,10 @@ async function readComparisonBundleRows(params: {
         CASE WHEN bool_or(p.status = 'live') THEN 'live' ELSE 'closed' END AS status,
         min(p.group_key) AS group_key,
         SUM(p.own_cost) AS own_cost,
-        COALESCE(t.target_cost, 0) AS target_cost,
+        CASE
+          WHEN bool_or(p.status = 'live') THEN COALESCE(t.active_target_cost, 0)
+          ELSE COALESCE(t.target_cost, 0)
+        END AS target_cost,
         (
           bool_or(p.identity_ambiguous)
           OR min(p.group_key) <> max(p.group_key)
@@ -935,20 +1027,53 @@ async function readComparisonBundleRows(params: {
       FROM eligible_positions p
       LEFT JOIN target_by_condition t ON t.condition_key = p.condition_key
       CROSS JOIN source_identity s
-      GROUP BY p.condition_key, t.target_cost, t.identity_ambiguous,
+      GROUP BY p.condition_key, t.target_cost, t.active_target_cost,
+        t.identity_ambiguous,
         s.identity_ambiguous
     ), position_eval AS (
       SELECT
         p.status,
+        p.condition_key,
+        p.token_id,
         (
           p.status = l.status
           AND l.own_cost > 0
-          AND l.target_cost > 0
-          AND NOT (p.identity_ambiguous OR l.identity_ambiguous)
+          AND COALESCE(t.target_cost, 0) > 0
+          AND (p.status = 'closed' OR COALESCE(t.current_active, false))
+          AND NOT (
+            p.identity_ambiguous
+            OR l.identity_ambiguous
+            OR COALESCE(t.identity_ambiguous, false)
+          )
         ) AS comparable,
-        (p.identity_ambiguous OR l.identity_ambiguous) AS ambiguous
+        (
+          p.identity_ambiguous
+          OR l.identity_ambiguous
+          OR COALESCE(t.identity_ambiguous, false)
+        ) AS ambiguous,
+        CASE
+          WHEN (
+            p.identity_ambiguous
+            OR l.identity_ambiguous
+            OR COALESCE(t.identity_ambiguous, false)
+          ) THEN 'identity_ambiguous'
+          WHEN p.status <> l.status THEN 'status_mismatch'
+          WHEN l.own_cost <= 0 THEN 'local_entry_unavailable'
+          WHEN tc.condition_key IS NULL
+            OR (p.status = 'live' AND NOT COALESCE(tc.current_active, false))
+            THEN 'no_target_position'
+          WHEN t.condition_key IS NULL THEN 'exact_token_missing'
+          WHEN p.status = 'live' AND NOT COALESCE(t.current_active, false)
+            THEN 'exact_token_missing'
+          WHEN t.target_cost <= 0 THEN 'target_entry_unavailable'
+          ELSE 'comparable'
+        END AS classification
       FROM eligible_positions p
       JOIN lines l ON l.condition_key = p.condition_key
+      LEFT JOIN target_by_position t
+        ON t.condition_key = p.condition_key
+       AND t.token_id = p.token_id
+      LEFT JOIN target_by_condition tc ON tc.condition_key = p.condition_key
     ), market_eval AS (
       SELECT
         CASE WHEN bool_or(l.status = 'live') THEN 'live' ELSE 'closed' END AS status,
@@ -998,22 +1123,20 @@ async function readComparisonBundleRows(params: {
         CASE WHEN cp.active THEN cp.last_observed_at
              ELSE l.captured_at END AS last_observed_at,
         CASE
-          WHEN cp.active IS TRUE THEN
-            CASE WHEN cp.current_value_usdc::numeric > 0
-                 THEN 'active' ELSE 'inactive' END
+          WHEN cp.active IS TRUE THEN 'active'
           WHEN cp.active IS FALSE THEN 'inactive'
-          ELSE
-            CASE WHEN d.current_value_usdc::numeric > 0
-                 THEN 'active' ELSE 'inactive' END
+          ELSE 'inactive'
         END AS lifecycle,
         row_number() OVER (
           PARTITION BY l.group_key, l.wallet_key, l.condition_key
           ORDER BY l.cost_basis_usdc DESC, l.token_id
         ) AS leg_rank
       FROM preview_latest l
+      JOIN lines comparison_line ON comparison_line.condition_key = l.condition_key
       JOIN poly_trader_position_snapshots d ON d.id = l.snapshot_id
       LEFT JOIN LATERAL (
-        SELECT candidate.active, candidate.current_value_usdc,
+        SELECT (${liveCurrentPositionSql("candidate")}) AS active,
+          candidate.current_value_usdc,
           candidate.last_observed_at
         FROM poly_trader_current_positions candidate
         JOIN active_targets candidate_wallet
@@ -1027,6 +1150,7 @@ async function readComparisonBundleRows(params: {
         LIMIT 1
       ) cp ON TRUE
       LEFT JOIN metadata m ON m.condition_key = l.condition_key
+      WHERE comparison_line.status = 'closed' OR cp.active IS TRUE
     ), preview_participants AS (
       SELECT
         group_key,
@@ -1127,6 +1251,8 @@ async function readComparisonBundleRows(params: {
       NULL::text AS wallet_address,
       NULL::text AS label,
       NULL::text AS condition_id,
+      NULL::text AS token_id,
+      NULL::text AS classification,
       NULL::jsonb AS legs
     FROM count_output c
     UNION ALL
@@ -1144,10 +1270,35 @@ async function readComparisonBundleRows(params: {
       p.wallet_address,
       p.label,
       p.condition_id,
+      NULL::text AS token_id,
+      NULL::text AS classification,
       p.legs
     FROM preview_output p
+    UNION ALL
+    SELECT
+      'classification'::text AS record_kind,
+      NULL::text AS entity,
+      p.status,
+      NULL::int AS eligible,
+      NULL::int AS comparable,
+      NULL::int AS ambiguous,
+      NULL::boolean AS source_ambiguous,
+      NULL::bigint AS total_participants,
+      NULL::boolean AS group_truncated,
+      NULL::text AS group_key,
+      NULL::text AS wallet_address,
+      NULL::text AS label,
+      p.condition_key AS condition_id,
+      p.token_id,
+      p.classification,
+      NULL::jsonb AS legs
+    FROM position_eval p
+    JOIN selected_position_keys selected
+      ON selected.condition_id = p.condition_key
+     AND selected.token_id = p.token_id
+     AND selected.status = p.status
     ORDER BY record_kind, entity, status, group_key, wallet_address,
-      condition_id
+      condition_id, token_id
   `)) as unknown as ComparisonBundleRow[];
 }
 
@@ -1172,6 +1323,38 @@ function countRowsFromBundle(
   );
 }
 
+function classificationRowsFromBundle(
+  rows: readonly ComparisonBundleRow[]
+): PositionComparisonClassification[] {
+  const validResults = new Set<PositionComparisonClassification["result"]>([
+    "comparable",
+    "no_target_position",
+    "exact_token_missing",
+    "target_entry_unavailable",
+    "local_entry_unavailable",
+    "identity_ambiguous",
+    "status_mismatch",
+  ]);
+  return rows.flatMap((row) =>
+    row.record_kind === "classification" &&
+    (row.status === "live" || row.status === "closed") &&
+    typeof row.condition_id === "string" &&
+    typeof row.token_id === "string" &&
+    row.classification !== null &&
+    row.classification !== undefined &&
+    validResults.has(row.classification)
+      ? [
+          {
+            conditionId: row.condition_id,
+            tokenId: row.token_id,
+            status: row.status,
+            result: row.classification,
+          },
+        ]
+      : []
+  );
+}
+
 export function unavailableComparisonCoverage(): WalletDashboardComparisonCoverage {
   return {
     markets: {
@@ -1182,11 +1365,13 @@ export function unavailableComparisonCoverage(): WalletDashboardComparisonCovera
       live: unavailableCoverageLeaf(),
       closed: unavailableCoverageLeaf(),
     },
+    positionClassifications: [],
   };
 }
 
 export function materializeComparisonCoverage(params: {
   counts: readonly ComparisonCoverageCountRow[];
+  positionClassifications?: readonly PositionComparisonClassification[];
   groups: readonly WalletExecutionMarketGroup[];
   livePositions: readonly WalletExecutionPosition[];
   closedPositions: readonly WalletExecutionPosition[];
@@ -1212,8 +1397,11 @@ export function materializeComparisonCoverage(params: {
   };
   const lineByCondition = new Map<
     string,
-    | { status: WalletExecutionMarketLineStatus; edgeGapPct: number | null }
-    | null
+    {
+      status: WalletExecutionMarketLineStatus;
+      edgeGapPct: number | null;
+      targetTokenIds: ReadonlySet<string>;
+    } | null
   >();
   for (const group of params.groups) {
     for (const line of group.lines) {
@@ -1222,7 +1410,21 @@ export function materializeComparisonCoverage(params: {
         key,
         lineByCondition.has(key)
           ? null
-          : { status: line.status, edgeGapPct: line.edgeGapPct }
+          : {
+              status: line.status,
+              edgeGapPct: line.edgeGapPct,
+              targetTokenIds: new Set(
+                (line.participants ?? [])
+                  .filter((participant) => participant.side === "copy_target")
+                  .flatMap((participant) => [
+                    participant.primary?.tokenId,
+                    participant.hedge?.tokenId,
+                  ])
+                  .filter(
+                    (tokenId): tokenId is string => tokenId !== undefined
+                  )
+              ),
+            }
       );
     }
   }
@@ -1236,10 +1438,31 @@ export function materializeComparisonCoverage(params: {
         line !== undefined &&
         line !== null &&
         line.status === status &&
+        line.targetTokenIds.has(position.asset) &&
         line.edgeGapPct !== null &&
         Number.isFinite(line.edgeGapPct)
       );
     }).length;
+
+  const classificationByVisibleKey = new Map(
+    (params.positionClassifications ?? []).map((classification) => [
+      `${classification.status}:${canonicalIdentity(classification.conditionId)}:${classification.tokenId}`,
+      classification,
+    ])
+  );
+  const visiblePositionClassifications = [
+    ...params.livePositions.map(
+      (position) => [position, "live" as const] as const
+    ),
+    ...params.closedPositions.map(
+      (position) => [position, "closed" as const] as const
+    ),
+  ].flatMap(([position, status]) => {
+    const classification = classificationByVisibleKey.get(
+      `${status}:${canonicalIdentity(position.conditionId)}:${position.asset}`
+    );
+    return classification === undefined ? [] : [classification];
+  });
 
   const leaf = (
     entity: "markets" | "positions",
@@ -1312,6 +1535,7 @@ export function materializeComparisonCoverage(params: {
         sampledPositions(params.closedPositions, "closed")
       ),
     },
+    positionClassifications: visiblePositionClassifications,
   };
 }
 
@@ -1394,6 +1618,7 @@ async function readTargetLegs(params: {
   db: Db;
   billingAccountId: string;
   conditions: readonly string[];
+  conditionStatus: ReadonlyMap<string, WalletExecutionMarketLineStatus>;
 }): Promise<RawLeg[]> {
   if (params.conditions.length === 0) return [];
 
@@ -1484,17 +1709,14 @@ async function readTargetLegs(params: {
       CASE WHEN cp.active THEN cp.last_observed_at
            ELSE ls.last_observed_at END AS last_observed_at,
       CASE
-        WHEN cp.active IS TRUE THEN
-          CASE WHEN cp.current_value_usdc::numeric > 0
-               THEN 'active' ELSE 'inactive' END
+        WHEN cp.active IS TRUE THEN 'active'
         WHEN cp.active IS FALSE THEN 'inactive'
-        ELSE
-          CASE WHEN ls.current_value_usdc > 0
-               THEN 'active' ELSE 'inactive' END
+        ELSE 'inactive'
       END AS lifecycle
     FROM latest_snapshots ls
     LEFT JOIN LATERAL (
-      SELECT candidate.active, candidate.current_value_usdc,
+      SELECT (${liveCurrentPositionSql("candidate")}) AS active,
+        candidate.current_value_usdc,
         candidate.last_observed_at
       FROM poly_trader_current_positions candidate
       JOIN active_targets candidate_wallet
@@ -1530,6 +1752,13 @@ async function readTargetLegs(params: {
     const avgPrice = nullableNumber(row.avg_price);
     const lifecycle: WalletExecutionMarketLeg["lifecycle"] =
       row.lifecycle === "inactive" ? "inactive" : "active";
+    if (
+      params.conditionStatus.get(canonicalIdentity(row.condition_id)) ===
+        "live" &&
+      lifecycle !== "active"
+    ) {
+      return [];
+    }
     const currentValueUsdc = toNumber(row.current_value_usdc);
     return [
       {
@@ -1643,13 +1872,9 @@ async function readBoundedTargetLegs(params: {
         l.avg_price,
         CASE WHEN cp.active THEN cp.last_observed_at ELSE l.captured_at END AS last_observed_at,
         CASE
-          WHEN cp.active IS TRUE THEN
-            CASE WHEN cp.current_value_usdc::numeric > 0
-                 THEN 'active' ELSE 'inactive' END
+          WHEN cp.active IS TRUE THEN 'active'
           WHEN cp.active IS FALSE THEN 'inactive'
-          ELSE
-            CASE WHEN l.snapshot_value_usdc > 0
-                 THEN 'active' ELSE 'inactive' END
+          ELSE 'inactive'
         END AS lifecycle,
         ROW_NUMBER() OVER (
           PARTITION BY l.group_key, l.wallet_address, l.condition_id
@@ -1657,7 +1882,8 @@ async function readBoundedTargetLegs(params: {
         ) AS leg_rank
       FROM latest l
       LEFT JOIN LATERAL (
-        SELECT candidate.active, candidate.current_value_usdc,
+        SELECT (${liveCurrentPositionSql("candidate")}) AS active,
+          candidate.current_value_usdc,
           candidate.last_observed_at
         FROM poly_trader_current_positions candidate
         JOIN active_targets candidate_wallet
@@ -1757,7 +1983,8 @@ function boundedTargetReadFromRows(
     for (const value of row.legs.slice(0, 2)) {
       if (!value || typeof value !== "object") continue;
       const leg = value as BoundedTargetLeg;
-      if (typeof leg.token_id !== "string" || leg.token_id.length === 0) continue;
+      if (typeof leg.token_id !== "string" || leg.token_id.length === 0)
+        continue;
       const shares = toNumber(leg.shares);
       const costBasisUsdc = toNumber(leg.cost_basis_usdc);
       const currentValueUsdc = toNumber(leg.current_value_usdc);
@@ -1867,7 +2094,10 @@ function groupParticipants(
       (leg) => leg.side === "copy_target"
     );
     const ourValueUsdc = roundMoney(sumValue(ourLegs));
-    const targetValueUsdc = roundMoney(sumValue(targetLegs));
+    const hasTargetFacts = targetLegs.length > 0;
+    const targetValueUsdc = hasTargetFacts
+      ? roundMoney(sumValue(targetLegs))
+      : null;
 
     const ourAgg = aggregateWalletReturn(ourLegs, rollups);
     const ourReturnPct = positionReturnPct({
@@ -1888,7 +2118,7 @@ function groupParticipants(
       totalBuyNotional: number;
       returnPct: number | null;
     }[] = [];
-    let targetGrossBuyNotional = 0;
+    let targetGrossBuyNotional: number | null = 0;
     for (const tlegs of byTargetWallet.values()) {
       const agg = aggregateWalletReturn(tlegs, rollups);
       targetEntries.push({
@@ -1900,13 +2130,21 @@ function groupParticipants(
           redemptionProceeds: agg.redemptionProceeds,
         }),
       });
-      targetGrossBuyNotional += agg.grossBuyNotional;
+      const hasCompleteGrossBuyRollup = tlegs.every((leg) =>
+        rollups.has(rollupKey(leg.walletAddress, leg.conditionId, leg.tokenId))
+      );
+      targetGrossBuyNotional =
+        targetGrossBuyNotional === null || !hasCompleteGrossBuyRollup
+          ? null
+          : targetGrossBuyNotional + agg.grossBuyNotional;
     }
     const targetReturnPct = blendTargetReturns(targetEntries);
     const targetTotalBuyNotional = targetEntries.reduce(
       (sum, e) => sum + e.totalBuyNotional,
       0
     );
+    const hasTargetEntryFacts =
+      hasTargetFacts && targetTotalBuyNotional > 0;
 
     const { rateGapPct, sizeScaledGapUsdc } = edgeGap({
       ourReturnPct,
@@ -1934,9 +2172,14 @@ function groupParticipants(
       ourValueUsdc,
       targetValueUsdc,
       ourEntryValueUsdc: roundMoney(ourAgg.totalBuyNotional),
-      targetEntryValueUsdc: roundMoney(targetTotalBuyNotional),
+      targetEntryValueUsdc: hasTargetEntryFacts
+        ? roundMoney(targetTotalBuyNotional)
+        : null,
       ourGrossBuyNotionalUsdc: roundMoney(ourAgg.grossBuyNotional),
-      targetGrossBuyNotionalUsdc: roundMoney(targetGrossBuyNotional),
+      targetGrossBuyNotionalUsdc:
+        hasTargetFacts && targetGrossBuyNotional !== null
+          ? roundMoney(targetGrossBuyNotional)
+          : null,
       ourVwap: weightedVwap(ourLegs),
       targetVwap: weightedVwap(targetLegs),
       edgeGapUsdc: sizeScaledGapUsdc,
@@ -2009,20 +2252,20 @@ function groupParticipants(
         ourValueUsdc: roundMoney(
           lines.reduce((sum, line) => sum + line.ourValueUsdc, 0)
         ),
-        targetValueUsdc: roundMoney(
-          lines.reduce((sum, line) => sum + line.targetValueUsdc, 0)
+        targetValueUsdc: sumAvailableMoney(
+          lines.map((line) => line.targetValueUsdc)
         ),
         ourEntryValueUsdc: roundMoney(
           lines.reduce((sum, line) => sum + line.ourEntryValueUsdc, 0)
         ),
-        targetEntryValueUsdc: roundMoney(
-          lines.reduce((sum, line) => sum + line.targetEntryValueUsdc, 0)
+        targetEntryValueUsdc: sumAvailableMoney(
+          lines.map((line) => line.targetEntryValueUsdc)
         ),
         ourGrossBuyNotionalUsdc: roundMoney(
           lines.reduce((sum, line) => sum + line.ourGrossBuyNotionalUsdc, 0)
         ),
-        targetGrossBuyNotionalUsdc: roundMoney(
-          lines.reduce((sum, line) => sum + line.targetGrossBuyNotionalUsdc, 0)
+        targetGrossBuyNotionalUsdc: sumAvailableMoney(
+          lines.map((line) => line.targetGrossBuyNotionalUsdc)
         ),
         pnlUsd: roundMoney(
           lines.reduce(
@@ -2240,6 +2483,15 @@ function sumValue(legs: readonly RawLeg[]): number {
   return legs.reduce((sum, leg) => sum + leg.currentValueUsdc, 0);
 }
 
+function sumAvailableMoney(values: readonly (number | null)[]): number | null {
+  if (values.length === 0 || values.some((value) => value === null)) {
+    return null;
+  }
+  return roundMoney(
+    (values as readonly number[]).reduce((sum, value) => sum + value, 0)
+  );
+}
+
 /** @internal — exported for the rollup parity tests only. */
 export function rollupKey(
   walletAddress: string,
@@ -2329,13 +2581,14 @@ export async function readFillRollups(params: {
     walletIdsByCanonicalAddress.set(address, ids);
   }
   const physicalPositionKeys = params.positionKeys?.flatMap((key) =>
-    (walletIdsByCanonicalAddress.get(canonicalIdentity(key.walletAddress)) ?? []).map(
-      (traderWalletId) => ({
+    (
+      walletIdsByCanonicalAddress.get(canonicalIdentity(key.walletAddress)) ??
+      []
+    ).map((traderWalletId) => ({
         traderWalletId,
         conditionId: canonicalIdentity(key.conditionId),
         tokenId: key.tokenId,
-      })
-    )
+    }))
   );
   const selectedKeyRows = params.positionKeys
     ? sql.join(
@@ -2375,7 +2628,8 @@ export async function readFillRollups(params: {
       fl.net_shares,
       pmo.outcome AS market_outcome
     FROM normalized_flows fl
-    ${selectedKeyRows === null
+    ${
+      selectedKeyRows === null
       ? sql``
       : sql`JOIN (
             SELECT DISTINCT wallet_address, condition_id, token_id
@@ -2383,7 +2637,8 @@ export async function readFillRollups(params: {
           ) AS selected_keys
           ON selected_keys.wallet_address = fl.wallet_address
          AND selected_keys.condition_id = fl.condition_id
-         AND selected_keys.token_id = fl.token_id`}
+         AND selected_keys.token_id = fl.token_id`
+    }
     LEFT JOIN LATERAL (
       SELECT candidate.outcome
       FROM poly_market_outcomes candidate
@@ -2445,7 +2700,7 @@ function compareLine(
 ): number {
   return (
     right.ourValueUsdc - left.ourValueUsdc ||
-    right.targetValueUsdc - left.targetValueUsdc ||
+    (right.targetValueUsdc ?? -1) - (left.targetValueUsdc ?? -1) ||
     left.marketTitle.localeCompare(right.marketTitle)
   );
 }

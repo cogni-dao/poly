@@ -398,6 +398,9 @@ export async function readTenantWalletDashboardIn(
 
   let marketRead: OptionalRead<BoundedMarketExposureRead>;
   let coverageRead: OptionalRead<ComparisonCoverageCountRow[]>;
+  let positionClassifications: Awaited<
+    ReturnType<typeof buildBoundedMarketExposureWithCoverage>
+  >["positionClassifications"] = [];
   const comparisonUnavailable = new Error(
     "Current-position authority is unavailable."
   );
@@ -470,6 +473,7 @@ export async function readTenantWalletDashboardIn(
     if (bundleRead.ok) {
       marketRead = { ok: true, value: bundleRead.value.market };
       coverageRead = { ok: true, value: bundleRead.value.counts };
+      positionClassifications = bundleRead.value.positionClassifications;
     } else {
       // A coverage/bundle failure may never erase the legacy-renderable market
       // preview. Re-run only that bounded reader in a fresh savepoint; coverage
@@ -525,6 +529,7 @@ export async function readTenantWalletDashboardIn(
     ? unavailableComparisonCoverage()
     : materializeComparisonCoverage({
         counts: coverageRead.value,
+        positionClassifications,
         groups: marketRead.value.groups,
         livePositions: livePositions.slice(0, LIVE_PREVIEW_LIMIT),
         closedPositions: closedPositions.slice(0, CLOSED_PREVIEW_LIMIT),
@@ -535,9 +540,10 @@ export async function readTenantWalletDashboardIn(
           historyFact.complete,
         previewTruncated: marketRead.value.truncated,
       });
-  const comparisonCoverageUnavailable = Object.values(
-    comparisonCoverage
-  ).some((byStatus) =>
+  const comparisonCoverageUnavailable = [
+    comparisonCoverage.markets,
+    comparisonCoverage.positions,
+  ].some((byStatus) =>
     Object.values(byStatus).some((leaf) =>
       leaf.reasons.includes("source_unavailable")
     )

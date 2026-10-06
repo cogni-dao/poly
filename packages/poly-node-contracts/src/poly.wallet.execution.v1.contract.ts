@@ -223,7 +223,8 @@ export const WalletExecutionMarketLineSchema = z.object({
   resolvesAt: z.string().nullable(),
   status: WalletExecutionMarketLineStatusSchema,
   ourValueUsdc: z.number().nonnegative(),
-  targetValueUsdc: z.number().nonnegative(),
+  /** Null when no saved exact target position facts exist for this line. */
+  targetValueUsdc: z.number().nonnegative().nullable(),
   /**
    * Σ snapshot.cost_basis_usdc on currently held shares — Polymarket
    * vendor-FIFO cost of the position as it exists right now. Used as the
@@ -236,7 +237,7 @@ export const WalletExecutionMarketLineSchema = z.object({
   ourEntryValueUsdc: z.number().nonnegative(),
   /** Same as `ourEntryValueUsdc` — Σ snapshot.cost_basis_usdc — but for
    * the target side. P/L denominator for target return %. */
-  targetEntryValueUsdc: z.number().nonnegative(),
+  targetEntryValueUsdc: z.number().nonnegative().nullable(),
   /**
    * Σ poly_trader_fills BUY size_usdc for our wallet × condition.
    * "Lifetime BUY activity" — every dollar that left our wallet to buy
@@ -250,7 +251,7 @@ export const WalletExecutionMarketLineSchema = z.object({
   ourGrossBuyNotionalUsdc: z.number().nonnegative(),
   /** Same as `ourGrossBuyNotionalUsdc` — lifetime BUY activity — but
    * Σ'd across all target wallets on this condition. */
-  targetGrossBuyNotionalUsdc: z.number().nonnegative(),
+  targetGrossBuyNotionalUsdc: z.number().nonnegative().nullable(),
   ourVwap: z.number().min(0).nullable(),
   targetVwap: z.number().min(0).nullable(),
   hedgeCount: z.number().int().nonnegative(),
@@ -281,15 +282,16 @@ export const WalletExecutionMarketGroupSchema = z.object({
   /** `live` if any line in the group is still held, else `closed`. */
   status: WalletExecutionMarketLineStatusSchema,
   ourValueUsdc: z.number().nonnegative(),
-  targetValueUsdc: z.number().nonnegative(),
+  /** Null when any child line lacks saved target position facts. */
+  targetValueUsdc: z.number().nonnegative().nullable(),
   /** Group-level Σ of per-line `ourEntryValueUsdc`. */
   ourEntryValueUsdc: z.number().nonnegative(),
   /** Group-level Σ of per-line `targetEntryValueUsdc`. */
-  targetEntryValueUsdc: z.number().nonnegative(),
+  targetEntryValueUsdc: z.number().nonnegative().nullable(),
   /** Group-level Σ of per-line `ourGrossBuyNotionalUsdc`. */
   ourGrossBuyNotionalUsdc: z.number().nonnegative(),
   /** Group-level Σ of per-line `targetGrossBuyNotionalUsdc`. */
-  targetGrossBuyNotionalUsdc: z.number().nonnegative(),
+  targetGrossBuyNotionalUsdc: z.number().nonnegative().nullable(),
   pnlUsd: z.number(),
   /**
    * Group-level `edgeGapPct × groupOurTotalBuyNotional`, where the

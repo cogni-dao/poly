@@ -95,6 +95,7 @@ export function portfolioSnapshotFixture(
       comparisonCoverage: {
         markets: { live: coverageLeaf, closed: coverageLeaf },
         positions: { live: coverageLeaf, closed: coverageLeaf },
+        positionClassifications: [],
       },
       warnings: [],
     },
