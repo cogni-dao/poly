@@ -32,7 +32,33 @@ import { and, desc, eq, gt, isNotNull, lte, sql } from "drizzle-orm";
 import type { AgentGrantTransaction } from "./authorization";
 import { replaceOwnedAgentGrant } from "./agent-grant-service";
 
-const PERFORMANCE_READ_SCOPE = "performance:read" as const;
+/**
+ * Canonical delegated account-read scope (story.5006). Reported on the wire and
+ * written into every newly minted grant.
+ */
+const ACCOUNT_READ_SCOPE = "account:read" as const;
+
+/**
+ * Legacy alias of {@link ACCOUNT_READ_SCOPE}.
+ *
+ * Two deliberate uses, both expand-phase:
+ *  1. `agent_access_requests.requested_scopes` is pinned by an EQUALITY check
+ *     constraint that migration 0074 intentionally did NOT widen, so inserts
+ *     into that table must keep writing exactly this value.
+ *  2. New grants carry BOTH names. The RLS policies and `authorize()` match
+ *     either via array overlap, so a dual-named grant reads correctly even if
+ *     code and migration land out of order — it cannot land in the state where
+ *     authorize() allows but RLS silently returns zero rows.
+ *
+ * The contract-phase task backfills rows and deletes this constant.
+ */
+const LEGACY_PERFORMANCE_READ_SCOPE = "performance:read" as const;
+
+/** Scopes written into a newly approved grant. */
+const ACCOUNT_READ_GRANT_SCOPES = [
+  ACCOUNT_READ_SCOPE,
+  LEGACY_PERFORMANCE_READ_SCOPE,
+] as const;
 const MAX_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 type GrantLifecycle = {
@@ -93,7 +119,7 @@ export function accessRequestToOwnerContract(
   return {
     id: entry.request.id,
     agent_display_name: entry.request.requesterDisplayName,
-    scope: PERFORMANCE_READ_SCOPE,
+    scope: ACCOUNT_READ_SCOPE,
     expires_at: toIso(entry.request.grantExpiresAt),
     requested_at: toIso(entry.request.createdAt),
     decided_at: entry.request.decidedAt
@@ -111,7 +137,7 @@ export function accessRequestToAgentContract(
   const status = lifecycleStatus(entry.request, entry.grant, now);
   const common = {
     id: entry.request.id,
-    scope: PERFORMANCE_READ_SCOPE,
+    scope: ACCOUNT_READ_SCOPE,
     expires_at: toIso(entry.request.grantExpiresAt),
     requested_at: toIso(entry.request.createdAt),
     decided_at: entry.request.decidedAt
@@ -194,7 +220,7 @@ export async function createAgentAccessRequest(
     .values({
       requesterPrincipalId: input.principalId,
       requesterDisplayName: input.displayName,
-      requestedScopes: [PERFORMANCE_READ_SCOPE],
+      requestedScopes: [LEGACY_PERFORMANCE_READ_SCOPE],
       grantExpiresAt,
       approvalTokenHash: input.tokenHash,
       approvalTokenExpiresAt: input.tokenExpiresAt,
@@ -351,7 +377,7 @@ export async function decideAgentAccessRequest(
   const grant = await replaceOwnedAgentGrant(tx, input.ownerPrincipalId, {
     billing_account_id: ownedAccount.id,
     grantee_principal_id: request.requesterPrincipalId,
-    scopes: [PERFORMANCE_READ_SCOPE],
+    scopes: [...ACCOUNT_READ_GRANT_SCOPES],
     expires_at: toIso(request.grantExpiresAt),
   });
   if (!grant) {

@@ -3,19 +3,17 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const {
-  investigate,
-  logEvent,
-  principal,
-  resolvePerformanceRead,
-  tenantTransaction,
-} = vi.hoisted(() => ({
+const { authorize, investigate, logEvent, principal, tenantTransaction } =
+  vi.hoisted(() => ({
+    authorize: vi.fn(),
     investigate: vi.fn(),
     logEvent: vi.fn(),
     principal: { id: "10000000-0000-4000-a000-000000000001" },
-    resolvePerformanceRead: vi.fn(),
-    tenantTransaction: { kind: "app-role-transaction", execute: vi.fn() },
-}));
+    tenantTransaction: {
+      kind: "app-role-transaction",
+      execute: vi.fn(async () => []),
+    },
+  }));
 
 vi.mock("@/app/_lib/auth/session", () => ({ getSessionUser: vi.fn() }));
 vi.mock("@/bootstrap/container", () => ({ resolveAppDb: () => ({ kind: "app-role-db" }) }));
@@ -30,20 +28,30 @@ vi.mock("@/bootstrap/http", () => ({
     (_config: unknown, handler: (...args: never[]) => Promise<Response>) =>
     (request: Request) =>
       handler(
-        { log: {}, reqId: "request-1", routeId: "poly.research-copy-trade-investigation" } as never,
+        {
+          log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+          reqId: "request-1",
+          routeId: "poly.research-copy-trade-investigation",
+        } as never,
         request as never,
         { id: principal.id } as never
       ),
 }));
 vi.mock("@/features/agent-grants/authorization", () => ({
-  resolvePerformanceRead: (...args: unknown[]) => resolvePerformanceRead(...args),
+  authorize: (...args: unknown[]) => authorize(...args),
+  resolvePrincipalAccountId: vi.fn(),
 }));
 vi.mock("@/features/wallet-analysis/server/copy-trade-investigation-service", () => ({
   getCopyTradeInvestigationSummary: (...args: unknown[]) => investigate(...args),
+  getCopyTradeInvestigationEvidence: vi.fn(),
+  InvalidInvestigationCursorError: class extends Error {},
+  InvalidInvestigationCapturedAtError: class extends Error {},
 }));
 vi.mock("@/shared/observability", () => ({
   EVENT_NAMES: {
     POLY_AGENT_GRANT_ACCESS_DECISION: "feature.poly_agent_grant.access_decision",
+    POLY_RESEARCH_COPY_TRADE_PNL_COMPLETE:
+      "feature.poly_research.copy_trade_pnl.complete",
     POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE:
       "feature.poly_research.copy_trade_investigation.complete",
   },
@@ -131,10 +139,19 @@ function expectSingleCompletion(expected: Record<string, unknown>): void {
   expect(completionFields()[0]).toEqual(expect.objectContaining(expected));
 }
 
+/**
+ * The TERMINAL event is the non-disclosing one: it mirrors the response, which
+ * must not distinguish "wrong tenant" from "no such account".
+ *
+ * The separate `access_decision` audit event deliberately DOES carry the
+ * principal, account and grant id — story.5004 requires exact-SHA Loki proof
+ * that a specific cross-tenant read was denied, which is unprovable without
+ * naming the subject and object. Before this task the three research routes
+ * disagreed on that point (the P/L route logged identifiers, the investigation
+ * routes did not); the capability plane unifies them on the audited behavior.
+ */
 function expectNoExplicitIdentifiers(): void {
-  const fields = logEvent.mock.calls.map(
-    ([, , eventFields]) => eventFields as Record<string, unknown>
-  );
+  const fields = completionFields();
   for (const eventFields of fields) {
     for (const key of [
       "billingAccountId",
@@ -159,9 +176,9 @@ describe("copy-trade investigation authorization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     investigate.mockReset();
-    resolvePerformanceRead.mockReset();
+    authorize.mockReset();
     principal.id = "10000000-0000-4000-a000-000000000001";
-    resolvePerformanceRead.mockResolvedValue({
+    authorize.mockResolvedValue({
       accessKind: "delegated",
       grantId: "30000000-0000-4000-b000-000000000001",
     });
@@ -178,12 +195,12 @@ describe("copy-trade investigation authorization", () => {
       errorCode: "invalid_query",
       evidenceCount: 0,
     });
-    expect(resolvePerformanceRead).not.toHaveBeenCalled();
+    expect(authorize).not.toHaveBeenCalled();
     expectNoExplicitIdentifiers();
   });
 
   it("returns the same non-disclosing 404 for every denied account", async () => {
-    resolvePerformanceRead.mockResolvedValue(null);
+    authorize.mockResolvedValue(null);
     const first = await GET(request(ACCOUNT_A));
     expectSingleCompletion({
       status: 404,
@@ -232,7 +249,11 @@ describe("copy-trade investigation authorization", () => {
     expect(result.status).toBe(500);
     expectSingleCompletion({
       status: 500,
-      authorizationOutcome: "not_evaluated",
+      // The executor records the decision it already made before the handler
+      // threw, which is strictly more informative than the old route's
+      // blanket "not_evaluated".
+      authorizationOutcome: "allowed",
+      accessKind: "delegated",
       errorCode: "service_failed",
     });
     expectNoExplicitIdentifiers();
@@ -255,7 +276,7 @@ describe("copy-trade investigation authorization", () => {
 
   it("returns the identical payload for owner and delegate access", async () => {
     investigate.mockResolvedValue(payload);
-    resolvePerformanceRead.mockResolvedValueOnce({ accessKind: "owner", grantId: null });
+    authorize.mockResolvedValueOnce({ accessKind: "owner", grantId: null });
     const owner = await GET(request(ACCOUNT_A));
     expectSingleCompletion({
       status: 200,
@@ -265,7 +286,7 @@ describe("copy-trade investigation authorization", () => {
     expectNoExplicitIdentifiers();
     logEvent.mockClear();
     principal.id = "10000000-0000-4000-a000-000000000002";
-    resolvePerformanceRead.mockResolvedValueOnce({
+    authorize.mockResolvedValueOnce({
       accessKind: "delegated",
       grantId: "30000000-0000-4000-b000-000000000001",
     });

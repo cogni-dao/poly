@@ -519,6 +519,13 @@
       "when": 1791109877528,
       "tag": "0073_curved_sabretooth",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1791109877529,
+      "tag": "0074_account_read_scope_alias",
+      "breakpoints": true
     }
   ]
 }

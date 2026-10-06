@@ -4,7 +4,7 @@
 /**
  * Module: `@tests/contract/app/agent-access-discovery`
  * Purpose: Pin machine discovery for self-list/request/poll and scoped
- *   performance read.
+ *   account read.
  * Scope: Public discovery JSON only; auth behavior lives in route tests.
  * Invariants: a newly registered agent can discover every next API action.
  * Side-effects: none
@@ -62,7 +62,7 @@ describe("agent access discovery", () => {
       method: "GET",
       endpoint:
         "https://poly.example.test/api/v1/poly/research/copy-trade-pnl",
-      auth: { type: "bearer", requiredScope: "performance:read" },
+      auth: { type: "bearer", requiredScope: "account:read" },
     });
     for (const action of [
       body.actions.listOwnAgentAccessRequests,

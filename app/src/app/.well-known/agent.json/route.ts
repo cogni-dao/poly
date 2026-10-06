@@ -33,10 +33,16 @@ import {
 	polyAgentAccessRequestAgentListOperation,
 	polyAgentAccessRequestCreateOperation,
 	polyAgentAccessRequestPollOperation,
-	polyResearchCopyTradePnlOperation,
 } from "@cogni/poly-node-contracts";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+// Imported from the discovery module directly, not the feature barrel: this
+// public endpoint must stay a pure projection and never pull the executor (and
+// therefore a DB client) into its module graph.
+import {
+	accountReadDiscoveryActions,
+	accountReadDiscoveryEndpoints,
+} from "@/features/capability-plane/discovery";
 import {
 	getNodeBrandColor,
 	getNodeBrandIcon,
@@ -103,7 +109,8 @@ export async function GET(request: Request) {
 			workItemHeartbeat: `${origin}/api/v1/work/items/{id}/heartbeat`,
 			workItemCoordination: `${origin}/api/v1/work/items/{id}/coordination`,
 			agentAccessRequests: `${origin}/api/v1/agent/access-requests`,
-			copyTradePnl: `${origin}/api/v1/poly/research/copy-trade-pnl`,
+			// GENERATED_DISCOVERY: one entry per account-read descriptor.
+			...accountReadDiscoveryEndpoints(origin),
 		},
 		actions: {
 			listOwnAgentAccessRequests: {
@@ -139,18 +146,10 @@ export async function GET(request: Request) {
 					polyAgentAccessRequestPollOperation.output,
 				),
 			},
-			readCopyTradePnl: {
-				method: "GET",
-				endpoint: `${origin}/api/v1/poly/research/copy-trade-pnl`,
-				auth: {
-					type: "bearer",
-					requiredScope: "performance:read",
-				},
-				inputSchema: z.toJSONSchema(polyResearchCopyTradePnlOperation.input),
-				outputSchema: z.toJSONSchema(
-					polyResearchCopyTradePnlOperation.output,
-				),
-			},
+			// GENERATED_DISCOVERY: method, path, required scope and both JSON
+			// schemas are projected from the pure account-read descriptors, so an
+			// agent can never read a shape the executor does not enforce.
+			...accountReadDiscoveryActions(origin),
 			listWorkItems: {
 				method: "GET",
 				endpoint: `${origin}/api/v1/work/items`,

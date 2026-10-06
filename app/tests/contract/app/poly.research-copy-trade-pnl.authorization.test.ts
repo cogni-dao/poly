@@ -3,29 +3,33 @@
 
 /**
  * Module: `@tests/contract/app/poly.research-copy-trade-pnl.authorization`
- * Purpose: Pin the capability-gated HTTP behavior of the tenant P/L route.
- * Scope: Mocked route contract only; database/RLS behavior is covered by the component lane.
- * Invariants: Every authorization denial is the same non-disclosing 404; owner and delegate share one response contract.
+ * Purpose: Pin the capability-gated HTTP behavior of the tenant P/L route now
+ *   that it is a thin transport over the capability plane. The response
+ *   contract, the terminal event, and the non-disclosing denial must be
+ *   byte-identical to the pre-migration route.
+ * Scope: Mocked route contract only; database/RLS behavior is covered by the
+ *   component lane.
+ * Invariants: every authorization denial is the same non-disclosing 404; owner
+ *   and delegate share one response contract; the aggregate now runs under
+ *   REPEATABLE READ READ ONLY; exactly one terminal event per response.
  * Side-effects: none
- * Links: src/app/api/v1/poly/research/copy-trade-pnl/route.ts, task.1791070950
+ * Links: src/app/api/v1/poly/research/copy-trade-pnl/route.ts, task.1791070961
  * @internal
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const {
-  aggregate,
-  logEvent,
-  principal,
-  resolvePerformanceRead,
-  tenantTransaction,
-} = vi.hoisted(() => ({
-  aggregate: vi.fn(),
-  logEvent: vi.fn(),
-  principal: { id: "10000000-0000-4000-a000-000000000001" },
-  resolvePerformanceRead: vi.fn(),
-  tenantTransaction: { kind: "app-role-transaction" },
-}));
+const { aggregate, authorize, logEvent, principal, tenantTransaction } =
+  vi.hoisted(() => ({
+    aggregate: vi.fn(),
+    authorize: vi.fn(),
+    logEvent: vi.fn(),
+    principal: { id: "10000000-0000-4000-a000-000000000001" },
+    tenantTransaction: {
+      kind: "app-role-transaction",
+      execute: vi.fn(async () => []),
+    },
+  }));
 
 vi.mock("@/app/_lib/auth/session", () => ({ getSessionUser: vi.fn() }));
 vi.mock("@/bootstrap/container", () => ({
@@ -55,21 +59,20 @@ vi.mock("@/bootstrap/http", () => ({
       ),
 }));
 vi.mock("@/features/agent-grants/authorization", () => ({
-  resolvePerformanceRead: (...args: unknown[]) =>
-    resolvePerformanceRead(...args),
+  authorize: (...args: unknown[]) => authorize(...args),
+  resolvePrincipalAccountId: vi.fn(),
 }));
-vi.mock(
-  "@/features/wallet-analysis/server/copy-trade-pnl-service",
-  () => ({
-    getCopyTradePnlForTenant: (...args: unknown[]) => aggregate(...args),
-  })
-);
+vi.mock("@/features/wallet-analysis/server/copy-trade-pnl-service", () => ({
+  getCopyTradePnlForTenant: (...args: unknown[]) => aggregate(...args),
+}));
 vi.mock("@/shared/observability", () => ({
   EVENT_NAMES: {
     POLY_AGENT_GRANT_ACCESS_DECISION:
       "feature.poly_agent_grant.access_decision",
     POLY_RESEARCH_COPY_TRADE_PNL_COMPLETE:
       "feature.poly_research.copy_trade_pnl.complete",
+    POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE:
+      "feature.poly_research.copy_trade_investigation.complete",
   },
   logEvent: (...args: unknown[]) => logEvent(...args),
 }));
@@ -128,14 +131,22 @@ const requestFor = (billingAccountId: string) =>
     `http://localhost/api/v1/poly/research/copy-trade-pnl?billing_account_id=${billingAccountId}&mode=all`
   );
 
+function completionCalls(): Record<string, unknown>[] {
+  return logEvent.mock.calls
+    .filter(([, name]) => name === "feature.poly_research.copy_trade_pnl.complete")
+    .map(([, , fields]) => fields as Record<string, unknown>);
+}
+
 describe("GET /api/v1/poly/research/copy-trade-pnl authorization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    authorize.mockReset();
+    aggregate.mockReset();
     principal.id = "10000000-0000-4000-a000-000000000001";
   });
 
   it("returns the identical non-disclosing response for every denied account", async () => {
-    resolvePerformanceRead.mockResolvedValue(null);
+    authorize.mockResolvedValue(null);
 
     const unknownAccount = await GET(requestFor(ACCOUNT_A));
     const secondTenant = await GET(requestFor(ACCOUNT_B));
@@ -153,31 +164,31 @@ describe("GET /api/v1/poly/research/copy-trade-pnl authorization", () => {
     expect(accessCalls.map((call) => call[2])).toEqual([
       expect.objectContaining({
         outcome: "deny",
-        requiredScope: "performance:read",
+        requiredScope: "account:read",
         billingAccountId: ACCOUNT_A,
       }),
       expect.objectContaining({
         outcome: "deny",
-        requiredScope: "performance:read",
+        requiredScope: "account:read",
         billingAccountId: ACCOUNT_B,
       }),
     ]);
 
-    const completionCalls = logEvent.mock.calls.filter(
-      (call) => call[1] === "feature.poly_research.copy_trade_pnl.complete"
-    );
-    expect(completionCalls).toHaveLength(2);
-    for (const call of completionCalls) {
-      expect(call[2]).toEqual(
+    const completions = completionCalls();
+    expect(completions).toHaveLength(2);
+    for (const fields of completions) {
+      expect(fields).toEqual(
         expect.objectContaining({
           status: 404,
           outcome: "error",
           authorizationOutcome: "denied",
           errorCode: "not_found",
+          marketsCount: 0,
+          fillsCount: 0,
         })
       );
-      expect(JSON.stringify(call[2])).not.toContain(ACCOUNT_A);
-      expect(JSON.stringify(call[2])).not.toContain(ACCOUNT_B);
+      expect(JSON.stringify(fields)).not.toContain(ACCOUNT_A);
+      expect(JSON.stringify(fields)).not.toContain(ACCOUNT_B);
     }
   });
 
@@ -185,14 +196,11 @@ describe("GET /api/v1/poly/research/copy-trade-pnl authorization", () => {
     const payload = responseFor(ACCOUNT_A);
     aggregate.mockResolvedValue(payload);
 
-    resolvePerformanceRead.mockResolvedValueOnce({
-      accessKind: "owner",
-      grantId: null,
-    });
+    authorize.mockResolvedValueOnce({ accessKind: "owner", grantId: null });
     const ownerResponse = await GET(requestFor(ACCOUNT_A));
 
     principal.id = "10000000-0000-4000-a000-000000000002";
-    resolvePerformanceRead.mockResolvedValueOnce({
+    authorize.mockResolvedValueOnce({
       accessKind: "delegated",
       grantId: GRANT_ID,
     });
@@ -217,5 +225,71 @@ describe("GET /api/v1/poly/research/copy-trade-pnl authorization", () => {
       "all",
       {}
     );
+    expect(completionCalls()).toEqual([
+      expect.objectContaining({
+        status: 200,
+        outcome: "success",
+        authorizationOutcome: "allowed",
+        accessKind: "owner",
+        marketsCount: 1,
+        fillsCount: 1,
+      }),
+      expect.objectContaining({
+        status: 200,
+        authorizationOutcome: "allowed",
+        accessKind: "delegated",
+      }),
+    ]);
+  });
+
+  it("runs the aggregate in a read-only snapshot transaction", async () => {
+    aggregate.mockResolvedValue(responseFor(ACCOUNT_A));
+    authorize.mockResolvedValue({ accessKind: "owner", grantId: null });
+
+    await GET(requestFor(ACCOUNT_A));
+
+    const statements = tenantTransaction.execute.mock.calls.map((call) =>
+      JSON.stringify(call[0])
+    );
+    expect(
+      statements.some((statement) =>
+        statement.includes("REPEATABLE READ READ ONLY")
+      )
+    ).toBe(true);
+  });
+
+  it("rejects an unparseable query with one terminal event and no DB access", async () => {
+    const response = await GET(
+      new Request(
+        "http://localhost/api/v1/poly/research/copy-trade-pnl?billing_account_id=not-a-uuid"
+      )
+    );
+
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe("invalid_query");
+    expect(authorize).not.toHaveBeenCalled();
+    expect(aggregate).not.toHaveBeenCalled();
+    expect(completionCalls()).toEqual([
+      expect.objectContaining({
+        status: 400,
+        outcome: "error",
+        authorizationOutcome: "not_evaluated",
+        errorCode: "invalid_query",
+        marketsCount: 0,
+        fillsCount: 0,
+      }),
+    ]);
+  });
+
+  it("keeps one terminal event when the aggregate fails", async () => {
+    authorize.mockResolvedValue({ accessKind: "owner", grantId: null });
+    aggregate.mockRejectedValue(new Error("database unavailable"));
+
+    const response = await GET(requestFor(ACCOUNT_A));
+
+    expect(response.status).toBe(500);
+    expect(completionCalls()).toEqual([
+      expect.objectContaining({ status: 500, errorCode: "service_failed" }),
+    ]);
   });
 });
