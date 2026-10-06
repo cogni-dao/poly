@@ -53,7 +53,7 @@
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1177,
+    "targetOnlyFiles": 1173,
     "unresolved": 605,
     "byStatus": {
       "exact": 1124,
@@ -25416,18 +25416,6 @@
     },
     {
       "targetPath": ".gitignore"
-    },
-    {
-      "targetPath": ".playwright-cli/network-2026-10-06T03-06-21-463Z.log"
-    },
-    {
-      "targetPath": ".playwright-cli/network-2026-10-06T03-06-23-132Z.log"
-    },
-    {
-      "targetPath": ".playwright-cli/page-2026-10-06T03-06-01-374Z.yml"
-    },
-    {
-      "targetPath": ".playwright-cli/page-2026-10-06T03-06-14-919Z.yml"
     },
     {
       "targetPath": "AGENTS.md"
