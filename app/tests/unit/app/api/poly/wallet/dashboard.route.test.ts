@@ -52,9 +52,9 @@ vi.mock("@/features/capability-plane", () => ({
     invalid_output: 500,
     failed: 500,
   },
-  ACCOUNT_READ_TERMINAL_EVENTS: {
-    "poly.account.portfolio-snapshot.v1": "feature.poly_wallet_dashboard.complete",
-  },
+  // Declared app-locally rather than in ACCOUNT_READ_TERMINAL_EVENTS, which is
+  // keyed by the discoverable catalog's id union this capability sits outside.
+  PORTFOLIO_SNAPSHOT_TERMINAL_EVENT: "feature.poly_wallet_dashboard.complete",
   executeAccountRead: (...args: unknown[]) => execute(...args),
   portfolioSnapshotExtra: (...args: unknown[]) => extra(...args),
   portfolioSnapshotAccountReadHandler: (...args: unknown[]) =>

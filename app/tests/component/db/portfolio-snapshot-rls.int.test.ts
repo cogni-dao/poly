@@ -446,8 +446,9 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       expect(plan).toContain("SubPlan");
       expect(plan).toContain("billing_accounts_owner_user_id_unique");
       expect(plan).toContain("agent_capability_grants");
-      // Neither side of the OR may fall back to a scan.
-      expect(plan).not.toContain('"Relation Name":"agent_capability_grants","Alias":"grant_row","Node Type":"Seq Scan"');
+      // Neither side of the OR may fall back to a scan. One generic check, not
+      // a key-order-specific one: JSON key order is not a stable contract, so
+      // an assertion pinned to it can never fail and is worse than none.
       expect(plan).not.toContain('"Node Type":"Seq Scan"');
     });
   });
