@@ -49,20 +49,20 @@
     }
   ],
   "policySha256": "56f42128ff2b65d09c9440e7ce92ca4bd1a788f806ae96704ec08572b31cc19b",
-  "targetTreeDigest": "4dcd8819fc7911c354da1d2828393dbf18f613b8e781f95d42bebed2e85df8da",
+  "targetTreeDigest": "806f41fb3a8a02daa4174c9b274a227e8201c69365842f7c0404323110f39f80",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
-    "targetOnlyFiles": 1175,
-    "unresolved": 605,
+    "targetOnlyFiles": 1176,
+    "unresolved": 606,
     "byStatus": {
-      "exact": 1124,
+      "exact": 1123,
       "retired": 1,
-      "unresolved": 605,
+      "unresolved": 606,
       "upgraded": 6
     },
     "unresolvedByPriority": {
-      "P0": 21,
+      "P0": 22,
       "P1": 51,
       "P2": 281,
       "P3": 252
@@ -5079,13 +5079,13 @@
       "sourceBlob": "62c8b933dc05f0517758524f481c22957417536b",
       "sourcePath": "app/src/app/(app)/research/view.tsx",
       "targetPath": "app/src/app/(app)/research/view.tsx",
-      "targetBlob": "62c8b933dc05f0517758524f481c22957417536b",
+      "targetBlob": "558e19a7ce24eebda5af7e30c213cf2f1bc28d33",
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
       "deliveryGroup": null,
-      "status": "exact",
-      "unresolvedReason": null,
+      "status": "unresolved",
+      "unresolvedReason": "content_differs",
       "resolution": null
     },
     {
@@ -26241,6 +26241,9 @@
     },
     {
       "targetPath": "app/tests/unit/app/profile/agent-access-section.test.tsx"
+    },
+    {
+      "targetPath": "app/tests/unit/app/research/research-you-wallet.spec.tsx"
     },
     {
       "targetPath": "app/tests/unit/app/work/fetch-work-item.test.ts"
