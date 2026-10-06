@@ -8,8 +8,13 @@
  * Scope: Descriptors + the discovery projection. No transport, no DB.
  * Invariants: CAPABILITY_DEFINED_ONCE; GENERATED_DISCOVERY;
  *   SCOPE_ENUM_SINGLE_SOURCE; every descriptor is read-only and account-scoped.
+ *   CATALOG_GROWTH_IS_NOT_A_REGRESSION — assertions are structural (they hold
+ *   for every descriptor the catalog currently has) plus a stability floor for
+ *   the already-published names. Hard-coding the catalog size or an exhaustive
+ *   action list would make each new capability fail a test it did not break,
+ *   which is exactly what happened when task.1791070959 landed its two.
  * Side-effects: none
- * Links: task.1791070961
+ * Links: task.1791070961, task.1791070959
  * @internal
  */
 
@@ -52,11 +57,27 @@ describe("account-read descriptors", () => {
   });
 
   it("publishes a read-only, account-scoped, single-scope catalog", () => {
-    expect(POLY_ACCOUNT_READ_OPERATIONS).toHaveLength(3);
+    // The catalog GROWS as capabilities land (task.1791070959 added copy-setup,
+    // the attempt tape, and the inverted orders list). Asserting an exact
+    // length would make every new capability look like a regression, so this
+    // pins a floor plus the three originally-published ids, and then asserts
+    // the per-descriptor invariants over whatever the catalog currently holds.
+    expect(POLY_ACCOUNT_READ_OPERATIONS.length).toBeGreaterThanOrEqual(3);
+    const catalogIds = POLY_ACCOUNT_READ_OPERATIONS.map((entry) => entry.id);
+    expect(catalogIds).toEqual(
+      expect.arrayContaining([
+        polyAccountReadCopyTradePnlOperation.id,
+        polyAccountReadCopyTradeInvestigationOperation.id,
+        polyAccountReadCopyTradeInvestigationEvidenceOperation.id,
+      ])
+    );
     for (const operation of POLY_ACCOUNT_READ_OPERATIONS) {
       expect(operation.method).toBe("GET");
       expect(operation.readOnly).toBe(true);
-      expect(operation.accountFrom).toBe("input");
+      // `principal` is the other legal source and is STRICTLY MORE restrictive
+      // than `input` — the caller cannot name an account at all — so it is
+      // accepted here. What must never happen is a third, unvetted source.
+      expect(["input", "principal"]).toContain(operation.accountFrom);
       expect(operation.requiredScope).toBe("account:read");
       expect(AGENT_CAPABILITY_SCOPES).toContain(operation.requiredScope);
       expect(operation.path.startsWith("/api/v1/poly/")).toBe(true);
@@ -69,8 +90,12 @@ describe("account-read descriptors", () => {
 
   it("binds every catalog entry to a terminal feature event", () => {
     for (const operation of POLY_ACCOUNT_READ_OPERATIONS) {
+      // Namespace, not sub-namespace: capabilities outside `poly_research`
+      // (account reads, copy operations) emit `feature.poly_<area>.*`. The
+      // invariant is that EVERY catalog entry has a feature-namespaced
+      // terminal event, not that every entry is a research read.
       expect(ACCOUNT_READ_TERMINAL_EVENTS[operation.id]).toMatch(
-        /^feature\.poly_research\./
+        /^feature\.poly_[a-z_]+\./
       );
     }
   });
@@ -109,11 +134,19 @@ describe("discovery projection", () => {
   it("projects one action per descriptor, with both schemas derived", () => {
     const actions = accountReadDiscoveryActions(ORIGIN);
 
-    expect(Object.keys(actions).sort()).toEqual([
-      "readCopyTradeInvestigation",
-      "readCopyTradeInvestigationEvidence",
-      "readCopyTradePnl",
-    ]);
+    // Superset: the three original action names must keep existing, and every
+    // descriptor must get exactly one action, but new capabilities are allowed
+    // to add names. One action per descriptor is asserted by the count below.
+    expect(Object.keys(actions)).toEqual(
+      expect.arrayContaining([
+        "readCopyTradeInvestigation",
+        "readCopyTradeInvestigationEvidence",
+        "readCopyTradePnl",
+      ])
+    );
+    expect(Object.keys(actions)).toHaveLength(
+      POLY_ACCOUNT_READ_OPERATIONS.length
+    );
 
     for (const operation of POLY_ACCOUNT_READ_OPERATIONS) {
       const action = Object.values(actions).find(
@@ -137,7 +170,10 @@ describe("discovery projection", () => {
       endpoint: `${ORIGIN}/api/v1/poly/research/copy-trade-pnl`,
       auth: { type: "bearer", requiredScope: "account:read" },
     });
-    expect(accountReadDiscoveryEndpoints(ORIGIN)).toEqual({
+    // toMatchObject, not toEqual: these three published names must keep
+    // resolving to these three paths forever, but the map legitimately gains
+    // an entry per new capability.
+    expect(accountReadDiscoveryEndpoints(ORIGIN)).toMatchObject({
       copyTradePnl: `${ORIGIN}/api/v1/poly/research/copy-trade-pnl`,
       copyTradeInvestigation: `${ORIGIN}${polyAccountReadCopyTradeInvestigationOperation.path}`,
       copyTradeInvestigationEvidence: `${ORIGIN}${polyAccountReadCopyTradeInvestigationEvidenceOperation.path}`,
