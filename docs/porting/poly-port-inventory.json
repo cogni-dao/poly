@@ -48,27 +48,27 @@
       ]
     }
   ],
-  "policySha256": "56f42128ff2b65d09c9440e7ce92ca4bd1a788f806ae96704ec08572b31cc19b",
+  "policySha256": "9b181ac5914f0931291e70cfaa5e99c8bb68ad980822c0cb9eec2e160f2f53e6",
   "targetTreeDigest": "806f41fb3a8a02daa4174c9b274a227e8201c69365842f7c0404323110f39f80",
   "summary": {
     "sourceFiles": 1736,
     "mappedTargets": 1736,
     "targetOnlyFiles": 1176,
-    "unresolved": 606,
+    "unresolved": 605,
     "byStatus": {
       "exact": 1123,
       "retired": 1,
-      "unresolved": 606,
-      "upgraded": 6
+      "unresolved": 605,
+      "upgraded": 7
     },
     "unresolvedByPriority": {
-      "P0": 22,
+      "P0": 21,
       "P1": 51,
       "P2": 281,
       "P3": 252
     },
-    "missionFiles": 79,
-    "missionResolved": 7,
+    "missionFiles": 80,
+    "missionResolved": 8,
     "deliveryGroups": 7,
     "behavioralGates": 7,
     "unresolvedBehavioralGates": 7
@@ -157,6 +157,7 @@
         "app/src/app/(app)/credits/TradingReadinessSection.tsx",
         "app/src/app/(app)/credits/TradingWalletPanel.tsx",
         "app/src/app/(app)/dashboard/view.tsx",
+        "app/src/app/(app)/research/view.tsx",
         "app/src/features/layout/components/AppHeader.tsx",
         "app/src/features/layout/components/AppSidebar.tsx",
         "app/src/features/layout/components/AppTopBar.tsx",
@@ -166,8 +167,8 @@
         "app/src/features/wallet-analysis/components/WalletAnalysisView.tsx",
         "app/src/features/wallet-analysis/components/WalletProfitLossCard.tsx"
       ],
-      "files": 11,
-      "resolved": 0,
+      "files": 12,
+      "resolved": 1,
       "gates": 0,
       "gatesPassed": 0
     },
@@ -5083,10 +5084,54 @@
       "targetMode": "100644",
       "priority": "P0",
       "priorityLabel": "visible product parity",
-      "deliveryGroup": null,
-      "status": "unresolved",
-      "unresolvedReason": "content_differs",
-      "resolution": null
+      "deliveryGroup": "visible-p0",
+      "status": "upgraded",
+      "unresolvedReason": null,
+      "resolution": {
+        "rationale": "SELF_IS_TRADING_WALLET: the research 'You' overlay is keyed on the connected per-tenant trading wallet (funder_address from /api/v1/poly/wallet/status, gated on connected), never the signin EOA, which never trades and always probes as wallet_not_observed.",
+        "behaviorExpectation": "Disconnected users see no 'You' series and a connect CTA; connected users see 'You' as their trading wallet; the signin EOA is never queried by research surfaces.",
+        "behaviorGateIds": [],
+        "proofs": [
+          {
+            "environment": "candidate",
+            "buildSha": "eb5ce5adddd914cdbd8927473967de54dc182e85",
+            "observedAt": "2026-10-06T04:41:58Z",
+            "kind": "ui",
+            "reference": "https://github.com/cogni-dao/poly/pull/129#issuecomment-6009489119",
+            "expectedTargetDigest": "edcf4df676bfa8db0925fa662200602bc4dfe8de1f608c9da0815659d116ca46",
+            "apiRefs": [],
+            "uiRefs": [
+              "https://github.com/cogni-dao/poly/pull/129#issuecomment-6009489119"
+            ],
+            "lokiRefs": [],
+            "oracleRefs": [],
+            "notApplicable": [
+              "api",
+              "loki",
+              "oracle"
+            ]
+          },
+          {
+            "environment": "production",
+            "buildSha": "70d3243994dfd68bb34ea0ef4285bb6dc249705c",
+            "observedAt": "2026-10-06T04:33:00Z",
+            "kind": "passive-ui",
+            "reference": "https://github.com/cogni-dao/poly/pull/129#issuecomment-6009489119",
+            "expectedTargetDigest": "edcf4df676bfa8db0925fa662200602bc4dfe8de1f608c9da0815659d116ca46",
+            "apiRefs": [],
+            "uiRefs": [
+              "https://github.com/cogni-dao/poly/pull/129#issuecomment-6009489119"
+            ],
+            "lokiRefs": [],
+            "oracleRefs": [],
+            "notApplicable": [
+              "api",
+              "loki",
+              "oracle"
+            ]
+          }
+        ]
+      }
     },
     {
       "sourceMode": "100644",
