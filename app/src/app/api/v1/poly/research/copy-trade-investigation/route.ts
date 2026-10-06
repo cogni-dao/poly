@@ -75,8 +75,6 @@ export const GET = wrapRouteHandlerWithLogging(
           routeId: ctx.routeId,
           outcome: access ? "allow" : "deny",
           requiredScope: "performance:read",
-          principalId: sessionUser.id,
-          billingAccountId: parsedQuery.data.billing_account_id,
           ...(access
             ? {
                 accessKind: access.accessKind,
@@ -137,7 +135,6 @@ export const GET = wrapRouteHandlerWithLogging(
       authorizationOutcome: "allowed",
       accessKind: authorized.access.accessKind,
       evidenceCount,
-      conditionId: response.data.condition_id,
       complete: response.data.completeness.complete,
     });
     return NextResponse.json(response.data);
@@ -154,7 +151,6 @@ function logComplete(
     accessKind?: PerformanceReadAccess["accessKind"] | undefined;
     errorCode?: string | undefined;
     evidenceCount: number;
-    conditionId?: string | undefined;
     complete?: boolean | undefined;
   }
 ): void {
@@ -168,7 +164,6 @@ function logComplete(
     ...(fields.accessKind ? { accessKind: fields.accessKind } : {}),
     ...(fields.errorCode ? { errorCode: fields.errorCode } : {}),
     evidenceCount: fields.evidenceCount,
-    ...(fields.conditionId ? { conditionId: fields.conditionId } : {}),
     ...(fields.complete !== undefined ? { complete: fields.complete } : {}),
   });
 }

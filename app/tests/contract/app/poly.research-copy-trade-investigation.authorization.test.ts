@@ -3,14 +3,19 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { investigate, principal, resolvePerformanceRead, tenantTransaction } = vi.hoisted(
-  () => ({
+const {
+  investigate,
+  logEvent,
+  principal,
+  resolvePerformanceRead,
+  tenantTransaction,
+} = vi.hoisted(() => ({
     investigate: vi.fn(),
+    logEvent: vi.fn(),
     principal: { id: "10000000-0000-4000-a000-000000000001" },
     resolvePerformanceRead: vi.fn(),
     tenantTransaction: { kind: "app-role-transaction", execute: vi.fn() },
-  })
-);
+}));
 
 vi.mock("@/app/_lib/auth/session", () => ({ getSessionUser: vi.fn() }));
 vi.mock("@/bootstrap/container", () => ({ resolveAppDb: () => ({ kind: "app-role-db" }) }));
@@ -42,7 +47,7 @@ vi.mock("@/shared/observability", () => ({
     POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE:
       "feature.poly_research.copy_trade_investigation.complete",
   },
-  logEvent: vi.fn(),
+  logEvent,
 }));
 
 import { GET } from "@/app/api/v1/poly/research/copy-trade-investigation/route";
@@ -127,6 +132,19 @@ describe("copy-trade investigation authorization", () => {
     expect(await first.json()).toEqual({ error: "not_found" });
     expect(await second.json()).toEqual({ error: "not_found" });
     expect(investigate).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledWith(
+      {},
+      "feature.poly_research.copy_trade_investigation.complete",
+      expect.objectContaining({
+        reqId: "request-1",
+        status: 404,
+        outcome: "error",
+        authorizationOutcome: "denied",
+        errorCode: "not_found",
+      })
+    );
+    expect(JSON.stringify(logEvent.mock.calls)).not.toContain("billingAccountId");
+    expect(JSON.stringify(logEvent.mock.calls)).not.toContain("conditionId");
   });
 
   it("returns the identical payload for owner and delegate access", async () => {
@@ -148,5 +166,19 @@ describe("copy-trade investigation authorization", () => {
       condition_id: "condition-a",
       mode: "paper",
     });
+    expect(logEvent).toHaveBeenCalledWith(
+      {},
+      "feature.poly_research.copy_trade_investigation.complete",
+      expect.objectContaining({
+        reqId: "request-1",
+        status: 200,
+        outcome: "success",
+        authorizationOutcome: "allowed",
+        evidenceCount: 2,
+        complete: false,
+      })
+    );
+    expect(JSON.stringify(logEvent.mock.calls)).not.toContain(ACCOUNT_A);
+    expect(JSON.stringify(logEvent.mock.calls)).not.toContain("condition-a");
   });
 });
