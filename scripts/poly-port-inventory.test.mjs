@@ -17,6 +17,7 @@ import {
   buildInventoryFromSource,
   classifyEntry,
   completionProblems,
+  contractDigest,
   coveredTargetsDigest,
   deriveBehavioralGates,
   groupProblems,
@@ -50,6 +51,9 @@ const committedReport = readFileSync(
   path.join(repoRoot, "docs/porting/poly-port-inventory.md"),
   "utf8"
 );
+// Amendment 1: mission scope is policy-derived (additive growth allowed), never below the floor.
+const missionScopePaths = policy.deliveryGroups.flatMap((group) => group.sourcePaths);
+const ratifiedMissionScopeFloor = { P0: 28, P1: 51 };
 
 test("the committed v2 ledger verifies against the current worktree", () => {
   const result = spawnSync(
@@ -58,7 +62,7 @@ test("the committed v2 ledger verifies against the current worktree", () => {
     { cwd: repoRoot, encoding: "utf8" }
   );
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /mission \d+\/79/);
+  assert.match(result.stdout, new RegExp(`mission \\d+/${missionScopePaths.length}`));
 });
 
 test("source pin covers every path, mode, and blob", () => {
@@ -109,13 +113,23 @@ test("longest path mapping wins and duplicate targets are rejected", () => {
   );
 });
 
-test("the Pareto mission assigns 28 P0 and 51 P1 files exactly once", () => {
-  const assigned = policy.deliveryGroups.flatMap((group) => group.sourcePaths);
-  assert.equal(assigned.length, 79);
-  assert.equal(new Set(assigned).size, 79);
+test("the Pareto mission assigns every policy-scoped P0/P1 file exactly once", () => {
+  assert.equal(new Set(missionScopePaths).size, missionScopePaths.length);
+  const priorityByPath = new Map(
+    inventory.entries.map(({ sourcePath, priority }) => [sourcePath, priority])
+  );
+  const counts = { P0: 0, P1: 0 };
+  for (const sourcePath of missionScopePaths) {
+    const priority = priorityByPath.get(sourcePath);
+    assert.ok(priority === "P0" || priority === "P1", `${sourcePath} must be P0/P1`);
+    counts[priority] += 1;
+  }
+  assert.ok(counts.P0 >= ratifiedMissionScopeFloor.P0, "P0 scope below ratified floor");
+  assert.ok(counts.P1 >= ratifiedMissionScopeFloor.P1, "P1 scope below ratified floor");
   const mission = inventory.entries.filter(({ deliveryGroup }) => deliveryGroup);
-  assert.equal(mission.filter(({ priority }) => priority === "P0").length, 28);
-  assert.equal(mission.filter(({ priority }) => priority === "P1").length, 51);
+  assert.equal(mission.length, missionScopePaths.length);
+  assert.equal(mission.filter(({ priority }) => priority === "P0").length, counts.P0);
+  assert.equal(mission.filter(({ priority }) => priority === "P1").length, counts.P1);
   assert.equal(
     inventory.summary.missionResolved,
     mission.filter(({ status }) => status !== "unresolved").length
@@ -537,4 +551,77 @@ test("regression allows only an exact validated proof-refresh transition", () =>
     )
   );
   assert.ok(problems.includes("behavioral gate regressed: hub.work_item_create"));
+});
+
+test("regression allows strictly additive delivery-group growth within the inventory", () => {
+  const current = structuredClone(inventory);
+  const group = current.deliveryGroups.find(({ id }) => id === "visible-p0");
+  const addition = current.entries.find(
+    ({ deliveryGroup, priority }) =>
+      !deliveryGroup && (priority === "P0" || priority === "P1")
+  ).sourcePath;
+  group.sourcePaths = [...group.sourcePaths, addition];
+  const notes = [];
+  assert.deepEqual(regressionProblems(inventory, current, notes), []);
+  assert.ok(
+    notes.includes(`delivery group sourcePaths grew additively: visible-p0 (+${addition})`)
+  );
+});
+
+test("regression still rejects removals, renames, and out-of-inventory additions", () => {
+  const removal = structuredClone(inventory);
+  const removalGroup = removal.deliveryGroups.find(({ id }) => id === "visible-p0");
+  const [removedPath] = removalGroup.sourcePaths.splice(0, 1);
+  assert.ok(
+    regressionProblems(inventory, removal).some(
+      (problem) =>
+        problem.includes("sourcePaths removed") && problem.includes(removedPath)
+    )
+  );
+
+  const rename = structuredClone(inventory);
+  const renameGroup = rename.deliveryGroups.find(({ id }) => id === "visible-p0");
+  const replacement = rename.entries.find(({ deliveryGroup }) => !deliveryGroup).sourcePath;
+  renameGroup.sourcePaths = [...renameGroup.sourcePaths.slice(1), replacement];
+  assert.ok(
+    regressionProblems(inventory, rename).some((problem) =>
+      problem.includes("sourcePaths removed")
+    )
+  );
+
+  const outside = structuredClone(inventory);
+  const outsideGroup = outside.deliveryGroups.find(({ id }) => id === "visible-p0");
+  outsideGroup.sourcePaths = [...outsideGroup.sourcePaths, "not/in/the/inventory.ts"];
+  assert.ok(
+    regressionProblems(inventory, outside).some((problem) =>
+      problem.includes("outside the pinned inventory")
+    )
+  );
+});
+
+test("a ratified amendment advances the contract lineage without tripping regression", () => {
+  const base = structuredClone(inventory);
+  base.contract.sha256 =
+    "196fb0e9863d53823db200479d940d9d7d3db93d7d221c5ef9ca793eaf0431ba";
+  const notes = [];
+  const problems = regressionProblems(base, inventory, notes);
+  assert.ok(!problems.some((problem) => problem.includes("contract")));
+  assert.ok(notes.includes("contract advanced along the ratified amendment lineage"));
+});
+
+test("only amendment-exempt regions are outside the frozen contract digest", () => {
+  const contract = readFileSync(
+    path.join(repoRoot, policy.contract.path),
+    "utf8"
+  );
+  assert.equal(contractDigest(contract), policy.contract.sha256);
+  const scopeGrown = contract.replace("| `visible-p0` | 11 | 0 |", "| `visible-p0` | 12 | 0 |");
+  assert.notEqual(scopeGrown, contract);
+  assert.equal(contractDigest(scopeGrown), policy.contract.sha256);
+  const weakened = contract.replace("## Locked outcome", "## Loosened outcome");
+  assert.notEqual(contractDigest(weakened), policy.contract.sha256);
+  assert.throws(
+    () => contractDigest("<!-- amendment-exempt:begin -->\nnever closed"),
+    /Unterminated amendment-exempt/
+  );
 });
