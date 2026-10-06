@@ -246,8 +246,12 @@ describe("executeAccountRead dispatch order", () => {
   // two accounts would merge into one response.
   it("passes the principal-resolved account to the handler, not just to authorize", async () => {
     const handler = vi.fn(async () => ({ rows: ["a"] }));
-    resolveSubjectAccountId.mockResolvedValue({ kind: "resolved", accountId: ACCOUNT });
+    // reset() clears the resolver mock, so it must come BEFORE arming it.
     reset(DELEGATE);
+    resolveSubjectAccountId.mockResolvedValue({
+      kind: "resolved",
+      accountId: ACCOUNT,
+    });
 
     await run({ handler, operation: principalOperation, rawInput: {} });
 
