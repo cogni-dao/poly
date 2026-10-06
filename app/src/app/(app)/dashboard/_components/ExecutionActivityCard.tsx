@@ -28,11 +28,7 @@
 
 "use client";
 
-import type {
-  WalletDashboardComparisonCoverage,
-  WalletDashboardComparisonCoverageLeaf,
-  WalletExecutionMarketGroup,
-} from "@cogni/poly-node-contracts";
+import type { WalletExecutionMarketGroup } from "@cogni/poly-node-contracts";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactElement,
@@ -77,15 +73,6 @@ const LIVE_POSITION_UNAVAILABLE_CODES = new Set([
 const CLOSED_POSITION_UNAVAILABLE_CODES = new Set([
   "history_unavailable",
 ]);
-
-const UNAVAILABLE_COMPARISON_COVERAGE = {
-  eligible: null,
-  comparable: null,
-  dropped: null,
-  sampled: null,
-  complete: false,
-  reasons: ["source_unavailable"],
-} satisfies WalletDashboardComparisonCoverageLeaf;
 
 export function ExecutionActivityCard(): ReactElement {
   const queryClient = useQueryClient();
@@ -253,7 +240,6 @@ export function ExecutionActivityCard(): ReactElement {
             closedPositionCount={executionData?.closed_position_count}
             closedPositions={closedPositions}
             groups={executionData?.market_groups ?? []}
-            comparisonCoverage={executionData?.comparisonCoverage}
             warnings={executionData?.warnings ?? []}
             isLoading={isExecutionLoading}
             isError={isExecutionError}
@@ -265,7 +251,6 @@ export function ExecutionActivityCard(): ReactElement {
         ) : (
           <MarketGroupsPanel
             groups={executionData?.market_groups ?? []}
-            comparisonCoverage={executionData?.comparisonCoverage}
             warnings={executionData?.warnings ?? []}
             isLoading={isExecutionLoading}
             isError={isExecutionError}
@@ -278,13 +263,11 @@ export function ExecutionActivityCard(): ReactElement {
 
 function MarketGroupsPanel({
   groups,
-  comparisonCoverage,
   warnings,
   isLoading,
   isError,
 }: {
   groups: readonly WalletExecutionMarketGroup[];
-  comparisonCoverage?: WalletDashboardComparisonCoverage | undefined;
   warnings: readonly { code: string; message: string }[];
   isLoading: boolean;
   isError: boolean;
@@ -326,16 +309,10 @@ function MarketGroupsPanel({
                 Showing a bounded market-comparison preview.
               </p>
             ) : null}
-            {!isLoading ? (
-              <MarketsDeltaDistribution
-                groups={groups}
-                statusFilter={statusFilter}
-                coverage={
-                  comparisonCoverage?.markets[statusFilter] ??
-                  UNAVAILABLE_COMPARISON_COVERAGE
-                }
-              />
-            ) : null}
+            <MarketsDeltaDistribution
+              groups={groups}
+              statusFilter={statusFilter}
+            />
             <MarketsTable
               groups={groups}
               isLoading={isLoading}
@@ -355,7 +332,6 @@ function PositionsPanel({
   closedPositionCount,
   closedPositions,
   groups,
-  comparisonCoverage,
   warnings,
   isLoading,
   isError,
@@ -369,7 +345,6 @@ function PositionsPanel({
   closedPositionCount?: number | null | undefined;
   closedPositions: readonly WalletPosition[];
   groups: readonly WalletExecutionMarketGroup[];
-  comparisonCoverage?: WalletDashboardComparisonCoverage | undefined;
   warnings: readonly { code: string; message: string }[];
   isLoading: boolean;
   isError: boolean;
@@ -443,15 +418,11 @@ function PositionsPanel({
             {positionActionError}
           </p>
         ) : null}
-        {!selectedInventoryUnavailable && !isLoading ? (
+        {!selectedInventoryUnavailable ? (
           <PositionsDeltaDistribution
             positions={positions}
             groups={groups}
             statusFilter={statusFilter}
-            coverage={
-              comparisonCoverage?.positions[statusFilter] ??
-              UNAVAILABLE_COMPARISON_COVERAGE
-            }
           />
         ) : null}
         <div className="flex flex-wrap items-center gap-2">
