@@ -6,8 +6,11 @@
  * Purpose: Prove the recurring comparison prewarm
  *   (fix/comparison-per-wallet-cache): each tick warms EXACTLY the two fixed
  *   research targets (RN1, swisstony) through the per-wallet comparison cache
- *   at the board-default 1W interval; the cadence stays below the cache's
- *   fresh window; stop() halts future ticks.
+ *   at the board-default 1W interval ON THE BACKGROUND BUDGET LANE
+ *   (fix/prewarm-budget-split — prewarm computes must complete un-degraded to
+ *   populate the cache); the cadence stays below the cache's fresh window;
+ *   each tick logs a tick-scoped completion event (prod Loki proof); stop()
+ *   halts future ticks.
  * Scope: Job wiring tests with the research-read-cache module mocked and fake
  *   timers. No DB, no HTTP.
  * Invariants under test: RECURRING_COMPARISON_PREWARM, ONE_SHOT_BOOT_REST,
@@ -125,6 +128,49 @@ describe("research prewarm job: recurring comparison re-warm", () => {
     expect(
       comparisonCalls().every(([, interval]) => interval === "1W")
     ).toBe(true);
+    stop();
+  });
+
+  it("every comparison warm (boot and tick) runs on the background budget lane", async () => {
+    const stop = startResearchPrewarm({
+      db: {} as never,
+      logger: makeLogger() as never,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(COMPARISON_PREWARM_POLL_MS);
+
+    // fix/prewarm-budget-split: a request-lane warm would burn the 8s budget
+    // on a cold target and (DEGRADED_NOT_PINNED) cache nothing, forever.
+    expect(comparisonMock.mock.calls.length).toBeGreaterThan(0);
+    expect(
+      comparisonMock.mock.calls.every(
+        (call) => call[3]?.lane === "background"
+      )
+    ).toBe(true);
+    stop();
+  });
+
+  it("each tick logs a tick-scoped completion event (prod Loki proof the loop is alive)", async () => {
+    const logger = makeLogger();
+    const stop = startResearchPrewarm({
+      db: {} as never,
+      logger: logger as never,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(logger.info).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: "poly.research-prewarm.tick_complete" }),
+      expect.any(String)
+    );
+
+    await vi.advanceTimersByTimeAsync(COMPARISON_PREWARM_POLL_MS);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "poly.research-prewarm.tick_complete",
+        ok: PREWARM_WALLETS.length,
+        failed: 0,
+      }),
+      expect.any(String)
+    );
     stop();
   });
 

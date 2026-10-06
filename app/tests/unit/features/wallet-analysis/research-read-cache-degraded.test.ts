@@ -30,12 +30,24 @@ import {
   comparisonWalletCacheKey,
   comparisonWalletIsCacheable,
   getTraderComparisonCached,
+  researchComparisonHealsInFlight,
 } from "@/features/wallet-analysis/server/research-read-cache";
 import { TRADER_COMPARISON_BUDGET_WARNING_CODE } from "@/features/wallet-analysis/server/trader-comparison-service";
 
+// Background (heal) budget kept tiny so the heal a burn kicks
+// (fix/prewarm-budget-split) settles fast against the hanging Db and the
+// guard drains between phases.
 vi.mock("@/shared/env/server-env", () => ({
-  serverEnv: () => ({ POLY_RESEARCH_WALLET_BUDGET_MS: 40 }),
+  serverEnv: () => ({
+    POLY_RESEARCH_WALLET_BUDGET_MS: 40,
+    POLY_RESEARCH_PREWARM_BUDGET_MS: 60,
+  }),
 }));
+
+/** Wait for the post-burn background heal to settle (evicted or cached). */
+async function healsDrained(): Promise<void> {
+  await vi.waitFor(() => expect(researchComparisonHealsInFlight()).toBe(0));
+}
 
 const RN1 = "0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
 const SWISSTONY = "0x204f72f35326db932158cba6adff0b9a1da95e14";
@@ -87,6 +99,10 @@ describe("trader-comparison per-wallet SWR cache", () => {
         code: TRADER_COMPARISON_BUDGET_WARNING_CODE,
       })
     );
+
+    // Let the burn-kicked background heal settle (it degrades against the
+    // hanging Db and is evicted) so the next read computes rather than joins.
+    await healsDrained();
 
     // Same per-wallet cache key. Were the degraded result pinned, this would
     // return it verbatim; instead the recovered backend is consulted and a
@@ -160,6 +176,9 @@ describe("trader-comparison per-wallet SWR cache", () => {
         code: TRADER_COMPARISON_BUDGET_WARNING_CODE,
       })
     );
+
+    // Let swisstony's burn-kicked heal settle (degrades on the hanging Db).
+    await healsDrained();
 
     // The degraded swisstony slot was not pinned: a recovered backend fills it.
     const recovered = await getTraderComparisonCached(

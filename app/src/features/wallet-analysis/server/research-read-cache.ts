@@ -47,6 +47,29 @@
  *     services are rollup-backed and fast; this layer is retained for
  *     request coalescing + burst absorption, not as the latency fix. Safe to
  *     shrink TTLs or delete once candidate timings confirm sub-second reads.
+ *   - BUDGET_LANES (fix/prewarm-budget-split): the per-wallet comparison
+ *     compute budget is CALLER-supplied via a lane. The request lane keeps the
+ *     env default (`POLY_RESEARCH_WALLET_BUDGET_MS`, 8s — degrade+serve
+ *     semantics unchanged); the background lane (prewarm tick, post-burn heal)
+ *     uses the generous `POLY_RESEARCH_PREWARM_BUDGET_MS` (45s) so background
+ *     computes COMPLETE un-degraded and actually populate this cache. Prod
+ *     4ceff2e1 proved a single budget is self-defeating: cold computes that
+ *     can't beat 8s are degraded, degraded is never cached
+ *     (DEGRADED_NOT_PINNED), so prewarm burned the same budget forever and
+ *     nothing was ever warm.
+ *   - BACKGROUND_HEAL (fix/prewarm-budget-split): a request-lane budget burn
+ *     kicks ONE background-lane recompute through the same per-wallet cache
+ *     key — the first user sees the degraded partial-200 fast, the cache heals
+ *     within the background budget, the next hit is warm. Single-flight: a
+ *     module-scope per-key guard skips the kick while a heal is already in
+ *     flight, so concurrent burns don't stack computes. A background-lane
+ *     result that STILL burns never re-kicks (no heal loop).
+ *   - REQUEST_SETTLE_CEILING (fix/prewarm-budget-split): the request lane
+ *     races its cache read against the request budget, because joining the
+ *     coalesced in-flight compute of a background-lane caller would otherwise
+ *     make a user wait up to the 45s background budget. On ceiling, the caller
+ *     gets the same degraded shape (`wallet_budget_exceeded`, served, never
+ *     cached) while the background compute keeps running and lands in cache.
  * Side-effects: none of its own (delegates to `coalesce.ts` module-scope Map).
  * Links: src/features/wallet-analysis/server/coalesce.ts,
  *   src/bootstrap/jobs/research-prewarm.job.ts, work/items/bug.5012
@@ -185,23 +208,44 @@ export function comparisonWalletIsCacheable(
 }
 
 /**
- * SWR-cached per-wallet comparison aggregate, keyed per (wallet, interval) —
- * the COMPARISON_PER_WALLET_CACHE unit. Applies the env-tunable per-wallet
- * time budget (`POLY_RESEARCH_WALLET_BUDGET_MS`) so a slow wallet degrades to
- * a warning result instead of an edge 520; budget-degraded results are served
- * but never cached (`comparisonWalletIsCacheable`, DEGRADED_NOT_PINNED) — on
- * a background refresh the prior complete value is kept instead.
+ * Which budget a per-wallet comparison compute runs under (BUDGET_LANES):
+ * `"request"` = env `POLY_RESEARCH_WALLET_BUDGET_MS` (8s, user-facing SLA);
+ * `"background"` = env `POLY_RESEARCH_PREWARM_BUDGET_MS` (45s, prewarm/heal —
+ * completes un-degraded so the cache actually gets populated).
  */
-export async function getComparisonWalletCached(
+export type ComparisonBudgetLane = "request" | "background";
+
+/**
+ * BACKGROUND_HEAL single-flight guard: cache keys with a background-lane
+ * recompute currently in flight. Concurrent request-lane burns for the same
+ * key skip the kick instead of stacking computes.
+ */
+const comparisonHealsInFlight = new Set<string>();
+
+/** Test-only: number of background heals currently in flight. */
+export function researchComparisonHealsInFlight(): number {
+  return comparisonHealsInFlight.size;
+}
+
+function comparisonBudgetMsFor(lane: ComparisonBudgetLane): number {
+  const env = serverEnv();
+  return lane === "background"
+    ? env.POLY_RESEARCH_PREWARM_BUDGET_MS
+    : env.POLY_RESEARCH_WALLET_BUDGET_MS;
+}
+
+/** The shared SWR read: one coalesced compute per key; the lane picks the budget the COMPUTE runs under. */
+function fetchComparisonWallet(
   db: Db,
   address: string,
-  interval: PolyWalletOverviewInterval
+  interval: PolyWalletOverviewInterval,
+  lane: ComparisonBudgetLane
 ): Promise<TraderComparisonWalletResult> {
   return coalesceSwr(
     comparisonWalletCacheKey(address, interval),
     () =>
       computeTraderComparisonWallet(db, address, interval, {
-        perWalletBudgetMs: serverEnv().POLY_RESEARCH_WALLET_BUDGET_MS,
+        perWalletBudgetMs: comparisonBudgetMsFor(lane),
       }),
     {
       freshMs: RESEARCH_READ_FRESH_MS,
@@ -209,6 +253,101 @@ export async function getComparisonWalletCached(
       shouldCache: comparisonWalletIsCacheable,
     }
   );
+}
+
+/** The degraded shape a request-lane caller gets when the settle ceiling fires (same contract as the compute's own budget burn). */
+function budgetExceededResult(
+  address: string,
+  budgetMs: number
+): TraderComparisonWalletResult {
+  const addr = address.toLowerCase() as `0x${string}`;
+  return {
+    address: addr,
+    capturedAt: new Date().toISOString(),
+    trader: null,
+    warnings: [
+      {
+        wallet: addr,
+        code: TRADER_COMPARISON_BUDGET_WARNING_CODE,
+        message: `Aggregation for ${addr} exceeded the ${budgetMs}ms request budget (background compute in flight) and was omitted from this response. Retry shortly — the cache is being healed in the background.`,
+      },
+    ],
+  };
+}
+
+/**
+ * BACKGROUND_HEAL kick: one single-flight background-lane recompute through
+ * the same per-wallet cache key. Skipped while a heal for the key is already
+ * in flight; a heal that still burns is served-not-cached by the shared
+ * `shouldCache` gate and does NOT re-kick (no loop). Failures evict
+ * (FAILED_FETCH_NOT_CACHED) and are swallowed — the next request retries.
+ */
+function kickComparisonBackgroundHeal(
+  db: Db,
+  address: string,
+  interval: PolyWalletOverviewInterval
+): void {
+  const key = comparisonWalletCacheKey(address, interval);
+  if (comparisonHealsInFlight.has(key)) return;
+  comparisonHealsInFlight.add(key);
+  void fetchComparisonWallet(db, address, interval, "background")
+    .catch(() => {
+      // BEST_EFFORT: a failed heal evicted its entry; requests retry cold.
+    })
+    .finally(() => {
+      comparisonHealsInFlight.delete(key);
+    });
+}
+
+/**
+ * SWR-cached per-wallet comparison aggregate, keyed per (wallet, interval) —
+ * the COMPARISON_PER_WALLET_CACHE unit. The caller's lane supplies the compute
+ * budget (BUDGET_LANES); budget-degraded results are served but never cached
+ * (`comparisonWalletIsCacheable`, DEGRADED_NOT_PINNED) — on a background
+ * refresh the prior complete value is kept instead.
+ *
+ * Request lane extras:
+ *  - REQUEST_SETTLE_CEILING: the read itself races the request budget, so a
+ *    caller that coalesces onto a background-lane compute still settles within
+ *    the request SLA (degraded) instead of waiting out the 45s budget.
+ *  - BACKGROUND_HEAL: any budget-degraded result kicks one single-flight
+ *    background recompute so the cache heals without a user ever waiting on it.
+ */
+export async function getComparisonWalletCached(
+  db: Db,
+  address: string,
+  interval: PolyWalletOverviewInterval,
+  opts: { lane?: ComparisonBudgetLane } = {}
+): Promise<TraderComparisonWalletResult> {
+  const lane = opts.lane ?? "request";
+  const read = fetchComparisonWallet(db, address, interval, lane);
+  if (lane === "background") {
+    return read;
+  }
+
+  const requestBudgetMs = serverEnv().POLY_RESEARCH_WALLET_BUDGET_MS;
+  const result = await new Promise<TraderComparisonWalletResult>(
+    (resolve, reject) => {
+      const timer = setTimeout(() => {
+        resolve(budgetExceededResult(address, requestBudgetMs));
+      }, requestBudgetMs);
+      timer.unref?.();
+      read.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err: unknown) => {
+          clearTimeout(timer);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      );
+    }
+  );
+  if (!comparisonWalletIsCacheable(result)) {
+    kickComparisonBackgroundHeal(db, address, interval);
+  }
+  return result;
 }
 
 /**

@@ -38,3 +38,25 @@ describe("POLY_RESEARCH_WALLET_BUDGET_MS default", () => {
     ).toBe(25_000);
   });
 });
+
+describe("POLY_RESEARCH_PREWARM_BUDGET_MS default (fix/prewarm-budget-split)", () => {
+  it("background-lane default is 45s so prewarm/heal computes complete un-degraded", () => {
+    expect(
+      serverSchema.shape.POLY_RESEARCH_PREWARM_BUDGET_MS.parse(undefined)
+    ).toBe(45_000);
+  });
+
+  it("background default exceeds the request default — a background budget at or below the request budget recreates the self-defeating never-cached loop (prod 4ceff2e1)", () => {
+    expect(
+      serverSchema.shape.POLY_RESEARCH_PREWARM_BUDGET_MS.parse(undefined)
+    ).toBeGreaterThan(
+      serverSchema.shape.POLY_RESEARCH_WALLET_BUDGET_MS.parse(undefined)
+    );
+  });
+
+  it("explicit env values still override the default", () => {
+    expect(
+      serverSchema.shape.POLY_RESEARCH_PREWARM_BUDGET_MS.parse("60000")
+    ).toBe(60_000);
+  });
+});
