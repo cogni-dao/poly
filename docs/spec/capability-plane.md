@@ -163,11 +163,14 @@ New files are free (`targetOnly`). Two concrete consequences:
 2. **Graph tool policy is declared app-locally.** All 14 tracked files under `graphs/` are
    `exact` — source and target blobs identical — including
    `graphs/src/graphs/poly-brain/tools.ts` and `graphs/src/index.ts`. These are **P2**, so editing
-   them does not trip the P0/P1 regression leg; the binding force is `verify` (a stale inventory
-   fails CI, making the drift explicit in review) *plus* `NODE_RUNTIME_CATALOG_BOUNDARY`
+   them does **not** fail CI: the regression leg is P0/P1-only (`:1223-1233`), and
+   `poly:port:verify` only prints a summary and returns — it does not fail on unresolved entries
+   (`:1306-1312`). Editing a P2 `exact` file flips its inventory status, which shows up in the
+   diff for review, but no gate blocks it. The binding force here is therefore
+   `NODE_RUNTIME_CATALOG_BOUNDARY` alone
    ([langgraph-patterns.md:49](langgraph-patterns.md)), which independently puts app runtime
-   policy in the node-local catalog. Tool policy is therefore declared in the **app-local node
-   catalog**: the freeze and the boundary invariant point the same direction.
+   policy in the node-local catalog. Tool policy is declared in the **app-local node catalog**
+   on that architectural ground — not because `graphs/` is uneditable.
 
 Priority matters when judging how hard a freeze bites: `app/src/bootstrap/container.ts` is
 **P0 / `upgraded`** (digest-pinned, delivery group `hub-control-plane`) and
