@@ -4,8 +4,8 @@ type: guide
 title: Candidate Auth Bootstrap — Authed Playwright via CDP Attach
 status: draft
 trust: draft
-summary: Capture a reusable signed-in browser session for this node's candidate-a env via a dedicated Chrome profile + MetaMask + CDP-attach export, so AI agents can drive authed Playwright flows without re-prompting signin.
-read_when: Setting up the candidate-auth Chrome profile, capturing a new env's storageState, or troubleshooting why a captured session no longer authenticates
+summary: Mint an authed session for any env headlessly via scripts/dev/siwe-login.mjs (no browser, no MetaMask), export Playwright storageState, and drive authed Playwright flows. MetaMask + CDP-attach capture remains as the fallback for human-owned accounts.
+read_when: An agent needs an authed browser/API session for candidate or prod, capturing a new env's storageState, or troubleshooting why a captured session no longer authenticates
 owner: derekg1729
 created: 2026-06-18
 verified: null
@@ -17,6 +17,46 @@ tags: [auth, playwright, candidate-a, validate, metamask]
 > Goal: capture a reusable signed-in browser session for `<node>-test.cognidao.org` (this node's candidate-a env) so AI agents (Claude, qa-agent) can drive authed Playwright flows without re-prompting MetaMask on every run.
 >
 > Human effort: one-time MetaMask install into a dedicated Chrome profile (~2 min), then 1–2 clicks to sign in per env. Recapture when the session cookie expires (days–weeks).
+
+## Headless SIWE login (no MetaMask) — PRIMARY PATH
+
+Fully headless, zero human effort, works against any env. `scripts/dev/siwe-login.mjs` performs the whole SIWE handshake with plain `fetch` + viem signing — no browser involved:
+
+1. `GET {base}/api/auth/csrf` → CSRF token (the server uses this same token as the SIWE **nonce**; the CSRF cookie must travel with the callback POST)
+2. Build the EIP-4361 message: `domain` = host of the env's `NEXTAUTH_URL`, `uri` = origin, `chainId` = **8453** (Base — the app's single active chain, `packages/node-shared` `ACTIVE_CHAIN_KEY`), `nonce` = csrfToken
+3. Sign with a viem local account, `POST {base}/api/auth/callback/credentials` (provider id is `credentials`, not `siwe`/`ethereum` — see `app/src/auth.ts:149`)
+4. Verify `GET /api/auth/session` returns a user, then export Playwright `storageState` (including the httpOnly `__Secure-next-auth.session-token`) to `.local-auth/{slug}.storageState.json`
+
+```bash
+# throwaway key (default) — mints a brand-new empty user, harmless
+node scripts/dev/siwe-login.mjs https://poly-test.cognidao.org --slug candidate-a-poly
+
+# prod works identically
+node scripts/dev/siwe-login.mjs https://poly.cognidao.org --slug prod-poly
+
+# re-login as a specific (agent-owned) wallet
+node scripts/dev/siwe-login.mjs https://poly-test.cognidao.org --slug candidate-a-poly --pk 0x<private-key>
+
+# viem is an app/ workspace dep; if this checkout has no node_modules, point at one that does
+SIWE_VIEM_DIR=/path/to/installed-checkout/app node scripts/dev/siwe-login.mjs ...
+```
+
+Prints `userId` + `walletAddress` on success. The generated private key is never persisted — a throwaway session authenticates a fresh empty user, which is exactly what page-rendering / API-shape validation needs. For flows that require a *specific* human-owned account (funded wallet, admin/approver), use the MetaMask fallback below or `--pk` with an agent-owned key from a secrets store. **Never commit keys or storageState — `.local-auth/` is gitignored.**
+
+Then drive the authed page with `playwright-cli`:
+
+```bash
+playwright-cli -s=validate open
+playwright-cli -s=validate state-load .local-auth/candidate-a-poly.storageState.json
+playwright-cli -s=validate goto https://poly-test.cognidao.org/research
+playwright-cli -s=validate snapshot
+playwright-cli -s=validate network   # lists the /api/v1/poly/* calls the page fired
+playwright-cli -s=validate close
+```
+
+> **bug.5059 verdict (measured 2026-10-05, playwright-cli 1.59.0-alpha-1771104257000):** `state-load` does **NOT** drop httpOnly cookies anymore — all three httpOnly NextAuth cookies (incl. the session token) survived load and the research page rendered authenticated. If a future playwright-cli regresses, the workaround is to inject the session cookie explicitly: `playwright-cli cookie-set __Secure-next-auth.session-token <value> --domain=<host> --httpOnly --secure`, or `context.addCookies(state.cookies)` from a `@playwright/test` script.
+
+Everything below is the **fallback** path for sessions that must belong to a human-owned MetaMask account.
 
 ## Why this exists
 
@@ -159,5 +199,5 @@ Notes:
 ## Scope / non-goals
 
 - Per-developer primitive. Multi-tenant / credential-broker flows for production agents are tracked separately.
-- No headless capture — signin is inherently interactive.
+- Headless capture is now the primary path (see top section) — the interactive MetaMask flow remains only for human-owned accounts.
 - Not for CI — CI uses API-key or service-account auth, not SIWE.
