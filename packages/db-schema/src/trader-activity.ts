@@ -162,6 +162,16 @@ export const polyTraderFills = pgTable(
       table.createdAt,
       table.id
     ),
+    // Identity-safe dashboard fill reads bind one wallet UUID plus canonical
+    // condition/token keys before applying the observation window. Keep the
+    // equality columns ahead of the range so lower(condition_id) remains an
+    // index lookup instead of reviving the full-wallet scan fixed by 0063.
+    index("poly_trader_fills_wallet_condition_token_observed_lower_idx").on(
+      table.traderWalletId,
+      sql`lower(${table.conditionId})`,
+      table.tokenId,
+      table.observedAt
+    ),
   ]
 );
 
@@ -242,6 +252,15 @@ export const polyTraderFillRollupsDaily = pgTable(
     index("poly_trader_fill_rollups_daily_wallet_token_idx").on(
       table.traderWalletId,
       table.tokenId
+    ),
+    // Dashboard lifetime rollups use canonical condition identity and exact
+    // token keys. Equality prefixes precede the day range so a mixed-case
+    // condition does not force a full per-wallet rollup scan.
+    index("poly_trader_fill_rollups_wallet_condition_token_day_lower_idx").on(
+      table.traderWalletId,
+      sql`lower(${table.conditionId})`,
+      table.tokenId,
+      table.day
     ),
   ]
 );
@@ -339,6 +358,15 @@ export const polyTraderPositionSnapshots = pgTable(
     index("poly_trader_position_snapshots_market_latest_idx").on(
       table.conditionId,
       table.traderWalletId,
+      table.tokenId,
+      table.capturedAt.desc()
+    ),
+    // Identity-safe dashboard comparison reads bind active target wallet UUIDs
+    // and canonical condition/token keys, then select the newest saved row.
+    // This is the lower(condition_id) counterpart to `_market_latest_idx`.
+    index("poly_trader_position_snapshots_wallet_condition_latest_lc_idx").on(
+      table.traderWalletId,
+      sql`lower(${table.conditionId})`,
       table.tokenId,
       table.capturedAt.desc()
     ),

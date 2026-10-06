@@ -23,6 +23,7 @@ import {
   unavailableComparisonCoverage,
   type BoundedMarketExposureRead,
   type ComparisonCoverageCountRow,
+  type ComparisonReadDiagnostics,
 } from "./market-exposure-service";
 import {
   applyRealizedPnl,
@@ -75,7 +76,7 @@ type ClosedRow = {
 
 type DailyCountRow = { day: string | null; n: string | number | null };
 
-export type WalletDashboardReadDiagnostics = {
+export type WalletDashboardReadDiagnostics = ComparisonReadDiagnostics & {
   comparisonPath?:
     | "cache_hit"
     | "unknown"
@@ -85,8 +86,6 @@ export type WalletDashboardReadDiagnostics = {
     | "bundle_fallback";
   comparisonIdentityMs?: number;
   comparisonBundleTotalMs?: number;
-  comparisonBundleQueryMs?: number;
-  comparisonFillRollupMs?: number;
   comparisonFallbackMarketMs?: number;
 };
 
@@ -447,21 +446,27 @@ export async function readTenantWalletDashboardIn(
   } else {
     recordDashboardDiagnostic(input.diagnostics, "comparisonPath", "bundle");
     const bundleStartedAt = performance.now();
-    const bundleRead = await optionalRead(db, (savepoint) =>
-      buildBoundedMarketExposureWithCoverage({
-        db: savepoint,
-        billingAccountId: input.billingAccountId,
-        walletAddress: address,
-        livePositions: marketLivePositions,
-        closedPositions: marketClosedPositions,
-        ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
-      })
-    );
-    recordDashboardDiagnostic(
-      input.diagnostics,
-      "comparisonBundleTotalMs",
-      Math.max(0, Math.round(performance.now() - bundleStartedAt))
-    );
+    let bundleRead: OptionalRead<Awaited<
+      ReturnType<typeof buildBoundedMarketExposureWithCoverage>
+    >>;
+    try {
+      bundleRead = await optionalRead(db, (savepoint) =>
+        buildBoundedMarketExposureWithCoverage({
+          db: savepoint,
+          billingAccountId: input.billingAccountId,
+          walletAddress: address,
+          livePositions: marketLivePositions,
+          closedPositions: marketClosedPositions,
+          ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
+        })
+      );
+    } finally {
+      recordDashboardDiagnostic(
+        input.diagnostics,
+        "comparisonBundleTotalMs",
+        Math.max(0, Math.round(performance.now() - bundleStartedAt))
+      );
+    }
     if (bundleRead.ok) {
       marketRead = { ok: true, value: bundleRead.value.market };
       coverageRead = { ok: true, value: bundleRead.value.counts };
@@ -475,20 +480,24 @@ export async function readTenantWalletDashboardIn(
         "bundle_fallback"
       );
       const fallbackStartedAt = performance.now();
-      marketRead = await optionalRead(db, (savepoint) =>
-        buildBoundedMarketExposureGroups({
-          db: savepoint,
-          billingAccountId: input.billingAccountId,
-          walletAddress: address,
-          livePositions: marketLivePositions,
-          closedPositions: marketClosedPositions,
-        })
-      );
-      recordDashboardDiagnostic(
-        input.diagnostics,
-        "comparisonFallbackMarketMs",
-        Math.max(0, Math.round(performance.now() - fallbackStartedAt))
-      );
+      try {
+        marketRead = await optionalRead(db, (savepoint) =>
+          buildBoundedMarketExposureGroups({
+            db: savepoint,
+            billingAccountId: input.billingAccountId,
+            walletAddress: address,
+            livePositions: marketLivePositions,
+            closedPositions: marketClosedPositions,
+            ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
+          })
+        );
+      } finally {
+        recordDashboardDiagnostic(
+          input.diagnostics,
+          "comparisonFallbackMarketMs",
+          Math.max(0, Math.round(performance.now() - fallbackStartedAt))
+        );
+      }
       coverageRead = { ok: false, error: bundleRead.error };
     }
   }
@@ -1103,8 +1112,32 @@ function warning(component: WalletDashboardWarning["component"], code: string, m
   return { component, code, message };
 }
 
-function readFailure(component: WalletDashboardWarning["component"], code: string, error: unknown): WalletDashboardWarning {
-  return warning(component, code, error instanceof Error ? error.message : String(error));
+const READ_FAILURE_MESSAGES: Readonly<Record<string, string>> = {
+  balances_unavailable: "Saved wallet balances could not be read for this snapshot.",
+  orders_unavailable: "Saved order facts could not be read for this snapshot.",
+  positions_unavailable: "Saved position facts could not be read for this snapshot.",
+  history_unavailable: "Saved position history could not be read for this snapshot.",
+  daily_trade_counts_unavailable:
+    "Saved trading activity could not be read for this snapshot.",
+  realized_pnl_unavailable: "Saved realized P/L could not be read for this snapshot.",
+  market_exposure_unavailable:
+    "Saved market comparison facts could not be read for this snapshot.",
+  comparison_coverage_unavailable:
+    "Comparison coverage could not be certified from saved facts for this snapshot.",
+  pnl_history_unavailable: "Saved P/L history could not be read for this snapshot.",
+};
+
+function readFailure(
+  component: WalletDashboardWarning["component"],
+  code: string,
+  _error: unknown
+): WalletDashboardWarning {
+  return warning(
+    component,
+    code,
+    READ_FAILURE_MESSAGES[code] ??
+      "A saved dashboard fact could not be read for this snapshot."
+  );
 }
 
 function normalizeRows<T>(value: unknown): T[] {
