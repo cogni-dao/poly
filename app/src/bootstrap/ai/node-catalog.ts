@@ -10,14 +10,10 @@
  *   `langgraph:poly-brain` — which the chat composer has offered all along —
  *   resolved to `not_found` in the provider and had never once executed.
  * Scope: Catalog composition only. Declares no graph, holds no tool
- *   implementation, and performs no IO. It lives in `bootstrap` rather than
- *   beside the provider because it must name an app-local tool id from
- *   `@features/agent-tools`, and `adapters` must NOT import `features` — a
- *   boundary this repo actually keeps (see
- *   `adapters/__arch_probes__/fail_adapters_imports_features.ts`; there are zero
- *   real violations). Bootstrap is the composition root, so the catalog is
- *   INJECTED into the two providers rather than imported by them, which also
- *   keeps those adapters node-agnostic and reusable.
+ *   implementation, and performs no IO. It lives in `bootstrap` — the
+ *   composition root — and is INJECTED into the execution and discovery
+ *   providers rather than imported by them, so those adapters stay
+ *   node-agnostic and discovery can never list a graph execution cannot run.
  * Invariants:
  *   - NODE_RUNTIME_CATALOG_BOUNDARY (docs/spec/langgraph-patterns.md:49) — app
  *     runtimes get their catalog from the node, not from shared
@@ -27,20 +23,15 @@
  *   - BASE_IS_SPREAD_NEVER_EDITED — the shared catalog is spread, so new shared
  *     graphs appear here automatically and nothing in `packages/**` is mutated.
  *   - TOOL_ALLOWLIST_IS_APP_POLICY — `toolIds` is declared HERE, deliberately
- *     not reused from `POLY_BRAIN_TOOL_IDS` in `@cogni/poly-graphs`. Two reasons,
- *     both binding rather than stylistic:
- *       1. That constant names `core__market_list` and
- *          `core__wallet_top_traders`, which live in `POLY_TOOL_BUNDLE`
- *          (`@cogni/poly-ai-tools`). Binding that bundle needs a `dataApiClient`
- *          wired in `app/src/bootstrap/container.ts`, which is a port-frozen P0
- *          entry. Those tools are therefore out of reach of this change, and a
- *          catalog entry that lists tools the source cannot resolve logs
- *          "graph misconfigured" per tool on every run.
- *       2. `core__poly_account_copy_trade_orders` is declared in `app/src`
- *          (because `packages/poly-ai-tools/src/index.ts` is port-frozen P1),
- *          and `PACKAGES_NO_SRC_IMPORTS` forbids a package from importing it.
- *          No allowlist naming it can live in a package. The boundary spec and
- *          the freeze gate agree: this is the catalog's correct home.
+ *     not reused from `POLY_BRAIN_TOOL_IDS` in `@cogni/poly-graphs`. That
+ *     constant names `core__market_list` and `core__wallet_top_traders`, which
+ *     live in `POLY_TOOL_BUNDLE` (`@cogni/poly-ai-tools`); binding that bundle
+ *     needs a `dataApiClient` wired in `app/src/bootstrap/container.ts`, a
+ *     port-frozen P0 entry. Those tools are out of reach of this change, and a
+ *     catalog entry naming a tool the source cannot resolve logs "graph
+ *     misconfigured" per tool on every run AND hands the model a tool it cannot
+ *     use. Which tools a node has actually BOUND is app runtime policy; which
+ *     tools a graph could use in principle is the package's business.
  *   - NO_LANGCHAIN_IN_SRC — graph FACTORIES are imported as opaque values from
  *     the graph packages. Nothing here imports `@langchain/*`.
  * Side-effects: none
@@ -54,10 +45,13 @@ import {
   type CreateGraphFn,
   LANGGRAPH_CATALOG,
 } from "@cogni/langgraph-graphs";
-import { createPolyBrainGraph, POLY_BRAIN_GRAPH_NAME } from "@cogni/poly-graphs";
+import {
+  createPolyBrainGraph,
+  POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
+  POLY_BRAIN_GRAPH_NAME,
+} from "@cogni/poly-graphs";
 
 import type { LangGraphCatalog } from "@/adapters/server/ai/langgraph/catalog";
-import { POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME } from "@/features/agent-tools";
 
 /**
  * Tool allowlist for `poly-brain` on this node.
@@ -65,7 +59,7 @@ import { POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME } from "@/features/agent-tools
  * Scoped to exactly what this node can bind today: web research, and ONE
  * account-read capability answered with the signed-in user's principal. See
  * TOOL_ALLOWLIST_IS_APP_POLICY for why the market-data tools are absent and why
- * this list is not imported from the graph package.
+ * this list is not `POLY_BRAIN_TOOL_IDS`.
  *
  * Deliberately contains NO write-capable tool. `core__poly_place_trade` stays
  * unbound (removed from `POLY_TOOL_BUNDLE` post-bug.0319) and story.5006 adds no

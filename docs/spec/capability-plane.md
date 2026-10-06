@@ -263,6 +263,33 @@ demanding a UUID from a human. The copy-trade **P/L** rollup was considered firs
 unsuitable: `polyAccountReadCopyTradePnlOperation` is `accountFrom: "input"` and its schema
 *requires* `billing_account_id`.
 
+#### The zod-major boundary (discovered building this, worth knowing before the next tool)
+
+**`app` and `@cogni/poly-node-contracts` resolve zod v4. `@cogni/ai-tools`,
+`@cogni/langgraph-graphs`, and `@cogni/poly-graphs` resolve zod v3.** `ToolContract.inputSchema`
+is a v3 `z.ZodType`, so a capability descriptor's schema cannot be handed to a tool contract by
+reference.
+
+The sharp part is not the type error — it is that bypassing the type error is silently
+catastrophic. `toToolSpec` compiles the wire schema with `zod-to-json-schema` (v3), which
+dispatches on `_def.typeName`; zod v4 has no such field, so a v4 schema compiles to an **empty**
+JSON Schema and the model is handed a tool with **no arguments**. CI caught this only because the
+schema test carried a *positive control* (`expect(wire).toContain("limit")`); every
+"must not contain an account id" assertion passed vacuously against `{}`.
+
+Consequences, now encoded:
+
+- Tool **contracts** live in `graphs/src/tools/` (zod v3). Only **transports** and
+  **implementations** are app-side.
+- A contract pins itself to the descriptor with `z.ZodType<DescriptorInput>`, so a descriptor
+  field change is a compile error rather than a drift. A unit test asserts both schemas accept
+  and reject the same inputs.
+- A tool's output schema validates the envelope only and passes capability rows through
+  opaquely. The executor already validated them; redeclaring 22 fields in the other zod major
+  would be a second definition that can drift.
+- Any new tool-schema test MUST assert against `toToolSpec`'s output **with a positive
+  control**.
+
 ### One authorization decision
 
 ```

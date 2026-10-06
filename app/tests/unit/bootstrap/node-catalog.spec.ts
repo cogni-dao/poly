@@ -19,6 +19,7 @@
 
 import { CORE_TOOL_BUNDLE, WEB_SEARCH_NAME } from "@cogni/ai-tools";
 import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
+import { POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME } from "@cogni/poly-graphs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -26,7 +27,6 @@ import {
   POLY_NODE_LANGGRAPH_CATALOG,
 } from "@/bootstrap/ai/node-catalog";
 import { PRINCIPAL_TOOL_BUNDLE } from "@/bootstrap/ai/principal-tool-source";
-import { POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME } from "@/features/agent-tools";
 
 const POLY_BRAIN = "poly-brain";
 

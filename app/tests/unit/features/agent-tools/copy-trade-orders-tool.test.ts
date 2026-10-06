@@ -21,6 +21,11 @@
 
 import { type ToolContract, toToolSpec } from "@cogni/ai-tools";
 import {
+  POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
+  polyAccountCopyTradeOrdersBoundTool,
+  polyAccountCopyTradeOrdersToolContract,
+} from "@cogni/poly-graphs";
+import {
   POLY_ACCOUNT_READ_OPERATIONS,
   polyAccountReadCopyTradeOrdersOperation,
 } from "@cogni/poly-node-contracts";
@@ -40,12 +45,7 @@ vi.mock("@/features/capability-plane", async (importOriginal) => {
   return { ...actual, executeAccountRead };
 });
 
-import {
-  POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
-  polyAccountCopyTradeOrdersBoundTool,
-  polyAccountCopyTradeOrdersToolContract,
-  runPolyAccountCopyTradeOrdersTool,
-} from "@/features/agent-tools";
+import { runPolyAccountCopyTradeOrdersTool } from "@/features/agent-tools";
 import { ACCOUNT_READ_TERMINAL_EVENTS } from "@/features/capability-plane";
 
 const ctx = {
@@ -135,11 +135,35 @@ describe("tool contract", () => {
     ).toBe(true);
   });
 
-  it("reuses the capability descriptor's input schema by reference", () => {
-    // CAPABILITY_DEFINED_ONCE — not a copy that can drift.
-    expect(polyAccountCopyTradeOrdersToolContract.inputSchema).toBe(
-      polyAccountReadCopyTradeOrdersOperation.input
-    );
+  it("accepts and rejects exactly what the capability descriptor does", () => {
+    // CAPABILITY_DEFINED_ONCE_ACROSS_ZOD_MAJORS. The tool schema cannot BE the
+    // descriptor's schema by reference: `ToolContract` is typed against zod v3
+    // and the descriptor is zod v4 (and a v4 schema compiles to an EMPTY JSON
+    // Schema through `toToolSpec`). The compile-time guard is the contract's
+    // `z.ZodType<PolyCopyTradeOrdersInput>` annotation; this is the behavioural
+    // half of the same guarantee.
+    const cases: unknown[] = [
+      {},
+      { limit: 20 },
+      { limit: "20" },
+      { status: "all" },
+      { status: "filled" },
+      { status: "not-a-status" },
+      { limit: 0 },
+      { limit: 201 },
+      { target_id: "11111111-1111-4111-8111-111111111111" },
+      { target_id: "not-a-uuid" },
+    ];
+
+    for (const value of cases) {
+      expect(
+        polyAccountCopyTradeOrdersToolContract.inputSchema.safeParse(value)
+          .success,
+        `tool schema disagreed with the descriptor on ${JSON.stringify(value)}`
+      ).toBe(
+        polyAccountReadCopyTradeOrdersOperation.input.safeParse(value).success
+      );
+    }
   });
 
   it("binds a capability that is a published catalog member", () => {
@@ -190,8 +214,9 @@ describe("outcome rendering", () => {
 
     const result = await runPolyAccountCopyTradeOrdersTool(deps, {});
 
-    // SAVED_FACTS_ONLY + parity: the agent sees the SAME rows the dashboard
-    // renders, not a reshaped summary.
+    // ROWS_PASS_THROUGH_UNCHANGED: the agent sees the SAME rows the dashboard
+    // renders — not a reshaped summary, and not re-validated against a second
+    // copy of the row schema that could drift from the frozen contract.
     expect(result).toEqual({
       status: "ok",
       orders: [ORDER_ROW],

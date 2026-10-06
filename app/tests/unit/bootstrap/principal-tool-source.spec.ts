@@ -23,6 +23,10 @@ import type {
   ToolSourcePort,
   ToolSpec,
 } from "@cogni/ai-core";
+import {
+  POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
+  polyAccountCopyTradeOrdersBoundTool,
+} from "@cogni/poly-graphs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { runPolyAccountCopyTradeOrdersTool } = vi.hoisted(() => ({
@@ -43,10 +47,6 @@ import {
   PRINCIPAL_TOOL_BUNDLE,
   PRINCIPAL_TOOL_IDS,
 } from "@/bootstrap/ai/principal-tool-source";
-import {
-  POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
-  polyAccountCopyTradeOrdersBoundTool,
-} from "@/features/agent-tools";
 
 const INVOCATION: ToolInvocationContext = {
   runId: "run-abc",

@@ -86,3 +86,6 @@ The direction that stays forbidden is the reverse one.
 - `container.toolSource` is module-scoped and principal-free, and `container.ts` is a
   port-frozen P0 entry. `composeToolSources` is the seam that lets a per-request tool join
   the graph runtime without editing it.
+- Tool CONTRACTS cannot be authored in `app/src`: `@cogni/ai-tools` is zod v3 and this app
+  is zod v4, and a v4 schema compiles to an EMPTY JSON Schema through `toToolSpec`. They
+  live in `@cogni/poly-graphs/tools`; only implementations and transports are app-side.

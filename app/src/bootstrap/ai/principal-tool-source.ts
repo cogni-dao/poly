@@ -9,8 +9,12 @@
  *   the third principal of the capability plane: "how does the signed-in user's
  *   principal reach a graph tool?"
  * Scope: Wiring only. No query, no authorization, no HTTP, no tool contract of
- *   its own. It injects the app-role `Database`, the principal, and a request
- *   context into `@features/agent-tools`, which calls the plane.
+ *   its own. It joins a CONTRACT from `@cogni/poly-graphs/tools` (zod v3, the
+ *   version `@cogni/ai-tools` and the LangChain runtime speak) to a TRANSPORT in
+ *   `@features/agent-tools` (zod v4, the version the capability plane speaks),
+ *   injecting the app-role `Database`, the principal, and a request context.
+ *   That version split is why the two halves live apart; see the contract's
+ *   header for the evidence.
  * Invariants:
  *   - PRINCIPAL_BY_CLOSURE_NOT_BY_CONTEXT — the principal arrives as a
  *     constructor argument and lives in a closure. It is NOT added to
@@ -52,14 +56,18 @@ import {
   toToolSpec,
 } from "@cogni/ai-tools";
 import type { Database } from "@cogni/db-client";
-import { trace } from "@opentelemetry/api";
-
 import {
   polyAccountCopyTradeOrdersBoundTool,
   polyAccountCopyTradeOrdersToolContract,
-  runPolyAccountCopyTradeOrdersTool,
-} from "@/features/agent-tools";
-import { type Logger, makeLogger, type RequestContext } from "@/shared/observability";
+} from "@cogni/poly-graphs";
+import { trace } from "@opentelemetry/api";
+
+import { runPolyAccountCopyTradeOrdersTool } from "@/features/agent-tools";
+import {
+  type Logger,
+  makeLogger,
+  type RequestContext,
+} from "@/shared/observability";
 
 /**
  * Contract-only bundle for the principal-scoped tools, appended to the node
