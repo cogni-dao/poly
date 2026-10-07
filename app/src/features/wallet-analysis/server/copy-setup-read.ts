@@ -328,8 +328,11 @@ export async function getCopySetupForAccount(
     ),
     unbudgetedActiveTargetCount
   );
+  const multiTargetPositionGapUnsupported =
+    budgetGroup.positionGapTargetCount > 1;
 
-  const budgetObservationRows = targetsTruncated
+  const budgetObservationRows =
+    targetsTruncated || multiTargetPositionGapUnsupported
     ? []
     : ((await tx
         .select({
@@ -351,21 +354,30 @@ export async function getCopySetupForAccount(
         budgetObservation.intent.mirror_portfolio_current_value_usdc
       )
     : null;
-  const latestBudgetActivationMs = eligiblePositionGapTargets.reduce(
-    (latest, { row }) => Math.max(latest, row.mirrorActivatedAt.getTime()),
-    0
+  const latestBudgetTopologyMs = resolvedTargets.reduce(
+    (latest, { row }) =>
+      Math.max(
+        latest,
+        row.mirrorActivatedAt.getTime(),
+        row.disabledAt?.getTime() ?? 0
+      ),
+    capsActive ? (grantRows[0]?.createdAt.getTime() ?? 0) : 0
   );
   const budgetObservationStatus =
-    targetsTruncated ||
-    !capsActive ||
-    !budgetObservation ||
-    observedMirrorNav === null
-      ? ("pending" as const)
-      : budgetObservation.decidedAt.getTime() < latestBudgetActivationMs
-        ? ("stale" as const)
-        : ("observed" as const);
+    multiTargetPositionGapUnsupported
+      ? ("blocked_multi_target" as const)
+      : targetsTruncated ||
+          !capsActive ||
+          !budgetObservation ||
+          observedMirrorNav === null
+        ? ("pending" as const)
+        : budgetObservation.decidedAt.getTime() < latestBudgetTopologyMs
+          ? ("stale" as const)
+          : ("observed" as const);
   const observedAt =
-    budgetObservationStatus === "pending" || !budgetObservation
+    budgetObservationStatus === "pending" ||
+    budgetObservationStatus === "blocked_multi_target" ||
+    !budgetObservation
       ? null
       : iso(budgetObservation.decidedAt);
   const effectiveByTargetId = new Map<
@@ -445,9 +457,11 @@ export async function getCopySetupForAccount(
               ? (effectiveBudget?.effectiveBudgetUsdc ?? null)
               : null,
           allocation_status:
-            budgetApplicable && budgetObservationStatus === "observed"
-              ? (effectiveBudget?.allocationStatus ?? null)
-              : null,
+            budgetApplicable && multiTargetPositionGapUnsupported
+              ? ("blocked_multi_target" as const)
+              : budgetApplicable && budgetObservationStatus === "observed"
+                ? (effectiveBudget?.allocationStatus ?? null)
+                : null,
           effective_budget_observed_at: budgetApplicable ? observedAt : null,
           observation_status: budgetApplicable
             ? budgetObservationStatus

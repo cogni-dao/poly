@@ -117,6 +117,8 @@ export const PositionGapSizingPolicySchema = z.object({
   kind: z.literal("position_gap"),
   /** Null/omitted preserves the single-target full-NAV default. */
   mirror_capital_budget_usdc: z.number().positive().nullable().optional(),
+  /** More than one position-gap target fails closed until holdings are attributable. */
+  account_position_gap_target_count: z.number().int().nonnegative().optional(),
   /** Sum of explicit budgets across runtime-eligible position-gap targets. */
   account_explicit_budget_total_usdc: z.number().nonnegative().optional(),
   /** Count of runtime-eligible position-gap targets with a null budget. */
@@ -531,6 +533,8 @@ export const MirrorReasonSchema = z.enum([
    * We refuse to place above an evidenced target entry on this token.
    */
   "vwap_floor_breach",
+  /** Multiple position-gap targets share indistinguishable wallet holdings. */
+  "multi_target_position_gap_unsupported",
   /**
    * task.5014 — first post-activation observation on a (billing, target,
    * condition) triple. The pipeline just captured the baseline snapshot; the

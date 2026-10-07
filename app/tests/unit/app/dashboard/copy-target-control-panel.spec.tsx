@@ -170,4 +170,23 @@ describe("CopyTargetControlPanel algorithm selector", () => {
       "https://poly.cognidao.org/knowledge/mirror-algorithm-rankings",
     );
   });
+
+  it("tells a human how to clear the multi-target position-gap block", () => {
+    const budget = targetResponse.targets[0].policy.portfolio_budget;
+    const previousStatus = budget.observation_status;
+    budget.observation_status = "blocked_multi_target";
+
+    try {
+      render(<CopyTargetControlPanel />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Expand copy controls" }),
+      );
+
+      expect(
+        screen.getByText(/^Choose one Position gap target/),
+      ).toBeInTheDocument();
+    } finally {
+      budget.observation_status = previousStatus;
+    }
+  });
 });

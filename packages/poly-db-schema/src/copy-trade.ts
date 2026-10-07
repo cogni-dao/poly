@@ -94,7 +94,7 @@ export const polyCopyTradeTargets = pgTable(
         scale: 2,
       }
     ),
-    /** Position-gap portfolio-scale budget. NULL allocates the automatic NAV share. */
+    /** Position-gap portfolio-scale budget. NULL uses full NAV for one eligible target. */
     mirrorCapitalBudgetUsdc: numeric("mirror_capital_budget_usdc", {
       precision: 12,
       scale: 2,

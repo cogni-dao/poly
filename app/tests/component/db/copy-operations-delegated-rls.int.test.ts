@@ -232,6 +232,7 @@ describe("copy-operations delegated RLS", () => {
         dailyUsdcCap: "110.00",
         hourlyFillsCap: 7,
         expiresAt: future,
+        createdAt: consentAt,
       },
       {
         id: grantB,
@@ -243,6 +244,7 @@ describe("copy-operations delegated RLS", () => {
         dailyUsdcCap: "220.00",
         hourlyFillsCap: 9,
         expiresAt: future,
+        createdAt: consentAt,
       },
     ]);
 
@@ -538,6 +540,54 @@ describe("copy-operations delegated RLS", () => {
     expect(policy?.declared_kind).toBe("auto");
     expect(policy?.effective_kind).toBe("target_percentile_scaled");
     expect(policy?.resolution).toBe("auto_snapshot");
+  });
+
+  it("copy-setup: reports an account and every position-gap target as blocked when holdings attribution is ambiguous", async () => {
+    const secondTargetId = randomUUID();
+    await getSeedDb().insert(polyCopyTradeTargets).values({
+      id: secondTargetId,
+      billingAccountId: ownerA.billingAccountId,
+      createdByUserId: ownerA.userId,
+      targetWallet: walletAddress(),
+      mirrorFilterPercentile: 80,
+      mirrorMaxUsdcPerTrade: "7.50",
+      sizingPolicyKind: "position_gap",
+      mirrorCapitalBudgetUsdc: "100.00",
+      mirrorActivatedAt: new Date("2026-10-06T00:00:00.000Z"),
+    });
+
+    try {
+      const setup = await asTx(ownerA.userId, (tx) =>
+        getCopySetupForAccount(tx, ownerA.billingAccountId, copySetupBinding),
+      );
+
+      expect(setup?.budget_allocation).toMatchObject({
+        position_gap_target_count: 2,
+        mirror_nav_usdc: null,
+        effective_budget_total_usdc: null,
+        observation_status: "blocked_multi_target",
+      });
+      expect(
+        setup?.targets
+          .filter((target) => target.policy.effective_kind === "position_gap")
+          .map((target) => target.policy.portfolio_budget),
+      ).toEqual([
+        expect.objectContaining({
+          effective_budget_usdc: null,
+          allocation_status: "blocked_multi_target",
+          observation_status: "blocked_multi_target",
+        }),
+        expect.objectContaining({
+          effective_budget_usdc: null,
+          allocation_status: "blocked_multi_target",
+          observation_status: "blocked_multi_target",
+        }),
+      ]);
+    } finally {
+      await getSeedDb()
+        .delete(polyCopyTradeTargets)
+        .where(eq(polyCopyTradeTargets.id, secondTargetId));
+    }
   });
 
   it("target PATCH rejects stale saves and clears the prior position-gap baseline", async () => {

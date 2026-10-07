@@ -83,7 +83,7 @@ export interface EnumeratedTarget {
   targetRangeMaxUsdc: number | null;
   /** Legacy position_gap v1 field; ignored by v2 sizing. */
   mirrorMaxAllocPerConditionUsdc: number | null;
-  /** Null means automatic allocation from the account's remaining mirror NAV. */
+  /** Null means full mirror NAV when this is the account's only position-gap target. */
   mirrorCapitalBudgetUsdc: number | null;
   /** Account-wide allocation inputs, computed from the same eligible row set. */
   positionGapBudgetGroup: PositionGapBudgetGroup;
@@ -175,6 +175,7 @@ export function envTargetSource(
       mirrorMaxAllocPerConditionUsdc: null,
       mirrorCapitalBudgetUsdc: null,
       positionGapBudgetGroup: {
+        positionGapTargetCount: 0,
         explicitBudgetTotalUsdc: 0,
         automaticTargetCount: 0,
         unbudgetedTargetCount: wallets.length,

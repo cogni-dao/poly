@@ -131,7 +131,7 @@ function buildSizingPolicy(params: {
   mirrorMaxAllocPerConditionUsdc?: number;
   /** Null/omitted preserves automatic full-NAV-compatible allocation. */
   mirrorCapitalBudgetUsdc?: number | null;
-  /** Runtime-eligible account group used to prevent aggregate over-claim. */
+  /** Runtime-eligible account group used to fail closed on ambiguous holdings. */
   positionGapBudgetGroup?: PositionGapBudgetGroup;
 }): SizingPolicy {
   const snapshot = snapshotForTargetWallet(params.targetWallet);
@@ -150,11 +150,13 @@ function buildSizingPolicy(params: {
       params.positionGapBudgetGroup ??
       (configuredBudget === null
         ? {
+            positionGapTargetCount: 1,
             explicitBudgetTotalUsdc: 0,
             automaticTargetCount: 1,
             unbudgetedTargetCount: 0,
           }
         : {
+            positionGapTargetCount: 1,
             explicitBudgetTotalUsdc: configuredBudget,
             automaticTargetCount: 0,
             unbudgetedTargetCount: 0,
@@ -162,6 +164,7 @@ function buildSizingPolicy(params: {
     return {
       kind: "position_gap",
       mirror_capital_budget_usdc: configuredBudget,
+      account_position_gap_target_count: group.positionGapTargetCount,
       account_explicit_budget_total_usdc: group.explicitBudgetTotalUsdc,
       account_automatic_budget_target_count: group.automaticTargetCount,
       account_unbudgeted_target_count: group.unbudgetedTargetCount,

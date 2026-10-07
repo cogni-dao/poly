@@ -214,7 +214,8 @@ function sizeFromPolicy(
  * **Whole-portfolio denominator.** This is not a per-condition range or cap.
  * RN1's entire active position book is the denominator and the account-safe
  * effective mirror budget is the dollar scale. Live mirror NAV stays a
- * separate fact; it only constrains the multi-target budget allocator.
+ * separate fact that bounds the configured budget. Multiple position-gap
+ * targets fail closed before this planner because wallet holdings are shared.
  *
  * **No per-trade cap.** `position_gap` passes `+Infinity` to
  * `applyMarketFloors` so only the market-floor LOWER bound applies. Wire-level

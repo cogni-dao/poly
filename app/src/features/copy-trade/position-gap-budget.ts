@@ -2,17 +2,17 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
 /**
- * Pure allocation math for sharing one mirror wallet across position-gap targets.
- * Configured budgets reserve dollars; null budgets split the unreserved NAV.
+ * Pure allocation math for one position-gap target on a mirror wallet.
+ * Multiple targets fail closed until holdings can be attributed per target.
  */
 
 export type PositionGapBudgetAllocationStatus =
 	| "full"
 	| "reserved"
-	| "prorated"
-	| "shared_remainder";
+	| "prorated";
 
 export interface PositionGapBudgetGroup {
+	positionGapTargetCount: number;
 	explicitBudgetTotalUsdc: number;
 	automaticTargetCount: number;
 	unbudgetedTargetCount: number;
@@ -30,6 +30,7 @@ export function summarizePositionGapBudgetGroup(
 	unbudgetedTargetCount: number,
 ): PositionGapBudgetGroup {
 	return {
+		positionGapTargetCount: configuredBudgets.length,
 		explicitBudgetTotalUsdc: configuredBudgets.reduce<number>(
 			(sum, budget) => sum + (budget ?? 0),
 			0,
@@ -55,6 +56,8 @@ export function effectivePositionGapBudget(params: {
 		mirrorNavUsdc < 0 ||
 		!Number.isFinite(group.explicitBudgetTotalUsdc) ||
 		group.explicitBudgetTotalUsdc < 0 ||
+		!Number.isInteger(group.positionGapTargetCount) ||
+		group.positionGapTargetCount !== 1 ||
 		!Number.isInteger(group.automaticTargetCount) ||
 		group.automaticTargetCount < 0 ||
 		!Number.isInteger(group.unbudgetedTargetCount) ||
@@ -83,16 +86,10 @@ export function effectivePositionGapBudget(params: {
 		};
 	}
 
-	if (group.automaticTargetCount <= 0) return undefined;
-	const effectiveBudgetUsdc =
-		Math.max(mirrorNavUsdc - group.explicitBudgetTotalUsdc, 0) /
-		group.automaticTargetCount;
+	if (group.automaticTargetCount !== 1) return undefined;
 	return {
-		effectiveBudgetUsdc,
-		allocationStatus:
-			group.automaticTargetCount === 1 && group.explicitBudgetTotalUsdc === 0
-				? "full"
-				: "shared_remainder",
+		effectiveBudgetUsdc: mirrorNavUsdc,
+		allocationStatus: "full",
 		overallocated,
 	};
 }

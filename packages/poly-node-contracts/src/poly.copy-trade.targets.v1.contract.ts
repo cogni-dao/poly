@@ -92,7 +92,7 @@ const targetPolicySchema = z.object({
   /** Legacy position_gap v1 field; accepted only for wire compatibility. */
   mirror_max_alloc_per_condition_usdc:
     mirrorMaxAllocPerConditionUsdcSchema.optional(),
-  /** Position-gap portfolio budget. Null/omitted shares available mirror NAV. */
+  /** Position-gap portfolio budget. Null/omitted uses full NAV for one target. */
   mirror_capital_budget_usdc: mirrorCapitalBudgetUsdcSchema.optional(),
 });
 
@@ -124,7 +124,7 @@ const targetSchema = z.object({
   /** Legacy position_gap v1 field; compatibility-only in v2. */
   mirror_max_alloc_per_condition_usdc:
     mirrorMaxAllocPerConditionUsdcSchema.nullable(),
-  /** Position-gap portfolio budget. Null means automatic/full available NAV. */
+  /** Position-gap portfolio budget. Null means full NAV for one target. */
   mirror_capital_budget_usdc: mirrorCapitalBudgetUsdcSchema,
   /** Optimistic-concurrency token and cold-start fence for this configuration. */
   mirror_activated_at: isoTimestampSchema,
@@ -159,7 +159,7 @@ const targetCreateInputSchema = z.object({
    */
   mirror_max_alloc_per_condition_usdc:
     mirrorMaxAllocPerConditionUsdcSchema.optional(),
-  /** Position-gap portfolio budget. Null/omitted uses automatic allocation. */
+  /** Position-gap portfolio budget. Null/omitted uses full NAV for one target. */
   mirror_capital_budget_usdc: mirrorCapitalBudgetUsdcSchema.optional(),
 });
 

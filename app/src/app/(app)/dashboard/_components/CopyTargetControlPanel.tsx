@@ -639,6 +639,9 @@ function algorithmSummary(target: PolyTrackedTarget): string {
 
 function budgetStatusLabel(target: PolyTrackedTarget): string {
   const budget = target.policy.portfolio_budget;
+  if (budget.observation_status === "blocked_multi_target") {
+    return "Choose one Position gap target";
+  }
   if (budget.observation_status === "pending") return "Pending first trade";
   if (budget.observation_status === "stale") return "Pending next trade";
   if (

@@ -47,11 +47,13 @@ describe("position-gap runtime budget grouping", () => {
     ]);
 
     expect(groups.get("account-a")).toEqual({
+      positionGapTargetCount: 2,
       explicitBudgetTotalUsdc: 0,
       automaticTargetCount: 2,
       unbudgetedTargetCount: 1,
     });
     expect(groups.get("account-b")).toEqual({
+      positionGapTargetCount: 2,
       explicitBudgetTotalUsdc: 500,
       automaticTargetCount: 0,
       unbudgetedTargetCount: 0,

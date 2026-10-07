@@ -95,6 +95,7 @@ function policyFingerprint(t: EnumeratedTarget): string {
     t.mirrorCapitalBudgetUsdc === null
       ? "automatic"
       : Number(t.mirrorCapitalBudgetUsdc).toFixed(2),
+    t.positionGapBudgetGroup.positionGapTargetCount,
     Number(t.positionGapBudgetGroup.explicitBudgetTotalUsdc).toFixed(2),
     t.positionGapBudgetGroup.automaticTargetCount,
     t.positionGapBudgetGroup.unbudgetedTargetCount,

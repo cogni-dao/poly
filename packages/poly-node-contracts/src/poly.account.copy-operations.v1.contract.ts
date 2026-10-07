@@ -175,7 +175,7 @@ export const PolyEffectiveSizingPolicySchema = z.object({
     configured_budget_usdc: z.number().positive().nullable(),
     effective_budget_usdc: z.number().nonnegative().nullable(),
     allocation_status: z
-      .enum(["full", "reserved", "prorated", "shared_remainder"])
+      .enum(["full", "reserved", "prorated", "blocked_multi_target"])
       .nullable(),
     effective_budget_observed_at: IsoTimestampSchema.nullable(),
     observation_status: z.enum([
@@ -183,6 +183,7 @@ export const PolyEffectiveSizingPolicySchema = z.object({
       "pending",
       "stale",
       "observed",
+      "blocked_multi_target",
     ]),
   }),
 });
@@ -291,7 +292,12 @@ export const PolyAccountCopySetupResponseSchema = z.object({
     effective_budget_total_usdc: z.number().nonnegative().nullable(),
     overallocated: z.boolean().nullable(),
     observed_at: IsoTimestampSchema.nullable(),
-    observation_status: z.enum(["pending", "stale", "observed"]),
+    observation_status: z.enum([
+      "pending",
+      "stale",
+      "observed",
+      "blocked_multi_target",
+    ]),
   }),
   /**
    * Names the two sources this capability joins, so a caller can tell which

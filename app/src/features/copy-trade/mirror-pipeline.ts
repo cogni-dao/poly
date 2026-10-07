@@ -357,6 +357,51 @@ async function processFill(
   );
   const log = parentLog.child({ lag_ms_total });
 
+  if (isMultiTargetPositionGapUnsupported(deps.target)) {
+    await cancelOpenMirrorOrdersForMarket({
+      deps,
+      fill,
+      log,
+      reason: "multi_target_position_gap_unsupported",
+    });
+    const decisionLogFields = {
+      position_branch: fill.side === "SELL" ? "sell_close" : "new_entry",
+      ...buildPositionGapBudgetLogFields(deps.target),
+    };
+    emitDecisionMetric(
+      deps.metrics,
+      "skipped",
+      "multi_target_position_gap_unsupported",
+      source,
+      placement
+    );
+    await tenantLedger.recordDecision({
+      ...decisionBase,
+      outcome: "skipped",
+      reason: "multi_target_position_gap_unsupported",
+      intent: buildDecisionIntentBlob(
+        fill,
+        deps.target,
+        client_order_id,
+        decisionLogFields
+      ),
+      receipt: null,
+    });
+    log.warn(
+      {
+        event: EVENT_NAMES.POLY_MIRROR_DECISION,
+        outcome: "skipped",
+        reason: "multi_target_position_gap_unsupported",
+        source,
+        fill_id: fill.fill_id,
+        client_order_id,
+        ...decisionLogFields,
+      },
+      "mirror pipeline: multiple position-gap targets fail closed"
+    );
+    return;
+  }
+
   if (fill.side === "SELL") {
     await processSellFill({
       fill,
@@ -718,6 +763,8 @@ async function fetchPositionGapPortfolioValues(args: {
       configuredBudgetUsdc: configuredBudget,
       mirrorNavUsdc: mirror,
       group: {
+        positionGapTargetCount:
+          sizing.account_position_gap_target_count ?? 1,
         explicitBudgetTotalUsdc:
           sizing.account_explicit_budget_total_usdc ?? configuredBudget ?? 0,
         automaticTargetCount:
@@ -876,19 +923,25 @@ function buildPositionGapBudgetLogFields(
   portfolioValues?: PositionGapPortfolioValues
 ): Record<string, unknown> {
   if (target.sizing.kind !== "position_gap") return {};
+  const positionGapTargetCount =
+    target.sizing.account_position_gap_target_count ?? 1;
+  const blockedMultiTarget = positionGapTargetCount > 1;
   return {
     mirror_capital_budget_usdc:
       target.sizing.mirror_capital_budget_usdc ?? null,
     effective_mirror_capital_budget_usdc:
       portfolioValues?.budget.effectiveBudgetUsdc ?? null,
     mirror_budget_allocation_status:
-      portfolioValues?.budget.allocationStatus ?? null,
+      blockedMultiTarget
+        ? "blocked_multi_target"
+        : (portfolioValues?.budget.allocationStatus ?? null),
     effective_budget_observed_at:
       portfolioValues?.effectiveBudgetObservedAt ?? null,
     position_gap_explicit_budget_total_usdc:
       target.sizing.account_explicit_budget_total_usdc ??
       target.sizing.mirror_capital_budget_usdc ??
       0,
+    position_gap_target_count: positionGapTargetCount,
     position_gap_automatic_target_count:
       target.sizing.account_automatic_budget_target_count ??
       (target.sizing.mirror_capital_budget_usdc == null ? 1 : 0),
@@ -896,6 +949,15 @@ function buildPositionGapBudgetLogFields(
       target.sizing.account_unbudgeted_target_count ?? 0,
     budget_overallocated: portfolioValues?.budget.overallocated ?? null,
   };
+}
+
+function isMultiTargetPositionGapUnsupported(
+  target: MirrorTargetConfig
+): boolean {
+  return (
+    target.sizing.kind === "position_gap" &&
+    (target.sizing.account_position_gap_target_count ?? 1) > 1
+  );
 }
 
 /** bug.5048 — fraction of target's total condition cost on the fill's token, or null when unknown. */
@@ -1357,7 +1419,10 @@ async function cancelOpenMirrorOrdersForMarket(args: {
   deps: MirrorPipelineDeps;
   fill: import("@cogni/poly-market-provider").Fill;
   log: LoggerPort;
-  reason: "target_exited_market" | "stale_resting_layer_up";
+  reason:
+    | "target_exited_market"
+    | "stale_resting_layer_up"
+    | "multi_target_position_gap_unsupported";
 }): Promise<void> {
   const { deps, fill, log, reason } = args;
   const cancelOrder = deps.cancelOrder;
@@ -1384,7 +1449,9 @@ async function cancelOpenMirrorOrdersForMarket(args: {
           phase:
             reason === "stale_resting_layer_up"
               ? "buy_canceled_on_stale_resting"
-              : "buy_canceled_on_target_sell",
+              : reason === "multi_target_position_gap_unsupported"
+                ? "buy_canceled_on_unsupported_multi_target"
+                : "buy_canceled_on_target_sell",
           client_order_id: row.client_order_id,
           order_id: row.order_id,
           market_id: row.market_id,
@@ -1392,7 +1459,9 @@ async function cancelOpenMirrorOrdersForMarket(args: {
         },
         reason === "stale_resting_layer_up"
           ? "mirror pipeline: canceled stale resting BUY for layer-up replace"
-          : "mirror pipeline: canceled resting BUY on target SELL"
+          : reason === "multi_target_position_gap_unsupported"
+            ? "mirror pipeline: canceled resting BUY because multi-target position-gap is unsupported"
+            : "mirror pipeline: canceled resting BUY on target SELL"
       );
     } catch (err: unknown) {
       log.error(

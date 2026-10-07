@@ -25,24 +25,8 @@ describe("position-gap portfolio budgets", () => {
 		});
 	});
 
-	it("splits live NAV evenly across multiple automatic targets", () => {
-		const group = summarizePositionGapBudgetGroup([null, null], 0);
-
-		expect(
-			effectivePositionGapBudget({
-				configuredBudgetUsdc: null,
-				mirrorNavUsdc: 500,
-				group,
-			}),
-		).toEqual({
-			effectiveBudgetUsdc: 250,
-			allocationStatus: "shared_remainder",
-			overallocated: false,
-		});
-	});
-
-	it("reserves explicit dollars and splits only the remainder", () => {
-		const group = summarizePositionGapBudgetGroup([200, null, null], 1);
+	it("reserves an explicit budget below live NAV", () => {
+		const group = summarizePositionGapBudgetGroup([200], 1);
 
 		expect(
 			effectivePositionGapBudget({
@@ -50,47 +34,44 @@ describe("position-gap portfolio budgets", () => {
 				mirrorNavUsdc: 500,
 				group,
 			}),
-		).toMatchObject({
+		).toEqual({
 			effectiveBudgetUsdc: 200,
 			allocationStatus: "reserved",
+			overallocated: false,
 		});
+	});
+
+	it("prorates one explicit budget to live NAV", () => {
+		const group = summarizePositionGapBudgetGroup([600], 0);
+
+		expect(
+			effectivePositionGapBudget({
+				configuredBudgetUsdc: 600,
+				mirrorNavUsdc: 300,
+				group,
+			}),
+		).toEqual({
+			effectiveBudgetUsdc: 300,
+			allocationStatus: "prorated",
+			overallocated: true,
+		});
+	});
+
+	it("fails closed when multiple position-gap targets share one wallet", () => {
 		expect(
 			effectivePositionGapBudget({
 				configuredBudgetUsdc: null,
 				mirrorNavUsdc: 500,
-				group,
+				group: summarizePositionGapBudgetGroup([null, null], 0),
 			}),
-		).toMatchObject({
-			effectiveBudgetUsdc: 150,
-			allocationStatus: "shared_remainder",
-		});
-	});
-
-	it("prorates explicit over-allocation and leaves automatic targets zero", () => {
-		const group = summarizePositionGapBudgetGroup([400, 200, null], 0);
-
+		).toBeUndefined();
 		expect(
 			effectivePositionGapBudget({
-				configuredBudgetUsdc: 400,
-				mirrorNavUsdc: 300,
-				group,
+				configuredBudgetUsdc: 200,
+				mirrorNavUsdc: 500,
+				group: summarizePositionGapBudgetGroup([200, null], 0),
 			}),
-		).toEqual({
-			effectiveBudgetUsdc: 200,
-			allocationStatus: "prorated",
-			overallocated: true,
-		});
-		expect(
-			effectivePositionGapBudget({
-				configuredBudgetUsdc: null,
-				mirrorNavUsdc: 300,
-				group,
-			}),
-		).toEqual({
-			effectiveBudgetUsdc: 0,
-			allocationStatus: "shared_remainder",
-			overallocated: true,
-		});
+		).toBeUndefined();
 	});
 
 	it("rejects invalid configured or observed values", () => {
