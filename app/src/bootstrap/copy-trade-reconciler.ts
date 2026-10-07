@@ -82,8 +82,16 @@ function keyFor(t: EnumeratedTarget): string {
 
 function policyFingerprint(t: EnumeratedTarget): string {
   return [
+    t.mirrorActivatedAt.toISOString(),
+    t.sizingPolicyKind,
     t.mirrorFilterPercentile,
     Number(t.mirrorMaxUsdcPerTrade).toFixed(2),
+    t.targetRangeMaxUsdc === null
+      ? "none"
+      : Number(t.targetRangeMaxUsdc).toFixed(2),
+    t.mirrorMaxAllocPerConditionUsdc === null
+      ? "none"
+      : Number(t.mirrorMaxAllocPerConditionUsdc).toFixed(2),
   ].join(":");
 }
 
