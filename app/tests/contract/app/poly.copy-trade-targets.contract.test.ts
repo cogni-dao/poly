@@ -31,7 +31,7 @@ describe("copy-target assignment contract", () => {
     ).toBe(true);
   });
 
-  it("accepts all required position-gap controls together", () => {
+	it("accepts position-gap without legacy v1 range controls", () => {
     expect(
       polyCopyTradeTargetUpdateOperation.input.safeParse({
         id: targetId,
@@ -39,8 +39,6 @@ describe("copy-target assignment contract", () => {
         expected_mirror_activated_at: activatedAt,
         mirror_filter_percentile: 75,
         mirror_max_usdc_per_trade: 10,
-        target_range_max_usdc: 100,
-        mirror_max_alloc_per_condition_usdc: 10,
       }).success,
     ).toBe(true);
   });

@@ -68,27 +68,14 @@ const sizingPolicyKindSchema = z.enum([
 ]);
 
 /**
- * Per-target assumed per-condition position ceiling for `position_gap`. Drives
- * `relative = min(delta / target_range_max_usdc, 1.0)` in
- * `applyPositionGapSizing`. Parameterized to swisstony/RN1's p95 of
- * per-condition peak cost-basis (~$10k); operator PATCHes upward when
- * `poly.mirror.range_breach` alerts fire. NULLable on the row; required (DB
- * CHECK) when `sizing_policy_kind = 'position_gap'`. Same shape as
- * `mirror_max_usdc_per_trade` (positive USDC, ≤ 2 decimals).
- *
- * task.5014 — see docs/research/poly/range-relative-mirror-2026-05-26.md.
+ * Legacy position_gap v1 range field. Retained on the wire so old rows and
+ * clients round-trip, but position_gap v2 never reads it.
  */
 const targetRangeMaxUsdcSchema = mirrorMaxUsdcPerTradeSchema;
 
 /**
- * Per-condition USDC ceiling this mirror commits per condition under
- * `position_gap`. Drives `desired_usdc = mirror_max_alloc_per_condition_usdc ×
- * relative`. NULLable on the row; required (DB CHECK) when
- * `sizing_policy_kind = 'position_gap'`. Aggregate exposure scales as
- * `max_alloc × N_active_conditions`; wire-level safety lives in
- * `poly_wallet_grants` (`CAPS_LIVE_IN_GRANT`).
- *
- * task.5014 — see docs/research/poly/range-relative-mirror-2026-05-26.md.
+ * Legacy position_gap v1 per-condition allocation field. Retained for
+ * backward-compatible reads only; v2 scales from live mirror NAV.
  */
 const mirrorMaxAllocPerConditionUsdcSchema = mirrorMaxUsdcPerTradeSchema;
 
@@ -97,9 +84,9 @@ const targetPolicySchema = z.object({
   mirror_max_usdc_per_trade: mirrorMaxUsdcPerTradeSchema,
   /** Optional override; omit (or `'auto'`) to keep legacy snapshot inference. */
   sizing_policy_kind: sizingPolicyKindSchema.optional(),
-  /** Per-target assumed per-condition position ceiling for `position_gap`. Required when policy resolves to `position_gap` (server-side CHECK). Omit to keep current value (PATCH) or leave NULL (POST for non-position_gap rows). */
+  /** Legacy position_gap v1 field; accepted only for wire compatibility. */
   target_range_max_usdc: targetRangeMaxUsdcSchema.optional(),
-  /** Per-condition USDC cap for `position_gap`. Required when policy resolves to `position_gap` (server-side CHECK). Omit to keep current value (PATCH) or leave NULL (POST for non-position_gap rows). */
+  /** Legacy position_gap v1 field; accepted only for wire compatibility. */
   mirror_max_alloc_per_condition_usdc:
     mirrorMaxAllocPerConditionUsdcSchema.optional(),
 });
@@ -114,7 +101,7 @@ const targetSchema = z.object({
   target_id: z.string().uuid(),
   /** 0x-prefixed 40-hex — the wallet being watched / copied. */
   target_wallet: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
-  /** Effective max mirror notional per fill (USDC) for this target. */
+  /** Legacy display notional; ignored when sizing_policy_kind is position_gap. */
   mirror_usdc: z.number().positive(),
   /** Target fill percentile floor; fills below this target-wallet size percentile skip. */
   mirror_filter_percentile: targetPolicySchema.shape.mirror_filter_percentile,
@@ -127,9 +114,9 @@ const targetSchema = z.object({
    * of snapshot availability.
    */
   sizing_policy_kind: sizingPolicyKindSchema,
-  /** Per-target assumed per-condition position ceiling for `position_gap`. Null on rows where the policy isn't `position_gap`; required (DB CHECK) when it is. */
+  /** Legacy position_gap v1 field; compatibility-only in v2. */
   target_range_max_usdc: targetRangeMaxUsdcSchema.nullable(),
-  /** Per-condition USDC cap for `position_gap`. Null on rows where the policy isn't `position_gap`; required (DB CHECK) when it is. */
+  /** Legacy position_gap v1 field; compatibility-only in v2. */
   mirror_max_alloc_per_condition_usdc:
     mirrorMaxAllocPerConditionUsdcSchema.nullable(),
   /** Optimistic-concurrency token and cold-start fence for this configuration. */
@@ -157,15 +144,11 @@ const targetCreateInputSchema = z.object({
    */
   sizing_policy_kind: sizingPolicyKindSchema.optional(),
   /**
-   * Initial assumed per-condition position ceiling for `position_gap`.
-   * Required (server-side CHECK) when `sizing_policy_kind === 'position_gap'`;
-   * NULLable for other kinds. task.5014.
+   * Legacy position_gap v1 field accepted for backward compatibility.
    */
   target_range_max_usdc: targetRangeMaxUsdcSchema.optional(),
   /**
-   * Initial per-condition USDC cap for `position_gap`. Required (server-side
-   * CHECK) when `sizing_policy_kind === 'position_gap'`; NULLable for other
-   * kinds. task.5014.
+   * Legacy position_gap v1 field accepted for backward compatibility.
    */
   mirror_max_alloc_per_condition_usdc:
     mirrorMaxAllocPerConditionUsdcSchema.optional(),
@@ -211,72 +194,6 @@ export const polyCopyTradeTargetUpdateOperation = {
     target: targetSchema,
   }),
 } as const;
-
-/**
- * Cross-field rule that the DB CHECK constraint enforces at write-time:
- * `position_gap` targets MUST carry BOTH an explicit `target_range_max_usdc`
- * AND an explicit `mirror_max_alloc_per_condition_usdc`. The route uses this
- * to return a 400 (instead of letting the DB 500 with a CHECK violation).
- * Tests pin the rule on inputs that look valid to the Zod schema but violate
- * the cross-field invariant.
- *
- * **bug.5026 ratio guard.** Beyond presence, the planner formula
- * `desired_usdc = mirror_max_alloc_per_condition_usdc × min(delta/target_range_max_usdc, 1)`
- * silently under-sizes when `mirror_max_alloc_per_condition_usdc` is far
- * smaller than `target_range_max_usdc`. At saturation (`delta ≥ range_max`)
- * desired peaks at `max_alloc` — so a $15/$500k row places at most $15 per
- * condition when the target has run $500k+ into one market. That isn't a
- * cap, it's a 0.003%-scale mirror that produces sub-floor sizing on every
- * fill (`below_market_min`) indistinguishable from "target hasn't moved."
- * Reject ratios below {@link MIN_ALLOC_TO_RANGE_RATIO} at the API so the
- * misconfig is loud at write-time instead of silent at runtime.
- *
- * Returns `null` when the input is valid, or a stable string code when not.
- * No throwing — the caller wraps the code into its preferred HTTP error shape.
- *
- * task.5014 — replaces the legacy `validatePositionGapCapitalAlloc` rule.
- *
- * @public
- */
-export type RangeKnobsRuleViolation =
-  | "position_gap_requires_target_range_max_usdc"
-  | "position_gap_requires_mirror_max_alloc_per_condition_usdc"
-  | "position_gap_alloc_range_ratio_too_small";
-
-/**
- * Minimum `mirror_max_alloc_per_condition_usdc / target_range_max_usdc` ratio
- * accepted by {@link validatePositionGapRangeKnobs}. Anything below this is
- * almost certainly a misconfig (bug.5026): a 5%-of-target-range mirror still
- * places $250 on a $5k delta, well above the $5 CLOB floor. Operators who
- * genuinely want sub-5% fractional mirroring should propose a code-level
- * change rather than smuggle it through a knob the planner treats as a
- * cap. @public
- */
-export const MIN_ALLOC_TO_RANGE_RATIO = 0.05;
-
-export function validatePositionGapRangeKnobs(input: {
-  sizing_policy_kind?: SizingPolicyKind | undefined;
-  target_range_max_usdc?: number | undefined;
-  mirror_max_alloc_per_condition_usdc?: number | undefined;
-}): RangeKnobsRuleViolation | null {
-  if (input.sizing_policy_kind !== "position_gap") {
-    return null;
-  }
-  if (input.target_range_max_usdc === undefined) {
-    return "position_gap_requires_target_range_max_usdc";
-  }
-  if (input.mirror_max_alloc_per_condition_usdc === undefined) {
-    return "position_gap_requires_mirror_max_alloc_per_condition_usdc";
-  }
-  if (
-    input.target_range_max_usdc > 0 &&
-    input.mirror_max_alloc_per_condition_usdc / input.target_range_max_usdc <
-      MIN_ALLOC_TO_RANGE_RATIO
-  ) {
-    return "position_gap_alloc_range_ratio_too_small";
-  }
-  return null;
-}
 
 export type SizingPolicyKind = z.infer<typeof sizingPolicyKindSchema>;
 export type PolyCopyTradeTarget = z.infer<typeof targetSchema>;

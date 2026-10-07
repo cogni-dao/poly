@@ -89,6 +89,29 @@ export {
 } from "./poly-clob-creds";
 
 const DEFAULT_CLOB_HOST = "https://clob.polymarket.com";
+const BUY_COLLATERAL_RESERVE_BPS = 1_000;
+const USDC_ATOMIC_SCALE = 1_000_000;
+
+/** Conservative CLOB fee/rounding reserve; never resizes the algorithm intent. */
+export function requiredBuyCollateralAtomic(usdcAmount: number): bigint {
+  if (!Number.isFinite(usdcAmount) || usdcAmount <= 0) return 0n;
+  return BigInt(
+    Math.ceil(
+      usdcAmount * USDC_ATOMIC_SCALE * (1 + BUY_COLLATERAL_RESERVE_BPS / 10_000)
+    )
+  );
+}
+
+export function evaluateClobCollateralPreflight(input: {
+  requiredAtomic: bigint;
+  balanceAtomic: bigint;
+  allowanceAtomic: bigint;
+}): "insufficient_balance" | "insufficient_allowance" | null {
+  if (input.balanceAtomic < input.requiredAtomic) return "insufficient_balance";
+  if (input.allowanceAtomic < input.requiredAtomic)
+    return "insufficient_allowance";
+  return null;
+}
 
 /** Parameters for the autonomous SELL-to-close path. */
 export interface ClosePositionParams {
@@ -454,6 +477,62 @@ async function buildExecutor(
         `poly-trade-executor: authorize denied (${authz.reason})`,
         authz.reason
       );
+    }
+    if (intent.side === "BUY") {
+      const tokenId =
+        typeof intent.attributes?.token_id === "string"
+          ? intent.attributes.token_id
+          : "";
+      const requiredAtomic = requiredBuyCollateralAtomic(intent.size_usdc);
+      const collateral = await adapter.getCollateralBalanceAllowance(tokenId);
+      const preflightFailure = evaluateClobCollateralPreflight({
+        requiredAtomic,
+        balanceAtomic: collateral.balanceAtomic,
+        allowanceAtomic: collateral.allowanceAtomic,
+      });
+      if (preflightFailure === "insufficient_balance") {
+        deps.metrics.incr("poly_authorize_denied_total", {
+          reason: "insufficient_balance",
+        });
+        deps.logger.warn(
+          {
+            event: "poly.trade.executor.balance_preflight_denied",
+            billing_account_id: billingAccountId,
+            client_order_id: intent.client_order_id,
+            intent_usdc: intent.size_usdc,
+            required_atomic: requiredAtomic.toString(),
+            available_atomic: collateral.balanceAtomic.toString(),
+          },
+          "poly-trade-executor: CLOB balance preflight denied; refusing placeOrder"
+        );
+        throw new PolyTradeExecutorError(
+          "not_authorized",
+          "poly-trade-executor: balance preflight denied (insufficient_balance)",
+          "insufficient_balance"
+        );
+      }
+      if (preflightFailure === "insufficient_allowance") {
+        deps.metrics.incr("poly_authorize_denied_total", {
+          reason: "insufficient_allowance",
+        });
+        deps.logger.warn(
+          {
+            event: "poly.trade.executor.allowance_preflight_denied",
+            billing_account_id: billingAccountId,
+            client_order_id: intent.client_order_id,
+            intent_usdc: intent.size_usdc,
+            required_atomic: requiredAtomic.toString(),
+            allowance_atomic: collateral.allowanceAtomic.toString(),
+            spender: collateral.spender,
+          },
+          "poly-trade-executor: CLOB allowance preflight denied; refusing placeOrder"
+        );
+        throw new PolyTradeExecutorError(
+          "not_authorized",
+          "poly-trade-executor: collateral preflight denied (insufficient_allowance)",
+          "insufficient_allowance"
+        );
+      }
     }
     deps.logger.info(
       {

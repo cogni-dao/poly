@@ -159,17 +159,15 @@ export const PolyEffectiveSizingPolicySchema = z.object({
   implementation_revision: PolyAlgorithmImplementationRevisionSchema,
   /** Target-wallet percentile floor below which fills are not mirrored. */
   mirror_filter_percentile: z.number().int(),
-  /** Per-target notional ceiling for a single mirrored trade. */
+  /** Legacy policy ceiling; ignored by position_gap v2. */
   mirror_max_usdc_per_trade: z.number().nonnegative(),
-  /** `position_gap` only: assumed per-condition position ceiling. */
+  /** Legacy position_gap v1 range; ignored by v2. */
   target_range_max_usdc: z.number().nonnegative().nullable(),
-  /** `position_gap` only: per-condition USDC allocation cap. */
+  /** Legacy position_gap v1 allocation cap; ignored by v2. */
   mirror_max_alloc_per_condition_usdc: z.number().nonnegative().nullable(),
   /**
-   * True when `declared_kind === 'position_gap'` but a required range knob is
-   * absent. The DB CHECK forbids this for ACTIVE rows, so it can only appear on
-   * a disabled row — surfaced rather than hidden so a re-enable is understood
-   * to need both knobs.
+   * Deprecated v1 compatibility flag. Always false because position_gap v2
+   * derives its scale from live portfolio NAV and requires no range knobs.
    */
   range_knobs_incomplete: z.boolean(),
 });

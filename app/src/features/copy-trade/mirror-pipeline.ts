@@ -40,7 +40,7 @@ import {
 } from "@/features/trading";
 import type { WalletActivitySource } from "@/features/wallet-watch";
 
-import { planMirrorFromFill } from "./plan-mirror";
+import { planMirrorFromFill, positionGapDesiredShares } from "./plan-mirror";
 import type {
   MirrorPositionView,
   MirrorReason,
@@ -59,9 +59,8 @@ type PlacementWire = "limit" | "market_fok";
  *
  * - Legacy policies (`min_bet`, `target_percentile`, `target_percentile_scaled`):
  *   `max_usdc_per_condition` is the per-trade cap.
- * - `position_gap` (task.5014 rewrite): surfaces
- *   `mirror_max_alloc_per_condition_usdc` — the per-condition cap that the
- *   range-relative math walks toward.
+ * - `position_gap`: the portfolio gap is computed separately; target fill
+ *   notional is only a compatibility fallback for non-planner call sites.
  * - `mirror_fill_exact`: no policy-level ceiling; the verbatim notional IS
  *   `fill.size_usdc`. SELL-close caps at the target's actual sell notional,
  *   bounded downstream by `closePosition` against our actual holdings.
@@ -69,7 +68,7 @@ type PlacementWire = "limit" | "market_fok";
 function nominalSizeUsdc(sizing: SizingPolicy, fillSizeUsdc: number): number {
   switch (sizing.kind) {
     case "position_gap":
-      return sizing.mirror_max_alloc_per_condition_usdc;
+      return fillSizeUsdc;
     case "mirror_fill_exact":
       return fillSizeUsdc;
     default:
@@ -118,6 +117,12 @@ function extractAdapterErrorReceipt(err: unknown): Record<string, unknown> {
 export interface OperatorPosition {
   asset: string;
   size: number;
+  currentValue?: number;
+}
+
+export interface MirrorPortfolioSnapshot {
+  currentValueUsdc: number;
+  positions: OperatorPosition[];
 }
 
 /** Metric names emitted by the pipeline. */
@@ -201,24 +206,16 @@ export interface MirrorPipelineDeps {
       }) => Promise<TargetConditionPositionView | undefined>)
     | undefined;
   /**
-   * task.5014 — capture-once per-(billing, target, condition) baseline of
-   * target's cumulative position USDC at first post-activation observation.
-   * Required by `position_gap` (range-relative, forward-only). The pipeline
-   * calls this on every BUY fill under `position_gap`; the adapter performs
-   * `INSERT ... ON CONFLICT DO NOTHING RETURNING` and reads back the row on
-   * conflict. Returns the persisted baseline (whether just inserted or
-   * already there) so the planner can compute `delta = current − baseline`.
-   * `undefined` ⇒ hydration error → planner skips `before_baseline_snapshot`
-   * and retries next tick.
+   * Whole target open-position current value for position_gap v2. The
+   * production adapter uses a fully-paginated, short-lived cached Data-API
+   * snapshot so numerator and denominator share one observation.
    */
-  getOrInsertConditionBaseline?:
-    | ((params: {
-        billingAccountId: string;
-        targetId: string;
-        conditionId: string;
-        observedTargetUsdc: number;
-        capturedAtFillId: string;
-      }) => Promise<number | undefined>)
+  getTargetPortfolioCurrentValue?:
+    | ((targetWallet: string) => Promise<number>)
+    | undefined;
+  /** Free pUSD + every exact live mirror position from one coherent read. */
+  getMirrorPortfolioSnapshot?:
+    | (() => Promise<MirrorPortfolioSnapshot>)
     | undefined;
   /** Per-target config. */
   target: MirrorTargetConfig;
@@ -426,29 +423,11 @@ async function processFill(
     fill,
     log,
   });
-  // task.5014 — per-condition sum from the hydrated target position. Used by
-  // `position_gap` to compute delta-since-baseline and the matching
-  // `target_position_usdc_on_condition` planner input.
-  const targetConditionUsdc = sumTargetConditionUsdc(targetPosition);
-  const conditionId = targetConditionIdForFill(fill);
-  // B1 poisoned-baseline guard. `targetPosition === undefined` ⇒ Data-API
-  // hydration failed (or the gate didn't apply). Writing a baseline at this
-  // point would persist 0 — sticky — and re-enable the exact cold-start
-  // catch-up failure mode B1 was designed to dissolve: next tick the API
-  // recovers, target's pre-existing $X position reads as `delta = X − 0`,
-  // and we mirror the full $X at current price. Defer baseline capture to a
-  // future tick when hydration succeeds. The planner already fails closed
-  // (`target_position_below_threshold`) for this fill.
-  const baselineUsdc =
-    targetPosition !== undefined
-      ? await fetchOrInsertConditionBaseline({
-          deps,
-          fill,
-          conditionId,
-          observedTargetUsdc: targetConditionUsdc,
-          log,
-        })
-      : undefined;
+  const portfolioValues = await fetchPositionGapPortfolioValues({
+    deps,
+    fill,
+    log,
+  });
 
   const fillEndDate = fill.attributes?.end_date;
   if (typeof fillEndDate !== "string" || fillEndDate.length === 0) {
@@ -475,11 +454,16 @@ async function processFill(
       ...(targetPosition !== undefined
         ? {
             target_position: targetPosition,
-            target_position_usdc_on_condition: targetConditionUsdc,
           }
         : {}),
-      ...(baselineUsdc !== undefined
-        ? { target_condition_baseline_usdc: baselineUsdc }
+      ...(portfolioValues?.target !== undefined
+        ? { target_portfolio_current_value_usdc: portfolioValues.target }
+        : {}),
+      ...(portfolioValues?.mirror !== undefined
+        ? { mirror_portfolio_current_value_usdc: portfolioValues.mirror }
+        : {}),
+      ...(portfolioValues?.mirrorTokenShares !== undefined
+        ? { mirror_token_qty_shares: portfolioValues.mirrorTokenShares }
         : {}),
     },
     client_order_id,
@@ -488,29 +472,6 @@ async function processFill(
     tick_size,
     now_ms: Date.now(),
   });
-
-  // task.5014 — emit `poly.mirror.range_breach` when target's delta-since-
-  // baseline meets-or-exceeds the per-target range ceiling. Operator's signal
-  // to PATCH `target_range_max_usdc` upward (or accept the clamp). One emit
-  // per breaching fill; bounded by per-target fill cadence at v0 volumes.
-  if (
-    deps.target.sizing.kind === "position_gap" &&
-    baselineUsdc !== undefined &&
-    targetConditionUsdc - baselineUsdc >=
-      deps.target.sizing.target_range_max_usdc
-  ) {
-    log.info(
-      {
-        event: "poly.mirror.range_breach",
-        target_wallet: deps.target.target_wallet,
-        condition_id: conditionId ?? null,
-        target_position_usdc: targetConditionUsdc,
-        target_range_max_usdc: deps.target.sizing.target_range_max_usdc,
-        baseline_target_position_usdc: baselineUsdc,
-      },
-      "mirror pipeline: target delta breached range ceiling; relative clamped to 1.0"
-    );
-  }
 
   const wrongSideHoldingDetected =
     plan.kind === "place" && plan.wrong_side_holding_detected === true;
@@ -525,6 +486,7 @@ async function processFill(
     min_shares,
     min_usdc_notional,
     tick_size,
+    portfolioValues,
   });
 
   // bug.5048 — fire the wrong-side counter + WARN log when option C taken.
@@ -694,7 +656,6 @@ async function fetchTargetConditionPosition(args: {
   const { deps, fill, log } = args;
   if (!needsTargetPosition(deps.target)) return undefined;
   if (!deps.getTargetConditionPosition) return undefined;
-  if (fill.side !== "BUY") return undefined;
   if (typeof fill.attributes?.asset !== "string") return undefined;
   const conditionId = targetConditionIdForFill(fill);
   if (!conditionId) return undefined;
@@ -717,54 +678,43 @@ async function fetchTargetConditionPosition(args: {
   }
 }
 
-/**
- * task.5014 — sum target's cost basis across all tokens on this fill's
- * condition, hydrated from the live target-position view. Returns 0 when
- * target_position is absent so callers can disambiguate "no data" from
- * "target has no exposure" via the `targetPosition !== undefined` check.
- */
-function sumTargetConditionUsdc(
-  targetPosition: TargetConditionPositionView | undefined
-): number {
-  if (!targetPosition) return 0;
-  return targetPosition.tokens.reduce((sum, token) => sum + token.cost_usdc, 0);
-}
-
-/**
- * task.5014 — capture-or-read per-(billing, target, condition) baseline.
- * Returns `undefined` when the dep is absent (legacy/test config) or when
- * hydration errors; the planner then skips `before_baseline_snapshot` and
- * the next tick retries. Only fires for BUY fills under `position_gap`.
- */
-async function fetchOrInsertConditionBaseline(args: {
+async function fetchPositionGapPortfolioValues(args: {
   deps: MirrorPipelineDeps;
   fill: import("@cogni/poly-market-provider").Fill;
-  conditionId: string | undefined;
-  observedTargetUsdc: number;
   log: LoggerPort;
-}): Promise<number | undefined> {
-  const { deps, fill, conditionId, observedTargetUsdc, log } = args;
+}): Promise<
+  { target: number; mirror: number; mirrorTokenShares: number } | undefined
+> {
+  const { deps, fill, log } = args;
   if (deps.target.sizing.kind !== "position_gap") return undefined;
-  if (!deps.getOrInsertConditionBaseline) return undefined;
-  if (fill.side !== "BUY") return undefined;
-  if (!conditionId) return undefined;
+  if (
+    !deps.getTargetPortfolioCurrentValue ||
+    !deps.getMirrorPortfolioSnapshot
+  ) {
+    return undefined;
+  }
   try {
-    return await deps.getOrInsertConditionBaseline({
-      billingAccountId: deps.target.billing_account_id,
-      targetId: deps.target.target_id,
-      conditionId,
-      observedTargetUsdc,
-      capturedAtFillId: fill.fill_id,
-    });
+    const [target, mirrorSnapshot] = await Promise.all([
+      deps.getTargetPortfolioCurrentValue(deps.target.target_wallet),
+      deps.getMirrorPortfolioSnapshot(),
+    ]);
+    const mirror = mirrorSnapshot.currentValueUsdc;
+    if (target < 0 || mirror <= 0) return undefined;
+    const tokenId =
+      typeof fill.attributes?.asset === "string" ? fill.attributes.asset : "";
+    const mirrorTokenShares = mirrorSnapshot.positions
+      .filter((position) => position.asset === tokenId)
+      .reduce((sum, position) => sum + Math.max(0, position.size), 0);
+    return { target, mirror, mirrorTokenShares };
   } catch (err) {
     log.warn(
       {
-        event: "poly.mirror.condition_baseline.fetch_error",
+        event: "poly.mirror.portfolio_value.fetch_error",
         fill_id: fill.fill_id,
         market_id: fill.market_id,
         err: err instanceof Error ? err.message : String(err),
       },
-      "mirror pipeline: condition baseline hydration failed; position_gap will skip before_baseline_snapshot"
+      "mirror pipeline: portfolio hydration failed; position_gap will skip"
     );
     return undefined;
   }
@@ -802,6 +752,9 @@ function buildDecisionLogFields(args: {
   min_shares?: number | undefined;
   min_usdc_notional?: number | undefined;
   tick_size?: number | undefined;
+  portfolioValues?:
+    | { target: number; mirror: number; mirrorTokenShares: number }
+    | undefined;
 }): Record<string, unknown> {
   const {
     branch,
@@ -813,6 +766,7 @@ function buildDecisionLogFields(args: {
     min_shares,
     min_usdc_notional,
     tick_size,
+    portfolioValues,
   } = args;
   const tokenId =
     typeof fill.attributes?.asset === "string" ? fill.attributes.asset : "";
@@ -830,11 +784,15 @@ function buildDecisionLogFields(args: {
     vwap_tolerance: target.vwap_tolerance ?? null,
     wrong_side_holding_detected: wrongSideHoldingDetected ?? false,
     sizing_policy_kind: target.sizing.kind,
-    // Field name retained for external observability (Grafana / Loki dashboards);
-    // internal type is `max_usdc_per_condition` for legacy policies; for
-    // `position_gap` we surface `capital_alloc_usdc` (the per-target whole-
-    // book ceiling) under the same observability label.
-    mirror_max_usdc_per_trade: nominalSizeUsdc(target.sizing, fill.size_usdc),
+    // Legacy ceilings do not participate in portfolio-weighted sizing.
+    mirror_max_usdc_per_trade:
+      target.sizing.kind === "position_gap"
+        ? null
+        : nominalSizeUsdc(target.sizing, fill.size_usdc),
+    position_gap_version: target.sizing.kind === "position_gap" ? 2 : null,
+    target_portfolio_current_value_usdc: portfolioValues?.target ?? null,
+    mirror_portfolio_current_value_usdc: portfolioValues?.mirror ?? null,
+    mirror_token_qty_shares: portfolioValues?.mirrorTokenShares ?? null,
     sizing_percentile:
       "statistic" in target.sizing ? target.sizing.statistic.percentile : null,
     sizing_min_target_usdc:
@@ -1106,12 +1064,106 @@ async function processSellFill(args: {
     return;
   }
 
+  let closeSizeUsdc = nominalSizeUsdc(deps.target.sizing, fill.size_usdc);
+  if (deps.target.sizing.kind === "position_gap") {
+    // Sequential reads intentionally reuse the container's target snapshot
+    // cache, keeping token shares and whole-book NAV on one observation.
+    const targetPosition = await fetchTargetConditionPosition({
+      deps,
+      fill,
+      log,
+    });
+    const portfolioValues = await fetchPositionGapPortfolioValues({
+      deps,
+      fill,
+      log,
+    });
+    const desiredShares = positionGapDesiredShares(tokenId, {
+      already_placed_ids: [],
+      placed_fill_ids: [],
+      ...(targetPosition ? { target_position: targetPosition } : {}),
+      ...(portfolioValues
+        ? {
+            target_portfolio_current_value_usdc: portfolioValues.target,
+            mirror_portfolio_current_value_usdc: portfolioValues.mirror,
+            mirror_token_qty_shares: portfolioValues.mirrorTokenShares,
+          }
+        : {}),
+    });
+    if (desiredShares === undefined) {
+      await recordSellSkip({
+        deps,
+        tenantLedger,
+        fill,
+        decisionBase,
+        source,
+        placement,
+        client_order_id,
+        log,
+        reason: "target_position_below_threshold",
+        detail: "portfolio snapshot unavailable",
+      });
+      return;
+    }
+    const excessShares = position.size - desiredShares;
+    if (excessShares <= 0) {
+      await recordSellSkip({
+        deps,
+        tenantLedger,
+        fill,
+        decisionBase,
+        source,
+        placement,
+        client_order_id,
+        log,
+        reason: "followup_not_needed",
+        detail: "mirror position is not overweight",
+      });
+      return;
+    }
+    closeSizeUsdc = excessShares * fill.price;
+    if (deps.getMarketConstraints) {
+      try {
+        const constraints = await deps.getMarketConstraints(tokenId);
+        const floorUsdc = Math.max(
+          constraints.minShares * fill.price,
+          constraints.minUsdcNotional ?? 0
+        );
+        if (closeSizeUsdc < floorUsdc) {
+          await recordSellSkip({
+            deps,
+            tenantLedger,
+            fill,
+            decisionBase,
+            source,
+            placement,
+            client_order_id,
+            log,
+            reason: "below_market_min",
+            detail: "overweight gap is below market minimum",
+          });
+          return;
+        }
+      } catch (err) {
+        log.warn(
+          {
+            event: "poly.mirror.constraints.fetch_error",
+            fill_id: fill.fill_id,
+            client_order_id,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "mirror pipeline: SELL constraints unavailable; closePosition remains bounded by holdings"
+        );
+      }
+    }
+  }
+
   const boundClose = deps.closePosition;
   if (!boundClose) return;
   const closeExecutor = (intent: OrderIntent): Promise<OrderReceipt> =>
     boundClose({
       tokenId: intent.attributes?.token_id as string,
-      max_size_usdc: nominalSizeUsdc(deps.target.sizing, fill.size_usdc),
+      max_size_usdc: closeSizeUsdc,
       limit_price: fill.price,
       client_order_id,
     });
@@ -1121,7 +1173,7 @@ async function processSellFill(args: {
     market_id: fill.market_id,
     outcome: fill.outcome,
     side: "SELL",
-    size_usdc: nominalSizeUsdc(deps.target.sizing, fill.size_usdc),
+    size_usdc: closeSizeUsdc,
     limit_price: fill.price,
     client_order_id,
     attributes: {
@@ -1148,6 +1200,62 @@ async function processSellFill(args: {
       position_qty_shares: position.size,
       position_token_id: tokenId,
     }
+  );
+}
+
+async function recordSellSkip(args: {
+  deps: MirrorPipelineDeps;
+  tenantLedger: ReturnType<OrderLedger["forTenant"]>;
+  fill: import("@cogni/poly-market-provider").Fill;
+  decisionBase: {
+    target_id: string;
+    fill_id: string;
+    billing_account_id: string;
+    created_by_user_id: string;
+    decided_at: Date;
+  };
+  source: DecisionSource;
+  placement: PlacementWire;
+  client_order_id: `0x${string}`;
+  log: LoggerPort;
+  reason: MirrorReason;
+  detail: string;
+}): Promise<void> {
+  const {
+    deps,
+    tenantLedger,
+    fill,
+    decisionBase,
+    source,
+    placement,
+    client_order_id,
+    log,
+    reason,
+    detail,
+  } = args;
+  emitDecisionMetric(deps.metrics, "skipped", reason, source, placement);
+  await tenantLedger.recordDecision({
+    ...decisionBase,
+    outcome: "skipped",
+    reason,
+    intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
+      close: false,
+      position_branch: "sell_close",
+    }),
+    receipt: null,
+  });
+  log.info(
+    {
+      event: EVENT_NAMES.POLY_MIRROR_DECISION,
+      outcome: "skipped",
+      reason,
+      source,
+      fill_id: fill.fill_id,
+      client_order_id,
+      detail,
+      position_branch: "sell_close",
+    },
+    "mirror pipeline: skip position-gap SELL"
   );
 }
 

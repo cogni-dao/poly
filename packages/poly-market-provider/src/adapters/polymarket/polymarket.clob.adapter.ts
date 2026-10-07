@@ -20,6 +20,7 @@
 
 import {
   type ApiKeyCreds,
+  AssetType,
   Chain,
   ClobClient,
   OrderType,
@@ -55,6 +56,10 @@ import {
   noopLogger,
   noopMetrics,
 } from "../../port/observability.port.js";
+import {
+  POLYGON_POLYMARKET_EXCHANGE_V2,
+  POLYGON_POLYMARKET_NEG_RISK_EXCHANGE_V2,
+} from "./polymarket.exchange.js";
 
 /** Metric names emitted by this adapter. Stable — dashboards reference these. */
 export const POLY_CLOB_METRICS = {
@@ -453,6 +458,51 @@ export class PolymarketClobAdapter implements MarketProviderPort {
         "PolymarketClobAdapter does not implement listMarkets — use the Gamma PolymarketAdapter for reads."
       )
     );
+  }
+
+  /**
+   * Authenticated CLOB view of currently spendable collateral. Unlike a raw
+   * ERC-20 balance this reflects CLOB-side reservations from resting orders.
+   * It is a read-only preflight; callers still treat POST /order as final
+   * authority for races after this snapshot.
+   */
+  async getCollateralBalanceAllowance(tokenId: string): Promise<{
+    balanceAtomic: bigint;
+    allowanceAtomic: bigint;
+    spender: string;
+  }> {
+    const [response, rawNegRisk] = await withSuppressedClobSdkDiagnostics(() =>
+      Promise.all([
+        this.client.getBalanceAllowance({
+          asset_type: AssetType.COLLATERAL,
+          token_id: tokenId,
+        }),
+        this.client.getNegRisk(tokenId),
+      ])
+    );
+    const negRisk = coerceNegRiskApiValue(rawNegRisk);
+    const spender = negRisk
+      ? POLYGON_POLYMARKET_NEG_RISK_EXCHANGE_V2
+      : POLYGON_POLYMARKET_EXCHANGE_V2;
+    const raw = response as unknown as {
+      balance: string;
+      allowance?: unknown;
+      allowances?: Record<string, unknown>;
+    };
+    const mapAllowance = raw.allowances
+      ? Object.entries(raw.allowances).find(
+          ([address]) => address.toLowerCase() === spender.toLowerCase()
+        )?.[1]
+      : undefined;
+    const rawAllowance = raw.allowance ?? mapAllowance;
+    return {
+      balanceAtomic: BigInt(raw.balance),
+      // Fail closed when the authenticated endpoint omits the applicable
+      // spender. A missing allowance must never authorize POST /order.
+      allowanceAtomic:
+        typeof rawAllowance === "string" ? BigInt(rawAllowance) : 0n,
+      spender,
+    };
   }
 
   async placeOrder(intent: OrderIntent): Promise<OrderReceipt> {
@@ -1353,7 +1403,17 @@ export class ClobRejectionError extends Error {
 
 function classifyRejectionMessage(msg: string): PolyClobErrorCode {
   const lowered = msg.toLowerCase();
+  // Polymarket prefixes both failure variants with the same
+  // "not enough balance / allowance" text. Classify the specific clause
+  // first or every allowance failure is swallowed by "not enough balance".
   if (
+    lowered.includes("allowance is not enough") ||
+    lowered.includes("insufficient allowance") ||
+    /allowance:\s*0(?:\D|$)/.test(lowered)
+  )
+    return POLY_CLOB_ERROR_CODES.insufficientAllowance;
+  if (
+    lowered.includes("balance is not enough") ||
     lowered.includes("not enough balance") ||
     lowered.includes("insufficient funds")
   )

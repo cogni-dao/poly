@@ -81,12 +81,12 @@ export const polyCopyTradeTargets = pgTable(
      * docs/spec/poly-copy-trade-position-mirror.md (Phase 1).
      */
     sizingPolicyKind: text("sizing_policy_kind").notNull().default("auto"),
-    /** task.5014 — assumed per-condition position ceiling for `position_gap`. See docs/research/poly/range-relative-mirror-2026-05-26.md. */
+    /** Legacy position_gap v1 range; v2 ignores it. */
     targetRangeMaxUsdc: numeric("target_range_max_usdc", {
       precision: 12,
       scale: 2,
     }),
-    /** task.5014 — per-condition USDC cap for `position_gap`. */
+    /** Legacy position_gap v1 allocation cap; v2 ignores it. */
     mirrorMaxAllocPerConditionUsdc: numeric(
       "mirror_max_alloc_per_condition_usdc",
       {
@@ -128,13 +128,6 @@ export const polyCopyTradeTargets = pgTable(
     check(
       "poly_copy_trade_targets_alloc_per_condition_positive",
       sql`${table.mirrorMaxAllocPerConditionUsdc} IS NULL OR ${table.mirrorMaxAllocPerConditionUsdc} > 0`
-    ),
-    // task.5014: active position_gap rows need both range knobs. Disabled rows
-    // are grandfathered (legacy Σ-book rows can keep their stale state under
-    // disabled_at without violating the new shape).
-    check(
-      "poly_copy_trade_targets_position_gap_requires_range_knobs",
-      sql`${table.sizingPolicyKind} <> 'position_gap' OR ${table.disabledAt} IS NOT NULL OR (${table.targetRangeMaxUsdc} IS NOT NULL AND ${table.mirrorMaxAllocPerConditionUsdc} IS NOT NULL)`
     ),
     // One active row per (tenant, wallet). Soft-deleted rows allowed to coexist
     // so a previously-disabled wallet can be re-added without violating uniqueness.
