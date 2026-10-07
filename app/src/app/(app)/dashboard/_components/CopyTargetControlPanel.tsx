@@ -68,8 +68,14 @@ const CURATED_TARGETS = [
   },
 ] as const;
 
-const ALGORITHM_GUIDE_URL =
-  "https://poly.cognidao.org/knowledge/mirror-algorithm-rankings";
+const ALGORITHM_GUIDE_URLS: Readonly<Record<SizingPolicyKind, string>> = {
+  auto: "https://poly.cognidao.org/knowledge/mirror-algorithm-rankings",
+  target_percentile_scaled:
+    "https://poly.cognidao.org/knowledge/mirror-target-percentile-scaled",
+  position_gap: "https://poly.cognidao.org/knowledge/mirror-position-gap",
+  min_bet: "https://poly.cognidao.org/knowledge/mirror-min-bet",
+  mirror_fill_exact: "https://poly.cognidao.org/knowledge/mirror-fill-exact",
+};
 
 export function CopyTargetControlPanel(): ReactElement {
   const queryClient = useQueryClient();
@@ -457,12 +463,6 @@ function TargetPolicyEditor({
     kind === "auto" || kind === "target_percentile_scaled";
   const cappedSizing = percentileSizing || kind === "min_bet";
   const positionGapSizing = kind === "position_gap";
-  const algorithmExplanation = explanationForAlgorithm(kind, {
-    percentile,
-    maxBet: parsedMaxBet,
-    rangeMax: parsedRangeMax,
-    maxAllocation: parsedMaxAllocation,
-  });
   const positionGapCapConflict =
     positionGapSizing &&
     perOrderCap !== null &&
@@ -544,7 +544,6 @@ function TargetPolicyEditor({
               {ALGORITHM_OPTIONS.map((option) => (
                 <SelectItem key={option.value} value={option.value}>
                   {option.label}
-                  {option.recommended ? " — Recommended" : ""}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -555,58 +554,14 @@ function TargetPolicyEditor({
           <div className="font-mono">build {buildRevision}</div>
         </div>
       </div>
-      <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="font-medium text-foreground">
-            {algorithmExplanation.title}
-          </span>
-          <a
-            href={ALGORITHM_GUIDE_URL}
-            target="_blank"
-            rel="noreferrer"
-            className="text-primary underline-offset-4 hover:underline"
-          >
-            Algorithm guide
-          </a>
-        </div>
-        <p className="mt-1 text-muted-foreground">
-          {algorithmExplanation.description}
-        </p>
-        <p className="mt-1 text-muted-foreground">
-          Changes here are drafts. The Active algorithm and build change only
-          after Save, then runtime picks them up within 30 seconds.
-        </p>
-        {changed ? (
-          <p className="mt-1 font-medium text-warning">
-            Draft only — Active stays {target ? algorithmSummary(target) : "--"}{" "}
-            until Save.
-          </p>
-        ) : null}
-      </div>
-      <div className="grid grid-cols-2 gap-2">
-        {positionGapSizing ? (
-          <>
-            <ValueCell label="Target range" value={moneyOrDash(rangeMax)} />
-            <ValueCell
-              label="Mirror allocation"
-              value={moneyOrDash(maxAllocation)}
-            />
-          </>
-        ) : kind === "mirror_fill_exact" ? (
-          <>
-            <ValueCell label="Sizing" value="Target fill" />
-            <ValueCell label="Safety" value="Wallet caps" />
-          </>
-        ) : (
-          <>
-            <ValueCell
-              label={percentileSizing ? `Threshold p${percentile}` : "Sizing"}
-              value={percentileSizing ? "target percentile" : "market minimum"}
-            />
-            <ValueCell label="Per-token cap" value={moneyOrDash(maxBet)} />
-          </>
-        )}
-      </div>
+      <a
+        href={ALGORITHM_GUIDE_URLS[kind]}
+        target="_blank"
+        rel="noreferrer"
+        className="w-fit font-medium text-primary text-sm underline underline-offset-4"
+      >
+        Learn how {algorithmLabel(kind)} works
+      </a>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:items-end">
         {percentileSizing ? (
           <label className="flex flex-col gap-1">
@@ -685,22 +640,12 @@ function TargetPolicyEditor({
           {saving ? "Saving..." : "Save"}
         </Button>
       </div>
-      {kind === "mirror_fill_exact" ? (
-        <div className="rounded-md bg-warning/10 px-3 py-2 text-muted-foreground text-xs">
-          Mirrors each target fill notional. Orders below the market minimum are
-          skipped; wallet grant caps reject larger orders rather than resizing
-          them.
-        </div>
-      ) : null}
       {positionGapCapConflict ? (
         <div
           className="rounded-md bg-warning/10 px-3 py-2 text-muted-foreground text-xs"
           role="status"
         >
-          A catch-up order can reach {formatMoney(parsedMaxAllocation)}, above
-          your {formatMoney(perOrderCap)} wallet per-order cap. Larger orders
-          are rejected, not resized; raise the wallet cap or lower Max
-          allocation.
+          Set Max allocation to {formatMoney(perOrderCap)} or less.
         </div>
       ) : null}
       {error ? (
@@ -715,11 +660,10 @@ function TargetPolicyEditor({
 const ALGORITHM_OPTIONS: ReadonlyArray<{
   value: SizingPolicyKind;
   label: string;
-  recommended?: boolean;
 }> = [
   { value: "auto", label: "Auto" },
   { value: "target_percentile_scaled", label: "Target percentile" },
-  { value: "position_gap", label: "Position gap", recommended: true },
+  { value: "position_gap", label: "Position gap" },
   { value: "min_bet", label: "Minimum bet" },
   { value: "mirror_fill_exact", label: "Exact fill mirror" },
 ];
@@ -737,81 +681,6 @@ function algorithmSummary(target: PolyTrackedTarget): string {
     : effective;
 }
 
-function moneyOrDash(value: string): string {
-  const amount = Number.parseFloat(value);
-  return Number.isFinite(amount) ? `$${amount.toFixed(2)}` : "--";
-}
-
 function formatMoney(value: number): string {
   return `$${value.toFixed(2)}`;
-}
-
-function explanationForAlgorithm(
-  kind: SizingPolicyKind,
-  values: {
-    percentile: number;
-    maxBet: number;
-    rangeMax: number;
-    maxAllocation: number;
-  },
-): { title: string; description: string } {
-  switch (kind) {
-    case "auto":
-      return {
-        title: "Operational default",
-        description:
-          "Uses Target percentile for curated targets with a sizing profile; otherwise Minimum bet. The recommendation does not change this mapping.",
-      };
-    case "target_percentile_scaled":
-      return {
-        title: "Selective, fill-triggered sizing",
-        description: `Threshold p${values.percentile} ignores smaller target positions. Qualifying exposure scales from the market minimum toward ${moneyOrDash(String(values.maxBet))} per token.`,
-      };
-    case "position_gap": {
-      const valid =
-        Number.isFinite(values.rangeMax) &&
-        values.rangeMax > 0 &&
-        Number.isFinite(values.maxAllocation) &&
-        values.maxAllocation > 0;
-      const example = valid
-        ? ` Example: after the target grows ${formatMoney(values.rangeMax / 4)} from its first post-save baseline, desired exposure is ${formatMoney(values.maxAllocation / 4)}; it buys only the missing shares.`
-        : " Enter both values to preview the allocation.";
-      return {
-        title: "Most promising for position delta · experimental",
-        description:
-          "Target range is the target's new position growth that reaches 100%. Max allocation is your desired exposure at 100%, before subtracting what you already hold." +
-          example,
-      };
-    }
-    case "min_bet":
-      return {
-        title: "Smallest placeable order",
-        description: `Places the market minimum for each eligible target fill, never above the ${moneyOrDash(String(values.maxBet))} per-token cap.`,
-      };
-    case "mirror_fill_exact":
-      return {
-        title: "Experimental fidelity baseline",
-        description:
-          "Copies each eligible target fill's USDC notional at its observed price. It does not compensate for earlier missed fills or position drift.",
-      };
-  }
-}
-
-function ValueCell({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}): ReactElement {
-  return (
-    <div className="rounded-md bg-muted/40 px-3 py-2">
-      <div className="text-muted-foreground text-xs uppercase tracking-wide">
-        {label}
-      </div>
-      <div className="font-semibold text-base tabular-nums tracking-tight">
-        {value}
-      </div>
-    </div>
-  );
 }
