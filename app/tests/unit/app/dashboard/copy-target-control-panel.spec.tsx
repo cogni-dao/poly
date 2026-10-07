@@ -3,23 +3,19 @@
 
 /**
  * Module: `@tests/unit/app/dashboard/copy-target-control-panel`
- * Purpose: Prove the human selector names the active implementation, explains
- *          position-gap settings, exposes durable guidance, and warns when a
- *          chosen allocation conflicts with the wallet's hard order cap.
+ * Purpose: Prove the human selector names the active implementation without
+ *          redundant prose, links directly to durable guidance, and gives one
+ *          concise action when allocation conflicts with the wallet cap.
  * Scope: Component rendering with query hooks mocked; no HTTP or DB.
- * Invariants: HUMAN_READABLE_POLICY, SAVE_BOUNDARY_IS_EXPLICIT,
- *             CAP_REJECTION_IS_EXPLAINED, GUIDE_IS_LINKED.
+ * Invariants: HUMAN_READABLE_POLICY, LEARN_MORE_IS_ALGORITHM_SPECIFIC,
+ *             VALIDATION_IS_ACTIONABLE, NO_RECOMMENDATION_COPY.
  * Side-effects: none
- * Links: story.5009, src/app/(app)/dashboard/_components/CopyTargetControlPanel.tsx
+ * Links: task.1791070971, src/app/(app)/dashboard/_components/CopyTargetControlPanel.tsx
  * @vitest-environment jsdom
  */
 
 import { fireEvent, render, screen } from "@testing-library/react";
-import type {
-  ButtonHTMLAttributes,
-  HTMLAttributes,
-  ReactNode,
-} from "react";
+import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 const targetResponse = {
@@ -95,10 +91,10 @@ vi.mock("@/components", () => ({
   Button: (props: ButtonHTMLAttributes<HTMLButtonElement>) => (
     <button {...props} />
   ),
-  Card: ({ children }: { children: ReactNode }) => <section>{children}</section>,
-  CardContent: ({ children }: { children: ReactNode }) => (
-    <div>{children}</div>
+  Card: ({ children }: { children: ReactNode }) => (
+    <section>{children}</section>
   ),
+  CardContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   formatShortWallet: (wallet: string) => wallet.slice(0, 8),
   Select: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SelectTrigger: (props: HTMLAttributes<HTMLDivElement>) => <div {...props} />,
@@ -120,7 +116,7 @@ vi.mock("@/features/wallet-analysis", () => ({
 import { CopyTargetControlPanel } from "@/app/(app)/dashboard/_components/CopyTargetControlPanel";
 
 describe("CopyTargetControlPanel algorithm selector", () => {
-  it("renders a truthful position-gap decision surface", () => {
+  it("renders a terse position-gap decision surface", () => {
     render(<CopyTargetControlPanel />);
     fireEvent.click(
       screen.getByRole("button", { name: "Expand copy controls" }),
@@ -128,32 +124,30 @@ describe("CopyTargetControlPanel algorithm selector", () => {
 
     expect(screen.getByText("Active: Position gap")).toBeInTheDocument();
     expect(screen.getByText("build f3e49318")).toBeInTheDocument();
+    expect(screen.queryByText(/recommended/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Most promising/i)).not.toBeInTheDocument();
     expect(
-      screen.getByText("Most promising for position delta · experimental"),
-    ).toBeInTheDocument();
+      screen.queryByText(/Changes here are drafts/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Draft only/i)).not.toBeInTheDocument();
     expect(
-      screen.getByText(
-        /after the target grows \$5\.00 from its first post-save baseline/i,
-      ),
-    ).toHaveTextContent("desired exposure is $12.50");
-    expect(
-      screen.getAllByText(
-        /Changes here are drafts.*runtime picks them up within 30 seconds/i,
-      ),
-    ).toHaveLength(2);
+      screen.queryByText(/first post-save baseline/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Algorithm guide")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent(
-      "above your $10.00 wallet per-order cap",
+      "Set Max allocation to $10.00 or less.",
     );
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "rejected, not resized",
+    expect(
+      screen.getByRole("link", { name: "Learn how Position gap works" }),
+    ).toHaveAttribute(
+      "href",
+      "https://poly.cognidao.org/knowledge/mirror-position-gap",
     );
-    for (const link of screen.getAllByRole("link", {
-      name: "Algorithm guide",
-    })) {
-      expect(link).toHaveAttribute(
-        "href",
-        "https://poly.cognidao.org/knowledge/mirror-algorithm-rankings",
-      );
-    }
+    expect(
+      screen.getByRole("link", { name: "Learn how Auto works" }),
+    ).toHaveAttribute(
+      "href",
+      "https://poly.cognidao.org/knowledge/mirror-algorithm-rankings",
+    );
   });
 });
