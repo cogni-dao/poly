@@ -28,7 +28,6 @@
  * @public
  */
 
-import { type LoggerPort } from "@cogni/poly-market-provider";
 import { withTenantScope } from "@cogni/db-client";
 import type { ActorId } from "@cogni/ids";
 import {
@@ -40,6 +39,7 @@ import {
   polyWalletConnections,
   polyWalletGrants,
 } from "@cogni/poly-db-schema";
+import type { LoggerPort } from "@cogni/poly-market-provider";
 import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { targetIdFromWallet } from "@/features/copy-trade/target-id";
@@ -75,24 +75,9 @@ export interface EnumeratedTarget {
    * planner policy. Threaded into `buildMirrorTargetConfig`.
    */
   sizingPolicyKind: SizingPolicyKind;
-  /**
-   * Per-target assumed per-condition position ceiling for `position_gap`.
-   * Nullable on the row; required (via DB CHECK) when
-   * `sizingPolicyKind === 'position_gap'`. Drives
-   * `relative = min(delta / target_range_max_usdc, 1.0)` in
-   * `applyPositionGapSizing`. Never read by other policy kinds.
-   *
-   * task.5014 — see docs/research/poly/range-relative-mirror-2026-05-26.md.
-   */
+  /** Legacy position_gap v1 field; ignored by v2 sizing. */
   targetRangeMaxUsdc: number | null;
-  /**
-   * Per-condition USDC cap this mirror commits per condition under
-   * `position_gap`. Nullable on the row; required (via DB CHECK) when
-   * `sizingPolicyKind === 'position_gap'`. Drives
-   * `desired_usdc = mirror_max_alloc_per_condition_usdc × relative`.
-   *
-   * task.5014.
-   */
+  /** Legacy position_gap v1 field; ignored by v2 sizing. */
   mirrorMaxAllocPerConditionUsdc: number | null;
 }
 
@@ -108,9 +93,9 @@ export interface UserTargetRow {
   mirrorFilterPercentile: number;
   mirrorMaxUsdcPerTrade: number;
   sizingPolicyKind: SizingPolicyKind;
-  /** task.5014 — per-target assumed per-condition position ceiling for `position_gap`. */
+  /** Legacy position_gap v1 field. */
   targetRangeMaxUsdc: number | null;
-  /** task.5014 — per-condition USDC cap for `position_gap`. */
+  /** Legacy position_gap v1 field. */
   mirrorMaxAllocPerConditionUsdc: number | null;
 }
 
@@ -366,7 +351,6 @@ export function dbTargetSource(
     },
   };
 }
-
 
 /**
  * Emit one WARN per non-disabled target that the live-mode joins excluded,

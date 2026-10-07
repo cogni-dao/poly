@@ -337,9 +337,8 @@ export async function getCopySetupForAccount(
         mirror_max_usdc_per_trade: num(row.mirrorMaxUsdcPerTrade),
         target_range_max_usdc: rangeMax,
         mirror_max_alloc_per_condition_usdc: allocPerCondition,
-        range_knobs_incomplete:
-          declaredKind === "position_gap" &&
-          (rangeMax === null || allocPerCondition === null),
+				// Deprecated v1 compatibility field. v2 has no range knobs.
+				range_knobs_incomplete: false,
       },
       activation,
     };

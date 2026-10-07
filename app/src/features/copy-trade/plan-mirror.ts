@@ -203,57 +203,28 @@ function sizeFromPolicy(
 }
 
 /**
- * 2026-05-26 rewrite — range-relative + forward-only baseline (task.5014).
+ * story.5011 — whole-portfolio position gap v2.
  *
- * **North star.** Anchor desired exposure to where target sits in their
- * ASSUMED per-condition position range (hardcoded ceiling), measured
- * relative to the per-(billing, target, condition) baseline snapshot taken at
- * first post-activation observation. We mirror forward growth only.
- *
- * **Math (per fill):**
- *   delta          = max(0, target_position_usdc_on_condition − baseline)
- *   relative       = min(delta / target_range_max_usdc, 1.0)
- *   desired_usdc   = mirror_max_alloc_per_condition_usdc × relative
- *   desired_shares = desired_usdc / fill.price
+ * **Math (per fill, position_gap v2):**
+ *   portfolio_scale = mirror_portfolio_current_value / target_portfolio_current_value
+ *   desired_shares  = target_token_shares × portfolio_scale
  *   gap_shares     = desired_shares − our_shares
- *   gap ≤ 0  → skip followup_not_needed                    (NO SELL)
+ *   BUY gap ≤ 0 → skip; SELL closes only the positive excess gap
  *
- * **Forward-only via baseline (FORWARD_ONLY_VIA_BASELINE).** When
- * `state.target_condition_baseline_usdc` is absent, the pipeline just captured
- * the baseline (INSERT ON CONFLICT DO NOTHING into
- * `poly_copy_target_condition_baseline`). The triggering fill itself has
- * `delta = 0` by construction → skip `before_baseline_snapshot`. ~1 missed
- * entry per (target, condition) lifetime; bounded cost, do not "optimize".
- *
- * **Range breach.** When `delta ≥ target_range_max_usdc`, clamp `relative = 1.0`
- * and emit `poly.mirror.range_breach` (operator's signal to raise the ceiling
- * if appropriate).
+ * **Whole-portfolio denominator.** This is not a per-condition range or cap.
+ * RN1's entire active position book is the denominator and our live NAV is
+ * the dollar scale. The legacy range/max-allocation knobs are compatibility
+ * fields only and MUST NOT participate in this calculation.
  *
  * **No per-trade cap.** `position_gap` passes `+Infinity` to
  * `applyMarketFloors` so only the market-floor LOWER bound applies. Wire-level
  * safety lives in `poly_wallet_grants` (`CAPS_LIVE_IN_GRANT`).
  *
- * **Knob ratio invariant (bug.5026).** `mirror_max_alloc_per_condition_usdc`
- * is BOTH the saturation $ value AND the per-condition ceiling — at saturation
- * (`delta ≥ target_range_max_usdc`) `desired_usdc` peaks at exactly
- * `max_alloc_per_condition_usdc`. Setting `max_alloc << range_max` does NOT
- * "track at full scale capped at max_alloc"; it produces a `max_alloc/range_max`-
- * scale mirror whose every fill falls under the CLOB floor. The contract guard
- * `validatePositionGapRangeKnobs` rejects ratios below `MIN_ALLOC_TO_RANGE_RATIO`
- * (`packages/node-contracts/src/poly.copy-trade.targets.v1.contract.ts`) so the
- * misconfig is loud at write-time instead of silent at runtime. For a 1:1
- * proportional mirror, set `max_alloc_per_condition_usdc = target_range_max_usdc`.
- *
- * **Multi-outcome and neg-risk.** No special case. Per-condition-sum scale
- * (in `target_position_usdc_on_condition`) handles binary, true multi-outcome
- * (>2 tokens), and neg-risk parent-event sub-conditions identically — each
- * fill places against the specific token's price and our specific token gap.
- *
- * See docs/research/poly/range-relative-mirror-2026-05-26.md (design),
- *     docs/research/poly/range-relative-parameterization-2026-05-26.md (knob values).
+ * **Multi-outcome and neg-risk.** No special case. Every token is one member
+ * of the same whole-book denominator and is compared to our exact token leg.
  */
-function applyPositionGapSizing(
-  policy: PositionGapSizingPolicy,
+export function applyPositionGapSizing(
+  _policy: PositionGapSizingPolicy,
   fill: PlanMirrorInput["fill"],
   state: PlanMirrorInput["state"],
   minShares: number | undefined,
@@ -264,40 +235,15 @@ function applyPositionGapSizing(
   if (tokenId === "") {
     return { ok: false, reason: "below_market_min" };
   }
-  // FORWARD_ONLY_VIA_BASELINE — no baseline persisted yet means this is the
-  // first post-activation fill on (billing, target, condition). The pipeline
-  // is responsible for capturing the baseline via INSERT ON CONFLICT DO
-  // NOTHING; this planner returns the bounded skip reason. `delta = 0` by
-  // construction on the trigger fill (baseline captures the post-fill state),
-  // so even without this guard the math below would yield `desired = 0`.
-  // Explicit skip lets the pipeline distinguish "first observation" from
-  // "ongoing followup that produced no gap".
-  if (state.target_condition_baseline_usdc === undefined) {
-    return { ok: false, reason: "before_baseline_snapshot" };
-  }
-  // Σ ≤ 0 guard — target must have a hydrated per-condition position. Skip
-  // rather than treat absence as zero (would emit spurious place attempts on
-  // markets we have no target signal for).
-  const targetPositionUsdc = state.target_position_usdc_on_condition;
-  if (targetPositionUsdc === undefined || targetPositionUsdc <= 0) {
+  const desiredShares = positionGapDesiredShares(tokenId, state);
+  if (desiredShares === undefined) {
     return { ok: false, reason: "target_position_below_threshold" };
   }
-  // RANGE_DRIVES_DESIRED — relative walks 0..1 from baseline to ceiling.
-  const delta = Math.max(
-    0,
-    targetPositionUsdc - state.target_condition_baseline_usdc
-  );
-  const relative = Math.min(delta / policy.target_range_max_usdc, 1.0);
-  const desiredUsdc = policy.mirror_max_alloc_per_condition_usdc * relative;
-  if (desiredUsdc <= 0) {
-    // delta ≤ 0 → target hasn't grown past baseline (or has reduced). NO SELL.
-    return { ok: false, reason: "followup_not_needed" };
-  }
-  const desiredShares = desiredUsdc / fill.price;
   const ourShares =
-    state.position?.our_token_id === tokenId
+    state.mirror_token_qty_shares ??
+    (state.position?.our_token_id === tokenId
       ? state.position.our_qty_shares
-      : 0;
+      : 0);
   const gapShares = desiredShares - ourShares;
   if (gapShares <= 0) {
     return { ok: false, reason: "followup_not_needed" };
@@ -331,6 +277,38 @@ function applyPositionGapSizing(
     minShares,
     minUsdcNotional,
     Number.POSITIVE_INFINITY
+  );
+}
+
+/** Exact target-token shares scaled by whole target NAV → whole mirror NAV. */
+export function positionGapDesiredShares(
+  tokenId: string,
+  state: PlanMirrorInput["state"]
+): number | undefined {
+  const targetPortfolioUsdc = state.target_portfolio_current_value_usdc;
+  const mirrorPortfolioUsdc = state.mirror_portfolio_current_value_usdc;
+  if (
+    tokenId === "" ||
+    targetPortfolioUsdc === undefined ||
+    targetPortfolioUsdc < 0 ||
+    mirrorPortfolioUsdc === undefined ||
+    mirrorPortfolioUsdc <= 0 ||
+    !state.target_position
+  ) {
+    return undefined;
+  }
+  const targetTokenShares = state.target_position.tokens
+    .filter((token) => token.token_id === tokenId)
+    .reduce((sum, token) => sum + token.size_shares, 0);
+  if (targetPortfolioUsdc === 0) {
+    return targetTokenShares === 0 ? 0 : undefined;
+  }
+  // A sold-out target token has a valid desired exposure of zero. Distinguish
+  // it from an unavailable target-position snapshot above so SELL can close
+  // the mirror leg without ever opening a short.
+  return Math.max(
+    0,
+    targetTokenShares * (mirrorPortfolioUsdc / targetPortfolioUsdc)
   );
 }
 

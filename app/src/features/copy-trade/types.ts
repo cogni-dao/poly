@@ -109,15 +109,9 @@ export type TargetPercentileScaledSizingPolicy = z.infer<
   typeof TargetPercentileScaledSizingPolicySchema
 >;
 
-/**
- * Position-gap sizing — task.5014 range-relative + forward-only baseline
- * rewrite. See docs/research/poly/range-relative-mirror-2026-05-26.md for the
- * design (math, invariants, parameterization).
- */
+/** Whole-portfolio proportional sizing. Runtime NAV supplies the scale. */
 export const PositionGapSizingPolicySchema = z.object({
   kind: z.literal("position_gap"),
-  target_range_max_usdc: z.number().positive(),
-  mirror_max_alloc_per_condition_usdc: z.number().positive(),
 });
 export type PositionGapSizingPolicy = z.infer<
   typeof PositionGapSizingPolicySchema
@@ -420,24 +414,22 @@ export const RuntimeStateSchema = z.object({
    */
   target_position: TargetConditionPositionViewSchema.optional(),
   /**
-   * Target's cumulative position USDC (cost basis) on this fill's
-   * `condition_id` RIGHT NOW. Sum across all of target's tokens on the
-   * condition (correct for binary, true multi-outcome, and neg-risk
-   * sub-conditions per the 2026-05-26 design). Hydrated by the pipeline from
-   * `state.target_position.tokens[].cost_usdc`; absent ⇒ `position_gap`
-   * skips `target_position_below_threshold`. task.5014.
+   * Current-value denominator for every active target token position. Under
+   * position_gap v2, one token's desired mirror weight is its
+   * `current_value_usdc / target_portfolio_current_value_usdc`.
    */
-  target_position_usdc_on_condition: z.number().nonnegative().optional(),
+  target_portfolio_current_value_usdc: z.number().nonnegative().optional(),
   /**
-   * Persisted baseline snapshot for `(billing_account_id, target_id, condition_id)`
-   * from `poly_copy_target_condition_baseline.baseline_target_position_usdc`.
-   * Absent ⇒ this is the first post-activation observation for this triple;
-   * the pipeline will INSERT the row (capturing
-   * `target_position_usdc_on_condition` as the baseline) and the planner
-   * MUST skip `before_baseline_snapshot` — `delta` is 0 by construction on
-   * the triggering fill. task.5014.
+   * Mirror wallet NAV available to allocate: free pUSD plus current value of
+   * every open position. This is the sole dollar scale for position_gap v2.
    */
-  target_condition_baseline_usdc: z.number().nonnegative().optional(),
+  mirror_portfolio_current_value_usdc: z.number().positive().optional(),
+  /**
+   * Exact live shares held by the mirror wallet for the fill token. The
+   * portfolio sizer prefers this wallet-authoritative value over the fills
+   * ledger aggregate, which can lag external fills and multi-leg positions.
+   */
+  mirror_token_qty_shares: z.number().nonnegative().optional(),
 });
 export type RuntimeState = z.infer<typeof RuntimeStateSchema>;
 

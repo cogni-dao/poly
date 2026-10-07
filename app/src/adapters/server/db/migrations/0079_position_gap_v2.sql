@@ -1,0 +1,1 @@
+ALTER TABLE "poly_copy_trade_targets" DROP CONSTRAINT "poly_copy_trade_targets_position_gap_requires_range_knobs";

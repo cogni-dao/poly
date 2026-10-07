@@ -442,6 +442,26 @@ describe("classifyClientError (axios / network)", () => {
     expect(details.response_keys).toEqual(["error"]);
   });
 
+  it("separates allowance failures from the shared balance prefix", () => {
+    const details = classifyClientError(
+      new Error(
+        "not enough balance / allowance: the allowance is not enough -> allowance: 0"
+      )
+    );
+    expect(details.error_code).toBe(
+      POLY_CLOB_ERROR_CODES.insufficientAllowance
+    );
+  });
+
+  it("keeps true balance failures classified as insufficient balance", () => {
+    const details = classifyClientError(
+      new Error(
+        "not enough balance / allowance: the balance is not enough -> balance: 702010"
+      )
+    );
+    expect(details.error_code).toBe(POLY_CLOB_ERROR_CODES.insufficientBalance);
+  });
+
   it("falls back to http_error for non-4xx without a parseable body", () => {
     const axiosErr = {
       message: "Request failed with status code 502",
@@ -485,6 +505,7 @@ describe("PolymarketClobAdapter", () => {
       createAndPostMarketOrder?: ReturnType<typeof vi.fn>;
       cancelOrder?: ReturnType<typeof vi.fn>;
       getOrder?: ReturnType<typeof vi.fn>;
+      getBalanceAllowance?: ReturnType<typeof vi.fn>;
       getTickSize?: ReturnType<typeof vi.fn>;
       getNegRisk?: ReturnType<typeof vi.fn>;
       getFeeRateBps?: ReturnType<typeof vi.fn>;
@@ -523,6 +544,60 @@ describe("PolymarketClobAdapter", () => {
     adapter.v2OrderClient = v2OrderClient;
     return adapter;
   }
+
+  it("preflights token-specific collateral and selects the regular exchange allowance", async () => {
+    const getBalanceAllowance = vi.fn().mockResolvedValue({
+      balance: "702010",
+      allowances: {
+        "0xE111180000d2663C0091e4f400237545B87B996B": "9000000",
+        "0xe2222d279d744050d28e00520010520000310F59": "0",
+      },
+    });
+    const getNegRisk = vi.fn().mockResolvedValue(false);
+    const adapter = makeAdapter({ getBalanceAllowance, getNegRisk });
+
+    const result = await adapter.getCollateralBalanceAllowance("token-1");
+
+    expect(getBalanceAllowance).toHaveBeenCalledWith({
+      asset_type: "COLLATERAL",
+      token_id: "token-1",
+    });
+    expect(getNegRisk).toHaveBeenCalledWith("token-1");
+    expect(result).toEqual({
+      balanceAtomic: 702010n,
+      allowanceAtomic: 9000000n,
+      spender: "0xE111180000d2663C0091e4f400237545B87B996B",
+    });
+  });
+
+  it("supports the singular allowance response observed on production", async () => {
+    const adapter = makeAdapter({
+      getBalanceAllowance: vi.fn().mockResolvedValue({
+        balance: "6000000",
+        allowance: "0",
+      }),
+      getNegRisk: vi.fn().mockResolvedValue(true),
+    });
+
+    const result = await adapter.getCollateralBalanceAllowance("token-2");
+
+    expect(result.allowanceAtomic).toBe(0n);
+    expect(result.spender).toBe("0xe2222d279d744050d28e00520010520000310F59");
+  });
+
+  it("fails closed when the applicable allowance is absent", async () => {
+    const adapter = makeAdapter({
+      getBalanceAllowance: vi.fn().mockResolvedValue({
+        balance: "6000000",
+        allowances: {},
+      }),
+      getNegRisk: vi.fn().mockResolvedValue(false),
+    });
+
+    const result = await adapter.getCollateralBalanceAllowance("token-3");
+
+    expect(result.allowanceAtomic).toBe(0n);
+  });
 
   it("routes a post-only limit order through the official V2 client", async () => {
     const placeLimitOrder = vi.fn().mockResolvedValue({

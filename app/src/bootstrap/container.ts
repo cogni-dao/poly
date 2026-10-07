@@ -987,89 +987,7 @@ function createContainer(): Container {
 					"@/bootstrap/copy-trade-reconciler"
 				);
 				const dataApiClient = new PolymarketDataApiClient();
-
-				// task.5014 — per-(billing, target, condition) baseline writer. Run
-				// under `withTenantScope(appDb, createdByUserId)` so RLS clamps the
-				// INSERT/SELECT to the calling tenant (mirrors the order-ledger
-				// tenant surface pattern). `INSERT ... ON CONFLICT DO NOTHING
-				// RETURNING` captures the row when fresh; on conflict, the SELECT
-				// reads back the persisted baseline. Either branch returns the
-				// canonical number the planner divides delta against.
-				const { polyCopyTargetConditionBaseline } = await import(
-					"@cogni/poly-db-schema"
-				);
-				const { withTenantScope } = await import("@cogni/db-client");
-				const { and, eq } = await import("drizzle-orm");
-				const baselineAppDb =
-					db as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
-						Record<string, unknown>
-					>;
-				async function getOrInsertConditionBaseline(params: {
-					createdByUserId: string;
-					billingAccountId: string;
-					targetId: string;
-					conditionId: string;
-					observedTargetUsdc: number;
-					capturedAtFillId: string;
-				}): Promise<number | undefined> {
-					try {
-						const actor = userActor(toUserId(params.createdByUserId));
-						return await withTenantScope(baselineAppDb, actor, async (tx) => {
-							const inserted = await tx
-								.insert(polyCopyTargetConditionBaseline)
-								.values({
-									billingAccountId: params.billingAccountId,
-									targetId: params.targetId,
-									conditionId: params.conditionId,
-									baselineTargetPositionUsdc:
-										params.observedTargetUsdc.toFixed(2),
-									capturedAtFillId: params.capturedAtFillId,
-								})
-								.onConflictDoNothing()
-								.returning({
-									baseline:
-										polyCopyTargetConditionBaseline.baselineTargetPositionUsdc,
-								});
-							if (inserted[0]) return Number(inserted[0].baseline);
-							const existing = await tx
-								.select({
-									baseline:
-										polyCopyTargetConditionBaseline.baselineTargetPositionUsdc,
-								})
-								.from(polyCopyTargetConditionBaseline)
-								.where(
-									and(
-										eq(
-											polyCopyTargetConditionBaseline.billingAccountId,
-											params.billingAccountId,
-										),
-										eq(
-											polyCopyTargetConditionBaseline.targetId,
-											params.targetId,
-										),
-										eq(
-											polyCopyTargetConditionBaseline.conditionId,
-											params.conditionId,
-										),
-									),
-								)
-								.limit(1);
-							return existing[0] ? Number(existing[0].baseline) : undefined;
-						});
-					} catch (err) {
-						log.warn(
-							{
-								event: "poly.mirror.condition_baseline.write_failed",
-								billing_account_id: params.billingAccountId,
-								target_id: params.targetId,
-								condition_id: params.conditionId,
-								err: err instanceof Error ? err.message : String(err),
-							},
-							"baseline upsert failed; planner will skip before_baseline_snapshot this tick",
-						);
-						return undefined;
-					}
-				}
+				const mirrorWalletPort = getPolyTraderWalletAdapter(log);
 				// pino's Logger is structurally compatible with LoggerPort's subset
 				// (debug/info/warn/error/child with object + optional msg).
 				const mirrorLogger =
@@ -1156,6 +1074,78 @@ function createContainer(): Container {
 							return cachedExecutor;
 						};
 
+						// position_gap v2 evaluates numerator + denominator from one
+						// fully-paginated target snapshot. Short caches keep a burst of
+						// fills coherent without turning each fill into another API walk.
+						type PositionSnapshot = Awaited<
+							ReturnType<typeof dataApiClient.listAllUserPositions>
+						>;
+						let targetPositionsCache:
+							| { capturedAt: number; positions: PositionSnapshot }
+							| undefined;
+						const getTargetPositions = async (): Promise<PositionSnapshot> => {
+							if (
+								targetPositionsCache &&
+								Date.now() - targetPositionsCache.capturedAt < 10_000
+							) {
+								return targetPositionsCache.positions;
+							}
+							const positions =
+								await dataApiClient.listAllUserPositions(targetWallet);
+							targetPositionsCache = { capturedAt: Date.now(), positions };
+							return positions;
+						};
+						let mirrorPortfolioCache:
+							| {
+									capturedAt: number;
+									valueUsdc: number;
+									positions: Awaited<
+										ReturnType<PolyTradeExecutor["listPositions"]>
+									>;
+							  }
+							| undefined;
+						const getMirrorPortfolioSnapshot = async () => {
+							if (
+								mirrorPortfolioCache &&
+								Date.now() - mirrorPortfolioCache.capturedAt < 5_000
+							) {
+								return {
+									currentValueUsdc: mirrorPortfolioCache.valueUsdc,
+									positions: mirrorPortfolioCache.positions.map((position) => ({
+										asset: position.asset,
+										size: position.size,
+										currentValue: position.currentValue,
+									})),
+								};
+							}
+							const executor = await getExecutor();
+							const [balances, positions] = await Promise.all([
+								mirrorWalletPort.getBalances(enumeratedTarget.billingAccountId),
+								executor.listPositions(),
+							]);
+							if (!balances || balances.pusd === null) {
+								throw new Error("mirror pUSD balance unavailable");
+							}
+							const openValue = positions.reduce(
+								(sum, position) => sum + Math.max(0, position.currentValue),
+								0,
+							);
+							const valueUsdc = balances.pusd + openValue;
+							mirrorPortfolioCache = {
+								capturedAt: Date.now(),
+								valueUsdc,
+								positions,
+							};
+							return {
+								currentValueUsdc: valueUsdc,
+								positions: positions.map((position) => ({
+									asset: position.asset,
+									size: position.size,
+									currentValue: position.currentValue,
+								})),
+							};
+						};
+
 						let stopPoll: (() => void) | null = null;
 						try {
 							stopPoll = startMirrorPoll({
@@ -1175,38 +1165,25 @@ function createContainer(): Container {
 									return executor.getMarketConstraints(tokenId);
 								},
 								getTargetConditionPosition: async (params) => {
-									const positions = await dataApiClient.listUserPositions(
-										params.targetWallet,
-										{
-											market: params.conditionId,
-											sizeThreshold: 0,
-										},
-									);
+									const positions = await getTargetPositions();
 									return targetConditionPositionFromDataApiPositions(
 										params.conditionId,
 										positions,
 									);
 								},
-								getOrInsertConditionBaseline: async (params) =>
-									getOrInsertConditionBaseline({
-										createdByUserId: enumeratedTarget.createdByUserId,
-										billingAccountId: params.billingAccountId,
-										targetId: params.targetId,
-										conditionId: params.conditionId,
-										observedTargetUsdc: params.observedTargetUsdc,
-										capturedAtFillId: params.capturedAtFillId,
-									}),
+								getTargetPortfolioCurrentValue: async () =>
+									(await getTargetPositions()).reduce(
+										(sum, position) =>
+											sum + Math.max(0, position.currentValue),
+										0,
+									),
+								getMirrorPortfolioSnapshot,
 								closePosition: async (params) => {
 									const executor = await getExecutor();
 									return executor.closePosition(params);
 								},
 								getOperatorPositions: async () => {
-									const executor = await getExecutor();
-									const positions = await executor.listPositions();
-									return positions.map((p) => ({
-										asset: p.asset,
-										size: p.size,
-									}));
+									return (await getMirrorPortfolioSnapshot()).positions;
 								},
 								logger: mirrorLogger,
 								metrics: noopMetrics,

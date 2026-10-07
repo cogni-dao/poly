@@ -124,16 +124,9 @@ function buildSizingPolicy(params: {
   mirrorMaxUsdcPerTrade: number;
   /** Per-target opt-in; `'auto'` (default) preserves snapshot-derived behavior. */
   sizingPolicyKind: SizingPolicyKindInput;
-  /**
-   * Per-target assumed per-condition position ceiling for `position_gap`.
-   * Required when `resolvedKind === 'position_gap'`; throws otherwise.
-   * task.5014 range-relative rewrite — no fallback constant, no default.
-   */
+  /** Legacy position_gap v1 field; ignored by the v2 runtime. */
   targetRangeMaxUsdc?: number;
-  /**
-   * Per-condition USDC cap for `position_gap`. Required when
-   * `resolvedKind === 'position_gap'`; throws otherwise. task.5014.
-   */
+  /** Legacy position_gap v1 field; ignored by the v2 runtime. */
   mirrorMaxAllocPerConditionUsdc?: number;
 }): SizingPolicy {
   const snapshot = snapshotForTargetWallet(params.targetWallet);
@@ -147,28 +140,7 @@ function buildSizingPolicy(params: {
     return minBetPolicy(params.mirrorMaxUsdcPerTrade);
   }
   if (resolvedKind === "position_gap") {
-    if (
-      params.targetRangeMaxUsdc === undefined ||
-      !(params.targetRangeMaxUsdc > 0)
-    ) {
-      throw new Error(
-        `position_gap target ${params.targetWallet} missing target_range_max_usdc — CHECK constraint should have caught this at the DB layer`
-      );
-    }
-    if (
-      params.mirrorMaxAllocPerConditionUsdc === undefined ||
-      !(params.mirrorMaxAllocPerConditionUsdc > 0)
-    ) {
-      throw new Error(
-        `position_gap target ${params.targetWallet} missing mirror_max_alloc_per_condition_usdc — CHECK constraint should have caught this at the DB layer`
-      );
-    }
-    return {
-      kind: "position_gap",
-      target_range_max_usdc: params.targetRangeMaxUsdc,
-      mirror_max_alloc_per_condition_usdc:
-        params.mirrorMaxAllocPerConditionUsdc,
-    };
+    return { kind: "position_gap" };
   }
   if (resolvedKind === "mirror_fill_exact") {
     return { kind: "mirror_fill_exact" };
@@ -231,19 +203,9 @@ export function buildMirrorTargetConfig(params: {
    * to `'auto'` (snapshot-derived) for back-compat.
    */
   sizingPolicyKind?: SizingPolicyKindInput;
-  /**
-   * Per-target assumed per-condition position ceiling for `position_gap`.
-   * Read from `poly_copy_trade_targets.target_range_max_usdc` by the
-   * enumerator. Required when `sizingPolicyKind === 'position_gap'` (CHECK
-   * enforced at the DB layer). task.5014.
-   */
+  /** Legacy position_gap v1 field; retained for row compatibility. */
   targetRangeMaxUsdc?: number;
-  /**
-   * Per-condition USDC cap for `position_gap`. Read from
-   * `poly_copy_trade_targets.mirror_max_alloc_per_condition_usdc` by the
-   * enumerator. Required when `sizingPolicyKind === 'position_gap'`.
-   * task.5014.
-   */
+  /** Legacy position_gap v1 field; retained for row compatibility. */
   mirrorMaxAllocPerConditionUsdc?: number;
 }): MirrorTargetConfig {
   const mirrorFilterPercentile =
@@ -265,8 +227,8 @@ export function buildMirrorTargetConfig(params: {
       : {}),
   });
   // SELF_CONTAINED_SIZING_POLICIES: `mirror_fill_exact` and `position_gap`
-  // each encode their own conviction (verbatim per-fill mirror, range-relative
-  // gap math). Attaching the bug.5048 per-fill gates — `min_target_side_fraction`,
+  // each encode their own conviction (verbatim fill or portfolio gap).
+  // Attaching the bug.5048 per-fill gates — `min_target_side_fraction`,
   // `vwap_tolerance` — or the `position_followup` dispatcher would re-introduce
   // filtering these policies exist to evaluate without (and worse, fire as
   // spurious skips: bug.5027). Optional fields are fail-open when unset; see
@@ -351,12 +313,10 @@ export interface MirrorJobDeps {
   getMarketConstraints?: MirrorPipelineDeps["getMarketConstraints"];
   /** Optional target-position read; v0 production uses Polymarket Data API. */
   getTargetConditionPosition?: MirrorPipelineDeps["getTargetConditionPosition"];
-  /**
-   * Optional per-(billing, target, condition) baseline writer for `position_gap`
-   * (task.5014 range-relative rewrite). See
-   * `MirrorPipelineDeps.getOrInsertConditionBaseline` for semantics.
-   */
-  getOrInsertConditionBaseline?: MirrorPipelineDeps["getOrInsertConditionBaseline"];
+  /** Whole-book current-value denominator for position_gap v2. */
+  getTargetPortfolioCurrentValue?: MirrorPipelineDeps["getTargetPortfolioCurrentValue"];
+  /** Live mirror NAV + exact wallet positions for position_gap v2. */
+  getMirrorPortfolioSnapshot?: MirrorPipelineDeps["getMirrorPortfolioSnapshot"];
   /** Structured log sink. */
   logger: LoggerPort;
   /** Metrics sink. */
@@ -418,7 +378,8 @@ export function startMirrorPoll(deps: MirrorJobDeps): MirrorJobStopFn {
       : {}),
     getMarketConstraints: deps.getMarketConstraints,
     getTargetConditionPosition: deps.getTargetConditionPosition,
-    getOrInsertConditionBaseline: deps.getOrInsertConditionBaseline,
+    getTargetPortfolioCurrentValue: deps.getTargetPortfolioCurrentValue,
+    getMirrorPortfolioSnapshot: deps.getMirrorPortfolioSnapshot,
     target: deps.target,
     getCursor: () => cursor,
     setCursor: (n) => {

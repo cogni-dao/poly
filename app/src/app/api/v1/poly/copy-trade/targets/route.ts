@@ -29,12 +29,9 @@ import { withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
 import { polyCopyTradeTargets } from "@cogni/poly-db-schema";
 import {
-  MIN_ALLOC_TO_RANGE_RATIO,
   type PolyCopyTradeTarget,
   polyAccountReadCopySetupOwnerOperation,
   polyCopyTradeTargetCreateOperation,
-  type RangeKnobsRuleViolation,
-  validatePositionGapRangeKnobs,
 } from "@cogni/poly-node-contracts";
 import { and, eq, isNull } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
@@ -53,19 +50,6 @@ import {
 import { serverEnv } from "@/shared/env/server-env";
 
 export const dynamic = "force-dynamic";
-
-// Per-violation 400 message. The presence violations are operator-typo-class;
-// the ratio violation is bug.5026 — point at the planner math + the threshold
-// so the operator knows whether to raise `max_alloc` or drop `range_max`.
-function rangeKnobsErrorMessage(code: RangeKnobsRuleViolation): string {
-  switch (code) {
-    case "position_gap_requires_target_range_max_usdc":
-    case "position_gap_requires_mirror_max_alloc_per_condition_usdc":
-      return "position_gap targets require both target_range_max_usdc and mirror_max_alloc_per_condition_usdc — no defaults, set explicitly";
-    case "position_gap_alloc_range_ratio_too_small":
-      return `mirror_max_alloc_per_condition_usdc / target_range_max_usdc < ${MIN_ALLOC_TO_RANGE_RATIO} produces sub-floor sizing every fill (bug.5026). The planner peaks at max_alloc at saturation — set max_alloc closer to target_range_max_usdc for a real proportional mirror, or raise both for fractional`;
-  }
-}
 
 /**
  * `id` is the DB row PK from `poly_copy_trade_targets`, exposed as the
@@ -94,17 +78,12 @@ function buildTargetView(params: {
   mirrorActivatedAt: Date;
   source: "env" | "db";
 }): PolyCopyTradeTarget {
-  // task.5014 — under `position_gap`, the per-condition cap IS the
-  // representative per-fill notional that dashboards display. Legacy policies
-  // continue to surface `mirror_max_usdc_per_trade`.
+	// Compatibility display field only. position_gap v2 ignores it entirely.
   const effectiveKind = sizingPolicyKindForTargetWallet(
     params.targetWallet,
     params.sizingPolicyKind,
   );
-  const mirrorUsdc =
-    effectiveKind === "position_gap"
-      ? (params.mirrorMaxAllocPerConditionUsdc ?? params.mirrorMaxUsdcPerTrade)
-      : params.mirrorMaxUsdcPerTrade;
+	const mirrorUsdc = params.mirrorMaxUsdcPerTrade;
   return {
     target_id: params.id,
     target_wallet: params.targetWallet,
@@ -175,30 +154,6 @@ export const POST = wrapRouteHandlerWithLogging(
     const targetRangeMaxInput = parsed.data.target_range_max_usdc;
     const mirrorMaxAllocPerConditionInput =
       parsed.data.mirror_max_alloc_per_condition_usdc;
-
-    // Server-side mirror of the DB CHECK so we return a 400 instead of a
-    // 500 on misuse (POST a position_gap target without both range knobs).
-    const rangeRuleError = validatePositionGapRangeKnobs({
-      sizing_policy_kind: sizingPolicyKindInput,
-      ...(targetRangeMaxInput !== undefined
-        ? { target_range_max_usdc: targetRangeMaxInput }
-        : {}),
-      ...(mirrorMaxAllocPerConditionInput !== undefined
-        ? {
-            mirror_max_alloc_per_condition_usdc:
-              mirrorMaxAllocPerConditionInput,
-          }
-        : {}),
-    });
-    if (rangeRuleError !== null) {
-      return NextResponse.json(
-        {
-          error: rangeKnobsErrorMessage(rangeRuleError),
-          code: rangeRuleError,
-        },
-        { status: 400 },
-      );
-    }
 
     const container = getContainer();
     const account = await container

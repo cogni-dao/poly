@@ -240,7 +240,6 @@ export function CopyTargetControlPanel(): ReactElement {
                 label={curated.label}
                 wallet={curated.wallet}
                 target={target}
-                perOrderCap={grant?.per_order_usdc_cap ?? null}
                 loading={targetsQuery.isLoading}
                 mutating={
                   createMutation.isPending ||
@@ -304,7 +303,6 @@ function CopyTargetCard({
   label,
   wallet,
   target,
-  perOrderCap,
   loading,
   mutating,
   onCreate,
@@ -314,7 +312,6 @@ function CopyTargetCard({
   label: string;
   wallet: string;
   target: PolyTrackedTarget | undefined;
-  perOrderCap: number | null;
   loading: boolean;
   mutating: boolean;
   onCreate: () => void;
@@ -343,7 +340,6 @@ function CopyTargetCard({
 
       <TargetPolicyEditor
         target={target}
-        perOrderCap={perOrderCap}
         disabled={!active || mutating}
         onSave={onSave}
       />
@@ -409,12 +405,10 @@ function TargetActiveSwitch({
 
 function TargetPolicyEditor({
   target,
-  perOrderCap,
   disabled,
   onSave,
 }: {
   target: PolyTrackedTarget | undefined;
-  perOrderCap: number | null;
   disabled: boolean;
   onSave: (next: Omit<PolyCopyTradeTargetUpdateInput, "id">) => Promise<void>;
 }): ReactElement {
@@ -427,12 +421,6 @@ function TargetPolicyEditor({
   const [maxBet, setMaxBet] = useState(
     (target?.policy.mirror_max_usdc_per_trade ?? 5).toFixed(2),
   );
-  const [rangeMax, setRangeMax] = useState(
-    target?.policy.target_range_max_usdc?.toFixed(2) ?? "",
-  );
-  const [maxAllocation, setMaxAllocation] = useState(
-    target?.policy.mirror_max_alloc_per_condition_usdc?.toFixed(2) ?? "",
-  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -440,34 +428,18 @@ function TargetPolicyEditor({
     setKind(target?.policy.declared_kind ?? "auto");
     setPercentile(target?.policy.mirror_filter_percentile ?? 75);
     setMaxBet((target?.policy.mirror_max_usdc_per_trade ?? 5).toFixed(2));
-    setRangeMax(target?.policy.target_range_max_usdc?.toFixed(2) ?? "");
-    setMaxAllocation(
-      target?.policy.mirror_max_alloc_per_condition_usdc?.toFixed(2) ?? "",
-    );
     setError(null);
   }, [target]);
 
   const parsedMaxBet = Number.parseFloat(maxBet);
-  const parsedRangeMax = Number.parseFloat(rangeMax);
-  const parsedMaxAllocation = Number.parseFloat(maxAllocation);
   const changed =
     target &&
     (kind !== target.policy.declared_kind ||
       percentile !== target.policy.mirror_filter_percentile ||
-      parsedMaxBet !== target.policy.mirror_max_usdc_per_trade ||
-      (Number.isFinite(parsedRangeMax) ? parsedRangeMax : null) !==
-        target.policy.target_range_max_usdc ||
-      (Number.isFinite(parsedMaxAllocation) ? parsedMaxAllocation : null) !==
-        target.policy.mirror_max_alloc_per_condition_usdc);
+      parsedMaxBet !== target.policy.mirror_max_usdc_per_trade);
   const percentileSizing =
     kind === "auto" || kind === "target_percentile_scaled";
   const cappedSizing = percentileSizing || kind === "min_bet";
-  const positionGapSizing = kind === "position_gap";
-  const positionGapCapConflict =
-    positionGapSizing &&
-    perOrderCap !== null &&
-    Number.isFinite(parsedMaxAllocation) &&
-    parsedMaxAllocation > perOrderCap;
   const buildRevision =
     target?.policy.implementation_revision.status === "available"
       ? target.policy.implementation_revision.build_sha.slice(0, 8)
@@ -479,24 +451,6 @@ function TargetPolicyEditor({
       setError("Max must be greater than 0");
       return;
     }
-    if (
-      positionGapSizing &&
-      (!Number.isFinite(parsedRangeMax) || parsedRangeMax <= 0)
-    ) {
-      setError("Target range must be greater than 0");
-      return;
-    }
-    if (
-      positionGapSizing &&
-      (!Number.isFinite(parsedMaxAllocation) || parsedMaxAllocation <= 0)
-    ) {
-      setError("Max allocation must be greater than 0");
-      return;
-    }
-    if (positionGapSizing && parsedMaxAllocation / parsedRangeMax < 0.05) {
-      setError("Max allocation must be at least 5% of target range");
-      return;
-    }
     setSaving(true);
     setError(null);
     try {
@@ -505,14 +459,6 @@ function TargetPolicyEditor({
         mirror_max_usdc_per_trade: parsedMaxBet,
         sizing_policy_kind: kind,
         expected_mirror_activated_at: target.mirror_activated_at,
-        ...(Number.isFinite(parsedRangeMax)
-          ? { target_range_max_usdc: parsedRangeMax }
-          : {}),
-        ...(Number.isFinite(parsedMaxAllocation)
-          ? {
-              mirror_max_alloc_per_condition_usdc: parsedMaxAllocation,
-            }
-          : {}),
       });
     } catch (cause) {
       setError(
@@ -597,40 +543,6 @@ function TargetPolicyEditor({
             </span>
           </label>
         ) : null}
-        {positionGapSizing ? (
-          <>
-            <label className="flex flex-col gap-1">
-              <span className="text-muted-foreground text-xs uppercase tracking-wide">
-                Target range
-              </span>
-              <span className="flex h-9 items-center gap-1 rounded-md border border-input bg-background px-2">
-                <span className="text-muted-foreground text-sm">$</span>
-                <input
-                  inputMode="decimal"
-                  value={rangeMax}
-                  disabled={disabled || saving}
-                  onChange={(event) => setRangeMax(event.target.value)}
-                  className="min-w-0 flex-1 bg-transparent text-sm tabular-nums outline-none disabled:opacity-50"
-                />
-              </span>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-muted-foreground text-xs uppercase tracking-wide">
-                Max allocation
-              </span>
-              <span className="flex h-9 items-center gap-1 rounded-md border border-input bg-background px-2">
-                <span className="text-muted-foreground text-sm">$</span>
-                <input
-                  inputMode="decimal"
-                  value={maxAllocation}
-                  disabled={disabled || saving}
-                  onChange={(event) => setMaxAllocation(event.target.value)}
-                  className="min-w-0 flex-1 bg-transparent text-sm tabular-nums outline-none disabled:opacity-50"
-                />
-              </span>
-            </label>
-          </>
-        ) : null}
         <Button
           type="button"
           size="sm"
@@ -640,14 +552,6 @@ function TargetPolicyEditor({
           {saving ? "Saving..." : "Save"}
         </Button>
       </div>
-      {positionGapCapConflict ? (
-        <div
-          className="rounded-md bg-warning/10 px-3 py-2 text-muted-foreground text-xs"
-          role="status"
-        >
-          Set Max allocation to {formatMoney(perOrderCap)} or less.
-        </div>
-      ) : null}
       {error ? (
         <div className="text-destructive text-xs" role="alert">
           {error}
@@ -679,8 +583,4 @@ function algorithmSummary(target: PolyTrackedTarget): string {
   return target.policy.declared_kind === "auto"
     ? `Auto → ${effective}`
     : effective;
-}
-
-function formatMoney(value: number): string {
-  return `$${value.toFixed(2)}`;
 }

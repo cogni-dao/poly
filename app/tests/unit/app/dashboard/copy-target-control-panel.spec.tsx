@@ -5,10 +5,10 @@
  * Module: `@tests/unit/app/dashboard/copy-target-control-panel`
  * Purpose: Prove the human selector names the active implementation without
  *          redundant prose, links directly to durable guidance, and gives one
- *          concise action when allocation conflicts with the wallet cap.
+ *          no obsolete allocation controls.
  * Scope: Component rendering with query hooks mocked; no HTTP or DB.
  * Invariants: HUMAN_READABLE_POLICY, LEARN_MORE_IS_ALGORITHM_SPECIFIC,
- *             VALIDATION_IS_ACTIONABLE, NO_RECOMMENDATION_COPY.
+ *             NO_LEGACY_GAP_KNOBS, NO_RECOMMENDATION_COPY.
  * Side-effects: none
  * Links: task.1791070971, src/app/(app)/dashboard/_components/CopyTargetControlPanel.tsx
  * @vitest-environment jsdom
@@ -134,9 +134,6 @@ describe("CopyTargetControlPanel algorithm selector", () => {
       screen.queryByText(/first post-save baseline/i),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Algorithm guide")).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Set Max allocation to $10.00 or less.",
-    );
     expect(
       screen.getByRole("link", { name: "Learn how Position gap works" }),
     ).toHaveAttribute(
