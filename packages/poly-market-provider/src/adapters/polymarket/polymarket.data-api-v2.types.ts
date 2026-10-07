@@ -4,6 +4,19 @@
 /** Strict schemas for condition-scoped Polymarket Data API V2 positions. */
 import { z } from "zod";
 
+/**
+ * Row lifecycle values emitted by `/v2/positions`.
+ *
+ * `status=OPEN` is a superset: settled-but-unredeemed winners are returned as
+ * `REDEEMABLE`. `REDEEMABLE_LOST` and `MERGEABLE` are query filters, not row
+ * statuses; accepting them here would hide an upstream contract change.
+ */
+export const PolymarketPositionStatusV2Schema = z.enum([
+  "OPEN",
+  "REDEEMABLE",
+  "CLOSED",
+]);
+
 export const PolymarketUserPositionV2Schema = z
   .object({
     archived: z.boolean().optional(),
@@ -34,7 +47,7 @@ export const PolymarketUserPositionV2Schema = z
     realized_pnl: z.number().finite(),
     redeemable: z.boolean().optional(),
     slug: z.string().nullable().optional(),
-    status: z.literal("OPEN"),
+    status: PolymarketPositionStatusV2Schema,
     title: z.string().nullable().optional(),
     token_id: z.string().min(1),
     total_cost_usdc: z.number().finite().nonnegative(),

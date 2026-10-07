@@ -418,7 +418,19 @@ describe("PolymarketDataApiClient.listUserPositionsV2", () => {
         jsonResponse(page([makePosition(conditions[0] ?? "", "11")], "cursor-2"))
       )
       .mockResolvedValueOnce(
-        jsonResponse(page([makePosition(conditions[19] ?? "", "22")]))
+        jsonResponse(
+          page([
+            makePosition(conditions[19] ?? "", "22", {
+              status: "REDEEMABLE",
+              redeemable: true,
+              current_price: 0,
+              current_value: 0,
+              entry_cost_usdc: 5,
+              unrealized_pnl: -5,
+              percent_pnl: -100,
+            }),
+          ])
+        )
       )
       .mockResolvedValueOnce(
         jsonResponse(page([makePosition(conditions[20] ?? "", "33")]))
@@ -436,6 +448,13 @@ describe("PolymarketDataApiClient.listUserPositionsV2", () => {
       initialValue: 4,
       currentValue: 8,
       cashPnl: 4,
+    });
+    expect(positions[1]).toMatchObject({
+      conditionId: conditions[19],
+      asset: "22",
+      initialValue: 5,
+      currentValue: 0,
+      redeemable: true,
     });
     const urls = fetchImpl.mock.calls.map((call) => call[0] as string);
     const first = new URL(urls[0] ?? "");
@@ -468,7 +487,7 @@ describe("PolymarketDataApiClient.listUserPositionsV2", () => {
     ).rejects.toThrow(/duplicate position key/);
   });
 
-  it("rejects mismatched cohorts, malformed pagination, and non-OPEN rows", async () => {
+  it("rejects mismatched cohorts, malformed pagination, and statuses outside an OPEN walk", async () => {
     const mismatched = new PolymarketDataApiClient({
       fetch: vi.fn().mockResolvedValue(
         jsonResponse(page([makePosition(condition(2), "11")]))
@@ -504,6 +523,32 @@ describe("PolymarketDataApiClient.listUserPositionsV2", () => {
     });
     await expect(
       wrongStatus.listUserPositionsV2(wallet, { conditions: [condition(1)] })
+    ).rejects.toThrow(/response status CLOSED was outside the requested OPEN cohort/);
+
+    const queryOnlyStatus = new PolymarketDataApiClient({
+      fetch: vi.fn().mockResolvedValue(
+        jsonResponse(
+          page([makePosition(condition(1), "11", { status: "MERGEABLE" })])
+        )
+      ),
+    });
+    await expect(
+      queryOnlyStatus.listUserPositionsV2(wallet, {
+        conditions: [condition(1)],
+      })
+    ).rejects.toBeInstanceOf(PolyDataApiValidationError);
+
+    const unknownStatus = new PolymarketDataApiClient({
+      fetch: vi.fn().mockResolvedValue(
+        jsonResponse(
+          page([makePosition(condition(1), "11", { status: "SETTLED" })])
+        )
+      ),
+    });
+    await expect(
+      unknownStatus.listUserPositionsV2(wallet, {
+        conditions: [condition(1)],
+      })
     ).rejects.toBeInstanceOf(PolyDataApiValidationError);
   });
 });
