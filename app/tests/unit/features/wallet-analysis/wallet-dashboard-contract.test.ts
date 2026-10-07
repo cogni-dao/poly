@@ -4,6 +4,7 @@
 import {
   PolyWalletDashboardOutputSchema,
   polyWalletDashboardOperation,
+  WalletExecutionMarketGroupSchema,
 } from "@cogni/poly-node-contracts";
 import { describe, expect, it } from "vitest";
 
@@ -24,5 +25,12 @@ describe("poly.wallet.dashboard.v1", () => {
     const execution = PolyWalletDashboardOutputSchema.shape.execution;
     expect(execution.shape.live_position_count.safeParse(null).success).toBe(true);
     expect(execution.shape.closed_position_count.safeParse(null).success).toBe(true);
+  });
+
+  it("keeps missing target position economics unavailable instead of zero", () => {
+    const shape = WalletExecutionMarketGroupSchema.shape;
+    expect(shape.targetEntryValueUsdc.safeParse(null).success).toBe(true);
+    expect(shape.targetValueUsdc.safeParse(null).success).toBe(true);
+    expect(shape.targetGrossBuyNotionalUsdc.safeParse(null).success).toBe(true);
   });
 });

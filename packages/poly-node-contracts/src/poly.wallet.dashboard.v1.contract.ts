@@ -157,6 +157,24 @@ const WalletDashboardComparisonCoverageByStatusSchema = z.object({
 export const WalletDashboardComparisonCoverageSchema = z.object({
   markets: WalletDashboardComparisonCoverageByStatusSchema,
   positions: WalletDashboardComparisonCoverageByStatusSchema,
+  positionClassifications: z
+    .array(
+      z.object({
+        conditionId: z.string(),
+        tokenId: z.string(),
+        status: z.enum(["live", "closed"]),
+        result: z.enum([
+          "comparable",
+          "no_target_position",
+          "exact_token_missing",
+          "target_entry_unavailable",
+          "local_entry_unavailable",
+          "identity_ambiguous",
+          "status_mismatch",
+        ]),
+      })
+    )
+    .max(530),
 });
 export type WalletDashboardComparisonCoverage = z.infer<
   typeof WalletDashboardComparisonCoverageSchema

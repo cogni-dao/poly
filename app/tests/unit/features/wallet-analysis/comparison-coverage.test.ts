@@ -38,6 +38,7 @@ function position(
 ): WalletExecutionPosition {
   return {
     conditionId,
+    asset: `${conditionId}-our-token`,
     status: status === "live" ? "open" : "closed",
   } as WalletExecutionPosition;
 }
@@ -132,6 +133,43 @@ describe("wallet dashboard comparison coverage", () => {
       sampled: null,
       complete: false,
       reasons: ["source_unavailable"],
+    });
+  });
+
+  it("does not sample a local token when the target holds only the opposite token", () => {
+    const conditionId = "condition-opposite-only";
+    const market = group({ conditionId, status: "live", edgeGapPct: 0.25 });
+    const [line] = market.lines;
+    if (!line) throw new Error("expected market line");
+    line.participants = [
+      {
+        side: "copy_target",
+        primary: { tokenId: `${conditionId}-opposite-token` },
+        hedge: null,
+      },
+    ] as never;
+
+    const coverage = materializeComparisonCoverage({
+      counts: [
+        { entity: "markets", status: "live", eligible: 1, comparable: 1, ambiguous: 0, source_ambiguous: false },
+        { entity: "markets", status: "closed", eligible: 0, comparable: 0, ambiguous: 0, source_ambiguous: false },
+        { entity: "positions", status: "live", eligible: 1, comparable: 0, ambiguous: 0, source_ambiguous: false },
+        { entity: "positions", status: "closed", eligible: 0, comparable: 0, ambiguous: 0, source_ambiguous: false },
+      ],
+      groups: [market],
+      livePositions: [position(conditionId, "live")],
+      closedPositions: [],
+      sourceComplete: true,
+      previewTruncated: false,
+    });
+
+    expect(coverage.positions.live).toEqual({
+      eligible: 1,
+      comparable: 0,
+      dropped: 1,
+      sampled: 0,
+      complete: false,
+      reasons: ["comparison_missing"],
     });
   });
 });

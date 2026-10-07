@@ -351,6 +351,163 @@ describe("PolymarketDataApiClient.listAllUserPositions", () => {
   });
 });
 
+describe("PolymarketDataApiClient.listUserPositionsV2", () => {
+  const wallet = "0x9f2fe025f84839ca81dd8e0338892605702d2ca8";
+  const condition = (suffix: number) =>
+    `0x${suffix.toString(16).padStart(64, "0")}`;
+  const makePosition = (
+    conditionId: string,
+    tokenId: string,
+    overrides: Record<string, unknown> = {}
+  ) => ({
+    archived: false,
+    avg_price: 0.4,
+    condition_id: conditionId,
+    current_price: 0.8,
+    current_size: 10,
+    current_value: 8,
+    end_date: "2026-12-31T00:00:00Z",
+    entry_cost_usdc: 4,
+    entry_fees_usdc: 0,
+    event_id: "event-1",
+    event_slug: "event-slug",
+    first_entry_at: 1_700_000_000,
+    icon: null,
+    last_event_at: 1_700_000_100,
+    mergeable: false,
+    name: null,
+    negative_risk: false,
+    opposite_outcome: "NO",
+    opposite_token_id: "999",
+    outcome: "YES",
+    outcome_index: 0,
+    percent_pnl: 100,
+    percent_realized_pnl: 0,
+    profile_image: null,
+    proxy_wallet: wallet,
+    realized_pnl: 0,
+    redeemable: false,
+    slug: "market-slug",
+    status: "OPEN",
+    title: "Market title",
+    token_id: tokenId,
+    total_cost_usdc: 4,
+    total_pnl: 4,
+    total_size: 10,
+    unrealized_pnl: 4,
+    verified: false,
+    ...overrides,
+  });
+  const page = (data: unknown[], nextCursor: string | null = null) => ({
+    data,
+    pagination: {
+      has_more: nextCursor !== null,
+      limit: 1000,
+      offset: 0,
+      next_cursor: nextCursor,
+    },
+  });
+
+  it("chunks 21 conditions, follows cursors, and normalizes V2 economics", async () => {
+    const conditions = Array.from({ length: 21 }, (_, index) =>
+      condition(index + 1)
+    );
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(page([makePosition(conditions[0] ?? "", "11")], "cursor-2"))
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(page([makePosition(conditions[19] ?? "", "22")]))
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(page([makePosition(conditions[20] ?? "", "33")]))
+      );
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    const positions = await client.listUserPositionsV2(wallet, { conditions });
+
+    expect(positions).toHaveLength(3);
+    expect(positions[0]).toMatchObject({
+      conditionId: conditions[0],
+      asset: "11",
+      size: 10,
+      avgPrice: 0.4,
+      initialValue: 4,
+      currentValue: 8,
+      cashPnl: 4,
+    });
+    const urls = fetchImpl.mock.calls.map((call) => call[0] as string);
+    const first = new URL(urls[0] ?? "");
+    const second = new URL(urls[1] ?? "");
+    const third = new URL(urls[2] ?? "");
+    expect(first.pathname).toBe("/v2/positions");
+    expect(first.searchParams.get("condition")?.split(",")).toHaveLength(20);
+    expect(first.searchParams.get("status")).toBe("OPEN");
+    expect(first.searchParams.get("include_archived")).toBe("true");
+    expect(first.searchParams.get("filter_type")).toBe("TOKENS");
+    expect(first.searchParams.get("filter_amount")).toBe("0");
+    expect(second.searchParams.get("condition")).toBe(
+      first.searchParams.get("condition")
+    );
+    expect(second.searchParams.get("cursor")).toBe("cursor-2");
+    expect(second.searchParams.has("limit")).toBe(false);
+    expect(third.searchParams.get("condition")).toBe(conditions[20]);
+  });
+
+  it("rejects duplicate condition/token rows across a cursor walk", async () => {
+    const row = makePosition(condition(1), "11");
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(page([row], "cursor-2")))
+      .mockResolvedValueOnce(jsonResponse(page([row])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    await expect(
+      client.listUserPositionsV2(wallet, { conditions: [condition(1)] })
+    ).rejects.toThrow(/duplicate position key/);
+  });
+
+  it("rejects mismatched cohorts, malformed pagination, and non-OPEN rows", async () => {
+    const mismatched = new PolymarketDataApiClient({
+      fetch: vi.fn().mockResolvedValue(
+        jsonResponse(page([makePosition(condition(2), "11")]))
+      ),
+    });
+    await expect(
+      mismatched.listUserPositionsV2(wallet, { conditions: [condition(1)] })
+    ).rejects.toThrow(/outside the requested cohort/);
+
+    const malformed = new PolymarketDataApiClient({
+      fetch: vi.fn().mockResolvedValue(
+        jsonResponse({
+          data: [makePosition(condition(1), "11")],
+          pagination: {
+            has_more: true,
+            limit: 1000,
+            offset: 0,
+            next_cursor: null,
+          },
+        })
+      ),
+    });
+    await expect(
+      malformed.listUserPositionsV2(wallet, { conditions: [condition(1)] })
+    ).rejects.toBeInstanceOf(PolyDataApiValidationError);
+
+    const wrongStatus = new PolymarketDataApiClient({
+      fetch: vi.fn().mockResolvedValue(
+        jsonResponse(
+          page([makePosition(condition(1), "11", { status: "CLOSED" })])
+        )
+      ),
+    });
+    await expect(
+      wrongStatus.listUserPositionsV2(wallet, { conditions: [condition(1)] })
+    ).rejects.toBeInstanceOf(PolyDataApiValidationError);
+  });
+});
+
 describe("PolymarketDataApiClient.listActivity", () => {
   const wallet = "0x9f2fe025f84839ca81dd8e0338892605702d2ca8";
 

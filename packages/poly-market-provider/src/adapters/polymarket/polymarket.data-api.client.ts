@@ -32,6 +32,10 @@ import {
   PolymarketUserTradesResponseSchema,
   UserValueResponseSchema,
 } from "./polymarket.data-api.types.js";
+import {
+  PolymarketUserPositionsV2ResponseSchema,
+  type PolymarketUserPositionV2,
+} from "./polymarket.data-api-v2.types.js";
 
 /**
  * Thrown when a Data API response fails Zod validation at the client boundary.
@@ -248,6 +252,10 @@ const LIST_ALL_POSITIONS_PAGE_SIZE = 500;
  * that always returns a full page. 50 × 500 = 25k rows; well above the largest
  * funder we have observed (~150). */
 const LIST_ALL_POSITIONS_MAX_PAGES = 50;
+const POSITIONS_V2_CONDITION_CHUNK_SIZE = 20;
+const POSITIONS_V2_MAX_CURSOR_PAGES = 100;
+const POSITIONS_V2_PAGE_SIZE = 1000;
+const CONDITION_ID_PATTERN = /^0x[0-9a-fA-F]{64}$/;
 
 export interface ListTopTradersParams {
   /** Rolling time window honored by the API. `ALL` is all-time. */
@@ -293,6 +301,21 @@ export interface ListUserPositionsParams {
   offset?: number;
   /** Cooperative cancellation — aborts the underlying fetch (task.5015). */
   signal?: AbortSignal | undefined;
+}
+
+export interface ListUserPositionsV2Params {
+  /** Exact condition cohort. The client deduplicates and chunks at 20. */
+  conditions: readonly string[];
+  signal?: AbortSignal | undefined;
+}
+
+/** Stable failure for a semantically invalid or incomplete V2 cursor walk. */
+export class PolyDataApiPositionsV2Error extends Error {
+  readonly code = "INVALID_V2_POSITIONS_WALK" as const;
+  constructor(message: string) {
+    super(`Polymarket Data API V2 positions walk rejected: ${message}`);
+    this.name = "PolyDataApiPositionsV2Error";
+  }
 }
 
 export interface ListActivityParams {
@@ -465,6 +488,108 @@ export class PolymarketDataApiClient {
       if (rows.length < LIST_ALL_POSITIONS_PAGE_SIZE) return all;
     }
     return all;
+  }
+
+  /**
+   * Read a condition-scoped V2 position cohort. Any duplicate, out-of-scope,
+   * malformed, or incomplete cursor walk rejects the whole call.
+   */
+  async listUserPositionsV2(
+    wallet: string,
+    params: ListUserPositionsV2Params
+  ): Promise<PolymarketUserPosition[]> {
+    assertWallet(wallet);
+    const conditions = [
+      ...new Set(params.conditions.map((value) => value.toLowerCase())),
+    ];
+    if (conditions.length === 0) {
+      throw new PolyDataApiPositionsV2Error("at least one condition is required");
+    }
+    const malformedCondition = conditions.find(
+      (condition) => !CONDITION_ID_PATTERN.test(condition)
+    );
+    if (malformedCondition) {
+      throw new PolyDataApiPositionsV2Error(
+        `invalid condition id ${malformedCondition}`
+      );
+    }
+
+    const normalized: PolymarketUserPosition[] = [];
+    const seenPositionKeys = new Set<string>();
+    for (
+      let chunkStart = 0;
+      chunkStart < conditions.length;
+      chunkStart += POSITIONS_V2_CONDITION_CHUNK_SIZE
+    ) {
+      const chunk = conditions.slice(
+        chunkStart,
+        chunkStart + POSITIONS_V2_CONDITION_CHUNK_SIZE
+      );
+      const chunkSet = new Set(chunk);
+      const seenCursors = new Set<string>();
+      let cursor: string | null = null;
+      let complete = false;
+      for (let page = 0; page < POSITIONS_V2_MAX_CURSOR_PAGES; page += 1) {
+        params.signal?.throwIfAborted();
+        const url = new URL("/v2/positions", this.baseUrl);
+        url.searchParams.set("user", wallet);
+        // Cursor pages do not retain the filter server-side; resend every time.
+        url.searchParams.set("condition", chunk.join(","));
+        url.searchParams.set("status", "OPEN");
+        url.searchParams.set("include_archived", "true");
+        url.searchParams.set("filter_type", "TOKENS");
+        url.searchParams.set("filter_amount", "0");
+        if (cursor === null) {
+          url.searchParams.set("limit", String(POSITIONS_V2_PAGE_SIZE));
+        } else {
+          url.searchParams.set("cursor", cursor);
+        }
+
+        const response = parseResponse(
+          PolymarketUserPositionsV2ResponseSchema,
+          await this.fetchJson(url, params.signal),
+          "/v2/positions"
+        );
+        for (const row of response.data) {
+          const conditionId = row.condition_id.toLowerCase();
+          if (!chunkSet.has(conditionId)) {
+            throw new PolyDataApiPositionsV2Error(
+              `response condition ${row.condition_id} was outside the requested cohort`
+            );
+          }
+          if (row.proxy_wallet.toLowerCase() !== wallet.toLowerCase()) {
+            throw new PolyDataApiPositionsV2Error(
+              `response wallet ${row.proxy_wallet} did not match the requested wallet`
+            );
+          }
+          const key = `${conditionId}\u0000${row.token_id}`;
+          if (seenPositionKeys.has(key)) {
+            throw new PolyDataApiPositionsV2Error(
+              `duplicate position key ${conditionId}/${row.token_id}`
+            );
+          }
+          seenPositionKeys.add(key);
+          normalized.push(normalizeV2Position(row));
+        }
+
+        const nextCursor = response.pagination.next_cursor;
+        if (nextCursor === null) {
+          complete = true;
+          break;
+        }
+        if (seenCursors.has(nextCursor)) {
+          throw new PolyDataApiPositionsV2Error("cursor cycle detected");
+        }
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
+      }
+      if (!complete) {
+        throw new PolyDataApiPositionsV2Error(
+          `cursor walk exceeded ${POSITIONS_V2_MAX_CURSOR_PAGES} pages`
+        );
+      }
+    }
+    return normalized;
   }
 
   /**
@@ -675,6 +800,40 @@ export class PolymarketDataApiClient {
       releaseSlot();
     }
   }
+}
+
+function normalizeV2Position(
+  row: PolymarketUserPositionV2
+): PolymarketUserPosition {
+  return PolymarketUserPositionsResponseSchema.element.parse({
+    ...row,
+    proxyWallet: row.proxy_wallet,
+    asset: row.token_id,
+    conditionId: row.condition_id,
+    size: row.current_size,
+    avgPrice: row.avg_price,
+    initialValue: row.entry_cost_usdc,
+    currentValue: row.current_value,
+    cashPnl: row.unrealized_pnl,
+    percentPnl: row.percent_pnl,
+    totalBought: row.total_size,
+    realizedPnl: row.realized_pnl,
+    percentRealizedPnl: row.percent_realized_pnl,
+    curPrice: row.current_price,
+    redeemable: row.redeemable,
+    mergeable: row.mergeable,
+    title: row.title ?? "",
+    slug: row.slug,
+    icon: row.icon,
+    eventId: row.event_id,
+    eventSlug: row.event_slug,
+    outcome: row.outcome,
+    outcomeIndex: row.outcome_index,
+    oppositeOutcome: row.opposite_outcome,
+    oppositeAsset: row.opposite_token_id,
+    endDate: row.end_date,
+    negativeRisk: row.negative_risk,
+  });
 }
 
 function assertWallet(wallet: string): void {

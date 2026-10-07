@@ -150,6 +150,69 @@ describe("bounded market exposure", () => {
     expect(read.truncated).toBe(true);
   });
 
+  it("keeps target entry/value but marks lifetime BUY unavailable without a complete fill rollup", async () => {
+    const db = fakeDb([targetParticipant()]);
+    const read = await buildBoundedMarketExposureGroups({
+      db,
+      billingAccountId: "tenant-a",
+      walletAddress: OUR,
+      livePositions: [position()],
+    });
+
+    expect(read.groups[0]?.lines[0]).toMatchObject({
+      targetEntryValueUsdc: 11,
+      targetValueUsdc: 12,
+      targetGrossBuyNotionalUsdc: null,
+    });
+  });
+
+  it("keeps a measured target value but makes a zero entry basis unavailable", async () => {
+    const zeroEntry = targetParticipant();
+    zeroEntry.legs = zeroEntry.legs.map((leg) => ({
+      ...leg,
+      cost_basis_usdc: "0",
+    }));
+    const db = fakeDb([zeroEntry]);
+    const read = await buildBoundedMarketExposureGroups({
+      db,
+      billingAccountId: "tenant-a",
+      walletAddress: OUR,
+      livePositions: [position()],
+    });
+
+    expect(read.groups[0]).toMatchObject({
+      targetEntryValueUsdc: null,
+      targetValueUsdc: 12,
+    });
+    expect(read.groups[0]?.lines[0]).toMatchObject({
+      targetEntryValueUsdc: null,
+      targetValueUsdc: 12,
+      edgeGapPct: null,
+    });
+  });
+
+  it("does not render an inactive saved target snapshot on the live fallback path", async () => {
+    const inactive = targetParticipant();
+    inactive.legs = inactive.legs.map((leg) => ({
+      ...leg,
+      lifecycle: "inactive",
+    }));
+    const db = fakeDb([inactive]);
+    const read = await buildBoundedMarketExposureGroups({
+      db,
+      billingAccountId: "tenant-a",
+      walletAddress: OUR,
+      livePositions: [position()],
+    });
+
+    expect(read.groups[0]?.lines[0]).toMatchObject({
+      targetEntryValueUsdc: null,
+      targetValueUsdc: null,
+      targetGrossBuyNotionalUsdc: null,
+      edgeGapPct: null,
+    });
+  });
+
   it("marks partial when the global participant budget truncates selected rows", async () => {
     const db = fakeDb([
       targetParticipant({ total_participants: 2_000, group_truncated: false }),
@@ -173,5 +236,35 @@ describe("bounded market exposure", () => {
     });
     expect(read.groups).toHaveLength(200);
     expect(read.truncated).toBe(true);
+    expect(read.groups[0]).toMatchObject({
+      targetEntryValueUsdc: null,
+      targetValueUsdc: null,
+      targetGrossBuyNotionalUsdc: null,
+      edgeGapUsdc: null,
+      edgeGapPct: null,
+    });
+  });
+
+  it("null-propagates group target totals when any child line lacks target facts", async () => {
+    const db = fakeDb([targetParticipant()]);
+    const second = {
+      ...position(1),
+      eventTitle: "Event 0",
+      eventSlug: "event-0",
+    };
+    const read = await buildBoundedMarketExposureGroups({
+      db,
+      billingAccountId: "tenant-a",
+      walletAddress: OUR,
+      livePositions: [position(), second],
+    });
+
+    expect(read.groups).toHaveLength(1);
+    expect(read.groups[0]?.lines).toHaveLength(2);
+    expect(read.groups[0]).toMatchObject({
+      targetEntryValueUsdc: null,
+      targetValueUsdc: null,
+      targetGrossBuyNotionalUsdc: null,
+    });
   });
 });

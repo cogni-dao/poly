@@ -16,25 +16,4 @@
  * @public
  */
 
-import { v5 as uuidv5 } from "uuid";
-
-/**
- * UUIDv5 namespace for poly target wallets. Arbitrary but fixed — any future
- * caller that needs a stable `target_id` from a wallet address uses this
- * namespace so ids collide with ours.
- */
-const POLY_TARGET_WALLET_NAMESPACE =
-  "e2a38b91-7b7d-5f8e-9c0d-4a1e6f8b2c3d" as const;
-
-/**
- * Derive a stable synthetic `target_id` from the target wallet. Used by:
- *   - the fills ledger as the `target_id` column value (so the same wallet
- *     observed by N tenants still has one stable id for client_order_id),
- *   - the env-backed `CopyTradeTargetSource` to give each wallet a stable
- *     synthetic row id (the DB-backed source uses real PK uuids).
- *
- * @public
- */
-export function targetIdFromWallet(wallet: `0x${string}`): string {
-  return uuidv5(wallet.toLowerCase(), POLY_TARGET_WALLET_NAMESPACE);
-}
+export { targetIdFromWallet } from "@/shared/util/poly-target-id";

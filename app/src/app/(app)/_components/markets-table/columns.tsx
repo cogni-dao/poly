@@ -45,6 +45,7 @@ import {
   TableRow,
 } from "@/components/vendor/shadcn/table";
 import { cn } from "@/shared/util/cn";
+import { formatMarketUsd } from "./format";
 
 // biome-ignore lint/suspicious/noExplicitAny: heterogeneous TanStack column array
 type AnyCol = ColumnDef<WalletExecutionMarketGroup, any>;
@@ -66,11 +67,8 @@ const rightHeader = (node: ReactNode) => (
   <div className="flex w-full justify-end">{node}</div>
 );
 
-function formatUsd(value: number): string {
-  return `$${value.toLocaleString(undefined, {
-    maximumFractionDigits: 2,
-    minimumFractionDigits: 2,
-  })}`;
+function formatUsd(value: number | null): string {
+  return formatMarketUsd(value);
 }
 
 function formatSignedUsd(value: number): string {
