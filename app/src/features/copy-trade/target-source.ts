@@ -61,6 +61,12 @@ export interface EnumeratedTarget {
   billingAccountId: string;
   createdByUserId: string;
   targetWallet: WalletAddress;
+  /**
+   * Monotonic assignment revision advanced by every successful policy PATCH.
+   * The target reconciler fingerprints this value so a saved algorithm change
+   * replaces the running poll on its next (at most 30 second) tick.
+   */
+  mirrorActivatedAt: Date;
   mirrorFilterPercentile: number;
   mirrorMaxUsdcPerTrade: number;
   /**
@@ -165,6 +171,7 @@ export function envTargetSource(
       billingAccountId: COGNI_SYSTEM_BILLING_ACCOUNT_ID,
       createdByUserId: COGNI_SYSTEM_PRINCIPAL_USER_ID,
       targetWallet,
+      mirrorActivatedAt: new Date(0),
       mirrorFilterPercentile: 75,
       mirrorMaxUsdcPerTrade: 5,
       sizingPolicyKind: "auto" as const,
@@ -282,6 +289,7 @@ export function dbTargetSource(
           billing_account_id: polyCopyTradeTargets.billingAccountId,
           created_by_user_id: polyCopyTradeTargets.createdByUserId,
           target_wallet: polyCopyTradeTargets.targetWallet,
+          mirror_activated_at: polyCopyTradeTargets.mirrorActivatedAt,
           mirror_filter_percentile: polyCopyTradeTargets.mirrorFilterPercentile,
           mirror_max_usdc_per_trade: polyCopyTradeTargets.mirrorMaxUsdcPerTrade,
           sizing_policy_kind: polyCopyTradeTargets.sizingPolicyKind,
@@ -342,6 +350,7 @@ export function dbTargetSource(
         billingAccountId: r.billing_account_id,
         createdByUserId: r.created_by_user_id,
         targetWallet: r.target_wallet as WalletAddress,
+        mirrorActivatedAt: r.mirror_activated_at,
         mirrorFilterPercentile: r.mirror_filter_percentile,
         mirrorMaxUsdcPerTrade: Number(r.mirror_max_usdc_per_trade),
         sizingPolicyKind: coerceSizingPolicyKind(r.sizing_policy_kind),
