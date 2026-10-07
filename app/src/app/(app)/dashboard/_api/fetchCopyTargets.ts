@@ -13,39 +13,38 @@
  */
 
 import type {
+  PolyAccountCopySetupResponse,
   PolyCopyTradeTarget,
   PolyCopyTradeTargetCreateInput,
   PolyCopyTradeTargetCreateOutput,
   PolyCopyTradeTargetDeleteOutput,
-  PolyCopyTradeTargetsOutput,
+  PolyCopyTradeTargetUpdateInput,
   PolyCopyTradeTargetUpdateOutput,
 } from "@cogni/poly-node-contracts";
 
 export type {
+  PolyAccountCopySetupResponse,
   PolyCopyTradeTarget,
-  PolyCopyTradeTargetsOutput,
   PolyCopyTradeTargetCreateInput,
   PolyCopyTradeTargetCreateOutput,
 };
 
-const EMPTY: PolyCopyTradeTargetsOutput = { targets: [] };
-
-export async function fetchCopyTargets(): Promise<PolyCopyTradeTargetsOutput> {
+export async function fetchCopyTargets(): Promise<PolyAccountCopySetupResponse | null> {
   try {
     const res = await fetch("/api/v1/poly/copy-trade/targets");
-    if (res.ok) return (await res.json()) as PolyCopyTradeTargetsOutput;
-    if (res.status === 404) return EMPTY;
+    if (res.ok) return (await res.json()) as PolyAccountCopySetupResponse;
+    if (res.status === 404) return null;
     throw new Error(
-      `Failed to fetch copy targets: ${res.status} ${res.statusText}`
+      `Failed to fetch copy targets: ${res.status} ${res.statusText}`,
     );
   } catch (err) {
-    if (err instanceof TypeError) return EMPTY;
+    if (err instanceof TypeError) return null;
     throw err;
   }
 }
 
 export async function createCopyTarget(
-  input: PolyCopyTradeTargetCreateInput
+  input: PolyCopyTradeTargetCreateInput,
 ): Promise<PolyCopyTradeTargetCreateOutput> {
   const res = await fetch("/api/v1/poly/copy-trade/targets", {
     method: "POST",
@@ -64,18 +63,18 @@ export async function createCopyTarget(
         detail && typeof detail === "object" && "error" in detail
           ? String((detail as { error: unknown }).error)
           : res.statusText
-      }`
+      }`,
     );
   }
   return (await res.json()) as PolyCopyTradeTargetCreateOutput;
 }
 
 export async function deleteCopyTarget(
-  id: string
+  id: string,
 ): Promise<PolyCopyTradeTargetDeleteOutput> {
   const res = await fetch(
     `/api/v1/poly/copy-trade/targets/${encodeURIComponent(id)}`,
-    { method: "DELETE" }
+    { method: "DELETE" },
   );
   if (!res.ok) {
     let detail: unknown;
@@ -89,7 +88,7 @@ export async function deleteCopyTarget(
         detail && typeof detail === "object" && "error" in detail
           ? String((detail as { error: unknown }).error)
           : res.statusText
-      }`
+      }`,
     );
   }
   return (await res.json()) as PolyCopyTradeTargetDeleteOutput;
@@ -97,10 +96,7 @@ export async function deleteCopyTarget(
 
 export async function updateCopyTargetPolicy(
   id: string,
-  input: {
-    mirror_filter_percentile: number;
-    mirror_max_usdc_per_trade: number;
-  }
+  input: Omit<PolyCopyTradeTargetUpdateInput, "id">,
 ): Promise<PolyCopyTradeTargetUpdateOutput> {
   const res = await fetch(
     `/api/v1/poly/copy-trade/targets/${encodeURIComponent(id)}`,
@@ -108,7 +104,7 @@ export async function updateCopyTargetPolicy(
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
-    }
+    },
   );
   if (!res.ok) {
     let detail: unknown;
@@ -117,13 +113,24 @@ export async function updateCopyTargetPolicy(
     } catch {
       // ignore parse failure
     }
-    throw new Error(
+    throw new CopyTargetUpdateError(
       `Failed to update copy target: ${res.status} ${
         detail && typeof detail === "object" && "error" in detail
           ? String((detail as { error: unknown }).error)
           : res.statusText
-      }`
+      }`,
+      res.status,
     );
   }
   return (await res.json()) as PolyCopyTradeTargetUpdateOutput;
+}
+
+export class CopyTargetUpdateError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "CopyTargetUpdateError";
+    this.status = status;
+  }
 }

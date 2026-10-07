@@ -16,20 +16,34 @@
 "use client";
 
 import type {
-  PolyCopyTradeTarget,
+  PolyCopyTradeTargetUpdateInput,
+  PolyTrackedTarget,
   PolyWalletGrantsPutInput,
+  SizingPolicyKind,
 } from "@cogni/poly-node-contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronUp, Radio } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useState } from "react";
 
-import { AddressChip, Button, Card, CardContent } from "@/components";
+import {
+  AddressChip,
+  Button,
+  Card,
+  CardContent,
+  formatShortWallet,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components";
 import { PolicyControls } from "@/components/kit/policy/PolicyControls";
 import { WalletQuickJump } from "@/features/wallet-analysis";
 import { cn } from "@/shared/util/cn";
 
 import {
+  CopyTargetUpdateError,
   createCopyTarget,
   deleteCopyTarget,
   fetchCopyTargets,
@@ -74,11 +88,29 @@ export function CopyTargetControlPanel(): ReactElement {
   });
 
   const targetsByWallet = useMemo(() => {
-    const map = new Map<string, PolyCopyTradeTarget>();
+    const map = new Map<string, PolyTrackedTarget>();
     for (const target of targetsQuery.data?.targets ?? []) {
-      map.set(target.target_wallet.toLowerCase(), target);
+      if (target.active) {
+        map.set(target.target_wallet.toLowerCase(), target);
+      }
     }
     return map;
+  }, [targetsQuery.data]);
+  const targetCards = useMemo(() => {
+    const curatedWallets = new Set(
+      CURATED_TARGETS.map((target) => target.wallet.toLowerCase()),
+    );
+    const additionalTargets = (targetsQuery.data?.targets ?? [])
+      .filter(
+        (target) =>
+          target.active &&
+          !curatedWallets.has(target.target_wallet.toLowerCase()),
+      )
+      .map((target) => ({
+        label: formatShortWallet(target.target_wallet),
+        wallet: target.target_wallet,
+      }));
+    return [...CURATED_TARGETS, ...additionalTargets];
   }, [targetsQuery.data]);
 
   const createMutation = useMutation({
@@ -97,13 +129,17 @@ export function CopyTargetControlPanel(): ReactElement {
       next,
     }: {
       targetId: string;
-      next: {
-        mirror_filter_percentile: number;
-        mirror_max_usdc_per_trade: number;
-      };
+      next: Omit<PolyCopyTradeTargetUpdateInput, "id">;
     }) => updateCopyTargetPolicy(targetId, next),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: COPY_TARGETS_QUERY_KEY }),
+    onError: (error) => {
+      if (error instanceof CopyTargetUpdateError && error.status === 409) {
+        void queryClient.invalidateQueries({
+          queryKey: COPY_TARGETS_QUERY_KEY,
+        });
+      }
+    },
   });
   const grantsMutation = useMutation({
     mutationFn: (next: PolyWalletGrantsPutInput) => putWalletGrants(next),
@@ -112,9 +148,9 @@ export function CopyTargetControlPanel(): ReactElement {
   });
 
   const grant = grantsQuery.data?.connected ? grantsQuery.data.grant : null;
-  const targetStates = CURATED_TARGETS.map((curated) => ({
+  const targetStates = targetCards.map((curated) => ({
     label: curated.label,
-    active: Boolean(targetsByWallet.get(curated.wallet)),
+    target: targetsByWallet.get(curated.wallet),
   }));
 
   if (collapsed) {
@@ -132,7 +168,7 @@ export function CopyTargetControlPanel(): ReactElement {
                 <CollapsedTargetSignal
                   key={targetState.label}
                   label={targetState.label}
-                  active={targetState.active}
+                  target={targetState.target}
                 />
               ))}
             </div>
@@ -187,7 +223,7 @@ export function CopyTargetControlPanel(): ReactElement {
           Copy targets
         </h2>
         <div className="grid gap-3 lg:grid-cols-2">
-          {CURATED_TARGETS.map((curated) => {
+          {targetCards.map((curated) => {
             const target = targetsByWallet.get(curated.wallet);
             return (
               <CopyTargetCard
@@ -230,25 +266,26 @@ export function CopyTargetControlPanel(): ReactElement {
 
 function CollapsedTargetSignal({
   label,
-  active,
+  target,
 }: {
   label: string;
-  active: boolean;
+  target: PolyTrackedTarget | undefined;
 }): ReactElement {
+  const active = Boolean(target);
   return (
     <span
       className={cn(
         "inline-flex min-h-7 items-center gap-1.5 rounded-md border px-2 font-mono text-xs uppercase tracking-wide",
         active
           ? "border-success/30 bg-success/10 text-success"
-          : "border-border/60 bg-background/40 text-muted-foreground"
+          : "border-border/60 bg-background/40 text-muted-foreground",
       )}
     >
       <Radio
         className={cn("size-3", active ? "animate-pulse" : "opacity-35")}
         aria-hidden
       />
-      {label} copy {active ? "active" : "--"}
+      {label} {target ? algorithmLabel(target.policy.effective_kind) : "off"}
     </span>
   );
 }
@@ -265,15 +302,12 @@ function CopyTargetCard({
 }: {
   label: string;
   wallet: string;
-  target: PolyCopyTradeTarget | undefined;
+  target: PolyTrackedTarget | undefined;
   loading: boolean;
   mutating: boolean;
   onCreate: () => void;
   onDelete: () => void;
-  onSave: (next: {
-    mirror_filter_percentile: number;
-    mirror_max_usdc_per_trade: number;
-  }) => Promise<void>;
+  onSave: (next: Omit<PolyCopyTradeTargetUpdateInput, "id">) => Promise<void>;
 }): ReactElement {
   const active = Boolean(target);
 
@@ -365,40 +399,82 @@ function TargetPolicyEditor({
   disabled,
   onSave,
 }: {
-  target: PolyCopyTradeTarget | undefined;
+  target: PolyTrackedTarget | undefined;
   disabled: boolean;
-  onSave: (next: {
-    mirror_filter_percentile: number;
-    mirror_max_usdc_per_trade: number;
-  }) => Promise<void>;
+  onSave: (next: Omit<PolyCopyTradeTargetUpdateInput, "id">) => Promise<void>;
 }): ReactElement {
+  const [kind, setKind] = useState<SizingPolicyKind>(
+    target?.policy.declared_kind ?? "auto",
+  );
   const [percentile, setPercentile] = useState(
-    target?.mirror_filter_percentile ?? 75
+    target?.policy.mirror_filter_percentile ?? 75,
   );
   const [maxBet, setMaxBet] = useState(
-    (target?.mirror_max_usdc_per_trade ?? 5).toFixed(2)
+    (target?.policy.mirror_max_usdc_per_trade ?? 5).toFixed(2),
+  );
+  const [rangeMax, setRangeMax] = useState(
+    target?.policy.target_range_max_usdc?.toFixed(2) ?? "",
+  );
+  const [maxAllocation, setMaxAllocation] = useState(
+    target?.policy.mirror_max_alloc_per_condition_usdc?.toFixed(2) ?? "",
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setPercentile(target?.mirror_filter_percentile ?? 75);
-    setMaxBet((target?.mirror_max_usdc_per_trade ?? 5).toFixed(2));
+    setKind(target?.policy.declared_kind ?? "auto");
+    setPercentile(target?.policy.mirror_filter_percentile ?? 75);
+    setMaxBet((target?.policy.mirror_max_usdc_per_trade ?? 5).toFixed(2));
+    setRangeMax(target?.policy.target_range_max_usdc?.toFixed(2) ?? "");
+    setMaxAllocation(
+      target?.policy.mirror_max_alloc_per_condition_usdc?.toFixed(2) ?? "",
+    );
     setError(null);
   }, [target]);
 
   const parsedMaxBet = Number.parseFloat(maxBet);
+  const parsedRangeMax = Number.parseFloat(rangeMax);
+  const parsedMaxAllocation = Number.parseFloat(maxAllocation);
   const changed =
     target &&
-    (percentile !== target.mirror_filter_percentile ||
-      maxBet.trim() !== target.mirror_max_usdc_per_trade.toFixed(2));
+    (kind !== target.policy.declared_kind ||
+      percentile !== target.policy.mirror_filter_percentile ||
+      parsedMaxBet !== target.policy.mirror_max_usdc_per_trade ||
+      (Number.isFinite(parsedRangeMax) ? parsedRangeMax : null) !==
+        target.policy.target_range_max_usdc ||
+      (Number.isFinite(parsedMaxAllocation) ? parsedMaxAllocation : null) !==
+        target.policy.mirror_max_alloc_per_condition_usdc);
   const percentileSizing =
-    target?.sizing_policy_kind === "target_percentile_scaled";
+    kind === "auto" || kind === "target_percentile_scaled";
+  const cappedSizing = percentileSizing || kind === "min_bet";
+  const positionGapSizing = kind === "position_gap";
+  const buildRevision =
+    target?.policy.implementation_revision.status === "available"
+      ? target.policy.implementation_revision.build_sha.slice(0, 8)
+      : "unavailable";
 
   async function handleSave() {
     if (!target) return;
     if (!Number.isFinite(parsedMaxBet) || parsedMaxBet <= 0) {
       setError("Max must be greater than 0");
+      return;
+    }
+    if (
+      positionGapSizing &&
+      (!Number.isFinite(parsedRangeMax) || parsedRangeMax <= 0)
+    ) {
+      setError("Target range must be greater than 0");
+      return;
+    }
+    if (
+      positionGapSizing &&
+      (!Number.isFinite(parsedMaxAllocation) || parsedMaxAllocation <= 0)
+    ) {
+      setError("Max allocation must be greater than 0");
+      return;
+    }
+    if (positionGapSizing && parsedMaxAllocation / parsedRangeMax < 0.05) {
+      setError("Max allocation must be at least 5% of target range");
       return;
     }
     setSaving(true);
@@ -407,9 +483,23 @@ function TargetPolicyEditor({
       await onSave({
         mirror_filter_percentile: percentile,
         mirror_max_usdc_per_trade: parsedMaxBet,
+        sizing_policy_kind: kind,
+        expected_mirror_activated_at: target.mirror_activated_at,
+        ...(Number.isFinite(parsedRangeMax)
+          ? { target_range_max_usdc: parsedRangeMax }
+          : {}),
+        ...(Number.isFinite(parsedMaxAllocation)
+          ? {
+              mirror_max_alloc_per_condition_usdc: parsedMaxAllocation,
+            }
+          : {}),
       });
-    } catch {
-      setError("Save failed");
+    } catch (cause) {
+      setError(
+        cause instanceof CopyTargetUpdateError && cause.status === 409
+          ? "Settings changed elsewhere. Reloaded values are required before saving again."
+          : "Save failed",
+      );
     } finally {
       setSaving(false);
     }
@@ -417,47 +507,126 @@ function TargetPolicyEditor({
 
   return (
     <div className="mt-auto flex flex-col gap-3">
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="text-muted-foreground text-xs uppercase tracking-wide">
+            Mirror algorithm
+          </span>
+          <Select
+            value={kind}
+            onValueChange={(value) => setKind(value as SizingPolicyKind)}
+            disabled={disabled || saving}
+          >
+            <SelectTrigger aria-label="Mirror algorithm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ALGORITHM_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="text-muted-foreground text-xs sm:text-right">
+          <div>Active: {target ? algorithmSummary(target) : "--"}</div>
+          <div className="font-mono">build {buildRevision}</div>
+        </div>
+      </div>
       <div className="grid grid-cols-2 gap-2">
-        <ValueCell
-          label={target && percentileSizing ? `p${percentile}` : "p--"}
-          value={target && percentileSizing ? "min bet" : "--"}
-        />
-        <ValueCell label="p100" value={target ? "max bet" : "--"} />
+        {positionGapSizing ? (
+          <>
+            <ValueCell label="Target range" value={moneyOrDash(rangeMax)} />
+            <ValueCell
+              label="Mirror allocation"
+              value={moneyOrDash(maxAllocation)}
+            />
+          </>
+        ) : kind === "mirror_fill_exact" ? (
+          <>
+            <ValueCell label="Sizing" value="Target fill" />
+            <ValueCell label="Safety" value="Wallet caps" />
+          </>
+        ) : (
+          <>
+            <ValueCell
+              label={percentileSizing ? `Threshold p${percentile}` : "Sizing"}
+              value={percentileSizing ? "target percentile" : "market minimum"}
+            />
+            <ValueCell label="Per-token cap" value={moneyOrDash(maxBet)} />
+          </>
+        )}
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:items-end">
-        <label className="flex flex-col gap-1">
-          <span className="text-muted-foreground text-xs uppercase tracking-wide">
-            Threshold p{percentile}
-          </span>
-          <input
-            type="range"
-            min={50}
-            max={99}
-            step={1}
-            value={percentile}
-            disabled={disabled || !percentileSizing || saving}
-            onChange={(e) => setPercentile(Number(e.target.value))}
-            className={cn(
-              "h-9 w-full accent-primary",
-              (disabled || !percentileSizing) && "opacity-40"
-            )}
-          />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-muted-foreground text-xs uppercase tracking-wide">
-            p100 max
-          </span>
-          <span className="flex h-9 items-center gap-1 rounded-md border border-input bg-background px-2">
-            <span className="text-muted-foreground text-sm">$</span>
+        {percentileSizing ? (
+          <label className="flex flex-col gap-1">
+            <span className="text-muted-foreground text-xs uppercase tracking-wide">
+              Threshold p{percentile}
+            </span>
             <input
-              inputMode="decimal"
-              value={maxBet}
+              type="range"
+              min={50}
+              max={99}
+              step={1}
+              value={percentile}
               disabled={disabled || saving}
-              onChange={(e) => setMaxBet(e.target.value)}
-              className="min-w-0 flex-1 bg-transparent text-sm tabular-nums outline-none disabled:opacity-50"
+              onChange={(e) => setPercentile(Number(e.target.value))}
+              className="h-9 w-full accent-primary"
             />
-          </span>
-        </label>
+          </label>
+        ) : null}
+        {cappedSizing ? (
+          <label className="flex flex-col gap-1">
+            <span className="text-muted-foreground text-xs uppercase tracking-wide">
+              Per-token cap
+            </span>
+            <span className="flex h-9 items-center gap-1 rounded-md border border-input bg-background px-2">
+              <span className="text-muted-foreground text-sm">$</span>
+              <input
+                inputMode="decimal"
+                value={maxBet}
+                disabled={disabled || saving}
+                onChange={(event) => setMaxBet(event.target.value)}
+                className="min-w-0 flex-1 bg-transparent text-sm tabular-nums outline-none disabled:opacity-50"
+              />
+            </span>
+          </label>
+        ) : null}
+        {positionGapSizing ? (
+          <>
+            <label className="flex flex-col gap-1">
+              <span className="text-muted-foreground text-xs uppercase tracking-wide">
+                Target range
+              </span>
+              <span className="flex h-9 items-center gap-1 rounded-md border border-input bg-background px-2">
+                <span className="text-muted-foreground text-sm">$</span>
+                <input
+                  inputMode="decimal"
+                  value={rangeMax}
+                  disabled={disabled || saving}
+                  onChange={(event) => setRangeMax(event.target.value)}
+                  className="min-w-0 flex-1 bg-transparent text-sm tabular-nums outline-none disabled:opacity-50"
+                />
+              </span>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-muted-foreground text-xs uppercase tracking-wide">
+                Max allocation
+              </span>
+              <span className="flex h-9 items-center gap-1 rounded-md border border-input bg-background px-2">
+                <span className="text-muted-foreground text-sm">$</span>
+                <input
+                  inputMode="decimal"
+                  value={maxAllocation}
+                  disabled={disabled || saving}
+                  onChange={(event) => setMaxAllocation(event.target.value)}
+                  className="min-w-0 flex-1 bg-transparent text-sm tabular-nums outline-none disabled:opacity-50"
+                />
+              </span>
+            </label>
+          </>
+        ) : null}
         <Button
           type="button"
           size="sm"
@@ -467,6 +636,12 @@ function TargetPolicyEditor({
           {saving ? "Saving..." : "Save"}
         </Button>
       </div>
+      {kind === "mirror_fill_exact" ? (
+        <div className="rounded-md bg-warning/10 px-3 py-2 text-muted-foreground text-xs">
+          Mirrors each target fill notional; wallet grant caps still limit real
+          orders.
+        </div>
+      ) : null}
       {error ? (
         <div className="text-destructive text-xs" role="alert">
           {error}
@@ -474,6 +649,35 @@ function TargetPolicyEditor({
       ) : null}
     </div>
   );
+}
+
+const ALGORITHM_OPTIONS: ReadonlyArray<{
+  value: SizingPolicyKind;
+  label: string;
+}> = [
+  { value: "auto", label: "Auto" },
+  { value: "target_percentile_scaled", label: "Target percentile" },
+  { value: "position_gap", label: "Position gap" },
+  { value: "min_bet", label: "Minimum bet" },
+  { value: "mirror_fill_exact", label: "Exact fill mirror" },
+];
+
+function algorithmLabel(kind: SizingPolicyKind): string {
+  return (
+    ALGORITHM_OPTIONS.find((option) => option.value === kind)?.label ?? kind
+  );
+}
+
+function algorithmSummary(target: PolyTrackedTarget): string {
+  const effective = algorithmLabel(target.policy.effective_kind);
+  return target.policy.declared_kind === "auto"
+    ? `Auto → ${effective}`
+    : effective;
+}
+
+function moneyOrDash(value: string): string {
+  const amount = Number.parseFloat(value);
+  return Number.isFinite(amount) ? `$${amount.toFixed(2)}` : "--";
 }
 
 function ValueCell({

@@ -30,6 +30,7 @@ export {
   type ExecuteAccountReadArgs,
 } from "./execute-account-read";
 export {
+  algorithmImplementationRevision,
   classifyRecentAttemptsError,
   copySetupAccountReadHandler,
   copySetupExtra,

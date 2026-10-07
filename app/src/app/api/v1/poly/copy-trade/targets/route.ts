@@ -5,18 +5,14 @@
  * Module: `@app/api/v1/poly/copy-trade/targets`
  * Purpose: HTTP GET (list) + POST (create) for the calling user's tracked Polymarket
  *          wallets. Per docs/spec/poly-tenant-and-collateral.md.
- * Scope: Thin validators — both ops resolve `(userId, billingAccountId)` from the
- *        session, then `withTenantScope(appDb, userId, ...)` so RLS enforces tenant
- *        isolation at the DB layer. App-side defense-in-depth verifies
- *        `row.billing_account_id === expected.billingAccountId` before responding.
- *        No business logic; no cross-tenant access.
+ * Scope: GET is the owner transport for `poly.account.copy-setup.v1`; POST is
+ *        the existing RLS-scoped create path. No cross-tenant access.
  * Invariants:
- *   - TENANT_SCOPED: routes use `withTenantScope(appDb, sessionUser.id)`. RLS clamp.
+ *   - TENANT_SCOPED: GET uses the account-read executor; POST uses
+ *     `withTenantScope(appDb, sessionUser.id)`. Both keep app-role RLS.
  *   - TENANT_DEFENSE_IN_DEPTH: write paths (POST) verify `row.billing_account_id ===
  *     expected.billingAccountId` after the RLS-scoped INSERT/SELECT (mirrors
- *     `DrizzleConnectionBrokerAdapter.resolve()`). Read paths (GET / DELETE) rely on
- *     the RLS clamp alone — they project bare wallet strings or do RLS-scoped
- *     UPDATE-by-id; there is no row-shaped tenant column to defense-check.
+ *     `DrizzleConnectionBrokerAdapter.resolve()`).
  *   - NO_KILL_SWITCH (bug.0438): copy-trade no longer has a per-tenant kill-switch
  *     table — the act of having an active target row IS the user's opt-in. The
  *     route writes only the `poly_copy_trade_targets` row; the cross-tenant
@@ -35,8 +31,8 @@ import { polyCopyTradeTargets } from "@cogni/poly-db-schema";
 import {
   MIN_ALLOC_TO_RANGE_RATIO,
   type PolyCopyTradeTarget,
+  polyAccountReadCopySetupOwnerOperation,
   polyCopyTradeTargetCreateOperation,
-  polyCopyTradeTargetsOperation,
   type RangeKnobsRuleViolation,
   validatePositionGapRangeKnobs,
 } from "@cogni/poly-node-contracts";
@@ -44,10 +40,17 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
+import { accountReadGetHandler } from "@/app/_lib/capability-plane/account-read-route";
 import { getContainer, resolveAppDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { sizingPolicyKindForTargetWallet } from "@/bootstrap/jobs/copy-trade-mirror.job";
-import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
+import {
+  ACCOUNT_READ_TERMINAL_EVENTS,
+  algorithmImplementationRevision,
+  copySetupAccountReadHandler,
+  copySetupExtra,
+} from "@/features/capability-plane";
+import { serverEnv } from "@/shared/env/server-env";
 
 export const dynamic = "force-dynamic";
 
@@ -88,6 +91,7 @@ function buildTargetView(params: {
     | "mirror_fill_exact";
   targetRangeMaxUsdc: number | null;
   mirrorMaxAllocPerConditionUsdc: number | null;
+  mirrorActivatedAt: Date;
   source: "env" | "db";
 }): PolyCopyTradeTarget {
   // task.5014 — under `position_gap`, the per-condition cap IS the
@@ -95,7 +99,7 @@ function buildTargetView(params: {
   // continue to surface `mirror_max_usdc_per_trade`.
   const effectiveKind = sizingPolicyKindForTargetWallet(
     params.targetWallet,
-    params.sizingPolicyKind
+    params.sizingPolicyKind,
   );
   const mirrorUsdc =
     effectiveKind === "position_gap"
@@ -110,59 +114,35 @@ function buildTargetView(params: {
     sizing_policy_kind: effectiveKind,
     target_range_max_usdc: params.targetRangeMaxUsdc,
     mirror_max_alloc_per_condition_usdc: params.mirrorMaxAllocPerConditionUsdc,
+    mirror_activated_at: params.mirrorActivatedAt.toISOString(),
     source: params.source,
   };
 }
 
 /**
- * GET /api/v1/poly/copy-trade/targets — list the calling user's tracked wallets.
+ * GET /api/v1/poly/copy-trade/targets — owner transport for the same typed
+ * copy-setup capability approved agents read. It adds no owner-only query.
  */
 export const GET = wrapRouteHandlerWithLogging(
   {
     routeId: "poly.copy_trade.targets.list",
     auth: { mode: "required", getSessionUser },
   },
-  async (_ctx, _request, sessionUser) => {
-    if (!sessionUser) throw new Error("sessionUser required");
-    const container = getContainer();
-
-    // Resolve the user's billing account (defense-in-depth target).
-    // CACHED_TENANT_RESOLUTION (dashboard floor fix): read path only —
-    // the POST below keeps the original uncached floor.
-    const billingAccountId = await resolveBillingAccountId(
-      container.serviceAccountService,
-      sessionUser.id
-    );
-
-    const rows = await container.copyTradeTargetSource.listForActor(
-      userActor(toUserId(sessionUser.id))
-    );
-
-    if (rows.length === 0) {
-      return NextResponse.json(
-        polyCopyTradeTargetsOperation.output.parse({ targets: [] })
-      );
-    }
-
-    const targets = rows.map((row) =>
-      buildTargetView({
-        id: row.id,
-        targetWallet: row.targetWallet,
-        billingAccountId,
-        createdByUserId: sessionUser.id,
-        mirrorFilterPercentile: row.mirrorFilterPercentile,
-        mirrorMaxUsdcPerTrade: row.mirrorMaxUsdcPerTrade,
-        sizingPolicyKind: row.sizingPolicyKind,
-        targetRangeMaxUsdc: row.targetRangeMaxUsdc,
-        mirrorMaxAllocPerConditionUsdc: row.mirrorMaxAllocPerConditionUsdc,
-        source: "db",
-      })
-    );
-
-    return NextResponse.json(
-      polyCopyTradeTargetsOperation.output.parse({ targets })
-    );
-  }
+  accountReadGetHandler({
+    resolveDb: resolveAppDb,
+    operation: polyAccountReadCopySetupOwnerOperation,
+    eventName:
+      ACCOUNT_READ_TERMINAL_EVENTS[polyAccountReadCopySetupOwnerOperation.id],
+    createRequestBinding: () => ({
+      handler: copySetupAccountReadHandler({
+        resolveEffectiveKind: sizingPolicyKindForTargetWallet,
+        implementationRevision: algorithmImplementationRevision(
+          serverEnv().APP_BUILD_SHA,
+        ),
+      }),
+      extra: copySetupExtra,
+    }),
+  }),
 );
 
 /**
@@ -187,7 +167,7 @@ export const POST = wrapRouteHandlerWithLogging(
     if (!parsed.success) {
       return NextResponse.json(
         { error: "Invalid input", issues: parsed.error.issues },
-        { status: 400 }
+        { status: 400 },
       );
     }
     const targetWallet = parsed.data.target_wallet as `0x${string}`;
@@ -216,7 +196,7 @@ export const POST = wrapRouteHandlerWithLogging(
           error: rangeKnobsErrorMessage(rangeRuleError),
           code: rangeRuleError,
         },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -264,7 +244,8 @@ export const POST = wrapRouteHandlerWithLogging(
           target_range_max_usdc: polyCopyTradeTargets.targetRangeMaxUsdc,
           mirror_max_alloc_per_condition_usdc:
             polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
-        })
+          mirror_activated_at: polyCopyTradeTargets.mirrorActivatedAt,
+        }),
     );
 
     let inserted = insertedRows[0];
@@ -284,23 +265,24 @@ export const POST = wrapRouteHandlerWithLogging(
             target_range_max_usdc: polyCopyTradeTargets.targetRangeMaxUsdc,
             mirror_max_alloc_per_condition_usdc:
               polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
+            mirror_activated_at: polyCopyTradeTargets.mirrorActivatedAt,
           })
           .from(polyCopyTradeTargets)
           .where(
             and(
               eq(polyCopyTradeTargets.billingAccountId, account.id),
               eq(polyCopyTradeTargets.targetWallet, targetWallet),
-              isNull(polyCopyTradeTargets.disabledAt)
-            )
+              isNull(polyCopyTradeTargets.disabledAt),
+            ),
           )
-          .limit(1)
+          .limit(1),
       );
       inserted = existing[0];
       if (!inserted) {
         // Should never happen — RLS rejected after we passed WITH CHECK.
         return NextResponse.json(
           { error: "Failed to persist tracked wallet" },
-          { status: 500 }
+          { status: 500 },
         );
       }
     }
@@ -314,7 +296,7 @@ export const POST = wrapRouteHandlerWithLogging(
           expected: account.id,
           actual: inserted.billing_account_id,
         },
-        "tenant verification failed after RLS-scoped insert"
+        "tenant verification failed after RLS-scoped insert",
       );
       return NextResponse.json({ error: "Tenant mismatch" }, { status: 500 });
     }
@@ -327,7 +309,7 @@ export const POST = wrapRouteHandlerWithLogging(
       mirrorFilterPercentile: inserted.mirror_filter_percentile,
       mirrorMaxUsdcPerTrade: Number(inserted.mirror_max_usdc_per_trade),
       sizingPolicyKind: coerceStoredSizingPolicyKind(
-        inserted.sizing_policy_kind
+        inserted.sizing_policy_kind,
       ),
       targetRangeMaxUsdc:
         inserted.target_range_max_usdc === null
@@ -337,19 +319,20 @@ export const POST = wrapRouteHandlerWithLogging(
         inserted.mirror_max_alloc_per_condition_usdc === null
           ? null
           : Number(inserted.mirror_max_alloc_per_condition_usdc),
+      mirrorActivatedAt: inserted.mirror_activated_at,
       source: "db",
     });
 
     ctx.log.info(
       { target_wallet: targetWallet, target_id: target.target_id },
-      "poly.copy_trade.targets.create_success"
+      "poly.copy_trade.targets.create_success",
     );
 
     return NextResponse.json(
       polyCopyTradeTargetCreateOperation.output.parse({ target }),
-      { status: 201 }
+      { status: 201 },
     );
-  }
+  },
 );
 
 /**
@@ -358,7 +341,7 @@ export const POST = wrapRouteHandlerWithLogging(
  * fail closed to `'auto'` so behavior matches the pre-cutover default.
  */
 function coerceStoredSizingPolicyKind(
-  value: string
+  value: string,
 ):
   | "auto"
   | "min_bet"

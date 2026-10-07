@@ -39,11 +39,9 @@
  *     migration 0036. There is no config table and no per-tenant kill switch.
  *     Policy is derived per target row; caps come from `poly_wallet_grants`.
  *     The capability joins those two sources and says which is which.
- *   - AUTO_KIND_IS_NOT_RESOLVED_HERE — `sizing_policy_kind='auto'` is resolved
- *     at plan time against a curated wallet snapshot. This read does NOT guess
- *     which concrete policy it would become; it reports `effective_kind: null`
- *     with `resolution: "auto_resolved_at_plan_time"`. Guessing would be a
- *     fabricated value.
+ *   - EFFECTIVE_KIND_MATCHES_RUNTIME — the app injects the exact runtime
+ *     resolver used by the mirror job. `auto` and the explicit percentile
+ *     fallback are therefore readable without duplicating policy logic.
  *   - SNAPSHOT_CUTOFF — `captured_at` freezes tape membership across pages. It
  *     is optional on the first request (the server freezes and returns it) and
  *     MUST be echoed back with the cursor for every subsequent page.
@@ -98,6 +96,9 @@ export type PolyAccountCopySetupQuery = z.infer<
   typeof PolyAccountCopySetupQuerySchema
 >;
 
+/** Owner-session alias of the same capability; the account comes from auth. */
+export const PolyAccountCopySetupOwnerQuerySchema = z.object({});
+
 /**
  * The five sizing-policy kinds a target row may declare, mirroring the
  * `poly_copy_trade_targets_sizing_policy_kind_check` DB constraint. Kept as a
@@ -111,22 +112,51 @@ export const PolySizingPolicyKindSchema = z.enum([
   "mirror_fill_exact",
 ]);
 
+export const PolyEffectiveSizingPolicyKindSchema = z.enum([
+  "min_bet",
+  "target_percentile_scaled",
+  "position_gap",
+  "mirror_fill_exact",
+]);
+
+/** Exact deployed code revision, or an honest typed absence in local dev. */
+export const PolyAlgorithmImplementationRevisionSchema = z.discriminatedUnion(
+  "status",
+  [
+    z.object({
+      status: z.literal("available"),
+      build_sha: z.string().min(7),
+    }),
+    z.object({
+      status: z.literal("unavailable"),
+      reason: z.literal("app_build_sha_not_set"),
+    }),
+  ],
+);
+export type PolyAlgorithmImplementationRevision = z.infer<
+  typeof PolyAlgorithmImplementationRevisionSchema
+>;
+
 /**
- * Effective sizing policy for ONE target, derived from the target row alone.
+ * Effective sizing policy for ONE target, derived from its saved row by the
+ * mirror runtime's exact wallet-snapshot resolver.
  *
  * `declared_kind` is the saved fact. `effective_kind` is the concrete policy
- * that will actually run, which is knowable only when `declared_kind !== 'auto'`
- * — see AUTO_KIND_IS_NOT_RESOLVED_HERE.
+ * the mirror runtime will run for this wallet at this deployed revision.
  */
 export const PolyEffectiveSizingPolicySchema = z.object({
   /** Exactly what the target row stores. */
   declared_kind: PolySizingPolicyKindSchema,
-  /**
-   * The concrete policy that will run, or `null` when the declared kind is
-   * `auto` and resolution is deferred to plan time. Never guessed.
-   */
-  effective_kind: PolySizingPolicyKindSchema.nullable(),
-  resolution: z.enum(["explicit", "auto_resolved_at_plan_time"]),
+  /** The concrete policy selected by the exact runtime resolver. */
+  effective_kind: PolyEffectiveSizingPolicyKindSchema,
+  resolution: z.enum([
+    "explicit",
+    "auto_snapshot",
+    "auto_no_snapshot",
+    "explicit_fallback_no_snapshot",
+  ]),
+  /** Immutable code identity shared with `/version.buildSha`. */
+  implementation_revision: PolyAlgorithmImplementationRevisionSchema,
   /** Target-wallet percentile floor below which fills are not mirrored. */
   mirror_filter_percentile: z.number().int(),
   /** Per-target notional ceiling for a single mirrored trade. */
@@ -185,6 +215,7 @@ export const PolyTrackedTargetSchema = z.object({
   policy: PolyEffectiveSizingPolicySchema,
   activation: PolyTargetActivationSchema,
 });
+export type PolyTrackedTarget = z.infer<typeof PolyTrackedTargetSchema>;
 
 /**
  * Active wallet safety caps — a DISCRIMINATED UNION, not a nullable object.
@@ -301,7 +332,7 @@ export const PolyAccountRecentAttemptsQuerySchema = z
     (query) =>
       !(query.since && query.until) ||
       Date.parse(query.since) <= Date.parse(query.until),
-    { message: "`since` must be ≤ `until`", path: ["since"] }
+    { message: "`since` must be ≤ `until`", path: ["since"] },
   );
 export type PolyAccountRecentAttemptsQuery = z.infer<
   typeof PolyAccountRecentAttemptsQuerySchema
@@ -392,7 +423,7 @@ export const PolyAttemptOutcomeResolutionSchema = z.discriminatedUnion(
       availability: z.literal("unavailable"),
       reason: z.enum(["market_unresolved", "no_token_id_on_attempt"]),
     }),
-  ]
+  ],
 );
 
 export const PolyCopyTradeAttemptSchema = z.object({

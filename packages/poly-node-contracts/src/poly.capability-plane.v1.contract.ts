@@ -30,6 +30,7 @@
 import { z } from "zod";
 
 import {
+  PolyAccountCopySetupOwnerQuerySchema,
   polyAccountCopySetupOperation,
   polyAccountRecentAttemptsOperation,
 } from "./poly.account.copy-operations.v1.contract";
@@ -133,7 +134,6 @@ export const polyAccountReadCopyTradeInvestigationEvidenceOperation =
     accountFrom: "input",
   });
 
-
 /**
  * Copy-trade setup for the calling principal's own account (task.1791070959).
  *
@@ -153,6 +153,19 @@ export const polyAccountReadCopySetupOperation = defineAccountReadOperation({
   readOnly: true,
   accountFrom: "input",
 });
+
+/**
+ * Owner-session transport for the SAME copy-setup capability. It intentionally
+ * shares the operation id and output with the discoverable agent transport;
+ * only its empty input, path, and principal-derived account differ.
+ */
+export const polyAccountReadCopySetupOwnerOperation =
+  defineAccountReadOperation({
+    ...polyAccountReadCopySetupOperation,
+    input: PolyAccountCopySetupOwnerQuerySchema,
+    path: "/api/v1/poly/copy-trade/targets",
+    accountFrom: "principal",
+  });
 
 /**
  * Account-wide, cross-market mirror-attempt tape (task.1791070959). Spine is

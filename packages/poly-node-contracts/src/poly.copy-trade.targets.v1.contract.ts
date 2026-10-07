@@ -25,6 +25,7 @@
 import { z } from "zod";
 
 const MAX_MIRROR_USDC_PER_TRADE = 99_999_999.99;
+const isoTimestampSchema = z.string().datetime({ offset: true });
 
 const mirrorMaxUsdcPerTradeSchema = z
   .number()
@@ -118,8 +119,7 @@ const targetSchema = z.object({
   /** Target fill percentile floor; fills below this target-wallet size percentile skip. */
   mirror_filter_percentile: targetPolicySchema.shape.mirror_filter_percentile,
   /** Target-specific max mirror notional; p100 target fills map to this value. */
-  mirror_max_usdc_per_trade:
-    targetPolicySchema.shape.mirror_max_usdc_per_trade,
+  mirror_max_usdc_per_trade: targetPolicySchema.shape.mirror_max_usdc_per_trade,
   /**
    * Actual planner sizing policy for this wallet. `'auto'` means inherit
    * from snapshot (uncurated wallets resolve to `min_bet`, curated to
@@ -132,6 +132,8 @@ const targetSchema = z.object({
   /** Per-condition USDC cap for `position_gap`. Null on rows where the policy isn't `position_gap`; required (DB CHECK) when it is. */
   mirror_max_alloc_per_condition_usdc:
     mirrorMaxAllocPerConditionUsdcSchema.nullable(),
+  /** Optimistic-concurrency token and cold-start fence for this configuration. */
+  mirror_activated_at: isoTimestampSchema,
   /** Provenance: `"env"` for the local-dev fallback; `"db"` once `dbTargetSource` is wired. */
   source: z.enum(["env", "db"]),
 });
@@ -196,7 +198,15 @@ export const polyCopyTradeTargetUpdateOperation = {
   summary: "Update one tracked wallet's copy sizing policy",
   description:
     "Updates the caller-owned target row's percentile floor and max mirror notional. Tenant-scoped via RLS; path id selects the row.",
-  input: z.object({ id: z.string().uuid() }).merge(targetPolicySchema),
+  input: z
+    .object({
+      id: z.string().uuid(),
+      /** Required on PATCH so the API never overwrites a newer human save. */
+      expected_mirror_activated_at: isoTimestampSchema,
+      /** PATCH always names the complete next policy; no hidden inherited kind. */
+      sizing_policy_kind: sizingPolicyKindSchema,
+    })
+    .merge(targetPolicySchema.omit({ sizing_policy_kind: true })),
   output: z.object({
     target: targetSchema,
   }),
@@ -260,8 +270,7 @@ export function validatePositionGapRangeKnobs(input: {
   }
   if (
     input.target_range_max_usdc > 0 &&
-    input.mirror_max_alloc_per_condition_usdc /
-      input.target_range_max_usdc <
+    input.mirror_max_alloc_per_condition_usdc / input.target_range_max_usdc <
       MIN_ALLOC_TO_RANGE_RATIO
   ) {
     return "position_gap_alloc_range_ratio_too_small";

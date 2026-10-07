@@ -29,15 +29,18 @@
  */
 
 import type {
-  PolyAccountCopySetupQuery,
   PolyAccountCopySetupResponse,
   PolyAccountRecentAttemptsQuery,
   PolyAccountRecentAttemptsResponse,
+  PolyAlgorithmImplementationRevision,
   PolyCopyTradeOrdersInput,
   PolyCopyTradeOrdersOutput,
 } from "@cogni/poly-node-contracts";
 
-import { getCopySetupForAccount } from "@/features/wallet-analysis/server/copy-setup-read";
+import {
+  type CopySetupReadBinding,
+  getCopySetupForAccount,
+} from "@/features/wallet-analysis/server/copy-setup-read";
 import {
   getRecentAttemptsForAccount,
   InvalidAttemptCapturedAtError,
@@ -45,16 +48,30 @@ import {
 } from "@/features/wallet-analysis/server/copy-trade-attempts-read";
 import { listCopyTradeOrdersForAccount } from "@/features/wallet-analysis/server/copy-trade-orders-read";
 
-import type { AccountReadHandler, AccountReadStatus } from "./execute-account-read";
+import type {
+  AccountReadHandler,
+  AccountReadStatus,
+} from "./execute-account-read";
 
 // ---------------------------------------------------------------------------
 // Capability 1 — copy setup
 // ---------------------------------------------------------------------------
 
-export const copySetupAccountReadHandler: AccountReadHandler<
-  PolyAccountCopySetupQuery,
-  PolyAccountCopySetupResponse
-> = (tx, input, accountId) => getCopySetupForAccount(tx, input, accountId);
+export function algorithmImplementationRevision(
+  buildSha: string | undefined,
+): PolyAlgorithmImplementationRevision {
+  return buildSha
+    ? { status: "available", build_sha: buildSha }
+    : { status: "unavailable", reason: "app_build_sha_not_set" };
+}
+
+/** One factory serves the owner and delegated transports with identical facts. */
+export function copySetupAccountReadHandler<TInput>(
+  binding: CopySetupReadBinding,
+): AccountReadHandler<TInput, PolyAccountCopySetupResponse> {
+  return (tx, _input, accountId) =>
+    getCopySetupForAccount(tx, accountId, binding);
+}
 
 /**
  * Setup counts. `capsStatus` is the discriminant only — never the cap values,
@@ -74,7 +91,7 @@ export function copySetupExtra(context: {
     // High-signal: counts the targets that are configured but silently not
     // enumerated because the wallet grant lapsed (bug.5288).
     blockedTargetCount: data.targets.filter(
-      (target) => target.activation.status === "blocked_no_active_wallet_grant"
+      (target) => target.activation.status === "blocked_no_active_wallet_grant",
     ).length,
     complete: data.completeness.complete,
   };
@@ -87,15 +104,14 @@ export function copySetupExtra(context: {
 export const recentAttemptsAccountReadHandler: AccountReadHandler<
   PolyAccountRecentAttemptsQuery,
   PolyAccountRecentAttemptsResponse
-> = (tx, input, accountId) =>
-  getRecentAttemptsForAccount(tx, input, accountId);
+> = (tx, input, accountId) => getRecentAttemptsForAccount(tx, input, accountId);
 
 /**
  * An unparseable cursor or a future `captured_at` is a caller problem. The
  * executor renders both as the 400 a hand-written route would have raised.
  */
 export function classifyRecentAttemptsError(
-  error: unknown
+  error: unknown,
 ): "invalid_input" | undefined {
   return error instanceof InvalidAttemptCursorError ||
     error instanceof InvalidAttemptCapturedAtError
@@ -115,17 +131,17 @@ export function recentAttemptsExtra(context: {
     : {};
   if (context.status !== "ok" || !data) return base;
   const skipped = data.attempts.filter(
-    (attempt) => attempt.decision.outcome === "skipped"
+    (attempt) => attempt.decision.outcome === "skipped",
   ).length;
   return {
     ...base,
     attemptCount: data.attempts.length,
     skippedCount: skipped,
     placedCount: data.attempts.filter(
-      (attempt) => attempt.decision.outcome === "placed"
+      (attempt) => attempt.decision.outcome === "placed",
     ).length,
     errorCount: data.attempts.filter(
-      (attempt) => attempt.decision.outcome === "error"
+      (attempt) => attempt.decision.outcome === "error",
     ).length,
     truncated: data.truncated,
     hasNextPage: data.next_cursor !== null,

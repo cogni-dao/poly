@@ -22,6 +22,8 @@ import {
   AGENT_CAPABILITY_SCOPES,
   defineAccountReadOperation,
   POLY_ACCOUNT_READ_OPERATIONS,
+  polyAccountReadCopySetupOperation,
+  polyAccountReadCopySetupOwnerOperation,
   polyAccountReadCopyTradeInvestigationEvidenceOperation,
   polyAccountReadCopyTradeInvestigationOperation,
   polyAccountReadCopyTradePnlOperation,
@@ -44,16 +46,32 @@ describe("account-read descriptors", () => {
     // The underlying contract files are frozen port entries; the descriptor
     // spreads them, so id/input/output must be the very same references.
     expect(polyAccountReadCopyTradePnlOperation.id).toBe(
-      polyResearchCopyTradePnlOperation.id
+      polyResearchCopyTradePnlOperation.id,
     );
     expect(polyAccountReadCopyTradePnlOperation.input).toBe(
-      polyResearchCopyTradePnlOperation.input
+      polyResearchCopyTradePnlOperation.input,
     );
     expect(polyAccountReadCopyTradePnlOperation.output).toBe(
-      polyResearchCopyTradePnlOperation.output
+      polyResearchCopyTradePnlOperation.output,
     );
     expect(polyResearchCopyTradePnlOperation).not.toHaveProperty(
-      "requiredScope"
+      "requiredScope",
+    );
+  });
+
+  it("serves copy setup to owners and agents as one versioned capability", () => {
+    expect(polyAccountReadCopySetupOwnerOperation.id).toBe(
+      polyAccountReadCopySetupOperation.id,
+    );
+    expect(polyAccountReadCopySetupOwnerOperation.output).toBe(
+      polyAccountReadCopySetupOperation.output,
+    );
+    expect(polyAccountReadCopySetupOperation.accountFrom).toBe("input");
+    expect(polyAccountReadCopySetupOwnerOperation.accountFrom).toBe(
+      "principal",
+    );
+    expect(polyAccountReadCopySetupOwnerOperation.path).toBe(
+      "/api/v1/poly/copy-trade/targets",
     );
   });
 
@@ -70,7 +88,7 @@ describe("account-read descriptors", () => {
         polyAccountReadCopyTradePnlOperation.id,
         polyAccountReadCopyTradeInvestigationOperation.id,
         polyAccountReadCopyTradeInvestigationEvidenceOperation.id,
-      ])
+      ]),
     );
     for (const operation of POLY_ACCOUNT_READ_OPERATIONS) {
       expect(operation.method).toBe("GET");
@@ -96,7 +114,7 @@ describe("account-read descriptors", () => {
       // invariant is that EVERY catalog entry has a feature-namespaced
       // terminal event, not that every entry is a research read.
       expect(ACCOUNT_READ_TERMINAL_EVENTS[operation.id]).toMatch(
-        /^feature\.poly_[a-z_]+\./
+        /^feature\.poly_[a-z_]+\./,
       );
     }
   });
@@ -147,7 +165,7 @@ describe("discovery projection", () => {
 
     expect(portfolio).toBeDefined();
     expect(portfolio?.endpoint).toBe(
-      `${ORIGIN}/api/v1/poly/account/portfolio-snapshot`
+      `${ORIGIN}/api/v1/poly/account/portfolio-snapshot`,
     );
     // Degraded to input mode, not omitted and not fabricated: the pre-transform
     // type of an address `.toLowerCase()` is the same `string`.
@@ -161,7 +179,7 @@ describe("discovery projection", () => {
     // their schemas.
     for (const operation of POLY_ACCOUNT_READ_OPERATIONS) {
       const action = Object.values(actions).find(
-        (candidate) => candidate.endpoint === `${ORIGIN}${operation.path}`
+        (candidate) => candidate.endpoint === `${ORIGIN}${operation.path}`,
       );
       expect(action?.inputSchema).toBeDefined();
     }
@@ -178,15 +196,15 @@ describe("discovery projection", () => {
         "readCopyTradeInvestigation",
         "readCopyTradeInvestigationEvidence",
         "readCopyTradePnl",
-      ])
+      ]),
     );
     expect(Object.keys(actions)).toHaveLength(
-      POLY_ACCOUNT_READ_OPERATIONS.length
+      POLY_ACCOUNT_READ_OPERATIONS.length,
     );
 
     for (const operation of POLY_ACCOUNT_READ_OPERATIONS) {
       const action = Object.values(actions).find(
-        (entry) => entry.endpoint === `${ORIGIN}${operation.path}`
+        (entry) => entry.endpoint === `${ORIGIN}${operation.path}`,
       );
       expect(action).toBeDefined();
       expect(action?.method).toBe(operation.method);
