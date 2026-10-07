@@ -27,12 +27,9 @@
  *     missing grant is `{status:"absent"}`, never `{per_order_usdc_cap: 0}`,
  *     because zero caps read as "no limits" when the truth is "cannot trade".
  *     This is NO_FABRICATED_VALUES at its most load-bearing.
- *   - AUTO_IS_NOT_RESOLVED_HERE — `sizing_policy_kind='auto'` resolves at plan
- *     time against a curated wallet snapshot. This read reports
- *     `effective_kind: null`, and does NOT read `poly_trader_*` to guess. That
- *     matters twice: guessing would fabricate a value, and `poly_trader_*` has
- *     NO row-level security at all (capability-plane Carve-out 1), so touching
- *     it from a delegated read would put the only tenant clamp in app code.
+ *   - EFFECTIVE_KIND_MATCHES_RUNTIME — the caller injects the exact pure
+ *     resolver used by the mirror job. This module does not duplicate its
+ *     snapshot switch and still never reads `poly_trader_*`.
  *   - SILENT_HALT_IS_NAMED — EXCLUSION_IS_EXPLAINED (bug.5288): the mirror
  *     enumerator INNER-joins targets against an active wallet grant, so an
  *     expired grant makes a tenant silently stop being enumerated. Halted
@@ -57,8 +54,8 @@ import { polyCopyTradeTargets } from "@cogni/poly-db-schema/copy-trade";
 import { polyWalletGrants } from "@cogni/poly-db-schema/wallet-grants";
 import {
   POLY_COPY_SETUP_MAX_TARGETS,
-  type PolyAccountCopySetupQuery,
   type PolyAccountCopySetupResponse,
+  type PolyAlgorithmImplementationRevision,
   type PolyWalletSafetyCaps,
 } from "@cogni/poly-node-contracts";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
@@ -90,6 +87,18 @@ type GrantRow = {
   expiresAt: Date | null;
   createdAt: Date;
   revokedAt: Date | null;
+};
+
+type TargetPolicy = PolyAccountCopySetupResponse["targets"][number]["policy"];
+type DeclaredKind = TargetPolicy["declared_kind"];
+type EffectiveKind = TargetPolicy["effective_kind"];
+
+export type CopySetupReadBinding = {
+  resolveEffectiveKind: (
+    targetWallet: `0x${string}`,
+    declaredKind: DeclaredKind,
+  ) => EffectiveKind;
+  implementationRevision: PolyAlgorithmImplementationRevision;
 };
 
 /**
@@ -125,7 +134,7 @@ const SIZING_POLICY_KINDS = new Set([
  * whole read or inventing a policy.
  */
 function coerceKind(
-  value: string
+  value: string,
 ): PolyAccountCopySetupResponse["targets"][number]["policy"]["declared_kind"] {
   return (
     SIZING_POLICY_KINDS.has(value) ? value : "auto"
@@ -139,7 +148,7 @@ function coerceKind(
  */
 function classifyWalletSafety(
   grant: GrantRow | undefined,
-  capturedAt: Date
+  capturedAt: Date,
 ): PolyWalletSafetyCaps {
   if (!grant) {
     return { status: "absent", reason: "no_wallet_grant_on_file" };
@@ -182,26 +191,22 @@ function classifyWalletSafety(
  */
 export async function getCopySetupForAccount(
   tx: AgentGrantTransaction,
-  rawQuery: PolyAccountCopySetupQuery,
-  accountId: string
+  accountId: string,
+  binding: CopySetupReadBinding,
 ): Promise<PolyAccountCopySetupResponse | null> {
   // ACCOUNT_IS_EXPLICIT: filter on the account the executor AUTHORIZED, not on
   // whatever the wire asked for. Under `accountFrom: "input"` these are the
   // same value by construction, so this is belt-and-braces — but it means a
   // future change to how the executor sources the account cannot silently make
   // this handler read a tenant that was never authorized.
-  const query: PolyAccountCopySetupQuery = {
-    ...rawQuery,
-    billing_account_id: accountId,
-  };
   await tx.execute(
-    sql.raw(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
+    sql.raw(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`),
   );
 
   // One frozen read time shared by all three reads below, so the caps cannot be
   // evaluated against a different "now" than the targets.
   const clockRows = rowsOf<{ captured_at: Date | string }>(
-    await tx.execute(sql`SELECT clock_timestamp() AS captured_at`)
+    await tx.execute(sql`SELECT clock_timestamp() AS captured_at`),
   );
   const rawCapturedAt = clockRows[0]?.captured_at;
   const capturedAt =
@@ -225,14 +230,14 @@ export async function getCopySetupForAccount(
       disabledAt: polyCopyTradeTargets.disabledAt,
     })
     .from(polyCopyTradeTargets)
-    .where(eq(polyCopyTradeTargets.billingAccountId, query.billing_account_id))
+    .where(eq(polyCopyTradeTargets.billingAccountId, accountId))
     // Active rows first — if the account is over the bound, the rows that can
     // actually trade are the ones that survive truncation. `id` breaks ties so
     // the page is deterministic.
     .orderBy(
       sql`(${polyCopyTradeTargets.disabledAt} IS NULL) DESC`,
       asc(polyCopyTradeTargets.createdAt),
-      asc(polyCopyTradeTargets.id)
+      asc(polyCopyTradeTargets.id),
     )
     .limit(POLY_COPY_SETUP_MAX_TARGETS + 1)) as unknown as TargetRow[];
 
@@ -245,9 +250,9 @@ export async function getCopySetupForAccount(
     .from(polyCopyTradeTargets)
     .where(
       and(
-        eq(polyCopyTradeTargets.billingAccountId, query.billing_account_id),
-        isNull(polyCopyTradeTargets.disabledAt)
-      )
+        eq(polyCopyTradeTargets.billingAccountId, accountId),
+        isNull(polyCopyTradeTargets.disabledAt),
+      ),
     )) as unknown as Array<{ count: string }>;
   const activeTargetCount = Number(countRows[0]?.count ?? 0);
 
@@ -265,10 +270,10 @@ export async function getCopySetupForAccount(
       revokedAt: polyWalletGrants.revokedAt,
     })
     .from(polyWalletGrants)
-    .where(eq(polyWalletGrants.billingAccountId, query.billing_account_id))
+    .where(eq(polyWalletGrants.billingAccountId, accountId))
     .orderBy(
       sql`(${polyWalletGrants.revokedAt} IS NULL AND (${polyWalletGrants.expiresAt} IS NULL OR ${polyWalletGrants.expiresAt} > ${capturedAt.toISOString()}::timestamptz)) DESC`,
-      sql`${polyWalletGrants.createdAt} DESC`
+      sql`${polyWalletGrants.createdAt} DESC`,
     )
     .limit(1)) as unknown as GrantRow[];
 
@@ -281,6 +286,10 @@ export async function getCopySetupForAccount(
 
   const targets = pagedTargets.map((row) => {
     const declaredKind = coerceKind(row.sizingPolicyKind);
+    const effectiveKind = binding.resolveEffectiveKind(
+      row.targetWallet as `0x${string}`,
+      declaredKind,
+    );
     const isDisabled = row.disabledAt !== null;
     const rangeMax = nullableNum(row.targetRangeMaxUsdc);
     const allocPerCondition = nullableNum(row.mirrorMaxAllocPerConditionUsdc);
@@ -313,12 +322,17 @@ export async function getCopySetupForAccount(
       disabled_at: nullableIso(row.disabledAt),
       policy: {
         declared_kind: declaredKind,
-        // Deliberately null for `auto` — see AUTO_IS_NOT_RESOLVED_HERE.
-        effective_kind: declaredKind === "auto" ? null : declaredKind,
+        effective_kind: effectiveKind,
         resolution:
           declaredKind === "auto"
-            ? ("auto_resolved_at_plan_time" as const)
-            : ("explicit" as const),
+            ? effectiveKind === "target_percentile_scaled"
+              ? ("auto_snapshot" as const)
+              : ("auto_no_snapshot" as const)
+            : declaredKind === "target_percentile_scaled" &&
+                effectiveKind === "min_bet"
+              ? ("explicit_fallback_no_snapshot" as const)
+              : ("explicit" as const),
+        implementation_revision: binding.implementationRevision,
         mirror_filter_percentile: row.mirrorFilterPercentile,
         mirror_max_usdc_per_trade: num(row.mirrorMaxUsdcPerTrade),
         target_range_max_usdc: rangeMax,
@@ -332,7 +346,7 @@ export async function getCopySetupForAccount(
   });
 
   return {
-    billing_account_id: query.billing_account_id,
+    billing_account_id: accountId,
     captured_at: capturedAt.toISOString(),
     targets,
     active_target_count: activeTargetCount,

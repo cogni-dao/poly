@@ -13,6 +13,8 @@
  *     affected → returns 404. Cross-tenant visibility blocked at the DB layer.
  *   - SOFT_DELETE: writes `disabled_at = now()` rather than DELETE. Preserves
  *     attribution history in `poly_copy_trade_fills`.
+ *   - SAFE_POLICY_ASSIGNMENT: PATCH compares `mirror_activated_at`, advances it
+ *     as the config revision, and clears old position-gap baselines atomically.
  * Side-effects: IO (Postgres UPDATE via appDb).
  * Links: docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
  * @public
@@ -20,7 +22,10 @@
 
 import { withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
-import { polyCopyTradeTargets } from "@cogni/poly-db-schema";
+import {
+  polyCopyTargetConditionBaseline,
+  polyCopyTradeTargets,
+} from "@cogni/poly-db-schema";
 import {
   MIN_ALLOC_TO_RANGE_RATIO,
   polyCopyTradeTargetDeleteOperation,
@@ -28,13 +33,14 @@ import {
   type RangeKnobsRuleViolation,
   validatePositionGapRangeKnobs,
 } from "@cogni/poly-node-contracts";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { resolveAppDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { sizingPolicyKindForTargetWallet } from "@/bootstrap/jobs/copy-trade-mirror.job";
+import { targetIdFromWallet } from "@/features/copy-trade/target-id";
 
 export const dynamic = "force-dynamic";
 
@@ -66,7 +72,7 @@ export const DELETE = wrapRouteHandlerWithLogging<{
     if (!parsed.success) {
       return NextResponse.json(
         { error: "Invalid target id", issues: parsed.error.issues },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -82,10 +88,10 @@ export const DELETE = wrapRouteHandlerWithLogging<{
         .where(
           and(
             eq(polyCopyTradeTargets.id, parsed.data.id),
-            isNull(polyCopyTradeTargets.disabledAt)
-          )
+            isNull(polyCopyTradeTargets.disabledAt),
+          ),
         )
-        .returning({ id: polyCopyTradeTargets.id })
+        .returning({ id: polyCopyTradeTargets.id }),
     );
 
     if (updatedRows.length === 0) {
@@ -94,19 +100,19 @@ export const DELETE = wrapRouteHandlerWithLogging<{
       // (do not distinguish — would leak existence across tenants).
       return NextResponse.json(
         { error: "Tracked wallet not found" },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
     ctx.log.info(
       { target_id: parsed.data.id },
-      "poly.copy_trade.targets.delete_success"
+      "poly.copy_trade.targets.delete_success",
     );
 
     return NextResponse.json(
-      polyCopyTradeTargetDeleteOperation.output.parse({ deleted: true })
+      polyCopyTradeTargetDeleteOperation.output.parse({ deleted: true }),
     );
-  }
+  },
 );
 
 export const PATCH = wrapRouteHandlerWithLogging<{
@@ -134,7 +140,7 @@ export const PATCH = wrapRouteHandlerWithLogging<{
     if (!parsed.success) {
       return NextResponse.json(
         { error: "Invalid input", issues: parsed.error.issues },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -160,7 +166,7 @@ export const PATCH = wrapRouteHandlerWithLogging<{
           error: rangeKnobsErrorMessage(rangeRuleError),
           code: rangeRuleError,
         },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -169,16 +175,17 @@ export const PATCH = wrapRouteHandlerWithLogging<{
     >;
     const actorId = userActor(toUserId(sessionUser.id));
 
-    // Build the UPDATE SET clause: required fields + optional sizing_policy_kind
-    // when provided. Omitting the key leaves the stored value untouched (DB
-    // CHECK enforces the enum on writes).
+    // PATCH carries the complete next policy. This makes selection explicit
+    // and prevents a hidden stored kind from changing how visible knobs behave.
     const updateSet: Record<string, unknown> = {
       mirrorFilterPercentile: parsed.data.mirror_filter_percentile,
       mirrorMaxUsdcPerTrade: parsed.data.mirror_max_usdc_per_trade.toFixed(2),
+      sizingPolicyKind: parsed.data.sizing_policy_kind,
+      // The activation timestamp doubles as the config revision token.
+      // Millisecond precision matches ISO JSON; Postgres otherwise retains
+      // microseconds that a round-tripped browser token cannot reproduce.
+      mirrorActivatedAt: sql`greatest(date_trunc('milliseconds', clock_timestamp()), date_trunc('milliseconds', ${polyCopyTradeTargets.mirrorActivatedAt}) + interval '1 millisecond')`,
     };
-    if (parsed.data.sizing_policy_kind !== undefined) {
-      updateSet.sizingPolicyKind = parsed.data.sizing_policy_kind;
-    }
     if (parsed.data.target_range_max_usdc !== undefined) {
       updateSet.targetRangeMaxUsdc =
         parsed.data.target_range_max_usdc.toFixed(2);
@@ -188,15 +195,43 @@ export const PATCH = wrapRouteHandlerWithLogging<{
         parsed.data.mirror_max_alloc_per_condition_usdc.toFixed(2);
     }
 
-    const updatedRows = await withTenantScope(appDb, actorId, async (tx) =>
-      tx
+    const updateResult = await withTenantScope(appDb, actorId, async (tx) => {
+      const currentRows = await tx
+        .select({
+          billing_account_id: polyCopyTradeTargets.billingAccountId,
+          target_wallet: polyCopyTradeTargets.targetWallet,
+          mirror_activated_at: polyCopyTradeTargets.mirrorActivatedAt,
+        })
+        .from(polyCopyTradeTargets)
+        .where(
+          and(
+            eq(polyCopyTradeTargets.id, parsed.data.id),
+            isNull(polyCopyTradeTargets.disabledAt),
+          ),
+        )
+        .limit(1);
+
+      const current = currentRows[0];
+      if (!current) return { status: "not_found" as const };
+
+      const expectedActivatedAt = new Date(
+        parsed.data.expected_mirror_activated_at,
+      );
+      if (
+        current.mirror_activated_at.getTime() !== expectedActivatedAt.getTime()
+      ) {
+        return { status: "conflict" as const };
+      }
+
+      const updatedRows = await tx
         .update(polyCopyTradeTargets)
         .set(updateSet)
         .where(
           and(
             eq(polyCopyTradeTargets.id, parsed.data.id),
-            isNull(polyCopyTradeTargets.disabledAt)
-          )
+            sql`date_trunc('milliseconds', ${polyCopyTradeTargets.mirrorActivatedAt}) = ${parsed.data.expected_mirror_activated_at}::timestamptz`,
+            isNull(polyCopyTradeTargets.disabledAt),
+          ),
         )
         .returning({
           id: polyCopyTradeTargets.id,
@@ -207,23 +242,57 @@ export const PATCH = wrapRouteHandlerWithLogging<{
           target_range_max_usdc: polyCopyTradeTargets.targetRangeMaxUsdc,
           mirror_max_alloc_per_condition_usdc:
             polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
-        })
-    );
+          mirror_activated_at: polyCopyTradeTargets.mirrorActivatedAt,
+        });
 
-    const row = updatedRows[0];
-    if (!row) {
+      const updated = updatedRows[0];
+      if (!updated) return { status: "conflict" as const };
+
+      // A position-gap baseline belongs to the previous activation. Clearing
+      // it atomically ensures the first BUY under the new configuration takes
+      // a fresh baseline instead of silently reusing stale position state.
+      await tx
+        .delete(polyCopyTargetConditionBaseline)
+        .where(
+          and(
+            eq(
+              polyCopyTargetConditionBaseline.billingAccountId,
+              current.billing_account_id,
+            ),
+            eq(
+              polyCopyTargetConditionBaseline.targetId,
+              targetIdFromWallet(current.target_wallet as `0x${string}`),
+            ),
+          ),
+        );
+
+      return { status: "updated" as const, row: updated };
+    });
+
+    if (updateResult.status === "not_found") {
       return NextResponse.json(
         { error: "Tracked wallet not found" },
-        { status: 404 }
+        { status: 404 },
+      );
+    }
+    if (updateResult.status === "conflict") {
+      return NextResponse.json(
+        {
+          error: "Target policy changed since it was loaded; refresh and retry",
+          code: "stale_target_policy",
+        },
+        { status: 409 },
       );
     }
 
+    const row = updateResult.row;
+
     const storedSizingPolicyKind = coercePatchedSizingPolicyKind(
-      row.sizing_policy_kind
+      row.sizing_policy_kind,
     );
     const effectiveKind = sizingPolicyKindForTargetWallet(
       row.target_wallet as `0x${string}`,
-      storedSizingPolicyKind
+      storedSizingPolicyKind,
     );
     const targetRangeMaxUsdc =
       row.target_range_max_usdc === null
@@ -243,7 +312,7 @@ export const PATCH = wrapRouteHandlerWithLogging<{
         target_range_max_usdc: targetRangeMaxUsdc,
         mirror_max_alloc_per_condition_usdc: mirrorMaxAllocPerConditionUsdc,
       },
-      "poly.copy_trade.targets.update_success"
+      "poly.copy_trade.targets.update_success",
     );
 
     // task.5014 — under `position_gap`, the per-condition cap is the
@@ -265,11 +334,12 @@ export const PATCH = wrapRouteHandlerWithLogging<{
           sizing_policy_kind: effectiveKind,
           target_range_max_usdc: targetRangeMaxUsdc,
           mirror_max_alloc_per_condition_usdc: mirrorMaxAllocPerConditionUsdc,
+          mirror_activated_at: row.mirror_activated_at.toISOString(),
           source: "db",
         },
-      })
+      }),
     );
-  }
+  },
 );
 
 /**
@@ -278,7 +348,7 @@ export const PATCH = wrapRouteHandlerWithLogging<{
  * drift — fail closed to `'auto'`.
  */
 function coercePatchedSizingPolicyKind(
-  value: string
+  value: string,
 ):
   | "auto"
   | "min_bet"

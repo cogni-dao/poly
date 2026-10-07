@@ -40,6 +40,7 @@
 import { randomUUID } from "node:crypto";
 import { agentCapabilityGrants } from "@cogni/db-schema/agent-capability-grants";
 import {
+  polyCopyTargetConditionBaseline,
   polyCopyTradeDecisions,
   polyCopyTradeFills,
   polyCopyTradeTargets,
@@ -49,10 +50,19 @@ import { polyWalletGrants } from "@cogni/db-schema/wallet-grants";
 import { toUserId, userActor } from "@cogni/ids";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq, inArray } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { NextRequest } from "next/server";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/app/_lib/auth/session", () => ({
+  getSessionUser: vi.fn(),
+}));
+
 import type { Database } from "@/adapters/server/db/client";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
+import { getSessionUser } from "@/app/_lib/auth/session";
+import { PATCH as updateCopyTarget } from "@/app/api/v1/poly/copy-trade/targets/[id]/route";
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
+import { targetIdFromWallet } from "@/features/copy-trade/target-id";
 import { getCopySetupForAccount } from "@/features/wallet-analysis/server/copy-setup-read";
 import { getRecentAttemptsForAccount } from "@/features/wallet-analysis/server/copy-trade-attempts-read";
 import { billingAccounts, users } from "@/shared/db/schema";
@@ -99,6 +109,21 @@ describe("copy-operations delegated RLS", () => {
 
   const targetWalletA = walletAddress();
   const targetWalletB = walletAddress();
+  const copySetupBinding = {
+    resolveEffectiveKind: (
+      _wallet: `0x${string}`,
+      kind:
+        | "auto"
+        | "min_bet"
+        | "target_percentile_scaled"
+        | "position_gap"
+        | "mirror_fill_exact",
+    ) => (kind === "auto" ? ("target_percentile_scaled" as const) : kind),
+    implementationRevision: {
+      status: "available" as const,
+      build_sha: "0123456789abcdef0123456789abcdef01234567",
+    },
+  };
 
   beforeAll(async () => {
     db = getAppDb();
@@ -109,7 +134,7 @@ describe("copy-operations delegated RLS", () => {
         id: entry.userId,
         name: entry.name,
         walletAddress: walletAddress(),
-      }))
+      })),
     );
 
     await seedDb.insert(billingAccounts).values([
@@ -309,6 +334,11 @@ describe("copy-operations delegated RLS", () => {
       .delete(polyCopyTradeFills)
       .where(inArray(polyCopyTradeFills.billingAccountId, accounts));
     await seedDb
+      .delete(polyCopyTargetConditionBaseline)
+      .where(
+        inArray(polyCopyTargetConditionBaseline.billingAccountId, accounts),
+      );
+    await seedDb
       .delete(polyWalletGrants)
       .where(inArray(polyWalletGrants.billingAccountId, accounts));
     await seedDb
@@ -319,15 +349,17 @@ describe("copy-operations delegated RLS", () => {
       .where(inArray(polyCopyTradeTargets.billingAccountId, accounts));
     await seedDb
       .delete(agentCapabilityGrants)
-      .where(eq(agentCapabilityGrants.billingAccountId, ownerA.billingAccountId));
+      .where(
+        eq(agentCapabilityGrants.billingAccountId, ownerA.billingAccountId),
+      );
     await seedDb
       .delete(billingAccounts)
       .where(inArray(billingAccounts.id, accounts));
     await seedDb.delete(users).where(
       inArray(
         users.id,
-        principals.map((entry) => entry.userId)
-      )
+        principals.map((entry) => entry.userId),
+      ),
     );
   });
 
@@ -341,7 +373,7 @@ describe("copy-operations delegated RLS", () => {
           perOrderUsdcCap: polyWalletGrants.perOrderUsdcCap,
         })
         .from(polyWalletGrants)
-        .where(inArray(polyWalletGrants.id, [grantA, grantB]))
+        .where(inArray(polyWalletGrants.id, [grantA, grantB])),
     );
   }
 
@@ -373,8 +405,8 @@ describe("copy-operations delegated RLS", () => {
     expect(delegated.map((row) => row.id)).not.toContain(grantB);
     expect(
       delegated.every(
-        (row) => row.billingAccountId === ownerA.billingAccountId
-      )
+        (row) => row.billingAccountId === ownerA.billingAccountId,
+      ),
     ).toBe(true);
 
     // And B's owner sees exactly its own — non-zero, so this case also cannot
@@ -393,7 +425,7 @@ describe("copy-operations delegated RLS", () => {
       tx
         .select({ id: polyWalletGrants.id })
         .from(polyWalletGrants)
-        .where(inArray(polyWalletGrants.id, [grantA, grantB]))
+        .where(inArray(polyWalletGrants.id, [grantA, grantB])),
     );
     expect(rows).toEqual([]);
   });
@@ -401,12 +433,16 @@ describe("copy-operations delegated RLS", () => {
   it("does NOT let the delegate mutate wallet grants", async () => {
     // The new policy is FOR SELECT only; `tenant_isolation` (FOR ALL,
     // owner-only) still governs writes, so an UPDATE must affect no rows.
-    await withTenantScope(db, userActor(toUserId(delegate.userId)), async (tx) => {
-      await tx
-        .update(polyWalletGrants)
-        .set({ hourlyFillsCap: 999 })
-        .where(eq(polyWalletGrants.id, grantA));
-    });
+    await withTenantScope(
+      db,
+      userActor(toUserId(delegate.userId)),
+      async (tx) => {
+        await tx
+          .update(polyWalletGrants)
+          .set({ hourlyFillsCap: 999 })
+          .where(eq(polyWalletGrants.id, grantA));
+      },
+    );
 
     const [row] = await getSeedDb()
       .select({ hourlyFillsCap: polyWalletGrants.hourlyFillsCap })
@@ -432,22 +468,18 @@ describe("copy-operations delegated RLS", () => {
    */
   const asTx = <T>(
     userId: string,
-    run: (tx: AgentGrantTransaction) => Promise<T>
+    run: (tx: AgentGrantTransaction) => Promise<T>,
   ): Promise<T> =>
     withTenantScope(db, userActor(toUserId(userId)), (tx) =>
-      run(tx as AgentGrantTransaction)
+      run(tx as AgentGrantTransaction),
     );
 
   it("copy-setup: owner and delegate get identical non-empty setup", async () => {
     const owner = await asTx(ownerA.userId, (tx) =>
-      getCopySetupForAccount(tx, {
-        billing_account_id: ownerA.billingAccountId,
-      }, ownerA.billingAccountId)
+      getCopySetupForAccount(tx, ownerA.billingAccountId, copySetupBinding),
     );
     const delegated = await asTx(delegate.userId, (tx) =>
-      getCopySetupForAccount(tx, {
-        billing_account_id: ownerA.billingAccountId,
-      }, ownerA.billingAccountId)
+      getCopySetupForAccount(tx, ownerA.billingAccountId, copySetupBinding),
     );
 
     expect(owner).not.toBeNull();
@@ -458,6 +490,9 @@ describe("copy-operations delegated RLS", () => {
     expect(owner?.targets[0]?.activation.status).toBe("eligible");
     expect(owner?.targets[0]?.policy.declared_kind).toBe("min_bet");
     expect(owner?.targets[0]?.policy.effective_kind).toBe("min_bet");
+    expect(owner?.targets[0]?.policy.implementation_revision).toEqual(
+      copySetupBinding.implementationRevision,
+    );
 
     // Parity is structural: same saved facts for both principals.
     expect(delegated?.targets).toEqual(owner?.targets);
@@ -469,42 +504,120 @@ describe("copy-operations delegated RLS", () => {
     // both the targets and the caps, so the capability reports not-found rather
     // than an account that looks unconfigured.
     const leaked = await asTx(ownerB.userId, (tx) =>
-      getCopySetupForAccount(tx, {
-        billing_account_id: ownerA.billingAccountId,
-      }, ownerA.billingAccountId)
+      getCopySetupForAccount(tx, ownerA.billingAccountId, copySetupBinding),
     );
     expect(leaked).toBeNull();
   });
 
-  it("copy-setup: `auto` policy is reported unresolved, never guessed", async () => {
+  it("copy-setup: `auto` policy uses the injected runtime resolver", async () => {
     const setup = await asTx(ownerB.userId, (tx) =>
-      getCopySetupForAccount(tx, {
-        billing_account_id: ownerB.billingAccountId,
-      }, ownerB.billingAccountId)
+      getCopySetupForAccount(tx, ownerB.billingAccountId, copySetupBinding),
     );
     const policy = setup?.targets[0]?.policy;
     expect(policy?.declared_kind).toBe("auto");
-    // NO_FABRICATED_VALUES: resolution is deferred, not invented.
-    expect(policy?.effective_kind).toBeNull();
-    expect(policy?.resolution).toBe("auto_resolved_at_plan_time");
+    expect(policy?.effective_kind).toBe("target_percentile_scaled");
+    expect(policy?.resolution).toBe("auto_snapshot");
+  });
+
+  it("target PATCH rejects stale saves and clears the prior position-gap baseline", async () => {
+    const deterministicTargetId = targetIdFromWallet(
+      targetWalletA as `0x${string}`,
+    );
+    await getSeedDb().insert(polyCopyTargetConditionBaseline).values({
+      billingAccountId: ownerA.billingAccountId,
+      targetId: deterministicTargetId,
+      conditionId: "condition-before-policy-change",
+      baselineTargetPositionUsdc: "125.00",
+      capturedAtFillId: "baseline-before-policy-change",
+    });
+
+    const [before] = await getSeedDb()
+      .select({ activatedAt: polyCopyTradeTargets.mirrorActivatedAt })
+      .from(polyCopyTradeTargets)
+      .where(eq(polyCopyTradeTargets.id, targetA));
+    expect(before).toBeDefined();
+
+    vi.mocked(getSessionUser).mockResolvedValue({
+      id: ownerA.userId,
+      walletAddress: walletAddress(),
+    });
+    const body = {
+      sizing_policy_kind: "position_gap",
+      expected_mirror_activated_at: before?.activatedAt.toISOString(),
+      mirror_filter_percentile: 80,
+      mirror_max_usdc_per_trade: 7.5,
+      target_range_max_usdc: 100,
+      mirror_max_alloc_per_condition_usdc: 10,
+    };
+
+    const first = await updateCopyTarget(
+      new NextRequest(
+        `http://localhost:3000/api/v1/poly/copy-trade/targets/${targetA}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      ),
+      { params: Promise.resolve({ id: targetA }) },
+    );
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({
+      target: {
+        target_id: targetA,
+        sizing_policy_kind: "position_gap",
+        target_range_max_usdc: 100,
+        mirror_max_alloc_per_condition_usdc: 10,
+      },
+    });
+
+    const baselines = await getSeedDb()
+      .select()
+      .from(polyCopyTargetConditionBaseline)
+      .where(
+        eq(polyCopyTargetConditionBaseline.targetId, deterministicTargetId),
+      );
+    expect(baselines).toHaveLength(0);
+
+    const stale = await updateCopyTarget(
+      new NextRequest(
+        `http://localhost:3000/api/v1/poly/copy-trade/targets/${targetA}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      ),
+      { params: Promise.resolve({ id: targetA }) },
+    );
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ code: "stale_target_policy" });
   });
 
   it("recent-attempts: the tape SHOWS skips, which the fills ledger cannot", async () => {
     const owner = await asTx(ownerA.userId, (tx) =>
-      getRecentAttemptsForAccount(tx, {
-        billing_account_id: ownerA.billingAccountId,
-        mode: "all",
-        outcome: "all",
-        limit: 50,
-      }, ownerA.billingAccountId)
+      getRecentAttemptsForAccount(
+        tx,
+        {
+          billing_account_id: ownerA.billingAccountId,
+          mode: "all",
+          outcome: "all",
+          limit: 50,
+        },
+        ownerA.billingAccountId,
+      ),
     );
     const delegated = await asTx(delegate.userId, (tx) =>
-      getRecentAttemptsForAccount(tx, {
-        billing_account_id: ownerA.billingAccountId,
-        mode: "all",
-        outcome: "all",
-        limit: 50,
-      }, ownerA.billingAccountId)
+      getRecentAttemptsForAccount(
+        tx,
+        {
+          billing_account_id: ownerA.billingAccountId,
+          mode: "all",
+          outcome: "all",
+          limit: 50,
+        },
+        ownerA.billingAccountId,
+      ),
     );
 
     expect(owner).not.toBeNull();
@@ -512,7 +625,7 @@ describe("copy-operations delegated RLS", () => {
     expect(delegated?.attempts).toEqual(owner?.attempts);
 
     const skipped = owner?.attempts.find(
-      (attempt) => attempt.decision.outcome === "skipped"
+      (attempt) => attempt.decision.outcome === "skipped",
     );
     // The whole point of the capability.
     expect(skipped).toBeDefined();
@@ -521,7 +634,7 @@ describe("copy-operations delegated RLS", () => {
     expect(skipped?.executed.availability).toBe("no_order_placed");
 
     const placed = owner?.attempts.find(
-      (attempt) => attempt.decision.outcome === "placed"
+      (attempt) => attempt.decision.outcome === "placed",
     );
     // Decision evidence correlated with placement/fill evidence.
     expect(placed?.executed.availability).toBe("observed");
@@ -536,12 +649,16 @@ describe("copy-operations delegated RLS", () => {
 
   it("recent-attempts: ordering is newest-first and the cursor is opaque", async () => {
     const page = await asTx(ownerA.userId, (tx) =>
-      getRecentAttemptsForAccount(tx, {
-        billing_account_id: ownerA.billingAccountId,
-        mode: "all",
-        outcome: "all",
-        limit: 1,
-      }, ownerA.billingAccountId)
+      getRecentAttemptsForAccount(
+        tx,
+        {
+          billing_account_id: ownerA.billingAccountId,
+          mode: "all",
+          outcome: "all",
+          limit: 1,
+        },
+        ownerA.billingAccountId,
+      ),
     );
     expect(page).not.toBeNull();
     if (page === null) return;
@@ -555,17 +672,23 @@ describe("copy-operations delegated RLS", () => {
 
     // Page 2 under the SAME frozen cutoff must not repeat page 1's row.
     const next = await asTx(ownerA.userId, (tx) =>
-      getRecentAttemptsForAccount(tx, {
-        billing_account_id: ownerA.billingAccountId,
-        mode: "all",
-        outcome: "all",
-        limit: 1,
-        captured_at: page.captured_at,
-        cursor,
-      }, ownerA.billingAccountId)
+      getRecentAttemptsForAccount(
+        tx,
+        {
+          billing_account_id: ownerA.billingAccountId,
+          mode: "all",
+          outcome: "all",
+          limit: 1,
+          captured_at: page.captured_at,
+          cursor,
+        },
+        ownerA.billingAccountId,
+      ),
     );
     expect(next?.attempts.length).toBe(1);
-    expect(next?.attempts[0]?.attempt_id).not.toBe(page.attempts[0]?.attempt_id);
+    expect(next?.attempts[0]?.attempt_id).not.toBe(
+      page.attempts[0]?.attempt_id,
+    );
     expect(next?.attempts[0]?.decision.outcome).toBe("placed");
     expect(next?.truncated).toBe(false);
     expect(next?.next_cursor).toBeNull();
@@ -577,12 +700,16 @@ describe("copy-operations delegated RLS", () => {
     // fetched the newest row — the skip — and then filtered it away, returning
     // an empty page while a matching row existed.
     const page = await asTx(ownerA.userId, (tx) =>
-      getRecentAttemptsForAccount(tx, {
-        billing_account_id: ownerA.billingAccountId,
-        mode: "all",
-        outcome: "placed",
-        limit: 1,
-      }, ownerA.billingAccountId)
+      getRecentAttemptsForAccount(
+        tx,
+        {
+          billing_account_id: ownerA.billingAccountId,
+          mode: "all",
+          outcome: "placed",
+          limit: 1,
+        },
+        ownerA.billingAccountId,
+      ),
     );
     expect(page?.attempts.length).toBe(1);
     expect(page?.attempts[0]?.decision.outcome).toBe("placed");
@@ -590,23 +717,31 @@ describe("copy-operations delegated RLS", () => {
 
   it("recent-attempts: a cross-tenant read returns no tape", async () => {
     const leaked = await asTx(ownerB.userId, (tx) =>
-      getRecentAttemptsForAccount(tx, {
-        billing_account_id: ownerA.billingAccountId,
-        mode: "all",
-        outcome: "all",
-        limit: 50,
-      }, ownerA.billingAccountId)
+      getRecentAttemptsForAccount(
+        tx,
+        {
+          billing_account_id: ownerA.billingAccountId,
+          mode: "all",
+          outcome: "all",
+          limit: 50,
+        },
+        ownerA.billingAccountId,
+      ),
     );
     expect(leaked).toBeNull();
 
     // Non-vacuous: B's own tape is non-empty.
     const own = await asTx(ownerB.userId, (tx) =>
-      getRecentAttemptsForAccount(tx, {
-        billing_account_id: ownerB.billingAccountId,
-        mode: "all",
-        outcome: "all",
-        limit: 50,
-      }, ownerB.billingAccountId)
+      getRecentAttemptsForAccount(
+        tx,
+        {
+          billing_account_id: ownerB.billingAccountId,
+          mode: "all",
+          outcome: "all",
+          limit: 50,
+        },
+        ownerB.billingAccountId,
+      ),
     );
     expect(own?.attempts.length).toBe(1);
     expect(own?.attempts[0]?.attempt_id).toBe(decisionB);
