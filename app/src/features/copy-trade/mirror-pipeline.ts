@@ -28,6 +28,7 @@ import {
   clientOrderIdFor,
   type LoggerPort,
   type MetricsPort,
+  normalizeLimitPriceToTick,
   type OrderIntent,
   type OrderReceipt,
 } from "@cogni/poly-market-provider";
@@ -40,7 +41,11 @@ import {
 } from "@/features/trading";
 import type { WalletActivitySource } from "@/features/wallet-watch";
 
-import { planMirrorFromFill, positionGapDesiredShares } from "./plan-mirror";
+import {
+  planMirrorFromFill,
+  positionGapDesiredShares,
+  targetVwapForToken,
+} from "./plan-mirror";
 import type {
   MirrorPositionView,
   MirrorReason,
@@ -770,6 +775,9 @@ function buildDecisionLogFields(args: {
   } = args;
   const tokenId =
     typeof fill.attributes?.asset === "string" ? fill.attributes.asset : "";
+  const normalizedLimitPrice = tick_size
+    ? normalizeLimitPriceToTick(fill.price, tick_size)
+    : ({ ok: true, price: fill.price } as const);
   return {
     position_branch: branch,
     position_qty_shares: position?.our_qty_shares ?? 0,
@@ -814,6 +822,9 @@ function buildDecisionLogFields(args: {
     min_usdc_notional: min_usdc_notional ?? null,
     tick_size: tick_size ?? null,
     fill_price: fill.price,
+    evaluated_limit_price: normalizedLimitPrice.ok
+      ? normalizedLimitPrice.price
+      : null,
     floor_usdc:
       min_usdc_notional === undefined
         ? null
@@ -860,17 +871,8 @@ function targetVwapForFillToken(
   targetPosition: TargetConditionPositionView | undefined,
   tokenId: string | undefined
 ): number | null {
-  if (!targetPosition || !tokenId) return null;
-  let cost = 0;
-  let shares = 0;
-  for (const t of targetPosition.tokens) {
-    if (t.token_id === tokenId) {
-      cost += t.cost_usdc;
-      shares += t.size_shares;
-    }
-  }
-  if (shares <= 0) return null;
-  return Number((cost / shares).toFixed(4));
+  const vwap = targetVwapForToken(targetPosition, tokenId ?? "");
+  return vwap === undefined ? null : Number(vwap.toFixed(4));
 }
 
 function targetPositionTotalUsdc(

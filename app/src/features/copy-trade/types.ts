@@ -234,9 +234,9 @@ export const MirrorTargetConfigSchema = z.object({
   /**
    * bug.5048 — upward tolerance (in 0–1 price units) above target's VWAP on
    * the fill's token. When `fill.price > target_vwap + vwap_tolerance`, the
-   * planner skips with `vwap_floor_breach`. Undefined ⇒ VWAP gate disabled.
-   * Default 0.005 (0.5pp) in bootstrap — covers tick-grid rounding + ladder
-   * slippage.
+   * planner skips with `vwap_floor_breach`. Undefined ⇒ VWAP gate disabled
+   * for legacy policies, but position_gap BUYs fail closed. Default 0.005
+   * (0.5pp) in bootstrap — covers tick-grid rounding + ladder slippage.
    */
   vwap_tolerance: z.number().min(0).max(1).optional(),
 });
@@ -506,8 +506,9 @@ export const MirrorReasonSchema = z.enum([
    */
   "target_dominant_other_side",
   /**
-   * bug.5048 — `fill.price > target_vwap_for_fill_token + config.vwap_tolerance`.
-   * We refuse to place above target's average entry on this token.
+   * bug.5048 / bug.5008 — `fill.price > target_vwap_for_fill_token +
+   * config.vwap_tolerance`, or missing/invalid target VWAP under position_gap.
+   * We refuse to place above an evidenced target entry on this token.
    */
   "vwap_floor_breach",
   /**

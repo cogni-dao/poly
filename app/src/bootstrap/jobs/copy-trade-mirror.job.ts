@@ -227,15 +227,13 @@ export function buildMirrorTargetConfig(params: {
       : {}),
   });
   // SELF_CONTAINED_SIZING_POLICIES: `mirror_fill_exact` and `position_gap`
-  // each encode their own conviction (verbatim fill or portfolio gap).
-  // Attaching the bug.5048 per-fill gates — `min_target_side_fraction`,
-  // `vwap_tolerance` — or the `position_followup` dispatcher would re-introduce
-  // filtering these policies exist to evaluate without (and worse, fire as
-  // spurious skips: bug.5027). Optional fields are fail-open when unset; see
-  // `planMirrorFromFill`'s applyVwapGate + analyzeTargetDominance + the
-  // `skipFollowupDispatch` short-circuit in `decideMirrorBranch`.
+  // each encode their own conviction (verbatim fill or portfolio gap), so
+  // neither uses dominance/follow-up filtering. Profitability is orthogonal
+  // to sizing, though: position_gap BUYs retain the target-token VWAP gate,
+  // while mirror_fill_exact intentionally stays a verbatim execution probe.
   const isSelfContainedPolicy =
     sizing.kind === "mirror_fill_exact" || sizing.kind === "position_gap";
+  const isVerbatimPolicy = sizing.kind === "mirror_fill_exact";
   return {
     target_id: targetIdFromWallet(params.targetWallet),
     target_wallet: params.targetWallet,
@@ -245,13 +243,16 @@ export function buildMirrorTargetConfig(params: {
     // task.5001 — default to mirror_limit (resting GTC at target's entry).
     // Persistence to a per-target column is deferred to task.0347.
     placement: { kind: "mirror_limit" },
-    // bug.5048 — gate new_entry + layer routing against target's per-side
-    // cost asymmetry, and refuse to place above target's per-token VWAP.
-    // Skipped under self-contained policies.
-    ...(isSelfContainedPolicy
+    // bug.5048 / bug.5008 — legacy policies gate target-side conviction and
+    // price; position_gap gates price only; mirror_fill_exact gates neither.
+    ...(isVerbatimPolicy
       ? {}
       : {
-          min_target_side_fraction: DEFAULT_MIN_TARGET_SIDE_FRACTION,
+          ...(sizing.kind === "position_gap"
+            ? {}
+            : {
+                min_target_side_fraction: DEFAULT_MIN_TARGET_SIDE_FRACTION,
+              }),
           vwap_tolerance: DEFAULT_VWAP_TOLERANCE,
         }),
     ...(!isSelfContainedPolicy &&
