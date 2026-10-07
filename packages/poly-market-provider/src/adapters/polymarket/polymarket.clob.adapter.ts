@@ -473,9 +473,11 @@ export class PolymarketClobAdapter implements MarketProviderPort {
   }> {
     const [response, rawNegRisk] = await withSuppressedClobSdkDiagnostics(() =>
       Promise.all([
+        // Polymarket's account endpoint accepts token_id only for
+        // CONDITIONAL assets. COLLATERAL is wallet-wide; including an outcome
+        // token makes the SDK return an HTTP error object instead of balance.
         this.client.getBalanceAllowance({
           asset_type: AssetType.COLLATERAL,
-          token_id: tokenId,
         }),
         this.client.getNegRisk(tokenId),
       ])
@@ -484,11 +486,38 @@ export class PolymarketClobAdapter implements MarketProviderPort {
     const spender = negRisk
       ? POLYGON_POLYMARKET_NEG_RISK_EXCHANGE_V2
       : POLYGON_POLYMARKET_EXCHANGE_V2;
-    const raw = response as unknown as {
-      balance: string;
-      allowance?: unknown;
-      allowances?: Record<string, unknown>;
-    };
+    const raw =
+      response !== null && typeof response === "object"
+        ? (response as unknown as {
+            balance?: unknown;
+            allowance?: unknown;
+            allowances?: Record<string, unknown>;
+          })
+        : {};
+    if (typeof raw.balance !== "string" || !/^\d+$/.test(raw.balance)) {
+      const upstream = classifyClobFailure(response);
+      this.log.warn(
+        {
+          event: "poly.clob.collateral_preflight",
+          phase: "unavailable",
+          error_code:
+            POLY_CLOB_ERROR_CODES.collateralPreflightUnavailable,
+          response_keys: upstream.response_keys,
+          http_status: upstream.http_status ?? null,
+          reason: upstream.reason ?? "missing_or_invalid_balance",
+        },
+        "authenticated CLOB collateral preflight unavailable; refusing order"
+      );
+      throw new ClobRejectionError(
+        "Polymarket CLOB collateral preflight returned no atomic balance",
+        {
+          ...upstream,
+          error_code:
+            POLY_CLOB_ERROR_CODES.collateralPreflightUnavailable,
+          reason: upstream.reason ?? "missing_or_invalid_balance",
+        }
+      );
+    }
     const mapAllowance = raw.allowances
       ? Object.entries(raw.allowances).find(
           ([address]) => address.toLowerCase() === spender.toLowerCase()
@@ -500,7 +529,9 @@ export class PolymarketClobAdapter implements MarketProviderPort {
       // Fail closed when the authenticated endpoint omits the applicable
       // spender. A missing allowance must never authorize POST /order.
       allowanceAtomic:
-        typeof rawAllowance === "string" ? BigInt(rawAllowance) : 0n,
+        typeof rawAllowance === "string" && /^\d+$/.test(rawAllowance)
+          ? BigInt(rawAllowance)
+          : 0n,
       spender,
     };
   }
@@ -1353,6 +1384,7 @@ export const POLY_CLOB_ERROR_CODES = {
   fokNoMatch: "fok_no_match",
   emptyResponse: "empty_response",
   httpError: "http_error",
+  collateralPreflightUnavailable: "collateral_preflight_unavailable",
   unknown: "unknown",
 } as const;
 export type PolyClobErrorCode =
