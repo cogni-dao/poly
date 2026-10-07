@@ -27,6 +27,15 @@
  *   - GRACE_WINDOW_IS_CONFIG — not_found rows older than `notFoundGraceMs` are
  *     promoted to `canceled`; value sourced from `POLY_CLOB_NOT_FOUND_GRACE_MS`
  *     env var (default 900 000 ms). (task.0328 CP2)
+ *   - UNPLACED_ROWS_TERMINALIZE — a row with no `order_id` past
+ *     `UNPLACED_GRACE_MS` (24h, deliberately NOT the not_found grace) is
+ *     promoted to `error` with reason `never_placed`. Without this such rows
+ *     stay `pending` forever and permanently block wallet reset, which treats
+ *     pending|open as unsettled. Residual risk, accepted and logged at warn:
+ *     if placement DID reach the venue and the process died before
+ *     `markOrderId`, the real order is no longer represented by this row. 24h
+ *     makes that window implausible; dedup is unaffected because
+ *     `snapshotState.cidRows` does not filter on status.
  *   - UPGRADE_IS_METERED — each not_found-to-canceled promotion increments
  *     `poly_reconciler_not_found_upgrades_total`. (task.0328 CP2)
  *   - SYNCED_AT_WRITTEN_ON_EVERY_SYNC — `markSynced` is called for every row
@@ -76,10 +85,24 @@ export const ORDER_RECONCILER_METRICS = {
    * order-retention / pruning behavior. Alert threshold: >5 in 10 min.
    */
   notFoundUpgradesTotal: "poly_reconciler_not_found_upgrades_total",
+  /** One per unplaced row (never got an order id) promoted to canceled. */
+  unplacedUpgradesTotal: "poly_reconciler_unplaced_upgrades_total",
 } as const;
 
 const RECONCILE_POLL_MS = 60_000;
 const DEFAULT_OLDER_THAN_MS = 30_000;
+/**
+ * Grace before a row that never received an `order_id` is terminalized.
+ *
+ * Deliberately NOT `notFoundGraceMs`. That window answers "the CLOB is slow to
+ * index an order we know exists" and 15 minutes is generous for it. This branch
+ * asserts the opposite — that no order exists — and it can be wrong: per
+ * INSERT_BEFORE_PLACE (`mirror-pipeline.ts`), a crash after the venue accepts
+ * but before `markOrderId` leaves a real resting order with no id in the
+ * ledger. 24h makes that window implausible while still clearing rows that
+ * have been stuck for months.
+ */
+const UNPLACED_GRACE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_LIMIT = 200;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -183,8 +206,44 @@ export async function runReconcileOnce(
 
   for (const row of rows) {
     if (!row.order_id) {
-      // Can't prove anything without a CLOB order id — placement may still be
-      // in-flight. Skip; markOrderId will eventually stamp the id.
+      // No CLOB order id. Within grace this is a placement still in flight —
+      // markOrderId will stamp it. Past UNPLACED_GRACE_MS nothing ever will:
+      // `listOpenOrPending` keeps returning the row and this branch used to
+      // skip it unconditionally, so it stayed `pending` for months and
+      // permanently blocked wallet reset (which counts pending|open as
+      // unsettled). Reason `never_placed` is distinct from the not_found
+      // branch's `clob_not_found` so forensics can tell "never reached the
+      // venue" apart from "reached it, then the venue pruned it".
+      //
+      // Side effect, intended: leaving pending|open also releases this row's
+      // slot in the partial unique index `one_open_per_market`, which the
+      // stuck row had been holding against new mirror orders for that market.
+      const unplacedAgeMs = clock().getTime() - row.created_at.getTime();
+      if (unplacedAgeMs < UNPLACED_GRACE_MS) continue;
+
+      // `error`, not `canceled`. We never saw a venue response for this row,
+      // so claiming it was canceled asserts state we cannot verify. `error`
+      // says what is actually known: the placement never recorded an id.
+      // Both are outside UNSETTLED_ORDER_STATUSES, so either unblocks wallet
+      // reset — but only one of them is honest.
+      await deps.ledger.updateStatus({
+        client_order_id: row.client_order_id,
+        status: "error",
+        reason: "never_placed",
+      });
+      // NOT pushed to syncedIds: `synced_at` records a typed CLOB response,
+      // and this row never produced one. The row leaves `listOpenOrPending`
+      // on the next tick anyway, so its staleness stops growing regardless.
+      deps.metrics.incr(ORDER_RECONCILER_METRICS.unplacedUpgradesTotal, {});
+      log.warn(
+        {
+          event: EVENT_NAMES.POLY_RECONCILER_UNPLACED_UPGRADE,
+          client_order_id: row.client_order_id,
+          billing_account_id: row.billing_account_id,
+          ageMs: unplacedAgeMs,
+        },
+        "reconciler: terminalizing row that never recorded a CLOB order id — if placement did reach the venue, this row stops representing it"
+      );
       continue;
     }
 

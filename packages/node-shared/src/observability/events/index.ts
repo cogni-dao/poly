@@ -188,6 +188,10 @@ export const EVENT_NAMES = {
 	POLY_RECONCILER_NOT_FOUND: "poly.reconciler.not_found",
 	// Emitted at info when a stale row is promoted to canceled.
 	POLY_RECONCILER_NOT_FOUND_UPGRADE: "poly.reconciler.not_found_upgrade",
+	// Emitted at info when a row that never received a CLOB order id is
+	// promoted to canceled past the grace window (bug: unplaced rows were
+	// skipped forever and permanently blocked wallet reset).
+	POLY_RECONCILER_UNPLACED_UPGRADE: "poly.reconciler.unplaced_upgrade",
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];
