@@ -14,7 +14,7 @@
  *   - TARGET_DOMINANCE_DRIVES_BRANCH (bug.5048): when `config.min_target_side_fraction` is set + target_position is available, `decideMirrorBranch` computes target's dominant side first, then routes by our position state per the spec branch table. Below-threshold (minority) fills always skip as `target_dominant_other_side` — master switch covering entry, layer, AND hedge. When disabled (threshold unset / no target data), legacy our-position routing applies for backward-compat.
  *   - SIZING_PROPORTIONAL_TO_TARGET_SHARE (charter D6): for `target_percentile_scaled`, mirror intent is scaled by target's cost-basis fraction on the fill's token. Minority-side fills sized below market min skip rather than place. Prevents the inverted-weighting failure mode (Sinner/Ruud 2026-05-17, target 99.5/0.5 → mirror 28/72 inverted). Tactical fix; true position-proportional alignment is D2.
  *   - GAP_DRIVES_SIZING (D2 phase 2): for `position_gap`, intent is `(desired_shares − our_shares) × fill.price`, where `desired_shares = target_shares × target_scale`. Each fill is a re-evaluation trigger, not the sizing input. Layer/hedge dispatch short-circuits when this kind is active — gap math produces layering via `desired − ours` directly. `gap ≤ 0` skips `followup_not_needed`; gap below market min skips `below_market_min`. Phase 4's GapExecutor dissolves the remaining fill-driven scaffolding.
- *   - NEVER_PAY_ABOVE_TARGET_VWAP (bug.5048): when `config.vwap_tolerance` is set, `applyVwapGate` skips `vwap_floor_breach` if `fill.price > target_vwap_for_fill_token + tolerance`. Asymmetric upward gate; fails open when target VWAP is unknown.
+ *   - NEVER_PAY_ABOVE_TARGET_VWAP (bug.5048, bug.5008): when `config.vwap_tolerance` is set, `applyVwapGate` skips `vwap_floor_breach` if `fill.price > target_vwap_for_fill_token + tolerance`. Asymmetric upward gate. Missing/invalid VWAP fails closed for position_gap BUYs; legacy policies retain fail-open compatibility.
  *   - HEDGE_PREDICATE_NOOPS_ON_UNKNOWN_OPPOSITE: hedge branch fires only when `state.position.opposite_token_id` is known from prior aggregation. No inference from condition structure alone.
  * Skip-reason precedence (first match wins): already_placed → market_past_end_date → price_outside_clob_bounds → target_dominant_other_side → vwap_floor_breach → sizing-reason skip (below_target_percentile / below_market_min / position_cap_reached / target_position_below_threshold / followup_position_too_small / followup_not_needed) → place.
  * Side-effects: none
@@ -443,9 +443,10 @@ export function planMirrorFromFill(input: PlanMirrorInput): MirrorPlan {
     };
   }
 
-  // VWAP gate (bug.5048) — applied AFTER branch selection, BEFORE sizing
-  // finalization. Fires on every place-bound branch. Fails open when target
-  // VWAP for the fill's token is unknown.
+  // VWAP gate (bug.5048 / bug.5008) — applied AFTER branch selection, BEFORE
+  // sizing finalization. Fires on every place-bound BUY branch. position_gap
+  // fails closed when target VWAP is unavailable; legacy policies retain
+  // their historical fail-open behavior.
   const vwapSkip = applyVwapGate(planningInput);
   if (vwapSkip !== undefined) {
     return {
@@ -546,8 +547,9 @@ export function analyzeTargetDominance(
 
 /**
  * bug.5048 — target's VWAP on a specific token, derived from
- * `cost_usdc / size_shares`. Returns undefined when shares are zero or token
- * is absent (fail-open semantics).
+ * `cost_usdc / size_shares`. Returns undefined when the token is absent or the
+ * result cannot be a valid Polymarket entry price. Callers choose fail-open or
+ * fail-closed semantics by policy.
  */
 export function targetVwapForToken(
   targetPosition: TargetConditionPositionView | undefined,
@@ -562,27 +564,43 @@ export function targetVwapForToken(
       shares += t.size_shares;
     }
   }
-  if (shares <= 0) return undefined;
-  return cost / shares;
+  if (!Number.isFinite(cost) || !Number.isFinite(shares) || shares <= 0) {
+    return undefined;
+  }
+  const vwap = cost / shares;
+  if (!Number.isFinite(vwap) || vwap <= 0 || vwap > 1) return undefined;
+  return vwap;
 }
 
 /**
- * bug.5048 — refuse to place above target's average entry on the fill's
- * token. Tolerance is asymmetric (upward only); we are happy to enter below
- * target VWAP. Fail-open when target VWAP is unknown.
+ * bug.5048 / bug.5008 — refuse to place above target's average entry on the
+ * fill's token. Tolerance is asymmetric (upward only); we are happy to enter
+ * below target VWAP. position_gap BUYs fail closed when either the explicit
+ * tolerance or a valid target-token VWAP is unavailable. Legacy policies
+ * retain their historical fail-open behavior; SELL convergence is routed
+ * before this planner in mirror-pipeline and is also excluded defensively.
  */
 function applyVwapGate(
   input: PlanMirrorInput
 ): "vwap_floor_breach" | undefined {
+  if (input.fill.side !== "BUY") return undefined;
+  const failClosed = input.config.sizing.kind === "position_gap";
   const tolerance = input.config.vwap_tolerance;
-  if (tolerance === undefined) return undefined;
+  if (
+    tolerance === undefined ||
+    !Number.isFinite(tolerance) ||
+    tolerance < 0
+  ) {
+    return failClosed ? "vwap_floor_breach" : undefined;
+  }
   const tokenId =
     typeof input.fill.attributes?.asset === "string"
       ? input.fill.attributes.asset
       : "";
-  if (tokenId === "") return undefined;
   const vwap = targetVwapForToken(input.state.target_position, tokenId);
-  if (vwap === undefined) return undefined;
+  if (vwap === undefined) {
+    return failClosed ? "vwap_floor_breach" : undefined;
+  }
   if (input.fill.price > vwap + tolerance) return "vwap_floor_breach";
   return undefined;
 }

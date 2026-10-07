@@ -3,11 +3,15 @@
 
 import type { Fill } from "@cogni/poly-market-provider";
 import { describe, expect, it } from "vitest";
+import { buildMirrorTargetConfig } from "@/bootstrap/jobs/copy-trade-mirror.job";
 import {
 	applyPositionGapSizing,
+	planMirrorFromFill,
 	positionGapDesiredShares,
+	targetVwapForToken,
 } from "@/features/copy-trade/plan-mirror";
 import type {
+	MirrorTargetConfig,
 	PositionGapSizingPolicy,
 	RuntimeState,
 } from "@/features/copy-trade/types";
@@ -130,5 +134,141 @@ describe("position_gap v2 portfolio weighting", () => {
 				}),
 			),
 		).toBe(0);
+	});
+});
+
+const clientOrderId =
+	"0x1111111111111111111111111111111111111111111111111111111111111111" as const;
+
+function positionGapConfig(
+	overrides: Partial<MirrorTargetConfig> = {},
+): MirrorTargetConfig {
+	return {
+		target_id: "11111111-1111-4111-8111-111111111111",
+		target_wallet: "0x2005d16a00000000000000000000000000000000",
+		billing_account_id: "billing-1",
+		created_by_user_id: "user-1",
+		sizing: policy,
+		placement: { kind: "mirror_limit" },
+		vwap_tolerance: 0.005,
+		...overrides,
+	};
+}
+
+function vwapPlan(price: number, stateOverride: Partial<RuntimeState> = {}) {
+	return planMirrorFromFill({
+		fill: { ...fill, price },
+		config: positionGapConfig(),
+		state: state({
+			target_position: {
+				condition_id: "condition",
+				tokens: [
+					{
+						token_id: "token-1",
+						size_shares: 100,
+						cost_usdc: 50,
+						current_value_usdc: 50,
+					},
+				],
+			},
+			target_portfolio_current_value_usdc: 100,
+			mirror_portfolio_current_value_usdc: 100,
+			...stateOverride,
+		}),
+		client_order_id: clientOrderId,
+		min_shares: 1,
+		min_usdc_notional: 1,
+	});
+}
+
+describe("position_gap BUY VWAP protection", () => {
+	it("threads the default VWAP tolerance without adding dominance filters", () => {
+		const config = buildMirrorTargetConfig({
+			targetWallet: "0x2005d16a00000000000000000000000000000000",
+			billingAccountId: "billing-1",
+			createdByUserId: "user-1",
+			sizingPolicyKind: "position_gap",
+		});
+
+		expect(config.vwap_tolerance).toBe(0.005);
+		expect(config.min_target_side_fraction).toBeUndefined();
+		expect(config.position_followup).toBeUndefined();
+	});
+
+	it.each([
+		["below", 0.504],
+		["equal", 0.505],
+	] as const)("places when the limit is %s target VWAP + tolerance", (_, price) => {
+		expect(vwapPlan(price)).toMatchObject({ kind: "place" });
+	});
+
+	it("skips above target VWAP + tolerance", () => {
+		expect(vwapPlan(0.506)).toEqual({
+			kind: "skip",
+			reason: "vwap_floor_breach",
+			position_branch: "new_entry",
+		});
+	});
+
+	it("fails closed when target VWAP is missing", () => {
+		expect(
+			vwapPlan(0.5, {
+				target_position: { condition_id: "condition", tokens: [] },
+			}),
+		).toEqual({
+			kind: "skip",
+			reason: "vwap_floor_breach",
+			position_branch: "new_entry",
+		});
+	});
+
+	it("fails closed when target VWAP is invalid", () => {
+		const invalidPosition: NonNullable<RuntimeState["target_position"]> = {
+			condition_id: "condition",
+			tokens: [
+				{
+					token_id: "token-1",
+					size_shares: 100,
+					cost_usdc: 200,
+					current_value_usdc: 50,
+				},
+			],
+		};
+		expect(targetVwapForToken(invalidPosition, "token-1")).toBeUndefined();
+		expect(vwapPlan(0.5, { target_position: invalidPosition })).toEqual({
+			kind: "skip",
+			reason: "vwap_floor_breach",
+			position_branch: "new_entry",
+		});
+	});
+
+	it("fails closed when position_gap is constructed without a tolerance", () => {
+		const plan = planMirrorFromFill({
+			fill,
+			config: positionGapConfig({ vwap_tolerance: undefined }),
+			state: state(),
+			client_order_id: clientOrderId,
+			min_shares: 1,
+			min_usdc_notional: 1,
+		});
+
+		expect(plan).toEqual({
+			kind: "skip",
+			reason: "vwap_floor_breach",
+			position_branch: "new_entry",
+		});
+	});
+
+	it("keeps mirror_fill_exact free of VWAP filtering", () => {
+		const config = buildMirrorTargetConfig({
+			targetWallet: "0x2005d16a00000000000000000000000000000000",
+			billingAccountId: "billing-1",
+			createdByUserId: "user-1",
+			sizingPolicyKind: "mirror_fill_exact",
+		});
+
+		expect(config.vwap_tolerance).toBeUndefined();
+		expect(config.min_target_side_fraction).toBeUndefined();
+		expect(config.position_followup).toBeUndefined();
 	});
 });
