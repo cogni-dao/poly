@@ -56,3 +56,8 @@ export {
   copyTradePnlAccountReadHandler,
   copyTradePnlExtra,
 } from "./handlers";
+export {
+  classifyTargetPositionsError,
+  targetPositionsAccountReadHandler,
+  targetPositionsExtra,
+} from "./target-positions-handler";

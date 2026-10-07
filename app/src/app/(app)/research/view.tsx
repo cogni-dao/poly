@@ -76,6 +76,7 @@ import {
   fetchCopyTargets,
 } from "../dashboard/_api/fetchCopyTargets";
 import { fetchTopWallets } from "../dashboard/_api/fetchTopWallets";
+import { TargetPositionsPanel } from "./_components/TargetPositionsPanel";
 
 const COPY_TARGETS_QUERY_KEY = ["dashboard-copy-targets"] as const;
 
@@ -86,6 +87,7 @@ const PERIOD_OPTIONS: readonly WalletTimePeriod[] = [
   "ALL",
 ] as const;
 const TOP_N = 100;
+type ResearchPageView = "wallets" | "positions";
 const PRIMARY_RESEARCH_WALLETS = [
   {
     label: "RN1",
@@ -200,6 +202,8 @@ export function ResearchView() {
   const [sorting, setSorting] = useState<SortingState>(initialSort);
   const [globalFilter, setGlobalFilter] = useState(searchParams.get("q") ?? "");
   const [selectedAddr, setSelectedAddr] = useState<string | null>(null);
+  const [researchPageView, setResearchPageView] =
+    useState<ResearchPageView>("wallets");
 
   const syncUrl = useCallback(
     (next: {
@@ -239,6 +243,7 @@ export function ResearchView() {
     staleTime: 60_000,
     gcTime: 5 * 60_000,
     retry: 1,
+    enabled: researchPageView === "wallets",
   });
 
   const { data: targetsData } = useQuery({
@@ -247,6 +252,7 @@ export function ResearchView() {
     staleTime: 30_000,
     gcTime: 5 * 60_000,
     retry: 1,
+    enabled: researchPageView === "wallets",
   });
 
   const { data: walletStatus } = useQuery({
@@ -255,6 +261,7 @@ export function ResearchView() {
     staleTime: 10_000,
     gcTime: 60_000,
     retry: 1,
+    enabled: researchPageView === "wallets",
   });
 
   const trackedSet = useMemo(
@@ -363,12 +370,31 @@ export function ResearchView() {
   return (
     <div className="flex flex-col gap-6 p-5 md:p-6">
       {/* Header */}
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-row flex-wrap items-center justify-between gap-2">
         <h1 className="font-semibold text-xl tracking-tight md:text-2xl">
           Research
         </h1>
+        <ToggleGroup
+          type="single"
+          value={researchPageView}
+          onValueChange={(value) => {
+            if (value) setResearchPageView(value as ResearchPageView);
+          }}
+          className="rounded-lg border"
+        >
+          <ToggleGroupItem value="wallets" className="px-3 text-xs">
+            Wallets
+          </ToggleGroupItem>
+          <ToggleGroupItem value="positions" className="px-3 text-xs">
+            Target positions
+          </ToggleGroupItem>
+        </ToggleGroup>
       </div>
 
+      {researchPageView === "positions" ? (
+        <TargetPositionsPanel />
+      ) : (
+        <>
       <ResearchBenchmarkBoard
         tradingWalletAddress={tradingWalletAddress}
         tradingWalletConnected={walletStatus?.connected === true}
@@ -472,6 +498,8 @@ export function ResearchView() {
           if (!open) setSelectedAddr(null);
         }}
       />
+        </>
+      )}
     </div>
   );
 }

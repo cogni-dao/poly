@@ -116,6 +116,10 @@ export function ExecutionActivityCard(): ReactElement {
     ReadonlySet<string>
   >(new Set());
 
+  useEffect(() => {
+    if (window.location.hash === "#markets") setView("markets");
+  }, []);
+
   const positionAction = useMutation({
     mutationFn: async (args: {
       kind: "close" | "redeem";
@@ -225,7 +229,7 @@ export function ExecutionActivityCard(): ReactElement {
   );
 
   return (
-    <Card>
+    <Card id="markets">
       <CardHeader className="px-5 py-3">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>

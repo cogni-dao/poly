@@ -60,6 +60,8 @@ export const EVENT_NAMES = {
   POLY_ACCOUNT_COPY_SETUP_COMPLETE: "feature.poly_account.copy_setup.complete",
   POLY_ACCOUNT_RECENT_ATTEMPTS_COMPLETE:
     "feature.poly_account.recent_attempts.complete",
+  POLY_ACCOUNT_TARGET_POSITIONS_COMPLETE:
+    "feature.poly_research.target_positions.complete",
   POLY_COPY_TRADE_ORDERS_COMPLETE: "feature.poly_copy_trade.orders.complete",
   POLY_WALLET_REFRESH_COMPLETE: "feature.poly_wallet_refresh.complete",
   POLY_WALLET_DASHBOARD_COMPLETE: "feature.poly_wallet_dashboard.complete",

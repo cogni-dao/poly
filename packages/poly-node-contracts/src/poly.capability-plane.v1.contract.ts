@@ -38,6 +38,10 @@ import {
   PolyAccountPortfolioSnapshotOwnerQuerySchema,
   polyAccountPortfolioSnapshotOperation,
 } from "./poly.account.portfolio-snapshot.v1.contract";
+import {
+  PolyAccountTargetPositionsOwnerQuerySchema,
+  polyAccountTargetPositionsOperation,
+} from "./poly.account.target-positions.v1.contract";
 import type { AgentCapabilityScope } from "./poly.agent-grants.v1.contract";
 import { polyCopyTradeOrdersOperation } from "./poly.copy-trade.orders.v1.contract";
 import {
@@ -296,6 +300,26 @@ export const polyAccountReadPortfolioSnapshotOwnerOperation =
     accountFrom: "principal",
   });
 
+/** Delegable saved-facts view of every active copy-target portfolio. */
+export const polyAccountReadTargetPositionsOperation =
+  defineAccountReadOperation({
+    ...polyAccountTargetPositionsOperation,
+    requiredScope: ACCOUNT_READ_SCOPE,
+    method: "GET",
+    path: "/api/v1/poly/account/target-positions",
+    readOnly: true,
+    accountFrom: "input",
+  });
+
+/** Owner-session transport for the identical capability and output contract. */
+export const polyAccountReadTargetPositionsOwnerOperation =
+  defineAccountReadOperation({
+    ...polyAccountReadTargetPositionsOperation,
+    input: PolyAccountTargetPositionsOwnerQuerySchema,
+    path: "/api/v1/poly/research/target-positions",
+    accountFrom: "principal",
+  });
+
 /**
  * The account-read catalog. Discovery, handler binding, and terminal-event
  * maps all derive from this one array, so adding a capability without wiring
@@ -309,6 +333,7 @@ export const POLY_ACCOUNT_READ_OPERATIONS = [
   polyAccountReadRecentAttemptsOperation,
   polyAccountReadCopyTradeOrdersOperation,
   polyAccountReadPortfolioSnapshotOperation,
+  polyAccountReadTargetPositionsOperation,
 ] as const;
 
 export type PolyAccountReadOperation =

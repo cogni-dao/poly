@@ -67,6 +67,8 @@ export const ACCOUNT_READ_TERMINAL_EVENTS: Record<
   "poly.account.copy-setup.v1": EVENT_NAMES.POLY_ACCOUNT_COPY_SETUP_COMPLETE,
   "poly.account.recent-attempts.v1":
     EVENT_NAMES.POLY_ACCOUNT_RECENT_ATTEMPTS_COMPLETE,
+  "poly.account.target-positions.v1":
+    EVENT_NAMES.POLY_ACCOUNT_TARGET_POSITIONS_COMPLETE,
   "poly.copy-trade.orders.v1": EVENT_NAMES.POLY_COPY_TRADE_ORDERS_COMPLETE,
   // task.1791070962 — the portfolio snapshot. Both of its transports (the
   // owner dashboard and the delegated agent route) share this one event, so
