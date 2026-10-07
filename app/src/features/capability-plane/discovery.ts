@@ -82,6 +82,10 @@ const DISCOVERY_NAMES: Record<
     action: "readPortfolioSnapshot",
     endpoint: "portfolioSnapshot",
   },
+  "poly.account.target-positions.v1": {
+    action: "readTargetPositions",
+    endpoint: "targetPositions",
+  },
 };
 
 export type AccountReadDiscoveryAction = {

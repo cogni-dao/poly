@@ -27,6 +27,8 @@ import {
   polyAccountReadCopyTradeInvestigationEvidenceOperation,
   polyAccountReadCopyTradeInvestigationOperation,
   polyAccountReadCopyTradePnlOperation,
+  polyAccountReadTargetPositionsOperation,
+  polyAccountReadTargetPositionsOwnerOperation,
   polyResearchCopyTradePnlOperation,
 } from "@cogni/poly-node-contracts";
 import { describe, expect, it } from "vitest";
@@ -72,6 +74,22 @@ describe("account-read descriptors", () => {
     );
     expect(polyAccountReadCopySetupOwnerOperation.path).toBe(
       "/api/v1/poly/copy-trade/targets",
+    );
+  });
+
+  it("serves target positions to owners and agents through one contract", () => {
+    expect(polyAccountReadTargetPositionsOwnerOperation.id).toBe(
+      polyAccountReadTargetPositionsOperation.id,
+    );
+    expect(polyAccountReadTargetPositionsOwnerOperation.output).toBe(
+      polyAccountReadTargetPositionsOperation.output,
+    );
+    expect(polyAccountReadTargetPositionsOperation.accountFrom).toBe("input");
+    expect(polyAccountReadTargetPositionsOwnerOperation.accountFrom).toBe(
+      "principal",
+    );
+    expect(polyAccountReadTargetPositionsOperation.path).toBe(
+      "/api/v1/poly/account/target-positions",
     );
   });
 
