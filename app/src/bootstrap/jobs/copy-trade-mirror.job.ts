@@ -32,6 +32,7 @@ import {
   runMirrorTick,
 } from "@/features/copy-trade/mirror-pipeline";
 import { positionCostUsdc } from "@/features/copy-trade/position-cost";
+import type { PositionGapBudgetGroup } from "@/features/copy-trade/position-gap-budget";
 import { targetIdFromWallet } from "@/features/copy-trade/target-id";
 import {
   buildWalletStatistic,
@@ -128,6 +129,10 @@ function buildSizingPolicy(params: {
   targetRangeMaxUsdc?: number;
   /** Legacy position_gap v1 field; ignored by the v2 runtime. */
   mirrorMaxAllocPerConditionUsdc?: number;
+  /** Null/omitted preserves automatic full-NAV-compatible allocation. */
+  mirrorCapitalBudgetUsdc?: number | null;
+  /** Runtime-eligible account group used to prevent aggregate over-claim. */
+  positionGapBudgetGroup?: PositionGapBudgetGroup;
 }): SizingPolicy {
   const snapshot = snapshotForTargetWallet(params.targetWallet);
   const resolvedKind: Exclude<SizingPolicyKindInput, "auto"> =
@@ -140,7 +145,27 @@ function buildSizingPolicy(params: {
     return minBetPolicy(params.mirrorMaxUsdcPerTrade);
   }
   if (resolvedKind === "position_gap") {
-    return { kind: "position_gap" };
+    const configuredBudget = params.mirrorCapitalBudgetUsdc ?? null;
+    const group =
+      params.positionGapBudgetGroup ??
+      (configuredBudget === null
+        ? {
+            explicitBudgetTotalUsdc: 0,
+            automaticTargetCount: 1,
+            unbudgetedTargetCount: 0,
+          }
+        : {
+            explicitBudgetTotalUsdc: configuredBudget,
+            automaticTargetCount: 0,
+            unbudgetedTargetCount: 0,
+          });
+    return {
+      kind: "position_gap",
+      mirror_capital_budget_usdc: configuredBudget,
+      account_explicit_budget_total_usdc: group.explicitBudgetTotalUsdc,
+      account_automatic_budget_target_count: group.automaticTargetCount,
+      account_unbudgeted_target_count: group.unbudgetedTargetCount,
+    };
   }
   if (resolvedKind === "mirror_fill_exact") {
     return { kind: "mirror_fill_exact" };
@@ -207,6 +232,10 @@ export function buildMirrorTargetConfig(params: {
   targetRangeMaxUsdc?: number;
   /** Legacy position_gap v1 field; retained for row compatibility. */
   mirrorMaxAllocPerConditionUsdc?: number;
+  /** Position-gap portfolio-scale budget; null/omitted is automatic. */
+  mirrorCapitalBudgetUsdc?: number | null;
+  /** Account group computed from the runtime-eligible target set. */
+  positionGapBudgetGroup?: PositionGapBudgetGroup;
 }): MirrorTargetConfig {
   const mirrorFilterPercentile =
     params.mirrorFilterPercentile ?? DEFAULT_CONVICTION_FILTER_PERCENTILE;
@@ -224,6 +253,12 @@ export function buildMirrorTargetConfig(params: {
       ? {
           mirrorMaxAllocPerConditionUsdc: params.mirrorMaxAllocPerConditionUsdc,
         }
+      : {}),
+    ...(params.mirrorCapitalBudgetUsdc !== undefined
+      ? { mirrorCapitalBudgetUsdc: params.mirrorCapitalBudgetUsdc }
+      : {}),
+    ...(params.positionGapBudgetGroup !== undefined
+      ? { positionGapBudgetGroup: params.positionGapBudgetGroup }
       : {}),
   });
   // SELF_CONTAINED_SIZING_POLICIES: `mirror_fill_exact` and `position_gap`

@@ -153,6 +153,12 @@ export const PATCH = wrapRouteHandlerWithLogging<{
       updateSet.mirrorMaxAllocPerConditionUsdc =
         parsed.data.mirror_max_alloc_per_condition_usdc.toFixed(2);
     }
+    if (parsed.data.mirror_capital_budget_usdc !== undefined) {
+      updateSet.mirrorCapitalBudgetUsdc =
+        parsed.data.mirror_capital_budget_usdc === null
+          ? null
+          : parsed.data.mirror_capital_budget_usdc.toFixed(2);
+    }
 
     const updateResult = await withTenantScope(appDb, actorId, async (tx) => {
       const currentRows = await tx
@@ -201,6 +207,8 @@ export const PATCH = wrapRouteHandlerWithLogging<{
           target_range_max_usdc: polyCopyTradeTargets.targetRangeMaxUsdc,
           mirror_max_alloc_per_condition_usdc:
             polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
+          mirror_capital_budget_usdc:
+            polyCopyTradeTargets.mirrorCapitalBudgetUsdc,
           mirror_activated_at: polyCopyTradeTargets.mirrorActivatedAt,
         });
 
@@ -261,6 +269,10 @@ export const PATCH = wrapRouteHandlerWithLogging<{
       row.mirror_max_alloc_per_condition_usdc === null
         ? null
         : Number(row.mirror_max_alloc_per_condition_usdc);
+    const mirrorCapitalBudgetUsdc =
+      row.mirror_capital_budget_usdc === null
+        ? null
+        : Number(row.mirror_capital_budget_usdc);
 
     ctx.log.info(
       {
@@ -270,6 +282,7 @@ export const PATCH = wrapRouteHandlerWithLogging<{
         sizing_policy_kind: storedSizingPolicyKind,
         target_range_max_usdc: targetRangeMaxUsdc,
         mirror_max_alloc_per_condition_usdc: mirrorMaxAllocPerConditionUsdc,
+        mirror_capital_budget_usdc: mirrorCapitalBudgetUsdc,
       },
       "poly.copy_trade.targets.update_success",
     );
@@ -288,6 +301,7 @@ export const PATCH = wrapRouteHandlerWithLogging<{
           sizing_policy_kind: effectiveKind,
           target_range_max_usdc: targetRangeMaxUsdc,
           mirror_max_alloc_per_condition_usdc: mirrorMaxAllocPerConditionUsdc,
+          mirror_capital_budget_usdc: mirrorCapitalBudgetUsdc,
           mirror_activated_at: row.mirror_activated_at.toISOString(),
           source: "db",
         },

@@ -1054,6 +1054,9 @@ function createContainer(): Container {
 											enumeratedTarget.mirrorMaxAllocPerConditionUsdc,
 									}
 								: {}),
+							mirrorCapitalBudgetUsdc:
+								enumeratedTarget.mirrorCapitalBudgetUsdc,
+							positionGapBudgetGroup: enumeratedTarget.positionGapBudgetGroup,
 						});
 						const source = createPolymarketChainActivitySource({
 							publicClient: chainPublicClient,

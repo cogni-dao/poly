@@ -42,6 +42,10 @@ import {
 import type { LoggerPort } from "@cogni/poly-market-provider";
 import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import {
+  type PositionGapBudgetGroup,
+  summarizePositionGapBudgetGroup,
+} from "@/features/copy-trade/position-gap-budget";
 import { targetIdFromWallet } from "@/features/copy-trade/target-id";
 
 export type WalletAddress = `0x${string}`;
@@ -79,6 +83,10 @@ export interface EnumeratedTarget {
   targetRangeMaxUsdc: number | null;
   /** Legacy position_gap v1 field; ignored by v2 sizing. */
   mirrorMaxAllocPerConditionUsdc: number | null;
+  /** Null means automatic allocation from the account's remaining mirror NAV. */
+  mirrorCapitalBudgetUsdc: number | null;
+  /** Account-wide allocation inputs, computed from the same eligible row set. */
+  positionGapBudgetGroup: PositionGapBudgetGroup;
 }
 
 /**
@@ -97,6 +105,8 @@ export interface UserTargetRow {
   targetRangeMaxUsdc: number | null;
   /** Legacy position_gap v1 field. */
   mirrorMaxAllocPerConditionUsdc: number | null;
+  /** Position-gap portfolio-scale budget; null is automatic/full-NAV compatible. */
+  mirrorCapitalBudgetUsdc: number | null;
 }
 
 export interface CopyTradeTargetSource {
@@ -149,6 +159,7 @@ export function envTargetSource(
       sizingPolicyKind: "auto" as const,
       targetRangeMaxUsdc: null,
       mirrorMaxAllocPerConditionUsdc: null,
+      mirrorCapitalBudgetUsdc: null,
     }))
   );
   const enumerated: readonly EnumeratedTarget[] = Object.freeze(
@@ -162,6 +173,12 @@ export function envTargetSource(
       sizingPolicyKind: "auto" as const,
       targetRangeMaxUsdc: null,
       mirrorMaxAllocPerConditionUsdc: null,
+      mirrorCapitalBudgetUsdc: null,
+      positionGapBudgetGroup: {
+        explicitBudgetTotalUsdc: 0,
+        automaticTargetCount: 0,
+        unbudgetedTargetCount: wallets.length,
+      },
     }))
   );
   return {
@@ -227,6 +244,8 @@ export function dbTargetSource(
             target_range_max_usdc: polyCopyTradeTargets.targetRangeMaxUsdc,
             mirror_max_alloc_per_condition_usdc:
               polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
+            mirror_capital_budget_usdc:
+              polyCopyTradeTargets.mirrorCapitalBudgetUsdc,
           })
           .from(polyCopyTradeTargets)
           .where(isNull(polyCopyTradeTargets.disabledAt))
@@ -246,6 +265,10 @@ export function dbTargetSource(
           r.mirror_max_alloc_per_condition_usdc === null
             ? null
             : Number(r.mirror_max_alloc_per_condition_usdc),
+        mirrorCapitalBudgetUsdc:
+          r.mirror_capital_budget_usdc === null
+            ? null
+            : Number(r.mirror_capital_budget_usdc),
       }));
     },
 
@@ -271,6 +294,7 @@ export function dbTargetSource(
       // every target row directly.
       const baseSelect = deps.serviceDb
         .select({
+          target_row_id: polyCopyTradeTargets.id,
           billing_account_id: polyCopyTradeTargets.billingAccountId,
           created_by_user_id: polyCopyTradeTargets.createdByUserId,
           target_wallet: polyCopyTradeTargets.targetWallet,
@@ -281,6 +305,8 @@ export function dbTargetSource(
           target_range_max_usdc: polyCopyTradeTargets.targetRangeMaxUsdc,
           mirror_max_alloc_per_condition_usdc:
             polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
+          mirror_capital_budget_usdc:
+            polyCopyTradeTargets.mirrorCapitalBudgetUsdc,
         })
         .from(polyCopyTradeTargets);
 
@@ -331,6 +357,8 @@ export function dbTargetSource(
         await explainExcludedTargets(deps, rows.length);
       }
 
+      const budgetGroups = positionGapBudgetGroups(rows);
+
       return rows.map((r) => ({
         billingAccountId: r.billing_account_id,
         createdByUserId: r.created_by_user_id,
@@ -347,9 +375,58 @@ export function dbTargetSource(
           r.mirror_max_alloc_per_condition_usdc === null
             ? null
             : Number(r.mirror_max_alloc_per_condition_usdc),
+        mirrorCapitalBudgetUsdc:
+          r.mirror_capital_budget_usdc === null
+            ? null
+            : Number(r.mirror_capital_budget_usdc),
+        positionGapBudgetGroup:
+          budgetGroups.get(r.billing_account_id) ??
+          summarizePositionGapBudgetGroup([], 0),
       }));
     },
   };
+}
+
+/**
+ * Collapse join-expanded eligible rows into one budget group per account.
+ * Exported so the multi-target allocation boundary stays directly testable.
+ */
+export function positionGapBudgetGroups(
+  rows: readonly {
+    target_row_id: string;
+    billing_account_id: string;
+    sizing_policy_kind: string;
+    mirror_capital_budget_usdc: string | null;
+  }[]
+): ReadonlyMap<string, PositionGapBudgetGroup> {
+  const uniqueRows = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) uniqueRows.set(row.target_row_id, row);
+
+  const byAccount = new Map<string, Array<(typeof rows)[number]>>();
+  for (const row of uniqueRows.values()) {
+    const accountRows = byAccount.get(row.billing_account_id) ?? [];
+    accountRows.push(row);
+    byAccount.set(row.billing_account_id, accountRows);
+  }
+
+  return new Map(
+    [...byAccount.entries()].map(([accountId, accountRows]) => {
+      const positionGapRows = accountRows.filter(
+        (row) => row.sizing_policy_kind === "position_gap"
+      );
+      return [
+        accountId,
+        summarizePositionGapBudgetGroup(
+          positionGapRows.map((row) =>
+            row.mirror_capital_budget_usdc === null
+              ? null
+              : Number(row.mirror_capital_budget_usdc)
+          ),
+          accountRows.length - positionGapRows.length
+        ),
+      ];
+    })
+  );
 }
 
 /**

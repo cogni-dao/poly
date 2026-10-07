@@ -36,6 +36,9 @@ const mirrorMaxUsdcPerTradeSchema = z
     message: "Expected a value with at most 2 decimal places",
   });
 
+/** Optional capital reservation for one position-gap target; null means auto. */
+const mirrorCapitalBudgetUsdcSchema = mirrorMaxUsdcPerTradeSchema.nullable();
+
 /**
  * Per-target sizing-policy kind. `'auto'` (default) preserves legacy
  * snapshot-derived behavior — `buildSizingPolicy` infers
@@ -89,6 +92,8 @@ const targetPolicySchema = z.object({
   /** Legacy position_gap v1 field; accepted only for wire compatibility. */
   mirror_max_alloc_per_condition_usdc:
     mirrorMaxAllocPerConditionUsdcSchema.optional(),
+  /** Position-gap portfolio budget. Null/omitted shares available mirror NAV. */
+  mirror_capital_budget_usdc: mirrorCapitalBudgetUsdcSchema.optional(),
 });
 
 const targetSchema = z.object({
@@ -119,6 +124,8 @@ const targetSchema = z.object({
   /** Legacy position_gap v1 field; compatibility-only in v2. */
   mirror_max_alloc_per_condition_usdc:
     mirrorMaxAllocPerConditionUsdcSchema.nullable(),
+  /** Position-gap portfolio budget. Null means automatic/full available NAV. */
+  mirror_capital_budget_usdc: mirrorCapitalBudgetUsdcSchema,
   /** Optimistic-concurrency token and cold-start fence for this configuration. */
   mirror_activated_at: isoTimestampSchema,
   /** Provenance: `"env"` for the local-dev fallback; `"db"` once `dbTargetSource` is wired. */
@@ -152,6 +159,8 @@ const targetCreateInputSchema = z.object({
    */
   mirror_max_alloc_per_condition_usdc:
     mirrorMaxAllocPerConditionUsdcSchema.optional(),
+  /** Position-gap portfolio budget. Null/omitted uses automatic allocation. */
+  mirror_capital_budget_usdc: mirrorCapitalBudgetUsdcSchema.optional(),
 });
 
 export const polyCopyTradeTargetCreateOperation = {

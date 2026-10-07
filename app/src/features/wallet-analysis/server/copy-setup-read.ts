@@ -7,7 +7,7 @@
  *   to mirror right now?". Joins the TWO surviving sources of copy-trade setup:
  *   per-target sizing policy from `poly_copy_trade_targets`, and account-wide
  *   wallet safety caps from `poly_wallet_grants`.
- * Scope: Three bounded reads on the dispatcher's app-role tenant transaction.
+ * Scope: Four bounded reads on the dispatcher's app-role tenant transaction.
  *   No authorization, no HTTP, no container, no upstream API.
  * Invariants:
  *   - THERE_IS_NO_CONFIG_TABLE — `poly_copy_trade_config` was DROPPED by
@@ -50,7 +50,10 @@
  * @public
  */
 
-import { polyCopyTradeTargets } from "@cogni/poly-db-schema/copy-trade";
+import {
+  polyCopyTradeDecisions,
+  polyCopyTradeTargets,
+} from "@cogni/poly-db-schema/copy-trade";
 import { polyWalletGrants } from "@cogni/poly-db-schema/wallet-grants";
 import {
   POLY_COPY_SETUP_MAX_TARGETS,
@@ -58,9 +61,13 @@ import {
   type PolyAlgorithmImplementationRevision,
   type PolyWalletSafetyCaps,
 } from "@cogni/poly-node-contracts";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
+import {
+  effectivePositionGapBudget,
+  summarizePositionGapBudgetGroup,
+} from "@/features/copy-trade/position-gap-budget";
 
 /** Statement timeout for this capability, matching the investigation service. */
 const STATEMENT_TIMEOUT_MS = 10_000;
@@ -73,6 +80,7 @@ type TargetRow = {
   sizingPolicyKind: string;
   targetRangeMaxUsdc: string | number | null;
   mirrorMaxAllocPerConditionUsdc: string | number | null;
+  mirrorCapitalBudgetUsdc: string | number | null;
   mirrorActivatedAt: Date;
   createdAt: Date;
   disabledAt: Date | null;
@@ -87,6 +95,11 @@ type GrantRow = {
   expiresAt: Date | null;
   createdAt: Date;
   revokedAt: Date | null;
+};
+
+type BudgetObservationRow = {
+  intent: Record<string, unknown>;
+  decidedAt: Date;
 };
 
 type TargetPolicy = PolyAccountCopySetupResponse["targets"][number]["policy"];
@@ -114,6 +127,11 @@ const rowsOf = <T>(result: unknown): T[] =>
 const num = (value: string | number): number => Number(value);
 const nullableNum = (value: string | number | null): number | null =>
   value === null ? null : Number(value);
+
+function finiteNonnegative(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
 const iso = (value: Date): string => value.toISOString();
 const nullableIso = (value: Date | null): string | null =>
   value === null ? null : value.toISOString();
@@ -203,7 +221,7 @@ export async function getCopySetupForAccount(
     sql.raw(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`),
   );
 
-  // One frozen read time shared by all three reads below, so the caps cannot be
+  // One frozen read time shared by all four reads below, so the caps cannot be
   // evaluated against a different "now" than the targets.
   const clockRows = rowsOf<{ captured_at: Date | string }>(
     await tx.execute(sql`SELECT clock_timestamp() AS captured_at`),
@@ -225,6 +243,7 @@ export async function getCopySetupForAccount(
       targetRangeMaxUsdc: polyCopyTradeTargets.targetRangeMaxUsdc,
       mirrorMaxAllocPerConditionUsdc:
         polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
+      mirrorCapitalBudgetUsdc: polyCopyTradeTargets.mirrorCapitalBudgetUsdc,
       mirrorActivatedAt: polyCopyTradeTargets.mirrorActivatedAt,
       createdAt: polyCopyTradeTargets.createdAt,
       disabledAt: polyCopyTradeTargets.disabledAt,
@@ -284,15 +303,95 @@ export async function getCopySetupForAccount(
 
   const capsActive = walletSafety.status === "active";
 
-  const targets = pagedTargets.map((row) => {
+  const resolvedTargets = pagedTargets.map((row) => {
     const declaredKind = coerceKind(row.sizingPolicyKind);
-    const effectiveKind = binding.resolveEffectiveKind(
-      row.targetWallet as `0x${string}`,
+    return {
+      row,
       declaredKind,
-    );
+      effectiveKind: binding.resolveEffectiveKind(
+        row.targetWallet as `0x${string}`,
+        declaredKind
+      ),
+    };
+  });
+  const eligiblePositionGapTargets = resolvedTargets.filter(
+    ({ row, effectiveKind }) =>
+      capsActive && row.disabledAt === null && effectiveKind === "position_gap"
+  );
+  const unbudgetedActiveTargetCount = resolvedTargets.filter(
+    ({ row, effectiveKind }) =>
+      row.disabledAt === null && effectiveKind !== "position_gap"
+  ).length;
+  const budgetGroup = summarizePositionGapBudgetGroup(
+    eligiblePositionGapTargets.map(({ row }) =>
+      nullableNum(row.mirrorCapitalBudgetUsdc)
+    ),
+    unbudgetedActiveTargetCount
+  );
+
+  const budgetObservationRows = targetsTruncated
+    ? []
+    : ((await tx
+        .select({
+          intent: polyCopyTradeDecisions.intent,
+          decidedAt: polyCopyTradeDecisions.decidedAt,
+        })
+        .from(polyCopyTradeDecisions)
+        .where(
+          and(
+            eq(polyCopyTradeDecisions.billingAccountId, accountId),
+            sql`${polyCopyTradeDecisions.intent}->>'effective_mirror_capital_budget_usdc' IS NOT NULL`
+          )
+        )
+        .orderBy(desc(polyCopyTradeDecisions.decidedAt))
+        .limit(1)) as unknown as BudgetObservationRow[]);
+  const budgetObservation = budgetObservationRows[0];
+  const observedMirrorNav = budgetObservation
+    ? finiteNonnegative(
+        budgetObservation.intent.mirror_portfolio_current_value_usdc
+      )
+    : null;
+  const latestBudgetActivationMs = eligiblePositionGapTargets.reduce(
+    (latest, { row }) => Math.max(latest, row.mirrorActivatedAt.getTime()),
+    0
+  );
+  const budgetObservationStatus =
+    targetsTruncated ||
+    !capsActive ||
+    !budgetObservation ||
+    observedMirrorNav === null
+      ? ("pending" as const)
+      : budgetObservation.decidedAt.getTime() < latestBudgetActivationMs
+        ? ("stale" as const)
+        : ("observed" as const);
+  const observedAt =
+    budgetObservationStatus === "pending" || !budgetObservation
+      ? null
+      : iso(budgetObservation.decidedAt);
+  const effectiveByTargetId = new Map<
+    string,
+    ReturnType<typeof effectivePositionGapBudget>
+  >();
+  if (budgetObservationStatus === "observed" && observedMirrorNav !== null) {
+    for (const { row } of eligiblePositionGapTargets) {
+      effectiveByTargetId.set(
+        row.id,
+        effectivePositionGapBudget({
+          configuredBudgetUsdc: nullableNum(row.mirrorCapitalBudgetUsdc),
+          mirrorNavUsdc: observedMirrorNav,
+          group: budgetGroup,
+        })
+      );
+    }
+  }
+
+  const targets = resolvedTargets.map(({ row, declaredKind, effectiveKind }) => {
     const isDisabled = row.disabledAt !== null;
     const rangeMax = nullableNum(row.targetRangeMaxUsdc);
     const allocPerCondition = nullableNum(row.mirrorMaxAllocPerConditionUsdc);
+    const configuredBudget = nullableNum(row.mirrorCapitalBudgetUsdc);
+    const effectiveBudget = effectiveByTargetId.get(row.id);
+    const budgetApplicable = !isDisabled && effectiveKind === "position_gap";
 
     const activation = isDisabled
       ? {
@@ -339,6 +438,21 @@ export async function getCopySetupForAccount(
         mirror_max_alloc_per_condition_usdc: allocPerCondition,
 				// Deprecated v1 compatibility field. v2 has no range knobs.
 				range_knobs_incomplete: false,
+        portfolio_budget: {
+          configured_budget_usdc: configuredBudget,
+          effective_budget_usdc:
+            budgetApplicable && budgetObservationStatus === "observed"
+              ? (effectiveBudget?.effectiveBudgetUsdc ?? null)
+              : null,
+          allocation_status:
+            budgetApplicable && budgetObservationStatus === "observed"
+              ? (effectiveBudget?.allocationStatus ?? null)
+              : null,
+          effective_budget_observed_at: budgetApplicable ? observedAt : null,
+          observation_status: budgetApplicable
+            ? budgetObservationStatus
+            : ("not_applicable" as const),
+        },
       },
       activation,
     };
@@ -351,6 +465,28 @@ export async function getCopySetupForAccount(
     active_target_count: activeTargetCount,
     targets_truncated: targetsTruncated,
     wallet_safety: walletSafety,
+    budget_allocation: {
+      position_gap_target_count: eligiblePositionGapTargets.length,
+      automatic_target_count: budgetGroup.automaticTargetCount,
+      explicit_budget_total_usdc: budgetGroup.explicitBudgetTotalUsdc,
+      unbudgeted_active_target_count: unbudgetedActiveTargetCount,
+      shared_wallet_risk: unbudgetedActiveTargetCount > 0,
+      mirror_nav_usdc:
+        budgetObservationStatus === "observed" ? observedMirrorNav : null,
+      effective_budget_total_usdc:
+        budgetObservationStatus === "observed"
+          ? [...effectiveByTargetId.values()].reduce(
+              (sum, budget) => sum + (budget?.effectiveBudgetUsdc ?? 0),
+              0
+            )
+          : null,
+      overallocated:
+        budgetObservationStatus === "observed"
+          ? budgetGroup.explicitBudgetTotalUsdc > (observedMirrorNav ?? 0)
+          : null,
+      observed_at: observedAt,
+      observation_status: budgetObservationStatus,
+    },
     sources: {
       targets: "poly_copy_trade_targets",
       caps: "poly_wallet_grants",

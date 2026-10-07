@@ -150,6 +150,10 @@ describe("position_gap pipeline VWAP boundary", () => {
 				evaluated_limit_price: 0.506,
 				sizing_policy_kind: "position_gap",
 				position_gap_version: 2,
+				mirror_capital_budget_usdc: null,
+				effective_mirror_capital_budget_usdc: 100,
+				mirror_budget_allocation_status: "full",
+				mirror_portfolio_current_value_usdc: 100,
 			},
 		});
 		expect(entries).toContainEqual(
@@ -162,6 +166,9 @@ describe("position_gap pipeline VWAP boundary", () => {
 				evaluated_limit_price: 0.506,
 				sizing_policy_kind: "position_gap",
 				position_gap_version: 2,
+				mirror_capital_budget_usdc: null,
+				effective_mirror_capital_budget_usdc: 100,
+				mirror_budget_allocation_status: "full",
 			}),
 		);
 	});

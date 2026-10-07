@@ -46,6 +46,10 @@ import {
   positionGapDesiredShares,
   targetVwapForToken,
 } from "./plan-mirror";
+import {
+  type EffectivePositionGapBudget,
+  effectivePositionGapBudget,
+} from "./position-gap-budget";
 import type {
   MirrorPositionView,
   MirrorReason,
@@ -318,7 +322,6 @@ async function processFill(
     billing_account_id: deps.target.billing_account_id,
     created_by_user_id: deps.target.created_by_user_id,
   });
-
   const client_order_id = clientOrderIdFor(
     deps.target.billing_account_id,
     deps.target.target_id,
@@ -466,6 +469,12 @@ async function processFill(
         : {}),
       ...(portfolioValues?.mirror !== undefined
         ? { mirror_portfolio_current_value_usdc: portfolioValues.mirror }
+        : {}),
+      ...(portfolioValues?.budget.effectiveBudgetUsdc !== undefined
+        ? {
+            mirror_effective_budget_usdc:
+              portfolioValues.budget.effectiveBudgetUsdc,
+          }
         : {}),
       ...(portfolioValues?.mirrorTokenShares !== undefined
         ? { mirror_token_qty_shares: portfolioValues.mirrorTokenShares }
@@ -687,9 +696,7 @@ async function fetchPositionGapPortfolioValues(args: {
   deps: MirrorPipelineDeps;
   fill: import("@cogni/poly-market-provider").Fill;
   log: LoggerPort;
-}): Promise<
-  { target: number; mirror: number; mirrorTokenShares: number } | undefined
-> {
+}): Promise<PositionGapPortfolioValues | undefined> {
   const { deps, fill, log } = args;
   if (deps.target.sizing.kind !== "position_gap") return undefined;
   if (
@@ -705,12 +712,33 @@ async function fetchPositionGapPortfolioValues(args: {
     ]);
     const mirror = mirrorSnapshot.currentValueUsdc;
     if (target < 0 || mirror <= 0) return undefined;
+    const sizing = deps.target.sizing;
+    const configuredBudget = sizing.mirror_capital_budget_usdc ?? null;
+    const budget = effectivePositionGapBudget({
+      configuredBudgetUsdc: configuredBudget,
+      mirrorNavUsdc: mirror,
+      group: {
+        explicitBudgetTotalUsdc:
+          sizing.account_explicit_budget_total_usdc ?? configuredBudget ?? 0,
+        automaticTargetCount:
+          sizing.account_automatic_budget_target_count ??
+          (configuredBudget === null ? 1 : 0),
+        unbudgetedTargetCount: sizing.account_unbudgeted_target_count ?? 0,
+      },
+    });
+    if (!budget) return undefined;
     const tokenId =
       typeof fill.attributes?.asset === "string" ? fill.attributes.asset : "";
     const mirrorTokenShares = mirrorSnapshot.positions
       .filter((position) => position.asset === tokenId)
       .reduce((sum, position) => sum + Math.max(0, position.size), 0);
-    return { target, mirror, mirrorTokenShares };
+    return {
+      target,
+      mirror,
+      mirrorTokenShares,
+      budget,
+      effectiveBudgetObservedAt: new Date().toISOString(),
+    };
   } catch (err) {
     log.warn(
       {
@@ -723,6 +751,14 @@ async function fetchPositionGapPortfolioValues(args: {
     );
     return undefined;
   }
+}
+
+interface PositionGapPortfolioValues {
+  target: number;
+  mirror: number;
+  mirrorTokenShares: number;
+  budget: EffectivePositionGapBudget;
+  effectiveBudgetObservedAt: string;
 }
 
 function needsTargetPosition(target: MirrorTargetConfig): boolean {
@@ -757,9 +793,7 @@ function buildDecisionLogFields(args: {
   min_shares?: number | undefined;
   min_usdc_notional?: number | undefined;
   tick_size?: number | undefined;
-  portfolioValues?:
-    | { target: number; mirror: number; mirrorTokenShares: number }
-    | undefined;
+  portfolioValues?: PositionGapPortfolioValues | undefined;
 }): Record<string, unknown> {
   const {
     branch,
@@ -800,6 +834,7 @@ function buildDecisionLogFields(args: {
     position_gap_version: target.sizing.kind === "position_gap" ? 2 : null,
     target_portfolio_current_value_usdc: portfolioValues?.target ?? null,
     mirror_portfolio_current_value_usdc: portfolioValues?.mirror ?? null,
+    ...buildPositionGapBudgetLogFields(target, portfolioValues),
     mirror_token_qty_shares: portfolioValues?.mirrorTokenShares ?? null,
     sizing_percentile:
       "statistic" in target.sizing ? target.sizing.statistic.percentile : null,
@@ -833,6 +868,33 @@ function buildDecisionLogFields(args: {
               4
             )
           ),
+  };
+}
+
+function buildPositionGapBudgetLogFields(
+  target: MirrorTargetConfig,
+  portfolioValues?: PositionGapPortfolioValues
+): Record<string, unknown> {
+  if (target.sizing.kind !== "position_gap") return {};
+  return {
+    mirror_capital_budget_usdc:
+      target.sizing.mirror_capital_budget_usdc ?? null,
+    effective_mirror_capital_budget_usdc:
+      portfolioValues?.budget.effectiveBudgetUsdc ?? null,
+    mirror_budget_allocation_status:
+      portfolioValues?.budget.allocationStatus ?? null,
+    effective_budget_observed_at:
+      portfolioValues?.effectiveBudgetObservedAt ?? null,
+    position_gap_explicit_budget_total_usdc:
+      target.sizing.account_explicit_budget_total_usdc ??
+      target.sizing.mirror_capital_budget_usdc ??
+      0,
+    position_gap_automatic_target_count:
+      target.sizing.account_automatic_budget_target_count ??
+      (target.sizing.mirror_capital_budget_usdc == null ? 1 : 0),
+    unbudgeted_active_target_count:
+      target.sizing.account_unbudgeted_target_count ?? 0,
+    budget_overallocated: portfolioValues?.budget.overallocated ?? null,
   };
 }
 
@@ -946,6 +1008,7 @@ async function processSellFill(args: {
     billing_account_id: deps.target.billing_account_id,
     created_by_user_id: deps.target.created_by_user_id,
   });
+  let budgetLogFields = buildPositionGapBudgetLogFields(deps.target);
 
   // Cancel resting mirror BUYs before position-close. task.5001.
   await cancelOpenMirrorOrdersForMarket({
@@ -970,6 +1033,7 @@ async function processSellFill(args: {
       intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
         close: false,
         position_branch: "sell_close",
+        ...budgetLogFields,
       }),
       receipt: null,
     });
@@ -983,6 +1047,7 @@ async function processSellFill(args: {
         client_order_id,
         detail: "closePosition/getOperatorPositions deps absent",
         position_branch: "sell_close",
+        ...budgetLogFields,
       },
       "mirror pipeline: skip (no close deps)"
     );
@@ -1010,6 +1075,7 @@ async function processSellFill(args: {
       intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
         close: false,
         position_branch: "sell_close",
+        ...budgetLogFields,
       }),
       receipt: null,
     });
@@ -1023,6 +1089,7 @@ async function processSellFill(args: {
         client_order_id,
         detail: "getOperatorPositions threw; skipping to avoid short",
         position_branch: "sell_close",
+        ...budgetLogFields,
       },
       "mirror pipeline: skip (position query failed)"
     );
@@ -1047,6 +1114,7 @@ async function processSellFill(args: {
       intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
         close: false,
         position_branch: "sell_close",
+        ...budgetLogFields,
       }),
       receipt: null,
     });
@@ -1060,6 +1128,7 @@ async function processSellFill(args: {
         client_order_id,
         token_id: tokenId,
         position_branch: "sell_close",
+        ...budgetLogFields,
       },
       "mirror pipeline: skip (no position to close)"
     );
@@ -1080,6 +1149,10 @@ async function processSellFill(args: {
       fill,
       log,
     });
+    budgetLogFields = buildPositionGapBudgetLogFields(
+      deps.target,
+      portfolioValues
+    );
     const desiredShares = positionGapDesiredShares(tokenId, {
       already_placed_ids: [],
       placed_fill_ids: [],
@@ -1088,6 +1161,8 @@ async function processSellFill(args: {
         ? {
             target_portfolio_current_value_usdc: portfolioValues.target,
             mirror_portfolio_current_value_usdc: portfolioValues.mirror,
+            mirror_effective_budget_usdc:
+              portfolioValues.budget.effectiveBudgetUsdc,
             mirror_token_qty_shares: portfolioValues.mirrorTokenShares,
           }
         : {}),
@@ -1104,6 +1179,7 @@ async function processSellFill(args: {
         log,
         reason: "target_position_below_threshold",
         detail: "portfolio snapshot unavailable",
+        decisionLogFields: budgetLogFields,
       });
       return;
     }
@@ -1120,6 +1196,7 @@ async function processSellFill(args: {
         log,
         reason: "followup_not_needed",
         detail: "mirror position is not overweight",
+        decisionLogFields: budgetLogFields,
       });
       return;
     }
@@ -1143,6 +1220,7 @@ async function processSellFill(args: {
             log,
             reason: "below_market_min",
             detail: "overweight gap is below market minimum",
+            decisionLogFields: budgetLogFields,
           });
           return;
         }
@@ -1201,6 +1279,7 @@ async function processSellFill(args: {
       position_branch: "sell_close",
       position_qty_shares: position.size,
       position_token_id: tokenId,
+      ...budgetLogFields,
     }
   );
 }
@@ -1222,6 +1301,7 @@ async function recordSellSkip(args: {
   log: LoggerPort;
   reason: MirrorReason;
   detail: string;
+  decisionLogFields?: Record<string, unknown>;
 }): Promise<void> {
   const {
     deps,
@@ -1234,6 +1314,7 @@ async function recordSellSkip(args: {
     log,
     reason,
     detail,
+    decisionLogFields,
   } = args;
   emitDecisionMetric(deps.metrics, "skipped", reason, source, placement);
   await tenantLedger.recordDecision({
@@ -1243,6 +1324,7 @@ async function recordSellSkip(args: {
     intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
       close: false,
       position_branch: "sell_close",
+      ...decisionLogFields,
     }),
     receipt: null,
   });
@@ -1256,6 +1338,7 @@ async function recordSellSkip(args: {
       client_order_id,
       detail,
       position_branch: "sell_close",
+      ...decisionLogFields,
     },
     "mirror pipeline: skip position-gap SELL"
   );

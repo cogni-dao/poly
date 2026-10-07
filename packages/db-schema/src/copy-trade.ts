@@ -94,6 +94,11 @@ export const polyCopyTradeTargets = pgTable(
         scale: 2,
       }
     ),
+    /** Position-gap portfolio-scale budget. NULL allocates the automatic NAV share. */
+    mirrorCapitalBudgetUsdc: numeric("mirror_capital_budget_usdc", {
+      precision: 12,
+      scale: 2,
+    }),
     /** task.5014 — cold-start fence; defines "first post-activation fill" for the baseline snapshot in `poly_copy_target_condition_baseline`. */
     mirrorActivatedAt: timestamp("mirror_activated_at", { withTimezone: true })
       .notNull()
@@ -128,6 +133,10 @@ export const polyCopyTradeTargets = pgTable(
     check(
       "poly_copy_trade_targets_alloc_per_condition_positive",
       sql`${table.mirrorMaxAllocPerConditionUsdc} IS NULL OR ${table.mirrorMaxAllocPerConditionUsdc} > 0`
+    ),
+    check(
+      "poly_copy_trade_targets_capital_budget_positive",
+      sql`${table.mirrorCapitalBudgetUsdc} IS NULL OR ${table.mirrorCapitalBudgetUsdc} > 0`
     ),
     // One active row per (tenant, wallet). Soft-deleted rows allowed to coexist
     // so a previously-disabled wallet can be re-added without violating uniqueness.
@@ -365,6 +374,11 @@ export const polyCopyTradeDecisions = pgTable(
     index("poly_copy_trade_decisions_billing_account_idx").on(
       table.billingAccountId
     ),
+    index("poly_copy_trade_decisions_budget_observation_idx")
+      .on(table.billingAccountId, table.decidedAt.desc())
+      .where(
+        sql`${table.intent}->>'effective_mirror_capital_budget_usdc' IS NOT NULL`
+      ),
     // story.5003 — decisions predate a first-class market_id column; this
     // expression index keeps one-market evidence reads account-bounded.
     index("poly_copy_trade_decisions_investigation_idx").on(

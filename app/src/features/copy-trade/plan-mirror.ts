@@ -206,15 +206,15 @@ function sizeFromPolicy(
  * story.5011 — whole-portfolio position gap v2.
  *
  * **Math (per fill, position_gap v2):**
- *   portfolio_scale = mirror_portfolio_current_value / target_portfolio_current_value
+ *   portfolio_scale = effective_mirror_budget / target_portfolio_current_value
  *   desired_shares  = target_token_shares × portfolio_scale
  *   gap_shares     = desired_shares − our_shares
  *   BUY gap ≤ 0 → skip; SELL closes only the positive excess gap
  *
  * **Whole-portfolio denominator.** This is not a per-condition range or cap.
- * RN1's entire active position book is the denominator and our live NAV is
- * the dollar scale. The legacy range/max-allocation knobs are compatibility
- * fields only and MUST NOT participate in this calculation.
+ * RN1's entire active position book is the denominator and the account-safe
+ * effective mirror budget is the dollar scale. Live mirror NAV stays a
+ * separate fact; it only constrains the multi-target budget allocator.
  *
  * **No per-trade cap.** `position_gap` passes `+Infinity` to
  * `applyMarketFloors` so only the market-floor LOWER bound applies. Wire-level
@@ -280,19 +280,23 @@ export function applyPositionGapSizing(
   );
 }
 
-/** Exact target-token shares scaled by whole target NAV → whole mirror NAV. */
+/** Exact target-token shares scaled by target NAV → effective mirror budget. */
 export function positionGapDesiredShares(
   tokenId: string,
   state: PlanMirrorInput["state"]
 ): number | undefined {
   const targetPortfolioUsdc = state.target_portfolio_current_value_usdc;
-  const mirrorPortfolioUsdc = state.mirror_portfolio_current_value_usdc;
+  // Fallback preserves direct planner callers built before story.5012. The
+  // production pipeline always supplies the separately allocated budget.
+  const mirrorBudgetUsdc =
+    state.mirror_effective_budget_usdc ??
+    state.mirror_portfolio_current_value_usdc;
   if (
     tokenId === "" ||
     targetPortfolioUsdc === undefined ||
     targetPortfolioUsdc < 0 ||
-    mirrorPortfolioUsdc === undefined ||
-    mirrorPortfolioUsdc <= 0 ||
+    mirrorBudgetUsdc === undefined ||
+    mirrorBudgetUsdc < 0 ||
     !state.target_position
   ) {
     return undefined;
@@ -308,7 +312,7 @@ export function positionGapDesiredShares(
   // the mirror leg without ever opening a short.
   return Math.max(
     0,
-    targetTokenShares * (mirrorPortfolioUsdc / targetPortfolioUsdc)
+    targetTokenShares * (mirrorBudgetUsdc / targetPortfolioUsdc)
   );
 }
 

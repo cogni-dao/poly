@@ -1,0 +1,3 @@
+ALTER TABLE "poly_copy_trade_targets" ADD COLUMN "mirror_capital_budget_usdc" numeric(12, 2);--> statement-breakpoint
+CREATE INDEX "poly_copy_trade_decisions_budget_observation_idx" ON "poly_copy_trade_decisions" USING btree ("billing_account_id","decided_at" DESC NULLS LAST) WHERE "poly_copy_trade_decisions"."intent"->>'effective_mirror_capital_budget_usdc' IS NOT NULL;--> statement-breakpoint
+ALTER TABLE "poly_copy_trade_targets" ADD CONSTRAINT "poly_copy_trade_targets_capital_budget_positive" CHECK ("poly_copy_trade_targets"."mirror_capital_budget_usdc" IS NULL OR "poly_copy_trade_targets"."mirror_capital_budget_usdc" > 0);

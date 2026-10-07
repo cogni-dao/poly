@@ -61,6 +61,34 @@ describe("position_gap v2 portfolio weighting", () => {
 		expect(result).toEqual({ ok: true, size_usdc: 1 });
 	});
 
+	it("uses an explicit effective budget instead of the full mirror NAV", () => {
+		const result = applyPositionGapSizing(
+			policy,
+			fill,
+			state({
+				target_portfolio_current_value_usdc: 500,
+				mirror_portfolio_current_value_usdc: 500,
+				mirror_effective_budget_usdc: 200,
+				target_position: {
+					condition_id: "condition",
+					tokens: [
+						{
+							token_id: "token-1",
+							size_shares: 100,
+							cost_usdc: 50,
+							current_value_usdc: 50,
+						},
+					],
+				},
+			}),
+			1,
+			1,
+		);
+
+		// Target token is 10% of $500; the configured $200 budget desires $20.
+		expect(result).toEqual({ ok: true, size_usdc: 20 });
+	});
+
 	it("does not saturate at the legacy $5 per-condition maximum", () => {
 		const result = applyPositionGapSizing(
 			policy,

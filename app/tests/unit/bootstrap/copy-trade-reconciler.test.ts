@@ -33,6 +33,12 @@ function target(overrides: Partial<EnumeratedTarget> = {}): EnumeratedTarget {
     sizingPolicyKind: "target_percentile_scaled",
     targetRangeMaxUsdc: null,
     mirrorMaxAllocPerConditionUsdc: null,
+    mirrorCapitalBudgetUsdc: null,
+    positionGapBudgetGroup: {
+      explicitBudgetTotalUsdc: 0,
+      automaticTargetCount: 1,
+      unbudgetedTargetCount: 0,
+    },
     ...overrides,
   };
 }
@@ -58,6 +64,17 @@ describe("copy-trade target reconciliation", () => {
     ["per-trade cap", { mirrorMaxUsdcPerTrade: 6 }],
     ["position range", { targetRangeMaxUsdc: 20 }],
     ["position allocation", { mirrorMaxAllocPerConditionUsdc: 50 }],
+    ["portfolio budget", { mirrorCapitalBudgetUsdc: 200 }],
+    [
+      "account budget group",
+      {
+        positionGapBudgetGroup: {
+          explicitBudgetTotalUsdc: 200,
+          automaticTargetCount: 0,
+          unbudgetedTargetCount: 1,
+        },
+      },
+    ],
     [
       "activation revision",
       { mirrorActivatedAt: new Date("2026-10-07T03:15:41.000Z") },

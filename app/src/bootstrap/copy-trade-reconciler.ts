@@ -92,6 +92,12 @@ function policyFingerprint(t: EnumeratedTarget): string {
     t.mirrorMaxAllocPerConditionUsdc === null
       ? "none"
       : Number(t.mirrorMaxAllocPerConditionUsdc).toFixed(2),
+    t.mirrorCapitalBudgetUsdc === null
+      ? "automatic"
+      : Number(t.mirrorCapitalBudgetUsdc).toFixed(2),
+    Number(t.positionGapBudgetGroup.explicitBudgetTotalUsdc).toFixed(2),
+    t.positionGapBudgetGroup.automaticTargetCount,
+    t.positionGapBudgetGroup.unbudgetedTargetCount,
   ].join(":");
 }
 

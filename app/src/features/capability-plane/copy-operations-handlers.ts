@@ -93,6 +93,14 @@ export function copySetupExtra(context: {
     blockedTargetCount: data.targets.filter(
       (target) => target.activation.status === "blocked_no_active_wallet_grant",
     ).length,
+    positionGapTargetCount:
+      data.budget_allocation.position_gap_target_count,
+    automaticBudgetTargetCount:
+      data.budget_allocation.automatic_target_count,
+    unbudgetedTargetCount:
+      data.budget_allocation.unbudgeted_active_target_count,
+    budgetObservationStatus: data.budget_allocation.observation_status,
+    sharedWalletRisk: data.budget_allocation.shared_wallet_risk,
     complete: data.completeness.complete,
   };
 }
