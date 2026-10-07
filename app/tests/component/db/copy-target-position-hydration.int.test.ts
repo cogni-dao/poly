@@ -446,7 +446,14 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		const listUserPositionsV2 = vi
 			.fn()
 			.mockResolvedValueOnce([
-				position(LOCAL_TOKEN),
+				{
+					...position(LOCAL_TOKEN),
+					currentValue: 0,
+					cashPnl: -40,
+					percentPnl: -100,
+					curPrice: 0,
+					redeemable: true,
+				},
 				position(OPPOSITE_TOKEN),
 				{
 					...position(ZERO_VALUE_TOKEN, ZERO_VALUE_CONDITION),
@@ -513,6 +520,24 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 					status: "closed",
 				}),
 			],
+		});
+		expect(bounded.positionClassifications).toContainEqual({
+			conditionId: CONDITION,
+			tokenId: LOCAL_TOKEN,
+			status: "live",
+			result: "comparable",
+		});
+		const redeemableLine = bounded.market.groups
+			.flatMap((group) => group.lines)
+			.find((line) => line.conditionId === CONDITION);
+		const exactRedeemableLeg = redeemableLine?.participants
+			.filter((participant) => participant.side === "copy_target")
+			.flatMap((participant) => [participant.primary, participant.hedge])
+			.find((leg) => leg?.tokenId === LOCAL_TOKEN);
+		expect(exactRedeemableLeg).toMatchObject({
+			costBasisUsdc: 40,
+			currentValueUsdc: 0,
+			lifecycle: "active",
 		});
 		expect(bounded.positionClassifications).toContainEqual({
 			conditionId: ZERO_VALUE_CONDITION,

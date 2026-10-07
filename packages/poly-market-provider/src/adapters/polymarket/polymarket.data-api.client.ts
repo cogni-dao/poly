@@ -551,6 +551,14 @@ export class PolymarketDataApiClient {
           "/v2/positions"
         );
         for (const row of response.data) {
+          // The documented OPEN result set includes settled-but-unredeemed
+          // winners, whose rows echo REDEEMABLE. CLOSED can never belong to
+          // this walk; reject it rather than silently publishing stale facts.
+          if (row.status !== "OPEN" && row.status !== "REDEEMABLE") {
+            throw new PolyDataApiPositionsV2Error(
+              `response status ${row.status} was outside the requested OPEN cohort`
+            );
+          }
           const conditionId = row.condition_id.toLowerCase();
           if (!chunkSet.has(conditionId)) {
             throw new PolyDataApiPositionsV2Error(
