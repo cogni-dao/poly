@@ -545,7 +545,7 @@ describe("PolymarketClobAdapter", () => {
     return adapter;
   }
 
-  it("preflights token-specific collateral and selects the regular exchange allowance", async () => {
+  it("reads wallet collateral without token_id and selects the regular exchange allowance", async () => {
     const getBalanceAllowance = vi.fn().mockResolvedValue({
       balance: "702010",
       allowances: {
@@ -560,7 +560,6 @@ describe("PolymarketClobAdapter", () => {
 
     expect(getBalanceAllowance).toHaveBeenCalledWith({
       asset_type: "COLLATERAL",
-      token_id: "token-1",
     });
     expect(getNegRisk).toHaveBeenCalledWith("token-1");
     expect(result).toEqual({
@@ -595,6 +594,57 @@ describe("PolymarketClobAdapter", () => {
     });
 
     const result = await adapter.getCollateralBalanceAllowance("token-3");
+
+    expect(result.allowanceAtomic).toBe(0n);
+  });
+
+  it("fails closed with a classified error when the SDK returns an HTTP error body", async () => {
+    const adapter = makeAdapter({
+      getBalanceAllowance: vi.fn().mockResolvedValue({
+        error: "rate limit exceeded",
+        status: 429,
+      }),
+      getNegRisk: vi.fn().mockResolvedValue(false),
+    });
+
+    await expect(
+      adapter.getCollateralBalanceAllowance("token-4")
+    ).rejects.toMatchObject({
+      name: "ClobRejectionError",
+      details: {
+        error_code: "collateral_preflight_unavailable",
+        http_status: 429,
+        response_keys: ["error", "status"],
+      },
+    });
+  });
+
+  it("fails closed when the SDK returns no collateral response", async () => {
+    const adapter = makeAdapter({
+      getBalanceAllowance: vi.fn().mockResolvedValue(null),
+      getNegRisk: vi.fn().mockResolvedValue(false),
+    });
+
+    await expect(
+      adapter.getCollateralBalanceAllowance("token-null")
+    ).rejects.toMatchObject({
+      details: {
+        error_code: "collateral_preflight_unavailable",
+        response_keys: [],
+      },
+    });
+  });
+
+  it("fails closed when an allowance is not an atomic integer string", async () => {
+    const adapter = makeAdapter({
+      getBalanceAllowance: vi.fn().mockResolvedValue({
+        balance: "6000000",
+        allowance: undefined,
+      }),
+      getNegRisk: vi.fn().mockResolvedValue(false),
+    });
+
+    const result = await adapter.getCollateralBalanceAllowance("token-5");
 
     expect(result.allowanceAtomic).toBe(0n);
   });
