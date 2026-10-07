@@ -20,7 +20,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { runReconcileOnce } from "@/bootstrap/jobs/order-reconciler.job";
 
-const GRACE_MS = 900_000;
+const NOT_FOUND_GRACE_MS = 900_000;
+const UNPLACED_GRACE_MS = 24 * 60 * 60 * 1000;
 const NOW = new Date("2026-10-07T00:00:00.000Z");
 
 function row(overrides: Record<string, unknown>) {
@@ -29,7 +30,7 @@ function row(overrides: Record<string, unknown>) {
     billing_account_id: "acct-1",
     order_id: null,
     status: "pending",
-    created_at: new Date(NOW.getTime() - GRACE_MS * 2),
+    created_at: new Date(NOW.getTime() - UNPLACED_GRACE_MS * 2),
     attributes: {},
     ...overrides,
   };
@@ -52,7 +53,7 @@ function harness(rows: unknown[], getOrder = vi.fn()) {
       getOrderForTenant: getOrder,
       logger: { ...leaf, child: () => leaf },
       metrics: { incr: vi.fn(), observe: vi.fn() },
-      notFoundGraceMs: GRACE_MS,
+      notFoundGraceMs: NOT_FOUND_GRACE_MS,
       clock: () => NOW,
     },
   } as never as {
@@ -67,21 +68,35 @@ function harness(rows: unknown[], getOrder = vi.fn()) {
 describe("runReconcileOnce — rows that never got a CLOB order id", () => {
   it("leaves a fresh unplaced row alone (placement may be in flight)", async () => {
     const h = harness([
-      row({ created_at: new Date(NOW.getTime() - GRACE_MS / 2) }),
+      row({ created_at: new Date(NOW.getTime() - UNPLACED_GRACE_MS / 2) }),
     ]);
     await runReconcileOnce(h.deps);
     expect(h.updateStatus).not.toHaveBeenCalled();
     expect(h.getOrder).not.toHaveBeenCalled();
   });
 
-  it("terminalizes an unplaced row past the grace window", async () => {
+  it("does NOT terminalize on the short not_found grace alone", async () => {
+    // The not_found window answers "CLOB slow to index an order we know
+    // exists". This branch asserts no order exists, so it must not inherit
+    // that window — a crash between venue-accept and markOrderId would be
+    // misread as "never placed" within minutes.
+    const h = harness([
+      row({ created_at: new Date(NOW.getTime() - NOT_FOUND_GRACE_MS * 2) }),
+    ]);
+    await runReconcileOnce(h.deps);
+    expect(h.updateStatus).not.toHaveBeenCalled();
+  });
+
+  it("terminalizes an unplaced row past the 24h grace window", async () => {
     // Before this fix the row was `continue`d unconditionally, so a months-old
     // pending row survived every tick and permanently blocked wallet reset.
     const h = harness([row({})]);
     await runReconcileOnce(h.deps);
     expect(h.updateStatus).toHaveBeenCalledWith({
       client_order_id: "coid-1",
-      status: "canceled",
+      // `error`, not `canceled` — we never saw a venue response, so asserting
+      // cancellation would claim state we cannot verify.
+      status: "error",
       reason: "never_placed",
     });
   });
