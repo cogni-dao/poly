@@ -109,9 +109,26 @@ export type TargetPercentileScaledSizingPolicy = z.infer<
   typeof TargetPercentileScaledSizingPolicySchema
 >;
 
-/** Whole-portfolio proportional sizing. Runtime NAV supplies the scale. */
+/**
+ * Whole-portfolio proportional sizing. Runtime supplies live NAV, while the
+ * account group prevents multiple position-gap targets from each claiming it.
+ */
 export const PositionGapSizingPolicySchema = z.object({
   kind: z.literal("position_gap"),
+  /** Null/omitted preserves the single-target full-NAV default. */
+  mirror_capital_budget_usdc: z.number().positive().nullable().optional(),
+  /** More than one position-gap target fails closed until holdings are attributable. */
+  account_position_gap_target_count: z.number().int().nonnegative().optional(),
+  /** Sum of explicit budgets across runtime-eligible position-gap targets. */
+  account_explicit_budget_total_usdc: z.number().nonnegative().optional(),
+  /** Count of runtime-eligible position-gap targets with a null budget. */
+  account_automatic_budget_target_count: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional(),
+  /** Active eligible targets using another, unbudgeted algorithm family. */
+  account_unbudgeted_target_count: z.number().int().nonnegative().optional(),
 });
 export type PositionGapSizingPolicy = z.infer<
   typeof PositionGapSizingPolicySchema
@@ -425,6 +442,11 @@ export const RuntimeStateSchema = z.object({
    */
   mirror_portfolio_current_value_usdc: z.number().positive().optional(),
   /**
+   * Account-safe allocation after applying the configured budget group to
+   * live mirror NAV. Kept separate from actual NAV for truthful observability.
+   */
+  mirror_effective_budget_usdc: z.number().nonnegative().optional(),
+  /**
    * Exact live shares held by the mirror wallet for the fill token. The
    * portfolio sizer prefers this wallet-authoritative value over the fills
    * ledger aggregate, which can lag external fills and multi-leg positions.
@@ -511,6 +533,8 @@ export const MirrorReasonSchema = z.enum([
    * We refuse to place above an evidenced target entry on this token.
    */
   "vwap_floor_breach",
+  /** Multiple position-gap targets share indistinguishable wallet holdings. */
+  "multi_target_position_gap_unsupported",
   /**
    * task.5014 — first post-activation observation on a (billing, target,
    * condition) triple. The pipeline just captured the baseline snapshot; the

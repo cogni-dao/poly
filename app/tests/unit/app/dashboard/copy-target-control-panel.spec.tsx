@@ -42,6 +42,13 @@ const targetResponse = {
         target_range_max_usdc: 20,
         mirror_max_alloc_per_condition_usdc: 50,
         range_knobs_incomplete: false,
+        portfolio_budget: {
+          configured_budget_usdc: 20,
+          effective_budget_usdc: 18.5,
+          allocation_status: "prorated",
+          effective_budget_observed_at: "2026-10-07T03:15:55.000Z",
+          observation_status: "observed",
+        },
       },
       activation: { status: "eligible", explanation: "Active grant" },
     },
@@ -49,6 +56,18 @@ const targetResponse = {
   active_target_count: 1,
   targets_truncated: false,
   wallet_safety: { status: "absent", reason: "no_wallet_grant_on_file" },
+  budget_allocation: {
+    position_gap_target_count: 1,
+    automatic_target_count: 0,
+    explicit_budget_total_usdc: 20,
+    unbudgeted_active_target_count: 1,
+    shared_wallet_risk: true,
+    mirror_nav_usdc: 18.5,
+    effective_budget_total_usdc: 18.5,
+    overallocated: true,
+    observed_at: "2026-10-07T03:15:55.000Z",
+    observation_status: "observed",
+  },
   sources: {
     targets: "poly_copy_trade_targets",
     caps: "poly_wallet_grants",
@@ -134,6 +153,10 @@ describe("CopyTargetControlPanel algorithm selector", () => {
       screen.queryByText(/first post-save baseline/i),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Algorithm guide")).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Full portfolio")).toHaveValue("20.00");
+    expect(
+      screen.getByText("Adjusted $18.50 · Shared wallet"),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("link", { name: "Learn how Position gap works" }),
     ).toHaveAttribute(
@@ -146,5 +169,24 @@ describe("CopyTargetControlPanel algorithm selector", () => {
       "href",
       "https://poly.cognidao.org/knowledge/mirror-algorithm-rankings",
     );
+  });
+
+  it("tells a human how to clear the multi-target position-gap block", () => {
+    const budget = targetResponse.targets[0].policy.portfolio_budget;
+    const previousStatus = budget.observation_status;
+    budget.observation_status = "blocked_multi_target";
+
+    try {
+      render(<CopyTargetControlPanel />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Expand copy controls" }),
+      );
+
+      expect(
+        screen.getByText(/^Choose one Position gap target/),
+      ).toBeInTheDocument();
+    } finally {
+      budget.observation_status = previousStatus;
+    }
   });
 });

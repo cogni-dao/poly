@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import { buildMirrorTargetConfig } from "@/bootstrap/jobs/copy-trade-mirror.job";
 import { runMirrorTick } from "@/features/copy-trade/mirror-pipeline";
 import type {
+	OpenOrderRow,
 	OrderLedger,
 	TenantOrderLedger,
 	TenantScopedRecordDecisionInput,
@@ -61,10 +62,11 @@ function recordingLogger(entries: Record<string, unknown>[]) {
 	return build({});
 }
 
-function ledgerHarness() {
+function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 	const decisions: TenantScopedRecordDecisionInput[] = [];
 	const insertPending = vi.fn(async () => undefined);
 	const markOrderId = vi.fn(async () => undefined);
+	const markCanceled = vi.fn(async () => undefined);
 	const tenant: TenantOrderLedger = {
 		snapshotState: async () => ({
 			today_spent_usdc: 0,
@@ -76,7 +78,7 @@ function ledgerHarness() {
 		cumulativeIntentForMarketToken: async () => 0,
 		insertPending,
 		hasOpenForMarket: async () => false,
-		findOpenForMarket: async () => [],
+		findOpenForMarket: async () => openOrders,
 		recordDecision: async (decision) => {
 			decisions.push(decision);
 		},
@@ -85,9 +87,9 @@ function ledgerHarness() {
 		forTenant: () => tenant,
 		markOrderId,
 		markError: async () => undefined,
-		markCanceled: async () => undefined,
+		markCanceled,
 	} as unknown as OrderLedger;
-	return { decisions, insertPending, ledger, markOrderId };
+	return { decisions, insertPending, ledger, markCanceled, markOrderId };
 }
 
 function commonDeps(fill: Fill, ledger: OrderLedger, logger: LoggerPort) {
@@ -150,6 +152,10 @@ describe("position_gap pipeline VWAP boundary", () => {
 				evaluated_limit_price: 0.506,
 				sizing_policy_kind: "position_gap",
 				position_gap_version: 2,
+				mirror_capital_budget_usdc: null,
+				effective_mirror_capital_budget_usdc: 100,
+				mirror_budget_allocation_status: "full",
+				mirror_portfolio_current_value_usdc: 100,
 			},
 		});
 		expect(entries).toContainEqual(
@@ -162,6 +168,9 @@ describe("position_gap pipeline VWAP boundary", () => {
 				evaluated_limit_price: 0.506,
 				sizing_policy_kind: "position_gap",
 				position_gap_version: 2,
+				mirror_capital_budget_usdc: null,
+				effective_mirror_capital_budget_usdc: 100,
+				mirror_budget_allocation_status: "full",
 			}),
 		);
 	});
@@ -232,4 +241,79 @@ describe("position_gap pipeline VWAP boundary", () => {
 			expect.objectContaining({ reason: "vwap_floor_breach" }),
 		);
 	});
+
+	it.each(["BUY", "SELL"] as const)(
+		"fails closed and cancels resting orders for %s with multiple position-gap targets",
+		async (side) => {
+			const fill: Fill = {
+				...buyFill,
+				fill_id: `chain:position-gap-multi-${side.toLowerCase()}`,
+				side,
+			};
+			const blockedTarget = buildMirrorTargetConfig({
+				targetWallet: fill.target_wallet,
+				billingAccountId: "billing-1",
+				createdByUserId: "user-1",
+				sizingPolicyKind: "position_gap",
+				positionGapBudgetGroup: {
+					positionGapTargetCount: 2,
+					explicitBudgetTotalUsdc: 0,
+					automaticTargetCount: 2,
+					unbudgetedTargetCount: 0,
+				},
+			});
+			const openOrder: OpenOrderRow = {
+				client_order_id: `0x${"1".repeat(64)}`,
+				order_id: "resting-order-1",
+				status: "open",
+				billing_account_id: "billing-1",
+				target_id: blockedTarget.target_id,
+				market_id: fill.market_id,
+				created_at: new Date("2026-10-07T00:00:00.000Z"),
+				limit_price: 0.5,
+			};
+			const entries: Record<string, unknown>[] = [];
+			const harness = ledgerHarness([openOrder]);
+			const deps = commonDeps(
+				fill,
+				harness.ledger,
+				recordingLogger(entries),
+			);
+			const cancelOrder = vi.fn(async () => undefined);
+			const closePosition = vi.fn(async () => {
+				throw new Error("closePosition must not run");
+			});
+			const getOperatorPositions = vi.fn(async () => [
+				{ asset: "token-1", size: 10 },
+			]);
+
+			await runMirrorTick({
+				...deps,
+				target: blockedTarget,
+				cancelOrder,
+				closePosition,
+				getOperatorPositions,
+			});
+
+			expect(deps.placeIntent).not.toHaveBeenCalled();
+			expect(closePosition).not.toHaveBeenCalled();
+			expect(getOperatorPositions).not.toHaveBeenCalled();
+			expect(harness.insertPending).not.toHaveBeenCalled();
+			expect(cancelOrder).toHaveBeenCalledWith("resting-order-1");
+			expect(harness.markCanceled).toHaveBeenCalledWith({
+				client_order_id: openOrder.client_order_id,
+				reason: "multi_target_position_gap_unsupported",
+			});
+			expect(harness.decisions).toContainEqual(
+				expect.objectContaining({
+					outcome: "skipped",
+					reason: "multi_target_position_gap_unsupported",
+					intent: expect.objectContaining({
+						mirror_budget_allocation_status: "blocked_multi_target",
+						position_gap_target_count: 2,
+					}),
+				}),
+			);
+		},
+	);
 });

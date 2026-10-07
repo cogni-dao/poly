@@ -39,6 +39,7 @@ describe("copy-target assignment contract", () => {
         expected_mirror_activated_at: activatedAt,
         mirror_filter_percentile: 75,
         mirror_max_usdc_per_trade: 10,
+        mirror_capital_budget_usdc: 200,
       }).success,
     ).toBe(true);
   });
@@ -70,6 +71,13 @@ describe("copy-setup algorithm identity", () => {
             target_range_max_usdc: null,
             mirror_max_alloc_per_condition_usdc: null,
             range_knobs_incomplete: false,
+            portfolio_budget: {
+              configured_budget_usdc: null,
+              effective_budget_usdc: null,
+              allocation_status: null,
+              effective_budget_observed_at: null,
+              observation_status: "not_applicable",
+            },
           },
           activation: { status: "eligible", explanation: "active" },
         },
@@ -79,6 +87,18 @@ describe("copy-setup algorithm identity", () => {
       wallet_safety: {
         status: "absent",
         reason: "no_wallet_grant_on_file",
+      },
+      budget_allocation: {
+        position_gap_target_count: 0,
+        automatic_target_count: 0,
+        explicit_budget_total_usdc: 0,
+        unbudgeted_active_target_count: 1,
+        shared_wallet_risk: true,
+        mirror_nav_usdc: null,
+        effective_budget_total_usdc: null,
+        overallocated: null,
+        observed_at: null,
+        observation_status: "pending",
       },
       sources: {
         targets: "poly_copy_trade_targets",

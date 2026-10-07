@@ -170,6 +170,22 @@ export const PolyEffectiveSizingPolicySchema = z.object({
    * derives its scale from live portfolio NAV and requires no range knobs.
    */
   range_knobs_incomplete: z.boolean(),
+  /** Saved and last-observed runtime budget facts; never recomputed by clients. */
+  portfolio_budget: z.object({
+    configured_budget_usdc: z.number().positive().nullable(),
+    effective_budget_usdc: z.number().nonnegative().nullable(),
+    allocation_status: z
+      .enum(["full", "reserved", "prorated", "blocked_multi_target"])
+      .nullable(),
+    effective_budget_observed_at: IsoTimestampSchema.nullable(),
+    observation_status: z.enum([
+      "not_applicable",
+      "pending",
+      "stale",
+      "observed",
+      "blocked_multi_target",
+    ]),
+  }),
 });
 
 /**
@@ -265,6 +281,24 @@ export const PolyAccountCopySetupResponseSchema = z.object({
   /** True when the account has more target rows than the hard bound returns. */
   targets_truncated: z.boolean(),
   wallet_safety: PolyWalletSafetyCapsSchema,
+  /** Account-wide position-gap allocation from the same saved runtime observation. */
+  budget_allocation: z.object({
+    position_gap_target_count: z.number().int().nonnegative(),
+    automatic_target_count: z.number().int().nonnegative(),
+    explicit_budget_total_usdc: z.number().nonnegative(),
+    unbudgeted_active_target_count: z.number().int().nonnegative(),
+    shared_wallet_risk: z.boolean(),
+    mirror_nav_usdc: z.number().nonnegative().nullable(),
+    effective_budget_total_usdc: z.number().nonnegative().nullable(),
+    overallocated: z.boolean().nullable(),
+    observed_at: IsoTimestampSchema.nullable(),
+    observation_status: z.enum([
+      "pending",
+      "stale",
+      "observed",
+      "blocked_multi_target",
+    ]),
+  }),
   /**
    * Names the two sources this capability joins, so a caller can tell which
    * half is which. `poly_copy_trade_config` is absent BY DESIGN — see

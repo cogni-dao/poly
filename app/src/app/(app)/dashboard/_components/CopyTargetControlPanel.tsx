@@ -257,6 +257,10 @@ export function CopyTargetControlPanel(): ReactElement {
                     next,
                   });
                 }}
+                unbudgetedTargetCount={
+                  targetsQuery.data?.budget_allocation
+                    .unbudgeted_active_target_count ?? 0
+                }
               />
             );
           })}
@@ -308,6 +312,7 @@ function CopyTargetCard({
   onCreate,
   onDelete,
   onSave,
+  unbudgetedTargetCount,
 }: {
   label: string;
   wallet: string;
@@ -317,6 +322,7 @@ function CopyTargetCard({
   onCreate: () => void;
   onDelete: () => void;
   onSave: (next: Omit<PolyCopyTradeTargetUpdateInput, "id">) => Promise<void>;
+  unbudgetedTargetCount: number;
 }): ReactElement {
   const active = Boolean(target);
 
@@ -342,6 +348,7 @@ function CopyTargetCard({
         target={target}
         disabled={!active || mutating}
         onSave={onSave}
+        unbudgetedTargetCount={unbudgetedTargetCount}
       />
     </div>
   );
@@ -407,10 +414,12 @@ function TargetPolicyEditor({
   target,
   disabled,
   onSave,
+  unbudgetedTargetCount,
 }: {
   target: PolyTrackedTarget | undefined;
   disabled: boolean;
   onSave: (next: Omit<PolyCopyTradeTargetUpdateInput, "id">) => Promise<void>;
+  unbudgetedTargetCount: number;
 }): ReactElement {
   const [kind, setKind] = useState<SizingPolicyKind>(
     target?.policy.declared_kind ?? "auto",
@@ -421,6 +430,9 @@ function TargetPolicyEditor({
   const [maxBet, setMaxBet] = useState(
     (target?.policy.mirror_max_usdc_per_trade ?? 5).toFixed(2),
   );
+  const [mirrorBudget, setMirrorBudget] = useState(
+    target?.policy.portfolio_budget.configured_budget_usdc?.toFixed(2) ?? "",
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -428,15 +440,22 @@ function TargetPolicyEditor({
     setKind(target?.policy.declared_kind ?? "auto");
     setPercentile(target?.policy.mirror_filter_percentile ?? 75);
     setMaxBet((target?.policy.mirror_max_usdc_per_trade ?? 5).toFixed(2));
+    setMirrorBudget(
+      target?.policy.portfolio_budget.configured_budget_usdc?.toFixed(2) ?? "",
+    );
     setError(null);
   }, [target]);
 
   const parsedMaxBet = Number.parseFloat(maxBet);
+  const parsedMirrorBudget =
+    mirrorBudget.trim() === "" ? null : Number.parseFloat(mirrorBudget);
   const changed =
     target &&
     (kind !== target.policy.declared_kind ||
       percentile !== target.policy.mirror_filter_percentile ||
-      parsedMaxBet !== target.policy.mirror_max_usdc_per_trade);
+      parsedMaxBet !== target.policy.mirror_max_usdc_per_trade ||
+      parsedMirrorBudget !==
+        target.policy.portfolio_budget.configured_budget_usdc);
   const percentileSizing =
     kind === "auto" || kind === "target_percentile_scaled";
   const cappedSizing = percentileSizing || kind === "min_bet";
@@ -451,6 +470,14 @@ function TargetPolicyEditor({
       setError("Max must be greater than 0");
       return;
     }
+    if (
+      kind === "position_gap" &&
+      parsedMirrorBudget !== null &&
+      (!Number.isFinite(parsedMirrorBudget) || parsedMirrorBudget <= 0)
+    ) {
+      setError("Budget must be greater than 0");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -458,6 +485,7 @@ function TargetPolicyEditor({
         mirror_filter_percentile: percentile,
         mirror_max_usdc_per_trade: parsedMaxBet,
         sizing_policy_kind: kind,
+        mirror_capital_budget_usdc: parsedMirrorBudget,
         expected_mirror_activated_at: target.mirror_activated_at,
       });
     } catch (cause) {
@@ -543,6 +571,30 @@ function TargetPolicyEditor({
             </span>
           </label>
         ) : null}
+        {kind === "position_gap" ? (
+          <label className="flex flex-col gap-1">
+            <span className="text-muted-foreground text-xs uppercase tracking-wide">
+              Mirror budget
+            </span>
+            <span className="flex h-9 items-center gap-1 rounded-md border border-input bg-background px-2">
+              <span className="text-muted-foreground text-sm">$</span>
+              <input
+                inputMode="decimal"
+                value={mirrorBudget}
+                placeholder="Full portfolio"
+                disabled={disabled || saving}
+                onChange={(event) => setMirrorBudget(event.target.value)}
+                className="min-w-0 flex-1 bg-transparent text-sm tabular-nums outline-none placeholder:text-muted-foreground disabled:opacity-50"
+              />
+            </span>
+            {target ? (
+              <span className="text-muted-foreground text-xs">
+                {budgetStatusLabel(target)}
+                {unbudgetedTargetCount > 0 ? " · Shared wallet" : ""}
+              </span>
+            ) : null}
+          </label>
+        ) : null}
         <Button
           type="button"
           size="sm"
@@ -583,4 +635,23 @@ function algorithmSummary(target: PolyTrackedTarget): string {
   return target.policy.declared_kind === "auto"
     ? `Auto → ${effective}`
     : effective;
+}
+
+function budgetStatusLabel(target: PolyTrackedTarget): string {
+  const budget = target.policy.portfolio_budget;
+  if (budget.observation_status === "blocked_multi_target") {
+    return "Choose one Position gap target";
+  }
+  if (budget.observation_status === "pending") return "Pending first trade";
+  if (budget.observation_status === "stale") return "Pending next trade";
+  if (
+    budget.observation_status === "observed" &&
+    budget.effective_budget_usdc !== null
+  ) {
+    const amount = `$${budget.effective_budget_usdc.toFixed(2)}`;
+    return budget.allocation_status === "prorated"
+      ? `Adjusted ${amount}`
+      : `Live ${amount}`;
+  }
+  return "Full portfolio";
 }

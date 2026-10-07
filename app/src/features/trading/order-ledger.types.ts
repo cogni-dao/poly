@@ -153,7 +153,8 @@ export interface StateSnapshot {
 export type LedgerCancelReason =
   | "target_exited_market"
   | "ttl_expired"
-  | "stale_resting_layer_up";
+  | "stale_resting_layer_up"
+  | "multi_target_position_gap_unsupported";
 
 /**
  * Thrown by `insertPending` when the partial unique index
