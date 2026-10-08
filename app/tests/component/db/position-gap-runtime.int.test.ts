@@ -1002,12 +1002,12 @@ describe("position-gap runtime persistence", () => {
 		await db
 			.update(polyCopyTradeFills)
 			.set({
-				price: (0.007 / 9.3).toString(),
+				price: (0.012 / 9.3).toString(),
 				shares: "9.3",
 				feesUsdc: "0.0003",
 				attributes: {
 					...convergedLedger?.attributes,
-					filled_size_usdc: 0.007,
+					filled_size_usdc: 0.012,
 					realized_fill_source: "clob_associated_trades",
 				},
 			})
@@ -1034,12 +1034,16 @@ describe("position-gap runtime persistence", () => {
 			.select()
 			.from(polyPositionGapReservations)
 			.where(eq(polyPositionGapReservations.buyActionId, actionId));
-		expect(Number(convergedAction?.filledUsdc)).toBe(0.007);
+		expect(Number(convergedAction?.filledUsdc)).toBe(0.012);
 		expect(convergedAction?.plannerAction.realized_fill_source).toBe(
 			"clob_associated_trades",
 		);
-		expect(Number(convergedLedger?.attributes?.filled_size_usdc)).toBe(0.007);
-		expect(Number(convergedReservation?.filledCostUsdc)).toBe(0.0073);
+		expect(Number(convergedLedger?.attributes?.filled_size_usdc)).toBe(0.012);
+		expect(Number(convergedReservation?.filledCostUsdc)).toBe(0.0123);
+		expect(Number(convergedReservation?.releasedBudgetUsdc)).toBeCloseTo(
+			3.592216 - 0.0123,
+			8,
+		);
 	});
 
 	it("consumes durable CLOB not_found before a stop retry and releases only unfilled", async () => {
