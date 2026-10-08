@@ -1738,7 +1738,7 @@ export class PositionGapRuntimeStore {
 					.set({
 						filledCostUsdc: grossCashUsdc.toString(),
 						releasedBudgetUsdc: Math.max(
-							numberOf(reservation.releasedBudgetUsdc),
+							0,
 							intendedNotional - grossCashUsdc,
 						).toString(),
 						updatedAt: new Date(),
