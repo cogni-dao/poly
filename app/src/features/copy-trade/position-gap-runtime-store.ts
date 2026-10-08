@@ -779,6 +779,7 @@ export class PositionGapRuntimeStore {
 				Math.max(0, Math.floor(input.walletCashUsdc * 1_000_000)),
 			);
 			if (
+				newBuys.length > 0 &&
 				BigInt(accountReserved?.cash ?? "0") + newCashAtomic >
 				walletCashAtomic
 			) {

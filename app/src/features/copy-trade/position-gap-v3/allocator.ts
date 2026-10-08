@@ -10,22 +10,6 @@ import {
 	POSITION_GAP_MAX_INTENTS_PER_PLAN,
 } from "./model";
 
-const USDC_SCALE = 1_000_000;
-
-function scaledTolerance(value: number): number {
-	return Number.EPSILON * Math.max(1, Math.abs(value));
-}
-
-export function quantizeUsdcUp(value: number): number {
-	const scaled = value * USDC_SCALE;
-	return Math.ceil(scaled - scaledTolerance(scaled)) / USDC_SCALE;
-}
-
-function quantizeUsdcDown(value: number): number {
-	const scaled = value * USDC_SCALE;
-	return Math.floor(scaled + scaledTolerance(scaled)) / USDC_SCALE;
-}
-
 function candidateOrder(
 	left: PositionGapCandidateV1,
 	right: PositionGapCandidateV1,
@@ -83,7 +67,7 @@ export function allocatePositionGapLots(
 	}
 
 	const capacities = selected.map(({ candidate, notionalUsdc }) =>
-		Math.max(0, candidate.maxShares * candidate.limitPrice - notionalUsdc),
+		Math.max(0, candidate.maxNotionalUsdc - notionalUsdc),
 	);
 	const totalCapacity = capacities.reduce((sum, value) => sum + value, 0);
 	if (totalCapacity <= POSITION_GAP_EPSILON) {
@@ -106,9 +90,9 @@ function toAllocatedLot(entry: {
 	candidate: PositionGapCandidateV1;
 	notionalUsdc: number;
 }): PositionGapAllocatedLotV1 {
-	const maxNotional = entry.candidate.maxShares * entry.candidate.limitPrice;
-	const notionalUsdc = quantizeUsdcDown(
-		Math.min(entry.notionalUsdc, maxNotional),
+	const notionalUsdc = Math.min(
+		entry.notionalUsdc,
+		entry.candidate.maxNotionalUsdc,
 	);
 	return {
 		...entry.candidate,

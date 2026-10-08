@@ -129,6 +129,7 @@ export type PositionGapCandidateV1 = Readonly<{
 	targetWeight: number;
 	limitPrice: number;
 	targetVwap: number;
+	maxNotionalUsdc: number;
 	maxShares: number;
 	floorShares: number;
 	floorNotionalUsdc: number;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-import { allocatePositionGapLots, quantizeUsdcUp } from "./allocator";
+import { allocatePositionGapLots } from "./allocator";
 import type {
 	NettedTargetPositionV1,
 	PositionGapBookInputV1,
@@ -607,12 +607,10 @@ function planCohort(params: {
 		return false;
 	}
 
-	const floorNotionalUsdc = quantizeUsdcUp(
-		Math.max(
-			CLOB_MIN_BUY_NOTIONAL_USDC,
-			quote.minOrderUsdc,
-			quote.minOrderShares * limit.price,
-		),
+	const floorNotionalUsdc = Math.max(
+		CLOB_MIN_BUY_NOTIONAL_USDC,
+		quote.minOrderUsdc,
+		quote.minOrderShares * limit.price,
 	);
 	const floorShares = floorNotionalUsdc / limit.price;
 	if (perOrderCapUsdc + POSITION_GAP_EPSILON < floorNotionalUsdc) {
@@ -688,7 +686,11 @@ function planCohort(params: {
 	}
 
 	const id = candidateId(position.tokenId, cohort.cohortId);
-	const maxShares = Math.min(gapShares, perOrderCapUsdc / limit.price);
+	const maxNotionalUsdc = Math.min(
+		gapShares * limit.price,
+		perOrderCapUsdc,
+	);
+	const maxShares = maxNotionalUsdc / limit.price;
 	if (maxShares + POSITION_GAP_EPSILON < floorShares) {
 		return false;
 	}
@@ -701,6 +703,7 @@ function planCohort(params: {
 		targetWeight,
 		limitPrice: limit.price,
 		targetVwap,
+		maxNotionalUsdc,
 		maxShares,
 		floorShares,
 		floorNotionalUsdc,
