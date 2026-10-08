@@ -585,6 +585,14 @@ export class PositionGapRuntimeStore {
 			await tx.execute(
 				sql`SELECT pg_advisory_xact_lock(hashtext(${`position-gap-v3:${input.scope.billingAccountId}`}))`,
 			);
+			const isSafetyCancellationOnly =
+				input.buys.length === 0 &&
+				input.cohortCreations.length === 0 &&
+				input.cohortReductions.length === 0 &&
+				input.cancellations.length > 0 &&
+				input.cancellations.every(
+					(cancellation) => cancellation.reason === "runtime_safety",
+				);
 
 			const [ambiguous] = await tx
 				.select({ id: polyPositionGapActions.id })
@@ -600,7 +608,7 @@ export class PositionGapRuntimeStore {
 					),
 				)
 				.limit(1);
-			if (ambiguous) {
+			if (ambiguous && !isSafetyCancellationOnly) {
 				throw new PositionGapReservationConflictError(
 					"duplicate",
 					"position-gap target is halted by an ambiguous placement",

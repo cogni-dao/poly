@@ -831,6 +831,7 @@ export function startPositionGapActor(
 			| "stale_snapshot",
 	): Promise<void> {
 		const runtime = await deps.store.loadPlannerState(deps.scope);
+		const unresolvedPlacements: string[] = [];
 		for (const action of runtime.activeBuys) {
 			if (
 				!action.orderId &&
@@ -846,13 +847,18 @@ export function startPositionGapActor(
 				!action.orderId &&
 				(action.status === "submitting" || action.status === "ambiguous")
 			) {
-				throw new Error(
-					`cannot safely stop position-gap with unresolved ${action.status} action ${action.id}`,
-				);
+				unresolvedPlacements.push(`${action.status} action ${action.id}`);
 			}
 		}
 		const orders = runtime.openBuyOrders;
-		if (orders.length === 0) return;
+		if (orders.length === 0) {
+			if (unresolvedPlacements.length > 0) {
+				throw new Error(
+					`cannot safely stop position-gap with unresolved ${unresolvedPlacements.join("; ")}`,
+				);
+			}
+			return;
+		}
 		const snapshot =
 			lastSnapshot ?? (await deps.store.loadLastSnapshot(deps.scope));
 		if (!snapshot) {
@@ -936,9 +942,23 @@ export function startPositionGapActor(
 				);
 			}
 		}
-		if (cancellationFailures.length > 0) {
+		if (
+			cancellationFailures.length > 0 ||
+			unresolvedPlacements.length > 0
+		) {
 			throw new Error(
-				`position-gap safety cancellation failed for ${cancellationFailures.join("; ")}`,
+				[
+					...(cancellationFailures.length > 0
+						? [
+								`position-gap safety cancellation failed for ${cancellationFailures.join("; ")}`,
+							]
+						: []),
+					...(unresolvedPlacements.length > 0
+						? [
+								`cannot safely stop position-gap with unresolved ${unresolvedPlacements.join("; ")}`,
+							]
+						: []),
+				].join("; "),
 			);
 		}
 		await deps.store.finishRun(persisted.runId, "halted", reason);
