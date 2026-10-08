@@ -334,15 +334,13 @@ export async function readPositionGapRuntimeByWallet(
 	wallets: readonly string[],
 	capturedAt: Date,
 ): Promise<Map<string, PolyPositionGapRuntime>> {
-	const targetIds = wallets.map((wallet) =>
-		targetIdFromWallet(wallet as `0x${string}`),
-	);
 	const walletByTargetId = new Map(
-		targetIds.map((targetId, index) => [
-			targetId,
-			wallets[index]?.toLowerCase() ?? "",
+		wallets.map((wallet) => [
+			targetIdFromWallet(wallet as `0x${string}`),
+			wallet.toLowerCase(),
 		]),
 	);
+	const targetIds = [...walletByTargetId.keys()];
 	if (targetIds.length === 0) return new Map();
 	const runs = rowsOf<Run>(
 		await tx.execute(positionGapLatestRunsSelect(accountId, targetIds)),
