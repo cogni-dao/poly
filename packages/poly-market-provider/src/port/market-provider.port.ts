@@ -78,7 +78,7 @@ export interface MarketConstraints {
  * preserves the historical market-FOK contract for callers that have not yet
  * made their placement semantics explicit.
  */
-export type MarketConstraintPlacement = "market_fok" | "limit_gtc";
+export type MarketConstraintPlacement = "market_fok" | "limit";
 
 /**
  * Stable code string attached to errors thrown from `placeOrder` when CLOB

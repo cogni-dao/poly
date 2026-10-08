@@ -255,7 +255,7 @@ export class PaperAdapter implements MarketProviderPort {
 
   async getMarketConstraints(
     tokenId: string,
-    placement?: "market_fok" | "limit_gtc"
+    placement?: "market_fok" | "limit"
   ): Promise<MarketConstraints> {
     // PAPER_DELEGATES_READS_TO_LIVE — paper trades must respect real ticks +
     // min-size from Polymarket production. The bootstrap factory injects the

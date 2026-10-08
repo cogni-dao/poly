@@ -1225,7 +1225,7 @@ describe("PolymarketClobAdapter", () => {
     });
 
     await expect(
-      adapter.getMarketConstraints("0xtoken", "limit_gtc")
+      adapter.getMarketConstraints("0xtoken", "limit")
     ).resolves.toEqual({ minShares: 5, tickSize: 0.01 });
   });
 

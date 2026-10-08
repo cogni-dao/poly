@@ -1359,7 +1359,7 @@ export class PolymarketClobAdapter implements MarketProviderPort {
    */
   async getMarketConstraints(
     tokenId: string,
-    placement: "market_fok" | "limit_gtc" = "market_fok"
+    placement: "market_fok" | "limit" = "market_fok"
   ): Promise<MarketConstraints> {
     const start = Date.now();
     try {

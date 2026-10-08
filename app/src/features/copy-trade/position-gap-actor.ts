@@ -62,7 +62,7 @@ export interface PositionGapBuyExecutionPort {
 	getBuy(orderId: string): Promise<GetOrderResult>;
 	getMarketConstraints(
 		tokenId: string,
-		placement: "limit_gtc",
+		placement: "limit",
 	): Promise<{
 		minShares: number;
 		minUsdcNotional?: number;
@@ -478,7 +478,7 @@ export function startPositionGapActor(
 							if (cached && cached.expiresAtMs > now()) return cached.quote;
 							const constraints = await deps.execution.getMarketConstraints(
 								token.tokenId,
-								"limit_gtc",
+								"limit",
 							);
 							const quote = {
 								tokenId: token.tokenId,
