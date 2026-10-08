@@ -132,6 +132,7 @@ export function startPositionGapActor(
 	>();
 	let causalWatermarkMs = 0;
 	let causalRetry: ReturnType<typeof globalThis.setTimeout> | null = null;
+	let causalHoldLogged = false;
 	const venueCache = new Map<
 		string,
 		{
@@ -293,6 +294,7 @@ export function startPositionGapActor(
 			!freshSnapshot.complete ||
 			now() >= freshSnapshot.expiresAtMs
 		) {
+			causalHoldLogged = false;
 			await cancelAll("stale_snapshot");
 			return;
 		}
@@ -311,7 +313,33 @@ export function startPositionGapActor(
 			(!Number.isFinite(sourceComputedAtMs) ||
 				sourceComputedAtMs < causalWatermarkMs)
 		) {
-			await cancelAll("causal_snapshot_lag");
+			// Activity can lead the Data API projection by several seconds. The
+			// lagging snapshot cannot authorize new demand, but prior GTCs remain
+			// backed by the last atomic snapshot until a fresh projection proves
+			// the exact whole-book reductions to cancel.
+			if (!causalHoldLogged) {
+				const heldRuntime = await deps.store.loadPlannerState(deps.scope);
+				deps.logger.warn(
+					{
+						event: "poly.position_gap.v3.causal_snapshot_lag",
+						action: "hold_approved_gtcs",
+						billing_account_id: deps.scope.billingAccountId,
+						target_wallet: deps.targetWallet,
+						target_id: deps.scope.targetId,
+						causal_watermark_ms: causalWatermarkMs,
+						source_computed_at_ms: Number.isFinite(sourceComputedAtMs)
+							? sourceComputedAtMs
+							: null,
+						dirty_condition_count: dirtyConditions.length,
+						retained_active_buy_count: heldRuntime.activeBuys.filter((action) =>
+							!["filled", "canceled", "rejected"].includes(action.status),
+						).length,
+						retained_open_buy_count: heldRuntime.openBuyOrders.length,
+					},
+					"position-gap retained last-approved GTCs while target snapshot catches up",
+				);
+				causalHoldLogged = true;
+			}
 			for (const conditionId of dirtyConditions) causalDirty.add(conditionId);
 			if (!disabled && !causalRetry) {
 				causalRetry = scheduleTimeout(() => {
@@ -321,6 +349,7 @@ export function startPositionGapActor(
 			}
 			return;
 		}
+		causalHoldLogged = false;
 		causalDirty.clear();
 		causalWatermarkMs = 0;
 
@@ -870,7 +899,6 @@ export function startPositionGapActor(
 
 	async function cancelAll(
 		reason:
-			| "causal_snapshot_lag"
 			| "disabled"
 			| "invalid_budget_group"
 			| "stale_snapshot",
@@ -1197,7 +1225,6 @@ function blockedSafetyPlan(
 		reservedUsdc: number;
 	}[],
 	reason:
-		| "causal_snapshot_lag"
 		| "disabled"
 		| "invalid_budget_group"
 		| "stale_snapshot",
