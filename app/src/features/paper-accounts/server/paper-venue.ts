@@ -5,7 +5,7 @@
  * Module: `@features/paper-accounts/server/paper-venue`
  * Purpose: The authorization + identity surface of a paper trading account.
  *   Paper placements used to skip `authorizeIntent` entirely and log
- *   `authorize_bypassed: true`; since 0081 a paper account owns a real
+ *   `authorize_bypassed: true`; since 0082 a paper account owns a real
  *   connection row AND a real `poly_wallet_grants` row, so there is nothing
  *   left to bypass. This module runs the same decision sequence the live
  *   adapter runs, against the paper account's own rows.
@@ -34,7 +34,7 @@
  *     `derivePaperAccountAddress`, used only at provision time) and does not
  *     invent a seed for a row that somehow lacks one.
  * Side-effects: IO (SELECTs).
- * Links: docs/spec/capability-plane.md, migration 0081,
+ * Links: docs/spec/capability-plane.md, migration 0082,
  *   app/src/adapters/server/wallet/privy-poly-trader-wallet.adapter.ts
  *   (the live counterpart of the decision sequence)
  * @public
@@ -242,7 +242,7 @@ export function createPaperVenue(deps: {
         );
       }
       // `provisionPaperAccount` writes both columns on every paper row, and
-      // 0081's `paper_requires_seed` CHECK holds the seed non-null. A NULL
+      // 0082's `paper_requires_seed` CHECK holds the seed non-null. A NULL
       // here means the row was hand-written around both — surface it instead
       // of substituting a value.
       if (!row.funderAddress || row.paperSeedUsdc === null) {

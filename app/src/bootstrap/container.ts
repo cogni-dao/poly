@@ -400,7 +400,7 @@ let _restingSweepStop: (() => void) | null = null;
 let _traderObservationStop: (() => void) | null = null;
 // Condition-iterating market outcome writer (task.5016). CLOB public client.
 let _marketOutcomeStop: (() => void) | null = null;
-// Paper-account fact projection stop fn (migration 0082). Local SQL projection
+// Paper-account fact projection stop fn (migration 0083). Local SQL projection
 // over our own ledger + one CLOB midpoint per open position.
 let _paperProjectionStop: (() => void) | null = null;
 // Per-asset price-history mirror job stop fn (task.5018). Public CLOB only.
@@ -917,7 +917,7 @@ function createContainer(): Container {
 	// does not route through that adapter at all. When the port is missing, a
 	// paper account still builds and a LIVE account fails loudly inside
 	// `buildExecutor` with `no_connection` — never a silent downgrade to paper.
-	// (Pre-0081 this slot held a Proxy whose every property access threw.)
+	// (Pre-0082 this slot held a Proxy whose every property access threw.)
 	const polyTradeExecutorFactory: ReturnType<
 		typeof createPolyTradeExecutorFactory
 	> = (() => {
@@ -943,7 +943,7 @@ function createContainer(): Container {
 			paperSidecarUrl: env.PAPER_SIDECAR_URL,
 			resolveExecutionVenue: executionVenueResolver,
 			paperVenue: getPaperVenue(),
-			// The paper venue's position reads, backed by the migration-0082 fact
+			// The paper venue's position reads, backed by the migration-0083 fact
 			// projection. Absent / incomplete / stale facts raise
 			// `PaperFactsUnavailableError` from inside the reader — this wiring adds
 			// no fallback, so there is still no path on which a paper position read
@@ -1318,7 +1318,7 @@ function createContainer(): Container {
 						 * (VENUE_RESOLVED_FROM_ACCOUNT).
 						 *
 						 * Live: free pUSD on the trading wallet + Data-API position values.
-						 * Paper: the migration-0082 projection's published NAV (seed − cost
+						 * Paper: the migration-0083 projection's published NAV (seed − cost
 						 * + marks) and its projected open positions. A paper account has no
 						 * pUSD balance to read and a live account has no projection, so this
 						 * is a real fork, not a preference — but both branches are
@@ -1689,7 +1689,7 @@ function createContainer(): Container {
 		}
 	})();
 
-	// migration 0082 — paper-account fact projection. Deliberately NOT inside the
+	// migration 0083 — paper-account fact projection. Deliberately NOT inside the
 	// trader-observation IIFE above, and deliberately NOT gated on
 	// POLY_TRADER_OBSERVATION_WRITER_ENABLED. That lever throttles DATA-API
 	// observation (paginated /activity + /positions for every target and tenant

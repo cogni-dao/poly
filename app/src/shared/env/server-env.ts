@@ -289,7 +289,7 @@ export const serverSchema = z.object({
   //
   // DECLARED_BUT_UNREAD: no application code reads this value any more.
   // Execution mode is a property of the account — `poly_wallet_connections.kind`
-  // (migration 0081), resolved by `@features/paper-accounts` execution-venue.
+  // (migration 0082), resolved by `@features/paper-accounts` execution-venue.
   // The declaration stays because changing a declared secret's presence has
   // broken every poly promote (bug.5277); removing it is a separate, deliberate
   // step. If you are adding a new read of this var, you are re-introducing the

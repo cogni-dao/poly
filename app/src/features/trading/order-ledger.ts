@@ -147,7 +147,7 @@ export interface OrderLedgerDeps {
    * `poly_copy_trade_{fills,decisions}.mode`, and the mode of a row is a
    * property of the account that produced it. Resolved per write from the
    * account's `poly_wallet_connections.kind`, NOT from a process-wide env var
-   * read once at construction (the pre-0081 `paperEnforceMode` dep, which made
+   * read once at construction (the pre-0082 `paperEnforceMode` dep, which made
    * every row on a pod carry the same label).
    *
    * Required, and deliberately so: there is no honest fallback. Defaulting to

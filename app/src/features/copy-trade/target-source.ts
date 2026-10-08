@@ -22,11 +22,11 @@
  *     table; target policy fields live directly on the tracked target row.
  *   - ACTIVATION_IS_KIND_AGNOSTIC: that predicate does NOT filter
  *     `poly_wallet_connections.kind`. A paper account owns a real connection row and a
- *     real grant row (migration 0081), so one rule activates both venues and the paper
+ *     real grant row (migration 0082), so one rule activates both venues and the paper
  *     path can no longer run with no wallet and no grant the way the deleted
  *     `paperEnforced` branch let it.
  *   - ONE_ROW_PER_TARGET: the connection + grant predicate is an EXISTS, never a join.
- *     Since 0081 an account can hold two active connections (one live, one paper) and
+ *     Since 0082 an account can hold two active connections (one live, one paper) and
  *     has always been able to hold several active grants, so the former INNER joins
  *     fanned a single target row into N enumerated targets — N concurrent mirror polls
  *     on the same wallet, each placing its own orders.
@@ -283,7 +283,7 @@ export function dbTargetSource(
       // that `authorizeIntent` (live) / the paper venue's authorizer will let
       // through. The act of having an active target row IS the user's opt-in.
       //
-      // ACTIVATION_IS_KIND_AGNOSTIC — no `kind` filter. Since 0081 a paper
+      // ACTIVATION_IS_KIND_AGNOSTIC — no `kind` filter. Since 0082 a paper
       // account has a real connection row and a real grant row, so the same
       // predicate serves both venues. This deliberately replaces the old
       // `paperEnforced` branch, which dropped BOTH joins process-wide: under
@@ -447,7 +447,7 @@ export function positionGapBudgetGroups(
  * so the diagnostic must not be able to change which tenants trade.
  *
  * ONE_ROW_PER_TARGET applies here too — scalar EXISTS subqueries, not LEFT
- * JOINs. The pre-0081 LEFT-JOIN form emitted one diag row per
+ * JOINs. The pre-0082 LEFT-JOIN form emitted one diag row per
  * (connection × grant) pair, so `candidate_targets` over-counted and a tenant
  * holding both a live and a paper account was reported twice.
  */
@@ -522,7 +522,7 @@ async function explainExcludedTargets(
     }
 
     for (const r of excluded) {
-      // Renamed from `no_live_wallet_connection` (pre-0081): a paper account's
+      // Renamed from `no_live_wallet_connection` (pre-0082): a paper account's
       // connection is a real row, so "live" in the reason would be a lie for
       // exactly the tenants this diagnostic now also covers.
       const reason = !r.has_connection

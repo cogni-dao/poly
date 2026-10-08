@@ -19,7 +19,7 @@
  *   - PAPER_ROWS_ONLY, FAIL_CLOSED (paper-venue.ts)
  *   - ONE_ROW_PER_TARGET, ACTIVATION_IS_KIND_AGNOSTIC (target-source.ts)
  * Side-effects: IO (testcontainers Postgres)
- * Links: migrations/0081_poly_paper_accounts.sql, docs/spec/capability-plane.md
+ * Links: migrations/0082_poly_paper_accounts.sql, docs/spec/capability-plane.md
  * @internal
  */
 
@@ -247,7 +247,7 @@ describe("execution venue + paper authorization (account-resolved mode)", () => 
         derivePaperAccountAddress(paperOnly.billingAccountId)
       );
       expect(Number(identity.seedUsdc)).toBe(1000);
-      // NOT the zero address the pre-0081 paper executor used.
+      // NOT the zero address the pre-0082 paper executor used.
       expect(identity.funderAddress).not.toBe(
         "0x0000000000000000000000000000000000000000"
       );

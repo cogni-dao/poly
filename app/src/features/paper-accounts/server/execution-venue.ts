@@ -17,7 +17,7 @@
  *     `intent.attributes.mode` shadow (task.5003 deleted those and they stay
  *     deleted).
  *   - LIVE_WINS_DISPATCH: a tenant holding BOTH an active live and an active
- *     paper connection (0081's partial unique index permits exactly one of
+ *     paper connection (0082's partial unique index permits exactly one of
  *     each) dispatches LIVE. Same precedence the presentation readers use
  *     (`LIVE_WINS_PAPER_SHOWS`), so what a tenant reads and what its orders do
  *     cannot disagree.
@@ -32,7 +32,7 @@
  *     a row it is stamping.
  * Side-effects: IO (one SELECT).
  * Links: docs/spec/capability-plane.md, docs/spec/poly-tenant-and-collateral.md,
- *   migration 0081
+ *   migration 0082
  * @public
  */
 
@@ -40,7 +40,7 @@ import { polyWalletConnections } from "@cogni/poly-db-schema";
 import { and, eq, isNull } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 
-/** The `kind` discriminator for a real Privy-custodied wallet (0081). */
+/** The `kind` discriminator for a real Privy-custodied wallet (0082). */
 export const LIVE_CONNECTION_KIND = "privy_live";
 
 /** Where an account's orders actually go. */
@@ -80,7 +80,7 @@ export type ExecutionVenueResolver = (
 ) => Promise<ExecutionVenue>;
 
 /**
- * Upper bound on rows read per account. 0081 allows at most one active row per
+ * Upper bound on rows read per account. 0082 allows at most one active row per
  * `(billing_account_id, kind)` and there are two kinds, so 2 is the real
  * ceiling; reading a few more costs nothing and means a future `kind` cannot
  * silently truncate the scan into a wrong answer.

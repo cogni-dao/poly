@@ -1540,10 +1540,10 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       // (intent insertion time) NOT observedAt (upstream fill time) so
       // historical target activity doesn't artificially backdate caps.
       //
-      // CAPS_COUNT_ONLY_THEIR_OWN_MODE (migration 0081): this is the LIVE
+      // CAPS_COUNT_ONLY_THEIR_OWN_MODE (migration 0082): this is the LIVE
       // authorizer — `liveRow()` above already guaranteed a `privy_live`
       // connection — so it must count only `mode = 'live'` intents. Before
-      // 0081 one billing account could hold at most one connection, so every
+      // 0082 one billing account could hold at most one connection, so every
       // row in this window was necessarily live and the filter was implicit.
       // Now a tenant may hold a live AND a paper connection against the same
       // `billing_account_id`, and without this predicate simulated fills would

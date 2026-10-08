@@ -22,7 +22,7 @@
  *   - NAV_IS_THE_PAPER_ACCOUNT'S — a NAV row written for a different address is
  *     not borrowed.
  * Side-effects: IO (testcontainers Postgres)
- * Links: migrations/0081, migrations/0082, docs/spec/capability-plane.md
+ * Links: migrations/0082, migrations/0083, docs/spec/capability-plane.md
  * @internal
  */
 

@@ -927,7 +927,7 @@ async function buildExecutor(
  *     real connection row with a real synthetic funder address.
  *   - Authorizes through `paperVenue.authorizeIntent`, which runs the same
  *     decision sequence the live adapter runs against the paper account's own
- *     `poly_wallet_grants` row. There is NO bypass: the pre-0081 build skipped
+ *     `poly_wallet_grants` row. There is NO bypass: the pre-0082 build skipped
  *     authorize entirely and logged `authorize_bypassed: true`, which silently
  *     neutered every cap the algorithm was supposed to be tested against.
  *   - Constructs `PolymarketClobAdapter` with a deterministic no-op signer +
@@ -937,8 +937,8 @@ async function buildExecutor(
  *   - Wires `paperPlace` as the only placement path. `livePlace` doesn't exist
  *     in this builder — every intent routes to the sidecar.
  *   - Position reads come from `deps.paperPositions` — the paper fact projection
- *     (migration 0082), read back per account. They do NOT return `0` and do NOT
- *     query the Data-API for the zero address, which is what the pre-0081 build
+ *     (migration 0083), read back per account. They do NOT return `0` and do NOT
+ *     query the Data-API for the zero address, which is what the pre-0082 build
  *     did: `getPositionShareBalance: async () => 0` fabricated a value that
  *     pinned `position_gap`'s gap math at `desired - 0` forever, and the
  *     zero-address Data-API read answered one deployment-wide "portfolio" that

@@ -10,7 +10,7 @@
  *   instead of each re-deriving execution mode.
  *   Also exposes the paper venue's READ side (`getPaperPortfolio`): the
  *   executor's position seam and the NAV the mirror's `position_gap` denominator
- *   needs, both adapted from the migration-0082 paper fact projection.
+ *   needs, both adapted from the migration-0083 paper fact projection.
  * Scope: Bootstrap wiring only. Contains no decision logic — the resolver lives
  *   in `@features/paper-accounts` and the fact reads in
  *   `@features/wallet-analysis/server/paper-fact-source`, which is where each is
@@ -23,7 +23,7 @@
  *     `poly_wallet_connections.kind` — the env var is declared (bug.5277 keeps
  *     the declaration) and deliberately unread.
  * Side-effects: constructs the service Drizzle client on first call.
- * Links: docs/spec/capability-plane.md, migration 0081
+ * Links: docs/spec/capability-plane.md, migration 0082
  * @internal
  */
 
@@ -77,7 +77,7 @@ export function getPaperVenue(): PaperVenuePort {
 /**
  * The paper venue's read side: the executor's position seam plus the NAV the
  * mirror's `position_gap` denominator needs. One object because both come from
- * one writer — the migration-0082 paper fact projection — and a caller holding
+ * one writer — the migration-0083 paper fact projection — and a caller holding
  * the positions without the NAV (or vice versa) would be reading half a
  * portfolio.
  */
