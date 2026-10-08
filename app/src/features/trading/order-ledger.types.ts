@@ -219,6 +219,14 @@ export interface OpenOrderRow {
   market_id: string;
   created_at: Date;
   /**
+   * Execution venue this row was written under, stamped at insert from the
+   * writing account's own connection kind (MODE_STAMPED_FROM_ACCOUNT). The
+   * reconciler reads it to size the unplaced grace per venue: a paper
+   * placement is a synchronous loopback call, so "still in flight" is not a
+   * possibility the way it is against the live CLOB.
+   */
+  mode: LedgerMode;
+  /**
    * Resting order's limit price extracted from `attributes.limit_price`. Null
    * when the row predates the field or the value is malformed. Used by the
    * BUY-side staleness check (bug.5035) to decide cancel-then-place vs skip.

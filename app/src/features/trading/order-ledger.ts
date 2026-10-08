@@ -583,6 +583,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       targetId: string;
       marketId: string;
       createdAt: Date;
+      mode: string;
       limitPrice: string | null;
     }>;
     try {
@@ -595,6 +596,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           targetId: polyCopyTradeFills.targetId,
           marketId: polyCopyTradeFills.marketId,
           createdAt: polyCopyTradeFills.createdAt,
+          mode: polyCopyTradeFills.mode,
           limitPrice: sql<
             string | null
           >`${polyCopyTradeFills.attributes}->>'limit_price'`,
@@ -638,6 +640,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         targetId: string;
         marketId: string;
         createdAt: Date;
+        mode: string;
         limitPrice: string | null;
       }) => ({
         client_order_id: r.clientOrderId,
@@ -647,6 +650,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         target_id: r.targetId,
         market_id: r.marketId,
         created_at: r.createdAt,
+        mode: r.mode as LedgerRow["mode"],
         limit_price: parseLimitPrice(r.limitPrice),
       })
     );
@@ -1422,6 +1426,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           targetId: polyCopyTradeFills.targetId,
           marketId: polyCopyTradeFills.marketId,
           createdAt: polyCopyTradeFills.createdAt,
+          mode: polyCopyTradeFills.mode,
           limitPrice: sql<
             string | null
           >`${polyCopyTradeFills.attributes}->>'limit_price'`,
@@ -1446,6 +1451,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         target_id: r.targetId,
         market_id: r.marketId,
         created_at: r.createdAt,
+        mode: r.mode as LedgerRow["mode"],
         limit_price: parseLimitPrice(r.limitPrice),
       }));
     },
