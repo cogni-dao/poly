@@ -868,7 +868,11 @@ describe("position-gap runtime persistence", () => {
 				child() {
 					return this;
 				},
-			} as never,
+			} as never,			// MODE_STAMPED_FROM_ACCOUNT: the ledger resolves each write's mode from the
+			// writing row's own billing account, never a process-wide env read. These
+			// are live fixtures; stating the venue explicitly keeps the test honest
+			// rather than leaning on a default production deliberately does not have.
+			resolveExecutionMode: async () => "live" as const,
 		});
 
 		const hard = await persistBuy("hard");
@@ -997,7 +1001,16 @@ describe("position-gap runtime persistence", () => {
 				return this;
 			},
 		};
-		const ledger = createOrderLedger({ db, logger: logger as never });
+		const ledger = createOrderLedger({
+			db,
+			logger: logger as never,
+			// MODE_STAMPED_FROM_ACCOUNT: the ledger resolves each write's mode from
+			// the writing row's own billing account rather than a process-wide env
+			// read. These rows are live fixtures, so the venue is "live"; supplying
+			// the resolver explicitly keeps the test honest about that rather than
+			// relying on a default the production ledger deliberately does not have.
+			resolveExecutionMode: async () => "live" as const,
+		});
 		const insert = (suffix: string) =>
 			ledger.insertPending({
 				billing_account_id: accountA,
@@ -1037,7 +1050,16 @@ describe("position-gap runtime persistence", () => {
 				return this;
 			},
 		};
-		const ledger = createOrderLedger({ db, logger: logger as never });
+		const ledger = createOrderLedger({
+			db,
+			logger: logger as never,
+			// MODE_STAMPED_FROM_ACCOUNT: the ledger resolves each write's mode from
+			// the writing row's own billing account rather than a process-wide env
+			// read. These rows are live fixtures, so the venue is "live"; supplying
+			// the resolver explicitly keeps the test honest about that rather than
+			// relying on a default the production ledger deliberately does not have.
+			resolveExecutionMode: async () => "live" as const,
+		});
 		const clientOrderId = `fill-accounting-${randomUUID()}`;
 		await ledger.insertPending({
 			billing_account_id: accountA,
@@ -1258,7 +1280,11 @@ describe("position-gap runtime persistence", () => {
 				child() {
 					return this;
 				},
-			} as never,
+			} as never,			// MODE_STAMPED_FROM_ACCOUNT: the ledger resolves each write's mode from the
+			// writing row's own billing account, never a process-wide env read. These
+			// are live fixtures; stating the venue explicitly keeps the test honest
+			// rather than leaning on a default production deliberately does not have.
+			resolveExecutionMode: async () => "live" as const,
 		});
 		await ledgerPort.markOrderId({
 			client_order_id: clientOrderId,
