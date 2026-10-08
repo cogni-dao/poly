@@ -109,6 +109,10 @@ export async function getCopyTradePnlForTenant(
       COALESCE(SUM(
         CASE
           WHEN ${polyCopyTradeFills.status} IN ('filled','partial')
+            AND (
+              COALESCE(${polyCopyTradeFills.attributes}->>'position_gap_version', '') <> '3'
+              OR ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades'
+            )
             AND ${polyCopyTradeFills.attributes}->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
           THEN (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric
           ELSE 0

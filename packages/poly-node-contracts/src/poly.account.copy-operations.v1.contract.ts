@@ -514,6 +514,8 @@ export const PolyAttemptExecutedSchema = z.discriminatedUnion("availability", [
     fees_usdc: z.number().nonnegative().nullable(),
     /** Executed notional, `price * shares`. `null` until a fill lands. */
     filled_size_usdc: z.number().nonnegative().nullable(),
+    /** Null for legacy/non-PG attempts; PG v3 is pending or trade-verified. */
+    fill_accounting: PolyPositionGapFillAccountingSchema.nullable(),
     /** Last reconciler tick that got a typed CLOB response for this row. */
     synced_at: IsoTimestampSchema.nullable(),
   }),

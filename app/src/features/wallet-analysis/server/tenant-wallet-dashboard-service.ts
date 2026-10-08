@@ -808,6 +808,11 @@ export async function readOrderSummary(
           AND (
             COALESCE(f.attributes->>'size_usdc', '') !~ '^[0-9]+(\\.[0-9]+)?$'
             OR (
+              (
+                COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+                OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+              )
+              AND
               COALESCE(f.attributes->>'filled_size_usdc', '') <> ''
               AND f.attributes->>'filled_size_usdc' !~ '^[0-9]+(\\.[0-9]+)?$'
             )
@@ -820,7 +825,10 @@ export async function readOrderSummary(
           THEN GREATEST(
             CASE WHEN f.attributes->>'size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
               THEN (f.attributes->>'size_usdc')::numeric ELSE 0 END
-              - CASE WHEN f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
+              - CASE WHEN (
+                  COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+                  OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+                ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
                 THEN (f.attributes->>'filled_size_usdc')::numeric ELSE 0 END,
             0
           )
@@ -835,6 +843,11 @@ export async function readOrderSummary(
           AND (
             COALESCE(f.attributes->>'size_usdc', '') !~ '^[0-9]+(\\.[0-9]+)?$'
             OR (
+              (
+                COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+                OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+              )
+              AND
               COALESCE(f.attributes->>'filled_size_usdc', '') <> ''
               AND f.attributes->>'filled_size_usdc' !~ '^[0-9]+(\\.[0-9]+)?$'
             )
@@ -882,9 +895,15 @@ export async function readClosedPositionSummary(
         COALESCE(f.attributes->>'market_slug', f.attributes->>'slug') AS market_slug,
         f.attributes->>'event_slug' AS event_slug,
         f.attributes->>'outcome' AS outcome,
-        NULLIF(f.attributes->>'limit_price', '')::numeric AS limit_price,
-        NULLIF(f.attributes->>'size_usdc', '')::numeric AS size_usdc,
-        NULLIF(f.attributes->>'filled_size_usdc', '')::numeric AS filled_size_usdc,
+        CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
+          AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+          THEN NULL ELSE NULLIF(f.attributes->>'limit_price', '')::numeric END AS limit_price,
+        CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
+          AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+          THEN NULL ELSE NULLIF(f.attributes->>'size_usdc', '')::numeric END AS size_usdc,
+        CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
+          AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+          THEN NULL ELSE NULLIF(f.attributes->>'filled_size_usdc', '')::numeric END AS filled_size_usdc,
         f.attributes->>'token_id' AS token_id,
         ROW_NUMBER() OVER (
           PARTITION BY
@@ -933,9 +952,14 @@ async function readDailyTradeCounts(db: ExecuteDb, billingAccountId: string, cap
       AND f.observed_at >= ${windowStart.toISOString()}::timestamptz
       AND f.observed_at < ${windowEnd.toISOString()}::timestamptz
       AND (
-        CASE WHEN f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
+        CASE WHEN (
+            COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+            OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+          ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
           THEN (f.attributes->>'filled_size_usdc')::numeric ELSE 0 END > 0
         OR (
+          COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+          AND
           f.status IN ('filled', 'partial')
           AND CASE WHEN f.attributes->>'size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
             THEN (f.attributes->>'size_usdc')::numeric ELSE 0 END > 0
