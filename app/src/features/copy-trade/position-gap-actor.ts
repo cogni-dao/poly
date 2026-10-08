@@ -437,6 +437,13 @@ export function startPositionGapActor(
 					await deps.store.markFillAccountingPending(action.id, error.message);
 					continue;
 				}
+				if (["filled", "canceled"].includes(action.status)) {
+					await deps.store.markFillAccountingPending(
+						action.id,
+						error instanceof Error ? error.message : String(error),
+					);
+					continue;
+				}
 				throw error;
 			}
 			if ("found" in result) {
@@ -445,6 +452,11 @@ export function startPositionGapActor(
 					client_order_id: action.clientOrderId,
 					receipt: result.found,
 				});
+			} else if (["filled", "canceled"].includes(action.status)) {
+				await deps.store.markFillAccountingPending(
+					action.id,
+					`CLOB order ${action.orderId} is unavailable for legacy fill repair`,
+				);
 			}
 		}
 	}
