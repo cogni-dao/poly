@@ -32,6 +32,7 @@
 "use client";
 
 import type {
+  PolyWalletOverviewInterval,
   WalletDashboardComparisonCoverage,
   WalletExecutionMarketGroup,
 } from "@cogni/poly-node-contracts";
@@ -58,14 +59,17 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@/components";
-import type { WalletPosition } from "@/features/wallet-analysis";
+import {
+  TimeWindowHeader,
+  type WalletPosition,
+} from "@/features/wallet-analysis";
 import {
   postClosePosition,
   postRedeemPosition,
 } from "../_api/fetchPositionActions";
 import {
-  useWalletDashboard,
   invalidateWalletDashboardSnapshot,
+  useWalletDashboard,
 } from "../_hooks/useWalletDashboard";
 import {
   comparisonCoverageReasonText,
@@ -281,6 +285,8 @@ export function ExecutionActivityCard(): ReactElement {
             actionsAllowed={actionsAllowed}
             pendingActionPositionId={pendingActionPositionId}
             positionActionError={positionActionError}
+            interval={dashboard.interval}
+            onIntervalChange={dashboard.setInterval}
           />
         ) : (
           <MarketGroupsPanel
@@ -289,6 +295,8 @@ export function ExecutionActivityCard(): ReactElement {
             warnings={executionData?.warnings ?? []}
             isLoading={isExecutionLoading}
             isError={isExecutionError}
+            interval={dashboard.interval}
+            onIntervalChange={dashboard.setInterval}
           />
         )}
       </CardContent>
@@ -302,12 +310,16 @@ function MarketGroupsPanel({
   warnings,
   isLoading,
   isError,
+  interval,
+  onIntervalChange,
 }: {
   groups: readonly WalletExecutionMarketGroup[];
   comparisonCoverage?: WalletDashboardComparisonCoverage | undefined;
   warnings: readonly { code: string; message: string }[];
   isLoading: boolean;
   isError: boolean;
+  interval: PolyWalletOverviewInterval;
+  onIntervalChange: (interval: PolyWalletOverviewInterval) => void;
 }): ReactElement {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("live");
 
@@ -436,6 +448,12 @@ function MarketGroupsPanel({
                 </div>
               )
             ) : null}
+            {statusFilter === "closed" ? (
+              <TimeWindowHeader
+                interval={interval}
+                onIntervalChange={onIntervalChange}
+              />
+            ) : null}
             <MarketsTable
               groups={groups}
               isLoading={isLoading}
@@ -463,6 +481,8 @@ function PositionsPanel({
   actionsAllowed,
   pendingActionPositionId,
   positionActionError,
+  interval,
+  onIntervalChange,
 }: {
   openPositions: readonly WalletPosition[];
   livePositionCount?: number | null | undefined;
@@ -479,6 +499,8 @@ function PositionsPanel({
   actionsAllowed: boolean;
   pendingActionPositionId: string | null;
   positionActionError: string | null;
+  interval: PolyWalletOverviewInterval;
+  onIntervalChange: (interval: PolyWalletOverviewInterval) => void;
 }): ReactElement {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("live");
 
@@ -667,6 +689,12 @@ function PositionsPanel({
             </ToggleGroupItem>
           </ToggleGroup>
         </div>
+        {!isLive ? (
+          <TimeWindowHeader
+            interval={interval}
+            onIntervalChange={onIntervalChange}
+          />
+        ) : null}
         {isLive ? (
           <PositionsTable
             positions={positions}

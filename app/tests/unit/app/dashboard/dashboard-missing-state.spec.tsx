@@ -21,6 +21,7 @@ const state = vi.hoisted(() => ({
   overview: undefined as unknown,
   execution: undefined as unknown,
   actionsAllowed: true,
+  setInterval: vi.fn(),
 }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -49,7 +50,7 @@ vi.mock("@/app/(app)/dashboard/_hooks/useWalletDashboard", () => ({
     isLoading: false,
     isError: false,
     interval: "1W",
-    setInterval: vi.fn(),
+    setInterval: state.setInterval,
   }),
 }));
 
@@ -113,14 +114,35 @@ vi.mock("@/features/wallet-analysis", async (importOriginal) => {
   return {
     ...actual,
     BalanceBar: () => <div>balance bar</div>,
-    TimeWindowHeader: () => <div>time window</div>,
+    TimeWindowHeader: ({
+      onIntervalChange,
+    }: {
+      onIntervalChange: (interval: "1D") => void;
+    }) => (
+      <div data-testid="time-window">
+        <button type="button" onClick={() => onIntervalChange("1D")}>
+          1D
+        </button>
+      </div>
+    ),
     TradesPerDayChart: () => <div>trade volume chart</div>,
   };
 });
 
 vi.mock("@/app/(app)/_components/markets-table", () => ({
   MarketsDeltaDistribution: () => <div>market distribution</div>,
-  MarketsTable: () => <div>markets table</div>,
+  MarketsTable: ({
+    onStatusFilterChange,
+  }: {
+    onStatusFilterChange?: (status: "closed") => void;
+  }) => (
+    <div>
+      markets table
+      <button type="button" onClick={() => onStatusFilterChange?.("closed")}>
+        Closed markets
+      </button>
+    </div>
+  ),
   PositionsDeltaDistribution: () => <div>position distribution</div>,
 }));
 
@@ -495,6 +517,35 @@ describe("dashboard missing read-model states", () => {
       screen.getByText("Closed position history unavailable.")
     ).toBeInTheDocument();
     expect(screen.queryByText("No closed positions yet.")).not.toBeInTheDocument();
+  });
+
+  it("reuses the shared time window in both closed execution views", () => {
+    state.setInterval.mockClear();
+    state.execution = {
+      address: "0x1111111111111111111111111111111111111111",
+      freshness: "read_model",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      dailyTradeCounts: [],
+      live_positions: [],
+      live_position_count: 0,
+      market_groups: [],
+      closed_positions: [],
+      closed_position_count: 0,
+      warnings: [],
+    };
+
+    render(<ExecutionActivityCard />);
+
+    expect(screen.queryByTestId("time-window")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Closed.*0/i }));
+    expect(screen.getByTestId("time-window")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "1D" }));
+    expect(state.setInterval).toHaveBeenCalledWith("1D");
+
+    fireEvent.click(screen.getByRole("button", { name: "Markets" }));
+    expect(screen.queryByTestId("time-window")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Closed markets" }));
+    expect(screen.getByTestId("time-window")).toBeInTheDocument();
   });
 
   it("suppresses false-zero market visuals when exposure is unavailable", () => {
