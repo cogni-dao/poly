@@ -197,6 +197,61 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     expect(walletError?.[0]).toMatchObject({ wallet: WALLET_B });
   });
 
+  it("emits a structured retention_prune line when the snapshot prune runs (observability follow-up to #102)", async () => {
+    const { db } = createFakeDb([walletRow("wallet-a", WALLET_A)]);
+    const logger = makeLogger();
+    const client = {
+      listUserActivity: vi.fn(async () => []),
+      listUserPositions: vi.fn(async () => []),
+    } as unknown as PolymarketDataApiClient;
+
+    await runTraderObservationTick({
+      db,
+      client,
+      logger: logger as never,
+      metrics,
+    });
+
+    // The run is observable as ONE structured line (not inferable from
+    // tick_ok, whose pruned_position_snapshots=0 can't tell ran from skipped).
+    const pruneLog = logger.info.mock.calls.find(
+      (call) => (call[0] as { phase?: string }).phase === "retention_prune"
+    );
+    expect(pruneLog?.[0]).toMatchObject({
+      event: "poly.trader.observe",
+      phase: "retention_prune",
+      outcome: "ran",
+      deleted: 0,
+      exhausted_budget: false,
+      duration_ms: expect.any(Number),
+    });
+  });
+
+  it("does not emit retention_prune (nor enter the stage) when the prune is gated off by cadence", async () => {
+    const { db } = createFakeDb([walletRow("wallet-a", WALLET_A)]);
+    const logger = makeLogger();
+    const client = {
+      listUserActivity: vi.fn(async () => []),
+      listUserPositions: vi.fn(async () => []),
+    } as unknown as PolymarketDataApiClient;
+
+    const stages: string[] = [];
+    await runTraderObservationTick({
+      db,
+      client,
+      logger: logger as never,
+      metrics,
+      runRetentionPrune: false,
+      onStage: (s) => stages.push(s),
+    });
+
+    const pruneLog = logger.info.mock.calls.find(
+      (call) => (call[0] as { phase?: string }).phase === "retention_prune"
+    );
+    expect(pruneLog).toBeUndefined();
+    expect(stages).not.toContain("prune_position_snapshots");
+  });
+
   it("bounds the pre-loop DB stages with a statement_timeout, since no signal can interrupt them (bug.5297)", async () => {
     // `sync_tenant_wallets` and `select_wallets` run BEFORE the bounded wallet
     // loop, and drizzle/postgres-js accept no AbortSignal — so an abort sets a
