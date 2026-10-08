@@ -47,7 +47,7 @@ import type {
 
 /** Stop handle returned by `startMirrorPoll`. Re-declared here to avoid the
  *  reconciler importing from the job shim (keeps module cohesion one-way). */
-export type StopFn = () => void;
+export type StopFn = () => void | Promise<void>;
 
 /** Factory that builds per-target dependencies (source, etc.) and starts the
  *  poll. The reconciler treats this as opaque — it receives the stop handle. */
@@ -120,8 +120,9 @@ export function startCopyTradeReconciler(
 
   const running = new Map<string, RunningPoll>();
   let stopped = false;
+  let tickInFlight: Promise<void> | null = null;
 
-  async function tick(): Promise<void> {
+  async function reconcileTargets(): Promise<void> {
     let enumerated: readonly EnumeratedTarget[];
     try {
       enumerated = await deps.targetSource.listAllActive();
@@ -152,8 +153,10 @@ export function startCopyTradeReconciler(
         desiredTarget === undefined ||
         poll.fingerprint !== policyFingerprint(desiredTarget)
       ) {
+        let stoppedCleanly = false;
         try {
-          poll.stop();
+          await poll.stop();
+          stoppedCleanly = true;
         } catch (err: unknown) {
           log.error(
             {
@@ -165,6 +168,7 @@ export function startCopyTradeReconciler(
             "reconciler tick: stop handle threw (continuing)"
           );
         }
+        if (!stoppedCleanly) continue;
         running.delete(key);
         removed += 1;
       }
@@ -206,6 +210,14 @@ export function startCopyTradeReconciler(
     );
   }
 
+  function tick(): Promise<void> {
+    if (tickInFlight) return tickInFlight;
+    tickInFlight = reconcileTargets().finally(() => {
+      tickInFlight = null;
+    });
+    return tickInFlight;
+  }
+
   // FIRST_TICK_IMMEDIATE — don't wait 30s to pick up startup targets.
   void tick();
 
@@ -220,7 +232,7 @@ export function startCopyTradeReconciler(
     timers.clearInterval(handle);
     for (const [key, poll] of running.entries()) {
       try {
-        poll.stop();
+        void poll.stop();
       } catch {
         // Best-effort cleanup; nothing to do beyond dropping the handle.
       }

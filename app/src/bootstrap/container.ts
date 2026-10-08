@@ -945,7 +945,11 @@ function createContainer(): Container {
 				const { createPolymarketChainActivitySource } = await import(
 					"@/features/wallet-watch"
 				);
-				const { PolymarketDataApiClient } = await import(
+				const {
+					POLYGON_CONDITIONAL_TOKENS,
+					PolymarketDataApiClient,
+					createPolymarketTargetBookProviderV1,
+				} = await import(
 					"@cogni/poly-market-provider/adapters/polymarket"
 				);
 				// task.5043 / bug.5049 — Polygon `OrderFilled` chain logs are the
@@ -970,7 +974,7 @@ function createContainer(): Container {
 					);
 					return;
 				}
-				const { createPublicClient, webSocket } = await import("viem");
+				const { createPublicClient, parseAbi, webSocket } = await import("viem");
 				const { polygon } = await import("viem/chains");
 				const chainPublicClient = createPublicClient({
 					chain: polygon,
@@ -987,6 +991,29 @@ function createContainer(): Container {
 					"@/bootstrap/copy-trade-reconciler"
 				);
 				const dataApiClient = new PolymarketDataApiClient();
+				const targetBookProvider = createPolymarketTargetBookProviderV1({
+					dataSource: dataApiClient,
+				});
+				const { PositionGapTargetRefreshCoordinator } = await import(
+					"@/features/copy-trade/position-gap-target-refresh"
+				);
+				const { PositionGapRuntimeStore } = await import(
+					"@/features/copy-trade/position-gap-runtime-store"
+				);
+				const { startPositionGapActor } = await import(
+					"@/features/copy-trade/position-gap-actor"
+				);
+				const positionGapRefresh = new PositionGapTargetRefreshCoordinator(
+					targetBookProvider,
+				);
+				const positionGapStore = new PositionGapRuntimeStore(serviceDb);
+				const positionGapActors = new Map<
+					string,
+					ReturnType<typeof startPositionGapActor>
+				>();
+				const ctfBalanceAbi = parseAbi([
+					"function balanceOfBatch(address[] accounts, uint256[] ids) view returns (uint256[])",
+				]);
 				const mirrorWalletPort = getPolyTraderWalletAdapter(log);
 				// pino's Logger is structurally compatible with LoggerPort's subset
 				// (debug/info/warn/error/child with object + optional msg).
@@ -1009,6 +1036,11 @@ function createContainer(): Container {
 					logger: mirrorLogger,
 					metrics: noopMetrics,
 					notFoundGraceMs: env.POLY_CLOB_NOT_FOUND_GRACE_MS,
+					onOrderChanged: (row) => {
+						positionGapActors
+							.get(`${row.billing_account_id}:${row.target_id}`)
+							?.wake("order_event");
+					},
 				});
 				// task.5016 — leadership was lost while this boot was in flight.
 				if (epoch !== _jobsEpoch) {
@@ -1076,6 +1108,70 @@ function createContainer(): Container {
 							);
 							return cachedExecutor;
 						};
+
+						if (enumeratedTarget.sizingPolicyKind === "position_gap") {
+							const actor = startPositionGapActor({
+								scope: {
+									billingAccountId: enumeratedTarget.billingAccountId,
+									createdByUserId: enumeratedTarget.createdByUserId,
+									targetId: target.target_id,
+								},
+								targetWallet,
+								configRevision: enumeratedTarget.mirrorActivatedAt.toISOString(),
+								configuredBudgetUsdc:
+									enumeratedTarget.mirrorCapitalBudgetUsdc,
+								source,
+								refresh: positionGapRefresh,
+								store: positionGapStore,
+								ledger: orderLedger,
+								execution: {
+									placeBuy: async (intent) =>
+										(await getExecutor()).placeIntent(intent),
+									cancelBuy: async (orderId) =>
+										(await getExecutor()).cancelOrder(orderId),
+									getBuy: async (orderId) =>
+										(await getExecutor()).getOrder(orderId),
+									getMarketConstraints: async (tokenId) =>
+										(await getExecutor()).getMarketConstraints(tokenId),
+								},
+								getWalletCashUsdc: async () => {
+									const balances = await mirrorWalletPort.getBalances(
+										enumeratedTarget.billingAccountId,
+									);
+									if (!balances || balances.pusd === null) {
+										throw new Error("mirror pUSD balance unavailable");
+									}
+									return balances.pusd;
+								},
+								getAuthoritativeShares: async (tokenIds) => {
+									if (tokenIds.length === 0) return [];
+									const executor = await getExecutor();
+									const balances = await chainPublicClient.readContract({
+										address: POLYGON_CONDITIONAL_TOKENS,
+										abi: ctfBalanceAbi,
+										functionName: "balanceOfBatch",
+										args: [
+											tokenIds.map(() => executor.funderAddress),
+											tokenIds.map((tokenId) => BigInt(tokenId)),
+										],
+									});
+									return balances.map((balance) => Number(balance) / 1_000_000);
+								},
+								logger: mirrorLogger,
+							});
+							const actorKey = `${enumeratedTarget.billingAccountId}:${target.target_id}`;
+							positionGapActors.set(actorKey, actor);
+							return async () => {
+								try {
+									await actor.stop();
+								} finally {
+									if (positionGapActors.get(actorKey) === actor) {
+										positionGapActors.delete(actorKey);
+									}
+									source.stop();
+								}
+							};
+						}
 
 						// position_gap v2 evaluates numerator + denominator from one
 						// fully-paginated target snapshot. Short caches keep a burst of

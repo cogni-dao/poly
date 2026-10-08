@@ -32,7 +32,7 @@ CREATE TABLE "poly_position_gap_actions" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "poly_position_gap_actions_kind_check" CHECK ("poly_position_gap_actions"."kind" IN ('buy','cancel')),
-	CONSTRAINT "poly_position_gap_actions_status_check" CHECK ("poly_position_gap_actions"."status" IN ('reserved','ledgered','submitting','pending','open','partial','filled','cancel_requested','canceled','rejected','ambiguous')),
+	CONSTRAINT "poly_position_gap_actions_status_check" CHECK ("poly_position_gap_actions"."status" IN ('reserved','ledgered','submitting','open','partial','filled','cancel_requested','canceled','rejected','ambiguous')),
 	CONSTRAINT "poly_position_gap_actions_buy_shape_check" CHECK ("poly_position_gap_actions"."kind" <> 'buy' OR (
         "poly_position_gap_actions"."desired_shares" > 0
         AND "poly_position_gap_actions"."notional_usdc" > 0
@@ -66,6 +66,7 @@ CREATE TABLE "poly_position_gap_cohorts" (
 	"target_delta_shares" numeric(30, 12) NOT NULL,
 	"scale_at_creation" numeric(30, 18) NOT NULL,
 	"allowed_mirror_shares" numeric(30, 12) NOT NULL,
+	"initial_allowed_mirror_shares" numeric(30, 12) NOT NULL,
 	"benchmark_target_vwap" numeric(20, 10) NOT NULL,
 	"acquired_shares" numeric(30, 12) DEFAULT '0' NOT NULL,
 	"open_order_shares" numeric(30, 12) DEFAULT '0' NOT NULL,
@@ -79,6 +80,7 @@ CREATE TABLE "poly_position_gap_cohorts" (
 	CONSTRAINT "poly_position_gap_cohorts_nonnegative_check" CHECK ("poly_position_gap_cohorts"."target_delta_shares" >= 0
         AND "poly_position_gap_cohorts"."scale_at_creation" >= 0
         AND "poly_position_gap_cohorts"."allowed_mirror_shares" >= 0
+		AND "poly_position_gap_cohorts"."initial_allowed_mirror_shares" >= "poly_position_gap_cohorts"."allowed_mirror_shares"
         AND "poly_position_gap_cohorts"."benchmark_target_vwap" > 0
         AND "poly_position_gap_cohorts"."benchmark_target_vwap" < 1
         AND "poly_position_gap_cohorts"."acquired_shares" >= 0
@@ -176,7 +178,7 @@ ALTER TABLE "poly_position_gap_runs" ADD CONSTRAINT "poly_position_gap_runs_crea
 CREATE UNIQUE INDEX "poly_position_gap_actions_key_unique" ON "poly_position_gap_actions" USING btree ("billing_account_id","target_id","action_key");--> statement-breakpoint
 CREATE UNIQUE INDEX "poly_position_gap_actions_client_order_unique" ON "poly_position_gap_actions" USING btree ("client_order_id") WHERE "poly_position_gap_actions"."client_order_id" IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "poly_position_gap_actions_one_open_buy_per_cohort" ON "poly_position_gap_actions" USING btree ("billing_account_id","target_id","cohort_key") WHERE "poly_position_gap_actions"."kind" = 'buy'
-			  AND "poly_position_gap_actions"."status" IN ('reserved','ledgered','submitting','pending','open','partial','cancel_requested','ambiguous');--> statement-breakpoint
+			  AND "poly_position_gap_actions"."status" IN ('reserved','ledgered','submitting','open','partial','cancel_requested','ambiguous');--> statement-breakpoint
 CREATE INDEX "poly_position_gap_actions_run_idx" ON "poly_position_gap_actions" USING btree ("run_id","created_at");--> statement-breakpoint
 CREATE INDEX "poly_position_gap_actions_order_idx" ON "poly_position_gap_actions" USING btree ("order_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "poly_position_gap_cohorts_key_unique" ON "poly_position_gap_cohorts" USING btree ("billing_account_id","target_id","cohort_key");--> statement-breakpoint
@@ -185,8 +187,8 @@ CREATE UNIQUE INDEX "poly_position_gap_reservations_buy_action_unique" ON "poly_
 CREATE INDEX "poly_position_gap_reservations_active_account_idx" ON "poly_position_gap_reservations" USING btree ("billing_account_id","target_id") WHERE "poly_position_gap_reservations"."state" = 'active';--> statement-breakpoint
 CREATE INDEX "poly_position_gap_runs_account_target_started_idx" ON "poly_position_gap_runs" USING btree ("billing_account_id","target_id","started_at" DESC NULLS LAST);--> statement-breakpoint
 CREATE INDEX "poly_position_gap_runs_running_idx" ON "poly_position_gap_runs" USING btree ("billing_account_id","target_id") WHERE "poly_position_gap_runs"."status" = 'running';--> statement-breakpoint
-CREATE UNIQUE INDEX "poly_copy_trade_fills_v3_one_open_per_cohort" ON "poly_copy_trade_fills" USING btree ("billing_account_id","target_id",("attributes"->>'cohort_key')) WHERE "poly_copy_trade_fills"."attributes"->>'position_gap_version' = '3'
-          AND "poly_copy_trade_fills"."attributes"->>'cohort_key' IS NOT NULL
+CREATE UNIQUE INDEX "poly_copy_trade_fills_v3_one_open_per_cohort" ON "poly_copy_trade_fills" USING btree ("billing_account_id","target_id",("attributes"->>'position_gap_cohort_key')) WHERE "poly_copy_trade_fills"."attributes"->>'position_gap_version' = '3'
+          AND "poly_copy_trade_fills"."attributes"->>'position_gap_cohort_key' IS NOT NULL
           AND "poly_copy_trade_fills"."status" IN ('pending','open','partial')
           AND ("poly_copy_trade_fills"."position_lifecycle" IS NULL OR "poly_copy_trade_fills"."position_lifecycle" IN ('unresolved','open','closing'))
           AND "poly_copy_trade_fills"."attributes"->>'closed_at' IS NULL;--> statement-breakpoint

@@ -654,6 +654,14 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         typeof input.intent.attributes?.condition_id === "string"
           ? input.intent.attributes.condition_id
           : undefined,
+      position_gap_version:
+        typeof input.intent.attributes?.position_gap_version === "string"
+          ? input.intent.attributes.position_gap_version
+          : undefined,
+      position_gap_cohort_key:
+        typeof input.intent.attributes?.position_gap_cohort_key === "string"
+          ? input.intent.attributes.position_gap_cohort_key
+          : undefined,
       target_wallet:
         typeof input.intent.attributes?.target_wallet === "string"
           ? input.intent.attributes.target_wallet
@@ -1244,6 +1252,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         .where(
           and(
             inArray(polyCopyTradeFills.status, ["pending", "open", "partial"]),
+            sql`COALESCE(${polyCopyTradeFills.attributes}->>'position_gap_version', '') <> '3'`,
             activeRestingPosition,
             lt(
               polyCopyTradeFills.createdAt,

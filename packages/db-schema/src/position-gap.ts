@@ -207,6 +207,10 @@ export const polyPositionGapCohorts = pgTable(
 			precision: 30,
 			scale: 12,
 		}).notNull(),
+		initialAllowedMirrorShares: numeric("initial_allowed_mirror_shares", {
+			precision: 30,
+			scale: 12,
+		}).notNull(),
 		benchmarkTargetVwap: numeric("benchmark_target_vwap", {
 			precision: 20,
 			scale: 10,
@@ -261,6 +265,7 @@ export const polyPositionGapCohorts = pgTable(
 			sql`${table.targetDeltaShares} >= 0
         AND ${table.scaleAtCreation} >= 0
         AND ${table.allowedMirrorShares} >= 0
+		AND ${table.initialAllowedMirrorShares} >= ${table.allowedMirrorShares}
         AND ${table.benchmarkTargetVwap} > 0
         AND ${table.benchmarkTargetVwap} < 1
         AND ${table.acquiredShares} >= 0
@@ -361,7 +366,7 @@ export const polyPositionGapActions = pgTable(
 			.on(table.billingAccountId, table.targetId, table.cohortKey)
 			.where(
 				sql`${table.kind} = 'buy'
-			  AND ${table.status} IN ('reserved','ledgered','submitting','pending','open','partial','cancel_requested','ambiguous')`,
+			  AND ${table.status} IN ('reserved','ledgered','submitting','open','partial','cancel_requested','ambiguous')`,
 			),
 		index("poly_position_gap_actions_run_idx").on(table.runId, table.createdAt),
 		index("poly_position_gap_actions_order_idx").on(table.orderId),
@@ -371,7 +376,7 @@ export const polyPositionGapActions = pgTable(
 		),
 		check(
 			"poly_position_gap_actions_status_check",
-			sql`${table.status} IN ('reserved','ledgered','submitting','pending','open','partial','filled','cancel_requested','canceled','rejected','ambiguous')`,
+			sql`${table.status} IN ('reserved','ledgered','submitting','open','partial','filled','cancel_requested','canceled','rejected','ambiguous')`,
 		),
 		check(
 			"poly_position_gap_actions_buy_shape_check",

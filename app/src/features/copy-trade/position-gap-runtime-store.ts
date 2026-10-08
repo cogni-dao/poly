@@ -21,15 +21,33 @@ import {
 	polyPositionGapReservations,
 	polyPositionGapRuns,
 } from "@cogni/db-schema/position-gap";
-import type { OrderReceipt } from "@cogni/poly-market-provider";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
-
+import { polyWalletGrants } from "@cogni/db-schema/wallet-grants";
+import type {
+	OrderReceipt,
+	TargetBookSnapshotV1,
+} from "@cogni/poly-market-provider";
+import {
+	and,
+	count,
+	desc,
+	eq,
+	gte,
+	inArray,
+	isNull,
+	or,
+	sql,
+	sum,
+} from "drizzle-orm";
 import { requiredBuyCollateralAtomic } from "@/bootstrap/capabilities/poly-trade-executor";
 import type {
 	PositionGapCohortCreation,
 	PositionGapCohortReduction,
 	PositionGapCohortState,
 } from "@/features/copy-trade/position-gap-cohorts";
+import type {
+	PositionGapOpenBuyOrderV1,
+	PositionGapPriceCohortV1,
+} from "@/features/copy-trade/position-gap-v3/model";
 
 const CASH_GUARD_SOURCE = "poly_trade_executor.requiredBuyCollateralAtomic/v1";
 const EPSILON = 1e-9;
@@ -58,7 +76,12 @@ export interface PositionGapPreparedCancel {
 	actionKey: string;
 	cohortKey: string;
 	orderId: string;
-	reason: "condition_closed" | "price_cap_lowered" | "target_reduced";
+	reason:
+		| "condition_closed"
+		| "opposite_hold"
+		| "price_cap_lowered"
+		| "runtime_safety"
+		| "target_reduced";
 	plannerAction: Record<string, unknown>;
 }
 
@@ -88,6 +111,7 @@ export interface PersistedPositionGapPlan {
 	runId: string;
 	buys: readonly {
 		id: string;
+		actionKey: string;
 		clientOrderId: string;
 		cohortKey: string;
 	}[];
@@ -96,6 +120,23 @@ export interface PersistedPositionGapPlan {
 		orderId: string;
 		relatedBuyActionId: string;
 	}[];
+}
+
+export interface PositionGapActiveBuy {
+	id: string;
+	runId: string;
+	clientOrderId: string;
+	orderId: string | null;
+	conditionId: string;
+	tokenId: string;
+	cohortKey: string;
+	marketId: string;
+	outcome: string;
+	shares: number;
+	filledShares: number;
+	notionalUsdc: number;
+	limitPrice: number;
+	status: string;
 }
 
 export class PositionGapReservationConflictError extends Error {
@@ -133,7 +174,9 @@ function sameNumber(left: string | number | null, right: number): boolean {
 function statusFromReceipt(status: OrderReceipt["status"]) {
 	switch (status) {
 		case "pending":
-			return "pending" as const;
+			// The existing dashboard ledger has no distinct internal pending/open
+			// split after placement; venueStatus preserves the exact value.
+			return "open" as const;
 		case "filled":
 			return "filled" as const;
 		case "partial":
@@ -147,6 +190,19 @@ function statusFromReceipt(status: OrderReceipt["status"]) {
 				"error receipt is not proof of rejection; caller must classify placement outcome",
 			);
 	}
+}
+
+function nextActionStatus(
+	current: string,
+	observed: ReturnType<typeof statusFromReceipt>,
+): "open" | "partial" | "filled" | "cancel_requested" | "canceled" | null {
+	if (["filled", "canceled", "rejected", "ambiguous"].includes(current)) {
+		return null;
+	}
+	if (observed === "filled" || observed === "canceled") return observed;
+	if (current === "cancel_requested") return "cancel_requested";
+	if (current === "partial" || observed === "partial") return "partial";
+	return "open";
 }
 
 export class PositionGapRuntimeStore {
@@ -188,6 +244,98 @@ export class PositionGapRuntimeStore {
 		}));
 	}
 
+	async loadPlannerState(scope: PositionGapRuntimeScope): Promise<{
+		cohorts: readonly PositionGapPriceCohortV1[];
+		openBuyOrders: readonly PositionGapOpenBuyOrderV1[];
+		activeBuys: readonly PositionGapActiveBuy[];
+	}> {
+		const [cohortRows, actionRows] = await Promise.all([
+			this.db
+				.select()
+				.from(polyPositionGapCohorts)
+				.where(
+					and(
+						eq(polyPositionGapCohorts.billingAccountId, scope.billingAccountId),
+						eq(polyPositionGapCohorts.targetId, scope.targetId),
+						sql`${polyPositionGapCohorts.status} <> 'resolved'`,
+					),
+				)
+				.orderBy(
+					polyPositionGapCohorts.createdAt,
+					polyPositionGapCohorts.cohortKey,
+				),
+			this.db
+				.select()
+				.from(polyPositionGapActions)
+				.where(
+					and(
+						eq(polyPositionGapActions.billingAccountId, scope.billingAccountId),
+						eq(polyPositionGapActions.targetId, scope.targetId),
+						eq(polyPositionGapActions.kind, "buy"),
+						inArray(polyPositionGapActions.status, [
+							"reserved",
+							"ledgered",
+							"submitting",
+							"open",
+							"partial",
+							"cancel_requested",
+							"ambiguous",
+						]),
+					),
+				)
+				.orderBy(polyPositionGapActions.createdAt),
+		]);
+		const activeBuys: PositionGapActiveBuy[] = actionRows
+			.filter((row) => row.clientOrderId !== null)
+			.map((row) => ({
+				id: row.id,
+				runId: row.runId,
+				clientOrderId: row.clientOrderId as string,
+				orderId: row.orderId,
+				conditionId: row.conditionId,
+				tokenId: row.tokenId,
+				cohortKey: row.cohortKey,
+				marketId: row.marketId,
+				outcome: row.outcome,
+				shares: numberOf(row.desiredShares),
+				filledShares: numberOf(row.filledShares),
+				notionalUsdc: numberOf(row.notionalUsdc),
+				limitPrice: numberOf(row.limitPrice),
+				status: row.status,
+			}));
+		return {
+			cohorts: cohortRows.map((row) => ({
+				cohortId: row.cohortKey,
+				conditionId: row.conditionId,
+				tokenId: row.tokenId,
+				kind: row.sourceKind === "target_buy" ? "forward" : "activation",
+				allowedMirrorShares: numberOf(row.allowedMirrorShares),
+				acquiredMirrorShares: numberOf(row.acquiredShares),
+				targetVwap: numberOf(row.benchmarkTargetVwap),
+			})),
+			openBuyOrders: activeBuys.flatMap((row) =>
+				row.orderId &&
+				["open", "partial", "cancel_requested"].includes(row.status)
+					? [
+							{
+								orderId: row.orderId,
+								conditionId: row.conditionId,
+								tokenId: row.tokenId,
+								cohortId: row.cohortKey,
+								remainingShares: Math.max(0, row.shares - row.filledShares),
+								reservedUsdc: Math.max(
+									0,
+									(row.shares - row.filledShares) * row.limitPrice,
+								),
+								limitPrice: row.limitPrice,
+							},
+						]
+					: [],
+			),
+			activeBuys,
+		};
+	}
+
 	async previousBudgetUsdc(
 		scope: PositionGapRuntimeScope,
 	): Promise<number | null> {
@@ -203,6 +351,88 @@ export class PositionGapRuntimeStore {
 			.orderBy(desc(polyPositionGapRuns.startedAt))
 			.limit(1);
 		return row ? numberOf(row.budget) : null;
+	}
+
+	async loadLastSnapshot(
+		scope: PositionGapRuntimeScope,
+	): Promise<TargetBookSnapshotV1 | null> {
+		const [row] = await this.db
+			.select({ snapshot: polyPositionGapRuns.targetSnapshot })
+			.from(polyPositionGapRuns)
+			.where(
+				and(
+					eq(polyPositionGapRuns.billingAccountId, scope.billingAccountId),
+					eq(polyPositionGapRuns.targetId, scope.targetId),
+					sql`${polyPositionGapRuns.targetSnapshot} IS NOT NULL`,
+				),
+			)
+			.orderBy(desc(polyPositionGapRuns.startedAt))
+			.limit(1);
+		return (row?.snapshot as TargetBookSnapshotV1 | undefined) ?? null;
+	}
+
+	async loadConfirmedCapacity(scope: PositionGapRuntimeScope): Promise<{
+		perOrderUsdc: number;
+		dailyHeadroomUsdc: number;
+		remainingIntentCount: number;
+	}> {
+		const [grant] = await this.db
+			.select({
+				perOrder: polyWalletGrants.perOrderUsdcCap,
+				daily: polyWalletGrants.dailyUsdcCap,
+				hourly: polyWalletGrants.hourlyFillsCap,
+			})
+			.from(polyWalletGrants)
+			.where(
+				and(
+					eq(polyWalletGrants.billingAccountId, scope.billingAccountId),
+					eq(polyWalletGrants.createdByUserId, scope.createdByUserId),
+					isNull(polyWalletGrants.revokedAt),
+					or(
+						isNull(polyWalletGrants.expiresAt),
+						sql`${polyWalletGrants.expiresAt} > now()`,
+					),
+					sql`${polyWalletGrants.scopes} @> ARRAY['poly:trade:buy']::text[]`,
+				),
+			)
+			.orderBy(desc(polyWalletGrants.createdAt))
+			.limit(1);
+		if (!grant) {
+			return { perOrderUsdc: 0, dailyHeadroomUsdc: 0, remainingIntentCount: 0 };
+		}
+		const activeStatuses = ["pending", "open", "filled", "partial"];
+		const [daily] = await this.db
+			.select({
+				spent: sum(
+					sql<string>`COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)`,
+				),
+			})
+			.from(polyCopyTradeFills)
+			.where(
+				and(
+					eq(polyCopyTradeFills.billingAccountId, scope.billingAccountId),
+					gte(polyCopyTradeFills.createdAt, sql`now() - interval '24 hours'`),
+					inArray(polyCopyTradeFills.status, activeStatuses),
+				),
+			);
+		const [hourly] = await this.db
+			.select({ n: count() })
+			.from(polyCopyTradeFills)
+			.where(
+				and(
+					eq(polyCopyTradeFills.billingAccountId, scope.billingAccountId),
+					gte(polyCopyTradeFills.createdAt, sql`now() - interval '1 hour'`),
+					inArray(polyCopyTradeFills.status, activeStatuses),
+				),
+			);
+		return {
+			perOrderUsdc: numberOf(grant.perOrder),
+			dailyHeadroomUsdc: Math.max(
+				0,
+				numberOf(grant.daily) - numberOf(daily?.spent),
+			),
+			remainingIntentCount: Math.max(0, grant.hourly - Number(hourly?.n ?? 0)),
+		};
 	}
 
 	async activeReservationTotals(scope: PositionGapRuntimeScope): Promise<{
@@ -308,10 +538,7 @@ export class PositionGapRuntimeStore {
 										polyPositionGapActions.billingAccountId,
 										input.scope.billingAccountId,
 									),
-									eq(
-										polyPositionGapActions.targetId,
-										input.scope.targetId,
-									),
+									eq(polyPositionGapActions.targetId, input.scope.targetId),
 									inArray(
 										polyPositionGapActions.actionKey,
 										requestedActionKeys,
@@ -393,10 +620,7 @@ export class PositionGapRuntimeStore {
 					),
 				);
 
-			const newBudget = newBuys.reduce(
-				(sum, buy) => sum + buy.notionalUsdc,
-				0,
-			);
+			const newBudget = newBuys.reduce((sum, buy) => sum + buy.notionalUsdc, 0);
 			const newCashAtomic = newBuys.reduce(
 				(sum, buy) => sum + requiredBuyCollateralAtomic(buy.notionalUsdc),
 				0n,
@@ -482,6 +706,10 @@ export class PositionGapRuntimeStore {
 							creation.scaleAtCreation,
 						) ||
 						!sameNumber(
+							existingCohort.initialAllowedMirrorShares,
+							creation.allowedMirrorShares,
+						) ||
+						!sameNumber(
 							existingCohort.benchmarkTargetVwap,
 							creation.benchmarkTargetVwap,
 						) ||
@@ -496,30 +724,31 @@ export class PositionGapRuntimeStore {
 					continue;
 				}
 				await tx.insert(polyPositionGapCohorts).values({
-						billingAccountId: input.scope.billingAccountId,
-						createdByUserId: input.scope.createdByUserId,
-						targetId: input.scope.targetId,
-						cohortKey: creation.cohortKey,
-						sourceKind: creation.sourceKind,
-						sourceEventId: creation.sourceEventId,
-						sourceConfigRevision: creation.sourceConfigRevision,
-						sourceSnapshotId: input.snapshot.id,
-						sourceSnapshotHash: input.snapshot.hash,
-						sourceSnapshotAsOf: input.snapshot.asOf,
-						sourceProvenance: creation.provenance,
-						createdRunId: runId,
-						conditionId: creation.conditionId,
-						tokenId: creation.tokenId,
-						marketId: creation.marketId,
-						outcome: creation.outcome,
-						targetDeltaShares: creation.targetDeltaShares.toString(),
-						scaleAtCreation: creation.scaleAtCreation.toString(),
-						allowedMirrorShares: creation.allowedMirrorShares.toString(),
-						benchmarkTargetVwap: creation.benchmarkTargetVwap.toString(),
-						remainingShares: creation.remainingShares.toString(),
-						createdAt: new Date(creation.createdAtMs),
-						updatedAt: new Date(),
-					});
+					billingAccountId: input.scope.billingAccountId,
+					createdByUserId: input.scope.createdByUserId,
+					targetId: input.scope.targetId,
+					cohortKey: creation.cohortKey,
+					sourceKind: creation.sourceKind,
+					sourceEventId: creation.sourceEventId,
+					sourceConfigRevision: creation.sourceConfigRevision,
+					sourceSnapshotId: input.snapshot.id,
+					sourceSnapshotHash: input.snapshot.hash,
+					sourceSnapshotAsOf: input.snapshot.asOf,
+					sourceProvenance: creation.provenance,
+					createdRunId: runId,
+					conditionId: creation.conditionId,
+					tokenId: creation.tokenId,
+					marketId: creation.marketId,
+					outcome: creation.outcome,
+					targetDeltaShares: creation.targetDeltaShares.toString(),
+					scaleAtCreation: creation.scaleAtCreation.toString(),
+					allowedMirrorShares: creation.allowedMirrorShares.toString(),
+					initialAllowedMirrorShares: creation.allowedMirrorShares.toString(),
+					benchmarkTargetVwap: creation.benchmarkTargetVwap.toString(),
+					remainingShares: creation.remainingShares.toString(),
+					createdAt: new Date(creation.createdAtMs),
+					updatedAt: new Date(),
+				});
 			}
 
 			for (const reduction of input.cohortReductions) {
@@ -561,7 +790,10 @@ export class PositionGapRuntimeStore {
 							),
 						)
 						.limit(1);
-					if (!current || !sameNumber(current.allowed, reduction.allowedMirrorShares)) {
+					if (
+						!current ||
+						!sameNumber(current.allowed, reduction.allowedMirrorShares)
+					) {
 						throw new PositionGapReservationConflictError(
 							"cohort",
 							`stale cohort reduction for ${reduction.cohortKey}`,
@@ -598,6 +830,7 @@ export class PositionGapRuntimeStore {
 
 			const persistedBuys: Array<{
 				id: string;
+				actionKey: string;
 				clientOrderId: string;
 				cohortKey: string;
 			}> = existingActions
@@ -609,6 +842,7 @@ export class PositionGapRuntimeStore {
 				)
 				.map((action) => ({
 					id: action.id,
+					actionKey: action.actionKey,
 					clientOrderId: action.clientOrderId as string,
 					cohortKey: action.cohortKey,
 				}));
@@ -683,6 +917,7 @@ export class PositionGapRuntimeStore {
 				}
 				persistedBuys.push({
 					id: actionId,
+					actionKey: buy.actionKey,
 					clientOrderId: buy.clientOrderId,
 					cohortKey: buy.cohortKey,
 				});
@@ -802,7 +1037,12 @@ export class PositionGapRuntimeStore {
 					errorDetail: detail.slice(0, 500),
 					updatedAt: new Date(),
 				})
-				.where(eq(polyPositionGapActions.id, actionId))
+				.where(
+					and(
+						eq(polyPositionGapActions.id, actionId),
+						eq(polyPositionGapActions.status, "submitting"),
+					),
+				)
 				.returning({ runId: polyPositionGapActions.runId });
 			if (action) {
 				await tx
@@ -834,10 +1074,7 @@ export class PositionGapRuntimeStore {
 				})
 				.where(
 					and(
-						eq(
-							polyPositionGapActions.billingAccountId,
-							scope.billingAccountId,
-						),
+						eq(polyPositionGapActions.billingAccountId, scope.billingAccountId),
 						eq(polyPositionGapActions.targetId, scope.targetId),
 						eq(polyPositionGapActions.status, "submitting"),
 					),
@@ -870,7 +1107,16 @@ export class PositionGapRuntimeStore {
 					completedAt: new Date(),
 					updatedAt: new Date(),
 				})
-				.where(eq(polyPositionGapActions.id, actionId))
+				.where(
+					and(
+						eq(polyPositionGapActions.id, actionId),
+						inArray(polyPositionGapActions.status, [
+							"reserved",
+							"ledgered",
+							"submitting",
+						]),
+					),
+				)
 				.returning();
 			if (!action) return;
 			await tx
@@ -901,24 +1147,39 @@ export class PositionGapRuntimeStore {
 		receipt: OrderReceipt,
 	): Promise<void> {
 		await this.db.transaction(async (tx) => {
+			await tx.execute(
+				sql`SELECT 1 FROM ${polyPositionGapActions} WHERE ${polyPositionGapActions.id} = ${actionId} FOR UPDATE`,
+			);
 			const [before] = await tx
 				.select()
 				.from(polyPositionGapActions)
 				.where(eq(polyPositionGapActions.id, actionId))
 				.limit(1);
 			if (!before) return;
-			const filledUsdc = Math.max(0, receipt.filled_size_usdc ?? 0);
-			const filledShares = Math.max(
+			const observedFilledUsdc = Math.max(0, receipt.filled_size_usdc ?? 0);
+			const observedFilledShares = Math.max(
 				0,
 				receipt.total_shares ??
 					(receipt.fill_price && receipt.fill_price > 0
-						? filledUsdc / receipt.fill_price
+						? observedFilledUsdc / receipt.fill_price
 						: 0),
 			);
 			const oldFilledShares = numberOf(before.filledShares);
-			const deltaFilledShares = Math.max(0, filledShares - oldFilledShares);
-			const status = statusFromReceipt(receipt.status);
+			const oldFilledUsdc = numberOf(before.filledUsdc);
 			const desiredShares = numberOf(before.desiredShares);
+			const intendedNotional = numberOf(before.notionalUsdc);
+			const filledShares = Math.min(
+				desiredShares,
+				Math.max(oldFilledShares, observedFilledShares),
+			);
+			const filledUsdc = Math.min(
+				intendedNotional,
+				Math.max(oldFilledUsdc, observedFilledUsdc),
+			);
+			const deltaFilledShares = Math.max(0, filledShares - oldFilledShares);
+			const observedStatus = statusFromReceipt(receipt.status);
+			const status = nextActionStatus(before.status, observedStatus);
+			if (status === null) return;
 			const limitPrice = numberOf(before.limitPrice);
 			const unfilledShares = Math.max(0, desiredShares - filledShares);
 			await tx
@@ -938,7 +1199,6 @@ export class PositionGapRuntimeStore {
 				})
 				.where(eq(polyPositionGapActions.id, actionId));
 
-			const intendedNotional = numberOf(before.notionalUsdc);
 			const remainingWorstCaseNotional =
 				status === "filled" || status === "canceled"
 					? 0
@@ -986,15 +1246,40 @@ export class PositionGapRuntimeStore {
 					})
 					.where(eq(polyPositionGapReservations.id, reservation.id));
 			}
+			let restoreCanceledEntitlement = status === "canceled";
+			if (status === "canceled") {
+				const [requestedCancel] = await tx
+					.select({ plannerAction: polyPositionGapActions.plannerAction })
+					.from(polyPositionGapActions)
+					.where(
+						and(
+							eq(polyPositionGapActions.kind, "cancel"),
+							eq(polyPositionGapActions.relatedBuyActionId, before.id),
+						),
+					)
+					.orderBy(desc(polyPositionGapActions.createdAt))
+					.limit(1);
+				const reason = String(
+					requestedCancel?.plannerAction.reason ?? "venue_canceled",
+				);
+				restoreCanceledEntitlement = [
+					"venue_canceled",
+					"price_cap_lowered",
+					"opposite_hold",
+					"runtime_safety",
+				].includes(reason);
+			}
 			if (deltaFilledShares > EPSILON || status === "canceled") {
 				await tx
 					.update(polyPositionGapCohorts)
 					.set({
 						acquiredShares: sql`${polyPositionGapCohorts.acquiredShares} + ${deltaFilledShares}`,
 						openOrderShares: sql`GREATEST(0, ${polyPositionGapCohorts.openOrderShares} - ${
-							status === "canceled" ? deltaFilledShares + unfilledShares : deltaFilledShares
+							status === "canceled"
+								? deltaFilledShares + unfilledShares
+								: deltaFilledShares
 						})`,
-						...(status === "canceled"
+						...(status === "canceled" && restoreCanceledEntitlement
 							? {
 									remainingShares: sql`LEAST(GREATEST(0, ${polyPositionGapCohorts.allowedMirrorShares} - ${polyPositionGapCohorts.acquiredShares} - ${deltaFilledShares}), ${polyPositionGapCohorts.remainingShares} + ${unfilledShares})`,
 								}
@@ -1028,6 +1313,7 @@ export class PositionGapRuntimeStore {
 				.where(eq(polyPositionGapActions.id, cancel.relatedBuyActionId))
 				.limit(1);
 			if (!buy) return;
+			if (cancel.status === "canceled" && buy.status === "canceled") return;
 			const desiredShares = numberOf(buy.desiredShares);
 			const filledShares = numberOf(buy.filledShares);
 			const unfilledShares = Math.max(0, desiredShares - filledShares);
@@ -1060,7 +1346,9 @@ export class PositionGapRuntimeStore {
 				.update(polyPositionGapCohorts)
 				.set({
 					openOrderShares: sql`GREATEST(0, ${polyPositionGapCohorts.openOrderShares} - ${unfilledShares})`,
-					...(reason === "price_cap_lowered"
+					...(reason === "price_cap_lowered" ||
+					reason === "opposite_hold" ||
+					reason === "runtime_safety"
 						? {
 								remainingShares: sql`LEAST(GREATEST(0, ${polyPositionGapCohorts.allowedMirrorShares} - ${polyPositionGapCohorts.acquiredShares}), ${polyPositionGapCohorts.remainingShares} + ${unfilledShares})`,
 							}

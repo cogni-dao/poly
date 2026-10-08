@@ -134,6 +134,8 @@ export interface OrderReconcilerDeps {
    * `POLY_CLOB_NOT_FOUND_GRACE_MS` via server-env; default 900 000 (15 min).
    */
   notFoundGraceMs: number;
+  /** Wake an account-local strategy actor after a durable ledger transition. */
+  onOrderChanged?: (row: LedgerRow) => void;
   /**
    * Injected clock — returns the current wall time. Defaults to `() => new Date()`
    * at production call sites. Injected in tests for deterministic age calculations.
@@ -231,6 +233,7 @@ export async function runReconcileOnce(
         status: "error",
         reason: "never_placed",
       });
+      deps.onOrderChanged?.(row);
       // NOT pushed to syncedIds: `synced_at` records a typed CLOB response,
       // and this row never produced one. The row leaves `listOpenOrPending`
       // on the next tick anyway, so its staleness stops growing regardless.
@@ -277,6 +280,7 @@ export async function runReconcileOnce(
           status: "canceled",
           reason: "clob_not_found",
         });
+        deps.onOrderChanged?.(row);
         deps.metrics.incr(ORDER_RECONCILER_METRICS.notFoundUpgradesTotal, {});
         log.info(
           {
@@ -314,6 +318,7 @@ export async function runReconcileOnce(
           ? { fees_usdc: receipt.fees_usdc }
           : {}),
       });
+      deps.onOrderChanged?.(row);
 
       deps.metrics.incr(ORDER_RECONCILER_METRICS.updatesTotal, {
         from: row.status,

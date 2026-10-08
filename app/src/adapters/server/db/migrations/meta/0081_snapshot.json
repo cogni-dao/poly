@@ -1,5 +1,5 @@
 {
-  "id": "6fbe139a-6eb8-4f28-9719-cd21e5f8709c",
+  "id": "1111cb3e-998c-4321-a09e-c1fe72b5b70b",
   "prevId": "d3b816c8-eadb-489d-82b3-dcfb2fddd661",
   "version": "7",
   "dialect": "postgresql",
@@ -5239,14 +5239,14 @@
               "nulls": "last"
             },
             {
-              "expression": "(\"attributes\"->>'cohort_key')",
+              "expression": "(\"attributes\"->>'position_gap_cohort_key')",
               "asc": true,
               "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
-          "where": "\"poly_copy_trade_fills\".\"attributes\"->>'position_gap_version' = '3'\n          AND \"poly_copy_trade_fills\".\"attributes\"->>'cohort_key' IS NOT NULL\n          AND \"poly_copy_trade_fills\".\"status\" IN ('pending','open','partial')\n          AND (\"poly_copy_trade_fills\".\"position_lifecycle\" IS NULL OR \"poly_copy_trade_fills\".\"position_lifecycle\" IN ('unresolved','open','closing'))\n          AND \"poly_copy_trade_fills\".\"attributes\"->>'closed_at' IS NULL",
+          "where": "\"poly_copy_trade_fills\".\"attributes\"->>'position_gap_version' = '3'\n          AND \"poly_copy_trade_fills\".\"attributes\"->>'position_gap_cohort_key' IS NOT NULL\n          AND \"poly_copy_trade_fills\".\"status\" IN ('pending','open','partial')\n          AND (\"poly_copy_trade_fills\".\"position_lifecycle\" IS NULL OR \"poly_copy_trade_fills\".\"position_lifecycle\" IN ('unresolved','open','closing'))\n          AND \"poly_copy_trade_fills\".\"attributes\"->>'closed_at' IS NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -6169,7 +6169,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"poly_position_gap_actions\".\"kind\" = 'buy'\n\t\t\t  AND \"poly_position_gap_actions\".\"status\" IN ('reserved','ledgered','submitting','pending','open','partial','cancel_requested','ambiguous')",
+          "where": "\"poly_position_gap_actions\".\"kind\" = 'buy'\n\t\t\t  AND \"poly_position_gap_actions\".\"status\" IN ('reserved','ledgered','submitting','open','partial','cancel_requested','ambiguous')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -6313,7 +6313,7 @@
         },
         "poly_position_gap_actions_status_check": {
           "name": "poly_position_gap_actions_status_check",
-          "value": "\"poly_position_gap_actions\".\"status\" IN ('reserved','ledgered','submitting','pending','open','partial','filled','cancel_requested','canceled','rejected','ambiguous')"
+          "value": "\"poly_position_gap_actions\".\"status\" IN ('reserved','ledgered','submitting','open','partial','filled','cancel_requested','canceled','rejected','ambiguous')"
         },
         "poly_position_gap_actions_buy_shape_check": {
           "name": "poly_position_gap_actions_buy_shape_check",
@@ -6447,6 +6447,12 @@
         },
         "allowed_mirror_shares": {
           "name": "allowed_mirror_shares",
+          "type": "numeric(30, 12)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "initial_allowed_mirror_shares": {
+          "name": "initial_allowed_mirror_shares",
           "type": "numeric(30, 12)",
           "primaryKey": false,
           "notNull": true
@@ -6660,7 +6666,7 @@
         },
         "poly_position_gap_cohorts_nonnegative_check": {
           "name": "poly_position_gap_cohorts_nonnegative_check",
-          "value": "\"poly_position_gap_cohorts\".\"target_delta_shares\" >= 0\n        AND \"poly_position_gap_cohorts\".\"scale_at_creation\" >= 0\n        AND \"poly_position_gap_cohorts\".\"allowed_mirror_shares\" >= 0\n        AND \"poly_position_gap_cohorts\".\"benchmark_target_vwap\" > 0\n        AND \"poly_position_gap_cohorts\".\"benchmark_target_vwap\" < 1\n        AND \"poly_position_gap_cohorts\".\"acquired_shares\" >= 0\n        AND \"poly_position_gap_cohorts\".\"open_order_shares\" >= 0\n        AND \"poly_position_gap_cohorts\".\"remaining_shares\" >= 0"
+          "value": "\"poly_position_gap_cohorts\".\"target_delta_shares\" >= 0\n        AND \"poly_position_gap_cohorts\".\"scale_at_creation\" >= 0\n        AND \"poly_position_gap_cohorts\".\"allowed_mirror_shares\" >= 0\n\t\tAND \"poly_position_gap_cohorts\".\"initial_allowed_mirror_shares\" >= \"poly_position_gap_cohorts\".\"allowed_mirror_shares\"\n        AND \"poly_position_gap_cohorts\".\"benchmark_target_vwap\" > 0\n        AND \"poly_position_gap_cohorts\".\"benchmark_target_vwap\" < 1\n        AND \"poly_position_gap_cohorts\".\"acquired_shares\" >= 0\n        AND \"poly_position_gap_cohorts\".\"open_order_shares\" >= 0\n        AND \"poly_position_gap_cohorts\".\"remaining_shares\" >= 0"
         },
         "poly_position_gap_cohorts_accounting_check": {
           "name": "poly_position_gap_cohorts_accounting_check",

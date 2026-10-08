@@ -175,6 +175,7 @@ function creationFromPosition(params: {
 			target_delta_shares: params.targetDeltaShares,
 			scale_at_creation: params.scale,
 			benchmark_target_vwap: benchmarkTargetVwap,
+			created_at_ms: params.createdAtMs,
 		},
 	};
 }

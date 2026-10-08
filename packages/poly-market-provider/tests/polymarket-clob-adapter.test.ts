@@ -842,6 +842,34 @@ describe("PolymarketClobAdapter", () => {
     expect(call[3]).toBe(true);
   });
 
+  it("routes a position-gap v3 BUY exclusively through limit GTC", async () => {
+    const createAndPostOrder = vi.fn().mockResolvedValue({
+      orderID: "0xpositiongap",
+      status: "live",
+      makingAmount: "0",
+    });
+    const createAndPostMarketOrder = vi.fn();
+    const adapter = makeAdapter({
+      createAndPostOrder,
+      createAndPostMarketOrder,
+    });
+
+    await adapter.placeOrder({
+      ...BASE_INTENT,
+      attributes: {
+        ...BASE_INTENT.attributes,
+        orderType: "GTC",
+        placement: "limit",
+        position_gap_version: "3",
+        position_gap_cohort_key: "activation:yes",
+      },
+    });
+
+    expect(createAndPostOrder).toHaveBeenCalledOnce();
+    expect(createAndPostOrder.mock.calls[0]?.[2]).toBe("GTC");
+    expect(createAndPostMarketOrder).not.toHaveBeenCalled();
+  });
+
   it("placeOrder rejects when token_id attribute is missing", async () => {
     const adapter = makeAdapter({});
     await expect(

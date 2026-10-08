@@ -291,11 +291,11 @@ export const polyCopyTradeFills = pgTable(
       .on(
         table.billingAccountId,
         table.targetId,
-        sql`(${table.attributes}->>'cohort_key')`
+        sql`(${table.attributes}->>'position_gap_cohort_key')`
       )
       .where(
         sql`${table.attributes}->>'position_gap_version' = '3'
-          AND ${table.attributes}->>'cohort_key' IS NOT NULL
+          AND ${table.attributes}->>'position_gap_cohort_key' IS NOT NULL
           AND ${table.status} IN ('pending','open','partial')
           AND (${table.positionLifecycle} IS NULL OR ${table.positionLifecycle} IN ('unresolved','open','closing'))
           AND ${table.attributes}->>'closed_at' IS NULL`
