@@ -18,6 +18,7 @@ import {
   type ActivityEventType,
   type GammaProfile,
   GammaPublicSearchResponseSchema,
+  GammaTokenMarketsResponseSchema,
   type MarketHolder,
   MarketHoldersResponseSchema,
   type MarketTrade,
@@ -244,6 +245,15 @@ export interface PolymarketDataApiClientConfig {
    * empirically the API returns in <300ms, so 5s is generous but bounds the worst case.
    */
   timeoutMs?: number;
+}
+
+/** Exact, unambiguous Gamma identity for one CLOB token. */
+export interface PolymarketTokenMetadata {
+  conditionId: string;
+  outcome: string;
+  endDate: string | null;
+  title: string | null;
+  slug: string | null;
 }
 
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -857,6 +867,81 @@ export class PolymarketDataApiClient {
   }
 
   /**
+   * Resolve one CLOB token to its market leg through Gamma's exact token
+   * filter. Returns null unless exactly one market contains the token exactly
+   * once and its token/outcome arrays align.
+   *
+   * This deliberately does not use the Data API's process-wide 429 cooldown:
+   * it is the bounded recovery path when `/positions` itself is delayed or
+   * rate-limited. Callers are responsible for coalescing and caching.
+   */
+  async resolveTokenMetadata(
+    tokenId: string
+  ): Promise<PolymarketTokenMetadata | null> {
+    if (!/^\d+$/.test(tokenId)) {
+      throw new Error("resolveTokenMetadata: tokenId must be decimal digits");
+    }
+    const url = new URL("/markets", this.gammaBaseUrl);
+    url.searchParams.set("clob_token_ids", tokenId);
+    url.searchParams.set("limit", "2");
+
+    const json = await this.fetchGammaJson(url);
+    const markets = parseResponse(
+      GammaTokenMarketsResponseSchema,
+      json,
+      "gamma:/markets?clob_token_ids"
+    );
+    if (markets.length !== 1) return null;
+    const matches: PolymarketTokenMetadata[] = [];
+    for (const market of markets) {
+      const tokenIds = parseGammaStringArray(market.clobTokenIds);
+      const outcomes = parseGammaStringArray(market.outcomes);
+      if (!tokenIds || !outcomes || tokenIds.length !== outcomes.length) {
+        continue;
+      }
+      const indexes = tokenIds.flatMap((candidate, index) =>
+        candidate === tokenId ? [index] : []
+      );
+      if (indexes.length !== 1) continue;
+      const outcome = outcomes[indexes[0] ?? -1]?.trim();
+      if (!outcome || !CONDITION_ID_PATTERN.test(market.conditionId)) continue;
+      matches.push({
+        conditionId: market.conditionId,
+        outcome,
+        endDate: nonemptyStringOrNull(market.endDate),
+        title: nonemptyStringOrNull(market.question),
+        slug: nonemptyStringOrNull(market.slug),
+      });
+    }
+    return matches.length === 1 ? (matches[0] ?? null) : null;
+  }
+
+  private async fetchGammaJson(url: URL): Promise<unknown> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetchImpl(url.toString(), {
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(
+          `Polymarket Gamma API error: ${response.status} ${response.statusText} (${url.pathname})`
+        );
+      }
+      return await response.json();
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new Error(
+          `Polymarket Gamma API timeout after ${this.timeoutMs}ms (${url.pathname})`
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * `signal` (task.5015): optional caller-owned cancellation, combined with
    * the per-request timeout controller. Caller aborts (e.g. the trader
    * observation tick timing out) reject distinctly from timeouts so callers
@@ -939,6 +1024,27 @@ export class PolymarketDataApiClient {
       releaseSlot();
     }
   }
+}
+
+function parseGammaStringArray(value: string | string[]): string[] | null {
+  if (Array.isArray(value)) {
+    return value.every((item) => typeof item === "string") ? value : null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) &&
+      parsed.every((item) => typeof item === "string")
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function nonemptyStringOrNull(value: string | null | undefined): string | null {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : null;
 }
 
 function normalizeV2Position(

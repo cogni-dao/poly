@@ -854,6 +854,110 @@ describe("PolymarketDataApiClient.resolveUsername", () => {
   });
 });
 
+describe("PolymarketDataApiClient.resolveTokenMetadata", () => {
+  const tokenId = "686203923426123";
+  const conditionId = `0x${"ab".repeat(32)}`;
+
+  it("maps one exact CLOB token to the aligned Gamma outcome", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse([
+        {
+          conditionId,
+          question: "Player A vs Player B",
+          slug: "player-a-v-player-b",
+          endDate: "2026-10-09T00:00:00Z",
+          outcomes: '["Player A","Player B"]',
+          clobTokenIds: `["${tokenId}","999"]`,
+        },
+      ])
+    );
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    await expect(client.resolveTokenMetadata(tokenId)).resolves.toEqual({
+      conditionId,
+      outcome: "Player A",
+      endDate: "2026-10-09T00:00:00Z",
+      title: "Player A vs Player B",
+      slug: "player-a-v-player-b",
+    });
+    const call = fetchImpl.mock.calls[0]?.[0] as string;
+    expect(call).toContain("gamma-api.polymarket.com/markets");
+    expect(call).toContain(`clob_token_ids=${tokenId}`);
+    expect(call).toContain("limit=2");
+  });
+
+  it("fails closed on duplicate markets or misaligned legs", async () => {
+    const matching = {
+      conditionId,
+      outcomes: '["YES","NO"]',
+      clobTokenIds: `["${tokenId}","999"]`,
+    };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([matching, matching]))
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            conditionId,
+            outcomes: '["YES"]',
+            clobTokenIds: `["${tokenId}","999"]`,
+          },
+        ])
+      );
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    await expect(client.resolveTokenMetadata(tokenId)).resolves.toBeNull();
+    await expect(client.resolveTokenMetadata(tokenId)).resolves.toBeNull();
+  });
+
+  it("fails closed when one valid row is accompanied by a malformed duplicate", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse([
+        {
+          conditionId,
+          outcomes: '["YES","NO"]',
+          clobTokenIds: `["${tokenId}","999"]`,
+        },
+        {
+          conditionId,
+          outcomes: '["YES"]',
+          clobTokenIds: `["${tokenId}","999"]`,
+        },
+      ])
+    );
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    await expect(client.resolveTokenMetadata(tokenId)).resolves.toBeNull();
+  });
+
+  it("still reaches Gamma while a Data API 429 cooldown is open", async () => {
+    __resetPolyDataApiCooldownForTests();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(null, false, 429))
+      .mockResolvedValueOnce(
+        jsonResponse([
+          {
+            conditionId,
+            outcomes: '["YES","NO"]',
+            clobTokenIds: `["${tokenId}","999"]`,
+          },
+        ])
+      );
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    await expect(
+      client.listUserPositions("0x9f2fe025f84839ca81dd8e0338892605702d2ca8")
+    ).rejects.toThrow(/429/);
+    await expect(client.resolveTokenMetadata(tokenId)).resolves.toMatchObject({
+      conditionId,
+      outcome: "YES",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    __resetPolyDataApiCooldownForTests();
+  });
+});
+
 describe("PolymarketDataApiClient Zod envelope", () => {
   const wallet = "0x1234567890abcdef1234567890abcdef12345678";
 

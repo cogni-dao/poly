@@ -110,18 +110,6 @@ deployment:
       secret_refs:
         - key: PAPER_ENFORCE_MODE
         - key: POLYGON_RPC_URL
-        # Dedicated bearer token for the narrow, audited internal wallet-fund
-        # recovery route. Declaring the catalog shape alone does not project a
-        # value into the Akash workload; this service ref is load-bearing.
-        - key: POLY_WALLET_RECOVERY_OPS_TOKEN
-        # bug.5310 — the node's STANDARD internal-ops bearer, consumed by
-        # /api/internal/ops/poly/wallet/{rotate-clob-creds,reset-connection}.
-        # A value already exists in candidate-a, preview AND production, so
-        # declaring it cannot reproduce the bug.5277 promote break (which came
-        # from declaring a key missing in an asserted lane). Without this ref
-        # the routes 500 `service_not_configured` on the pod even though the
-        # env schema accepts the key.
-        - key: INTERNAL_OPS_TOKEN
         - key: PRIVY_USER_WALLETS_APP_ID
         - key: PRIVY_USER_WALLETS_APP_SECRET
         - key: PRIVY_USER_WALLETS_SIGNING_KEY

@@ -76,6 +76,7 @@ export {
   PolyDataApiValidationError,
   PolymarketDataApiClient,
   type PolymarketDataApiClientConfig,
+  type PolymarketTokenMetadata,
   type ResolveUsernameParams,
 } from "./polymarket.data-api.client.js";
 export {

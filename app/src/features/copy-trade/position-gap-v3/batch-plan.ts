@@ -406,6 +406,7 @@ function planPosition(params: {
 			desiredShares: assignment.desiredShares,
 			heldShares: assignment.heldShares,
 			venue,
+			sleeveBudgetUsdc: input.sleeveBudgetUsdc,
 			eligibleNetNavUsdc,
 			perOrderCapUsdc: input.confirmedPerOrderCapUsdc,
 			candidateAllowed: !candidateSelected,
@@ -437,6 +438,7 @@ function planCohort(params: {
 	desiredShares: number;
 	heldShares: number;
 	venue: PositionGapVenueConditionV1 | undefined;
+	sleeveBudgetUsdc: number;
 	eligibleNetNavUsdc: number;
 	perOrderCapUsdc: number;
 	candidateAllowed: boolean;
@@ -453,6 +455,7 @@ function planCohort(params: {
 		desiredShares,
 		heldShares,
 		venue,
+		sleeveBudgetUsdc,
 		eligibleNetNavUsdc,
 		perOrderCapUsdc,
 		candidateAllowed,
@@ -622,11 +625,17 @@ function planCohort(params: {
 		});
 		return false;
 	}
+	const scaledFloorSleeveUsdc =
+		((heldShares + openShares + floorShares) * eligibleNetNavUsdc) /
+		position.netShares;
+	// A larger sleeve creates an explicit config-increase cohort. Report that
+	// remedy even though today's durable cohort cannot yet clear the share floor;
+	// retain null when only stale/cohort provenance (not scale) is blocking.
 	const minimumSleeveUsdc =
 		cohort.allowedMirrorShares + POSITION_GAP_EPSILON >=
-		heldShares + openShares + floorShares
-			? ((heldShares + openShares + floorShares) * eligibleNetNavUsdc) /
-				position.netShares
+			heldShares + openShares + floorShares ||
+		scaledFloorSleeveUsdc > sleeveBudgetUsdc + POSITION_GAP_EPSILON
+			? scaledFloorSleeveUsdc
 			: null;
 	if (minimumSleeveUsdc !== null && Number.isFinite(minimumSleeveUsdc)) {
 		minimumSleeves.push(minimumSleeveUsdc);
@@ -819,7 +828,7 @@ function validQuote(quote: PositionGapVenueQuoteV1): boolean {
 		Number.isFinite(quote.minOrderShares) &&
 		quote.minOrderShares > 0 &&
 		Number.isFinite(quote.minOrderUsdc) &&
-		quote.minOrderUsdc > 0 &&
+		quote.minOrderUsdc >= 0 &&
 		(quote.bestAsk === null ||
 			(Number.isFinite(quote.bestAsk) &&
 				quote.bestAsk > 0 &&

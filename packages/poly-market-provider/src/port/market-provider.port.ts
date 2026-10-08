@@ -51,13 +51,13 @@ export interface MarketProviderConfig {
 
 /**
  * Mechanical constraints for a single market/token, fetched ahead of order
- * placement so callers can right-size intents. Two orthogonal floors today,
- * both platform-enforced on marketable BUYs (bug.0342):
+ * placement so callers can right-size intents. Two orthogonal floors today
+ * (bug.0342, bug.5013):
  *   - `minShares`: from CLOB order-book `min_order_size`; varies per market
- *     (1–5 shares observed).
- *   - `minUsdcNotional`: Polymarket platform rule for marketable BUY orders;
- *     $1 USDC notional floor regardless of share count. A market with
- *     minShares=1 at price 0.49 still rejects a $0.49 order for this reason.
+ *     (1–5 shares observed) and applies to limit-GTC orders.
+ *   - `minUsdcNotional`: Polymarket platform rule for market-FOK BUY orders;
+ *     $1 USDC notional floor regardless of share count. It is absent for a
+ *     limit-GTC constraint request.
  *
  * Future fields (tick, fee, negRisk) slot in here without widening the port.
  */
@@ -72,6 +72,13 @@ export interface MarketConstraints {
    */
   minUsdcNotional?: number;
 }
+
+/**
+ * Order form whose mechanical venue floors are being requested. The default
+ * preserves the historical market-FOK contract for callers that have not yet
+ * made their placement semantics explicit.
+ */
+export type MarketConstraintPlacement = "market_fok" | "limit";
 
 /**
  * Stable code string attached to errors thrown from `placeOrder` when CLOB
@@ -160,7 +167,10 @@ export interface MarketProviderPort {
    *
    * @throws OrderNotSupportedError if the adapter does not support trading.
    */
-  getMarketConstraints(tokenId: string): Promise<MarketConstraints>;
+  getMarketConstraints(
+    tokenId: string,
+    placement?: MarketConstraintPlacement
+  ): Promise<MarketConstraints>;
 
   /**
    * Look up an order's current status by platform `order_id`.

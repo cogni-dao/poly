@@ -18,9 +18,7 @@
  *   withdrawals), `ensureTradingApprovals` (idempotent 6-step
  *   Polymarket onboarding: 3× USDC.e `approve` + 3× CTF `setApprovalForAll`
  *   signed by Privy HSM; stamps the `trading_approvals_ready_at` readiness
- *   column on success), `revoke` (cascades across `poly_wallet_grants` in
- *   the same tx + clears `trading_approvals_ready_at` so the next connection
- *   re-runs the approvals flow).
+ *   column on success).
  *   `rotateClobCreds` remains stubbed until the CLOB-rotation item lands.
  * Invariants:
  *   - SEPARATE_PRIVY_APP: constructor takes a PrivyClient built from
@@ -49,11 +47,6 @@
  *     branded `AuthorizedSigningContext`. `PolymarketClobAdapter.placeOrder`
  *     requires the brand — no cap/scope check can be bypassed by constructing
  *     a context elsewhere.
- *   - REVOKE_CASCADES_FROM_CONNECTION: `revoke(billingAccountId)` flips
- *     `poly_wallet_connections.revoked_at` AND every grant row whose
- *     `wallet_connection_id` matches, inside the same transaction. Next
- *     `authorizeIntent` fails with `no_active_grant`. Same transaction also
- *     clears `trading_approvals_ready_at` so a re-provision starts un-approved.
  *   `rotateClobCreds` deletes the current Polymarket L2 API key, creates a
  *   fresh one for the same tenant wallet, and updates only the encrypted
  *   credential envelope.
@@ -1263,89 +1256,6 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       },
       isIdempotentHit: false,
     };
-  }
-
-  /**
-   * Soft-delete the tenant's active connection row + cascade to grants.
-   *
-   * WARNING — this is a halt-future kill-switch ONLY. It does NOT:
-   *   - delete the Privy backend wallet (funds at that address remain spendable),
-   *   - move USDC.e / MATIC off the address (no on-chain transfer),
-   *   - verify the address is empty before marking revoked.
-   *
-   * Callers (UI, API route handlers) MUST enforce `WITHDRAW_BEFORE_REVOKE`: show
-   * the current on-chain balance and require explicit "proceed with non-zero
-   * balance" confirmation from the user. Skipping that check strands funds.
-   *
-   * The grant cascade (REVOKE_CASCADES_FROM_CONNECTION invariant, migration
-   * 0031) runs inside the same transaction as the connection update so
-   * `authorizeIntent` cannot succeed against a stale grant whose connection
-   * just got revoked.
-   */
-  async revoke(input: {
-    billingAccountId: string;
-    revokedByUserId: string;
-  }): Promise<void> {
-    await this.serviceDb.transaction(async (tx) => {
-      const [revokedConnection] = await tx
-        .update(polyWalletConnections)
-        .set({
-          revokedAt: new Date(),
-          revokedByUserId: input.revokedByUserId,
-          // Clear the readiness stamp so a post-revoke re-provision starts in
-          // `trading_not_ready` and must re-run `ensureTradingApprovals`.
-          // Same transaction as the revoke flip — APPROVALS_BEFORE_PLACE
-          // cannot leak across a revoke cycle.
-          tradingApprovalsReadyAt: null,
-        })
-        .where(
-          and(
-            eq(polyWalletConnections.billingAccountId, input.billingAccountId),
-            isNull(polyWalletConnections.revokedAt)
-          )
-        )
-        .returning({ id: polyWalletConnections.id });
-
-      if (!revokedConnection) {
-        // Nothing to cascade — either no active connection or already revoked.
-        return;
-      }
-
-      const revokedGrants = await tx
-        .update(polyWalletGrants)
-        .set({
-          revokedAt: new Date(),
-          revokedByUserId: input.revokedByUserId,
-        })
-        .where(
-          and(
-            eq(polyWalletGrants.walletConnectionId, revokedConnection.id),
-            isNull(polyWalletGrants.revokedAt)
-          )
-        )
-        .returning({ id: polyWalletGrants.id });
-
-      this.log.info(
-        {
-          billing_account_id: input.billingAccountId,
-          connection_id: revokedConnection.id,
-          revoked_by_user_id: input.revokedByUserId,
-          cascaded_grant_ids: revokedGrants.map((g) => g.id),
-        },
-        "poly.wallet.revoke — soft-deleted active connection + cascaded grants (funds NOT moved; caller must have enforced withdraw)"
-      );
-
-      for (const g of revokedGrants) {
-        this.log.info(
-          {
-            billing_account_id: input.billingAccountId,
-            grant_id: g.id,
-            cascaded_from_connection_id: revokedConnection.id,
-          },
-          "poly.wallet.grant.revoke — cascaded by connection revoke"
-        );
-      }
-    });
   }
 
   /**

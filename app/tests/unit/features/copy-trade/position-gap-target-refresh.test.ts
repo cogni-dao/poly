@@ -120,7 +120,7 @@ describe("selectPositionGapVenueCandidates", () => {
 		expect(candidates.has("token-150")).toBe(true);
 	});
 
-	it("performs zero venue reads when the per-order authority cannot reach the $1 floor", () => {
+	it("keeps a sub-$1 GTC candidate so venue share floors remain observable", () => {
 		expect(
 			selectPositionGapVenueCandidates({
 				snapshot,
@@ -135,7 +135,50 @@ describe("selectPositionGapVenueCandidates", () => {
 				openOrders: [],
 				perOrderHeadroomUsdc: 0.99,
 			}),
-		).toEqual(new Set());
+		).toEqual(new Set(["token"]));
+	});
+
+	it("keeps an under-share-floor gap for bounded floor and minimum-sleeve diagnostics", () => {
+		expect(
+			selectPositionGapVenueCandidates({
+				snapshot,
+				cohorts: [
+					{
+						tokenId: "rn1-token",
+						allowedMirrorShares: 1.087455525259,
+						benchmarkTargetVwap: 0.18,
+					},
+				],
+				holdings: [],
+				openOrders: [],
+				perOrderHeadroomUsdc: 5,
+			}),
+		).toEqual(new Set(["rn1-token"]));
+	});
+
+	it("prioritizes a mechanically feasible cheap share lot inside the 16-token bound", () => {
+		const candidates = selectPositionGapVenueCandidates({
+			snapshot,
+			cohorts: [
+				...Array.from({ length: 16 }, (_, index) => ({
+					tokenId: `expensive-${index.toString().padStart(2, "0")}`,
+					allowedMirrorShares: 4,
+					benchmarkTargetVwap: 0.9,
+				})),
+				{
+					tokenId: "cheap-five-share-lot",
+					allowedMirrorShares: 5,
+					benchmarkTargetVwap: 0.01,
+				},
+			],
+			holdings: [],
+			openOrders: [],
+			perOrderHeadroomUsdc: 5,
+		});
+
+		expect(candidates.size).toBe(16);
+		expect(candidates.has("cheap-five-share-lot")).toBe(true);
+		expect(candidates.has("expensive-15")).toBe(false);
 	});
 
 	it("nets mirror complete sets before deciding whether a target-side gap needs venue truth", () => {

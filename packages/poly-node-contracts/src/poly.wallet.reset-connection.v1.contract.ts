@@ -3,10 +3,9 @@
 
 /**
  * Module: `@contracts/poly.wallet.reset-connection.v1.contract`
- * Purpose: Contract for the audited operator reset of ONE tenant's Polymarket
- *   wallet connection, so the owner can re-provision a fresh canonical V2
- *   Deposit Wallet through the normal product UI.
- * Scope: `POST /api/v1/.../internal/ops/poly/wallet/reset-connection`.
+ * Purpose: Contract for an authenticated owner to reset their own Polymarket
+ *   wallet connection and re-provision a fresh canonical V2 Deposit Wallet.
+ * Scope: `POST /api/v1/poly/wallet/reset-connection`.
  *   Schema-only. Moves no funds and deletes no history.
  * Invariants:
  *   - REVOKE_NEVER_DELETES — reset revokes the ACTIVE connection + grants and
@@ -14,18 +13,20 @@
  *     revoked) are preserved for audit; nothing is deleted, and no Privy
  *     wallet or SIWE/user identity binding is touched.
  *   - NO_STRANDED_FUNDS — the reset refuses while the Deposit Wallet holds any
- *     USDC.e / pUSD / POL, unless the operator explicitly passes
- *     `accept_residual_dust`. A balance read that ERRORS always blocks reset
- *     (fail-closed) and cannot be overridden as dust.
+ *     USDC.e / pUSD / POL. A balance read that ERRORS always blocks reset.
  *   - NO_UNSETTLED_ORDERS — the reset refuses while any mirror fill row for
  *     the tenant is still `pending | open | partial`, so a revoke can never
  *     orphan a resting CLOB order.
+ *   - NO_STRANDED_POSITIONS — any non-terminal position exposure blocks reset.
+ *   - TARGETS_QUIESCE_FIRST — active copy targets are disabled on the first
+ *     call, which returns blocked; the owner retries only after the mirror
+ *     pipeline has observed that stop signal.
  *   - RESET_IS_IDEMPOTENT — a second call with no active connection returns
  *     `no_active_connection` and 200, not an error.
  *   - NO_FUND_MOVEMENT — this operation never transfers, wraps, or withdraws.
  *     Recovery is a separate, explicit action.
  * Side-effects: none (schema only)
- * Links: docs/spec/poly-tenant-and-collateral.md, work/items/bug.5310
+ * Links: docs/spec/poly-tenant-and-collateral.md, task.5167
  * @public
  */
 
@@ -36,18 +37,14 @@ const addressSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
 export const polyWalletResetConnectionOperation = {
   id: "poly.wallet.reset-connection.v1",
   summary:
-    "Revoke one tenant's active Polymarket wallet connection + grants and disable its copy targets, so the owner can re-provision a fresh V2 Deposit Wallet",
+    "Revoke the authenticated owner's active Polymarket wallet connection and disable its copy targets so they can safely re-provision",
   description:
-    "Audited operator reset for a single billing account. Fail-closed on residual balances and unsettled mirror orders. Preserves all history, the Privy wallet, and the SIWE identity binding. Never moves funds.",
-  input: z.object({
-    billing_account_id: z.string().min(1),
-    /**
-     * Acknowledge that the Deposit Wallet still holds a residual amount the
-     * owner has accepted as unrecoverable dust. This never overrides an
-     * unreadable balance; read errors always block (NO_STRANDED_FUNDS).
-     */
-    accept_residual_dust: z.boolean().default(false),
-  }),
+    "Owner-scoped reset. The server derives the billing account from session auth; no tenant identifier crosses the wire. Fail-closed on residual balances, position exposure, unsettled mirror orders, and active copy targets.",
+  input: z
+    .object({
+      confirmation: z.literal("RESET_WALLET_CONNECTION"),
+    })
+    .strict(),
   output: z.object({
     billing_account_id: z.string(),
     outcome: z.enum(["reset", "no_active_connection", "blocked"]),
@@ -57,6 +54,8 @@ export const polyWalletResetConnectionOperation = {
         "residual_balance",
         "balance_read_failed",
         "unsettled_orders",
+        "open_positions",
+        "copy_targets_disabled",
       ])
       .nullable(),
     connection: z
@@ -76,6 +75,7 @@ export const polyWalletResetConnectionOperation = {
       read_errors: z.array(z.string()),
     }),
     unsettled_fill_count: z.number().int(),
+    open_position_count: z.number().int(),
     grants_revoked_count: z.number().int(),
     targets_disabled_count: z.number().int(),
     /**

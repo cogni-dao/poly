@@ -183,6 +183,9 @@ function creationFromPosition(params: {
 /**
  * Project cohort state for the pure planner. Existing rows only shrink;
  * activation, observed target BUYs, and explicit budget growth create rows.
+ * Callers project activation on every complete snapshot: the deterministic
+ * config-revision key, retained even for resolved rows, is the exact-once
+ * identity for positions that appear after the first snapshot.
  */
 export function projectPositionGapCohorts(
 	input: ProjectPositionGapCohortsInput,

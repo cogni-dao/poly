@@ -61,3 +61,4 @@ pnpm test tests/unit/bootstrap
 ## Notes
 
 - Tests use dynamic imports to simulate app startup conditions.
+- **Last reviewed:** 2026-10-01
