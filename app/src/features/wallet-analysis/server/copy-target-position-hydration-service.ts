@@ -27,6 +27,7 @@
 import { createHash } from "node:crypto";
 import {
 	polyTraderCurrentPositions,
+	polyTraderIngestionCursors,
 	polyTraderPositionSnapshots,
 	polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
@@ -40,6 +41,9 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 import { liveCurrentPositionSql } from "./current-position-staleness";
+import {
+	COPY_TARGET_POSITION_CURSOR_SOURCE,
+} from "./position-observation-sources";
 
 type Db =
 	| NodePgDatabase<Record<string, unknown>>
@@ -373,6 +377,28 @@ async function persistScopedTargetPositions(input: {
             AND observed.token_id = p.token_id
         )
     `);
+		await tx
+			.insert(polyTraderIngestionCursors)
+			.values({
+				traderWalletId: wallet.id,
+				source: COPY_TARGET_POSITION_CURSOR_SOURCE,
+				lastSuccessAt: observedAt,
+				status: "ok",
+				errorMessage: null,
+				updatedAt: observedAt,
+			})
+			.onConflictDoUpdate({
+				target: [
+					polyTraderIngestionCursors.traderWalletId,
+					polyTraderIngestionCursors.source,
+				],
+				set: {
+					lastSuccessAt: observedAt,
+					status: "ok",
+					errorMessage: null,
+					updatedAt: observedAt,
+				},
+			});
 	});
 }
 

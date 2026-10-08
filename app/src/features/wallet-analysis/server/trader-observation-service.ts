@@ -831,29 +831,34 @@ async function observeWallet(
           async (tx) =>
             await upsertObservedFills(tx, deps.wallet.id, observed.fills)
         );
-  const positionResult = await observePositionsIfDue(deps).catch(
-    async (err: unknown) => {
-      // task.5015: an abort-interrupted position fetch is cancellation, not a
-      // wallet failure — rethrow so the loop counts it aborted with no
-      // cursor-error write.
-      if (deps.signal?.aborted) throw err;
-      deps.logger.error(
-        {
-          event: "poly.trader.observe",
-          phase: "positions_error",
-          trader_wallet_id: deps.wallet.id,
-          wallet: deps.wallet.walletAddress,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        "trader position observation failed"
-      );
-      // The serialized position path records ordinary fetch/authority
-      // failures with its preflight cursor token. An escaped error is a DB or
-      // cancellation failure; writing an unversioned cursor error here could
-      // overwrite a newer writer and is therefore deliberately forbidden.
-      return { positions: 0, complete: false, skipped: false };
-    }
-  );
+  // Copy targets publish their bounded, lineage-scoped position truth through
+  // the V2 hydrator after this wallet loop. Keep activity/fill observation,
+  // but never let the legacy whole-wallet V1 walk compete for those rows or
+  // continuously poison freshness with its historical omission ceiling.
+  const positionResult =
+    deps.wallet.kind === "copy_target"
+      ? { positions: 0, complete: false, skipped: true }
+      : await observePositionsIfDue(deps).catch(async (err: unknown) => {
+          // task.5015: an abort-interrupted position fetch is cancellation, not a
+          // wallet failure — rethrow so the loop counts it aborted with no
+          // cursor-error write.
+          if (deps.signal?.aborted) throw err;
+          deps.logger.error(
+            {
+              event: "poly.trader.observe",
+              phase: "positions_error",
+              trader_wallet_id: deps.wallet.id,
+              wallet: deps.wallet.walletAddress,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "trader position observation failed"
+          );
+          // The serialized position path records ordinary fetch/authority
+          // failures with its preflight cursor token. An escaped error is a DB or
+          // cancellation failure; writing an unversioned cursor error here could
+          // overwrite a newer writer and is therefore deliberately forbidden.
+          return { positions: 0, complete: false, skipped: false };
+        });
 
   await deps.db
     .insert(polyTraderIngestionCursors)
