@@ -10,6 +10,22 @@ import {
 	POSITION_GAP_MAX_INTENTS_PER_PLAN,
 } from "./model";
 
+const USDC_SCALE = 1_000_000;
+
+function scaledTolerance(value: number): number {
+	return Number.EPSILON * Math.max(1, Math.abs(value));
+}
+
+export function quantizeUsdcUp(value: number): number {
+	const scaled = value * USDC_SCALE;
+	return Math.ceil(scaled - scaledTolerance(scaled)) / USDC_SCALE;
+}
+
+function quantizeUsdcDown(value: number): number {
+	const scaled = value * USDC_SCALE;
+	return Math.floor(scaled + scaledTolerance(scaled)) / USDC_SCALE;
+}
+
 function candidateOrder(
 	left: PositionGapCandidateV1,
 	right: PositionGapCandidateV1,
@@ -91,7 +107,9 @@ function toAllocatedLot(entry: {
 	notionalUsdc: number;
 }): PositionGapAllocatedLotV1 {
 	const maxNotional = entry.candidate.maxShares * entry.candidate.limitPrice;
-	const notionalUsdc = Math.min(entry.notionalUsdc, maxNotional);
+	const notionalUsdc = quantizeUsdcDown(
+		Math.min(entry.notionalUsdc, maxNotional),
+	);
 	return {
 		...entry.candidate,
 		notionalUsdc,

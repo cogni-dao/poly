@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-import { allocatePositionGapLots } from "./allocator";
+import { allocatePositionGapLots, quantizeUsdcUp } from "./allocator";
 import type {
 	NettedTargetPositionV1,
 	PositionGapBookInputV1,
@@ -607,10 +607,12 @@ function planCohort(params: {
 		return false;
 	}
 
-	const floorNotionalUsdc = Math.max(
-		CLOB_MIN_BUY_NOTIONAL_USDC,
-		quote.minOrderUsdc,
-		quote.minOrderShares * limit.price,
+	const floorNotionalUsdc = quantizeUsdcUp(
+		Math.max(
+			CLOB_MIN_BUY_NOTIONAL_USDC,
+			quote.minOrderUsdc,
+			quote.minOrderShares * limit.price,
+		),
 	);
 	const floorShares = floorNotionalUsdc / limit.price;
 	if (perOrderCapUsdc + POSITION_GAP_EPSILON < floorNotionalUsdc) {

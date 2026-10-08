@@ -766,6 +766,7 @@ export class PositionGapRuntimeStore {
 				0n,
 			);
 			if (
+				newBuys.length > 0 &&
 				numberOf(targetReserved?.budget) + newBudget >
 				input.budgetUsdc + EPSILON
 			) {
