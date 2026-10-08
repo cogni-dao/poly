@@ -15,16 +15,17 @@ import { type SQL, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { readCurrentWalletPositionModel } from "./current-position-read-model";
 import {
+  type BoundedMarketExposureRead,
   buildBoundedMarketExposureGroups,
   buildBoundedMarketExposureWithCoverage,
+  type ComparisonCoverageCountRow,
+  type ComparisonReadDiagnostics,
   emptyComparisonCoverageCounts,
   materializeComparisonCoverage,
   readComparisonSourceIdentityAmbiguity,
   unavailableComparisonCoverage,
-  type BoundedMarketExposureRead,
-  type ComparisonCoverageCountRow,
-  type ComparisonReadDiagnostics,
 } from "./market-exposure-service";
+import { portfolioWindowStart } from "./portfolio-window";
 import {
   applyRealizedPnl,
   readWalletTokenPnlMap,
@@ -201,7 +202,12 @@ export async function readTenantWalletDashboardIn(
     readCurrentWalletPositionModel({ db: savepoint, walletAddress: address, capturedAt: capturedAtDate })
   );
   const closedRead = await optionalRead(db, (savepoint) =>
-    readClosedPositionSummary(savepoint, input.billingAccountId, capturedAtDate)
+    readClosedPositionSummary(
+      savepoint,
+      input.billingAccountId,
+      capturedAtDate,
+      input.interval
+    )
   );
   const dailyRead = await optionalRead(db, (savepoint) =>
     readDailyTradeCounts(savepoint, input.billingAccountId, capturedAtDate)
@@ -881,16 +887,31 @@ export async function readOrderSummary(
   };
 }
 
-/** @internal Exported only for SQL-versus-pure component parity coverage. */
+/**
+ * Windowed closed-position summary at the portfolio snapshot cutoff.
+ *
+ * The cutoff applies after latest-row tuple selection: an older terminal row
+ * must never reappear merely because a newer row for that position is active
+ * or abandoned. The same 1D/1W/1M/1Y/YTD/ALL window applies to the exact
+ * closed count, pending-accounting count, and verified preview on both
+ * dashboard and agent transports.
+ *
+ * @internal Exported only for SQL-versus-pure component parity coverage.
+ */
 export async function readClosedPositionSummary(
   db: ExecuteDb,
   billingAccountId: string,
-  capturedAt: Date
+  capturedAt: Date,
+  interval: PolyWalletOverviewInterval
 ): Promise<{
   count: number;
   accountingPendingCount: number;
   positions: WalletExecutionPosition[];
 }> {
+  const windowStart = portfolioWindowStart(interval, capturedAt);
+  const windowPredicate = windowStart
+    ? sql`COALESCE(NULLIF(closed_at, '')::timestamptz, updated_at, observed_at) >= ${windowStart.toISOString()}::timestamptz`
+    : sql`TRUE`;
   const rows = normalizeRows<ClosedRow>(await db.execute(sql`
     WITH keyed AS (
       SELECT
@@ -936,12 +957,13 @@ export async function readClosedPositionSummary(
       SELECT * FROM keyed
       WHERE tuple_rank = 1
         AND position_lifecycle IN ('closed', 'redeemed', 'loser', 'dust')
+        AND ${windowPredicate}
     ), terminal AS (
       SELECT * FROM terminal_all
       WHERE accounting_verified
     ), preview AS (
       SELECT * FROM terminal
-      ORDER BY COALESCE(NULLIF(closed_at, '')::timestamptz, observed_at) DESC,
+      ORDER BY COALESCE(NULLIF(closed_at, '')::timestamptz, updated_at, observed_at) DESC,
         condition_key, asset_key
       LIMIT ${CLOSED_PREVIEW_LIMIT}
     )
@@ -952,7 +974,7 @@ export async function readClosedPositionSummary(
     FROM (SELECT 1) seed
     LEFT JOIN preview ON TRUE
     ORDER BY
-      COALESCE(NULLIF(preview.closed_at, '')::timestamptz, preview.observed_at) DESC NULLS LAST,
+      COALESCE(NULLIF(preview.closed_at, '')::timestamptz, preview.updated_at, preview.observed_at) DESC NULLS LAST,
       preview.condition_key,
       preview.asset_key
   `));

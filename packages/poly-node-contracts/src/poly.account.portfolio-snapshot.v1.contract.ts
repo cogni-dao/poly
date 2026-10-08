@@ -144,7 +144,7 @@ export const polyAccountPortfolioSnapshotOperation = {
   summary:
     "Read one coherent, bounded saved-facts portfolio snapshot for a billing account",
   description:
-    "Returns wallet identity and readiness, collateral/gas/open orders, total and component balances, persisted P/L history, 14-day daily activity, bounded open and closed position previews with exact counts, bounded market exposure versus copy targets, and the per-component freshness/completeness/warning envelope — all at ONE coherent snapshot cutoff (`capturedAt`) inside a single REPEATABLE READ READ ONLY transaction. Saved facts only: no Polymarket, Privy, or Polygon RPC call is made. Missing or stale facts are returned as typed nulls with a warning explaining why, never as zero.",
+    "Returns wallet identity and readiness, collateral/gas/open orders, total and component balances, persisted P/L history, 14-day daily activity, bounded open positions plus closed positions filtered by the requested 1D/1W/1M/1Y/YTD/ALL interval with exact windowed counts, bounded market exposure versus copy targets, and the per-component freshness/completeness/warning envelope — all at ONE coherent snapshot cutoff (`capturedAt`) inside a single REPEATABLE READ READ ONLY transaction. Saved facts only: no Polymarket, Privy, or Polygon RPC call is made. Missing or stale facts are returned as typed nulls with a warning explaining why, never as zero.",
   input: PolyAccountPortfolioSnapshotQuerySchema,
   output: PolyAccountPortfolioSnapshotOutputSchema,
 } as const;
