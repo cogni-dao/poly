@@ -247,6 +247,7 @@ describe("buildPositionGapBuyIntent", () => {
 			tokenId: "yes",
 			conditionId: "condition",
 			cohortKey: "activation:yes",
+			targetWallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
 		});
 
 		expect(intent.side).toBe("BUY");
@@ -254,6 +255,7 @@ describe("buildPositionGapBuyIntent", () => {
 			orderType: "GTC",
 			placement: "limit",
 			position_gap_version: "3",
+			target_wallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
 		});
 	});
 

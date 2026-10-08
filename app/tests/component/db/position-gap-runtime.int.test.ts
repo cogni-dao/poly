@@ -544,6 +544,7 @@ describe("position-gap runtime persistence", () => {
 			tokenId: actions[0]?.tokenId ?? "missing",
 			conditionId: actions[0]?.conditionId ?? "missing",
 			cohortKey: actions[0]?.cohortKey ?? "missing",
+			targetWallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
 		});
 		expect(intent).toMatchObject({
 			side: "BUY",
@@ -889,6 +890,7 @@ describe("position-gap runtime persistence", () => {
 				tokenId: "token-hard",
 				conditionId: "condition-hard",
 				cohortKey: "ambiguous-cohort-hard",
+				targetWallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
 			}),
 		});
 		await store.markLedgered(hardBuy.id);
