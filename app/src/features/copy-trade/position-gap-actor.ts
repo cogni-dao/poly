@@ -134,6 +134,11 @@ export function startPositionGapActor(
 				reasons.clear();
 				try {
 					if (batch.includes("disabled")) {
+						// A terminal ledger transition can arrive after the actor has
+						// disabled normal wakes. Consume both process-local and durable
+						// evidence before retrying the safety cancellation.
+						await reconcileKnownOrders();
+						await deps.store.reconcileLedgerTerminals(deps.scope);
 						await cancelAll("disabled");
 						continue;
 					}

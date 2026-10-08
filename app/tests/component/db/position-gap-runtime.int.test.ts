@@ -528,7 +528,7 @@ describe("position-gap runtime persistence", () => {
 		await expect(insert("second")).rejects.toThrow();
 	});
 
-	it("releases only the unfilled reservation after authoritative CLOB not_found", async () => {
+	it("consumes durable CLOB not_found before a stop retry and releases only unfilled", async () => {
 		const db = getSeedDb();
 		const store = new PositionGapRuntimeStore(db);
 		const runId = randomUUID();
@@ -604,9 +604,33 @@ describe("position-gap runtime persistence", () => {
 			executorCashGuardAtomic: "5500000",
 			cashGuardSource: "test",
 		});
+		await db.insert(polyCopyTradeFills).values({
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetNotFound,
+			fillId: "position-gap-v3:not-found-action",
+			marketId: "prediction-market:polymarket:condition-not-found",
+			observedAt: asOf,
+			clientOrderId: "not-found-client",
+			orderId: "not-found-order",
+			status: "canceled",
+			attributes: { reason: "clob_not_found" },
+		});
 
-		await store.markVenueNotFoundCanceled(actionId);
-		await store.markVenueNotFoundCanceled(actionId);
+		expect(
+			await store.reconcileLedgerTerminals({
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId: targetNotFound,
+			}),
+		).toBe(1);
+		expect(
+			await store.reconcileLedgerTerminals({
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId: targetNotFound,
+			}),
+		).toBe(0);
 		const [reservation] = await db
 			.select()
 			.from(polyPositionGapReservations)
