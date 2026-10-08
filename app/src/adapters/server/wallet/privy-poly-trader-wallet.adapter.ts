@@ -1539,6 +1539,18 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       // open / filled / partial). CAPS_COUNT_INTENTS: filter by createdAt
       // (intent insertion time) NOT observedAt (upstream fill time) so
       // historical target activity doesn't artificially backdate caps.
+      //
+      // CAPS_COUNT_ONLY_THEIR_OWN_MODE (migration 0081): this is the LIVE
+      // authorizer — `liveRow()` above already guaranteed a `privy_live`
+      // connection — so it must count only `mode = 'live'` intents. Before
+      // 0081 one billing account could hold at most one connection, so every
+      // row in this window was necessarily live and the filter was implicit.
+      // Now a tenant may hold a live AND a paper connection against the same
+      // `billing_account_id`, and without this predicate simulated fills would
+      // consume the real daily USDC and hourly-fill caps — paper activity
+      // throttling real trading. The paper authorizer in
+      // `@features/paper-accounts/server/paper-venue` applies the mirror-image
+      // filter (`mode = 'paper'`), so the two budgets are disjoint.
       const [spendRow] = await this.serviceDb
         .select({
           spent: sum(
@@ -1549,6 +1561,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         .where(
           and(
             eq(polyCopyTradeFills.billingAccountId, billingAccountId),
+            eq(polyCopyTradeFills.mode, "live"),
             gte(polyCopyTradeFills.createdAt, sql`now() - interval '24 hours'`),
             inArray(polyCopyTradeFills.status, [...IN_FLIGHT_FILL_STATUSES])
           )
@@ -1565,12 +1578,14 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         );
       }
 
+      // CAPS_COUNT_ONLY_THEIR_OWN_MODE — see the 24h window above.
       const [rateRow] = await this.serviceDb
         .select({ n: count() })
         .from(polyCopyTradeFills)
         .where(
           and(
             eq(polyCopyTradeFills.billingAccountId, billingAccountId),
+            eq(polyCopyTradeFills.mode, "live"),
             gte(polyCopyTradeFills.createdAt, sql`now() - interval '1 hour'`),
             inArray(polyCopyTradeFills.status, [...IN_FLIGHT_FILL_STATUSES])
           )

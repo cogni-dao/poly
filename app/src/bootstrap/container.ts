@@ -399,6 +399,9 @@ let _restingSweepStop: (() => void) | null = null;
 let _traderObservationStop: (() => void) | null = null;
 // Condition-iterating market outcome writer (task.5016). CLOB public client.
 let _marketOutcomeStop: (() => void) | null = null;
+// Paper-account fact projection stop fn (migration 0082). Local SQL projection
+// over our own ledger + one CLOB midpoint per open position.
+let _paperProjectionStop: (() => void) | null = null;
 // Per-asset price-history mirror job stop fn (task.5018). Public CLOB only.
 let _priceHistoryStop: (() => void) | null = null;
 // Top-wallets leaderboard mirror job stop fn (bug.5017). Public Data API only.
@@ -479,6 +482,14 @@ function stopAllJobHandles(): void {
 			// Best-effort.
 		}
 		_marketOutcomeStop = null;
+	}
+	if (_paperProjectionStop) {
+		try {
+			_paperProjectionStop();
+		} catch {
+			// Best-effort.
+		}
+		_paperProjectionStop = null;
 	}
 	if (_priceHistoryStop) {
 		try {
@@ -1596,6 +1607,55 @@ function createContainer(): Container {
 					err: err instanceof Error ? err.message : String(err),
 				},
 				"trader observation job boot failed — continuing without observed trader read model",
+			);
+		}
+	})();
+
+	// migration 0082 — paper-account fact projection. Deliberately NOT inside the
+	// trader-observation IIFE above, and deliberately NOT gated on
+	// POLY_TRADER_OBSERVATION_WRITER_ENABLED. That lever throttles DATA-API
+	// observation (paginated /activity + /positions for every target and tenant
+	// wallet, plus per-token snapshot rows, every 30s) on non-prod lanes whose DBs
+	// live on the prod VM by custody (bug.5297/bug.5206). This job shares none of
+	// that shape: a local SQL projection over this node's OWN
+	// poly_copy_trade_fills, scoped to the paper accounts that exist, plus one CLOB
+	// midpoint per open position. Its gate is the DATA — no active paper account
+	// means one indexed SELECT and an `idle_no_paper_accounts` log. Gating it on
+	// the observation flag left a paper tenant's dashboard structurally
+	// unrenderable on exactly the lanes paper trading runs on.
+	void (async () => {
+		try {
+			const { startPaperProjectionJob } = await import(
+				"@/bootstrap/jobs/paper-projection.job"
+			);
+			const { PolymarketClobPublicClient: PaperClobPublicClient } = await import(
+				"@cogni/poly-market-provider/adapters/polymarket"
+			);
+			const paperLogger =
+				log as unknown as import("@cogni/poly-market-provider").LoggerPort;
+			const paperClobClient = new PaperClobPublicClient();
+			const paperProjectionStop = startPaperProjectionJob({
+				db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
+					Record<string, unknown>
+				>,
+				readPaperMidPrice: (tokenId, signal) =>
+					paperClobClient.getMidpoint(tokenId, signal),
+				logger: paperLogger,
+			});
+			// task.5016 — leadership was lost while this boot was in flight.
+			if (epoch !== _jobsEpoch) {
+				paperProjectionStop();
+				return;
+			}
+			_paperProjectionStop = paperProjectionStop;
+		} catch (err: unknown) {
+			log.error(
+				{
+					event: "poly.paper.project",
+					phase: "boot_failed",
+					err: err instanceof Error ? err.message : String(err),
+				},
+				"paper projection job boot failed — continuing without paper facts",
 			);
 		}
 	})();
