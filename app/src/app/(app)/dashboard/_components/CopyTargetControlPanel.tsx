@@ -547,7 +547,7 @@ function TargetPolicyEditor({
         >
           Mirror: {positionGapRuntimeLabel(target)} ·{" "}
           <a
-            href="/research#target-positions"
+            href={`/research?target_wallet=${encodeURIComponent(target.target_wallet)}#target-positions`}
             className="font-medium text-primary underline underline-offset-4"
           >
             Details

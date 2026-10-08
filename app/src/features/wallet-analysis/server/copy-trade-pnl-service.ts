@@ -97,7 +97,7 @@ export async function getCopyTradePnlForTenant(
       COUNT(*)::int AS fills_count,
       COUNT(*) FILTER (WHERE ${polyCopyTradeFills.status} = 'filled' AND (
         COALESCE(${polyCopyTradeFills.attributes}->>'position_gap_version', '') <> '3'
-        OR ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades'
+        OR ${polyCopyTradeFills.attributes}->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
       ))::int AS filled_count,
       COUNT(*) FILTER (WHERE ${polyCopyTradeFills.status} = 'open')::int AS open_count,
       COUNT(*) FILTER (WHERE ${polyCopyTradeFills.status} = 'pending')::int AS pending_count,
@@ -115,7 +115,7 @@ export async function getCopyTradePnlForTenant(
           WHEN ${polyCopyTradeFills.status} IN ('filled','partial')
             AND (
               COALESCE(${polyCopyTradeFills.attributes}->>'position_gap_version', '') <> '3'
-              OR ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades'
+              OR ${polyCopyTradeFills.attributes}->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
             )
             AND ${polyCopyTradeFills.attributes}->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
           THEN (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric
@@ -125,7 +125,7 @@ export async function getCopyTradePnlForTenant(
       COUNT(*) FILTER (WHERE
         COALESCE(${polyCopyTradeFills.attributes}->>'position_gap_version', '') = '3'
         AND ${polyCopyTradeFills.status} IN ('filled','partial')
-        AND COALESCE(${polyCopyTradeFills.attributes}->>'realized_fill_source', '') <> 'clob_associated_trades'
+        AND COALESCE(${polyCopyTradeFills.attributes}->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
       )::int AS accounting_pending_count,
       BOOL_OR(
         (${polyCopyTradeFills.positionLifecycle} IS NULL

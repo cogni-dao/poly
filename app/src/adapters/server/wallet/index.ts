@@ -11,6 +11,12 @@
  * @internal
  */
 
-export type { PrivyPolyTraderWalletAdapterConfig } from "./privy-poly-trader-wallet.adapter";
-export { PrivyPolyTraderWalletAdapter } from "./privy-poly-trader-wallet.adapter";
 export { DrizzlePolyWalletResetStateAdapter } from "./drizzle-poly-wallet-reset-state.adapter";
+export type {
+  PrivyPolyTraderWalletAdapterConfig,
+  VerifiedPusdAllowanceStateV1,
+} from "./privy-poly-trader-wallet.adapter";
+export {
+  isVerifiedPusdAllowanceState,
+  PrivyPolyTraderWalletAdapter,
+} from "./privy-poly-trader-wallet.adapter";

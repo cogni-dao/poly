@@ -128,6 +128,46 @@ describe("Position-gap public fill accounting", () => {
     });
   });
 
+  it("publishes complete Data-API-corroborated economics with its source", () => {
+    const order = toContractRow(
+      orderRow({
+        position_gap_version: "3",
+        realized_fill_source: "data_api_activity_position",
+        filled_size_usdc: 0.009295,
+      }),
+      date.getTime(),
+    );
+    expect(order).toMatchObject({
+      filled_size_usdc: 0.009295,
+      fill_accounting: {
+        status: "verified",
+        source: "data_api_activity_position",
+        realized_shares: 9.3,
+        realized_entry_notional_usdc: 0.009295,
+      },
+    });
+
+    const attempt = toExecuted(
+      attemptRow({
+        exec_price: 0.009295 / 9.3,
+        exec_fees_usdc: 0.00046,
+        exec_filled_size_usdc: 0.009295,
+        exec_realized_fill_source: "data_api_activity_position",
+      }),
+    );
+    expect(attempt).toMatchObject({
+      availability: "observed",
+      price: 0.009295 / 9.3,
+      shares: 9.3,
+      fees_usdc: 0.00046,
+      filled_size_usdc: 0.009295,
+      fill_accounting: {
+        status: "verified",
+        source: "data_api_activity_position",
+      },
+    });
+  });
+
   it("preserves legacy and non-PG execution semantics", () => {
     const order = toContractRow(
       orderRow({ filled_size_usdc: 3.5898 }),

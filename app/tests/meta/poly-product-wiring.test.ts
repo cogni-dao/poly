@@ -33,8 +33,13 @@ describe("Poly product wiring", () => {
 		expect(credits).toContain('from "./TradingWalletPanel"');
 		expect(credits).toContain("<TradingWalletPanel />");
 		expect(credits).toContain("<AiCreditsPanel />");
-		expect(walletPanel).toContain('from "./TradingWalletResetButton"');
-		expect(walletPanel).toContain("<TradingWalletResetButton");
+		// Wallet reset is a privileged recovery tool, NOT a self-serve control.
+		// It shipped briefly as a Money-page button; the guards behind it block
+		// on residual funds and unsettled orders, but a healthy funded wallet
+		// that happens to be flat passes all of them and gets revoked on a
+		// mis-click. The owner-scoped API route still exists for operator-driven
+		// recovery — what must never come back is a product-page entry point.
+		expect(walletPanel).not.toContain("TradingWalletResetButton");
 	});
 
 	it("keeps trading controls rendered on the dashboard", () => {

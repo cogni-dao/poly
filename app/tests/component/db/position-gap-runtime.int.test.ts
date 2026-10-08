@@ -43,6 +43,7 @@ describe("position-gap runtime persistence", () => {
 	const targetNotFound = randomUUID();
 	const targetQuantized = randomUUID();
 	const targetActivationBackfill = randomUUID();
+	const targetAmbiguousRejection = randomUUID();
 
 	beforeAll(async () => {
 		appDb = getAppDb();
@@ -793,6 +794,198 @@ describe("position-gap runtime persistence", () => {
 		expect(retry.buys).toHaveLength(1);
 	});
 
+	it("recovers a durable allowance rejection but keeps transport ambiguity blocked", async () => {
+		const db = getSeedDb();
+		const store = new PositionGapRuntimeStore(db);
+		const scope = {
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetAmbiguousRejection,
+		};
+		const persistBuy = async (suffix: string) => {
+			const cohortKey = `ambiguous-cohort-${suffix}`;
+			return store.persistPlan({
+				scope,
+				triggerReasons: ["activation"],
+				snapshot: {
+					id: `ambiguous-snapshot-${suffix}`,
+					hash: `ambiguous-hash-${suffix}`,
+					asOf,
+					expiresAt: future,
+					value: { version: 1, complete: true },
+				},
+				plannerVersion: "test",
+				budgetUsdc: 10,
+				eligibleNetNavUsdc: 100,
+				scale: 0.1,
+				walletCashUsdc: 20,
+				plan: { version: 1, status: "ready" },
+				cohortCreations: [
+					{
+						cohortKey,
+						sourceKind: "activation" as const,
+						sourceEventId: null,
+						sourceConfigRevision: "rev-ambiguous",
+						conditionId: `condition-${suffix}`,
+						tokenId: `token-${suffix}`,
+						marketId: `prediction-market:polymarket:condition-${suffix}`,
+						outcome: "0",
+						targetDeltaShares: 4,
+						scaleAtCreation: 1,
+						allowedMirrorShares: 4,
+						benchmarkTargetVwap: 0.5,
+						remainingShares: 4,
+						createdAtMs: asOf.getTime(),
+						provenance: { created_at_ms: asOf.getTime() },
+					},
+				],
+				cohortReductions: [],
+				buys: [
+					{
+						actionKey: `ambiguous-buy-${suffix}`,
+						cohortKey,
+						conditionId: `condition-${suffix}`,
+						tokenId: `token-${suffix}`,
+						marketId: `prediction-market:polymarket:condition-${suffix}`,
+						outcome: "0",
+						shares: 4,
+						notionalUsdc: 2,
+						limitPrice: 0.5,
+						clientOrderId: `ambiguous-client-${suffix}`,
+						plannerAction: { side: "BUY" },
+					},
+				],
+				cancellations: [],
+			});
+		};
+		const ledger = createOrderLedger({
+			db,
+			logger: {
+				debug: () => undefined,
+				info: () => undefined,
+				warn: () => undefined,
+				error: () => undefined,
+				child() {
+					return this;
+				},
+			} as never,
+		});
+
+		const hard = await persistBuy("hard");
+		const hardBuy = hard.buys[0];
+		if (!hardBuy) throw new Error("hard rejection BUY missing");
+		await ledger.insertPending({
+			billing_account_id: accountA,
+			created_by_user_id: ownerA,
+			target_id: targetAmbiguousRejection,
+			fill_id: "position-gap-v3:ambiguous-buy-hard",
+			observed_at: asOf,
+			intent: buildPositionGapBuyIntent({
+				marketId: "prediction-market:polymarket:condition-hard",
+				outcome: "0",
+				notionalUsdc: 2,
+				limitPrice: 0.5,
+				clientOrderId: "ambiguous-client-hard",
+				tokenId: "token-hard",
+				conditionId: "condition-hard",
+				cohortKey: "ambiguous-cohort-hard",
+			}),
+		});
+		await store.markLedgered(hardBuy.id);
+		await store.markSubmitting(hardBuy.id);
+		const durableDetail =
+			'PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_allowance, response_keys=[success,errorMsg], reason="insufficient_allowance", clob_error="not enough balance / allowance: the allowance is not enough")';
+		await store.markAmbiguous(hardBuy.id, durableDetail);
+
+		await expect(
+			store.recoverKnownRejectedAmbiguities(scope),
+		).resolves.toEqual([
+			{
+				id: hardBuy.id,
+				clientOrderId: "ambiguous-client-hard",
+				errorCode: "insufficient_allowance",
+			},
+		]);
+		await expect(
+			store.recoverKnownRejectedAmbiguities(scope),
+		).resolves.toEqual([]);
+
+		const [hardAction] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, hardBuy.id));
+		const [hardReservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, hardBuy.id));
+		const [hardCohort] = await db
+			.select()
+			.from(polyPositionGapCohorts)
+			.where(
+				eq(polyPositionGapCohorts.cohortKey, "ambiguous-cohort-hard"),
+			);
+		const [hardLedger] = await db
+			.select()
+			.from(polyCopyTradeFills)
+			.where(
+				eq(polyCopyTradeFills.clientOrderId, "ambiguous-client-hard"),
+			);
+		expect(hardAction).toMatchObject({
+			status: "rejected",
+			errorCode: "placement_rejected",
+			errorDetail: durableDetail,
+		});
+		expect(hardReservation).toMatchObject({
+			state: "released",
+			releaseReason: "known_rejected",
+		});
+		expect(Number(hardCohort?.openOrderShares)).toBe(0);
+		expect(Number(hardCohort?.remainingShares)).toBe(4);
+		expect(hardLedger).toMatchObject({ status: "error" });
+		expect(hardLedger?.attributes).toMatchObject({ error: durableDetail });
+
+		const transport = await persistBuy("transport");
+		const transportBuy = transport.buys[0];
+		if (!transportBuy) throw new Error("transport BUY missing");
+		await store.markLedgered(transportBuy.id);
+		await store.markSubmitting(transportBuy.id);
+		await store.markAmbiguous(
+			transportBuy.id,
+			"connection reset after submit",
+		);
+		await expect(
+			store.recoverKnownRejectedAmbiguities(scope),
+		).resolves.toEqual([]);
+		const [transportAction] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, transportBuy.id));
+		expect(transportAction?.status).toBe("ambiguous");
+		await expect(
+			store.persistPlan({
+				scope,
+				triggerReasons: ["disabled"],
+				snapshot: {
+					id: "blocked-snapshot",
+					hash: "blocked-hash",
+					asOf,
+					expiresAt: future,
+					value: { version: 1, complete: true },
+				},
+				plannerVersion: "test",
+				budgetUsdc: 10,
+				eligibleNetNavUsdc: 0,
+				scale: 0,
+				walletCashUsdc: 20,
+				plan: { version: 1, status: "blocked" },
+				cohortCreations: [],
+				cohortReductions: [],
+				buys: [],
+				cancellations: [],
+			}),
+		).rejects.toThrow("halted by an ambiguous placement");
+	});
+
 	it("rejects a second live ledger row for the same v3 cohort before placement", async () => {
 		const db = getSeedDb();
 		const logger = {
@@ -863,6 +1056,17 @@ describe("position-gap runtime persistence", () => {
 				attributes: { token_id: clientOrderId },
 			},
 		});
+		await db
+			.update(polyCopyTradeFills)
+			.set({
+				price: "0.002",
+				shares: "12",
+				attributes: {
+					filled_size_usdc: 0.024,
+					realized_fill_source: "data_api_activity_position",
+				},
+			})
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
 
 		await Promise.all([
 			ledger.markOrderId({
@@ -905,6 +1109,313 @@ describe("position-gap runtime persistence", () => {
 		expect(Number(row?.attributes?.filled_size_usdc)).toBe(0.012);
 		expect(row?.attributes?.realized_fill_source).toBe(
 			"clob_associated_trades",
+		);
+	});
+
+	it("atomically repairs a pruned PGv3 fill from exact Data API evidence", async () => {
+		const db = getSeedDb();
+		const store = new PositionGapRuntimeStore(db);
+		const targetId = randomUUID();
+		const runId = randomUUID();
+		const cohortId = randomUUID();
+		const actionId = randomUUID();
+		const clientOrderId = `data-api-repair-${randomUUID()}`;
+		const orderId = `0x${"1".repeat(64)}`;
+		const scope = {
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId,
+		};
+		await db.insert(polyPositionGapRuns).values({
+			id: runId,
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId,
+			budgetUsdc: "10",
+			walletCashUsdcAtStart: "10",
+			status: "completed",
+			completedAt: asOf,
+		});
+		await db.insert(polyPositionGapCohorts).values({
+			id: cohortId,
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId,
+			cohortKey: "data-api-repair-cohort",
+			sourceKind: "activation",
+			sourceConfigRevision: "rev",
+			sourceSnapshotId: "snapshot",
+			sourceSnapshotHash: "hash",
+			sourceSnapshotAsOf: asOf,
+			sourceProvenance: {},
+			createdRunId: runId,
+			conditionId: "condition-data-api-repair",
+			tokenId: "token-data-api-repair",
+			marketId: "prediction-market:polymarket:condition-data-api-repair",
+			outcome: "1",
+			targetDeltaShares: "9.3",
+			scaleAtCreation: "1",
+			allowedMirrorShares: "9.3",
+			initialAllowedMirrorShares: "9.3",
+			benchmarkTargetVwap: "0.3867",
+			acquiredShares: "9.3",
+			remainingShares: "0",
+			status: "exhausted",
+		});
+		await db.insert(polyPositionGapActions).values({
+			id: actionId,
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId,
+			runId,
+			cohortId,
+			cohortKey: "data-api-repair-cohort",
+			actionKey: "data-api-repair-action",
+			kind: "buy",
+			conditionId: "condition-data-api-repair",
+			tokenId: "token-data-api-repair",
+			marketId: "prediction-market:polymarket:condition-data-api-repair",
+			outcome: "1",
+			desiredShares: "9.306",
+			filledShares: "9.3",
+			filledUsdc: "3.5898",
+			notionalUsdc: "3.592216",
+			limitPrice: "0.386",
+			plannerAction: { fill_accounting_status: "pending" },
+			clientOrderId,
+			orderId,
+			status: "filled",
+			submitStartedAt: new Date("2026-10-08T04:47:47.865Z"),
+			completedAt: new Date("2026-10-08T04:48:00.000Z"),
+		});
+		await db.insert(polyPositionGapReservations).values({
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId,
+			cohortId,
+			buyActionId: actionId,
+			budgetNotionalUsdc: "3.592216",
+			executorCashGuardAtomic: "3951438",
+			cashGuardSource: "test",
+			filledCostUsdc: "3.5898",
+		});
+		await db.insert(polyCopyTradeFills).values({
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId,
+			fillId: "position-gap-v3:data-api-repair-action",
+			marketId: "prediction-market:polymarket:condition-data-api-repair",
+			observedAt: asOf,
+			clientOrderId,
+			orderId,
+			status: "filled",
+			price: "0.386",
+			shares: "9.3",
+			attributes: {
+				position_gap_version: "3",
+				filled_size_usdc: 3.5898,
+			},
+		});
+
+		const evidence = {
+			status: "verified" as const,
+			source: "data_api_activity_position" as const,
+			wallet: "0x8ca45685c5827f7acfdd890214180c4ea9d0bf58" as const,
+			shares: 9.3,
+			filledUsdc: 0.009295,
+			grossCashUsdc: 0.00976,
+			fillPrice: 0.009295 / 9.3,
+			feesUsdc: 0.00046,
+			transactionHashes: [`0x${"2".repeat(64)}`],
+			evidenceStart: "2026-10-08T04:47:42.000Z",
+			evidenceEnd: "2026-10-08T04:48:30.000Z",
+		};
+		expect(
+			await store.markFillAccountingMismatch(
+				scope,
+				actionId,
+				"missing_activity",
+				"no exact activity yet",
+			),
+		).toMatchObject({
+			from: "pending",
+			to: "mismatch",
+			reason: "missing_activity",
+		});
+		expect(
+			await store.applyDataApiFillAccounting(scope, actionId, evidence),
+		).toMatchObject({ from: "mismatch", to: "verified" });
+		expect(
+			await store.applyDataApiFillAccounting(scope, actionId, evidence),
+		).toMatchObject({ from: "verified", to: "verified" });
+		const ledgerPort = createOrderLedger({
+			db,
+			logger: {
+				debug: () => undefined,
+				info: () => undefined,
+				warn: () => undefined,
+				error: () => undefined,
+				child() {
+					return this;
+				},
+			} as never,
+		});
+		await ledgerPort.markOrderId({
+			client_order_id: clientOrderId,
+			receipt: {
+				order_id: orderId,
+				client_order_id: clientOrderId,
+				status: "filled",
+				filled_size_usdc: 1,
+				fill_price: 0.1,
+				total_shares: 10,
+				submitted_at: "2026-10-08T04:47:47.865Z",
+			},
+		});
+		await expect(
+			store.applyDataApiFillAccounting(
+				{ ...scope, targetId: targetB },
+				actionId,
+				evidence,
+			),
+		).rejects.toThrow("attribution changed");
+
+		const [action] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, actionId));
+		const [ledger] = await db
+			.select()
+			.from(polyCopyTradeFills)
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
+		const [reservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, actionId));
+		expect(Number(action?.filledUsdc)).toBe(0.009295);
+		expect(action?.plannerAction.realized_fill_source).toBe(
+			"data_api_activity_position",
+		);
+		expect(ledger?.status).toBe("filled");
+		expect(Number(ledger?.price)).toBeCloseTo(0.009295 / 9.3, 8);
+		expect(Number(ledger?.shares)).toBe(9.3);
+		expect(Number(ledger?.feesUsdc)).toBe(0.00046);
+		expect(ledger?.attributes?.filled_size_usdc).toBe(0.009295);
+		expect(ledger?.attributes?.fill_accounting_gross_cash_usdc).toBe(0.00976);
+		expect(ledger?.attributes?.realized_fill_source).toBe(
+			"data_api_activity_position",
+		);
+		expect(Number(reservation?.filledCostUsdc)).toBe(0.00976);
+
+		// Crash window 1: the runtime action committed authoritative CLOB
+		// accounting while the ledger and reservation retained older Data evidence.
+		await db
+			.update(polyPositionGapActions)
+			.set({
+				filledUsdc: "0.008",
+				plannerAction: {
+					...action?.plannerAction,
+					realized_fill_source: "clob_associated_trades",
+					fill_accounting_status: "verified",
+				},
+			})
+			.where(eq(polyPositionGapActions.id, actionId));
+		await db
+			.update(polyCopyTradeFills)
+			.set({
+				price: evidence.fillPrice.toString(),
+				feesUsdc: evidence.feesUsdc.toString(),
+				attributes: {
+					...ledger?.attributes,
+					filled_size_usdc: evidence.filledUsdc,
+					realized_fill_source: "data_api_activity_position",
+				},
+			})
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
+		await db
+			.update(polyPositionGapReservations)
+			.set({ filledCostUsdc: evidence.grossCashUsdc.toString() })
+			.where(eq(polyPositionGapReservations.buyActionId, actionId));
+		expect(
+			await store.applyDataApiFillAccounting(scope, actionId, evidence),
+		).toMatchObject({ source: "clob_associated_trades", to: "verified" });
+
+		let [convergedAction] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, actionId));
+		let [convergedLedger] = await db
+			.select()
+			.from(polyCopyTradeFills)
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
+		let [convergedReservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, actionId));
+		expect(Number(convergedAction?.filledUsdc)).toBe(0.008);
+		expect(convergedLedger?.attributes?.realized_fill_source).toBe(
+			"clob_associated_trades",
+		);
+		expect(Number(convergedLedger?.attributes?.filled_size_usdc)).toBe(0.008);
+		expect(Number(convergedReservation?.filledCostUsdc)).toBe(0.00846);
+
+		// Crash window 2: the ledger committed authoritative CLOB accounting while
+		// the runtime action and reservation retained older Data evidence.
+		await db
+			.update(polyPositionGapActions)
+			.set({
+				filledUsdc: evidence.filledUsdc.toString(),
+				plannerAction: {
+					...convergedAction?.plannerAction,
+					realized_fill_source: "data_api_activity_position",
+					fill_accounting_status: "verified",
+				},
+			})
+			.where(eq(polyPositionGapActions.id, actionId));
+		await db
+			.update(polyCopyTradeFills)
+			.set({
+				price: (0.012 / 9.3).toString(),
+				shares: "9.3",
+				feesUsdc: "0.0003",
+				attributes: {
+					...convergedLedger?.attributes,
+					filled_size_usdc: 0.012,
+					realized_fill_source: "clob_associated_trades",
+				},
+			})
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
+		await db
+			.update(polyPositionGapReservations)
+			.set({ filledCostUsdc: evidence.grossCashUsdc.toString() })
+			.where(eq(polyPositionGapReservations.buyActionId, actionId));
+		expect(
+			await store.applyDataApiFillAccounting(scope, actionId, evidence),
+		).toMatchObject({ source: "clob_associated_trades", to: "verified" });
+		expect(
+			await store.applyDataApiFillAccounting(scope, actionId, evidence),
+		).toMatchObject({ source: "clob_associated_trades", to: "verified" });
+		[convergedAction] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, actionId));
+		[convergedLedger] = await db
+			.select()
+			.from(polyCopyTradeFills)
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
+		[convergedReservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, actionId));
+		expect(Number(convergedAction?.filledUsdc)).toBe(0.012);
+		expect(convergedAction?.plannerAction.realized_fill_source).toBe(
+			"clob_associated_trades",
+		);
+		expect(Number(convergedLedger?.attributes?.filled_size_usdc)).toBe(0.012);
+		expect(Number(convergedReservation?.filledCostUsdc)).toBe(0.0123);
+		expect(Number(convergedReservation?.releasedBudgetUsdc)).toBeCloseTo(
+			3.592216 - 0.0123,
+			8,
 		);
 	});
 

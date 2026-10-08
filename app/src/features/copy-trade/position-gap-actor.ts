@@ -24,14 +24,20 @@ import {
 
 import { requiredBuyCollateralAtomic } from "@/bootstrap/capabilities/poly-trade-executor";
 import {
+	effectivePositionGapBudget,
+	type PositionGapBudgetGroup,
+} from "@/features/copy-trade/position-gap-budget";
+import {
 	type PositionGapTargetActivity,
 	projectPositionGapCohorts,
 } from "@/features/copy-trade/position-gap-cohorts";
 import {
-	effectivePositionGapBudget,
-	type PositionGapBudgetGroup,
-} from "@/features/copy-trade/position-gap-budget";
+	type PositionGapFillEvidencePort,
+	reconcilePositionGapFillEvidence,
+} from "@/features/copy-trade/position-gap-fill-evidence";
+import { isStructuredClobRejection } from "@/features/copy-trade/position-gap-placement-errors";
 import type {
+	PositionGapAccountingTransition,
 	PositionGapActiveBuy,
 	PositionGapPreparedCancel,
 	PositionGapRuntimeScope,
@@ -81,6 +87,7 @@ export interface PositionGapActorDeps {
 	store: PositionGapRuntimeStore;
 	ledger: OrderLedger;
 	execution: PositionGapBuyExecutionPort;
+	fillEvidence: PositionGapFillEvidencePort;
 	getWalletCashUsdc(): Promise<number>;
 	/** Exact Polygon CTF `balanceOfBatch`, including both binary legs. */
 	getAuthoritativeShares(
@@ -310,7 +317,7 @@ export function startPositionGapActor(
 		causalDirty.clear();
 		causalWatermarkMs = 0;
 
-		await reconcileKnownOrders();
+		const accountingTransitions = await reconcileKnownOrders();
 		await deps.store.reconcileLedgerTerminals(deps.scope);
 		await deps.store.releaseTerminalExposure(deps.scope);
 		const runtime = await deps.store.loadPlannerState(deps.scope);
@@ -417,10 +424,29 @@ export function startPositionGapActor(
 			plan,
 			cohortCreations: cohortProjection.creations,
 			cohortReductions: cohortProjection.reductions,
+			accountingTransitions,
 		});
 	}
-
-	async function reconcileKnownOrders(): Promise<void> {
+	async function reconcileKnownOrders(): Promise<
+		readonly PositionGapAccountingTransition[]
+	> {
+		const transitions: PositionGapAccountingTransition[] = [];
+		const recovered = await deps.store.recoverKnownRejectedAmbiguities(
+			deps.scope,
+		);
+		for (const action of recovered) {
+			deps.logger.warn(
+				{
+					event: "poly.position_gap.v3.ambiguous_rejection_recovered",
+					billing_account_id: deps.scope.billingAccountId,
+					target_id: deps.scope.targetId,
+					action_id: action.id,
+					client_order_id: action.clientOrderId,
+					error_code: action.errorCode,
+				},
+				"position-gap recovered a durable hard CLOB rejection",
+			);
+		}
 		const runtime = await deps.store.loadPlannerState(deps.scope);
 		for (const action of runtime.activeBuys) {
 			const terminalReason = ledgerTerminals.get(action.clientOrderId);
@@ -440,7 +466,14 @@ export function startPositionGapActor(
 				result = await deps.execution.getBuy(action.orderId);
 			} catch (error) {
 				if (error instanceof FillAccountingPendingError) {
-					await deps.store.markFillAccountingPending(action.id, error.message);
+					if (["filled", "canceled"].includes(action.status)) {
+						transitions.push(await repairFromDataApi(action));
+					} else {
+						await deps.store.markFillAccountingPending(
+							action.id,
+							error.message,
+						);
+					}
 					continue;
 				}
 				if (["filled", "canceled"].includes(action.status)) {
@@ -459,11 +492,46 @@ export function startPositionGapActor(
 					receipt: result.found,
 				});
 			} else if (["filled", "canceled"].includes(action.status)) {
-				await deps.store.markFillAccountingPending(
-					action.id,
-					`CLOB order ${action.orderId} is unavailable for legacy fill repair`,
-				);
+				transitions.push(await repairFromDataApi(action));
 			}
+		}
+		return transitions;
+	}
+
+	async function repairFromDataApi(
+		action: PositionGapActiveBuy,
+	): Promise<PositionGapAccountingTransition> {
+		try {
+			const result = await reconcilePositionGapFillEvidence({
+				port: deps.fillEvidence,
+				conditionId: action.conditionId,
+				tokenId: action.tokenId,
+				expectedShares: action.filledShares,
+				submitStartedAt: action.submitStartedAt,
+				completedAt: action.completedAt,
+				hasOverlappingOrder: await deps.store.hasOverlappingFillEvidenceOrder(
+					deps.scope,
+					action,
+				),
+			});
+			return result.status === "verified"
+				? deps.store.applyDataApiFillAccounting(deps.scope, action.id, result)
+				: deps.store.markFillAccountingMismatch(
+						deps.scope,
+						action.id,
+						result.reason,
+						result.detail,
+					);
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			await deps.store.markFillAccountingPending(action.id, detail);
+			return {
+				actionId: action.id,
+				from: "pending",
+				to: "pending",
+				source: null,
+				reason: "data_api_unavailable",
+			};
 		}
 	}
 
@@ -541,6 +609,7 @@ export function startPositionGapActor(
 		cohortReductions: ReturnType<
 			typeof projectPositionGapCohorts
 		>["reductions"];
+		accountingTransitions: readonly PositionGapAccountingTransition[];
 	}): Promise<void> {
 		const preparedBuys = input.plan.intents.map((intent) => {
 			const token = tokenById(input.snapshot, intent.tokenId);
@@ -695,6 +764,8 @@ export function startPositionGapActor(
 					target_wallet: deps.targetWallet,
 					target_id: deps.scope.targetId,
 					run_id: persisted.runId,
+					trigger_reasons: input.triggerReasons,
+					fill_accounting_transitions: input.accountingTransitions,
 					outcome,
 					snapshot_id: input.snapshot.snapshotId,
 					snapshot_as_of: input.snapshot.updatedAtMs,
@@ -760,6 +831,7 @@ export function startPositionGapActor(
 			| "stale_snapshot",
 	): Promise<void> {
 		const runtime = await deps.store.loadPlannerState(deps.scope);
+		const unresolvedPlacements: string[] = [];
 		for (const action of runtime.activeBuys) {
 			if (
 				!action.orderId &&
@@ -775,13 +847,18 @@ export function startPositionGapActor(
 				!action.orderId &&
 				(action.status === "submitting" || action.status === "ambiguous")
 			) {
-				throw new Error(
-					`cannot safely stop position-gap with unresolved ${action.status} action ${action.id}`,
-				);
+				unresolvedPlacements.push(`${action.status} action ${action.id}`);
 			}
 		}
 		const orders = runtime.openBuyOrders;
-		if (orders.length === 0) return;
+		if (orders.length === 0) {
+			if (unresolvedPlacements.length > 0) {
+				throw new Error(
+					`cannot safely stop position-gap with unresolved ${unresolvedPlacements.join("; ")}`,
+				);
+			}
+			return;
+		}
 		const snapshot =
 			lastSnapshot ?? (await deps.store.loadLastSnapshot(deps.scope));
 		if (!snapshot) {
@@ -848,15 +925,41 @@ export function startPositionGapActor(
 				action.orderId ? [[action.orderId, action] as const] : [],
 			),
 		);
+		const cancellationFailures: string[] = [];
 		for (const cancellation of persisted.cancellations) {
 			const active = activeByOrder.get(cancellation.orderId);
-			await requireConfirmedSafetyCancellation({
-				execution: deps.execution,
-				store: deps.store,
-				ledger: deps.ledger,
-				cancellation,
-				...(active ? { active } : {}),
-			});
+			try {
+				await requireConfirmedSafetyCancellation({
+					execution: deps.execution,
+					store: deps.store,
+					ledger: deps.ledger,
+					cancellation,
+					...(active ? { active } : {}),
+				});
+			} catch (error) {
+				cancellationFailures.push(
+					`${cancellation.orderId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+		if (
+			cancellationFailures.length > 0 ||
+			unresolvedPlacements.length > 0
+		) {
+			throw new Error(
+				[
+					...(cancellationFailures.length > 0
+						? [
+								`position-gap safety cancellation failed for ${cancellationFailures.join("; ")}`,
+							]
+						: []),
+					...(unresolvedPlacements.length > 0
+						? [
+								`cannot safely stop position-gap with unresolved ${unresolvedPlacements.join("; ")}`,
+							]
+						: []),
+				].join("; "),
+			);
 		}
 		await deps.store.finishRun(persisted.runId, "halted", reason);
 	}
@@ -995,7 +1098,8 @@ export function knownNoOrder(error: unknown): boolean {
 		(error as Error & { code?: string }).code === "not_authorized"
 	)
 		return true;
-	if (error instanceof ClobRejectionError) return true;
+	if (error instanceof ClobRejectionError || isStructuredClobRejection(error))
+		return true;
 	return (error as Error & { code?: string }).code === BELOW_MARKET_MIN_CODE;
 }
 

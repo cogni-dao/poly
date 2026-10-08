@@ -3,12 +3,13 @@
 
 /** Bounded latest-run read model shared by the owner UI and account-read agents. */
 
+import { polyCopyTradeFills } from "@cogni/db-schema/copy-trade";
 import {
 	polyPositionGapActions,
 	polyPositionGapRuns,
 } from "@cogni/db-schema/position-gap";
-import { polyCopyTradeFills } from "@cogni/db-schema/copy-trade";
 import {
+	PolyPositionGapFillAccountingMismatchReasonSchema,
 	type PolyPositionGapRuntime,
 	PolyPositionGapRuntimeSchema,
 } from "@cogni/poly-node-contracts";
@@ -18,6 +19,7 @@ import type { AgentGrantTransaction } from "@/features/agent-grants/authorizatio
 import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 
 const MAX_POSITIONS = 2_000;
+const MAX_RECENT_ORDERS = 50;
 type Run = {
 	id: string;
 	targetId: string;
@@ -42,6 +44,26 @@ type Run = {
 	completedAt: Date | string | null;
 };
 
+type RecentOrder = {
+	id: string;
+	targetId: string;
+	clientOrderId: string;
+	orderId: string | null;
+	conditionId: string;
+	tokenId: string;
+	status: string;
+	submitStartedAt: Date | string | null;
+	completedAt: Date | string | null;
+	desiredShares: string | number;
+	notionalUsdc: string | number;
+	limitPrice: string | number;
+	plannerAction: Record<string, unknown>;
+	ledgerPrice: string | number | null;
+	ledgerShares: string | number | null;
+	ledgerFeesUsdc: string | number | null;
+	ledgerAttributes: Record<string, unknown> | null;
+};
+
 const rowsOf = <T>(result: unknown): T[] =>
 	Array.isArray(result)
 		? (result as T[])
@@ -61,6 +83,63 @@ const isoOf = (value: Date | string | null): string | null => {
 	return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 };
 
+function toRecentOrder(row: RecentOrder) {
+	const attributes = recordOf(row.ledgerAttributes) ?? {};
+	const source = attributes.realized_fill_source;
+	const realizedShares = numberOf(row.ledgerShares);
+	const realizedUsdc = numberOf(attributes.filled_size_usdc);
+	const realizedPrice = numberOf(row.ledgerPrice);
+	const verified =
+		(source === "clob_associated_trades" ||
+			source === "data_api_activity_position") &&
+		realizedShares !== null &&
+		realizedShares > 0 &&
+		realizedUsdc !== null &&
+		realizedUsdc > 0 &&
+		realizedPrice !== null &&
+		realizedPrice > 0;
+	const mismatchReason =
+		row.plannerAction.fill_accounting_status === "mismatch"
+			? PolyPositionGapFillAccountingMismatchReasonSchema.safeParse(
+					row.plannerAction.fill_accounting_mismatch_reason,
+				).data
+			: undefined;
+	const fillAccounting = verified
+		? {
+				status: "verified" as const,
+				source,
+				matched_order_count: 1,
+				realized_shares: realizedShares,
+				realized_entry_notional_usdc: realizedUsdc,
+			}
+		: mismatchReason
+			? {
+					status: "mismatch" as const,
+					source: "data_api_activity_position" as const,
+					reason: mismatchReason,
+				}
+			: {
+					status: "pending" as const,
+					source: "clob_order_receipt" as const,
+				};
+	return {
+		action_id: row.id,
+		client_order_id: row.clientOrderId,
+		order_id: row.orderId,
+		condition_id: row.conditionId,
+		token_id: row.tokenId,
+		status: row.status,
+		submit_started_at: isoOf(row.submitStartedAt),
+		completed_at: isoOf(row.completedAt),
+		intended_shares: numberOf(row.desiredShares),
+		intended_notional_usdc: numberOf(row.notionalUsdc),
+		limit_price: numberOf(row.limitPrice),
+		fill_accounting: fillAccounting,
+		realized_fill_price: verified ? realizedPrice : null,
+		fees_usdc: verified ? numberOf(row.ledgerFeesUsdc) : null,
+	};
+}
+
 function runtimeFromRun(
 	run: Run,
 	execution: {
@@ -69,7 +148,12 @@ function runtimeFromRun(
 		verifiedMatched: unknown;
 		verifiedShares: unknown;
 		verifiedUsdc: unknown;
+		clobVerified: unknown;
+		dataApiVerified: unknown;
+		mismatched: unknown;
+		mismatchReason: unknown;
 	},
+	recentOrders: readonly RecentOrder[],
 	capturedAt: Date,
 ): PolyPositionGapRuntime {
 	const plan = recordOf(run.plan);
@@ -150,6 +234,19 @@ function runtimeFromRun(
 	const verifiedMatched = numberOf(execution.verifiedMatched) ?? 0;
 	const verifiedShares = numberOf(execution.verifiedShares) ?? 0;
 	const verifiedUsdc = numberOf(execution.verifiedUsdc) ?? 0;
+	const mismatch = PolyPositionGapFillAccountingMismatchReasonSchema.safeParse(
+		execution.mismatchReason,
+	);
+	const mismatchReason = mismatch.success ? mismatch.data : null;
+	const mismatched = numberOf(execution.mismatched) ?? 0;
+	const clobVerified = (numberOf(execution.clobVerified) ?? 0) > 0;
+	const dataApiVerified = (numberOf(execution.dataApiVerified) ?? 0) > 0;
+	const verifiedSource =
+		clobVerified && dataApiVerified
+			? ("mixed_verified_sources" as const)
+			: dataApiVerified
+				? ("data_api_activity_position" as const)
+				: ("clob_associated_trades" as const);
 	const fillAccounting =
 		reportedMatched > 0 &&
 		reportedMatched === verifiedMatched &&
@@ -157,15 +254,22 @@ function runtimeFromRun(
 		verifiedUsdc > 0
 			? {
 					status: "verified" as const,
-					source: "clob_associated_trades" as const,
+					source: verifiedSource,
 					matched_order_count: verifiedMatched,
 					realized_shares: verifiedShares,
 					realized_entry_notional_usdc: verifiedUsdc,
 				}
-			: {
-					status: "pending" as const,
-					source: "clob_order_receipt" as const,
-				};
+			: mismatched > 0 && mismatchReason !== null
+				? {
+						status: "mismatch" as const,
+						source: "data_api_activity_position" as const,
+						reason: mismatchReason,
+					}
+				: {
+						status: "pending" as const,
+						source: "clob_order_receipt" as const,
+					};
+	const orderRows = recentOrders.map(toRecentOrder);
 	const parsed = PolyPositionGapRuntimeSchema.safeParse({
 		status: "observed",
 		run: {
@@ -212,6 +316,8 @@ function runtimeFromRun(
 			scope: "target_lifetime",
 			submitted_order_count: numberOf(execution.submitted),
 			fill_accounting: fillAccounting,
+			recent_orders_truncated: orderRows.length > MAX_RECENT_ORDERS,
+			recent_orders: orderRows.slice(0, MAX_RECENT_ORDERS),
 		},
 		position_count: positions.length,
 		positions_truncated: positions.length > MAX_POSITIONS,
@@ -251,6 +357,20 @@ export async function readPositionGapRuntimeByWallet(
 					observedTargetIds,
 				);
 	const execution = new Map(actionRows.map((row) => [row.targetId, row]));
+	const recentOrders =
+		runs.length === 0
+			? []
+			: rowsOf<RecentOrder>(
+					await tx.execute(
+						positionGapRecentOrdersSelect(accountId, observedTargetIds),
+					),
+				);
+	const recentOrdersByTarget = new Map<string, RecentOrder[]>();
+	for (const order of recentOrders) {
+		const rows = recentOrdersByTarget.get(order.targetId) ?? [];
+		rows.push(order);
+		recentOrdersByTarget.set(order.targetId, rows);
+	}
 	return new Map(
 		runs.map((run) => [
 			walletByTargetId.get(run.targetId) ?? "",
@@ -262,12 +382,52 @@ export async function readPositionGapRuntimeByWallet(
 					verifiedMatched: 0,
 					verifiedShares: 0,
 					verifiedUsdc: 0,
+					clobVerified: 0,
+					dataApiVerified: 0,
+					mismatched: 0,
+					mismatchReason: null,
 				},
+				recentOrdersByTarget.get(run.targetId) ?? [],
 				capturedAt,
 			),
 		]),
 	);
 }
+
+/** Bounded newest PGv3 BUY tape per target for account-read parity. */
+export const positionGapRecentOrdersSelect = (
+	accountId: string,
+	targetIds: readonly string[],
+) => sql`
+	SELECT
+		a.id AS "id", a.target_id AS "targetId",
+		a.client_order_id AS "clientOrderId", a.order_id AS "orderId",
+		a.condition_id AS "conditionId", a.token_id AS "tokenId",
+		a.status AS "status", a.submit_started_at AS "submitStartedAt",
+		a.completed_at AS "completedAt", a.desired_shares AS "desiredShares",
+		a.notional_usdc AS "notionalUsdc", a.limit_price AS "limitPrice",
+		a.planner_action AS "plannerAction", f.price AS "ledgerPrice",
+		f.shares AS "ledgerShares", f.fees_usdc AS "ledgerFeesUsdc",
+		f.attributes AS "ledgerAttributes"
+	FROM unnest(ARRAY[${sql.join(
+		targetIds.map((id) => sql`${id}::uuid`),
+		sql`, `,
+	)}]::uuid[]) AS wanted(target_id)
+	CROSS JOIN LATERAL (
+		SELECT * FROM ${polyPositionGapActions}
+		WHERE ${polyPositionGapActions.billingAccountId} = ${accountId}
+			AND ${polyPositionGapActions.targetId} = wanted.target_id
+			AND ${polyPositionGapActions.kind} = 'buy'
+			AND ${polyPositionGapActions.clientOrderId} IS NOT NULL
+		ORDER BY ${polyPositionGapActions.createdAt} DESC
+		LIMIT ${MAX_RECENT_ORDERS + 1}
+	) AS a
+	LEFT JOIN ${polyCopyTradeFills} AS f
+		ON f.billing_account_id = a.billing_account_id
+		AND f.target_id = a.target_id
+		AND f.client_order_id = a.client_order_id
+	ORDER BY a.target_id, a.created_at DESC
+`;
 
 /** Exact latest-run query, exported for its component EXPLAIN proof. */
 export const positionGapLatestRunsSelect = (
@@ -316,9 +476,15 @@ export const positionGapActionAggregateSelect = (
 			targetId: polyPositionGapActions.targetId,
 			submitted: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.submittedAt} IS NOT NULL)`,
 			reportedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.filledShares} > 0)`,
-			verifiedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades' AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$')`,
-			verifiedShares: sql<string>`COALESCE(SUM(${polyCopyTradeFills.shares}) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades' AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'), 0)`,
-			verifiedUsdc: sql<string>`COALESCE(SUM(CASE WHEN ${polyPositionGapActions.kind} = 'buy' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades' AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric ELSE 0 END), 0)`,
+			verifiedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position') AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$')`,
+			verifiedShares: sql<string>`COALESCE(SUM(${polyCopyTradeFills.shares}) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position') AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'), 0)`,
+			verifiedUsdc: sql<string>`COALESCE(SUM(CASE WHEN ${polyPositionGapActions.kind} = 'buy' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position') AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric ELSE 0 END), 0)`,
+			clobVerified: sql<string>`count(*) FILTER (WHERE ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades')`,
+			dataApiVerified: sql<string>`count(*) FILTER (WHERE ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'data_api_activity_position')`,
+			mismatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.plannerAction}->>'fill_accounting_status' = 'mismatch')`,
+			mismatchReason: sql<
+				string | null
+			>`min(${polyPositionGapActions.plannerAction}->>'fill_accounting_mismatch_reason') FILTER (WHERE ${polyPositionGapActions.plannerAction}->>'fill_accounting_status' = 'mismatch')`,
 		})
 		.from(polyPositionGapActions)
 		.leftJoin(

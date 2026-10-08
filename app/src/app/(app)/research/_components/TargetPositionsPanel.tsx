@@ -3,7 +3,7 @@
 
 /**
  * Module: `@app/(app)/research/_components/TargetPositionsPanel`
- * Purpose: Minimal human view of the same saved target-position capability agents read.
+ * Purpose: Minimal human view of the same persisted target/runtime capability agents read.
  * Scope: Fetch + render only. No portfolio math or upstream calls.
  */
 
@@ -12,10 +12,10 @@
 import type {
 	PolyAccountTargetPositionsResponse,
 	PolyTargetPositionsSort,
-	PolyTrackedTarget,
 } from "@cogni/poly-node-contracts";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 import {
@@ -38,8 +38,6 @@ import {
 	TableRow,
 } from "@/components";
 import { cn } from "@/shared/util/cn";
-
-import { fetchCopyTargets } from "../../dashboard/_api/fetchCopyTargets";
 
 const ALL_TARGETS = "all";
 
@@ -64,7 +62,13 @@ async function fetchTargetPositions(args: {
 }
 
 export function TargetPositionsPanel() {
-	const [targetWallet, setTargetWallet] = useState(ALL_TARGETS);
+	const searchParams = useSearchParams();
+	const requestedTarget = searchParams?.get("target_wallet") ?? null;
+	const [targetWallet, setTargetWallet] = useState(
+		requestedTarget && /^0x[a-fA-F0-9]{40}$/.test(requestedTarget)
+			? requestedTarget.toLowerCase()
+			: ALL_TARGETS,
+	);
 	const [sort, setSort] = useState<PolyTargetPositionsSort>("portfolio_weight");
 	const [cursorStack, setCursorStack] = useState<(string | null)[]>([null]);
 	const cursor = cursorStack.at(-1) ?? null;
@@ -75,23 +79,6 @@ export function TargetPositionsPanel() {
 		gcTime: 5 * 60_000,
 		placeholderData: (previous) => previous,
 	});
-	const setup = useQuery({
-		queryKey: ["dashboard-copy-targets"],
-		queryFn: fetchCopyTargets,
-		staleTime: 30_000,
-	});
-	const runtimes = new Map(
-		(setup.data?.targets ?? []).map((target) => [
-			target.target_wallet.toLowerCase(),
-			target,
-		]),
-	);
-	const visibleRuntimes = [...runtimes.values()].filter(
-		(target) =>
-			targetWallet === ALL_TARGETS ||
-			target.target_wallet.toLowerCase() === targetWallet.toLowerCase(),
-	);
-
 	const resetPage = () => setCursorStack([null]);
 
 	return (
@@ -99,7 +86,7 @@ export function TargetPositionsPanel() {
 			<CardHeader className="gap-3 px-5 py-3">
 				<div className="flex flex-wrap items-center justify-between gap-3">
 					<CardTitle className="font-semibold text-muted-foreground text-xs uppercase tracking-wider">
-						Target positions · live ≤6h
+						Target positions
 					</CardTitle>
 					<div className="flex flex-wrap gap-2">
 						<Select
@@ -143,9 +130,7 @@ export function TargetPositionsPanel() {
 						</Select>
 					</div>
 				</div>
-				{query.data ? (
-					<TargetFreshness data={query.data} runtimes={visibleRuntimes} />
-				) : null}
+				{query.data ? <TargetFreshness data={query.data} /> : null}
 			</CardHeader>
 			<CardContent className="p-0">
 				{query.isError ? (
@@ -160,7 +145,7 @@ export function TargetPositionsPanel() {
 					</div>
 				) : (query.data?.positions.length ?? 0) === 0 ? (
 					<p className="px-5 py-8 text-center text-muted-foreground text-sm">
-						No live saved positions.
+						No current positions.
 					</p>
 				) : (
 					<div className="overflow-x-auto">
@@ -190,6 +175,9 @@ export function TargetPositionsPanel() {
 										<TableCell className="font-medium text-xs">
 											{position.target_label ||
 												shortAddress(position.target_wallet)}
+											{position.row_source === "runtime_only"
+												? " · runtime"
+												: ""}
 										</TableCell>
 										<TableCell>
 											<div className="flex flex-col gap-0.5">
@@ -219,19 +207,22 @@ export function TargetPositionsPanel() {
 											{position.outcome ?? "—"}
 										</TableCell>
 										<TableCell className="text-right tabular-nums">
-											{formatPercent(position.portfolio_weight)}
+											{formatPercent(
+												position.runtime?.target_weight ??
+													position.portfolio_weight,
+											)}
 										</TableCell>
 										<TableCell className="text-right tabular-nums">
-											{formatNumber(position.shares)}
+											{formatMaybe(position.shares, formatNumber)}
 										</TableCell>
 										<TableCell className="text-right tabular-nums">
-											{formatUsd(position.cost_basis_usdc)}
+											{formatMaybe(position.cost_basis_usdc, formatUsd)}
 										</TableCell>
 										<TableCell className="text-right tabular-nums">
-											{formatUsd(position.current_value_usdc)}
+											{formatMaybe(position.current_value_usdc, formatUsd)}
 										</TableCell>
 										<TableCell className="text-right tabular-nums">
-											{formatPrice(position.entry_price)}
+											{formatMaybe(position.entry_price, formatPrice)}
 										</TableCell>
 										<TableCell className="text-right tabular-nums">
 											{position.current_price === null
@@ -249,20 +240,10 @@ export function TargetPositionsPanel() {
 												: formatSignedUsd(position.cash_pnl_usdc)}
 										</TableCell>
 										<TableCell className="text-right text-xs tabular-nums">
-											{mirrorText(
-												runtimes.get(position.target_wallet.toLowerCase()),
-												position.condition_id,
-												position.token_id,
-												"position",
-											)}
+											{mirrorText(position.runtime, "position")}
 										</TableCell>
 										<TableCell className="text-right text-muted-foreground text-xs tabular-nums">
-											{mirrorText(
-												runtimes.get(position.target_wallet.toLowerCase()),
-												position.condition_id,
-												position.token_id,
-												"limits",
-											)}
+											{mirrorText(position.runtime, "limits")}
 										</TableCell>
 										<TableCell className="text-right text-muted-foreground text-xs">
 											{timeAgo(position.last_observed_at)}
@@ -312,10 +293,8 @@ export function TargetPositionsPanel() {
 
 function TargetFreshness({
 	data,
-	runtimes,
 }: {
 	data: PolyAccountTargetPositionsResponse;
-	runtimes: readonly PolyTrackedTarget[];
 }) {
 	return (
 		<div className="flex flex-wrap gap-2">
@@ -338,8 +317,10 @@ function TargetFreshness({
 					· {target.observation.freshness} · {target.observation.completeness}
 				</Badge>
 			))}
-			{runtimes
-				.filter((target) => target.policy.effective_kind === "position_gap")
+			{data.targets
+				.filter(
+					(target) => target.position_gap_runtime.status !== "not_applicable",
+				)
 				.map((target) => (
 					<Badge
 						key={`mirror:${target.target_id}`}
@@ -358,7 +339,7 @@ function TargetFreshness({
 }
 
 function runtimeSummary(
-	runtime: PolyTrackedTarget["position_gap_runtime"],
+	runtime: PolyAccountTargetPositionsResponse["targets"][number]["position_gap_runtime"],
 ): string {
 	if (runtime.status === "pending") return "awaiting first plan";
 	if (runtime.status === "unavailable") return "plan unavailable";
@@ -383,7 +364,7 @@ function runtimeSummary(
 }
 
 function runtimeAtRest(
-	runtime: PolyTrackedTarget["position_gap_runtime"],
+	runtime: PolyAccountTargetPositionsResponse["targets"][number]["position_gap_runtime"],
 ): boolean {
 	return (
 		runtime.status === "observed" &&
@@ -402,7 +383,7 @@ function runtimeAtRest(
 }
 
 function runtimeHealthy(
-	runtime: PolyTrackedTarget["position_gap_runtime"],
+	runtime: PolyAccountTargetPositionsResponse["targets"][number]["position_gap_runtime"],
 ): boolean {
 	return (
 		runtime.status === "observed" &&
@@ -413,45 +394,22 @@ function runtimeHealthy(
 	);
 }
 
-function mirrorPosition(
-	target: PolyTrackedTarget | undefined,
-	conditionId: string,
-	tokenId: string,
-) {
-	const runtime = target?.position_gap_runtime;
-	if (runtime?.status !== "observed") return null;
-	const rows = runtime.positions.filter(
-		(row) => row.condition_id === conditionId && row.token_id === tokenId,
-	);
-	if (rows.length === 0) return null;
-	const finite = (values: Array<number | null>) =>
-		values.filter((value): value is number => value !== null);
-	const priceCaps = finite(rows.map((row) => row.price_cap));
-	const floors = finite(rows.map((row) => row.market_floor_usdc));
-	return {
-		desired: rows.reduce((sum, row) => sum + row.desired_shares, 0),
-		held: rows.reduce((sum, row) => sum + row.held_shares, 0),
-		open: rows.reduce((sum, row) => sum + row.open_shares, 0),
-		gap: rows.reduce((sum, row) => sum + row.gap_shares, 0),
-		locked: Math.max(...rows.map((row) => row.locked_overweight_shares)),
-		priceCap: priceCaps.length ? Math.min(...priceCaps) : null,
-		floor: floors.length ? Math.min(...floors) : null,
-		reason: [...new Set(rows.map((row) => row.decision_reason))].join(", "),
-	};
-}
-
 function mirrorText(
-	target: PolyTrackedTarget | undefined,
-	conditionId: string,
-	tokenId: string,
+	mirror: PolyAccountTargetPositionsResponse["positions"][number]["runtime"],
 	kind: "position" | "limits",
 ): string {
-	const mirror = mirrorPosition(target, conditionId, tokenId);
 	if (!mirror) return "—";
 	if (kind === "limits") {
-		return `${mirror.priceCap === null ? "—" : `≤${formatPrice(mirror.priceCap)}`} · ${mirror.floor === null ? "—" : `${formatUsd(mirror.floor)} floor`} · ${mirror.reason}`;
+		return `${mirror.price_cap === null ? "—" : `≤${formatPrice(mirror.price_cap)}`} · ${mirror.market_floor_usdc === null ? "—" : `${formatUsd(mirror.market_floor_usdc)} floor`} · ${mirror.decision_reasons.join(", ")}`;
 	}
-	return `${formatNumber(mirror.held)}/${formatNumber(mirror.desired)} · open ${formatNumber(mirror.open)} · gap ${formatNumber(mirror.gap)}${mirror.locked ? ` · ${formatNumber(mirror.locked)} locked` : ""}`;
+	return `${formatNumber(mirror.held_shares)}/${formatNumber(mirror.desired_shares)} · open ${formatNumber(mirror.open_shares)} · gap ${formatNumber(mirror.gap_shares)}${mirror.locked_overweight_shares ? ` · ${formatNumber(mirror.locked_overweight_shares)} locked` : ""}`;
+}
+
+function formatMaybe(
+	value: number | null,
+	format: (value: number) => string,
+): string {
+	return value === null ? "—" : format(value);
 }
 
 function shortAddress(address: string): string {

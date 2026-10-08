@@ -7,13 +7,19 @@
  *   create (inline `TradingWalletConnectFlow` when `configured && !connected`),
  *   fund (pUSD / USDC.e / POL readout + Polygon bridge link), enable trading
  *   (`TradingReadinessSection`, task.0355), withdraw dialog, and stubbed fund
- *   button (task.0352). An explicit owner-only reset escape hatch revokes an
- *   empty broken connection so the normal connect flow can reprovision it.
+ *   button (task.0352).
  * Scope: Client component. React Query fetches `/wallet/status` + `/wallet/balances`;
  *   reads the session via `next-auth/react` only to surface `userId` to the
  *   inline connect flow. On `onConnected`, invalidates `poly-wallet-status`
  *   so the panel flips from "create" to "balances" without a reload.
  * Invariants:
+ *   - NO_SELF_SERVE_RESET: wallet reset is a privileged recovery tool and must
+ *     never have an entry point on this page. Its guards block on residual
+ *     funds and unsettled orders, but a healthy funded wallet that happens to
+ *     be flat passes all of them and is revoked on a mis-click, losing its
+ *     CLOB credentials and readiness stamp. Operator-driven recovery goes
+ *     through the owner-scoped API route instead. Pinned by
+ *     `tests/meta/poly-product-wiring`.
  *   - ENABLE_TRADING_VISIBLE: when connected AND `trading_ready=false`, the
  *     readiness section is the primary above-the-fold CTA on this card.
  *     Without it the user cannot reach the CLOB — APPROVALS_BEFORE_PLACE
@@ -44,12 +50,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Info } from "lucide-react";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import { type ReactElement, useEffect, useState } from "react";
+import type { ReactElement } from "react";
 import { AddressChip, Card, HintText } from "@/components";
 import { AutoWrapToggle } from "./AutoWrapToggle";
 import { TradingReadinessSection } from "./TradingReadinessSection";
 import { TradingWalletConnectFlow } from "./TradingWalletConnectFlow";
-import { TradingWalletResetButton } from "./TradingWalletResetButton";
 import { TradingWalletWithdrawDialog } from "./TradingWalletWithdrawDialog";
 
 async function fetchWalletStatus(): Promise<PolyWalletStatusOutput> {
@@ -102,16 +107,6 @@ export function TradingWalletPanel(): ReactElement {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
   const userId = session?.user?.id ?? null;
-  const [reprovisionWaitSeconds, setReprovisionWaitSeconds] = useState(0);
-
-  useEffect(() => {
-    if (reprovisionWaitSeconds <= 0) return;
-    const timer = window.setInterval(() => {
-      setReprovisionWaitSeconds((seconds) => Math.max(0, seconds - 1));
-    }, 1_000);
-    return () => window.clearInterval(timer);
-  }, [reprovisionWaitSeconds]);
-
   const statusQuery = useQuery({
     queryKey: POLY_WALLET_STATUS_QUERY_KEY,
     queryFn: fetchWalletStatus,
@@ -158,12 +153,7 @@ export function TradingWalletPanel(): ReactElement {
           Trading wallet not enabled on this deployment.
         </p>
       ) : !connected ? (
-        reprovisionWaitSeconds > 0 ? (
-          <p className="text-muted-foreground text-sm">
-            Reset complete. Re-provisioning unlocks in about{" "}
-            {Math.ceil(reprovisionWaitSeconds / 60)} minute(s).
-          </p>
-        ) : userId ? (
+        userId ? (
           <TradingWalletConnectFlow
             userId={userId}
             onConnected={() => {
@@ -237,19 +227,6 @@ export function TradingWalletPanel(): ReactElement {
             <TradingWalletWithdrawDialog balances={balances} />
           </div>
 
-          <TradingWalletResetButton
-            onReset={(retryAfterSeconds) => {
-              setReprovisionWaitSeconds(retryAfterSeconds);
-              void Promise.all([
-                queryClient.invalidateQueries({
-                  queryKey: POLY_WALLET_STATUS_QUERY_KEY,
-                }),
-                queryClient.invalidateQueries({
-                  queryKey: ["poly-wallet-balances"],
-                }),
-              ]);
-            }}
-          />
 
           {balancesQuery.isError ? (
             <HintText icon={<Info size={16} />}>
