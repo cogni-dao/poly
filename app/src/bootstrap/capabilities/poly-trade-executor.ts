@@ -1088,14 +1088,16 @@ async function buildPaperOnlyExecutor(
   }
 
   function requirePaperPositions(operation: string): PaperPositionSource {
-    if (!paperPositions) {
+    // `??` rather than an `if` + narrowing: `paperRefuse` returns `never`, so
+    // this expression types as the port with no control-flow-analysis subtlety.
+    return (
+      paperPositions ??
       paperRefuse(
         operation,
         "paper_positions_unavailable",
         "no paper position source is wired on this deployment"
-      );
-    }
-    return paperPositions;
+      )
+    );
   }
 
   /**
