@@ -188,7 +188,10 @@ describe("market-exposure latest_snapshots CTE (dashboard floor fix)", () => {
     expect(comparisonSql).toContain("attributes->>'position_gap_version'");
     expect(comparisonSql).toContain("attributes->>'realized_fill_source'");
     expect(comparisonSql).toMatch(
-      /position_gap_version[^]*<> 'clob_associated_trades'[^]*THEN 0[^]*filled_size_usdc[^]*size_usdc/
+      /position_gap_version[^]*<> 'clob_associated_trades'[^]*THEN NULL[^]*filled_size_usdc[^]*size_usdc/
+    );
+    expect(comparisonSql).toContain(
+      "own_cost IS NULL OR l.own_cost <= 0"
     );
   });
 });

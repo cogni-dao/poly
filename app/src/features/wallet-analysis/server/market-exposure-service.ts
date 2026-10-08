@@ -776,7 +776,7 @@ async function readComparisonBundleRows(params: {
         CASE
           WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
             AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
-            THEN 0
+            THEN NULL
           WHEN COALESCE(f.attributes->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'
             THEN (f.attributes->>'filled_size_usdc')::numeric
           WHEN COALESCE(f.attributes->>'size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'
@@ -1061,7 +1061,7 @@ async function readComparisonBundleRows(params: {
             OR COALESCE(t.identity_ambiguous, false)
           ) THEN 'identity_ambiguous'
           WHEN p.status <> l.status THEN 'status_mismatch'
-          WHEN l.own_cost <= 0 THEN 'local_entry_unavailable'
+          WHEN l.own_cost IS NULL OR l.own_cost <= 0 THEN 'local_entry_unavailable'
           WHEN tc.condition_key IS NULL
             OR (p.status = 'live' AND NOT COALESCE(tc.current_active, false))
             THEN 'no_target_position'
