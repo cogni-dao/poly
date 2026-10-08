@@ -1199,7 +1199,10 @@ export class PositionGapRuntimeStore {
 			if (!before) return false;
 			const recoverableAmbiguity =
 				before.status === "ambiguous" &&
-				recoverableHardClobRejectionCode(before.errorDetail) !== null;
+				recoverableHardClobRejectionCode(
+					before.errorDetail,
+					before.submitStartedAt,
+				) !== null;
 			if (
 				!["reserved", "ledgered", "submitting"].includes(before.status) &&
 				!recoverableAmbiguity
@@ -1288,6 +1291,7 @@ export class PositionGapRuntimeStore {
 				id: polyPositionGapActions.id,
 				clientOrderId: polyPositionGapActions.clientOrderId,
 				errorDetail: polyPositionGapActions.errorDetail,
+				submitStartedAt: polyPositionGapActions.submitStartedAt,
 			})
 			.from(polyPositionGapActions)
 			.where(
@@ -1307,7 +1311,10 @@ export class PositionGapRuntimeStore {
 			errorCode: RecoverableHardClobRejectionCode;
 		}[];
 		for (const row of rows) {
-			const errorCode = recoverableHardClobRejectionCode(row.errorDetail);
+			const errorCode = recoverableHardClobRejectionCode(
+				row.errorDetail,
+				row.submitStartedAt,
+			);
 			if (!errorCode || !row.clientOrderId || !row.errorDetail) continue;
 			if (await this.markKnownRejected(row.id, row.errorDetail)) {
 				recovered.push({

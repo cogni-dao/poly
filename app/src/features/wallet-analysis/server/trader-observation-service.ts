@@ -1453,6 +1453,11 @@ async function readOmittedCurrentPositions(input: {
     FROM poly_trader_current_positions p
     WHERE p.trader_wallet_id = ${input.wallet.id}::uuid
       AND p.active = true
+      -- A prior complete page already proved these rows resolved/redeemable.
+      -- They can retain nonzero winner tokens until redemption, but they are
+      -- intentionally outside the open book and must not trip the exact-zero
+      -- omission guard used for unexplained live-position disappearances.
+      AND p.raw->>'redeemable' IS DISTINCT FROM 'true'
       AND NOT EXISTS (
         SELECT 1
         FROM jsonb_to_recordset(${observedKeys}::jsonb)
@@ -1784,6 +1789,20 @@ async function persistPreparedCurrentPositions(
         )
       )
     );
+  // The Data API's explicit redeemable flag is terminal market evidence, not
+  // an unexplained omission. Keep its saved economics for closed-position
+  // history while removing it from the open/current portfolio even when the
+  // wallet still holds unredeemed winner tokens on-chain.
+  await db
+    .update(polyTraderCurrentPositions)
+    .set({ active: false, lastObservedAt: capturedAt })
+    .where(
+      and(
+        eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+        eq(polyTraderCurrentPositions.active, true),
+        sql`${polyTraderCurrentPositions.raw}->>'redeemable' = 'true'`
+      )
+    );
   if (prepared.omitted.length > 0) {
     const omittedKeys = JSON.stringify(
       prepared.omitted.map((position) => ({
@@ -1979,6 +1998,12 @@ export async function fetchTraderPositionsPages(params: {
       params.walletAddress,
       {
         sizeThreshold: 0,
+        // The legacy endpoint otherwise sorts this whale's tens of thousands
+        // of resolved claims ahead of its live book. That makes a bounded,
+        // complete current-position walk impossible and leaves the cursor
+        // permanently partial. Resolved/redeemable claims are not positions
+        // that a BUY-only mirror can reproduce.
+        redeemable: false,
         limit: POSITION_FETCH_LIMIT,
         offset: page * POSITION_FETCH_LIMIT,
         signal: params.signal,
