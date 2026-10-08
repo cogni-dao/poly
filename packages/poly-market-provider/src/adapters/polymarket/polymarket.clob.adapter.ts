@@ -1095,11 +1095,37 @@ export class PolymarketClobAdapter implements MarketProviderPort {
           order_id: orderId,
           status: receipt.status,
           filled_size_usdc: receipt.filled_size_usdc,
+          realized_fill_source: receipt.attributes?.realizedFillSource,
+          realized_shares: receipt.total_shares,
+          gross_execution_notional_usdc: receipt.filled_size_usdc,
         },
         "getOrder: ok"
       );
       return { found: receipt };
     } catch (err) {
+      if (err instanceof FillAccountingPendingError) {
+        const duration_ms = Date.now() - start;
+        this.metrics.incr(POLY_CLOB_METRICS.getOrderTotal, {
+          result: "fill_accounting_pending",
+        });
+        this.metrics.observeDurationMs(
+          POLY_CLOB_METRICS.getOrderDurationMs,
+          duration_ms,
+          { result: "fill_accounting_pending" }
+        );
+        this.log.warn(
+          {
+            event: "poly.clob.get_order",
+            phase: "fill_accounting_pending",
+            duration_ms,
+            order_id: orderId,
+            error_code: err.code,
+            reason: err.message,
+          },
+          "getOrder: fill accounting pending"
+        );
+        throw err;
+      }
       // 404-style errors from the CLOB client surface as thrown errors with
       // messages like "Order not found" or HTTP 404. Treat those as not_found
       // rather than hard errors — the order may have been purged from CLOB.
@@ -1155,7 +1181,13 @@ export class PolymarketClobAdapter implements MarketProviderPort {
   private async mapOrderWithRealizedTrades(
     open: ClobOpenOrderLike
   ): Promise<OrderReceipt> {
-    const matchedShares = finitePositive(open.size_matched) ?? 0;
+    const matchedShares = Number(open.size_matched);
+    if (!Number.isFinite(matchedShares) || matchedShares < 0) {
+      throw new FillAccountingPendingError(
+        open.id,
+        `PolymarketClobAdapter.getOrder: invalid matched shares for ${open.id}`
+      );
+    }
     if (matchedShares === 0) return mapOpenOrderToReceipt(open);
 
     const tradeIds = [
@@ -1834,7 +1866,13 @@ export function aggregateRealizedFillForOrder(
   const seen = new Set<string>();
 
   for (const trade of trades) {
-    if (seen.has(trade.id) || trade.status.toUpperCase() === "FAILED") return null;
+    const normalizedStatus = trade.status.trim().toUpperCase();
+    if (
+      seen.has(trade.id) ||
+      normalizedStatus === "FAILED" ||
+      normalizedStatus.endsWith("_FAILED")
+    )
+      return null;
     seen.add(trade.id);
 
     let matched = false;

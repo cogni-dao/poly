@@ -50,6 +50,7 @@ import {
   type LedgerCancelReason,
   type LedgerPositionLifecycle,
   type LedgerRow,
+  type LedgerStatus,
   type ListOpenOrPendingOptions,
   type ListRecentOptions,
   type ListTenantPositionsOptions,
@@ -930,6 +931,16 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     };
   }
 
+  function monotonicLedgerStatus(
+    current: string,
+    observed: LedgerStatus
+  ): LedgerStatus {
+    if (current === "filled" || current === "canceled") {
+      return current;
+    }
+    return observed;
+  }
+
   const root: OrderLedger = {
     forTenant: buildTenantSurface,
 
@@ -976,10 +987,6 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       const status: LedgerRow["status"] = mapReceiptStatus(
         params.receipt.status
       );
-      const positionLifecycle = lifecycleFromOrderUpdate(
-        status,
-        params.receipt.filled_size_usdc
-      );
       const realizedFillSource =
         params.receipt.attributes?.realizedFillSource ===
         "clob_associated_trades"
@@ -995,11 +1002,17 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             shares: polyCopyTradeFills.shares,
             feesUsdc: polyCopyTradeFills.feesUsdc,
             attributes: polyCopyTradeFills.attributes,
+            status: polyCopyTradeFills.status,
           })
           .from(polyCopyTradeFills)
           .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id))
           .limit(1);
         if (!current) return;
+        const nextStatus = monotonicLedgerStatus(current.status, status);
+        const positionLifecycle = lifecycleFromOrderUpdate(
+          nextStatus,
+          params.receipt.filled_size_usdc
+        );
         const fill = acceptedFillAccounting(current, {
           filled_size_usdc: params.receipt.filled_size_usdc,
           ...(params.receipt.fill_price !== undefined
@@ -1023,7 +1036,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           .update(polyCopyTradeFills)
           .set({
             orderId: params.receipt.order_id,
-            status,
+            status: nextStatus,
             ...(positionLifecycle !== null
               ? {
                   positionLifecycle:
@@ -1174,11 +1187,6 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       if (input.reason !== undefined) {
         patch.reason = input.reason;
       }
-      const positionLifecycle = lifecycleFromOrderUpdate(
-        input.status,
-        input.filled_size_usdc
-      );
-
       await deps.db.transaction(async (tx) => {
         await tx.execute(
           sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${polyCopyTradeFills.clientOrderId} = ${input.client_order_id} FOR UPDATE`
@@ -1189,17 +1197,23 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             shares: polyCopyTradeFills.shares,
             feesUsdc: polyCopyTradeFills.feesUsdc,
             attributes: polyCopyTradeFills.attributes,
+            status: polyCopyTradeFills.status,
           })
           .from(polyCopyTradeFills)
           .where(eq(polyCopyTradeFills.clientOrderId, input.client_order_id))
           .limit(1);
         if (!current) return;
+        const nextStatus = monotonicLedgerStatus(current.status, input.status);
+        const positionLifecycle = lifecycleFromOrderUpdate(
+          nextStatus,
+          input.filled_size_usdc
+        );
         const fill = acceptedFillAccounting(current, input);
         const attributesPatch = { ...patch, ...(fill?.attributes ?? {}) };
         await tx
           .update(polyCopyTradeFills)
           .set({
-            status: input.status,
+            status: nextStatus,
             ...(input.order_id !== undefined
               ? { orderId: input.order_id }
               : {}),

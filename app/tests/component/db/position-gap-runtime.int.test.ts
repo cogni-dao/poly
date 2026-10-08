@@ -692,7 +692,7 @@ describe("position-gap runtime persistence", () => {
 				receipt: {
 					order_id: "venue-fill-accounting",
 					client_order_id: clientOrderId,
-					status: "filled",
+					status: "open",
 					filled_size_usdc: 4,
 					fill_price: 4 / 12,
 					total_shares: 12,
@@ -710,7 +710,7 @@ describe("position-gap runtime persistence", () => {
 		]);
 		await ledger.updateStatus({
 			client_order_id: clientOrderId,
-			status: "filled",
+			status: "open",
 			filled_size_usdc: 0.0005,
 			fill_price: 0.00008,
 			total_shares: 6,
@@ -722,6 +722,7 @@ describe("position-gap runtime persistence", () => {
 			.from(polyCopyTradeFills)
 			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
 		expect(Number(row?.shares)).toBe(12);
+		expect(row?.status).toBe("filled");
 		expect(Number(row?.price)).toBe(0.001);
 		expect(Number(row?.attributes?.filled_size_usdc)).toBe(0.012);
 		expect(row?.attributes?.realized_fill_source).toBe(

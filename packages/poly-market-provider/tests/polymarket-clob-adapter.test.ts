@@ -542,6 +542,7 @@ describe("aggregateRealizedFillForOrder", () => {
 
   it.each([
     ["failed", [trade({ status: "FAILED" })]],
+    ["wire failed", [trade({ status: "TRADE_STATUS_FAILED" })]],
     ["duplicate", [trade({}), trade({})]],
     ["unattributed", [trade({ maker_orders: [] })]],
   ])("rejects %s associated-trade evidence", (_case, trades) => {
@@ -1107,6 +1108,22 @@ describe("PolymarketClobAdapter", () => {
     await expect(adapter.getOrder("0xmatched")).rejects.toBeInstanceOf(
       FillAccountingPendingError
     );
+  });
+
+  it("does not collapse an invalid nonzero matched size to authoritative zero", async () => {
+    const getOrder = vi.fn().mockResolvedValue({
+      id: "0xinvalid-matched",
+      status: "matched",
+      side: "BUY",
+      original_size: "9.306",
+      size_matched: "not-a-number",
+      price: "0.386",
+      associate_trades: [],
+    });
+    const adapter = makeAdapter({ getOrder });
+    await expect(
+      adapter.getOrder("0xinvalid-matched")
+    ).rejects.toBeInstanceOf(FillAccountingPendingError);
   });
 
   it("getOrder returns { status: 'not_found' } when CLOB returns null/empty body", async () => {
