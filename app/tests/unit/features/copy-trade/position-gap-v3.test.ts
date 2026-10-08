@@ -270,6 +270,7 @@ describe("position-gap-v3 deterministic lot allocator", () => {
 			targetWeight: weight,
 			limitPrice: 0.5,
 			targetVwap: 0.5,
+			maxNotionalUsdc,
 			maxShares: maxNotionalUsdc / 0.5,
 			floorShares: 2,
 			floorNotionalUsdc: 1,
