@@ -78,6 +78,104 @@ function liveRow(owner: Tenant, overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * SQLSTATEs this file asserts on. Codes are part of the Postgres wire contract
+ * and never change; the human-readable message text is not and does change.
+ */
+const PG_CHECK_VIOLATION = "23514";
+const PG_UNIQUE_VIOLATION = "23505";
+/** RLS rejects a WITH CHECK failure as insufficient_privilege, not as a constraint. */
+const PG_INSUFFICIENT_PRIVILEGE = "42501";
+
+/** Every link in an error's `cause` chain, innermost last, cycle-safe. */
+function causeChain(err: unknown): unknown[] {
+  const chain: unknown[] = [];
+  const seen = new Set<unknown>();
+  let current = err;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    chain.push(current);
+    current = (current as { cause?: unknown }).cause;
+  }
+  return chain;
+}
+
+/**
+ * Pull the real Postgres error facts out of whatever the driver stack wrapped
+ * them in.
+ *
+ * Drizzle raises a `DrizzleQueryError` whose `message` is its own
+ * `"Failed query: insert into ... params: ..."` text — the Postgres message
+ * ("violates check constraint ...", "duplicate key value ...", "violates
+ * row-level security policy") is NOT in `.message`, it is on the wrapped
+ * cause. Asserting with `rejects.toThrow(/some text/)` therefore tests the
+ * driver's formatting rather than the database's behavior: it fails even
+ * though the DDL worked, and worse, a future wrapper change could make it
+ * pass for a rejection that came from somewhere else entirely.
+ *
+ * `code` + `constraint_name` come straight off the PG error fields, so they
+ * are stable across driver and wrapper versions.
+ */
+function pgErrorFacts(err: unknown): { code: string; constraint: string | null } {
+  for (const link of causeChain(err)) {
+    const fields = link as Record<string, unknown>;
+    const code = fields.code;
+    // SQLSTATE is always exactly five alphanumerics; this also skips Node's
+    // string `code`s (ECONNREFUSED and friends).
+    if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) {
+      // postgres-js copies the PG field verbatim as `constraint_name`;
+      // node-postgres calls it `constraint`. Accept either.
+      const constraint =
+        typeof fields.constraint_name === "string"
+          ? fields.constraint_name
+          : typeof fields.constraint === "string"
+            ? fields.constraint
+            : null;
+      return { code, constraint };
+    }
+  }
+  throw new Error(
+    `expected a Postgres error in the cause chain, found none. Chain: ${causeChain(
+      err
+    )
+      .map((link) => (link instanceof Error ? link.message : String(link)))
+      .join(" <- ")}`
+  );
+}
+
+/**
+ * Assert a write is rejected BY POSTGRES for a specific, named reason.
+ *
+ * Deliberately not `rejects.toThrow`: a write that unexpectedly SUCCEEDS is
+ * the dangerous outcome here (it means a constraint is missing), so that case
+ * gets its own explicit failure rather than being reported as a message
+ * mismatch.
+ */
+async function expectPgViolation(
+  write: () => Promise<unknown>,
+  expected: { code: string; constraint?: string }
+): Promise<void> {
+  let thrown: unknown;
+  let succeeded = false;
+  try {
+    await write();
+    succeeded = true;
+  } catch (err) {
+    thrown = err;
+  }
+
+  expect(
+    succeeded,
+    "expected Postgres to reject this write, but it was accepted — a constraint is missing"
+  ).toBe(false);
+
+  const facts = pgErrorFacts(thrown);
+  expect(facts.code).toBe(expected.code);
+  if (expected.constraint !== undefined) {
+    expect(facts.constraint).toBe(expected.constraint);
+  }
+}
+
 describe("paper accounts as a connection kind (migration 0082)", () => {
   let db: Database;
   const legacy = tenant("Pre-0082 live tenant");
@@ -180,58 +278,70 @@ describe("paper accounts as a connection kind (migration 0082)", () => {
       ] as const;
 
       for (const nulled of nullings) {
-        await expect(
-          seedDb
-            .insert(polyWalletConnections)
-            .values(liveRow(rejects, { kind: "privy_live", ...nulled }))
-        ).rejects.toThrow(
-          /poly_wallet_connections_live_requires_custody|violates check constraint/i
+        await expectPgViolation(
+          () =>
+            seedDb
+              .insert(polyWalletConnections)
+              .values(liveRow(rejects, { kind: "privy_live", ...nulled })),
+          {
+            code: PG_CHECK_VIOLATION,
+            constraint: "poly_wallet_connections_live_requires_custody",
+          }
         );
       }
     });
 
     it("rejects an unknown kind", async () => {
       const seedDb = getSeedDb();
-      await expect(
-        seedDb
-          .insert(polyWalletConnections)
-          .values(liveRow(rejects, { kind: "margin" }))
-      ).rejects.toThrow(
-        /poly_wallet_connections_kind_check|violates check constraint/i
+      await expectPgViolation(
+        () =>
+          seedDb
+            .insert(polyWalletConnections)
+            .values(liveRow(rejects, { kind: "margin" })),
+        {
+          code: PG_CHECK_VIOLATION,
+          constraint: "poly_wallet_connections_kind_check",
+        }
       );
     });
 
     it("rejects a paper row with no declared seed", async () => {
       const seedDb = getSeedDb();
       const addr = address();
-      await expect(
-        seedDb.insert(polyWalletConnections).values({
-          billingAccountId: rejects.billingAccountId,
-          createdByUserId: rejects.userId,
-          kind: "paper",
-          privyWalletId: null,
-          clobApiKeyCiphertext: null,
-          encryptionKeyId: null,
-          address: addr,
-          funderAddress: addr,
-          // PAPER_SEED_DECLARED: omitted on purpose.
-          custodialConsentAcceptedAt: new Date(),
-          custodialConsentActorKind: "user",
-          custodialConsentActorId: rejects.userId,
-        })
-      ).rejects.toThrow(
-        /poly_wallet_connections_paper_seed_usdc|violates check constraint/i
+      await expectPgViolation(
+        () =>
+          seedDb.insert(polyWalletConnections).values({
+            billingAccountId: rejects.billingAccountId,
+            createdByUserId: rejects.userId,
+            kind: "paper",
+            privyWalletId: null,
+            clobApiKeyCiphertext: null,
+            encryptionKeyId: null,
+            address: addr,
+            funderAddress: addr,
+            // PAPER_SEED_DECLARED: omitted on purpose.
+            custodialConsentAcceptedAt: new Date(),
+            custodialConsentActorKind: "user",
+            custodialConsentActorId: rejects.userId,
+          }),
+        {
+          code: PG_CHECK_VIOLATION,
+          constraint: "poly_wallet_connections_paper_seed_usdc",
+        }
       );
     });
 
     it("rejects a live row that carries a simulated seed", async () => {
       const seedDb = getSeedDb();
-      await expect(
-        seedDb
-          .insert(polyWalletConnections)
-          .values(liveRow(rejects, { paperSeedUsdc: "500.00000000" }))
-      ).rejects.toThrow(
-        /poly_wallet_connections_paper_seed_usdc|violates check constraint/i
+      await expectPgViolation(
+        () =>
+          seedDb
+            .insert(polyWalletConnections)
+            .values(liveRow(rejects, { paperSeedUsdc: "500.00000000" })),
+        {
+          code: PG_CHECK_VIOLATION,
+          constraint: "poly_wallet_connections_paper_seed_usdc",
+        }
       );
     });
   });
@@ -272,10 +382,14 @@ describe("paper accounts as a connection kind (migration 0082)", () => {
       const seedDb = getSeedDb();
       // `both` already has an active live row from the previous test. The
       // index widened to (billing_account_id, kind) — it did not go away.
-      await expect(
-        seedDb.insert(polyWalletConnections).values(liveRow(both))
-      ).rejects.toThrow(
-        /poly_wallet_connections_tenant_active_idx|duplicate key value/i
+      await expectPgViolation(
+        () => seedDb.insert(polyWalletConnections).values(liveRow(both)),
+        {
+          code: PG_UNIQUE_VIOLATION,
+          // Postgres reports the offending unique INDEX in the constraint
+          // field, which is what pins the (billing_account_id, kind) shape.
+          constraint: "poly_wallet_connections_tenant_active_idx",
+        }
       );
     });
   });
@@ -404,24 +518,29 @@ describe("paper accounts as a connection kind (migration 0082)", () => {
     });
 
     it("refuses to write a paper row onto another tenant's account", async () => {
-      await expect(
-        withTenantScope(db, userActor(toUserId(isolatedB.userId)), (tx) =>
-          provisionPaperAccount(tx, {
-            // Lying about the tenant: the RLS WITH CHECK clause is the
-            // backstop under the route's server-side tenant resolution.
-            // `legacy` holds no paper row, so the only constraint that can
-            // fire here is RLS — a victim that already had one could fail on
-            // the unique index instead and the test would pass for the wrong
-            // reason.
-            billingAccountId: legacy.billingAccountId,
-            createdByUserId: isolatedB.userId,
-            actorKind: "user",
-            actorId: isolatedB.userId,
-            seedUsdc: 10,
-            defaultGrant: { perOrderUsdcCap: 1, dailyUsdcCap: 2 },
-          })
-        )
-      ).rejects.toThrow(/row-level security|violates row-level/i);
+      await expectPgViolation(
+        () =>
+          withTenantScope(db, userActor(toUserId(isolatedB.userId)), (tx) =>
+            provisionPaperAccount(tx, {
+              // Lying about the tenant: the RLS WITH CHECK clause is the
+              // backstop under the route's server-side tenant resolution.
+              // `legacy` holds no paper row, so the only thing that can fire
+              // here is RLS — a victim that already had one could fail on the
+              // unique index instead and the test would pass for the wrong
+              // reason.
+              billingAccountId: legacy.billingAccountId,
+              createdByUserId: isolatedB.userId,
+              actorKind: "user",
+              actorId: isolatedB.userId,
+              seedUsdc: 10,
+              defaultGrant: { perOrderUsdcCap: 1, dailyUsdcCap: 2 },
+            })
+          ),
+        // A WITH CHECK failure is insufficient_privilege and carries no
+        // constraint name, so the code is the whole assertion. It is still
+        // unambiguous: nothing else in this transaction can raise 42501.
+        { code: PG_INSUFFICIENT_PRIVILEGE }
+      );
     });
   });
 
