@@ -31,6 +31,29 @@ import type {
 
 const UNSETTLED_ORDER_STATUSES = ["pending", "open", "partial"] as const;
 
+/**
+ * RESOLVED_POSITIONS_ARE_NOT_RESTING_ORDERS: mirrors `activeRestingPosition`
+ * in `order-ledger.ts`, which the reconciler's `listOpenOrPending` applies.
+ *
+ * The two queries MUST agree. When a market resolves the row's
+ * `position_lifecycle` goes terminal and it leaves `listOpenOrPending`
+ * forever, so the reconciler can never advance its order status again. Counted
+ * here on `status` alone, such a row is both unreconcilable and blocking —
+ * reset becomes impossible and nothing in the system can clear it. Seen on
+ * connection `49cfd0b4…`: three orders from 2026-05-03/04 whose `synced_at`
+ * froze at 05-04/05, the day their markets resolved.
+ *
+ * This does not weaken the guard: an unfilled resting order has no exposure,
+ * so its lifecycle is NULL, it passes this predicate, and it still blocks.
+ */
+const activeRestingPosition = sql`(
+  (
+    ${polyCopyTradeFills.positionLifecycle} IS NULL
+    OR ${polyCopyTradeFills.positionLifecycle} IN ('unresolved','open','closing')
+  )
+  AND ${polyCopyTradeFills.attributes}->>'closed_at' IS NULL
+)`;
+
 const nonTerminalPosition = sql`(
   ${polyCopyTradeFills.positionLifecycle} IS NULL
   OR ${polyCopyTradeFills.positionLifecycle} NOT IN ('closed','redeemed','loser','dust','abandoned')
@@ -101,7 +124,8 @@ export class DrizzlePolyWalletResetStateAdapter
               eq(polyCopyTradeFills.billingAccountId, input.billingAccountId),
               inArray(polyCopyTradeFills.status, [
                 ...UNSETTLED_ORDER_STATUSES,
-              ])
+              ]),
+              activeRestingPosition
             )
           ),
         tx
