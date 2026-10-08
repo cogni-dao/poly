@@ -262,7 +262,7 @@ export async function getCopyTradeInvestigationSummary(
     WITH execution_source AS (
       SELECT f.*, (
         COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-        OR COALESCE(f.attributes->>'realized_fill_source', '') = 'clob_associated_trades'
+        OR COALESCE(f.attributes->>'realized_fill_source', '') IN ('clob_associated_trades', 'data_api_activity_position')
       ) AS accounting_verified
       FROM poly_copy_trade_fills f
       WHERE f.billing_account_id = ${query.billing_account_id}
@@ -697,7 +697,8 @@ export async function getCopyTradeInvestigationEvidence(
           const notional = nullableNumber(row.filled_size_usdc);
           const verified =
             positionGapV3 &&
-            row.realized_fill_source === "clob_associated_trades" &&
+            (row.realized_fill_source === "clob_associated_trades" ||
+              row.realized_fill_source === "data_api_activity_position") &&
             price !== null &&
             shares !== null &&
             shares > 0 &&
@@ -716,7 +717,9 @@ export async function getCopyTradeInvestigationEvidence(
             price: positionGapV3 && !verified ? null : price,
             shares: positionGapV3 && !verified ? null : shares,
             fees_usdc:
-              positionGapV3 ? null : nullableNumber(row.fees_usdc),
+              positionGapV3 && !verified
+                ? null
+                : nullableNumber(row.fees_usdc),
             intent_size_usdc: nullableNumber(row.intent_size_usdc),
             filled_size_usdc:
               positionGapV3 && !verified ? null : notional,
@@ -724,7 +727,9 @@ export async function getCopyTradeInvestigationEvidence(
               ? verified
                 ? {
                     status: "verified" as const,
-                    source: "clob_associated_trades" as const,
+                    source: row.realized_fill_source as
+                      | "clob_associated_trades"
+                      | "data_api_activity_position",
                     matched_order_count: 1,
                     realized_shares: shares,
                     realized_entry_notional_usdc: notional,
@@ -801,18 +806,19 @@ export function copyTradeFillEvidenceSelect(
       CASE WHEN f.attributes->>'side' IN ('BUY', 'SELL') THEN f.attributes->>'side' ELSE NULL END AS side,
       f.status,
       CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-        AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+        AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
         THEN NULL ELSE f.price END AS price,
       CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-        AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+        AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
         THEN NULL ELSE f.shares END AS shares,
       CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
+        AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
         THEN NULL ELSE f.fees_usdc END AS fees_usdc,
       CASE WHEN f.attributes->>'size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
         THEN (f.attributes->>'size_usdc')::numeric ELSE NULL END AS intent_size_usdc,
       CASE WHEN (
           COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-          OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+          OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
         ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
         THEN (f.attributes->>'filled_size_usdc')::numeric ELSE NULL END AS filled_size_usdc,
       f.attributes->>'position_gap_version' AS position_gap_version,

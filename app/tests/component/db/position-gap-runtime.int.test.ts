@@ -908,6 +908,202 @@ describe("position-gap runtime persistence", () => {
 		);
 	});
 
+	it("atomically repairs a pruned PGv3 fill from exact Data API evidence", async () => {
+		const db = getSeedDb();
+		const store = new PositionGapRuntimeStore(db);
+		const targetId = randomUUID();
+		const runId = randomUUID();
+		const cohortId = randomUUID();
+		const actionId = randomUUID();
+		const clientOrderId = `data-api-repair-${randomUUID()}`;
+		const orderId = `0x${"1".repeat(64)}`;
+		const scope = {
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId,
+		};
+		await db.insert(polyPositionGapRuns).values({
+			id: runId,
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId,
+			budgetUsdc: "10",
+			walletCashUsdcAtStart: "10",
+			status: "completed",
+			completedAt: asOf,
+		});
+		await db.insert(polyPositionGapCohorts).values({
+			id: cohortId,
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId,
+			cohortKey: "data-api-repair-cohort",
+			sourceKind: "activation",
+			sourceConfigRevision: "rev",
+			sourceSnapshotId: "snapshot",
+			sourceSnapshotHash: "hash",
+			sourceSnapshotAsOf: asOf,
+			sourceProvenance: {},
+			createdRunId: runId,
+			conditionId: "condition-data-api-repair",
+			tokenId: "token-data-api-repair",
+			marketId: "prediction-market:polymarket:condition-data-api-repair",
+			outcome: "1",
+			targetDeltaShares: "9.3",
+			scaleAtCreation: "1",
+			allowedMirrorShares: "9.3",
+			initialAllowedMirrorShares: "9.3",
+			benchmarkTargetVwap: "0.3867",
+			acquiredShares: "9.3",
+			remainingShares: "0",
+			status: "exhausted",
+		});
+		await db.insert(polyPositionGapActions).values({
+			id: actionId,
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId,
+			runId,
+			cohortId,
+			cohortKey: "data-api-repair-cohort",
+			actionKey: "data-api-repair-action",
+			kind: "buy",
+			conditionId: "condition-data-api-repair",
+			tokenId: "token-data-api-repair",
+			marketId: "prediction-market:polymarket:condition-data-api-repair",
+			outcome: "1",
+			desiredShares: "9.306",
+			filledShares: "9.3",
+			filledUsdc: "3.5898",
+			notionalUsdc: "3.592216",
+			limitPrice: "0.386",
+			plannerAction: { fill_accounting_status: "pending" },
+			clientOrderId,
+			orderId,
+			status: "filled",
+			submitStartedAt: new Date("2026-10-08T04:47:47.865Z"),
+			completedAt: new Date("2026-10-08T04:48:00.000Z"),
+		});
+		await db.insert(polyPositionGapReservations).values({
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId,
+			cohortId,
+			buyActionId: actionId,
+			budgetNotionalUsdc: "3.592216",
+			executorCashGuardAtomic: "3951438",
+			cashGuardSource: "test",
+			filledCostUsdc: "3.5898",
+		});
+		await db.insert(polyCopyTradeFills).values({
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId,
+			fillId: "position-gap-v3:data-api-repair-action",
+			marketId: "prediction-market:polymarket:condition-data-api-repair",
+			observedAt: asOf,
+			clientOrderId,
+			orderId,
+			status: "filled",
+			price: "0.386",
+			shares: "9.3",
+			attributes: {
+				position_gap_version: "3",
+				filled_size_usdc: 3.5898,
+			},
+		});
+
+		const evidence = {
+			status: "verified" as const,
+			source: "data_api_activity_position" as const,
+			wallet: "0x8ca45685c5827f7acfdd890214180c4ea9d0bf58" as const,
+			shares: 9.3,
+			filledUsdc: 0.009295,
+			grossCashUsdc: 0.00976,
+			fillPrice: 0.009295 / 9.3,
+			feesUsdc: 0.00046,
+			transactionHashes: [`0x${"2".repeat(64)}`],
+			evidenceStart: "2026-10-08T04:47:42.000Z",
+			evidenceEnd: "2026-10-08T04:48:30.000Z",
+		};
+		expect(
+			await store.markFillAccountingMismatch(
+				scope,
+				actionId,
+				"missing_activity",
+				"no exact activity yet",
+			),
+		).toMatchObject({
+			from: "pending",
+			to: "mismatch",
+			reason: "missing_activity",
+		});
+		expect(
+			await store.applyDataApiFillAccounting(scope, actionId, evidence),
+		).toMatchObject({ from: "mismatch", to: "verified" });
+		expect(
+			await store.applyDataApiFillAccounting(scope, actionId, evidence),
+		).toMatchObject({ from: "verified", to: "verified" });
+		const ledgerPort = createOrderLedger({
+			db,
+			logger: {
+				debug: () => undefined,
+				info: () => undefined,
+				warn: () => undefined,
+				error: () => undefined,
+				child() {
+					return this;
+				},
+			} as never,
+		});
+		await ledgerPort.markOrderId({
+			client_order_id: clientOrderId,
+			receipt: {
+				order_id: orderId,
+				client_order_id: clientOrderId,
+				status: "filled",
+				filled_size_usdc: 1,
+				fill_price: 0.1,
+				total_shares: 10,
+				submitted_at: "2026-10-08T04:47:47.865Z",
+			},
+		});
+		await expect(
+			store.applyDataApiFillAccounting(
+				{ ...scope, targetId: targetB },
+				actionId,
+				evidence,
+			),
+		).rejects.toThrow("attribution changed");
+
+		const [action] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, actionId));
+		const [ledger] = await db
+			.select()
+			.from(polyCopyTradeFills)
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
+		const [reservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, actionId));
+		expect(Number(action?.filledUsdc)).toBe(0.009295);
+		expect(action?.plannerAction.realized_fill_source).toBe(
+			"data_api_activity_position",
+		);
+		expect(ledger?.status).toBe("filled");
+		expect(Number(ledger?.price)).toBeCloseTo(0.009295 / 9.3, 8);
+		expect(Number(ledger?.shares)).toBe(9.3);
+		expect(Number(ledger?.feesUsdc)).toBe(0.00046);
+		expect(ledger?.attributes?.filled_size_usdc).toBe(0.009295);
+		expect(ledger?.attributes?.fill_accounting_gross_cash_usdc).toBe(0.00976);
+		expect(ledger?.attributes?.realized_fill_source).toBe(
+			"data_api_activity_position",
+		);
+		expect(Number(reservation?.filledCostUsdc)).toBe(0.00976);
+	});
+
 	it("consumes durable CLOB not_found before a stop retry and releases only unfilled", async () => {
 		const db = getSeedDb();
 		const store = new PositionGapRuntimeStore(db);

@@ -97,6 +97,10 @@ export const PolymarketUserPositionSchema = z
     size: z.coerce.number(),
     avgPrice: z.coerce.number(),
     initialValue: z.coerce.number(),
+    /** Gross opening cash observed by Data API; used only for strict fill corroboration. */
+    grossInitialValue: z.coerce.number().optional(),
+    /** Position-level entry fees. Undefined when the upstream response omits them. */
+    entryFeesUsdc: z.coerce.number().optional(),
     currentValue: z.coerce.number(),
     cashPnl: z.coerce.number(),
     percentPnl: z.coerce.number(),

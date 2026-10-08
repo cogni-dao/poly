@@ -234,7 +234,23 @@ export const PolyPositionGapDecisionReasonSchema = z.enum([
   "venue_unknown",
 ]);
 
-/** Realized fill economics are public only after associated CLOB trades verify them. */
+export const PolyPositionGapFillAccountingMismatchReasonSchema = z.enum([
+  "activity_history_incomplete",
+  "ambiguous_activity",
+  "ambiguous_position",
+  "evidence_window_too_wide",
+  "invalid_time_bounds",
+  "missing_activity",
+  "missing_position",
+  "overlapping_position_gap_order",
+  "position_cost_mismatch",
+  "position_fee_missing",
+  "position_share_mismatch",
+  "position_total_bought_mismatch",
+  "trade_share_mismatch",
+]);
+
+/** Realized economics publish only after exact CLOB or Data-API evidence. */
 export const PolyPositionGapFillAccountingSchema = z.discriminatedUnion(
   "status",
   [
@@ -246,11 +262,22 @@ export const PolyPositionGapFillAccountingSchema = z.discriminatedUnion(
       .strict(),
     z
       .object({
+        status: z.literal("mismatch"),
+        source: z.literal("data_api_activity_position"),
+        reason: PolyPositionGapFillAccountingMismatchReasonSchema,
+      })
+      .strict(),
+    z
+      .object({
         status: z.literal("verified"),
-        source: z.literal("clob_associated_trades"),
+        source: z.enum([
+          "clob_associated_trades",
+          "data_api_activity_position",
+          "mixed_verified_sources",
+        ]),
         matched_order_count: z.number().int().positive(),
         realized_shares: z.number().positive(),
-        /** Gross entry notional at execution VWAP; authoritative fees are excluded. */
+        /** Entry notional at execution VWAP; authoritative fees are excluded. */
         realized_entry_notional_usdc: z.number().positive(),
       })
       .strict(),
@@ -303,6 +330,36 @@ export const PolyPositionGapRuntimeSchema = z.discriminatedUnion("status", [
       scope: z.literal("target_lifetime"),
       submitted_order_count: z.number().int().nonnegative(),
       fill_accounting: PolyPositionGapFillAccountingSchema,
+      recent_orders_truncated: z.boolean(),
+      recent_orders: z.array(
+        z.object({
+          action_id: z.string().uuid(),
+          client_order_id: z.string().min(1),
+          order_id: z.string().min(1).nullable(),
+          condition_id: z.string().min(1),
+          token_id: z.string().min(1),
+          status: z.enum([
+            "reserved",
+            "ledgered",
+            "submitting",
+            "open",
+            "partial",
+            "filled",
+            "cancel_requested",
+            "canceled",
+            "rejected",
+            "ambiguous",
+          ]),
+          submit_started_at: IsoTimestampSchema.nullable(),
+          completed_at: IsoTimestampSchema.nullable(),
+          intended_shares: z.number().positive(),
+          intended_notional_usdc: z.number().positive(),
+          limit_price: z.number().positive().lt(1),
+          fill_accounting: PolyPositionGapFillAccountingSchema,
+          realized_fill_price: z.number().positive().nullable(),
+          fees_usdc: z.number().nonnegative().nullable(),
+        })
+      ),
     }),
     position_count: z.number().int().nonnegative(),
     positions_truncated: z.boolean(),
