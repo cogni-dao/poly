@@ -125,4 +125,46 @@ describe("copy-trade target reconciliation", () => {
     expect(pollStop).not.toHaveBeenCalled();
     stop();
   });
+
+  it("awaits the old generation shutdown before starting a changed config", async () => {
+    let current = target();
+    let releaseOld!: () => void;
+    const oldStopped = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    const events: string[] = [];
+    const startPollForTarget = vi.fn((started: EnumeratedTarget) => {
+      const revision = started.mirrorActivatedAt.toISOString();
+      events.push(`start:${revision}`);
+      if (startPollForTarget.mock.calls.length === 1) {
+        return async () => {
+          events.push(`stop:${revision}`);
+          await oldStopped;
+        };
+      }
+      return () => events.push(`stop:${revision}`);
+    });
+    const stop = startCopyTradeReconciler({
+      targetSource: { listAllActive: async () => [current] },
+      startPollForTarget,
+      logger: makeLogger() as never,
+      intervalMs: RECONCILE_MS,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    current = target({
+      mirrorActivatedAt: new Date("2026-10-07T03:15:41.000Z"),
+      mirrorCapitalBudgetUsdc: 20,
+    });
+    await vi.advanceTimersByTimeAsync(RECONCILE_MS);
+    expect(events).toEqual([
+      "start:2026-10-07T03:15:40.799Z",
+      "stop:2026-10-07T03:15:40.799Z",
+    ]);
+
+    releaseOld();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events[2]).toBe("start:2026-10-07T03:15:41.000Z");
+    stop();
+  });
 });

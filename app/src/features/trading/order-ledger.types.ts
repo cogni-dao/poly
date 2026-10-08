@@ -154,6 +154,8 @@ export type LedgerCancelReason =
   | "target_exited_market"
   | "ttl_expired"
   | "stale_resting_layer_up"
+  | "position_gap_reconciled"
+  | "position_gap_runtime_safety"
   | "multi_target_position_gap_unsupported";
 
 /**
@@ -339,6 +341,8 @@ export interface UpdateStatusInput {
   fill_price?: number;
   total_shares?: number;
   fees_usdc?: number;
+  /** Verified cumulative fill accounting source; absent means unverified. */
+  realized_fill_source?: "clob_associated_trades";
   /**
    * Machine-readable promotion reason stored in `attributes.reason`.
    * Used by the reconciler to distinguish "clob_not_found" cancelations from

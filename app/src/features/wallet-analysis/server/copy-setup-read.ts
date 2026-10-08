@@ -68,6 +68,7 @@ import {
   effectivePositionGapBudget,
   summarizePositionGapBudgetGroup,
 } from "@/features/copy-trade/position-gap-budget";
+import { readPositionGapRuntimeByWallet } from "@/features/wallet-analysis/server/position-gap-runtime-read";
 
 /** Statement timeout for this capability, matching the investigation service. */
 const STATEMENT_TIMEOUT_MS = 10_000;
@@ -397,6 +398,15 @@ export async function getCopySetupForAccount(
     }
   }
 
+  const positionGapRuntimeByWallet = await readPositionGapRuntimeByWallet(
+    tx,
+    accountId,
+    resolvedTargets
+      .filter(({ effectiveKind }) => effectiveKind === "position_gap")
+      .map(({ row }) => row.targetWallet),
+    capturedAt,
+  );
+
   const targets = resolvedTargets.map(({ row, declaredKind, effectiveKind }) => {
     const isDisabled = row.disabledAt !== null;
     const rangeMax = nullableNum(row.targetRangeMaxUsdc);
@@ -469,6 +479,11 @@ export async function getCopySetupForAccount(
         },
       },
       activation,
+      position_gap_runtime:
+        effectiveKind !== "position_gap"
+          ? ({ status: "not_applicable" } as const)
+          : positionGapRuntimeByWallet.get(row.targetWallet.toLowerCase()) ??
+            ({ status: "pending", reason: "no_reconciliation_run" } as const),
     };
   });
 

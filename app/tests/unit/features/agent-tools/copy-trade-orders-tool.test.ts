@@ -77,6 +77,7 @@ const ORDER_ROW = {
   size_usdc: null,
   limit_price: null,
   filled_size_usdc: null,
+  fill_accounting: null,
   error: null,
   observed_at: "2026-10-05T00:00:00.000Z",
   created_at: "2026-10-05T00:00:00.000Z",

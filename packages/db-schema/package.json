@@ -46,6 +46,11 @@
       "import": "./dist/copy-trade.js",
       "default": "./dist/copy-trade.js"
     },
+    "./position-gap": {
+      "types": "./dist/position-gap.d.ts",
+      "import": "./dist/position-gap.js",
+      "default": "./dist/position-gap.js"
+    },
     "./ai": {
       "types": "./dist/ai.d.ts",
       "import": "./dist/ai.js",
@@ -97,7 +102,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "postbuild": "node -e \"const fs=require('fs'); for(const f of ['dist/index.js','dist/agent-access-requests.js','dist/agent-capability-grants.js','dist/refs.js','dist/copy-trade.js','dist/poly-redeem-jobs.js','dist/trader-activity.js','dist/wallet-connections.js','dist/wallet-grants.js']){if(!fs.existsSync(f)){console.error('ERROR: '+f+' missing'); process.exit(1)}}\"",
+    "postbuild": "node -e \"const fs=require('fs'); for(const f of ['dist/index.js','dist/agent-access-requests.js','dist/agent-capability-grants.js','dist/refs.js','dist/copy-trade.js','dist/position-gap.js','dist/poly-redeem-jobs.js','dist/trader-activity.js','dist/wallet-connections.js','dist/wallet-grants.js']){if(!fs.existsSync(f)){console.error('ERROR: '+f+' missing'); process.exit(1)}}\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

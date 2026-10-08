@@ -12,6 +12,7 @@
 import type {
 	PolyAccountTargetPositionsResponse,
 	PolyTargetPositionsSort,
+	PolyTrackedTarget,
 } from "@cogni/poly-node-contracts";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
@@ -37,6 +38,8 @@ import {
 	TableRow,
 } from "@/components";
 import { cn } from "@/shared/util/cn";
+
+import { fetchCopyTargets } from "../../dashboard/_api/fetchCopyTargets";
 
 const ALL_TARGETS = "all";
 
@@ -72,11 +75,27 @@ export function TargetPositionsPanel() {
 		gcTime: 5 * 60_000,
 		placeholderData: (previous) => previous,
 	});
+	const setup = useQuery({
+		queryKey: ["dashboard-copy-targets"],
+		queryFn: fetchCopyTargets,
+		staleTime: 30_000,
+	});
+	const runtimes = new Map(
+		(setup.data?.targets ?? []).map((target) => [
+			target.target_wallet.toLowerCase(),
+			target,
+		]),
+	);
+	const visibleRuntimes = [...runtimes.values()].filter(
+		(target) =>
+			targetWallet === ALL_TARGETS ||
+			target.target_wallet.toLowerCase() === targetWallet.toLowerCase(),
+	);
 
 	const resetPage = () => setCursorStack([null]);
 
 	return (
-		<Card>
+		<Card id="target-positions">
 			<CardHeader className="gap-3 px-5 py-3">
 				<div className="flex flex-wrap items-center justify-between gap-3">
 					<CardTitle className="font-semibold text-muted-foreground text-xs uppercase tracking-wider">
@@ -124,7 +143,9 @@ export function TargetPositionsPanel() {
 						</Select>
 					</div>
 				</div>
-				{query.data ? <TargetFreshness data={query.data} /> : null}
+				{query.data ? (
+					<TargetFreshness data={query.data} runtimes={visibleRuntimes} />
+				) : null}
 			</CardHeader>
 			<CardContent className="p-0">
 				{query.isError ? (
@@ -156,6 +177,8 @@ export function TargetPositionsPanel() {
 									<TableHead className="text-right">Entry</TableHead>
 									<TableHead className="text-right">Now</TableHead>
 									<TableHead className="text-right">P/L</TableHead>
+									<TableHead className="text-right">Mirror</TableHead>
+									<TableHead className="text-right">Limits</TableHead>
 									<TableHead className="text-right">Seen</TableHead>
 								</TableRow>
 							</TableHeader>
@@ -225,6 +248,22 @@ export function TargetPositionsPanel() {
 												? "—"
 												: formatSignedUsd(position.cash_pnl_usdc)}
 										</TableCell>
+										<TableCell className="text-right text-xs tabular-nums">
+											{mirrorText(
+												runtimes.get(position.target_wallet.toLowerCase()),
+												position.condition_id,
+												position.token_id,
+												"position",
+											)}
+										</TableCell>
+										<TableCell className="text-right text-muted-foreground text-xs tabular-nums">
+											{mirrorText(
+												runtimes.get(position.target_wallet.toLowerCase()),
+												position.condition_id,
+												position.token_id,
+												"limits",
+											)}
+										</TableCell>
 										<TableCell className="text-right text-muted-foreground text-xs">
 											{timeAgo(position.last_observed_at)}
 										</TableCell>
@@ -273,8 +312,10 @@ export function TargetPositionsPanel() {
 
 function TargetFreshness({
 	data,
+	runtimes,
 }: {
 	data: PolyAccountTargetPositionsResponse;
+	runtimes: readonly PolyTrackedTarget[];
 }) {
 	return (
 		<div className="flex flex-wrap gap-2">
@@ -297,8 +338,120 @@ function TargetFreshness({
 					· {target.observation.freshness} · {target.observation.completeness}
 				</Badge>
 			))}
+			{runtimes
+				.filter((target) => target.policy.effective_kind === "position_gap")
+				.map((target) => (
+					<Badge
+						key={`mirror:${target.target_id}`}
+						intent={
+							runtimeHealthy(target.position_gap_runtime)
+								? "secondary"
+								: "destructive"
+						}
+						size="sm"
+					>
+						Mirror · {runtimeSummary(target.position_gap_runtime)}
+					</Badge>
+				))}
 		</div>
 	);
+}
+
+function runtimeSummary(
+	runtime: PolyTrackedTarget["position_gap_runtime"],
+): string {
+	if (runtime.status === "pending") return "awaiting first plan";
+	if (runtime.status === "unavailable") return "plan unavailable";
+	if (runtime.status === "not_applicable") return "not running";
+	if (runtime.snapshot.completeness !== "complete")
+		return "incomplete snapshot";
+	if (runtime.snapshot.freshness !== "fresh") return "stale snapshot";
+	const minimum = runtime.plan.minimum_feasible_sleeve_usdc;
+	const status = runtimeAtRest(runtime)
+		? runtime.positions.some((position) => position.open_shares > 1e-9)
+			? "orders resting"
+			: "matched"
+		: runtime.plan.status.replaceAll("_", " ");
+	const fills = runtime.execution.fill_accounting;
+	const execution =
+		fills.status === "verified"
+			? `${runtime.execution.submitted_order_count} submitted · ${fills.matched_order_count} verified`
+			: runtime.execution.submitted_order_count === 0
+				? "no fills"
+				: `${runtime.execution.submitted_order_count} submitted · fills pending`;
+	return `${status} · sleeve ${formatUsd(runtime.plan.sleeve_budget_usdc)}${minimum === null ? "" : ` · min ${formatUsd(minimum)}`} · NAV ${formatUsd(runtime.plan.eligible_net_nav_usdc)} · scale ${runtime.plan.scale.toPrecision(3)} · free ${formatUsd(runtime.plan.free_wallet_cash_after_guards_usdc)} · reserved ${formatUsd(runtime.plan.reserved_budget_usdc)} · ${execution}`;
+}
+
+function runtimeAtRest(
+	runtime: PolyTrackedTarget["position_gap_runtime"],
+): boolean {
+	return (
+		runtime.status === "observed" &&
+		(runtime.run.status === "completed" || runtime.run.status === "skipped") &&
+		runtime.plan.status === "no_feasible_position" &&
+		!runtime.positions_truncated &&
+		runtime.positions.length > 0 &&
+		runtime.plan.locked_overweight_count === 0 &&
+		runtime.positions.every(
+			(position) =>
+				position.decision_reason === "no_gap" &&
+				position.gap_shares <= 1e-9 &&
+				position.locked_overweight_shares <= 1e-9,
+		)
+	);
+}
+
+function runtimeHealthy(
+	runtime: PolyTrackedTarget["position_gap_runtime"],
+): boolean {
+	return (
+		runtime.status === "observed" &&
+		runtime.snapshot.completeness === "complete" &&
+		runtime.snapshot.freshness === "fresh" &&
+		((runtime.run.status === "completed" && runtime.plan.status === "ready") ||
+			runtimeAtRest(runtime))
+	);
+}
+
+function mirrorPosition(
+	target: PolyTrackedTarget | undefined,
+	conditionId: string,
+	tokenId: string,
+) {
+	const runtime = target?.position_gap_runtime;
+	if (runtime?.status !== "observed") return null;
+	const rows = runtime.positions.filter(
+		(row) => row.condition_id === conditionId && row.token_id === tokenId,
+	);
+	if (rows.length === 0) return null;
+	const finite = (values: Array<number | null>) =>
+		values.filter((value): value is number => value !== null);
+	const priceCaps = finite(rows.map((row) => row.price_cap));
+	const floors = finite(rows.map((row) => row.market_floor_usdc));
+	return {
+		desired: rows.reduce((sum, row) => sum + row.desired_shares, 0),
+		held: rows.reduce((sum, row) => sum + row.held_shares, 0),
+		open: rows.reduce((sum, row) => sum + row.open_shares, 0),
+		gap: rows.reduce((sum, row) => sum + row.gap_shares, 0),
+		locked: Math.max(...rows.map((row) => row.locked_overweight_shares)),
+		priceCap: priceCaps.length ? Math.min(...priceCaps) : null,
+		floor: floors.length ? Math.min(...floors) : null,
+		reason: [...new Set(rows.map((row) => row.decision_reason))].join(", "),
+	};
+}
+
+function mirrorText(
+	target: PolyTrackedTarget | undefined,
+	conditionId: string,
+	tokenId: string,
+	kind: "position" | "limits",
+): string {
+	const mirror = mirrorPosition(target, conditionId, tokenId);
+	if (!mirror) return "—";
+	if (kind === "limits") {
+		return `${mirror.priceCap === null ? "—" : `≤${formatPrice(mirror.priceCap)}`} · ${mirror.floor === null ? "—" : `${formatUsd(mirror.floor)} floor`} · ${mirror.reason}`;
+	}
+	return `${formatNumber(mirror.held)}/${formatNumber(mirror.desired)} · open ${formatNumber(mirror.open)} · gap ${formatNumber(mirror.gap)}${mirror.locked ? ` · ${formatNumber(mirror.locked)} locked` : ""}`;
 }
 
 function shortAddress(address: string): string {

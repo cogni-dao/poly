@@ -57,6 +57,7 @@ type OrderSummaryRow = {
 
 type ClosedRow = {
   closed_position_count: string | number | null;
+  accounting_pending_count: string | number | null;
   condition_key: string | null;
   asset_key: string | null;
   client_order_id: string | null;
@@ -303,6 +304,15 @@ export async function readTenantWalletDashboardIn(
   }
 
   if (!closedRead.ok) warnings.push(readFailure("history", "history_unavailable", closedRead.error));
+  else if (closedRead.value.accountingPendingCount > 0) {
+    warnings.push(
+      warning(
+        "history",
+        "history_fill_accounting_pending",
+        `${closedRead.value.accountingPendingCount} closed Position-gap order${closedRead.value.accountingPendingCount === 1 ? " is" : "s are"} awaiting verified execution accounting.`
+      )
+    );
+  }
 
   const activityFact = dailyRead.ok
     ? freshFact("local_ledger", capturedAt)
@@ -394,7 +404,8 @@ export async function readTenantWalletDashboardIn(
     : positionsRead.ok &&
         !positionsRead.value.summary.identityAmbiguous &&
         realizedRead.ok &&
-        missingRealizedClosedCount === 0
+        missingRealizedClosedCount === 0 &&
+        closedRead.value.accountingPendingCount === 0
       ? freshFact("local_ledger", capturedAt)
       : {
           ...freshFact("local_ledger", capturedAt),
@@ -814,6 +825,11 @@ export async function readOrderSummary(
           AND (
             COALESCE(f.attributes->>'size_usdc', '') !~ '^[0-9]+(\\.[0-9]+)?$'
             OR (
+              (
+                COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+                OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+              )
+              AND
               COALESCE(f.attributes->>'filled_size_usdc', '') <> ''
               AND f.attributes->>'filled_size_usdc' !~ '^[0-9]+(\\.[0-9]+)?$'
             )
@@ -826,7 +842,10 @@ export async function readOrderSummary(
           THEN GREATEST(
             CASE WHEN f.attributes->>'size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
               THEN (f.attributes->>'size_usdc')::numeric ELSE 0 END
-              - CASE WHEN f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
+              - CASE WHEN (
+                  COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+                  OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+                ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
                 THEN (f.attributes->>'filled_size_usdc')::numeric ELSE 0 END,
             0
           )
@@ -841,6 +860,11 @@ export async function readOrderSummary(
           AND (
             COALESCE(f.attributes->>'size_usdc', '') !~ '^[0-9]+(\\.[0-9]+)?$'
             OR (
+              (
+                COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+                OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+              )
+              AND
               COALESCE(f.attributes->>'filled_size_usdc', '') <> ''
               AND f.attributes->>'filled_size_usdc' !~ '^[0-9]+(\\.[0-9]+)?$'
             )
@@ -868,8 +892,9 @@ export async function readOrderSummary(
  *
  * The cutoff applies after latest-row tuple selection: an older terminal row
  * must never reappear merely because a newer row for that position is active
- * or abandoned. The exact count and bounded preview therefore describe the
- * same 1D/1W/1M/1Y/YTD/ALL population on both dashboard and agent transports.
+ * or abandoned. The same 1D/1W/1M/1Y/YTD/ALL window applies to the exact
+ * closed count, pending-accounting count, and verified preview on both
+ * dashboard and agent transports.
  *
  * @internal Exported only for SQL-versus-pure component parity coverage.
  */
@@ -878,7 +903,11 @@ export async function readClosedPositionSummary(
   billingAccountId: string,
   capturedAt: Date,
   interval: PolyWalletOverviewInterval
-): Promise<{ count: number; positions: WalletExecutionPosition[] }> {
+): Promise<{
+  count: number;
+  accountingPendingCount: number;
+  positions: WalletExecutionPosition[];
+}> {
   const windowStart = portfolioWindowStart(interval, capturedAt);
   const windowPredicate = windowStart
     ? sql`COALESCE(NULLIF(closed_at, '')::timestamptz, updated_at, observed_at) >= ${windowStart.toISOString()}::timestamptz`
@@ -902,9 +931,19 @@ export async function readClosedPositionSummary(
         COALESCE(f.attributes->>'market_slug', f.attributes->>'slug') AS market_slug,
         f.attributes->>'event_slug' AS event_slug,
         f.attributes->>'outcome' AS outcome,
-        NULLIF(f.attributes->>'limit_price', '')::numeric AS limit_price,
-        NULLIF(f.attributes->>'size_usdc', '')::numeric AS size_usdc,
-        NULLIF(f.attributes->>'filled_size_usdc', '')::numeric AS filled_size_usdc,
+        (
+          COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+          OR COALESCE(f.attributes->>'realized_fill_source', '') = 'clob_associated_trades'
+        ) AS accounting_verified,
+        CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
+          AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+          THEN NULL ELSE NULLIF(f.attributes->>'limit_price', '')::numeric END AS limit_price,
+        CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
+          AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+          THEN NULL ELSE NULLIF(f.attributes->>'size_usdc', '')::numeric END AS size_usdc,
+        CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
+          AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+          THEN NULL ELSE NULLIF(f.attributes->>'filled_size_usdc', '')::numeric END AS filled_size_usdc,
         f.attributes->>'token_id' AS token_id,
         ROW_NUMBER() OVER (
           PARTITION BY
@@ -914,18 +953,24 @@ export async function readClosedPositionSummary(
         ) AS tuple_rank
       FROM poly_copy_trade_fills f
       WHERE f.billing_account_id = ${billingAccountId}
-    ), terminal AS (
+    ), terminal_all AS (
       SELECT * FROM keyed
       WHERE tuple_rank = 1
         AND position_lifecycle IN ('closed', 'redeemed', 'loser', 'dust')
         AND ${windowPredicate}
+    ), terminal AS (
+      SELECT * FROM terminal_all
+      WHERE accounting_verified
     ), preview AS (
       SELECT * FROM terminal
       ORDER BY COALESCE(NULLIF(closed_at, '')::timestamptz, updated_at, observed_at) DESC,
         condition_key, asset_key
       LIMIT ${CLOSED_PREVIEW_LIMIT}
     )
-    SELECT (SELECT COUNT(*)::int FROM terminal) AS closed_position_count, preview.*
+    SELECT
+      (SELECT COUNT(*)::int FROM terminal_all) AS closed_position_count,
+      (SELECT COUNT(*)::int FROM terminal_all WHERE NOT accounting_verified) AS accounting_pending_count,
+      preview.*
     FROM (SELECT 1) seed
     LEFT JOIN preview ON TRUE
     ORDER BY
@@ -935,6 +980,7 @@ export async function readClosedPositionSummary(
   `));
   return {
     count: nonnegativeInt(rows[0]?.closed_position_count),
+    accountingPendingCount: nonnegativeInt(rows[0]?.accounting_pending_count),
     positions: rows.flatMap((row) => closedRowToPosition(row, capturedAt)),
   };
 }
@@ -954,9 +1000,14 @@ async function readDailyTradeCounts(db: ExecuteDb, billingAccountId: string, cap
       AND f.observed_at >= ${windowStart.toISOString()}::timestamptz
       AND f.observed_at < ${windowEnd.toISOString()}::timestamptz
       AND (
-        CASE WHEN f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
+        CASE WHEN (
+            COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+            OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+          ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
           THEN (f.attributes->>'filled_size_usdc')::numeric ELSE 0 END > 0
         OR (
+          COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+          AND
           f.status IN ('filled', 'partial')
           AND CASE WHEN f.attributes->>'size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
             THEN (f.attributes->>'size_usdc')::numeric ELSE 0 END > 0

@@ -20,6 +20,7 @@ export * from "./auth";
 export * from "./billing";
 export * from "./connections";
 export * from "./copy-trade";
+export * from "./position-gap";
 export * from "./identity";
 export * from "./poly-redeem-jobs";
 export * from "./profile";
