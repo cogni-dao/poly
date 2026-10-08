@@ -3,17 +3,22 @@
 
 /**
  * Module: `@cogni/poly-node-contracts/poly.account.target-positions.v1.contract`
- * Purpose: Human/agent contract for the saved active-position books of one
- *   account's active copy targets.
+ * Purpose: Human/agent contract for the persisted target and Position-gap
+ *   decision books of one account's active copy targets.
  * Scope: Pure schemas and one operation literal. No authorization, DB, or IO.
  * Invariants:
- *   - SAVED_FACTS_ONLY: rows come from persisted observation tables.
+ *   - PERSISTED_FACTS_ONLY: rows come from persisted observation/runtime tables.
  *   - NO_FABRICATED_VALUES: missing marks, P/L, metadata, and observations stay null/tagged.
  *   - BOUNDED_CURSOR_PAGES: positions are keyset-paginated, never exhaustively hydrated.
  * @public
  */
 
 import { z } from "zod";
+
+import {
+	PolyPositionGapDecisionReasonSchema,
+	PolyPositionGapRuntimeSchema,
+} from "./poly.account.copy-operations.v1.contract";
 
 const IsoTimestampSchema = z.string().datetime({ offset: true });
 const PolyAddressSchema = z
@@ -67,6 +72,7 @@ export const PolyTargetPositionObservationSchema = z.object({
 	completeness: z.enum(["complete", "partial", "unavailable"]),
 	reason: z.enum([
 		"complete_saved_snapshot",
+		"saved_snapshot_stale",
 		"wallet_not_observed",
 		"positions_never_observed",
 		"positions_cursor_not_ok",
@@ -80,6 +86,21 @@ export const PolyTargetPositionTargetSchema = z.object({
 	live_position_count: z.number().int().nonnegative(),
 	live_portfolio_value_usdc: z.number().nonnegative(),
 	observation: PolyTargetPositionObservationSchema,
+	position_gap_runtime: PolyPositionGapRuntimeSchema,
+});
+
+export const PolyTargetPositionRuntimeRowSchema = z.object({
+	decision_reasons: z.array(PolyPositionGapDecisionReasonSchema).min(1),
+	target_weight: z.number().min(0).max(1),
+	desired_shares: z.number().nonnegative(),
+	held_shares: z.number().nonnegative(),
+	open_shares: z.number().nonnegative(),
+	gap_shares: z.number().nonnegative(),
+	locked_overweight_shares: z.number().nonnegative(),
+	price_cap: z.number().positive().lt(1).nullable(),
+	market_floor_usdc: z.number().nonnegative().nullable(),
+	minimum_sleeve_usdc: z.number().nonnegative().nullable(),
+	cohort_count: z.number().int().positive(),
 });
 
 export const PolyTargetPositionRowSchema = z.object({
@@ -94,14 +115,16 @@ export const PolyTargetPositionRowSchema = z.object({
 	market_slug: z.string().nullable(),
 	event_slug: z.string().nullable(),
 	market_url: z.string().url().nullable(),
-	shares: z.number().nonnegative(),
-	cost_basis_usdc: z.number().nonnegative(),
-	current_value_usdc: z.number().nonnegative(),
+	row_source: z.enum(["saved_only", "saved_and_runtime", "runtime_only"]),
+	shares: z.number().nonnegative().nullable(),
+	cost_basis_usdc: z.number().nonnegative().nullable(),
+	current_value_usdc: z.number().nonnegative().nullable(),
 	portfolio_weight: z.number().min(0).max(1),
-	entry_price: z.number().nonnegative(),
+	entry_price: z.number().nonnegative().nullable(),
 	current_price: z.number().nonnegative().nullable(),
 	cash_pnl_usdc: z.number().nullable(),
 	last_observed_at: IsoTimestampSchema,
+	runtime: PolyTargetPositionRuntimeRowSchema.nullable(),
 });
 export type PolyTargetPositionRow = z.infer<typeof PolyTargetPositionRowSchema>;
 
@@ -140,6 +163,7 @@ export const PolyAccountTargetPositionsResponseSchema = z.object({
 		positions: z.literal("poly_trader_current_positions"),
 		metadata: z.literal("poly_market_metadata"),
 		observation: z.literal("poly_trader_ingestion_cursors"),
+		runtime: z.literal("poly_position_gap_runs.plan.diagnostics"),
 	}),
 });
 export type PolyAccountTargetPositionsResponse = z.infer<
@@ -148,7 +172,8 @@ export type PolyAccountTargetPositionsResponse = z.infer<
 
 export const polyAccountTargetPositionsOperation = {
 	id: "poly.account.target-positions.v1",
-	summary: "Saved active-position portfolios for this account's copy targets",
+	summary:
+		"Persisted target portfolios and current Position-gap decision books for this account",
 	input: PolyAccountTargetPositionsQuerySchema,
 	output: PolyAccountTargetPositionsResponseSchema,
 } as const;
