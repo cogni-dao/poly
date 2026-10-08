@@ -34,11 +34,10 @@
  *     cost basis / avg price stay snapshot-sourced — they are hash-covered
  *     and therefore always fresh in the latest snapshot.
  *   - TARGET_LEGS_FROM_SNAPSHOTS: every active copy-target whose latest
- *     snapshot covers a condition we hold surfaces as a leg, regardless of
- *     whether we've mirrored a fill from that target on that condition. The
- *     "Markets" lens compares us against the targets we follow — gating on
- *     per-condition fills throws away DB-persisted positions and produces
- *     bogus solo-market percentages.
+ *     snapshot covers a condition we hold surfaces as a leg. A soft-disabled
+ *     target remains observable only where authoritative realized fill
+ *     lineage proves it created a held/closed local position. Disable stops
+ *     execution; it never erases the comparison needed to explain holdings.
  *   - SERVER_SIDE_LIFECYCLE: a leg's lifecycle is `"active"` if its
  *     current-positions row is active with positive live value (snapshot
  *     value fallback when no current-positions row exists), otherwise
@@ -919,38 +918,91 @@ async function readComparisonBundleRows(params: {
       SELECT * FROM live_inventory
       UNION ALL
       SELECT * FROM closed_inventory
-    ), active_target_candidates AS (
-      -- Coverage authority includes every physical wallet sibling, including
-      -- disabled/kind variants. Preview eligibility remains the narrower
-      -- legacy predicate and is carried explicitly rather than conflated.
+    ), realized_copy_lineage AS MATERIALIZED (
+      SELECT DISTINCT
+        lower(NULLIF(f.attributes->>'target_wallet', '')) AS wallet_key,
+        lower(COALESCE(
+          NULLIF(f.attributes->>'condition_id', ''),
+          NULLIF(regexp_replace(
+            f.market_id,
+            '^prediction-market:polymarket:',
+            ''
+          ), '')
+        )) AS condition_key,
+        NULLIF(f.attributes->>'token_id', '') AS token_id
+      FROM poly_copy_trade_fills f
+      JOIN eligible_positions p
+        ON p.condition_key = lower(COALESCE(
+          NULLIF(f.attributes->>'condition_id', ''),
+          NULLIF(regexp_replace(
+            f.market_id,
+            '^prediction-market:polymarket:',
+            ''
+          ), '')
+        ))
+       AND p.token_id = NULLIF(f.attributes->>'token_id', '')
+      WHERE f.billing_account_id = ${params.billingAccountId}
+        AND f.order_id IS NOT NULL
+        AND f.mode = 'live'
+        AND (
+          COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+          OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
+        )
+        AND (
+          COALESCE(f.shares, 0) > 0
+          OR f.status = 'filled'
+          OR (
+            COALESCE(f.attributes->>'filled_size_usdc', '')
+              ~ '^[0-9]+(\\.[0-9]+)?$'
+            AND (f.attributes->>'filled_size_usdc')::numeric > 0
+          )
+        )
+    ), observable_target_wallets AS (
       SELECT
         lower(t.target_wallet) AS wallet_key,
+        bool_or(t.disabled_at IS NULL) AS execution_active,
+        min(t.target_wallet) <> max(t.target_wallet)
+          AS target_identity_ambiguous
+      FROM poly_copy_trade_targets t
+      WHERE t.billing_account_id = ${params.billingAccountId}
+        AND (
+          t.disabled_at IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM realized_copy_lineage lineage
+            WHERE lineage.wallet_key = lower(t.target_wallet)
+          )
+        )
+      GROUP BY lower(t.target_wallet)
+    ), observable_target_candidates AS (
+      -- Coverage authority includes every physical wallet sibling, including
+      -- disabled/kind variants. Target-row enablement is intentionally absent:
+      -- disabled targets reached this point only through authoritative lineage.
+      SELECT
+        target.wallet_key,
+        target.execution_active,
         w.id AS trader_wallet_id,
         COALESCE(NULLIF(w.label, ''), 'Copy target') AS label,
         (w.disabled_at IS NULL) AS preview_eligible,
         (
-          count(*) OVER (PARTITION BY lower(t.target_wallet)) > 1
-          OR
-          min(t.target_wallet) OVER (PARTITION BY lower(t.target_wallet)) <>
-            max(t.target_wallet) OVER (PARTITION BY lower(t.target_wallet))
-          OR min(w.wallet_address) OVER (PARTITION BY lower(t.target_wallet)) <>
-            max(w.wallet_address) OVER (PARTITION BY lower(t.target_wallet))
+          target.target_identity_ambiguous
+          OR count(*) OVER (PARTITION BY target.wallet_key) > 1
+          OR min(w.wallet_address) OVER (PARTITION BY target.wallet_key) <>
+            max(w.wallet_address) OVER (PARTITION BY target.wallet_key)
         ) AS identity_ambiguous
-      FROM poly_copy_trade_targets t
+      FROM observable_target_wallets target
       JOIN poly_trader_wallets w
-        ON lower(w.wallet_address) = lower(t.target_wallet)
-      WHERE t.billing_account_id = ${params.billingAccountId}
-        AND t.disabled_at IS NULL
-    ), active_targets AS (
-      SELECT DISTINCT wallet_key, trader_wallet_id, label, preview_eligible,
-        identity_ambiguous
-      FROM active_target_candidates
+        ON lower(w.wallet_address) = target.wallet_key
+    ), observable_targets AS (
+      SELECT DISTINCT wallet_key, execution_active, trader_wallet_id, label,
+        preview_eligible, identity_ambiguous
+      FROM observable_target_candidates
     ), source_identity AS (
       SELECT
         o.identity_ambiguous OR COALESCE(bool_or(a.identity_ambiguous), false)
           AS identity_ambiguous
       FROM our_identity o
-      LEFT JOIN active_targets a ON TRUE
+      LEFT JOIN observable_targets a ON TRUE
       GROUP BY o.identity_ambiguous
     ), target_snapshot_source AS MATERIALIZED (
       SELECT
@@ -974,10 +1026,20 @@ async function readComparisonBundleRows(params: {
         ) AS current_active,
         a.identity_ambiguous AS wallet_identity_ambiguous
       FROM poly_trader_position_snapshots s
-      JOIN active_targets a ON a.trader_wallet_id = s.trader_wallet_id
+      JOIN observable_targets a ON a.trader_wallet_id = s.trader_wallet_id
       WHERE lower(s.condition_id) IN (
         SELECT DISTINCT condition_key FROM eligible_positions
       )
+        AND (
+          a.execution_active
+          OR EXISTS (
+            SELECT 1
+            FROM realized_copy_lineage lineage
+            WHERE lineage.wallet_key = a.wallet_key
+              AND lineage.condition_key = lower(s.condition_id)
+              AND lineage.token_id = s.token_id
+          )
+        )
     ), target_snapshot_ranked AS (
       SELECT
         s.*,
@@ -1142,7 +1204,7 @@ async function readComparisonBundleRows(params: {
           candidate.current_value_usdc,
           candidate.last_observed_at
         FROM poly_trader_current_positions candidate
-        JOIN active_targets candidate_wallet
+        JOIN observable_targets candidate_wallet
           ON candidate_wallet.trader_wallet_id = candidate.trader_wallet_id
          AND candidate_wallet.wallet_key = l.wallet_key
          AND candidate_wallet.preview_eligible
