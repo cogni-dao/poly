@@ -1036,10 +1036,21 @@ function createContainer(): Container {
 					logger: mirrorLogger,
 					metrics: noopMetrics,
 					notFoundGraceMs: env.POLY_CLOB_NOT_FOUND_GRACE_MS,
-					onOrderChanged: (row) => {
-						positionGapActors
-							.get(`${row.billing_account_id}:${row.target_id}`)
-							?.wake("order_event");
+					onOrderChanged: (row, change) => {
+						const actor = positionGapActors.get(
+							`${row.billing_account_id}:${row.target_id}`,
+						);
+						if (
+							change.reason === "clob_not_found" ||
+							change.reason === "never_placed"
+						) {
+							actor?.observeLedgerTerminal(
+								row.client_order_id,
+								change.reason,
+							);
+						} else {
+							actor?.wake("order_event");
+						}
 					},
 				});
 				// task.5016 — leadership was lost while this boot was in flight.
@@ -1120,6 +1131,8 @@ function createContainer(): Container {
 								configRevision: enumeratedTarget.mirrorActivatedAt.toISOString(),
 								configuredBudgetUsdc:
 									enumeratedTarget.mirrorCapitalBudgetUsdc,
+								positionGapBudgetGroup:
+									enumeratedTarget.positionGapBudgetGroup,
 								source,
 								refresh: positionGapRefresh,
 								store: positionGapStore,

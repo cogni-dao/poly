@@ -8,6 +8,7 @@
 
 import { createHash } from "node:crypto";
 import {
+	BELOW_MARKET_MIN_CODE,
 	clientOrderIdFor,
 	type Fill,
 	type GetOrderResult,
@@ -16,13 +17,19 @@ import {
 	type OrderReceipt,
 	type TargetBookSnapshotV1,
 } from "@cogni/poly-market-provider";
+import { ClobRejectionError } from "@cogni/poly-market-provider/adapters/polymarket";
 
 import { requiredBuyCollateralAtomic } from "@/bootstrap/capabilities/poly-trade-executor";
 import {
 	type PositionGapTargetActivity,
 	projectPositionGapCohorts,
 } from "@/features/copy-trade/position-gap-cohorts";
+import {
+	effectivePositionGapBudget,
+	type PositionGapBudgetGroup,
+} from "@/features/copy-trade/position-gap-budget";
 import type {
+	PositionGapActiveBuy,
 	PositionGapPreparedCancel,
 	PositionGapRuntimeScope,
 	PositionGapRuntimeStore,
@@ -62,6 +69,7 @@ export interface PositionGapActorDeps {
 	targetWallet: `0x${string}`;
 	configRevision: string;
 	configuredBudgetUsdc: number | null;
+	positionGapBudgetGroup: PositionGapBudgetGroup;
 	source: WalletActivitySource;
 	refresh: PositionGapTargetRefreshCoordinator;
 	store: PositionGapRuntimeStore;
@@ -82,6 +90,10 @@ export interface PositionGapActorDeps {
 
 export interface PositionGapActorHandle {
 	wake(reason: "config" | "order_event" | "target_activity"): void;
+	observeLedgerTerminal(
+		clientOrderId: string,
+		reason: "clob_not_found" | "never_placed",
+	): void;
 	stop(): Promise<void>;
 }
 
@@ -98,7 +110,12 @@ export function startPositionGapActor(
 	let draining: Promise<void> | null = null;
 	let lastSnapshot: TargetBookSnapshotV1 | null = null;
 	let disabled = false;
+	let stopFailure: unknown = null;
 	const causalDirty = new Set<string>();
+	const ledgerTerminals = new Map<
+		string,
+		"clob_not_found" | "never_placed"
+	>();
 	let causalWatermarkMs = 0;
 	let causalRetry: ReturnType<typeof globalThis.setTimeout> | null = null;
 	const venueCache = new Map<
@@ -122,6 +139,7 @@ export function startPositionGapActor(
 					}
 					await reconcile(batch);
 				} catch (error) {
+					if (batch.includes("disabled")) stopFailure = error;
 					deps.logger.error(
 						{
 							event: "poly.position_gap.v3.run_failed",
@@ -174,13 +192,19 @@ export function startPositionGapActor(
 		wake(reason) {
 			enqueue(reason);
 		},
+		observeLedgerTerminal(clientOrderId, reason) {
+			ledgerTerminals.set(clientOrderId, reason);
+			enqueue("order_event");
+		},
 		async stop() {
-			if (disabled) return;
-			disabled = true;
-			cancelInterval(timer);
-			cancelInterval(fullRefreshTimer);
-			if (causalRetry) cancelTimeout(causalRetry);
-			unsubscribe?.();
+			if (!disabled) {
+				disabled = true;
+				cancelInterval(timer);
+				cancelInterval(fullRefreshTimer);
+				if (causalRetry) cancelTimeout(causalRetry);
+				unsubscribe?.();
+			}
+			stopFailure = null;
 			reasons.clear();
 			reasons.add("disabled");
 			// A replacement generation must not start while this generation can
@@ -189,6 +213,7 @@ export function startPositionGapActor(
 			while (draining || reasons.size > 0) {
 				await drain();
 			}
+			if (stopFailure) throw stopFailure;
 		},
 	};
 
@@ -275,6 +300,7 @@ export function startPositionGapActor(
 		causalWatermarkMs = 0;
 
 		await reconcileKnownOrders();
+		await deps.store.reconcileLedgerTerminals(deps.scope);
 		await deps.store.releaseTerminalExposure(deps.scope);
 		const runtime = await deps.store.loadPlannerState(deps.scope);
 		// Unknown venue state stays in the economic denominator. CLOB reads are
@@ -286,8 +312,16 @@ export function startPositionGapActor(
 			const token = tokenById(freshSnapshot, holding.tokenId);
 			return sum + holding.shares * (token?.markPrice ?? 0);
 		}, 0);
-		const budgetUsdc =
-			deps.configuredBudgetUsdc ?? walletCashUsdc + mirrorMarkedExposure;
+		const budgetAllocation = effectivePositionGapBudget({
+			configuredBudgetUsdc: deps.configuredBudgetUsdc,
+			mirrorNavUsdc: walletCashUsdc + mirrorMarkedExposure,
+			group: deps.positionGapBudgetGroup,
+		});
+		if (!budgetAllocation) {
+			await cancelAll("invalid_budget_group");
+			return;
+		}
+		const budgetUsdc = budgetAllocation.effectiveBudgetUsdc;
 		const scale =
 			netBook.eligibleNetNavUsdc > 0
 				? budgetUsdc / netBook.eligibleNetNavUsdc
@@ -375,6 +409,17 @@ export function startPositionGapActor(
 	async function reconcileKnownOrders(): Promise<void> {
 		const runtime = await deps.store.loadPlannerState(deps.scope);
 		for (const action of runtime.activeBuys) {
+			const terminalReason = ledgerTerminals.get(action.clientOrderId);
+			if (terminalReason === "clob_not_found") {
+				await deps.store.markVenueNotFoundCanceled(action.id);
+				ledgerTerminals.delete(action.clientOrderId);
+				continue;
+			}
+			if (terminalReason === "never_placed") {
+				await deps.store.markKnownRejected(action.id, terminalReason);
+				ledgerTerminals.delete(action.clientOrderId);
+				continue;
+			}
 			if (!action.orderId) continue;
 			const result = await deps.execution.getBuy(action.orderId);
 			if ("found" in result) {
@@ -543,6 +588,8 @@ export function startPositionGapActor(
 		}
 
 		let halted = false;
+		let placedCount = 0;
+		let filledCount = 0;
 		for (const buy of persisted.buys) {
 			if (halted) break;
 			const prepared = preparedBuys.find(
@@ -577,6 +624,10 @@ export function startPositionGapActor(
 			try {
 				const receipt = await deps.execution.placeBuy(intent);
 				await deps.store.markPlacementReceipt(buy.id, receipt);
+				placedCount += 1;
+				if (receipt.status === "filled" || receipt.status === "partial") {
+					filledCount += 1;
+				}
 				await deps.ledger.markOrderId({
 					client_order_id: prepared.clientOrderId,
 					receipt,
@@ -596,17 +647,81 @@ export function startPositionGapActor(
 			}
 		}
 		if (!halted) {
-			await deps.store.finishRun(
-				persisted.runId,
+			const outcome =
 				input.plan.intents.length === 0 && input.plan.cancellations.length === 0
 					? "skipped"
-					: "completed",
+					: "completed";
+			await deps.store.finishRun(persisted.runId, outcome);
+			deps.logger.info(
+				{
+					event: "poly.position_gap.v3.reconciled",
+					billing_account_id: deps.scope.billingAccountId,
+					target_wallet: deps.targetWallet,
+					target_id: deps.scope.targetId,
+					run_id: persisted.runId,
+					outcome,
+					snapshot_id: input.snapshot.snapshotId,
+					snapshot_as_of: input.snapshot.updatedAtMs,
+					eligible_net_nav_usdc: input.plan.eligibleNetNavUsdc,
+					scale: input.plan.scale,
+					sleeve_budget_usdc: input.budgetUsdc,
+					wallet_cash_usdc: input.walletCashUsdc,
+					existing_reserved_usdc: input.plan.existingReservedUsdc,
+					new_reserved_usdc: input.plan.newReservedUsdc,
+					minimum_feasible_sleeve_usdc:
+						input.plan.minimumFeasibleSleeveUsdc,
+					planned_intents: input.plan.intents.length,
+					planned_cancellations: input.plan.cancellations.length,
+					intent_details: input.plan.intents.slice(0, 8).map((intent) => {
+						const diagnostic = input.plan.diagnostics.find(
+							(row) =>
+								row.conditionId === intent.conditionId &&
+								row.tokenId === intent.tokenId &&
+								row.cohortId === intent.cohortId,
+						);
+						return {
+							condition_id: intent.conditionId,
+							token_id: intent.tokenId,
+							cohort_kind: intent.cohortKind,
+							target_weight: diagnostic?.targetWeight,
+							desired_shares: intent.desiredShares,
+							held_shares: intent.heldShares,
+							open_shares: intent.openShares,
+							gap_shares: intent.gapShares,
+							floor_usdc: intent.floorNotionalUsdc,
+							limit_price: intent.limitPrice,
+							target_vwap: intent.targetVwap,
+							notional_usdc: intent.notionalUsdc,
+						};
+					}),
+					decision_details: input.plan.diagnostics.slice(0, 16).map((row) => ({
+						condition_id: row.conditionId,
+						token_id: row.tokenId,
+						reason: row.reason,
+						target_weight: row.targetWeight,
+						desired_shares: row.desiredShares,
+						held_shares: row.heldShares,
+						open_shares: row.openShares,
+						gap_shares: row.gapShares,
+						floor_usdc: row.floorNotionalUsdc,
+						minimum_sleeve_usdc: row.minimumSleeveUsdc,
+						limit_price: row.limitPrice,
+						target_vwap: row.targetVwap,
+					})),
+					placed_count: placedCount,
+					filled_count: filledCount,
+				},
+				"position-gap v3 reconciliation completed",
 			);
 		}
 	}
 
 	async function cancelAll(
-		reason: "causal_snapshot_lag" | "disabled" | "stale_snapshot",
+		reason:
+			| "causal_snapshot_lag"
+			| "disabled"
+			| "invalid_budget_group"
+			| "stale_snapshot",
 	): Promise<void> {
 		const runtime = await deps.store.loadPlannerState(deps.scope);
 		for (const action of runtime.activeBuys) {
@@ -619,6 +734,14 @@ export function startPositionGapActor(
 					client_order_id: action.clientOrderId,
 					error: `runtime_${reason}`,
 				});
+			}
+			if (
+				!action.orderId &&
+				(action.status === "submitting" || action.status === "ambiguous")
+			) {
+				throw new Error(
+					`cannot safely stop position-gap with unresolved ${action.status} action ${action.id}`,
+				);
 			}
 		}
 		const orders = runtime.openBuyOrders;
@@ -690,18 +813,14 @@ export function startPositionGapActor(
 			),
 		);
 		for (const cancellation of persisted.cancellations) {
-			await deps.execution.cancelBuy(cancellation.orderId);
-			const observed = await deps.execution.getBuy(cancellation.orderId);
-			if ("found" in observed && observed.found.status === "canceled") {
-				await deps.store.markCancelConfirmed(cancellation.id);
-				const active = activeByOrder.get(cancellation.orderId);
-				if (active) {
-					await deps.ledger.markCanceled({
-						client_order_id: active.clientOrderId,
-						reason: "position_gap_runtime_safety",
-					});
-				}
-			}
+			const active = activeByOrder.get(cancellation.orderId);
+			await requireConfirmedSafetyCancellation({
+				execution: deps.execution,
+				store: deps.store,
+				ledger: deps.ledger,
+				cancellation,
+				...(active ? { active } : {}),
+			});
 		}
 		await deps.store.finishRun(persisted.runId, "halted", reason);
 	}
@@ -833,11 +952,51 @@ function buyNotionalForCollateral(atomic: bigint): number {
 	return Math.floor(low * 1_000_000) / 1_000_000;
 }
 
-function knownNoOrder(error: unknown): boolean {
-	return (
-		error instanceof Error &&
+export function knownNoOrder(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	if (
 		error.name === "PolyTradeExecutorError" &&
 		(error as Error & { code?: string }).code === "not_authorized"
+	)
+		return true;
+	if (error instanceof ClobRejectionError) return true;
+	return (error as Error & { code?: string }).code === BELOW_MARKET_MIN_CODE;
+}
+
+export async function requireConfirmedSafetyCancellation(input: {
+	execution: Pick<PositionGapBuyExecutionPort, "cancelBuy" | "getBuy">;
+	store: Pick<
+		PositionGapRuntimeStore,
+		"markCancelConfirmed" | "markPlacementReceipt"
+	>;
+	ledger: Pick<OrderLedger, "markCanceled" | "markOrderId">;
+	cancellation: { id: string; orderId: string };
+	active?: PositionGapActiveBuy;
+}): Promise<void> {
+	await input.execution.cancelBuy(input.cancellation.orderId);
+	const observed = await input.execution.getBuy(input.cancellation.orderId);
+	if ("found" in observed && observed.found.status === "canceled") {
+		await input.store.markCancelConfirmed(input.cancellation.id);
+		if (input.active) {
+			await input.ledger.markCanceled({
+				client_order_id: input.active.clientOrderId,
+				reason: "position_gap_runtime_safety",
+			});
+		}
+		return;
+	}
+	if ("found" in observed && observed.found.status === "filled") {
+		if (input.active) {
+			await input.store.markPlacementReceipt(input.active.id, observed.found);
+			await input.ledger.markOrderId({
+				client_order_id: input.active.clientOrderId,
+				receipt: observed.found,
+			});
+		}
+		return;
+	}
+	throw new Error(
+		`position-gap safety cancellation unconfirmed for ${input.cancellation.orderId}`,
 	);
 }
 
@@ -850,7 +1009,11 @@ function blockedSafetyPlan(
 		cohortId: string;
 		reservedUsdc: number;
 	}[],
-	reason: "causal_snapshot_lag" | "disabled" | "stale_snapshot",
+	reason:
+		| "causal_snapshot_lag"
+		| "disabled"
+		| "invalid_budget_group"
+		| "stale_snapshot",
 	sleeveBudgetUsdc: number,
 	walletCashUsdc: number,
 ): PositionGapBookPlanV1 {

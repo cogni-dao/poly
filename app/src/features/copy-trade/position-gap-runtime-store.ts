@@ -1142,6 +1142,134 @@ export class PositionGapRuntimeStore {
 		});
 	}
 
+	/**
+	 * Release a runtime BUY only after the shared ledger reconciler has observed
+	 * typed CLOB `not_found` beyond its configured grace window.
+	 */
+	async markVenueNotFoundCanceled(actionId: string): Promise<void> {
+		await this.db.transaction(async (tx) => {
+			await tx.execute(
+				sql`SELECT 1 FROM ${polyPositionGapActions} WHERE ${polyPositionGapActions.id} = ${actionId} FOR UPDATE`,
+			);
+			const [action] = await tx
+				.select()
+				.from(polyPositionGapActions)
+				.where(eq(polyPositionGapActions.id, actionId))
+				.limit(1);
+			if (
+				!action ||
+				["filled", "canceled", "rejected", "ambiguous"].includes(action.status)
+			)
+				return;
+			const desiredShares = numberOf(action.desiredShares);
+			const filledShares = numberOf(action.filledShares);
+			const unfilledShares = Math.max(0, desiredShares - filledShares);
+			const intended = numberOf(action.notionalUsdc);
+			const filled = numberOf(action.filledUsdc);
+			await tx
+				.update(polyPositionGapActions)
+				.set({
+					status: "canceled",
+					venueStatus: "not_found_after_grace",
+					errorCode: "clob_not_found",
+					completedAt: new Date(),
+					updatedAt: new Date(),
+				})
+				.where(eq(polyPositionGapActions.id, action.id));
+			await tx
+				.update(polyPositionGapActions)
+				.set({
+					status: "canceled",
+					errorCode: "clob_not_found",
+					completedAt: new Date(),
+					updatedAt: new Date(),
+				})
+				.where(
+					and(
+						eq(polyPositionGapActions.relatedBuyActionId, action.id),
+						eq(polyPositionGapActions.status, "cancel_requested"),
+					),
+				);
+			await tx
+				.update(polyPositionGapReservations)
+				.set({
+					releasedBudgetUsdc: Math.max(0, intended - filled).toString(),
+					releasedCashGuardAtomic:
+						polyPositionGapReservations.executorCashGuardAtomic,
+					state: filled > EPSILON ? "active" : "released",
+					releaseReason: "clob_not_found",
+					...(filled > EPSILON ? {} : { releasedAt: new Date() }),
+					updatedAt: new Date(),
+				})
+				.where(eq(polyPositionGapReservations.buyActionId, action.id));
+			await tx
+				.update(polyPositionGapCohorts)
+				.set({
+					openOrderShares: sql`GREATEST(0, ${polyPositionGapCohorts.openOrderShares} - ${unfilledShares})`,
+					remainingShares: sql`LEAST(GREATEST(0, ${polyPositionGapCohorts.allowedMirrorShares} - ${polyPositionGapCohorts.acquiredShares}), ${polyPositionGapCohorts.remainingShares} + ${unfilledShares})`,
+					status: filled > EPSILON ? "exhausted" : "available",
+					updatedAt: new Date(),
+				})
+				.where(eq(polyPositionGapCohorts.id, action.cohortId));
+		});
+	}
+
+	/** Recover terminal ledger evidence even when its callback raced actor boot. */
+	async reconcileLedgerTerminals(
+		scope: PositionGapRuntimeScope,
+	): Promise<number> {
+		const rows = await this.db
+			.select({
+				actionId: polyPositionGapActions.id,
+				ledgerStatus: polyCopyTradeFills.status,
+				reason: sql<string | null>`${polyCopyTradeFills.attributes}->>'reason'`,
+			})
+			.from(polyPositionGapActions)
+			.innerJoin(
+				polyCopyTradeFills,
+				eq(
+					polyCopyTradeFills.clientOrderId,
+					polyPositionGapActions.clientOrderId,
+				),
+			)
+			.where(
+				and(
+					eq(
+						polyPositionGapActions.billingAccountId,
+						scope.billingAccountId,
+					),
+					eq(polyPositionGapActions.targetId, scope.targetId),
+					eq(polyPositionGapActions.kind, "buy"),
+					inArray(polyPositionGapActions.status, [
+						"reserved",
+						"ledgered",
+						"submitting",
+						"open",
+						"partial",
+						"cancel_requested",
+					]),
+					or(
+						and(
+							eq(polyCopyTradeFills.status, "canceled"),
+							sql`${polyCopyTradeFills.attributes}->>'reason' = 'clob_not_found'`,
+						),
+						and(
+							eq(polyCopyTradeFills.status, "error"),
+							sql`${polyCopyTradeFills.attributes}->>'reason' = 'never_placed'`,
+						),
+					),
+				),
+			);
+		for (const row of rows) {
+			if (row.ledgerStatus === "canceled" && row.reason === "clob_not_found") {
+				await this.markVenueNotFoundCanceled(row.actionId);
+			} else if (row.ledgerStatus === "error" && row.reason === "never_placed") {
+				await this.markKnownRejected(row.actionId, "never_placed");
+			}
+		}
+		return rows.length;
+	}
+
 	async markPlacementReceipt(
 		actionId: string,
 		receipt: OrderReceipt,

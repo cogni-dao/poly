@@ -40,6 +40,7 @@ describe("position-gap runtime persistence", () => {
 	const targetA = randomUUID();
 	const targetB = randomUUID();
 	const targetSafety = randomUUID();
+	const targetNotFound = randomUUID();
 
 	beforeAll(async () => {
 		appDb = getAppDb();
@@ -525,5 +526,99 @@ describe("position-gap runtime persistence", () => {
 
 		await insert("first");
 		await expect(insert("second")).rejects.toThrow();
+	});
+
+	it("releases only the unfilled reservation after authoritative CLOB not_found", async () => {
+		const db = getSeedDb();
+		const store = new PositionGapRuntimeStore(db);
+		const runId = randomUUID();
+		const cohortId = randomUUID();
+		const actionId = randomUUID();
+		await db.insert(polyPositionGapRuns).values({
+			id: runId,
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetNotFound,
+			budgetUsdc: "10",
+			walletCashUsdcAtStart: "10",
+			status: "completed",
+		});
+		await db.insert(polyPositionGapCohorts).values({
+			id: cohortId,
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetNotFound,
+			cohortKey: "not-found-cohort",
+			sourceKind: "activation",
+			sourceConfigRevision: "rev",
+			sourceSnapshotId: "snapshot",
+			sourceSnapshotHash: "hash",
+			sourceSnapshotAsOf: asOf,
+			sourceProvenance: {},
+			createdRunId: runId,
+			conditionId: "condition-not-found",
+			tokenId: "token-not-found",
+			marketId: "prediction-market:polymarket:condition-not-found",
+			outcome: "0",
+			targetDeltaShares: "10",
+			scaleAtCreation: "1",
+			allowedMirrorShares: "10",
+			initialAllowedMirrorShares: "10",
+			benchmarkTargetVwap: "0.5",
+			acquiredShares: "4",
+			openOrderShares: "6",
+			remainingShares: "0",
+			status: "resting",
+		});
+		await db.insert(polyPositionGapActions).values({
+			id: actionId,
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetNotFound,
+			runId,
+			cohortId,
+			cohortKey: "not-found-cohort",
+			actionKey: "not-found-action",
+			kind: "buy",
+			conditionId: "condition-not-found",
+			tokenId: "token-not-found",
+			marketId: "prediction-market:polymarket:condition-not-found",
+			outcome: "0",
+			desiredShares: "10",
+			filledShares: "4",
+			filledUsdc: "2",
+			notionalUsdc: "5",
+			limitPrice: "0.5",
+			plannerAction: {},
+			clientOrderId: "not-found-client",
+			orderId: "not-found-order",
+			status: "partial",
+		});
+		await db.insert(polyPositionGapReservations).values({
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetNotFound,
+			cohortId,
+			buyActionId: actionId,
+			budgetNotionalUsdc: "5",
+			executorCashGuardAtomic: "5500000",
+			cashGuardSource: "test",
+		});
+
+		await store.markVenueNotFoundCanceled(actionId);
+		await store.markVenueNotFoundCanceled(actionId);
+		const [reservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, actionId));
+		const [cohort] = await db
+			.select()
+			.from(polyPositionGapCohorts)
+			.where(eq(polyPositionGapCohorts.id, cohortId));
+		expect(Number(reservation?.releasedBudgetUsdc)).toBe(3);
+		expect(reservation?.state).toBe("active");
+		expect(Number(cohort?.acquiredShares)).toBe(4);
+		expect(Number(cohort?.openOrderShares)).toBe(0);
+		expect(Number(cohort?.remainingShares)).toBe(6);
 	});
 });

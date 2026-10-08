@@ -5,10 +5,13 @@ import type {
 	TargetBookProviderV1,
 	TargetBookSnapshotV1,
 } from "@cogni/poly-market-provider";
+import { ClobRejectionError } from "@cogni/poly-market-provider/adapters/polymarket";
 import { describe, expect, it, vi } from "vitest";
 
 import {
 	buildPositionGapBuyIntent,
+	knownNoOrder,
+	requireConfirmedSafetyCancellation,
 	selectPositionGapVenueCandidates,
 } from "@/features/copy-trade/position-gap-actor";
 import { PositionGapTargetRefreshCoordinator } from "@/features/copy-trade/position-gap-target-refresh";
@@ -207,5 +210,71 @@ describe("buildPositionGapBuyIntent", () => {
 			placement: "limit",
 			position_gap_version: "3",
 		});
+	});
+
+	it("distinguishes explicit no-order rejection from ambiguous transport failure", () => {
+		expect(
+			knownNoOrder(
+				new ClobRejectionError("rejected", {
+					error_code: "insufficient_balance",
+					reason: "rejected",
+					response_keys: [],
+				}),
+			),
+		).toBe(true);
+		expect(knownNoOrder(new Error("connection reset after submit"))).toBe(false);
+	});
+
+	it("blocks a safety stop until the venue confirms cancellation", async () => {
+		const cancelBuy = vi.fn(async () => undefined);
+		const getBuy = vi
+			.fn()
+			.mockResolvedValueOnce({ not_found: true })
+			.mockResolvedValueOnce({
+				found: {
+					order_id: "order",
+					client_order_id: "client",
+					status: "canceled",
+					submitted_at: "2026-10-08T00:00:00.000Z",
+				},
+			});
+		const markCancelConfirmed = vi.fn(async () => undefined);
+		const ledgerMarkCanceled = vi.fn(async () => undefined);
+		const input = {
+			execution: { cancelBuy, getBuy },
+			store: {
+				markCancelConfirmed,
+				markPlacementReceipt: vi.fn(async () => undefined),
+			},
+			ledger: {
+				markCanceled: ledgerMarkCanceled,
+				markOrderId: vi.fn(async () => undefined),
+			},
+			cancellation: { id: "cancel", orderId: "order" },
+			active: {
+				id: "buy",
+				runId: "run",
+				clientOrderId: "client",
+				orderId: "order",
+				conditionId: "condition",
+				tokenId: "token",
+				cohortKey: "cohort",
+				marketId: "market",
+				outcome: "0",
+				shares: 2,
+				filledShares: 0,
+				notionalUsdc: 1,
+				limitPrice: 0.5,
+				status: "open",
+			},
+		};
+
+		await expect(requireConfirmedSafetyCancellation(input)).rejects.toThrow(
+			"unconfirmed",
+		);
+		expect(markCancelConfirmed).not.toHaveBeenCalled();
+		await expect(requireConfirmedSafetyCancellation(input)).resolves.toBeUndefined();
+		expect(markCancelConfirmed).toHaveBeenCalledOnce();
+		expect(ledgerMarkCanceled).toHaveBeenCalledOnce();
 	});
 });

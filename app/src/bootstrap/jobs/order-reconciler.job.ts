@@ -135,7 +135,10 @@ export interface OrderReconcilerDeps {
    */
   notFoundGraceMs: number;
   /** Wake an account-local strategy actor after a durable ledger transition. */
-  onOrderChanged?: (row: LedgerRow) => void;
+  onOrderChanged?: (
+    row: LedgerRow,
+    change: { status: LedgerStatus; reason?: string }
+  ) => void;
   /**
    * Injected clock — returns the current wall time. Defaults to `() => new Date()`
    * at production call sites. Injected in tests for deterministic age calculations.
@@ -233,7 +236,10 @@ export async function runReconcileOnce(
         status: "error",
         reason: "never_placed",
       });
-      deps.onOrderChanged?.(row);
+      deps.onOrderChanged?.(row, {
+        status: "error",
+        reason: "never_placed",
+      });
       // NOT pushed to syncedIds: `synced_at` records a typed CLOB response,
       // and this row never produced one. The row leaves `listOpenOrPending`
       // on the next tick anyway, so its staleness stops growing regardless.
@@ -280,7 +286,10 @@ export async function runReconcileOnce(
           status: "canceled",
           reason: "clob_not_found",
         });
-        deps.onOrderChanged?.(row);
+        deps.onOrderChanged?.(row, {
+          status: "canceled",
+          reason: "clob_not_found",
+        });
         deps.metrics.incr(ORDER_RECONCILER_METRICS.notFoundUpgradesTotal, {});
         log.info(
           {
@@ -318,7 +327,7 @@ export async function runReconcileOnce(
           ? { fees_usdc: receipt.fees_usdc }
           : {}),
       });
-      deps.onOrderChanged?.(row);
+      deps.onOrderChanged?.(row, { status: newStatus });
 
       deps.metrics.incr(ORDER_RECONCILER_METRICS.updatesTotal, {
         from: row.status,
