@@ -21,7 +21,9 @@
  *     unsettled orders and live positions still block. Without this exemption
  *     unprovisioned connections were permanently unresettable.
  *   - NO_UNSETTLED_ORDERS: refuses while any mirror fill is pending | open |
- *     partial, so a revoke cannot orphan a resting CLOB order.
+ *     partial AND its position is still resting, so a revoke cannot orphan a
+ *     live CLOB order. The position predicate matches the reconciler's
+ *     `listOpenOrPending`; see RESOLVED_POSITIONS_ARE_NOT_RESTING_ORDERS.
  *   - REVOKE_NEVER_DELETES: history, the Privy wallet, and the SIWE/user
  *     identity binding are all preserved. `revokedByUserId` is the connection's
  *     own `createdByUserId` — the reset attributes to the owning user, and
@@ -46,7 +48,7 @@ import {
   type PolyWalletResetConnectionOutput,
   polyWalletResetConnectionOperation,
 } from "@cogni/poly-node-contracts";
-import { and, count, eq, inArray, isNull } from "drizzle-orm";
+import { and, count, eq, inArray, isNull, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getContainer, resolveServiceDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -66,6 +68,28 @@ const MAX_TOKEN_LENGTH = 256;
 
 /** Canonical OrderStatus values that mean "still resting at the CLOB". */
 const UNSETTLED_STATUSES = ["pending", "open", "partial"] as const;
+
+/**
+ * A resting order can only exist while its position is still live. Mirrors
+ * `activeRestingPosition` in `order-ledger.ts`, which the reconciler's
+ * `listOpenOrPending` already applies.
+ *
+ * RESOLVED_POSITIONS_ARE_NOT_RESTING_ORDERS: without this predicate the two
+ * queries disagree. A row whose market resolved gets a terminal
+ * `position_lifecycle`, which drops it out of `listOpenOrPending` forever — so
+ * the reconciler can never advance its order status — while this guard kept
+ * counting it as unsettled on `status` alone. The row then blocks reset
+ * permanently, and nothing can ever clear it. Observed on connection
+ * `49cfd0b4…`: three orders from 2026-05-03/04 with `synced_at` frozen at
+ * 05-04/05, the moment their markets resolved.
+ */
+const activeRestingPosition = sql`(
+  (
+    ${polyCopyTradeFills.positionLifecycle} IS NULL
+    OR ${polyCopyTradeFills.positionLifecycle} IN ('unresolved','open','closing')
+  )
+  AND ${polyCopyTradeFills.attributes}->>'closed_at' IS NULL
+)`;
 
 function safeCompare(a: string, b: string): boolean {
   const bufA = Buffer.from(a, "utf8");
@@ -220,7 +244,8 @@ export const POST = wrapRouteHandlerWithLogging(
       .where(
         and(
           eq(polyCopyTradeFills.billingAccountId, billingAccountId),
-          inArray(polyCopyTradeFills.status, [...UNSETTLED_STATUSES])
+          inArray(polyCopyTradeFills.status, [...UNSETTLED_STATUSES]),
+          activeRestingPosition
         )
       );
     const unsettledFillCount = Number(unsettledRow?.c ?? 0);
