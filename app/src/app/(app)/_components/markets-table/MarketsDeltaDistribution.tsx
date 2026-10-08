@@ -11,6 +11,8 @@
  *   - REACTS_TO_FILTER: bins live or closed groups according to the
  *     parent panel's `statusFilter`. The dashboard's Live/Closed toggle
  *     is the single source of truth.
+ *   - FINITE_VALUES_ONLY: malformed deltas are omitted without hiding the
+ *     histogram or suppressing other valid saved values.
  * Side-effects: none
  * @public
  */
@@ -31,19 +33,27 @@ export type MarketsDeltaDistributionProps = {
   statusFilter: WalletExecutionMarketLineStatus;
 };
 
+export function marketDeltaValues(
+  groups: readonly WalletExecutionMarketGroup[],
+  statusFilter: WalletExecutionMarketLineStatus
+): number[] {
+  return groups
+    .filter((group) => group.status === statusFilter)
+    .filter(
+      (group): group is WalletExecutionMarketGroup & { edgeGapPct: number } =>
+        group.edgeGapPct !== null && Number.isFinite(group.edgeGapPct)
+    )
+    .map((group) => Math.abs(group.edgeGapPct * 100));
+}
+
 export function MarketsDeltaDistribution({
   groups,
   statusFilter,
-}: MarketsDeltaDistributionProps): ReactElement | null {
-  const absDeltaPcts = useMemo(() => {
-    return (groups ?? [])
-      .filter((g) => g.status === statusFilter)
-      .filter(
-        (g): g is WalletExecutionMarketGroup & { edgeGapPct: number } =>
-          g.edgeGapPct !== null
-      )
-      .map((g) => Math.abs(g.edgeGapPct * 100));
-  }, [groups, statusFilter]);
+}: MarketsDeltaDistributionProps): ReactElement {
+  const absDeltaPcts = useMemo(
+    () => marketDeltaValues(groups ?? [], statusFilter),
+    [groups, statusFilter]
+  );
 
   return (
     <DeltaDistribution absDeltaPcts={absDeltaPcts} subtitle={statusFilter} />
