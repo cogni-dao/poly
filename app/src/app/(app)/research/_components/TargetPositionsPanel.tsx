@@ -63,7 +63,7 @@ async function fetchTargetPositions(args: {
 
 export function TargetPositionsPanel() {
 	const searchParams = useSearchParams();
-	const requestedTarget = searchParams.get("target_wallet");
+	const requestedTarget = searchParams?.get("target_wallet") ?? null;
 	const [targetWallet, setTargetWallet] = useState(
 		requestedTarget && /^0x[a-fA-F0-9]{40}$/.test(requestedTarget)
 			? requestedTarget.toLowerCase()

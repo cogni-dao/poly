@@ -164,7 +164,7 @@ describe("CopyTargetControlPanel algorithm selector", () => {
     expect(screen.getByText(/awaiting first plan/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Details" })).toHaveAttribute(
       "href",
-      "/research#target-positions",
+      "/research?target_wallet=0x2005d16a84ceefa912d4e380cd32e7ff827875ea#target-positions",
     );
     expect(
       screen.getByRole("link", { name: "Learn how Position gap works" }),
