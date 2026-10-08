@@ -448,6 +448,58 @@ export function startPositionGapActor(
 			);
 		}
 		const runtime = await deps.store.loadPlannerState(deps.scope);
+
+		// LEDGER_TERMINAL_SURVIVES_RESTART (bug.5023). `ledgerTerminals` is an
+		// in-memory map fed by `observeLedgerTerminal`, which the shared
+		// reconciler calls exactly ONCE, into whichever actor instance happens
+		// to be alive at that moment. If the ledger row terminalizes while no
+		// actor is running — a pod restart, a redeploy, a leadership handover —
+		// that single notification lands on nothing, and the action stays
+		// `ambiguous` forever: the recovery sweep above only matches known CLOB
+		// rejection codes, so a non-CLOB failure (e.g. a paper sidecar 502) is
+		// outside it. The target then halts on every tick, permanently, while
+		// the ledger has long since recorded the truth.
+		//
+		// Re-derive the map from the ledger instead of depending on having
+		// caught the live event. The ledger is the authority on whether an
+		// order ever reached a venue, so this is the same answer, just sourced
+		// from durable state. Only actions with no `orderId` qualify: an action
+		// that HAS one is reconciled against the venue below, which is strictly
+		// better evidence than our own ledger row.
+		const unplacedAmbiguous = runtime.activeBuys.filter(
+			(a) => !a.orderId && !ledgerTerminals.has(a.clientOrderId),
+		);
+		if (unplacedAmbiguous.length > 0) {
+			const recent = await deps.ledger.listRecent({
+				billing_account_id: deps.scope.billingAccountId,
+				target_id: deps.scope.targetId,
+				limit: 200,
+			});
+			const statusByCoid = new Map(
+				recent.map((r) => [r.client_order_id, r.status]),
+			);
+			for (const action of unplacedAmbiguous) {
+				const status = statusByCoid.get(action.clientOrderId);
+				// `error` is what the reconciler writes for `never_placed`;
+				// `canceled` means it was retired without ever reporting an id.
+				// Both say the same thing for an action with no `orderId`: the
+				// venue never acknowledged it, so there is nothing to deny.
+				if (status !== "error" && status !== "canceled") continue;
+				ledgerTerminals.set(action.clientOrderId, "never_placed");
+				deps.logger.warn(
+					{
+						event: "poly.position_gap.v3.ledger_terminal_rehydrated",
+						billing_account_id: deps.scope.billingAccountId,
+						target_id: deps.scope.targetId,
+						action_id: action.id,
+						client_order_id: action.clientOrderId,
+						ledger_status: status,
+					},
+					"position-gap re-derived a terminal ledger transition missed while no actor was running",
+				);
+			}
+		}
+
 		for (const action of runtime.activeBuys) {
 			const terminalReason = ledgerTerminals.get(action.clientOrderId);
 			if (terminalReason === "clob_not_found") {
