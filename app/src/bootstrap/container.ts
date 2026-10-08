@@ -1229,6 +1229,26 @@ function createContainer(): Container {
 										}),
 								},
 								getWalletCashUsdc: async () => {
+									// VENUE_DECIDES_THE_CASH_SOURCE (NO_FABRICATED_VALUES) — the third
+									// and last of v3's wallet-shaped deps, after `getAuthoritativeShares`
+									// and the portfolio snapshot. A paper account holds no pUSD, so
+									// `mirrorWalletPort.getBalances().pusd` is not merely unavailable
+									// for it, it is the wrong question: its cash is the migration-0083
+									// projection's NAV (seed − realized cost + marked open value).
+									// Asking the live port and throwing would be honest but useless —
+									// position_gap would decline to size on every paper tick forever,
+									// which is precisely the "paper runs but proves nothing" state this
+									// story exists to end. `getNavUsdc` raises a typed unavailable when
+									// the projection is absent, incomplete or stale, so a withheld NAV
+									// still cannot be read as 0.
+									const cashVenue = await executionVenueResolver(
+										enumeratedTarget.billingAccountId,
+									);
+									if (cashVenue === "paper") {
+										return paperPortfolio.getNavUsdc(
+											enumeratedTarget.billingAccountId,
+										);
+									}
 									// NO_FABRICATED_VALUES: `mirrorWalletPort` is undefined on a
 									// deployment with no Privy / AEAD config, so there is no readable
 									// pUSD balance to denominate against. Throw — position_gap then
