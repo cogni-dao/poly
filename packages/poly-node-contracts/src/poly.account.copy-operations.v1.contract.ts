@@ -277,6 +277,7 @@ export const PolyPositionGapRuntimeSchema = z.discriminatedUnion("status", [
       locked_overweight_count: z.number().int().nonnegative(),
     }),
     execution: z.object({
+      scope: z.literal("target_lifetime"),
       submitted_order_count: z.number().int().nonnegative(),
       filled_order_count: z.number().int().nonnegative(),
       filled_shares: z.number().nonnegative(),

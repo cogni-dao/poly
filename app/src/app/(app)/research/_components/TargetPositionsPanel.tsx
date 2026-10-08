@@ -367,7 +367,31 @@ function runtimeSummary(
 		return "incomplete snapshot";
 	if (runtime.snapshot.freshness !== "fresh") return "stale snapshot";
 	const minimum = runtime.plan.minimum_feasible_sleeve_usdc;
-	return `${runtime.plan.status.replaceAll("_", " ")} · sleeve ${formatUsd(runtime.plan.sleeve_budget_usdc)}${minimum === null ? "" : ` · min ${formatUsd(minimum)}`} · NAV ${formatUsd(runtime.plan.eligible_net_nav_usdc)} · scale ${runtime.plan.scale.toPrecision(3)} · free ${formatUsd(runtime.plan.free_wallet_cash_after_guards_usdc)} · reserved ${formatUsd(runtime.plan.reserved_budget_usdc)} · ${runtime.execution.submitted_order_count}/${runtime.execution.filled_order_count} submitted/filled`;
+	const status = runtimeAtRest(runtime)
+		? runtime.positions.some((position) => position.open_shares > 1e-9)
+			? "orders resting"
+			: "matched"
+		: runtime.plan.status.replaceAll("_", " ");
+	return `${status} · sleeve ${formatUsd(runtime.plan.sleeve_budget_usdc)}${minimum === null ? "" : ` · min ${formatUsd(minimum)}`} · NAV ${formatUsd(runtime.plan.eligible_net_nav_usdc)} · scale ${runtime.plan.scale.toPrecision(3)} · free ${formatUsd(runtime.plan.free_wallet_cash_after_guards_usdc)} · reserved ${formatUsd(runtime.plan.reserved_budget_usdc)} · lifetime ${runtime.execution.submitted_order_count}/${runtime.execution.filled_order_count} submitted/filled`;
+}
+
+function runtimeAtRest(
+	runtime: PolyTrackedTarget["position_gap_runtime"],
+): boolean {
+	return (
+		runtime.status === "observed" &&
+		(runtime.run.status === "completed" || runtime.run.status === "skipped") &&
+		runtime.plan.status === "no_feasible_position" &&
+		!runtime.positions_truncated &&
+		runtime.positions.length > 0 &&
+		runtime.plan.locked_overweight_count === 0 &&
+		runtime.positions.every(
+			(position) =>
+				position.decision_reason === "no_gap" &&
+				position.gap_shares <= 1e-9 &&
+				position.locked_overweight_shares <= 1e-9,
+		)
+	);
 }
 
 function runtimeHealthy(
@@ -377,8 +401,8 @@ function runtimeHealthy(
 		runtime.status === "observed" &&
 		runtime.snapshot.completeness === "complete" &&
 		runtime.snapshot.freshness === "fresh" &&
-		runtime.plan.status === "ready" &&
-		runtime.execution.submitted_order_count > 0
+		((runtime.run.status === "completed" && runtime.plan.status === "ready") ||
+			runtimeAtRest(runtime))
 	);
 }
 

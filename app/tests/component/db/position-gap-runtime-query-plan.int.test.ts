@@ -17,6 +17,7 @@ import {
 import { billingAccounts, users } from "@/shared/db/schema";
 
 const ACTION_PLAN_ROWS = 20_000;
+const BACKGROUND_ACTION_ROWS = 80_000;
 type ExplainNode = {
 	"Node Type": string;
 	"Relation Name"?: string;
@@ -108,10 +109,10 @@ describe("position-gap runtime query plan proof", () => {
 				desired_shares, notional_usdc, limit_price, filled_shares, filled_usdc,
 				planner_action, client_order_id, status, submitted_at
 			)
-			SELECT ${accountId}, ${userId}, ${targetId}::uuid, ${latestRunId}::uuid, ${cohortId}::uuid,
-				'plan-cohort', 'latest-' || n, 'buy', 'condition', 'token', 'market', 'Yes',
-				'1', '0.5', '0.5', '1', '0.5', '{}'::jsonb, 'latest-client-' || n, 'filled', NOW()
-			FROM generate_series(1, 8) AS n
+			SELECT ${accountId}, ${userId}, gen_random_uuid(), ${oldRunId}::uuid, ${cohortId}::uuid,
+				'noise-cohort', 'noise-' || n, 'buy', 'condition', 'token', 'market', 'Yes',
+				'1', '0.5', '0.5', '1', '0.5', '{}'::jsonb, 'noise-client-' || n, 'filled', NOW()
+			FROM generate_series(1, ${BACKGROUND_ACTION_ROWS}) AS n
 		`);
 		await appDb.execute(sql`ANALYZE poly_position_gap_runs`);
 		await appDb.execute(sql`ANALYZE poly_position_gap_actions`);
@@ -136,6 +137,15 @@ describe("position-gap runtime query plan proof", () => {
 	it("uses bounded indexes below 200ms", async () => {
 		await withTenantScope(appDb, userActor(toUserId(userId)), async (rawTx) => {
 			const tx = rawTx as AgentGrantTransaction;
+			const actionRows = await positionGapActionAggregateSelect(tx, accountId, [
+				targetId,
+			]);
+			expect(actionRows).toMatchObject([
+				{
+					submitted: String(ACTION_PLAN_ROWS),
+					filled: String(ACTION_PLAN_ROWS),
+				},
+			]);
 			const latest = documentOf(
 				await tx.execute(
 					sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${positionGapLatestRunsSelect(accountId, [targetId])}`,
@@ -143,7 +153,7 @@ describe("position-gap runtime query plan proof", () => {
 			);
 			const actions = documentOf(
 				await tx.execute(
-					sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${positionGapActionAggregateSelect(tx, accountId, [latestRunId])}`,
+					sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${positionGapActionAggregateSelect(tx, accountId, [targetId])}`,
 				),
 			);
 			const latestNodes = flatten(latest.Plan);
@@ -157,7 +167,8 @@ describe("position-gap runtime query plan proof", () => {
 			).toBe(true);
 			expect(
 				actionNodes.some(
-					(node) => node["Index Name"] === "poly_position_gap_actions_run_idx",
+					(node) =>
+						node["Index Name"] === "poly_position_gap_actions_key_unique",
 				),
 			).toBe(true);
 			expect(

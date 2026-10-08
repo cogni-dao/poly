@@ -105,6 +105,7 @@ vi.mock("@tanstack/react-query", () => ({
 								policy: { effective_kind: "position_gap" },
 								position_gap_runtime: {
 									status: "observed",
+									run: { status: "completed" },
 									snapshot: {
 										completeness: "complete",
 										freshness: "fresh",
@@ -117,11 +118,14 @@ vi.mock("@tanstack/react-query", () => ({
 										free_wallet_cash_after_guards_usdc: 23,
 										reserved_budget_usdc: 1,
 										minimum_feasible_sleeve_usdc: 53.31,
+										locked_overweight_count: 0,
 									},
 									execution: {
+										scope: "target_lifetime",
 										submitted_order_count: 0,
 										filled_order_count: 0,
 									},
+									positions_truncated: false,
 									positions: [
 										{
 											condition_id: "condition-a",

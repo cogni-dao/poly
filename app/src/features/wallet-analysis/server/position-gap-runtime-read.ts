@@ -187,6 +187,7 @@ function runtimeFromRun(
 			locked_overweight_count: plan.lockedOverweights.length,
 		},
 		execution: {
+			scope: "target_lifetime",
 			submitted_order_count: numberOf(execution.submitted),
 			filled_order_count: numberOf(execution.filled),
 			filled_shares: numberOf(execution.shares),
@@ -220,18 +221,22 @@ export async function readPositionGapRuntimeByWallet(
 	const runs = rowsOf<Run>(
 		await tx.execute(positionGapLatestRunsSelect(accountId, targetIds)),
 	);
-	const runIds = runs.map((run) => run.id);
+	const observedTargetIds = runs.map((run) => run.targetId);
 	const actionRows =
-		runIds.length === 0
+		runs.length === 0
 			? []
-			: await positionGapActionAggregateSelect(tx, accountId, runIds);
-	const execution = new Map(actionRows.map((row) => [row.runId, row]));
+			: await positionGapActionAggregateSelect(
+					tx,
+					accountId,
+					observedTargetIds,
+				);
+	const execution = new Map(actionRows.map((row) => [row.targetId, row]));
 	return new Map(
 		runs.map((run) => [
 			walletByTargetId.get(run.targetId) ?? "",
 			runtimeFromRun(
 				run,
-				execution.get(run.id) ?? {
+				execution.get(run.targetId) ?? {
 					submitted: 0,
 					filled: 0,
 					shares: 0,
@@ -283,11 +288,11 @@ export const positionGapLatestRunsSelect = (
 export const positionGapActionAggregateSelect = (
 	tx: AgentGrantTransaction,
 	accountId: string,
-	runIds: readonly string[],
+	targetIds: readonly string[],
 ) =>
 	tx
 		.select({
-			runId: polyPositionGapActions.runId,
+			targetId: polyPositionGapActions.targetId,
 			submitted: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.submittedAt} IS NOT NULL)`,
 			filled: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.filledShares} > 0)`,
 			shares: sql<string>`COALESCE(SUM(${polyPositionGapActions.filledShares}) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy'), 0)`,
@@ -297,7 +302,7 @@ export const positionGapActionAggregateSelect = (
 		.where(
 			and(
 				eq(polyPositionGapActions.billingAccountId, accountId),
-				inArray(polyPositionGapActions.runId, runIds),
+				inArray(polyPositionGapActions.targetId, targetIds),
 			),
 		)
-		.groupBy(polyPositionGapActions.runId);
+		.groupBy(polyPositionGapActions.targetId);

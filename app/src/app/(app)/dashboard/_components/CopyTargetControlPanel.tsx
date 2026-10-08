@@ -684,10 +684,30 @@ function positionGapRuntimeLabel(target: PolyTrackedTarget): string {
   if (runtime.run.status === "failed") return `failed${runtime.run.error_code ? ` · ${runtime.run.error_code}` : ""}`;
   if (runtime.plan.status === "blocked") return `blocked${runtime.plan.block_reason ? ` · ${runtime.plan.block_reason}` : ""}`;
   if (runtime.plan.status === "no_feasible_position") {
+    if (positionGapRuntimeAtRest(target)) {
+      return runtime.positions.some((position) => position.open_shares > 1e-9)
+        ? "orders resting"
+        : "matched";
+    }
     const minimum = runtime.plan.minimum_feasible_sleeve_usdc;
     return `no feasible position · $${runtime.plan.sleeve_budget_usdc.toFixed(2)} sleeve${minimum === null ? "" : ` · $${minimum.toFixed(2)} min`}`;
   }
-  return `${runtime.execution.submitted_order_count} submitted · ${runtime.execution.filled_order_count} filled`;
+  return `${runtime.plan.planned_order_count} planned`;
+}
+
+function positionGapRuntimeAtRest(target: PolyTrackedTarget): boolean {
+  const runtime = target.position_gap_runtime;
+  return runtime.status === "observed" &&
+    (runtime.run.status === "completed" || runtime.run.status === "skipped") &&
+    runtime.plan.status === "no_feasible_position" &&
+    !runtime.positions_truncated &&
+    runtime.positions.length > 0 &&
+    runtime.plan.locked_overweight_count === 0 &&
+    runtime.positions.every((position) =>
+      position.decision_reason === "no_gap" &&
+      position.gap_shares <= 1e-9 &&
+      position.locked_overweight_shares <= 1e-9
+    );
 }
 
 function positionGapRuntimeHealthy(target: PolyTrackedTarget): boolean {
@@ -695,6 +715,6 @@ function positionGapRuntimeHealthy(target: PolyTrackedTarget): boolean {
   return runtime.status === "observed" &&
     runtime.snapshot.completeness === "complete" &&
     runtime.snapshot.freshness === "fresh" &&
-    runtime.plan.status === "ready" &&
-    runtime.execution.submitted_order_count > 0;
+    ((runtime.run.status === "completed" && runtime.plan.status === "ready") ||
+      positionGapRuntimeAtRest(target));
 }
