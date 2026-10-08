@@ -34,6 +34,7 @@ import {
 	gte,
 	inArray,
 	isNull,
+	notExists,
 	or,
 	sql,
 	sum,
@@ -249,7 +250,7 @@ export class PositionGapRuntimeStore {
 		openBuyOrders: readonly PositionGapOpenBuyOrderV1[];
 		activeBuys: readonly PositionGapActiveBuy[];
 	}> {
-		const [cohortRows, actionRows] = await Promise.all([
+		const [cohortRows, activeActionRows, terminalRepairRows] = await Promise.all([
 			this.db
 				.select()
 				.from(polyPositionGapCohorts)
@@ -284,7 +285,44 @@ export class PositionGapRuntimeStore {
 					),
 				)
 				.orderBy(polyPositionGapActions.createdAt),
+			this.db
+				.select()
+				.from(polyPositionGapActions)
+				.where(
+					and(
+						eq(polyPositionGapActions.billingAccountId, scope.billingAccountId),
+						eq(polyPositionGapActions.targetId, scope.targetId),
+						eq(polyPositionGapActions.kind, "buy"),
+						inArray(polyPositionGapActions.status, ["filled", "canceled"]),
+						sql`${polyPositionGapActions.filledShares} > 0`,
+						notExists(
+							this.db
+								.select({ one: sql`1` })
+								.from(polyCopyTradeFills)
+								.where(
+									and(
+										eq(
+											polyCopyTradeFills.clientOrderId,
+											polyPositionGapActions.clientOrderId,
+										),
+										eq(
+											polyCopyTradeFills.billingAccountId,
+											scope.billingAccountId,
+										),
+										eq(polyCopyTradeFills.targetId, scope.targetId),
+										sql`${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades'`,
+									),
+								),
+						),
+					),
+				)
+				.orderBy(
+					sql`NULLIF(${polyPositionGapActions.plannerAction}->>'fill_accounting_last_attempt_at', '')::timestamptz ASC NULLS FIRST`,
+					polyPositionGapActions.completedAt,
+				)
+				.limit(8),
 		]);
+		const actionRows = [...activeActionRows, ...terminalRepairRows];
 		const activeBuys: PositionGapActiveBuy[] = actionRows
 			.filter((row) => row.clientOrderId !== null)
 			.map((row) => ({
@@ -1293,18 +1331,40 @@ export class PositionGapRuntimeStore {
 			const oldFilledUsdc = numberOf(before.filledUsdc);
 			const desiredShares = numberOf(before.desiredShares);
 			const intendedNotional = numberOf(before.notionalUsdc);
+			const authoritativeTradeCost =
+				receipt.attributes?.realizedFillSource === "clob_associated_trades";
+			const priorTradeCostSource =
+				before.plannerAction.realized_fill_source ===
+				"clob_associated_trades";
+			const authoritativeObservationIsCurrent =
+				authoritativeTradeCost &&
+				(observedFilledShares > oldFilledShares + EPSILON ||
+					(!priorTradeCostSource &&
+						observedFilledShares + EPSILON >= oldFilledShares));
 			const filledShares = Math.min(
 				desiredShares,
 				Math.max(oldFilledShares, observedFilledShares),
 			);
 			const filledUsdc = Math.min(
 				intendedNotional,
-				Math.max(oldFilledUsdc, observedFilledUsdc),
+				authoritativeObservationIsCurrent
+					? observedFilledUsdc
+					: Math.max(oldFilledUsdc, observedFilledUsdc),
 			);
 			const deltaFilledShares = Math.max(0, filledShares - oldFilledShares);
 			const observedStatus = statusFromReceipt(receipt.status);
-			const status = nextActionStatus(before.status, observedStatus);
-			if (status === null) return;
+			const nextStatus = nextActionStatus(before.status, observedStatus);
+			const correctsTerminalTradeCost =
+				nextStatus === null &&
+				authoritativeObservationIsCurrent &&
+				["filled", "canceled"].includes(before.status);
+			if (nextStatus === null && !correctsTerminalTradeCost) return;
+			const status = (nextStatus ?? before.status) as
+				| "open"
+				| "partial"
+				| "filled"
+				| "cancel_requested"
+				| "canceled";
 			const limitPrice = numberOf(before.limitPrice);
 			const unfilledShares = Math.max(0, desiredShares - filledShares);
 			await tx
@@ -1316,6 +1376,16 @@ export class PositionGapRuntimeStore {
 					venueObservedAt: new Date(),
 					filledShares: filledShares.toString(),
 					filledUsdc: filledUsdc.toString(),
+					plannerAction: authoritativeObservationIsCurrent
+						? {
+								...before.plannerAction,
+								realized_fill_source: "clob_associated_trades",
+								fill_accounting_status: "verified",
+								fill_accounting_last_attempt_at: new Date().toISOString(),
+							}
+						: before.plannerAction,
+					errorCode: authoritativeObservationIsCurrent ? null : before.errorCode,
+					errorDetail: authoritativeObservationIsCurrent ? null : before.errorDetail,
 					submittedAt: new Date(),
 					...(status === "filled" || status === "canceled"
 						? { completedAt: new Date() }
@@ -1421,6 +1491,39 @@ export class PositionGapRuntimeStore {
 					})
 					.where(eq(polyPositionGapCohorts.id, before.cohortId));
 			}
+		});
+	}
+
+	async markFillAccountingPending(
+		actionId: string,
+		detail: string,
+	): Promise<void> {
+		await this.db.transaction(async (tx) => {
+			await tx.execute(
+				sql`SELECT 1 FROM ${polyPositionGapActions} WHERE ${polyPositionGapActions.id} = ${actionId} FOR UPDATE`,
+			);
+			const [action] = await tx
+				.select({ plannerAction: polyPositionGapActions.plannerAction })
+				.from(polyPositionGapActions)
+				.where(eq(polyPositionGapActions.id, actionId))
+				.limit(1);
+			if (!action) return;
+			const attempts = Number(action.plannerAction.fill_accounting_attempts ?? 0);
+			await tx
+				.update(polyPositionGapActions)
+				.set({
+					plannerAction: {
+						...action.plannerAction,
+						fill_accounting_status: "pending",
+						fill_accounting_attempts:
+							Number.isFinite(attempts) && attempts >= 0 ? attempts + 1 : 1,
+						fill_accounting_last_attempt_at: new Date().toISOString(),
+					},
+					errorCode: "fill_accounting_pending",
+					errorDetail: detail.slice(0, 500),
+					updatedAt: new Date(),
+				})
+				.where(eq(polyPositionGapActions.id, actionId));
 		});
 	}
 

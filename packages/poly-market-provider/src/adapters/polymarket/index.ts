@@ -25,6 +25,7 @@ export {
 export {
   type ClobFailureDetails,
   ClobRejectionError,
+  FillAccountingPendingError,
   classifyClientError,
   classifyClobFailure,
   coerceNegRiskApiValue,

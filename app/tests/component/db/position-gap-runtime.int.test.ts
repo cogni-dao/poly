@@ -277,6 +277,7 @@ describe("position-gap runtime persistence", () => {
 			status: "filled" | "open" | "partial",
 			filledSizeUsdc: number,
 			totalShares?: number,
+			verified = false,
 		) => ({
 			order_id: "venue-order-a",
 			client_order_id: persisted?.clientOrderId ?? "missing",
@@ -289,6 +290,9 @@ describe("position-gap runtime persistence", () => {
 						fill_price: filledSizeUsdc / totalShares,
 					}),
 			submitted_at: asOf.toISOString(),
+			...(verified
+				? { attributes: { realizedFillSource: "clob_associated_trades" } }
+				: {}),
 		});
 		await store.markPlacementReceipt(
 			persisted?.id ?? "missing",
@@ -310,6 +314,17 @@ describe("position-gap runtime persistence", () => {
 			persisted?.id ?? "missing",
 			receipt("partial", 2, 6),
 		);
+		// Associated-trade accounting may arrive after a terminal order receipt.
+		// Equal cumulative shares upgrades the source and may correct the old
+		// limit-derived cost downward; a later lower-share receipt cannot regress it.
+		await store.markPlacementReceipt(
+			persisted?.id ?? "missing",
+			receipt("filled", 0.012, 12, true),
+		);
+		await store.markPlacementReceipt(
+			persisted?.id ?? "missing",
+			receipt("filled", 0.0005, 6, true),
+		);
 
 		const [filledAction] = await db
 			.select()
@@ -323,8 +338,11 @@ describe("position-gap runtime persistence", () => {
 			);
 		expect(filledAction?.status).toBe("filled");
 		expect(Number(filledAction?.filledShares)).toBe(12);
-		expect(Number(filledAction?.filledUsdc)).toBe(4);
-		expect(Number(filledReservation?.releasedBudgetUsdc)).toBe(2);
+		expect(Number(filledAction?.filledUsdc)).toBe(0.012);
+		expect(filledAction?.plannerAction.realized_fill_source).toBe(
+			"clob_associated_trades",
+		);
+		expect(Number(filledReservation?.releasedBudgetUsdc)).toBe(5.988);
 	});
 
 	it("atomically reduces and reserves planner shares across NUMERIC(30,12) rounding", async () => {
@@ -608,6 +626,80 @@ describe("position-gap runtime persistence", () => {
 
 		await insert("first");
 		await expect(insert("second")).rejects.toThrow();
+	});
+
+	it("atomically upgrades ledger fill accounting without share regression", async () => {
+		const db = getSeedDb();
+		const logger = {
+			debug: () => undefined,
+			info: () => undefined,
+			warn: () => undefined,
+			error: () => undefined,
+			child() {
+				return this;
+			},
+		};
+		const ledger = createOrderLedger({ db, logger: logger as never });
+		const clientOrderId = `fill-accounting-${randomUUID()}`;
+		await ledger.insertPending({
+			billing_account_id: accountA,
+			created_by_user_id: ownerA,
+			target_id: targetA,
+			fill_id: `position-gap-v3:${clientOrderId}`,
+			observed_at: asOf,
+			intent: {
+				provider: "polymarket",
+				market_id: `prediction-market:polymarket:${clientOrderId}`,
+				outcome: "0",
+				side: "BUY",
+				size_usdc: 6,
+				limit_price: 0.5,
+				client_order_id: clientOrderId,
+				attributes: { token_id: clientOrderId },
+			},
+		});
+
+		await Promise.all([
+			ledger.markOrderId({
+				client_order_id: clientOrderId,
+				receipt: {
+					order_id: "venue-fill-accounting",
+					client_order_id: clientOrderId,
+					status: "filled",
+					filled_size_usdc: 4,
+					fill_price: 4 / 12,
+					total_shares: 12,
+					submitted_at: asOf.toISOString(),
+				},
+			}),
+			ledger.updateStatus({
+				client_order_id: clientOrderId,
+				status: "filled",
+				filled_size_usdc: 0.012,
+				fill_price: 0.001,
+				total_shares: 12,
+				realized_fill_source: "clob_associated_trades",
+			}),
+		]);
+		await ledger.updateStatus({
+			client_order_id: clientOrderId,
+			status: "filled",
+			filled_size_usdc: 0.0005,
+			fill_price: 0.00008,
+			total_shares: 6,
+			realized_fill_source: "clob_associated_trades",
+		});
+
+		const [row] = await db
+			.select()
+			.from(polyCopyTradeFills)
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
+		expect(Number(row?.shares)).toBe(12);
+		expect(Number(row?.price)).toBe(0.001);
+		expect(Number(row?.attributes?.filled_size_usdc)).toBe(0.012);
+		expect(row?.attributes?.realized_fill_source).toBe(
+			"clob_associated_trades",
+		);
 	});
 
 	it("consumes durable CLOB not_found before a stop retry and releases only unfilled", async () => {

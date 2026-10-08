@@ -308,7 +308,10 @@ export async function runReconcileOnce(
       const filledChanged =
         receipt.filled_size_usdc !== undefined &&
         receipt.filled_size_usdc !== ledgerExecutedUsdc(row);
-      if (newStatus === row.status && !filledChanged) {
+      const sourceChanged =
+        receipt.attributes?.realizedFillSource === "clob_associated_trades" &&
+        row.attributes?.realized_fill_source !== "clob_associated_trades";
+      if (newStatus === row.status && !filledChanged && !sourceChanged) {
         // Nothing changed — avoid a gratuitous UPDATE + updated_at churn.
         continue;
       }
@@ -325,6 +328,9 @@ export async function runReconcileOnce(
           : {}),
         ...(receipt.fees_usdc !== undefined
           ? { fees_usdc: receipt.fees_usdc }
+          : {}),
+        ...(receipt.attributes?.realizedFillSource === "clob_associated_trades"
+          ? { realized_fill_source: "clob_associated_trades" as const }
           : {}),
       });
       deps.onOrderChanged?.(row, { status: newStatus });

@@ -17,7 +17,10 @@ import {
 	type OrderReceipt,
 	type TargetBookSnapshotV1,
 } from "@cogni/poly-market-provider";
-import { ClobRejectionError } from "@cogni/poly-market-provider/adapters/polymarket";
+import {
+	ClobRejectionError,
+	FillAccountingPendingError,
+} from "@cogni/poly-market-provider/adapters/polymarket";
 
 import { requiredBuyCollateralAtomic } from "@/bootstrap/capabilities/poly-trade-executor";
 import {
@@ -426,7 +429,16 @@ export function startPositionGapActor(
 				continue;
 			}
 			if (!action.orderId) continue;
-			const result = await deps.execution.getBuy(action.orderId);
+			let result: GetOrderResult;
+			try {
+				result = await deps.execution.getBuy(action.orderId);
+			} catch (error) {
+				if (error instanceof FillAccountingPendingError) {
+					await deps.store.markFillAccountingPending(action.id, error.message);
+					continue;
+				}
+				throw error;
+			}
 			if ("found" in result) {
 				await deps.store.markPlacementReceipt(action.id, result.found);
 				await deps.ledger.markOrderId({
