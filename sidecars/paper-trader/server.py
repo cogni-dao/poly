@@ -336,6 +336,55 @@ def _resolve_slug_or_id(req: PlaceOrderRequest) -> str:
     return req.market_id
 
 
+def _resolve_outcome(req: PlaceOrderRequest, engine: Any, slug_or_id: str) -> str:
+    """Map cogni `outcome` → an upstream outcome NAME.
+
+    OUTCOME_IS_A_NAME_UPSTREAM. Cogni carries the outcome as the CTF leg INDEX
+    ("0"/"1") because the live CLOB adapter addresses a leg by `token_id` and
+    never needs the human label. The vendored engine takes the opposite view:
+    `_validate_outcome` rejects anything not in `market.outcomes` (for a binary
+    market, `["Yes","No"]`), so a verbatim "1" raises InvalidOutcomeError and
+    the sidecar reports it as a generic 502 `upstream_engine_failed`.
+
+    That asymmetry is why paper placement failed 100% while live succeeded —
+    and it stayed invisible for as long as the algorithm only ever produced
+    skips, because nothing reached this call. Translating here keeps the
+    vendored package unpatched: identity mapping is this wrapper's job.
+
+    Resolution order, most authoritative first:
+      1. `token_id` — exact leg identity; ask the market which outcome owns it.
+      2. a numeric index — position in `market.outcomes`.
+      3. anything else — pass through; it is already a name, and the engine
+         validates it against the real market rather than trusting us.
+    """
+    raw = (req.outcome or "").strip()
+    token_id = req.token_id or (
+        req.attributes.get("token_id") if req.attributes else None
+    )
+    needs_mapping = bool(token_id) or raw.isdigit()
+    if not needs_mapping:
+        return raw
+
+    market = engine.api.get_market(slug_or_id)
+    outcomes = list(getattr(market, "outcomes", []) or [])
+
+    if token_id:
+        for name in outcomes:
+            try:
+                if str(market.get_token_id(name)) == str(token_id):
+                    return name
+            except Exception:  # noqa: BLE001 - a market that cannot answer for
+                continue       # one leg should not veto the index fallback
+    if raw.isdigit():
+        idx = int(raw)
+        if 0 <= idx < len(outcomes):
+            return outcomes[idx]
+    # Unmappable: hand the raw value to the engine so ITS validator produces the
+    # error, listing the outcomes it actually accepts. Never invent a leg —
+    # guessing "Yes" here would place a real paper trade on the wrong side.
+    return raw
+
+
 # ─── Sidecar — wraps Engine + lifespan + lock + fill loop ───────────────────
 
 
@@ -493,7 +542,7 @@ class Sidecar:
             try:
                 d: dict[str, Any] = self.engine.place_limit_order(  # type: ignore[union-attr]
                     slug_or_id=slug_or_id,
-                    outcome=req.outcome,
+                    outcome=_resolve_outcome(req, self.engine, slug_or_id),
                     side=req.side.lower(),
                     amount=req.size_usdc,
                     limit_price=req.limit_price,
