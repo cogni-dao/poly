@@ -282,6 +282,22 @@ export const polyCopyTradeFills = pgTable(
       .where(
         sql`${table.status} IN ('pending','open','partial')
           AND (${table.positionLifecycle} IS NULL OR ${table.positionLifecycle} IN ('unresolved','open','closing'))
+          AND ${table.attributes}->>'closed_at' IS NULL
+          AND COALESCE(${table.attributes}->>'position_gap_version', '') <> '3'`
+      ),
+    // Position-gap v3 permits independent price/quantity cohorts on one
+    // market while retaining one active order per cohort.
+    uniqueIndex("poly_copy_trade_fills_v3_one_open_per_cohort")
+      .on(
+        table.billingAccountId,
+        table.targetId,
+        sql`(${table.attributes}->>'position_gap_cohort_key')`
+      )
+      .where(
+        sql`${table.attributes}->>'position_gap_version' = '3'
+          AND ${table.attributes}->>'position_gap_cohort_key' IS NOT NULL
+          AND ${table.status} IN ('pending','open','partial')
+          AND (${table.positionLifecycle} IS NULL OR ${table.positionLifecycle} IN ('unresolved','open','closing'))
           AND ${table.attributes}->>'closed_at' IS NULL`
       ),
     index("poly_copy_trade_fills_position_lifecycle_idx").on(

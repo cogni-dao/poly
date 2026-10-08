@@ -3,9 +3,25 @@
 
 import { describe, expect, it } from "vitest";
 
+import { effectivePositionGapBudget } from "@/features/copy-trade/position-gap-budget";
 import { positionGapBudgetGroups } from "@/features/copy-trade/target-source";
 
 describe("position-gap runtime budget grouping", () => {
+	it("fails closed when more than one position-gap target shares an account", () => {
+		expect(
+			effectivePositionGapBudget({
+				configuredBudgetUsdc: null,
+				mirrorNavUsdc: 24,
+				group: {
+					positionGapTargetCount: 2,
+					explicitBudgetTotalUsdc: 0,
+					automaticTargetCount: 2,
+					unbudgetedTargetCount: 0,
+				},
+			}),
+		).toBeUndefined();
+	});
+
   it("groups automatic targets per account and deduplicates join-expanded rows", () => {
     const groups = positionGapBudgetGroups([
       {

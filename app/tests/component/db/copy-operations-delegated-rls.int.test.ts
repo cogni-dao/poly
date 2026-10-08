@@ -45,6 +45,7 @@ import {
   polyCopyTradeFills,
   polyCopyTradeTargets,
 } from "@cogni/db-schema/copy-trade";
+import { polyPositionGapRuns } from "@cogni/db-schema/position-gap";
 import { polyWalletConnections } from "@cogni/db-schema/wallet-connections";
 import { polyWalletGrants } from "@cogni/db-schema/wallet-grants";
 import { toUserId, userActor } from "@cogni/ids";
@@ -106,6 +107,7 @@ describe("copy-operations delegated RLS", () => {
   const grantB = randomUUID();
   const decisionA = randomUUID();
   const decisionB = randomUUID();
+  const positionGapRunA = randomUUID();
 
   const targetWalletA = walletAddress();
   const targetWalletB = walletAddress();
@@ -330,11 +332,58 @@ describe("copy-operations delegated RLS", () => {
         mode: "paper",
       },
     ]);
+    await seedDb.insert(polyPositionGapRuns).values({
+      id: positionGapRunA,
+      billingAccountId: ownerA.billingAccountId,
+      createdByUserId: ownerA.userId,
+      targetId: targetIdFromWallet(targetWalletA as `0x${string}`),
+      triggerReasons: ["safety_timer"],
+      targetSnapshotId: "copy-ops-snapshot-a",
+      targetSnapshotHash: "copy-ops-snapshot-hash-a",
+      targetSnapshotAsOf: new Date("2026-10-05T00:04:00.000Z"),
+      targetSnapshotExpiresAt: future,
+      targetSnapshot: { complete: true },
+      plannerVersion: "position-gap-v3",
+      budgetUsdc: "200",
+      eligibleNetNavUsdc: "500",
+      scale: "0.4",
+      walletCashUsdcAtStart: "250",
+      status: "completed",
+      plan: {
+        status: "no_feasible_position",
+        blockReason: null,
+        eligibleNetNavUsdc: 500,
+        scale: 0.4,
+        sleeveBudgetUsdc: 200,
+        intents: [],
+        lockedOverweights: [],
+        diagnostics: [{
+          conditionId: "condition-a",
+          tokenId: "token-a",
+          cohortId: "cohort-a",
+          reason: "below_market_floor",
+          desiredShares: 0.4,
+          heldShares: 0,
+          openShares: 0,
+          gapShares: 0.4,
+          targetWeight: 0.01,
+          limitPrice: 0.79,
+          floorNotionalUsdc: 3.95,
+          minimumSleeveUsdc: 53.31,
+        }],
+        minimumFeasibleSleeveUsdc: 53.31,
+      },
+      startedAt: new Date("2026-10-05T00:04:01.000Z"),
+      completedAt: new Date("2026-10-05T00:04:02.000Z"),
+    });
   });
 
   afterAll(async () => {
     const seedDb = getSeedDb();
     const accounts = [ownerA.billingAccountId, ownerB.billingAccountId];
+    await seedDb
+      .delete(polyPositionGapRuns)
+      .where(inArray(polyPositionGapRuns.billingAccountId, accounts));
     await seedDb
       .delete(polyCopyTradeDecisions)
       .where(inArray(polyCopyTradeDecisions.billingAccountId, accounts));
@@ -515,6 +564,17 @@ describe("copy-operations delegated RLS", () => {
     expect(owner?.targets[0]?.policy.implementation_revision).toEqual(
       copySetupBinding.implementationRevision,
     );
+    expect(owner?.targets[0]?.position_gap_runtime).toMatchObject({
+      status: "observed",
+      snapshot: { completeness: "complete", freshness: "fresh" },
+      plan: {
+        status: "no_feasible_position",
+        sleeve_budget_usdc: 200,
+        minimum_feasible_sleeve_usdc: 53.31,
+      },
+      execution: { submitted_order_count: 0, filled_order_count: 0 },
+      position_count: 1,
+    });
 
     // Parity is structural: same saved facts for both principals.
     expect(delegated?.targets).toEqual(owner?.targets);
@@ -530,6 +590,87 @@ describe("copy-operations delegated RLS", () => {
       getCopySetupForAccount(tx, ownerA.billingAccountId, copySetupBinding),
     );
     expect(leaked).toBeNull();
+  });
+
+  it("copy-setup: marks a malformed latest plan unavailable", async () => {
+    const malformedRunId = randomUUID();
+    await getSeedDb().insert(polyPositionGapRuns).values({
+      id: malformedRunId,
+      billingAccountId: ownerA.billingAccountId,
+      createdByUserId: ownerA.userId,
+      targetId: targetIdFromWallet(targetWalletA as `0x${string}`),
+      triggerReasons: ["safety_timer"],
+      targetSnapshot: { complete: true },
+      budgetUsdc: "200",
+      walletCashUsdcAtStart: "250",
+      status: "completed",
+      plan: {},
+      startedAt: new Date("2098-01-01T00:00:00.000Z"),
+    });
+    try {
+      const setup = await asTx(ownerA.userId, (tx) =>
+        getCopySetupForAccount(tx, ownerA.billingAccountId, copySetupBinding),
+      );
+      expect(setup?.targets[0]?.position_gap_runtime).toEqual({
+        status: "unavailable",
+        reason: "invalid_reconciliation_record",
+      });
+    } finally {
+      await getSeedDb()
+        .delete(polyPositionGapRuns)
+        .where(eq(polyPositionGapRuns.id, malformedRunId));
+    }
+  });
+
+  it("copy-setup: keeps a stale safety run explicit for owner and delegate", async () => {
+    const safetyRunId = randomUUID();
+    await getSeedDb().insert(polyPositionGapRuns).values({
+      id: safetyRunId,
+      billingAccountId: ownerA.billingAccountId,
+      createdByUserId: ownerA.userId,
+      targetId: targetIdFromWallet(targetWalletA as `0x${string}`),
+      triggerReasons: ["safety_timer"],
+      targetSnapshotId: "stale-snapshot",
+      targetSnapshotExpiresAt: new Date("2026-01-01T00:00:00.000Z"),
+      targetSnapshot: { complete: true },
+      budgetUsdc: "200",
+      eligibleNetNavUsdc: "500",
+      scale: "0.4",
+      walletCashUsdcAtStart: "250",
+      status: "halted",
+      plan: {
+        status: "blocked",
+        blockReason: "stale_snapshot",
+        eligibleNetNavUsdc: 500,
+        scale: 0.4,
+        sleeveBudgetUsdc: 0,
+        intents: [],
+        diagnostics: [],
+        lockedOverweights: [],
+        minimumFeasibleSleeveUsdc: null,
+      },
+      startedAt: new Date("2098-01-02T00:00:00.000Z"),
+    });
+    try {
+      const owner = await asTx(ownerA.userId, (tx) =>
+        getCopySetupForAccount(tx, ownerA.billingAccountId, copySetupBinding),
+      );
+      const delegated = await asTx(delegate.userId, (tx) =>
+        getCopySetupForAccount(tx, ownerA.billingAccountId, copySetupBinding),
+      );
+      expect(owner?.targets[0]?.position_gap_runtime).toMatchObject({
+        status: "observed",
+        snapshot: { freshness: "stale" },
+        plan: { status: "blocked", block_reason: "stale_snapshot", sleeve_budget_usdc: 200 },
+      });
+      expect(delegated?.targets[0]?.position_gap_runtime).toEqual(
+        owner?.targets[0]?.position_gap_runtime,
+      );
+    } finally {
+      await getSeedDb()
+        .delete(polyPositionGapRuns)
+        .where(eq(polyPositionGapRuns.id, safetyRunId));
+    }
   });
 
   it("copy-setup: `auto` policy uses the injected runtime resolver", async () => {

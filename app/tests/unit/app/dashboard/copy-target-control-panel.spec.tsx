@@ -14,7 +14,7 @@
  * @vitest-environment jsdom
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -51,6 +51,10 @@ const targetResponse = {
         },
       },
       activation: { status: "eligible", explanation: "Active grant" },
+      position_gap_runtime: {
+        status: "pending",
+        reason: "no_reconciliation_run",
+      },
     },
   ],
   active_target_count: 1,
@@ -157,6 +161,11 @@ describe("CopyTargetControlPanel algorithm selector", () => {
     expect(
       screen.getByText("Adjusted $18.50 · Shared wallet"),
     ).toBeInTheDocument();
+    expect(screen.getByText(/awaiting first plan/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Details" })).toHaveAttribute(
+      "href",
+      "/research#target-positions",
+    );
     expect(
       screen.getByRole("link", { name: "Learn how Position gap works" }),
     ).toHaveAttribute(
@@ -187,6 +196,61 @@ describe("CopyTargetControlPanel algorithm selector", () => {
       ).toBeInTheDocument();
     } finally {
       budget.observation_status = previousStatus;
+    }
+  });
+
+  it("renders a completed no-gap plan as healthy resting orders", () => {
+    const target = targetResponse.targets[0] as {
+      position_gap_runtime: unknown;
+    };
+    const previousRuntime = target.position_gap_runtime;
+    target.position_gap_runtime = {
+      status: "observed",
+      run: { status: "skipped" },
+      snapshot: { completeness: "complete", freshness: "fresh" },
+      plan: {
+        status: "no_feasible_position",
+        sleeve_budget_usdc: 20,
+        minimum_feasible_sleeve_usdc: null,
+        locked_overweight_count: 0,
+      },
+      execution: {
+        scope: "target_lifetime",
+        submitted_order_count: 1,
+        filled_order_count: 0,
+      },
+      positions_truncated: false,
+      positions: [
+        {
+          decision_reason: "no_gap",
+          open_shares: 2,
+          gap_shares: 0,
+          locked_overweight_shares: 0,
+        },
+      ],
+    };
+
+    try {
+      render(<CopyTargetControlPanel />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Expand copy controls" }),
+      );
+
+      const mirror = screen.getByText(/Mirror: orders resting/);
+      expect(mirror).toBeInTheDocument();
+      expect(mirror.closest("div")).not.toHaveClass("text-destructive");
+
+      cleanup();
+      (target.position_gap_runtime as { positions: unknown[] }).positions = [];
+      render(<CopyTargetControlPanel />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Expand copy controls" }),
+      );
+      const empty = screen.getByText(/Mirror: no feasible position/);
+      expect(empty.closest("div")).toHaveClass("text-destructive");
+    } finally {
+      cleanup();
+      target.position_gap_runtime = previousRuntime;
     }
   });
 });

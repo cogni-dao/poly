@@ -218,6 +218,92 @@ export const PolyTargetActivationSchema = z.object({
   explanation: z.string(),
 });
 
+export const PolyPositionGapDecisionReasonSchema = z.enum([
+  "allocated",
+  "allocation_headroom",
+  "below_market_floor",
+  "blocked_by_opposite_hold",
+  "cohort_waiting",
+  "condition_closed",
+  "invalid_target_mark",
+  "invalid_cohort",
+  "invalid_quote",
+  "missing_cohort",
+  "no_gap",
+  "per_order_cap",
+  "venue_unknown",
+]);
+
+export const PolyPositionGapRuntimeSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("not_applicable") }),
+  z.object({
+    status: z.literal("pending"),
+    reason: z.literal("no_reconciliation_run"),
+  }),
+  z.object({
+    status: z.literal("unavailable"),
+    reason: z.literal("invalid_reconciliation_record"),
+  }),
+  z.object({
+    status: z.literal("observed"),
+    run: z.object({
+      run_id: z.string().uuid(),
+      status: z.enum(["running", "completed", "skipped", "halted", "failed"]),
+      planner_version: z.string().nullable(),
+      started_at: IsoTimestampSchema,
+      completed_at: IsoTimestampSchema.nullable(),
+      trigger_reasons: z.array(z.string()),
+      error_code: z.string().nullable(),
+    }),
+    snapshot: z.object({
+      snapshot_id: z.string().min(1).nullable(),
+      as_of: IsoTimestampSchema.nullable(),
+      expires_at: IsoTimestampSchema.nullable(),
+      completeness: z.enum(["complete", "incomplete"]),
+      freshness: z.enum(["fresh", "stale", "unknown"]),
+    }),
+    plan: z.object({
+      status: z.enum(["ready", "no_feasible_position", "blocked"]),
+      block_reason: z.enum(["invalid_input", "stale_snapshot"]).nullable(),
+      eligible_net_nav_usdc: z.number().nonnegative(),
+      scale: z.number().nonnegative(),
+      sleeve_budget_usdc: z.number().positive(),
+      reserved_budget_usdc: z.number().nonnegative(),
+      free_sleeve_budget_usdc: z.number().nonnegative(),
+      reserved_cash_guard_usdc: z.number().nonnegative(),
+      free_wallet_cash_after_guards_usdc: z.number().nonnegative(),
+      minimum_feasible_sleeve_usdc: z.number().nonnegative().nullable(),
+      planned_order_count: z.number().int().nonnegative(),
+      locked_overweight_count: z.number().int().nonnegative(),
+    }),
+    execution: z.object({
+      scope: z.literal("target_lifetime"),
+      submitted_order_count: z.number().int().nonnegative(),
+      filled_order_count: z.number().int().nonnegative(),
+      filled_shares: z.number().nonnegative(),
+      filled_usdc: z.number().nonnegative(),
+    }),
+    position_count: z.number().int().nonnegative(),
+    positions_truncated: z.boolean(),
+    positions: z.array(z.object({
+      condition_id: z.string().min(1),
+      token_id: z.string().min(1),
+      cohort_id: z.string().min(1).nullable(),
+      decision_reason: PolyPositionGapDecisionReasonSchema,
+      desired_shares: z.number().nonnegative(),
+      held_shares: z.number().nonnegative(),
+      open_shares: z.number().nonnegative(),
+      gap_shares: z.number().nonnegative(),
+      target_weight: z.number().nonnegative(),
+      price_cap: z.number().positive().lt(1).nullable(),
+      market_floor_usdc: z.number().nonnegative().nullable(),
+      minimum_sleeve_usdc: z.number().nonnegative().nullable(),
+      locked_overweight_shares: z.number().nonnegative(),
+    })).max(2_000),
+  }),
+]);
+export type PolyPositionGapRuntime = z.infer<typeof PolyPositionGapRuntimeSchema>;
+
 export const PolyTrackedTargetSchema = z.object({
   target_id: z.string().uuid(),
   target_wallet: z.string(),
@@ -228,6 +314,7 @@ export const PolyTrackedTargetSchema = z.object({
   disabled_at: IsoTimestampSchema.nullable(),
   policy: PolyEffectiveSizingPolicySchema,
   activation: PolyTargetActivationSchema,
+  position_gap_runtime: PolyPositionGapRuntimeSchema,
 });
 export type PolyTrackedTarget = z.infer<typeof PolyTrackedTargetSchema>;
 

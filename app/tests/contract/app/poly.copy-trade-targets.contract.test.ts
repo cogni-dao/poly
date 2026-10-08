@@ -80,6 +80,7 @@ describe("copy-setup algorithm identity", () => {
             },
           },
           activation: { status: "eligible", explanation: "active" },
+          position_gap_runtime: { status: "not_applicable" },
         },
       ],
       active_target_count: 1,
