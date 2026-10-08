@@ -33,6 +33,8 @@ import {
   UserValueResponseSchema,
 } from "./polymarket.data-api.types.js";
 import {
+  PolymarketDataApiStatusV2Schema,
+  type PolymarketDataApiStatusV2,
   PolymarketUserPositionsV2ResponseSchema,
   type PolymarketUserPositionV2,
 } from "./polymarket.data-api-v2.types.js";
@@ -306,13 +308,30 @@ export interface ListUserPositionsParams {
 export interface ListUserPositionsV2Params {
   /** Exact condition cohort. The client deduplicates and chunks at 20. */
   conditions: readonly string[];
+  /** Include user-archived rows. Defaults true for backward compatibility. */
+  includeArchived?: boolean;
+  /** Aggregate request ceiling across all chunks and cursor pages. */
+  maxRequests?: number;
   signal?: AbortSignal | undefined;
 }
+
+export interface PolymarketPositionsV2Walk {
+  positions: PolymarketUserPositionV2[];
+  requestCount: number;
+}
+
+export type PolyDataApiPositionsV2FailureReason =
+  | "incomplete"
+  | "malformed"
+  | "request_budget";
 
 /** Stable failure for a semantically invalid or incomplete V2 cursor walk. */
 export class PolyDataApiPositionsV2Error extends Error {
   readonly code = "INVALID_V2_POSITIONS_WALK" as const;
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly reason: PolyDataApiPositionsV2FailureReason = "malformed"
+  ) {
     super(`Polymarket Data API V2 positions walk rejected: ${message}`);
     this.name = "PolyDataApiPositionsV2Error";
   }
@@ -397,6 +416,19 @@ export class PolymarketDataApiClient {
 
     const json = await this.fetchJson(url);
     return PolymarketLeaderboardResponseSchema.parse(json);
+  }
+
+  /** Data API's own serving/ingestion freshness evidence. */
+  async getStatusV2(params?: {
+    signal?: AbortSignal | undefined;
+  }): Promise<PolymarketDataApiStatusV2> {
+    const url = new URL("/v2/status", this.baseUrl);
+    const json = await this.fetchJson(url, params?.signal);
+    return parseResponse(
+      PolymarketDataApiStatusV2Schema,
+      json,
+      "/v2/status"
+    ).data;
   }
 
   async listUserActivity(
@@ -498,14 +530,94 @@ export class PolymarketDataApiClient {
     wallet: string,
     params: ListUserPositionsV2Params
   ): Promise<PolymarketUserPosition[]> {
+    const walk = await this.listUserPositionsV2Raw(wallet, params);
+    return walk.positions.map(normalizeV2Position);
+  }
+
+  /** Cursor-complete raw rows for an exact condition cohort. */
+  async listUserPositionsV2Raw(
+    wallet: string,
+    params: ListUserPositionsV2Params
+  ): Promise<PolymarketPositionsV2Walk> {
+    return this.walkUserPositionsV2(wallet, {
+      conditions: params.conditions,
+      includeArchived: params.includeArchived ?? true,
+      filterType: "TOKENS",
+      filterAmount: 0,
+      maxRequests: params.maxRequests ?? POSITIONS_V2_MAX_CURSOR_PAGES,
+      signal: params.signal,
+    });
+  }
+
+  /**
+   * Cheap positive-value discovery for complete target-book hydration.
+   * The returned cohort is structurally OPEN and never treats endDate as a
+   * lifecycle signal.
+   */
+  async listPositiveOpenUserPositionsV2(
+    wallet: string,
+    params?: { signal?: AbortSignal | undefined }
+  ): Promise<PolymarketPositionsV2Walk> {
+    const walk = await this.walkUserPositionsV2(wallet, {
+      filterType: "CASH",
+      // One atomic USDC unit; written as a decimal (not 1e-7) because the
+      // upstream query parser is not documented to accept exponent notation.
+      filterAmount: 0.000001,
+      includeArchived: false,
+      maxRequests: 5,
+      signal: params?.signal,
+    });
+    return {
+      positions: walk.positions.filter(
+        (row) =>
+          row.status === "OPEN" &&
+          row.redeemable !== true &&
+          row.current_value > 0
+      ),
+      requestCount: walk.requestCount,
+    };
+  }
+
+  /** Cursor-complete V2 replacement for legacy offset redemption reads. */
+  async listAllUserPositionsV2(
+    wallet: string,
+    params?: { signal?: AbortSignal | undefined }
+  ): Promise<PolymarketUserPosition[]> {
+    const walk = await this.walkUserPositionsV2(wallet, {
+      filterType: "TOKENS",
+      filterAmount: 0,
+      includeArchived: true,
+      maxRequests: POSITIONS_V2_MAX_CURSOR_PAGES,
+      signal: params?.signal,
+    });
+    return walk.positions.map(normalizeV2Position);
+  }
+
+  private async walkUserPositionsV2(
+    wallet: string,
+    params: {
+      conditions?: readonly string[];
+      filterType: "CASH" | "TOKENS";
+      filterAmount: number;
+      includeArchived: boolean;
+      maxRequests: number;
+      signal?: AbortSignal | undefined;
+    }
+  ): Promise<PolymarketPositionsV2Walk> {
     assertWallet(wallet);
-    const conditions = [
-      ...new Set(params.conditions.map((value) => value.toLowerCase())),
-    ];
-    if (conditions.length === 0) {
+    if (!Number.isInteger(params.maxRequests) || params.maxRequests <= 0) {
+      throw new PolyDataApiPositionsV2Error(
+        "request budget must be a positive integer",
+        "request_budget"
+      );
+    }
+    const conditions = params.conditions
+      ? [...new Set(params.conditions.map((value) => value.toLowerCase()))]
+      : null;
+    if (conditions?.length === 0) {
       throw new PolyDataApiPositionsV2Error("at least one condition is required");
     }
-    const malformedCondition = conditions.find(
+    const malformedCondition = conditions?.find(
       (condition) => !CONDITION_ID_PATTERN.test(condition)
     );
     if (malformedCondition) {
@@ -514,31 +626,43 @@ export class PolymarketDataApiClient {
       );
     }
 
-    const normalized: PolymarketUserPosition[] = [];
+    const raw: PolymarketUserPositionV2[] = [];
     const seenPositionKeys = new Set<string>();
-    for (
-      let chunkStart = 0;
-      chunkStart < conditions.length;
-      chunkStart += POSITIONS_V2_CONDITION_CHUNK_SIZE
-    ) {
-      const chunk = conditions.slice(
-        chunkStart,
-        chunkStart + POSITIONS_V2_CONDITION_CHUNK_SIZE
-      );
-      const chunkSet = new Set(chunk);
+    let requestCount = 0;
+    const chunks = conditions
+      ? Array.from(
+          { length: Math.ceil(conditions.length / POSITIONS_V2_CONDITION_CHUNK_SIZE) },
+          (_, index) =>
+            conditions.slice(
+              index * POSITIONS_V2_CONDITION_CHUNK_SIZE,
+              (index + 1) * POSITIONS_V2_CONDITION_CHUNK_SIZE
+            )
+        )
+      : [null];
+    for (const chunk of chunks) {
+      const chunkSet = chunk ? new Set(chunk) : null;
       const seenCursors = new Set<string>();
       let cursor: string | null = null;
       let complete = false;
       for (let page = 0; page < POSITIONS_V2_MAX_CURSOR_PAGES; page += 1) {
         params.signal?.throwIfAborted();
+        if (requestCount >= params.maxRequests) {
+          throw new PolyDataApiPositionsV2Error(
+            `request budget ${params.maxRequests} exhausted before cursor completion`,
+            "request_budget"
+          );
+        }
         const url = new URL("/v2/positions", this.baseUrl);
         url.searchParams.set("user", wallet);
         // Cursor pages do not retain the filter server-side; resend every time.
-        url.searchParams.set("condition", chunk.join(","));
+        if (chunk) url.searchParams.set("condition", chunk.join(","));
         url.searchParams.set("status", "OPEN");
-        url.searchParams.set("include_archived", "true");
-        url.searchParams.set("filter_type", "TOKENS");
-        url.searchParams.set("filter_amount", "0");
+        url.searchParams.set(
+          "include_archived",
+          params.includeArchived ? "true" : "false"
+        );
+        url.searchParams.set("filter_type", params.filterType);
+        url.searchParams.set("filter_amount", String(params.filterAmount));
         if (cursor === null) {
           url.searchParams.set("limit", String(POSITIONS_V2_PAGE_SIZE));
         } else {
@@ -550,6 +674,7 @@ export class PolymarketDataApiClient {
           await this.fetchJson(url, params.signal),
           "/v2/positions"
         );
+        requestCount += 1;
         for (const row of response.data) {
           // The documented OPEN result set includes settled-but-unredeemed
           // winners, whose rows echo REDEEMABLE. CLOSED can never belong to
@@ -559,8 +684,13 @@ export class PolymarketDataApiClient {
               `response status ${row.status} was outside the requested OPEN cohort`
             );
           }
+          if (!params.includeArchived && row.archived === true) {
+            throw new PolyDataApiPositionsV2Error(
+              `response returned archived token ${row.token_id} outside the active cohort`
+            );
+          }
           const conditionId = row.condition_id.toLowerCase();
-          if (!chunkSet.has(conditionId)) {
+          if (chunkSet && !chunkSet.has(conditionId)) {
             throw new PolyDataApiPositionsV2Error(
               `response condition ${row.condition_id} was outside the requested cohort`
             );
@@ -577,7 +707,7 @@ export class PolymarketDataApiClient {
             );
           }
           seenPositionKeys.add(key);
-          normalized.push(normalizeV2Position(row));
+          raw.push(row);
         }
 
         const nextCursor = response.pagination.next_cursor;
@@ -593,11 +723,12 @@ export class PolymarketDataApiClient {
       }
       if (!complete) {
         throw new PolyDataApiPositionsV2Error(
-          `cursor walk exceeded ${POSITIONS_V2_MAX_CURSOR_PAGES} pages`
+          `cursor walk exceeded ${POSITIONS_V2_MAX_CURSOR_PAGES} pages`,
+          "incomplete"
         );
       }
     }
-    return normalized;
+    return { positions: raw, requestCount };
   }
 
   /**

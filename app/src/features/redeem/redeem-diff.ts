@@ -121,7 +121,7 @@ export async function runRedeemDiffTick(deps: RunDiffTickDeps): Promise<void> {
   const staleMs = deps.staleUnresolvedMs ?? REDEEM_DIFF_STALE_UNRESOLVED_MS;
   const concurrency = deps.concurrency ?? REDEEM_DIFF_ENQUEUE_CONCURRENCY;
 
-  const positions = await deps.dataApiClient.listAllUserPositions(
+  const positions = await deps.dataApiClient.listAllUserPositionsV2(
     deps.funderAddress
   );
   const apiConditionIds = new Set<`0x${string}`>();

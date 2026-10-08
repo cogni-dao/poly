@@ -42,6 +42,17 @@ export {
   type NormalizedMarket,
   NormalizedMarketSchema,
 } from "./domain/schemas.js";
+// Immutable target-book seam shared by the Data-API provider and allocator.
+export {
+  type TargetBookConditionV1,
+  type TargetBookProviderV1,
+  type TargetBookRefreshFailureReasonV1,
+  type TargetBookRefreshOptionsV1,
+  type TargetBookRefreshResultV1,
+  type TargetBookRefreshStatsV1,
+  type TargetBookSnapshotV1,
+  type TargetBookTokenV1,
+} from "./domain/target-book.js";
 // Port interface
 export {
   BELOW_MARKET_MIN_CODE,

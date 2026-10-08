@@ -551,6 +551,135 @@ describe("PolymarketDataApiClient.listUserPositionsV2", () => {
       })
     ).rejects.toBeInstanceOf(PolyDataApiValidationError);
   });
+
+  it("discovers positive OPEN positions with a bounded unscoped CASH cursor walk", async () => {
+    const open = makePosition(condition(1), "11");
+    const redeemable = makePosition(condition(2), "22", {
+      status: "REDEEMABLE",
+      redeemable: true,
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(page([open], "cursor-2")))
+      .mockResolvedValueOnce(jsonResponse(page([redeemable])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    const result = await client.listPositiveOpenUserPositionsV2(wallet);
+
+    expect(result.positions).toEqual([open]);
+    expect(result.requestCount).toBe(2);
+    const urls = fetchImpl.mock.calls.map((call) => new URL(call[0] as string));
+    expect(urls[0]?.searchParams.has("condition")).toBe(false);
+    expect(urls[0]?.searchParams.get("filter_type")).toBe("CASH");
+    expect(urls[0]?.searchParams.get("include_archived")).toBe("false");
+    expect(Number(urls[0]?.searchParams.get("filter_amount"))).toBeGreaterThan(
+      0
+    );
+    expect(urls[1]?.searchParams.get("cursor")).toBe("cursor-2");
+  });
+
+  it("rejects an archived row leaked into active target-book discovery", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(
+        page([makePosition(condition(1), "11", { archived: true })])
+      )
+    );
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    await expect(
+      client.listPositiveOpenUserPositionsV2(wallet)
+    ).rejects.toThrow(/archived token/);
+  });
+
+  it("fails before exceeding the positive discovery request budget", async () => {
+    let cursor = 0;
+    const fetchImpl = vi.fn().mockImplementation(() => {
+      cursor += 1;
+      return Promise.resolve(
+        jsonResponse(page([], `cursor-${cursor}`))
+      );
+    });
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    await expect(
+      client.listPositiveOpenUserPositionsV2(wallet)
+    ).rejects.toThrow(/request budget/);
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+  });
+
+  it("walks unscoped V2 TOKENS positions for redemption reads", async () => {
+    const winner = makePosition(condition(1), "11", {
+      status: "REDEEMABLE",
+      redeemable: true,
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(page([winner], "cursor-2")))
+      .mockResolvedValueOnce(jsonResponse(page([])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    const positions = await client.listAllUserPositionsV2(wallet);
+
+    expect(positions).toHaveLength(1);
+    expect(positions[0]).toMatchObject({
+      conditionId: condition(1),
+      asset: "11",
+      redeemable: true,
+    });
+    const first = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(first.searchParams.has("condition")).toBe(false);
+    expect(first.searchParams.get("filter_type")).toBe("TOKENS");
+    expect(first.searchParams.get("filter_amount")).toBe("0");
+  });
+});
+
+describe("PolymarketDataApiClient.getStatusV2", () => {
+  it("parses source freshness evidence from /v2/status", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: {
+          computed_at: "2026-10-08T02:43:37Z",
+          age_seconds: 8,
+          serving: {
+            lag_seconds: 1,
+            worst: "activity_feed",
+            mechanisms: [
+              {
+                name: "custody_balances",
+                age_seconds: 0,
+                blocks_behind: 0,
+              },
+              { name: "pnl", age_seconds: 0, blocks_behind: 1 },
+            ],
+          },
+          ingestion: {
+            cursors: 175,
+            network: "polygon",
+            chain_id: 137,
+            max_synced_block: 95_148_145,
+          },
+        },
+      })
+    );
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    await expect(client.getStatusV2()).resolves.toMatchObject({
+      computed_at: "2026-10-08T02:43:37Z",
+      ingestion: { chain_id: 137, max_synced_block: 95_148_145 },
+    });
+    expect(new URL(fetchImpl.mock.calls[0]?.[0] as string).pathname).toBe(
+      "/v2/status"
+    );
+  });
+
+  it("rejects malformed freshness evidence", async () => {
+    const client = new PolymarketDataApiClient({
+      fetch: vi.fn().mockResolvedValue(jsonResponse({ data: {} })),
+    });
+    await expect(client.getStatusV2()).rejects.toBeInstanceOf(
+      PolyDataApiValidationError
+    );
+  });
 });
 
 describe("PolymarketDataApiClient.listActivity", () => {

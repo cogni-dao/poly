@@ -68,6 +68,8 @@ export {
   type ListUserActivityParams,
   type ListUserPositionsParams,
   type ListUserPositionsV2Params,
+  type PolymarketPositionsV2Walk,
+  type PolyDataApiPositionsV2FailureReason,
   type ListUserTradesParams,
   PolyDataApiPositionsV2Error,
   PolyDataApiValidationError,
@@ -107,12 +109,19 @@ export {
   UserValueResponseSchema,
 } from "./polymarket.data-api.types.js";
 export {
+  PolymarketDataApiStatusV2Schema,
+  type PolymarketDataApiStatusV2,
   PolymarketPositionsV2PaginationSchema,
   PolymarketUserPositionsV2ResponseSchema,
   type PolymarketUserPositionsV2Response,
   type PolymarketUserPositionV2,
   PolymarketUserPositionV2Schema,
 } from "./polymarket.data-api-v2.types.js";
+export {
+  createPolymarketTargetBookProviderV1,
+  type PolymarketTargetBookDataSourceV1,
+  type PolymarketTargetBookProviderV1Config,
+} from "./polymarket.target-book.js";
 export {
   POLYGON_NEG_RISK_ADAPTER,
   polymarketNegRiskAdapterAbi,
