@@ -768,10 +768,7 @@ export class PositionGapRuntimeStore {
 							),
 							eq(polyPositionGapCohorts.targetId, input.scope.targetId),
 							eq(polyPositionGapCohorts.cohortKey, reduction.cohortKey),
-							eq(
-								polyPositionGapCohorts.allowedMirrorShares,
-								reduction.previousAllowedMirrorShares.toString(),
-							),
+							sql`ABS(${polyPositionGapCohorts.allowedMirrorShares} - ${reduction.previousAllowedMirrorShares}) <= ${EPSILON}`,
 						),
 					)
 					.returning({ id: polyPositionGapCohorts.id });
@@ -905,7 +902,7 @@ export class PositionGapRuntimeStore {
 					.where(
 						and(
 							eq(polyPositionGapCohorts.id, cohort.id),
-							sql`${polyPositionGapCohorts.remainingShares} >= ${buy.shares}`,
+							sql`${polyPositionGapCohorts.remainingShares} + ${EPSILON} >= ${buy.shares}`,
 						),
 					)
 					.returning({ id: polyPositionGapCohorts.id });
