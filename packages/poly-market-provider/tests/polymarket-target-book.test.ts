@@ -9,10 +9,38 @@ import {
   type PolymarketTargetBookDataSourceV1,
 } from "../src/adapters/polymarket/index.js";
 import type { PolymarketUserPositionV2 } from "../src/adapters/polymarket/polymarket.data-api-v2.types.js";
+import type { PolymarketDataApiStatusV2 } from "../src/adapters/polymarket/polymarket.data-api-v2.types.js";
 
 const WALLET = "0x9f2fe025f84839ca81dd8e0338892605702d2ca8";
 const condition = (suffix: number) =>
   `0x${suffix.toString(16).padStart(64, "0")}`;
+
+function healthyStatus(
+  overrides: Partial<PolymarketDataApiStatusV2> = {}
+): PolymarketDataApiStatusV2 {
+  return {
+    computed_at: "2026-10-08T02:43:37Z",
+    age_seconds: 8,
+    serving: {
+      lag_seconds: 1,
+      worst: "activity_feed",
+      mechanisms: [
+        {
+          name: "custody_balances",
+          age_seconds: 0,
+          blocks_behind: 0,
+        },
+      ],
+    },
+    ingestion: {
+      cursors: 175,
+      network: "polygon",
+      chain_id: 137,
+      max_synced_block: 95_148_145,
+    },
+    ...overrides,
+  };
+}
 
 function row(
   conditionId: string,
@@ -53,11 +81,14 @@ function source(args?: {
   hydrated?: PolymarketUserPositionV2[];
   discoveryCalls?: number;
   hydrationCalls?: number;
+  status?: PolymarketDataApiStatusV2;
 }): PolymarketTargetBookDataSourceV1 & {
+  getStatusV2: ReturnType<typeof vi.fn>;
   listPositiveOpenUserPositionsV2: ReturnType<typeof vi.fn>;
   listUserPositionsV2Raw: ReturnType<typeof vi.fn>;
 } {
   return {
+    getStatusV2: vi.fn().mockResolvedValue(args?.status ?? healthyStatus()),
     listPositiveOpenUserPositionsV2: vi.fn().mockResolvedValue({
       positions: args?.discovery ?? [],
       requestCount: args?.discoveryCalls ?? 1,
@@ -94,7 +125,9 @@ describe("createPolymarketTargetBookProviderV1", () => {
         kind: "full",
         discoveryRows: 1,
         conditionCount: 1,
-        dataApiCalls: 2,
+        dataApiCalls: 3,
+        sourceComputedAt: "2026-10-08T02:43:37Z",
+        sourceMaxSyncedBlock: 95_148_145,
       },
     });
     expect(result.snapshot.conditions[0]).toMatchObject({
@@ -245,7 +278,9 @@ describe("createPolymarketTargetBookProviderV1", () => {
       kind: "dirty",
       discoveryRows: 1,
       conditionCount: 0,
-      dataApiCalls: 1,
+      dataApiCalls: 2,
+      sourceComputedAt: "2026-10-08T02:43:37Z",
+      sourceMaxSyncedBlock: 95_148_145,
     });
 
     const tooMany = Array.from({ length: 101 }, (_, index) =>
@@ -256,6 +291,31 @@ describe("createPolymarketTargetBookProviderV1", () => {
       reason: "condition_limit",
       retainedSnapshotId: patched.snapshot.snapshotId,
     });
+  });
+
+  it("reserves exactly five hydration calls plus status for a 100-condition dirty patch", async () => {
+    const held = row(condition(1), "111", "222");
+    const dataSource = source({ discovery: [held], hydrated: [held] });
+    const provider = createPolymarketTargetBookProviderV1({ dataSource });
+    const first = await provider.refreshFull(WALLET);
+    if (!first.published) throw new Error("expected first publication");
+    const dirtyIds = Array.from({ length: 100 }, (_, index) =>
+      condition(index + 1)
+    );
+    dataSource.listUserPositionsV2Raw.mockResolvedValueOnce({
+      positions: [],
+      requestCount: 5,
+    });
+
+    const result = await provider.refreshDirty(WALLET, dirtyIds);
+
+    expect(result.published).toBe(true);
+    if (!result.published) throw new Error("expected dirty publication");
+    expect(result.snapshot.refreshStats.dataApiCalls).toBe(6);
+    expect(dataSource.listUserPositionsV2Raw).toHaveBeenLastCalledWith(
+      WALLET,
+      expect.objectContaining({ maxRequests: 5 })
+    );
   });
 
   it("refuses dirty IO when the only cached snapshot is stale", async () => {
@@ -281,5 +341,46 @@ describe("createPolymarketTargetBookProviderV1", () => {
     });
     expect(dataSource.listUserPositionsV2Raw).not.toHaveBeenCalled();
     expect(provider.readFresh(WALLET)).toBeNull();
+  });
+
+  it("fails closed when source freshness is stale and retains last-good", async () => {
+    const held = row(condition(1), "111", "222");
+    const dataSource = source({ discovery: [held], hydrated: [held] });
+    const provider = createPolymarketTargetBookProviderV1({ dataSource });
+    const first = await provider.refreshFull(WALLET);
+    if (!first.published) throw new Error("expected first publication");
+    dataSource.getStatusV2.mockResolvedValue(
+      healthyStatus({ age_seconds: 61 })
+    );
+
+    await expect(provider.refreshFull(WALLET)).resolves.toEqual({
+      published: false,
+      reason: "stale_snapshot",
+      retainedSnapshotId: first.snapshot.snapshotId,
+    });
+    expect(provider.readFresh(WALLET)).toBe(first.snapshot);
+  });
+
+  it("fails closed when source status reports the wrong chain", async () => {
+    const held = row(condition(1), "111", "222");
+    const dataSource = source({
+      discovery: [held],
+      hydrated: [held],
+      status: healthyStatus({
+        ingestion: {
+          cursors: 1,
+          network: "ethereum",
+          chain_id: 1,
+          max_synced_block: 1,
+        },
+      }),
+    });
+    const provider = createPolymarketTargetBookProviderV1({ dataSource });
+
+    await expect(provider.refreshFull(WALLET)).resolves.toEqual({
+      published: false,
+      reason: "malformed",
+      retainedSnapshotId: null,
+    });
   });
 });

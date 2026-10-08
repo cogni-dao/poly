@@ -85,3 +85,30 @@ export const PolymarketUserPositionsV2ResponseSchema = z.object({
 export type PolymarketUserPositionsV2Response = z.infer<
   typeof PolymarketUserPositionsV2ResponseSchema
 >;
+
+export const PolymarketDataApiStatusV2Schema = z.object({
+  data: z.object({
+    computed_at: z.string().min(1),
+    age_seconds: z.number().int().nonnegative(),
+    serving: z.object({
+      lag_seconds: z.number().int().nonnegative().nullable().optional(),
+      worst: z.string().nullable().optional(),
+      mechanisms: z.array(
+        z.object({
+          name: z.string().min(1),
+          age_seconds: z.number().int().nonnegative(),
+          blocks_behind: z.number().int().nonnegative().nullable().optional(),
+        })
+      ),
+    }),
+    ingestion: z.object({
+      cursors: z.number().int().nonnegative(),
+      network: z.string().nullable().optional(),
+      chain_id: z.number().int(),
+      max_synced_block: z.number().int().nonnegative().nullable().optional(),
+    }),
+  }),
+});
+export type PolymarketDataApiStatusV2 = z.infer<
+  typeof PolymarketDataApiStatusV2Schema
+>["data"];

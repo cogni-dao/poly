@@ -633,6 +633,54 @@ describe("PolymarketDataApiClient.listUserPositionsV2", () => {
   });
 });
 
+describe("PolymarketDataApiClient.getStatusV2", () => {
+  it("parses source freshness evidence from /v2/status", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: {
+          computed_at: "2026-10-08T02:43:37Z",
+          age_seconds: 8,
+          serving: {
+            lag_seconds: 1,
+            worst: "activity_feed",
+            mechanisms: [
+              {
+                name: "custody_balances",
+                age_seconds: 0,
+                blocks_behind: 0,
+              },
+            ],
+          },
+          ingestion: {
+            cursors: 175,
+            network: "polygon",
+            chain_id: 137,
+            max_synced_block: 95_148_145,
+          },
+        },
+      })
+    );
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    await expect(client.getStatusV2()).resolves.toMatchObject({
+      computed_at: "2026-10-08T02:43:37Z",
+      ingestion: { chain_id: 137, max_synced_block: 95_148_145 },
+    });
+    expect(new URL(fetchImpl.mock.calls[0]?.[0] as string).pathname).toBe(
+      "/v2/status"
+    );
+  });
+
+  it("rejects malformed freshness evidence", async () => {
+    const client = new PolymarketDataApiClient({
+      fetch: vi.fn().mockResolvedValue(jsonResponse({ data: {} })),
+    });
+    await expect(client.getStatusV2()).rejects.toBeInstanceOf(
+      PolyDataApiValidationError
+    );
+  });
+});
+
 describe("PolymarketDataApiClient.listActivity", () => {
   const wallet = "0x9f2fe025f84839ca81dd8e0338892605702d2ca8";
 

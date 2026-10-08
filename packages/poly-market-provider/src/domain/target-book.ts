@@ -42,6 +42,9 @@ export type TargetBookRefreshStatsV1 = Readonly<{
   discoveryRows: number;
   conditionCount: number;
   dataApiCalls: number;
+  /** Data API freshness snapshot that authorized this publication. */
+  sourceComputedAt: string;
+  sourceMaxSyncedBlock: number;
 }>;
 
 /** A complete, immutable target book. Partial snapshots are unrepresentable. */

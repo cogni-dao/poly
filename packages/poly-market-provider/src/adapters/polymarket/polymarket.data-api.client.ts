@@ -33,6 +33,8 @@ import {
   UserValueResponseSchema,
 } from "./polymarket.data-api.types.js";
 import {
+  PolymarketDataApiStatusV2Schema,
+  type PolymarketDataApiStatusV2,
   PolymarketUserPositionsV2ResponseSchema,
   type PolymarketUserPositionV2,
 } from "./polymarket.data-api-v2.types.js";
@@ -414,6 +416,19 @@ export class PolymarketDataApiClient {
 
     const json = await this.fetchJson(url);
     return PolymarketLeaderboardResponseSchema.parse(json);
+  }
+
+  /** Data API's own serving/ingestion freshness evidence. */
+  async getStatusV2(params?: {
+    signal?: AbortSignal | undefined;
+  }): Promise<PolymarketDataApiStatusV2> {
+    const url = new URL("/v2/status", this.baseUrl);
+    const json = await this.fetchJson(url, params?.signal);
+    return parseResponse(
+      PolymarketDataApiStatusV2Schema,
+      json,
+      "/v2/status"
+    ).data;
   }
 
   async listUserActivity(

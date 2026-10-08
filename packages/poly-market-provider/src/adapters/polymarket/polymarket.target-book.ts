@@ -20,7 +20,10 @@ import type {
   TargetBookSnapshotV1,
   TargetBookTokenV1,
 } from "../../domain/target-book.js";
-import type { PolymarketUserPositionV2 } from "./polymarket.data-api-v2.types.js";
+import type {
+  PolymarketDataApiStatusV2,
+  PolymarketUserPositionV2,
+} from "./polymarket.data-api-v2.types.js";
 import {
   PolyDataApiPositionsV2Error,
   type PolymarketPositionsV2Walk,
@@ -31,10 +34,16 @@ const TOKEN_ID_PATTERN = /^\d+$/;
 const MAX_CONDITIONS = 500;
 const MAX_DIRTY_CONDITIONS = 100;
 const MAX_FULL_DATA_API_CALLS = 30;
-const MAX_DIRTY_DATA_API_CALLS = 5;
+// Five 20-condition hydration calls plus one mandatory source-status proof.
+const MAX_DIRTY_DATA_API_CALLS = 6;
 const DEFAULT_TTL_MS = 10 * 60 * 1_000;
+const DEFAULT_MAX_SOURCE_AGE_SECONDS = 60;
+const DEFAULT_MAX_CUSTODY_BLOCKS_BEHIND = 30;
 
 export interface PolymarketTargetBookDataSourceV1 {
+  getStatusV2(params?: {
+    signal?: AbortSignal | undefined;
+  }): Promise<PolymarketDataApiStatusV2>;
   listPositiveOpenUserPositionsV2(
     wallet: string,
     params?: { signal?: AbortSignal | undefined }
@@ -54,6 +63,8 @@ export interface PolymarketTargetBookProviderV1Config {
   dataSource: PolymarketTargetBookDataSourceV1;
   now?: () => number;
   ttlMs?: number;
+  maxSourceAgeSeconds?: number;
+  maxCustodyBlocksBehind?: number;
 }
 
 export function createPolymarketTargetBookProviderV1(
@@ -61,8 +72,21 @@ export function createPolymarketTargetBookProviderV1(
 ): TargetBookProviderV1 {
   const now = config.now ?? Date.now;
   const ttlMs = config.ttlMs ?? DEFAULT_TTL_MS;
+  const maxSourceAgeSeconds =
+    config.maxSourceAgeSeconds ?? DEFAULT_MAX_SOURCE_AGE_SECONDS;
+  const maxCustodyBlocksBehind =
+    config.maxCustodyBlocksBehind ?? DEFAULT_MAX_CUSTODY_BLOCKS_BEHIND;
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
     throw new Error("Target-book ttlMs must be positive and finite");
+  }
+  if (!Number.isFinite(maxSourceAgeSeconds) || maxSourceAgeSeconds < 0) {
+    throw new Error("Target-book maxSourceAgeSeconds must be nonnegative");
+  }
+  if (
+    !Number.isInteger(maxCustodyBlocksBehind) ||
+    maxCustodyBlocksBehind < 0
+  ) {
+    throw new Error("Target-book maxCustodyBlocksBehind must be nonnegative");
   }
 
   const snapshots = new Map<string, TargetBookSnapshotV1>();
@@ -127,17 +151,27 @@ export function createPolymarketTargetBookProviderV1(
           return failed(wallet, "request_budget");
         }
 
+        const remainingHydrationCalls =
+          MAX_FULL_DATA_API_CALLS - discovery.requestCount - 1;
+        if (conditionIds.length > 0 && remainingHydrationCalls <= 0) {
+          return failed(wallet, "request_budget");
+        }
         const hydration =
           conditionIds.length === 0
             ? { positions: [], requestCount: 0 }
             : await config.dataSource.listUserPositionsV2Raw(wallet, {
                 conditions: conditionIds,
                 includeArchived: false,
-                maxRequests:
-                  MAX_FULL_DATA_API_CALLS - discovery.requestCount,
+                maxRequests: remainingHydrationCalls,
                 signal: options?.signal,
               });
-        const dataApiCalls = discovery.requestCount + hydration.requestCount;
+        const source = validateSourceStatus(
+          await config.dataSource.getStatusV2({ signal: options?.signal }),
+          maxSourceAgeSeconds,
+          maxCustodyBlocksBehind
+        );
+        const dataApiCalls =
+          discovery.requestCount + hydration.requestCount + 1;
         if (dataApiCalls > MAX_FULL_DATA_API_CALLS) {
           return failed(wallet, "request_budget");
         }
@@ -156,6 +190,7 @@ export function createPolymarketTargetBookProviderV1(
             discoveryRows: discovery.positions.length,
             conditionCount: conditions.length,
             dataApiCalls,
+            ...source,
           },
           conditions,
         });
@@ -183,19 +218,21 @@ export function createPolymarketTargetBookProviderV1(
         if (dirtyIds.length > MAX_DIRTY_CONDITIONS) {
           return failed(wallet, "condition_limit");
         }
-        if (dirtyIds.length === 0) {
-          return { published: true, snapshot: retained };
-        }
-        const hydration = await config.dataSource.listUserPositionsV2Raw(
-          wallet,
-          {
-            conditions: dirtyIds,
-            includeArchived: false,
-            maxRequests: MAX_DIRTY_DATA_API_CALLS,
-            signal: options?.signal,
-          }
+        const hydration =
+          dirtyIds.length === 0
+            ? { positions: [], requestCount: 0 }
+            : await config.dataSource.listUserPositionsV2Raw(wallet, {
+                conditions: dirtyIds,
+                includeArchived: false,
+                maxRequests: MAX_DIRTY_DATA_API_CALLS - 1,
+                signal: options?.signal,
+              });
+        const source = validateSourceStatus(
+          await config.dataSource.getStatusV2({ signal: options?.signal }),
+          maxSourceAgeSeconds,
+          maxCustodyBlocksBehind
         );
-        if (hydration.requestCount > MAX_DIRTY_DATA_API_CALLS) {
+        if (hydration.requestCount + 1 > MAX_DIRTY_DATA_API_CALLS) {
           return failed(wallet, "request_budget");
         }
         assertRowsInCohort(hydration.positions, dirtyIds);
@@ -221,7 +258,8 @@ export function createPolymarketTargetBookProviderV1(
             kind: "dirty",
             discoveryRows: retained.refreshStats.discoveryRows,
             conditionCount: nextConditions.length,
-            dataApiCalls: hydration.requestCount,
+            dataApiCalls: hydration.requestCount + 1,
+            ...source,
           },
           conditions: nextConditions,
         });
@@ -412,8 +450,73 @@ function classifyFailure(
   options?: TargetBookRefreshOptionsV1
 ): TargetBookRefreshFailureReasonV1 {
   if (options?.signal?.aborted) return "aborted";
+  if (error instanceof TargetBookSourceStatusError) return error.reason;
   if (error instanceof PolyDataApiPositionsV2Error) return error.reason;
   return "upstream";
+}
+
+class TargetBookSourceStatusError extends Error {
+  constructor(
+    readonly reason: TargetBookRefreshFailureReasonV1,
+    message: string
+  ) {
+    super(message);
+    this.name = "TargetBookSourceStatusError";
+  }
+}
+
+function validateSourceStatus(
+  status: PolymarketDataApiStatusV2,
+  maxAgeSeconds: number,
+  maxCustodyBlocksBehind: number
+): Pick<
+  TargetBookSnapshotV1["refreshStats"],
+  "sourceComputedAt" | "sourceMaxSyncedBlock"
+> {
+  if (
+    status.ingestion.chain_id !== 137 ||
+    status.ingestion.network?.toLowerCase() !== "polygon"
+  ) {
+    throw new TargetBookSourceStatusError(
+      "malformed",
+      "Data API status reported the wrong chain"
+    );
+  }
+  const maxSyncedBlock = status.ingestion.max_synced_block;
+  if (
+    status.ingestion.cursors <= 0 ||
+    maxSyncedBlock == null ||
+    maxSyncedBlock <= 0 ||
+    !Number.isFinite(Date.parse(status.computed_at))
+  ) {
+    throw new TargetBookSourceStatusError(
+      "incomplete",
+      "Data API status lacked ingestion freshness evidence"
+    );
+  }
+  const custody = status.serving.mechanisms.find(
+    (mechanism) => mechanism.name === "custody_balances"
+  );
+  if (custody?.blocks_behind == null) {
+    throw new TargetBookSourceStatusError(
+      "incomplete",
+      "Data API status lacked custody balance freshness evidence"
+    );
+  }
+  if (
+    status.age_seconds > maxAgeSeconds ||
+    custody.age_seconds > maxAgeSeconds ||
+    custody.blocks_behind > maxCustodyBlocksBehind
+  ) {
+    throw new TargetBookSourceStatusError(
+      "stale_snapshot",
+      "Data API status or custody balances were stale"
+    );
+  }
+  return {
+    sourceComputedAt: status.computed_at,
+    sourceMaxSyncedBlock: maxSyncedBlock,
+  };
 }
 
 function normalizeWallet(wallet: string): string {

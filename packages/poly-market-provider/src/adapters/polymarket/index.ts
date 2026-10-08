@@ -109,6 +109,8 @@ export {
   UserValueResponseSchema,
 } from "./polymarket.data-api.types.js";
 export {
+  PolymarketDataApiStatusV2Schema,
+  type PolymarketDataApiStatusV2,
   PolymarketPositionsV2PaginationSchema,
   PolymarketUserPositionsV2ResponseSchema,
   type PolymarketUserPositionsV2Response,
