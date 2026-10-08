@@ -47,6 +47,7 @@ type MarketRowRaw = {
   sell_count: string;
   intent_usdc: string | null;
   realized_size_usdc: string | null;
+  accounting_pending_count: string;
   has_open_position: boolean;
   position_lifecycle: string | null;
   // pg driver returns timestamptz as ISO string (or Date in some configs);
@@ -94,7 +95,10 @@ export async function getCopyTradePnlForTenant(
       ${polyCopyTradeFills.targetId} AS target_id,
       MAX(${polyCopyTradeFills.attributes}->>'target_wallet') AS target_wallet,
       COUNT(*)::int AS fills_count,
-      COUNT(*) FILTER (WHERE ${polyCopyTradeFills.status} = 'filled')::int AS filled_count,
+      COUNT(*) FILTER (WHERE ${polyCopyTradeFills.status} = 'filled' AND (
+        COALESCE(${polyCopyTradeFills.attributes}->>'position_gap_version', '') <> '3'
+        OR ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades'
+      ))::int AS filled_count,
       COUNT(*) FILTER (WHERE ${polyCopyTradeFills.status} = 'open')::int AS open_count,
       COUNT(*) FILTER (WHERE ${polyCopyTradeFills.status} = 'pending')::int AS pending_count,
       COUNT(*) FILTER (WHERE ${polyCopyTradeFills.status} IN ('canceled','partial'))::int AS canceled_count,
@@ -118,6 +122,11 @@ export async function getCopyTradePnlForTenant(
           ELSE 0
         END
       ), 0)::text AS realized_size_usdc,
+      COUNT(*) FILTER (WHERE
+        COALESCE(${polyCopyTradeFills.attributes}->>'position_gap_version', '') = '3'
+        AND ${polyCopyTradeFills.status} IN ('filled','partial')
+        AND COALESCE(${polyCopyTradeFills.attributes}->>'realized_fill_source', '') <> 'clob_associated_trades'
+      )::int AS accounting_pending_count,
       BOOL_OR(
         (${polyCopyTradeFills.positionLifecycle} IS NULL
          OR ${polyCopyTradeFills.positionLifecycle} IN ('unresolved','open','closing'))
@@ -156,6 +165,9 @@ export async function getCopyTradePnlForTenant(
     sell_count: Number(r.sell_count) || 0,
     intent_usdc: toNum(r.intent_usdc),
     realized_size_usdc: toNum(r.realized_size_usdc),
+    fill_accounting_status:
+      Number(r.accounting_pending_count) > 0 ? "partial" as const : "complete" as const,
+    accounting_pending_count: Number(r.accounting_pending_count) || 0,
     has_open_position: Boolean(r.has_open_position),
     position_lifecycle: r.position_lifecycle,
     first_fill_at: toIso(r.first_fill_at),
@@ -175,6 +187,15 @@ export async function getCopyTradePnlForTenant(
     total_intent_usdc: markets.reduce((s, m) => s + m.intent_usdc, 0),
     total_realized_size_usdc: markets.reduce(
       (s, m) => s + m.realized_size_usdc,
+      0
+    ),
+    fill_accounting_status: markets.some(
+      (market) => market.accounting_pending_count > 0
+    )
+      ? "partial" as const
+      : "complete" as const,
+    accounting_pending_count: markets.reduce(
+      (sum, market) => sum + market.accounting_pending_count,
       0
     ),
     first_fill_at: markets.reduce<string | null>((acc, m) => {

@@ -895,6 +895,10 @@ export async function readClosedPositionSummary(
         COALESCE(f.attributes->>'market_slug', f.attributes->>'slug') AS market_slug,
         f.attributes->>'event_slug' AS event_slug,
         f.attributes->>'outcome' AS outcome,
+        (
+          COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+          OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+        ) AS accounting_verified,
         CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
           AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
           THEN NULL ELSE NULLIF(f.attributes->>'limit_price', '')::numeric END AS limit_price,
@@ -917,6 +921,7 @@ export async function readClosedPositionSummary(
       SELECT * FROM keyed
       WHERE tuple_rank = 1
         AND position_lifecycle IN ('closed', 'redeemed', 'loser', 'dust')
+        AND accounting_verified
     ), preview AS (
       SELECT * FROM terminal
       ORDER BY COALESCE(NULLIF(closed_at, '')::timestamptz, observed_at) DESC,

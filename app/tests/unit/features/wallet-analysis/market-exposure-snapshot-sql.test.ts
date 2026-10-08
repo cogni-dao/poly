@@ -21,7 +21,10 @@
 import type { WalletExecutionPosition } from "@cogni/poly-node-contracts";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
-import { buildMarketExposureGroups } from "@/features/wallet-analysis/server/market-exposure-service";
+import {
+  buildBoundedMarketExposureWithCoverage,
+  buildMarketExposureGroups,
+} from "@/features/wallet-analysis/server/market-exposure-service";
 
 const BILLING_ACCOUNT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OUR_WALLET = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
@@ -156,5 +159,36 @@ describe("market-exposure latest_snapshots CTE (dashboard floor fix)", () => {
       currentValueUsdc: 13,
       lifecycle: "active",
     });
+  });
+
+  it("never falls back from unverified Position-gap fills to intended closed cost", async () => {
+    const captured: string[] = [];
+    const db = {
+      execute: async (query: unknown) => {
+        captured.push(new PgDialect().sqlToQuery(query as never).sql);
+        return [];
+      },
+    };
+    await buildBoundedMarketExposureWithCoverage({
+      db,
+      billingAccountId: BILLING_ACCOUNT,
+      walletAddress: OUR_WALLET,
+      livePositions: [],
+      closedPositions: [
+        {
+          ...ourPosition,
+          status: "closed",
+          lifecycleState: "closed",
+          closedAt: "2026-09-30T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const comparisonSql = captured[0] ?? "";
+    expect(comparisonSql).toContain("attributes->>'position_gap_version'");
+    expect(comparisonSql).toContain("attributes->>'realized_fill_source'");
+    expect(comparisonSql).toMatch(
+      /position_gap_version[^]*<> 'clob_associated_trades'[^]*THEN 0[^]*filled_size_usdc[^]*size_usdc/
+    );
   });
 });
