@@ -1471,6 +1471,37 @@ export class DoltgresWorkItemAdapter
       });
       throw this.preservedBranchError(branch, error);
     }
+
+    // A restart branch whose exact tip is already reachable from main owns no
+    // commits that main does not. This includes a branch-create acknowledgement
+    // failure: the ref can remain at an older main commit after main advances.
+    // Do not interpret that ancestor commit as a work-item operation commit;
+    // its parent diff may legitimately describe any repository change.
+    if (reachable && !pending) {
+      let cleaned = true;
+      try {
+        await this.deleteOperationBranch(conn, branch);
+      } catch (error) {
+        cleaned = false;
+        this.logReconciliation("warn", conn, {
+          branch,
+          tip,
+          classification: "reachable_redundant_cleanup_pending",
+          durationMs: Date.now() - startedAt,
+          ...errorFields(error),
+        });
+      }
+      this.logReconciliation("info", conn, {
+        branch,
+        tip,
+        classification: cleaned
+          ? "reachable_redundant_cleaned"
+          : "reachable_redundant_cleanup_pending",
+        durationMs: Date.now() - startedAt,
+      });
+      return undefined;
+    }
+
     let transition: ValidatedBranchTransition;
     try {
       transition = await this.validateOperationBranch(
