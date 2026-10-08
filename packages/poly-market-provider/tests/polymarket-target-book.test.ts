@@ -30,6 +30,7 @@ function healthyStatus(
           age_seconds: 0,
           blocks_behind: 0,
         },
+        { name: "pnl", age_seconds: 0, blocks_behind: 1 },
       ],
     },
     ingestion: {
@@ -380,6 +381,30 @@ describe("createPolymarketTargetBookProviderV1", () => {
     await expect(provider.refreshFull(WALLET)).resolves.toEqual({
       published: false,
       reason: "malformed",
+      retainedSnapshotId: null,
+    });
+  });
+
+  it("fails closed when PnL mark freshness evidence is missing", async () => {
+    const held = row(condition(1), "111", "222");
+    const status = healthyStatus();
+    const dataSource = source({
+      discovery: [held],
+      hydrated: [held],
+      status: healthyStatus({
+        serving: {
+          ...status.serving,
+          mechanisms: status.serving.mechanisms.filter(
+            (mechanism) => mechanism.name !== "pnl"
+          ),
+        },
+      }),
+    });
+    const provider = createPolymarketTargetBookProviderV1({ dataSource });
+
+    await expect(provider.refreshFull(WALLET)).resolves.toEqual({
+      published: false,
+      reason: "incomplete",
       retainedSnapshotId: null,
     });
   });

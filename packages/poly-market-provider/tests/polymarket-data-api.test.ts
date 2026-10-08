@@ -649,6 +649,7 @@ describe("PolymarketDataApiClient.getStatusV2", () => {
                 age_seconds: 0,
                 blocks_behind: 0,
               },
+              { name: "pnl", age_seconds: 0, blocks_behind: 1 },
             ],
           },
           ingestion: {

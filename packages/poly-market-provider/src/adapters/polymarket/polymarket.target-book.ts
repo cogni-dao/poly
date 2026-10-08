@@ -38,7 +38,7 @@ const MAX_FULL_DATA_API_CALLS = 30;
 const MAX_DIRTY_DATA_API_CALLS = 6;
 const DEFAULT_TTL_MS = 10 * 60 * 1_000;
 const DEFAULT_MAX_SOURCE_AGE_SECONDS = 60;
-const DEFAULT_MAX_CUSTODY_BLOCKS_BEHIND = 30;
+const DEFAULT_MAX_PROJECTION_BLOCKS_BEHIND = 30;
 
 export interface PolymarketTargetBookDataSourceV1 {
   getStatusV2(params?: {
@@ -64,7 +64,7 @@ export interface PolymarketTargetBookProviderV1Config {
   now?: () => number;
   ttlMs?: number;
   maxSourceAgeSeconds?: number;
-  maxCustodyBlocksBehind?: number;
+  maxProjectionBlocksBehind?: number;
 }
 
 export function createPolymarketTargetBookProviderV1(
@@ -74,8 +74,9 @@ export function createPolymarketTargetBookProviderV1(
   const ttlMs = config.ttlMs ?? DEFAULT_TTL_MS;
   const maxSourceAgeSeconds =
     config.maxSourceAgeSeconds ?? DEFAULT_MAX_SOURCE_AGE_SECONDS;
-  const maxCustodyBlocksBehind =
-    config.maxCustodyBlocksBehind ?? DEFAULT_MAX_CUSTODY_BLOCKS_BEHIND;
+  const maxProjectionBlocksBehind =
+    config.maxProjectionBlocksBehind ??
+    DEFAULT_MAX_PROJECTION_BLOCKS_BEHIND;
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
     throw new Error("Target-book ttlMs must be positive and finite");
   }
@@ -83,10 +84,10 @@ export function createPolymarketTargetBookProviderV1(
     throw new Error("Target-book maxSourceAgeSeconds must be nonnegative");
   }
   if (
-    !Number.isInteger(maxCustodyBlocksBehind) ||
-    maxCustodyBlocksBehind < 0
+    !Number.isInteger(maxProjectionBlocksBehind) ||
+    maxProjectionBlocksBehind < 0
   ) {
-    throw new Error("Target-book maxCustodyBlocksBehind must be nonnegative");
+    throw new Error("Target-book maxProjectionBlocksBehind must be nonnegative");
   }
 
   const snapshots = new Map<string, TargetBookSnapshotV1>();
@@ -168,7 +169,7 @@ export function createPolymarketTargetBookProviderV1(
         const source = validateSourceStatus(
           await config.dataSource.getStatusV2({ signal: options?.signal }),
           maxSourceAgeSeconds,
-          maxCustodyBlocksBehind
+          maxProjectionBlocksBehind
         );
         const dataApiCalls =
           discovery.requestCount + hydration.requestCount + 1;
@@ -230,7 +231,7 @@ export function createPolymarketTargetBookProviderV1(
         const source = validateSourceStatus(
           await config.dataSource.getStatusV2({ signal: options?.signal }),
           maxSourceAgeSeconds,
-          maxCustodyBlocksBehind
+          maxProjectionBlocksBehind
         );
         if (hydration.requestCount + 1 > MAX_DIRTY_DATA_API_CALLS) {
           return failed(wallet, "request_budget");
@@ -468,7 +469,7 @@ class TargetBookSourceStatusError extends Error {
 function validateSourceStatus(
   status: PolymarketDataApiStatusV2,
   maxAgeSeconds: number,
-  maxCustodyBlocksBehind: number
+  maxProjectionBlocksBehind: number
 ): Pick<
   TargetBookSnapshotV1["refreshStats"],
   "sourceComputedAt" | "sourceMaxSyncedBlock"
@@ -494,23 +495,29 @@ function validateSourceStatus(
       "Data API status lacked ingestion freshness evidence"
     );
   }
-  const custody = status.serving.mechanisms.find(
-    (mechanism) => mechanism.name === "custody_balances"
+  const requiredMechanisms = ["custody_balances", "pnl"] as const;
+  const mechanisms = requiredMechanisms.map((name) =>
+    status.serving.mechanisms.find((mechanism) => mechanism.name === name)
   );
-  if (custody?.blocks_behind == null) {
+  if (mechanisms.some((mechanism) => mechanism?.blocks_behind == null)) {
     throw new TargetBookSourceStatusError(
       "incomplete",
-      "Data API status lacked custody balance freshness evidence"
+      "Data API status lacked custody or PnL freshness evidence"
     );
   }
   if (
     status.age_seconds > maxAgeSeconds ||
-    custody.age_seconds > maxAgeSeconds ||
-    custody.blocks_behind > maxCustodyBlocksBehind
+    mechanisms.some(
+      (mechanism) =>
+        mechanism != null &&
+        (mechanism.age_seconds > maxAgeSeconds ||
+          (mechanism.blocks_behind ?? Number.POSITIVE_INFINITY) >
+            maxProjectionBlocksBehind)
+    )
   ) {
     throw new TargetBookSourceStatusError(
       "stale_snapshot",
-      "Data API status or custody balances were stale"
+      "Data API status, custody balances, or PnL marks were stale"
     );
   }
   return {
