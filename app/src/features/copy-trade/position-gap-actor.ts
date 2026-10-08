@@ -353,7 +353,10 @@ export function startPositionGapActor(
 			budgetUsdc,
 			eligibleNetNavUsdc: netBook.eligibleNetNavUsdc,
 			scale,
-			activation: existingCohorts.length === 0,
+			// Every complete snapshot projects the config-revision activation keys.
+			// Persisted keys (including resolved cohorts) make this an exact-once
+			// backfill when a position first appears after activation.
+			activation: true,
 			nowMs: now(),
 		});
 		const reservations = await deps.store.activeReservationTotals(deps.scope);
