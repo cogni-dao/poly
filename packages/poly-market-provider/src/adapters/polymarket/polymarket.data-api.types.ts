@@ -253,3 +253,19 @@ export const GammaPublicSearchResponseSchema = z
   })
   .passthrough();
 
+/**
+ * Gamma `GET /markets?clob_token_ids=<tokenId>` identity fields.
+ * Gamma encodes both token ids and outcomes as JSON strings on the wire.
+ */
+export const GammaTokenMarketSchema = z
+  .object({
+    conditionId: z.string(),
+    question: z.string().optional().nullable().default(""),
+    slug: z.string().optional().nullable().default(""),
+    endDate: z.string().optional().nullable().default(""),
+    outcomes: z.string().or(z.array(z.string())),
+    clobTokenIds: z.string().or(z.array(z.string())),
+  })
+  .passthrough();
+
+export const GammaTokenMarketsResponseSchema = z.array(GammaTokenMarketSchema);
