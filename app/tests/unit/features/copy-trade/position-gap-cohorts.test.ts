@@ -73,6 +73,71 @@ describe("projectPositionGapCohorts", () => {
 		expect(second.creations[0]?.cohortKey).toBe(first.creations[0]?.cohortKey);
 	});
 
+	it("backfills a position omitted from the first complete snapshot exactly once", () => {
+		const latePosition = {
+			...position,
+			conditionId: "condition-2",
+			tokenId: "token-late",
+			marketId: "prediction-market:polymarket:condition-2",
+			netShares: 50,
+			activationPriceCap: 0.3,
+		};
+		const initial = projectPositionGapCohorts(base({ activation: true }));
+		const persistedInitial = cohort({
+			id: "persisted-initial",
+			cohortKey: initial.creations[0]?.cohortKey,
+			sourceKind: "activation",
+		});
+		const later = projectPositionGapCohorts(
+			base({
+				activation: true,
+				existing: [persistedInitial],
+				netTargetPositions: [position, latePosition],
+				snapshotId: "snapshot-2",
+				snapshotHash: "hash-2",
+				nowMs: 2_000,
+			}),
+		);
+
+		expect(later.creations).toHaveLength(1);
+		expect(later.creations[0]).toMatchObject({
+			sourceKind: "activation",
+			conditionId: latePosition.conditionId,
+			tokenId: latePosition.tokenId,
+			allowedMirrorShares: 5,
+			benchmarkTargetVwap: 0.3,
+		});
+		expect(
+			later.cohorts.find((entry) => entry.id === persistedInitial.id),
+		).toEqual(persistedInitial);
+
+		const persistedLate = cohort({
+			id: "persisted-late",
+			cohortKey: later.creations[0]?.cohortKey,
+			sourceKind: "activation",
+			conditionId: latePosition.conditionId,
+			tokenId: latePosition.tokenId,
+			marketId: latePosition.marketId,
+			targetDeltaShares: latePosition.netShares,
+			allowedMirrorShares: 5,
+			remainingShares: 5,
+			benchmarkTargetVwap: 0.3,
+			createdAtMs: 2_000,
+		});
+		const replay = projectPositionGapCohorts(
+			base({
+				activation: true,
+				existing: [persistedInitial, persistedLate],
+				netTargetPositions: [position, latePosition],
+				snapshotId: "snapshot-3",
+				snapshotHash: "hash-3",
+				nowMs: 3_000,
+			}),
+		);
+
+		expect(replay.creations).toEqual([]);
+	});
+
 	it("does not manufacture entitlement when scale rises without BUY or config growth", () => {
 		const result = projectPositionGapCohorts(
 			base({ existing: [cohort({})], scale: 0.2 }),

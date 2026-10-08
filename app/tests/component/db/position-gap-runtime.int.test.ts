@@ -17,13 +17,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { Database } from "@/adapters/server/db/client";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
+import { buildPositionGapBuyIntent } from "@/features/copy-trade/position-gap-actor";
+import { projectPositionGapCohorts } from "@/features/copy-trade/position-gap-cohorts";
 import {
 	PositionGapReservationConflictError,
 	PositionGapRuntimeStore,
 } from "@/features/copy-trade/position-gap-runtime-store";
-import {
-	createOrderLedger,
-} from "@/features/trading/order-ledger";
+import { createOrderLedger } from "@/features/trading/order-ledger";
 import { billingAccounts, users } from "@/shared/db/schema";
 
 const future = new Date("2099-01-01T00:00:00.000Z");
@@ -42,6 +42,7 @@ describe("position-gap runtime persistence", () => {
 	const targetSafety = randomUUID();
 	const targetNotFound = randomUUID();
 	const targetQuantized = randomUUID();
+	const targetActivationBackfill = randomUUID();
 
 	beforeAll(async () => {
 		appDb = getAppDb();
@@ -370,6 +371,183 @@ describe("position-gap runtime persistence", () => {
 		expect(repairVerified.activeBuys.map((action) => action.id)).not.toContain(
 			persisted?.id,
 		);
+	});
+
+	it("backfills late activation once across timer replay, restart, and resolved tombstones", async () => {
+		const db = getSeedDb();
+		const scope = {
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetActivationBackfill,
+		};
+		const store = new PositionGapRuntimeStore(db);
+		const firstPosition = {
+			conditionId: "condition-activation-first",
+			tokenId: "token-activation-first",
+			marketId: "prediction-market:polymarket:condition-activation-first",
+			outcome: "0",
+			netShares: 100,
+			activationPriceCap: 0.4,
+		};
+		const latePosition = {
+			conditionId: "condition-activation-late",
+			tokenId: "token-activation-late",
+			marketId: "prediction-market:polymarket:condition-activation-late",
+			outcome: "1",
+			netShares: 50,
+			activationPriceCap: 0.3,
+		};
+		const projection = (
+			existing: Awaited<ReturnType<typeof store.loadCohorts>>,
+			positions: readonly (typeof firstPosition)[],
+			snapshot: number,
+		) =>
+			projectPositionGapCohorts({
+				existing,
+				netTargetPositions: positions,
+				activity: [],
+				snapshotId: `activation-snapshot-${snapshot}`,
+				snapshotHash: `activation-hash-${snapshot}`,
+				configRevision: "activation-revision",
+				previousBudgetUsdc: null,
+				budgetUsdc: 40,
+				eligibleNetNavUsdc: 400,
+				scale: 0.1,
+				activation: true,
+				nowMs: asOf.getTime() + snapshot * 1_000,
+			});
+		const persist = async (
+			snapshot: number,
+			cohortCreations: ReturnType<typeof projection>["creations"],
+			buys: Parameters<typeof store.persistPlan>[0]["buys"] = [],
+		) =>
+			store.persistPlan({
+				scope,
+				triggerReasons: snapshot === 1 ? ["activation"] : ["timer"],
+				snapshot: {
+					id: `activation-snapshot-${snapshot}`,
+					hash: `activation-hash-${snapshot}`,
+					asOf: new Date(asOf.getTime() + snapshot * 1_000),
+					expiresAt: future,
+					value: { version: 1, complete: true },
+				},
+				plannerVersion: "position-gap-v3/book-plan-v1",
+				budgetUsdc: 40,
+				eligibleNetNavUsdc: 400,
+				scale: 0.1,
+				walletCashUsdc: 50,
+				plan: { version: 1, status: "ready", intents: [] },
+				cohortCreations,
+				cohortReductions: [],
+				buys,
+				cancellations: [],
+			});
+
+		const initial = projection([], [firstPosition], 1);
+		expect(initial.creations).toHaveLength(1);
+		await persist(1, initial.creations);
+		const [firstBefore] = await db
+			.select()
+			.from(polyPositionGapCohorts)
+			.where(
+				eq(
+					polyPositionGapCohorts.cohortKey,
+					initial.creations[0]?.cohortKey ?? "",
+				),
+			);
+
+		const late = projection(
+			await store.loadCohorts(scope),
+			[firstPosition, latePosition],
+			2,
+		);
+		expect(late.creations).toHaveLength(1);
+		expect(late.creations[0]).toMatchObject({
+			conditionId: latePosition.conditionId,
+			tokenId: latePosition.tokenId,
+			sourceKind: "activation",
+			benchmarkTargetVwap: latePosition.activationPriceCap,
+		});
+		const lateCreation = late.creations[0];
+		if (!lateCreation) throw new Error("late activation creation missing");
+		const actionKey = "late-activation-buy";
+		const clientOrderId = `pg-${randomUUID()}`;
+		await persist(2, late.creations, [
+			{
+				actionKey,
+				cohortKey: lateCreation.cohortKey,
+				conditionId: lateCreation.conditionId,
+				tokenId: lateCreation.tokenId,
+				marketId: lateCreation.marketId,
+				outcome: lateCreation.outcome,
+				shares: lateCreation.allowedMirrorShares,
+				notionalUsdc:
+					lateCreation.allowedMirrorShares * lateCreation.benchmarkTargetVwap,
+				limitPrice: lateCreation.benchmarkTargetVwap,
+				clientOrderId,
+				plannerAction: {
+					side: "BUY",
+					cohortId: lateCreation.cohortKey,
+					targetVwap: lateCreation.benchmarkTargetVwap,
+				},
+			},
+		]);
+
+		const timerReplay = projection(
+			await store.loadCohorts(scope),
+			[firstPosition, latePosition],
+			3,
+		);
+		expect(timerReplay.creations).toEqual([]);
+		await persist(3, timerReplay.creations);
+
+		const restartedStore = new PositionGapRuntimeStore(db);
+		const restartReplay = projection(
+			await restartedStore.loadCohorts(scope),
+			[firstPosition, latePosition],
+			4,
+		);
+		expect(restartReplay.creations).toEqual([]);
+
+		await db
+			.update(polyPositionGapCohorts)
+			.set({ status: "resolved" })
+			.where(eq(polyPositionGapCohorts.cohortKey, lateCreation.cohortKey));
+		const resolvedReplay = projection(
+			await new PositionGapRuntimeStore(db).loadCohorts(scope),
+			[firstPosition, latePosition],
+			5,
+		);
+		expect(resolvedReplay.creations).toEqual([]);
+
+		const [firstAfter] = await db
+			.select()
+			.from(polyPositionGapCohorts)
+			.where(eq(polyPositionGapCohorts.id, firstBefore?.id ?? "missing"));
+		expect(firstAfter).toEqual(firstBefore);
+		const actions = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.targetId, targetActivationBackfill));
+		expect(actions).toHaveLength(1);
+		expect(actions[0]?.kind).toBe("buy");
+		expect(Number(actions[0]?.limitPrice)).toBeLessThanOrEqual(
+			lateCreation.benchmarkTargetVwap,
+		);
+		const intent = buildPositionGapBuyIntent({
+			marketId: actions[0]?.marketId ?? "missing",
+			outcome: actions[0]?.outcome ?? "missing",
+			notionalUsdc: Number(actions[0]?.notionalUsdc),
+			limitPrice: Number(actions[0]?.limitPrice),
+			clientOrderId: actions[0]?.clientOrderId ?? "missing",
+			tokenId: actions[0]?.tokenId ?? "missing",
+			conditionId: actions[0]?.conditionId ?? "missing",
+			cohortKey: actions[0]?.cohortKey ?? "missing",
+		});
+		expect(intent).toMatchObject({
+			side: "BUY",
+			attributes: { placement: "limit", orderType: "GTC" },
+		});
 	});
 
 	it("atomically reduces and reserves planner shares across NUMERIC(30,12) rounding", async () => {
