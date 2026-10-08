@@ -124,7 +124,7 @@ export async function readCopyTargetPositionCohorts(db: {
         AND f.mode = 'live'
         AND (
           COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-          OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+          OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
         )
         AND (
           COALESCE(f.shares, 0) > 0

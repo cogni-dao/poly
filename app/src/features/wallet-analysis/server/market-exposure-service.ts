@@ -775,7 +775,7 @@ async function readComparisonBundleRows(params: {
         NULLIF(f.attributes->>'event_slug', '') AS event_slug,
         CASE
           WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-            AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+            AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
             THEN NULL
           WHEN COALESCE(f.attributes->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'
             THEN (f.attributes->>'filled_size_usdc')::numeric

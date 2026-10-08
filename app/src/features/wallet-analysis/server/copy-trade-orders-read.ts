@@ -98,9 +98,11 @@ export function toContractRow(
   const readNum = (key: string): number | null =>
     typeof attrs[key] === "number" ? (attrs[key] as number) : null;
   const positionGapV3 = readStr("position_gap_version") === "3";
+  const realizedFillSource = readStr("realized_fill_source");
   const verifiedPositionGapFill =
     positionGapV3 &&
-    readStr("realized_fill_source") === "clob_associated_trades";
+    (realizedFillSource === "clob_associated_trades" ||
+      realizedFillSource === "data_api_activity_position");
   const realizedShares = Number(row.shares);
   const realizedNotional = readNum("filled_size_usdc");
   const fillAccounting = positionGapV3
@@ -111,7 +113,9 @@ export function toContractRow(
       realizedNotional > 0
       ? {
           status: "verified" as const,
-          source: "clob_associated_trades" as const,
+          source: realizedFillSource as
+            | "clob_associated_trades"
+            | "data_api_activity_position",
           matched_order_count: 1,
           realized_shares: realizedShares,
           realized_entry_notional_usdc: realizedNotional,

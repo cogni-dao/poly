@@ -827,7 +827,7 @@ export async function readOrderSummary(
             OR (
               (
                 COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-                OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+                OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
               )
               AND
               COALESCE(f.attributes->>'filled_size_usdc', '') <> ''
@@ -844,7 +844,7 @@ export async function readOrderSummary(
               THEN (f.attributes->>'size_usdc')::numeric ELSE 0 END
               - CASE WHEN (
                   COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-                  OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+                  OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
                 ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
                 THEN (f.attributes->>'filled_size_usdc')::numeric ELSE 0 END,
             0
@@ -862,7 +862,7 @@ export async function readOrderSummary(
             OR (
               (
                 COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-                OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+                OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
               )
               AND
               COALESCE(f.attributes->>'filled_size_usdc', '') <> ''
@@ -933,16 +933,16 @@ export async function readClosedPositionSummary(
         f.attributes->>'outcome' AS outcome,
         (
           COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-          OR COALESCE(f.attributes->>'realized_fill_source', '') = 'clob_associated_trades'
+          OR COALESCE(f.attributes->>'realized_fill_source', '') IN ('clob_associated_trades', 'data_api_activity_position')
         ) AS accounting_verified,
         CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-          AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+          AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
           THEN NULL ELSE NULLIF(f.attributes->>'limit_price', '')::numeric END AS limit_price,
         CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-          AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+          AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
           THEN NULL ELSE NULLIF(f.attributes->>'size_usdc', '')::numeric END AS size_usdc,
         CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-          AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+          AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
           THEN NULL ELSE NULLIF(f.attributes->>'filled_size_usdc', '')::numeric END AS filled_size_usdc,
         f.attributes->>'token_id' AS token_id,
         ROW_NUMBER() OVER (
@@ -1002,7 +1002,7 @@ async function readDailyTradeCounts(db: ExecuteDb, billingAccountId: string, cap
       AND (
         CASE WHEN (
             COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-            OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+            OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
           ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
           THEN (f.attributes->>'filled_size_usdc')::numeric ELSE 0 END > 0
         OR (

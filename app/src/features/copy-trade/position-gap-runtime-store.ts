@@ -45,6 +45,11 @@ import type {
 	PositionGapCohortReduction,
 	PositionGapCohortState,
 } from "@/features/copy-trade/position-gap-cohorts";
+import {
+	POSITION_GAP_DATA_API_FILL_SOURCE,
+	type PositionGapFillEvidenceMismatchReason,
+	type PositionGapFillEvidenceResult,
+} from "@/features/copy-trade/position-gap-fill-evidence";
 import type {
 	PositionGapOpenBuyOrderV1,
 	PositionGapPriceCohortV1,
@@ -138,6 +143,19 @@ export interface PositionGapActiveBuy {
 	notionalUsdc: number;
 	limitPrice: number;
 	status: string;
+	submitStartedAt: Date | null;
+	completedAt: Date | null;
+}
+
+export interface PositionGapAccountingTransition {
+	actionId: string;
+	from: "mismatch" | "pending" | "verified";
+	to: "mismatch" | "pending" | "verified";
+	source:
+		| "clob_associated_trades"
+		| typeof POSITION_GAP_DATA_API_FILL_SOURCE
+		| null;
+	reason: string | null;
 }
 
 export class PositionGapReservationConflictError extends Error {
@@ -170,6 +188,26 @@ function stableJson(value: unknown): string {
 
 function sameNumber(left: string | number | null, right: number): boolean {
 	return Math.abs(numberOf(left) - right) <= EPSILON;
+}
+
+function fillAccountingStatus(
+	plannerAction: Record<string, unknown>,
+): "mismatch" | "pending" | "verified" {
+	return plannerAction.fill_accounting_status === "verified"
+		? "verified"
+		: plannerAction.fill_accounting_status === "mismatch"
+			? "mismatch"
+			: "pending";
+}
+
+function verifiedFillSource(
+	plannerAction: Record<string, unknown>,
+): PositionGapAccountingTransition["source"] {
+	return plannerAction.realized_fill_source === "clob_associated_trades"
+		? "clob_associated_trades"
+		: plannerAction.realized_fill_source === POSITION_GAP_DATA_API_FILL_SOURCE
+			? POSITION_GAP_DATA_API_FILL_SOURCE
+			: null;
 }
 
 function statusFromReceipt(status: OrderReceipt["status"]) {
@@ -310,7 +348,10 @@ export class PositionGapRuntimeStore {
 											scope.billingAccountId,
 										),
 										eq(polyCopyTradeFills.targetId, scope.targetId),
-										sql`${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades'`,
+										or(
+											sql`${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades'`,
+											sql`${polyCopyTradeFills.attributes}->>'realized_fill_source' = ${POSITION_GAP_DATA_API_FILL_SOURCE}`,
+										),
 									),
 								),
 						),
@@ -340,6 +381,8 @@ export class PositionGapRuntimeStore {
 				notionalUsdc: numberOf(row.notionalUsdc),
 				limitPrice: numberOf(row.limitPrice),
 				status: row.status,
+				submitStartedAt: row.submitStartedAt,
+				completedAt: row.completedAt,
 			}));
 		return {
 			cohorts: cohortRows.map((row) => ({
@@ -1494,6 +1537,299 @@ export class PositionGapRuntimeStore {
 		});
 	}
 
+	async hasOverlappingFillEvidenceOrder(
+		scope: PositionGapRuntimeScope,
+		action: PositionGapActiveBuy,
+	): Promise<boolean> {
+		if (!action.submitStartedAt || !action.completedAt) return true;
+		const [row] = await this.db
+			.select({ n: count() })
+			.from(polyPositionGapActions)
+			.where(
+				and(
+					eq(polyPositionGapActions.billingAccountId, scope.billingAccountId),
+					eq(polyPositionGapActions.kind, "buy"),
+					eq(polyPositionGapActions.tokenId, action.tokenId),
+					sql`${polyPositionGapActions.id} <> ${action.id}::uuid`,
+					sql`${polyPositionGapActions.submitStartedAt} IS NOT NULL`,
+					sql`${polyPositionGapActions.submitStartedAt} <= ${new Date(action.completedAt.getTime() + 30_000)}`,
+					sql`COALESCE(${polyPositionGapActions.completedAt}, now()) >= ${new Date(action.submitStartedAt.getTime() - 5_000)}`,
+					sql`${polyPositionGapActions.status} <> 'rejected'`,
+				),
+			);
+		return Number(row?.n ?? 0) > 0;
+	}
+
+	/**
+	 * Atomically converges PGv3 runtime, ledger, and reservation accounting.
+	 * Exact CLOB trade evidence wins over the Data-API fallback on replay.
+	 */
+	async applyDataApiFillAccounting(
+		scope: PositionGapRuntimeScope,
+		actionId: string,
+		evidence: Extract<PositionGapFillEvidenceResult, { status: "verified" }>,
+	): Promise<PositionGapAccountingTransition> {
+		return this.db.transaction(async (tx) => {
+			await tx.execute(
+				sql`SELECT 1 FROM ${polyPositionGapActions}
+					WHERE ${polyPositionGapActions.id} = ${actionId}
+						AND ${polyPositionGapActions.billingAccountId} = ${scope.billingAccountId}
+						AND ${polyPositionGapActions.targetId} = ${scope.targetId}::uuid
+					FOR UPDATE`,
+			);
+			const [action] = await tx
+				.select()
+				.from(polyPositionGapActions)
+				.where(
+					and(
+						eq(polyPositionGapActions.id, actionId),
+						eq(polyPositionGapActions.billingAccountId, scope.billingAccountId),
+						eq(polyPositionGapActions.targetId, scope.targetId),
+						eq(polyPositionGapActions.createdByUserId, scope.createdByUserId),
+					),
+				)
+				.limit(1);
+			if (!action?.clientOrderId || !action.orderId) {
+				throw new Error("position-gap fill repair action attribution changed");
+			}
+			if (!["filled", "canceled"].includes(action.status)) {
+				throw new Error("position-gap fill repair requires a terminal action");
+			}
+
+			await tx.execute(
+				sql`SELECT 1 FROM ${polyCopyTradeFills}
+					WHERE ${polyCopyTradeFills.clientOrderId} = ${action.clientOrderId}
+						AND ${polyCopyTradeFills.billingAccountId} = ${scope.billingAccountId}
+						AND ${polyCopyTradeFills.targetId} = ${scope.targetId}::uuid
+					FOR UPDATE`,
+			);
+			const [ledger] = await tx
+				.select()
+				.from(polyCopyTradeFills)
+				.where(
+					and(
+						eq(polyCopyTradeFills.clientOrderId, action.clientOrderId),
+						eq(polyCopyTradeFills.billingAccountId, scope.billingAccountId),
+						eq(polyCopyTradeFills.targetId, scope.targetId),
+					),
+				)
+				.limit(1);
+			if (!ledger || ledger.orderId !== action.orderId) {
+				throw new Error("position-gap fill repair ledger attribution changed");
+			}
+			const ledgerAttributes =
+				ledger.attributes && typeof ledger.attributes === "object"
+					? (ledger.attributes as Record<string, unknown>)
+					: {};
+			await tx.execute(
+				sql`SELECT 1 FROM ${polyPositionGapReservations}
+					WHERE ${polyPositionGapReservations.buyActionId} = ${action.id}
+					FOR UPDATE`,
+			);
+			const [reservation] = await tx
+				.select()
+				.from(polyPositionGapReservations)
+				.where(eq(polyPositionGapReservations.buyActionId, action.id))
+				.limit(1);
+
+			const actionShares = numberOf(action.filledShares);
+			if (!sameNumber(action.filledShares, evidence.shares)) {
+				throw new Error("position-gap fill repair shares changed");
+			}
+			const priorStatus = fillAccountingStatus(action.plannerAction);
+			const actionSource = verifiedFillSource(action.plannerAction);
+			const ledgerSource = verifiedFillSource(ledgerAttributes);
+			const source =
+				actionSource === "clob_associated_trades" ||
+				ledgerSource === "clob_associated_trades"
+					? "clob_associated_trades"
+					: POSITION_GAP_DATA_API_FILL_SOURCE;
+			const clobCost =
+				ledgerSource === "clob_associated_trades"
+					? numberOf(
+							ledgerAttributes.filled_size_usdc as number | string | null,
+						)
+					: numberOf(action.filledUsdc);
+			const clobShares =
+				ledgerSource === "clob_associated_trades"
+					? numberOf(ledger.shares)
+					: actionShares;
+			if (
+				source === "clob_associated_trades" &&
+				(!sameNumber(clobShares, actionShares) || clobCost <= 0)
+			) {
+				throw new Error("position-gap CLOB fill repair evidence changed");
+			}
+			const filledUsdc =
+				source === "clob_associated_trades" ? clobCost : evidence.filledUsdc;
+			const fillPrice =
+				source === "clob_associated_trades"
+					? filledUsdc / actionShares
+					: evidence.fillPrice;
+			const ledgerFee = numberOf(ledger.feesUsdc);
+			const hasClobLedgerFee =
+				ledgerSource === "clob_associated_trades" &&
+				ledger.feesUsdc !== null &&
+				Number.isFinite(ledgerFee) &&
+				ledgerFee >= 0;
+			const feesUsdc =
+				hasClobLedgerFee ? ledgerFee : evidence.feesUsdc;
+			const grossCashUsdc =
+				source === POSITION_GAP_DATA_API_FILL_SOURCE
+					? evidence.grossCashUsdc
+					: filledUsdc + (feesUsdc ?? 0);
+			const intendedNotional = numberOf(action.notionalUsdc);
+			if (grossCashUsdc > intendedNotional + EPSILON) {
+				throw new Error("position-gap fill repair exceeds intended notional");
+			}
+			const evidenceAttributes = {
+				realized_fill_source: source,
+				fill_accounting_status: "verified",
+				fill_accounting_wallet: evidence.wallet,
+				fill_accounting_transaction_hashes: evidence.transactionHashes,
+				fill_accounting_gross_cash_usdc: grossCashUsdc,
+				fill_accounting_evidence_start: evidence.evidenceStart,
+				fill_accounting_evidence_end: evidence.evidenceEnd,
+				fill_accounting_last_attempt_at: new Date().toISOString(),
+			};
+			await tx
+				.update(polyPositionGapActions)
+				.set({
+					filledUsdc: filledUsdc.toString(),
+					plannerAction: {
+						...action.plannerAction,
+						...evidenceAttributes,
+					},
+					errorCode: null,
+					errorDetail: null,
+					updatedAt: new Date(),
+				})
+				.where(
+					and(
+						eq(polyPositionGapActions.id, action.id),
+						eq(polyPositionGapActions.billingAccountId, scope.billingAccountId),
+						eq(polyPositionGapActions.targetId, scope.targetId),
+					),
+				);
+			await tx
+				.update(polyCopyTradeFills)
+				.set({
+					price: fillPrice.toString(),
+					shares: actionShares.toString(),
+					...(feesUsdc !== undefined ? { feesUsdc: feesUsdc.toString() } : {}),
+					attributes: {
+						...ledgerAttributes,
+						filled_size_usdc: filledUsdc,
+						...evidenceAttributes,
+					},
+					updatedAt: new Date(),
+				})
+				.where(
+					and(
+						eq(polyCopyTradeFills.clientOrderId, action.clientOrderId),
+						eq(polyCopyTradeFills.billingAccountId, scope.billingAccountId),
+						eq(polyCopyTradeFills.targetId, scope.targetId),
+					),
+				);
+
+			if (reservation) {
+				await tx
+					.update(polyPositionGapReservations)
+					.set({
+						filledCostUsdc: grossCashUsdc.toString(),
+						releasedBudgetUsdc: Math.max(
+							0,
+							intendedNotional - grossCashUsdc,
+						).toString(),
+						updatedAt: new Date(),
+					})
+					.where(eq(polyPositionGapReservations.id, reservation.id));
+			}
+			return {
+				actionId,
+				from: priorStatus,
+				to: "verified",
+				source,
+				reason: null,
+			};
+		});
+	}
+
+	async markFillAccountingMismatch(
+		scope: PositionGapRuntimeScope,
+		actionId: string,
+		reason: PositionGapFillEvidenceMismatchReason,
+		detail: string,
+	): Promise<PositionGapAccountingTransition> {
+		return this.db.transaction(async (tx) => {
+			await tx.execute(
+				sql`SELECT 1 FROM ${polyPositionGapActions}
+					WHERE ${polyPositionGapActions.id} = ${actionId}
+						AND ${polyPositionGapActions.billingAccountId} = ${scope.billingAccountId}
+						AND ${polyPositionGapActions.targetId} = ${scope.targetId}::uuid
+					FOR UPDATE`,
+			);
+			const [action] = await tx
+				.select({ plannerAction: polyPositionGapActions.plannerAction })
+				.from(polyPositionGapActions)
+				.where(
+					and(
+						eq(polyPositionGapActions.id, actionId),
+						eq(polyPositionGapActions.billingAccountId, scope.billingAccountId),
+						eq(polyPositionGapActions.targetId, scope.targetId),
+						eq(polyPositionGapActions.createdByUserId, scope.createdByUserId),
+					),
+				)
+				.limit(1);
+			if (!action) {
+				throw new Error(
+					"position-gap fill mismatch action attribution changed",
+				);
+			}
+			const priorStatus = fillAccountingStatus(action.plannerAction);
+			const priorSource = verifiedFillSource(action.plannerAction);
+			if (priorStatus === "verified") {
+				return {
+					actionId,
+					from: "verified",
+					to: "verified",
+					source: priorSource,
+					reason: null,
+				};
+			}
+			const attempts = Number(action.plannerAction.fill_accounting_attempts ?? 0);
+			await tx
+				.update(polyPositionGapActions)
+				.set({
+					plannerAction: {
+						...action.plannerAction,
+						fill_accounting_status: "mismatch",
+						fill_accounting_mismatch_reason: reason,
+						fill_accounting_attempts:
+							Number.isFinite(attempts) && attempts >= 0 ? attempts + 1 : 1,
+						fill_accounting_last_attempt_at: new Date().toISOString(),
+					},
+					errorCode: "fill_accounting_mismatch",
+					errorDetail: detail.slice(0, 500),
+					updatedAt: new Date(),
+				})
+				.where(
+					and(
+						eq(polyPositionGapActions.id, actionId),
+						eq(polyPositionGapActions.billingAccountId, scope.billingAccountId),
+						eq(polyPositionGapActions.targetId, scope.targetId),
+					),
+				);
+			return {
+				actionId,
+				from: priorStatus,
+				to: "mismatch",
+				source: null,
+				reason,
+			};
+		});
+	}
+
 	async markFillAccountingPending(
 		actionId: string,
 		detail: string,
@@ -1508,7 +1844,9 @@ export class PositionGapRuntimeStore {
 				.where(eq(polyPositionGapActions.id, actionId))
 				.limit(1);
 			if (!action) return;
-			const attempts = Number(action.plannerAction.fill_accounting_attempts ?? 0);
+			const attempts = Number(
+				action.plannerAction.fill_accounting_attempts ?? 0,
+			);
 			await tx
 				.update(polyPositionGapActions)
 				.set({
