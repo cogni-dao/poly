@@ -508,7 +508,37 @@ export function startPositionGapActor(
 				continue;
 			}
 			if (terminalReason === "never_placed") {
-				await deps.store.markKnownRejected(action.id, terminalReason);
+				// `markKnownRejected` admits an `ambiguous` action ONLY when its
+				// stored errorDetail parses as a known CLOB rejection code. A
+				// non-CLOB failure — a paper sidecar 502, a transport fault —
+				// does not, so the call returns false and the action stays
+				// ambiguous forever, halting the target on every tick. That is
+				// the actual mechanism behind bug.5023; rehydrating the terminal
+				// is necessary but not sufficient without this.
+				//
+				// Fall through to the venue-not-found release, which is the only
+				// transition that can retire an ambiguous BUY — and which is
+				// literally true here: the ledger reached a terminal state with
+				// no order id, so the venue does not have this order. We are not
+				// widening what counts as a CLOB rejection; we are recording the
+				// release on the evidence we actually have.
+				const retired = await deps.store.markKnownRejected(
+					action.id,
+					terminalReason,
+				);
+				if (!retired) {
+					await deps.store.markVenueNotFoundCanceled(action.id);
+					deps.logger.warn(
+						{
+							event: "poly.position_gap.v3.ambiguous_released_by_ledger",
+							billing_account_id: deps.scope.billingAccountId,
+							target_id: deps.scope.targetId,
+							action_id: action.id,
+							client_order_id: action.clientOrderId,
+						},
+						"position-gap released an ambiguous BUY the rejection path could not retire",
+					);
+				}
 				ledgerTerminals.delete(action.clientOrderId);
 				continue;
 			}
