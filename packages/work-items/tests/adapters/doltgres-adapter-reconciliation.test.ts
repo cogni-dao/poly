@@ -24,6 +24,8 @@ interface ReconciliationState {
   merged: boolean;
 }
 
+type DiffSummary = ReadonlyArray<Record<string, unknown>>;
+
 const recoveredRow = {
   id: "task.0001",
   type: "task",
@@ -46,12 +48,21 @@ function makeReconciliationHarness({
   listError,
   omitBranchCommit = false,
   proofError,
+  diffSummary = [
+    {
+      from_table_name: "public.work_items",
+      to_table_name: "public.work_items",
+      schema_change: false,
+      data_change: false,
+    },
+  ],
 }: {
   readonly branchCommit?: string;
   readonly mergeBase: string;
   readonly listError?: Error;
   readonly omitBranchCommit?: boolean;
   readonly proofError?: Error;
+  readonly diffSummary?: DiffSummary;
 }) {
   const state: ReconciliationState = {
     branch: "work-item-op/restart-evidence",
@@ -117,14 +128,7 @@ function makeReconciliationHarness({
       ];
     }
     if (query.startsWith("SELECT * FROM dolt_diff_summary")) {
-      return [
-        {
-          from_table_name: "public.work_items",
-          to_table_name: "public.work_items",
-          schema_change: false,
-          data_change: false,
-        },
-      ];
+      return diffSummary;
     }
     if (query.startsWith("SELECT * FROM dolt_diff(")) {
       return [
@@ -186,9 +190,18 @@ describe("DoltgresWorkItemAdapter restart reconciliation", () => {
     ).toBe(false);
   });
 
-  it("deletes a stale operation branch only after its tip is proven on main", async () => {
+  it("deletes a redundant restart branch once its old-main tip is proven reachable", async () => {
     const { adapter, state } = makeReconciliationHarness({
-      mergeBase: "operation-commit",
+      branchCommit: "old-main",
+      mergeBase: "old-main",
+      diffSummary: [
+        {
+          from_table_name: "public.knowledge",
+          to_table_name: "public.knowledge",
+          schema_change: true,
+          data_change: true,
+        },
+      ],
     });
 
     await expect(
@@ -197,8 +210,14 @@ describe("DoltgresWorkItemAdapter restart reconciliation", () => {
 
     expect(state.branch).toBeUndefined();
     expect(state.queries).toContain(
-      "SELECT dolt_merge_base('main', 'operation-commit') AS dolt_merge_base"
+      "SELECT dolt_merge_base('main', 'old-main') AS dolt_merge_base"
     );
+    expect(
+      state.queries.some((query) => query.includes("FROM dolt.commits"))
+    ).toBe(false);
+    expect(
+      state.queries.some((query) => query.startsWith("SELECT * FROM dolt_diff"))
+    ).toBe(false);
     expect(
       state.queries.some((query) => query.startsWith("SELECT dolt_branch('-D'"))
     ).toBe(true);
