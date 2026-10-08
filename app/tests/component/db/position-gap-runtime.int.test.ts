@@ -43,6 +43,7 @@ describe("position-gap runtime persistence", () => {
 	const targetNotFound = randomUUID();
 	const targetQuantized = randomUUID();
 	const targetActivationBackfill = randomUUID();
+	const targetAmbiguousRejection = randomUUID();
 
 	beforeAll(async () => {
 		appDb = getAppDb();
@@ -791,6 +792,198 @@ describe("position-gap runtime persistence", () => {
 			cancellations: [],
 		});
 		expect(retry.buys).toHaveLength(1);
+	});
+
+	it("recovers a durable allowance rejection but keeps transport ambiguity blocked", async () => {
+		const db = getSeedDb();
+		const store = new PositionGapRuntimeStore(db);
+		const scope = {
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetAmbiguousRejection,
+		};
+		const persistBuy = async (suffix: string) => {
+			const cohortKey = `ambiguous-cohort-${suffix}`;
+			return store.persistPlan({
+				scope,
+				triggerReasons: ["activation"],
+				snapshot: {
+					id: `ambiguous-snapshot-${suffix}`,
+					hash: `ambiguous-hash-${suffix}`,
+					asOf,
+					expiresAt: future,
+					value: { version: 1, complete: true },
+				},
+				plannerVersion: "test",
+				budgetUsdc: 10,
+				eligibleNetNavUsdc: 100,
+				scale: 0.1,
+				walletCashUsdc: 20,
+				plan: { version: 1, status: "ready" },
+				cohortCreations: [
+					{
+						cohortKey,
+						sourceKind: "activation" as const,
+						sourceEventId: null,
+						sourceConfigRevision: "rev-ambiguous",
+						conditionId: `condition-${suffix}`,
+						tokenId: `token-${suffix}`,
+						marketId: `prediction-market:polymarket:condition-${suffix}`,
+						outcome: "0",
+						targetDeltaShares: 4,
+						scaleAtCreation: 1,
+						allowedMirrorShares: 4,
+						benchmarkTargetVwap: 0.5,
+						remainingShares: 4,
+						createdAtMs: asOf.getTime(),
+						provenance: { created_at_ms: asOf.getTime() },
+					},
+				],
+				cohortReductions: [],
+				buys: [
+					{
+						actionKey: `ambiguous-buy-${suffix}`,
+						cohortKey,
+						conditionId: `condition-${suffix}`,
+						tokenId: `token-${suffix}`,
+						marketId: `prediction-market:polymarket:condition-${suffix}`,
+						outcome: "0",
+						shares: 4,
+						notionalUsdc: 2,
+						limitPrice: 0.5,
+						clientOrderId: `ambiguous-client-${suffix}`,
+						plannerAction: { side: "BUY" },
+					},
+				],
+				cancellations: [],
+			});
+		};
+		const ledger = createOrderLedger({
+			db,
+			logger: {
+				debug: () => undefined,
+				info: () => undefined,
+				warn: () => undefined,
+				error: () => undefined,
+				child() {
+					return this;
+				},
+			} as never,
+		});
+
+		const hard = await persistBuy("hard");
+		const hardBuy = hard.buys[0];
+		if (!hardBuy) throw new Error("hard rejection BUY missing");
+		await ledger.insertPending({
+			billing_account_id: accountA,
+			created_by_user_id: ownerA,
+			target_id: targetAmbiguousRejection,
+			fill_id: "position-gap-v3:ambiguous-buy-hard",
+			observed_at: asOf,
+			intent: buildPositionGapBuyIntent({
+				marketId: "prediction-market:polymarket:condition-hard",
+				outcome: "0",
+				notionalUsdc: 2,
+				limitPrice: 0.5,
+				clientOrderId: "ambiguous-client-hard",
+				tokenId: "token-hard",
+				conditionId: "condition-hard",
+				cohortKey: "ambiguous-cohort-hard",
+			}),
+		});
+		await store.markLedgered(hardBuy.id);
+		await store.markSubmitting(hardBuy.id);
+		const durableDetail =
+			'PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_allowance, response_keys=[success,errorMsg], reason="insufficient_allowance", clob_error="not enough balance / allowance: the allowance is not enough")';
+		await store.markAmbiguous(hardBuy.id, durableDetail);
+
+		await expect(
+			store.recoverKnownRejectedAmbiguities(scope),
+		).resolves.toEqual([
+			{
+				id: hardBuy.id,
+				clientOrderId: "ambiguous-client-hard",
+				errorCode: "insufficient_allowance",
+			},
+		]);
+		await expect(
+			store.recoverKnownRejectedAmbiguities(scope),
+		).resolves.toEqual([]);
+
+		const [hardAction] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, hardBuy.id));
+		const [hardReservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, hardBuy.id));
+		const [hardCohort] = await db
+			.select()
+			.from(polyPositionGapCohorts)
+			.where(
+				eq(polyPositionGapCohorts.cohortKey, "ambiguous-cohort-hard"),
+			);
+		const [hardLedger] = await db
+			.select()
+			.from(polyCopyTradeFills)
+			.where(
+				eq(polyCopyTradeFills.clientOrderId, "ambiguous-client-hard"),
+			);
+		expect(hardAction).toMatchObject({
+			status: "rejected",
+			errorCode: "placement_rejected",
+			errorDetail: durableDetail,
+		});
+		expect(hardReservation).toMatchObject({
+			state: "released",
+			releaseReason: "known_rejected",
+		});
+		expect(Number(hardCohort?.openOrderShares)).toBe(0);
+		expect(Number(hardCohort?.remainingShares)).toBe(4);
+		expect(hardLedger).toMatchObject({ status: "error" });
+		expect(hardLedger?.attributes).toMatchObject({ error: durableDetail });
+
+		const transport = await persistBuy("transport");
+		const transportBuy = transport.buys[0];
+		if (!transportBuy) throw new Error("transport BUY missing");
+		await store.markLedgered(transportBuy.id);
+		await store.markSubmitting(transportBuy.id);
+		await store.markAmbiguous(
+			transportBuy.id,
+			"connection reset after submit",
+		);
+		await expect(
+			store.recoverKnownRejectedAmbiguities(scope),
+		).resolves.toEqual([]);
+		const [transportAction] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, transportBuy.id));
+		expect(transportAction?.status).toBe("ambiguous");
+		await expect(
+			store.persistPlan({
+				scope,
+				triggerReasons: ["disabled"],
+				snapshot: {
+					id: "blocked-snapshot",
+					hash: "blocked-hash",
+					asOf,
+					expiresAt: future,
+					value: { version: 1, complete: true },
+				},
+				plannerVersion: "test",
+				budgetUsdc: 10,
+				eligibleNetNavUsdc: 0,
+				scale: 0,
+				walletCashUsdc: 20,
+				plan: { version: 1, status: "blocked" },
+				cohortCreations: [],
+				cohortReductions: [],
+				buys: [],
+				cancellations: [],
+			}),
+		).rejects.toThrow("halted by an ambiguous placement");
 	});
 
 	it("rejects a second live ledger row for the same v3 cohort before placement", async () => {

@@ -24,17 +24,18 @@ import {
 
 import { requiredBuyCollateralAtomic } from "@/bootstrap/capabilities/poly-trade-executor";
 import {
-	type PositionGapTargetActivity,
-	projectPositionGapCohorts,
-} from "@/features/copy-trade/position-gap-cohorts";
-import {
 	effectivePositionGapBudget,
 	type PositionGapBudgetGroup,
 } from "@/features/copy-trade/position-gap-budget";
 import {
+	type PositionGapTargetActivity,
+	projectPositionGapCohorts,
+} from "@/features/copy-trade/position-gap-cohorts";
+import {
 	type PositionGapFillEvidencePort,
 	reconcilePositionGapFillEvidence,
 } from "@/features/copy-trade/position-gap-fill-evidence";
+import { isStructuredClobRejection } from "@/features/copy-trade/position-gap-placement-errors";
 import type {
 	PositionGapAccountingTransition,
 	PositionGapActiveBuy,
@@ -426,11 +427,26 @@ export function startPositionGapActor(
 			accountingTransitions,
 		});
 	}
-
 	async function reconcileKnownOrders(): Promise<
 		readonly PositionGapAccountingTransition[]
 	> {
 		const transitions: PositionGapAccountingTransition[] = [];
+		const recovered = await deps.store.recoverKnownRejectedAmbiguities(
+			deps.scope,
+		);
+		for (const action of recovered) {
+			deps.logger.warn(
+				{
+					event: "poly.position_gap.v3.ambiguous_rejection_recovered",
+					billing_account_id: deps.scope.billingAccountId,
+					target_id: deps.scope.targetId,
+					action_id: action.id,
+					client_order_id: action.clientOrderId,
+					error_code: action.errorCode,
+				},
+				"position-gap recovered a durable hard CLOB rejection",
+			);
+		}
 		const runtime = await deps.store.loadPlannerState(deps.scope);
 		for (const action of runtime.activeBuys) {
 			const terminalReason = ledgerTerminals.get(action.clientOrderId);
@@ -1050,7 +1066,8 @@ export function knownNoOrder(error: unknown): boolean {
 		(error as Error & { code?: string }).code === "not_authorized"
 	)
 		return true;
-	if (error instanceof ClobRejectionError) return true;
+	if (error instanceof ClobRejectionError || isStructuredClobRejection(error))
+		return true;
 	return (error as Error & { code?: string }).code === BELOW_MARKET_MIN_CODE;
 }
 

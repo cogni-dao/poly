@@ -50,6 +50,10 @@ import {
 	type PositionGapFillEvidenceMismatchReason,
 	type PositionGapFillEvidenceResult,
 } from "@/features/copy-trade/position-gap-fill-evidence";
+import {
+	type RecoverableHardClobRejectionCode,
+	recoverableHardClobRejectionCode,
+} from "@/features/copy-trade/position-gap-placement-errors";
 import type {
 	PositionGapOpenBuyOrderV1,
 	PositionGapPriceCohortV1,
@@ -1174,29 +1178,45 @@ export class PositionGapRuntimeStore {
 		});
 	}
 
-	async markKnownRejected(actionId: string, detail: string): Promise<void> {
-		await this.db.transaction(async (tx) => {
+	async markKnownRejected(actionId: string, detail: string): Promise<boolean> {
+		return this.db.transaction(async (tx) => {
+			await tx.execute(
+				sql`SELECT 1 FROM ${polyPositionGapActions} WHERE ${polyPositionGapActions.id} = ${actionId} FOR UPDATE`,
+			);
+			const [before] = await tx
+				.select()
+				.from(polyPositionGapActions)
+				.where(eq(polyPositionGapActions.id, actionId))
+				.limit(1);
+			if (!before) return false;
+			const recoverableAmbiguity =
+				before.status === "ambiguous" &&
+				recoverableHardClobRejectionCode(before.errorDetail) !== null;
+			if (
+				!["reserved", "ledgered", "submitting"].includes(before.status) &&
+				!recoverableAmbiguity
+			)
+				return false;
+			const durableDetail = recoverableAmbiguity
+				? (before.errorDetail ?? detail)
+				: detail;
 			const [action] = await tx
 				.update(polyPositionGapActions)
 				.set({
 					status: "rejected",
 					errorCode: "placement_rejected",
-					errorDetail: detail.slice(0, 500),
+					errorDetail: durableDetail.slice(0, 500),
 					completedAt: new Date(),
 					updatedAt: new Date(),
 				})
 				.where(
 					and(
 						eq(polyPositionGapActions.id, actionId),
-						inArray(polyPositionGapActions.status, [
-							"reserved",
-							"ledgered",
-							"submitting",
-						]),
+						eq(polyPositionGapActions.status, before.status),
 					),
 				)
 				.returning();
-			if (!action) return;
+			if (!action) return false;
 			await tx
 				.update(polyPositionGapReservations)
 				.set({
@@ -1217,7 +1237,79 @@ export class PositionGapRuntimeStore {
 					updatedAt: new Date(),
 				})
 				.where(eq(polyPositionGapCohorts.id, action.cohortId));
+			if (recoverableAmbiguity && action.clientOrderId) {
+				const ledgerError =
+					durableDetail.length > 512
+						? `${durableDetail.slice(0, 512)}…`
+						: durableDetail;
+				await tx
+					.update(polyCopyTradeFills)
+					.set({
+						status: "error",
+						updatedAt: new Date(),
+						attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(
+							{ error: ledgerError },
+						)}::jsonb`,
+					})
+					.where(
+						and(
+							eq(
+								polyCopyTradeFills.billingAccountId,
+								action.billingAccountId,
+							),
+							eq(polyCopyTradeFills.targetId, action.targetId),
+							eq(polyCopyTradeFills.clientOrderId, action.clientOrderId),
+						),
+					);
+			}
+			return true;
 		});
+	}
+
+	async recoverKnownRejectedAmbiguities(
+		scope: PositionGapRuntimeScope,
+	): Promise<
+		readonly {
+			id: string;
+			clientOrderId: string;
+			errorCode: RecoverableHardClobRejectionCode;
+		}[]
+	> {
+		const rows = await this.db
+			.select({
+				id: polyPositionGapActions.id,
+				clientOrderId: polyPositionGapActions.clientOrderId,
+				errorDetail: polyPositionGapActions.errorDetail,
+			})
+			.from(polyPositionGapActions)
+			.where(
+				and(
+					eq(
+						polyPositionGapActions.billingAccountId,
+						scope.billingAccountId,
+					),
+					eq(polyPositionGapActions.targetId, scope.targetId),
+					eq(polyPositionGapActions.kind, "buy"),
+					eq(polyPositionGapActions.status, "ambiguous"),
+				),
+			);
+		const recovered = [] as {
+			id: string;
+			clientOrderId: string;
+			errorCode: RecoverableHardClobRejectionCode;
+		}[];
+		for (const row of rows) {
+			const errorCode = recoverableHardClobRejectionCode(row.errorDetail);
+			if (!errorCode || !row.clientOrderId || !row.errorDetail) continue;
+			if (await this.markKnownRejected(row.id, row.errorDetail)) {
+				recovered.push({
+					id: row.id,
+					clientOrderId: row.clientOrderId,
+					errorCode,
+				});
+			}
+		}
+		return recovered;
 	}
 
 	/**
