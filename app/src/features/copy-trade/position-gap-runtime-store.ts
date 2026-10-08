@@ -376,6 +376,9 @@ export class PositionGapRuntimeStore {
 				.limit(8),
 		]);
 		const actionRows = [...activeActionRows, ...terminalRepairRows];
+		const activeCohortKeys = new Set(
+			activeActionRows.map((row) => row.cohortKey),
+		);
 		const activeBuys: PositionGapActiveBuy[] = actionRows
 			.filter((row) => row.clientOrderId !== null)
 			.map((row) => ({
@@ -404,6 +407,9 @@ export class PositionGapRuntimeStore {
 				kind: row.sourceKind === "target_buy" ? "forward" : "activation",
 				allowedMirrorShares: numberOf(row.allowedMirrorShares),
 				acquiredMirrorShares: numberOf(row.acquiredShares),
+				availableNewBuyShares: activeCohortKeys.has(row.cohortKey)
+					? 0
+					: numberOf(row.remainingShares),
 				targetVwap: numberOf(row.benchmarkTargetVwap),
 			})),
 			openBuyOrders: activeBuys.flatMap((row) =>

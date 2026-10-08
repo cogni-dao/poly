@@ -528,7 +528,10 @@ function planCohort(params: {
 	}
 	retained = retained.filter((order) => !cancellations.has(order.orderId));
 	const openShares = sumShares(retained);
-	const gapShares = Math.max(0, desiredShares - heldShares - openShares);
+	const gapShares = Math.min(
+		Math.max(0, desiredShares - heldShares - openShares),
+		cohort.availableNewBuyShares,
+	);
 	const targetWeight =
 		eligibleNetNavUsdc > POSITION_GAP_EPSILON
 			? (position.netShares * position.markPrice) / eligibleNetNavUsdc
@@ -818,6 +821,8 @@ function validCohort(cohort: PositionGapPriceCohortV1): boolean {
 		cohort.allowedMirrorShares >= 0 &&
 		Number.isFinite(cohort.acquiredMirrorShares) &&
 		cohort.acquiredMirrorShares >= 0 &&
+		Number.isFinite(cohort.availableNewBuyShares) &&
+		cohort.availableNewBuyShares >= 0 &&
 		Number.isFinite(cohort.targetVwap) &&
 		cohort.targetVwap > 0 &&
 		cohort.targetVwap < 1

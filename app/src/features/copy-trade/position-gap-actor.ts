@@ -325,6 +325,21 @@ export function startPositionGapActor(
 		causalWatermarkMs = 0;
 
 		const runtime = await deps.store.loadPlannerState(deps.scope);
+		const activeCohortKeys = new Set(
+			runtime.activeBuys
+				.filter((action) =>
+					[
+						"reserved",
+						"ledgered",
+						"submitting",
+						"open",
+						"partial",
+						"cancel_requested",
+						"ambiguous",
+					].includes(action.status),
+				)
+				.map((action) => action.cohortKey),
+		);
 		// Unknown venue state stays in the economic denominator. CLOB reads are
 		// deferred until after the $1 theoretical feasibility bound below.
 		const netBook = netTargetBook(freshSnapshot, new Map());
@@ -414,6 +429,9 @@ export function startPositionGapActor(
 				kind: cohort.sourceKind === "target_buy" ? "forward" : "activation",
 				allowedMirrorShares: cohort.allowedMirrorShares,
 				acquiredMirrorShares: cohort.acquiredShares,
+				availableNewBuyShares: activeCohortKeys.has(cohort.cohortKey)
+					? 0
+					: cohort.remainingShares,
 				targetVwap: cohort.benchmarkTargetVwap,
 			})),
 			holdings,
