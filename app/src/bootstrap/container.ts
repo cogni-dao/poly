@@ -1144,8 +1144,11 @@ function createContainer(): Container {
 										(await getExecutor()).cancelOrder(orderId),
 									getBuy: async (orderId) =>
 										(await getExecutor()).getOrder(orderId),
-									getMarketConstraints: async (tokenId) =>
-										(await getExecutor()).getMarketConstraints(tokenId),
+									getMarketConstraints: async (tokenId, placement) =>
+										(await getExecutor()).getMarketConstraints(
+											tokenId,
+											placement,
+										),
 								},
 								getWalletCashUsdc: async () => {
 									const balances = await mirrorWalletPort.getBalances(

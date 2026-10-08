@@ -60,7 +60,10 @@ export interface PositionGapBuyExecutionPort {
 	placeBuy(intent: OrderIntent & { side: "BUY" }): Promise<OrderReceipt>;
 	cancelBuy(orderId: string): Promise<void>;
 	getBuy(orderId: string): Promise<GetOrderResult>;
-	getMarketConstraints(tokenId: string): Promise<{
+	getMarketConstraints(
+		tokenId: string,
+		placement: "limit_gtc",
+	): Promise<{
 		minShares: number;
 		minUsdcNotional?: number;
 		tickSize?: number;
@@ -475,13 +478,14 @@ export function startPositionGapActor(
 							if (cached && cached.expiresAtMs > now()) return cached.quote;
 							const constraints = await deps.execution.getMarketConstraints(
 								token.tokenId,
+								"limit_gtc",
 							);
 							const quote = {
 								tokenId: token.tokenId,
 								bestAsk: null,
 								tickSize: constraints.tickSize ?? 0.01,
 								minOrderShares: constraints.minShares,
-								minOrderUsdc: constraints.minUsdcNotional ?? 0.01,
+								minOrderUsdc: constraints.minUsdcNotional ?? 0,
 							};
 							venueCache.set(token.tokenId, {
 								expiresAtMs: now() + VENUE_CACHE_MS,
@@ -1087,7 +1091,6 @@ export function selectPositionGapVenueCandidates(input: {
 	openOrders: readonly { tokenId: string; remainingShares: number }[];
 	perOrderHeadroomUsdc: number;
 }): ReadonlySet<string> {
-	if (input.perOrderHeadroomUsdc < 1) return new Set();
 	const byToken = new Map<
 		string,
 		{ allowed: number; priceCap: number; held: number; open: number }
@@ -1134,10 +1137,14 @@ export function selectPositionGapVenueCandidates(input: {
 		[...byToken.entries()]
 			.map(([tokenId, value]) => ({
 				tokenId,
+				gapShares: Math.max(0, value.allowed - value.held - value.open),
 				theoreticalNotional:
 					Math.max(0, value.allowed - value.held - value.open) * value.priceCap,
 			}))
-			.filter((entry) => entry.theoreticalNotional >= 1)
+			.filter(
+				(entry) =>
+					entry.gapShares > 0 && input.perOrderHeadroomUsdc > 0,
+			)
 			.sort(
 				(left, right) =>
 					right.theoreticalNotional - left.theoreticalNotional ||

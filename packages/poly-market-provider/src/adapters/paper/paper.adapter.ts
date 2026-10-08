@@ -253,7 +253,10 @@ export class PaperAdapter implements MarketProviderPort {
     }
   }
 
-  async getMarketConstraints(tokenId: string): Promise<MarketConstraints> {
+  async getMarketConstraints(
+    tokenId: string,
+    placement?: "market_fok" | "limit_gtc"
+  ): Promise<MarketConstraints> {
     // PAPER_DELEGATES_READS_TO_LIVE — paper trades must respect real ticks +
     // min-size from Polymarket production. The bootstrap factory injects the
     // live read source.
@@ -264,7 +267,7 @@ export class PaperAdapter implements MarketProviderPort {
         "paper adapter requires `readSource` for tick + min-size — inject a live adapter at bootstrap"
       );
     }
-    return this.readSource.getMarketConstraints(tokenId);
+    return this.readSource.getMarketConstraints(tokenId, placement);
   }
 
   async getOrder(orderId: string): Promise<GetOrderResult> {

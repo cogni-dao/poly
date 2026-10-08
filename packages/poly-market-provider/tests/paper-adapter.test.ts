@@ -218,13 +218,19 @@ describe("PaperAdapter — readSource delegation", () => {
       fetchImpl,
     });
 
-    const constraints = await adapter.getMarketConstraints("tok-1");
+    const constraints = await adapter.getMarketConstraints(
+      "tok-1",
+      "limit_gtc"
+    );
     expect(constraints).toEqual({
       minShares: 5,
       tickSize: 0.01,
       minUsdcNotional: 1,
     });
-    expect(readSource.getMarketConstraints).toHaveBeenCalledWith("tok-1");
+    expect(readSource.getMarketConstraints).toHaveBeenCalledWith(
+      "tok-1",
+      "limit_gtc"
+    );
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

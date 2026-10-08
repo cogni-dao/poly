@@ -1357,7 +1357,10 @@ export class PolymarketClobAdapter implements MarketProviderPort {
    * market-min on `OrderBookSummary.min_order_size` (string; verified on SDK
    * 5.8.1 `types.d.ts`). bug.0342.
    */
-  async getMarketConstraints(tokenId: string): Promise<MarketConstraints> {
+  async getMarketConstraints(
+    tokenId: string,
+    placement: "market_fok" | "limit_gtc" = "market_fok"
+  ): Promise<MarketConstraints> {
     const start = Date.now();
     try {
       const [book, rawTickSize] = await withSuppressedClobSdkDiagnostics(() =>
@@ -1378,12 +1381,15 @@ export class PolymarketClobAdapter implements MarketProviderPort {
           `PolymarketClobAdapter.getMarketConstraints: unexpected tickSize=${rawTickSize} for token ${tokenId}`
         );
       }
-      // Polymarket platform rule: marketable BUY orders must be ≥ $1 USDC
-      // notional. This is a platform constant (not a per-market field exposed
-      // by the SDK), hardcoded here so the coordinator can pre-scale intents.
+      // Polymarket platform rule: market-FOK BUY orders must be ≥ $1 USDC
+      // notional. Limit-GTC orders use the book's share minimum instead. This
+      // is a platform constant (not a per-market field exposed by the SDK),
+      // hardcoded here so callers can pre-scale the matching order form.
       // Observed live on candidate-a 2026-04-21: "invalid amount for a
       // marketable BUY order ($0.9996), min size: $1".
       const POLY_MARKETABLE_BUY_MIN_USDC = 1;
+      const minUsdcNotional =
+        placement === "market_fok" ? POLY_MARKETABLE_BUY_MIN_USDC : undefined;
       const duration_ms = Date.now() - start;
       this.log.debug(
         {
@@ -1393,14 +1399,17 @@ export class PolymarketClobAdapter implements MarketProviderPort {
           token_id: tokenId,
           min_shares: minShares,
           tick_size: tickSize,
-          min_usdc_notional: POLY_MARKETABLE_BUY_MIN_USDC,
+          placement,
+          ...(minUsdcNotional === undefined
+            ? {}
+            : { min_usdc_notional: minUsdcNotional }),
         },
         "getMarketConstraints: ok"
       );
       return {
         minShares,
         tickSize,
-        minUsdcNotional: POLY_MARKETABLE_BUY_MIN_USDC,
+        ...(minUsdcNotional === undefined ? {} : { minUsdcNotional }),
       };
     } catch (err) {
       const duration_ms = Date.now() - start;
