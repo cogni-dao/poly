@@ -217,7 +217,10 @@ describe("CopyTargetControlPanel algorithm selector", () => {
       execution: {
         scope: "target_lifetime",
         submitted_order_count: 1,
-        filled_order_count: 0,
+        fill_accounting: {
+          status: "pending",
+          source: "clob_order_receipt",
+        },
       },
       positions_truncated: false,
       positions: [

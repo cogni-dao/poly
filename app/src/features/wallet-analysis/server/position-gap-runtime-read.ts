@@ -7,6 +7,7 @@ import {
 	polyPositionGapActions,
 	polyPositionGapRuns,
 } from "@cogni/db-schema/position-gap";
+import { polyCopyTradeFills } from "@cogni/db-schema/copy-trade";
 import {
 	type PolyPositionGapRuntime,
 	PolyPositionGapRuntimeSchema,
@@ -64,9 +65,10 @@ function runtimeFromRun(
 	run: Run,
 	execution: {
 		submitted: unknown;
-		filled: unknown;
-		shares: unknown;
-		usdc: unknown;
+		reportedMatched: unknown;
+		verifiedMatched: unknown;
+		verifiedShares: unknown;
+		verifiedUsdc: unknown;
 	},
 	capturedAt: Date,
 ): PolyPositionGapRuntime {
@@ -144,6 +146,26 @@ function runtimeFromRun(
 	const walletCash = numberOf(run.walletCashUsdcAtStart);
 	const expiresAt = run.targetSnapshotExpiresAt;
 	const expiresAtMs = expiresAt === null ? null : new Date(expiresAt).getTime();
+	const reportedMatched = numberOf(execution.reportedMatched) ?? 0;
+	const verifiedMatched = numberOf(execution.verifiedMatched) ?? 0;
+	const verifiedShares = numberOf(execution.verifiedShares) ?? 0;
+	const verifiedUsdc = numberOf(execution.verifiedUsdc) ?? 0;
+	const fillAccounting =
+		reportedMatched > 0 &&
+		reportedMatched === verifiedMatched &&
+		verifiedShares > 0 &&
+		verifiedUsdc > 0
+			? {
+					status: "verified" as const,
+					source: "clob_associated_trades" as const,
+					matched_order_count: verifiedMatched,
+					realized_shares: verifiedShares,
+					realized_entry_notional_usdc: verifiedUsdc,
+				}
+			: {
+					status: "pending" as const,
+					source: "clob_order_receipt" as const,
+				};
 	const parsed = PolyPositionGapRuntimeSchema.safeParse({
 		status: "observed",
 		run: {
@@ -189,9 +211,7 @@ function runtimeFromRun(
 		execution: {
 			scope: "target_lifetime",
 			submitted_order_count: numberOf(execution.submitted),
-			filled_order_count: numberOf(execution.filled),
-			filled_shares: numberOf(execution.shares),
-			filled_usdc: numberOf(execution.usdc),
+			fill_accounting: fillAccounting,
 		},
 		position_count: positions.length,
 		positions_truncated: positions.length > MAX_POSITIONS,
@@ -238,9 +258,10 @@ export async function readPositionGapRuntimeByWallet(
 				run,
 				execution.get(run.targetId) ?? {
 					submitted: 0,
-					filled: 0,
-					shares: 0,
-					usdc: 0,
+					reportedMatched: 0,
+					verifiedMatched: 0,
+					verifiedShares: 0,
+					verifiedUsdc: 0,
 				},
 				capturedAt,
 			),
@@ -294,11 +315,26 @@ export const positionGapActionAggregateSelect = (
 		.select({
 			targetId: polyPositionGapActions.targetId,
 			submitted: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.submittedAt} IS NOT NULL)`,
-			filled: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.filledShares} > 0)`,
-			shares: sql<string>`COALESCE(SUM(${polyPositionGapActions.filledShares}) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy'), 0)`,
-			usdc: sql<string>`COALESCE(SUM(${polyPositionGapActions.filledUsdc}) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy'), 0)`,
+			reportedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.filledShares} > 0)`,
+			verifiedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades' AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$')`,
+			verifiedShares: sql<string>`COALESCE(SUM(${polyCopyTradeFills.shares}) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades' AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'), 0)`,
+			verifiedUsdc: sql<string>`COALESCE(SUM(CASE WHEN ${polyPositionGapActions.kind} = 'buy' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades' AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric ELSE 0 END), 0)`,
 		})
 		.from(polyPositionGapActions)
+		.leftJoin(
+			polyCopyTradeFills,
+			and(
+				eq(
+					polyCopyTradeFills.billingAccountId,
+					polyPositionGapActions.billingAccountId,
+				),
+				eq(polyCopyTradeFills.targetId, polyPositionGapActions.targetId),
+				eq(
+					polyCopyTradeFills.clientOrderId,
+					polyPositionGapActions.clientOrderId,
+				),
+			),
+		)
 		.where(
 			and(
 				eq(polyPositionGapActions.billingAccountId, accountId),

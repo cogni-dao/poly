@@ -372,7 +372,14 @@ function runtimeSummary(
 			? "orders resting"
 			: "matched"
 		: runtime.plan.status.replaceAll("_", " ");
-	return `${status} · sleeve ${formatUsd(runtime.plan.sleeve_budget_usdc)}${minimum === null ? "" : ` · min ${formatUsd(minimum)}`} · NAV ${formatUsd(runtime.plan.eligible_net_nav_usdc)} · scale ${runtime.plan.scale.toPrecision(3)} · free ${formatUsd(runtime.plan.free_wallet_cash_after_guards_usdc)} · reserved ${formatUsd(runtime.plan.reserved_budget_usdc)} · lifetime ${runtime.execution.submitted_order_count}/${runtime.execution.filled_order_count} submitted/filled`;
+	const fills = runtime.execution.fill_accounting;
+	const execution =
+		fills.status === "verified"
+			? `${runtime.execution.submitted_order_count} submitted · ${fills.matched_order_count} verified`
+			: runtime.execution.submitted_order_count === 0
+				? "no fills"
+				: `${runtime.execution.submitted_order_count} submitted · fills pending`;
+	return `${status} · sleeve ${formatUsd(runtime.plan.sleeve_budget_usdc)}${minimum === null ? "" : ` · min ${formatUsd(minimum)}`} · NAV ${formatUsd(runtime.plan.eligible_net_nav_usdc)} · scale ${runtime.plan.scale.toPrecision(3)} · free ${formatUsd(runtime.plan.free_wallet_cash_after_guards_usdc)} · reserved ${formatUsd(runtime.plan.reserved_budget_usdc)} · ${execution}`;
 }
 
 function runtimeAtRest(

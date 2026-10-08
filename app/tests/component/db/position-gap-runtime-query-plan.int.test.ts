@@ -14,7 +14,7 @@ import {
 	positionGapActionAggregateSelect,
 	positionGapLatestRunsSelect,
 } from "@/features/wallet-analysis/server/position-gap-runtime-read";
-import { billingAccounts, users } from "@/shared/db/schema";
+import { billingAccounts, polyCopyTradeFills, users } from "@/shared/db/schema";
 
 const ACTION_PLAN_ROWS = 20_000;
 const BACKGROUND_ACTION_ROWS = 80_000;
@@ -46,6 +46,7 @@ describe("position-gap runtime query plan proof", () => {
 	const userId = randomUUID();
 	const accountId = randomUUID();
 	const targetId = randomUUID();
+	const verifiedTargetId = randomUUID();
 	const oldRunId = randomUUID();
 	const latestRunId = randomUUID();
 	const cohortId = randomUUID();
@@ -114,11 +115,44 @@ describe("position-gap runtime query plan proof", () => {
 				'1', '0.5', '0.5', '1', '0.5', '{}'::jsonb, 'noise-client-' || n, 'filled', NOW()
 			FROM generate_series(1, ${BACKGROUND_ACTION_ROWS}) AS n
 		`);
+		await seedDb.execute(sql`
+			INSERT INTO poly_position_gap_actions (
+				billing_account_id, created_by_user_id, target_id, run_id, cohort_id,
+				cohort_key, action_key, kind, condition_id, token_id, market_id, outcome,
+				desired_shares, notional_usdc, limit_price, filled_shares, filled_usdc,
+				planner_action, client_order_id, status, submitted_at
+			) VALUES (
+				${accountId}, ${userId}, ${verifiedTargetId}::uuid, ${oldRunId}::uuid, ${cohortId}::uuid,
+				'verified-cohort', 'verified-action', 'buy', 'condition', 'token', 'market', 'Yes',
+				'20', '5', '0.386', '10.73333333', '3.5898', '{}'::jsonb,
+				'verified-client', 'filled', NOW()
+			)
+		`);
+		await seedDb.insert(polyCopyTradeFills).values({
+			billingAccountId: accountId,
+			createdByUserId: userId,
+			targetId: verifiedTargetId,
+			fillId: "position-gap:verified",
+			marketId: "market",
+			observedAt: new Date(),
+			clientOrderId: "verified-client",
+			status: "filled",
+			attributes: {
+				realized_fill_source: "clob_associated_trades",
+				filled_size_usdc: 0.00966,
+			},
+			mode: "live",
+			price: "0.0009",
+			shares: "10.73333333",
+		});
 		await appDb.execute(sql`ANALYZE poly_position_gap_runs`);
 		await appDb.execute(sql`ANALYZE poly_position_gap_actions`);
 	}, 180_000);
 
 	afterAll(async () => {
+		await seedDb
+			.delete(polyCopyTradeFills)
+			.where(eq(polyCopyTradeFills.billingAccountId, accountId));
 		await seedDb.execute(
 			sql`DELETE FROM poly_position_gap_actions WHERE billing_account_id = ${accountId}`,
 		);
@@ -140,10 +174,23 @@ describe("position-gap runtime query plan proof", () => {
 			const actionRows = await positionGapActionAggregateSelect(tx, accountId, [
 				targetId,
 			]);
+			const verifiedRows = await positionGapActionAggregateSelect(
+				tx,
+				accountId,
+				[verifiedTargetId],
+			);
+			expect(verifiedRows).toMatchObject([
+				{
+					reportedMatched: "1",
+					verifiedMatched: "1",
+					verifiedUsdc: "0.00966",
+				},
+			]);
 			expect(actionRows).toMatchObject([
 				{
 					submitted: String(ACTION_PLAN_ROWS),
-					filled: String(ACTION_PLAN_ROWS),
+					reportedMatched: String(ACTION_PLAN_ROWS),
+					verifiedMatched: "0",
 				},
 			]);
 			const latest = documentOf(
