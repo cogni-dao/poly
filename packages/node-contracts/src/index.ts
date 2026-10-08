@@ -58,7 +58,6 @@ export * from "./cognition.v1.contract";
 export * from "./error.chat.v1.contract";
 export * from "./governance.status.v1.contract";
 // ── Governance ──────────────────────────────────────────────────────────────
-export * from "./governance-schedules-sync.internal.v1.contract";
 export * from "./grants.validate.internal.v1.contract";
 // ── Graphs ──────────────────────────────────────────────────────────────────
 export * from "./graph-runs.create.internal.v1.contract";

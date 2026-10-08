@@ -45,7 +45,7 @@ is the first-user path for provisioning, funding, approvals, and withdrawals.
 - **Files considered API:** `page.tsx`, `CreditsPage.client.tsx`,
   `AiCreditsPanel.tsx`, `TradingWalletPanel.tsx`,
   `TradingWalletConnectFlow.tsx`, `TradingWalletWithdrawDialog.tsx`,
-  `TradingReadinessSection.tsx`
+  `TradingWalletResetButton.tsx`, `TradingReadinessSection.tsx`
 
 ## Responsibilities
 

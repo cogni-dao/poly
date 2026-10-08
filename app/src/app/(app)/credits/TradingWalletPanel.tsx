@@ -7,7 +7,8 @@
  *   create (inline `TradingWalletConnectFlow` when `configured && !connected`),
  *   fund (pUSD / USDC.e / POL readout + Polygon bridge link), enable trading
  *   (`TradingReadinessSection`, task.0355), withdraw dialog, and stubbed fund
- *   button (task.0352).
+ *   button (task.0352). An explicit owner-only reset escape hatch revokes an
+ *   empty broken connection so the normal connect flow can reprovision it.
  * Scope: Client component. React Query fetches `/wallet/status` + `/wallet/balances`;
  *   reads the session via `next-auth/react` only to surface `userId` to the
  *   inline connect flow. On `onConnected`, invalidates `poly-wallet-status`
@@ -43,11 +44,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Info } from "lucide-react";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import type { ReactElement } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 import { AddressChip, Card, HintText } from "@/components";
 import { AutoWrapToggle } from "./AutoWrapToggle";
 import { TradingReadinessSection } from "./TradingReadinessSection";
 import { TradingWalletConnectFlow } from "./TradingWalletConnectFlow";
+import { TradingWalletResetButton } from "./TradingWalletResetButton";
 import { TradingWalletWithdrawDialog } from "./TradingWalletWithdrawDialog";
 
 async function fetchWalletStatus(): Promise<PolyWalletStatusOutput> {
@@ -100,6 +102,15 @@ export function TradingWalletPanel(): ReactElement {
   const queryClient = useQueryClient();
   const { data: session } = useSession();
   const userId = session?.user?.id ?? null;
+  const [reprovisionWaitSeconds, setReprovisionWaitSeconds] = useState(0);
+
+  useEffect(() => {
+    if (reprovisionWaitSeconds <= 0) return;
+    const timer = window.setInterval(() => {
+      setReprovisionWaitSeconds((seconds) => Math.max(0, seconds - 1));
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [reprovisionWaitSeconds]);
 
   const statusQuery = useQuery({
     queryKey: POLY_WALLET_STATUS_QUERY_KEY,
@@ -147,7 +158,12 @@ export function TradingWalletPanel(): ReactElement {
           Trading wallet not enabled on this deployment.
         </p>
       ) : !connected ? (
-        userId ? (
+        reprovisionWaitSeconds > 0 ? (
+          <p className="text-muted-foreground text-sm">
+            Reset complete. Re-provisioning unlocks in about{" "}
+            {Math.ceil(reprovisionWaitSeconds / 60)} minute(s).
+          </p>
+        ) : userId ? (
           <TradingWalletConnectFlow
             userId={userId}
             onConnected={() => {
@@ -220,6 +236,20 @@ export function TradingWalletPanel(): ReactElement {
             </button>
             <TradingWalletWithdrawDialog balances={balances} />
           </div>
+
+          <TradingWalletResetButton
+            onReset={(retryAfterSeconds) => {
+              setReprovisionWaitSeconds(retryAfterSeconds);
+              void Promise.all([
+                queryClient.invalidateQueries({
+                  queryKey: POLY_WALLET_STATUS_QUERY_KEY,
+                }),
+                queryClient.invalidateQueries({
+                  queryKey: ["poly-wallet-balances"],
+                }),
+              ]);
+            }}
+          />
 
           {balancesQuery.isError ? (
             <HintText icon={<Info size={16} />}>

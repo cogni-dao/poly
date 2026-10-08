@@ -129,6 +129,7 @@ import {
 	getTestOperatorWallet,
 } from "@/adapters/test";
 import { createToolBindings } from "@/bootstrap/ai/tool-bindings";
+import { startGovernanceSyncOnBoot } from "@/bootstrap/startup-reconcile";
 import { createBoundToolSource } from "@/bootstrap/ai/tool-source.factory";
 import {
 	createPolyTradeExecutorFactory,
@@ -516,6 +517,7 @@ function stopAllJobHandles(): void {
 export function getContainer(): Container {
 	if (!_container) {
 		_container = createContainer();
+		startGovernanceSyncOnBoot(_container.log);
 	}
 	return _container;
 }
