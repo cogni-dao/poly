@@ -11,7 +11,8 @@
  *   - CHAIN_REORG_POLICY_V0 — `watchContractEvent` delivers logs with no confirmations buffer; reorg retractions arrive as `log.removed === true` on the next poll, are dropped + counted (`poly_mirror_chain_skip_total{reason="reorg"}`), but already-emitted Fills are NOT recalled. Mirror orders placed on a reorged log sit on CLOB until the order-reconciler (`bootstrap/jobs/order-reconciler.job`) hits its `clob_not_found` grace window (default 900 s). v1 hardening: 1-block delay-buffer or `getLogs(toBlock: latest - N)`. task.5043 follow-up.
  *   - CURSOR_IS_MAX_TIMESTAMP — `newSince` = max `block.timestamp` (unix seconds) emitted this drain.
  *   - CHAIN_TRANSPORT_IS_PUSH — the caller-supplied `publicClient` MUST use viem's `webSocket()` transport so `watchContractEvent` issues `eth_subscribe` (push, server-side filter). HTTP transport falls back to `eth_newFilter` + `eth_getFilterChanges` polling, which Alchemy garbage-collects and viem 2.39 does not recreate (bug.5051 — observed ~98% event miss rate). Same WSS client multiplexes all per-target subscriptions + `getBlock` lookups onto one connection.
- *   - METADATA_FROM_POSITIONS — `(condition_id, outcome, end_date)` enriched from `listAllUserPositions(wallet)` (paginated to exhaustion — bug.5055; the single-page `listUserPositions` silently caps at ~100 rows per bug.5027, which would drop everything past the top page), refreshed every `refreshAssetsIntervalMs`. Cache miss triggers an immediate refresh + retry; still-missing OR empty-outcome → skip with `metadata_unresolved` + warn. Empty-outcome skip prevents wrong-leg mirroring on NegRisk multi-outcome markets.
+ *   - METADATA_FROM_POSITIONS — `(condition_id, outcome, end_date)` is normally enriched from periodic `listAllUserPositions(wallet)` snapshots (paginated to exhaustion — bug.5055). A fill never waits for that full-wallet walk.
+ *   - EXACT_TOKEN_METADATA_BACKSTOP — when the wallet position snapshot does not yet contain a just-filled token (or `/positions` is stalled/rate-limited), resolve that exact CLOB token through Gamma first. Results and in-flight work are coalesced per `(target wallet, token)` across tenant sources. Missing or ambiguous mappings still fail closed. Empty-outcome skip prevents wrong-leg mirroring on NegRisk multi-outcome markets.
  * Side-effects: opens 2 viem RPC subscriptions; HTTPS GETs to data-api.polymarket.com on each metadata refresh; logger + metrics; periodic heartbeat info log.
  * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5043, work/items/task.5042
  * @public
@@ -69,6 +70,9 @@ const DEFAULT_REFRESH_ASSETS_INTERVAL_MS = 60_000;
  * one per fill.
  */
 const CACHE_MISS_REFRESH_COOLDOWN_MS = 60_000;
+const EXACT_METADATA_SUCCESS_TTL_MS = 6 * 60 * 60 * 1000;
+const EXACT_METADATA_MISS_TTL_MS = 60_000;
+const EXACT_METADATA_CACHE_MAX_ENTRIES = 4096;
 /** Default heartbeat info-log cadence (ms). Loki absence-alert key. */
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -97,6 +101,36 @@ interface TokenMetadata {
   endDate: string | null;
   title: string | null;
   slug: string | null;
+}
+
+interface ExactMetadataCacheEntry {
+  value: TokenMetadata | null;
+  expiresAt: number;
+}
+
+const exactMetadataCache = new Map<string, ExactMetadataCacheEntry>();
+const exactMetadataInFlight = new Map<string, Promise<TokenMetadata | null>>();
+
+function exactMetadataKey(wallet: string, tokenId: string): string {
+  return `${wallet.toLowerCase()}:${tokenId}`;
+}
+
+function cacheExactMetadata(
+  key: string,
+  value: TokenMetadata | null
+): void {
+  if (exactMetadataCache.size >= EXACT_METADATA_CACHE_MAX_ENTRIES) {
+    const oldest = exactMetadataCache.keys().next().value;
+    if (oldest !== undefined) exactMetadataCache.delete(oldest);
+  }
+  exactMetadataCache.set(key, {
+    value,
+    expiresAt:
+      Date.now() +
+      (value === null
+        ? EXACT_METADATA_MISS_TTL_MS
+        : EXACT_METADATA_SUCCESS_TTL_MS),
+  });
 }
 
 interface BufferedFill {
@@ -256,6 +290,43 @@ export function createPolymarketChainActivitySource(
    */
   let lastRefreshCompletedAt = 0;
 
+  async function resolveExactTokenMetadata(
+    tokenId: string
+  ): Promise<TokenMetadata | null> {
+    const key = exactMetadataKey(deps.wallet, tokenId);
+    const cached = exactMetadataCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    if (cached) exactMetadataCache.delete(key);
+
+    const existing = exactMetadataInFlight.get(key);
+    if (existing) return existing;
+
+    const pending = deps.client
+      .resolveTokenMetadata(tokenId)
+      .then((value) => {
+        cacheExactMetadata(key, value);
+        return value;
+      })
+      .catch((err: unknown) => {
+        cacheExactMetadata(key, null);
+        log.warn(
+          {
+            event: EVENT_NAMES.POLY_WALLET_WATCH_NORMALIZE_ERROR,
+            phase: "exact_token_metadata_failed",
+            token_id: tokenId,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "polymarket-chain-source: exact-token Gamma metadata lookup failed"
+        );
+        return null;
+      })
+      .finally(() => {
+        exactMetadataInFlight.delete(key);
+      });
+    exactMetadataInFlight.set(key, pending);
+    return pending;
+  }
+
   async function getBlockTimestamp(
     blockNumber: bigint | null | undefined
   ): Promise<number | null> {
@@ -405,9 +476,17 @@ export function createPolymarketChainActivitySource(
     }
 
     let meta = tokenMeta.get(decoded.tokenId);
-    if (!meta) {
-      await refreshMetadata("cache_miss");
-      meta = tokenMeta.get(decoded.tokenId);
+    if (!meta || !meta.outcome) {
+      const exact = await resolveExactTokenMetadata(decoded.tokenId);
+      if (exact) {
+        tokenMeta.set(decoded.tokenId, exact);
+        meta = exact;
+      } else {
+        // A periodic/cold-start positions walk may have completed while the
+        // exact lookup was in flight. Read its result, but never await the
+        // full-wallet walk on the target-fill critical path.
+        meta = tokenMeta.get(decoded.tokenId);
+      }
     }
     if (!meta || !meta.outcome) {
       // Empty outcome → cannot safely mirror (NegRisk multi-outcome markets
