@@ -86,7 +86,10 @@ export function portfolioSnapshotFixture(
       address: ADDRESS,
       freshness: "read_model",
       capturedAt: CAPTURED_AT,
-      dailyTradeCounts: [{ day: "2026-10-06", n: 3 }],
+      tradeActivity: {
+        bucketUnit: "day",
+        buckets: [{ start: "2026-10-06T12:00:00.000Z", n: 3 }],
+      },
       live_positions: [],
       live_position_count: 3,
       market_groups: [],

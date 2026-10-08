@@ -13,8 +13,9 @@ export function OperatorWalletChartsRow(): ReactElement {
   const data = dashboard.data?.execution;
   const { isLoading, isError } = dashboard;
 
-  const dailyCounts = (data?.dailyTradeCounts ?? []).map((point) => ({
-    d: point.day.slice(5),
+  const tradeActivity = data?.tradeActivity;
+  const activityBuckets = (tradeActivity?.buckets ?? []).map((point) => ({
+    d: point.start,
     n: point.n,
   }));
   const dailyCountsUnavailable = data?.warnings.some(
@@ -55,12 +56,16 @@ export function OperatorWalletChartsRow(): ReactElement {
           >
             Trade history is temporarily unavailable.
           </div>
-        ) : !isLoading && dailyCounts.length === 0 ? (
+        ) : !isLoading && activityBuckets.length === 0 ? (
           <div className="flex h-44 items-center justify-center text-center text-muted-foreground text-sm">
             No trade history yet.
           </div>
         ) : (
-          <TradesPerDayChart daily={dailyCounts} isLoading={isLoading} />
+          <TradesPerDayChart
+            daily={activityBuckets}
+            bucketUnit={tradeActivity?.bucketUnit}
+            isLoading={isLoading}
+          />
         )}
       </CardContent>
     </Card>
