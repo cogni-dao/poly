@@ -122,8 +122,11 @@ vi.mock("@tanstack/react-query", () => ({
 									},
 									execution: {
 										scope: "target_lifetime",
-										submitted_order_count: 0,
-										filled_order_count: 0,
+										submitted_order_count: 1,
+										fill_accounting: {
+											status: "pending",
+											source: "clob_order_receipt",
+										},
 									},
 									positions_truncated: false,
 									positions: [
@@ -199,6 +202,8 @@ describe("TargetPositionsPanel position-gap truth", () => {
 		).toBeInTheDocument();
 		expect(screen.getByText(/min \$53\.31/)).toBeInTheDocument();
 		expect(screen.getByText("1/2 · open 0.5 · gap 0.5")).toBeInTheDocument();
+		expect(screen.getByText(/1 submitted · fills pending/)).toBeInTheDocument();
+		expect(screen.queryByText(/filled/)).not.toBeInTheDocument();
 		expect(
 			screen.getByText("≤0.790 · $3.95 floor · below_market_floor"),
 		).toBeInTheDocument();

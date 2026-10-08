@@ -61,19 +61,58 @@ describe("wallet dashboard order aggregate", () => {
         },
       }))
     );
-    await db.insert(polyCopyTradeFills).values({
-      billingAccountId: TENANT_B,
-      createdByUserId: USER_B,
-      targetId: TARGET,
-      fillId: "other-fill",
-      marketId: "other-market",
-      observedAt,
-      clientOrderId: "other-client",
-      status: "open",
-      positionLifecycle: "open",
-      syncedAt: observedAt,
-      attributes: { side: "BUY", size_usdc: "999", filled_size_usdc: "0" },
-    });
+    await db.insert(polyCopyTradeFills).values([
+      {
+        billingAccountId: TENANT_B,
+        createdByUserId: USER_B,
+        targetId: TARGET,
+        fillId: "other-fill",
+        marketId: "other-market",
+        observedAt,
+        clientOrderId: "other-client",
+        status: "open",
+        positionLifecycle: "open",
+        syncedAt: observedAt,
+        attributes: { side: "BUY", size_usdc: "999", filled_size_usdc: "0" },
+      },
+      {
+        billingAccountId: TENANT_B,
+        createdByUserId: USER_B,
+        targetId: TARGET,
+        fillId: "pg-pending",
+        marketId: "pg-pending-market",
+        observedAt,
+        clientOrderId: "pg-pending-client",
+        status: "partial",
+        positionLifecycle: "open",
+        syncedAt: observedAt,
+        attributes: {
+          side: "BUY",
+          size_usdc: "5",
+          filled_size_usdc: "4",
+          position_gap_version: "3",
+        },
+      },
+      {
+        billingAccountId: TENANT_B,
+        createdByUserId: USER_B,
+        targetId: TARGET,
+        fillId: "pg-verified",
+        marketId: "pg-verified-market",
+        observedAt,
+        clientOrderId: "pg-verified-client",
+        status: "partial",
+        positionLifecycle: "open",
+        syncedAt: observedAt,
+        attributes: {
+          side: "BUY",
+          size_usdc: "5",
+          filled_size_usdc: "0.01",
+          position_gap_version: "3",
+          realized_fill_source: "clob_associated_trades",
+        },
+      },
+    ]);
 
     const tenantA = await readOrderSummary(db, TENANT_A, CAPTURED_AT);
     expect(tenantA.openOrders).toBe(2_001);
@@ -82,8 +121,10 @@ describe("wallet dashboard order aggregate", () => {
     expect(tenantA.observedAt).toBe(CAPTURED_AT);
 
     const tenantB = await readOrderSummary(db, TENANT_B, CAPTURED_AT);
-    expect(tenantB.openOrders).toBe(1);
-    expect(tenantB.lockedUsdc).toBe(999);
+    expect(tenantB.openOrders).toBe(3);
+    // Pending PG accounting reserves the full intent; verified accounting may
+    // release only its authoritative gross execution notional.
+    expect(tenantB.lockedUsdc).toBe(1_008.99);
 
     const empty = await readOrderSummary(db, "wallet-dashboard-orders-empty", CAPTURED_AT);
     expect(empty).toMatchObject({

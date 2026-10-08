@@ -20,6 +20,7 @@
 
 import { z } from "zod";
 
+import { PolyPositionGapFillAccountingSchema } from "./poly.account.copy-operations.v1.contract";
 import { PolyResearchCopyTradePnlModeSchema } from "./poly.research-copy-trade-pnl.v1.contract";
 
 const IsoTimestampSchema = z.string().datetime({ offset: true });
@@ -241,6 +242,7 @@ export const PolyInvestigationFillEvidenceSchema = z.object({
   fees_usdc: z.number().nonnegative().nullable(),
   intent_size_usdc: z.number().nonnegative().nullable(),
   filled_size_usdc: z.number().nonnegative().nullable(),
+  fill_accounting: PolyPositionGapFillAccountingSchema.nullable(),
   position_lifecycle: z.string().nullable(),
 });
 

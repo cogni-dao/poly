@@ -234,6 +234,29 @@ export const PolyPositionGapDecisionReasonSchema = z.enum([
   "venue_unknown",
 ]);
 
+/** Realized fill economics are public only after associated CLOB trades verify them. */
+export const PolyPositionGapFillAccountingSchema = z.discriminatedUnion(
+  "status",
+  [
+    z
+      .object({
+        status: z.literal("pending"),
+        source: z.literal("clob_order_receipt"),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal("verified"),
+        source: z.literal("clob_associated_trades"),
+        matched_order_count: z.number().int().positive(),
+        realized_shares: z.number().positive(),
+        /** Gross entry notional at execution VWAP; authoritative fees are excluded. */
+        realized_entry_notional_usdc: z.number().positive(),
+      })
+      .strict(),
+  ],
+);
+
 export const PolyPositionGapRuntimeSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("not_applicable") }),
   z.object({
@@ -279,9 +302,7 @@ export const PolyPositionGapRuntimeSchema = z.discriminatedUnion("status", [
     execution: z.object({
       scope: z.literal("target_lifetime"),
       submitted_order_count: z.number().int().nonnegative(),
-      filled_order_count: z.number().int().nonnegative(),
-      filled_shares: z.number().nonnegative(),
-      filled_usdc: z.number().nonnegative(),
+      fill_accounting: PolyPositionGapFillAccountingSchema,
     }),
     position_count: z.number().int().nonnegative(),
     positions_truncated: z.boolean(),
@@ -493,6 +514,8 @@ export const PolyAttemptExecutedSchema = z.discriminatedUnion("availability", [
     fees_usdc: z.number().nonnegative().nullable(),
     /** Executed notional, `price * shares`. `null` until a fill lands. */
     filled_size_usdc: z.number().nonnegative().nullable(),
+    /** Null for legacy/non-PG attempts; PG v3 is pending or trade-verified. */
+    fill_accounting: PolyPositionGapFillAccountingSchema.nullable(),
     /** Last reconciler tick that got a typed CLOB response for this row. */
     synced_at: IsoTimestampSchema.nullable(),
   }),

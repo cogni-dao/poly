@@ -71,6 +71,8 @@ export const PolyResearchCopyTradePnlMarketRowSchema = z.object({
   sell_count: z.number().int().nonnegative(),
   intent_usdc: z.number().nonnegative(),
   realized_size_usdc: z.number().nonnegative(),
+  fill_accounting_status: z.enum(["complete", "partial"]),
+  accounting_pending_count: z.number().int().nonnegative(),
   has_open_position: z.boolean(),
   position_lifecycle: z.string().nullable(),
   first_fill_at: z.string().nullable(),
@@ -91,6 +93,8 @@ export const PolyResearchCopyTradePnlSummarySchema = z.object({
   markets_with_open_position: z.number().int().nonnegative(),
   total_intent_usdc: z.number().nonnegative(),
   total_realized_size_usdc: z.number().nonnegative(),
+  fill_accounting_status: z.enum(["complete", "partial"]),
+  accounting_pending_count: z.number().int().nonnegative(),
   first_fill_at: z.string().nullable(),
   last_fill_at: z.string().nullable(),
 });

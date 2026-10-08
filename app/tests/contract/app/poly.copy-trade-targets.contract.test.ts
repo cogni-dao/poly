@@ -3,6 +3,7 @@
 
 import {
   PolyAccountCopySetupResponseSchema,
+  PolyPositionGapFillAccountingSchema,
   polyCopyTradeTargetUpdateOperation,
 } from "@cogni/poly-node-contracts";
 import { describe, expect, it } from "vitest";
@@ -114,5 +115,29 @@ describe("copy-setup algorithm identity", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe("position-gap fill accounting", () => {
+  it("never permits realized economics on an unverified receipt", () => {
+    expect(
+      PolyPositionGapFillAccountingSchema.safeParse({
+        status: "pending",
+        source: "clob_order_receipt",
+        realized_entry_notional_usdc: 3.5898,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("names associated-trade notional as verified and fee-exclusive", () => {
+    expect(
+      PolyPositionGapFillAccountingSchema.safeParse({
+        status: "verified",
+        source: "clob_associated_trades",
+        matched_order_count: 1,
+        realized_shares: 10.73333333,
+        realized_entry_notional_usdc: 0.00966,
+      }).success,
+    ).toBe(true);
   });
 });

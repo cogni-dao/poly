@@ -182,6 +182,7 @@ describe("wallet dashboard closed SQL parity", () => {
     );
 
     expect(actual.count).toBe(oracle.length);
+    expect(actual.accountingPendingCount).toBe(0);
     expect(actual.positions.map((position) => position.conditionId)).toEqual(
       oracle.map((row) => keys(row).condition)
     );
@@ -199,5 +200,41 @@ describe("wallet dashboard closed SQL parity", () => {
         (position) => position.conditionId === "condition-mixed"
       )?.positionId
     ).toBe("condition-mixed:token-mixed");
+  });
+
+  it("counts pending Position-gap history without publishing false economics", async () => {
+    await db.insert(polyCopyTradeFills).values({
+      billingAccountId: TENANT,
+      createdByUserId: USER,
+      targetId: TARGET,
+      fillId: "position-gap-pending-terminal",
+      marketId: "prediction-market:polymarket:position-gap-pending-condition",
+      observedAt: OBSERVED,
+      clientOrderId: "position-gap-pending-client",
+      status: "filled",
+      positionLifecycle: "loser",
+      price: "0.386",
+      shares: "9.3",
+      attributes: {
+        condition_id: "position-gap-pending-condition",
+        token_id: "position-gap-pending-token",
+        limit_price: 0.386,
+        size_usdc: 3.5898,
+        filled_size_usdc: 3.5898,
+        position_gap_version: "3",
+        closed_at: OBSERVED.toISOString(),
+      },
+    });
+
+    const actual = await readClosedPositionSummary(
+      db,
+      TENANT,
+      new Date("2026-10-03T12:01:00.000Z")
+    );
+    expect(actual.count).toBe(pureClosed(rows).length + 1);
+    expect(actual.accountingPendingCount).toBe(1);
+    expect(actual.positions).not.toContainEqual(
+      expect.objectContaining({ conditionId: "position-gap-pending-condition" })
+    );
   });
 });

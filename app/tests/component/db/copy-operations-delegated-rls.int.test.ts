@@ -572,7 +572,13 @@ describe("copy-operations delegated RLS", () => {
         sleeve_budget_usdc: 200,
         minimum_feasible_sleeve_usdc: 53.31,
       },
-      execution: { submitted_order_count: 0, filled_order_count: 0 },
+      execution: {
+        submitted_order_count: 0,
+        fill_accounting: {
+          status: "pending",
+          source: "clob_order_receipt",
+        },
+      },
       position_count: 1,
     });
 

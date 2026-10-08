@@ -141,6 +141,8 @@ type FillEvidenceRow = {
   fees_usdc: string | number | null;
   intent_size_usdc: string | number | null;
   filled_size_usdc: string | number | null;
+  position_gap_version: string | null;
+  realized_fill_source: string | null;
   position_lifecycle: string | null;
 };
 
@@ -257,36 +259,43 @@ export async function getCopyTradeInvestigationSummary(
   const market = marketRows[0];
 
   const rawMirrorRows = rowsOf<MirrorLegRow>(await db.execute(sql`
-    WITH execution_legs AS (
+    WITH execution_source AS (
+      SELECT f.*, (
+        COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+        OR COALESCE(f.attributes->>'realized_fill_source', '') = 'clob_associated_trades'
+      ) AS accounting_verified
+      FROM poly_copy_trade_fills f
+      WHERE f.billing_account_id = ${query.billing_account_id}
+        AND f.market_id = ${marketId}
+        AND ${modeFilter}
+        AND ${fillWindow}
+        AND f.observed_at <= ${capturedAt}::timestamptz
+    ), execution_legs AS (
     SELECT
       COALESCE(NULLIF(f.attributes->>'token_id', ''), 'unknown') AS token_id,
       MAX(NULLIF(f.attributes->>'outcome', '')) AS outcome,
       COUNT(*) FILTER (WHERE f.attributes->>'side' = 'BUY')::int AS buy_count,
       COUNT(*) FILTER (WHERE f.attributes->>'side' = 'SELL')::int AS sell_count,
-      COALESCE(SUM(CASE WHEN f.attributes->>'side' = 'BUY' THEN f.shares ELSE 0 END), 0)::text AS buy_shares,
-      COALESCE(SUM(CASE WHEN f.attributes->>'side' = 'SELL' THEN f.shares ELSE 0 END), 0)::text AS sell_shares,
-      COALESCE(SUM(CASE WHEN f.attributes->>'side' = 'BUY' THEN f.price * f.shares ELSE 0 END), 0)::text AS buy_usdc,
-      COALESCE(SUM(CASE WHEN f.attributes->>'side' = 'SELL' THEN f.price * f.shares ELSE 0 END), 0)::text AS sell_usdc,
-      CASE WHEN SUM(CASE WHEN f.attributes->>'side' = 'BUY' THEN f.shares ELSE 0 END) > 0
-        THEN (SUM(CASE WHEN f.attributes->>'side' = 'BUY' THEN f.price * f.shares ELSE 0 END)
-          / SUM(CASE WHEN f.attributes->>'side' = 'BUY' THEN f.shares ELSE 0 END))::text
+      COALESCE(SUM(CASE WHEN f.accounting_verified AND f.attributes->>'side' = 'BUY' THEN f.shares ELSE 0 END), 0)::text AS buy_shares,
+      COALESCE(SUM(CASE WHEN f.accounting_verified AND f.attributes->>'side' = 'SELL' THEN f.shares ELSE 0 END), 0)::text AS sell_shares,
+      COALESCE(SUM(CASE WHEN f.accounting_verified AND f.attributes->>'side' = 'BUY' THEN f.price * f.shares ELSE 0 END), 0)::text AS buy_usdc,
+      COALESCE(SUM(CASE WHEN f.accounting_verified AND f.attributes->>'side' = 'SELL' THEN f.price * f.shares ELSE 0 END), 0)::text AS sell_usdc,
+      CASE WHEN SUM(CASE WHEN f.accounting_verified AND f.attributes->>'side' = 'BUY' THEN f.shares ELSE 0 END) > 0
+        THEN (SUM(CASE WHEN f.accounting_verified AND f.attributes->>'side' = 'BUY' THEN f.price * f.shares ELSE 0 END)
+          / SUM(CASE WHEN f.accounting_verified AND f.attributes->>'side' = 'BUY' THEN f.shares ELSE 0 END))::text
         ELSE NULL END AS buy_vwap,
-      CASE WHEN SUM(CASE WHEN f.attributes->>'side' = 'SELL' THEN f.shares ELSE 0 END) > 0
-        THEN (SUM(CASE WHEN f.attributes->>'side' = 'SELL' THEN f.price * f.shares ELSE 0 END)
-          / SUM(CASE WHEN f.attributes->>'side' = 'SELL' THEN f.shares ELSE 0 END))::text
+      CASE WHEN SUM(CASE WHEN f.accounting_verified AND f.attributes->>'side' = 'SELL' THEN f.shares ELSE 0 END) > 0
+        THEN (SUM(CASE WHEN f.accounting_verified AND f.attributes->>'side' = 'SELL' THEN f.price * f.shares ELSE 0 END)
+          / SUM(CASE WHEN f.accounting_verified AND f.attributes->>'side' = 'SELL' THEN f.shares ELSE 0 END))::text
         ELSE NULL END AS sell_vwap,
-      COALESCE(SUM(f.fees_usdc), 0)::text AS fees_usdc,
+      COALESCE(SUM(CASE WHEN f.accounting_verified THEN f.fees_usdc ELSE 0 END), 0)::text AS fees_usdc,
       COUNT(*) FILTER (
-        WHERE f.status IN ('filled', 'partial') AND (f.price IS NULL OR f.shares IS NULL)
+        WHERE f.status IN ('filled', 'partial')
+          AND (NOT f.accounting_verified OR f.price IS NULL OR f.shares IS NULL)
       )::int AS missing_realized_rows,
       MIN(f.observed_at) AS first_observed_at,
       MAX(f.observed_at) AS last_observed_at
-    FROM poly_copy_trade_fills f
-    WHERE f.billing_account_id = ${query.billing_account_id}
-      AND f.market_id = ${marketId}
-      AND ${modeFilter}
-      AND ${fillWindow}
-      AND f.observed_at <= ${capturedAt}::timestamptz
+    FROM execution_source f
     GROUP BY COALESCE(NULLIF(f.attributes->>'token_id', ''), 'unknown')
     )
     SELECT
@@ -527,13 +536,16 @@ export async function getCopyTradeInvestigationSummary(
   const marksComplete = mirrorLegs.every(
     (leg) => leg.net_shares <= 0 || leg.mark_price !== null
   );
+  const accountingComplete = mirrorLegs.every(
+    (leg) => leg.missing_realized_rows === 0
+  );
   const facts = [
     fact(
       "mirror_ledger",
       ledgerObservedAt,
       capturedAt,
       POSITION_FRESHNESS_MS,
-      !accountPositionTruncated
+      !accountPositionTruncated && accountingComplete
     ),
     fact("market_prices", markObservedAt, capturedAt, MARKET_FRESHNESS_MS, marksComplete),
     fact("target_positions", targetObservedAt, capturedAt, POSITION_FRESHNESS_MS, !targetsTruncated),
@@ -678,23 +690,53 @@ export async function getCopyTradeInvestigationEvidence(
   const last = page.at(-1);
   const items =
     query.kind === "fills"
-      ? (page as FillEvidenceRow[]).map((row) => ({
-          kind: "fill" as const,
-          evidence_id: row.evidence_id,
-          occurred_at: toIso(row.occurred_at) ?? query.captured_at,
-          target_id: row.target_id,
-          target_wallet: row.target_wallet,
-          fill_id: row.fill_id,
-          token_id: row.token_id,
-          side: orderSide(row.side),
-          status: row.status,
-          price: nullableNumber(row.price),
-          shares: nullableNumber(row.shares),
-          fees_usdc: nullableNumber(row.fees_usdc),
-          intent_size_usdc: nullableNumber(row.intent_size_usdc),
-          filled_size_usdc: nullableNumber(row.filled_size_usdc),
-          position_lifecycle: row.position_lifecycle,
-        }))
+      ? (page as FillEvidenceRow[]).map((row) => {
+          const positionGapV3 = row.position_gap_version === "3";
+          const price = nullableNumber(row.price);
+          const shares = nullableNumber(row.shares);
+          const notional = nullableNumber(row.filled_size_usdc);
+          const verified =
+            positionGapV3 &&
+            row.realized_fill_source === "clob_associated_trades" &&
+            price !== null &&
+            shares !== null &&
+            shares > 0 &&
+            notional !== null &&
+            notional > 0;
+          return {
+            kind: "fill" as const,
+            evidence_id: row.evidence_id,
+            occurred_at: toIso(row.occurred_at) ?? query.captured_at,
+            target_id: row.target_id,
+            target_wallet: row.target_wallet,
+            fill_id: row.fill_id,
+            token_id: row.token_id,
+            side: orderSide(row.side),
+            status: row.status,
+            price: positionGapV3 && !verified ? null : price,
+            shares: positionGapV3 && !verified ? null : shares,
+            fees_usdc:
+              positionGapV3 ? null : nullableNumber(row.fees_usdc),
+            intent_size_usdc: nullableNumber(row.intent_size_usdc),
+            filled_size_usdc:
+              positionGapV3 && !verified ? null : notional,
+            fill_accounting: positionGapV3
+              ? verified
+                ? {
+                    status: "verified" as const,
+                    source: "clob_associated_trades" as const,
+                    matched_order_count: 1,
+                    realized_shares: shares,
+                    realized_entry_notional_usdc: notional,
+                  }
+                : {
+                    status: "pending" as const,
+                    source: "clob_order_receipt" as const,
+                  }
+              : null,
+            position_lifecycle: row.position_lifecycle,
+          };
+        })
       : (page as DecisionEvidenceRow[]).map((row) => ({
           kind: "decision" as const,
           evidence_id: row.evidence_id,
@@ -758,13 +800,23 @@ export function copyTradeFillEvidenceSelect(
       NULLIF(f.attributes->>'token_id', '') AS token_id,
       CASE WHEN f.attributes->>'side' IN ('BUY', 'SELL') THEN f.attributes->>'side' ELSE NULL END AS side,
       f.status,
-      f.price,
-      f.shares,
-      f.fees_usdc,
+      CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
+        AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+        THEN NULL ELSE f.price END AS price,
+      CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
+        AND COALESCE(f.attributes->>'realized_fill_source', '') <> 'clob_associated_trades'
+        THEN NULL ELSE f.shares END AS shares,
+      CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
+        THEN NULL ELSE f.fees_usdc END AS fees_usdc,
       CASE WHEN f.attributes->>'size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
         THEN (f.attributes->>'size_usdc')::numeric ELSE NULL END AS intent_size_usdc,
-      CASE WHEN f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
+      CASE WHEN (
+          COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+          OR f.attributes->>'realized_fill_source' = 'clob_associated_trades'
+        ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
         THEN (f.attributes->>'filled_size_usdc')::numeric ELSE NULL END AS filled_size_usdc,
+      f.attributes->>'position_gap_version' AS position_gap_version,
+      f.attributes->>'realized_fill_source' AS realized_fill_source,
       f.position_lifecycle
     FROM poly_copy_trade_fills f
     WHERE f.billing_account_id = ${query.billing_account_id}

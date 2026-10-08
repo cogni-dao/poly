@@ -142,6 +142,9 @@ type AttemptRow = {
   exec_price: string | number | null;
   exec_shares: string | number | null;
   exec_fees_usdc: string | number | null;
+  exec_filled_size_usdc: string | number | null;
+  exec_position_gap_version: string | null;
+  exec_realized_fill_source: string | null;
   exec_synced_at: Date | string | null;
   mark_price: string | number | null;
   mark_observed_at: Date | string | null;
@@ -241,6 +244,10 @@ export function copyTradeAttemptsSelect(
       f.price                                           AS exec_price,
       f.shares                                          AS exec_shares,
       f.fees_usdc                                       AS exec_fees_usdc,
+      CASE WHEN COALESCE(f.attributes->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'
+        THEN (f.attributes->>'filled_size_usdc')::numeric END AS exec_filled_size_usdc,
+      f.attributes->>'position_gap_version'             AS exec_position_gap_version,
+      f.attributes->>'realized_fill_source'             AS exec_realized_fill_source,
       f.synced_at                                       AS exec_synced_at,
       mark.price                                        AS mark_price,
       mark.ts                                           AS mark_observed_at,
@@ -292,11 +299,42 @@ export function copyTradeAttemptsSelect(
   `;
 }
 
-function toExecuted(row: AttemptRow): PolyCopyTradeAttempt["executed"] {
+/** @internal Exported for the public truth-gating contract test. */
+export function toExecuted(row: AttemptRow): PolyCopyTradeAttempt["executed"] {
   const observedAt = toIso(row.exec_observed_at);
   if (row.exec_status !== null && observedAt !== null) {
-    const price = nullableNumber(row.exec_price);
-    const shares = nullableNumber(row.exec_shares);
+    const positionGapV3 = row.exec_position_gap_version === "3";
+    const sourceVerified =
+      row.exec_realized_fill_source === "clob_associated_trades";
+    const rawPrice = nullableNumber(row.exec_price);
+    const rawShares = nullableNumber(row.exec_shares);
+    const rawNotional = nullableNumber(row.exec_filled_size_usdc);
+    const verifiedPositionGapFill =
+      positionGapV3 &&
+      sourceVerified &&
+      rawPrice !== null &&
+      rawPrice >= 0 &&
+      rawShares !== null &&
+      rawShares > 0 &&
+      rawNotional !== null &&
+      rawNotional > 0;
+    const price = positionGapV3 && !verifiedPositionGapFill ? null : rawPrice;
+    const shares =
+      positionGapV3 && !verifiedPositionGapFill ? null : rawShares;
+    const fillAccounting = positionGapV3
+      ? verifiedPositionGapFill
+        ? {
+            status: "verified" as const,
+            source: "clob_associated_trades" as const,
+            matched_order_count: 1,
+            realized_shares: rawShares,
+            realized_entry_notional_usdc: rawNotional,
+          }
+        : {
+            status: "pending" as const,
+            source: "clob_order_receipt" as const,
+          }
+      : null;
     return {
       availability: "observed",
       status: row.exec_status,
@@ -305,11 +343,17 @@ function toExecuted(row: AttemptRow): PolyCopyTradeAttempt["executed"] {
       position_lifecycle: row.exec_position_lifecycle,
       price,
       shares,
-      fees_usdc: nullableNumber(row.exec_fees_usdc),
+      fees_usdc: positionGapV3 ? null : nullableNumber(row.exec_fees_usdc),
       // Executed notional is only knowable once BOTH legs are realized.
       // Deriving it from one of them would fabricate a value.
-      filled_size_usdc:
-        price !== null && shares !== null ? price * shares : null,
+      filled_size_usdc: positionGapV3
+        ? verifiedPositionGapFill
+          ? rawNotional
+          : null
+        : price !== null && shares !== null
+          ? price * shares
+          : null,
+      fill_accounting: fillAccounting,
       synced_at: toIso(row.exec_synced_at),
     };
   }

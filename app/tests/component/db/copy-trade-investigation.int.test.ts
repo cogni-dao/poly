@@ -376,6 +376,81 @@ describe("copy-trade investigation", () => {
     expect(target?.percentile).toBe(80);
   });
 
+  it("withholds unverified Position-gap v3 economics from human and agent reads", async () => {
+    const fillId = "position-gap-accounting-pending";
+    await seedDb.insert(polyCopyTradeFills).values({
+      billingAccountId: ownerA.billingAccountId,
+      createdByUserId: ownerA.userId,
+      targetId: fillTargetId,
+      fillId,
+      marketId: MARKET_A,
+      observedAt: new Date("2026-10-03T12:08:00.000Z"),
+      clientOrderId: `pg-pending-${randomUUID()}`,
+      orderId: `pg-pending-order-${randomUUID()}`,
+      status: "filled",
+      positionLifecycle: "open",
+      mode: "paper",
+      price: "0.38600000",
+      shares: "9.30000000",
+      attributes: {
+        target_wallet: TARGET_WALLET,
+        token_id: TOKEN_YES,
+        outcome: "YES",
+        side: "BUY",
+        size_usdc: 3.5898,
+        filled_size_usdc: 3.5898,
+        position_gap_version: "3",
+      },
+    });
+    try {
+      const summary = await summaryFor(delegate.userId, ownerA.billingAccountId);
+      expect(summary?.account_position.legs[0]).toMatchObject({
+        token_id: TOKEN_YES,
+        net_shares: 6,
+        buy_usdc: 3,
+        missing_realized_rows: 1,
+      });
+      expect(summary?.completeness.facts).toContainEqual(
+        expect.objectContaining({
+          source: "mirror_ledger",
+          status: "partial",
+          complete: false,
+        })
+      );
+
+      const evidence = await withTenantScope(
+        db,
+        userActor(toUserId(delegate.userId)),
+        (tx) =>
+          getCopyTradeInvestigationEvidence(
+            tx as unknown as Parameters<typeof getCopyTradeInvestigationEvidence>[0],
+            {
+              billing_account_id: ownerA.billingAccountId,
+              condition_id: MARKET_A,
+              mode: "paper",
+              kind: "fills",
+              captured_at: summary?.captured_at ?? "2026-10-04T00:00:00.000Z",
+              limit: 100,
+            }
+          )
+      );
+      expect(evidence?.items.find((item) => item.fill_id === fillId)).toMatchObject({
+        price: null,
+        shares: null,
+        fees_usdc: null,
+        filled_size_usdc: null,
+        fill_accounting: {
+          status: "pending",
+          source: "clob_order_receipt",
+        },
+      });
+    } finally {
+      await seedDb
+        .delete(polyCopyTradeFills)
+        .where(eq(polyCopyTradeFills.fillId, fillId));
+    }
+  });
+
   it("uses a frozen cutoff and stable cursor without exceeding the requested page size", async () => {
     const summary = await summaryFor(delegate.userId, ownerA.billingAccountId);
     expect(summary).not.toBeNull();

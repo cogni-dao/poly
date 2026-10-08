@@ -606,6 +606,53 @@ describe("wallet dashboard coherent snapshot", () => {
     }
   }, 60_000);
 
+  it("marks history partial while terminal Position-gap accounting is pending", async () => {
+    const fillId = `pg-history-pending-${randomUUID()}`;
+    await db.insert(polyCopyTradeFills).values({
+      billingAccountId: TENANT_B,
+      createdByUserId: USER_B,
+      targetId: TARGET_ID,
+      fillId,
+      marketId: "prediction-market:polymarket:pg-history-pending",
+      observedAt: new Date(),
+      clientOrderId: `pg-history-pending-client-${randomUUID()}`,
+      status: "filled",
+      positionLifecycle: "loser",
+      price: "0.386",
+      shares: "9.3",
+      attributes: {
+        condition_id: "pg-history-pending",
+        token_id: "pg-history-pending-token",
+        size_usdc: 3.5898,
+        filled_size_usdc: 3.5898,
+        position_gap_version: "3",
+        closed_at: new Date().toISOString(),
+      },
+    });
+    try {
+      const dashboard = await readTenantWalletDashboard({
+        db,
+        billingAccountId: TENANT_B,
+        interval: "1W",
+        adapterConfigured: true,
+      });
+      expect(dashboard.execution.closed_position_count).toBe(1);
+      expect(dashboard.execution.closed_positions).toEqual([]);
+      expect(dashboard.facts.history).toMatchObject({
+        status: "partial",
+        complete: false,
+      });
+      expect(dashboard.warnings).toContainEqual(
+        expect.objectContaining({
+          component: "history",
+          code: "history_fill_accounting_pending",
+        })
+      );
+    } finally {
+      await db.delete(polyCopyTradeFills).where(eq(polyCopyTradeFills.fillId, fillId));
+    }
+  }, 60_000);
+
   it("dedupes canonical condition siblings and fails their coverage closed", async () => {
     await db.insert(polyTraderCurrentPositions).values([
       currentPosition(walletB.id, 910, "Case-Duplicate"),

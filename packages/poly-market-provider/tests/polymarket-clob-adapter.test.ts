@@ -14,7 +14,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  aggregateRealizedFillForOrder,
   ClobRejectionError,
+  FillAccountingPendingError,
   classifyClientError,
   classifyClobFailure,
   coerceNegRiskApiValue,
@@ -480,7 +482,7 @@ describe("classifyClientError (axios / network)", () => {
 });
 
 describe("mapOpenOrderToReceipt", () => {
-  it("converts matched shares × price into filled USDC notional", () => {
+  it("does not relabel limit price as realized fill cost", () => {
     const receipt = mapOpenOrderToReceipt({
       id: "0xopen",
       status: "live",
@@ -490,8 +492,61 @@ describe("mapOpenOrderToReceipt", () => {
       price: "0.5",
     });
     expect(receipt.order_id).toBe("0xopen");
-    expect(receipt.filled_size_usdc).toBe(1);
+    expect(receipt.filled_size_usdc).toBe(0);
+    expect(receipt.fill_price).toBeUndefined();
+    expect(receipt.total_shares).toBeUndefined();
+    expect(receipt.attributes?.realizedFillSource).toBe("unavailable");
     expect(receipt.status).toBe("open");
+  });
+});
+
+describe("aggregateRealizedFillForOrder", () => {
+  const trade = (overrides: Record<string, unknown>) =>
+    ({
+      id: "trade-base",
+      taker_order_id: "other-order",
+      market: "condition-1",
+      asset_id: "token-1",
+      side: "BUY",
+      size: "1",
+      fee_rate_bps: "0",
+      price: "0.5",
+      status: "CONFIRMED",
+      match_time: "0",
+      last_update: "0",
+      outcome: "YES",
+      bucket_index: 0,
+      owner: "owner",
+      maker_address: "maker",
+      maker_orders: [],
+      trader_side: "MAKER",
+      ...overrides,
+    }) as never;
+
+  it("uses the exact maker row when the order is not the taker", () => {
+    const fill = aggregateRealizedFillForOrder("our-order", [
+      trade({
+        maker_orders: [
+          {
+            order_id: "our-order",
+            matched_amount: "2.5",
+            price: "0.12",
+            fee_rate_bps: "0",
+          },
+        ],
+      }),
+    ]);
+    expect(fill?.totalShares).toBe(2.5);
+    expect(fill?.filledSizeUsdc).toBeCloseTo(0.3, 12);
+  });
+
+  it.each([
+    ["failed", [trade({ status: "FAILED" })]],
+    ["wire failed", [trade({ status: "TRADE_STATUS_FAILED" })]],
+    ["duplicate", [trade({}), trade({})]],
+    ["unattributed", [trade({ maker_orders: [] })]],
+  ])("rejects %s associated-trade evidence", (_case, trades) => {
+    expect(aggregateRealizedFillForOrder("our-order", trades)).toBeNull();
   });
 });
 
@@ -505,6 +560,7 @@ describe("PolymarketClobAdapter", () => {
       createAndPostMarketOrder?: ReturnType<typeof vi.fn>;
       cancelOrder?: ReturnType<typeof vi.fn>;
       getOrder?: ReturnType<typeof vi.fn>;
+      getTrades?: ReturnType<typeof vi.fn>;
       getBalanceAllowance?: ReturnType<typeof vi.fn>;
       getTickSize?: ReturnType<typeof vi.fn>;
       getNegRisk?: ReturnType<typeof vi.fn>;
@@ -970,23 +1026,104 @@ describe("PolymarketClobAdapter", () => {
     expect(createAndPostMarketOrder).not.toHaveBeenCalled();
   });
 
-  it("getOrder maps OpenOrder response to { found: receipt } (GETORDER_NEVER_NULL, task.0328 CP1)", async () => {
+  it("uses multi-trade execution prices, not the live order's limit", async () => {
     const getOrder = vi.fn().mockResolvedValue({
-      id: "0xopen",
-      status: "live",
+      id: "0xb1d281",
+      status: "matched",
       side: "BUY",
-      original_size: "4",
-      size_matched: "1",
-      price: "0.25",
+      original_size: "9.306",
+      size_matched: "9.3",
+      price: "0.386",
+      associate_trades: ["trade-1", "trade-2"],
     });
-    const adapter = makeAdapter({ getOrder });
-    const result = await adapter.getOrder("0xopen");
-    expect(getOrder).toHaveBeenCalledWith("0xopen");
+    const getTrades = vi.fn().mockImplementation(({ id }: { id: string }) =>
+      Promise.resolve([
+        {
+        id,
+        taker_order_id: "0xb1d281",
+        market: "condition-1",
+        asset_id: "token-1",
+        side: "BUY",
+        size: "4.65",
+        fee_rate_bps: "1000",
+        price: id === "trade-1" ? "0.001" : "0.000978494623655914",
+        status: "CONFIRMED",
+        match_time: "0",
+        last_update: "0",
+        outcome: "YES",
+        bucket_index: 0,
+        owner: "owner",
+        maker_address: "maker",
+        maker_orders: [],
+        trader_side: "TAKER",
+      },
+      ])
+    );
+    const adapter = makeAdapter({ getOrder, getTrades });
+    const result = await adapter.getOrder("0xb1d281");
+    expect(getOrder).toHaveBeenCalledWith("0xb1d281");
+    expect(getTrades).toHaveBeenCalledWith({ id: "trade-1" }, true);
     expect("found" in result).toBe(true);
     if ("found" in result) {
-      expect(result.found.status).toBe("open");
-      expect(result.found.filled_size_usdc).toBe(0.25); // 1 * 0.25
+      expect(result.found.status).toBe("filled");
+      expect(result.found.filled_size_usdc).toBeCloseTo(0.0092, 10);
+      expect(result.found.filled_size_usdc).not.toBeCloseTo(3.5898, 3);
+      expect(result.found.fill_price).toBeCloseTo(0.0092 / 9.3, 10);
+      expect(result.found.total_shares).toBe(9.3);
+      expect(result.found.attributes?.realizedFillSource).toBe(
+        "clob_associated_trades"
+      );
     }
+  });
+
+  it("fails closed when matched shares have no authoritative trade receipts", async () => {
+    const getOrder = vi.fn().mockResolvedValue({
+      id: "0xmatched",
+      status: "matched",
+      side: "BUY",
+      original_size: "9.306",
+      size_matched: "9.3",
+      price: "0.386",
+      associate_trades: [],
+    });
+    const adapter = makeAdapter({ getOrder });
+
+    await expect(adapter.getOrder("0xmatched")).rejects.toThrow(
+      FillAccountingPendingError
+    );
+  });
+
+  it("keeps incomplete or mismatched associated trades accounting-pending", async () => {
+    const getOrder = vi.fn().mockResolvedValue({
+      id: "0xmatched",
+      status: "matched",
+      side: "BUY",
+      original_size: "9.306",
+      size_matched: "9.3",
+      price: "0.386",
+      associate_trades: ["trade-1"],
+    });
+    const getTrades = vi.fn().mockResolvedValue([]);
+    const adapter = makeAdapter({ getOrder, getTrades });
+    await expect(adapter.getOrder("0xmatched")).rejects.toBeInstanceOf(
+      FillAccountingPendingError
+    );
+  });
+
+  it("does not collapse an invalid nonzero matched size to authoritative zero", async () => {
+    const getOrder = vi.fn().mockResolvedValue({
+      id: "0xinvalid-matched",
+      status: "matched",
+      side: "BUY",
+      original_size: "9.306",
+      size_matched: "not-a-number",
+      price: "0.386",
+      associate_trades: [],
+    });
+    const adapter = makeAdapter({ getOrder });
+    await expect(
+      adapter.getOrder("0xinvalid-matched")
+    ).rejects.toBeInstanceOf(FillAccountingPendingError);
   });
 
   it("getOrder returns { status: 'not_found' } when CLOB returns null/empty body", async () => {
@@ -1016,7 +1153,10 @@ describe("PolymarketClobAdapter", () => {
       expect.objectContaining({
         order_id: "0xopen",
         status: "open",
-        filled_size_usdc: 0.5,
+        filled_size_usdc: 0,
+        attributes: expect.objectContaining({
+          realizedFillSource: "unavailable",
+        }),
       }),
     ]);
   });

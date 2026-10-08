@@ -12,7 +12,12 @@
  *   - SIGNER_VIA_LOCAL_ACCOUNT — caller passes a viem `LocalAccount` wrapped in a `WalletClient`. No custom signer port.
  *   - V2_DEPOSIT_WALLET — production injects the official unified SDK client
  *     for POLY_1271 order signing; direct EOA remains a compatibility fallback.
- *   - REALIZED_FROM_AMOUNTS (bug.5018) — `mapOrderResponseToReceipt` surfaces `fill_price` (USDC/shares VWAP) and `total_shares` from CLOB `makingAmount`/`takingAmount`; `mapOpenOrderToReceipt` does the same when `size_matched > 0`. Both leave the fields `undefined` when no real match occurred (status open / canceled with 0 fills). `fees_usdc` is undefined on real prod responses today (CLOB does not surface fees on OrderResponse); the schema accepts a `fee` field for forward-compat + the equivalence-test stub.
+ *   - REALIZED_FROM_TRADES (bug.5011) — status polling resolves `associate_trades`
+ *     and derives cumulative shares/notional/VWAP from execution prices. The
+ *     order's limit price is never reported as realized cost.
+ *   - REALIZED_FROM_AMOUNTS (bug.5018) — immediate placement receipts surface
+ *     `fill_price` and `total_shares` from CLOB `makingAmount`/`takingAmount`.
+ *     `fees_usdc` remains undefined when the venue does not report charged USDC.
  * Side-effects: IO (HTTPS to the Polymarket CLOB).
  * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 CP3.2), docs/spec/poly-paper-trading-shortcomings.md (bug.5018 — adapter symmetry)
  * @public
@@ -26,6 +31,7 @@ import {
   OrderType,
   Side,
   SignatureTypeV2,
+  type Trade,
   type TickSize,
 } from "@polymarket/clob-client-v2";
 import { z } from "zod";
@@ -216,6 +222,23 @@ export class ClobServiceUnavailableError extends Error {
   constructor(readonly reason: string) {
     super(`Polymarket CLOB service unavailable: ${reason}`);
     this.name = "ClobServiceUnavailableError";
+  }
+}
+
+/**
+ * The venue reports matched shares, but the associated trade tape is not yet
+ * complete enough to prove cumulative execution consideration. Callers must
+ * retry this order; they must not substitute the order's limit price.
+ */
+export class FillAccountingPendingError extends Error {
+  readonly code = "fill_accounting_pending" as const;
+
+  constructor(
+    readonly orderId: string,
+    message: string
+  ) {
+    super(message);
+    this.name = "FillAccountingPendingError";
   }
 }
 
@@ -1056,7 +1079,7 @@ export class PolymarketClobAdapter implements MarketProviderPort {
         );
         return { status: "not_found" };
       }
-      const receipt = mapOpenOrderToReceipt(open);
+      const receipt = await this.mapOrderWithRealizedTrades(open);
       const duration_ms = Date.now() - start;
       this.metrics.incr(POLY_CLOB_METRICS.getOrderTotal, { result: "ok" });
       this.metrics.observeDurationMs(
@@ -1072,11 +1095,37 @@ export class PolymarketClobAdapter implements MarketProviderPort {
           order_id: orderId,
           status: receipt.status,
           filled_size_usdc: receipt.filled_size_usdc,
+          realized_fill_source: receipt.attributes?.realizedFillSource,
+          realized_shares: receipt.total_shares,
+          gross_execution_notional_usdc: receipt.filled_size_usdc,
         },
         "getOrder: ok"
       );
       return { found: receipt };
     } catch (err) {
+      if (err instanceof FillAccountingPendingError) {
+        const duration_ms = Date.now() - start;
+        this.metrics.incr(POLY_CLOB_METRICS.getOrderTotal, {
+          result: "fill_accounting_pending",
+        });
+        this.metrics.observeDurationMs(
+          POLY_CLOB_METRICS.getOrderDurationMs,
+          duration_ms,
+          { result: "fill_accounting_pending" }
+        );
+        this.log.warn(
+          {
+            event: "poly.clob.get_order",
+            phase: "fill_accounting_pending",
+            duration_ms,
+            order_id: orderId,
+            error_code: err.code,
+            reason: err.message,
+          },
+          "getOrder: fill accounting pending"
+        );
+        throw err;
+      }
       // 404-style errors from the CLOB client surface as thrown errors with
       // messages like "Order not found" or HTTP 404. Treat those as not_found
       // rather than hard errors — the order may have been purged from CLOB.
@@ -1127,6 +1176,79 @@ export class PolymarketClobAdapter implements MarketProviderPort {
       );
       throw err;
     }
+  }
+
+  private async mapOrderWithRealizedTrades(
+    open: ClobOpenOrderLike
+  ): Promise<OrderReceipt> {
+    const matchedShares = Number(open.size_matched);
+    if (!Number.isFinite(matchedShares) || matchedShares < 0) {
+      throw new FillAccountingPendingError(
+        open.id,
+        `PolymarketClobAdapter.getOrder: invalid matched shares for ${open.id}`
+      );
+    }
+    if (matchedShares === 0) return mapOpenOrderToReceipt(open);
+
+    const tradeIds = [
+      ...new Set(
+        (open.associate_trades ?? []).filter(
+          (tradeId): tradeId is string =>
+            typeof tradeId === "string" && tradeId.length > 0
+        )
+      ),
+    ];
+    if (tradeIds.length === 0) {
+      throw new FillAccountingPendingError(
+        open.id,
+        `PolymarketClobAdapter.getOrder: matched order ${open.id} has no associated trades`
+      );
+    }
+
+    const pages: Trade[][] = [];
+    const maxConcurrentTradeReads = 4;
+    for (let offset = 0; offset < tradeIds.length; offset += maxConcurrentTradeReads) {
+      pages.push(
+        ...(await Promise.all(
+          tradeIds.slice(offset, offset + maxConcurrentTradeReads).map((tradeId) =>
+            withSuppressedClobSdkDiagnostics(() =>
+              this.client.getTrades({ id: tradeId }, true)
+            )
+          )
+        ))
+      );
+    }
+    const requested = new Set(tradeIds);
+    const tradesById = new Map<string, Trade>();
+    for (const trade of pages.flat()) {
+      if (!requested.has(trade.id)) continue;
+      if (tradesById.has(trade.id)) {
+        throw new FillAccountingPendingError(
+          open.id,
+          `PolymarketClobAdapter.getOrder: duplicate associated trade ${trade.id} for ${open.id}`
+        );
+      }
+      tradesById.set(trade.id, trade);
+    }
+    if (tradesById.size !== tradeIds.length) {
+      throw new FillAccountingPendingError(
+        open.id,
+        `PolymarketClobAdapter.getOrder: incomplete associated trade IDs for ${open.id} (expected=${tradeIds.length}, observed=${tradesById.size})`
+      );
+    }
+    const trades = tradeIds.map((tradeId) => tradesById.get(tradeId) as Trade);
+    const realized = aggregateRealizedFillForOrder(open.id, trades);
+    if (
+      !realized ||
+      Math.abs(realized.totalShares - matchedShares) >
+        Math.max(1e-6, matchedShares * 1e-9)
+    ) {
+      throw new FillAccountingPendingError(
+        open.id,
+        `PolymarketClobAdapter.getOrder: incomplete realized trades for ${open.id} (matched=${matchedShares}, observed=${realized?.totalShares ?? 0})`
+      );
+    }
+    return mapOpenOrderToReceipt(open, realized);
   }
 
   async listOpenOrders(params?: {
@@ -1711,6 +1833,7 @@ interface ClobOpenOrderLike {
   original_size: string;
   size_matched: string;
   price: string;
+  associate_trades?: string[];
   /** conditionId. Present on `getOpenOrders` rows, absent on `getOrder`. */
   market?: string;
   /** ERC-1155 asset id. Present on `getOpenOrders` rows. */
@@ -1721,25 +1844,87 @@ interface ClobOpenOrderLike {
   created_at?: number;
 }
 
-export function mapOpenOrderToReceipt(open: ClobOpenOrderLike): OrderReceipt {
-  const status = normalizePolymarketStatus(open.status);
-  // size_matched is in outcome shares; convert back to USDC notional.
-  const priceNum = Number(open.price);
-  const matchedShares = Number(open.size_matched);
-  const filled_size_usdc = Number.isFinite(priceNum * matchedShares)
-    ? priceNum * matchedShares
-    : 0;
+interface ClobRealizedFill {
+  filledSizeUsdc: number;
+  totalShares: number;
+  fillPrice: number;
+  tradeIds: string[];
+}
 
-  // bug.5018 — only populate realized-fill fields when there's an actual
-  // match (size_matched > 0). For open-status orders with no fills these
-  // stay `undefined` — distinct from "adapter dropped them". CLOB
-  // OrderBook doesn't surface fees here; fees_usdc remains undefined.
-  const isRealizedFill =
-    Number.isFinite(priceNum) &&
-    Number.isFinite(matchedShares) &&
-    matchedShares > 0;
-  const fill_price = isRealizedFill ? priceNum : undefined;
-  const total_shares = isRealizedFill ? matchedShares : undefined;
+/**
+ * Aggregate the authenticated CLOB trade receipts attributable to one order.
+ * The order can be either the taker or one of several makers in a trade.
+ * Failed settlement attempts are excluded; duplicate trade rows are counted once.
+ */
+export function aggregateRealizedFillForOrder(
+  orderId: string,
+  trades: readonly Trade[]
+): ClobRealizedFill | null {
+  let totalShares = 0;
+  let filledSizeUsdc = 0;
+  const tradeIds: string[] = [];
+  const seen = new Set<string>();
+
+  for (const trade of trades) {
+    const normalizedStatus = trade.status.trim().toUpperCase();
+    if (
+      seen.has(trade.id) ||
+      normalizedStatus === "FAILED" ||
+      normalizedStatus.endsWith("_FAILED")
+    )
+      return null;
+    seen.add(trade.id);
+
+    let matched = false;
+    if (trade.taker_order_id === orderId) {
+      const shares = finitePositive(trade.size);
+      const price = finitePositive(trade.price);
+      if (shares === null || price === null) return null;
+      totalShares += shares;
+      filledSizeUsdc += shares * price;
+      matched = true;
+    } else {
+      let makerMatches = 0;
+      for (const maker of trade.maker_orders) {
+        if (maker.order_id !== orderId) continue;
+        makerMatches += 1;
+        const shares = finitePositive(maker.matched_amount);
+        const price = finitePositive(maker.price);
+        if (shares === null || price === null) return null;
+        totalShares += shares;
+        filledSizeUsdc += shares * price;
+        matched = true;
+      }
+      if (makerMatches > 1) return null;
+    }
+    if (!matched) return null;
+    tradeIds.push(trade.id);
+  }
+
+  if (totalShares <= 0 || filledSizeUsdc <= 0) return null;
+  return {
+    filledSizeUsdc,
+    totalShares,
+    fillPrice: filledSizeUsdc / totalShares,
+    tradeIds,
+  };
+}
+
+function finitePositive(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+export function mapOpenOrderToReceipt(
+  open: ClobOpenOrderLike,
+  realized?: ClobRealizedFill
+): OrderReceipt {
+  const status = normalizePolymarketStatus(open.status);
+  // The order's `price` is its limit, not its execution VWAP. Only an
+  // aggregate of associated authenticated trade receipts is realized truth.
+  const filled_size_usdc = realized?.filledSizeUsdc ?? 0;
+  const fill_price = realized?.fillPrice;
+  const total_shares = realized?.totalShares;
 
   const submitted_at =
     typeof open.created_at === "number" && open.created_at > 0
@@ -1760,6 +1945,10 @@ export function mapOpenOrderToReceipt(open: ClobOpenOrderLike): OrderReceipt {
       originalSize: open.original_size,
       sizeMatched: open.size_matched,
       price: open.price,
+      realizedFillSource: realized
+        ? "clob_associated_trades"
+        : "unavailable",
+      ...(realized ? { realizedTradeIds: realized.tradeIds } : {}),
       ...(open.market ? { market: open.market } : {}),
       ...(open.asset_id ? { tokenId: open.asset_id } : {}),
       ...(open.outcome ? { outcome: open.outcome } : {}),

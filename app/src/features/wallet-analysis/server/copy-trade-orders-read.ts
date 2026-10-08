@@ -75,6 +75,7 @@ type OrdersRow = {
   updatedAt: Date;
   syncedAt: Date | null;
   mode: string;
+  shares: string | number;
   attributes: Record<string, unknown> | null;
 };
 
@@ -96,6 +97,30 @@ export function toContractRow(
     typeof attrs[key] === "string" ? (attrs[key] as string) : null;
   const readNum = (key: string): number | null =>
     typeof attrs[key] === "number" ? (attrs[key] as number) : null;
+  const positionGapV3 = readStr("position_gap_version") === "3";
+  const verifiedPositionGapFill =
+    positionGapV3 &&
+    readStr("realized_fill_source") === "clob_associated_trades";
+  const realizedShares = Number(row.shares);
+  const realizedNotional = readNum("filled_size_usdc");
+  const fillAccounting = positionGapV3
+    ? verifiedPositionGapFill &&
+      Number.isFinite(realizedShares) &&
+      realizedShares > 0 &&
+      realizedNotional !== null &&
+      realizedNotional > 0
+      ? {
+          status: "verified" as const,
+          source: "clob_associated_trades" as const,
+          matched_order_count: 1,
+          realized_shares: realizedShares,
+          realized_entry_notional_usdc: realizedNotional,
+        }
+      : {
+          status: "pending" as const,
+          source: "clob_order_receipt" as const,
+        }
+    : null;
 
   const sideRaw = readStr("side");
   const side: PolyCopyTradeOrderRow["side"] =
@@ -125,7 +150,11 @@ export function toContractRow(
     side,
     size_usdc: readNum("size_usdc"),
     limit_price: readNum("limit_price"),
-    filled_size_usdc: readNum("filled_size_usdc"),
+    filled_size_usdc:
+      !positionGapV3 || fillAccounting?.status === "verified"
+        ? realizedNotional
+        : null,
+    fill_accounting: fillAccounting,
     error: readStr("error"),
     observed_at: row.observedAt.toISOString(),
     created_at: row.createdAt.toISOString(),
@@ -193,6 +222,7 @@ export async function listCopyTradeOrdersForAccount(
       updatedAt: polyCopyTradeFills.updatedAt,
       syncedAt: polyCopyTradeFills.syncedAt,
       mode: polyCopyTradeFills.mode,
+      shares: polyCopyTradeFills.shares,
       attributes: polyCopyTradeFills.attributes,
     })
     .from(polyCopyTradeFills)

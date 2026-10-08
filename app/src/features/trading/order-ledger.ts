@@ -50,6 +50,7 @@ import {
   type LedgerCancelReason,
   type LedgerPositionLifecycle,
   type LedgerRow,
+  type LedgerStatus,
   type ListOpenOrPendingOptions,
   type ListRecentOptions,
   type ListTenantPositionsOptions,
@@ -857,6 +858,89 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     });
   }
 
+  type FillAccountingObservation = {
+    filled_size_usdc?: number;
+    fill_price?: number;
+    total_shares?: number;
+    fees_usdc?: number;
+    realized_fill_source?: "clob_associated_trades";
+  };
+
+  function acceptedFillAccounting(
+    current: {
+      price: string | null;
+      shares: string | null;
+      feesUsdc: string | null;
+      attributes: unknown;
+    },
+    observation: FillAccountingObservation
+  ): {
+    columns: Partial<Record<"price" | "shares" | "feesUsdc", string>>;
+    attributes: Record<string, unknown>;
+  } | null {
+    const incomingShares = observation.total_shares;
+    const incomingPrice = observation.fill_price;
+    const incomingCost = observation.filled_size_usdc;
+    if (
+      typeof incomingShares !== "number" ||
+      !Number.isFinite(incomingShares) ||
+      incomingShares <= 0 ||
+      typeof incomingPrice !== "number" ||
+      !Number.isFinite(incomingPrice) ||
+      incomingPrice <= 0 ||
+      typeof incomingCost !== "number" ||
+      !Number.isFinite(incomingCost) ||
+      incomingCost <= 0
+    ) {
+      return null;
+    }
+
+    const attributes =
+      current.attributes && typeof current.attributes === "object"
+        ? (current.attributes as Record<string, unknown>)
+        : {};
+    const currentShares = Number(current.shares ?? 0);
+    const safeCurrentShares = Number.isFinite(currentShares) ? currentShares : 0;
+    const currentVerified =
+      attributes.realized_fill_source === "clob_associated_trades";
+    const incomingVerified =
+      observation.realized_fill_source === "clob_associated_trades";
+    const isHigher = incomingShares > safeCurrentShares + 1e-9;
+    const isHigherAccepted = isHigher && (incomingVerified || !currentVerified);
+    const isSourceUpgrade =
+      incomingVerified &&
+      !currentVerified &&
+      incomingShares + 1e-9 >= safeCurrentShares;
+    if (!isHigherAccepted && !isSourceUpgrade) return null;
+
+    return {
+      columns: {
+        price: incomingPrice.toString(),
+        shares: incomingShares.toString(),
+        ...(typeof observation.fees_usdc === "number" &&
+        Number.isFinite(observation.fees_usdc)
+          ? { feesUsdc: observation.fees_usdc.toString() }
+          : {}),
+      },
+      attributes: {
+        filled_size_usdc: incomingCost,
+        ...(incomingVerified
+          ? { realized_fill_source: "clob_associated_trades" }
+          : {}),
+      },
+    };
+  }
+
+  function monotonicLedgerStatus(
+    current: string,
+    observed: LedgerStatus
+  ): LedgerStatus {
+    if (current === "filled" || current === "canceled") {
+      return current;
+    }
+    return observed;
+  }
+
   const root: OrderLedger = {
     forTenant: buildTenantSurface,
 
@@ -903,31 +987,68 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       const status: LedgerRow["status"] = mapReceiptStatus(
         params.receipt.status
       );
-      const positionLifecycle = lifecycleFromOrderUpdate(
-        status,
-        params.receipt.filled_size_usdc
-      );
-      const fillColumns = realizedFillColumns(params.receipt);
-      await deps.db
-        .update(polyCopyTradeFills)
-        .set({
-          orderId: params.receipt.order_id,
-          status,
-          ...(positionLifecycle !== null
-            ? {
-                positionLifecycle: preserveTerminalLifecycle(positionLifecycle),
-              }
+      const realizedFillSource =
+        params.receipt.attributes?.realizedFillSource ===
+        "clob_associated_trades"
+          ? "clob_associated_trades"
+          : undefined;
+      await deps.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${polyCopyTradeFills.clientOrderId} = ${params.client_order_id} FOR UPDATE`
+        );
+        const [current] = await tx
+          .select({
+            price: polyCopyTradeFills.price,
+            shares: polyCopyTradeFills.shares,
+            feesUsdc: polyCopyTradeFills.feesUsdc,
+            attributes: polyCopyTradeFills.attributes,
+            status: polyCopyTradeFills.status,
+          })
+          .from(polyCopyTradeFills)
+          .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id))
+          .limit(1);
+        if (!current) return;
+        const nextStatus = monotonicLedgerStatus(current.status, status);
+        const positionLifecycle = lifecycleFromOrderUpdate(
+          nextStatus,
+          params.receipt.filled_size_usdc
+        );
+        const fill = acceptedFillAccounting(current, {
+          filled_size_usdc: params.receipt.filled_size_usdc,
+          ...(params.receipt.fill_price !== undefined
+            ? { fill_price: params.receipt.fill_price }
             : {}),
-          ...fillColumns,
-          updatedAt: new Date(),
-          attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(
-            {
-              filled_size_usdc: params.receipt.filled_size_usdc ?? 0,
-              submitted_at: params.receipt.submitted_at,
-            }
-          )}::jsonb`,
-        })
-        .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id));
+          ...(params.receipt.total_shares !== undefined
+            ? { total_shares: params.receipt.total_shares }
+            : {}),
+          ...(params.receipt.fees_usdc !== undefined
+            ? { fees_usdc: params.receipt.fees_usdc }
+            : {}),
+          ...(realizedFillSource
+            ? { realized_fill_source: realizedFillSource }
+            : {}),
+        });
+        const attributesPatch = {
+          submitted_at: params.receipt.submitted_at,
+          ...(fill?.attributes ?? {}),
+        };
+        await tx
+          .update(polyCopyTradeFills)
+          .set({
+            orderId: params.receipt.order_id,
+            status: nextStatus,
+            ...(positionLifecycle !== null
+              ? {
+                  positionLifecycle:
+                    preserveTerminalLifecycle(positionLifecycle),
+                }
+              : {}),
+            ...(fill?.columns ?? {}),
+            updatedAt: new Date(),
+            attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(attributesPatch)}::jsonb`,
+          })
+          .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id));
+      });
     },
 
     async markError(params: {
@@ -1063,37 +1184,55 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     async updateStatus(input: UpdateStatusInput): Promise<void> {
       // Build the attributes patch only for the fields actually provided.
       const patch: Record<string, unknown> = {};
-      if (input.filled_size_usdc !== undefined) {
-        patch.filled_size_usdc = input.filled_size_usdc;
-      }
       if (input.reason !== undefined) {
         patch.reason = input.reason;
       }
-      const fillColumns = realizedFillColumns(input);
-      const positionLifecycle = lifecycleFromOrderUpdate(
-        input.status,
-        input.filled_size_usdc
-      );
-
-      await deps.db
-        .update(polyCopyTradeFills)
-        .set({
-          status: input.status,
-          ...(input.order_id !== undefined ? { orderId: input.order_id } : {}),
-          ...(positionLifecycle !== null
-            ? {
-                positionLifecycle: preserveTerminalLifecycle(positionLifecycle),
-              }
-            : {}),
-          ...fillColumns,
-          updatedAt: new Date(),
-          ...(Object.keys(patch).length > 0
-            ? {
-                attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`,
-              }
-            : {}),
-        })
-        .where(eq(polyCopyTradeFills.clientOrderId, input.client_order_id));
+      await deps.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${polyCopyTradeFills.clientOrderId} = ${input.client_order_id} FOR UPDATE`
+        );
+        const [current] = await tx
+          .select({
+            price: polyCopyTradeFills.price,
+            shares: polyCopyTradeFills.shares,
+            feesUsdc: polyCopyTradeFills.feesUsdc,
+            attributes: polyCopyTradeFills.attributes,
+            status: polyCopyTradeFills.status,
+          })
+          .from(polyCopyTradeFills)
+          .where(eq(polyCopyTradeFills.clientOrderId, input.client_order_id))
+          .limit(1);
+        if (!current) return;
+        const nextStatus = monotonicLedgerStatus(current.status, input.status);
+        const positionLifecycle = lifecycleFromOrderUpdate(
+          nextStatus,
+          input.filled_size_usdc
+        );
+        const fill = acceptedFillAccounting(current, input);
+        const attributesPatch = { ...patch, ...(fill?.attributes ?? {}) };
+        await tx
+          .update(polyCopyTradeFills)
+          .set({
+            status: nextStatus,
+            ...(input.order_id !== undefined
+              ? { orderId: input.order_id }
+              : {}),
+            ...(positionLifecycle !== null
+              ? {
+                  positionLifecycle:
+                    preserveTerminalLifecycle(positionLifecycle),
+                }
+              : {}),
+            ...(fill?.columns ?? {}),
+            updatedAt: new Date(),
+            ...(Object.keys(attributesPatch).length > 0
+              ? {
+                  attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(attributesPatch)}::jsonb`,
+                }
+              : {}),
+          })
+          .where(eq(polyCopyTradeFills.clientOrderId, input.client_order_id));
+      });
     },
 
     async markSynced(client_order_ids: string[]): Promise<void> {
@@ -1387,24 +1526,6 @@ export function mapLedgerRow(r: LedgerSelectedRow): LedgerRow {
     billing_account_id: r.billingAccountId,
     // Schema CHECK enforces ('live','paper'); cast is safe at the type boundary.
     mode: r.mode as LedgerRow["mode"],
-  };
-}
-
-function realizedFillColumns(input: {
-  fill_price?: number | undefined;
-  total_shares?: number | undefined;
-  fees_usdc?: number | undefined;
-}): Partial<Record<"price" | "shares" | "feesUsdc", string>> {
-  return {
-    ...(typeof input.fill_price === "number"
-      ? { price: input.fill_price.toString() }
-      : {}),
-    ...(typeof input.total_shares === "number"
-      ? { shares: input.total_shares.toString() }
-      : {}),
-    ...(typeof input.fees_usdc === "number"
-      ? { feesUsdc: input.fees_usdc.toString() }
-      : {}),
   };
 }
 
