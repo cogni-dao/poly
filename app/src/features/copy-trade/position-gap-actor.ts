@@ -1147,6 +1147,7 @@ export function selectPositionGapVenueCandidates(input: {
 			)
 			.sort(
 				(left, right) =>
+					right.gapShares - left.gapShares ||
 					right.theoreticalNotional - left.theoreticalNotional ||
 					left.tokenId.localeCompare(right.tokenId),
 			)

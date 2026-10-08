@@ -156,6 +156,31 @@ describe("selectPositionGapVenueCandidates", () => {
 		).toEqual(new Set(["rn1-token"]));
 	});
 
+	it("prioritizes a mechanically feasible cheap share lot inside the 16-token bound", () => {
+		const candidates = selectPositionGapVenueCandidates({
+			snapshot,
+			cohorts: [
+				...Array.from({ length: 16 }, (_, index) => ({
+					tokenId: `expensive-${index.toString().padStart(2, "0")}`,
+					allowedMirrorShares: 4,
+					benchmarkTargetVwap: 0.9,
+				})),
+				{
+					tokenId: "cheap-five-share-lot",
+					allowedMirrorShares: 5,
+					benchmarkTargetVwap: 0.01,
+				},
+			],
+			holdings: [],
+			openOrders: [],
+			perOrderHeadroomUsdc: 5,
+		});
+
+		expect(candidates.size).toBe(16);
+		expect(candidates.has("cheap-five-share-lot")).toBe(true);
+		expect(candidates.has("expensive-15")).toBe(false);
+	});
+
 	it("nets mirror complete sets before deciding whether a target-side gap needs venue truth", () => {
 		const binarySnapshot: TargetBookSnapshotV1 = {
 			...snapshot,
