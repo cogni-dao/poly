@@ -6,13 +6,14 @@ import { polyCopyTradeFills } from "@cogni/db-schema/copy-trade";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { billingAccounts, users } from "@/shared/db/schema";
 import { readClosedPositionSummary } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
+import { billingAccounts, users } from "@/shared/db/schema";
 
 const TENANT = "wallet-dashboard-closed-parity";
 const TARGET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const USER = "wallet-dashboard-closed-parity-user";
 const OBSERVED = new Date("2026-10-03T12:00:00.000Z");
+const CAPTURED = new Date("2026-10-07T20:30:00.000Z");
 
 type OracleRow = {
   fillId: string;
@@ -62,8 +63,12 @@ function pureClosed(rows: OracleRow[]) {
     .sort((left, right) => {
       const leftClosed = Date.parse(String(left.attributes.closed_at ?? ""));
       const rightClosed = Date.parse(String(right.attributes.closed_at ?? ""));
-      const leftTime = Number.isFinite(leftClosed) ? leftClosed : left.observedAt.getTime();
-      const rightTime = Number.isFinite(rightClosed) ? rightClosed : right.observedAt.getTime();
+      const leftTime = Number.isFinite(leftClosed)
+        ? leftClosed
+        : left.updatedAt.getTime();
+      const rightTime = Number.isFinite(rightClosed)
+        ? rightClosed
+        : right.updatedAt.getTime();
       if (leftTime !== rightTime) return rightTime - leftTime;
       const leftKeys = keys(left);
       const rightKeys = keys(right);
@@ -140,6 +145,87 @@ describe("wallet dashboard closed SQL parity", () => {
       updatedAt: new Date("2026-10-03T11:30:00.000Z"),
       attributes: { condition_id: "condition-mixed", token_id: "token-mixed", closed_at: OBSERVED.toISOString() },
     },
+    {
+      fillId: "window-recent",
+      marketId: "ignored",
+      clientOrderId: "window-recent-client",
+      lifecycle: "closed",
+      observedAt: new Date("2026-10-07T20:00:00.000Z"),
+      updatedAt: new Date("2026-10-07T20:15:00.000Z"),
+      attributes: { condition_id: "window-recent", token_id: "window-recent-token" },
+    },
+    {
+      fillId: "window-1d-boundary",
+      marketId: "ignored",
+      clientOrderId: "window-1d-boundary-client",
+      lifecycle: "closed",
+      observedAt: new Date("2026-10-06T20:30:00.000Z"),
+      updatedAt: new Date("2026-10-06T20:30:00.000Z"),
+      attributes: { condition_id: "window-1d-boundary", token_id: "window-1d-boundary-token", closed_at: "2026-10-06T20:30:00.000Z" },
+    },
+    {
+      fillId: "window-before-1d",
+      marketId: "ignored",
+      clientOrderId: "window-before-1d-client",
+      lifecycle: "closed",
+      observedAt: new Date("2026-10-06T20:29:59.999Z"),
+      updatedAt: new Date("2026-10-06T20:29:59.999Z"),
+      attributes: { condition_id: "window-before-1d", token_id: "window-before-1d-token", closed_at: "2026-10-06T20:29:59.999Z" },
+    },
+    {
+      fillId: "window-1w-boundary",
+      marketId: "ignored",
+      clientOrderId: "window-1w-boundary-client",
+      lifecycle: "closed",
+      observedAt: new Date("2026-09-30T20:30:00.000Z"),
+      updatedAt: new Date("2026-09-30T20:30:00.000Z"),
+      attributes: { condition_id: "window-1w-boundary", token_id: "window-1w-boundary-token", closed_at: "2026-09-30T20:30:00.000Z" },
+    },
+    {
+      fillId: "window-1m-boundary",
+      marketId: "ignored",
+      clientOrderId: "window-1m-boundary-client",
+      lifecycle: "closed",
+      observedAt: new Date("2026-09-07T20:30:00.000Z"),
+      updatedAt: new Date("2026-09-07T20:30:00.000Z"),
+      attributes: { condition_id: "window-1m-boundary", token_id: "window-1m-boundary-token", closed_at: "2026-09-07T20:30:00.000Z" },
+    },
+    {
+      fillId: "window-1y-boundary",
+      marketId: "ignored",
+      clientOrderId: "window-1y-boundary-client",
+      lifecycle: "closed",
+      observedAt: new Date("2025-10-07T20:30:00.000Z"),
+      updatedAt: new Date("2025-10-07T20:30:00.000Z"),
+      attributes: { condition_id: "window-1y-boundary", token_id: "window-1y-boundary-token", closed_at: "2025-10-07T20:30:00.000Z" },
+    },
+    {
+      fillId: "window-ytd-boundary",
+      marketId: "ignored",
+      clientOrderId: "window-ytd-boundary-client",
+      lifecycle: "closed",
+      observedAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      attributes: { condition_id: "window-ytd-boundary", token_id: "window-ytd-boundary-token", closed_at: "2026-01-01T00:00:00.000Z" },
+    },
+    {
+      fillId: "window-before-ytd",
+      marketId: "ignored",
+      clientOrderId: "window-before-ytd-client",
+      lifecycle: "closed",
+      observedAt: new Date("2025-12-31T23:59:59.999Z"),
+      updatedAt: new Date("2025-12-31T23:59:59.999Z"),
+      attributes: { condition_id: "window-before-ytd", token_id: "window-before-ytd-token", closed_at: "2025-12-31T23:59:59.999Z" },
+    },
+    {
+      fillId: "window-before-1y",
+      marketId: "ignored",
+      clientOrderId: "window-before-1y-client",
+      lifecycle: "closed",
+      observedAt: new Date("2025-10-07T20:29:59.999Z"),
+      updatedAt: new Date("2025-10-07T20:29:59.999Z"),
+      attributes: { condition_id: "window-before-1y", token_id: "window-before-1y-token", closed_at: "2025-10-07T20:29:59.999Z" },
+    },
   ];
 
   beforeAll(async () => {
@@ -149,15 +235,6 @@ describe("wallet dashboard closed SQL parity", () => {
       ownerUserId: USER,
       balanceCredits: 0n,
     });
-  });
-
-  afterAll(async () => {
-    await db.delete(polyCopyTradeFills).where(eq(polyCopyTradeFills.billingAccountId, TENANT));
-    await db.delete(billingAccounts).where(eq(billingAccounts.id, TENANT));
-    await db.delete(users).where(eq(users.id, USER));
-  });
-
-  it("matches the pure tuple oracle and deterministic fallback-key ordering", async () => {
     await db.insert(polyCopyTradeFills).values(
       rows.map((row) => ({
         billingAccountId: TENANT,
@@ -173,12 +250,22 @@ describe("wallet dashboard closed SQL parity", () => {
         updatedAt: row.updatedAt,
       }))
     );
+  });
+
+  afterAll(async () => {
+    await db.delete(polyCopyTradeFills).where(eq(polyCopyTradeFills.billingAccountId, TENANT));
+    await db.delete(billingAccounts).where(eq(billingAccounts.id, TENANT));
+    await db.delete(users).where(eq(users.id, USER));
+  });
+
+  it("matches the pure tuple oracle and deterministic fallback-key ordering", async () => {
 
     const oracle = pureClosed(rows);
     const actual = await readClosedPositionSummary(
       db,
       TENANT,
-      new Date("2026-10-03T12:01:00.000Z")
+      CAPTURED,
+      "ALL"
     );
 
     expect(actual.count).toBe(oracle.length);
@@ -200,4 +287,26 @@ describe("wallet dashboard closed SQL parity", () => {
       )?.positionId
     ).toBe("condition-mixed:token-mixed");
   });
+
+  it.each([
+    ["1D", 2],
+    ["1W", 8],
+    ["1M", 9],
+    ["1Y", 12],
+    ["YTD", 10],
+    ["ALL", 13],
+  ] as const)(
+    "filters the exact count and preview at the inclusive %s cutoff",
+    async (interval, expectedCount) => {
+      const actual = await readClosedPositionSummary(
+        db,
+        TENANT,
+        CAPTURED,
+        interval
+      );
+
+      expect(actual.count).toBe(expectedCount);
+      expect(actual.positions).toHaveLength(expectedCount);
+    }
+  );
 });

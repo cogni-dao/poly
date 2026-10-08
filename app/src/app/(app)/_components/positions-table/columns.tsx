@@ -74,10 +74,13 @@ function formatHeldDuration(heldMinutes: number): string {
 }
 
 function formatClosedAt(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, {
+  return new Date(iso).toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
   });
 }
 
@@ -263,7 +266,7 @@ export function makeColumns(opts: MakeColumnsOpts): AnyCol[] {
           rightHeader(
             <DataGridColumnHeader column={column} title="Closed" visibility />
           ),
-        size: 120,
+        size: 190,
         sortingFn: (a, b) => {
           const av = a.getValue<string | null | undefined>("closedAt");
           const bv = b.getValue<string | null | undefined>("closedAt");
@@ -274,9 +277,12 @@ export function makeColumns(opts: MakeColumnsOpts): AnyCol[] {
         cell: (info) => {
           const v = info.getValue();
           return (
-            <div className="text-right text-muted-foreground text-sm tabular-nums">
+            <time
+              dateTime={v ?? undefined}
+              className="block text-right text-muted-foreground text-sm tabular-nums"
+            >
               {v ? formatClosedAt(v) : "—"}
-            </div>
+            </time>
           );
         },
         meta: {

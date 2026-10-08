@@ -42,6 +42,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { withResearchReadTimeout } from "./fill-rollup-service";
 import { dedupeByKey } from "./observation-helpers";
+import { portfolioWindowStart } from "./portfolio-window";
 
 type Db =
   | NodePgDatabase<Record<string, unknown>>
@@ -120,8 +121,8 @@ export async function getTradingWalletPnlHistoryRead(input: {
       // only the windowed rows instead of the wallet's entire stored series.
       // `windowStart` is the same cutoff `filterPnlHistory` applies (null for
       // ALL / unparseable capturedAt = no bound), so the JS filter below is a
-      // no-op refinement kept for the floor-to-second edge (see pnlWindowStart).
-      const windowStart = pnlWindowStart(input.interval, capturedAt);
+      // no-op refinement kept for the floor-to-second edge.
+      const windowStart = portfolioWindowStart(input.interval, capturedAt);
       const rows = await tx
         .select({
           ts: polyTraderUserPnlPoints.ts,
@@ -296,24 +297,6 @@ function readFidelityForInterval(
   }
 }
 
-/**
- * SQL-pushdown twin of `filterPnlHistory` (task.5018): the timestamptz cutoff
- * for the requested interval, or null when there is no bound (ALL, or an
- * unparseable capturedAt — the same cases where `filterPnlHistory` returns
- * the series unfiltered). The SQL bound `ts >= cutoff` is a superset of the
- * JS predicate `floor(ts/1s)*1s >= cutoff` (flooring only moves timestamps
- * earlier), so applying both yields byte-identical output to JS-only.
- */
-function pnlWindowStart(
-  interval: PolyWalletOverviewInterval,
-  capturedAtIso: string
-): Date | null {
-  if (interval === "ALL") return null;
-  const capturedAtMs = new Date(capturedAtIso).getTime();
-  if (!Number.isFinite(capturedAtMs)) return null;
-  return new Date(windowStartMs(interval, capturedAtMs));
-}
-
 function filterPnlHistory(
   points: readonly PolymarketUserPnlPoint[],
   interval: PolyWalletOverviewInterval,
@@ -324,28 +307,10 @@ function filterPnlHistory(
   const capturedAtMs = new Date(capturedAtIso).getTime();
   if (!Number.isFinite(capturedAtMs)) return [...points];
 
-  const startMs = windowStartMs(interval, capturedAtMs);
+  const windowStart = portfolioWindowStart(interval, capturedAtIso);
+  if (windowStart === null) return [...points];
+  const startMs = windowStart.getTime();
   return points.filter((point) => point.t * 1_000 >= startMs);
-}
-
-function windowStartMs(
-  interval: Exclude<PolyWalletOverviewInterval, "ALL">,
-  capturedAtMs: number
-): number {
-  switch (interval) {
-    case "1D":
-      return capturedAtMs - 86_400_000;
-    case "1W":
-      return capturedAtMs - 7 * 86_400_000;
-    case "1M":
-      return capturedAtMs - 30 * 86_400_000;
-    case "1Y":
-      return capturedAtMs - 365 * 86_400_000;
-    case "YTD": {
-      const now = new Date(capturedAtMs);
-      return Date.UTC(now.getUTCFullYear(), 0, 1);
-    }
-  }
 }
 
 function roundUsd(value: number): number {
