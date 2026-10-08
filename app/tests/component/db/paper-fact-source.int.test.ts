@@ -51,7 +51,7 @@ import {
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
 import { derivePaperAccountAddress } from "@/features/paper-accounts";
@@ -63,6 +63,7 @@ import {
   PAPER_WALLET_KIND,
   type PaperMidPriceReader,
   readActivePaperAccounts,
+  runPaperProjectionTick,
   syncPaperTraderWallets,
 } from "@/features/wallet-analysis/server/paper-fact-source";
 import { readWalletBalanceFact } from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
@@ -88,6 +89,29 @@ const logger = {
   debug: () => {},
   child: () => logger,
 } as unknown as Parameters<typeof observePaperWallet>[0]["logger"];
+
+/**
+ * Captures the `phase` of every structured log line, so "idle" is provably
+ * distinguishable from "broken" rather than both being silence.
+ */
+function recordingLogger() {
+  const seen: string[] = [];
+  const record = (payload: unknown): void => {
+    const phase = (payload as { phase?: unknown } | undefined)?.phase;
+    if (typeof phase === "string") seen.push(phase);
+  };
+  const self = {
+    info: record,
+    warn: record,
+    error: record,
+    debug: record,
+    child: () => self,
+  };
+  return {
+    logger: self as unknown as Parameters<typeof observePaperWallet>[0]["logger"],
+    phases: () => [...seen],
+  };
+}
 
 type Tenant = { userId: string; billingAccountId: string; name: string };
 
@@ -800,6 +824,109 @@ describe("paper facts project into the live tables (migration 0083)", () => {
 
       // An empty read is indistinguishable from an outage; retiring on it
       // would lose the dashboard for every paper tenant at once.
+      expect(rows[0]?.activeForResearch).toBe(true);
+      expect(rows[0]?.disabledAt).toBeNull();
+    });
+  });
+  describe("the gate is the data, not POLY_TRADER_OBSERVATION_WRITER_ENABLED", () => {
+    it("projects whenever an active paper account exists, reading no env flag", async () => {
+      const events = recordingLogger();
+      const result = await runPaperProjectionTick({
+        db: getSeedDb() as unknown as PaperDb,
+        readMidPrice: midPrices({
+          [tokenA]: 0.5,
+          [tokenB]: 0.65,
+          [tokenU]: 0.35,
+        }),
+        logger: events.logger,
+        now: new Date("2026-10-07T20:00:00.000Z"),
+      });
+
+      // Both seeded paper tenants are found and projected. Nothing in this
+      // path consults POLY_TRADER_OBSERVATION_WRITER_ENABLED — that lever
+      // throttles Data-API observation, whose write load this does not share.
+      expect(result.paperAccounts).toBeGreaterThanOrEqual(2);
+      expect(result.walletsProjected).toBe(result.paperAccounts);
+      expect(result.navsPublished).toBeGreaterThanOrEqual(2);
+      expect(result.errors).toBe(0);
+      expect(result.idleReason).toBeUndefined();
+      expect(events.phases()).toContain("wallet_ok");
+    });
+
+    it("logs idle_no_paper_accounts and writes nothing when none exist", async () => {
+      const seedDb = getSeedDb();
+      // Deterministically reach the zero-account state by revoking every
+      // active paper connection, then restoring exactly those rows. The
+      // component lane is `sequence: { concurrent: false }` + `singleFork`, so
+      // nothing else is running while this holds.
+      const active = await seedDb
+        .select({ id: polyWalletConnections.id })
+        .from(polyWalletConnections)
+        .where(
+          and(
+            eq(polyWalletConnections.kind, "paper"),
+            isNull(polyWalletConnections.revokedAt)
+          )
+        );
+      expect(active.length).toBeGreaterThan(0);
+      const ids = active.map((row) => row.id);
+
+      const navsBefore = await seedDb
+        .select({ billingAccountId: polyWalletBalanceSnapshots.billingAccountId })
+        .from(polyWalletBalanceSnapshots);
+
+      const events = recordingLogger();
+      try {
+        await seedDb
+          .update(polyWalletConnections)
+          .set({ revokedAt: new Date("2026-10-07T21:00:00.000Z") })
+          .where(inArray(polyWalletConnections.id, ids));
+
+        const result = await runPaperProjectionTick({
+          db: seedDb as unknown as PaperDb,
+          // Would throw if ever called — proves the gate short-circuits BEFORE
+          // any market read, so an idle lane costs one indexed SELECT.
+          readMidPrice: () => {
+            throw new Error("mid price must not be read when idle");
+          },
+          logger: events.logger,
+        });
+
+        expect(result.idleReason).toBe("no_paper_accounts");
+        expect(result.paperAccounts).toBe(0);
+        expect(result.walletsProjected).toBe(0);
+        expect(result.errors).toBe(0);
+
+        // Observable as IDLE, not BROKEN. A silent no-op here would reproduce
+        // exactly the invisible-paper-account failure this slice exists to fix.
+        expect(events.phases()).toContain("idle_no_paper_accounts");
+        expect(events.phases()).not.toContain("account_failed");
+
+        // And it wrote nothing.
+        const navsAfter = await seedDb
+          .select({
+            billingAccountId: polyWalletBalanceSnapshots.billingAccountId,
+          })
+          .from(polyWalletBalanceSnapshots);
+        expect(navsAfter).toHaveLength(navsBefore.length);
+      } finally {
+        await seedDb
+          .update(polyWalletConnections)
+          .set({ revokedAt: null })
+          .where(inArray(polyWalletConnections.id, ids));
+      }
+    });
+
+    it("retires nothing on the idle path, so paper wallets survive an empty lane", async () => {
+      const paperAddress = derivePaperAccountAddress(traded.billingAccountId);
+      const rows = await getSeedDb()
+        .select({
+          activeForResearch: polyTraderWallets.activeForResearch,
+          disabledAt: polyTraderWallets.disabledAt,
+        })
+        .from(polyTraderWallets)
+        .where(eq(polyTraderWallets.walletAddress, paperAddress));
+
       expect(rows[0]?.activeForResearch).toBe(true);
       expect(rows[0]?.disabledAt).toBeNull();
     });

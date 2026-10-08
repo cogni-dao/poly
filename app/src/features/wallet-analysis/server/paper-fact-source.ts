@@ -332,7 +332,14 @@ export async function syncPaperTraderWallets(
     now
   );
 
-  const byAddress = new Map(
+  // Key type widened to plain `string` deliberately. The values keep their
+  // branded `0x${string}` address because `derivePaperAccountAddress` COMPUTED
+  // it — that brand means "derived, not read". `row.walletAddress` comes back
+  // from Postgres as a plain string, and casting it to the branded type here
+  // would assert exactly the thing this module cannot know at that point, and
+  // which DERIVED_ADDRESS_IS_CROSS_CHECKED already verifies at runtime instead.
+  // This Map is an internal lookup index; its key carries no guarantee.
+  const byAddress = new Map<string, PaperAccount>(
     accounts.map((account) => [account.address, account])
   );
   return enrolled.flatMap((row) => {
@@ -1120,4 +1127,134 @@ function allRows<T>(result: unknown): T[] {
 
 function firstRow<T>(result: unknown): T | undefined {
   return allRows<T>(result)[0];
+}
+
+/**
+ * Wraps one unit of projection work in a bounded transaction.
+ *
+ * Injected rather than imported so this module never reaches back into
+ * `trader-observation-service` (which imports {@link PAPER_WALLET_KIND} from
+ * here) — that would be an import cycle. The job binds
+ * `withStatementTimeout(db, OBSERVATION_STATEMENT_TIMEOUT_MS, fn)`; tests may
+ * omit it and run unwrapped.
+ */
+export type BoundedTxRunner = <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
+
+export type PaperProjectionTickResult = {
+  /** Active paper accounts found this tick. Zero is the idle case. */
+  paperAccounts: number;
+  walletsProjected: number;
+  fills: number;
+  positions: number;
+  unpricedPositions: number;
+  navsPublished: number;
+  errors: number;
+  /**
+   * Set when the tick deliberately did nothing. Distinguishes "idle" from
+   * "broken" for the operator — a silent no-op here would reproduce exactly
+   * the invisible-paper-account failure this whole slice exists to fix.
+   */
+  idleReason?: "no_paper_accounts";
+};
+
+/**
+ * One paper-projection tick: find the active paper accounts, enrol them, and
+ * project each one's ledger into the shared fact tables.
+ *
+ * THE GATE IS THE DATA, NOT A FLAG. This runs whenever at least one active
+ * paper account exists and is deliberately NOT gated on
+ * `POLY_TRADER_OBSERVATION_WRITER_ENABLED`. That lever exists because
+ * Data-API observation writes burn production IO for zero user value on
+ * non-prod lanes whose DBs live on the prod VM by custody (bug.5297/bug.5206):
+ * paginated `/activity` + `/positions` for every target and tenant wallet,
+ * plus snapshot rows per token, every 30s. The paper projection shares none of
+ * that shape — it is a local SQL projection over this node's OWN
+ * `poly_copy_trade_fills`, scoped to the paper accounts that actually exist
+ * (currently one), with one midpoint read per open position. Reusing the
+ * observation flag would conflate two unrelated write loads and leave the
+ * paper dashboard structurally unrenderable on exactly the lanes paper
+ * trading runs on.
+ *
+ * Per-account error isolation: one account's failure is logged and counted,
+ * never fatal to the others.
+ */
+export async function runPaperProjectionTick(deps: {
+  db: Db;
+  readMidPrice: PaperMidPriceReader;
+  logger: LoggerPort;
+  /** Defaults to running unwrapped; the job binds a statement timeout. */
+  runBounded?: BoundedTxRunner;
+  signal?: AbortSignal | undefined;
+  now?: Date;
+}): Promise<PaperProjectionTickResult> {
+  const runBounded: BoundedTxRunner =
+    deps.runBounded ?? (<T>(fn: (tx: Db) => Promise<T>) => fn(deps.db));
+  const empty: PaperProjectionTickResult = {
+    paperAccounts: 0,
+    walletsProjected: 0,
+    fills: 0,
+    positions: 0,
+    unpricedPositions: 0,
+    navsPublished: 0,
+    errors: 0,
+  };
+
+  // The read runs before any write (ENROLLMENT_FAILURE_IS_NOT_A_WIPE) and is
+  // also the gate: no accounts, no work, no writes.
+  const accounts = await readActivePaperAccounts(deps.db, deps.logger);
+  if (accounts.length === 0) {
+    deps.logger.info(
+      {
+        event: "poly.paper.project",
+        phase: "idle_no_paper_accounts",
+        reason: "no active poly_wallet_connections row with kind='paper'",
+      },
+      "paper projection idle — no paper accounts exist on this lane (idle, not broken)"
+    );
+    return { ...empty, idleReason: "no_paper_accounts" };
+  }
+
+  const enrolled = await runBounded(
+    async (tx) => await syncPaperTraderWallets(tx, accounts, deps.now)
+  );
+
+  const result: PaperProjectionTickResult = {
+    ...empty,
+    paperAccounts: accounts.length,
+  };
+  for (const wallet of enrolled) {
+    if (deps.signal?.aborted) break;
+    try {
+      const projected = await runBounded(
+        async (tx) =>
+          await observePaperWallet({
+            db: tx,
+            wallet,
+            readMidPrice: deps.readMidPrice,
+            logger: deps.logger,
+            signal: deps.signal,
+            ...(deps.now === undefined ? {} : { now: deps.now }),
+          })
+      );
+      result.walletsProjected += 1;
+      result.fills += projected.fills;
+      result.positions += projected.positions;
+      result.unpricedPositions += projected.unpricedPositions;
+      if (projected.navPublished) result.navsPublished += 1;
+    } catch (err: unknown) {
+      if (deps.signal?.aborted) throw err;
+      result.errors += 1;
+      deps.logger.error(
+        {
+          event: "poly.paper.project",
+          phase: "account_failed",
+          trader_wallet_id: wallet.traderWalletId,
+          billing_account_id: wallet.account.billingAccountId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "paper projection failed for one account; other accounts continue"
+      );
+    }
+  }
+  return result;
 }
