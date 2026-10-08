@@ -105,6 +105,69 @@ describe("resetWalletConnection", () => {
     expect(revokeConnection).not.toHaveBeenCalled();
   });
 
+  it("resets an unprovisioned connection instead of blocking forever", async () => {
+    // No funderAddress means no V2 Deposit Wallet was ever provisioned, so
+    // getAddress returns null and getBalances returns null with an EMPTY
+    // errors list: nothing to read, not a failed read. Treating that as
+    // unreadable made the tenants who most need a reset the only ones who
+    // could never get one — and acceptResidualDust is no escape, because the
+    // unreadable check is evaluated first.
+    inspect.mockResolvedValue({
+      ...cleanState,
+      connection: { ...cleanState.connection, funderAddress: null },
+    } as PolyWalletResetState);
+    getBalances.mockResolvedValue(null);
+
+    const result = await resetWalletConnection(deps, input);
+
+    expect(result).toMatchObject({ outcome: "revoked", blockedReason: null });
+    expect(revokeConnection).toHaveBeenCalled();
+  });
+
+  it("does not even attempt a balance read for an unprovisioned connection", async () => {
+    inspect.mockResolvedValue({
+      ...cleanState,
+      connection: { ...cleanState.connection, funderAddress: null },
+    } as PolyWalletResetState);
+
+    await resetWalletConnection(deps, input);
+
+    expect(getBalances).not.toHaveBeenCalled();
+  });
+
+  it("still blocks an unprovisioned connection on unsettled orders", async () => {
+    // The exemption is scoped to the balance guard ONLY.
+    inspect.mockResolvedValue({
+      ...cleanState,
+      connection: { ...cleanState.connection, funderAddress: null },
+      unsettledOrderCount: 3,
+    } as PolyWalletResetState);
+
+    const result = await resetWalletConnection(deps, input);
+
+    expect(result).toMatchObject({
+      outcome: "blocked",
+      blockedReason: "unsettled_orders",
+    });
+    expect(revokeConnection).not.toHaveBeenCalled();
+  });
+
+  it("still blocks an unprovisioned connection on open positions", async () => {
+    inspect.mockResolvedValue({
+      ...cleanState,
+      connection: { ...cleanState.connection, funderAddress: null },
+      openPositionCount: 1,
+    } as PolyWalletResetState);
+
+    const result = await resetWalletConnection(deps, input);
+
+    expect(result).toMatchObject({
+      outcome: "blocked",
+      blockedReason: "open_positions",
+    });
+    expect(revokeConnection).not.toHaveBeenCalled();
+  });
+
   it.each(["usdcE", "pusd", "pol"] as const)(
     "blocks when %s has a residual balance",
     async (asset) => {
