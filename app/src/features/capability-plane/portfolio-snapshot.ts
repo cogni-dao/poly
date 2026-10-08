@@ -217,6 +217,15 @@ export function portfolioSnapshotExtra(
     openOrders: response.overview.open_orders,
     livePositionCount: response.execution.live_position_count,
     closedPositionCount: response.execution.closed_position_count,
+    tradeActivityBucketUnit:
+      response.execution.tradeActivity?.bucketUnit ?? null,
+    tradeActivityBucketCount:
+      response.execution.tradeActivity?.buckets.length ?? 0,
+    tradeActivityTotal:
+      response.execution.tradeActivity?.buckets.reduce(
+        (sum, bucket) => sum + bucket.n,
+        0
+      ) ?? 0,
     ...coverageFields("comparisonMarketsLive", coverage.markets.live),
     ...coverageFields("comparisonMarketsClosed", coverage.markets.closed),
     ...coverageFields("comparisonPositionsLive", coverage.positions.live),

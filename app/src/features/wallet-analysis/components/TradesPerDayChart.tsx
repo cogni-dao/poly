@@ -3,15 +3,16 @@
 
 /**
  * Module: `@features/wallet-analysis/components/TradesPerDayChart`
- * Purpose: 14-day trades-per-day bar chart. Last bar is always "today" and rendered in primary color.
+ * Purpose: Reusable trade-activity bar chart with hour/day/month/year buckets.
  * Scope: Presentational only. Uses CSS for bars; no chart library.
- * Invariants: Bars are normalized to the max count in the dataset; minimum visible bar height for non-zero days.
+ * Invariants: Bars are normalized to the max count in the dataset; the latest bucket is rendered in primary color.
  * Side-effects: none
  * @public
  */
 
 "use client";
 
+import type { WalletExecutionTradeBucketUnit } from "@cogni/poly-node-contracts";
 import type { ReactElement } from "react";
 
 import { cn } from "@/shared/util/cn";
@@ -19,18 +20,20 @@ import type { WalletDailyCount } from "../types/wallet-analysis";
 
 export type TradesPerDayChartProps = {
   daily?: readonly WalletDailyCount[] | undefined;
+  bucketUnit?: WalletExecutionTradeBucketUnit | undefined;
   isLoading?: boolean | undefined;
 };
 
 export function TradesPerDayChart({
   daily,
+  bucketUnit = "day",
   isLoading,
 }: TradesPerDayChartProps): ReactElement {
   if (isLoading) {
     return (
       <div className="flex flex-col gap-3">
         <h4 className="font-semibold text-sm uppercase tracking-widest">
-          Trades / day
+          Trades / {bucketUnit}
         </h4>
         <div className="h-28 animate-pulse rounded bg-muted" />
       </div>
@@ -41,7 +44,7 @@ export function TradesPerDayChart({
     return (
       <div className="flex flex-col gap-3">
         <h4 className="font-semibold text-sm uppercase tracking-widest">
-          Trades / day
+          Trades / {bucketUnit}
         </h4>
         <div className="flex h-28 items-center justify-center text-muted-foreground text-sm">
           No trade history yet.
@@ -54,14 +57,15 @@ export function TradesPerDayChart({
   /** Bar scale floor only — must not be shown as a "user cap" when all days are 0. */
   const scaleMax = Math.max(rawMax, 1);
   const total = daily.reduce((s, d) => s + d.n, 0);
-  const today = daily.at(-1);
-  const summarySuffix = rawMax > 0 ? ` · peak ${rawMax}/day` : "";
+  const latest = daily.at(-1);
+  const summarySuffix =
+    rawMax > 0 ? ` · peak ${rawMax}/${bucketUnit}` : "";
 
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-baseline justify-between">
         <h4 className="font-semibold text-sm uppercase tracking-widest">
-          Trades / day, last {daily.length} day{daily.length === 1 ? "" : "s"}
+          Trades / {bucketUnit}
         </h4>
         <span className="font-mono text-muted-foreground text-xs">
           {total} total{summarySuffix}
@@ -76,21 +80,24 @@ export function TradesPerDayChart({
             d.n === 0
               ? 4
               : Math.max(8, Math.round((d.n / scaleMax) * CHART_PX));
-          const isToday = i === daily.length - 1;
+          const isLatest = i === daily.length - 1;
+          const showTick = shouldShowTick(i, daily.length);
           return (
             <div
               key={d.d}
               className="group relative flex flex-1 flex-col items-center justify-end gap-1"
-              title={`${d.d} · ${d.n} trade${d.n === 1 ? "" : "s"}`}
+              title={`${formatBucketLabel(d.d, bucketUnit, "long")} · ${d.n} trade${
+                d.n === 1 ? "" : "s"
+              }`}
             >
               {/* Always-visible count label above each non-zero bar; reserves
                   a blank row above zero bars so bars stay aligned. */}
               <span
                 className={cn(
                   "font-mono text-xs tabular-nums leading-none",
-                  d.n === 0
+                  d.n === 0 || (daily.length > 14 && !showTick)
                     ? "invisible"
-                    : isToday
+                    : isLatest
                       ? "text-primary"
                       : "text-muted-foreground"
                 )}
@@ -101,25 +108,82 @@ export function TradesPerDayChart({
                 style={{ height: `${heightPx}px` }}
                 className={cn(
                   "w-full rounded-t-sm transition-colors",
-                  isToday
+                  isLatest
                     ? "bg-primary"
                     : "bg-muted-foreground/40 group-hover:bg-primary/60"
                 )}
               />
-              <span className="font-mono text-muted-foreground text-xs leading-none">
-                {/* last 2 chars ≈ day-of-month for both "MM-DD" and "Mon MM-DD" */}
-                {d.d.slice(-2)}
+              <span
+                className={cn(
+                  "font-mono text-muted-foreground text-xs leading-none",
+                  showTick ? "visible" : "invisible"
+                )}
+              >
+                {formatBucketLabel(d.d, bucketUnit, "short")}
               </span>
             </div>
           );
         })}
       </div>
       <div className="flex items-baseline justify-between text-muted-foreground text-xs">
-        <span>2 weeks ago</span>
+        <span>
+          {formatBucketLabel(daily[0]?.d ?? "", bucketUnit, "long")}
+        </span>
         <span className="font-mono">
-          today · <span className="text-primary">{today?.n ?? 0} trades</span>
+          {formatBucketLabel(latest?.d ?? "", bucketUnit, "long")} ·{" "}
+          <span className="text-primary">{latest?.n ?? 0} trades</span>
         </span>
       </div>
     </div>
   );
+}
+
+function shouldShowTick(index: number, length: number): boolean {
+  if (length <= 12) return true;
+  const cadence = Math.ceil(length / 6);
+  return index === 0 || index === length - 1 || index % cadence === 0;
+}
+
+function formatBucketLabel(
+  value: string,
+  unit: WalletExecutionTradeBucketUnit,
+  width: "short" | "long"
+): string {
+  if (/^\d{2}-\d{2}$/.test(value)) {
+    return unit === "day" && width === "short" ? value.slice(-2) : value;
+  }
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    return unit === "day" && width === "short" ? value.slice(-2) : value;
+  }
+  switch (unit) {
+    case "hour":
+      return width === "long"
+        ? parsed.toLocaleString("en-US", {
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          })
+        : parsed.toLocaleTimeString("en-US", {
+            hour: "numeric",
+            minute: "2-digit",
+          });
+    case "day":
+      return width === "short"
+        ? parsed.toLocaleDateString("en-US", { day: "numeric" })
+        : parsed.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+          });
+    case "month":
+      return width === "long"
+        ? parsed.toLocaleDateString("en-US", {
+            month: "short",
+            year: "numeric",
+          })
+        : parsed.toLocaleDateString("en-US", { month: "short" });
+    case "year":
+      return parsed.getUTCFullYear().toString();
+  }
 }

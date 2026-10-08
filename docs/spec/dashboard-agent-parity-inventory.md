@@ -210,11 +210,11 @@ leaks cross-tenant P/L with no backstop.
 > component declares the prop (`:34`) and destructures only `interval`/`onIntervalChange`
 > (`:38-41`). That pass is **dead** — not a second render surface.
 
-## 5. Daily activity
+## 5. Trade activity
 
 | # | Field | UI surface | Read path today | Agent read today? | Owning capability | Class |
 |---|---|---|---|---|---|---|
-| 5.1 | `execution.dailyTradeCounts[]` → `{day, n}` | `OperatorWalletChartsRow.tsx:16` → `TradesPerDayChart.tsx:63` (bar chart; `d.n` `:53,56,78,84,98,120`, `d.d` `:82,84,111`) | `:369` ← `readDailyTradeCounts` `:588-623` → `poly_copy_trade_fills`, fixed **14-day** UTC window, zero-filled in JS `:617-622` | NO | `poly.account.portfolio-snapshot` | **CSF** |
+| 5.1 | `execution.tradeActivity` → `{bucketUnit, buckets[]: {start, n}}` | `OperatorWalletChartsRow.tsx` → the existing `TradesPerDayChart`; the shared `TimeWindowHeader` selection controls the snapshot request | `readTradeActivity` → `poly_copy_trade_fills`; the exact snapshot-relative cutoff is aggregated in SQL and only the bounded axis is zero-filled in JS: 1D = 24 hourly buckets, 1W = 7 daily, 1M = 30 daily, 1Y/YTD = calendar months, ALL = calendar years | YES | `poly.account.portfolio-snapshot` | **CSF** |
 | 5.2 | `facts.activity.*` | none | `:405` ← `freshFact("local_ledger", capturedAt)` `:232` | NO | `poly.account.portfolio-snapshot` | **CSF** |
 
 > No heatmap exists — `grep -i heatmap` over `app/src` returns zero hits. The dashboard's

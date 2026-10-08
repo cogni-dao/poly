@@ -125,7 +125,17 @@ vi.mock("@/features/wallet-analysis", async (importOriginal) => {
         </button>
       </div>
     ),
-    TradesPerDayChart: () => <div>trade volume chart</div>,
+    TradesPerDayChart: ({
+      daily,
+      bucketUnit,
+    }: {
+      daily?: readonly { d: string; n: number }[];
+      bucketUnit?: string;
+    }) => (
+      <div data-testid="trade-volume" data-bucket-unit={bucketUnit}>
+        {daily?.map((bucket) => `${bucket.d}:${bucket.n}`).join("|")}
+      </div>
+    ),
   };
 });
 
@@ -650,5 +660,34 @@ describe("dashboard missing read-model states", () => {
     expect(screen.getByText(copy)).toBeInTheDocument();
     expect(screen.queryByText("No trade history yet.")).not.toBeInTheDocument();
     expect(screen.queryByText(/not a zero-trade/i)).not.toBeInTheDocument();
+  });
+
+  it("renders the interval-scoped activity unit and buckets", () => {
+    state.execution = {
+      address: "0x1111111111111111111111111111111111111111",
+      freshness: "read_model",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      tradeActivity: {
+        bucketUnit: "hour",
+        buckets: [
+          { start: "2026-10-02T10:00:00.000Z", n: 2 },
+          { start: "2026-10-02T11:00:00.000Z", n: 3 },
+        ],
+      },
+      live_positions: [],
+      market_groups: [],
+      closed_positions: [],
+      warnings: [],
+    };
+
+    render(<OperatorWalletChartsRow />);
+
+    expect(screen.getByTestId("trade-volume")).toHaveAttribute(
+      "data-bucket-unit",
+      "hour"
+    );
+    expect(screen.getByTestId("trade-volume")).toHaveTextContent(
+      "2026-10-02T10:00:00.000Z:2|2026-10-02T11:00:00.000Z:3"
+    );
   });
 });
