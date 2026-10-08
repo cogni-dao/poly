@@ -88,6 +88,7 @@ function input(
 			kind: "activation" as const,
 			allowedMirrorShares: token.shares,
 			acquiredMirrorShares: 0,
+			availableNewBuyShares: token.shares,
 			targetVwap: token.averagePrice,
 		})),
 	);
@@ -269,6 +270,7 @@ describe("position-gap-v3 deterministic lot allocator", () => {
 			targetWeight: weight,
 			limitPrice: 0.5,
 			targetVwap: 0.5,
+			maxNotionalUsdc,
 			maxShares: maxNotionalUsdc / 0.5,
 			floorShares: 2,
 			floorNotionalUsdc: 1,
@@ -910,6 +912,7 @@ describe("position-gap-v3 whole-book planning", () => {
 				kind: "forward" as const,
 				allowedMirrorShares: 20,
 				acquiredMirrorShares: 0,
+				availableNewBuyShares: 20,
 				targetVwap: 0.6,
 			},
 			{
@@ -919,6 +922,7 @@ describe("position-gap-v3 whole-book planning", () => {
 				kind: "forward" as const,
 				allowedMirrorShares: 20,
 				acquiredMirrorShares: 0,
+				availableNewBuyShares: 20,
 				targetVwap: 0.4,
 			},
 		];
@@ -952,6 +956,7 @@ describe("position-gap-v3 whole-book planning", () => {
 				kind: "forward" as const,
 				allowedMirrorShares: 20,
 				acquiredMirrorShares: 20,
+				availableNewBuyShares: 20,
 				targetVwap: 0.6,
 			},
 			{
@@ -961,6 +966,7 @@ describe("position-gap-v3 whole-book planning", () => {
 				kind: "forward" as const,
 				allowedMirrorShares: 20,
 				acquiredMirrorShares: 20,
+				availableNewBuyShares: 20,
 				targetVwap: 0.4,
 			},
 		];

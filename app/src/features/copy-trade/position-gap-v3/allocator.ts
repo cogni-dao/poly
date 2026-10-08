@@ -67,7 +67,7 @@ export function allocatePositionGapLots(
 	}
 
 	const capacities = selected.map(({ candidate, notionalUsdc }) =>
-		Math.max(0, candidate.maxShares * candidate.limitPrice - notionalUsdc),
+		Math.max(0, candidate.maxNotionalUsdc - notionalUsdc),
 	);
 	const totalCapacity = capacities.reduce((sum, value) => sum + value, 0);
 	if (totalCapacity <= POSITION_GAP_EPSILON) {
@@ -90,8 +90,10 @@ function toAllocatedLot(entry: {
 	candidate: PositionGapCandidateV1;
 	notionalUsdc: number;
 }): PositionGapAllocatedLotV1 {
-	const maxNotional = entry.candidate.maxShares * entry.candidate.limitPrice;
-	const notionalUsdc = Math.min(entry.notionalUsdc, maxNotional);
+	const notionalUsdc = Math.min(
+		entry.notionalUsdc,
+		entry.candidate.maxNotionalUsdc,
+	);
 	return {
 		...entry.candidate,
 		notionalUsdc,

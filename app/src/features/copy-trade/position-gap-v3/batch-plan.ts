@@ -528,7 +528,10 @@ function planCohort(params: {
 	}
 	retained = retained.filter((order) => !cancellations.has(order.orderId));
 	const openShares = sumShares(retained);
-	const gapShares = Math.max(0, desiredShares - heldShares - openShares);
+	const gapShares = Math.min(
+		Math.max(0, desiredShares - heldShares - openShares),
+		cohort.availableNewBuyShares,
+	);
 	const targetWeight =
 		eligibleNetNavUsdc > POSITION_GAP_EPSILON
 			? (position.netShares * position.markPrice) / eligibleNetNavUsdc
@@ -683,7 +686,11 @@ function planCohort(params: {
 	}
 
 	const id = candidateId(position.tokenId, cohort.cohortId);
-	const maxShares = Math.min(gapShares, perOrderCapUsdc / limit.price);
+	const maxNotionalUsdc = Math.min(
+		gapShares * limit.price,
+		perOrderCapUsdc,
+	);
+	const maxShares = maxNotionalUsdc / limit.price;
 	if (maxShares + POSITION_GAP_EPSILON < floorShares) {
 		return false;
 	}
@@ -696,6 +703,7 @@ function planCohort(params: {
 		targetWeight,
 		limitPrice: limit.price,
 		targetVwap,
+		maxNotionalUsdc,
 		maxShares,
 		floorShares,
 		floorNotionalUsdc,
@@ -818,6 +826,8 @@ function validCohort(cohort: PositionGapPriceCohortV1): boolean {
 		cohort.allowedMirrorShares >= 0 &&
 		Number.isFinite(cohort.acquiredMirrorShares) &&
 		cohort.acquiredMirrorShares >= 0 &&
+		Number.isFinite(cohort.availableNewBuyShares) &&
+		cohort.availableNewBuyShares >= 0 &&
 		Number.isFinite(cohort.targetVwap) &&
 		cohort.targetVwap > 0 &&
 		cohort.targetVwap < 1

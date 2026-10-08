@@ -45,6 +45,8 @@ export type PositionGapPriceCohortV1 = Readonly<{
 	allowedMirrorShares: number;
 	/** Durable fills attributed to this cohort; planner clamps to wallet truth. */
 	acquiredMirrorShares: number;
+	/** Durable entitlement not yet consumed by a fill or active BUY reservation. */
+	availableNewBuyShares: number;
 	targetVwap: number;
 }>;
 
@@ -127,6 +129,7 @@ export type PositionGapCandidateV1 = Readonly<{
 	targetWeight: number;
 	limitPrice: number;
 	targetVwap: number;
+	maxNotionalUsdc: number;
 	maxShares: number;
 	floorShares: number;
 	floorNotionalUsdc: number;
