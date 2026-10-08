@@ -58,6 +58,7 @@ import type {
 	PositionGapOpenBuyOrderV1,
 	PositionGapPriceCohortV1,
 } from "@/features/copy-trade/position-gap-v3/model";
+import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 
 const CASH_GUARD_SOURCE = "poly_trade_executor.requiredBuyCollateralAtomic/v1";
 const EPSILON = 1e-9;
@@ -436,6 +437,41 @@ export class PositionGapRuntimeStore {
 			.orderBy(desc(polyPositionGapRuns.startedAt))
 			.limit(1);
 		return row ? numberOf(row.budget) : null;
+	}
+
+	/**
+	 * Repair the one PGv3 producer-field omission that predates canonical
+	 * copy-target correlation. The deterministic target id proves the wallet;
+	 * tenant + target + policy version clamp the idempotent update.
+	 */
+	async repairTargetWalletLineage(
+		scope: PositionGapRuntimeScope,
+		targetWallet: string,
+	): Promise<number> {
+		const normalized = targetWallet.toLowerCase();
+		if (
+			!/^0x[0-9a-f]{40}$/.test(normalized) ||
+			targetIdFromWallet(normalized as `0x${string}`) !== scope.targetId
+		) {
+			throw new Error("position-gap target wallet lineage mismatch");
+		}
+		const repaired = await this.db
+			.update(polyCopyTradeFills)
+			.set({
+				attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || jsonb_build_object('target_wallet', ${normalized})`,
+				updatedAt: new Date(),
+			})
+			.where(
+				and(
+					eq(polyCopyTradeFills.billingAccountId, scope.billingAccountId),
+					eq(polyCopyTradeFills.targetId, scope.targetId),
+					eq(polyCopyTradeFills.mode, "live"),
+					sql`${polyCopyTradeFills.attributes}->>'position_gap_version' = '3'`,
+					sql`NULLIF(${polyCopyTradeFills.attributes}->>'target_wallet', '') IS NULL`,
+				),
+			)
+			.returning({ clientOrderId: polyCopyTradeFills.clientOrderId });
+		return repaired.length;
 	}
 
 	async loadLastSnapshot(

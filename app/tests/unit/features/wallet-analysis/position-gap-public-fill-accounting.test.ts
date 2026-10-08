@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
+import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
 import { toExecuted } from "@/features/wallet-analysis/server/copy-trade-attempts-read";
-import { toContractRow } from "@/features/wallet-analysis/server/copy-trade-orders-read";
+import {
+  listCopyTradeOrdersForAccount,
+  toContractRow,
+} from "@/features/wallet-analysis/server/copy-trade-orders-read";
 
 const date = new Date("2026-10-07T00:00:00.000Z");
 
@@ -23,6 +27,7 @@ function orderRow(attributes: Record<string, unknown>) {
     mode: "live",
     shares: "9.3",
     attributes,
+    metadataMarketTitle: null,
   };
 }
 
@@ -64,6 +69,44 @@ function attemptRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Position-gap public fill accounting", () => {
+  it("bounded-joins canonical market metadata before rendering orders", async () => {
+    const captured: string[] = [];
+    const tx = {
+      execute: async (query: unknown) => {
+        captured.push(new PgDialect().sqlToQuery(query as never).sql);
+        return [];
+      },
+    };
+
+    await listCopyTradeOrdersForAccount(
+      tx as never,
+      { limit: 50 },
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    );
+
+    const query = captured[0] ?? "";
+    expect(query).toContain("WITH ordered_fills AS MATERIALIZED");
+    expect(query).toContain("LEFT JOIN LATERAL");
+    expect(query).toContain('FROM "poly_market_metadata" candidate');
+    expect(query).toMatch(
+      /lower\(candidate\.condition_id\) = lower\(COALESCE\([\s\S]*attributes->>'condition_id'[\s\S]*regexp_replace\([\s\S]*market_id[\s\S]*\^prediction-market:polymarket:/
+    );
+    expect(query).toMatch(/LIMIT \$\d+\s*\)[\s\S]*LEFT JOIN LATERAL/);
+  });
+
+  it("prefers canonical market metadata over the numeric outcome label", () => {
+    const order = toContractRow(
+      {
+        ...orderRow({ title: "0", outcome: "0", position_gap_version: "3" }),
+        metadataMarketTitle: "Will the canonical market win?",
+      },
+      date.getTime()
+    );
+
+    expect(order.market_title).toBe("Will the canonical market win?");
+    expect(order.outcome).toBe("0");
+  });
+
   it("withholds legacy limit-derived economics while accounting is pending", () => {
     const order = toContractRow(
       orderRow({

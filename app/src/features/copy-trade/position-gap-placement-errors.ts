@@ -6,39 +6,53 @@ import { POLY_CLOB_ERROR_CODES } from "@cogni/poly-market-provider/adapters/poly
 const CLOB_ERROR_CODES = new Set<string>(Object.values(POLY_CLOB_ERROR_CODES));
 
 export type RecoverableHardClobRejectionCode =
+	| "below_min_order_size"
 	| "insufficient_allowance"
 	| "insufficient_balance";
+
+const CANONICAL_BELOW_MIN_ORDER_SIZE =
+	/^invalid amount for a marketable BUY order \(\$\d+(?:\.\d+)?\), min size: \$\d+(?:\.\d+)? \(https:\/\/clob\.polymarket\.com\/order\)$/;
 
 /**
  * Production bundles may load two copies of the provider package, so
  * `instanceof ClobRejectionError` is not a stable boundary. The error name and
- * complete structured details are the cross-bundle contract. A generic
- * transport error with adapter-classified details deliberately does not pass.
+ * complete structured details are the cross-bundle contract. The one generic
+ * client error accepted here must carry both the adapter's below-min code and
+ * the CLOB's canonical pre-acceptance rejection; transport errors fail closed.
  */
 export function isStructuredClobRejection(error: unknown): boolean {
 	if (!error || typeof error !== "object") return false;
 	const candidate = error as {
 		name?: unknown;
+		message?: unknown;
 		details?: {
 			error_code?: unknown;
+			reason?: unknown;
 			response_keys?: unknown;
 		};
 	};
-	return (
-		candidate.name === "ClobRejectionError" &&
+	const hasStructuredDetails =
 		candidate.details !== null &&
 		typeof candidate.details === "object" &&
 		typeof candidate.details.error_code === "string" &&
 		CLOB_ERROR_CODES.has(candidate.details.error_code) &&
 		Array.isArray(candidate.details.response_keys) &&
-		candidate.details.response_keys.every((key) => typeof key === "string")
+		candidate.details.response_keys.every((key) => typeof key === "string");
+	if (!hasStructuredDetails) return false;
+	if (candidate.name === "ClobRejectionError") return true;
+	return (
+		candidate.details?.error_code ===
+			POLY_CLOB_ERROR_CODES.belowMinOrderSize &&
+		candidate.details?.reason === POLY_CLOB_ERROR_CODES.belowMinOrderSize &&
+		typeof candidate.message === "string" &&
+		CANONICAL_BELOW_MIN_ORDER_SIZE.test(candidate.message)
 	);
 }
 
 /**
- * Only the adapter's stable explicit-rejection message is durable proof that
- * an old ambiguous submission created no order. Free-form balance/allowance
- * text and transport errors remain ambiguous and fail closed.
+ * Only the adapter's stable explicit-rejection message or the CLOB's canonical
+ * below-min response is durable proof that an old ambiguous submission created
+ * no order. Free-form text and transport errors remain ambiguous and fail closed.
  */
 export function recoverableHardClobRejectionCode(
 	detail: string | null | undefined,
@@ -50,6 +64,19 @@ export function recoverableHardClobRejectionCode(
 			detail,
 		);
 	if (match?.[1]) return match[1] as RecoverableHardClobRejectionCode;
+	const belowMinMatch =
+		/^PolymarketClobAdapter\.placeOrder: CLOB rejected order \(error_code=below_min_order_size, response_keys=\[[^\]]*\], reason="below_min_order_size", clob_error="([^"]+)"\)$/.exec(
+			detail,
+		);
+	if (
+		belowMinMatch?.[1] &&
+		CANONICAL_BELOW_MIN_ORDER_SIZE.test(belowMinMatch[1])
+	) {
+		return "below_min_order_size";
+	}
+	if (CANONICAL_BELOW_MIN_ORDER_SIZE.test(detail)) {
+		return "below_min_order_size";
+	}
 
 	// Before the structured adapter boundary shipped, clob-client's ApiError
 	// message was persisted verbatim while its typed `insufficient_allowance`

@@ -431,6 +431,22 @@ export function startPositionGapActor(
 		readonly PositionGapAccountingTransition[]
 	> {
 		const transitions: PositionGapAccountingTransition[] = [];
+		const repairedTargetWalletRows = await deps.store.repairTargetWalletLineage(
+			deps.scope,
+			deps.targetWallet,
+		);
+		if (repairedTargetWalletRows > 0) {
+			deps.logger.info(
+				{
+					event: "poly.position_gap.v3.target_lineage_repaired",
+					billing_account_id: deps.scope.billingAccountId,
+					target_id: deps.scope.targetId,
+					target_wallet: deps.targetWallet.toLowerCase(),
+					repaired_fill_count: repairedTargetWalletRows,
+				},
+				"position-gap repaired canonical target-wallet lineage",
+			);
+		}
 		const recovered = await deps.store.recoverKnownRejectedAmbiguities(
 			deps.scope,
 		);
@@ -701,7 +717,10 @@ export function startPositionGapActor(
 				(candidate) => candidate.actionKey === buy.actionKey,
 			);
 			if (!prepared) continue;
-			const intent = buildPositionGapBuyIntent(prepared);
+			const intent = buildPositionGapBuyIntent({
+				...prepared,
+				targetWallet: deps.targetWallet,
+			});
 			try {
 				await deps.ledger
 					.forTenant({
@@ -974,6 +993,7 @@ export function buildPositionGapBuyIntent(input: {
 	tokenId: string;
 	conditionId: string;
 	cohortKey: string;
+	targetWallet: string;
 }): OrderIntent & { side: "BUY" } {
 	return {
 		provider: "polymarket",
@@ -986,6 +1006,7 @@ export function buildPositionGapBuyIntent(input: {
 		attributes: {
 			token_id: input.tokenId,
 			condition_id: input.conditionId,
+			target_wallet: input.targetWallet.toLowerCase(),
 			orderType: "GTC",
 			placement: "limit",
 			position_gap_version: "3",

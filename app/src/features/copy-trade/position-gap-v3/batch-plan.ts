@@ -24,6 +24,8 @@ import {
 import { netTargetBook } from "./netting";
 import { strictBuyLimitPrice } from "./price-cohort";
 
+const CLOB_MIN_BUY_NOTIONAL_USDC = 1;
+
 type CandidateContext = Readonly<{
 	desiredShares: number;
 	heldShares: number;
@@ -602,11 +604,12 @@ function planCohort(params: {
 		return false;
 	}
 
-	const floorShares = Math.max(
-		quote.minOrderShares,
-		quote.minOrderUsdc / limit.price,
+	const floorNotionalUsdc = Math.max(
+		CLOB_MIN_BUY_NOTIONAL_USDC,
+		quote.minOrderUsdc,
+		quote.minOrderShares * limit.price,
 	);
-	const floorNotionalUsdc = floorShares * limit.price;
+	const floorShares = floorNotionalUsdc / limit.price;
 	if (perOrderCapUsdc + POSITION_GAP_EPSILON < floorNotionalUsdc) {
 		diagnostics.push({
 			...decision(
