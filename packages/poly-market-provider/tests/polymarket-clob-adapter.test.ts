@@ -1218,6 +1218,17 @@ describe("PolymarketClobAdapter", () => {
     });
   });
 
+  it("getMarketConstraints omits the market-FOK notional floor for limit-GTC", async () => {
+    const adapter = makeAdapter({
+      getOrderBook: vi.fn().mockResolvedValue({ min_order_size: "5" }),
+      getTickSize: vi.fn().mockResolvedValue("0.01"),
+    });
+
+    await expect(
+      adapter.getMarketConstraints("0xtoken", "limit")
+    ).resolves.toEqual({ minShares: 5, tickSize: 0.01 });
+  });
+
   it("placeOrder rounds limit_price to market tick before submission (bug.5160)", async () => {
     const createAndPostOrder = vi.fn().mockResolvedValue({
       orderID: "0xrounded",

@@ -66,6 +66,7 @@
 import type {
   GetOrderResult,
   LoggerPort,
+  MarketConstraintPlacement,
   MetricsPort,
   OrderIntent,
   OrderReceipt,
@@ -228,7 +229,10 @@ export interface PolyTradeExecutor {
    * minimum and normalize limit prices. Raw passthrough to
    * `PolymarketClobAdapter.getMarketConstraints`.
    */
-  getMarketConstraints: (tokenId: string) => Promise<{
+  getMarketConstraints: (
+    tokenId: string,
+    placement?: MarketConstraintPlacement
+  ) => Promise<{
     minShares: number;
     minUsdcNotional?: number;
     tickSize?: number;

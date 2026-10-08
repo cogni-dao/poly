@@ -598,6 +598,98 @@ describe("position-gap-v3 whole-book planning", () => {
 		);
 	});
 
+	it("plans mechanically valid sub-$1 limit-GTC orders from the share floor", () => {
+		const book = snapshot([
+			condition({
+				leftShares: 100,
+				rightShares: 0,
+				leftMark: 0.01,
+				leftAverage: 0.01,
+			}),
+		]);
+		const base = input(book, { sleeveBudgetUsdc: 0.05 });
+		const plan = planPositionGapBook({
+			...base,
+			venues: base.venues.map((venue) => ({
+				...venue,
+				quotes: venue.quotes.map((quote) => ({
+					...quote,
+					bestAsk: null,
+					minOrderShares: 5,
+					minOrderUsdc: 0,
+				})),
+			})),
+			confirmedBuyNotionalCashHeadroomUsdc: 0.05,
+			confirmedSleeveHeadroomUsdc: 0.05,
+			confirmedStrategyCapHeadroomUsdc: 0.05,
+			confirmedAccountCapHeadroomUsdc: 0.05,
+			confirmedPerOrderCapUsdc: 0.05,
+		});
+
+		expect(plan.intents).toEqual([
+			expect.objectContaining({
+				side: "BUY",
+				shares: 5,
+				notionalUsdc: 0.05,
+				floorNotionalUsdc: 0.05,
+			}),
+		]);
+	});
+
+	it("reports the sleeve needed for a five-share GTC without manufacturing an RN1 order", () => {
+		const currentSleeve = 24.21285;
+		const currentGapShares = 1.087455525259;
+		const targetNavUsdc = 47_338.14592945;
+		const selectedShares =
+			currentGapShares / (currentSleeve / targetNavUsdc);
+		const ballastShares = (targetNavUsdc - selectedShares * 0.18) / 0.5;
+		const book = snapshot([
+			condition({
+				conditionId: "selected",
+				leftShares: selectedShares,
+				rightShares: 0,
+				leftMark: 0.18,
+				leftAverage: 0.18,
+			}),
+			condition({
+				conditionId: "ballast",
+				leftShares: ballastShares,
+				rightShares: 0,
+				leftMark: 0.5,
+			}),
+		]);
+		const base = input(book, { sleeveBudgetUsdc: currentSleeve });
+		const plan = planPositionGapBook({
+			...base,
+			venues: base.venues.map((venue) => ({
+				...venue,
+				quotes: venue.quotes.map((quote) => ({
+					...quote,
+					bestAsk: null,
+					minOrderShares: 5,
+					minOrderUsdc: 0,
+				})),
+			})),
+			cohorts: base.cohorts
+				.filter((cohort) => cohort.tokenId === "selected-yes")
+				.map((cohort) => ({
+					...cohort,
+					allowedMirrorShares: currentGapShares,
+				})),
+		});
+
+		expect(plan.intents).toEqual([]);
+		const selected = plan.diagnostics.find(
+			(row) => row.tokenId === "selected-yes",
+		);
+		expect(selected).toMatchObject({ reason: "below_market_floor" });
+		expect(selected?.floorNotionalUsdc).toBeCloseTo(0.9, 10);
+		expect(plan.minimumFeasibleSleeveUsdc).toBeCloseTo(
+			(currentSleeve * 5) / currentGapShares,
+			6,
+		);
+	});
+
 	it("cancels reduced open BUYs, reports filled overweight, and emits no SELL", () => {
 		const book = snapshot([
 			condition({ leftShares: 10, rightShares: 0, leftMark: 0.5 }),

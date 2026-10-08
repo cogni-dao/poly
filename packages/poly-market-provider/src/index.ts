@@ -56,6 +56,7 @@ export {
 // Port interface
 export {
   BELOW_MARKET_MIN_CODE,
+  type MarketConstraintPlacement,
   type MarketConstraints,
   type MarketCredentials,
   type MarketProviderConfig,
