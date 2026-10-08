@@ -45,7 +45,11 @@ import {
   polyCopyTradeFills,
   polyCopyTradeTargets,
 } from "@cogni/db-schema/copy-trade";
-import { polyPositionGapRuns } from "@cogni/db-schema/position-gap";
+import {
+  polyPositionGapActions,
+  polyPositionGapCohorts,
+  polyPositionGapRuns,
+} from "@cogni/db-schema/position-gap";
 import { polyWalletConnections } from "@cogni/db-schema/wallet-connections";
 import { polyWalletGrants } from "@cogni/db-schema/wallet-grants";
 import { toUserId, userActor } from "@cogni/ids";
@@ -108,9 +112,14 @@ describe("copy-operations delegated RLS", () => {
   const decisionA = randomUUID();
   const decisionB = randomUUID();
   const positionGapRunA = randomUUID();
+  const positionGapCohortA = randomUUID();
+  const positionGapActionA = randomUUID();
 
   const targetWalletA = walletAddress();
   const targetWalletB = walletAddress();
+  const positionGapTargetA = targetIdFromWallet(
+    targetWalletA as `0x${string}`,
+  );
   const copySetupBinding = {
     resolveEffectiveKind: (
       _wallet: `0x${string}`,
@@ -336,7 +345,7 @@ describe("copy-operations delegated RLS", () => {
       id: positionGapRunA,
       billingAccountId: ownerA.billingAccountId,
       createdByUserId: ownerA.userId,
-      targetId: targetIdFromWallet(targetWalletA as `0x${string}`),
+      targetId: positionGapTargetA,
       triggerReasons: ["safety_timer"],
       targetSnapshotId: "copy-ops-snapshot-a",
       targetSnapshotHash: "copy-ops-snapshot-hash-a",
@@ -376,11 +385,93 @@ describe("copy-operations delegated RLS", () => {
       startedAt: new Date("2026-10-05T00:04:01.000Z"),
       completedAt: new Date("2026-10-05T00:04:02.000Z"),
     });
+    await seedDb.insert(polyPositionGapCohorts).values({
+      id: positionGapCohortA,
+      billingAccountId: ownerA.billingAccountId,
+      createdByUserId: ownerA.userId,
+      targetId: positionGapTargetA,
+      cohortKey: "copy-ops-cohort-a",
+      sourceKind: "activation",
+      sourceConfigRevision: "copy-ops-revision-a",
+      sourceSnapshotId: "copy-ops-snapshot-a",
+      sourceSnapshotHash: "copy-ops-snapshot-hash-a",
+      sourceSnapshotAsOf: new Date("2026-10-05T00:04:00.000Z"),
+      sourceProvenance: {},
+      createdRunId: positionGapRunA,
+      conditionId: "condition-a",
+      tokenId: "token-a",
+      marketId: "prediction-market:polymarket:condition-a",
+      outcome: "Yes",
+      targetDeltaShares: "9.3",
+      scaleAtCreation: "1",
+      allowedMirrorShares: "9.3",
+      initialAllowedMirrorShares: "9.3",
+      benchmarkTargetVwap: "0.001",
+      acquiredShares: "9.3",
+      remainingShares: "0",
+      status: "exhausted",
+    });
+    await seedDb.insert(polyPositionGapActions).values({
+      id: positionGapActionA,
+      billingAccountId: ownerA.billingAccountId,
+      createdByUserId: ownerA.userId,
+      targetId: positionGapTargetA,
+      runId: positionGapRunA,
+      cohortId: positionGapCohortA,
+      cohortKey: "copy-ops-cohort-a",
+      actionKey: "copy-ops-action-a",
+      kind: "buy",
+      conditionId: "condition-a",
+      tokenId: "token-a",
+      marketId: "prediction-market:polymarket:condition-a",
+      outcome: "Yes",
+      desiredShares: "9.306",
+      notionalUsdc: "3.592216",
+      limitPrice: "0.386",
+      filledShares: "9.3",
+      filledUsdc: "0.009295",
+      plannerAction: {
+        fill_accounting_status: "verified",
+        realized_fill_source: "data_api_activity_position",
+      },
+      clientOrderId: "copy-ops-client-a",
+      orderId: "copy-ops-order-a",
+      status: "filled",
+      submitStartedAt: new Date("2026-10-05T00:04:03.000Z"),
+      submittedAt: new Date("2026-10-05T00:04:04.000Z"),
+      completedAt: new Date("2026-10-05T00:04:05.000Z"),
+    });
+    await seedDb.insert(polyCopyTradeFills).values({
+      billingAccountId: ownerA.billingAccountId,
+      createdByUserId: ownerA.userId,
+      targetId: positionGapTargetA,
+      fillId: "position-gap-v3:copy-ops-action-a",
+      marketId: "prediction-market:polymarket:condition-a",
+      observedAt: new Date("2026-10-05T00:04:05.000Z"),
+      clientOrderId: "copy-ops-client-a",
+      orderId: "copy-ops-order-a",
+      status: "filled",
+      mode: "live",
+      price: String(0.009295 / 9.3),
+      shares: "9.3",
+      feesUsdc: "0.00046",
+      attributes: {
+        position_gap_version: "3",
+        filled_size_usdc: 0.009295,
+        realized_fill_source: "data_api_activity_position",
+      },
+    });
   });
 
   afterAll(async () => {
     const seedDb = getSeedDb();
     const accounts = [ownerA.billingAccountId, ownerB.billingAccountId];
+    await seedDb
+      .delete(polyPositionGapActions)
+      .where(inArray(polyPositionGapActions.billingAccountId, accounts));
+    await seedDb
+      .delete(polyPositionGapCohorts)
+      .where(inArray(polyPositionGapCohorts.billingAccountId, accounts));
     await seedDb
       .delete(polyPositionGapRuns)
       .where(inArray(polyPositionGapRuns.billingAccountId, accounts));
@@ -573,11 +664,27 @@ describe("copy-operations delegated RLS", () => {
         minimum_feasible_sleeve_usdc: 53.31,
       },
       execution: {
-        submitted_order_count: 0,
+        submitted_order_count: 1,
         fill_accounting: {
-          status: "pending",
-          source: "clob_order_receipt",
+          status: "verified",
+          source: "data_api_activity_position",
+          matched_order_count: 1,
+          realized_shares: 9.3,
+          realized_entry_notional_usdc: 0.009295,
         },
+        recent_orders_truncated: false,
+        recent_orders: [
+          expect.objectContaining({
+            action_id: positionGapActionA,
+            order_id: "copy-ops-order-a",
+            realized_fill_price: 0.00099946,
+            fees_usdc: 0.00046,
+            fill_accounting: expect.objectContaining({
+              status: "verified",
+              source: "data_api_activity_position",
+            }),
+          }),
+        ],
       },
       position_count: 1,
     });

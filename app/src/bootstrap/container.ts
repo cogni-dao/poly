@@ -1147,6 +1147,18 @@ function createContainer(): Container {
 									getMarketConstraints: async (tokenId) =>
 										(await getExecutor()).getMarketConstraints(tokenId),
 								},
+								fillEvidence: {
+									getWalletAddress: async () =>
+										(await getExecutor()).funderAddress,
+									listActivity: async (wallet, params) =>
+										dataApiClient.listActivity(wallet, params),
+									listPositions: async (wallet, conditionId) =>
+										dataApiClient.listUserPositions(wallet, {
+											market: conditionId,
+											sizeThreshold: 0,
+											limit: 500,
+										}),
+								},
 								getWalletCashUsdc: async () => {
 									const balances = await mirrorWalletPort.getBalances(
 										enumeratedTarget.billingAccountId,

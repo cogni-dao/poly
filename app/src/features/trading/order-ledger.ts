@@ -902,7 +902,8 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     const currentShares = Number(current.shares ?? 0);
     const safeCurrentShares = Number.isFinite(currentShares) ? currentShares : 0;
     const currentVerified =
-      attributes.realized_fill_source === "clob_associated_trades";
+      attributes.realized_fill_source === "clob_associated_trades" ||
+      attributes.realized_fill_source === "data_api_activity_position";
     const incomingVerified =
       observation.realized_fill_source === "clob_associated_trades";
     const isHigher = incomingShares > safeCurrentShares + 1e-9;
