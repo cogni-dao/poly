@@ -62,7 +62,7 @@ export function recoverableHardClobRejectionCode(
 	if (
 		submittedAt &&
 		submittedAt.getTime() < legacyCutoverMs &&
-		/^not enough balance \/ allowance: (?:the )?allowance is not enough(?: -> allowance: \d+)?$/i.test(
+		/^not enough balance \/ allowance: the allowance is not enough -> spender: 0xd91e80cf2e7be2e162c6513ced06f1dd0da35296, allowance: \d+, sum of matched orders: \d+, order amount \(inc\. fees\): \d+ \(https:\/\/clob\.polymarket\.com\/order\)$/i.test(
 			detail,
 		)
 	) {
