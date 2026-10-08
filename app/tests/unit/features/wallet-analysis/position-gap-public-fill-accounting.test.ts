@@ -87,7 +87,7 @@ describe("Position-gap public fill accounting", () => {
     const query = captured[0] ?? "";
     expect(query).toContain("WITH ordered_fills AS MATERIALIZED");
     expect(query).toContain("LEFT JOIN LATERAL");
-    expect(query).toContain("FROM poly_market_metadata candidate");
+    expect(query).toContain('FROM "poly_market_metadata" candidate');
     expect(query).toMatch(
       /lower\(candidate\.condition_id\) = lower\(COALESCE\([\s\S]*attributes->>'condition_id'[\s\S]*regexp_replace\([\s\S]*market_id[\s\S]*\^prediction-market:polymarket:/
     );

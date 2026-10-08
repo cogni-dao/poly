@@ -495,6 +495,7 @@ describe("buildPositionGapBuyIntent", () => {
 			refresh: {} as never,
 			store: {
 				recoverSubmittingAsAmbiguous: vi.fn(() => never),
+				repairTargetWalletLineage: vi.fn(async () => 0),
 				recoverKnownRejectedAmbiguities,
 				loadPlannerState,
 				reconcileLedgerTerminals: vi.fn(async () => 0),
