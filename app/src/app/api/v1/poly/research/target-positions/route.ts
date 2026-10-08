@@ -11,6 +11,7 @@ import { getSessionUser } from "@/app/_lib/auth/session";
 import { accountReadGetHandler } from "@/app/_lib/capability-plane/account-read-route";
 import { resolveAppDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
+import { sizingPolicyKindForTargetWallet } from "@/bootstrap/jobs/copy-trade-mirror.job";
 import {
 	ACCOUNT_READ_TERMINAL_EVENTS,
 	classifyTargetPositionsError,
@@ -30,7 +31,9 @@ export const GET = wrapRouteHandlerWithLogging(
 		operation: polyAccountReadTargetPositionsOwnerOperation,
 		eventName:
 			ACCOUNT_READ_TERMINAL_EVENTS[polyAccountReadTargetPositionsOperation.id],
-		handler: targetPositionsAccountReadHandler,
+		handler: targetPositionsAccountReadHandler({
+			resolveEffectiveKind: sizingPolicyKindForTargetWallet,
+		}),
 		extra: targetPositionsExtra,
 		classifyError: classifyTargetPositionsError,
 	}),
