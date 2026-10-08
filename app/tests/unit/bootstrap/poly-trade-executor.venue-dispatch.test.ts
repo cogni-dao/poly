@@ -10,6 +10,9 @@
  * Scope: Unit. The two builders are detected by which injected dependency they
  *   touch first (`paperVenue.resolveAccount` vs `walletPort.resolve`), so no
  *   CLOB SDK, viem client, or network is loaded.
+ *   Also covers `planPaperCloseIntent` — the pure sizing behind the paper
+ *   venue's SELL-close — which is the arithmetic a paper twin must share with
+ *   live for its exits to mean anything.
  * Invariants:
  *   - venue per account, not per process
  *   - NO_DEFAULT_VENUE: an unresolvable account fails and enters neither builder
@@ -26,6 +29,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
 	createPolyTradeExecutorFactory,
+	planPaperCloseIntent,
 	PolyTradeExecutorError,
 } from "@/bootstrap/capabilities/poly-trade-executor";
 import {
@@ -147,5 +151,61 @@ describe("executor venue dispatch (VENUE_RESOLVED_FROM_ACCOUNT)", () => {
 			PAPER_ACCOUNT,
 			PAPER_ACCOUNT,
 		]);
+	});
+});
+
+describe("paper SELL-close sizing (planPaperCloseIntent)", () => {
+	const params = {
+		tokenId: "tok-1",
+		max_size_usdc: 100,
+		client_order_id: "0xabc" as `0x${string}`,
+	};
+	const position = {
+		conditionId: "0xcond",
+		tokenId: "tok-1",
+		shares: 100,
+		// Marked at 0.50 by the projection.
+		currentValueUsdc: 50,
+		avgPrice: 0.4,
+	};
+
+	it("returns null when the account holds nothing for the token", () => {
+		expect(planPaperCloseIntent(params, undefined)).toBeNull();
+		expect(planPaperCloseIntent(params, { ...position, shares: 0 })).toBeNull();
+	});
+
+	it("caps the notional at the position's value AT THE LIMIT", () => {
+		const intent = planPaperCloseIntent(
+			{ ...params, limit_price: 0.3 },
+			position,
+		);
+		expect(intent?.side).toBe("SELL");
+		expect(intent?.limit_price).toBe(0.3);
+		// 100 shares × 0.30 = 30, below the 100 cap.
+		expect(intent?.size_usdc).toBe(30);
+		expect(intent?.attributes?.token_id).toBe("tok-1");
+		expect(intent?.market_id).toBe("prediction-market:polymarket:0xcond");
+	});
+
+	it("never exceeds the caller's max notional", () => {
+		const intent = planPaperCloseIntent(
+			{ ...params, max_size_usdc: 10, limit_price: 0.5 },
+			position,
+		);
+		expect(intent?.size_usdc).toBe(10);
+	});
+
+	it("defaults the limit to one cent through the projection's mark", () => {
+		const intent = planPaperCloseIntent(params, position);
+		// currentValue/shares = 0.50 → 0.49.
+		expect(intent?.limit_price).toBeCloseTo(0.49, 8);
+	});
+
+	it("floors the default limit at one cent", () => {
+		const intent = planPaperCloseIntent(params, {
+			...position,
+			currentValueUsdc: 0,
+		});
+		expect(intent?.limit_price).toBe(0.01);
 	});
 });

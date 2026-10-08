@@ -264,17 +264,42 @@ export interface PolyTradeExecutor {
 }
 
 /**
- * Per-account paper position reads. SEAM_ONLY: the implementation is the paper
- * position / NAV projection, which lands separately. Until it is wired, the
- * paper executor throws `paper_positions_unavailable` for every position read —
- * deliberately louder than the hardcoded `0` it replaces.
+ * One open paper position, exactly as the executor consumes it.
+ *
+ * Deliberately NOT `PolymarketUserPosition`. That shape is the Data-API
+ * response: it requires `cashPnl`, `realizedPnl`, `percentPnl`, `redeemable`,
+ * `title`, `eventSlug` and a dozen more fields a paper account has no fact for,
+ * and synthesizing them to satisfy a type is the same class of lie as the
+ * hardcoded `0` this slice removes. Every field below is either stored by the
+ * paper projection or arithmetic over stored values.
+ */
+export interface PaperExecutorPosition {
+  readonly conditionId: string;
+  readonly tokenId: string;
+  /** Net shares held; always > 0. */
+  readonly shares: number;
+  /** `shares × mid` at the projection's observation time. */
+  readonly currentValueUsdc: number;
+  /** Entry VWAP. */
+  readonly avgPrice: number;
+}
+
+/**
+ * Per-account paper position reads, backed by the paper fact projection
+ * (`@features/wallet-analysis/server/paper-fact-source`). Bootstrap adapts the
+ * fact readers to this shape.
+ *
+ * Both methods are expected to THROW a typed unavailable (rather than return an
+ * empty book or a 0) when the projection has not run, is incomplete, or is
+ * stale — see `PaperFactsUnavailableError`. An empty array from
+ * `listOpenPositions` means "verifiably holds nothing", which is a fact.
  */
 export interface PaperPositionSource {
-  /** Paper positions for one account, shaped like the Data-API read. */
-  listPositions: (
+  /** The account's open book as of the last complete projection tick. */
+  listOpenPositions: (
     billingAccountId: string
-  ) => Promise<PolymarketUserPosition[]>;
-  /** Paper share balance for one account + token id. */
+  ) => Promise<readonly PaperExecutorPosition[]>;
+  /** Shares held for one token id. */
   getPositionShareBalance: (
     billingAccountId: string,
     tokenId: string
@@ -333,6 +358,50 @@ function toOrderIntentSummary(intent: OrderIntent): OrderIntentSummary {
       /^prediction-market:polymarket:/,
       ""
     ),
+  };
+}
+
+/**
+ * Build the SELL intent that closes a paper position. Pure, so the arithmetic is
+ * testable without the paper sidecar or a CLOB client in the loop.
+ *
+ * Mirrors the live `closePosition` sizing exactly — cap the notional at the
+ * position's value AT THE LIMIT, and default the limit to one cent through the
+ * current mark — with `curPrice` derived as `currentValueUsdc / shares` (the mid
+ * the projection marked at, which is the quantity the Data-API's `curPrice`
+ * carries on the live path).
+ *
+ * @returns the intent, or `null` when the position cannot back a SELL. `null` is
+ *   "you hold nothing here", which the caller turns into `no_position_to_close`
+ *   — deliberately distinct from "I cannot see what you hold", which the fact
+ *   reader raises before this is ever reached.
+ * @public
+ */
+export function planPaperCloseIntent(
+  params: ClosePositionParams,
+  position: PaperExecutorPosition | undefined
+): OrderIntent | null {
+  if (!position || position.shares <= 0) return null;
+  const markedPrice = position.currentValueUsdc / position.shares;
+  const limit_price =
+    params.limit_price ??
+    Math.max(0.01, (Number.isFinite(markedPrice) ? markedPrice : 0) - 0.01);
+  const size_usdc = Math.min(
+    params.max_size_usdc,
+    position.shares * limit_price
+  );
+  return {
+    provider: "polymarket",
+    market_id: `prediction-market:polymarket:${position.conditionId}`,
+    // The projection stores no outcome label. The live path passes `""` whenever
+    // the Data-API omits it, and `token_id` is what identifies the asset to the
+    // venue, so this matches live behavior rather than inventing a label.
+    outcome: "",
+    side: "SELL",
+    size_usdc,
+    limit_price,
+    client_order_id: params.client_order_id,
+    attributes: { token_id: params.tokenId },
   };
 }
 
@@ -672,8 +741,14 @@ async function buildExecutor(
     action: "close" | "redeem";
     requireTradingReady: boolean;
   }): Promise<void> {
+    // `walletPort` (not `deps.walletPort`): the custody port is optional on the
+    // factory deps because a paper-only deployment has none, and the ONE place
+    // that absence is decided is the guard at the top of `buildExecutor`, which
+    // turns it into a typed `no_connection` failure. Every live-path consumer
+    // closes over the narrowed local, so "the port might be missing" cannot
+    // leak into code that only runs after it was proven present.
     const connection =
-      await deps.walletPort.getConnectionSummary(billingAccountId);
+      await walletPort.getConnectionSummary(billingAccountId);
     if (!connection) {
       deps.logger.warn(
         {
@@ -693,7 +768,7 @@ async function buildExecutor(
     if (params.requireTradingReady && !connection.tradingApprovalsReadyAt) {
       try {
         const ready =
-          await deps.walletPort.ensureTradingApprovals(billingAccountId);
+          await walletPort.ensureTradingApprovals(billingAccountId);
         if (ready.ready) return;
       } catch (err) {
         deps.logger.warn(
@@ -853,17 +928,20 @@ async function buildExecutor(
  *     don't auth, so this works for the mirror BUY path's tick/min-size lookup.
  *   - Wires `paperPlace` as the only placement path. `livePlace` doesn't exist
  *     in this builder — every intent routes to the sidecar.
- *   - Position reads (`listPositions`, `getPositionShareBalance`) delegate to
- *     `deps.paperPositions`. When that projection is not wired they throw
- *     `paper_positions_unavailable`. They do NOT return `0` and do NOT query the
- *     Data-API for the zero address, which is what the pre-0081 build did:
- *     `getPositionShareBalance: async () => 0` fabricated a value that pinned
- *     `position_gap`'s gap math at `desired - 0` forever, and the zero-address
- *     Data-API read answered one deployment-wide "portfolio" that belonged to
- *     nobody.
- *   - `closePosition` / `exitPosition` need a position to size the SELL against,
- *     so they surface the same typed unavailable until the paper position
- *     projection lands.
+ *   - Position reads come from `deps.paperPositions` — the paper fact projection
+ *     (migration 0082), read back per account. They do NOT return `0` and do NOT
+ *     query the Data-API for the zero address, which is what the pre-0081 build
+ *     did: `getPositionShareBalance: async () => 0` fabricated a value that
+ *     pinned `position_gap`'s gap math at `desired - 0` forever, and the
+ *     zero-address Data-API read answered one deployment-wide "portfolio" that
+ *     belonged to nobody. An absent / incomplete / stale projection raises a
+ *     typed unavailable from the reader; only a complete, fresh projection
+ *     licenses the statement "this account holds nothing".
+ *   - `closePosition` sizes the mirror's SELL from those facts, same arithmetic
+ *     as the live builder. `exitPosition` and the Data-API-shaped
+ *     `listPositions` are refused with their own named reasons — the paper
+ *     sidecar has no market-order seam, and the wide Data-API position shape
+ *     carries realized-PnL / metadata fields paper has no fact for.
  */
 async function buildPaperOnlyExecutor(
   billingAccountId: string,
@@ -994,38 +1072,99 @@ async function buildPaperOnlyExecutor(
   const paperPositions = deps.paperPositions;
 
   /**
-   * SEAM_ONLY — the paper position / NAV projection is not wired yet. Throwing a
-   * typed unavailable is the whole point: the value this replaces was a
-   * hardcoded `0`, which read as "no position" to every caller and was
-   * indistinguishable from a real flat book.
+   * Refuse an operation the paper venue cannot answer from facts.
+   *
+   * `reason` is deliberately specific: "the projection is not wired on this
+   * deployment" and "this shape cannot be produced honestly for paper" are
+   * different operator problems, and collapsing them is what makes a gap look
+   * like a bug (or worse, gets papered over with a 0).
    */
-  function paperPositionsUnavailable(operation: string): never {
+  function paperRefuse(operation: string, reason: string, detail: string): never {
     throw new PolyTradeExecutorError(
       "not_authorized",
-      `poly-trade-executor: ${operation} unavailable for the paper venue on this deployment (no paper position source wired)`,
-      "paper_positions_unavailable"
+      `poly-trade-executor: ${operation} unavailable for the paper venue — ${detail}`,
+      reason
     );
+  }
+
+  function requirePaperPositions(operation: string): PaperPositionSource {
+    if (!paperPositions) {
+      paperRefuse(
+        operation,
+        "paper_positions_unavailable",
+        "no paper position source is wired on this deployment"
+      );
+    }
+    return paperPositions;
+  }
+
+  /**
+   * SELL-to-close for a paper account — the mirror's exit path.
+   *
+   * Same shape as the live `closePosition`, with the position read coming from
+   * the paper projection instead of the Data-API. Sizing lives in the pure
+   * `planPaperCloseIntent` above; this function is the IO around it.
+   *
+   * A token the account verifiably does not hold raises `no_position_to_close`,
+   * exactly as live does. An unreadable projection raises its own typed
+   * unavailable from inside `listOpenPositions` — the two are never conflated,
+   * because "you hold nothing" and "I cannot see what you hold" are different
+   * answers.
+   */
+  async function paperClosePosition(
+    params: ClosePositionParams
+  ): Promise<OrderReceipt> {
+    const positions = await requirePaperPositions(
+      "closePosition"
+    ).listOpenPositions(billingAccountId);
+    const intent = planPaperCloseIntent(
+      params,
+      positions.find((p) => p.tokenId === params.tokenId)
+    );
+    if (!intent) {
+      throw new PolyTradeExecutorError(
+        "no_position_to_close",
+        `poly-trade-executor: no open paper position for tokenId=${params.tokenId} on account=${billingAccountId}`
+      );
+    }
+    return authorizedPlace(intent);
   }
 
   const executor: PolyTradeExecutor = {
     billingAccountId,
     placeIntent: authorizedPlace,
-    // Both close paths size the SELL from the current position; without a paper
-    // position source there is nothing honest to size against.
-    closePosition: async () => paperPositionsUnavailable("closePosition"),
-    exitPosition: async () => paperPositionsUnavailable("exitPosition"),
+    closePosition: paperClosePosition,
+    // The user-facing full exit sells the whole balance at market via the live
+    // adapter's `sellPositionAtMarket`. `PaperAdapter` exposes no market-order
+    // seam, so this is a genuine capability gap in the paper venue — named as
+    // one, not emulated with a limit order that might not fill.
+    exitPosition: async () =>
+      paperRefuse(
+        "exitPosition",
+        "paper_market_exit_unsupported",
+        "the paper sidecar has no market-order seam; close via the mirror's SELL path instead"
+      ),
+    // `PolyTradeExecutor.listPositions` is typed as the Data-API
+    // `PolymarketUserPosition[]`, which carries realized-PnL and market-metadata
+    // fields the paper projection has no fact for. Callers that need a paper
+    // account's book take `PaperPositionSource.listOpenPositions` (bootstrap
+    // wires the mirror's portfolio snapshot straight to it); nothing fabricates
+    // the wide shape to satisfy this signature.
     listPositions: async () =>
-      paperPositions
-        ? paperPositions.listPositions(billingAccountId)
-        : paperPositionsUnavailable("listPositions"),
+      paperRefuse(
+        "listPositions",
+        "paper_positions_shape_unavailable",
+        "the Data-API position shape cannot be produced from paper facts; use the paper portfolio snapshot"
+      ),
     getOrder: paperAdapter.getOrder.bind(paperAdapter),
     cancelOrder: paperAdapter.cancelOrder.bind(paperAdapter),
     getMarketConstraints: adapter.getMarketConstraints.bind(adapter),
     listOpenOrders: async () => [],
     getPositionShareBalance: async (tokenId: string) =>
-      paperPositions
-        ? paperPositions.getPositionShareBalance(billingAccountId, tokenId)
-        : paperPositionsUnavailable("getPositionShareBalance"),
+      requirePaperPositions("getPositionShareBalance").getPositionShareBalance(
+        billingAccountId,
+        tokenId
+      ),
     funderAddress,
   };
 

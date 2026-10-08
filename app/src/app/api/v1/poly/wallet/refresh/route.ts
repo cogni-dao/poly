@@ -34,6 +34,7 @@ import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import {
   getExecutionVenueResolver,
+  getPaperPortfolio,
   getPaperVenue,
 } from "@/bootstrap/poly-execution-venue";
 import {
@@ -228,6 +229,7 @@ export const POST = wrapRouteHandlerWithLogging(
         // which executor it gets, same as the mirror loop.
         resolveExecutionVenue: getExecutionVenueResolver(),
         paperVenue: getPaperVenue(),
+        paperPositions: getPaperPortfolio(),
       });
       const executor = await executorFactory.getPolyTradeExecutorFor(
         account.id

@@ -9,6 +9,13 @@
  *   `poly_trader_current_positions` — plus the tenant's
  *   `poly_wallet_balance_snapshots` NAV row, so every existing DB-only reader
  *   works unchanged with no paper-specific branch.
+ *
+ *   Also owns the READ-BACK of those facts on the trading hot path
+ *   (`readPaperAccountPositionFacts` / `readPaperAccountNavUsdc`): how a paper
+ *   account's own open book and NAV reach the sizing policy and the SELL-close
+ *   path. Writer and reader live together on purpose — the reader's safety
+ *   depends on the cursor and withholding semantics the writer establishes, and
+ *   splitting them is how the two drift.
  * Scope: Feature service. Caller injects the DB handle, the logger, and the
  *   mid-price reader, and owns the statement timeout and transaction. Does not
  *   construct clients, read env, or schedule itself.
@@ -58,6 +65,19 @@
  *     no RLS; the capability plane is their only clamp. Every statement below
  *     binds `trader_wallet_id` and/or `billing_account_id` explicitly. There
  *     is no database backstop behind these queries.
+ *   - READS_THE_PROJECTION_NEVER_REAGGREGATES: the read-back returns the rows
+ *     this module wrote. It does not re-run the ledger `GROUP BY` — a second
+ *     aggregation would be a second answer to "what does this account hold",
+ *     and the two would diverge exactly when it mattered (one marked at a mid,
+ *     the other not).
+ *   - FRESHNESS_IS_A_PRECONDITION: the read-back refuses when the position
+ *     cursor is absent (`never_projected`), not `ok` (`projection_incomplete`),
+ *     or older than `PAPER_FACTS_MAX_STALENESS_MS` (`projection_stale`). An
+ *     empty book is only ever returned when a complete, recent tick proves the
+ *     account holds nothing. This is the read-side half of
+ *     NO_FABRICATED_VALUES: the writer withholds rather than invents, so the
+ *     reader must refuse rather than substitute — a stale or short book
+ *     under-reports exposure, which is the same bug the hardcoded `0` was.
  *   - DERIVED_ADDRESS_IS_CROSS_CHECKED: the synthetic address is recomputed
  *     from the billing account and compared to the stored row; a mismatch
  *     skips the account loudly rather than observing an address that two
@@ -71,7 +91,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { polyWalletConnections } from "@cogni/db-schema/wallet-connections";
+import {
+  polyWalletBalanceSnapshots,
+  polyWalletConnections,
+} from "@cogni/db-schema/wallet-connections";
 import type { LoggerPort } from "@cogni/poly-market-provider";
 import {
   polyTraderCurrentPositions,
@@ -1257,4 +1280,305 @@ export async function runPaperProjectionTick(deps: {
     }
   }
   return result;
+}
+
+/* ── Read-back: a paper account's own projected positions + NAV ───────────── */
+
+/**
+ * How old the position projection may be and still be used to SIZE an order.
+ *
+ * The projection ticks every 30s (`PAPER_PROJECTION_POLL_MS`) with a 25s
+ * timeout, so four ticks absorbs a slow tick and a failed one without making
+ * paper untradeable. The bound exists because a stale read UNDER-reports a
+ * position that was just opened, and "position smaller than it really is" is
+ * the same failure the hardcoded `0` produced — only slower and harder to see.
+ * Past the bound the reader reports `projection_stale` instead.
+ *
+ * Note this is bounded staleness, not a fresh read: the live path marks against
+ * a live Data-API position read. That difference is inherent to paper (its
+ * positions are DERIVED from our own ledger, by a writer, on a timer) and is
+ * named here rather than hidden.
+ */
+export const PAPER_FACTS_MAX_STALENESS_MS = 120_000;
+
+/** Why a paper account's facts cannot be used right now. */
+export type PaperFactsUnavailableReason =
+  /** No enrolled `poly_trader_wallets` row for the derived paper address. */
+  | "no_paper_wallet"
+  /** The wallet exists but the position projection has never completed. */
+  | "never_projected"
+  /** Last tick was `partial` — a mid was unreadable, so exposure is incomplete. */
+  | "projection_incomplete"
+  /** Last successful tick is older than {@link PAPER_FACTS_MAX_STALENESS_MS}. */
+  | "projection_stale"
+  /** No usable NAV row for this paper address. */
+  | "nav_missing";
+
+/**
+ * Thrown instead of returning an incomplete or stale paper fact set.
+ *
+ * NO_FABRICATED_VALUES, on the read side: the writer already refuses to invent
+ * a mark, and this is the matching refusal for the reader. Returning "no
+ * positions" for an account whose projection has not run, or a NAV of 0 for one
+ * whose NAV was withheld, would re-create the exact bug the hardcoded
+ * `getPositionShareBalance: async () => 0` was.
+ */
+export class PaperFactsUnavailableError extends Error {
+  constructor(
+    public readonly billingAccountId: string,
+    public readonly reason: PaperFactsUnavailableReason,
+    public readonly detail?: string
+  ) {
+    super(
+      `paper facts unavailable for billingAccountId=${billingAccountId} (${reason})${
+        detail ? `: ${detail}` : ""
+      }`
+    );
+    this.name = "PaperFactsUnavailableError";
+  }
+}
+
+/** One open paper position, as projected and marked by the last good tick. */
+export type PaperOpenPosition = {
+  readonly conditionId: string;
+  readonly tokenId: string;
+  /** Net shares held. Always > 0 — closed positions are not returned. */
+  readonly shares: number;
+  /** `shares × mid` at `observedAt`. */
+  readonly currentValueUsdc: number;
+  /** Entry VWAP. */
+  readonly avgPrice: number;
+};
+
+/** The paper account's open book, with the observation time it came from. */
+export type PaperAccountPositionFacts = {
+  readonly traderWalletId: string;
+  /** The derived synthetic address these facts belong to. */
+  readonly address: `0x${string}`;
+  /** `last_success_at` of the position cursor — when these marks were taken. */
+  readonly observedAt: Date;
+  readonly positions: readonly PaperOpenPosition[];
+};
+
+/**
+ * Read one paper account's open positions back out of the fact tables.
+ *
+ * READS_THE_PROJECTION_NEVER_REAGGREGATES: this returns the rows
+ * {@link projectPaperPositionsAndNav} wrote. It deliberately does NOT re-run
+ * the `GROUP BY` over `poly_copy_trade_fills` — a second aggregation would be a
+ * second answer to "what does this account hold", and the two would drift
+ * exactly when it mattered (one marked at a mid, the other not). The cursor row
+ * that projection publishes is what makes the read-back safe: it carries both
+ * completeness (`status`) and recency (`last_success_at`), so an incomplete or
+ * stale projection is detectable here rather than silently returning a short
+ * book.
+ *
+ * `active = false` rows are excluded: the projection writes those with
+ * `shares = 0` when a position closed, which is arithmetic rather than a mark.
+ * A caller asking "what do I hold" is asking about the open book.
+ *
+ * @throws {PaperFactsUnavailableError} on every not-usable state. Never returns
+ *   an empty book to mean "unknown"; an empty `positions` array means this
+ *   account verifiably holds nothing as of `observedAt`.
+ * @public
+ */
+export async function readPaperAccountPositionFacts(input: {
+  db: Db;
+  billingAccountId: string;
+  now?: Date;
+  maxStalenessMs?: number;
+}): Promise<PaperAccountPositionFacts> {
+  const now = input.now ?? new Date();
+  const maxStalenessMs = input.maxStalenessMs ?? PAPER_FACTS_MAX_STALENESS_MS;
+  // Same single definition of the address the writer enrolls under
+  // (DERIVED_ADDRESS_IS_CROSS_CHECKED) — not a second derivation, the same one.
+  const address = derivePaperAccountAddress(input.billingAccountId);
+
+  const walletRows = await input.db
+    .select({ id: polyTraderWallets.id })
+    .from(polyTraderWallets)
+    .where(
+      and(
+        eq(polyTraderWallets.walletAddress, address),
+        eq(polyTraderWallets.kind, PAPER_WALLET_KIND),
+        isNull(polyTraderWallets.disabledAt)
+      )
+    )
+    .limit(1);
+  const wallet = walletRows[0];
+  if (!wallet) {
+    throw new PaperFactsUnavailableError(
+      input.billingAccountId,
+      "no_paper_wallet",
+      "no active poly_trader_wallets row for the derived paper address — the projection has not enrolled this account"
+    );
+  }
+
+  const cursorRows = await input.db
+    .select({
+      status: polyTraderIngestionCursors.status,
+      lastSuccessAt: polyTraderIngestionCursors.lastSuccessAt,
+      errorMessage: polyTraderIngestionCursors.errorMessage,
+    })
+    .from(polyTraderIngestionCursors)
+    .where(
+      and(
+        eq(polyTraderIngestionCursors.traderWalletId, wallet.id),
+        eq(polyTraderIngestionCursors.source, PAPER_POSITION_CURSOR_SOURCE)
+      )
+    )
+    .limit(1);
+  const cursor = cursorRows[0];
+  if (!cursor?.lastSuccessAt) {
+    throw new PaperFactsUnavailableError(
+      input.billingAccountId,
+      "never_projected",
+      "position cursor has no last_success_at — no projection tick has completed for this account"
+    );
+  }
+  if (cursor.status !== "ok") {
+    throw new PaperFactsUnavailableError(
+      input.billingAccountId,
+      "projection_incomplete",
+      cursor.errorMessage ??
+        `position cursor status is '${cursor.status}'; exposure may be understated`
+    );
+  }
+  const ageMs = now.getTime() - cursor.lastSuccessAt.getTime();
+  if (ageMs > maxStalenessMs) {
+    throw new PaperFactsUnavailableError(
+      input.billingAccountId,
+      "projection_stale",
+      `last successful projection was ${Math.round(ageMs / 1000)}s ago (bound ${Math.round(maxStalenessMs / 1000)}s)`
+    );
+  }
+
+  const rows = await input.db
+    .select({
+      conditionId: polyTraderCurrentPositions.conditionId,
+      tokenId: polyTraderCurrentPositions.tokenId,
+      shares: polyTraderCurrentPositions.shares,
+      currentValueUsdc: polyTraderCurrentPositions.currentValueUsdc,
+      avgPrice: polyTraderCurrentPositions.avgPrice,
+    })
+    .from(polyTraderCurrentPositions)
+    .where(
+      and(
+        eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+        eq(polyTraderCurrentPositions.active, true)
+      )
+    );
+
+  const positions: PaperOpenPosition[] = [];
+  for (const row of rows) {
+    const shares = Number(row.shares);
+    const currentValueUsdc = Number(row.currentValueUsdc);
+    const avgPrice = Number(row.avgPrice);
+    if (
+      !Number.isFinite(shares) ||
+      !Number.isFinite(currentValueUsdc) ||
+      !Number.isFinite(avgPrice)
+    ) {
+      // A row we cannot read is not a row we may skip: dropping it understates
+      // the book just as surely as marking it 0 would.
+      throw new PaperFactsUnavailableError(
+        input.billingAccountId,
+        "projection_incomplete",
+        `projected position ${row.conditionId}/${row.tokenId} has an unreadable numeric value`
+      );
+    }
+    if (shares <= 0) continue;
+    positions.push({
+      conditionId: row.conditionId,
+      tokenId: row.tokenId,
+      shares,
+      currentValueUsdc,
+      avgPrice,
+    });
+  }
+
+  return {
+    traderWalletId: wallet.id,
+    address,
+    observedAt: cursor.lastSuccessAt,
+    positions,
+  };
+}
+
+/**
+ * Read the paper account's NAV (`seed − bought + sold − fees + marks`) back out
+ * of the `poly_wallet_balance_snapshots` row the projection publishes.
+ *
+ * Deliberately NOT via `readWalletBalanceFact`: that reader applies
+ * LIVE_WINS_PAPER_SHOWS, so for a tenant holding both kinds it would hand back
+ * the LIVE wallet's cash as this paper account's NAV. The snapshot table is
+ * keyed by `billing_account_id` alone, so the only way to know whose number is
+ * in the row is to check its `address` against the paper address — a mismatch
+ * means the live writer owns that row and this account HAS no published NAV.
+ *
+ * @throws {PaperFactsUnavailableError} `nav_missing` when the row is absent,
+ *   belongs to another address, carries a NULL (withheld) NAV, or is older than
+ *   the staleness bound. The writer withholds rather than invents; this reader
+ *   refuses rather than substitutes 0.
+ * @public
+ */
+export async function readPaperAccountNavUsdc(input: {
+  db: Db;
+  billingAccountId: string;
+  now?: Date;
+  maxStalenessMs?: number;
+}): Promise<{ navUsdc: number; observedAt: Date }> {
+  const now = input.now ?? new Date();
+  const maxStalenessMs = input.maxStalenessMs ?? PAPER_FACTS_MAX_STALENESS_MS;
+  const address = derivePaperAccountAddress(input.billingAccountId);
+
+  const rows = await input.db
+    .select({
+      address: polyWalletBalanceSnapshots.address,
+      usdcE: polyWalletBalanceSnapshots.usdcE,
+      observedAt: polyWalletBalanceSnapshots.observedAt,
+    })
+    .from(polyWalletBalanceSnapshots)
+    .where(eq(polyWalletBalanceSnapshots.billingAccountId, input.billingAccountId))
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) {
+    throw new PaperFactsUnavailableError(
+      input.billingAccountId,
+      "nav_missing",
+      "no poly_wallet_balance_snapshots row — the projection has published no NAV yet"
+    );
+  }
+  if (row.address.toLowerCase() !== address) {
+    throw new PaperFactsUnavailableError(
+      input.billingAccountId,
+      "nav_missing",
+      "the tenant's NAV row belongs to a different address (live custody owns it); this paper account has no published NAV"
+    );
+  }
+  if (row.usdcE === null) {
+    throw new PaperFactsUnavailableError(
+      input.billingAccountId,
+      "nav_missing",
+      "NAV was withheld by the projection (an open position could not be marked)"
+    );
+  }
+  const navUsdc = Number(row.usdcE);
+  if (!Number.isFinite(navUsdc)) {
+    throw new PaperFactsUnavailableError(
+      input.billingAccountId,
+      "nav_missing",
+      "published NAV is not a finite number"
+    );
+  }
+  const ageMs = now.getTime() - row.observedAt.getTime();
+  if (ageMs > maxStalenessMs) {
+    throw new PaperFactsUnavailableError(
+      input.billingAccountId,
+      "projection_stale",
+      `published NAV is ${Math.round(ageMs / 1000)}s old (bound ${Math.round(maxStalenessMs / 1000)}s)`
+    );
+  }
+  return { navUsdc, observedAt: row.observedAt };
 }

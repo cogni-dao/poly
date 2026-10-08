@@ -157,6 +157,7 @@ import {
 } from "@/bootstrap/jobs/order-reconciler.job";
 import {
 	getExecutionVenueResolver,
+	getPaperPortfolio,
 	getPaperVenue,
 } from "@/bootstrap/poly-execution-venue";
 import {
@@ -897,6 +898,12 @@ function createContainer(): Container {
 	});
 	const redeemPipelines = new Map<string, RedeemPipelineHandles>();
 
+	// The paper venue's read side — executor position seam + the NAV the mirror's
+	// position_gap denominator needs. Shared with the wallet-refresh and
+	// manual-close routes through `@/bootstrap/poly-execution-venue`, so all three
+	// executor construction sites read paper facts the same way.
+	const paperPortfolio = getPaperPortfolio();
+
 	// Per-tenant trade-executor factory. Lazily constructs a
 	// `PolyTradeExecutor` for a given `billingAccountId` and dispatches it to the
 	// venue that account's `poly_wallet_connections.kind` names
@@ -936,9 +943,12 @@ function createContainer(): Container {
 			paperSidecarUrl: env.PAPER_SIDECAR_URL,
 			resolveExecutionVenue: executionVenueResolver,
 			paperVenue: getPaperVenue(),
-			// `paperPositions` is intentionally unwired: the paper position / NAV
-			// projection lands separately, and until it does the paper executor
-			// throws `paper_positions_unavailable` rather than answering 0.
+			// The paper venue's position reads, backed by the migration-0082 fact
+			// projection. Absent / incomplete / stale facts raise
+			// `PaperFactsUnavailableError` from inside the reader — this wiring adds
+			// no fallback, so there is still no path on which a paper position read
+			// answers 0 without a complete, fresh projection behind it.
+			paperPositions: paperPortfolio,
 		});
 	})();
 
@@ -1288,19 +1298,38 @@ function createContainer(): Container {
 							targetPositionsCache = { capturedAt: Date.now(), positions };
 							return positions;
 						};
+						// `OperatorPosition`-shaped: exactly `{asset, size, currentValue}`,
+						// the only fields position_gap and the SELL branch consume. Both
+						// venues can supply all three as facts.
+						type MirrorPosition = {
+							asset: string;
+							size: number;
+							currentValue: number;
+						};
 						let mirrorPortfolioCache:
 							| {
 									capturedAt: number;
 									valueUsdc: number;
-									positions: Awaited<
-										ReturnType<PolyTradeExecutor["listPositions"]>
-									>;
+									positions: MirrorPosition[];
 							  }
 							| undefined;
-						const getMirrorPortfolioSnapshot = ((): import("@/bootstrap/jobs/copy-trade-mirror.job").MirrorJobDeps["getMirrorPortfolioSnapshot"] => {
-						const walletPort = mirrorWalletPort;
-						if (!walletPort) return undefined;
-						return async () => {
+						/**
+						 * NAV + open book for THIS tenant's mirror account, per venue
+						 * (VENUE_RESOLVED_FROM_ACCOUNT).
+						 *
+						 * Live: free pUSD on the trading wallet + Data-API position values.
+						 * Paper: the migration-0082 projection's published NAV (seed − cost
+						 * + marks) and its projected open positions. A paper account has no
+						 * pUSD balance to read and a live account has no projection, so this
+						 * is a real fork, not a preference — but both branches are
+						 * saved/observed facts, and either one THROWS rather than return a
+						 * partial total. position_gap treats a throw as "cannot size now"
+						 * and skips, which is the behaviour a withheld NAV must produce.
+						 */
+						const getMirrorPortfolioSnapshot = async (): Promise<{
+							currentValueUsdc: number;
+							positions: MirrorPosition[];
+						}> => {
 							if (
 								mirrorPortfolioCache &&
 								Date.now() - mirrorPortfolioCache.capturedAt < 5_000
@@ -1308,25 +1337,79 @@ function createContainer(): Container {
 								return {
 									currentValueUsdc: mirrorPortfolioCache.valueUsdc,
 									positions: mirrorPortfolioCache.positions.map((position) => ({
-										asset: position.asset,
-										size: position.size,
-										currentValue: position.currentValue,
+										...position,
 									})),
 								};
 							}
-							const executor = await getExecutor();
-							const [balances, positions] = await Promise.all([
-								walletPort.getBalances(enumeratedTarget.billingAccountId),
-								executor.listPositions(),
-							]);
-							if (!balances || balances.pusd === null) {
-								throw new Error("mirror pUSD balance unavailable");
-							}
-							const openValue = positions.reduce(
-								(sum, position) => sum + Math.max(0, position.currentValue),
-								0,
+
+							const venue = await executionVenueResolver(
+								enumeratedTarget.billingAccountId,
 							);
-							const valueUsdc = balances.pusd + openValue;
+
+							let valueUsdc: number;
+							let positions: MirrorPosition[];
+							if (venue === "paper") {
+								// Both reads throw `PaperFactsUnavailableError` unless the
+								// projection is complete and fresh, so a withheld NAV or an
+								// unmarked position can never be silently read as 0. They are
+								// two reads of one writer: the projection publishes the NAV row
+								// and the position cursor in the SAME transaction per tick, so
+								// in steady state they carry the same `observedAt`; at worst
+								// they straddle a tick, which is bounded by the same freshness
+								// gate and cannot invent exposure that was never projected.
+								const [navUsdc, open] = await Promise.all([
+									paperPortfolio.getNavUsdc(
+										enumeratedTarget.billingAccountId,
+									),
+									paperPortfolio.listOpenPositions(
+										enumeratedTarget.billingAccountId,
+									),
+								]);
+								// NAV already includes the marked value of every open position
+								// (NAV_IS_CASH_PLUS_MARKS), so it is the whole denominator —
+								// unlike the live branch, where `pusd` is cash only and the
+								// open value has to be added.
+								valueUsdc = navUsdc;
+								positions = open.map((position) => ({
+									asset: position.tokenId,
+									size: position.shares,
+									currentValue: position.currentValueUsdc,
+								}));
+							} else {
+								// The live branch is where "no custody port" is a real state:
+								// this deployment cannot read a live wallet's cash at all.
+								// Throwing here (rather than asserting the port exists) keeps
+								// the paper lane working and makes the live lane's missing
+								// configuration a named, per-tick failure.
+								if (!mirrorWalletPort) {
+									throw new Error(
+										"mirror NAV unavailable: no trader-wallet adapter is configured on this deployment (live account)",
+									);
+								}
+								const executor = await getExecutor();
+								const [balances, livePositions] = await Promise.all([
+									mirrorWalletPort.getBalances(
+										enumeratedTarget.billingAccountId,
+									),
+									executor.listPositions(),
+								]);
+								if (!balances || balances.pusd === null) {
+									throw new Error("mirror pUSD balance unavailable");
+								}
+								positions = livePositions.map((position) => ({
+									asset: position.asset,
+									size: position.size,
+									currentValue: position.currentValue,
+								}));
+								valueUsdc =
+									balances.pusd +
+									positions.reduce(
+										(sum, position) =>
+											sum + Math.max(0, position.currentValue),
+										0,
+									);
+							}
+
 							mirrorPortfolioCache = {
 								capturedAt: Date.now(),
 								valueUsdc,
@@ -1334,14 +1417,9 @@ function createContainer(): Container {
 							};
 							return {
 								currentValueUsdc: valueUsdc,
-								positions: positions.map((position) => ({
-									asset: position.asset,
-									size: position.size,
-									currentValue: position.currentValue,
-								})),
+								positions: positions.map((position) => ({ ...position })),
 							};
 						};
-						})();
 
 						let stopPoll: (() => void) | null = null;
 						try {
