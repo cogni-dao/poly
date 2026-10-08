@@ -8,6 +8,12 @@
  * Invariants:
  *   - SAME_OBSERVED_TRADE_TABLE: copy-target and Cogni wallet public trades share `poly_trader_fills`.
  *   - OBSERVATION_INDEPENDENT_OF_COPYING: `active_for_research` is research state, not copy-trade policy.
+ *   - PAPER_IS_A_SOURCE_NOT_A_TABLE (migration 0083): a paper account's facts
+ *     land in these SAME tables under `poly_trader_wallets.kind = 'paper_wallet'`,
+ *     `poly_trader_fills.source = 'paper-ledger'`, and cursor sources
+ *     `paper-ledger-{trades,positions}`. The three CHECK vocabularies were closed
+ *     against Data-API values; they are widened, never bypassed, so a typo still
+ *     fails at the DB instead of inventing a fourth provenance.
  *   - NO_FULL_HISTORY_CRAWL: ingestion cursors store forward watermarks; historical backfill is a separate v2 concern.
  *   - PNL_TIMESERIES_KEYED_BY_FIDELITY: `poly_trader_user_pnl_points` PK is `(trader_wallet_id, fidelity, ts)`; reader picks `1h` for short windows, `1d` for long.
  *   - PRICE_HISTORY_TIMESERIES_KEYED: `poly_market_price_history` PK is `(asset, fidelity, ts)`; reader picks `1h` for windows up to ~1 month, `1d` for longer.
@@ -60,7 +66,7 @@ export const polyTraderWallets = pgTable(
     ),
     check(
       "poly_trader_wallets_kind_check",
-      sql`${table.kind} IN ('copy_target','cogni_wallet')`
+      sql`${table.kind} IN ('copy_target','cogni_wallet','paper_wallet')`
     ),
     uniqueIndex("poly_trader_wallets_wallet_address_idx").on(
       table.walletAddress
@@ -93,7 +99,7 @@ export const polyTraderIngestionCursors = pgTable(
     primaryKey({ columns: [table.traderWalletId, table.source] }),
     check(
       "poly_trader_ingestion_cursors_source_check",
-      sql`${table.source} IN ('data-api','data-api-trades','data-api-positions','clob-ws')`
+      sql`${table.source} IN ('data-api','data-api-trades','data-api-positions','clob-ws','paper-ledger-trades','paper-ledger-positions')`
     ),
     check(
       "poly_trader_ingestion_cursors_status_check",
@@ -128,7 +134,7 @@ export const polyTraderFills = pgTable(
   (table) => [
     check(
       "poly_trader_fills_source_check",
-      sql`${table.source} IN ('data-api','clob-ws')`
+      sql`${table.source} IN ('data-api','clob-ws','paper-ledger')`
     ),
     check("poly_trader_fills_side_check", sql`${table.side} IN ('BUY','SELL')`),
     check("poly_trader_fills_price_positive", sql`${table.price} > 0`),

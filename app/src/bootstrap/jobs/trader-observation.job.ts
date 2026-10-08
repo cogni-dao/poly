@@ -9,6 +9,8 @@
  *   - LIVE_FORWARD_COLLECTION: every tick observes configured `active_for_research` wallets from current watermarks.
  *   - TICK_IS_SELF_HEALING: escaped errors are logged and the interval continues.
  *   - TICK_TIMEOUT_IS_REAL_CANCELLATION (task.5015): the tick timeout aborts an AbortSignal threaded through the tick into per-wallet work and Polymarket fetches. The aborted tick settles cooperatively (logged as `tick_timeout` with wallets completed/remaining); only if it still hasn't settled after a short grace window is the promise abandoned — and even then its writers are signal-stopped, so no orphan writes past the next tick start.
+ *   - PAPER_FACTS_NEED_NO_CONTAINER_CHANGE (migration 0083): `listPaperAccounts` and `readPaperMidPrice` default here to `readActivePaperAccounts` over the injected (service-role) db and the public CLOB client, so a paper account's facts exist without the container learning about paper at all. Both are injectable for tests.
+ *   - PAPER_MARK_FAILURE_WITHHOLDS_NAV: the midpoint reader returns null on any CLOB failure, and the tick treats null as "unknown" — the account's NAV row is withheld for that tick instead of being published with the position marked to zero (NO_FABRICATED_VALUES).
  *   - USER_PNL_OPTIONAL: `userPnlClient` is optional; when omitted (e.g. in component tests), the tick skips the user-pnl read model writer and prune entirely.
  *   - RETENTION_PRUNE_CADENCE (prod EXPLAIN 2026-10-01): the two retention prunes run at most once per RETENTION_PRUNE_INTERVAL_MS (via `runRetentionPrune`), never every poll, and never on the boot tick — prod EXPLAIN showed the snapshot prune burning 30-72s of disk I/O per tick to delete zero rows on a bloated heap.
  * Side-effects: starts a timer, performs IO through injected deps.
@@ -23,6 +25,11 @@ import type {
 } from "@cogni/poly-market-provider/adapters/polymarket";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import {
+  type PaperAccount,
+  type PaperMidPriceReader,
+  readActivePaperAccounts,
+} from "@/features/wallet-analysis/server/paper-fact-source";
 import { createPolygonPositionBalanceBatchReader } from "@/features/wallet-analysis/server/position-balance-authority";
 import {
   runTraderObservationTick,
@@ -71,6 +78,18 @@ export interface TraderObservationJobDeps {
   readPositionBalances?: PositionBalanceBatchReader;
   /** Off-render Polygon reads persisted for DB-only dashboard GETs. */
   refreshBalanceFacts?: () => Promise<void>;
+  /**
+   * Active paper accounts to project (migration 0083). Defaulted below to
+   * `readActivePaperAccounts` against `deps.db` — which the container binds to
+   * the BYPASSRLS `serviceDb`, the role that can see every tenant's
+   * `poly_wallet_connections` row. Injectable for tests.
+   */
+  listPaperAccounts?: () => Promise<readonly PaperAccount[]>;
+  /**
+   * Live CLOB midpoint for marking paper positions. Defaulted below to the
+   * public CLOB client. Injectable for tests.
+   */
+  readPaperMidPrice?: PaperMidPriceReader;
   logger: LoggerPort;
   metrics: MetricsPort;
   pollMs?: number;
@@ -89,6 +108,27 @@ export function startTraderObservationJob(
     })();
   const pollMs = deps.pollMs ?? OBSERVATION_POLL_MS;
   const log = deps.logger.child({ component: "trader-observation-job" });
+  // Defaulted HERE rather than in the container for the same reason
+  // `readPositionBalances` is: the job already owns the "construct the obvious
+  // production binding unless injected" role, and the container does not need
+  // to learn about paper to get paper facts.
+  const listPaperAccounts =
+    deps.listPaperAccounts ?? (() => readActivePaperAccounts(deps.db, log));
+  // Lazily constructed so a lane that never observes a paper wallet never
+  // builds the client. `getMidpoint` returns null on any failure, so a CLOB
+  // outage withholds the NAV rather than marking positions to zero.
+  let paperMidPriceReader: PaperMidPriceReader | undefined =
+    deps.readPaperMidPrice;
+  const readPaperMidPrice: PaperMidPriceReader = async (tokenId, signal) => {
+    if (!paperMidPriceReader) {
+      const { PolymarketClobPublicClient } = await import(
+        "@cogni/poly-market-provider/adapters/polymarket"
+      );
+      const client = new PolymarketClobPublicClient();
+      paperMidPriceReader = (token, sig) => client.getMidpoint(token, sig);
+    }
+    return await paperMidPriceReader(tokenId, signal);
+  };
   let running = false;
   let balanceRefreshRunning = false;
   // prod EXPLAIN 2026-10-01 — seed to "now" so the first prune fires one full interval after
@@ -156,6 +196,8 @@ export function startTraderObservationJob(
     const tickPromise = runTraderObservationTick({
       ...deps,
       ...(readPositionBalances === undefined ? {} : { readPositionBalances }),
+      listPaperAccounts,
+      readPaperMidPrice,
       runRetentionPrune,
       signal: controller.signal,
       onStage: (next) => {

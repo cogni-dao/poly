@@ -28,6 +28,19 @@
  *   - COGNI_POSITION_ABSENCE_NEEDS_AUTHORITY: complete Data API polls do not
  *     deactivate Cogni-wallet current-position rows unless an injected
  *     authority classifies the missing row terminal.
+ *   - KIND_ROUTES_THE_FACT_SOURCE (migration 0083): a `paper_wallet` row is
+ *     observed by `paper-fact-source`, which projects the paper ledger into
+ *     these same tables. That path never calls `deps.client` (the Data-API has
+ *     nothing to say about a synthetic address), never calls
+ *     `deps.userPnlClient`, and never consults `deps.readPositionBalances` —
+ *     see LEDGER_IS_THE_AUTHORITY. `deps.client` therefore needs no interface
+ *     seam: the branch happens before any client use.
+ *   - PAPER_AND_LIVE_SWEEPS_ARE_DISJOINT: `disableMissingTenantWallets`
+ *     filters `kind = 'cogni_wallet'` and `retireMissingPaperWallets` filters
+ *     `kind = 'paper_wallet'`, so neither population can retire the other.
+ *     The paper sweep additionally refuses to retire anything on an EMPTY
+ *     account list, so a transient read of zero accounts cannot wipe
+ *     enrollment (a stronger form of ENROLLMENT_FAILURE_IS_NOT_A_WIPE).
  * Side-effects: IO through injected Data API client + optional user-pnl client + injected DB.
  * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5015
  * @public
@@ -66,6 +79,15 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import pLimit from "p-limit";
 import { hydrateCopyTargetPositions } from "./copy-target-position-hydration-service";
+import {
+  type EnrolledPaperWallet,
+  observePaperWallet,
+  PAPER_WALLET_KIND,
+  type PaperAccount,
+  PAPER_TRADE_CURSOR_SOURCE,
+  type PaperMidPriceReader,
+  syncPaperTraderWallets,
+} from "./paper-fact-source";
 import {
   accumulateFillRollups,
   TICK_ROLLUP_MAX_BATCHES,
@@ -138,6 +160,25 @@ export interface TraderObservationTickDeps {
   listActiveTradingAddresses: TenantTradingAddressReader;
   /** Polygon CTF `balanceOfBatch` authority for Data-API omissions. */
   readPositionBalances?: PositionBalanceBatchReader;
+  /**
+   * Active paper accounts to enroll and project (migration 0083). Omitted =>
+   * no paper enrollment and no paper projection this tick, which is exactly
+   * the pre-0083 behaviour. Supplying it is what makes a paper account's facts
+   * exist at all.
+   *
+   * Unlike `listActiveTradingAddresses` this is NOT a port call: a paper row's
+   * trading identity has one definition (`derivePaperAccountAddress`), which
+   * the reader recomputes and cross-checks. Production binds
+   * `readActivePaperAccounts` against the service DB.
+   */
+  listPaperAccounts?: (() => Promise<readonly PaperAccount[]>) | undefined;
+  /**
+   * Live CLOB midpoint used to mark paper positions to market. Required for a
+   * paper wallet to publish anything: without it every open position is
+   * unpriced, so NAV is withheld rather than invented (NO_FABRICATED_VALUES).
+   * Production binds `PolymarketClobPublicClient.getMidpoint`.
+   */
+  readPaperMidPrice?: PaperMidPriceReader | undefined;
   logger: LoggerPort;
   metrics: MetricsPort;
   tradePageLimit?: number;
@@ -205,6 +246,16 @@ export interface TraderObservationTickResult {
   targetPositionRows: number;
   /** Fills folded into `poly_trader_fill_rollups_daily` this tick. */
   rollupFills: number;
+  /** Paper wallets enrolled for projection this tick. */
+  paperWallets: number;
+  /** Paper accounts whose NAV row was published this tick. */
+  paperNavPublished: number;
+  /**
+   * Open paper positions whose mid price could not be read. Non-zero means at
+   * least one account's NAV was deliberately withheld — a visible, countable
+   * "unavailable", never a silent zero.
+   */
+  paperUnpricedPositions: number;
   pnlPoints: number;
   prunedPnlPoints: number;
   prunedPositionSnapshots: number;
@@ -384,6 +435,8 @@ export async function runTraderObservationTick(
   // observation entirely — the same blank dashboard, by a different route.
   // Audible, never silent: its own log phase plus the tick's `errors` count.
   let syncTenantWalletsFailed = false;
+  // Pre-loop failures are counted here because `errors` is not yet in scope.
+  let errorsBeforeLoop = 0;
   try {
     await withStatementTimeout(
       deps.db,
@@ -402,6 +455,40 @@ export async function runTraderObservationTick(
       "trader observation: tenant wallet enrollment failed; observing the already-enrolled set"
     );
   }
+  // Paper enrollment runs in its own transaction and its own try/catch: a
+  // paper-side failure must not retire or block live enrollment, and vice
+  // versa. Same statement-timeout bound as the live sync — this is pre-loop DB
+  // work that `deps.signal` cannot interrupt (BOUND_THE_PRE_LOOP_STAGES).
+  const paperWalletsById = new Map<string, EnrolledPaperWallet>();
+  const listPaperAccounts = deps.listPaperAccounts;
+  if (listPaperAccounts) {
+    try {
+      // The read runs BEFORE the write transaction opens, mirroring
+      // ENROLLMENT_FAILURE_IS_NOT_A_WIPE: a throw here enrolls and retires
+      // nothing, and an empty result retires nothing either (see
+      // `syncPaperTraderWallets`).
+      const accounts = await listPaperAccounts();
+      const enrolled = await withStatementTimeout(
+        deps.db,
+        OBSERVATION_STATEMENT_TIMEOUT_MS,
+        async (tx) => await syncPaperTraderWallets(tx, accounts)
+      );
+      for (const wallet of enrolled) {
+        paperWalletsById.set(wallet.traderWalletId, wallet);
+      }
+    } catch (err: unknown) {
+      errorsBeforeLoop += 1;
+      log.error(
+        {
+          event: "poly.paper.observe",
+          phase: "sync_paper_wallets_failed",
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "paper account enrollment failed; previously-enrolled paper wallets keep their facts"
+      );
+    }
+  }
+
   stage("select_wallets");
   const wallets = await withStatementTimeout(
     deps.db,
@@ -423,7 +510,9 @@ export async function runTraderObservationTick(
   let positions = 0;
   let rollupFills = 0;
   let pnlPoints = 0;
-  let errors = syncTenantWalletsFailed ? 1 : 0;
+  let errors = (syncTenantWalletsFailed ? 1 : 0) + errorsBeforeLoop;
+  let paperNavPublished = 0;
+  let paperUnpricedPositions = 0;
 
   // task.5015: bounded-parallel wallet fan-out. Per-wallet error isolation is
   // preserved — each phase catches its own errors and continues — EXCEPT when
@@ -435,6 +524,82 @@ export async function runTraderObservationTick(
     concurrency: WALLET_OBSERVE_CONCURRENCY,
     signal: deps.signal,
     run: async (wallet) => {
+      // KIND_ROUTES_THE_FACT_SOURCE: a paper wallet is projected from the
+      // ledger and returns BEFORE the Data-API observe call, the rollup
+      // accumulator's live-fill assumptions, and the user-pnl ingest below —
+      // all three of which would ask Polymarket about an address it has never
+      // seen and get an empty answer that reads as "no activity".
+      if (wallet.kind === PAPER_WALLET_KIND) {
+        const paper = paperWalletsById.get(wallet.id);
+        if (!paper) {
+          // Enrolled earlier but its account is not resolvable this tick
+          // (enrollment failed, the account was revoked, or the address
+          // cross-check rejected it). We cannot project without the tenant and
+          // the declared seed, and we will not guess either.
+          errors += 1;
+          log.warn(
+            {
+              event: "poly.paper.observe",
+              phase: "account_unresolved",
+              trader_wallet_id: wallet.id,
+              wallet: wallet.walletAddress,
+            },
+            "paper wallet has no resolvable account this tick; skipping projection"
+          );
+          return;
+        }
+        const readMidPrice = deps.readPaperMidPrice;
+        if (!readMidPrice) {
+          errors += 1;
+          log.error(
+            {
+              event: "poly.paper.observe",
+              phase: "mid_price_reader_missing",
+              trader_wallet_id: wallet.id,
+            },
+            "no paper mid-price reader injected; refusing to mark positions at a fabricated price"
+          );
+          return;
+        }
+        try {
+          const result = await withStatementTimeout(
+            deps.db,
+            OBSERVATION_STATEMENT_TIMEOUT_MS,
+            async (tx) =>
+              await observePaperWallet({
+                db: tx,
+                wallet: paper,
+                readMidPrice,
+                logger: log,
+                signal: deps.signal,
+              })
+          );
+          fills += result.fills;
+          positions += result.positions;
+          paperUnpricedPositions += result.unpricedPositions;
+          if (result.navPublished) paperNavPublished += 1;
+        } catch (err: unknown) {
+          if (deps.signal?.aborted) throw err;
+          errors += 1;
+          log.error(
+            {
+              event: "poly.paper.observe",
+              phase: "error",
+              trader_wallet_id: wallet.id,
+              wallet: wallet.walletAddress,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "paper wallet projection failed"
+          );
+          await markCursorError(
+            deps.db,
+            wallet.id,
+            err,
+            PAPER_TRADE_CURSOR_SOURCE
+          );
+        }
+        return;
+      }
       try {
         const result = await observeWallet({ ...deps, wallet, logger: log });
         fills += result.fills;
@@ -624,6 +789,9 @@ export async function runTraderObservationTick(
       positions,
       target_position_rows: targetPositionRows,
       rollup_fills: rollupFills,
+      paper_wallets: paperWalletsById.size,
+      paper_nav_published: paperNavPublished,
+      paper_unpriced_positions: paperUnpricedPositions,
       pnl_points: pnlPoints,
       pruned_pnl_points: prunedPnlPoints,
       pruned_position_snapshots: prunedPositionSnapshots,
@@ -640,6 +808,9 @@ export async function runTraderObservationTick(
     positions,
     targetPositionRows,
     rollupFills,
+    paperWallets: paperWalletsById.size,
+    paperNavPublished,
+    paperUnpricedPositions,
     pnlPoints,
     prunedPnlPoints,
     prunedPositionSnapshots,
