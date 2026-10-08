@@ -45,7 +45,7 @@ export function recoverableHardClobRejectionCode(
 ): RecoverableHardClobRejectionCode | null {
 	if (!detail) return null;
 	const match =
-		/PolymarketClobAdapter\.placeOrder: CLOB rejected order \(error_code=(insufficient_allowance|insufficient_balance)(?:,|\))/.exec(
+		/^PolymarketClobAdapter\.placeOrder: CLOB rejected order \(error_code=(insufficient_allowance|insufficient_balance), response_keys=\[[^\]]*\], reason="\1", clob_error="/.exec(
 			detail,
 		);
 	return (match?.[1] as RecoverableHardClobRejectionCode | undefined) ?? null;

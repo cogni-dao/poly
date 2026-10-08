@@ -302,14 +302,19 @@ describe("buildPositionGapBuyIntent", () => {
 	it("recovers only durable explicit balance and allowance rejections", () => {
 		expect(
 			recoverableHardClobRejectionCode(
-				'PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_allowance, response_keys=[success,errorMsg], reason="insufficient_allowance")',
+				'PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_allowance, response_keys=[success,errorMsg], reason="insufficient_allowance", clob_error="allowance is not enough")',
 			),
 		).toBe("insufficient_allowance");
 		expect(
 			recoverableHardClobRejectionCode(
-				'PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_balance, response_keys=[success,errorMsg], reason="insufficient_balance")',
+				'PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_balance, response_keys=[success,errorMsg], reason="insufficient_balance", clob_error="not enough balance")',
 			),
 		).toBe("insufficient_balance");
+		expect(
+			recoverableHardClobRejectionCode(
+				"PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_allowance)",
+			),
+		).toBeNull();
 		expect(
 			recoverableHardClobRejectionCode(
 				"not enough balance / allowance: allowance is not enough",
