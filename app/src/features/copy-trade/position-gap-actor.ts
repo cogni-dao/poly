@@ -36,12 +36,13 @@ import {
 	reconcilePositionGapFillEvidence,
 } from "@/features/copy-trade/position-gap-fill-evidence";
 import { isStructuredClobRejection } from "@/features/copy-trade/position-gap-placement-errors";
-import type {
-	PositionGapAccountingTransition,
-	PositionGapActiveBuy,
-	PositionGapPreparedCancel,
-	PositionGapRuntimeScope,
-	PositionGapRuntimeStore,
+import {
+	PositionGapTargetLineageMismatchError,
+	type PositionGapAccountingTransition,
+	type PositionGapActiveBuy,
+	type PositionGapPreparedCancel,
+	type PositionGapRuntimeScope,
+	type PositionGapRuntimeStore,
 } from "@/features/copy-trade/position-gap-runtime-store";
 import type { PositionGapTargetRefreshCoordinator } from "@/features/copy-trade/position-gap-target-refresh";
 import { planPositionGapBook } from "@/features/copy-trade/position-gap-v3/batch-plan";
@@ -236,6 +237,12 @@ export function startPositionGapActor(
 	};
 
 	async function reconcile(triggerReasons: readonly string[]): Promise<void> {
+		// Reconcile our durable order truth before any stale/causal early exit can
+		// enter safety cancellation. Known hard rejections must not remain
+		// ambiguous merely because the target snapshot is temporarily unusable.
+		const accountingTransitions = await reconcileKnownOrders();
+		await deps.store.reconcileLedgerTerminals(deps.scope);
+		await deps.store.releaseTerminalExposure(deps.scope);
 		let activity: Fill[] = [];
 		if (triggerReasons.includes("target_activity")) {
 			const drained = await deps.source.fetchSince(cursor);
@@ -317,9 +324,6 @@ export function startPositionGapActor(
 		causalDirty.clear();
 		causalWatermarkMs = 0;
 
-		const accountingTransitions = await reconcileKnownOrders();
-		await deps.store.reconcileLedgerTerminals(deps.scope);
-		await deps.store.releaseTerminalExposure(deps.scope);
 		const runtime = await deps.store.loadPlannerState(deps.scope);
 		// Unknown venue state stays in the economic denominator. CLOB reads are
 		// deferred until after the $1 theoretical feasibility bound below.
@@ -431,22 +435,6 @@ export function startPositionGapActor(
 		readonly PositionGapAccountingTransition[]
 	> {
 		const transitions: PositionGapAccountingTransition[] = [];
-		const repairedTargetWalletRows = await deps.store.repairTargetWalletLineage(
-			deps.scope,
-			deps.targetWallet,
-		);
-		if (repairedTargetWalletRows > 0) {
-			deps.logger.info(
-				{
-					event: "poly.position_gap.v3.target_lineage_repaired",
-					billing_account_id: deps.scope.billingAccountId,
-					target_id: deps.scope.targetId,
-					target_wallet: deps.targetWallet.toLowerCase(),
-					repaired_fill_count: repairedTargetWalletRows,
-				},
-				"position-gap repaired canonical target-wallet lineage",
-			);
-		}
 		const recovered = await deps.store.recoverKnownRejectedAmbiguities(
 			deps.scope,
 		);
@@ -461,6 +449,26 @@ export function startPositionGapActor(
 					error_code: action.errorCode,
 				},
 				"position-gap recovered a durable hard CLOB rejection",
+			);
+		}
+		try {
+			await deps.store.repairTargetWalletLineage(
+				deps.scope,
+				deps.targetWallet,
+			);
+		} catch (error) {
+			if (error instanceof PositionGapTargetLineageMismatchError) throw error;
+			// Prospective PGv3 intents already carry target_wallet. This historic
+			// observability repair may retry, but cannot gate safe trading.
+			deps.logger.warn(
+				{
+					event: "poly.position_gap.v3.target_lineage_repair_failed",
+					billing_account_id: deps.scope.billingAccountId,
+					target_id: deps.scope.targetId,
+					target_wallet: deps.targetWallet.toLowerCase(),
+					err: error instanceof Error ? error.message : String(error),
+				},
+				"position-gap historical target-wallet lineage repair failed",
 			);
 		}
 		const runtime = await deps.store.loadPlannerState(deps.scope);
