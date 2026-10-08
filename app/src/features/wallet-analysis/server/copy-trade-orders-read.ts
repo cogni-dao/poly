@@ -39,18 +39,22 @@
  *     then passes `authorize()` as `owner` and returns a 200 for the wrong
  *     tenant. The seam now resolves by reachability instead.
  *   - NO_FABRICATED_VALUES — an absent attribute is `null`, never `0`.
+ *   - CANONICAL_MARKET_IDENTITY — the bounded ledger page resolves the bare
+ *     condition id through `poly_market_metadata`; saved metadata wins over
+ *     legacy display attributes without adding an upstream render call.
  * Side-effects: IO (one SELECT).
  * Links: task.1791070959, story.5004, docs/spec/capability-plane.md
  * @public
  */
 
 import { polyCopyTradeFills } from "@cogni/poly-db-schema/copy-trade";
+import { polyMarketMetadata } from "@cogni/poly-db-schema/trader-activity";
 import type {
   PolyCopyTradeOrderRow,
   PolyCopyTradeOrdersInput,
   PolyCopyTradeOrdersOutput,
 } from "@cogni/poly-node-contracts";
-import { and, desc, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
 
@@ -70,20 +74,29 @@ type OrdersRow = {
   orderId: string | null;
   status: string;
   marketId: string;
-  observedAt: Date;
-  createdAt: Date;
-  updatedAt: Date;
-  syncedAt: Date | null;
+  observedAt: Date | string;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  syncedAt: Date | string | null;
   mode: string;
   shares: string | number;
   attributes: Record<string, unknown> | null;
+  metadataMarketTitle: string | null;
 };
+
+const rowsOf = <T>(result: unknown): T[] =>
+  Array.isArray(result)
+    ? (result as T[])
+    : (((result as { rows?: T[] }).rows ?? []) as T[]);
+
+const dateOf = (value: Date | string): Date =>
+  value instanceof Date ? value : new Date(value);
 
 /**
  * Map one ledger row to the frozen contract row.
  *
- * Moved verbatim-in-behaviour from `copy-trade/orders/route.ts:43-87` so the
- * route becomes a pure transport. The frozen
+ * Moved from `copy-trade/orders/route.ts:43-87` so the route remains a pure
+ * transport. The frozen
  * `poly.copy-trade.orders.v1.contract` is unchanged — this mapper produces
  * exactly the same 22 fields it already produced, including the dormant
  * `polymarket_profile_url: null`.
@@ -136,7 +149,7 @@ export function toContractRow(
   // the key and NO_FABRICATED_VALUES forbids inventing a URL.
   const polymarketProfileUrl: string | null = null;
 
-  const syncedAt = row.syncedAt ?? null;
+  const syncedAt = row.syncedAt === null ? null : dateOf(row.syncedAt);
 
   return {
     target_id: row.targetId,
@@ -148,7 +161,7 @@ export function toContractRow(
     // Promoted to a real column in task.5001; the attribute remains the
     // fallback for rows written before that backfill.
     market_id: row.marketId || readStr("market_id"),
-    market_title: readStr("title"),
+    market_title: row.metadataMarketTitle?.trim() || readStr("title"),
     market_tx_hash: readStr("transaction_hash"),
     outcome: readStr("outcome"),
     side,
@@ -160,9 +173,9 @@ export function toContractRow(
         : null,
     fill_accounting: fillAccounting,
     error: readStr("error"),
-    observed_at: row.observedAt.toISOString(),
-    created_at: row.createdAt.toISOString(),
-    updated_at: row.updatedAt.toISOString(),
+    observed_at: dateOf(row.observedAt).toISOString(),
+    created_at: dateOf(row.createdAt).toISOString(),
+    updated_at: dateOf(row.updatedAt).toISOString(),
     polymarket_profile_url: polymarketProfileUrl,
     synced_at: syncedAt?.toISOString() ?? null,
     // Derived server-side so every client agrees on staleness.
@@ -213,33 +226,67 @@ export async function listCopyTradeOrdersForAccount(
       : []),
   ];
 
-  const rows = await tx
-    .select({
-      targetId: polyCopyTradeFills.targetId,
-      fillId: polyCopyTradeFills.fillId,
-      clientOrderId: polyCopyTradeFills.clientOrderId,
-      orderId: polyCopyTradeFills.orderId,
-      status: polyCopyTradeFills.status,
-      marketId: polyCopyTradeFills.marketId,
-      observedAt: polyCopyTradeFills.observedAt,
-      createdAt: polyCopyTradeFills.createdAt,
-      updatedAt: polyCopyTradeFills.updatedAt,
-      syncedAt: polyCopyTradeFills.syncedAt,
-      mode: polyCopyTradeFills.mode,
-      shares: polyCopyTradeFills.shares,
-      attributes: polyCopyTradeFills.attributes,
-    })
-    .from(polyCopyTradeFills)
-    .where(and(...predicates))
-    .orderBy(
-      desc(polyCopyTradeFills.observedAt),
-      desc(polyCopyTradeFills.targetId),
-      desc(polyCopyTradeFills.fillId)
-    )
-    .limit(limit);
+  const rows = rowsOf<OrdersRow>(
+    await tx.execute(sql`
+      WITH ordered_fills AS MATERIALIZED (
+        SELECT
+          ${polyCopyTradeFills.targetId} AS target_id,
+          ${polyCopyTradeFills.fillId} AS fill_id,
+          ${polyCopyTradeFills.clientOrderId} AS client_order_id,
+          ${polyCopyTradeFills.orderId} AS order_id,
+          ${polyCopyTradeFills.status} AS status,
+          ${polyCopyTradeFills.marketId} AS market_id,
+          ${polyCopyTradeFills.observedAt} AS observed_at,
+          ${polyCopyTradeFills.createdAt} AS created_at,
+          ${polyCopyTradeFills.updatedAt} AS updated_at,
+          ${polyCopyTradeFills.syncedAt} AS synced_at,
+          ${polyCopyTradeFills.mode} AS mode,
+          ${polyCopyTradeFills.shares} AS shares,
+          ${polyCopyTradeFills.attributes} AS attributes
+        FROM ${polyCopyTradeFills}
+        WHERE ${and(...predicates)}
+        ORDER BY
+          ${polyCopyTradeFills.observedAt} DESC,
+          ${polyCopyTradeFills.targetId} DESC,
+          ${polyCopyTradeFills.fillId} DESC
+        LIMIT ${limit}
+      )
+      SELECT
+        f.target_id AS "targetId",
+        f.fill_id AS "fillId",
+        f.client_order_id AS "clientOrderId",
+        f.order_id AS "orderId",
+        f.status AS "status",
+        f.market_id AS "marketId",
+        f.observed_at AS "observedAt",
+        f.created_at AS "createdAt",
+        f.updated_at AS "updatedAt",
+        f.synced_at AS "syncedAt",
+        f.mode AS "mode",
+        f.shares AS "shares",
+        f.attributes AS "attributes",
+        metadata.market_title AS "metadataMarketTitle"
+      FROM ordered_fills f
+      LEFT JOIN LATERAL (
+        SELECT NULLIF(candidate.market_title, '') AS market_title
+        FROM ${polyMarketMetadata} candidate
+        WHERE lower(candidate.condition_id) = lower(COALESCE(
+          NULLIF(f.attributes->>'condition_id', ''),
+          NULLIF(regexp_replace(
+            f.market_id,
+            '^prediction-market:polymarket:',
+            ''
+          ), '')
+        ))
+        ORDER BY candidate.fetched_at DESC, candidate.condition_id
+        LIMIT 1
+      ) metadata ON TRUE
+      ORDER BY f.observed_at DESC, f.target_id DESC, f.fill_id DESC
+    `)
+  );
 
   // One clock read for the whole page so two rows in the same response cannot
   // report staleness against different "now"s.
   const now = Date.now();
-  return { orders: rows.map((row) => toContractRow(row as OrdersRow, now)) };
+  return { orders: rows.map((row) => toContractRow(row, now)) };
 }
