@@ -120,7 +120,7 @@ describe("resetWalletConnection", () => {
 
     const result = await resetWalletConnection(deps, input);
 
-    expect(result).toMatchObject({ outcome: "revoked", blockedReason: null });
+    expect(result).toMatchObject({ outcome: "reset", blockedReason: null });
     expect(revokeConnection).toHaveBeenCalled();
   });
 
