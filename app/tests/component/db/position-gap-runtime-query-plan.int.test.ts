@@ -81,11 +81,12 @@ describe("position-gap runtime query plan proof", () => {
 				source_kind, source_snapshot_id, source_snapshot_hash, source_snapshot_as_of,
 				source_provenance, created_run_id, condition_id, token_id, market_id, outcome,
 				target_delta_shares, scale_at_creation, allowed_mirror_shares,
+				initial_allowed_mirror_shares,
 				benchmark_target_vwap, remaining_shares
 			) VALUES (
 				${cohortId}::uuid, ${accountId}, ${userId}, ${targetId}::uuid, 'plan-cohort',
 				'activation', 'snapshot', 'hash', NOW(), '{}'::jsonb, ${oldRunId}::uuid,
-				'condition', 'token', 'market', 'Yes', '1', '1', '1', '0.5', '1'
+				'condition', 'token', 'market', 'Yes', '1', '1', '1', '1', '0.5', '1'
 			)
 		`);
 		await seedDb.execute(sql`
