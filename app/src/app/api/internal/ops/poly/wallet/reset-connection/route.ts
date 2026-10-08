@@ -15,6 +15,11 @@
  *   - NO_STRANDED_FUNDS: refuses while the Deposit Wallet holds USDC.e / pUSD
  *     / POL unless `accept_residual_dust` is set. An ERRORED balance read
  *     always blocks reset and cannot be overridden as dust.
+ *   - NOTHING_TO_READ_IS_NOT_A_FAILED_READ: a connection with no
+ *     `funder_address` has no Deposit Wallet, so there is no balance to read
+ *     and nothing it could strand. It is exempt from the balance guard only —
+ *     unsettled orders and live positions still block. Without this exemption
+ *     unprovisioned connections were permanently unresettable.
  *   - NO_UNSETTLED_ORDERS: refuses while any mirror fill is pending | open |
  *     partial, so a revoke cannot orphan a resting CLOB order.
  *   - REVOKE_NEVER_DELETES: history, the Privy wallet, and the SIWE/user
@@ -221,20 +226,42 @@ export const POST = wrapRouteHandlerWithLogging(
     const unsettledFillCount = Number(unsettledRow?.c ?? 0);
 
     // --- Precondition: no recoverable balance left behind -----------------
-    const balancesRead = await adapter.getBalances(billingAccountId);
+    //
+    // NOTHING_TO_READ_IS_NOT_A_FAILED_READ: a connection with no
+    // `funder_address` never had a V2 Deposit Wallet provisioned, so there is
+    // no deposit-wallet address whose balance could be read — `getAddress`
+    // returns null and `getBalances` returns null with an EMPTY `errors` list.
+    // Treating that as "unreadable" made exactly the tenants who most need a
+    // reset the only ones who can never get one: unprovisioned rows were
+    // permanently blocked here, with no `accept_residual_dust` escape (the
+    // unreadable branch returns before that flag is consulted).
+    //
+    // This is safe because there is no deposit wallet to strand funds in, and
+    // because REVOKE_NEVER_DELETES still holds: the Privy signer wallet, its
+    // on-chain assets, and the user binding all survive the revoke, so
+    // anything held at the SIGNER address stays exactly as reachable after
+    // this call as before it. The unsettled-orders and position guards below
+    // are untouched and still apply.
+    const isUnprovisioned = active.funderAddress === null;
+    const balancesRead = isUnprovisioned
+      ? null
+      : await adapter.getBalances(billingAccountId);
     const balances = {
       usdc_e: balancesRead?.usdcE ?? null,
       pusd: balancesRead?.pusd ?? null,
       pol: balancesRead?.pol ?? null,
       read_errors: [...(balancesRead?.errors ?? [])],
     };
-    // Fail-closed: an unreadable balance is NOT a zero balance.
+    // Fail-closed: an unreadable balance is NOT a zero balance. Only an
+    // unprovisioned connection — which has no balance to read at all — is
+    // exempt.
     const balanceUnreadable =
-      balancesRead === null ||
-      balances.read_errors.length > 0 ||
-      balances.usdc_e === null ||
-      balances.pusd === null ||
-      balances.pol === null;
+      !isUnprovisioned &&
+      (balancesRead === null ||
+        balances.read_errors.length > 0 ||
+        balances.usdc_e === null ||
+        balances.pusd === null ||
+        balances.pol === null);
     const hasResidualBalance =
       (balances.usdc_e ?? 0) > 0 ||
       (balances.pusd ?? 0) > 0 ||
