@@ -919,15 +919,27 @@ export function startPositionGapActor(
 				action.orderId ? [[action.orderId, action] as const] : [],
 			),
 		);
+		const cancellationFailures: string[] = [];
 		for (const cancellation of persisted.cancellations) {
 			const active = activeByOrder.get(cancellation.orderId);
-			await requireConfirmedSafetyCancellation({
-				execution: deps.execution,
-				store: deps.store,
-				ledger: deps.ledger,
-				cancellation,
-				...(active ? { active } : {}),
-			});
+			try {
+				await requireConfirmedSafetyCancellation({
+					execution: deps.execution,
+					store: deps.store,
+					ledger: deps.ledger,
+					cancellation,
+					...(active ? { active } : {}),
+				});
+			} catch (error) {
+				cancellationFailures.push(
+					`${cancellation.orderId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+		if (cancellationFailures.length > 0) {
+			throw new Error(
+				`position-gap safety cancellation failed for ${cancellationFailures.join("; ")}`,
+			);
 		}
 		await deps.store.finishRun(persisted.runId, "halted", reason);
 	}
