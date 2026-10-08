@@ -1198,6 +1198,27 @@ export class DoltgresWorkItemAdapter
         );
   }
 
+  /**
+   * Re-reads the ref after a delete whose acknowledgement did not arrive.
+   *
+   * Doltgres can apply `dolt_branch('-D', ...)` durably and still lose the ack
+   * to the query deadline — the same lost-acknowledgement shape as bug.5358,
+   * one layer down. Taking the thrown error at face value reports completed
+   * work as pending, which sends an operator (or a retry loop) chasing a ref
+   * that is already gone. Observed on poly production 2026-10-08T02:20:15Z.
+   */
+  private async deleteLanded(
+    conn: WorkItemConnection,
+    branch: string
+  ): Promise<boolean> {
+    try {
+      return (await this.operationBranchRow(conn, branch)) === undefined;
+    } catch {
+      // The session may be dead too. An unverifiable delete stays pending.
+      return false;
+    }
+  }
+
   private async cleanupVerifiedBranch(
     conn: WorkItemConnection,
     transition: ValidatedBranchTransition,
@@ -1207,18 +1228,28 @@ export class DoltgresWorkItemAdapter
       await this.deleteOperationBranch(conn, transition.branch);
       return true;
     } catch (error) {
-      // Once reachability (and, for a fresh merge, the exact current row) is
-      // proven, ref deletion is repairable housekeeping. Returning a 503 here
-      // would invite callers to replay an already-durable PATCH/CREATE.
-      this.logReconciliation("warn", conn, {
+      const fields = {
         branch: transition.branch,
         baseHash: transition.baseHash,
         tip: transition.tip,
         verb: transition.proof.verb,
         itemId: transition.proof.itemId,
-        classification: "cleanup_pending",
         durationMs: Date.now() - startedAt,
         ...errorFields(error),
+      };
+      if (await this.deleteLanded(conn, transition.branch)) {
+        // No `classification` key: the caller records the cleaned verdict, and
+        // adding a value here would make existing classification queries
+        // incomplete. `deleteAckLost` is the queryable substrate signal.
+        this.logReconciliation("info", conn, { ...fields, deleteAckLost: true });
+        return true;
+      }
+      // Once reachability (and, for a fresh merge, the exact current row) is
+      // proven, ref deletion is repairable housekeeping. Returning a 503 here
+      // would invite callers to replay an already-durable PATCH/CREATE.
+      this.logReconciliation("warn", conn, {
+        ...fields,
+        classification: "cleanup_pending",
       });
       return false;
     }
@@ -1498,22 +1529,26 @@ export class DoltgresWorkItemAdapter
       });
       throw this.preservedBranchError(branch, error);
     }
-
     // A restart branch whose exact tip is already reachable from main owns no
     // commits that main does not. This includes a branch-create acknowledgement
-    // failure: the ref can remain at an older main commit after main advances.
-    // Do not interpret that ancestor commit as a work-item operation commit;
-    // its parent diff may legitimately describe any repository change.
+    // failure: Dolt can create the ref at the then-current main, lose the ack,
+    // and leave the ref behind; once main advances that tip is an old main
+    // ancestor. Do not interpret that ancestor commit as a work-item operation
+    // commit — its parent diff legitimately describes any repository change,
+    // which is what produced `changed unsupported schema or tables` on poly
+    // production (poly #169, bug.5358).
     if (reachable && !pending) {
       let cleaned = true;
       try {
         await this.deleteOperationBranch(conn, branch);
       } catch (error) {
-        cleaned = false;
-        this.logReconciliation("warn", conn, {
+        cleaned = await this.deleteLanded(conn, branch);
+        this.logReconciliation(cleaned ? "info" : "warn", conn, {
           branch,
           tip,
-          classification: "reachable_redundant_cleanup_pending",
+          ...(cleaned
+            ? { deleteAckLost: true }
+            : { classification: "reachable_redundant_cleanup_pending" }),
           durationMs: Date.now() - startedAt,
           ...errorFields(error),
         });
