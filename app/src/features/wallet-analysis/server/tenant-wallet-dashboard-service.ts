@@ -1078,7 +1078,12 @@ export async function readTradeActivity(
     rows.flatMap((row) =>
       row.bucket_start === null
         ? []
-        : [[row.bucket_start, nonnegativeInt(row.n)] as const]
+        : [
+            [
+              new Date(row.bucket_start).toISOString(),
+              nonnegativeInt(row.n),
+            ] as const,
+          ]
     )
   );
   if (bucketUnit === "year" && byStart.size === 0) {
