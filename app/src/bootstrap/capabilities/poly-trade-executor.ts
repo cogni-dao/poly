@@ -495,14 +495,22 @@ async function buildExecutor(
   // only run paper accounts legitimately boot without Privy / AEAD credentials,
   // so this is a per-account failure rather than a boot failure — and it is a
   // failure, never a fallback to the paper venue.
-  const walletPort = deps.walletPort;
-  if (!walletPort) {
+  const maybeWalletPort = deps.walletPort;
+  if (!maybeWalletPort) {
     throw new PolyTradeExecutorError(
       "not_authorized",
       `poly-trade-executor: account ${billingAccountId} resolves to the live venue but no trader-wallet port is configured on this deployment`,
       "no_connection"
     );
   }
+  // Re-bind with the optionality stripped rather than relying on narrowing.
+  // `authorizeWalletExit` and the other live-path helpers below are hoisted
+  // FUNCTION DECLARATIONS, and TypeScript deliberately does not carry an
+  // enclosing guard's narrowing into them — a declaration could in principle be
+  // called before the guard ran. The annotation makes the post-guard type a
+  // property of the binding instead of a property of the control flow, so the
+  // helpers need neither `!` nor a repeated check.
+  const walletPort: PolyTraderWalletPort = maybeWalletPort;
   const resolved = await walletPort.resolve(billingAccountId);
   if (!resolved) {
     throw new PolyTradeExecutorError(
