@@ -18,8 +18,18 @@
  *     enumerator is a separate, explicitly-named method (`listAllActive`) that runs
  *     under serviceDb and is the ONLY place that observes more than one tenant.
  *   - NO_KILL_SWITCH (bug.0438): the active-target × active-connection × active-grant
- *     join in `listAllActive` is the sole gate. There is no per-tenant kill-switch
+ *     predicate in `listAllActive` is the sole gate. There is no per-tenant kill-switch
  *     table; target policy fields live directly on the tracked target row.
+ *   - ACTIVATION_IS_KIND_AGNOSTIC: that predicate does NOT filter
+ *     `poly_wallet_connections.kind`. A paper account owns a real connection row and a
+ *     real grant row (migration 0081), so one rule activates both venues and the paper
+ *     path can no longer run with no wallet and no grant the way the deleted
+ *     `paperEnforced` branch let it.
+ *   - ONE_ROW_PER_TARGET: the connection + grant predicate is an EXISTS, never a join.
+ *     Since 0081 an account can hold two active connections (one live, one paper) and
+ *     has always been able to hold several active grants, so the former INNER joins
+ *     fanned a single target row into N enumerated targets — N concurrent mirror polls
+ *     on the same wallet, each placing its own orders.
  *   - ENV_IMPL_LOCAL_DEV_ONLY — `envTargetSource` is wired only when APP_ENV=test;
  *     production wires `dbTargetSource`.
  * Side-effects: dbTargetSource → DB I/O. envTargetSource → none.
@@ -40,7 +50,7 @@ import {
   polyWalletGrants,
 } from "@cogni/poly-db-schema";
 import type { LoggerPort } from "@cogni/poly-market-provider";
-import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, eq, exists, gt, isNull, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import {
   type PositionGapBudgetGroup,
@@ -207,19 +217,6 @@ export interface DbTargetSourceDeps {
    * absence costs only the diagnostic, never correctness.
    */
   logger?: LoggerPort | undefined;
-  /**
-   * When true, `listAllActive` skips the wallet_connections + wallet_grants
-   * joins. The deploy-wide `PAPER_ENFORCE_MODE=paper` makes every placement
-   * route through the paper sidecar (no signing → no trader wallet needed),
-   * so requiring a Privy-provisioned wallet to activate a target excludes
-   * exactly the population this env is meant to serve. Set by bootstrap from
-   * the same env var the executor dispatcher reads.
-   *
-   * In live deployments (paperEnforced=false), the joins remain — a target
-   * without a wallet has no way to sign live CLOB orders, which is the
-   * pre-existing activation invariant.
-   */
-  paperEnforced?: boolean;
 }
 
 /**
@@ -276,23 +273,31 @@ export function dbTargetSource(
     async listAllActive(): Promise<readonly EnumeratedTarget[]> {
       // The ONE sanctioned BYPASSRLS read.
       //
-      // Live-mode joins (bug.0438 dropped the poly_copy_trade_config
+      // Activation predicate (bug.0438 dropped the poly_copy_trade_config
       // kill-switch join):
-      //   targets (disabled_at IS NULL)         — active tracked rows only
-      //   × wallet_connections (revoked_at IS NULL) — tenant has a live trader wallet
-      //   × wallet_grants (revoked_at IS NULL, expires_at > now or NULL)
+      //   targets (disabled_at IS NULL)              — active tracked rows only
+      //   AND EXISTS an un-revoked poly_wallet_connections row for the account
+      //   AND     that row has an un-revoked, unexpired poly_wallet_grants row
       //
-      // Net effect (live): only tenants whose per-tenant path can actually
-      // sign + that `authorizeIntent` will let through. The act of having an
-      // active target row IS the user's opt-in signal.
+      // Net effect: only tenants whose per-tenant path can actually place AND
+      // that `authorizeIntent` (live) / the paper venue's authorizer will let
+      // through. The act of having an active target row IS the user's opt-in.
       //
-      // PAPER_ENFORCE_MODE=paper bypass: in candidate-a + preview the
-      // executor dispatcher forces every placement through the paper sidecar
-      // (no signing, no wallet load). Requiring wallet_connections +
-      // wallet_grants there excludes the exact population this env is meant
-      // to serve — users iterating on the algorithm without setting up real
-      // wallets. When `paperEnforced=true`, drop those joins and activate
-      // every target row directly.
+      // ACTIVATION_IS_KIND_AGNOSTIC — no `kind` filter. Since 0081 a paper
+      // account has a real connection row and a real grant row, so the same
+      // predicate serves both venues. This deliberately replaces the old
+      // `paperEnforced` branch, which dropped BOTH joins process-wide: under
+      // env-paper ANY target activated with no wallet and no grant, so caps
+      // were never exercised at all. The sibling reader
+      // `copy-target-position-hydration-service.ts` DOES filter
+      // `kind='privy_live'`, and that asymmetry is intended, not drift: it
+      // hydrates real on-chain positions, which a synthetic paper address can
+      // never have.
+      //
+      // ONE_ROW_PER_TARGET — EXISTS, not a join. An account may hold one active
+      // connection per kind and any number of active grants; with INNER joins a
+      // single target row fanned out once per (connection × grant) pair, and the
+      // reconciler started one mirror poll per duplicate.
       const baseSelect = deps.serviceDb
         .select({
           target_row_id: polyCopyTradeTargets.id,
@@ -311,50 +316,53 @@ export function dbTargetSource(
         })
         .from(polyCopyTradeTargets);
 
-      const rows = deps.paperEnforced
-        ? await baseSelect
-            .where(isNull(polyCopyTradeTargets.disabledAt))
-            .orderBy(polyCopyTradeTargets.createdAt)
-        : await baseSelect
-            .innerJoin(
-              polyWalletConnections,
-              and(
-                eq(
-                  polyWalletConnections.billingAccountId,
-                  polyCopyTradeTargets.billingAccountId
-                ),
-                isNull(polyWalletConnections.revokedAt)
+      const hasActiveConnectionWithGrant = exists(
+        deps.serviceDb
+          .select({ one: sql<number>`1`.as("one") })
+          .from(polyWalletConnections)
+          .innerJoin(
+            polyWalletGrants,
+            and(
+              eq(polyWalletGrants.walletConnectionId, polyWalletConnections.id),
+              isNull(polyWalletGrants.revokedAt),
+              or(
+                isNull(polyWalletGrants.expiresAt),
+                gt(polyWalletGrants.expiresAt, sql`now()`)
               )
             )
-            .innerJoin(
-              polyWalletGrants,
-              and(
-                eq(
-                  polyWalletGrants.walletConnectionId,
-                  polyWalletConnections.id
-                ),
-                isNull(polyWalletGrants.revokedAt),
-                or(
-                  isNull(polyWalletGrants.expiresAt),
-                  gt(polyWalletGrants.expiresAt, sql`now()`)
-                )
-              )
+          )
+          .where(
+            and(
+              eq(
+                polyWalletConnections.billingAccountId,
+                polyCopyTradeTargets.billingAccountId
+              ),
+              isNull(polyWalletConnections.revokedAt)
             )
-            .where(isNull(polyCopyTradeTargets.disabledAt))
-            .orderBy(polyCopyTradeTargets.createdAt);
+          )
+      );
 
-      // EXCLUSION_IS_EXPLAINED (bug.5288) — the live-mode joins above are INNER
-      // joins, so a tenant whose grant expired is not "skipped" or "errored";
-      // it simply stops being enumerated. Trading halts and looks IDENTICAL to
-      // idle. Prod 2026-09-28: `poly.mirror.decision` went to ZERO and the
-      // owner's funded tenant vanished from the stream with no log line
-      // anywhere, while its wallet kept reporting healthy in the same window.
+      const rows = await baseSelect
+        .where(
+          and(
+            isNull(polyCopyTradeTargets.disabledAt),
+            hasActiveConnectionWithGrant
+          )
+        )
+        .orderBy(polyCopyTradeTargets.createdAt);
+
+      // EXCLUSION_IS_EXPLAINED (bug.5288) — the predicate above is a filter, so a
+      // tenant whose grant expired is not "skipped" or "errored"; it simply stops
+      // being enumerated. Trading halts and looks IDENTICAL to idle. Prod
+      // 2026-09-28: `poly.mirror.decision` went to ZERO and the owner's funded
+      // tenant vanished from the stream with no log line anywhere, while its
+      // wallet kept reporting healthy in the same window.
       //
       // Grants are TIME-BOUNDED BY DESIGN (`expires_at` IS the safety
-      // mechanism), so this is not an edge case — every live tenant reaches it
+      // mechanism), so this is not an edge case — every tenant reaches it
       // eventually. One bounded query over a small table buys the operator the
       // reason. Diagnostic only: never changes which targets are returned.
-      if (!deps.paperEnforced && deps.logger) {
+      if (deps.logger) {
         await explainExcludedTargets(deps, rows.length);
       }
 
@@ -431,13 +439,17 @@ export function positionGapBudgetGroups(
 }
 
 /**
- * Emit one WARN per non-disabled target that the live-mode joins excluded,
+ * Emit one WARN per non-disabled target that the activation predicate excluded,
  * naming WHICH condition failed. bug.5288.
  *
- * Deliberately a separate LEFT-JOIN query rather than converting the
- * enumerator itself: the enumerator is on the mirror's hot path and its
- * semantics are load-bearing, so the diagnostic must not be able to change
- * which tenants trade. `activeCount` short-circuits the common healthy case.
+ * Deliberately a separate query rather than converting the enumerator itself:
+ * the enumerator is on the mirror's hot path and its semantics are load-bearing,
+ * so the diagnostic must not be able to change which tenants trade.
+ *
+ * ONE_ROW_PER_TARGET applies here too — scalar EXISTS subqueries, not LEFT
+ * JOINs. The pre-0081 LEFT-JOIN form emitted one diag row per
+ * (connection × grant) pair, so `candidate_targets` over-counted and a tenant
+ * holding both a live and a paper account was reported twice.
  */
 async function explainExcludedTargets(
   deps: DbTargetSourceDeps,
@@ -449,36 +461,42 @@ async function explainExcludedTargets(
     const diag = (await deps.serviceDb.execute(sql`
       SELECT t.billing_account_id,
              t.target_wallet,
-             (c.id IS NOT NULL) AS has_live_connection,
-             (g.id IS NOT NULL) AS has_live_grant,
-             g_any.expires_at    AS latest_grant_expires_at
+             EXISTS (
+               SELECT 1
+                 FROM poly_wallet_connections c
+                WHERE c.billing_account_id = t.billing_account_id
+                  AND c.revoked_at IS NULL
+             ) AS has_connection,
+             EXISTS (
+               SELECT 1
+                 FROM poly_wallet_connections c
+                 JOIN poly_wallet_grants g
+                   ON g.wallet_connection_id = c.id
+                  AND g.revoked_at IS NULL
+                  AND (g.expires_at IS NULL OR g.expires_at > now())
+                WHERE c.billing_account_id = t.billing_account_id
+                  AND c.revoked_at IS NULL
+             ) AS has_grant,
+             (
+               SELECT g2.expires_at
+                 FROM poly_wallet_grants g2
+                 JOIN poly_wallet_connections c2
+                   ON c2.id = g2.wallet_connection_id
+                WHERE c2.billing_account_id = t.billing_account_id
+                ORDER BY g2.expires_at DESC NULLS FIRST
+                LIMIT 1
+             ) AS latest_grant_expires_at
         FROM poly_copy_trade_targets t
-        LEFT JOIN poly_wallet_connections c
-          ON c.billing_account_id = t.billing_account_id
-         AND c.revoked_at IS NULL
-        LEFT JOIN poly_wallet_grants g
-          ON g.wallet_connection_id = c.id
-         AND g.revoked_at IS NULL
-         AND (g.expires_at IS NULL OR g.expires_at > now())
-        LEFT JOIN LATERAL (
-          SELECT g2.expires_at
-            FROM poly_wallet_grants g2
-           WHERE g2.wallet_connection_id = c.id
-           ORDER BY g2.expires_at DESC NULLS FIRST
-           LIMIT 1
-        ) g_any ON TRUE
        WHERE t.disabled_at IS NULL
     `)) as unknown as Array<{
       billing_account_id: string;
       target_wallet: string;
-      has_live_connection: boolean;
-      has_live_grant: boolean;
+      has_connection: boolean;
+      has_grant: boolean;
       latest_grant_expires_at: string | null;
     }>;
 
-    const excluded = diag.filter(
-      (r) => !r.has_live_connection || !r.has_live_grant
-    );
+    const excluded = diag.filter((r) => !r.has_connection || !r.has_grant);
     // HEALTHY_PATH_IS_AUDIBLE (bug.5298) — this used to `return` silently when
     // nothing was excluded, which made ZERO `target_excluded` lines ambiguous
     // between three states I could not tell apart on prod: (a) the enumerator
@@ -504,8 +522,11 @@ async function explainExcludedTargets(
     }
 
     for (const r of excluded) {
-      const reason = !r.has_live_connection
-        ? "no_live_wallet_connection"
+      // Renamed from `no_live_wallet_connection` (pre-0081): a paper account's
+      // connection is a real row, so "live" in the reason would be a lie for
+      // exactly the tenants this diagnostic now also covers.
+      const reason = !r.has_connection
+        ? "no_active_wallet_connection"
         : "grant_revoked_or_expired";
       log.warn(
         {

@@ -32,6 +32,10 @@ import {
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import {
+  getExecutionVenueResolver,
+  getPaperVenue,
+} from "@/bootstrap/poly-execution-venue";
+import {
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
@@ -103,7 +107,12 @@ export const POST = wrapRouteHandlerWithLogging(
       metrics: noopMetrics,
       polygonRpcUrl: env.POLYGON_RPC_URL,
       paperSidecarUrl: env.PAPER_SIDECAR_URL,
-      paperEnforceMode: env.PAPER_ENFORCE_MODE,
+      // VENUE_RESOLVED_FROM_ACCOUNT. A paper account's manual close surfaces
+      // `paper_positions_unavailable` until the paper position projection
+      // lands — an honest 4xx-shaped refusal instead of a zero-share "nothing
+      // to close".
+      resolveExecutionVenue: getExecutionVenueResolver(),
+      paperVenue: getPaperVenue(),
     });
 
     try {

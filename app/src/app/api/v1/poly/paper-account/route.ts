@@ -18,9 +18,10 @@
  *     use the BYPASSRLS service role.
  *   - NO_PRIVY_DEPENDENCY: unlike `/api/v1/poly/wallet/connect`, this route does
  *     NOT go through `getPolyTraderWalletAdapter`. That adapter requires Privy
- *     configuration and is a deliberate poison-pill stub under
- *     `PAPER_ENFORCE_MODE=paper` — the exact deployments that most need a paper
- *     account. Creating one must not depend on live-custody config being present.
+ *     configuration, which the deployments most in need of a paper account do
+ *     not have. Creating one must not depend on live-custody config being
+ *     present. (The adapter's paper-mode stub is gone — it now simply throws
+ *     `WalletAdapterUnconfiguredError`, and nothing on the paper path calls it.)
  *   - CONSENT_ACTOR_IS_THE_SESSION: `custodial_consent_actor_id` is the session
  *     user's id, never a value from the wire.
  *   - IDEMPOTENT: an existing active paper account is returned with

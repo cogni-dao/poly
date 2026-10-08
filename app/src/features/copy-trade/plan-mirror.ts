@@ -1043,9 +1043,8 @@ function applyFollowupSizing(params: {
  * Build a canonical `OrderIntent` from the fill + target config.
  * Mirror size is the selected sizing-policy output, never an adapter concern.
  * The planner is mode-agnostic — execution mode is stamped by the ledger from
- * `PAPER_ENFORCE_MODE` env (MODE_STAMPED_AT_LEDGER_FROM_ENV in
- * order-ledger.ts). Pair with `PAPER_DISPATCH_IS_ENV_ONLY` in
- * poly-trade-executor.ts.
+ * the account's connection kind (MODE_STAMPED_FROM_ACCOUNT in order-ledger.ts).
+ * Pair with `VENUE_RESOLVED_FROM_ACCOUNT` in poly-trade-executor.ts.
  */
 function buildIntent(
   fill: PlanMirrorInput["fill"],

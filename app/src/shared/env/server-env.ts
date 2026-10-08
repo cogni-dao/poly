@@ -286,6 +286,14 @@ export const serverSchema = z.object({
   // "papper") MUST still hard-fail. Failing open on this knob would silently
   // route a paper-only env onto the live CLOB with real USDC. Fail-safe for
   // PAPER_ENFORCE_MODE is "refuse to boot", never "assume live".
+  //
+  // DECLARED_BUT_UNREAD: no application code reads this value any more.
+  // Execution mode is a property of the account — `poly_wallet_connections.kind`
+  // (migration 0081), resolved by `@features/paper-accounts` execution-venue.
+  // The declaration stays because changing a declared secret's presence has
+  // broken every poly promote (bug.5277); removing it is a separate, deliberate
+  // step. If you are adding a new read of this var, you are re-introducing the
+  // process-wide switch that made paper headless.
   PAPER_ENFORCE_MODE: z
     .preprocess(emptyToUndefined, z.enum(["paper", "live"]).optional())
     .optional()

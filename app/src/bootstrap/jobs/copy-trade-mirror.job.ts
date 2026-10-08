@@ -356,6 +356,12 @@ export interface MirrorJobDeps {
   getTargetPortfolioCurrentValue?: MirrorPipelineDeps["getTargetPortfolioCurrentValue"];
   /** Live mirror NAV + exact wallet positions for position_gap v2. */
   getMirrorPortfolioSnapshot?: MirrorPipelineDeps["getMirrorPortfolioSnapshot"];
+  /**
+   * Resolves this tenant's execution mode for decision-log attribution
+   * (EXECUTION_MODE_IS_LOG_ONLY). Container wires the same resolver the executor
+   * dispatches on; optional so tests can omit it.
+   */
+  getExecutionMode?: MirrorPipelineDeps["getExecutionMode"];
   /** Structured log sink. */
   logger: LoggerPort;
   /** Metrics sink. */
@@ -424,6 +430,9 @@ export function startMirrorPoll(deps: MirrorJobDeps): MirrorJobStopFn {
     setCursor: (n) => {
       cursor = n;
     },
+    ...(deps.getExecutionMode !== undefined
+      ? { getExecutionMode: deps.getExecutionMode }
+      : {}),
     logger: deps.logger,
     metrics: deps.metrics,
     // exactOptionalPropertyTypes: only spread when defined to avoid

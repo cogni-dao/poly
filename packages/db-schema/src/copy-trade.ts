@@ -201,14 +201,14 @@ export const polyCopyTradeFills = pgTable(
     syncedAt: timestamp("synced_at", { withTimezone: true }),
     /**
      * Execution mode of the order that produced this fill. Stamped at write
-     * time by `order-ledger.ts::insertPending` from the ledger's
-     * `paperEnforceMode` dep, which the bootstrap resolves once from
-     * `PAPER_ENFORCE_MODE` env. Answers exactly one question correctly:
-     * "where did this order execute?" Paper rows participate in cap
-     * accounting (CAP_COUNTS_REALIZED_ON_CANCEL) identically to live rows;
-     * the paper sidecar populates `filled_size_usdc` correctly.
-     * See MODE_STAMPED_AT_LEDGER_FROM_ENV (order-ledger.ts) + pair invariant
-     * PAPER_DISPATCH_IS_ENV_ONLY (poly-trade-executor.ts).
+     * time by `order-ledger.ts::insertPending` from the row's own billing
+     * account — its `poly_wallet_connections.kind`. Answers exactly one
+     * question correctly: "where did this order execute?" Paper rows
+     * participate in cap accounting (CAP_COUNTS_REALIZED_ON_CANCEL)
+     * identically to live rows; the paper sidecar populates
+     * `filled_size_usdc` correctly.
+     * See MODE_STAMPED_FROM_ACCOUNT (order-ledger.ts) + pair invariant
+     * VENUE_RESOLVED_FROM_ACCOUNT (poly-trade-executor.ts).
      */
     mode: text("mode").notNull().default("live"),
     /**
@@ -368,9 +368,9 @@ export const polyCopyTradeDecisions = pgTable(
     decidedAt: timestamp("decided_at", { withTimezone: true }).notNull(),
     /**
      * Execution mode of the decision. Stamped at write time by
-     * `order-ledger.ts::recordDecision` from the ledger's `paperEnforceMode`
-     * dep (resolved once from `PAPER_ENFORCE_MODE` env at bootstrap).
-     * MODE_STAMPED_AT_LEDGER_FROM_ENV — replaces the legacy advisory chain
+     * `order-ledger.ts::recordDecision` from the deciding account's
+     * `poly_wallet_connections.kind`.
+     * MODE_STAMPED_FROM_ACCOUNT — replaces the legacy advisory chain
      * `targets.mode → intent.attributes.mode → JSONB blob` which never
      * reached this column. Defaulted to `'live'` for legacy pre-cutover
      * rows; task.5003 ships NO retroactive backfill because the only

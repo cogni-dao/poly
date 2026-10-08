@@ -239,6 +239,20 @@ export interface MirrorPipelineDeps {
   /** Clock injection — tests pin `Date`. Default = real `Date`. */
   clock?: () => Date;
   /**
+   * EXECUTION_MODE_IS_LOG_ONLY — resolves the account's execution mode once per
+   * tick so every `poly.mirror.decision` line inherits `execution_mode`. Before
+   * this, the decision tape carried NO mode field at all: a paper row and a live
+   * row were indistinguishable in Loki, which is why "is paper even running?"
+   * could only be answered from the DB.
+   *
+   * Advisory only. The pipeline never branches on it — dispatch is
+   * `VENUE_RESOLVED_FROM_ACCOUNT` inside the executor, and the persisted label is
+   * `MODE_STAMPED_FROM_ACCOUNT` inside the ledger. A failure to resolve logs
+   * `execution_mode: "unresolved"` and does not stop the tick: losing a log field
+   * must never halt trading.
+   */
+  getExecutionMode?: (() => Promise<"live" | "paper">) | undefined;
+  /**
    * Optional — SELL-to-close path. Routes through the per-tenant executor's
    * `closePosition` which authorizes + caps + signs. When absent, SELL fills
    * degrade to `skip/sell_without_position` (never open a short).
@@ -258,6 +272,23 @@ export interface MirrorPipelineDeps {
 }
 
 /**
+ * The account's execution mode for log attribution. `"unresolved"` is reported
+ * honestly rather than defaulting to `"live"`: a wrong label on the decision
+ * tape is worse than a missing one, and `live` is the label that would get a
+ * simulated decision read as real money.
+ */
+async function resolveExecutionModeForLog(
+  deps: MirrorPipelineDeps
+): Promise<"live" | "paper" | "unresolved"> {
+  if (!deps.getExecutionMode) return "unresolved";
+  try {
+    return await deps.getExecutionMode();
+  } catch {
+    return "unresolved";
+  }
+}
+
+/**
  * One pipeline tick. Fully sequential — no concurrency across fills inside
  * one tick, so `planMirrorFromFill()`'s `already_placed_ids` snapshot stays
  * consistent.
@@ -266,10 +297,13 @@ export interface MirrorPipelineDeps {
  */
 export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
   const clock = deps.clock ?? (() => new Date());
+  const executionMode = await resolveExecutionModeForLog(deps);
   const log = deps.logger.child({
     component: "mirror-pipeline",
     target_id: deps.target.target_id,
     target_wallet: deps.target.target_wallet,
+    // EXECUTION_MODE_IS_LOG_ONLY — inherited by every decision line below.
+    execution_mode: executionMode,
   });
 
   const cursor = deps.getCursor();

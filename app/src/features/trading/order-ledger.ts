@@ -15,6 +15,7 @@
  *   - TENANT_FILTER_IN_EVERY_SNAPSHOT_QUERY (bug.5022) — all four `snapshotState` reads (spend, rate, COID dedup, position aggregates) filter on both `targetId` AND `billingAccountId`. Pre-bug.5022 the billing_account_id arg was accepted but ignored, causing cross-tenant `position_aggregates` pollution under shared targets.
  *   - DEDUP_WINDOW_IS_BOUNDED (bug.5023) — the COID/fill_id dedup query is bounded to fills `created_at >= now() - SNAPSHOT_DEDUP_WINDOW_DAYS` AND `LIMIT SNAPSHOT_DEDUP_ROW_CAP` rows ordered by `created_at DESC`. Older COIDs/fill_ids that escape the window are caught by the PK `(target_id, fill_id)` ON CONFLICT DO NOTHING backstop in `insertPending` — collisions become silent no-ops, never duplicate placements. Pre-bug.5023 the dedup query was unbounded, returning every fill the tenant had ever placed on this target and gunking the Node event loop on every chain event.
  *   - FORTENANT_RUNS_UNDER_RLS (bug.5022) — every method on the `TenantOrderLedger` returned by `OrderLedger.forTenant(ctx)` — both reads (`snapshotState`, `cumulativeIntentForMarketToken`, `hasOpenForMarket`, `findOpenForMarket`) AND writes (`insertPending`, `recordDecision`) — runs inside `withTenantScope(appDb, ctx.created_by_user_id, ...)`. Postgres RLS on `poly_copy_trade_{fills,decisions}` is the runtime backstop: even if a query forgets the explicit `billingAccountId` filter, the DB strips rows owned by another user. The `insertPending` advisory_xact_lock holds for the lifetime of the outer withTenantScope tx (the inner `db.transaction(...)` becomes a SAVEPOINT) — same atomicity as the legacy root path.
+ *   - MODE_STAMPED_FROM_ACCOUNT — `poly_copy_trade_{fills,decisions}.mode` is resolved per write from the WRITING ROW'S OWN billing account (`deps.resolveExecutionMode` → `poly_wallet_connections.kind`), never from a process-wide env read at construction. Two accounts writing through one ledger instance get different labels, and an account whose venue cannot be resolved fails the write instead of landing a guessed label. The resolution happens BEFORE any transaction is opened (see the `mode` param on `insertPendingOnDb`) so the venue read never sits inside the RLS critical section. Pair invariant: `VENUE_RESOLVED_FROM_ACCOUNT` (poly-trade-executor.ts) consumes the same resolver, so dispatch and audit cannot disagree.
  *   - SYNCED_AT_WRITTEN_ON_EVERY_SYNC — `markSynced` sets `synced_at = now()` for every row for which the reconciler received a typed CLOB response (found OR not_found). Rows never checked show `synced_at IS NULL`. (task.0328 CP3)
  *   - REALIZED_COLUMNS_WRITTEN (bug.5018) — `markOrderId` and `updateStatus` write `price` / `shares` / `fees_usdc` directly into first-class columns (NOT JSONB) when the receipt carries them. Fields are skipped (column left NULL) when the upstream did not surface a realized value — distinct from "wrote 0". JSONB `attributes` carries only adapter-specific metadata (rawStatus, transactionsHashes, sidecar diagnostics) — no double-write.
  * Side-effects: IO (Postgres reads + writes).
@@ -48,6 +49,7 @@ import {
   AlreadyRestingError,
   type InsertPendingInput,
   type LedgerCancelReason,
+  type LedgerMode,
   type LedgerPositionLifecycle,
   type LedgerRow,
   type LedgerStatus,
@@ -141,14 +143,23 @@ export interface OrderLedgerDeps {
   /** Pino logger. Bind `component: "order-ledger"` at the caller if desired. */
   logger: Logger;
   /**
-   * MODE_STAMPED_AT_LEDGER_FROM_ENV — the ledger is the single write
-   * authority for `poly_copy_trade_{fills,decisions}.mode`. Bootstrap reads
-   * `PAPER_ENFORCE_MODE` once at process start and passes the resolved value
-   * here; every row this ledger writes is stamped with the resulting
-   * execution mode. Pair invariant: `PAPER_DISPATCH_IS_ENV_ONLY` in
-   * `poly-trade-executor.ts`.
+   * MODE_STAMPED_FROM_ACCOUNT — the ledger is the single write authority for
+   * `poly_copy_trade_{fills,decisions}.mode`, and the mode of a row is a
+   * property of the account that produced it. Resolved per write from the
+   * account's `poly_wallet_connections.kind`, NOT from a process-wide env var
+   * read once at construction (the pre-0081 `paperEnforceMode` dep, which made
+   * every row on a pod carry the same label).
+   *
+   * Required, and deliberately so: there is no honest fallback. Defaulting to
+   * `'live'` is how a simulated fill gets filed as real money, and defaulting
+   * to `'paper'` hides a real one. Bootstrap wires the SAME resolver the
+   * executor factory dispatches on (`VENUE_RESOLVED_FROM_ACCOUNT`), so the
+   * stamped mode and the venue that produced the row cannot disagree.
+   *
+   * A resolver failure propagates: the write fails loudly rather than landing a
+   * row whose mode is a guess.
    */
-  paperEnforceMode?: "paper" | undefined;
+  resolveExecutionMode: (billingAccountId: string) => Promise<LedgerMode>;
 }
 
 /** Postgres unique-violation SQLSTATE — partial unique index rejection. */
@@ -221,10 +232,6 @@ function materializeIntentAggregates(
 
 export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
   const log = deps.logger.child({ component: "order-ledger" });
-  // MODE_STAMPED_AT_LEDGER_FROM_ENV — resolved once at construction. Every
-  // insertPending / recordDecision write stamps this onto the row.
-  const effectiveMode: "live" | "paper" =
-    deps.paperEnforceMode === "paper" ? "paper" : "live";
 
   // `forTenant(ctx)` opens a `withTenantScope(appDb, ctx.created_by_user_id, ...)`
   // transaction around each tenant-scoped read so Postgres RLS on
@@ -279,22 +286,36 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       // `db.transaction(...)` becomes a SAVEPOINT under the outer tx) —
       // serializing concurrent inserts on the same (billing, market, token)
       // tuple, same semantics as the root path.
-      insertPending: (input: TenantScopedInsertPendingInput) =>
-        withTenantScope(appDb, actor, async (tx) =>
-          insertPendingOnDb(tx, {
-            ...input,
-            billing_account_id: ctx.billing_account_id,
-            created_by_user_id: ctx.created_by_user_id,
-          })
-        ),
-      recordDecision: (input: TenantScopedRecordDecisionInput) =>
-        withTenantScope(appDb, actor, async (tx) =>
-          recordDecisionOnDb(tx, {
-            ...input,
-            billing_account_id: ctx.billing_account_id,
-            created_by_user_id: ctx.created_by_user_id,
-          })
-        ),
+      insertPending: async (input: TenantScopedInsertPendingInput) => {
+        // Venue read first, OUTSIDE the tenant transaction (see the `mode`
+        // param docs on `insertPendingOnDb`).
+        const mode = await deps.resolveExecutionMode(ctx.billing_account_id);
+        return withTenantScope(appDb, actor, async (tx) =>
+          insertPendingOnDb(
+            tx,
+            {
+              ...input,
+              billing_account_id: ctx.billing_account_id,
+              created_by_user_id: ctx.created_by_user_id,
+            },
+            mode
+          )
+        );
+      },
+      recordDecision: async (input: TenantScopedRecordDecisionInput) => {
+        const mode = await deps.resolveExecutionMode(ctx.billing_account_id);
+        return withTenantScope(appDb, actor, async (tx) =>
+          recordDecisionOnDb(
+            tx,
+            {
+              ...input,
+              billing_account_id: ctx.billing_account_id,
+              created_by_user_id: ctx.created_by_user_id,
+            },
+            mode
+          )
+        );
+      },
     };
   };
 
@@ -631,9 +652,18 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     );
   }
 
+  /**
+   * @param mode - MODE_STAMPED_FROM_ACCOUNT, resolved by the caller BEFORE any
+   *   transaction is opened. Passing it in (rather than resolving here) keeps
+   *   the venue read off the critical section: the `forTenant` path already
+   *   holds an `appDb` transaction when it calls this, and awaiting a second
+   *   pool's connection from inside an open transaction is how a saturated pool
+   *   turns a cheap SELECT into a stall.
+   */
   async function insertPendingOnDb(
     db: AnyDb,
-    input: InsertPendingInput
+    input: InsertPendingInput,
+    mode: LedgerMode
   ): Promise<void> {
     // Stash placement-display fields in `attributes` so the read API +
     // dashboard don't need to re-derive from the intent blob.
@@ -713,7 +743,10 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       status: "pending" as const,
       positionLifecycle: null,
       attributes: attrs,
-      mode: effectiveMode,
+      // MODE_STAMPED_FROM_ACCOUNT — resolved per write from this row's own
+      // billing account, so two accounts inserting in the same process get
+      // their own modes.
+      mode,
     };
 
     const insert = async (insertDb: AnyDb) => {
@@ -840,9 +873,11 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     }
   }
 
+  /** @param mode - see `insertPendingOnDb`. */
   async function recordDecisionOnDb(
     db: AnyDb,
-    input: RecordDecisionInput
+    input: RecordDecisionInput,
+    mode: LedgerMode
   ): Promise<void> {
     await db.insert(polyCopyTradeDecisions).values({
       billingAccountId: input.billing_account_id,
@@ -854,7 +889,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       intent: input.intent,
       receipt: input.receipt,
       decidedAt: input.decided_at,
-      mode: effectiveMode,
+      mode,
     });
   }
 
@@ -976,8 +1011,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     // bug.5022 — legacy root entry point. Delegates to `insertPendingOnDb`
     // running on `deps.db`. `forTenant(ctx).insertPending` is the
     // RLS-enforced canonical surface; both paths share one implementation.
-    insertPending(input: InsertPendingInput): Promise<void> {
-      return insertPendingOnDb(deps.db, input);
+    async insertPending(input: InsertPendingInput): Promise<void> {
+      const mode = await deps.resolveExecutionMode(input.billing_account_id);
+      return insertPendingOnDb(deps.db, input, mode);
     },
 
     async markOrderId(params: {
@@ -1078,8 +1114,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     // bug.5022 — legacy root entry point. Delegates to `recordDecisionOnDb`
     // running on `deps.db`. `forTenant(ctx).recordDecision` is the
     // RLS-enforced canonical surface.
-    recordDecision(input: RecordDecisionInput): Promise<void> {
-      return recordDecisionOnDb(deps.db, input);
+    async recordDecision(input: RecordDecisionInput): Promise<void> {
+      const mode = await deps.resolveExecutionMode(input.billing_account_id);
+      return recordDecisionOnDb(deps.db, input, mode);
     },
 
     async listRecent(opts: ListRecentOptions): Promise<LedgerRow[]> {
