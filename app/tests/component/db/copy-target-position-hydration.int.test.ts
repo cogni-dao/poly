@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import {
 	polyTraderCurrentPositions,
+	polyTraderIngestionCursors,
 	polyTraderPositionSnapshots,
 	polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
@@ -21,6 +22,9 @@ import {
 	hydrateCopyTargetPositions,
 	readCopyTargetPositionCohorts,
 } from "@/features/wallet-analysis/server/copy-target-position-hydration-service";
+import {
+	COPY_TARGET_POSITION_CURSOR_SOURCE,
+} from "@/features/wallet-analysis/server/position-observation-sources";
 import {
 	buildBoundedMarketExposureWithCoverage,
 	readFullComparisonCoverageCounts,
@@ -493,6 +497,12 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		const client = {
 			listUserPositionsV2,
 		} as unknown as PolymarketDataApiClient;
+		await db.insert(polyTraderIngestionCursors).values({
+			traderWalletId: targetTraderWalletId,
+			source: "data-api-positions",
+			status: "partial",
+			errorMessage: "omission_over_cap",
+		});
 
 		const first = await hydrateCopyTargetPositions({
 			db,
@@ -503,6 +513,33 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		expect(listUserPositionsV2).toHaveBeenLastCalledWith(TARGET_WALLET, {
 			conditions: [CONDITION, ZERO_VALUE_CONDITION],
 		});
+		const cursors = await db
+			.select({
+				source: polyTraderIngestionCursors.source,
+				status: polyTraderIngestionCursors.status,
+				lastSuccessAt: polyTraderIngestionCursors.lastSuccessAt,
+			})
+			.from(polyTraderIngestionCursors)
+			.where(
+				eq(
+					polyTraderIngestionCursors.traderWalletId,
+					targetTraderWalletId,
+				),
+			);
+		expect(cursors).toEqual(
+			expect.arrayContaining([
+				{
+					source: COPY_TARGET_POSITION_CURSOR_SOURCE,
+					status: "ok",
+					lastSuccessAt: expect.any(Date),
+				},
+				{
+					source: "data-api-positions",
+					status: "partial",
+					lastSuccessAt: null,
+				},
+			]),
+		);
 		const after = await readFullComparisonCoverageCounts({
 			db,
 			billingAccountId: BILLING_ID,
