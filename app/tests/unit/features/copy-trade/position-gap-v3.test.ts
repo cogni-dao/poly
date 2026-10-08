@@ -598,7 +598,7 @@ describe("position-gap-v3 whole-book planning", () => {
 		);
 	});
 
-	it("plans mechanically valid sub-$1 limit-GTC orders from the share floor", () => {
+	it("skips a sub-$1 limit-GTC gap instead of rounding it upward", () => {
 		const book = snapshot([
 			condition({
 				leftShares: 100,
@@ -623,17 +623,17 @@ describe("position-gap-v3 whole-book planning", () => {
 			confirmedSleeveHeadroomUsdc: 0.05,
 			confirmedStrategyCapHeadroomUsdc: 0.05,
 			confirmedAccountCapHeadroomUsdc: 0.05,
-			confirmedPerOrderCapUsdc: 0.05,
+			confirmedPerOrderCapUsdc: 1,
 		});
 
-		expect(plan.intents).toEqual([
+		expect(plan.intents).toEqual([]);
+		expect(plan.diagnostics).toContainEqual(
 			expect.objectContaining({
-				side: "BUY",
-				shares: 5,
-				notionalUsdc: 0.05,
-				floorNotionalUsdc: 0.05,
+				reason: "below_market_floor",
+				gapShares: 5,
+				floorNotionalUsdc: 1,
 			}),
-		]);
+		);
 	});
 
 	it("reports the sleeve needed for a five-share GTC without manufacturing an RN1 order", () => {
