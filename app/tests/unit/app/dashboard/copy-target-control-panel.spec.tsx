@@ -51,6 +51,10 @@ const targetResponse = {
         },
       },
       activation: { status: "eligible", explanation: "Active grant" },
+      position_gap_runtime: {
+        status: "pending",
+        reason: "no_reconciliation_run",
+      },
     },
   ],
   active_target_count: 1,
@@ -157,6 +161,11 @@ describe("CopyTargetControlPanel algorithm selector", () => {
     expect(
       screen.getByText("Adjusted $18.50 · Shared wallet"),
     ).toBeInTheDocument();
+    expect(screen.getByText(/awaiting first plan/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Details" })).toHaveAttribute(
+      "href",
+      "/research#target-positions",
+    );
     expect(
       screen.getByRole("link", { name: "Learn how Position gap works" }),
     ).toHaveAttribute(

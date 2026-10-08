@@ -536,6 +536,24 @@ function TargetPolicyEditor({
       >
         Learn how {algorithmLabel(kind)} works
       </a>
+      {target?.policy.effective_kind === "position_gap" ? (
+        <div
+          className={cn(
+            "text-xs",
+            positionGapRuntimeHealthy(target)
+              ? "text-muted-foreground"
+              : "text-destructive",
+          )}
+        >
+          Mirror: {positionGapRuntimeLabel(target)} ·{" "}
+          <a
+            href="/research#target-positions"
+            className="font-medium text-primary underline underline-offset-4"
+          >
+            Details
+          </a>
+        </div>
+      ) : null}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:items-end">
         {percentileSizing ? (
           <label className="flex flex-col gap-1">
@@ -654,4 +672,29 @@ function budgetStatusLabel(target: PolyTrackedTarget): string {
       : `Live ${amount}`;
   }
   return "Full portfolio";
+}
+
+function positionGapRuntimeLabel(target: PolyTrackedTarget): string {
+  const runtime = target.position_gap_runtime;
+  if (runtime.status === "pending") return "awaiting first plan";
+  if (runtime.status === "unavailable") return "plan unavailable";
+  if (runtime.status === "not_applicable") return "not running";
+  if (runtime.snapshot.completeness !== "complete") return "incomplete snapshot";
+  if (runtime.snapshot.freshness !== "fresh") return "stale snapshot";
+  if (runtime.run.status === "failed") return `failed${runtime.run.error_code ? ` · ${runtime.run.error_code}` : ""}`;
+  if (runtime.plan.status === "blocked") return `blocked${runtime.plan.block_reason ? ` · ${runtime.plan.block_reason}` : ""}`;
+  if (runtime.plan.status === "no_feasible_position") {
+    const minimum = runtime.plan.minimum_feasible_sleeve_usdc;
+    return `no feasible position · $${runtime.plan.sleeve_budget_usdc.toFixed(2)} sleeve${minimum === null ? "" : ` · $${minimum.toFixed(2)} min`}`;
+  }
+  return `${runtime.execution.submitted_order_count} submitted · ${runtime.execution.filled_order_count} filled`;
+}
+
+function positionGapRuntimeHealthy(target: PolyTrackedTarget): boolean {
+  const runtime = target.position_gap_runtime;
+  return runtime.status === "observed" &&
+    runtime.snapshot.completeness === "complete" &&
+    runtime.snapshot.freshness === "fresh" &&
+    runtime.plan.status === "ready" &&
+    runtime.execution.submitted_order_count > 0;
 }
