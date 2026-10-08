@@ -69,6 +69,13 @@ export interface PositionGapRuntimeScope {
 	targetId: string;
 }
 
+export class PositionGapTargetLineageMismatchError extends Error {
+	constructor() {
+		super("position-gap target wallet lineage mismatch");
+		this.name = "PositionGapTargetLineageMismatchError";
+	}
+}
+
 export interface PositionGapPreparedBuy {
 	actionKey: string;
 	cohortKey: string;
@@ -453,7 +460,7 @@ export class PositionGapRuntimeStore {
 			!/^0x[0-9a-f]{40}$/.test(normalized) ||
 			targetIdFromWallet(normalized as `0x${string}`) !== scope.targetId
 		) {
-			throw new Error("position-gap target wallet lineage mismatch");
+			throw new PositionGapTargetLineageMismatchError();
 		}
 		await this.db
 			.update(polyCopyTradeFills)

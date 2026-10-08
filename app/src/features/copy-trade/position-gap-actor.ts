@@ -36,12 +36,13 @@ import {
 	reconcilePositionGapFillEvidence,
 } from "@/features/copy-trade/position-gap-fill-evidence";
 import { isStructuredClobRejection } from "@/features/copy-trade/position-gap-placement-errors";
-import type {
-	PositionGapAccountingTransition,
-	PositionGapActiveBuy,
-	PositionGapPreparedCancel,
-	PositionGapRuntimeScope,
-	PositionGapRuntimeStore,
+import {
+	PositionGapTargetLineageMismatchError,
+	type PositionGapAccountingTransition,
+	type PositionGapActiveBuy,
+	type PositionGapPreparedCancel,
+	type PositionGapRuntimeScope,
+	type PositionGapRuntimeStore,
 } from "@/features/copy-trade/position-gap-runtime-store";
 import type { PositionGapTargetRefreshCoordinator } from "@/features/copy-trade/position-gap-target-refresh";
 import { planPositionGapBook } from "@/features/copy-trade/position-gap-v3/batch-plan";
@@ -456,6 +457,7 @@ export function startPositionGapActor(
 				deps.targetWallet,
 			);
 		} catch (error) {
+			if (error instanceof PositionGapTargetLineageMismatchError) throw error;
 			// Prospective PGv3 intents already carry target_wallet. This historic
 			// observability repair may retry, but cannot gate safe trading.
 			deps.logger.warn(
