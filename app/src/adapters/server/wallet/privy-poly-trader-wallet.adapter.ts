@@ -178,6 +178,70 @@ const PUSD_SPENDERS: readonly { label: string; address: Address }[] = [
   { label: "pUSD → Neg-Risk Adapter", address: NEG_RISK_ADAPTER_POLYMARKET },
 ];
 
+const PUSD_ALLOWANCE_STATE_KIND = "polymarket_pusd_buy_allowances_v1";
+
+export interface VerifiedPusdAllowanceStateV1 {
+  readonly kind: typeof PUSD_ALLOWANCE_STATE_KIND;
+  readonly chainId: typeof polygon.id;
+  readonly funderAddress: Address;
+  readonly tokenAddress: Address;
+  readonly verifiedAt: string;
+  readonly spenders: readonly {
+    readonly address: Address;
+    readonly allowanceAtomic: string;
+  }[];
+}
+
+function buildVerifiedPusdAllowanceState(
+  funderAddress: Address,
+  allowances: readonly bigint[],
+  verifiedAt = new Date()
+): VerifiedPusdAllowanceStateV1 {
+  return {
+    kind: PUSD_ALLOWANCE_STATE_KIND,
+    chainId: polygon.id,
+    funderAddress,
+    tokenAddress: PUSD_POLYGON,
+    verifiedAt: verifiedAt.toISOString(),
+    spenders: PUSD_SPENDERS.map((spender, index) => ({
+      address: spender.address,
+      allowanceAtomic: (allowances[index] ?? 0n).toString(),
+    })),
+  };
+}
+
+export function isVerifiedPusdAllowanceState(
+  value: unknown,
+  funderAddress: Address
+): value is VerifiedPusdAllowanceStateV1 {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<VerifiedPusdAllowanceStateV1>;
+  if (
+    candidate.kind !== PUSD_ALLOWANCE_STATE_KIND ||
+    candidate.chainId !== polygon.id ||
+    typeof candidate.funderAddress !== "string" ||
+    candidate.funderAddress.toLowerCase() !== funderAddress.toLowerCase() ||
+    typeof candidate.tokenAddress !== "string" ||
+    candidate.tokenAddress.toLowerCase() !== PUSD_POLYGON.toLowerCase() ||
+    !Array.isArray(candidate.spenders)
+  ) {
+    return false;
+  }
+  return PUSD_SPENDERS.every((required) => {
+    const observed = candidate.spenders?.find(
+      (entry) =>
+        entry &&
+        typeof entry === "object" &&
+        typeof entry.address === "string" &&
+        entry.address.toLowerCase() === required.address.toLowerCase()
+    );
+    return (
+      typeof observed?.allowanceAtomic === "string" &&
+      observed.allowanceAtomic === maxUint256.toString()
+    );
+  });
+}
+
 const CTF_OPERATORS: readonly { label: string; address: Address }[] = [
   { label: "CTF → Exchange (V2)", address: EXCHANGE_POLYMARKET },
   {
@@ -285,6 +349,7 @@ export interface DefaultGrantInput {
 
 export interface PreparedPolyDepositWallet {
   readonly funderAddress: `0x${string}`;
+  readonly allowanceState: VerifiedPusdAllowanceStateV1 | null;
 }
 
 export type PreparePolyDepositWallet = (
@@ -888,6 +953,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         billingAccountId: polyWalletConnections.billingAccountId,
         address: polyWalletConnections.address,
         funderAddress: polyWalletConnections.funderAddress,
+        allowanceState: polyWalletConnections.allowanceState,
         tradingApprovalsReadyAt: polyWalletConnections.tradingApprovalsReadyAt,
         autoWrapConsentAt: polyWalletConnections.autoWrapConsentAt,
         autoWrapRevokedAt: polyWalletConnections.autoWrapRevokedAt,
@@ -921,7 +987,11 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     return {
       connectionId: row.id,
       funderAddress: summaryFunder,
-      tradingApprovalsReadyAt: row.tradingApprovalsReadyAt,
+      tradingApprovalsReadyAt:
+        row.tradingApprovalsReadyAt &&
+        isVerifiedPusdAllowanceState(row.allowanceState, summaryFunder)
+          ? row.tradingApprovalsReadyAt
+          : null,
       autoWrapConsentAt:
         row.autoWrapRevokedAt === null ? row.autoWrapConsentAt : null,
       autoWrapFloorUsdceAtomic: row.autoWrapFloorUsdceE6dp,
@@ -1286,7 +1356,9 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         .select({
           id: polyWalletConnections.id,
           billingAccountId: polyWalletConnections.billingAccountId,
+          address: polyWalletConnections.address,
           funderAddress: polyWalletConnections.funderAddress,
+          allowanceState: polyWalletConnections.allowanceState,
           tradingApprovalsReadyAt:
             polyWalletConnections.tradingApprovalsReadyAt,
         })
@@ -1320,9 +1392,14 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
           "backend_unreachable"
         );
       }
+      const connectionFunder = resolveTradingAddress(connection);
       if (
         !connection.tradingApprovalsReadyAt ||
-        (this.prepareDepositWallet && !connection.funderAddress)
+        !connectionFunder ||
+        !isVerifiedPusdAllowanceState(
+          connection.allowanceState,
+          connectionFunder
+        )
       ) {
         return this.denyAuthorization(
           billingAccountId,
@@ -1552,11 +1629,22 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         signingContext.clobCreds,
         { transferExistingPusd, setupTradingApprovals: true }
       );
+      if (
+        !isVerifiedPusdAllowanceState(
+          prepared.allowanceState,
+          prepared.funderAddress
+        )
+      ) {
+        throw new Error(
+          "ensureTradingApprovals: Deposit Wallet factory returned no verified pUSD allowance state"
+        );
+      }
       const readyAt = new Date();
       await this.serviceDb
         .update(polyWalletConnections)
         .set({
           funderAddress: prepared.funderAddress,
+          allowanceState: prepared.allowanceState,
           tradingApprovalsReadyAt: readyAt,
         })
         .where(
@@ -1597,6 +1685,9 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
           label: sp.label,
           tokenContract: PUSD_POLYGON,
           operator: sp.address,
+          // The official SDK and our legacy-adapter supplement have both
+          // settled; this state comes from the factory's post-read, not from
+          // assuming setupTradingApprovals covered the contract.
           state: "satisfied" as const,
           txHash: null,
           error: null,
@@ -1771,7 +1862,8 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       steps.push(...buildSatisfiedSteps());
       const readyAt = await this.stampTradingReady(
         signingContext.connectionId,
-        billingAccountId
+        billingAccountId,
+        buildVerifiedPusdAllowanceState(address, pusdAllowances)
       );
       this.log.info(
         {
@@ -2034,9 +2126,34 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       return { ready: false, address, polBalance, steps, readyAt: null };
     }
 
+    const verifiedPusdAllowances = await Promise.all(
+      PUSD_SPENDERS.map((spender) =>
+        publicClient.readContract({
+          address: PUSD_POLYGON,
+          abi: erc20Abi,
+          functionName: "allowance",
+          args: [address, spender.address],
+        })
+      )
+    );
+    if (verifiedPusdAllowances.some((allowance) => allowance !== maxUint256)) {
+      this.log.warn(
+        {
+          billing_account_id: billingAccountId,
+          connection_id: signingContext.connectionId,
+          funder_address: address,
+          pusd_allowances: verifiedPusdAllowances.map(
+            (allowance) => allowance === maxUint256
+          ),
+        },
+        "poly.wallet.enable_trading.post_verify_failed"
+      );
+      return { ready: false, address, polBalance, steps, readyAt: null };
+    }
     const readyAt = await this.stampTradingReady(
       signingContext.connectionId,
-      billingAccountId
+      billingAccountId,
+      buildVerifiedPusdAllowanceState(address, verifiedPusdAllowances)
     );
     this.log.info(
       {
@@ -2325,12 +2442,13 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
 
   private async stampTradingReady(
     connectionId: string,
-    billingAccountId: string
+    billingAccountId: string,
+    allowanceState: VerifiedPusdAllowanceStateV1
   ): Promise<Date> {
     const readyAt = new Date();
     await this.serviceDb
       .update(polyWalletConnections)
-      .set({ tradingApprovalsReadyAt: readyAt })
+      .set({ allowanceState, tradingApprovalsReadyAt: readyAt })
       .where(
         and(
           eq(polyWalletConnections.id, connectionId),

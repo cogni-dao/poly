@@ -21,6 +21,7 @@ import {
   type Signer,
   type TransactionHandle,
 } from "@polymarket/client";
+import { getContractConfig as getClobV2ContractConfig } from "@polymarket/clob-client-v2";
 import {
   createBuilderApiKey,
   prepareGaslessTransaction,
@@ -31,12 +32,14 @@ import { PrivyClient } from "@privy-io/node";
 import { desc, eq } from "drizzle-orm";
 import type { Logger } from "pino";
 import {
+  type Address,
   createPublicClient,
   createWalletClient,
   encodeFunctionData,
   erc20Abi,
   http,
   type LocalAccount,
+  maxUint256,
   parseAbi,
 } from "viem";
 import { polygon } from "viem/chains";
@@ -45,6 +48,7 @@ import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
 import {
   DrizzlePolyWalletResetStateAdapter,
   PrivyPolyTraderWalletAdapter,
+  type VerifiedPusdAllowanceStateV1,
 } from "@/adapters/server/wallet";
 import {
   classifyClobCredentialRotationError,
@@ -185,7 +189,14 @@ export function createRealClobCredsFactory({
   };
 }
 
-const PUSD_POLYGON = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB" as const;
+const POLYMARKET_CONTRACTS = getClobV2ContractConfig(polygon.id);
+const PUSD_POLYGON = POLYMARKET_CONTRACTS.collateral as Address;
+const LEGACY_NEG_RISK_ADAPTER = POLYMARKET_CONTRACTS.negRiskAdapter as Address;
+const PUSD_TRADE_SPENDERS: readonly Address[] = [
+  POLYMARKET_CONTRACTS.exchangeV2 as Address,
+  POLYMARKET_CONTRACTS.negRiskExchangeV2 as Address,
+  LEGACY_NEG_RISK_ADAPTER,
+];
 const USDC_E_POLYGON =
   "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174" as const;
 const COLLATERAL_ONRAMP_POLYGON =
@@ -278,19 +289,22 @@ export function createOfficialDepositWalletFactory({
       readonly transferExistingPusd: boolean;
       readonly setupTradingApprovals: boolean;
     }
-  ): Promise<{ funderAddress: `0x${string}` }> => {
+  ): Promise<{
+    funderAddress: `0x${string}`;
+    allowanceState: VerifiedPusdAllowanceStateV1 | null;
+  }> => {
     const { depositClient, eoaClient } =
       await createOfficialDepositWalletClient({
         signer,
         clobCreds,
         polygonRpcUrl,
       });
+    const publicClient = createPublicClient({
+      chain: polygon,
+      transport: http(polygonRpcUrl),
+    });
 
     if (options.transferExistingPusd) {
-      const publicClient = createPublicClient({
-        chain: polygon,
-        transport: http(polygonRpcUrl),
-      });
       const balance = await publicClient.readContract({
         address: PUSD_POLYGON,
         abi: erc20Abi,
@@ -307,8 +321,58 @@ export function createOfficialDepositWalletFactory({
       }
     }
 
+    let allowanceState: VerifiedPusdAllowanceStateV1 | null = null;
     if (options.setupTradingApprovals) {
       await depositClient.setupTradingApprovals();
+
+      // @polymarket/client 0.11's setup list covers both V2 exchanges but
+      // omits the legacy NegRiskAdapter that the production CLOB still asks
+      // to spend pUSD on some neg-risk BUYs. Repair that exact gap through
+      // the same gasless Deposit Wallet, idempotently.
+      const legacyAdapterAllowance = await publicClient.readContract({
+        address: PUSD_POLYGON,
+        abi: erc20Abi,
+        functionName: "allowance",
+        args: [
+          depositClient.account.wallet,
+          LEGACY_NEG_RISK_ADAPTER,
+        ],
+      });
+      if (legacyAdapterAllowance !== maxUint256) {
+        const approval = await depositClient.approveErc20({
+          amount: "max",
+          spenderAddress: LEGACY_NEG_RISK_ADAPTER,
+          tokenAddress: PUSD_POLYGON,
+        });
+        await approval.wait();
+      }
+
+      const verifiedAllowances = await Promise.all(
+        PUSD_TRADE_SPENDERS.map((spender) =>
+          publicClient.readContract({
+            address: PUSD_POLYGON,
+            abi: erc20Abi,
+            functionName: "allowance",
+            args: [depositClient.account.wallet, spender],
+          })
+        )
+      );
+      if (verifiedAllowances.some((allowance) => allowance !== maxUint256)) {
+        throw new Error(
+          "Deposit Wallet trading approvals did not post-verify for every pUSD spender"
+        );
+      }
+      allowanceState = {
+        kind: "polymarket_pusd_buy_allowances_v1",
+        chainId: polygon.id,
+        funderAddress: depositClient.account.wallet,
+        tokenAddress: PUSD_POLYGON,
+        verifiedAt: new Date().toISOString(),
+        spenders: PUSD_TRADE_SPENDERS.map((address, index) => ({
+          address,
+          allowanceAtomic: (verifiedAllowances[index] ?? 0n).toString(),
+        })),
+      };
     }
     logger.info(
       {
@@ -321,7 +385,7 @@ export function createOfficialDepositWalletFactory({
         ? "poly.wallet.deposit_wallet.ready"
         : "poly.wallet.deposit_wallet.derived"
     );
-    return { funderAddress: depositClient.account.wallet };
+    return { funderAddress: depositClient.account.wallet, allowanceState };
   };
 }
 

@@ -637,6 +637,48 @@ describe("PolymarketClobAdapter", () => {
     const result = await adapter.getCollateralBalanceAllowance("token-2");
 
     expect(result.allowanceAtomic).toBe(0n);
+    expect(result.spender).toBe("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296");
+  });
+
+  it("fails a neg-risk BUY preflight on the production adapter allowance even when exchange allowance is max", async () => {
+    const adapter = makeAdapter({
+      getBalanceAllowance: vi.fn().mockResolvedValue({
+        balance: "99212850",
+        allowances: {
+          "0xe2222d279d744050d28e00520010520000310F59":
+            "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296": "0",
+        },
+      }),
+      getNegRisk: vi.fn().mockResolvedValue(true),
+    });
+
+    const result = await adapter.getCollateralBalanceAllowance(
+      "545523-production-token"
+    );
+
+    expect(result).toEqual({
+      balanceAtomic: 99_212_850n,
+      allowanceAtomic: 0n,
+      spender: "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
+    });
+  });
+
+  it("requires the neg-risk exchange and adapter allowances together", async () => {
+    const adapter = makeAdapter({
+      getBalanceAllowance: vi.fn().mockResolvedValue({
+        balance: "6000000",
+        allowances: {
+          "0xe2222d279d744050d28e00520010520000310F59": "0",
+          "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296": "9000000",
+        },
+      }),
+      getNegRisk: vi.fn().mockResolvedValue(true),
+    });
+
+    const result = await adapter.getCollateralBalanceAllowance("token-2b");
+
+    expect(result.allowanceAtomic).toBe(0n);
     expect(result.spender).toBe("0xe2222d279d744050d28e00520010520000310F59");
   });
 
