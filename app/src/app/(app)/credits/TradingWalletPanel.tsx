@@ -7,13 +7,19 @@
  *   create (inline `TradingWalletConnectFlow` when `configured && !connected`),
  *   fund (pUSD / USDC.e / POL readout + Polygon bridge link), enable trading
  *   (`TradingReadinessSection`, task.0355), withdraw dialog, and stubbed fund
- *   button (task.0352). An explicit owner-only reset escape hatch revokes an
- *   empty broken connection so the normal connect flow can reprovision it.
+ *   button (task.0352).
  * Scope: Client component. React Query fetches `/wallet/status` + `/wallet/balances`;
  *   reads the session via `next-auth/react` only to surface `userId` to the
  *   inline connect flow. On `onConnected`, invalidates `poly-wallet-status`
  *   so the panel flips from "create" to "balances" without a reload.
  * Invariants:
+ *   - NO_SELF_SERVE_RESET: wallet reset is a privileged recovery tool and must
+ *     never have an entry point on this page. Its guards block on residual
+ *     funds and unsettled orders, but a healthy funded wallet that happens to
+ *     be flat passes all of them and is revoked on a mis-click, losing its
+ *     CLOB credentials and readiness stamp. Operator-driven recovery goes
+ *     through the owner-scoped API route instead. Pinned by
+ *     `tests/meta/poly-product-wiring`.
  *   - ENABLE_TRADING_VISIBLE: when connected AND `trading_ready=false`, the
  *     readiness section is the primary above-the-fold CTA on this card.
  *     Without it the user cannot reach the CLOB — APPROVALS_BEFORE_PLACE
