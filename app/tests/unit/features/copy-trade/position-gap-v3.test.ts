@@ -636,7 +636,7 @@ describe("position-gap-v3 whole-book planning", () => {
 		);
 	});
 
-	it("reports the sleeve needed for a five-share GTC without manufacturing an RN1 order", () => {
+	it("reports the sleeve needed for a $1 GTC without manufacturing an RN1 order", () => {
 		const currentSleeve = 24.21285;
 		const currentGapShares = 1.087455525259;
 		const targetNavUsdc = 47_338.14592945;
@@ -683,9 +683,9 @@ describe("position-gap-v3 whole-book planning", () => {
 			(row) => row.tokenId === "selected-yes",
 		);
 		expect(selected).toMatchObject({ reason: "below_market_floor" });
-		expect(selected?.floorNotionalUsdc).toBeCloseTo(0.9, 10);
+		expect(selected?.floorNotionalUsdc).toBeCloseTo(1, 10);
 		expect(plan.minimumFeasibleSleeveUsdc).toBeCloseTo(
-			(currentSleeve * 5) / currentGapShares,
+			(currentSleeve * (1 / 0.18)) / currentGapShares,
 			6,
 		);
 	});
