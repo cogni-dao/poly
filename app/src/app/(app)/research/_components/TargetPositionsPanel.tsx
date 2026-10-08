@@ -15,6 +15,7 @@ import type {
 } from "@cogni/poly-node-contracts";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 import {
@@ -61,7 +62,13 @@ async function fetchTargetPositions(args: {
 }
 
 export function TargetPositionsPanel() {
-	const [targetWallet, setTargetWallet] = useState(ALL_TARGETS);
+	const searchParams = useSearchParams();
+	const requestedTarget = searchParams?.get("target_wallet") ?? null;
+	const [targetWallet, setTargetWallet] = useState(
+		requestedTarget && /^0x[a-fA-F0-9]{40}$/.test(requestedTarget)
+			? requestedTarget.toLowerCase()
+			: ALL_TARGETS,
+	);
 	const [sort, setSort] = useState<PolyTargetPositionsSort>("portfolio_weight");
 	const [cursorStack, setCursorStack] = useState<(string | null)[]>([null]);
 	const cursor = cursorStack.at(-1) ?? null;
