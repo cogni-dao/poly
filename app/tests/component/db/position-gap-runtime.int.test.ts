@@ -41,6 +41,7 @@ describe("position-gap runtime persistence", () => {
 	const targetB = randomUUID();
 	const targetSafety = randomUUID();
 	const targetNotFound = randomUUID();
+	const targetQuantized = randomUUID();
 
 	beforeAll(async () => {
 		appDb = getAppDb();
@@ -324,6 +325,87 @@ describe("position-gap runtime persistence", () => {
 		expect(Number(filledAction?.filledShares)).toBe(12);
 		expect(Number(filledAction?.filledUsdc)).toBe(4);
 		expect(Number(filledReservation?.releasedBudgetUsdc)).toBe(2);
+	});
+
+	it("atomically reduces and reserves planner shares across NUMERIC(30,12) rounding", async () => {
+		const store = new PositionGapRuntimeStore(getSeedDb());
+		const cohortKey = "quantized-cohort";
+		const originalShares = 2.0000000000004;
+		const reducedShares = 1.0000000000004;
+		const persisted = await store.persistPlan({
+			scope: {
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId: targetQuantized,
+			},
+			triggerReasons: ["activation"],
+			snapshot: {
+				id: "snapshot-quantized",
+				hash: "hash-quantized",
+				asOf,
+				expiresAt: new Date(asOf.getTime() + 600_000),
+				value: { version: 1, complete: true },
+			},
+			plannerVersion: "test",
+			budgetUsdc: 10,
+			eligibleNetNavUsdc: 100,
+			scale: 0.1,
+			walletCashUsdc: 10,
+			plan: { version: 1, status: "ready" },
+			cohortCreations: [
+				{
+					cohortKey,
+					sourceKind: "activation",
+					sourceEventId: null,
+					sourceConfigRevision: "rev-quantized",
+					conditionId: "condition-quantized",
+					tokenId: "token-quantized",
+					marketId: "prediction-market:polymarket:condition-quantized",
+					outcome: "0",
+					targetDeltaShares: originalShares,
+					scaleAtCreation: 1,
+					allowedMirrorShares: originalShares,
+					benchmarkTargetVwap: 0.5,
+					remainingShares: originalShares,
+					createdAtMs: asOf.getTime(),
+					provenance: { created_at_ms: asOf.getTime() },
+				},
+			],
+			cohortReductions: [
+				{
+					cohortId: cohortKey,
+					cohortKey,
+					previousAllowedMirrorShares: originalShares,
+					allowedMirrorShares: reducedShares,
+					remainingShares: reducedShares,
+					status: "reduced",
+				},
+			],
+			buys: [
+				{
+					actionKey: "quantized-buy",
+					cohortKey,
+					conditionId: "condition-quantized",
+					tokenId: "token-quantized",
+					marketId: "prediction-market:polymarket:condition-quantized",
+					outcome: "0",
+					shares: reducedShares,
+					notionalUsdc: reducedShares * 0.5,
+					limitPrice: 0.5,
+					clientOrderId: "quantized-client",
+					plannerAction: { side: "BUY" },
+				},
+			],
+			cancellations: [],
+		});
+
+		expect(persisted.buys).toHaveLength(1);
+		const [cohort] = await getSeedDb()
+			.select()
+			.from(polyPositionGapCohorts)
+			.where(eq(polyPositionGapCohorts.cohortKey, cohortKey));
+		expect(Number(cohort?.allowedMirrorShares)).toBe(1);
+		expect(Number(cohort?.remainingShares)).toBe(0);
 	});
 
 	it("enforces FORCE RLS for owner, delegate, and stranger", async () => {
