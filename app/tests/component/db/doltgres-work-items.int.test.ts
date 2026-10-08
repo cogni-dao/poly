@@ -195,7 +195,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		await expect(adapter.get(id)).resolves.toBeNull();
 	}, 60_000);
 
-	it("preserves an unreachable operation branch and serves after explicit cleanup", async () => {
+	it("serves reads past an unreachable operation branch while writes fail closed", async () => {
 		const branch = "work-item-op/component-unreachable";
 		const maintenance = postgres(dbUrl, { max: 1, fetch_types: false });
 		try {
@@ -214,8 +214,31 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				lockWaitMs: 250,
 				lockRetryMs: 25,
 			});
+			// bug.5358: an unprovable branch must not take reads down. The read is
+			// served from committed `main` — which does not carry task.9599, so null
+			// is the correct answer — while the evidence branch stays untouched.
+			// Reads still fail closed on lock contention and on a destroyed
+			// connection; both are asserted above. Only branch-proof residue is
+			// tolerated.
 			await expect(
 				adapter.get(toWorkItemId("task.9599")),
+			).resolves.toBeNull();
+			await expect(
+				maintenance.unsafe(
+					`SELECT name FROM dolt.branches WHERE name = '${branch}'`,
+				),
+			).resolves.toHaveLength(1);
+
+			// A write still fails closed on the same branch: it must never build on
+			// unproven evidence.
+			await expect(
+				adapter.patch(
+					{
+						id: toWorkItemId("task.9599"),
+						set: { title: "must not land" },
+					},
+					"component-agent",
+				),
 			).rejects.toBeInstanceOf(WorkItemsBusyError);
 			await expect(
 				maintenance.unsafe(
