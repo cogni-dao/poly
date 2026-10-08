@@ -447,7 +447,7 @@ export class PositionGapRuntimeStore {
 	async repairTargetWalletLineage(
 		scope: PositionGapRuntimeScope,
 		targetWallet: string,
-	): Promise<number> {
+	): Promise<void> {
 		const normalized = targetWallet.toLowerCase();
 		if (
 			!/^0x[0-9a-f]{40}$/.test(normalized) ||
@@ -455,10 +455,10 @@ export class PositionGapRuntimeStore {
 		) {
 			throw new Error("position-gap target wallet lineage mismatch");
 		}
-		const repaired = await this.db
+		await this.db
 			.update(polyCopyTradeFills)
 			.set({
-				attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || jsonb_build_object('target_wallet', ${normalized})`,
+				attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || jsonb_build_object('target_wallet', ${normalized}::text)`,
 				updatedAt: new Date(),
 			})
 			.where(
@@ -469,9 +469,7 @@ export class PositionGapRuntimeStore {
 					sql`${polyCopyTradeFills.attributes}->>'position_gap_version' = '3'`,
 					sql`NULLIF(${polyCopyTradeFills.attributes}->>'target_wallet', '') IS NULL`,
 				),
-			)
-			.returning({ clientOrderId: polyCopyTradeFills.clientOrderId });
-		return repaired.length;
+			);
 	}
 
 	async loadLastSnapshot(
