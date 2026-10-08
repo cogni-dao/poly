@@ -85,7 +85,23 @@ export async function resetWalletConnection(
     signerAddress: state.connection.address,
     revokedAt: null as Date | null,
   };
-  const balanceRead = await deps.wallet.getBalances(input.billingAccountId);
+  // NOTHING_TO_READ_IS_NOT_A_FAILED_READ: a connection with no
+  // `funderAddress` never had a V2 Deposit Wallet provisioned, so
+  // `getAddress` returns null and `getBalances` returns null with an EMPTY
+  // `errors` list — there is no address whose balance could be read. Reading
+  // that as "unreadable" made the tenants who most need a reset the only ones
+  // who could never get one, with no `acceptResidualDust` escape because the
+  // unreadable check is evaluated first.
+  //
+  // Safe: there is no deposit wallet to strand funds in, and revoke never
+  // deletes the Privy signer wallet, its on-chain assets, or the user
+  // binding — anything held at the SIGNER address stays exactly as reachable
+  // after the reset as before it. Unsettled orders and live positions still
+  // block; they are checked ahead of this.
+  const isUnprovisioned = state.connection.funderAddress === null;
+  const balanceRead = isUnprovisioned
+    ? null
+    : await deps.wallet.getBalances(input.billingAccountId);
   const balances = {
     usdcE: balanceRead?.usdcE ?? null,
     pusd: balanceRead?.pusd ?? null,
@@ -93,11 +109,12 @@ export async function resetWalletConnection(
     readErrors: [...(balanceRead?.errors ?? [])],
   };
   const balanceUnreadable =
-    balanceRead === null ||
-    balances.readErrors.length > 0 ||
-    balances.usdcE === null ||
-    balances.pusd === null ||
-    balances.pol === null;
+    !isUnprovisioned &&
+    (balanceRead === null ||
+      balances.readErrors.length > 0 ||
+      balances.usdcE === null ||
+      balances.pusd === null ||
+      balances.pol === null);
   const hasResidualBalance =
     (balances.usdcE ?? 0) > 0 ||
     (balances.pusd ?? 0) > 0 ||
