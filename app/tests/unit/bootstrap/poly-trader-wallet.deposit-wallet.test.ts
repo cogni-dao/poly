@@ -10,6 +10,8 @@ const {
 	prepareGaslessTransactionMock,
 	transferErc20Mock,
 	setupTradingApprovalsMock,
+	approveErc20Mock,
+	readContractMock,
 	getAddressMock,
 	signTypedDataMock,
 	signMessageMock,
@@ -20,6 +22,8 @@ const {
 	prepareGaslessTransactionMock: vi.fn(),
 	transferErc20Mock: vi.fn(),
 	setupTradingApprovalsMock: vi.fn(),
+	approveErc20Mock: vi.fn(),
+	readContractMock: vi.fn(),
 	getAddressMock: vi.fn(),
 	signTypedDataMock: vi.fn(),
 	signMessageMock: vi.fn(),
@@ -47,6 +51,9 @@ vi.mock("viem", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("viem")>();
 	return {
 		...actual,
+		createPublicClient: vi.fn(() => ({
+			readContract: readContractMock,
+		})),
 		createWalletClient: vi.fn(() => ({ __walletClient: true })),
 	};
 });
@@ -71,6 +78,10 @@ describe("official Deposit Wallet transfer factory", () => {
 		waitMock.mockResolvedValue({ transactionHash: TX_HASH });
 		transferErc20Mock.mockResolvedValue({ wait: waitMock });
 		setupTradingApprovalsMock.mockResolvedValue(undefined);
+		approveErc20Mock.mockResolvedValue({ wait: waitMock });
+		readContractMock.mockResolvedValue(
+			115792089237316195423570985008687907853269984665640564039457584007913129639935n,
+		);
 		getAddressMock.mockResolvedValue(SIGNER);
 		signTypedDataMock.mockResolvedValue(`0x${"ab".repeat(65)}`);
 		signMessageMock.mockResolvedValue(`0x${"ef".repeat(65)}`);
@@ -89,6 +100,7 @@ describe("official Deposit Wallet transfer factory", () => {
 					signMessage: signMessageMock,
 				},
 				setupTradingApprovals: setupTradingApprovalsMock,
+				approveErc20: approveErc20Mock,
 				transferErc20: transferErc20Mock,
 			});
 	});
@@ -281,6 +293,12 @@ describe("official Deposit Wallet transfer factory", () => {
 describe("official Deposit Wallet onboarding factory", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		const maxAllowance =
+			115792089237316195423570985008687907853269984665640564039457584007913129639935n;
+		waitMock.mockResolvedValue({ transactionHash: TX_HASH });
+		setupTradingApprovalsMock.mockResolvedValue(undefined);
+		approveErc20Mock.mockResolvedValue({ wait: waitMock });
+		readContractMock.mockResolvedValue(maxAllowance);
 		createBuilderApiKeyMock.mockResolvedValue({
 			key: "builder-key",
 			secret: "builder-secret",
@@ -291,6 +309,7 @@ describe("official Deposit Wallet onboarding factory", () => {
 			.mockResolvedValueOnce({
 				account: { wallet: FUNDER },
 				setupTradingApprovals: setupTradingApprovalsMock,
+				approveErc20: approveErc20Mock,
 			});
 	});
 
@@ -306,7 +325,7 @@ describe("official Deposit Wallet onboarding factory", () => {
 			{ transferExistingPusd: false, setupTradingApprovals: false },
 		);
 
-		expect(result).toEqual({ funderAddress: FUNDER });
+		expect(result).toEqual({ funderAddress: FUNDER, allowanceState: null });
 		expect(setupTradingApprovalsMock).not.toHaveBeenCalled();
 	});
 
@@ -323,5 +342,63 @@ describe("official Deposit Wallet onboarding factory", () => {
 		);
 
 		expect(setupTradingApprovalsMock).toHaveBeenCalledOnce();
+		expect(approveErc20Mock).not.toHaveBeenCalled();
+		expect(readContractMock).toHaveBeenCalledTimes(4);
+	});
+
+	it("repairs and post-verifies the production legacy NegRiskAdapter allowance", async () => {
+		const maxAllowance =
+			115792089237316195423570985008687907853269984665640564039457584007913129639935n;
+		readContractMock
+			.mockResolvedValueOnce(0n)
+			.mockResolvedValueOnce(maxAllowance)
+			.mockResolvedValueOnce(maxAllowance)
+			.mockResolvedValueOnce(maxAllowance);
+		const prepare = createOfficialDepositWalletFactory({
+			logger: { info: vi.fn() } as never,
+			polygonRpcUrl: "https://polygon.example.test",
+		});
+
+		const result = await prepare(
+			{ address: SIGNER } as never,
+			{ key: "k", secret: "s", passphrase: "p" },
+			{ transferExistingPusd: false, setupTradingApprovals: true },
+		);
+
+		expect(approveErc20Mock).toHaveBeenCalledWith({
+			amount: "max",
+			spenderAddress: "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
+			tokenAddress: "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+		});
+		expect(waitMock).toHaveBeenCalledOnce();
+		expect(result.allowanceState?.spenders.map((entry) => entry.address)).toEqual([
+			"0xE111180000d2663C0091e4f400237545B87B996B",
+			"0xe2222d279d744050d28e00520010520000310F59",
+			"0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
+		]);
+	});
+
+	it("refuses readiness when any required pUSD spender fails post-verification", async () => {
+		const maxAllowance =
+			115792089237316195423570985008687907853269984665640564039457584007913129639935n;
+		readContractMock
+			.mockResolvedValueOnce(maxAllowance)
+			.mockResolvedValueOnce(maxAllowance)
+			.mockResolvedValueOnce(0n)
+			.mockResolvedValueOnce(maxAllowance);
+		const prepare = createOfficialDepositWalletFactory({
+			logger: { info: vi.fn() } as never,
+			polygonRpcUrl: "https://polygon.example.test",
+		});
+
+		await expect(
+			prepare(
+				{ address: SIGNER } as never,
+				{ key: "k", secret: "s", passphrase: "p" },
+				{ transferExistingPusd: false, setupTradingApprovals: true },
+			),
+		).rejects.toThrow(
+			"Deposit Wallet trading approvals did not post-verify for every pUSD spender",
+		);
 	});
 });

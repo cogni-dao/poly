@@ -305,7 +305,8 @@ export function toExecuted(row: AttemptRow): PolyCopyTradeAttempt["executed"] {
   if (row.exec_status !== null && observedAt !== null) {
     const positionGapV3 = row.exec_position_gap_version === "3";
     const sourceVerified =
-      row.exec_realized_fill_source === "clob_associated_trades";
+      row.exec_realized_fill_source === "clob_associated_trades" ||
+      row.exec_realized_fill_source === "data_api_activity_position";
     const rawPrice = nullableNumber(row.exec_price);
     const rawShares = nullableNumber(row.exec_shares);
     const rawNotional = nullableNumber(row.exec_filled_size_usdc);
@@ -325,7 +326,9 @@ export function toExecuted(row: AttemptRow): PolyCopyTradeAttempt["executed"] {
       ? verifiedPositionGapFill
         ? {
             status: "verified" as const,
-            source: "clob_associated_trades" as const,
+            source: row.exec_realized_fill_source as
+              | "clob_associated_trades"
+              | "data_api_activity_position",
             matched_order_count: 1,
             realized_shares: rawShares,
             realized_entry_notional_usdc: rawNotional,
@@ -343,7 +346,10 @@ export function toExecuted(row: AttemptRow): PolyCopyTradeAttempt["executed"] {
       position_lifecycle: row.exec_position_lifecycle,
       price,
       shares,
-      fees_usdc: positionGapV3 ? null : nullableNumber(row.exec_fees_usdc),
+      fees_usdc:
+        positionGapV3 && !verifiedPositionGapFill
+          ? null
+          : nullableNumber(row.exec_fees_usdc),
       // Executed notional is only knowable once BOTH legs are realized.
       // Deriving it from one of them would fabricate a value.
       filled_size_usdc: positionGapV3

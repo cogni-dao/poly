@@ -11,6 +11,7 @@ import type {
 import {
 	getTargetPositionsForAccount,
 	InvalidTargetPositionCursorError,
+	type TargetPositionsReadBinding,
 } from "@/features/wallet-analysis/server/target-positions-read";
 
 import type {
@@ -23,11 +24,16 @@ type TargetPositionsInput = Omit<
 	"billing_account_id"
 > & { billing_account_id?: string };
 
-export const targetPositionsAccountReadHandler: AccountReadHandler<
+/** One factory serves owner and delegate transports with identical policy truth. */
+export function targetPositionsAccountReadHandler(
+	binding: TargetPositionsReadBinding,
+): AccountReadHandler<
 	TargetPositionsInput,
 	PolyAccountTargetPositionsResponse
-> = (tx, input, accountId) =>
-	getTargetPositionsForAccount(tx, accountId, input);
+> {
+	return (tx, input, accountId) =>
+		getTargetPositionsForAccount(tx, accountId, input, binding);
+}
 
 export function classifyTargetPositionsError(
 	error: unknown,

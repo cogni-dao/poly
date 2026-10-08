@@ -66,6 +66,7 @@ import {
   POLYGON_POLYMARKET_EXCHANGE_V2,
   POLYGON_POLYMARKET_NEG_RISK_EXCHANGE_V2,
 } from "./polymarket.exchange.js";
+import { POLYGON_NEG_RISK_ADAPTER } from "./polymarket.neg-risk-adapter.js";
 
 /** Metric names emitted by this adapter. Stable — dashboards reference these. */
 export const POLY_CLOB_METRICS = {
@@ -506,9 +507,12 @@ export class PolymarketClobAdapter implements MarketProviderPort {
       ])
     );
     const negRisk = coerceNegRiskApiValue(rawNegRisk);
-    const spender = negRisk
-      ? POLYGON_POLYMARKET_NEG_RISK_EXCHANGE_V2
-      : POLYGON_POLYMARKET_EXCHANGE_V2;
+    const requiredSpenders = negRisk
+      ? [
+          POLYGON_POLYMARKET_NEG_RISK_EXCHANGE_V2,
+          POLYGON_NEG_RISK_ADAPTER,
+        ]
+      : [POLYGON_POLYMARKET_EXCHANGE_V2];
     const raw =
       response !== null && typeof response === "object"
         ? (response as unknown as {
@@ -541,21 +545,50 @@ export class PolymarketClobAdapter implements MarketProviderPort {
         }
       );
     }
-    const mapAllowance = raw.allowances
-      ? Object.entries(raw.allowances).find(
-          ([address]) => address.toLowerCase() === spender.toLowerCase()
-        )?.[1]
-      : undefined;
-    const rawAllowance = raw.allowance ?? mapAllowance;
+    const mappedAllowances = raw.allowances
+      ? requiredSpenders.map((spender) => ({
+          spender,
+          allowance: Object.entries(raw.allowances ?? {}).find(
+            ([address]) => address.toLowerCase() === spender.toLowerCase()
+          )?.[1],
+        }))
+      : [];
+    const parsedMappedAllowances = mappedAllowances.map((entry) => ({
+      spender: entry.spender,
+      allowanceAtomic:
+        typeof entry.allowance === "string" && /^\d+$/.test(entry.allowance)
+          ? BigInt(entry.allowance)
+          : 0n,
+    }));
+    const limitingMappedAllowance = parsedMappedAllowances.reduce<
+      (typeof parsedMappedAllowances)[number] | undefined
+    >(
+      (limiting, current) =>
+        !limiting || current.allowanceAtomic < limiting.allowanceAtomic
+          ? current
+          : limiting,
+      undefined
+    );
+    const singularAllowance =
+      typeof raw.allowance === "string" && /^\d+$/.test(raw.allowance)
+        ? BigInt(raw.allowance)
+        : 0n;
+    const applicable = limitingMappedAllowance ?? {
+      // The production CLOB singular response did not identify its spender.
+      // For neg-risk BUYs the rejecting contract was the legacy adapter, so
+      // name that fail-closed requirement instead of the exchange alone.
+      spender: negRisk
+        ? POLYGON_NEG_RISK_ADAPTER
+        : POLYGON_POLYMARKET_EXCHANGE_V2,
+      allowanceAtomic: singularAllowance,
+    };
     return {
       balanceAtomic: BigInt(raw.balance),
-      // Fail closed when the authenticated endpoint omits the applicable
-      // spender. A missing allowance must never authorize POST /order.
-      allowanceAtomic:
-        typeof rawAllowance === "string" && /^\d+$/.test(rawAllowance)
-          ? BigInt(rawAllowance)
-          : 0n,
-      spender,
+      // A neg-risk BUY needs both the exchange and the legacy adapter. Return
+      // the limiting requirement so any missing map entry fail-closes before
+      // POST /order instead of relying on a venue rejection.
+      allowanceAtomic: applicable.allowanceAtomic,
+      spender: applicable.spender,
     };
   }
 

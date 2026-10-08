@@ -13,7 +13,9 @@ import {
 	knownNoOrder,
 	requireConfirmedSafetyCancellation,
 	selectPositionGapVenueCandidates,
+	startPositionGapActor,
 } from "@/features/copy-trade/position-gap-actor";
+import { recoverableHardClobRejectionCode } from "@/features/copy-trade/position-gap-placement-errors";
 import { PositionGapTargetRefreshCoordinator } from "@/features/copy-trade/position-gap-target-refresh";
 
 const snapshot: TargetBookSnapshotV1 = {
@@ -268,6 +270,61 @@ describe("buildPositionGapBuyIntent", () => {
 		expect(knownNoOrder(new Error("connection reset after submit"))).toBe(false);
 	});
 
+	it("recognizes structured CLOB rejection details across bundle identities", () => {
+		const crossBundleError = Object.assign(
+			new Error(
+				'PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_allowance, response_keys=[success,errorMsg], reason="insufficient_allowance")',
+			),
+			{
+				name: "ClobRejectionError",
+				details: {
+					error_code: "insufficient_allowance",
+					response_keys: ["success", "errorMsg"],
+					reason: "insufficient_allowance",
+				},
+			},
+		);
+
+		expect(crossBundleError).not.toBeInstanceOf(ClobRejectionError);
+		expect(knownNoOrder(crossBundleError)).toBe(true);
+		expect(
+			knownNoOrder(
+				Object.assign(new Error("connection reset after submit"), {
+					details: {
+						error_code: "insufficient_allowance",
+						response_keys: [],
+					},
+				}),
+			),
+		).toBe(false);
+	});
+
+	it("recovers only durable explicit balance and allowance rejections", () => {
+		expect(
+			recoverableHardClobRejectionCode(
+				'PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_allowance, response_keys=[success,errorMsg], reason="insufficient_allowance", clob_error="allowance is not enough")',
+			),
+		).toBe("insufficient_allowance");
+		expect(
+			recoverableHardClobRejectionCode(
+				'PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_balance, response_keys=[success,errorMsg], reason="insufficient_balance", clob_error="not enough balance")',
+			),
+		).toBe("insufficient_balance");
+		expect(
+			recoverableHardClobRejectionCode(
+				"PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_allowance)",
+			),
+		).toBeNull();
+		expect(
+			recoverableHardClobRejectionCode(
+				"not enough balance / allowance: allowance is not enough",
+			),
+		).toBeNull();
+		expect(
+			recoverableHardClobRejectionCode("connection reset after submit"),
+		).toBeNull();
+	});
+
 	it("blocks a safety stop until the venue confirms cancellation", async () => {
 		const cancelBuy = vi.fn(async () => undefined);
 		const getBuy = vi
@@ -319,5 +376,141 @@ describe("buildPositionGapBuyIntent", () => {
 		await expect(requireConfirmedSafetyCancellation(input)).resolves.toBeUndefined();
 		expect(markCancelConfirmed).toHaveBeenCalledOnce();
 		expect(ledgerMarkCanceled).toHaveBeenCalledOnce();
+	});
+
+	it("recovers a hard rejection before disable cancels an accepted BUY", async () => {
+		const recoverKnownRejectedAmbiguities = vi.fn(async () => [
+			{
+				id: "rejected-buy",
+				clientOrderId: "rejected-client",
+				errorCode: "insufficient_allowance" as const,
+			},
+		]);
+		const openBuy = {
+			id: "open-buy",
+			runId: "open-run",
+			clientOrderId: "open-client",
+			orderId: "open-order",
+			conditionId: "condition",
+			tokenId: "token",
+			cohortKey: "cohort",
+			marketId: "prediction-market:polymarket:condition",
+			outcome: "0",
+			shares: 2,
+			filledShares: 0,
+			notionalUsdc: 1,
+			limitPrice: 0.5,
+			status: "open",
+		};
+		const loadPlannerState = vi.fn(async () => ({
+			cohorts: [],
+			openBuyOrders: [
+				{
+					orderId: "open-order",
+					conditionId: "condition",
+					tokenId: "token",
+					cohortId: "cohort",
+					remainingShares: 2,
+					reservedUsdc: 1,
+					limitPrice: 0.5,
+				},
+			],
+			activeBuys: [openBuy],
+		}));
+		const cancelBuy = vi.fn(async () => undefined);
+		const getBuy = vi
+			.fn()
+			.mockResolvedValueOnce({
+				found: {
+					order_id: "open-order",
+					client_order_id: "open-client",
+					status: "open",
+					submitted_at: "2026-10-08T00:00:00.000Z",
+				},
+			})
+			.mockResolvedValueOnce({
+				found: {
+					order_id: "open-order",
+					client_order_id: "open-client",
+					status: "canceled",
+					submitted_at: "2026-10-08T00:00:00.000Z",
+				},
+			});
+		const markCancelConfirmed = vi.fn(async () => undefined);
+		const persistPlan = vi.fn(async () => ({
+			runId: "safety-run",
+			buys: [],
+			cancellations: [
+				{
+					id: "cancel-action",
+					orderId: "open-order",
+					relatedBuyActionId: "open-buy",
+				},
+			],
+		}));
+		const never = new Promise<number>(() => undefined);
+		const handle = startPositionGapActor({
+			scope: {
+				billingAccountId: "billing-account",
+				createdByUserId: "user",
+				targetId: "target",
+			},
+			targetWallet: "0x1111111111111111111111111111111111111111",
+			configRevision: "revision",
+			configuredBudgetUsdc: 10,
+			positionGapBudgetGroup: {
+				positionGapTargetCount: 1,
+				explicitBudgetTotalUsdc: 10,
+				automaticTargetCount: 0,
+				unbudgetedTargetCount: 0,
+			},
+			source: {
+				fetchSince: vi.fn(),
+				subscribeWake: vi.fn(() => () => undefined),
+			},
+			refresh: {} as never,
+			store: {
+				recoverSubmittingAsAmbiguous: vi.fn(() => never),
+				recoverKnownRejectedAmbiguities,
+				loadPlannerState,
+				reconcileLedgerTerminals: vi.fn(async () => 0),
+				loadLastSnapshot: vi.fn(async () => snapshot),
+				persistPlan,
+				markPlacementReceipt: vi.fn(async () => undefined),
+				markCancelConfirmed,
+				finishRun: vi.fn(async () => undefined),
+			} as never,
+			ledger: {
+				markOrderId: vi.fn(async () => undefined),
+				markCanceled: vi.fn(async () => undefined),
+			} as never,
+			execution: {
+				placeBuy: vi.fn(),
+				cancelBuy,
+				getBuy,
+				getMarketConstraints: vi.fn(),
+			},
+			getWalletCashUsdc: vi.fn(async () => 20),
+			getAuthoritativeShares: vi.fn(),
+			logger: {
+				debug: vi.fn(),
+				info: vi.fn(),
+				warn: vi.fn(),
+				error: vi.fn(),
+				child() {
+					return this;
+				},
+			},
+			setInterval: vi.fn(() => 1 as never),
+			clearInterval: vi.fn(),
+		});
+
+		await expect(handle.stop()).resolves.toBeUndefined();
+		expect(recoverKnownRejectedAmbiguities).toHaveBeenCalledOnce();
+		expect(cancelBuy).toHaveBeenCalledWith("open-order");
+		expect(markCancelConfirmed).toHaveBeenCalledWith("cancel-action");
+		expect(
+			recoverKnownRejectedAmbiguities.mock.invocationCallOrder[0],
+		).toBeLessThan(cancelBuy.mock.invocationCallOrder[0] ?? 0);
 	});
 });
