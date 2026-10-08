@@ -11,10 +11,8 @@
  * provider, and atomically persists existing position facts.
  * Invariants:
  *   - PAGE_LOAD_DB_ONLY: dashboard routes never import or invoke this writer.
- *   - LINEAGE_SCOPED: target enablement controls execution, never durable
- *     observability. Active or soft-disabled target rows remain eligible only
- *     while their tenant holds an exact condition+token produced by an
- *     authoritative realized copy-fill.
+ *   - LINEAGE_SCOPED: only active target rows whose tenant currently holds an
+ *     exact condition+token produced by a realized copy-fill are eligible.
  *   - COMPLETE_COHORTS_ONLY: the provider must complete every cursor/chunk
  *     before any row for that target is persisted.
  *   - PRESERVE_UNRELATED_ROWS: publication touches only the requested target
@@ -75,11 +73,9 @@ export async function readCopyTargetPositionCohorts(db: {
 }): Promise<CopyTargetPositionCohort[]> {
 	const rows = normalizeRows<CohortRow>(
 		await db.execute(sql`
-    WITH observable_targets AS (
-      -- Execution eligibility still lives in dbTargetSource.listAllActive.
-      -- This read-side cohort intentionally includes soft-disabled target rows:
-      -- the realized lineage join below prevents disable from erasing the
-      -- target facts needed to explain holdings the algorithm already created.
+    WITH active_targets AS (
+      -- Match dbTargetSource.listAllActive's live-mode activation predicate:
+      -- target row + unrevoked connection + unrevoked/unexpired grant.
       SELECT DISTINCT
         t.billing_account_id,
         lower(t.target_wallet) AS target_wallet,
@@ -92,6 +88,7 @@ export async function readCopyTargetPositionCohorts(db: {
         ON g.wallet_connection_id = c.id
        AND g.revoked_at IS NULL
        AND (g.expires_at IS NULL OR g.expires_at > NOW())
+      WHERE t.disabled_at IS NULL
     ), realized_copy_lineage_ranked AS (
       SELECT
         f.billing_account_id,
@@ -154,7 +151,7 @@ export async function readCopyTargetPositionCohorts(db: {
       lineage.target_id,
       lineage.condition_id,
       lineage.token_id
-    FROM observable_targets target
+    FROM active_targets target
     JOIN realized_copy_lineage lineage
       ON lineage.billing_account_id = target.billing_account_id
      AND lineage.target_wallet = target.target_wallet

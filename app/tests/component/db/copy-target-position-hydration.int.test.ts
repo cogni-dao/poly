@@ -16,7 +16,6 @@ import type { WalletExecutionPosition } from "@cogni/poly-node-contracts";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { dbTargetSource } from "@/features/copy-trade/target-source";
 import {
 	hydrateCopyTargetPositions,
 	readCopyTargetPositionCohorts,
@@ -243,8 +242,6 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 					condition_id: CONDITION,
 					token_id: LOCAL_TOKEN,
 					filled_size_usdc: 5,
-					position_gap_version: "3",
-					realized_fill_source: "clob_associated_trades",
 				},
 			},
 			{
@@ -306,32 +303,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			capturedAt: new Date(),
 			raw: opposite as unknown as Record<string, unknown>,
 		});
-		const paperOnly = position(PAPER_TOKEN, PAPER_CONDITION);
-		await db.insert(polyTraderPositionSnapshots).values({
-			traderWalletId: targetWallet.id,
-			conditionId: PAPER_CONDITION,
-			tokenId: PAPER_TOKEN,
-			shares: paperOnly.size.toFixed(8),
-			costBasisUsdc: paperOnly.initialValue.toFixed(8),
-			currentValueUsdc: paperOnly.currentValue.toFixed(8),
-			avgPrice: paperOnly.avgPrice.toFixed(8),
-			contentHash: `paper-only-${suffix}`,
-			capturedAt: new Date(),
-			raw: paperOnly as unknown as Record<string, unknown>,
-		});
 		await db.insert(polyTraderCurrentPositions).values([
-			{
-				traderWalletId: targetWallet.id,
-				conditionId: PAPER_CONDITION,
-				tokenId: PAPER_TOKEN,
-				shares: paperOnly.size.toFixed(8),
-				costBasisUsdc: paperOnly.initialValue.toFixed(8),
-				currentValueUsdc: paperOnly.currentValue.toFixed(8),
-				avgPrice: paperOnly.avgPrice.toFixed(8),
-				contentHash: `paper-only-${suffix}`,
-				lastObservedAt: new Date(),
-				raw: paperOnly as unknown as Record<string, unknown>,
-			},
 			{
 				traderWalletId: targetWallet.id,
 				conditionId: CONDITION,
@@ -469,7 +441,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		});
 		expect(
 			before.find((row) => row.entity === "positions" && row.status === "live"),
-		).toMatchObject({ eligible: 2, comparable: 1 });
+		).toMatchObject({ eligible: 2, comparable: 0 });
 
 		const listUserPositionsV2 = vi
 			.fn()
@@ -510,7 +482,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		});
 		expect(
 			after.find((row) => row.entity === "positions" && row.status === "live"),
-		).toMatchObject({ eligible: 2, comparable: 2 });
+		).toMatchObject({ eligible: 2, comparable: 1 });
 		expect(
 			after.find(
 				(row) => row.entity === "positions" && row.status === "closed",
@@ -522,7 +494,10 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			.where(
 				and(
 					eq(polyTraderCurrentPositions.traderWalletId, targetTraderWalletId),
-					eq(polyTraderCurrentPositions.conditionId, ZERO_VALUE_CONDITION),
+					eq(
+						polyTraderCurrentPositions.conditionId,
+						ZERO_VALUE_CONDITION,
+					),
 					eq(polyTraderCurrentPositions.tokenId, ZERO_VALUE_TOKEN),
 				),
 			);
@@ -535,11 +510,6 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				localExecutionPosition({
 					conditionId: CONDITION,
 					tokenId: LOCAL_TOKEN,
-					status: "open",
-				}),
-				localExecutionPosition({
-					conditionId: PAPER_CONDITION,
-					tokenId: PAPER_TOKEN,
 					status: "open",
 				}),
 			],
@@ -585,76 +555,11 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		});
 		expect(
 			bounded.market.groups.find((group) =>
-				group.lines.some((line) => line.conditionId === ZERO_VALUE_CONDITION),
+				group.lines.some(
+					(line) => line.conditionId === ZERO_VALUE_CONDITION,
+				),
 			)?.targetEntryValueUsdc,
 		).toBeNull();
-
-		const disabledAt = new Date();
-		await db
-			.update(polyCopyTradeTargets)
-			.set({ disabledAt })
-			.where(eq(polyCopyTradeTargets.billingAccountId, BILLING_ID));
-		await db.insert(polyCopyTradeTargets).values({
-			billingAccountId: BILLING_ID,
-			createdByUserId: USER_ID,
-			targetWallet: TARGET_WALLET,
-			disabledAt,
-		});
-
-		const executionTargets = await dbTargetSource({
-			appDb: db as never,
-			serviceDb: db as never,
-		}).listAllActive();
-		expect(
-			executionTargets.some((target) => target.billingAccountId === BILLING_ID),
-		).toBe(false);
-		expect(await readCopyTargetPositionCohorts(db)).toEqual(cohorts);
-
-		const disabledCoverage = await readFullComparisonCoverageCounts({
-			db,
-			billingAccountId: BILLING_ID,
-			walletAddress: OUR_WALLET,
-		});
-		expect(
-			disabledCoverage.find(
-				(row) => row.entity === "positions" && row.status === "live",
-			),
-		).toMatchObject({ eligible: 2, comparable: 1, source_ambiguous: false });
-		const disabledPreview = await buildBoundedMarketExposureWithCoverage({
-			db,
-			billingAccountId: BILLING_ID,
-			walletAddress: OUR_WALLET,
-			livePositions: [
-				localExecutionPosition({
-					conditionId: CONDITION,
-					tokenId: LOCAL_TOKEN,
-					status: "open",
-				}),
-				localExecutionPosition({
-					conditionId: PAPER_CONDITION,
-					tokenId: PAPER_TOKEN,
-					status: "open",
-				}),
-			],
-			closedPositions: [],
-		});
-		expect(disabledPreview.positionClassifications).toContainEqual({
-			conditionId: CONDITION,
-			tokenId: LOCAL_TOKEN,
-			status: "live",
-			result: "comparable",
-		});
-		expect(disabledPreview.positionClassifications).toContainEqual({
-			conditionId: PAPER_CONDITION,
-			tokenId: PAPER_TOKEN,
-			status: "live",
-			result: "no_target_position",
-		});
-		expect(
-			disabledPreview.market.groups
-				.flatMap((group) => group.lines)
-				.find((line) => line.conditionId === CONDITION),
-		).toMatchObject({ targetEntryValueUsdc: 40, targetValueUsdc: 0 });
 
 		const omitted = await hydrateCopyTargetPositions({
 			db,
