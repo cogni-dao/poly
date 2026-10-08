@@ -863,6 +863,17 @@ describe("position-gap runtime persistence", () => {
 				attributes: { token_id: clientOrderId },
 			},
 		});
+		await db
+			.update(polyCopyTradeFills)
+			.set({
+				price: "0.002",
+				shares: "12",
+				attributes: {
+					filled_size_usdc: 0.024,
+					realized_fill_source: "data_api_activity_position",
+				},
+			})
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
 
 		await Promise.all([
 			ledger.markOrderId({
@@ -1102,6 +1113,113 @@ describe("position-gap runtime persistence", () => {
 			"data_api_activity_position",
 		);
 		expect(Number(reservation?.filledCostUsdc)).toBe(0.00976);
+
+		// Crash window 1: the runtime action committed authoritative CLOB
+		// accounting while the ledger and reservation retained older Data evidence.
+		await db
+			.update(polyPositionGapActions)
+			.set({
+				filledUsdc: "0.008",
+				plannerAction: {
+					...action?.plannerAction,
+					realized_fill_source: "clob_associated_trades",
+					fill_accounting_status: "verified",
+				},
+			})
+			.where(eq(polyPositionGapActions.id, actionId));
+		await db
+			.update(polyCopyTradeFills)
+			.set({
+				price: evidence.fillPrice.toString(),
+				feesUsdc: evidence.feesUsdc.toString(),
+				attributes: {
+					...ledger?.attributes,
+					filled_size_usdc: evidence.filledUsdc,
+					realized_fill_source: "data_api_activity_position",
+				},
+			})
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
+		await db
+			.update(polyPositionGapReservations)
+			.set({ filledCostUsdc: evidence.grossCashUsdc.toString() })
+			.where(eq(polyPositionGapReservations.buyActionId, actionId));
+		expect(
+			await store.applyDataApiFillAccounting(scope, actionId, evidence),
+		).toMatchObject({ source: "clob_associated_trades", to: "verified" });
+
+		let [convergedAction] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, actionId));
+		let [convergedLedger] = await db
+			.select()
+			.from(polyCopyTradeFills)
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
+		let [convergedReservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, actionId));
+		expect(Number(convergedAction?.filledUsdc)).toBe(0.008);
+		expect(convergedLedger?.attributes?.realized_fill_source).toBe(
+			"clob_associated_trades",
+		);
+		expect(Number(convergedLedger?.attributes?.filled_size_usdc)).toBe(0.008);
+		expect(Number(convergedReservation?.filledCostUsdc)).toBe(0.00846);
+
+		// Crash window 2: the ledger committed authoritative CLOB accounting while
+		// the runtime action and reservation retained older Data evidence.
+		await db
+			.update(polyPositionGapActions)
+			.set({
+				filledUsdc: evidence.filledUsdc.toString(),
+				plannerAction: {
+					...convergedAction?.plannerAction,
+					realized_fill_source: "data_api_activity_position",
+					fill_accounting_status: "verified",
+				},
+			})
+			.where(eq(polyPositionGapActions.id, actionId));
+		await db
+			.update(polyCopyTradeFills)
+			.set({
+				price: (0.007 / 9.3).toString(),
+				shares: "9.3",
+				feesUsdc: "0.0003",
+				attributes: {
+					...convergedLedger?.attributes,
+					filled_size_usdc: 0.007,
+					realized_fill_source: "clob_associated_trades",
+				},
+			})
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
+		await db
+			.update(polyPositionGapReservations)
+			.set({ filledCostUsdc: evidence.grossCashUsdc.toString() })
+			.where(eq(polyPositionGapReservations.buyActionId, actionId));
+		expect(
+			await store.applyDataApiFillAccounting(scope, actionId, evidence),
+		).toMatchObject({ source: "clob_associated_trades", to: "verified" });
+		expect(
+			await store.applyDataApiFillAccounting(scope, actionId, evidence),
+		).toMatchObject({ source: "clob_associated_trades", to: "verified" });
+		[convergedAction] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, actionId));
+		[convergedLedger] = await db
+			.select()
+			.from(polyCopyTradeFills)
+			.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
+		[convergedReservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, actionId));
+		expect(Number(convergedAction?.filledUsdc)).toBe(0.007);
+		expect(convergedAction?.plannerAction.realized_fill_source).toBe(
+			"clob_associated_trades",
+		);
+		expect(Number(convergedLedger?.attributes?.filled_size_usdc)).toBe(0.007);
+		expect(Number(convergedReservation?.filledCostUsdc)).toBe(0.0073);
 	});
 
 	it("consumes durable CLOB not_found before a stop retry and releases only unfilled", async () => {
