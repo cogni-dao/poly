@@ -1561,8 +1561,8 @@ export class PositionGapRuntimeStore {
 	}
 
 	/**
-	 * Atomically upgrades both PGv3 runtime state and its generic ledger row from
-	 * limit-derived/pending economics to exact Data-API activity evidence.
+	 * Atomically converges PGv3 runtime, ledger, and reservation accounting.
+	 * Exact CLOB trade evidence wins over the Data-API fallback on replay.
 	 */
 	async applyDataApiFillAccounting(
 		scope: PositionGapRuntimeScope,
@@ -1595,23 +1595,6 @@ export class PositionGapRuntimeStore {
 			if (!["filled", "canceled"].includes(action.status)) {
 				throw new Error("position-gap fill repair requires a terminal action");
 			}
-			const actionShares = numberOf(action.filledShares);
-			if (!sameNumber(action.filledShares, evidence.shares)) {
-				throw new Error("position-gap fill repair shares changed");
-			}
-			const priorSource = String(
-				action.plannerAction.realized_fill_source ?? "",
-			);
-			const priorStatus = fillAccountingStatus(action.plannerAction);
-			if (priorSource === "clob_associated_trades") {
-				return {
-					actionId,
-					from: "verified",
-					to: "verified",
-					source: "clob_associated_trades",
-					reason: null,
-				};
-			}
 
 			await tx.execute(
 				sql`SELECT 1 FROM ${polyCopyTradeFills}
@@ -1638,25 +1621,73 @@ export class PositionGapRuntimeStore {
 				ledger.attributes && typeof ledger.attributes === "object"
 					? (ledger.attributes as Record<string, unknown>)
 					: {};
-			if (ledgerAttributes.realized_fill_source === "clob_associated_trades") {
-				return {
-					actionId,
-					from: "verified",
-					to: "verified",
-					source: "clob_associated_trades",
-					reason: null,
-				};
+			await tx.execute(
+				sql`SELECT 1 FROM ${polyPositionGapReservations}
+					WHERE ${polyPositionGapReservations.buyActionId} = ${action.id}
+					FOR UPDATE`,
+			);
+			const [reservation] = await tx
+				.select()
+				.from(polyPositionGapReservations)
+				.where(eq(polyPositionGapReservations.buyActionId, action.id))
+				.limit(1);
+
+			const actionShares = numberOf(action.filledShares);
+			if (!sameNumber(action.filledShares, evidence.shares)) {
+				throw new Error("position-gap fill repair shares changed");
 			}
+			const priorStatus = fillAccountingStatus(action.plannerAction);
+			const actionSource = verifiedFillSource(action.plannerAction);
+			const ledgerSource = verifiedFillSource(ledgerAttributes);
+			const source =
+				actionSource === "clob_associated_trades" ||
+				ledgerSource === "clob_associated_trades"
+					? "clob_associated_trades"
+					: POSITION_GAP_DATA_API_FILL_SOURCE;
+			const clobCost =
+				ledgerSource === "clob_associated_trades"
+					? numberOf(
+							ledgerAttributes.filled_size_usdc as number | string | null,
+						)
+					: numberOf(action.filledUsdc);
+			const clobShares =
+				ledgerSource === "clob_associated_trades"
+					? numberOf(ledger.shares)
+					: actionShares;
+			if (
+				source === "clob_associated_trades" &&
+				(!sameNumber(clobShares, actionShares) || clobCost <= 0)
+			) {
+				throw new Error("position-gap CLOB fill repair evidence changed");
+			}
+			const filledUsdc =
+				source === "clob_associated_trades" ? clobCost : evidence.filledUsdc;
+			const fillPrice =
+				source === "clob_associated_trades"
+					? filledUsdc / actionShares
+					: evidence.fillPrice;
+			const ledgerFee = numberOf(ledger.feesUsdc);
+			const hasClobLedgerFee =
+				ledgerSource === "clob_associated_trades" &&
+				ledger.feesUsdc !== null &&
+				Number.isFinite(ledgerFee) &&
+				ledgerFee >= 0;
+			const feesUsdc =
+				hasClobLedgerFee ? ledgerFee : evidence.feesUsdc;
+			const grossCashUsdc =
+				source === POSITION_GAP_DATA_API_FILL_SOURCE
+					? evidence.grossCashUsdc
+					: filledUsdc + (feesUsdc ?? 0);
 			const intendedNotional = numberOf(action.notionalUsdc);
-			if (evidence.grossCashUsdc > intendedNotional + EPSILON) {
+			if (grossCashUsdc > intendedNotional + EPSILON) {
 				throw new Error("position-gap fill repair exceeds intended notional");
 			}
 			const evidenceAttributes = {
-				realized_fill_source: POSITION_GAP_DATA_API_FILL_SOURCE,
+				realized_fill_source: source,
 				fill_accounting_status: "verified",
 				fill_accounting_wallet: evidence.wallet,
 				fill_accounting_transaction_hashes: evidence.transactionHashes,
-				fill_accounting_gross_cash_usdc: evidence.grossCashUsdc,
+				fill_accounting_gross_cash_usdc: grossCashUsdc,
 				fill_accounting_evidence_start: evidence.evidenceStart,
 				fill_accounting_evidence_end: evidence.evidenceEnd,
 				fill_accounting_last_attempt_at: new Date().toISOString(),
@@ -1664,7 +1695,7 @@ export class PositionGapRuntimeStore {
 			await tx
 				.update(polyPositionGapActions)
 				.set({
-					filledUsdc: evidence.filledUsdc.toString(),
+					filledUsdc: filledUsdc.toString(),
 					plannerAction: {
 						...action.plannerAction,
 						...evidenceAttributes,
@@ -1683,14 +1714,12 @@ export class PositionGapRuntimeStore {
 			await tx
 				.update(polyCopyTradeFills)
 				.set({
-					price: evidence.fillPrice.toString(),
+					price: fillPrice.toString(),
 					shares: actionShares.toString(),
-					...(evidence.feesUsdc !== undefined
-						? { feesUsdc: evidence.feesUsdc.toString() }
-						: {}),
+					...(feesUsdc !== undefined ? { feesUsdc: feesUsdc.toString() } : {}),
 					attributes: {
 						...ledgerAttributes,
-						filled_size_usdc: evidence.filledUsdc,
+						filled_size_usdc: filledUsdc,
 						...evidenceAttributes,
 					},
 					updatedAt: new Date(),
@@ -1703,19 +1732,14 @@ export class PositionGapRuntimeStore {
 					),
 				);
 
-			const [reservation] = await tx
-				.select()
-				.from(polyPositionGapReservations)
-				.where(eq(polyPositionGapReservations.buyActionId, action.id))
-				.limit(1);
 			if (reservation) {
 				await tx
 					.update(polyPositionGapReservations)
 					.set({
-						filledCostUsdc: evidence.grossCashUsdc.toString(),
+						filledCostUsdc: grossCashUsdc.toString(),
 						releasedBudgetUsdc: Math.max(
 							numberOf(reservation.releasedBudgetUsdc),
-							intendedNotional - evidence.grossCashUsdc,
+							intendedNotional - grossCashUsdc,
 						).toString(),
 						updatedAt: new Date(),
 					})
@@ -1725,7 +1749,7 @@ export class PositionGapRuntimeStore {
 				actionId,
 				from: priorStatus,
 				to: "verified",
-				source: POSITION_GAP_DATA_API_FILL_SOURCE,
+				source,
 				reason: null,
 			};
 		});

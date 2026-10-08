@@ -901,16 +901,17 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         : {};
     const currentShares = Number(current.shares ?? 0);
     const safeCurrentShares = Number.isFinite(currentShares) ? currentShares : 0;
+    const currentSource = attributes.realized_fill_source;
     const currentVerified =
-      attributes.realized_fill_source === "clob_associated_trades" ||
-      attributes.realized_fill_source === "data_api_activity_position";
+      currentSource === "clob_associated_trades" ||
+      currentSource === "data_api_activity_position";
     const incomingVerified =
       observation.realized_fill_source === "clob_associated_trades";
     const isHigher = incomingShares > safeCurrentShares + 1e-9;
     const isHigherAccepted = isHigher && (incomingVerified || !currentVerified);
     const isSourceUpgrade =
       incomingVerified &&
-      !currentVerified &&
+      currentSource !== "clob_associated_trades" &&
       incomingShares + 1e-9 >= safeCurrentShares;
     if (!isHigherAccepted && !isSourceUpgrade) return null;
 
