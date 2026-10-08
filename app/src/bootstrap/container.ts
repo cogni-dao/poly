@@ -1250,6 +1250,30 @@ function createContainer(): Container {
 								getAuthoritativeShares: async (tokenIds) => {
 									if (tokenIds.length === 0) return [];
 									const executor = await getExecutor();
+									// VENUE_DECIDES_THE_SHARE_SOURCE (NO_FABRICATED_VALUES). A paper
+									// account's funder address is a real, deterministic SHA-256-derived
+									// address with NO on-chain presence, so `balanceOfBatch` answers 0
+									// for every token. That zero is fabricated: it pins position_gap's
+									// gap math at `desired - 0` forever, which is the exact bug the
+									// paper fact projection exists to remove. Route paper through the
+									// executor instead — its paper build reads the migration-0083
+									// projection and raises a typed unavailable when that projection is
+									// absent, incomplete or stale.
+									//
+									// The chain read stays byte-identical for live, including the single
+									// batched call. A tenant holding BOTH an active live and an active
+									// paper row resolves to `live` (LIVE_WINS in the venue resolver), so
+									// only a paper-only tenant takes the projection path.
+									const venue = await executionVenueResolver(
+										enumeratedTarget.billingAccountId,
+									);
+									if (venue === "paper") {
+										return Promise.all(
+											tokenIds.map((tokenId) =>
+												executor.getPositionShareBalance(tokenId),
+											),
+										);
+									}
 									const balances = await chainPublicClient.readContract({
 										address: POLYGON_CONDITIONAL_TOKENS,
 										abi: ctfBalanceAbi,
