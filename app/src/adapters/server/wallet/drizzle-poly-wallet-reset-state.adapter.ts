@@ -24,6 +24,7 @@ import {
 } from "drizzle-orm";
 import type { Database } from "@/adapters/server/db/client";
 import { withTenantScope } from "@/adapters/server/db/tenant-scope";
+import { LIVE_CONNECTION_KIND } from "@/features/paper-accounts";
 import type {
   PolyWalletResetState,
   PolyWalletResetStatePort,
@@ -91,6 +92,13 @@ export class DrizzlePolyWalletResetStateAdapter
               polyWalletConnections.billingAccountId,
               input.billingAccountId
             ),
+            // LIVE_ROWS_ONLY. Wallet reset inventories and revokes LIVE
+            // custody — a Privy wallet holding real funds. Since migration
+            // 0082 a tenant may hold an active live row AND an active paper
+            // row, and this read is `.limit(1)` with no ORDER BY, so without
+            // this predicate it would pick one arbitrarily and could report
+            // the paper account's synthetic address as the wallet to recover.
+            eq(polyWalletConnections.kind, LIVE_CONNECTION_KIND),
             isNull(polyWalletConnections.revokedAt)
           )
         )
@@ -241,6 +249,12 @@ export class DrizzlePolyWalletResetStateAdapter
               polyWalletConnections.billingAccountId,
               input.billingAccountId
             ),
+            // LIVE_ROWS_ONLY. Without this the UPDATE matches EVERY active row
+            // for the tenant, so a live wallet reset would silently revoke the
+            // tenant's paper account too — while `const [connection]` below
+            // destructures only the first, leaving the other's grants
+            // uncascaded.
+            eq(polyWalletConnections.kind, LIVE_CONNECTION_KIND),
             isNull(polyWalletConnections.revokedAt)
           )
         )

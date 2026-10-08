@@ -823,7 +823,20 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         // Stamp the key actually used, so a future mismatch is attributable.
         encryptionKeyId: this.encryptionKeyId,
       })
-      .where(eq(polyWalletConnections.id, row.id));
+      // Self-guarding, like every sibling mutation in this adapter. `row.id`
+      // already came off the `liveRow()`-filtered select above, so these
+      // predicates are satisfied by provenance today — but this was the only
+      // `poly_wallet_connections` write whose correctness DEPENDED on its
+      // caller. Broadening that select (to repair paper rows, say) would
+      // otherwise silently stamp live CLOB ciphertext onto a non-live row.
+      .where(
+        and(
+          eq(polyWalletConnections.id, row.id),
+          eq(polyWalletConnections.billingAccountId, billingAccountId),
+          liveRow(),
+          isNull(polyWalletConnections.revokedAt)
+        )
+      );
 
     // Re-arm the MIRROR_FLOOD_GUARD throttle for this connection: the creds are
     // readable again, so a future decrypt fault on it should warn afresh.
