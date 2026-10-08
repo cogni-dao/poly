@@ -756,7 +756,10 @@ async function readActiveWalletConnection(
     FROM poly_wallet_connections
     WHERE billing_account_id = ${billingAccountId}
       AND revoked_at IS NULL
-    ORDER BY created_at DESC
+    -- LIVE_WINS_PAPER_SHOWS (migration 0082): a tenant may hold an active
+    -- live row and an active paper row. Ordering on created_at alone would
+    -- let whichever was provisioned last take over the readiness panel.
+    ORDER BY (kind = 'privy_live') DESC, created_at DESC
     LIMIT 1
   `));
   const row = rows[0];

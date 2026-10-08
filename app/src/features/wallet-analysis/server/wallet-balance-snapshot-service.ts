@@ -149,6 +149,15 @@ export async function readWalletBalanceFact(
         isNull(polyWalletConnections.revokedAt)
       )
     )
+    // LIVE_WINS_PAPER_SHOWS (migration 0082): since a tenant may hold an
+    // active live row AND an active paper row, `limit(1)` without an order is
+    // no longer deterministic. Live takes precedence, so a tenant with real
+    // custody reads exactly as it did before 0082; a paper-only tenant now
+    // resolves its paper row instead of falling through to `no_wallet`, which
+    // is the whole reason paper became a first-class connection kind.
+    .orderBy(
+      sql`(${polyWalletConnections.kind} = 'privy_live') DESC, ${polyWalletConnections.createdAt} DESC`
+    )
     .limit(1);
   const result = rows[0];
   if (!result) return { kind: "no_wallet" as const };

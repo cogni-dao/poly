@@ -1399,7 +1399,7 @@ function createContainer(): Container {
 					const { polyWalletConnections } = await import(
 						"@cogni/poly-db-schema"
 					);
-					const { and, isNotNull, isNull } = await import("drizzle-orm");
+					const { and, eq, isNotNull, isNull } = await import("drizzle-orm");
 					const { noopMetrics: noopMetricsForAutoWrap } = await import(
 						"@cogni/poly-market-provider"
 					);
@@ -1417,6 +1417,10 @@ function createContainer(): Container {
 								.from(polyWalletConnections)
 								.where(
 									and(
+										// Auto-wrap is an on-chain USDC.e -> pUSD swap; paper
+										// accounts have no chain presence, and a duplicate
+										// account would burn the `limit` budget twice.
+										eq(polyWalletConnections.kind, "privy_live"),
 										isNull(polyWalletConnections.revokedAt),
 										isNull(polyWalletConnections.autoWrapRevokedAt),
 										isNotNull(polyWalletConnections.autoWrapConsentAt),

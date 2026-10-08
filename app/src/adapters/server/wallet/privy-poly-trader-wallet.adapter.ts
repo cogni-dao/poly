@@ -314,6 +314,57 @@ const ENABLE_TRADING_MIN_POL = 0.02;
  * is an app-issued default for the tenant's active connection; user-managed
  * downscoping and delegated actor grants are future product work.
  */
+/**
+ * The `kind` value for a real Privy-custodied wallet (migration 0082).
+ */
+const LIVE_KIND = "privy_live";
+
+/**
+ * LIVE_ROWS_ONLY. Every path in this adapter speaks to Privy custody, AEAD
+ * CLOB credentials, or on-chain approvals — none of which a `kind = 'paper'`
+ * row has. Since 0082 a tenant may hold an active live row AND an active paper
+ * row at the same time, and the per-tenant reads below are `.limit(1)` with no
+ * ORDER BY, so without this predicate they would pick a row arbitrarily. Two
+ * concrete failures it prevents:
+ *
+ *   * `decryptCreds(row.clobApiKeyCiphertext)` and
+ *     `createViemAccount({ walletId: row.privyWalletId })` would receive NULL
+ *     and throw, turning "this tenant also has a paper account" into a hard
+ *     failure of the live signing path.
+ *   * `authorizeIntent` would read `trading_approvals_ready_at` off whichever
+ *     row it happened to get. A paper row has that stamped at creation (it
+ *     needs no on-chain approvals), so a LIVE order could clear the
+ *     APPROVALS_BEFORE_PLACE gate on a paper row's readiness.
+ *
+ * Paper placements do NOT route through this adapter; they get their own venue.
+ */
+function liveRow() {
+  return eq(polyWalletConnections.kind, LIVE_KIND);
+}
+
+/**
+ * Narrow `privy_wallet_id` for a row that is already known to be live.
+ *
+ * Since 0082 the column is nullable in the type system because paper rows
+ * share the table, but the `live_requires_custody` CHECK plus the `liveRow()`
+ * filter on every query in this adapter make NULL unreachable here. Throwing
+ * rather than widening the Privy call signatures keeps that loud: a NULL at
+ * this point means the CHECK was dropped or a query lost its kind filter, and
+ * silently passing `null` into the Privy SDK would surface as an opaque
+ * upstream error instead of the invariant breach it actually is.
+ */
+function requirePrivyWalletId(row: {
+  id: string;
+  privyWalletId: string | null;
+}): string {
+  if (row.privyWalletId === null) {
+    throw new Error(
+      `poly_wallet_connections ${row.id} is kind=privy_live with a NULL privy_wallet_id — LIVE_ROW_CUSTODY_COMPLETE violated`
+    );
+  }
+  return row.privyWalletId;
+}
+
 const DEFAULT_GRANT_SCOPES = ["poly:trade:buy", "poly:trade:sell"] as const;
 
 /**
@@ -609,6 +660,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         .where(
           and(
             eq(polyWalletConnections.billingAccountId, billingAccountId),
+            liveRow(),
             isNull(polyWalletConnections.revokedAt)
           )
         )
@@ -657,7 +709,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     let account: LocalAccount;
     try {
       const rawAccount = createViemAccount(this.privyClient, {
-        walletId: row.privyWalletId,
+        walletId: requirePrivyWalletId(row),
         address: row.address as `0x${string}`,
         authorizationContext: this.authorizationContext,
       });
@@ -729,6 +781,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       .where(
         and(
           eq(polyWalletConnections.billingAccountId, billingAccountId),
+          liveRow(),
           isNull(polyWalletConnections.revokedAt)
         )
       )
@@ -751,7 +804,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
     }
 
     const rawAccount = createViemAccount(this.privyClient, {
-      walletId: row.privyWalletId,
+      walletId: requirePrivyWalletId(row),
       address: row.address as `0x${string}`,
       authorizationContext: this.authorizationContext,
     });
@@ -889,6 +942,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       .where(
         and(
           eq(polyWalletConnections.billingAccountId, billingAccountId),
+          liveRow(),
           isNull(polyWalletConnections.revokedAt)
         )
       )
@@ -926,7 +980,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         funderAddress: polyWalletConnections.funderAddress,
       })
       .from(polyWalletConnections)
-      .where(isNull(polyWalletConnections.revokedAt));
+      .where(and(liveRow(), isNull(polyWalletConnections.revokedAt)));
     return rows.flatMap((row) => {
       const address = resolveTradingAddress(row);
       if (!address) {
@@ -963,6 +1017,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       .where(
         and(
           eq(polyWalletConnections.billingAccountId, billingAccountId),
+          liveRow(),
           isNull(polyWalletConnections.revokedAt)
         )
       )
@@ -1196,6 +1251,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       .where(
         and(
           eq(polyWalletConnections.billingAccountId, input.billingAccountId),
+          liveRow(),
           isNull(polyWalletConnections.revokedAt)
         )
       )
@@ -1214,7 +1270,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         provider: CREDENTIAL_PROVIDER,
       });
       const rawIdemAccount = createViemAccount(this.privyClient, {
-        walletId: row.privyWalletId,
+        walletId: requirePrivyWalletId(row),
         address: row.address as `0x${string}`,
         authorizationContext: this.authorizationContext,
       });
@@ -1247,7 +1303,10 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       .select({ c: count() })
       .from(polyWalletConnections)
       .where(
-        eq(polyWalletConnections.billingAccountId, input.billingAccountId)
+        and(
+          eq(polyWalletConnections.billingAccountId, input.billingAccountId),
+          liveRow()
+        )
       );
     const generation = Number(generationRow?.c ?? 0) + 1;
     const idempotencyKey = `poly-wallet:${input.billingAccountId}:${generation}`;
@@ -1291,6 +1350,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       id: gen_id,
       billingAccountId: input.billingAccountId,
       createdByUserId: input.createdByUserId,
+      kind: LIVE_KIND,
       privyWalletId: privyWallet.id,
       address: getAddress(privyWallet.address),
       funderAddress: preparedDepositWallet.funderAddress,
@@ -1366,6 +1426,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         .where(
           and(
             eq(polyWalletConnections.billingAccountId, billingAccountId),
+            liveRow(),
             isNull(polyWalletConnections.revokedAt)
           )
         )
@@ -1651,6 +1712,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
           and(
             eq(polyWalletConnections.id, signingContext.connectionId),
             eq(polyWalletConnections.billingAccountId, billingAccountId),
+            liveRow(),
             isNull(polyWalletConnections.revokedAt)
           )
         );
@@ -2453,6 +2515,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         and(
           eq(polyWalletConnections.id, connectionId),
           eq(polyWalletConnections.billingAccountId, billingAccountId),
+          liveRow(),
           isNull(polyWalletConnections.revokedAt)
         )
       );
@@ -3024,6 +3087,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         .where(
           and(
             eq(polyWalletConnections.billingAccountId, input.billingAccountId),
+            liveRow(),
             isNull(polyWalletConnections.revokedAt)
           )
         )
@@ -3049,7 +3113,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       };
       const currentCreds = this.decryptCreds(row.clobApiKeyCiphertext, aad);
       const rawAccount = createViemAccount(this.privyClient, {
-        walletId: row.privyWalletId,
+        walletId: requirePrivyWalletId(row),
         address: row.address as `0x${string}`,
         authorizationContext: this.authorizationContext,
       });
@@ -3073,6 +3137,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
           and(
             eq(polyWalletConnections.id, row.id),
             eq(polyWalletConnections.billingAccountId, input.billingAccountId),
+            liveRow(),
             isNull(polyWalletConnections.revokedAt)
           )
         );
@@ -3111,6 +3176,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       .where(
         and(
           eq(polyWalletConnections.billingAccountId, billingAccountId),
+          liveRow(),
           isNull(polyWalletConnections.revokedAt)
         )
       )
@@ -3278,6 +3344,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       .where(
         and(
           eq(polyWalletConnections.billingAccountId, input.billingAccountId),
+          liveRow(),
           isNull(polyWalletConnections.revokedAt)
         )
       )
@@ -3314,6 +3381,7 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       .where(
         and(
           eq(polyWalletConnections.billingAccountId, input.billingAccountId),
+          liveRow(),
           isNull(polyWalletConnections.revokedAt)
         )
       )
@@ -3333,7 +3401,22 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
   // Private
   // ────────────────────────────────────────────────────────────────────────
 
-  private decryptCreds(ciphertext: Buffer, aad: AeadAAD): PolyClobApiKeyCreds {
+  /**
+   * @param ciphertext - Nullable since 0082 (paper rows carry none). Every
+   *   caller reads it off a `liveRow()`-filtered row, where the
+   *   `live_requires_custody` CHECK guarantees non-null, so a NULL here is an
+   *   invariant breach rather than an expected state — see
+   *   `requirePrivyWalletId` for the same reasoning.
+   */
+  private decryptCreds(
+    ciphertext: Buffer | null,
+    aad: AeadAAD
+  ): PolyClobApiKeyCreds {
+    if (ciphertext === null) {
+      throw new Error(
+        `poly_wallet_connections ${aad.connection_id} is kind=privy_live with a NULL clob_api_key_ciphertext — LIVE_ROW_CUSTODY_COMPLETE violated`
+      );
+    }
     let plaintext: string;
     try {
       plaintext = aeadDecrypt(ciphertext, aad, this.encryptionKey);
