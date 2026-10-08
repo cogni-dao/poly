@@ -343,6 +343,33 @@ describe("position-gap runtime persistence", () => {
 			"clob_associated_trades",
 		);
 		expect(Number(filledReservation?.releasedBudgetUsdc)).toBe(5.988);
+
+		const repairPending = await store.loadPlannerState(scope);
+		expect(repairPending.activeBuys.map((action) => action.id)).toContain(
+			persisted?.id,
+		);
+		expect(repairPending.openBuyOrders).toHaveLength(0);
+		await db.insert(polyCopyTradeFills).values({
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetA,
+			fillId: `position-gap-v3:${persisted?.actionKey}`,
+			marketId: "prediction-market:polymarket:condition-a",
+			observedAt: asOf,
+			clientOrderId: persisted?.clientOrderId ?? "missing",
+			orderId: "venue-order-a",
+			status: "filled",
+			price: "0.001",
+			shares: "12",
+			attributes: {
+				filled_size_usdc: 0.012,
+				realized_fill_source: "clob_associated_trades",
+			},
+		});
+		const repairVerified = await store.loadPlannerState(scope);
+		expect(repairVerified.activeBuys.map((action) => action.id)).not.toContain(
+			persisted?.id,
+		);
 	});
 
 	it("atomically reduces and reserves planner shares across NUMERIC(30,12) rounding", async () => {
