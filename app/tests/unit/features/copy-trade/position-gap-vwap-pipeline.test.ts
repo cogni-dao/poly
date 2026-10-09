@@ -175,6 +175,52 @@ describe("position_gap pipeline VWAP boundary", () => {
 		);
 	});
 
+	it("records shared mirror facts for min_bet even when target NAV is unavailable", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		const deps = commonDeps(
+			buyFill,
+			harness.ledger,
+			recordingLogger(entries),
+		);
+		const minBetTarget = buildMirrorTargetConfig({
+			targetWallet: buyFill.target_wallet,
+			billingAccountId: "billing-1",
+			createdByUserId: "user-1",
+			sizingPolicyKind: "min_bet",
+		});
+
+		await runMirrorTick({
+			...deps,
+			target: minBetTarget,
+			getTargetPortfolioCurrentValue: async () => {
+				throw new Error("target rate limited");
+			},
+			getMirrorPortfolioSnapshot: async () => ({
+				currentValueUsdc: 321,
+				positions: [{ asset: "token-1", size: 7, currentValue: 3.5 }],
+			}),
+		});
+
+		expect(harness.decisions).toHaveLength(1);
+		expect(harness.decisions[0]).toMatchObject({
+			intent: {
+				sizing_policy_kind: "min_bet",
+				target_portfolio_current_value_usdc: null,
+				mirror_portfolio_current_value_usdc: 321,
+				mirror_token_qty_shares: 7,
+			},
+		});
+		expect(entries).toContainEqual(
+			expect.objectContaining({
+				event: "poly.mirror.decision",
+				target_portfolio_current_value_usdc: null,
+				mirror_portfolio_current_value_usdc: 321,
+				mirror_token_qty_shares: 7,
+			}),
+		);
+	});
+
 	it("keeps an overweight position-gap SELL on the close path", async () => {
 		const sellFill: Fill = {
 			...buyFill,
@@ -235,6 +281,10 @@ describe("position_gap pipeline VWAP boundary", () => {
 			expect.objectContaining({
 				outcome: "placed",
 				reason: "sell_closed_position",
+				intent: expect.objectContaining({
+					mirror_portfolio_current_value_usdc: 100,
+					mirror_token_qty_shares: 0,
+				}),
 			}),
 		);
 		expect(harness.decisions).not.toContainEqual(

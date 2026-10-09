@@ -1476,9 +1476,10 @@ function createContainer(): Container {
 							};
 						}
 
-						// position_gap v2 evaluates numerator + denominator from one
-						// fully-paginated target snapshot. Short caches keep a burst of
-						// fills coherent without turning each fill into another API walk.
+						// Every policy records target + mirror portfolio facts from coherent
+						// snapshots so paper/live algorithms share one observable input tape.
+						// Short caches keep a burst of fills coherent without turning each fill
+						// into another API walk.
 						type PositionSnapshot = Awaited<
 							ReturnType<typeof dataApiClient.listAllUserPositions>
 						>;
@@ -1522,8 +1523,9 @@ function createContainer(): Container {
 						 * pUSD balance to read and a live account has no projection, so this
 						 * is a real fork, not a preference — but both branches are
 						 * saved/observed facts, and either one THROWS rather than return a
-						 * partial total. position_gap treats a throw as "cannot size now"
-						 * and skips, which is the behaviour a withheld NAV must produce.
+						 * partial total. position_gap treats a throw as "cannot size now" and
+						 * skips; other policies may still decide but must log the fact as
+						 * unavailable rather than substitute a value.
 						 */
 						const getMirrorPortfolioSnapshot = async (): Promise<{
 							currentValueUsdc: number;

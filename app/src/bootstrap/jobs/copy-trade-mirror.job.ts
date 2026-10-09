@@ -352,9 +352,9 @@ export interface MirrorJobDeps {
   getMarketConstraints?: MirrorPipelineDeps["getMarketConstraints"];
   /** Optional target-position read; v0 production uses Polymarket Data API. */
   getTargetConditionPosition?: MirrorPipelineDeps["getTargetConditionPosition"];
-  /** Whole-book current-value denominator for position_gap v2. */
+  /** Whole-book target value recorded as a shared algorithm input. */
   getTargetPortfolioCurrentValue?: MirrorPipelineDeps["getTargetPortfolioCurrentValue"];
-  /** Live mirror NAV + exact wallet positions for position_gap v2. */
+  /** Mirror NAV + exact positions recorded as shared algorithm inputs. */
   getMirrorPortfolioSnapshot?: MirrorPipelineDeps["getMirrorPortfolioSnapshot"];
   /**
    * Resolves this tenant's execution mode for decision-log attribution
