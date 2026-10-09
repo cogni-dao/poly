@@ -199,6 +199,69 @@ describe("position_gap legacy fill-pipeline boundary", () => {
 		);
 	});
 
+	it("suppresses an old execution-mode error when the assignment retires", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		const deps = commonDeps(buyFill, harness.ledger, recordingLogger(entries));
+		const fetchSince = vi.fn(deps.source.fetchSince);
+		const isAssignmentCurrent = vi
+			.fn<() => Promise<boolean>>()
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+
+		await runMirrorTick({
+			...deps,
+			source: { fetchSince },
+			isAssignmentCurrent,
+			getExecutionMode: async () => {
+				throw new Error("mode unavailable");
+			},
+		});
+
+		expect(isAssignmentCurrent).toHaveBeenCalledTimes(2);
+		expect(fetchSince).not.toHaveBeenCalled();
+		expect(
+			entries.filter(
+				(entry) => entry.event === "poly.mirror.assignment_retired",
+			),
+		).toHaveLength(1);
+		expect(
+			entries.filter((entry) => entry.event === "poly.mirror.decision"),
+		).toHaveLength(0);
+	});
+
+	it("suppresses an old source error when the assignment retires", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		const deps = commonDeps(buyFill, harness.ledger, recordingLogger(entries));
+		const fetchSince = vi.fn(async () => {
+			throw new Error("source unavailable");
+		});
+		const isAssignmentCurrent = vi
+			.fn<() => Promise<boolean>>()
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+
+		await runMirrorTick({
+			...deps,
+			source: { fetchSince },
+			isAssignmentCurrent,
+		});
+
+		expect(isAssignmentCurrent).toHaveBeenCalledTimes(2);
+		expect(fetchSince).toHaveBeenCalledOnce();
+		expect(
+			entries.filter(
+				(entry) => entry.event === "poly.mirror.assignment_retired",
+			),
+		).toHaveLength(1);
+		expect(
+			entries.filter(
+				(entry) => entry.event === "poly.mirror.source_error",
+			),
+		).toHaveLength(0);
+	});
+
 	it("drops an old planner skip when the assignment retires mid-tick", async () => {
 		const entries: Record<string, unknown>[] = [];
 		const harness = ledgerHarness();

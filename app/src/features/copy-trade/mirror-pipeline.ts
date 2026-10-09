@@ -366,6 +366,9 @@ export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
   try {
     executionMode = await deps.getExecutionMode();
   } catch (error) {
+    if (!(await assignmentGuard.check(assignmentLog, "execution_mode_error"))) {
+      return;
+    }
     assignmentLog.error(
       {
         event: EVENT_NAMES.POLY_MIRROR_DECISION,
@@ -393,6 +396,7 @@ export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
   try {
     result = await deps.source.fetchSince(cursor);
   } catch (err: unknown) {
+    if (!(await assignmentGuard.check(log, "source_fetch_error"))) return;
     log.warn(
       {
         event: EVENT_NAMES.POLY_MIRROR_SOURCE_ERROR,
