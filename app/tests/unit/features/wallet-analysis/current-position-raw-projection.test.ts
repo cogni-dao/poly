@@ -266,6 +266,12 @@ describe("current-position read model raw->> projection equivalence", () => {
     // `p.raw` may appear only as a `p.raw->>` scalar extraction.
     expect(sqlText).not.toMatch(/p\.raw\b(?!->>)/);
     expect(sqlText).toContain("target_correlated_positions");
+    expect(sqlText).toContain(
+      "JOIN poly_trader_current_positions target_position"
+    );
+    expect(sqlText).not.toContain(
+      "JOIN poly_trader_position_snapshots target_position"
+    );
     expect(sqlText).toContain("(correlated.token_id IS NOT NULL) DESC");
   });
 

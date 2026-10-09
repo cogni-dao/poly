@@ -25,9 +25,9 @@
  *     the full blob never crosses the wire or gets decoded in V8.
  *   - DETERMINISTIC_BOUNDED_PREVIEW: equal value/time rows are ordered by
  *     their stable condition/token identity before the 500-row limit.
- *   - COPY_TARGETS_STAY_VISIBLE: exact active target condition/token matches
- *     are ranked ahead of unrelated holdings so a large resumed paper book
- *     cannot hide the algorithm positions the dashboard exists to evaluate.
+ *   - COPY_TARGETS_STAY_VISIBLE: exact last-known target condition/token
+ *     matches are ranked ahead of unrelated holdings so a large resumed paper
+ *     book cannot hide the algorithm positions the dashboard exists to evaluate.
  * Side-effects: DB read only.
  * Links: work/items/task.5007.poly-tenant-current-position-reconciler.md
  * @public
@@ -96,7 +96,7 @@ type CurrentPositionRow = {
 
 export interface CurrentWalletPositionReadModel {
   positions: WalletExecutionPosition[];
-  /** Exact active target condition/token keys retained in the bounded preview. */
+  /** Exact last-known target condition/token keys retained in the preview. */
   targetCorrelatedKeys: ReadonlySet<string>;
   summary: {
     positionsMtm: number;
@@ -165,10 +165,11 @@ export async function readCurrentWalletPositionModel(params: {
          AND target_wallet.kind = 'copy_target'
          AND target_wallet.active_for_research = true
          AND target_wallet.disabled_at IS NULL
-        -- Snapshot lineage, not current-active state, owns preview priority.
-        -- A stale/inactive target fact must remain visible as an explicit
-        -- no_target_position classification instead of falling out of view.
-        JOIN poly_trader_position_snapshots target_position
+        -- Last-known target lineage, not current-active state, owns preview
+        -- priority. The current-position table retains inactive/stale rows,
+        -- so it preserves the explicit no_target_position classification
+        -- without scanning the append-only snapshot history on every page.
+        JOIN poly_trader_current_positions target_position
           ON target_position.trader_wallet_id = target_wallet.id
         WHERE target.billing_account_id = ${params.billingAccountId}
           AND target.disabled_at IS NULL
