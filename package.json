@@ -15,6 +15,7 @@
     "dev:local:prepare": "node scripts/local-runtime.mjs prepare",
     "dev:local:health": "node scripts/local-runtime.mjs health",
     "dev:local:down": "node scripts/local-runtime.mjs down",
+    "dev:local:test": "node --test scripts/local-runtime.test.mjs",
     "poly:delta-investigation": "tsx scripts/poly-delta-investigation.ts",
     "db:generate": "tsx node_modules/drizzle-kit/bin.cjs generate --config=drizzle.config.ts",
     "db:check": "pnpm db:check:drizzle && pnpm db:check:generate-clean",

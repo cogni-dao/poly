@@ -6,6 +6,20 @@ services:
   postgres:
     image: postgres:15
     restart: unless-stopped
+    cpus: 0.5
+    mem_limit: 384m
+    mem_reservation: 128m
+    shm_size: 64mb
+    command:
+      - postgres
+      - -c
+      - max_connections=32
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=32MB
     ports:
       - "127.0.0.1:${LOCAL_DB_PORT:?LOCAL_DB_PORT is required}:5432"
     environment:

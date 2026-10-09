@@ -55,6 +55,20 @@ const GENERATED_FILE = resolve(STATE_DIR, "generated.env");
 const APP_LOG_FILE = resolve(STATE_DIR, "app.log");
 const PUBLIC_BASE_RPC_URL = "https://mainnet.base.org";
 
+export const LOCAL_DB_POOL_LIMITS = Object.freeze({
+	app: "2",
+	service: "2",
+	read: "1",
+});
+
+export function localDbPoolEnv() {
+	return {
+		DB_POOL_MAX: LOCAL_DB_POOL_LIMITS.app,
+		DB_SERVICE_POOL_MAX: LOCAL_DB_POOL_LIMITS.service,
+		DB_READ_POOL_MAX: LOCAL_DB_POOL_LIMITS.read,
+	};
+}
+
 const HUMAN_FIELDS = [
 	"POLYGON_RPC_URL",
 	"POLYGON_RPC_WSS_URL",
@@ -265,6 +279,7 @@ function runtimeContext(human, generated) {
 		PINO_LOG_LEVEL: process.env.PINO_LOG_LEVEL || "info",
 		DATABASE_URL: databaseUrl.toString(),
 		DATABASE_SERVICE_URL: serviceDatabaseUrl.toString(),
+		...localDbPoolEnv(),
 		AUTH_SECRET: generated.LOCAL_AUTH_SECRET,
 		LITELLM_BASE_URL: "http://127.0.0.1:4000",
 		LITELLM_MASTER_KEY: generated.LOCAL_LITELLM_MASTER_KEY,
