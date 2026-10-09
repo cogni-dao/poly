@@ -22,6 +22,7 @@ import { createPolyBrainGraph } from "../src/graphs/poly-brain/graph";
 import {
 	POLY_BRAIN_DAO_OBJECTIVE,
 	POLY_BRAIN_STRATEGY_REVIEW_SCHEMA_VERSION,
+	PolyBrainHypothesisIdSchema,
 	PolyBrainStrategyReviewV1Schema,
 } from "../src/graphs/poly-brain/output-schema";
 import { POLY_BRAIN_SYSTEM_PROMPT } from "../src/graphs/poly-brain/prompts";
@@ -58,8 +59,9 @@ describe("poly-brain strategy eval set v1", () => {
 		expect(output.objective).toBe(POLY_BRAIN_DAO_OBJECTIVE);
 		expect(output.nextExperiment).not.toBeInstanceOf(Array);
 		expect(output.persistence.status).toBe("committed");
-		expect(output.persistence.sourceRef).toContain("schedule:story.5017:");
+		expect(output.persistence.sourceRef).toBe("story.5017/poly-brain/v1");
 		expect(output.persistence.committed).toBe(true);
+		expect(output.persistence.hypothesisId).toBe("forecast-signal-brier");
 		expect(output.evidence.map((item) => item.ref)).toEqual(
 			expect.arrayContaining([
 				"knowledge:mission:poly-mission",
@@ -72,6 +74,16 @@ describe("poly-brain strategy eval set v1", () => {
 				(strategy) => strategy.confidence === "low",
 			),
 		).toBe(true);
+	});
+
+	it("requires live-hub lowercase kebab hypothesis ids", () => {
+		expect(
+			PolyBrainHypothesisIdSchema.safeParse("forecast-signal-brier").success,
+		).toBe(true);
+		expect(
+			PolyBrainHypothesisIdSchema.safeParse("poly:forecast-signal-brier-v1")
+				.success,
+		).toBe(false);
 	});
 
 	it("keeps the operating prompt evidence-first and non-trading", () => {
@@ -101,6 +113,10 @@ describe("poly-brain strategy eval set v1", () => {
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
 			"The raw EDO tool is not retry-idempotent",
 		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
+			'set sourceRef exactly to "story.5017/poly-brain/v1"',
+		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain("never invent one");
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
 			"do not present them as runtime-stamped identity",
 		);

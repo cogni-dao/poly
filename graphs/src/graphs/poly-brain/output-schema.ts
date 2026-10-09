@@ -55,10 +55,19 @@ export const PolyBrainNextExperimentSchema = z.object({
 	workItemIds: z.array(z.string()).default([]),
 });
 
+export const PolyBrainHypothesisIdSchema = z
+	.string()
+	.min(1)
+	.max(200)
+	.regex(
+		/^[a-z0-9]+(?:-[a-z0-9]+)*$/,
+		"hypothesis id must be lowercase kebab-case",
+	);
+
 const PolyBrainCommittedPersistenceSchema = z.object({
 	status: z.literal("committed"),
 	tool: z.literal(EDO_HYPOTHESIZE_NAME),
-	hypothesisId: z.string().min(1),
+	hypothesisId: PolyBrainHypothesisIdSchema,
 	sourceRef: z.string().min(1),
 	evaluateAt: z.string().datetime(),
 	evidenceForIds: z.array(z.string().min(1)).min(1),
@@ -67,7 +76,7 @@ const PolyBrainCommittedPersistenceSchema = z.object({
 
 const PolyBrainReusedPersistenceSchema = z.object({
 	status: z.literal("reused"),
-	hypothesisId: z.string().min(1),
+	hypothesisId: PolyBrainHypothesisIdSchema,
 	sourceRef: z.string().min(1),
 	evaluateAt: z.string().datetime(),
 	evidenceForIds: z.array(z.string().min(1)).min(1),
@@ -76,7 +85,7 @@ const PolyBrainReusedPersistenceSchema = z.object({
 
 const PolyBrainFailedPersistenceSchema = z.object({
 	status: z.literal("failed"),
-	hypothesisId: z.string().nullable(),
+	hypothesisId: PolyBrainHypothesisIdSchema.nullable(),
 	sourceRef: z.string().min(1),
 	committed: z.literal(false),
 	error: z.string().min(1),
