@@ -24,7 +24,6 @@
  * @public
  */
 
-import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
 import {
   clientOrderIdFor,
   type LoggerPort,
@@ -41,6 +40,7 @@ import {
   PositionCapReachedError,
 } from "@/features/trading";
 import type { WalletActivitySource } from "@/features/wallet-watch";
+import { EVENT_NAMES } from "@/shared/observability/events";
 import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 
 import {
@@ -177,8 +177,12 @@ export type DecisionSource = "data-api" | "clob-ws" | "chain";
 export interface MirrorPipelineDeps {
 	/** Exact Git SHA; algorithm versions are invalid without code identity. */
 	implementationRevision: string;
+	/** Durable `poly_copy_trade_targets.id`; distinct from wallet-derived `target_id`. */
+	targetRowId: string;
 	/** Immutable target activation/config assignment identity. */
 	assignmentId: string;
+  /** Authoritative cross-process liveness check for the exact assignment. */
+  isAssignmentCurrent: () => Promise<boolean>;
   /** Fill source — v0 is the Polymarket Data-API adapter. */
   source: WalletActivitySource;
   /** Order ledger — reads state + writes pending/mark/decision rows. */
@@ -293,11 +297,43 @@ export interface MirrorPipelineDeps {
  */
 export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
   const clock = deps.clock ?? (() => new Date());
+  const algorithmId = algorithmIdForSizingKind(deps.target.sizing.kind);
+  const assignmentLog = deps.logger.child({
+    billing_account_id: deps.target.billing_account_id,
+    target_row_id: deps.targetRowId,
+    assignment_id: deps.assignmentId,
+    algorithm_id: algorithmId,
+  });
+  try {
+    if (!(await deps.isAssignmentCurrent())) {
+      assignmentLog.info(
+        {
+          event: EVENT_NAMES.POLY_MIRROR_ASSIGNMENT_RETIRED,
+          outcome: "skipped",
+          reason: "assignment_retired",
+        },
+        "mirror pipeline: assignment retired; skipping tick",
+      );
+      return;
+    }
+  } catch (error) {
+    assignmentLog.error(
+      {
+        event: EVENT_NAMES.POLY_MIRROR_ASSIGNMENT_RETIRED,
+        outcome: "error",
+        reason: "assignment_liveness_unavailable",
+        errorCode: "assignment_liveness_unavailable",
+        ...safeErrorDimensions(error),
+      },
+      "mirror pipeline: assignment liveness unavailable; skipping tick",
+    );
+    return;
+  }
   let executionMode: "live" | "paper";
   try {
     executionMode = await deps.getExecutionMode();
   } catch (error) {
-    deps.logger.error(
+    assignmentLog.error(
       {
         event: EVENT_NAMES.POLY_MIRROR_DECISION,
         outcome: "error",
@@ -308,10 +344,9 @@ export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
     );
     return;
   }
-  const log = deps.logger.child({
+  const log = assignmentLog.child({
     component: "mirror-pipeline",
     target_id: deps.target.target_id,
-    target_wallet: deps.target.target_wallet,
     // The same binding governs private facts and the pre-placement equality gate.
     execution_mode: executionMode,
   });
@@ -1815,6 +1850,65 @@ async function executeMirrorOrder(
       throw new Error(
 				`execution venue changed during mirror planning (${planningMode} -> ${placementMode})`,
       );
+    }
+    let assignmentCurrent = false;
+    let assignmentLivenessError: unknown;
+    try {
+      assignmentCurrent = await deps.isAssignmentCurrent();
+    } catch (error) {
+      assignmentLivenessError = error;
+    }
+    if (!assignmentCurrent) {
+      await deps.ledger.markCanceled({
+        client_order_id,
+        reason: "assignment_retired",
+      });
+      emitDecisionMetric(
+        deps.metrics,
+        "skipped",
+        "assignment_retired",
+        source,
+				placement,
+      );
+      await tenantLedger.recordDecision({
+        ...decisionBase,
+        mode_override: placementMode,
+        outcome: "skipped",
+        reason: "assignment_retired",
+        intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
+          ...decisionLogFields,
+          side: intent.side,
+          close: intent.side === "SELL",
+          position_branch: decisionLogFields?.position_branch ?? "new_entry",
+        }),
+        receipt: null,
+      });
+      const terminalFields = {
+        event: EVENT_NAMES.POLY_MIRROR_ASSIGNMENT_RETIRED,
+        outcome: "skipped",
+        reason: "assignment_retired",
+        source,
+        fill_id: fill.fill_id,
+        client_order_id,
+        ...(assignmentLivenessError
+          ? {
+              errorCode: "assignment_liveness_unavailable",
+              ...safeErrorDimensions(assignmentLivenessError),
+            }
+          : {}),
+      };
+      if (assignmentLivenessError) {
+        log.error(
+          terminalFields,
+          "mirror pipeline: assignment liveness unavailable before venue dispatch",
+        );
+      } else {
+        log.info(
+          terminalFields,
+          "mirror pipeline: assignment retired before venue dispatch",
+        );
+      }
+      return;
     }
     const receipt = await executor(intent, placementMode);
     await deps.ledger.markOrderId({

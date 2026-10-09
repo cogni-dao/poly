@@ -158,7 +158,8 @@ export type LedgerCancelReason =
   | "stale_resting_layer_up"
   | "position_gap_reconciled"
   | "position_gap_runtime_safety"
-  | "multi_target_position_gap_unsupported";
+  | "multi_target_position_gap_unsupported"
+  | "assignment_retired";
 
 /**
  * Thrown by `insertPending` when the partial unique index

@@ -25,7 +25,7 @@
 
 import { randomUUID } from "node:crypto";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -330,6 +330,14 @@ describe("execution venue + paper authorization (account-resolved mode)", () => 
 
   describe("the mirror enumerator", () => {
     it("enumerates both kinds, exactly once per target, and skips the unprovisioned tenant", async () => {
+      await getSeedDb()
+        .update(polyCopyTradeTargets)
+        .set({
+          mirrorActivatedAt: sql`'2026-10-09T13:06:00.123456Z'::timestamptz`,
+        })
+        .where(
+          eq(polyCopyTradeTargets.billingAccountId, liveOnly.billingAccountId)
+        );
       const source = dbTargetSource({
         appDb: asPgDb(getAppDb()),
         serviceDb: asPgDb(getSeedDb()),
@@ -349,6 +357,33 @@ describe("execution venue + paper authorization (account-resolved mode)", () => 
       expect(countFor(both)).toBe(1);
       // No connection at all → not enumerated.
       expect(countFor(unprovisioned)).toBe(0);
+
+      const current = rows.find(
+        (row) => row.billingAccountId === liveOnly.billingAccountId
+      );
+      expect(current).toBeDefined();
+      if (!current) return;
+      const assignment = {
+        targetRowId: current.targetRowId,
+        billingAccountId: current.billingAccountId,
+        mirrorActivatedAt: current.mirrorActivatedAt,
+        sizingPolicyKind: current.sizingPolicyKind,
+      };
+      expect(await source.isAssignmentCurrent(assignment)).toBe(true);
+      expect(
+        await source.isAssignmentCurrent({
+          ...assignment,
+          mirrorActivatedAt: new Date(
+            assignment.mirrorActivatedAt.getTime() + 1
+          ),
+        })
+      ).toBe(false);
+      expect(
+        await source.isAssignmentCurrent({
+          ...assignment,
+          targetRowId: randomUUID(),
+        })
+      ).toBe(false);
     });
   });
 });
