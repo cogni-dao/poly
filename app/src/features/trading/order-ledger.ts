@@ -304,12 +304,15 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         return mode;
       },
       recordDecision: async (input: TenantScopedRecordDecisionInput) => {
-        const mode = await deps.resolveExecutionMode(ctx.billing_account_id);
+        const mode =
+          input.mode_override ??
+          (await deps.resolveExecutionMode(ctx.billing_account_id));
+        const { mode_override: _modeOverride, ...decision } = input;
         return withTenantScope(appDb, actor, async (tx) =>
           recordDecisionOnDb(
             tx,
             {
-              ...input,
+              ...decision,
               billing_account_id: ctx.billing_account_id,
               created_by_user_id: ctx.created_by_user_id,
             },

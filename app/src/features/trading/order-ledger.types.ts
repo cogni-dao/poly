@@ -484,7 +484,10 @@ export type TenantScopedInsertPendingInput = Omit<
 export type TenantScopedRecordDecisionInput = Omit<
   RecordDecisionInput,
   keyof TenantBinding
->;
+> & {
+  /** Use the venue already stamped on the related order; omit for pre-order skips. */
+  mode_override?: LedgerMode;
+};
 
 /**
  * Order ledger port. Production adapter is `createOrderLedger({ db })` in

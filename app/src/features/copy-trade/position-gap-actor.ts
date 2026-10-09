@@ -603,16 +603,9 @@ export function startPositionGapActor(
 			);
 		}
 		const runtime = await deps.store.loadPlannerState(deps.scope);
-		const recent =
-			runtime.activeBuys.length > 0
-				? await deps.ledger.listRecent({
-						billing_account_id: deps.scope.billingAccountId,
-						target_id: deps.scope.targetId,
-						limit: Math.max(200, runtime.activeBuys.length * 4),
-					})
-				: [];
-		const ledgerByClientOrderId = new Map(
-			recent.map((row) => [row.client_order_id, row] as const),
+		const ledgerByClientOrderId = await deps.store.loadOrderBindings(
+			deps.scope,
+			runtime.activeBuys.map((action) => action.clientOrderId),
 		);
 
 		// LEDGER_TERMINAL_SURVIVES_RESTART (bug.5023). `ledgerTerminals` is an
@@ -636,11 +629,8 @@ export function startPositionGapActor(
 			(a) => !a.orderId && !ledgerTerminals.has(a.clientOrderId),
 		);
 		if (unplacedAmbiguous.length > 0) {
-			const statusByCoid = new Map(
-				recent.map((r) => [r.client_order_id, r.status]),
-			);
 			for (const action of unplacedAmbiguous) {
-				const status = statusByCoid.get(action.clientOrderId);
+				const status = ledgerByClientOrderId.get(action.clientOrderId)?.status;
 				// `error` is what the reconciler writes for `never_placed`;
 				// `canceled` means it was retired without ever reporting an id.
 				// Both say the same thing for an action with no `orderId`: the

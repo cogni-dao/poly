@@ -10,6 +10,7 @@
  */
 
 const MAX_ERROR_MESSAGE_LENGTH = 300;
+const MAX_ERROR_LABEL_LENGTH = 80;
 const MAX_CAUSE_DEPTH = 6;
 
 function stringProperty(
@@ -46,21 +47,30 @@ function sanitizedMessage(value: unknown): string | undefined {
 		.slice(0, MAX_ERROR_MESSAGE_LENGTH);
 }
 
+function safeLabel(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	return value
+		.replace(/[^a-zA-Z0-9_.:-]/g, "_")
+		.slice(0, MAX_ERROR_LABEL_LENGTH);
+}
+
 function errorClass(value: unknown): string | undefined {
-	if (value instanceof Error) return value.name;
-	return stringProperty(value, ["name"]);
+	if (value instanceof Error) return safeLabel(value.name);
+	return safeLabel(stringProperty(value, ["name"]));
 }
 
 function errorCode(value: unknown): string | undefined {
 	const direct = stringProperty(value, ["code", "sqlState", "sqlstate"]);
-	if (direct) return direct;
+	if (direct) return safeLabel(direct);
 	if (!value || typeof value !== "object") return undefined;
-	return stringProperty((value as { details?: unknown }).details, [
-		"error_code",
-		"code",
-		"sqlState",
-		"sqlstate",
-	]);
+	return safeLabel(
+		stringProperty((value as { details?: unknown }).details, [
+			"error_code",
+			"code",
+			"sqlState",
+			"sqlstate",
+		]),
+	);
 }
 
 function errorCause(value: unknown): unknown {
@@ -76,7 +86,12 @@ export function safeErrorDimensions(
 	let nestedCode: string | undefined;
 	let nestedMessage: string | undefined;
 	let nestedClass: string | undefined;
+	const visited = new Set<object>();
 	while (cause !== undefined && causeDepth < MAX_CAUSE_DEPTH) {
+		if (typeof cause === "object" && cause !== null) {
+			if (visited.has(cause)) break;
+			visited.add(cause);
+		}
 		nestedCode ??= errorCode(cause);
 		nestedMessage ??= sanitizedMessage(cause);
 		nestedClass ??= errorClass(cause);
@@ -85,7 +100,7 @@ export function safeErrorDimensions(
 	}
 
 	return {
-		err_class: errorClass(error) ?? typeof error,
+		err_class: errorClass(error) ?? safeLabel(typeof error),
 		err: sanitizedMessage(error),
 		err_code: errorCode(error),
 		cause_class: nestedClass,

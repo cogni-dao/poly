@@ -24,7 +24,6 @@
 import type {
   LoggerPort,
   MetricsPort,
-  OrderReceipt,
 } from "@cogni/poly-market-provider";
 import {
   type MirrorPipelineDeps,
@@ -370,12 +369,7 @@ export interface MirrorJobDeps {
    * Optional SELL-to-close path from `PolyTradeExecutor.closePosition`.
    * When absent, SELL fills degrade to `skip/sell_without_position`.
    */
-  closePosition?: (params: {
-    tokenId: string;
-    max_size_usdc: number;
-    limit_price: number;
-    client_order_id: `0x${string}`;
-  }) => Promise<OrderReceipt>;
+  closePosition?: MirrorPipelineDeps["closePosition"];
   /**
    * Optional position query from `PolyTradeExecutor.listPositions`.
    * When absent, SELL fills degrade to `skip/sell_without_position`.

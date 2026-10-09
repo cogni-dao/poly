@@ -1756,6 +1756,7 @@ async function executeMirrorOrder(
     emitDecisionMetric(deps.metrics, "placed", reason, source, placement);
     await tenantLedger.recordDecision({
       ...decisionBase,
+      mode_override: placementMode,
       outcome: "placed",
       reason,
       intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
@@ -1788,6 +1789,7 @@ async function executeMirrorOrder(
         size_usdc: intent.size_usdc,
         limit_price: intent.limit_price,
         ...decisionLogFields,
+        execution_mode: placementMode,
       },
       "mirror pipeline: placed"
     );
@@ -1825,6 +1827,7 @@ async function executeMirrorOrder(
     );
     await tenantLedger.recordDecision({
       ...decisionBase,
+      mode_override: placementMode,
       outcome: "error",
       reason: "placement_failed",
       intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
@@ -1851,6 +1854,7 @@ async function executeMirrorOrder(
         reason: "placement_failed",
         source,
         fill_id: fill.fill_id,
+        execution_mode: placementMode,
         client_order_id,
         // Sized notional + limit from the planner. Mirrors the `placed` log
         // line so failure analysis can join intent shape vs adapter rejection

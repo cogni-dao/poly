@@ -404,7 +404,8 @@ describe("paper position + NAV read-back", () => {
         billingAccountId: flat.billingAccountId,
         now: observedAt,
       });
-      expect(nav.navUsdc).toBeCloseTo(1000, 6);
+      // Closed at a $1 realized gain: 1000 - 10 bought + 11 sold.
+      expect(nav.navUsdc).toBeCloseTo(1001, 6);
     });
 
     it("refuses a stale NAV", async () => {

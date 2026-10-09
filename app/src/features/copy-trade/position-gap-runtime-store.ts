@@ -551,6 +551,7 @@ export class PositionGapRuntimeStore {
 			const filledShares =
 				row.filledShares === null ? 0 : Number(row.filledShares);
 			if (
+				(row.mode !== "live" && row.mode !== "paper") ||
 				conditionId.length === 0 ||
 				tokenId.length === 0 ||
 				!Number.isFinite(sizeUsdc) ||
@@ -574,6 +575,43 @@ export class PositionGapRuntimeStore {
 				remainingShares: Math.max(0, sizeUsdc / limitPrice - filledShares),
 			};
 		});
+	}
+
+	/** Durable venue/status bindings for the exact active actions requested. */
+	async loadOrderBindings(
+		scope: PositionGapRuntimeScope,
+		clientOrderIds: readonly string[],
+	): Promise<
+		ReadonlyMap<string, { mode: "live" | "paper"; status: string }>
+	> {
+		if (clientOrderIds.length === 0) return new Map();
+		const rows = await this.db
+			.select({
+				clientOrderId: polyCopyTradeFills.clientOrderId,
+				mode: polyCopyTradeFills.mode,
+				status: polyCopyTradeFills.status,
+			})
+			.from(polyCopyTradeFills)
+			.where(
+				and(
+					eq(polyCopyTradeFills.billingAccountId, scope.billingAccountId),
+					eq(polyCopyTradeFills.targetId, scope.targetId),
+					inArray(polyCopyTradeFills.clientOrderId, [...clientOrderIds]),
+				),
+			);
+		return new Map(
+			rows.map((row) => {
+				if (row.mode !== "live" && row.mode !== "paper") {
+					throw new Error(
+						`position-gap ledger row has invalid venue binding: ${row.clientOrderId}`,
+					);
+				}
+				return [
+					row.clientOrderId,
+					{ mode: row.mode, status: row.status },
+				] as const;
+			}),
+		);
 	}
 
 	async previousBudgetUsdc(
