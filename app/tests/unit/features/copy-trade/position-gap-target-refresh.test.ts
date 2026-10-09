@@ -506,6 +506,24 @@ describe("buildPositionGapBuyIntent", () => {
 				repairTargetWalletLineage,
 				recoverKnownRejectedAmbiguities,
 				loadPlannerState,
+				loadOrderBindings: vi.fn(async () =>
+					new Map([
+						[
+							"open-client",
+							{ mode: "paper" as const, status: "open" },
+						],
+					]),
+				),
+				loadAccountBuyExposure: vi.fn(async () => [
+					{
+						clientOrderId: "open-client",
+						orderId: "open-order",
+						mode: "paper" as const,
+						conditionId: "condition",
+						tokenId: "token",
+						remainingShares: 1,
+					},
+				]),
 				reconcileLedgerTerminals: vi.fn(async () => 0),
 				loadLastSnapshot: vi.fn(async () => snapshot),
 				persistPlan,
@@ -518,12 +536,17 @@ describe("buildPositionGapBuyIntent", () => {
 				markCanceled: vi.fn(async () => undefined),
 			} as never,
 			getExecutionMode: vi.fn(async () => "paper" as const),
-			execution: {
+			executionForMode: () => ({
 				placeBuy: vi.fn(),
 				cancelBuy,
 				getBuy,
 				getMarketConstraints: vi.fn(),
 				listOpenOrders: vi.fn(async () => []),
+			}),
+			fillEvidence: {
+				getWalletAddress: vi.fn(),
+				listActivity: vi.fn(),
+				listPositions: vi.fn(),
 			},
 			getWalletCashUsdc: vi.fn(async () => 20),
 			getTargetCashUsdc: vi.fn(async () => ({

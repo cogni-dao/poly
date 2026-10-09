@@ -274,6 +274,7 @@ describe("position_gap pipeline VWAP boundary", () => {
 				max_size_usdc: 4,
 				limit_price: 0.5,
 			}),
+			"paper",
 		);
 		expect(harness.insertPending).toHaveBeenCalledOnce();
 		expect(harness.markOrderId).toHaveBeenCalledOnce();
@@ -320,6 +321,7 @@ describe("position_gap pipeline VWAP boundary", () => {
 				target_id: blockedTarget.target_id,
 				market_id: fill.market_id,
 				created_at: new Date("2026-10-07T00:00:00.000Z"),
+				mode: "paper",
 				limit_price: 0.5,
 			};
 			const entries: Record<string, unknown>[] = [];
@@ -349,7 +351,7 @@ describe("position_gap pipeline VWAP boundary", () => {
 			expect(closePosition).not.toHaveBeenCalled();
 			expect(getOperatorPositions).not.toHaveBeenCalled();
 			expect(harness.insertPending).not.toHaveBeenCalled();
-			expect(cancelOrder).toHaveBeenCalledWith("resting-order-1");
+			expect(cancelOrder).toHaveBeenCalledWith("resting-order-1", "paper");
 			expect(harness.markCanceled).toHaveBeenCalledWith({
 				client_order_id: openOrder.client_order_id,
 				reason: "multi_target_position_gap_unsupported",
