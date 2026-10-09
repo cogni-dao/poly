@@ -11,15 +11,26 @@
  * Scope: Catalog composition and allowlist/bundle agreement. Graph execution
  *   itself is proven on candidate.
  * Invariants: NODE_RUNTIME_CATALOG_BOUNDARY; BASE_IS_SPREAD_NEVER_EDITED;
- *   TOOL_ALLOWLIST_IS_APP_POLICY; NO_WRITE_SCOPE.
+ *   TOOL_ALLOWLIST_IS_APP_POLICY; ONE_EDO_WRITE_ONLY.
  * Side-effects: none
- * Links: task.1791070967, story.5006, docs/spec/langgraph-patterns.md
+ * Links: task.1791070967, task.1791070993, story.5017,
+ *   docs/spec/langgraph-patterns.md
  * @internal
  */
 
-import { CORE_TOOL_BUNDLE, WEB_SEARCH_NAME } from "@cogni/ai-tools";
+import {
+  CORE_TOOL_BUNDLE,
+  EDO_HYPOTHESIZE_NAME,
+  GET_CURRENT_TIME_NAME,
+  KNOWLEDGE_READ_NAME,
+  KNOWLEDGE_SEARCH_NAME,
+  REPO_LIST_NAME,
+  REPO_OPEN_NAME,
+  REPO_SEARCH_NAME,
+  WEB_SEARCH_NAME,
+  WORK_ITEM_QUERY_NAME,
+} from "@cogni/ai-tools";
 import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
-import { POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME } from "@cogni/poly-graphs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -58,10 +69,17 @@ describe("this node's langgraph catalog", () => {
     );
   });
 
-  it("allowlists exactly web search and the one account-read capability", () => {
+  it("allowlists evidence reads plus exactly one EDO learning write", () => {
     expect(POLY_BRAIN_NODE_TOOL_IDS).toEqual([
+      GET_CURRENT_TIME_NAME,
+      KNOWLEDGE_SEARCH_NAME,
+      KNOWLEDGE_READ_NAME,
+      WORK_ITEM_QUERY_NAME,
+      REPO_LIST_NAME,
+      REPO_SEARCH_NAME,
+      REPO_OPEN_NAME,
       WEB_SEARCH_NAME,
-      POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
+      EDO_HYPOTHESIZE_NAME,
     ]);
     expect(POLY_NODE_LANGGRAPH_CATALOG[POLY_BRAIN]?.toolIds).toEqual(
       POLY_BRAIN_NODE_TOOL_IDS
@@ -71,9 +89,7 @@ describe("this node's langgraph catalog", () => {
   it("allowlists only tools the node bundle can actually resolve", () => {
     // The provider logs "Tool not found in toolSource; graph misconfigured" per
     // unresolvable id and then hands the model a tool list it cannot use. This
-    // is exactly why `POLY_BRAIN_TOOL_IDS` from @cogni/poly-graphs is NOT reused
-    // here: it names POLY_TOOL_BUNDLE tools that need a container-level
-    // dataApiClient binding (container.ts is port-frozen P0).
+    // is why runtime policy is verified against the actual node bundles.
     const resolvable = new Set(
       [...CORE_TOOL_BUNDLE, ...PRINCIPAL_TOOL_BUNDLE].map(
         (bound) => bound.contract.name
@@ -84,19 +100,26 @@ describe("this node's langgraph catalog", () => {
     }
   });
 
-  it("grants poly-brain no write-capable tool", () => {
-    // NO_WRITE_SCOPE: story.5006 adds no write capability, and
-    // `core__poly_place_trade` has been unbound since bug.0319.
+  it("grants exactly one bounded write and no trade or policy capability", () => {
     const byId = new Map(
       [...CORE_TOOL_BUNDLE, ...PRINCIPAL_TOOL_BUNDLE].map((bound) => [
         bound.contract.name,
         bound.contract,
       ])
     );
-    for (const toolId of POLY_BRAIN_NODE_TOOL_IDS) {
-      expect(byId.get(toolId)?.effect).toBe("read_only");
-    }
+    const writeTools = POLY_BRAIN_NODE_TOOL_IDS.filter(
+      (toolId) => byId.get(toolId)?.effect === "state_change"
+    );
+    expect(writeTools).toEqual([EDO_HYPOTHESIZE_NAME]);
+    expect(POLY_BRAIN_NODE_TOOL_IDS).not.toContain("core__knowledge_write");
+    expect(POLY_BRAIN_NODE_TOOL_IDS).not.toContain(
+      "core__work_item_transition"
+    );
+    expect(POLY_BRAIN_NODE_TOOL_IDS).not.toContain("core__schedule_manage");
     expect(POLY_BRAIN_NODE_TOOL_IDS).not.toContain("core__poly_place_trade");
     expect(POLY_BRAIN_NODE_TOOL_IDS).not.toContain("core__poly_cancel_order");
+    expect(POLY_BRAIN_NODE_TOOL_IDS).not.toContain(
+      "core__poly_account_copy_trade_orders"
+    );
   });
 });

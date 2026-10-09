@@ -22,32 +22,35 @@
  *     now imports this module.
  *   - BASE_IS_SPREAD_NEVER_EDITED — the shared catalog is spread, so new shared
  *     graphs appear here automatically and nothing in `packages/**` is mutated.
- *   - TOOL_ALLOWLIST_IS_APP_POLICY — `toolIds` is declared HERE, deliberately
- *     not reused from `POLY_BRAIN_TOOL_IDS` in `@cogni/poly-graphs`. That
- *     constant names `core__market_list` and `core__wallet_top_traders`, which
- *     live in `POLY_TOOL_BUNDLE` (`@cogni/poly-ai-tools`); binding that bundle
- *     needs a `dataApiClient` wired in `app/src/bootstrap/container.ts`, a
- *     port-frozen P0 entry. Those tools are out of reach of this change, and a
- *     catalog entry naming a tool the source cannot resolve logs "graph
- *     misconfigured" per tool on every run AND hands the model a tool it cannot
- *     use. Which tools a node has actually BOUND is app runtime policy; which
- *     tools a graph could use in principle is the package's business.
+ *   - TOOL_ALLOWLIST_IS_APP_POLICY — `toolIds` is declared HERE rather than
+ *     imported from graph capability metadata. The runtime grant must stay
+ *     reviewable against the node's actually bound tool sources, and it may be
+ *     narrower than what a graph package can describe in principle.
  *   - NO_LANGCHAIN_IN_SRC — graph FACTORIES are imported as opaque values from
  *     the graph packages. Nothing here imports `@langchain/*`.
  * Side-effects: none
- * Links: task.1791070967, story.5006, docs/spec/langgraph-patterns.md,
- *   docs/spec/capability-plane.md
+ * Links: task.1791070967, task.1791070993, story.5017,
+ *   docs/spec/langgraph-patterns.md, docs/spec/capability-plane.md
  * @internal
  */
 
-import { WEB_SEARCH_NAME } from "@cogni/ai-tools";
+import {
+  EDO_HYPOTHESIZE_NAME,
+  GET_CURRENT_TIME_NAME,
+  KNOWLEDGE_READ_NAME,
+  KNOWLEDGE_SEARCH_NAME,
+  REPO_LIST_NAME,
+  REPO_OPEN_NAME,
+  REPO_SEARCH_NAME,
+  WEB_SEARCH_NAME,
+  WORK_ITEM_QUERY_NAME,
+} from "@cogni/ai-tools";
 import {
   type CreateGraphFn,
   LANGGRAPH_CATALOG,
 } from "@cogni/langgraph-graphs";
 import {
   createPolyBrainGraph,
-  POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
   POLY_BRAIN_GRAPH_NAME,
 } from "@cogni/poly-graphs";
 
@@ -56,18 +59,24 @@ import type { LangGraphCatalog } from "@/adapters/server/ai/langgraph/catalog";
 /**
  * Tool allowlist for `poly-brain` on this node.
  *
- * Scoped to exactly what this node can bind today: web research, and ONE
- * account-read capability answered with the signed-in user's principal. See
- * TOOL_ALLOWLIST_IS_APP_POLICY for why the market-data tools are absent and why
- * this list is not `POLY_BRAIN_TOOL_IDS`.
+ * Scoped to the node's bound evidence tools and exactly one durable write: a
+ * falsifiable EDO hypothesis for the selected next experiment. This list is
+ * deliberately app policy rather than blindly reusing package capability
+ * metadata.
  *
- * Deliberately contains NO write-capable tool. `core__poly_place_trade` stays
- * unbound (removed from `POLY_TOOL_BUNDLE` post-bug.0319) and story.5006 adds no
- * write scope.
+ * Deliberately excludes generic knowledge writes, work-item transitions,
+ * schedules, wallets, target policy, algorithms, orders, and trades.
  */
 export const POLY_BRAIN_NODE_TOOL_IDS: readonly string[] = [
+  GET_CURRENT_TIME_NAME,
+  KNOWLEDGE_SEARCH_NAME,
+  KNOWLEDGE_READ_NAME,
+  WORK_ITEM_QUERY_NAME,
+  REPO_LIST_NAME,
+  REPO_SEARCH_NAME,
+  REPO_OPEN_NAME,
   WEB_SEARCH_NAME,
-  POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
+  EDO_HYPOTHESIZE_NAME,
 ];
 
 /**
@@ -82,7 +91,7 @@ export const POLY_NODE_LANGGRAPH_CATALOG: LangGraphCatalog<CreateGraphFn> = {
   [POLY_BRAIN_GRAPH_NAME]: {
     displayName: "Poly Brain",
     description:
-      "Prediction-market analyst that can read this account's own saved copy-trade order ledger and research events on the web",
+      "Recurring DAO-objective reviewer that compares evidence-backed ethical-profit directions, persists one hypothesis, and proposes one next experiment",
     toolIds: POLY_BRAIN_NODE_TOOL_IDS,
     // Cast for the same reason the shared catalog is cast above: the factory's
     // return type is deliberately unannotated (TYPE_TRANSPARENT_RETURN), so its
