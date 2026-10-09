@@ -17,6 +17,11 @@ const runtime = {
 		status: "no_feasible_position",
 		sleeve_budget_usdc: 24,
 		eligible_net_nav_usdc: 500_000,
+		target_complete_set_value_usdc: 25_000,
+		target_pusd_balance_usdc: 1_800_000,
+		target_usdce_balance_usdc: 0,
+		target_total_wealth_usdc: 2_325_000,
+		target_balance_source_block: 95_213_861,
 		scale: 0.000048,
 		free_wallet_cash_after_guards_usdc: 23,
 		reserved_budget_usdc: 1,
@@ -185,9 +190,14 @@ describe("TargetPositionsPanel position-gap truth", () => {
 		render(<TargetPositionsPanel />);
 
 		expect(
-			screen.getByText(/no feasible position · sleeve \$24\.00/),
+			screen.getByText(/no order · usable budget \$24\.00/),
 		).toBeInTheDocument();
-		expect(screen.getByText(/min \$53\.31/)).toBeInTheDocument();
+		expect(screen.getByText(/\$53\.31 needed/)).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				/Target wealth \$2,325,000\.00 · pUSD balance \$1,800,000\.00 · directional positions \$500,000\.00 · paired sets \$25,000\.00 · block 95,213,861/,
+			),
+		).toBeInTheDocument();
 		expect(screen.getByText("1/2 · open 0.5 · gap 0.5")).toBeInTheDocument();
 		expect(screen.getByText(/1 submitted · fills pending/)).toBeInTheDocument();
 		expect(screen.queryByText(/filled/)).not.toBeInTheDocument();
