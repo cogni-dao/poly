@@ -1916,8 +1916,10 @@ describe("position-gap runtime persistence", () => {
 		);
 		expect(Number(convergedLedger?.attributes?.filled_size_usdc)).toBe(0.012);
 		expect(Number(convergedReservation?.filledCostUsdc)).toBe(0.0123);
+		// Reservation release is monotonic: a later authoritative cost correction
+		// cannot re-reserve budget that the executor already made available.
 		expect(Number(convergedReservation?.releasedBudgetUsdc)).toBeCloseTo(
-			3.592216 - 0.0123,
+			3.592216 - 0.00846,
 			8,
 		);
 	});
