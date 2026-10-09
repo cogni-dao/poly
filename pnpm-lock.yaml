@@ -1420,7 +1420,7 @@ packages:
 
   '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.8/cogni-dao-work-items-0.1.8.tgz':
     resolution: {tarball: https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.8/cogni-dao-work-items-0.1.8.tgz}
-    version: 0.1.7
+    version: 0.1.8
 
   '@coinbase/cdp-sdk@1.51.0':
     resolution: {integrity: sha512-XK8+OXDER1jirYpuiOct4ij65ODQ31LsmyRrZi/J7zF4GB89qxWZ0KPfAdsqJMP7VvE4no+Q++MKkQtAJUBoyg==}
