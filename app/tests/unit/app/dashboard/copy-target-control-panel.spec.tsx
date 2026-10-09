@@ -3,7 +3,7 @@
 
 /**
  * Module: `@tests/unit/app/dashboard/copy-target-control-panel`
- * Purpose: Prove the human selector names the active implementation without
+ * Purpose: Prove the human selector names the configured implementation without
  *          redundant prose, links directly to durable guidance, and gives one
  *          no obsolete allocation controls.
  * Scope: Component rendering with query hooks mocked; no HTTP or DB.
@@ -145,7 +145,8 @@ describe("CopyTargetControlPanel algorithm selector", () => {
       screen.getByRole("button", { name: "Expand copy controls" }),
     );
 
-    expect(screen.getByText("Active: Position gap")).toBeInTheDocument();
+    expect(screen.getByText("Configured: Position gap")).toBeInTheDocument();
+    expect(screen.queryByText("Active: Position gap")).not.toBeInTheDocument();
     expect(screen.getByText("build f3e49318")).toBeInTheDocument();
     expect(screen.queryByText(/recommended/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Most promising/i)).not.toBeInTheDocument();

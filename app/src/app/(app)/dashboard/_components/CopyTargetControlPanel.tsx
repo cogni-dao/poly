@@ -524,7 +524,7 @@ function TargetPolicyEditor({
           </Select>
         </div>
         <div className="text-muted-foreground text-xs sm:text-right">
-          <div>Active: {target ? algorithmSummary(target) : "--"}</div>
+          <div>Configured: {target ? algorithmSummary(target) : "--"}</div>
           <div className="font-mono">build {buildRevision}</div>
         </div>
       </div>
