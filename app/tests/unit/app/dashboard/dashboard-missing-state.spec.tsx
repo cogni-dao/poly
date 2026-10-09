@@ -455,6 +455,9 @@ describe("dashboard missing read-model states", () => {
   });
 
   it("keeps paper positions visible without offering unsupported actions", () => {
+    const previousActionsAllowed = state.actionsAllowed;
+    const previousOverview = state.overview;
+    const previousExecution = state.execution;
     state.actionsAllowed = false;
     state.overview = {
       configured: true,
@@ -485,8 +488,9 @@ describe("dashboard missing read-model states", () => {
     expect(
       screen.queryByRole("button", { name: "position action" })
     ).not.toBeInTheDocument();
-    state.actionsAllowed = true;
-    state.overview = undefined;
+    state.actionsAllowed = previousActionsAllowed;
+    state.overview = previousOverview;
+    state.execution = previousExecution;
   });
 
   it("keeps the position histogram without rendering preview disclaimers", () => {
