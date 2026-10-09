@@ -35,8 +35,6 @@ COPY server.py /app/server.py
 
 # Default writable data dir under /tmp (compatible with readOnlyRootFilesystem).
 ENV PM_TRADER_DATA_DIR=/tmp/pm_trader
-ENV PM_TRADER_ACCOUNT=cogni-paper
-ENV PM_TRADER_STARTING_BALANCE_USDC=1000000
 ENV PAPER_CHECK_ORDERS_INTERVAL_SECONDS=30
 ENV PINO_LOG_LEVEL=info
 

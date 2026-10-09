@@ -421,7 +421,7 @@ type CachedExecutor = {
 
 /**
  * Process-level factory. Returns a function that caches executors per
- * `billingAccountId`. Every cached entry reuses the same
+ * `(billingAccountId, venue)`. Every cached entry reuses the same
  * `PolymarketClobAdapter` (one HTTPS client) + shared `PublicClient` for RPC
  * reads. Scope + cap checks go through `walletPort.authorizeIntent` on every
  * call — the cache never makes auth decisions.
@@ -442,10 +442,14 @@ export function createPolyTradeExecutorFactory(
   async function getPolyTradeExecutorFor(
     billingAccountId: string
   ): Promise<PolyTradeExecutor> {
-    const cached = cache.get(billingAccountId);
+    // Resolve on every dispatch so provisioning live custody cannot leave a
+    // cached paper executor serving fresh intents.
+    const venue = await deps.resolveExecutionVenue(billingAccountId);
+    const cacheKey = `${billingAccountId}:${venue}`;
+    const cached = cache.get(cacheKey);
     if (cached) return cached.executor;
 
-    const existing = inflight.get(billingAccountId);
+    const existing = inflight.get(cacheKey);
     if (existing) return (await existing).executor;
 
     // VENUE_RESOLVED_FROM_ACCOUNT — read the account's connection `kind` and
@@ -454,34 +458,32 @@ export function createPolyTradeExecutorFactory(
     // (NO_DEFAULT_VENUE): a tenant that never provisioned anything gets a loud
     // failure, not a silent downgrade to simulation or a live CLOB attempt.
     //
-    // Resolution is inside the per-account build promise so it is paid once per
-    // account per process and shares the inflight de-duplication below. The
-    // cache key is the billing account, so a live account and a paper account
-    // coexist in one process with different venues — the thing the old
-    // process-wide env switch made impossible.
+    // The cache key includes the resolved venue, so an account transition can
+    // never reuse a client from the other venue.
     const buildPromise = (async () => {
-      const venue = await deps.resolveExecutionVenue(billingAccountId);
       return venue === "paper"
         ? buildPaperOnlyExecutor(billingAccountId, deps)
         : buildExecutor(billingAccountId, deps);
     })().then((built) => {
-      cache.set(billingAccountId, built);
-      inflight.delete(billingAccountId);
+      cache.set(cacheKey, built);
+      inflight.delete(cacheKey);
       return built;
     });
-    inflight.set(billingAccountId, buildPromise);
+    inflight.set(cacheKey, buildPromise);
     try {
       const built = await buildPromise;
       return built.executor;
     } catch (err) {
-      inflight.delete(billingAccountId);
+      inflight.delete(cacheKey);
       throw err;
     }
   }
 
   function invalidatePolyTradeExecutorFor(billingAccountId: string): void {
-    cache.delete(billingAccountId);
-    inflight.delete(billingAccountId);
+    for (const venue of ["live", "paper"] as const) {
+      cache.delete(`${billingAccountId}:${venue}`);
+      inflight.delete(`${billingAccountId}:${venue}`);
+    }
   }
 
   return { getPolyTradeExecutorFor, invalidatePolyTradeExecutorFor };
@@ -1017,6 +1019,8 @@ async function buildPaperOnlyExecutor(
   });
 
   const paperAdapter = new PaperAdapter({
+    accountId: account.connectionId,
+    startingBalanceUsdc: Number(account.seedUsdc),
     ...(deps.paperSidecarUrl !== undefined
       ? { sidecarBaseUrl: deps.paperSidecarUrl }
       : {}),
@@ -1169,7 +1173,8 @@ async function buildPaperOnlyExecutor(
     getOrder: paperAdapter.getOrder.bind(paperAdapter),
     cancelOrder: paperAdapter.cancelOrder.bind(paperAdapter),
     getMarketConstraints: adapter.getMarketConstraints.bind(adapter),
-    listOpenOrders: async () => [],
+    listOpenOrders: async () =>
+      (await paperAdapter.listOpenOrders()).map(mapOpenOrderSummary),
     getPositionShareBalance: async (tokenId: string) =>
       requirePaperPositions("getPositionShareBalance").getPositionShareBalance(
         billingAccountId,
@@ -1181,13 +1186,7 @@ async function buildPaperOnlyExecutor(
   return { executor, funderAddress };
 }
 
-function mapOpenOrderSummary(
-  order: Awaited<
-    ReturnType<
-      import("@cogni/poly-market-provider/adapters/polymarket").PolymarketClobAdapter["listOpenOrders"]
-    >
-  >[number]
-): OpenOrderSummary {
+function mapOpenOrderSummary(order: OrderReceipt): OpenOrderSummary {
   const attrs = (order.attributes ?? {}) as Record<string, unknown>;
   const price = readFinite(attrs.price);
   const originalShares = readFinite(attrs.originalSize);

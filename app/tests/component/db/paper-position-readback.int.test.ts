@@ -385,24 +385,26 @@ describe("paper position + NAV read-back", () => {
       ).toBe("nav_missing");
     });
 
-    it("never borrows a NAV row written for a different address", async () => {
-      // Simulate the live balance writer owning this tenant's PK'd row.
+    it("reads the paper NAV while a live-address snapshot coexists", async () => {
       await getSeedDb()
-        .update(polyWalletBalanceSnapshots)
-        .set({ address: address() })
-        .where(
-          eq(polyWalletBalanceSnapshots.billingAccountId, flat.billingAccountId)
-        );
+        .insert(polyWalletBalanceSnapshots)
+        .values({
+          billingAccountId: flat.billingAccountId,
+          address: address(),
+          usdcE: "77.00000000",
+          pusd: "88.00000000",
+          pol: "1.000000000000000000",
+          status: "ok",
+          errors: [],
+          observedAt,
+        });
 
-      expect(
-        await reasonOf(
-          readPaperAccountNavUsdc({
-            db: paperDb(),
-            billingAccountId: flat.billingAccountId,
-            now: observedAt,
-          })
-        )
-      ).toBe("nav_missing");
+      const nav = await readPaperAccountNavUsdc({
+        db: paperDb(),
+        billingAccountId: flat.billingAccountId,
+        now: observedAt,
+      });
+      expect(nav.navUsdc).toBeCloseTo(1000, 6);
     });
 
     it("refuses a stale NAV", async () => {

@@ -190,12 +190,14 @@ import server  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+ACCOUNT_ID = "paper-account-a"
+OTHER_ACCOUNT_ID = "paper-account-b"
+STARTING_BALANCE_USDC = 10_000.0
+
 
 @pytest.fixture
 def client():
     with TestClient(server.app) as c:
-        # Replace fresh state per test.
-        server.sidecar.orders.clear()
         yield c
 
 
@@ -230,6 +232,8 @@ def test_place_order_returns_open_receipt(client):
     r = client.post(
         "/place-order",
         json={
+            "account_id": ACCOUNT_ID,
+            "starting_balance_usdc": STARTING_BALANCE_USDC,
             "client_order_id": "cogni-coid-1",
             "market_id": "prediction-market:polymarket:0xCONDITION_ID",
             "outcome": "Yes",
@@ -251,6 +255,8 @@ def test_place_order_strips_prefix_and_passes_condition_id(client):
     r = client.post(
         "/place-order",
         json={
+            "account_id": ACCOUNT_ID,
+            "starting_balance_usdc": STARTING_BALANCE_USDC,
             "client_order_id": "cogni-coid-2",
             "market_id": "prediction-market:polymarket:0xABCDEF",
             "outcome": "No",
@@ -261,14 +267,14 @@ def test_place_order_strips_prefix_and_passes_condition_id(client):
     )
     assert r.status_code == 200
     # Look up the stored upstream order to confirm the slug_or_id mapping.
-    engine: FakeEngine = server.sidecar.engine  # type: ignore[assignment]
+    engine: FakeEngine = server.sidecars.get(ACCOUNT_ID).engine  # type: ignore[assignment]
     placed = list(engine._orders.values())[-1]
     assert placed["market_slug"] == "0xABCDEF"
     assert placed["side"] == "buy"  # lowercased before passing upstream
 
 
 def test_get_order_returns_404_for_unknown_id(client):
-    r = client.get("/orders/999999")
+    r = client.get(f"/orders/999999?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}")
     assert r.status_code == 404
     assert r.json()["detail"] == "not_found"
 
@@ -277,6 +283,8 @@ def test_get_order_returns_receipt_after_place(client):
     r = client.post(
         "/place-order",
         json={
+            "account_id": ACCOUNT_ID,
+            "starting_balance_usdc": STARTING_BALANCE_USDC,
             "client_order_id": "cogni-coid-3",
             "market_id": "prediction-market:polymarket:0xCID",
             "outcome": "Yes",
@@ -286,7 +294,7 @@ def test_get_order_returns_receipt_after_place(client):
         },
     )
     oid = r.json()["order_id"]
-    r2 = client.get(f"/orders/{oid}")
+    r2 = client.get(f"/orders/{oid}?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}")
     assert r2.status_code == 200
     body = r2.json()
     assert body["status"] == "open"
@@ -294,10 +302,62 @@ def test_get_order_returns_receipt_after_place(client):
     assert body["filled_size_usdc"] == 0
 
 
+def test_accounts_have_isolated_orders_and_engine_state(client):
+    first = client.post(
+        "/place-order",
+        json={
+            "account_id": ACCOUNT_ID,
+            "starting_balance_usdc": STARTING_BALANCE_USDC,
+            "client_order_id": "tenant-a-order",
+            "market_id": "prediction-market:polymarket:0xTENANT",
+            "outcome": "Yes",
+            "side": "BUY",
+            "size_usdc": 2.0,
+            "limit_price": 0.5,
+        },
+    ).json()
+    second = client.post(
+        "/place-order",
+        json={
+            "account_id": OTHER_ACCOUNT_ID,
+            "starting_balance_usdc": 20_000.0,
+            "client_order_id": "tenant-b-order",
+            "market_id": "prediction-market:polymarket:0xTENANT",
+            "outcome": "Yes",
+            "side": "BUY",
+            "size_usdc": 3.0,
+            "limit_price": 0.5,
+        },
+    ).json()
+
+    assert first["order_id"] != second["order_id"]
+    assert client.get(
+        f"/orders/{first['order_id']}?account_id={OTHER_ACCOUNT_ID}&starting_balance_usdc=20000"
+    ).status_code == 404
+    open_a = client.get(
+        f"/orders?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}"
+    ).json()
+    open_b = client.get(
+        f"/orders?account_id={OTHER_ACCOUNT_ID}&starting_balance_usdc=20000"
+    ).json()
+    assert [row["client_order_id"] for row in open_a] == ["tenant-a-order"]
+    assert [row["client_order_id"] for row in open_b] == ["tenant-b-order"]
+
+
+def test_new_account_open_orders_is_authoritative_empty(client):
+    r = client.get(
+        "/orders?account_id=fresh-account&starting_balance_usdc=5000"
+    )
+    assert r.status_code == 200
+    assert r.json() == []
+
+
 def test_fill_loop_flips_status_and_populates_filled_size(client):
     r = client.post(
         "/place-order",
         json={
+            "account_id": ACCOUNT_ID,
+            "starting_balance_usdc": STARTING_BALANCE_USDC,
             "client_order_id": "cogni-coid-4",
             "market_id": "prediction-market:polymarket:0xFILLME",
             "outcome": "Yes",
@@ -307,17 +367,17 @@ def test_fill_loop_flips_status_and_populates_filled_size(client):
         },
     )
     oid = r.json()["order_id"]
-    # Externally-visible oid is `<BOOT_ID>-<upstream_int>`; the fake engine
-    # keys on the raw upstream int.
-    upstream_int = server._to_upstream_int(oid)
+    # Externally-visible oid is `<account_key>-<BOOT_ID>-<upstream_int>`;
+    # the fake engine keys on the raw upstream int.
+    upstream_int = server._to_upstream_int(oid, server._account_key(ACCOUNT_ID))
     assert upstream_int is not None
-    engine: FakeEngine = server.sidecar.engine  # type: ignore[assignment]
+    engine: FakeEngine = server.sidecars.get(ACCOUNT_ID).engine  # type: ignore[assignment]
     engine.fill_on_next_check.add(upstream_int)
 
     # Background fill loop runs every 0.1s (test env). Poll the receipt up to 2s.
     deadline = time.time() + 2.0
     while time.time() < deadline:
-        r2 = client.get(f"/orders/{oid}")
+        r2 = client.get(f"/orders/{oid}?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}")
         if r2.json().get("status") == "filled":
             break
         time.sleep(0.05)
@@ -329,7 +389,7 @@ def test_fill_loop_flips_status_and_populates_filled_size(client):
 
 
 def test_cancel_unknown_id_returns_404(client):
-    r = client.post("/orders/999999/cancel")
+    r = client.post(f"/orders/999999/cancel?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}")
     assert r.status_code == 404
 
 
@@ -337,6 +397,8 @@ def test_cancel_existing_order_returns_204_and_flips_status(client):
     r = client.post(
         "/place-order",
         json={
+            "account_id": ACCOUNT_ID,
+            "starting_balance_usdc": STARTING_BALANCE_USDC,
             "client_order_id": "cogni-coid-5",
             "market_id": "prediction-market:polymarket:0xCNX",
             "outcome": "Yes",
@@ -346,14 +408,14 @@ def test_cancel_existing_order_returns_204_and_flips_status(client):
         },
     )
     oid = r.json()["order_id"]
-    r2 = client.post(f"/orders/{oid}/cancel")
+    r2 = client.post(f"/orders/{oid}/cancel?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}")
     assert r2.status_code == 204
-    r3 = client.get(f"/orders/{oid}")
+    r3 = client.get(f"/orders/{oid}?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}")
     assert r3.json()["status"] == "canceled"
 
 
 def test_cancel_invalid_id_format_returns_404(client):
-    r = client.post("/orders/not-an-int/cancel")
+    r = client.post(f"/orders/not-an-int/cancel?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}")
     assert r.status_code == 404
 
 
@@ -372,6 +434,8 @@ def test_fill_loop_reads_wrapped_engine_result_not_flat(client):
     r = client.post(
         "/place-order",
         json={
+            "account_id": ACCOUNT_ID,
+            "starting_balance_usdc": STARTING_BALANCE_USDC,
             "client_order_id": "regression-wrapped-1",
             "market_id": "prediction-market:polymarket:0xWRAP",
             "outcome": "Yes",
@@ -381,18 +445,18 @@ def test_fill_loop_reads_wrapped_engine_result_not_flat(client):
         },
     )
     oid = r.json()["order_id"]
-    upstream_int = server._to_upstream_int(oid)
+    upstream_int = server._to_upstream_int(oid, server._account_key(ACCOUNT_ID))
     assert upstream_int is not None
-    engine: FakeEngine = server.sidecar.engine  # type: ignore[assignment]
+    engine: FakeEngine = server.sidecars.get(ACCOUNT_ID).engine  # type: ignore[assignment]
     engine.fill_on_next_check.add(upstream_int)
 
     deadline = time.time() + 2.0
     while time.time() < deadline:
-        if client.get(f"/orders/{oid}").json().get("status") == "filled":
+        if client.get(f"/orders/{oid}?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}").json().get("status") == "filled":
             break
         time.sleep(0.05)
 
-    body = client.get(f"/orders/{oid}").json()
+    body = client.get(f"/orders/{oid}?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}").json()
     assert body["status"] == "filled", f"wrapped-shape mapping broken; body={body}"
     assert body["filled_size_usdc"] == 6.0
 
@@ -401,7 +465,20 @@ def test_fill_loop_reads_wrapped_engine_result_not_flat(client):
 
 
 def test_balance_returns_pm_trader_shape(client):
-    r = client.get("/balance")
+    client.post(
+        "/place-order",
+        json={
+            "account_id": ACCOUNT_ID,
+            "starting_balance_usdc": STARTING_BALANCE_USDC,
+            "client_order_id": "balance-bootstrap",
+            "market_id": "prediction-market:polymarket:0xBAL",
+            "outcome": "Yes",
+            "side": "BUY",
+            "size_usdc": 1.0,
+            "limit_price": 0.5,
+        },
+    )
+    r = client.get(f"/balance?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}")
     assert r.status_code == 200
     body = r.json()
     # Mirrors pm_trader.Engine.get_balance contract — fail loud if upstream drifts.
@@ -412,7 +489,20 @@ def test_balance_returns_pm_trader_shape(client):
 
 
 def test_portfolio_returns_list_of_positions_with_unrealized_pnl(client):
-    r = client.get("/portfolio")
+    client.post(
+        "/place-order",
+        json={
+            "account_id": ACCOUNT_ID,
+            "starting_balance_usdc": STARTING_BALANCE_USDC,
+            "client_order_id": "portfolio-bootstrap",
+            "market_id": "prediction-market:polymarket:0xPORT",
+            "outcome": "Yes",
+            "side": "BUY",
+            "size_usdc": 1.0,
+            "limit_price": 0.5,
+        },
+    )
+    r = client.get(f"/portfolio?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}")
     assert r.status_code == 200
     body = r.json()
     assert isinstance(body, list)
@@ -425,7 +515,20 @@ def test_portfolio_returns_list_of_positions_with_unrealized_pnl(client):
 
 
 def test_history_returns_serialized_trades(client):
-    r = client.get("/history")
+    client.post(
+        "/place-order",
+        json={
+            "account_id": ACCOUNT_ID,
+            "starting_balance_usdc": STARTING_BALANCE_USDC,
+            "client_order_id": "history-bootstrap",
+            "market_id": "prediction-market:polymarket:0xHIST",
+            "outcome": "Yes",
+            "side": "BUY",
+            "size_usdc": 1.0,
+            "limit_price": 0.5,
+        },
+    )
+    r = client.get(f"/history?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}")
     assert r.status_code == 200
     body = r.json()
     assert isinstance(body, list)
@@ -436,11 +539,12 @@ def test_history_returns_serialized_trades(client):
 
 
 def test_history_limit_param_validates(client):
-    r = client.get("/history?limit=0")
+    server.sidecars.get_or_create(ACCOUNT_ID, STARTING_BALANCE_USDC)
+    r = client.get(f"/history?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}&limit=0")
     assert r.status_code == 400
-    r = client.get("/history?limit=501")
+    r = client.get(f"/history?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}&limit=501")
     assert r.status_code == 400
-    r = client.get("/history?limit=10")
+    r = client.get(f"/history?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}&limit=10")
     assert r.status_code == 200
 
 
@@ -452,6 +556,8 @@ def test_fill_loop_ignores_non_filled_actions(client):
     r = client.post(
         "/place-order",
         json={
+            "account_id": ACCOUNT_ID,
+            "starting_balance_usdc": STARTING_BALANCE_USDC,
             "client_order_id": "regression-action-1",
             "market_id": "prediction-market:polymarket:0xEXP",
             "outcome": "Yes",
@@ -461,8 +567,8 @@ def test_fill_loop_ignores_non_filled_actions(client):
         },
     )
     oid = r.json()["order_id"]
-    upstream_int = server._to_upstream_int(oid)
-    engine: FakeEngine = server.sidecar.engine  # type: ignore[assignment]
+    upstream_int = server._to_upstream_int(oid, server._account_key(ACCOUNT_ID))
+    engine: FakeEngine = server.sidecars.get(ACCOUNT_ID).engine  # type: ignore[assignment]
 
     # Monkey-patch a single tick to emit an action=expired entry for this id.
     original = engine.check_orders
@@ -481,7 +587,7 @@ def test_fill_loop_ignores_non_filled_actions(client):
     finally:
         engine.check_orders = original  # type: ignore[assignment]
 
-    body = client.get(f"/orders/{oid}").json()
+    body = client.get(f"/orders/{oid}?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}").json()
     assert body["status"] == "open", (
         f"expired action incorrectly flipped status to filled; body={body}"
     )
@@ -494,6 +600,8 @@ def test_place_returns_boot_prefixed_order_id(client):
     r = client.post(
         "/place-order",
         json={
+            "account_id": ACCOUNT_ID,
+            "starting_balance_usdc": STARTING_BALANCE_USDC,
             "client_order_id": "cogni-coid-boot",
             "market_id": "prediction-market:polymarket:0xBOOT",
             "outcome": "Yes",
@@ -503,7 +611,7 @@ def test_place_returns_boot_prefixed_order_id(client):
         },
     )
     oid = r.json()["order_id"]
-    assert oid.startswith(f"{server.BOOT_ID}-"), oid
+    assert oid.startswith(f"{server._account_key(ACCOUNT_ID)}-{server.BOOT_ID}-"), oid
     # Plain int parse must fail — that's the whole point of the prefix.
     with pytest.raises(ValueError):
         int(oid)
@@ -514,14 +622,17 @@ def test_to_upstream_int_rejects_foreign_boot_prefix():
     BOOT_ID) must read as 'not found' rather than dispatch to the wrong
     upstream row."""
     foreign_oid = f"deadbeefcafe-42"
-    assert server._to_upstream_int(foreign_oid) is None
+    key = server._account_key(ACCOUNT_ID)
+    assert server._to_upstream_int(foreign_oid, key) is None
     # Sanity-check the positive case too.
-    assert server._to_upstream_int(f"{server.BOOT_ID}-42") == 42
+    assert server._to_upstream_int(f"{key}-{server.BOOT_ID}-42", key) == 42
 
 
 def test_cancel_with_foreign_boot_prefix_returns_404(client):
     """A cancel for an id minted in a previous process must 404 cleanly."""
-    r = client.post("/orders/deadbeefcafe-1/cancel")
+    r = client.post(
+        f"/orders/deadbeefcafe-1/cancel?account_id={ACCOUNT_ID}&starting_balance_usdc={STARTING_BALANCE_USDC}"
+    )
     assert r.status_code == 404
 
 
@@ -540,6 +651,8 @@ def test_lock_serializes_engine_calls(client):
         r = client.post(
             "/place-order",
             json={
+                "account_id": ACCOUNT_ID,
+                "starting_balance_usdc": STARTING_BALANCE_USDC,
                 "client_order_id": f"parallel-{i}",
                 "market_id": "prediction-market:polymarket:0xPAR",
                 "outcome": "Yes",

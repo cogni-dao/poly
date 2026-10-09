@@ -80,6 +80,28 @@ export interface PaperProjectionJobDeps {
   pollMs?: number;
 }
 
+function errorDimensions(error: unknown): Record<string, string | undefined> {
+  const err = error instanceof Error ? error : null;
+  const cause = err?.cause instanceof Error ? err.cause : null;
+  const codeOf = (value: unknown): string | undefined => {
+    if (!value || typeof value !== "object") return undefined;
+    const candidate = value as {
+      code?: unknown;
+      details?: { error_code?: unknown };
+    };
+    if (typeof candidate.code === "string") return candidate.code;
+    return typeof candidate.details?.error_code === "string"
+      ? candidate.details.error_code
+      : undefined;
+  };
+  return {
+    err_class: err?.name ?? typeof error,
+    err_code: codeOf(error),
+    cause_class: cause?.name,
+    cause_code: codeOf(cause),
+  };
+}
+
 export function startPaperProjectionJob(
   deps: PaperProjectionJobDeps
 ): PaperProjectionJobStopFn {
@@ -146,7 +168,7 @@ export function startPaperProjectionJob(
           "paper projection tick complete"
         );
       }
-    } catch {
+    } catch (err: unknown) {
       const timedOut = controller.signal.aborted;
       log.error(
         {
@@ -156,6 +178,7 @@ export function startPaperProjectionJob(
             ? "paper_projection_timeout"
             : "paper_projection_failed",
           tick_ms: Date.now() - startedAt,
+          ...errorDimensions(err),
         },
         "paper projection tick failed — retrying on the next interval"
       );

@@ -1180,16 +1180,13 @@ function createContainer(): Container {
 							metrics: noopMetrics,
 						});
 
-						// Build once per (tenant × target). Executor is cached across
-						// ticks inside the factory keyed on billingAccountId.
-						let cachedExecutor: PolyTradeExecutor | null = null;
-						const getExecutor = async (): Promise<PolyTradeExecutor> => {
-							if (cachedExecutor) return cachedExecutor;
-							cachedExecutor = await executorFactory.getPolyTradeExecutorFor(
+						// The factory resolves the account venue on every dispatch, then
+						// reuses the venue-specific client. A second target-local cache
+						// would pin paper after live custody is provisioned.
+						const getExecutor = (): Promise<PolyTradeExecutor> =>
+							executorFactory.getPolyTradeExecutorFor(
 								enumeratedTarget.billingAccountId,
 							);
-							return cachedExecutor;
-						};
 
 						if (enumeratedTarget.sizingPolicyKind === "position_gap") {
 							const actor = startPositionGapActor({

@@ -64,6 +64,7 @@ import {
   numeric,
   pgTable,
   pgPolicy,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -279,7 +280,7 @@ export const polyWalletBalanceSnapshots = pgTable(
   "poly_wallet_balance_snapshots",
   {
     billingAccountId: text("billing_account_id")
-      .primaryKey()
+      .notNull()
       .references(() => billingAccounts.id, { onDelete: "cascade" }),
     address: text("address").notNull(),
     usdcE: numeric("usdc_e", { precision: 20, scale: 8 }),
@@ -293,6 +294,10 @@ export const polyWalletBalanceSnapshots = pgTable(
       .defaultNow(),
   },
   (table) => [
+    primaryKey({
+      name: "poly_wallet_balance_snapshots_billing_address_pk",
+      columns: [table.billingAccountId, table.address],
+    }),
     check(
       "poly_wallet_balance_snapshots_address_shape",
       sql`${table.address} ~ '^0x[a-fA-F0-9]{40}$'`

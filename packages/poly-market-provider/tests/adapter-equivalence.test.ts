@@ -112,6 +112,8 @@ describe("adapter-equivalence (bug.5018) — full fill", () => {
     );
     const paperAdapter = new PaperAdapter({
       sidecarBaseUrl: "http://sidecar:9100",
+      accountId: "paper-account-test",
+      startingBalanceUsdc: 10_000,
       fetchImpl: paperFetch,
     });
     const paperReceipt = await paperAdapter.placeOrder(makeIntent());
@@ -161,6 +163,8 @@ describe("adapter-equivalence (bug.5018) — canceled / unfilled", () => {
     );
     const paperAdapter = new PaperAdapter({
       sidecarBaseUrl: "http://sidecar:9100",
+      accountId: "paper-account-test",
+      startingBalanceUsdc: 10_000,
       fetchImpl: paperFetch,
     });
     const paperReceipt = await paperAdapter.placeOrder(makeIntent());

@@ -58,6 +58,7 @@ import type {
 import { netTargetBook } from "@/features/copy-trade/position-gap-v3/netting";
 import type { OrderLedger } from "@/features/trading";
 import type { WalletActivitySource } from "@/features/wallet-watch";
+import { EVENT_NAMES } from "@/shared/observability/events";
 
 const RECONCILE_MS = 30_000;
 const FULL_REFRESH_MS = 5 * 60_000;
@@ -544,6 +545,7 @@ export function startPositionGapActor(
 		readonly PositionGapAccountingTransition[]
 	> {
 		const transitions: PositionGapAccountingTransition[] = [];
+		const executionMode = await deps.getExecutionMode();
 		const recovered = await deps.store.recoverKnownRejectedAmbiguities(
 			deps.scope,
 		);
@@ -564,7 +566,7 @@ export function startPositionGapActor(
 			await deps.store.repairTargetWalletLineage(
 				deps.scope,
 				deps.targetWallet,
-				await deps.getExecutionMode(),
+				executionMode,
 			);
 		} catch (error) {
 			if (error instanceof PositionGapTargetLineageMismatchError) throw error;
@@ -690,7 +692,9 @@ export function startPositionGapActor(
 			} catch (error) {
 				if (error instanceof FillAccountingPendingError) {
 					if (["filled", "canceled"].includes(action.status)) {
-						transitions.push(await repairFromDataApi(action));
+						transitions.push(
+							await repairFromVenueEvidence(action, executionMode),
+						);
 					} else {
 						await deps.store.markFillAccountingPending(
 							action.id,
@@ -715,15 +719,38 @@ export function startPositionGapActor(
 					receipt: result.found,
 				});
 			} else if (["filled", "canceled"].includes(action.status)) {
-				transitions.push(await repairFromDataApi(action));
+				transitions.push(await repairFromVenueEvidence(action, executionMode));
 			}
 		}
 		return transitions;
 	}
 
-	async function repairFromDataApi(
+	async function repairFromVenueEvidence(
 		action: PositionGapActiveBuy,
+		executionMode: "live" | "paper",
 	): Promise<PositionGapAccountingTransition> {
+		if (executionMode === "paper") {
+			const detail =
+				"paper order has no venue receipt with fill accounting; live Data API evidence is forbidden for synthetic accounts";
+			await deps.store.markFillAccountingPending(action.id, detail);
+			deps.logger.warn(
+				{
+					event: EVENT_NAMES.POLY_POSITION_GAP_PAPER_FILL_EVIDENCE_UNAVAILABLE,
+					error_code: "paper_fill_evidence_unavailable",
+					billing_account_id: deps.scope.billingAccountId,
+					target_id: deps.scope.targetId,
+					action_id: action.id,
+				},
+				"position-gap withheld paper fill accounting; live wallet evidence cannot describe a synthetic account",
+			);
+			return {
+				actionId: action.id,
+				from: "pending",
+				to: "pending",
+				source: null,
+				reason: "paper_fill_evidence_unavailable",
+			};
+		}
 		try {
 			const result = await reconcilePositionGapFillEvidence({
 				port: deps.fillEvidence,

@@ -55,9 +55,17 @@ function silentLogger(): Logger {
 	return logger as unknown as Logger;
 }
 
-function harness(options: { withWalletPort?: boolean } = {}) {
+function harness(
+	options: { withWalletPort?: boolean; paperBuildSucceeds?: boolean } = {},
+) {
+	let paperAccountVenue: "paper" | "live" = "paper";
 	const resolveAccount = vi.fn(async () => {
-		throw new Error(PAPER_BUILDER_REACHED);
+		if (!options.paperBuildSucceeds) throw new Error(PAPER_BUILDER_REACHED);
+		return {
+			connectionId: "paper-connection-1",
+			funderAddress: "0x1111111111111111111111111111111111111111" as const,
+			seedUsdc: "1000.00000000",
+		};
 	});
 	const paperVenue = {
 		resolveAccount,
@@ -73,7 +81,7 @@ function harness(options: { withWalletPort?: boolean } = {}) {
 	const walletPort = { resolve } as unknown as PolyTraderWalletPort;
 
 	const resolveExecutionVenue = vi.fn(async (billingAccountId: string) => {
-		if (billingAccountId === PAPER_ACCOUNT) return "paper" as const;
+		if (billingAccountId === PAPER_ACCOUNT) return paperAccountVenue;
 		if (billingAccountId === LIVE_ACCOUNT) return "live" as const;
 		throw new ExecutionVenueUnresolvedError(billingAccountId, "no_connection");
 	});
@@ -86,7 +94,15 @@ function harness(options: { withWalletPort?: boolean } = {}) {
 		paperVenue,
 	});
 
-	return { factory, resolveAccount, resolve, resolveExecutionVenue };
+	return {
+		factory,
+		resolveAccount,
+		resolve,
+		resolveExecutionVenue,
+		setPaperAccountVenue: (venue: "paper" | "live") => {
+			paperAccountVenue = venue;
+		},
+	};
 }
 
 describe("executor venue dispatch (VENUE_RESOLVED_FROM_ACCOUNT)", () => {
@@ -134,7 +150,7 @@ describe("executor venue dispatch (VENUE_RESOLVED_FROM_ACCOUNT)", () => {
 		expect(resolveAccount).not.toHaveBeenCalled();
 	});
 
-	it("resolves the venue once per account and caches the outcome", async () => {
+	it("re-resolves the venue on every dispatch after a failed build", async () => {
 		const { factory, resolveExecutionVenue } = harness();
 
 		await expect(
@@ -151,6 +167,22 @@ describe("executor venue dispatch (VENUE_RESOLVED_FROM_ACCOUNT)", () => {
 			PAPER_ACCOUNT,
 			PAPER_ACCOUNT,
 		]);
+	});
+
+	it("does not reuse a cached paper executor after the account becomes live", async () => {
+		const { factory, resolve, resolveAccount, setPaperAccountVenue } = harness({
+			paperBuildSucceeds: true,
+		});
+
+		const paperExecutor = await factory.getPolyTradeExecutorFor(PAPER_ACCOUNT);
+		expect(paperExecutor.billingAccountId).toBe(PAPER_ACCOUNT);
+		expect(resolveAccount).toHaveBeenCalledTimes(1);
+
+		setPaperAccountVenue("live");
+		await expect(
+			factory.getPolyTradeExecutorFor(PAPER_ACCOUNT),
+		).rejects.toBeInstanceOf(PolyTradeExecutorError);
+		expect(resolve).toHaveBeenCalledWith(PAPER_ACCOUNT);
 	});
 });
 

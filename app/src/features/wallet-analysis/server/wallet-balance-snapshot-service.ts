@@ -83,9 +83,11 @@ export async function persistWalletBalanceFact(
       observedAt,
     })
     .onConflictDoUpdate({
-      target: polyWalletBalanceSnapshots.billingAccountId,
+      target: [
+        polyWalletBalanceSnapshots.billingAccountId,
+        polyWalletBalanceSnapshots.address,
+      ],
       set: {
-        address: sql`excluded.address`,
         usdcE: sql`excluded.usdc_e`,
         pusd: sql`excluded.pusd`,
         pol: sql`excluded.pol`,

@@ -63,10 +63,14 @@ import {
   PAPER_WALLET_KIND,
   type PaperMidPriceReader,
   readActivePaperAccounts,
+  readPaperAccountNavUsdc,
   runPaperProjectionTick,
   syncPaperTraderWallets,
 } from "@/features/wallet-analysis/server/paper-fact-source";
-import { readWalletBalanceFact } from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
+import {
+  persistWalletBalanceFact,
+  readWalletBalanceFact,
+} from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
 import {
   billingAccounts,
   polyCopyTradeFills,
@@ -242,13 +246,14 @@ async function readBalanceAsTenant(owner: Tenant) {
 }
 
 describe("paper facts project into the live tables (migration 0083)", () => {
-  // One tenant per scenario: `poly_wallet_balance_snapshots` is PK'd on
-  // billing_account_id and the connection index is unique per (account, kind),
-  // so sharing a tenant across scenarios would make them interfere.
+  // One tenant per scenario so their connection and projection state cannot
+  // interfere.
   const traded = tenant("Paper tenant with trades");
   const unpriced = tenant("Paper tenant with an unpriceable position");
+  const negative = tenant("Paper tenant with inconsistent negative NAV");
+  const dual = tenant("Tenant with live and paper snapshots");
   const live = tenant("Live tenant that must be untouched");
-  const tenants = [traded, unpriced, live];
+  const tenants = [traded, unpriced, negative, dual, live];
 
   // Deterministic per-scenario market keys so assertions can name them.
   const condA = `0xcond${"a".repeat(60)}`;
@@ -667,6 +672,131 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       if (balance.kind !== "available") throw new Error("unreachable");
       // 1000 - 6 (20 @ 0.30) + 7 (20 @ 0.35 mark) = 1001
       expect(balance.usdcE).toBeCloseTo(1001, 6);
+    });
+  });
+
+  describe("NO_FABRICATED_VALUES: a negative NAV is never published as zero", () => {
+    let wallet: Awaited<ReturnType<typeof enrol>>;
+
+    beforeAll(async () => {
+      await seedPaperConnection(negative, "1.00000000");
+      await seedLedgerFill(negative, targetId, {
+        tokenId: "44444444444444444444444444444444",
+        conditionId: `0xcond${"d".repeat(60)}`,
+        side: "BUY",
+        price: "0.50000000",
+        shares: "10.00000000",
+      });
+      wallet = await enrol(negative);
+      await observePaperWallet({
+        db: getSeedDb() as unknown as PaperDb,
+        wallet,
+        readMidPrice: midPrices({
+          "44444444444444444444444444444444": 0.1,
+        }),
+        logger,
+        now: new Date("2026-10-07T18:20:00.000Z"),
+      });
+    });
+
+    it("withholds the balance snapshot and marks the projection partial", async () => {
+      const snapshots = await getSeedDb()
+        .select({ usdcE: polyWalletBalanceSnapshots.usdcE })
+        .from(polyWalletBalanceSnapshots)
+        .where(
+          eq(
+            polyWalletBalanceSnapshots.billingAccountId,
+            negative.billingAccountId
+          )
+        );
+      expect(snapshots).toHaveLength(0);
+
+      const cursors = await getSeedDb()
+        .select({
+          status: polyTraderIngestionCursors.status,
+          errorMessage: polyTraderIngestionCursors.errorMessage,
+        })
+        .from(polyTraderIngestionCursors)
+        .where(
+          and(
+            eq(polyTraderIngestionCursors.traderWalletId, wallet.traderWalletId),
+            eq(
+              polyTraderIngestionCursors.source,
+              PAPER_POSITION_CURSOR_SOURCE
+            )
+          )
+        );
+      expect(cursors[0]?.status).toBe("partial");
+      expect(cursors[0]?.errorMessage).toContain("negative");
+    });
+  });
+
+  describe("dual-kind tenants retain both balance facts", () => {
+    const observedAt = new Date("2026-10-07T18:30:00.000Z");
+    const liveAddress = address();
+
+    beforeAll(async () => {
+      const paperAddress = await seedPaperConnection(dual, SEED_USDC);
+      await getSeedDb().insert(polyWalletConnections).values({
+        billingAccountId: dual.billingAccountId,
+        createdByUserId: dual.userId,
+        kind: "privy_live",
+        privyWalletId: `privy-${randomUUID()}`,
+        address: liveAddress,
+        funderAddress: liveAddress,
+        clobApiKeyCiphertext: Buffer.from("ciphertext"),
+        encryptionKeyId: "test-key",
+        custodialConsentAcceptedAt: new Date("2026-10-01T00:00:00.000Z"),
+        custodialConsentActorKind: "user",
+        custodialConsentActorId: dual.userId,
+      });
+      await persistWalletBalanceFact(
+        getSeedDb(),
+        {
+          billingAccountId: dual.billingAccountId,
+          address: paperAddress,
+          usdcE: 1000,
+          pusd: null,
+          pol: null,
+          errors: ["paper NAV"],
+        },
+        observedAt
+      );
+      await persistWalletBalanceFact(
+        getSeedDb(),
+        {
+          billingAccountId: dual.billingAccountId,
+          address: liveAddress,
+          usdcE: 10,
+          pusd: 20,
+          pol: 30,
+          errors: [],
+        },
+        observedAt
+      );
+    });
+
+    it("serves live to the dashboard and paper to the paper NAV reader", async () => {
+      const dashboard = await readBalanceAsTenant(dual);
+      expect(dashboard.kind).toBe("available");
+      if (dashboard.kind !== "available") throw new Error("unreachable");
+      expect(dashboard.address).toBe(liveAddress.toLowerCase());
+      expect(dashboard.usdcE).toBe(10);
+
+      const paper = await readPaperAccountNavUsdc({
+        db: getSeedDb() as unknown as PaperDb,
+        billingAccountId: dual.billingAccountId,
+        now: observedAt,
+      });
+      expect(paper.navUsdc).toBe(1000);
+
+      const rows = await getSeedDb()
+        .select({ address: polyWalletBalanceSnapshots.address })
+        .from(polyWalletBalanceSnapshots)
+        .where(
+          eq(polyWalletBalanceSnapshots.billingAccountId, dual.billingAccountId)
+        );
+      expect(rows).toHaveLength(2);
     });
   });
 

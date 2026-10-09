@@ -114,6 +114,28 @@ type Db =
   | NodePgDatabase<Record<string, unknown>>
   | PostgresJsDatabase<Record<string, unknown>>;
 
+function errorDimensions(error: unknown): Record<string, string | undefined> {
+  const err = error instanceof Error ? error : null;
+  const cause = err?.cause instanceof Error ? err.cause : null;
+  const codeOf = (value: unknown): string | undefined => {
+    if (!value || typeof value !== "object") return undefined;
+    const candidate = value as {
+      code?: unknown;
+      details?: { error_code?: unknown };
+    };
+    if (typeof candidate.code === "string") return candidate.code;
+    return typeof candidate.details?.error_code === "string"
+      ? candidate.details.error_code
+      : undefined;
+  };
+  return {
+    err_class: err?.name ?? typeof error,
+    err_code: codeOf(error),
+    cause_class: cause?.name,
+    cause_code: codeOf(cause),
+  };
+}
+
 /**
  * `poly_trader_wallets.kind` for a paper account (migration 0083).
  *
@@ -809,27 +831,43 @@ export async function projectPaperPositionsAndNav(input: {
 
   // NAV_IS_CASH_PLUS_MARKS. Withheld whenever any open position is unmarked or
   // incoherent, because the total would then silently omit that exposure.
-  const navBlockers = unpriced.length + incoherent.length;
+  const nav = seedUsdc - boughtUsdc + soldUsdc - fees.feesUsdc + openValueUsdc;
+  const negativeNav = Number.isFinite(nav) && nav < 0;
+  const invalidSeed = !Number.isFinite(seedUsdc);
+  const navBlockers =
+    unpriced.length +
+    incoherent.length +
+    (negativeNav ? 1 : 0) +
+    (invalidSeed ? 1 : 0);
   const navPublishable = navBlockers === 0 && Number.isFinite(seedUsdc);
-  if (navPublishable) {
-    const nav = seedUsdc - boughtUsdc + soldUsdc - fees.feesUsdc + openValueUsdc;
+  if (negativeNav) {
+    input.logger.error(
+      {
+        event: EVENT_NAMES.POLY_PAPER_NAV_NEGATIVE,
+        errorCode: "paper_nav_negative",
+        trader_wallet_id: traderWalletId,
+        billing_account_id: account.billingAccountId,
+        nav_usdc: nav,
+      },
+      "paper NAV computed negative — snapshot withheld because publishing 0 would fabricate value"
+    );
+  } else if (navPublishable) {
     await publishPaperNav({
       db: input.db,
       account,
-      // A NAV below zero cannot be represented: the snapshot's `nonnegative`
-      // CHECK rejects it. It also cannot happen under correct cap accounting,
-      // so it is a loud clamp, not a silent one.
       navUsdc: nav,
       rowsMissingFees: fees.rowsMissingFees,
       logger: input.logger,
       observedAt: now,
     });
-  } else {
+  } else if (!negativeNav) {
     input.logger.warn(
       {
         event: EVENT_NAMES.POLY_PAPER_NAV_WITHHELD,
-        errorCode: "paper_position_mark_unavailable",
-        dep: "polymarket_clob",
+        errorCode: invalidSeed
+          ? "paper_seed_invalid"
+          : "paper_position_mark_unavailable",
+        ...(invalidSeed ? {} : { dep: "polymarket_clob" }),
         trader_wallet_id: traderWalletId,
         billing_account_id: account.billingAccountId,
         unpriced_positions: unpriced.length,
@@ -846,9 +884,13 @@ export async function projectPaperPositionsAndNav(input: {
     traderWalletId,
     status: navBlockers === 0 ? "ok" : "partial",
     errorMessage:
-      navBlockers === 0
-        ? null
-        : `${unpriced.length} open position(s) had no readable midpoint or settlement mark and ${incoherent.length} had no derivable cost basis; NAV withheld`,
+      negativeNav
+        ? `paper NAV computed negative (${nav}); snapshot withheld because cap or fill accounting is inconsistent`
+        : invalidSeed
+          ? "paper seed is not finite; NAV withheld"
+          : navBlockers === 0
+            ? null
+            : `${unpriced.length} open position(s) had no readable midpoint or settlement mark and ${incoherent.length} had no derivable cost basis; NAV withheld`,
     observedAt: now,
   });
 
@@ -973,8 +1015,8 @@ async function writePaperPositionRows(
  * pins its precision to `usdc_e`, which is the column task A intended.
  *
  * Reuses `persistWalletBalanceFact`, so the status classification and the
- * `billing_account_id` PK upsert are shared with the live Polygon writer
- * rather than re-implemented.
+ * `(billing_account_id, address)` upsert are shared with the live Polygon
+ * writer rather than re-implemented.
  */
 async function publishPaperNav(input: {
   db: Db;
@@ -993,28 +1035,17 @@ async function publishPaperNav(input: {
       `${input.rowsMissingFees} realized paper fill(s) reported no fee value; NAV treats their fees as unreported, not as zero.`
     );
   }
-  let nav = input.navUsdc;
-  if (!(nav >= 0)) {
-    input.logger.error(
-      {
-        event: EVENT_NAMES.POLY_PAPER_NAV_NEGATIVE,
-        errorCode: "paper_nav_negative",
-        billing_account_id: input.account.billingAccountId,
-        nav_usdc: input.navUsdc,
-      },
-      "paper NAV computed negative — clamping to 0 for the nonnegative CHECK; cap accounting is wrong upstream"
+  if (!Number.isFinite(input.navUsdc) || input.navUsdc < 0) {
+    throw new Error(
+      "paper NAV must be finite and nonnegative before publication"
     );
-    errors.push(
-      `NAV computed negative (${input.navUsdc}) and was clamped to 0 — treat this account's totals as unreliable.`
-    );
-    nav = 0;
   }
   await persistWalletBalanceFact(
     input.db,
     {
       billingAccountId: input.account.billingAccountId,
       address: input.account.address,
-      usdcE: Number(nav.toFixed(USDC_SCALE)),
+      usdcE: Number(input.navUsdc.toFixed(USDC_SCALE)),
       pusd: null,
       pol: null,
       errors,
@@ -1290,6 +1321,7 @@ export async function runPaperProjectionTick(deps: {
           errorCode: "paper_projection_account_failed",
           trader_wallet_id: wallet.traderWalletId,
           billing_account_id: wallet.account.billingAccountId,
+          ...errorDimensions(err),
         },
         "paper projection failed for one account; other accounts continue"
       );
@@ -1528,9 +1560,7 @@ export async function readPaperAccountPositionFacts(input: {
  * Deliberately NOT via `readWalletBalanceFact`: that reader applies
  * LIVE_WINS_PAPER_SHOWS, so for a tenant holding both kinds it would hand back
  * the LIVE wallet's cash as this paper account's NAV. The snapshot table is
- * keyed by `billing_account_id` alone, so the only way to know whose number is
- * in the row is to check its `address` against the paper address — a mismatch
- * means the live writer owns that row and this account HAS no published NAV.
+ * keyed by `(billing_account_id, address)`, so live and paper facts coexist.
  *
  * @throws {PaperFactsUnavailableError} `nav_missing` when the row is absent,
  *   belongs to another address, carries a NULL (withheld) NAV, or is older than
@@ -1555,7 +1585,12 @@ export async function readPaperAccountNavUsdc(input: {
       observedAt: polyWalletBalanceSnapshots.observedAt,
     })
     .from(polyWalletBalanceSnapshots)
-    .where(eq(polyWalletBalanceSnapshots.billingAccountId, input.billingAccountId))
+    .where(
+      and(
+        eq(polyWalletBalanceSnapshots.billingAccountId, input.billingAccountId),
+        sql`lower(${polyWalletBalanceSnapshots.address}) = ${address}`
+      )
+    )
     .limit(1);
 
   const row = rows[0];
