@@ -15,6 +15,5 @@
     "baseUrl": "."
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"],
-  "references": [{ "path": "../knowledge-base" }]
+  "exclude": ["node_modules", "dist"]
 }

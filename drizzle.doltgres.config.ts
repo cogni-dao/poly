@@ -19,7 +19,7 @@ function requireDatabaseUrl(): string {
   if (!url) {
     throw new Error(
       "DATABASE_URL is required for drizzle-kit (drizzle.doltgres.config.ts). " +
-        "Invoke via pnpm db:generate:node-template:doltgres / db:migrate:node-template:doltgres which set it from .env.local DOLTGRES_URL_NODE_TEMPLATE.",
+        "Invoke via pnpm db:generate:poly:doltgres / db:migrate:poly:doltgres which set it from .env.local DOLTGRES_URL_POLY.",
     );
   }
   return url;
