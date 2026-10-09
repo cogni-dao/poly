@@ -903,6 +903,18 @@ function buildDecisionLogFields(args: {
     min_shares: min_shares ?? null,
     min_usdc_notional: min_usdc_notional ?? null,
     tick_size: tick_size ?? null,
+    correlation_id:
+      typeof fill.attributes?.correlation_id === "string"
+        ? fill.attributes.correlation_id
+        : null,
+    algorithm_version:
+      typeof fill.attributes?.algorithm_version === "string"
+        ? fill.attributes.algorithm_version
+        : null,
+    fixed_input_id:
+      typeof fill.attributes?.fixed_input_id === "string"
+        ? fill.attributes.fixed_input_id
+        : null,
     fill_price: fill.price,
     evaluated_limit_price: normalizedLimitPrice.ok
       ? normalizedLimitPrice.price
@@ -1655,6 +1667,8 @@ async function executeMirrorOrder(
         status: receipt.status,
         filled_size_usdc: receipt.filled_size_usdc ?? 0,
         submitted_at: receipt.submitted_at,
+        correlation_id: decisionLogFields?.correlation_id ?? null,
+        algorithm_version: decisionLogFields?.algorithm_version ?? null,
       },
     });
     log.info(
