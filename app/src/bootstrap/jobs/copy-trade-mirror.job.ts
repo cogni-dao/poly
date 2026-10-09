@@ -327,6 +327,10 @@ export function targetConditionPositionFromDataApiPositions(
 // semantics. Re-imported below.
 
 export interface MirrorJobDeps {
+	/** Exact Git SHA bound into every algorithm version. */
+	implementationRevision: string;
+	/** Immutable target activation/config assignment identity. */
+	assignmentId: string;
   /** Target config — built via `buildMirrorTargetConfig`; Phase 4 reads from a tenant-aware table. */
   target: MirrorTargetConfig;
   /** Injected source (Data-API adapter) — P4 swaps in WS. */
@@ -407,6 +411,8 @@ export function startMirrorPoll(deps: MirrorJobDeps): MirrorJobStopFn {
   );
 
   const pipelineDeps: MirrorPipelineDeps = {
+		implementationRevision: deps.implementationRevision,
+		assignmentId: deps.assignmentId,
     source: deps.source,
     ledger: deps.ledger,
     placeIntent: deps.placeIntent,

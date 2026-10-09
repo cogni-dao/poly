@@ -315,7 +315,16 @@ export const PolyPositionGapRuntimeSchema = z.discriminatedUnion("status", [
     plan: z.object({
       status: z.enum(["ready", "no_feasible_position", "blocked"]),
       block_reason: z.enum(["invalid_input", "stale_snapshot"]).nullable(),
+      /** Marked directional exposure after complete-set pairs are removed. */
       eligible_net_nav_usdc: z.number().nonnegative(),
+      /** Cash-equivalent paired outcome shares, valued at $1 per complete set. */
+      target_complete_set_value_usdc: z.number().nonnegative().nullable(),
+      /** Exact on-chain target balances at target_balance_source_block. */
+      target_pusd_balance_usdc: z.number().nonnegative().nullable(),
+      target_usdce_balance_usdc: z.number().nonnegative().nullable(),
+      /** Denominator used for every target weight and desired-share decision. */
+      target_total_wealth_usdc: z.number().nonnegative().nullable(),
+      target_balance_source_block: z.number().int().nonnegative().nullable(),
       scale: z.number().nonnegative(),
       sleeve_budget_usdc: z.number().positive(),
       reserved_budget_usdc: z.number().nonnegative(),
@@ -496,9 +505,7 @@ export const PolyAttemptOutcomeFilterSchema = z.enum([
   "all",
 ]);
 
-export const PolyAccountRecentAttemptsQuerySchema = z
-  .object({
-    billing_account_id: z.string().uuid(),
+const PolyAccountRecentAttemptsQueryFields = {
     mode: PolyCopyOperationsModeFilterSchema.default("all"),
     /**
      * Decision outcome filter. Pushed into SQL as a real predicate — NEVER
@@ -524,15 +531,37 @@ export const PolyAccountRecentAttemptsQuerySchema = z
       .min(1)
       .max(POLY_COPY_ATTEMPTS_MAX_LIMIT)
       .default(POLY_COPY_ATTEMPTS_DEFAULT_LIMIT),
+};
+
+const orderedAttemptWindow = <
+  T extends { since?: string | undefined; until?: string | undefined },
+>(
+  query: T,
+) =>
+  !(query.since && query.until) ||
+  Date.parse(query.since) <= Date.parse(query.until);
+
+export const PolyAccountRecentAttemptsQuerySchema = z
+  .object({
+    billing_account_id: z.string().uuid(),
+    ...PolyAccountRecentAttemptsQueryFields,
   })
   .refine(
-    (query) =>
-      !(query.since && query.until) ||
-      Date.parse(query.since) <= Date.parse(query.until),
+    orderedAttemptWindow,
     { message: "`since` must be ≤ `until`", path: ["since"] },
   );
 export type PolyAccountRecentAttemptsQuery = z.infer<
   typeof PolyAccountRecentAttemptsQuerySchema
+>;
+
+/** Owner-session alias; account identity comes from the authenticated principal. */
+export const PolyAccountRecentAttemptsOwnerQuerySchema =
+  z.object(PolyAccountRecentAttemptsQueryFields).refine(orderedAttemptWindow, {
+    message: "`since` must be ≤ `until`",
+    path: ["since"],
+  });
+export type PolyAccountRecentAttemptsOwnerQuery = z.infer<
+  typeof PolyAccountRecentAttemptsOwnerQuerySchema
 >;
 
 /**
@@ -573,6 +602,8 @@ export const PolyAttemptExecutedSchema = z.discriminatedUnion("availability", [
     filled_size_usdc: z.number().nonnegative().nullable(),
     /** Null for legacy/non-PG attempts; PG v3 is pending or trade-verified. */
     fill_accounting: PolyPositionGapFillAccountingSchema.nullable(),
+    /** Runtime-owned terminal cause; distinct from the algorithm decision reason. */
+    terminal_reason: z.string().nullable(),
     /** Last reconciler tick that got a typed CLOB response for this row. */
     synced_at: IsoTimestampSchema.nullable(),
   }),
@@ -625,6 +656,14 @@ export const PolyAttemptOutcomeResolutionSchema = z.discriminatedUnion(
   ],
 );
 
+export const PolyAlgorithmIdSchema = z.enum([
+  "poly.copy-mirror.min-bet",
+  "poly.copy-mirror.target-percentile",
+  "poly.copy-mirror.target-percentile-scaled",
+  "poly.copy-mirror.fill-exact",
+  "poly.copy-mirror.position-gap",
+]);
+
 export const PolyCopyTradeAttemptSchema = z.object({
   /** The decision row's uuid. Stable, and half of the keyset cursor. */
   attempt_id: z.string().uuid(),
@@ -635,7 +674,25 @@ export const PolyCopyTradeAttemptSchema = z.object({
   fill_id: z.string(),
   /** Market, from the decision intent; the ledger row is the fallback. */
   market_id: z.string().nullable(),
+  /** Shared metadata projection; never authored by an algorithm. */
+  market_title: z.string().nullable(),
+  outcome_label: z.string().nullable(),
   mode: PolyCopyOperationsModeSchema,
+  algorithm: z.discriminatedUnion("availability", [
+    z.object({
+      availability: z.literal("observed"),
+      algorithm_id: PolyAlgorithmIdSchema,
+      algorithm_version_id: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      config_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      input_snapshot_id: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      assignment_id: z.string().min(1),
+      correlation_id: z.string().min(1),
+    }),
+    z.object({
+      availability: z.literal("unavailable"),
+      reason: z.literal("legacy_attempt_without_lineage"),
+    }),
+  ]),
   /**
    * WHY. `reason` is the single most valuable field on this tape and is
    * invisible in the dashboard today, because that card reads the fills ledger

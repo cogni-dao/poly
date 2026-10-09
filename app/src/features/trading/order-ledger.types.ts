@@ -299,6 +299,15 @@ export interface InsertPendingInput extends TenantBinding {
 }
 
 /** Input to `recordDecision` — one row per `decide()` outcome, including skips. */
+export interface OrderLedgerAlgorithmLineage {
+  algorithm_id: string;
+  algorithm_version_id: string;
+  config_hash: string;
+  input_snapshot_id: string;
+  assignment_id: string;
+  correlation_id: string;
+}
+
 export interface RecordDecisionInput extends TenantBinding {
   target_id: string;
   fill_id: string;
@@ -307,6 +316,8 @@ export interface RecordDecisionInput extends TenantBinding {
   intent: Record<string, unknown>;
   receipt: Record<string, unknown> | null;
   decided_at: Date;
+  /** Canonical planner provenance; absent only for legacy non-registry callers. */
+  lineage?: OrderLedgerAlgorithmLineage;
 }
 
 /**

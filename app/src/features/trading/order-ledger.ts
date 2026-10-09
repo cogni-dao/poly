@@ -174,12 +174,45 @@ function parseLimitPrice(raw: string | null): number | null {
 const DEFAULT_LIST_LIMIT = 50;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+type StoredAlgorithmLineage = {
+	algorithm_id: string;
+	algorithm_version_id: string;
+	config_hash: string;
+	input_snapshot_id: string;
+	assignment_id: string;
+	correlation_id: string;
+};
+
+/** Promote an all-or-nothing provenance envelope; partial lineage is corrupt. */
+function readAlgorithmLineage(value: unknown): StoredAlgorithmLineage | null {
+	if (!value || typeof value !== "object") return null;
+	const record = value as Record<string, unknown>;
+	const keys = [
+		"algorithm_id",
+		"algorithm_version_id",
+		"config_hash",
+		"input_snapshot_id",
+		"assignment_id",
+		"correlation_id",
+	] as const;
+	const present = keys.filter(
+		(key) => typeof record[key] === "string" && record[key].length > 0,
+	);
+	if (present.length === 0) return null;
+	if (present.length !== keys.length) {
+		throw new Error("algorithm_lineage_incomplete");
+	}
+	return Object.fromEntries(
+		keys.map((key) => [key, record[key] as string]),
+	) as StoredAlgorithmLineage;
+}
+
 /** Fixed-width UTC day window ending at `capturedAt`, oldest → newest. */
 function buildUtcDayWindow(capturedAt: Date, windowDays: number): string[] {
   const todayUtc = Date.UTC(
     capturedAt.getUTCFullYear(),
     capturedAt.getUTCMonth(),
-    capturedAt.getUTCDate()
+		capturedAt.getUTCDate(),
   );
   const days: string[] = [];
   for (let i = windowDays - 1; i >= 0; i--) {
@@ -214,7 +247,7 @@ function materializeIntentAggregates(
     net_shares: string;
     gross_usdc_in: string;
     gross_shares_in: string;
-  }>
+	}>,
 ): PositionIntentAggregate[] {
   const out: PositionIntentAggregate[] = [];
   for (const row of rows) {
@@ -249,18 +282,18 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     const appDb = deps.appDb;
     if (!appDb) {
       throw new Error(
-        "OrderLedger.forTenant(ctx) requires deps.appDb to be wired (RLS-enforced app_user role). Pass appDb when constructing the ledger — see nodes/poly/app/src/bootstrap/container.ts."
+				"OrderLedger.forTenant(ctx) requires deps.appDb to be wired (RLS-enforced app_user role). Pass appDb when constructing the ledger — see nodes/poly/app/src/bootstrap/container.ts.",
       );
     }
     const actor = userActor(toUserId(ctx.created_by_user_id));
     return {
       snapshotState: (target_id) =>
         withTenantScope(appDb, actor, async (tx) =>
-          snapshotStateOnDb(tx, target_id, ctx.billing_account_id)
+					snapshotStateOnDb(tx, target_id, ctx.billing_account_id),
         ),
       cumulativeIntentForMarketToken: (market_id, token_id) =>
         withTenantScope(appDb, actor, async (tx) =>
-          cumulativeIntentImpl(tx, ctx.billing_account_id, market_id, token_id)
+					cumulativeIntentImpl(tx, ctx.billing_account_id, market_id, token_id),
         ),
       hasOpenForMarket: (args) =>
         withTenantScope(appDb, actor, async (tx) =>
@@ -268,7 +301,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             billing_account_id: ctx.billing_account_id,
             target_id: args.target_id,
             market_id: args.market_id,
-          })
+					}),
         ),
       findOpenForMarket: (args) =>
         withTenantScope(appDb, actor, async (tx) =>
@@ -276,7 +309,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             billing_account_id: ctx.billing_account_id,
             target_id: args.target_id,
             market_id: args.market_id,
-          })
+					}),
         ),
       // bug.5022 — writes also run inside `withTenantScope(appDb, ...)` so
       // RLS on `poly_copy_trade_{fills,decisions}` enforces tenant isolation
@@ -298,8 +331,8 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
               billing_account_id: ctx.billing_account_id,
               created_by_user_id: ctx.created_by_user_id,
             },
-            mode
-          )
+						mode,
+					),
         );
         return mode;
       },
@@ -316,8 +349,8 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
               billing_account_id: ctx.billing_account_id,
               created_by_user_id: ctx.created_by_user_id,
             },
-            mode
-          )
+						mode,
+					),
         );
       },
     };
@@ -335,14 +368,14 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
   async function snapshotStateOnDb(
     db: AnyDb,
     target_id: string,
-    billing_account_id: string
+		billing_account_id: string,
   ): Promise<StateSnapshot> {
     try {
       const [spendRows, rateRows, cidRows, positionRows] = await Promise.all([
         db
           .select({
             spent: sum(
-              sql<string>`COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)`
+							sql<string>`COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)`,
             ),
           })
           .from(polyCopyTradeFills)
@@ -352,9 +385,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
               eq(polyCopyTradeFills.targetId, target_id),
               gte(
                 polyCopyTradeFills.createdAt,
-                sql`date_trunc('day', now() at time zone 'utc') at time zone 'utc'`
-              )
-            )
+								sql`date_trunc('day', now() at time zone 'utc') at time zone 'utc'`,
+							),
+						),
           ),
         db
           .select({ n: count() })
@@ -363,8 +396,8 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             and(
               eq(polyCopyTradeFills.billingAccountId, billing_account_id),
               eq(polyCopyTradeFills.targetId, target_id),
-              gte(polyCopyTradeFills.createdAt, sql`now() - interval '1 hour'`)
-            )
+							gte(polyCopyTradeFills.createdAt, sql`now() - interval '1 hour'`),
+						),
           ),
         // bug.5023: bound the COID/fill_id dedup window to the last
         // SNAPSHOT_DEDUP_WINDOW_DAYS days + cap at SNAPSHOT_DEDUP_ROW_CAP.
@@ -389,9 +422,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
               eq(polyCopyTradeFills.targetId, target_id),
               gte(
                 polyCopyTradeFills.createdAt,
-                sql`now() - interval '${sql.raw(String(SNAPSHOT_DEDUP_WINDOW_DAYS))} days'`
-              )
-            )
+								sql`now() - interval '${sql.raw(String(SNAPSHOT_DEDUP_WINDOW_DAYS))} days'`,
+							),
+						),
           )
           .orderBy(desc(polyCopyTradeFills.createdAt))
           .limit(SNAPSHOT_DEDUP_ROW_CAP),
@@ -430,12 +463,12 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
                 "filled",
                 "partial",
               ]),
-              activeRestingPosition
-            )
+							activeRestingPosition,
+						),
           )
           .groupBy(
             polyCopyTradeFills.marketId,
-            sql`${polyCopyTradeFills.attributes}->>'token_id'`
+						sql`${polyCopyTradeFills.attributes}->>'token_id'`,
           ),
       ]);
 
@@ -455,7 +488,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           billing_account_id,
           err: err instanceof Error ? err.message : String(err),
         },
-        "order-ledger snapshot failed; returning zeroes"
+				"order-ledger snapshot failed; returning zeroes",
       );
       return {
         today_spent_usdc: 0,
@@ -471,7 +504,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     db: AnyDb,
     billing_account_id: string,
     market_id: string,
-    token_id: string
+		token_id: string,
   ): Promise<number> {
     try {
       const rows = await db
@@ -490,7 +523,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
                      AND ${polyCopyTradeFills.attributes}->>'placement' = 'market_fok'
                   THEN COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)
                 ELSE 0
-              END`
+              END`,
           ),
         })
         .from(polyCopyTradeFills)
@@ -510,10 +543,10 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
               ]),
               and(
                 eq(polyCopyTradeFills.status, "error"),
-                sql`${polyCopyTradeFills.attributes}->>'placement' = 'market_fok'`
-              )
-            )
-          )
+								sql`${polyCopyTradeFills.attributes}->>'placement' = 'market_fok'`,
+							),
+						),
+					),
         );
       return Number(rows[0]?.sum ?? 0);
     } catch (err: unknown) {
@@ -526,7 +559,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           token_id,
           err: err instanceof Error ? err.message : String(err),
         },
-        "order-ledger cumulativeIntentForMarketToken failed; returning Infinity (skip placement)"
+				"order-ledger cumulativeIntentForMarketToken failed; returning Infinity (skip placement)",
       );
       return Number.POSITIVE_INFINITY;
     }
@@ -538,7 +571,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       billing_account_id: string;
       target_id: string;
       market_id: string;
-    }
+		},
   ): Promise<boolean> {
     try {
       const rows = await db
@@ -550,8 +583,8 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             eq(polyCopyTradeFills.targetId, args.target_id),
             eq(polyCopyTradeFills.marketId, args.market_id),
             activeRestingPosition,
-            inArray(polyCopyTradeFills.status, ["pending", "open", "partial"])
-          )
+						inArray(polyCopyTradeFills.status, ["pending", "open", "partial"]),
+					),
         )
         .limit(1);
       return rows.length > 0;
@@ -565,7 +598,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           market_id: args.market_id,
           err: err instanceof Error ? err.message : String(err),
         },
-        "order-ledger hasOpenForMarket failed; returning true (skip placement)"
+				"order-ledger hasOpenForMarket failed; returning true (skip placement)",
       );
       return true;
     }
@@ -577,7 +610,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       billing_account_id: string;
       target_id: string;
       market_id: string;
-    }
+		},
   ): Promise<OpenOrderRow[]> {
     let rows: Array<{
       clientOrderId: string;
@@ -612,8 +645,8 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             eq(polyCopyTradeFills.targetId, args.target_id),
             eq(polyCopyTradeFills.marketId, args.market_id),
             activeRestingPosition,
-            inArray(polyCopyTradeFills.status, ["pending", "open", "partial"])
-          )
+						inArray(polyCopyTradeFills.status, ["pending", "open", "partial"]),
+					),
         );
     } catch (err: unknown) {
       // Observability sibling to `snapshotStateOnDb` / `hasOpenForMarketImpl`.
@@ -631,7 +664,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           market_id: args.market_id,
           err: err instanceof Error ? err.message : String(err),
         },
-        "order-ledger findOpenForMarket failed; rethrowing so caller skips this tick"
+				"order-ledger findOpenForMarket failed; rethrowing so caller skips this tick",
       );
       throw err;
     }
@@ -656,7 +689,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         created_at: r.createdAt,
         mode: r.mode as LedgerRow["mode"],
         limit_price: parseLimitPrice(r.limitPrice),
-      })
+			}),
     );
   }
 
@@ -671,10 +704,11 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
   async function insertPendingOnDb(
     db: AnyDb,
     input: InsertPendingInput,
-    mode: LedgerMode
+		mode: LedgerMode,
   ): Promise<void> {
     // Stash placement-display fields in `attributes` so the read API +
     // dashboard don't need to re-derive from the intent blob.
+		const lineage = readAlgorithmLineage(input.intent.attributes);
     const attrs = {
       size_usdc: input.intent.size_usdc,
       limit_price: input.intent.limit_price,
@@ -737,6 +771,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         typeof input.intent.attributes?.transaction_hash === "string"
           ? input.intent.attributes.transaction_hash
           : undefined,
+			...(lineage ?? {}),
     };
 
     const values = {
@@ -755,6 +790,12 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       // billing account, so two accounts inserting in the same process get
       // their own modes.
       mode,
+			algorithmId: lineage?.algorithm_id ?? null,
+			algorithmVersionId: lineage?.algorithm_version_id ?? null,
+			configHash: lineage?.config_hash ?? null,
+			inputSnapshotId: lineage?.input_snapshot_id ?? null,
+			assignmentId: lineage?.assignment_id ?? null,
+			correlationId: lineage?.correlation_id ?? null,
     };
 
     const insert = async (insertDb: AnyDb) => {
@@ -815,12 +856,12 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         // tests/component/jobs/job-leader-election.int.test.ts.
         await db.transaction(async (tx: AnyDb) => {
           await tx.execute(
-            sql`SELECT pg_advisory_xact_lock(hashtext(${`${input.billing_account_id}:${input.intent.market_id}:${lockToken}`}))`
+						sql`SELECT pg_advisory_xact_lock(hashtext(${`${input.billing_account_id}:${input.intent.market_id}:${lockToken}`}))`,
           );
           const rows = await tx
             .select({
               sum: sum(
-                sql<string>`COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)`
+								sql<string>`COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)`,
               ),
             })
             .from(polyCopyTradeFills)
@@ -828,7 +869,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
               and(
                 eq(
                   polyCopyTradeFills.billingAccountId,
-                  input.billing_account_id
+									input.billing_account_id,
                 ),
                 eq(polyCopyTradeFills.marketId, input.intent.market_id),
                 sql`${polyCopyTradeFills.attributes}->>'token_id' = ${lockToken}`,
@@ -842,10 +883,10 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
                   ]),
                   and(
                     eq(polyCopyTradeFills.status, "error"),
-                    sql`${polyCopyTradeFills.attributes}->>'placement' = 'market_fok'`
-                  )
-                )
-              )
+										sql`${polyCopyTradeFills.attributes}->>'placement' = 'market_fok'`,
+									),
+								),
+							),
             );
           const currentIntent = Number(rows[0]?.sum ?? 0);
           if (currentIntent + input.intent.size_usdc > maxMarketIntentUsdc) {
@@ -855,7 +896,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
               lockToken,
               currentIntent,
               input.intent.size_usdc,
-              maxMarketIntentUsdc
+							maxMarketIntentUsdc,
             );
           }
           await insert(tx);
@@ -874,7 +915,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         throw new AlreadyRestingError(
           input.billing_account_id,
           input.target_id,
-          input.intent.market_id
+					input.intent.market_id,
         );
       }
       throw err;
@@ -885,8 +926,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
   async function recordDecisionOnDb(
     db: AnyDb,
     input: RecordDecisionInput,
-    mode: LedgerMode
+		mode: LedgerMode,
   ): Promise<void> {
+		const lineage = readAlgorithmLineage(input.lineage ?? input.intent);
     await db.insert(polyCopyTradeDecisions).values({
       billingAccountId: input.billing_account_id,
       createdByUserId: input.created_by_user_id,
@@ -898,6 +940,12 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       receipt: input.receipt,
       decidedAt: input.decided_at,
       mode,
+			algorithmId: lineage?.algorithm_id ?? null,
+			algorithmVersionId: lineage?.algorithm_version_id ?? null,
+			configHash: lineage?.config_hash ?? null,
+			inputSnapshotId: lineage?.input_snapshot_id ?? null,
+			assignmentId: lineage?.assignment_id ?? null,
+			correlationId: lineage?.correlation_id ?? null,
     });
   }
 
@@ -916,7 +964,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       feesUsdc: string | null;
       attributes: unknown;
     },
-    observation: FillAccountingObservation
+		observation: FillAccountingObservation,
   ): {
     columns: Partial<Record<"price" | "shares" | "feesUsdc", string>>;
     attributes: Record<string, unknown>;
@@ -943,7 +991,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         ? (current.attributes as Record<string, unknown>)
         : {};
     const currentShares = Number(current.shares ?? 0);
-    const safeCurrentShares = Number.isFinite(currentShares) ? currentShares : 0;
+		const safeCurrentShares = Number.isFinite(currentShares)
+			? currentShares
+			: 0;
     const currentSource = attributes.realized_fill_source;
     const currentVerified =
       currentSource === "clob_associated_trades" ||
@@ -978,7 +1028,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 
   function monotonicLedgerStatus(
     current: string,
-    observed: LedgerStatus
+		observed: LedgerStatus,
   ): LedgerStatus {
     if (current === "filled" || current === "canceled") {
       return current;
@@ -995,7 +1045,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     // OrderLedger interface; task.5012 migrates the remaining callers.
     snapshotState(
       target_id: string,
-      billing_account_id: string
+			billing_account_id: string,
     ): Promise<StateSnapshot> {
       return snapshotStateOnDb(deps.db, target_id, billing_account_id);
     },
@@ -1006,13 +1056,13 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     cumulativeIntentForMarketToken(
       billing_account_id: string,
       market_id: string,
-      token_id: string
+			token_id: string,
     ): Promise<number> {
       return cumulativeIntentImpl(
         deps.db,
         billing_account_id,
         market_id,
-        token_id
+				token_id,
       );
     },
 
@@ -1031,7 +1081,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       // Update by `client_order_id` — unique-by-construction across rows since
       // cid is deterministic from `(target_id, fill_id)` (PK).
       const status: LedgerRow["status"] = mapReceiptStatus(
-        params.receipt.status
+				params.receipt.status,
       );
       const realizedFillSource =
         params.receipt.attributes?.realizedFillSource ===
@@ -1040,7 +1090,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           : undefined;
       await deps.db.transaction(async (tx) => {
         await tx.execute(
-          sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${polyCopyTradeFills.clientOrderId} = ${params.client_order_id} FOR UPDATE`
+					sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${polyCopyTradeFills.clientOrderId} = ${params.client_order_id} FOR UPDATE`,
         );
         const [current] = await tx
           .select({
@@ -1057,7 +1107,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         const nextStatus = monotonicLedgerStatus(current.status, status);
         const positionLifecycle = lifecycleFromOrderUpdate(
           nextStatus,
-          params.receipt.filled_size_usdc
+					params.receipt.filled_size_usdc,
         );
         const fill = acceptedFillAccounting(current, {
           filled_size_usdc: params.receipt.filled_size_usdc,
@@ -1113,7 +1163,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           status: "error",
           updatedAt: new Date(),
           attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(
-            { error: truncated }
+						{ error: truncated },
           )}::jsonb`,
         })
         .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id));
@@ -1135,7 +1185,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       const whereClause = opts.target_id
         ? and(
             eq(polyCopyTradeFills.billingAccountId, opts.billing_account_id),
-            eq(polyCopyTradeFills.targetId, opts.target_id)
+						eq(polyCopyTradeFills.targetId, opts.target_id),
           )
         : eq(polyCopyTradeFills.billingAccountId, opts.billing_account_id);
 
@@ -1151,7 +1201,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     },
 
     async listTenantPositions(
-      opts: ListTenantPositionsOptions
+			opts: ListTenantPositionsOptions,
     ): Promise<LedgerRow[]> {
       const limit = opts.limit ?? DEFAULT_LIST_LIMIT;
       const statuses = opts.statuses ?? ["open", "filled", "partial"];
@@ -1163,8 +1213,8 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         .where(
           and(
             eq(polyCopyTradeFills.billingAccountId, opts.billing_account_id),
-            inArray(polyCopyTradeFills.status, statuses)
-          )
+						inArray(polyCopyTradeFills.status, statuses),
+					),
         )
         .orderBy(desc(polyCopyTradeFills.observedAt))
         .limit(limit);
@@ -1207,7 +1257,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     },
 
     async listOpenOrPending(
-      opts?: ListOpenOrPendingOptions
+			opts?: ListOpenOrPendingOptions,
     ): Promise<LedgerRow[]> {
       const olderThanMs = opts?.olderThanMs ?? 30_000;
       const limit = opts?.limit ?? 200;
@@ -1219,8 +1269,8 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           and(
             sql`${polyCopyTradeFills.status} IN ('pending','open')`,
             activeRestingPosition,
-            sql`${polyCopyTradeFills.createdAt} < now() - make_interval(secs => ${olderThanMs} / 1000.0)`
-          )
+						sql`${polyCopyTradeFills.createdAt} < now() - make_interval(secs => ${olderThanMs} / 1000.0)`,
+					),
         )
         .orderBy(polyCopyTradeFills.createdAt)
         .limit(limit);
@@ -1236,7 +1286,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       }
       await deps.db.transaction(async (tx) => {
         await tx.execute(
-          sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${polyCopyTradeFills.clientOrderId} = ${input.client_order_id} FOR UPDATE`
+					sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${polyCopyTradeFills.clientOrderId} = ${input.client_order_id} FOR UPDATE`,
         );
         const [current] = await tx
           .select({
@@ -1253,7 +1303,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         const nextStatus = monotonicLedgerStatus(current.status, input.status);
         const positionLifecycle = lifecycleFromOrderUpdate(
           nextStatus,
-          input.filled_size_usdc
+					input.filled_size_usdc,
         );
         const fill = acceptedFillAccounting(current, input);
         const attributesPatch = { ...patch, ...(fill?.attributes ?? {}) };
@@ -1301,14 +1351,14 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           status: "canceled",
           updatedAt: new Date(),
           attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(
-            { reason: params.reason }
+						{ reason: params.reason },
           )}::jsonb`,
         })
         .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id));
     },
 
     async markPositionClosedByAsset(
-      input: MarkPositionClosedByAssetInput
+			input: MarkPositionClosedByAssetInput,
     ): Promise<number> {
       const rows = await deps.db
         .update(polyCopyTradeFills)
@@ -1321,7 +1371,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
               close_order_id: input.close_order_id,
               close_client_order_id: input.close_client_order_id,
               close_reason: input.reason,
-            }
+						},
           )}::jsonb`,
         })
         .where(
@@ -1329,15 +1379,15 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             eq(polyCopyTradeFills.billingAccountId, input.billing_account_id),
             sql`${polyCopyTradeFills.attributes}->>'token_id' = ${input.token_id}`,
             notPositionTerminal,
-            hasPositionLifecycleOrExecution
-          )
+						hasPositionLifecycleOrExecution,
+					),
         )
         .returning({ clientOrderId: polyCopyTradeFills.clientOrderId });
       return rows.length;
     },
 
     async markPositionLifecycleByAsset(
-      input: MarkPositionLifecycleByAssetInput
+			input: MarkPositionLifecycleByAssetInput,
     ): Promise<number> {
       const incomingLifecycleIsTerminal = [
         "closed",
@@ -1362,15 +1412,15 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             eq(polyCopyTradeFills.billingAccountId, input.billing_account_id),
             sql`${polyCopyTradeFills.attributes}->>'token_id' = ${input.token_id}`,
             incomingLifecycleIsTerminal ? undefined : terminalCorrectionGuard,
-            hasPositionLifecycleOrExecution
-          )
+						hasPositionLifecycleOrExecution,
+					),
         )
         .returning({ clientOrderId: polyCopyTradeFills.clientOrderId });
       return rows.length;
     },
 
     async markPositionLifecycleByConditionId(
-      input: MarkPositionLifecycleByConditionIdInput
+			input: MarkPositionLifecycleByConditionIdInput,
     ): Promise<number> {
       const normalizedMarketId = `prediction-market:polymarket:${input.condition_id}`;
       const incomingLifecycleIsTerminal = [
@@ -1392,11 +1442,11 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             or(
               sql`${polyCopyTradeFills.attributes}->>'condition_id' = ${input.condition_id}`,
               eq(polyCopyTradeFills.marketId, input.condition_id),
-              eq(polyCopyTradeFills.marketId, normalizedMarketId)
+							eq(polyCopyTradeFills.marketId, normalizedMarketId),
             ),
             incomingLifecycleIsTerminal ? undefined : notPositionTerminal,
-            hasPositionLifecycleOrExecution
-          )
+						hasPositionLifecycleOrExecution,
+					),
         )
         .returning({ clientOrderId: polyCopyTradeFills.clientOrderId });
       return rows.length;
@@ -1443,9 +1493,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             activeRestingPosition,
             lt(
               polyCopyTradeFills.createdAt,
-              sql`now() - make_interval(mins => ${args.max_age_minutes})`
-            )
-          )
+							sql`now() - make_interval(mins => ${args.max_age_minutes})`,
+						),
+					),
         );
       return rows.map((r) => ({
         client_order_id: r.clientOrderId,
@@ -1487,7 +1537,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
               WHERE ${polyCopyTradeFills.syncedAt} IS NULL
             ) AS never_synced
           FROM ${polyCopyTradeFills}
-        `
+        `,
       );
 
       // postgres-js Drizzle returns the rows as an array-like `RowList`
@@ -1544,6 +1594,12 @@ const LEDGER_ROW_COLUMNS = {
   updatedAt: polyCopyTradeFills.updatedAt,
   billingAccountId: polyCopyTradeFills.billingAccountId,
   mode: polyCopyTradeFills.mode,
+	algorithmId: polyCopyTradeFills.algorithmId,
+	algorithmVersionId: polyCopyTradeFills.algorithmVersionId,
+	configHash: polyCopyTradeFills.configHash,
+	inputSnapshotId: polyCopyTradeFills.inputSnapshotId,
+	assignmentId: polyCopyTradeFills.assignmentId,
+	correlationId: polyCopyTradeFills.correlationId,
 };
 
 /**
@@ -1558,6 +1614,19 @@ export type LedgerSelectedRow = Pick<
 >;
 
 export function mapLedgerRow(r: LedgerSelectedRow): LedgerRow {
+	const persistedAttributes =
+		(r.attributes as Record<string, unknown> | null) ?? null;
+	const attributes = r.algorithmId
+		? {
+				...(persistedAttributes ?? {}),
+				algorithm_id: r.algorithmId,
+				algorithm_version_id: r.algorithmVersionId,
+				config_hash: r.configHash,
+				input_snapshot_id: r.inputSnapshotId,
+				assignment_id: r.assignmentId,
+				correlation_id: r.correlationId,
+			}
+		: persistedAttributes;
   return {
     target_id: r.targetId,
     fill_id: r.fillId,
@@ -1568,7 +1637,7 @@ export function mapLedgerRow(r: LedgerSelectedRow): LedgerRow {
     status: r.status as LedgerRow["status"],
     position_lifecycle:
       (r.positionLifecycle as LedgerPositionLifecycle | null) ?? null,
-    attributes: (r.attributes as Record<string, unknown> | null) ?? null,
+		attributes,
     synced_at: r.syncedAt,
     created_at: r.createdAt,
     updated_at: r.updatedAt,
@@ -1583,7 +1652,7 @@ export function mapLedgerRow(r: LedgerSelectedRow): LedgerRow {
  * polymarket-shaped enum; map to the ledger's canonical set.
  */
 function mapReceiptStatus(
-  receiptStatus: import("@cogni/poly-market-provider").OrderReceipt["status"]
+	receiptStatus: import("@cogni/poly-market-provider").OrderReceipt["status"],
 ): LedgerRow["status"] {
   switch (receiptStatus) {
     case "filled":
@@ -1603,7 +1672,7 @@ function mapReceiptStatus(
 
 function lifecycleFromOrderUpdate(
   status: LedgerRow["status"],
-  filledSizeUsdc: number | undefined
+	filledSizeUsdc: number | undefined,
 ): LedgerPositionLifecycle | null {
   if (status === "filled" || status === "partial") return "open";
   if (filledSizeUsdc !== undefined && filledSizeUsdc > 0) return "open";

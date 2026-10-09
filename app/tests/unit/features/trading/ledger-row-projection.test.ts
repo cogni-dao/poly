@@ -43,6 +43,12 @@ const projectedRow: LedgerSelectedRow = {
   updatedAt: new Date("2026-09-29T00:02:00.000Z"),
   billingAccountId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   mode: "live",
+  algorithmId: null,
+  algorithmVersionId: null,
+  configHash: null,
+  inputSnapshotId: null,
+  assignmentId: null,
+  correlationId: null,
 };
 
 /** The same row as a full `SELECT *` would return it — extra columns present. */
@@ -89,5 +95,27 @@ describe("mapLedgerRow projection equivalence (dashboard floor fix)", () => {
       feesUsdc: "9.99000000",
     };
     expect(mapLedgerRow(mutatedExtras)).toEqual(mapLedgerRow(projectedRow));
+  });
+
+  it("projects first-class lineage into the stable ledger attribute envelope", () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    expect(
+      mapLedgerRow({
+        ...projectedRow,
+        algorithmId: "poly.copy-mirror.min-bet",
+        algorithmVersionId: hash,
+        configHash: hash,
+        inputSnapshotId: hash,
+        assignmentId: "assignment-1",
+        correlationId: "correlation-1",
+      }).attributes,
+    ).toMatchObject({
+      algorithm_id: "poly.copy-mirror.min-bet",
+      algorithm_version_id: hash,
+      config_hash: hash,
+      input_snapshot_id: hash,
+      assignment_id: "assignment-1",
+      correlation_id: "correlation-1",
+    });
   });
 });

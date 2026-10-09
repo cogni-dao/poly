@@ -31,6 +31,7 @@
 import type {
   PolyAccountCopySetupResponse,
   PolyAccountRecentAttemptsQuery,
+  PolyAccountRecentAttemptsOwnerQuery,
   PolyAccountRecentAttemptsResponse,
   PolyAlgorithmImplementationRevision,
   PolyCopyTradeOrdersInput,
@@ -114,6 +115,17 @@ export const recentAttemptsAccountReadHandler: AccountReadHandler<
   PolyAccountRecentAttemptsResponse
 > = (tx, input, accountId) => getRecentAttemptsForAccount(tx, input, accountId);
 
+/** Owner transport supplies the authorized account instead of accepting it on wire. */
+export const recentAttemptsOwnerAccountReadHandler: AccountReadHandler<
+  PolyAccountRecentAttemptsOwnerQuery,
+  PolyAccountRecentAttemptsResponse
+> = (tx, input, accountId) =>
+  getRecentAttemptsForAccount(
+    tx,
+    { ...input, billing_account_id: accountId },
+    accountId
+  );
+
 /**
  * An unparseable cursor or a future `captured_at` is a caller problem. The
  * executor renders both as the 400 a hand-written route would have raised.
@@ -130,7 +142,10 @@ export function classifyRecentAttemptsError(
 /** Tape counts, including the skip-rate signal this capability exists to expose. */
 export function recentAttemptsExtra(context: {
   status: AccountReadStatus;
-  input: PolyAccountRecentAttemptsQuery | null;
+  input:
+    | PolyAccountRecentAttemptsQuery
+    | PolyAccountRecentAttemptsOwnerQuery
+    | null;
   data: PolyAccountRecentAttemptsResponse | null;
 }): Record<string, unknown> {
   const data = context.data;

@@ -3,13 +3,13 @@
 
 /**
  * Module: `@features/copy-trade/mirror-pipeline`
- * Purpose: Thin pipeline that glues `features/wallet-watch/` → `planMirrorFromFill()` → `features/trading/`. Pure `runMirrorTick(deps)` — no `setInterval`, no env reads, no DB client construction. The ONLY file in the feature layer that imports from both sibling slices.
+ * Purpose: Thin pipeline that glues `features/wallet-watch/` → the shared algorithm registry → `features/trading/`. Pure `runMirrorTick(deps)` — no `setInterval`, no env reads, no DB client construction. The ONLY file in the feature layer that imports from both sibling slices.
  * Scope: Sequencing + INSERT_BEFORE_PLACE enforcement. Does not own cadence (bootstrap job), does not own cursor persistence (deps supply `getCursor`/`setCursor`), does not construct adapters.
  * Invariants:
  *   - COPY_TRADE_ONLY_PIPES — the pipeline is the only slice file that imports both `trading/` and `wallet-watch/`.
  *   - INSERT_BEFORE_PLACE — `order-ledger.insertPending` runs BEFORE the placeIntent executor. `markOrderId` / `markError` run AFTER. Crash between insert and place leaves a pending row whose `client_order_id` will be in the next tick's `already_placed_ids`, so `planMirrorFromFill()` returns `skip/already_placed`.
  *   - IDEMPOTENT_BY_CLIENT_ID — `client_order_id = clientOrderIdFor(target.billing_account_id, target.target_id, fill.fill_id)`, pinned helper. Deterministic from the per-tenant PK triple so re-runs dedupe within a tenant; N tenants mirroring the same fill produce N distinct client_order_ids.
- *   - RECORD_EVERY_DECISION — `order-ledger.recordDecision` fires for EVERY planMirrorFromFill() outcome (placed, skipped, or error). Supports divergence analysis without the fills ledger.
+ *   - RECORD_EVERY_DECISION — `order-ledger.recordDecision` fires for EVERY registry outcome (placed, skipped, or error) with the same first-class algorithm lineage as the ledger row.
  *   - DECISIONS_TOTAL_HAS_SOURCE — `poly_mirror_decisions_total{outcome, reason, source, placement}` always carries `source` (v0 = `"data-api"`) AND `placement` (`"limit"` | `"market_fok"`).
  *   - DECISION_LAG_OBSERVED_ONCE (task.5042) — every fill emits exactly one `poly_mirror_decision_lag_ms{source}` observation, measured as `decided_at - fill.observed_at`, clamped ≥0. The same `lag_ms_total` is attached as a logger-child field so every downstream decision log line (skip / placed / error / SELL-close) inherits it without per-site edits. Measurement-first lever for root-causing target-fill → mirror-decision lag before any fill-source rebuild.
  *   - DECISION_FACTS_POLICY_INDEPENDENT — every algorithm observes the same mirror NAV and exact fill-token shares before it decides. Policy selects behavior, never telemetry availability; target and mirror facts fail independently so a target API outage cannot erase an available account fact.
@@ -44,10 +44,15 @@ import type { WalletActivitySource } from "@/features/wallet-watch";
 import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 
 import {
-  planMirrorFromFill,
-  positionGapDesiredShares,
-  targetVwapForToken,
-} from "./plan-mirror";
+	ALGORITHM_DEFINITIONS,
+	type AlgorithmEvaluation,
+	type AlgorithmLineage,
+	algorithmIdForSizingKind,
+	type CanonicalAlgorithmOrder,
+	evaluateAlgorithm,
+	fillAlgorithmConfig,
+} from "./algorithm-registry";
+import { targetVwapForToken } from "./plan-mirror";
 import {
   type EffectivePositionGapBudget,
   effectivePositionGapBudget,
@@ -159,7 +164,7 @@ export const MIRROR_PIPELINE_METRICS = {
  */
 export function computeFillToDecisionLagMs(
   observedAtIso: string,
-  decidedAt: Date
+	decidedAt: Date,
 ): number {
   const observedMs = Date.parse(observedAtIso);
   if (Number.isNaN(observedMs)) return 0;
@@ -170,6 +175,10 @@ export function computeFillToDecisionLagMs(
 export type DecisionSource = "data-api" | "clob-ws" | "chain";
 
 export interface MirrorPipelineDeps {
+	/** Exact Git SHA; algorithm versions are invalid without code identity. */
+	implementationRevision: string;
+	/** Immutable target activation/config assignment identity. */
+	assignmentId: string;
   /** Fill source — v0 is the Polymarket Data-API adapter. */
   source: WalletActivitySource;
   /** Order ledger — reads state + writes pending/mark/decision rows. */
@@ -182,7 +191,7 @@ export interface MirrorPipelineDeps {
    */
   placeIntent: (
     intent: OrderIntent,
-    mode: "live" | "paper"
+		mode: "live" | "paper",
   ) => Promise<OrderReceipt>;
   /**
    * Tenant-scoped cancel seam (task.5001). Delegates to
@@ -195,10 +204,7 @@ export interface MirrorPipelineDeps {
    * cancel pre-step. Production bootstrap (`copy-trade-mirror.job` →
    * `container.ts`) always wires it.
    */
-  cancelOrder?: (
-    order_id: string,
-    mode: "live" | "paper"
-  ) => Promise<void>;
+	cancelOrder?: (order_id: string, mode: "live" | "paper") => Promise<void>;
   /**
    * Market-constraint fetch seam — returns `{ minShares }` for a token id so
    * the sizing policy can avoid sub-min submissions (bug.0342). Optional.
@@ -260,7 +266,7 @@ export interface MirrorPipelineDeps {
       limit_price: number;
       client_order_id: `0x${string}`;
     },
-    mode: "live" | "paper"
+		mode: "live" | "paper",
   ) => Promise<OrderReceipt>;
   /**
    * Optional — position query used by the SELL branch. Per-tenant.
@@ -268,7 +274,7 @@ export interface MirrorPipelineDeps {
    * `skip/sell_without_position`.
    */
   getOperatorPositions?: (
-    mode: "live" | "paper"
+		mode: "live" | "paper",
   ) => Promise<OperatorPosition[]>;
 }
 
@@ -298,7 +304,7 @@ export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
         reason: "execution_venue_unresolved",
         ...safeErrorDimensions(error),
       },
-      "mirror pipeline: execution venue unavailable; skipping tick"
+			"mirror pipeline: execution venue unavailable; skipping tick",
     );
     return;
   }
@@ -326,7 +332,7 @@ export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
         cursor,
         err: err instanceof Error ? err.message : String(err),
       },
-      "mirror pipeline: source fetch failed; skipping tick"
+			"mirror pipeline: source fetch failed; skipping tick",
     );
     return;
   }
@@ -343,7 +349,7 @@ async function processFill(
   deps: MirrorPipelineDeps,
   clock: () => Date,
   parentLog: LoggerPort,
-  planningMode: "live" | "paper"
+	planningMode: "live" | "paper",
 ): Promise<void> {
   // bug.5022 — construct the TenantContext envelope ONCE at the top of
   // `processFill` and route every per-tenant READ through it
@@ -364,7 +370,7 @@ async function processFill(
   const client_order_id = clientOrderIdFor(
     deps.target.billing_account_id,
     deps.target.target_id,
-    fill.fill_id
+		fill.fill_id,
   );
   const placement: PlacementWire =
     deps.target.placement.kind === "mirror_limit" ? "limit" : "market_fok";
@@ -372,12 +378,33 @@ async function processFill(
   const snapshot = await tenantLedger.snapshotState(deps.target.target_id);
 
   const source: DecisionSource = fill.source as DecisionSource;
+	const basePlannerInput = {
+		fill,
+		state: {
+			already_placed_ids: snapshot.already_placed_ids,
+			placed_fill_ids: snapshot.placed_fill_ids,
+		},
+		now_ms: clock().getTime(),
+	};
+	const algorithmId = algorithmIdForSizingKind(deps.target.sizing.kind);
+	const baseEvaluation = evaluateAlgorithm({
+		definition: ALGORITHM_DEFINITIONS[algorithmId],
+		input: basePlannerInput,
+		config: fillAlgorithmConfig(deps.target),
+		implementationRevision: deps.implementationRevision,
+		assignmentId: deps.assignmentId,
+		correlationId: client_order_id,
+	});
   const decisionBase = {
     target_id: deps.target.target_id,
     fill_id: fill.fill_id,
     billing_account_id: deps.target.billing_account_id,
     created_by_user_id: deps.target.created_by_user_id,
     decided_at: clock(),
+		lineage: {
+			...baseEvaluation.lineage,
+			algorithm_id: algorithmId,
+		} as AlgorithmLineage,
   };
 
   // task.5042 — one observation + log-field per fill. The `lag_ms_total`
@@ -387,14 +414,17 @@ async function processFill(
   // cardinality remains v0-safe.
   const lag_ms_total = computeFillToDecisionLagMs(
     fill.observed_at,
-    decisionBase.decided_at
+		decisionBase.decided_at,
   );
   deps.metrics.observeDurationMs(
     MIRROR_PIPELINE_METRICS.decisionLagMs,
     lag_ms_total,
-    { source }
+		{ source },
   );
-  const log = parentLog.child({ lag_ms_total });
+	let log = parentLog.child({
+		lag_ms_total,
+		...decisionBase.lineage,
+	});
   const portfolioValues = await fetchDecisionPortfolioValues({
     deps,
     fill,
@@ -419,7 +449,7 @@ async function processFill(
       "skipped",
       "multi_target_position_gap_unsupported",
       source,
-      placement
+			placement,
     );
     await tenantLedger.recordDecision({
       ...decisionBase,
@@ -429,7 +459,7 @@ async function processFill(
         fill,
         deps.target,
         client_order_id,
-        decisionLogFields
+				decisionLogFields,
       ),
       receipt: null,
     });
@@ -443,7 +473,7 @@ async function processFill(
         client_order_id,
         ...decisionLogFields,
       },
-      "mirror pipeline: multiple position-gap targets fail closed"
+			"mirror pipeline: multiple position-gap targets fail closed",
     );
     return;
   }
@@ -452,6 +482,9 @@ async function processFill(
     await processSellFill({
       fill,
       deps,
+			baseEvaluation,
+			basePlannerInput,
+			algorithmId,
       client_order_id,
       placement,
       source,
@@ -483,7 +516,7 @@ async function processFill(
             client_order_id,
             err: err instanceof Error ? err.message : String(err),
           },
-          "mirror pipeline: getMarketConstraints threw; planMirrorFromFill will run without market floors"
+					"mirror pipeline: getMarketConstraints threw; planMirrorFromFill will run without market floors",
         );
       }
     }
@@ -512,11 +545,11 @@ async function processFill(
       ? undefined
       : await tenantLedger.cumulativeIntentForMarketToken(
           fill.market_id,
-          fillTokenId
+					fillTokenId,
         );
 
   const positions_by_condition = aggregatePositionRows(
-    snapshot.position_aggregates
+		snapshot.position_aggregates,
   );
   const position = positions_by_condition.get(fill.market_id);
   const targetPosition = await fetchTargetConditionPosition({
@@ -534,13 +567,12 @@ async function processFill(
         market_id: fill.market_id,
         attributes_keys: fill.attributes ? Object.keys(fill.attributes) : [],
       },
-      "BUY fill missing fill.attributes.end_date — market-liveness gate is a no-op for this fill"
+			"BUY fill missing fill.attributes.end_date — market-liveness gate is a no-op for this fill",
     );
   }
 
-  const plan = planMirrorFromFill({
+	const plannerInput = {
     fill,
-    config: deps.target,
     state: {
       already_placed_ids: snapshot.already_placed_ids,
       placed_fill_ids: snapshot.placed_fill_ids,
@@ -567,12 +599,59 @@ async function processFill(
         ? { mirror_token_qty_shares: portfolioValues.mirrorTokenShares }
         : {}),
     },
-    client_order_id,
     min_shares,
     min_usdc_notional,
     tick_size,
-    now_ms: Date.now(),
+		now_ms: decisionBase.decided_at.getTime(),
+	};
+	const evaluation = evaluateAlgorithm({
+		definition: ALGORITHM_DEFINITIONS[algorithmId],
+		input: plannerInput,
+		config: fillAlgorithmConfig(deps.target),
+		implementationRevision: deps.implementationRevision,
+		assignmentId: deps.assignmentId,
+		correlationId: client_order_id,
   });
+	const evaluatedDecisionBase = {
+		...decisionBase,
+		lineage: {
+			...evaluation.lineage,
+			algorithm_id: algorithmId,
+		} as AlgorithmLineage,
+	};
+	log = log.child(evaluatedDecisionBase.lineage);
+	const positionBranch =
+		typeof evaluation.decision.diagnostics.position_branch === "string"
+			? (evaluation.decision.diagnostics.position_branch as PositionBranch)
+			: "new_entry";
+	const canonicalOrder = evaluation.decision.orders[0];
+	const plan =
+		evaluation.decision.status === "ready" && canonicalOrder
+			? ({
+					kind: "place" as const,
+					reason: evaluation.decision.reason as
+						| "ok"
+						| "layer_scale_in"
+						| "hedge_followup",
+					position_branch: positionBranch,
+					intent: materializeFillOrderIntent(
+						canonicalOrder,
+						deps.target,
+						evaluatedDecisionBase.lineage,
+						fill,
+					),
+					wrong_side_holding_detected:
+						evaluation.decision.diagnostics.wrong_side_holding_detected ===
+						true,
+				} as const)
+			: ({
+					kind: "skip" as const,
+					reason: evaluation.decision.reason as Exclude<
+						MirrorReason,
+						"ok" | "sell_closed_position"
+					>,
+					position_branch: positionBranch,
+				} as const);
 
   const wrongSideHoldingDetected =
     plan.kind === "place" && plan.wrong_side_holding_detected === true;
@@ -611,21 +690,21 @@ async function processFill(
         target_dominant_token_id: decisionLogFields.target_dominant_token_id,
         target_side_fraction: decisionLogFields.target_side_fraction,
       },
-      "mirror pipeline: option C — wallet holds non-dominant leg from cross-target activity; opening dominant-side parallel leg"
+			"mirror pipeline: option C — wallet holds non-dominant leg from cross-target activity; opening dominant-side parallel leg",
     );
   }
 
   if (plan.kind === "skip") {
     emitDecisionMetric(deps.metrics, "skipped", plan.reason, source, placement);
     await tenantLedger.recordDecision({
-      ...decisionBase,
+			...evaluatedDecisionBase,
       outcome: "skipped",
       reason: plan.reason,
       intent: buildDecisionIntentBlob(
         fill,
         deps.target,
         client_order_id,
-        decisionLogFields
+				decisionLogFields,
       ),
       receipt: null,
     });
@@ -639,7 +718,7 @@ async function processFill(
         client_order_id,
         ...decisionLogFields,
       },
-      "mirror pipeline: skip"
+			"mirror pipeline: skip",
     );
     return;
   }
@@ -661,17 +740,17 @@ async function processFill(
         "skipped",
         "already_resting",
         source,
-        placement
+				placement,
       );
       await tenantLedger.recordDecision({
-        ...decisionBase,
+				...evaluatedDecisionBase,
         outcome: "skipped",
         reason: "already_resting",
         intent: buildDecisionIntentBlob(
           fill,
           deps.target,
           client_order_id,
-          decisionLogFields
+					decisionLogFields,
         ),
         receipt: null,
       });
@@ -686,7 +765,7 @@ async function processFill(
           market_id: fill.market_id,
           ...decisionLogFields,
         },
-        "mirror pipeline: skip (already resting on market)"
+				"mirror pipeline: skip (already resting on market)",
       );
       return;
     }
@@ -704,7 +783,7 @@ async function processFill(
         new_intent_price: plan.intent.limit_price,
         resting_prices: open.map((r) => r.limit_price),
       },
-      "mirror pipeline: cancel-then-place (resting price stale vs new intent)"
+			"mirror pipeline: cancel-then-place (resting price stale vs new intent)",
     );
     await cancelOpenMirrorOrdersForMarket({
       deps,
@@ -718,7 +797,7 @@ async function processFill(
     deps,
     fill,
     client_order_id,
-    decisionBase,
+		evaluatedDecisionBase,
     source,
     placement,
     plan.intent,
@@ -726,15 +805,54 @@ async function processFill(
     log,
     planningMode,
     undefined,
-    decisionLogFields
+		decisionLogFields,
   );
+}
+
+/** Runtime-owned translation from an economic decision to the venue port. */
+function materializeFillOrderIntent(
+	order: CanonicalAlgorithmOrder,
+	target: MirrorTargetConfig,
+	lineage: AlgorithmLineage,
+	fill: import("@cogni/poly-market-provider").Fill,
+): OrderIntent {
+	return {
+		provider: "polymarket",
+		market_id: order.market_id,
+		outcome: order.outcome ?? "unknown",
+		side: order.side,
+		size_usdc: order.size_usdc,
+		limit_price: order.limit_price,
+		client_order_id: lineage.correlation_id as `0x${string}`,
+		attributes: {
+			token_id: order.token_id,
+			condition_id: order.condition_id ?? undefined,
+			source_fill_id: fill.fill_id,
+			target_wallet: fill.target_wallet.toLowerCase(),
+			placement:
+				target.placement.kind === "mirror_limit" ? "limit" : "market_fok",
+			position_branch: order.position_branch ?? undefined,
+			title: nullableStringAttribute(fill.attributes?.title),
+			slug: nullableStringAttribute(fill.attributes?.slug),
+			event_slug: nullableStringAttribute(fill.attributes?.event_slug),
+			event_title: nullableStringAttribute(fill.attributes?.event_title),
+			transaction_hash: nullableStringAttribute(
+				fill.attributes?.transaction_hash,
+			),
+			...lineage,
+		},
+	};
+}
+
+function nullableStringAttribute(value: unknown): string | undefined {
+	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 /** bug.5035: true if any resting order's limit_price is ≥STALE_RESTING_PRICE_DELTA disadvantageously out of band vs the new intent. Pending rows (no order_id) and rows missing limit_price are not stale — fail-closed to the existing skip-as-already_resting path. */
 const STALE_RESTING_PRICE_DELTA = 0.03;
 function isRestingPriceStale(
   open: OpenOrderRow[],
-  newIntent: OrderIntent
+	newIntent: OrderIntent,
 ): boolean {
   for (const row of open) {
     if (row.order_id === null) return false;
@@ -774,7 +892,7 @@ async function fetchTargetConditionPosition(args: {
         market_id: fill.market_id,
         err: err instanceof Error ? err.message : String(err),
       },
-      "mirror pipeline: target position fetch failed; follow-up branch will fail closed"
+			"mirror pipeline: target position fetch failed; follow-up branch will fail closed",
     );
     return undefined;
   }
@@ -824,7 +942,7 @@ async function fetchDecisionPortfolioValues(args: {
               : String(targetResult.reason)
             : "invalid target portfolio value",
       },
-      "mirror pipeline: target portfolio fact unavailable"
+			"mirror pipeline: target portfolio fact unavailable",
     );
   }
 
@@ -853,7 +971,7 @@ async function fetchDecisionPortfolioValues(args: {
               : String(mirrorResult.reason)
             : "invalid mirror portfolio value",
       },
-      "mirror pipeline: mirror portfolio facts unavailable"
+			"mirror pipeline: mirror portfolio facts unavailable",
     );
   }
 
@@ -908,7 +1026,7 @@ function needsTargetPosition(target: MirrorTargetConfig): boolean {
 }
 
 function targetConditionIdForFill(
-  fill: import("@cogni/poly-market-provider").Fill
+	fill: import("@cogni/poly-market-provider").Fill,
 ): string | undefined {
   if (typeof fill.attributes?.condition_id === "string") {
     return fill.attributes.condition_id;
@@ -1000,14 +1118,14 @@ function buildDecisionLogFields(args: {
         ? null
         : Number(
             Math.max((min_shares ?? 0) * fill.price, min_usdc_notional).toFixed(
-              4
-            )
+							4,
+						),
           ),
   };
 }
 
 function buildDecisionPortfolioFactFields(
-  portfolioValues?: DecisionPortfolioValues
+	portfolioValues?: DecisionPortfolioValues,
 ): Record<string, number | null> {
   return {
     target_portfolio_current_value_usdc: portfolioValues?.target ?? null,
@@ -1018,7 +1136,7 @@ function buildDecisionPortfolioFactFields(
 
 function buildPositionGapBudgetLogFields(
   target: MirrorTargetConfig,
-  portfolioValues?: DecisionPortfolioValues
+	portfolioValues?: DecisionPortfolioValues,
 ): Record<string, unknown> {
   if (target.sizing.kind !== "position_gap") return {};
   const positionGapTargetCount =
@@ -1029,8 +1147,7 @@ function buildPositionGapBudgetLogFields(
       target.sizing.mirror_capital_budget_usdc ?? null,
     effective_mirror_capital_budget_usdc:
       portfolioValues?.budget?.effectiveBudgetUsdc ?? null,
-    mirror_budget_allocation_status:
-      blockedMultiTarget
+		mirror_budget_allocation_status: blockedMultiTarget
         ? "blocked_multi_target"
         : (portfolioValues?.budget?.allocationStatus ?? null),
     effective_budget_observed_at:
@@ -1050,7 +1167,7 @@ function buildPositionGapBudgetLogFields(
 }
 
 function isMultiTargetPositionGapUnsupported(
-  target: MirrorTargetConfig
+	target: MirrorTargetConfig,
 ): boolean {
   return (
     target.sizing.kind === "position_gap" &&
@@ -1061,7 +1178,7 @@ function isMultiTargetPositionGapUnsupported(
 /** bug.5048 — fraction of target's total condition cost on the fill's token, or null when unknown. */
 function targetSideFraction(
   targetPosition: TargetConditionPositionView | undefined,
-  tokenId: string | undefined
+	tokenId: string | undefined,
 ): number | null {
   if (!targetPosition || !tokenId) return null;
   const total = targetPosition.tokens.reduce((sum, t) => sum + t.cost_usdc, 0);
@@ -1074,7 +1191,7 @@ function targetSideFraction(
 
 /** bug.5048 — token id with the highest cost in target's condition position, or null. */
 function targetDominantTokenId(
-  targetPosition: TargetConditionPositionView | undefined
+	targetPosition: TargetConditionPositionView | undefined,
 ): string | null {
   if (!targetPosition || targetPosition.tokens.length === 0) return null;
   let dominantId: string | null = null;
@@ -1091,39 +1208,39 @@ function targetDominantTokenId(
 /** bug.5048 — target's VWAP on the fill's token, derived from cost_usdc / size_shares, or null. */
 function targetVwapForFillToken(
   targetPosition: TargetConditionPositionView | undefined,
-  tokenId: string | undefined
+	tokenId: string | undefined,
 ): number | null {
   const vwap = targetVwapForToken(targetPosition, tokenId ?? "");
   return vwap === undefined ? null : Number(vwap.toFixed(4));
 }
 
 function targetPositionTotalUsdc(
-  targetPosition: TargetConditionPositionView | undefined
+	targetPosition: TargetConditionPositionView | undefined,
 ): number | null {
   if (!targetPosition) return null;
   return Number(
     targetPosition.tokens
       .reduce((sum, token) => sum + token.cost_usdc, 0)
-      .toFixed(2)
+			.toFixed(2),
   );
 }
 
 function targetTokenCostUsdc(
   targetPosition: TargetConditionPositionView | undefined,
-  tokenId: string | undefined
+	tokenId: string | undefined,
 ): number | null {
   if (!targetPosition || !tokenId) return null;
   return Number(
     targetPosition.tokens
       .filter((token) => token.token_id === tokenId)
       .reduce((sum, token) => sum + token.cost_usdc, 0)
-      .toFixed(2)
+			.toFixed(2),
   );
 }
 
 function targetHedgeRatio(
   position: MirrorPositionView | undefined,
-  targetPosition: TargetConditionPositionView | undefined
+	targetPosition: TargetConditionPositionView | undefined,
 ): number | null {
   if (
     !position?.our_token_id ||
@@ -1146,6 +1263,16 @@ function targetHedgeRatio(
 async function processSellFill(args: {
   fill: import("@cogni/poly-market-provider").Fill;
   deps: MirrorPipelineDeps;
+	baseEvaluation: AlgorithmEvaluation;
+	basePlannerInput: {
+		fill: import("@cogni/poly-market-provider").Fill;
+		state: {
+			already_placed_ids: string[];
+			placed_fill_ids: string[];
+		};
+		now_ms: number;
+	};
+	algorithmId: ReturnType<typeof algorithmIdForSizingKind>;
   client_order_id: `0x${string}`;
   placement: PlacementWire;
   source: DecisionSource;
@@ -1155,6 +1282,7 @@ async function processSellFill(args: {
     billing_account_id: string;
     created_by_user_id: string;
     decided_at: Date;
+		lineage: AlgorithmLineage;
   };
   log: LoggerPort;
   portfolioValues: DecisionPortfolioValues | undefined;
@@ -1163,6 +1291,9 @@ async function processSellFill(args: {
   const {
     fill,
     deps,
+		baseEvaluation,
+		basePlannerInput,
+		algorithmId,
     client_order_id,
     placement,
     source,
@@ -1179,7 +1310,8 @@ async function processSellFill(args: {
     billing_account_id: deps.target.billing_account_id,
     created_by_user_id: deps.target.created_by_user_id,
   });
-  let decisionLogFields = {
+	const noPositionReason = baseEvaluation.decision.reason as MirrorReason;
+	const decisionLogFields = {
     ...buildDecisionPortfolioFactFields(portfolioValues),
     ...buildPositionGapBudgetLogFields(deps.target, portfolioValues),
   };
@@ -1196,14 +1328,14 @@ async function processSellFill(args: {
     emitDecisionMetric(
       deps.metrics,
       "skipped",
-      "sell_without_position",
+			noPositionReason,
       source,
-      placement
+			placement,
     );
     await tenantLedger.recordDecision({
       ...decisionBase,
       outcome: "skipped",
-      reason: "sell_without_position",
+			reason: noPositionReason,
       intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
         close: false,
         position_branch: "sell_close",
@@ -1215,7 +1347,7 @@ async function processSellFill(args: {
       {
         event: EVENT_NAMES.POLY_MIRROR_DECISION,
         outcome: "skipped",
-        reason: "sell_without_position",
+				reason: noPositionReason,
         source,
         fill_id: fill.fill_id,
         client_order_id,
@@ -1223,7 +1355,7 @@ async function processSellFill(args: {
         position_branch: "sell_close",
         ...decisionLogFields,
       },
-      "mirror pipeline: skip (no close deps)"
+			"mirror pipeline: skip (no close deps)",
     );
     return;
   }
@@ -1238,14 +1370,14 @@ async function processSellFill(args: {
     emitDecisionMetric(
       deps.metrics,
       "skipped",
-      "sell_without_position",
+			noPositionReason,
       source,
-      placement
+			placement,
     );
     await tenantLedger.recordDecision({
       ...decisionBase,
       outcome: "skipped",
-      reason: "sell_without_position",
+			reason: noPositionReason,
       intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
         close: false,
         position_branch: "sell_close",
@@ -1257,7 +1389,7 @@ async function processSellFill(args: {
       {
         event: EVENT_NAMES.POLY_MIRROR_DECISION,
         outcome: "skipped",
-        reason: "sell_without_position",
+				reason: noPositionReason,
         source,
         fill_id: fill.fill_id,
         client_order_id,
@@ -1265,7 +1397,7 @@ async function processSellFill(args: {
         position_branch: "sell_close",
         ...decisionLogFields,
       },
-      "mirror pipeline: skip (position query failed)"
+			"mirror pipeline: skip (position query failed)",
     );
     return;
   }
@@ -1277,14 +1409,14 @@ async function processSellFill(args: {
     emitDecisionMetric(
       deps.metrics,
       "skipped",
-      "sell_without_position",
+			noPositionReason,
       source,
-      placement
+			placement,
     );
     await tenantLedger.recordDecision({
       ...decisionBase,
       outcome: "skipped",
-      reason: "sell_without_position",
+			reason: noPositionReason,
       intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
         close: false,
         position_branch: "sell_close",
@@ -1296,7 +1428,7 @@ async function processSellFill(args: {
       {
         event: EVENT_NAMES.POLY_MIRROR_DECISION,
         outcome: "skipped",
-        reason: "sell_without_position",
+				reason: noPositionReason,
         source,
         fill_id: fill.fill_id,
         client_order_id,
@@ -1304,117 +1436,48 @@ async function processSellFill(args: {
         position_branch: "sell_close",
         ...decisionLogFields,
       },
-      "mirror pipeline: skip (no position to close)"
+			"mirror pipeline: skip (no position to close)",
     );
     return;
   }
 
-  let closeSizeUsdc = nominalSizeUsdc(deps.target.sizing, fill.size_usdc);
-  if (deps.target.sizing.kind === "position_gap") {
-    // Sequential reads intentionally reuse the container's target snapshot
-    // cache, keeping token shares and whole-book NAV on one observation.
-    const targetPosition = await fetchTargetConditionPosition({
-      deps,
-      fill,
-      log,
+	const evaluation = evaluateAlgorithm({
+		definition: ALGORITHM_DEFINITIONS[algorithmId],
+		input: { ...basePlannerInput, sell_position_shares: position.size },
+		config: fillAlgorithmConfig(deps.target),
+		implementationRevision: deps.implementationRevision,
+		assignmentId: deps.assignmentId,
+		correlationId: client_order_id,
     });
-    decisionLogFields = {
-      ...buildDecisionPortfolioFactFields(portfolioValues),
-      ...buildPositionGapBudgetLogFields(deps.target, portfolioValues),
+	const canonicalOrder = evaluation.decision.orders[0];
+	const evaluatedDecisionBase = {
+		...decisionBase,
+		lineage: evaluation.lineage,
     };
-    const desiredShares = positionGapDesiredShares(tokenId, {
-      already_placed_ids: [],
-      placed_fill_ids: [],
-      ...(targetPosition ? { target_position: targetPosition } : {}),
-      ...(portfolioValues?.budget &&
-        portfolioValues.target !== undefined &&
-        portfolioValues.mirror !== undefined &&
-        portfolioValues.mirrorTokenShares !== undefined
-        ? {
-            target_portfolio_current_value_usdc: portfolioValues.target,
-            mirror_portfolio_current_value_usdc: portfolioValues.mirror,
-            mirror_effective_budget_usdc:
-              portfolioValues.budget.effectiveBudgetUsdc,
-            mirror_token_qty_shares: portfolioValues.mirrorTokenShares,
-          }
-        : {}),
-    });
-    if (desiredShares === undefined) {
+	const evaluatedLog = log.child(evaluation.lineage);
+	if (evaluation.decision.status !== "ready" || !canonicalOrder) {
       await recordSellSkip({
         deps,
         tenantLedger,
         fill,
-        decisionBase,
-        source,
-        placement,
-        client_order_id,
-        log,
-        reason: "target_position_below_threshold",
-        detail: "portfolio snapshot unavailable",
-        decisionLogFields,
-      });
-      return;
-    }
-    const excessShares = position.size - desiredShares;
-    if (excessShares <= 0) {
-      await recordSellSkip({
-        deps,
-        tenantLedger,
-        fill,
-        decisionBase,
-        source,
-        placement,
-        client_order_id,
-        log,
-        reason: "followup_not_needed",
-        detail: "mirror position is not overweight",
-        decisionLogFields,
-      });
-      return;
-    }
-    closeSizeUsdc = excessShares * fill.price;
-    if (deps.getMarketConstraints) {
-      try {
-        const constraints = await deps.getMarketConstraints(tokenId);
-        const floorUsdc = Math.max(
-          constraints.minShares * fill.price,
-          constraints.minUsdcNotional ?? 0
-        );
-        if (closeSizeUsdc < floorUsdc) {
-          await recordSellSkip({
-            deps,
-            tenantLedger,
-            fill,
-            decisionBase,
+			decisionBase: evaluatedDecisionBase,
             source,
             placement,
             client_order_id,
-            log,
-            reason: "below_market_min",
-            detail: "overweight gap is below market minimum",
+			log: evaluatedLog,
+			reason: evaluation.decision.reason as MirrorReason,
+			detail: "algorithm emitted no safe SELL action",
             decisionLogFields,
           });
           return;
         }
-      } catch (err) {
-        log.warn(
-          {
-            event: "poly.mirror.constraints.fetch_error",
-            fill_id: fill.fill_id,
-            client_order_id,
-            err: err instanceof Error ? err.message : String(err),
-          },
-          "mirror pipeline: SELL constraints unavailable; closePosition remains bounded by holdings"
-        );
-      }
-    }
-  }
+	const closeSizeUsdc = canonicalOrder.size_usdc;
 
   const boundClose = deps.closePosition;
   if (!boundClose) return;
   const closeExecutor = (
     intent: OrderIntent,
-    mode: "live" | "paper"
+		mode: "live" | "paper",
   ): Promise<OrderReceipt> =>
     boundClose(
       {
@@ -1423,35 +1486,26 @@ async function processSellFill(args: {
         limit_price: fill.price,
         client_order_id,
       },
-      mode
+			mode,
     );
 
-  const closeIntent: OrderIntent = {
-    provider: "polymarket",
-    market_id: fill.market_id,
-    outcome: fill.outcome,
-    side: "SELL",
-    size_usdc: closeSizeUsdc,
-    limit_price: fill.price,
-    client_order_id,
-    attributes: {
-      token_id: tokenId,
-      source_fill_id: fill.fill_id,
-      target_wallet: fill.target_wallet,
-      position_branch: "sell_close",
-    },
-  };
+	const closeIntent = materializeFillOrderIntent(
+		canonicalOrder,
+		deps.target,
+		evaluation.lineage,
+		fill,
+	);
 
   await executeMirrorOrder(
     deps,
     fill,
     client_order_id,
-    decisionBase,
+		evaluatedDecisionBase,
     source,
     placement,
     closeIntent,
-    "sell_closed_position",
-    log,
+		evaluation.decision.reason as MirrorReason,
+		evaluatedLog,
     planningMode,
     closeExecutor,
     {
@@ -1459,7 +1513,7 @@ async function processSellFill(args: {
       position_qty_shares: position.size,
       position_token_id: tokenId,
       ...decisionLogFields,
-    }
+		},
   );
 }
 
@@ -1473,6 +1527,7 @@ async function recordSellSkip(args: {
     billing_account_id: string;
     created_by_user_id: string;
     decided_at: Date;
+		lineage: AlgorithmLineage;
   };
   source: DecisionSource;
   placement: PlacementWire;
@@ -1519,7 +1574,7 @@ async function recordSellSkip(args: {
       position_branch: "sell_close",
       ...decisionLogFields,
     },
-    "mirror pipeline: skip position-gap SELL"
+		"mirror pipeline: skip position-gap SELL",
   );
 }
 
@@ -1578,7 +1633,7 @@ async function cancelOpenMirrorOrdersForMarket(args: {
           ? "mirror pipeline: canceled stale resting BUY for layer-up replace"
           : reason === "multi_target_position_gap_unsupported"
             ? "mirror pipeline: canceled resting BUY because multi-target position-gap is unsupported"
-            : "mirror pipeline: canceled resting BUY on target SELL"
+						: "mirror pipeline: canceled resting BUY on target SELL",
       );
     } catch (err: unknown) {
       log.error(
@@ -1589,7 +1644,7 @@ async function cancelOpenMirrorOrdersForMarket(args: {
           order_id: row.order_id,
           err: err instanceof Error ? err.message : String(err),
         },
-        "mirror pipeline: cancel failed; row stays open for sweeper"
+				"mirror pipeline: cancel failed; row stays open for sweeper",
       );
     }
   }
@@ -1609,6 +1664,7 @@ async function executeMirrorOrder(
     billing_account_id: string;
     created_by_user_id: string;
     decided_at: Date;
+		lineage: AlgorithmLineage;
   },
   source: DecisionSource,
   placement: PlacementWire,
@@ -1618,9 +1674,9 @@ async function executeMirrorOrder(
   planningMode: "live" | "paper",
   intentExecutor?: (
     intent: OrderIntent,
-    mode: "live" | "paper"
+		mode: "live" | "paper",
   ) => Promise<OrderReceipt>,
-  decisionLogFields?: Record<string, unknown>
+	decisionLogFields?: Record<string, unknown>,
 ): Promise<void> {
   // bug.5022 — tenantLedger for all per-tenant writes (insertPending +
   // recordDecision). Uses appDb + withTenantScope; RLS active.
@@ -1641,7 +1697,7 @@ async function executeMirrorOrder(
         ? {
             max_market_intent_usdc: nominalSizeUsdc(
               deps.target.sizing,
-              fill.size_usdc
+							fill.size_usdc,
             ),
           }
         : {}),
@@ -1654,7 +1710,7 @@ async function executeMirrorOrder(
         "skipped",
         "already_resting",
         source,
-        placement
+				placement,
       );
       await tenantLedger.recordDecision({
         ...decisionBase,
@@ -1678,7 +1734,7 @@ async function executeMirrorOrder(
           detail: "DB unique-index backstop fired (race past app-level gate)",
           ...decisionLogFields,
         },
-        "mirror pipeline: skip (already resting; DB index backstop)"
+				"mirror pipeline: skip (already resting; DB index backstop)",
       );
       return;
     }
@@ -1688,7 +1744,7 @@ async function executeMirrorOrder(
         "skipped",
         "position_cap_reached",
         source,
-        placement
+				placement,
       );
       await tenantLedger.recordDecision({
         ...decisionBase,
@@ -1718,7 +1774,7 @@ async function executeMirrorOrder(
           detail: "DB tenant-market intent cap backstop fired",
           ...decisionLogFields,
         },
-        "mirror pipeline: skip (position cap reached; DB backstop)"
+				"mirror pipeline: skip (position cap reached; DB backstop)",
       );
       return;
     }
@@ -1727,7 +1783,7 @@ async function executeMirrorOrder(
       "error",
       "pending_insert_failed",
       source,
-      placement
+			placement,
     );
     await tenantLedger.recordDecision({
       ...decisionBase,
@@ -1749,7 +1805,7 @@ async function executeMirrorOrder(
         fill_id: fill.fill_id,
         ...decisionLogFields,
       },
-      "mirror pipeline: pending insert failed; skipping placement"
+			"mirror pipeline: pending insert failed; skipping placement",
     );
     return;
   }
@@ -1757,7 +1813,7 @@ async function executeMirrorOrder(
   try {
     if (placementMode !== planningMode) {
       throw new Error(
-        `execution venue changed during mirror planning (${planningMode} -> ${placementMode})`
+				`execution venue changed during mirror planning (${planningMode} -> ${placementMode})`,
       );
     }
     const receipt = await executor(intent, placementMode);
@@ -1803,7 +1859,7 @@ async function executeMirrorOrder(
         ...decisionLogFields,
         execution_mode: placementMode,
       },
-      "mirror pipeline: placed"
+			"mirror pipeline: placed",
     );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1835,7 +1891,7 @@ async function executeMirrorOrder(
       "error",
       "placement_failed",
       source,
-      placement
+			placement,
     );
     await tenantLedger.recordDecision({
       ...decisionBase,
@@ -1878,7 +1934,7 @@ async function executeMirrorOrder(
       },
       isFokNoMatch
         ? "mirror pipeline: FOK no-match — clean skip, no retry"
-        : "mirror pipeline: placement error"
+				: "mirror pipeline: placement error",
     );
   }
 }
@@ -1888,7 +1944,7 @@ function emitDecisionMetric(
   outcome: "placed" | "skipped" | "error",
   reason: MirrorReason | "pending_insert_failed" | "placement_failed",
   source: DecisionSource,
-  placement: PlacementWire
+	placement: PlacementWire,
 ): void {
   metrics.incr(MIRROR_PIPELINE_METRICS.decisionsTotal, {
     outcome,
@@ -1902,7 +1958,7 @@ function buildDecisionIntentBlob(
   fill: import("@cogni/poly-market-provider").Fill,
   target: MirrorTargetConfig,
   client_order_id: `0x${string}`,
-  extra?: Record<string, unknown>
+	extra?: Record<string, unknown>,
 ): Record<string, unknown> {
   return {
     target_wallet: target.target_wallet,

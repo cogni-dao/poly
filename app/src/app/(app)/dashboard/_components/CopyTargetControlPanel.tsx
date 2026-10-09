@@ -660,6 +660,12 @@ function budgetStatusLabel(target: PolyTrackedTarget): string {
   if (budget.observation_status === "blocked_multi_target") {
     return "Choose one Position gap target";
   }
+  if (target.position_gap_runtime.status === "observed") {
+    const usable = target.position_gap_runtime.plan.sleeve_budget_usdc;
+    return budget.configured_budget_usdc === null
+      ? `Usable ${formatUsd(usable)} · full funded portfolio`
+      : `Set ${formatUsd(budget.configured_budget_usdc)} · usable ${formatUsd(usable)}`;
+  }
   if (budget.observation_status === "pending") return "Pending first trade";
   if (budget.observation_status === "stale") return "Pending next trade";
   if (
@@ -690,7 +696,7 @@ function positionGapRuntimeLabel(target: PolyTrackedTarget): string {
         : "matched";
     }
     const minimum = runtime.plan.minimum_feasible_sleeve_usdc;
-    return `no feasible position · $${runtime.plan.sleeve_budget_usdc.toFixed(2)} sleeve${minimum === null ? "" : ` · $${minimum.toFixed(2)} min`}`;
+    return `no order · ${formatUsd(runtime.plan.sleeve_budget_usdc)} usable${minimum === null ? "" : ` · ${formatUsd(minimum)} needed`}`;
   }
   return `${runtime.plan.planned_order_count} planned`;
 }
@@ -715,6 +721,15 @@ function positionGapRuntimeHealthy(target: PolyTrackedTarget): boolean {
   return runtime.status === "observed" &&
     runtime.snapshot.completeness === "complete" &&
     runtime.snapshot.freshness === "fresh" &&
-    ((runtime.run.status === "completed" && runtime.plan.status === "ready") ||
-      positionGapRuntimeAtRest(target));
+    (runtime.run.status === "completed" || runtime.run.status === "skipped") &&
+    (runtime.plan.status === "ready" ||
+      runtime.plan.status === "no_feasible_position");
+}
+
+function formatUsd(value: number): string {
+  return value.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  });
 }

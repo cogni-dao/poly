@@ -33,6 +33,7 @@ import {
   PolyAccountCopySetupOwnerQuerySchema,
   polyAccountCopySetupOperation,
   polyAccountRecentAttemptsOperation,
+  PolyAccountRecentAttemptsOwnerQuerySchema,
 } from "./poly.account.copy-operations.v1.contract";
 import {
   PolyAccountPortfolioSnapshotOwnerQuerySchema,
@@ -184,6 +185,15 @@ export const polyAccountReadRecentAttemptsOperation =
     path: "/api/v1/poly/account/recent-attempts",
     readOnly: true,
     accountFrom: "input",
+  });
+
+/** Owner-session transport for the same canonical attempt tape. */
+export const polyAccountReadRecentAttemptsOwnerOperation =
+  defineAccountReadOperation({
+    ...polyAccountReadRecentAttemptsOperation,
+    input: PolyAccountRecentAttemptsOwnerQuerySchema,
+    path: "/api/v1/poly/copy-trade/attempts",
+    accountFrom: "principal",
   });
 
 /**

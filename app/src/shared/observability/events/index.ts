@@ -42,12 +42,10 @@ export const EVENT_NAMES = {
     "feature.poly_agent_access_request.created",
   POLY_AGENT_ACCESS_REQUEST_APPROVED:
     "feature.poly_agent_access_request.approved",
-  POLY_AGENT_ACCESS_REQUEST_DENIED:
-    "feature.poly_agent_access_request.denied",
+	POLY_AGENT_ACCESS_REQUEST_DENIED: "feature.poly_agent_access_request.denied",
   POLY_AGENT_GRANT_CREATED: "feature.poly_agent_grant.created",
   POLY_AGENT_GRANT_REVOKED: "feature.poly_agent_grant.revoked",
-  POLY_AGENT_GRANT_ACCESS_DECISION:
-    "feature.poly_agent_grant.access_decision",
+	POLY_AGENT_GRANT_ACCESS_DECISION: "feature.poly_agent_grant.access_decision",
   POLY_RESEARCH_COPY_TRADE_PNL_COMPLETE:
     "feature.poly_research.copy_trade_pnl.complete",
   POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE:
@@ -80,11 +78,9 @@ export const EVENT_NAMES = {
   POLY_WALLET_WATCH_CHAIN_STOPPED: "poly.wallet_watch.chain.stopped",
 
   POLY_RECONCILER_STATUS_UPDATED: "poly.reconciler.status_updated",
-
   // Paper-account fact projection (story.5016). Background work has no HTTP
   // reqId, so these registry-backed terminal events are the correlation seam.
-  POLY_PAPER_ACCOUNT_ADDRESS_MISMATCH:
-    "poly.paper.account_address_mismatch",
+	POLY_PAPER_ACCOUNT_ADDRESS_MISMATCH: "poly.paper.account_address_mismatch",
   POLY_PAPER_ACCOUNT_FUNDER_MISMATCH: "poly.paper.account_funder_mismatch",
   POLY_PAPER_ACCOUNT_SEED_MISSING: "poly.paper.account_seed_missing",
   POLY_PAPER_POSITION_INCOHERENT: "poly.paper.position_incoherent",
@@ -94,6 +90,7 @@ export const EVENT_NAMES = {
   POLY_PAPER_PROJECT: "poly.paper.project",
   POLY_POSITION_GAP_PAPER_FILL_EVIDENCE_UNAVAILABLE:
     "poly.position_gap.v3.paper_fill_evidence_unavailable",
+	POLY_ALGORITHM_ATTEMPT_COMPLETE: "feature.poly_algorithm.attempt.complete",
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];

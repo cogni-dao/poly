@@ -211,6 +211,13 @@ export const polyCopyTradeFills = pgTable(
      * VENUE_RESOLVED_FROM_ACCOUNT (poly-trade-executor.ts).
      */
     mode: text("mode").notNull().default("live"),
+    /** Immutable algorithm identity promoted from runtime metadata. NULL only on legacy rows. */
+    algorithmId: text("algorithm_id"),
+    algorithmVersionId: text("algorithm_version_id"),
+    configHash: text("config_hash"),
+    inputSnapshotId: text("input_snapshot_id"),
+    assignmentId: text("assignment_id"),
+    correlationId: text("correlation_id"),
     /**
      * Realized fill VWAP (USDC / shares). Populated on post-place UPDATE
      * once a fill is observed; NULL for pre-fill rows. Same precision as
@@ -257,6 +264,10 @@ export const polyCopyTradeFills = pgTable(
     index("poly_copy_trade_fills_billing_observed_idx").on(
       table.billingAccountId,
       table.observedAt.desc()
+    ),
+    index("poly_copy_trade_fills_correlation_idx").on(
+      table.billingAccountId,
+      table.correlationId
     ),
     // Reconciler cross-tenant scan (`listOpenOrPending`, every 60s):
     // `WHERE status IN ('pending','open') AND created_at < … ORDER BY created_at`.
@@ -324,6 +335,33 @@ export const polyCopyTradeFills = pgTable(
       "poly_copy_trade_fills_mode_check",
       sql`${table.mode} IN ('live','paper')`
     ),
+    check(
+      "poly_copy_trade_fills_algorithm_lineage_complete",
+      sql`(
+        ${table.algorithmId} IS NULL AND ${table.algorithmVersionId} IS NULL AND
+        ${table.configHash} IS NULL AND ${table.inputSnapshotId} IS NULL AND
+        ${table.assignmentId} IS NULL AND ${table.correlationId} IS NULL
+      ) OR (
+        ${table.algorithmId} IS NOT NULL AND ${table.algorithmVersionId} IS NOT NULL AND
+        ${table.configHash} IS NOT NULL AND ${table.inputSnapshotId} IS NOT NULL AND
+        ${table.assignmentId} IS NOT NULL AND ${table.correlationId} IS NOT NULL
+      )`
+    ),
+    check(
+      "poly_copy_trade_fills_algorithm_lineage_valid",
+      sql`${table.algorithmId} IS NULL OR (
+        ${table.algorithmId} IN (
+          'poly.copy-mirror.min-bet',
+          'poly.copy-mirror.target-percentile',
+          'poly.copy-mirror.target-percentile-scaled',
+          'poly.copy-mirror.fill-exact',
+          'poly.copy-mirror.position-gap'
+        ) AND
+        ${table.algorithmVersionId} ~ '^sha256:[a-f0-9]{64}$' AND
+        ${table.configHash} ~ '^sha256:[a-f0-9]{64}$' AND
+        ${table.inputSnapshotId} ~ '^sha256:[a-f0-9]{64}$'
+      )`
+    ),
   ]
 );
 
@@ -364,6 +402,13 @@ export const polyCopyTradeDecisions = pgTable(
      * real-money trades as paper is worse than the analytics gap.
      */
     mode: text("mode").notNull().default("live"),
+    /** Immutable algorithm identity promoted from runtime metadata. NULL only on legacy rows. */
+    algorithmId: text("algorithm_id"),
+    algorithmVersionId: text("algorithm_version_id"),
+    configHash: text("config_hash"),
+    inputSnapshotId: text("input_snapshot_id"),
+    assignmentId: text("assignment_id"),
+    correlationId: text("correlation_id"),
   },
   (table) => [
     index("poly_copy_trade_decisions_decided_at_idx").on(table.decidedAt),
@@ -373,6 +418,10 @@ export const polyCopyTradeDecisions = pgTable(
     ),
     index("poly_copy_trade_decisions_billing_account_idx").on(
       table.billingAccountId
+    ),
+    index("poly_copy_trade_decisions_correlation_idx").on(
+      table.billingAccountId,
+      table.correlationId
     ),
     index("poly_copy_trade_decisions_budget_observation_idx")
       .on(table.billingAccountId, table.decidedAt.desc())
@@ -395,6 +444,33 @@ export const polyCopyTradeDecisions = pgTable(
     check(
       "poly_copy_trade_decisions_mode_check",
       sql`${table.mode} IN ('live','paper')`
+    ),
+    check(
+      "poly_copy_trade_decisions_algorithm_lineage_complete",
+      sql`(
+        ${table.algorithmId} IS NULL AND ${table.algorithmVersionId} IS NULL AND
+        ${table.configHash} IS NULL AND ${table.inputSnapshotId} IS NULL AND
+        ${table.assignmentId} IS NULL AND ${table.correlationId} IS NULL
+      ) OR (
+        ${table.algorithmId} IS NOT NULL AND ${table.algorithmVersionId} IS NOT NULL AND
+        ${table.configHash} IS NOT NULL AND ${table.inputSnapshotId} IS NOT NULL AND
+        ${table.assignmentId} IS NOT NULL AND ${table.correlationId} IS NOT NULL
+      )`
+    ),
+    check(
+      "poly_copy_trade_decisions_algorithm_lineage_valid",
+      sql`${table.algorithmId} IS NULL OR (
+        ${table.algorithmId} IN (
+          'poly.copy-mirror.min-bet',
+          'poly.copy-mirror.target-percentile',
+          'poly.copy-mirror.target-percentile-scaled',
+          'poly.copy-mirror.fill-exact',
+          'poly.copy-mirror.position-gap'
+        ) AND
+        ${table.algorithmVersionId} ~ '^sha256:[a-f0-9]{64}$' AND
+        ${table.configHash} ~ '^sha256:[a-f0-9]{64}$' AND
+        ${table.inputSnapshotId} ~ '^sha256:[a-f0-9]{64}$'
+      )`
     ),
   ]
 );

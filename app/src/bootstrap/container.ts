@@ -713,6 +713,8 @@ export async function finalizeEpochInProcess(
 
 function createContainer(): Container {
 	const env = serverEnv();
+	const algorithmImplementationRevision =
+		env.APP_BUILD_SHA ?? env.COGNI_REPO_SHA;
 	const nodeId = getNodeId();
 	const db = getAppDb();
 	const log = makeLogger({ service: "cogni-template", nodeId });
@@ -1148,6 +1150,11 @@ function createContainer(): Container {
 				const targetsReconcilerStop = startCopyTradeReconciler({
 					targetSource: copyTradeTargetSource,
 					startPollForTarget: (enumeratedTarget) => {
+						if (!algorithmImplementationRevision) {
+							throw new Error(
+								"copy trading requires APP_BUILD_SHA or COGNI_REPO_SHA",
+							);
+						}
 						const targetWallet = enumeratedTarget.targetWallet;
 						// MODE_STAMPED_FROM_ACCOUNT — the ledger resolves each new row's
 						// mode and returns that durable binding to the pipeline. Placement
@@ -1198,6 +1205,7 @@ function createContainer(): Container {
 
 						if (enumeratedTarget.sizingPolicyKind === "position_gap") {
 							const actor = startPositionGapActor({
+								implementationRevision: algorithmImplementationRevision,
 								scope: {
 									billingAccountId: enumeratedTarget.billingAccountId,
 									createdByUserId: enumeratedTarget.createdByUserId,
@@ -1625,6 +1633,8 @@ function createContainer(): Container {
 						let stopPoll: (() => void) | null = null;
 						try {
 							stopPoll = startMirrorPoll({
+								implementationRevision: algorithmImplementationRevision,
+								assignmentId: `${target.target_id}:${enumeratedTarget.mirrorActivatedAt.toISOString()}`,
 								target,
 								source,
 								ledger: orderLedger,

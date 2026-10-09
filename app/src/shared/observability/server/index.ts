@@ -10,19 +10,22 @@
  * @public
  */
 
-import type { Logger } from "pino";
-
 import type { EventBase, EventName } from "../events";
 
 import { logEvent as logSharedEvent } from "@cogni/node-shared/observability/server";
 
+interface EventLogger {
+  info(obj: Record<string, unknown>, msg?: string): void;
+  error(obj: Record<string, unknown>, msg?: string): void;
+}
+
 export function logEvent(
-  logger: Logger,
+  logger: EventLogger,
   eventName: EventName,
   fields: EventBase & Record<string, unknown>,
   message?: string
 ): void {
-  logSharedEvent(logger, eventName as never, fields, message);
+  logSharedEvent(logger as never, eventName as never, fields, message);
 }
 
 // Extracted to @cogni/node-shared

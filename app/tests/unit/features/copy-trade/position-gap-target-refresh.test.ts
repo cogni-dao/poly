@@ -248,13 +248,22 @@ describe("buildPositionGapBuyIntent", () => {
 			conditionId: "condition",
 			cohortKey: "activation:yes",
 			targetWallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
+			lineage: {
+				algorithm_id: "poly.copy-mirror.position-gap",
+				algorithm_version_id: `sha256:${"a".repeat(64)}`,
+				config_hash: `sha256:${"b".repeat(64)}`,
+				input_snapshot_id: `sha256:${"c".repeat(64)}`,
+				assignment_id: "assignment",
+				correlation_id: "client",
+			},
 		});
 
 		expect(intent.side).toBe("BUY");
-		expect(intent.attributes).toMatchObject({
+			expect(intent.attributes).toMatchObject({
 			orderType: "GTC",
 			placement: "limit",
 			position_gap_version: "3",
+			algorithm_id: "poly.copy-mirror.position-gap",
 			target_wallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
 		});
 	});
@@ -482,6 +491,7 @@ describe("buildPositionGapBuyIntent", () => {
 		});
 		const loggerWarn = vi.fn();
 		const handle = startPositionGapActor({
+			implementationRevision: "0123456789abcdef0123456789abcdef01234567",
 			scope: {
 				billingAccountId: "billing-account",
 				createdByUserId: "user",
