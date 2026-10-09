@@ -65,7 +65,7 @@ describe("this node's langgraph catalog", () => {
       expect(POLY_NODE_LANGGRAPH_CATALOG[graphName]).toBeDefined();
     }
     expect(Object.keys(POLY_NODE_LANGGRAPH_CATALOG)).toHaveLength(
-      Object.keys(LANGGRAPH_CATALOG).length + 1
+      Object.keys(LANGGRAPH_CATALOG).length + 2
     );
   });
 
