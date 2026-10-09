@@ -242,6 +242,9 @@ describe("CopyTargetControlPanel algorithm selector", () => {
       const mirror = screen.getByText(/Mirror: orders resting/);
       expect(mirror).toBeInTheDocument();
       expect(mirror.closest("div")).not.toHaveClass("text-destructive");
+      expect(
+        screen.getByText(/Set \$20\.00 · usable \$20\.00/),
+      ).toBeInTheDocument();
 
       cleanup();
       (target.position_gap_runtime as { positions: unknown[] }).positions = [];
@@ -249,8 +252,8 @@ describe("CopyTargetControlPanel algorithm selector", () => {
       fireEvent.click(
         screen.getByRole("button", { name: "Expand copy controls" }),
       );
-      const empty = screen.getByText(/Mirror: no feasible position/);
-      expect(empty.closest("div")).toHaveClass("text-destructive");
+      const empty = screen.getByText(/Mirror: no order/);
+      expect(empty.closest("div")).not.toHaveClass("text-destructive");
     } finally {
       cleanup();
       target.position_gap_runtime = previousRuntime;

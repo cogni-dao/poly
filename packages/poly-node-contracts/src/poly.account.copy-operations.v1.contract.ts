@@ -315,7 +315,16 @@ export const PolyPositionGapRuntimeSchema = z.discriminatedUnion("status", [
     plan: z.object({
       status: z.enum(["ready", "no_feasible_position", "blocked"]),
       block_reason: z.enum(["invalid_input", "stale_snapshot"]).nullable(),
+      /** Marked directional exposure after complete-set pairs are removed. */
       eligible_net_nav_usdc: z.number().nonnegative(),
+      /** Cash-equivalent paired outcome shares, valued at $1 per complete set. */
+      target_complete_set_value_usdc: z.number().nonnegative().nullable(),
+      /** Exact on-chain target balances at target_balance_source_block. */
+      target_pusd_balance_usdc: z.number().nonnegative().nullable(),
+      target_usdce_balance_usdc: z.number().nonnegative().nullable(),
+      /** Denominator used for every target weight and desired-share decision. */
+      target_total_wealth_usdc: z.number().nonnegative().nullable(),
+      target_balance_source_block: z.number().int().nonnegative().nullable(),
       scale: z.number().nonnegative(),
       sleeve_budget_usdc: z.number().positive(),
       reserved_budget_usdc: z.number().nonnegative(),

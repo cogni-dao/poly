@@ -298,6 +298,11 @@ function runtimeFromRun(
 			block_reason: plan.blockReason,
 			eligible_net_nav_usdc:
 				numberOf(plan.eligibleNetNavUsdc) ?? numberOf(run.eligibleNetNavUsdc),
+			target_complete_set_value_usdc: numberOf(plan.targetCompleteSetValueUsdc),
+			target_pusd_balance_usdc: numberOf(plan.targetCashPusdUsdc),
+			target_usdce_balance_usdc: numberOf(plan.targetCashUsdcEUsdc),
+			target_total_wealth_usdc: numberOf(plan.targetTotalWealthUsdc),
+			target_balance_source_block: numberOf(plan.targetCashObservedBlock),
 			scale: numberOf(plan.scale) ?? numberOf(run.scale),
 			sleeve_budget_usdc: sleeve,
 			reserved_budget_usdc: reservedBudget,
