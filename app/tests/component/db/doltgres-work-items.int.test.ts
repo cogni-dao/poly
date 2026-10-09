@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-/** Real Doltgres 0.57.3 acceptance for the deployed work-item mutation flow. */
+/**
+ * Real Doltgres 0.57.3 acceptance for the deployed work-item mutation flow.
+ *
+ * node-template owns `@cogni/work-items`' Doltgres adapter, so the real-engine
+ * proof belongs here rather than only in a fork (task.5199). Fake-SQL unit
+ * tests cannot see Dolt branch semantics; bug.5358 shipped green against them.
+ */
 
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -17,9 +23,9 @@ import {
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
-	DoltgresPolyWorkItemAdapter,
+	DoltgresWorkItemAdapter,
 	WorkItemsBusyError,
-} from "@/adapters/server/db/doltgres/work-items-adapter";
+} from "@cogni/work-items/adapters/doltgres";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../..");
@@ -86,10 +92,19 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 	it("creates, lists, patches, coordinates, and deletes through Dolt branches", async () => {
 		const createWorkItemClient = () =>
 			postgres(dbUrl, { max: 1, fetch_types: false });
-		const adapter = new DoltgresPolyWorkItemAdapter(sql, stageLogger, {
+		// An EXPLICIT read pool, so `recreateClient` below stays a pure
+		// write-pool factory and `sql` keeps tracking the write pool — which the
+		// pool-death scenario further down depends on. The 0.1.7 derivation path
+		// (no readClient, pool built from recreateClient) is covered in the unit
+		// lane; mixing it in here would mean `sql` sometimes pointed at the read
+		// pool and the pool-death assertions would kill the wrong connection.
+		const readSql = createWorkItemClient();
+		const adapter = new DoltgresWorkItemAdapter(sql, {
+			logger: stageLogger,
 			lockWaitMs: 250,
 			lockRetryMs: 25,
 			queryTimeoutMs: 5_000,
+			readClient: readSql,
 			recreateClient: () => {
 				sql = createWorkItemClient();
 				return sql;
@@ -111,10 +126,18 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		);
 		expect(patched.title).toBe("Doltgres accepted");
 
+		// bug.5358's core guarantee, against a REAL held lock: a write holding
+		// the global work-items lock must not take reads down with it. Before
+		// 0.1.7 this same lock made `get` reject with WorkItemsBusyError, because
+		// reads shared the write lane. The write lane still fails closed — the
+		// `patch` below proves that on the same held lock.
 		const blocker = createWorkItemClient();
 		try {
 			await blocker.unsafe("SELECT pg_advisory_lock(5001001)");
-			await expect(adapter.get(id)).rejects.toBeInstanceOf(WorkItemsBusyError);
+			await expect(adapter.get(id)).resolves.toMatchObject({ id });
+			await expect(
+				adapter.patch({ id, set: { title: "blocked" } }, principalId),
+			).rejects.toBeInstanceOf(WorkItemsBusyError);
 		} finally {
 			await blocker
 				.unsafe("SELECT pg_advisory_unlock(5001001)")
@@ -142,7 +165,15 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				(error) => error,
 			);
 			await new Promise((resolve) => setTimeout(resolve, 50));
-			const recoveryAttempt = adapter.get(id);
+			// A WRITE, not a read: the write pool is the only pool a write uses,
+			// so it is the only operation that can observe that pool dying and
+			// then prove `recreateClient` rebuilt it. Before 0.1.7 a read shared
+			// that pool and stood in for this; it no longer does, and a read
+			// standing in would now assert nothing.
+			const recoveryAttempt = adapter.patch(
+				{ id, set: { title: "pool death" } },
+				principalId,
+			);
 			const destroyTimer = setTimeout(() => {
 				void oldPool.end({ timeout: 0 });
 			}, 100);
@@ -157,7 +188,16 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			await lockHolder.end({ timeout: 0 });
 		}
 
+		// Reads kept serving throughout — including while the write pool was
+		// dead, which is the bug.5358 guarantee.
 		await expect(adapter.get(id)).resolves.toMatchObject({ id });
+		// ...and the next WRITE both proves the pool was rebuilt and sweeps the
+		// orphan branch. Sweeping is a branch mutation, so it belongs to the
+		// write plane (COMMAND_QUERY_SEPARATION); a read used to do it here only
+		// because a read used to take the write lock.
+		await expect(
+			adapter.patch({ id, set: { title: "Doltgres accepted" } }, principalId),
+		).resolves.toMatchObject({ id, title: "Doltgres accepted" });
 		const verifier = createWorkItemClient();
 		try {
 			await expect(
@@ -193,9 +233,10 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		expect(released.claimedByRun).toBeUndefined();
 		await expect(adapter.delete(id, principalId)).resolves.toBe(true);
 		await expect(adapter.get(id)).resolves.toBeNull();
+		await readSql.end({ timeout: 0 });
 	}, 60_000);
 
-	it("serves reads past an unreachable operation branch while writes fail closed", async () => {
+	it("serves reads past an unprovable operation branch and quarantines it so writes recover", async () => {
 		const branch = "work-item-op/component-unreachable";
 		const maintenance = postgres(dbUrl, { max: 1, fetch_types: false });
 		try {
@@ -203,14 +244,15 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				`SELECT dolt_checkout('-b', '${branch}', 'main')`,
 			);
 			await maintenance.unsafe(
-				"INSERT INTO work_items (id, type, title, status, node, created_by_principal_id) VALUES ('task.9599', 'task', 'Unreachable evidence', 'needs_implement', 'poly', 'component-agent')",
+				"INSERT INTO work_items (id, type, title, status, node, created_by_principal_id) VALUES ('task.9599', 'task', 'Unreachable evidence', 'needs_implement', 'shared', 'component-agent')",
 			);
 			await maintenance.unsafe(
 				"SELECT dolt_commit('-Am', 'component unreachable evidence')",
 			);
 			await maintenance.unsafe("SELECT dolt_checkout('main')");
 
-			const adapter = new DoltgresPolyWorkItemAdapter(sql, stageLogger, {
+			const adapter = new DoltgresWorkItemAdapter(sql, {
+			logger: stageLogger,
 				lockWaitMs: 250,
 				lockRetryMs: 25,
 			});
@@ -229,8 +271,19 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				),
 			).resolves.toHaveLength(1);
 
-			// A write still fails closed on the same branch: it must never build on
-			// unproven evidence.
+			// CONTRACT CHANGE, deliberate (bug.5358). This case previously asserted
+			// that the write stays 503 forever. That is what made operator
+			// production unwritable: nothing deletes this ref, the sweep re-walks
+			// `dolt.branches` on every request, and no restart clears it — 88
+			// consecutive write 503s over two hours while reads stayed 200.
+			//
+			// The safety property is unchanged: the write still does not build on
+			// unproven evidence. Instead the ref is RENAMED out of the swept
+			// namespace, so its commits survive byte-for-byte for a human to
+			// merge, and the write then proceeds. Here it proceeds to a genuine
+			// "not found", because committed `main` does not carry task.9599 —
+			// which is exactly the point: the branch no longer decides the
+			// outcome.
 			await expect(
 				adapter.patch(
 					{
@@ -239,14 +292,36 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 					},
 					"component-agent",
 				),
-			).rejects.toBeInstanceOf(WorkItemsBusyError);
+			).rejects.toThrow(/Work item not found/);
+			// Parked, never deleted: gone from the op namespace, present under
+			// quarantine with its row intact.
 			await expect(
 				maintenance.unsafe(
 					`SELECT name FROM dolt.branches WHERE name = '${branch}'`,
 				),
+			).resolves.toHaveLength(0);
+			const quarantined = `work-item-quarantine/${branch.slice(
+				"work-item-op/".length,
+			)}`;
+			await expect(
+				maintenance.unsafe(
+					`SELECT name FROM dolt.branches WHERE name = '${quarantined}'`,
+				),
 			).resolves.toHaveLength(1);
+			// Proving the ROW survived is the point of quarantine. Doltgres is
+			// Postgres dialect, so MySQL backtick branch-qualification does not
+			// parse; check the branch out on the maintenance session instead.
+			await maintenance.unsafe(`SELECT dolt_checkout('${quarantined}')`);
+			await expect(
+				maintenance.unsafe(
+					"SELECT id FROM work_items WHERE id = 'task.9599'",
+				),
+			).resolves.toHaveLength(1);
+			await maintenance.unsafe("SELECT dolt_checkout('main')");
 
-			await maintenance.unsafe(`SELECT dolt_branch('-D', '${branch}')`);
+			// `branch` no longer exists — quarantine renamed it — so drop the
+			// quarantined ref to prove a clean store still reads null.
+			await maintenance.unsafe(`SELECT dolt_branch('-D', '${quarantined}')`);
 			await expect(
 				adapter.get(toWorkItemId("task.9599")),
 			).resolves.toBeNull();
@@ -257,12 +332,18 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			await maintenance
 				.unsafe(`SELECT dolt_branch('-D', '${branch}')`)
 				.catch(() => undefined);
+			await maintenance
+				.unsafe(
+					`SELECT dolt_branch('-D', 'work-item-quarantine/${branch.slice("work-item-op/".length)}')`,
+				)
+				.catch(() => undefined);
 			await maintenance.end({ timeout: 0 });
 		}
 	}, 60_000);
 
 	it("commits only work_items while preserving and deterministically cleaning dirty knowledge", async () => {
-		const adapter = new DoltgresPolyWorkItemAdapter(sql, stageLogger, {
+		const adapter = new DoltgresWorkItemAdapter(sql, {
+			logger: stageLogger,
 			lockWaitMs: 250,
 			lockRetryMs: 25,
 			queryTimeoutMs: 5_000,
@@ -300,7 +381,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				`SELECT dolt_checkout('-b', '${knowledgeBranch}', 'main')`,
 			);
 			await knowledgeSession.unsafe(
-				`INSERT INTO knowledge (id, domain, title, content, source_type) VALUES ('${knowledgeId}', 'poly', 'Dirty fixture', 'Must remain outside work-item commit', 'agent')`,
+				`INSERT INTO knowledge (id, domain, title, content, source_type) VALUES ('${knowledgeId}', 'shared', 'Dirty fixture', 'Must remain outside work-item commit', 'agent')`,
 			);
 
 			await adapter.create(
