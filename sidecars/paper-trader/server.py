@@ -128,15 +128,16 @@ def _to_upstream_int(external_id: str) -> Optional[int]:
 # OR conditionId. We strip the cogni prefix and pass the bare conditionId.
 MARKET_ID_PREFIX = "prediction-market:polymarket:"
 
-# Upstream LimitOrder.status (from pm_trader.orders) maps to cogni's OrderStatus.
-# Cogni `OrderStatus` enum: open|filled|cancelled|expired (we collapse expired
-# into cancelled — the reconciler treats them identically).
+# Upstream LimitOrder.status (from pm_trader.orders) maps to cogni's canonical
+# OrderStatus. Upstream uses British ``cancelled``; the TS port deliberately
+# uses ``canceled``. Keep that spelling translation at this wire boundary so a
+# successful safety cancel can always be parsed by ``OrderReceiptSchema``.
 UPSTREAM_TO_COGNI_STATUS = {
     "pending": "open",
     "filled": "filled",
-    "cancelled": "cancelled",
-    "canceled": "cancelled",
-    "expired": "cancelled",
+    "cancelled": "canceled",
+    "canceled": "canceled",
+    "expired": "canceled",
 }
 
 # ─── Event registry (mirrors nodes/poly/app/src/shared/observability/events) ─
@@ -641,7 +642,9 @@ class Sidecar:
             raise HTTPException(status_code=404, detail=ERROR_NOT_FOUND)
         st = self.orders.get(order_id)
         if st is not None:
-            st.status = "cancelled"
+            # The vendored engine stores ``cancelled``; our HTTP contract is
+            # the provider-neutral Cogni spelling accepted by OrderReceiptSchema.
+            st.status = "canceled"
         log.info(
             "order cancelled",
             extra={

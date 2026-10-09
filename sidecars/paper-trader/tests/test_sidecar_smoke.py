@@ -349,7 +349,7 @@ def test_cancel_existing_order_returns_204_and_flips_status(client):
     r2 = client.post(f"/orders/{oid}/cancel")
     assert r2.status_code == 204
     r3 = client.get(f"/orders/{oid}")
-    assert r3.json()["status"] == "cancelled"
+    assert r3.json()["status"] == "canceled"
 
 
 def test_cancel_invalid_id_format_returns_404(client):
