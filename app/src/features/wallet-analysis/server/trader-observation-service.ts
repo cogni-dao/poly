@@ -28,6 +28,9 @@
  *   - COGNI_POSITION_ABSENCE_NEEDS_AUTHORITY: complete Data API polls do not
  *     deactivate Cogni-wallet current-position rows unless an injected
  *     authority classifies the missing row terminal.
+ *   - PARTIAL_PUBLICATION_PRESERVES_OMISSIONS: a nonzero Polygon balance
+ *     blocks destructive omission cleanup but not publication of rows the
+ *     same Data API page did return; those rows publish under a partial cursor.
  * Side-effects: IO through injected Data API client + optional user-pnl client + injected DB.
  * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5015
  * @public
@@ -1231,6 +1234,35 @@ async function observePositionsSerialized(deps: {
       signal: deps.signal,
     });
     lastAuthority = authority;
+    if (authority.reason === "authority_nonzero") {
+      // Data API can lag a just-filled CTF balance (or omit an unredeemed
+      // resolved claim). That must block destructive omission cleanup, but it
+      // must not also discard rows the same complete page did return. Publish
+      // those observed rows atomically, preserve every omission, and mark the
+      // cursor partial so readers show current known positions without
+      // claiming a complete wallet snapshot.
+      const published = await publishPreparedPositions({
+        db: deps.db,
+        wallet: deps.wallet,
+        prepared: { state, positions: pageResult.positions, omitted },
+        signal: deps.signal,
+        beforePositionCursorPublish: deps.beforePositionCursorPublish,
+        mode: "partial_preserve_omissions",
+      });
+      if (published === "superseded") continue;
+      logPositionPublication(deps, {
+        state,
+        status: authority.reason,
+        reason: authority.reason,
+        pages: pageResult.pages,
+        fetchedCount: pageResult.positions.length,
+        omittedCount: omitted.length,
+        authority,
+        published: true,
+        startedAt,
+      });
+      return { ...published, failureReason: authority.reason };
+    }
     if (authority.reason !== "all_zero") {
       const published = await publishPositionFailure({
         db: deps.db,
@@ -1319,10 +1351,11 @@ function logPositionPublication(
     startedAt: number;
   }
 ): void {
+  const normalizedStatus = normalizePositionPublishStatus(input.status);
   deps.logger?.info(
     {
       event: "poly.trader.positions.publish",
-      status: normalizePositionPublishStatus(input.status),
+      status: normalizedStatus,
       reason: input.reason,
       observation_time: input.state.capturedAt,
       wallet: deps.wallet.walletAddress,
@@ -1335,8 +1368,10 @@ function logPositionPublication(
       chunk_count: input.authority.chunkCount,
       cursor_before_status: input.state.cursor.status ?? "missing",
       cursor_after_status: input.published
-        ? "ok"
-        : normalizePositionPublishStatus(input.status),
+        ? normalizedStatus === "published"
+          ? "ok"
+          : normalizedStatus
+        : normalizedStatus,
       published: input.published,
       duration_ms: Date.now() - input.startedAt,
     },
@@ -1351,7 +1386,7 @@ function normalizePositionPublishStatus(
   if (status === "data_api_incomplete" || status === "omission_over_cap") {
     return "partial";
   }
-  if (status === "authority_nonzero") return "stale";
+  if (status === "authority_nonzero") return "partial";
   if (status === "superseded_exhausted") return "superseded";
   return "error";
 }
@@ -1641,6 +1676,7 @@ async function publishPreparedPositions(input: {
   prepared: PreparedPositionPublication;
   signal?: AbortSignal | undefined;
   beforePositionCursorPublish?: (() => void | Promise<void>) | undefined;
+  mode?: "complete" | "partial_preserve_omissions";
 }): Promise<PersistedCurrentPositions | "superseded"> {
   input.signal?.throwIfAborted();
   return await withStatementTimeout(
@@ -1674,7 +1710,8 @@ async function publishPreparedPositions(input: {
         tx,
         input.wallet,
         input.prepared,
-        input.beforePositionCursorPublish
+        input.beforePositionCursorPublish,
+        input.mode ?? "complete"
       );
     }
   );
@@ -1697,7 +1734,8 @@ async function persistPreparedCurrentPositions(
   db: Db,
   wallet: PolyTraderWallet,
   prepared: PreparedPositionPublication,
-  beforePositionCursorPublish?: () => void | Promise<void>
+  beforePositionCursorPublish?: () => void | Promise<void>,
+  mode: "complete" | "partial_preserve_omissions" = "complete"
 ): Promise<PersistedCurrentPositions> {
   const positions = prepared.positions;
   const capturedAt = new Date(prepared.state.capturedAt);
@@ -1763,52 +1801,54 @@ async function persistPreparedCurrentPositions(
         },
       });
   }
-  // Resolved-loser terminality is independent of Data-API omission and is
-  // retained from the existing writer contract. It executes in this same
-  // publication transaction so a later cursor failure rolls it back with
-  // snapshots/current upserts and exact-zero omission deactivations.
-  await db
-    .update(polyTraderCurrentPositions)
-    .set({ active: false, lastObservedAt: capturedAt })
-    .where(
-      and(
-        eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
-        eq(polyTraderCurrentPositions.active, true),
-        exists(
-          db
-            .select({ one: sql`1` })
-            .from(polyMarketOutcomes)
-            .where(
-              and(
-                eq(
-                  polyMarketOutcomes.conditionId,
-                  polyTraderCurrentPositions.conditionId
-                ),
-                eq(
-                  polyMarketOutcomes.tokenId,
-                  polyTraderCurrentPositions.tokenId
-                ),
-                eq(polyMarketOutcomes.outcome, "loser")
+  if (mode === "complete") {
+    // Resolved-loser terminality is independent of Data-API omission and is
+    // retained from the existing writer contract. It executes in this same
+    // publication transaction so a later cursor failure rolls it back with
+    // snapshots/current upserts and exact-zero omission deactivations.
+    await db
+      .update(polyTraderCurrentPositions)
+      .set({ active: false, lastObservedAt: capturedAt })
+      .where(
+        and(
+          eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+          eq(polyTraderCurrentPositions.active, true),
+          exists(
+            db
+              .select({ one: sql`1` })
+              .from(polyMarketOutcomes)
+              .where(
+                and(
+                  eq(
+                    polyMarketOutcomes.conditionId,
+                    polyTraderCurrentPositions.conditionId
+                  ),
+                  eq(
+                    polyMarketOutcomes.tokenId,
+                    polyTraderCurrentPositions.tokenId
+                  ),
+                  eq(polyMarketOutcomes.outcome, "loser")
+                )
               )
-            )
+          )
         )
-      )
-    );
-  // The Data API's explicit redeemable flag is terminal market evidence, not
-  // an unexplained omission. Keep its saved economics for closed-position
-  // history while removing it from the open/current portfolio even when the
-  // wallet still holds unredeemed winner tokens on-chain.
-  await db
-    .update(polyTraderCurrentPositions)
-    .set({ active: false, lastObservedAt: capturedAt })
-    .where(
-      and(
-        eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
-        eq(polyTraderCurrentPositions.active, true),
-        sql`${polyTraderCurrentPositions.raw}->>'redeemable' = 'true'`
-      )
-    );
-  if (prepared.omitted.length > 0) {
+      );
+    // The Data API's explicit redeemable flag is terminal market evidence, not
+    // an unexplained omission. Keep its saved economics for closed-position
+    // history while removing it from the open/current portfolio even when the
+    // wallet still holds unredeemed winner tokens on-chain.
+    await db
+      .update(polyTraderCurrentPositions)
+      .set({ active: false, lastObservedAt: capturedAt })
+      .where(
+        and(
+          eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+          eq(polyTraderCurrentPositions.active, true),
+          sql`${polyTraderCurrentPositions.raw}->>'redeemable' = 'true'`
+        )
+      );
+  }
+  if (mode === "complete" && prepared.omitted.length > 0) {
     const omittedKeys = JSON.stringify(
       prepared.omitted.map((position) => ({
         condition_id: position.conditionId,
@@ -1848,8 +1888,11 @@ async function persistPreparedCurrentPositions(
       traderWalletId: wallet.id,
       source: POSITION_SOURCE,
       lastSuccessAt: capturedAt,
-      status: "ok",
-      errorMessage: null,
+      status: mode === "complete" ? "ok" : "partial",
+      errorMessage:
+        mode === "complete"
+          ? null
+          : `authority_nonzero: ${prepared.omitted.length} Data API omissions preserved`,
       updatedAt: capturedAt,
     })
     .onConflictDoUpdate({
@@ -1859,8 +1902,11 @@ async function persistPreparedCurrentPositions(
       ],
       set: {
         lastSuccessAt: capturedAt,
-        status: "ok",
-        errorMessage: null,
+        status: mode === "complete" ? "ok" : "partial",
+        errorMessage:
+          mode === "complete"
+            ? null
+            : `authority_nonzero: ${prepared.omitted.length} Data API omissions preserved`,
         updatedAt: capturedAt,
       },
     });
@@ -1868,9 +1914,11 @@ async function persistPreparedCurrentPositions(
   return {
     observedPositions: positions,
     positionRows: values.length,
-    complete: true,
-    stalePositionRowsDeactivated: prepared.omitted.length,
-    stalePositionRowsPreserved: 0,
+    complete: mode === "complete",
+    stalePositionRowsDeactivated:
+      mode === "complete" ? prepared.omitted.length : 0,
+    stalePositionRowsPreserved:
+      mode === "complete" ? 0 : prepared.omitted.length,
   };
 }
 

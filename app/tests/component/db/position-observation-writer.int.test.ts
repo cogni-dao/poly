@@ -6,7 +6,8 @@
  * Purpose: Real-Postgres proofs for the serialized current-position writer.
  * Scope: Writer transaction/CAS behavior with fake read-only upstreams.
  * Invariants:
- *   - ZERO_ONLY_DEACTIVATES: nonzero dust publishes no snapshot/current rows.
+ *   - ZERO_ONLY_DEACTIVATES: nonzero omissions are preserved while newly
+ *     observed rows publish as an explicitly partial snapshot.
  *   - XMIN_BEATS_SAME_TIMESTAMP: cursor updates sharing last_success_at still
  *     supersede an older preparation.
  *   - LOCKED_OMISSION_RECHECK: a current row appearing after chain
@@ -30,6 +31,7 @@ import {
 } from "@cogni/poly-db-schema/trader-activity";
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
 import {
   refreshCurrentPositionsForWallet,
 } from "@/features/wallet-analysis/server/trader-observation-service";
@@ -199,20 +201,22 @@ describe("serialized position-observation writer", () => {
     );
   });
 
-  it("treats nonzero dust as nonfresh and publishes none of the fetched rows", async () => {
+  it("publishes fetched rows as partial while preserving nonzero omissions", async () => {
     const wallet = await seedWallet("5102");
     await seedCurrent(wallet.id, "201");
+    const logger = { info: vi.fn() };
 
     const result = await refreshCurrentPositionsForWallet({
       db: getSeedDb() as unknown as WriterDb,
       client: clientReturning(async () => [position("202")]),
       walletAddress: wallet.address,
       readPositionBalances: async () => [1n],
+      logger: logger as never,
     });
 
     expect(result).toMatchObject({
       complete: false,
-      positionRows: 0,
+      positionRows: 1,
       failureReason: "authority_nonzero",
       stalePositionRowsPreserved: 1,
     });
@@ -220,13 +224,19 @@ describe("serialized position-observation writer", () => {
       .select()
       .from(polyTraderCurrentPositions)
       .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
-    expect(current).toHaveLength(1);
-    expect(current[0]).toMatchObject({ tokenId: "201", active: true });
+    expect(current).toHaveLength(2);
+    expect(current).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tokenId: "201", active: true }),
+        expect.objectContaining({ tokenId: "202", active: true }),
+      ])
+    );
     const snapshots = await getSeedDb()
       .select()
       .from(polyTraderPositionSnapshots)
       .where(eq(polyTraderPositionSnapshots.traderWalletId, wallet.id));
-    expect(snapshots).toHaveLength(0);
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toMatchObject({ tokenId: "202" });
     const [cursor] = await getSeedDb()
       .select()
       .from(polyTraderIngestionCursors)
@@ -236,8 +246,88 @@ describe("serialized position-observation writer", () => {
           eq(polyTraderIngestionCursors.source, "data-api-positions")
         )
       );
-    expect(cursor?.lastSuccessAt).toEqual(wallet.lastSuccessAt);
-    expect(cursor?.status).toBe("stale");
+    expect(cursor?.lastSuccessAt.getTime()).toBeGreaterThan(
+      wallet.lastSuccessAt.getTime()
+    );
+    expect(cursor).toMatchObject({
+      status: "partial",
+      errorMessage: "authority_nonzero: 1 Data API omissions preserved",
+    });
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "poly.trader.positions.publish",
+        status: "partial",
+        reason: "authority_nonzero",
+        observed_count: 1,
+        omitted_count: 1,
+        nonzero_count: 1,
+        cursor_after_status: "partial",
+        published: true,
+      }),
+      "trader positions publication finished"
+    );
+  });
+
+  it("publishes the production-shaped two observed rows while preserving five mixed omissions", async () => {
+    const wallet = await seedWallet("5111");
+    for (const tokenId of ["1101", "1102", "1103", "1104", "1105"]) {
+      await seedCurrent(wallet.id, tokenId);
+    }
+
+    const result = await refreshCurrentPositionsForWallet({
+      db: getSeedDb() as unknown as WriterDb,
+      client: clientReturning(async () => [position("1106"), position("1107")]),
+      walletAddress: wallet.address,
+      readPositionBalances: async () => [0n, 19_010_000n, 0n, 7_240_000n, 1n],
+    });
+
+    expect(result).toMatchObject({
+      complete: false,
+      positionRows: 2,
+      failureReason: "authority_nonzero",
+      stalePositionRowsDeactivated: 0,
+      stalePositionRowsPreserved: 5,
+    });
+    const current = await getSeedDb()
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    expect(current).toHaveLength(7);
+    expect(current.every((row) => row.active)).toBe(true);
+    expect(current.map((row) => row.tokenId)).toEqual(
+      expect.arrayContaining(["1106", "1107"])
+    );
+    const [cursor] = await getSeedDb()
+      .select()
+      .from(polyTraderIngestionCursors)
+      .where(
+        and(
+          eq(polyTraderIngestionCursors.traderWalletId, wallet.id),
+          eq(polyTraderIngestionCursors.source, "data-api-positions")
+        )
+      );
+    expect(cursor).toMatchObject({
+      status: "partial",
+      errorMessage: "authority_nonzero: 5 Data API omissions preserved",
+    });
+    const readModel = await readCurrentWalletPositionModel({
+      db: getSeedDb(),
+      walletAddress: wallet.address,
+      capturedAt: new Date(),
+    });
+    expect(readModel.positions.map((entry) => entry.asset).sort()).toEqual([
+      "1106",
+      "1107",
+    ]);
+    expect(readModel.summary).toMatchObject({
+      positionsMtm: 10,
+      activeRows: 2,
+      cursorStatus: "partial",
+      stale: true,
+    });
+    expect(readModel.warnings).toContainEqual(
+      expect.objectContaining({ code: "current_positions_partial" })
+    );
   });
 
   it("keeps a Data-API-returned resolved loser inactive on successful publish", async () => {

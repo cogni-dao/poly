@@ -122,7 +122,7 @@ export function TargetPositionsPanel() {
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
-								<SelectItem value="portfolio_weight">Weight</SelectItem>
+								<SelectItem value="portfolio_weight">Target weight</SelectItem>
 								<SelectItem value="current_value">Current value</SelectItem>
 								<SelectItem value="pnl">P/L</SelectItem>
 								<SelectItem value="last_observed">Newest</SelectItem>
@@ -155,14 +155,14 @@ export function TargetPositionsPanel() {
 									<TableHead>Target</TableHead>
 									<TableHead className="min-w-56">Market</TableHead>
 									<TableHead>Outcome</TableHead>
-									<TableHead className="text-right">Weight</TableHead>
+									<TableHead className="text-right">Target weight</TableHead>
 									<TableHead className="text-right">Shares</TableHead>
 									<TableHead className="text-right">Cost</TableHead>
 									<TableHead className="text-right">Value</TableHead>
 									<TableHead className="text-right">Entry</TableHead>
 									<TableHead className="text-right">Now</TableHead>
 									<TableHead className="text-right">P/L</TableHead>
-									<TableHead className="text-right">Mirror</TableHead>
+									<TableHead className="text-right">Mirror shares</TableHead>
 									<TableHead className="text-right">Limits</TableHead>
 									<TableHead className="text-right">Seen</TableHead>
 								</TableRow>
@@ -321,19 +321,42 @@ function TargetFreshness({
 				.filter(
 					(target) => target.position_gap_runtime.status !== "not_applicable",
 				)
-				.map((target) => (
-					<Badge
-						key={`mirror:${target.target_id}`}
-						intent={
-							runtimeHealthy(target.position_gap_runtime)
-								? "secondary"
-								: "destructive"
-						}
-						size="sm"
-					>
-						Mirror · {runtimeSummary(target.position_gap_runtime)}
-					</Badge>
-				))}
+				.flatMap((target) => {
+					const runtime = target.position_gap_runtime;
+					return [
+						<Badge
+							key={`mirror:${target.target_id}`}
+							intent={runtimeHealthy(runtime) ? "secondary" : "destructive"}
+							size="sm"
+						>
+							Mirror · {runtimeSummary(runtime)}
+						</Badge>,
+						...(runtime.status === "observed" &&
+						runtime.plan.target_total_wealth_usdc !== null
+							? [
+									<Badge
+										key={`wealth:${target.target_id}`}
+										intent="secondary"
+										size="sm"
+									>
+										Target wealth{" "}
+										{formatUsd(runtime.plan.target_total_wealth_usdc)} · pUSD
+										balance{" "}
+										{formatNullableUsd(runtime.plan.target_pusd_balance_usdc)} ·
+										directional positions{" "}
+										{formatUsd(runtime.plan.eligible_net_nav_usdc)} · paired
+										sets{" "}
+										{formatNullableUsd(
+											runtime.plan.target_complete_set_value_usdc,
+										)}{" "}
+										· block{" "}
+										{runtime.plan.target_balance_source_block?.toLocaleString() ??
+											"unknown"}
+									</Badge>,
+								]
+							: []),
+					];
+				})}
 		</div>
 	);
 }
@@ -352,7 +375,9 @@ function runtimeSummary(
 		? runtime.positions.some((position) => position.open_shares > 1e-9)
 			? "orders resting"
 			: "matched"
-		: runtime.plan.status.replaceAll("_", " ");
+		: runtime.plan.status === "no_feasible_position"
+			? "no order"
+			: runtime.plan.status.replaceAll("_", " ");
 	const fills = runtime.execution.fill_accounting;
 	const execution =
 		fills.status === "verified"
@@ -360,7 +385,7 @@ function runtimeSummary(
 			: runtime.execution.submitted_order_count === 0
 				? "no fills"
 				: `${runtime.execution.submitted_order_count} submitted · fills pending`;
-	return `${status} · sleeve ${formatUsd(runtime.plan.sleeve_budget_usdc)}${minimum === null ? "" : ` · min ${formatUsd(minimum)}`} · NAV ${formatUsd(runtime.plan.eligible_net_nav_usdc)} · scale ${runtime.plan.scale.toPrecision(3)} · free ${formatUsd(runtime.plan.free_wallet_cash_after_guards_usdc)} · reserved ${formatUsd(runtime.plan.reserved_budget_usdc)} · ${execution}`;
+	return `${status} · usable budget ${formatUsd(runtime.plan.sleeve_budget_usdc)}${minimum === null ? "" : ` · ${formatUsd(minimum)} needed`} · scale ${runtime.plan.scale.toPrecision(3)} · wallet cash ${formatUsd(runtime.plan.free_wallet_cash_after_guards_usdc)} · used budget ${formatUsd(runtime.plan.reserved_budget_usdc)} · ${execution}`;
 }
 
 function runtimeAtRest(
@@ -389,8 +414,9 @@ function runtimeHealthy(
 		runtime.status === "observed" &&
 		runtime.snapshot.completeness === "complete" &&
 		runtime.snapshot.freshness === "fresh" &&
-		((runtime.run.status === "completed" && runtime.plan.status === "ready") ||
-			runtimeAtRest(runtime))
+		(runtime.run.status === "completed" || runtime.run.status === "skipped") &&
+		(runtime.plan.status === "ready" ||
+			runtime.plan.status === "no_feasible_position")
 	);
 }
 
@@ -410,6 +436,10 @@ function formatMaybe(
 	format: (value: number) => string,
 ): string {
 	return value === null ? "—" : format(value);
+}
+
+function formatNullableUsd(value: number | null): string {
+	return value === null ? "unknown" : formatUsd(value);
 }
 
 function shortAddress(address: string): string {
