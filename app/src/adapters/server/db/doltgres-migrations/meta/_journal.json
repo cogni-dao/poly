@@ -15,6 +15,13 @@
       "when": 1790977072974,
       "tag": "0001_work_item_ownership_leases",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791511084228,
+      "tag": "0002_amusing_black_bolt",
+      "breakpoints": true
     }
   ]
 }

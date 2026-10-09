@@ -55,6 +55,7 @@ import {
 	recoverableHardClobRejectionCode,
 } from "@/features/copy-trade/position-gap-placement-errors";
 import type {
+	PositionGapHoldingV1,
 	PositionGapOpenBuyOrderV1,
 	PositionGapPriceCohortV1,
 } from "@/features/copy-trade/position-gap-v3/model";
@@ -307,8 +308,14 @@ export class PositionGapRuntimeStore {
 		cohorts: readonly PositionGapPriceCohortV1[];
 		openBuyOrders: readonly PositionGapOpenBuyOrderV1[];
 		activeBuys: readonly PositionGapActiveBuy[];
+		provisionalFilledHoldings: readonly PositionGapHoldingV1[];
 	}> {
-		const [cohortRows, activeActionRows, terminalRepairRows] = await Promise.all([
+		const [
+			cohortRows,
+			activeActionRows,
+			terminalRepairRows,
+			provisionalHoldingRows,
+		] = await Promise.all([
 			this.db
 				.select()
 				.from(polyPositionGapCohorts)
@@ -382,6 +389,54 @@ export class PositionGapRuntimeStore {
 					polyPositionGapActions.completedAt,
 				)
 				.limit(8),
+			this.db
+				.select({
+					conditionId: polyPositionGapActions.conditionId,
+					tokenId: polyPositionGapActions.tokenId,
+					shares: sum(polyPositionGapActions.filledShares),
+				})
+				.from(polyPositionGapActions)
+				.innerJoin(
+					polyPositionGapCohorts,
+					eq(polyPositionGapCohorts.id, polyPositionGapActions.cohortId),
+				)
+				.where(
+					and(
+						eq(polyPositionGapActions.billingAccountId, scope.billingAccountId),
+						eq(polyPositionGapActions.targetId, scope.targetId),
+						eq(polyPositionGapActions.createdByUserId, scope.createdByUserId),
+						eq(polyPositionGapActions.kind, "buy"),
+						eq(polyPositionGapActions.status, "canceled"),
+						sql`${polyPositionGapActions.filledShares} > 0`,
+						sql`${polyPositionGapCohorts.status} <> 'resolved'`,
+						notExists(
+							this.db
+								.select({ one: sql`1` })
+								.from(polyCopyTradeFills)
+								.where(
+									and(
+										eq(
+											polyCopyTradeFills.clientOrderId,
+											polyPositionGapActions.clientOrderId,
+										),
+										eq(
+											polyCopyTradeFills.billingAccountId,
+											scope.billingAccountId,
+										),
+										eq(polyCopyTradeFills.targetId, scope.targetId),
+										or(
+											sql`${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades'`,
+											sql`${polyCopyTradeFills.attributes}->>'realized_fill_source' = ${POSITION_GAP_DATA_API_FILL_SOURCE}`,
+										),
+									),
+								),
+						),
+					),
+				)
+				.groupBy(
+					polyPositionGapActions.conditionId,
+					polyPositionGapActions.tokenId,
+				),
 		]);
 		const actionRows = [...activeActionRows, ...terminalRepairRows];
 		const activeCohortKeys = new Set(
@@ -440,6 +495,11 @@ export class PositionGapRuntimeStore {
 					: [],
 			),
 			activeBuys,
+			provisionalFilledHoldings: provisionalHoldingRows.map((row) => ({
+				conditionId: row.conditionId,
+				tokenId: row.tokenId,
+				shares: numberOf(row.shares),
+			})),
 		};
 	}
 
@@ -1589,10 +1649,9 @@ export class PositionGapRuntimeStore {
 
 	/**
 	 * Catch up reservations written by older runtimes that terminalized the BUY
-	 * but retained provisional fill cost as active sleeve budget. Release a
-	 * cohort only when its durable acquired quantity covers the sum of every BUY
-	 * action's observed fills in that cohort, so previously released actions
-	 * cannot lend their acquired quantity to an unrepresented terminal fill.
+	 * but retained provisional fill cost as active sleeve budget. A confirmed
+	 * cancel has no remaining venue liability; uncertain filled quantity stays
+	 * fail-closed through `provisionalFilledHoldings`, not this reservation.
 	 */
 	async releaseCanceledOrderReservations(
 		scope: PositionGapRuntimeScope,
@@ -1601,18 +1660,15 @@ export class PositionGapRuntimeStore {
 			await tx.execute(sql`SELECT r.id
 				FROM ${polyPositionGapReservations} r
 				INNER JOIN ${polyPositionGapActions} a ON a.id = r.buy_action_id
-				INNER JOIN ${polyPositionGapCohorts} c ON c.id = r.cohort_id
 				WHERE r.billing_account_id = ${scope.billingAccountId}
 					AND r.target_id = ${scope.targetId}::uuid
 					AND a.created_by_user_id = ${scope.createdByUserId}
 					AND a.status = 'canceled'
 					AND r.state = 'active'
-				FOR UPDATE OF r, a, c`);
+				FOR UPDATE OF r, a`);
 			const rows = await tx
 				.select({
 					reservationId: polyPositionGapReservations.id,
-					cohortId: polyPositionGapReservations.cohortId,
-					acquiredShares: polyPositionGapCohorts.acquiredShares,
 				})
 				.from(polyPositionGapReservations)
 				.innerJoin(
@@ -1621,10 +1677,6 @@ export class PositionGapRuntimeStore {
 						polyPositionGapActions.id,
 						polyPositionGapReservations.buyActionId,
 					),
-				)
-				.innerJoin(
-					polyPositionGapCohorts,
-					eq(polyPositionGapCohorts.id, polyPositionGapReservations.cohortId),
 				)
 				.where(
 					and(
@@ -1639,54 +1691,6 @@ export class PositionGapRuntimeStore {
 					),
 				);
 			if (rows.length === 0) return 0;
-			const cohortIds = [...new Set(rows.map((row) => row.cohortId))];
-			const allFilledRows = await tx
-				.select({
-					cohortId: polyPositionGapActions.cohortId,
-					filledShares: polyPositionGapActions.filledShares,
-				})
-				.from(polyPositionGapActions)
-				.where(
-					and(
-						eq(polyPositionGapActions.billingAccountId, scope.billingAccountId),
-						eq(polyPositionGapActions.targetId, scope.targetId),
-						eq(polyPositionGapActions.createdByUserId, scope.createdByUserId),
-						eq(polyPositionGapActions.kind, "buy"),
-						inArray(polyPositionGapActions.cohortId, cohortIds),
-					),
-				)
-				.for("update");
-			const totalFilledByCohort = new Map<string, number>();
-			for (const row of allFilledRows) {
-				totalFilledByCohort.set(
-					row.cohortId,
-					(totalFilledByCohort.get(row.cohortId) ?? 0) +
-						numberOf(row.filledShares),
-				);
-			}
-			const cohorts = new Map<
-				string,
-				{
-					acquiredShares: number;
-					reservationIds: string[];
-				}
-			>();
-			for (const row of rows) {
-				const cohort = cohorts.get(row.cohortId) ?? {
-					acquiredShares: numberOf(row.acquiredShares),
-					reservationIds: [],
-				};
-				cohort.reservationIds.push(row.reservationId);
-				cohorts.set(row.cohortId, cohort);
-			}
-			const releasableIds = [...cohorts.entries()].flatMap(
-				([cohortId, cohort]) =>
-					(totalFilledByCohort.get(cohortId) ?? 0) <=
-					cohort.acquiredShares + EPSILON
-						? cohort.reservationIds
-						: [],
-			);
-			if (releasableIds.length === 0) return 0;
 			const released = await tx
 				.update(polyPositionGapReservations)
 				.set({
@@ -1700,7 +1704,10 @@ export class PositionGapRuntimeStore {
 				})
 				.where(
 					and(
-						inArray(polyPositionGapReservations.id, releasableIds),
+						inArray(
+							polyPositionGapReservations.id,
+							rows.map((row) => row.reservationId),
+						),
 						eq(polyPositionGapReservations.state, "active"),
 					),
 				)
