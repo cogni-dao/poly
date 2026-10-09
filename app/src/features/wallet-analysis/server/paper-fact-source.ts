@@ -48,10 +48,11 @@
  *     as `missing` ("no observation yet"), which is true, instead of
  *     `available` at an invented number. A hardcoded 0 here is precisely the
  *     bug that made paper trading unreadable.
- *   - MARKED_AT_THE_LIVE_MID: only *execution* is simulated. Open positions are
- *     marked at the real CLOB midpoint, same as a live position
- *     (PAPER_DELEGATES_READS_TO_LIVE in `paper.adapter.ts`). This is a writer,
- *     not a render path, so the upstream read does not violate
+ *   - MARKED_AT_THE_AUTHORITATIVE_PRICE: only *execution* is simulated. A
+ *     trading position is marked at the real CLOB midpoint; after settlement,
+ *     when no order book exists, it is marked from the CLOB's unique winner
+ *     fact (1/0). Missing or contradictory evidence stays unavailable. This is
+ *     a writer, not a render path, so the upstream read does not violate
  *     PAGE_LOAD_DB_ONLY / SAVED_FACTS_ONLY.
  *   - NAV_IS_CASH_PLUS_MARKS: `seed − bought + sold − fees + Σ(shares × mid)`.
  *     The seed comes from `poly_wallet_connections.paper_seed_usdc`
@@ -84,7 +85,7 @@
  *     derivations disagree on (the live-path drift OBSERVE_WHAT_THE_EXECUTOR_
  *     SIGNS_FROM was written for).
  * Side-effects: IO — DB reads/writes through the injected handle, plus one
- *   CLOB midpoint read per open position token.
+ *   CLOB mark read per open position token (midpoint, then settlement fact).
  * Links: docs/spec/capability-plane.md, docs/spec/poly-copy-trade-execution.md,
  *   migration 0082, migration 0083
  * @public
@@ -174,15 +175,18 @@ const PROJECTION_WATERMARK_OVERLAP_MS = 60_000;
 const USDC_SCALE = 8;
 
 /**
- * Reads the current midpoint for one CTF token as a probability in `(0, 1)`,
- * or `null` when it cannot be read.
+ * Reads the current authoritative mark for one CTF token: live midpoint in
+ * `(0, 1)`, or a proven settlement value in `{0, 1}`. Returns `null` when it
+ * cannot be read.
  *
  * `null` means UNKNOWN and is never coerced to 0 — see NO_FABRICATED_VALUES.
- * Production binds `PolymarketClobPublicClient.getMidpoint`.
+ * Production binds `PolymarketClobPublicClient.getMarkPrice`; the historical
+ * type name is retained to avoid churn in injected test readers.
  */
 export type PaperMidPriceReader = (
   tokenId: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  conditionId?: string
 ) => Promise<number | null>;
 
 /** One active paper account, as the observation tick needs it. */
@@ -738,7 +742,11 @@ export async function projectPaperPositionsAndNav(input: {
       continue;
     }
 
-    const mid = await input.readMidPrice(rollup.tokenId, input.signal);
+    const mid = await input.readMidPrice(
+      rollup.tokenId,
+      input.signal,
+      rollup.conditionId
+    );
     if (mid === null) {
       // NO_FABRICATED_VALUES: leave the existing row untouched and withhold the
       // NAV. Writing 0 here is the bug; writing a stale-but-real prior mark and
@@ -833,7 +841,7 @@ export async function projectPaperPositionsAndNav(input: {
     errorMessage:
       navBlockers === 0
         ? null
-        : `${unpriced.length} open position(s) had no readable mid price and ${incoherent.length} had no derivable cost basis; NAV withheld`,
+        : `${unpriced.length} open position(s) had no readable midpoint or settlement mark and ${incoherent.length} had no derivable cost basis; NAV withheld`,
     observedAt: now,
   });
 
@@ -1193,7 +1201,7 @@ export type PaperProjectionTickResult = {
  * plus snapshot rows per token, every 30s. The paper projection shares none of
  * that shape — it is a local SQL projection over this node's OWN
  * `poly_copy_trade_fills`, scoped to the paper accounts that actually exist
- * (currently one), with one midpoint read per open position. Reusing the
+ * (currently one), with one authoritative mark read per open position. Reusing the
  * observation flag would conflate two unrelated write loads and leave the
  * paper dashboard structurally unrenderable on exactly the lanes paper
  * trading runs on.

@@ -3,7 +3,7 @@
 
 /**
  * Module: `@cogni/poly-market-provider/adapters/polymarket/polymarket.clob-public.client`
- * Purpose: Read-only client for the public, unauthenticated Polymarket CLOB endpoints — market resolution (`/markets/{conditionId}`), price history (`/prices-history`), and token midpoint (`/midpoint`).
+ * Purpose: Read-only client for the public, unauthenticated Polymarket CLOB endpoints — market resolution (`/markets/{conditionId}`), price history (`/prices-history`), token midpoint (`/midpoint`), and authoritative open-or-settled marks.
  * Scope: Public reads only. Does not place orders, does not require auth, does not load env. Distinct from `polymarket.clob.adapter.ts` (which signs orders) — this is a public-read sibling.
  * Invariants:
  *   - PACKAGES_NO_ENV, READ_ONLY.
@@ -76,12 +76,16 @@ export class PolymarketClobPublicClient {
    * missing entries as "still open" — see `computeWalletMetrics`.
    */
   async getMarketResolution(
-    conditionId: string
+    conditionId: string,
+    signal?: AbortSignal
   ): Promise<MarketResolutionInput | null> {
     const url = new URL(`/markets/${conditionId}`, this.baseUrl);
     const controller = new AbortController();
+    const onAbort = (): void => controller.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
+      if (signal?.aborted) return null;
       const response = await this.fetchImpl(url.toString(), {
         signal: controller.signal,
       });
@@ -93,13 +97,16 @@ export class PolymarketClobPublicClient {
         closed: Boolean(json.closed),
         tokens: rawTokens.map((t) => ({
           token_id: String(t.token_id),
-          winner: Boolean(t.winner),
+          // Only the literal boolean is authority. String coercion would turn
+          // `"false"` into true and could fabricate a settled $1 mark.
+          winner: t.winner === true,
         })),
       };
     } catch {
       return null;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
   }
 
@@ -201,5 +208,36 @@ export class PolymarketClobPublicClient {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  /**
+   * Authoritative mark for an open or settled CTF token.
+   *
+   * A live order book supplies the midpoint. Once a market settles there is no
+   * order book, so `/midpoint` correctly returns unavailable; the final mark is
+   * then the CLOB market's winner fact (1 for the unique winner, 0 for the
+   * loser). We require a closed market, the requested token, and exactly one
+   * winner before returning a boundary value. Missing or contradictory
+   * resolution evidence remains `null` — never a guessed zero.
+   */
+  async getMarkPrice(
+    conditionId: string,
+    tokenId: string,
+    signal?: AbortSignal
+  ): Promise<number | null> {
+    const midpoint = await this.getMidpoint(tokenId, signal);
+    if (midpoint !== null) return midpoint;
+
+    const resolution = await this.getMarketResolution(conditionId, signal);
+    if (!resolution?.closed) return null;
+
+    const winners = resolution.tokens.filter((token) => token.winner);
+    if (winners.length !== 1) return null;
+
+    const token = resolution.tokens.find(
+      (candidate) => candidate.token_id === tokenId
+    );
+    if (!token) return null;
+    return token.winner ? 1 : 0;
   }
 }

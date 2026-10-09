@@ -1917,8 +1917,14 @@ function createContainer(): Container {
 				db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
 					Record<string, unknown>
 				>,
-				readPaperMidPrice: (tokenId, signal) =>
-					paperClobClient.getMidpoint(tokenId, signal),
+				// Open positions mark at the live midpoint. Settled positions have
+				// no order book, so the same public client falls back to the CLOB's
+				// unique winner fact (1/0). Unknown remains null — never a guessed
+				// settlement value.
+				readPaperMidPrice: (tokenId, signal, conditionId) =>
+					conditionId === undefined
+						? paperClobClient.getMidpoint(tokenId, signal)
+						: paperClobClient.getMarkPrice(conditionId, tokenId, signal),
 				logger: paperLogger,
 			});
 			// task.5016 — leadership was lost while this boot was in flight.

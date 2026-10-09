@@ -19,7 +19,7 @@
  *     on non-prod lanes whose DBs live on the prod VM by custody
  *     (bug.5297/bug.5206). The paper projection is a local SQL projection over
  *     this node's own ledger, scoped to the paper accounts that exist, with one
- *     midpoint read per open position. Reusing that flag would conflate two
+ *     authoritative mark read per open position. Reusing that flag would conflate two
  *     unrelated write loads and leave the paper dashboard structurally
  *     unrenderable on precisely the lanes paper trading runs on — which is the
  *     bug this slice exists to fix.
@@ -64,8 +64,8 @@ const PAPER_PROJECTION_POLL_MS = 30_000;
 
 /**
  * Well under the poll interval: the tick is a handful of bounded SQL
- * statements plus one midpoint read per open position, so exceeding this means
- * something is wedged, not merely slow.
+ * statements plus one bounded mark read per open position, so exceeding this
+ * means something is wedged, not merely slow.
  */
 const TICK_TIMEOUT_MS = 25_000;
 
@@ -73,7 +73,7 @@ export type PaperProjectionJobStopFn = () => void;
 
 export interface PaperProjectionJobDeps {
   db: Db;
-  /** Live CLOB midpoint used to mark open paper positions. */
+  /** Live midpoint or authoritative settlement used to mark paper positions. */
   readPaperMidPrice: PaperMidPriceReader;
   logger: LoggerPort;
   pollMs?: number;
