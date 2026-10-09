@@ -53,6 +53,11 @@ import {
   createPolyBrainGraph,
   POLY_BRAIN_GRAPH_NAME,
 } from "@cogni/poly-graphs";
+import {
+  createPolyAlgorithmEvaluationGraph,
+  POLY_ALGORITHM_EVALUATION_GRAPH_NAME,
+  POLY_ALGORITHM_EVALUATION_TOOL_IDS,
+} from "@cogni/poly-graphs/graphs";
 
 import type { LangGraphCatalog } from "@/adapters/server/ai/langgraph/catalog";
 
@@ -80,6 +85,13 @@ export const POLY_BRAIN_NODE_TOOL_IDS: readonly string[] = [
 ];
 
 /**
+ * Algorithm evaluation uses only tools already bound by this node. Its only
+ * state changes are typed EDO learning writes; it has no operational mutation.
+ */
+export const POLY_ALGORITHM_EVALUATION_NODE_TOOL_IDS: readonly string[] =
+  POLY_ALGORITHM_EVALUATION_TOOL_IDS;
+
+/**
  * This node's catalog: the shared base, plus `poly-brain`.
  *
  * `poly-brain` is keyed by `POLY_BRAIN_GRAPH_NAME` ("poly-brain"), which is what
@@ -88,6 +100,13 @@ export const POLY_BRAIN_NODE_TOOL_IDS: readonly string[] = [
  */
 export const POLY_NODE_LANGGRAPH_CATALOG: LangGraphCatalog<CreateGraphFn> = {
   ...(LANGGRAPH_CATALOG as LangGraphCatalog<CreateGraphFn>),
+  [POLY_ALGORITHM_EVALUATION_GRAPH_NAME]: {
+    displayName: "Poly Algorithm Evaluation",
+    description:
+      "Evaluates durable algorithm knowledge, persists learning, and proposes one bounded next experiment while account reads remain a typed gap",
+    toolIds: POLY_ALGORITHM_EVALUATION_NODE_TOOL_IDS,
+    graphFactory: createPolyAlgorithmEvaluationGraph as CreateGraphFn,
+  },
   [POLY_BRAIN_GRAPH_NAME]: {
     displayName: "Poly Brain",
     description:
