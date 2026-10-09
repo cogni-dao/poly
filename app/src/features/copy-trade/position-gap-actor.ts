@@ -432,6 +432,7 @@ export function startPositionGapActor(
 		const holdings = floorPositionGapHoldingsAtAcquiredShares({
 			holdings: validateLocalHoldings(freshSnapshot, localHoldings),
 			cohorts: runtime.cohorts,
+			provisionalFilledHoldings: runtime.provisionalFilledHoldings,
 		});
 		const walletCashUsdc = await deps.getWalletCashUsdc();
 		const mirrorMarkedExposure = holdings.reduce((sum, holding) => {
@@ -1013,6 +1014,9 @@ export function startPositionGapActor(
 					? "skipped"
 					: "completed";
 			await deps.store.finishRun(persisted.runId, outcome);
+			const activeReservations = await deps.store.activeReservationTotals(
+				deps.scope,
+			);
 			deps.logger.info(
 				{
 					event: "poly.position_gap.v3.reconciled",
@@ -1036,6 +1040,7 @@ export function startPositionGapActor(
 					scale: input.plan.scale,
 					sleeve_budget_usdc: input.budgetUsdc,
 					wallet_cash_usdc: input.walletCashUsdc,
+					active_reservation_budget_usdc: activeReservations.budgetUsdc,
 					existing_reserved_usdc: input.plan.existingReservedUsdc,
 					new_reserved_usdc: input.plan.newReservedUsdc,
 					confirmed_buy_notional_cash_headroom_usdc:
@@ -1482,14 +1487,15 @@ export async function requireConfirmedSafetyCancellation(input: {
 }
 
 /**
- * Treat durable cohort acquisitions as a fail-closed lower bound while chain
- * balance reads lag or terminal fill accounting remains unverified. `max`
- * avoids double counting once Polygon catches up, while still preventing a
- * canceled order's provisional fills from reopening the same portfolio gap.
+ * Treat durable cohort acquisitions and unresolved terminal fills as fail-closed
+ * lower bounds while chain balance reads lag. `max` avoids double counting once
+ * Polygon catches up, while preventing a canceled order's provisional fills
+ * from reopening the same portfolio gap after its venue reservation is released.
  */
 export function floorPositionGapHoldingsAtAcquiredShares(input: {
 	holdings: readonly PositionGapHoldingV1[];
 	cohorts: readonly PositionGapPriceCohortV1[];
+	provisionalFilledHoldings?: readonly PositionGapHoldingV1[];
 }): PositionGapHoldingV1[] {
 	const acquiredByToken = new Map<string, number>();
 	for (const cohort of input.cohorts) {
@@ -1500,12 +1506,24 @@ export function floorPositionGapHoldingsAtAcquiredShares(input: {
 				finiteNonnegative(cohort.acquiredMirrorShares),
 		);
 	}
+	const provisionalByToken = new Map<string, number>();
+	for (const holding of input.provisionalFilledHoldings ?? []) {
+		const holdingKey = `${holding.conditionId}\u0000${holding.tokenId}`;
+		provisionalByToken.set(
+			holdingKey,
+			(provisionalByToken.get(holdingKey) ?? 0) +
+				finiteNonnegative(holding.shares),
+		);
+	}
 	return input.holdings.map((holding) => ({
 		...holding,
 		shares: Math.max(
 			finiteNonnegative(holding.shares),
 			acquiredByToken.get(`${holding.conditionId}\u0000${holding.tokenId}`) ??
 				0,
+			provisionalByToken.get(
+				`${holding.conditionId}\u0000${holding.tokenId}`,
+			) ?? 0,
 		),
 	}));
 }
