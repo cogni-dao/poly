@@ -10,12 +10,22 @@
  */
 import { z } from "zod";
 
+import { POLY_ALGORITHM_EVALUATION_EDO_DOMAIN } from "./prompts";
+
+const REPOSITORY_CITATION_PATTERN =
+	/^repo:[a-z0-9_-]+:[^#\s]+#L\d+-L\d+@[0-9a-f]{7}$/;
+const StableHypothesisIdSchema = z
+	.string()
+	.min(1)
+	.max(40)
+	.regex(/^[a-z0-9]+(?:-[a-z0-9]+){0,3}$/);
+
 export const POLY_ALGORITHM_EVALUATION_SCHEMA_VERSION =
 	"poly-algorithm-evaluation.v1" as const;
 
 export const PolyAlgorithmEvidenceCitationSchema = z.object({
 	id: z.string().min(1),
-	source: z.enum(["account_read", "knowledge", "edo"]),
+	source: z.enum(["account_read", "knowledge", "repository", "edo"]),
 	factPath: z.string().min(1),
 	observedAt: z.string().datetime().nullable(),
 	note: z.string().min(1),
@@ -34,6 +44,7 @@ export const PolyAlgorithmGapSchema = z.object({
 		"algorithm_identity_missing",
 		"evidence_incomplete",
 		"evidence_stale",
+		"evidence_conflict",
 		"paper_fidelity_unproven",
 		"edo_attribution_unstamped",
 		"edo_retry_idempotency_unproven",
@@ -51,24 +62,28 @@ export const PolyAlgorithmNextExperimentSchema = z.object({
 	evaluateAt: z.string().datetime(),
 	riskBound: z.string().min(1),
 	stopCondition: z.string().min(1),
-	hypothesisId: z.string().min(1),
+	ethicalRationale: z.string().min(1),
+	hypothesisId: StableHypothesisIdSchema,
 });
 
 export const PolyAlgorithmPersistenceSchema = z.discriminatedUnion("status", [
 	z.object({
 		status: z.literal("committed"),
 		tool: z.literal("core__edo_hypothesize"),
-		hypothesisId: z.string().min(1),
+		domain: z.literal(POLY_ALGORITHM_EVALUATION_EDO_DOMAIN),
+		hypothesisId: StableHypothesisIdSchema,
 		committed: z.literal(true),
 	}),
 	z.object({
 		status: z.literal("reused"),
-		hypothesisId: z.string().min(1),
+		domain: z.literal(POLY_ALGORITHM_EVALUATION_EDO_DOMAIN),
+		hypothesisId: StableHypothesisIdSchema,
 		committed: z.literal(false),
 	}),
 	z.object({
 		status: z.literal("failed"),
-		hypothesisId: z.string().min(1),
+		domain: z.literal(POLY_ALGORITHM_EVALUATION_EDO_DOMAIN),
+		hypothesisId: StableHypothesisIdSchema,
 		committed: z.literal(false),
 		reason: z.string().min(1),
 	}),
@@ -92,6 +107,43 @@ export const PolyAlgorithmEvaluationReportSchema = z
 	})
 	.superRefine((report, ctx) => {
 		const evidenceIds = new Set(report.evidence.map((item) => item.id));
+		const repositoryEvidence = report.evidence.filter(
+			(item) => item.source === "repository",
+		);
+		if (repositoryEvidence.length === 0) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["evidence"],
+				message:
+					"Algorithm evaluation requires SHA-stamped repository evidence",
+			});
+		}
+		for (const [index, evidence] of report.evidence.entries()) {
+			if (
+				evidence.source === "repository" &&
+				!REPOSITORY_CITATION_PATTERN.test(evidence.factPath)
+			) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["evidence", index, "factPath"],
+					message:
+						"Repository evidence requires the SHA-stamped citation returned by repo tools",
+				});
+			}
+		}
+		const citedRepositoryEvidence = new Set(
+			report.findings.flatMap((finding) => finding.evidenceIds),
+		);
+		if (
+			repositoryEvidence.length > 0 &&
+			!repositoryEvidence.some((item) => citedRepositoryEvidence.has(item.id))
+		) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["findings"],
+				message: "At least one finding must cite repository evidence",
+			});
+		}
 		for (const finding of report.findings) {
 			for (const evidenceId of finding.evidenceIds) {
 				if (!evidenceIds.has(evidenceId)) {
