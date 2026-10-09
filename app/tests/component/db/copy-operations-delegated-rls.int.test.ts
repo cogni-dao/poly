@@ -84,6 +84,8 @@ const FILL_A = "data-api:copy-ops-fill-a";
 const FILL_B = "data-api:copy-ops-fill-b";
 
 const future = new Date("2099-01-01T00:00:00.000Z");
+const HASH_A = `sha256:${"a".repeat(64)}`;
+const HASH_B = `sha256:${"b".repeat(64)}`;
 
 function principal(name: string): Principal {
   return { userId: randomUUID(), name };
@@ -298,6 +300,12 @@ describe("copy-operations delegated RLS", () => {
         clientOrderId: `coid-${FILL_A}`,
         status: "filled",
         mode: "paper",
+        algorithmId: "poly.copy-mirror.position-gap",
+        algorithmVersionId: HASH_A,
+        configHash: HASH_A,
+        inputSnapshotId: HASH_A,
+        assignmentId: targetA,
+        correlationId: `coid-${FILL_A}`,
         attributes: { target_wallet: targetWalletA, size_usdc: 5 },
       },
       {
@@ -310,6 +318,12 @@ describe("copy-operations delegated RLS", () => {
         clientOrderId: `coid-${FILL_B}`,
         status: "filled",
         mode: "paper",
+        algorithmId: "poly.copy-mirror.min-bet",
+        algorithmVersionId: HASH_B,
+        configHash: HASH_B,
+        inputSnapshotId: HASH_B,
+        assignmentId: targetB,
+        correlationId: `coid-${FILL_B}`,
         attributes: { target_wallet: targetWalletB, size_usdc: 6 },
       },
     ]);
@@ -325,6 +339,12 @@ describe("copy-operations delegated RLS", () => {
         targetId: targetA,
         fillId: FILL_A,
         outcome: "placed",
+        algorithmId: "poly.copy-mirror.position-gap",
+        algorithmVersionId: HASH_A,
+        configHash: HASH_A,
+        inputSnapshotId: HASH_A,
+        assignmentId: targetA,
+        correlationId: `coid-${FILL_A}`,
         intent: {
           market_id: "prediction-market:polymarket:cond-a",
           side: "BUY",
@@ -341,6 +361,12 @@ describe("copy-operations delegated RLS", () => {
         fillId: "data-api:copy-ops-skipped-a",
         outcome: "skipped",
         reason: "below_filter_percentile",
+        algorithmId: "poly.copy-mirror.position-gap",
+        algorithmVersionId: HASH_A,
+        configHash: HASH_A,
+        inputSnapshotId: HASH_A,
+        assignmentId: targetA,
+        correlationId: "skipped-a",
         intent: {
           market_id: "prediction-market:polymarket:cond-a",
           side: "BUY",
@@ -360,6 +386,12 @@ describe("copy-operations delegated RLS", () => {
         targetId: targetB,
         fillId: FILL_B,
         outcome: "placed",
+        algorithmId: "poly.copy-mirror.min-bet",
+        algorithmVersionId: HASH_B,
+        configHash: HASH_B,
+        inputSnapshotId: HASH_B,
+        assignmentId: targetB,
+        correlationId: `coid-${FILL_B}`,
         intent: {
           market_id: "prediction-market:polymarket:cond-b",
           side: "SELL",
@@ -1032,6 +1064,15 @@ describe("copy-operations delegated RLS", () => {
     expect(skipped?.decision.reason).toBe("below_filter_percentile");
     // A skip has no ledger row, and that is an EXPECTED absence.
     expect(skipped?.executed.availability).toBe("no_order_placed");
+    expect(skipped?.algorithm).toEqual({
+      availability: "observed",
+      algorithm_id: "poly.copy-mirror.position-gap",
+      algorithm_version_id: HASH_A,
+      config_hash: HASH_A,
+      input_snapshot_id: HASH_A,
+      assignment_id: targetA,
+      correlation_id: "skipped-a",
+    });
 
     const placed = owner?.attempts.find(
       (attempt) => attempt.decision.outcome === "placed",
@@ -1040,11 +1081,52 @@ describe("copy-operations delegated RLS", () => {
     expect(placed?.executed.availability).toBe("observed");
     // Intended size survives even though the fill never realized a price.
     expect(placed?.intended.size_usdc).toBe(5);
+    expect(placed?.algorithm).toMatchObject({
+      availability: "observed",
+      algorithm_id: "poly.copy-mirror.position-gap",
+      correlation_id: `coid-${FILL_A}`,
+    });
     // NO_FABRICATED_VALUES: no realized price/shares yet, so no executed size.
     if (placed?.executed.availability === "observed") {
       expect(placed.executed.filled_size_usdc).toBeNull();
     }
     expect(owner?.completeness.spine).toBe("poly_copy_trade_decisions");
+  });
+
+  it("algorithm lineage is all-or-nothing and restricted to registered IDs", async () => {
+    const seedDb = getSeedDb();
+    const base = {
+      billingAccountId: ownerA.billingAccountId,
+      createdByUserId: ownerA.userId,
+      targetId: targetA,
+      marketId: "prediction-market:polymarket:lineage-constraint",
+      observedAt: new Date("2026-10-05T00:04:00.000Z"),
+      clientOrderId: `coid-lineage-${randomUUID()}`,
+      status: "pending" as const,
+      mode: "paper" as const,
+      attributes: {},
+    };
+
+    await expect(
+      seedDb.insert(polyCopyTradeFills).values({
+        ...base,
+        fillId: `partial-lineage:${randomUUID()}`,
+        algorithmId: "poly.copy-mirror.min-bet",
+      }),
+    ).rejects.toThrow();
+
+    await expect(
+      seedDb.insert(polyCopyTradeFills).values({
+        ...base,
+        fillId: `unknown-algorithm:${randomUUID()}`,
+        algorithmId: "poly.copy-mirror.unknown",
+        algorithmVersionId: HASH_A,
+        configHash: HASH_A,
+        inputSnapshotId: HASH_A,
+        assignmentId: targetA,
+        correlationId: "constraint-test",
+      }),
+    ).rejects.toThrow();
   });
 
   it("recent-attempts: ordering is newest-first and the cursor is opaque", async () => {
@@ -1145,5 +1227,29 @@ describe("copy-operations delegated RLS", () => {
     );
     expect(own?.attempts.length).toBe(1);
     expect(own?.attempts[0]?.attempt_id).toBe(decisionB);
+    expect(own?.attempts[0]?.algorithm).toMatchObject({
+      availability: "observed",
+      algorithm_id: "poly.copy-mirror.min-bet",
+      correlation_id: `coid-${FILL_B}`,
+    });
+    expect(Object.keys(own?.attempts[0] ?? {}).sort()).toEqual(
+      [
+        "algorithm",
+        "attempt_id",
+        "decided_at",
+        "decision",
+        "executed",
+        "fill_id",
+        "intended",
+        "mark",
+        "market_id",
+        "market_title",
+        "mode",
+        "outcome_label",
+        "outcome_resolution",
+        "target_id",
+        "target_wallet",
+      ].sort(),
+    );
   });
 });

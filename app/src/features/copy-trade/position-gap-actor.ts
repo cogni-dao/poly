@@ -3,7 +3,9 @@
 
 /**
  * Per-account Position-gap v3 actor. Target refresh is shared; wallet truth,
- * planning, reservations, and execution remain tenant-local.
+ * registry evaluation, reservations, and execution remain tenant-local.
+ * The algorithm returns economic actions only; this actor owns correlation,
+ * ledger persistence, venue intent materialization, logs, and terminal state.
  */
 
 import { createHash } from "node:crypto";
@@ -23,6 +25,11 @@ import {
 } from "@cogni/poly-market-provider/adapters/polymarket";
 
 import { requiredBuyCollateralAtomic } from "@/bootstrap/capabilities/poly-trade-executor";
+import {
+	ALGORITHM_DEFINITIONS,
+	type AlgorithmLineage,
+	evaluateAlgorithm,
+} from "@/features/copy-trade/algorithm-registry";
 import {
 	effectivePositionGapBudget,
 	type PositionGapBudgetGroup,
@@ -46,7 +53,6 @@ import {
 	PositionGapTargetLineageMismatchError,
 } from "@/features/copy-trade/position-gap-runtime-store";
 import type { PositionGapTargetRefreshCoordinator } from "@/features/copy-trade/position-gap-target-refresh";
-import { planPositionGapBook } from "@/features/copy-trade/position-gap-v3/batch-plan";
 import type {
 	NettedTargetPositionV1,
 	PositionGapBookPlanV1,
@@ -58,14 +64,15 @@ import type {
 import { netTargetBook } from "@/features/copy-trade/position-gap-v3/netting";
 import type { OrderLedger } from "@/features/trading";
 import type { WalletActivitySource } from "@/features/wallet-watch";
-import { EVENT_NAMES } from "@/shared/observability/events";
+import { EVENT_NAMES, logEvent } from "@/shared/observability";
 
 const RECONCILE_MS = 30_000;
 const FULL_REFRESH_MS = 5 * 60_000;
 const VENUE_CACHE_MS = 30_000;
 const MAX_VENUE_CANDIDATES = 16;
 const WARMUP_SECONDS = 60;
-const PLANNER_VERSION = "position-gap-v3/book-plan-v1";
+const POSITION_GAP_DEFINITION =
+	ALGORITHM_DEFINITIONS["poly.copy-mirror.position-gap"];
 
 export interface PositionGapBuyExecutionPort {
 	placeBuy(intent: OrderIntent & { side: "BUY" }): Promise<OrderReceipt>;
@@ -113,6 +120,8 @@ export interface PositionGapLocalHoldingsSnapshot {
 }
 
 export interface PositionGapActorDeps {
+	/** Exact Git SHA; algorithm versions are invalid without code identity. */
+	implementationRevision: string;
 	scope: PositionGapRuntimeScope;
 	targetWallet: `0x${string}`;
 	configRevision: string;
@@ -127,7 +136,9 @@ export interface PositionGapActorDeps {
 	fillEvidence: PositionGapFillEvidencePort;
 	getWalletCashUsdc(mode: "live" | "paper"): Promise<number>;
 	/** Both Polymarket collateral vintages at the target-book source block. */
-	getTargetCashUsdc(sourceBlock: number): Promise<PositionGapTargetCashSnapshot>;
+	getTargetCashUsdc(
+		sourceBlock: number,
+	): Promise<PositionGapTargetCashSnapshot>;
 	/** Complete CTF inventory at one Polygon block, including legacy aliases. */
 	getAuthoritativeHoldings(
 		snapshot: TargetBookSnapshotV1,
@@ -165,10 +176,7 @@ export function startPositionGapActor(
 	let disabled = false;
 	let stopFailure: unknown = null;
 	const causalDirty = new Set<string>();
-	const ledgerTerminals = new Map<
-		string,
-		"clob_not_found" | "never_placed"
-	>();
+	const ledgerTerminals = new Map<string, "clob_not_found" | "never_placed">();
 	let causalWatermarkMs = 0;
 	let causalRetry: ReturnType<typeof globalThis.setTimeout> | null = null;
 	let causalHoldLogged = false;
@@ -372,8 +380,9 @@ export function startPositionGapActor(
 							? sourceComputedAtMs
 							: null,
 						dirty_condition_count: dirtyConditions.length,
-						retained_active_buy_count: heldRuntime.activeBuys.filter((action) =>
-							!["filled", "canceled", "rejected"].includes(action.status),
+						retained_active_buy_count: heldRuntime.activeBuys.filter(
+							(action) =>
+								!["filled", "canceled", "rejected"].includes(action.status),
 						).length,
 						retained_open_buy_count: heldRuntime.openBuyOrders.length,
 					},
@@ -449,9 +458,7 @@ export function startPositionGapActor(
 			targetCash.pusdUsdc +
 			targetCash.usdcEUsdc;
 		const scale =
-			targetTotalWealthUsdc > 0
-				? budgetUsdc / targetTotalWealthUsdc
-				: 0;
+			targetTotalWealthUsdc > 0 ? budgetUsdc / targetTotalWealthUsdc : 0;
 		const existingCohorts = await deps.store.loadCohorts(deps.scope);
 		const previousBudget = await deps.store.previousBudgetUsdc(deps.scope);
 		const snapshotHash = hashJson(freshSnapshot);
@@ -501,7 +508,7 @@ export function startPositionGapActor(
 			localHoldings,
 			planningMode,
 		});
-		const plan = planPositionGapBook({
+		const plannerInput = {
 			nowMs: now(),
 			snapshot: freshSnapshot,
 			sleeveBudgetUsdc: budgetUsdc,
@@ -539,7 +546,23 @@ export function startPositionGapActor(
 			holdings,
 			openBuyOrders: runtime.openBuyOrders,
 			unmanagedBuyExposure,
+		};
+		const evaluation = evaluateAlgorithm({
+			definition: POSITION_GAP_DEFINITION,
+			input: plannerInput,
+			config: {
+				config_revision: deps.configRevision,
+				configured_budget_usdc: deps.configuredBudgetUsdc,
+			},
+			implementationRevision: deps.implementationRevision,
+			assignmentId: `${deps.scope.targetId}:${deps.configRevision}`,
+			correlationId: `position-gap:${freshSnapshot.snapshotId}:${deps.configRevision}`,
 		});
+		const plan = evaluation.decision.diagnostics
+			.source_plan as PositionGapBookPlanV1;
+		if (!plan) {
+			throw new Error("position-gap registry returned no typed source plan");
+		}
 		await persistAndExecute({
 			triggerReasons,
 			snapshot: freshSnapshot,
@@ -547,6 +570,7 @@ export function startPositionGapActor(
 			budgetUsdc,
 			walletCashUsdc,
 			plan,
+			lineage: evaluation.lineage,
 			cohortCreations: cohortProjection.creations,
 			cohortReductions: cohortProjection.reductions,
 			accountingTransitions,
@@ -708,9 +732,7 @@ export function startPositionGapActor(
 			} catch (error) {
 				if (error instanceof FillAccountingPendingError) {
 					if (["filled", "canceled"].includes(action.status)) {
-						transitions.push(
-							await repairFromVenueEvidence(action, actionMode),
-						);
+						transitions.push(await repairFromVenueEvidence(action, actionMode));
 					} else {
 						await deps.store.markFillAccountingPending(
 							action.id,
@@ -884,7 +906,9 @@ export function startPositionGapActor(
 			),
 		);
 		const ledgerOrderIds = new Set(
-			accountExposure.flatMap((entry) => (entry.orderId ? [entry.orderId] : [])),
+			accountExposure.flatMap((entry) =>
+				entry.orderId ? [entry.orderId] : [],
+			),
 		);
 		const exposures: PositionGapUnmanagedBuyExposureV1[] = [];
 		const add = (
@@ -946,7 +970,10 @@ export function startPositionGapActor(
 		).flat();
 		for (const order of venueOrders) {
 			if (order.side !== "BUY") continue;
-			if (managedOrderIds.has(order.orderId) || ledgerOrderIds.has(order.orderId)) {
+			if (
+				managedOrderIds.has(order.orderId) ||
+				ledgerOrderIds.has(order.orderId)
+			) {
 				continue;
 			}
 			const conditionId = order.marketId?.replace(
@@ -985,6 +1012,7 @@ export function startPositionGapActor(
 		budgetUsdc: number;
 		walletCashUsdc: number;
 		plan: PositionGapBookPlanV1;
+		lineage: AlgorithmLineage;
 		cohortCreations: ReturnType<typeof projectPositionGapCohorts>["creations"];
 		cohortReductions: ReturnType<
 			typeof projectPositionGapCohorts
@@ -1001,6 +1029,11 @@ export function startPositionGapActor(
 				intent.shares.toString(),
 				intent.limitPrice.toString(),
 			]);
+			const clientOrderId = clientOrderIdFor(
+				deps.scope.billingAccountId,
+				deps.scope.targetId,
+				actionKey,
+			);
 			return {
 				actionKey,
 				cohortKey: intent.cohortId,
@@ -1011,11 +1044,11 @@ export function startPositionGapActor(
 				shares: intent.shares,
 				notionalUsdc: intent.notionalUsdc,
 				limitPrice: intent.limitPrice,
-				clientOrderId: clientOrderIdFor(
-					deps.scope.billingAccountId,
-					deps.scope.targetId,
-					actionKey,
-				),
+				clientOrderId,
+				lineage: {
+					...input.lineage,
+					correlation_id: clientOrderId,
+				},
 				plannerAction: intent as unknown as Record<string, unknown>,
 			};
 		});
@@ -1041,7 +1074,7 @@ export function startPositionGapActor(
 				expiresAt: new Date(input.snapshot.expiresAtMs),
 				value: input.snapshot as unknown as Record<string, unknown>,
 			},
-			plannerVersion: PLANNER_VERSION,
+			plannerVersion: input.lineage.algorithm_version_id,
 			budgetUsdc: input.budgetUsdc,
 			eligibleNetNavUsdc: input.plan.eligibleNetNavUsdc,
 			scale: input.plan.scale,
@@ -1059,7 +1092,9 @@ export function startPositionGapActor(
 		);
 		const accountExposure = await deps.store.loadAccountBuyExposure(deps.scope);
 		const modeByClientOrderId = new Map(
-			accountExposure.map((entry) => [entry.clientOrderId, entry.mode] as const),
+			accountExposure.map(
+				(entry) => [entry.clientOrderId, entry.mode] as const,
+			),
 		);
 
 		for (const cancellation of persisted.cancellations) {
@@ -1094,6 +1129,10 @@ export function startPositionGapActor(
 		let halted = false;
 		let placedCount = 0;
 		let filledCount = 0;
+		const tenantLedger = deps.ledger.forTenant({
+			billing_account_id: deps.scope.billingAccountId,
+			created_by_user_id: deps.scope.createdByUserId,
+		});
 		for (const buy of persisted.buys) {
 			if (halted) break;
 			const prepared = preparedBuys.find(
@@ -1104,18 +1143,24 @@ export function startPositionGapActor(
 				...prepared,
 				targetWallet: deps.targetWallet,
 			});
+			const decisionBase = {
+				target_id: deps.scope.targetId,
+				fill_id: `position-gap-v3:${prepared.actionKey}`,
+				outcome: "error" as const,
+				reason: null as string | null,
+				intent: positionGapDecisionIntent(prepared, intent),
+				receipt: null as Record<string, unknown> | null,
+				decided_at: new Date(input.snapshot.updatedAtMs),
+				lineage: prepared.lineage,
+			};
+			const attemptLog = deps.logger.child(prepared.lineage);
 			try {
-				const placementMode = await deps.ledger
-					.forTenant({
-						billing_account_id: deps.scope.billingAccountId,
-						created_by_user_id: deps.scope.createdByUserId,
-					})
-					.insertPending({
-						target_id: deps.scope.targetId,
-						fill_id: `position-gap-v3:${prepared.actionKey}`,
-						observed_at: new Date(input.snapshot.updatedAtMs),
-						intent,
-					});
+				const placementMode = await tenantLedger.insertPending({
+					target_id: deps.scope.targetId,
+					fill_id: `position-gap-v3:${prepared.actionKey}`,
+					observed_at: new Date(input.snapshot.updatedAtMs),
+					intent,
+				});
 				if (placementMode !== input.planningMode) {
 					throw new Error(
 						`execution venue changed during position-gap planning (${input.planningMode} -> ${placementMode})`,
@@ -1131,6 +1176,22 @@ export function startPositionGapActor(
 					client_order_id: prepared.clientOrderId,
 					error: detail,
 				});
+				await tenantLedger.recordDecision({
+					...decisionBase,
+					reason: "pending_insert_failed",
+				});
+				logEvent(
+					attemptLog,
+					EVENT_NAMES.POLY_ALGORITHM_ATTEMPT_COMPLETE,
+					{
+						reqId: prepared.clientOrderId,
+						outcome: "error",
+						errorCode: "pending_insert_failed",
+						reason: "pending_insert_failed",
+						client_order_id: prepared.clientOrderId,
+					},
+					"position-gap algorithm attempt failed before placement",
+				);
 				continue;
 			}
 			try {
@@ -1146,6 +1207,33 @@ export function startPositionGapActor(
 					client_order_id: prepared.clientOrderId,
 					receipt,
 				});
+				await tenantLedger.recordDecision({
+					...decisionBase,
+					outcome: "placed",
+					reason: "allocated",
+					receipt: {
+						order_id: receipt.order_id,
+						client_order_id: receipt.client_order_id,
+						status: receipt.status,
+						filled_size_usdc: receipt.filled_size_usdc,
+						submitted_at: receipt.submitted_at,
+					},
+				});
+				logEvent(
+					attemptLog,
+					EVENT_NAMES.POLY_ALGORITHM_ATTEMPT_COMPLETE,
+					{
+						reqId: prepared.clientOrderId,
+						outcome: "placed",
+						reason: "allocated",
+						client_order_id: prepared.clientOrderId,
+						order_id: receipt.order_id,
+						order_status: receipt.status,
+						size_usdc: intent.size_usdc,
+						limit_price: intent.limit_price,
+					},
+					"position-gap algorithm attempt placed",
+				);
 			} catch (error) {
 				const detail = error instanceof Error ? error.message : String(error);
 				if (knownNoOrder(error)) {
@@ -1154,10 +1242,34 @@ export function startPositionGapActor(
 						client_order_id: prepared.clientOrderId,
 						error: detail,
 					});
+					await tenantLedger.recordDecision({
+						...decisionBase,
+						reason: "placement_failed",
+					});
 				} else {
 					await deps.store.markAmbiguous(buy.id, detail);
+					await tenantLedger.recordDecision({
+						...decisionBase,
+						reason: "placement_ambiguous",
+					});
 					halted = true;
 				}
+				logEvent(
+					attemptLog,
+					EVENT_NAMES.POLY_ALGORITHM_ATTEMPT_COMPLETE,
+					{
+						reqId: prepared.clientOrderId,
+						outcome: "error",
+						errorCode: knownNoOrder(error)
+							? "placement_failed"
+							: "placement_ambiguous",
+						reason: knownNoOrder(error)
+							? "placement_failed"
+							: "placement_ambiguous",
+						client_order_id: prepared.clientOrderId,
+					},
+					"position-gap algorithm attempt failed",
+				);
 			}
 		}
 		if (!halted) {
@@ -1176,14 +1288,14 @@ export function startPositionGapActor(
 					target_wallet: deps.targetWallet,
 					target_id: deps.scope.targetId,
 					run_id: persisted.runId,
+					...input.lineage,
 					trigger_reasons: input.triggerReasons,
 					fill_accounting_transitions: input.accountingTransitions,
 					outcome,
 					snapshot_id: input.snapshot.snapshotId,
 					snapshot_as_of: input.snapshot.updatedAtMs,
 					eligible_net_nav_usdc: input.plan.eligibleNetNavUsdc,
-					target_complete_set_value_usdc:
-						input.plan.targetCompleteSetValueUsdc,
+					target_complete_set_value_usdc: input.plan.targetCompleteSetValueUsdc,
 					target_cash_pusd_usdc: input.plan.targetCashPusdUsdc,
 					target_cash_usdc_e_usdc: input.plan.targetCashUsdcEUsdc,
 					target_cash_usdc: input.plan.targetCashUsdc,
@@ -1201,8 +1313,7 @@ export function startPositionGapActor(
 						input.plan.confirmedAllocationHeadroomUsdc,
 					remaining_buy_notional_cash_headroom_usdc:
 						input.plan.remainingBuyNotionalCashHeadroomUsdc,
-					minimum_feasible_sleeve_usdc:
-						input.plan.minimumFeasibleSleeveUsdc,
+					minimum_feasible_sleeve_usdc: input.plan.minimumFeasibleSleeveUsdc,
 					planned_intents: input.plan.intents.length,
 					planned_cancellations: input.plan.cancellations.length,
 					intent_details: input.plan.intents.slice(0, 8).map((intent) => {
@@ -1250,10 +1361,7 @@ export function startPositionGapActor(
 	}
 
 	async function cancelAll(
-		reason:
-			| "disabled"
-			| "invalid_budget_group"
-			| "stale_snapshot",
+		reason: "disabled" | "invalid_budget_group" | "stale_snapshot",
 	): Promise<void> {
 		const runtime = await deps.store.loadPlannerState(deps.scope);
 		const unresolvedPlacements: string[] = [];
@@ -1335,7 +1443,7 @@ export function startPositionGapActor(
 				expiresAt: new Date(snapshot.expiresAtMs),
 				value: snapshot as unknown as Record<string, unknown>,
 			},
-			plannerVersion: PLANNER_VERSION,
+			plannerVersion: POSITION_GAP_DEFINITION.codeVersion,
 			budgetUsdc: safetyBudgetUsdc,
 			eligibleNetNavUsdc: 0,
 			scale: 0,
@@ -1353,7 +1461,9 @@ export function startPositionGapActor(
 		);
 		const accountExposure = await deps.store.loadAccountBuyExposure(deps.scope);
 		const modeByClientOrderId = new Map(
-			accountExposure.map((entry) => [entry.clientOrderId, entry.mode] as const),
+			accountExposure.map(
+				(entry) => [entry.clientOrderId, entry.mode] as const,
+			),
 		);
 		const cancellationFailures: string[] = [];
 		for (const cancellation of persisted.cancellations) {
@@ -1383,10 +1493,7 @@ export function startPositionGapActor(
 				);
 			}
 		}
-		if (
-			cancellationFailures.length > 0 ||
-			unresolvedPlacements.length > 0
-		) {
+		if (cancellationFailures.length > 0 || unresolvedPlacements.length > 0) {
 			throw new Error(
 				[
 					...(cancellationFailures.length > 0
@@ -1416,6 +1523,7 @@ export function buildPositionGapBuyIntent(input: {
 	conditionId: string;
 	cohortKey: string;
 	targetWallet: string;
+	lineage: AlgorithmLineage;
 }): OrderIntent & { side: "BUY" } {
 	return {
 		provider: "polymarket",
@@ -1433,7 +1541,36 @@ export function buildPositionGapBuyIntent(input: {
 			placement: "limit",
 			position_gap_version: "3",
 			position_gap_cohort_key: input.cohortKey,
+			...input.lineage,
 		},
+	};
+}
+
+function positionGapDecisionIntent(
+	prepared: {
+		conditionId: string;
+		tokenId: string;
+		outcome: string;
+		notionalUsdc: number;
+		limitPrice: number;
+		clientOrderId: string;
+		cohortKey: string;
+		lineage: AlgorithmLineage;
+	},
+	intent: OrderIntent,
+): Record<string, unknown> {
+	return {
+		market_id: intent.market_id,
+		condition_id: prepared.conditionId,
+		token_id: prepared.tokenId,
+		outcome: prepared.outcome,
+		side: "BUY",
+		size_usdc: prepared.notionalUsdc,
+		limit_price: prepared.limitPrice,
+		client_order_id: prepared.clientOrderId,
+		position_branch: "position_gap",
+		position_gap_cohort_key: prepared.cohortKey,
+		...prepared.lineage,
 	};
 }
 
@@ -1522,7 +1659,9 @@ function validateTargetCash(
 		!Number.isSafeInteger(cash.observedBlock) ||
 		cash.observedBlock !== expectedBlock
 	) {
-		throw new Error("target cash proof was incomplete or source-block mismatched");
+		throw new Error(
+			"target cash proof was incomplete or source-block mismatched",
+		);
 	}
 	return cash;
 }
@@ -1706,10 +1845,7 @@ function blockedSafetyPlan(
 		cohortId: string;
 		reservedUsdc: number;
 	}[],
-	reason:
-		| "disabled"
-		| "invalid_budget_group"
-		| "stale_snapshot",
+	reason: "disabled" | "invalid_budget_group" | "stale_snapshot",
 	sleeveBudgetUsdc: number,
 	walletCashUsdc: number,
 ): PositionGapBookPlanV1 {
@@ -1810,10 +1946,7 @@ export function selectPositionGapVenueCandidates(input: {
 				theoreticalNotional:
 					Math.max(0, value.allowed - value.held - value.open) * value.priceCap,
 			}))
-			.filter(
-				(entry) =>
-					entry.gapShares > 0 && input.perOrderHeadroomUsdc > 0,
-			)
+			.filter((entry) => entry.gapShares > 0 && input.perOrderHeadroomUsdc > 0)
 			.sort(
 				(left, right) =>
 					right.gapShares - left.gapShares ||

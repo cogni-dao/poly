@@ -37,6 +37,7 @@ export {
   copyTradeOrdersAccountReadHandler,
   copyTradeOrdersExtra,
   recentAttemptsAccountReadHandler,
+  recentAttemptsOwnerAccountReadHandler,
   recentAttemptsExtra,
 } from "./copy-operations-handlers";
 export {

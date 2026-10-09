@@ -49,6 +49,7 @@
 
 import {
   POLY_COPY_ATTEMPTS_MAX_LIMIT,
+  PolyAlgorithmIdSchema,
   type PolyAccountRecentAttemptsQuery,
   type PolyAccountRecentAttemptsResponse,
   type PolyCopyTradeAttempt,
@@ -126,7 +127,15 @@ type AttemptRow = {
   target_wallet: string | null;
   fill_id: string;
   market_id: string | null;
+  market_title: string | null;
+  outcome_label: string | null;
   mode: string;
+  algorithm_id: string | null;
+  algorithm_version_id: string | null;
+  config_hash: string | null;
+  input_snapshot_id: string | null;
+  assignment_id: string | null;
+  correlation_id: string | null;
   outcome: "placed" | "skipped" | "error";
   reason: string | null;
   intended_side: string | null;
@@ -146,6 +155,7 @@ type AttemptRow = {
   exec_position_gap_version: string | null;
   exec_realized_fill_source: string | null;
   exec_synced_at: Date | string | null;
+  exec_terminal_reason: string | null;
   mark_price: string | number | null;
   mark_observed_at: Date | string | null;
   resolution: string | null;
@@ -227,7 +237,15 @@ export function copyTradeAttemptsSelect(
       t.target_wallet,
       d.fill_id,
       COALESCE(NULLIF(d.intent->>'market_id', ''), f.market_id) AS market_id,
+      COALESCE(NULLIF(metadata.market_title, ''), NULLIF(f.attributes->>'title', '')) AS market_title,
+      COALESCE(NULLIF(d.intent->>'outcome', ''), NULLIF(f.attributes->>'outcome', '')) AS outcome_label,
       d.mode,
+      d.algorithm_id,
+      d.algorithm_version_id,
+      d.config_hash,
+      d.input_snapshot_id,
+      d.assignment_id,
+      d.correlation_id,
       d.outcome,
       d.reason,
       CASE WHEN d.intent->>'side' IN ('BUY','SELL')
@@ -249,6 +267,11 @@ export function copyTradeAttemptsSelect(
       f.attributes->>'position_gap_version'             AS exec_position_gap_version,
       f.attributes->>'realized_fill_source'             AS exec_realized_fill_source,
       f.synced_at                                       AS exec_synced_at,
+      CASE
+        WHEN f.status = 'canceled' THEN NULLIF(f.attributes->>'reason', '')
+        WHEN f.status = 'error' THEN NULLIF(f.attributes->>'error', '')
+        ELSE NULL
+      END                                               AS exec_terminal_reason,
       mark.price                                        AS mark_price,
       mark.ts                                           AS mark_observed_at,
       o.outcome                                         AS resolution,
@@ -268,6 +291,12 @@ export function copyTradeAttemptsSelect(
      AND f.target_id = d.target_id
      AND f.fill_id = d.fill_id
      AND f.observed_at <= ${capturedAt}::timestamptz
+    LEFT JOIN poly_market_metadata metadata
+      ON lower(metadata.condition_id) = lower(regexp_replace(
+           COALESCE(NULLIF(d.intent->>'market_id', ''), f.market_id, ''),
+           ${LEDGER_PREFIX_PATTERN},
+           ''
+         ))
     -- Mark availability: newest price at or before the cutoff for the intended
     -- token. One index probe per row, bounded by the page size.
     LEFT JOIN LATERAL (
@@ -360,6 +389,7 @@ export function toExecuted(row: AttemptRow): PolyCopyTradeAttempt["executed"] {
           ? price * shares
           : null,
       fill_accounting: fillAccounting,
+      terminal_reason: row.exec_terminal_reason,
       synced_at: toIso(row.exec_synced_at),
     };
   }
@@ -410,6 +440,27 @@ function toResolution(
 }
 
 function toAttempt(row: AttemptRow, fallbackIso: string): PolyCopyTradeAttempt {
+  const parsedAlgorithmId = PolyAlgorithmIdSchema.safeParse(row.algorithm_id);
+  const algorithm =
+    parsedAlgorithmId.success &&
+    row.algorithm_version_id &&
+    row.config_hash &&
+    row.input_snapshot_id &&
+    row.assignment_id &&
+    row.correlation_id
+      ? ({
+          availability: "observed" as const,
+          algorithm_id: parsedAlgorithmId.data,
+          algorithm_version_id: row.algorithm_version_id,
+          config_hash: row.config_hash,
+          input_snapshot_id: row.input_snapshot_id,
+          assignment_id: row.assignment_id,
+          correlation_id: row.correlation_id,
+        } as const)
+      : ({
+          availability: "unavailable" as const,
+          reason: "legacy_attempt_without_lineage" as const,
+        } as const);
   return {
     attempt_id: row.attempt_id,
     decided_at: toIso(row.decided_at) ?? fallbackIso,
@@ -417,7 +468,10 @@ function toAttempt(row: AttemptRow, fallbackIso: string): PolyCopyTradeAttempt {
     target_wallet: row.target_wallet,
     fill_id: row.fill_id,
     market_id: row.market_id,
+    market_title: row.market_title,
+    outcome_label: row.outcome_label,
     mode: mode(row.mode),
+    algorithm,
     decision: { outcome: row.outcome, reason: row.reason },
     intended: {
       side: side(row.intended_side),

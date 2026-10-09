@@ -104,6 +104,8 @@ function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 
 function commonDeps(fill: Fill, ledger: OrderLedger, logger: LoggerPort) {
 	return {
+		implementationRevision: "0123456789abcdef0123456789abcdef01234567",
+		assignmentId: "target:2026-10-07T00:00:00.000Z",
 		source: { fetchSince: async () => ({ fills: [fill], newSince: 1 }) },
 		ledger,
 		getExecutionMode: async () => "paper" as const,
@@ -138,7 +140,7 @@ function commonDeps(fill: Fill, ledger: OrderLedger, logger: LoggerPort) {
 	};
 }
 
-describe("position_gap pipeline VWAP boundary", () => {
+describe("position_gap legacy fill-pipeline boundary", () => {
 	it("does not place when the account venue changes after private facts are read", async () => {
 		const entries: Record<string, unknown>[] = [];
 		const harness = ledgerHarness();
@@ -181,14 +183,10 @@ describe("position_gap pipeline VWAP boundary", () => {
 		);
 	});
 
-	it("records every input used by a vwap_floor_breach skip", async () => {
+	it("fails the legacy fill pipeline closed so the book actor is the only planner", async () => {
 		const entries: Record<string, unknown>[] = [];
 		const harness = ledgerHarness();
-		const deps = commonDeps(
-			buyFill,
-			harness.ledger,
-			recordingLogger(entries),
-		);
+		const deps = commonDeps(buyFill, harness.ledger, recordingLogger(entries));
 
 		await runMirrorTick(deps);
 
@@ -197,7 +195,7 @@ describe("position_gap pipeline VWAP boundary", () => {
 		expect(harness.decisions).toHaveLength(1);
 		expect(harness.decisions[0]).toMatchObject({
 			outcome: "skipped",
-			reason: "vwap_floor_breach",
+			reason: "invalid_input",
 			intent: {
 				target_vwap_for_fill_token: 0.5,
 				vwap_tolerance: 0.005,
@@ -214,7 +212,7 @@ describe("position_gap pipeline VWAP boundary", () => {
 		expect(entries).toContainEqual(
 			expect.objectContaining({
 				outcome: "skipped",
-				reason: "vwap_floor_breach",
+				reason: "invalid_input",
 				target_vwap_for_fill_token: 0.5,
 				vwap_tolerance: 0.005,
 				fill_price: 0.5064,
@@ -231,11 +229,7 @@ describe("position_gap pipeline VWAP boundary", () => {
 	it("records shared mirror facts for min_bet even when target NAV is unavailable", async () => {
 		const entries: Record<string, unknown>[] = [];
 		const harness = ledgerHarness();
-		const deps = commonDeps(
-			buyFill,
-			harness.ledger,
-			recordingLogger(entries),
-		);
+		const deps = commonDeps(buyFill, harness.ledger, recordingLogger(entries));
 		const minBetTarget = buildMirrorTargetConfig({
 			targetWallet: buyFill.target_wallet,
 			billingAccountId: "billing-1",
@@ -274,7 +268,7 @@ describe("position_gap pipeline VWAP boundary", () => {
 		);
 	});
 
-	it("keeps an overweight position-gap SELL on the close path", async () => {
+	it("fails legacy position-gap SELL closed so the book actor remains the only planner", async () => {
 		const sellFill: Fill = {
 			...buyFill,
 			fill_id: "chain:position-gap-sell",
@@ -283,11 +277,7 @@ describe("position_gap pipeline VWAP boundary", () => {
 		};
 		const entries: Record<string, unknown>[] = [];
 		const harness = ledgerHarness();
-		const deps = commonDeps(
-			sellFill,
-			harness.ledger,
-			recordingLogger(entries),
-		);
+		const deps = commonDeps(sellFill, harness.ledger, recordingLogger(entries));
 		const closePosition = vi.fn(
 			async (params: {
 				client_order_id: `0x${string}`;
@@ -321,24 +311,13 @@ describe("position_gap pipeline VWAP boundary", () => {
 			closePosition,
 		});
 
-		expect(closePosition).toHaveBeenCalledWith(
-			expect.objectContaining({
-				tokenId: "token-1",
-				max_size_usdc: 4,
-				limit_price: 0.5,
-			}),
-			"paper",
-		);
-		expect(harness.insertPending).toHaveBeenCalledOnce();
-		expect(harness.markOrderId).toHaveBeenCalledOnce();
+		expect(closePosition).not.toHaveBeenCalled();
+		expect(harness.insertPending).not.toHaveBeenCalled();
+		expect(harness.markOrderId).not.toHaveBeenCalled();
 		expect(harness.decisions).toContainEqual(
 			expect.objectContaining({
-				outcome: "placed",
-				reason: "sell_closed_position",
-				intent: expect.objectContaining({
-					mirror_portfolio_current_value_usdc: 100,
-					mirror_token_qty_shares: 0,
-				}),
+				outcome: "skipped",
+				reason: "invalid_input",
 			}),
 		);
 		expect(harness.decisions).not.toContainEqual(
@@ -379,11 +358,7 @@ describe("position_gap pipeline VWAP boundary", () => {
 			};
 			const entries: Record<string, unknown>[] = [];
 			const harness = ledgerHarness([openOrder]);
-			const deps = commonDeps(
-				fill,
-				harness.ledger,
-				recordingLogger(entries),
-			);
+			const deps = commonDeps(fill, harness.ledger, recordingLogger(entries));
 			const cancelOrder = vi.fn(async () => undefined);
 			const closePosition = vi.fn(async () => {
 				throw new Error("closePosition must not run");

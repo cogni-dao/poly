@@ -29,6 +29,15 @@ import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 
 const future = new Date("2099-01-01T00:00:00.000Z");
 const asOf = new Date("2026-10-08T00:00:00.000Z");
+const algorithmHash = `sha256:${"a".repeat(64)}`;
+const algorithmLineage = {
+	algorithm_id: "poly.copy-mirror.position-gap" as const,
+	algorithm_version_id: algorithmHash,
+	config_hash: algorithmHash,
+	input_snapshot_id: algorithmHash,
+	assignment_id: "position-gap-component",
+	correlation_id: "position-gap-component",
+};
 
 describe("position-gap runtime persistence", () => {
 	let appDb: Database;
@@ -1134,6 +1143,7 @@ describe("position-gap runtime persistence", () => {
 			conditionId: actions[0]?.conditionId ?? "missing",
 			cohortKey: actions[0]?.cohortKey ?? "missing",
 			targetWallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
+			lineage: algorithmLineage,
 		});
 		expect(intent).toMatchObject({
 			side: "BUY",
@@ -1491,6 +1501,7 @@ describe("position-gap runtime persistence", () => {
 				conditionId: "condition-hard",
 				cohortKey: "ambiguous-cohort-hard",
 				targetWallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
+				lineage: algorithmLineage,
 			}),
 		});
 		await store.markLedgered(hardBuy.id);
