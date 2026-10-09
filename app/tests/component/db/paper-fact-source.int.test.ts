@@ -536,6 +536,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       expect(balance.address).toBe(
         derivePaperAccountAddress(traded.billingAccountId)
       );
+      expect(balance.connectionKind).toBe("paper");
       // A paper account has no on-chain pUSD and no POL, and never will. NULL
       // plus `partial` says that; writing 0 would assert two measurements that
       // were never taken.

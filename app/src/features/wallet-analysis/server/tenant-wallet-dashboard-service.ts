@@ -187,7 +187,11 @@ export async function readTenantWalletDashboardIn(
   const balance: Exclude<WalletBalanceRead, { kind: "no_wallet" }> =
     balanceRead.ok && balanceRead.value.kind !== "no_wallet"
       ? balanceRead.value
-      : { kind: "missing", address };
+      : {
+          kind: "missing",
+          address,
+          connectionKind: connection.connectionKind,
+        };
   if (!balanceRead.ok) {
     warnings.push(readFailure("cash", "balances_unavailable", balanceRead.error));
   } else if (balanceRead.value.kind === "no_wallet") {
@@ -637,6 +641,7 @@ export async function readTenantWalletDashboardIn(
     overview: {
       configured: input.adapterConfigured,
       connected: true,
+      account_kind: connection.connectionKind,
       freshness: "read_model",
       address,
       interval: input.interval,
@@ -737,6 +742,7 @@ export async function readTenantWalletDashboardIn(
 type ActiveWalletConnection = {
   /** Null when the row exists but has no usable funder address (unprovisioned). */
   address: `0x${string}` | null;
+  connectionKind: "privy_live" | "paper";
   tradingReady: boolean;
   autoWrapConsentAt: string | null;
   autoWrapFloorUsdceAtomic: string | null;
@@ -757,6 +763,7 @@ async function readActiveWalletConnection(
 ): Promise<ActiveWalletConnection | null> {
   const rows = normalizeRows<{
     address: string | null;
+    connection_kind: "privy_live" | "paper";
     trading_approvals_ready_at: Date | string | null;
     auto_wrap_consent_at: Date | string | null;
     auto_wrap_revoked_at: Date | string | null;
@@ -766,6 +773,7 @@ async function readActiveWalletConnection(
       -- Amendment 2: funder_address alone. A null funder is an unprovisioned
       -- deposit wallet, and flows to a null address below, never to the signer.
       lower(funder_address) AS address,
+      kind AS connection_kind,
       trading_approvals_ready_at,
       auto_wrap_consent_at,
       auto_wrap_revoked_at,
@@ -788,6 +796,7 @@ async function readActiveWalletConnection(
       typeof address === "string" && /^0x[0-9a-f]{40}$/.test(address)
         ? (address as `0x${string}`)
         : null,
+    connectionKind: row.connection_kind,
     tradingReady: row.trading_approvals_ready_at !== null,
     // A revocation nulls the consent out; the stamp itself is never rewritten.
     autoWrapConsentAt:
@@ -1254,6 +1263,7 @@ function emptyDashboard(input: { snapshotId: string; capturedAt: string; interva
     overview: {
       configured: input.configured,
       connected: false,
+      account_kind: null,
       freshness: "read_model",
       address: null,
       interval: input.interval,

@@ -72,6 +72,12 @@ export const polyWalletOverviewOperation = {
   output: z.object({
     configured: z.boolean(),
     connected: z.boolean(),
+    /**
+     * The account venue selected by the same live-wins-paper rule used for
+     * execution. Paper's deterministic address is an internal join key, not
+     * a human wallet identity.
+     */
+    account_kind: z.enum(["privy_live", "paper"]).nullable(),
     freshness: PolyWalletDataFreshnessSchema,
     address: walletAddressSchema.nullable(),
     interval: PolyWalletOverviewIntervalSchema,

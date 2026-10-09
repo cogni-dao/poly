@@ -3,14 +3,14 @@
 
 /**
  * Module: `@app/(app)/dashboard/_components/TradingWalletCard`
- * Purpose: Dashboard tile — caller's own per-tenant trading-wallet summary
- *   (address, gas, live balance model) plus first-user onboarding nudges:
- *   renders "Connect →" → `/credits` when no wallet exists, and
- *   "Enable trading →" → `/credits` when connected but `trading_ready=false`.
+ * Purpose: Dashboard tile — caller's own per-tenant trading-account summary
+ *   plus explicit paper/live onboarding. Paper accounts are labeled as
+ *   simulation and their deterministic join address is never shown as a
+ *   human wallet.
  * Scope: Client component. Uses the progressive dashboard overview hook for
  *   the balance snapshot and `/api/v1/poly/wallet/status` (shared cache key with
  *   `/credits` via `poly-wallet-status`) to drive the onboarding CTA branch.
- *   Read-only.
+ *   Paper creation is the one mutation; live setup remains on `/credits`.
  * Invariants:
  *   - TENANT_SCOPED: the backing route resolves the caller's own wallet from
  *     the session — no address plumbing at the UI boundary.
@@ -19,6 +19,13 @@
  *   - NO_FAKE_HISTORY: this card renders current wallet truth only.
  *   - STATE_DRIVEN_UI (task.0361): the onboarding CTA is derived from
  *     `poly.wallet.status.v1`; no persisted onboarding-progress.
+ *   - PAPER_DOES_NOT_REQUIRE_PRIVY: a tenant with no connection can create a
+ *     paper account even when the live adapter is unconfigured.
+ *   - LIVE_WINS_PRESENTATION: an existing live connection, including an
+ *     incomplete one, never exposes the paper-create CTA. This matches
+ *     execution venue precedence and prevents a hidden paper account.
+ *   - PAPER_ADDRESS_IS_INTERNAL: paper renders an explicit badge, never an
+ *     AddressChip containing its synthetic database join key.
  *   - FUNDED_GATES_LIVE (task.0365): when approvals are signed but the
  *     wallet holds zero USD collateral (pUSD + USDC.e both zero), the card
  *     surfaces a fund CTA in place of the balance breakdown — silent zeros
@@ -28,7 +35,7 @@
  *   - UNKNOWN_IS_NOT_ZERO: absent/stale position or P/L read models render an
  *     explicit unavailable state. A nullable total never triggers the empty
  *     wallet CTA and cash-only is never presented as Total.
- * Side-effects: IO (via React Query).
+ * Side-effects: IO (React Query reads; session-bound paper-account POST).
  * Links: work/items/task.0361.poly-first-user-onboarding-flow-v0.md
  * @public
  */
@@ -36,11 +43,12 @@
 "use client";
 
 import type { PolyWalletStatusOutput } from "@cogni/poly-node-contracts";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import type { ReactElement } from "react";
 import {
   AddressChip,
+  Button,
   Card,
   CardContent,
   CardHeader,
@@ -51,7 +59,10 @@ import {
   WalletProfitLossCard,
 } from "@/features/wallet-analysis";
 import { cn } from "@/shared/util/cn";
-import { useWalletDashboard } from "../_hooks/useWalletDashboard";
+import {
+  invalidateWalletDashboardSnapshot,
+  useWalletDashboard,
+} from "../_hooks/useWalletDashboard";
 import { TradingWalletBalanceBar } from "./TradingWalletBalanceBar";
 
 function formatDecimal(n: number | null, fractionDigits: number): string {
@@ -70,7 +81,28 @@ async function fetchWalletStatus(): Promise<PolyWalletStatusOutput> {
   return (await response.json()) as PolyWalletStatusOutput;
 }
 
+const PAPER_ACCOUNT_TERMS = {
+  seedUsdc: 10_000,
+  defaultGrant: {
+    perOrderUsdcCap: 20,
+    dailyUsdcCap: 200,
+  },
+} as const;
+
+async function createPaperAccount(): Promise<void> {
+  const response = await fetch("/api/v1/poly/paper-account", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(PAPER_ACCOUNT_TERMS),
+  });
+  if (!response.ok) {
+    throw new Error(`paper account creation failed: ${response.status}`);
+  }
+}
+
 export function TradingWalletCard(): ReactElement {
+  const queryClient = useQueryClient();
   const dashboard = useWalletDashboard();
   const data = dashboard.data?.overview;
   const { interval, setInterval, isLoading, isError } = dashboard;
@@ -81,6 +113,17 @@ export function TradingWalletCard(): ReactElement {
     gcTime: 60_000,
     retry: 1,
   });
+  const paperAccount = useMutation({
+    mutationFn: createPaperAccount,
+    onSuccess: async () => {
+      await Promise.all([
+        invalidateWalletDashboardSnapshot(queryClient),
+        queryClient.invalidateQueries({ queryKey: ["poly-wallet-status"] }),
+      ]);
+    },
+  });
+  const isPaper = data?.account_kind === "paper";
+  const hasPersistedConnection = dashboard.data?.readiness?.connected === true;
 
   const gasReading = data?.pol_gas;
   const hasGasReading = gasReading !== null && gasReading !== undefined;
@@ -141,7 +184,11 @@ export function TradingWalletCard(): ReactElement {
                 {noGas ? "no gas" : "low gas"}
               </span>
             ) : null}
-            {data?.connected && data.address ? (
+            {data?.connected && isPaper ? (
+              <span className="rounded bg-primary/10 px-2 py-1 font-semibold text-primary">
+                Paper account
+              </span>
+            ) : data?.connected && data.address ? (
               <AddressChip address={data.address} />
             ) : null}
           </div>
@@ -157,23 +204,29 @@ export function TradingWalletCard(): ReactElement {
           <p className="py-2 text-muted-foreground text-sm">
             Couldn&apos;t load trading wallet. Will retry shortly.
           </p>
-        ) : !data.configured ? (
+        ) : !data.connected && hasPersistedConnection ? (
+          <OnboardingCta
+            message="Your live trading wallet setup is incomplete."
+            ctaLabel="Finish live setup →"
+            href="/credits"
+          />
+        ) : !data.connected ? (
+          <PaperAccountOnboarding
+            isPending={paperAccount.isPending}
+            isError={paperAccount.isError}
+            onCreate={() => paperAccount.mutate()}
+          />
+        ) : !isPaper && !data.configured ? (
           <p className="py-2 text-muted-foreground text-sm">
             Trading-wallet adapter is not configured on this pod yet.
           </p>
-        ) : !data.connected ? (
-          <OnboardingCta
-            message="No trading wallet connected yet."
-            ctaLabel="Connect wallet →"
-            href="/credits"
-          />
-        ) : statusData?.connected && !statusData.trading_ready ? (
+        ) : !isPaper && statusData?.connected && !statusData.trading_ready ? (
           <OnboardingCta
             message="Trading not enabled — finish approvals to copy-trade."
             ctaLabel="Enable trading →"
             href="/credits"
           />
-        ) : data.usdc_total !== null && data.usdc_total <= 0 ? (
+        ) : !isPaper && data.usdc_total !== null && data.usdc_total <= 0 ? (
           <OnboardingCta
             message="Wallet is empty — add USD collateral (pUSD or USDC.e) on Polygon to start trading."
             ctaLabel="Fund wallet →"
@@ -216,6 +269,50 @@ export function TradingWalletCard(): ReactElement {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function PaperAccountOnboarding({
+  isPending,
+  isError,
+  onCreate,
+}: {
+  isPending: boolean;
+  isError: boolean;
+  onCreate: () => void;
+}): ReactElement {
+  return (
+    <div className="flex flex-col items-center gap-3 py-8 text-center">
+      <p className="text-muted-foreground text-sm">
+        No trading account exists for this login yet.
+      </p>
+      <p className="max-w-xl text-muted-foreground text-xs">
+        Start with a declared $10,000 simulated balance and safety caps of $20
+        per order and $200 per day. No wallet, key, deposit, or real funds are
+        created.
+      </p>
+      <div className="flex flex-wrap justify-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          disabled={isPending}
+          onClick={onCreate}
+        >
+          {isPending ? "Starting paper account…" : "Start paper trading"}
+        </Button>
+        <Link
+          href="/credits"
+          className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-5 py-2 font-semibold text-primary text-sm transition-colors hover:bg-primary/20"
+        >
+          Connect live wallet →
+        </Link>
+      </div>
+      {isError ? (
+        <p className="text-destructive text-xs" role="alert">
+          Paper account creation failed. Please retry.
+        </p>
+      ) : null}
+    </div>
   );
 }
 

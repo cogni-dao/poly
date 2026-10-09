@@ -101,8 +101,15 @@ export async function persistWalletBalanceFact(
 
 export type WalletBalanceRead =
   | { kind: "no_wallet" }
-  | { kind: "missing"; address: `0x${string}` }
-  | ({ kind: "available" } & Awaited<ReturnType<typeof availableBalanceRow>>);
+  | {
+      kind: "missing";
+      address: `0x${string}`;
+      connectionKind: "privy_live" | "paper";
+    }
+  | ({
+      kind: "available";
+      connectionKind: "privy_live" | "paper";
+    } & Awaited<ReturnType<typeof availableBalanceRow>>);
 
 function availableBalanceRow(row: typeof polyWalletBalanceSnapshots.$inferSelect) {
   return {
@@ -131,6 +138,7 @@ export async function readWalletBalanceFact(
       // Amendment 2: funder_address alone — an unprovisioned connection must
       // read as no_wallet, not as signer-keyed balances.
       address: sql<string>`lower(${polyWalletConnections.funderAddress})`,
+      connectionKind: polyWalletConnections.kind,
       snapshot: polyWalletBalanceSnapshots,
     })
     .from(polyWalletConnections)
@@ -169,10 +177,15 @@ export async function readWalletBalanceFact(
   if (!result.address) return { kind: "no_wallet" as const };
   const row = result.snapshot;
   if (!row) {
-    return { kind: "missing" as const, address: result.address as `0x${string}` };
+    return {
+      kind: "missing" as const,
+      address: result.address as `0x${string}`,
+      connectionKind: result.connectionKind as "privy_live" | "paper",
+    };
   }
   return {
     kind: "available" as const,
+    connectionKind: result.connectionKind as "privy_live" | "paper",
     ...availableBalanceRow(row),
   };
 }
