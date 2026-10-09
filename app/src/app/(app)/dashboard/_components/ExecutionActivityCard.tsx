@@ -160,7 +160,7 @@ export function ExecutionActivityCard(): ReactElement {
   const isExecutionLoading = dashboard.isLoading;
   const isExecutionError = dashboard.isError;
   const accessWarning =
-    dashboard.data?.overview.configured === false
+    dashboard.data?.overview?.configured === false
       ? {
           code: "wallet_adapter_unconfigured",
           message: "Trading-wallet execution is unavailable on this deployment.",
