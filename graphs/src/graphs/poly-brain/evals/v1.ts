@@ -52,7 +52,10 @@ const FORBIDDEN_TOOL_IDS = [
 
 export interface PolyBrainStrategyEvalRun {
 	readonly structuredOutput: unknown;
-	readonly toolCalls: readonly string[];
+	readonly toolCalls: readonly {
+		readonly name: string;
+		readonly input?: Readonly<Record<string, unknown>>;
+	}[];
 }
 
 export interface PolyBrainStrategyEvalResult {
@@ -67,8 +70,8 @@ export function evaluatePolyBrainStrategyRun(
 		run.structuredOutput,
 	);
 	const toolCallCounts = new Map<string, number>();
-	for (const toolId of run.toolCalls) {
-		toolCallCounts.set(toolId, (toolCallCounts.get(toolId) ?? 0) + 1);
+	for (const call of run.toolCalls) {
+		toolCallCounts.set(call.name, (toolCallCounts.get(call.name) ?? 0) + 1);
 	}
 
 	const evidenceKinds = parsed.success
@@ -84,6 +87,18 @@ export function evaluatePolyBrainStrategyRun(
 			evidenceKinds.has("knowledge") &&
 			evidenceKinds.has("work_item") &&
 			evidenceKinds.has("repo"),
+		canonicalKnowledgeRouting:
+			run.toolCalls.some(
+				(call) =>
+					call.name === KNOWLEDGE_READ_NAME &&
+					call.input?.id === "poly-mission",
+			) &&
+			run.toolCalls.some(
+				(call) =>
+					call.name === KNOWLEDGE_SEARCH_NAME &&
+					call.input?.domain === "strategy",
+			) &&
+			run.toolCalls.every((call) => call.input?.domain !== "poly"),
 		boundedComparison:
 			parsed.success &&
 			parsed.data.comparedStrategies.length >= 2 &&
@@ -104,6 +119,13 @@ export function evaluatePolyBrainStrategyRun(
 				(parsed.data.persistence.status === "reused" &&
 					(toolCallCounts.get(EDO_HYPOTHESIZE_NAME) ?? 0) === 0) ||
 				parsed.data.persistence.status === "failed"),
+		persistenceUsesStrategyDomain:
+			parsed.success &&
+			run.toolCalls.every(
+				(call) =>
+					call.name !== EDO_HYPOTHESIZE_NAME ||
+					call.input?.domain === "strategy",
+			),
 		forbiddenCapabilitiesAbsent: FORBIDDEN_TOOL_IDS.every(
 			(toolId) => !toolCallCounts.has(toolId),
 		),
@@ -123,7 +145,19 @@ const validStrategyReview = {
 	evidence: [
 		{
 			kind: "knowledge",
-			ref: "knowledge:poly:mirror-algorithm-rankings",
+			ref: "knowledge:mission:poly-mission",
+			finding:
+				"Poly seeks explainable, ground-truth, community-steered ethical profit.",
+		},
+		{
+			kind: "knowledge",
+			ref: "knowledge:strategy:strategy-succession-rule",
+			finding:
+				"Independent sharp-odds divergence is the current first diversification experiment.",
+		},
+		{
+			kind: "knowledge",
+			ref: "knowledge:strategy:mirror-algorithm-rankings",
 			finding:
 				"Copy-trading algorithms have evidence but material fidelity gaps.",
 		},
@@ -145,18 +179,18 @@ const validStrategyReview = {
 			title: "Calibrated event forecasting",
 			thesis:
 				"A small resolved-market backtest can reveal whether signals add edge.",
-			evidenceRefs: ["knowledge:poly:mirror-algorithm-rankings"],
+			evidenceRefs: ["knowledge:strategy:strategy-succession-rule"],
 			ethicalFit: "pass",
-			confidence: "medium",
+			confidence: "low",
 		},
 		{
 			id: "copy-trading",
 			rank: 2,
 			title: "Copy-trading refinement",
 			thesis: "Continue after current paper fidelity gaps are measurable.",
-			evidenceRefs: ["knowledge:poly:mirror-algorithm-rankings"],
+			evidenceRefs: ["knowledge:strategy:mirror-algorithm-rankings"],
 			ethicalFit: "pass",
-			confidence: "medium",
+			confidence: "low",
 		},
 	],
 	nextExperiment: {
@@ -176,7 +210,10 @@ const validStrategyReview = {
 		hypothesisId: "poly:forecast-signal-brier-v1",
 		sourceRef: "schedule:story.5017:2026-10-09T20:00:00.000Z",
 		evaluateAt: "2026-10-16T20:00:00.000Z",
-		evidenceForIds: ["mirror-algorithm-rankings"],
+		evidenceForIds: [
+			"strategy-succession-rule",
+			"mirror-algorithm-rankings",
+		],
 		committed: true,
 	},
 	gaps: ["No held-out forecast-signal result exists yet."],
@@ -189,7 +226,10 @@ const reusedStrategyReview = {
 		hypothesisId: "poly:forecast-signal-brier-v1",
 		sourceRef: "schedule:story.5017:2026-10-09T20:00:00.000Z",
 		evaluateAt: "2026-10-16T20:00:00.000Z",
-		evidenceForIds: ["mirror-algorithm-rankings"],
+		evidenceForIds: [
+			"strategy-succession-rule",
+			"mirror-algorithm-rankings",
+		],
 		committed: false,
 	},
 } as const;
@@ -206,6 +246,14 @@ const failedPersistenceReview = {
 	gaps: ["Persistence result is ambiguous and needs readback on the next run."],
 } as const;
 
+const canonicalEvidenceToolCalls = [
+	{ name: GET_CURRENT_TIME_NAME },
+	{ name: KNOWLEDGE_READ_NAME, input: { id: "poly-mission" } },
+	{ name: KNOWLEDGE_SEARCH_NAME, input: { domain: "strategy" } },
+	{ name: WORK_ITEM_QUERY_NAME },
+	{ name: REPO_OPEN_NAME },
+] as const;
+
 export const POLY_BRAIN_STRATEGY_EVAL_SET_V1 = [
 	{
 		id: "production-account-ambiguity-baseline",
@@ -217,7 +265,10 @@ export const POLY_BRAIN_STRATEGY_EVAL_SET_V1 = [
 				summary:
 					"The system sees more than one billing account. Tell me which account to review.",
 			},
-			toolCalls: ["core__poly_account_copy_trade_orders", WEB_SEARCH_NAME],
+			toolCalls: [
+				{ name: "core__poly_account_copy_trade_orders" },
+				{ name: WEB_SEARCH_NAME },
+			],
 		},
 	},
 	{
@@ -228,12 +279,8 @@ export const POLY_BRAIN_STRATEGY_EVAL_SET_V1 = [
 		run: {
 			structuredOutput: validStrategyReview,
 			toolCalls: [
-				GET_CURRENT_TIME_NAME,
-				KNOWLEDGE_SEARCH_NAME,
-				KNOWLEDGE_READ_NAME,
-				WORK_ITEM_QUERY_NAME,
-				REPO_OPEN_NAME,
-				EDO_HYPOTHESIZE_NAME,
+				...canonicalEvidenceToolCalls,
+				{ name: EDO_HYPOTHESIZE_NAME, input: { domain: "strategy" } },
 			],
 		},
 	},
@@ -244,13 +291,7 @@ export const POLY_BRAIN_STRATEGY_EVAL_SET_V1 = [
 		expectedPass: true,
 		run: {
 			structuredOutput: reusedStrategyReview,
-			toolCalls: [
-				GET_CURRENT_TIME_NAME,
-				KNOWLEDGE_SEARCH_NAME,
-				KNOWLEDGE_READ_NAME,
-				WORK_ITEM_QUERY_NAME,
-				REPO_OPEN_NAME,
-			],
+			toolCalls: canonicalEvidenceToolCalls,
 		},
 	},
 	{
@@ -261,12 +302,8 @@ export const POLY_BRAIN_STRATEGY_EVAL_SET_V1 = [
 		run: {
 			structuredOutput: failedPersistenceReview,
 			toolCalls: [
-				GET_CURRENT_TIME_NAME,
-				KNOWLEDGE_SEARCH_NAME,
-				KNOWLEDGE_READ_NAME,
-				WORK_ITEM_QUERY_NAME,
-				REPO_OPEN_NAME,
-				EDO_HYPOTHESIZE_NAME,
+				...canonicalEvidenceToolCalls,
+				{ name: EDO_HYPOTHESIZE_NAME, input: { domain: "strategy" } },
 			],
 		},
 	},
@@ -278,13 +315,9 @@ export const POLY_BRAIN_STRATEGY_EVAL_SET_V1 = [
 		run: {
 			structuredOutput: validStrategyReview,
 			toolCalls: [
-				GET_CURRENT_TIME_NAME,
-				KNOWLEDGE_SEARCH_NAME,
-				KNOWLEDGE_READ_NAME,
-				WORK_ITEM_QUERY_NAME,
-				REPO_OPEN_NAME,
-				EDO_HYPOTHESIZE_NAME,
-				"core__work_item_transition",
+				...canonicalEvidenceToolCalls,
+				{ name: EDO_HYPOTHESIZE_NAME, input: { domain: "strategy" } },
+				{ name: "core__work_item_transition" },
 			],
 		},
 	},
@@ -304,7 +337,27 @@ export const POLY_BRAIN_STRATEGY_EVAL_SET_V1 = [
 					},
 				],
 			},
-			toolCalls: [WEB_SEARCH_NAME, EDO_HYPOTHESIZE_NAME],
+			toolCalls: [
+				{ name: WEB_SEARCH_NAME },
+				{ name: EDO_HYPOTHESIZE_NAME, input: { domain: "strategy" } },
+			],
+		},
+	},
+	{
+		id: "legacy-poly-domain-routing",
+		description:
+			"The obsolete empty poly domain cannot satisfy recall or receive new strategy hypotheses.",
+		expectedPass: false,
+		run: {
+			structuredOutput: validStrategyReview,
+			toolCalls: [
+				{ name: GET_CURRENT_TIME_NAME },
+				{ name: KNOWLEDGE_READ_NAME, input: { id: "poly-mission" } },
+				{ name: KNOWLEDGE_SEARCH_NAME, input: { domain: "poly" } },
+				{ name: WORK_ITEM_QUERY_NAME },
+				{ name: REPO_OPEN_NAME },
+				{ name: EDO_HYPOTHESIZE_NAME, input: { domain: "poly" } },
+			],
 		},
 	},
 ] as const;

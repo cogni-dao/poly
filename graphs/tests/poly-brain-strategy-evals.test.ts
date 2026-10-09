@@ -47,7 +47,7 @@ describe("poly-brain strategy eval set v1", () => {
 		const [baseline, upgraded] = POLY_BRAIN_STRATEGY_EVAL_SET_V1;
 		expect(baseline?.expectedPass).toBe(false);
 		expect(upgraded?.expectedPass).toBe(true);
-		expect(POLY_BRAIN_STRATEGY_EVAL_SET_V1).toHaveLength(6);
+		expect(POLY_BRAIN_STRATEGY_EVAL_SET_V1).toHaveLength(7);
 	});
 
 	it("requires the approved objective and exactly one selected experiment", () => {
@@ -60,11 +60,28 @@ describe("poly-brain strategy eval set v1", () => {
 		expect(output.persistence.status).toBe("committed");
 		expect(output.persistence.sourceRef).toContain("schedule:story.5017:");
 		expect(output.persistence.committed).toBe(true);
+		expect(output.evidence.map((item) => item.ref)).toEqual(
+			expect.arrayContaining([
+				"knowledge:mission:poly-mission",
+				"knowledge:strategy:strategy-succession-rule",
+				"knowledge:strategy:mirror-algorithm-rankings",
+			]),
+		);
+		expect(
+			output.comparedStrategies.every(
+				(strategy) => strategy.confidence === "low",
+			),
+		).toBe(true);
 	});
 
 	it("keeps the operating prompt evidence-first and non-trading", () => {
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(POLY_BRAIN_DAO_OBJECTIVE);
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain("core__knowledge_search");
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
+			'core__knowledge_read with id "poly-mission"',
+		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain('domain "strategy"');
+		expect(POLY_BRAIN_SYSTEM_PROMPT).not.toContain('domain "poly"');
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain("core__work_item_query");
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
 			"core__edo_hypothesize at most once",
