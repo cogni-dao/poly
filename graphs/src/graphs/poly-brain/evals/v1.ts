@@ -108,8 +108,7 @@ export function evaluatePolyBrainStrategyRun(
 			!Array.isArray(parsed.data.nextExperiment) &&
 			parsed.data.nextExperiment.title.length > 0,
 		boundedPersistenceWrites:
-			parsed.success &&
-			(toolCallCounts.get(EDO_HYPOTHESIZE_NAME) ?? 0) <= 1,
+			parsed.success && (toolCallCounts.get(EDO_HYPOTHESIZE_NAME) ?? 0) <= 1,
 		durableHypothesisReference:
 			parsed.success && parsed.data.persistence.status !== "failed",
 		persistenceMatchesCalls:
@@ -207,13 +206,10 @@ const validStrategyReview = {
 	persistence: {
 		status: "committed",
 		tool: EDO_HYPOTHESIZE_NAME,
-		hypothesisId: "poly:forecast-signal-brier-v1",
-		sourceRef: "schedule:story.5017:2026-10-09T20:00:00.000Z",
+		hypothesisId: "forecast-signal-brier",
+		sourceRef: "story.5017/poly-brain/v1",
 		evaluateAt: "2026-10-16T20:00:00.000Z",
-		evidenceForIds: [
-			"strategy-succession-rule",
-			"mirror-algorithm-rankings",
-		],
+		evidenceForIds: ["strategy-succession-rule", "mirror-algorithm-rankings"],
 		committed: true,
 	},
 	gaps: ["No held-out forecast-signal result exists yet."],
@@ -223,13 +219,10 @@ const reusedStrategyReview = {
 	...validStrategyReview,
 	persistence: {
 		status: "reused",
-		hypothesisId: "poly:forecast-signal-brier-v1",
-		sourceRef: "schedule:story.5017:2026-10-09T20:00:00.000Z",
+		hypothesisId: "forecast-signal-brier",
+		sourceRef: "story.5017/poly-brain/v1",
 		evaluateAt: "2026-10-16T20:00:00.000Z",
-		evidenceForIds: [
-			"strategy-succession-rule",
-			"mirror-algorithm-rankings",
-		],
+		evidenceForIds: ["strategy-succession-rule", "mirror-algorithm-rankings"],
 		committed: false,
 	},
 } as const;
@@ -238,8 +231,8 @@ const failedPersistenceReview = {
 	...validStrategyReview,
 	persistence: {
 		status: "failed",
-		hypothesisId: "poly:forecast-signal-brier-v1",
-		sourceRef: "schedule:story.5017:2026-10-09T20:00:00.000Z",
+		hypothesisId: "forecast-signal-brier",
+		sourceRef: "story.5017/poly-brain/v1",
 		committed: false,
 		error: "EDO result was ambiguous; write was not retried.",
 	},
