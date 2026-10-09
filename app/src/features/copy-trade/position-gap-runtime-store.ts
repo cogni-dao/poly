@@ -1459,7 +1459,10 @@ export class PositionGapRuntimeStore {
 
 	/**
 	 * Release a runtime BUY only after the shared ledger reconciler has observed
-	 * typed CLOB `not_found` beyond its configured grace window.
+	 * typed CLOB `not_found` beyond its configured grace window, or the actor has
+	 * matched a no-order-id ambiguity to durable `never_placed` ledger evidence.
+	 * The evidence check remains outside this transition; admitting `ambiguous`
+	 * here is what lets that already-proven terminal state retire durably.
 	 */
 	async markVenueNotFoundCanceled(actionId: string): Promise<void> {
 		await this.db.transaction(async (tx) => {
@@ -1473,7 +1476,7 @@ export class PositionGapRuntimeStore {
 				.limit(1);
 			if (
 				!action ||
-				["filled", "canceled", "rejected", "ambiguous"].includes(action.status)
+				["filled", "canceled", "rejected"].includes(action.status)
 			)
 				return;
 			const desiredShares = numberOf(action.desiredShares);

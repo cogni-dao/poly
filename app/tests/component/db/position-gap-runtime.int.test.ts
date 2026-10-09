@@ -1551,6 +1551,29 @@ describe("position-gap runtime persistence", () => {
 				cancellations: [],
 			}),
 		).rejects.toThrow("halted by an ambiguous placement");
+
+		// A generic transport ambiguity remains fail-closed until durable ledger
+		// evidence proves no venue order exists. The actor maps that evidence to
+		// this narrow transition; it must retire the action and release its
+		// reservation so a replacement generation can start safely.
+		await store.markVenueNotFoundCanceled(transportBuy.id);
+		const [retiredTransportAction] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, transportBuy.id));
+		const [retiredTransportReservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, transportBuy.id));
+		expect(retiredTransportAction).toMatchObject({
+			status: "canceled",
+			errorCode: "clob_not_found",
+		});
+		expect(retiredTransportReservation).toMatchObject({
+			state: "released",
+			releaseReason: "clob_not_found",
+		});
+		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBe(0);
 	});
 
 	it("rejects a second live ledger row for the same v3 cohort before placement", async () => {
