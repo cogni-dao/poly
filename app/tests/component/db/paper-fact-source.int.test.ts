@@ -856,11 +856,14 @@ describe("paper facts project into the live tables (migration 0083)", () => {
     it("logs idle_no_paper_accounts and writes nothing when none exist", async () => {
       const seedDb = getSeedDb();
       // Deterministically reach the zero-account state by revoking every
-      // active paper connection, then restoring exactly those rows. The
-      // component lane is `sequence: { concurrent: false }` + `singleFork`, so
-      // nothing else is running while this holds.
+      // active paper connection, then restoring exactly those rows. Other
+      // component files share this database, so write assertions below stay
+      // scoped to the captured accounts rather than comparing global counts.
       const active = await seedDb
-        .select({ id: polyWalletConnections.id })
+        .select({
+          id: polyWalletConnections.id,
+          billingAccountId: polyWalletConnections.billingAccountId,
+        })
         .from(polyWalletConnections)
         .where(
           and(
@@ -870,10 +873,17 @@ describe("paper facts project into the live tables (migration 0083)", () => {
         );
       expect(active.length).toBeGreaterThan(0);
       const ids = active.map((row) => row.id);
+      const billingAccountIds = active.map((row) => row.billingAccountId);
 
       const navsBefore = await seedDb
         .select({ billingAccountId: polyWalletBalanceSnapshots.billingAccountId })
-        .from(polyWalletBalanceSnapshots);
+        .from(polyWalletBalanceSnapshots)
+        .where(
+          inArray(
+            polyWalletBalanceSnapshots.billingAccountId,
+            billingAccountIds
+          )
+        );
 
       const events = recordingLogger();
       try {
@@ -907,7 +917,13 @@ describe("paper facts project into the live tables (migration 0083)", () => {
           .select({
             billingAccountId: polyWalletBalanceSnapshots.billingAccountId,
           })
-          .from(polyWalletBalanceSnapshots);
+          .from(polyWalletBalanceSnapshots)
+          .where(
+            inArray(
+              polyWalletBalanceSnapshots.billingAccountId,
+              billingAccountIds
+            )
+          );
         expect(navsAfter).toHaveLength(navsBefore.length);
       } finally {
         await seedDb
