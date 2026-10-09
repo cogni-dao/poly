@@ -127,7 +127,10 @@ jobs:
           TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/
         run: pnpm test:component
 
+      - name: Preload Doltgres 0.57.3 from trusted mirror
+        run: |
+          docker pull mirror.gcr.io/dolthub/doltgresql:0.57.3
+          docker tag mirror.gcr.io/dolthub/doltgresql:0.57.3 dolthub/doltgresql:0.57.3
+
       - name: Doltgres 0.57.3 work-item acceptance
-        env:
-          TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/
         run: pnpm --filter @cogni/node-template-app test:doltgres
