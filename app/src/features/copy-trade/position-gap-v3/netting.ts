@@ -23,17 +23,19 @@ export function netTargetBook(
 	const closedConditionIds: string[] = [];
 	const ineligibleTargetPositions: NettedTargetBookV1["ineligibleTargetPositions"][number][] =
 		[];
+	let completeSetValueUsdc = 0;
 
 	for (const condition of [...snapshot.conditions].sort((left, right) =>
 		left.conditionId.localeCompare(right.conditionId),
 	)) {
+		const [left, right] = condition.tokens;
+		const completeSetShares = Math.min(left.shares, right.shares);
+		completeSetValueUsdc += completeSetShares;
 		if (venueStatusByCondition.get(condition.conditionId) === "closed") {
 			closedConditionIds.push(condition.conditionId);
 			continue;
 		}
 
-		const [left, right] = condition.tokens;
-		const completeSetShares = Math.min(left.shares, right.shares);
 		const grossCost =
 			left.shares * left.averagePrice + right.shares * right.averagePrice;
 		for (const token of [left, right].sort((a, b) =>
@@ -85,6 +87,7 @@ export function netTargetBook(
 	return {
 		positions,
 		eligibleNetNavUsdc,
+		completeSetValueUsdc,
 		closedConditionIds,
 		ineligibleTargetPositions,
 	};

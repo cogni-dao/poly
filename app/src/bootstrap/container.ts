@@ -992,6 +992,8 @@ function createContainer(): Container {
 				);
 				const {
 					POLYGON_CONDITIONAL_TOKENS,
+					POLYGON_PUSD,
+					POLYGON_USDC_E,
 					PolymarketDataApiClient,
 					createPolymarketTargetBookProviderV1,
 				} = await import(
@@ -1058,6 +1060,9 @@ function createContainer(): Container {
 				>();
 				const ctfBalanceAbi = parseAbi([
 					"function balanceOfBatch(address[] accounts, uint256[] ids) view returns (uint256[])",
+				]);
+				const erc20BalanceAbi = parseAbi([
+					"function balanceOf(address account) view returns (uint256)",
 				]);
 				// Only used for the position_gap NAV denominator (free pUSD on the
 				// live trading wallet). A paper-only deployment has no Privy / AEAD
@@ -1217,6 +1222,8 @@ function createContainer(): Container {
 											tokenId,
 											placement,
 										),
+									listOpenOrders: async () =>
+										(await getExecutor()).listOpenOrders(),
 								},
 								fillEvidence: {
 									getWalletAddress: async () =>
@@ -1269,8 +1276,39 @@ function createContainer(): Container {
 									}
 									return balances.pusd;
 								},
-								getAuthoritativeShares: async (tokenIds) => {
-									if (tokenIds.length === 0) return [];
+								getTargetCashUsdc: async (sourceBlock) => {
+									const blockNumber = BigInt(sourceBlock);
+									// Native Polygon USDC is not Polymarket collateral. V2
+									// spends pUSD; legacy USDC.e remains owned + convertible.
+									const [pusdAtomic, usdcEAtomic] = await Promise.all([
+										chainPublicClient.readContract({
+											address: POLYGON_PUSD,
+											abi: erc20BalanceAbi,
+											functionName: "balanceOf",
+											args: [targetWallet],
+											blockNumber,
+										}),
+										chainPublicClient.readContract({
+											address: POLYGON_USDC_E,
+											abi: erc20BalanceAbi,
+											functionName: "balanceOf",
+											args: [targetWallet],
+											blockNumber,
+										}),
+									]);
+									if (
+										pusdAtomic > BigInt(Number.MAX_SAFE_INTEGER) ||
+										usdcEAtomic > BigInt(Number.MAX_SAFE_INTEGER)
+									) {
+										throw new Error("target cash balance exceeded exact numeric range");
+									}
+									return {
+										pusdUsdc: Number(pusdAtomic) / 1_000_000,
+										usdcEUsdc: Number(usdcEAtomic) / 1_000_000,
+										observedBlock: sourceBlock,
+									};
+								},
+								getAuthoritativeHoldings: async (snapshot) => {
 									const executor = await getExecutor();
 									// VENUE_DECIDES_THE_SHARE_SOURCE (NO_FABRICATED_VALUES). A paper
 									// account's funder address is a real, deterministic SHA-256-derived
@@ -1290,22 +1328,137 @@ function createContainer(): Container {
 										enumeratedTarget.billingAccountId,
 									);
 									if (venue === "paper") {
-										return Promise.all(
-											tokenIds.map((tokenId) =>
-												executor.getPositionShareBalance(tokenId),
+										const holdings = await Promise.all(
+											snapshot.conditions.flatMap((condition) =>
+												condition.tokens.map(async (token) => ({
+													conditionId: condition.conditionId,
+													tokenId: token.tokenId,
+													shares: await executor.getPositionShareBalance(
+														token.tokenId,
+													),
+												})),
 											),
 										);
+										return {
+											holdings,
+											tokenAliases: holdings.map((holding) => ({
+												conditionId: holding.conditionId,
+												sourceTokenId: holding.tokenId,
+												canonicalTokenId: holding.tokenId,
+											})),
+											observedBlock:
+												snapshot.refreshStats.sourceMaxSyncedBlock,
+										};
 									}
-									const balances = await chainPublicClient.readContract({
-										address: POLYGON_CONDITIONAL_TOKENS,
-										abi: ctfBalanceAbi,
-										functionName: "balanceOfBatch",
-										args: [
-											tokenIds.map(() => executor.funderAddress),
-											tokenIds.map((tokenId) => BigInt(tokenId)),
-										],
+									const canonicalByOutcome = new Map(
+										snapshot.conditions.flatMap((condition) =>
+											condition.tokens.map(
+												(token) =>
+													[
+														`${condition.conditionId}\u0000${token.outcomeIndex}`,
+														token.tokenId,
+													] as const,
+											),
+										),
+									);
+									const localWalk =
+										snapshot.conditions.length === 0
+											? { positions: [], requestCount: 0 }
+											: await dataApiClient.listUserPositionsV2Raw(
+													executor.funderAddress,
+													{
+														conditions: snapshot.conditions.map(
+															(condition) => condition.conditionId,
+														),
+														includeArchived: true,
+														maxRequests: 30,
+													},
+												);
+									const probes = new Map<
+										string,
+										{ conditionId: string; canonicalTokenId: string }
+									>();
+									for (const condition of snapshot.conditions) {
+										for (const token of condition.tokens) {
+											probes.set(token.tokenId, {
+												conditionId: condition.conditionId,
+												canonicalTokenId: token.tokenId,
+											});
+										}
+									}
+									for (const row of localWalk.positions) {
+										if (row.outcome_index !== 0 && row.outcome_index !== 1) {
+											throw new Error(
+												`local holding lacked outcome index: ${row.token_id}`,
+											);
+										}
+										const conditionId = row.condition_id.toLowerCase();
+										const canonicalTokenId = canonicalByOutcome.get(
+											`${conditionId}\u0000${row.outcome_index}`,
+										);
+										if (!canonicalTokenId) {
+											throw new Error(
+												`local holding lacked canonical target leg: ${row.token_id}`,
+											);
+										}
+										probes.set(row.token_id, { conditionId, canonicalTokenId });
+									}
+									const tokenIds = [...probes.keys()];
+									const observedBlock = Number(await chainPublicClient.getBlockNumber());
+									if (!Number.isSafeInteger(observedBlock)) {
+										throw new Error("local holding block exceeded safe integer range");
+									}
+									const balances =
+										tokenIds.length === 0
+											? []
+											: await chainPublicClient.readContract({
+													address: POLYGON_CONDITIONAL_TOKENS,
+													abi: ctfBalanceAbi,
+													functionName: "balanceOfBatch",
+													args: [
+														tokenIds.map(() => executor.funderAddress),
+														tokenIds.map((tokenId) => BigInt(tokenId)),
+													],
+													blockNumber: BigInt(observedBlock),
+												});
+									if (balances.length !== tokenIds.length) {
+										throw new Error("local holding balance tuple was incomplete");
+									}
+									if (
+										balances.some(
+											(balance) => balance > BigInt(Number.MAX_SAFE_INTEGER),
+										)
+									) {
+										throw new Error(
+											"local holding balance exceeded exact numeric range",
+										);
+									}
+									const sharesByCanonical = new Map<string, number>();
+									const tokenAliases = tokenIds.map((sourceTokenId, index) => {
+										const probe = probes.get(sourceTokenId);
+										if (!probe) throw new Error("local holding probe disappeared");
+										const canonicalKey = `${probe.conditionId}\u0000${probe.canonicalTokenId}`;
+										sharesByCanonical.set(
+											canonicalKey,
+											(sharesByCanonical.get(canonicalKey) ?? 0) +
+												Number(balances[index]) / 1_000_000,
+										);
+										return { ...probe, sourceTokenId };
 									});
-									return balances.map((balance) => Number(balance) / 1_000_000);
+									return {
+										holdings: snapshot.conditions.flatMap((condition) =>
+											condition.tokens.map((token) => ({
+												conditionId: condition.conditionId,
+												tokenId: token.tokenId,
+												shares:
+													sharesByCanonical.get(
+														`${condition.conditionId}\u0000${token.tokenId}`,
+													) ?? 0,
+											})),
+										),
+										tokenAliases,
+										observedBlock,
+									};
 								},
 								logger: mirrorLogger,
 							});

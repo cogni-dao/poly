@@ -103,7 +103,7 @@ export interface ProjectPositionGapCohortsInput {
 	configRevision: string;
 	previousBudgetUsdc: number | null;
 	budgetUsdc: number;
-	eligibleNetNavUsdc: number;
+	allocationDenominatorUsdc: number;
 	scale: number;
 	activation: boolean;
 	nowMs: number;
@@ -191,7 +191,10 @@ export function projectPositionGapCohorts(
 	input: ProjectPositionGapCohortsInput,
 ): PositionGapCohortProjection {
 	assertFiniteNonnegative(input.budgetUsdc, "budget");
-	assertFiniteNonnegative(input.eligibleNetNavUsdc, "eligible NAV");
+	assertFiniteNonnegative(
+		input.allocationDenominatorUsdc,
+		"allocation denominator",
+	);
 	assertFiniteNonnegative(input.scale, "scale");
 
 	const existingKeys = new Set(
@@ -230,10 +233,11 @@ export function projectPositionGapCohorts(
 	if (
 		input.previousBudgetUsdc !== null &&
 		input.budgetUsdc > input.previousBudgetUsdc + EPSILON &&
-		input.eligibleNetNavUsdc > EPSILON
+		input.allocationDenominatorUsdc > EPSILON
 	) {
 		const addedScale =
-			(input.budgetUsdc - input.previousBudgetUsdc) / input.eligibleNetNavUsdc;
+			(input.budgetUsdc - input.previousBudgetUsdc) /
+			input.allocationDenominatorUsdc;
 		for (const position of input.netTargetPositions) {
 			addCreation(
 				creationFromPosition({

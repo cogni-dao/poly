@@ -14,6 +14,7 @@ import type {
 	PositionGapOpenBuyOrderV1,
 	PositionGapPriceCohortV1,
 	PositionGapTokenDecisionV1,
+	PositionGapUnmanagedBuyExposureV1,
 	PositionGapVenueConditionV1,
 	PositionGapVenueQuoteV1,
 } from "./model";
@@ -55,14 +56,24 @@ export function planPositionGapBook(
 		[...venues].map(([conditionId, venue]) => [conditionId, venue.status]),
 	);
 	const netBook = netTargetBook(input.snapshot, venueStatus);
+	if (netBook.ineligibleTargetPositions.length > 0) {
+		return blockedPlan(input, existingReservedUsdc, "invalid_input");
+	}
 	const eligibleNetNavUsdc = netBook.eligibleNetNavUsdc;
+	const targetCashUsdc = input.targetCashPusdUsdc + input.targetCashUsdcEUsdc;
+	const targetTotalWealthUsdc =
+		eligibleNetNavUsdc + netBook.completeSetValueUsdc + targetCashUsdc;
 	const scale =
-		eligibleNetNavUsdc > POSITION_GAP_EPSILON
-			? input.sleeveBudgetUsdc / eligibleNetNavUsdc
+		targetTotalWealthUsdc > POSITION_GAP_EPSILON
+			? input.sleeveBudgetUsdc / targetTotalWealthUsdc
 			: 0;
 
 	const holdings = netMirrorHoldings(input.holdings, input.snapshot);
 	const openOrders = [...input.openBuyOrders].sort(orderIdentity);
+	const unmanagedBuyExposure = netUnmanagedBuyExposure(
+		input.unmanagedBuyExposure,
+		input.snapshot,
+	);
 	const cancellations = new Map<string, PositionGapCancelDirectiveV1>();
 	const lockedOverweights: PositionGapLockedOverweightV1[] = [];
 	const diagnostics: PositionGapTokenDecisionV1[] = [];
@@ -160,8 +171,9 @@ export function planPositionGapBook(
 			position,
 			venue: venues.get(position.conditionId),
 			scale,
-			eligibleNetNavUsdc,
+			targetTotalWealthUsdc,
 			holdings,
+			unmanagedBuyExposure,
 			openOrders,
 			cancellations,
 			lockedOverweights,
@@ -240,6 +252,12 @@ export function planPositionGapBook(
 		snapshotId: input.snapshot.snapshotId,
 		targetWallet: input.snapshot.targetWallet,
 		eligibleNetNavUsdc,
+		targetCompleteSetValueUsdc: netBook.completeSetValueUsdc,
+		targetCashPusdUsdc: input.targetCashPusdUsdc,
+		targetCashUsdcEUsdc: input.targetCashUsdcEUsdc,
+		targetCashUsdc,
+		targetTotalWealthUsdc,
+		targetCashObservedBlock: input.targetCashObservedBlock,
 		scale,
 		sleeveBudgetUsdc: input.sleeveBudgetUsdc,
 		existingReservedUsdc,
@@ -266,8 +284,9 @@ function planPosition(params: {
 	position: NettedTargetPositionV1;
 	venue: PositionGapVenueConditionV1 | undefined;
 	scale: number;
-	eligibleNetNavUsdc: number;
+	targetTotalWealthUsdc: number;
 	holdings: ReadonlyMap<string, number>;
+	unmanagedBuyExposure: ReadonlyMap<string, number>;
 	openOrders: readonly PositionGapOpenBuyOrderV1[];
 	cancellations: Map<string, PositionGapCancelDirectiveV1>;
 	lockedOverweights: PositionGapLockedOverweightV1[];
@@ -281,8 +300,9 @@ function planPosition(params: {
 		position,
 		venue,
 		scale,
-		eligibleNetNavUsdc,
+		targetTotalWealthUsdc,
 		holdings,
+		unmanagedBuyExposure,
 		openOrders,
 		cancellations,
 		lockedOverweights,
@@ -293,6 +313,7 @@ function planPosition(params: {
 	} = params;
 	const tokenKey = key(position.conditionId, position.tokenId);
 	const heldTotal = holdings.get(tokenKey) ?? 0;
+	const unmanagedOpenShares = unmanagedBuyExposure.get(tokenKey) ?? 0;
 	const targetScaledShares = position.netShares * scale;
 	const oppositeHeld =
 		holdings.get(key(position.conditionId, position.oppositeTokenId)) ?? 0;
@@ -353,6 +374,7 @@ function planPosition(params: {
 		cohort: PositionGapPriceCohortV1;
 		desiredShares: number;
 		heldShares: number;
+		unmanagedOpenShares: number;
 	}> = [];
 	for (const cohort of cohorts) {
 		if (!validCohort(cohort)) {
@@ -375,7 +397,12 @@ function planPosition(params: {
 		);
 		remainingTargetDesired -= desiredShares;
 		totalCohortDesired += desiredShares;
-		assignments.push({ cohort, desiredShares, heldShares: 0 });
+		assignments.push({
+			cohort,
+			desiredShares,
+			heldShares: 0,
+			unmanagedOpenShares: 0,
+		});
 	}
 
 	// First honor durable cohort attribution, but never beyond wallet truth.
@@ -399,6 +426,17 @@ function planPosition(params: {
 		assignment.heldShares += unattributed;
 		remainingHeld -= unattributed;
 	}
+	// Account-wide ledger/venue BUY exposure has no PGv3 cohort provenance.
+	// Offset the strictest cohorts first, exactly like unattributed holdings.
+	let remainingUnmanagedOpen = unmanagedOpenShares;
+	for (const assignment of assignments) {
+		const assigned = Math.min(
+			Math.max(0, assignment.desiredShares - assignment.heldShares),
+			remainingUnmanagedOpen,
+		);
+		assignment.unmanagedOpenShares = assigned;
+		remainingUnmanagedOpen -= assigned;
+	}
 
 	let candidateSelected = false;
 	for (const assignment of assignments) {
@@ -409,7 +447,8 @@ function planPosition(params: {
 			heldShares: assignment.heldShares,
 			venue,
 			sleeveBudgetUsdc: input.sleeveBudgetUsdc,
-			eligibleNetNavUsdc,
+			targetTotalWealthUsdc,
+			unmanagedOpenShares: assignment.unmanagedOpenShares,
 			perOrderCapUsdc: input.confirmedPerOrderCapUsdc,
 			candidateAllowed: !candidateSelected,
 			openOrders,
@@ -441,7 +480,8 @@ function planCohort(params: {
 	heldShares: number;
 	venue: PositionGapVenueConditionV1 | undefined;
 	sleeveBudgetUsdc: number;
-	eligibleNetNavUsdc: number;
+	targetTotalWealthUsdc: number;
+	unmanagedOpenShares: number;
 	perOrderCapUsdc: number;
 	candidateAllowed: boolean;
 	openOrders: readonly PositionGapOpenBuyOrderV1[];
@@ -458,7 +498,8 @@ function planCohort(params: {
 		heldShares,
 		venue,
 		sleeveBudgetUsdc,
-		eligibleNetNavUsdc,
+		targetTotalWealthUsdc,
+		unmanagedOpenShares,
 		perOrderCapUsdc,
 		candidateAllowed,
 		openOrders,
@@ -519,7 +560,10 @@ function planCohort(params: {
 	let retained = cohortOrders.filter(
 		(order) => !cancellations.has(order.orderId),
 	);
-	const maxOpenShares = Math.max(0, desiredShares - heldShares);
+	const maxOpenShares = Math.max(
+		0,
+		desiredShares - heldShares - unmanagedOpenShares,
+	);
 	let retainedShares = sumShares(retained);
 	for (const order of [...retained].sort(cancelPreference)) {
 		if (retainedShares <= maxOpenShares + POSITION_GAP_EPSILON) break;
@@ -527,14 +571,14 @@ function planCohort(params: {
 		retainedShares -= order.remainingShares;
 	}
 	retained = retained.filter((order) => !cancellations.has(order.orderId));
-	const openShares = sumShares(retained);
+	const openShares = sumShares(retained) + unmanagedOpenShares;
 	const gapShares = Math.min(
 		Math.max(0, desiredShares - heldShares - openShares),
 		cohort.availableNewBuyShares,
 	);
 	const targetWeight =
-		eligibleNetNavUsdc > POSITION_GAP_EPSILON
-			? (position.netShares * position.markPrice) / eligibleNetNavUsdc
+		targetTotalWealthUsdc > POSITION_GAP_EPSILON
+			? (position.netShares * position.markPrice) / targetTotalWealthUsdc
 			: 0;
 	const hadCancellation = cohortOrders.some((order) =>
 		cancellations.has(order.orderId),
@@ -632,7 +676,7 @@ function planCohort(params: {
 		return false;
 	}
 	const scaledFloorSleeveUsdc =
-		((heldShares + openShares + floorShares) * eligibleNetNavUsdc) /
+		((heldShares + openShares + floorShares) * targetTotalWealthUsdc) /
 		position.netShares;
 	// A larger sleeve creates an explicit config-increase cohort. Report that
 	// remedy even though today's durable cohort cannot yet clear the share floor;
@@ -686,10 +730,7 @@ function planCohort(params: {
 	}
 
 	const id = candidateId(position.tokenId, cohort.cohortId);
-	const maxNotionalUsdc = Math.min(
-		gapShares * limit.price,
-		perOrderCapUsdc,
-	);
+	const maxNotionalUsdc = Math.min(gapShares * limit.price, perOrderCapUsdc);
 	const maxShares = maxNotionalUsdc / limit.price;
 	if (maxShares + POSITION_GAP_EPSILON < floorShares) {
 		return false;
@@ -746,6 +787,16 @@ function blockedPlan(
 		snapshotId: input.snapshot.snapshotId,
 		targetWallet: input.snapshot.targetWallet,
 		eligibleNetNavUsdc: 0,
+		targetCompleteSetValueUsdc: 0,
+		targetCashPusdUsdc: finiteOrZero(input.targetCashPusdUsdc),
+		targetCashUsdcEUsdc: finiteOrZero(input.targetCashUsdcEUsdc),
+		targetCashUsdc:
+			finiteOrZero(input.targetCashPusdUsdc) +
+			finiteOrZero(input.targetCashUsdcEUsdc),
+		targetTotalWealthUsdc: 0,
+		targetCashObservedBlock: Number.isSafeInteger(input.targetCashObservedBlock)
+			? input.targetCashObservedBlock
+			: 0,
 		scale: 0,
 		sleeveBudgetUsdc: finiteOrZero(input.sleeveBudgetUsdc),
 		existingReservedUsdc,
@@ -770,6 +821,8 @@ function validInput(input: PositionGapBookInputV1): boolean {
 	const finiteNonnegative = [
 		input.nowMs,
 		input.sleeveBudgetUsdc,
+		input.targetCashPusdUsdc,
+		input.targetCashUsdcEUsdc,
 		input.actualWalletCashUsdc,
 		input.confirmedBuyNotionalCashHeadroomUsdc,
 		input.confirmedSleeveHeadroomUsdc,
@@ -786,8 +839,25 @@ function validInput(input: PositionGapBookInputV1): boolean {
 		Number.isInteger(input.confirmedRemainingIntentCount) &&
 		input.confirmedRemainingIntentCount >= 0 &&
 		input.holdings.every(validHolding) &&
+		input.unmanagedBuyExposure.every(validUnmanagedBuyExposure) &&
+		Number.isSafeInteger(input.targetCashObservedBlock) &&
+		input.targetCashObservedBlock > 0 &&
+		input.targetCashObservedBlock ===
+			input.snapshot.refreshStats.sourceMaxSyncedBlock &&
 		input.openBuyOrders.every(validOpenOrder) &&
 		uniqueCohortIds(input.cohorts)
+	);
+}
+
+function validUnmanagedBuyExposure(
+	exposure: PositionGapUnmanagedBuyExposureV1,
+): boolean {
+	return (
+		exposure.conditionId.length > 0 &&
+		exposure.tokenId.length > 0 &&
+		Number.isFinite(exposure.remainingShares) &&
+		exposure.remainingShares >= 0 &&
+		(exposure.source === "account_ledger" || exposure.source === "venue")
 	);
 }
 
@@ -867,6 +937,26 @@ function netMirrorHoldings(
 		const completeSetShares = Math.min(leftShares, rightShares);
 		result.set(leftKey, Math.max(0, leftShares - completeSetShares));
 		result.set(rightKey, Math.max(0, rightShares - completeSetShares));
+	}
+	return result;
+}
+
+function netUnmanagedBuyExposure(
+	exposure: readonly PositionGapUnmanagedBuyExposureV1[],
+	snapshot: PositionGapBookInputV1["snapshot"],
+): ReadonlyMap<string, number> {
+	const result = new Map<string, number>();
+	for (const entry of exposure) {
+		const entryKey = key(entry.conditionId, entry.tokenId);
+		result.set(entryKey, (result.get(entryKey) ?? 0) + entry.remainingShares);
+	}
+	// BUY exposure on opposite legs is economically equivalent to a complete
+	// set only after both orders fill. Do not net unfilled orders together.
+	for (const condition of snapshot.conditions) {
+		for (const token of condition.tokens) {
+			const tokenKey = key(condition.conditionId, token.tokenId);
+			if (!result.has(tokenKey)) result.set(tokenKey, 0);
+		}
 	}
 	return result;
 }

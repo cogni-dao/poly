@@ -11,7 +11,9 @@
  *   - FAILURES_ARE_THE_POINT (bug.5279) — a successful-fills-only view is useless
  *     during an outage, which is exactly when someone looks. Error rows render their
  *     `error` text, which carries the CLOB's own words since bug.5267 (e.g.
- *     `clob_error="Trading restricted in your region"`). Never filter errors out.
+ *     `clob_error="Trading restricted in your region"`); canceled rows render the
+ *     bounded internal cancellation code carried by the same frozen field. Never
+ *     filter failures out.
  *   - TENANT_SCOPED upstream: the route clamps to the caller's billing account.
  * Side-effects: IO (React Query).
  * Links: [fetchCopyTradeOrders](../_api/fetchCopyTradeOrders.ts),
@@ -51,6 +53,17 @@ export function summarizeLedgerError(error: string | null): string | null {
   const reason = /reason="([^"]+)"/.exec(error);
   if (reason?.[1]) return reason[1];
   return error.length > 160 ? `${error.slice(0, 160)}…` : error;
+}
+
+/** Prefer a human title and never present a binary outcome index as a market. */
+export function marketLabel(row: PolyCopyTradeOrderRow): string {
+  const title = row.market_title?.trim();
+  if (title && title !== "0" && title !== "1") return title;
+  const conditionId = row.market_id?.replace(
+    /^prediction-market:polymarket:/,
+    "",
+  );
+  return conditionId ? `Market ${conditionId.slice(0, 10)}…` : "--";
 }
 
 function statusTone(status: PolyCopyTradeOrderRow["status"]): string {
@@ -120,7 +133,7 @@ export function MirrorAttemptsCard(): ReactElement {
                     {new Date(r.observed_at).toLocaleTimeString()}
                   </TableCell>
                   <TableCell className="max-w-[18rem] truncate text-sm">
-                    {r.market_title ?? r.outcome ?? "--"}
+                    {marketLabel(r)}
                   </TableCell>
                   <TableCell className="text-sm">{r.side ?? "--"}</TableCell>
                   <TableCell className="text-right text-sm">

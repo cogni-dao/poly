@@ -3,7 +3,7 @@
 
 import type { TargetBookSnapshotV1 } from "@cogni/poly-market-provider";
 import { describe, expect, it } from "vitest";
-
+import { floorPositionGapHoldingsAtAcquiredShares } from "@/features/copy-trade/position-gap-actor";
 import { allocatePositionGapLots } from "@/features/copy-trade/position-gap-v3/allocator";
 import { planPositionGapBook } from "@/features/copy-trade/position-gap-v3/batch-plan";
 import type {
@@ -107,6 +107,9 @@ function input(
 		nowMs: NOW,
 		snapshot: book,
 		sleeveBudgetUsdc: 100,
+		targetCashPusdUsdc: 0,
+		targetCashUsdcEUsdc: 0,
+		targetCashObservedBlock: book.refreshStats.sourceMaxSyncedBlock,
 		actualWalletCashUsdc: 110,
 		confirmedBuyNotionalCashHeadroomUsdc: 100,
 		confirmedSleeveHeadroomUsdc: 100,
@@ -119,6 +122,7 @@ function input(
 		cohorts,
 		holdings: [],
 		openBuyOrders: [],
+		unmanagedBuyExposure: [],
 		...overrides,
 	};
 }
@@ -138,6 +142,7 @@ describe("position-gap-v3 complete-set netting", () => {
 		);
 
 		expect(result.eligibleNetNavUsdc).toBeCloseTo(16, 10);
+		expect(result.completeSetValueUsdc).toBe(60);
 		expect(result.positions).toEqual([
 			expect.objectContaining({
 				conditionId: "condition-1",
@@ -213,7 +218,7 @@ describe("position-gap-v3 complete-set netting", () => {
 	it("keeps unknown venue state in NAV but removes authoritative closure", () => {
 		const book = snapshot([
 			condition({ conditionId: "unknown", leftShares: 10, rightShares: 0 }),
-			condition({ conditionId: "closed", leftShares: 20, rightShares: 0 }),
+			condition({ conditionId: "closed", leftShares: 20, rightShares: 10 }),
 		]);
 		const result = netTargetBook(
 			book,
@@ -224,6 +229,7 @@ describe("position-gap-v3 complete-set netting", () => {
 		);
 
 		expect(result.eligibleNetNavUsdc).toBe(5);
+		expect(result.completeSetValueUsdc).toBe(10);
 		expect(result.positions.map((position) => position.conditionId)).toEqual([
 			"unknown",
 		]);
@@ -386,20 +392,177 @@ describe("position-gap-v3 deterministic lot allocator", () => {
 });
 
 describe("position-gap-v3 whole-book planning", () => {
-	it("uses budget / eligible net NAV and never reads target cash", () => {
+	it("floors lagging wallet reads at durable acquisitions without spending the sleeve twice", () => {
 		const book = snapshot([
-			condition({ leftShares: 100, rightShares: 0, leftMark: 0.5 }),
+			condition({
+				conditionId: "condition-a",
+				leftShares: 50,
+				rightShares: 0,
+				leftMark: 0.5,
+			}),
+			condition({
+				conditionId: "condition-b",
+				leftShares: 50,
+				rightShares: 0,
+				leftMark: 0.5,
+			}),
 		]);
-		const plan = planPositionGapBook(input(book, { sleeveBudgetUsdc: 25 }));
-
-		expect(plan.status).toBe("ready");
-		expect(plan.eligibleNetNavUsdc).toBe(50);
-		expect(plan.scale).toBe(0.5);
-		expect(plan.intents[0]).toMatchObject({
-			side: "BUY",
-			desiredShares: 50,
-			gapShares: 50,
+		const base = input(book, { sleeveBudgetUsdc: 50 });
+		const cohorts = base.cohorts.map((cohort) =>
+			cohort.tokenId === "condition-a-yes"
+				? {
+						...cohort,
+						acquiredMirrorShares: 40,
+						availableNewBuyShares: 10,
+					}
+				: cohort,
+		);
+		const authoritative = book.conditions.flatMap((entry) =>
+			entry.tokens.map((token) => ({
+				conditionId: entry.conditionId,
+				tokenId: token.tokenId,
+				shares: 0,
+			})),
+		);
+		const first = floorPositionGapHoldingsAtAcquiredShares({
+			holdings: authoritative,
+			cohorts,
 		});
+		const repeated = floorPositionGapHoldingsAtAcquiredShares({
+			holdings: first,
+			cohorts,
+		});
+		const plan = planPositionGapBook({
+			...base,
+			cohorts,
+			holdings: repeated,
+		});
+
+		expect(first).toEqual(repeated);
+		expect(
+			first.find((holding) => holding.tokenId === "condition-a-yes")?.shares,
+		).toBe(40);
+		expect(plan.intents).toHaveLength(2);
+		const heldExposure = repeated.reduce(
+			(sum, holding) =>
+				sum +
+				holding.shares *
+					(book.conditions
+						.flatMap((entry) => entry.tokens)
+						.find((token) => token.tokenId === holding.tokenId)?.markPrice ??
+						0),
+			0,
+		);
+		const pendingExposure = plan.intents.reduce(
+			(sum, intent) => sum + intent.shares * 0.5,
+			0,
+		);
+		expect(heldExposure).toBe(20);
+		expect(heldExposure + pendingExposure).toBeLessThanOrEqual(50);
+		expect(plan.intents).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ tokenId: "condition-a-yes", shares: 10 }),
+				expect.objectContaining({ tokenId: "condition-b-yes", shares: 50 }),
+			]),
+		);
+	});
+
+	it("keeps directional NAV, complete sets, and both target cash legs explicit", () => {
+		const book = snapshot([
+			condition({
+				leftShares: 100,
+				rightShares: 60,
+				leftMark: 0.4,
+				rightMark: 0.6,
+			}),
+		]);
+		const plan = planPositionGapBook(
+			input(book, {
+				sleeveBudgetUsdc: 106,
+				targetCashPusdUsdc: 20,
+				targetCashUsdcEUsdc: 10,
+			}),
+		);
+
+		expect(plan).toMatchObject({
+			eligibleNetNavUsdc: 16,
+			targetCompleteSetValueUsdc: 60,
+			targetCashPusdUsdc: 20,
+			targetCashUsdcEUsdc: 10,
+			targetCashUsdc: 30,
+			targetTotalWealthUsdc: 106,
+			scale: 1,
+		});
+	});
+
+	it("replays RN1 cash deployment without shrinking an old desired weight or buying excess", () => {
+		const rn1Under = condition({
+			conditionId: "rn1-under",
+			leftShares: 3_048.001,
+			rightShares: 0,
+			leftMark: 0.755,
+			leftAverage: 0.83,
+		});
+		const activationBook = snapshot([
+			rn1Under,
+			condition({
+				conditionId: "other",
+				leftShares: 27_214.524,
+				rightShares: 0,
+				leftMark: 0.5,
+			}),
+		]);
+		const deployedBook = snapshot([
+			rn1Under,
+			condition({
+				conditionId: "other",
+				leftShares: 106_135.524,
+				rightShares: 0,
+				leftMark: 0.5,
+			}),
+		]);
+		const common = {
+			sleeveBudgetUsdc: 105.95953,
+			holdings: [
+				{ conditionId: "rn1-under", tokenId: "rn1-under-yes", shares: 9.4 },
+			],
+			confirmedPerOrderCapUsdc: 10,
+		};
+		const activation = planPositionGapBook(
+			input(activationBook, {
+				...common,
+				targetCashPusdUsdc: 39_460.96,
+			}),
+		);
+		const afterDeployment = planPositionGapBook(
+			input(deployedBook, {
+				...common,
+				targetCashPusdUsdc: 0.46,
+			}),
+		);
+
+		expect(activation.targetTotalWealthUsdc).toBeCloseTo(
+			afterDeployment.targetTotalWealthUsdc,
+			2,
+		);
+		expect(activation.scale).toBeCloseTo(afterDeployment.scale, 8);
+		expect(
+			activation.diagnostics.find((entry) => entry.conditionId === "rn1-under")
+				?.desiredShares,
+		).toBeCloseTo(5.833, 2);
+		expect(
+			afterDeployment.diagnostics.find(
+				(entry) => entry.conditionId === "rn1-under",
+			)?.desiredShares,
+		).toBeCloseTo(5.833, 2);
+		expect(
+			activation.intents.filter((intent) => intent.conditionId === "rn1-under"),
+		).toEqual([]);
+		expect(
+			afterDeployment.intents.filter(
+				(intent) => intent.conditionId === "rn1-under",
+			),
+		).toEqual([]);
 	});
 
 	it("treats cohort allowance as scaled provenance, never raw target shares", () => {
@@ -446,6 +609,19 @@ describe("position-gap-v3 whole-book planning", () => {
 		const incomplete = planPositionGapBook(
 			input({ ...book, complete: false } as unknown as TargetBookSnapshotV1),
 		);
+		const uncertainMark = planPositionGapBook(
+			input(
+				snapshot([
+					condition({ leftShares: 100, rightShares: 0, leftMark: 0 }),
+					condition({
+						conditionId: "otherwise-orderable",
+						leftShares: 100,
+						rightShares: 0,
+						leftMark: 0.5,
+					}),
+				]),
+			),
+		);
 
 		expect(expired).toMatchObject({
 			status: "blocked",
@@ -453,6 +629,11 @@ describe("position-gap-v3 whole-book planning", () => {
 			intents: [],
 		});
 		expect(incomplete).toMatchObject({
+			status: "blocked",
+			blockReason: "invalid_input",
+			intents: [],
+		});
+		expect(uncertainMark).toMatchObject({
 			status: "blocked",
 			blockReason: "invalid_input",
 			intents: [],
@@ -492,6 +673,57 @@ describe("position-gap-v3 whole-book planning", () => {
 			heldShares: 10,
 			openShares: 5,
 			gapShares: 35,
+		});
+	});
+
+	it("subtracts unmanaged account and venue BUY exposure without canceling it", () => {
+		const book = snapshot([
+			condition({ leftShares: 100, rightShares: 0, leftMark: 0.5 }),
+		]);
+		const plan = planPositionGapBook(
+			input(book, {
+				sleeveBudgetUsdc: 25,
+				unmanagedBuyExposure: [
+					{
+						conditionId: "condition-1",
+						tokenId: "condition-1-yes",
+						remainingShares: 20,
+						source: "account_ledger",
+					},
+					{
+						conditionId: "condition-1",
+						tokenId: "condition-1-yes",
+						remainingShares: 5,
+						source: "venue",
+					},
+				],
+			}),
+		);
+
+		expect(plan.intents[0]).toMatchObject({
+			desiredShares: 50,
+			heldShares: 0,
+			openShares: 25,
+			gapShares: 25,
+		});
+		expect(plan.cancellations).toEqual([]);
+	});
+
+	it("fails closed when the target cash proof is not at the book source block", () => {
+		const book = snapshot([
+			condition({ leftShares: 100, rightShares: 0, leftMark: 0.5 }),
+		]);
+		const plan = planPositionGapBook(
+			input(book, {
+				targetCashPusdUsdc: 20,
+				targetCashObservedBlock: book.refreshStats.sourceMaxSyncedBlock + 1,
+			}),
+		);
+
+		expect(plan).toMatchObject({
+			status: "blocked",
+			blockReason: "invalid_input",
+			intents: [],
 		});
 	});
 
@@ -642,8 +874,7 @@ describe("position-gap-v3 whole-book planning", () => {
 		const currentSleeve = 24.21285;
 		const currentGapShares = 1.087455525259;
 		const targetNavUsdc = 47_338.14592945;
-		const selectedShares =
-			currentGapShares / (currentSleeve / targetNavUsdc);
+		const selectedShares = currentGapShares / (currentSleeve / targetNavUsdc);
 		const ballastShares = (targetNavUsdc - selectedShares * 0.18) / 0.5;
 		const book = snapshot([
 			condition({
@@ -1015,7 +1246,7 @@ describe("position-gap-v3 whole-book planning", () => {
 		);
 	});
 
-	it("reports an excluded zero-mark target leg instead of allocating it", () => {
+	it("blocks the whole plan when a target leg has an uncertain zero mark", () => {
 		const book = snapshot([
 			condition({
 				leftShares: 100,
@@ -1026,14 +1257,11 @@ describe("position-gap-v3 whole-book planning", () => {
 		]);
 		const plan = planPositionGapBook(input(book));
 
-		expect(plan.eligibleNetNavUsdc).toBe(0);
-		expect(plan.intents).toEqual([]);
-		expect(plan.diagnostics).toContainEqual(
-			expect.objectContaining({
-				tokenId: "condition-1-yes",
-				reason: "invalid_target_mark",
-			}),
-		);
+		expect(plan).toMatchObject({
+			status: "blocked",
+			blockReason: "invalid_input",
+			intents: [],
+		});
 	});
 
 	it("reports no sleeve-only remedy when cohort allowance cannot clear a floor", () => {
