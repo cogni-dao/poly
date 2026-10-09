@@ -680,6 +680,22 @@ describe("paper facts project into the live tables (migration 0083)", () => {
 
     beforeAll(async () => {
       await seedPaperConnection(negative, "1.00000000");
+      wallet = await enrol(negative);
+    });
+
+    it("invalidates a previously usable NAV and marks the projection partial", async () => {
+      await observePaperWallet({
+        db: getSeedDb() as unknown as PaperDb,
+        wallet,
+        readMidPrice: midPrices({}),
+        logger,
+        now: new Date("2026-10-07T18:19:00.000Z"),
+      });
+      const prior = await readBalanceAsTenant(negative);
+      expect(prior.kind).toBe("available");
+      if (prior.kind !== "available") throw new Error("unreachable");
+      expect(prior.usdcE).toBeCloseTo(1, 6);
+
       await seedLedgerFill(negative, targetId, {
         tokenId: "44444444444444444444444444444444",
         conditionId: `0xcond${"d".repeat(60)}`,
@@ -687,7 +703,6 @@ describe("paper facts project into the live tables (migration 0083)", () => {
         price: "0.50000000",
         shares: "10.00000000",
       });
-      wallet = await enrol(negative);
       await observePaperWallet({
         db: getSeedDb() as unknown as PaperDb,
         wallet,
@@ -697,9 +712,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
         logger,
         now: new Date("2026-10-07T18:20:00.000Z"),
       });
-    });
 
-    it("withholds the balance snapshot and marks the projection partial", async () => {
       const snapshots = await getSeedDb()
         .select({ usdcE: polyWalletBalanceSnapshots.usdcE })
         .from(polyWalletBalanceSnapshots)
@@ -710,6 +723,14 @@ describe("paper facts project into the live tables (migration 0083)", () => {
           )
         );
       expect(snapshots).toHaveLength(0);
+
+      await expect(
+        readPaperAccountNavUsdc({
+          db: getSeedDb() as unknown as PaperDb,
+          billingAccountId: negative.billingAccountId,
+          now: new Date("2026-10-07T18:20:01.000Z"),
+        })
+      ).rejects.toMatchObject({ reason: "nav_missing" });
 
       const cursors = await getSeedDb()
         .select({

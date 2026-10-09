@@ -13,8 +13,8 @@
  *   Worst-case stale window with 2-min TTL + 60s sweep interval ≈ 3 min.
  * Scope: setInterval cadence + per-tenant cancel dispatch.
  * Invariants:
- *   - Single global `findStaleOpen` query → app-side groupBy on
- *     `billing_account_id`. No N+1.
+ *   - Single global `findStaleOpen` query → app-side groupBy on durable
+ *     `(billing_account_id, mode)`. No N+1 and no venue re-resolution.
  *   - Cancel routes through the per-tenant executor (404-idempotent).
  *   - Pending rows (no `order_id` yet) are skipped — race with in-flight
  *     placement is acceptable for v0.
@@ -36,7 +36,8 @@ export const MIRROR_RESTING_SWEEP_METRICS = {
 export interface RestingSweepDeps {
   ledger: OrderLedger;
   cancelOrderFor: (
-    billing_account_id: string
+    billing_account_id: string,
+    mode: "live" | "paper"
   ) => Promise<(order_id: string) => Promise<void>>;
   logger: LoggerPort;
   metrics: MetricsPort;
@@ -93,23 +94,40 @@ export function startRestingSweep(deps: RestingSweepDeps): RestingSweepStopFn {
     }
     if (rows.length === 0) return;
 
-    const byTenant = new Map<string, typeof rows>();
+    const byTenantVenue = new Map<
+      string,
+      {
+        billingAccountId: string;
+        mode: "live" | "paper";
+        rows: typeof rows;
+      }
+    >();
     for (const r of rows) {
-      const list = byTenant.get(r.billing_account_id) ?? [];
-      list.push(r);
-      byTenant.set(r.billing_account_id, list);
+      const key = `${r.billing_account_id}\u0000${r.mode}`;
+      const group = byTenantVenue.get(key) ?? {
+        billingAccountId: r.billing_account_id,
+        mode: r.mode,
+        rows: [],
+      };
+      group.rows.push(r);
+      byTenantVenue.set(key, group);
     }
 
-    for (const [billing_account_id, tenantRows] of byTenant) {
+    for (const {
+      billingAccountId,
+      mode,
+      rows: tenantRows,
+    } of byTenantVenue.values()) {
       let cancel: (order_id: string) => Promise<void>;
       try {
-        cancel = await deps.cancelOrderFor(billing_account_id);
+        cancel = await deps.cancelOrderFor(billingAccountId, mode);
       } catch (err: unknown) {
         log.error(
           {
             event: EVENT_NAMES.POLY_MIRROR_DECISION,
             phase: "executor_resolve_failed",
-            billing_account_id,
+            billing_account_id: billingAccountId,
+            execution_mode: mode,
             err: err instanceof Error ? err.message : String(err),
           },
           "mirror resting-sweep: failed to resolve tenant executor"

@@ -184,6 +184,25 @@ describe("executor venue dispatch (VENUE_RESOLVED_FROM_ACCOUNT)", () => {
 		).rejects.toBeInstanceOf(PolyTradeExecutorError);
 		expect(resolve).toHaveBeenCalledWith(PAPER_ACCOUNT);
 	});
+
+	it("keeps a ledger-bound paper order on paper after the account becomes live", async () => {
+		const { factory, resolve, resolveExecutionVenue, setPaperAccountVenue } =
+			harness({ paperBuildSucceeds: true });
+
+		const paperExecutor = await factory.getPolyTradeExecutorForVenue(
+			PAPER_ACCOUNT,
+			"paper",
+		);
+		setPaperAccountVenue("live");
+		const historicalExecutor = await factory.getPolyTradeExecutorForVenue(
+			PAPER_ACCOUNT,
+			"paper",
+		);
+
+		expect(historicalExecutor).toBe(paperExecutor);
+		expect(resolveExecutionVenue).not.toHaveBeenCalled();
+		expect(resolve).not.toHaveBeenCalled();
+	});
 });
 
 describe("paper SELL-close sizing (planPaperCloseIntent)", () => {

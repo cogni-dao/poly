@@ -146,7 +146,8 @@ export interface OrderReconcilerDeps {
    */
   getOrderForTenant: (
     billing_account_id: string,
-    order_id: string
+    order_id: string,
+    mode: "live" | "paper"
   ) => Promise<GetOrderResult>;
   logger: LoggerPort;
   metrics: MetricsPort;
@@ -287,7 +288,8 @@ export async function runReconcileOnce(
     try {
       const result = await deps.getOrderForTenant(
         row.billing_account_id,
-        row.order_id
+        row.order_id,
+        row.mode
       );
       // getOrder returned a typed response — mark as synced regardless of branch.
       syncedIds.push(row.client_order_id);

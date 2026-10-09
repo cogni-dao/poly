@@ -290,7 +290,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         // Venue read first, OUTSIDE the tenant transaction (see the `mode`
         // param docs on `insertPendingOnDb`).
         const mode = await deps.resolveExecutionMode(ctx.billing_account_id);
-        return withTenantScope(appDb, actor, async (tx) =>
+        await withTenantScope(appDb, actor, async (tx) =>
           insertPendingOnDb(
             tx,
             {
@@ -301,6 +301,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             mode
           )
         );
+        return mode;
       },
       recordDecision: async (input: TenantScopedRecordDecisionInput) => {
         const mode = await deps.resolveExecutionMode(ctx.billing_account_id);

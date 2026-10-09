@@ -443,9 +443,12 @@ export interface TenantOrderLedger {
 
   /**
    * Insert a `pending` row scoped to this tenant. `input` no longer needs
-   * `billing_account_id` or `created_by_user_id` (stamped from `ctx`).
+   * `billing_account_id` or `created_by_user_id` (stamped from `ctx`). Returns
+   * the execution mode written to the row so the caller can dispatch the
+   * placement through the same venue without re-resolving mutable account
+   * state.
    */
-  insertPending(input: TenantScopedInsertPendingInput): Promise<void>;
+  insertPending(input: TenantScopedInsertPendingInput): Promise<LedgerMode>;
 
   /**
    * Partial-unique-index existence check scoped to this tenant.

@@ -51,6 +51,7 @@ import {
   withStatementTimeout,
 } from "@/features/wallet-analysis/server/trader-observation-service";
 import { EVENT_NAMES } from "@/shared/observability/events";
+import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 
 type Db =
   | NodePgDatabase<Record<string, unknown>>
@@ -78,28 +79,6 @@ export interface PaperProjectionJobDeps {
   readPaperMidPrice: PaperMidPriceReader;
   logger: LoggerPort;
   pollMs?: number;
-}
-
-function errorDimensions(error: unknown): Record<string, string | undefined> {
-  const err = error instanceof Error ? error : null;
-  const cause = err?.cause instanceof Error ? err.cause : null;
-  const codeOf = (value: unknown): string | undefined => {
-    if (!value || typeof value !== "object") return undefined;
-    const candidate = value as {
-      code?: unknown;
-      details?: { error_code?: unknown };
-    };
-    if (typeof candidate.code === "string") return candidate.code;
-    return typeof candidate.details?.error_code === "string"
-      ? candidate.details.error_code
-      : undefined;
-  };
-  return {
-    err_class: err?.name ?? typeof error,
-    err_code: codeOf(error),
-    cause_class: cause?.name,
-    cause_code: codeOf(cause),
-  };
 }
 
 export function startPaperProjectionJob(
@@ -178,7 +157,7 @@ export function startPaperProjectionJob(
             ? "paper_projection_timeout"
             : "paper_projection_failed",
           tick_ms: Date.now() - startedAt,
-          ...errorDimensions(err),
+          ...safeErrorDimensions(err),
         },
         "paper projection tick failed — retrying on the next interval"
       );

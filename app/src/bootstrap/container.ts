@@ -1098,9 +1098,12 @@ function createContainer(): Container {
 				// reconciler runs on the pod; per-tenant dispatch is internal.
 				const reconcilerHandle = startOrderReconciler({
 					ledger: orderLedger,
-					getOrderForTenant: async (billingAccountId, orderId) => {
+					getOrderForTenant: async (billingAccountId, orderId, mode) => {
 						const executor =
-							await executorFactory.getPolyTradeExecutorFor(billingAccountId);
+							await executorFactory.getPolyTradeExecutorForVenue(
+								billingAccountId,
+								mode,
+							);
 						return executor.getOrder(orderId);
 					},
 					logger: mirrorLogger,
@@ -1146,12 +1149,10 @@ function createContainer(): Container {
 					targetSource: copyTradeTargetSource,
 					startPollForTarget: (enumeratedTarget) => {
 						const targetWallet = enumeratedTarget.targetWallet;
-						// MODE_STAMPED_FROM_ACCOUNT — the ledger resolves each row's mode
-						// from that row's own account. No need to thread mode through
-						// `MirrorTargetConfig`; the planner + pipeline stay mode-agnostic,
-						// and the decision LOG gets `execution_mode` from
-						// `getExecutionMode` below. Pair with VENUE_RESOLVED_FROM_ACCOUNT
-						// (poly-trade-executor.ts).
+						// MODE_STAMPED_FROM_ACCOUNT — the ledger resolves each new row's
+						// mode and returns that durable binding to the pipeline. Placement
+						// and historical get/cancel operations dispatch with that exact
+						// mode; `MirrorTargetConfig` remains algorithm-only.
 						const target = buildMirrorTargetConfig({
 							targetWallet,
 							billingAccountId: enumeratedTarget.billingAccountId,
@@ -1183,10 +1184,17 @@ function createContainer(): Container {
 						// The factory resolves the account venue on every dispatch, then
 						// reuses the venue-specific client. A second target-local cache
 						// would pin paper after live custody is provisioned.
-						const getExecutor = (): Promise<PolyTradeExecutor> =>
-							executorFactory.getPolyTradeExecutorFor(
-								enumeratedTarget.billingAccountId,
-							);
+						const getExecutor = (
+							mode?: "live" | "paper",
+						): Promise<PolyTradeExecutor> =>
+							mode
+								? executorFactory.getPolyTradeExecutorForVenue(
+										enumeratedTarget.billingAccountId,
+										mode,
+									)
+								: executorFactory.getPolyTradeExecutorFor(
+										enumeratedTarget.billingAccountId,
+									);
 
 						if (enumeratedTarget.sizingPolicyKind === "position_gap") {
 							const actor = startPositionGapActor({
@@ -1207,24 +1215,24 @@ function createContainer(): Container {
 								ledger: orderLedger,
 								getExecutionMode: () =>
 									executionVenueResolver(enumeratedTarget.billingAccountId),
-								execution: {
+								executionForMode: (mode) => ({
 									placeBuy: async (intent) =>
-										(await getExecutor()).placeIntent(intent),
+										(await getExecutor(mode)).placeIntent(intent),
 									cancelBuy: async (orderId) =>
-										(await getExecutor()).cancelOrder(orderId),
+										(await getExecutor(mode)).cancelOrder(orderId),
 									getBuy: async (orderId) =>
-										(await getExecutor()).getOrder(orderId),
+										(await getExecutor(mode)).getOrder(orderId),
 									getMarketConstraints: async (tokenId, placement) =>
-										(await getExecutor()).getMarketConstraints(
+										(await getExecutor(mode)).getMarketConstraints(
 											tokenId,
 											placement,
 										),
 									listOpenOrders: async () =>
-										(await getExecutor()).listOpenOrders(),
-								},
+										(await getExecutor(mode)).listOpenOrders(),
+								}),
 								fillEvidence: {
 									getWalletAddress: async () =>
-										(await getExecutor()).funderAddress,
+										(await getExecutor("live")).funderAddress,
 									listActivity: async (wallet, params) =>
 										dataApiClient.listActivity(wallet, params),
 									listPositions: async (wallet, conditionId) =>
@@ -1234,7 +1242,7 @@ function createContainer(): Container {
 											limit: 500,
 										}),
 								},
-								getWalletCashUsdc: async () => {
+								getWalletCashUsdc: async (cashVenue) => {
 									// VENUE_DECIDES_THE_CASH_SOURCE (NO_FABRICATED_VALUES) — the third
 									// and last of v3's wallet-shaped deps, after `getAuthoritativeShares`
 									// and the portfolio snapshot. A paper account holds no pUSD, so
@@ -1247,9 +1255,6 @@ function createContainer(): Container {
 									// story exists to end. `getNavUsdc` raises a typed unavailable when
 									// the projection is absent, incomplete or stale, so a withheld NAV
 									// still cannot be read as 0.
-									const cashVenue = await executionVenueResolver(
-										enumeratedTarget.billingAccountId,
-									);
 									if (cashVenue === "paper") {
 										return paperPortfolio.getNavUsdc(
 											enumeratedTarget.billingAccountId,
@@ -1305,8 +1310,8 @@ function createContainer(): Container {
 										observedBlock: sourceBlock,
 									};
 								},
-								getAuthoritativeHoldings: async (snapshot) => {
-									const executor = await getExecutor();
+								getAuthoritativeHoldings: async (snapshot, venue) => {
+									const executor = await getExecutor(venue);
 									// VENUE_DECIDES_THE_SHARE_SOURCE (NO_FABRICATED_VALUES). A paper
 									// account's funder address is a real, deterministic SHA-256-derived
 									// address with NO on-chain presence, so `balanceOfBatch` answers 0
@@ -1321,9 +1326,6 @@ function createContainer(): Container {
 									// batched call. A tenant holding BOTH an active live and an active
 									// paper row resolves to `live` (LIVE_WINS in the venue resolver), so
 									// only a paper-only tenant takes the projection path.
-									const venue = await executionVenueResolver(
-										enumeratedTarget.billingAccountId,
-									);
 									if (venue === "paper") {
 										const holdings = await Promise.all(
 											snapshot.conditions.flatMap((condition) =>
@@ -1630,12 +1632,12 @@ function createContainer(): Container {
 								// row came from without a second source of truth.
 								getExecutionMode: () =>
 									executionVenueResolver(enumeratedTarget.billingAccountId),
-								placeIntent: async (intent) => {
-									const executor = await getExecutor();
+								placeIntent: async (intent, mode) => {
+									const executor = await getExecutor(mode);
 									return executor.placeIntent(intent);
 								},
-								cancelOrder: async (orderId) => {
-									const executor = await getExecutor();
+								cancelOrder: async (orderId, mode) => {
+									const executor = await getExecutor(mode);
 									return executor.cancelOrder(orderId);
 								},
 								getMarketConstraints: async (tokenId) => {
@@ -1656,8 +1658,8 @@ function createContainer(): Container {
 										0,
 									),
 								getMirrorPortfolioSnapshot,
-								closePosition: async (params) => {
-									const executor = await getExecutor();
+								closePosition: async (params, mode) => {
+									const executor = await getExecutor(mode);
 									return executor.closePosition(params);
 								},
 								getOperatorPositions: async () => {
@@ -1709,9 +1711,12 @@ function createContainer(): Container {
 					log as unknown as import("@cogni/poly-market-provider").LoggerPort;
 				const restingSweepStop = startRestingSweep({
 					ledger: orderLedger,
-					cancelOrderFor: async (billing_account_id) => {
+					cancelOrderFor: async (billing_account_id, mode) => {
 						const exec =
-							await executorFactory.getPolyTradeExecutorFor(billing_account_id);
+							await executorFactory.getPolyTradeExecutorForVenue(
+								billing_account_id,
+								mode,
+							);
 						return exec.cancelOrder.bind(exec);
 					},
 					logger: sweepLogger,

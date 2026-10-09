@@ -64,7 +64,7 @@ function recordingLogger(entries: Record<string, unknown>[]) {
 
 function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 	const decisions: TenantScopedRecordDecisionInput[] = [];
-	const insertPending = vi.fn(async () => undefined);
+	const insertPending = vi.fn(async () => "paper" as const);
 	const markOrderId = vi.fn(async () => undefined);
 	const markCanceled = vi.fn(async () => undefined);
 	const tenant: TenantOrderLedger = {

@@ -163,6 +163,7 @@ export interface PositionGapActiveBuy {
 export interface PositionGapAccountBuyExposure {
 	clientOrderId: string;
 	orderId: string | null;
+	mode: "live" | "paper";
 	conditionId: string;
 	tokenId: string;
 	remainingShares: number;
@@ -513,6 +514,7 @@ export class PositionGapRuntimeStore {
 			.select({
 				clientOrderId: polyCopyTradeFills.clientOrderId,
 				orderId: polyCopyTradeFills.orderId,
+				mode: polyCopyTradeFills.mode,
 				marketId: polyCopyTradeFills.marketId,
 				conditionId: sql<
 					string | null
@@ -566,6 +568,7 @@ export class PositionGapRuntimeStore {
 			return {
 				clientOrderId: row.clientOrderId,
 				orderId: row.orderId,
+				mode: row.mode,
 				conditionId,
 				tokenId,
 				remainingShares: Math.max(0, sizeUsdc / limitPrice - filledShares),

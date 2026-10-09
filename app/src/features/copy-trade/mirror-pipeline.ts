@@ -179,7 +179,10 @@ export interface MirrorPipelineDeps {
    * `PolymarketClobAdapter.placeOrder`. Must be constructed against
    * `deps.target.billing_account_id` by the caller.
    */
-  placeIntent: (intent: OrderIntent) => Promise<OrderReceipt>;
+  placeIntent: (
+    intent: OrderIntent,
+    mode: "live" | "paper"
+  ) => Promise<OrderReceipt>;
   /**
    * Tenant-scoped cancel seam (task.5001). Delegates to
    * `PolyTradeExecutor.cancelOrder` → `PolymarketClobAdapter.cancelOrder`,
@@ -191,7 +194,10 @@ export interface MirrorPipelineDeps {
    * cancel pre-step. Production bootstrap (`copy-trade-mirror.job` →
    * `container.ts`) always wires it.
    */
-  cancelOrder?: (order_id: string) => Promise<void>;
+  cancelOrder?: (
+    order_id: string,
+    mode: "live" | "paper"
+  ) => Promise<void>;
   /**
    * Market-constraint fetch seam — returns `{ minShares }` for a token id so
    * the sizing policy can avoid sub-min submissions (bug.0342). Optional.
@@ -254,12 +260,15 @@ export interface MirrorPipelineDeps {
    * `closePosition` which authorizes + caps + signs. When absent, SELL fills
    * degrade to `skip/sell_without_position` (never open a short).
    */
-  closePosition?: (params: {
-    tokenId: string;
-    max_size_usdc: number;
-    limit_price: number;
-    client_order_id: `0x${string}`;
-  }) => Promise<OrderReceipt>;
+  closePosition?: (
+    params: {
+      tokenId: string;
+      max_size_usdc: number;
+      limit_price: number;
+      client_order_id: `0x${string}`;
+    },
+    mode: "live" | "paper"
+  ) => Promise<OrderReceipt>;
   /**
    * Optional — position query used by the SELL branch. Per-tenant.
    * When absent (or no `closePosition`), SELL fills degrade to
@@ -1398,13 +1407,19 @@ async function processSellFill(args: {
 
   const boundClose = deps.closePosition;
   if (!boundClose) return;
-  const closeExecutor = (intent: OrderIntent): Promise<OrderReceipt> =>
-    boundClose({
-      tokenId: intent.attributes?.token_id as string,
-      max_size_usdc: closeSizeUsdc,
-      limit_price: fill.price,
-      client_order_id,
-    });
+  const closeExecutor = (
+    intent: OrderIntent,
+    mode: "live" | "paper"
+  ): Promise<OrderReceipt> =>
+    boundClose(
+      {
+        tokenId: intent.attributes?.token_id as string,
+        max_size_usdc: closeSizeUsdc,
+        limit_price: fill.price,
+        client_order_id,
+      },
+      mode
+    );
 
   const closeIntent: OrderIntent = {
     provider: "polymarket",
@@ -1534,7 +1549,7 @@ async function cancelOpenMirrorOrdersForMarket(args: {
   for (const row of open) {
     if (row.order_id === null) continue;
     try {
-      await cancelOrder(row.order_id);
+      await cancelOrder(row.order_id, row.mode);
       await deps.ledger.markCanceled({
         client_order_id: row.client_order_id,
         reason,
@@ -1594,7 +1609,10 @@ async function executeMirrorOrder(
   intent: OrderIntent,
   reason: MirrorReason,
   log: LoggerPort,
-  intentExecutor?: (intent: OrderIntent) => Promise<OrderReceipt>,
+  intentExecutor?: (
+    intent: OrderIntent,
+    mode: "live" | "paper"
+  ) => Promise<OrderReceipt>,
   decisionLogFields?: Record<string, unknown>
 ): Promise<void> {
   // bug.5022 — tenantLedger for all per-tenant writes (insertPending +
@@ -1605,8 +1623,9 @@ async function executeMirrorOrder(
   });
   const executor = intentExecutor ?? deps.placeIntent;
 
+  let placementMode: "live" | "paper";
   try {
-    await tenantLedger.insertPending({
+    placementMode = await tenantLedger.insertPending({
       target_id: deps.target.target_id,
       fill_id: fill.fill_id,
       observed_at: new Date(fill.observed_at),
@@ -1729,7 +1748,7 @@ async function executeMirrorOrder(
   }
 
   try {
-    const receipt = await executor(intent);
+    const receipt = await executor(intent, placementMode);
     await deps.ledger.markOrderId({
       client_order_id,
       receipt,

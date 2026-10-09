@@ -38,8 +38,8 @@
  *     the bootstrap / provider boundaries so pods without Polymarket creds
  *     never load them on unrelated paths.
  *   - LAZY_INIT_ADAPTER — adapter construction happens on first per-tenant
- *     call. Subsequent calls reuse the cached instance until the process exits
- *     or an ops path invalidates that tenant after CLOB credential rotation.
+ *     call. Subsequent calls reuse the cached `(billing account, venue)`
+ *     instance until the process exits or an ops path invalidates that tenant.
  *   - SHARED_PUBLIC_CLIENT — the `viem.PublicClient` used for RPC reads is a
  *     process-level singleton; wallet clients fan out per tenant.
  *   - DATA_API_DISCOVERY_HINT_FOR_EXIT — `exitPosition` uses Data API as the
@@ -50,13 +50,13 @@
  *     is the ONLY thing that selects a venue. The factory resolves it per
  *     `billingAccountId` (`deps.resolveExecutionVenue`) and then chooses
  *     `buildExecutor` (live CLOB) or `buildPaperOnlyExecutor` (paper sidecar)
- *     once, at executor-construction time. Because the cache key is already the
- *     billing account (TENANT_CACHE_KEYS_BILLING_ACCOUNT), two accounts in one
- *     process can hold different venues — which the previous
- *     `PAPER_ENFORCE_MODE` switch made structurally impossible. Pairs with
- *     `MODE_STAMPED_FROM_ACCOUNT` (order-ledger.ts): the ledger stamps
- *     `poly_copy_trade_{fills,decisions}.mode` from the SAME resolver, so audit
- *     and dispatch agree by construction. Per-target `mode` columns and
+ *     once, at executor-construction time. The cache key is `(billing account,
+ *     venue)`, so two accounts in one process can hold different venues and a
+ *     historical paper order remains routed to paper after live custody is
+ *     added. Pairs with `MODE_STAMPED_FROM_ACCOUNT` (order-ledger.ts): the
+ *     ledger returns the venue it durably stamped; placement and every later
+ *     get/cancel/reconcile dispatch use that exact value. Per-target `mode`
+ *     columns and
  *     `intent.attributes.mode` shadows were removed (task.5003); any attribute
  *     placed on an intent is purely advisory and the executor never reads it.
  *   - NO_PAPER_BYPASSES — the paper venue runs the real authorization path
@@ -434,6 +434,10 @@ export function createPolyTradeExecutorFactory(
   getPolyTradeExecutorFor: (
     billingAccountId: string
   ) => Promise<PolyTradeExecutor>;
+  getPolyTradeExecutorForVenue: (
+    billingAccountId: string,
+    venue: "live" | "paper"
+  ) => Promise<PolyTradeExecutor>;
   invalidatePolyTradeExecutorFor: (billingAccountId: string) => void;
 } {
   const cache = new Map<string, CachedExecutor>();
@@ -442,9 +446,14 @@ export function createPolyTradeExecutorFactory(
   async function getPolyTradeExecutorFor(
     billingAccountId: string
   ): Promise<PolyTradeExecutor> {
-    // Resolve on every dispatch so provisioning live custody cannot leave a
-    // cached paper executor serving fresh intents.
     const venue = await deps.resolveExecutionVenue(billingAccountId);
+    return getPolyTradeExecutorForVenue(billingAccountId, venue);
+  }
+
+  async function getPolyTradeExecutorForVenue(
+    billingAccountId: string,
+    venue: "live" | "paper"
+  ): Promise<PolyTradeExecutor> {
     const cacheKey = `${billingAccountId}:${venue}`;
     const cached = cache.get(cacheKey);
     if (cached) return cached.executor;
@@ -486,7 +495,11 @@ export function createPolyTradeExecutorFactory(
     }
   }
 
-  return { getPolyTradeExecutorFor, invalidatePolyTradeExecutorFor };
+  return {
+    getPolyTradeExecutorFor,
+    getPolyTradeExecutorForVenue,
+    invalidatePolyTradeExecutorFor,
+  };
 }
 
 async function buildExecutor(

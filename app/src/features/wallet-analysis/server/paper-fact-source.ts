@@ -43,9 +43,9 @@
  *     and silently desynchronise `poly_trader_fill_rollups_daily`.
  *   - NO_FABRICATED_VALUES (docs/spec/capability-plane.md): an open position
  *     whose mid price cannot be read is NOT marked to 0 and NOT published; its
- *     prior row is preserved, the position cursor records `partial` with the
- *     reason, and the NAV row is withheld for that tick. A withheld NAV reads
- *     as `missing` ("no observation yet"), which is true, instead of
+ *     prior position row is preserved, the position cursor records `partial`
+ *     with the reason, and any prior NAV row is removed in the same projection
+ *     transaction. A withheld NAV reads as `missing`, which is true, instead of
  *     `available` at an invented number. A hardcoded 0 here is precisely the
  *     bug that made paper trading unreadable.
  *   - MARKED_AT_THE_AUTHORITATIVE_PRICE: only *execution* is simulated. A
@@ -108,33 +108,12 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { derivePaperAccountAddress } from "@/features/paper-accounts";
 import { EVENT_NAMES } from "@/shared/observability/events";
+import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 import { persistWalletBalanceFact } from "./wallet-balance-snapshot-service";
 
 type Db =
   | NodePgDatabase<Record<string, unknown>>
   | PostgresJsDatabase<Record<string, unknown>>;
-
-function errorDimensions(error: unknown): Record<string, string | undefined> {
-  const err = error instanceof Error ? error : null;
-  const cause = err?.cause instanceof Error ? err.cause : null;
-  const codeOf = (value: unknown): string | undefined => {
-    if (!value || typeof value !== "object") return undefined;
-    const candidate = value as {
-      code?: unknown;
-      details?: { error_code?: unknown };
-    };
-    if (typeof candidate.code === "string") return candidate.code;
-    return typeof candidate.details?.error_code === "string"
-      ? candidate.details.error_code
-      : undefined;
-  };
-  return {
-    err_class: err?.name ?? typeof error,
-    err_code: codeOf(error),
-    cause_class: cause?.name,
-    cause_code: codeOf(cause),
-  };
-}
 
 /**
  * `poly_trader_wallets.kind` for a paper account (migration 0083).
@@ -879,6 +858,25 @@ export async function projectPaperPositionsAndNav(input: {
     );
   }
 
+  if (!navPublishable) {
+    // INVALID_CURRENT_NAV_INVALIDATES_PRIOR_FACT. Leaving the last good value
+    // readable would make a known-bad current account look tradeable until the
+    // normal staleness TTL elapsed. The caller runs this projection in one
+    // account-scoped transaction, so deletion and the partial cursor below are
+    // committed atomically.
+    await input.db
+      .delete(polyWalletBalanceSnapshots)
+      .where(
+        and(
+          eq(
+            polyWalletBalanceSnapshots.billingAccountId,
+            account.billingAccountId
+          ),
+          sql`lower(${polyWalletBalanceSnapshots.address}) = ${account.address}`
+        )
+      );
+  }
+
   await publishPaperPositionCursor({
     db: input.db,
     traderWalletId,
@@ -1321,7 +1319,7 @@ export async function runPaperProjectionTick(deps: {
           errorCode: "paper_projection_account_failed",
           trader_wallet_id: wallet.traderWalletId,
           billing_account_id: wallet.account.billingAccountId,
-          ...errorDimensions(err),
+          ...safeErrorDimensions(err),
         },
         "paper projection failed for one account; other accounts continue"
       );
