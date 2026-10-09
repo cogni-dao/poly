@@ -9,6 +9,7 @@ import {
 	polyTraderPositionSnapshots,
 	polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
+import type { TargetBookSnapshotV1 } from "@cogni/poly-market-provider";
 import type {
 	PolymarketDataApiClient,
 	PolymarketUserPosition,
@@ -20,6 +21,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { dbTargetSource } from "@/features/copy-trade/target-source";
 import {
 	hydrateCopyTargetPositions,
+	persistPositionGapTargetSnapshot,
 	readCopyTargetPositionCohorts,
 } from "@/features/wallet-analysis/server/copy-target-position-hydration-service";
 import {
@@ -55,6 +57,96 @@ const UNRELATED_TOKEN = "333333";
 const ZERO_VALUE_TOKEN = "444444";
 const PAPER_TOKEN = "555555";
 const MISMATCHED_TARGET_TOKEN = "666666";
+const POSITION_GAP_WALLET = `0x${"73".repeat(20)}` as `0x${string}`;
+const POSITION_GAP_CONDITION_A = `0x${"74".repeat(32)}`;
+const POSITION_GAP_CONDITION_B = `0x${"75".repeat(32)}`;
+const POSITION_GAP_TOKEN_A = "777777";
+const POSITION_GAP_OPPOSITE_A = "888888";
+const POSITION_GAP_TOKEN_B = "999999";
+const POSITION_GAP_OPPOSITE_B = "101010";
+const POSITION_GAP_FUTURE_CONDITION = `0x${"76".repeat(32)}`;
+const POSITION_GAP_FUTURE_TOKEN = "111213";
+
+function positionGapSnapshot(input: {
+	snapshotId: string;
+	updatedAt: string;
+	sharesA: number;
+	includeB: boolean;
+}): TargetBookSnapshotV1 {
+	const updatedAtMs = Date.parse(input.updatedAt);
+	const conditions: Array<TargetBookSnapshotV1["conditions"][number]> = [
+		{
+			conditionId: POSITION_GAP_CONDITION_A,
+			status: "OPEN",
+			redeemable: false,
+			endDate: "2027-01-01T00:00:00.000Z",
+			negativeRisk: false,
+			tokens: [
+				{
+					tokenId: POSITION_GAP_TOKEN_A,
+					oppositeTokenId: POSITION_GAP_OPPOSITE_A,
+					outcomeIndex: 0,
+					shares: input.sharesA,
+					averagePrice: 0.4,
+					markPrice: 0.75,
+				},
+				{
+					tokenId: POSITION_GAP_OPPOSITE_A,
+					oppositeTokenId: POSITION_GAP_TOKEN_A,
+					outcomeIndex: 1,
+					shares: 0,
+					averagePrice: 0,
+					markPrice: 0.25,
+				},
+			],
+		},
+	];
+	if (input.includeB) {
+		conditions.push({
+			conditionId: POSITION_GAP_CONDITION_B,
+			status: "OPEN",
+			redeemable: false,
+			endDate: null,
+			negativeRisk: true,
+			tokens: [
+				{
+					tokenId: POSITION_GAP_TOKEN_B,
+					oppositeTokenId: POSITION_GAP_OPPOSITE_B,
+					outcomeIndex: 0,
+					shares: 20,
+					averagePrice: 0.2,
+					markPrice: 0.3,
+				},
+				{
+					tokenId: POSITION_GAP_OPPOSITE_B,
+					oppositeTokenId: POSITION_GAP_TOKEN_B,
+					outcomeIndex: 1,
+					shares: 0,
+					averagePrice: 0,
+					markPrice: 0.7,
+				},
+			],
+		});
+	}
+	return {
+		version: 1,
+		snapshotId: input.snapshotId,
+		targetWallet: POSITION_GAP_WALLET,
+		fullRefreshAtMs: updatedAtMs,
+		updatedAtMs,
+		expiresAtMs: updatedAtMs + 60_000,
+		complete: true,
+		refreshStats: {
+			kind: "full",
+			discoveryRows: conditions.length,
+			conditionCount: conditions.length,
+			dataApiCalls: 2,
+			sourceComputedAt: input.updatedAt,
+			sourceMaxSyncedBlock: Math.floor(updatedAtMs / 1_000),
+		},
+		conditions,
+	};
+}
 
 function position(
 	tokenId: string,
@@ -521,10 +613,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			})
 			.from(polyTraderIngestionCursors)
 			.where(
-				eq(
-					polyTraderIngestionCursors.traderWalletId,
-					targetTraderWalletId,
-				),
+				eq(polyTraderIngestionCursors.traderWalletId, targetTraderWalletId),
 			);
 		expect(cursors).toEqual(
 			expect.arrayContaining([
@@ -781,5 +870,181 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				),
 			);
 		expect(unrelated?.active).toBe(true);
+	});
+
+	it("projects complete Position-gap books monotonically into shared target facts", async () => {
+		const newer = positionGapSnapshot({
+			snapshotId: `position-gap-newer-${suffix}`,
+			updatedAt: "2026-10-09T10:00:00.000Z",
+			sharesA: 100,
+			includeB: true,
+		});
+		const first = await persistPositionGapTargetSnapshot({
+			db,
+			snapshot: newer,
+		});
+		expect(first).toEqual({
+			applied: true,
+			positions: 2,
+			snapshotId: newer.snapshotId,
+		});
+
+		const [wallet] = await db
+			.select({ id: polyTraderWallets.id })
+			.from(polyTraderWallets)
+			.where(eq(polyTraderWallets.walletAddress, POSITION_GAP_WALLET));
+		if (!wallet)
+			throw new Error("Position-gap target wallet was not persisted");
+
+		try {
+			const firstCurrent = await db
+				.select({
+					conditionId: polyTraderCurrentPositions.conditionId,
+					tokenId: polyTraderCurrentPositions.tokenId,
+					shares: polyTraderCurrentPositions.shares,
+					costBasisUsdc: polyTraderCurrentPositions.costBasisUsdc,
+					currentValueUsdc: polyTraderCurrentPositions.currentValueUsdc,
+					active: polyTraderCurrentPositions.active,
+				})
+				.from(polyTraderCurrentPositions)
+				.where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+			expect(firstCurrent).toEqual(
+				expect.arrayContaining([
+					{
+						conditionId: POSITION_GAP_CONDITION_A,
+						tokenId: POSITION_GAP_TOKEN_A,
+						shares: "100.00000000",
+						costBasisUsdc: "40.00000000",
+						currentValueUsdc: "75.00000000",
+						active: true,
+					},
+					{
+						conditionId: POSITION_GAP_CONDITION_B,
+						tokenId: POSITION_GAP_TOKEN_B,
+						shares: "20.00000000",
+						costBasisUsdc: "4.00000000",
+						currentValueUsdc: "6.00000000",
+						active: true,
+					},
+				]),
+			);
+
+			const older = positionGapSnapshot({
+				snapshotId: `position-gap-older-${suffix}`,
+				updatedAt: "2026-10-09T09:59:00.000Z",
+				sharesA: 1,
+				includeB: false,
+			});
+			await expect(
+				persistPositionGapTargetSnapshot({ db, snapshot: older }),
+			).resolves.toEqual({
+				applied: false,
+				positions: 1,
+				snapshotId: older.snapshotId,
+			});
+			const afterOlder = await db
+				.select({
+					tokenId: polyTraderCurrentPositions.tokenId,
+					shares: polyTraderCurrentPositions.shares,
+					active: polyTraderCurrentPositions.active,
+				})
+				.from(polyTraderCurrentPositions)
+				.where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+			expect(afterOlder).toEqual(
+				expect.arrayContaining([
+					{
+						tokenId: POSITION_GAP_TOKEN_A,
+						shares: "100.00000000",
+						active: true,
+					},
+					{
+						tokenId: POSITION_GAP_TOKEN_B,
+						shares: "20.00000000",
+						active: true,
+					},
+				]),
+			);
+
+			const latest = positionGapSnapshot({
+				snapshotId: `position-gap-latest-${suffix}`,
+				updatedAt: "2026-10-09T10:01:00.000Z",
+				sharesA: 125,
+				includeB: false,
+			});
+			await db.insert(polyTraderCurrentPositions).values({
+				traderWalletId: wallet.id,
+				conditionId: POSITION_GAP_FUTURE_CONDITION,
+				tokenId: POSITION_GAP_FUTURE_TOKEN,
+				shares: "1.00000000",
+				costBasisUsdc: "0.50000000",
+				currentValueUsdc: "0.60000000",
+				avgPrice: "0.50000000",
+				contentHash: `future-${suffix}`,
+				lastObservedAt: new Date("2026-10-09T10:02:00.000Z"),
+			});
+			await expect(
+				persistPositionGapTargetSnapshot({ db, snapshot: latest }),
+			).resolves.toMatchObject({
+				applied: true,
+				snapshotId: latest.snapshotId,
+			});
+			const finalCurrent = await db
+				.select({
+					tokenId: polyTraderCurrentPositions.tokenId,
+					shares: polyTraderCurrentPositions.shares,
+					active: polyTraderCurrentPositions.active,
+				})
+				.from(polyTraderCurrentPositions)
+				.where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+			expect(finalCurrent).toEqual(
+				expect.arrayContaining([
+					{
+						tokenId: POSITION_GAP_TOKEN_A,
+						shares: "125.00000000",
+						active: true,
+					},
+					{
+						tokenId: POSITION_GAP_TOKEN_B,
+						shares: "20.00000000",
+						active: false,
+					},
+					{
+						tokenId: POSITION_GAP_FUTURE_TOKEN,
+						shares: "1.00000000",
+						active: true,
+					},
+				]),
+			);
+			const snapshots = await db
+				.select({ tokenId: polyTraderPositionSnapshots.tokenId })
+				.from(polyTraderPositionSnapshots)
+				.where(eq(polyTraderPositionSnapshots.traderWalletId, wallet.id));
+			expect(snapshots).toHaveLength(3);
+			const [cursor] = await db
+				.select({
+					lastSeenAt: polyTraderIngestionCursors.lastSeenAt,
+					lastSeenNativeId: polyTraderIngestionCursors.lastSeenNativeId,
+					status: polyTraderIngestionCursors.status,
+				})
+				.from(polyTraderIngestionCursors)
+				.where(
+					and(
+						eq(polyTraderIngestionCursors.traderWalletId, wallet.id),
+						eq(
+							polyTraderIngestionCursors.source,
+							COPY_TARGET_POSITION_CURSOR_SOURCE,
+						),
+					),
+				);
+			expect(cursor).toEqual({
+				lastSeenAt: new Date(latest.updatedAtMs),
+				lastSeenNativeId: latest.snapshotId,
+				status: "ok",
+			});
+		} finally {
+			await db
+				.delete(polyTraderWallets)
+				.where(eq(polyTraderWallets.id, wallet.id));
+		}
 	});
 });
