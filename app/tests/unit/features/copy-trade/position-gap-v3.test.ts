@@ -392,7 +392,7 @@ describe("position-gap-v3 deterministic lot allocator", () => {
 });
 
 describe("position-gap-v3 whole-book planning", () => {
-	it("floors lagging wallet reads at durable acquisitions without spending the sleeve twice", () => {
+	it("floors lagging wallet reads at provisional fills without spending the sleeve twice", () => {
 		const book = snapshot([
 			condition({
 				conditionId: "condition-a",
@@ -412,11 +412,18 @@ describe("position-gap-v3 whole-book planning", () => {
 			cohort.tokenId === "condition-a-yes"
 				? {
 						...cohort,
-						acquiredMirrorShares: 40,
-						availableNewBuyShares: 10,
+						acquiredMirrorShares: 10,
+						availableNewBuyShares: 40,
 					}
 				: cohort,
 		);
+		const provisionalFilledHoldings = [
+			{
+				conditionId: "condition-a",
+				tokenId: "condition-a-yes",
+				shares: 40,
+			},
+		];
 		const authoritative = book.conditions.flatMap((entry) =>
 			entry.tokens.map((token) => ({
 				conditionId: entry.conditionId,
@@ -427,10 +434,12 @@ describe("position-gap-v3 whole-book planning", () => {
 		const first = floorPositionGapHoldingsAtAcquiredShares({
 			holdings: authoritative,
 			cohorts,
+			provisionalFilledHoldings,
 		});
 		const repeated = floorPositionGapHoldingsAtAcquiredShares({
 			holdings: first,
 			cohorts,
+			provisionalFilledHoldings,
 		});
 		const plan = planPositionGapBook({
 			...base,
