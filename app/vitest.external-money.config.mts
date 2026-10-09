@@ -3,11 +3,12 @@
 
 /**
  * Module: `vitest.external-money.config.mts`
- * Purpose: Vitest configuration for external money tests that spend real USDC on Base mainnet.
- * Scope: Tests in tests/external/money/ — require funded test wallet, OpenRouter API key,
- *   and a running dev:stack (Postgres + TigerBeetle). NOT part of CI.
- * Invariants: No testcontainers (expects dev:stack running). Separate config prevents accidental inclusion in other test suites.
- * Side-effects: process.env injection, real on-chain txs, real OpenRouter charges.
+ * Purpose: Vitest configuration for explicitly opted-in external money tests.
+ * Scope: Tests in tests/external/money/ — require a running local stack and
+ *   human-owned authenticated state. NOT part of CI.
+ * Invariants: CI is refused before test discovery; each test has its own exact
+ *   confirmation gate; no provider is constructed before the skip gate.
+ * Side-effects: process.env injection; opted-in tests can spend real funds.
  * Links: tests/external/AGENTS.md, vitest.external.config.mts (similar pattern)
  * @public
  */
@@ -21,51 +22,39 @@ import { defineConfig } from "vitest/config";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Load .env.test first (defaults), then .env.local (overrides with real dev values).
-// dotenv won't overwrite existing vars, so load .env.local first for priority.
-const local = config({ path: path.resolve(__dirname, "../../../.env.local") });
+// Flat node layout: app/ is one directory below the repository root.
+// Load local real-provider values first, then test defaults without override.
+const local = config({ path: path.resolve(__dirname, "../.env.local") });
 expand(local);
-const test = config({ path: path.resolve(__dirname, "../../../.env.test") });
+const test = config({ path: path.resolve(__dirname, "../.env.test") });
 expand(test);
 
-// Fail fast if required env vars are missing
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(
-      `[external:money] ${name} is required. Add it to .env.test.`
-    );
-  }
-  return value;
+if (/^(1|true|yes|on)$/i.test(process.env.CI ?? "")) {
+	throw new Error("[external:money] refused: real-money tests never run in CI");
 }
 
-requireEnv("DATABASE_SERVICE_URL");
-requireEnv("TIGERBEETLE_ADDRESS");
-requireEnv("OPENROUTER_API_KEY");
-requireEnv("TEST_WALLET_PRIVATE_KEY");
-
 export default defineConfig({
-  root: __dirname,
-  plugins: [tsconfigPaths({ projects: ["./tsconfig.test.json"] })],
-  test: {
-    include: ["tests/external/money/*.external.money.test.ts"],
-    environment: "node",
-    setupFiles: ["./tests/setup.ts"],
-    // No globalSetup — expects dev:stack already running (Postgres + TigerBeetle)
-    pool: "forks",
-    poolOptions: {
-      forks: {
-        singleFork: true,
-        execArgv: ["--dns-result-order=ipv4first"],
-      },
-    },
-    sequence: { concurrent: false },
-    testTimeout: 60_000,
-    hookTimeout: 30_000,
-  },
-  resolve: {
-    alias: {
-      "@tests": path.resolve(__dirname, "./tests"),
-    },
-  },
+	root: __dirname,
+	plugins: [tsconfigPaths({ projects: ["./tsconfig.test.json"] })],
+	test: {
+		include: ["tests/external/money/*.external.money.test.ts"],
+		environment: "node",
+		setupFiles: ["./tests/setup.ts"],
+		// No globalSetup — expects the local app + Postgres runtime already running.
+		pool: "forks",
+		poolOptions: {
+			forks: {
+				singleFork: true,
+				execArgv: ["--dns-result-order=ipv4first"],
+			},
+		},
+		sequence: { concurrent: false },
+		testTimeout: 60_000,
+		hookTimeout: 30_000,
+	},
+	resolve: {
+		alias: {
+			"@tests": path.resolve(__dirname, "./tests"),
+		},
+	},
 });
