@@ -9,6 +9,7 @@
  *   - LIVE_FORWARD_COLLECTION: every tick observes configured `active_for_research` wallets from current watermarks.
  *   - TICK_IS_SELF_HEALING: escaped errors are logged and the interval continues.
  *   - TICK_TIMEOUT_IS_REAL_CANCELLATION (task.5015): the tick timeout aborts an AbortSignal threaded through the tick into per-wallet work and Polymarket fetches. The aborted tick settles cooperatively (logged as `tick_timeout` with wallets completed/remaining); only if it still hasn't settled after a short grace window is the promise abandoned — and even then its writers are signal-stopped, so no orphan writes past the next tick start.
+ *   - PAPER_IS_A_SEPARATE_JOB (migration 0083): this job does NOT project paper accounts. `paper-projection.job.ts` owns that, because this job is gated on `POLY_TRADER_OBSERVATION_WRITER_ENABLED` and the paper projection must not be. The tick still skips `kind='paper_wallet'` rows defensively so the Data-API path can never be applied to a synthetic address.
  *   - USER_PNL_OPTIONAL: `userPnlClient` is optional; when omitted (e.g. in component tests), the tick skips the user-pnl read model writer and prune entirely.
  *   - RETENTION_PRUNE_CADENCE (prod EXPLAIN 2026-10-01): the two retention prunes run at most once per RETENTION_PRUNE_INTERVAL_MS (via `runRetentionPrune`), never every poll, and never on the boot tick — prod EXPLAIN showed the snapshot prune burning 30-72s of disk I/O per tick to delete zero rows on a bloated heap.
  * Side-effects: starts a timer, performs IO through injected deps.

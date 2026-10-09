@@ -12,16 +12,19 @@ Contract (consumed by the cogni TS PaperAdapter at
   GET  /version                       — { buildSha, upstreamPaperTraderSha }
   POST /place-order                   — PlaceOrderRequest → OrderReceipt
   POST /orders/{order_id}/cancel      — 204 on cancel, 404 idempotent
+  GET  /orders                        — account-scoped open OrderReceipt[]
   GET  /orders/{order_id}             — 200 OrderReceipt | 404 not_found
 
 Design (see work/projects/proj.poly-paper-trading.md § "Design — PR 3"):
 
-- One Engine per pod, instantiated at lifespan startup.
-- A single `threading.Lock` guards every Engine call. Background fill-poll
-  thread acquires the same lock — there are no concurrent Engine calls.
+- One Engine per paper account, created lazily in an opaque account directory.
+  Cash, SQLite state, orders, and fill loops never cross tenants.
+- One `threading.Lock` per account guards every Engine call. Its background
+  fill-poll thread acquires the same lock — there are no concurrent calls to
+  one Engine, while independent tenants do not block each other.
 - FastAPI handlers are sync `def` (not `async def`) so they run in FastAPI's
   internal threadpool — no `asyncio.to_thread` plumbing needed.
-- In-memory `OrderState` map keyed by upstream order id holds enough to map
+- Each account's in-memory `OrderState` map holds enough to map
   back to the cogni `OrderReceipt` shape (including the client_order_id we
   need to echo back). Pod restart wipes this — by design for v0; the cogni
   reconciler treats orphan pending rows the same as a CLOB outage would.
@@ -40,8 +43,10 @@ upstream and bump `UPSTREAM_PAPER_TRADER_SHA`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import os
 import sqlite3
 import threading
@@ -76,10 +81,6 @@ from pydantic import BaseModel, Field  # noqa: E402
 # ─── Config (env-driven; defaults sourced from Dockerfile ENV) ──────────────
 
 DATA_DIR = Path(os.environ.get("PM_TRADER_DATA_DIR", "/tmp/pm_trader"))
-ACCOUNT = os.environ.get("PM_TRADER_ACCOUNT", "cogni-paper")
-STARTING_BALANCE_USDC = float(
-    os.environ.get("PM_TRADER_STARTING_BALANCE_USDC", "1000000")
-)
 CHECK_ORDERS_INTERVAL_SECONDS = float(
     os.environ.get("PAPER_CHECK_ORDERS_INTERVAL_SECONDS", "30")
 )
@@ -104,15 +105,20 @@ SERVICE_NAME = "poly-paper-sidecar"
 BOOT_ID = uuid.uuid4().hex[:12]
 
 
-def _externalize(upstream_id: Any) -> str:
-    return f"{BOOT_ID}-{upstream_id}"
+def _account_key(account_id: str) -> str:
+    """Stable opaque namespace; tenant ids never enter paths or logs."""
+    return hashlib.sha256(account_id.encode("utf-8")).hexdigest()[:16]
 
 
-def _to_upstream_int(external_id: str) -> Optional[int]:
+def _externalize(account_key: str, upstream_id: Any) -> str:
+    return f"{account_key}-{BOOT_ID}-{upstream_id}"
+
+
+def _to_upstream_int(external_id: str, account_key: str) -> Optional[int]:
     """Recover the upstream int id for a cancel/get path. Returns None if the
     id was issued by a different process (different BOOT_ID) or is malformed —
     callers translate that to 404, matching the behaviour for an unknown id."""
-    prefix = f"{BOOT_ID}-"
+    prefix = f"{account_key}-{BOOT_ID}-"
     if not external_id.startswith(prefix):
         return None
     raw = external_id[len(prefix):]
@@ -128,15 +134,16 @@ def _to_upstream_int(external_id: str) -> Optional[int]:
 # OR conditionId. We strip the cogni prefix and pass the bare conditionId.
 MARKET_ID_PREFIX = "prediction-market:polymarket:"
 
-# Upstream LimitOrder.status (from pm_trader.orders) maps to cogni's OrderStatus.
-# Cogni `OrderStatus` enum: open|filled|cancelled|expired (we collapse expired
-# into cancelled — the reconciler treats them identically).
+# Upstream LimitOrder.status (from pm_trader.orders) maps to cogni's canonical
+# OrderStatus. Upstream uses British ``cancelled``; the TS port deliberately
+# uses ``canceled``. Keep that spelling translation at this wire boundary so a
+# successful safety cancel can always be parsed by ``OrderReceiptSchema``.
 UPSTREAM_TO_COGNI_STATUS = {
     "pending": "open",
     "filled": "filled",
-    "cancelled": "cancelled",
-    "canceled": "cancelled",
-    "expired": "cancelled",
+    "cancelled": "canceled",
+    "canceled": "canceled",
+    "expired": "canceled",
 }
 
 # ─── Event registry (mirrors nodes/poly/app/src/shared/observability/events) ─
@@ -233,6 +240,8 @@ class PlaceOrderRequest(BaseModel):
     """Mirrors `PlaceOrderRequestSchema` in nodes/poly/packages/market-provider/
     src/adapters/paper/paper.adapter.ts:80."""
 
+    account_id: str = Field(..., min_length=1)
+    starting_balance_usdc: float = Field(..., gt=0)
     client_order_id: str = Field(..., min_length=1)
     market_id: str = Field(..., min_length=1)
     token_id: Optional[str] = None
@@ -322,6 +331,15 @@ def _to_receipt(st: OrderState) -> OrderReceipt:
         attributes={
             "upstream_status": st.extra.get("status"),
             "upstream_id": st.upstream_id,
+            "market": st.extra.get("market"),
+            "tokenId": st.extra.get("tokenId"),
+            "outcome": st.extra.get("outcome"),
+            "side": st.extra.get("side"),
+            "price": st.extra.get("price"),
+            "originalSize": st.extra.get("originalSize"),
+            "sizeMatched": (
+                st.total_shares if st.total_shares is not None else 0.0
+            ),
         },
     )
 
@@ -336,11 +354,64 @@ def _resolve_slug_or_id(req: PlaceOrderRequest) -> str:
     return req.market_id
 
 
+def _resolve_outcome(req: PlaceOrderRequest, engine: Any, slug_or_id: str) -> str:
+    """Map cogni `outcome` → an upstream outcome NAME.
+
+    OUTCOME_IS_A_NAME_UPSTREAM. Cogni carries the outcome as the CTF leg INDEX
+    ("0"/"1") because the live CLOB adapter addresses a leg by `token_id` and
+    never needs the human label. The vendored engine takes the opposite view:
+    `_validate_outcome` rejects anything not in `market.outcomes` (for a binary
+    market, `["Yes","No"]`), so a verbatim "1" raises InvalidOutcomeError and
+    the sidecar reports it as a generic 502 `upstream_engine_failed`.
+
+    That asymmetry is why paper placement failed 100% while live succeeded —
+    and it stayed invisible for as long as the algorithm only ever produced
+    skips, because nothing reached this call. Translating here keeps the
+    vendored package unpatched: identity mapping is this wrapper's job.
+
+    Resolution order, most authoritative first:
+      1. `token_id` — exact leg identity; ask the market which outcome owns it.
+      2. a numeric index — position in `market.outcomes`.
+      3. anything else — pass through; it is already a name, and the engine
+         validates it against the real market rather than trusting us.
+    """
+    raw = (req.outcome or "").strip()
+    token_id = req.token_id or (
+        req.attributes.get("token_id") if req.attributes else None
+    )
+    needs_mapping = bool(token_id) or raw.isdigit()
+    if not needs_mapping:
+        return raw
+
+    market = engine.api.get_market(slug_or_id)
+    outcomes = list(getattr(market, "outcomes", []) or [])
+
+    if token_id:
+        for name in outcomes:
+            try:
+                if str(market.get_token_id(name)) == str(token_id):
+                    return name
+            except Exception:  # noqa: BLE001 - a market that cannot answer for
+                continue       # one leg should not veto the index fallback
+    if raw.isdigit():
+        idx = int(raw)
+        if 0 <= idx < len(outcomes):
+            return outcomes[idx]
+    # Unmappable: hand the raw value to the engine so ITS validator produces the
+    # error, listing the outcomes it actually accepts. Never invent a leg —
+    # guessing "Yes" here would place a real paper trade on the wrong side.
+    return raw
+
+
 # ─── Sidecar — wraps Engine + lifespan + lock + fill loop ───────────────────
 
 
 class Sidecar:
-    def __init__(self) -> None:
+    """One isolated paper-account engine and order namespace."""
+
+    def __init__(self, account_id: str, starting_balance_usdc: float) -> None:
+        self.account_key = _account_key(account_id)
+        self.starting_balance_usdc = starting_balance_usdc
         self.engine: Optional[Any] = None  # pm_trader.engine.Engine
         self.lock = threading.Lock()
         self.orders: dict[str, OrderState] = {}
@@ -354,13 +425,13 @@ class Sidecar:
         # fresh thread that doesn't see a stale set-event and exit immediately.
         self._stop.clear()
 
-        account_dir = DATA_DIR / ACCOUNT
+        account_dir = DATA_DIR / self.account_key
         account_dir.mkdir(parents=True, exist_ok=True)
         self.engine = Engine(data_dir=account_dir)
         # Idempotent — already-initialized accounts re-init harmlessly OR raise;
         # we accept either and move on.
         try:
-            self.engine.init_account(balance=STARTING_BALANCE_USDC)
+            self.engine.init_account(balance=self.starting_balance_usdc)
         except Exception:
             # Idempotent — already-initialised accounts may raise; not an error.
             pass
@@ -373,7 +444,7 @@ class Sidecar:
             "sidecar started",
             extra={
                 "event": EVENT_SIDECAR_STARTED,
-                "account": ACCOUNT,
+                "account_key": self.account_key,
                 "data_dir": str(account_dir),
                 "check_interval_s": CHECK_ORDERS_INTERVAL_SECONDS,
                 "upstream_sha": UPSTREAM_PAPER_TRADER_SHA[:12],
@@ -414,7 +485,7 @@ class Sidecar:
                     if d.get("action") != "filled":
                         continue
                     upstream_id = d.get("order", {}).get("id", "")
-                    oid = _externalize(upstream_id)
+                    oid = _externalize(self.account_key, upstream_id)
                     st = self.orders.get(oid)
                     if st is None:
                         # Engine reported a fill we never placed (different
@@ -493,7 +564,7 @@ class Sidecar:
             try:
                 d: dict[str, Any] = self.engine.place_limit_order(  # type: ignore[union-attr]
                     slug_or_id=slug_or_id,
-                    outcome=req.outcome,
+                    outcome=_resolve_outcome(req, self.engine, slug_or_id),
                     side=req.side.lower(),
                     amount=req.size_usdc,
                     limit_price=req.limit_price,
@@ -526,7 +597,7 @@ class Sidecar:
                 },
             )
             raise HTTPException(status_code=502, detail=ERROR_UPSTREAM_NO_ORDER_ID)
-        oid = _externalize(upstream_id)
+        oid = _externalize(self.account_key, upstream_id)
 
         upstream_status = str(d.get("status", "pending")).lower()
         cogni_status = UPSTREAM_TO_COGNI_STATUS.get(upstream_status, "open")
@@ -547,7 +618,15 @@ class Sidecar:
             status=cogni_status,
             filled_size_usdc=0.0,
             submitted_at=str(submitted_at),
-            extra=d,
+            extra={
+                **d,
+                "market": req.market_id,
+                "tokenId": req.token_id,
+                "outcome": req.outcome,
+                "side": req.side,
+                "price": req.limit_price,
+                "originalSize": req.size_usdc / req.limit_price,
+            },
         )
         self.orders[oid] = st
         log.info(
@@ -565,7 +644,7 @@ class Sidecar:
         return _to_receipt(st)
 
     def cancel(self, order_id: str) -> None:
-        int_id = _to_upstream_int(order_id)
+        int_id = _to_upstream_int(order_id, self.account_key)
         if int_id is None:
             # Different BOOT_ID (issued by a prior process), missing prefix, or
             # not parseable as int — none of those can exist in this engine.
@@ -592,7 +671,9 @@ class Sidecar:
             raise HTTPException(status_code=404, detail=ERROR_NOT_FOUND)
         st = self.orders.get(order_id)
         if st is not None:
-            st.status = "cancelled"
+            # The vendored engine stores ``cancelled``; our HTTP contract is
+            # the provider-neutral Cogni spelling accepted by OrderReceiptSchema.
+            st.status = "canceled"
         log.info(
             "order cancelled",
             extra={
@@ -608,12 +689,30 @@ class Sidecar:
             raise HTTPException(status_code=404, detail="not_found")
         return _to_receipt(st)
 
-    # ── pm_trader pass-throughs (sidecar-global PnL surface) ──────────────
+    def list_open_orders(self) -> list[OrderReceipt]:
+        """Return this account's authoritative current open-order book.
+
+        The engine's SQLite rows are the order-state authority. The receipt
+        shadow supplies the client id and original intent fields. A missing
+        shadow is typed unavailable, never an invented empty list.
+        """
+        with self.lock:
+            pending = self.engine.get_pending_orders()  # type: ignore[union-attr]
+        receipts: list[OrderReceipt] = []
+        for order in pending:
+            oid = _externalize(self.account_key, order.get("id", ""))
+            st = self.orders.get(oid)
+            if st is None:
+                raise HTTPException(
+                    status_code=503, detail="open_order_shadow_unavailable"
+                )
+            receipts.append(_to_receipt(st))
+        return receipts
+
+    # ── pm_trader pass-throughs (account-scoped PnL surface) ─────────────
     # These expose pm_trader.Engine's existing PnL/portfolio/history methods
     # so we can observe what the paper engine actually thinks is happening.
-    # All values are SIDECAR-GLOBAL (one account shared across tenants per the
-    # current v0 architecture); per-tenant PnL still has to be aggregated
-    # cogni-side from `poly_copy_trade_fills`.
+    # Every value belongs to this Sidecar's one account namespace.
     def balance(self) -> dict[str, Any]:
         with self.lock:
             return self.engine.get_balance()  # type: ignore[union-attr]
@@ -639,16 +738,69 @@ class Sidecar:
         return out
 
 
-sidecar = Sidecar()
+class SidecarRegistry:
+    """Process registry of isolated paper accounts."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.accounts: dict[str, Sidecar] = {}
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        with self.lock:
+            accounts = list(self.accounts.values())
+            self.accounts.clear()
+            self.started = False
+        for account in accounts:
+            account.stop()
+
+    def get_or_create(
+        self, account_id: str, starting_balance_usdc: float
+    ) -> Sidecar:
+        if (
+            not account_id
+            or not math.isfinite(starting_balance_usdc)
+            or starting_balance_usdc <= 0
+        ):
+            raise HTTPException(status_code=422, detail="paper_account_invalid")
+        with self.lock:
+            existing = self.accounts.get(account_id)
+            if existing is not None:
+                if existing.starting_balance_usdc != starting_balance_usdc:
+                    raise HTTPException(
+                        status_code=409, detail="account_seed_mismatch"
+                    )
+                return existing
+            account = Sidecar(account_id, starting_balance_usdc)
+            account.start()
+            self.accounts[account_id] = account
+            return account
+
+    def get(self, account_id: str) -> Sidecar:
+        with self.lock:
+            account = self.accounts.get(account_id)
+        if account is None:
+            raise HTTPException(status_code=404, detail="account_not_found")
+        return account
+
+    def snapshot(self) -> list[Sidecar]:
+        with self.lock:
+            return list(self.accounts.values())
+
+
+sidecars = SidecarRegistry()
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    sidecar.start()
+    sidecars.start()
     try:
         yield
     finally:
-        sidecar.stop()
+        sidecars.stop()
 
 
 app = FastAPI(title="poly-paper-sidecar", version="1.0.0", lifespan=lifespan)
@@ -661,10 +813,13 @@ def healthz() -> dict[str, str]:
 
 @app.get("/readyz")
 def readyz() -> dict[str, str]:
-    if sidecar._fill_thread is None or not sidecar._fill_thread.is_alive():
-        raise HTTPException(status_code=503, detail="fill_loop_not_running")
-    if sidecar.engine is None:
-        raise HTTPException(status_code=503, detail="engine_not_initialized")
+    if not sidecars.started:
+        raise HTTPException(status_code=503, detail="registry_not_started")
+    for account in sidecars.snapshot():
+        if account._fill_thread is None or not account._fill_thread.is_alive():
+            raise HTTPException(status_code=503, detail="fill_loop_not_running")
+        if account.engine is None:
+            raise HTTPException(status_code=503, detail="engine_not_initialized")
     return {"status": "ok"}
 
 
@@ -683,37 +838,52 @@ def version() -> dict[str, str]:
 # pending-state receipt with `fill_price`/`total_shares`/`fees_usdc` = null.
 @app.post("/place-order", response_model_exclude_none=True)
 def place_order(req: PlaceOrderRequest) -> OrderReceipt:
-    return sidecar.place(req)
+    return sidecars.get_or_create(
+        req.account_id, req.starting_balance_usdc
+    ).place(req)
 
 
 @app.post("/orders/{order_id}/cancel")
-def cancel_order(order_id: str) -> Response:
-    sidecar.cancel(order_id)
+def cancel_order(
+    order_id: str, account_id: str, starting_balance_usdc: float
+) -> Response:
+    sidecars.get_or_create(account_id, starting_balance_usdc).cancel(order_id)
     return Response(status_code=204)
 
 
+@app.get("/orders", response_model_exclude_none=True)
+def list_open_orders(
+    account_id: str, starting_balance_usdc: float
+) -> list[OrderReceipt]:
+    return sidecars.get_or_create(
+        account_id, starting_balance_usdc
+    ).list_open_orders()
+
+
 @app.get("/orders/{order_id}", response_model_exclude_none=True)
-def get_order(order_id: str) -> OrderReceipt:
-    return sidecar.get(order_id)
+def get_order(
+    order_id: str, account_id: str, starting_balance_usdc: float
+) -> OrderReceipt:
+    return sidecars.get_or_create(account_id, starting_balance_usdc).get(order_id)
 
 
 # ─── pm_trader pass-through: PnL, portfolio, history ────────────────────────
-# Sidecar-global view (single pm_trader account across all tenants). Cogni-side
-# per-tenant aggregation lives separately over `poly_copy_trade_fills`.
+# Account-scoped engine view. Cogni's normalized facts remain the UI/research
+# read plane; these endpoints are operator diagnostics only.
 
 
 @app.get("/balance")
-def balance() -> dict[str, Any]:
-    return sidecar.balance()
+def balance(account_id: str) -> dict[str, Any]:
+    return sidecars.get(account_id).balance()
 
 
 @app.get("/portfolio")
-def portfolio() -> list[dict[str, Any]]:
-    return sidecar.portfolio()
+def portfolio(account_id: str) -> list[dict[str, Any]]:
+    return sidecars.get(account_id).portfolio()
 
 
 @app.get("/history")
-def history(limit: int = 50) -> list[dict[str, Any]]:
+def history(account_id: str, limit: int = 50) -> list[dict[str, Any]]:
     if limit < 1 or limit > 500:
         raise HTTPException(status_code=400, detail="limit_out_of_range")
-    return sidecar.history(limit)
+    return sidecars.get(account_id).history(limit)

@@ -10,25 +10,20 @@
  * Invariants: an absent funder reads as `no_wallet` / `address: null`; it never
  *   yields a usable-looking address and never yields the signer.
  * Side-effects: none
+ * Notes: The db stub is chainable for any clause (see `drizzleQueryChain`).
+ *   These cases are about how an absent funder is INTERPRETED, not about the
+ *   emitted SQL, so the stub must not encode the query's current clause list —
+ *   it previously did, and adding `LIVE_WINS_PAPER_SHOWS`'s `.orderBy()` to the
+ *   read broke all three cases without any of them changing meaning.
  * Links: docs/porting/poly-parity-contract.md (Amendment 2)
  */
 
+import { fakeSelectDb } from "@tests/_fakes/drizzle-query-chain";
 import { describe, expect, it } from "vitest";
 import { readWalletBalanceFact } from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
 
 const FUNDER = "0x8ca45685c5827f7acfdd890214180c4ea9d0bf58";
 const SIGNER = "0x1111111111111111111111111111111111111111";
-
-/** Minimal drizzle-shaped stub: the chain ends at `.limit()` returning rows. */
-function dbReturning(rows: unknown[]) {
-  const chain = {
-    from: () => chain,
-    leftJoin: () => chain,
-    where: () => chain,
-    limit: async () => rows,
-  };
-  return { select: () => chain } as never;
-}
 
 describe("Amendment 2 — wallet balance fact resolves funder only", () => {
   it("reads no_wallet when the connection has no funder address", async () => {
@@ -36,7 +31,7 @@ describe("Amendment 2 — wallet balance fact resolves funder only", () => {
     // never created. Before Amendment 2 it fell through as `missing` at a null
     // address, i.e. a wallet that reads as real but has nowhere to be.
     const read = await readWalletBalanceFact(
-      dbReturning([{ address: null, snapshot: null }]),
+      fakeSelectDb([{ address: null, snapshot: null }]),
       "account-1"
     );
     expect(read).toEqual({ kind: "no_wallet" });
@@ -44,7 +39,7 @@ describe("Amendment 2 — wallet balance fact resolves funder only", () => {
 
   it("never substitutes the signer address for an absent funder", async () => {
     const read = await readWalletBalanceFact(
-      dbReturning([{ address: null, snapshot: null }]),
+      fakeSelectDb([{ address: null, snapshot: null }]),
       "account-1"
     );
     expect(JSON.stringify(read)).not.toContain(SIGNER);
@@ -52,7 +47,7 @@ describe("Amendment 2 — wallet balance fact resolves funder only", () => {
 
   it("still reports a provisioned funder whose snapshot has not landed", async () => {
     const read = await readWalletBalanceFact(
-      dbReturning([{ address: FUNDER, snapshot: null }]),
+      fakeSelectDb([{ address: FUNDER, snapshot: null }]),
       "account-1"
     );
     expect(read).toEqual({ kind: "missing", address: FUNDER });

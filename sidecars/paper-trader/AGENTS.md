@@ -42,8 +42,8 @@ Python sidecar wrapping [`agent-next/polymarket-paper-trader`](https://github.co
 ## Public Surface
 
 - `Dockerfile` — multi-stage. `base` is the runtime image; `test` runs pytest under a stubbed `pm_trader.Engine` as a build-blocker. `UPSTREAM_PAPER_TRADER_SHA` build-arg pins the upstream commit (current: `8a0a3ee2` = upstream v0.1.6).
-- `server.py` — FastAPI app: `/healthz`, `/readyz`, `/version`, `POST /place-order`, `POST /orders/{id}/cancel`, `GET /orders/{id}`. Single global `threading.Lock` serializes Engine access. Daemon thread polls `engine.check_orders()` every `PAPER_CHECK_ORDERS_INTERVAL_SECONDS` (default 30s, aligns with cogni reconciler's 60s tick).
-- `tests/test_sidecar_smoke.py` — 12 tests, ~0.4s. Stubs `pm_trader.engine` via `sys.modules`. Wired into `.github/workflows/build-poly-paper-sidecar.yml` as a CI build-blocker (red ⇒ no image push).
+- `server.py` — FastAPI app: `/healthz`, `/readyz`, `/version`, `POST /place-order`, `GET /orders`, `POST /orders/{id}/cancel`, `GET /orders/{id}`. One Engine + lock + fill loop per paper account keeps tenant state isolated. Daemon threads poll `engine.check_orders()` every `PAPER_CHECK_ORDERS_INTERVAL_SECONDS` (default 30s, aligns with cogni reconciler's 60s tick).
+- `tests/test_sidecar_smoke.py` — fast smoke suite. Stubs `pm_trader.engine` via `sys.modules`. Wired into `.github/workflows/build-poly-paper-sidecar.yml` as a CI build-blocker (red ⇒ no image push).
 
 ## HTTP contract (consumed by `PaperAdapter`)
 
@@ -53,10 +53,11 @@ Python sidecar wrapping [`agent-next/polymarket-paper-trader`](https://github.co
 | `GET /readyz`                    | Readiness (fill loop alive)  | `200 {status}`                           | `503` if fill loop dead        |
 | `GET /version`                   | Pinned build + upstream SHAs | `200 {buildSha, upstreamPaperTraderSha}` | —                              |
 | `POST /place-order`              | Submit a paper limit order   | `200 OrderReceipt`                       | `502` per upstream cause       |
+| `GET /orders?account_id=...&starting_balance_usdc=...` | Account open-order truth | `200 OrderReceipt[]` | `503` if shadow unavailable |
 | `POST /orders/{order_id}/cancel` | Idempotent cancel            | `204`                                    | `404` swallowed by adapter     |
 | `GET /orders/{order_id}`         | Status lookup                | `200 OrderReceipt`                       | `404` → `not_found` in adapter |
 
-Response shape on `200`: matches `OrderReceiptSchema` from `@cogni/poly-market-provider`. **v0 fill-amount convention:** when upstream reports `status="filled"`, sidecar sets `filled_size_usdc = intent.size_usdc` (full-fill assumption). Partial-fill fidelity is a documented limitation; the realized-cost/fee keys on the upstream check_orders dict aren't stable enough yet to lift safely.
+Response shape on `200`: matches `OrderReceiptSchema` from `@cogni/poly-market-provider`. Filled receipts use the engine's realized `amount_usd`, average price, shares, and fee. Non-filled receipts omit those realized fields rather than echoing intent values.
 
 ## Market identity translation
 
@@ -79,7 +80,7 @@ Cogni `market_id` is shaped `"prediction-market:polymarket:<conditionId>"` (per 
 
 ## Notes
 
-- v0 ships **ephemeral SQLite** at `${PM_TRADER_DATA_DIR}/${PM_TRADER_ACCOUNT}/`. Pod restart wipes open paper orders; the cogni reconciler treats orphan `pending` rows the same as a CLOB outage (closes after grace window). Add a PVC only if/when preview's redeploy cadence produces visible fill-rate friction.
-- Account starting balance is `PM_TRADER_STARTING_BALANCE_USDC=1000000` (1M). Upstream cap-rejection never fires; cogni's own cap-enforcement code is the real gate. Don't tune balance for paper-PnL bookkeeping — use cogni Postgres `poly_copy_trade_fills WHERE mode='paper'` for that.
+- v0 ships **ephemeral SQLite** at `${PM_TRADER_DATA_DIR}/<opaque-account-key>/`. Each request carries a connection id and declared seed; one tenant can never see another tenant's cash, orders, positions, or fill loop.
+- Account starting balance comes from the tenant's immutable `paper_seed_usdc`. Cogni's grant caps remain the authorization gate; the engine balance is account state, never a deployment-wide substitute.
 - This image is consumed **only** as a pod-loopback sidecar. Must never be exposed to a Service or Ingress — `PaperAdapter`'s base URL defaults to `http://localhost:9100` and is only constructor-injected, never DNS-resolved.
 - Logging: JSON-ish single-line to stdout, with `event=…` keys + `client_order_id=…` for cross-service joins in Grafana/Loki.

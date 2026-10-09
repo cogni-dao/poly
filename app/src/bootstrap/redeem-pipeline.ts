@@ -51,7 +51,7 @@ import type {
   PolyTraderSigningContext,
   PolyTraderWalletPort,
 } from "@cogni/poly-wallet";
-import { isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Logger } from "pino";
 import {
   type Account,
@@ -141,7 +141,15 @@ export async function startRedeemPipelines(
   const activeConnections = await deps.serviceDb
     .select({ billingAccountId: polyWalletConnections.billingAccountId })
     .from(polyWalletConnections)
-    .where(isNull(polyWalletConnections.revokedAt));
+    // CTF redemption is an on-chain action — paper accounts have nothing to
+    // redeem, and a duplicate billingAccountId would overwrite (and leak) the
+    // first handle in the returned Map.
+    .where(
+      and(
+        eq(polyWalletConnections.kind, "privy_live"),
+        isNull(polyWalletConnections.revokedAt)
+      )
+    );
 
   if (activeConnections.length === 0) {
     log.info(

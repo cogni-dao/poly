@@ -49,6 +49,10 @@ import {
 const DEFAULT_SIDECAR_BASE_URL = "http://localhost:9100";
 
 export interface PaperAdapterConfig extends MarketProviderConfig {
+  /** Durable account identity carried on every stateful sidecar request. */
+  accountId?: string;
+  /** Seed used only when the sidecar first opens this account namespace. */
+  startingBalanceUsdc?: number;
   /**
    * The underlying platform this paper adapter simulates. Used as a label on
    * telemetry emitted by the sidecar wrapper.
@@ -91,7 +95,11 @@ export class PaperAdapterError extends Error {
       | "paper_sidecar_unavailable";
     reason: string;
     error_class: "PaperAdapterError";
-    operation: "placeOrder" | "cancelOrder" | "getOrder";
+    operation:
+      | "placeOrder"
+      | "cancelOrder"
+      | "getOrder"
+      | "listOpenOrders";
     http_status?: number;
     response_body?: string;
   };
@@ -107,6 +115,8 @@ export class PaperAdapterError extends Error {
 
 /** Request body shape posted to the sidecar's place-order endpoint. */
 const PlaceOrderRequestSchema = z.object({
+  account_id: z.string().min(1),
+  starting_balance_usdc: z.number().positive(),
   client_order_id: z.string().min(1),
   market_id: z.string().min(1),
   token_id: z.string().min(1).optional(),
@@ -130,6 +140,8 @@ export class PaperAdapter implements MarketProviderPort {
   readonly provider: MarketProvider;
 
   private readonly sidecarBaseUrl: string;
+  private readonly accountId: string | undefined;
+  private readonly startingBalanceUsdc: number | undefined;
   private readonly readSource: MarketProviderPort | undefined;
   private readonly fetchImpl: typeof fetch;
 
@@ -138,6 +150,8 @@ export class PaperAdapter implements MarketProviderPort {
     this.sidecarBaseUrl = (
       config.sidecarBaseUrl ?? DEFAULT_SIDECAR_BASE_URL
     ).replace(/\/$/, "");
+    this.accountId = config.accountId;
+    this.startingBalanceUsdc = config.startingBalanceUsdc;
     this.readSource = config.readSource;
     this.fetchImpl =
       config.fetchImpl ?? (globalThis.fetch.bind(globalThis) as typeof fetch);
@@ -157,6 +171,7 @@ export class PaperAdapter implements MarketProviderPort {
   }
 
   async placeOrder(intent: OrderIntent): Promise<OrderReceiptSchemaInferred> {
+    const account = this.requirePaperAccount("placeOrder");
     // Sidecar speaks the same shape as our OrderIntent (minus provider — implied
     // by sidecar identity). Strip provider; the rest passes through.
     const parsed = PlaceOrderRequestSchema.safeParse({
@@ -173,6 +188,8 @@ export class PaperAdapter implements MarketProviderPort {
       size_usdc: intent.size_usdc,
       limit_price: intent.limit_price,
       attributes: intent.attributes,
+      account_id: account.accountId,
+      starting_balance_usdc: account.startingBalanceUsdc,
     });
     if (!parsed.success) {
       const reason = parsed.error.issues
@@ -230,8 +247,9 @@ export class PaperAdapter implements MarketProviderPort {
   }
 
   async cancelOrder(orderId: string): Promise<void> {
+    const account = this.requirePaperAccount("cancelOrder");
     const response = await this.fetchWithTimeout(
-      `${this.sidecarBaseUrl}/orders/${encodeURIComponent(orderId)}/cancel`,
+      `${this.sidecarBaseUrl}/orders/${encodeURIComponent(orderId)}/cancel?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}`,
       { method: "POST" }
     );
 
@@ -271,8 +289,9 @@ export class PaperAdapter implements MarketProviderPort {
   }
 
   async getOrder(orderId: string): Promise<GetOrderResult> {
+    const account = this.requirePaperAccount("getOrder");
     const response = await this.fetchWithTimeout(
-      `${this.sidecarBaseUrl}/orders/${encodeURIComponent(orderId)}`,
+      `${this.sidecarBaseUrl}/orders/${encodeURIComponent(orderId)}?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}`,
       { method: "GET" }
     );
 
@@ -296,6 +315,53 @@ export class PaperAdapter implements MarketProviderPort {
     const json = await response.json();
     const receipt = OrderReceiptSchema.parse(json);
     return { found: receipt };
+  }
+
+  /** Account-scoped open orders from the sidecar's SQLite-backed book. */
+  async listOpenOrders(): Promise<OrderReceiptSchemaInferred[]> {
+    const account = this.requirePaperAccount("listOpenOrders");
+    const response = await this.fetchWithTimeout(
+      `${this.sidecarBaseUrl}/orders?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}`,
+      { method: "GET" }
+    );
+    if (!response.ok) {
+      const text = await this.safeReadText(response);
+      throw new PaperAdapterError(
+        `paper sidecar list-open-orders failed: ${response.status} ${text}`,
+        {
+          error_code: "paper_sidecar_http_error",
+          reason: text,
+          operation: "listOpenOrders",
+          http_status: response.status,
+          response_body: text,
+        }
+      );
+    }
+    return z.array(OrderReceiptSchema).parse(await response.json());
+  }
+
+  private requirePaperAccount(
+    operation: PaperAdapterError["details"]["operation"]
+  ): { accountId: string; startingBalanceUsdc: number } {
+    if (
+      !this.accountId ||
+      this.startingBalanceUsdc === undefined ||
+      !Number.isFinite(this.startingBalanceUsdc) ||
+      this.startingBalanceUsdc <= 0
+    ) {
+      throw new PaperAdapterError(
+        "paper adapter requires an account id and positive starting balance",
+        {
+          error_code: "paper_intent_invalid",
+          reason: "paper_account_unconfigured",
+          operation,
+        }
+      );
+    }
+    return {
+      accountId: this.accountId,
+      startingBalanceUsdc: this.startingBalanceUsdc,
+    };
   }
 
   private async fetchWithTimeout(

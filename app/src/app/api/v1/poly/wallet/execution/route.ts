@@ -7,16 +7,20 @@
  *          counts) for the caller's own Polymarket trading wallet. Powers the dashboard's
  *          `OperatorWalletChartsRow` + `ExecutionActivityCard`.
  * Scope: Session-auth, tenant-scoped. Resolves the caller's billing account,
- *   asks `PolyTraderWalletPort` for its `funder_address`, reads the local
- *   position read model, and optionally overlays live timeline enrichment.
+ *   resolves its presentation wallet from saved account facts, then reads the
+ *   local position model. Paper and live therefore share one response shape
+ *   without a paper page load touching the private live-wallet adapter.
  * Invariants:
  *   - TENANT_SCOPED: the caller's own wallet is the only thing this route
  *     ever reads. The route has no query-parameter escape hatch.
  *   - CONTRACT_STABLE: response shape matches
  *     `polyWalletExecutionOperation.output`. When the tenant has no trading
- *     wallet provisioned yet (or the adapter itself is unconfigured on this
- *     pod), the payload is empty arrays with a warning — the UI empty
- *     state renders without throwing.
+ *     wallet provisioned yet, the payload is empty arrays with a warning —
+ *     the UI empty state renders without throwing.
+ *   - ACCOUNT_VENUE_OWNS_PRIVATE_READS: the selected connection row chooses
+ *     the address. Paper reads its durable simulator projection; live reads
+ *     its durable live projection. This route never asks a signer/custody
+ *     adapter which wallet exists.
  *   - EXECUTION_ONLY: current wallet totals live on
  *     `/api/v1/poly/wallet/overview`; this route stays focused on positions
  *     and trade cadence only.
@@ -38,7 +42,7 @@
  *   - CACHED_TENANT_RESOLUTION: the billing-account id is resolved through
  *     the short-TTL `resolveBillingAccountId` cache (identity is immutable
  *     per user), so a warm request runs zero pre-cache DB round-trips.
- * Side-effects: IO (DB read, optional Polymarket Data API + CLOB public reads).
+ * Side-effects: IO (DB reads only).
  * Links: nodes/poly/packages/node-contracts/src/poly.wallet.execution.v1.contract.ts,
  *        docs/spec/poly-tenant-and-collateral.md,
  *        work/items/task.0354.poly-trading-hardening-followups.md
@@ -50,20 +54,23 @@ import {
   PolyWalletExecutionOutputSchema,
   polyWalletExecutionOperation,
 } from "@cogni/poly-node-contracts";
+import { withTenantScope } from "@cogni/db-client";
+import { toUserId, userActor } from "@cogni/ids";
+import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
-import { getContainer } from "@/bootstrap/container";
+import { getContainer, resolveAppDb } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
-import {
-  getPolyTraderWalletAdapter,
-  WalletAdapterUnconfiguredError,
-} from "@/bootstrap/poly-trader-wallet";
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
 import { buildMarketExposureGroups } from "@/features/wallet-analysis/server/market-exposure-service";
 import {
   applyRealizedPnl,
   readWalletTokenPnlMap,
 } from "@/features/wallet-analysis/server/realized-pnl-service";
+import {
+  hasTradingWallet,
+  readWalletBalanceFact,
+} from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 import { resolveBillingAccountId } from "../../_lib/billing-account-cache";
 import {
@@ -123,7 +130,7 @@ export const GET = wrapRouteHandlerWithLogging(
       sessionUser.id
     );
 
-    // COALESCED_PAYLOAD (task.5013, SWR): everything below — adapter
+    // COALESCED_PAYLOAD (task.5013, SWR): everything below — saved account
     // resolution, realized P/L, ledger + current-position read models,
     // market groups — is served from cache when fresh; a stale hit (every
     // 30s dashboard tick) returns the previous payload and kicks ONE
@@ -134,35 +141,15 @@ export const GET = wrapRouteHandlerWithLogging(
     const payload = await coalesceDashboardRoutePayload<PolyWalletExecutionOutput>(
       executionRouteCacheKey(billingAccountId),
       async () => {
-        let adapter: ReturnType<typeof getPolyTraderWalletAdapter>;
-        try {
-          adapter = getPolyTraderWalletAdapter(ctx.log);
-        } catch (err) {
-          if (err instanceof WalletAdapterUnconfiguredError) {
-            logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
-              reqId: ctx.reqId,
-              routeId: ctx.routeId,
-              ...walletCompletionDiagnostics(
-                "wallet_adapter_unconfigured",
-                ["wallet_adapter_unconfigured"]
-              ),
-              durationMs: Math.round(performance.now() - startedAtMs),
-              outcome: "success",
-              freshness,
-              live_positions: 0,
-              closed_positions: 0,
-              daily_trade_days: 0,
-            });
-            return emptyPayload(freshness, {
-              code: "wallet_adapter_unconfigured",
-              message: "Trading-wallet adapter is not configured on this pod yet.",
-            });
-          }
-          throw err;
-        }
-
-        const address = await adapter.getAddress(billingAccountId);
-        if (!address) {
+        const appDb = resolveAppDb() as unknown as PostgresJsDatabase<
+          Record<string, unknown>
+        >;
+        const wallet = await withTenantScope(
+          appDb,
+          userActor(toUserId(sessionUser.id)),
+          async (tx) => readWalletBalanceFact(tx, billingAccountId)
+        );
+        if (!hasTradingWallet(wallet)) {
           logEvent(ctx.log, EVENT_NAMES.POLY_WALLET_EXECUTION_COMPLETE, {
             reqId: ctx.reqId,
             routeId: ctx.routeId,
@@ -182,6 +169,7 @@ export const GET = wrapRouteHandlerWithLogging(
               "No Polymarket trading wallet is provisioned for this account. Connect one from the Money page.",
           });
         }
+        const address = wallet.address;
 
         const capturedAt = new Date();
         const warnings: Array<{ code: string; message: string }> = [];

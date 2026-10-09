@@ -1,0 +1,82 @@
+-- ============================================================================
+-- Admit a paper provenance into the three closed observation vocabularies.
+--
+-- WHY THIS EXISTS
+-- Migration 0082 made a paper account a first-class tenant, so the dashboard
+-- has a `poly_wallet_connections` row to drive from. It still renders empty,
+-- because every read below the balance card is DB-only over `poly_trader_*`
+-- facts (SAVED_FACTS_ONLY) and those facts are written exclusively by the
+-- Data-API observation tick. A paper account has no on-chain activity, so the
+-- Data-API returns nothing for its synthetic address, so there are no facts.
+-- Measured on candidate-a 2026-10-07: 100 mirror decisions in 9 minutes with
+-- `mirror_portfolio_current_value_usdc`, `mirror_token_qty_shares` and
+-- `target_portfolio_current_value_usdc` all 0/100 non-null — which is why
+-- `position_gap` is structurally unrunnable in paper.
+--
+-- The fix is a second FACT SOURCE writing the SAME tables, projected from the
+-- paper ledger (`poly_copy_trade_fills WHERE mode = 'paper'`). Every existing
+-- reader then works unchanged — no reader learns a second code path, exactly
+-- the shape 0082 chose for the connection row.
+--
+-- WHY THIS IS ONLY CHECK WIDENING
+-- Three CHECK vocabularies were closed against literal Data-API values and
+-- are the only things standing between the projection and the existing tables:
+--   poly_trader_wallets.kind                 ('copy_target','cogni_wallet')
+--   poly_trader_fills.source                 ('data-api','clob-ws')
+--   poly_trader_ingestion_cursors.source     ('data-api','data-api-trades',
+--                                             'data-api-positions','clob-ws')
+-- Each gains paper values and nothing else. No column is added, no column is
+-- relaxed, no index changes. `poly_trader_position_snapshots` has no `source`
+-- column and does not get one — the snapshot's provenance is its wallet, and
+-- inventing a parallel discriminator there would be the first thing to rot.
+--
+-- WHY WIDEN RATHER THAN DROP
+-- The temptation is to drop these CHECKs so no future provenance needs DDL.
+-- They are load-bearing in the other direction: a typo'd source is how a fill
+-- becomes invisible to every reader that filters on source, with no error at
+-- any layer. Widening keeps a misspelled provenance a write-time failure.
+--
+-- WHY A SEPARATE WALLET KIND, NOT 'cogni_wallet'
+-- `kind` is what routes a wallet in the observation tick: 'paper_wallet' goes
+-- to the ledger projection and never touches the Data-API client or the
+-- Polygon `balanceOfBatch` authority. It is also what keeps the two
+-- retirement sweeps disjoint — `disableMissingTenantWallets` filters
+-- `kind = 'cogni_wallet'`, so it structurally cannot retire a paper wallet,
+-- and the paper sweep filters `kind = 'paper_wallet'` and cannot retire a live
+-- one. Reusing 'cogni_wallet' would have made each sweep a live hazard to the
+-- other population, resolvable only by label string matching.
+--
+-- POPULATED-TABLE SAFETY
+-- Every widened CHECK is strictly weaker than the one it replaces, so it
+-- validates true for every existing row by construction and the ADD cannot
+-- fail to verify. All statements run in drizzle's single migration
+-- transaction.
+--
+-- NO RLS CHANGE
+-- `poly_trader_*` carry no tenant FK and therefore no RLS, by design — they
+-- are a cross-tenant observation read model and the capability plane is their
+-- only tenant clamp. This migration does not change that, which is precisely
+-- why the projection's queries must each carry an explicit wallet/account
+-- filter: there is no database backstop behind them.
+--
+-- PINNED INVARIANTS
+--   PAPER_IS_A_SOURCE_NOT_A_TABLE
+--     Paper facts land in the existing tables under a paper provenance. No
+--     `poly_paper_trader_*` mirror table exists or may be added; a second
+--     table is a second reader code path, which is the bug 0082 fixed.
+--   VOCABULARIES_STAY_CLOSED
+--     These three CHECKs are widened for each new provenance, never dropped.
+--   KIND_ROUTES_THE_OBSERVER
+--     'paper_wallet' selects the ledger projection; 'cogni_wallet' and
+--     'copy_target' select the Data-API path. No other field may route.
+--
+-- Links: docs/spec/capability-plane.md, docs/spec/poly-copy-trade-execution.md,
+--        migration 0082
+-- ============================================================================
+
+ALTER TABLE "poly_trader_wallets" DROP CONSTRAINT "poly_trader_wallets_kind_check";--> statement-breakpoint
+ALTER TABLE "poly_trader_fills" DROP CONSTRAINT "poly_trader_fills_source_check";--> statement-breakpoint
+ALTER TABLE "poly_trader_ingestion_cursors" DROP CONSTRAINT "poly_trader_ingestion_cursors_source_check";--> statement-breakpoint
+ALTER TABLE "poly_trader_wallets" ADD CONSTRAINT "poly_trader_wallets_kind_check" CHECK ("poly_trader_wallets"."kind" IN ('copy_target','cogni_wallet','paper_wallet'));--> statement-breakpoint
+ALTER TABLE "poly_trader_fills" ADD CONSTRAINT "poly_trader_fills_source_check" CHECK ("poly_trader_fills"."source" IN ('data-api','clob-ws','paper-ledger'));--> statement-breakpoint
+ALTER TABLE "poly_trader_ingestion_cursors" ADD CONSTRAINT "poly_trader_ingestion_cursors_source_check" CHECK ("poly_trader_ingestion_cursors"."source" IN ('data-api','data-api-trades','data-api-positions','clob-ws','paper-ledger-trades','paper-ledger-positions'));

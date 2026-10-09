@@ -12,6 +12,9 @@
  *   - DB_CURRENT_POSITIONS_ARE_PAGELOAD_TRUTH: dashboard overview/execution
  *     use this read model for current exposure.
  *   - OBSERVER_OWNS_UPSTREAM_PAGING: this module performs no Polymarket HTTP.
+ *   - ACCOUNT_KIND_OWNS_CURSOR_SOURCE: live wallets read the Data API cursor;
+ *     paper wallets read the simulator cursor. Both consume the same saved
+ *     position rows and return the same normalized contract.
  *   - COMPLETE_POLLS_DEACTIVATE: missing rows are trusted only because the
  *     observer deactivates them after complete paged polls.
  *   - CANONICAL_WALLET_SCOPE: every eligible physical wallet row sharing
@@ -35,6 +38,7 @@ import type {
 } from "@cogni/poly-node-contracts";
 import { type SQL, sql } from "drizzle-orm";
 import { liveCurrentPositionSql } from "./current-position-staleness";
+import { PAPER_POSITION_CURSOR_SOURCE } from "./paper-fact-source";
 
 type Db = {
   execute(query: SQL): Promise<unknown>;
@@ -115,7 +119,7 @@ export async function readCurrentWalletPositionModel(params: {
         SELECT w.*
         FROM poly_trader_wallets w
         WHERE lower(w.wallet_address) = lower(${params.walletAddress})
-          AND w.kind = 'cogni_wallet'
+          AND w.kind IN ('cogni_wallet', 'paper_wallet')
           AND w.active_for_research = true
           AND w.disabled_at IS NULL
       ), canonical_wallet_identity AS (
@@ -140,7 +144,10 @@ export async function readCurrentWalletPositionModel(params: {
         FROM wallet_candidates w
         LEFT JOIN poly_trader_ingestion_cursors c
           ON c.trader_wallet_id = w.id
-         AND c.source = ${OBSERVATION_SOURCE}
+         AND c.source = CASE
+           WHEN w.kind = 'paper_wallet' THEN ${PAPER_POSITION_CURSOR_SOURCE}
+           ELSE ${OBSERVATION_SOURCE}
+         END
       ), position_candidates AS (
         SELECT
           p.*,

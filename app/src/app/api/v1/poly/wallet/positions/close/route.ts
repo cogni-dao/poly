@@ -32,6 +32,11 @@ import {
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import {
+  getExecutionVenueResolver,
+  getPaperPortfolio,
+  getPaperVenue,
+} from "@/bootstrap/poly-execution-venue";
+import {
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
@@ -103,7 +108,14 @@ export const POST = wrapRouteHandlerWithLogging(
       metrics: noopMetrics,
       polygonRpcUrl: env.POLYGON_RPC_URL,
       paperSidecarUrl: env.PAPER_SIDECAR_URL,
-      paperEnforceMode: env.PAPER_ENFORCE_MODE,
+      // VENUE_RESOLVED_FROM_ACCOUNT. A paper account reads its positions from the
+      // paper fact projection, but the user-facing FULL exit is a market order
+      // and the paper sidecar has no market-order seam, so this route answers a
+      // paper account with `paper_market_exit_unsupported` — a named gap, not a
+      // zero-share "nothing to close".
+      resolveExecutionVenue: getExecutionVenueResolver(),
+      paperVenue: getPaperVenue(),
+      paperPositions: getPaperPortfolio(),
     });
 
     try {

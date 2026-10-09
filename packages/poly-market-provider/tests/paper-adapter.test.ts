@@ -50,6 +50,11 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+const PAPER_ACCOUNT_CONFIG = {
+  accountId: "paper-account-test",
+  startingBalanceUsdc: 10_000,
+} as const;
+
 describe("PaperAdapter — sidecar IPC", () => {
   it("placeOrder posts to /place-order and parses the OrderReceipt", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
@@ -64,6 +69,7 @@ describe("PaperAdapter — sidecar IPC", () => {
     );
     const adapter = new PaperAdapter({
       sidecarBaseUrl: "http://sidecar:9100",
+      ...PAPER_ACCOUNT_CONFIG,
       fetchImpl,
     });
     const receipt = await adapter.placeOrder(makeIntent());
@@ -81,6 +87,8 @@ describe("PaperAdapter — sidecar IPC", () => {
       client_order_id: "0x" + "a".repeat(64),
       market_id: "prediction-market:polymarket:0xabc",
       token_id: "tok-1",
+      account_id: "paper-account-test",
+      starting_balance_usdc: 10_000,
       side: "BUY",
       size_usdc: 5,
       limit_price: 0.42,
@@ -93,6 +101,7 @@ describe("PaperAdapter — sidecar IPC", () => {
       .mockResolvedValue(new Response("boom", { status: 500 }));
     const adapter = new PaperAdapter({
       sidecarBaseUrl: "http://sidecar:9100",
+      ...PAPER_ACCOUNT_CONFIG,
       fetchImpl,
     });
     try {
@@ -117,6 +126,7 @@ describe("PaperAdapter — sidecar IPC", () => {
     const fetchImpl = vi.fn();
     const adapter = new PaperAdapter({
       sidecarBaseUrl: "http://sidecar:9100",
+      ...PAPER_ACCOUNT_CONFIG,
       fetchImpl,
     });
     // size_usdc=0 violates `z.number().positive()` — must throw BEFORE
@@ -138,6 +148,7 @@ describe("PaperAdapter — sidecar IPC", () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
     const adapter = new PaperAdapter({
       sidecarBaseUrl: "http://sidecar:9100",
+      ...PAPER_ACCOUNT_CONFIG,
       fetchImpl,
     });
     try {
@@ -153,7 +164,7 @@ describe("PaperAdapter — sidecar IPC", () => {
 
   it("getOrder returns { found } on 200 and { status: 'not_found' } on 404", async () => {
     const fetchImpl = vi.fn().mockImplementation(async (url) => {
-      if ((url as string).endsWith("/orders/missing")) {
+      if ((url as string).includes("/orders/missing?")) {
         return new Response(null, { status: 404 });
       }
       return jsonResponse({
@@ -166,6 +177,7 @@ describe("PaperAdapter — sidecar IPC", () => {
     });
     const adapter = new PaperAdapter({
       sidecarBaseUrl: "http://sidecar:9100",
+      ...PAPER_ACCOUNT_CONFIG,
       fetchImpl,
     });
 
@@ -174,6 +186,34 @@ describe("PaperAdapter — sidecar IPC", () => {
 
     const missing = await adapter.getOrder("missing");
     expect(missing).toEqual({ status: "not_found" });
+    expect(fetchImpl.mock.calls[0]?.[0]).toContain(
+      "account_id=paper-account-test"
+    );
+  });
+
+  it("listOpenOrders reads the tenant-scoped sidecar book", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse([
+        {
+          order_id: "paper-open-1",
+          client_order_id: "0x" + "b".repeat(64),
+          status: "open",
+          filled_size_usdc: 0,
+          submitted_at: "2026-05-14T12:00:00Z",
+          attributes: { tokenId: "tok-1" },
+        },
+      ])
+    );
+    const adapter = new PaperAdapter({
+      sidecarBaseUrl: "http://sidecar:9100",
+      ...PAPER_ACCOUNT_CONFIG,
+      fetchImpl,
+    });
+
+    await expect(adapter.listOpenOrders()).resolves.toHaveLength(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      "http://sidecar:9100/orders?account_id=paper-account-test&starting_balance_usdc=10000"
+    );
   });
 
   it("cancelOrder swallows 404s but throws on other non-2xx", async () => {
@@ -187,6 +227,7 @@ describe("PaperAdapter — sidecar IPC", () => {
     });
     const adapter = new PaperAdapter({
       sidecarBaseUrl: "http://sidecar:9100",
+      ...PAPER_ACCOUNT_CONFIG,
       fetchImpl,
     });
 

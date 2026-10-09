@@ -69,7 +69,7 @@ export interface LedgerRow {
   billing_account_id: string;
   /**
    * Execution mode stamped on the row at write-time by the ledger
-   * (MODE_STAMPED_AT_LEDGER_FROM_ENV — `order-ledger.ts`). `live` rows are
+   * (MODE_STAMPED_FROM_ACCOUNT — `order-ledger.ts`). `live` rows are
    * real CLOB orders; `paper` rows are simulated by the paper sidecar but
    * otherwise participate in cap accounting identically. Schema default is
    * `'live'` (migration 0049). Pre-cutover rows on paper-enforced envs
@@ -83,9 +83,11 @@ export interface LedgerRow {
 }
 
 /**
- * Execution mode stamped on every fill / decision row. Sourced from the
- * ledger's `paperEnforceMode` dep — env is the single authority. Pair with
- * `PAPER_DISPATCH_IS_ENV_ONLY` (poly-trade-executor.ts).
+ * Execution mode stamped on every fill / decision row. Resolved per write from
+ * the row's own billing account (`poly_wallet_connections.kind`) via the
+ * ledger's `resolveExecutionMode` dep — the account is the single authority.
+ * Pair with `VENUE_RESOLVED_FROM_ACCOUNT` (poly-trade-executor.ts), which
+ * dispatches on the same resolver.
  */
 export type LedgerMode = "live" | "paper";
 
@@ -216,6 +218,14 @@ export interface OpenOrderRow {
   target_id: string;
   market_id: string;
   created_at: Date;
+  /**
+   * Execution venue this row was written under, stamped at insert from the
+   * writing account's own connection kind (MODE_STAMPED_FROM_ACCOUNT). The
+   * reconciler reads it to size the unplaced grace per venue: a paper
+   * placement is a synchronous loopback call, so "still in flight" is not a
+   * possibility the way it is against the live CLOB.
+   */
+  mode: LedgerMode;
   /**
    * Resting order's limit price extracted from `attributes.limit_price`. Null
    * when the row predates the field or the value is malformed. Used by the
@@ -433,9 +443,12 @@ export interface TenantOrderLedger {
 
   /**
    * Insert a `pending` row scoped to this tenant. `input` no longer needs
-   * `billing_account_id` or `created_by_user_id` (stamped from `ctx`).
+   * `billing_account_id` or `created_by_user_id` (stamped from `ctx`). Returns
+   * the execution mode written to the row so the caller can dispatch the
+   * placement through the same venue without re-resolving mutable account
+   * state.
    */
-  insertPending(input: TenantScopedInsertPendingInput): Promise<void>;
+  insertPending(input: TenantScopedInsertPendingInput): Promise<LedgerMode>;
 
   /**
    * Partial-unique-index existence check scoped to this tenant.
@@ -471,7 +484,10 @@ export type TenantScopedInsertPendingInput = Omit<
 export type TenantScopedRecordDecisionInput = Omit<
   RecordDecisionInput,
   keyof TenantBinding
->;
+> & {
+  /** Use the venue already stamped on the related order; omit for pre-order skips. */
+  mode_override?: LedgerMode;
+};
 
 /**
  * Order ledger port. Production adapter is `createOrderLedger({ db })` in

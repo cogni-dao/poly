@@ -38,24 +38,32 @@
  *     the bootstrap / provider boundaries so pods without Polymarket creds
  *     never load them on unrelated paths.
  *   - LAZY_INIT_ADAPTER — adapter construction happens on first per-tenant
- *     call. Subsequent calls reuse the cached instance until the process exits
- *     or an ops path invalidates that tenant after CLOB credential rotation.
+ *     call. Subsequent calls reuse the cached `(billing account, venue)`
+ *     instance until the process exits or an ops path invalidates that tenant.
  *   - SHARED_PUBLIC_CLIENT — the `viem.PublicClient` used for RPC reads is a
  *     process-level singleton; wallet clients fan out per tenant.
  *   - DATA_API_DISCOVERY_HINT_FOR_EXIT — `exitPosition` uses Data API as the
  *     cheap discovery path only. If a ledger-backed token is omitted there,
  *     CTF ERC-1155 `balanceOf(funder, tokenId)` is the close authority before
  *     deciding there is no position to sell.
- *   - PAPER_DISPATCH_IS_ENV_ONLY — `PAPER_ENFORCE_MODE=paper` is the ONLY thing
- *     that activates paper routing. The factory chooses between `buildExecutor`
- *     (live CLOB) and `buildPaperOnlyExecutor` (sidecar) once, at executor-
- *     construction time, based on the env. Pairs with
- *     `MODE_STAMPED_AT_LEDGER_FROM_ENV` (order-ledger.ts) — the ledger writes
- *     the same env-derived value to `poly_copy_trade_{fills,decisions}.mode`,
- *     so audit + dispatch agree by construction. Per-target `mode` columns
- *     and `intent.attributes.mode` shadows were removed (task.5003); any new
- *     attribute placed on an intent is purely advisory and the executor never
- *     reads it.
+ *   - VENUE_RESOLVED_FROM_ACCOUNT — the account's `poly_wallet_connections.kind`
+ *     is the ONLY thing that selects a venue. The factory resolves it per
+ *     `billingAccountId` (`deps.resolveExecutionVenue`) and then chooses
+ *     `buildExecutor` (live CLOB) or `buildPaperOnlyExecutor` (paper sidecar)
+ *     once, at executor-construction time. The cache key is `(billing account,
+ *     venue)`, so two accounts in one process can hold different venues and a
+ *     historical paper order remains routed to paper after live custody is
+ *     added. Pairs with `MODE_STAMPED_FROM_ACCOUNT` (order-ledger.ts): the
+ *     ledger returns the venue it durably stamped; placement and every later
+ *     get/cancel/reconcile dispatch use that exact value. Per-target `mode`
+ *     columns and
+ *     `intent.attributes.mode` shadows were removed (task.5003); any attribute
+ *     placed on an intent is purely advisory and the executor never reads it.
+ *   - NO_PAPER_BYPASSES — the paper venue runs the real authorization path
+ *     against its own `poly_wallet_grants` row, reports its own synthetic
+ *     funder address, and throws a typed unavailable for any position read it
+ *     cannot serve. It never skips authorize, never answers a share balance
+ *     with a hardcoded 0, and never queries the zero address.
  * Side-effects: on first `placeIntent` for a new tenant: HTTPS to Polymarket
  *   CLOB + Privy API. Subsequent calls reuse cached clients.
  * Links: work/items/task.0318 (Phase B3), work/items/task.0388,
@@ -77,6 +85,10 @@ import type {
   PolyTraderWalletPort,
 } from "@cogni/poly-wallet";
 import type { Logger } from "pino";
+import type {
+  ExecutionVenueResolver,
+  PaperVenuePort,
+} from "@/features/paper-accounts";
 import {
   type ClobExecutor,
   createClobExecutor,
@@ -211,8 +223,8 @@ export interface PolyTradeExecutor {
   listPositions: () => Promise<PolymarketUserPosition[]>;
   /**
    * Per-tenant getOrder for the reconciler path. Dispatch follows
-   * `PAPER_DISPATCH_IS_ENV_ONLY`: when `PAPER_ENFORCE_MODE=paper` the executor
-   * is the paper-only build (sidecar reads); otherwise the live CLOB.
+   * `VENUE_RESOLVED_FROM_ACCOUNT`: a paper account's executor reads the
+   * sidecar, a live account's reads the CLOB.
    */
   getOrder: (orderId: string) => Promise<GetOrderResult>;
   /**
@@ -220,7 +232,7 @@ export interface PolyTradeExecutor {
    * `cancelOrder` with an audit log so the cancel boundary is tenant-
    * attributed in Loki the same way placement is. The adapter swallows
    * 404s (`CANCEL_404_SWALLOWED_IN_ADAPTER`); callers see only success /
-   * non-404 error. Dispatch follows `PAPER_DISPATCH_IS_ENV_ONLY`.
+   * non-404 error. Dispatch follows `VENUE_RESOLVED_FROM_ACCOUNT`.
    */
   cancelOrder: (orderId: string) => Promise<void>;
   /**
@@ -239,14 +251,70 @@ export interface PolyTradeExecutor {
   }>;
   /** Per-tenant live open orders from the CLOB. */
   listOpenOrders: () => Promise<OpenOrderSummary[]>;
-  /** CTF ERC-1155 share balance for the tenant wallet and token id. */
+  /**
+   * Share balance for the tenant's account and token id. Live accounts read CTF
+   * ERC-1155 `balanceOf`. Paper accounts read the paper position projection;
+   * until that projection exists this throws a typed unavailable. It MUST NOT
+   * answer 0 — `NO_FABRICATED_VALUES`, and a fabricated 0 is what pinned
+   * `position_gap`'s gap math at `desired - 0` on every paper deployment.
+   */
   getPositionShareBalance: (tokenId: string) => Promise<number>;
   /** The tenant's current EOA address (used for profile URLs + position queries). */
   readonly funderAddress: `0x${string}`;
 }
 
+/**
+ * One open paper position, exactly as the executor consumes it.
+ *
+ * Deliberately NOT `PolymarketUserPosition`. That shape is the Data-API
+ * response: it requires `cashPnl`, `realizedPnl`, `percentPnl`, `redeemable`,
+ * `title`, `eventSlug` and a dozen more fields a paper account has no fact for,
+ * and synthesizing them to satisfy a type is the same class of lie as the
+ * hardcoded `0` this slice removes. Every field below is either stored by the
+ * paper projection or arithmetic over stored values.
+ */
+export interface PaperExecutorPosition {
+  readonly conditionId: string;
+  readonly tokenId: string;
+  /** Net shares held; always > 0. */
+  readonly shares: number;
+  /** `shares × mid` at the projection's observation time. */
+  readonly currentValueUsdc: number;
+  /** Entry VWAP. */
+  readonly avgPrice: number;
+}
+
+/**
+ * Per-account paper position reads, backed by the paper fact projection
+ * (`@features/wallet-analysis/server/paper-fact-source`). Bootstrap adapts the
+ * fact readers to this shape.
+ *
+ * Both methods are expected to THROW a typed unavailable (rather than return an
+ * empty book or a 0) when the projection has not run, is incomplete, or is
+ * stale — see `PaperFactsUnavailableError`. An empty array from
+ * `listOpenPositions` means "verifiably holds nothing", which is a fact.
+ */
+export interface PaperPositionSource {
+  /** The account's open book as of the last complete projection tick. */
+  listOpenPositions: (
+    billingAccountId: string
+  ) => Promise<readonly PaperExecutorPosition[]>;
+  /** Shares held for one token id. */
+  getPositionShareBalance: (
+    billingAccountId: string,
+    tokenId: string
+  ) => Promise<number>;
+}
+
 export interface PolyTradeExecutorFactoryDeps {
-  walletPort: PolyTraderWalletPort;
+  /**
+   * Live custody + authorization port. Optional because a deployment can serve
+   * paper accounts with no Privy / AEAD credentials at all (the case bug.5253
+   * papered over with a Proxy whose every property access threw). When an
+   * account resolves to the LIVE venue and this is absent, the build fails
+   * loudly with `no_connection` — it never degrades to paper.
+   */
+  walletPort?: PolyTraderWalletPort | undefined;
   logger: Logger;
   metrics: MetricsPort;
   host?: string | undefined;
@@ -259,13 +327,82 @@ export interface PolyTradeExecutorFactoryDeps {
    */
   paperSidecarUrl?: string | undefined;
   /**
-   * `"paper"` triggers `buildPaperOnlyExecutor` (sidecar-only, no wallet
-   * resolve). Any other value (including `undefined`) selects `buildExecutor`
-   * (live CLOB). This is the ONLY paper-mode switch — see
-   * `PAPER_DISPATCH_IS_ENV_ONLY` in the module docstring. Bootstrap supplies
-   * this from the `PAPER_ENFORCE_MODE` env var.
+   * VENUE_RESOLVED_FROM_ACCOUNT — maps a `billingAccountId` to its venue by
+   * reading that account's `poly_wallet_connections.kind`. Required: there is
+   * no default venue, and an account with no active connection must fail rather
+   * than be guessed at. Bootstrap wires
+   * `createExecutionVenueResolver({ db })`.
    */
-  paperEnforceMode?: "paper" | undefined;
+  resolveExecutionVenue: ExecutionVenueResolver;
+  /**
+   * Authorization + identity for paper accounts — the paper analogue of
+   * `walletPort`. Required to build a paper executor; absent means a paper
+   * account cannot be served on this deployment, which fails loudly instead of
+   * placing unauthorized simulated orders.
+   */
+  paperVenue?: PaperVenuePort | undefined;
+  /** Paper position reads. See `PaperPositionSource`. */
+  paperPositions?: PaperPositionSource | undefined;
+}
+
+/**
+ * The exact intent fields an authorization decision is made against. Shared by
+ * both venues so a paper account's grant sees the same summary its live twin
+ * would — `GRANT_CAPS_MIRROR_LIVE` is only meaningful if the input is identical.
+ */
+function toOrderIntentSummary(intent: OrderIntent): OrderIntentSummary {
+  return {
+    side: intent.side,
+    usdcAmount: intent.size_usdc,
+    marketConditionId: intent.market_id.replace(
+      /^prediction-market:polymarket:/,
+      ""
+    ),
+  };
+}
+
+/**
+ * Build the SELL intent that closes a paper position. Pure, so the arithmetic is
+ * testable without the paper sidecar or a CLOB client in the loop.
+ *
+ * Mirrors the live `closePosition` sizing exactly — cap the notional at the
+ * position's value AT THE LIMIT, and default the limit to one cent through the
+ * current mark — with `curPrice` derived as `currentValueUsdc / shares` (the mid
+ * the projection marked at, which is the quantity the Data-API's `curPrice`
+ * carries on the live path).
+ *
+ * @returns the intent, or `null` when the position cannot back a SELL. `null` is
+ *   "you hold nothing here", which the caller turns into `no_position_to_close`
+ *   — deliberately distinct from "I cannot see what you hold", which the fact
+ *   reader raises before this is ever reached.
+ * @public
+ */
+export function planPaperCloseIntent(
+  params: ClosePositionParams,
+  position: PaperExecutorPosition | undefined
+): OrderIntent | null {
+  if (!position || position.shares <= 0) return null;
+  const markedPrice = position.currentValueUsdc / position.shares;
+  const limit_price =
+    params.limit_price ??
+    Math.max(0.01, (Number.isFinite(markedPrice) ? markedPrice : 0) - 0.01);
+  const size_usdc = Math.min(
+    params.max_size_usdc,
+    position.shares * limit_price
+  );
+  return {
+    provider: "polymarket",
+    market_id: `prediction-market:polymarket:${position.conditionId}`,
+    // The projection stores no outcome label. The live path passes `""` whenever
+    // the Data-API omits it, and `token_id` is what identifies the asset to the
+    // venue, so this matches live behavior rather than inventing a label.
+    outcome: "",
+    side: "SELL",
+    size_usdc,
+    limit_price,
+    client_order_id: params.client_order_id,
+    attributes: { token_id: params.tokenId },
+  };
 }
 
 type MarketExitAdapter = {
@@ -284,7 +421,7 @@ type CachedExecutor = {
 
 /**
  * Process-level factory. Returns a function that caches executors per
- * `billingAccountId`. Every cached entry reuses the same
+ * `(billingAccountId, venue)`. Every cached entry reuses the same
  * `PolymarketClobAdapter` (one HTTPS client) + shared `PublicClient` for RPC
  * reads. Scope + cap checks go through `walletPort.authorizeIntent` on every
  * call — the cache never makes auth decisions.
@@ -297,6 +434,10 @@ export function createPolyTradeExecutorFactory(
   getPolyTradeExecutorFor: (
     billingAccountId: string
   ) => Promise<PolyTradeExecutor>;
+  getPolyTradeExecutorForVenue: (
+    billingAccountId: string,
+    venue: "live" | "paper"
+  ) => Promise<PolyTradeExecutor>;
   invalidatePolyTradeExecutorFor: (billingAccountId: string) => void;
 } {
   const cache = new Map<string, CachedExecutor>();
@@ -305,51 +446,87 @@ export function createPolyTradeExecutorFactory(
   async function getPolyTradeExecutorFor(
     billingAccountId: string
   ): Promise<PolyTradeExecutor> {
-    const cached = cache.get(billingAccountId);
+    const venue = await deps.resolveExecutionVenue(billingAccountId);
+    return getPolyTradeExecutorForVenue(billingAccountId, venue);
+  }
+
+  async function getPolyTradeExecutorForVenue(
+    billingAccountId: string,
+    venue: "live" | "paper"
+  ): Promise<PolyTradeExecutor> {
+    const cacheKey = `${billingAccountId}:${venue}`;
+    const cached = cache.get(cacheKey);
     if (cached) return cached.executor;
 
-    const existing = inflight.get(billingAccountId);
+    const existing = inflight.get(cacheKey);
     if (existing) return (await existing).executor;
 
-    // PAPER_ENFORCE_MODE=paper short-circuit (closes the TODO on
-    // PolyTradeExecutorFactoryDeps.paperEnforceMode): skip wallet.resolve
-    // entirely so a deployment without live CLOB credentials boots cleanly.
-    // The mirror BUY path needs only `placeIntent` + `getMarketConstraints`;
-    // both work without a tenant trader wallet because placement routes
-    // through the paper sidecar (no signing) and constraints hit Polymarket's
-    // public CLOB read endpoints.
-    const builder =
-      deps.paperEnforceMode === "paper"
+    // VENUE_RESOLVED_FROM_ACCOUNT — read the account's connection `kind` and
+    // build the venue it names. The resolver throws
+    // `ExecutionVenueUnresolvedError` for an account with no active connection
+    // (NO_DEFAULT_VENUE): a tenant that never provisioned anything gets a loud
+    // failure, not a silent downgrade to simulation or a live CLOB attempt.
+    //
+    // The cache key includes the resolved venue, so an account transition can
+    // never reuse a client from the other venue.
+    const buildPromise = (async () => {
+      return venue === "paper"
         ? buildPaperOnlyExecutor(billingAccountId, deps)
         : buildExecutor(billingAccountId, deps);
-    const buildPromise = builder.then((built) => {
-      cache.set(billingAccountId, built);
-      inflight.delete(billingAccountId);
+    })().then((built) => {
+      cache.set(cacheKey, built);
+      inflight.delete(cacheKey);
       return built;
     });
-    inflight.set(billingAccountId, buildPromise);
+    inflight.set(cacheKey, buildPromise);
     try {
       const built = await buildPromise;
       return built.executor;
     } catch (err) {
-      inflight.delete(billingAccountId);
+      inflight.delete(cacheKey);
       throw err;
     }
   }
 
   function invalidatePolyTradeExecutorFor(billingAccountId: string): void {
-    cache.delete(billingAccountId);
-    inflight.delete(billingAccountId);
+    for (const venue of ["live", "paper"] as const) {
+      cache.delete(`${billingAccountId}:${venue}`);
+      inflight.delete(`${billingAccountId}:${venue}`);
+    }
   }
 
-  return { getPolyTradeExecutorFor, invalidatePolyTradeExecutorFor };
+  return {
+    getPolyTradeExecutorFor,
+    getPolyTradeExecutorForVenue,
+    invalidatePolyTradeExecutorFor,
+  };
 }
 
 async function buildExecutor(
   billingAccountId: string,
   deps: PolyTradeExecutorFactoryDeps
 ): Promise<CachedExecutor> {
-  const resolved = await deps.walletPort.resolve(billingAccountId);
+  // The live venue cannot be served without the custody port. Deployments that
+  // only run paper accounts legitimately boot without Privy / AEAD credentials,
+  // so this is a per-account failure rather than a boot failure — and it is a
+  // failure, never a fallback to the paper venue.
+  const maybeWalletPort = deps.walletPort;
+  if (!maybeWalletPort) {
+    throw new PolyTradeExecutorError(
+      "not_authorized",
+      `poly-trade-executor: account ${billingAccountId} resolves to the live venue but no trader-wallet port is configured on this deployment`,
+      "no_connection"
+    );
+  }
+  // Re-bind with the optionality stripped rather than relying on narrowing.
+  // `authorizeWalletExit` and the other live-path helpers below are hoisted
+  // FUNCTION DECLARATIONS, and TypeScript deliberately does not carry an
+  // enclosing guard's narrowing into them — a declaration could in principle be
+  // called before the guard ran. The annotation makes the post-guard type a
+  // property of the binding instead of a property of the control flow, so the
+  // helpers need neither `!` nor a repeated check.
+  const walletPort: PolyTraderWalletPort = maybeWalletPort;
+  const resolved = await walletPort.resolve(billingAccountId);
   if (!resolved) {
     throw new PolyTradeExecutorError(
       "not_authorized",
@@ -434,13 +611,11 @@ async function buildExecutor(
 
   const dataApiClient = new PolymarketDataApiClient();
 
-  // PAPER_DISPATCH_IS_ENV_ONLY (task: paper-mode-env-only-dispatch) —
-  // `buildExecutor` runs ONLY when `deps.paperEnforceMode !== "paper"` (the
-  // factory at `createPolyTradeExecutorFactory` chooses `buildPaperOnlyExecutor`
-  // when env-paper). So every placement reaching this builder is live by
-  // construction. There is no per-target paper dispatch here, no `PaperAdapter`
-  // sibling, no runtime branch on `intent.attributes.mode`. Activating paper
-  // requires `PAPER_ENFORCE_MODE=paper` at process start — period.
+  // VENUE_RESOLVED_FROM_ACCOUNT — `buildExecutor` runs ONLY for an account whose
+  // connection `kind` resolved to `privy_live`, so every placement reaching this
+  // builder is live by construction. There is no per-target paper dispatch here,
+  // no `PaperAdapter` sibling, and no runtime branch on `intent.attributes.mode`;
+  // reaching the paper venue requires a `kind = 'paper'` connection row.
   const livePlace: ClobExecutor = createClobExecutor({
     placeOrder: adapter.placeOrder.bind(adapter),
     logger: loggerPort,
@@ -450,17 +625,9 @@ async function buildExecutor(
   const authorizedPlace = async (
     intent: OrderIntent
   ): Promise<OrderReceipt> => {
-    const summary: OrderIntentSummary = {
-      side: intent.side,
-      usdcAmount: intent.size_usdc,
-      marketConditionId: intent.market_id.replace(
-        /^prediction-market:polymarket:/,
-        ""
-      ),
-    };
-    const authz = await deps.walletPort.authorizeIntent(
+    const authz = await walletPort.authorizeIntent(
       billingAccountId,
-      summary
+      toOrderIntentSummary(intent)
     );
     if (!authz.ok) {
       deps.metrics.incr("poly_authorize_denied_total", {
@@ -597,8 +764,14 @@ async function buildExecutor(
     action: "close" | "redeem";
     requireTradingReady: boolean;
   }): Promise<void> {
+    // `walletPort` (not `deps.walletPort`): the custody port is optional on the
+    // factory deps because a paper-only deployment has none, and the ONE place
+    // that absence is decided is the guard at the top of `buildExecutor`, which
+    // turns it into a typed `no_connection` failure. Every live-path consumer
+    // closes over the narrowed local, so "the port might be missing" cannot
+    // leak into code that only runs after it was proven present.
     const connection =
-      await deps.walletPort.getConnectionSummary(billingAccountId);
+      await walletPort.getConnectionSummary(billingAccountId);
     if (!connection) {
       deps.logger.warn(
         {
@@ -618,7 +791,7 @@ async function buildExecutor(
     if (params.requireTradingReady && !connection.tradingApprovalsReadyAt) {
       try {
         const ready =
-          await deps.walletPort.ensureTradingApprovals(billingAccountId);
+          await walletPort.ensureTradingApprovals(billingAccountId);
         if (ready.ready) return;
       } catch (err) {
         deps.logger.warn(
@@ -759,31 +932,58 @@ async function buildExecutor(
 }
 
 /**
- * Paper-enforced executor builder. Used when `PAPER_ENFORCE_MODE=paper`.
+ * Paper-account executor builder. Used when the account's connection
+ * `kind = 'paper'` (VENUE_RESOLVED_FROM_ACCOUNT).
  *
- * Differences from `buildExecutor`:
- *   - Skips `walletPort.resolve()` — no trader wallet required for paper.
- *   - Skips `walletPort.authorizeIntent()` — caps + scope checks live on the
- *     same tenant gate, but in paper mode there's nothing to authorize against
- *     (no signing, no real USDC). Logged as `paper_enforced` so the bypass is
- *     visible in audit.
+ * Differences from `buildExecutor` — and nothing more than these:
+ *   - Resolves the account from `paperVenue.resolveAccount` instead of
+ *     `walletPort.resolve()`. A paper account holds no key material, so there is
+ *     no Privy call and no CLOB credential to decrypt; what it does hold is a
+ *     real connection row with a real synthetic funder address.
+ *   - Authorizes through `paperVenue.authorizeIntent`, which runs the same
+ *     decision sequence the live adapter runs against the paper account's own
+ *     `poly_wallet_grants` row. There is NO bypass: the pre-0082 build skipped
+ *     authorize entirely and logged `authorize_bypassed: true`, which silently
+ *     neutered every cap the algorithm was supposed to be tested against.
  *   - Constructs `PolymarketClobAdapter` with a deterministic no-op signer +
  *     empty CLOB creds. The SDK's `getOrderBook` and `getTickSize` read paths
  *     (used by `getMarketConstraints`) hit Polymarket's public endpoints that
  *     don't auth, so this works for the mirror BUY path's tick/min-size lookup.
  *   - Wires `paperPlace` as the only placement path. `livePlace` doesn't exist
  *     in this builder — every intent routes to the sidecar.
- *   - `closePosition` / `exitPosition` / `listPositions` /
- *     `getPositionShareBalance` throw `paper_enforced_not_supported`. These
- *     are user-driven flows (manual wallet close, position UI) that have no
- *     meaning when the entire deployment is paper-only. The mirror BUY path
- *     does not call them.
+ *   - Position reads come from `deps.paperPositions` — the paper fact projection
+ *     (migration 0083), read back per account. They do NOT return `0` and do NOT
+ *     query the Data-API for the zero address, which is what the pre-0082 build
+ *     did: `getPositionShareBalance: async () => 0` fabricated a value that
+ *     pinned `position_gap`'s gap math at `desired - 0` forever, and the
+ *     zero-address Data-API read answered one deployment-wide "portfolio" that
+ *     belonged to nobody. An absent / incomplete / stale projection raises a
+ *     typed unavailable from the reader; only a complete, fresh projection
+ *     licenses the statement "this account holds nothing".
+ *   - `closePosition` sizes the mirror's SELL from those facts, same arithmetic
+ *     as the live builder. `exitPosition` and the Data-API-shaped
+ *     `listPositions` are refused with their own named reasons — the paper
+ *     sidecar has no market-order seam, and the wide Data-API position shape
+ *     carries realized-PnL / metadata fields paper has no fact for.
  */
 async function buildPaperOnlyExecutor(
   billingAccountId: string,
   deps: PolyTradeExecutorFactoryDeps
 ): Promise<CachedExecutor> {
-  const { PolymarketClobAdapter, PolymarketDataApiClient } = await import(
+  const paperVenue = deps.paperVenue;
+  if (!paperVenue) {
+    throw new PolyTradeExecutorError(
+      "not_authorized",
+      `poly-trade-executor: account ${billingAccountId} resolves to the paper venue but no paper venue is configured on this deployment`,
+      "no_connection"
+    );
+  }
+  // Throws `PaperAccountUnavailableError` when the paper row vanished between
+  // venue resolution and here (a revoke mid-build). Fail, never substitute.
+  const account = await paperVenue.resolveAccount(billingAccountId);
+  const funderAddress = account.funderAddress;
+
+  const { PolymarketClobAdapter } = await import(
     "@cogni/poly-market-provider/adapters/polymarket"
   );
   const { PaperAdapter } = await import(
@@ -794,12 +994,12 @@ async function buildPaperOnlyExecutor(
   const { polygon } = await import("viem/chains");
 
   // Stable, well-known throwaway private key. Used only to satisfy the
-  // ClobClient SDK constructor's signer requirement — paper mode never signs.
+  // ClobClient SDK constructor's signer requirement — the paper venue never
+  // signs, and this key is never the account identity (that is
+  // `account.funderAddress`, read off the connection row).
   // pubkey: 0x7e5f4552091a69125d5dfcb7b8c2659029395bdf
   const PAPER_NOOP_PRIVATE_KEY =
     "0x0000000000000000000000000000000000000000000000000000000000000001" as const;
-  const PAPER_FUNDER_ADDRESS =
-    "0x0000000000000000000000000000000000000000" as const;
 
   // biome-ignore lint/suspicious/noExplicitAny: cross-peerDep viem type drift
   const noopAccount: any = privateKeyToAccount(PAPER_NOOP_PRIVATE_KEY);
@@ -815,7 +1015,7 @@ async function buildPaperOnlyExecutor(
     deps.logger.child({
       subcomponent: "poly-trade-executor",
       billing_account_id: billingAccountId,
-      paper_enforced: true,
+      execution_mode: "paper",
     })
   );
 
@@ -825,15 +1025,15 @@ async function buildPaperOnlyExecutor(
   const adapter = new PolymarketClobAdapter({
     signer: signerAny,
     creds: { key: "", secret: "", passphrase: "" },
-    funderAddress: PAPER_FUNDER_ADDRESS,
+    funderAddress,
     host: deps.host ?? DEFAULT_CLOB_HOST,
     logger: loggerPort,
     metrics: deps.metrics,
   });
 
-  const dataApiClient = new PolymarketDataApiClient();
-
   const paperAdapter = new PaperAdapter({
+    accountId: account.connectionId,
+    startingBalanceUsdc: Number(account.seedUsdc),
     ...(deps.paperSidecarUrl !== undefined
       ? { sidecarBaseUrl: deps.paperSidecarUrl }
       : {}),
@@ -849,9 +1049,35 @@ async function buildPaperOnlyExecutor(
   const authorizedPlace = async (
     intent: OrderIntent
   ): Promise<OrderReceipt> => {
-    // In paper-enforced mode we skip walletPort.authorizeIntent — there's no
-    // wallet to authorize against, and paper placements cannot burn real
-    // USDC. The decision is audited via the `paper_enforced` log key.
+    // AUTHORIZED_PLACE_ONLY applies to paper exactly as it does to live: the
+    // grant row, its scopes, and its per-order / daily / hourly caps decide.
+    // Read fresh on every call, so a revoke that lands after this executor was
+    // cached still denies (CACHE_INVALIDATED_BY_AUTHORIZE).
+    const authz = await paperVenue.authorizeIntent(
+      billingAccountId,
+      toOrderIntentSummary(intent)
+    );
+    if (!authz.ok) {
+      deps.metrics.incr("poly_authorize_denied_total", {
+        reason: authz.reason,
+      });
+      deps.logger.warn(
+        {
+          event: "poly.trade.executor.authorize_denied",
+          billing_account_id: billingAccountId,
+          intent_side: intent.side,
+          intent_usdc: intent.size_usdc,
+          reason: authz.reason,
+          execution_mode: "paper",
+        },
+        "poly-trade-executor: authorize denied; refusing paper placeOrder"
+      );
+      throw new PolyTradeExecutorError(
+        "not_authorized",
+        `poly-trade-executor: authorize denied (${authz.reason})`,
+        authz.reason
+      );
+    }
     deps.logger.info(
       {
         event: "poly.mirror.place.tenant",
@@ -861,47 +1087,119 @@ async function buildPaperOnlyExecutor(
         market_id: intent.market_id,
         client_order_id: intent.client_order_id,
         execution_mode: "paper",
-        paper_enforced: true,
-        authorize_bypassed: true,
+        grant_id: authz.grantId,
       },
-      "poly-trade-executor (paper-enforced): authorize bypassed → placeOrder"
+      "poly-trade-executor (paper): authorized → placeOrder"
     );
     return paperPlace(intent);
   };
 
-  function paperNotSupported(operation: string): never {
+  const paperPositions = deps.paperPositions;
+
+  /**
+   * Refuse an operation the paper venue cannot answer from facts.
+   *
+   * `reason` is deliberately specific: "the projection is not wired on this
+   * deployment" and "this shape cannot be produced honestly for paper" are
+   * different operator problems, and collapsing them is what makes a gap look
+   * like a bug (or worse, gets papered over with a 0).
+   */
+  function paperRefuse(operation: string, reason: string, detail: string): never {
     throw new PolyTradeExecutorError(
       "not_authorized",
-      `poly-trade-executor: ${operation} not supported in PAPER_ENFORCE_MODE=paper (no trader wallet)`,
-      "no_connection"
+      `poly-trade-executor: ${operation} unavailable for the paper venue — ${detail}`,
+      reason
     );
+  }
+
+  function requirePaperPositions(operation: string): PaperPositionSource {
+    // `??` rather than an `if` + narrowing: `paperRefuse` returns `never`, so
+    // this expression types as the port with no control-flow-analysis subtlety.
+    return (
+      paperPositions ??
+      paperRefuse(
+        operation,
+        "paper_positions_unavailable",
+        "no paper position source is wired on this deployment"
+      )
+    );
+  }
+
+  /**
+   * SELL-to-close for a paper account — the mirror's exit path.
+   *
+   * Same shape as the live `closePosition`, with the position read coming from
+   * the paper projection instead of the Data-API. Sizing lives in the pure
+   * `planPaperCloseIntent` above; this function is the IO around it.
+   *
+   * A token the account verifiably does not hold raises `no_position_to_close`,
+   * exactly as live does. An unreadable projection raises its own typed
+   * unavailable from inside `listOpenPositions` — the two are never conflated,
+   * because "you hold nothing" and "I cannot see what you hold" are different
+   * answers.
+   */
+  async function paperClosePosition(
+    params: ClosePositionParams
+  ): Promise<OrderReceipt> {
+    const positions = await requirePaperPositions(
+      "closePosition"
+    ).listOpenPositions(billingAccountId);
+    const intent = planPaperCloseIntent(
+      params,
+      positions.find((p) => p.tokenId === params.tokenId)
+    );
+    if (!intent) {
+      throw new PolyTradeExecutorError(
+        "no_position_to_close",
+        `poly-trade-executor: no open paper position for tokenId=${params.tokenId} on account=${billingAccountId}`
+      );
+    }
+    return authorizedPlace(intent);
   }
 
   const executor: PolyTradeExecutor = {
     billingAccountId,
     placeIntent: authorizedPlace,
-    closePosition: async () => paperNotSupported("closePosition"),
-    exitPosition: async () => paperNotSupported("exitPosition"),
+    closePosition: paperClosePosition,
+    // The user-facing full exit sells the whole balance at market via the live
+    // adapter's `sellPositionAtMarket`. `PaperAdapter` exposes no market-order
+    // seam, so this is a genuine capability gap in the paper venue — named as
+    // one, not emulated with a limit order that might not fill.
+    exitPosition: async () =>
+      paperRefuse(
+        "exitPosition",
+        "paper_market_exit_unsupported",
+        "the paper sidecar has no market-order seam; close via the mirror's SELL path instead"
+      ),
+    // `PolyTradeExecutor.listPositions` is typed as the Data-API
+    // `PolymarketUserPosition[]`, which carries realized-PnL and market-metadata
+    // fields the paper projection has no fact for. Callers that need a paper
+    // account's book take `PaperPositionSource.listOpenPositions` (bootstrap
+    // wires the mirror's portfolio snapshot straight to it); nothing fabricates
+    // the wide shape to satisfy this signature.
     listPositions: async () =>
-      dataApiClient.listAllUserPositions(PAPER_FUNDER_ADDRESS),
+      paperRefuse(
+        "listPositions",
+        "paper_positions_shape_unavailable",
+        "the Data-API position shape cannot be produced from paper facts; use the paper portfolio snapshot"
+      ),
     getOrder: paperAdapter.getOrder.bind(paperAdapter),
     cancelOrder: paperAdapter.cancelOrder.bind(paperAdapter),
     getMarketConstraints: adapter.getMarketConstraints.bind(adapter),
-    listOpenOrders: async () => [],
-    getPositionShareBalance: async () => 0,
-    funderAddress: PAPER_FUNDER_ADDRESS,
+    listOpenOrders: async () =>
+      (await paperAdapter.listOpenOrders()).map(mapOpenOrderSummary),
+    getPositionShareBalance: async (tokenId: string) =>
+      requirePaperPositions("getPositionShareBalance").getPositionShareBalance(
+        billingAccountId,
+        tokenId
+      ),
+    funderAddress,
   };
 
-  return { executor, funderAddress: PAPER_FUNDER_ADDRESS };
+  return { executor, funderAddress };
 }
 
-function mapOpenOrderSummary(
-  order: Awaited<
-    ReturnType<
-      import("@cogni/poly-market-provider/adapters/polymarket").PolymarketClobAdapter["listOpenOrders"]
-    >
-  >[number]
-): OpenOrderSummary {
+function mapOpenOrderSummary(order: OrderReceipt): OpenOrderSummary {
   const attrs = (order.attributes ?? {}) as Record<string, unknown>;
   const price = readFinite(attrs.price);
   const originalShares = readFinite(attrs.originalSize);

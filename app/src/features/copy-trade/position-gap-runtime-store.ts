@@ -163,6 +163,7 @@ export interface PositionGapActiveBuy {
 export interface PositionGapAccountBuyExposure {
 	clientOrderId: string;
 	orderId: string | null;
+	mode: "live" | "paper";
 	conditionId: string;
 	tokenId: string;
 	remainingShares: number;
@@ -513,6 +514,7 @@ export class PositionGapRuntimeStore {
 			.select({
 				clientOrderId: polyCopyTradeFills.clientOrderId,
 				orderId: polyCopyTradeFills.orderId,
+				mode: polyCopyTradeFills.mode,
 				marketId: polyCopyTradeFills.marketId,
 				conditionId: sql<
 					string | null
@@ -549,6 +551,7 @@ export class PositionGapRuntimeStore {
 			const filledShares =
 				row.filledShares === null ? 0 : Number(row.filledShares);
 			if (
+				(row.mode !== "live" && row.mode !== "paper") ||
 				conditionId.length === 0 ||
 				tokenId.length === 0 ||
 				!Number.isFinite(sizeUsdc) ||
@@ -566,11 +569,49 @@ export class PositionGapRuntimeStore {
 			return {
 				clientOrderId: row.clientOrderId,
 				orderId: row.orderId,
+				mode: row.mode,
 				conditionId,
 				tokenId,
 				remainingShares: Math.max(0, sizeUsdc / limitPrice - filledShares),
 			};
 		});
+	}
+
+	/** Durable venue/status bindings for the exact active actions requested. */
+	async loadOrderBindings(
+		scope: PositionGapRuntimeScope,
+		clientOrderIds: readonly string[],
+	): Promise<
+		ReadonlyMap<string, { mode: "live" | "paper"; status: string }>
+	> {
+		if (clientOrderIds.length === 0) return new Map();
+		const rows = await this.db
+			.select({
+				clientOrderId: polyCopyTradeFills.clientOrderId,
+				mode: polyCopyTradeFills.mode,
+				status: polyCopyTradeFills.status,
+			})
+			.from(polyCopyTradeFills)
+			.where(
+				and(
+					eq(polyCopyTradeFills.billingAccountId, scope.billingAccountId),
+					eq(polyCopyTradeFills.targetId, scope.targetId),
+					inArray(polyCopyTradeFills.clientOrderId, [...clientOrderIds]),
+				),
+			);
+		return new Map(
+			rows.map((row) => {
+				if (row.mode !== "live" && row.mode !== "paper") {
+					throw new Error(
+						`position-gap ledger row has invalid venue binding: ${row.clientOrderId}`,
+					);
+				}
+				return [
+					row.clientOrderId,
+					{ mode: row.mode, status: row.status },
+				] as const;
+			}),
+		);
 	}
 
 	async previousBudgetUsdc(
@@ -593,11 +634,13 @@ export class PositionGapRuntimeStore {
 	/**
 	 * Repair the one PGv3 producer-field omission that predates canonical
 	 * copy-target correlation. The deterministic target id proves the wallet;
-	 * tenant + target + policy version clamp the idempotent update.
+	 * tenant + target + account-resolved mode + policy version clamp the
+	 * idempotent update.
 	 */
 	async repairTargetWalletLineage(
 		scope: PositionGapRuntimeScope,
 		targetWallet: string,
+		mode: "live" | "paper",
 	): Promise<void> {
 		const normalized = targetWallet.toLowerCase();
 		if (
@@ -616,7 +659,7 @@ export class PositionGapRuntimeStore {
 				and(
 					eq(polyCopyTradeFills.billingAccountId, scope.billingAccountId),
 					eq(polyCopyTradeFills.targetId, scope.targetId),
-					eq(polyCopyTradeFills.mode, "live"),
+					eq(polyCopyTradeFills.mode, mode),
 					sql`${polyCopyTradeFills.attributes}->>'position_gap_version' = '3'`,
 					sql`NULLIF(${polyCopyTradeFills.attributes}->>'target_wallet', '') IS NULL`,
 				),
@@ -1516,7 +1559,10 @@ export class PositionGapRuntimeStore {
 
 	/**
 	 * Release a runtime BUY only after the shared ledger reconciler has observed
-	 * typed CLOB `not_found` beyond its configured grace window.
+	 * typed CLOB `not_found` beyond its configured grace window, or the actor has
+	 * matched a no-order-id ambiguity to durable `never_placed` ledger evidence.
+	 * The evidence check remains outside this transition; admitting `ambiguous`
+	 * here is what lets that already-proven terminal state retire durably.
 	 */
 	async markVenueNotFoundCanceled(actionId: string): Promise<void> {
 		await this.db.transaction(async (tx) => {
@@ -1530,7 +1576,7 @@ export class PositionGapRuntimeStore {
 				.limit(1);
 			if (
 				!action ||
-				["filled", "canceled", "rejected", "ambiguous"].includes(action.status)
+				["filled", "canceled", "rejected"].includes(action.status)
 			)
 				return;
 			const desiredShares = numberOf(action.desiredShares);

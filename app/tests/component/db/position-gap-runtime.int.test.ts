@@ -25,6 +25,7 @@ import {
 } from "@/features/copy-trade/position-gap-runtime-store";
 import { createOrderLedger } from "@/features/trading/order-ledger";
 import { billingAccounts, users } from "@/shared/db/schema";
+import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 
 const future = new Date("2099-01-01T00:00:00.000Z");
 const asOf = new Date("2026-10-08T00:00:00.000Z");
@@ -516,6 +517,65 @@ describe("position-gap runtime persistence", () => {
 		expect(repairVerified.activeBuys.map((action) => action.id)).not.toContain(
 			persisted?.id,
 		);
+	});
+
+	it("repairs target-wallet lineage only in the account's execution mode", async () => {
+		const db = getSeedDb();
+		const store = new PositionGapRuntimeStore(db);
+		const targetWallet = "0x1111111111111111111111111111111111111111";
+		const targetId = targetIdFromWallet(targetWallet);
+		const paperFillId = `paper-lineage-${randomUUID()}`;
+		const liveFillId = `live-lineage-${randomUUID()}`;
+
+		await db.insert(polyCopyTradeFills).values([
+			{
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId,
+				fillId: paperFillId,
+				marketId: "prediction-market:polymarket:paper-lineage",
+				observedAt: asOf,
+				clientOrderId: `paper-lineage-${randomUUID()}`,
+				status: "filled",
+				mode: "paper",
+				attributes: { position_gap_version: "3" },
+			},
+			{
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId,
+				fillId: liveFillId,
+				marketId: "prediction-market:polymarket:live-lineage",
+				observedAt: asOf,
+				clientOrderId: `live-lineage-${randomUUID()}`,
+				status: "filled",
+				mode: "live",
+				attributes: { position_gap_version: "3" },
+			},
+		]);
+
+		await store.repairTargetWalletLineage(
+			{
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId,
+			},
+			targetWallet,
+			"paper",
+		);
+
+		const rows = await db
+			.select({
+				fillId: polyCopyTradeFills.fillId,
+				attributes: polyCopyTradeFills.attributes,
+			})
+			.from(polyCopyTradeFills)
+			.where(inArray(polyCopyTradeFills.fillId, [paperFillId, liveFillId]));
+		const attributesByFill = new Map(
+			rows.map((row) => [row.fillId, row.attributes]),
+		);
+		expect(attributesByFill.get(paperFillId)?.target_wallet).toBe(targetWallet);
+		expect(attributesByFill.get(liveFillId)?.target_wallet).toBeUndefined();
 	});
 
 	it("retains the filled cost of all 49 canceled pending-fill reservations", async () => {
@@ -1405,7 +1465,11 @@ describe("position-gap runtime persistence", () => {
 				child() {
 					return this;
 				},
-			} as never,
+			} as never, // MODE_STAMPED_FROM_ACCOUNT: the ledger resolves each write's mode from the
+			// writing row's own billing account, never a process-wide env read. These
+			// are live fixtures; stating the venue explicitly keeps the test honest
+			// rather than leaning on a default production deliberately does not have.
+			resolveExecutionMode: async () => "live" as const,
 		});
 
 		const hard = await persistBuy("hard");
@@ -1435,18 +1499,18 @@ describe("position-gap runtime persistence", () => {
 			'PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_allowance, response_keys=[success,errorMsg], reason="insufficient_allowance", clob_error="not enough balance / allowance: the allowance is not enough")';
 		await store.markAmbiguous(hardBuy.id, durableDetail);
 
-		await expect(
-			store.recoverKnownRejectedAmbiguities(scope),
-		).resolves.toEqual([
-			{
-				id: hardBuy.id,
-				clientOrderId: "ambiguous-client-hard",
-				errorCode: "insufficient_allowance",
-			},
-		]);
-		await expect(
-			store.recoverKnownRejectedAmbiguities(scope),
-		).resolves.toEqual([]);
+		await expect(store.recoverKnownRejectedAmbiguities(scope)).resolves.toEqual(
+			[
+				{
+					id: hardBuy.id,
+					clientOrderId: "ambiguous-client-hard",
+					errorCode: "insufficient_allowance",
+				},
+			],
+		);
+		await expect(store.recoverKnownRejectedAmbiguities(scope)).resolves.toEqual(
+			[],
+		);
 
 		const [hardAction] = await db
 			.select()
@@ -1459,15 +1523,11 @@ describe("position-gap runtime persistence", () => {
 		const [hardCohort] = await db
 			.select()
 			.from(polyPositionGapCohorts)
-			.where(
-				eq(polyPositionGapCohorts.cohortKey, "ambiguous-cohort-hard"),
-			);
+			.where(eq(polyPositionGapCohorts.cohortKey, "ambiguous-cohort-hard"));
 		const [hardLedger] = await db
 			.select()
 			.from(polyCopyTradeFills)
-			.where(
-				eq(polyCopyTradeFills.clientOrderId, "ambiguous-client-hard"),
-			);
+			.where(eq(polyCopyTradeFills.clientOrderId, "ambiguous-client-hard"));
 		expect(hardAction).toMatchObject({
 			status: "rejected",
 			errorCode: "placement_rejected",
@@ -1487,13 +1547,10 @@ describe("position-gap runtime persistence", () => {
 		if (!transportBuy) throw new Error("transport BUY missing");
 		await store.markLedgered(transportBuy.id);
 		await store.markSubmitting(transportBuy.id);
-		await store.markAmbiguous(
-			transportBuy.id,
-			"connection reset after submit",
+		await store.markAmbiguous(transportBuy.id, "connection reset after submit");
+		await expect(store.recoverKnownRejectedAmbiguities(scope)).resolves.toEqual(
+			[],
 		);
-		await expect(
-			store.recoverKnownRejectedAmbiguities(scope),
-		).resolves.toEqual([]);
 		const [transportAction] = await db
 			.select()
 			.from(polyPositionGapActions)
@@ -1522,6 +1579,29 @@ describe("position-gap runtime persistence", () => {
 				cancellations: [],
 			}),
 		).rejects.toThrow("halted by an ambiguous placement");
+
+		// A generic transport ambiguity remains fail-closed until durable ledger
+		// evidence proves no venue order exists. The actor maps that evidence to
+		// this narrow transition; it must retire the action and release its
+		// reservation so a replacement generation can start safely.
+		await store.markVenueNotFoundCanceled(transportBuy.id);
+		const [retiredTransportAction] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, transportBuy.id));
+		const [retiredTransportReservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, transportBuy.id));
+		expect(retiredTransportAction).toMatchObject({
+			status: "canceled",
+			errorCode: "clob_not_found",
+		});
+		expect(retiredTransportReservation).toMatchObject({
+			state: "released",
+			releaseReason: "clob_not_found",
+		});
+		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBe(0);
 	});
 
 	it("rejects a second live ledger row for the same v3 cohort before placement", async () => {
@@ -1535,7 +1615,16 @@ describe("position-gap runtime persistence", () => {
 				return this;
 			},
 		};
-		const ledger = createOrderLedger({ db, logger: logger as never });
+		const ledger = createOrderLedger({
+			db,
+			logger: logger as never,
+			// MODE_STAMPED_FROM_ACCOUNT: the ledger resolves each write's mode from
+			// the writing row's own billing account rather than a process-wide env
+			// read. These rows are live fixtures, so the venue is "live"; supplying
+			// the resolver explicitly keeps the test honest about that rather than
+			// relying on a default the production ledger deliberately does not have.
+			resolveExecutionMode: async () => "live" as const,
+		});
 		const insert = (suffix: string) =>
 			ledger.insertPending({
 				billing_account_id: accountA,
@@ -1575,7 +1664,16 @@ describe("position-gap runtime persistence", () => {
 				return this;
 			},
 		};
-		const ledger = createOrderLedger({ db, logger: logger as never });
+		const ledger = createOrderLedger({
+			db,
+			logger: logger as never,
+			// MODE_STAMPED_FROM_ACCOUNT: the ledger resolves each write's mode from
+			// the writing row's own billing account rather than a process-wide env
+			// read. These rows are live fixtures, so the venue is "live"; supplying
+			// the resolver explicitly keeps the test honest about that rather than
+			// relying on a default the production ledger deliberately does not have.
+			resolveExecutionMode: async () => "live" as const,
+		});
 		const clientOrderId = `fill-accounting-${randomUUID()}`;
 		await ledger.insertPending({
 			billing_account_id: accountA,
@@ -1796,7 +1894,11 @@ describe("position-gap runtime persistence", () => {
 				child() {
 					return this;
 				},
-			} as never,
+			} as never, // MODE_STAMPED_FROM_ACCOUNT: the ledger resolves each write's mode from the
+			// writing row's own billing account, never a process-wide env read. These
+			// are live fixtures; stating the venue explicitly keeps the test honest
+			// rather than leaning on a default production deliberately does not have.
+			resolveExecutionMode: async () => "live" as const,
 		});
 		await ledgerPort.markOrderId({
 			client_order_id: clientOrderId,

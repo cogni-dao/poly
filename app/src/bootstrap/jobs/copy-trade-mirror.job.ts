@@ -24,11 +24,9 @@
 import type {
   LoggerPort,
   MetricsPort,
-  OrderReceipt,
 } from "@cogni/poly-market-provider";
 import {
   type MirrorPipelineDeps,
-  type OperatorPosition,
   runMirrorTick,
 } from "@/features/copy-trade/mirror-pipeline";
 import { positionCostUsdc } from "@/features/copy-trade/position-cost";
@@ -352,10 +350,15 @@ export interface MirrorJobDeps {
   getMarketConstraints?: MirrorPipelineDeps["getMarketConstraints"];
   /** Optional target-position read; v0 production uses Polymarket Data API. */
   getTargetConditionPosition?: MirrorPipelineDeps["getTargetConditionPosition"];
-  /** Whole-book current-value denominator for position_gap v2. */
+  /** Whole-book target value recorded as a shared algorithm input. */
   getTargetPortfolioCurrentValue?: MirrorPipelineDeps["getTargetPortfolioCurrentValue"];
-  /** Live mirror NAV + exact wallet positions for position_gap v2. */
+  /** Mirror NAV + exact positions recorded as shared algorithm inputs. */
   getMirrorPortfolioSnapshot?: MirrorPipelineDeps["getMirrorPortfolioSnapshot"];
+  /**
+   * Resolves this tenant's execution mode once per tick. Private account facts
+   * and placement must retain this binding for the whole decision.
+   */
+  getExecutionMode: MirrorPipelineDeps["getExecutionMode"];
   /** Structured log sink. */
   logger: LoggerPort;
   /** Metrics sink. */
@@ -364,17 +367,12 @@ export interface MirrorJobDeps {
    * Optional SELL-to-close path from `PolyTradeExecutor.closePosition`.
    * When absent, SELL fills degrade to `skip/sell_without_position`.
    */
-  closePosition?: (params: {
-    tokenId: string;
-    max_size_usdc: number;
-    limit_price: number;
-    client_order_id: `0x${string}`;
-  }) => Promise<OrderReceipt>;
+  closePosition?: MirrorPipelineDeps["closePosition"];
   /**
    * Optional position query from `PolyTradeExecutor.listPositions`.
    * When absent, SELL fills degrade to `skip/sell_without_position`.
    */
-  getOperatorPositions?: () => Promise<OperatorPosition[]>;
+  getOperatorPositions?: MirrorPipelineDeps["getOperatorPositions"];
 }
 
 /** Stops the poll. Returned so the container can call on SIGTERM (future). */
@@ -424,6 +422,7 @@ export function startMirrorPoll(deps: MirrorJobDeps): MirrorJobStopFn {
     setCursor: (n) => {
       cursor = n;
     },
+    getExecutionMode: deps.getExecutionMode,
     logger: deps.logger,
     metrics: deps.metrics,
     // exactOptionalPropertyTypes: only spread when defined to avoid

@@ -473,6 +473,14 @@ describe("buildPositionGapBuyIntent", () => {
 			],
 		}));
 		const never = new Promise<number>(() => undefined);
+		const databaseCause = Object.assign(
+			new Error("violates check constraint"),
+			{ code: "23514" },
+		);
+		const repairTargetWalletLineage = vi.fn(async () => {
+			throw new Error("Failed query", { cause: databaseCause });
+		});
+		const loggerWarn = vi.fn();
 		const handle = startPositionGapActor({
 			scope: {
 				billingAccountId: "billing-account",
@@ -495,9 +503,27 @@ describe("buildPositionGapBuyIntent", () => {
 			refresh: {} as never,
 			store: {
 				recoverSubmittingAsAmbiguous: vi.fn(() => never),
-				repairTargetWalletLineage: vi.fn(async () => 0),
+				repairTargetWalletLineage,
 				recoverKnownRejectedAmbiguities,
 				loadPlannerState,
+				loadOrderBindings: vi.fn(async () =>
+					new Map([
+						[
+							"open-client",
+							{ mode: "paper" as const, status: "open" },
+						],
+					]),
+				),
+				loadAccountBuyExposure: vi.fn(async () => [
+					{
+						clientOrderId: "open-client",
+						orderId: "open-order",
+						mode: "paper" as const,
+						conditionId: "condition",
+						tokenId: "token",
+						remainingShares: 1,
+					},
+				]),
 				reconcileLedgerTerminals: vi.fn(async () => 0),
 				loadLastSnapshot: vi.fn(async () => snapshot),
 				persistPlan,
@@ -509,12 +535,18 @@ describe("buildPositionGapBuyIntent", () => {
 				markOrderId: vi.fn(async () => undefined),
 				markCanceled: vi.fn(async () => undefined),
 			} as never,
-			execution: {
+			getExecutionMode: vi.fn(async () => "paper" as const),
+			executionForMode: () => ({
 				placeBuy: vi.fn(),
 				cancelBuy,
 				getBuy,
 				getMarketConstraints: vi.fn(),
 				listOpenOrders: vi.fn(async () => []),
+			}),
+			fillEvidence: {
+				getWalletAddress: vi.fn(),
+				listActivity: vi.fn(),
+				listPositions: vi.fn(),
 			},
 			getWalletCashUsdc: vi.fn(async () => 20),
 			getTargetCashUsdc: vi.fn(async () => ({
@@ -526,7 +558,7 @@ describe("buildPositionGapBuyIntent", () => {
 			logger: {
 				debug: vi.fn(),
 				info: vi.fn(),
-				warn: vi.fn(),
+				warn: loggerWarn,
 				error: vi.fn(),
 				child() {
 					return this;
@@ -538,6 +570,24 @@ describe("buildPositionGapBuyIntent", () => {
 
 		await expect(handle.stop()).resolves.toBeUndefined();
 		expect(recoverKnownRejectedAmbiguities).toHaveBeenCalledOnce();
+		expect(repairTargetWalletLineage).toHaveBeenCalledWith(
+			{
+				billingAccountId: "billing-account",
+				createdByUserId: "user",
+				targetId: "target",
+			},
+			"0x1111111111111111111111111111111111111111",
+			"paper",
+		);
+		expect(loggerWarn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "poly.position_gap.v3.target_lineage_repair_failed",
+				err: "Failed query",
+				err_cause: "violates check constraint",
+				err_code: "23514",
+			}),
+			expect.any(String),
+		);
 		expect(cancelBuy).toHaveBeenCalledWith("open-order");
 		expect(markCancelConfirmed).toHaveBeenCalledWith("cancel-action");
 		expect(

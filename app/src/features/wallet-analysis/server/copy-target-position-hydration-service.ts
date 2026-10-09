@@ -91,6 +91,11 @@ export async function readCopyTargetPositionCohorts(db: {
       FROM poly_copy_trade_targets t
       JOIN poly_wallet_connections c
         ON c.billing_account_id = t.billing_account_id
+        -- Hydration reads REAL on-chain positions for local_wallet. A
+        -- kind='paper' row's address is synthetic and has no chain presence,
+        -- so without this filter a tenant holding both kinds would produce two
+        -- cohorts per target, the second of which can only ever hydrate empty.
+       AND c.kind = 'privy_live'
        AND c.revoked_at IS NULL
       JOIN poly_wallet_grants g
         ON g.wallet_connection_id = c.id

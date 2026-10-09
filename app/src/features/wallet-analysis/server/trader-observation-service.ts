@@ -28,6 +28,19 @@
  *   - COGNI_POSITION_ABSENCE_NEEDS_AUTHORITY: complete Data API polls do not
  *     deactivate Cogni-wallet current-position rows unless an injected
  *     authority classifies the missing row terminal.
+ *   - KIND_ROUTES_THE_FACT_SOURCE (migration 0083): a `paper_wallet` row is
+ *     observed by `paper-fact-source`, which projects the paper ledger into
+ *     these same tables. That path never calls `deps.client` (the Data-API has
+ *     nothing to say about a synthetic address), never calls
+ *     `deps.userPnlClient`, and never consults `deps.readPositionBalances` —
+ *     see LEDGER_IS_THE_AUTHORITY. `deps.client` therefore needs no interface
+ *     seam: the branch happens before any client use.
+ *   - PAPER_AND_LIVE_SWEEPS_ARE_DISJOINT: `disableMissingTenantWallets`
+ *     filters `kind = 'cogni_wallet'` and `retireMissingPaperWallets` filters
+ *     `kind = 'paper_wallet'`, so neither population can retire the other.
+ *     The paper sweep additionally refuses to retire anything on an EMPTY
+ *     account list, so a transient read of zero accounts cannot wipe
+ *     enrollment (a stronger form of ENROLLMENT_FAILURE_IS_NOT_A_WIPE).
  * Side-effects: IO through injected Data API client + optional user-pnl client + injected DB.
  * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5015
  * @public
@@ -66,6 +79,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import pLimit from "p-limit";
 import { hydrateCopyTargetPositions } from "./copy-target-position-hydration-service";
+import { PAPER_WALLET_KIND } from "./paper-fact-source";
 import {
   accumulateFillRollups,
   TICK_ROLLUP_MAX_BATCHES,
@@ -205,6 +219,12 @@ export interface TraderObservationTickResult {
   targetPositionRows: number;
   /** Fills folded into `poly_trader_fill_rollups_daily` this tick. */
   rollupFills: number;
+  /**
+   * `kind='paper_wallet'` rows this tick skipped. Paper accounts are projected
+   * by `paper-projection.job.ts`, not here; a non-zero count is normal and is
+   * how you tell "the observer correctly ignored paper" from "paper vanished".
+   */
+  paperWalletsSkipped: number;
   pnlPoints: number;
   prunedPnlPoints: number;
   prunedPositionSnapshots: number;
@@ -384,6 +404,8 @@ export async function runTraderObservationTick(
   // observation entirely — the same blank dashboard, by a different route.
   // Audible, never silent: its own log phase plus the tick's `errors` count.
   let syncTenantWalletsFailed = false;
+  // Pre-loop failures are counted here because `errors` is not yet in scope.
+  let errorsBeforeLoop = 0;
   try {
     await withStatementTimeout(
       deps.db,
@@ -423,7 +445,8 @@ export async function runTraderObservationTick(
   let positions = 0;
   let rollupFills = 0;
   let pnlPoints = 0;
-  let errors = syncTenantWalletsFailed ? 1 : 0;
+  let errors = (syncTenantWalletsFailed ? 1 : 0) + errorsBeforeLoop;
+  let paperWalletsSkipped = 0;
 
   // task.5015: bounded-parallel wallet fan-out. Per-wallet error isolation is
   // preserved — each phase catches its own errors and continues — EXCEPT when
@@ -435,6 +458,30 @@ export async function runTraderObservationTick(
     concurrency: WALLET_OBSERVE_CONCURRENCY,
     signal: deps.signal,
     run: async (wallet) => {
+      // PAPER_IS_A_SEPARATE_JOB: `paper-projection.job.ts` owns paper
+      // accounts, because it must run on lanes where
+      // POLY_TRADER_OBSERVATION_WRITER_ENABLED is false. This branch is the
+      // defensive half of that split — a paper wallet row is enrolled and
+      // `active_for_research`, so it IS selected here, and without this skip it
+      // would be handed to the Data-API path. That path would ask Polymarket
+      // about a synthetic address that has never traded on chain, get an empty
+      // answer, and record it as "no activity" — overwriting real projected
+      // facts with an absence. Skipping is not an optimisation; it is what
+      // keeps the two schedulers from fighting over one wallet.
+      if (wallet.kind === PAPER_WALLET_KIND) {
+        paperWalletsSkipped += 1;
+        log.debug(
+          {
+            event: "poly.trader.observe",
+            phase: "paper_wallet_skipped",
+            trader_wallet_id: wallet.id,
+            wallet: wallet.walletAddress,
+            reason: "projected by paper-projection.job",
+          },
+          "paper wallet skipped by the Data-API observer (owned by the paper projection job)"
+        );
+        return;
+      }
       try {
         const result = await observeWallet({ ...deps, wallet, logger: log });
         fills += result.fills;
@@ -624,6 +671,7 @@ export async function runTraderObservationTick(
       positions,
       target_position_rows: targetPositionRows,
       rollup_fills: rollupFills,
+      paper_wallets_skipped: paperWalletsSkipped,
       pnl_points: pnlPoints,
       pruned_pnl_points: prunedPnlPoints,
       pruned_position_snapshots: prunedPositionSnapshots,
@@ -640,6 +688,7 @@ export async function runTraderObservationTick(
     positions,
     targetPositionRows,
     rollupFills,
+    paperWalletsSkipped,
     pnlPoints,
     prunedPnlPoints,
     prunedPositionSnapshots,

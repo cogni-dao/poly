@@ -29,7 +29,7 @@ import {
 import { builderApiKey } from "@polymarket/client/node";
 import { signerFrom as polymarketSignerFrom } from "@polymarket/client/viem";
 import { PrivyClient } from "@privy-io/node";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import type { Logger } from "pino";
 import {
   type Address,
@@ -56,6 +56,7 @@ import {
   normalizePolymarketApiKeyCreds,
   rotatePolymarketApiKeyForSigner,
 } from "@/bootstrap/capabilities/poly-clob-creds";
+import { LIVE_CONNECTION_KIND } from "@/features/paper-accounts";
 import { serverEnv } from "@/shared/env/server-env";
 
 export class WalletAdapterUnconfiguredError extends Error {
@@ -80,25 +81,6 @@ export function isPolyTraderWalletConfigured(): boolean {
       env.POLY_WALLET_AEAD_KEY_ID &&
       env.POLYGON_RPC_URL
   );
-}
-
-/**
- * Paper-mode stub for the live tenant-wallet adapter. In PAPER_ENFORCE_MODE=paper
- * the executor factory + mirror poll must boot without live-wallet creds (Privy +
- * substrate-managed AEAD), because `buildPaperOnlyExecutor` never resolves a wallet
- * (it places through the paper sidecar with a noop signer). Every method throws if
- * actually invoked — which paper flows never do. bug.5253.
- */
-function createPaperUnusableWalletAdapter(
-  missing: string[]
-): PrivyPolyTraderWalletAdapter {
-  return new Proxy({} as PrivyPolyTraderWalletAdapter, {
-    get() {
-      return () => {
-        throw new WalletAdapterUnconfiguredError(missing);
-      };
-    },
-  });
 }
 
 export function createRealClobCredsFactory({
@@ -612,22 +594,15 @@ export function getPolyTraderWalletAdapter(
     !aeadKeyId ||
     !polygonRpcUrl
   ) {
-    // PAPER_UNUSED_WALLET (bug.5253): in PAPER_ENFORCE_MODE=paper the live tenant
-    // wallet is never resolved — `buildPaperOnlyExecutor` skips `resolve` +
-    // `authorizeIntent` and places through the paper sidecar with a noop signer.
-    // The live-wallet creds (Privy + the substrate-managed AEAD key) are
-    // intentionally absent on candidate/preview, so a missing adapter must NOT
-    // block the executor factory (otherwise no mirror poll runs → paper can't
-    // place). Return a stub that throws only if a method is actually invoked
-    // (it isn't, in paper mode). Live mode still requires full config.
-    if (env.PAPER_ENFORCE_MODE === "paper") {
-      logger.info(
-        { missing },
-        "paper mode: live wallet adapter unconfigured; using paper-unusable stub (never resolved)"
-      );
-      cached = createPaperUnusableWalletAdapter(missing);
-      return cached;
-    }
+    // NO_UNUSABLE_STUB — this used to return a Proxy whose every property access
+    // threw (`createPaperUnusableWalletAdapter`, bug.5253), so that a paper-only
+    // deployment with no Privy / AEAD credentials could still construct the
+    // executor factory. The paper venue no longer goes through this adapter at
+    // all (it has its own authorizer + identity), so the stub's only remaining
+    // effect would be to turn a configuration error into a mystery
+    // `TypeError`-shaped failure deep inside a live code path. Callers that can
+    // serve paper accounts catch this error and wire the factory without a
+    // `walletPort`; see `container.ts`.
     throw new WalletAdapterUnconfiguredError(missing);
   }
 
@@ -704,11 +679,19 @@ export interface ConnectRateLimitResult {
 /**
  * Check whether a new `/connect` attempt for the given tenant should be
  * rate-limited. Returns `{ limited: false }` when:
- *   - the tenant has no rows yet (first-ever provision), OR
- *   - the tenant's most-recent row is still active (idempotent re-hit), OR
- *   - the tenant's most-recent row was revoked more than the cooldown ago.
- * Returns `{ limited: true, retryAfterSeconds }` when the most-recent row is
- * revoked AND still inside the cooldown window.
+ *   - the tenant has no LIVE rows yet (first-ever provision), OR
+ *   - the tenant's most-recent live row is still active (idempotent re-hit), OR
+ *   - the tenant's most-recent live row was revoked more than the cooldown ago.
+ * Returns `{ limited: true, retryAfterSeconds }` when the most-recent live row
+ * is revoked AND still inside the cooldown window.
+ *
+ * LIVE_ROWS_ONLY: `/connect` provisions a `kind='privy_live'` wallet, so the
+ * cooldown must be computed over live rows only. Without the filter, a paper
+ * account created after a live revoke becomes the "most-recent row", its
+ * `revoked_at` is NULL, and the just-revoked live row is masked — the
+ * connect→revoke→connect churn this limiter exists to bound sails straight
+ * through. The `revoked_at` predicate stays absent on purpose: the decision
+ * needs the latest row *whatever its state*, and reads `revoked_at` off it.
  *
  * Kept in bootstrap (not in the route / not in the adapter) so route handlers
  * can consume it without crossing the `@/adapters/**` boundary.
@@ -723,7 +706,12 @@ export async function checkConnectRateLimit(
       revokedAt: polyWalletConnections.revokedAt,
     })
     .from(polyWalletConnections)
-    .where(eq(polyWalletConnections.billingAccountId, billingAccountId))
+    .where(
+      and(
+        eq(polyWalletConnections.billingAccountId, billingAccountId),
+        eq(polyWalletConnections.kind, LIVE_CONNECTION_KIND)
+      )
+    )
     .orderBy(desc(polyWalletConnections.createdAt))
     .limit(1);
 

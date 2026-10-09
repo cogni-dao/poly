@@ -58,6 +58,7 @@ import type {
 import { netTargetBook } from "@/features/copy-trade/position-gap-v3/netting";
 import type { OrderLedger } from "@/features/trading";
 import type { WalletActivitySource } from "@/features/wallet-watch";
+import { EVENT_NAMES } from "@/shared/observability/events";
 
 const RECONCILE_MS = 30_000;
 const FULL_REFRESH_MS = 5 * 60_000;
@@ -121,14 +122,16 @@ export interface PositionGapActorDeps {
 	refresh: PositionGapTargetRefreshCoordinator;
 	store: PositionGapRuntimeStore;
 	ledger: OrderLedger;
-	execution: PositionGapBuyExecutionPort;
+	getExecutionMode(): Promise<"live" | "paper">;
+	executionForMode(mode: "live" | "paper"): PositionGapBuyExecutionPort;
 	fillEvidence: PositionGapFillEvidencePort;
-	getWalletCashUsdc(): Promise<number>;
+	getWalletCashUsdc(mode: "live" | "paper"): Promise<number>;
 	/** Both Polymarket collateral vintages at the target-book source block. */
 	getTargetCashUsdc(sourceBlock: number): Promise<PositionGapTargetCashSnapshot>;
 	/** Complete CTF inventory at one Polygon block, including legacy aliases. */
 	getAuthoritativeHoldings(
 		snapshot: TargetBookSnapshotV1,
+		mode: "live" | "paper",
 	): Promise<PositionGapLocalHoldingsSnapshot>;
 	logger: LoggerPort;
 	now?: () => number;
@@ -274,6 +277,8 @@ export function startPositionGapActor(
 	};
 
 	async function reconcile(triggerReasons: readonly string[]): Promise<void> {
+		const planningMode = await deps.getExecutionMode();
+		const planningExecution = deps.executionForMode(planningMode);
 		// Reconcile our durable order truth before any stale/causal early exit can
 		// enter safety cancellation. Known hard rejections must not remain
 		// ambiguous merely because the target snapshot is temporarily unusable.
@@ -414,13 +419,16 @@ export function startPositionGapActor(
 			),
 			freshSnapshot.refreshStats.sourceMaxSyncedBlock,
 		);
-		const localHoldings = await deps.getAuthoritativeHoldings(freshSnapshot);
+		const localHoldings = await deps.getAuthoritativeHoldings(
+			freshSnapshot,
+			planningMode,
+		);
 		const holdings = floorPositionGapHoldingsAtAcquiredShares({
 			holdings: validateLocalHoldings(freshSnapshot, localHoldings),
 			cohorts: runtime.cohorts,
 			provisionalFilledHoldings: runtime.provisionalFilledHoldings,
 		});
-		const walletCashUsdc = await deps.getWalletCashUsdc();
+		const walletCashUsdc = await deps.getWalletCashUsdc(planningMode);
 		const mirrorMarkedExposure = holdings.reduce((sum, holding) => {
 			const token = tokenById(freshSnapshot, holding.tokenId);
 			return sum + holding.shares * (token?.markPrice ?? 0);
@@ -482,11 +490,16 @@ export function startPositionGapActor(
 			openOrders: runtime.openBuyOrders,
 			perOrderHeadroomUsdc: capacity.perOrderUsdc,
 		});
-		const venues = await loadVenues(freshSnapshot, candidateTokens);
+		const venues = await loadVenues(
+			freshSnapshot,
+			candidateTokens,
+			planningExecution,
+		);
 		const unmanagedBuyExposure = await loadUnmanagedBuyExposure({
 			snapshot: freshSnapshot,
 			runtime,
 			localHoldings,
+			planningMode,
 		});
 		const plan = planPositionGapBook({
 			nowMs: now(),
@@ -537,12 +550,14 @@ export function startPositionGapActor(
 			cohortCreations: cohortProjection.creations,
 			cohortReductions: cohortProjection.reductions,
 			accountingTransitions,
+			planningMode,
 		});
 	}
 	async function reconcileKnownOrders(): Promise<
 		readonly PositionGapAccountingTransition[]
 	> {
 		const transitions: PositionGapAccountingTransition[] = [];
+		const executionMode = await deps.getExecutionMode();
 		const recovered = await deps.store.recoverKnownRejectedAmbiguities(
 			deps.scope,
 		);
@@ -563,9 +578,15 @@ export function startPositionGapActor(
 			await deps.store.repairTargetWalletLineage(
 				deps.scope,
 				deps.targetWallet,
+				executionMode,
 			);
 		} catch (error) {
 			if (error instanceof PositionGapTargetLineageMismatchError) throw error;
+			const cause = error instanceof Error ? error.cause : undefined;
+			const causeCode =
+				typeof cause === "object" && cause !== null && "code" in cause
+					? String(cause.code)
+					: undefined;
 			// Prospective PGv3 intents already carry target_wallet. This historic
 			// observability repair may retry, but cannot gate safe trading.
 			deps.logger.warn(
@@ -575,11 +596,61 @@ export function startPositionGapActor(
 					target_id: deps.scope.targetId,
 					target_wallet: deps.targetWallet.toLowerCase(),
 					err: error instanceof Error ? error.message : String(error),
+					err_cause: cause instanceof Error ? cause.message : undefined,
+					err_code: causeCode,
 				},
 				"position-gap historical target-wallet lineage repair failed",
 			);
 		}
 		const runtime = await deps.store.loadPlannerState(deps.scope);
+		const ledgerByClientOrderId = await deps.store.loadOrderBindings(
+			deps.scope,
+			runtime.activeBuys.map((action) => action.clientOrderId),
+		);
+
+		// LEDGER_TERMINAL_SURVIVES_RESTART (bug.5023). `ledgerTerminals` is an
+		// in-memory map fed by `observeLedgerTerminal`, which the shared
+		// reconciler calls exactly ONCE, into whichever actor instance happens
+		// to be alive at that moment. If the ledger row terminalizes while no
+		// actor is running — a pod restart, a redeploy, a leadership handover —
+		// that single notification lands on nothing, and the action stays
+		// `ambiguous` forever: the recovery sweep above only matches known CLOB
+		// rejection codes, so a non-CLOB failure (e.g. a paper sidecar 502) is
+		// outside it. The target then halts on every tick, permanently, while
+		// the ledger has long since recorded the truth.
+		//
+		// Re-derive the map from the ledger instead of depending on having
+		// caught the live event. The ledger is the authority on whether an
+		// order ever reached a venue, so this is the same answer, just sourced
+		// from durable state. Only actions with no `orderId` qualify: an action
+		// that HAS one is reconciled against the venue below, which is strictly
+		// better evidence than our own ledger row.
+		const unplacedAmbiguous = runtime.activeBuys.filter(
+			(a) => !a.orderId && !ledgerTerminals.has(a.clientOrderId),
+		);
+		if (unplacedAmbiguous.length > 0) {
+			for (const action of unplacedAmbiguous) {
+				const status = ledgerByClientOrderId.get(action.clientOrderId)?.status;
+				// `error` is what the reconciler writes for `never_placed`;
+				// `canceled` means it was retired without ever reporting an id.
+				// Both say the same thing for an action with no `orderId`: the
+				// venue never acknowledged it, so there is nothing to deny.
+				if (status !== "error" && status !== "canceled") continue;
+				ledgerTerminals.set(action.clientOrderId, "never_placed");
+				deps.logger.warn(
+					{
+						event: "poly.position_gap.v3.ledger_terminal_rehydrated",
+						billing_account_id: deps.scope.billingAccountId,
+						target_id: deps.scope.targetId,
+						action_id: action.id,
+						client_order_id: action.clientOrderId,
+						ledger_status: status,
+					},
+					"position-gap re-derived a terminal ledger transition missed while no actor was running",
+				);
+			}
+		}
+
 		for (const action of runtime.activeBuys) {
 			const terminalReason = ledgerTerminals.get(action.clientOrderId);
 			if (terminalReason === "clob_not_found") {
@@ -588,18 +659,58 @@ export function startPositionGapActor(
 				continue;
 			}
 			if (terminalReason === "never_placed") {
-				await deps.store.markKnownRejected(action.id, terminalReason);
+				// `markKnownRejected` admits an `ambiguous` action ONLY when its
+				// stored errorDetail parses as a known CLOB rejection code. A
+				// non-CLOB failure — a paper sidecar 502, a transport fault —
+				// does not, so the call returns false and the action stays
+				// ambiguous forever, halting the target on every tick. That is
+				// the actual mechanism behind bug.5023; rehydrating the terminal
+				// is necessary but not sufficient without this.
+				//
+				// Fall through to the venue-not-found release, which is the only
+				// transition that can retire an ambiguous BUY — and which is
+				// literally true here: the ledger reached a terminal state with
+				// no order id, so the venue does not have this order. We are not
+				// widening what counts as a CLOB rejection; we are recording the
+				// release on the evidence we actually have.
+				const retired = await deps.store.markKnownRejected(
+					action.id,
+					terminalReason,
+				);
+				if (!retired) {
+					await deps.store.markVenueNotFoundCanceled(action.id);
+					deps.logger.warn(
+						{
+							event: "poly.position_gap.v3.ambiguous_released_by_ledger",
+							billing_account_id: deps.scope.billingAccountId,
+							target_id: deps.scope.targetId,
+							action_id: action.id,
+							client_order_id: action.clientOrderId,
+						},
+						"position-gap released an ambiguous BUY the rejection path could not retire",
+					);
+				}
 				ledgerTerminals.delete(action.clientOrderId);
 				continue;
 			}
 			if (!action.orderId) continue;
+			const ledgerRow = ledgerByClientOrderId.get(action.clientOrderId);
+			if (!ledgerRow) {
+				throw new Error(
+					`position-gap order has no durable venue binding: ${action.clientOrderId}`,
+				);
+			}
+			const actionMode = ledgerRow.mode;
+			const execution = deps.executionForMode(actionMode);
 			let result: GetOrderResult;
 			try {
-				result = await deps.execution.getBuy(action.orderId);
+				result = await execution.getBuy(action.orderId);
 			} catch (error) {
 				if (error instanceof FillAccountingPendingError) {
 					if (["filled", "canceled"].includes(action.status)) {
-						transitions.push(await repairFromDataApi(action));
+						transitions.push(
+							await repairFromVenueEvidence(action, actionMode),
+						);
 					} else {
 						await deps.store.markFillAccountingPending(
 							action.id,
@@ -624,15 +735,38 @@ export function startPositionGapActor(
 					receipt: result.found,
 				});
 			} else if (["filled", "canceled"].includes(action.status)) {
-				transitions.push(await repairFromDataApi(action));
+				transitions.push(await repairFromVenueEvidence(action, actionMode));
 			}
 		}
 		return transitions;
 	}
 
-	async function repairFromDataApi(
+	async function repairFromVenueEvidence(
 		action: PositionGapActiveBuy,
+		executionMode: "live" | "paper",
 	): Promise<PositionGapAccountingTransition> {
+		if (executionMode === "paper") {
+			const detail =
+				"paper order has no venue receipt with fill accounting; live Data API evidence is forbidden for synthetic accounts";
+			await deps.store.markFillAccountingPending(action.id, detail);
+			deps.logger.warn(
+				{
+					event: EVENT_NAMES.POLY_POSITION_GAP_PAPER_FILL_EVIDENCE_UNAVAILABLE,
+					error_code: "paper_fill_evidence_unavailable",
+					billing_account_id: deps.scope.billingAccountId,
+					target_id: deps.scope.targetId,
+					action_id: action.id,
+				},
+				"position-gap withheld paper fill accounting; live wallet evidence cannot describe a synthetic account",
+			);
+			return {
+				actionId: action.id,
+				from: "pending",
+				to: "pending",
+				source: null,
+				reason: "paper_fill_evidence_unavailable",
+			};
+		}
 		try {
 			const result = await reconcilePositionGapFillEvidence({
 				port: deps.fillEvidence,
@@ -670,6 +804,7 @@ export function startPositionGapActor(
 	async function loadVenues(
 		snapshot: TargetBookSnapshotV1,
 		candidateTokenIds: ReadonlySet<string>,
+		execution: PositionGapBuyExecutionPort,
 	): Promise<PositionGapVenueConditionV1[]> {
 		return Promise.all(
 			snapshot.conditions.map(async (condition) => {
@@ -679,7 +814,7 @@ export function startPositionGapActor(
 						.map(async (token) => {
 							const cached = venueCache.get(token.tokenId);
 							if (cached && cached.expiresAtMs > now()) return cached.quote;
-							const constraints = await deps.execution.getMarketConstraints(
+							const constraints = await execution.getMarketConstraints(
 								token.tokenId,
 								"limit",
 							);
@@ -713,6 +848,7 @@ export function startPositionGapActor(
 		snapshot: TargetBookSnapshotV1;
 		runtime: Awaited<ReturnType<PositionGapRuntimeStore["loadPlannerState"]>>;
 		localHoldings: PositionGapLocalHoldingsSnapshot;
+		planningMode: "live" | "paper";
 	}): Promise<PositionGapUnmanagedBuyExposureV1[]> {
 		const aliases = new Map(
 			input.localHoldings.tokenAliases.map((entry) => [
@@ -797,7 +933,17 @@ export function startPositionGapActor(
 			if (managedClientIds.has(exposure.clientOrderId)) continue;
 			add(exposure, "account_ledger");
 		}
-		const venueOrders = await deps.execution.listOpenOrders();
+		const venueModes = new Set<"live" | "paper">([
+			input.planningMode,
+			...accountExposure.map((entry) => entry.mode),
+		]);
+		const venueOrders = (
+			await Promise.all(
+				[...venueModes].map((mode) =>
+					deps.executionForMode(mode).listOpenOrders(),
+				),
+			)
+		).flat();
 		for (const order of venueOrders) {
 			if (order.side !== "BUY") continue;
 			if (managedOrderIds.has(order.orderId) || ledgerOrderIds.has(order.orderId)) {
@@ -844,6 +990,7 @@ export function startPositionGapActor(
 			typeof projectPositionGapCohorts
 		>["reductions"];
 		accountingTransitions: readonly PositionGapAccountingTransition[];
+		planningMode: "live" | "paper";
 	}): Promise<void> {
 		const preparedBuys = input.plan.intents.map((intent) => {
 			const token = tokenById(input.snapshot, intent.tokenId);
@@ -910,25 +1057,37 @@ export function startPositionGapActor(
 				(action) => (action.orderId ? [[action.orderId, action] as const] : []),
 			),
 		);
+		const accountExposure = await deps.store.loadAccountBuyExposure(deps.scope);
+		const modeByClientOrderId = new Map(
+			accountExposure.map((entry) => [entry.clientOrderId, entry.mode] as const),
+		);
 
 		for (const cancellation of persisted.cancellations) {
-			await deps.execution.cancelBuy(cancellation.orderId);
-			const observed = await deps.execution.getBuy(cancellation.orderId);
+			const active = activeByOrder.get(cancellation.orderId);
+			if (!active) {
+				throw new Error(
+					`position-gap cancellation has no active order binding: ${cancellation.orderId}`,
+				);
+			}
+			const mode = modeByClientOrderId.get(active.clientOrderId);
+			if (!mode) {
+				throw new Error(
+					`position-gap cancellation has no durable venue binding: ${active.clientOrderId}`,
+				);
+			}
+			const execution = deps.executionForMode(mode);
+			await execution.cancelBuy(cancellation.orderId);
+			const observed = await execution.getBuy(cancellation.orderId);
 			if ("found" in observed && observed.found.status === "canceled") {
-				const active = activeByOrder.get(cancellation.orderId);
-				if (active) {
-					// The terminal receipt can contain a final provisional partial fill.
-					// Persist that quantity into the cohort in the same transaction that
-					// releases the order reservation before acknowledging the cancel row.
-					await deps.store.markPlacementReceipt(active.id, observed.found);
-				}
+				// The terminal receipt can contain a final provisional partial fill.
+				// Persist that quantity into the cohort in the same transaction that
+				// releases the order reservation before acknowledging the cancel row.
+				await deps.store.markPlacementReceipt(active.id, observed.found);
 				await deps.store.markCancelConfirmed(cancellation.id);
-				if (active) {
-					await deps.ledger.markCanceled({
-						client_order_id: active.clientOrderId,
-						reason: "position_gap_reconciled",
-					});
-				}
+				await deps.ledger.markCanceled({
+					client_order_id: active.clientOrderId,
+					reason: "position_gap_reconciled",
+				});
 			}
 		}
 
@@ -946,7 +1105,7 @@ export function startPositionGapActor(
 				targetWallet: deps.targetWallet,
 			});
 			try {
-				await deps.ledger
+				const placementMode = await deps.ledger
 					.forTenant({
 						billing_account_id: deps.scope.billingAccountId,
 						created_by_user_id: deps.scope.createdByUserId,
@@ -957,6 +1116,11 @@ export function startPositionGapActor(
 						observed_at: new Date(input.snapshot.updatedAtMs),
 						intent,
 					});
+				if (placementMode !== input.planningMode) {
+					throw new Error(
+						`execution venue changed during position-gap planning (${input.planningMode} -> ${placementMode})`,
+					);
+				}
 				await deps.store.markLedgered(buy.id);
 				await deps.store.markSubmitting(buy.id);
 			} catch (error) {
@@ -970,7 +1134,9 @@ export function startPositionGapActor(
 				continue;
 			}
 			try {
-				const receipt = await deps.execution.placeBuy(intent);
+				const receipt = await deps
+					.executionForMode(input.planningMode)
+					.placeBuy(intent);
 				await deps.store.markPlacementReceipt(buy.id, receipt);
 				placedCount += 1;
 				if (receipt.status === "filled" || receipt.status === "partial") {
@@ -1146,7 +1312,8 @@ export function startPositionGapActor(
 				safetyReason: reason,
 			},
 		}));
-		const walletCashUsdc = await deps.getWalletCashUsdc();
+		const planningMode = await deps.getExecutionMode();
+		const walletCashUsdc = await deps.getWalletCashUsdc(planningMode);
 		const safetyBudgetUsdc = Math.max(
 			deps.configuredBudgetUsdc ?? walletCashUsdc,
 			0.00000001,
@@ -1184,12 +1351,27 @@ export function startPositionGapActor(
 				action.orderId ? [[action.orderId, action] as const] : [],
 			),
 		);
+		const accountExposure = await deps.store.loadAccountBuyExposure(deps.scope);
+		const modeByClientOrderId = new Map(
+			accountExposure.map((entry) => [entry.clientOrderId, entry.mode] as const),
+		);
 		const cancellationFailures: string[] = [];
 		for (const cancellation of persisted.cancellations) {
 			const active = activeByOrder.get(cancellation.orderId);
 			try {
+				if (!active) {
+					throw new Error(
+						`position-gap safety cancellation has no active order binding: ${cancellation.orderId}`,
+					);
+				}
+				const mode = modeByClientOrderId.get(active.clientOrderId);
+				if (!mode) {
+					throw new Error(
+						`position-gap safety cancellation has no durable venue binding: ${active.clientOrderId}`,
+					);
+				}
 				await requireConfirmedSafetyCancellation({
-					execution: deps.execution,
+					execution: deps.executionForMode(mode),
 					store: deps.store,
 					ledger: deps.ledger,
 					cancellation,

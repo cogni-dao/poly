@@ -33,6 +33,11 @@ import { createPolyTradeExecutorFactory } from "@/bootstrap/capabilities/poly-tr
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import {
+  getExecutionVenueResolver,
+  getPaperPortfolio,
+  getPaperVenue,
+} from "@/bootstrap/poly-execution-venue";
+import {
   getPolyTraderWalletAdapter,
   WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
@@ -220,7 +225,11 @@ export const POST = wrapRouteHandlerWithLogging(
         metrics: noopMetrics,
         polygonRpcUrl: env.POLYGON_RPC_URL,
         paperSidecarUrl: env.PAPER_SIDECAR_URL,
-        paperEnforceMode: env.PAPER_ENFORCE_MODE,
+        // VENUE_RESOLVED_FROM_ACCOUNT — this account's connection kind decides
+        // which executor it gets, same as the mirror loop.
+        resolveExecutionVenue: getExecutionVenueResolver(),
+        paperVenue: getPaperVenue(),
+        paperPositions: getPaperPortfolio(),
       });
       const executor = await executorFactory.getPolyTradeExecutorFor(
         account.id

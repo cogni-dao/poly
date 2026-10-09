@@ -64,8 +64,11 @@ function recordingLogger(entries: Record<string, unknown>[]) {
 
 function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 	const decisions: TenantScopedRecordDecisionInput[] = [];
-	const insertPending = vi.fn(async () => undefined);
+	const insertPending = vi.fn<() => Promise<"live" | "paper">>(async () =>
+		Promise.resolve("paper"),
+	);
 	const markOrderId = vi.fn(async () => undefined);
+	const markError = vi.fn(async () => undefined);
 	const markCanceled = vi.fn(async () => undefined);
 	const tenant: TenantOrderLedger = {
 		snapshotState: async () => ({
@@ -86,16 +89,24 @@ function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 	const ledger = {
 		forTenant: () => tenant,
 		markOrderId,
-		markError: async () => undefined,
+		markError,
 		markCanceled,
 	} as unknown as OrderLedger;
-	return { decisions, insertPending, ledger, markCanceled, markOrderId };
+	return {
+		decisions,
+		insertPending,
+		ledger,
+		markCanceled,
+		markError,
+		markOrderId,
+	};
 }
 
 function commonDeps(fill: Fill, ledger: OrderLedger, logger: LoggerPort) {
 	return {
 		source: { fetchSince: async () => ({ fills: [fill], newSince: 1 }) },
 		ledger,
+		getExecutionMode: async () => "paper" as const,
 		placeIntent: vi.fn<() => Promise<OrderReceipt>>(),
 		target,
 		getCursor: () => undefined,
@@ -128,6 +139,48 @@ function commonDeps(fill: Fill, ledger: OrderLedger, logger: LoggerPort) {
 }
 
 describe("position_gap pipeline VWAP boundary", () => {
+	it("does not place when the account venue changes after private facts are read", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		harness.insertPending.mockResolvedValueOnce("live");
+		const deps = commonDeps(
+			{ ...buyFill, price: 0.5 },
+			harness.ledger,
+			recordingLogger(entries),
+		);
+		const placeIntent = vi.fn(async () => {
+			throw new Error("venue call must not run");
+		});
+
+		await runMirrorTick({
+			...deps,
+			target: buildMirrorTargetConfig({
+				targetWallet: buyFill.target_wallet,
+				billingAccountId: "billing-1",
+				createdByUserId: "user-1",
+				sizingPolicyKind: "min_bet",
+			}),
+			placeIntent,
+		});
+
+		expect(placeIntent).not.toHaveBeenCalled();
+		expect(harness.markError).toHaveBeenCalledOnce();
+		expect(harness.decisions).toContainEqual(
+			expect.objectContaining({
+				mode_override: "live",
+				outcome: "error",
+				reason: "placement_failed",
+			}),
+		);
+		expect(entries).toContainEqual(
+			expect.objectContaining({
+				execution_mode: "live",
+				outcome: "error",
+				reason: "placement_failed",
+			}),
+		);
+	});
+
 	it("records every input used by a vwap_floor_breach skip", async () => {
 		const entries: Record<string, unknown>[] = [];
 		const harness = ledgerHarness();
@@ -171,6 +224,52 @@ describe("position_gap pipeline VWAP boundary", () => {
 				mirror_capital_budget_usdc: null,
 				effective_mirror_capital_budget_usdc: 100,
 				mirror_budget_allocation_status: "full",
+			}),
+		);
+	});
+
+	it("records shared mirror facts for min_bet even when target NAV is unavailable", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		const deps = commonDeps(
+			buyFill,
+			harness.ledger,
+			recordingLogger(entries),
+		);
+		const minBetTarget = buildMirrorTargetConfig({
+			targetWallet: buyFill.target_wallet,
+			billingAccountId: "billing-1",
+			createdByUserId: "user-1",
+			sizingPolicyKind: "min_bet",
+		});
+
+		await runMirrorTick({
+			...deps,
+			target: minBetTarget,
+			getTargetPortfolioCurrentValue: async () => {
+				throw new Error("target rate limited");
+			},
+			getMirrorPortfolioSnapshot: async () => ({
+				currentValueUsdc: 321,
+				positions: [{ asset: "token-1", size: 7, currentValue: 3.5 }],
+			}),
+		});
+
+		expect(harness.decisions).toHaveLength(1);
+		expect(harness.decisions[0]).toMatchObject({
+			intent: {
+				sizing_policy_kind: "min_bet",
+				target_portfolio_current_value_usdc: null,
+				mirror_portfolio_current_value_usdc: 321,
+				mirror_token_qty_shares: 7,
+			},
+		});
+		expect(entries).toContainEqual(
+			expect.objectContaining({
+				event: "poly.mirror.decision",
+				target_portfolio_current_value_usdc: null,
+				mirror_portfolio_current_value_usdc: 321,
+				mirror_token_qty_shares: 7,
 			}),
 		);
 	});
@@ -228,6 +327,7 @@ describe("position_gap pipeline VWAP boundary", () => {
 				max_size_usdc: 4,
 				limit_price: 0.5,
 			}),
+			"paper",
 		);
 		expect(harness.insertPending).toHaveBeenCalledOnce();
 		expect(harness.markOrderId).toHaveBeenCalledOnce();
@@ -235,6 +335,10 @@ describe("position_gap pipeline VWAP boundary", () => {
 			expect.objectContaining({
 				outcome: "placed",
 				reason: "sell_closed_position",
+				intent: expect.objectContaining({
+					mirror_portfolio_current_value_usdc: 100,
+					mirror_token_qty_shares: 0,
+				}),
 			}),
 		);
 		expect(harness.decisions).not.toContainEqual(
@@ -270,6 +374,7 @@ describe("position_gap pipeline VWAP boundary", () => {
 				target_id: blockedTarget.target_id,
 				market_id: fill.market_id,
 				created_at: new Date("2026-10-07T00:00:00.000Z"),
+				mode: "paper",
 				limit_price: 0.5,
 			};
 			const entries: Record<string, unknown>[] = [];
@@ -299,7 +404,7 @@ describe("position_gap pipeline VWAP boundary", () => {
 			expect(closePosition).not.toHaveBeenCalled();
 			expect(getOperatorPositions).not.toHaveBeenCalled();
 			expect(harness.insertPending).not.toHaveBeenCalled();
-			expect(cancelOrder).toHaveBeenCalledWith("resting-order-1");
+			expect(cancelOrder).toHaveBeenCalledWith("resting-order-1", "paper");
 			expect(harness.markCanceled).toHaveBeenCalledWith({
 				client_order_id: openOrder.client_order_id,
 				reason: "multi_target_position_gap_unsupported",

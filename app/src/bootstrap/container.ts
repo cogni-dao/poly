@@ -156,6 +156,11 @@ import {
 	startOrderReconciler,
 } from "@/bootstrap/jobs/order-reconciler.job";
 import {
+	getExecutionVenueResolver,
+	getPaperPortfolio,
+	getPaperVenue,
+} from "@/bootstrap/poly-execution-venue";
+import {
 	getPolyTraderWalletAdapter,
 	WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
@@ -395,6 +400,9 @@ let _restingSweepStop: (() => void) | null = null;
 let _traderObservationStop: (() => void) | null = null;
 // Condition-iterating market outcome writer (task.5016). CLOB public client.
 let _marketOutcomeStop: (() => void) | null = null;
+// Paper-account fact projection stop fn (migration 0083). Local SQL projection
+// over our own ledger + one CLOB midpoint per open position.
+let _paperProjectionStop: (() => void) | null = null;
 // Per-asset price-history mirror job stop fn (task.5018). Public CLOB only.
 let _priceHistoryStop: (() => void) | null = null;
 // Top-wallets leaderboard mirror job stop fn (bug.5017). Public Data API only.
@@ -475,6 +483,14 @@ function stopAllJobHandles(): void {
 			// Best-effort.
 		}
 		_marketOutcomeStop = null;
+	}
+	if (_paperProjectionStop) {
+		try {
+			_paperProjectionStop();
+		} catch {
+			// Best-effort.
+		}
+		_paperProjectionStop = null;
 	}
 	if (_priceHistoryStop) {
 		try {
@@ -852,11 +868,17 @@ function createContainer(): Container {
 	const serviceDb = getServiceDb();
 	const paymentAttemptServiceRepository =
 		new ServiceDrizzlePaymentAttemptRepository(serviceDb);
+	// ONE_VENUE_RESOLVER_PER_PROCESS — the ledger's `mode` stamp and the executor
+	// factory's venue dispatch read the same resolver, so a row can never be
+	// labeled `live` while its order went to the paper sidecar.
+	const executionVenueResolver = getExecutionVenueResolver();
 	const orderLedger = createOrderLedger({
 		db: serviceDb,
 		appDb: db,
 		logger: log.child({ component: "order-ledger" }),
-		paperEnforceMode: env.PAPER_ENFORCE_MODE,
+		// MODE_STAMPED_FROM_ACCOUNT — resolved per write from the row's own
+		// account's `poly_wallet_connections.kind`, not from a process-wide env.
+		resolveExecutionMode: executionVenueResolver,
 	});
 	// DB-backed copy-trade target source. Candidate/preview always have a real
 	// Postgres, so there's no need for an in-memory env fallback here.
@@ -869,48 +891,65 @@ function createContainer(): Container {
 			serviceDb as unknown as import("drizzle-orm/postgres-js").PostgresJsDatabase<
 				Record<string, unknown>
 			>,
-		// PAPER_ENFORCE_MODE=paper routes every placement through the paper
-		// sidecar (no wallet signing), so skip the wallet_connections +
-		// wallet_grants activation joins so targets activate without Privy
-		// onboarding the user doesn't need for paper.
-		paperEnforced: env.PAPER_ENFORCE_MODE === "paper",
-		// bug.5288 — without this the enumerator's INNER joins drop a tenant
-		// silently: trading halts and looks identical to idle. Wired so an
+		// bug.5288 — without this the enumerator's activation predicate drops a
+		// tenant silently: trading halts and looks identical to idle. Wired so an
 		// expired grant names itself in the logs.
 		logger: log.child({ component: "copy-trade-target-source" }),
 	});
 	const redeemPipelines = new Map<string, RedeemPipelineHandles>();
 
+	// The paper venue's read side — executor position seam + the NAV the mirror's
+	// position_gap denominator needs. Shared with the wallet-refresh and
+	// manual-close routes through `@/bootstrap/poly-execution-venue`, so all three
+	// executor construction sites read paper facts the same way.
+	const paperPortfolio = getPaperPortfolio();
+
 	// Per-tenant trade-executor factory. Lazily constructs a
-	// `PolyTradeExecutor` for a given `billingAccountId`. Uses the per-user
-	// Privy app (`PRIVY_USER_WALLETS_*`) — distinct from the operator-wallet
-	// Privy app used by `OperatorWalletPort`. Undefined when any of those
-	// envs are missing; callers degrade gracefully (no mirror polls, no
-	// order reconciler). Sole placement path post Stage 4 purge — the former
-	// single-operator `polyTradeBundle` is gone and will not come back.
-	const polyTradeExecutorFactory:
-		| ReturnType<typeof createPolyTradeExecutorFactory>
-		| undefined = (() => {
-		try {
-			const walletPort = getPolyTraderWalletAdapter(log);
-			return createPolyTradeExecutorFactory({
-				walletPort,
-				logger: log,
-				metrics: noopMetricsForExecutor,
-				polygonRpcUrl: env.POLYGON_RPC_URL,
-				paperSidecarUrl: env.PAPER_SIDECAR_URL,
-				paperEnforceMode: env.PAPER_ENFORCE_MODE,
-			});
-		} catch (err) {
-			if (err instanceof WalletAdapterUnconfiguredError) {
-				log.info(
-					{ missing: err.message },
-					"per-tenant poly-trade executor not configured (PRIVY_USER_WALLETS_* or POLY_WALLET_AEAD_* missing)",
-				);
-				return undefined;
+	// `PolyTradeExecutor` for a given `billingAccountId` and dispatches it to the
+	// venue that account's `poly_wallet_connections.kind` names
+	// (VENUE_RESOLVED_FROM_ACCOUNT). Live accounts use the per-user Privy app
+	// (`PRIVY_USER_WALLETS_*`) — distinct from the operator-wallet Privy app used
+	// by `OperatorWalletPort`. Sole placement path post Stage 4 purge — the
+	// former single-operator `polyTradeBundle` is gone and will not come back.
+	//
+	// The custody port is OPTIONAL here: a deployment that serves only paper
+	// accounts legitimately has no Privy / AEAD credentials, and the paper venue
+	// does not route through that adapter at all. When the port is missing, a
+	// paper account still builds and a LIVE account fails loudly inside
+	// `buildExecutor` with `no_connection` — never a silent downgrade to paper.
+	// (Pre-0082 this slot held a Proxy whose every property access threw.)
+	const polyTradeExecutorFactory: ReturnType<
+		typeof createPolyTradeExecutorFactory
+	> = (() => {
+		const walletPort = (() => {
+			try {
+				return getPolyTraderWalletAdapter(log);
+			} catch (err) {
+				if (err instanceof WalletAdapterUnconfiguredError) {
+					log.info(
+						{ missing: err.message },
+						"poly trader wallet adapter not configured (PRIVY_USER_WALLETS_* or POLY_WALLET_AEAD_* missing) — live accounts cannot place on this deployment; paper accounts still can",
+					);
+					return undefined;
+				}
+				throw err;
 			}
-			throw err;
-		}
+		})();
+		return createPolyTradeExecutorFactory({
+			...(walletPort ? { walletPort } : {}),
+			logger: log,
+			metrics: noopMetricsForExecutor,
+			polygonRpcUrl: env.POLYGON_RPC_URL,
+			paperSidecarUrl: env.PAPER_SIDECAR_URL,
+			resolveExecutionVenue: executionVenueResolver,
+			paperVenue: getPaperVenue(),
+			// The paper venue's position reads, backed by the migration-0083 fact
+			// projection. Absent / incomplete / stale facts raise
+			// `PaperFactsUnavailableError` from inside the reader — this wiring adds
+			// no fallback, so there is still no path on which a paper position read
+			// answers 0 without a complete, fresh projection behind it.
+			paperPositions: paperPortfolio,
+		});
 	})();
 
 	// ─── task.5016: THE background-job start seam ────────────────────────────
@@ -931,13 +970,17 @@ function createContainer(): Container {
 	// (tenant × wallet); exactly one `startOrderReconciler` process-wide
 	// (per-tenant dispatch is internal, routed through the executor factory).
 	//
-	// Post-cutover gate: the poll + reconciler start iff
-	// `polyTradeExecutorFactory` exists, i.e. `PRIVY_USER_WALLETS_*` and
-	// `POLY_WALLET_AEAD_*` are configured. Daily/hourly USDC caps live in
-	// each tenant's `poly_wallet_grants` and are enforced by `authorizeIntent`
-	// on the hot path inside `PolyTradeExecutor.placeIntent`.
-	// bug.0438: copy-trade has no per-tenant kill-switch; the gate is the
-	// active-target × active-connection × active-grant join inside `listAllActive`.
+	// The executor factory is always constructed now (a paper-only deployment
+	// needs no Privy / AEAD credentials, and per-account venue dispatch decides
+	// what each tenant can actually do), so this is no longer a credential gate:
+	// the gate is the active-target × active-connection × active-grant predicate
+	// inside `listAllActive`. Daily/hourly USDC caps live in each tenant's
+	// `poly_wallet_grants` and are enforced on the hot path inside
+	// `PolyTradeExecutor.placeIntent` — by `authorizeIntent` for a live account,
+	// by the paper venue's authorizer for a paper one.
+	// bug.0438: copy-trade has no per-tenant kill-switch. The `!== undefined`
+	// guard below is vestigial (the factory is now always defined) and kept only
+	// to avoid re-indenting the whole job-start block in this change.
 	if (polyTradeExecutorFactory !== undefined) {
 		const executorFactory = polyTradeExecutorFactory;
 		// Lazy-load the poll wiring so its transitive imports (Data-API HTTP
@@ -1021,7 +1064,27 @@ function createContainer(): Container {
 				const erc20BalanceAbi = parseAbi([
 					"function balanceOf(address account) view returns (uint256)",
 				]);
-				const mirrorWalletPort = getPolyTraderWalletAdapter(log);
+				// Only used for the position_gap NAV denominator (free pUSD on the
+				// live trading wallet). A paper-only deployment has no Privy / AEAD
+				// config, and since the paper-unusable Proxy stub is gone this throws
+				// there — so tolerate its absence rather than taking the whole mirror
+				// poll down with it. `getMirrorPortfolioSnapshot` is left unwired in
+				// that case, which makes position_gap decline to size instead of
+				// sizing against an invented NAV.
+				const mirrorWalletPort = (() => {
+					try {
+						return getPolyTraderWalletAdapter(log);
+					} catch (err) {
+						if (err instanceof WalletAdapterUnconfiguredError) {
+							log.info(
+								{ missing: err.message },
+								"mirror poll: live wallet adapter unconfigured — position_gap NAV reads disabled on this deployment",
+							);
+							return undefined;
+						}
+						throw err;
+					}
+				})();
 				// pino's Logger is structurally compatible with LoggerPort's subset
 				// (debug/info/warn/error/child with object + optional msg).
 				const mirrorLogger =
@@ -1035,9 +1098,12 @@ function createContainer(): Container {
 				// reconciler runs on the pod; per-tenant dispatch is internal.
 				const reconcilerHandle = startOrderReconciler({
 					ledger: orderLedger,
-					getOrderForTenant: async (billingAccountId, orderId) => {
+					getOrderForTenant: async (billingAccountId, orderId, mode) => {
 						const executor =
-							await executorFactory.getPolyTradeExecutorFor(billingAccountId);
+							await executorFactory.getPolyTradeExecutorForVenue(
+								billingAccountId,
+								mode,
+							);
 						return executor.getOrder(orderId);
 					},
 					logger: mirrorLogger,
@@ -1071,9 +1137,10 @@ function createContainer(): Container {
 				// per-wallet polls to match. First tick fires immediately. See
 				// docs/spec/poly-tenant-and-collateral.md § POLL_RECONCILES_PER_TICK.
 				//
-				// `listAllActive` joins `poly_wallet_connections` +
-				// `poly_wallet_grants`, so the reconciler only hands us tenants that
-				// have (a) an active trading wallet and (b) an active grant. Each
+				// `listAllActive` requires an active `poly_wallet_connections` row with
+				// an active `poly_wallet_grants` row, so the reconciler only hands us
+				// tenants that have (a) an active account of either kind and (b) an
+				// active grant. Each
 				// per-tenant poll routes placements through the per-tenant
 				// `PolyTradeExecutor`, which wraps every `placeOrder` with
 				// `authorizeIntent` so scope + cap + grant-revoke checks run on the
@@ -1082,12 +1149,10 @@ function createContainer(): Container {
 					targetSource: copyTradeTargetSource,
 					startPollForTarget: (enumeratedTarget) => {
 						const targetWallet = enumeratedTarget.targetWallet;
-						// MODE_STAMPED_AT_LEDGER_FROM_ENV — the ledger reads
-						// PAPER_ENFORCE_MODE once at construction and stamps every fill /
-						// decision row with the env-derived mode. No need to thread mode
-						// through `MirrorTargetConfig`; the planner + pipeline are mode-
-						// agnostic. Pair with PAPER_DISPATCH_IS_ENV_ONLY
-						// (poly-trade-executor.ts).
+						// MODE_STAMPED_FROM_ACCOUNT — the ledger resolves each new row's
+						// mode and returns that durable binding to the pipeline. Placement
+						// and historical get/cancel operations dispatch with that exact
+						// mode; `MirrorTargetConfig` remains algorithm-only.
 						const target = buildMirrorTargetConfig({
 							targetWallet,
 							billingAccountId: enumeratedTarget.billingAccountId,
@@ -1116,16 +1181,20 @@ function createContainer(): Container {
 							metrics: noopMetrics,
 						});
 
-						// Build once per (tenant × target). Executor is cached across
-						// ticks inside the factory keyed on billingAccountId.
-						let cachedExecutor: PolyTradeExecutor | null = null;
-						const getExecutor = async (): Promise<PolyTradeExecutor> => {
-							if (cachedExecutor) return cachedExecutor;
-							cachedExecutor = await executorFactory.getPolyTradeExecutorFor(
-								enumeratedTarget.billingAccountId,
-							);
-							return cachedExecutor;
-						};
+						// The factory resolves the account venue on every dispatch, then
+						// reuses the venue-specific client. A second target-local cache
+						// would pin paper after live custody is provisioned.
+						const getExecutor = (
+							mode?: "live" | "paper",
+						): Promise<PolyTradeExecutor> =>
+							mode
+								? executorFactory.getPolyTradeExecutorForVenue(
+										enumeratedTarget.billingAccountId,
+										mode,
+									)
+								: executorFactory.getPolyTradeExecutorFor(
+										enumeratedTarget.billingAccountId,
+									);
 
 						if (enumeratedTarget.sizingPolicyKind === "position_gap") {
 							const actor = startPositionGapActor({
@@ -1144,24 +1213,26 @@ function createContainer(): Container {
 								refresh: positionGapRefresh,
 								store: positionGapStore,
 								ledger: orderLedger,
-								execution: {
+								getExecutionMode: () =>
+									executionVenueResolver(enumeratedTarget.billingAccountId),
+								executionForMode: (mode) => ({
 									placeBuy: async (intent) =>
-										(await getExecutor()).placeIntent(intent),
+										(await getExecutor(mode)).placeIntent(intent),
 									cancelBuy: async (orderId) =>
-										(await getExecutor()).cancelOrder(orderId),
+										(await getExecutor(mode)).cancelOrder(orderId),
 									getBuy: async (orderId) =>
-										(await getExecutor()).getOrder(orderId),
+										(await getExecutor(mode)).getOrder(orderId),
 									getMarketConstraints: async (tokenId, placement) =>
-										(await getExecutor()).getMarketConstraints(
+										(await getExecutor(mode)).getMarketConstraints(
 											tokenId,
 											placement,
 										),
 									listOpenOrders: async () =>
-										(await getExecutor()).listOpenOrders(),
-								},
+										(await getExecutor(mode)).listOpenOrders(),
+								}),
 								fillEvidence: {
 									getWalletAddress: async () =>
-										(await getExecutor()).funderAddress,
+										(await getExecutor("live")).funderAddress,
 									listActivity: async (wallet, params) =>
 										dataApiClient.listActivity(wallet, params),
 									listPositions: async (wallet, conditionId) =>
@@ -1171,7 +1242,34 @@ function createContainer(): Container {
 											limit: 500,
 										}),
 								},
-								getWalletCashUsdc: async () => {
+								getWalletCashUsdc: async (cashVenue) => {
+									// VENUE_DECIDES_THE_CASH_SOURCE (NO_FABRICATED_VALUES) — the third
+									// and last of v3's wallet-shaped deps, after `getAuthoritativeShares`
+									// and the portfolio snapshot. A paper account holds no pUSD, so
+									// `mirrorWalletPort.getBalances().pusd` is not merely unavailable
+									// for it, it is the wrong question: its cash is the migration-0083
+									// projection's NAV (seed − realized cost + marked open value).
+									// Asking the live port and throwing would be honest but useless —
+									// position_gap would decline to size on every paper tick forever,
+									// which is precisely the "paper runs but proves nothing" state this
+									// story exists to end. `getNavUsdc` raises a typed unavailable when
+									// the projection is absent, incomplete or stale, so a withheld NAV
+									// still cannot be read as 0.
+									if (cashVenue === "paper") {
+										return paperPortfolio.getNavUsdc(
+											enumeratedTarget.billingAccountId,
+										);
+									}
+									// NO_FABRICATED_VALUES: `mirrorWalletPort` is undefined on a
+									// deployment with no Privy / AEAD config, so there is no readable
+									// pUSD balance to denominate against. Throw — position_gap then
+									// declines to size, exactly as it does when the balance read
+									// itself comes back empty. Returning 0 here would invent a NAV.
+									if (!mirrorWalletPort) {
+										throw new Error(
+											"mirror pUSD balance unavailable — live wallet adapter unconfigured",
+										);
+									}
 									const balances = await mirrorWalletPort.getBalances(
 										enumeratedTarget.billingAccountId,
 									);
@@ -1212,8 +1310,45 @@ function createContainer(): Container {
 										observedBlock: sourceBlock,
 									};
 								},
-								getAuthoritativeHoldings: async (snapshot) => {
-									const executor = await getExecutor();
+								getAuthoritativeHoldings: async (snapshot, venue) => {
+									const executor = await getExecutor(venue);
+									// VENUE_DECIDES_THE_SHARE_SOURCE (NO_FABRICATED_VALUES). A paper
+									// account's funder address is a real, deterministic SHA-256-derived
+									// address with NO on-chain presence, so `balanceOfBatch` answers 0
+									// for every token. That zero is fabricated: it pins position_gap's
+									// gap math at `desired - 0` forever, which is the exact bug the
+									// paper fact projection exists to remove. Route paper through the
+									// executor instead — its paper build reads the migration-0083
+									// projection and raises a typed unavailable when that projection is
+									// absent, incomplete or stale.
+									//
+									// The chain read stays byte-identical for live, including the single
+									// batched call. A tenant holding BOTH an active live and an active
+									// paper row resolves to `live` (LIVE_WINS in the venue resolver), so
+									// only a paper-only tenant takes the projection path.
+									if (venue === "paper") {
+										const holdings = await Promise.all(
+											snapshot.conditions.flatMap((condition) =>
+												condition.tokens.map(async (token) => ({
+													conditionId: condition.conditionId,
+													tokenId: token.tokenId,
+													shares: await executor.getPositionShareBalance(
+														token.tokenId,
+													),
+												})),
+											),
+										);
+										return {
+											holdings,
+											tokenAliases: holdings.map((holding) => ({
+												conditionId: holding.conditionId,
+												sourceTokenId: holding.tokenId,
+												canonicalTokenId: holding.tokenId,
+											})),
+											observedBlock:
+												snapshot.refreshStats.sourceMaxSyncedBlock,
+										};
+									}
 									const canonicalByOutcome = new Map(
 										snapshot.conditions.flatMap((condition) =>
 											condition.tokens.map(
@@ -1340,9 +1475,10 @@ function createContainer(): Container {
 							};
 						}
 
-						// position_gap v2 evaluates numerator + denominator from one
-						// fully-paginated target snapshot. Short caches keep a burst of
-						// fills coherent without turning each fill into another API walk.
+						// Every policy records target + mirror portfolio facts from coherent
+						// snapshots so paper/live algorithms share one observable input tape.
+						// Short caches keep a burst of fills coherent without turning each fill
+						// into another API walk.
 						type PositionSnapshot = Awaited<
 							ReturnType<typeof dataApiClient.listAllUserPositions>
 						>;
@@ -1361,54 +1497,128 @@ function createContainer(): Container {
 							targetPositionsCache = { capturedAt: Date.now(), positions };
 							return positions;
 						};
+						// `OperatorPosition`-shaped: exactly `{asset, size, currentValue}`,
+						// the only fields position_gap and the SELL branch consume. Both
+						// venues can supply all three as facts.
+						type MirrorPosition = {
+							asset: string;
+							size: number;
+							currentValue: number;
+						};
 						let mirrorPortfolioCache:
 							| {
 									capturedAt: number;
+									mode: "live" | "paper";
 									valueUsdc: number;
-									positions: Awaited<
-										ReturnType<PolyTradeExecutor["listPositions"]>
-									>;
+									positions: MirrorPosition[];
 							  }
 							| undefined;
-						const getMirrorPortfolioSnapshot = async () => {
+						/**
+						 * NAV + open book for THIS tenant's mirror account, per venue
+						 * (VENUE_RESOLVED_FROM_ACCOUNT).
+						 *
+						 * Live: free pUSD on the trading wallet + Data-API position values.
+						 * Paper: the migration-0083 projection's published NAV (seed − cost
+						 * + marks) and its projected open positions. A paper account has no
+						 * pUSD balance to read and a live account has no projection, so this
+						 * is a real fork, not a preference — but both branches are
+						 * saved/observed facts, and either one THROWS rather than return a
+						 * partial total. position_gap treats a throw as "cannot size now" and
+						 * skips; other policies may still decide but must log the fact as
+						 * unavailable rather than substitute a value.
+						 */
+						const getMirrorPortfolioSnapshot = async (
+							venue: "live" | "paper",
+						): Promise<{
+							currentValueUsdc: number;
+							positions: MirrorPosition[];
+						}> => {
 							if (
 								mirrorPortfolioCache &&
+								mirrorPortfolioCache.mode === venue &&
 								Date.now() - mirrorPortfolioCache.capturedAt < 5_000
 							) {
 								return {
 									currentValueUsdc: mirrorPortfolioCache.valueUsdc,
 									positions: mirrorPortfolioCache.positions.map((position) => ({
-										asset: position.asset,
-										size: position.size,
-										currentValue: position.currentValue,
+										...position,
 									})),
 								};
 							}
-							const executor = await getExecutor();
-							const [balances, positions] = await Promise.all([
-								mirrorWalletPort.getBalances(enumeratedTarget.billingAccountId),
-								executor.listPositions(),
-							]);
-							if (!balances || balances.pusd === null) {
-								throw new Error("mirror pUSD balance unavailable");
+
+							let valueUsdc: number;
+							let positions: MirrorPosition[];
+							if (venue === "paper") {
+								// Both reads throw `PaperFactsUnavailableError` unless the
+								// projection is complete and fresh, so a withheld NAV or an
+								// unmarked position can never be silently read as 0. They are
+								// two reads of one writer: the projection publishes the NAV row
+								// and the position cursor in the SAME transaction per tick, so
+								// in steady state they carry the same `observedAt`; at worst
+								// they straddle a tick, which is bounded by the same freshness
+								// gate and cannot invent exposure that was never projected.
+								const [navUsdc, open] = await Promise.all([
+									paperPortfolio.getNavUsdc(
+										enumeratedTarget.billingAccountId,
+									),
+									paperPortfolio.listOpenPositions(
+										enumeratedTarget.billingAccountId,
+									),
+								]);
+								// NAV already includes the marked value of every open position
+								// (NAV_IS_CASH_PLUS_MARKS), so it is the whole denominator —
+								// unlike the live branch, where `pusd` is cash only and the
+								// open value has to be added.
+								valueUsdc = navUsdc;
+								positions = open.map((position) => ({
+									asset: position.tokenId,
+									size: position.shares,
+									currentValue: position.currentValueUsdc,
+								}));
+							} else {
+								// The live branch is where "no custody port" is a real state:
+								// this deployment cannot read a live wallet's cash at all.
+								// Throwing here (rather than asserting the port exists) keeps
+								// the paper lane working and makes the live lane's missing
+								// configuration a named, per-tick failure.
+								if (!mirrorWalletPort) {
+									throw new Error(
+										"mirror NAV unavailable: no trader-wallet adapter is configured on this deployment (live account)",
+									);
+								}
+								const executor = await getExecutor(venue);
+								const [balances, livePositions] = await Promise.all([
+									mirrorWalletPort.getBalances(
+										enumeratedTarget.billingAccountId,
+									),
+									executor.listPositions(),
+								]);
+								if (!balances || balances.pusd === null) {
+									throw new Error("mirror pUSD balance unavailable");
+								}
+								positions = livePositions.map((position) => ({
+									asset: position.asset,
+									size: position.size,
+									currentValue: position.currentValue,
+								}));
+								valueUsdc =
+									balances.pusd +
+									positions.reduce(
+										(sum, position) =>
+											sum + Math.max(0, position.currentValue),
+										0,
+									);
 							}
-							const openValue = positions.reduce(
-								(sum, position) => sum + Math.max(0, position.currentValue),
-								0,
-							);
-							const valueUsdc = balances.pusd + openValue;
+
 							mirrorPortfolioCache = {
 								capturedAt: Date.now(),
+								mode: venue,
 								valueUsdc,
 								positions,
 							};
 							return {
 								currentValueUsdc: valueUsdc,
-								positions: positions.map((position) => ({
-									asset: position.asset,
-									size: position.size,
-									currentValue: position.currentValue,
-								})),
+								positions: positions.map((position) => ({ ...position })),
 							};
 						};
 
@@ -1418,12 +1628,16 @@ function createContainer(): Container {
 								target,
 								source,
 								ledger: orderLedger,
-								placeIntent: async (intent) => {
-									const executor = await getExecutor();
+								// One venue binding governs private facts, ledger stamp,
+								// placement, and terminal decision attribution for this tick.
+								getExecutionMode: () =>
+									executionVenueResolver(enumeratedTarget.billingAccountId),
+								placeIntent: async (intent, mode) => {
+									const executor = await getExecutor(mode);
 									return executor.placeIntent(intent);
 								},
-								cancelOrder: async (orderId) => {
-									const executor = await getExecutor();
+								cancelOrder: async (orderId, mode) => {
+									const executor = await getExecutor(mode);
 									return executor.cancelOrder(orderId);
 								},
 								getMarketConstraints: async (tokenId) => {
@@ -1444,12 +1658,12 @@ function createContainer(): Container {
 										0,
 									),
 								getMirrorPortfolioSnapshot,
-								closePosition: async (params) => {
-									const executor = await getExecutor();
+								closePosition: async (params, mode) => {
+									const executor = await getExecutor(mode);
 									return executor.closePosition(params);
 								},
-								getOperatorPositions: async () => {
-									return (await getMirrorPortfolioSnapshot()).positions;
+								getOperatorPositions: async (mode) => {
+									return (await getMirrorPortfolioSnapshot(mode)).positions;
 								},
 								logger: mirrorLogger,
 								metrics: noopMetrics,
@@ -1497,9 +1711,12 @@ function createContainer(): Container {
 					log as unknown as import("@cogni/poly-market-provider").LoggerPort;
 				const restingSweepStop = startRestingSweep({
 					ledger: orderLedger,
-					cancelOrderFor: async (billing_account_id) => {
+					cancelOrderFor: async (billing_account_id, mode) => {
 						const exec =
-							await executorFactory.getPolyTradeExecutorFor(billing_account_id);
+							await executorFactory.getPolyTradeExecutorForVenue(
+								billing_account_id,
+								mode,
+							);
 						return exec.cancelOrder.bind(exec);
 					},
 					logger: sweepLogger,
@@ -1536,7 +1753,7 @@ function createContainer(): Container {
 					const { polyWalletConnections } = await import(
 						"@cogni/poly-db-schema"
 					);
-					const { and, isNotNull, isNull } = await import("drizzle-orm");
+					const { and, eq, isNotNull, isNull } = await import("drizzle-orm");
 					const { noopMetrics: noopMetricsForAutoWrap } = await import(
 						"@cogni/poly-market-provider"
 					);
@@ -1554,6 +1771,10 @@ function createContainer(): Container {
 								.from(polyWalletConnections)
 								.where(
 									and(
+										// Auto-wrap is an on-chain USDC.e -> pUSD swap; paper
+										// accounts have no chain presence, and a duplicate
+										// account would burn the `limit` budget twice.
+										eq(polyWalletConnections.kind, "privy_live"),
 										isNull(polyWalletConnections.revokedAt),
 										isNull(polyWalletConnections.autoWrapRevokedAt),
 										isNotNull(polyWalletConnections.autoWrapConsentAt),
@@ -1667,6 +1888,61 @@ function createContainer(): Container {
 					err: err instanceof Error ? err.message : String(err),
 				},
 				"trader observation job boot failed — continuing without observed trader read model",
+			);
+		}
+	})();
+
+	// migration 0083 — paper-account fact projection. Deliberately NOT inside the
+	// trader-observation IIFE above, and deliberately NOT gated on
+	// POLY_TRADER_OBSERVATION_WRITER_ENABLED. That lever throttles DATA-API
+	// observation (paginated /activity + /positions for every target and tenant
+	// wallet, plus per-token snapshot rows, every 30s) on non-prod lanes whose DBs
+	// live on the prod VM by custody (bug.5297/bug.5206). This job shares none of
+	// that shape: a local SQL projection over this node's OWN
+	// poly_copy_trade_fills, scoped to the paper accounts that exist, plus one CLOB
+	// midpoint per open position. Its gate is the DATA — no active paper account
+	// means one indexed SELECT and an `idle_no_paper_accounts` log. Gating it on
+	// the observation flag left a paper tenant's dashboard structurally
+	// unrenderable on exactly the lanes paper trading runs on.
+	void (async () => {
+		try {
+			const { startPaperProjectionJob } = await import(
+				"@/bootstrap/jobs/paper-projection.job"
+			);
+			const { PolymarketClobPublicClient: PaperClobPublicClient } = await import(
+				"@cogni/poly-market-provider/adapters/polymarket"
+			);
+			const paperLogger =
+				log as unknown as import("@cogni/poly-market-provider").LoggerPort;
+			const paperClobClient = new PaperClobPublicClient();
+			const paperProjectionStop = startPaperProjectionJob({
+				db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
+					Record<string, unknown>
+				>,
+				// Open positions mark at the live midpoint, then a real last trade if
+				// the book is temporarily absent. Settled positions use the CLOB's
+				// unique winner fact (1/0). Unknown remains null — the client's
+				// documented synthetic no-trades default is rejected.
+				readPaperMidPrice: (tokenId, signal, conditionId) =>
+					conditionId === undefined
+						? paperClobClient.getMidpoint(tokenId, signal)
+						: paperClobClient.getMarkPrice(conditionId, tokenId, signal),
+				logger: paperLogger,
+			});
+			// task.5016 — leadership was lost while this boot was in flight.
+			if (epoch !== _jobsEpoch) {
+				paperProjectionStop();
+				return;
+			}
+			_paperProjectionStop = paperProjectionStop;
+		} catch (err: unknown) {
+			log.error(
+				{
+					event: "poly.paper.project",
+					phase: "boot_failed",
+					err: err instanceof Error ? err.message : String(err),
+				},
+				"paper projection job boot failed — continuing without paper facts",
 			);
 		}
 	})();

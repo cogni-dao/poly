@@ -80,6 +80,20 @@ export const EVENT_NAMES = {
   POLY_WALLET_WATCH_CHAIN_STOPPED: "poly.wallet_watch.chain.stopped",
 
   POLY_RECONCILER_STATUS_UPDATED: "poly.reconciler.status_updated",
+
+  // Paper-account fact projection (story.5016). Background work has no HTTP
+  // reqId, so these registry-backed terminal events are the correlation seam.
+  POLY_PAPER_ACCOUNT_ADDRESS_MISMATCH:
+    "poly.paper.account_address_mismatch",
+  POLY_PAPER_ACCOUNT_FUNDER_MISMATCH: "poly.paper.account_funder_mismatch",
+  POLY_PAPER_ACCOUNT_SEED_MISSING: "poly.paper.account_seed_missing",
+  POLY_PAPER_POSITION_INCOHERENT: "poly.paper.position_incoherent",
+  POLY_PAPER_NAV_WITHHELD: "poly.paper.nav_withheld",
+  POLY_PAPER_NAV_NEGATIVE: "poly.paper.nav_negative",
+  POLY_PAPER_OBSERVE: "poly.paper.observe",
+  POLY_PAPER_PROJECT: "poly.paper.project",
+  POLY_POSITION_GAP_PAPER_FILL_EVIDENCE_UNAVAILABLE:
+    "poly.position_gap.v3.paper_fill_evidence_unavailable",
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];

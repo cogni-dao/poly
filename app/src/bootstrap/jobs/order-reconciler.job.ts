@@ -103,6 +103,28 @@ const DEFAULT_OLDER_THAN_MS = 30_000;
  * have been stuck for months.
  */
 const UNPLACED_GRACE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Paper's unplaced grace. The 24h above is sized for the LIVE CLOB, where a
+ * placement really can still be in flight: the request crosses the public
+ * internet, the venue may accept it after our client gave up, and promoting
+ * the row to `error` too early would deny a resting order that exists.
+ *
+ * None of that is true for paper. `PaperAdapter` places over POD-LOOPBACK to
+ * the sidecar and awaits the response synchronously, so the call either
+ * returned an order id or it is never going to. Worse, the sidecar's SQLite is
+ * ephemeral (`PM_TRADER_DATA_DIR` under /tmp), so a pod restart erases any
+ * order it might have accepted — there is nothing left to deny.
+ *
+ * Carrying the live grace into paper costs a full DAY of a target's evidence
+ * for one bad sidecar response: the null-`order_id` row keeps
+ * `listOpenOrPending` returning it, position-gap v3 reads that as an ambiguous
+ * placement and halts the target on it. Measured on candidate-a 2026-10-08 —
+ * one `502 upstream_engine_failed` wedged RN1 for 24h. Paper experiments are
+ * the thing this node runs many of; a day of lost evidence per bad response is
+ * the difference between a usable lab and a decorative one.
+ */
+const PAPER_UNPLACED_GRACE_MS = 2 * 60 * 1000;
 const DEFAULT_LIMIT = 200;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,7 +146,8 @@ export interface OrderReconcilerDeps {
    */
   getOrderForTenant: (
     billing_account_id: string,
-    order_id: string
+    order_id: string,
+    mode: "live" | "paper"
   ) => Promise<GetOrderResult>;
   logger: LoggerPort;
   metrics: MetricsPort;
@@ -224,7 +247,13 @@ export async function runReconcileOnce(
       // slot in the partial unique index `one_open_per_market`, which the
       // stuck row had been holding against new mirror orders for that market.
       const unplacedAgeMs = clock().getTime() - row.created_at.getTime();
-      if (unplacedAgeMs < UNPLACED_GRACE_MS) continue;
+      // VENUE_SETS_THE_UNPLACED_GRACE — see PAPER_UNPLACED_GRACE_MS. `mode` is
+      // stamped on the row at insert from the writing account's own venue
+      // (MODE_STAMPED_FROM_ACCOUNT), so this needs no extra lookup and cannot
+      // disagree with the venue that actually attempted the placement.
+      const graceMs =
+        row.mode === "paper" ? PAPER_UNPLACED_GRACE_MS : UNPLACED_GRACE_MS;
+      if (unplacedAgeMs < graceMs) continue;
 
       // `error`, not `canceled`. We never saw a venue response for this row,
       // so claiming it was canceled asserts state we cannot verify. `error`
@@ -259,7 +288,8 @@ export async function runReconcileOnce(
     try {
       const result = await deps.getOrderForTenant(
         row.billing_account_id,
-        row.order_id
+        row.order_id,
+        row.mode
       );
       // getOrder returned a typed response — mark as synced regardless of branch.
       syncedIds.push(row.client_order_id);
