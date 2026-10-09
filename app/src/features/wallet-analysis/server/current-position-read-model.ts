@@ -25,6 +25,9 @@
  *     the full blob never crosses the wire or gets decoded in V8.
  *   - DETERMINISTIC_BOUNDED_PREVIEW: equal value/time rows are ordered by
  *     their stable condition/token identity before the 500-row limit.
+ *   - COPY_TARGETS_STAY_VISIBLE: exact active target condition/token matches
+ *     are ranked ahead of unrelated holdings so a large resumed paper book
+ *     cannot hide the algorithm positions the dashboard exists to evaluate.
  * Side-effects: DB read only.
  * Links: work/items/task.5007.poly-tenant-current-position-reconciler.md
  * @public
@@ -88,10 +91,13 @@ type CurrentPositionRow = {
   metadata_end_date: Date | string | null;
   total_active_rows: string | number;
   total_positions_mtm: string | number;
+  target_correlated: boolean | null;
 };
 
 export interface CurrentWalletPositionReadModel {
   positions: WalletExecutionPosition[];
+  /** Exact active target condition/token keys retained in the bounded preview. */
+  targetCorrelatedKeys: ReadonlySet<string>;
   summary: {
     positionsMtm: number;
     syncedAt: string | null;
@@ -110,6 +116,7 @@ export interface CurrentWalletPositionReadModel {
 
 export async function readCurrentWalletPositionModel(params: {
   db: Db;
+  billingAccountId: string;
   walletAddress: string;
   capturedAt: Date;
 }): Promise<CurrentWalletPositionReadModel> {
@@ -148,6 +155,21 @@ export async function readCurrentWalletPositionModel(params: {
            WHEN w.kind = 'paper_wallet' THEN ${PAPER_POSITION_CURSOR_SOURCE}
            ELSE ${OBSERVATION_SOURCE}
          END
+      ), target_correlated_positions AS (
+        SELECT DISTINCT
+          lower(target_position.condition_id) AS condition_key,
+          target_position.token_id
+        FROM poly_copy_trade_targets target
+        JOIN poly_trader_wallets target_wallet
+          ON lower(target_wallet.wallet_address) = lower(target.target_wallet)
+         AND target_wallet.kind = 'copy_target'
+         AND target_wallet.active_for_research = true
+         AND target_wallet.disabled_at IS NULL
+        JOIN poly_trader_current_positions target_position
+          ON target_position.trader_wallet_id = target_wallet.id
+         AND ${liveCurrentPositionSql("target_position")}
+        WHERE target.billing_account_id = ${params.billingAccountId}
+          AND target.disabled_at IS NULL
       ), position_candidates AS (
         SELECT
           p.*,
@@ -197,6 +219,7 @@ export async function readCurrentWalletPositionModel(params: {
         pmm.event_title AS metadata_event_title,
         pmm.event_slug AS metadata_event_slug,
         pmm.end_date AS metadata_end_date,
+        (correlated.token_id IS NOT NULL) AS target_correlated,
         count(p.token_id) FILTER (
           WHERE p.current_value_usdc > 0
             AND (
@@ -249,6 +272,9 @@ export async function readCurrentWalletPositionModel(params: {
         ORDER BY candidate.fetched_at DESC, candidate.condition_id
         LIMIT 1
       ) pmm ON p.token_id IS NOT NULL
+      LEFT JOIN target_correlated_positions correlated
+        ON correlated.condition_key = lower(p.condition_id)
+       AND correlated.token_id = p.token_id
       WHERE (
           p.token_id IS NULL
           OR (
@@ -263,6 +289,7 @@ export async function readCurrentWalletPositionModel(params: {
           )
         )
       ORDER BY
+        (correlated.token_id IS NOT NULL) DESC,
         p.current_value_usdc DESC NULLS LAST,
         p.last_observed_at DESC NULLS LAST,
         p.condition_id ASC NULLS LAST,
@@ -346,6 +373,13 @@ export async function readCurrentWalletPositionModel(params: {
 
   return {
     positions,
+    targetCorrelatedKeys: new Set(
+      rows.flatMap((row) =>
+        row.target_correlated === true && row.condition_id && row.token_id
+          ? [`${row.condition_id.toLowerCase()}:${row.token_id}`]
+          : []
+      )
+    ),
     summary: {
       positionsMtm: roundToCents(
         toNumber(rows[0]?.total_positions_mtm ?? null)

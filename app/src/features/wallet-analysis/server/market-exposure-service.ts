@@ -269,6 +269,20 @@ type BoundedOurExposureSelection = {
   groupedCount: number;
 };
 
+type DashboardConnectionKind = "privy_live" | "paper";
+
+function traderWalletKindForConnection(
+  connectionKind: DashboardConnectionKind
+): "cogni_wallet" | "paper_wallet" {
+  return connectionKind === "paper" ? "paper_wallet" : "cogni_wallet";
+}
+
+function executionModeForConnection(
+  connectionKind: DashboardConnectionKind
+): "live" | "paper" {
+  return connectionKind === "paper" ? "paper" : "live";
+}
+
 export async function buildMarketExposureGroups(params: {
   db: Db;
   billingAccountId: string;
@@ -316,6 +330,7 @@ export async function buildBoundedMarketExposureGroups(params: {
   walletAddress: string;
   livePositions: readonly WalletExecutionPosition[];
   closedPositions?: readonly WalletExecutionPosition[];
+  priorityPositionKeys?: ReadonlySet<string>;
   diagnostics?: ComparisonReadDiagnostics;
 }): Promise<BoundedMarketExposureRead> {
   const closedPositions = params.closedPositions ?? [];
@@ -323,6 +338,7 @@ export async function buildBoundedMarketExposureGroups(params: {
     walletAddress: params.walletAddress,
     livePositions: params.livePositions,
     closedPositions,
+    priorityPositionKeys: params.priorityPositionKeys ?? new Set(),
   });
   if (selection.allOurLegs.length === 0) {
     return { groups: [], truncated: false };
@@ -407,6 +423,7 @@ function selectBoundedOurExposure(params: {
   walletAddress: string;
   livePositions: readonly WalletExecutionPosition[];
   closedPositions: readonly WalletExecutionPosition[];
+  priorityPositionKeys?: ReadonlySet<string>;
 }): BoundedOurExposureSelection {
   const allOurLegs = [
     ...buildOurLegs(params.livePositions, params.walletAddress, "live"),
@@ -424,6 +441,8 @@ function selectBoundedOurExposure(params: {
   const selected = [...grouped.entries()]
     .sort(
       (left, right) =>
+        Number(groupHasPriority(right[1], params.priorityPositionKeys)) -
+          Number(groupHasPriority(left[1], params.priorityPositionKeys)) ||
         sumValue(right[1]) - sumValue(left[1]) ||
         left[0].localeCompare(right[0])
     )
@@ -443,6 +462,18 @@ function selectBoundedOurExposure(params: {
     ).size,
     groupedCount: grouped.size,
   };
+}
+
+function groupHasPriority(
+  legs: readonly RawLeg[],
+  priorityPositionKeys: ReadonlySet<string> | undefined
+): boolean {
+  if (!priorityPositionKeys || priorityPositionKeys.size === 0) return false;
+  return legs.some((leg) =>
+    priorityPositionKeys.has(
+      `${canonicalIdentity(leg.conditionId)}:${leg.tokenId}`
+    )
+  );
 }
 
 function conditionStatusFromLegs(
@@ -471,14 +502,17 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
   db: Db;
   billingAccountId: string;
   walletAddress: string;
+  connectionKind: DashboardConnectionKind;
   livePositions: readonly WalletExecutionPosition[];
   closedPositions?: readonly WalletExecutionPosition[];
+  priorityPositionKeys?: ReadonlySet<string>;
   diagnostics?: ComparisonReadDiagnostics;
 }): Promise<BoundedMarketExposureCoverageRead> {
   const selection = selectBoundedOurExposure({
     walletAddress: params.walletAddress,
     livePositions: params.livePositions,
     closedPositions: params.closedPositions ?? [],
+    priorityPositionKeys: params.priorityPositionKeys ?? new Set(),
   });
   const targetBudget = Math.max(
     0,
@@ -491,6 +525,7 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
       db: params.db,
       billingAccountId: params.billingAccountId,
       walletAddress: params.walletAddress,
+      connectionKind: params.connectionKind,
       conditionGroup: selection.conditionGroup,
       participantLimit: targetBudget,
       selectedPositionKeys: [
@@ -611,12 +646,17 @@ export async function readComparisonSourceIdentityAmbiguity(params: {
   db: Db;
   billingAccountId: string;
   walletAddress: string;
+  connectionKind: DashboardConnectionKind;
 }): Promise<boolean> {
+  const traderWalletKind = traderWalletKindForConnection(
+    params.connectionKind
+  );
   const rows = (await params.db.execute(sql`
     WITH canonical_wallet_identity AS (
       SELECT count(*) > 1 AS identity_ambiguous
       FROM poly_trader_wallets w
       WHERE lower(w.wallet_address) = lower(${params.walletAddress})
+        AND w.kind = ${traderWalletKind}
     ), active_target_candidates AS (
       SELECT
         lower(t.target_wallet) AS wallet_key,
@@ -672,6 +712,7 @@ export async function readFullComparisonCoverageCounts(params: {
   db: Db;
   billingAccountId: string;
   walletAddress: string;
+  connectionKind: DashboardConnectionKind;
 }): Promise<ComparisonCoverageCountRow[]> {
   const rows = await readComparisonBundleRows({
     ...params,
@@ -686,6 +727,7 @@ async function readComparisonBundleRows(params: {
   db: Db;
   billingAccountId: string;
   walletAddress: string;
+  connectionKind: DashboardConnectionKind;
   conditionGroup: ReadonlyMap<string, string>;
   participantLimit: number;
   selectedPositionKeys: readonly {
@@ -694,6 +736,10 @@ async function readComparisonBundleRows(params: {
     status: WalletExecutionMarketLineStatus;
   }[];
 }): Promise<ComparisonBundleRow[]> {
+  const traderWalletKind = traderWalletKindForConnection(
+    params.connectionKind
+  );
+  const executionMode = executionModeForConnection(params.connectionKind);
   // This bounded relation is consumed only by preview_* CTEs below. The
   // eligible/position_eval/market_eval coverage chain remains full-population.
   const selectedConditions =
@@ -724,6 +770,7 @@ async function readComparisonBundleRows(params: {
       SELECT count(*) > 1 AS identity_ambiguous
       FROM poly_trader_wallets w
       WHERE lower(w.wallet_address) = lower(${params.walletAddress})
+        AND w.kind = ${traderWalletKind}
     ), wallet_scope AS (
       SELECT
         w.*,
@@ -731,7 +778,7 @@ async function readComparisonBundleRows(params: {
       FROM poly_trader_wallets w
       CROSS JOIN canonical_wallet_identity canonical
       WHERE lower(w.wallet_address) = lower(${params.walletAddress})
-        AND w.kind = 'cogni_wallet'
+        AND w.kind = ${traderWalletKind}
         AND w.active_for_research = true
         AND w.disabled_at IS NULL
     ), our_identity AS (
@@ -784,6 +831,7 @@ async function readComparisonBundleRows(params: {
         END AS own_cost
       FROM poly_copy_trade_fills f
       WHERE f.billing_account_id = ${params.billingAccountId}
+        AND f.mode = ${executionMode}
     ), closed_ranked AS (
       SELECT
         s.*,
@@ -943,7 +991,7 @@ async function readComparisonBundleRows(params: {
        AND p.token_id = NULLIF(f.attributes->>'token_id', '')
       WHERE f.billing_account_id = ${params.billingAccountId}
         AND f.order_id IS NOT NULL
-        AND f.mode = 'live'
+        AND f.mode = ${executionMode}
         AND (
           COALESCE(f.attributes->>'position_gap_version', '') <> '3'
           OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')

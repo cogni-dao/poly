@@ -45,6 +45,7 @@ const suffix = randomUUID().replaceAll("-", "");
 const USER_ID = `target-hydration-user-${suffix}`;
 const BILLING_ID = `target-hydration-billing-${suffix}`;
 const OUR_WALLET = `0x${"31".repeat(20)}` as `0x${string}`;
+const PAPER_LOCAL_WALLET = `0x${"32".repeat(20)}` as `0x${string}`;
 const TARGET_WALLET = `0x${"42".repeat(20)}` as `0x${string}`;
 const CONDITION = `0x${"a1".repeat(32)}`;
 const UNRELATED_CONDITION = `0x${"b2".repeat(32)}`;
@@ -216,6 +217,7 @@ function localExecutionPosition(input: {
 describe("lineage-scoped copy-target V2 hydration", () => {
 	const db = getSeedDb();
 	let ourTraderWalletId = "";
+	let paperTraderWalletId = "";
 	let targetTraderWalletId = "";
 
 	beforeAll(async () => {
@@ -274,6 +276,16 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		if (!ourWallet || !targetWallet) throw new Error("wallet seed failed");
 		ourTraderWalletId = ourWallet.id;
 		targetTraderWalletId = targetWallet.id;
+		const [paperWallet] = await db
+			.insert(polyTraderWallets)
+			.values({
+				walletAddress: PAPER_LOCAL_WALLET,
+				kind: "paper_wallet",
+				label: "Our paper wallet",
+			})
+			.returning({ id: polyTraderWallets.id });
+		if (!paperWallet) throw new Error("paper wallet seed failed");
+		paperTraderWalletId = paperWallet.id;
 
 		await db.insert(polyTraderCurrentPositions).values([
 			{
@@ -313,6 +325,18 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				lastObservedAt: new Date(),
 			},
 		]);
+		await db.insert(polyTraderCurrentPositions).values({
+			traderWalletId: paperWallet.id,
+			conditionId: PAPER_CONDITION,
+			tokenId: PAPER_TOKEN,
+			shares: "10",
+			costBasisUsdc: "5",
+			currentValueUsdc: "6",
+			avgPrice: "0.5",
+			contentHash: `our-paper-wallet-${suffix}`,
+			lastObservedAt: new Date(),
+			raw: { title: "Paper hydration market", outcome: "YES" },
+		});
 		await db.insert(polyCopyTradeTargets).values({
 			billingAccountId: BILLING_ID,
 			createdByUserId: USER_ID,
@@ -469,6 +493,9 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			.where(eq(polyTraderWallets.id, ourTraderWalletId));
 		await db
 			.delete(polyTraderWallets)
+			.where(eq(polyTraderWallets.id, paperTraderWalletId));
+		await db
+			.delete(polyTraderWallets)
 			.where(eq(polyTraderWallets.id, targetTraderWalletId));
 		await db.delete(billingAccounts).where(eq(billingAccounts.id, BILLING_ID));
 		await db.delete(users).where(eq(users.id, USER_ID));
@@ -562,10 +589,22 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: OUR_WALLET,
+			connectionKind: "privy_live",
 		});
 		expect(
 			before.find((row) => row.entity === "positions" && row.status === "live"),
 		).toMatchObject({ eligible: 2, comparable: 1 });
+		const paperBefore = await readFullComparisonCoverageCounts({
+			db,
+			billingAccountId: BILLING_ID,
+			walletAddress: PAPER_LOCAL_WALLET,
+			connectionKind: "paper",
+		});
+		expect(
+			paperBefore.find(
+				(row) => row.entity === "positions" && row.status === "live",
+			),
+		).toMatchObject({ eligible: 1, comparable: 1 });
 
 		const listUserPositionsV2 = vi
 			.fn()
@@ -633,6 +672,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: OUR_WALLET,
+			connectionKind: "privy_live",
 		});
 		expect(
 			after.find((row) => row.entity === "positions" && row.status === "live"),
@@ -657,6 +697,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: OUR_WALLET,
+			connectionKind: "privy_live",
 			livePositions: [
 				localExecutionPosition({
 					conditionId: CONDITION,
@@ -740,16 +781,29 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: OUR_WALLET,
+			connectionKind: "privy_live",
 		});
 		expect(
 			disabledCoverage.find(
 				(row) => row.entity === "positions" && row.status === "live",
 			),
 		).toMatchObject({ eligible: 2, comparable: 1, source_ambiguous: false });
+		const disabledPaperCoverage = await readFullComparisonCoverageCounts({
+			db,
+			billingAccountId: BILLING_ID,
+			walletAddress: PAPER_LOCAL_WALLET,
+			connectionKind: "paper",
+		});
+		expect(
+			disabledPaperCoverage.find(
+				(row) => row.entity === "positions" && row.status === "live",
+			),
+		).toMatchObject({ eligible: 1, comparable: 1, source_ambiguous: false });
 		const disabledPreview = await buildBoundedMarketExposureWithCoverage({
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: OUR_WALLET,
+			connectionKind: "privy_live",
 			livePositions: [
 				localExecutionPosition({
 					conditionId: CONDITION,
@@ -821,6 +875,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: OUR_WALLET,
+			connectionKind: "privy_live",
 		});
 		expect(
 			afterOmission.find(
@@ -836,6 +891,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: OUR_WALLET,
+			connectionKind: "privy_live",
 			livePositions: [],
 			closedPositions: [
 				localExecutionPosition({

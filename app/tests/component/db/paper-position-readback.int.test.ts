@@ -268,6 +268,7 @@ describe("paper position + NAV read-back", () => {
     it("feeds the shared dashboard position model through the paper cursor", async () => {
       const model = await readCurrentWalletPositionModel({
         db: paperDb(),
+        billingAccountId: holder.billingAccountId,
         walletAddress: derivePaperAccountAddress(holder.billingAccountId),
         capturedAt: observedAt,
       });
