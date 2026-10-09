@@ -1052,6 +1052,9 @@ function createContainer(): Container {
 				const { startPositionGapActor } = await import(
 					"@/features/copy-trade/position-gap-actor"
 				);
+				const { persistPositionGapTargetSnapshot } = await import(
+					"@/features/wallet-analysis/server/copy-target-position-hydration-service"
+				);
 				const positionGapRefresh = new PositionGapTargetRefreshCoordinator(
 					targetBookProvider,
 				);
@@ -1476,6 +1479,11 @@ function createContainer(): Container {
 										observedBlock,
 									};
 								},
+								publishTargetSnapshot: (snapshot) =>
+									persistPositionGapTargetSnapshot({
+										db: serviceDb,
+										snapshot,
+									}),
 								logger: mirrorLogger,
 							});
 							const actorKey = `${enumeratedTarget.billingAccountId}:${target.target_id}`;

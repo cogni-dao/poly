@@ -579,6 +579,11 @@ describe("buildPositionGapBuyIntent", () => {
 				observedBlock: 1,
 			})),
 			getAuthoritativeHoldings: vi.fn(),
+			publishTargetSnapshot: vi.fn(async (targetSnapshot) => ({
+				applied: true,
+				positions: targetSnapshot.conditions.length,
+				snapshotId: targetSnapshot.snapshotId,
+			})),
 			logger: { ...actorLogger, child: loggerChild },
 			setInterval: vi.fn(() => 1 as never),
 			clearInterval: vi.fn(),

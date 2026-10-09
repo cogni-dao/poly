@@ -17,8 +17,10 @@
  *     authoritative realized copy-fill.
  *   - COMPLETE_COHORTS_ONLY: the provider must complete every cursor/chunk
  *     before any row for that target is persisted.
- *   - PRESERVE_UNRELATED_ROWS: publication touches only the requested target
- *     wallet and condition cohort; other conditions and wallets are unchanged.
+ *   - SCOPE_MATCHES_COMPLETENESS: V2 cohort publication preserves unrelated
+ *     conditions; a complete Position-gap book may replace the whole wallet.
+ *   - MONOTONIC_COMPLETE_BOOKS: an older complete Position-gap book cannot
+ *     overwrite a newer complete book for the same target wallet.
  *   - NO_V1_FALLBACK: failures preserve the last saved facts and return an
  *     error count; they never widen to the capped legacy walk.
  * Side-effects: Data API V2 reads and Postgres writes through injected deps.
@@ -31,19 +33,20 @@ import {
 	polyTraderPositionSnapshots,
 	polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
-import type { LoggerPort } from "@cogni/poly-market-provider";
+import type {
+	LoggerPort,
+	TargetBookSnapshotV1,
+} from "@cogni/poly-market-provider";
 import type {
 	PolymarketDataApiClient,
 	PolymarketUserPosition,
 } from "@cogni/poly-market-provider/adapters/polymarket";
-import { eq, type SQL, sql } from "drizzle-orm";
+import { and, eq, type SQL, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 import { liveCurrentPositionSql } from "./current-position-staleness";
-import {
-	COPY_TARGET_POSITION_CURSOR_SOURCE,
-} from "./position-observation-sources";
+import { COPY_TARGET_POSITION_CURSOR_SOURCE } from "./position-observation-sources";
 
 type Db =
 	| NodePgDatabase<Record<string, unknown>>
@@ -67,6 +70,23 @@ export type CopyTargetPositionHydrationResult = {
 	conditions: number;
 	rows: number;
 	errors: number;
+};
+
+export type PositionGapTargetSnapshotPublication = {
+	applied: boolean;
+	positions: number;
+	snapshotId: string;
+};
+
+type PersistedTargetPosition = {
+	conditionId: string;
+	tokenId: string;
+	shares: string;
+	costBasisUsdc: string;
+	currentValueUsdc: string;
+	avgPrice: string;
+	contentHash: string;
+	raw: Record<string, unknown>;
 };
 
 /**
@@ -274,6 +294,110 @@ export async function hydrateCopyTargetPositions(input: {
 	return { cohorts: cohorts.length, conditions, rows, errors };
 }
 
+/**
+ * Publish the exact complete target book already accepted by Position-gap.
+ * This is a saved-fact projection only: it performs no upstream read and a
+ * caller must never make execution depend on its success.
+ */
+export async function persistPositionGapTargetSnapshot(input: {
+	db: Db;
+	snapshot: TargetBookSnapshotV1;
+}): Promise<PositionGapTargetSnapshotPublication> {
+	const { snapshot } = input;
+	if (
+		snapshot.version !== 1 ||
+		snapshot.complete !== true ||
+		!/^0x[0-9a-f]{40}$/.test(snapshot.targetWallet) ||
+		!Number.isFinite(snapshot.updatedAtMs) ||
+		!Number.isSafeInteger(snapshot.refreshStats.sourceMaxSyncedBlock) ||
+		snapshot.refreshStats.sourceMaxSyncedBlock <= 0
+	) {
+		throw new Error("invalid Position-gap target snapshot publication");
+	}
+	const observedAt = new Date(snapshot.updatedAtMs);
+	if (!Number.isFinite(observedAt.getTime())) {
+		throw new Error("invalid Position-gap target snapshot timestamp");
+	}
+	const positions: PersistedTargetPosition[] = [];
+	for (const condition of snapshot.conditions) {
+		if (!/^0x[0-9a-f]{64}$/.test(condition.conditionId)) {
+			throw new Error("invalid Position-gap target condition identity");
+		}
+		for (const token of condition.tokens) {
+			if (
+				token.tokenId.length === 0 ||
+				token.oppositeTokenId.length === 0 ||
+				!Number.isFinite(token.shares) ||
+				!Number.isFinite(token.averagePrice) ||
+				!Number.isFinite(token.markPrice) ||
+				token.shares < 0 ||
+				token.averagePrice < 0 ||
+				token.markPrice < 0
+			) {
+				throw new Error("invalid Position-gap target position fact");
+			}
+			if (token.shares === 0) continue;
+			const costBasisUsdc = token.shares * token.averagePrice;
+			const currentValueUsdc = token.shares * token.markPrice;
+			if (
+				!Number.isFinite(costBasisUsdc) ||
+				!Number.isFinite(currentValueUsdc)
+			) {
+				throw new Error("invalid Position-gap target position economics");
+			}
+			const raw = {
+				proxyWallet: snapshot.targetWallet,
+				asset: token.tokenId,
+				conditionId: condition.conditionId,
+				size: token.shares,
+				avgPrice: token.averagePrice,
+				initialValue: costBasisUsdc,
+				currentValue: currentValueUsdc,
+				curPrice: token.markPrice,
+				outcomeIndex: token.outcomeIndex,
+				oppositeAsset: token.oppositeTokenId,
+				endDate: condition.endDate,
+				negativeRisk: condition.negativeRisk,
+				positionGapTargetBook: {
+					version: snapshot.version,
+					snapshotId: snapshot.snapshotId,
+					sourceComputedAt: snapshot.refreshStats.sourceComputedAt,
+					sourceMaxSyncedBlock: snapshot.refreshStats.sourceMaxSyncedBlock,
+				},
+			};
+			positions.push({
+				conditionId: condition.conditionId,
+				tokenId: token.tokenId,
+				shares: token.shares.toFixed(8),
+				costBasisUsdc: costBasisUsdc.toFixed(8),
+				currentValueUsdc: currentValueUsdc.toFixed(8),
+				avgPrice: token.averagePrice.toFixed(8),
+				contentHash: hashPositionIdentity({
+					conditionId: condition.conditionId,
+					tokenId: token.tokenId,
+					shares: token.shares,
+					avgPrice: token.averagePrice,
+					costBasisUsdc,
+				}),
+				raw,
+			});
+		}
+	}
+	const applied = await persistTargetPositionFacts({
+		db: input.db,
+		targetWallet: snapshot.targetWallet,
+		positions,
+		observedAt,
+		scopeConditions: null,
+		cursorNativeId: snapshot.snapshotId,
+	});
+	return {
+		applied,
+		positions: positions.length,
+		snapshotId: snapshot.snapshotId,
+	};
+}
+
 async function persistScopedTargetPositions(input: {
 	db: Db;
 	targetWallet: string;
@@ -281,22 +405,8 @@ async function persistScopedTargetPositions(input: {
 	positions: readonly PolymarketUserPosition[];
 }): Promise<void> {
 	const observedAt = new Date();
-	const observedAtIso = observedAt.toISOString();
-	await (
-		input.db as unknown as {
-			transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
-		}
-	).transaction(async (tx) => {
-		const wallet = await resolveTargetWallet(
-			tx,
-			input.targetWallet,
-			observedAt,
-		);
-		await tx.execute(
-			sql`SELECT pg_advisory_xact_lock(hashtextextended(${`poly:positions:${wallet.id}`}, 0))`,
-		);
-		const values = input.positions.map((position) => ({
-			traderWalletId: wallet.id,
+	const positions: PersistedTargetPosition[] = input.positions.map(
+		(position) => ({
 			conditionId: position.conditionId.toLowerCase(),
 			tokenId: position.asset,
 			shares: position.size.toFixed(8),
@@ -304,8 +414,67 @@ async function persistScopedTargetPositions(input: {
 			currentValueUsdc: position.currentValue.toFixed(8),
 			avgPrice: position.avgPrice.toFixed(8),
 			contentHash: hashPositionFact(position),
-			capturedAt: observedAt,
 			raw: position as unknown as Record<string, unknown>,
+		}),
+	);
+	await persistTargetPositionFacts({
+		db: input.db,
+		targetWallet: input.targetWallet,
+		positions,
+		observedAt,
+		scopeConditions: input.conditions,
+		cursorNativeId: null,
+	});
+}
+
+async function persistTargetPositionFacts(input: {
+	db: Db;
+	targetWallet: string;
+	positions: readonly PersistedTargetPosition[];
+	observedAt: Date;
+	/** null means the producer proved a complete whole-wallet publication. */
+	scopeConditions: readonly string[] | null;
+	cursorNativeId: string | null;
+}): Promise<boolean> {
+	const observedAtIso = input.observedAt.toISOString();
+	return (
+		input.db as unknown as {
+			transaction<T>(fn: (tx: Db) => Promise<T>): Promise<T>;
+		}
+	).transaction(async (tx) => {
+		const wallet = await resolveTargetWallet(
+			tx,
+			input.targetWallet,
+			input.observedAt,
+		);
+		await tx.execute(
+			sql`SELECT pg_advisory_xact_lock(hashtextextended(${`poly:positions:${wallet.id}`}, 0))`,
+		);
+		if (input.cursorNativeId !== null) {
+			const [existingCompleteCursor] = await tx
+				.select({ lastSeenAt: polyTraderIngestionCursors.lastSeenAt })
+				.from(polyTraderIngestionCursors)
+				.where(
+					and(
+						eq(polyTraderIngestionCursors.traderWalletId, wallet.id),
+						eq(
+							polyTraderIngestionCursors.source,
+							COPY_TARGET_POSITION_CURSOR_SOURCE,
+						),
+					),
+				)
+				.limit(1);
+			if (
+				existingCompleteCursor?.lastSeenAt &&
+				existingCompleteCursor.lastSeenAt.getTime() >= input.observedAt.getTime()
+			) {
+				return false;
+			}
+		}
+		const values = input.positions.map((position) => ({
+			traderWalletId: wallet.id,
+			...position,
+			capturedAt: input.observedAt,
 		}));
 		if (values.length > 0) {
 			await tx
@@ -332,7 +501,7 @@ async function persistScopedTargetPositions(input: {
 						currentValueUsdc: value.currentValueUsdc,
 						avgPrice: value.avgPrice,
 						contentHash: value.contentHash,
-						lastObservedAt: observedAt,
+						lastObservedAt: input.observedAt,
 						raw: value.raw,
 					})),
 				)
@@ -349,31 +518,37 @@ async function persistScopedTargetPositions(input: {
 						currentValueUsdc: sql`excluded.current_value_usdc`,
 						avgPrice: sql`excluded.avg_price`,
 						contentHash: sql`excluded.content_hash`,
-						lastObservedAt: observedAt,
+						lastObservedAt: input.observedAt,
 						raw: sql`excluded.raw`,
 					},
+					setWhere: sql`${polyTraderCurrentPositions.lastObservedAt} <= excluded.last_observed_at`,
 				});
 		}
 
-		const conditionRows = JSON.stringify(
-			input.conditions.map((conditionId) => ({ condition_id: conditionId })),
-		);
 		const observedKeys = JSON.stringify(
 			values.map((value) => ({
 				condition_id: value.conditionId,
 				token_id: value.tokenId,
 			})),
 		);
+		const scopePredicate =
+			input.scopeConditions === null
+				? sql`TRUE`
+				: sql`EXISTS (
+            SELECT 1
+            FROM jsonb_to_recordset(${JSON.stringify(
+							input.scopeConditions.map((conditionId) => ({
+								condition_id: conditionId,
+							})),
+						)}::jsonb) AS requested(condition_id text)
+            WHERE lower(requested.condition_id) = lower(p.condition_id)
+          )`;
 		await tx.execute(sql`
       UPDATE poly_trader_current_positions p
       SET active = false, last_observed_at = ${observedAtIso}::timestamptz
       WHERE p.trader_wallet_id = ${wallet.id}::uuid
-        AND EXISTS (
-          SELECT 1
-          FROM jsonb_to_recordset(${conditionRows}::jsonb)
-            AS requested(condition_id text)
-          WHERE lower(requested.condition_id) = lower(p.condition_id)
-        )
+        AND ${scopePredicate}
+		AND p.last_observed_at <= ${observedAtIso}::timestamptz
         AND NOT EXISTS (
           SELECT 1
           FROM jsonb_to_recordset(${observedKeys}::jsonb)
@@ -382,15 +557,23 @@ async function persistScopedTargetPositions(input: {
             AND observed.token_id = p.token_id
         )
     `);
+		const cursorIdentity =
+			input.cursorNativeId === null
+				? {}
+				: {
+						lastSeenAt: input.observedAt,
+						lastSeenNativeId: input.cursorNativeId,
+					};
 		await tx
 			.insert(polyTraderIngestionCursors)
 			.values({
 				traderWalletId: wallet.id,
 				source: COPY_TARGET_POSITION_CURSOR_SOURCE,
-				lastSuccessAt: observedAt,
+				...cursorIdentity,
+				lastSuccessAt: input.observedAt,
 				status: "ok",
 				errorMessage: null,
-				updatedAt: observedAt,
+				updatedAt: input.observedAt,
 			})
 			.onConflictDoUpdate({
 				target: [
@@ -398,12 +581,14 @@ async function persistScopedTargetPositions(input: {
 					polyTraderIngestionCursors.source,
 				],
 				set: {
-					lastSuccessAt: observedAt,
+					...cursorIdentity,
+					lastSuccessAt: sql`GREATEST(${polyTraderIngestionCursors.lastSuccessAt}, excluded.last_success_at)`,
 					status: "ok",
 					errorMessage: null,
-					updatedAt: observedAt,
+					updatedAt: sql`GREATEST(${polyTraderIngestionCursors.updatedAt}, excluded.updated_at)`,
 				},
 			});
+		return true;
 	});
 }
 
@@ -447,14 +632,30 @@ async function resolveTargetWallet(
 }
 
 function hashPositionFact(position: PolymarketUserPosition): string {
+	return hashPositionIdentity({
+		conditionId: position.conditionId.toLowerCase(),
+		tokenId: position.asset,
+		shares: position.size,
+		avgPrice: position.avgPrice,
+		costBasisUsdc: position.initialValue,
+	});
+}
+
+function hashPositionIdentity(input: {
+	conditionId: string;
+	tokenId: string;
+	shares: number;
+	avgPrice: number;
+	costBasisUsdc: number;
+}): string {
 	return createHash("sha256")
 		.update(
 			JSON.stringify({
-				conditionId: position.conditionId.toLowerCase(),
-				asset: position.asset,
-				size: position.size,
-				avgPrice: position.avgPrice,
-				initialValue: position.initialValue,
+				conditionId: input.conditionId,
+				asset: input.tokenId,
+				size: input.shares,
+				avgPrice: input.avgPrice,
+				initialValue: input.costBasisUsdc,
 			}),
 		)
 		.digest("hex");
