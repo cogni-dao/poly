@@ -3,7 +3,7 @@
 
 /**
  * Module: `@tests/unit/app/dashboard/copy-target-control-panel`
- * Purpose: Prove the human selector names the active implementation without
+ * Purpose: Prove the human selector names the configured implementation without
  *          redundant prose, links directly to durable guidance, and gives one
  *          no obsolete allocation controls.
  * Scope: Component rendering with query hooks mocked; no HTTP or DB.
@@ -84,6 +84,20 @@ const targetResponse = {
   },
 };
 
+const apiMocks = vi.hoisted(() => ({
+  createCopyTarget: vi.fn(async () => undefined),
+}));
+
+vi.mock(
+  "@/app/(app)/dashboard/_api/fetchCopyTargets",
+  async (importOriginal) => {
+    const actual = await importOriginal<
+      typeof import("@/app/(app)/dashboard/_api/fetchCopyTargets")
+    >();
+    return { ...actual, createCopyTarget: apiMocks.createCopyTarget };
+  },
+);
+
 vi.mock("@tanstack/react-query", () => ({
   useQuery: ({ queryKey }: { queryKey: readonly string[] }) =>
     queryKey[0] === "dashboard-copy-targets"
@@ -101,10 +115,16 @@ vi.mock("@tanstack/react-query", () => ({
           },
           isLoading: false,
         },
-  useMutation: () => ({
+  useMutation: ({
+    mutationFn,
+  }: {
+    mutationFn: (input: unknown) => Promise<unknown> | unknown;
+  }) => ({
     isPending: false,
-    mutate: vi.fn(),
-    mutateAsync: vi.fn(async () => undefined),
+    mutate: (input: unknown) => {
+      void mutationFn(input);
+    },
+    mutateAsync: mutationFn,
   }),
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
@@ -119,13 +139,32 @@ vi.mock("@/components", () => ({
   ),
   CardContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   formatShortWallet: (wallet: string) => wallet.slice(0, 8),
-  Select: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  SelectTrigger: (props: HTMLAttributes<HTMLDivElement>) => <div {...props} />,
-  SelectValue: () => <span>Selected algorithm</span>,
-  SelectContent: ({ children }: { children: ReactNode }) => (
-    <div>{children}</div>
+  Select: ({
+    value,
+    onValueChange,
+    disabled,
+  }: {
+    value: string;
+    onValueChange: (value: string) => void;
+    disabled?: boolean;
+  }) => (
+    <select
+      aria-label="Mirror algorithm"
+      value={value}
+      disabled={disabled}
+      onChange={(event) => onValueChange(event.target.value)}
+    >
+      <option value="auto">Auto</option>
+      <option value="target_percentile_scaled">Target percentile</option>
+      <option value="position_gap">Position gap</option>
+      <option value="min_bet">Minimum bet</option>
+      <option value="mirror_fill_exact">Exact fill mirror</option>
+    </select>
   ),
-  SelectItem: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  SelectTrigger: (_props: HTMLAttributes<HTMLDivElement>) => null,
+  SelectValue: () => null,
+  SelectContent: (_props: { children: ReactNode }) => null,
+  SelectItem: (_props: { children: ReactNode }) => null,
 }));
 
 vi.mock("@/components/kit/policy/PolicyControls", () => ({
@@ -139,13 +178,44 @@ vi.mock("@/features/wallet-analysis", () => ({
 import { CopyTargetControlPanel } from "@/app/(app)/dashboard/_components/CopyTargetControlPanel";
 
 describe("CopyTargetControlPanel algorithm selector", () => {
+  it("enables an off target with the selected algorithm atomically", () => {
+    const previousTargets = targetResponse.targets;
+    targetResponse.targets = [];
+    apiMocks.createCopyTarget.mockClear();
+
+    try {
+      render(<CopyTargetControlPanel />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Expand copy controls" }),
+      );
+
+      const selectors = screen.getAllByRole("combobox", {
+        name: "Mirror algorithm",
+      });
+      expect(selectors[0]).toBeEnabled();
+      fireEvent.change(selectors[0], {
+        target: { value: "target_percentile_scaled" },
+      });
+      fireEvent.click(screen.getByRole("switch", { name: "Turn on RN1" }));
+
+      expect(apiMocks.createCopyTarget).toHaveBeenCalledWith({
+        target_wallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
+        sizing_policy_kind: "target_percentile_scaled",
+      });
+    } finally {
+      cleanup();
+      targetResponse.targets = previousTargets;
+    }
+  });
+
   it("renders a terse position-gap decision surface", () => {
     render(<CopyTargetControlPanel />);
     fireEvent.click(
       screen.getByRole("button", { name: "Expand copy controls" }),
     );
 
-    expect(screen.getByText("Active: Position gap")).toBeInTheDocument();
+    expect(screen.getByText("Configured: Position gap")).toBeInTheDocument();
+    expect(screen.queryByText("Active: Position gap")).not.toBeInTheDocument();
     expect(screen.getByText("build f3e49318")).toBeInTheDocument();
     expect(screen.queryByText(/recommended/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Most promising/i)).not.toBeInTheDocument();

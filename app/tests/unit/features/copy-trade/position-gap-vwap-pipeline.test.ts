@@ -105,7 +105,9 @@ function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 function commonDeps(fill: Fill, ledger: OrderLedger, logger: LoggerPort) {
 	return {
 		implementationRevision: "0123456789abcdef0123456789abcdef01234567",
+		targetRowId: "target-row-1",
 		assignmentId: "target:2026-10-07T00:00:00.000Z",
+		isAssignmentCurrent: async () => true,
 		source: { fetchSince: async () => ({ fills: [fill], newSince: 1 }) },
 		ledger,
 		getExecutionMode: async () => "paper" as const,
@@ -141,6 +143,278 @@ function commonDeps(fill: Fill, ledger: OrderLedger, logger: LoggerPort) {
 }
 
 describe("position_gap legacy fill-pipeline boundary", () => {
+	it("fails closed before source reads when the assignment is retired", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		const deps = commonDeps(buyFill, harness.ledger, recordingLogger(entries));
+		const fetchSince = vi.fn(deps.source.fetchSince);
+
+		await runMirrorTick({
+			...deps,
+			source: { fetchSince },
+			isAssignmentCurrent: async () => false,
+		});
+
+		expect(fetchSince).not.toHaveBeenCalled();
+		expect(harness.decisions).toHaveLength(0);
+		expect(entries).toContainEqual(
+			expect.objectContaining({
+				event: "poly.mirror.assignment_retired",
+				outcome: "skipped",
+				reason: "assignment_retired",
+				billing_account_id: "billing-1",
+				target_row_id: "target-row-1",
+				assignment_id: "target:2026-10-07T00:00:00.000Z",
+				algorithm_id: "poly.copy-mirror.position-gap",
+			}),
+		);
+		expect(entries[0]).not.toHaveProperty("target_wallet");
+	});
+
+	it("reports liveness lookup failure as an error, not known retirement", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		const deps = commonDeps(buyFill, harness.ledger, recordingLogger(entries));
+		const fetchSince = vi.fn(deps.source.fetchSince);
+
+		await runMirrorTick({
+			...deps,
+			source: { fetchSince },
+			isAssignmentCurrent: async () => {
+				throw new Error("DB unavailable");
+			},
+		});
+
+		expect(fetchSince).not.toHaveBeenCalled();
+		expect(entries).toContainEqual(
+			expect.objectContaining({
+				event: "poly.mirror.assignment_retired",
+				outcome: "error",
+				reason: "assignment_liveness_unavailable",
+				errorCode: "assignment_liveness_unavailable",
+			}),
+		);
+		expect(entries).not.toContainEqual(
+			expect.objectContaining({ reason: "assignment_retired" }),
+		);
+	});
+
+	it("suppresses an old execution-mode error when the assignment retires", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		const deps = commonDeps(buyFill, harness.ledger, recordingLogger(entries));
+		const fetchSince = vi.fn(deps.source.fetchSince);
+		const isAssignmentCurrent = vi
+			.fn<() => Promise<boolean>>()
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+
+		await runMirrorTick({
+			...deps,
+			source: { fetchSince },
+			isAssignmentCurrent,
+			getExecutionMode: async () => {
+				throw new Error("mode unavailable");
+			},
+		});
+
+		expect(isAssignmentCurrent).toHaveBeenCalledTimes(2);
+		expect(fetchSince).not.toHaveBeenCalled();
+		expect(
+			entries.filter(
+				(entry) => entry.event === "poly.mirror.assignment_retired",
+			),
+		).toHaveLength(1);
+		expect(
+			entries.filter((entry) => entry.event === "poly.mirror.decision"),
+		).toHaveLength(0);
+	});
+
+	it("suppresses an old source error when the assignment retires", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		const deps = commonDeps(buyFill, harness.ledger, recordingLogger(entries));
+		const fetchSince = vi.fn(async () => {
+			throw new Error("source unavailable");
+		});
+		const isAssignmentCurrent = vi
+			.fn<() => Promise<boolean>>()
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+
+		await runMirrorTick({
+			...deps,
+			source: { fetchSince },
+			isAssignmentCurrent,
+		});
+
+		expect(isAssignmentCurrent).toHaveBeenCalledTimes(2);
+		expect(fetchSince).toHaveBeenCalledOnce();
+		expect(
+			entries.filter(
+				(entry) => entry.event === "poly.mirror.assignment_retired",
+			),
+		).toHaveLength(1);
+		expect(
+			entries.filter(
+				(entry) => entry.event === "poly.mirror.source_error",
+			),
+		).toHaveLength(0);
+	});
+
+	it("drops an old planner skip when the assignment retires mid-tick", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		const deps = commonDeps(buyFill, harness.ledger, recordingLogger(entries));
+		const isAssignmentCurrent = vi
+			.fn<() => Promise<boolean>>()
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+
+		await runMirrorTick({ ...deps, isAssignmentCurrent });
+
+		expect(isAssignmentCurrent).toHaveBeenCalledTimes(2);
+		expect(harness.decisions).toHaveLength(0);
+		expect(harness.insertPending).not.toHaveBeenCalled();
+		expect(
+			entries.filter(
+				(entry) => entry.event === "poly.mirror.assignment_retired",
+			),
+		).toHaveLength(1);
+		expect(
+			entries.filter((entry) => entry.event === "poly.mirror.decision"),
+		).toHaveLength(0);
+	});
+
+	it("never cancels shared orders after a SELL assignment retires", async () => {
+		const sellFill: Fill = {
+			...buyFill,
+			fill_id: "chain:retired-sell-cancel",
+			side: "SELL",
+		};
+		const openOrder: OpenOrderRow = {
+			client_order_id: `0x${"1".repeat(64)}`,
+			order_id: "shared-resting-order",
+			status: "open",
+			billing_account_id: "billing-1",
+			target_id: target.target_id,
+			market_id: sellFill.market_id,
+			created_at: new Date("2026-10-07T00:00:00.000Z"),
+			mode: "paper",
+			limit_price: 0.5,
+		};
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness([openOrder]);
+		const deps = commonDeps(
+			sellFill,
+			harness.ledger,
+			recordingLogger(entries),
+		);
+		const isAssignmentCurrent = vi
+			.fn<() => Promise<boolean>>()
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+		const cancelOrder = vi.fn(async () => undefined);
+
+		await runMirrorTick({
+			...deps,
+			isAssignmentCurrent,
+			cancelOrder,
+		});
+
+		expect(cancelOrder).not.toHaveBeenCalled();
+		expect(harness.markCanceled).not.toHaveBeenCalled();
+		expect(harness.decisions).toHaveLength(0);
+		expect(
+			entries.filter(
+				(entry) => entry.event === "poly.mirror.assignment_retired",
+			),
+		).toHaveLength(1);
+		expect(
+			entries.filter((entry) => entry.event === "poly.mirror.decision"),
+		).toHaveLength(0);
+	});
+
+	it("adds complete lineage and durable assignment attribution to terminal decisions", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		const deps = commonDeps(buyFill, harness.ledger, recordingLogger(entries));
+
+		await runMirrorTick(deps);
+
+		const terminal = entries.find(
+			(entry) =>
+				entry.event === "poly.mirror.decision" && entry.outcome === "skipped",
+		);
+		expect(terminal).toMatchObject({
+			billing_account_id: "billing-1",
+			target_row_id: "target-row-1",
+			assignment_id: "target:2026-10-07T00:00:00.000Z",
+			algorithm_id: "poly.copy-mirror.position-gap",
+			algorithm_version_id: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+			config_hash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+			input_snapshot_id: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+			correlation_id: expect.stringMatching(/^0x[a-f0-9]{64}$/),
+		});
+		expect(terminal).not.toHaveProperty("target_wallet");
+	});
+
+	it("retires a pending intent when assignment changes before venue dispatch", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		const eligibleFill = { ...buyFill, price: 0.5 };
+		const deps = commonDeps(
+			eligibleFill,
+			harness.ledger,
+			recordingLogger(entries),
+		);
+		const isAssignmentCurrent = vi
+			.fn<() => Promise<boolean>>()
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+		const placeIntent = vi.fn(async () => {
+			throw new Error("retired assignment must not reach venue");
+		});
+
+		await runMirrorTick({
+			...deps,
+			isAssignmentCurrent,
+			target: buildMirrorTargetConfig({
+				targetWallet: eligibleFill.target_wallet,
+				billingAccountId: "billing-1",
+				createdByUserId: "user-1",
+				sizingPolicyKind: "min_bet",
+			}),
+			placeIntent,
+		});
+
+		expect(isAssignmentCurrent).toHaveBeenCalledTimes(2);
+		expect(harness.insertPending).toHaveBeenCalledOnce();
+		expect(placeIntent).not.toHaveBeenCalled();
+		expect(harness.markCanceled).toHaveBeenCalledWith({
+			client_order_id: expect.stringMatching(/^0x[a-f0-9]{64}$/),
+			reason: "assignment_retired",
+		});
+		expect(harness.decisions).toContainEqual(
+			expect.objectContaining({
+				outcome: "skipped",
+				reason: "assignment_retired",
+			}),
+		);
+		expect(entries).toContainEqual(
+			expect.objectContaining({
+				event: "poly.mirror.assignment_retired",
+				outcome: "skipped",
+				reason: "assignment_retired",
+				algorithm_id: "poly.copy-mirror.min-bet",
+				algorithm_version_id: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				config_hash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				input_snapshot_id: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				correlation_id: expect.stringMatching(/^0x[a-f0-9]{64}$/),
+			}),
+		);
+	});
+
 	it("does not place when the account venue changes after private facts are read", async () => {
 		const entries: Record<string, unknown>[] = [];
 		const harness = ledgerHarness();
@@ -181,6 +455,59 @@ describe("position_gap legacy fill-pipeline boundary", () => {
 				reason: "placement_failed",
 			}),
 		);
+	});
+
+	it("retires a pending intent when venue drift and replacement race", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		harness.insertPending.mockResolvedValueOnce("live");
+		const deps = commonDeps(
+			{ ...buyFill, price: 0.5 },
+			harness.ledger,
+			recordingLogger(entries),
+		);
+		const isAssignmentCurrent = vi
+			.fn<() => Promise<boolean>>()
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+		const placeIntent = vi.fn(async () => {
+			throw new Error("retired assignment must not reach venue");
+		});
+
+		await runMirrorTick({
+			...deps,
+			isAssignmentCurrent,
+			target: buildMirrorTargetConfig({
+				targetWallet: buyFill.target_wallet,
+				billingAccountId: "billing-1",
+				createdByUserId: "user-1",
+				sizingPolicyKind: "min_bet",
+			}),
+			placeIntent,
+		});
+
+		expect(isAssignmentCurrent).toHaveBeenCalledTimes(2);
+		expect(placeIntent).not.toHaveBeenCalled();
+		expect(harness.markError).not.toHaveBeenCalled();
+		expect(harness.markCanceled).toHaveBeenCalledWith({
+			client_order_id: expect.stringMatching(/^0x[a-f0-9]{64}$/),
+			reason: "assignment_retired",
+		});
+		expect(harness.decisions).toContainEqual(
+			expect.objectContaining({
+				mode_override: "live",
+				outcome: "skipped",
+				reason: "assignment_retired",
+			}),
+		);
+		expect(entries).not.toContainEqual(
+			expect.objectContaining({ reason: "placement_failed" }),
+		);
+		expect(
+			entries.filter(
+				(entry) => entry.event === "poly.mirror.assignment_retired",
+			),
+		).toHaveLength(1);
 	});
 
 	it("fails the legacy fill pipeline closed so the book actor is the only planner", async () => {

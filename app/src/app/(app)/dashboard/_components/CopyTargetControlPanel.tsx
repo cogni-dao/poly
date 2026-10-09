@@ -16,6 +16,7 @@
 "use client";
 
 import type {
+  PolyCopyTradeTargetCreateInput,
   PolyCopyTradeTargetUpdateInput,
   PolyTrackedTarget,
   PolyWalletGrantsPutInput,
@@ -123,7 +124,8 @@ export function CopyTargetControlPanel(): ReactElement {
   }, [targetsQuery.data]);
 
   const createMutation = useMutation({
-    mutationFn: (target_wallet: string) => createCopyTarget({ target_wallet }),
+    mutationFn: (input: PolyCopyTradeTargetCreateInput) =>
+      createCopyTarget(input),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: COPY_TARGETS_QUERY_KEY }),
   });
@@ -246,7 +248,12 @@ export function CopyTargetControlPanel(): ReactElement {
                   deleteMutation.isPending ||
                   policyMutation.isPending
                 }
-                onCreate={() => createMutation.mutate(curated.wallet)}
+                onCreate={(sizingPolicyKind) =>
+                  createMutation.mutate({
+                    target_wallet: curated.wallet,
+                    sizing_policy_kind: sizingPolicyKind,
+                  })
+                }
                 onDelete={() => {
                   if (target) deleteMutation.mutate(target.target_id);
                 }}
@@ -319,12 +326,19 @@ function CopyTargetCard({
   target: PolyTrackedTarget | undefined;
   loading: boolean;
   mutating: boolean;
-  onCreate: () => void;
+  onCreate: (sizingPolicyKind: SizingPolicyKind) => void;
   onDelete: () => void;
   onSave: (next: Omit<PolyCopyTradeTargetUpdateInput, "id">) => Promise<void>;
   unbudgetedTargetCount: number;
 }): ReactElement {
   const active = Boolean(target);
+  const [selectedKind, setSelectedKind] = useState<SizingPolicyKind>(
+    target?.policy.declared_kind ?? "auto",
+  );
+
+  useEffect(() => {
+    if (target) setSelectedKind(target.policy.declared_kind);
+  }, [target]);
 
   return (
     <div className="flex min-h-48 min-w-0 flex-col gap-3 rounded-md border bg-background/40 p-4">
@@ -340,13 +354,16 @@ function CopyTargetCard({
           label={label}
           active={active}
           disabled={loading || mutating}
-          onToggle={active ? onDelete : onCreate}
+          onToggle={active ? onDelete : () => onCreate(selectedKind)}
         />
       </div>
 
       <TargetPolicyEditor
         target={target}
         disabled={!active || mutating}
+        algorithmDisabled={mutating}
+        kind={selectedKind}
+        onKindChange={setSelectedKind}
         onSave={onSave}
         unbudgetedTargetCount={unbudgetedTargetCount}
       />
@@ -413,17 +430,20 @@ function TargetActiveSwitch({
 function TargetPolicyEditor({
   target,
   disabled,
+  algorithmDisabled,
+  kind,
+  onKindChange,
   onSave,
   unbudgetedTargetCount,
 }: {
   target: PolyTrackedTarget | undefined;
   disabled: boolean;
+  algorithmDisabled: boolean;
+  kind: SizingPolicyKind;
+  onKindChange: (kind: SizingPolicyKind) => void;
   onSave: (next: Omit<PolyCopyTradeTargetUpdateInput, "id">) => Promise<void>;
   unbudgetedTargetCount: number;
 }): ReactElement {
-  const [kind, setKind] = useState<SizingPolicyKind>(
-    target?.policy.declared_kind ?? "auto",
-  );
   const [percentile, setPercentile] = useState(
     target?.policy.mirror_filter_percentile ?? 75,
   );
@@ -437,7 +457,6 @@ function TargetPolicyEditor({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setKind(target?.policy.declared_kind ?? "auto");
     setPercentile(target?.policy.mirror_filter_percentile ?? 75);
     setMaxBet((target?.policy.mirror_max_usdc_per_trade ?? 5).toFixed(2));
     setMirrorBudget(
@@ -508,8 +527,10 @@ function TargetPolicyEditor({
           </span>
           <Select
             value={kind}
-            onValueChange={(value) => setKind(value as SizingPolicyKind)}
-            disabled={disabled || saving}
+            onValueChange={(value) =>
+              onKindChange(value as SizingPolicyKind)
+            }
+            disabled={algorithmDisabled || saving}
           >
             <SelectTrigger aria-label="Mirror algorithm">
               <SelectValue />
@@ -524,7 +545,7 @@ function TargetPolicyEditor({
           </Select>
         </div>
         <div className="text-muted-foreground text-xs sm:text-right">
-          <div>Active: {target ? algorithmSummary(target) : "--"}</div>
+          <div>Configured: {target ? algorithmSummary(target) : "--"}</div>
           <div className="font-mono">build {buildRevision}</div>
         </div>
       </div>
