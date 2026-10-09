@@ -37,7 +37,7 @@ const validGapReport = {
 	],
 	gaps: [
 		{
-			code: "account_unavailable" as const,
+			code: "account_read_unavailable" as const,
 			requiredFact: "explicit billing-account evidence",
 			reason: "No unambiguous explicit-input account tool is bound in v1.",
 		},
@@ -82,6 +82,21 @@ describe("poly-algorithm-evaluation output v1", () => {
 		expect(() =>
 			PolyAlgorithmEvaluationReportSchema.parse(validGapReport),
 		).not.toThrow();
+	});
+
+	it("uses account_read_unavailable as the canonical account GAP code", () => {
+		expect(validGapReport.gaps[0]?.code).toBe("account_read_unavailable");
+		expect(() =>
+			PolyAlgorithmEvaluationReportSchema.parse({
+				...validGapReport,
+				gaps: [
+					{
+						...validGapReport.gaps[0],
+						code: "account_unavailable",
+					},
+				],
+			}),
+		).toThrow();
 	});
 
 	it("rejects findings that cite evidence absent from the report", () => {
