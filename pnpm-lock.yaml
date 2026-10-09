@@ -153,8 +153,8 @@ importers:
         specifier: workspace:*
         version: link:../packages/scheduler-core
       '@cogni/work-items':
-        specifier: https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.5/cogni-dao-work-items-0.1.5.tgz
-        version: '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.5/cogni-dao-work-items-0.1.5.tgz'
+        specifier: https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.7/cogni-dao-work-items-0.1.7.tgz
+        version: '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.7/cogni-dao-work-items-0.1.7.tgz'
       '@dnd-kit/core':
         specifier: ^6.3.1
         version: 6.3.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
@@ -1418,9 +1418,9 @@ packages:
     peerDependencies:
       '@cogni/ai-tools': '*'
 
-  '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.5/cogni-dao-work-items-0.1.5.tgz':
-    resolution: {tarball: https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.5/cogni-dao-work-items-0.1.5.tgz}
-    version: 0.1.5
+  '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.7/cogni-dao-work-items-0.1.7.tgz':
+    resolution: {tarball: https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.7/cogni-dao-work-items-0.1.7.tgz}
+    version: 0.1.7
 
   '@coinbase/cdp-sdk@1.51.0':
     resolution: {integrity: sha512-XK8+OXDER1jirYpuiOct4ij65ODQ31LsmyRrZi/J7zF4GB89qxWZ0KPfAdsqJMP7VvE4no+Q++MKkQtAJUBoyg==}
@@ -9924,7 +9924,7 @@ snapshots:
       postgres: 3.4.9
       zod: 4.4.3
 
-  '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.5/cogni-dao-work-items-0.1.5.tgz':
+  '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.1.7/cogni-dao-work-items-0.1.7.tgz':
     dependencies:
       type-fest: 5.7.0
       yaml: 2.9.0
