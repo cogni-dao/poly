@@ -49,6 +49,8 @@ export interface ProofLogRecord {
 	algorithm_version: string;
 	fixed_input_id: string;
 	decision_size_usdc: number;
+	decision_correlation_id: string;
+	decision_algorithm_version: string;
 	client_order_id: string;
 	order_id: string;
 }
@@ -222,6 +224,18 @@ function validateAttempt(
 				`${prefix}.${event} decision size does not match the response`,
 			);
 		}
+		if (record.decision_correlation_id !== response.decision.correlation_id) {
+			issues.push(
+				`${prefix}.${event} decision correlation does not match the persisted decision`,
+			);
+		}
+		if (
+			record.decision_algorithm_version !== response.decision.algorithm_version
+		) {
+			issues.push(
+				`${prefix}.${event} decision algorithm version does not match the persisted decision`,
+			);
+		}
 		if (record.client_order_id !== response.ledger.client_order_id) {
 			issues.push(
 				`${prefix}.${event} client_order_id does not match the ledger`,
@@ -265,6 +279,8 @@ export function collectCorrelatedLogEvidence(
 			typeof parsed.algorithm_version !== "string" ||
 			typeof parsed.fixed_input_id !== "string" ||
 			typeof parsed.decision_size_usdc !== "number" ||
+			typeof parsed.decision_correlation_id !== "string" ||
+			typeof parsed.decision_algorithm_version !== "string" ||
 			typeof parsed.client_order_id !== "string" ||
 			typeof parsed.order_id !== "string"
 		) {
@@ -276,6 +292,8 @@ export function collectCorrelatedLogEvidence(
 			algorithm_version: parsed.algorithm_version,
 			fixed_input_id: parsed.fixed_input_id,
 			decision_size_usdc: parsed.decision_size_usdc,
+			decision_correlation_id: parsed.decision_correlation_id,
+			decision_algorithm_version: parsed.decision_algorithm_version,
 			client_order_id: parsed.client_order_id,
 			order_id: parsed.order_id,
 		});
