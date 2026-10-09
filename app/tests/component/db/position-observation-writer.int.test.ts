@@ -267,7 +267,7 @@ describe("serialized position-observation writer", () => {
     // omission guard and wedged the observer stale forever. The resolved-market
     // exclusion must keep the omitted loser OUT of the authority check, so the
     // writer publishes cleanly and the in-publication deactivation retires it.
-    const wallet = await seedWallet("5107");
+    const wallet = await seedWallet("5111");
     await seedCurrent(wallet.id, "701");
     await seedLoser("701");
     let authorityCalls = 0;
