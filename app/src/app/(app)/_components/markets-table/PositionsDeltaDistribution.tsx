@@ -12,8 +12,10 @@
  * Scope: Pure client component. No fetch — caller passes both `positions`
  *   and `groups` (already in dashboard state).
  * Invariants:
- *   - JOIN_BY_CONDITION_ID: positions without a matching line drop from
- *     the histogram (silently — they are by definition not comparable).
+ *   - JOIN_BY_CANONICAL_CONDITION_ID: position and market-line condition ids
+ *     are normalized case-insensitively before joining. Positions without a
+ *     unique finite match drop from the bounded sample without hiding the
+ *     histogram.
  *   - STATUS_AT_LINE: line `status` ("live" | "closed") drives the
  *     filter, not position lifecycle. The Open tab passes `live`,
  *     History passes `closed`.
@@ -43,34 +45,61 @@ export type PositionsDeltaDistributionProps = {
   statusFilter: WalletExecutionMarketLineStatus;
 };
 
+export function positionDeltaValues(
+  positions: readonly WalletPosition[],
+  groups: readonly WalletExecutionMarketGroup[],
+  statusFilter: WalletExecutionMarketLineStatus
+): number[] {
+  const lineByCondition = new Map<
+    string,
+    { edgeGapPct: number; status: WalletExecutionMarketLineStatus } | null
+  >();
+  for (const group of groups) {
+    for (const line of group.lines) {
+      if (
+        line.status !== statusFilter ||
+        line.edgeGapPct === null ||
+        !Number.isFinite(line.edgeGapPct) ||
+        typeof line.conditionId !== "string" ||
+        line.conditionId.length === 0
+      ) {
+        continue;
+      }
+      const conditionId = line.conditionId.toLowerCase();
+      if (lineByCondition.has(conditionId)) {
+        lineByCondition.set(conditionId, null);
+        continue;
+      }
+      lineByCondition.set(conditionId, {
+        edgeGapPct: line.edgeGapPct,
+        status: line.status,
+      });
+    }
+  }
+  const values: number[] = [];
+  for (const position of positions) {
+    if (
+      typeof position.conditionId !== "string" ||
+      position.conditionId.length === 0
+    ) {
+      continue;
+    }
+    const line = lineByCondition.get(position.conditionId.toLowerCase());
+    if (!line || line.status !== statusFilter) continue;
+    values.push(Math.abs(line.edgeGapPct * 100));
+  }
+  return values;
+}
+
 export function PositionsDeltaDistribution({
   positions,
   groups,
   statusFilter,
-}: PositionsDeltaDistributionProps): ReactElement | null {
-  const absDeltaPcts = useMemo(() => {
-    const lineByCondition = new Map<
-      string,
-      { edgeGapPct: number; status: WalletExecutionMarketLineStatus }
-    >();
-    for (const g of groups ?? []) {
-      for (const line of g.lines) {
-        if (line.edgeGapPct === null) continue;
-        lineByCondition.set(line.conditionId, {
-          edgeGapPct: line.edgeGapPct,
-          status: line.status,
-        });
-      }
-    }
-    const out: number[] = [];
-    for (const p of positions ?? []) {
-      const line = lineByCondition.get(p.conditionId);
-      if (!line) continue;
-      if (line.status !== statusFilter) continue;
-      out.push(Math.abs(line.edgeGapPct * 100));
-    }
-    return out;
-  }, [positions, groups, statusFilter]);
+}: PositionsDeltaDistributionProps): ReactElement {
+  const absDeltaPcts = useMemo(
+    () => positionDeltaValues(positions ?? [], groups ?? [], statusFilter),
+    [positions, groups, statusFilter]
+  );
 
   return (
     <DeltaDistribution absDeltaPcts={absDeltaPcts} subtitle={statusFilter} />

@@ -454,7 +454,7 @@ describe("dashboard missing read-model states", () => {
     state.actionsAllowed = true;
   });
 
-  it("labels a bounded position preview without calling it an upstream failure", () => {
+  it("keeps the position histogram without rendering preview disclaimers", () => {
     state.execution = {
       address: "0x1111111111111111111111111111111111111111",
       freshness: "read_model",
@@ -474,9 +474,14 @@ describe("dashboard missing read-model states", () => {
 
     render(<ExecutionActivityCard />);
 
-    expect(screen.getByRole("button", { name: /Live.*501/i })).toBeInTheDocument();
-    expect(screen.getByText(/bounded preview/i)).toBeInTheDocument();
-    expect(screen.queryByText(/upstream data is temporarily unavailable/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Live.*501/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("position distribution")).toBeInTheDocument();
+    expect(screen.queryByText(/bounded preview/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/upstream data is temporarily unavailable/i),
+    ).not.toBeInTheDocument();
   });
 
   it.each([
@@ -558,7 +563,7 @@ describe("dashboard missing read-model states", () => {
     expect(screen.getByTestId("time-window")).toBeInTheDocument();
   });
 
-  it("suppresses false-zero market visuals when exposure is unavailable", () => {
+  it("keeps the market histogram mounted when exposure is unavailable", () => {
     state.execution = {
       address: "0x1111111111111111111111111111111111111111",
       freshness: "read_model",
@@ -580,11 +585,11 @@ describe("dashboard missing read-model states", () => {
       screen.getByText("Market exposure temporarily unavailable.")
     ).toBeInTheDocument();
     expect(screen.queryByText(/not a zero-exposure/i)).not.toBeInTheDocument();
-    expect(screen.queryByText("market distribution")).not.toBeInTheDocument();
+    expect(screen.getByText("market distribution")).toBeInTheDocument();
     expect(screen.queryByText("markets table")).not.toBeInTheDocument();
   });
 
-  it("visibly labels a bounded market preview", () => {
+  it("keeps the market histogram without rendering preview disclaimers", () => {
     state.execution = {
       address: "0x1111111111111111111111111111111111111111",
       freshness: "read_model",
@@ -603,9 +608,55 @@ describe("dashboard missing read-model states", () => {
     render(<ExecutionActivityCard />);
     fireEvent.click(screen.getByRole("button", { name: "Markets" }));
 
+    expect(screen.getByText("market distribution")).toBeInTheDocument();
     expect(
-      screen.getByText("Showing a bounded market-comparison preview.")
-    ).toBeInTheDocument();
+      screen.queryByText("Showing a bounded market-comparison preview.")
+    ).not.toBeInTheDocument();
+  });
+
+  it("ignores partial coverage metadata and renders the saved market deltas", () => {
+    state.execution = {
+      address: "0x1111111111111111111111111111111111111111",
+      freshness: "read_model",
+      capturedAt: "2026-10-02T12:00:00.000Z",
+      dailyTradeCounts: [],
+      live_positions: [],
+      live_position_count: 0,
+      market_groups: [
+        { groupKey: "market-1", status: "live", edgeGapPct: 0.1, lines: [] },
+      ],
+      closed_positions: [],
+      closed_position_count: 0,
+      comparisonCoverage: {
+        markets: {
+          live: {
+            eligible: 1,
+            comparable: 1,
+            dropped: 0,
+            sampled: 0,
+            complete: false,
+            reasons: ["source_incomplete", "preview_truncated"],
+          },
+        },
+      },
+      warnings: [
+        { code: "market_exposure_preview_truncated", message: "bounded" },
+      ],
+    };
+
+    render(<ExecutionActivityCard />);
+    fireEvent.click(screen.getByRole("button", { name: "Markets" }));
+
+    expect(screen.getByText("market distribution")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Compared 1 of 1 markets/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Chart sample/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Partial comparison/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/histogram is withheld/i),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/stale or incomplete/i)).not.toBeInTheDocument();
   });
 
   it("shows the wallet partial badge for malformed order amounts", () => {

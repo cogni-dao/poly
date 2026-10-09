@@ -17,6 +17,8 @@
  *   - BIN_BOUNDARIES_FIXED: 0, 1, 5, 10, 25, 50, 100, ∞ (% units). Driven
  *     by the goal contract: ideal <1%, acceptable <10%, anything past 25%
  *     is mirror-loop pathology.
+ *   - ALWAYS_VISIBLE: the chart frame remains mounted for an empty bounded
+ *     sample; missing values never erase the histogram surface.
  * Side-effects: none
  * @public
  */
@@ -106,7 +108,7 @@ export type DeltaDistributionProps = {
 export function DeltaDistribution({
   absDeltaPcts,
   subtitle,
-}: DeltaDistributionProps): ReactElement | null {
+}: DeltaDistributionProps): ReactElement {
   const { bars, stats, comparable } = useMemo(() => {
     const counts = new Array(BINS.length).fill(0) as number[];
     for (const v of absDeltaPcts) {
@@ -130,10 +132,10 @@ export function DeltaDistribution({
     };
   }, [absDeltaPcts]);
 
-  if (comparable === 0) return null;
-
-  const pctUnder1 = Math.round((stats.under1 / stats.total) * 100);
-  const pctUnder10 = Math.round((stats.under10 / stats.total) * 100);
+  const pctUnder1 =
+    stats.total > 0 ? Math.round((stats.under1 / stats.total) * 100) : null;
+  const pctUnder10 =
+    stats.total > 0 ? Math.round((stats.under10 / stats.total) * 100) : null;
 
   return (
     <div className={CONTAINER_CLASS}>
@@ -142,24 +144,28 @@ export function DeltaDistribution({
           <h4 className={TITLE_CLASS}>|Δ| distribution</h4>
           <span className={HEADER_META_CLASS}>{subtitle}</span>
         </div>
-        <div className={STATS_ROW_CLASS}>
-          <span>
-            mean{" "}
-            <span className={STAT_VALUE_CLASS}>
-              {stats.meanAbs.toFixed(1)}%
+        {comparable > 0 ? (
+          <div className={STATS_ROW_CLASS}>
+            <span>
+              mean{" "}
+              <span className={STAT_VALUE_CLASS}>
+                {stats.meanAbs.toFixed(1)}%
+              </span>
             </span>
-          </span>
-          <span>
-            median{" "}
-            <span className={STAT_VALUE_CLASS}>{stats.medAbs.toFixed(1)}%</span>
-          </span>
-          <span>
-            &lt;1% <span className={STAT_VALUE_CLASS}>{pctUnder1}%</span>
-          </span>
-          <span>
-            &lt;10% <span className={STAT_VALUE_CLASS}>{pctUnder10}%</span>
-          </span>
-        </div>
+            <span>
+              median{" "}
+              <span className={STAT_VALUE_CLASS}>
+                {stats.medAbs.toFixed(1)}%
+              </span>
+            </span>
+            <span>
+              &lt;1% <span className={STAT_VALUE_CLASS}>{pctUnder1}%</span>
+            </span>
+            <span>
+              &lt;10% <span className={STAT_VALUE_CLASS}>{pctUnder10}%</span>
+            </span>
+          </div>
+        ) : null}
       </div>
       <ChartContainer config={CHART_CONFIG} className={CHART_WRAPPER_CLASS}>
         <BarChart
