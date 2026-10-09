@@ -614,9 +614,20 @@ export async function readTenantWalletDashboardIn(
   const availableUsdc = cashOnChain !== null && lockedUsdc !== null
     ? roundMoney(Math.max(0, cashOnChain - lockedUsdc))
     : null;
-  const positionsMtm = positionsRead.ok && positionFact.status !== "unavailable"
-    ? roundMoney(positionsRead.value.summary.positionsMtm)
-    : null;
+  // UNKNOWN_IS_NOT_ZERO: `summary.positionsMtm` is summed over the SAVED
+  // position inventory but filtered by the LIVE market-outcome / redeem joins
+  // (see current-position-read-model). When the position observer stalls, the
+  // inventory freezes while that filter keeps resolving markets, so the sum
+  // drifts toward a misleading figure — bug.5031: a dead observer (frozen
+  // 9.5h) collapsed a ~$21 live book to $0 while the card still presented cash
+  // as if it were the balance. Trust the MTM only when the positions fact is
+  // fresh and complete — the same gate the composite total already requires —
+  // and otherwise surface it as unknown (null) so the UI shows "—", never a
+  // stale number dressed as truth.
+  const positionsMtm =
+    positionsRead.ok && positionFact.complete
+      ? roundMoney(positionsRead.value.summary.positionsMtm)
+      : null;
   const totalCoherent =
     cashOnChain !== null &&
     positionsMtm !== null &&

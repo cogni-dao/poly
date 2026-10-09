@@ -35,6 +35,10 @@
  *   - UNKNOWN_IS_NOT_ZERO: absent/stale position or P/L read models render an
  *     explicit unavailable state. A nullable total never triggers the empty
  *     wallet CTA and cash-only is never presented as Total.
+ *   - STALE_IS_LOUD (bug.5031): when `positions_stale` is true the card shows
+ *     a prominent "data-sync delay, not a change in funds" banner. A stalled
+ *     position observer previously degraded silently to a cash-only figure
+ *     with only a subtle "partial" chip, reading as a balance drop.
  * Side-effects: IO (React Query reads; session-bound paper-account POST).
  * Links: work/items/task.0361.poly-first-user-onboarding-flow-v0.md
  * @public
@@ -71,6 +75,22 @@ function formatDecimal(n: number | null, fractionDigits: number): string {
     minimumFractionDigits: fractionDigits,
     maximumFractionDigits: fractionDigits,
   });
+}
+
+/**
+ * Coarse "how long ago" label for the stale-positions banner. Null when no
+ * sync age is known (the banner then omits the parenthetical) so the copy
+ * never invents a freshness it cannot prove.
+ */
+function formatSyncAge(ms: number | null | undefined): string | null {
+  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms <= 0) {
+    return null;
+  }
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 async function fetchWalletStatus(): Promise<PolyWalletStatusOutput> {
@@ -235,6 +255,19 @@ export function TradingWalletCard(): ReactElement {
         ) : (
           <div className="space-y-5 py-1">
             <div className="space-y-3">
+              {data.positions_stale ? (
+                <div
+                  className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-warning text-xs"
+                  role="status"
+                >
+                  Live position data is stale
+                  {formatSyncAge(data.positions_sync_age_ms)
+                    ? ` (last synced ${formatSyncAge(data.positions_sync_age_ms)})`
+                    : ""}
+                  . Open-position value is withheld below — this is a data-sync
+                  delay, not a change in your funds.
+                </div>
+              ) : null}
               <TradingWalletBalanceBar balance={balance} />
               <div className="flex flex-wrap items-center justify-between gap-3 text-muted-foreground text-xs">
                 <span>

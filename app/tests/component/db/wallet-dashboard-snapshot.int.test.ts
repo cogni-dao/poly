@@ -863,7 +863,10 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(partial.execution.comparisonCoverage.positions.live.reasons).toContain(
       "source_incomplete"
     );
-    expect(partial.overview.usdc_positions_mtm).toBe(2);
+    // bug.5031: a non-fresh positions fact must not emit a dollar MTM. The
+    // exact count is retained for the execution card, but the money figure is
+    // unknown — never a number summed over a frozen/partial inventory.
+    expect(partial.overview.usdc_positions_mtm).toBeNull();
     expect(partial.overview.usdc_total).toBeNull();
 
     await db
@@ -877,7 +880,10 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(stale.execution.live_positions).toHaveLength(1);
     expect(stale.execution.market_groups.length).toBeGreaterThan(0);
     expect(stale.facts.markets.status).toBe("stale");
-    expect(stale.overview.usdc_positions_mtm).toBe(2);
+    // bug.5031: the stalled-observer case the dashboard actually hit in prod —
+    // the frozen inventory's MTM is withheld (null), not a misleading stale
+    // number, and the composite total stays null.
+    expect(stale.overview.usdc_positions_mtm).toBeNull();
     expect(stale.overview.usdc_total).toBeNull();
 
     await db.delete(polyTraderIngestionCursors).where(cursor);

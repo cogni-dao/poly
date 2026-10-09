@@ -230,6 +230,50 @@ describe("dashboard missing read-model states", () => {
     expect(screen.queryByText(/observer read model/i)).not.toBeInTheDocument();
   });
 
+  it("shouts a stale-positions banner and withholds the positions leg (bug.5031)", () => {
+    state.overview = {
+      configured: true,
+      connected: true,
+      freshness: "read_model",
+      address: "0x1111111111111111111111111111111111111111",
+      interval: "1W",
+      capturedAt: "2026-10-09T10:00:00.000Z",
+      pol_gas: 5,
+      usdc_available: 88.88,
+      usdc_locked: 0,
+      // A stalled observer must surface positions as unknown, never a
+      // misleading zero summed over frozen inventory.
+      usdc_positions_mtm: null,
+      usdc_total: null,
+      open_orders: 0,
+      positions_synced_at: "2026-10-09T00:32:30.965Z",
+      positions_sync_age_ms: 34_044_169,
+      positions_stale: true,
+      pnlHistory: [],
+      warnings: [
+        { code: "current_positions_stale", message: "stale" },
+      ],
+    };
+
+    render(<TradingWalletCard />);
+
+    // Loud banner, framed as a data-sync delay rather than lost funds.
+    expect(
+      screen.getByText(/not a change in your funds/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/last synced 9h ago/i)).toBeInTheDocument();
+    // Cash is shown, positions + total are withheld as unknown (never $0.00).
+    expect(screen.getByText("$88.88")).toBeInTheDocument();
+    expect(screen.getByText("Total").parentElement).toHaveTextContent("Total—");
+    expect(
+      screen.getByRole("img", {
+        name: /Positions: unavailable; Total: unavailable/i,
+      })
+    ).toBeInTheDocument();
+    // The empty-wallet CTA must never fire on a withheld total.
+    expect(screen.queryByText(/Wallet is empty/i)).not.toBeInTheDocument();
+  });
+
   it("reuses the legacy balance bar for a complete wallet breakdown", () => {
     state.overview = {
       configured: true,
