@@ -1156,6 +1156,13 @@ function createContainer(): Container {
 							);
 						}
 						const targetWallet = enumeratedTarget.targetWallet;
+						const isAssignmentCurrent = () =>
+							copyTradeTargetSource.isAssignmentCurrent({
+								targetRowId: enumeratedTarget.targetRowId,
+								billingAccountId: enumeratedTarget.billingAccountId,
+								mirrorActivatedAt: enumeratedTarget.mirrorActivatedAt,
+								sizingPolicyKind: enumeratedTarget.sizingPolicyKind,
+							});
 						// MODE_STAMPED_FROM_ACCOUNT — the ledger resolves each new row's
 						// mode and returns that durable binding to the pipeline. Placement
 						// and historical get/cancel operations dispatch with that exact
@@ -1206,6 +1213,8 @@ function createContainer(): Container {
 						if (enumeratedTarget.sizingPolicyKind === "position_gap") {
 							const actor = startPositionGapActor({
 								implementationRevision: algorithmImplementationRevision,
+								targetRowId: enumeratedTarget.targetRowId,
+								isAssignmentCurrent,
 								scope: {
 									billingAccountId: enumeratedTarget.billingAccountId,
 									createdByUserId: enumeratedTarget.createdByUserId,
@@ -1634,7 +1643,9 @@ function createContainer(): Container {
 						try {
 							stopPoll = startMirrorPoll({
 								implementationRevision: algorithmImplementationRevision,
-								assignmentId: `${target.target_id}:${enumeratedTarget.mirrorActivatedAt.toISOString()}`,
+								targetRowId: enumeratedTarget.targetRowId,
+								assignmentId: `${enumeratedTarget.targetRowId}:${enumeratedTarget.mirrorActivatedAt.toISOString()}`,
+								isAssignmentCurrent,
 								target,
 								source,
 								ledger: orderLedger,

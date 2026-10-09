@@ -22,6 +22,8 @@
  *     collapsed so RLS writes and DB reads agree.
  *   - FIRST_TICK_IMMEDIATE — the first tick fires synchronously on `start()` so
  *     startup targets begin polling without waiting 30s.
+ *   - STOP_IS_TERMINAL — once `stop()` is called, an in-flight enumeration or
+ *     predecessor retirement cannot launch an unowned poll.
  *   - SELF_HEALING — tick errors (DB failure, factory throw) are caught, logged
  *     under `poly.mirror.targets.reconcile.tick_error`, and do not tear down
  *     the interval. The next tick reattempts enumeration from scratch.
@@ -73,6 +75,9 @@ export type ReconcilerStopFn = () => void;
 interface RunningPoll {
   stop: StopFn;
   fingerprint: string;
+  algorithm: EnumeratedTarget["sizingPolicyKind"];
+  configRevision: string;
+  retirement: Promise<void> | null;
 }
 
 /** Key a running poll by `${billingAccountId}:${targetWallet.toLowerCase()}`. */
@@ -122,11 +127,29 @@ export function startCopyTradeReconciler(
   let stopped = false;
   let tickInFlight: Promise<void> | null = null;
 
+  function retirePoll(poll: RunningPoll): Promise<void> {
+    if (poll.retirement) return poll.retirement;
+    let result: void | Promise<void>;
+    try {
+      // Invoke synchronously so actors close their wake gate before a
+      // replacement or leadership handoff can continue.
+      result = poll.stop();
+    } catch (err: unknown) {
+      return Promise.reject(err);
+    }
+    const retirement = Promise.resolve(result).finally(() => {
+      if (poll.retirement === retirement) poll.retirement = null;
+    });
+    poll.retirement = retirement;
+    return retirement;
+  }
+
   async function reconcileTargets(): Promise<void> {
     let enumerated: readonly EnumeratedTarget[];
     try {
       enumerated = await deps.targetSource.listAllActive();
     } catch (err: unknown) {
+      if (stopped) return;
       log.error(
         {
           event: EVENT_NAMES.POLY_MIRROR_TARGETS_RECONCILE_TICK_ERROR,
@@ -137,6 +160,10 @@ export function startCopyTradeReconciler(
       );
       return;
     }
+
+    // Starting from a DB result that resolved after stop() creates an orphan
+    // poll whose handle was absent when stop() swept `running`.
+    if (stopped) return;
 
     const desired = new Map<string, EnumeratedTarget>();
     for (const t of enumerated) {
@@ -155,7 +182,7 @@ export function startCopyTradeReconciler(
       ) {
         let stoppedCleanly = false;
         try {
-          await poll.stop();
+          await retirePoll(poll);
           stoppedCleanly = true;
         } catch (err: unknown) {
           log.error(
@@ -163,6 +190,12 @@ export function startCopyTradeReconciler(
               event: EVENT_NAMES.POLY_MIRROR_TARGETS_RECONCILE_TICK_ERROR,
               errorCode: "stop_failed",
               key,
+              retiring_algorithm: poll.algorithm,
+              retiring_config_revision: poll.configRevision,
+              desired_algorithm: desiredTarget?.sizingPolicyKind,
+              desired_config_revision:
+                desiredTarget?.mirrorActivatedAt.toISOString(),
+              replacement_blocked: desiredTarget !== undefined,
               err: err instanceof Error ? err.message : String(err),
             },
             "reconciler tick: stop handle threw (continuing)"
@@ -171,18 +204,23 @@ export function startCopyTradeReconciler(
         if (!stoppedCleanly) continue;
         running.delete(key);
         removed += 1;
+        if (stopped) return;
       }
     }
 
     // Start polls for keys in desired but not running. If `startPollForTarget`
     // throws, log + skip — next tick retries.
     for (const [key, target] of desired.entries()) {
+      if (stopped) return;
       if (running.has(key)) continue;
       try {
         const stop = deps.startPollForTarget(target);
         running.set(key, {
           stop,
           fingerprint: policyFingerprint(target),
+          algorithm: target.sizingPolicyKind,
+          configRevision: target.mirrorActivatedAt.toISOString(),
+          retirement: null,
         });
         added += 1;
       } catch (err: unknown) {
@@ -231,12 +269,24 @@ export function startCopyTradeReconciler(
     stopped = true;
     timers.clearInterval(handle);
     for (const [key, poll] of running.entries()) {
-      try {
-        void poll.stop();
-      } catch {
-        // Best-effort cleanup; nothing to do beyond dropping the handle.
-      }
       running.delete(key);
+      // De-duplicate shutdown against an in-flight config retirement and
+      // observe async stop failures instead of leaking an unhandled rejection.
+      void retirePoll(poll).catch((err: unknown) => {
+        log.error(
+          {
+            event: EVENT_NAMES.POLY_MIRROR_TARGETS_RECONCILE_TICK_ERROR,
+            errorCode: "stop_failed",
+            key,
+            retiring_algorithm: poll.algorithm,
+            retiring_config_revision: poll.configRevision,
+            replacement_blocked: false,
+            shutdown: true,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "reconciler stop: target stop handle threw"
+        );
+      });
     }
     log.info(
       { event: EVENT_NAMES.POLY_MIRROR_TARGETS_RECONCILE_STOPPED },

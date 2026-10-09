@@ -259,7 +259,7 @@ describe("buildPositionGapBuyIntent", () => {
 		});
 
 		expect(intent.side).toBe("BUY");
-			expect(intent.attributes).toMatchObject({
+		expect(intent.attributes).toMatchObject({
 			orderType: "GTC",
 			placement: "limit",
 			position_gap_version: "3",
@@ -278,7 +278,9 @@ describe("buildPositionGapBuyIntent", () => {
 				}),
 			),
 		).toBe(true);
-		expect(knownNoOrder(new Error("connection reset after submit"))).toBe(false);
+		expect(knownNoOrder(new Error("connection reset after submit"))).toBe(
+			false,
+		);
 	});
 
 	it("recognizes structured CLOB rejection details across bundle identities", () => {
@@ -406,7 +408,9 @@ describe("buildPositionGapBuyIntent", () => {
 			"unconfirmed",
 		);
 		expect(markCancelConfirmed).not.toHaveBeenCalled();
-		await expect(requireConfirmedSafetyCancellation(input)).resolves.toBeUndefined();
+		await expect(
+			requireConfirmedSafetyCancellation(input),
+		).resolves.toBeUndefined();
 		expect(markCancelConfirmed).toHaveBeenCalledOnce();
 		expect(ledgerMarkCanceled).toHaveBeenCalledOnce();
 	});
@@ -490,8 +494,20 @@ describe("buildPositionGapBuyIntent", () => {
 			throw new Error("Failed query", { cause: databaseCause });
 		});
 		const loggerWarn = vi.fn();
+		const actorLogger = {
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: loggerWarn,
+			error: vi.fn(),
+			child() {
+				return this;
+			},
+		};
+		const loggerChild = vi.fn(() => actorLogger);
 		const handle = startPositionGapActor({
 			implementationRevision: "0123456789abcdef0123456789abcdef01234567",
+			targetRowId: "target-row",
+			isAssignmentCurrent: vi.fn(async () => true),
 			scope: {
 				billingAccountId: "billing-account",
 				createdByUserId: "user",
@@ -516,13 +532,11 @@ describe("buildPositionGapBuyIntent", () => {
 				repairTargetWalletLineage,
 				recoverKnownRejectedAmbiguities,
 				loadPlannerState,
-				loadOrderBindings: vi.fn(async () =>
-					new Map([
-						[
-							"open-client",
-							{ mode: "paper" as const, status: "open" },
-						],
-					]),
+				loadOrderBindings: vi.fn(
+					async () =>
+						new Map([
+							["open-client", { mode: "paper" as const, status: "open" }],
+						]),
 				),
 				loadAccountBuyExposure: vi.fn(async () => [
 					{
@@ -565,15 +579,7 @@ describe("buildPositionGapBuyIntent", () => {
 				observedBlock: 1,
 			})),
 			getAuthoritativeHoldings: vi.fn(),
-			logger: {
-				debug: vi.fn(),
-				info: vi.fn(),
-				warn: loggerWarn,
-				error: vi.fn(),
-				child() {
-					return this;
-				},
-			},
+			logger: { ...actorLogger, child: loggerChild },
 			setInterval: vi.fn(() => 1 as never),
 			clearInterval: vi.fn(),
 		});
@@ -598,10 +604,279 @@ describe("buildPositionGapBuyIntent", () => {
 			}),
 			expect.any(String),
 		);
+		expect(loggerChild).toHaveBeenCalledWith({
+			billing_account_id: "billing-account",
+			target_id: "target",
+			target_row_id: "target-row",
+			assignment_id: "target-row:revision",
+		});
 		expect(cancelBuy).toHaveBeenCalledWith("open-order");
 		expect(markCancelConfirmed).toHaveBeenCalledWith("cancel-action");
 		expect(
 			recoverKnownRejectedAmbiguities.mock.invocationCallOrder[0],
 		).toBeLessThan(cancelBuy.mock.invocationCallOrder[0] ?? 0);
+	});
+
+	it("refuses to plan when the durable assignment revision is retired", async () => {
+		const isAssignmentCurrent = vi.fn(async () => false);
+		const loadPlannerState = vi.fn(async () => ({
+			cohorts: [],
+			openBuyOrders: [],
+			activeBuys: [],
+		}));
+		const refreshFull = vi.fn();
+		const placeBuy = vi.fn();
+		const loggerWarn = vi.fn();
+		const actorLogger = {
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: loggerWarn,
+			error: vi.fn(),
+			child() {
+				return this;
+			},
+		};
+		const handle = startPositionGapActor({
+			implementationRevision: "0123456789abcdef0123456789abcdef01234567",
+			targetRowId: "target-row",
+			isAssignmentCurrent,
+			scope: {
+				billingAccountId: "billing-account",
+				createdByUserId: "user",
+				targetId: "wallet-derived-target",
+			},
+			targetWallet: "0x1111111111111111111111111111111111111111",
+			configRevision: "revision",
+			configuredBudgetUsdc: 10,
+			positionGapBudgetGroup: {
+				positionGapTargetCount: 1,
+				explicitBudgetTotalUsdc: 10,
+				automaticTargetCount: 0,
+				unbudgetedTargetCount: 0,
+			},
+			source: { fetchSince: vi.fn() },
+			refresh: { refreshFull, readFresh: vi.fn() } as never,
+			store: {
+				recoverSubmittingAsAmbiguous: vi.fn(async () => 0),
+				loadPlannerState,
+			} as never,
+			ledger: {} as never,
+			getExecutionMode: vi.fn(async () => "paper" as const),
+			executionForMode: () => ({ placeBuy }) as never,
+			fillEvidence: {} as never,
+			getWalletCashUsdc: vi.fn(),
+			getTargetCashUsdc: vi.fn(),
+			getAuthoritativeHoldings: vi.fn(),
+			logger: {
+				...actorLogger,
+				child: vi.fn(() => actorLogger),
+			},
+			setInterval: vi.fn(() => 1 as never),
+			clearInterval: vi.fn(),
+		});
+
+		await vi.waitFor(() => expect(loadPlannerState).toHaveBeenCalledOnce());
+		expect(isAssignmentCurrent).toHaveBeenCalledOnce();
+		expect(refreshFull).not.toHaveBeenCalled();
+		expect(placeBuy).not.toHaveBeenCalled();
+		expect(loggerWarn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "poly.mirror.assignment_retired",
+				outcome: "skipped",
+				reason: "assignment_retired",
+				stage: "reconcile_entry",
+			}),
+			expect.any(String),
+		);
+		void handle;
+	});
+
+	it("halts a zero-intent run when its assignment retires after persistence", async () => {
+		const isAssignmentCurrent = vi
+			.fn<() => Promise<boolean>>()
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+		const emptyRuntime = {
+			cohorts: [],
+			openBuyOrders: [],
+			activeBuys: [],
+			provisionalFilledHoldings: [],
+		};
+		const persistPlan = vi.fn(async () => ({
+			runId: "zero-intent-run",
+			buys: [],
+			cancellations: [],
+		}));
+		const finishRun = vi.fn(async () => undefined);
+		const recordDecision = vi.fn();
+		const placeBuy = vi.fn();
+		const handle = startPositionGapActor({
+			implementationRevision: "0123456789abcdef0123456789abcdef01234567",
+			targetRowId: "target-row",
+			isAssignmentCurrent,
+			scope: {
+				billingAccountId: "billing-account",
+				createdByUserId: "user",
+				targetId: "wallet-derived-target",
+			},
+			targetWallet: "0x1111111111111111111111111111111111111111",
+			configRevision: "revision",
+			configuredBudgetUsdc: 10,
+			positionGapBudgetGroup: {
+				positionGapTargetCount: 1,
+				explicitBudgetTotalUsdc: 10,
+				automaticTargetCount: 0,
+				unbudgetedTargetCount: 0,
+			},
+			source: { fetchSince: vi.fn() },
+			refresh: {
+				refreshFull: vi.fn(async () => ({ published: true, snapshot })),
+				readFresh: vi.fn(() => snapshot),
+			} as never,
+			store: {
+				recoverSubmittingAsAmbiguous: vi.fn(async () => 0),
+				recoverKnownRejectedAmbiguities: vi.fn(async () => []),
+				repairTargetWalletLineage: vi.fn(async () => undefined),
+				loadPlannerState: vi.fn(async () => emptyRuntime),
+				loadOrderBindings: vi.fn(async () => new Map()),
+				reconcileLedgerTerminals: vi.fn(async () => 0),
+				releaseTerminalExposure: vi.fn(async () => undefined),
+				loadLastSnapshot: vi.fn(async () => snapshot),
+				loadCohorts: vi.fn(async () => []),
+				previousBudgetUsdc: vi.fn(async () => 10),
+				activeReservationTotals: vi.fn(async () => ({
+					budgetUsdc: 0,
+					cashGuardAtomicForAccount: 0n,
+				})),
+				loadConfirmedCapacity: vi.fn(async () => ({
+					dailyHeadroomUsdc: 100,
+					perOrderUsdc: 100,
+					remainingIntentCount: 8,
+				})),
+				loadAccountBuyExposure: vi.fn(async () => []),
+				persistPlan,
+				finishRun,
+			} as never,
+			ledger: {
+				forTenant: vi.fn(() => ({ recordDecision })),
+			} as never,
+			getExecutionMode: vi.fn(async () => "paper" as const),
+			executionForMode: () => ({
+				placeBuy,
+				getMarketConstraints: vi.fn(),
+				listOpenOrders: vi.fn(async () => []),
+			}) as never,
+			fillEvidence: {} as never,
+			getWalletCashUsdc: vi.fn(async () => 10),
+			getTargetCashUsdc: vi.fn(async () => ({
+				pusdUsdc: 10,
+				usdcEUsdc: 0,
+				observedBlock: 1,
+			})),
+			getAuthoritativeHoldings: vi.fn(async () => ({
+				holdings: [],
+				tokenAliases: [],
+				observedBlock: 1,
+			})),
+			logger: {
+				debug: vi.fn(),
+				info: vi.fn(),
+				warn: vi.fn(),
+				error: vi.fn(),
+				child() {
+					return this;
+				},
+			},
+			now: () => 2,
+			setInterval: vi.fn(() => 1 as never),
+			clearInterval: vi.fn(),
+		});
+
+		await vi.waitFor(() =>
+			expect(finishRun).toHaveBeenCalledWith(
+				"zero-intent-run",
+				"halted",
+				"assignment_retired",
+			),
+		);
+		expect(isAssignmentCurrent).toHaveBeenCalledTimes(3);
+		expect(persistPlan).toHaveBeenCalledOnce();
+		expect(recordDecision).not.toHaveBeenCalled();
+		expect(placeBuy).not.toHaveBeenCalled();
+		void handle;
+	});
+
+	it("fails closed with a stable code when assignment liveness is unavailable", async () => {
+		const isAssignmentCurrent = vi.fn(async () => {
+			throw new Error("database detail must not leak");
+		});
+		const refreshFull = vi.fn();
+		const placeBuy = vi.fn();
+		const loggerError = vi.fn();
+		const actorLogger = {
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: loggerError,
+			child() {
+				return this;
+			},
+		};
+		const handle = startPositionGapActor({
+			implementationRevision: "0123456789abcdef0123456789abcdef01234567",
+			targetRowId: "target-row",
+			isAssignmentCurrent,
+			scope: {
+				billingAccountId: "billing-account",
+				createdByUserId: "user",
+				targetId: "wallet-derived-target",
+			},
+			targetWallet: "0x1111111111111111111111111111111111111111",
+			configRevision: "revision",
+			configuredBudgetUsdc: 10,
+			positionGapBudgetGroup: {
+				positionGapTargetCount: 1,
+				explicitBudgetTotalUsdc: 10,
+				automaticTargetCount: 0,
+				unbudgetedTargetCount: 0,
+			},
+			source: { fetchSince: vi.fn() },
+			refresh: { refreshFull, readFresh: vi.fn() } as never,
+			store: {
+				recoverSubmittingAsAmbiguous: vi.fn(async () => 0),
+			} as never,
+			ledger: {} as never,
+			getExecutionMode: vi.fn(async () => "paper" as const),
+			executionForMode: () => ({ placeBuy }) as never,
+			fillEvidence: {} as never,
+			getWalletCashUsdc: vi.fn(),
+			getTargetCashUsdc: vi.fn(),
+			getAuthoritativeHoldings: vi.fn(),
+			logger: {
+				...actorLogger,
+				child: vi.fn(() => actorLogger),
+			},
+			setInterval: vi.fn(() => 1 as never),
+			clearInterval: vi.fn(),
+		});
+
+		await vi.waitFor(() => expect(loggerError).toHaveBeenCalledOnce());
+		expect(refreshFull).not.toHaveBeenCalled();
+		expect(placeBuy).not.toHaveBeenCalled();
+		expect(loggerError).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "poly.mirror.assignment_retired",
+				outcome: "error",
+				reason: "assignment_liveness_unavailable",
+				errorCode: "assignment_liveness_unavailable",
+				stage: "reconcile_entry",
+			}),
+			expect.any(String),
+		);
+		expect(JSON.stringify(loggerError.mock.calls)).not.toContain(
+			"database detail must not leak",
+		);
+		void handle;
 	});
 });
