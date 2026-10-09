@@ -251,11 +251,20 @@ describe("paper facts project into the live tables (migration 0083)", () => {
   // interfere.
   const traded = tenant("Paper tenant with trades");
   const unpriced = tenant("Paper tenant with an unpriceable position");
+  const converging = tenant("Paper tenant with a resumable mark sweep");
   const negative = tenant("Paper tenant with inconsistent negative NAV");
   const nonfinite = tenant("Paper tenant with non-finite NAV");
   const dual = tenant("Tenant with live and paper snapshots");
   const live = tenant("Live tenant that must be untouched");
-  const tenants = [traded, unpriced, negative, nonfinite, dual, live];
+  const tenants = [
+    traded,
+    unpriced,
+    converging,
+    negative,
+    nonfinite,
+    dual,
+    live,
+  ];
 
   // Deterministic per-scenario market keys so assertions can name them.
   const condA = `0xcond${"a".repeat(60)}`;
@@ -695,6 +704,122 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       if (balance.kind !== "available") throw new Error("unreachable");
       // 1000 - 6 (20 @ 0.30) + 7 (20 @ 0.35 mark) = 1001
       expect(balance.usdcE).toBeCloseTo(1001, 6);
+    });
+  });
+
+  describe("a bounded mark sweep converges across ticks", () => {
+    const conditionA = `0xcond${"d".repeat(60)}`;
+    const conditionB = `0xcond${"e".repeat(60)}`;
+    const positionA = "44444444444444444444444444444444";
+    const positionB = "55555555555555555555555555555555";
+    let wallet: Awaited<ReturnType<typeof enrol>>;
+
+    beforeAll(async () => {
+      await seedPaperConnection(converging, SEED_USDC);
+      await seedLedgerFill(converging, targetId, {
+        tokenId: positionA,
+        conditionId: conditionA,
+        side: "BUY",
+        price: "0.20000000",
+        shares: "10.00000000",
+      });
+      await seedLedgerFill(converging, targetId, {
+        tokenId: positionB,
+        conditionId: conditionB,
+        side: "BUY",
+        price: "0.30000000",
+        shares: "20.00000000",
+      });
+      wallet = await enrol(converging);
+    });
+
+    it("rotates past a failed mark, then reuses only real fresh marks", async () => {
+      const calls: string[] = [];
+      const reader: PaperMidPriceReader = async (tokenId) => {
+        calls.push(tokenId);
+        if (calls.length === 1) return null;
+        if (tokenId === positionA) return 0.4;
+        if (tokenId === positionB) return 0.7;
+        return null;
+      };
+
+      const first = await observePaperWallet({
+        db: getSeedDb() as unknown as PaperDb,
+        wallet,
+        readMidPrice: reader,
+        logger,
+        now: new Date("2026-10-07T18:30:00.000Z"),
+        markRefreshLimit: 1,
+      });
+      expect(calls).toEqual([positionA]);
+      expect(first).toMatchObject({
+        marksAttempted: 1,
+        marksRefreshed: 0,
+        marksReused: 0,
+        unpricedPositions: 2,
+        navPublished: false,
+      });
+
+      const second = await observePaperWallet({
+        db: getSeedDb() as unknown as PaperDb,
+        wallet,
+        readMidPrice: reader,
+        logger,
+        now: new Date("2026-10-07T18:30:30.000Z"),
+        markRefreshLimit: 1,
+      });
+      expect(calls).toEqual([positionA, positionB]);
+      expect(second).toMatchObject({
+        marksAttempted: 1,
+        marksRefreshed: 1,
+        marksReused: 0,
+        unpricedPositions: 1,
+        navPublished: false,
+      });
+
+      const third = await observePaperWallet({
+        db: getSeedDb() as unknown as PaperDb,
+        wallet,
+        readMidPrice: reader,
+        logger,
+        now: new Date("2026-10-07T18:31:00.000Z"),
+        markRefreshLimit: 1,
+      });
+      expect(calls).toEqual([positionA, positionB, positionA]);
+      expect(third).toMatchObject({
+        marksAttempted: 1,
+        marksRefreshed: 1,
+        marksReused: 1,
+        unpricedPositions: 0,
+        navPublished: true,
+      });
+
+      const balance = await readBalanceAsTenant(converging);
+      expect(balance.kind).toBe("available");
+      if (balance.kind !== "available") throw new Error("unreachable");
+      // seed 1000 - buys 8 + current marks 18 = 1010
+      expect(balance.usdcE).toBeCloseTo(1010, 6);
+
+      const stale = await observePaperWallet({
+        db: getSeedDb() as unknown as PaperDb,
+        wallet,
+        readMidPrice: () => {
+          throw new Error("refresh window is deliberately zero");
+        },
+        logger,
+        now: new Date("2026-10-07T18:42:00.000Z"),
+        markRefreshLimit: 0,
+      });
+      expect(stale).toMatchObject({
+        marksAttempted: 0,
+        marksRefreshed: 0,
+        marksReused: 0,
+        unpricedPositions: 2,
+        navPublished: false,
+      });
+      expect(await readBalanceAsTenant(converging)).toMatchObject({
+        kind: "missing",
+      });
     });
   });
 

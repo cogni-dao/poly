@@ -42,12 +42,11 @@
  *     accumulator — projecting a mutable row would freeze its first-seen size
  *     and silently desynchronise `poly_trader_fill_rollups_daily`.
  *   - NO_FABRICATED_VALUES (docs/spec/capability-plane.md): an open position
- *     whose mid price cannot be read is NOT marked to 0 and NOT published; its
- *     prior position row is preserved, the position cursor records `partial`
- *     with the reason, and any prior NAV row is removed in the same projection
- *     transaction. A withheld NAV reads as `missing`, which is true, instead of
- *     `available` at an invented number. A hardcoded 0 here is precisely the
- *     bug that made paper trading unreadable.
+ *     whose mark cannot be read is NOT marked to 0. A prior authoritative mark
+ *     may be reused only inside its explicit freshness bound (settlement 0/1 is
+ *     immutable); otherwise the position cursor records `partial` and any prior
+ *     NAV row is removed in the same transaction. A withheld NAV reads as
+ *     `missing`, which is true, instead of `available` at an invented number.
  *   - MARKED_AT_THE_AUTHORITATIVE_PRICE: only *execution* is simulated. A
  *     trading position is marked at the real CLOB midpoint; after settlement,
  *     when no order book exists, it is marked from the CLOB's unique winner
@@ -84,8 +83,8 @@
  *     skips the account loudly rather than observing an address that two
  *     derivations disagree on (the live-path drift OBSERVE_WHAT_THE_EXECUTOR_
  *     SIGNS_FROM was written for).
- * Side-effects: IO — DB reads/writes through the injected handle, plus one
- *   CLOB mark read per open position token (midpoint, then settlement fact).
+ * Side-effects: IO — DB reads/writes through the injected handle, plus a
+ *   bounded cursor-resumed window of CLOB mark reads.
  * Links: docs/spec/capability-plane.md, docs/spec/poly-copy-trade-execution.md,
  *   migration 0082, migration 0083
  * @public
@@ -134,6 +133,25 @@ export const PAPER_TRADE_CURSOR_SOURCE = "paper-ledger-trades";
 
 /** `poly_trader_ingestion_cursors.source` for the position projection. */
 export const PAPER_POSITION_CURSOR_SOURCE = "paper-ledger-positions";
+
+/**
+ * Maximum public mark reads one paper account may issue in a projection tick.
+ *
+ * A historical paper ledger can contain thousands of still-open aggregates.
+ * Reading all of them serially made every tick restart at the same prefix and
+ * hit the job timeout before it could publish a complete book. The durable
+ * position cursor rotates this bounded window until the whole book converges.
+ */
+export const PAPER_MARK_REFRESH_LIMIT_PER_TICK = 100;
+
+/**
+ * A real, previously acquired live-market mark may bridge short CLOB read
+ * failures, but never indefinitely. Ten minutes matches the dashboard's live
+ * wallet-balance freshness contract and lets a 100-mark/30s bounded projector
+ * converge a 2,000-position historical book. Settlement marks (exactly 0 or
+ * 1) are immutable and therefore do not expire.
+ */
+export const PAPER_OPEN_MARK_MAX_AGE_MS = 600_000;
 
 /**
  * Label on the enrolled wallet row. Distinct from the live
@@ -215,6 +233,12 @@ export type PaperObservationResult = {
   unpricedPositions: number;
   /** Whether the NAV row was published this tick. */
   navPublished: boolean;
+  /** Public mark calls made during this tick. */
+  marksAttempted: number;
+  /** Mark calls that returned an authoritative value. */
+  marksRefreshed: number;
+  /** Prior real marks reused inside their declared freshness bound. */
+  marksReused: number;
 };
 
 /**
@@ -533,6 +557,11 @@ type PaperPositionRollup = {
   buyUsdc: number;
   sellUsdc: number;
   lastFillAt: Date;
+  cachedActive: boolean | null;
+  cachedShares: number | null;
+  cachedCurrentValueUsdc: number | null;
+  cachedLastObservedAt: Date | null;
+  cachedRaw: Record<string, unknown> | null;
 };
 
 /**
@@ -554,18 +583,33 @@ async function readPaperPositionRollups(
   traderWalletId: string
 ): Promise<readonly PaperPositionRollup[]> {
   const result = await db.execute(sql`
+    WITH rollups AS (
+      SELECT
+        condition_id,
+        token_id,
+        SUM(CASE WHEN side = 'BUY' THEN shares ELSE -shares END) AS net_shares,
+        COALESCE(SUM(shares)   FILTER (WHERE side = 'BUY'),  0) AS buy_shares,
+        COALESCE(SUM(size_usdc) FILTER (WHERE side = 'BUY'),  0) AS buy_usdc,
+        COALESCE(SUM(size_usdc) FILTER (WHERE side = 'SELL'), 0) AS sell_usdc,
+        MAX(observed_at) AS last_fill_at
+      FROM poly_trader_fills
+      WHERE trader_wallet_id = ${traderWalletId}::uuid
+        AND source = ${PAPER_FILL_SOURCE}
+      GROUP BY condition_id, token_id
+    )
     SELECT
-      condition_id,
-      token_id,
-      SUM(CASE WHEN side = 'BUY' THEN shares ELSE -shares END) AS net_shares,
-      COALESCE(SUM(shares)   FILTER (WHERE side = 'BUY'),  0) AS buy_shares,
-      COALESCE(SUM(size_usdc) FILTER (WHERE side = 'BUY'),  0) AS buy_usdc,
-      COALESCE(SUM(size_usdc) FILTER (WHERE side = 'SELL'), 0) AS sell_usdc,
-      MAX(observed_at) AS last_fill_at
-    FROM poly_trader_fills
-    WHERE trader_wallet_id = ${traderWalletId}::uuid
-      AND source = ${PAPER_FILL_SOURCE}
-    GROUP BY condition_id, token_id
+      rollups.*,
+      current_position.active AS cached_active,
+      current_position.shares AS cached_shares,
+      current_position.current_value_usdc AS cached_current_value_usdc,
+      current_position.last_observed_at AS cached_last_observed_at,
+      current_position.raw AS cached_raw
+    FROM rollups
+    LEFT JOIN poly_trader_current_positions current_position
+      ON current_position.trader_wallet_id = ${traderWalletId}::uuid
+     AND current_position.condition_id = rollups.condition_id
+     AND current_position.token_id = rollups.token_id
+    ORDER BY rollups.condition_id, rollups.token_id
   `);
   return allRows<{
     condition_id: string;
@@ -575,6 +619,11 @@ async function readPaperPositionRollups(
     buy_usdc: string;
     sell_usdc: string;
     last_fill_at: string | Date;
+    cached_active: boolean | null;
+    cached_shares: string | null;
+    cached_current_value_usdc: string | null;
+    cached_last_observed_at: string | Date | null;
+    cached_raw: Record<string, unknown> | null;
   }>(result).map((row) => ({
     conditionId: row.condition_id,
     tokenId: row.token_id,
@@ -583,7 +632,78 @@ async function readPaperPositionRollups(
     buyUsdc: Number(row.buy_usdc),
     sellUsdc: Number(row.sell_usdc),
     lastFillAt: new Date(row.last_fill_at),
+    cachedActive: row.cached_active,
+    cachedShares: row.cached_shares === null ? null : Number(row.cached_shares),
+    cachedCurrentValueUsdc:
+      row.cached_current_value_usdc === null
+        ? null
+        : Number(row.cached_current_value_usdc),
+    cachedLastObservedAt:
+      row.cached_last_observed_at === null
+        ? null
+        : new Date(row.cached_last_observed_at),
+    cachedRaw: row.cached_raw,
   }));
+}
+
+function paperPositionKey(position: {
+  conditionId: string;
+  tokenId: string;
+}): string {
+  return `${position.conditionId}|${position.tokenId}`;
+}
+
+function reusablePaperMark(
+  rollup: PaperPositionRollup,
+  now: Date
+): number | null {
+  if (
+    rollup.cachedActive !== true ||
+    rollup.cachedShares === null ||
+    rollup.cachedCurrentValueUsdc === null ||
+    rollup.cachedLastObservedAt === null ||
+    rollup.cachedRaw?.source !== PAPER_FILL_SOURCE ||
+    typeof rollup.cachedRaw.curPrice !== "number"
+  ) {
+    return null;
+  }
+  const mark = rollup.cachedRaw.curPrice;
+  if (
+    !Number.isFinite(mark) ||
+    mark < 0 ||
+    mark > 1 ||
+    !Number.isFinite(rollup.cachedShares) ||
+    Math.abs(rollup.cachedShares - rollup.netShares) > 1e-8 ||
+    !Number.isFinite(rollup.cachedCurrentValueUsdc) ||
+    Math.abs(rollup.cachedCurrentValueUsdc - rollup.cachedShares * mark) > 1e-6
+  ) {
+    return null;
+  }
+
+  // getMarkPrice returns exact 0/1 only from a unique closed-market winner,
+  // never from midpoint or last-trade fallbacks, so this fact is permanent.
+  if (mark === 0 || mark === 1) return mark;
+  const ageMs = now.getTime() - rollup.cachedLastObservedAt.getTime();
+  return ageMs >= 0 && ageMs <= PAPER_OPEN_MARK_MAX_AGE_MS ? mark : null;
+}
+
+function rotatedMarkWindow(
+  candidates: readonly PaperPositionRollup[],
+  priorCursor: string | null,
+  limit: number
+): readonly PaperPositionRollup[] {
+  if (candidates.length === 0 || limit <= 0) return [];
+  const start =
+    priorCursor === null
+      ? 0
+      : Math.max(
+          0,
+          candidates.findIndex(
+            (candidate) => paperPositionKey(candidate) > priorCursor
+          )
+        );
+  const ordered = [...candidates.slice(start), ...candidates.slice(0, start)];
+  return ordered.slice(0, limit);
 }
 
 /**
@@ -682,14 +802,46 @@ export async function projectPaperPositionsAndNav(input: {
   logger: LoggerPort;
   signal?: AbortSignal | undefined;
   now?: Date;
+  markRefreshLimit?: number;
 }): Promise<{
   positions: number;
   unpricedPositions: number;
   navPublished: boolean;
+  marksAttempted: number;
+  marksRefreshed: number;
+  marksReused: number;
 }> {
   const now = input.now ?? new Date();
   const { traderWalletId, account } = input.wallet;
   const rollups = await readPaperPositionRollups(input.db, traderWalletId);
+
+  const cursorRows = await input.db
+    .select({ lastSeenNativeId: polyTraderIngestionCursors.lastSeenNativeId })
+    .from(polyTraderIngestionCursors)
+    .where(
+      and(
+        eq(polyTraderIngestionCursors.traderWalletId, traderWalletId),
+        eq(polyTraderIngestionCursors.source, PAPER_POSITION_CURSOR_SOURCE)
+      )
+    )
+    .limit(1);
+  const priorMarkCursor = cursorRows[0]?.lastSeenNativeId ?? null;
+  const refreshCandidates = rollups.filter(
+    (rollup) =>
+      rollup.netShares > 0 &&
+      rollup.buyShares > 0 &&
+      reusablePaperMark(rollup, now) === null
+  );
+  const refreshWindow = rotatedMarkWindow(
+    refreshCandidates,
+    priorMarkCursor,
+    input.markRefreshLimit ?? PAPER_MARK_REFRESH_LIMIT_PER_TICK
+  );
+  const refreshKeys = new Set(refreshWindow.map(paperPositionKey));
+  const nextMarkCursor =
+    refreshWindow.length > 0
+      ? paperPositionKey(refreshWindow[refreshWindow.length - 1]!)
+      : priorMarkCursor;
 
   const prepared: PreparedPaperPosition[] = [];
   const unpriced: { conditionId: string; tokenId: string }[] = [];
@@ -697,6 +849,8 @@ export async function projectPaperPositionsAndNav(input: {
   let openValueUsdc = 0;
   let boughtUsdc = 0;
   let soldUsdc = 0;
+  let marksRefreshed = 0;
+  let marksReused = 0;
 
   for (const rollup of rollups) {
     boughtUsdc += rollup.buyUsdc;
@@ -747,11 +901,26 @@ export async function projectPaperPositionsAndNav(input: {
       continue;
     }
 
-    const mid = await input.readMidPrice(
-      rollup.tokenId,
-      input.signal,
-      rollup.conditionId
-    );
+    const shouldRefresh = refreshKeys.has(paperPositionKey(rollup));
+    if (shouldRefresh && input.signal?.aborted) {
+      throw input.signal.reason instanceof Error
+        ? input.signal.reason
+        : new Error("paper projection aborted before mark refresh");
+    }
+    const refreshedMid = shouldRefresh
+      ? await input.readMidPrice(
+          rollup.tokenId,
+          input.signal,
+          rollup.conditionId
+        )
+      : null;
+    if (shouldRefresh && input.signal?.aborted) {
+      throw input.signal.reason instanceof Error
+        ? input.signal.reason
+        : new Error("paper projection aborted during mark refresh");
+    }
+    const cachedMid = reusablePaperMark(rollup, now);
+    const mid = refreshedMid ?? cachedMid;
     if (mid === null) {
       // NO_FABRICATED_VALUES: leave the existing row untouched and withhold the
       // NAV. Writing 0 here is the bug; writing a stale-but-real prior mark and
@@ -763,12 +932,15 @@ export async function projectPaperPositionsAndNav(input: {
       continue;
     }
 
+    if (refreshedMid === null) marksReused += 1;
+    else marksRefreshed += 1;
+
     const shares = openShares.toFixed(USDC_SCALE);
     const costBasisUsdc = (openShares * avgPrice).toFixed(USDC_SCALE);
     const avgPriceStr = avgPrice.toFixed(USDC_SCALE);
     const currentValue = openShares * mid;
     openValueUsdc += currentValue;
-    prepared.push({
+    const markedPosition: PreparedPaperPosition = {
       conditionId: rollup.conditionId,
       tokenId: rollup.tokenId,
       active: true,
@@ -784,7 +956,10 @@ export async function projectPaperPositionsAndNav(input: {
         costBasisUsdc,
       }),
       raw: paperPositionRaw(rollup, mid, currentValue),
-    });
+    };
+    // Reusing a prior real mark contributes to this tick's complete NAV, but
+    // must not rewrite last_observed_at and pretend the mark was refreshed.
+    if (refreshedMid !== null) prepared.push(markedPosition);
   }
 
   if (incoherent.length > 0) {
@@ -897,12 +1072,16 @@ export async function projectPaperPositionsAndNav(input: {
             ? null
             : `${unpriced.length} open position(s) had no readable midpoint or settlement mark and ${incoherent.length} had no derivable cost basis; NAV withheld`,
     observedAt: now,
+    lastSeenNativeId: nextMarkCursor,
   });
 
   return {
     positions: prepared.length,
     unpricedPositions: unpriced.length,
     navPublished: navPublishable,
+    marksAttempted: refreshWindow.length,
+    marksRefreshed,
+    marksReused,
   };
 }
 
@@ -1066,12 +1245,14 @@ async function publishPaperPositionCursor(input: {
   status: "ok" | "partial";
   errorMessage: string | null;
   observedAt: Date;
+  lastSeenNativeId: string | null;
 }): Promise<void> {
   await input.db
     .insert(polyTraderIngestionCursors)
     .values({
       traderWalletId: input.traderWalletId,
       source: PAPER_POSITION_CURSOR_SOURCE,
+      lastSeenNativeId: input.lastSeenNativeId,
       lastSuccessAt: input.observedAt,
       status: input.status,
       errorMessage: input.errorMessage,
@@ -1083,6 +1264,7 @@ async function publishPaperPositionCursor(input: {
         polyTraderIngestionCursors.source,
       ],
       set: {
+        lastSeenNativeId: sql`excluded.last_seen_native_id`,
         lastSuccessAt: input.observedAt,
         status: sql`excluded.status`,
         errorMessage: sql`excluded.error_message`,
@@ -1106,6 +1288,7 @@ export async function observePaperWallet(input: {
   logger: LoggerPort;
   signal?: AbortSignal | undefined;
   now?: Date;
+  markRefreshLimit?: number;
 }): Promise<PaperObservationResult> {
   const startedAt = Date.now();
   const now = input.now ?? new Date();
@@ -1161,6 +1344,9 @@ export async function observePaperWallet(input: {
     logger: input.logger,
     signal: input.signal,
     now,
+    ...(input.markRefreshLimit === undefined
+      ? {}
+      : { markRefreshLimit: input.markRefreshLimit }),
   });
 
   input.logger.info(
@@ -1175,6 +1361,9 @@ export async function observePaperWallet(input: {
       positions: positions.positions,
       unpriced_positions: positions.unpricedPositions,
       nav_published: positions.navPublished,
+      marks_attempted: positions.marksAttempted,
+      marks_refreshed: positions.marksRefreshed,
+      marks_reused: positions.marksReused,
       duration_ms: Date.now() - startedAt,
     },
     "paper wallet observed"
@@ -1185,6 +1374,9 @@ export async function observePaperWallet(input: {
     positions: positions.positions,
     unpricedPositions: positions.unpricedPositions,
     navPublished: positions.navPublished,
+    marksAttempted: positions.marksAttempted,
+    marksRefreshed: positions.marksRefreshed,
+    marksReused: positions.marksReused,
   };
 }
 
@@ -1223,6 +1415,9 @@ export type PaperProjectionTickResult = {
   positions: number;
   unpricedPositions: number;
   navsPublished: number;
+  marksAttempted: number;
+  marksRefreshed: number;
+  marksReused: number;
   errors: number;
   /**
    * Set when the tick deliberately did nothing. Distinguishes "idle" from
@@ -1244,9 +1439,9 @@ export type PaperProjectionTickResult = {
  * paginated `/activity` + `/positions` for every target and tenant wallet,
  * plus snapshot rows per token, every 30s. The paper projection shares none of
  * that shape — it is a local SQL projection over this node's OWN
- * `poly_copy_trade_fills`, scoped to the paper accounts that actually exist
- * (currently one), with one authoritative mark read per open position. Reusing the
- * observation flag would conflate two unrelated write loads and leave the
+ * `poly_copy_trade_fills`, scoped to the paper accounts that actually exist,
+ * with a bounded, cursor-resumed window of authoritative mark reads. Reusing
+ * the observation flag would conflate two unrelated write loads and leave the
  * paper dashboard structurally unrenderable on exactly the lanes paper
  * trading runs on.
  *
@@ -1261,6 +1456,7 @@ export async function runPaperProjectionTick(deps: {
   runBounded?: BoundedTxRunner;
   signal?: AbortSignal | undefined;
   now?: Date;
+  markRefreshLimit?: number;
 }): Promise<PaperProjectionTickResult> {
   const runBounded: BoundedTxRunner =
     deps.runBounded ?? (<T>(fn: (tx: Db) => Promise<T>) => fn(deps.db));
@@ -1271,6 +1467,9 @@ export async function runPaperProjectionTick(deps: {
     positions: 0,
     unpricedPositions: 0,
     navsPublished: 0,
+    marksAttempted: 0,
+    marksRefreshed: 0,
+    marksReused: 0,
     errors: 0,
   };
 
@@ -1309,12 +1508,18 @@ export async function runPaperProjectionTick(deps: {
             logger: deps.logger,
             signal: deps.signal,
             ...(deps.now === undefined ? {} : { now: deps.now }),
+            ...(deps.markRefreshLimit === undefined
+              ? {}
+              : { markRefreshLimit: deps.markRefreshLimit }),
           })
       );
       result.walletsProjected += 1;
       result.fills += projected.fills;
       result.positions += projected.positions;
       result.unpricedPositions += projected.unpricedPositions;
+      result.marksAttempted += projected.marksAttempted;
+      result.marksRefreshed += projected.marksRefreshed;
+      result.marksReused += projected.marksReused;
       if (projected.navPublished) result.navsPublished += 1;
     } catch (err: unknown) {
       if (deps.signal?.aborted) throw err;
