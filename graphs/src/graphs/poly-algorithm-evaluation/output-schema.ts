@@ -30,7 +30,7 @@ export const PolyAlgorithmFindingSchema = z.object({
 
 export const PolyAlgorithmGapSchema = z.object({
 	code: z.enum([
-		"account_unavailable",
+		"account_read_unavailable",
 		"algorithm_identity_missing",
 		"evidence_incomplete",
 		"evidence_stale",
