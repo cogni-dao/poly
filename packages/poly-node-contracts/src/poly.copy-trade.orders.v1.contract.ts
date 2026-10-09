@@ -54,6 +54,7 @@ const orderRowSchema = z.object({
    * associated trades verify them. Null preserves the legacy/non-PG contract.
    */
   fill_accounting: PolyPositionGapFillAccountingSchema.nullable(),
+  /** Venue error for `error`; bounded internal cancellation code for `canceled`; otherwise null. */
   error: z.string().nullable(),
   observed_at: z.string(), // ISO-8601
   created_at: z.string(),

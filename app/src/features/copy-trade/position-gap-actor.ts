@@ -37,12 +37,13 @@ import {
 } from "@/features/copy-trade/position-gap-fill-evidence";
 import { isStructuredClobRejection } from "@/features/copy-trade/position-gap-placement-errors";
 import {
-	PositionGapTargetLineageMismatchError,
+	type PositionGapAccountBuyExposure,
 	type PositionGapAccountingTransition,
 	type PositionGapActiveBuy,
 	type PositionGapPreparedCancel,
 	type PositionGapRuntimeScope,
 	type PositionGapRuntimeStore,
+	PositionGapTargetLineageMismatchError,
 } from "@/features/copy-trade/position-gap-runtime-store";
 import type { PositionGapTargetRefreshCoordinator } from "@/features/copy-trade/position-gap-target-refresh";
 import { planPositionGapBook } from "@/features/copy-trade/position-gap-v3/batch-plan";
@@ -50,6 +51,8 @@ import type {
 	NettedTargetPositionV1,
 	PositionGapBookPlanV1,
 	PositionGapHoldingV1,
+	PositionGapPriceCohortV1,
+	PositionGapUnmanagedBuyExposureV1,
 	PositionGapVenueConditionV1,
 } from "@/features/copy-trade/position-gap-v3/model";
 import { netTargetBook } from "@/features/copy-trade/position-gap-v3/netting";
@@ -75,6 +78,37 @@ export interface PositionGapBuyExecutionPort {
 		minUsdcNotional?: number;
 		tickSize?: number;
 	}>;
+	listOpenOrders(): Promise<
+		readonly {
+			orderId: string;
+			marketId: string | null;
+			tokenId: string | null;
+			outcome: string | null;
+			side: "BUY" | "SELL" | null;
+			price: number | null;
+			originalShares: number | null;
+			matchedShares: number | null;
+			remainingUsdc: number | null;
+			submittedAt: string;
+			status: string;
+		}[]
+	>;
+}
+
+export interface PositionGapTargetCashSnapshot {
+	pusdUsdc: number;
+	usdcEUsdc: number;
+	observedBlock: number;
+}
+
+export interface PositionGapLocalHoldingsSnapshot {
+	holdings: readonly PositionGapHoldingV1[];
+	tokenAliases: readonly {
+		conditionId: string;
+		sourceTokenId: string;
+		canonicalTokenId: string;
+	}[];
+	observedBlock: number;
 }
 
 export interface PositionGapActorDeps {
@@ -90,10 +124,12 @@ export interface PositionGapActorDeps {
 	execution: PositionGapBuyExecutionPort;
 	fillEvidence: PositionGapFillEvidencePort;
 	getWalletCashUsdc(): Promise<number>;
-	/** Exact Polygon CTF `balanceOfBatch`, including both binary legs. */
-	getAuthoritativeShares(
-		tokenIds: readonly string[],
-	): Promise<readonly number[]>;
+	/** Both Polymarket collateral vintages at the target-book source block. */
+	getTargetCashUsdc(sourceBlock: number): Promise<PositionGapTargetCashSnapshot>;
+	/** Complete CTF inventory at one Polygon block, including legacy aliases. */
+	getAuthoritativeHoldings(
+		snapshot: TargetBookSnapshotV1,
+	): Promise<PositionGapLocalHoldingsSnapshot>;
 	logger: LoggerPort;
 	now?: () => number;
 	setInterval?: typeof globalThis.setInterval;
@@ -154,6 +190,7 @@ export function startPositionGapActor(
 						// evidence before retrying the safety cancellation.
 						await reconcileKnownOrders();
 						await deps.store.reconcileLedgerTerminals(deps.scope);
+						await deps.store.releaseCanceledOrderReservations(deps.scope);
 						await cancelAll("disabled");
 						continue;
 					}
@@ -243,6 +280,19 @@ export function startPositionGapActor(
 		// ambiguous merely because the target snapshot is temporarily unusable.
 		const accountingTransitions = await reconcileKnownOrders();
 		await deps.store.reconcileLedgerTerminals(deps.scope);
+		const releasedCanceledReservations =
+			await deps.store.releaseCanceledOrderReservations(deps.scope);
+		if (releasedCanceledReservations > 0) {
+			deps.logger.info(
+				{
+					event: "poly.position_gap.v3.terminal_reservations_released",
+					billing_account_id: deps.scope.billingAccountId,
+					target_id: deps.scope.targetId,
+					released_reservation_count: releasedCanceledReservations,
+				},
+				"position-gap released terminal canceled order reservations",
+			);
+		}
 		await deps.store.releaseTerminalExposure(deps.scope);
 		let activity: Fill[] = [];
 		if (triggerReasons.includes("target_activity")) {
@@ -372,7 +422,17 @@ export function startPositionGapActor(
 		// Unknown venue state stays in the economic denominator. CLOB reads are
 		// deferred until after the $1 theoretical feasibility bound below.
 		const netBook = netTargetBook(freshSnapshot, new Map());
-		const holdings = await loadHoldings(freshSnapshot);
+		const targetCash = validateTargetCash(
+			await deps.getTargetCashUsdc(
+				freshSnapshot.refreshStats.sourceMaxSyncedBlock,
+			),
+			freshSnapshot.refreshStats.sourceMaxSyncedBlock,
+		);
+		const localHoldings = await deps.getAuthoritativeHoldings(freshSnapshot);
+		const holdings = floorPositionGapHoldingsAtAcquiredShares({
+			holdings: validateLocalHoldings(freshSnapshot, localHoldings),
+			cohorts: runtime.cohorts,
+		});
 		const walletCashUsdc = await deps.getWalletCashUsdc();
 		const mirrorMarkedExposure = holdings.reduce((sum, holding) => {
 			const token = tokenById(freshSnapshot, holding.tokenId);
@@ -388,9 +448,14 @@ export function startPositionGapActor(
 			return;
 		}
 		const budgetUsdc = budgetAllocation.effectiveBudgetUsdc;
+		const targetTotalWealthUsdc =
+			netBook.eligibleNetNavUsdc +
+			netBook.completeSetValueUsdc +
+			targetCash.pusdUsdc +
+			targetCash.usdcEUsdc;
 		const scale =
-			netBook.eligibleNetNavUsdc > 0
-				? budgetUsdc / netBook.eligibleNetNavUsdc
+			targetTotalWealthUsdc > 0
+				? budgetUsdc / targetTotalWealthUsdc
 				: 0;
 		const existingCohorts = await deps.store.loadCohorts(deps.scope);
 		const previousBudget = await deps.store.previousBudgetUsdc(deps.scope);
@@ -406,7 +471,7 @@ export function startPositionGapActor(
 			configRevision: deps.configRevision,
 			previousBudgetUsdc: previousBudget,
 			budgetUsdc,
-			eligibleNetNavUsdc: netBook.eligibleNetNavUsdc,
+			allocationDenominatorUsdc: targetTotalWealthUsdc,
 			scale,
 			// Every complete snapshot projects the config-revision activation keys.
 			// Persisted keys (including resolved cohorts) make this an exact-once
@@ -431,10 +496,18 @@ export function startPositionGapActor(
 			perOrderHeadroomUsdc: capacity.perOrderUsdc,
 		});
 		const venues = await loadVenues(freshSnapshot, candidateTokens);
+		const unmanagedBuyExposure = await loadUnmanagedBuyExposure({
+			snapshot: freshSnapshot,
+			runtime,
+			localHoldings,
+		});
 		const plan = planPositionGapBook({
 			nowMs: now(),
 			snapshot: freshSnapshot,
 			sleeveBudgetUsdc: budgetUsdc,
+			targetCashPusdUsdc: targetCash.pusdUsdc,
+			targetCashUsdcEUsdc: targetCash.usdcEUsdc,
+			targetCashObservedBlock: targetCash.observedBlock,
 			actualWalletCashUsdc: walletCashUsdc,
 			confirmedBuyNotionalCashHeadroomUsdc:
 				buyNotionalForCollateral(unreservedCashAtomic),
@@ -465,6 +538,7 @@ export function startPositionGapActor(
 			})),
 			holdings,
 			openBuyOrders: runtime.openBuyOrders,
+			unmanagedBuyExposure,
 		});
 		await persistAndExecute({
 			triggerReasons,
@@ -648,25 +722,127 @@ export function startPositionGapActor(
 		);
 	}
 
-	async function loadHoldings(
-		snapshot: TargetBookSnapshotV1,
-	): Promise<PositionGapHoldingV1[]> {
-		const tokens = snapshot.conditions.flatMap((condition) =>
-			condition.tokens.map((token) => ({
-				conditionId: condition.conditionId,
-				tokenId: token.tokenId,
-			})),
+	async function loadUnmanagedBuyExposure(input: {
+		snapshot: TargetBookSnapshotV1;
+		runtime: Awaited<ReturnType<PositionGapRuntimeStore["loadPlannerState"]>>;
+		localHoldings: PositionGapLocalHoldingsSnapshot;
+	}): Promise<PositionGapUnmanagedBuyExposureV1[]> {
+		const aliases = new Map(
+			input.localHoldings.tokenAliases.map((entry) => [
+				`${entry.conditionId}\u0000${entry.sourceTokenId}`,
+				entry.canonicalTokenId,
+			]),
 		);
-		const shares = await deps.getAuthoritativeShares(
-			tokens.map((token) => token.tokenId),
+		const conditionIds = new Set(
+			input.snapshot.conditions.map((condition) => condition.conditionId),
 		);
-		if (shares.length !== tokens.length) {
-			throw new Error("authoritative holding tuple was incomplete");
+		const canonicalToken = (exposure: {
+			conditionId: string;
+			tokenId: string;
+		}): string | null => {
+			if (!conditionIds.has(exposure.conditionId)) return null;
+			const mapped = aliases.get(
+				`${exposure.conditionId}\u0000${exposure.tokenId}`,
+			);
+			if (!mapped) {
+				throw new Error(
+					`active BUY exposure token lacked canonical mapping: ${exposure.conditionId}/${exposure.tokenId}`,
+				);
+			}
+			return mapped;
+		};
+		const accountExposure = await deps.store.loadAccountBuyExposure(deps.scope);
+		const managedClientIds = new Set(
+			input.runtime.activeBuys.map((entry) => entry.clientOrderId),
+		);
+		const managedOrderIds = new Set(
+			input.runtime.activeBuys.flatMap((entry) =>
+				entry.orderId ? [entry.orderId] : [],
+			),
+		);
+		const ledgerOrderIds = new Set(
+			accountExposure.flatMap((entry) => (entry.orderId ? [entry.orderId] : [])),
+		);
+		const exposures: PositionGapUnmanagedBuyExposureV1[] = [];
+		const add = (
+			exposure: Pick<
+				PositionGapAccountBuyExposure,
+				"conditionId" | "tokenId" | "remainingShares"
+			>,
+			source: PositionGapUnmanagedBuyExposureV1["source"],
+		): void => {
+			if (
+				!Number.isFinite(exposure.remainingShares) ||
+				exposure.remainingShares < 0
+			) {
+				throw new Error(
+					`active BUY exposure had invalid remaining shares: ${exposure.conditionId}/${exposure.tokenId}`,
+				);
+			}
+			const tokenId = canonicalToken(exposure);
+			if (tokenId === null || exposure.remainingShares <= 0) return;
+			exposures.push({
+				conditionId: exposure.conditionId,
+				tokenId,
+				remainingShares: exposure.remainingShares,
+				source,
+			});
+		};
+		for (const active of input.runtime.activeBuys) {
+			if (
+				active.orderId &&
+				input.runtime.openBuyOrders.some(
+					(order) => order.orderId === active.orderId,
+				)
+			) {
+				continue;
+			}
+			add(
+				{
+					conditionId: active.conditionId,
+					tokenId: active.tokenId,
+					remainingShares: Math.max(0, active.shares - active.filledShares),
+				},
+				"account_ledger",
+			);
 		}
-		return tokens.map((token, index) => ({
-			...token,
-			shares: finiteNonnegative(shares[index]),
-		}));
+		for (const exposure of accountExposure) {
+			if (managedClientIds.has(exposure.clientOrderId)) continue;
+			add(exposure, "account_ledger");
+		}
+		const venueOrders = await deps.execution.listOpenOrders();
+		for (const order of venueOrders) {
+			if (order.side !== "BUY") continue;
+			if (managedOrderIds.has(order.orderId) || ledgerOrderIds.has(order.orderId)) {
+				continue;
+			}
+			const conditionId = order.marketId?.replace(
+				/^prediction-market:polymarket:/,
+				"",
+			);
+			if (!conditionId || !conditionIds.has(conditionId)) continue;
+			if (
+				!order.tokenId ||
+				order.originalShares === null ||
+				order.matchedShares === null ||
+				!Number.isFinite(order.originalShares) ||
+				!Number.isFinite(order.matchedShares) ||
+				order.originalShares < 0 ||
+				order.matchedShares < 0 ||
+				order.originalShares < order.matchedShares
+			) {
+				throw new Error(`venue BUY exposure was incomplete: ${order.orderId}`);
+			}
+			add(
+				{
+					conditionId,
+					tokenId: order.tokenId,
+					remainingShares: order.originalShares - order.matchedShares,
+				},
+				"venue",
+			);
+		}
+		return exposures;
 	}
 
 	async function persistAndExecute(input: {
@@ -752,8 +928,14 @@ export function startPositionGapActor(
 			await deps.execution.cancelBuy(cancellation.orderId);
 			const observed = await deps.execution.getBuy(cancellation.orderId);
 			if ("found" in observed && observed.found.status === "canceled") {
-				await deps.store.markCancelConfirmed(cancellation.id);
 				const active = activeByOrder.get(cancellation.orderId);
+				if (active) {
+					// The terminal receipt can contain a final provisional partial fill.
+					// Persist that quantity into the cohort in the same transaction that
+					// releases the order reservation before acknowledging the cancel row.
+					await deps.store.markPlacementReceipt(active.id, observed.found);
+				}
+				await deps.store.markCancelConfirmed(cancellation.id);
 				if (active) {
 					await deps.ledger.markCanceled({
 						client_order_id: active.clientOrderId,
@@ -844,11 +1026,24 @@ export function startPositionGapActor(
 					snapshot_id: input.snapshot.snapshotId,
 					snapshot_as_of: input.snapshot.updatedAtMs,
 					eligible_net_nav_usdc: input.plan.eligibleNetNavUsdc,
+					target_complete_set_value_usdc:
+						input.plan.targetCompleteSetValueUsdc,
+					target_cash_pusd_usdc: input.plan.targetCashPusdUsdc,
+					target_cash_usdc_e_usdc: input.plan.targetCashUsdcEUsdc,
+					target_cash_usdc: input.plan.targetCashUsdc,
+					target_total_wealth_usdc: input.plan.targetTotalWealthUsdc,
+					target_cash_observed_block: input.plan.targetCashObservedBlock,
 					scale: input.plan.scale,
 					sleeve_budget_usdc: input.budgetUsdc,
 					wallet_cash_usdc: input.walletCashUsdc,
 					existing_reserved_usdc: input.plan.existingReservedUsdc,
 					new_reserved_usdc: input.plan.newReservedUsdc,
+					confirmed_buy_notional_cash_headroom_usdc:
+						input.plan.confirmedBuyNotionalCashHeadroomUsdc,
+					confirmed_allocation_headroom_usdc:
+						input.plan.confirmedAllocationHeadroomUsdc,
+					remaining_buy_notional_cash_headroom_usdc:
+						input.plan.remainingBuyNotionalCashHeadroomUsdc,
 					minimum_feasible_sleeve_usdc:
 						input.plan.minimumFeasibleSleeveUsdc,
 					planned_intents: input.plan.intents.length,
@@ -1142,6 +1337,74 @@ function marketId(conditionId: string): string {
 	return `prediction-market:polymarket:${conditionId}`;
 }
 
+function validateTargetCash(
+	cash: PositionGapTargetCashSnapshot,
+	expectedBlock: number,
+): PositionGapTargetCashSnapshot {
+	if (
+		!Number.isFinite(cash.pusdUsdc) ||
+		cash.pusdUsdc < 0 ||
+		!Number.isFinite(cash.usdcEUsdc) ||
+		cash.usdcEUsdc < 0 ||
+		!Number.isSafeInteger(cash.observedBlock) ||
+		cash.observedBlock !== expectedBlock
+	) {
+		throw new Error("target cash proof was incomplete or source-block mismatched");
+	}
+	return cash;
+}
+
+function validateLocalHoldings(
+	snapshot: TargetBookSnapshotV1,
+	local: PositionGapLocalHoldingsSnapshot,
+): PositionGapHoldingV1[] {
+	if (!Number.isSafeInteger(local.observedBlock) || local.observedBlock <= 0) {
+		throw new Error("authoritative local holding block was invalid");
+	}
+	const expected = new Set(
+		snapshot.conditions.flatMap((condition) =>
+			condition.tokens.map(
+				(token) => `${condition.conditionId}\u0000${token.tokenId}`,
+			),
+		),
+	);
+	const actual = new Set<string>();
+	for (const holding of local.holdings) {
+		const holdingKey = `${holding.conditionId}\u0000${holding.tokenId}`;
+		if (
+			!expected.has(holdingKey) ||
+			actual.has(holdingKey) ||
+			!Number.isFinite(holding.shares) ||
+			holding.shares < 0
+		) {
+			throw new Error("authoritative local holding tuple was malformed");
+		}
+		actual.add(holdingKey);
+	}
+	if (actual.size !== expected.size) {
+		throw new Error("authoritative local holding tuple was incomplete");
+	}
+	const aliasKeys = new Set<string>();
+	for (const alias of local.tokenAliases) {
+		const canonicalKey = `${alias.conditionId}\u0000${alias.canonicalTokenId}`;
+		const aliasKey = `${alias.conditionId}\u0000${alias.sourceTokenId}`;
+		if (
+			!expected.has(canonicalKey) ||
+			alias.sourceTokenId.length === 0 ||
+			aliasKeys.has(aliasKey)
+		) {
+			throw new Error("authoritative local holding alias map was malformed");
+		}
+		aliasKeys.add(aliasKey);
+	}
+	for (const expectedKey of expected) {
+		if (!aliasKeys.has(expectedKey)) {
+			throw new Error("authoritative local holding alias map was incomplete");
+		}
+	}
+	return [...local.holdings];
+}
+
 function finiteNonnegative(value: number | undefined): number {
 	return Number.isFinite(value) && (value ?? -1) >= 0 ? (value as number) : 0;
 }
@@ -1191,6 +1454,9 @@ export async function requireConfirmedSafetyCancellation(input: {
 	await input.execution.cancelBuy(input.cancellation.orderId);
 	const observed = await input.execution.getBuy(input.cancellation.orderId);
 	if ("found" in observed && observed.found.status === "canceled") {
+		if (input.active) {
+			await input.store.markPlacementReceipt(input.active.id, observed.found);
+		}
 		await input.store.markCancelConfirmed(input.cancellation.id);
 		if (input.active) {
 			await input.ledger.markCanceled({
@@ -1213,6 +1479,35 @@ export async function requireConfirmedSafetyCancellation(input: {
 	throw new Error(
 		`position-gap safety cancellation unconfirmed for ${input.cancellation.orderId}`,
 	);
+}
+
+/**
+ * Treat durable cohort acquisitions as a fail-closed lower bound while chain
+ * balance reads lag or terminal fill accounting remains unverified. `max`
+ * avoids double counting once Polygon catches up, while still preventing a
+ * canceled order's provisional fills from reopening the same portfolio gap.
+ */
+export function floorPositionGapHoldingsAtAcquiredShares(input: {
+	holdings: readonly PositionGapHoldingV1[];
+	cohorts: readonly PositionGapPriceCohortV1[];
+}): PositionGapHoldingV1[] {
+	const acquiredByToken = new Map<string, number>();
+	for (const cohort of input.cohorts) {
+		const holdingKey = `${cohort.conditionId}\u0000${cohort.tokenId}`;
+		acquiredByToken.set(
+			holdingKey,
+			(acquiredByToken.get(holdingKey) ?? 0) +
+				finiteNonnegative(cohort.acquiredMirrorShares),
+		);
+	}
+	return input.holdings.map((holding) => ({
+		...holding,
+		shares: Math.max(
+			finiteNonnegative(holding.shares),
+			acquiredByToken.get(`${holding.conditionId}\u0000${holding.tokenId}`) ??
+				0,
+		),
+	}));
 }
 
 function blockedSafetyPlan(
@@ -1239,6 +1534,12 @@ function blockedSafetyPlan(
 		snapshotId: snapshot.snapshotId,
 		targetWallet: snapshot.targetWallet,
 		eligibleNetNavUsdc: 0,
+		targetCompleteSetValueUsdc: 0,
+		targetCashPusdUsdc: 0,
+		targetCashUsdcEUsdc: 0,
+		targetCashUsdc: 0,
+		targetTotalWealthUsdc: 0,
+		targetCashObservedBlock: 0,
 		scale: 0,
 		sleeveBudgetUsdc,
 		existingReservedUsdc: orders.reduce(

@@ -56,6 +56,17 @@ export type PositionGapHoldingV1 = Readonly<{
 	shares: number;
 }>;
 
+/**
+ * BUY exposure that already exists outside the PGv3-managed order set.
+ * It offsets a gap, but PGv3 never cancels it because it does not own it.
+ */
+export type PositionGapUnmanagedBuyExposureV1 = Readonly<{
+	conditionId: string;
+	tokenId: string;
+	remainingShares: number;
+	source: "account_ledger" | "venue";
+}>;
+
 export type PositionGapOpenBuyOrderV1 = Readonly<{
 	orderId: string;
 	conditionId: string;
@@ -70,6 +81,12 @@ export type PositionGapBookInputV1 = Readonly<{
 	nowMs: number;
 	snapshot: TargetBookSnapshotV1;
 	sleeveBudgetUsdc: number;
+	/** pUSD held by the target custody address at the snapshot source block. */
+	targetCashPusdUsdc: number;
+	/** Legacy USDC.e held by the target custody address at the same block. */
+	targetCashUsdcEUsdc: number;
+	/** Block shared by both target cash reads and the Data API source proof. */
+	targetCashObservedBlock: number;
 	/** Human-visible raw wallet collateral, never used directly for allocation. */
 	actualWalletCashUsdc: number;
 	/**
@@ -92,6 +109,7 @@ export type PositionGapBookInputV1 = Readonly<{
 	cohorts: readonly PositionGapPriceCohortV1[];
 	holdings: readonly PositionGapHoldingV1[];
 	openBuyOrders: readonly PositionGapOpenBuyOrderV1[];
+	unmanagedBuyExposure: readonly PositionGapUnmanagedBuyExposureV1[];
 }>;
 
 export type NettedTargetPositionV1 = Readonly<{
@@ -112,6 +130,8 @@ export type NettedTargetPositionV1 = Readonly<{
 export type NettedTargetBookV1 = Readonly<{
 	positions: readonly NettedTargetPositionV1[];
 	eligibleNetNavUsdc: number;
+	/** Matched YES+NO shares, redeemable/mergeable at $1 per pair. */
+	completeSetValueUsdc: number;
 	closedConditionIds: readonly string[];
 	ineligibleTargetPositions: readonly Readonly<{
 		conditionId: string;
@@ -222,6 +242,12 @@ export type PositionGapBookPlanV1 = Readonly<{
 	snapshotId: string;
 	targetWallet: string;
 	eligibleNetNavUsdc: number;
+	targetCompleteSetValueUsdc: number;
+	targetCashPusdUsdc: number;
+	targetCashUsdcEUsdc: number;
+	targetCashUsdc: number;
+	targetTotalWealthUsdc: number;
+	targetCashObservedBlock: number;
 	scale: number;
 	sleeveBudgetUsdc: number;
 	existingReservedUsdc: number;
