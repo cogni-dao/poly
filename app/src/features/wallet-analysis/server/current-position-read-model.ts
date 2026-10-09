@@ -173,6 +173,23 @@ export async function readCurrentWalletPositionModel(params: {
           ON target_position.trader_wallet_id = target_wallet.id
         WHERE target.billing_account_id = ${params.billingAccountId}
           AND target.disabled_at IS NULL
+          -- bug.5031 (perf): this set is consumed ONLY by a LEFT JOIN that flags
+          -- the VIEWER's own holdings correlating to a target position, so only
+          -- target tokens the viewer actually holds can ever match downstream.
+          -- Without this bound the CTE cross-joins EVERY position of EVERY
+          -- copy-target wallet (thousands for large targets like RN1), blowing
+          -- the dashboard's 8s statement timeout and throwing the whole
+          -- positions read (observed on prod: positions_unavailable). Output is
+          -- identical; the scan is bounded to the viewer's ~hundreds of rows.
+          AND EXISTS (
+            SELECT 1
+            FROM poly_trader_current_positions viewer_position
+            JOIN wallet_candidates viewer_wallet
+              ON viewer_wallet.id = viewer_position.trader_wallet_id
+            WHERE lower(viewer_position.condition_id)
+                = lower(target_position.condition_id)
+              AND viewer_position.token_id = target_position.token_id
+          )
       ), position_candidates AS (
         SELECT
           p.*,
