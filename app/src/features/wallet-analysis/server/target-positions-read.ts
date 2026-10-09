@@ -29,6 +29,7 @@ import { type SQL, sql } from "drizzle-orm";
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
 import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 import { liveCurrentPositionSql } from "./current-position-staleness";
+import { COPY_TARGET_POSITION_CURSOR_SOURCE } from "./position-observation-sources";
 import { readPositionGapRuntimeByWallet } from "./position-gap-runtime-read";
 
 const STATEMENT_TIMEOUT_MS = 5_000;
@@ -243,7 +244,7 @@ export function targetSummarySelect(
       ) w ON TRUE
       LEFT JOIN poly_trader_ingestion_cursors cursor
         ON cursor.trader_wallet_id = w.id
-       AND cursor.source = 'data-api-positions'
+       AND cursor.source = ${COPY_TARGET_POSITION_CURSOR_SOURCE}
       LEFT JOIN LATERAL (
         SELECT count(*) AS position_count,
                coalesce(sum(p.current_value_usdc), 0) AS portfolio_value_usdc,

@@ -61,7 +61,24 @@ function savedFacts(snapshot: PolyAccountPortfolioSnapshotOutput) {
     positions_sync_age_ms: _overviewSyncAge,
     ...overview
   } = snapshot.overview;
-  const { capturedAt: _executionCapturedAt, ...execution } = snapshot.execution;
+  const {
+    capturedAt: _executionCapturedAt,
+    tradeActivity,
+    ...executionFacts
+  } = snapshot.execution;
+  const execution = {
+    ...executionFacts,
+    // Bucket boundaries are derived from each request's capturedAt. Counts and
+    // grain are the saved-fact parity surface; boundary instants belong to the
+    // per-request snapshot envelope excluded above.
+    tradeActivity:
+      tradeActivity === undefined
+        ? undefined
+        : {
+            bucketUnit: tradeActivity.bucketUnit,
+            buckets: tradeActivity.buckets.map((bucket) => bucket.n),
+          },
+  };
   return {
     interval: snapshot.interval,
     readiness,

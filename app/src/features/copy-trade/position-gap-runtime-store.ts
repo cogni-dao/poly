@@ -58,6 +58,7 @@ import type {
 	PositionGapOpenBuyOrderV1,
 	PositionGapPriceCohortV1,
 } from "@/features/copy-trade/position-gap-v3/model";
+import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 
 const CASH_GUARD_SOURCE = "poly_trade_executor.requiredBuyCollateralAtomic/v1";
 const EPSILON = 1e-9;
@@ -66,6 +67,13 @@ export interface PositionGapRuntimeScope {
 	billingAccountId: string;
 	createdByUserId: string;
 	targetId: string;
+}
+
+export class PositionGapTargetLineageMismatchError extends Error {
+	constructor() {
+		super("position-gap target wallet lineage mismatch");
+		this.name = "PositionGapTargetLineageMismatchError";
+	}
 }
 
 export interface PositionGapPreparedBuy {
@@ -368,6 +376,9 @@ export class PositionGapRuntimeStore {
 				.limit(8),
 		]);
 		const actionRows = [...activeActionRows, ...terminalRepairRows];
+		const activeCohortKeys = new Set(
+			activeActionRows.map((row) => row.cohortKey),
+		);
 		const activeBuys: PositionGapActiveBuy[] = actionRows
 			.filter((row) => row.clientOrderId !== null)
 			.map((row) => ({
@@ -396,6 +407,9 @@ export class PositionGapRuntimeStore {
 				kind: row.sourceKind === "target_buy" ? "forward" : "activation",
 				allowedMirrorShares: numberOf(row.allowedMirrorShares),
 				acquiredMirrorShares: numberOf(row.acquiredShares),
+				availableNewBuyShares: activeCohortKeys.has(row.cohortKey)
+					? 0
+					: numberOf(row.remainingShares),
 				targetVwap: numberOf(row.benchmarkTargetVwap),
 			})),
 			openBuyOrders: activeBuys.flatMap((row) =>
@@ -436,6 +450,39 @@ export class PositionGapRuntimeStore {
 			.orderBy(desc(polyPositionGapRuns.startedAt))
 			.limit(1);
 		return row ? numberOf(row.budget) : null;
+	}
+
+	/**
+	 * Repair the one PGv3 producer-field omission that predates canonical
+	 * copy-target correlation. The deterministic target id proves the wallet;
+	 * tenant + target + policy version clamp the idempotent update.
+	 */
+	async repairTargetWalletLineage(
+		scope: PositionGapRuntimeScope,
+		targetWallet: string,
+	): Promise<void> {
+		const normalized = targetWallet.toLowerCase();
+		if (
+			!/^0x[0-9a-f]{40}$/.test(normalized) ||
+			targetIdFromWallet(normalized as `0x${string}`) !== scope.targetId
+		) {
+			throw new PositionGapTargetLineageMismatchError();
+		}
+		await this.db
+			.update(polyCopyTradeFills)
+			.set({
+				attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || jsonb_build_object('target_wallet', ${normalized}::text)`,
+				updatedAt: new Date(),
+			})
+			.where(
+				and(
+					eq(polyCopyTradeFills.billingAccountId, scope.billingAccountId),
+					eq(polyCopyTradeFills.targetId, scope.targetId),
+					eq(polyCopyTradeFills.mode, "live"),
+					sql`${polyCopyTradeFills.attributes}->>'position_gap_version' = '3'`,
+					sql`NULLIF(${polyCopyTradeFills.attributes}->>'target_wallet', '') IS NULL`,
+				),
+			);
 	}
 
 	async loadLastSnapshot(
@@ -719,6 +766,7 @@ export class PositionGapRuntimeStore {
 				0n,
 			);
 			if (
+				newBuys.length > 0 &&
 				numberOf(targetReserved?.budget) + newBudget >
 				input.budgetUsdc + EPSILON
 			) {
@@ -731,6 +779,7 @@ export class PositionGapRuntimeStore {
 				Math.max(0, Math.floor(input.walletCashUsdc * 1_000_000)),
 			);
 			if (
+				newBuys.length > 0 &&
 				BigInt(accountReserved?.cash ?? "0") + newCashAtomic >
 				walletCashAtomic
 			) {
@@ -1199,7 +1248,10 @@ export class PositionGapRuntimeStore {
 			if (!before) return false;
 			const recoverableAmbiguity =
 				before.status === "ambiguous" &&
-				recoverableHardClobRejectionCode(before.errorDetail) !== null;
+				recoverableHardClobRejectionCode(
+					before.errorDetail,
+					before.submitStartedAt,
+				) !== null;
 			if (
 				!["reserved", "ledgered", "submitting"].includes(before.status) &&
 				!recoverableAmbiguity
@@ -1288,6 +1340,7 @@ export class PositionGapRuntimeStore {
 				id: polyPositionGapActions.id,
 				clientOrderId: polyPositionGapActions.clientOrderId,
 				errorDetail: polyPositionGapActions.errorDetail,
+				submitStartedAt: polyPositionGapActions.submitStartedAt,
 			})
 			.from(polyPositionGapActions)
 			.where(
@@ -1307,7 +1360,10 @@ export class PositionGapRuntimeStore {
 			errorCode: RecoverableHardClobRejectionCode;
 		}[];
 		for (const row of rows) {
-			const errorCode = recoverableHardClobRejectionCode(row.errorDetail);
+			const errorCode = recoverableHardClobRejectionCode(
+				row.errorDetail,
+				row.submitStartedAt,
+			);
 			if (!errorCode || !row.clientOrderId || !row.errorDetail) continue;
 			if (await this.markKnownRejected(row.id, row.errorDetail)) {
 				recovered.push({

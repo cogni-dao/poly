@@ -329,11 +329,37 @@ export type WalletExecutionDailyCount = z.infer<
   typeof WalletExecutionDailyCountSchema
 >;
 
+export const WalletExecutionTradeBucketUnitSchema = z.enum([
+  "hour",
+  "day",
+  "month",
+  "year",
+]);
+export type WalletExecutionTradeBucketUnit = z.infer<
+  typeof WalletExecutionTradeBucketUnitSchema
+>;
+
+export const WalletExecutionTradeActivitySchema = z.object({
+  bucketUnit: WalletExecutionTradeBucketUnitSchema,
+  buckets: z.array(
+    z.object({
+      start: z.string(),
+      n: z.number().int().nonnegative(),
+    })
+  ),
+});
+export type WalletExecutionTradeActivity = z.infer<
+  typeof WalletExecutionTradeActivitySchema
+>;
+
 export const PolyWalletExecutionOutputSchema = z.object({
   address: PolyAddressSchema,
   freshness: PolyWalletDataFreshnessSchema,
   capturedAt: z.string(),
-  dailyTradeCounts: z.array(WalletExecutionDailyCountSchema),
+  /** @deprecated Legacy standalone execution-route series. */
+  dailyTradeCounts: z.array(WalletExecutionDailyCountSchema).optional(),
+  /** Interval-scoped saved trade facts for the shared portfolio selector. */
+  tradeActivity: WalletExecutionTradeActivitySchema.optional(),
   /** Currently held positions (status open or redeemable). Powers the Open tab. */
   live_positions: z.array(WalletExecutionPositionSchema),
   /** Exact DB count; live_positions is a bounded preview. */
@@ -351,9 +377,9 @@ export type PolyWalletExecutionOutput = z.infer<
 export const polyWalletExecutionOperation = {
   id: "poly.wallet.execution.v1",
   summary:
-    "Trading-wallet execution positions and trades-per-day with traceable price timelines",
+    "Trading-wallet execution positions and interval-scoped trade activity",
   description:
-    "Returns the signed-in user's DB-backed daily trade counts, open positions (live_positions), and closed position history (closed_positions) for the trading-wallet dashboard.",
+    "Returns the signed-in user's DB-backed trade activity, open positions (live_positions), and closed position history (closed_positions) for the trading-wallet dashboard.",
   input: z.object({
     freshness: PolyWalletDataFreshnessSchema.optional().default("read_model"),
   }),

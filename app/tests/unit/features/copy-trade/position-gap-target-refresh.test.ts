@@ -247,6 +247,7 @@ describe("buildPositionGapBuyIntent", () => {
 			tokenId: "yes",
 			conditionId: "condition",
 			cohortKey: "activation:yes",
+			targetWallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
 		});
 
 		expect(intent.side).toBe("BUY");
@@ -254,6 +255,7 @@ describe("buildPositionGapBuyIntent", () => {
 			orderType: "GTC",
 			placement: "limit",
 			position_gap_version: "3",
+			target_wallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
 		});
 	});
 
@@ -289,6 +291,23 @@ describe("buildPositionGapBuyIntent", () => {
 		expect(knownNoOrder(crossBundleError)).toBe(true);
 		expect(
 			knownNoOrder(
+				Object.assign(
+					new Error(
+						"invalid amount for a marketable BUY order ($0.22729), min size: $1 (https://clob.polymarket.com/order)",
+					),
+					{
+						name: "p",
+						details: {
+							error_code: "below_min_order_size",
+							response_keys: [],
+							reason: "below_min_order_size",
+						},
+					},
+				),
+			),
+		).toBe(true);
+		expect(
+			knownNoOrder(
 				Object.assign(new Error("connection reset after submit"), {
 					details: {
 						error_code: "insufficient_allowance",
@@ -299,7 +318,7 @@ describe("buildPositionGapBuyIntent", () => {
 		).toBe(false);
 	});
 
-	it("recovers only durable explicit balance and allowance rejections", () => {
+	it("recovers only canonical durable hard rejections", () => {
 		expect(
 			recoverableHardClobRejectionCode(
 				'PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_allowance, response_keys=[success,errorMsg], reason="insufficient_allowance", clob_error="allowance is not enough")',
@@ -310,6 +329,11 @@ describe("buildPositionGapBuyIntent", () => {
 				'PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_balance, response_keys=[success,errorMsg], reason="insufficient_balance", clob_error="not enough balance")',
 			),
 		).toBe("insufficient_balance");
+		expect(
+			recoverableHardClobRejectionCode(
+				"invalid amount for a marketable BUY order ($0.22729), min size: $1 (https://clob.polymarket.com/order)",
+			),
+		).toBe("below_min_order_size");
 		expect(
 			recoverableHardClobRejectionCode(
 				"PolymarketClobAdapter.placeOrder: CLOB rejected order (error_code=insufficient_allowance)",
@@ -471,6 +495,7 @@ describe("buildPositionGapBuyIntent", () => {
 			refresh: {} as never,
 			store: {
 				recoverSubmittingAsAmbiguous: vi.fn(() => never),
+				repairTargetWalletLineage: vi.fn(async () => 0),
 				recoverKnownRejectedAmbiguities,
 				loadPlannerState,
 				reconcileLedgerTerminals: vi.fn(async () => 0),

@@ -10,6 +10,7 @@ import type {
   WalletDashboardFactMeta,
   WalletDashboardWarning,
   WalletExecutionPosition,
+  WalletExecutionTradeActivity,
 } from "@cogni/poly-node-contracts";
 import { type SQL, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
@@ -76,7 +77,11 @@ type ClosedRow = {
   token_id: string | null;
 };
 
-type DailyCountRow = { day: string | null; n: string | number | null };
+type TradeActivityRow = {
+  bucket_index: string | number | null;
+  bucket_start: string | null;
+  n: string | number | null;
+};
 
 export type WalletDashboardReadDiagnostics = ComparisonReadDiagnostics & {
   comparisonPath?:
@@ -94,7 +99,6 @@ export type WalletDashboardReadDiagnostics = ComparisonReadDiagnostics & {
 type OptionalRead<T> =
   | { ok: true; value: T }
   | { ok: false; error: unknown };
-
 
 export type TenantWalletDashboardReadInput = {
   billingAccountId: string;
@@ -209,8 +213,13 @@ export async function readTenantWalletDashboardIn(
       input.interval
     )
   );
-  const dailyRead = await optionalRead(db, (savepoint) =>
-    readDailyTradeCounts(savepoint, input.billingAccountId, capturedAtDate)
+  const activityRead = await optionalRead(db, (savepoint) =>
+    readTradeActivity(
+      savepoint,
+      input.billingAccountId,
+      capturedAtDate,
+      input.interval
+    )
   );
   const pnlRead = await optionalRead(db, (savepoint) =>
     getTradingWalletPnlHistoryRead({
@@ -314,10 +323,18 @@ export async function readTenantWalletDashboardIn(
     );
   }
 
-  const activityFact = dailyRead.ok
+  const activityFact = activityRead.ok
     ? freshFact("local_ledger", capturedAt)
     : unavailableFact("local_ledger");
-  if (!dailyRead.ok) warnings.push(readFailure("activity", "daily_trade_counts_unavailable", dailyRead.error));
+  if (!activityRead.ok) {
+    warnings.push(
+      readFailure(
+        "activity",
+        "daily_trade_counts_unavailable",
+        activityRead.error
+      )
+    );
+  }
 
   const cashFact = cashMeta(balance, capturedAtDate);
   if (!balanceRead.ok) {
@@ -645,7 +662,7 @@ export async function readTenantWalletDashboardIn(
       address,
       freshness: "read_model",
       capturedAt,
-      dailyTradeCounts: dailyRead.ok ? dailyRead.value : [],
+      tradeActivity: activityRead.ok ? activityRead.value : undefined,
       live_positions: livePositions.slice(0, LIVE_PREVIEW_LIMIT),
       live_position_count:
         positionsRead.ok && positionFact.status !== "unavailable"
@@ -988,45 +1005,135 @@ export async function readClosedPositionSummary(
   };
 }
 
-async function readDailyTradeCounts(db: ExecuteDb, billingAccountId: string, capturedAt: Date) {
-  const windowEnd = new Date(capturedAt);
-  windowEnd.setUTCHours(0, 0, 0, 0);
-  windowEnd.setUTCDate(windowEnd.getUTCDate() + 1);
-  const windowStart = new Date(windowEnd);
-  windowStart.setUTCDate(windowStart.getUTCDate() - 14);
-  const rows = normalizeRows<DailyCountRow>(await db.execute(sql`
+/**
+ * Interval-scoped executed-trade aggregate for the shared portfolio snapshot.
+ * Postgres returns at most one row per visual bucket; V8 only zero-fills that
+ * bounded axis and never hydrates the underlying fill population.
+ */
+export async function readTradeActivity(
+  db: ExecuteDb,
+  billingAccountId: string,
+  capturedAt: Date,
+  interval: PolyWalletOverviewInterval
+): Promise<WalletExecutionTradeActivity> {
+  if (interval === "1D" || interval === "1W" || interval === "1M") {
+    const bucketUnit = interval === "1D" ? "hour" : "day";
+    const bucketCount = interval === "1D" ? 24 : interval === "1W" ? 7 : 30;
+    const bucketMs = bucketUnit === "hour" ? 3_600_000 : 86_400_000;
+    const windowStart = portfolioWindowStart(interval, capturedAt);
+    if (windowStart === null) throw new Error(`missing ${interval} window start`);
+    const bucketSeconds = bucketMs / 1_000;
+    const rows = normalizeRows<TradeActivityRow>(await db.execute(sql`
+      SELECT
+        LEAST(
+          ${bucketCount - 1},
+          FLOOR(EXTRACT(EPOCH FROM (
+            f.observed_at - ${windowStart.toISOString()}::timestamptz
+          )) / ${bucketSeconds})
+        )::int AS bucket_index,
+        COUNT(*)::int AS n
+      FROM poly_copy_trade_fills f
+      WHERE f.billing_account_id = ${billingAccountId}
+        AND f.observed_at >= ${windowStart.toISOString()}::timestamptz
+        AND f.observed_at <= ${capturedAt.toISOString()}::timestamptz
+        AND ${countedTradePredicate()}
+      GROUP BY 1
+      ORDER BY 1
+    `));
+    const byIndex = new Map(
+      rows.map((row) => [
+        nonnegativeInt(row.bucket_index),
+        nonnegativeInt(row.n),
+      ])
+    );
+    return {
+      bucketUnit,
+      buckets: Array.from({ length: bucketCount }, (_, index) => ({
+        start: new Date(windowStart.getTime() + index * bucketMs).toISOString(),
+        n: byIndex.get(index) ?? 0,
+      })),
+    };
+  }
+
+  const bucketUnit = interval === "ALL" ? "year" : "month";
+  const windowStart = portfolioWindowStart(interval, capturedAt);
+  const bucketExpression =
+    bucketUnit === "year"
+      ? sql`date_trunc('year', f.observed_at AT TIME ZONE 'UTC')`
+      : sql`date_trunc('month', f.observed_at AT TIME ZONE 'UTC')`;
+  const rows = normalizeRows<TradeActivityRow>(await db.execute(sql`
     SELECT
-      to_char(date_trunc('day', f.observed_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+      to_char(${bucketExpression}, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS bucket_start,
       COUNT(*)::int AS n
     FROM poly_copy_trade_fills f
     WHERE f.billing_account_id = ${billingAccountId}
-      AND f.observed_at >= ${windowStart.toISOString()}::timestamptz
-      AND f.observed_at < ${windowEnd.toISOString()}::timestamptz
-      AND (
-        CASE WHEN (
-            COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-            OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
-          ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
-          THEN (f.attributes->>'filled_size_usdc')::numeric ELSE 0 END > 0
-        OR (
-          COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-          AND
-          f.status IN ('filled', 'partial')
-          AND CASE WHEN f.attributes->>'size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
-            THEN (f.attributes->>'size_usdc')::numeric ELSE 0 END > 0
-        )
-      )
+      AND ${
+        windowStart
+          ? sql`f.observed_at >= ${windowStart.toISOString()}::timestamptz`
+          : sql`TRUE`
+      }
+      AND f.observed_at <= ${capturedAt.toISOString()}::timestamptz
+      AND ${countedTradePredicate()}
     GROUP BY 1
     ORDER BY 1
   `));
-  const byDay = new Map(rows.map((row) => [row.day ?? "", nonnegativeInt(row.n)]));
-  return Array.from({ length: 14 }, (_, index) => {
-    const day = new Date(capturedAt);
-    day.setUTCHours(0, 0, 0, 0);
-    day.setUTCDate(day.getUTCDate() - (13 - index));
-    const key = day.toISOString().slice(0, 10);
-    return { day: key, n: byDay.get(key) ?? 0 };
-  });
+  const byStart = new Map(
+    rows.flatMap((row) =>
+      row.bucket_start === null
+        ? []
+        : [
+            [
+              new Date(row.bucket_start).toISOString(),
+              nonnegativeInt(row.n),
+            ] as const,
+          ]
+    )
+  );
+  if (bucketUnit === "year" && byStart.size === 0) {
+    return { bucketUnit, buckets: [] };
+  }
+
+  const first =
+    bucketUnit === "year"
+      ? new Date([...byStart.keys()][0] ?? capturedAt)
+      : new Date(
+          Date.UTC(
+            (windowStart ?? capturedAt).getUTCFullYear(),
+            (windowStart ?? capturedAt).getUTCMonth(),
+            1
+          )
+        );
+  const end = new Date(
+    Date.UTC(
+      capturedAt.getUTCFullYear(),
+      bucketUnit === "month" ? capturedAt.getUTCMonth() : 0,
+      1
+    )
+  );
+  const buckets: WalletExecutionTradeActivity["buckets"] = [];
+  for (const cursor = new Date(first); cursor <= end; ) {
+    const start = cursor.toISOString();
+    buckets.push({ start, n: byStart.get(start) ?? 0 });
+    if (bucketUnit === "month") cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+    else cursor.setUTCFullYear(cursor.getUTCFullYear() + 1);
+  }
+  return { bucketUnit, buckets };
+}
+
+function countedTradePredicate(): SQL {
+  return sql`(
+    CASE WHEN (
+        COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+        OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
+      ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
+      THEN (f.attributes->>'filled_size_usdc')::numeric ELSE 0 END > 0
+    OR (
+      COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+      AND f.status IN ('filled', 'partial')
+      AND CASE WHEN f.attributes->>'size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
+        THEN (f.attributes->>'size_usdc')::numeric ELSE 0 END > 0
+    )
+  )`;
 }
 
 function closedRowToPosition(row: ClosedRow, capturedAt: Date): WalletExecutionPosition[] {
@@ -1167,7 +1274,7 @@ function emptyDashboard(input: { snapshotId: string; capturedAt: string; interva
       address: "0x0000000000000000000000000000000000000000",
       freshness: "read_model",
       capturedAt: input.capturedAt,
-      dailyTradeCounts: [],
+      tradeActivity: undefined,
       live_positions: [],
       live_position_count: null,
       market_groups: [],

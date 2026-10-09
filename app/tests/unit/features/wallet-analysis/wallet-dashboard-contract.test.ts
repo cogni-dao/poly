@@ -27,6 +27,23 @@ describe("poly.wallet.dashboard.v1", () => {
     expect(execution.shape.closed_position_count.safeParse(null).success).toBe(true);
   });
 
+  it("exposes interval-scoped activity units on the shared snapshot", () => {
+    const activity =
+      PolyWalletDashboardOutputSchema.shape.execution.shape.tradeActivity;
+    expect(
+      activity.safeParse({
+        bucketUnit: "hour",
+        buckets: [{ start: "2026-10-08T11:30:00.000Z", n: 2 }],
+      }).success
+    ).toBe(true);
+    expect(
+      activity.safeParse({
+        bucketUnit: "week",
+        buckets: [],
+      }).success
+    ).toBe(false);
+  });
+
   it("keeps missing target position economics unavailable instead of zero", () => {
     const shape = WalletExecutionMarketGroupSchema.shape;
     expect(shape.targetEntryValueUsdc.safeParse(null).success).toBe(true);

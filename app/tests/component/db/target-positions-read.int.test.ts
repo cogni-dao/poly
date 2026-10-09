@@ -15,7 +15,7 @@ import {
 } from "@cogni/poly-db-schema/trader-activity";
 import { PolyAccountTargetPositionsResponseSchema } from "@cogni/poly-node-contracts";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
@@ -26,6 +26,9 @@ import {
 	getTargetPositionsForAccount as readTargetPositionsForAccount,
 	targetPositionRowsSelect,
 } from "@/features/wallet-analysis/server/target-positions-read";
+import {
+	COPY_TARGET_POSITION_CURSOR_SOURCE,
+} from "@/features/wallet-analysis/server/position-observation-sources";
 import {
 	billingAccounts,
 	polyCopyTradeTargets,
@@ -168,19 +171,25 @@ describe("target positions persisted target/runtime read", () => {
 		await db.insert(polyTraderIngestionCursors).values([
 			{
 				traderWalletId: targetWalletId,
-				source: "data-api-positions",
+				source: COPY_TARGET_POSITION_CURSOR_SOURCE,
 				status: "ok",
 				lastSuccessAt: now,
 			},
 			{
-				traderWalletId: partialWalletId,
+				traderWalletId: targetWalletId,
 				source: "data-api-positions",
+				status: "partial",
+				lastSuccessAt: new Date("2026-10-03T00:00:00.000Z"),
+			},
+			{
+				traderWalletId: partialWalletId,
+				source: COPY_TARGET_POSITION_CURSOR_SOURCE,
 				status: "partial",
 				lastSuccessAt: now,
 			},
 			{
 				traderWalletId: otherWalletId,
-				source: "data-api-positions",
+				source: COPY_TARGET_POSITION_CURSOR_SOURCE,
 				status: "ok",
 				lastSuccessAt: now,
 			},
@@ -606,7 +615,15 @@ describe("target positions persisted target/runtime read", () => {
 		await db
 			.update(polyTraderIngestionCursors)
 			.set({ lastSuccessAt: staleAt })
-			.where(eq(polyTraderIngestionCursors.traderWalletId, targetWalletId));
+			.where(
+				and(
+					eq(polyTraderIngestionCursors.traderWalletId, targetWalletId),
+					eq(
+						polyTraderIngestionCursors.source,
+						COPY_TARGET_POSITION_CURSOR_SOURCE,
+					),
+				),
+			);
 		const result = await getTargetPositionsForAccount(
 			db as unknown as AgentGrantTransaction,
 			ACCOUNT_A,
@@ -624,7 +641,15 @@ describe("target positions persisted target/runtime read", () => {
 		await db
 			.update(polyTraderIngestionCursors)
 			.set({ lastSuccessAt: now })
-			.where(eq(polyTraderIngestionCursors.traderWalletId, targetWalletId));
+			.where(
+				and(
+					eq(polyTraderIngestionCursors.traderWalletId, targetWalletId),
+					eq(
+						polyTraderIngestionCursors.source,
+						COPY_TARGET_POSITION_CURSOR_SOURCE,
+					),
+				),
+			);
 	});
 
 	it("keeps a requested Position-gap target beyond the global cap exact and bounded", async () => {

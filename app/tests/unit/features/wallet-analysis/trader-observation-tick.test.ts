@@ -37,10 +37,10 @@ import {
 const WALLET_A = `0x${"a".repeat(40)}`;
 const WALLET_B = `0x${"b".repeat(40)}`;
 
-const walletRow = (id: string, walletAddress: string) => ({
+const walletRow = (id: string, walletAddress: string, kind = "cogni_wallet") => ({
   id,
   walletAddress,
-  kind: "target",
+  kind,
   label: `wallet ${id}`,
   activeForResearch: true,
   disabledAt: null,
@@ -145,6 +145,42 @@ function tickOkCall(logger: ReturnType<typeof makeLogger>) {
 }
 
 describe("runTraderObservationTick wiring (task.5015)", () => {
+  it("keeps copy-target fill ingestion but leaves position publication to V2", async () => {
+    const { db } = createFakeDb([
+      walletRow("copy-target", WALLET_A, "copy_target"),
+    ]);
+    const logger = makeLogger();
+    const client = {
+      listUserActivity: vi.fn(async () => []),
+      listUserPositions: vi.fn(async () => []),
+    } as unknown as PolymarketDataApiClient;
+
+    const result = await runTraderObservationTick({
+      db,
+      client,
+      listActiveTradingAddresses: async () => [],
+      logger: logger as never,
+      metrics,
+    });
+
+    expect(result).toMatchObject({ walletsProcessed: 1, errors: 0 });
+    expect(client.listUserActivity).toHaveBeenCalledWith(
+      WALLET_A,
+      expect.any(Object)
+    );
+    expect(client.listUserPositions).not.toHaveBeenCalled();
+    const walletOk = logger.info.mock.calls.find(
+      (call) => (call[0] as { phase?: string }).phase === "wallet_ok"
+    );
+    expect(walletOk?.[0]).toMatchObject({
+      wallet: WALLET_A,
+      kind: "copy_target",
+      positions: 0,
+      positions_complete: false,
+      positions_skipped: true,
+    });
+  });
+
   it("emits tick_ok summary fields and isolates a failing wallet", async () => {
     const { db } = createFakeDb([
       walletRow("wallet-a", WALLET_A),

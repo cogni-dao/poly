@@ -36,12 +36,13 @@ import {
 	reconcilePositionGapFillEvidence,
 } from "@/features/copy-trade/position-gap-fill-evidence";
 import { isStructuredClobRejection } from "@/features/copy-trade/position-gap-placement-errors";
-import type {
-	PositionGapAccountingTransition,
-	PositionGapActiveBuy,
-	PositionGapPreparedCancel,
-	PositionGapRuntimeScope,
-	PositionGapRuntimeStore,
+import {
+	PositionGapTargetLineageMismatchError,
+	type PositionGapAccountingTransition,
+	type PositionGapActiveBuy,
+	type PositionGapPreparedCancel,
+	type PositionGapRuntimeScope,
+	type PositionGapRuntimeStore,
 } from "@/features/copy-trade/position-gap-runtime-store";
 import type { PositionGapTargetRefreshCoordinator } from "@/features/copy-trade/position-gap-target-refresh";
 import { planPositionGapBook } from "@/features/copy-trade/position-gap-v3/batch-plan";
@@ -131,6 +132,7 @@ export function startPositionGapActor(
 	>();
 	let causalWatermarkMs = 0;
 	let causalRetry: ReturnType<typeof globalThis.setTimeout> | null = null;
+	let causalHoldLogged = false;
 	const venueCache = new Map<
 		string,
 		{
@@ -236,6 +238,12 @@ export function startPositionGapActor(
 	};
 
 	async function reconcile(triggerReasons: readonly string[]): Promise<void> {
+		// Reconcile our durable order truth before any stale/causal early exit can
+		// enter safety cancellation. Known hard rejections must not remain
+		// ambiguous merely because the target snapshot is temporarily unusable.
+		const accountingTransitions = await reconcileKnownOrders();
+		await deps.store.reconcileLedgerTerminals(deps.scope);
+		await deps.store.releaseTerminalExposure(deps.scope);
 		let activity: Fill[] = [];
 		if (triggerReasons.includes("target_activity")) {
 			const drained = await deps.source.fetchSince(cursor);
@@ -286,6 +294,7 @@ export function startPositionGapActor(
 			!freshSnapshot.complete ||
 			now() >= freshSnapshot.expiresAtMs
 		) {
+			causalHoldLogged = false;
 			await cancelAll("stale_snapshot");
 			return;
 		}
@@ -304,7 +313,33 @@ export function startPositionGapActor(
 			(!Number.isFinite(sourceComputedAtMs) ||
 				sourceComputedAtMs < causalWatermarkMs)
 		) {
-			await cancelAll("causal_snapshot_lag");
+			// Activity can lead the Data API projection by several seconds. The
+			// lagging snapshot cannot authorize new demand, but prior GTCs remain
+			// backed by the last atomic snapshot until a fresh projection proves
+			// the exact whole-book reductions to cancel.
+			if (!causalHoldLogged) {
+				const heldRuntime = await deps.store.loadPlannerState(deps.scope);
+				deps.logger.warn(
+					{
+						event: "poly.position_gap.v3.causal_snapshot_lag",
+						action: "hold_approved_gtcs",
+						billing_account_id: deps.scope.billingAccountId,
+						target_wallet: deps.targetWallet,
+						target_id: deps.scope.targetId,
+						causal_watermark_ms: causalWatermarkMs,
+						source_computed_at_ms: Number.isFinite(sourceComputedAtMs)
+							? sourceComputedAtMs
+							: null,
+						dirty_condition_count: dirtyConditions.length,
+						retained_active_buy_count: heldRuntime.activeBuys.filter((action) =>
+							!["filled", "canceled", "rejected"].includes(action.status),
+						).length,
+						retained_open_buy_count: heldRuntime.openBuyOrders.length,
+					},
+					"position-gap retained last-approved GTCs while target snapshot catches up",
+				);
+				causalHoldLogged = true;
+			}
 			for (const conditionId of dirtyConditions) causalDirty.add(conditionId);
 			if (!disabled && !causalRetry) {
 				causalRetry = scheduleTimeout(() => {
@@ -314,13 +349,26 @@ export function startPositionGapActor(
 			}
 			return;
 		}
+		causalHoldLogged = false;
 		causalDirty.clear();
 		causalWatermarkMs = 0;
 
-		const accountingTransitions = await reconcileKnownOrders();
-		await deps.store.reconcileLedgerTerminals(deps.scope);
-		await deps.store.releaseTerminalExposure(deps.scope);
 		const runtime = await deps.store.loadPlannerState(deps.scope);
+		const activeCohortKeys = new Set(
+			runtime.activeBuys
+				.filter((action) =>
+					[
+						"reserved",
+						"ledgered",
+						"submitting",
+						"open",
+						"partial",
+						"cancel_requested",
+						"ambiguous",
+					].includes(action.status),
+				)
+				.map((action) => action.cohortKey),
+		);
 		// Unknown venue state stays in the economic denominator. CLOB reads are
 		// deferred until after the $1 theoretical feasibility bound below.
 		const netBook = netTargetBook(freshSnapshot, new Map());
@@ -410,6 +458,9 @@ export function startPositionGapActor(
 				kind: cohort.sourceKind === "target_buy" ? "forward" : "activation",
 				allowedMirrorShares: cohort.allowedMirrorShares,
 				acquiredMirrorShares: cohort.acquiredShares,
+				availableNewBuyShares: activeCohortKeys.has(cohort.cohortKey)
+					? 0
+					: cohort.remainingShares,
 				targetVwap: cohort.benchmarkTargetVwap,
 			})),
 			holdings,
@@ -445,6 +496,26 @@ export function startPositionGapActor(
 					error_code: action.errorCode,
 				},
 				"position-gap recovered a durable hard CLOB rejection",
+			);
+		}
+		try {
+			await deps.store.repairTargetWalletLineage(
+				deps.scope,
+				deps.targetWallet,
+			);
+		} catch (error) {
+			if (error instanceof PositionGapTargetLineageMismatchError) throw error;
+			// Prospective PGv3 intents already carry target_wallet. This historic
+			// observability repair may retry, but cannot gate safe trading.
+			deps.logger.warn(
+				{
+					event: "poly.position_gap.v3.target_lineage_repair_failed",
+					billing_account_id: deps.scope.billingAccountId,
+					target_id: deps.scope.targetId,
+					target_wallet: deps.targetWallet.toLowerCase(),
+					err: error instanceof Error ? error.message : String(error),
+				},
+				"position-gap historical target-wallet lineage repair failed",
 			);
 		}
 		const runtime = await deps.store.loadPlannerState(deps.scope);
@@ -783,7 +854,10 @@ export function startPositionGapActor(
 				(candidate) => candidate.actionKey === buy.actionKey,
 			);
 			if (!prepared) continue;
-			const intent = buildPositionGapBuyIntent(prepared);
+			const intent = buildPositionGapBuyIntent({
+				...prepared,
+				targetWallet: deps.targetWallet,
+			});
 			try {
 				await deps.ledger
 					.forTenant({
@@ -907,7 +981,6 @@ export function startPositionGapActor(
 
 	async function cancelAll(
 		reason:
-			| "causal_snapshot_lag"
 			| "disabled"
 			| "invalid_budget_group"
 			| "stale_snapshot",
@@ -1056,6 +1129,7 @@ export function buildPositionGapBuyIntent(input: {
 	tokenId: string;
 	conditionId: string;
 	cohortKey: string;
+	targetWallet: string;
 }): OrderIntent & { side: "BUY" } {
 	return {
 		provider: "polymarket",
@@ -1068,6 +1142,7 @@ export function buildPositionGapBuyIntent(input: {
 		attributes: {
 			token_id: input.tokenId,
 			condition_id: input.conditionId,
+			target_wallet: input.targetWallet.toLowerCase(),
 			orderType: "GTC",
 			placement: "limit",
 			position_gap_version: "3",
@@ -1232,7 +1307,6 @@ function blockedSafetyPlan(
 		reservedUsdc: number;
 	}[],
 	reason:
-		| "causal_snapshot_lag"
 		| "disabled"
 		| "invalid_budget_group"
 		| "stale_snapshot",

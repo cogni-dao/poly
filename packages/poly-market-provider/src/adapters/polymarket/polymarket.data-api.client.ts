@@ -307,6 +307,8 @@ export interface ListUserPositionsParams {
   market?: string;
   /** Optional minimum position size (USDC). */
   sizeThreshold?: number;
+  /** Restrict resolved/redeemable rows. `false` is the complete open book. */
+  redeemable?: boolean;
   /** Optional position cap. */
   limit?: number;
   /** Optional offset for pagination. */
@@ -484,6 +486,9 @@ export class PolymarketDataApiClient {
     if (params?.market) url.searchParams.set("market", params.market);
     if (params?.sizeThreshold !== undefined) {
       url.searchParams.set("sizeThreshold", String(params.sizeThreshold));
+    }
+    if (params?.redeemable !== undefined) {
+      url.searchParams.set("redeemable", String(params.redeemable));
     }
     if (params?.limit !== undefined) {
       url.searchParams.set("limit", String(params.limit));
