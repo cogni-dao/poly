@@ -159,6 +159,14 @@ export interface PositionGapActiveBuy {
 	completedAt: Date | null;
 }
 
+export interface PositionGapAccountBuyExposure {
+	clientOrderId: string;
+	orderId: string | null;
+	conditionId: string;
+	tokenId: string;
+	remainingShares: number;
+}
+
 export interface PositionGapAccountingTransition {
 	actionId: string;
 	from: "mismatch" | "pending" | "verified";
@@ -433,6 +441,77 @@ export class PositionGapRuntimeStore {
 			),
 			activeBuys,
 		};
+	}
+
+	/**
+	 * Every active BUY reservation in the account, across targets and sizing
+	 * policies. Position-gap subtracts these before creating new demand.
+	 */
+	async loadAccountBuyExposure(
+		scope: PositionGapRuntimeScope,
+	): Promise<readonly PositionGapAccountBuyExposure[]> {
+		const rows = await this.db
+			.select({
+				clientOrderId: polyCopyTradeFills.clientOrderId,
+				orderId: polyCopyTradeFills.orderId,
+				marketId: polyCopyTradeFills.marketId,
+				conditionId: sql<
+					string | null
+				>`${polyCopyTradeFills.attributes}->>'condition_id'`,
+				tokenId: sql<
+					string | null
+				>`${polyCopyTradeFills.attributes}->>'token_id'`,
+				sizeUsdc: sql<
+					string | null
+				>`${polyCopyTradeFills.attributes}->>'size_usdc'`,
+				limitPrice: sql<
+					string | null
+				>`${polyCopyTradeFills.attributes}->>'limit_price'`,
+				filledShares: polyCopyTradeFills.shares,
+			})
+			.from(polyCopyTradeFills)
+			.where(
+				and(
+					eq(polyCopyTradeFills.billingAccountId, scope.billingAccountId),
+					inArray(polyCopyTradeFills.status, ["pending", "open", "partial"]),
+					sql`${polyCopyTradeFills.attributes}->>'side' = 'BUY'`,
+					sql`${polyCopyTradeFills.attributes}->>'closed_at' IS NULL`,
+				),
+			);
+		return rows.map((row) => {
+			const tokenId = row.tokenId?.trim() ?? "";
+			const conditionId =
+				row.conditionId?.trim() ||
+				row.marketId.replace(/^prediction-market:polymarket:/, "");
+			const sizeUsdc =
+				row.sizeUsdc === null ? Number.NaN : Number(row.sizeUsdc);
+			const limitPrice =
+				row.limitPrice === null ? Number.NaN : Number(row.limitPrice);
+			const filledShares =
+				row.filledShares === null ? 0 : Number(row.filledShares);
+			if (
+				conditionId.length === 0 ||
+				tokenId.length === 0 ||
+				!Number.isFinite(sizeUsdc) ||
+				sizeUsdc <= 0 ||
+				!Number.isFinite(limitPrice) ||
+				limitPrice <= 0 ||
+				limitPrice >= 1 ||
+				!Number.isFinite(filledShares) ||
+				filledShares < 0
+			) {
+				throw new Error(
+					`active BUY exposure was malformed for ${row.clientOrderId}`,
+				);
+			}
+			return {
+				clientOrderId: row.clientOrderId,
+				orderId: row.orderId,
+				conditionId,
+				tokenId,
+				remainingShares: Math.max(0, sizeUsdc / limitPrice - filledShares),
+			};
+		});
 	}
 
 	async previousBudgetUsdc(

@@ -44,6 +44,8 @@ describe("position-gap runtime persistence", () => {
 	const targetQuantized = randomUUID();
 	const targetActivationBackfill = randomUUID();
 	const targetAmbiguousRejection = randomUUID();
+	const targetAccountExposureA = randomUUID();
+	const targetAccountExposureB = randomUUID();
 
 	beforeAll(async () => {
 		appDb = getAppDb();
@@ -138,6 +140,146 @@ describe("position-gap runtime persistence", () => {
 			executorCashGuardAtomic: "1100000",
 			cashGuardSource: "test",
 		});
+	});
+
+	it("loads complete active BUY exposure across every target in the account", async () => {
+		const db = getSeedDb();
+		const store = new PositionGapRuntimeStore(db);
+		const firstClientOrderId = `account-exposure-a-${randomUUID()}`;
+		const secondClientOrderId = `account-exposure-b-${randomUUID()}`;
+		const otherAccountClientOrderId = `account-exposure-other-${randomUUID()}`;
+		await db.insert(polyCopyTradeFills).values([
+			{
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId: targetAccountExposureA,
+				fillId: `test:${randomUUID()}`,
+				marketId: "prediction-market:polymarket:account-exposure-a",
+				observedAt: asOf,
+				clientOrderId: firstClientOrderId,
+				orderId: `venue-${randomUUID()}`,
+				status: "partial",
+				shares: "4",
+				attributes: {
+					side: "BUY",
+					condition_id: "account-exposure-a",
+					token_id: "token-a",
+					size_usdc: 10,
+					limit_price: 0.5,
+				},
+			},
+			{
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId: targetAccountExposureB,
+				fillId: `test:${randomUUID()}`,
+				marketId: "prediction-market:polymarket:account-exposure-b",
+				observedAt: asOf,
+				clientOrderId: secondClientOrderId,
+				status: "pending",
+				attributes: {
+					side: "BUY",
+					condition_id: "account-exposure-b",
+					token_id: "token-b",
+					size_usdc: 3,
+					limit_price: 0.25,
+				},
+			},
+			{
+				billingAccountId: accountB,
+				createdByUserId: ownerB,
+				targetId: targetAccountExposureA,
+				fillId: `test:${randomUUID()}`,
+				marketId: "prediction-market:polymarket:account-exposure-other",
+				observedAt: asOf,
+				clientOrderId: otherAccountClientOrderId,
+				status: "open",
+				attributes: {
+					side: "BUY",
+					condition_id: "account-exposure-other",
+					token_id: "token-other",
+					size_usdc: 100,
+					limit_price: 0.5,
+				},
+			},
+		]);
+
+		try {
+			const exposure = await store.loadAccountBuyExposure({
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId: targetAccountExposureA,
+			});
+			expect(
+				exposure
+					.filter((row) =>
+						[firstClientOrderId, secondClientOrderId].includes(
+							row.clientOrderId,
+						),
+					)
+					.map((row) => ({
+						clientOrderId: row.clientOrderId,
+						remainingShares: row.remainingShares,
+					}))
+					.sort((left, right) =>
+						left.clientOrderId.localeCompare(right.clientOrderId),
+					),
+			).toEqual([
+				{ clientOrderId: firstClientOrderId, remainingShares: 16 },
+				{ clientOrderId: secondClientOrderId, remainingShares: 12 },
+			]);
+			expect(
+				exposure.some((row) => row.clientOrderId === otherAccountClientOrderId),
+			).toBe(false);
+		} finally {
+			await db
+				.delete(polyCopyTradeFills)
+				.where(
+					inArray(polyCopyTradeFills.clientOrderId, [
+						firstClientOrderId,
+						secondClientOrderId,
+						otherAccountClientOrderId,
+					]),
+				);
+		}
+	});
+
+	it("fails closed when active BUY exposure lacks sizing provenance", async () => {
+		const db = getSeedDb();
+		const store = new PositionGapRuntimeStore(db);
+		const clientOrderId = `account-exposure-malformed-${randomUUID()}`;
+		await db.insert(polyCopyTradeFills).values({
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetAccountExposureA,
+			fillId: `test:${randomUUID()}`,
+			marketId: "prediction-market:polymarket:account-exposure-malformed",
+			observedAt: asOf,
+			clientOrderId,
+			status: "open",
+			attributes: {
+				side: "BUY",
+				condition_id: "account-exposure-malformed",
+				token_id: "token-malformed",
+				limit_price: 0.5,
+			},
+		});
+
+		try {
+			await expect(
+				store.loadAccountBuyExposure({
+					billingAccountId: accountA,
+					createdByUserId: ownerA,
+					targetId: targetAccountExposureA,
+				}),
+			).rejects.toThrow(
+				`active BUY exposure was malformed for ${clientOrderId}`,
+			);
+		} finally {
+			await db
+				.delete(polyCopyTradeFills)
+				.where(eq(polyCopyTradeFills.clientOrderId, clientOrderId));
+		}
 	});
 
 	afterAll(async () => {
@@ -412,7 +554,7 @@ describe("position-gap runtime persistence", () => {
 				configRevision: "activation-revision",
 				previousBudgetUsdc: null,
 				budgetUsdc: 40,
-				eligibleNetNavUsdc: 400,
+				allocationDenominatorUsdc: 400,
 				scale: 0.1,
 				activation: true,
 				nowMs: asOf.getTime() + snapshot * 1_000,

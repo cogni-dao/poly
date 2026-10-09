@@ -141,7 +141,7 @@ describe("polymarket chain source — exact-token Gamma fallback", () => {
       configRevision: "revision-1",
       previousBudgetUsdc: 20,
       budgetUsdc: 20,
-      eligibleNetNavUsdc: 200,
+      allocationDenominatorUsdc: 200,
       scale: 0.1,
       activation: false,
       nowMs: 1_790_000_000_000,

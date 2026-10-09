@@ -50,7 +50,7 @@ function base(overrides: Record<string, unknown> = {}) {
 		configRevision: "revision-1",
 		previousBudgetUsdc: null,
 		budgetUsdc: 40,
-		eligibleNetNavUsdc: 400,
+		allocationDenominatorUsdc: 400,
 		scale: 0.1,
 		activation: false,
 		nowMs: 1_000,

@@ -514,9 +514,15 @@ describe("buildPositionGapBuyIntent", () => {
 				cancelBuy,
 				getBuy,
 				getMarketConstraints: vi.fn(),
+				listOpenOrders: vi.fn(async () => []),
 			},
 			getWalletCashUsdc: vi.fn(async () => 20),
-			getAuthoritativeShares: vi.fn(),
+			getTargetCashUsdc: vi.fn(async () => ({
+				pusdUsdc: 0,
+				usdcEUsdc: 0,
+				observedBlock: 1,
+			})),
+			getAuthoritativeHoldings: vi.fn(),
 			logger: {
 				debug: vi.fn(),
 				info: vi.fn(),
