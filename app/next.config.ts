@@ -33,6 +33,22 @@ const nextConfig: NextConfig = {
     "prom-client",
     "posthog-node",
   ],
+  webpack(config, { isServer }) {
+    if (isServer) {
+      config.externals.push({
+        "@opentelemetry/sdk-node": "commonjs @opentelemetry/sdk-node",
+      });
+    } else {
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        async_hooks: false,
+        "node:async_hooks": false,
+        crypto: false,
+        "node:crypto": false,
+      };
+    }
+    return config;
+  },
   // WalletConnect pulls pino@7 → thread-stream@0.15 which ships test files
   // requiring 'tape'. outputFileTracingRoot broadens tracing to monorepo root,
   // exposing these. Exclude test/bench dirs from tracing.

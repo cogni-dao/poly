@@ -550,6 +550,7 @@ async function startApp(runtime) {
 			"exec",
 			"next",
 			"dev",
+			"--webpack",
 			"-p",
 			String(runtime.appPort),
 		],
