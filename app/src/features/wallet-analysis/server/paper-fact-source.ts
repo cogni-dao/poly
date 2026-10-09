@@ -107,6 +107,7 @@ import { and, eq, isNull, notInArray, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { derivePaperAccountAddress } from "@/features/paper-accounts";
+import { EVENT_NAMES } from "@/shared/observability/events";
 import { persistWalletBalanceFact } from "./wallet-balance-snapshot-service";
 
 type Db =
@@ -257,7 +258,8 @@ export async function readActivePaperAccounts(
     if (stored !== expected) {
       logger.error(
         {
-          event: "poly.paper.account_address_mismatch",
+          event: EVENT_NAMES.POLY_PAPER_ACCOUNT_ADDRESS_MISMATCH,
+          errorCode: "paper_account_address_mismatch",
           billing_account_id: row.billingAccountId,
           stored_address: stored,
           derived_address: expected,
@@ -273,7 +275,8 @@ export async function readActivePaperAccounts(
     if ((row.funderAddress ?? "").toLowerCase() !== expected) {
       logger.error(
         {
-          event: "poly.paper.account_funder_mismatch",
+          event: EVENT_NAMES.POLY_PAPER_ACCOUNT_FUNDER_MISMATCH,
+          errorCode: "paper_account_funder_mismatch",
           billing_account_id: row.billingAccountId,
           funder_address: row.funderAddress,
           derived_address: expected,
@@ -288,7 +291,8 @@ export async function readActivePaperAccounts(
     if (row.paperSeedUsdc === null) {
       logger.error(
         {
-          event: "poly.paper.account_seed_missing",
+          event: EVENT_NAMES.POLY_PAPER_ACCOUNT_SEED_MISSING,
+          errorCode: "paper_account_seed_missing",
           billing_account_id: row.billingAccountId,
         },
         "paper account has no declared seed balance — refusing to observe it"
@@ -785,7 +789,8 @@ export async function projectPaperPositionsAndNav(input: {
   if (incoherent.length > 0) {
     input.logger.error(
       {
-        event: "poly.paper.position_incoherent",
+        event: EVENT_NAMES.POLY_PAPER_POSITION_INCOHERENT,
+        errorCode: "paper_position_cost_basis_missing",
         trader_wallet_id: traderWalletId,
         billing_account_id: account.billingAccountId,
         positions: incoherent.length,
@@ -822,7 +827,9 @@ export async function projectPaperPositionsAndNav(input: {
   } else {
     input.logger.warn(
       {
-        event: "poly.paper.nav_withheld",
+        event: EVENT_NAMES.POLY_PAPER_NAV_WITHHELD,
+        errorCode: "paper_position_mark_unavailable",
+        dep: "polymarket_clob",
         trader_wallet_id: traderWalletId,
         billing_account_id: account.billingAccountId,
         unpriced_positions: unpriced.length,
@@ -990,7 +997,8 @@ async function publishPaperNav(input: {
   if (!(nav >= 0)) {
     input.logger.error(
       {
-        event: "poly.paper.nav_negative",
+        event: EVENT_NAMES.POLY_PAPER_NAV_NEGATIVE,
+        errorCode: "paper_nav_negative",
         billing_account_id: input.account.billingAccountId,
         nav_usdc: input.navUsdc,
       },
@@ -1121,7 +1129,7 @@ export async function observePaperWallet(input: {
 
   input.logger.info(
     {
-      event: "poly.paper.observe",
+      event: EVENT_NAMES.POLY_PAPER_OBSERVE,
       phase: "wallet_ok",
       trader_wallet_id: traderWalletId,
       billing_account_id: account.billingAccountId,
@@ -1236,7 +1244,7 @@ export async function runPaperProjectionTick(deps: {
   if (accounts.length === 0) {
     deps.logger.info(
       {
-        event: "poly.paper.project",
+        event: EVENT_NAMES.POLY_PAPER_PROJECT,
         phase: "idle_no_paper_accounts",
         reason: "no active poly_wallet_connections row with kind='paper'",
       },
@@ -1277,11 +1285,11 @@ export async function runPaperProjectionTick(deps: {
       result.errors += 1;
       deps.logger.error(
         {
-          event: "poly.paper.project",
+          event: EVENT_NAMES.POLY_PAPER_PROJECT,
           phase: "account_failed",
+          errorCode: "paper_projection_account_failed",
           trader_wallet_id: wallet.traderWalletId,
           billing_account_id: wallet.account.billingAccountId,
-          err: err instanceof Error ? err.message : String(err),
         },
         "paper projection failed for one account; other accounts continue"
       );

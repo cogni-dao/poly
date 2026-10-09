@@ -50,6 +50,7 @@ import {
   OBSERVATION_STATEMENT_TIMEOUT_MS,
   withStatementTimeout,
 } from "@/features/wallet-analysis/server/trader-observation-service";
+import { EVENT_NAMES } from "@/shared/observability/events";
 
 type Db =
   | NodePgDatabase<Record<string, unknown>>
@@ -87,14 +88,21 @@ export function startPaperProjectionJob(
   let running = false;
 
   log.info(
-    { event: "poly.paper.project", phase: "job_start", poll_ms: pollMs },
+    {
+      event: EVENT_NAMES.POLY_PAPER_PROJECT,
+      phase: "job_start",
+      poll_ms: pollMs,
+    },
     "paper projection job starting"
   );
 
   async function tick(): Promise<void> {
     if (running) {
       log.warn(
-        { event: "poly.paper.project", phase: "tick_skipped_running" },
+        {
+          event: EVENT_NAMES.POLY_PAPER_PROJECT,
+          phase: "tick_skipped_running",
+        },
         "paper projection tick skipped; previous tick still running"
       );
       return;
@@ -124,7 +132,7 @@ export function startPaperProjectionJob(
       if (result.idleReason === undefined) {
         log.info(
           {
-            event: "poly.paper.project",
+            event: EVENT_NAMES.POLY_PAPER_PROJECT,
             phase: "tick_complete",
             paper_accounts: result.paperAccounts,
             wallets_projected: result.walletsProjected,
@@ -138,12 +146,15 @@ export function startPaperProjectionJob(
           "paper projection tick complete"
         );
       }
-    } catch (err: unknown) {
+    } catch {
+      const timedOut = controller.signal.aborted;
       log.error(
         {
-          event: "poly.paper.project",
+          event: EVENT_NAMES.POLY_PAPER_PROJECT,
           phase: "tick_failed",
-          err: err instanceof Error ? err.message : String(err),
+          errorCode: timedOut
+            ? "paper_projection_timeout"
+            : "paper_projection_failed",
           tick_ms: Date.now() - startedAt,
         },
         "paper projection tick failed — retrying on the next interval"
