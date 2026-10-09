@@ -564,6 +564,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       expect(dashboard.execution.warnings.map((entry) => entry.code)).not.toContain(
         "wallet_adapter_unconfigured"
       );
+      expect(dashboard.facts.positions.actionsAllowed).toBe(false);
     });
 
     it("marks the position cursor ok when every open position was priced", async () => {

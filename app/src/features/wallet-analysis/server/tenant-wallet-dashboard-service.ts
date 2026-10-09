@@ -698,7 +698,8 @@ export async function readTenantWalletDashboardIn(
       positions: {
         ...positionFact,
         actionsAllowed:
-          accountConfigured &&
+          connection.connectionKind === "privy_live" &&
+          input.adapterConfigured &&
           positionFact.status === "fresh" &&
           positionFact.complete,
         previewLimit: LIVE_PREVIEW_LIMIT,
