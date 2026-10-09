@@ -37,13 +37,13 @@ import {
 } from "@/features/copy-trade/position-gap-fill-evidence";
 import { isStructuredClobRejection } from "@/features/copy-trade/position-gap-placement-errors";
 import {
-	PositionGapTargetLineageMismatchError,
 	type PositionGapAccountBuyExposure,
 	type PositionGapAccountingTransition,
 	type PositionGapActiveBuy,
 	type PositionGapPreparedCancel,
 	type PositionGapRuntimeScope,
 	type PositionGapRuntimeStore,
+	PositionGapTargetLineageMismatchError,
 } from "@/features/copy-trade/position-gap-runtime-store";
 import type { PositionGapTargetRefreshCoordinator } from "@/features/copy-trade/position-gap-target-refresh";
 import { planPositionGapBook } from "@/features/copy-trade/position-gap-v3/batch-plan";
@@ -51,6 +51,7 @@ import type {
 	NettedTargetPositionV1,
 	PositionGapBookPlanV1,
 	PositionGapHoldingV1,
+	PositionGapPriceCohortV1,
 	PositionGapUnmanagedBuyExposureV1,
 	PositionGapVenueConditionV1,
 } from "@/features/copy-trade/position-gap-v3/model";
@@ -189,6 +190,7 @@ export function startPositionGapActor(
 						// evidence before retrying the safety cancellation.
 						await reconcileKnownOrders();
 						await deps.store.reconcileLedgerTerminals(deps.scope);
+						await deps.store.releaseCanceledOrderReservations(deps.scope);
 						await cancelAll("disabled");
 						continue;
 					}
@@ -278,6 +280,19 @@ export function startPositionGapActor(
 		// ambiguous merely because the target snapshot is temporarily unusable.
 		const accountingTransitions = await reconcileKnownOrders();
 		await deps.store.reconcileLedgerTerminals(deps.scope);
+		const releasedCanceledReservations =
+			await deps.store.releaseCanceledOrderReservations(deps.scope);
+		if (releasedCanceledReservations > 0) {
+			deps.logger.info(
+				{
+					event: "poly.position_gap.v3.terminal_reservations_released",
+					billing_account_id: deps.scope.billingAccountId,
+					target_id: deps.scope.targetId,
+					released_reservation_count: releasedCanceledReservations,
+				},
+				"position-gap released terminal canceled order reservations",
+			);
+		}
 		await deps.store.releaseTerminalExposure(deps.scope);
 		let activity: Fill[] = [];
 		if (triggerReasons.includes("target_activity")) {
@@ -414,7 +429,10 @@ export function startPositionGapActor(
 			freshSnapshot.refreshStats.sourceMaxSyncedBlock,
 		);
 		const localHoldings = await deps.getAuthoritativeHoldings(freshSnapshot);
-		const holdings = validateLocalHoldings(freshSnapshot, localHoldings);
+		const holdings = floorPositionGapHoldingsAtAcquiredShares({
+			holdings: validateLocalHoldings(freshSnapshot, localHoldings),
+			cohorts: runtime.cohorts,
+		});
 		const walletCashUsdc = await deps.getWalletCashUsdc();
 		const mirrorMarkedExposure = holdings.reduce((sum, holding) => {
 			const token = tokenById(freshSnapshot, holding.tokenId);
@@ -910,8 +928,14 @@ export function startPositionGapActor(
 			await deps.execution.cancelBuy(cancellation.orderId);
 			const observed = await deps.execution.getBuy(cancellation.orderId);
 			if ("found" in observed && observed.found.status === "canceled") {
-				await deps.store.markCancelConfirmed(cancellation.id);
 				const active = activeByOrder.get(cancellation.orderId);
+				if (active) {
+					// The terminal receipt can contain a final provisional partial fill.
+					// Persist that quantity into the cohort in the same transaction that
+					// releases the order reservation before acknowledging the cancel row.
+					await deps.store.markPlacementReceipt(active.id, observed.found);
+				}
+				await deps.store.markCancelConfirmed(cancellation.id);
 				if (active) {
 					await deps.ledger.markCanceled({
 						client_order_id: active.clientOrderId,
@@ -1381,6 +1405,10 @@ function validateLocalHoldings(
 	return [...local.holdings];
 }
 
+function finiteNonnegative(value: number | undefined): number {
+	return Number.isFinite(value) && (value ?? -1) >= 0 ? (value as number) : 0;
+}
+
 function hashJson(value: unknown): string {
 	return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -1426,6 +1454,9 @@ export async function requireConfirmedSafetyCancellation(input: {
 	await input.execution.cancelBuy(input.cancellation.orderId);
 	const observed = await input.execution.getBuy(input.cancellation.orderId);
 	if ("found" in observed && observed.found.status === "canceled") {
+		if (input.active) {
+			await input.store.markPlacementReceipt(input.active.id, observed.found);
+		}
 		await input.store.markCancelConfirmed(input.cancellation.id);
 		if (input.active) {
 			await input.ledger.markCanceled({
@@ -1448,6 +1479,35 @@ export async function requireConfirmedSafetyCancellation(input: {
 	throw new Error(
 		`position-gap safety cancellation unconfirmed for ${input.cancellation.orderId}`,
 	);
+}
+
+/**
+ * Treat durable cohort acquisitions as a fail-closed lower bound while chain
+ * balance reads lag or terminal fill accounting remains unverified. `max`
+ * avoids double counting once Polygon catches up, while still preventing a
+ * canceled order's provisional fills from reopening the same portfolio gap.
+ */
+export function floorPositionGapHoldingsAtAcquiredShares(input: {
+	holdings: readonly PositionGapHoldingV1[];
+	cohorts: readonly PositionGapPriceCohortV1[];
+}): PositionGapHoldingV1[] {
+	const acquiredByToken = new Map<string, number>();
+	for (const cohort of input.cohorts) {
+		const holdingKey = `${cohort.conditionId}\u0000${cohort.tokenId}`;
+		acquiredByToken.set(
+			holdingKey,
+			(acquiredByToken.get(holdingKey) ?? 0) +
+				finiteNonnegative(cohort.acquiredMirrorShares),
+		);
+	}
+	return input.holdings.map((holding) => ({
+		...holding,
+		shares: Math.max(
+			finiteNonnegative(holding.shares),
+			acquiredByToken.get(`${holding.conditionId}\u0000${holding.tokenId}`) ??
+				0,
+		),
+	}));
 }
 
 function blockedSafetyPlan(

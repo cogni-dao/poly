@@ -3,7 +3,7 @@
 
 import type { TargetBookSnapshotV1 } from "@cogni/poly-market-provider";
 import { describe, expect, it } from "vitest";
-
+import { floorPositionGapHoldingsAtAcquiredShares } from "@/features/copy-trade/position-gap-actor";
 import { allocatePositionGapLots } from "@/features/copy-trade/position-gap-v3/allocator";
 import { planPositionGapBook } from "@/features/copy-trade/position-gap-v3/batch-plan";
 import type {
@@ -392,6 +392,81 @@ describe("position-gap-v3 deterministic lot allocator", () => {
 });
 
 describe("position-gap-v3 whole-book planning", () => {
+	it("floors lagging wallet reads at durable acquisitions without spending the sleeve twice", () => {
+		const book = snapshot([
+			condition({
+				conditionId: "condition-a",
+				leftShares: 50,
+				rightShares: 0,
+				leftMark: 0.5,
+			}),
+			condition({
+				conditionId: "condition-b",
+				leftShares: 50,
+				rightShares: 0,
+				leftMark: 0.5,
+			}),
+		]);
+		const base = input(book, { sleeveBudgetUsdc: 50 });
+		const cohorts = base.cohorts.map((cohort) =>
+			cohort.tokenId === "condition-a-yes"
+				? {
+						...cohort,
+						acquiredMirrorShares: 40,
+						availableNewBuyShares: 10,
+					}
+				: cohort,
+		);
+		const authoritative = book.conditions.flatMap((entry) =>
+			entry.tokens.map((token) => ({
+				conditionId: entry.conditionId,
+				tokenId: token.tokenId,
+				shares: 0,
+			})),
+		);
+		const first = floorPositionGapHoldingsAtAcquiredShares({
+			holdings: authoritative,
+			cohorts,
+		});
+		const repeated = floorPositionGapHoldingsAtAcquiredShares({
+			holdings: first,
+			cohorts,
+		});
+		const plan = planPositionGapBook({
+			...base,
+			cohorts,
+			holdings: repeated,
+		});
+
+		expect(first).toEqual(repeated);
+		expect(
+			first.find((holding) => holding.tokenId === "condition-a-yes")?.shares,
+		).toBe(40);
+		expect(plan.intents).toHaveLength(2);
+		const heldExposure = repeated.reduce(
+			(sum, holding) =>
+				sum +
+				holding.shares *
+					(book.conditions
+						.flatMap((entry) => entry.tokens)
+						.find((token) => token.tokenId === holding.tokenId)?.markPrice ??
+						0),
+			0,
+		);
+		const pendingExposure = plan.intents.reduce(
+			(sum, intent) => sum + intent.shares * 0.5,
+			0,
+		);
+		expect(heldExposure).toBe(20);
+		expect(heldExposure + pendingExposure).toBeLessThanOrEqual(50);
+		expect(plan.intents).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ tokenId: "condition-a-yes", shares: 10 }),
+				expect.objectContaining({ tokenId: "condition-b-yes", shares: 50 }),
+			]),
+		);
+	});
+
 	it("keeps directional NAV, complete sets, and both target cash legs explicit", () => {
 		const book = snapshot([
 			condition({

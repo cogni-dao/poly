@@ -46,6 +46,8 @@ describe("position-gap runtime persistence", () => {
 	const targetAmbiguousRejection = randomUUID();
 	const targetAccountExposureA = randomUUID();
 	const targetAccountExposureB = randomUUID();
+	const targetReservationCatchup = randomUUID();
+	const targetCanceledReceipt = randomUUID();
 
 	beforeAll(async () => {
 		appDb = getAppDb();
@@ -516,6 +518,356 @@ describe("position-gap runtime persistence", () => {
 		);
 	});
 
+	it("releases the 49 terminal pending-fill reservations only after their cohort owns every provisional share", async () => {
+		const db = getSeedDb();
+		const store = new PositionGapRuntimeStore(db);
+		const scope = {
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetReservationCatchup,
+		};
+		const runId = randomUUID();
+		const cohortId = randomUUID();
+		const plannedNotional = 73.42378 / 49;
+		await db.insert(polyPositionGapRuns).values({
+			id: runId,
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetReservationCatchup,
+			budgetUsdc: "50",
+			walletCashUsdcAtStart: "50",
+			status: "completed",
+			completedAt: asOf,
+		});
+		await db.insert(polyPositionGapCohorts).values({
+			id: cohortId,
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetReservationCatchup,
+			cohortKey: "terminal-catchup-cohort",
+			sourceKind: "activation",
+			sourceConfigRevision: "rev-terminal-catchup",
+			sourceSnapshotId: "snapshot-terminal-catchup",
+			sourceSnapshotHash: "hash-terminal-catchup",
+			sourceSnapshotAsOf: asOf,
+			sourceProvenance: {},
+			createdRunId: runId,
+			conditionId: "condition-terminal-catchup",
+			tokenId: "token-terminal-catchup",
+			marketId: "prediction-market:polymarket:condition-terminal-catchup",
+			outcome: "0",
+			targetDeltaShares: "98",
+			scaleAtCreation: "1",
+			allowedMirrorShares: "98",
+			initialAllowedMirrorShares: "98",
+			benchmarkTargetVwap: "0.284",
+			acquiredShares: "48",
+			openOrderShares: "0",
+			remainingShares: "49",
+			status: "exhausted",
+		});
+		const actions = Array.from({ length: 49 }, (_, index) => ({
+			id: randomUUID(),
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetReservationCatchup,
+			runId,
+			cohortId,
+			cohortKey: "terminal-catchup-cohort",
+			actionKey: `terminal-catchup-action-${index}`,
+			kind: "buy" as const,
+			conditionId: "condition-terminal-catchup",
+			tokenId: "token-terminal-catchup",
+			marketId: "prediction-market:polymarket:condition-terminal-catchup",
+			outcome: "0",
+			desiredShares: "2",
+			filledShares: "1",
+			filledUsdc: "0.1",
+			notionalUsdc: plannedNotional.toString(),
+			limitPrice: "0.284",
+			plannerAction: { fill_accounting_status: "pending" },
+			clientOrderId: `terminal-catchup-client-${index}`,
+			orderId: `terminal-catchup-order-${index}`,
+			status: "canceled" as const,
+			completedAt: asOf,
+		}));
+		await db.insert(polyPositionGapActions).values(actions);
+		await db.insert(polyPositionGapReservations).values(
+			actions.map((action) => ({
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId: targetReservationCatchup,
+				cohortId,
+				buyActionId: action.id,
+				budgetNotionalUsdc: plannedNotional.toString(),
+				executorCashGuardAtomic: "1648289",
+				cashGuardSource: "test",
+				filledCostUsdc: "0.1",
+			})),
+		);
+
+		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBeCloseTo(
+			73.42378,
+			5,
+		);
+		// Aggregate gating matters: each 1-share action is individually covered,
+		// but the cohort is still one share short across all 49 terminal actions.
+		expect(await store.releaseCanceledOrderReservations(scope)).toBe(0);
+		await db
+			.update(polyPositionGapCohorts)
+			.set({ acquiredShares: "49" })
+			.where(eq(polyPositionGapCohorts.id, cohortId));
+		expect(await store.releaseCanceledOrderReservations(scope)).toBe(49);
+		expect(await store.releaseCanceledOrderReservations(scope)).toBe(0);
+		expect(await store.activeReservationTotals(scope)).toEqual({
+			budgetUsdc: 0,
+			cashGuardAtomicForAccount: 0n,
+		});
+		const reservations = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(
+				eq(polyPositionGapReservations.targetId, targetReservationCatchup),
+			);
+		expect(reservations).toHaveLength(49);
+		expect(
+			reservations.every(
+				(reservation) =>
+					reservation.state === "released" &&
+					Number(reservation.releasedBudgetUsdc) ===
+						Number(reservation.budgetNotionalUsdc) &&
+					reservation.releaseReason === "terminal_cancel_catchup",
+			),
+		).toBe(true);
+
+		// Previously released actions must not lend their acquired shares to a new
+		// canceled action whose own provisional fill was never added to the cohort.
+		const missingAcquisitionActionId = randomUUID();
+		await db.insert(polyPositionGapActions).values({
+			id: missingAcquisitionActionId,
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetReservationCatchup,
+			runId,
+			cohortId,
+			cohortKey: "terminal-catchup-cohort",
+			actionKey: "terminal-catchup-missing-acquisition",
+			kind: "buy",
+			conditionId: "condition-terminal-catchup",
+			tokenId: "token-terminal-catchup",
+			marketId: "prediction-market:polymarket:condition-terminal-catchup",
+			outcome: "0",
+			desiredShares: "2",
+			filledShares: "1",
+			filledUsdc: "0.1",
+			notionalUsdc: "1.5",
+			limitPrice: "0.284",
+			plannerAction: { fill_accounting_status: "pending" },
+			clientOrderId: "terminal-catchup-missing-acquisition-client",
+			orderId: "terminal-catchup-missing-acquisition-order",
+			status: "canceled",
+			completedAt: asOf,
+		});
+		await db.insert(polyPositionGapReservations).values({
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetReservationCatchup,
+			cohortId,
+			buyActionId: missingAcquisitionActionId,
+			budgetNotionalUsdc: "1.5",
+			executorCashGuardAtomic: "1650000",
+			cashGuardSource: "test",
+			filledCostUsdc: "0.1",
+		});
+		expect(await store.releaseCanceledOrderReservations(scope)).toBe(0);
+		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBe(1.5);
+		await db
+			.update(polyPositionGapCohorts)
+			.set({ acquiredShares: "50" })
+			.where(eq(polyPositionGapCohorts.id, cohortId));
+		expect(await store.releaseCanceledOrderReservations(scope)).toBe(1);
+		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBe(0);
+	});
+
+	it("atomically retains a terminal receipt's provisional shares while releasing its full order reservation", async () => {
+		const db = getSeedDb();
+		const store = new PositionGapRuntimeStore(db);
+		const scope = {
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetCanceledReceipt,
+		};
+		const common = {
+			scope,
+			triggerReasons: ["activation"],
+			snapshot: {
+				id: "snapshot-canceled-receipt",
+				hash: "hash-canceled-receipt",
+				asOf,
+				expiresAt: future,
+				value: { version: 1, complete: true },
+			},
+			plannerVersion: "test",
+			budgetUsdc: 50,
+			eligibleNetNavUsdc: 50,
+			scale: 1,
+			walletCashUsdc: 50,
+			plan: { version: 1, status: "ready" },
+			cohortReductions: [],
+		};
+		const initial = await store.persistPlan({
+			...common,
+			cohortCreations: [
+				{
+					cohortKey: "canceled-receipt-cohort",
+					sourceKind: "activation" as const,
+					sourceEventId: null,
+					sourceConfigRevision: "rev-canceled-receipt",
+					conditionId: "condition-canceled-receipt",
+					tokenId: "token-canceled-receipt",
+					marketId: "prediction-market:polymarket:condition-canceled-receipt",
+					outcome: "0",
+					targetDeltaShares: 10,
+					scaleAtCreation: 1,
+					allowedMirrorShares: 10,
+					benchmarkTargetVwap: 0.5,
+					remainingShares: 10,
+					createdAtMs: asOf.getTime(),
+					provenance: { created_at_ms: asOf.getTime() },
+				},
+			],
+			buys: [
+				{
+					actionKey: "canceled-receipt-buy",
+					cohortKey: "canceled-receipt-cohort",
+					conditionId: "condition-canceled-receipt",
+					tokenId: "token-canceled-receipt",
+					marketId: "prediction-market:polymarket:condition-canceled-receipt",
+					outcome: "0",
+					shares: 10,
+					notionalUsdc: 5,
+					limitPrice: 0.5,
+					clientOrderId: "canceled-receipt-client",
+					plannerAction: { side: "BUY" },
+				},
+			],
+			cancellations: [],
+		});
+		const buy = initial.buys[0];
+		if (!buy) throw new Error("canceled receipt buy missing");
+		await store.markLedgered(buy.id);
+		await store.markSubmitting(buy.id);
+		await store.markPlacementReceipt(buy.id, {
+			order_id: "canceled-receipt-order",
+			client_order_id: "canceled-receipt-client",
+			status: "partial",
+			filled_size_usdc: 1,
+			fill_price: 0.5,
+			total_shares: 2,
+			submitted_at: asOf.toISOString(),
+		});
+		const cancellation = await store.persistPlan({
+			...common,
+			triggerReasons: ["timer"],
+			cohortCreations: [],
+			buys: [],
+			cancellations: [
+				{
+					actionKey: "canceled-receipt-cancel",
+					cohortKey: "canceled-receipt-cohort",
+					orderId: "canceled-receipt-order",
+					reason: "runtime_safety" as const,
+					plannerAction: { reason: "runtime_safety" },
+				},
+			],
+		});
+		const cancel = cancellation.cancellations[0];
+		if (!cancel) throw new Error("canceled receipt cancellation missing");
+		const terminalReceipt = {
+			order_id: "canceled-receipt-order",
+			client_order_id: "canceled-receipt-client",
+			status: "canceled" as const,
+			filled_size_usdc: 2,
+			fill_price: 0.5,
+			total_shares: 4,
+			submitted_at: asOf.toISOString(),
+		};
+		await store.markPlacementReceipt(buy.id, terminalReceipt);
+		await store.markCancelConfirmed(cancel.id);
+		await store.markPlacementReceipt(buy.id, terminalReceipt);
+
+		const [action] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, buy.id));
+		const [cancelAction] = await db
+			.select()
+			.from(polyPositionGapActions)
+			.where(eq(polyPositionGapActions.id, cancel.id));
+		const [reservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, buy.id));
+		const [cohort] = await db
+			.select()
+			.from(polyPositionGapCohorts)
+			.where(eq(polyPositionGapCohorts.cohortKey, "canceled-receipt-cohort"));
+		expect(action?.status).toBe("canceled");
+		expect(Number(action?.filledShares)).toBe(4);
+		expect(cancelAction?.status).toBe("canceled");
+		expect(reservation).toMatchObject({
+			state: "released",
+			releaseReason: "venue_cancel_confirmed",
+		});
+		expect(Number(reservation?.releasedBudgetUsdc)).toBe(5);
+		expect(Number(cohort?.acquiredShares)).toBe(4);
+		expect(Number(cohort?.remainingShares)).toBe(6);
+		expect(Number(cohort?.openOrderShares)).toBe(0);
+		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBe(0);
+		const runtime = await store.loadPlannerState(scope);
+		expect(runtime.cohorts[0]?.acquiredMirrorShares).toBe(4);
+		expect(runtime.activeBuys.map((entry) => entry.id)).toContain(buy.id);
+		await db.insert(polyCopyTradeFills).values({
+			billingAccountId: accountA,
+			createdByUserId: ownerA,
+			targetId: targetCanceledReceipt,
+			fillId: "position-gap-v3:canceled-receipt-buy",
+			marketId: "prediction-market:polymarket:condition-canceled-receipt",
+			observedAt: asOf,
+			clientOrderId: "canceled-receipt-client",
+			orderId: "canceled-receipt-order",
+			status: "canceled",
+			price: "0.45",
+			shares: "4",
+			attributes: { position_gap_version: "3" },
+		});
+		const evidence = {
+			status: "verified" as const,
+			source: "data_api_activity_position" as const,
+			wallet: "0x8ca45685c5827f7acfdd890214180c4ea9d0bf58" as const,
+			shares: 4,
+			filledUsdc: 1.8,
+			grossCashUsdc: 1.81,
+			fillPrice: 0.45,
+			feesUsdc: 0.01,
+			transactionHashes: [`0x${"3".repeat(64)}`],
+			evidenceStart: "2026-10-07T23:59:55.000Z",
+			evidenceEnd: "2026-10-08T00:00:30.000Z",
+		};
+		expect(
+			await store.applyDataApiFillAccounting(scope, buy.id, evidence),
+		).toMatchObject({ to: "verified" });
+		expect(
+			await store.applyDataApiFillAccounting(scope, buy.id, evidence),
+		).toMatchObject({ from: "verified", to: "verified" });
+		const [verifiedReservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, buy.id));
+		expect(verifiedReservation?.state).toBe("released");
+		expect(Number(verifiedReservation?.releasedBudgetUsdc)).toBe(5);
+	});
+
 	it("backfills late activation once across timer replay, restart, and resolved tombstones", async () => {
 		const db = getSeedDb();
 		const scope = {
@@ -910,8 +1262,15 @@ describe("position-gap runtime persistence", () => {
 			.select()
 			.from(polyPositionGapCohorts)
 			.where(eq(polyPositionGapCohorts.cohortKey, cohortKey));
+		const [releasedReservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, buy?.id ?? "missing"));
 		expect(Number(restored?.remainingShares)).toBe(4);
 		expect(Number(restored?.openOrderShares)).toBe(0);
+		expect(releasedReservation?.state).toBe("released");
+		expect(Number(releasedReservation?.releasedBudgetUsdc)).toBe(2);
+		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBe(0);
 
 		const retry = await store.persistPlan({
 			...common,
@@ -1674,8 +2033,8 @@ describe("position-gap runtime persistence", () => {
 			.select()
 			.from(polyPositionGapCohorts)
 			.where(eq(polyPositionGapCohorts.id, cohortId));
-		expect(Number(reservation?.releasedBudgetUsdc)).toBe(3);
-		expect(reservation?.state).toBe("active");
+		expect(Number(reservation?.releasedBudgetUsdc)).toBe(5);
+		expect(reservation?.state).toBe("released");
 		expect(Number(cohort?.acquiredShares)).toBe(4);
 		expect(Number(cohort?.openOrderShares)).toBe(0);
 		expect(Number(cohort?.remainingShares)).toBe(6);

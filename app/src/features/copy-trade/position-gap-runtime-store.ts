@@ -1477,7 +1477,6 @@ export class PositionGapRuntimeStore {
 			const desiredShares = numberOf(action.desiredShares);
 			const filledShares = numberOf(action.filledShares);
 			const unfilledShares = Math.max(0, desiredShares - filledShares);
-			const intended = numberOf(action.notionalUsdc);
 			const filled = numberOf(action.filledUsdc);
 			await tx
 				.update(polyPositionGapActions)
@@ -1506,12 +1505,12 @@ export class PositionGapRuntimeStore {
 			await tx
 				.update(polyPositionGapReservations)
 				.set({
-					releasedBudgetUsdc: Math.max(0, intended - filled).toString(),
+					releasedBudgetUsdc: polyPositionGapReservations.budgetNotionalUsdc,
 					releasedCashGuardAtomic:
 						polyPositionGapReservations.executorCashGuardAtomic,
-					state: filled > EPSILON ? "active" : "released",
+					state: "released",
 					releaseReason: "clob_not_found",
-					...(filled > EPSILON ? {} : { releasedAt: new Date() }),
+					releasedAt: new Date(),
 					updatedAt: new Date(),
 				})
 				.where(eq(polyPositionGapReservations.buyActionId, action.id));
@@ -1581,6 +1580,128 @@ export class PositionGapRuntimeStore {
 			}
 		}
 		return rows.length;
+	}
+
+	/**
+	 * Catch up reservations written by older runtimes that terminalized the BUY
+	 * but retained provisional fill cost as active sleeve budget. Release a
+	 * cohort only when its durable acquired quantity covers the sum of every BUY
+	 * action's observed fills in that cohort, so previously released actions
+	 * cannot lend their acquired quantity to an unrepresented terminal fill.
+	 */
+	async releaseCanceledOrderReservations(
+		scope: PositionGapRuntimeScope,
+	): Promise<number> {
+		return this.db.transaction(async (tx) => {
+			await tx.execute(sql`SELECT r.id
+				FROM ${polyPositionGapReservations} r
+				INNER JOIN ${polyPositionGapActions} a ON a.id = r.buy_action_id
+				INNER JOIN ${polyPositionGapCohorts} c ON c.id = r.cohort_id
+				WHERE r.billing_account_id = ${scope.billingAccountId}
+					AND r.target_id = ${scope.targetId}::uuid
+					AND a.created_by_user_id = ${scope.createdByUserId}
+					AND a.status = 'canceled'
+					AND r.state = 'active'
+				FOR UPDATE OF r, a, c`);
+			const rows = await tx
+				.select({
+					reservationId: polyPositionGapReservations.id,
+					cohortId: polyPositionGapReservations.cohortId,
+					acquiredShares: polyPositionGapCohorts.acquiredShares,
+				})
+				.from(polyPositionGapReservations)
+				.innerJoin(
+					polyPositionGapActions,
+					eq(
+						polyPositionGapActions.id,
+						polyPositionGapReservations.buyActionId,
+					),
+				)
+				.innerJoin(
+					polyPositionGapCohorts,
+					eq(polyPositionGapCohorts.id, polyPositionGapReservations.cohortId),
+				)
+				.where(
+					and(
+						eq(
+							polyPositionGapReservations.billingAccountId,
+							scope.billingAccountId,
+						),
+						eq(polyPositionGapReservations.targetId, scope.targetId),
+						eq(polyPositionGapActions.createdByUserId, scope.createdByUserId),
+						eq(polyPositionGapActions.status, "canceled"),
+						eq(polyPositionGapReservations.state, "active"),
+					),
+				);
+			if (rows.length === 0) return 0;
+			const cohortIds = [...new Set(rows.map((row) => row.cohortId))];
+			const allFilledRows = await tx
+				.select({
+					cohortId: polyPositionGapActions.cohortId,
+					filledShares: polyPositionGapActions.filledShares,
+				})
+				.from(polyPositionGapActions)
+				.where(
+					and(
+						eq(polyPositionGapActions.billingAccountId, scope.billingAccountId),
+						eq(polyPositionGapActions.targetId, scope.targetId),
+						eq(polyPositionGapActions.createdByUserId, scope.createdByUserId),
+						eq(polyPositionGapActions.kind, "buy"),
+						inArray(polyPositionGapActions.cohortId, cohortIds),
+					),
+				)
+				.for("update");
+			const totalFilledByCohort = new Map<string, number>();
+			for (const row of allFilledRows) {
+				totalFilledByCohort.set(
+					row.cohortId,
+					(totalFilledByCohort.get(row.cohortId) ?? 0) +
+						numberOf(row.filledShares),
+				);
+			}
+			const cohorts = new Map<
+				string,
+				{
+					acquiredShares: number;
+					reservationIds: string[];
+				}
+			>();
+			for (const row of rows) {
+				const cohort = cohorts.get(row.cohortId) ?? {
+					acquiredShares: numberOf(row.acquiredShares),
+					reservationIds: [],
+				};
+				cohort.reservationIds.push(row.reservationId);
+				cohorts.set(row.cohortId, cohort);
+			}
+			const releasableIds = [...cohorts.entries()].flatMap(
+				([cohortId, cohort]) =>
+					(totalFilledByCohort.get(cohortId) ?? 0) <=
+					cohort.acquiredShares + EPSILON
+						? cohort.reservationIds
+						: [],
+			);
+			if (releasableIds.length === 0) return 0;
+			const released = await tx
+				.update(polyPositionGapReservations)
+				.set({
+					releasedBudgetUsdc: polyPositionGapReservations.budgetNotionalUsdc,
+					releasedCashGuardAtomic:
+						polyPositionGapReservations.executorCashGuardAtomic,
+					state: "released",
+					releaseReason: "terminal_cancel_catchup",
+					releasedAt: new Date(),
+					updatedAt: new Date(),
+				})
+				.where(
+					and(
+						inArray(polyPositionGapReservations.id, releasableIds),
+						eq(polyPositionGapReservations.state, "active"),
+					),
+				)
+				.returning({ id: polyPositionGapReservations.id });
+			return released.length;
+		});
 	}
 
 	async markPlacementReceipt(
@@ -1671,6 +1792,22 @@ export class PositionGapRuntimeStore {
 					updatedAt: new Date(),
 				})
 				.where(eq(polyPositionGapActions.id, actionId));
+			if (status === "canceled") {
+				await tx
+					.update(polyPositionGapActions)
+					.set({
+						status: "canceled",
+						completedAt: new Date(),
+						updatedAt: new Date(),
+					})
+					.where(
+						and(
+							eq(polyPositionGapActions.kind, "cancel"),
+							eq(polyPositionGapActions.relatedBuyActionId, actionId),
+							eq(polyPositionGapActions.status, "cancel_requested"),
+						),
+					);
+			}
 
 			const remainingWorstCaseNotional =
 				status === "filled" || status === "canceled"
@@ -1700,7 +1837,9 @@ export class PositionGapRuntimeStore {
 				);
 				const releasedBudget = Math.max(
 					numberOf(reservation.releasedBudgetUsdc),
-					intendedNotional - activeBudget,
+					status === "canceled"
+						? intendedNotional
+						: intendedNotional - activeBudget,
 				);
 				await tx
 					.update(polyPositionGapReservations)
@@ -1708,7 +1847,7 @@ export class PositionGapRuntimeStore {
 						filledCostUsdc: filledUsdc.toString(),
 						releasedBudgetUsdc: releasedBudget.toString(),
 						releasedCashGuardAtomic: releasedGuard.toString(),
-						...(status === "canceled" && filledUsdc <= EPSILON
+						...(status === "canceled"
 							? {
 									state: "released" as const,
 									releaseReason: "venue_cancel_confirmed",
@@ -1973,8 +2112,8 @@ export class PositionGapRuntimeStore {
 					.set({
 						filledCostUsdc: grossCashUsdc.toString(),
 						releasedBudgetUsdc: Math.max(
-							0,
-							intendedNotional - grossCashUsdc,
+							numberOf(reservation.releasedBudgetUsdc),
+							Math.max(0, intendedNotional - grossCashUsdc),
 						).toString(),
 						updatedAt: new Date(),
 					})
@@ -2118,9 +2257,7 @@ export class PositionGapRuntimeStore {
 			const desiredShares = numberOf(buy.desiredShares);
 			const filledShares = numberOf(buy.filledShares);
 			const unfilledShares = Math.max(0, desiredShares - filledShares);
-			const intended = numberOf(buy.notionalUsdc);
 			const filled = numberOf(buy.filledUsdc);
-			const unfilledUsdc = Math.max(0, intended - filled);
 			const reason = String(cancel.plannerAction.reason ?? "target_reduced");
 
 			await tx
@@ -2134,12 +2271,12 @@ export class PositionGapRuntimeStore {
 			await tx
 				.update(polyPositionGapReservations)
 				.set({
-					releasedBudgetUsdc: unfilledUsdc.toString(),
+					releasedBudgetUsdc: polyPositionGapReservations.budgetNotionalUsdc,
 					releasedCashGuardAtomic:
 						polyPositionGapReservations.executorCashGuardAtomic,
-					state: filled > EPSILON ? "active" : "released",
+					state: "released",
 					releaseReason: "cancel_confirmed",
-					...(filled > EPSILON ? {} : { releasedAt: new Date() }),
+					releasedAt: new Date(),
 					updatedAt: new Date(),
 				})
 				.where(eq(polyPositionGapReservations.buyActionId, buy.id));
