@@ -392,7 +392,7 @@ describe("position-gap-v3 deterministic lot allocator", () => {
 });
 
 describe("position-gap-v3 whole-book planning", () => {
-	it("floors lagging wallet reads at provisional fills without spending the sleeve twice", () => {
+	it("caps cross-token spend after a canceled partial fill retains sleeve budget", () => {
 		const book = snapshot([
 			condition({
 				conditionId: "condition-a",
@@ -407,13 +407,13 @@ describe("position-gap-v3 whole-book planning", () => {
 				leftMark: 0.5,
 			}),
 		]);
-		const base = input(book, { sleeveBudgetUsdc: 50 });
+		const base = input(book, { sleeveBudgetUsdc: 60 });
 		const cohorts = base.cohorts.map((cohort) =>
 			cohort.tokenId === "condition-a-yes"
 				? {
 						...cohort,
 						acquiredMirrorShares: 10,
-						availableNewBuyShares: 40,
+						availableNewBuyShares: 50,
 					}
 				: cohort,
 		);
@@ -421,7 +421,7 @@ describe("position-gap-v3 whole-book planning", () => {
 			{
 				conditionId: "condition-a",
 				tokenId: "condition-a-yes",
-				shares: 40,
+				shares: 60,
 			},
 		];
 		const authoritative = book.conditions.flatMap((entry) =>
@@ -441,38 +441,32 @@ describe("position-gap-v3 whole-book planning", () => {
 			cohorts,
 			provisionalFilledHoldings,
 		});
+		const retainedCanceledFillCostUsdc = 40;
 		const plan = planPositionGapBook({
 			...base,
 			cohorts,
 			holdings: repeated,
+			confirmedSleeveHeadroomUsdc: 20,
+			confirmedStrategyCapHeadroomUsdc: 20,
 		});
 
 		expect(first).toEqual(repeated);
 		expect(
 			first.find((holding) => holding.tokenId === "condition-a-yes")?.shares,
-		).toBe(40);
-		expect(plan.intents).toHaveLength(2);
-		const heldExposure = repeated.reduce(
-			(sum, holding) =>
-				sum +
-				holding.shares *
-					(book.conditions
-						.flatMap((entry) => entry.tokens)
-						.find((token) => token.tokenId === holding.tokenId)?.markPrice ??
-						0),
+		).toBe(60);
+		const newReservedUsdc = plan.intents.reduce(
+			(sum, intent) => sum + intent.notionalUsdc,
 			0,
 		);
-		const pendingExposure = plan.intents.reduce(
-			(sum, intent) => sum + intent.shares * 0.5,
-			0,
-		);
-		expect(heldExposure).toBe(20);
-		expect(heldExposure + pendingExposure).toBeLessThanOrEqual(50);
-		expect(plan.intents).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ tokenId: "condition-a-yes", shares: 10 }),
-				expect.objectContaining({ tokenId: "condition-b-yes", shares: 50 }),
-			]),
+		expect(plan.intents).toEqual([
+			expect.objectContaining({
+				tokenId: "condition-b-yes",
+				notionalUsdc: 20,
+			}),
+		]);
+		expect(newReservedUsdc).toBeCloseTo(20);
+		expect(retainedCanceledFillCostUsdc + newReservedUsdc).toBeLessThanOrEqual(
+			60,
 		);
 	});
 

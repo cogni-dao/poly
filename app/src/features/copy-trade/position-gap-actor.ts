@@ -190,7 +190,6 @@ export function startPositionGapActor(
 						// evidence before retrying the safety cancellation.
 						await reconcileKnownOrders();
 						await deps.store.reconcileLedgerTerminals(deps.scope);
-						await deps.store.releaseCanceledOrderReservations(deps.scope);
 						await cancelAll("disabled");
 						continue;
 					}
@@ -280,19 +279,6 @@ export function startPositionGapActor(
 		// ambiguous merely because the target snapshot is temporarily unusable.
 		const accountingTransitions = await reconcileKnownOrders();
 		await deps.store.reconcileLedgerTerminals(deps.scope);
-		const releasedCanceledReservations =
-			await deps.store.releaseCanceledOrderReservations(deps.scope);
-		if (releasedCanceledReservations > 0) {
-			deps.logger.info(
-				{
-					event: "poly.position_gap.v3.terminal_reservations_released",
-					billing_account_id: deps.scope.billingAccountId,
-					target_id: deps.scope.targetId,
-					released_reservation_count: releasedCanceledReservations,
-				},
-				"position-gap released terminal canceled order reservations",
-			);
-		}
 		await deps.store.releaseTerminalExposure(deps.scope);
 		let activity: Fill[] = [];
 		if (triggerReasons.includes("target_activity")) {
@@ -1487,10 +1473,11 @@ export async function requireConfirmedSafetyCancellation(input: {
 }
 
 /**
- * Treat durable cohort acquisitions and unresolved terminal fills as fail-closed
+ * Treat durable cohort acquisitions and unverified terminal fills as fail-closed
  * lower bounds while chain balance reads lag. `max` avoids double counting once
- * Polygon catches up, while preventing a canceled order's provisional fills
- * from reopening the same portfolio gap after its venue reservation is released.
+ * Polygon catches up. The filled-cost reservation still protects global sleeve
+ * headroom; this quantity floor prevents a same-token duplicate after a budget
+ * increase.
  */
 export function floorPositionGapHoldingsAtAcquiredShares(input: {
 	holdings: readonly PositionGapHoldingV1[];
