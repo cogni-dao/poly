@@ -274,6 +274,46 @@ describe("dashboard missing read-model states", () => {
     expect(screen.queryByText(/Wallet is empty/i)).not.toBeInTheDocument();
   });
 
+  it("suppresses the stale banner for a never-synced account (no false fund-change alarm, bug.5031 I2)", () => {
+    state.overview = {
+      configured: true,
+      connected: true,
+      freshness: "read_model",
+      address: "0x1111111111111111111111111111111111111111",
+      interval: "1W",
+      capturedAt: "2026-10-09T10:00:00.000Z",
+      pol_gas: 5,
+      usdc_available: 25,
+      usdc_locked: 0,
+      // Never observed: positions withheld, but there is no prior sync (null
+      // age) and no prior funds to have "changed" — the reassurance banner
+      // would be a false alarm, so it must stay hidden.
+      usdc_positions_mtm: null,
+      usdc_total: null,
+      open_orders: 0,
+      positions_synced_at: null,
+      positions_sync_age_ms: null,
+      positions_stale: true,
+      pnlHistory: [],
+      warnings: [
+        { code: "current_positions_never_observed", message: "never observed" },
+      ],
+    };
+
+    render(<TradingWalletCard />);
+
+    expect(screen.getByText("$25.00")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/not a change in your funds/i)
+    ).not.toBeInTheDocument();
+    // Positions are still honestly withheld in the bar, just without the alarm.
+    expect(
+      screen.getByRole("img", {
+        name: /Positions: unavailable; Total: unavailable/i,
+      })
+    ).toBeInTheDocument();
+  });
+
   it("reuses the legacy balance bar for a complete wallet breakdown", () => {
     state.overview = {
       configured: true,

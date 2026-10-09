@@ -35,10 +35,12 @@
  *   - UNKNOWN_IS_NOT_ZERO: absent/stale position or P/L read models render an
  *     explicit unavailable state. A nullable total never triggers the empty
  *     wallet CTA and cash-only is never presented as Total.
- *   - STALE_IS_LOUD (bug.5031): when `positions_stale` is true the card shows
- *     a prominent "data-sync delay, not a change in funds" banner. A stalled
- *     position observer previously degraded silently to a cash-only figure
- *     with only a subtle "partial" chip, reading as a balance drop.
+ *   - STALE_IS_LOUD (bug.5031): when positions were previously synced and are
+ *     now stale/withheld, the card shows a prominent "data-sync delay, not a
+ *     change in funds" banner. A stalled observer previously degraded silently
+ *     to a cash-only figure with only a subtle "partial" chip, reading as a
+ *     balance drop. The banner is gated to genuine stalls (non-null sync age)
+ *     so a never-observed/new account never gets a false "funds changed" alarm.
  * Side-effects: IO (React Query reads; session-bound paper-account POST).
  * Links: work/items/task.0361.poly-first-user-onboarding-flow-v0.md
  * @public
@@ -255,17 +257,23 @@ export function TradingWalletCard(): ReactElement {
         ) : (
           <div className="space-y-5 py-1">
             <div className="space-y-3">
-              {data.positions_stale ? (
+              {balance.positions === null &&
+              data.positions_stale &&
+              formatSyncAge(data.positions_sync_age_ms) ? (
+                // Only the genuine-stall case: positions were synced before
+                // (non-null age) and are now withheld. A never-observed account
+                // (null age) withholds too, but has no prior funds to have
+                // "changed" — showing the reassurance there would be a false
+                // alarm (bug.5031 review I2). Keying on `balance.positions ===
+                // null` keeps "withheld below" literally true (I3).
                 <div
                   className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-warning text-xs"
                   role="status"
                 >
-                  Live position data is stale
-                  {formatSyncAge(data.positions_sync_age_ms)
-                    ? ` (last synced ${formatSyncAge(data.positions_sync_age_ms)})`
-                    : ""}
-                  . Open-position value is withheld below — this is a data-sync
-                  delay, not a change in your funds.
+                  Live position data is stale (last synced{" "}
+                  {formatSyncAge(data.positions_sync_age_ms)}). Open-position
+                  value is withheld below — this is a data-sync delay, not a
+                  change in your funds.
                 </div>
               ) : null}
               <TradingWalletBalanceBar balance={balance} />
