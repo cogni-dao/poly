@@ -87,6 +87,7 @@ export interface PositionGapActorDeps {
 	refresh: PositionGapTargetRefreshCoordinator;
 	store: PositionGapRuntimeStore;
 	ledger: OrderLedger;
+	getExecutionMode(): Promise<"live" | "paper">;
 	execution: PositionGapBuyExecutionPort;
 	fillEvidence: PositionGapFillEvidencePort;
 	getWalletCashUsdc(): Promise<number>;
@@ -502,9 +503,15 @@ export function startPositionGapActor(
 			await deps.store.repairTargetWalletLineage(
 				deps.scope,
 				deps.targetWallet,
+				await deps.getExecutionMode(),
 			);
 		} catch (error) {
 			if (error instanceof PositionGapTargetLineageMismatchError) throw error;
+			const cause = error instanceof Error ? error.cause : undefined;
+			const causeCode =
+				typeof cause === "object" && cause !== null && "code" in cause
+					? String(cause.code)
+					: undefined;
 			// Prospective PGv3 intents already carry target_wallet. This historic
 			// observability repair may retry, but cannot gate safe trading.
 			deps.logger.warn(
@@ -514,6 +521,8 @@ export function startPositionGapActor(
 					target_id: deps.scope.targetId,
 					target_wallet: deps.targetWallet.toLowerCase(),
 					err: error instanceof Error ? error.message : String(error),
+					err_cause: cause instanceof Error ? cause.message : undefined,
+					err_code: causeCode,
 				},
 				"position-gap historical target-wallet lineage repair failed",
 			);

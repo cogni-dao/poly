@@ -473,6 +473,14 @@ describe("buildPositionGapBuyIntent", () => {
 			],
 		}));
 		const never = new Promise<number>(() => undefined);
+		const databaseCause = Object.assign(
+			new Error("violates check constraint"),
+			{ code: "23514" },
+		);
+		const repairTargetWalletLineage = vi.fn(async () => {
+			throw new Error("Failed query", { cause: databaseCause });
+		});
+		const loggerWarn = vi.fn();
 		const handle = startPositionGapActor({
 			scope: {
 				billingAccountId: "billing-account",
@@ -495,7 +503,7 @@ describe("buildPositionGapBuyIntent", () => {
 			refresh: {} as never,
 			store: {
 				recoverSubmittingAsAmbiguous: vi.fn(() => never),
-				repairTargetWalletLineage: vi.fn(async () => 0),
+				repairTargetWalletLineage,
 				recoverKnownRejectedAmbiguities,
 				loadPlannerState,
 				reconcileLedgerTerminals: vi.fn(async () => 0),
@@ -509,6 +517,7 @@ describe("buildPositionGapBuyIntent", () => {
 				markOrderId: vi.fn(async () => undefined),
 				markCanceled: vi.fn(async () => undefined),
 			} as never,
+			getExecutionMode: vi.fn(async () => "paper" as const),
 			execution: {
 				placeBuy: vi.fn(),
 				cancelBuy,
@@ -520,7 +529,7 @@ describe("buildPositionGapBuyIntent", () => {
 			logger: {
 				debug: vi.fn(),
 				info: vi.fn(),
-				warn: vi.fn(),
+				warn: loggerWarn,
 				error: vi.fn(),
 				child() {
 					return this;
@@ -532,6 +541,24 @@ describe("buildPositionGapBuyIntent", () => {
 
 		await expect(handle.stop()).resolves.toBeUndefined();
 		expect(recoverKnownRejectedAmbiguities).toHaveBeenCalledOnce();
+		expect(repairTargetWalletLineage).toHaveBeenCalledWith(
+			{
+				billingAccountId: "billing-account",
+				createdByUserId: "user",
+				targetId: "target",
+			},
+			"0x1111111111111111111111111111111111111111",
+			"paper",
+		);
+		expect(loggerWarn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				event: "poly.position_gap.v3.target_lineage_repair_failed",
+				err: "Failed query",
+				err_cause: "violates check constraint",
+				err_code: "23514",
+			}),
+			expect.any(String),
+		);
 		expect(cancelBuy).toHaveBeenCalledWith("open-order");
 		expect(markCancelConfirmed).toHaveBeenCalledWith("cancel-action");
 		expect(

@@ -25,6 +25,7 @@ import {
 } from "@/features/copy-trade/position-gap-runtime-store";
 import { createOrderLedger } from "@/features/trading/order-ledger";
 import { billingAccounts, users } from "@/shared/db/schema";
+import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 
 const future = new Date("2099-01-01T00:00:00.000Z");
 const asOf = new Date("2026-10-08T00:00:00.000Z");
@@ -372,6 +373,65 @@ describe("position-gap runtime persistence", () => {
 		expect(repairVerified.activeBuys.map((action) => action.id)).not.toContain(
 			persisted?.id,
 		);
+	});
+
+	it("repairs target-wallet lineage only in the account's execution mode", async () => {
+		const db = getSeedDb();
+		const store = new PositionGapRuntimeStore(db);
+		const targetWallet = "0x1111111111111111111111111111111111111111";
+		const targetId = targetIdFromWallet(targetWallet);
+		const paperFillId = `paper-lineage-${randomUUID()}`;
+		const liveFillId = `live-lineage-${randomUUID()}`;
+
+		await db.insert(polyCopyTradeFills).values([
+			{
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId,
+				fillId: paperFillId,
+				marketId: "prediction-market:polymarket:paper-lineage",
+				observedAt: asOf,
+				clientOrderId: `paper-lineage-${randomUUID()}`,
+				status: "filled",
+				mode: "paper",
+				attributes: { position_gap_version: "3" },
+			},
+			{
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId,
+				fillId: liveFillId,
+				marketId: "prediction-market:polymarket:live-lineage",
+				observedAt: asOf,
+				clientOrderId: `live-lineage-${randomUUID()}`,
+				status: "filled",
+				mode: "live",
+				attributes: { position_gap_version: "3" },
+			},
+		]);
+
+		await store.repairTargetWalletLineage(
+			{
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId,
+			},
+			targetWallet,
+			"paper",
+		);
+
+		const rows = await db
+			.select({
+				fillId: polyCopyTradeFills.fillId,
+				attributes: polyCopyTradeFills.attributes,
+			})
+			.from(polyCopyTradeFills)
+			.where(inArray(polyCopyTradeFills.fillId, [paperFillId, liveFillId]));
+		const attributesByFill = new Map(
+			rows.map((row) => [row.fillId, row.attributes]),
+		);
+		expect(attributesByFill.get(paperFillId)?.target_wallet).toBe(targetWallet);
+		expect(attributesByFill.get(liveFillId)?.target_wallet).toBeUndefined();
 	});
 
 	it("backfills late activation once across timer replay, restart, and resolved tombstones", async () => {

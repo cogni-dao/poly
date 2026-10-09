@@ -1203,6 +1203,8 @@ function createContainer(): Container {
 								refresh: positionGapRefresh,
 								store: positionGapStore,
 								ledger: orderLedger,
+								getExecutionMode: () =>
+									executionVenueResolver(enumeratedTarget.billingAccountId),
 								execution: {
 									placeBuy: async (intent) =>
 										(await getExecutor()).placeIntent(intent),

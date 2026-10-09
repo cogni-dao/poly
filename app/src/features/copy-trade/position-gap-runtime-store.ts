@@ -455,11 +455,13 @@ export class PositionGapRuntimeStore {
 	/**
 	 * Repair the one PGv3 producer-field omission that predates canonical
 	 * copy-target correlation. The deterministic target id proves the wallet;
-	 * tenant + target + policy version clamp the idempotent update.
+	 * tenant + target + account-resolved mode + policy version clamp the
+	 * idempotent update.
 	 */
 	async repairTargetWalletLineage(
 		scope: PositionGapRuntimeScope,
 		targetWallet: string,
+		mode: "live" | "paper",
 	): Promise<void> {
 		const normalized = targetWallet.toLowerCase();
 		if (
@@ -478,7 +480,7 @@ export class PositionGapRuntimeStore {
 				and(
 					eq(polyCopyTradeFills.billingAccountId, scope.billingAccountId),
 					eq(polyCopyTradeFills.targetId, scope.targetId),
-					eq(polyCopyTradeFills.mode, "live"),
+					eq(polyCopyTradeFills.mode, mode),
 					sql`${polyCopyTradeFills.attributes}->>'position_gap_version' = '3'`,
 					sql`NULLIF(${polyCopyTradeFills.attributes}->>'target_wallet', '') IS NULL`,
 				),
