@@ -8,7 +8,7 @@
  * ledger persistence, venue intent materialization, logs, and terminal state.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	BELOW_MARKET_MIN_CODE,
 	clientOrderIdFor,
@@ -508,8 +508,9 @@ export function startPositionGapActor(
 			localHoldings,
 			planningMode,
 		});
+		const decidedAtMs = now();
 		const plannerInput = {
-			nowMs: now(),
+			nowMs: decidedAtMs,
 			snapshot: freshSnapshot,
 			sleeveBudgetUsdc: budgetUsdc,
 			targetCashPusdUsdc: targetCash.pusdUsdc,
@@ -556,7 +557,7 @@ export function startPositionGapActor(
 			},
 			implementationRevision: deps.implementationRevision,
 			assignmentId: `${deps.scope.targetId}:${deps.configRevision}`,
-			correlationId: `position-gap:${freshSnapshot.snapshotId}:${deps.configRevision}`,
+			correlationId: `position-gap:${randomUUID()}`,
 		});
 		const plan = evaluation.decision.diagnostics
 			.source_plan as PositionGapBookPlanV1;
@@ -564,6 +565,7 @@ export function startPositionGapActor(
 			throw new Error("position-gap registry returned no typed source plan");
 		}
 		await persistAndExecute({
+			decidedAtMs,
 			triggerReasons,
 			snapshot: freshSnapshot,
 			snapshotHash,
@@ -1006,6 +1008,7 @@ export function startPositionGapActor(
 	}
 
 	async function persistAndExecute(input: {
+		decidedAtMs: number;
 		triggerReasons: readonly string[];
 		snapshot: TargetBookSnapshotV1;
 		snapshotHash: string;
@@ -1085,6 +1088,38 @@ export function startPositionGapActor(
 			buys: preparedBuys,
 			cancellations: preparedCancels,
 		});
+		const tenantLedger = deps.ledger.forTenant({
+			billing_account_id: deps.scope.billingAccountId,
+			created_by_user_id: deps.scope.createdByUserId,
+		});
+		if (
+			persisted.buys.length === 0 &&
+			persisted.cancellations.length === 0
+		) {
+			const reason = input.plan.blockReason ?? "no_feasible_position";
+			await tenantLedger.recordDecision({
+				target_id: deps.scope.targetId,
+				fill_id: `position-gap-v3:run:${persisted.runId}`,
+				outcome: "skipped",
+				reason,
+				intent: positionGapPlanDecisionIntent(input.plan, input.lineage),
+				receipt: null,
+				decided_at: new Date(input.decidedAtMs),
+				lineage: input.lineage,
+			});
+			logEvent(
+				deps.logger.child(input.lineage),
+				EVENT_NAMES.POLY_ALGORITHM_ATTEMPT_COMPLETE,
+				{
+					reqId: input.lineage.correlation_id,
+					outcome: "skipped",
+					reason,
+					planned_order_count: 0,
+					planned_cancellation_count: 0,
+				},
+				"position-gap algorithm attempt produced no executable action",
+			);
+		}
 		const activeByOrder = new Map(
 			(await deps.store.loadPlannerState(deps.scope)).activeBuys.flatMap(
 				(action) => (action.orderId ? [[action.orderId, action] as const] : []),
@@ -1129,10 +1164,6 @@ export function startPositionGapActor(
 		let halted = false;
 		let placedCount = 0;
 		let filledCount = 0;
-		const tenantLedger = deps.ledger.forTenant({
-			billing_account_id: deps.scope.billingAccountId,
-			created_by_user_id: deps.scope.createdByUserId,
-		});
 		for (const buy of persisted.buys) {
 			if (halted) break;
 			const prepared = preparedBuys.find(
@@ -1150,7 +1181,7 @@ export function startPositionGapActor(
 				reason: null as string | null,
 				intent: positionGapDecisionIntent(prepared, intent),
 				receipt: null as Record<string, unknown> | null,
-				decided_at: new Date(input.snapshot.updatedAtMs),
+				decided_at: new Date(input.decidedAtMs),
 				lineage: prepared.lineage,
 			};
 			const attemptLog = deps.logger.child(prepared.lineage);
@@ -1571,6 +1602,35 @@ function positionGapDecisionIntent(
 		position_branch: "position_gap",
 		position_gap_cohort_key: prepared.cohortKey,
 		...prepared.lineage,
+	};
+}
+
+function positionGapPlanDecisionIntent(
+	plan: PositionGapBookPlanV1,
+	lineage: AlgorithmLineage,
+): Record<string, unknown> {
+	return {
+		market_id: null,
+		condition_id: null,
+		token_id: null,
+		outcome: null,
+		side: null,
+		size_usdc: null,
+		limit_price: null,
+		position_branch: "position_gap",
+		position_gap_version: "3",
+		plan_status: plan.status,
+		block_reason: plan.blockReason,
+		target_total_wealth_usdc: plan.targetTotalWealthUsdc,
+		target_complete_set_value_usdc: plan.targetCompleteSetValueUsdc,
+		target_cash_pusd_usdc: plan.targetCashPusdUsdc,
+		target_cash_usdc_e_usdc: plan.targetCashUsdcEUsdc,
+		eligible_net_nav_usdc: plan.eligibleNetNavUsdc,
+		sleeve_budget_usdc: plan.sleeveBudgetUsdc,
+		minimum_feasible_sleeve_usdc: plan.minimumFeasibleSleeveUsdc,
+		planned_order_count: plan.intents.length,
+		planned_cancellation_count: plan.cancellations.length,
+		...lineage,
 	};
 }
 
