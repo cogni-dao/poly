@@ -3,7 +3,7 @@
 
 /**
  * Module: `@cogni/poly-market-provider/adapters/polymarket/polymarket.clob-public.client`
- * Purpose: Read-only client for the public, unauthenticated Polymarket CLOB endpoints — market resolution (`/markets/{conditionId}`), price history (`/prices-history`), token midpoint (`/midpoint`), and authoritative open-or-settled marks.
+ * Purpose: Read-only client for the public, unauthenticated Polymarket CLOB endpoints — market resolution (`/markets/{conditionId}`), price history (`/prices-history`), token midpoint (`/midpoint`), last trade (`/last-trade-price`), and authoritative open-or-settled marks.
  * Scope: Public reads only. Does not place orders, does not require auth, does not load env. Distinct from `polymarket.clob.adapter.ts` (which signs orders) — this is a public-read sibling.
  * Invariants:
  *   - PACKAGES_NO_ENV, READ_ONLY.
@@ -211,14 +211,53 @@ export class PolymarketClobPublicClient {
   }
 
   /**
+   * Last observed public trade price for one CTF token.
+   *
+   * Polymarket documents a synthetic `{ price: "0.5", side: "" }` response
+   * when the token has never traded. Requiring a literal BUY/SELL side is what
+   * keeps that placeholder out of the fact plane: a returned number always
+   * belongs to an actual venue trade, never to the endpoint's default.
+   */
+  async getLastTradePrice(
+    tokenId: string,
+    signal?: AbortSignal
+  ): Promise<number | null> {
+    const url = new URL("/last-trade-price", this.baseUrl);
+    url.searchParams.set("token_id", tokenId);
+    const controller = new AbortController();
+    const onAbort = (): void => controller.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      if (signal?.aborted) return null;
+      const response = await this.fetchImpl(url.toString(), {
+        signal: controller.signal,
+      });
+      if (!response.ok) return null;
+      const json = (await response.json()) as Record<string, unknown>;
+      if (json.side !== "BUY" && json.side !== "SELL") return null;
+      if (typeof json.price !== "string" && typeof json.price !== "number") {
+        return null;
+      }
+      const price = Number(json.price);
+      if (!Number.isFinite(price) || price <= 0 || price >= 1) return null;
+      return price;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /**
    * Authoritative mark for an open or settled CTF token.
    *
-   * A live order book supplies the midpoint. Once a market settles there is no
-   * order book, so `/midpoint` correctly returns unavailable; the final mark is
-   * then the CLOB market's winner fact (1 for the unique winner, 0 for the
-   * loser). We require a closed market, the requested token, and exactly one
-   * winner before returning a boundary value. Missing or contradictory
-   * resolution evidence remains `null` — never a guessed zero.
+   * A live order book supplies the midpoint. A temporarily absent book falls
+   * back to the last actual venue trade (never the endpoint's synthetic 0.5).
+   * Once a market settles, the CLOB market's unique winner fact takes priority:
+   * 1 for the winner and 0 for the loser. Contradictory closed-market evidence
+   * remains `null` — a stale trade must never override known settlement state.
    */
   async getMarkPrice(
     conditionId: string,
@@ -229,7 +268,9 @@ export class PolymarketClobPublicClient {
     if (midpoint !== null) return midpoint;
 
     const resolution = await this.getMarketResolution(conditionId, signal);
-    if (!resolution?.closed) return null;
+    if (!resolution?.closed) {
+      return this.getLastTradePrice(tokenId, signal);
+    }
 
     const winners = resolution.tokens.filter((token) => token.winner);
     if (winners.length !== 1) return null;

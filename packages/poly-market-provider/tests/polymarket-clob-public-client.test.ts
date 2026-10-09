@@ -3,8 +3,8 @@
 
 /**
  * Module: `@cogni/poly-market-provider/tests/polymarket-clob-public-client`
- * Purpose: Prove that paper marks use a live midpoint while trading and the
- *   CLOB's unique winner fact after settlement.
+ * Purpose: Prove that paper marks use a live midpoint, a real last trade when
+ *   the book is absent, and the CLOB's unique winner fact after settlement.
  * Scope: Injected fetch mock only. No network, persistence, or credentials.
  * Invariants:
  *   - NO_FABRICATED_VALUES: a missing/contradictory settlement remains null.
@@ -69,6 +69,44 @@ describe("PolymarketClobPublicClient.getMarkPrice", () => {
 	);
 
 	it.each([
+		{ market: { closed: false, tokens: [] }, label: "open market" },
+		{ market: null, label: "unindexed market" },
+	])(
+		"uses a real last trade for an $label with no book",
+		async ({ market }) => {
+			const fetchImpl = vi
+				.fn()
+				.mockResolvedValueOnce(jsonResponse({}, false, 404))
+				.mockResolvedValueOnce(
+					market === null
+						? jsonResponse({}, false, 404)
+						: jsonResponse(market),
+				)
+				.mockResolvedValueOnce(
+					jsonResponse({ price: "0.37", side: "BUY" }),
+				);
+			const client = new PolymarketClobPublicClient({ fetch: fetchImpl });
+
+			await expect(client.getMarkPrice(conditionId, winner)).resolves.toBe(
+				0.37,
+			);
+			expect(fetchImpl).toHaveBeenCalledTimes(3);
+			expect(fetchImpl.mock.calls[2]?.[0]).toContain("/last-trade-price");
+		},
+	);
+
+	it("rejects Polymarket's synthetic no-trades default", async () => {
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValueOnce(jsonResponse({}, false, 404))
+			.mockResolvedValueOnce(jsonResponse({ closed: false, tokens: [] }))
+			.mockResolvedValueOnce(jsonResponse({ price: "0.5", side: "" }));
+		const client = new PolymarketClobPublicClient({ fetch: fetchImpl });
+
+		await expect(client.getMarkPrice(conditionId, winner)).resolves.toBeNull();
+	});
+
+	it.each([
 		{
 			closed: false,
 			tokens: [{ token_id: winner, winner: true }],
@@ -91,7 +129,8 @@ describe("PolymarketClobPublicClient.getMarkPrice", () => {
 		const fetchImpl = vi
 			.fn()
 			.mockResolvedValueOnce(jsonResponse({}, false, 404))
-			.mockResolvedValueOnce(jsonResponse(market));
+			.mockResolvedValueOnce(jsonResponse(market))
+			.mockResolvedValueOnce(jsonResponse({}, false, 404));
 		const client = new PolymarketClobPublicClient({ fetch: fetchImpl });
 
 		await expect(client.getMarkPrice(conditionId, winner)).resolves.toBeNull();

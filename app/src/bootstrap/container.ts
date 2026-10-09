@@ -1917,10 +1917,10 @@ function createContainer(): Container {
 				db: serviceDb as unknown as import("drizzle-orm/node-postgres").NodePgDatabase<
 					Record<string, unknown>
 				>,
-				// Open positions mark at the live midpoint. Settled positions have
-				// no order book, so the same public client falls back to the CLOB's
-				// unique winner fact (1/0). Unknown remains null — never a guessed
-				// settlement value.
+				// Open positions mark at the live midpoint, then a real last trade if
+				// the book is temporarily absent. Settled positions use the CLOB's
+				// unique winner fact (1/0). Unknown remains null — the client's
+				// documented synthetic no-trades default is rejected.
 				readPaperMidPrice: (tokenId, signal, conditionId) =>
 					conditionId === undefined
 						? paperClobClient.getMidpoint(tokenId, signal)

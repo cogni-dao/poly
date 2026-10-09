@@ -176,9 +176,9 @@ const PROJECTION_WATERMARK_OVERLAP_MS = 60_000;
 const USDC_SCALE = 8;
 
 /**
- * Reads the current authoritative mark for one CTF token: live midpoint in
- * `(0, 1)`, or a proven settlement value in `{0, 1}`. Returns `null` when it
- * cannot be read.
+ * Reads the current authoritative mark for one CTF token: live midpoint or
+ * last actual venue trade in `(0, 1)`, or a proven settlement value in
+ * `{0, 1}`. Returns `null` when none can be read.
  *
  * `null` means UNKNOWN and is never coerced to 0 — see NO_FABRICATED_VALUES.
  * Production binds `PolymarketClobPublicClient.getMarkPrice`; the historical
