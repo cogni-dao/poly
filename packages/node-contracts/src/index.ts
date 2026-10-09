@@ -70,6 +70,7 @@ export * from "./http/router.v1";
 // ── Knowledge ───────────────────────────────────────────────────────────────
 export * from "./knowledge.contributions.v1.contract";
 export * from "./knowledge.domains.v1.contract";
+export * from "./knowledge.index.v1.contract";
 export * from "./knowledge.list.v1.contract";
 // ── Meta ────────────────────────────────────────────────────────────────────
 export * from "./meta.livez.read.v1.contract";

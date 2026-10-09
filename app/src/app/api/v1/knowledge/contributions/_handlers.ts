@@ -22,6 +22,7 @@ import {
   ContributionQuotaError,
   ContributionStateError,
   DomainNotRegisteredError,
+  EmptyKnowledgePatchError,
   KnowledgeBusyError,
   KnowledgeGateError,
   type PrincipalAuthSource,
@@ -78,6 +79,8 @@ function mapError(e: unknown): NextResponse {
   if (e instanceof ContributionQuotaError)
     return NextResponse.json({ error: e.message }, { status: 429 });
   if (e instanceof DomainNotRegisteredError)
+    return NextResponse.json({ error: e.message }, { status: 400 });
+  if (e instanceof EmptyKnowledgePatchError)
     return NextResponse.json({ error: e.message }, { status: 400 });
   // A cite/EDO edit whose target resolves on neither the branch nor main, or
   // whose edge type doesn't match the cited entry_type, is a client error â

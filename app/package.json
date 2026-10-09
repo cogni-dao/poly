@@ -34,7 +34,7 @@
     "@cogni/graph-execution-host": "workspace:*",
     "@cogni/ids": "workspace:*",
     "@cogni/ingestion-core": "workspace:*",
-    "@cogni/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.2.0/cogni-dao-knowledge-store-0.2.0.tgz",
+    "@cogni/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.3.0/cogni-dao-knowledge-store-0.3.0.tgz",
     "@cogni/langgraph-graphs": "workspace:*",
     "@cogni/node-app": "workspace:*",
     "@cogni/node-contracts": "workspace:*",
