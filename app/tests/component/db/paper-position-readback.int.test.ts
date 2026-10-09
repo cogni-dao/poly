@@ -183,7 +183,10 @@ describe("paper position + NAV read-back", () => {
 
   const SEED = "1000.00000000";
   const targetId = randomUUID();
-  const observedAt = new Date("2026-10-07T12:00:00.000Z");
+  // The shared dashboard reader enforces its production six-hour row TTL
+  // against database NOW(). Keep this projection current; refusal tests below
+  // advance their own read clock explicitly when proving staleness.
+  const observedAt = new Date();
 
   beforeAll(async () => {
     const seedDb = getSeedDb();
