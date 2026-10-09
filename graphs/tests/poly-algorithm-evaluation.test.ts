@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-import { CORE_TOOL_BUNDLE, EDO_HYPOTHESIZE_NAME } from "@cogni/ai-tools";
+import {
+	CORE_TOOL_BUNDLE,
+	EDO_HYPOTHESIZE_NAME,
+	REPO_LIST_NAME,
+	REPO_OPEN_NAME,
+	REPO_SEARCH_NAME,
+} from "@cogni/ai-tools";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -13,6 +19,10 @@ import {
 	POLY_LANGGRAPH_CATALOG,
 	PolyAlgorithmEvaluationReportSchema,
 } from "../src";
+import {
+	POLY_ALGORITHM_EVALUATION_EDO_DOMAIN,
+	POLY_ALGORITHM_EVALUATION_KNOWLEDGE_DOMAINS,
+} from "../src/graphs/poly-algorithm-evaluation/prompts";
 import {
 	evaluateAlgorithmEvaluationContract,
 	POLY_ALGORITHM_EVALUATION_EVAL_SET_V1,
@@ -34,6 +44,14 @@ const validGapReport = {
 			observedAt: null,
 			note: "Immutable identity is required before evaluating an algorithm.",
 		},
+		{
+			id: "planner-source",
+			source: "repository" as const,
+			factPath:
+				"repo:main:app/src/features/copy-trade/plan-mirror.ts#L1-L40@abc1234",
+			observedAt: null,
+			note: "SHA-stamped planner source is available for comparison.",
+		},
 	],
 	gaps: [
 		{
@@ -53,7 +71,7 @@ const validGapReport = {
 			rank: 1,
 			claim: "Current evidence cannot attribute performance to one version.",
 			confidencePct: 100,
-			evidenceIds: ["algorithm-contract"],
+			evidenceIds: ["algorithm-contract", "planner-source"],
 		},
 	],
 	nextExperiment: {
@@ -66,11 +84,14 @@ const validGapReport = {
 		riskBound:
 			"paper account only; zero trade or policy writes from this graph",
 		stopCondition: "stop if any required identity field is missing",
+		ethicalRationale:
+			"Improves explainable paper evidence without manipulating markets or risking funds.",
 		hypothesisId: "algorithm-lineage-complete",
 	},
 	persistence: {
 		status: "committed" as const,
 		tool: "core__edo_hypothesize" as const,
+		domain: POLY_ALGORITHM_EVALUATION_EDO_DOMAIN,
 		hypothesisId: "algorithm-lineage-complete",
 		committed: true as const,
 	},
@@ -119,6 +140,100 @@ describe("poly-algorithm-evaluation output v1", () => {
 		).toThrow();
 	});
 
+	it("requires SHA-stamped repository evidence", () => {
+		expect(() =>
+			PolyAlgorithmEvaluationReportSchema.parse({
+				...validGapReport,
+				evidence: validGapReport.evidence.filter(
+					(item) => item.source !== "repository",
+				),
+			}),
+		).toThrow(/repository evidence/i);
+	});
+
+	it("rejects an invented repository citation shape", () => {
+		expect(() =>
+			PolyAlgorithmEvaluationReportSchema.parse({
+				...validGapReport,
+				evidence: validGapReport.evidence.map((item) =>
+					item.source === "repository"
+						? { ...item, factPath: "app/src/fake.ts" }
+						: item,
+				),
+			}),
+		).toThrow(/sha-stamped citation/i);
+	});
+
+	it("requires a ranked finding to cite repository evidence", () => {
+		expect(() =>
+			PolyAlgorithmEvaluationReportSchema.parse({
+				...validGapReport,
+				findings: [
+					{
+						...validGapReport.findings[0],
+						evidenceIds: ["algorithm-contract"],
+					},
+				],
+			}),
+		).toThrow(/finding must cite repository/i);
+	});
+
+	it("accepts a typed evidence conflict GAP", () => {
+		expect(() =>
+			PolyAlgorithmEvaluationReportSchema.parse({
+				...validGapReport,
+				gaps: [
+					...validGapReport.gaps,
+					{
+						code: "evidence_conflict",
+						requiredFact: "Position-gap reduction behavior",
+						reason:
+							"Merged guidance says buy-only while a ranking claims excess is sold.",
+					},
+				],
+			}),
+		).not.toThrow();
+	});
+
+	it("requires an ethical mission rationale for the next experiment", () => {
+		const { ethicalRationale: _omitted, ...nextExperiment } =
+			validGapReport.nextExperiment;
+		expect(() =>
+			PolyAlgorithmEvaluationReportSchema.parse({
+				...validGapReport,
+				nextExperiment,
+			}),
+		).toThrow();
+	});
+
+	it("rejects EDO persistence outside the strategy domain", () => {
+		expect(() =>
+			PolyAlgorithmEvaluationReportSchema.parse({
+				...validGapReport,
+				persistence: {
+					...validGapReport.persistence,
+					domain: "poly",
+				},
+			}),
+		).toThrow();
+	});
+
+	it("rejects unstable hypothesis ids", () => {
+		expect(() =>
+			PolyAlgorithmEvaluationReportSchema.parse({
+				...validGapReport,
+				nextExperiment: {
+					...validGapReport.nextExperiment,
+					hypothesisId: "algorithm:lineage:complete",
+				},
+				persistence: {
+					...validGapReport.persistence,
+					hypothesisId: "algorithm:lineage:complete",
+				},
+			}),
+		).toThrow();
+	});
+
 	it("rejects a report with no ranked findings", () => {
 		expect(() =>
 			PolyAlgorithmEvaluationReportSchema.parse({
@@ -156,6 +271,7 @@ describe("poly-algorithm-evaluation output v1", () => {
 				...validGapReport,
 				persistence: {
 					status: "reused",
+					domain: POLY_ALGORITHM_EVALUATION_EDO_DOMAIN,
 					hypothesisId: "algorithm-lineage-complete",
 					committed: false,
 				},
@@ -166,6 +282,7 @@ describe("poly-algorithm-evaluation output v1", () => {
 	it("requires a typed GAP when persistence fails", () => {
 		const failedPersistence = {
 			status: "failed" as const,
+			domain: POLY_ALGORITHM_EVALUATION_EDO_DOMAIN,
 			hypothesisId: "algorithm-lineage-complete",
 			committed: false as const,
 			reason: "safe tool failure",
@@ -229,6 +346,13 @@ describe("poly-algorithm-evaluation graph boundary", () => {
 		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).not.toContain(
 			"core__poly_account_copy_trade_orders",
 		);
+		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).toEqual(
+			expect.arrayContaining([
+				REPO_LIST_NAME,
+				REPO_SEARCH_NAME,
+				REPO_OPEN_NAME,
+			]),
+		);
 	});
 
 	it("compiles a runnable with a fixed structured-output contract", () => {
@@ -251,6 +375,9 @@ describe("poly-algorithm-evaluation eval set v1", () => {
 		const results = evaluateAlgorithmEvaluationContract({
 			systemPrompt: "Review this algorithm and suggest improvements.",
 			toolIds: [],
+			knowledgeSearchDomains: [],
+			edoDomain: null,
+			legacyPolyDomainAllowed: true,
 			outputSchemaVersion: "none",
 			nextExperimentCardinality: "many",
 		});
@@ -263,6 +390,9 @@ describe("poly-algorithm-evaluation eval set v1", () => {
 		const results = evaluateAlgorithmEvaluationContract({
 			systemPrompt: POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT,
 			toolIds: POLY_ALGORITHM_EVALUATION_TOOL_IDS,
+			knowledgeSearchDomains: POLY_ALGORITHM_EVALUATION_KNOWLEDGE_DOMAINS,
+			edoDomain: POLY_ALGORITHM_EVALUATION_EDO_DOMAIN,
+			legacyPolyDomainAllowed: false,
 			outputSchemaVersion: POLY_ALGORITHM_EVALUATION_SCHEMA_VERSION,
 			nextExperimentCardinality: "one",
 		});
@@ -273,5 +403,27 @@ describe("poly-algorithm-evaluation eval set v1", () => {
 				passed: true,
 			})),
 		);
+	});
+
+	it("fails live-domain routing when legacy poly is allowed", () => {
+		const results = evaluateAlgorithmEvaluationContract({
+			systemPrompt: POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT,
+			toolIds: POLY_ALGORITHM_EVALUATION_TOOL_IDS,
+			knowledgeSearchDomains: [
+				...POLY_ALGORITHM_EVALUATION_KNOWLEDGE_DOMAINS,
+				"poly",
+			],
+			edoDomain: "poly",
+			legacyPolyDomainAllowed: true,
+			outputSchemaVersion: POLY_ALGORITHM_EVALUATION_SCHEMA_VERSION,
+			nextExperimentCardinality: "one",
+		});
+
+		expect(
+			results.find((result) => result.id === "live_domain_routing"),
+		).toEqual({
+			id: "live_domain_routing",
+			passed: false,
+		});
 	});
 });
