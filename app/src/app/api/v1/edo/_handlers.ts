@@ -43,6 +43,7 @@ import {
   DomainNotRegisteredError,
   EdoEntryTypeRequiresAtomicToolError,
   HypothesisMissingEvaluateAtError,
+  KnowledgeBusyError,
   KnowledgeGateError,
   type PrincipalAuthSource,
   sessionUserToPrincipal,
@@ -63,6 +64,14 @@ function authSource(request: Request): PrincipalAuthSource {
 }
 
 function mapError(e: unknown): NextResponse {
+  // Admission control refused, reserved, or lock-contended: nothing was
+  // applied, so this is retryable capacity pressure, never a client conflict.
+  // 409 here would tell an agent its write was rejected on the merits.
+  if (e instanceof KnowledgeBusyError)
+    return NextResponse.json(
+      { error: e.message, retryable: true },
+      { status: 503, headers: { "Retry-After": "2" } }
+    );
   if (e instanceof HypothesisMissingEvaluateAtError)
     return NextResponse.json({ error: e.message }, { status: 400 });
   if (e instanceof CitationTargetNotFoundError)
