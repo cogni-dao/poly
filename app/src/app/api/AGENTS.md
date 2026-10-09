@@ -74,6 +74,7 @@ HTTP API endpoints using Next.js App Router. Contract-validated entry points tha
   - `/api/v1/poly/agent-access-requests/preview` [POST] - browser-owner approval-token preview
   - `/api/v1/poly/agent-access-requests/[id]/decision` [POST] - browser-owner approve/deny
   - `/api/v1/poly/account/target-positions` [GET] - delegated, account-scoped saved target positions
+  - `/api/v1/poly/dev/live-algorithm-canary` [POST] - authenticated local-development-only, non-CI, geo-permitted ≤$2 live execution proof
   - `/api/v1/poly/research/target-positions` [GET] - owner-session saved target positions
   - `/api/v1/ai/runs/[runId]/ui-stream` [GET] - session-authenticated AI SDK chat replay stream
 - **Files considered API:** v1/_/route.ts, admin/_/route.ts
