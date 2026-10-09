@@ -73,6 +73,8 @@ export const polyLocalLiveCanaryOperation = {
 			reason: z.string().nullable(),
 			/** Persisted planned notional, read back from the decision intent. */
 			size_usdc: z.number().gt(0).max(2),
+			correlation_id: z.string().min(1),
+			algorithm_version: z.string().min(1),
 		}),
 		ledger: z.object({
 			fill_id: z.string().min(1),

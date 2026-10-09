@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
 	getContainer: vi.fn(),
 	createExecutorResolver: vi.fn(),
 	runLocalLiveCanary: vi.fn(),
-	getEgressGeoblockLatch: vi.fn(),
+	probePolymarketGeoblockOnce: vi.fn(),
 	serverEnv: vi.fn(),
 }));
 
@@ -33,7 +33,7 @@ vi.mock("@/bootstrap/poly-local-live-canary", () => ({
 }));
 
 vi.mock("@/lib/egress-geoblock", () => ({
-	getEgressGeoblockLatch: mocks.getEgressGeoblockLatch,
+	probePolymarketGeoblockOnce: mocks.probePolymarketGeoblockOnce,
 }));
 
 vi.mock("@/shared/env/server", () => ({ serverEnv: mocks.serverEnv }));
@@ -107,11 +107,12 @@ describe("POST /api/v1/poly/dev/live-algorithm-canary", () => {
 			APP_BUILD_SHA: "abcdef123456",
 			PAPER_ENFORCE_MODE: undefined,
 		});
-		mocks.getEgressGeoblockLatch.mockReturnValue({
-			latched: true,
-			lastVerdict: "blocked",
-			egressCountry: "US",
-			egressRegion: "CA",
+		mocks.probePolymarketGeoblockOnce.mockResolvedValue({
+			verdict: "blocked",
+			ip: null,
+			country: "US",
+			region: "CA",
+			errorClass: null,
 		});
 	});
 
@@ -122,6 +123,43 @@ describe("POST /api/v1/poly/dev/live-algorithm-canary", () => {
 
 		expect(response.status).toBe(401);
 		expect(mocks.serverEnv).not.toHaveBeenCalled();
+		expect(mocks.probePolymarketGeoblockOnce).not.toHaveBeenCalled();
+		expect(mocks.getContainer).not.toHaveBeenCalled();
+		expect(mocks.createExecutorResolver).not.toHaveBeenCalled();
+		expect(mocks.runLocalLiveCanary).not.toHaveBeenCalled();
+	});
+
+	it("refuses a deployed runtime before calling the external oracle", async () => {
+		mocks.serverEnv.mockReturnValue({
+			NODE_ENV: "production",
+			APP_ENV: "production",
+			APP_BUILD_SHA: "abcdef123456",
+			PAPER_ENFORCE_MODE: undefined,
+		});
+
+		const response = await POST(request());
+
+		expect(response.status).toBe(404);
+		expect(mocks.probePolymarketGeoblockOnce).not.toHaveBeenCalled();
+		expect(mocks.getContainer).not.toHaveBeenCalled();
+	});
+
+	it("fails closed on an unreachable oracle before trade-path I/O", async () => {
+		mocks.probePolymarketGeoblockOnce.mockResolvedValue({
+			verdict: "unreachable",
+			ip: null,
+			country: null,
+			region: null,
+			errorClass: "oracle_timeout",
+		});
+
+		const response = await POST(request());
+
+		expect(response.status).toBe(503);
+		expect(await response.json()).toMatchObject({
+			error: "egress_unproven",
+			egress: { verdict: "unreachable" },
+		});
 		expect(mocks.getContainer).not.toHaveBeenCalled();
 		expect(mocks.createExecutorResolver).not.toHaveBeenCalled();
 		expect(mocks.runLocalLiveCanary).not.toHaveBeenCalled();
@@ -148,7 +186,7 @@ describe("POST /api/v1/poly/dev/live-algorithm-canary", () => {
 
 		expect(response.status).toBe(400);
 		expect(mocks.serverEnv).not.toHaveBeenCalled();
-		expect(mocks.getEgressGeoblockLatch).not.toHaveBeenCalled();
+		expect(mocks.probePolymarketGeoblockOnce).not.toHaveBeenCalled();
 		expect(mocks.getContainer).not.toHaveBeenCalled();
 	});
 });

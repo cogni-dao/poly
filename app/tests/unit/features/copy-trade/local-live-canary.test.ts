@@ -16,6 +16,7 @@ import { POLY_LOCAL_LIVE_CONFIRMATION } from "@cogni/poly-node-contracts";
 import { describe, expect, it } from "vitest";
 import {
 	assertLocalLiveCanaryRuntime,
+	assertPersistedDecisionCorrelation,
 	fixedInputId,
 	LOCAL_LIVE_CANARY_ALGORITHM,
 	LOCAL_LIVE_CANARY_HARD_CAP_USDC,
@@ -98,5 +99,33 @@ describe("local live algorithm canary gate", () => {
 
 		expect(fixedInputId(fixedInput)).toBe(fixedInputId({ ...fixedInput }));
 		expect(fixedInputId(fixedInput)).toMatch(/^0x[a-f0-9]{64}$/);
+	});
+
+	it("accepts only persisted decision receipt correlation for this run", () => {
+		expect(
+			assertPersistedDecisionCorrelation({
+				receipt: {
+					correlation_id: "local-canary-abc",
+					algorithm_version: "v1",
+				},
+				expectedCorrelationId: "local-canary-abc",
+				expectedAlgorithmVersion: "v1",
+			}),
+		).toEqual({
+			correlationId: "local-canary-abc",
+			algorithmVersion: "v1",
+		});
+		expect(() =>
+			assertPersistedDecisionCorrelation({
+				receipt: {
+					correlation_id: "local-canary-other",
+					algorithm_version: "v1",
+				},
+				expectedCorrelationId: "local-canary-abc",
+				expectedAlgorithmVersion: "v1",
+			}),
+		).toThrowError(
+			expect.objectContaining({ code: "canary_execution_failed" }),
+		);
 	});
 });

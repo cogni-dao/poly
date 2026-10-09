@@ -151,7 +151,7 @@ function defaultLogger(): Pick<pino.Logger, "info" | "warn" | "error"> {
   });
 }
 
-interface ProbeOutcome {
+export interface EgressGeoblockProbeOutcome {
   verdict: EgressVerdict;
   ip: string | null;
   country: string | null;
@@ -159,7 +159,7 @@ interface ProbeOutcome {
   errorClass: string | null;
 }
 
-function unreachable(errorClass: string): ProbeOutcome {
+function unreachable(errorClass: string): EgressGeoblockProbeOutcome {
   return {
     verdict: "unreachable",
     ip: null,
@@ -181,7 +181,9 @@ function asString(value: unknown): string | null {
  * oracle we could not read is never evidence that the egress is blocked, and it
  * is never evidence that the egress is permitted either.
  */
-async function probeOnce(fetchImpl: typeof fetch): Promise<ProbeOutcome> {
+export async function probePolymarketGeoblockOnce(
+  fetchImpl: typeof fetch = fetch
+): Promise<EgressGeoblockProbeOutcome> {
   try {
     const res = await fetchImpl(GEOBLOCK_URL, {
       cache: "no-store",
@@ -260,7 +262,7 @@ export async function runEgressGeoblockAssertion(
       return getEgressGeoblockLatch();
     }
 
-    const outcome = await probeOnce(fetchImpl);
+    const outcome = await probePolymarketGeoblockOnce(fetchImpl);
     latchState.lastVerdict = outcome.verdict;
     if (outcome.verdict === "blocked") {
       latchState.consecutiveBlocked += 1;

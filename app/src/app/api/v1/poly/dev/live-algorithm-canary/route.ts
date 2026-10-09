@@ -29,12 +29,13 @@ import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { createLocalLiveCanaryExecutorResolver } from "@/bootstrap/poly-local-live-canary";
 import {
+	assertLocalLiveCanaryProcessGate,
 	assertLocalLiveCanaryRuntime,
 	LocalLiveCanaryError,
 	type LocalLiveCanaryRuntimeGate,
 	runLocalLiveCanary,
 } from "@/features/copy-trade/local-live-canary";
-import { getEgressGeoblockLatch } from "@/lib/egress-geoblock";
+import { probePolymarketGeoblockOnce } from "@/lib/egress-geoblock";
 import { serverEnv } from "@/shared/env/server";
 
 export const dynamic = "force-dynamic";
@@ -131,8 +132,7 @@ export const POST = wrapRouteHandlerWithLogging(
 		}
 
 		const env = serverEnv();
-		const egress = getEgressGeoblockLatch();
-		const runtime: LocalLiveCanaryRuntimeGate = {
+		const processGate = {
 			nodeEnv: env.NODE_ENV,
 			appEnv: env.APP_ENV,
 			// CI is a universal process guard, not an application feature flag.
@@ -140,7 +140,27 @@ export const POST = wrapRouteHandlerWithLogging(
 			paperEnforceMode: env.PAPER_ENFORCE_MODE,
 			localSha: env.APP_BUILD_SHA,
 			confirmation: parsed.data.confirmation,
-			egress,
+		};
+		try {
+			assertLocalLiveCanaryProcessGate(processGate);
+		} catch (error) {
+			if (error instanceof LocalLiveCanaryError) return renderError(error);
+			throw error;
+		}
+
+		// Next dev may evaluate instrumentation and route modules in isolated
+		// graphs, so their in-memory latch state is not a route safety proof.
+		// Every explicit real-money request obtains its own current oracle verdict
+		// before account, DB, wallet, or executor access.
+		const egressProbe = await probePolymarketGeoblockOnce();
+		const runtime: LocalLiveCanaryRuntimeGate = {
+			...processGate,
+			egress: {
+				latched: egressProbe.verdict === "blocked",
+				lastVerdict: egressProbe.verdict,
+				egressCountry: egressProbe.country,
+				egressRegion: egressProbe.region,
+			},
 		};
 		try {
 			// Run before resolving the user account or constructing a tenant
@@ -201,6 +221,8 @@ export const POST = wrapRouteHandlerWithLogging(
 					fixed_input_id: evidence.fixed_input_id,
 					decision_outcome: evidence.decision.outcome,
 					decision_size_usdc: evidence.decision.size_usdc,
+					decision_correlation_id: evidence.decision.correlation_id,
+					decision_algorithm_version: evidence.decision.algorithm_version,
 					client_order_id: evidence.ledger.client_order_id,
 					order_id: evidence.clob.order_id,
 					ledger_status: evidence.ledger.status,

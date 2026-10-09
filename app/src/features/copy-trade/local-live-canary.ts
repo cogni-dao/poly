@@ -109,9 +109,9 @@ export interface LocalLiveCanaryRuntimeGate {
 	};
 }
 
-/** Pure, exported so the money lane can prove every refusal without I/O. */
-export function assertLocalLiveCanaryRuntime(
-	gate: LocalLiveCanaryRuntimeGate,
+/** Pure process gate that must run before even the geoblock oracle request. */
+export function assertLocalLiveCanaryProcessGate(
+	gate: Omit<LocalLiveCanaryRuntimeGate, "egress">,
 ): void {
 	if (gate.confirmation !== POLY_LOCAL_LIVE_CONFIRMATION) {
 		throw new LocalLiveCanaryError(
@@ -143,6 +143,13 @@ export function assertLocalLiveCanaryRuntime(
 			"APP_BUILD_SHA must identify the local commit before live proof",
 		);
 	}
+}
+
+/** Pure, exported so the money lane can prove every refusal without I/O. */
+export function assertLocalLiveCanaryRuntime(
+	gate: LocalLiveCanaryRuntimeGate,
+): void {
+	assertLocalLiveCanaryProcessGate(gate);
 	if (gate.egress.latched || gate.egress.lastVerdict === "blocked") {
 		throw new LocalLiveCanaryError(
 			"egress_geoblocked",
@@ -218,6 +225,35 @@ function correlationId(params: {
 	return `local-canary-${sha256Hex(
 		`${params.billingAccountId}:${params.fixedInputId}:${params.algorithmVersion}`,
 	).slice(0, 32)}`;
+}
+
+/** Validate that API decision evidence comes from the persisted receipt. */
+export function assertPersistedDecisionCorrelation(params: {
+	receipt: unknown;
+	expectedCorrelationId: string;
+	expectedAlgorithmVersion: string;
+}): { correlationId: string; algorithmVersion: string } {
+	const receipt =
+		params.receipt && typeof params.receipt === "object"
+			? (params.receipt as Record<string, unknown>)
+			: null;
+	const correlationId =
+		typeof receipt?.correlation_id === "string" ? receipt.correlation_id : null;
+	const algorithmVersion =
+		typeof receipt?.algorithm_version === "string"
+			? receipt.algorithm_version
+			: null;
+	if (
+		correlationId !== params.expectedCorrelationId ||
+		algorithmVersion !== params.expectedAlgorithmVersion
+	) {
+		throw new LocalLiveCanaryError(
+			"canary_execution_failed",
+			"persisted decision receipt correlation does not match this canary run",
+			{ correlation_id: params.expectedCorrelationId },
+		);
+	}
+	return { correlationId, algorithmVersion };
 }
 
 export async function runLocalLiveCanary(
@@ -442,6 +478,7 @@ export async function runLocalLiveCanary(
 				eq(polyCopyTradeDecisions.billingAccountId, deps.billingAccountId),
 				eq(polyCopyTradeDecisions.targetId, target_id),
 				eq(polyCopyTradeDecisions.fillId, fill_id),
+				eq(polyCopyTradeDecisions.outcome, "placed"),
 			),
 		)
 		.orderBy(desc(polyCopyTradeDecisions.decidedAt))
@@ -493,6 +530,14 @@ export async function runLocalLiveCanary(
 		| Record<string, unknown>
 		| null
 		| undefined;
+	const {
+		correlationId: decisionCorrelationId,
+		algorithmVersion: decisionAlgorithmVersion,
+	} = assertPersistedDecisionCorrelation({
+		receipt: receiptFromDecision,
+		expectedCorrelationId: correlation_id,
+		expectedAlgorithmVersion: algorithm.version,
+	});
 	// TypeScript does not model assignment from the awaited pipeline callback;
 	// recover the declared union after runMirrorTick has completed.
 	const observedPlacementReceipt = placementReceipt as OrderReceipt | null;
@@ -632,6 +677,8 @@ export async function runLocalLiveCanary(
 			decision_outcome: decisionOutcome,
 			decision_reason: decision?.reason ?? null,
 			decision_size_usdc: decisionSizeUsdc,
+			decision_correlation_id: decisionCorrelationId,
+			decision_algorithm_version: decisionAlgorithmVersion,
 			ledger_status: ledger?.status ?? null,
 			client_order_id: ledger?.clientOrderId ?? expectedClientOrderId,
 			order_id: orderId,
@@ -653,6 +700,8 @@ export async function runLocalLiveCanary(
 			outcome: decisionOutcome,
 			reason: decision?.reason ?? (decision ? null : "decision_missing"),
 			size_usdc: decisionSizeUsdc,
+			correlation_id: decisionCorrelationId,
+			algorithm_version: decisionAlgorithmVersion,
 		},
 		ledger: {
 			fill_id,
