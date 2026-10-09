@@ -382,7 +382,7 @@ export function startPositionGapActor(
 						dirty_condition_count: dirtyConditions.length,
 						retained_active_buy_count: heldRuntime.activeBuys.filter(
 							(action) =>
-								!["filled", "canceled", "rejected"].includes(action.status),
+							!["filled", "canceled", "rejected"].includes(action.status),
 						).length,
 						retained_open_buy_count: heldRuntime.openBuyOrders.length,
 					},
@@ -1187,11 +1187,11 @@ export function startPositionGapActor(
 			const attemptLog = deps.logger.child(prepared.lineage);
 			try {
 				const placementMode = await tenantLedger.insertPending({
-					target_id: deps.scope.targetId,
-					fill_id: `position-gap-v3:${prepared.actionKey}`,
-					observed_at: new Date(input.snapshot.updatedAtMs),
-					intent,
-				});
+						target_id: deps.scope.targetId,
+						fill_id: `position-gap-v3:${prepared.actionKey}`,
+						observed_at: new Date(input.snapshot.updatedAtMs),
+						intent,
+					});
 				if (placementMode !== input.planningMode) {
 					throw new Error(
 						`execution venue changed during position-gap planning (${input.planningMode} -> ${placementMode})`,

@@ -27,50 +27,50 @@ import { withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
 import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
 import {
-	polyCopyTradeDecisions,
-	polyCopyTradeFills,
+  polyCopyTradeDecisions,
+  polyCopyTradeFills,
 } from "@cogni/poly-db-schema/copy-trade";
 import {
-	and,
-	count,
-	desc,
-	eq,
-	gte,
-	inArray,
-	lt,
-	or,
-	sql,
-	sum,
+  and,
+  count,
+  desc,
+  eq,
+  gte,
+  inArray,
+  lt,
+  or,
+  sql,
+  sum,
 } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { Logger } from "pino";
 
 import {
-	AlreadyRestingError,
-	type InsertPendingInput,
-	type LedgerCancelReason,
-	type LedgerMode,
-	type LedgerPositionLifecycle,
-	type LedgerRow,
-	type LedgerStatus,
-	type ListOpenOrPendingOptions,
-	type ListRecentOptions,
-	type ListTenantPositionsOptions,
-	type MarkPositionClosedByAssetInput,
-	type MarkPositionLifecycleByAssetInput,
-	type MarkPositionLifecycleByConditionIdInput,
-	type OpenOrderRow,
-	type OrderLedger,
-	PositionCapReachedError,
-	type PositionIntentAggregate,
-	type RecordDecisionInput,
-	type StateSnapshot,
-	type SyncHealthSummary,
-	type TenantContext,
-	type TenantOrderLedger,
-	type TenantScopedInsertPendingInput,
-	type TenantScopedRecordDecisionInput,
-	type UpdateStatusInput,
+  AlreadyRestingError,
+  type InsertPendingInput,
+  type LedgerCancelReason,
+  type LedgerMode,
+  type LedgerPositionLifecycle,
+  type LedgerRow,
+  type LedgerStatus,
+  type ListOpenOrPendingOptions,
+  type ListRecentOptions,
+  type ListTenantPositionsOptions,
+  type MarkPositionClosedByAssetInput,
+  type MarkPositionLifecycleByAssetInput,
+  type MarkPositionLifecycleByConditionIdInput,
+  type OpenOrderRow,
+  type OrderLedger,
+  PositionCapReachedError,
+  type PositionIntentAggregate,
+  type RecordDecisionInput,
+  type StateSnapshot,
+  type SyncHealthSummary,
+  type TenantContext,
+  type TenantOrderLedger,
+  type TenantScopedInsertPendingInput,
+  type TenantScopedRecordDecisionInput,
+  type UpdateStatusInput,
 } from "./order-ledger.types";
 
 /**
@@ -103,72 +103,72 @@ export const SNAPSHOT_DEDUP_ROW_CAP = 5000;
 
 /** Dependencies injected at the `bootstrap/container.ts` boundary. */
 export interface OrderLedgerDeps {
-	/**
-	 * Drizzle client used by the LEGACY root surface — `serviceDb` (BYPASSRLS).
-	 * Every per-tenant op carries an explicit `billing_account_id` filter
-	 * inside the query (bug.5022). Used by:
-	 *   - the legacy `snapshotState(target_id, billing_account_id)` form
-	 *     (back-compat for non-mirror-pipeline callers; task.5012 migrates),
-	 *   - the COID-keyed mutations (`markOrderId`, `markError`, `markCanceled`,
-	 *     `updateStatus`, `markSynced`) — looked up by client_order_id which
-	 *     is tenant-unique by hash; called from cross-tenant contexts
-	 *     (the reconciler iterating all rows),
-	 *   - the explicitly cross-tenant ops (`findStaleOpen`,
-	 *     `listOpenOrPending`, `syncHealthSummary`) — documented as such on
-	 *     the root `OrderLedger` interface (`CROSS_TENANT_OPS_NAMED_EXPLICITLY`).
-	 * Per-tenant callers MUST use `OrderLedger.forTenant(ctx)` — that path
-	 * routes through `appDb` + `withTenantScope` for both reads and writes.
-	 *
-	 * Driver: `PostgresJsDatabase`. The bootstrap container exposes both
-	 * `serviceDb` and `appDb` as postgres-js clients (see
-	 * `packages/db-client/src/build-client.ts`); the historical
-	 * `NodePgDatabase` cast on this field was a TypeScript fiction, not a
-	 * real driver split.
-	 */
-	db: PostgresJsDatabase<Record<string, unknown>>;
-	/**
-	 * Drizzle client wired to the RLS-enforced `app_user` role. Used by every
-	 * read on the `TenantOrderLedger` returned by `forTenant(ctx)` — wrapped
-	 * in `withTenantScope(appDb, ctx.created_by_user_id, ...)` so the
-	 * row-level security policy on `poly_copy_trade_{fills,decisions}`
-	 * (keyed on `current_setting('app.current_user_id', true)`) becomes the
-	 * runtime DB-layer backstop even if an explicit `eq(billingAccountId, ...)`
-	 * filter is forgotten. See bug.5022.
-	 *
-	 * Optional only to keep unit-test setups that don't exercise the
-	 * `forTenant(...)` surface from having to wire it; calling `forTenant(ctx)`
-	 * without `appDb` throws at runtime with a clear error.
-	 */
-	appDb?: PostgresJsDatabase<Record<string, unknown>>;
-	/** Pino logger. Bind `component: "order-ledger"` at the caller if desired. */
-	logger: Logger;
-	/**
-	 * MODE_STAMPED_FROM_ACCOUNT — the ledger is the single write authority for
-	 * `poly_copy_trade_{fills,decisions}.mode`, and the mode of a row is a
-	 * property of the account that produced it. Resolved per write from the
-	 * account's `poly_wallet_connections.kind`, NOT from a process-wide env var
-	 * read once at construction (the pre-0082 `paperEnforceMode` dep, which made
-	 * every row on a pod carry the same label).
-	 *
-	 * Required, and deliberately so: there is no honest fallback. Defaulting to
-	 * `'live'` is how a simulated fill gets filed as real money, and defaulting
-	 * to `'paper'` hides a real one. Bootstrap wires the SAME resolver the
-	 * executor factory dispatches on (`VENUE_RESOLVED_FROM_ACCOUNT`), so the
-	 * stamped mode and the venue that produced the row cannot disagree.
-	 *
-	 * A resolver failure propagates: the write fails loudly rather than landing a
-	 * row whose mode is a guess.
-	 */
-	resolveExecutionMode: (billingAccountId: string) => Promise<LedgerMode>;
+  /**
+   * Drizzle client used by the LEGACY root surface — `serviceDb` (BYPASSRLS).
+   * Every per-tenant op carries an explicit `billing_account_id` filter
+   * inside the query (bug.5022). Used by:
+   *   - the legacy `snapshotState(target_id, billing_account_id)` form
+   *     (back-compat for non-mirror-pipeline callers; task.5012 migrates),
+   *   - the COID-keyed mutations (`markOrderId`, `markError`, `markCanceled`,
+   *     `updateStatus`, `markSynced`) — looked up by client_order_id which
+   *     is tenant-unique by hash; called from cross-tenant contexts
+   *     (the reconciler iterating all rows),
+   *   - the explicitly cross-tenant ops (`findStaleOpen`,
+   *     `listOpenOrPending`, `syncHealthSummary`) — documented as such on
+   *     the root `OrderLedger` interface (`CROSS_TENANT_OPS_NAMED_EXPLICITLY`).
+   * Per-tenant callers MUST use `OrderLedger.forTenant(ctx)` — that path
+   * routes through `appDb` + `withTenantScope` for both reads and writes.
+   *
+   * Driver: `PostgresJsDatabase`. The bootstrap container exposes both
+   * `serviceDb` and `appDb` as postgres-js clients (see
+   * `packages/db-client/src/build-client.ts`); the historical
+   * `NodePgDatabase` cast on this field was a TypeScript fiction, not a
+   * real driver split.
+   */
+  db: PostgresJsDatabase<Record<string, unknown>>;
+  /**
+   * Drizzle client wired to the RLS-enforced `app_user` role. Used by every
+   * read on the `TenantOrderLedger` returned by `forTenant(ctx)` — wrapped
+   * in `withTenantScope(appDb, ctx.created_by_user_id, ...)` so the
+   * row-level security policy on `poly_copy_trade_{fills,decisions}`
+   * (keyed on `current_setting('app.current_user_id', true)`) becomes the
+   * runtime DB-layer backstop even if an explicit `eq(billingAccountId, ...)`
+   * filter is forgotten. See bug.5022.
+   *
+   * Optional only to keep unit-test setups that don't exercise the
+   * `forTenant(...)` surface from having to wire it; calling `forTenant(ctx)`
+   * without `appDb` throws at runtime with a clear error.
+   */
+  appDb?: PostgresJsDatabase<Record<string, unknown>>;
+  /** Pino logger. Bind `component: "order-ledger"` at the caller if desired. */
+  logger: Logger;
+  /**
+   * MODE_STAMPED_FROM_ACCOUNT — the ledger is the single write authority for
+   * `poly_copy_trade_{fills,decisions}.mode`, and the mode of a row is a
+   * property of the account that produced it. Resolved per write from the
+   * account's `poly_wallet_connections.kind`, NOT from a process-wide env var
+   * read once at construction (the pre-0082 `paperEnforceMode` dep, which made
+   * every row on a pod carry the same label).
+   *
+   * Required, and deliberately so: there is no honest fallback. Defaulting to
+   * `'live'` is how a simulated fill gets filed as real money, and defaulting
+   * to `'paper'` hides a real one. Bootstrap wires the SAME resolver the
+   * executor factory dispatches on (`VENUE_RESOLVED_FROM_ACCOUNT`), so the
+   * stamped mode and the venue that produced the row cannot disagree.
+   *
+   * A resolver failure propagates: the write fails loudly rather than landing a
+   * row whose mode is a guess.
+   */
+  resolveExecutionMode: (billingAccountId: string) => Promise<LedgerMode>;
 }
 
 /** Postgres unique-violation SQLSTATE — partial unique index rejection. */
 const PG_UNIQUE_VIOLATION = "23505";
 
 function parseLimitPrice(raw: string | null): number | null {
-	if (raw === null) return null;
-	const n = Number(raw);
-	return Number.isFinite(n) ? n : null;
+  if (raw === null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
 }
 
 const DEFAULT_LIST_LIMIT = 50;
@@ -209,16 +209,16 @@ function readAlgorithmLineage(value: unknown): StoredAlgorithmLineage | null {
 
 /** Fixed-width UTC day window ending at `capturedAt`, oldest → newest. */
 function buildUtcDayWindow(capturedAt: Date, windowDays: number): string[] {
-	const todayUtc = Date.UTC(
-		capturedAt.getUTCFullYear(),
-		capturedAt.getUTCMonth(),
+  const todayUtc = Date.UTC(
+    capturedAt.getUTCFullYear(),
+    capturedAt.getUTCMonth(),
 		capturedAt.getUTCDate(),
-	);
-	const days: string[] = [];
-	for (let i = windowDays - 1; i >= 0; i--) {
-		days.push(new Date(todayUtc - i * MS_PER_DAY).toISOString().slice(0, 10));
-	}
-	return days;
+  );
+  const days: string[] = [];
+  for (let i = windowDays - 1; i >= 0; i--) {
+    days.push(new Date(todayUtc - i * MS_PER_DAY).toISOString().slice(0, 10));
+  }
+  return days;
 }
 const nonTerminalPositionLifecycle = sql`(${polyCopyTradeFills.positionLifecycle} IS NULL OR ${polyCopyTradeFills.positionLifecycle} NOT IN ('closed','redeemed','loser','dust','abandoned'))`;
 const activeRestingPositionLifecycle = sql`(${polyCopyTradeFills.positionLifecycle} IS NULL OR ${polyCopyTradeFills.positionLifecycle} IN ('unresolved','open','closing'))`;
@@ -241,276 +241,276 @@ const hasPositionLifecycleOrExecution = sql`(
  * null. Pure — testable in isolation.
  */
 function materializeIntentAggregates(
-	rows: Array<{
-		market_id: string;
-		token_id: string | null;
-		net_shares: string;
-		gross_usdc_in: string;
-		gross_shares_in: string;
+  rows: Array<{
+    market_id: string;
+    token_id: string | null;
+    net_shares: string;
+    gross_usdc_in: string;
+    gross_shares_in: string;
 	}>,
 ): PositionIntentAggregate[] {
-	const out: PositionIntentAggregate[] = [];
-	for (const row of rows) {
-		if (row.token_id === null) continue;
-		out.push({
-			market_id: row.market_id,
-			token_id: row.token_id,
-			net_shares: Number(row.net_shares),
-			gross_usdc_in: Number(row.gross_usdc_in),
-			gross_shares_in: Number(row.gross_shares_in),
-		});
-	}
-	return out;
+  const out: PositionIntentAggregate[] = [];
+  for (const row of rows) {
+    if (row.token_id === null) continue;
+    out.push({
+      market_id: row.market_id,
+      token_id: row.token_id,
+      net_shares: Number(row.net_shares),
+      gross_usdc_in: Number(row.gross_usdc_in),
+      gross_shares_in: Number(row.gross_shares_in),
+    });
+  }
+  return out;
 }
 
 export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
-	const log = deps.logger.child({ component: "order-ledger" });
+  const log = deps.logger.child({ component: "order-ledger" });
 
-	// `forTenant(ctx)` opens a `withTenantScope(appDb, ctx.created_by_user_id, ...)`
-	// transaction around each tenant-scoped read so Postgres RLS on
-	// `poly_copy_trade_{fills,decisions}` (keyed on `current_setting('app.current_user_id',
-	// true)`) becomes the runtime backstop — even if a future query forgets the
-	// explicit `eq(billingAccountId, ...)` filter, RLS will still strip rows
-	// owned by another user. The four read methods (snapshotState,
-	// cumulativeIntentForMarketToken, hasOpenForMarket, findOpenForMarket) all
-	// go through this path. The two writes (insertPending, recordDecision)
-	// continue to use `deps.db` (serviceDb) and stamp `billing_account_id` /
-	// `created_by_user_id` explicitly in the row values — they were never the
-	// bug.5022 leak surface; task.5012 migrates them onto withTenantScope too.
-	// `root` is referenced lazily; the arrow bodies execute after init.
-	const buildTenantSurface = (ctx: TenantContext): TenantOrderLedger => {
-		const appDb = deps.appDb;
-		if (!appDb) {
-			throw new Error(
+  // `forTenant(ctx)` opens a `withTenantScope(appDb, ctx.created_by_user_id, ...)`
+  // transaction around each tenant-scoped read so Postgres RLS on
+  // `poly_copy_trade_{fills,decisions}` (keyed on `current_setting('app.current_user_id',
+  // true)`) becomes the runtime backstop — even if a future query forgets the
+  // explicit `eq(billingAccountId, ...)` filter, RLS will still strip rows
+  // owned by another user. The four read methods (snapshotState,
+  // cumulativeIntentForMarketToken, hasOpenForMarket, findOpenForMarket) all
+  // go through this path. The two writes (insertPending, recordDecision)
+  // continue to use `deps.db` (serviceDb) and stamp `billing_account_id` /
+  // `created_by_user_id` explicitly in the row values — they were never the
+  // bug.5022 leak surface; task.5012 migrates them onto withTenantScope too.
+  // `root` is referenced lazily; the arrow bodies execute after init.
+  const buildTenantSurface = (ctx: TenantContext): TenantOrderLedger => {
+    const appDb = deps.appDb;
+    if (!appDb) {
+      throw new Error(
 				"OrderLedger.forTenant(ctx) requires deps.appDb to be wired (RLS-enforced app_user role). Pass appDb when constructing the ledger — see nodes/poly/app/src/bootstrap/container.ts.",
-			);
-		}
-		const actor = userActor(toUserId(ctx.created_by_user_id));
-		return {
-			snapshotState: (target_id) =>
-				withTenantScope(appDb, actor, async (tx) =>
+      );
+    }
+    const actor = userActor(toUserId(ctx.created_by_user_id));
+    return {
+      snapshotState: (target_id) =>
+        withTenantScope(appDb, actor, async (tx) =>
 					snapshotStateOnDb(tx, target_id, ctx.billing_account_id),
-				),
-			cumulativeIntentForMarketToken: (market_id, token_id) =>
-				withTenantScope(appDb, actor, async (tx) =>
+        ),
+      cumulativeIntentForMarketToken: (market_id, token_id) =>
+        withTenantScope(appDb, actor, async (tx) =>
 					cumulativeIntentImpl(tx, ctx.billing_account_id, market_id, token_id),
-				),
-			hasOpenForMarket: (args) =>
-				withTenantScope(appDb, actor, async (tx) =>
-					hasOpenForMarketImpl(tx, {
-						billing_account_id: ctx.billing_account_id,
-						target_id: args.target_id,
-						market_id: args.market_id,
+        ),
+      hasOpenForMarket: (args) =>
+        withTenantScope(appDb, actor, async (tx) =>
+          hasOpenForMarketImpl(tx, {
+            billing_account_id: ctx.billing_account_id,
+            target_id: args.target_id,
+            market_id: args.market_id,
 					}),
-				),
-			findOpenForMarket: (args) =>
-				withTenantScope(appDb, actor, async (tx) =>
-					findOpenForMarketImpl(tx, {
-						billing_account_id: ctx.billing_account_id,
-						target_id: args.target_id,
-						market_id: args.market_id,
+        ),
+      findOpenForMarket: (args) =>
+        withTenantScope(appDb, actor, async (tx) =>
+          findOpenForMarketImpl(tx, {
+            billing_account_id: ctx.billing_account_id,
+            target_id: args.target_id,
+            market_id: args.market_id,
 					}),
-				),
-			// bug.5022 — writes also run inside `withTenantScope(appDb, ...)` so
-			// RLS on `poly_copy_trade_{fills,decisions}` enforces tenant isolation
-			// at the DB layer for inserts too, not just reads. The
-			// advisory_xact_lock inside `insertPendingOnDb`'s cap path holds for
-			// the lifetime of the outer withTenantScope tx (the inner
-			// `db.transaction(...)` becomes a SAVEPOINT under the outer tx) —
-			// serializing concurrent inserts on the same (billing, market, token)
-			// tuple, same semantics as the root path.
-			insertPending: async (input: TenantScopedInsertPendingInput) => {
-				// Venue read first, OUTSIDE the tenant transaction (see the `mode`
-				// param docs on `insertPendingOnDb`).
-				const mode = await deps.resolveExecutionMode(ctx.billing_account_id);
-				await withTenantScope(appDb, actor, async (tx) =>
-					insertPendingOnDb(
-						tx,
-						{
-							...input,
-							billing_account_id: ctx.billing_account_id,
-							created_by_user_id: ctx.created_by_user_id,
-						},
+        ),
+      // bug.5022 — writes also run inside `withTenantScope(appDb, ...)` so
+      // RLS on `poly_copy_trade_{fills,decisions}` enforces tenant isolation
+      // at the DB layer for inserts too, not just reads. The
+      // advisory_xact_lock inside `insertPendingOnDb`'s cap path holds for
+      // the lifetime of the outer withTenantScope tx (the inner
+      // `db.transaction(...)` becomes a SAVEPOINT under the outer tx) —
+      // serializing concurrent inserts on the same (billing, market, token)
+      // tuple, same semantics as the root path.
+      insertPending: async (input: TenantScopedInsertPendingInput) => {
+        // Venue read first, OUTSIDE the tenant transaction (see the `mode`
+        // param docs on `insertPendingOnDb`).
+        const mode = await deps.resolveExecutionMode(ctx.billing_account_id);
+        await withTenantScope(appDb, actor, async (tx) =>
+          insertPendingOnDb(
+            tx,
+            {
+              ...input,
+              billing_account_id: ctx.billing_account_id,
+              created_by_user_id: ctx.created_by_user_id,
+            },
 						mode,
 					),
-				);
-				return mode;
-			},
-			recordDecision: async (input: TenantScopedRecordDecisionInput) => {
-				const mode =
-					input.mode_override ??
-					(await deps.resolveExecutionMode(ctx.billing_account_id));
-				const { mode_override: _modeOverride, ...decision } = input;
-				return withTenantScope(appDb, actor, async (tx) =>
-					recordDecisionOnDb(
-						tx,
-						{
-							...decision,
-							billing_account_id: ctx.billing_account_id,
-							created_by_user_id: ctx.created_by_user_id,
-						},
+        );
+        return mode;
+      },
+      recordDecision: async (input: TenantScopedRecordDecisionInput) => {
+        const mode =
+          input.mode_override ??
+          (await deps.resolveExecutionMode(ctx.billing_account_id));
+        const { mode_override: _modeOverride, ...decision } = input;
+        return withTenantScope(appDb, actor, async (tx) =>
+          recordDecisionOnDb(
+            tx,
+            {
+              ...decision,
+              billing_account_id: ctx.billing_account_id,
+              created_by_user_id: ctx.created_by_user_id,
+            },
 						mode,
 					),
-				);
-			},
-		};
-	};
+        );
+      },
+    };
+  };
 
-	// Loose `db` type for shared impl helpers — accepts both a
-	// `PostgresJsDatabase` (the legacy root path, `deps.db`) and the `tx`
-	// handed to us by `withTenantScope` (forTenant path), which is a
-	// postgres-js `PgTransaction`. Same driver, slightly different generic
-	// shapes; carrying the union through every helper signature isn't worth
-	// it. Internal — not exposed.
-	// biome-ignore lint/suspicious/noExplicitAny: structural widening between PgDatabase + PgTransaction
-	type AnyDb = any;
+  // Loose `db` type for shared impl helpers — accepts both a
+  // `PostgresJsDatabase` (the legacy root path, `deps.db`) and the `tx`
+  // handed to us by `withTenantScope` (forTenant path), which is a
+  // postgres-js `PgTransaction`. Same driver, slightly different generic
+  // shapes; carrying the union through every helper signature isn't worth
+  // it. Internal — not exposed.
+  // biome-ignore lint/suspicious/noExplicitAny: structural widening between PgDatabase + PgTransaction
+  type AnyDb = any;
 
-	async function snapshotStateOnDb(
-		db: AnyDb,
-		target_id: string,
+  async function snapshotStateOnDb(
+    db: AnyDb,
+    target_id: string,
 		billing_account_id: string,
-	): Promise<StateSnapshot> {
-		try {
-			const [spendRows, rateRows, cidRows, positionRows] = await Promise.all([
-				db
-					.select({
-						spent: sum(
+  ): Promise<StateSnapshot> {
+    try {
+      const [spendRows, rateRows, cidRows, positionRows] = await Promise.all([
+        db
+          .select({
+            spent: sum(
 							sql<string>`COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)`,
-						),
-					})
-					.from(polyCopyTradeFills)
-					.where(
-						and(
-							eq(polyCopyTradeFills.billingAccountId, billing_account_id),
-							eq(polyCopyTradeFills.targetId, target_id),
-							gte(
-								polyCopyTradeFills.createdAt,
+            ),
+          })
+          .from(polyCopyTradeFills)
+          .where(
+            and(
+              eq(polyCopyTradeFills.billingAccountId, billing_account_id),
+              eq(polyCopyTradeFills.targetId, target_id),
+              gte(
+                polyCopyTradeFills.createdAt,
 								sql`date_trunc('day', now() at time zone 'utc') at time zone 'utc'`,
 							),
 						),
-					),
-				db
-					.select({ n: count() })
-					.from(polyCopyTradeFills)
-					.where(
-						and(
-							eq(polyCopyTradeFills.billingAccountId, billing_account_id),
-							eq(polyCopyTradeFills.targetId, target_id),
+          ),
+        db
+          .select({ n: count() })
+          .from(polyCopyTradeFills)
+          .where(
+            and(
+              eq(polyCopyTradeFills.billingAccountId, billing_account_id),
+              eq(polyCopyTradeFills.targetId, target_id),
 							gte(polyCopyTradeFills.createdAt, sql`now() - interval '1 hour'`),
 						),
-					),
-				// bug.5023: bound the COID/fill_id dedup window to the last
-				// SNAPSHOT_DEDUP_WINDOW_DAYS days + cap at SNAPSHOT_DEDUP_ROW_CAP.
-				// Pre-bug.5023 this query was unbounded — it returned every fill row
-				// this tenant had ever written for this target, hydrated into JS heap
-				// as two parallel string[]s on every fill processed by mirror-pipeline.
-				// The DEDUP_WINDOW_IS_BOUNDED invariant + the PK `(target_id, fill_id)`
-				// ON CONFLICT DO NOTHING backstop together guarantee correctness: any
-				// older COID/fill_id that escapes the window collides on insert and
-				// is a silent no-op. ORDER BY ... DESC + LIMIT keeps the most-recent
-				// rows, which are the ones the cursor-bounded fill stream could
-				// plausibly replay.
-				db
-					.select({
-						cid: polyCopyTradeFills.clientOrderId,
-						fill_id: polyCopyTradeFills.fillId,
-					})
-					.from(polyCopyTradeFills)
-					.where(
-						and(
-							eq(polyCopyTradeFills.billingAccountId, billing_account_id),
-							eq(polyCopyTradeFills.targetId, target_id),
-							gte(
-								polyCopyTradeFills.createdAt,
+          ),
+        // bug.5023: bound the COID/fill_id dedup window to the last
+        // SNAPSHOT_DEDUP_WINDOW_DAYS days + cap at SNAPSHOT_DEDUP_ROW_CAP.
+        // Pre-bug.5023 this query was unbounded — it returned every fill row
+        // this tenant had ever written for this target, hydrated into JS heap
+        // as two parallel string[]s on every fill processed by mirror-pipeline.
+        // The DEDUP_WINDOW_IS_BOUNDED invariant + the PK `(target_id, fill_id)`
+        // ON CONFLICT DO NOTHING backstop together guarantee correctness: any
+        // older COID/fill_id that escapes the window collides on insert and
+        // is a silent no-op. ORDER BY ... DESC + LIMIT keeps the most-recent
+        // rows, which are the ones the cursor-bounded fill stream could
+        // plausibly replay.
+        db
+          .select({
+            cid: polyCopyTradeFills.clientOrderId,
+            fill_id: polyCopyTradeFills.fillId,
+          })
+          .from(polyCopyTradeFills)
+          .where(
+            and(
+              eq(polyCopyTradeFills.billingAccountId, billing_account_id),
+              eq(polyCopyTradeFills.targetId, target_id),
+              gte(
+                polyCopyTradeFills.createdAt,
 								sql`now() - interval '${sql.raw(String(SNAPSHOT_DEDUP_WINDOW_DAYS))} days'`,
 							),
 						),
-					)
-					.orderBy(desc(polyCopyTradeFills.createdAt))
-					.limit(SNAPSHOT_DEDUP_ROW_CAP),
-				db
-					.select({
-						market_id: polyCopyTradeFills.marketId,
-						token_id: sql<
-							string | null
-						>`${polyCopyTradeFills.attributes}->>'token_id'`,
-						net_shares: sql<string>`COALESCE(SUM(
+          )
+          .orderBy(desc(polyCopyTradeFills.createdAt))
+          .limit(SNAPSHOT_DEDUP_ROW_CAP),
+        db
+          .select({
+            market_id: polyCopyTradeFills.marketId,
+            token_id: sql<
+              string | null
+            >`${polyCopyTradeFills.attributes}->>'token_id'`,
+            net_shares: sql<string>`COALESCE(SUM(
                 CASE WHEN ${polyCopyTradeFills.attributes}->>'side' = 'BUY'
                        THEN  (${polyCopyTradeFills.attributes}->>'size_usdc')::numeric / NULLIF((${polyCopyTradeFills.attributes}->>'limit_price')::numeric, 0)
                      WHEN ${polyCopyTradeFills.attributes}->>'side' = 'SELL'
                        THEN -((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric / NULLIF((${polyCopyTradeFills.attributes}->>'limit_price')::numeric, 0))
                      ELSE 0 END
               ), 0)`,
-						gross_usdc_in: sql<string>`COALESCE(SUM(
+            gross_usdc_in: sql<string>`COALESCE(SUM(
                 CASE WHEN ${polyCopyTradeFills.attributes}->>'side' = 'BUY'
                        THEN (${polyCopyTradeFills.attributes}->>'size_usdc')::numeric
                      ELSE 0 END
               ), 0)`,
-						gross_shares_in: sql<string>`COALESCE(SUM(
+            gross_shares_in: sql<string>`COALESCE(SUM(
                 CASE WHEN ${polyCopyTradeFills.attributes}->>'side' = 'BUY'
                        THEN (${polyCopyTradeFills.attributes}->>'size_usdc')::numeric / NULLIF((${polyCopyTradeFills.attributes}->>'limit_price')::numeric, 0)
                      ELSE 0 END
               ), 0)`,
-					})
-					.from(polyCopyTradeFills)
-					.where(
-						and(
-							eq(polyCopyTradeFills.billingAccountId, billing_account_id),
-							eq(polyCopyTradeFills.targetId, target_id),
-							inArray(polyCopyTradeFills.status, [
-								"pending",
-								"open",
-								"filled",
-								"partial",
-							]),
+          })
+          .from(polyCopyTradeFills)
+          .where(
+            and(
+              eq(polyCopyTradeFills.billingAccountId, billing_account_id),
+              eq(polyCopyTradeFills.targetId, target_id),
+              inArray(polyCopyTradeFills.status, [
+                "pending",
+                "open",
+                "filled",
+                "partial",
+              ]),
 							activeRestingPosition,
 						),
-					)
-					.groupBy(
-						polyCopyTradeFills.marketId,
+          )
+          .groupBy(
+            polyCopyTradeFills.marketId,
 						sql`${polyCopyTradeFills.attributes}->>'token_id'`,
-					),
-			]);
+          ),
+      ]);
 
-			return {
-				today_spent_usdc: Number(spendRows[0]?.spent ?? 0),
-				fills_last_hour: Number(rateRows[0]?.n ?? 0),
-				already_placed_ids: cidRows.map((r: { cid: string }) => r.cid),
-				placed_fill_ids: cidRows.map((r: { fill_id: string }) => r.fill_id),
-				position_aggregates: materializeIntentAggregates(positionRows),
-			};
-		} catch (err: unknown) {
-			log.warn(
-				{
-					event: EVENT_NAMES.ADAPTER_ORDER_LEDGER_SNAPSHOT_ERROR,
-					errorCode: "snapshot_fail_closed",
-					target_id,
-					billing_account_id,
-					err: err instanceof Error ? err.message : String(err),
-				},
+      return {
+        today_spent_usdc: Number(spendRows[0]?.spent ?? 0),
+        fills_last_hour: Number(rateRows[0]?.n ?? 0),
+        already_placed_ids: cidRows.map((r: { cid: string }) => r.cid),
+        placed_fill_ids: cidRows.map((r: { fill_id: string }) => r.fill_id),
+        position_aggregates: materializeIntentAggregates(positionRows),
+      };
+    } catch (err: unknown) {
+      log.warn(
+        {
+          event: EVENT_NAMES.ADAPTER_ORDER_LEDGER_SNAPSHOT_ERROR,
+          errorCode: "snapshot_fail_closed",
+          target_id,
+          billing_account_id,
+          err: err instanceof Error ? err.message : String(err),
+        },
 				"order-ledger snapshot failed; returning zeroes",
-			);
-			return {
-				today_spent_usdc: 0,
-				fills_last_hour: 0,
-				already_placed_ids: [],
-				placed_fill_ids: [],
-				position_aggregates: [],
-			};
-		}
-	}
+      );
+      return {
+        today_spent_usdc: 0,
+        fills_last_hour: 0,
+        already_placed_ids: [],
+        placed_fill_ids: [],
+        position_aggregates: [],
+      };
+    }
+  }
 
-	async function cumulativeIntentImpl(
-		db: AnyDb,
-		billing_account_id: string,
-		market_id: string,
+  async function cumulativeIntentImpl(
+    db: AnyDb,
+    billing_account_id: string,
+    market_id: string,
 		token_id: string,
-	): Promise<number> {
-		try {
-			const rows = await db
-				.select({
-					sum: sum(
-						sql<string>`CASE
+  ): Promise<number> {
+    try {
+      const rows = await db
+        .select({
+          sum: sum(
+            sql<string>`CASE
                 WHEN ${polyCopyTradeFills.status} = 'canceled'
                   THEN COALESCE(
                     (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric,
@@ -524,710 +524,710 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
                   THEN COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)
                 ELSE 0
               END`,
-					),
-				})
-				.from(polyCopyTradeFills)
-				.where(
-					and(
-						eq(polyCopyTradeFills.billingAccountId, billing_account_id),
-						eq(polyCopyTradeFills.marketId, market_id),
-						sql`${polyCopyTradeFills.attributes}->>'token_id' = ${token_id}`,
-						activeRestingPosition,
-						or(
-							inArray(polyCopyTradeFills.status, [
-								"pending",
-								"open",
-								"filled",
-								"partial",
-								"canceled",
-							]),
-							and(
-								eq(polyCopyTradeFills.status, "error"),
+          ),
+        })
+        .from(polyCopyTradeFills)
+        .where(
+          and(
+            eq(polyCopyTradeFills.billingAccountId, billing_account_id),
+            eq(polyCopyTradeFills.marketId, market_id),
+            sql`${polyCopyTradeFills.attributes}->>'token_id' = ${token_id}`,
+            activeRestingPosition,
+            or(
+              inArray(polyCopyTradeFills.status, [
+                "pending",
+                "open",
+                "filled",
+                "partial",
+                "canceled",
+              ]),
+              and(
+                eq(polyCopyTradeFills.status, "error"),
 								sql`${polyCopyTradeFills.attributes}->>'placement' = 'market_fok'`,
 							),
 						),
 					),
-				);
-			return Number(rows[0]?.sum ?? 0);
-		} catch (err: unknown) {
-			log.warn(
-				{
-					event: EVENT_NAMES.ADAPTER_ORDER_LEDGER_SNAPSHOT_ERROR,
-					errorCode: "cumulative_intent_fail_closed",
-					billing_account_id,
-					market_id,
-					token_id,
-					err: err instanceof Error ? err.message : String(err),
-				},
+        );
+      return Number(rows[0]?.sum ?? 0);
+    } catch (err: unknown) {
+      log.warn(
+        {
+          event: EVENT_NAMES.ADAPTER_ORDER_LEDGER_SNAPSHOT_ERROR,
+          errorCode: "cumulative_intent_fail_closed",
+          billing_account_id,
+          market_id,
+          token_id,
+          err: err instanceof Error ? err.message : String(err),
+        },
 				"order-ledger cumulativeIntentForMarketToken failed; returning Infinity (skip placement)",
-			);
-			return Number.POSITIVE_INFINITY;
-		}
-	}
+      );
+      return Number.POSITIVE_INFINITY;
+    }
+  }
 
-	async function hasOpenForMarketImpl(
-		db: AnyDb,
-		args: {
-			billing_account_id: string;
-			target_id: string;
-			market_id: string;
+  async function hasOpenForMarketImpl(
+    db: AnyDb,
+    args: {
+      billing_account_id: string;
+      target_id: string;
+      market_id: string;
 		},
-	): Promise<boolean> {
-		try {
-			const rows = await db
-				.select({ cid: polyCopyTradeFills.clientOrderId })
-				.from(polyCopyTradeFills)
-				.where(
-					and(
-						eq(polyCopyTradeFills.billingAccountId, args.billing_account_id),
-						eq(polyCopyTradeFills.targetId, args.target_id),
-						eq(polyCopyTradeFills.marketId, args.market_id),
-						activeRestingPosition,
+  ): Promise<boolean> {
+    try {
+      const rows = await db
+        .select({ cid: polyCopyTradeFills.clientOrderId })
+        .from(polyCopyTradeFills)
+        .where(
+          and(
+            eq(polyCopyTradeFills.billingAccountId, args.billing_account_id),
+            eq(polyCopyTradeFills.targetId, args.target_id),
+            eq(polyCopyTradeFills.marketId, args.market_id),
+            activeRestingPosition,
 						inArray(polyCopyTradeFills.status, ["pending", "open", "partial"]),
 					),
-				)
-				.limit(1);
-			return rows.length > 0;
-		} catch (err: unknown) {
-			log.warn(
-				{
-					event: EVENT_NAMES.ADAPTER_ORDER_LEDGER_SNAPSHOT_ERROR,
-					errorCode: "has_open_for_market_fail_closed",
-					billing_account_id: args.billing_account_id,
-					target_id: args.target_id,
-					market_id: args.market_id,
-					err: err instanceof Error ? err.message : String(err),
-				},
+        )
+        .limit(1);
+      return rows.length > 0;
+    } catch (err: unknown) {
+      log.warn(
+        {
+          event: EVENT_NAMES.ADAPTER_ORDER_LEDGER_SNAPSHOT_ERROR,
+          errorCode: "has_open_for_market_fail_closed",
+          billing_account_id: args.billing_account_id,
+          target_id: args.target_id,
+          market_id: args.market_id,
+          err: err instanceof Error ? err.message : String(err),
+        },
 				"order-ledger hasOpenForMarket failed; returning true (skip placement)",
-			);
-			return true;
-		}
-	}
+      );
+      return true;
+    }
+  }
 
-	async function findOpenForMarketImpl(
-		db: AnyDb,
-		args: {
-			billing_account_id: string;
-			target_id: string;
-			market_id: string;
+  async function findOpenForMarketImpl(
+    db: AnyDb,
+    args: {
+      billing_account_id: string;
+      target_id: string;
+      market_id: string;
 		},
-	): Promise<OpenOrderRow[]> {
-		let rows: Array<{
-			clientOrderId: string;
-			orderId: string | null;
-			status: string;
-			billingAccountId: string;
-			targetId: string;
-			marketId: string;
-			createdAt: Date;
-			mode: string;
-			limitPrice: string | null;
-		}>;
-		try {
-			rows = await db
-				.select({
-					clientOrderId: polyCopyTradeFills.clientOrderId,
-					orderId: polyCopyTradeFills.orderId,
-					status: polyCopyTradeFills.status,
-					billingAccountId: polyCopyTradeFills.billingAccountId,
-					targetId: polyCopyTradeFills.targetId,
-					marketId: polyCopyTradeFills.marketId,
-					createdAt: polyCopyTradeFills.createdAt,
-					mode: polyCopyTradeFills.mode,
-					limitPrice: sql<
-						string | null
-					>`${polyCopyTradeFills.attributes}->>'limit_price'`,
-				})
-				.from(polyCopyTradeFills)
-				.where(
-					and(
-						eq(polyCopyTradeFills.billingAccountId, args.billing_account_id),
-						eq(polyCopyTradeFills.targetId, args.target_id),
-						eq(polyCopyTradeFills.marketId, args.market_id),
-						activeRestingPosition,
+  ): Promise<OpenOrderRow[]> {
+    let rows: Array<{
+      clientOrderId: string;
+      orderId: string | null;
+      status: string;
+      billingAccountId: string;
+      targetId: string;
+      marketId: string;
+      createdAt: Date;
+      mode: string;
+      limitPrice: string | null;
+    }>;
+    try {
+      rows = await db
+        .select({
+          clientOrderId: polyCopyTradeFills.clientOrderId,
+          orderId: polyCopyTradeFills.orderId,
+          status: polyCopyTradeFills.status,
+          billingAccountId: polyCopyTradeFills.billingAccountId,
+          targetId: polyCopyTradeFills.targetId,
+          marketId: polyCopyTradeFills.marketId,
+          createdAt: polyCopyTradeFills.createdAt,
+          mode: polyCopyTradeFills.mode,
+          limitPrice: sql<
+            string | null
+          >`${polyCopyTradeFills.attributes}->>'limit_price'`,
+        })
+        .from(polyCopyTradeFills)
+        .where(
+          and(
+            eq(polyCopyTradeFills.billingAccountId, args.billing_account_id),
+            eq(polyCopyTradeFills.targetId, args.target_id),
+            eq(polyCopyTradeFills.marketId, args.market_id),
+            activeRestingPosition,
 						inArray(polyCopyTradeFills.status, ["pending", "open", "partial"]),
 					),
-				);
-		} catch (err: unknown) {
-			// Observability sibling to `snapshotStateOnDb` / `hasOpenForMarketImpl`.
-			// Re-throw (don't return `[]`) — the caller would otherwise treat the
-			// empty result as "no resting order" and proceed to place, racing
-			// through the application-level dedup. The DB partial unique index is
-			// the structural backstop, but skipping the tick is the safer mode
-			// when our read of the truth fails.
-			log.warn(
-				{
-					event: EVENT_NAMES.ADAPTER_ORDER_LEDGER_SNAPSHOT_ERROR,
-					errorCode: "find_open_for_market_fail_closed",
-					billing_account_id: args.billing_account_id,
-					target_id: args.target_id,
-					market_id: args.market_id,
-					err: err instanceof Error ? err.message : String(err),
-				},
+        );
+    } catch (err: unknown) {
+      // Observability sibling to `snapshotStateOnDb` / `hasOpenForMarketImpl`.
+      // Re-throw (don't return `[]`) — the caller would otherwise treat the
+      // empty result as "no resting order" and proceed to place, racing
+      // through the application-level dedup. The DB partial unique index is
+      // the structural backstop, but skipping the tick is the safer mode
+      // when our read of the truth fails.
+      log.warn(
+        {
+          event: EVENT_NAMES.ADAPTER_ORDER_LEDGER_SNAPSHOT_ERROR,
+          errorCode: "find_open_for_market_fail_closed",
+          billing_account_id: args.billing_account_id,
+          target_id: args.target_id,
+          market_id: args.market_id,
+          err: err instanceof Error ? err.message : String(err),
+        },
 				"order-ledger findOpenForMarket failed; rethrowing so caller skips this tick",
-			);
-			throw err;
-		}
-		return rows.map(
-			(r: {
-				clientOrderId: string;
-				orderId: string | null;
-				status: string;
-				billingAccountId: string;
-				targetId: string;
-				marketId: string;
-				createdAt: Date;
-				mode: string;
-				limitPrice: string | null;
-			}) => ({
-				client_order_id: r.clientOrderId,
-				order_id: r.orderId,
-				status: r.status as LedgerRow["status"],
-				billing_account_id: r.billingAccountId,
-				target_id: r.targetId,
-				market_id: r.marketId,
-				created_at: r.createdAt,
-				mode: r.mode as LedgerRow["mode"],
-				limit_price: parseLimitPrice(r.limitPrice),
+      );
+      throw err;
+    }
+    return rows.map(
+      (r: {
+        clientOrderId: string;
+        orderId: string | null;
+        status: string;
+        billingAccountId: string;
+        targetId: string;
+        marketId: string;
+        createdAt: Date;
+        mode: string;
+        limitPrice: string | null;
+      }) => ({
+        client_order_id: r.clientOrderId,
+        order_id: r.orderId,
+        status: r.status as LedgerRow["status"],
+        billing_account_id: r.billingAccountId,
+        target_id: r.targetId,
+        market_id: r.marketId,
+        created_at: r.createdAt,
+        mode: r.mode as LedgerRow["mode"],
+        limit_price: parseLimitPrice(r.limitPrice),
 			}),
-		);
-	}
+    );
+  }
 
-	/**
-	 * @param mode - MODE_STAMPED_FROM_ACCOUNT, resolved by the caller BEFORE any
-	 *   transaction is opened. Passing it in (rather than resolving here) keeps
-	 *   the venue read off the critical section: the `forTenant` path already
-	 *   holds an `appDb` transaction when it calls this, and awaiting a second
-	 *   pool's connection from inside an open transaction is how a saturated pool
-	 *   turns a cheap SELECT into a stall.
-	 */
-	async function insertPendingOnDb(
-		db: AnyDb,
-		input: InsertPendingInput,
+  /**
+   * @param mode - MODE_STAMPED_FROM_ACCOUNT, resolved by the caller BEFORE any
+   *   transaction is opened. Passing it in (rather than resolving here) keeps
+   *   the venue read off the critical section: the `forTenant` path already
+   *   holds an `appDb` transaction when it calls this, and awaiting a second
+   *   pool's connection from inside an open transaction is how a saturated pool
+   *   turns a cheap SELECT into a stall.
+   */
+  async function insertPendingOnDb(
+    db: AnyDb,
+    input: InsertPendingInput,
 		mode: LedgerMode,
-	): Promise<void> {
-		// Stash placement-display fields in `attributes` so the read API +
-		// dashboard don't need to re-derive from the intent blob.
+  ): Promise<void> {
+    // Stash placement-display fields in `attributes` so the read API +
+    // dashboard don't need to re-derive from the intent blob.
 		const lineage = readAlgorithmLineage(input.intent.attributes);
-		const attrs = {
-			size_usdc: input.intent.size_usdc,
-			limit_price: input.intent.limit_price,
-			market_id: input.intent.market_id,
-			outcome: input.intent.outcome,
-			side: input.intent.side,
-			placement:
-				typeof input.intent.attributes?.placement === "string"
-					? input.intent.attributes.placement
-					: undefined,
-			token_id:
-				typeof input.intent.attributes?.token_id === "string"
-					? input.intent.attributes.token_id
-					: undefined,
-			condition_id:
-				typeof input.intent.attributes?.condition_id === "string"
-					? input.intent.attributes.condition_id
-					: undefined,
-			position_gap_version:
-				typeof input.intent.attributes?.position_gap_version === "string"
-					? input.intent.attributes.position_gap_version
-					: undefined,
-			position_gap_cohort_key:
-				typeof input.intent.attributes?.position_gap_cohort_key === "string"
-					? input.intent.attributes.position_gap_cohort_key
-					: undefined,
-			target_wallet:
-				typeof input.intent.attributes?.target_wallet === "string"
-					? input.intent.attributes.target_wallet
-					: undefined,
-			source_fill_id:
-				typeof input.intent.attributes?.source_fill_id === "string"
-					? input.intent.attributes.source_fill_id
-					: undefined,
-			title:
-				typeof input.intent.attributes?.title === "string"
-					? input.intent.attributes.title
-					: undefined,
-			slug:
-				typeof input.intent.attributes?.slug === "string"
-					? input.intent.attributes.slug
-					: undefined,
-			event_slug:
-				typeof input.intent.attributes?.event_slug === "string"
-					? input.intent.attributes.event_slug
-					: undefined,
-			event_title:
-				typeof input.intent.attributes?.event_title === "string"
-					? input.intent.attributes.event_title
-					: undefined,
-			end_date:
-				typeof input.intent.attributes?.end_date === "string"
-					? input.intent.attributes.end_date
-					: undefined,
-			game_start_time:
-				typeof input.intent.attributes?.game_start_time === "string"
-					? input.intent.attributes.game_start_time
-					: undefined,
-			transaction_hash:
-				typeof input.intent.attributes?.transaction_hash === "string"
-					? input.intent.attributes.transaction_hash
-					: undefined,
+    const attrs = {
+      size_usdc: input.intent.size_usdc,
+      limit_price: input.intent.limit_price,
+      market_id: input.intent.market_id,
+      outcome: input.intent.outcome,
+      side: input.intent.side,
+      placement:
+        typeof input.intent.attributes?.placement === "string"
+          ? input.intent.attributes.placement
+          : undefined,
+      token_id:
+        typeof input.intent.attributes?.token_id === "string"
+          ? input.intent.attributes.token_id
+          : undefined,
+      condition_id:
+        typeof input.intent.attributes?.condition_id === "string"
+          ? input.intent.attributes.condition_id
+          : undefined,
+      position_gap_version:
+        typeof input.intent.attributes?.position_gap_version === "string"
+          ? input.intent.attributes.position_gap_version
+          : undefined,
+      position_gap_cohort_key:
+        typeof input.intent.attributes?.position_gap_cohort_key === "string"
+          ? input.intent.attributes.position_gap_cohort_key
+          : undefined,
+      target_wallet:
+        typeof input.intent.attributes?.target_wallet === "string"
+          ? input.intent.attributes.target_wallet
+          : undefined,
+      source_fill_id:
+        typeof input.intent.attributes?.source_fill_id === "string"
+          ? input.intent.attributes.source_fill_id
+          : undefined,
+      title:
+        typeof input.intent.attributes?.title === "string"
+          ? input.intent.attributes.title
+          : undefined,
+      slug:
+        typeof input.intent.attributes?.slug === "string"
+          ? input.intent.attributes.slug
+          : undefined,
+      event_slug:
+        typeof input.intent.attributes?.event_slug === "string"
+          ? input.intent.attributes.event_slug
+          : undefined,
+      event_title:
+        typeof input.intent.attributes?.event_title === "string"
+          ? input.intent.attributes.event_title
+          : undefined,
+      end_date:
+        typeof input.intent.attributes?.end_date === "string"
+          ? input.intent.attributes.end_date
+          : undefined,
+      game_start_time:
+        typeof input.intent.attributes?.game_start_time === "string"
+          ? input.intent.attributes.game_start_time
+          : undefined,
+      transaction_hash:
+        typeof input.intent.attributes?.transaction_hash === "string"
+          ? input.intent.attributes.transaction_hash
+          : undefined,
 			...(lineage ?? {}),
-		};
+    };
 
-		const values = {
-			billingAccountId: input.billing_account_id,
-			createdByUserId: input.created_by_user_id,
-			targetId: input.target_id,
-			fillId: input.fill_id,
-			marketId: input.intent.market_id,
-			observedAt: input.observed_at,
-			clientOrderId: input.intent.client_order_id,
-			orderId: null,
-			status: "pending" as const,
-			positionLifecycle: null,
-			attributes: attrs,
-			// MODE_STAMPED_FROM_ACCOUNT — resolved per write from this row's own
-			// billing account, so two accounts inserting in the same process get
-			// their own modes.
-			mode,
+    const values = {
+      billingAccountId: input.billing_account_id,
+      createdByUserId: input.created_by_user_id,
+      targetId: input.target_id,
+      fillId: input.fill_id,
+      marketId: input.intent.market_id,
+      observedAt: input.observed_at,
+      clientOrderId: input.intent.client_order_id,
+      orderId: null,
+      status: "pending" as const,
+      positionLifecycle: null,
+      attributes: attrs,
+      // MODE_STAMPED_FROM_ACCOUNT — resolved per write from this row's own
+      // billing account, so two accounts inserting in the same process get
+      // their own modes.
+      mode,
 			algorithmId: lineage?.algorithm_id ?? null,
 			algorithmVersionId: lineage?.algorithm_version_id ?? null,
 			configHash: lineage?.config_hash ?? null,
 			inputSnapshotId: lineage?.input_snapshot_id ?? null,
 			assignmentId: lineage?.assignment_id ?? null,
 			correlationId: lineage?.correlation_id ?? null,
-		};
+    };
 
-		const insert = async (insertDb: AnyDb) => {
-			await insertDb
-				.insert(polyCopyTradeFills)
-				.values(values)
-				.onConflictDoNothing({
-					target: [
-						polyCopyTradeFills.billingAccountId,
-						polyCopyTradeFills.targetId,
-						polyCopyTradeFills.fillId,
-					],
-				});
-		};
+    const insert = async (insertDb: AnyDb) => {
+      await insertDb
+        .insert(polyCopyTradeFills)
+        .values(values)
+        .onConflictDoNothing({
+          target: [
+            polyCopyTradeFills.billingAccountId,
+            polyCopyTradeFills.targetId,
+            polyCopyTradeFills.fillId,
+          ],
+        });
+    };
 
-		try {
-			// CAP_IS_PER_TOKEN_ID (bug.5004): the atomic check requires a real
-			// token_id. `plan-mirror.ts::buildIntent` falls back to `""` when
-			// `fill.attributes.asset` is non-string (defensive); treat that as
-			// "no per-token cap available" rather than scoping to an empty-string
-			// token (which would silently match no rows and bypass the cap).
-			const rawTokenId =
-				typeof input.intent.attributes?.token_id === "string"
-					? input.intent.attributes.token_id
-					: undefined;
-			const intentTokenId =
-				rawTokenId !== undefined && rawTokenId.length > 0
-					? rawTokenId
-					: undefined;
-			if (
-				input.max_market_intent_usdc !== undefined &&
-				input.intent.side === "BUY" &&
-				intentTokenId !== undefined
-			) {
-				const maxMarketIntentUsdc = input.max_market_intent_usdc;
-				const lockToken = intentTokenId;
-				// `db.transaction()` opens a top-level tx when `db` is `deps.db` and
-				// a SAVEPOINT when `db` is already a tx (withTenantScope path). The
-				// advisory_xact_lock holds for the lifetime of the enclosing tx,
-				// which is correct in both cases — under withTenantScope it holds
-				// for the entire RLS-scoped tx, serializing concurrent inserts on
-				// the same (billing, market, token) tuple as intended.
-				//
-				// ADVISORY_KEYSPACE (task.5016): session-level and xact-level
-				// advisory locks share ONE keyspace, so these hashtext(int4) keys
-				// coexist with the repo's long-lived session locks:
-				//   - hashtext('poly:job-runner')  — job-runner leader election,
-				//     held for the leader pod's whole lifetime
-				//     (bootstrap/jobs/job-leader-elector.ts)
-				//   - hashtext('governance_sync')  — transient, per sync run
-				//     (bootstrap/jobs/syncGovernanceSchedules.job.ts)
-				// If hashtext('poly:job-runner') ever collided with a
-				// `billing:market:token` key here, this xact lock would block for
-				// the leader's entire session. Accepted: probability is ~2^-32 per
-				// distinct tuple (hashtext → int4) and the blast radius is one
-				// tuple's cap-check serialization, not correctness. The two fixed
-				// string keys are asserted non-colliding in
-				// tests/component/jobs/job-leader-election.int.test.ts.
-				await db.transaction(async (tx: AnyDb) => {
-					await tx.execute(
+    try {
+      // CAP_IS_PER_TOKEN_ID (bug.5004): the atomic check requires a real
+      // token_id. `plan-mirror.ts::buildIntent` falls back to `""` when
+      // `fill.attributes.asset` is non-string (defensive); treat that as
+      // "no per-token cap available" rather than scoping to an empty-string
+      // token (which would silently match no rows and bypass the cap).
+      const rawTokenId =
+        typeof input.intent.attributes?.token_id === "string"
+          ? input.intent.attributes.token_id
+          : undefined;
+      const intentTokenId =
+        rawTokenId !== undefined && rawTokenId.length > 0
+          ? rawTokenId
+          : undefined;
+      if (
+        input.max_market_intent_usdc !== undefined &&
+        input.intent.side === "BUY" &&
+        intentTokenId !== undefined
+      ) {
+        const maxMarketIntentUsdc = input.max_market_intent_usdc;
+        const lockToken = intentTokenId;
+        // `db.transaction()` opens a top-level tx when `db` is `deps.db` and
+        // a SAVEPOINT when `db` is already a tx (withTenantScope path). The
+        // advisory_xact_lock holds for the lifetime of the enclosing tx,
+        // which is correct in both cases — under withTenantScope it holds
+        // for the entire RLS-scoped tx, serializing concurrent inserts on
+        // the same (billing, market, token) tuple as intended.
+        //
+        // ADVISORY_KEYSPACE (task.5016): session-level and xact-level
+        // advisory locks share ONE keyspace, so these hashtext(int4) keys
+        // coexist with the repo's long-lived session locks:
+        //   - hashtext('poly:job-runner')  — job-runner leader election,
+        //     held for the leader pod's whole lifetime
+        //     (bootstrap/jobs/job-leader-elector.ts)
+        //   - hashtext('governance_sync')  — transient, per sync run
+        //     (bootstrap/jobs/syncGovernanceSchedules.job.ts)
+        // If hashtext('poly:job-runner') ever collided with a
+        // `billing:market:token` key here, this xact lock would block for
+        // the leader's entire session. Accepted: probability is ~2^-32 per
+        // distinct tuple (hashtext → int4) and the blast radius is one
+        // tuple's cap-check serialization, not correctness. The two fixed
+        // string keys are asserted non-colliding in
+        // tests/component/jobs/job-leader-election.int.test.ts.
+        await db.transaction(async (tx: AnyDb) => {
+          await tx.execute(
 						sql`SELECT pg_advisory_xact_lock(hashtext(${`${input.billing_account_id}:${input.intent.market_id}:${lockToken}`}))`,
-					);
-					const rows = await tx
-						.select({
-							sum: sum(
+          );
+          const rows = await tx
+            .select({
+              sum: sum(
 								sql<string>`COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)`,
-							),
-						})
-						.from(polyCopyTradeFills)
-						.where(
-							and(
-								eq(
-									polyCopyTradeFills.billingAccountId,
+              ),
+            })
+            .from(polyCopyTradeFills)
+            .where(
+              and(
+                eq(
+                  polyCopyTradeFills.billingAccountId,
 									input.billing_account_id,
-								),
-								eq(polyCopyTradeFills.marketId, input.intent.market_id),
-								sql`${polyCopyTradeFills.attributes}->>'token_id' = ${lockToken}`,
-								activeRestingPosition,
-								or(
-									inArray(polyCopyTradeFills.status, [
-										"pending",
-										"open",
-										"filled",
-										"partial",
-									]),
-									and(
-										eq(polyCopyTradeFills.status, "error"),
+                ),
+                eq(polyCopyTradeFills.marketId, input.intent.market_id),
+                sql`${polyCopyTradeFills.attributes}->>'token_id' = ${lockToken}`,
+                activeRestingPosition,
+                or(
+                  inArray(polyCopyTradeFills.status, [
+                    "pending",
+                    "open",
+                    "filled",
+                    "partial",
+                  ]),
+                  and(
+                    eq(polyCopyTradeFills.status, "error"),
 										sql`${polyCopyTradeFills.attributes}->>'placement' = 'market_fok'`,
 									),
 								),
 							),
-						);
-					const currentIntent = Number(rows[0]?.sum ?? 0);
-					if (currentIntent + input.intent.size_usdc > maxMarketIntentUsdc) {
-						throw new PositionCapReachedError(
-							input.billing_account_id,
-							input.intent.market_id,
-							lockToken,
-							currentIntent,
-							input.intent.size_usdc,
+            );
+          const currentIntent = Number(rows[0]?.sum ?? 0);
+          if (currentIntent + input.intent.size_usdc > maxMarketIntentUsdc) {
+            throw new PositionCapReachedError(
+              input.billing_account_id,
+              input.intent.market_id,
+              lockToken,
+              currentIntent,
+              input.intent.size_usdc,
 							maxMarketIntentUsdc,
-						);
-					}
-					await insert(tx);
-				});
-			} else {
-				await insert(db);
-			}
-		} catch (err: unknown) {
-			// Partial unique index rejection → typed AlreadyRestingError. task.5001.
-			if (
-				typeof err === "object" &&
-				err !== null &&
-				"code" in err &&
-				(err as { code: unknown }).code === PG_UNIQUE_VIOLATION
-			) {
-				throw new AlreadyRestingError(
-					input.billing_account_id,
-					input.target_id,
+            );
+          }
+          await insert(tx);
+        });
+      } else {
+        await insert(db);
+      }
+    } catch (err: unknown) {
+      // Partial unique index rejection → typed AlreadyRestingError. task.5001.
+      if (
+        typeof err === "object" &&
+        err !== null &&
+        "code" in err &&
+        (err as { code: unknown }).code === PG_UNIQUE_VIOLATION
+      ) {
+        throw new AlreadyRestingError(
+          input.billing_account_id,
+          input.target_id,
 					input.intent.market_id,
-				);
-			}
-			throw err;
-		}
-	}
+        );
+      }
+      throw err;
+    }
+  }
 
-	/** @param mode - see `insertPendingOnDb`. */
-	async function recordDecisionOnDb(
-		db: AnyDb,
-		input: RecordDecisionInput,
+  /** @param mode - see `insertPendingOnDb`. */
+  async function recordDecisionOnDb(
+    db: AnyDb,
+    input: RecordDecisionInput,
 		mode: LedgerMode,
-	): Promise<void> {
+  ): Promise<void> {
 		const lineage = readAlgorithmLineage(input.lineage ?? input.intent);
-		await db.insert(polyCopyTradeDecisions).values({
-			billingAccountId: input.billing_account_id,
-			createdByUserId: input.created_by_user_id,
-			targetId: input.target_id,
-			fillId: input.fill_id,
-			outcome: input.outcome,
-			reason: input.reason,
-			intent: input.intent,
-			receipt: input.receipt,
-			decidedAt: input.decided_at,
-			mode,
+    await db.insert(polyCopyTradeDecisions).values({
+      billingAccountId: input.billing_account_id,
+      createdByUserId: input.created_by_user_id,
+      targetId: input.target_id,
+      fillId: input.fill_id,
+      outcome: input.outcome,
+      reason: input.reason,
+      intent: input.intent,
+      receipt: input.receipt,
+      decidedAt: input.decided_at,
+      mode,
 			algorithmId: lineage?.algorithm_id ?? null,
 			algorithmVersionId: lineage?.algorithm_version_id ?? null,
 			configHash: lineage?.config_hash ?? null,
 			inputSnapshotId: lineage?.input_snapshot_id ?? null,
 			assignmentId: lineage?.assignment_id ?? null,
 			correlationId: lineage?.correlation_id ?? null,
-		});
-	}
+    });
+  }
 
-	type FillAccountingObservation = {
-		filled_size_usdc?: number;
-		fill_price?: number;
-		total_shares?: number;
-		fees_usdc?: number;
-		realized_fill_source?: "clob_associated_trades";
-	};
+  type FillAccountingObservation = {
+    filled_size_usdc?: number;
+    fill_price?: number;
+    total_shares?: number;
+    fees_usdc?: number;
+    realized_fill_source?: "clob_associated_trades";
+  };
 
-	function acceptedFillAccounting(
-		current: {
-			price: string | null;
-			shares: string | null;
-			feesUsdc: string | null;
-			attributes: unknown;
-		},
+  function acceptedFillAccounting(
+    current: {
+      price: string | null;
+      shares: string | null;
+      feesUsdc: string | null;
+      attributes: unknown;
+    },
 		observation: FillAccountingObservation,
-	): {
-		columns: Partial<Record<"price" | "shares" | "feesUsdc", string>>;
-		attributes: Record<string, unknown>;
-	} | null {
-		const incomingShares = observation.total_shares;
-		const incomingPrice = observation.fill_price;
-		const incomingCost = observation.filled_size_usdc;
-		if (
-			typeof incomingShares !== "number" ||
-			!Number.isFinite(incomingShares) ||
-			incomingShares <= 0 ||
-			typeof incomingPrice !== "number" ||
-			!Number.isFinite(incomingPrice) ||
-			incomingPrice <= 0 ||
-			typeof incomingCost !== "number" ||
-			!Number.isFinite(incomingCost) ||
-			incomingCost <= 0
-		) {
-			return null;
-		}
+  ): {
+    columns: Partial<Record<"price" | "shares" | "feesUsdc", string>>;
+    attributes: Record<string, unknown>;
+  } | null {
+    const incomingShares = observation.total_shares;
+    const incomingPrice = observation.fill_price;
+    const incomingCost = observation.filled_size_usdc;
+    if (
+      typeof incomingShares !== "number" ||
+      !Number.isFinite(incomingShares) ||
+      incomingShares <= 0 ||
+      typeof incomingPrice !== "number" ||
+      !Number.isFinite(incomingPrice) ||
+      incomingPrice <= 0 ||
+      typeof incomingCost !== "number" ||
+      !Number.isFinite(incomingCost) ||
+      incomingCost <= 0
+    ) {
+      return null;
+    }
 
-		const attributes =
-			current.attributes && typeof current.attributes === "object"
-				? (current.attributes as Record<string, unknown>)
-				: {};
-		const currentShares = Number(current.shares ?? 0);
+    const attributes =
+      current.attributes && typeof current.attributes === "object"
+        ? (current.attributes as Record<string, unknown>)
+        : {};
+    const currentShares = Number(current.shares ?? 0);
 		const safeCurrentShares = Number.isFinite(currentShares)
 			? currentShares
 			: 0;
-		const currentSource = attributes.realized_fill_source;
-		const currentVerified =
-			currentSource === "clob_associated_trades" ||
-			currentSource === "data_api_activity_position";
-		const incomingVerified =
-			observation.realized_fill_source === "clob_associated_trades";
-		const isHigher = incomingShares > safeCurrentShares + 1e-9;
-		const isHigherAccepted = isHigher && (incomingVerified || !currentVerified);
-		const isSourceUpgrade =
-			incomingVerified &&
-			currentSource !== "clob_associated_trades" &&
-			incomingShares + 1e-9 >= safeCurrentShares;
-		if (!isHigherAccepted && !isSourceUpgrade) return null;
+    const currentSource = attributes.realized_fill_source;
+    const currentVerified =
+      currentSource === "clob_associated_trades" ||
+      currentSource === "data_api_activity_position";
+    const incomingVerified =
+      observation.realized_fill_source === "clob_associated_trades";
+    const isHigher = incomingShares > safeCurrentShares + 1e-9;
+    const isHigherAccepted = isHigher && (incomingVerified || !currentVerified);
+    const isSourceUpgrade =
+      incomingVerified &&
+      currentSource !== "clob_associated_trades" &&
+      incomingShares + 1e-9 >= safeCurrentShares;
+    if (!isHigherAccepted && !isSourceUpgrade) return null;
 
-		return {
-			columns: {
-				price: incomingPrice.toString(),
-				shares: incomingShares.toString(),
-				...(typeof observation.fees_usdc === "number" &&
-				Number.isFinite(observation.fees_usdc)
-					? { feesUsdc: observation.fees_usdc.toString() }
-					: {}),
-			},
-			attributes: {
-				filled_size_usdc: incomingCost,
-				...(incomingVerified
-					? { realized_fill_source: "clob_associated_trades" }
-					: {}),
-			},
-		};
-	}
+    return {
+      columns: {
+        price: incomingPrice.toString(),
+        shares: incomingShares.toString(),
+        ...(typeof observation.fees_usdc === "number" &&
+        Number.isFinite(observation.fees_usdc)
+          ? { feesUsdc: observation.fees_usdc.toString() }
+          : {}),
+      },
+      attributes: {
+        filled_size_usdc: incomingCost,
+        ...(incomingVerified
+          ? { realized_fill_source: "clob_associated_trades" }
+          : {}),
+      },
+    };
+  }
 
-	function monotonicLedgerStatus(
-		current: string,
+  function monotonicLedgerStatus(
+    current: string,
 		observed: LedgerStatus,
-	): LedgerStatus {
-		if (current === "filled" || current === "canceled") {
-			return current;
-		}
-		return observed;
-	}
+  ): LedgerStatus {
+    if (current === "filled" || current === "canceled") {
+      return current;
+    }
+    return observed;
+  }
 
-	const root: OrderLedger = {
-		forTenant: buildTenantSurface,
+  const root: OrderLedger = {
+    forTenant: buildTenantSurface,
 
-		// bug.5022 — legacy root entry point. Delegates to `snapshotStateOnDb`
-		// running on `deps.db` (serviceDb / BYPASSRLS). `forTenant(ctx).snapshotState`
-		// is the RLS-enforced canonical surface. Marked `@deprecated` in the
-		// OrderLedger interface; task.5012 migrates the remaining callers.
-		snapshotState(
-			target_id: string,
+    // bug.5022 — legacy root entry point. Delegates to `snapshotStateOnDb`
+    // running on `deps.db` (serviceDb / BYPASSRLS). `forTenant(ctx).snapshotState`
+    // is the RLS-enforced canonical surface. Marked `@deprecated` in the
+    // OrderLedger interface; task.5012 migrates the remaining callers.
+    snapshotState(
+      target_id: string,
 			billing_account_id: string,
-		): Promise<StateSnapshot> {
-			return snapshotStateOnDb(deps.db, target_id, billing_account_id);
-		},
+    ): Promise<StateSnapshot> {
+      return snapshotStateOnDb(deps.db, target_id, billing_account_id);
+    },
 
-		// bug.5022 — legacy root entry point. Delegates to `cumulativeIntentImpl`
-		// running on `deps.db`. `forTenant(ctx).cumulativeIntentForMarketToken`
-		// is the RLS-enforced canonical surface.
-		cumulativeIntentForMarketToken(
-			billing_account_id: string,
-			market_id: string,
+    // bug.5022 — legacy root entry point. Delegates to `cumulativeIntentImpl`
+    // running on `deps.db`. `forTenant(ctx).cumulativeIntentForMarketToken`
+    // is the RLS-enforced canonical surface.
+    cumulativeIntentForMarketToken(
+      billing_account_id: string,
+      market_id: string,
 			token_id: string,
-		): Promise<number> {
-			return cumulativeIntentImpl(
-				deps.db,
-				billing_account_id,
-				market_id,
+    ): Promise<number> {
+      return cumulativeIntentImpl(
+        deps.db,
+        billing_account_id,
+        market_id,
 				token_id,
-			);
-		},
+      );
+    },
 
-		// bug.5022 — legacy root entry point. Delegates to `insertPendingOnDb`
-		// running on `deps.db`. `forTenant(ctx).insertPending` is the
-		// RLS-enforced canonical surface; both paths share one implementation.
-		async insertPending(input: InsertPendingInput): Promise<void> {
-			const mode = await deps.resolveExecutionMode(input.billing_account_id);
-			return insertPendingOnDb(deps.db, input, mode);
-		},
+    // bug.5022 — legacy root entry point. Delegates to `insertPendingOnDb`
+    // running on `deps.db`. `forTenant(ctx).insertPending` is the
+    // RLS-enforced canonical surface; both paths share one implementation.
+    async insertPending(input: InsertPendingInput): Promise<void> {
+      const mode = await deps.resolveExecutionMode(input.billing_account_id);
+      return insertPendingOnDb(deps.db, input, mode);
+    },
 
-		async markOrderId(params: {
-			client_order_id: string;
-			receipt: import("@cogni/poly-market-provider").OrderReceipt;
-		}): Promise<void> {
-			// Update by `client_order_id` — unique-by-construction across rows since
-			// cid is deterministic from `(target_id, fill_id)` (PK).
-			const status: LedgerRow["status"] = mapReceiptStatus(
+    async markOrderId(params: {
+      client_order_id: string;
+      receipt: import("@cogni/poly-market-provider").OrderReceipt;
+    }): Promise<void> {
+      // Update by `client_order_id` — unique-by-construction across rows since
+      // cid is deterministic from `(target_id, fill_id)` (PK).
+      const status: LedgerRow["status"] = mapReceiptStatus(
 				params.receipt.status,
-			);
-			const realizedFillSource =
-				params.receipt.attributes?.realizedFillSource ===
-				"clob_associated_trades"
-					? "clob_associated_trades"
-					: undefined;
-			await deps.db.transaction(async (tx) => {
-				await tx.execute(
+      );
+      const realizedFillSource =
+        params.receipt.attributes?.realizedFillSource ===
+        "clob_associated_trades"
+          ? "clob_associated_trades"
+          : undefined;
+      await deps.db.transaction(async (tx) => {
+        await tx.execute(
 					sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${polyCopyTradeFills.clientOrderId} = ${params.client_order_id} FOR UPDATE`,
-				);
-				const [current] = await tx
-					.select({
-						price: polyCopyTradeFills.price,
-						shares: polyCopyTradeFills.shares,
-						feesUsdc: polyCopyTradeFills.feesUsdc,
-						attributes: polyCopyTradeFills.attributes,
-						status: polyCopyTradeFills.status,
-					})
-					.from(polyCopyTradeFills)
-					.where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id))
-					.limit(1);
-				if (!current) return;
-				const nextStatus = monotonicLedgerStatus(current.status, status);
-				const positionLifecycle = lifecycleFromOrderUpdate(
-					nextStatus,
+        );
+        const [current] = await tx
+          .select({
+            price: polyCopyTradeFills.price,
+            shares: polyCopyTradeFills.shares,
+            feesUsdc: polyCopyTradeFills.feesUsdc,
+            attributes: polyCopyTradeFills.attributes,
+            status: polyCopyTradeFills.status,
+          })
+          .from(polyCopyTradeFills)
+          .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id))
+          .limit(1);
+        if (!current) return;
+        const nextStatus = monotonicLedgerStatus(current.status, status);
+        const positionLifecycle = lifecycleFromOrderUpdate(
+          nextStatus,
 					params.receipt.filled_size_usdc,
-				);
-				const fill = acceptedFillAccounting(current, {
-					filled_size_usdc: params.receipt.filled_size_usdc,
-					...(params.receipt.fill_price !== undefined
-						? { fill_price: params.receipt.fill_price }
-						: {}),
-					...(params.receipt.total_shares !== undefined
-						? { total_shares: params.receipt.total_shares }
-						: {}),
-					...(params.receipt.fees_usdc !== undefined
-						? { fees_usdc: params.receipt.fees_usdc }
-						: {}),
-					...(realizedFillSource
-						? { realized_fill_source: realizedFillSource }
-						: {}),
-				});
-				const attributesPatch = {
-					submitted_at: params.receipt.submitted_at,
-					...(fill?.attributes ?? {}),
-				};
-				await tx
-					.update(polyCopyTradeFills)
-					.set({
-						orderId: params.receipt.order_id,
-						status: nextStatus,
-						...(positionLifecycle !== null
-							? {
-									positionLifecycle:
-										preserveTerminalLifecycle(positionLifecycle),
-								}
-							: {}),
-						...(fill?.columns ?? {}),
-						updatedAt: new Date(),
-						attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(attributesPatch)}::jsonb`,
-					})
-					.where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id));
-			});
-		},
+        );
+        const fill = acceptedFillAccounting(current, {
+          filled_size_usdc: params.receipt.filled_size_usdc,
+          ...(params.receipt.fill_price !== undefined
+            ? { fill_price: params.receipt.fill_price }
+            : {}),
+          ...(params.receipt.total_shares !== undefined
+            ? { total_shares: params.receipt.total_shares }
+            : {}),
+          ...(params.receipt.fees_usdc !== undefined
+            ? { fees_usdc: params.receipt.fees_usdc }
+            : {}),
+          ...(realizedFillSource
+            ? { realized_fill_source: realizedFillSource }
+            : {}),
+        });
+        const attributesPatch = {
+          submitted_at: params.receipt.submitted_at,
+          ...(fill?.attributes ?? {}),
+        };
+        await tx
+          .update(polyCopyTradeFills)
+          .set({
+            orderId: params.receipt.order_id,
+            status: nextStatus,
+            ...(positionLifecycle !== null
+              ? {
+                  positionLifecycle:
+                    preserveTerminalLifecycle(positionLifecycle),
+                }
+              : {}),
+            ...(fill?.columns ?? {}),
+            updatedAt: new Date(),
+            attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(attributesPatch)}::jsonb`,
+          })
+          .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id));
+      });
+    },
 
-		async markError(params: {
-			client_order_id: string;
-			error: string;
-		}): Promise<void> {
-			// Cap error string at 512 chars — matches executor log truncation to
-			// keep jsonb bounded for grafana / dashboard rendering.
-			const truncated =
-				params.error.length > 512
-					? `${params.error.slice(0, 512)}…`
-					: params.error;
-			await deps.db
-				.update(polyCopyTradeFills)
-				.set({
-					status: "error",
-					updatedAt: new Date(),
-					attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(
+    async markError(params: {
+      client_order_id: string;
+      error: string;
+    }): Promise<void> {
+      // Cap error string at 512 chars — matches executor log truncation to
+      // keep jsonb bounded for grafana / dashboard rendering.
+      const truncated =
+        params.error.length > 512
+          ? `${params.error.slice(0, 512)}…`
+          : params.error;
+      await deps.db
+        .update(polyCopyTradeFills)
+        .set({
+          status: "error",
+          updatedAt: new Date(),
+          attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(
 						{ error: truncated },
-					)}::jsonb`,
-				})
-				.where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id));
-		},
+          )}::jsonb`,
+        })
+        .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id));
+    },
 
-		// bug.5022 — legacy root entry point. Delegates to `recordDecisionOnDb`
-		// running on `deps.db`. `forTenant(ctx).recordDecision` is the
-		// RLS-enforced canonical surface.
-		async recordDecision(input: RecordDecisionInput): Promise<void> {
-			const mode = await deps.resolveExecutionMode(input.billing_account_id);
-			return recordDecisionOnDb(deps.db, input, mode);
-		},
+    // bug.5022 — legacy root entry point. Delegates to `recordDecisionOnDb`
+    // running on `deps.db`. `forTenant(ctx).recordDecision` is the
+    // RLS-enforced canonical surface.
+    async recordDecision(input: RecordDecisionInput): Promise<void> {
+      const mode = await deps.resolveExecutionMode(input.billing_account_id);
+      return recordDecisionOnDb(deps.db, input, mode);
+    },
 
-		async listRecent(opts: ListRecentOptions): Promise<LedgerRow[]> {
-			const limit = opts.limit ?? DEFAULT_LIST_LIMIT;
-			// Tenant clamp is always applied — the adapter runs on the BYPASSRLS
-			// service connection, so this WHERE is the only thing keeping the orders
-			// route from leaking cross-tenant ledger rows.
-			const whereClause = opts.target_id
-				? and(
-						eq(polyCopyTradeFills.billingAccountId, opts.billing_account_id),
+    async listRecent(opts: ListRecentOptions): Promise<LedgerRow[]> {
+      const limit = opts.limit ?? DEFAULT_LIST_LIMIT;
+      // Tenant clamp is always applied — the adapter runs on the BYPASSRLS
+      // service connection, so this WHERE is the only thing keeping the orders
+      // route from leaking cross-tenant ledger rows.
+      const whereClause = opts.target_id
+        ? and(
+            eq(polyCopyTradeFills.billingAccountId, opts.billing_account_id),
 						eq(polyCopyTradeFills.targetId, opts.target_id),
-					)
-				: eq(polyCopyTradeFills.billingAccountId, opts.billing_account_id);
+          )
+        : eq(polyCopyTradeFills.billingAccountId, opts.billing_account_id);
 
-			// Explicit projection (dashboard floor fix) — see LEDGER_ROW_COLUMNS.
-			const rows = await deps.db
-				.select(LEDGER_ROW_COLUMNS)
-				.from(polyCopyTradeFills)
-				.where(whereClause)
-				.orderBy(desc(polyCopyTradeFills.observedAt))
-				.limit(limit);
+      // Explicit projection (dashboard floor fix) — see LEDGER_ROW_COLUMNS.
+      const rows = await deps.db
+        .select(LEDGER_ROW_COLUMNS)
+        .from(polyCopyTradeFills)
+        .where(whereClause)
+        .orderBy(desc(polyCopyTradeFills.observedAt))
+        .limit(limit);
 
-			return rows.map(mapLedgerRow);
-		},
+      return rows.map(mapLedgerRow);
+    },
 
-		async listTenantPositions(
+    async listTenantPositions(
 			opts: ListTenantPositionsOptions,
-		): Promise<LedgerRow[]> {
-			const limit = opts.limit ?? DEFAULT_LIST_LIMIT;
-			const statuses = opts.statuses ?? ["open", "filled", "partial"];
+    ): Promise<LedgerRow[]> {
+      const limit = opts.limit ?? DEFAULT_LIST_LIMIT;
+      const statuses = opts.statuses ?? ["open", "filled", "partial"];
 
-			// Explicit projection (dashboard floor fix) — see LEDGER_ROW_COLUMNS.
-			const rows = await deps.db
-				.select(LEDGER_ROW_COLUMNS)
-				.from(polyCopyTradeFills)
-				.where(
-					and(
-						eq(polyCopyTradeFills.billingAccountId, opts.billing_account_id),
+      // Explicit projection (dashboard floor fix) — see LEDGER_ROW_COLUMNS.
+      const rows = await deps.db
+        .select(LEDGER_ROW_COLUMNS)
+        .from(polyCopyTradeFills)
+        .where(
+          and(
+            eq(polyCopyTradeFills.billingAccountId, opts.billing_account_id),
 						inArray(polyCopyTradeFills.status, statuses),
 					),
-				)
-				.orderBy(desc(polyCopyTradeFills.observedAt))
-				.limit(limit);
+        )
+        .orderBy(desc(polyCopyTradeFills.observedAt))
+        .limit(limit);
 
-			return rows.map(mapLedgerRow);
-		},
+      return rows.map(mapLedgerRow);
+    },
 
-		async dailyTradeCounts(opts: {
-			billing_account_id: string;
-			capturedAt: Date;
-			windowDays: number;
-		}): Promise<Array<{ day: string; n: number }>> {
-			const rows = (await deps.db.execute(sql`
+    async dailyTradeCounts(opts: {
+      billing_account_id: string;
+      capturedAt: Date;
+      windowDays: number;
+    }): Promise<Array<{ day: string; n: number }>> {
+      const rows = (await deps.db.execute(sql`
         SELECT
           to_char(date_trunc('day', ${polyCopyTradeFills.observedAt} AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
           COUNT(*)::int AS n
@@ -1244,285 +1244,285 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         GROUP BY 1
         ORDER BY 1
       `)) as unknown as { rows?: Array<Record<string, unknown>> };
-			const list =
-				rows.rows ?? (rows as unknown as Array<Record<string, unknown>>);
-			const byDay = new Map<string, number>();
-			for (const r of list as Array<Record<string, unknown>>) {
-				byDay.set(String(r.day ?? ""), Number(r.n ?? 0));
-			}
-			return buildUtcDayWindow(opts.capturedAt, opts.windowDays).map((day) => ({
-				day,
-				n: byDay.get(day) ?? 0,
-			}));
-		},
+      const list =
+        rows.rows ?? (rows as unknown as Array<Record<string, unknown>>);
+      const byDay = new Map<string, number>();
+      for (const r of list as Array<Record<string, unknown>>) {
+        byDay.set(String(r.day ?? ""), Number(r.n ?? 0));
+      }
+      return buildUtcDayWindow(opts.capturedAt, opts.windowDays).map((day) => ({
+        day,
+        n: byDay.get(day) ?? 0,
+      }));
+    },
 
-		async listOpenOrPending(
+    async listOpenOrPending(
 			opts?: ListOpenOrPendingOptions,
-		): Promise<LedgerRow[]> {
-			const olderThanMs = opts?.olderThanMs ?? 30_000;
-			const limit = opts?.limit ?? 200;
+    ): Promise<LedgerRow[]> {
+      const olderThanMs = opts?.olderThanMs ?? 30_000;
+      const limit = opts?.limit ?? 200;
 
-			const rows = await deps.db
-				.select()
-				.from(polyCopyTradeFills)
-				.where(
-					and(
-						sql`${polyCopyTradeFills.status} IN ('pending','open')`,
-						activeRestingPosition,
+      const rows = await deps.db
+        .select()
+        .from(polyCopyTradeFills)
+        .where(
+          and(
+            sql`${polyCopyTradeFills.status} IN ('pending','open')`,
+            activeRestingPosition,
 						sql`${polyCopyTradeFills.createdAt} < now() - make_interval(secs => ${olderThanMs} / 1000.0)`,
 					),
-				)
-				.orderBy(polyCopyTradeFills.createdAt)
-				.limit(limit);
+        )
+        .orderBy(polyCopyTradeFills.createdAt)
+        .limit(limit);
 
-			return rows.map(mapLedgerRow);
-		},
+      return rows.map(mapLedgerRow);
+    },
 
-		async updateStatus(input: UpdateStatusInput): Promise<void> {
-			// Build the attributes patch only for the fields actually provided.
-			const patch: Record<string, unknown> = {};
-			if (input.reason !== undefined) {
-				patch.reason = input.reason;
-			}
-			await deps.db.transaction(async (tx) => {
-				await tx.execute(
+    async updateStatus(input: UpdateStatusInput): Promise<void> {
+      // Build the attributes patch only for the fields actually provided.
+      const patch: Record<string, unknown> = {};
+      if (input.reason !== undefined) {
+        patch.reason = input.reason;
+      }
+      await deps.db.transaction(async (tx) => {
+        await tx.execute(
 					sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${polyCopyTradeFills.clientOrderId} = ${input.client_order_id} FOR UPDATE`,
-				);
-				const [current] = await tx
-					.select({
-						price: polyCopyTradeFills.price,
-						shares: polyCopyTradeFills.shares,
-						feesUsdc: polyCopyTradeFills.feesUsdc,
-						attributes: polyCopyTradeFills.attributes,
-						status: polyCopyTradeFills.status,
-					})
-					.from(polyCopyTradeFills)
-					.where(eq(polyCopyTradeFills.clientOrderId, input.client_order_id))
-					.limit(1);
-				if (!current) return;
-				const nextStatus = monotonicLedgerStatus(current.status, input.status);
-				const positionLifecycle = lifecycleFromOrderUpdate(
-					nextStatus,
+        );
+        const [current] = await tx
+          .select({
+            price: polyCopyTradeFills.price,
+            shares: polyCopyTradeFills.shares,
+            feesUsdc: polyCopyTradeFills.feesUsdc,
+            attributes: polyCopyTradeFills.attributes,
+            status: polyCopyTradeFills.status,
+          })
+          .from(polyCopyTradeFills)
+          .where(eq(polyCopyTradeFills.clientOrderId, input.client_order_id))
+          .limit(1);
+        if (!current) return;
+        const nextStatus = monotonicLedgerStatus(current.status, input.status);
+        const positionLifecycle = lifecycleFromOrderUpdate(
+          nextStatus,
 					input.filled_size_usdc,
-				);
-				const fill = acceptedFillAccounting(current, input);
-				const attributesPatch = { ...patch, ...(fill?.attributes ?? {}) };
-				await tx
-					.update(polyCopyTradeFills)
-					.set({
-						status: nextStatus,
-						...(input.order_id !== undefined
-							? { orderId: input.order_id }
-							: {}),
-						...(positionLifecycle !== null
-							? {
-									positionLifecycle:
-										preserveTerminalLifecycle(positionLifecycle),
-								}
-							: {}),
-						...(fill?.columns ?? {}),
-						updatedAt: new Date(),
-						...(Object.keys(attributesPatch).length > 0
-							? {
-									attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(attributesPatch)}::jsonb`,
-								}
-							: {}),
-					})
-					.where(eq(polyCopyTradeFills.clientOrderId, input.client_order_id));
-			});
-		},
+        );
+        const fill = acceptedFillAccounting(current, input);
+        const attributesPatch = { ...patch, ...(fill?.attributes ?? {}) };
+        await tx
+          .update(polyCopyTradeFills)
+          .set({
+            status: nextStatus,
+            ...(input.order_id !== undefined
+              ? { orderId: input.order_id }
+              : {}),
+            ...(positionLifecycle !== null
+              ? {
+                  positionLifecycle:
+                    preserveTerminalLifecycle(positionLifecycle),
+                }
+              : {}),
+            ...(fill?.columns ?? {}),
+            updatedAt: new Date(),
+            ...(Object.keys(attributesPatch).length > 0
+              ? {
+                  attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(attributesPatch)}::jsonb`,
+                }
+              : {}),
+          })
+          .where(eq(polyCopyTradeFills.clientOrderId, input.client_order_id));
+      });
+    },
 
-		async markSynced(client_order_ids: string[]): Promise<void> {
-			// No-op on empty array — avoids a vacuous UPDATE that touches no rows.
-			if (client_order_ids.length === 0) return;
-			await deps.db
-				.update(polyCopyTradeFills)
-				.set({ syncedAt: sql`now()` })
-				.where(inArray(polyCopyTradeFills.clientOrderId, client_order_ids));
-		},
+    async markSynced(client_order_ids: string[]): Promise<void> {
+      // No-op on empty array — avoids a vacuous UPDATE that touches no rows.
+      if (client_order_ids.length === 0) return;
+      await deps.db
+        .update(polyCopyTradeFills)
+        .set({ syncedAt: sql`now()` })
+        .where(inArray(polyCopyTradeFills.clientOrderId, client_order_ids));
+    },
 
-		async markCanceled(params: {
-			client_order_id: string;
-			reason: LedgerCancelReason;
-		}): Promise<void> {
-			await deps.db
-				.update(polyCopyTradeFills)
-				.set({
-					status: "canceled",
-					updatedAt: new Date(),
-					attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(
+    async markCanceled(params: {
+      client_order_id: string;
+      reason: LedgerCancelReason;
+    }): Promise<void> {
+      await deps.db
+        .update(polyCopyTradeFills)
+        .set({
+          status: "canceled",
+          updatedAt: new Date(),
+          attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(
 						{ reason: params.reason },
-					)}::jsonb`,
-				})
-				.where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id));
-		},
+          )}::jsonb`,
+        })
+        .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id));
+    },
 
-		async markPositionClosedByAsset(
+    async markPositionClosedByAsset(
 			input: MarkPositionClosedByAssetInput,
-		): Promise<number> {
-			const rows = await deps.db
-				.update(polyCopyTradeFills)
-				.set({
-					positionLifecycle: "closed",
-					updatedAt: input.closed_at,
-					attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(
-						{
-							closed_at: input.closed_at.toISOString(),
-							close_order_id: input.close_order_id,
-							close_client_order_id: input.close_client_order_id,
-							close_reason: input.reason,
+    ): Promise<number> {
+      const rows = await deps.db
+        .update(polyCopyTradeFills)
+        .set({
+          positionLifecycle: "closed",
+          updatedAt: input.closed_at,
+          attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(
+            {
+              closed_at: input.closed_at.toISOString(),
+              close_order_id: input.close_order_id,
+              close_client_order_id: input.close_client_order_id,
+              close_reason: input.reason,
 						},
-					)}::jsonb`,
-				})
-				.where(
-					and(
-						eq(polyCopyTradeFills.billingAccountId, input.billing_account_id),
-						sql`${polyCopyTradeFills.attributes}->>'token_id' = ${input.token_id}`,
-						notPositionTerminal,
+          )}::jsonb`,
+        })
+        .where(
+          and(
+            eq(polyCopyTradeFills.billingAccountId, input.billing_account_id),
+            sql`${polyCopyTradeFills.attributes}->>'token_id' = ${input.token_id}`,
+            notPositionTerminal,
 						hasPositionLifecycleOrExecution,
 					),
-				)
-				.returning({ clientOrderId: polyCopyTradeFills.clientOrderId });
-			return rows.length;
-		},
+        )
+        .returning({ clientOrderId: polyCopyTradeFills.clientOrderId });
+      return rows.length;
+    },
 
-		async markPositionLifecycleByAsset(
+    async markPositionLifecycleByAsset(
 			input: MarkPositionLifecycleByAssetInput,
-		): Promise<number> {
-			const incomingLifecycleIsTerminal = [
-				"closed",
-				"redeemed",
-				"loser",
-				"dust",
-				"abandoned",
-			].includes(input.lifecycle);
-			const terminalCorrectionGuard =
-				input.terminal_correction === "redeem_reorg" &&
-				input.lifecycle === "redeem_pending"
-					? sql`(${notPositionTerminal} OR ${polyCopyTradeFills.positionLifecycle} = 'redeemed')`
-					: notPositionTerminal;
-			const rows = await deps.db
-				.update(polyCopyTradeFills)
-				.set({
-					positionLifecycle: input.lifecycle,
-					updatedAt: input.updated_at,
-				})
-				.where(
-					and(
-						eq(polyCopyTradeFills.billingAccountId, input.billing_account_id),
-						sql`${polyCopyTradeFills.attributes}->>'token_id' = ${input.token_id}`,
-						incomingLifecycleIsTerminal ? undefined : terminalCorrectionGuard,
+    ): Promise<number> {
+      const incomingLifecycleIsTerminal = [
+        "closed",
+        "redeemed",
+        "loser",
+        "dust",
+        "abandoned",
+      ].includes(input.lifecycle);
+      const terminalCorrectionGuard =
+        input.terminal_correction === "redeem_reorg" &&
+        input.lifecycle === "redeem_pending"
+          ? sql`(${notPositionTerminal} OR ${polyCopyTradeFills.positionLifecycle} = 'redeemed')`
+          : notPositionTerminal;
+      const rows = await deps.db
+        .update(polyCopyTradeFills)
+        .set({
+          positionLifecycle: input.lifecycle,
+          updatedAt: input.updated_at,
+        })
+        .where(
+          and(
+            eq(polyCopyTradeFills.billingAccountId, input.billing_account_id),
+            sql`${polyCopyTradeFills.attributes}->>'token_id' = ${input.token_id}`,
+            incomingLifecycleIsTerminal ? undefined : terminalCorrectionGuard,
 						hasPositionLifecycleOrExecution,
 					),
-				)
-				.returning({ clientOrderId: polyCopyTradeFills.clientOrderId });
-			return rows.length;
-		},
+        )
+        .returning({ clientOrderId: polyCopyTradeFills.clientOrderId });
+      return rows.length;
+    },
 
-		async markPositionLifecycleByConditionId(
+    async markPositionLifecycleByConditionId(
 			input: MarkPositionLifecycleByConditionIdInput,
-		): Promise<number> {
-			const normalizedMarketId = `prediction-market:polymarket:${input.condition_id}`;
-			const incomingLifecycleIsTerminal = [
-				"closed",
-				"redeemed",
-				"loser",
-				"dust",
-				"abandoned",
-			].includes(input.lifecycle);
-			const rows = await deps.db
-				.update(polyCopyTradeFills)
-				.set({
-					positionLifecycle: input.lifecycle,
-					updatedAt: input.updated_at,
-				})
-				.where(
-					and(
-						eq(polyCopyTradeFills.billingAccountId, input.billing_account_id),
-						or(
-							sql`${polyCopyTradeFills.attributes}->>'condition_id' = ${input.condition_id}`,
-							eq(polyCopyTradeFills.marketId, input.condition_id),
+    ): Promise<number> {
+      const normalizedMarketId = `prediction-market:polymarket:${input.condition_id}`;
+      const incomingLifecycleIsTerminal = [
+        "closed",
+        "redeemed",
+        "loser",
+        "dust",
+        "abandoned",
+      ].includes(input.lifecycle);
+      const rows = await deps.db
+        .update(polyCopyTradeFills)
+        .set({
+          positionLifecycle: input.lifecycle,
+          updatedAt: input.updated_at,
+        })
+        .where(
+          and(
+            eq(polyCopyTradeFills.billingAccountId, input.billing_account_id),
+            or(
+              sql`${polyCopyTradeFills.attributes}->>'condition_id' = ${input.condition_id}`,
+              eq(polyCopyTradeFills.marketId, input.condition_id),
 							eq(polyCopyTradeFills.marketId, normalizedMarketId),
-						),
-						incomingLifecycleIsTerminal ? undefined : notPositionTerminal,
+            ),
+            incomingLifecycleIsTerminal ? undefined : notPositionTerminal,
 						hasPositionLifecycleOrExecution,
 					),
-				)
-				.returning({ clientOrderId: polyCopyTradeFills.clientOrderId });
-			return rows.length;
-		},
+        )
+        .returning({ clientOrderId: polyCopyTradeFills.clientOrderId });
+      return rows.length;
+    },
 
-		hasOpenForMarket(args: {
-			billing_account_id: string;
-			target_id: string;
-			market_id: string;
-		}): Promise<boolean> {
-			return hasOpenForMarketImpl(deps.db, args);
-		},
+    hasOpenForMarket(args: {
+      billing_account_id: string;
+      target_id: string;
+      market_id: string;
+    }): Promise<boolean> {
+      return hasOpenForMarketImpl(deps.db, args);
+    },
 
-		findOpenForMarket(args: {
-			billing_account_id: string;
-			target_id: string;
-			market_id: string;
-		}): Promise<OpenOrderRow[]> {
-			return findOpenForMarketImpl(deps.db, args);
-		},
+    findOpenForMarket(args: {
+      billing_account_id: string;
+      target_id: string;
+      market_id: string;
+    }): Promise<OpenOrderRow[]> {
+      return findOpenForMarketImpl(deps.db, args);
+    },
 
-		async findStaleOpen(args: {
-			max_age_minutes: number;
-		}): Promise<OpenOrderRow[]> {
-			const rows = await deps.db
-				.select({
-					clientOrderId: polyCopyTradeFills.clientOrderId,
-					orderId: polyCopyTradeFills.orderId,
-					status: polyCopyTradeFills.status,
-					billingAccountId: polyCopyTradeFills.billingAccountId,
-					targetId: polyCopyTradeFills.targetId,
-					marketId: polyCopyTradeFills.marketId,
-					createdAt: polyCopyTradeFills.createdAt,
-					mode: polyCopyTradeFills.mode,
-					limitPrice: sql<
-						string | null
-					>`${polyCopyTradeFills.attributes}->>'limit_price'`,
-				})
-				.from(polyCopyTradeFills)
-				.where(
-					and(
-						inArray(polyCopyTradeFills.status, ["pending", "open", "partial"]),
-						sql`COALESCE(${polyCopyTradeFills.attributes}->>'position_gap_version', '') <> '3'`,
-						activeRestingPosition,
-						lt(
-							polyCopyTradeFills.createdAt,
+    async findStaleOpen(args: {
+      max_age_minutes: number;
+    }): Promise<OpenOrderRow[]> {
+      const rows = await deps.db
+        .select({
+          clientOrderId: polyCopyTradeFills.clientOrderId,
+          orderId: polyCopyTradeFills.orderId,
+          status: polyCopyTradeFills.status,
+          billingAccountId: polyCopyTradeFills.billingAccountId,
+          targetId: polyCopyTradeFills.targetId,
+          marketId: polyCopyTradeFills.marketId,
+          createdAt: polyCopyTradeFills.createdAt,
+          mode: polyCopyTradeFills.mode,
+          limitPrice: sql<
+            string | null
+          >`${polyCopyTradeFills.attributes}->>'limit_price'`,
+        })
+        .from(polyCopyTradeFills)
+        .where(
+          and(
+            inArray(polyCopyTradeFills.status, ["pending", "open", "partial"]),
+            sql`COALESCE(${polyCopyTradeFills.attributes}->>'position_gap_version', '') <> '3'`,
+            activeRestingPosition,
+            lt(
+              polyCopyTradeFills.createdAt,
 							sql`now() - make_interval(mins => ${args.max_age_minutes})`,
 						),
 					),
-				);
-			return rows.map((r) => ({
-				client_order_id: r.clientOrderId,
-				order_id: r.orderId,
-				status: r.status as LedgerRow["status"],
-				billing_account_id: r.billingAccountId,
-				target_id: r.targetId,
-				market_id: r.marketId,
-				created_at: r.createdAt,
-				mode: r.mode as LedgerRow["mode"],
-				limit_price: parseLimitPrice(r.limitPrice),
-			}));
-		},
+        );
+      return rows.map((r) => ({
+        client_order_id: r.clientOrderId,
+        order_id: r.orderId,
+        status: r.status as LedgerRow["status"],
+        billing_account_id: r.billingAccountId,
+        target_id: r.targetId,
+        market_id: r.marketId,
+        created_at: r.createdAt,
+        mode: r.mode as LedgerRow["mode"],
+        limit_price: parseLimitPrice(r.limitPrice),
+      }));
+    },
 
-		async syncHealthSummary(): Promise<SyncHealthSummary> {
-			// Single round-trip: three filtered aggregates in one SELECT.
-			// oldest_ms — age of least-recently-synced row that HAS synced_at.
-			//   Only rows with non-null synced_at qualify; never-synced rows are
-			//   counted separately in never_synced.
-			// stale_60s — rows whose synced_at is older than 60 seconds.
-			// never_synced — rows with NULL synced_at.
-			const rows = await deps.db.execute(
-				sql<{
-					oldest_ms: string | null;
-					stale_60s: string;
-					never_synced: string;
-				}>`
+    async syncHealthSummary(): Promise<SyncHealthSummary> {
+      // Single round-trip: three filtered aggregates in one SELECT.
+      // oldest_ms — age of least-recently-synced row that HAS synced_at.
+      //   Only rows with non-null synced_at qualify; never-synced rows are
+      //   counted separately in never_synced.
+      // stale_60s — rows whose synced_at is older than 60 seconds.
+      // never_synced — rows with NULL synced_at.
+      const rows = await deps.db.execute(
+        sql<{
+          oldest_ms: string | null;
+          stale_60s: string;
+          never_synced: string;
+        }>`
           SELECT
             CAST(
               EXTRACT(EPOCH FROM (now() - MIN(${polyCopyTradeFills.syncedAt})))
@@ -1538,33 +1538,33 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             ) AS never_synced
           FROM ${polyCopyTradeFills}
         `,
-			);
+      );
 
-			// postgres-js Drizzle returns the rows as an array-like `RowList`
-			// directly (no `.rows` wrapper). The pre-bug.5022 NodePgDatabase
-			// cast made TypeScript think this was a node-postgres `QueryResult`
-			// with a `.rows` field — but the underlying client was always
-			// postgres-js, so `rows.rows[0]` quietly evaluated to `undefined`
-			// at runtime and this method's `oldest_synced_row_age_ms` always
-			// returned `null`. Now indexing the array directly.
-			const row = (
-				rows as unknown as Array<{
-					oldest_ms: string | null;
-					stale_60s: string;
-					never_synced: string;
-				}>
-			)[0];
+      // postgres-js Drizzle returns the rows as an array-like `RowList`
+      // directly (no `.rows` wrapper). The pre-bug.5022 NodePgDatabase
+      // cast made TypeScript think this was a node-postgres `QueryResult`
+      // with a `.rows` field — but the underlying client was always
+      // postgres-js, so `rows.rows[0]` quietly evaluated to `undefined`
+      // at runtime and this method's `oldest_synced_row_age_ms` always
+      // returned `null`. Now indexing the array directly.
+      const row = (
+        rows as unknown as Array<{
+          oldest_ms: string | null;
+          stale_60s: string;
+          never_synced: string;
+        }>
+      )[0];
 
-			return {
-				oldest_synced_row_age_ms:
-					row?.oldest_ms != null ? Number(row.oldest_ms) : null,
-				rows_stale_over_60s: Number(row?.stale_60s ?? 0),
-				rows_never_synced: Number(row?.never_synced ?? 0),
-			};
-		},
-	};
+      return {
+        oldest_synced_row_age_ms:
+          row?.oldest_ms != null ? Number(row.oldest_ms) : null,
+        rows_stale_over_60s: Number(row?.stale_60s ?? 0),
+        rows_never_synced: Number(row?.never_synced ?? 0),
+      };
+    },
+  };
 
-	return root;
+  return root;
 }
 
 /**
@@ -1581,19 +1581,19 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
  * add brittleness for no byte savings.
  */
 const LEDGER_ROW_COLUMNS = {
-	targetId: polyCopyTradeFills.targetId,
-	fillId: polyCopyTradeFills.fillId,
-	observedAt: polyCopyTradeFills.observedAt,
-	clientOrderId: polyCopyTradeFills.clientOrderId,
-	orderId: polyCopyTradeFills.orderId,
-	status: polyCopyTradeFills.status,
-	positionLifecycle: polyCopyTradeFills.positionLifecycle,
-	attributes: polyCopyTradeFills.attributes,
-	syncedAt: polyCopyTradeFills.syncedAt,
-	createdAt: polyCopyTradeFills.createdAt,
-	updatedAt: polyCopyTradeFills.updatedAt,
-	billingAccountId: polyCopyTradeFills.billingAccountId,
-	mode: polyCopyTradeFills.mode,
+  targetId: polyCopyTradeFills.targetId,
+  fillId: polyCopyTradeFills.fillId,
+  observedAt: polyCopyTradeFills.observedAt,
+  clientOrderId: polyCopyTradeFills.clientOrderId,
+  orderId: polyCopyTradeFills.orderId,
+  status: polyCopyTradeFills.status,
+  positionLifecycle: polyCopyTradeFills.positionLifecycle,
+  attributes: polyCopyTradeFills.attributes,
+  syncedAt: polyCopyTradeFills.syncedAt,
+  createdAt: polyCopyTradeFills.createdAt,
+  updatedAt: polyCopyTradeFills.updatedAt,
+  billingAccountId: polyCopyTradeFills.billingAccountId,
+  mode: polyCopyTradeFills.mode,
 	algorithmId: polyCopyTradeFills.algorithmId,
 	algorithmVersionId: polyCopyTradeFills.algorithmVersionId,
 	configHash: polyCopyTradeFills.configHash,
@@ -1609,8 +1609,8 @@ const LEDGER_ROW_COLUMNS = {
  * @internal
  */
 export type LedgerSelectedRow = Pick<
-	typeof polyCopyTradeFills.$inferSelect,
-	keyof typeof LEDGER_ROW_COLUMNS
+  typeof polyCopyTradeFills.$inferSelect,
+  keyof typeof LEDGER_ROW_COLUMNS
 >;
 
 export function mapLedgerRow(r: LedgerSelectedRow): LedgerRow {
@@ -1627,24 +1627,24 @@ export function mapLedgerRow(r: LedgerSelectedRow): LedgerRow {
 				correlation_id: r.correlationId,
 			}
 		: persistedAttributes;
-	return {
-		target_id: r.targetId,
-		fill_id: r.fillId,
-		observed_at: r.observedAt,
-		client_order_id: r.clientOrderId,
-		order_id: r.orderId,
-		// Schema CHECK enforces the set; cast is safe at the type boundary.
-		status: r.status as LedgerRow["status"],
-		position_lifecycle:
-			(r.positionLifecycle as LedgerPositionLifecycle | null) ?? null,
+  return {
+    target_id: r.targetId,
+    fill_id: r.fillId,
+    observed_at: r.observedAt,
+    client_order_id: r.clientOrderId,
+    order_id: r.orderId,
+    // Schema CHECK enforces the set; cast is safe at the type boundary.
+    status: r.status as LedgerRow["status"],
+    position_lifecycle:
+      (r.positionLifecycle as LedgerPositionLifecycle | null) ?? null,
 		attributes,
-		synced_at: r.syncedAt,
-		created_at: r.createdAt,
-		updated_at: r.updatedAt,
-		billing_account_id: r.billingAccountId,
-		// Schema CHECK enforces ('live','paper'); cast is safe at the type boundary.
-		mode: r.mode as LedgerRow["mode"],
-	};
+    synced_at: r.syncedAt,
+    created_at: r.createdAt,
+    updated_at: r.updatedAt,
+    billing_account_id: r.billingAccountId,
+    // Schema CHECK enforces ('live','paper'); cast is safe at the type boundary.
+    mode: r.mode as LedgerRow["mode"],
+  };
 }
 
 /**
@@ -1654,33 +1654,33 @@ export function mapLedgerRow(r: LedgerSelectedRow): LedgerRow {
 function mapReceiptStatus(
 	receiptStatus: import("@cogni/poly-market-provider").OrderReceipt["status"],
 ): LedgerRow["status"] {
-	switch (receiptStatus) {
-		case "filled":
-			return "filled";
-		case "partial":
-			return "partial";
-		case "canceled":
-			return "canceled";
-		case "open":
-			return "open";
-		default:
-			// `unknown` / future additions fall through to `open` — CLOB accepted
-			// it; surface it as live in the ledger until further state arrives.
-			return "open";
-	}
+  switch (receiptStatus) {
+    case "filled":
+      return "filled";
+    case "partial":
+      return "partial";
+    case "canceled":
+      return "canceled";
+    case "open":
+      return "open";
+    default:
+      // `unknown` / future additions fall through to `open` — CLOB accepted
+      // it; surface it as live in the ledger until further state arrives.
+      return "open";
+  }
 }
 
 function lifecycleFromOrderUpdate(
-	status: LedgerRow["status"],
+  status: LedgerRow["status"],
 	filledSizeUsdc: number | undefined,
 ): LedgerPositionLifecycle | null {
-	if (status === "filled" || status === "partial") return "open";
-	if (filledSizeUsdc !== undefined && filledSizeUsdc > 0) return "open";
-	return null;
+  if (status === "filled" || status === "partial") return "open";
+  if (filledSizeUsdc !== undefined && filledSizeUsdc > 0) return "open";
+  return null;
 }
 
 function preserveTerminalLifecycle(next: LedgerPositionLifecycle) {
-	return sql`CASE
+  return sql`CASE
     WHEN ${polyCopyTradeFills.positionLifecycle} IN ('closed','redeemed','loser','dust','abandoned')
       THEN ${polyCopyTradeFills.positionLifecycle}
     ELSE ${next}

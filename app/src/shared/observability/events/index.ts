@@ -13,83 +13,83 @@
  */
 
 import {
-	type EventBase,
-	EVENT_NAMES as SHARED_EVENT_NAMES,
+  type EventBase,
+  EVENT_NAMES as SHARED_EVENT_NAMES,
 } from "@cogni/node-shared/observability/events";
 
 export const EVENT_NAMES = {
-	...SHARED_EVENT_NAMES,
-	// Auth perimeter (proxy): request rejected before reaching any route handler,
-	// so the request-scoped logger never sees it — emitted directly from the proxy.
-	AUTH_PERIMETER_DENIED: "auth.perimeter.denied",
+  ...SHARED_EVENT_NAMES,
+  // Auth perimeter (proxy): request rejected before reaching any route handler,
+  // so the request-scoped logger never sees it — emitted directly from the proxy.
+  AUTH_PERIMETER_DENIED: "auth.perimeter.denied",
 
-	POLY_WALLET_ENABLE_TRADING_COMPLETE:
-		"feature.poly_wallet_enable_trading.complete",
-	ADAPTER_POLY_WALLET_RESOLVE_ERROR: "adapter.poly_wallet.resolve_error",
+  POLY_WALLET_ENABLE_TRADING_COMPLETE:
+    "feature.poly_wallet_enable_trading.complete",
+  ADAPTER_POLY_WALLET_RESOLVE_ERROR: "adapter.poly_wallet.resolve_error",
 
-	// Poly redeem lifecycle bridge (task.5006)
-	POLY_REDEEM_CATCHUP_COMPLETE: "feature.poly_redeem.catchup.complete",
-	POLY_REDEEM_CATCHUP_FAILED: "feature.poly_redeem.catchup.failed",
-	POLY_REDEEM_CATCHUP_TICK_SKIPPED: "poly.ctf.redeem.catchup_tick_skipped",
-	POLY_REDEEM_DIFF_TICK_COMPLETE: "feature.poly_redeem.diff_tick.complete",
-	POLY_REDEEM_DIFF_TICK_FAILED: "feature.poly_redeem.diff_tick.failed",
-	POLY_REDEEM_DIFF_TICK_SKIPPED: "poly.ctf.redeem.diff_tick_skipped",
-	POLY_REDEEM_LIFECYCLE_MIRRORED: "feature.poly_redeem.lifecycle_mirrored",
-	POLY_REDEEM_LIFECYCLE_MIRROR_FAILED:
-		"feature.poly_redeem.lifecycle_mirror_failed",
+  // Poly redeem lifecycle bridge (task.5006)
+  POLY_REDEEM_CATCHUP_COMPLETE: "feature.poly_redeem.catchup.complete",
+  POLY_REDEEM_CATCHUP_FAILED: "feature.poly_redeem.catchup.failed",
+  POLY_REDEEM_CATCHUP_TICK_SKIPPED: "poly.ctf.redeem.catchup_tick_skipped",
+  POLY_REDEEM_DIFF_TICK_COMPLETE: "feature.poly_redeem.diff_tick.complete",
+  POLY_REDEEM_DIFF_TICK_FAILED: "feature.poly_redeem.diff_tick.failed",
+  POLY_REDEEM_DIFF_TICK_SKIPPED: "poly.ctf.redeem.diff_tick_skipped",
+  POLY_REDEEM_LIFECYCLE_MIRRORED: "feature.poly_redeem.lifecycle_mirrored",
+  POLY_REDEEM_LIFECYCLE_MIRROR_FAILED:
+    "feature.poly_redeem.lifecycle_mirror_failed",
 
-	POLY_AGENT_ACCESS_REQUEST_CREATED:
-		"feature.poly_agent_access_request.created",
-	POLY_AGENT_ACCESS_REQUEST_APPROVED:
-		"feature.poly_agent_access_request.approved",
+  POLY_AGENT_ACCESS_REQUEST_CREATED:
+    "feature.poly_agent_access_request.created",
+  POLY_AGENT_ACCESS_REQUEST_APPROVED:
+    "feature.poly_agent_access_request.approved",
 	POLY_AGENT_ACCESS_REQUEST_DENIED: "feature.poly_agent_access_request.denied",
-	POLY_AGENT_GRANT_CREATED: "feature.poly_agent_grant.created",
-	POLY_AGENT_GRANT_REVOKED: "feature.poly_agent_grant.revoked",
+  POLY_AGENT_GRANT_CREATED: "feature.poly_agent_grant.created",
+  POLY_AGENT_GRANT_REVOKED: "feature.poly_agent_grant.revoked",
 	POLY_AGENT_GRANT_ACCESS_DECISION: "feature.poly_agent_grant.access_decision",
-	POLY_RESEARCH_COPY_TRADE_PNL_COMPLETE:
-		"feature.poly_research.copy_trade_pnl.complete",
-	POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE:
-		"feature.poly_research.copy_trade_investigation.complete",
-	POLY_RESEARCH_TRADER_COMPARISON_COMPLETE:
-		"feature.poly_research.trader_comparison.complete",
+  POLY_RESEARCH_COPY_TRADE_PNL_COMPLETE:
+    "feature.poly_research.copy_trade_pnl.complete",
+  POLY_RESEARCH_COPY_TRADE_INVESTIGATION_COMPLETE:
+    "feature.poly_research.copy_trade_investigation.complete",
+  POLY_RESEARCH_TRADER_COMPARISON_COMPLETE:
+    "feature.poly_research.trader_comparison.complete",
 
-	// Copy-operations account reads (task.1791070959). One terminal event per
-	// capability, emitted ONLY by `executeAccountRead`.
-	POLY_ACCOUNT_COPY_SETUP_COMPLETE: "feature.poly_account.copy_setup.complete",
-	POLY_ACCOUNT_RECENT_ATTEMPTS_COMPLETE:
-		"feature.poly_account.recent_attempts.complete",
-	POLY_ACCOUNT_TARGET_POSITIONS_COMPLETE:
-		"feature.poly_research.target_positions.complete",
-	POLY_COPY_TRADE_ORDERS_COMPLETE: "feature.poly_copy_trade.orders.complete",
-	POLY_WALLET_REFRESH_COMPLETE: "feature.poly_wallet_refresh.complete",
-	POLY_WALLET_DASHBOARD_COMPLETE: "feature.poly_wallet_dashboard.complete",
-	POLY_WALLET_POSITIONS_CLOSE_COMPLETE:
-		"feature.poly_wallet_positions_close.complete",
+  // Copy-operations account reads (task.1791070959). One terminal event per
+  // capability, emitted ONLY by `executeAccountRead`.
+  POLY_ACCOUNT_COPY_SETUP_COMPLETE: "feature.poly_account.copy_setup.complete",
+  POLY_ACCOUNT_RECENT_ATTEMPTS_COMPLETE:
+    "feature.poly_account.recent_attempts.complete",
+  POLY_ACCOUNT_TARGET_POSITIONS_COMPLETE:
+    "feature.poly_research.target_positions.complete",
+  POLY_COPY_TRADE_ORDERS_COMPLETE: "feature.poly_copy_trade.orders.complete",
+  POLY_WALLET_REFRESH_COMPLETE: "feature.poly_wallet_refresh.complete",
+  POLY_WALLET_DASHBOARD_COMPLETE: "feature.poly_wallet_dashboard.complete",
+  POLY_WALLET_POSITIONS_CLOSE_COMPLETE:
+    "feature.poly_wallet_positions_close.complete",
 
-	// Push-on-wake mirror dispatch (task.5017)
-	POLY_MIRROR_WAKE_TICK: "poly.mirror.wake_tick",
-	POLY_WALLET_WATCH_WS_WAKE_CALLBACK_THREW:
-		"poly.wallet_watch.ws.wake_callback_threw",
+  // Push-on-wake mirror dispatch (task.5017)
+  POLY_MIRROR_WAKE_TICK: "poly.mirror.wake_tick",
+  POLY_WALLET_WATCH_WS_WAKE_CALLBACK_THREW:
+    "poly.wallet_watch.ws.wake_callback_threw",
 
-	// Polygon chain-log wallet-watch source (task.5043). Heartbeat reuses
-	// POLY_WALLET_WATCH_WS_HEARTBEAT — same Loki absence-alert key applies, the
-	// `component` label disambiguates ws vs chain in the line body.
-	POLY_WALLET_WATCH_CHAIN_STARTED: "poly.wallet_watch.chain.started",
-	POLY_WALLET_WATCH_CHAIN_STOPPED: "poly.wallet_watch.chain.stopped",
+  // Polygon chain-log wallet-watch source (task.5043). Heartbeat reuses
+  // POLY_WALLET_WATCH_WS_HEARTBEAT — same Loki absence-alert key applies, the
+  // `component` label disambiguates ws vs chain in the line body.
+  POLY_WALLET_WATCH_CHAIN_STARTED: "poly.wallet_watch.chain.started",
+  POLY_WALLET_WATCH_CHAIN_STOPPED: "poly.wallet_watch.chain.stopped",
 
-	POLY_RECONCILER_STATUS_UPDATED: "poly.reconciler.status_updated",
-	// Paper-account fact projection (story.5016). Background work has no HTTP
-	// reqId, so these registry-backed terminal events are the correlation seam.
+  POLY_RECONCILER_STATUS_UPDATED: "poly.reconciler.status_updated",
+  // Paper-account fact projection (story.5016). Background work has no HTTP
+  // reqId, so these registry-backed terminal events are the correlation seam.
 	POLY_PAPER_ACCOUNT_ADDRESS_MISMATCH: "poly.paper.account_address_mismatch",
-	POLY_PAPER_ACCOUNT_FUNDER_MISMATCH: "poly.paper.account_funder_mismatch",
-	POLY_PAPER_ACCOUNT_SEED_MISSING: "poly.paper.account_seed_missing",
-	POLY_PAPER_POSITION_INCOHERENT: "poly.paper.position_incoherent",
-	POLY_PAPER_NAV_WITHHELD: "poly.paper.nav_withheld",
-	POLY_PAPER_NAV_NEGATIVE: "poly.paper.nav_negative",
-	POLY_PAPER_OBSERVE: "poly.paper.observe",
-	POLY_PAPER_PROJECT: "poly.paper.project",
-	POLY_POSITION_GAP_PAPER_FILL_EVIDENCE_UNAVAILABLE:
-		"poly.position_gap.v3.paper_fill_evidence_unavailable",
+  POLY_PAPER_ACCOUNT_FUNDER_MISMATCH: "poly.paper.account_funder_mismatch",
+  POLY_PAPER_ACCOUNT_SEED_MISSING: "poly.paper.account_seed_missing",
+  POLY_PAPER_POSITION_INCOHERENT: "poly.paper.position_incoherent",
+  POLY_PAPER_NAV_WITHHELD: "poly.paper.nav_withheld",
+  POLY_PAPER_NAV_NEGATIVE: "poly.paper.nav_negative",
+  POLY_PAPER_OBSERVE: "poly.paper.observe",
+  POLY_PAPER_PROJECT: "poly.paper.project",
+  POLY_POSITION_GAP_PAPER_FILL_EVIDENCE_UNAVAILABLE:
+    "poly.position_gap.v3.paper_fill_evidence_unavailable",
 	POLY_ALGORITHM_ATTEMPT_COMPLETE: "feature.poly_algorithm.attempt.complete",
 } as const;
 
