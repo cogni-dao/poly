@@ -4,7 +4,7 @@
 "use client";
 
 import type {
-  PolyWalletDashboardOutput,
+  PolyAccountPortfolioSnapshotOutput,
   PolyWalletOverviewInterval,
 } from "@cogni/poly-node-contracts";
 import { type QueryClient, useQuery } from "@tanstack/react-query";
@@ -28,7 +28,7 @@ export function invalidateWalletDashboardSnapshot(
 }
 
 type WalletDashboardContextValue = {
-  data: PolyWalletDashboardOutput | undefined;
+  data: PolyAccountPortfolioSnapshotOutput | undefined;
   isLoading: boolean;
   isError: boolean;
   interval: PolyWalletOverviewInterval;

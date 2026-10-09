@@ -154,7 +154,13 @@ export async function readTenantWalletDashboardIn(
   const capturedAtDate = new Date(capturedAt);
   const snapshotId = randomUUID();
   const warnings: WalletDashboardWarning[] = [];
-  if (!input.adapterConfigured) {
+
+  const connection = await readActiveWalletConnection(db, input.billingAccountId);
+  // Paper has its own complete venue adapter and must not inherit Privy's
+  // deployment-readiness flag. Live remains gated exactly as before.
+  const accountConfigured =
+    connection?.connectionKind === "paper" || input.adapterConfigured;
+  if (!accountConfigured) {
     warnings.push(
       warning(
         "wallet",
@@ -164,22 +170,21 @@ export async function readTenantWalletDashboardIn(
     );
   }
 
-  const connection = await readActiveWalletConnection(db, input.billingAccountId);
   const readiness = walletReadiness(connection, capturedAt);
-  const address = connection?.address ?? null;
-  if (address === null) {
+  if (connection === null || connection.address === null) {
     warnings.push(warning("wallet", "no_trading_wallet", "No trading wallet is connected."));
     return emptyDashboard({
       snapshotId,
       capturedAt,
       interval: input.interval,
-      configured: input.adapterConfigured,
+      configured: accountConfigured,
       warnings,
       // A row may exist with an unusable address. Readiness still reports the
       // persisted truth rather than inventing a disconnected wallet.
       readiness,
     });
   }
+  const address = connection.address;
 
   const balanceRead = await optionalRead(db, (savepoint) =>
     (input.readBalance ?? readWalletBalanceFact)(savepoint, input.billingAccountId)
@@ -187,7 +192,11 @@ export async function readTenantWalletDashboardIn(
   const balance: Exclude<WalletBalanceRead, { kind: "no_wallet" }> =
     balanceRead.ok && balanceRead.value.kind !== "no_wallet"
       ? balanceRead.value
-      : { kind: "missing", address };
+      : {
+          kind: "missing",
+          address,
+          connectionKind: connection.connectionKind,
+        };
   if (!balanceRead.ok) {
     warnings.push(readFailure("cash", "balances_unavailable", balanceRead.error));
   } else if (balanceRead.value.kind === "no_wallet") {
@@ -635,8 +644,9 @@ export async function readTenantWalletDashboardIn(
     interval: input.interval,
     readiness,
     overview: {
-      configured: input.adapterConfigured,
+      configured: accountConfigured,
       connected: true,
+      account_kind: connection.connectionKind,
       freshness: "read_model",
       address,
       interval: input.interval,
@@ -688,6 +698,7 @@ export async function readTenantWalletDashboardIn(
       positions: {
         ...positionFact,
         actionsAllowed:
+          connection.connectionKind === "privy_live" &&
           input.adapterConfigured &&
           positionFact.status === "fresh" &&
           positionFact.complete,
@@ -737,6 +748,7 @@ export async function readTenantWalletDashboardIn(
 type ActiveWalletConnection = {
   /** Null when the row exists but has no usable funder address (unprovisioned). */
   address: `0x${string}` | null;
+  connectionKind: "privy_live" | "paper";
   tradingReady: boolean;
   autoWrapConsentAt: string | null;
   autoWrapFloorUsdceAtomic: string | null;
@@ -757,6 +769,7 @@ async function readActiveWalletConnection(
 ): Promise<ActiveWalletConnection | null> {
   const rows = normalizeRows<{
     address: string | null;
+    connection_kind: "privy_live" | "paper";
     trading_approvals_ready_at: Date | string | null;
     auto_wrap_consent_at: Date | string | null;
     auto_wrap_revoked_at: Date | string | null;
@@ -766,6 +779,7 @@ async function readActiveWalletConnection(
       -- Amendment 2: funder_address alone. A null funder is an unprovisioned
       -- deposit wallet, and flows to a null address below, never to the signer.
       lower(funder_address) AS address,
+      kind AS connection_kind,
       trading_approvals_ready_at,
       auto_wrap_consent_at,
       auto_wrap_revoked_at,
@@ -788,6 +802,7 @@ async function readActiveWalletConnection(
       typeof address === "string" && /^0x[0-9a-f]{40}$/.test(address)
         ? (address as `0x${string}`)
         : null,
+    connectionKind: row.connection_kind,
     tradingReady: row.trading_approvals_ready_at !== null,
     // A revocation nulls the consent out; the stamp itself is never rewritten.
     autoWrapConsentAt:
@@ -1254,6 +1269,7 @@ function emptyDashboard(input: { snapshotId: string; capturedAt: string; interva
     overview: {
       configured: input.configured,
       connected: false,
+      account_kind: null,
       freshness: "read_model",
       address: null,
       interval: input.interval,

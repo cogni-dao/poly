@@ -454,6 +454,45 @@ describe("dashboard missing read-model states", () => {
     state.actionsAllowed = true;
   });
 
+  it("keeps paper positions visible without offering unsupported actions", () => {
+    const previousActionsAllowed = state.actionsAllowed;
+    const previousOverview = state.overview;
+    const previousExecution = state.execution;
+    state.actionsAllowed = false;
+    state.overview = {
+      configured: true,
+      connected: true,
+      account_kind: "paper",
+    };
+    state.execution = {
+      address: "0x1111111111111111111111111111111111111111",
+      freshness: "read_model",
+      capturedAt: "2026-10-09T08:00:00.000Z",
+      dailyTradeCounts: [],
+      live_positions: [{ positionId: "paper-position" }],
+      live_position_count: 1,
+      market_groups: [],
+      closed_positions: [],
+      closed_position_count: 0,
+      warnings: [],
+    };
+
+    render(<ExecutionActivityCard />);
+
+    expect(screen.getByText("position rows")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Manual position actions are unavailable for paper accounts."
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "position action" })
+    ).not.toBeInTheDocument();
+    state.actionsAllowed = previousActionsAllowed;
+    state.overview = previousOverview;
+    state.execution = previousExecution;
+  });
+
   it("keeps the position histogram without rendering preview disclaimers", () => {
     state.execution = {
       address: "0x1111111111111111111111111111111111111111",

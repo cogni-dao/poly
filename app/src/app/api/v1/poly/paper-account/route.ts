@@ -44,6 +44,7 @@ import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { provisionPaperAccount } from "@/features/paper-accounts";
+import { invalidateDashboardRouteCaches } from "../wallet/_lib/dashboard-route-cache";
 
 export const dynamic = "force-dynamic";
 
@@ -131,6 +132,9 @@ export const POST = wrapRouteHandlerWithLogging(
       // stuck behind the APPROVALS_BEFORE_PLACE gate in authorizeIntent.
       trading_ready: true,
     };
+    // A no-wallet response may already be cached. Evict it before replying so
+    // the creating browser's refetch observes the new paper connection.
+    invalidateDashboardRouteCaches(account.id);
     ctx.log.info(
       {
         billing_account_id: account.id,

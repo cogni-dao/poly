@@ -145,6 +145,7 @@ export function ExecutionActivityCard(): ReactElement {
 
   const dashboard = useWalletDashboard();
   const executionData = dashboard.data?.execution;
+  const isPaperAccount = dashboard.data?.overview?.account_kind === "paper";
   const actionsAllowed = dashboard.data?.facts.positions.actionsAllowed === true;
   useEffect(() => {
     if (!executionData) return;
@@ -159,7 +160,7 @@ export function ExecutionActivityCard(): ReactElement {
   const isExecutionLoading = dashboard.isLoading;
   const isExecutionError = dashboard.isError;
   const accessWarning =
-    dashboard.data?.overview.configured === false
+    dashboard.data?.overview?.configured === false
       ? {
           code: "wallet_adapter_unconfigured",
           message: "Trading-wallet execution is unavailable on this deployment.",
@@ -260,6 +261,7 @@ export function ExecutionActivityCard(): ReactElement {
             isError={isExecutionError}
             onPositionAction={actionsAllowed ? handlePositionAction : undefined}
             actionsAllowed={actionsAllowed}
+            isPaperAccount={isPaperAccount}
             pendingActionPositionId={pendingActionPositionId}
             positionActionError={positionActionError}
             interval={dashboard.interval}
@@ -354,6 +356,7 @@ function PositionsPanel({
   isError,
   onPositionAction,
   actionsAllowed,
+  isPaperAccount,
   pendingActionPositionId,
   positionActionError,
   interval,
@@ -371,6 +374,7 @@ function PositionsPanel({
     | ((position: WalletPosition, action: "close" | "redeem") => void)
     | undefined;
   actionsAllowed: boolean;
+  isPaperAccount: boolean;
   pendingActionPositionId: string | null;
   positionActionError: string | null;
   interval: PolyWalletOverviewInterval;
@@ -407,7 +411,9 @@ function PositionsPanel({
         />
         {isLive && !actionsAllowed && !liveInventoryUnavailable ? (
           <p className="text-muted-foreground text-xs" role="status">
-            Position actions are paused until the inventory snapshot is fresh.
+            {isPaperAccount
+              ? "Manual position actions are unavailable for paper accounts."
+              : "Position actions are paused until the inventory snapshot is fresh."}
           </p>
         ) : null}
         {isLive && positionActionError ? (

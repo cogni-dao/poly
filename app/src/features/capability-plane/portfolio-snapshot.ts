@@ -214,6 +214,7 @@ export function portfolioSnapshotExtra(
     ...factFields("total", facts.total),
     tradingReady: response.readiness.trading_ready,
     walletConnected: response.readiness.connected,
+    accountKind: response.overview.account_kind,
     openOrders: response.overview.open_orders,
     livePositionCount: response.execution.live_position_count,
     closedPositionCount: response.execution.closed_position_count,

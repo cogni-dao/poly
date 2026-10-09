@@ -94,6 +94,7 @@ function emptyPayload(
   return polyWalletOverviewOperation.output.parse({
     configured: true,
     connected: false,
+    account_kind: null,
     freshness: overrides.freshness ?? "live",
     address: null,
     interval,
@@ -401,6 +402,7 @@ export const GET = wrapRouteHandlerWithLogging(
         return polyWalletOverviewOperation.output.parse({
           configured: isPolyTraderWalletConfigured(),
           connected: true,
+          account_kind: balances.connectionKind,
           freshness,
           address: balances.address,
           interval,

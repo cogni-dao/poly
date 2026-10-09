@@ -66,6 +66,7 @@ export function portfolioSnapshotFixture(
     overview: {
       configured: true,
       connected: true,
+      account_kind: "privy_live",
       freshness: "read_model",
       address: ADDRESS,
       interval: "1W",

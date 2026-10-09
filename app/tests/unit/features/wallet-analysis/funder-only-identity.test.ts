@@ -47,9 +47,19 @@ describe("Amendment 2 — wallet balance fact resolves funder only", () => {
 
   it("still reports a provisioned funder whose snapshot has not landed", async () => {
     const read = await readWalletBalanceFact(
-      fakeSelectDb([{ address: FUNDER, snapshot: null }]),
+      fakeSelectDb([
+        {
+          address: FUNDER,
+          connectionKind: "privy_live",
+          snapshot: null,
+        },
+      ]),
       "account-1"
     );
-    expect(read).toEqual({ kind: "missing", address: FUNDER });
+    expect(read).toEqual({
+      kind: "missing",
+      address: FUNDER,
+      connectionKind: "privy_live",
+    });
   });
 });
