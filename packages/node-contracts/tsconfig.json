@@ -18,7 +18,6 @@
   "references": [
     { "path": "../ai-core" },
     { "path": "../aragon-osx" },
-    { "path": "../knowledge-store" },
     { "path": "../node-core" }
   ]
 }
