@@ -173,6 +173,7 @@ describe("market-exposure latest_snapshots CTE (dashboard floor fix)", () => {
       db,
       billingAccountId: BILLING_ACCOUNT,
       walletAddress: OUR_WALLET,
+      connectionKind: "privy_live",
       livePositions: [],
       closedPositions: [
         {

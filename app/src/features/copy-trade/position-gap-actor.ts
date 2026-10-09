@@ -65,6 +65,7 @@ import { netTargetBook } from "@/features/copy-trade/position-gap-v3/netting";
 import type { OrderLedger } from "@/features/trading";
 import type { WalletActivitySource } from "@/features/wallet-watch";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
+import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 
 const RECONCILE_MS = 30_000;
 const FULL_REFRESH_MS = 5 * 60_000;
@@ -144,6 +145,10 @@ export interface PositionGapActorDeps {
 		snapshot: TargetBookSnapshotV1,
 		mode: "live" | "paper",
 	): Promise<PositionGapLocalHoldingsSnapshot>;
+	/** Saved-fact projection only; failure must never authorize or veto execution. */
+	publishTargetSnapshot(
+		snapshot: TargetBookSnapshotV1,
+	): Promise<{ applied: boolean; positions: number; snapshotId: string }>;
 	logger: LoggerPort;
 	now?: () => number;
 	setInterval?: typeof globalThis.setInterval;
@@ -180,6 +185,7 @@ export function startPositionGapActor(
 	let causalWatermarkMs = 0;
 	let causalRetry: ReturnType<typeof globalThis.setTimeout> | null = null;
 	let causalHoldLogged = false;
+	let publishedTargetSnapshotId: string | null = null;
 	const venueCache = new Map<
 		string,
 		{
@@ -402,6 +408,41 @@ export function startPositionGapActor(
 		causalHoldLogged = false;
 		causalDirty.clear();
 		causalWatermarkMs = 0;
+		if (publishedTargetSnapshotId !== freshSnapshot.snapshotId) {
+			try {
+				const publication = await deps.publishTargetSnapshot(freshSnapshot);
+				publishedTargetSnapshotId = publication.snapshotId;
+				deps.logger.info(
+					{
+						event: publication.applied
+							? "poly.position_gap.v3.target_snapshot_published"
+							: "poly.position_gap.v3.target_snapshot_stale_ignored",
+						billing_account_id: deps.scope.billingAccountId,
+						target_id: deps.scope.targetId,
+						target_wallet: deps.targetWallet,
+						snapshot_id: publication.snapshotId,
+						position_rows: publication.positions,
+						source_max_synced_block:
+							freshSnapshot.refreshStats.sourceMaxSyncedBlock,
+					},
+					publication.applied
+						? "position-gap published planner target snapshot to shared saved facts"
+						: "position-gap ignored an older target snapshot already superseded in shared saved facts",
+				);
+			} catch (error) {
+				deps.logger.warn(
+					{
+						event: "poly.position_gap.v3.target_snapshot_publish_failed",
+						billing_account_id: deps.scope.billingAccountId,
+						target_id: deps.scope.targetId,
+						target_wallet: deps.targetWallet,
+						snapshot_id: freshSnapshot.snapshotId,
+						...safeErrorDimensions(error),
+					},
+					"position-gap target saved-fact publication failed; execution continues",
+				);
+			}
+		}
 
 		const runtime = await deps.store.loadPlannerState(deps.scope);
 		const activeCohortKeys = new Set(
@@ -1025,6 +1066,23 @@ export function startPositionGapActor(
 	}): Promise<void> {
 		const preparedBuys = input.plan.intents.map((intent) => {
 			const token = tokenById(input.snapshot, intent.tokenId);
+			const condition = input.snapshot.conditions.find(
+				(candidate) => candidate.conditionId === intent.conditionId,
+			);
+			const targetPositionUsdc = condition
+				? Number(
+						condition.tokens
+							.reduce(
+								(sum, candidate) =>
+									sum + candidate.shares * candidate.averagePrice,
+								0,
+							)
+							.toFixed(2),
+					)
+				: null;
+			const targetTokenCostUsdc = token
+				? Number((token.shares * token.averagePrice).toFixed(2))
+				: null;
 			const actionKey = hashParts([
 				"buy",
 				input.snapshot.snapshotId,
@@ -1048,6 +1106,9 @@ export function startPositionGapActor(
 				notionalUsdc: intent.notionalUsdc,
 				limitPrice: intent.limitPrice,
 				clientOrderId,
+				targetWallet: deps.targetWallet,
+				targetPositionUsdc,
+				targetTokenCostUsdc,
 				lineage: {
 					...input.lineage,
 					correlation_id: clientOrderId,
@@ -1102,7 +1163,11 @@ export function startPositionGapActor(
 				fill_id: `position-gap-v3:run:${persisted.runId}`,
 				outcome: "skipped",
 				reason,
-				intent: positionGapPlanDecisionIntent(input.plan, input.lineage),
+				intent: positionGapPlanDecisionIntent(
+					input.plan,
+					input.lineage,
+					deps.targetWallet,
+				),
 				receipt: null,
 				decided_at: new Date(input.decidedAtMs),
 				lineage: input.lineage,
@@ -1586,6 +1651,9 @@ function positionGapDecisionIntent(
 		limitPrice: number;
 		clientOrderId: string;
 		cohortKey: string;
+		targetWallet: string;
+		targetPositionUsdc: number | null;
+		targetTokenCostUsdc: number | null;
 		lineage: AlgorithmLineage;
 	},
 	intent: OrderIntent,
@@ -1601,6 +1669,9 @@ function positionGapDecisionIntent(
 		client_order_id: prepared.clientOrderId,
 		position_branch: "position_gap",
 		position_gap_cohort_key: prepared.cohortKey,
+		target_wallet: prepared.targetWallet.toLowerCase(),
+		target_position_usdc: prepared.targetPositionUsdc,
+		target_token_cost_usdc: prepared.targetTokenCostUsdc,
 		...prepared.lineage,
 	};
 }
@@ -1608,6 +1679,7 @@ function positionGapDecisionIntent(
 function positionGapPlanDecisionIntent(
 	plan: PositionGapBookPlanV1,
 	lineage: AlgorithmLineage,
+	targetWallet: string,
 ): Record<string, unknown> {
 	return {
 		market_id: null,
@@ -1619,6 +1691,7 @@ function positionGapPlanDecisionIntent(
 		limit_price: null,
 		position_branch: "position_gap",
 		position_gap_version: "3",
+		target_wallet: targetWallet.toLowerCase(),
 		plan_status: plan.status,
 		block_reason: plan.blockReason,
 		target_total_wealth_usdc: plan.targetTotalWealthUsdc,
