@@ -201,7 +201,7 @@ describe("current-position read model raw->> projection equivalence", () => {
       db.captured[0].indexOf("p.active = true")
     );
     expect(db.captured[0]).toMatch(
-      /ORDER BY\s+p\.current_value_usdc DESC NULLS LAST,\s+p\.last_observed_at DESC NULLS LAST,\s+p\.condition_id ASC NULLS LAST,\s+p\.token_id ASC NULLS LAST\s+LIMIT \$\d+/
+      /ORDER BY\s+\(correlated\.token_id IS NOT NULL\) DESC,\s+p\.current_value_usdc DESC NULLS LAST,\s+p\.last_observed_at DESC NULLS LAST,\s+p\.condition_id ASC NULLS LAST,\s+p\.token_id ASC NULLS LAST\s+LIMIT \$\d+/
     );
   });
 
