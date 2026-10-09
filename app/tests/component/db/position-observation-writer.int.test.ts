@@ -260,6 +260,53 @@ describe("serialized position-observation writer", () => {
     expect(current).toMatchObject({ tokenId: "601", active: false });
   });
 
+  it("publishes (not wedges) when an OMITTED resolved loser still holds nonzero on-chain balance (bug.5031)", async () => {
+    // The exact prod deadlock: a market resolved AFTER the last good page, so
+    // Data-API now drops the worthless loser token while it still has nonzero
+    // CTF balance on-chain. Previously that tripped the authority_nonzero
+    // omission guard and wedged the observer stale forever. The resolved-market
+    // exclusion must keep the omitted loser OUT of the authority check, so the
+    // writer publishes cleanly and the in-publication deactivation retires it.
+    const wallet = await seedWallet("5107");
+    await seedCurrent(wallet.id, "701");
+    await seedLoser("701");
+    let authorityCalls = 0;
+
+    const result = await refreshCurrentPositionsForWallet({
+      db: getSeedDb() as unknown as WriterDb,
+      client: clientReturning(async () => []), // 701 omitted by Data-API
+      walletAddress: wallet.address,
+      // Nonzero balance would have tripped authority_nonzero pre-fix; it must
+      // now never be consulted for the excluded resolved token.
+      readPositionBalances: async ({ tokenIds }) => {
+        authorityCalls += 1;
+        return tokenIds.map(() => 1n);
+      },
+    });
+
+    expect(result.complete).toBe(true);
+    expect(result.failureReason).toBeUndefined();
+    expect(authorityCalls).toBe(0); // resolved loser excluded from the guard
+    const [current] = await getSeedDb()
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    expect(current).toMatchObject({ tokenId: "701", active: false });
+    const [cursor] = await getSeedDb()
+      .select()
+      .from(polyTraderIngestionCursors)
+      .where(
+        and(
+          eq(polyTraderIngestionCursors.traderWalletId, wallet.id),
+          eq(polyTraderIngestionCursors.source, "data-api-positions")
+        )
+      );
+    expect(cursor?.status).toBe("ok");
+    expect(cursor?.lastSuccessAt.getTime()).toBeGreaterThan(
+      wallet.lastSuccessAt.getTime()
+    );
+  });
+
   it("uses xmin to exhaust two same-timestamp superseded attempts without writes", async () => {
     const wallet = await seedWallet("5103");
     await seedCurrent(wallet.id, "301");
