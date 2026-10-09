@@ -477,6 +477,7 @@ describe("no fabricated values survive the plane", () => {
       totalUsdc: null,
       tradingReady: true,
       walletConnected: true,
+      accountKind: "privy_live",
       // The route's former `outcome: "degraded"` is now this boolean, because
       // the executor owns `outcome` and only emits success/error.
       degraded: true,

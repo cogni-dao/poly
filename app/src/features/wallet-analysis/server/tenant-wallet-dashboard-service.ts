@@ -154,7 +154,13 @@ export async function readTenantWalletDashboardIn(
   const capturedAtDate = new Date(capturedAt);
   const snapshotId = randomUUID();
   const warnings: WalletDashboardWarning[] = [];
-  if (!input.adapterConfigured) {
+
+  const connection = await readActiveWalletConnection(db, input.billingAccountId);
+  // Paper has its own complete venue adapter and must not inherit Privy's
+  // deployment-readiness flag. Live remains gated exactly as before.
+  const accountConfigured =
+    connection?.connectionKind === "paper" || input.adapterConfigured;
+  if (!accountConfigured) {
     warnings.push(
       warning(
         "wallet",
@@ -164,22 +170,21 @@ export async function readTenantWalletDashboardIn(
     );
   }
 
-  const connection = await readActiveWalletConnection(db, input.billingAccountId);
   const readiness = walletReadiness(connection, capturedAt);
-  const address = connection?.address ?? null;
-  if (address === null) {
+  if (connection === null || connection.address === null) {
     warnings.push(warning("wallet", "no_trading_wallet", "No trading wallet is connected."));
     return emptyDashboard({
       snapshotId,
       capturedAt,
       interval: input.interval,
-      configured: input.adapterConfigured,
+      configured: accountConfigured,
       warnings,
       // A row may exist with an unusable address. Readiness still reports the
       // persisted truth rather than inventing a disconnected wallet.
       readiness,
     });
   }
+  const address = connection.address;
 
   const balanceRead = await optionalRead(db, (savepoint) =>
     (input.readBalance ?? readWalletBalanceFact)(savepoint, input.billingAccountId)
@@ -639,7 +644,7 @@ export async function readTenantWalletDashboardIn(
     interval: input.interval,
     readiness,
     overview: {
-      configured: input.adapterConfigured,
+      configured: accountConfigured,
       connected: true,
       account_kind: connection.connectionKind,
       freshness: "read_model",
@@ -693,7 +698,7 @@ export async function readTenantWalletDashboardIn(
       positions: {
         ...positionFact,
         actionsAllowed:
-          input.adapterConfigured &&
+          accountConfigured &&
           positionFact.status === "fresh" &&
           positionFact.complete,
         previewLimit: LIVE_PREVIEW_LIMIT,

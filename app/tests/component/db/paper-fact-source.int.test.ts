@@ -71,6 +71,7 @@ import {
   persistWalletBalanceFact,
   readWalletBalanceFact,
 } from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
+import { readTenantWalletDashboard } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 import {
   billingAccounts,
   polyCopyTradeFills,
@@ -544,6 +545,25 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       expect(balance.pol).toBeNull();
       expect(balance.status).toBe("partial");
       expect(balance.errors.length).toBeGreaterThan(0);
+    });
+
+    it("keeps the full paper dashboard visible without Privy configuration", async () => {
+      const dashboard = await readTenantWalletDashboard({
+        db: getSeedDb(),
+        billingAccountId: traded.billingAccountId,
+        interval: "1W",
+        adapterConfigured: false,
+      });
+
+      expect(dashboard.overview.account_kind).toBe("paper");
+      expect(dashboard.overview.configured).toBe(true);
+      expect(dashboard.overview.connected).toBe(true);
+      expect(dashboard.warnings.map((entry) => entry.code)).not.toContain(
+        "wallet_adapter_unconfigured"
+      );
+      expect(dashboard.execution.warnings.map((entry) => entry.code)).not.toContain(
+        "wallet_adapter_unconfigured"
+      );
     });
 
     it("marks the position cursor ok when every open position was priced", async () => {
