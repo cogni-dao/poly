@@ -507,7 +507,6 @@ describe("buildPositionGapBuyIntent", () => {
 				recoverKnownRejectedAmbiguities,
 				loadPlannerState,
 				reconcileLedgerTerminals: vi.fn(async () => 0),
-				releaseCanceledOrderReservations: vi.fn(async () => 0),
 				loadLastSnapshot: vi.fn(async () => snapshot),
 				persistPlan,
 				markPlacementReceipt: vi.fn(async () => undefined),

@@ -578,7 +578,7 @@ describe("position-gap runtime persistence", () => {
 		expect(attributesByFill.get(liveFillId)?.target_wallet).toBeUndefined();
 	});
 
-	it("releases all 49 terminal reservations while retaining their provisional exposure", async () => {
+	it("retains the filled cost of all 49 canceled pending-fill reservations", async () => {
 		const db = getSeedDb();
 		const store = new PositionGapRuntimeStore(db);
 		const scope = {
@@ -672,19 +672,11 @@ describe("position-gap runtime persistence", () => {
 		);
 		const beforeRelease = await store.loadPlannerState(scope);
 		expect(beforeRelease.openBuyOrders).toEqual([]);
-		expect(beforeRelease.provisionalFilledHoldings).toEqual([
-			{
-				conditionId: "condition-terminal-catchup",
-				tokenId: "token-terminal-catchup",
-				shares: 49,
-			},
-		]);
-		expect(await store.releaseCanceledOrderReservations(scope)).toBe(49);
-		expect(await store.releaseCanceledOrderReservations(scope)).toBe(0);
-		expect(await store.activeReservationTotals(scope)).toEqual({
-			budgetUsdc: 0,
-			cashGuardAtomicForAccount: 0n,
-		});
+		expect(beforeRelease.activeBuys).toHaveLength(8);
+		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBeCloseTo(
+			73.42378,
+			5,
+		);
 		const reservations = await db
 			.select()
 			.from(polyPositionGapReservations)
@@ -695,15 +687,14 @@ describe("position-gap runtime persistence", () => {
 		expect(
 			reservations.every(
 				(reservation) =>
-					reservation.state === "released" &&
-					Number(reservation.releasedBudgetUsdc) ===
-						Number(reservation.budgetNotionalUsdc) &&
-					reservation.releaseReason === "terminal_cancel_catchup",
+					reservation.state === "active" &&
+					Number(reservation.releasedBudgetUsdc) === 0 &&
+					Number(reservation.filledCostUsdc) === 0.1,
 			),
 		).toBe(true);
 
-		// A later historical cancel is released independently of durable cohort
-		// attribution, while its uncertain fill remains in the exposure floor.
+		// A later historical cancel likewise remains fail-closed until its market
+		// reaches an economically terminal lifecycle.
 		const missingAcquisitionActionId = randomUUID();
 		await db.insert(polyPositionGapActions).values({
 			id: missingAcquisitionActionId,
@@ -741,20 +732,39 @@ describe("position-gap runtime persistence", () => {
 			cashGuardSource: "test",
 			filledCostUsdc: "0.1",
 		});
-		expect(await store.releaseCanceledOrderReservations(scope)).toBe(1);
+		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBeCloseTo(
+			74.92378,
+			5,
+		);
+		await db.insert(polyCopyTradeFills).values(
+			Array.from({ length: 50 }, (_, index) => ({
+				billingAccountId: accountA,
+				createdByUserId: ownerA,
+				targetId: targetReservationCatchup,
+				fillId: `terminal-catchup-fill-${index}`,
+				marketId: "prediction-market:polymarket:condition-terminal-catchup",
+				observedAt: asOf,
+				clientOrderId:
+					index < actions.length
+						? `terminal-catchup-client-${index}`
+						: "terminal-catchup-missing-acquisition-client",
+				orderId:
+					index < actions.length
+						? `terminal-catchup-order-${index}`
+						: "terminal-catchup-missing-acquisition-order",
+				status: "canceled" as const,
+				positionLifecycle: "loser" as const,
+				price: "0.1",
+				shares: "1",
+				attributes: { position_gap_version: "3" },
+			})),
+		);
+		expect(await store.releaseTerminalExposure(scope)).toBe(50);
+		expect(await store.releaseTerminalExposure(scope)).toBe(0);
 		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBe(0);
-		const afterRelease = await store.loadPlannerState(scope);
-		expect(afterRelease.openBuyOrders).toEqual([]);
-		expect(afterRelease.provisionalFilledHoldings).toEqual([
-			{
-				conditionId: "condition-terminal-catchup",
-				tokenId: "token-terminal-catchup",
-				shares: 50,
-			},
-		]);
 	});
 
-	it("atomically retains a terminal receipt's provisional shares while releasing its full order reservation", async () => {
+	it("retains canceled fill cost until terminal lifecycle releases it", async () => {
 		const db = getSeedDb();
 		const store = new PositionGapRuntimeStore(db);
 		const scope = {
@@ -881,23 +891,16 @@ describe("position-gap runtime persistence", () => {
 		expect(Number(action?.filledShares)).toBe(4);
 		expect(cancelAction?.status).toBe("canceled");
 		expect(reservation).toMatchObject({
-			state: "released",
-			releaseReason: "venue_cancel_confirmed",
+			state: "active",
+			filledCostUsdc: "2.00000000",
 		});
-		expect(Number(reservation?.releasedBudgetUsdc)).toBe(5);
+		expect(Number(reservation?.releasedBudgetUsdc)).toBe(3);
 		expect(Number(cohort?.acquiredShares)).toBe(4);
 		expect(Number(cohort?.remainingShares)).toBe(6);
 		expect(Number(cohort?.openOrderShares)).toBe(0);
-		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBe(0);
+		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBe(2);
 		const runtime = await store.loadPlannerState(scope);
 		expect(runtime.cohorts[0]?.acquiredMirrorShares).toBe(4);
-		expect(runtime.provisionalFilledHoldings).toEqual([
-			{
-				conditionId: "condition-canceled-receipt",
-				tokenId: "token-canceled-receipt",
-				shares: 4,
-			},
-		]);
 		expect(runtime.activeBuys.map((entry) => entry.id)).toContain(buy.id);
 		await db.insert(polyCopyTradeFills).values({
 			billingAccountId: accountA,
@@ -936,11 +939,28 @@ describe("position-gap runtime persistence", () => {
 			.select()
 			.from(polyPositionGapReservations)
 			.where(eq(polyPositionGapReservations.buyActionId, buy.id));
-		expect(verifiedReservation?.state).toBe("released");
-		expect(Number(verifiedReservation?.releasedBudgetUsdc)).toBe(5);
-		expect(
-			(await store.loadPlannerState(scope)).provisionalFilledHoldings,
-		).toEqual([]);
+		expect(verifiedReservation?.state).toBe("active");
+		expect(Number(verifiedReservation?.releasedBudgetUsdc)).toBe(3.19);
+		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBeCloseTo(
+			1.81,
+		);
+
+		await db
+			.update(polyCopyTradeFills)
+			.set({ positionLifecycle: "loser" })
+			.where(eq(polyCopyTradeFills.clientOrderId, "canceled-receipt-client"));
+		expect(await store.releaseTerminalExposure(scope)).toBe(1);
+		expect(await store.releaseTerminalExposure(scope)).toBe(0);
+		expect((await store.activeReservationTotals(scope)).budgetUsdc).toBe(0);
+		const [releasedReservation] = await db
+			.select()
+			.from(polyPositionGapReservations)
+			.where(eq(polyPositionGapReservations.buyActionId, buy.id));
+		expect(releasedReservation).toMatchObject({
+			state: "released",
+			releaseReason: "loser_terminal",
+		});
+		expect(Number(releasedReservation?.releasedBudgetUsdc)).toBe(5);
 	});
 
 	it("backfills late activation once across timer replay, restart, and resolved tombstones", async () => {
@@ -2152,8 +2172,17 @@ describe("position-gap runtime persistence", () => {
 			.select()
 			.from(polyPositionGapCohorts)
 			.where(eq(polyPositionGapCohorts.id, cohortId));
-		expect(Number(reservation?.releasedBudgetUsdc)).toBe(5);
-		expect(reservation?.state).toBe("released");
+		expect(Number(reservation?.releasedBudgetUsdc)).toBe(3);
+		expect(reservation?.state).toBe("active");
+		expect(
+			(
+				await store.activeReservationTotals({
+					billingAccountId: accountA,
+					createdByUserId: ownerA,
+					targetId: targetNotFound,
+				})
+			).budgetUsdc,
+		).toBe(2);
 		expect(Number(cohort?.acquiredShares)).toBe(4);
 		expect(Number(cohort?.openOrderShares)).toBe(0);
 		expect(Number(cohort?.remainingShares)).toBe(6);
