@@ -145,7 +145,7 @@ export function ExecutionActivityCard(): ReactElement {
 
   const dashboard = useWalletDashboard();
   const executionData = dashboard.data?.execution;
-  const isPaperAccount = dashboard.data?.overview.account_kind === "paper";
+  const isPaperAccount = dashboard.data?.overview?.account_kind === "paper";
   const actionsAllowed = dashboard.data?.facts.positions.actionsAllowed === true;
   useEffect(() => {
     if (!executionData) return;
