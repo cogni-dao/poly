@@ -29,37 +29,6 @@ export const HUMAN_PASTE_FIELDS = [
 
 export type EgressVerdict = "permitted" | "blocked" | "unknown" | "unreachable";
 
-export interface LiveMoneyGateInput {
-	env: Readonly<Record<string, string | undefined>>;
-	confirmation: string | undefined;
-	algorithmUsdc: number;
-	authenticated: boolean;
-	tradingEnabled: boolean;
-	dbIsolationVerified: boolean;
-	egress: {
-		verdict: EgressVerdict;
-		country: string | null;
-	};
-}
-
-export type LiveMoneyGateResult =
-	| { ok: true }
-	| {
-			ok: false;
-			code:
-				| "development_only"
-				| "ci_refused"
-				| "live_dispatch_required"
-				| "explicit_opt_in_required"
-				| "geo_refused"
-				| "authentication_required"
-				| "trading_not_enabled"
-				| "db_isolation_unproven"
-				| "invalid_order_size"
-				| "order_cap_exceeded";
-			message: string;
-	  };
-
 export interface ProofAttempt {
 	phase: "before" | "after";
 	started_at: string;
@@ -120,101 +89,22 @@ export interface ProofEvaluation {
 	lines: string[];
 }
 
-function truthy(value: string | undefined): boolean {
-	return /^(1|true|yes|on)$/i.test(value ?? "");
-}
-
-/** Fail-closed gate used immediately before any real-money placement call. */
-export function evaluateLiveMoneyGate(
-	input: LiveMoneyGateInput,
-): LiveMoneyGateResult {
-	if (input.env.NODE_ENV !== "development") {
-		return {
-			ok: false,
-			code: "development_only",
-			message: "real-money local proof requires NODE_ENV=development",
-		};
-	}
-	if (truthy(input.env.CI)) {
-		return {
-			ok: false,
-			code: "ci_refused",
-			message: "real-money proof is forbidden in CI",
-		};
-	}
-	if (input.env.APP_ENV !== "production") {
-		return {
-			ok: false,
-			code: "live_dispatch_required",
-			message: "local proof requires the production/live dispatcher",
-		};
-	}
-	if (input.confirmation !== LIVE_PROOF_CONFIRMATION) {
-		return {
-			ok: false,
-			code: "explicit_opt_in_required",
-			message: `request confirmation must equal ${LIVE_PROOF_CONFIRMATION}`,
-		};
-	}
-	if (input.egress.verdict !== "permitted") {
-		return {
-			ok: false,
-			code: "geo_refused",
-			message: `live placement refused by geographic preflight (${input.egress.verdict}, ${input.egress.country ?? "unknown"})`,
-		};
-	}
-	if (!input.authenticated) {
-		return {
-			ok: false,
-			code: "authentication_required",
-			message: "an authenticated local user is required",
-		};
-	}
-	if (!input.tradingEnabled) {
-		return {
-			ok: false,
-			code: "trading_not_enabled",
-			message: "the authenticated user must enable trading",
-		};
-	}
-	if (!input.dbIsolationVerified) {
-		return {
-			ok: false,
-			code: "db_isolation_unproven",
-			message: "tenant-isolated database reads must pass before placement",
-		};
-	}
-	if (!Number.isFinite(input.algorithmUsdc) || input.algorithmUsdc <= 0) {
-		return {
-			ok: false,
-			code: "invalid_order_size",
-			message: "live proof order size must be finite and positive",
-		};
-	}
-	if (input.algorithmUsdc > LIVE_PROOF_MAX_USDC) {
-		return {
-			ok: false,
-			code: "order_cap_exceeded",
-			message: `live proof order exceeds the $${LIVE_PROOF_MAX_USDC.toFixed(2)} hard cap`,
-		};
-	}
-	return { ok: true };
-}
-
-/**
- * Makes gate ordering executable: a denied gate returns without invoking the
- * callback. The callback is where the live probe calls the real executor.
- */
-export async function runGuardedLivePlacement<T>(
-	input: LiveMoneyGateInput,
-	place: () => Promise<T>,
-): Promise<
-	| { placed: false; refusal: Exclude<LiveMoneyGateResult, { ok: true }> }
-	| { placed: true; receipt: T }
-> {
-	const gate = evaluateLiveMoneyGate(input);
-	if (!gate.ok) return { placed: false, refusal: gate };
-	return { placed: true, receipt: await place() };
+/** Build a cookie header using RFC domain boundaries, never suffix lookalikes. */
+export function cookieHeaderForHost(
+	cookies: ReadonlyArray<{ name: string; value: string; domain: string }>,
+	host: string,
+): string {
+	const normalizedHost = host.toLowerCase();
+	return cookies
+		.filter((entry) => {
+			const domain = entry.domain.replace(/^\./, "").toLowerCase();
+			return (
+				normalizedHost === domain ||
+				(entry.domain.startsWith(".") && normalizedHost.endsWith(`.${domain}`))
+			);
+		})
+		.map((entry) => `${entry.name}=${entry.value}`)
+		.join("; ");
 }
 
 function isSha(value: string): boolean {
@@ -287,6 +177,14 @@ function validateAttempt(
 	if (response.decision.size_usdc !== response.algorithm_parameter.order_usdc) {
 		issues.push(
 			`${prefix}.decision size does not match the algorithm parameter`,
+		);
+	}
+	if (response.decision.correlation_id !== response.correlation_id) {
+		issues.push(`${prefix}.decision correlation does not match the response`);
+	}
+	if (response.decision.algorithm_version !== response.algorithm_version) {
+		issues.push(
+			`${prefix}.decision algorithm version does not match the response`,
 		);
 	}
 	if (

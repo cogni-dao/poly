@@ -9,44 +9,34 @@
  */
 
 import type { PolyLocalLiveCanaryOutput } from "@cogni/poly-node-contracts";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
 	collectCorrelatedLogEvidence,
-	evaluateLiveMoneyGate,
+	cookieHeaderForHost,
 	evaluateProof,
 	findLeakedSecretNames,
 	HUMAN_PASTE_FIELDS,
 	LIVE_CANARY_SCHEMA_VERSION,
-	LIVE_PROOF_CONFIRMATION,
 	LIVE_PROOF_SCHEMA_VERSION,
-	type LiveMoneyGateInput,
 	type LocalLiveProofEvidence,
 	type ProofAttempt,
 	REQUIRED_LIVE_PROOF_LOG_EVENTS,
-	runGuardedLivePlacement,
 } from "../../../../scripts/local-live-proof/proof-contract";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
-
-function gate(overrides: Partial<LiveMoneyGateInput> = {}): LiveMoneyGateInput {
-	return {
-		env: { NODE_ENV: "development", APP_ENV: "production" },
-		confirmation: LIVE_PROOF_CONFIRMATION,
-		algorithmUsdc: 1,
-		authenticated: true,
-		tradingEnabled: true,
-		dbIsolationVerified: true,
-		egress: { verdict: "permitted", country: "GB" },
-		...overrides,
-	};
-}
 
 function response(
 	version: string,
 	orderUsdc: number,
 	correlation: string,
 	orderId: string,
-	decision: { outcome: "placed"; reason: string | null; size_usdc: number },
+	decision: {
+		outcome: "placed";
+		reason: string | null;
+		size_usdc: number;
+		correlation_id?: string;
+		algorithm_version?: string;
+	},
 ): PolyLocalLiveCanaryOutput {
 	return {
 		schema_version: LIVE_CANARY_SCHEMA_VERSION,
@@ -63,7 +53,11 @@ function response(
 			normalized_price: 0.5,
 			tick_size: 0.01,
 		},
-		decision,
+		decision: {
+			...decision,
+			correlation_id: decision.correlation_id ?? correlation,
+			algorithm_version: decision.algorithm_version ?? version,
+		},
 		ledger: {
 			fill_id: `local-canary:${version}:sha256:fixed-input`,
 			client_order_id: `0xclient${version}`,
@@ -175,69 +169,6 @@ function provenEvidence(): LocalLiveProofEvidence {
 	};
 }
 
-describe("evaluateLiveMoneyGate", () => {
-	it.each([
-		[
-			{ env: { NODE_ENV: "production", APP_ENV: "production" } },
-			"development_only",
-		],
-		[
-			{ env: { NODE_ENV: "development", APP_ENV: "production", CI: "true" } },
-			"ci_refused",
-		],
-		[
-			{ env: { NODE_ENV: "development", APP_ENV: "test" } },
-			"live_dispatch_required",
-		],
-		[{ confirmation: "yes" }, "explicit_opt_in_required"],
-		[{ egress: { verdict: "blocked" as const, country: "US" } }, "geo_refused"],
-		[{ egress: { verdict: "unknown" as const, country: null } }, "geo_refused"],
-		[
-			{ egress: { verdict: "unreachable" as const, country: null } },
-			"geo_refused",
-		],
-		[{ authenticated: false }, "authentication_required"],
-		[{ tradingEnabled: false }, "trading_not_enabled"],
-		[{ dbIsolationVerified: false }, "db_isolation_unproven"],
-		[{ algorithmUsdc: 0 }, "invalid_order_size"],
-		[{ algorithmUsdc: 2.01 }, "order_cap_exceeded"],
-	] as const)("refuses %j with %s", (override, code) => {
-		expect(evaluateLiveMoneyGate(gate(override))).toMatchObject({
-			ok: false,
-			code,
-		});
-	});
-
-	it("allows exactly $2 only after every safety boundary passes", () => {
-		expect(evaluateLiveMoneyGate(gate({ algorithmUsdc: 2 }))).toEqual({
-			ok: true,
-		});
-	});
-
-	it("never calls placement when auth, geo, cap, or CI refuses", async () => {
-		const place = vi.fn(async () => ({ orderId: "must-not-exist" }));
-		for (const input of [
-			gate({ authenticated: false }),
-			gate({ egress: { verdict: "blocked", country: "US" } }),
-			gate({ algorithmUsdc: 2.01 }),
-			gate({
-				env: { NODE_ENV: "development", APP_ENV: "production", CI: "1" },
-			}),
-		]) {
-			const result = await runGuardedLivePlacement(input, place);
-			expect(result.placed).toBe(false);
-		}
-		expect(place).not.toHaveBeenCalled();
-	});
-
-	it("calls placement once only after authorization succeeds", async () => {
-		const place = vi.fn(async () => ({ orderId: "order-1" }));
-		const result = await runGuardedLivePlacement(gate(), place);
-		expect(result).toEqual({ placed: true, receipt: { orderId: "order-1" } });
-		expect(place).toHaveBeenCalledTimes(1);
-	});
-});
-
 describe("evaluateProof", () => {
 	it("passes a correlated same-SHA before/after algorithm change under 60 seconds", () => {
 		const result = evaluateProof(provenEvidence());
@@ -253,6 +184,8 @@ describe("evaluateProof", () => {
 		after.response.api.correlation_id = "wrong-correlation";
 		after.response.clob.order_id = "wrong-order";
 		after.response.ledger.algorithm_version = "wrong-version";
+		after.response.decision.correlation_id = "wrong-correlation";
+		after.response.decision.algorithm_version = "wrong-version";
 		const completion = after.log_records[0];
 		if (!completion) throw new Error("missing completion log fixture");
 		completion.correlation_id = "wrong-correlation";
@@ -263,6 +196,8 @@ describe("evaluateProof", () => {
 				"after.api correlation does not match the response",
 				"after.ledger algorithm version does not match the response",
 				"after.ledger order id does not match the CLOB order id",
+				"after.decision correlation does not match the response",
+				"after.decision algorithm version does not match the response",
 				"after.poly.local_live_canary.complete correlation does not match the response",
 			]),
 		);
@@ -345,6 +280,17 @@ describe("evaluateProof", () => {
 });
 
 describe("evidence secrecy", () => {
+	it("matches host-only auth cookies without accepting suffix lookalikes", () => {
+		const cookies = [
+			{ name: "auth", value: "ipv4", domain: "127.0.0.1" },
+			{ name: "wrong", value: "localhost", domain: "localhost" },
+			{ name: "parent", value: "yes", domain: ".example.com" },
+		];
+		expect(cookieHeaderForHost(cookies, "127.0.0.1")).toBe("auth=ipv4");
+		expect(cookieHeaderForHost(cookies, "app.example.com")).toBe("parent=yes");
+		expect(cookieHeaderForHost(cookies, "notexample.com")).toBe("");
+	});
+
 	it("collects only allowlisted correlated fields from NDJSON app logs", () => {
 		const correlation = `local-canary-${"c".repeat(32)}`;
 		const common = {

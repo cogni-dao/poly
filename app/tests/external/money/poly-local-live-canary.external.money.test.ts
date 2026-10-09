@@ -18,6 +18,7 @@ import {
 	polyLocalLiveCanaryOperation,
 } from "@cogni/poly-node-contracts";
 import { describe, expect, it } from "vitest";
+import { cookieHeaderForHost } from "../../../../scripts/local-live-proof/proof-contract";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../../..");
@@ -35,7 +36,7 @@ describe.skipIf(!explicitlyConfirmed)("local live algorithm canary", () => {
 		const port = process.env.CONDUCTOR_PORT;
 		const baseUrl =
 			process.env.POLY_LOCAL_LIVE_BASE_URL ??
-			(port ? `http://localhost:${port}` : undefined);
+			(port ? `http://127.0.0.1:${port}` : undefined);
 		if (!baseUrl) {
 			throw new Error(
 				"POLY_LOCAL_LIVE_BASE_URL or CONDUCTOR_PORT is required for the opted-in lane",
@@ -60,14 +61,7 @@ describe.skipIf(!explicitlyConfirmed)("local live algorithm canary", () => {
 		});
 
 		const host = new URL(baseUrl).hostname;
-		const cookie = state.cookies
-			.filter(
-				(entry) =>
-					host === entry.domain ||
-					host.endsWith(entry.domain.replace(/^\./, "")),
-			)
-			.map((entry) => `${entry.name}=${entry.value}`)
-			.join("; ");
+		const cookie = cookieHeaderForHost(state.cookies, host);
 		if (!cookie) throw new Error(`no authenticated cookies found for ${host}`);
 
 		const response = await fetch(
@@ -105,6 +99,8 @@ describe.skipIf(!explicitlyConfirmed)("local live algorithm canary", () => {
 		expect(proof.algorithm_parameter.order_usdc).toBeLessThanOrEqual(2);
 		expect(proof.decision.outcome).toBe("placed");
 		expect(proof.decision.size_usdc).toBe(proof.algorithm_parameter.order_usdc);
+		expect(proof.decision.correlation_id).toBe(proof.correlation_id);
+		expect(proof.decision.algorithm_version).toBe(proof.algorithm_version);
 		expect(proof.ledger.client_order_id).not.toBeNull();
 		expect(proof.ledger.order_id).not.toBeNull();
 		expect(proof.ledger.order_id).toBe(proof.clob.order_id);
