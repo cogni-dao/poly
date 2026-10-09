@@ -282,6 +282,62 @@ export interface MirrorPipelineDeps {
   ) => Promise<OperatorPosition[]>;
 }
 
+interface AssignmentGuard {
+  readonly retired: boolean;
+  readonly terminalReason:
+    | "assignment_retired"
+    | "assignment_liveness_unavailable"
+    | null;
+  check(log: LoggerPort, phase: string): Promise<boolean>;
+}
+
+function createAssignmentGuard(deps: MirrorPipelineDeps): AssignmentGuard {
+  let retired = false;
+  let terminalReason: AssignmentGuard["terminalReason"] = null;
+  return {
+    get retired() {
+      return retired;
+    },
+    get terminalReason() {
+      return terminalReason;
+    },
+    async check(log, phase) {
+      if (retired) return false;
+      let current = false;
+      let livenessError: unknown;
+      try {
+        current = await deps.isAssignmentCurrent();
+      } catch (error) {
+        livenessError = error;
+      }
+      if (current) return true;
+
+      retired = true;
+      terminalReason = livenessError
+        ? "assignment_liveness_unavailable"
+        : "assignment_retired";
+      const fields = {
+        event: EVENT_NAMES.POLY_MIRROR_ASSIGNMENT_RETIRED,
+        outcome: livenessError ? "error" : "skipped",
+        reason: terminalReason,
+        phase,
+        ...(livenessError
+          ? {
+              errorCode: "assignment_liveness_unavailable",
+              ...safeErrorDimensions(livenessError),
+            }
+          : {}),
+      };
+      if (livenessError) {
+        log.error(fields, "mirror pipeline: assignment liveness unavailable");
+      } else {
+        log.info(fields, "mirror pipeline: assignment retired");
+      }
+      return false;
+    },
+  };
+}
+
 /**
  * The account's execution mode for log attribution. `"unresolved"` is reported
  * honestly rather than defaulting to `"live"`: a wrong label on the decision
@@ -304,31 +360,8 @@ export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
     assignment_id: deps.assignmentId,
     algorithm_id: algorithmId,
   });
-  try {
-    if (!(await deps.isAssignmentCurrent())) {
-      assignmentLog.info(
-        {
-          event: EVENT_NAMES.POLY_MIRROR_ASSIGNMENT_RETIRED,
-          outcome: "skipped",
-          reason: "assignment_retired",
-        },
-        "mirror pipeline: assignment retired; skipping tick",
-      );
-      return;
-    }
-  } catch (error) {
-    assignmentLog.error(
-      {
-        event: EVENT_NAMES.POLY_MIRROR_ASSIGNMENT_RETIRED,
-        outcome: "error",
-        reason: "assignment_liveness_unavailable",
-        errorCode: "assignment_liveness_unavailable",
-        ...safeErrorDimensions(error),
-      },
-      "mirror pipeline: assignment liveness unavailable; skipping tick",
-    );
-    return;
-  }
+  const assignmentGuard = createAssignmentGuard(deps);
+  if (!(await assignmentGuard.check(assignmentLog, "tick_entry"))) return;
   let executionMode: "live" | "paper";
   try {
     executionMode = await deps.getExecutionMode();
@@ -375,7 +408,8 @@ export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
   deps.setCursor(result.newSince);
 
   for (const fill of result.fills) {
-    await processFill(fill, deps, clock, log, executionMode);
+    await processFill(fill, deps, clock, log, executionMode, assignmentGuard);
+    if (assignmentGuard.retired) break;
   }
 }
 
@@ -383,8 +417,9 @@ async function processFill(
   fill: import("@cogni/poly-market-provider").Fill,
   deps: MirrorPipelineDeps,
   clock: () => Date,
-  parentLog: LoggerPort,
+	parentLog: LoggerPort,
 	planningMode: "live" | "paper",
+	assignmentGuard: AssignmentGuard,
 ): Promise<void> {
   // bug.5022 — construct the TenantContext envelope ONCE at the top of
   // `processFill` and route every per-tenant READ through it
@@ -468,17 +503,20 @@ async function processFill(
   });
 
   if (isMultiTargetPositionGapUnsupported(deps.target)) {
-    await cancelOpenMirrorOrdersForMarket({
+    const cancellationAllowed = await cancelOpenMirrorOrdersForMarket({
       deps,
       fill,
       log,
       reason: "multi_target_position_gap_unsupported",
+      assignmentGuard,
     });
+    if (!cancellationAllowed) return;
     const decisionLogFields = {
       position_branch: fill.side === "SELL" ? "sell_close" : "new_entry",
       ...buildDecisionPortfolioFactFields(portfolioValues),
       ...buildPositionGapBudgetLogFields(deps.target, portfolioValues),
     };
+    if (!(await assignmentGuard.check(log, "multi_target_skip"))) return;
     emitDecisionMetric(
       deps.metrics,
       "skipped",
@@ -527,6 +565,7 @@ async function processFill(
       log,
       portfolioValues,
       planningMode,
+			assignmentGuard,
     });
     return;
   }
@@ -730,6 +769,7 @@ async function processFill(
   }
 
   if (plan.kind === "skip") {
+    if (!(await assignmentGuard.check(log, "planner_skip"))) return;
     emitDecisionMetric(deps.metrics, "skipped", plan.reason, source, placement);
     await tenantLedger.recordDecision({
 			...evaluatedDecisionBase,
@@ -770,6 +810,7 @@ async function processFill(
   if (open.length > 0) {
     const stale = isRestingPriceStale(open, plan.intent);
     if (!stale) {
+      if (!(await assignmentGuard.check(log, "already_resting_skip"))) return;
       emitDecisionMetric(
         deps.metrics,
         "skipped",
@@ -807,6 +848,7 @@ async function processFill(
 
     // Stale resting at an out-of-band price. Cancel before placing so the
     // partial unique index has room for the new pending row.
+    if (!(await assignmentGuard.check(log, "stale_resting_cancel"))) return;
     log.info(
       {
         event: EVENT_NAMES.POLY_MIRROR_DECISION,
@@ -820,12 +862,14 @@ async function processFill(
       },
 			"mirror pipeline: cancel-then-place (resting price stale vs new intent)",
     );
-    await cancelOpenMirrorOrdersForMarket({
+    const cancellationAllowed = await cancelOpenMirrorOrdersForMarket({
       deps,
       fill,
       log,
       reason: "stale_resting_layer_up",
+      assignmentGuard,
     });
+    if (!cancellationAllowed) return;
   }
 
   await executeMirrorOrder(
@@ -839,6 +883,7 @@ async function processFill(
     plan.reason,
     log,
     planningMode,
+		assignmentGuard,
     undefined,
 		decisionLogFields,
   );
@@ -1322,6 +1367,7 @@ async function processSellFill(args: {
   log: LoggerPort;
   portfolioValues: DecisionPortfolioValues | undefined;
   planningMode: "live" | "paper";
+	assignmentGuard: AssignmentGuard;
 }): Promise<void> {
   const {
     fill,
@@ -1336,6 +1382,7 @@ async function processSellFill(args: {
     log,
     portfolioValues,
     planningMode,
+		assignmentGuard,
   } = args;
   const { closePosition, getOperatorPositions } = deps;
 
@@ -1352,14 +1399,17 @@ async function processSellFill(args: {
   };
 
   // Cancel resting mirror BUYs before position-close. task.5001.
-  await cancelOpenMirrorOrdersForMarket({
+  const cancellationAllowed = await cancelOpenMirrorOrdersForMarket({
     deps,
     fill,
     log,
     reason: "target_exited_market",
+		assignmentGuard,
   });
+  if (!cancellationAllowed) return;
 
   if (!closePosition || !getOperatorPositions) {
+    if (!(await assignmentGuard.check(log, "sell_missing_deps_skip"))) return;
     emitDecisionMetric(
       deps.metrics,
       "skipped",
@@ -1402,6 +1452,7 @@ async function processSellFill(args: {
   try {
     positions = await getOperatorPositions(planningMode);
   } catch {
+    if (!(await assignmentGuard.check(log, "sell_position_error_skip"))) return;
     emitDecisionMetric(
       deps.metrics,
       "skipped",
@@ -1441,6 +1492,7 @@ async function processSellFill(args: {
   const hasPosition = position !== undefined && position.size > 0;
 
   if (!hasPosition) {
+    if (!(await assignmentGuard.check(log, "sell_no_position_skip"))) return;
     emitDecisionMetric(
       deps.metrics,
       "skipped",
@@ -1503,6 +1555,7 @@ async function processSellFill(args: {
 			reason: evaluation.decision.reason as MirrorReason,
 			detail: "algorithm emitted no safe SELL action",
             decisionLogFields,
+			assignmentGuard,
           });
           return;
         }
@@ -1542,12 +1595,13 @@ async function processSellFill(args: {
 		evaluation.decision.reason as MirrorReason,
 		evaluatedLog,
     planningMode,
+		assignmentGuard,
     closeExecutor,
     {
       position_branch: "sell_close",
       position_qty_shares: position.size,
       position_token_id: tokenId,
-      ...decisionLogFields,
+		...decisionLogFields,
 		},
   );
 }
@@ -1571,6 +1625,7 @@ async function recordSellSkip(args: {
   reason: MirrorReason;
   detail: string;
   decisionLogFields?: Record<string, unknown>;
+	assignmentGuard: AssignmentGuard;
 }): Promise<void> {
   const {
     deps,
@@ -1584,7 +1639,9 @@ async function recordSellSkip(args: {
     reason,
     detail,
     decisionLogFields,
+		assignmentGuard,
   } = args;
+  if (!(await assignmentGuard.check(log, "sell_planner_skip"))) return;
   emitDecisionMetric(deps.metrics, "skipped", reason, source, placement);
   await tenantLedger.recordDecision({
     ...decisionBase,
@@ -1630,10 +1687,12 @@ async function cancelOpenMirrorOrdersForMarket(args: {
     | "target_exited_market"
     | "stale_resting_layer_up"
     | "multi_target_position_gap_unsupported";
-}): Promise<void> {
-  const { deps, fill, log, reason } = args;
+	assignmentGuard: AssignmentGuard;
+}): Promise<boolean> {
+  const { deps, fill, log, reason, assignmentGuard } = args;
+  if (!(await assignmentGuard.check(log, `cancel_${reason}`))) return false;
   const cancelOrder = deps.cancelOrder;
-  if (!cancelOrder) return;
+  if (!cancelOrder) return true;
   const tenantLedger = deps.ledger.forTenant({
     billing_account_id: deps.target.billing_account_id,
     created_by_user_id: deps.target.created_by_user_id,
@@ -1644,6 +1703,9 @@ async function cancelOpenMirrorOrdersForMarket(args: {
   });
   for (const row of open) {
     if (row.order_id === null) continue;
+    if (!(await assignmentGuard.check(log, `cancel_dispatch_${reason}`))) {
+      return false;
+    }
     try {
       await cancelOrder(row.order_id, row.mode);
       await deps.ledger.markCanceled({
@@ -1683,6 +1745,7 @@ async function cancelOpenMirrorOrdersForMarket(args: {
       );
     }
   }
+  return true;
 }
 
 /**
@@ -1707,10 +1770,11 @@ async function executeMirrorOrder(
   reason: MirrorReason,
   log: LoggerPort,
   planningMode: "live" | "paper",
+	assignmentGuard: AssignmentGuard,
   intentExecutor?: (
     intent: OrderIntent,
 		mode: "live" | "paper",
-  ) => Promise<OrderReceipt>,
+	) => Promise<OrderReceipt>,
 	decisionLogFields?: Record<string, unknown>,
 ): Promise<void> {
   // bug.5022 — tenantLedger for all per-tenant writes (insertPending +
@@ -1720,8 +1784,30 @@ async function executeMirrorOrder(
     created_by_user_id: deps.target.created_by_user_id,
   });
   const executor = intentExecutor ?? deps.placeIntent;
+  const retirePending = async (mode: "live" | "paper"): Promise<void> => {
+    const terminalReason =
+      assignmentGuard.terminalReason ?? "assignment_liveness_unavailable";
+    await deps.ledger.markCanceled({
+      client_order_id,
+      reason: terminalReason,
+    });
+    await tenantLedger.recordDecision({
+      ...decisionBase,
+      mode_override: mode,
+      outcome: terminalReason === "assignment_retired" ? "skipped" : "error",
+      reason: terminalReason,
+      intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
+        ...decisionLogFields,
+        side: intent.side,
+        close: intent.side === "SELL",
+        position_branch: decisionLogFields?.position_branch ?? "new_entry",
+      }),
+      receipt: null,
+    });
+  };
 
   let placementMode: "live" | "paper";
+  let venueDispatchStarted = false;
   try {
     placementMode = await tenantLedger.insertPending({
       target_id: deps.target.target_id,
@@ -1740,6 +1826,9 @@ async function executeMirrorOrder(
   } catch (err: unknown) {
     // DB partial unique index races past the app-level gate → same skip outcome.
     if (err instanceof AlreadyRestingError) {
+      if (!(await assignmentGuard.check(log, "insert_already_resting_skip"))) {
+        return;
+      }
       emitDecisionMetric(
         deps.metrics,
         "skipped",
@@ -1774,6 +1863,9 @@ async function executeMirrorOrder(
       return;
     }
     if (err instanceof PositionCapReachedError) {
+      if (!(await assignmentGuard.check(log, "insert_position_cap_skip"))) {
+        return;
+      }
       emitDecisionMetric(
         deps.metrics,
         "skipped",
@@ -1813,6 +1905,7 @@ async function executeMirrorOrder(
       );
       return;
     }
+    if (!(await assignmentGuard.check(log, "pending_insert_error"))) return;
     emitDecisionMetric(
       deps.metrics,
       "error",
@@ -1851,65 +1944,11 @@ async function executeMirrorOrder(
 				`execution venue changed during mirror planning (${planningMode} -> ${placementMode})`,
       );
     }
-    let assignmentCurrent = false;
-    let assignmentLivenessError: unknown;
-    try {
-      assignmentCurrent = await deps.isAssignmentCurrent();
-    } catch (error) {
-      assignmentLivenessError = error;
-    }
-    if (!assignmentCurrent) {
-      await deps.ledger.markCanceled({
-        client_order_id,
-        reason: "assignment_retired",
-      });
-      emitDecisionMetric(
-        deps.metrics,
-        "skipped",
-        "assignment_retired",
-        source,
-				placement,
-      );
-      await tenantLedger.recordDecision({
-        ...decisionBase,
-        mode_override: placementMode,
-        outcome: "skipped",
-        reason: "assignment_retired",
-        intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
-          ...decisionLogFields,
-          side: intent.side,
-          close: intent.side === "SELL",
-          position_branch: decisionLogFields?.position_branch ?? "new_entry",
-        }),
-        receipt: null,
-      });
-      const terminalFields = {
-        event: EVENT_NAMES.POLY_MIRROR_ASSIGNMENT_RETIRED,
-        outcome: "skipped",
-        reason: "assignment_retired",
-        source,
-        fill_id: fill.fill_id,
-        client_order_id,
-        ...(assignmentLivenessError
-          ? {
-              errorCode: "assignment_liveness_unavailable",
-              ...safeErrorDimensions(assignmentLivenessError),
-            }
-          : {}),
-      };
-      if (assignmentLivenessError) {
-        log.error(
-          terminalFields,
-          "mirror pipeline: assignment liveness unavailable before venue dispatch",
-        );
-      } else {
-        log.info(
-          terminalFields,
-          "mirror pipeline: assignment retired before venue dispatch",
-        );
-      }
+    if (!(await assignmentGuard.check(log, "venue_dispatch"))) {
+      await retirePending(placementMode);
       return;
     }
+    venueDispatchStarted = true;
     const receipt = await executor(intent, placementMode);
     await deps.ledger.markOrderId({
       client_order_id,
@@ -1956,6 +1995,13 @@ async function executeMirrorOrder(
 			"mirror pipeline: placed",
     );
   } catch (err: unknown) {
+    if (
+      !venueDispatchStarted &&
+      !(await assignmentGuard.check(log, "pre_dispatch_error"))
+    ) {
+      await retirePending(placementMode);
+      return;
+    }
     const msg = err instanceof Error ? err.message : String(err);
     const errDetails =
       err && typeof err === "object" && "details" in err

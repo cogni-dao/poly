@@ -159,7 +159,8 @@ export type LedgerCancelReason =
   | "position_gap_reconciled"
   | "position_gap_runtime_safety"
   | "multi_target_position_gap_unsupported"
-  | "assignment_retired";
+  | "assignment_retired"
+  | "assignment_liveness_unavailable";
 
 /**
  * Thrown by `insertPending` when the partial unique index

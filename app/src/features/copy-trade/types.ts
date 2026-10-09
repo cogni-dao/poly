@@ -537,6 +537,8 @@ export const MirrorReasonSchema = z.enum([
   "multi_target_position_gap_unsupported",
   /** Assignment changed after planning; pending intent was canceled before venue dispatch. */
   "assignment_retired",
+  /** Assignment authority could not be read, so the runtime failed closed. */
+  "assignment_liveness_unavailable",
   /**
    * task.5014 — first post-activation observation on a (billing, target,
    * condition) triple. The pipeline just captured the baseline snapshot; the
