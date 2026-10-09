@@ -1512,6 +1512,21 @@ async function readOmittedCurrentPositions(input: {
       -- intentionally outside the open book and must not trip the exact-zero
       -- omission guard used for unexplained live-position disappearances.
       AND p.raw->>'redeemable' IS DISTINCT FROM 'true'
+      -- bug.5031: a market that resolved AFTER the last successful page has a
+      -- stale saved raw (redeemable still false), so the flag above misses it.
+      -- Its worthless-loser / unredeemed-winner tokens keep a nonzero on-chain
+      -- balance forever, which trips the authority (balanceOfBatch) guard and
+      -- wedges the observer stale permanently — a deadlock, because the
+      -- in-publication resolved-market deactivation only runs once we publish.
+      -- Trust the authoritative poly_market_outcomes table (same source the
+      -- deactivation uses) to exclude resolved tokens from the omission guard.
+      AND NOT EXISTS (
+        SELECT 1
+        FROM poly_market_outcomes o
+        WHERE o.condition_id = p.condition_id
+          AND o.token_id = p.token_id
+          AND o.outcome IN ('winner', 'loser')
+      )
       AND NOT EXISTS (
         SELECT 1
         FROM jsonb_to_recordset(${observedKeys}::jsonb)
