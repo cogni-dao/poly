@@ -13,7 +13,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	getSessionUser: vi.fn(),
@@ -98,6 +98,10 @@ function request(body: unknown = validBody): Request {
 describe("POST /api/v1/poly/dev/live-algorithm-canary", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		// Route safety reads the process-wide CI sentinel directly. Keep these
+		// local-development route cases deterministic when Vitest itself runs in
+		// CI; the pure process-gate suite separately proves CI is refused.
+		vi.stubEnv("CI", "false");
 		mocks.getSessionUser.mockResolvedValue({
 			id: "11111111-1111-4111-8111-111111111111",
 		});
@@ -114,6 +118,10 @@ describe("POST /api/v1/poly/dev/live-algorithm-canary", () => {
 			region: "CA",
 			errorClass: null,
 		});
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
 	});
 
 	it("requires a browser session before parsing or trade-path I/O", async () => {
