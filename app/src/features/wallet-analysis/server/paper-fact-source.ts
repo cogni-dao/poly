@@ -813,12 +813,14 @@ export async function projectPaperPositionsAndNav(input: {
   const nav = seedUsdc - boughtUsdc + soldUsdc - fees.feesUsdc + openValueUsdc;
   const negativeNav = Number.isFinite(nav) && nav < 0;
   const invalidSeed = !Number.isFinite(seedUsdc);
+  const invalidNav = !Number.isFinite(nav);
   const navBlockers =
     unpriced.length +
     incoherent.length +
     (negativeNav ? 1 : 0) +
-    (invalidSeed ? 1 : 0);
-  const navPublishable = navBlockers === 0 && Number.isFinite(seedUsdc);
+    (invalidSeed ? 1 : 0) +
+    (invalidNav && !invalidSeed ? 1 : 0);
+  const navPublishable = navBlockers === 0 && Number.isFinite(nav);
   if (negativeNav) {
     input.logger.error(
       {
@@ -845,16 +847,19 @@ export async function projectPaperPositionsAndNav(input: {
         event: EVENT_NAMES.POLY_PAPER_NAV_WITHHELD,
         errorCode: invalidSeed
           ? "paper_seed_invalid"
-          : "paper_position_mark_unavailable",
-        ...(invalidSeed ? {} : { dep: "polymarket_clob" }),
+          : invalidNav
+            ? "paper_nav_non_finite"
+            : "paper_position_mark_unavailable",
+        ...(invalidSeed || invalidNav ? {} : { dep: "polymarket_clob" }),
         trader_wallet_id: traderWalletId,
         billing_account_id: account.billingAccountId,
         unpriced_positions: unpriced.length,
         incoherent_positions: incoherent.length,
         seed_usdc_finite: Number.isFinite(seedUsdc),
+        nav_usdc_finite: Number.isFinite(nav),
         sample_unpriced: unpriced.slice(0, 5),
       },
-      "paper NAV withheld — an open position could not be marked; publishing a partial total would invent a value"
+      "paper NAV withheld — the current projection is incomplete or invalid; publishing a partial total would invent a value"
     );
   }
 
@@ -886,6 +891,8 @@ export async function projectPaperPositionsAndNav(input: {
         ? `paper NAV computed negative (${nav}); snapshot withheld because cap or fill accounting is inconsistent`
         : invalidSeed
           ? "paper seed is not finite; NAV withheld"
+          : invalidNav
+            ? "paper NAV is not finite; snapshot withheld because an aggregate is invalid"
           : navBlockers === 0
             ? null
             : `${unpriced.length} open position(s) had no readable midpoint or settlement mark and ${incoherent.length} had no derivable cost basis; NAV withheld`,

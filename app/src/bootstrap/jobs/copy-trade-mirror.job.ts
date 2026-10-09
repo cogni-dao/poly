@@ -27,7 +27,6 @@ import type {
 } from "@cogni/poly-market-provider";
 import {
   type MirrorPipelineDeps,
-  type OperatorPosition,
   runMirrorTick,
 } from "@/features/copy-trade/mirror-pipeline";
 import { positionCostUsdc } from "@/features/copy-trade/position-cost";
@@ -356,11 +355,10 @@ export interface MirrorJobDeps {
   /** Mirror NAV + exact positions recorded as shared algorithm inputs. */
   getMirrorPortfolioSnapshot?: MirrorPipelineDeps["getMirrorPortfolioSnapshot"];
   /**
-   * Resolves this tenant's execution mode for decision-log attribution
-   * (EXECUTION_MODE_IS_LOG_ONLY). Container wires the same resolver the executor
-   * dispatches on; optional so tests can omit it.
+   * Resolves this tenant's execution mode once per tick. Private account facts
+   * and placement must retain this binding for the whole decision.
    */
-  getExecutionMode?: MirrorPipelineDeps["getExecutionMode"];
+  getExecutionMode: MirrorPipelineDeps["getExecutionMode"];
   /** Structured log sink. */
   logger: LoggerPort;
   /** Metrics sink. */
@@ -374,7 +372,7 @@ export interface MirrorJobDeps {
    * Optional position query from `PolyTradeExecutor.listPositions`.
    * When absent, SELL fills degrade to `skip/sell_without_position`.
    */
-  getOperatorPositions?: () => Promise<OperatorPosition[]>;
+  getOperatorPositions?: MirrorPipelineDeps["getOperatorPositions"];
 }
 
 /** Stops the poll. Returned so the container can call on SIGTERM (future). */
@@ -424,9 +422,7 @@ export function startMirrorPoll(deps: MirrorJobDeps): MirrorJobStopFn {
     setCursor: (n) => {
       cursor = n;
     },
-    ...(deps.getExecutionMode !== undefined
-      ? { getExecutionMode: deps.getExecutionMode }
-      : {}),
+    getExecutionMode: deps.getExecutionMode,
     logger: deps.logger,
     metrics: deps.metrics,
     // exactOptionalPropertyTypes: only spread when defined to avoid

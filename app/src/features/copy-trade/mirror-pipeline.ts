@@ -41,6 +41,7 @@ import {
   PositionCapReachedError,
 } from "@/features/trading";
 import type { WalletActivitySource } from "@/features/wallet-watch";
+import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 
 import {
   planMirrorFromFill,
@@ -227,7 +228,7 @@ export interface MirrorPipelineDeps {
     | undefined;
   /** Account NAV + exact positions recorded as shared algorithm inputs. */
   getMirrorPortfolioSnapshot?:
-    | (() => Promise<MirrorPortfolioSnapshot>)
+    | ((mode: "live" | "paper") => Promise<MirrorPortfolioSnapshot>)
     | undefined;
   /** Per-target config. */
   target: MirrorTargetConfig;
@@ -242,19 +243,11 @@ export interface MirrorPipelineDeps {
   /** Clock injection — tests pin `Date`. Default = real `Date`. */
   clock?: () => Date;
   /**
-   * EXECUTION_MODE_IS_LOG_ONLY — resolves the account's execution mode once per
-   * tick so every `poly.mirror.decision` line inherits `execution_mode`. Before
-   * this, the decision tape carried NO mode field at all: a paper row and a live
-   * row were indistinguishable in Loki, which is why "is paper even running?"
-   * could only be answered from the DB.
-   *
-   * Advisory only. The pipeline never branches on it — dispatch is
-   * `VENUE_RESOLVED_FROM_ACCOUNT` inside the executor, and the persisted label is
-   * `MODE_STAMPED_FROM_ACCOUNT` inside the ledger. A failure to resolve logs
-   * `execution_mode: "unresolved"` and does not stop the tick: losing a log field
-   * must never halt trading.
+   * Resolve once per tick. Private account facts are read from this venue and
+   * placement proceeds only if the ledger stamps the same venue. A transition
+   * during planning fails closed before any venue call.
    */
-  getExecutionMode?: (() => Promise<"live" | "paper">) | undefined;
+  getExecutionMode: () => Promise<"live" | "paper">;
   /**
    * Optional — SELL-to-close path. Routes through the per-tenant executor's
    * `closePosition` which authorizes + caps + signs. When absent, SELL fills
@@ -274,7 +267,9 @@ export interface MirrorPipelineDeps {
    * When absent (or no `closePosition`), SELL fills degrade to
    * `skip/sell_without_position`.
    */
-  getOperatorPositions?: () => Promise<OperatorPosition[]>;
+  getOperatorPositions?: (
+    mode: "live" | "paper"
+  ) => Promise<OperatorPosition[]>;
 }
 
 /**
@@ -283,17 +278,6 @@ export interface MirrorPipelineDeps {
  * tape is worse than a missing one, and `live` is the label that would get a
  * simulated decision read as real money.
  */
-async function resolveExecutionModeForLog(
-  deps: MirrorPipelineDeps
-): Promise<"live" | "paper" | "unresolved"> {
-  if (!deps.getExecutionMode) return "unresolved";
-  try {
-    return await deps.getExecutionMode();
-  } catch {
-    return "unresolved";
-  }
-}
-
 /**
  * One pipeline tick. Fully sequential — no concurrency across fills inside
  * one tick, so `planMirrorFromFill()`'s `already_placed_ids` snapshot stays
@@ -303,12 +287,26 @@ async function resolveExecutionModeForLog(
  */
 export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
   const clock = deps.clock ?? (() => new Date());
-  const executionMode = await resolveExecutionModeForLog(deps);
+  let executionMode: "live" | "paper";
+  try {
+    executionMode = await deps.getExecutionMode();
+  } catch (error) {
+    deps.logger.error(
+      {
+        event: EVENT_NAMES.POLY_MIRROR_DECISION,
+        outcome: "error",
+        reason: "execution_venue_unresolved",
+        ...safeErrorDimensions(error),
+      },
+      "mirror pipeline: execution venue unavailable; skipping tick"
+    );
+    return;
+  }
   const log = deps.logger.child({
     component: "mirror-pipeline",
     target_id: deps.target.target_id,
     target_wallet: deps.target.target_wallet,
-    // EXECUTION_MODE_IS_LOG_ONLY — inherited by every decision line below.
+    // The same binding governs private facts and the pre-placement equality gate.
     execution_mode: executionMode,
   });
 
@@ -336,7 +334,7 @@ export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
   deps.setCursor(result.newSince);
 
   for (const fill of result.fills) {
-    await processFill(fill, deps, clock, log);
+    await processFill(fill, deps, clock, log, executionMode);
   }
 }
 
@@ -344,7 +342,8 @@ async function processFill(
   fill: import("@cogni/poly-market-provider").Fill,
   deps: MirrorPipelineDeps,
   clock: () => Date,
-  parentLog: LoggerPort
+  parentLog: LoggerPort,
+  planningMode: "live" | "paper"
 ): Promise<void> {
   // bug.5022 — construct the TenantContext envelope ONCE at the top of
   // `processFill` and route every per-tenant READ through it
@@ -400,6 +399,7 @@ async function processFill(
     deps,
     fill,
     log,
+    planningMode,
   });
 
   if (isMultiTargetPositionGapUnsupported(deps.target)) {
@@ -458,6 +458,7 @@ async function processFill(
       decisionBase,
       log,
       portfolioValues,
+      planningMode,
     });
     return;
   }
@@ -723,6 +724,7 @@ async function processFill(
     plan.intent,
     plan.reason,
     log,
+    planningMode,
     undefined,
     decisionLogFields
   );
@@ -791,8 +793,9 @@ async function fetchDecisionPortfolioValues(args: {
   deps: MirrorPipelineDeps;
   fill: import("@cogni/poly-market-provider").Fill;
   log: LoggerPort;
+  planningMode: "live" | "paper";
 }): Promise<DecisionPortfolioValues | undefined> {
-  const { deps, fill, log } = args;
+  const { deps, fill, log, planningMode } = args;
   if (
     !deps.getTargetPortfolioCurrentValue ||
     !deps.getMirrorPortfolioSnapshot
@@ -801,7 +804,7 @@ async function fetchDecisionPortfolioValues(args: {
   }
   const [targetResult, mirrorResult] = await Promise.allSettled([
     deps.getTargetPortfolioCurrentValue(deps.target.target_wallet),
-    deps.getMirrorPortfolioSnapshot(),
+    deps.getMirrorPortfolioSnapshot(planningMode),
   ]);
 
   const values: DecisionPortfolioValues = {};
@@ -1155,6 +1158,7 @@ async function processSellFill(args: {
   };
   log: LoggerPort;
   portfolioValues: DecisionPortfolioValues | undefined;
+  planningMode: "live" | "paper";
 }): Promise<void> {
   const {
     fill,
@@ -1165,6 +1169,7 @@ async function processSellFill(args: {
     decisionBase,
     log,
     portfolioValues,
+    planningMode,
   } = args;
   const { closePosition, getOperatorPositions } = deps;
 
@@ -1228,7 +1233,7 @@ async function processSellFill(args: {
 
   let positions: OperatorPosition[];
   try {
-    positions = await getOperatorPositions();
+    positions = await getOperatorPositions(planningMode);
   } catch {
     emitDecisionMetric(
       deps.metrics,
@@ -1447,6 +1452,7 @@ async function processSellFill(args: {
     closeIntent,
     "sell_closed_position",
     log,
+    planningMode,
     closeExecutor,
     {
       position_branch: "sell_close",
@@ -1609,6 +1615,7 @@ async function executeMirrorOrder(
   intent: OrderIntent,
   reason: MirrorReason,
   log: LoggerPort,
+  planningMode: "live" | "paper",
   intentExecutor?: (
     intent: OrderIntent,
     mode: "live" | "paper"
@@ -1748,6 +1755,11 @@ async function executeMirrorOrder(
   }
 
   try {
+    if (placementMode !== planningMode) {
+      throw new Error(
+        `execution venue changed during mirror planning (${planningMode} -> ${placementMode})`
+      );
+    }
     const receipt = await executor(intent, placementMode);
     await deps.ledger.markOrderId({
       client_order_id,

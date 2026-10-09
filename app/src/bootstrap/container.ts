@@ -1508,6 +1508,7 @@ function createContainer(): Container {
 						let mirrorPortfolioCache:
 							| {
 									capturedAt: number;
+									mode: "live" | "paper";
 									valueUsdc: number;
 									positions: MirrorPosition[];
 							  }
@@ -1526,12 +1527,15 @@ function createContainer(): Container {
 						 * skips; other policies may still decide but must log the fact as
 						 * unavailable rather than substitute a value.
 						 */
-						const getMirrorPortfolioSnapshot = async (): Promise<{
+						const getMirrorPortfolioSnapshot = async (
+							venue: "live" | "paper",
+						): Promise<{
 							currentValueUsdc: number;
 							positions: MirrorPosition[];
 						}> => {
 							if (
 								mirrorPortfolioCache &&
+								mirrorPortfolioCache.mode === venue &&
 								Date.now() - mirrorPortfolioCache.capturedAt < 5_000
 							) {
 								return {
@@ -1541,10 +1545,6 @@ function createContainer(): Container {
 									})),
 								};
 							}
-
-							const venue = await executionVenueResolver(
-								enumeratedTarget.billingAccountId,
-							);
 
 							let valueUsdc: number;
 							let positions: MirrorPosition[];
@@ -1586,7 +1586,7 @@ function createContainer(): Container {
 										"mirror NAV unavailable: no trader-wallet adapter is configured on this deployment (live account)",
 									);
 								}
-								const executor = await getExecutor();
+								const executor = await getExecutor(venue);
 								const [balances, livePositions] = await Promise.all([
 									mirrorWalletPort.getBalances(
 										enumeratedTarget.billingAccountId,
@@ -1612,6 +1612,7 @@ function createContainer(): Container {
 
 							mirrorPortfolioCache = {
 								capturedAt: Date.now(),
+								mode: venue,
 								valueUsdc,
 								positions,
 							};
@@ -1627,9 +1628,8 @@ function createContainer(): Container {
 								target,
 								source,
 								ledger: orderLedger,
-								// EXECUTION_MODE_IS_LOG_ONLY — same resolver as dispatch +
-								// `mode` stamping, so the decision tape says which venue a
-								// row came from without a second source of truth.
+								// One venue binding governs private facts, ledger stamp,
+								// placement, and terminal decision attribution for this tick.
 								getExecutionMode: () =>
 									executionVenueResolver(enumeratedTarget.billingAccountId),
 								placeIntent: async (intent, mode) => {
@@ -1662,8 +1662,8 @@ function createContainer(): Container {
 									const executor = await getExecutor(mode);
 									return executor.closePosition(params);
 								},
-								getOperatorPositions: async () => {
-									return (await getMirrorPortfolioSnapshot()).positions;
+								getOperatorPositions: async (mode) => {
+									return (await getMirrorPortfolioSnapshot(mode)).positions;
 								},
 								logger: mirrorLogger,
 								metrics: noopMetrics,

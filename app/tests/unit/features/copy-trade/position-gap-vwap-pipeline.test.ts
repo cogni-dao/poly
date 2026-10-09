@@ -64,8 +64,11 @@ function recordingLogger(entries: Record<string, unknown>[]) {
 
 function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 	const decisions: TenantScopedRecordDecisionInput[] = [];
-	const insertPending = vi.fn(async () => "paper" as const);
+	const insertPending = vi.fn<() => Promise<"live" | "paper">>(async () =>
+		Promise.resolve("paper"),
+	);
 	const markOrderId = vi.fn(async () => undefined);
+	const markError = vi.fn(async () => undefined);
 	const markCanceled = vi.fn(async () => undefined);
 	const tenant: TenantOrderLedger = {
 		snapshotState: async () => ({
@@ -86,16 +89,24 @@ function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 	const ledger = {
 		forTenant: () => tenant,
 		markOrderId,
-		markError: async () => undefined,
+		markError,
 		markCanceled,
 	} as unknown as OrderLedger;
-	return { decisions, insertPending, ledger, markCanceled, markOrderId };
+	return {
+		decisions,
+		insertPending,
+		ledger,
+		markCanceled,
+		markError,
+		markOrderId,
+	};
 }
 
 function commonDeps(fill: Fill, ledger: OrderLedger, logger: LoggerPort) {
 	return {
 		source: { fetchSince: async () => ({ fills: [fill], newSince: 1 }) },
 		ledger,
+		getExecutionMode: async () => "paper" as const,
 		placeIntent: vi.fn<() => Promise<OrderReceipt>>(),
 		target,
 		getCursor: () => undefined,
@@ -128,6 +139,48 @@ function commonDeps(fill: Fill, ledger: OrderLedger, logger: LoggerPort) {
 }
 
 describe("position_gap pipeline VWAP boundary", () => {
+	it("does not place when the account venue changes after private facts are read", async () => {
+		const entries: Record<string, unknown>[] = [];
+		const harness = ledgerHarness();
+		harness.insertPending.mockResolvedValueOnce("live");
+		const deps = commonDeps(
+			{ ...buyFill, price: 0.5 },
+			harness.ledger,
+			recordingLogger(entries),
+		);
+		const placeIntent = vi.fn(async () => {
+			throw new Error("venue call must not run");
+		});
+
+		await runMirrorTick({
+			...deps,
+			target: buildMirrorTargetConfig({
+				targetWallet: buyFill.target_wallet,
+				billingAccountId: "billing-1",
+				createdByUserId: "user-1",
+				sizingPolicyKind: "min_bet",
+			}),
+			placeIntent,
+		});
+
+		expect(placeIntent).not.toHaveBeenCalled();
+		expect(harness.markError).toHaveBeenCalledOnce();
+		expect(harness.decisions).toContainEqual(
+			expect.objectContaining({
+				mode_override: "live",
+				outcome: "error",
+				reason: "placement_failed",
+			}),
+		);
+		expect(entries).toContainEqual(
+			expect.objectContaining({
+				execution_mode: "live",
+				outcome: "error",
+				reason: "placement_failed",
+			}),
+		);
+	});
+
 	it("records every input used by a vwap_floor_breach skip", async () => {
 		const entries: Record<string, unknown>[] = [];
 		const harness = ledgerHarness();

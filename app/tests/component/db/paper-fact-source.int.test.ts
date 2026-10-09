@@ -251,9 +251,10 @@ describe("paper facts project into the live tables (migration 0083)", () => {
   const traded = tenant("Paper tenant with trades");
   const unpriced = tenant("Paper tenant with an unpriceable position");
   const negative = tenant("Paper tenant with inconsistent negative NAV");
+  const nonfinite = tenant("Paper tenant with non-finite NAV");
   const dual = tenant("Tenant with live and paper snapshots");
   const live = tenant("Live tenant that must be untouched");
-  const tenants = [traded, unpriced, negative, dual, live];
+  const tenants = [traded, unpriced, negative, nonfinite, dual, live];
 
   // Deterministic per-scenario market keys so assertions can name them.
   const condA = `0xcond${"a".repeat(60)}`;
@@ -749,6 +750,47 @@ describe("paper facts project into the live tables (migration 0083)", () => {
         );
       expect(cursors[0]?.status).toBe("partial");
       expect(cursors[0]?.errorMessage).toContain("negative");
+    });
+  });
+
+  describe("NO_FABRICATED_VALUES: a non-finite NAV invalidates prior truth", () => {
+    it("removes a usable snapshot before publishing a partial cursor", async () => {
+      await seedPaperConnection(nonfinite, "100.00000000");
+      const wallet = await enrol(nonfinite);
+      await observePaperWallet({
+        db: getSeedDb() as unknown as PaperDb,
+        wallet,
+        readMidPrice: midPrices({}),
+        logger,
+        now: new Date("2026-10-07T18:21:00.000Z"),
+      });
+      expect((await readBalanceAsTenant(nonfinite)).kind).toBe("available");
+
+      await seedLedgerFill(nonfinite, targetId, {
+        tokenId: "55555555555555555555555555555555",
+        conditionId: `0xcond${"e".repeat(60)}`,
+        side: "BUY",
+        price: "0.50000000",
+        shares: "1.00000000",
+        feesUsdc: "NaN",
+      });
+      await observePaperWallet({
+        db: getSeedDb() as unknown as PaperDb,
+        wallet,
+        readMidPrice: midPrices({
+          "55555555555555555555555555555555": 0.5,
+        }),
+        logger,
+        now: new Date("2026-10-07T18:22:00.000Z"),
+      });
+
+      await expect(
+        readPaperAccountNavUsdc({
+          db: getSeedDb() as unknown as PaperDb,
+          billingAccountId: nonfinite.billingAccountId,
+          now: new Date("2026-10-07T18:22:01.000Z"),
+        })
+      ).rejects.toMatchObject({ reason: "nav_missing" });
     });
   });
 

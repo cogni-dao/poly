@@ -30,7 +30,10 @@ function row(overrides: Record<string, unknown>) {
     billing_account_id: "acct-1",
     order_id: null,
     status: "pending",
-    mode: "paper",
+    // These cases pin the live venue's 24-hour crash-recovery grace. Paper
+    // rows intentionally use a shorter grace and have their own reconciler
+    // coverage.
+    mode: "live",
     created_at: new Date(NOW.getTime() - UNPLACED_GRACE_MS * 2),
     attributes: {},
     ...overrides,
@@ -115,7 +118,7 @@ describe("runReconcileOnce — rows that never got a CLOB order id", () => {
     const getOrder = vi.fn(async () => ({ found: { status: "CANCELED" } }));
     const h = harness([row({ order_id: "0xabc", status: "open" })], getOrder);
     await runReconcileOnce(h.deps);
-    expect(getOrder).toHaveBeenCalledWith("acct-1", "0xabc", "paper");
+    expect(getOrder).toHaveBeenCalledWith("acct-1", "0xabc", "live");
     expect(h.updateStatus).not.toHaveBeenCalledWith(
       expect.objectContaining({ reason: "never_placed" })
     );
