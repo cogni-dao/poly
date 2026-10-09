@@ -61,7 +61,7 @@ describe("local live proof DB isolation and restart idempotency", () => {
 				attributes: {
 					correlation_id: CORRELATION_A,
 					algorithm_version: "local-canary-v1",
-					mirror_usdc: 1,
+					size_usdc: 1,
 				},
 			},
 			{
@@ -78,7 +78,7 @@ describe("local live proof DB isolation and restart idempotency", () => {
 				attributes: {
 					correlation_id: CORRELATION_B,
 					algorithm_version: "local-canary-v1",
-					mirror_usdc: 1,
+					size_usdc: 1,
 				},
 			},
 		]);
@@ -93,7 +93,7 @@ describe("local live proof DB isolation and restart idempotency", () => {
 					correlation_id: CORRELATION_A,
 					algorithm_version: "local-canary-v1",
 					client_order_id: "0xlocal-proof-client-a",
-					size_usdc: 1,
+					mirror_usdc: 1,
 				},
 				receipt: { order_id: "local-proof-order-a", status: "open" },
 				decidedAt: new Date("2026-10-09T00:00:00.100Z"),
@@ -109,7 +109,7 @@ describe("local live proof DB isolation and restart idempotency", () => {
 					correlation_id: CORRELATION_B,
 					algorithm_version: "local-canary-v1",
 					client_order_id: "0xlocal-proof-client-b",
-					size_usdc: 1,
+					mirror_usdc: 1,
 				},
 				receipt: { order_id: "local-proof-order-b", status: "open" },
 				decidedAt: new Date("2026-10-09T00:00:01.100Z"),
