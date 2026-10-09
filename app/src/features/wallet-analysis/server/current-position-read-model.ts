@@ -165,9 +165,11 @@ export async function readCurrentWalletPositionModel(params: {
          AND target_wallet.kind = 'copy_target'
          AND target_wallet.active_for_research = true
          AND target_wallet.disabled_at IS NULL
-        JOIN poly_trader_current_positions target_position
+        -- Snapshot lineage, not current-active state, owns preview priority.
+        -- A stale/inactive target fact must remain visible as an explicit
+        -- no_target_position classification instead of falling out of view.
+        JOIN poly_trader_position_snapshots target_position
           ON target_position.trader_wallet_id = target_wallet.id
-         AND ${liveCurrentPositionSql("target_position")}
         WHERE target.billing_account_id = ${params.billingAccountId}
           AND target.disabled_at IS NULL
       ), position_candidates AS (
