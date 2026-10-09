@@ -32,6 +32,7 @@ import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { derivePaperAccountAddress } from "@/features/paper-accounts";
+import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
 import {
   type EnrolledPaperWallet,
   observePaperWallet,
@@ -261,6 +262,30 @@ describe("paper position + NAV read-back", () => {
   });
 
   describe("the open book", () => {
+    it("feeds the shared dashboard position model through the paper cursor", async () => {
+      const model = await readCurrentWalletPositionModel({
+        db: paperDb(),
+        walletAddress: derivePaperAccountAddress(holder.billingAccountId),
+        capturedAt: observedAt,
+      });
+
+      expect(model.warnings).toEqual([]);
+      expect(model.summary).toMatchObject({
+        positionsMtm: 50,
+        activeRows: 1,
+        hasSuccessfulObservation: true,
+        cursorStatus: "ok",
+        stale: false,
+      });
+      expect(model.positions).toHaveLength(1);
+      expect(model.positions[0]).toMatchObject({
+        conditionId: condA.toLowerCase(),
+        asset: tokenA,
+        size: 100,
+        currentValue: 50,
+      });
+    });
+
     it("reads back the position the writer marked, not a re-aggregation", async () => {
       const facts = await readPaperAccountPositionFacts({
         db: paperDb(),

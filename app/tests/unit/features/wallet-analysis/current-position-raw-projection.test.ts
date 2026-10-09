@@ -174,6 +174,10 @@ describe("current-position read model raw->> projection equivalence", () => {
     expect(db.captured[0]).toContain("NOT IN ('redeemed', 'loser', 'dust', 'closed')");
     expect(db.captured[0]).toContain("lower(w.wallet_address) = lower(");
     expect(db.captured[0]).toContain(
+      "w.kind IN ('cogni_wallet', 'paper_wallet')"
+    );
+    expect(db.captured[0]).toContain("WHEN w.kind = 'paper_wallet' THEN");
+    expect(db.captured[0]).toContain(
       "PARTITION BY lower(p.condition_id), p.token_id"
     );
     expect(db.captured[0].indexOf("row_number() OVER")).toBeLessThan(
