@@ -48,7 +48,10 @@
  */
 
 import { polyCopyTradeFills } from "@cogni/poly-db-schema/copy-trade";
-import { polyMarketMetadata } from "@cogni/poly-db-schema/trader-activity";
+import {
+  polyMarketMetadata,
+  polyTraderCurrentPositions,
+} from "@cogni/poly-db-schema/trader-activity";
 import type {
   PolyCopyTradeOrderRow,
   PolyCopyTradeOrdersInput,
@@ -93,6 +96,36 @@ const dateOf = (value: Date | string): Date =>
   value instanceof Date ? value : new Date(value);
 
 /**
+ * Only ledger-owned cancellation codes may cross the public read boundary.
+ * `attributes.reason` is JSONB and predates the typed ledger seam, so validate
+ * it here instead of trusting an arbitrary historical string.
+ */
+const LEDGER_CANCEL_REASONS = new Set([
+  "target_exited_market",
+  "ttl_expired",
+  "stale_resting_layer_up",
+  "position_gap_reconciled",
+  "position_gap_runtime_safety",
+  "multi_target_position_gap_unsupported",
+]);
+
+function publicAttemptReason(
+  status: string,
+  attrs: Record<string, unknown>,
+): string | null {
+  if (status === "error") {
+    return typeof attrs.error === "string" ? attrs.error : null;
+  }
+  if (status !== "canceled" || typeof attrs.reason !== "string") return null;
+  return LEDGER_CANCEL_REASONS.has(attrs.reason) ? attrs.reason : null;
+}
+
+function humanMarketTitle(value: string | null): string | null {
+  const title = value?.trim();
+  return title && title !== "0" && title !== "1" ? title : null;
+}
+
+/**
  * Map one ledger row to the frozen contract row.
  *
  * Moved from `copy-trade/orders/route.ts:43-87` so the route remains a pure
@@ -103,7 +136,7 @@ const dateOf = (value: Date | string): Date =>
  */
 export function toContractRow(
   row: OrdersRow,
-  now: number
+  now: number,
 ): PolyCopyTradeOrderRow {
   const attrs = row.attributes ?? {};
   const readStr = (key: string): string | null =>
@@ -161,7 +194,9 @@ export function toContractRow(
     // Promoted to a real column in task.5001; the attribute remains the
     // fallback for rows written before that backfill.
     market_id: row.marketId || readStr("market_id"),
-    market_title: row.metadataMarketTitle?.trim() || readStr("title"),
+    market_title:
+      humanMarketTitle(row.metadataMarketTitle) ??
+      humanMarketTitle(readStr("title")),
     market_tx_hash: readStr("transaction_hash"),
     outcome: readStr("outcome"),
     side,
@@ -172,7 +207,10 @@ export function toContractRow(
         ? realizedNotional
         : null,
     fill_accounting: fillAccounting,
-    error: readStr("error"),
+    // The frozen field name is `error`, but the card column is "Reason". For
+    // canceled rows expose the bounded ledger cancellation code; error rows
+    // retain the venue error text.
+    error: publicAttemptReason(row.status, attrs),
     observed_at: dateOf(row.observedAt).toISOString(),
     created_at: dateOf(row.createdAt).toISOString(),
     updated_at: dateOf(row.updatedAt).toISOString(),
@@ -208,7 +246,7 @@ export function toContractRow(
 export async function listCopyTradeOrdersForAccount(
   tx: AgentGrantTransaction,
   query: PolyCopyTradeOrdersInput,
-  accountId: string
+  accountId: string,
 ): Promise<PolyCopyTradeOrdersOutput | null> {
   const billingAccountId = accountId;
 
@@ -265,7 +303,8 @@ export async function listCopyTradeOrdersForAccount(
         f.mode AS "mode",
         f.shares AS "shares",
         f.attributes AS "attributes",
-        metadata.market_title AS "metadataMarketTitle"
+        COALESCE(metadata.market_title, position.market_title)
+          AS "metadataMarketTitle"
       FROM ordered_fills f
       LEFT JOIN LATERAL (
         SELECT NULLIF(candidate.market_title, '') AS market_title
@@ -281,8 +320,29 @@ export async function listCopyTradeOrdersForAccount(
         ORDER BY candidate.fetched_at DESC, candidate.condition_id
         LIMIT 1
       ) metadata ON TRUE
+      -- Position-gap snapshots intentionally carry structural identity only.
+      -- When the metadata projector has not materialized this condition yet,
+      -- recover the same persisted Data-API title from the bounded current-
+      -- position read model. Token identity and the already-bounded ledger page
+      -- constrain each lookup; no upstream request occurs on dashboard render.
+      LEFT JOIN LATERAL (
+        SELECT NULLIF(candidate.raw->>'title', '') AS market_title
+        FROM ${polyTraderCurrentPositions} candidate
+        WHERE lower(candidate.condition_id) = lower(COALESCE(
+          NULLIF(f.attributes->>'condition_id', ''),
+          NULLIF(regexp_replace(
+            f.market_id,
+            '^prediction-market:polymarket:',
+            ''
+          ), '')
+        ))
+          AND candidate.token_id = NULLIF(f.attributes->>'token_id', '')
+          AND NULLIF(candidate.raw->>'title', '') IS NOT NULL
+        ORDER BY candidate.active DESC, candidate.last_observed_at DESC
+        LIMIT 1
+      ) position ON metadata.market_title IS NULL
       ORDER BY f.observed_at DESC, f.target_id DESC, f.fill_id DESC
-    `)
+    `),
   );
 
   // One clock read for the whole page so two rows in the same response cannot

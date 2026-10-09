@@ -50,6 +50,10 @@ import {
   polyPositionGapCohorts,
   polyPositionGapRuns,
 } from "@cogni/db-schema/position-gap";
+import {
+  polyTraderCurrentPositions,
+  polyTraderWallets,
+} from "@cogni/db-schema/trader-activity";
 import { polyWalletConnections } from "@cogni/db-schema/wallet-connections";
 import { polyWalletGrants } from "@cogni/db-schema/wallet-grants";
 import { toUserId, userActor } from "@cogni/ids";
@@ -70,6 +74,7 @@ import type { AgentGrantTransaction } from "@/features/agent-grants/authorizatio
 import { targetIdFromWallet } from "@/features/copy-trade/target-id";
 import { getCopySetupForAccount } from "@/features/wallet-analysis/server/copy-setup-read";
 import { getRecentAttemptsForAccount } from "@/features/wallet-analysis/server/copy-trade-attempts-read";
+import { listCopyTradeOrdersForAccount } from "@/features/wallet-analysis/server/copy-trade-orders-read";
 import { billingAccounts, users } from "@/shared/db/schema";
 
 type Principal = { userId: string; name: string };
@@ -114,6 +119,9 @@ describe("copy-operations delegated RLS", () => {
   const positionGapRunA = randomUUID();
   const positionGapCohortA = randomUUID();
   const positionGapActionA = randomUUID();
+  const traderWalletA = randomUUID();
+  const titleFallbackCondition = `0x${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
+  const titleFallbackToken = "copy-ops-title-token-a";
 
   const targetWalletA = walletAddress();
   const targetWalletB = walletAddress();
@@ -160,6 +168,26 @@ describe("copy-operations delegated RLS", () => {
         balanceCredits: 0n,
       },
     ]);
+
+    await seedDb.insert(polyTraderWallets).values({
+      id: traderWalletA,
+      walletAddress: targetWalletA,
+      kind: "copy_target",
+      label: "Copy-ops title fallback target",
+    });
+    await seedDb.insert(polyTraderCurrentPositions).values({
+      traderWalletId: traderWalletA,
+      // Mixed case is deliberate: ledger identity is canonical lowercase and
+      // the public orders read must still resolve this persisted title.
+      conditionId: titleFallbackCondition.toUpperCase(),
+      tokenId: titleFallbackToken,
+      shares: "1",
+      costBasisUsdc: "0.50",
+      currentValueUsdc: "0.55",
+      avgPrice: "0.50",
+      contentHash: "copy-ops-title-fallback",
+      raw: { title: "Will the current-position fallback resolve?" },
+    });
 
     // The delegate holds ONLY the canonical scope name, so this also re-proves
     // that migration 0076's policy body uses the same OVERLAP predicate as 0074.
@@ -461,6 +489,28 @@ describe("copy-operations delegated RLS", () => {
         realized_fill_source: "data_api_activity_position",
       },
     });
+    await seedDb.insert(polyCopyTradeFills).values({
+      billingAccountId: ownerA.billingAccountId,
+      createdByUserId: ownerA.userId,
+      targetId: targetA,
+      fillId: "position-gap-v3:copy-ops-title-fallback",
+      marketId: `prediction-market:polymarket:${titleFallbackCondition}`,
+      observedAt: new Date("2026-10-05T00:05:00.000Z"),
+      clientOrderId: "copy-ops-title-fallback",
+      orderId: "copy-ops-title-fallback-order",
+      status: "canceled",
+      mode: "live",
+      attributes: {
+        position_gap_version: "3",
+        condition_id: titleFallbackCondition,
+        token_id: titleFallbackToken,
+        outcome: "0",
+        title: "0",
+        side: "BUY",
+        size_usdc: 5,
+        reason: "position_gap_reconciled",
+      },
+    });
   });
 
   afterAll(async () => {
@@ -495,6 +545,9 @@ describe("copy-operations delegated RLS", () => {
     await seedDb
       .delete(polyCopyTradeTargets)
       .where(inArray(polyCopyTradeTargets.billingAccountId, accounts));
+    await seedDb
+      .delete(polyTraderWallets)
+      .where(eq(polyTraderWallets.id, traderWalletA));
     await seedDb
       .delete(agentCapabilityGrants)
       .where(
@@ -693,6 +746,26 @@ describe("copy-operations delegated RLS", () => {
     expect(delegated?.targets).toEqual(owner?.targets);
     expect(delegated?.wallet_safety).toEqual(owner?.wallet_safety);
     expect(delegated?.budget_allocation).toEqual(owner?.budget_allocation);
+  });
+
+  it("orders: resolves a mixed-case current-position title and cancellation code", async () => {
+    const orders = await asTx(ownerA.userId, (tx) =>
+      listCopyTradeOrdersForAccount(
+        tx,
+        { limit: 200 },
+        ownerA.billingAccountId,
+      ),
+    );
+    const row = orders?.orders.find(
+      (order) => order.client_order_id === "copy-ops-title-fallback",
+    );
+
+    expect(row).toMatchObject({
+      market_title: "Will the current-position fallback resolve?",
+      outcome: "0",
+      status: "canceled",
+      error: "position_gap_reconciled",
+    });
   });
 
   it("copy-setup: a cross-tenant read is denied, not silently emptied", async () => {

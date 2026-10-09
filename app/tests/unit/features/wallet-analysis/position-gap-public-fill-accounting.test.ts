@@ -81,17 +81,50 @@ describe("Position-gap public fill accounting", () => {
     await listCopyTradeOrdersForAccount(
       tx as never,
       { limit: 50 },
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     );
 
     const query = captured[0] ?? "";
     expect(query).toContain("WITH ordered_fills AS MATERIALIZED");
     expect(query).toContain("LEFT JOIN LATERAL");
     expect(query).toContain('FROM "poly_market_metadata" candidate');
+    expect(query).toContain('FROM "poly_trader_current_positions" candidate');
     expect(query).toMatch(
-      /lower\(candidate\.condition_id\) = lower\(COALESCE\([\s\S]*attributes->>'condition_id'[\s\S]*regexp_replace\([\s\S]*market_id[\s\S]*\^prediction-market:polymarket:/
+      /lower\(candidate\.condition_id\) = lower\(COALESCE\([\s\S]*attributes->>'condition_id'[\s\S]*regexp_replace\([\s\S]*market_id[\s\S]*\^prediction-market:polymarket:/,
+    );
+    expect(query).toMatch(
+      /lower\(candidate\.condition_id\) = lower\(COALESCE\([\s\S]*candidate\.token_id = NULLIF\(f\.attributes->>'token_id'/,
     );
     expect(query).toMatch(/LIMIT \$\d+\s*\)[\s\S]*LEFT JOIN LATERAL/);
+  });
+
+  it("returns a real title from the current-position fallback", async () => {
+    const tx = {
+      execute: async () => [
+        {
+          ...orderRow({
+            condition_id:
+              "0x8f9a4ff725d4f23ac1eea6c611a21193a629de0a6af74f8a28c08fef37908183",
+            token_id: "token-1",
+            outcome: "0",
+            position_gap_version: "3",
+          }),
+          metadataMarketTitle: "Will the canonical market win?",
+        },
+      ],
+    };
+
+    const result = await listCopyTradeOrdersForAccount(
+      tx as never,
+      { limit: 1 },
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+
+    expect(result?.orders).toHaveLength(1);
+    expect(result?.orders[0]?.market_title).toBe(
+      "Will the canonical market win?",
+    );
+    expect(result?.orders[0]?.outcome).toBe("0");
   });
 
   it("prefers canonical market metadata over the numeric outcome label", () => {
@@ -100,10 +133,54 @@ describe("Position-gap public fill accounting", () => {
         ...orderRow({ title: "0", outcome: "0", position_gap_version: "3" }),
         metadataMarketTitle: "Will the canonical market win?",
       },
-      date.getTime()
+      date.getTime(),
     );
 
     expect(order.market_title).toBe("Will the canonical market win?");
+    expect(order.outcome).toBe("0");
+  });
+
+  it("exposes bounded cancellation codes and keeps venue errors", () => {
+    const canceled = toContractRow(
+      {
+        ...orderRow({
+          reason: "position_gap_reconciled",
+          error: "must not win",
+        }),
+        status: "canceled",
+      },
+      date.getTime(),
+    );
+    const errored = toContractRow(
+      {
+        ...orderRow({
+          reason: "position_gap_reconciled",
+          error: 'clob_error="insufficient balance"',
+        }),
+        status: "error",
+      },
+      date.getTime(),
+    );
+    const unbounded = toContractRow(
+      {
+        ...orderRow({ reason: "arbitrary user text" }),
+        status: "canceled",
+      },
+      date.getTime(),
+    );
+
+    expect(canceled.error).toBe("position_gap_reconciled");
+    expect(errored.error).toBe('clob_error="insufficient balance"');
+    expect(unbounded.error).toBeNull();
+  });
+
+  it("rejects numeric outcome labels as market titles", () => {
+    const order = toContractRow(
+      orderRow({ title: "0", outcome: "0", position_gap_version: "3" }),
+      date.getTime(),
+    );
+
+    expect(order.market_title).toBeNull();
     expect(order.outcome).toBe("0");
   });
 
@@ -114,7 +191,7 @@ describe("Position-gap public fill accounting", () => {
         limit_price: 0.386,
         filled_size_usdc: 3.5898,
       }),
-      date.getTime()
+      date.getTime(),
     );
     expect(order.filled_size_usdc).toBeNull();
     expect(order.fill_accounting).toEqual({
@@ -157,7 +234,7 @@ describe("Position-gap public fill accounting", () => {
         exec_price: 0.0092 / 9.3,
         exec_filled_size_usdc: 0.0092,
         exec_realized_fill_source: "clob_associated_trades",
-      })
+      }),
     );
     expect(attempt).toMatchObject({
       availability: "observed",
@@ -214,7 +291,7 @@ describe("Position-gap public fill accounting", () => {
   it("preserves legacy and non-PG execution semantics", () => {
     const order = toContractRow(
       orderRow({ filled_size_usdc: 3.5898 }),
-      date.getTime()
+      date.getTime(),
     );
     expect(order.filled_size_usdc).toBe(3.5898);
     expect(order.fill_accounting).toBeNull();
@@ -223,7 +300,7 @@ describe("Position-gap public fill accounting", () => {
       attemptRow({
         exec_position_gap_version: null,
         exec_filled_size_usdc: null,
-      })
+      }),
     );
     expect(attempt).toMatchObject({
       availability: "observed",
@@ -232,7 +309,7 @@ describe("Position-gap public fill accounting", () => {
       fill_accounting: null,
     });
     expect(
-      attempt.availability === "observed" ? attempt.filled_size_usdc : null
+      attempt.availability === "observed" ? attempt.filled_size_usdc : null,
     ).toBeCloseTo(3.5898, 10);
   });
 });
