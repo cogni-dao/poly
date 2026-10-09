@@ -672,6 +672,7 @@ describe("buildPositionGapBuyIntent", () => {
 			getWalletCashUsdc: vi.fn(),
 			getTargetCashUsdc: vi.fn(),
 			getAuthoritativeHoldings: vi.fn(),
+			publishTargetSnapshot: vi.fn(),
 			logger: {
 				...actorLogger,
 				child: vi.fn(() => actorLogger),
@@ -696,9 +697,94 @@ describe("buildPositionGapBuyIntent", () => {
 		void handle;
 	});
 
+	it("does not publish target facts after the assignment retires during refresh", async () => {
+		const isAssignmentCurrent = vi
+			.fn<() => Promise<boolean>>()
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+		const emptyRuntime = {
+			cohorts: [],
+			openBuyOrders: [],
+			activeBuys: [],
+			provisionalFilledHoldings: [],
+		};
+		const publishTargetSnapshot = vi.fn();
+		const loggerInfo = vi.fn();
+		const loggerWarn = vi.fn();
+		const handle = startPositionGapActor({
+			implementationRevision: "0123456789abcdef0123456789abcdef01234567",
+			targetRowId: "target-row",
+			isAssignmentCurrent,
+			scope: {
+				billingAccountId: "billing-account",
+				createdByUserId: "user",
+				targetId: "wallet-derived-target",
+			},
+			targetWallet: "0x1111111111111111111111111111111111111111",
+			configRevision: "revision",
+			configuredBudgetUsdc: 10,
+			positionGapBudgetGroup: {
+				positionGapTargetCount: 1,
+				explicitBudgetTotalUsdc: 10,
+				automaticTargetCount: 0,
+				unbudgetedTargetCount: 0,
+			},
+			source: { fetchSince: vi.fn() },
+			refresh: {
+				refreshFull: vi.fn(async () => ({ published: true, snapshot })),
+				readFresh: vi.fn(() => snapshot),
+			} as never,
+			store: {
+				recoverSubmittingAsAmbiguous: vi.fn(async () => 0),
+				recoverKnownRejectedAmbiguities: vi.fn(async () => []),
+				repairTargetWalletLineage: vi.fn(async () => undefined),
+				loadPlannerState: vi.fn(async () => emptyRuntime),
+				loadOrderBindings: vi.fn(async () => new Map()),
+				reconcileLedgerTerminals: vi.fn(async () => 0),
+				releaseTerminalExposure: vi.fn(async () => undefined),
+			} as never,
+			ledger: {} as never,
+			getExecutionMode: vi.fn(async () => "paper" as const),
+			executionForMode: vi.fn(() => ({}) as never),
+			fillEvidence: {} as never,
+			getWalletCashUsdc: vi.fn(),
+			getTargetCashUsdc: vi.fn(),
+			getAuthoritativeHoldings: vi.fn(),
+			publishTargetSnapshot,
+			logger: {
+				debug: vi.fn(),
+				info: loggerInfo,
+				warn: loggerWarn,
+				error: vi.fn(),
+				child() {
+					return this;
+				},
+			},
+			now: () => 2,
+			setInterval: vi.fn(() => 1 as never),
+			clearInterval: vi.fn(),
+		});
+
+		await vi.waitFor(() =>
+			expect(loggerWarn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					event: "poly.mirror.assignment_retired",
+					stage: "before_target_snapshot_publish",
+				}),
+				expect.any(String),
+			),
+		);
+		expect(isAssignmentCurrent).toHaveBeenCalledTimes(2);
+		expect(publishTargetSnapshot).not.toHaveBeenCalled();
+		expect(loggerInfo).not.toHaveBeenCalled();
+		void handle;
+	});
+
 	it("halts a zero-intent run when its assignment retires after persistence", async () => {
 		const isAssignmentCurrent = vi
 			.fn<() => Promise<boolean>>()
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(true)
 			.mockResolvedValueOnce(true)
 			.mockResolvedValueOnce(true)
 			.mockResolvedValueOnce(false);
@@ -716,6 +802,11 @@ describe("buildPositionGapBuyIntent", () => {
 		const finishRun = vi.fn(async () => undefined);
 		const recordDecision = vi.fn();
 		const placeBuy = vi.fn();
+		const publishTargetSnapshot = vi.fn(async (targetSnapshot) => ({
+			applied: true,
+			positions: targetSnapshot.conditions.length,
+			snapshotId: targetSnapshot.snapshotId,
+		}));
 		const handle = startPositionGapActor({
 			implementationRevision: "0123456789abcdef0123456789abcdef01234567",
 			targetRowId: "target-row",
@@ -784,6 +875,7 @@ describe("buildPositionGapBuyIntent", () => {
 				tokenAliases: [],
 				observedBlock: 1,
 			})),
+			publishTargetSnapshot,
 			logger: {
 				debug: vi.fn(),
 				info: vi.fn(),
@@ -805,7 +897,8 @@ describe("buildPositionGapBuyIntent", () => {
 				"assignment_retired",
 			),
 		);
-		expect(isAssignmentCurrent).toHaveBeenCalledTimes(3);
+		expect(isAssignmentCurrent).toHaveBeenCalledTimes(5);
+		expect(publishTargetSnapshot).toHaveBeenCalledOnce();
 		expect(persistPlan).toHaveBeenCalledOnce();
 		expect(recordDecision).not.toHaveBeenCalled();
 		expect(placeBuy).not.toHaveBeenCalled();
@@ -858,6 +951,7 @@ describe("buildPositionGapBuyIntent", () => {
 			getWalletCashUsdc: vi.fn(),
 			getTargetCashUsdc: vi.fn(),
 			getAuthoritativeHoldings: vi.fn(),
+			publishTargetSnapshot: vi.fn(),
 			logger: {
 				...actorLogger,
 				child: vi.fn(() => actorLogger),

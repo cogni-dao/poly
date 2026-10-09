@@ -476,10 +476,35 @@ export function startPositionGapActor(
 		causalDirty.clear();
 		causalWatermarkMs = 0;
 		if (publishedTargetSnapshotId !== freshSnapshot.snapshotId) {
+			if (!(await assignmentStillCurrent("before_target_snapshot_publish"))) {
+				await cancelAll("disabled");
+				return;
+			}
+			let publication:
+				| { applied: boolean; positions: number; snapshotId: string }
+				| undefined;
 			try {
-				const publication = await deps.publishTargetSnapshot(freshSnapshot);
+				publication = await deps.publishTargetSnapshot(freshSnapshot);
+			} catch (error) {
+				actorLogger.warn(
+					{
+						event: "poly.position_gap.v3.target_snapshot_publish_failed",
+						billing_account_id: deps.scope.billingAccountId,
+						target_id: deps.scope.targetId,
+						target_wallet: deps.targetWallet,
+						snapshot_id: freshSnapshot.snapshotId,
+						...safeErrorDimensions(error),
+					},
+					"position-gap target saved-fact publication failed; execution continues",
+				);
+			}
+			if (publication) {
+				if (!(await assignmentStillCurrent("after_target_snapshot_publish"))) {
+					await cancelAll("disabled");
+					return;
+				}
 				publishedTargetSnapshotId = publication.snapshotId;
-				deps.logger.info(
+				actorLogger.info(
 					{
 						event: publication.applied
 							? "poly.position_gap.v3.target_snapshot_published"
@@ -495,18 +520,6 @@ export function startPositionGapActor(
 					publication.applied
 						? "position-gap published planner target snapshot to shared saved facts"
 						: "position-gap ignored an older target snapshot already superseded in shared saved facts",
-				);
-			} catch (error) {
-				deps.logger.warn(
-					{
-						event: "poly.position_gap.v3.target_snapshot_publish_failed",
-						billing_account_id: deps.scope.billingAccountId,
-						target_id: deps.scope.targetId,
-						target_wallet: deps.targetWallet,
-						snapshot_id: freshSnapshot.snapshotId,
-						...safeErrorDimensions(error),
-					},
-					"position-gap target saved-fact publication failed; execution continues",
 				);
 			}
 		}
