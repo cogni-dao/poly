@@ -25,28 +25,18 @@ import type {
 } from "@cogni/node-contracts";
 
 /**
- * Hard ceiling for model-visible SessionStart context.
+ * No producer-side byte ceiling (story.5070).
  *
- * Codex's repo hook opts out of its approximate token spill so the middle of
- * the orientation can never disappear. That is safe only while the producer
- * enforces a strict bound. Keep the shell loader's value identical: the API
- * rejects growth at the source, and the loader independently protects stale
- * or foreign caches.
+ * The loader writes `.cogni/.cognition-cache.md`, then each harness uses its
+ * native full-context path: Claude Code `@import` (up to 4 MiB), Codex hook
+ * stdout with `additionalContextLimit = 0`, and OpenCode `opencode.json`
+ * instructions. Claude Code's SessionStart stdout/`additionalContext` is NOT a
+ * safe delivery surface — it caps large output with no override — so no
+ * universal hook-injection path or serve-side ceiling is assumed. The former
+ * 16 KB cap (bug.5284) capped the SSoT itself and blocked realistic growth; the
+ * bundle is human-curated in Dolt, not user-generated. See the canonical
+ * Cognition Substrate design and the `cognition-expert` skill.
  */
-export const SESSION_COGNITION_MAX_BYTES = 16 * 1024;
-
-/** Reject an oversized bundle rather than silently removing arbitrary text. */
-export function assertBundleWithinBudget(markdown: string): void {
-	// Shell command substitution strips trailing newlines; the presenter then
-	// restores exactly one. Count that exact model-visible stdout shape here.
-	const presented = `${markdown.replace(/\n+$/, "")}\n`;
-	const bytes = new TextEncoder().encode(presented).byteLength;
-	if (bytes > SESSION_COGNITION_MAX_BYTES) {
-		throw new Error(
-			`Session cognition bundle is ${bytes} bytes; maximum is ${SESSION_COGNITION_MAX_BYTES}`,
-		);
-	}
-}
 
 /**
  * The irreducible session contract. This is the ONLY cognition that is
