@@ -9,7 +9,7 @@
 
 ## Purpose
 
-Job modules that wire business logic to the application container for ops-triggered tasks (CLI and internal routes). Each job acquires an advisory lock, resolves dependencies from the container, and delegates to a service function.
+Job modules that wire business logic or bounded substrate diagnostics to the application environment for ops-triggered tasks and routes.
 
 ## Pointers
 
@@ -28,9 +28,9 @@ Job modules that wire business logic to the application container for ops-trigge
 
 ## Public Surface
 
-- **Exports:** `runGovernanceSchedulesSyncJob()`
+- **Exports:** `runGovernanceSchedulesSyncJob()`, `checkSharedTemporalHealth()`
 - **CLI (if any):** none; the app invokes the job directly at boot
-- **Files considered API:** `syncGovernanceSchedules.job.ts`
+- **Files considered API:** job modules in this directory
 
 ## Ports (optional)
 
@@ -39,7 +39,7 @@ Job modules that wire business logic to the application container for ops-trigge
 
 ## Responsibilities
 
-- This directory **does**: Acquire advisory locks, resolve container deps, call service functions
+- This directory **does**: Acquire advisory locks, resolve dependencies, call services and bounded read-only substrate diagnostics
 - This directory **does not**: Contain business logic, expose HTTP routes, manage process lifecycle
 
 ## Standards

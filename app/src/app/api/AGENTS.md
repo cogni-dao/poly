@@ -5,7 +5,7 @@
 ## Metadata
 
 - **Owners:** @derek @core-dev
-- **Last reviewed:** 2026-10-03
+- **Last reviewed:** 2026-10-11
 - **Status:** draft
 
 ## Purpose
@@ -69,6 +69,7 @@ HTTP API endpoints using Next.js App Router. Contract-validated entry points tha
   - `/api/v1/agent/access-requests/[id]` [GET] - bearer-only self poll of request lifecycle
   - `/api/v1/agent/runs` [GET] - machine-authenticated run list
   - `/api/v1/agent/runs/[runId]/stream` [GET] - machine-authenticated run stream SSE
+  - `/api/v1/temporal/health` [GET] - authenticated, read-only shared-worker artifact and server-observed poller proof
   - `/api/v1/poly/agent-grants` [GET, POST] - owner-managed principal capability grants
   - `/api/v1/poly/agent-grants/[id]` [DELETE] - owner-only soft revocation
   - `/api/v1/poly/agent-access-requests` [GET] - browser-owner access lifecycle list
