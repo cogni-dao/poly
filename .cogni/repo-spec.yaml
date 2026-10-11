@@ -72,6 +72,34 @@ gates:
     with:
       rule_file: repo-goal-alignment.yaml
 
+# Shared-worker graph schedules for existing Poly functionality. The operator
+# reconciles these into GraphRunWorkflow under this node's tenant identity.
+schedules:
+  # Evaluate the current algorithm evidence first so its durable learning is
+  # available to the strategy review that follows thirty minutes later.
+  - id: poly-daily-algorithm-evaluation
+    cron: "0 0 * * *"
+    timezone: UTC
+    graph: "langgraph:poly-algorithm-evaluation"
+    payload:
+      messages:
+        - role: user
+          content: "Run Poly's scheduled algorithm evaluation. Review canonical mission, strategy, algorithm, repository, paper/copy-trading, and critical-review evidence; report material gaps honestly; persist at most one evidence-linked learning hypothesis; and propose one bounded next algorithm experiment. Do not trade, mutate policy, or invent unavailable account facts."
+      modelRef:
+        providerKey: platform
+        modelId: gpt-oss-120b
+  - id: poly-daily-strategy-review
+    cron: "30 0 * * *"
+    timezone: UTC
+    graph: "langgraph:poly-brain"
+    payload:
+      messages:
+        - role: user
+          content: "Run Poly's scheduled DAO-objective strategy review. Compare evidence-backed ethical-profit directions using canonical mission, strategy, work-item, repository, and relevant build evidence; persist at most one evidence-linked learning hypothesis; and propose one bounded next experiment. Do not trade, mutate policy, or invent unavailable account facts."
+      modelRef:
+        providerKey: platform
+        modelId: gpt-oss-120b
+
 # Akash lane (story.5016). Declares WHAT this node runs so the operator can
 # render a provider-neutral workload. Emitted verbatim by
 # `renderNodeDeploymentYaml()` in @cogni/repo-spec -- the SAME renderer the node
