@@ -33,14 +33,11 @@
  *     single order. Post the 2026-04-28 cutover pUSD is the real collateral,
  *     so the empty check MUST include pUSD, not USDC.e alone.
  *   - UNKNOWN_IS_NOT_ZERO: absent/stale position or P/L read models render an
- *     explicit unavailable state. A nullable total never triggers the empty
- *     wallet CTA and cash-only is never presented as Total.
- *   - STALE_IS_LOUD (bug.5031): when positions were previously synced and are
- *     now stale/withheld, the card shows a prominent "data-sync delay, not a
- *     change in funds" banner. A stalled observer previously degraded silently
- *     to a cash-only figure with only a subtle "partial" chip, reading as a
- *     balance drop. The banner is gated to genuine stalls (non-null sync age)
- *     so a never-observed/new account never gets a false "funds changed" alarm.
+ *     explicit unavailable state (em dash). A nullable total never triggers the
+ *     empty wallet CTA and cash-only is never presented as Total. The real cure
+ *     for staleness is the observer, not a disclaimer (bug.5031): the card
+ *     shows accurate cash+orders+positions=total and simply renders an unknown
+ *     leg as "—" without an alarming banner.
  * Side-effects: IO (React Query reads; session-bound paper-account POST).
  * Links: work/items/task.0361.poly-first-user-onboarding-flow-v0.md
  * @public
@@ -77,22 +74,6 @@ function formatDecimal(n: number | null, fractionDigits: number): string {
     minimumFractionDigits: fractionDigits,
     maximumFractionDigits: fractionDigits,
   });
-}
-
-/**
- * Coarse "how long ago" label for the stale-positions banner. Null when no
- * sync age is known (the banner then omits the parenthetical) so the copy
- * never invents a freshness it cannot prove.
- */
-function formatSyncAge(ms: number | null | undefined): string | null {
-  if (ms === null || ms === undefined || !Number.isFinite(ms) || ms <= 0) {
-    return null;
-  }
-  const minutes = Math.floor(ms / 60_000);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
 }
 
 async function fetchWalletStatus(): Promise<PolyWalletStatusOutput> {
@@ -257,25 +238,6 @@ export function TradingWalletCard(): ReactElement {
         ) : (
           <div className="space-y-5 py-1">
             <div className="space-y-3">
-              {balance.positions === null &&
-              data.positions_stale &&
-              formatSyncAge(data.positions_sync_age_ms) ? (
-                // Only the genuine-stall case: positions were synced before
-                // (non-null age) and are now withheld. A never-observed account
-                // (null age) withholds too, but has no prior funds to have
-                // "changed" — showing the reassurance there would be a false
-                // alarm (bug.5031 review I2). Keying on `balance.positions ===
-                // null` keeps "withheld below" literally true (I3).
-                <div
-                  className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-warning text-xs"
-                  role="status"
-                >
-                  Live position data is stale (last synced{" "}
-                  {formatSyncAge(data.positions_sync_age_ms)}). Open-position
-                  value is withheld below — this is a data-sync delay, not a
-                  change in your funds.
-                </div>
-              ) : null}
               <TradingWalletBalanceBar balance={balance} />
               <div className="flex flex-wrap items-center justify-between gap-3 text-muted-foreground text-xs">
                 <span>

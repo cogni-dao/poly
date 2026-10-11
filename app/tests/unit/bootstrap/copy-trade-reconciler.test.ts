@@ -24,6 +24,7 @@ const RECONCILE_MS = 30_000;
 
 function target(overrides: Partial<EnumeratedTarget> = {}): EnumeratedTarget {
   return {
+    targetRowId: "target-row-1",
     billingAccountId: "billing-1",
     createdByUserId: "user-1",
     targetWallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
@@ -166,5 +167,58 @@ describe("copy-trade target reconciliation", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(events[2]).toBe("start:2026-10-07T03:15:41.000Z");
     stop();
+  });
+
+  it("does not start an orphan poll when stopped during target enumeration", async () => {
+    let releaseTargets!: (targets: readonly EnumeratedTarget[]) => void;
+    const targets = new Promise<readonly EnumeratedTarget[]>((resolve) => {
+      releaseTargets = resolve;
+    });
+    const startPollForTarget = vi.fn(() => vi.fn());
+    const stop = startCopyTradeReconciler({
+      targetSource: { listAllActive: () => targets },
+      startPollForTarget,
+      logger: makeLogger() as never,
+      intervalMs: RECONCILE_MS,
+    });
+
+    stop();
+    releaseTargets([target({ sizingPolicyKind: "position_gap" })]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(startPollForTarget).not.toHaveBeenCalled();
+  });
+
+  it("does not start a successor after shutdown races predecessor retirement", async () => {
+    let current = target();
+    let finishRetirement!: () => void;
+    const retirement = new Promise<void>((resolve) => {
+      finishRetirement = resolve;
+    });
+    const predecessorStop = vi.fn(() => retirement);
+    const startPollForTarget = vi.fn(() =>
+      startPollForTarget.mock.calls.length === 1 ? predecessorStop : vi.fn()
+    );
+    const stop = startCopyTradeReconciler({
+      targetSource: { listAllActive: async () => [current] },
+      startPollForTarget,
+      logger: makeLogger() as never,
+      intervalMs: RECONCILE_MS,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    current = target({
+      sizingPolicyKind: "position_gap",
+      mirrorActivatedAt: new Date("2026-10-07T03:15:41.000Z"),
+    });
+    await vi.advanceTimersByTimeAsync(RECONCILE_MS);
+    expect(predecessorStop).toHaveBeenCalledOnce();
+
+    stop();
+    expect(predecessorStop).toHaveBeenCalledOnce();
+    finishRetirement();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(startPollForTarget).toHaveBeenCalledTimes(1);
   });
 });

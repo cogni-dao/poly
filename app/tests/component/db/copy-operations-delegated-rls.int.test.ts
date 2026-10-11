@@ -1090,6 +1090,7 @@ describe("copy-operations delegated RLS", () => {
     );
     // Decision evidence correlated with placement/fill evidence.
     expect(placed?.executed.availability).toBe("observed");
+    expect(placed?.target_wallet).toBe(targetWalletA);
     // Intended size survives even though the fill never realized a price.
     expect(placed?.intended.size_usdc).toBe(5);
     expect(placed?.algorithm).toMatchObject({

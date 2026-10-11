@@ -234,7 +234,12 @@ export function copyTradeAttemptsSelect(
       d.id::text                                        AS attempt_id,
       d.decided_at,
       d.target_id::text                                 AS target_id,
-      t.target_wallet,
+      COALESCE(
+        NULLIF(lower(d.intent->>'target_wallet'), ''),
+        NULLIF(lower(d.intent->'attributes'->>'target_wallet'), ''),
+        NULLIF(lower(f.attributes->>'target_wallet'), ''),
+        lower(t.target_wallet)
+      )                                                 AS target_wallet,
       d.fill_id,
       COALESCE(NULLIF(d.intent->>'market_id', ''), f.market_id) AS market_id,
       COALESCE(NULLIF(metadata.market_title, ''), NULLIF(f.attributes->>'title', '')) AS market_title,

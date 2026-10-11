@@ -262,6 +262,7 @@ export const GET = wrapRouteHandlerWithLogging(
             () =>
               readCurrentWalletPositionModel({
                 db: container.serviceDb,
+                billingAccountId,
                 walletAddress: address,
                 capturedAt,
               })

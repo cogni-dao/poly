@@ -230,7 +230,7 @@ describe("dashboard missing read-model states", () => {
     expect(screen.queryByText(/observer read model/i)).not.toBeInTheDocument();
   });
 
-  it("shouts a stale-positions banner and withholds the positions leg (bug.5031)", () => {
+  it("renders a stale positions leg as an em dash without an alarming banner (bug.5031)", () => {
     state.overview = {
       configured: true,
       connected: true,
@@ -241,8 +241,6 @@ describe("dashboard missing read-model states", () => {
       pol_gas: 5,
       usdc_available: 88.88,
       usdc_locked: 0,
-      // A stalled observer must surface positions as unknown, never a
-      // misleading zero summed over frozen inventory.
       usdc_positions_mtm: null,
       usdc_total: null,
       open_orders: 0,
@@ -250,68 +248,20 @@ describe("dashboard missing read-model states", () => {
       positions_sync_age_ms: 34_044_169,
       positions_stale: true,
       pnlHistory: [],
-      warnings: [
-        { code: "current_positions_stale", message: "stale" },
-      ],
+      warnings: [{ code: "current_positions_stale", message: "stale" }],
     };
 
     render(<TradingWalletCard />);
 
-    // Loud banner, framed as a data-sync delay rather than lost funds.
-    expect(
-      screen.getByText(/not a change in your funds/i)
-    ).toBeInTheDocument();
-    expect(screen.getByText(/last synced 9h ago/i)).toBeInTheDocument();
-    // Cash is shown, positions + total are withheld as unknown (never $0.00).
+    // Cash shows; positions/total render as unknown (never a misleading $0),
+    // and NO yellow data-sync banner is shown — the observer fix is the cure.
     expect(screen.getByText("$88.88")).toBeInTheDocument();
     expect(screen.getByText("Total").parentElement).toHaveTextContent("Total—");
     expect(
-      screen.getByRole("img", {
-        name: /Positions: unavailable; Total: unavailable/i,
-      })
-    ).toBeInTheDocument();
-    // The empty-wallet CTA must never fire on a withheld total.
-    expect(screen.queryByText(/Wallet is empty/i)).not.toBeInTheDocument();
-  });
-
-  it("suppresses the stale banner for a never-synced account (no false fund-change alarm, bug.5031 I2)", () => {
-    state.overview = {
-      configured: true,
-      connected: true,
-      freshness: "read_model",
-      address: "0x1111111111111111111111111111111111111111",
-      interval: "1W",
-      capturedAt: "2026-10-09T10:00:00.000Z",
-      pol_gas: 5,
-      usdc_available: 25,
-      usdc_locked: 0,
-      // Never observed: positions withheld, but there is no prior sync (null
-      // age) and no prior funds to have "changed" — the reassurance banner
-      // would be a false alarm, so it must stay hidden.
-      usdc_positions_mtm: null,
-      usdc_total: null,
-      open_orders: 0,
-      positions_synced_at: null,
-      positions_sync_age_ms: null,
-      positions_stale: true,
-      pnlHistory: [],
-      warnings: [
-        { code: "current_positions_never_observed", message: "never observed" },
-      ],
-    };
-
-    render(<TradingWalletCard />);
-
-    expect(screen.getByText("$25.00")).toBeInTheDocument();
-    expect(
       screen.queryByText(/not a change in your funds/i)
     ).not.toBeInTheDocument();
-    // Positions are still honestly withheld in the bar, just without the alarm.
-    expect(
-      screen.getByRole("img", {
-        name: /Positions: unavailable; Total: unavailable/i,
-      })
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/data-sync delay/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Wallet is empty/i)).not.toBeInTheDocument();
   });
 
   it("reuses the legacy balance bar for a complete wallet breakdown", () => {

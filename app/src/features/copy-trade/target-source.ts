@@ -71,7 +71,16 @@ export type SizingPolicyKind =
   | "position_gap"
   | "mirror_fill_exact";
 
+export interface CopyTradeAssignmentRef {
+  targetRowId: string;
+  billingAccountId: string;
+  mirrorActivatedAt: Date;
+  sizingPolicyKind: SizingPolicyKind;
+}
+
 export interface EnumeratedTarget {
+  /** Durable `poly_copy_trade_targets.id`; distinct from wallet-derived `target_id`. */
+  targetRowId: string;
   billingAccountId: string;
   createdByUserId: string;
   targetWallet: WalletAddress;
@@ -138,6 +147,13 @@ export interface CopyTradeTargetSource {
    * `withTenantScope(appDb, createdByUserId)`.
    */
   listAllActive(): Promise<readonly EnumeratedTarget[]>;
+
+  /**
+   * Cross-process, authoritative assignment liveness check. A caller must
+   * supply the durable row, tenant, activation revision, and policy kind it
+   * started with; any disabled, replaced, or de-authorized row returns false.
+   */
+  isAssignmentCurrent(assignment: CopyTradeAssignmentRef): Promise<boolean>;
 }
 
 // ── env impl (local-dev / tests only) ───────────────────────────────────────
@@ -174,6 +190,7 @@ export function envTargetSource(
   );
   const enumerated: readonly EnumeratedTarget[] = Object.freeze(
     wallets.map((targetWallet) => ({
+      targetRowId: targetIdFromWallet(targetWallet),
       billingAccountId: COGNI_SYSTEM_BILLING_ACCOUNT_ID,
       createdByUserId: COGNI_SYSTEM_PRINCIPAL_USER_ID,
       targetWallet,
@@ -195,6 +212,15 @@ export function envTargetSource(
   return {
     listForActor: async () => userRows,
     listAllActive: async () => enumerated,
+    isAssignmentCurrent: async (assignment) =>
+      enumerated.some(
+        (target) =>
+          target.targetRowId === assignment.targetRowId &&
+          target.billingAccountId === assignment.billingAccountId &&
+          target.mirrorActivatedAt.getTime() ===
+            assignment.mirrorActivatedAt.getTime() &&
+          target.sizingPolicyKind === assignment.sizingPolicyKind
+      ),
   };
 }
 
@@ -369,6 +395,7 @@ export function dbTargetSource(
       const budgetGroups = positionGapBudgetGroups(rows);
 
       return rows.map((r) => ({
+        targetRowId: r.target_row_id,
         billingAccountId: r.billing_account_id,
         createdByUserId: r.created_by_user_id,
         targetWallet: r.target_wallet as WalletAddress,
@@ -392,6 +419,64 @@ export function dbTargetSource(
           budgetGroups.get(r.billing_account_id) ??
           summarizePositionGapBudgetGroup([], 0),
       }));
+    },
+
+    async isAssignmentCurrent(
+      assignment: CopyTradeAssignmentRef
+    ): Promise<boolean> {
+      const rows = await deps.serviceDb
+        .select({
+          mirror_activated_at: polyCopyTradeTargets.mirrorActivatedAt,
+          sizing_policy_kind: polyCopyTradeTargets.sizingPolicyKind,
+        })
+        .from(polyCopyTradeTargets)
+        .where(
+          and(
+            eq(polyCopyTradeTargets.id, assignment.targetRowId),
+            eq(
+              polyCopyTradeTargets.billingAccountId,
+              assignment.billingAccountId
+            ),
+            isNull(polyCopyTradeTargets.disabledAt),
+            exists(
+              deps.serviceDb
+                .select({ one: sql<number>`1`.as("one") })
+                .from(polyWalletConnections)
+                .innerJoin(
+                  polyWalletGrants,
+                  and(
+                    eq(
+                      polyWalletGrants.walletConnectionId,
+                      polyWalletConnections.id
+                    ),
+                    isNull(polyWalletGrants.revokedAt),
+                    or(
+                      isNull(polyWalletGrants.expiresAt),
+                      gt(polyWalletGrants.expiresAt, sql`now()`)
+                    )
+                  )
+                )
+                .where(
+                  and(
+                    eq(
+                      polyWalletConnections.billingAccountId,
+                      polyCopyTradeTargets.billingAccountId
+                    ),
+                    isNull(polyWalletConnections.revokedAt)
+                  )
+                )
+            )
+          )
+        )
+        .limit(1);
+      const [current] = rows;
+      return (
+        current !== undefined &&
+        current.mirror_activated_at.getTime() ===
+          assignment.mirrorActivatedAt.getTime() &&
+        coerceSizingPolicyKind(current.sizing_policy_kind) ===
+          assignment.sizingPolicyKind
+      );
     },
   };
 }

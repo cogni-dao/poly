@@ -329,8 +329,12 @@ export function targetConditionPositionFromDataApiPositions(
 export interface MirrorJobDeps {
 	/** Exact Git SHA bound into every algorithm version. */
 	implementationRevision: string;
+	/** Durable `poly_copy_trade_targets.id`; never derived from wallet identity. */
+	targetRowId: string;
 	/** Immutable target activation/config assignment identity. */
 	assignmentId: string;
+  /** Authoritative DB-backed liveness check for this exact assignment. */
+  isAssignmentCurrent: MirrorPipelineDeps["isAssignmentCurrent"];
   /** Target config — built via `buildMirrorTargetConfig`; Phase 4 reads from a tenant-aware table. */
   target: MirrorTargetConfig;
   /** Injected source (Data-API adapter) — P4 swaps in WS. */
@@ -392,8 +396,9 @@ export function startMirrorPoll(deps: MirrorJobDeps): MirrorJobStopFn {
   const log = deps.logger.child({
     component: "mirror-job",
     target_id: deps.target.target_id,
-    target_wallet: deps.target.target_wallet,
+    target_row_id: deps.targetRowId,
     billing_account_id: deps.target.billing_account_id,
+		assignment_id: deps.assignmentId,
   });
 
   // First-tick cursor — avoid replaying a target's historical activity at boot.
@@ -412,7 +417,9 @@ export function startMirrorPoll(deps: MirrorJobDeps): MirrorJobStopFn {
 
   const pipelineDeps: MirrorPipelineDeps = {
 		implementationRevision: deps.implementationRevision,
+		targetRowId: deps.targetRowId,
 		assignmentId: deps.assignmentId,
+    isAssignmentCurrent: deps.isAssignmentCurrent,
     source: deps.source,
     ledger: deps.ledger,
     placeIntent: deps.placeIntent,
@@ -429,7 +436,7 @@ export function startMirrorPoll(deps: MirrorJobDeps): MirrorJobStopFn {
       cursor = n;
     },
     getExecutionMode: deps.getExecutionMode,
-    logger: deps.logger,
+    logger: log,
     metrics: deps.metrics,
     // exactOptionalPropertyTypes: only spread when defined to avoid
     // assigning `undefined` to a property typed as `T` (not `T | undefined`).

@@ -134,9 +134,9 @@ describe("wallet dashboard coherent snapshot", () => {
       Array.from({ length: 501 }, (_, index) => ({
         ...currentPosition(walletA.id, index),
         // condition-0 is the market shared with Tenant A's target snapshot.
-        // Rank it above the 500 equal-valued preview rows so this isolation
-        // assertion never depends on PostgreSQL's ordering of an unresolved tie.
-        ...(index === 0 ? { shares: "3", currentValueUsdc: "3" } : {}),
+        // Its deliberately tiny value would fall outside the 500-position and
+        // 200-market previews unless exact target correlation wins the rank.
+        ...(index === 0 ? { shares: "0.5", currentValueUsdc: "0.25" } : {}),
       }))
     );
     await db.insert(polyCopyTradeFills).values(
@@ -346,6 +346,16 @@ describe("wallet dashboard coherent snapshot", () => {
       status: "live",
       result: "comparable",
     });
+    expect(
+      result.execution.live_positions.some(
+        (position) => position.conditionId === "condition-0"
+      )
+    ).toBe(true);
+    const correlatedLine = result.execution.market_groups
+      .flatMap((group) => group.lines)
+      .find((line) => line.conditionId === "condition-0");
+    expect(correlatedLine).toBeDefined();
+    expect(correlatedLine?.targetEntryValueUsdc ?? 0).toBeGreaterThan(0);
     expect(result.execution.comparisonCoverage.markets.live.eligible).toBe(501);
   }, 60_000);
 
@@ -577,6 +587,7 @@ describe("wallet dashboard coherent snapshot", () => {
         db,
         billingAccountId: TENANT_A,
         walletAddress: OUR_A,
+        connectionKind: "privy_live",
         livePositions: [],
         closedPositions: [closedPosition!],
       });

@@ -24,6 +24,7 @@ import { describe, expect, it } from "vitest";
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
 
 const CAPTURED_AT = new Date("2026-09-29T00:10:00.000Z");
+const BILLING_ACCOUNT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const WALLET = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
 
 /** Row with full raw projections + empty-string Gamma title (nonEmpty fallback). */
@@ -59,6 +60,7 @@ const fullRow = {
   metadata_end_date: null,
   total_active_rows: 1,
   total_positions_mtm: "6.5",
+  target_correlated: false,
 };
 
 /** Row with NO raw fields at all — every raw-derived default must fire. */
@@ -90,11 +92,13 @@ describe("current-position read model raw->> projection equivalence", () => {
     const db = fakeDb([fullRow]);
     const model = await readCurrentWalletPositionModel({
       db,
+      billingAccountId: BILLING_ACCOUNT,
       walletAddress: WALLET,
       capturedAt: CAPTURED_AT,
     });
 
     expect(model.positions).toHaveLength(1);
+    expect(model.targetCorrelatedKeys.size).toBe(0);
     const position = model.positions[0];
     expect(position).toMatchObject({
       positionId: "0xcond:token1",
@@ -134,10 +138,22 @@ describe("current-position read model raw->> projection equivalence", () => {
     expect(model.warnings).toEqual([]);
   });
 
+  it("returns exact target-correlated keys for bounded preview priority", async () => {
+    const model = await readCurrentWalletPositionModel({
+      db: fakeDb([{ ...fullRow, target_correlated: true }]),
+      billingAccountId: BILLING_ACCOUNT,
+      walletAddress: WALLET,
+      capturedAt: CAPTURED_AT,
+    });
+
+    expect([...model.targetCorrelatedKeys]).toEqual(["0xcond:token1"]);
+  });
+
   it("absent raw projections hit the same defaults as absent raw keys", async () => {
     const db = fakeDb([bareRow]);
     const model = await readCurrentWalletPositionModel({
       db,
+      billingAccountId: BILLING_ACCOUNT,
       walletAddress: WALLET,
       capturedAt: CAPTURED_AT,
     });
@@ -162,6 +178,7 @@ describe("current-position read model raw->> projection equivalence", () => {
     ]);
     const model = await readCurrentWalletPositionModel({
       db,
+      billingAccountId: BILLING_ACCOUNT,
       walletAddress: WALLET,
       capturedAt: CAPTURED_AT,
     });
@@ -184,7 +201,7 @@ describe("current-position read model raw->> projection equivalence", () => {
       db.captured[0].indexOf("p.active = true")
     );
     expect(db.captured[0]).toMatch(
-      /ORDER BY\s+p\.current_value_usdc DESC NULLS LAST,\s+p\.last_observed_at DESC NULLS LAST,\s+p\.condition_id ASC NULLS LAST,\s+p\.token_id ASC NULLS LAST\s+LIMIT \$\d+/
+      /ORDER BY\s+\(correlated\.token_id IS NOT NULL\) DESC,\s+p\.current_value_usdc DESC NULLS LAST,\s+p\.last_observed_at DESC NULLS LAST,\s+p\.condition_id ASC NULLS LAST,\s+p\.token_id ASC NULLS LAST\s+LIMIT \$\d+/
     );
   });
 
@@ -201,6 +218,7 @@ describe("current-position read model raw->> projection equivalence", () => {
           total_positions_mtm: 0,
         },
       ]),
+      billingAccountId: BILLING_ACCOUNT,
       walletAddress: WALLET,
       capturedAt: CAPTURED_AT,
     });
@@ -211,6 +229,7 @@ describe("current-position read model raw->> projection equivalence", () => {
 
     const partial = await readCurrentWalletPositionModel({
       db: fakeDb([{ ...fullRow, cursor_status: "partial" }]),
+      billingAccountId: BILLING_ACCOUNT,
       walletAddress: WALLET,
       capturedAt: CAPTURED_AT,
     });
@@ -227,6 +246,7 @@ describe("current-position read model raw->> projection equivalence", () => {
     const db = fakeDb([]);
     await readCurrentWalletPositionModel({
       db,
+      billingAccountId: BILLING_ACCOUNT,
       walletAddress: WALLET,
       capturedAt: CAPTURED_AT,
     });
@@ -245,12 +265,21 @@ describe("current-position read model raw->> projection equivalence", () => {
     }
     // `p.raw` may appear only as a `p.raw->>` scalar extraction.
     expect(sqlText).not.toMatch(/p\.raw\b(?!->>)/);
+    expect(sqlText).toContain("target_correlated_positions");
+    expect(sqlText).toContain(
+      "JOIN poly_trader_current_positions target_position"
+    );
+    expect(sqlText).not.toContain(
+      "JOIN poly_trader_position_snapshots target_position"
+    );
+    expect(sqlText).toContain("(correlated.token_id IS NOT NULL) DESC");
   });
 
   it("canonicalizes emitted condition identity and joins saved facts case-insensitively", async () => {
     const db = fakeDb([{ ...fullRow, condition_id: "MiXeD-Condition" }]);
     const model = await readCurrentWalletPositionModel({
       db,
+      billingAccountId: BILLING_ACCOUNT,
       walletAddress: WALLET.toUpperCase(),
       capturedAt: CAPTURED_AT,
     });
@@ -264,6 +293,7 @@ describe("current-position read model raw->> projection equivalence", () => {
   it("coalesces wallet siblings and marks their retained position fact ambiguous", async () => {
     const model = await readCurrentWalletPositionModel({
       db: fakeDb([{ ...fullRow, wallet_identity_count: 2 }]),
+      billingAccountId: BILLING_ACCOUNT,
       walletAddress: WALLET,
       capturedAt: CAPTURED_AT,
     });

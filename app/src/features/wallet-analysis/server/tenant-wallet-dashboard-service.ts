@@ -212,7 +212,12 @@ export async function readTenantWalletDashboardIn(
     readOrderSummary(savepoint, input.billingAccountId, capturedAt)
   );
   const positionsRead = await optionalRead(db, (savepoint) =>
-    readCurrentWalletPositionModel({ db: savepoint, walletAddress: address, capturedAt: capturedAtDate })
+    readCurrentWalletPositionModel({
+      db: savepoint,
+      billingAccountId: input.billingAccountId,
+      walletAddress: address,
+      capturedAt: capturedAtDate,
+    })
   );
   const closedRead = await optionalRead(db, (savepoint) =>
     readClosedPositionSummary(
@@ -476,6 +481,7 @@ export async function readTenantWalletDashboardIn(
         db: savepoint,
         billingAccountId: input.billingAccountId,
         walletAddress: address,
+        connectionKind: connection.connectionKind,
       })
     );
     recordDashboardDiagnostic(
@@ -501,8 +507,12 @@ export async function readTenantWalletDashboardIn(
           db: savepoint,
           billingAccountId: input.billingAccountId,
           walletAddress: address,
+          connectionKind: connection.connectionKind,
           livePositions: marketLivePositions,
           closedPositions: marketClosedPositions,
+          priorityPositionKeys: positionsRead.ok
+            ? positionsRead.value.targetCorrelatedKeys
+            : new Set(),
           ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
         })
       );
@@ -535,6 +545,9 @@ export async function readTenantWalletDashboardIn(
             walletAddress: address,
             livePositions: marketLivePositions,
             closedPositions: marketClosedPositions,
+            priorityPositionKeys: positionsRead.ok
+              ? positionsRead.value.targetCorrelatedKeys
+              : new Set(),
             ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
           })
         );

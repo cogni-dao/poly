@@ -65,6 +65,7 @@ import { netTargetBook } from "@/features/copy-trade/position-gap-v3/netting";
 import type { OrderLedger } from "@/features/trading";
 import type { WalletActivitySource } from "@/features/wallet-watch";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
+import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 
 const RECONCILE_MS = 30_000;
 const FULL_REFRESH_MS = 5 * 60_000;
@@ -73,6 +74,13 @@ const MAX_VENUE_CANDIDATES = 16;
 const WARMUP_SECONDS = 60;
 const POSITION_GAP_DEFINITION =
 	ALGORITHM_DEFINITIONS["poly.copy-mirror.position-gap"];
+
+class AssignmentLivenessUnavailableError extends Error {
+	constructor() {
+		super("assignment liveness unavailable");
+		this.name = "AssignmentLivenessUnavailableError";
+	}
+}
 
 export interface PositionGapBuyExecutionPort {
 	placeBuy(intent: OrderIntent & { side: "BUY" }): Promise<OrderReceipt>;
@@ -122,6 +130,10 @@ export interface PositionGapLocalHoldingsSnapshot {
 export interface PositionGapActorDeps {
 	/** Exact Git SHA; algorithm versions are invalid without code identity. */
 	implementationRevision: string;
+	/** Durable tenant-owned `poly_copy_trade_targets.id`. */
+	targetRowId: string;
+	/** Authoritative DB-backed assignment generation fence. */
+	isAssignmentCurrent(): Promise<boolean>;
 	scope: PositionGapRuntimeScope;
 	targetWallet: `0x${string}`;
 	configRevision: string;
@@ -144,6 +156,10 @@ export interface PositionGapActorDeps {
 		snapshot: TargetBookSnapshotV1,
 		mode: "live" | "paper",
 	): Promise<PositionGapLocalHoldingsSnapshot>;
+	/** Saved-fact projection only; failure must never authorize or veto execution. */
+	publishTargetSnapshot(
+		snapshot: TargetBookSnapshotV1,
+	): Promise<{ applied: boolean; positions: number; snapshotId: string }>;
 	logger: LoggerPort;
 	now?: () => number;
 	setInterval?: typeof globalThis.setInterval;
@@ -164,6 +180,13 @@ export interface PositionGapActorHandle {
 export function startPositionGapActor(
 	deps: PositionGapActorDeps,
 ): PositionGapActorHandle {
+	const assignmentId = `${deps.targetRowId}:${deps.configRevision}`;
+	const actorLogger = deps.logger.child({
+		billing_account_id: deps.scope.billingAccountId,
+		target_id: deps.scope.targetId,
+		target_row_id: deps.targetRowId,
+		assignment_id: assignmentId,
+	});
 	const now = deps.now ?? Date.now;
 	const scheduleInterval = deps.setInterval ?? globalThis.setInterval;
 	const cancelInterval = deps.clearInterval ?? globalThis.clearInterval;
@@ -174,12 +197,14 @@ export function startPositionGapActor(
 	let draining: Promise<void> | null = null;
 	let lastSnapshot: TargetBookSnapshotV1 | null = null;
 	let disabled = false;
+	let assignmentRetired = false;
 	let stopFailure: unknown = null;
 	const causalDirty = new Set<string>();
 	const ledgerTerminals = new Map<string, "clob_not_found" | "never_placed">();
 	let causalWatermarkMs = 0;
 	let causalRetry: ReturnType<typeof globalThis.setTimeout> | null = null;
 	let causalHoldLogged = false;
+	let publishedTargetSnapshotId: string | null = null;
 	const venueCache = new Map<
 		string,
 		{
@@ -207,7 +232,8 @@ export function startPositionGapActor(
 					await reconcile(batch);
 				} catch (error) {
 					if (batch.includes("disabled")) stopFailure = error;
-					deps.logger.error(
+					if (error instanceof AssignmentLivenessUnavailableError) continue;
+					actorLogger.error(
 						{
 							event: "poly.position_gap.v3.run_failed",
 							billing_account_id: deps.scope.billingAccountId,
@@ -227,9 +253,49 @@ export function startPositionGapActor(
 	};
 
 	const enqueue = (reason: string): void => {
-		if (disabled && reason !== "disabled") return;
+		if ((disabled || assignmentRetired) && reason !== "disabled") return;
 		reasons.add(reason);
 		void drain();
+	};
+
+	const assignmentStillCurrent = async (
+		stage: string,
+		persistedRunId?: string,
+	): Promise<boolean> => {
+		if (assignmentRetired) return false;
+		try {
+			if (await deps.isAssignmentCurrent()) return true;
+		} catch {
+			actorLogger.error(
+				{
+					event: EVENT_NAMES.POLY_MIRROR_ASSIGNMENT_RETIRED,
+					outcome: "error",
+					reason: "assignment_liveness_unavailable",
+					errorCode: "assignment_liveness_unavailable",
+					stage,
+				},
+				"position-gap assignment liveness unavailable; refusing this run",
+			);
+			if (persistedRunId) {
+				await deps.store.finishRun(
+					persistedRunId,
+					"failed",
+					"assignment_liveness_unavailable",
+				);
+			}
+			throw new AssignmentLivenessUnavailableError();
+		}
+		assignmentRetired = true;
+		actorLogger.warn(
+			{
+				event: EVENT_NAMES.POLY_MIRROR_ASSIGNMENT_RETIRED,
+				outcome: "skipped",
+				reason: "assignment_retired",
+				stage,
+			},
+			"position-gap assignment retired; refusing new economic actions",
+		);
+		return false;
 	};
 
 	const unsubscribe = deps.source.subscribeWake?.(() =>
@@ -249,7 +315,7 @@ export function startPositionGapActor(
 		.recoverSubmittingAsAmbiguous(deps.scope)
 		.then(() => drain())
 		.catch((error) =>
-			deps.logger.error(
+			actorLogger.error(
 				{ err: error instanceof Error ? error.message : String(error) },
 				"position-gap v3 startup recovery failed",
 			),
@@ -285,6 +351,13 @@ export function startPositionGapActor(
 	};
 
 	async function reconcile(triggerReasons: readonly string[]): Promise<void> {
+		if (!(await assignmentStillCurrent("reconcile_entry"))) {
+			// Retirement is not a kill-switch for cleanup: owned GTCs still need a
+			// confirmed safety cancellation, but this generation may never plan or
+			// place another BUY.
+			await cancelAll("disabled");
+			return;
+		}
 		const planningMode = await deps.getExecutionMode();
 		const planningExecution = deps.executionForMode(planningMode);
 		// Reconcile our durable order truth before any stale/causal early exit can
@@ -368,7 +441,7 @@ export function startPositionGapActor(
 			// the exact whole-book reductions to cancel.
 			if (!causalHoldLogged) {
 				const heldRuntime = await deps.store.loadPlannerState(deps.scope);
-				deps.logger.warn(
+				actorLogger.warn(
 					{
 						event: "poly.position_gap.v3.causal_snapshot_lag",
 						action: "hold_approved_gtcs",
@@ -402,6 +475,54 @@ export function startPositionGapActor(
 		causalHoldLogged = false;
 		causalDirty.clear();
 		causalWatermarkMs = 0;
+		if (publishedTargetSnapshotId !== freshSnapshot.snapshotId) {
+			if (!(await assignmentStillCurrent("before_target_snapshot_publish"))) {
+				await cancelAll("disabled");
+				return;
+			}
+			let publication:
+				| { applied: boolean; positions: number; snapshotId: string }
+				| undefined;
+			try {
+				publication = await deps.publishTargetSnapshot(freshSnapshot);
+			} catch (error) {
+				actorLogger.warn(
+					{
+						event: "poly.position_gap.v3.target_snapshot_publish_failed",
+						billing_account_id: deps.scope.billingAccountId,
+						target_id: deps.scope.targetId,
+						target_wallet: deps.targetWallet,
+						snapshot_id: freshSnapshot.snapshotId,
+						...safeErrorDimensions(error),
+					},
+					"position-gap target saved-fact publication failed; execution continues",
+				);
+			}
+			if (publication) {
+				if (!(await assignmentStillCurrent("after_target_snapshot_publish"))) {
+					await cancelAll("disabled");
+					return;
+				}
+				publishedTargetSnapshotId = publication.snapshotId;
+				actorLogger.info(
+					{
+						event: publication.applied
+							? "poly.position_gap.v3.target_snapshot_published"
+							: "poly.position_gap.v3.target_snapshot_stale_ignored",
+						billing_account_id: deps.scope.billingAccountId,
+						target_id: deps.scope.targetId,
+						target_wallet: deps.targetWallet,
+						snapshot_id: publication.snapshotId,
+						position_rows: publication.positions,
+						source_max_synced_block:
+							freshSnapshot.refreshStats.sourceMaxSyncedBlock,
+					},
+					publication.applied
+						? "position-gap published planner target snapshot to shared saved facts"
+						: "position-gap ignored an older target snapshot already superseded in shared saved facts",
+				);
+			}
+		}
 
 		const runtime = await deps.store.loadPlannerState(deps.scope);
 		const activeCohortKeys = new Set(
@@ -556,7 +677,7 @@ export function startPositionGapActor(
 				configured_budget_usdc: deps.configuredBudgetUsdc,
 			},
 			implementationRevision: deps.implementationRevision,
-			assignmentId: `${deps.scope.targetId}:${deps.configRevision}`,
+			assignmentId,
 			correlationId: `position-gap:${randomUUID()}`,
 		});
 		const plan = evaluation.decision.diagnostics
@@ -588,7 +709,7 @@ export function startPositionGapActor(
 			deps.scope,
 		);
 		for (const action of recovered) {
-			deps.logger.warn(
+			actorLogger.warn(
 				{
 					event: "poly.position_gap.v3.ambiguous_rejection_recovered",
 					billing_account_id: deps.scope.billingAccountId,
@@ -615,7 +736,7 @@ export function startPositionGapActor(
 					: undefined;
 			// Prospective PGv3 intents already carry target_wallet. This historic
 			// observability repair may retry, but cannot gate safe trading.
-			deps.logger.warn(
+			actorLogger.warn(
 				{
 					event: "poly.position_gap.v3.target_lineage_repair_failed",
 					billing_account_id: deps.scope.billingAccountId,
@@ -663,7 +784,7 @@ export function startPositionGapActor(
 				// venue never acknowledged it, so there is nothing to deny.
 				if (status !== "error" && status !== "canceled") continue;
 				ledgerTerminals.set(action.clientOrderId, "never_placed");
-				deps.logger.warn(
+				actorLogger.warn(
 					{
 						event: "poly.position_gap.v3.ledger_terminal_rehydrated",
 						billing_account_id: deps.scope.billingAccountId,
@@ -705,7 +826,7 @@ export function startPositionGapActor(
 				);
 				if (!retired) {
 					await deps.store.markVenueNotFoundCanceled(action.id);
-					deps.logger.warn(
+					actorLogger.warn(
 						{
 							event: "poly.position_gap.v3.ambiguous_released_by_ledger",
 							billing_account_id: deps.scope.billingAccountId,
@@ -773,7 +894,7 @@ export function startPositionGapActor(
 			const detail =
 				"paper order has no venue receipt with fill accounting; live Data API evidence is forbidden for synthetic accounts";
 			await deps.store.markFillAccountingPending(action.id, detail);
-			deps.logger.warn(
+			actorLogger.warn(
 				{
 					event: EVENT_NAMES.POLY_POSITION_GAP_PAPER_FILL_EVIDENCE_UNAVAILABLE,
 					error_code: "paper_fill_evidence_unavailable",
@@ -1023,8 +1144,31 @@ export function startPositionGapActor(
 		accountingTransitions: readonly PositionGapAccountingTransition[];
 		planningMode: "live" | "paper";
 	}): Promise<void> {
+		// Fact hydration can take seconds. Re-read the durable row revision before
+		// making the plan observable or reserving any capital.
+		if (!(await assignmentStillCurrent("before_plan_persist"))) {
+			await cancelAll("disabled");
+			return;
+		}
 		const preparedBuys = input.plan.intents.map((intent) => {
 			const token = tokenById(input.snapshot, intent.tokenId);
+			const condition = input.snapshot.conditions.find(
+				(candidate) => candidate.conditionId === intent.conditionId,
+			);
+			const targetPositionUsdc = condition
+				? Number(
+						condition.tokens
+							.reduce(
+								(sum, candidate) =>
+									sum + candidate.shares * candidate.averagePrice,
+								0,
+							)
+							.toFixed(2),
+					)
+				: null;
+			const targetTokenCostUsdc = token
+				? Number((token.shares * token.averagePrice).toFixed(2))
+				: null;
 			const actionKey = hashParts([
 				"buy",
 				input.snapshot.snapshotId,
@@ -1048,6 +1192,9 @@ export function startPositionGapActor(
 				notionalUsdc: intent.notionalUsdc,
 				limitPrice: intent.limitPrice,
 				clientOrderId,
+				targetWallet: deps.targetWallet,
+				targetPositionUsdc,
+				targetTokenCostUsdc,
 				lineage: {
 					...input.lineage,
 					correlation_id: clientOrderId,
@@ -1088,6 +1235,17 @@ export function startPositionGapActor(
 			buys: preparedBuys,
 			cancellations: preparedCancels,
 		});
+		if (
+			!(await assignmentStillCurrent("after_plan_persist", persisted.runId))
+		) {
+			await cancelAll("disabled");
+			await deps.store.finishRun(
+				persisted.runId,
+				"halted",
+				"assignment_retired",
+			);
+			return;
+		}
 		const tenantLedger = deps.ledger.forTenant({
 			billing_account_id: deps.scope.billingAccountId,
 			created_by_user_id: deps.scope.createdByUserId,
@@ -1102,13 +1260,17 @@ export function startPositionGapActor(
 				fill_id: `position-gap-v3:run:${persisted.runId}`,
 				outcome: "skipped",
 				reason,
-				intent: positionGapPlanDecisionIntent(input.plan, input.lineage),
+				intent: positionGapPlanDecisionIntent(
+					input.plan,
+					input.lineage,
+					deps.targetWallet,
+				),
 				receipt: null,
 				decided_at: new Date(input.decidedAtMs),
 				lineage: input.lineage,
 			});
 			logEvent(
-				deps.logger.child(input.lineage),
+				actorLogger.child(input.lineage),
 				EVENT_NAMES.POLY_ALGORITHM_ATTEMPT_COMPLETE,
 				{
 					reqId: input.lineage.correlation_id,
@@ -1166,6 +1328,17 @@ export function startPositionGapActor(
 		let filledCount = 0;
 		for (const buy of persisted.buys) {
 			if (halted) break;
+			if (
+				!(await assignmentStillCurrent("before_placement", persisted.runId))
+			) {
+				await cancelAll("disabled");
+				await deps.store.finishRun(
+					persisted.runId,
+					"halted",
+					"assignment_retired",
+				);
+				return;
+			}
 			const prepared = preparedBuys.find(
 				(candidate) => candidate.actionKey === buy.actionKey,
 			);
@@ -1184,7 +1357,7 @@ export function startPositionGapActor(
 				decided_at: new Date(input.decidedAtMs),
 				lineage: prepared.lineage,
 			};
-			const attemptLog = deps.logger.child(prepared.lineage);
+			const attemptLog = actorLogger.child(prepared.lineage);
 			try {
 				const placementMode = await tenantLedger.insertPending({
 						target_id: deps.scope.targetId,
@@ -1224,6 +1397,39 @@ export function startPositionGapActor(
 					"position-gap algorithm attempt failed before placement",
 				);
 				continue;
+			}
+			if (
+				!(await assignmentStillCurrent("placement_dispatch", persisted.runId))
+			) {
+				const detail = "assignment retired before venue dispatch";
+				await deps.store.markKnownRejected(buy.id, detail);
+				await deps.ledger.markError({
+					client_order_id: prepared.clientOrderId,
+					error: detail,
+				});
+				await tenantLedger.recordDecision({
+					...decisionBase,
+					reason: "assignment_retired",
+				});
+				logEvent(
+					attemptLog,
+					EVENT_NAMES.POLY_ALGORITHM_ATTEMPT_COMPLETE,
+					{
+						reqId: prepared.clientOrderId,
+						outcome: "error",
+						errorCode: "assignment_retired",
+						reason: "assignment_retired",
+						client_order_id: prepared.clientOrderId,
+					},
+					"position-gap algorithm attempt retired before placement",
+				);
+				await cancelAll("disabled");
+				await deps.store.finishRun(
+					persisted.runId,
+					"halted",
+					"assignment_retired",
+				);
+				return;
 			}
 			try {
 				const receipt = await deps
@@ -1304,6 +1510,17 @@ export function startPositionGapActor(
 			}
 		}
 		if (!halted) {
+			if (
+				!(await assignmentStillCurrent("before_run_complete", persisted.runId))
+			) {
+				await cancelAll("disabled");
+				await deps.store.finishRun(
+					persisted.runId,
+					"halted",
+					"assignment_retired",
+				);
+				return;
+			}
 			const outcome =
 				input.plan.intents.length === 0 && input.plan.cancellations.length === 0
 					? "skipped"
@@ -1312,7 +1529,7 @@ export function startPositionGapActor(
 			const activeReservations = await deps.store.activeReservationTotals(
 				deps.scope,
 			);
-			deps.logger.info(
+			actorLogger.info(
 				{
 					event: "poly.position_gap.v3.reconciled",
 					billing_account_id: deps.scope.billingAccountId,
@@ -1586,6 +1803,9 @@ function positionGapDecisionIntent(
 		limitPrice: number;
 		clientOrderId: string;
 		cohortKey: string;
+		targetWallet: string;
+		targetPositionUsdc: number | null;
+		targetTokenCostUsdc: number | null;
 		lineage: AlgorithmLineage;
 	},
 	intent: OrderIntent,
@@ -1601,6 +1821,9 @@ function positionGapDecisionIntent(
 		client_order_id: prepared.clientOrderId,
 		position_branch: "position_gap",
 		position_gap_cohort_key: prepared.cohortKey,
+		target_wallet: prepared.targetWallet.toLowerCase(),
+		target_position_usdc: prepared.targetPositionUsdc,
+		target_token_cost_usdc: prepared.targetTokenCostUsdc,
 		...prepared.lineage,
 	};
 }
@@ -1608,6 +1831,7 @@ function positionGapDecisionIntent(
 function positionGapPlanDecisionIntent(
 	plan: PositionGapBookPlanV1,
 	lineage: AlgorithmLineage,
+	targetWallet: string,
 ): Record<string, unknown> {
 	return {
 		market_id: null,
@@ -1619,6 +1843,7 @@ function positionGapPlanDecisionIntent(
 		limit_price: null,
 		position_branch: "position_gap",
 		position_gap_version: "3",
+		target_wallet: targetWallet.toLowerCase(),
 		plan_status: plan.status,
 		block_reason: plan.blockReason,
 		target_total_wealth_usdc: plan.targetTotalWealthUsdc,

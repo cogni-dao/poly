@@ -67,6 +67,7 @@ export const EVENT_NAMES = {
     "feature.poly_wallet_positions_close.complete",
 
   // Push-on-wake mirror dispatch (task.5017)
+  POLY_MIRROR_ASSIGNMENT_RETIRED: "poly.mirror.assignment_retired",
   POLY_MIRROR_WAKE_TICK: "poly.mirror.wake_tick",
   POLY_WALLET_WATCH_WS_WAKE_CALLBACK_THREW:
     "poly.wallet_watch.ws.wake_callback_threw",
