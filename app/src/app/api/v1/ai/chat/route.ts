@@ -557,6 +557,17 @@ export const POST = wrapRouteHandlerWithLogging(
               },
             });
 
+            // Make durable workflow acceptance body-visible before waiting for
+            // the first Redis event. Queue latency can otherwise leave the SSE
+            // body empty long enough for an edge/client idle timeout to detach
+            // even though Temporal completes the run. Keep this on the shared
+            // mapper path so live and replay status chunks use one wire shape.
+            mapper.consume({
+              type: "status",
+              phase: "thinking",
+              label: "Queued",
+            });
+
             for await (const event of deltaStream) {
               if (request.signal.aborted) break;
               eventSeq++;
