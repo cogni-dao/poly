@@ -603,6 +603,13 @@
       "when": 1791535616854,
       "tag": "0085_daily_jackpot",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1791799488095,
+      "tag": "0086_repair_candidate_migration_identity",
+      "breakpoints": true
     }
   ]
 }
