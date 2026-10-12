@@ -230,8 +230,21 @@ export async function readEconomicPositionProjection(params: {
        AND k.token_id = p.token_id
       WHERE target.billing_account_id = ${params.billingAccountId}
         AND target.disabled_at IS NULL
-    ), driven_fill_identities AS MATERIALIZED (
-      SELECT DISTINCT f.source, f.native_id
+    ), fill_candidates AS MATERIALIZED (
+      SELECT
+        f.id,
+        f.source,
+        f.native_id,
+        f.condition_id,
+        f.token_id,
+        f.side,
+        f.price,
+        f.shares,
+        f.size_usdc,
+        f.observed_at,
+        w.updated_at AS wallet_updated_at,
+        w.created_at AS wallet_created_at,
+        w.id AS wallet_id
       FROM poly_trader_fills f
       JOIN wallet_identity w ON w.id = f.trader_wallet_id
       JOIN driven_keys k
@@ -242,30 +255,25 @@ export async function readEconomicPositionProjection(params: {
       SELECT
         f.source,
         f.native_id,
-        (array_agg(f.id ORDER BY w.updated_at DESC, w.created_at DESC, w.id, f.id))[1] AS chosen_id,
+        (array_agg(f.id ORDER BY
+          f.wallet_updated_at DESC,
+          f.wallet_created_at DESC,
+          f.wallet_id,
+          f.id
+        ))[1] AS chosen_id,
         count(DISTINCT md5(concat_ws('|',
           lower(f.condition_id), f.token_id, f.side, f.price::text,
           f.shares::text, f.size_usdc::text, f.observed_at::text
         )))::int AS fact_variants
-      FROM poly_trader_fills f
-      JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      JOIN driven_fill_identities identity
-        ON identity.source = f.source
-       AND identity.native_id = f.native_id
-      WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+      FROM fill_candidates f
       GROUP BY f.source, f.native_id
     ), fill_conflicted_keys AS MATERIALIZED (
       SELECT DISTINCT lower(f.condition_id) AS condition_id, f.token_id
-      FROM poly_trader_fills f
-      JOIN wallet_identity w ON w.id = f.trader_wallet_id
+      FROM fill_candidates f
       JOIN fill_groups g
         ON g.source = f.source
        AND g.native_id = f.native_id
        AND g.fact_variants > 1
-      JOIN driven_keys k
-        ON k.condition_id = lower(f.condition_id)
-       AND k.token_id = f.token_id
-      WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
     ), canonical_fills AS MATERIALIZED (
       SELECT
         lower(f.condition_id) AS condition_id,
@@ -277,7 +285,7 @@ export async function readEconomicPositionProjection(params: {
         f.observed_at,
         g.fact_variants
       FROM fill_groups g
-      JOIN poly_trader_fills f ON f.id = g.chosen_id
+      JOIN fill_candidates f ON f.id = g.chosen_id
     ), position_flows AS MATERIALIZED (
       SELECT
         condition_id,
