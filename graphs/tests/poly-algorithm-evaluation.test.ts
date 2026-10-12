@@ -4,9 +4,6 @@
 import {
 	CORE_TOOL_BUNDLE,
 	EDO_HYPOTHESIZE_NAME,
-	REPO_LIST_NAME,
-	REPO_OPEN_NAME,
-	REPO_SEARCH_NAME,
 } from "@cogni/ai-tools";
 import { describe, expect, it } from "vitest";
 
@@ -75,6 +72,7 @@ const validGapReport = {
 		},
 	],
 	nextExperiment: {
+		experimentType: "evidence_acquisition" as const,
 		title: "Capture immutable identity with the next decision",
 		hypothesis:
 			"A complete decision lineage will make one version independently evaluable.",
@@ -140,15 +138,21 @@ describe("poly-algorithm-evaluation output v1", () => {
 		).toThrow();
 	});
 
-	it("requires SHA-stamped repository evidence", () => {
+	it("accepts a GAP without repository evidence in deployed runtime", () => {
 		expect(() =>
 			PolyAlgorithmEvaluationReportSchema.parse({
 				...validGapReport,
 				evidence: validGapReport.evidence.filter(
 					(item) => item.source !== "repository",
 				),
+				findings: [
+					{
+						...validGapReport.findings[0],
+						evidenceIds: ["algorithm-contract"],
+					},
+				],
 			}),
-		).toThrow(/repository evidence/i);
+		).not.toThrow();
 	});
 
 	it("rejects an invented repository citation shape", () => {
@@ -265,6 +269,18 @@ describe("poly-algorithm-evaluation output v1", () => {
 		).toThrow(/must reference/i);
 	});
 
+	it("requires evidence acquisition when algorithm identity is incomplete", () => {
+		expect(() =>
+			PolyAlgorithmEvaluationReportSchema.parse({
+				...validGapReport,
+				nextExperiment: {
+					...validGapReport.nextExperiment,
+					experimentType: "algorithm_falsification",
+				},
+			}),
+		).toThrow(/evidence-acquisition/i);
+	});
+
 	it("accepts repeat-run reuse without a duplicate write", () => {
 		expect(() =>
 			PolyAlgorithmEvaluationReportSchema.parse({
@@ -346,12 +362,14 @@ describe("poly-algorithm-evaluation graph boundary", () => {
 		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).not.toContain(
 			"core__poly_account_copy_trade_orders",
 		);
-		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).toEqual(
-			expect.arrayContaining([
-				REPO_LIST_NAME,
-				REPO_SEARCH_NAME,
-				REPO_OPEN_NAME,
-			]),
+		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).not.toContain(
+			"core__repo_list",
+		);
+		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).not.toContain(
+			"core__repo_search",
+		);
+		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).not.toContain(
+			"core__repo_open",
 		);
 	});
 

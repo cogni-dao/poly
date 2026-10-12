@@ -40,6 +40,7 @@ export const PolyAlgorithmFindingSchema = z.object({
 
 export const PolyAlgorithmGapSchema = z.object({
 	code: z.enum([
+		"canonical_evidence_unavailable",
 		"account_read_unavailable",
 		"algorithm_identity_missing",
 		"evidence_incomplete",
@@ -55,6 +56,7 @@ export const PolyAlgorithmGapSchema = z.object({
 });
 
 export const PolyAlgorithmNextExperimentSchema = z.object({
+	experimentType: z.enum(["evidence_acquisition", "algorithm_falsification"]),
 	title: z.string().min(1),
 	hypothesis: z.string().min(1),
 	metric: z.string().min(1),
@@ -110,14 +112,6 @@ export const PolyAlgorithmEvaluationReportSchema = z
 		const repositoryEvidence = report.evidence.filter(
 			(item) => item.source === "repository",
 		);
-		if (repositoryEvidence.length === 0) {
-			ctx.addIssue({
-				code: z.ZodIssueCode.custom,
-				path: ["evidence"],
-				message:
-					"Algorithm evaluation requires SHA-stamped repository evidence",
-			});
-		}
 		for (const [index, evidence] of report.evidence.entries()) {
 			if (
 				evidence.source === "repository" &&
@@ -194,6 +188,29 @@ export const PolyAlgorithmEvaluationReportSchema = z
 					message: "Experiment-ready reports require durable persistence",
 				});
 			}
+			if (report.nextExperiment.experimentType !== "algorithm_falsification") {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["nextExperiment", "experimentType"],
+					message:
+						"Experiment-ready reports require an algorithm falsification experiment",
+				});
+			}
+		}
+
+		const hasIncompleteIdentity = Object.values(report.algorithm).some(
+			(value) => value === null,
+		);
+		if (
+			hasIncompleteIdentity &&
+			report.nextExperiment.experimentType !== "evidence_acquisition"
+		) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["nextExperiment", "experimentType"],
+				message:
+					"Incomplete algorithm identity requires an evidence-acquisition experiment",
+			});
 		}
 
 		if (

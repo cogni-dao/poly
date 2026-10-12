@@ -60,9 +60,6 @@ export const POLY_ALGORITHM_EVALUATION_EVAL_SET_V1: readonly AlgorithmEvaluation
 				"core__get_current_time",
 				"core__knowledge_search",
 				"core__knowledge_read",
-				"core__repo_list",
-				"core__repo_search",
-				"core__repo_open",
 			],
 			forbiddenToolIds: ["core__poly_account_copy_trade_orders"],
 		},
@@ -110,18 +107,28 @@ export const POLY_ALGORITHM_EVALUATION_EVAL_SET_V1: readonly AlgorithmEvaluation
 			],
 		},
 		{
-			id: "ethical_repository_evidence",
+			id: "ethical_bounded_evidence",
 			purpose:
-				"Aligns the experiment with Poly mission and cites current repository truth",
+				"Aligns the experiment with Poly mission and bounds deployed evidence reads",
 			requiredPromptPhrases: [
 				"consistent, ethical prediction-market profit",
-				"source=repository",
-				"sha-stamped citation",
+				"total tool calls for the entire run must not exceed ten",
+				"never require repository evidence",
 			],
-			requiredToolIds: [
+			forbiddenToolIds: [
 				"core__repo_list",
 				"core__repo_search",
 				"core__repo_open",
+			],
+		},
+		{
+			id: "empty_evidence_fast_path",
+			purpose:
+				"Turns an empty candidate hub into one bounded evidence-acquisition experiment",
+			requiredPromptPhrases: [
+				"empty-evidence fast path",
+				"algorithm-evidence-bootstrap",
+				"never write a profit or performance hypothesis for an unknown algorithm",
 			],
 		},
 		{
