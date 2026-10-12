@@ -167,6 +167,7 @@ export const WalletDashboardComparisonCoverageSchema = z.object({
         result: z.enum([
           "comparable",
           "no_target_position",
+          "target_now_unavailable",
           "exact_token_missing",
           "target_entry_unavailable",
           "local_entry_unavailable",
@@ -181,6 +182,92 @@ export type WalletDashboardComparisonCoverage = z.infer<
   typeof WalletDashboardComparisonCoverageSchema
 >;
 
+const NullableExactCountSchema = z.number().int().nonnegative().nullable();
+
+/** Exact full-population lineage counts plus the bounded response preview. */
+export const WalletDashboardOriginCoverageSchema = z
+  .object({
+    status: z.enum(["available", "unavailable"]),
+    originPositionCount: NullableExactCountSchema,
+    originEventCount: NullableExactCountSchema,
+    completeEventCount: NullableExactCountSchema,
+    legacyPartialEventCount: NullableExactCountSchema,
+    incompleteEventCount: NullableExactCountSchema,
+    identityAmbiguousEventCount: NullableExactCountSchema,
+    originLayerCount: NullableExactCountSchema,
+    comparableLayerCount: NullableExactCountSchema,
+    previewLayerCount: NullableExactCountSchema,
+    previewTruncated: z.boolean().nullable(),
+  })
+  .superRefine((value, context) => {
+    const counts = [
+      value.originPositionCount,
+      value.originEventCount,
+      value.completeEventCount,
+      value.legacyPartialEventCount,
+      value.incompleteEventCount,
+      value.identityAmbiguousEventCount,
+      value.originLayerCount,
+      value.comparableLayerCount,
+      value.previewLayerCount,
+    ];
+    if (value.status === "unavailable") {
+      if (
+        counts.some((count) => count !== null) ||
+        value.previewTruncated !== null
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "unavailable origin coverage cannot fabricate counts",
+        });
+      }
+      return;
+    }
+    if (
+      counts.some((count) => count === null) ||
+      value.previewTruncated === null
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "available origin coverage requires exact counts",
+      });
+      return;
+    }
+    const complete = value.completeEventCount ?? 0;
+    const legacy = value.legacyPartialEventCount ?? 0;
+    const incomplete = value.incompleteEventCount ?? 0;
+    const ambiguous = value.identityAmbiguousEventCount ?? 0;
+    if (value.originEventCount !== complete + legacy + incomplete + ambiguous) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "origin event evidence buckets must equal originEventCount",
+      });
+    }
+    if ((value.comparableLayerCount ?? 0) > (value.originLayerCount ?? 0)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "comparableLayerCount cannot exceed originLayerCount",
+      });
+    }
+    if ((value.previewLayerCount ?? 0) > (value.originLayerCount ?? 0)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "previewLayerCount cannot exceed originLayerCount",
+      });
+    }
+    const shouldBeTruncated =
+      (value.previewLayerCount ?? 0) < (value.originLayerCount ?? 0);
+    if (value.previewTruncated !== shouldBeTruncated) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "previewTruncated must describe the exact layer counts",
+      });
+    }
+  });
+export type WalletDashboardOriginCoverage = z.infer<
+  typeof WalletDashboardOriginCoverageSchema
+>;
+
 export const PolyWalletDashboardOutputSchema = z.object({
   snapshotId: z.string().uuid(),
   capturedAt: z.string(),
@@ -193,6 +280,7 @@ export const PolyWalletDashboardOutputSchema = z.object({
     closed_positions: z.array(WalletExecutionPositionSchema).max(30),
     market_groups: z.array(WalletExecutionMarketGroupSchema).max(200),
     comparisonCoverage: WalletDashboardComparisonCoverageSchema,
+    originCoverage: WalletDashboardOriginCoverageSchema,
   }),
   facts: z.object({
     wallet: WalletDashboardFactMetaSchema,

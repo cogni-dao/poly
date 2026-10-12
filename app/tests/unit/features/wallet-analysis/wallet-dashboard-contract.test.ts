@@ -25,6 +25,47 @@ describe("poly.wallet.dashboard.v1", () => {
     const execution = PolyWalletDashboardOutputSchema.shape.execution;
     expect(execution.shape.live_position_count.safeParse(null).success).toBe(true);
     expect(execution.shape.closed_position_count.safeParse(null).success).toBe(true);
+    expect(
+      execution.shape.originCoverage.safeParse({
+        status: "unavailable",
+        originPositionCount: null,
+        originEventCount: null,
+        completeEventCount: null,
+        legacyPartialEventCount: null,
+        incompleteEventCount: null,
+        identityAmbiguousEventCount: null,
+        originLayerCount: null,
+        comparableLayerCount: null,
+        previewLayerCount: null,
+        previewTruncated: null,
+      }).success
+    ).toBe(true);
+  });
+
+  it("requires exact origin buckets and honest preview truncation", () => {
+    const originCoverage =
+      PolyWalletDashboardOutputSchema.shape.execution.shape.originCoverage;
+    const available = {
+      status: "available",
+      originPositionCount: 2,
+      originEventCount: 5,
+      completeEventCount: 3,
+      legacyPartialEventCount: 1,
+      incompleteEventCount: 1,
+      identityAmbiguousEventCount: 0,
+      originLayerCount: 3,
+      comparableLayerCount: 1,
+      previewLayerCount: 2,
+      previewTruncated: true,
+    } as const;
+
+    expect(originCoverage.safeParse(available).success).toBe(true);
+    expect(
+      originCoverage.safeParse({ ...available, previewTruncated: false }).success
+    ).toBe(false);
+    expect(
+      originCoverage.safeParse({ ...available, completeEventCount: 4 }).success
+    ).toBe(false);
   });
 
   it("exposes interval-scoped activity units on the shared snapshot", () => {

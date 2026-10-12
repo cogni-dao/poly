@@ -88,6 +88,10 @@ function pnlClass(value: number): string {
   return value >= 0 ? "text-success" : "text-destructive";
 }
 
+function algorithmLabel(value: string): string {
+  return value.replace("poly.copy-mirror.", "").replaceAll("-", " ");
+}
+
 // Slug-derived event label for the Market column sub-line. Trims trailing
 // ISO date / bare year so it doesn't duplicate the date that's already in
 // most marketTitle strings. Returns null when the slug is missing or its
@@ -254,6 +258,45 @@ export function makeColumns(opts: MakeColumnsOpts): AnyCol[] {
       meta: {
         headerTitle: "Trace",
         skeleton: <Skeleton className="h-3.5 w-64" />,
+      },
+    }),
+
+    col.display({
+      id: "copyOrigin",
+      header: ({ column }) => (
+        <DataGridColumnHeader column={column} title="Copy origin" visibility />
+      ),
+      enableSorting: false,
+      size: 220,
+      cell: ({ row }) => {
+        const origins = row.original.copyOrigins ?? [];
+        const origin = origins[0];
+        if (!origin) {
+          return <span className="text-muted-foreground text-xs">—</span>;
+        }
+        const atDecision = origin.targetAtDecision?.costBasisUsdc;
+        const targetNow = origin.targetNow?.costBasisUsdc;
+        return (
+          <div className="flex flex-col gap-0.5 text-xs">
+            <span className="font-medium capitalize">
+              {algorithmLabel(origin.algorithmId)}
+              {(row.original.copyOriginLayerCount ?? origins.length) > 1
+                ? ` +${(row.original.copyOriginLayerCount ?? origins.length) - 1}`
+                : ""}
+            </span>
+            <span className="text-muted-foreground tabular-nums">
+              Copied at decision{" "}
+              {atDecision == null ? "—" : formatUsd(atDecision)}
+            </span>
+            <span className="text-muted-foreground tabular-nums">
+              Target now {targetNow == null ? "—" : formatUsd(targetNow)}
+            </span>
+          </div>
+        );
+      },
+      meta: {
+        headerTitle: "Copy origin",
+        skeleton: <Skeleton className="h-10 w-36" />,
       },
     }),
   ];

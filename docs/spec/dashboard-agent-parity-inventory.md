@@ -236,6 +236,8 @@ leaks cross-tenant P/L with no backstop.
 | 6.9 | `overview.positions_synced_at` | **none — zero JSX references** | `:357` ← `summary.syncedAt` ← `poly_trader_ingestion_cursors.last_success_at` | NO | `poly.account.portfolio-snapshot` | **CSF** 🔒 — in-contract, unrendered |
 | 6.10 | `overview.positions_sync_age_ms` | **none — zero JSX references** | `:358` ← `summary.syncAgeMs` | NO | `poly.account.portfolio-snapshot` | **CSF** 🔒 — in-contract, unrendered |
 | 6.11 | `overview.positions_stale` | **none — zero JSX references** | `:359` — `positionFact.status !== "fresh"` | NO | `poly.account.portfolio-snapshot` | **CSF** — in-contract, unrendered |
+| 6.12 | `execution.live_positions[].copyOrigins[]` / `closed_positions[].copyOrigins[]` | `PositionsTable` → **Copy origin** column, explicitly labelled **Copied at decision** and **Target now** | `readAlgorithmOriginProjection` starts from positive executed `poly_copy_trade_fills`, joins immutable `poly_algorithm_input_snapshots` by tenant + content id, validates exact condition + token, retains one layer per assignment + algorithm version + config, and selects the latest complete cumulative input per layer. The decision audit row and current target enablement are not required. | YES | `poly.account.portfolio-snapshot` | **CSF** 🔒 |
+| 6.13 | `execution.originCoverage` | not rendered; explains the bounded origin preview to UI and agents | Exact DB counts for origin positions/events/layers, complete vs legacy-partial vs incomplete vs ambiguous evidence, target-now-comparable layers, returned preview layers, and truncation. Unavailable reads return typed nulls, never zeros. | YES | `poly.account.portfolio-snapshot` | **CSF** 🔒 |
 
 ### 6a. `live_positions[]` / `closed_positions[]` element fields — all CSF 🔒
 
@@ -249,7 +251,18 @@ downstream parity tests can enumerate them without re-deriving the set.
 `closedAt` `:117` · `resolvesAt` `:118` · `gameStartTime` `:119` · `heldMinutes` `:120` ·
 `entryPrice` `:121` · `currentPrice` `:122` · `size` `:123` · `currentValue` `:124` ·
 `pnlUsd` `:125` · `pnlPct` `:126` · `syncedAt` `:127` · `syncAgeMs` `:128` ·
-`syncStale` `:129` · `timeline[]` `:130` · `events[]` `:131`.
+`syncStale` `:129` · `copyOrigins[]` · `copyOriginLayerCount` ·
+`copyOriginsTruncated` · `timeline[]` `:130` · `events[]` `:131`.
+
+`copyOrigins[]` carries all six lineage identities on every emitted layer:
+`algorithmId`, `algorithmVersionId`, `configHash`, the selected `inputSnapshotId`,
+`assignmentId`, and the selected `correlationId`. `targetAtDecision` is immutable provenance.
+`targetNow` is optional observer evidence and may be null after the target exits, is disabled,
+or disappears from current positions; that absence never rewrites a proven copy origin as
+`no_target_position`. A maximum of 20 deterministically ordered layers is returned per
+position while `originCoverage` retains exact full-population counts and truncation.
+Each position also carries its exact `copyOriginLayerCount` and an explicit
+`copyOriginsTruncated` flag so a 20-layer row never masquerades as complete.
 
 Two traps for the parity test, both verified in code:
 
