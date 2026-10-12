@@ -18,6 +18,7 @@ import {
 	POLY_BRAIN_RESPONSE_PROMPT,
 	POLY_BRAIN_SYSTEM_PROMPT,
 } from "./prompts";
+import { POLY_BRAIN_TOOL_IDS } from "./tools";
 
 export const POLY_BRAIN_GRAPH_NAME = "poly-brain" as const;
 
@@ -28,10 +29,13 @@ export const POLY_BRAIN_GRAPH_NAME = "poly-brain" as const;
  */
 export function createPolyBrainGraph(opts: CreateReactAgentGraphOptions) {
 	const { llm, tools, responseFormat } = opts;
+	const allowedToolIds = new Set<string>(POLY_BRAIN_TOOL_IDS);
 
 	return createReactAgent({
 		llm,
-		tools: [...tools],
+		// Keep the graph's lean v1 budget enforceable even when an app-local
+		// catalog temporarily grants a wider compatibility set.
+		tools: tools.filter((tool) => allowedToolIds.has(tool.name)),
 		messageModifier: POLY_BRAIN_SYSTEM_PROMPT,
 		responseFormat:
 			responseFormat ??

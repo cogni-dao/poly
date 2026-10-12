@@ -29,6 +29,7 @@ import {
 	POLY_BRAIN_RESPONSE_PROMPT,
 	POLY_BRAIN_SYSTEM_PROMPT,
 } from "../src/graphs/poly-brain/prompts";
+import { POLY_BRAIN_TOOL_IDS } from "../src/graphs/poly-brain/tools";
 
 describe("poly-brain strategy eval set v1", () => {
 	it("is explicitly versioned", () => {
@@ -147,6 +148,13 @@ describe("poly-brain strategy eval set v1", () => {
 		expect(POLY_BRAIN_RESPONSE_PROMPT).toContain(
 			"no acknowledgement, prose, or markdown fences",
 		);
+	});
+
+	it("does not expose out-of-budget or unconfigured research tools", () => {
+		expect(POLY_BRAIN_TOOL_IDS).not.toContain("core__web_search");
+		expect(POLY_BRAIN_TOOL_IDS).not.toContain("core__repo_list");
+		expect(POLY_BRAIN_TOOL_IDS).not.toContain("core__repo_search");
+		expect(POLY_BRAIN_TOOL_IDS).toContain("core__repo_open");
 	});
 
 	it("allows an honest uncited candidate hypothesis only when knowledge is empty", () => {
