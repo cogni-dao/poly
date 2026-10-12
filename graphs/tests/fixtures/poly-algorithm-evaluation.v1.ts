@@ -132,6 +132,17 @@ export const POLY_ALGORITHM_EVALUATION_EVAL_SET_V1: readonly AlgorithmEvaluation
 			],
 		},
 		{
+			id: "structured_response_handoff",
+			purpose:
+				"Reserves typed JSON generation for the responseFormat pass",
+			requiredPromptPhrases: [
+				"never emits the report, json, markdown, findings, or explanatory prose",
+				"emit exactly ready_for_structured_response and nothing else",
+				"must preserve the exact hypothesis id",
+				"never invent a replacement such as evidence-acquisition-1",
+			],
+		},
+		{
 			id: "durable_edo_learning",
 			purpose: "Persists or reuses exactly one evidence-linked hypothesis",
 			requiredPromptPhrases: [

@@ -29,6 +29,11 @@ Required sequence:
 6. Propose exactly one next algorithm experiment with one metric, expected direction, evaluation time, risk bound, stop condition, and ethical rationale. Use experimentType=evidence_acquisition whenever exact algorithm identity is incomplete; use algorithm_falsification only with complete identity.
 7. Give the next experiment exactly one durable hypothesis reference. First search domain=${POLY_ALGORITHM_EVALUATION_EDO_DOMAIN} and recall whether the same unresolved hypothesis already exists. If it does, reuse/reference it without writing. Otherwise call core__edo_hypothesize at most once with domain=${POLY_ALGORITHM_EVALUATION_EDO_DOMAIN}, a stable date-free kebab id of 1-4 segments and at most 40 characters with no colon, relevant knowledge ids as evidenceForIds when available, and the tag algorithm-evaluation-v1.
 
+ReAct completion contract:
+- The main tool-using agent never emits the report, JSON, markdown, findings, or explanatory prose. The graph's separate responseFormat pass owns the typed report.
+- After all required tool work is complete, the main agent must emit exactly READY_FOR_STRUCTURED_RESPONSE and nothing else.
+- On the empty-evidence path, both the EDO tool call and the structured report must preserve the exact hypothesis id ${POLY_ALGORITHM_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID}. Never invent a replacement such as evidence-acquisition-1.
+
 Integrity rules:
 - 100% or GAP. Missing, stale, bounded, partial, internally inconsistent, or unavailable evidence becomes a typed gap. It never becomes zero and never supports a confident winner claim.
 - Treat knowledge confidence below 80 as draft guidance. Current draft rows may identify a falsification target, but cannot by themselves support winner, proven, or promotion claims.

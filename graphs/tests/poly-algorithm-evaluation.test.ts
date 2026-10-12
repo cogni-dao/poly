@@ -328,6 +328,18 @@ describe("poly-algorithm-evaluation output v1", () => {
 });
 
 describe("poly-algorithm-evaluation graph boundary", () => {
+	it("hands report generation to the structured-response pass", () => {
+		expect(POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT).toContain(
+			"emit exactly READY_FOR_STRUCTURED_RESPONSE and nothing else",
+		);
+		expect(POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT).toContain(
+			"must preserve the exact hypothesis id algorithm-evidence-bootstrap",
+		);
+		expect(POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT).toContain(
+			"Never invent a replacement such as evidence-acquisition-1",
+		);
+	});
+
 	it("is registered as a node-local peer graph", () => {
 		const entry = POLY_LANGGRAPH_CATALOG[POLY_ALGORITHM_EVALUATION_GRAPH_NAME];
 		expect(POLY_ALGORITHM_EVALUATION_GRAPH_NAME).toBe(
