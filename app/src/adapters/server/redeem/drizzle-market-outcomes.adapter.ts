@@ -10,6 +10,8 @@
  * Invariants:
  *   - UPSERT_IS_IDEMPOTENT — re-receiving the same chain log produces the
  *     same row state.
+ *   - TERMINAL_FACTS_ARE_MONOTONE — lowercase identity is canonical; once a
+ *     winner/loser tuple exists, conflicting/unknown writes cannot rewrite it.
  * Side-effects: IO (database writes).
  * Links: docs/spec/poly-copy-trade-execution.md, bug.5008
  * @public
@@ -28,20 +30,46 @@ export class DrizzleMarketOutcomesAdapter implements MarketOutcomesPort {
     await this.db
       .insert(polyMarketOutcomes)
       .values({
-        conditionId: input.conditionId,
+        conditionId: input.conditionId.toLowerCase(),
         tokenId: input.tokenId,
         outcome: input.outcome,
         payout: input.payout,
-        resolvedAt: input.resolvedAt,
+        resolvedAt:
+          input.resolvedAt ??
+          (input.outcome === "winner" || input.outcome === "loser"
+            ? new Date()
+            : null),
         raw: input.raw,
       })
       .onConflictDoUpdate({
         target: [polyMarketOutcomes.conditionId, polyMarketOutcomes.tokenId],
         set: {
-          outcome: sql`EXCLUDED.outcome`,
-          payout: sql`EXCLUDED.payout`,
-          resolvedAt: sql`EXCLUDED.resolved_at`,
-          raw: sql`EXCLUDED.raw`,
+          outcome: sql`CASE
+            WHEN ${polyMarketOutcomes.outcome} IN ('winner', 'loser')
+              THEN ${polyMarketOutcomes.outcome}
+            ELSE EXCLUDED.outcome
+          END`,
+          payout: sql`CASE
+            WHEN ${polyMarketOutcomes.outcome} IN ('winner', 'loser')
+              AND ${polyMarketOutcomes.outcome} <> EXCLUDED.outcome
+              THEN ${polyMarketOutcomes.payout}
+            ELSE COALESCE(${polyMarketOutcomes.payout}, EXCLUDED.payout)
+          END`,
+          resolvedAt: sql`CASE
+            WHEN ${polyMarketOutcomes.outcome} IN ('winner', 'loser')
+              AND ${polyMarketOutcomes.outcome} <> EXCLUDED.outcome
+              THEN ${polyMarketOutcomes.resolvedAt}
+            WHEN ${polyMarketOutcomes.outcome} IN ('winner', 'loser')
+              THEN COALESCE(${polyMarketOutcomes.resolvedAt}, EXCLUDED.resolved_at, now())
+            WHEN EXCLUDED.outcome IN ('winner', 'loser')
+              THEN COALESCE(EXCLUDED.resolved_at, now())
+            ELSE ${polyMarketOutcomes.resolvedAt}
+          END`,
+          raw: sql`CASE
+            WHEN ${polyMarketOutcomes.outcome} IN ('winner', 'loser')
+              THEN ${polyMarketOutcomes.raw}
+            ELSE EXCLUDED.raw
+          END`,
           updatedAt: sql`now()`,
         },
       });

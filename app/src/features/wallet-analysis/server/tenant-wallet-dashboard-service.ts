@@ -15,6 +15,7 @@ import type {
 import { type SQL, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { readCurrentWalletPositionModel } from "./current-position-read-model";
+import { readEconomicPositionProjection } from "./economic-position-read-model";
 import {
   type BoundedMarketExposureRead,
   buildBoundedMarketExposureGroups,
@@ -27,11 +28,6 @@ import {
   unavailableComparisonCoverage,
 } from "./market-exposure-service";
 import { portfolioWindowStart } from "./portfolio-window";
-import {
-  applyRealizedPnl,
-  readWalletTokenPnlMap,
-  tokenPnlKey,
-} from "./realized-pnl-service";
 import { getTradingWalletPnlHistoryRead } from "./trading-wallet-overview-service";
 import {
   readWalletBalanceFact,
@@ -54,27 +50,6 @@ type OrderSummaryRow = {
   locked_usdc: string | number | null;
   observed_at: Date | string | null;
   malformed_buy_rows: string | number | null;
-};
-
-type ClosedRow = {
-  closed_position_count: string | number | null;
-  accounting_pending_count: string | number | null;
-  condition_key: string | null;
-  asset_key: string | null;
-  client_order_id: string | null;
-  position_lifecycle: string | null;
-  observed_at: Date | string | null;
-  updated_at: Date | string | null;
-  closed_at: string | null;
-  title: string | null;
-  event_title: string | null;
-  market_slug: string | null;
-  event_slug: string | null;
-  outcome: string | null;
-  limit_price: string | number | null;
-  size_usdc: string | number | null;
-  filled_size_usdc: string | number | null;
-  token_id: string | null;
 };
 
 type TradeActivityRow = {
@@ -219,13 +194,15 @@ export async function readTenantWalletDashboardIn(
       capturedAt: capturedAtDate,
     })
   );
-  const closedRead = await optionalRead(db, (savepoint) =>
-    readClosedPositionSummary(
-      savepoint,
-      input.billingAccountId,
-      capturedAtDate,
-      input.interval
-    )
+  const economicRead = await optionalRead(db, (savepoint) =>
+    readEconomicPositionProjection({
+      db: savepoint,
+      billingAccountId: input.billingAccountId,
+      walletAddress: address,
+      connectionKind: connection.connectionKind,
+      capturedAt: capturedAtDate,
+      interval: input.interval,
+    })
   );
   const activityRead = await optionalRead(db, (savepoint) =>
     readTradeActivity(
@@ -272,7 +249,7 @@ export async function readTenantWalletDashboardIn(
     );
   }
 
-  const positionFact = positionsRead.ok
+  const currentPositionFact = positionsRead.ok
     ? positionsRead.value.warnings.some((entry) => entry.code === "current_positions_wallet_missing") ||
       !positionsRead.value.summary.hasSuccessfulObservation
       ? unavailableFact("data_api_current_positions")
@@ -306,33 +283,83 @@ export async function readTenantWalletDashboardIn(
             POSITION_FRESHNESS_MS
           )
     : unavailableFact("data_api_current_positions");
+  const economicProjectionIncomplete = economicRead.ok &&
+    (economicRead.value.incompleteCount > 0 ||
+      economicRead.value.fillIdentityConflictCount > 0 ||
+      economicRead.value.outcomeIdentityConflictCount > 0 ||
+      economicRead.value.missingMarkCount > 0);
+  const positionFact = !economicRead.ok
+    ? unavailableFact("saved_wallet_economics")
+    : economicProjectionIncomplete || currentPositionFact.status !== "fresh"
+      ? {
+          ...freshFact("saved_wallet_economics", capturedAt),
+          observedAt: currentPositionFact.observedAt,
+          ageMs: currentPositionFact.ageMs,
+          status: "partial" as const,
+          complete: false,
+        }
+      : {
+          ...currentPositionFact,
+          source: "saved_wallet_economics" as const,
+        };
   if (!positionsRead.ok) {
     warnings.push(readFailure("positions", "positions_unavailable", positionsRead.error));
+  } else if (!economicRead.ok) {
+    warnings.push(readFailure("positions", "positions_unavailable", economicRead.error));
   } else {
     warnings.push(
       ...positionsRead.value.warnings.map((entry) => ({ component: "positions" as const, ...entry }))
     );
     if (
       positionFact.status !== "unavailable" &&
-      positionsRead.value.summary.activeRows > positionsRead.value.positions.length
+      economicRead.ok &&
+      economicRead.value.liveCount > economicRead.value.livePositions.length
     ) {
       warnings.push(
         warning(
           "positions",
           "positions_preview_truncated",
-          `Showing ${positionsRead.value.positions.length} of ${positionsRead.value.summary.activeRows} open positions.`
+          `Showing ${economicRead.value.livePositions.length} of ${economicRead.value.liveCount} open positions.`
         )
       );
     }
   }
 
-  if (!closedRead.ok) warnings.push(readFailure("history", "history_unavailable", closedRead.error));
-  else if (closedRead.value.accountingPendingCount > 0) {
+  if (!economicRead.ok) {
+    warnings.push(readFailure("history", "history_unavailable", economicRead.error));
+  } else if (economicRead.value.fillIdentityConflictCount > 0) {
     warnings.push(
       warning(
         "history",
-        "history_fill_accounting_pending",
-        `${closedRead.value.accountingPendingCount} closed Position-gap order${closedRead.value.accountingPendingCount === 1 ? " is" : "s are"} awaiting verified execution accounting.`
+        "history_fill_identity_ambiguous",
+        `${economicRead.value.fillIdentityConflictCount} position${economicRead.value.fillIdentityConflictCount === 1 ? " has" : "s have"} conflicting saved fill identities; affected economics are withheld.`
+      )
+    );
+  }
+  if (economicRead.ok && economicRead.value.outcomeIdentityConflictCount > 0) {
+    warnings.push(
+      warning(
+        "history",
+        "history_outcome_identity_ambiguous",
+        `${economicRead.value.outcomeIdentityConflictCount} position${economicRead.value.outcomeIdentityConflictCount === 1 ? " has" : "s have"} conflicting terminal market facts; affected outcomes are withheld.`
+      )
+    );
+  }
+  if (economicRead.ok && economicRead.value.incompleteCount > 0) {
+    warnings.push(
+      warning(
+        "history",
+        "history_projection_incomplete",
+        `${economicRead.value.incompleteCount} position${economicRead.value.incompleteCount === 1 ? " is" : "s are"} omitted because saved economic facts are incomplete or ambiguous.`
+      )
+    );
+  }
+  if (economicRead.ok && economicRead.value.missingMarkCount > 0) {
+    warnings.push(
+      warning(
+        "positions",
+        "positions_current_mark_unavailable",
+        `${economicRead.value.missingMarkCount} open position${economicRead.value.missingMarkCount === 1 ? " has" : "s have"} no current saved mark; the last saved fill price is shown and the position remains live.`
       )
     );
   }
@@ -366,80 +393,21 @@ export async function readTenantWalletDashboardIn(
     }
   }
 
-  let livePositions =
-    positionsRead.ok && positionFact.status !== "unavailable"
-      ? positionsRead.value.positions
-      : [];
-  let closedPositions = closedRead.ok ? closedRead.value.positions : [];
-  // Market exposure needs the vendor snapshot cost basis encoded by the
-  // pre-realized-overlay `currentValue - pnlUsd` relation. The display
-  // overlay below changes pnlUsd to lifetime realized P/L and must not be
-  // fed back into market cost-basis math.
-  const marketLivePositions = livePositions;
-  const marketClosedPositions = closedPositions;
-  const displayedLivePositions = marketLivePositions.slice(
-    0,
-    LIVE_PREVIEW_LIMIT
-  );
-  const displayedClosedPositions = marketClosedPositions.slice(
-    0,
-    CLOSED_PREVIEW_LIMIT
-  );
-  const displayedKeys = [
-    ...new Map(
-      [...displayedLivePositions, ...displayedClosedPositions].map(
-        (position) => [
-          tokenPnlKey(position.conditionId, position.asset),
-          { conditionId: position.conditionId, tokenId: position.asset },
-        ] as const
-      )
-    ).values(),
-  ];
-  const realizedRead = await optionalRead(db, (savepoint) =>
-    readWalletTokenPnlMap({ db: savepoint, walletAddress: address, positionKeys: displayedKeys })
-  );
-  if (realizedRead.ok) {
-    livePositions = applyRealizedPnl(livePositions, realizedRead.value);
-    closedPositions = applyRealizedPnl(closedPositions, realizedRead.value);
-  } else {
-    warnings.push(readFailure("pnl", "realized_pnl_unavailable", realizedRead.error));
-  }
-  if (positionsRead.ok && positionsRead.value.summary.identityAmbiguous) {
-    warnings.push(
-      warning(
-        "pnl",
-        "realized_pnl_identity_ambiguous",
-        "Per-position realized P/L is best-effort because multiple saved wallet identities share this address."
-      )
-    );
-  }
-  const missingRealizedClosedCount = realizedRead.ok
-    ? displayedClosedPositions.filter(
-        (position) =>
-          !realizedRead.value.has(
-            tokenPnlKey(position.conditionId, position.asset)
-          )
-      ).length
-    : 0;
-  if (realizedRead.ok && missingRealizedClosedCount > 0) {
-    warnings.push(
-      warning(
-        "pnl",
-        "realized_pnl_incomplete",
-        `Realized P/L is missing for ${missingRealizedClosedCount} displayed closed position${missingRealizedClosedCount === 1 ? "" : "s"}; history remains partial.`
-      )
-    );
-  }
-  const historyFact = !closedRead.ok
-    ? unavailableFact("local_ledger")
-    : positionsRead.ok &&
-        !positionsRead.value.summary.identityAmbiguous &&
-        realizedRead.ok &&
-        missingRealizedClosedCount === 0 &&
-        closedRead.value.accountingPendingCount === 0
-      ? freshFact("local_ledger", capturedAt)
+  const livePositions = economicRead.ok ? economicRead.value.livePositions : [];
+  const closedPositions = economicRead.ok ? economicRead.value.closedPositions : [];
+  // Comparison math consumes `currentValue - pnlUsd` as cost basis. Display
+  // positions carry lifetime economic P/L, so restore that legacy relation
+  // only for the comparison input without weakening the displayed truth.
+  const marketLivePositions = livePositions.map(toMarketCostBasisPosition);
+  const marketClosedPositions = closedPositions.map(toMarketCostBasisPosition);
+  const historyFact = !economicRead.ok
+    ? unavailableFact("saved_wallet_economics")
+    : economicRead.value.incompleteCount === 0 &&
+        economicRead.value.fillIdentityConflictCount === 0 &&
+        economicRead.value.outcomeIdentityConflictCount === 0
+      ? freshFact("saved_wallet_economics", capturedAt)
       : {
-          ...freshFact("local_ledger", capturedAt),
+          ...freshFact("saved_wallet_economics", capturedAt),
           status: "partial" as const,
           complete: false,
         };
@@ -462,9 +430,9 @@ export async function readTenantWalletDashboardIn(
     coverageRead = { ok: false, error: comparisonUnavailable };
   } else if (
     positionsRead.ok &&
-    closedRead.ok &&
-    positionsRead.value.summary.activeRows === 0 &&
-    closedRead.value.count === 0
+    economicRead.ok &&
+    economicRead.value.liveCount === 0 &&
+    economicRead.value.closedCount === 0
   ) {
     // Both authorities have exact full-population zero counts. Preserve the
     // full reader's all-physical wallet/target ambiguity semantics, but avoid
@@ -574,9 +542,8 @@ export async function readTenantWalletDashboardIn(
   if (
     marketRead.ok &&
     (marketRead.value.truncated ||
-      (positionsRead.ok &&
-        positionsRead.value.summary.activeRows > livePositions.length) ||
-      (closedRead.ok && closedRead.value.count > closedPositions.length))
+      (economicRead.ok && economicRead.value.liveCount > livePositions.length) ||
+      (economicRead.ok && economicRead.value.closedCount > closedPositions.length))
   ) {
     marketRead.value.truncated = true;
     warnings.push(warning("markets", "market_exposure_preview_truncated", "Market comparison is a bounded preview; exact position counts remain available separately."));
@@ -638,7 +605,7 @@ export async function readTenantWalletDashboardIn(
   // and otherwise surface it as unknown (null) so the UI shows "—", never a
   // stale number dressed as truth.
   const positionsMtm =
-    positionsRead.ok && positionFact.complete
+    positionsRead.ok && currentPositionFact.complete
       ? roundMoney(positionsRead.value.summary.positionsMtm)
       : null;
   const totalCoherent =
@@ -699,13 +666,11 @@ export async function readTenantWalletDashboardIn(
       tradeActivity: activityRead.ok ? activityRead.value : undefined,
       live_positions: livePositions.slice(0, LIVE_PREVIEW_LIMIT),
       live_position_count:
-        positionsRead.ok && positionFact.status !== "unavailable"
-          ? positionsRead.value.summary.activeRows
-          : null,
+        economicRead.ok ? economicRead.value.liveCount : null,
       market_groups: marketRead.ok ? marketRead.value.groups : [],
       comparisonCoverage,
       closed_positions: closedPositions.slice(0, CLOSED_PREVIEW_LIMIT),
-      closed_position_count: closedRead.ok ? closedRead.value.count : null,
+      closed_position_count: economicRead.ok ? economicRead.value.closedCount : null,
       warnings: warnings
         .filter(
           (entry) =>
@@ -724,13 +689,15 @@ export async function readTenantWalletDashboardIn(
         actionsAllowed:
           connection.connectionKind === "privy_live" &&
           input.adapterConfigured &&
+          currentPositionFact.status === "fresh" &&
+          currentPositionFact.complete &&
           positionFact.status === "fresh" &&
           positionFact.complete,
         previewLimit: LIVE_PREVIEW_LIMIT,
       },
       history: {
         ...historyFact,
-        authority: "provisional_local_ledger",
+        authority: "saved_wallet_fills_and_outcomes",
         previewLimit: CLOSED_PREVIEW_LIMIT,
       },
       pnl: pnlFact,
@@ -947,104 +914,6 @@ export async function readOrderSummary(
 }
 
 /**
- * Windowed closed-position summary at the portfolio snapshot cutoff.
- *
- * The cutoff applies after latest-row tuple selection: an older terminal row
- * must never reappear merely because a newer row for that position is active
- * or abandoned. The same 1D/1W/1M/1Y/YTD/ALL window applies to the exact
- * closed count, pending-accounting count, and verified preview on both
- * dashboard and agent transports.
- *
- * @internal Exported only for SQL-versus-pure component parity coverage.
- */
-export async function readClosedPositionSummary(
-  db: ExecuteDb,
-  billingAccountId: string,
-  capturedAt: Date,
-  interval: PolyWalletOverviewInterval
-): Promise<{
-  count: number;
-  accountingPendingCount: number;
-  positions: WalletExecutionPosition[];
-}> {
-  const windowStart = portfolioWindowStart(interval, capturedAt);
-  const windowPredicate = windowStart
-    ? sql`COALESCE(NULLIF(closed_at, '')::timestamptz, updated_at, observed_at) >= ${windowStart.toISOString()}::timestamptz`
-    : sql`TRUE`;
-  const rows = normalizeRows<ClosedRow>(await db.execute(sql`
-    WITH keyed AS (
-      SELECT
-        lower(COALESCE(
-          NULLIF(f.attributes->>'condition_id', ''),
-          NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), ''),
-          f.fill_id
-        )) AS condition_key,
-        COALESCE(NULLIF(f.attributes->>'token_id', ''), f.client_order_id) AS asset_key,
-        f.client_order_id,
-        f.position_lifecycle,
-        f.observed_at,
-        f.updated_at,
-        f.attributes->>'closed_at' AS closed_at,
-        f.attributes->>'title' AS title,
-        f.attributes->>'event_title' AS event_title,
-        COALESCE(f.attributes->>'market_slug', f.attributes->>'slug') AS market_slug,
-        f.attributes->>'event_slug' AS event_slug,
-        f.attributes->>'outcome' AS outcome,
-        (
-          COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-          OR COALESCE(f.attributes->>'realized_fill_source', '') IN ('clob_associated_trades', 'data_api_activity_position')
-        ) AS accounting_verified,
-        CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-          AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
-          THEN NULL ELSE NULLIF(f.attributes->>'limit_price', '')::numeric END AS limit_price,
-        CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-          AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
-          THEN NULL ELSE NULLIF(f.attributes->>'size_usdc', '')::numeric END AS size_usdc,
-        CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-          AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
-          THEN NULL ELSE NULLIF(f.attributes->>'filled_size_usdc', '')::numeric END AS filled_size_usdc,
-        f.attributes->>'token_id' AS token_id,
-        ROW_NUMBER() OVER (
-          PARTITION BY
-            lower(COALESCE(NULLIF(f.attributes->>'condition_id', ''), NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), ''), f.fill_id)),
-            COALESCE(NULLIF(f.attributes->>'token_id', ''), f.client_order_id)
-          ORDER BY f.observed_at DESC, f.updated_at DESC, f.client_order_id DESC
-        ) AS tuple_rank
-      FROM poly_copy_trade_fills f
-      WHERE f.billing_account_id = ${billingAccountId}
-    ), terminal_all AS (
-      SELECT * FROM keyed
-      WHERE tuple_rank = 1
-        AND position_lifecycle IN ('closed', 'redeemed', 'loser', 'dust')
-        AND ${windowPredicate}
-    ), terminal AS (
-      SELECT * FROM terminal_all
-      WHERE accounting_verified
-    ), preview AS (
-      SELECT * FROM terminal
-      ORDER BY COALESCE(NULLIF(closed_at, '')::timestamptz, updated_at, observed_at) DESC,
-        condition_key, asset_key
-      LIMIT ${CLOSED_PREVIEW_LIMIT}
-    )
-    SELECT
-      (SELECT COUNT(*)::int FROM terminal_all) AS closed_position_count,
-      (SELECT COUNT(*)::int FROM terminal_all WHERE NOT accounting_verified) AS accounting_pending_count,
-      preview.*
-    FROM (SELECT 1) seed
-    LEFT JOIN preview ON TRUE
-    ORDER BY
-      COALESCE(NULLIF(preview.closed_at, '')::timestamptz, preview.updated_at, preview.observed_at) DESC NULLS LAST,
-      preview.condition_key,
-      preview.asset_key
-  `));
-  return {
-    count: nonnegativeInt(rows[0]?.closed_position_count),
-    accountingPendingCount: nonnegativeInt(rows[0]?.accounting_pending_count),
-    positions: rows.flatMap((row) => closedRowToPosition(row, capturedAt)),
-  };
-}
-
-/**
  * Interval-scoped executed-trade aggregate for the shared portfolio snapshot.
  * Postgres returns at most one row per visual bucket; V8 only zero-fills that
  * bounded axis and never hydrates the underlying fill population.
@@ -1175,53 +1044,6 @@ function countedTradePredicate(): SQL {
   )`;
 }
 
-function closedRowToPosition(row: ClosedRow, capturedAt: Date): WalletExecutionPosition[] {
-  if (row.condition_key === null || row.asset_key === null || row.client_order_id === null) return [];
-  const observedAt = toIso(row.observed_at) ?? capturedAt.toISOString();
-  const closedAt = toIso(row.closed_at) ?? toIso(row.updated_at) ?? observedAt;
-  const price = Math.max(0, toNumber(row.limit_price));
-  const notional = Math.max(0, toNumber(row.filled_size_usdc) || toNumber(row.size_usdc));
-  const size = price > 0 ? notional / price : notional;
-  const eventSlug = nonEmpty(row.event_slug);
-  const marketSlug = nonEmpty(row.market_slug);
-  return [{
-    positionId: `${row.condition_key}:${row.asset_key}`,
-    conditionId: row.condition_key.toLowerCase(),
-    asset: row.token_id ?? row.asset_key,
-    marketTitle: nonEmpty(row.title) ?? "Polymarket",
-    eventTitle: nonEmpty(row.event_title) ?? null,
-    marketSlug: marketSlug ?? null,
-    eventSlug: eventSlug ?? null,
-    marketUrl: eventSlug
-      ? `https://polymarket.com/event/${encodeURIComponent(eventSlug)}`
-      : marketSlug
-        ? `https://polymarket.com/market/${encodeURIComponent(marketSlug)}`
-        : null,
-    outcome: nonEmpty(row.outcome) ?? "UNKNOWN",
-    status: "closed",
-    lifecycleState: row.position_lifecycle as WalletExecutionPosition["lifecycleState"],
-    openedAt: observedAt,
-    closedAt,
-    resolvesAt: null,
-    gameStartTime: null,
-    heldMinutes: Math.max(0, Math.floor((Date.parse(closedAt) - Date.parse(observedAt)) / 60_000)),
-    entryPrice: price,
-    currentPrice: price,
-    size: roundPrecision(size, 4),
-    currentValue: 0,
-    pnlUsd: roundMoney(-notional),
-    pnlPct: notional > 0 ? -100 : 0,
-    syncedAt: toIso(row.updated_at),
-    syncAgeMs: Math.max(0, capturedAt.getTime() - (Date.parse(toIso(row.updated_at) ?? observedAt))),
-    syncStale: false,
-    timeline: [],
-    events: [
-      { ts: observedAt, kind: "entry", price, shares: size },
-      { ts: closedAt, kind: "close", price, shares: size },
-    ],
-  }];
-}
-
 async function optionalRead<T>(
   db: Db,
   read: (savepoint: Db) => Promise<T>
@@ -1327,8 +1149,8 @@ function emptyDashboard(input: { snapshotId: string; capturedAt: string; interva
       wallet: unavailableWallet,
       cash: unavailableFact("polygon_balance_snapshot"),
       orders: { ...unavailableFact("local_ledger"), authority: "provisional_local_ledger" },
-      positions: { ...unavailableFact("data_api_current_positions"), actionsAllowed: false, previewLimit: LIVE_PREVIEW_LIMIT },
-      history: { ...unavailableFact("local_ledger"), authority: "provisional_local_ledger", previewLimit: CLOSED_PREVIEW_LIMIT },
+      positions: { ...unavailableFact("saved_wallet_economics"), actionsAllowed: false, previewLimit: LIVE_PREVIEW_LIMIT },
+      history: { ...unavailableFact("saved_wallet_economics"), authority: "saved_wallet_fills_and_outcomes", previewLimit: CLOSED_PREVIEW_LIMIT },
       pnl: unavailableFact("user_pnl_snapshot"),
       activity: unavailableFact("local_ledger"),
       markets: unavailableFact("composite"),
@@ -1409,6 +1231,16 @@ function nonnegativeInt(value: string | number | null | undefined): number {
 function nonEmpty(value: string | null): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function toMarketCostBasisPosition(
+  position: WalletExecutionPosition
+): WalletExecutionPosition {
+  const costBasis = Math.max(0, position.entryPrice * position.size);
+  return {
+    ...position,
+    pnlUsd: roundMoney(position.currentValue - costBasis),
+  };
 }
 
 function roundMoney(value: number): number {

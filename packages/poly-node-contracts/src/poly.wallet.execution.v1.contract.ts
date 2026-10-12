@@ -9,8 +9,12 @@
  *   - Address is always the configured tenant wallet (or zero-address when unconfigured).
  *   - Position timelines are price-series traces, not fabricated balance curves.
  *   - Market links must come from upstream slugs, never title guessing.
- *   - live_positions contains open/redeemable rows only; closed_positions contains closed rows only.
- *   - lifecycleState (optional) reflects the redeem-pipeline classification (task.0388). Drives Open vs History tab membership and the Redeem-button gate; absent / null when the pipeline has not yet classified the position.
+ *   - Exactly one economic bucket owns each lifetime token leg: unresolved
+ *     positive-net legs are live; resolved or zero-net legs are closed.
+ *   - A resolved unredeemed winner is economically closed but may retain
+ *     `status=redeemable` and `lifecycleState=winner` so the Redeem action survives.
+ *   - lifecycleState (optional) reflects redeem-pipeline operations. It never
+ *     drives Open vs History membership; absent / null means unclassified.
  * Side-effects: none
  * Links: docs/spec/poly-copy-trade-execution.md, docs/design/wallet-analysis-components.md
  * @public
@@ -30,9 +34,9 @@ export type WalletExecutionPositionStatus = z.infer<
 >;
 
 /**
- * Lifecycle state from the redeem pipeline (`poly_redeem_jobs`). Drives the
- * dashboard's Open vs History tab membership and the Redeem-button gate.
- * `null` when the pipeline has not classified the position yet.
+ * Lifecycle state from the redeem pipeline (`poly_redeem_jobs`). It gates
+ * actions but does not classify economic membership. `null` when the pipeline
+ * has not classified the position yet.
  */
 export const WalletExecutionLifecycleStateSchema = z.enum([
   "unresolved",

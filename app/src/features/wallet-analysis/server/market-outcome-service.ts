@@ -26,6 +26,9 @@
  *     never the multi-million-row raw fills table. The observation writer
  *     folds fills into the rollup before this independent background tick;
  *     active positions cover the live condition set while that fold settles.
+ *   - TERMINAL_FACTS_ARE_MONOTONE: writers lowercase condition identity;
+ *     unknown/conflicting refreshes cannot replace a saved terminal tuple,
+ *     while a same-terminal refresh may fill only null payout/resolution time.
  * Side-effects: IO via injected DB + injected CLOB client.
  * Links: work/items/task.5012, work/items/task.5016, work/items/spike.5001
  * @public
@@ -110,17 +113,21 @@ export async function runMarketOutcomeTick(
 
   const candidates = (await deps.db.execute(sql`
     WITH active_conditions AS (
-      SELECT condition_id, token_id
+      SELECT lower(condition_id) AS condition_id, token_id
       FROM poly_trader_current_positions
       WHERE active = true
       UNION
-      SELECT condition_id, token_id
+      SELECT lower(condition_id) AS condition_id, token_id
       FROM poly_trader_fill_rollups_daily
       ${rollupFilter}
+    ), outcome_freshness AS (
+      SELECT lower(condition_id) AS condition_id, token_id, max(updated_at) AS updated_at
+      FROM poly_market_outcomes
+      GROUP BY lower(condition_id), token_id
     )
     SELECT a.condition_id, a.token_id
     FROM active_conditions a
-    LEFT JOIN poly_market_outcomes m
+    LEFT JOIN outcome_freshness m
       ON m.condition_id = a.condition_id
      AND m.token_id = a.token_id
     WHERE ${stalenessFilter}
@@ -219,11 +226,11 @@ export async function runMarketOutcomeTick(
         : "loser";
     return [
       {
-        conditionId: row.condition_id,
+        conditionId: row.condition_id.toLowerCase(),
         tokenId: row.token_id,
         outcome,
         payout: null,
-        resolvedAt: null,
+        resolvedAt: resolution.closed ? new Date() : null,
         raw: resolution as unknown as Record<string, unknown>,
       },
     ];
@@ -251,10 +258,32 @@ export async function runMarketOutcomeTick(
       .onConflictDoUpdate({
         target: [polyMarketOutcomes.conditionId, polyMarketOutcomes.tokenId],
         set: {
-          outcome: sql`EXCLUDED.outcome`,
-          payout: sql`EXCLUDED.payout`,
-          resolvedAt: sql`EXCLUDED.resolved_at`,
-          raw: sql`EXCLUDED.raw`,
+          outcome: sql`CASE
+            WHEN ${polyMarketOutcomes.outcome} IN ('winner', 'loser')
+              THEN ${polyMarketOutcomes.outcome}
+            ELSE EXCLUDED.outcome
+          END`,
+          payout: sql`CASE
+            WHEN ${polyMarketOutcomes.outcome} IN ('winner', 'loser')
+              AND ${polyMarketOutcomes.outcome} <> EXCLUDED.outcome
+              THEN ${polyMarketOutcomes.payout}
+            ELSE COALESCE(${polyMarketOutcomes.payout}, EXCLUDED.payout)
+          END`,
+          resolvedAt: sql`CASE
+            WHEN ${polyMarketOutcomes.outcome} IN ('winner', 'loser')
+              AND ${polyMarketOutcomes.outcome} <> EXCLUDED.outcome
+              THEN ${polyMarketOutcomes.resolvedAt}
+            WHEN ${polyMarketOutcomes.outcome} IN ('winner', 'loser')
+              THEN COALESCE(${polyMarketOutcomes.resolvedAt}, EXCLUDED.resolved_at, now())
+            WHEN EXCLUDED.outcome IN ('winner', 'loser')
+              THEN COALESCE(EXCLUDED.resolved_at, now())
+            ELSE ${polyMarketOutcomes.resolvedAt}
+          END`,
+          raw: sql`CASE
+            WHEN ${polyMarketOutcomes.outcome} IN ('winner', 'loser')
+              THEN ${polyMarketOutcomes.raw}
+            ELSE EXCLUDED.raw
+          END`,
           updatedAt: sql`now()`,
         },
       });
