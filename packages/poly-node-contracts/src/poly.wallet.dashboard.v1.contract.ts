@@ -23,6 +23,7 @@ export const WalletDashboardFactSourceSchema = z.enum([
   "wallet_connection",
   "polygon_balance_snapshot",
   "data_api_current_positions",
+  "saved_wallet_economics",
   "user_pnl_snapshot",
   "local_ledger",
   "composite",
@@ -204,7 +205,7 @@ export const PolyWalletDashboardOutputSchema = z.object({
       previewLimit: z.literal(500),
     }),
     history: WalletDashboardFactMetaSchema.extend({
-      authority: z.literal("provisional_local_ledger"),
+      authority: z.literal("saved_wallet_fills_and_outcomes"),
       previewLimit: z.literal(30),
     }),
     pnl: WalletDashboardFactMetaSchema,

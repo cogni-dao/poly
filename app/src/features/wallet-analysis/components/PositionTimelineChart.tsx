@@ -46,7 +46,7 @@ export type PositionTimelineChartProps = {
   events?: readonly WalletPositionEvent[] | undefined;
   entryPrice: number;
   status: WalletPositionStatus;
-  pnlUsd: number;
+  pnlUsd: number | null;
   className?: string | undefined;
   isLoading?: boolean | undefined;
 };
@@ -239,14 +239,15 @@ function getPriceDomain(
   return [Math.max(0, min - padding), max + padding];
 }
 
-function terminalStroke(kind: "close" | "redeemable", pnlUsd: number): string {
+function terminalStroke(kind: "close" | "redeemable", pnlUsd: number | null): string {
   if (kind === "redeemable") return "hsl(var(--warning))";
+  if (pnlUsd === null) return "hsl(var(--muted-foreground))";
   return pnlUsd >= 0 ? "hsl(var(--chart-2))" : "hsl(var(--destructive))";
 }
 
 function terminalEventColor(
   event: WalletPositionEvent,
-  pnlUsd: number
+  pnlUsd: number | null
 ): string {
   return terminalStroke(
     event.kind === "redeemable" ? "redeemable" : "close",
@@ -256,7 +257,7 @@ function terminalEventColor(
 
 function statusEndpointColor(
   status: WalletPositionStatus,
-  pnlUsd: number
+  pnlUsd: number | null
 ): string {
   return terminalStroke(
     status === "redeemable" ? "redeemable" : "close",

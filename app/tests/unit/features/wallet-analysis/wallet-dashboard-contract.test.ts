@@ -9,14 +9,14 @@ import {
 import { describe, expect, it } from "vitest";
 
 describe("poly.wallet.dashboard.v1", () => {
-  it("pins one snapshot and explicit local-ledger authority for orders and history", () => {
+  it("pins one snapshot and explicit saved-economic authority for history", () => {
     expect(polyWalletDashboardOperation.id).toBe("poly.wallet.dashboard.v1");
     const shape = PolyWalletDashboardOutputSchema.shape;
     expect(shape.snapshotId).toBeDefined();
     expect(shape.capturedAt).toBeDefined();
     const facts = shape.facts.shape;
     expect(facts.orders.shape.authority.safeParse("provisional_local_ledger").success).toBe(true);
-    expect(facts.history.shape.authority.safeParse("provisional_local_ledger").success).toBe(true);
+    expect(facts.history.shape.authority.safeParse("saved_wallet_fills_and_outcomes").success).toBe(true);
     expect(facts.positions.shape.previewLimit.safeParse(500).success).toBe(true);
     expect(facts.history.shape.previewLimit.safeParse(30).success).toBe(true);
   });

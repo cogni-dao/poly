@@ -161,6 +161,36 @@ describe("wallet dashboard coherent snapshot", () => {
         },
       }))
     );
+    // The authoritative closed projection is driven by canonical wallet
+    // economics, not order lifecycle. Each historical leg is a true full exit.
+    await db.insert(polyTraderFills).values(
+      Array.from({ length: 31 }, (_, index) => [
+        {
+          traderWalletId: walletA.id,
+          source: "data-api" as const,
+          nativeId: `closed-buy-${index}`,
+          conditionId: `closed-condition-${index}`,
+          tokenId: `closed-token-${index}`,
+          side: "BUY" as const,
+          price: "0.5",
+          shares: "2",
+          sizeUsdc: "1",
+          observedAt: new Date(Date.now() - index * 1_000 - 500),
+        },
+        {
+          traderWalletId: walletA.id,
+          source: "data-api" as const,
+          nativeId: `closed-sell-${index}`,
+          conditionId: `closed-condition-${index}`,
+          tokenId: `closed-token-${index}`,
+          side: "SELL" as const,
+          price: "0.75",
+          shares: "2",
+          sizeUsdc: "1.5",
+          observedAt: new Date(Date.now() - index * 1_000),
+        },
+      ]).flat()
+    );
 
     const targets = await db
       .insert(polyTraderWallets)
@@ -311,17 +341,16 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(result.execution.closed_position_count).toBe(31);
     expect(result.execution.closed_positions).toHaveLength(30);
     expect(result.facts.positions.status).toBe("fresh");
-    expect(result.facts.history.status).toBe("partial");
+    expect(result.facts.history.status).toBe("fresh");
     expect(result.execution.warnings.map((entry) => entry.code)).toContain("positions_preview_truncated");
-    expect(result.execution.warnings.map((entry) => entry.code)).toContain("realized_pnl_incomplete");
+    expect(result.execution.warnings.map((entry) => entry.code)).not.toContain("realized_pnl_incomplete");
     expect(result.execution.comparisonCoverage.positions.live).toEqual({
       eligible: 501,
       comparable: 1,
       dropped: 500,
-      sampled: 0,
+      sampled: 1,
       complete: false,
       reasons: [
-        "source_incomplete",
         "comparison_missing",
         "preview_truncated",
       ],
@@ -333,7 +362,6 @@ describe("wallet dashboard coherent snapshot", () => {
       sampled: 0,
       complete: false,
       reasons: [
-        "source_incomplete",
         "comparison_missing",
         "preview_truncated",
       ],
@@ -617,7 +645,7 @@ describe("wallet dashboard coherent snapshot", () => {
     }
   }, 60_000);
 
-  it("marks history partial while terminal Position-gap accounting is pending", async () => {
+  it("withholds lifecycle-only history when canonical economics are missing", async () => {
     const fillId = `pg-history-pending-${randomUUID()}`;
     await db.insert(polyCopyTradeFills).values({
       billingAccountId: TENANT_B,
@@ -647,7 +675,7 @@ describe("wallet dashboard coherent snapshot", () => {
         interval: "1W",
         adapterConfigured: true,
       });
-      expect(dashboard.execution.closed_position_count).toBe(1);
+      expect(dashboard.execution.closed_position_count).toBe(0);
       expect(dashboard.execution.closed_positions).toEqual([]);
       expect(dashboard.facts.history).toMatchObject({
         status: "partial",
@@ -656,7 +684,7 @@ describe("wallet dashboard coherent snapshot", () => {
       expect(dashboard.warnings).toContainEqual(
         expect.objectContaining({
           component: "history",
-          code: "history_fill_accounting_pending",
+          code: "history_projection_incomplete",
         })
       );
     } finally {
@@ -748,10 +776,10 @@ describe("wallet dashboard coherent snapshot", () => {
       expect(result.facts.positions.status).toBe("partial");
       expect(result.facts.positions.complete).toBe(false);
       expect(result.facts.positions.actionsAllowed).toBe(false);
-      expect(result.facts.history.status).toBe("partial");
-      expect(result.facts.history.complete).toBe(false);
+      expect(result.facts.history.status).toBe("fresh");
+      expect(result.facts.history.complete).toBe(true);
       expect(result.overview.usdc_total).toBeNull();
-      expect(result.execution.warnings).toContainEqual(
+      expect(result.execution.warnings).not.toContainEqual(
         expect.objectContaining({ code: "realized_pnl_identity_ambiguous" })
       );
     } finally {
@@ -869,7 +897,7 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(partial.facts.positions.actionsAllowed).toBe(false);
     expect(partial.execution.live_position_count).toBe(1);
     expect(partial.execution.live_positions).toHaveLength(1);
-    expect(partial.execution.market_groups.length).toBeGreaterThan(0);
+    expect(partial.execution.market_groups).toEqual([]);
     expect(partial.facts.markets.status).toBe("partial");
     expect(partial.execution.comparisonCoverage.positions.live.reasons).toContain(
       "source_incomplete"
@@ -885,12 +913,12 @@ describe("wallet dashboard coherent snapshot", () => {
       .set({ status: "ok", lastSuccessAt: new Date(Date.now() - 11 * 60_000) })
       .where(cursor);
     const stale = await readTenantWalletDashboard({ db, billingAccountId: TENANT_B, interval: "1W", adapterConfigured: true });
-    expect(stale.facts.positions.status).toBe("stale");
+    expect(stale.facts.positions.status).toBe("partial");
     expect(stale.facts.positions.actionsAllowed).toBe(false);
     expect(stale.execution.live_position_count).toBe(1);
     expect(stale.execution.live_positions).toHaveLength(1);
-    expect(stale.execution.market_groups.length).toBeGreaterThan(0);
-    expect(stale.facts.markets.status).toBe("stale");
+    expect(stale.execution.market_groups).toEqual([]);
+    expect(stale.facts.markets.status).toBe("partial");
     // bug.5031: the stalled-observer case the dashboard actually hit in prod —
     // the frozen inventory's MTM is withheld (null), not a misleading stale
     // number, and the composite total stays null.
@@ -899,18 +927,13 @@ describe("wallet dashboard coherent snapshot", () => {
 
     await db.delete(polyTraderIngestionCursors).where(cursor);
     const unavailable = await readTenantWalletDashboard({ db, billingAccountId: TENANT_B, interval: "1W", adapterConfigured: true });
-    expect(unavailable.facts.positions.status).toBe("unavailable");
-    expect(unavailable.execution.live_position_count).toBeNull();
-    expect(unavailable.execution.live_positions).toEqual([]);
+    expect(unavailable.facts.positions.status).toBe("partial");
+    expect(unavailable.execution.live_position_count).toBe(1);
+    expect(unavailable.execution.live_positions).toHaveLength(1);
     expect(unavailable.execution.market_groups).toEqual([]);
-    expect(unavailable.execution.comparisonCoverage.positions.live).toEqual({
-      eligible: null,
-      comparable: null,
-      dropped: null,
-      sampled: null,
-      complete: false,
-      reasons: ["source_unavailable"],
-    });
+    expect(unavailable.execution.comparisonCoverage.positions.live.reasons).toContain(
+      "source_incomplete"
+    );
     expect(unavailable.overview.usdc_positions_mtm).toBeNull();
     expect(unavailable.overview.usdc_total).toBeNull();
   });

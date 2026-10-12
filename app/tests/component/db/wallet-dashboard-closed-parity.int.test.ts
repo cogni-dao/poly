@@ -1,350 +1,278 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-/** Exact closed-count/preview SQL parity with fallback keys and tied times. */
-import { polyCopyTradeFills } from "@cogni/db-schema/copy-trade";
+/** Authoritative lifetime-token-leg partition and economic-P/L coverage. */
+import { randomUUID } from "node:crypto";
+import {
+  polyMarketOutcomes,
+  polyTraderIngestionCursors,
+  polyTraderCurrentPositions,
+  polyTraderFills,
+  polyTraderWallets,
+} from "@cogni/poly-db-schema/trader-activity";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { readClosedPositionSummary } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
-import { billingAccounts, users } from "@/shared/db/schema";
+import { readEconomicPositionProjection } from "@/features/wallet-analysis/server/economic-position-read-model";
+import { billingAccounts, polyCopyTradeFills, users } from "@/shared/db/schema";
 
-const TENANT = "wallet-dashboard-closed-parity";
-const TARGET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const USER = "wallet-dashboard-closed-parity-user";
-const OBSERVED = new Date("2026-10-03T12:00:00.000Z");
-const CAPTURED = new Date("2026-10-07T20:30:00.000Z");
+const USER = `economic-position-user-${randomUUID()}`;
+const TENANT = `economic-position-tenant-${randomUUID()}`;
+const OTHER_USER = `economic-position-other-user-${randomUUID()}`;
+const OTHER_TENANT = `economic-position-other-tenant-${randomUUID()}`;
+const TARGET_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const ADDRESS = `0x${"ab".repeat(20)}`;
+const ADDRESS_CASE_SIBLING = `0x${"AB".repeat(20)}`;
+const PAPER_ADDRESS_CASE_SIBLING = `0x${"Ab".repeat(20)}`;
+const OTHER_ADDRESS = `0x${"cd".repeat(20)}`;
+const CAPTURED = new Date("2026-10-12T12:00:00.000Z");
 
-type OracleRow = {
-  fillId: string;
-  marketId: string;
-  clientOrderId: string;
-  lifecycle: string;
-  observedAt: Date;
-  updatedAt: Date;
-  attributes: Record<string, unknown>;
-};
+const CONDITIONS = {
+  winner: "condition-winner",
+  loser: "condition-loser",
+  fullExit: "condition-full-exit",
+  partial: "condition-partial",
+  reopened: "condition-reopened",
+  fillConflict: "condition-fill-conflict",
+  fillKeyConflictA: "condition-fill-key-conflict-a",
+  fillKeyConflictB: "condition-fill-key-conflict-b",
+  currentConflict: "condition-current-conflict",
+  outcomeConflict: "condition-outcome-conflict",
+  otherTenant: "condition-other-tenant",
+} as const;
 
-function keys(row: OracleRow): { condition: string; asset: string } {
-  const conditionAttribute = row.attributes.condition_id;
-  const tokenAttribute = row.attributes.token_id;
-  return {
-    condition: (
-      typeof conditionAttribute === "string" && conditionAttribute.length > 0
-        ? conditionAttribute
-        : row.marketId.replace(/^prediction-market:polymarket:/, "") || row.fillId
-    ).toLowerCase(),
-    asset:
-      typeof tokenAttribute === "string" && tokenAttribute.length > 0
-        ? tokenAttribute
-        : row.clientOrderId,
-  };
+const walletIds: string[] = [];
+const outcomeConditions: string[] = [];
+
+function token(condition: string): string {
+  return `token-${condition}`;
 }
 
-function pureClosed(rows: OracleRow[]) {
-  const latest = new Map<string, OracleRow>();
-  for (const row of rows) {
-    const key = keys(row);
-    const tuple = `${key.condition}:${key.asset}`;
-    const prior = latest.get(tuple);
-    if (
-      !prior ||
-      row.observedAt > prior.observedAt ||
-      (row.observedAt.getTime() === prior.observedAt.getTime() &&
-        (row.updatedAt > prior.updatedAt ||
-          (row.updatedAt.getTime() === prior.updatedAt.getTime() &&
-            row.clientOrderId > prior.clientOrderId)))
-    ) {
-      latest.set(tuple, row);
-    }
-  }
-  return [...latest.values()]
-    .filter((row) => ["closed", "redeemed", "loser", "dust"].includes(row.lifecycle))
-    .sort((left, right) => {
-      const leftClosed = Date.parse(String(left.attributes.closed_at ?? ""));
-      const rightClosed = Date.parse(String(right.attributes.closed_at ?? ""));
-      const leftTime = Number.isFinite(leftClosed)
-        ? leftClosed
-        : left.updatedAt.getTime();
-      const rightTime = Number.isFinite(rightClosed)
-        ? rightClosed
-        : right.updatedAt.getTime();
-      if (leftTime !== rightTime) return rightTime - leftTime;
-      const leftKeys = keys(left);
-      const rightKeys = keys(right);
-      return (
-        leftKeys.condition.localeCompare(rightKeys.condition) ||
-        leftKeys.asset.localeCompare(rightKeys.asset)
-      );
-    });
-}
-
-describe("wallet dashboard closed SQL parity", () => {
+describe("authoritative wallet economic-position projection", () => {
   const db = getSeedDb();
-  const rows: OracleRow[] = [
-    {
-      fillId: "dup-old",
-      marketId: "prediction-market:polymarket:condition-a",
-      clientOrderId: "client-a-old",
-      lifecycle: "closed",
-      observedAt: new Date("2026-10-03T10:00:00.000Z"),
-      updatedAt: new Date("2026-10-03T10:00:00.000Z"),
-      attributes: { condition_id: "condition-a", token_id: "token-a", closed_at: OBSERVED.toISOString() },
-    },
-    {
-      fillId: "dup-new",
-      marketId: "prediction-market:polymarket:condition-a",
-      clientOrderId: "client-a-new",
-      lifecycle: "abandoned",
-      observedAt: new Date("2026-10-03T11:00:00.000Z"),
-      updatedAt: new Date("2026-10-03T11:00:00.000Z"),
-      attributes: { condition_id: "condition-a", token_id: "token-a", closed_at: OBSERVED.toISOString() },
-    },
-    {
-      fillId: "market-fallback",
-      marketId: "prediction-market:polymarket:condition-b",
-      clientOrderId: "client-b",
-      lifecycle: "redeemed",
-      observedAt: OBSERVED,
-      updatedAt: OBSERVED,
-      attributes: { closed_at: OBSERVED.toISOString() },
-    },
-    {
-      fillId: "fill-fallback",
-      marketId: "",
-      clientOrderId: "client-c",
-      lifecycle: "loser",
-      observedAt: OBSERVED,
-      updatedAt: OBSERVED,
-      attributes: { closed_at: OBSERVED.toISOString() },
-    },
-    {
-      fillId: "condition-explicit",
-      marketId: "ignored",
-      clientOrderId: "client-d",
-      lifecycle: "dust",
-      observedAt: OBSERVED,
-      updatedAt: OBSERVED,
-      attributes: { condition_id: "condition-c", token_id: "token-d", closed_at: OBSERVED.toISOString() },
-    },
-    {
-      fillId: "mixed-old",
-      marketId: "ignored",
-      clientOrderId: "client-mixed-old",
-      lifecycle: "closed",
-      observedAt: new Date("2026-10-03T10:30:00.000Z"),
-      updatedAt: new Date("2026-10-03T10:30:00.000Z"),
-      attributes: { condition_id: "CONDITION-MIXED", token_id: "token-mixed", closed_at: OBSERVED.toISOString() },
-    },
-    {
-      fillId: "mixed-new",
-      marketId: "ignored",
-      clientOrderId: "client-mixed-new",
-      lifecycle: "redeemed",
-      observedAt: new Date("2026-10-03T11:30:00.000Z"),
-      updatedAt: new Date("2026-10-03T11:30:00.000Z"),
-      attributes: { condition_id: "condition-mixed", token_id: "token-mixed", closed_at: OBSERVED.toISOString() },
-    },
-    {
-      fillId: "window-recent",
-      marketId: "ignored",
-      clientOrderId: "window-recent-client",
-      lifecycle: "closed",
-      observedAt: new Date("2026-10-07T20:00:00.000Z"),
-      updatedAt: new Date("2026-10-07T20:15:00.000Z"),
-      attributes: { condition_id: "window-recent", token_id: "window-recent-token" },
-    },
-    {
-      fillId: "window-1d-boundary",
-      marketId: "ignored",
-      clientOrderId: "window-1d-boundary-client",
-      lifecycle: "closed",
-      observedAt: new Date("2026-10-06T20:30:00.000Z"),
-      updatedAt: new Date("2026-10-06T20:30:00.000Z"),
-      attributes: { condition_id: "window-1d-boundary", token_id: "window-1d-boundary-token", closed_at: "2026-10-06T20:30:00.000Z" },
-    },
-    {
-      fillId: "window-before-1d",
-      marketId: "ignored",
-      clientOrderId: "window-before-1d-client",
-      lifecycle: "closed",
-      observedAt: new Date("2026-10-06T20:29:59.999Z"),
-      updatedAt: new Date("2026-10-06T20:29:59.999Z"),
-      attributes: { condition_id: "window-before-1d", token_id: "window-before-1d-token", closed_at: "2026-10-06T20:29:59.999Z" },
-    },
-    {
-      fillId: "window-1w-boundary",
-      marketId: "ignored",
-      clientOrderId: "window-1w-boundary-client",
-      lifecycle: "closed",
-      observedAt: new Date("2026-09-30T20:30:00.000Z"),
-      updatedAt: new Date("2026-09-30T20:30:00.000Z"),
-      attributes: { condition_id: "window-1w-boundary", token_id: "window-1w-boundary-token", closed_at: "2026-09-30T20:30:00.000Z" },
-    },
-    {
-      fillId: "window-1m-boundary",
-      marketId: "ignored",
-      clientOrderId: "window-1m-boundary-client",
-      lifecycle: "closed",
-      observedAt: new Date("2026-09-07T20:30:00.000Z"),
-      updatedAt: new Date("2026-09-07T20:30:00.000Z"),
-      attributes: { condition_id: "window-1m-boundary", token_id: "window-1m-boundary-token", closed_at: "2026-09-07T20:30:00.000Z" },
-    },
-    {
-      fillId: "window-1y-boundary",
-      marketId: "ignored",
-      clientOrderId: "window-1y-boundary-client",
-      lifecycle: "closed",
-      observedAt: new Date("2025-10-07T20:30:00.000Z"),
-      updatedAt: new Date("2025-10-07T20:30:00.000Z"),
-      attributes: { condition_id: "window-1y-boundary", token_id: "window-1y-boundary-token", closed_at: "2025-10-07T20:30:00.000Z" },
-    },
-    {
-      fillId: "window-ytd-boundary",
-      marketId: "ignored",
-      clientOrderId: "window-ytd-boundary-client",
-      lifecycle: "closed",
-      observedAt: new Date("2026-01-01T00:00:00.000Z"),
-      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
-      attributes: { condition_id: "window-ytd-boundary", token_id: "window-ytd-boundary-token", closed_at: "2026-01-01T00:00:00.000Z" },
-    },
-    {
-      fillId: "window-before-ytd",
-      marketId: "ignored",
-      clientOrderId: "window-before-ytd-client",
-      lifecycle: "closed",
-      observedAt: new Date("2025-12-31T23:59:59.999Z"),
-      updatedAt: new Date("2025-12-31T23:59:59.999Z"),
-      attributes: { condition_id: "window-before-ytd", token_id: "window-before-ytd-token", closed_at: "2025-12-31T23:59:59.999Z" },
-    },
-    {
-      fillId: "window-before-1y",
-      marketId: "ignored",
-      clientOrderId: "window-before-1y-client",
-      lifecycle: "closed",
-      observedAt: new Date("2025-10-07T20:29:59.999Z"),
-      updatedAt: new Date("2025-10-07T20:29:59.999Z"),
-      attributes: { condition_id: "window-before-1y", token_id: "window-before-1y-token", closed_at: "2025-10-07T20:29:59.999Z" },
-    },
-  ];
 
   beforeAll(async () => {
-    await db.insert(users).values({ id: USER, name: USER });
-    await db.insert(billingAccounts).values({
-      id: TENANT,
-      ownerUserId: USER,
-      balanceCredits: 0n,
-    });
-    await db.insert(polyCopyTradeFills).values(
-      rows.map((row) => ({
+    await db.insert(users).values([
+      { id: USER, name: USER },
+      { id: OTHER_USER, name: OTHER_USER },
+    ]);
+    await db.insert(billingAccounts).values([
+      { id: TENANT, ownerUserId: USER, balanceCredits: 0n },
+      { id: OTHER_TENANT, ownerUserId: OTHER_USER, balanceCredits: 0n },
+    ]);
+
+    for (const [address, label] of [
+      [ADDRESS, "canonical"],
+      [ADDRESS_CASE_SIBLING, "case-sibling"],
+      [OTHER_ADDRESS, "other-tenant"],
+    ] as const) {
+      const inserted = await db
+        .insert(polyTraderWallets)
+        .values({ walletAddress: address, kind: "cogni_wallet", label })
+        .returning({ id: polyTraderWallets.id });
+      const id = inserted[0]?.id;
+      if (!id) throw new Error("wallet seed failed");
+      walletIds.push(id);
+    }
+    const paperInserted = await db
+      .insert(polyTraderWallets)
+      .values({
+        walletAddress: PAPER_ADDRESS_CASE_SIBLING,
+        kind: "paper_wallet",
+        label: "paper-mode-sibling",
+      })
+      .returning({ id: polyTraderWallets.id });
+    const paperWallet = paperInserted[0]?.id;
+    if (!paperWallet) throw new Error("paper wallet seed failed");
+    walletIds.push(paperWallet);
+
+    const [wallet, sibling, otherWallet] = walletIds;
+    if (!wallet || !sibling || !otherWallet) {
+      throw new Error("wallet seed incomplete");
+    }
+
+    const tenantConditions = Object.values(CONDITIONS).filter(
+      (condition) => condition !== CONDITIONS.otherTenant
+    );
+    await db.insert(polyCopyTradeFills).values([
+      ...tenantConditions.map((condition, index) => ({
         billingAccountId: TENANT,
         createdByUserId: USER,
-        targetId: TARGET,
-        fillId: row.fillId,
-        marketId: row.marketId,
-        observedAt: row.observedAt,
-        clientOrderId: row.clientOrderId,
+        targetId: TARGET_ID,
+        fillId: `origin-${index}`,
+        marketId: `prediction-market:polymarket:${condition}`,
+        observedAt: new Date(Date.UTC(2026, 9, index + 1, 10)),
+        clientOrderId: `origin-client-${index}`,
         status: "filled",
-        positionLifecycle: row.lifecycle,
-        attributes: row.attributes,
-        updatedAt: row.updatedAt,
+        positionLifecycle: "open",
+        mode: "live",
+        attributes: {
+          condition_id: condition,
+          token_id: token(condition),
+          filled_size_usdc: "4",
+        },
+      })),
+      {
+        billingAccountId: OTHER_TENANT,
+        createdByUserId: OTHER_USER,
+        targetId: TARGET_ID,
+        fillId: "other-origin",
+        marketId: `prediction-market:polymarket:${CONDITIONS.otherTenant}`,
+        observedAt: new Date("2026-10-01T10:00:00.000Z"),
+        clientOrderId: "other-origin-client",
+        status: "filled",
+        positionLifecycle: "open",
+        mode: "live",
+        attributes: {
+          condition_id: CONDITIONS.otherTenant,
+          token_id: token(CONDITIONS.otherTenant),
+          filled_size_usdc: "4",
+        },
+      },
+    ]);
+
+    const fill = (
+      traderWalletId: string,
+      nativeId: string,
+      conditionId: string,
+      side: "BUY" | "SELL",
+      price: string,
+      shares: string,
+      observedAt: string
+    ) => ({
+      traderWalletId,
+      source: "data-api" as const,
+      nativeId,
+      conditionId,
+      tokenId: token(conditionId.toLowerCase()),
+      side,
+      price,
+      shares,
+      sizeUsdc: String(Number(price) * Number(shares)),
+      observedAt: new Date(observedAt),
+    });
+    await db.insert(polyTraderFills).values([
+      fill(wallet, "winner-buy", CONDITIONS.winner, "BUY", "0.4", "10", "2026-10-01T10:00:00.000Z"),
+      fill(sibling, "winner-buy", CONDITIONS.winner.toUpperCase(), "BUY", "0.4", "10", "2026-10-01T10:00:00.000Z"),
+      fill(wallet, "loser-buy", CONDITIONS.loser, "BUY", "0.4", "10", "2026-10-02T10:00:00.000Z"),
+      fill(wallet, "exit-buy", CONDITIONS.fullExit, "BUY", "0.4", "10", "2026-10-03T10:00:00.000Z"),
+      fill(wallet, "exit-sell", CONDITIONS.fullExit, "SELL", "0.6", "10", "2026-10-04T10:00:00.000Z"),
+      fill(wallet, "partial-buy", CONDITIONS.partial, "BUY", "0.4", "10", "2026-10-05T10:00:00.000Z"),
+      fill(wallet, "partial-sell", CONDITIONS.partial, "SELL", "0.6", "4", "2026-10-06T10:00:00.000Z"),
+      fill(wallet, "reopen-buy-a", CONDITIONS.reopened, "BUY", "0.4", "10", "2026-10-01T11:00:00.000Z"),
+      fill(wallet, "reopen-sell", CONDITIONS.reopened, "SELL", "0.5", "10", "2026-10-02T11:00:00.000Z"),
+      fill(wallet, "reopen-buy-b", CONDITIONS.reopened, "BUY", "0.25", "4", "2026-10-03T11:00:00.000Z"),
+      fill(wallet, "conflicting-native", CONDITIONS.fillConflict, "BUY", "0.4", "10", "2026-10-07T10:00:00.000Z"),
+      fill(sibling, "conflicting-native", CONDITIONS.fillConflict, "BUY", "0.5", "10", "2026-10-07T10:00:00.000Z"),
+      fill(wallet, "conflicting-key-native", CONDITIONS.fillKeyConflictA, "BUY", "0.4", "10", "2026-10-07T11:00:00.000Z"),
+      fill(sibling, "conflicting-key-native", CONDITIONS.fillKeyConflictB, "BUY", "0.4", "10", "2026-10-07T11:00:00.000Z"),
+      fill(wallet, "current-conflict-buy", CONDITIONS.currentConflict, "BUY", "0.4", "10", "2026-10-07T12:00:00.000Z"),
+      fill(wallet, "outcome-conflict-buy", CONDITIONS.outcomeConflict, "BUY", "0.4", "10", "2026-10-08T10:00:00.000Z"),
+      fill(otherWallet, "other-buy", CONDITIONS.otherTenant, "BUY", "0.4", "10", "2026-10-01T10:00:00.000Z"),
+      fill(paperWallet, "paper-partial-buy", CONDITIONS.partial, "BUY", "0.9", "100", "2026-10-01T10:00:00.000Z"),
+    ]);
+
+    await db.insert(polyTraderIngestionCursors).values([
+      { traderWalletId: wallet, source: "data-api-positions", status: "ok", lastSuccessAt: new Date("2026-10-12T11:55:00.000Z") },
+      { traderWalletId: sibling, source: "data-api-positions", status: "ok", lastSuccessAt: new Date("2026-10-12T11:55:00.000Z") },
+    ]);
+    await db.insert(polyTraderCurrentPositions).values([
+      {
+        traderWalletId: wallet,
+        conditionId: CONDITIONS.reopened,
+        tokenId: token(CONDITIONS.reopened),
+        active: true,
+        shares: "4",
+        costBasisUsdc: "1",
+        currentValueUsdc: "1.2",
+        avgPrice: "0.25",
+        contentHash: "reopened-current",
+        lastObservedAt: new Date("2026-10-12T11:55:00.000Z"),
+        firstObservedAt: new Date("2026-10-01T11:00:00.000Z"),
+        raw: { curPrice: "0.3", outcome: "YES" },
+      },
+      ...[wallet, sibling].map((traderWalletId, index) => ({
+        traderWalletId,
+        conditionId: CONDITIONS.currentConflict,
+        tokenId: token(CONDITIONS.currentConflict),
+        active: true,
+        shares: "10",
+        costBasisUsdc: "4",
+        currentValueUsdc: index === 0 ? "6" : "7",
+        avgPrice: "0.4",
+        contentHash: `current-conflict-${index}`,
+        lastObservedAt: new Date("2026-10-12T11:55:00.000Z"),
+        firstObservedAt: new Date("2026-10-07T12:00:00.000Z"),
+        raw: { curPrice: index === 0 ? "0.6" : "0.7", outcome: "YES" },
+      })),
+    ]);
+
+    const outcomes = [
+      { conditionId: CONDITIONS.winner, outcome: "winner" as const, payout: "1" },
+      { conditionId: CONDITIONS.winner.toUpperCase(), outcome: "winner" as const, payout: "1" },
+      { conditionId: CONDITIONS.loser, outcome: "loser" as const, payout: "0" },
+      { conditionId: CONDITIONS.outcomeConflict, outcome: "winner" as const, payout: "1" },
+      { conditionId: CONDITIONS.outcomeConflict.toUpperCase(), outcome: "loser" as const, payout: "0" },
+    ];
+    outcomeConditions.push(...outcomes.map((entry) => entry.conditionId));
+    await db.insert(polyMarketOutcomes).values(
+      outcomes.map((entry) => ({
+        ...entry,
+        tokenId: token(entry.conditionId.toLowerCase()),
+        resolvedAt: new Date("2026-10-10T12:00:00.000Z"),
       }))
     );
   });
 
   afterAll(async () => {
-    await db.delete(polyCopyTradeFills).where(eq(polyCopyTradeFills.billingAccountId, TENANT));
-    await db.delete(billingAccounts).where(eq(billingAccounts.id, TENANT));
-    await db.delete(users).where(eq(users.id, USER));
+    await db.delete(polyMarketOutcomes).where(inArray(polyMarketOutcomes.conditionId, outcomeConditions));
+    await db.delete(polyTraderCurrentPositions).where(inArray(polyTraderCurrentPositions.traderWalletId, walletIds));
+    await db.delete(polyTraderIngestionCursors).where(inArray(polyTraderIngestionCursors.traderWalletId, walletIds));
+    await db.delete(polyTraderFills).where(inArray(polyTraderFills.traderWalletId, walletIds));
+    await db.delete(polyCopyTradeFills).where(inArray(polyCopyTradeFills.billingAccountId, [TENANT, OTHER_TENANT]));
+    await db.delete(polyTraderWallets).where(inArray(polyTraderWallets.id, walletIds));
+    await db.delete(billingAccounts).where(inArray(billingAccounts.id, [TENANT, OTHER_TENANT]));
+    await db.delete(users).where(inArray(users.id, [USER, OTHER_USER]));
   });
 
-  it("matches the pure tuple oracle and deterministic fallback-key ordering", async () => {
-
-    const oracle = pureClosed(rows);
-    const actual = await readClosedPositionSummary(
+  it("partitions every complete key once and never loses resolved or unmarked legs", async () => {
+    const result = await readEconomicPositionProjection({
       db,
-      TENANT,
-      CAPTURED,
-      "ALL"
-    );
-
-    expect(actual.count).toBe(oracle.length);
-    expect(actual.accountingPendingCount).toBe(0);
-    expect(actual.positions.map((position) => position.conditionId)).toEqual(
-      oracle.map((row) => keys(row).condition)
-    );
-    expect(actual.positions.map((position) => position.asset)).toEqual(
-      oracle.map((row) => keys(row).asset)
-    );
-    expect(actual.positions.some((position) => position.conditionId === "condition-a")).toBe(false);
-    expect(
-      actual.positions.filter(
-        (position) => position.conditionId === "condition-mixed"
-      )
-    ).toHaveLength(1);
-    expect(
-      actual.positions.find(
-        (position) => position.conditionId === "condition-mixed"
-      )?.positionId
-    ).toBe("condition-mixed:token-mixed");
-  });
-
-  it.each([
-    ["1D", 2],
-    ["1W", 8],
-    ["1M", 9],
-    ["1Y", 12],
-    ["YTD", 10],
-    ["ALL", 13],
-  ] as const)(
-    "filters the exact count and preview at the inclusive %s cutoff",
-    async (interval, expectedCount) => {
-      const actual = await readClosedPositionSummary(
-        db,
-        TENANT,
-        CAPTURED,
-        interval
-      );
-
-      expect(actual.count).toBe(expectedCount);
-      expect(actual.positions).toHaveLength(expectedCount);
-    }
-  );
-
-  it("counts pending Position-gap history without publishing false economics", async () => {
-    await db.insert(polyCopyTradeFills).values({
       billingAccountId: TENANT,
-      createdByUserId: USER,
-      targetId: TARGET,
-      fillId: "position-gap-pending-terminal",
-      marketId: "prediction-market:polymarket:position-gap-pending-condition",
-      observedAt: OBSERVED,
-      clientOrderId: "position-gap-pending-client",
-      status: "filled",
-      positionLifecycle: "loser",
-      price: "0.386",
-      shares: "9.3",
-      attributes: {
-        condition_id: "position-gap-pending-condition",
-        token_id: "position-gap-pending-token",
-        limit_price: 0.386,
-        size_usdc: 3.5898,
-        filled_size_usdc: 3.5898,
-        position_gap_version: "3",
-        closed_at: OBSERVED.toISOString(),
-      },
+      walletAddress: ADDRESS,
+      connectionKind: "privy_live",
+      capturedAt: CAPTURED,
+      interval: "ALL",
     });
 
-    const actual = await readClosedPositionSummary(
-      db,
-      TENANT,
-      new Date("2026-10-03T12:01:00.000Z"),
-      "ALL"
-    );
-    expect(actual.count).toBe(pureClosed(rows).length + 1);
-    expect(actual.accountingPendingCount).toBe(1);
-    expect(actual.positions).not.toContainEqual(
-      expect.objectContaining({ conditionId: "position-gap-pending-condition" })
-    );
+    expect(result.liveCount).toBe(3);
+    expect(result.closedCount).toBe(3);
+    expect(result.incompleteCount).toBe(4);
+    expect(result.walletIdentityCount).toBe(2);
+    expect(result.fillIdentityConflictCount).toBe(3);
+    expect(result.outcomeIdentityConflictCount).toBe(1);
+    expect(result.currentIdentityConflictCount).toBe(1);
+    expect(result.missingMarkCount).toBe(2);
+
+    const liveIds = new Set(result.livePositions.map((position) => position.positionId));
+    const closedIds = new Set(result.closedPositions.map((position) => position.positionId));
+    expect([...liveIds].filter((id) => closedIds.has(id))).toEqual([]);
+    expect(liveIds).toContain(`${CONDITIONS.partial}:${token(CONDITIONS.partial)}`);
+    expect(liveIds).toContain(`${CONDITIONS.reopened}:${token(CONDITIONS.reopened)}`);
+    expect([...liveIds, ...closedIds].some((id) => id.includes(CONDITIONS.otherTenant))).toBe(false);
+
+    const winner = result.closedPositions.find((position) => position.conditionId === CONDITIONS.winner);
+    expect(winner).toMatchObject({ status: "redeemable", lifecycleState: "winner", pnlUsd: 6 });
+    const loser = result.closedPositions.find((position) => position.conditionId === CONDITIONS.loser);
+    expect(loser).toMatchObject({ status: "closed", pnlUsd: -4 });
+    const fullExit = result.closedPositions.find((position) => position.conditionId === CONDITIONS.fullExit);
+    expect(fullExit).toMatchObject({ status: "closed", pnlUsd: 2, closedAt: "2026-10-04T10:00:00.000Z" });
+
+    const reopened = result.livePositions.find((position) => position.conditionId === CONDITIONS.reopened);
+    expect(reopened).toMatchObject({ positionId: `${CONDITIONS.reopened}:${token(CONDITIONS.reopened)}`, size: 4, currentValue: 1.2, pnlUsd: 1.2 });
+    const unmarked = result.livePositions.find((position) => position.conditionId === CONDITIONS.partial);
+    expect(unmarked).toMatchObject({ size: 6, currentPrice: null, currentValue: null, pnlUsd: null, pnlPct: null });
+    const currentConflict = result.livePositions.find((position) => position.conditionId === CONDITIONS.currentConflict);
+    expect(currentConflict).toMatchObject({ size: 10, currentPrice: null, currentValue: null, pnlUsd: null, pnlPct: null });
   });
 });

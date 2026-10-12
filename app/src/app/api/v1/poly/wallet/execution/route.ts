@@ -53,6 +53,7 @@ import {
   type PolyWalletExecutionOutput,
   PolyWalletExecutionOutputSchema,
   polyWalletExecutionOperation,
+  type WalletExecutionPosition,
 } from "@cogni/poly-node-contracts";
 import { withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
@@ -92,6 +93,20 @@ export const dynamic = "force-dynamic";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 const EXECUTION_HISTORY_LIMIT = 30;
+
+type ValuedPosition = WalletExecutionPosition & {
+  currentPrice: number;
+  currentValue: number;
+  pnlUsd: number;
+  pnlPct: number;
+};
+
+function hasValuation(position: WalletExecutionPosition): position is ValuedPosition {
+  return position.currentPrice !== null &&
+    position.currentValue !== null &&
+    position.pnlUsd !== null &&
+    position.pnlPct !== null;
+}
 
 function emptyPayload(
   freshness: PolyWalletExecutionOutput["freshness"],
@@ -242,7 +257,7 @@ export const GET = wrapRouteHandlerWithLogging(
             const ledgerLivePositions = coalesceWalletExecutionPositions(
               positions
                 .filter((position) => position.status !== "closed")
-                .filter((position) => position.currentValue > 0)
+                .filter((position) => (position.currentValue ?? 0) > 0)
             );
             for (const position of ledgerLivePositions) {
               ledgerLiveByAsset.set(position.asset, position);
@@ -268,7 +283,7 @@ export const GET = wrapRouteHandlerWithLogging(
               })
           );
           const currentLivePositions = currentPositions.positions.filter(
-            (position) => position.status !== "closed" && position.currentValue > 0
+            (position) => position.status !== "closed" && (position.currentValue ?? 0) > 0
           );
           livePositionCount = currentPositions.summary.activeRows;
           if (livePositionCount > currentLivePositions.length) {
@@ -278,7 +293,7 @@ export const GET = wrapRouteHandlerWithLogging(
             });
           }
           const currentClosedPositions = currentPositions.positions.filter(
-            (position) => position.status === "closed" || position.currentValue <= 0
+            (position) => position.status === "closed" || (position.currentValue ?? 0) <= 0
           );
           livePositions = currentLivePositions.map((position) => {
             const ledgerPosition = ledgerLiveByAsset.get(position.asset);
@@ -330,8 +345,8 @@ export const GET = wrapRouteHandlerWithLogging(
           db: container.serviceDb,
           billingAccountId,
           walletAddress: address,
-          livePositions,
-          closedPositions,
+          livePositions: livePositions.filter(hasValuation),
+          closedPositions: closedPositions.filter(hasValuation),
         }).catch((err: unknown) => {
           warnings.push({
             code: "market_exposure_unavailable",

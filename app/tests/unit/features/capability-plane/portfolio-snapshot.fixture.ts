@@ -109,13 +109,14 @@ export function portfolioSnapshotFixture(
       orders: { ...freshMeta, authority: "provisional_local_ledger" },
       positions: {
         ...freshMeta,
-        source: "data_api_current_positions",
+        source: "saved_wallet_economics",
         actionsAllowed: true,
         previewLimit: 500,
       },
       history: {
         ...freshMeta,
-        authority: "provisional_local_ledger",
+        source: "saved_wallet_economics",
+        authority: "saved_wallet_fills_and_outcomes",
         previewLimit: 30,
       },
       pnl: { ...freshMeta, source: "user_pnl_snapshot" },

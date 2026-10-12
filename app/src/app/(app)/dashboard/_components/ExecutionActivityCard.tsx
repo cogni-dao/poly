@@ -468,6 +468,11 @@ function PositionsPanel({
                 : "No open positions."
             }
             onPositionAction={onPositionAction}
+            allowedActions={
+              actionsAllowed
+                ? ["close", "redeem"]
+                : []
+            }
             pendingActionPositionId={pendingActionPositionId}
           />
         ) : (
@@ -475,6 +480,9 @@ function PositionsPanel({
             positions={positions}
             isLoading={isLoading}
             variant="history"
+            onPositionAction={onPositionAction}
+            allowedActions={actionsAllowed ? ["redeem"] : []}
+            pendingActionPositionId={pendingActionPositionId}
             emptyMessage={
               closedInventoryUnavailable
                 ? "Closed position history unavailable."
