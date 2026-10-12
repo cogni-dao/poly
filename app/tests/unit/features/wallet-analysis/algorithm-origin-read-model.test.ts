@@ -93,7 +93,7 @@ describe("algorithm origin read model", () => {
     const rendered = captured[0] ?? "";
     expect(rendered).toContain("FROM poly_copy_trade_fills f");
     expect(rendered).not.toContain("poly_copy_trade_decisions");
-    expect(rendered).toContain("p.condition_id = l.condition_id");
+    expect(rendered).toContain("lower(p.condition_id) = l.condition_id");
     expect(rendered).toContain("p.token_id = l.token_id");
     expect(rendered).toMatch(/preview_rank <= \$\d+/);
     expect(rendered).toContain(
