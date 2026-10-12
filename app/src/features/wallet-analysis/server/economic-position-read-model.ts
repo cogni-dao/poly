@@ -34,7 +34,13 @@ type EconomicRow = {
   wallet_identity_count: string | number | null;
   fill_identity_conflict_count: string | number | null;
   outcome_identity_conflict_count: string | number | null;
+  current_identity_conflict_count: string | number | null;
   missing_mark_count: string | number | null;
+  observer_last_success_at: Date | string | null;
+  observer_status: string | null;
+  observer_complete: boolean | null;
+  positions_mtm_usdc: string | number | null;
+  target_correlated: boolean | null;
   economic_bucket: "live" | "closed" | null;
   closed_reason: "resolved" | "fully_exited" | null;
   condition_id: string | null;
@@ -52,6 +58,8 @@ type EconomicRow = {
   current_price: string | number | null;
   current_shares: string | number | null;
   current_avg_price: string | number | null;
+  current_identity_conflict: boolean | null;
+  mark_available: boolean | null;
   title: string | null;
   event_title: string | null;
   market_slug: string | null;
@@ -67,7 +75,13 @@ export type EconomicPositionRead = {
   walletIdentityCount: number;
   fillIdentityConflictCount: number;
   outcomeIdentityConflictCount: number;
+  currentIdentityConflictCount: number;
   missingMarkCount: number;
+  observerSyncedAt: string | null;
+  observerStatus: string | null;
+  observerComplete: boolean;
+  positionsMtm: number | null;
+  targetCorrelatedKeys: ReadonlySet<string>;
   livePositions: WalletExecutionPosition[];
   closedPositions: WalletExecutionPosition[];
 };
@@ -93,6 +107,32 @@ export async function readEconomicPositionProjection(params: {
       FROM poly_trader_wallets w
       WHERE lower(w.wallet_address) = lower(${params.walletAddress})
         AND w.kind = ${walletKind}
+    ), eligible_wallet_identity AS MATERIALIZED (
+      SELECT w.id
+      FROM poly_trader_wallets w
+      WHERE lower(w.wallet_address) = lower(${params.walletAddress})
+        AND w.kind = ${walletKind}
+        AND w.active_for_research = true
+        AND w.disabled_at IS NULL
+    ), observer_summary AS MATERIALIZED (
+      SELECT
+        min(c.last_success_at) AS last_success_at,
+        CASE
+          WHEN count(w.id) = 0 THEN NULL
+          WHEN count(c.trader_wallet_id) < count(w.id) THEN 'partial'
+          WHEN bool_and(c.status = 'ok') THEN 'ok'
+          WHEN bool_or(c.status = 'partial') THEN 'partial'
+          WHEN bool_or(c.status = 'error') THEN 'error'
+          WHEN bool_or(c.status = 'stale') THEN 'stale'
+          ELSE 'partial'
+        END AS status,
+        count(w.id) > 0
+          AND count(c.trader_wallet_id) = count(w.id)
+          AND min(c.last_success_at) IS NOT NULL AS complete
+      FROM eligible_wallet_identity w
+      LEFT JOIN poly_trader_ingestion_cursors c
+        ON c.trader_wallet_id = w.id
+       AND c.source = ${mode === "paper" ? "paper-ledger-positions" : "data-api-positions"}
     ), ledger_candidates AS MATERIALIZED (
       SELECT
         lower(NULLIF(COALESCE(
@@ -133,10 +173,29 @@ export async function readEconomicPositionProjection(params: {
     ), origin_keys AS MATERIALIZED (
       SELECT * FROM ledger_candidates
       WHERE condition_id IS NOT NULL AND token_id IS NOT NULL
-    ), current_candidates AS MATERIALIZED (
+    ), current_groups AS MATERIALIZED (
       SELECT
         lower(p.condition_id) AS condition_id,
         p.token_id,
+        (array_agg(p.trader_wallet_id ORDER BY p.last_observed_at DESC,
+          w.updated_at DESC, w.created_at DESC, w.id, p.condition_id))[1]
+          AS chosen_wallet_id,
+        (array_agg(p.condition_id ORDER BY p.last_observed_at DESC,
+          w.updated_at DESC, w.created_at DESC, w.id, p.condition_id))[1]
+          AS chosen_condition_id,
+        count(DISTINCT md5(concat_ws('|',
+          p.shares::text, p.cost_basis_usdc::text, p.current_value_usdc::text,
+          p.avg_price::text, COALESCE(p.raw->>'curPrice', ''),
+          COALESCE(p.raw->>'outcome', ''), COALESCE(p.raw->>'endDate', '')
+        )))::int AS fact_variants
+      FROM poly_trader_current_positions p
+      JOIN wallet_identity w ON w.id = p.trader_wallet_id
+      WHERE p.active = true
+      GROUP BY lower(p.condition_id), p.token_id
+    ), current_facts AS MATERIALIZED (
+      SELECT
+        g.condition_id,
+        g.token_id,
         p.shares,
         p.cost_basis_usdc,
         p.current_value_usdc,
@@ -144,21 +203,32 @@ export async function readEconomicPositionProjection(params: {
         p.last_observed_at,
         p.first_observed_at,
         p.raw,
-        row_number() OVER (
-          PARTITION BY lower(p.condition_id), p.token_id
-          ORDER BY p.last_observed_at DESC, w.updated_at DESC,
-            w.created_at DESC, w.id, p.condition_id
-        ) AS identity_rank
-      FROM poly_trader_current_positions p
-      JOIN wallet_identity w ON w.id = p.trader_wallet_id
-      WHERE p.active = true
-    ), current_facts AS MATERIALIZED (
-      SELECT * FROM current_candidates WHERE identity_rank = 1
+        g.fact_variants > 1 AS current_identity_conflict
+      FROM current_groups g
+      JOIN poly_trader_current_positions p
+        ON p.trader_wallet_id = g.chosen_wallet_id
+       AND p.condition_id = g.chosen_condition_id
+       AND p.token_id = g.token_id
     ), driven_keys AS MATERIALIZED (
       SELECT condition_id, token_id FROM origin_keys
       UNION
       SELECT condition_id, token_id FROM current_facts
       WHERE shares > 0
+    ), target_correlated_keys AS MATERIALIZED (
+      SELECT DISTINCT lower(p.condition_id) AS condition_id, p.token_id
+      FROM poly_copy_trade_targets target
+      JOIN poly_trader_wallets target_wallet
+        ON lower(target_wallet.wallet_address) = lower(target.target_wallet)
+       AND target_wallet.kind = 'copy_target'
+       AND target_wallet.active_for_research = true
+       AND target_wallet.disabled_at IS NULL
+      JOIN poly_trader_current_positions p
+        ON p.trader_wallet_id = target_wallet.id
+      JOIN driven_keys k
+        ON k.condition_id = lower(p.condition_id)
+       AND k.token_id = p.token_id
+      WHERE target.billing_account_id = ${params.billingAccountId}
+        AND target.disabled_at IS NULL
     ), driven_fill_identities AS MATERIALIZED (
       SELECT DISTINCT f.source, f.native_id
       FROM poly_trader_fills f
@@ -267,6 +337,7 @@ export async function readEconomicPositionProjection(params: {
         cf.raw->>'curPrice' AS raw_cur_price,
         cf.raw->>'outcome' AS current_outcome_label,
         cf.raw->>'endDate' AS current_resolves_at,
+        cf.current_identity_conflict,
         lc.position_lifecycle,
         lc.observed_at AS ledger_observed_at,
         lc.updated_at AS ledger_updated_at,
@@ -305,8 +376,18 @@ export async function readEconomicPositionProjection(params: {
     ), classified AS MATERIALIZED (
       SELECT
         b.*,
+        (
+          b.current_value_usdc IS NOT NULL
+          AND NOT COALESCE(b.current_identity_conflict, false)
+          AND observer.status = 'ok'
+          AND observer.complete
+          AND observer.last_success_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'
+          AND b.current_last_observed_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'
+        ) AS mark_available,
         CASE
           WHEN b.fill_identity_conflict OR b.terminal_variants > 1 OR b.payout_variants > 1
+            THEN NULL
+          WHEN b.current_identity_conflict AND b.total_buy_shares IS NULL
             THEN NULL
           WHEN b.terminal_variants = 1 AND b.resolved_at IS NOT NULL
             AND COALESCE(b.total_buy_shares, b.current_shares) > 0
@@ -333,6 +414,7 @@ export async function readEconomicPositionProjection(params: {
           ELSE NULL
         END AS closed_at
       FROM economic_position_base b
+      CROSS JOIN observer_summary observer
     ), windowed AS MATERIALIZED (
       SELECT * FROM classified
       WHERE economic_bucket = 'live'
@@ -361,7 +443,30 @@ export async function readEconomicPositionProjection(params: {
       (SELECT count(*)::int FROM wallet_identity) AS wallet_identity_count,
       (SELECT count(*)::int FROM fill_conflicted_keys) AS fill_identity_conflict_count,
       (SELECT count(*)::int FROM outcome_consensus WHERE terminal_variants > 1 OR payout_variants > 1) AS outcome_identity_conflict_count,
-      (SELECT count(*)::int FROM classified WHERE economic_bucket = 'live' AND current_value_usdc IS NULL) AS missing_mark_count,
+      (SELECT count(*)::int FROM current_facts WHERE current_identity_conflict) AS current_identity_conflict_count,
+      (SELECT count(*)::int FROM classified WHERE economic_bucket = 'live' AND NOT mark_available) AS missing_mark_count,
+      observer.last_success_at AS observer_last_success_at,
+      observer.status AS observer_status,
+      observer.complete AS observer_complete,
+      CASE
+        WHEN observer.status = 'ok' AND observer.complete
+          AND observer.last_success_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'
+          AND NOT EXISTS (
+            SELECT 1 FROM classified
+            WHERE economic_bucket = 'live' AND NOT mark_available
+          )
+        THEN (
+          SELECT COALESCE(sum(current_value_usdc), 0)
+          FROM classified
+          WHERE economic_bucket = 'live' AND mark_available
+        )
+        ELSE NULL
+      END AS positions_mtm_usdc,
+      EXISTS (
+        SELECT 1 FROM target_correlated_keys target_key
+        WHERE target_key.condition_id = p.condition_id
+          AND target_key.token_id = p.token_id
+      ) AS target_correlated,
       p.economic_bucket,
       p.closed_reason,
       p.condition_id,
@@ -390,6 +495,8 @@ export async function readEconomicPositionProjection(params: {
       ) AS current_price,
       p.current_shares,
       p.current_avg_price,
+      p.current_identity_conflict,
+      p.mark_available,
       COALESCE(p.market_title, p.attributes->>'title', 'Polymarket') AS title,
       COALESCE(p.event_title, p.attributes->>'event_title') AS event_title,
       COALESCE(p.market_slug, p.attributes->>'market_slug', p.attributes->>'slug') AS market_slug,
@@ -401,6 +508,7 @@ export async function readEconomicPositionProjection(params: {
           THEN p.current_resolves_at::timestamptz END
       ) AS resolves_at
     FROM (SELECT 1) seed
+    CROSS JOIN observer_summary observer
     LEFT JOIN preview p ON TRUE
     ORDER BY p.economic_bucket, p.bucket_rank
   `));
@@ -408,9 +516,11 @@ export async function readEconomicPositionProjection(params: {
   const first = rows[0];
   const livePositions: WalletExecutionPosition[] = [];
   const closedPositions: WalletExecutionPosition[] = [];
+  const targetCorrelatedKeys = new Set<string>();
   for (const row of rows) {
     const position = toPosition(row, params.capturedAt);
     if (position === null) continue;
+    if (row.target_correlated) targetCorrelatedKeys.add(position.positionId);
     if (row.economic_bucket === "live") livePositions.push(position);
     if (row.economic_bucket === "closed") closedPositions.push(position);
   }
@@ -421,7 +531,16 @@ export async function readEconomicPositionProjection(params: {
     walletIdentityCount: nonnegativeInt(first?.wallet_identity_count),
     fillIdentityConflictCount: nonnegativeInt(first?.fill_identity_conflict_count),
     outcomeIdentityConflictCount: nonnegativeInt(first?.outcome_identity_conflict_count),
+    currentIdentityConflictCount: nonnegativeInt(first?.current_identity_conflict_count),
     missingMarkCount: nonnegativeInt(first?.missing_mark_count),
+    observerSyncedAt: iso(first?.observer_last_success_at),
+    observerStatus: first?.observer_status ?? null,
+    observerComplete: first?.observer_complete === true,
+    positionsMtm:
+      first?.positions_mtm_usdc === null || first?.positions_mtm_usdc === undefined
+        ? null
+        : round(numberOf(first.positions_mtm_usdc), 2),
+    targetCorrelatedKeys,
     livePositions,
     closedPositions,
   };
@@ -436,22 +555,25 @@ function toPosition(row: EconomicRow, capturedAt: Date): WalletExecutionPosition
   const buyShares = numberOf(row.total_buy_shares);
   const netShares = numberOf(row.net_shares);
   if (buyUsdc <= 0 || buyShares <= 0 || netShares < 0) return null;
-  const currentPriceFallback = Math.max(
+  const savedCurrentPrice = Math.max(
     0,
     numberOf(row.current_price) || numberOf(row.current_avg_price)
   );
-  const currentValue = row.economic_bucket === "live"
-    ? row.current_value_usdc === null
-      ? currentPriceFallback * netShares
-      : Math.max(0, numberOf(row.current_value_usdc))
-    : 0;
-  const { pnlUsd, pnlPct } = computeRealizedPnl({
-    totalBuyNotional: buyUsdc,
-    realizedCash: sellUsdc,
-    currentMarkValue: currentValue,
-    netShares,
-    marketOutcome: row.market_outcome,
-  });
+  const hasValuation = row.economic_bucket === "closed" || row.mark_available === true;
+  const currentValue = row.economic_bucket === "closed"
+    ? 0
+    : hasValuation
+      ? Math.max(0, numberOf(row.current_value_usdc))
+      : null;
+  const realized = hasValuation
+    ? computeRealizedPnl({
+        totalBuyNotional: buyUsdc,
+        realizedCash: sellUsdc,
+        currentMarkValue: currentValue ?? 0,
+        netShares,
+        marketOutcome: row.market_outcome,
+      })
+    : null;
   const openedAt = iso(row.opened_at) ?? capturedAt.toISOString();
   const closedAt = row.economic_bucket === "closed" ? iso(row.closed_at) : null;
   const lifecycle = normalizeLifecycle(row.lifecycle_state);
@@ -477,8 +599,10 @@ function toPosition(row: EconomicRow, capturedAt: Date): WalletExecutionPosition
       ? 1
       : row.market_outcome === "loser"
         ? 0
-        : currentPriceFallback
-    : currentPriceFallback;
+        : savedCurrentPrice
+    : hasValuation
+      ? savedCurrentPrice
+      : null;
   const eventSlug = nonempty(row.event_slug);
   const marketSlug = nonempty(row.market_slug);
   const syncedAt = iso(row.synced_at);
@@ -507,21 +631,24 @@ function toPosition(row: EconomicRow, capturedAt: Date): WalletExecutionPosition
       Math.floor(((closedAt ? Date.parse(closedAt) : capturedAt.getTime()) - Date.parse(openedAt)) / 60_000)
     ),
     entryPrice: round(entryPrice, 8),
-    currentPrice: round(currentPrice, 8),
+    currentPrice: currentPrice === null ? null : round(currentPrice, 8),
     size: round(size, 4),
-    currentValue: round(currentValue, 2),
-    pnlUsd,
-    pnlPct: pnlPct === null ? 0 : round(pnlPct * 100, 2),
+    currentValue: currentValue === null ? null : round(currentValue, 2),
+    pnlUsd: realized?.pnlUsd ?? null,
+    pnlPct:
+      realized?.pnlPct === null || realized?.pnlPct === undefined
+        ? null
+        : round(realized.pnlPct * 100, 2),
     syncedAt,
     syncAgeMs: syncedAt === null ? null : Math.max(0, capturedAt.getTime() - Date.parse(syncedAt)),
     syncStale:
-      row.economic_bucket === "live" && row.current_value_usdc === null,
+      row.economic_bucket === "live" && !hasValuation,
     timeline: [],
     events: [
       { ts: openedAt, kind: "entry", price: round(entryPrice, 8), shares: round(buyShares, 4) },
       ...(closedAt === null
         ? []
-        : [{ ts: closedAt, kind: "close" as const, price: round(currentPrice, 8), shares: round(size, 4) }]),
+        : [{ ts: closedAt, kind: "close" as const, price: round(currentPrice ?? 0, 8), shares: round(size, 4) }]),
     ],
   };
 }

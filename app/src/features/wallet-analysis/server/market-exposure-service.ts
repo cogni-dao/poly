@@ -260,6 +260,13 @@ const BOUNDED_PARTICIPANT_ROW_LIMIT = 2_200;
 const VISIBLE_LIVE_POSITION_LIMIT = 500;
 const VISIBLE_CLOSED_POSITION_LIMIT = 30;
 
+type ValuedExecutionPosition = WalletExecutionPosition & {
+  currentPrice: number;
+  currentValue: number;
+  pnlUsd: number;
+  pnlPct: number;
+};
+
 type BoundedOurExposureSelection = {
   allOurLegs: RawLeg[];
   ourLegs: RawLeg[];
@@ -287,8 +294,8 @@ export async function buildMarketExposureGroups(params: {
   db: Db;
   billingAccountId: string;
   walletAddress: string;
-  livePositions: readonly WalletExecutionPosition[];
-  closedPositions?: readonly WalletExecutionPosition[];
+  livePositions: readonly ValuedExecutionPosition[];
+  closedPositions?: readonly ValuedExecutionPosition[];
 }): Promise<WalletExecutionMarketGroup[]> {
   const closedPositions = params.closedPositions ?? [];
   if (params.livePositions.length === 0 && closedPositions.length === 0) {
@@ -328,8 +335,8 @@ export async function buildBoundedMarketExposureGroups(params: {
   db: Db;
   billingAccountId: string;
   walletAddress: string;
-  livePositions: readonly WalletExecutionPosition[];
-  closedPositions?: readonly WalletExecutionPosition[];
+  livePositions: readonly ValuedExecutionPosition[];
+  closedPositions?: readonly ValuedExecutionPosition[];
   priorityPositionKeys?: ReadonlySet<string>;
   diagnostics?: ComparisonReadDiagnostics;
 }): Promise<BoundedMarketExposureRead> {
@@ -421,8 +428,8 @@ export async function buildBoundedMarketExposureGroups(params: {
 
 function selectBoundedOurExposure(params: {
   walletAddress: string;
-  livePositions: readonly WalletExecutionPosition[];
-  closedPositions: readonly WalletExecutionPosition[];
+  livePositions: readonly ValuedExecutionPosition[];
+  closedPositions: readonly ValuedExecutionPosition[];
   priorityPositionKeys?: ReadonlySet<string>;
 }): BoundedOurExposureSelection {
   const allOurLegs = [
@@ -503,8 +510,8 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
   billingAccountId: string;
   walletAddress: string;
   connectionKind: DashboardConnectionKind;
-  livePositions: readonly WalletExecutionPosition[];
-  closedPositions?: readonly WalletExecutionPosition[];
+  livePositions: readonly ValuedExecutionPosition[];
+  closedPositions?: readonly ValuedExecutionPosition[];
   priorityPositionKeys?: ReadonlySet<string>;
   diagnostics?: ComparisonReadDiagnostics;
 }): Promise<BoundedMarketExposureCoverageRead> {
@@ -1692,7 +1699,7 @@ function enrichLegWithRollup(
 }
 
 function buildOurLegs(
-  positions: readonly WalletExecutionPosition[],
+  positions: readonly ValuedExecutionPosition[],
   walletAddress: string,
   ourPositionStatus: WalletExecutionMarketLineStatus
 ): RawLeg[] {
@@ -2820,7 +2827,7 @@ function compareLine(
 }
 
 function costBasisFromExecutionPosition(
-  position: WalletExecutionPosition
+  position: ValuedExecutionPosition
 ): number {
   return roundMoney(Math.max(0, position.currentValue - position.pnlUsd));
 }

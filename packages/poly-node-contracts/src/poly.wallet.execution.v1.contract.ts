@@ -123,11 +123,13 @@ export const WalletExecutionPositionSchema = z.object({
   gameStartTime: z.string().nullable().optional(),
   heldMinutes: z.number().int().nonnegative(),
   entryPrice: z.number().min(0),
-  currentPrice: z.number().min(0),
+  /** Null when no fresh, identity-consistent saved mark is available. */
+  currentPrice: z.number().min(0).nullable(),
   size: z.number().nonnegative(),
-  currentValue: z.number().nonnegative(),
-  pnlUsd: z.number(),
-  pnlPct: z.number(),
+  /** Live valuation fields are null together when the saved mark is unavailable. */
+  currentValue: z.number().nonnegative().nullable(),
+  pnlUsd: z.number().nullable(),
+  pnlPct: z.number().nullable(),
   syncedAt: z.string().nullable().optional(),
   syncAgeMs: z.number().int().nonnegative().nullable().optional(),
   syncStale: z.boolean().optional(),

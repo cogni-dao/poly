@@ -14,7 +14,6 @@ import type {
 } from "@cogni/poly-node-contracts";
 import { type SQL, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { readCurrentWalletPositionModel } from "./current-position-read-model";
 import { readEconomicPositionProjection } from "./economic-position-read-model";
 import {
   type BoundedMarketExposureRead,
@@ -186,14 +185,6 @@ export async function readTenantWalletDashboardIn(
   const orderRead = await optionalRead(db, (savepoint) =>
     readOrderSummary(savepoint, input.billingAccountId, capturedAt)
   );
-  const positionsRead = await optionalRead(db, (savepoint) =>
-    readCurrentWalletPositionModel({
-      db: savepoint,
-      billingAccountId: input.billingAccountId,
-      walletAddress: address,
-      capturedAt: capturedAtDate,
-    })
-  );
   const economicRead = await optionalRead(db, (savepoint) =>
     readEconomicPositionProjection({
       db: savepoint,
@@ -249,44 +240,24 @@ export async function readTenantWalletDashboardIn(
     );
   }
 
-  const currentPositionFact = positionsRead.ok
-    ? positionsRead.value.warnings.some((entry) => entry.code === "current_positions_wallet_missing") ||
-      !positionsRead.value.summary.hasSuccessfulObservation
-      ? unavailableFact("data_api_current_positions")
-      : positionsRead.value.summary.identityAmbiguous ||
-          positionsRead.value.summary.cursorStatus === "partial"
-        ? {
-            ...factFromAge(
-              "data_api_current_positions",
-              positionsRead.value.summary.syncedAt,
-              capturedAtDate,
-              POSITION_FRESHNESS_MS
-            ),
-            status: "partial" as const,
-            complete: false,
-          }
-        : positionsRead.value.summary.stale
-        ? {
-            ...factFromAge(
-              "data_api_current_positions",
-              positionsRead.value.summary.syncedAt,
-              capturedAtDate,
-              POSITION_FRESHNESS_MS
-            ),
-            status: "stale" as const,
-            complete: false,
-          }
-        : factFromAge(
-            "data_api_current_positions",
-            positionsRead.value.summary.syncedAt ?? capturedAt,
-            capturedAtDate,
-            POSITION_FRESHNESS_MS
-          )
+  const observerAgeFact = economicRead.ok && economicRead.value.observerSyncedAt !== null
+    ? factFromAge(
+        "data_api_current_positions",
+        economicRead.value.observerSyncedAt,
+        capturedAtDate,
+        POSITION_FRESHNESS_MS
+      )
     : unavailableFact("data_api_current_positions");
+  const currentPositionFact = !economicRead.ok || !economicRead.value.observerComplete
+    ? unavailableFact("data_api_current_positions")
+    : economicRead.value.observerStatus !== "ok"
+      ? { ...observerAgeFact, status: "partial" as const, complete: false }
+      : observerAgeFact;
   const economicProjectionIncomplete = economicRead.ok &&
     (economicRead.value.incompleteCount > 0 ||
       economicRead.value.fillIdentityConflictCount > 0 ||
       economicRead.value.outcomeIdentityConflictCount > 0 ||
+      economicRead.value.currentIdentityConflictCount > 0 ||
       economicRead.value.missingMarkCount > 0);
   const positionFact = !economicRead.ok
     ? unavailableFact("saved_wallet_economics")
@@ -302,14 +273,9 @@ export async function readTenantWalletDashboardIn(
           ...currentPositionFact,
           source: "saved_wallet_economics" as const,
         };
-  if (!positionsRead.ok) {
-    warnings.push(readFailure("positions", "positions_unavailable", positionsRead.error));
-  } else if (!economicRead.ok) {
+  if (!economicRead.ok) {
     warnings.push(readFailure("positions", "positions_unavailable", economicRead.error));
   } else {
-    warnings.push(
-      ...positionsRead.value.warnings.map((entry) => ({ component: "positions" as const, ...entry }))
-    );
     if (
       positionFact.status !== "unavailable" &&
       economicRead.ok &&
@@ -345,6 +311,15 @@ export async function readTenantWalletDashboardIn(
       )
     );
   }
+  if (economicRead.ok && economicRead.value.currentIdentityConflictCount > 0) {
+    warnings.push(
+      warning(
+        "positions",
+        "positions_current_identity_ambiguous",
+        `${economicRead.value.currentIdentityConflictCount} position${economicRead.value.currentIdentityConflictCount === 1 ? " has" : "s have"} conflicting saved current facts; affected valuation is withheld.`
+      )
+    );
+  }
   if (economicRead.ok && economicRead.value.incompleteCount > 0) {
     warnings.push(
       warning(
@@ -359,7 +334,7 @@ export async function readTenantWalletDashboardIn(
       warning(
         "positions",
         "positions_current_mark_unavailable",
-        `${economicRead.value.missingMarkCount} open position${economicRead.value.missingMarkCount === 1 ? " has" : "s have"} no current saved mark; the last saved fill price is shown and the position remains live.`
+        `${economicRead.value.missingMarkCount} open position${economicRead.value.missingMarkCount === 1 ? " has" : "s have"} no fresh, identity-consistent saved mark; valuation and P/L are withheld while the position remains live.`
       )
     );
   }
@@ -398,8 +373,12 @@ export async function readTenantWalletDashboardIn(
   // Comparison math consumes `currentValue - pnlUsd` as cost basis. Display
   // positions carry lifetime economic P/L, so restore that legacy relation
   // only for the comparison input without weakening the displayed truth.
-  const marketLivePositions = livePositions.map(toMarketCostBasisPosition);
-  const marketClosedPositions = closedPositions.map(toMarketCostBasisPosition);
+  const marketLivePositions = livePositions
+    .filter(hasPositionValuation)
+    .map(toMarketCostBasisPosition);
+  const marketClosedPositions = closedPositions
+    .filter(hasPositionValuation)
+    .map(toMarketCostBasisPosition);
   const historyFact = !economicRead.ok
     ? unavailableFact("saved_wallet_economics")
     : economicRead.value.incompleteCount === 0 &&
@@ -429,7 +408,6 @@ export async function readTenantWalletDashboardIn(
     marketRead = { ok: false, error: comparisonUnavailable };
     coverageRead = { ok: false, error: comparisonUnavailable };
   } else if (
-    positionsRead.ok &&
     economicRead.ok &&
     economicRead.value.liveCount === 0 &&
     economicRead.value.closedCount === 0
@@ -478,8 +456,8 @@ export async function readTenantWalletDashboardIn(
           connectionKind: connection.connectionKind,
           livePositions: marketLivePositions,
           closedPositions: marketClosedPositions,
-          priorityPositionKeys: positionsRead.ok
-            ? positionsRead.value.targetCorrelatedKeys
+          priorityPositionKeys: economicRead.ok
+            ? economicRead.value.targetCorrelatedKeys
             : new Set(),
           ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
         })
@@ -513,8 +491,8 @@ export async function readTenantWalletDashboardIn(
             walletAddress: address,
             livePositions: marketLivePositions,
             closedPositions: marketClosedPositions,
-            priorityPositionKeys: positionsRead.ok
-              ? positionsRead.value.targetCorrelatedKeys
+            priorityPositionKeys: economicRead.ok
+              ? economicRead.value.targetCorrelatedKeys
               : new Set(),
             ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
           })
@@ -605,8 +583,8 @@ export async function readTenantWalletDashboardIn(
   // and otherwise surface it as unknown (null) so the UI shows "—", never a
   // stale number dressed as truth.
   const positionsMtm =
-    positionsRead.ok && currentPositionFact.complete
-      ? roundMoney(positionsRead.value.summary.positionsMtm)
+    economicRead.ok && currentPositionFact.complete
+      ? economicRead.value.positionsMtm
       : null;
   const totalCoherent =
     cashOnChain !== null &&
@@ -651,8 +629,8 @@ export async function readTenantWalletDashboardIn(
           ? roundMoney(cashOnChain + positionsMtm)
           : null,
       open_orders: orderRead.ok ? orderRead.value.openOrders : null,
-      positions_synced_at: positionsRead.ok ? positionsRead.value.summary.syncedAt : null,
-      positions_sync_age_ms: positionsRead.ok ? positionsRead.value.summary.syncAgeMs : null,
+      positions_synced_at: economicRead.ok ? economicRead.value.observerSyncedAt : null,
+      positions_sync_age_ms: currentPositionFact.ageMs,
       positions_stale: positionFact.status !== "fresh",
       pnlHistory: pnlRead.ok && pnlRead.value.status === "available" ? pnlRead.value.points : [],
       warnings: warnings
@@ -1233,9 +1211,25 @@ function nonEmpty(value: string | null): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-function toMarketCostBasisPosition(
+type ValuedPosition = WalletExecutionPosition & {
+  currentPrice: number;
+  currentValue: number;
+  pnlUsd: number;
+  pnlPct: number;
+};
+
+function hasPositionValuation(
   position: WalletExecutionPosition
-): WalletExecutionPosition {
+): position is ValuedPosition {
+  return position.currentPrice !== null &&
+    position.currentValue !== null &&
+    position.pnlUsd !== null &&
+    position.pnlPct !== null;
+}
+
+function toMarketCostBasisPosition(
+  position: ValuedPosition
+): ValuedPosition {
   const costBasis = Math.max(0, position.entryPrice * position.size);
   return {
     ...position,

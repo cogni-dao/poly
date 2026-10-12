@@ -93,11 +93,11 @@ export type WalletPosition = {
   gameStartTime?: string | null | undefined;
   heldMinutes: number;
   entryPrice: number;
-  currentPrice: number;
+  currentPrice: number | null;
   size: number;
-  currentValue: number;
-  pnlUsd: number;
-  pnlPct: number;
+  currentValue: number | null;
+  pnlUsd: number | null;
+  pnlPct: number | null;
   syncedAt?: string | null | undefined;
   syncAgeMs?: number | null | undefined;
   syncStale?: boolean | undefined;

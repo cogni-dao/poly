@@ -147,6 +147,8 @@ export function ExecutionActivityCard(): ReactElement {
   const executionData = dashboard.data?.execution;
   const isPaperAccount = dashboard.data?.overview?.account_kind === "paper";
   const actionsAllowed = dashboard.data?.facts.positions.actionsAllowed === true;
+  const redeemActionsAllowed =
+    dashboard.data?.overview?.configured === true && !isPaperAccount;
   useEffect(() => {
     if (!executionData) return;
     const liveIds = new Set(
@@ -259,8 +261,13 @@ export function ExecutionActivityCard(): ReactElement {
             warnings={executionData?.warnings ?? []}
             isLoading={isExecutionLoading}
             isError={isExecutionError}
-            onPositionAction={actionsAllowed ? handlePositionAction : undefined}
+            onPositionAction={
+              actionsAllowed || redeemActionsAllowed
+                ? handlePositionAction
+                : undefined
+            }
             actionsAllowed={actionsAllowed}
+            redeemActionsAllowed={redeemActionsAllowed}
             isPaperAccount={isPaperAccount}
             pendingActionPositionId={pendingActionPositionId}
             positionActionError={positionActionError}
@@ -356,6 +363,7 @@ function PositionsPanel({
   isError,
   onPositionAction,
   actionsAllowed,
+  redeemActionsAllowed,
   isPaperAccount,
   pendingActionPositionId,
   positionActionError,
@@ -374,6 +382,7 @@ function PositionsPanel({
     | ((position: WalletPosition, action: "close" | "redeem") => void)
     | undefined;
   actionsAllowed: boolean;
+  redeemActionsAllowed: boolean;
   isPaperAccount: boolean;
   pendingActionPositionId: string | null;
   positionActionError: string | null;
@@ -468,6 +477,13 @@ function PositionsPanel({
                 : "No open positions."
             }
             onPositionAction={onPositionAction}
+            allowedActions={
+              actionsAllowed
+                ? ["close", "redeem"]
+                : redeemActionsAllowed
+                  ? ["redeem"]
+                  : []
+            }
             pendingActionPositionId={pendingActionPositionId}
           />
         ) : (
@@ -475,6 +491,9 @@ function PositionsPanel({
             positions={positions}
             isLoading={isLoading}
             variant="history"
+            onPositionAction={onPositionAction}
+            allowedActions={redeemActionsAllowed ? ["redeem"] : []}
+            pendingActionPositionId={pendingActionPositionId}
             emptyMessage={
               closedInventoryUnavailable
                 ? "Closed position history unavailable."

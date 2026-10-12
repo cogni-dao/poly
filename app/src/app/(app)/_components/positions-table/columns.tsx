@@ -43,6 +43,7 @@ export type MakeColumnsOpts = {
       ) => void | Promise<void>)
     | undefined;
   pendingActionPositionId?: string | null;
+  allowedActions?: readonly PositionAction[];
 };
 
 const col = createColumnHelper<WalletPosition>();
@@ -51,16 +52,19 @@ const rightHeader = (node: ReactNode) => (
   <div className="flex w-full justify-end">{node}</div>
 );
 
-function formatUsd(value: number): string {
+function formatUsd(value: number | null): string {
+  if (value === null) return "—";
   return `$${value.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`;
 }
 
-function formatSignedUsd(value: number): string {
+function formatSignedUsd(value: number | null): string {
+  if (value === null) return "—";
   const sign = value > 0 ? "+" : value < 0 ? "-" : "";
   return `${sign}${formatUsd(Math.abs(value))}`;
 }
 
-function formatSignedPct(value: number): string {
+function formatSignedPct(value: number | null): string {
+  if (value === null) return "—";
   const sign = value > 0 ? "+" : value < 0 ? "-" : "";
   return `${sign}${Math.abs(value).toFixed(2)}%`;
 }
@@ -84,7 +88,8 @@ function formatClosedAt(iso: string): string {
   });
 }
 
-function pnlClass(value: number): string {
+function pnlClass(value: number | null): string {
+  if (value === null) return "text-muted-foreground";
   return value >= 0 ? "text-success" : "text-destructive";
 }
 
@@ -117,7 +122,12 @@ function prettifyEventSlug(
 }
 
 export function makeColumns(opts: MakeColumnsOpts): AnyCol[] {
-  const { variant, onPositionAction, pendingActionPositionId = null } = opts;
+  const {
+    variant,
+    onPositionAction,
+    pendingActionPositionId = null,
+    allowedActions = ["close", "redeem"],
+  } = opts;
   const isHistory = variant === "history";
 
   const columns: AnyCol[] = [
@@ -356,7 +366,7 @@ export function makeColumns(opts: MakeColumnsOpts): AnyCol[] {
     })
   );
 
-  if (!isHistory) {
+  if (!isHistory || onPositionAction) {
     columns.push(
       col.display({
         id: "action",
@@ -371,6 +381,7 @@ export function makeColumns(opts: MakeColumnsOpts): AnyCol[] {
               position={row.original}
               onPositionAction={onPositionAction}
               pendingActionPositionId={pendingActionPositionId}
+              allowedActions={allowedActions}
             />
           </div>
         ),
@@ -451,10 +462,12 @@ function PositionActionButton({
   position,
   onPositionAction,
   pendingActionPositionId,
+  allowedActions,
 }: {
   position: WalletPosition;
   onPositionAction?: MakeColumnsOpts["onPositionAction"];
   pendingActionPositionId: string | null;
+  allowedActions: readonly PositionAction[];
 }): ReactElement {
   const lifecycle = position.lifecycleState ?? null;
   const isTerminal =
@@ -475,7 +488,9 @@ function PositionActionButton({
       ? "Close"
       : actionLabel(position.status);
   const wired = typeof onPositionAction === "function";
-  const actionable = wired && (isRedeemable || isCloseable);
+  const actionable = wired &&
+    ((isRedeemable && allowedActions.includes("redeem")) ||
+      (isCloseable && allowedActions.includes("close")));
   const busy = pendingActionPositionId === position.positionId;
   const kind: PositionAction | null = isRedeemable
     ? "redeem"

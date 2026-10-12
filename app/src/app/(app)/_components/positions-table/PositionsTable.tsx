@@ -14,7 +14,8 @@
  * Invariants:
  *   - HEADER_OWNS_CONTROLS: sort + hide live on the column header dropdown.
  *   - variant="default": Current value + Action columns visible.
- *   - variant="history": Closed-at column replaces Current; no Action column.
+ *   - variant="history": Closed-at replaces Current; Action is present only
+ *     when the caller supplies the operational Redeem handler.
  *   - PositionsTable does not fetch; callers pass `WalletPosition[]` and
  *     `pendingActionPositionId`.
  * Side-effects: none
@@ -57,13 +58,15 @@ export type PositionsTableProps = {
   emptyMessage?: ReactNode;
   /**
    * "default" — shows Current value + Action columns (Close/Redeem buttons).
-   * "history" — shows Closed timestamp instead; no Action column.
+   * "history" — shows Closed timestamp and, when wired, Redeem only.
    */
   variant?: PositionsTableVariant;
   /** When set, clicking Close / Redeem invokes this. */
   onPositionAction?: MakeColumnsOpts["onPositionAction"];
   /** Row `positionId` while an action request is in flight. */
   pendingActionPositionId?: string | null;
+  /** Restricts the wired handler to the operational actions valid in this view. */
+  allowedActions?: readonly PositionAction[];
 };
 
 const DEFAULT_VISIBILITY: VisibilityState = {
@@ -87,6 +90,7 @@ const HISTORY_VISIBILITY: VisibilityState = {
   closedAt: true,
   pnlUsd: true,
   pnlPct: true,
+  action: true,
 };
 const PAGE_SIZE = 25;
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
@@ -98,6 +102,7 @@ export function PositionsTable({
   variant = "default",
   onPositionAction,
   pendingActionPositionId = null,
+  allowedActions,
 }: PositionsTableProps): ReactElement {
   const data = useMemo(
     () => (positions ? Array.from(positions) : []),
@@ -110,8 +115,9 @@ export function PositionsTable({
         variant,
         ...(onPositionAction && { onPositionAction }),
         pendingActionPositionId,
+        ...(allowedActions && { allowedActions }),
       }),
-    [variant, onPositionAction, pendingActionPositionId]
+    [variant, onPositionAction, pendingActionPositionId, allowedActions]
   );
 
   const variantVisibility =

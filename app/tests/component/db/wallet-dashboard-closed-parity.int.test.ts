@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import {
   polyMarketOutcomes,
+  polyTraderIngestionCursors,
   polyTraderCurrentPositions,
   polyTraderFills,
   polyTraderWallets,
@@ -35,6 +36,7 @@ const CONDITIONS = {
   fillConflict: "condition-fill-conflict",
   fillKeyConflictA: "condition-fill-key-conflict-a",
   fillKeyConflictB: "condition-fill-key-conflict-b",
+  currentConflict: "condition-current-conflict",
   outcomeConflict: "condition-outcome-conflict",
   otherTenant: "condition-other-tenant",
 } as const;
@@ -164,25 +166,46 @@ describe("authoritative wallet economic-position projection", () => {
       fill(sibling, "conflicting-native", CONDITIONS.fillConflict, "BUY", "0.5", "10", "2026-10-07T10:00:00.000Z"),
       fill(wallet, "conflicting-key-native", CONDITIONS.fillKeyConflictA, "BUY", "0.4", "10", "2026-10-07T11:00:00.000Z"),
       fill(sibling, "conflicting-key-native", CONDITIONS.fillKeyConflictB, "BUY", "0.4", "10", "2026-10-07T11:00:00.000Z"),
+      fill(wallet, "current-conflict-buy", CONDITIONS.currentConflict, "BUY", "0.4", "10", "2026-10-07T12:00:00.000Z"),
       fill(wallet, "outcome-conflict-buy", CONDITIONS.outcomeConflict, "BUY", "0.4", "10", "2026-10-08T10:00:00.000Z"),
       fill(otherWallet, "other-buy", CONDITIONS.otherTenant, "BUY", "0.4", "10", "2026-10-01T10:00:00.000Z"),
       fill(paperWallet, "paper-partial-buy", CONDITIONS.partial, "BUY", "0.9", "100", "2026-10-01T10:00:00.000Z"),
     ]);
 
-    await db.insert(polyTraderCurrentPositions).values({
-      traderWalletId: wallet,
-      conditionId: CONDITIONS.reopened,
-      tokenId: token(CONDITIONS.reopened),
-      active: true,
-      shares: "4",
-      costBasisUsdc: "1",
-      currentValueUsdc: "1.2",
-      avgPrice: "0.25",
-      contentHash: "reopened-current",
-      lastObservedAt: new Date("2026-10-12T11:55:00.000Z"),
-      firstObservedAt: new Date("2026-10-01T11:00:00.000Z"),
-      raw: { curPrice: "0.3", outcome: "YES" },
-    });
+    await db.insert(polyTraderIngestionCursors).values([
+      { traderWalletId: wallet, source: "data-api-positions", status: "ok", lastSuccessAt: new Date("2026-10-12T11:55:00.000Z") },
+      { traderWalletId: sibling, source: "data-api-positions", status: "ok", lastSuccessAt: new Date("2026-10-12T11:55:00.000Z") },
+    ]);
+    await db.insert(polyTraderCurrentPositions).values([
+      {
+        traderWalletId: wallet,
+        conditionId: CONDITIONS.reopened,
+        tokenId: token(CONDITIONS.reopened),
+        active: true,
+        shares: "4",
+        costBasisUsdc: "1",
+        currentValueUsdc: "1.2",
+        avgPrice: "0.25",
+        contentHash: "reopened-current",
+        lastObservedAt: new Date("2026-10-12T11:55:00.000Z"),
+        firstObservedAt: new Date("2026-10-01T11:00:00.000Z"),
+        raw: { curPrice: "0.3", outcome: "YES" },
+      },
+      ...[wallet, sibling].map((traderWalletId, index) => ({
+        traderWalletId,
+        conditionId: CONDITIONS.currentConflict,
+        tokenId: token(CONDITIONS.currentConflict),
+        active: true,
+        shares: "10",
+        costBasisUsdc: "4",
+        currentValueUsdc: index === 0 ? "6" : "7",
+        avgPrice: "0.4",
+        contentHash: `current-conflict-${index}`,
+        lastObservedAt: new Date("2026-10-12T11:55:00.000Z"),
+        firstObservedAt: new Date("2026-10-07T12:00:00.000Z"),
+        raw: { curPrice: index === 0 ? "0.6" : "0.7", outcome: "YES" },
+      })),
+    ]);
 
     const outcomes = [
       { conditionId: CONDITIONS.winner, outcome: "winner" as const, payout: "1" },
@@ -204,6 +227,7 @@ describe("authoritative wallet economic-position projection", () => {
   afterAll(async () => {
     await db.delete(polyMarketOutcomes).where(inArray(polyMarketOutcomes.conditionId, outcomeConditions));
     await db.delete(polyTraderCurrentPositions).where(inArray(polyTraderCurrentPositions.traderWalletId, walletIds));
+    await db.delete(polyTraderIngestionCursors).where(inArray(polyTraderIngestionCursors.traderWalletId, walletIds));
     await db.delete(polyTraderFills).where(inArray(polyTraderFills.traderWalletId, walletIds));
     await db.delete(polyCopyTradeFills).where(inArray(polyCopyTradeFills.billingAccountId, [TENANT, OTHER_TENANT]));
     await db.delete(polyTraderWallets).where(inArray(polyTraderWallets.id, walletIds));
@@ -221,13 +245,14 @@ describe("authoritative wallet economic-position projection", () => {
       interval: "ALL",
     });
 
-    expect(result.liveCount).toBe(2);
+    expect(result.liveCount).toBe(3);
     expect(result.closedCount).toBe(3);
     expect(result.incompleteCount).toBe(4);
     expect(result.walletIdentityCount).toBe(2);
     expect(result.fillIdentityConflictCount).toBe(3);
     expect(result.outcomeIdentityConflictCount).toBe(1);
-    expect(result.missingMarkCount).toBe(1);
+    expect(result.currentIdentityConflictCount).toBe(1);
+    expect(result.missingMarkCount).toBe(2);
 
     const liveIds = new Set(result.livePositions.map((position) => position.positionId));
     const closedIds = new Set(result.closedPositions.map((position) => position.positionId));
@@ -246,6 +271,8 @@ describe("authoritative wallet economic-position projection", () => {
     const reopened = result.livePositions.find((position) => position.conditionId === CONDITIONS.reopened);
     expect(reopened).toMatchObject({ positionId: `${CONDITIONS.reopened}:${token(CONDITIONS.reopened)}`, size: 4, currentValue: 1.2, pnlUsd: 1.2 });
     const unmarked = result.livePositions.find((position) => position.conditionId === CONDITIONS.partial);
-    expect(unmarked).toMatchObject({ size: 6, currentPrice: 0.6, currentValue: 3.6, pnlUsd: 2 });
+    expect(unmarked).toMatchObject({ size: 6, currentPrice: null, currentValue: null, pnlUsd: null, pnlPct: null });
+    const currentConflict = result.livePositions.find((position) => position.conditionId === CONDITIONS.currentConflict);
+    expect(currentConflict).toMatchObject({ size: 10, currentPrice: null, currentValue: null, pnlUsd: null, pnlPct: null });
   });
 });

@@ -242,7 +242,7 @@ export const GET = wrapRouteHandlerWithLogging(
             const ledgerLivePositions = coalesceWalletExecutionPositions(
               positions
                 .filter((position) => position.status !== "closed")
-                .filter((position) => position.currentValue > 0)
+                .filter((position) => (position.currentValue ?? 0) > 0)
             );
             for (const position of ledgerLivePositions) {
               ledgerLiveByAsset.set(position.asset, position);
@@ -268,7 +268,7 @@ export const GET = wrapRouteHandlerWithLogging(
               })
           );
           const currentLivePositions = currentPositions.positions.filter(
-            (position) => position.status !== "closed" && position.currentValue > 0
+            (position) => position.status !== "closed" && (position.currentValue ?? 0) > 0
           );
           livePositionCount = currentPositions.summary.activeRows;
           if (livePositionCount > currentLivePositions.length) {
@@ -278,7 +278,7 @@ export const GET = wrapRouteHandlerWithLogging(
             });
           }
           const currentClosedPositions = currentPositions.positions.filter(
-            (position) => position.status === "closed" || position.currentValue <= 0
+            (position) => position.status === "closed" || (position.currentValue ?? 0) <= 0
           );
           livePositions = currentLivePositions.map((position) => {
             const ledgerPosition = ledgerLiveByAsset.get(position.asset);
