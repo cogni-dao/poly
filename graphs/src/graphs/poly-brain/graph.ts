@@ -14,7 +14,10 @@
 import type { CreateReactAgentGraphOptions } from "@cogni/langgraph-graphs/graphs";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { PolyBrainStrategyReviewV1Schema } from "./output-schema";
-import { POLY_BRAIN_SYSTEM_PROMPT } from "./prompts";
+import {
+	POLY_BRAIN_RESPONSE_PROMPT,
+	POLY_BRAIN_SYSTEM_PROMPT,
+} from "./prompts";
 
 export const POLY_BRAIN_GRAPH_NAME = "poly-brain" as const;
 
@@ -33,8 +36,7 @@ export function createPolyBrainGraph(opts: CreateReactAgentGraphOptions) {
 		responseFormat:
 			responseFormat ??
 			({
-				prompt:
-					"Return only the final Poly strategy review. It must satisfy the poly-brain.strategy-review.v1 schema and reflect tool results from this run.",
+				prompt: POLY_BRAIN_RESPONSE_PROMPT,
 				schema: PolyBrainStrategyReviewV1Schema,
 			} as const),
 	});

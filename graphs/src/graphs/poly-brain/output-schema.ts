@@ -70,7 +70,7 @@ const PolyBrainCommittedPersistenceSchema = z.object({
 	hypothesisId: PolyBrainHypothesisIdSchema,
 	sourceRef: z.string().min(1),
 	evaluateAt: z.string().datetime(),
-	evidenceForIds: z.array(z.string().min(1)).min(1),
+	evidenceForIds: z.array(z.string().min(1)),
 	committed: z.literal(true),
 });
 
@@ -79,7 +79,7 @@ const PolyBrainReusedPersistenceSchema = z.object({
 	hypothesisId: PolyBrainHypothesisIdSchema,
 	sourceRef: z.string().min(1),
 	evaluateAt: z.string().datetime(),
-	evidenceForIds: z.array(z.string().min(1)).min(1),
+	evidenceForIds: z.array(z.string().min(1)),
 	committed: z.literal(false),
 });
 
@@ -134,6 +134,19 @@ export const PolyBrainStrategyReviewV1Schema = z
 				code: z.ZodIssueCode.custom,
 				path: ["nextExperiment", "strategyId"],
 				message: "next experiment must select a compared strategy",
+			});
+		}
+
+		if (
+			review.persistence.status !== "failed" &&
+			review.persistence.evidenceForIds.length === 0 &&
+			!review.gaps.includes("canonical_knowledge_empty")
+		) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["persistence", "evidenceForIds"],
+				message:
+					"uncited persistence is allowed only when canonical knowledge is empty",
 			});
 		}
 	});

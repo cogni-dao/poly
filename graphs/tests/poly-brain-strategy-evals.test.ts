@@ -25,7 +25,10 @@ import {
 	PolyBrainHypothesisIdSchema,
 	PolyBrainStrategyReviewV1Schema,
 } from "../src/graphs/poly-brain/output-schema";
-import { POLY_BRAIN_SYSTEM_PROMPT } from "../src/graphs/poly-brain/prompts";
+import {
+	POLY_BRAIN_RESPONSE_PROMPT,
+	POLY_BRAIN_SYSTEM_PROMPT,
+} from "../src/graphs/poly-brain/prompts";
 
 describe("poly-brain strategy eval set v1", () => {
 	it("is explicitly versioned", () => {
@@ -114,11 +117,56 @@ describe("poly-brain strategy eval set v1", () => {
 			"The raw EDO tool is not retry-idempotent",
 		);
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
+			"at most eight total tool calls",
+		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
+			'Do not call core__web_search in this lean v1 run',
+		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
+			'bounded gap "canonical_knowledge_empty"',
+		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
 			'set sourceRef exactly to "story.5017/poly-brain/v1"',
 		);
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain("never invent one");
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
 			"do not present them as runtime-stamped identity",
+		);
+	});
+
+	it("gives the free-model structured pass the exact JSON shape", () => {
+		expect(POLY_BRAIN_RESPONSE_PROMPT).toContain(
+			'"schemaVersion": "poly-brain.strategy-review.v1"',
+		);
+		expect(POLY_BRAIN_RESPONSE_PROMPT).toContain(
+			'"objective": "Poly learns which ethical profit strategy to test next"',
+		);
+		expect(POLY_BRAIN_RESPONSE_PROMPT).toContain(
+			'"persistence": {"status": "committed"',
+		);
+		expect(POLY_BRAIN_RESPONSE_PROMPT).toContain(
+			"no acknowledgement, prose, or markdown fences",
+		);
+	});
+
+	it("allows an honest uncited candidate hypothesis only when knowledge is empty", () => {
+		const upgraded = POLY_BRAIN_STRATEGY_EVAL_SET_V1[1];
+		const uncited = {
+			...upgraded.run.structuredOutput,
+			persistence: {
+				...upgraded.run.structuredOutput.persistence,
+				evidenceForIds: [],
+			},
+		};
+		expect(PolyBrainStrategyReviewV1Schema.safeParse(uncited).success).toBe(
+			false,
+		);
+		const candidateEmpty = {
+			...uncited,
+			gaps: ["canonical_knowledge_empty"],
+		};
+		expect(PolyBrainStrategyReviewV1Schema.safeParse(candidateEmpty).success).toBe(
+			true,
 		);
 	});
 
