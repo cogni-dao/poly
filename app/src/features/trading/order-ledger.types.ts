@@ -275,6 +275,8 @@ export interface InsertPendingInput extends TenantBinding {
   fill_id: string;
   observed_at: Date;
   intent: OrderIntent;
+  /** Persisted in the same transaction before the fill becomes dispatchable. */
+  input_snapshot?: OrderLedgerAlgorithmInputSnapshot;
   /**
    * Optional atomic cap for active tenant × market × token intent. When
    * present AND `intent.attributes.token_id` is set, the DB adapter locks
@@ -310,6 +312,15 @@ export interface OrderLedgerAlgorithmLineage {
   correlation_id: string;
 }
 
+/** Exact validated planner input addressed by lineage.input_snapshot_id. */
+export interface OrderLedgerAlgorithmInputSnapshot {
+  input_snapshot_id: string;
+  algorithm_id: string;
+  input_contract_version: string;
+  canonical_input: unknown;
+  quality: Record<string, unknown>;
+}
+
 export interface RecordDecisionInput extends TenantBinding {
   target_id: string;
   fill_id: string;
@@ -320,6 +331,8 @@ export interface RecordDecisionInput extends TenantBinding {
   decided_at: Date;
   /** Canonical planner provenance; absent only for legacy non-registry callers. */
   lineage?: OrderLedgerAlgorithmLineage;
+  /** Persisted atomically with the diagnostic decision row when present. */
+  input_snapshot?: OrderLedgerAlgorithmInputSnapshot;
 }
 
 /**

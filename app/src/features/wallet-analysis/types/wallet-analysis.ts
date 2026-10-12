@@ -12,6 +12,8 @@
  * @public
  */
 
+import type { WalletExecutionCopyOrigin } from "@cogni/poly-node-contracts";
+
 export type WalletTradeSide = "BUY" | "SELL";
 
 export type WalletTrade = {
@@ -101,6 +103,9 @@ export type WalletPosition = {
   syncedAt?: string | null | undefined;
   syncAgeMs?: number | null | undefined;
   syncStale?: boolean | undefined;
+  copyOrigins?: readonly WalletExecutionCopyOrigin[] | undefined;
+  copyOriginLayerCount?: number | undefined;
+  copyOriginsTruncated?: boolean | undefined;
   timeline: readonly WalletPositionTimelinePoint[];
   events: readonly WalletPositionEvent[];
 };

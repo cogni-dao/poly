@@ -14,6 +14,12 @@ import type {
 } from "@cogni/poly-node-contracts";
 import { type SQL, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import {
+  positionKey,
+  readAlgorithmOriginProjection,
+  unavailableOriginCoverage,
+} from "./algorithm-origin-read-model";
+import { readCurrentWalletPositionModel } from "./current-position-read-model";
 import { readEconomicPositionProjection } from "./economic-position-read-model";
 import {
   type BoundedMarketExposureRead,
@@ -195,6 +201,23 @@ export async function readTenantWalletDashboardIn(
       interval: input.interval,
     })
   );
+  const originRead = economicRead.ok
+    ? await optionalRead(db, (savepoint) =>
+        readAlgorithmOriginProjection({
+          db: savepoint,
+          billingAccountId: input.billingAccountId,
+          connectionKind: connection.connectionKind,
+          capturedAt: capturedAtDate,
+          previewPositionKeys: [
+            ...economicRead.value.livePositions,
+            ...economicRead.value.closedPositions,
+          ].map((position) => ({
+            conditionId: position.conditionId,
+            tokenId: position.asset,
+          })),
+        })
+      )
+    : { ok: false as const, error: economicRead.error };
   const activityRead = await optionalRead(db, (savepoint) =>
     readTradeActivity(
       savepoint,
@@ -338,6 +361,23 @@ export async function readTenantWalletDashboardIn(
       )
     );
   }
+  const incompleteOriginCount = originRead.ok
+    ? (originRead.value.coverage.incompleteEventCount ?? 0) +
+      (originRead.value.coverage.identityAmbiguousEventCount ?? 0)
+    : null;
+  if (!originRead.ok) {
+    warnings.push(
+      readFailure("positions", "copy_origin_unavailable", originRead.error)
+    );
+  } else if (incompleteOriginCount !== null && incompleteOriginCount > 0) {
+    warnings.push(
+      warning(
+        "positions",
+        "copy_origin_incomplete",
+        `${incompleteOriginCount} executed fill${incompleteOriginCount === 1 ? " has" : "s have"} incomplete or ambiguous algorithm lineage; those origins are withheld.`
+      )
+    );
+  }
 
   const activityFact = activityRead.ok
     ? freshFact("local_ledger", capturedAt)
@@ -368,8 +408,27 @@ export async function readTenantWalletDashboardIn(
     }
   }
 
-  const livePositions = economicRead.ok ? economicRead.value.livePositions : [];
-  const closedPositions = economicRead.ok ? economicRead.value.closedPositions : [];
+  const attachOrigins = (
+    position: WalletExecutionPosition
+  ): WalletExecutionPosition => {
+    if (!originRead.ok) return position;
+    const key = positionKey(position.conditionId, position.asset);
+    const copyOrigins = [...(originRead.value.byPositionKey.get(key) ?? [])];
+    const copyOriginLayerCount =
+      originRead.value.layerCountByPositionKey.get(key) ?? 0;
+    return {
+      ...position,
+      copyOrigins,
+      copyOriginLayerCount,
+      copyOriginsTruncated: copyOrigins.length < copyOriginLayerCount,
+    };
+  };
+  const livePositions = economicRead.ok
+    ? economicRead.value.livePositions.map(attachOrigins)
+    : [];
+  const closedPositions = economicRead.ok
+    ? economicRead.value.closedPositions.map(attachOrigins)
+    : [];
   // Comparison math consumes `currentValue - pnlUsd` as cost basis. Display
   // positions carry lifetime economic P/L, so restore that legacy relation
   // only for the comparison input without weakening the displayed truth.
@@ -541,6 +600,20 @@ export async function readTenantWalletDashboardIn(
           historyFact.complete,
         previewTruncated: marketRead.value.truncated,
       });
+  if (originRead.ok) {
+    comparisonCoverage.positionClassifications =
+      comparisonCoverage.positionClassifications.map((classification) => {
+        const origins = originRead.value.byPositionKey.get(
+          positionKey(classification.conditionId, classification.tokenId)
+        );
+        return origins &&
+          origins.length > 0 &&
+          (classification.result === "no_target_position" ||
+            classification.result === "exact_token_missing")
+          ? { ...classification, result: "target_now_unavailable" as const }
+          : classification;
+      });
+  }
   const comparisonCoverageUnavailable = [
     comparisonCoverage.markets,
     comparisonCoverage.positions,
@@ -647,6 +720,9 @@ export async function readTenantWalletDashboardIn(
         economicRead.ok ? economicRead.value.liveCount : null,
       market_groups: marketRead.ok ? marketRead.value.groups : [],
       comparisonCoverage,
+      originCoverage: originRead.ok
+        ? originRead.value.coverage
+        : unavailableOriginCoverage(),
       closed_positions: closedPositions.slice(0, CLOSED_PREVIEW_LIMIT),
       closed_position_count: economicRead.ok ? economicRead.value.closedCount : null,
       warnings: warnings
@@ -1119,6 +1195,7 @@ function emptyDashboard(input: { snapshotId: string; capturedAt: string; interva
       live_position_count: null,
       market_groups: [],
       comparisonCoverage: unavailableComparisonCoverage(),
+      originCoverage: unavailableOriginCoverage(),
       closed_positions: [],
       closed_position_count: null,
       warnings: input.warnings.map(({ code, message }) => ({ code, message })),

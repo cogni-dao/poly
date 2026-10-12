@@ -149,6 +149,34 @@ export const polyCopyTradeTargets = pgTable(
   ]
 );
 
+/** Content-addressed, immutable algorithm inputs. Runtime writes are insert-only. */
+export const polyAlgorithmInputSnapshots = pgTable(
+  "poly_algorithm_input_snapshots",
+  {
+    billingAccountId: text("billing_account_id").notNull(),
+    inputSnapshotId: text("input_snapshot_id").notNull(),
+    createdByUserId: text("created_by_user_id").notNull(),
+    algorithmId: text("algorithm_id").notNull(),
+    inputContractVersion: text("input_contract_version").notNull(),
+    canonicalInput: jsonb("canonical_input").notNull(),
+    quality: jsonb("quality").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.billingAccountId, table.inputSnapshotId] }),
+    index("poly_algorithm_input_snapshots_created_idx").on(
+      table.billingAccountId,
+      table.createdAt.desc()
+    ),
+    check(
+      "poly_algorithm_input_snapshots_id_valid",
+      sql`${table.inputSnapshotId} ~ '^sha256:[a-f0-9]{64}$'`
+    ),
+  ]
+);
+
 /**
  * Observed fills from tracked target wallets + their mirror placement state.
  * Composite PK `(billing_account_id, target_id, fill_id)` is the per-tenant dedupe gate.
@@ -526,6 +554,10 @@ export const polyCopyTargetConditionBaseline = pgTable(
 );
 
 export type PolyCopyTradeTarget = typeof polyCopyTradeTargets.$inferSelect;
+export type PolyAlgorithmInputSnapshot =
+  typeof polyAlgorithmInputSnapshots.$inferSelect;
+export type NewPolyAlgorithmInputSnapshot =
+  typeof polyAlgorithmInputSnapshots.$inferInsert;
 export type NewPolyCopyTradeTarget = typeof polyCopyTradeTargets.$inferInsert;
 export type PolyCopyTradeFill = typeof polyCopyTradeFills.$inferSelect;
 export type NewPolyCopyTradeFill = typeof polyCopyTradeFills.$inferInsert;

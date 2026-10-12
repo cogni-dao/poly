@@ -26,7 +26,9 @@
 import { withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
 import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
+import type { OrderIntent } from "@cogni/poly-market-provider";
 import {
+  polyAlgorithmInputSnapshots,
   polyCopyTradeDecisions,
   polyCopyTradeFills,
 } from "@cogni/poly-db-schema/copy-trade";
@@ -61,6 +63,7 @@ import {
   type MarkPositionLifecycleByConditionIdInput,
   type OpenOrderRow,
   type OrderLedger,
+  type OrderLedgerAlgorithmInputSnapshot,
   PositionCapReachedError,
   type PositionIntentAggregate,
   type RecordDecisionInput,
@@ -709,6 +712,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     // Stash placement-display fields in `attributes` so the read API +
     // dashboard don't need to re-derive from the intent blob.
 		const lineage = readAlgorithmLineage(input.intent.attributes);
+		assertSnapshotIdentity(lineage, input.input_snapshot, input.intent);
     const attrs = {
       size_usdc: input.intent.size_usdc,
       limit_price: input.intent.limit_price,
@@ -799,6 +803,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     };
 
     const insert = async (insertDb: AnyDb) => {
+			if (input.input_snapshot) {
+				await persistAlgorithmInputSnapshot(insertDb, input, input.input_snapshot);
+			}
       await insertDb
         .insert(polyCopyTradeFills)
         .values(values)
@@ -929,6 +936,10 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 		mode: LedgerMode,
   ): Promise<void> {
 		const lineage = readAlgorithmLineage(input.lineage ?? input.intent);
+		assertSnapshotIdentity(lineage, input.input_snapshot, input.intent);
+		if (input.input_snapshot) {
+			await persistAlgorithmInputSnapshot(db, input, input.input_snapshot);
+		}
     await db.insert(polyCopyTradeDecisions).values({
       billingAccountId: input.billing_account_id,
       createdByUserId: input.created_by_user_id,
@@ -948,6 +959,100 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 			correlationId: lineage?.correlation_id ?? null,
     });
   }
+
+	async function persistAlgorithmInputSnapshot(
+		db: AnyDb,
+		tenant: { billing_account_id: string; created_by_user_id: string },
+		snapshot: OrderLedgerAlgorithmInputSnapshot,
+	): Promise<void> {
+		await db
+			.insert(polyAlgorithmInputSnapshots)
+			.values({
+				billingAccountId: tenant.billing_account_id,
+				createdByUserId: tenant.created_by_user_id,
+				inputSnapshotId: snapshot.input_snapshot_id,
+				algorithmId: snapshot.algorithm_id,
+				inputContractVersion: snapshot.input_contract_version,
+				canonicalInput: snapshot.canonical_input,
+				quality: snapshot.quality,
+			})
+			.onConflictDoNothing({
+				target: [
+					polyAlgorithmInputSnapshots.billingAccountId,
+					polyAlgorithmInputSnapshots.inputSnapshotId,
+				],
+			});
+
+		const [matching] = await db
+			.select({ inputSnapshotId: polyAlgorithmInputSnapshots.inputSnapshotId })
+			.from(polyAlgorithmInputSnapshots)
+			.where(
+				and(
+					eq(
+						polyAlgorithmInputSnapshots.billingAccountId,
+						tenant.billing_account_id,
+					),
+					eq(
+						polyAlgorithmInputSnapshots.inputSnapshotId,
+						snapshot.input_snapshot_id,
+					),
+					eq(polyAlgorithmInputSnapshots.algorithmId, snapshot.algorithm_id),
+					eq(
+						polyAlgorithmInputSnapshots.inputContractVersion,
+						snapshot.input_contract_version,
+					),
+					sql`${polyAlgorithmInputSnapshots.canonicalInput} = ${JSON.stringify(snapshot.canonical_input)}::jsonb`,
+					sql`${polyAlgorithmInputSnapshots.quality} = ${JSON.stringify(snapshot.quality)}::jsonb`,
+				),
+			)
+			.limit(1);
+		if (!matching) {
+			throw new Error("algorithm_input_snapshot_collision");
+		}
+	}
+
+	function assertSnapshotIdentity(
+		lineage: ReturnType<typeof readAlgorithmLineage>,
+		snapshot: OrderLedgerAlgorithmInputSnapshot | undefined,
+		intent: Record<string, unknown> | OrderIntent,
+	): void {
+		if (!snapshot) return;
+		if (
+			!lineage ||
+			lineage.input_snapshot_id !== snapshot.input_snapshot_id ||
+			lineage.algorithm_id !== snapshot.algorithm_id
+		) {
+			throw new Error("lineage_identity_ambiguous");
+		}
+		const canonical = snapshot.canonical_input as Record<string, unknown> | null;
+		const fill = canonical?.fill as Record<string, unknown> | undefined;
+		const intentRecord = intent as Record<string, unknown>;
+		const attributes: Record<string, unknown> =
+			intentRecord.attributes && typeof intentRecord.attributes === "object"
+				? (intentRecord.attributes as Record<string, unknown>)
+				: intentRecord;
+		if (fill) {
+			const fillAttributes = (fill.attributes ?? {}) as Record<string, unknown>;
+			if (
+				String(fill.market_id ?? "").toLowerCase() !==
+					String(intent.market_id ?? "").toLowerCase() ||
+				String(fillAttributes.asset ?? "") !== String(attributes.token_id ?? "")
+			) {
+				throw new Error("lineage_identity_ambiguous");
+			}
+		}
+		const book = canonical?.snapshot as
+			| { conditions?: Array<{ conditionId?: string; tokens?: Array<{ tokenId?: string }> }> }
+			| undefined;
+		if (book?.conditions && attributes.condition_id && attributes.token_id) {
+			const condition = book.conditions.find(
+				(row) => row.conditionId?.toLowerCase() === String(attributes.condition_id).toLowerCase(),
+			);
+			if (!condition?.tokens?.some((row) => row.tokenId === attributes.token_id)) {
+				throw new Error("lineage_identity_ambiguous");
+			}
+		}
+	}
 
   type FillAccountingObservation = {
     filled_size_usdc?: number;

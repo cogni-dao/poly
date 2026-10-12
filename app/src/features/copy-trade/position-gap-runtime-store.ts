@@ -14,7 +14,10 @@
 
 import { randomUUID } from "node:crypto";
 import type { Database } from "@cogni/db-client";
-import { polyCopyTradeFills } from "@cogni/db-schema/copy-trade";
+import {
+	polyAlgorithmInputSnapshots,
+	polyCopyTradeFills,
+} from "@cogni/db-schema/copy-trade";
 import {
 	polyPositionGapActions,
 	polyPositionGapCohorts,
@@ -113,6 +116,14 @@ export interface PersistPositionGapPlanInput {
 		asOf: Date;
 		expiresAt: Date;
 		value: Record<string, unknown>;
+	};
+	/** Forward actor writes always supply this; optional only for legacy callers/tests. */
+	inputSnapshot?: {
+		input_snapshot_id: string;
+		algorithm_id: string;
+		input_contract_version: string;
+		canonical_input: unknown;
+		quality: Readonly<Record<string, unknown>>;
 	};
 	plannerVersion: string;
 	budgetUsdc: number;
@@ -670,18 +681,35 @@ export class PositionGapRuntimeStore {
 		scope: PositionGapRuntimeScope,
 	): Promise<TargetBookSnapshotV1 | null> {
 		const [row] = await this.db
-			.select({ snapshot: polyPositionGapRuns.targetSnapshot })
+			.select({
+				legacySnapshot: polyPositionGapRuns.targetSnapshot,
+				canonicalInput: polyAlgorithmInputSnapshots.canonicalInput,
+			})
 			.from(polyPositionGapRuns)
+			.leftJoin(
+				polyAlgorithmInputSnapshots,
+				and(
+					eq(polyAlgorithmInputSnapshots.billingAccountId, polyPositionGapRuns.billingAccountId),
+					eq(polyAlgorithmInputSnapshots.inputSnapshotId, polyPositionGapRuns.inputSnapshotId),
+				),
+			)
 			.where(
 				and(
 					eq(polyPositionGapRuns.billingAccountId, scope.billingAccountId),
 					eq(polyPositionGapRuns.targetId, scope.targetId),
-					sql`${polyPositionGapRuns.targetSnapshot} IS NOT NULL`,
+					or(
+						sql`${polyPositionGapRuns.targetSnapshot} IS NOT NULL`,
+						sql`${polyAlgorithmInputSnapshots.canonicalInput}->'snapshot' IS NOT NULL`,
+					),
 				),
 			)
 			.orderBy(desc(polyPositionGapRuns.startedAt))
 			.limit(1);
-		return (row?.snapshot as TargetBookSnapshotV1 | undefined) ?? null;
+		const canonical = row?.canonicalInput as
+			| { snapshot?: TargetBookSnapshotV1 }
+			| undefined;
+		return canonical?.snapshot ??
+			((row?.legacySnapshot as TargetBookSnapshotV1 | undefined) ?? null);
 	}
 
 	async loadConfirmedCapacity(scope: PositionGapRuntimeScope): Promise<{
@@ -971,6 +999,39 @@ export class PositionGapRuntimeStore {
 			}
 
 			const runId = randomUUID();
+			if (input.inputSnapshot) {
+				await tx
+					.insert(polyAlgorithmInputSnapshots)
+					.values({
+					billingAccountId: input.scope.billingAccountId,
+					createdByUserId: input.scope.createdByUserId,
+					inputSnapshotId: input.inputSnapshot.input_snapshot_id,
+					algorithmId: input.inputSnapshot.algorithm_id,
+					inputContractVersion: input.inputSnapshot.input_contract_version,
+					canonicalInput: input.inputSnapshot.canonical_input,
+					quality: input.inputSnapshot.quality,
+					})
+					.onConflictDoNothing({
+					target: [
+						polyAlgorithmInputSnapshots.billingAccountId,
+						polyAlgorithmInputSnapshots.inputSnapshotId,
+					],
+					});
+				const [matchingSnapshot] = await tx
+				.select({ id: polyAlgorithmInputSnapshots.inputSnapshotId })
+				.from(polyAlgorithmInputSnapshots)
+				.where(
+					and(
+						eq(polyAlgorithmInputSnapshots.billingAccountId, input.scope.billingAccountId),
+						eq(polyAlgorithmInputSnapshots.inputSnapshotId, input.inputSnapshot.input_snapshot_id),
+						eq(polyAlgorithmInputSnapshots.algorithmId, input.inputSnapshot.algorithm_id),
+						eq(polyAlgorithmInputSnapshots.inputContractVersion, input.inputSnapshot.input_contract_version),
+						sql`${polyAlgorithmInputSnapshots.canonicalInput} = ${JSON.stringify(input.inputSnapshot.canonical_input)}::jsonb`,
+					),
+				)
+				.limit(1);
+				if (!matchingSnapshot) throw new Error("algorithm_input_snapshot_collision");
+			}
 			await tx.insert(polyPositionGapRuns).values({
 				id: runId,
 				billingAccountId: input.scope.billingAccountId,
@@ -981,7 +1042,8 @@ export class PositionGapRuntimeStore {
 				targetSnapshotHash: input.snapshot.hash,
 				targetSnapshotAsOf: input.snapshot.asOf,
 				targetSnapshotExpiresAt: input.snapshot.expiresAt,
-				targetSnapshot: input.snapshot.value,
+				inputSnapshotId: input.inputSnapshot?.input_snapshot_id ?? null,
+				targetSnapshot: input.inputSnapshot ? null : input.snapshot.value,
 				plannerVersion: input.plannerVersion,
 				budgetUsdc: input.budgetUsdc.toString(),
 				eligibleNetNavUsdc: input.eligibleNetNavUsdc.toString(),

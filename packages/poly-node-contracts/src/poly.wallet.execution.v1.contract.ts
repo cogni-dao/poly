@@ -105,6 +105,59 @@ export const WalletExecutionEventSchema = z.object({
 });
 export type WalletExecutionEvent = z.infer<typeof WalletExecutionEventSchema>;
 
+export const WalletExecutionAlgorithmIdSchema = z.enum([
+  "poly.copy-mirror.min-bet",
+  "poly.copy-mirror.target-percentile",
+  "poly.copy-mirror.target-percentile-scaled",
+  "poly.copy-mirror.fill-exact",
+  "poly.copy-mirror.position-gap",
+]);
+
+export const WalletExecutionCopyOriginFactSchema = z.object({
+  walletAddress: PolyAddressSchema,
+  conditionId: z.string().min(1),
+  tokenId: z.string().min(1),
+  shares: z.number().nonnegative().nullable(),
+  costBasisUsdc: z.number().nonnegative().nullable(),
+  currentValueUsdc: z.number().nonnegative().nullable(),
+  averagePrice: z.number().min(0).nullable(),
+  observedAt: z.string().nullable(),
+});
+export type WalletExecutionCopyOriginFact = z.infer<
+  typeof WalletExecutionCopyOriginFactSchema
+>;
+
+/**
+ * One durable algorithm-origin layer for a lifetime token leg. Provenance is
+ * immutable decision-time evidence; `targetNow` is optional comparison state
+ * and may disappear without erasing the origin.
+ */
+export const WalletExecutionCopyOriginSchema = z.object({
+  layerId: z.string().min(1),
+  algorithmId: WalletExecutionAlgorithmIdSchema,
+  algorithmVersionId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  configHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  inputSnapshotId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  assignmentId: z.string().min(1),
+  correlationId: z.string().min(1),
+  evidence: z.enum(["complete", "legacy_partial"]),
+  targetWalletAddress: PolyAddressSchema,
+  firstExecutedAt: z.string(),
+  lastExecutedAt: z.string(),
+  executedFillCount: z.number().int().positive(),
+  targetAtDecision: WalletExecutionCopyOriginFactSchema.nullable(),
+  targetNow: WalletExecutionCopyOriginFactSchema.nullable(),
+  comparisonStatus: z.enum([
+    "comparable",
+    "target_at_decision_unavailable",
+    "target_now_unavailable",
+    "target_now_identity_ambiguous",
+  ]),
+});
+export type WalletExecutionCopyOrigin = z.infer<
+  typeof WalletExecutionCopyOriginSchema
+>;
+
 export const WalletExecutionPositionSchema = z.object({
   positionId: z.string(),
   conditionId: z.string(),
@@ -133,6 +186,10 @@ export const WalletExecutionPositionSchema = z.object({
   syncedAt: z.string().nullable().optional(),
   syncAgeMs: z.number().int().nonnegative().nullable().optional(),
   syncStale: z.boolean().optional(),
+  /** Bounded preview; exact row/global totals accompany it. */
+  copyOrigins: z.array(WalletExecutionCopyOriginSchema).max(20).optional(),
+  copyOriginLayerCount: z.number().int().nonnegative().optional(),
+  copyOriginsTruncated: z.boolean().optional(),
   timeline: z.array(WalletExecutionTimelinePointSchema),
   events: z.array(WalletExecutionEventSchema),
 });

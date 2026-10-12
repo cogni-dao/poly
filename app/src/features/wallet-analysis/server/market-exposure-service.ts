@@ -1450,6 +1450,7 @@ function classificationRowsFromBundle(
   const validResults = new Set<PositionComparisonClassification["result"]>([
     "comparable",
     "no_target_position",
+    "target_now_unavailable",
     "exact_token_missing",
     "target_entry_unavailable",
     "local_entry_unavailable",
