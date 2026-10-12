@@ -245,13 +245,32 @@ function mergeWalletExecutionPosition(
   right: WalletExecutionPosition
 ): WalletExecutionPosition {
   const size = roundToPrecision(left.size + right.size, 4);
-  const currentValue = roundToCents(left.currentValue + right.currentValue);
-  const costBasis =
-    left.currentValue - left.pnlUsd + (right.currentValue - right.pnlUsd);
-  const pnlUsd = roundToCents(left.pnlUsd + right.pnlUsd);
-  const pnlPct = costBasis > 0 ? roundToCents((pnlUsd / costBasis) * 100) : 0;
-  const entryPrice = size > 0 ? roundToPrecision(costBasis / size, 4) : 0;
-  const currentPrice = size > 0 ? roundToPrecision(currentValue / size, 4) : 0;
+  const hasValuation = left.currentValue !== null && left.pnlUsd !== null &&
+    right.currentValue !== null && right.pnlUsd !== null;
+  const currentValue = hasValuation
+    ? roundToCents((left.currentValue ?? 0) + (right.currentValue ?? 0))
+    : null;
+  const costBasis = hasValuation
+    ? (left.currentValue ?? 0) - (left.pnlUsd ?? 0) +
+      ((right.currentValue ?? 0) - (right.pnlUsd ?? 0))
+    : null;
+  const pnlUsd = hasValuation
+    ? roundToCents((left.pnlUsd ?? 0) + (right.pnlUsd ?? 0))
+    : null;
+  const pnlPct = costBasis !== null && costBasis > 0 && pnlUsd !== null
+    ? roundToCents((pnlUsd / costBasis) * 100)
+    : null;
+  const entryPrice = size > 0
+    ? roundToPrecision(
+        costBasis !== null
+          ? costBasis / size
+          : (left.entryPrice * left.size + right.entryPrice * right.size) / size,
+        4
+      )
+    : 0;
+  const currentPrice = size > 0 && currentValue !== null
+    ? roundToPrecision(currentValue / size, 4)
+    : null;
   const openedAt = earliestIso(left.openedAt, right.openedAt) ?? left.openedAt;
   const closedAt = latestNullableIso(left.closedAt, right.closedAt);
   const heldUntil =

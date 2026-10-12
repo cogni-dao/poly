@@ -25,6 +25,10 @@ import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import { Button, Skeleton } from "@/components";
 import { DataGridColumnHeader } from "@/components/reui/data-grid/data-grid-column-header";
 import { PositionTimelineChart } from "@/features/wallet-analysis/components/PositionTimelineChart";
+import {
+  positionActionKind,
+  type WalletPositionAction,
+} from "@/features/wallet-analysis/position-action-kind";
 import type { WalletPosition } from "@/features/wallet-analysis/types/wallet-analysis";
 
 // biome-ignore lint/suspicious/noExplicitAny: heterogeneous TanStack column array
@@ -32,7 +36,7 @@ type AnyCol = ColumnDef<WalletPosition, any>;
 
 export type PositionsTableVariant = "default" | "history";
 
-export type PositionAction = "close" | "redeem";
+export type PositionAction = WalletPositionAction;
 
 export type MakeColumnsOpts = {
   variant: PositionsTableVariant;
@@ -43,6 +47,7 @@ export type MakeColumnsOpts = {
       ) => void | Promise<void>)
     | undefined;
   pendingActionPositionId?: string | null;
+  allowedActions?: readonly PositionAction[];
 };
 
 const col = createColumnHelper<WalletPosition>();
@@ -51,16 +56,19 @@ const rightHeader = (node: ReactNode) => (
   <div className="flex w-full justify-end">{node}</div>
 );
 
-function formatUsd(value: number): string {
+function formatUsd(value: number | null): string {
+  if (value === null) return "—";
   return `$${value.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 })}`;
 }
 
-function formatSignedUsd(value: number): string {
+function formatSignedUsd(value: number | null): string {
+  if (value === null) return "—";
   const sign = value > 0 ? "+" : value < 0 ? "-" : "";
   return `${sign}${formatUsd(Math.abs(value))}`;
 }
 
-function formatSignedPct(value: number): string {
+function formatSignedPct(value: number | null): string {
+  if (value === null) return "—";
   const sign = value > 0 ? "+" : value < 0 ? "-" : "";
   return `${sign}${Math.abs(value).toFixed(2)}%`;
 }
@@ -84,7 +92,8 @@ function formatClosedAt(iso: string): string {
   });
 }
 
-function pnlClass(value: number): string {
+function pnlClass(value: number | null): string {
+  if (value === null) return "text-muted-foreground";
   return value >= 0 ? "text-success" : "text-destructive";
 }
 
@@ -121,7 +130,12 @@ function prettifyEventSlug(
 }
 
 export function makeColumns(opts: MakeColumnsOpts): AnyCol[] {
-  const { variant, onPositionAction, pendingActionPositionId = null } = opts;
+  const {
+    variant,
+    onPositionAction,
+    pendingActionPositionId = null,
+    allowedActions = ["close", "redeem"],
+  } = opts;
   const isHistory = variant === "history";
 
   const columns: AnyCol[] = [
@@ -399,7 +413,7 @@ export function makeColumns(opts: MakeColumnsOpts): AnyCol[] {
     })
   );
 
-  if (!isHistory) {
+  if (!isHistory || onPositionAction) {
     columns.push(
       col.display({
         id: "action",
@@ -414,6 +428,7 @@ export function makeColumns(opts: MakeColumnsOpts): AnyCol[] {
               position={row.original}
               onPositionAction={onPositionAction}
               pendingActionPositionId={pendingActionPositionId}
+              allowedActions={allowedActions}
             />
           </div>
         ),
@@ -494,38 +509,32 @@ function PositionActionButton({
   position,
   onPositionAction,
   pendingActionPositionId,
+  allowedActions,
 }: {
   position: WalletPosition;
   onPositionAction?: MakeColumnsOpts["onPositionAction"];
   pendingActionPositionId: string | null;
+  allowedActions: readonly PositionAction[];
 }): ReactElement {
   const lifecycle = position.lifecycleState ?? null;
   const isTerminal =
     lifecycle === "closed" ||
     lifecycle === "loser" ||
     lifecycle === "dust" ||
-    lifecycle === "redeemed" ||
-    lifecycle === "abandoned";
-  const isRedeemable =
-    position.status === "redeemable" &&
-    (lifecycle === null || lifecycle === "winner");
-  const isCloseable =
-    position.status === "open" &&
-    (lifecycle === null || lifecycle === "unresolved" || lifecycle === "open");
+    lifecycle === "redeemed";
+  const kind = positionActionKind(position);
+  const isRedeemable = kind === "redeem";
+  const isCloseable = kind === "close";
   const label = isRedeemable
     ? "Redeem"
     : isCloseable
       ? "Close"
       : actionLabel(position.status);
   const wired = typeof onPositionAction === "function";
-  const actionable = wired && (isRedeemable || isCloseable);
+  const actionable = wired &&
+    ((isRedeemable && allowedActions.includes("redeem")) ||
+      (isCloseable && allowedActions.includes("close")));
   const busy = pendingActionPositionId === position.positionId;
-  const kind: PositionAction | null = isRedeemable
-    ? "redeem"
-    : isCloseable
-      ? "close"
-      : null;
-
   return (
     <Button
       type="button"
