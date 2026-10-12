@@ -34,6 +34,25 @@ export type PositionsTableVariant = "default" | "history";
 
 export type PositionAction = "close" | "redeem";
 
+export function positionActionKind(
+  position: Pick<WalletPosition, "status" | "lifecycleState">
+): PositionAction | null {
+  const lifecycle = position.lifecycleState ?? null;
+  if (
+    position.status === "redeemable" &&
+    (lifecycle === null || lifecycle === "winner" || lifecycle === "abandoned")
+  ) {
+    return "redeem";
+  }
+  if (
+    position.status === "open" &&
+    (lifecycle === null || lifecycle === "unresolved" || lifecycle === "open")
+  ) {
+    return "close";
+  }
+  return null;
+}
+
 export type MakeColumnsOpts = {
   variant: PositionsTableVariant;
   onPositionAction?:
@@ -474,14 +493,10 @@ function PositionActionButton({
     lifecycle === "closed" ||
     lifecycle === "loser" ||
     lifecycle === "dust" ||
-    lifecycle === "redeemed" ||
-    lifecycle === "abandoned";
-  const isRedeemable =
-    position.status === "redeemable" &&
-    (lifecycle === null || lifecycle === "winner");
-  const isCloseable =
-    position.status === "open" &&
-    (lifecycle === null || lifecycle === "unresolved" || lifecycle === "open");
+    lifecycle === "redeemed";
+  const kind = positionActionKind(position);
+  const isRedeemable = kind === "redeem";
+  const isCloseable = kind === "close";
   const label = isRedeemable
     ? "Redeem"
     : isCloseable
@@ -492,12 +507,6 @@ function PositionActionButton({
     ((isRedeemable && allowedActions.includes("redeem")) ||
       (isCloseable && allowedActions.includes("close")));
   const busy = pendingActionPositionId === position.positionId;
-  const kind: PositionAction | null = isRedeemable
-    ? "redeem"
-    : isCloseable
-      ? "close"
-      : null;
-
   return (
     <Button
       type="button"
