@@ -1026,10 +1026,11 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 		}
 		const canonical = snapshot.canonical_input as Record<string, unknown> | null;
 		const fill = canonical?.fill as Record<string, unknown> | undefined;
-		const attributes =
-			intent.attributes && typeof intent.attributes === "object"
-				? (intent.attributes as Record<string, unknown>)
-				: intent;
+		const intentRecord = intent as Record<string, unknown>;
+		const attributes: Record<string, unknown> =
+			intentRecord.attributes && typeof intentRecord.attributes === "object"
+				? (intentRecord.attributes as Record<string, unknown>)
+				: intentRecord;
 		if (fill) {
 			const fillAttributes = (fill.attributes ?? {}) as Record<string, unknown>;
 			if (
