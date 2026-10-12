@@ -897,7 +897,7 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(partial.facts.positions.actionsAllowed).toBe(false);
     expect(partial.execution.live_position_count).toBe(1);
     expect(partial.execution.live_positions).toHaveLength(1);
-    expect(partial.execution.market_groups.length).toBeGreaterThan(0);
+    expect(partial.execution.market_groups).toEqual([]);
     expect(partial.facts.markets.status).toBe("partial");
     expect(partial.execution.comparisonCoverage.positions.live.reasons).toContain(
       "source_incomplete"
@@ -917,7 +917,7 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(stale.facts.positions.actionsAllowed).toBe(false);
     expect(stale.execution.live_position_count).toBe(1);
     expect(stale.execution.live_positions).toHaveLength(1);
-    expect(stale.execution.market_groups.length).toBeGreaterThan(0);
+    expect(stale.execution.market_groups).toEqual([]);
     expect(stale.facts.markets.status).toBe("partial");
     // bug.5031: the stalled-observer case the dashboard actually hit in prod —
     // the frozen inventory's MTM is withheld (null), not a misleading stale
@@ -930,7 +930,7 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(unavailable.facts.positions.status).toBe("partial");
     expect(unavailable.execution.live_position_count).toBe(1);
     expect(unavailable.execution.live_positions).toHaveLength(1);
-    expect(unavailable.execution.market_groups.length).toBeGreaterThan(0);
+    expect(unavailable.execution.market_groups).toEqual([]);
     expect(unavailable.execution.comparisonCoverage.positions.live.reasons).toContain(
       "source_incomplete"
     );

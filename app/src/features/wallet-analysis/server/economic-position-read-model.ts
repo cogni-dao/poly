@@ -426,6 +426,11 @@ export async function readEconomicPositionProjection(params: {
           PARTITION BY economic_bucket
           ORDER BY
             CASE WHEN economic_bucket = 'closed' THEN closed_at END DESC NULLS LAST,
+            CASE WHEN economic_bucket = 'live' THEN EXISTS (
+              SELECT 1 FROM target_correlated_keys target_key
+              WHERE target_key.condition_id = w.condition_id
+                AND target_key.token_id = w.token_id
+            ) END DESC NULLS LAST,
             CASE WHEN economic_bucket = 'live' THEN current_value_usdc END DESC NULLS LAST,
             condition_id, token_id
         ) AS bucket_rank
