@@ -26,6 +26,7 @@
 import { withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
 import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
+import type { OrderIntent } from "@cogni/poly-market-provider";
 import {
   polyAlgorithmInputSnapshots,
   polyCopyTradeDecisions,
