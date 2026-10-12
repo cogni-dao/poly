@@ -90,7 +90,17 @@ export type CanonicalAlgorithmDecision = Readonly<{
 
 export type AlgorithmEvaluation = Readonly<{
 	lineage: AlgorithmLineage;
+	inputSnapshot: AlgorithmInputSnapshot;
 	decision: CanonicalAlgorithmDecision;
+}>;
+
+/** Immutable, content-addressed planner evidence persisted before dispatch. */
+export type AlgorithmInputSnapshot = Readonly<{
+	input_snapshot_id: `sha256:${string}`;
+	algorithm_id: PolyAlgorithmId;
+	input_contract_version: string;
+	canonical_input: unknown;
+	quality: Readonly<Record<string, unknown>>;
 }>;
 
 type ParseResult<T> =
@@ -339,7 +349,7 @@ function fillDefinition(
 	return Object.freeze({
 		algorithmId,
 		codeVersion,
-		inputContractVersion: "fill-facts-v1",
+		inputContractVersion: "fill-facts-v2",
 		configSchemaVersion: "fill-config-v1",
 		parseInput: fillInputParser,
 		parseConfig(value: unknown): ParseResult<FillAlgorithmConfig> {
@@ -364,7 +374,7 @@ const positionGapDefinition: AlgorithmDefinition<
 > = Object.freeze({
 	algorithmId: "poly.copy-mirror.position-gap",
 	codeVersion: "position-gap-v3/book-plan-v1",
-	inputContractVersion: "position-gap-book-input-v1",
+	inputContractVersion: "position-gap-book-input-v2",
 	configSchemaVersion: "position-gap-config-v1",
 	parseInput: positionGapInputParser,
 	parseConfig: schemaParser(PositionGapConfigSchema),
@@ -444,11 +454,21 @@ export function evaluateAlgorithm(args: {
 			? parsedConfig.data
 			: { invalid_config_for: args.definition.algorithmId },
 	);
-	const inputSnapshotId = hashCanonical(
-		parsedInput.success
-			? parsedInput.data
-			: { invalid_input_for: args.definition.algorithmId },
-	);
+	const canonicalInput = parsedInput.success
+		? parsedInput.data
+		: { invalid_input_for: args.definition.algorithmId };
+	const inputSnapshotId = hashCanonical({
+		algorithm_id: args.definition.algorithmId,
+		input_contract_version: args.definition.inputContractVersion,
+		canonical_input: canonicalInput,
+	});
+	const inputSnapshot: AlgorithmInputSnapshot = {
+		input_snapshot_id: inputSnapshotId,
+		algorithm_id: args.definition.algorithmId,
+		input_contract_version: args.definition.inputContractVersion,
+		canonical_input: canonicalInput,
+		quality: { validation: parsedInput.success ? "validated" : "invalid" },
+	};
 	const versionId = hashCanonical({
 		algorithm_id: args.definition.algorithmId,
 		implementation_revision: implementationRevision.success
@@ -474,6 +494,7 @@ export function evaluateAlgorithm(args: {
 	) {
 		return {
 			lineage,
+			inputSnapshot,
 			decision: {
 				status: "blocked",
 				reason: "invalid_input",
@@ -491,6 +512,7 @@ export function evaluateAlgorithm(args: {
 		if (decision.status === "blocked" && decision.reason === "invalid_input") {
 			return {
 				lineage,
+				inputSnapshot,
 				decision: {
 					status: "blocked",
 					reason: "invalid_input",
@@ -502,11 +524,13 @@ export function evaluateAlgorithm(args: {
 		}
 		return {
 			lineage,
+			inputSnapshot,
 			decision,
 		};
 	} catch {
 		return {
 			lineage,
+			inputSnapshot,
 			decision: {
 				status: "blocked",
 				reason: "invalid_input",

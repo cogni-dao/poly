@@ -27,8 +27,10 @@ import {
 import { requiredBuyCollateralAtomic } from "@/bootstrap/capabilities/poly-trade-executor";
 import {
 	ALGORITHM_DEFINITIONS,
+	type AlgorithmInputSnapshot,
 	type AlgorithmLineage,
 	evaluateAlgorithm,
+	hashCanonical,
 } from "@/features/copy-trade/algorithm-registry";
 import {
 	effectivePositionGapBudget,
@@ -694,6 +696,7 @@ export function startPositionGapActor(
 			walletCashUsdc,
 			plan,
 			lineage: evaluation.lineage,
+			inputSnapshot: evaluation.inputSnapshot,
 			cohortCreations: cohortProjection.creations,
 			cohortReductions: cohortProjection.reductions,
 			accountingTransitions,
@@ -1137,6 +1140,7 @@ export function startPositionGapActor(
 		walletCashUsdc: number;
 		plan: PositionGapBookPlanV1;
 		lineage: AlgorithmLineage;
+		inputSnapshot: AlgorithmInputSnapshot;
 		cohortCreations: ReturnType<typeof projectPositionGapCohorts>["creations"];
 		cohortReductions: ReturnType<
 			typeof projectPositionGapCohorts
@@ -1224,6 +1228,7 @@ export function startPositionGapActor(
 				expiresAt: new Date(input.snapshot.expiresAtMs),
 				value: input.snapshot as unknown as Record<string, unknown>,
 			},
+			inputSnapshot: input.inputSnapshot,
 			plannerVersion: input.lineage.algorithm_version_id,
 			budgetUsdc: input.budgetUsdc,
 			eligibleNetNavUsdc: input.plan.eligibleNetNavUsdc,
@@ -1268,6 +1273,7 @@ export function startPositionGapActor(
 				receipt: null,
 				decided_at: new Date(input.decidedAtMs),
 				lineage: input.lineage,
+				input_snapshot: input.inputSnapshot,
 			});
 			logEvent(
 				actorLogger.child(input.lineage),
@@ -1356,6 +1362,7 @@ export function startPositionGapActor(
 				receipt: null as Record<string, unknown> | null,
 				decided_at: new Date(input.decidedAtMs),
 				lineage: prepared.lineage,
+				input_snapshot: input.inputSnapshot,
 			};
 			const attemptLog = actorLogger.child(prepared.lineage);
 			try {
@@ -1364,6 +1371,7 @@ export function startPositionGapActor(
 						fill_id: `position-gap-v3:${prepared.actionKey}`,
 						observed_at: new Date(input.snapshot.updatedAtMs),
 						intent,
+						input_snapshot: input.inputSnapshot,
 					});
 				if (placementMode !== input.planningMode) {
 					throw new Error(
@@ -1681,6 +1689,24 @@ export function startPositionGapActor(
 			safetyBudgetUsdc,
 			walletCashUsdc,
 		);
+		const safetyCanonicalInput = {
+			reason,
+			snapshot,
+			wallet_cash_usdc: walletCashUsdc,
+			budget_usdc: safetyBudgetUsdc,
+			orders,
+		};
+		const safetyInputSnapshot = {
+			algorithm_id: POSITION_GAP_DEFINITION.algorithmId,
+			input_contract_version: "position-gap-runtime-safety-v2",
+			canonical_input: safetyCanonicalInput,
+			quality: { validation: "validated", source: "runtime_safety" },
+			input_snapshot_id: hashCanonical({
+				algorithm_id: POSITION_GAP_DEFINITION.algorithmId,
+				input_contract_version: "position-gap-runtime-safety-v2",
+				canonical_input: safetyCanonicalInput,
+			}),
+		};
 		const persisted = await deps.store.persistPlan({
 			scope: deps.scope,
 			triggerReasons: [reason],
@@ -1691,6 +1717,7 @@ export function startPositionGapActor(
 				expiresAt: new Date(snapshot.expiresAtMs),
 				value: snapshot as unknown as Record<string, unknown>,
 			},
+			inputSnapshot: safetyInputSnapshot,
 			plannerVersion: POSITION_GAP_DEFINITION.codeVersion,
 			budgetUsdc: safetyBudgetUsdc,
 			eligibleNetNavUsdc: 0,

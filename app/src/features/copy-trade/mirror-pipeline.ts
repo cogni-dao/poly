@@ -479,6 +479,7 @@ async function processFill(
 			...baseEvaluation.lineage,
 			algorithm_id: algorithmId,
 		} as AlgorithmLineage,
+		input_snapshot: baseEvaluation.inputSnapshot,
   };
 
   // task.5042 — one observation + log-field per fill. The `lag_ms_total`
@@ -696,6 +697,7 @@ async function processFill(
 			...evaluation.lineage,
 			algorithm_id: algorithmId,
 		} as AlgorithmLineage,
+		input_snapshot: evaluation.inputSnapshot,
 	};
 	log = log.child(evaluatedDecisionBase.lineage);
 	const positionBranch =
@@ -1367,6 +1369,7 @@ async function processSellFill(args: {
     created_by_user_id: string;
     decided_at: Date;
 		lineage: AlgorithmLineage;
+		input_snapshot: AlgorithmEvaluation["inputSnapshot"];
   };
   log: LoggerPort;
   portfolioValues: DecisionPortfolioValues | undefined;
@@ -1544,6 +1547,7 @@ async function processSellFill(args: {
 	const evaluatedDecisionBase = {
 		...decisionBase,
 		lineage: evaluation.lineage,
+		input_snapshot: evaluation.inputSnapshot,
     };
 	const evaluatedLog = log.child(evaluation.lineage);
 	if (evaluation.decision.status !== "ready" || !canonicalOrder) {
@@ -1621,6 +1625,7 @@ async function recordSellSkip(args: {
     created_by_user_id: string;
     decided_at: Date;
 		lineage: AlgorithmLineage;
+		input_snapshot: AlgorithmEvaluation["inputSnapshot"];
   };
   source: DecisionSource;
   placement: PlacementWire;
@@ -1767,6 +1772,7 @@ async function executeMirrorOrder(
     created_by_user_id: string;
     decided_at: Date;
 		lineage: AlgorithmLineage;
+		input_snapshot: AlgorithmEvaluation["inputSnapshot"];
   },
   source: DecisionSource,
   placement: PlacementWire,
@@ -1818,6 +1824,7 @@ async function executeMirrorOrder(
       fill_id: fill.fill_id,
       observed_at: new Date(fill.observed_at),
       intent,
+			input_snapshot: decisionBase.input_snapshot,
       ...(intent.side === "BUY"
         ? {
             max_market_intent_usdc: nominalSizeUsdc(

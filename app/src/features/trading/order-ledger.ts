@@ -27,6 +27,7 @@ import { withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
 import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
 import {
+  polyAlgorithmInputSnapshots,
   polyCopyTradeDecisions,
   polyCopyTradeFills,
 } from "@cogni/poly-db-schema/copy-trade";
@@ -61,6 +62,7 @@ import {
   type MarkPositionLifecycleByConditionIdInput,
   type OpenOrderRow,
   type OrderLedger,
+  type OrderLedgerAlgorithmInputSnapshot,
   PositionCapReachedError,
   type PositionIntentAggregate,
   type RecordDecisionInput,
@@ -799,6 +801,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     };
 
     const insert = async (insertDb: AnyDb) => {
+			if (input.input_snapshot) {
+				await persistAlgorithmInputSnapshot(insertDb, input, input.input_snapshot);
+			}
       await insertDb
         .insert(polyCopyTradeFills)
         .values(values)
@@ -929,6 +934,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 		mode: LedgerMode,
   ): Promise<void> {
 		const lineage = readAlgorithmLineage(input.lineage ?? input.intent);
+		if (input.input_snapshot) {
+			await persistAlgorithmInputSnapshot(db, input, input.input_snapshot);
+		}
     await db.insert(polyCopyTradeDecisions).values({
       billingAccountId: input.billing_account_id,
       createdByUserId: input.created_by_user_id,
@@ -948,6 +956,57 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 			correlationId: lineage?.correlation_id ?? null,
     });
   }
+
+	async function persistAlgorithmInputSnapshot(
+		db: AnyDb,
+		tenant: { billing_account_id: string; created_by_user_id: string },
+		snapshot: OrderLedgerAlgorithmInputSnapshot,
+	): Promise<void> {
+		await db
+			.insert(polyAlgorithmInputSnapshots)
+			.values({
+				billingAccountId: tenant.billing_account_id,
+				createdByUserId: tenant.created_by_user_id,
+				inputSnapshotId: snapshot.input_snapshot_id,
+				algorithmId: snapshot.algorithm_id,
+				inputContractVersion: snapshot.input_contract_version,
+				canonicalInput: snapshot.canonical_input,
+				quality: snapshot.quality,
+			})
+			.onConflictDoNothing({
+				target: [
+					polyAlgorithmInputSnapshots.billingAccountId,
+					polyAlgorithmInputSnapshots.inputSnapshotId,
+				],
+			});
+
+		const [matching] = await db
+			.select({ inputSnapshotId: polyAlgorithmInputSnapshots.inputSnapshotId })
+			.from(polyAlgorithmInputSnapshots)
+			.where(
+				and(
+					eq(
+						polyAlgorithmInputSnapshots.billingAccountId,
+						tenant.billing_account_id,
+					),
+					eq(
+						polyAlgorithmInputSnapshots.inputSnapshotId,
+						snapshot.input_snapshot_id,
+					),
+					eq(polyAlgorithmInputSnapshots.algorithmId, snapshot.algorithm_id),
+					eq(
+						polyAlgorithmInputSnapshots.inputContractVersion,
+						snapshot.input_contract_version,
+					),
+					sql`${polyAlgorithmInputSnapshots.canonicalInput} = ${JSON.stringify(snapshot.canonical_input)}::jsonb`,
+					sql`${polyAlgorithmInputSnapshots.quality} = ${JSON.stringify(snapshot.quality)}::jsonb`,
+				),
+			)
+			.limit(1);
+		if (!matching) {
+			throw new Error("algorithm_input_snapshot_collision");
+		}
+	}
 
   type FillAccountingObservation = {
     filled_size_usdc?: number;

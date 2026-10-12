@@ -72,6 +72,8 @@ export const polyPositionGapRuns = pgTable(
 			withTimezone: true,
 		}),
 		targetSnapshot: jsonb("target_snapshot").$type<Record<string, unknown>>(),
+		/** Forward runs reference the canonical payload; legacy rows retain target_snapshot. */
+		inputSnapshotId: text("input_snapshot_id"),
 		plannerVersion: text("planner_version"),
 		budgetUsdc: numeric("budget_usdc", { precision: 20, scale: 8 }).notNull(),
 		eligibleNetNavUsdc: numeric("eligible_net_nav_usdc", {
