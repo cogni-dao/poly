@@ -118,6 +118,15 @@ describe("poly-brain strategy eval set v1", () => {
 			"The raw EDO tool is not retry-idempotent",
 		);
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
+			"final main-agent response must be exactly READY_FOR_STRUCTURED_RESPONSE",
+		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
+			"including the exact EDO receipt",
+		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
+			"alone emits the poly-brain.strategy-review.v1 JSON",
+		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
 			"at most eight total tool calls",
 		);
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
