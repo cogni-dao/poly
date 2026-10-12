@@ -13,6 +13,7 @@
 
 import type { CreateReactAgentGraphOptions } from "@cogni/langgraph-graphs/graphs";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
+import { guardScheduledGraphTools } from "../guarded-edo-tool";
 import { PolyBrainStrategyReviewV1Schema } from "./output-schema";
 import {
 	POLY_BRAIN_RESPONSE_PROMPT,
@@ -35,7 +36,12 @@ export function createPolyBrainGraph(opts: CreateReactAgentGraphOptions) {
 		llm,
 		// Keep the graph's lean v1 budget enforceable even when an app-local
 		// catalog temporarily grants a wider compatibility set.
-		tools: tools.filter((tool) => allowedToolIds.has(tool.name)),
+		tools: guardScheduledGraphTools(tools, allowedToolIds, {
+			domain: "strategy",
+			sourceRef: "story.5017/poly-brain/v1",
+			sourceNode: POLY_BRAIN_GRAPH_NAME,
+			requiredTag: "strategy-research-v1",
+		}),
 		messageModifier: POLY_BRAIN_SYSTEM_PROMPT,
 		responseFormat:
 			responseFormat ??

@@ -20,6 +20,9 @@ export const POLY_BRAIN_STRATEGY_REVIEW_SCHEMA_VERSION =
 export const POLY_BRAIN_DAO_OBJECTIVE =
 	"Poly learns which ethical profit strategy to test next" as const;
 
+export const POLY_BRAIN_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID =
+	"strategy-evidence-bootstrap" as const;
+
 export const PolyBrainEvidenceKindSchema = z.enum([
 	"knowledge",
 	"work_item",
@@ -58,10 +61,10 @@ export const PolyBrainNextExperimentSchema = z.object({
 export const PolyBrainHypothesisIdSchema = z
 	.string()
 	.min(1)
-	.max(200)
+	.max(40)
 	.regex(
-		/^[a-z0-9]+(?:-[a-z0-9]+)*$/,
-		"hypothesis id must be lowercase kebab-case",
+		/^[a-z0-9]+(?:-[a-z0-9]+){0,3}$/,
+		"hypothesis id must be 1-4 lowercase kebab segments",
 	);
 
 const PolyBrainCommittedPersistenceSchema = z.object({
@@ -78,7 +81,6 @@ const PolyBrainReusedPersistenceSchema = z.object({
 	status: z.literal("reused"),
 	hypothesisId: PolyBrainHypothesisIdSchema,
 	sourceRef: z.string().min(1),
-	evaluateAt: z.string().datetime(),
 	evidenceForIds: z.array(z.string().min(1)),
 	committed: z.literal(false),
 });

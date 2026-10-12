@@ -5,11 +5,13 @@
 import type { CreateReactAgentGraphOptions } from "@cogni/langgraph-graphs/graphs";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 
+import { guardScheduledGraphTools } from "../guarded-edo-tool";
 import { PolyAlgorithmEvaluationReportSchema } from "./output-schema";
 import {
 	POLY_ALGORITHM_EVALUATION_RESPONSE_PROMPT,
 	POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT,
 } from "./prompts";
+import { POLY_ALGORITHM_EVALUATION_TOOL_IDS } from "./tools";
 
 export const POLY_ALGORITHM_EVALUATION_GRAPH_NAME =
 	"poly-algorithm-evaluation" as const;
@@ -22,9 +24,15 @@ export const POLY_ALGORITHM_EVALUATION_GRAPH_NAME =
 export function createPolyAlgorithmEvaluationGraph(
 	opts: CreateReactAgentGraphOptions,
 ) {
+	const allowedToolIds = new Set<string>(POLY_ALGORITHM_EVALUATION_TOOL_IDS);
 	return createReactAgent({
 		llm: opts.llm,
-		tools: [...opts.tools],
+		tools: guardScheduledGraphTools(opts.tools, allowedToolIds, {
+			domain: "strategy",
+			sourceRef: "story.5017/poly-algorithm-evaluation/v1",
+			sourceNode: POLY_ALGORITHM_EVALUATION_GRAPH_NAME,
+			requiredTag: "algorithm-evaluation-v1",
+		}),
 		messageModifier: POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT,
 		responseFormat: {
 			prompt: POLY_ALGORITHM_EVALUATION_RESPONSE_PROMPT,

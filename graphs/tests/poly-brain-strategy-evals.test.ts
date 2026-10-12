@@ -21,6 +21,7 @@ import {
 import { createPolyBrainGraph } from "../src/graphs/poly-brain/graph";
 import {
 	POLY_BRAIN_DAO_OBJECTIVE,
+	POLY_BRAIN_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID,
 	POLY_BRAIN_STRATEGY_REVIEW_SCHEMA_VERSION,
 	PolyBrainHypothesisIdSchema,
 	PolyBrainStrategyReviewV1Schema,
@@ -88,6 +89,9 @@ describe("poly-brain strategy eval set v1", () => {
 			PolyBrainHypothesisIdSchema.safeParse("poly:forecast-signal-brier-v1")
 				.success,
 		).toBe(false);
+		expect(
+			PolyBrainHypothesisIdSchema.safeParse("one-two-three-four-five").success,
+		).toBe(false);
 	});
 
 	it("keeps the operating prompt evidence-first and non-trading", () => {
@@ -130,17 +134,26 @@ describe("poly-brain strategy eval set v1", () => {
 			"at most eight total tool calls",
 		);
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
-			'Do not call core__web_search in this lean v1 run',
+			"Do not call core__web_search in this lean v1 run",
 		);
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
 			'bounded gap "canonical_knowledge_empty"',
 		);
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
+			`id "${POLY_BRAIN_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID}"`,
+		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
+			"Repository tools are intentionally unavailable",
+		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain("output has committed=true");
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain("output contains error");
+		expect(POLY_BRAIN_RESPONSE_PROMPT).toContain("output with reused=true");
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
 			'set sourceRef exactly to "story.5017/poly-brain/v1"',
 		);
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain("never invent one");
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
-			"do not present them as runtime-stamped identity",
+			"principal and run identity are not row-stamped",
 		);
 	});
 
@@ -163,7 +176,7 @@ describe("poly-brain strategy eval set v1", () => {
 		expect(POLY_BRAIN_TOOL_IDS).not.toContain("core__web_search");
 		expect(POLY_BRAIN_TOOL_IDS).not.toContain("core__repo_list");
 		expect(POLY_BRAIN_TOOL_IDS).not.toContain("core__repo_search");
-		expect(POLY_BRAIN_TOOL_IDS).toContain("core__repo_open");
+		expect(POLY_BRAIN_TOOL_IDS).not.toContain("core__repo_open");
 	});
 
 	it("allows an honest uncited candidate hypothesis only when knowledge is empty", () => {
@@ -182,9 +195,9 @@ describe("poly-brain strategy eval set v1", () => {
 			...uncited,
 			gaps: ["canonical_knowledge_empty"],
 		};
-		expect(PolyBrainStrategyReviewV1Schema.safeParse(candidateEmpty).success).toBe(
-			true,
-		);
+		expect(
+			PolyBrainStrategyReviewV1Schema.safeParse(candidateEmpty).success,
+		).toBe(true);
 	});
 
 	it("composes a runnable graph with the default typed response", () => {

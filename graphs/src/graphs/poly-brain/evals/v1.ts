@@ -16,7 +16,6 @@ import {
 	GET_CURRENT_TIME_NAME,
 	KNOWLEDGE_READ_NAME,
 	KNOWLEDGE_SEARCH_NAME,
-	REPO_OPEN_NAME,
 	WEB_SEARCH_NAME,
 	WORK_ITEM_QUERY_NAME,
 } from "@cogni/ai-tools";
@@ -35,7 +34,6 @@ const REQUIRED_EVIDENCE_TOOLS = [
 	KNOWLEDGE_SEARCH_NAME,
 	KNOWLEDGE_READ_NAME,
 	WORK_ITEM_QUERY_NAME,
-	REPO_OPEN_NAME,
 ] as const;
 
 const FORBIDDEN_TOOL_IDS = [
@@ -84,9 +82,7 @@ export function evaluatePolyBrainStrategyRun(
 			(toolId) => (toolCallCounts.get(toolId) ?? 0) >= 1,
 		),
 		canonicalEvidenceKinds:
-			evidenceKinds.has("knowledge") &&
-			evidenceKinds.has("work_item") &&
-			evidenceKinds.has("repo"),
+			evidenceKinds.has("knowledge") && evidenceKinds.has("work_item"),
 		canonicalKnowledgeRouting:
 			run.toolCalls.some(
 				(call) =>
@@ -165,11 +161,6 @@ const validStrategyReview = {
 			ref: "task.1791070993",
 			finding: "The strategy loop is the current implementation seam.",
 		},
-		{
-			kind: "repo",
-			ref: "repo:graphs/src/graphs/poly-brain/prompts.ts",
-			finding: "Poly Brain can run the next bounded research experiment.",
-		},
 	],
 	comparedStrategies: [
 		{
@@ -221,7 +212,6 @@ const reusedStrategyReview = {
 		status: "reused",
 		hypothesisId: "forecast-signal-brier",
 		sourceRef: "story.5017/poly-brain/v1",
-		evaluateAt: "2026-10-16T20:00:00.000Z",
 		evidenceForIds: ["strategy-succession-rule", "mirror-algorithm-rankings"],
 		committed: false,
 	},
@@ -244,7 +234,6 @@ const canonicalEvidenceToolCalls = [
 	{ name: KNOWLEDGE_READ_NAME, input: { id: "poly-mission" } },
 	{ name: KNOWLEDGE_SEARCH_NAME, input: { domain: "strategy" } },
 	{ name: WORK_ITEM_QUERY_NAME },
-	{ name: REPO_OPEN_NAME },
 ] as const;
 
 export const POLY_BRAIN_STRATEGY_EVAL_SET_V1 = [
@@ -348,7 +337,6 @@ export const POLY_BRAIN_STRATEGY_EVAL_SET_V1 = [
 				{ name: KNOWLEDGE_READ_NAME, input: { id: "poly-mission" } },
 				{ name: KNOWLEDGE_SEARCH_NAME, input: { domain: "poly" } },
 				{ name: WORK_ITEM_QUERY_NAME },
-				{ name: REPO_OPEN_NAME },
 				{ name: EDO_HYPOTHESIZE_NAME, input: { domain: "poly" } },
 			],
 		},

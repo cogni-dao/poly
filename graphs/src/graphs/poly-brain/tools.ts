@@ -16,14 +16,12 @@ import {
 	GET_CURRENT_TIME_NAME,
 	KNOWLEDGE_READ_NAME,
 	KNOWLEDGE_SEARCH_NAME,
-	REPO_OPEN_NAME,
 	WORK_ITEM_QUERY_NAME,
 } from "@cogni/ai-tools";
 
 /**
- * The graph reads current time, node knowledge, work priorities, repository
- * evidence, and the web. Its sole write is one falsifiable EDO hypothesis for
- * the selected next experiment.
+ * The graph reads current time, node knowledge, and work priorities. Its sole
+ * write is one falsifiable EDO hypothesis for the selected next experiment.
  *
  * Deliberately absent: knowledge_write, work_item_transition, schedule_manage,
  * wallet/policy/order/trade tools, and the other EDO mutation tools.
@@ -33,7 +31,6 @@ export const POLY_BRAIN_TOOL_IDS = [
 	KNOWLEDGE_SEARCH_NAME,
 	KNOWLEDGE_READ_NAME,
 	WORK_ITEM_QUERY_NAME,
-	REPO_OPEN_NAME,
 	EDO_HYPOTHESIZE_NAME,
 ] as const;
 

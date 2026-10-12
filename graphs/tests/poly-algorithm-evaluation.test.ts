@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-import {
-	CORE_TOOL_BUNDLE,
-	EDO_HYPOTHESIZE_NAME,
-} from "@cogni/ai-tools";
+import { CORE_TOOL_BUNDLE, EDO_HYPOTHESIZE_NAME } from "@cogni/ai-tools";
 import { describe, expect, it } from "vitest";
 
 import {
 	createPolyAlgorithmEvaluationGraph,
 	POLY_ALGORITHM_EVALUATION_GRAPH_NAME,
+	POLY_ALGORITHM_EVALUATION_RESPONSE_PROMPT,
 	POLY_ALGORITHM_EVALUATION_SCHEMA_VERSION,
 	POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT,
 	POLY_ALGORITHM_EVALUATION_TOOL_IDS,
@@ -338,6 +336,18 @@ describe("poly-algorithm-evaluation graph boundary", () => {
 		expect(POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT).toContain(
 			"Never invent a replacement such as evidence-acquisition-1",
 		);
+		expect(POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT).toContain(
+			"Before any write, you MUST call core__knowledge_read",
+		);
+		expect(POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT).toContain(
+			"output has committed=true",
+		);
+		expect(POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT).toContain(
+			"output contains error",
+		);
+		expect(POLY_ALGORITHM_EVALUATION_RESPONSE_PROMPT).toContain(
+			"output with reused=true",
+		);
 	});
 
 	it("is registered as a node-local peer graph", () => {
@@ -374,15 +384,11 @@ describe("poly-algorithm-evaluation graph boundary", () => {
 		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).not.toContain(
 			"core__poly_account_copy_trade_orders",
 		);
-		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).not.toContain(
-			"core__repo_list",
-		);
+		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).not.toContain("core__repo_list");
 		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).not.toContain(
 			"core__repo_search",
 		);
-		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).not.toContain(
-			"core__repo_open",
-		);
+		expect(POLY_ALGORITHM_EVALUATION_TOOL_IDS).not.toContain("core__repo_open");
 	});
 
 	it("compiles a runnable with a fixed structured-output contract", () => {

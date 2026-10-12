@@ -128,13 +128,13 @@ export const POLY_ALGORITHM_EVALUATION_EVAL_SET_V1: readonly AlgorithmEvaluation
 			requiredPromptPhrases: [
 				"empty-evidence fast path",
 				"algorithm-evidence-bootstrap",
+				"before any write, you must call core__knowledge_read",
 				"never write a profit or performance hypothesis for an unknown algorithm",
 			],
 		},
 		{
 			id: "structured_response_handoff",
-			purpose:
-				"Reserves typed JSON generation for the responseFormat pass",
+			purpose: "Reserves typed JSON generation for the responseFormat pass",
 			requiredPromptPhrases: [
 				"never emits the report, json, markdown, findings, or explanatory prose",
 				"emit exactly ready_for_structured_response and nothing else",
@@ -148,7 +148,7 @@ export const POLY_ALGORITHM_EVALUATION_EVAL_SET_V1: readonly AlgorithmEvaluation
 			requiredPromptPhrases: [
 				"exactly one durable hypothesis reference",
 				"at most once",
-				"edo source fields are model-supplied",
+				"edo domain and source fields are graph-pinned",
 				"not proven retry-idempotent",
 				"1-4 segments and at most 40 characters with no colon",
 			],
