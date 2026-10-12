@@ -25,8 +25,10 @@ import {
   type BoundedMarketExposureRead,
   buildBoundedMarketExposureGroups,
   buildBoundedMarketExposureWithCoverage,
+  classifyDatabaseReadFailure,
   type ComparisonCoverageCountRow,
   type ComparisonReadDiagnostics,
+  type ComparisonReadFailureClass,
   emptyComparisonCoverageCounts,
   materializeComparisonCoverage,
   readComparisonSourceIdentityAmbiguity,
@@ -64,6 +66,8 @@ type TradeActivityRow = {
 };
 
 export type WalletDashboardReadDiagnostics = ComparisonReadDiagnostics & {
+  economicProjectionMs?: number;
+  economicProjectionFailureClass?: ComparisonReadFailureClass;
   comparisonPath?:
     | "cache_hit"
     | "unknown"
@@ -191,16 +195,35 @@ export async function readTenantWalletDashboardIn(
   const orderRead = await optionalRead(db, (savepoint) =>
     readOrderSummary(savepoint, input.billingAccountId, capturedAt)
   );
-  const economicRead = await optionalRead(db, (savepoint) =>
-    readEconomicPositionProjection({
-      db: savepoint,
-      billingAccountId: input.billingAccountId,
-      walletAddress: address,
-      connectionKind: connection.connectionKind,
-      capturedAt: capturedAtDate,
-      interval: input.interval,
-    })
-  );
+  const economicStartedAt = performance.now();
+  let economicRead: OptionalRead<
+    Awaited<ReturnType<typeof readEconomicPositionProjection>>
+  >;
+  try {
+    economicRead = await optionalRead(db, (savepoint) =>
+      readEconomicPositionProjection({
+        db: savepoint,
+        billingAccountId: input.billingAccountId,
+        walletAddress: address,
+        connectionKind: connection.connectionKind,
+        capturedAt: capturedAtDate,
+        interval: input.interval,
+      })
+    );
+  } finally {
+    recordDashboardDiagnostic(
+      input.diagnostics,
+      "economicProjectionMs",
+      Math.max(0, Math.round(performance.now() - economicStartedAt))
+    );
+  }
+  if (!economicRead.ok) {
+    recordDashboardDiagnostic(
+      input.diagnostics,
+      "economicProjectionFailureClass",
+      classifyDatabaseReadFailure(economicRead.error)
+    );
+  }
   const originRead = economicRead.ok
     ? await optionalRead(db, (savepoint) =>
         readAlgorithmOriginProjection({

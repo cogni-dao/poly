@@ -133,7 +133,7 @@ export async function readEconomicPositionProjection(params: {
       LEFT JOIN poly_trader_ingestion_cursors c
         ON c.trader_wallet_id = w.id
        AND c.source = ${mode === "paper" ? "paper-ledger-positions" : "data-api-positions"}
-    ), ledger_candidates AS MATERIALIZED (
+    ), ledger_source AS (
       SELECT
         lower(NULLIF(COALESCE(
           NULLIF(f.attributes->>'condition_id', ''),
@@ -144,15 +144,7 @@ export async function readEconomicPositionProjection(params: {
         f.observed_at,
         f.updated_at,
         f.attributes,
-        row_number() OVER (
-          PARTITION BY
-            lower(NULLIF(COALESCE(
-              NULLIF(f.attributes->>'condition_id', ''),
-              NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), '')
-            ), '')),
-            NULLIF(f.attributes->>'token_id', '')
-          ORDER BY f.updated_at DESC, f.observed_at DESC, f.client_order_id DESC
-        ) AS metadata_rank
+        f.client_order_id
       FROM poly_copy_trade_fills f
       WHERE f.billing_account_id = ${params.billingAccountId}
         AND f.mode = ${mode}
@@ -170,9 +162,18 @@ export async function readEconomicPositionProjection(params: {
             AND (f.attributes->>'size_usdc')::numeric > 0
           )
         )
-    ), origin_keys AS MATERIALIZED (
-      SELECT * FROM ledger_candidates
+    ), ledger_candidates AS MATERIALIZED (
+      SELECT DISTINCT ON (condition_id, token_id)
+        condition_id,
+        token_id,
+        position_lifecycle,
+        observed_at,
+        updated_at,
+        attributes
+      FROM ledger_source
       WHERE condition_id IS NOT NULL AND token_id IS NOT NULL
+      ORDER BY condition_id, token_id,
+        updated_at DESC, observed_at DESC, client_order_id DESC
     ), current_groups AS MATERIALIZED (
       SELECT
         lower(p.condition_id) AS condition_id,
@@ -210,7 +211,7 @@ export async function readEconomicPositionProjection(params: {
        AND p.condition_id = g.chosen_condition_id
        AND p.token_id = g.token_id
     ), driven_keys AS MATERIALIZED (
-      SELECT condition_id, token_id FROM origin_keys
+      SELECT condition_id, token_id FROM ledger_candidates
       UNION
       SELECT condition_id, token_id FROM current_facts
       WHERE shares > 0
@@ -353,10 +354,9 @@ export async function readEconomicPositionProjection(params: {
       LEFT JOIN fill_conflicted_keys ck USING (condition_id, token_id)
       LEFT JOIN outcome_consensus oc USING (condition_id, token_id)
       LEFT JOIN current_facts cf USING (condition_id, token_id)
-      LEFT JOIN origin_keys lc
+      LEFT JOIN ledger_candidates lc
         ON lc.condition_id = k.condition_id
        AND lc.token_id = k.token_id
-       AND lc.metadata_rank = 1
       LEFT JOIN LATERAL (
         SELECT candidate.lifecycle_state
         FROM poly_redeem_jobs candidate
