@@ -247,6 +247,7 @@ export async function readEconomicPositionProjection(params: {
         pf.total_buy_usdc,
         pf.total_sell_usdc,
         pf.total_buy_shares,
+        pf.total_sell_shares,
         pf.total_buy_shares - pf.total_sell_shares AS net_shares,
         pf.first_buy_at,
         pf.last_flow_at,
