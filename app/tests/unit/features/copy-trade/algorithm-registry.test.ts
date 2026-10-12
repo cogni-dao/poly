@@ -9,6 +9,7 @@ import {
 	ALGORITHM_DEFINITIONS,
 	evaluateAlgorithm,
 	fillAlgorithmConfig,
+	hashCanonical,
 	POLY_ALGORITHM_IDS,
 	type PolyAlgorithmId,
 } from "@/features/copy-trade/algorithm-registry";
@@ -371,6 +372,23 @@ describe("Poly AlgorithmDefinition conformance", () => {
 		);
 		expect(changed.lineage.input_snapshot_id).toBe(
 			base.lineage.input_snapshot_id,
+		);
+	});
+
+	it("addresses the validated v2 input envelope and returns its canonical payload", () => {
+		const result = evaluate("poly.copy-mirror.min-bet");
+		expect(result.inputSnapshot).toMatchObject({
+			algorithm_id: "poly.copy-mirror.min-bet",
+			input_contract_version: "fill-facts-v2",
+			quality: { validation: "validated" },
+			canonical_input: fillInput(),
+		});
+		expect(result.lineage.input_snapshot_id).toBe(
+			hashCanonical({
+				algorithm_id: result.inputSnapshot.algorithm_id,
+				input_contract_version: result.inputSnapshot.input_contract_version,
+				canonical_input: result.inputSnapshot.canonical_input,
+			}),
 		);
 	});
 

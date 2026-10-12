@@ -3,7 +3,10 @@
 
 /** Bounded latest-run read model shared by the owner UI and account-read agents. */
 
-import { polyCopyTradeFills } from "@cogni/db-schema/copy-trade";
+import {
+	polyAlgorithmInputSnapshots,
+	polyCopyTradeFills,
+} from "@cogni/db-schema/copy-trade";
 import {
 	polyPositionGapActions,
 	polyPositionGapRuns,
@@ -444,7 +447,7 @@ export const positionGapLatestRunsSelect = (
 			r.target_snapshot_id AS "targetSnapshotId",
 			r.target_snapshot_as_of AS "targetSnapshotAsOf",
 			r.target_snapshot_expires_at AS "targetSnapshotExpiresAt",
-			r.target_snapshot AS "targetSnapshot",
+			COALESCE(r.target_snapshot, input_snapshot.canonical_input->'snapshot') AS "targetSnapshot",
 			r.planner_version AS "plannerVersion", r.budget_usdc AS "budgetUsdc",
 			r.eligible_net_nav_usdc AS "eligibleNetNavUsdc", r.scale AS "scale",
 			r.wallet_cash_usdc_at_start AS "walletCashUsdcAtStart",
@@ -465,6 +468,9 @@ export const positionGapLatestRunsSelect = (
 			ORDER BY ${polyPositionGapRuns.startedAt} DESC
 			LIMIT 1
 		) AS r
+		LEFT JOIN ${polyAlgorithmInputSnapshots} AS input_snapshot
+			ON input_snapshot.billing_account_id = r.billing_account_id
+			AND input_snapshot.input_snapshot_id = r.input_snapshot_id
 		ORDER BY r.target_id
 	`;
 

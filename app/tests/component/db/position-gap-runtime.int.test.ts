@@ -3,7 +3,10 @@
 
 import { randomUUID } from "node:crypto";
 import { agentCapabilityGrants } from "@cogni/db-schema/agent-capability-grants";
-import { polyCopyTradeFills } from "@cogni/db-schema/copy-trade";
+import {
+	polyAlgorithmInputSnapshots,
+	polyCopyTradeFills,
+} from "@cogni/db-schema/copy-trade";
 import {
 	polyPositionGapActions,
 	polyPositionGapCohorts,
@@ -30,6 +33,7 @@ import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 const future = new Date("2099-01-01T00:00:00.000Z");
 const asOf = new Date("2026-10-08T00:00:00.000Z");
 const algorithmHash = `sha256:${"a".repeat(64)}`;
+const ledgerSnapshotHash = `sha256:${"b".repeat(64)}`;
 const algorithmLineage = {
 	algorithm_id: "poly.copy-mirror.position-gap" as const,
 	algorithm_version_id: algorithmHash,
@@ -354,6 +358,13 @@ describe("position-gap runtime persistence", () => {
 				expiresAt: new Date(asOf.getTime() + 600_000),
 				value: { version: 1, complete: true },
 			},
+			inputSnapshot: {
+				input_snapshot_id: algorithmHash,
+				algorithm_id: "poly.copy-mirror.position-gap",
+				input_contract_version: "position-gap-book-input-v2",
+				canonical_input: { version: 2, exact: "planner-input-a" },
+				quality: { validation: "validated" },
+			},
 			plannerVersion: "test",
 			budgetUsdc: 10,
 			eligibleNetNavUsdc: 100,
@@ -426,6 +437,36 @@ describe("position-gap runtime persistence", () => {
 			.from(polyPositionGapReservations)
 			.where(eq(polyPositionGapReservations.billingAccountId, accountA));
 		expect(reservations).toHaveLength(1);
+		const snapshots = await db
+			.select()
+			.from(polyAlgorithmInputSnapshots)
+			.where(eq(polyAlgorithmInputSnapshots.billingAccountId, accountA));
+		expect(snapshots).toHaveLength(1);
+		expect(snapshots[0]?.canonicalInput).toEqual({
+			version: 2,
+			exact: "planner-input-a",
+		});
+		const runs = await db
+			.select({
+				inputSnapshotId: polyPositionGapRuns.inputSnapshotId,
+				targetSnapshot: polyPositionGapRuns.targetSnapshot,
+			})
+			.from(polyPositionGapRuns)
+			.where(eq(polyPositionGapRuns.billingAccountId, accountA));
+		expect(runs.length).toBeGreaterThan(0);
+		expect(runs.every((run) => run.inputSnapshotId === algorithmHash)).toBe(true);
+		expect(runs.every((run) => run.targetSnapshot === null)).toBe(true);
+		await expect(
+			store.persistPlan({
+				...base,
+				inputSnapshot: {
+					...base.inputSnapshot,
+					canonical_input: { version: 2, exact: "collision" },
+				},
+				buys: [],
+				cohortCreations: [],
+			}),
+		).rejects.toThrow("algorithm_input_snapshot_collision");
 
 		await store.markLedgered(persisted?.id ?? "missing");
 		await store.markSubmitting(persisted?.id ?? "missing");
@@ -1491,6 +1532,13 @@ describe("position-gap runtime persistence", () => {
 			target_id: targetAmbiguousRejection,
 			fill_id: "position-gap-v3:ambiguous-buy-hard",
 			observed_at: asOf,
+			input_snapshot: {
+				input_snapshot_id: ledgerSnapshotHash,
+				algorithm_id: "poly.copy-mirror.position-gap",
+				input_contract_version: "position-gap-book-input-v2",
+				canonical_input: { exact: "ledger-pre-dispatch" },
+				quality: { validation: "validated" },
+			},
 			intent: buildPositionGapBuyIntent({
 				marketId: "prediction-market:polymarket:condition-hard",
 				outcome: "0",
@@ -1501,9 +1549,44 @@ describe("position-gap runtime persistence", () => {
 				conditionId: "condition-hard",
 				cohortKey: "ambiguous-cohort-hard",
 				targetWallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
-				lineage: algorithmLineage,
+				lineage: { ...algorithmLineage, input_snapshot_id: ledgerSnapshotHash },
 			}),
 		});
+		const [durableInput] = await db
+			.select()
+			.from(polyAlgorithmInputSnapshots)
+			.where(
+				eq(polyAlgorithmInputSnapshots.inputSnapshotId, ledgerSnapshotHash),
+			);
+		expect(durableInput?.canonicalInput).toEqual({ exact: "ledger-pre-dispatch" });
+		await expect(
+			ledger.insertPending({
+				billing_account_id: accountA,
+				created_by_user_id: ownerA,
+				target_id: targetAmbiguousRejection,
+				fill_id: "position-gap-v3:collision",
+				observed_at: asOf,
+				input_snapshot: {
+					input_snapshot_id: ledgerSnapshotHash,
+					algorithm_id: "poly.copy-mirror.position-gap",
+					input_contract_version: "position-gap-book-input-v2",
+					canonical_input: { exact: "different" },
+					quality: { validation: "validated" },
+				},
+				intent: buildPositionGapBuyIntent({
+					marketId: "prediction-market:polymarket:condition-collision",
+					outcome: "0",
+					notionalUsdc: 1,
+					limitPrice: 0.5,
+					clientOrderId: "collision-client",
+					tokenId: "token-collision",
+					conditionId: "condition-collision",
+					cohortKey: "collision-cohort",
+					targetWallet: "0x2005d16a84ceefa912d4e380cd32e7ff827875ea",
+					lineage: { ...algorithmLineage, input_snapshot_id: ledgerSnapshotHash },
+				}),
+			}),
+		).rejects.toThrow("algorithm_input_snapshot_collision");
 		await store.markLedgered(hardBuy.id);
 		await store.markSubmitting(hardBuy.id);
 		const durableDetail =

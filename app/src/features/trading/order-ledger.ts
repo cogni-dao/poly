@@ -711,6 +711,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     // Stash placement-display fields in `attributes` so the read API +
     // dashboard don't need to re-derive from the intent blob.
 		const lineage = readAlgorithmLineage(input.intent.attributes);
+		assertSnapshotIdentity(lineage, input.input_snapshot, input.intent);
     const attrs = {
       size_usdc: input.intent.size_usdc,
       limit_price: input.intent.limit_price,
@@ -934,6 +935,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 		mode: LedgerMode,
   ): Promise<void> {
 		const lineage = readAlgorithmLineage(input.lineage ?? input.intent);
+		assertSnapshotIdentity(lineage, input.input_snapshot, input.intent);
 		if (input.input_snapshot) {
 			await persistAlgorithmInputSnapshot(db, input, input.input_snapshot);
 		}
@@ -1005,6 +1007,48 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 			.limit(1);
 		if (!matching) {
 			throw new Error("algorithm_input_snapshot_collision");
+		}
+	}
+
+	function assertSnapshotIdentity(
+		lineage: ReturnType<typeof readAlgorithmLineage>,
+		snapshot: OrderLedgerAlgorithmInputSnapshot | undefined,
+		intent: Record<string, unknown> | OrderIntent,
+	): void {
+		if (!snapshot) return;
+		if (
+			!lineage ||
+			lineage.input_snapshot_id !== snapshot.input_snapshot_id ||
+			lineage.algorithm_id !== snapshot.algorithm_id
+		) {
+			throw new Error("lineage_identity_ambiguous");
+		}
+		const canonical = snapshot.canonical_input as Record<string, unknown> | null;
+		const fill = canonical?.fill as Record<string, unknown> | undefined;
+		const attributes =
+			intent.attributes && typeof intent.attributes === "object"
+				? (intent.attributes as Record<string, unknown>)
+				: intent;
+		if (fill) {
+			const fillAttributes = (fill.attributes ?? {}) as Record<string, unknown>;
+			if (
+				String(fill.market_id ?? "").toLowerCase() !==
+					String(intent.market_id ?? "").toLowerCase() ||
+				String(fillAttributes.asset ?? "") !== String(attributes.token_id ?? "")
+			) {
+				throw new Error("lineage_identity_ambiguous");
+			}
+		}
+		const book = canonical?.snapshot as
+			| { conditions?: Array<{ conditionId?: string; tokens?: Array<{ tokenId?: string }> }> }
+			| undefined;
+		if (book?.conditions && attributes.condition_id && attributes.token_id) {
+			const condition = book.conditions.find(
+				(row) => row.conditionId?.toLowerCase() === String(attributes.condition_id).toLowerCase(),
+			);
+			if (!condition?.tokens?.some((row) => row.tokenId === attributes.token_id)) {
+				throw new Error("lineage_identity_ambiguous");
+			}
 		}
 	}
 
