@@ -348,7 +348,7 @@ describe("wallet dashboard coherent snapshot", () => {
       eligible: 501,
       comparable: 1,
       dropped: 500,
-      sampled: 0,
+      sampled: 1,
       complete: false,
       reasons: [
         "comparison_missing",

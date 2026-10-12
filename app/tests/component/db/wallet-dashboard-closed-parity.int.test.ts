@@ -101,7 +101,7 @@ describe("authoritative wallet economic-position projection", () => {
         targetId: TARGET_ID,
         fillId: `origin-${index}`,
         marketId: `prediction-market:polymarket:${condition}`,
-        observedAt: new Date(`2026-10-0${index + 1}T10:00:00.000Z`),
+        observedAt: new Date(Date.UTC(2026, 9, index + 1, 10)),
         clientOrderId: `origin-client-${index}`,
         status: "filled",
         positionLifecycle: "open",

@@ -25,6 +25,10 @@ import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import { Button, Skeleton } from "@/components";
 import { DataGridColumnHeader } from "@/components/reui/data-grid/data-grid-column-header";
 import { PositionTimelineChart } from "@/features/wallet-analysis/components/PositionTimelineChart";
+import {
+  positionActionKind,
+  type WalletPositionAction,
+} from "@/features/wallet-analysis/position-action-kind";
 import type { WalletPosition } from "@/features/wallet-analysis/types/wallet-analysis";
 
 // biome-ignore lint/suspicious/noExplicitAny: heterogeneous TanStack column array
@@ -32,26 +36,7 @@ type AnyCol = ColumnDef<WalletPosition, any>;
 
 export type PositionsTableVariant = "default" | "history";
 
-export type PositionAction = "close" | "redeem";
-
-export function positionActionKind(
-  position: Pick<WalletPosition, "status" | "lifecycleState">
-): PositionAction | null {
-  const lifecycle = position.lifecycleState ?? null;
-  if (
-    position.status === "redeemable" &&
-    (lifecycle === null || lifecycle === "winner" || lifecycle === "abandoned")
-  ) {
-    return "redeem";
-  }
-  if (
-    position.status === "open" &&
-    (lifecycle === null || lifecycle === "unresolved" || lifecycle === "open")
-  ) {
-    return "close";
-  }
-  return null;
-}
+export type PositionAction = WalletPositionAction;
 
 export type MakeColumnsOpts = {
   variant: PositionsTableVariant;

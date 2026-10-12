@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
 import { describe, expect, it } from "vitest";
-import { positionActionKind } from "@/app/(app)/_components/positions-table/columns";
+import { positionActionKind } from "@/features/wallet-analysis/position-action-kind";
 
 describe("positionActionKind", () => {
   it("keeps an abandoned but unredeemed winner redeemable from Closed", () => {
