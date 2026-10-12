@@ -230,6 +230,14 @@ export async function readEconomicPositionProjection(params: {
        AND k.token_id = p.token_id
       WHERE target.billing_account_id = ${params.billingAccountId}
         AND target.disabled_at IS NULL
+    ), fill_identity_anchors AS MATERIALIZED (
+      SELECT DISTINCT f.source, f.native_id
+      FROM poly_trader_fills f
+      JOIN wallet_identity w ON w.id = f.trader_wallet_id
+      JOIN driven_keys k
+        ON k.condition_id = lower(f.condition_id)
+       AND k.token_id = f.token_id
+      WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
     ), fill_candidates AS MATERIALIZED (
       SELECT
         f.id,
@@ -245,11 +253,12 @@ export async function readEconomicPositionProjection(params: {
         w.updated_at AS wallet_updated_at,
         w.created_at AS wallet_created_at,
         w.id AS wallet_id
-      FROM poly_trader_fills f
-      JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      JOIN driven_keys k
-        ON k.condition_id = lower(f.condition_id)
-       AND k.token_id = f.token_id
+      FROM fill_identity_anchors identity
+      JOIN wallet_identity w ON TRUE
+      JOIN poly_trader_fills f
+        ON f.trader_wallet_id = w.id
+       AND f.source = identity.source
+       AND f.native_id = identity.native_id
       WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
     ), fill_groups AS MATERIALIZED (
       SELECT
@@ -274,6 +283,9 @@ export async function readEconomicPositionProjection(params: {
         ON g.source = f.source
        AND g.native_id = f.native_id
        AND g.fact_variants > 1
+      JOIN driven_keys k
+        ON k.condition_id = lower(f.condition_id)
+       AND k.token_id = f.token_id
     ), canonical_fills AS MATERIALIZED (
       SELECT
         lower(f.condition_id) AS condition_id,

@@ -92,7 +92,9 @@ describe("authoritative wallet economic-position projection", () => {
     }
 
     const tenantConditions = Object.values(CONDITIONS).filter(
-      (condition) => condition !== CONDITIONS.otherTenant
+      (condition) =>
+        condition !== CONDITIONS.otherTenant &&
+        condition !== CONDITIONS.fillKeyConflictB
     );
     await db.insert(polyCopyTradeFills).values([
       ...tenantConditions.map((condition, index) => ({
@@ -247,9 +249,9 @@ describe("authoritative wallet economic-position projection", () => {
 
     expect(result.liveCount).toBe(3);
     expect(result.closedCount).toBe(3);
-    expect(result.incompleteCount).toBe(4);
+    expect(result.incompleteCount).toBe(3);
     expect(result.walletIdentityCount).toBe(2);
-    expect(result.fillIdentityConflictCount).toBe(3);
+    expect(result.fillIdentityConflictCount).toBe(2);
     expect(result.outcomeIdentityConflictCount).toBe(1);
     expect(result.currentIdentityConflictCount).toBe(1);
     expect(result.missingMarkCount).toBe(2);
@@ -259,6 +261,17 @@ describe("authoritative wallet economic-position projection", () => {
     expect([...liveIds].filter((id) => closedIds.has(id))).toEqual([]);
     expect(liveIds).toContain(`${CONDITIONS.partial}:${token(CONDITIONS.partial)}`);
     expect(liveIds).toContain(`${CONDITIONS.reopened}:${token(CONDITIONS.reopened)}`);
+    expect(liveIds).not.toContain(
+      `${CONDITIONS.fillKeyConflictA}:${token(CONDITIONS.fillKeyConflictA)}`
+    );
+    expect(closedIds).not.toContain(
+      `${CONDITIONS.fillKeyConflictA}:${token(CONDITIONS.fillKeyConflictA)}`
+    );
+    expect(
+      [...liveIds, ...closedIds].some((id) =>
+        id.includes(CONDITIONS.fillKeyConflictB)
+      )
+    ).toBe(false);
     expect([...liveIds, ...closedIds].some((id) => id.includes(CONDITIONS.otherTenant))).toBe(false);
 
     const winner = result.closedPositions.find((position) => position.conditionId === CONDITIONS.winner);

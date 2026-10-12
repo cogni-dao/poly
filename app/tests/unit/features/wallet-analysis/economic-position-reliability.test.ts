@@ -20,7 +20,7 @@ import { classifyDatabaseReadFailure } from "@/features/wallet-analysis/server/m
 import { portfolioSnapshotFixture } from "../capability-plane/portfolio-snapshot.fixture";
 
 describe("economic-position projection reliability", () => {
-  it("materializes canonical ledger keys and scans position-keyed fills once", async () => {
+  it("anchors position-keyed fills before indexed sibling consensus", async () => {
     const captured: string[] = [];
     const db = {
       execute: async (query: unknown) => {
@@ -46,8 +46,13 @@ describe("economic-position projection reliability", () => {
     expect(query).not.toContain("SELECT * FROM ledger_candidates");
     expect(query).not.toContain("metadata_rank");
     expect(query).not.toContain("origin_keys AS MATERIALIZED");
+    expect(query).toContain("fill_identity_anchors AS MATERIALIZED");
     expect(query).toContain("fill_candidates AS MATERIALIZED");
     expect(query.match(/FROM poly_trader_fills f/g)).toHaveLength(1);
+    expect(query.match(/JOIN poly_trader_fills f/g)).toHaveLength(1);
+    expect(query).toContain("ON f.trader_wallet_id = w.id");
+    expect(query).toContain("AND f.source = identity.source");
+    expect(query).toContain("AND f.native_id = identity.native_id");
     expect(query).toContain("FROM fill_candidates f");
     expect(query).toContain("JOIN fill_candidates f ON f.id = g.chosen_id");
     expect(query).not.toContain("driven_fill_identities");
