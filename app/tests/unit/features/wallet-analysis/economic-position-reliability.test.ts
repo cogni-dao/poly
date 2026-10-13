@@ -108,19 +108,10 @@ describe("economic-position projection reliability", () => {
     expect(query).toContain("effective_rollup_cursor AS MATERIALIZED");
     expect(query).toContain("single_wallet_unrolled_tail AS MATERIALIZED");
     const normalizedQuery = query.replace(/\s+/g, " ").trim();
-    const drivenKeysAt = normalizedQuery.indexOf("CROSS JOIN driven_keys k");
     const lateralAt = normalizedQuery.indexOf("CROSS JOIN LATERAL");
-    const canonicalKeyAt = normalizedQuery.indexOf(
-      "lower(f.condition_id) = k.condition_id",
-      lateralAt
-    );
-    const tokenKeyAt = normalizedQuery.indexOf(
-      "f.token_id = k.token_id",
-      canonicalKeyAt
-    );
     const cursorAt = normalizedQuery.indexOf(
       "(f.created_at, f.id) > (cursor.last_created_at, cursor.last_fill_id)",
-      tokenKeyAt
+      lateralAt
     );
     const cutoffDayAt = normalizedQuery.indexOf(
       "f.observed_at < date_trunc(",
@@ -132,15 +123,18 @@ describe("economic-position projection reliability", () => {
     );
     const pullupFenceAt = normalizedQuery.indexOf("OFFSET 0", capturedAtCutoffAt);
     const lateralFence = normalizedQuery.slice(lateralAt, pullupFenceAt);
-    expect(drivenKeysAt).toBeGreaterThan(-1);
-    expect(lateralAt).toBeGreaterThan(drivenKeysAt);
-    expect(canonicalKeyAt).toBeGreaterThan(lateralAt);
-    expect(tokenKeyAt).toBeGreaterThan(canonicalKeyAt);
-    expect(cursorAt).toBeGreaterThan(tokenKeyAt);
+    const drivenFilterAt = normalizedQuery.indexOf(
+      "JOIN driven_keys k",
+      pullupFenceAt
+    );
+    expect(lateralAt).toBeGreaterThan(-1);
+    expect(cursorAt).toBeGreaterThan(lateralAt);
     expect(cutoffDayAt).toBeGreaterThan(cursorAt);
     expect(capturedAtCutoffAt).toBeGreaterThan(cutoffDayAt);
     expect(pullupFenceAt).toBeGreaterThan(capturedAtCutoffAt);
     expect(lateralFence).not.toContain("ORDER BY");
+    expect(lateralFence).not.toContain("JOIN driven_keys");
+    expect(drivenFilterAt).toBeGreaterThan(pullupFenceAt);
     expect(query).toContain("FROM single_wallet_unrolled_tail f");
     expect(query).not.toContain("fill_identity_anchors AS MATERIALIZED");
     expect(query).toContain("AT TIME ZONE 'UTC'");
