@@ -1027,17 +1027,32 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				sharesA: 125,
 				includeB: false,
 			});
-			await db.insert(polyTraderCurrentPositions).values({
-				traderWalletId: wallet.id,
-				conditionId: POSITION_GAP_FUTURE_CONDITION,
-				tokenId: POSITION_GAP_FUTURE_TOKEN,
-				shares: "1.00000000",
-				costBasisUsdc: "0.50000000",
-				currentValueUsdc: "0.60000000",
-				avgPrice: "0.50000000",
-				contentHash: `future-${suffix}`,
-				lastObservedAt: new Date("2026-10-09T10:02:00.000Z"),
-			});
+			const inactiveObservedAt = new Date("2026-10-09T09:58:00.000Z");
+			await db.insert(polyTraderCurrentPositions).values([
+				{
+					traderWalletId: wallet.id,
+					conditionId: POSITION_GAP_FUTURE_CONDITION,
+					tokenId: POSITION_GAP_FUTURE_TOKEN,
+					shares: "1.00000000",
+					costBasisUsdc: "0.50000000",
+					currentValueUsdc: "0.60000000",
+					avgPrice: "0.50000000",
+					contentHash: `future-${suffix}`,
+					lastObservedAt: new Date("2026-10-09T10:02:00.000Z"),
+				},
+				{
+					traderWalletId: wallet.id,
+					conditionId: POSITION_GAP_FUTURE_CONDITION,
+					tokenId: `${POSITION_GAP_FUTURE_TOKEN}-inactive`,
+					active: false,
+					shares: "0.00000000",
+					costBasisUsdc: "0.00000000",
+					currentValueUsdc: "0.00000000",
+					avgPrice: "0.00000000",
+					contentHash: `inactive-${suffix}`,
+					lastObservedAt: inactiveObservedAt,
+				},
+			]);
 			await expect(
 				persistPositionGapTargetSnapshot({ db, snapshot: latest }),
 			).resolves.toMatchObject({
@@ -1049,6 +1064,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 					tokenId: polyTraderCurrentPositions.tokenId,
 					shares: polyTraderCurrentPositions.shares,
 					active: polyTraderCurrentPositions.active,
+					lastObservedAt: polyTraderCurrentPositions.lastObservedAt,
 				})
 				.from(polyTraderCurrentPositions)
 				.where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
@@ -1058,16 +1074,25 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 						tokenId: POSITION_GAP_TOKEN_A,
 						shares: "125.00000000",
 						active: true,
+						lastObservedAt: new Date(latest.updatedAtMs),
 					},
 					{
 						tokenId: POSITION_GAP_TOKEN_B,
 						shares: "20.00000000",
 						active: false,
+						lastObservedAt: new Date(latest.updatedAtMs),
 					},
 					{
 						tokenId: POSITION_GAP_FUTURE_TOKEN,
 						shares: "1.00000000",
 						active: true,
+						lastObservedAt: new Date("2026-10-09T10:02:00.000Z"),
+					},
+					{
+						tokenId: `${POSITION_GAP_FUTURE_TOKEN}-inactive`,
+						shares: "0.00000000",
+						active: false,
+						lastObservedAt: inactiveObservedAt,
 					},
 				]),
 			);
