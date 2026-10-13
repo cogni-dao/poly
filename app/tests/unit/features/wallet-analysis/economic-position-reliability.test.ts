@@ -96,6 +96,15 @@ describe("economic-position projection reliability", () => {
     expect(query).toContain("single_position_flows AS MATERIALIZED");
     expect(query).toContain("poly_trader_fill_rollups_daily");
     expect(query).toContain("poly_trader_fill_rollup_cursors");
+    expect(query).toContain("effective_rollup_cursor AS MATERIALIZED");
+    expect(query).toContain("single_wallet_unrolled_tail AS MATERIALIZED");
+    expect(query).toContain("CROSS JOIN LATERAL");
+    expect(query).toContain(
+      "(f.created_at, f.id) > (cursor.last_created_at, cursor.last_fill_id)"
+    );
+    expect(query).toContain("ORDER BY f.created_at ASC, f.id ASC");
+    expect(query).toContain("JOIN single_wallet_unrolled_tail f");
+    expect(query).not.toContain("fill_identity_anchors AS MATERIALIZED");
     expect(query).toContain("AT TIME ZONE 'UTC'");
     expect(query).toContain("f.observed_at <=");
     expect(query).toContain("ORDER BY f.observed_at DESC, f.id");

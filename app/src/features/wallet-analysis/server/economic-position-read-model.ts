@@ -137,6 +137,39 @@ export async function readEconomicPositionProjection(params: {
         NULL::timestamptz AS first_buy_at, NULL::timestamptz AS last_flow_at,
         NULL::numeric AS last_price WHERE FALSE`
     : sql`
+      WITH effective_rollup_cursor AS MATERIALIZED (
+        SELECT
+          COALESCE(c.last_created_at, 'epoch'::timestamptz) AS last_created_at,
+          COALESCE(
+            c.last_fill_id,
+            '00000000-0000-0000-0000-000000000000'::uuid
+          ) AS last_fill_id
+        FROM (SELECT 1) seed
+        LEFT JOIN poly_trader_fill_rollup_cursors c
+          ON c.trader_wallet_id = ${singleWalletId}::uuid
+      ), single_wallet_unrolled_tail AS MATERIALIZED (
+        -- LATERAL is load-bearing: the insertion watermark becomes an Index
+        -- Cond on (trader_wallet_id, created_at, id), so a caught-up wallet
+        -- does not rescan each driven position's lifetime fill history.
+        SELECT
+          f.condition_id, f.token_id, f.side, f.size_usdc, f.shares,
+          f.observed_at
+        FROM effective_rollup_cursor cursor
+        CROSS JOIN LATERAL (
+          SELECT
+            f.condition_id, f.token_id, f.side, f.size_usdc, f.shares,
+            f.observed_at, f.created_at, f.id
+          FROM poly_trader_fills f
+          WHERE f.trader_wallet_id = ${singleWalletId}::uuid
+            AND (f.created_at, f.id) >
+              (cursor.last_created_at, cursor.last_fill_id)
+          ORDER BY f.created_at ASC, f.id ASC
+        ) f
+        WHERE f.observed_at < date_trunc(
+          'day', ${params.capturedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC'
+        ) AT TIME ZONE 'UTC'
+          AND f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+      )
       SELECT
         flows.condition_id,
         flows.token_id,
@@ -197,20 +230,9 @@ export async function readEconomicPositionProjection(params: {
             CASE WHEN f.side = 'BUY' THEN f.observed_at END,
             f.observed_at
           FROM driven_keys k
-          JOIN poly_trader_fills f
-           ON f.trader_wallet_id = ${singleWalletId}::uuid
-           AND lower(f.condition_id) = k.condition_id
+          JOIN single_wallet_unrolled_tail f
+            ON lower(f.condition_id) = k.condition_id
            AND f.token_id = k.token_id
-           AND f.observed_at < date_trunc(
-             'day', ${params.capturedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC'
-           ) AT TIME ZONE 'UTC'
-           AND f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-          LEFT JOIN poly_trader_fill_rollup_cursors c
-            ON c.trader_wallet_id = f.trader_wallet_id
-          WHERE (f.created_at, f.id) > (
-            COALESCE(c.last_created_at, 'epoch'::timestamptz),
-            COALESCE(c.last_fill_id, '00000000-0000-0000-0000-000000000000'::uuid)
-          )
         ) parts
         GROUP BY lower(parts.condition_id), parts.token_id
       ) flows
@@ -225,6 +247,105 @@ export async function readEconomicPositionProjection(params: {
         LIMIT 1
       ) latest ON TRUE
     `;
+  const rawPositionFlowCtes = singleWalletId !== null
+    ? sql`
+      fill_conflicted_keys AS MATERIALIZED (
+        SELECT NULL::text AS condition_id, NULL::text AS token_id WHERE FALSE
+      ), raw_position_flows AS MATERIALIZED (
+        SELECT
+          NULL::text AS condition_id, NULL::text AS token_id,
+          NULL::numeric AS total_buy_usdc, NULL::numeric AS total_sell_usdc,
+          NULL::numeric AS total_buy_shares, NULL::numeric AS total_sell_shares,
+          NULL::timestamptz AS first_buy_at,
+          NULL::timestamptz AS last_flow_at,
+          NULL::numeric AS last_price,
+          NULL::boolean AS fill_identity_conflict
+        WHERE FALSE
+      )`
+    : sql`
+      fill_identity_anchors AS MATERIALIZED (
+        SELECT DISTINCT f.source, f.native_id
+        FROM poly_trader_fills f
+        JOIN wallet_identity w ON w.id = f.trader_wallet_id
+        JOIN driven_keys k
+          ON k.condition_id = lower(f.condition_id)
+         AND k.token_id = f.token_id
+        WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+      ), fill_candidates AS MATERIALIZED (
+        SELECT
+          f.id,
+          f.source,
+          f.native_id,
+          f.condition_id,
+          f.token_id,
+          f.side,
+          f.price,
+          f.shares,
+          f.size_usdc,
+          f.observed_at,
+          w.updated_at AS wallet_updated_at,
+          w.created_at AS wallet_created_at,
+          w.id AS wallet_id
+        FROM fill_identity_anchors identity
+        JOIN wallet_identity w ON TRUE
+        JOIN poly_trader_fills f
+          ON f.trader_wallet_id = w.id
+         AND f.source = identity.source
+         AND f.native_id = identity.native_id
+        WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+      ), fill_groups AS MATERIALIZED (
+        SELECT
+          f.source,
+          f.native_id,
+          (array_agg(f.id ORDER BY
+            f.wallet_updated_at DESC,
+            f.wallet_created_at DESC,
+            f.wallet_id,
+            f.id
+          ))[1] AS chosen_id,
+          count(DISTINCT md5(concat_ws('|',
+            lower(f.condition_id), f.token_id, f.side, f.price::text,
+            f.shares::text, f.size_usdc::text, f.observed_at::text
+          )))::int AS fact_variants
+        FROM fill_candidates f
+        GROUP BY f.source, f.native_id
+      ), fill_conflicted_keys AS MATERIALIZED (
+        SELECT DISTINCT lower(f.condition_id) AS condition_id, f.token_id
+        FROM fill_candidates f
+        JOIN fill_groups g
+          ON g.source = f.source
+         AND g.native_id = f.native_id
+         AND g.fact_variants > 1
+        JOIN driven_keys k
+          ON k.condition_id = lower(f.condition_id)
+         AND k.token_id = f.token_id
+      ), canonical_fills AS MATERIALIZED (
+        SELECT
+          lower(f.condition_id) AS condition_id,
+          f.token_id,
+          f.side,
+          f.price,
+          f.shares,
+          f.size_usdc,
+          f.observed_at,
+          g.fact_variants
+        FROM fill_groups g
+        JOIN fill_candidates f ON f.id = g.chosen_id
+      ), raw_position_flows AS MATERIALIZED (
+        SELECT
+          condition_id,
+          token_id,
+          SUM(size_usdc) FILTER (WHERE side = 'BUY')::numeric AS total_buy_usdc,
+          COALESCE(SUM(size_usdc) FILTER (WHERE side = 'SELL'), 0)::numeric AS total_sell_usdc,
+          SUM(shares) FILTER (WHERE side = 'BUY')::numeric AS total_buy_shares,
+          COALESCE(SUM(shares) FILTER (WHERE side = 'SELL'), 0)::numeric AS total_sell_shares,
+          MIN(observed_at) FILTER (WHERE side = 'BUY') AS first_buy_at,
+          MAX(observed_at) AS last_flow_at,
+          (array_agg(price ORDER BY observed_at DESC))[1]::numeric AS last_price,
+          bool_or(fact_variants > 1) AS fill_identity_conflict
+        FROM canonical_fills
+        GROUP BY condition_id, token_id
+      )`;
 
   const queryStartedAt = performance.now();
   let queryResult: unknown = [];
@@ -378,90 +499,7 @@ export async function readEconomicPositionProjection(params: {
        AND k.token_id = p.token_id
       WHERE target.billing_account_id = ${params.billingAccountId}
         AND target.disabled_at IS NULL
-    ), fill_identity_anchors AS MATERIALIZED (
-      SELECT DISTINCT f.source, f.native_id
-      FROM poly_trader_fills f
-      JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      JOIN driven_keys k
-        ON k.condition_id = lower(f.condition_id)
-       AND k.token_id = f.token_id
-      WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-        AND ${singleWalletId}::uuid IS NULL
-    ), fill_candidates AS MATERIALIZED (
-      SELECT
-        f.id,
-        f.source,
-        f.native_id,
-        f.condition_id,
-        f.token_id,
-        f.side,
-        f.price,
-        f.shares,
-        f.size_usdc,
-        f.observed_at,
-        w.updated_at AS wallet_updated_at,
-        w.created_at AS wallet_created_at,
-        w.id AS wallet_id
-      FROM fill_identity_anchors identity
-      JOIN wallet_identity w ON TRUE
-      JOIN poly_trader_fills f
-        ON f.trader_wallet_id = w.id
-       AND f.source = identity.source
-       AND f.native_id = identity.native_id
-      WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-    ), fill_groups AS MATERIALIZED (
-      SELECT
-        f.source,
-        f.native_id,
-        (array_agg(f.id ORDER BY
-          f.wallet_updated_at DESC,
-          f.wallet_created_at DESC,
-          f.wallet_id,
-          f.id
-        ))[1] AS chosen_id,
-        count(DISTINCT md5(concat_ws('|',
-          lower(f.condition_id), f.token_id, f.side, f.price::text,
-          f.shares::text, f.size_usdc::text, f.observed_at::text
-        )))::int AS fact_variants
-      FROM fill_candidates f
-      GROUP BY f.source, f.native_id
-    ), fill_conflicted_keys AS MATERIALIZED (
-      SELECT DISTINCT lower(f.condition_id) AS condition_id, f.token_id
-      FROM fill_candidates f
-      JOIN fill_groups g
-        ON g.source = f.source
-       AND g.native_id = f.native_id
-       AND g.fact_variants > 1
-      JOIN driven_keys k
-        ON k.condition_id = lower(f.condition_id)
-       AND k.token_id = f.token_id
-    ), canonical_fills AS MATERIALIZED (
-      SELECT
-        lower(f.condition_id) AS condition_id,
-        f.token_id,
-        f.side,
-        f.price,
-        f.shares,
-        f.size_usdc,
-        f.observed_at,
-        g.fact_variants
-      FROM fill_groups g
-      JOIN fill_candidates f ON f.id = g.chosen_id
-    ), raw_position_flows AS MATERIALIZED (
-      SELECT
-        condition_id,
-        token_id,
-        SUM(size_usdc) FILTER (WHERE side = 'BUY')::numeric AS total_buy_usdc,
-        COALESCE(SUM(size_usdc) FILTER (WHERE side = 'SELL'), 0)::numeric AS total_sell_usdc,
-        SUM(shares) FILTER (WHERE side = 'BUY')::numeric AS total_buy_shares,
-        COALESCE(SUM(shares) FILTER (WHERE side = 'SELL'), 0)::numeric AS total_sell_shares,
-        MIN(observed_at) FILTER (WHERE side = 'BUY') AS first_buy_at,
-        MAX(observed_at) AS last_flow_at,
-        (array_agg(price ORDER BY observed_at DESC))[1]::numeric AS last_price,
-        bool_or(fact_variants > 1) AS fill_identity_conflict
-      FROM canonical_fills
-      GROUP BY condition_id, token_id
-    ), single_position_flows AS MATERIALIZED (
+    ), ${rawPositionFlowCtes}, single_position_flows AS MATERIALIZED (
       ${singleWalletFlows}
     ), position_flows AS MATERIALIZED (
       SELECT
