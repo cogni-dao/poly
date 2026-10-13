@@ -20,8 +20,13 @@ const VIRTUAL_KEY_ID = "30000000-0000-4000-a000-000000000001";
 
 const mocks = vi.hoisted(() => ({
   checkIdempotency: vi.fn().mockResolvedValue({ status: "new" }),
-  createPendingRequest: vi.fn().mockResolvedValue(undefined),
+  createPendingRequest: vi.fn().mockResolvedValue({
+    status: "claimed",
+    request: { runId: "a0000000-0000-4000-a000-000000000001" },
+  }),
+  heartbeatRequest: vi.fn().mockResolvedValue(undefined),
   finalizeRequest: vi.fn(),
+  markRunCompleted: vi.fn().mockResolvedValue(undefined),
   publish: vi.fn(async (_runId: string, event: { type: string }) => {
     if (event.type === "done") throw new Error("redis unavailable");
   }),
@@ -81,7 +86,11 @@ vi.mock("@/bootstrap/container", () => ({
     executionRequestPort: {
       checkIdempotency: mocks.checkIdempotency,
       createPendingRequest: mocks.createPendingRequest,
+      heartbeatRequest: mocks.heartbeatRequest,
       finalizeRequest: mocks.finalizeRequest,
+    },
+    graphRunRepository: {
+      markRunCompleted: mocks.markRunCompleted,
     },
     accountsForUser: () => ({}),
     providerResolver: {},
@@ -195,6 +204,10 @@ describe("POST /api/internal/graphs/{graphId}/runs terminal publication", () => 
 
     expect(response.status).toBe(200);
     expect(mocks.createPendingRequest).not.toHaveBeenCalled();
+    expect(mocks.heartbeatRequest).toHaveBeenCalledWith(
+      "ai:scoped-key",
+      expect.any(String)
+    );
     expect(mocks.finalizeRequest).toHaveBeenCalledWith("ai:scoped-key", {
       ok: false,
       errorCode: "internal",
