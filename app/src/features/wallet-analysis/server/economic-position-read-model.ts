@@ -156,32 +156,37 @@ export async function readEconomicPositionProjection(params: {
         LEFT JOIN poly_trader_fill_rollup_cursors c
           ON c.trader_wallet_id = ${singleWalletId}::uuid
       ), single_wallet_unrolled_tail AS MATERIALIZED (
-        -- LATERAL + OFFSET 0 are load-bearing: scan the wallet's insertion-
-        -- watermark tail exactly once, then discard unrelated driven legs.
-        -- Production deliberately has no condition/token/created composite
-        -- index, so probing this tail once per driven key repeats the wallet
-        -- scan and can exhaust the statement budget under load.
+        -- The inner OFFSET 0 is load-bearing: only the predicates served by
+        -- the existing wallet/condition/token/observed index live inside its
+        -- fence. The cursor tuple stays outside so Postgres cannot choose the
+        -- wallet/created index once per driven key and rescan the same tail.
         SELECT
           f.condition_id, f.token_id, f.side, f.size_usdc, f.shares,
           f.observed_at
         FROM effective_rollup_cursor cursor
+        CROSS JOIN driven_keys k
         CROSS JOIN LATERAL (
           SELECT
             f.condition_id, f.token_id, f.side, f.size_usdc, f.shares,
-            f.observed_at, f.created_at, f.id
-          FROM poly_trader_fills f
-          WHERE f.trader_wallet_id = ${singleWalletId}::uuid
-            AND (f.created_at, f.id) >
-              (cursor.last_created_at, cursor.last_fill_id)
-            AND f.observed_at < date_trunc(
-              'day', ${params.capturedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC'
-            ) AT TIME ZONE 'UTC'
-            AND f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-          OFFSET 0
+            f.observed_at
+          FROM (
+            SELECT
+              keyed.condition_id, keyed.token_id, keyed.side,
+              keyed.size_usdc, keyed.shares, keyed.observed_at,
+              keyed.created_at, keyed.id
+            FROM poly_trader_fills keyed
+            WHERE keyed.trader_wallet_id = ${singleWalletId}::uuid
+              AND lower(keyed.condition_id) = k.condition_id
+              AND keyed.token_id = k.token_id
+              AND keyed.observed_at < date_trunc(
+                'day', ${params.capturedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC'
+              ) AT TIME ZONE 'UTC'
+              AND keyed.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+            OFFSET 0
+          ) f
+          WHERE (f.created_at, f.id) >
+            (cursor.last_created_at, cursor.last_fill_id)
         ) f
-        JOIN driven_keys k
-          ON k.condition_id = lower(f.condition_id)
-         AND k.token_id = f.token_id
       )
       SELECT
         flows.condition_id,
