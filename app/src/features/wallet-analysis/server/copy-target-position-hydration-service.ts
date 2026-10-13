@@ -547,8 +547,9 @@ async function persistTargetPositionFacts(input: {
       UPDATE poly_trader_current_positions p
       SET active = false, last_observed_at = ${observedAtIso}::timestamptz
       WHERE p.trader_wallet_id = ${wallet.id}::uuid
+        AND p.active = true
         AND ${scopePredicate}
-		AND p.last_observed_at <= ${observedAtIso}::timestamptz
+        AND p.last_observed_at <= ${observedAtIso}::timestamptz
         AND NOT EXISTS (
           SELECT 1
           FROM jsonb_to_recordset(${observedKeys}::jsonb)
