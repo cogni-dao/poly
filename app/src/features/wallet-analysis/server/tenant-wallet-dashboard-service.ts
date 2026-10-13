@@ -73,8 +73,8 @@ export type WalletDashboardReadDiagnostics = ComparisonReadDiagnostics & {
   economicProjectionFailureClass?: ComparisonReadFailureClass;
   economicProjectionPlanMs?: number;
   economicProjectionPlanStatement?: "identity" | "projection";
-  economicProjectionPlanEstimatedTotalCost?: number;
-  economicProjectionPlanEstimatedRows?: number;
+  economicProjectionPlanEstimatedTotalCost?: number | null;
+  economicProjectionPlanEstimatedRows?: number | null;
   economicProjectionPlanNodes?: string[];
   economicProjectionPlanFailureClass?: ComparisonReadFailureClass;
   comparisonPath?:
