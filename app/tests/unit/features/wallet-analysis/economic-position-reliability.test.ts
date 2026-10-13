@@ -39,7 +39,14 @@ describe("economic-position projection reliability", () => {
     });
 
     const query = captured[0] ?? "";
-    expect(query).toContain("SELECT DISTINCT ON (condition_id, token_id)");
+    expect(query).toContain("ledger_candidate_refs AS MATERIALIZED");
+    expect(query).toContain("SELECT DISTINCT ON (");
+    expect(query).toContain("f.target_id");
+    expect(query).toContain("f.fill_id");
+    expect(query).toContain("FROM ledger_candidate_refs r");
+    expect(query).toContain("AND f.target_id = r.target_id");
+    expect(query).toContain("AND f.fill_id = r.fill_id");
+    expect(query).not.toContain("ledger_source AS");
     expect(query).toContain(
       "SELECT condition_id, token_id FROM ledger_candidates"
     );

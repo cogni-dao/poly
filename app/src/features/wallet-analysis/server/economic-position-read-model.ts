@@ -133,22 +133,30 @@ export async function readEconomicPositionProjection(params: {
       LEFT JOIN poly_trader_ingestion_cursors c
         ON c.trader_wallet_id = w.id
        AND c.source = ${mode === "paper" ? "paper-ledger-positions" : "data-api-positions"}
-    ), ledger_source AS (
-      SELECT
+    ), ledger_candidate_refs AS MATERIALIZED (
+      SELECT DISTINCT ON (
+        lower(NULLIF(COALESCE(
+          NULLIF(f.attributes->>'condition_id', ''),
+          NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), '')
+        ), '')),
+        NULLIF(f.attributes->>'token_id', '')
+      )
         lower(NULLIF(COALESCE(
           NULLIF(f.attributes->>'condition_id', ''),
           NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), '')
         ), '')) AS condition_id,
         NULLIF(f.attributes->>'token_id', '') AS token_id,
-        f.position_lifecycle,
-        f.observed_at,
-        f.updated_at,
-        f.attributes,
-        f.client_order_id
+        f.target_id,
+        f.fill_id
       FROM poly_copy_trade_fills f
       WHERE f.billing_account_id = ${params.billingAccountId}
         AND f.mode = ${mode}
         AND f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+        AND lower(NULLIF(COALESCE(
+          NULLIF(f.attributes->>'condition_id', ''),
+          NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), '')
+        ), '')) IS NOT NULL
+        AND NULLIF(f.attributes->>'token_id', '') IS NOT NULL
         AND (
           f.position_lifecycle IS NOT NULL
           OR CASE
@@ -162,18 +170,30 @@ export async function readEconomicPositionProjection(params: {
             AND (f.attributes->>'size_usdc')::numeric > 0
           )
         )
+      ORDER BY
+        lower(NULLIF(COALESCE(
+          NULLIF(f.attributes->>'condition_id', ''),
+          NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), '')
+        ), '')),
+        NULLIF(f.attributes->>'token_id', ''),
+        f.updated_at DESC,
+        f.observed_at DESC,
+        f.client_order_id DESC
     ), ledger_candidates AS MATERIALIZED (
-      SELECT DISTINCT ON (condition_id, token_id)
-        condition_id,
-        token_id,
-        position_lifecycle,
-        observed_at,
-        updated_at,
-        attributes
-      FROM ledger_source
-      WHERE condition_id IS NOT NULL AND token_id IS NOT NULL
-      ORDER BY condition_id, token_id,
-        updated_at DESC, observed_at DESC, client_order_id DESC
+      SELECT
+        r.condition_id,
+        r.token_id,
+        f.position_lifecycle,
+        f.observed_at,
+        f.updated_at,
+        f.attributes
+      FROM ledger_candidate_refs r
+      JOIN poly_copy_trade_fills f
+        ON f.billing_account_id = ${params.billingAccountId}
+       AND f.target_id = r.target_id
+       AND f.fill_id = r.fill_id
+      WHERE f.mode = ${mode}
+        AND f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
     ), current_groups AS MATERIALIZED (
       SELECT
         lower(p.condition_id) AS condition_id,
