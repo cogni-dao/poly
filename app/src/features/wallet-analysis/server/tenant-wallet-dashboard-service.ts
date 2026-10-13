@@ -71,6 +71,12 @@ export type WalletDashboardReadDiagnostics = ComparisonReadDiagnostics & {
   economicWalletIdentityCount?: number;
   economicProjectionQueryMs?: number;
   economicProjectionFailureClass?: ComparisonReadFailureClass;
+  economicProjectionPlanMs?: number;
+  economicProjectionPlanStatement?: "identity" | "projection";
+  economicProjectionPlanEstimatedTotalCost?: number;
+  economicProjectionPlanEstimatedRows?: number;
+  economicProjectionPlanNodes?: string[];
+  economicProjectionPlanFailureClass?: ComparisonReadFailureClass;
   comparisonPath?:
     | "cache_hit"
     | "unknown"
@@ -202,10 +208,18 @@ export async function readTenantWalletDashboardIn(
   let economicRead: OptionalRead<
     Awaited<ReturnType<typeof readEconomicPositionProjection>>
   >;
+  let economicStatement: SQL | undefined;
+  let economicStatementOrdinal = 0;
   try {
     economicRead = await optionalRead(db, (savepoint) =>
       readEconomicPositionProjection({
-        db: savepoint,
+        db: {
+          execute: async (query) => {
+            economicStatement = query;
+            economicStatementOrdinal += 1;
+            return savepoint.execute(query);
+          },
+        },
         billingAccountId: input.billingAccountId,
         walletAddress: address,
         connectionKind: connection.connectionKind,
@@ -222,11 +236,25 @@ export async function readTenantWalletDashboardIn(
     );
   }
   if (!economicRead.ok) {
+    const failureClass = classifyDatabaseReadFailure(economicRead.error);
     recordDashboardDiagnostic(
       input.diagnostics,
       "economicProjectionFailureClass",
-      classifyDatabaseReadFailure(economicRead.error)
+      failureClass
     );
+    if (
+      failureClass === "statement_timeout" &&
+      input.diagnostics &&
+      economicStatement
+    ) {
+      await recordEconomicProjectionPlanAfterTimeout({
+        db,
+        statement: economicStatement,
+        statementKind:
+          economicStatementOrdinal > 1 ? "projection" : "identity",
+        diagnostics: input.diagnostics,
+      });
+    }
   }
   const originRead = economicRead.ok
     ? await optionalRead(db, (savepoint) =>
@@ -1150,6 +1178,167 @@ function recordDashboardDiagnostic<K extends keyof WalletDashboardReadDiagnostic
   } catch {
     // Observability is fail-open and cannot alter wallet truth.
   }
+}
+
+type ExplainPlanNode = {
+  "Node Type"?: unknown;
+  "CTE Name"?: unknown;
+  "Subplan Name"?: unknown;
+  "Relation Name"?: unknown;
+  "Index Name"?: unknown;
+  "Total Cost"?: unknown;
+  "Plan Rows"?: unknown;
+  Plans?: unknown;
+};
+
+export type EconomicProjectionPlanSummary = {
+  estimatedTotalCost: number | null;
+  estimatedRows: number | null;
+  nodes: string[];
+};
+
+/**
+ * @internal — explain the exact failed statement after its savepoint rollback.
+ * Never throws: diagnostic failure cannot replace the original degraded read.
+ */
+export async function recordEconomicProjectionPlanAfterTimeout(params: {
+  db: Db;
+  statement: SQL;
+  statementKind: "identity" | "projection";
+  diagnostics: WalletDashboardReadDiagnostics;
+}): Promise<void> {
+  recordDashboardDiagnostic(
+    params.diagnostics,
+    "economicProjectionPlanStatement",
+    params.statementKind
+  );
+  const planStartedAt = performance.now();
+  const planRead = await optionalRead(params.db, async (savepoint) => {
+    await savepoint.execute(sql.raw("SET LOCAL statement_timeout = 1000"));
+    const result = await savepoint.execute(
+      sql`EXPLAIN (FORMAT JSON) ${params.statement}`
+    );
+    await savepoint.execute(
+      sql.raw(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
+    );
+    return result;
+  });
+  recordDashboardDiagnostic(
+    params.diagnostics,
+    "economicProjectionPlanMs",
+    Math.max(0, Math.round(performance.now() - planStartedAt))
+  );
+  if (planRead.ok) {
+    const summary = summarizeEconomicProjectionPlan(planRead.value);
+    recordDashboardDiagnostic(
+      params.diagnostics,
+      "economicProjectionPlanEstimatedTotalCost",
+      summary.estimatedTotalCost
+    );
+    recordDashboardDiagnostic(
+      params.diagnostics,
+      "economicProjectionPlanEstimatedRows",
+      summary.estimatedRows
+    );
+    recordDashboardDiagnostic(
+      params.diagnostics,
+      "economicProjectionPlanNodes",
+      summary.nodes
+    );
+    return;
+  }
+  recordDashboardDiagnostic(
+    params.diagnostics,
+    "economicProjectionPlanFailureClass",
+    classifyDatabaseReadFailure(planRead.error)
+  );
+}
+
+/** @internal — bounded, identifier-only summary for timeout diagnostics. */
+export function summarizeEconomicProjectionPlan(
+  result: unknown
+): EconomicProjectionPlanSummary {
+  const row = normalizeRows<Record<string, unknown>>(result)[0];
+  const raw = row?.["QUERY PLAN"] ?? row?.query_plan;
+  const decoded = typeof raw === "string" ? safeJson(raw) : raw;
+  const document = Array.isArray(decoded) ? decoded[0] : decoded;
+  const root = isRecord(document) ? document.Plan : undefined;
+  if (!isRecord(root)) {
+    return { estimatedTotalCost: null, estimatedRows: null, nodes: [] };
+  }
+
+  const ranked: Array<{ access: boolean; cost: number; label: string }> = [];
+  const visit = (value: unknown): void => {
+    if (!isRecord(value)) return;
+    const node = value as ExplainPlanNode;
+    const cost = finiteNumber(node["Total Cost"]);
+    const rows = finiteNumber(node["Plan Rows"]);
+    const nodeType = boundedIdentifier(node["Node Type"]);
+    const cte = boundedIdentifier(node["CTE Name"]);
+    const subplan = boundedIdentifier(node["Subplan Name"]);
+    const relation = boundedIdentifier(node["Relation Name"]);
+    const index = boundedIdentifier(node["Index Name"]);
+    ranked.push({
+      access:
+        cte !== null ||
+        subplan !== null ||
+        relation !== null ||
+        index !== null ||
+        nodeType?.toLowerCase().includes("scan") === true,
+      cost: cost ?? -1,
+      label: [
+        nodeType ?? "unknown",
+        cte ? `cte=${cte}` : null,
+        subplan ? `subplan=${subplan}` : null,
+        relation ? `rel=${relation}` : null,
+        index ? `idx=${index}` : null,
+        cost === null ? null : `est_cost=${cost}`,
+        rows === null ? null : `est_rows=${rows}`,
+      ]
+        .filter((part): part is string => part !== null)
+        .join(" "),
+    });
+    if (Array.isArray(node.Plans)) {
+      for (const child of node.Plans) visit(child);
+    }
+  };
+  visit(root);
+
+  const byCost = [...ranked].sort((left, right) => right.cost - left.cost);
+  const labels = [
+    ...byCost.slice(0, 4),
+    ...byCost.filter((entry) => entry.access).slice(0, 4),
+  ].map((entry) => entry.label);
+
+  return {
+    estimatedTotalCost: finiteNumber(root["Total Cost"]),
+    estimatedRows: finiteNumber(root["Plan Rows"]),
+    nodes: [...new Set(labels)].slice(0, 8),
+  };
+}
+
+function safeJson(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function finiteNumber(value: unknown): number | null {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function boundedIdentifier(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0
+    ? value.slice(0, 96)
+    : null;
 }
 
 function cashMeta(balance: Exclude<Awaited<ReturnType<typeof readWalletBalanceFact>>, { kind: "no_wallet" }>, capturedAt: Date): WalletDashboardFactMeta {

@@ -242,6 +242,17 @@ export function portfolioSnapshotExtra(
     economicProjectionQueryMs: diagnostics?.economicProjectionQueryMs ?? null,
     economicProjectionFailureClass:
       diagnostics?.economicProjectionFailureClass ?? null,
+    economicProjectionPlanMs: diagnostics?.economicProjectionPlanMs ?? null,
+    economicProjectionPlanStatement:
+      diagnostics?.economicProjectionPlanStatement ?? null,
+    economicProjectionPlanEstimatedTotalCost:
+      diagnostics?.economicProjectionPlanEstimatedTotalCost ?? null,
+    economicProjectionPlanEstimatedRows:
+      diagnostics?.economicProjectionPlanEstimatedRows ?? null,
+    economicProjectionPlanNodes:
+      diagnostics?.economicProjectionPlanNodes ?? [],
+    economicProjectionPlanFailureClass:
+      diagnostics?.economicProjectionPlanFailureClass ?? null,
     comparisonReadPath: diagnostics?.comparisonPath ?? "unknown",
     comparisonIdentityMs: diagnostics?.comparisonIdentityMs ?? null,
     comparisonBundleTotalMs: diagnostics?.comparisonBundleTotalMs ?? null,

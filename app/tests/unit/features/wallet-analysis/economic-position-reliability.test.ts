@@ -11,6 +11,7 @@
  * @internal
  */
 
+import { sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
@@ -20,6 +21,10 @@ import {
   readEconomicPositionProjection,
 } from "@/features/wallet-analysis/server/economic-position-read-model";
 import { classifyDatabaseReadFailure } from "@/features/wallet-analysis/server/market-exposure-service";
+import {
+  recordEconomicProjectionPlanAfterTimeout,
+  summarizeEconomicProjectionPlan,
+} from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 import { portfolioSnapshotFixture } from "../capability-plane/portfolio-snapshot.fixture";
 
 describe("economic-position projection reliability", () => {
@@ -164,6 +169,120 @@ describe("economic-position projection reliability", () => {
     );
   });
 
+  it("reduces EXPLAIN JSON to bounded planner evidence", () => {
+    const summary = summarizeEconomicProjectionPlan([
+      {
+        "QUERY PLAN": [
+          {
+            Plan: {
+              "Node Type": "Nested Loop",
+              "Total Cost": 9001.25,
+              "Plan Rows": 30,
+              Plans: [
+                {
+                  "Node Type": "Index Scan",
+                  "Subplan Name": "CTE single_wallet_unrolled_tail",
+                  "Relation Name": "poly_trader_fills",
+                  "Index Name":
+                    "poly_trader_fills_wallet_condition_token_observed_lower_idx",
+                  "Total Cost": 8000.5,
+                  "Plan Rows": 1776,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ]);
+
+    expect(summary).toEqual({
+      estimatedTotalCost: 9001.25,
+      estimatedRows: 30,
+      nodes: [
+        "Nested Loop est_cost=9001.25 est_rows=30",
+        "Index Scan subplan=CTE single_wallet_unrolled_tail rel=poly_trader_fills idx=poly_trader_fills_wallet_condition_token_observed_lower_idx est_cost=8000.5 est_rows=1776",
+      ],
+    });
+  });
+
+  it("explains a timed-out statement under a restored bounded timeout", async () => {
+    const executed: string[] = [];
+    const diagnostics = {};
+    const plan = [
+      {
+        "QUERY PLAN": [
+          {
+            Plan: {
+              "Node Type": "Seq Scan",
+              "Relation Name": "poly_copy_trade_fills",
+              "Total Cost": 42,
+              "Plan Rows": 7,
+            },
+          },
+        ],
+      },
+    ];
+    const savepoint = {
+      execute: async (query: unknown) => {
+        const rendered = new PgDialect().sqlToQuery(query as never).sql;
+        executed.push(rendered);
+        return rendered.includes("EXPLAIN") ? plan : [];
+      },
+    };
+    const db = {
+      transaction: async (read: (tx: typeof savepoint) => Promise<unknown>) =>
+        read(savepoint),
+    };
+
+    await recordEconomicProjectionPlanAfterTimeout({
+      db: db as never,
+      statement: sql`SELECT 1`,
+      statementKind: "projection",
+      diagnostics,
+    });
+
+    expect(executed).toHaveLength(3);
+    expect(executed[0]).toContain("SET LOCAL statement_timeout = 1000");
+    expect(executed[1]).toContain("EXPLAIN (FORMAT JSON) SELECT 1");
+    expect(executed[2]).toContain("SET LOCAL statement_timeout = 8000");
+    expect(diagnostics).toMatchObject({
+      economicProjectionPlanStatement: "projection",
+      economicProjectionPlanEstimatedTotalCost: 42,
+      economicProjectionPlanEstimatedRows: 7,
+      economicProjectionPlanNodes: [
+        "Seq Scan rel=poly_copy_trade_fills est_cost=42 est_rows=7",
+      ],
+    });
+  });
+
+  it("keeps a failed timeout EXPLAIN fail-open", async () => {
+    const diagnostics = {};
+    const savepoint = {
+      execute: async (query: unknown) => {
+        const rendered = new PgDialect().sqlToQuery(query as never).sql;
+        if (rendered.includes("EXPLAIN")) throw new Error("plan unavailable");
+        return [];
+      },
+    };
+    const db = {
+      transaction: async (read: (tx: typeof savepoint) => Promise<unknown>) =>
+        read(savepoint),
+    };
+
+    await expect(
+      recordEconomicProjectionPlanAfterTimeout({
+        db: db as never,
+        statement: sql`SELECT 1`,
+        statementKind: "projection",
+        diagnostics,
+      })
+    ).resolves.toBeUndefined();
+    expect(diagnostics).toMatchObject({
+      economicProjectionPlanStatement: "projection",
+      economicProjectionPlanFailureClass: "unexpected_error",
+    });
+  });
+
   it("emits bounded economic timing and the typed failure class on the terminal event", () => {
     const extra = portfolioSnapshotExtra(
       { status: "ok", data: portfolioSnapshotFixture() },
@@ -174,6 +293,13 @@ describe("economic-position projection reliability", () => {
         economicWalletIdentityCount: 1,
         economicProjectionQueryMs: 7_997,
         economicProjectionFailureClass: "statement_timeout",
+        economicProjectionPlanMs: 9,
+        economicProjectionPlanStatement: "projection",
+        economicProjectionPlanEstimatedTotalCost: 9001.25,
+        economicProjectionPlanEstimatedRows: 30,
+        economicProjectionPlanNodes: [
+          "Nested Loop est_cost=9001.25 est_rows=30",
+        ],
       }
     );
 
@@ -183,6 +309,13 @@ describe("economic-position projection reliability", () => {
       economicWalletIdentityCount: 1,
       economicProjectionQueryMs: 7_997,
       economicProjectionFailureClass: "statement_timeout",
+      economicProjectionPlanMs: 9,
+      economicProjectionPlanStatement: "projection",
+      economicProjectionPlanEstimatedTotalCost: 9001.25,
+      economicProjectionPlanEstimatedRows: 30,
+      economicProjectionPlanNodes: [
+        "Nested Loop est_cost=9001.25 est_rows=30",
+      ],
     });
     expect(JSON.stringify(extra)).not.toContain("sensitive database detail");
   });
