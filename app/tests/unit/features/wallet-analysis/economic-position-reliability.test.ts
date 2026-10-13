@@ -25,6 +25,12 @@ describe("economic-position projection reliability", () => {
     const db = {
       execute: async (query: unknown) => {
         captured.push(new PgDialect().sqlToQuery(query as never).sql);
+        if (captured.length === 1) {
+          return [
+            { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+            { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+          ];
+        }
         return [];
       },
     };
@@ -38,7 +44,7 @@ describe("economic-position projection reliability", () => {
       interval: "ALL",
     });
 
-    const query = captured[0] ?? "";
+    const query = captured.at(-1) ?? "";
     expect(query).toContain("ledger_candidate_refs AS MATERIALIZED");
     expect(query).toContain("SELECT DISTINCT ON (");
     expect(query).toContain("f.target_id");
@@ -63,6 +69,36 @@ describe("economic-position projection reliability", () => {
     expect(query).toContain("FROM fill_candidates f");
     expect(query).toContain("JOIN fill_candidates f ON f.id = g.chosen_id");
     expect(query).not.toContain("driven_fill_identities");
+    expect(query).toContain("raw_position_flows AS MATERIALIZED");
+  });
+
+  it("uses exact rollup plus cutoff-day and unrolled-tail fills for one wallet identity", async () => {
+    const captured: string[] = [];
+    const db = {
+      execute: async (query: unknown) => {
+        captured.push(new PgDialect().sqlToQuery(query as never).sql);
+        return captured.length === 1
+          ? [{ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }]
+          : [];
+      },
+    };
+
+    await readEconomicPositionProjection({
+      db,
+      billingAccountId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      walletAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+      connectionKind: "paper",
+      capturedAt: new Date("2026-10-12T12:00:00.000Z"),
+      interval: "ALL",
+    });
+
+    const query = captured.at(-1) ?? "";
+    expect(query).toContain("single_position_flows AS MATERIALIZED");
+    expect(query).toContain("poly_trader_fill_rollups_daily");
+    expect(query).toContain("poly_trader_fill_rollup_cursors");
+    expect(query).toContain("AT TIME ZONE 'UTC'");
+    expect(query).toContain("f.observed_at <=");
+    expect(query).toContain("ORDER BY f.observed_at DESC, f.id");
   });
 
   it("classifies a nested Postgres statement timeout without logging raw error text", () => {
@@ -87,12 +123,16 @@ describe("economic-position projection reliability", () => {
       "sha-test",
       {
         economicProjectionMs: 7_999,
+        economicWalletIdentityMs: 2,
+        economicProjectionQueryMs: 7_997,
         economicProjectionFailureClass: "statement_timeout",
       }
     );
 
     expect(extra).toMatchObject({
       economicProjectionMs: 7_999,
+      economicWalletIdentityMs: 2,
+      economicProjectionQueryMs: 7_997,
       economicProjectionFailureClass: "statement_timeout",
     });
     expect(JSON.stringify(extra)).not.toContain("sensitive database detail");

@@ -236,6 +236,8 @@ export function portfolioSnapshotExtra(
     totalUsdc: response.overview.usdc_total,
     warningCodes: response.warnings.map((entry) => entry.code),
     economicProjectionMs: diagnostics?.economicProjectionMs ?? null,
+    economicWalletIdentityMs: diagnostics?.economicWalletIdentityMs ?? null,
+    economicProjectionQueryMs: diagnostics?.economicProjectionQueryMs ?? null,
     economicProjectionFailureClass:
       diagnostics?.economicProjectionFailureClass ?? null,
     comparisonReadPath: diagnostics?.comparisonPath ?? "unknown",

@@ -67,6 +67,8 @@ type TradeActivityRow = {
 
 export type WalletDashboardReadDiagnostics = ComparisonReadDiagnostics & {
   economicProjectionMs?: number;
+  economicWalletIdentityMs?: number;
+  economicProjectionQueryMs?: number;
   economicProjectionFailureClass?: ComparisonReadFailureClass;
   comparisonPath?:
     | "cache_hit"
@@ -208,6 +210,7 @@ export async function readTenantWalletDashboardIn(
         connectionKind: connection.connectionKind,
         capturedAt: capturedAtDate,
         interval: input.interval,
+        ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
       })
     );
   } finally {

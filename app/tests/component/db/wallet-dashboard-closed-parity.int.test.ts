@@ -5,13 +5,15 @@
 import { randomUUID } from "node:crypto";
 import {
   polyMarketOutcomes,
+  polyTraderFillRollupCursors,
+  polyTraderFillRollupsDaily,
   polyTraderIngestionCursors,
   polyTraderCurrentPositions,
   polyTraderFills,
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { eq, inArray } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readEconomicPositionProjection } from "@/features/wallet-analysis/server/economic-position-read-model";
 import { billingAccounts, polyCopyTradeFills, users } from "@/shared/db/schema";
@@ -26,6 +28,10 @@ const ADDRESS_CASE_SIBLING = `0x${"AB".repeat(20)}`;
 const PAPER_ADDRESS_CASE_SIBLING = `0x${"Ab".repeat(20)}`;
 const OTHER_ADDRESS = `0x${"cd".repeat(20)}`;
 const CAPTURED = new Date("2026-10-12T12:00:00.000Z");
+const OTHER_ROLLED_FILL_ID = randomUUID();
+const OTHER_LATE_OLD_FILL_ID = randomUUID();
+const OTHER_CUTOFF_BUY_FILL_ID = randomUUID();
+const OTHER_POST_CUTOFF_FILL_ID = randomUUID();
 
 const CONDITIONS = {
   winner: "condition-winner",
@@ -115,6 +121,23 @@ describe("authoritative wallet economic-position projection", () => {
         },
       })),
       {
+        billingAccountId: TENANT,
+        createdByUserId: USER,
+        targetId: TARGET_ID,
+        fillId: "paper-origin",
+        marketId: `prediction-market:polymarket:${CONDITIONS.partial}`,
+        observedAt: new Date("2026-10-01T10:00:00.000Z"),
+        clientOrderId: "paper-origin-client",
+        status: "filled",
+        positionLifecycle: "open",
+        mode: "paper",
+        attributes: {
+          condition_id: CONDITIONS.partial,
+          token_id: token(CONDITIONS.partial),
+          filled_size_usdc: "90",
+        },
+      },
+      {
         billingAccountId: OTHER_TENANT,
         createdByUserId: OTHER_USER,
         targetId: TARGET_ID,
@@ -170,9 +193,101 @@ describe("authoritative wallet economic-position projection", () => {
       fill(sibling, "conflicting-key-native", CONDITIONS.fillKeyConflictB, "BUY", "0.4", "10", "2026-10-07T11:00:00.000Z"),
       fill(wallet, "current-conflict-buy", CONDITIONS.currentConflict, "BUY", "0.4", "10", "2026-10-07T12:00:00.000Z"),
       fill(wallet, "outcome-conflict-buy", CONDITIONS.outcomeConflict, "BUY", "0.4", "10", "2026-10-08T10:00:00.000Z"),
-      fill(otherWallet, "other-buy", CONDITIONS.otherTenant, "BUY", "0.4", "10", "2026-10-01T10:00:00.000Z"),
+      {
+        ...fill(
+          otherWallet,
+          "other-buy",
+          CONDITIONS.otherTenant,
+          "BUY",
+          "0.5",
+          "2",
+          "2026-10-01T10:00:00.000Z"
+        ),
+        id: OTHER_ROLLED_FILL_ID,
+        createdAt: new Date("2026-10-10T10:00:00.000Z"),
+      },
+      {
+        ...fill(
+          otherWallet,
+          "other-late-old-buy",
+          CONDITIONS.otherTenant.toUpperCase(),
+          "BUY",
+          "0.4",
+          "1",
+          "2026-10-02T10:00:00.000Z"
+        ),
+        id: OTHER_LATE_OLD_FILL_ID,
+        createdAt: new Date("2026-10-13T10:00:00.000Z"),
+      },
+      {
+        ...fill(
+          otherWallet,
+          "other-cutoff-buy",
+          CONDITIONS.otherTenant,
+          "BUY",
+          "0.3",
+          "1",
+          "2026-10-12T11:00:00.000Z"
+        ),
+        id: OTHER_CUTOFF_BUY_FILL_ID,
+        createdAt: new Date("2026-10-11T11:05:00.000Z"),
+      },
+      {
+        ...fill(
+          otherWallet,
+          "other-post-cutoff-sell",
+          CONDITIONS.otherTenant,
+          "SELL",
+          "0.7",
+          "4",
+          "2026-10-12T13:00:00.000Z"
+        ),
+        id: OTHER_POST_CUTOFF_FILL_ID,
+        createdAt: new Date("2026-10-12T13:05:00.000Z"),
+      },
       fill(paperWallet, "paper-partial-buy", CONDITIONS.partial, "BUY", "0.9", "100", "2026-10-01T10:00:00.000Z"),
     ]);
+
+    await db.insert(polyTraderFillRollupsDaily).values([
+      {
+        traderWalletId: otherWallet,
+        conditionId: CONDITIONS.otherTenant,
+        tokenId: token(CONDITIONS.otherTenant),
+        day: "2026-10-01",
+        fillCount: 1,
+        buyCount: 1,
+        sellCount: 0,
+        buyUsdc: "1",
+        sellUsdc: "0",
+        buyShares: "2",
+        sellShares: "0",
+        firstBuyObservedAt: new Date("2026-10-01T10:00:00.000Z"),
+        firstObservedAt: new Date("2026-10-01T10:00:00.000Z"),
+        lastObservedAt: new Date("2026-10-01T10:00:00.000Z"),
+      },
+      {
+        traderWalletId: otherWallet,
+        conditionId: CONDITIONS.otherTenant,
+        tokenId: token(CONDITIONS.otherTenant),
+        day: "2026-10-12",
+        fillCount: 2,
+        buyCount: 1,
+        sellCount: 1,
+        buyUsdc: "0.3",
+        sellUsdc: "2.8",
+        buyShares: "1",
+        sellShares: "4",
+        firstBuyObservedAt: new Date("2026-10-12T11:00:00.000Z"),
+        firstObservedAt: new Date("2026-10-12T11:00:00.000Z"),
+        lastObservedAt: new Date("2026-10-12T13:00:00.000Z"),
+      },
+    ]);
+    await db.insert(polyTraderFillRollupCursors).values({
+      traderWalletId: otherWallet,
+      lastCreatedAt: new Date("2026-10-12T13:05:00.000Z"),
+      lastFillId: OTHER_POST_CUTOFF_FILL_ID,
+      rolledFillCount: 3,
+    });
 
     await db.insert(polyTraderIngestionCursors).values([
       { traderWalletId: wallet, source: "data-api-positions", status: "ok", lastSuccessAt: new Date("2026-10-12T11:55:00.000Z") },
@@ -230,6 +345,8 @@ describe("authoritative wallet economic-position projection", () => {
     await db.delete(polyMarketOutcomes).where(inArray(polyMarketOutcomes.conditionId, outcomeConditions));
     await db.delete(polyTraderCurrentPositions).where(inArray(polyTraderCurrentPositions.traderWalletId, walletIds));
     await db.delete(polyTraderIngestionCursors).where(inArray(polyTraderIngestionCursors.traderWalletId, walletIds));
+    await db.delete(polyTraderFillRollupCursors).where(inArray(polyTraderFillRollupCursors.traderWalletId, walletIds));
+    await db.delete(polyTraderFillRollupsDaily).where(inArray(polyTraderFillRollupsDaily.traderWalletId, walletIds));
     await db.delete(polyTraderFills).where(inArray(polyTraderFills.traderWalletId, walletIds));
     await db.delete(polyCopyTradeFills).where(inArray(polyCopyTradeFills.billingAccountId, [TENANT, OTHER_TENANT]));
     await db.delete(polyTraderWallets).where(inArray(polyTraderWallets.id, walletIds));
@@ -287,5 +404,51 @@ describe("authoritative wallet economic-position projection", () => {
     expect(unmarked).toMatchObject({ size: 6, currentPrice: null, currentValue: null, pnlUsd: null, pnlPct: null });
     const currentConflict = result.livePositions.find((position) => position.conditionId === CONDITIONS.currentConflict);
     expect(currentConflict).toMatchObject({ size: 10, currentPrice: null, currentValue: null, pnlUsd: null, pnlPct: null });
+  });
+
+  it("combines rolled history and the unrolled tail without admitting cutoff-day future fills", async () => {
+    const result = await readEconomicPositionProjection({
+      db,
+      billingAccountId: OTHER_TENANT,
+      walletAddress: OTHER_ADDRESS,
+      connectionKind: "privy_live",
+      capturedAt: CAPTURED,
+      interval: "ALL",
+    });
+
+    expect(result.walletIdentityCount).toBe(1);
+    expect(result.liveCount).toBe(1);
+    expect(result.closedCount).toBe(0);
+    expect(result.incompleteCount).toBe(0);
+    expect(result.livePositions).toHaveLength(1);
+    expect(result.livePositions[0]).toMatchObject({
+      conditionId: CONDITIONS.otherTenant,
+      size: 4,
+      entryPrice: 0.425,
+      openedAt: "2026-10-01T10:00:00.000Z",
+      currentPrice: null,
+      currentValue: null,
+      pnlUsd: null,
+    });
+  });
+
+  it("reads a one-wallet unrolled tail when no rollup cursor exists", async () => {
+    const result = await readEconomicPositionProjection({
+      db,
+      billingAccountId: TENANT,
+      walletAddress: PAPER_ADDRESS_CASE_SIBLING,
+      connectionKind: "paper",
+      capturedAt: CAPTURED,
+      interval: "ALL",
+    });
+
+    expect(result.walletIdentityCount).toBe(1);
+    expect(result.liveCount).toBe(1);
+    expect(result.closedCount).toBe(0);
+    expect(result.livePositions[0]).toMatchObject({
+      conditionId: CONDITIONS.partial,
+      size: 100,
+      entryPrice: 0.9,
+    });
   });
 });
