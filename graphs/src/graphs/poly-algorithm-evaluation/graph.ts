@@ -10,6 +10,7 @@ import { PolyAlgorithmEvaluationReportSchema } from "./output-schema";
 import {
 	POLY_ALGORITHM_EVALUATION_RESPONSE_PROMPT,
 	POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT,
+	POLY_ALGORITHM_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID,
 } from "./prompts";
 import { POLY_ALGORITHM_EVALUATION_TOOL_IDS } from "./tools";
 
@@ -32,6 +33,14 @@ export function createPolyAlgorithmEvaluationGraph(
 			sourceRef: "story.5017/poly-algorithm-evaluation/v1",
 			sourceNode: POLY_ALGORITHM_EVALUATION_GRAPH_NAME,
 			requiredTag: "algorithm-evaluation-v1",
+			pinnedHypotheses: {
+				[POLY_ALGORITHM_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID]: {
+					title: "Restore canonical mission and algorithm evidence",
+					content:
+						"If canonical mission and algorithm evidence are restored, the next evaluation run can assess an exact algorithm identity from grounded facts without placing trades.",
+					evidenceForIds: [],
+				},
+			},
 		}),
 		messageModifier: POLY_ALGORITHM_EVALUATION_SYSTEM_PROMPT,
 		responseFormat: {

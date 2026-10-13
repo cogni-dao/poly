@@ -53,7 +53,7 @@ describe("poly-brain strategy eval set v1", () => {
 		const [baseline, upgraded] = POLY_BRAIN_STRATEGY_EVAL_SET_V1;
 		expect(baseline?.expectedPass).toBe(false);
 		expect(upgraded?.expectedPass).toBe(true);
-		expect(POLY_BRAIN_STRATEGY_EVAL_SET_V1).toHaveLength(7);
+		expect(POLY_BRAIN_STRATEGY_EVAL_SET_V1).toHaveLength(8);
 	});
 
 	it("requires the approved objective and exactly one selected experiment", () => {
@@ -140,6 +140,12 @@ describe("poly-brain strategy eval set v1", () => {
 			'bounded gap "canonical_knowledge_empty"',
 		);
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
+			"do not search other knowledge domains or select, compare, or recommend any profit strategy",
+		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
+			"Never propose copy trading or any other profit strategy from an empty evidence set",
+		);
+		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
 			`id "${POLY_BRAIN_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID}"`,
 		);
 		expect(POLY_BRAIN_SYSTEM_PROMPT).toContain(
@@ -193,11 +199,31 @@ describe("poly-brain strategy eval set v1", () => {
 		);
 		const candidateEmpty = {
 			...uncited,
+			comparedStrategies: [],
+			nextExperiment: {
+				strategyId: "canonical-evidence-bootstrap",
+				title: "Restore canonical strategy evidence",
+				hypothesis:
+					"Restoring canonical evidence enables a grounded strategy comparison.",
+				method: "Seed the candidate knowledge snapshot and rerun the review.",
+				successCriterion: "Mission and strategy entries are retrieved.",
+				failureCriterion: "Canonical entries remain unavailable.",
+				timebox: "7 days",
+				workItemIds: [],
+			},
 			gaps: ["canonical_knowledge_empty"],
 		};
 		expect(
 			PolyBrainStrategyReviewV1Schema.safeParse(candidateEmpty).success,
 		).toBe(true);
+
+		const inventedStrategy = {
+			...candidateEmpty,
+			comparedStrategies: upgraded.run.structuredOutput.comparedStrategies,
+		};
+		expect(
+			PolyBrainStrategyReviewV1Schema.safeParse(inventedStrategy).success,
+		).toBe(false);
 	});
 
 	it("composes a runnable graph with the default typed response", () => {

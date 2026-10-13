@@ -14,7 +14,10 @@
 import type { CreateReactAgentGraphOptions } from "@cogni/langgraph-graphs/graphs";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { guardScheduledGraphTools } from "../guarded-edo-tool";
-import { PolyBrainStrategyReviewV1Schema } from "./output-schema";
+import {
+	POLY_BRAIN_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID,
+	PolyBrainStrategyReviewV1Schema,
+} from "./output-schema";
 import {
 	POLY_BRAIN_RESPONSE_PROMPT,
 	POLY_BRAIN_SYSTEM_PROMPT,
@@ -41,6 +44,14 @@ export function createPolyBrainGraph(opts: CreateReactAgentGraphOptions) {
 			sourceRef: "story.5017/poly-brain/v1",
 			sourceNode: POLY_BRAIN_GRAPH_NAME,
 			requiredTag: "strategy-research-v1",
+			pinnedHypotheses: {
+				[POLY_BRAIN_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID]: {
+					title: "Restore canonical mission and strategy evidence",
+					content:
+						"If canonical mission and strategy evidence are restored, the next Poly Brain run can compare ethical-profit directions from grounded facts instead of selecting a strategy without evidence.",
+					evidenceForIds: [],
+				},
+			},
 		}),
 		messageModifier: POLY_BRAIN_SYSTEM_PROMPT,
 		responseFormat:

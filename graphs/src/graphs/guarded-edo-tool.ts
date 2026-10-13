@@ -42,6 +42,16 @@ export interface GuardedEdoToolOptions {
 	readonly sourceRef: string;
 	readonly sourceNode: string;
 	readonly requiredTag: string;
+	readonly pinnedHypotheses?: Readonly<
+		Record<
+			string,
+			{
+				readonly title: string;
+				readonly content: string;
+				readonly evidenceForIds?: readonly string[];
+			}
+		>
+	>;
 }
 
 interface KnowledgeReadResult {
@@ -56,17 +66,25 @@ interface KnowledgeReadResult {
 	}>;
 }
 
-function parseToolJson(result: unknown): Record<string, unknown> | null {
+function parseToolJson(
+	result: unknown,
+	depth = 0,
+): Record<string, unknown> | null {
+	if (depth > 2) return null;
 	if (typeof result !== "string") {
-		return result !== null && typeof result === "object"
-			? (result as Record<string, unknown>)
-			: null;
+		if (result === null || typeof result !== "object") return null;
+		const record = result as Record<string, unknown>;
+		// Nested tool invocation returns a LangChain ToolMessage rather than the
+		// raw JSON string. Unwrap it so the preflight/read-after-failure guard
+		// observes the same receipt that the outer graph stream publishes.
+		if (typeof record.content === "string") {
+			return parseToolJson(record.content, depth + 1);
+		}
+		return record;
 	}
 	try {
 		const parsed: unknown = JSON.parse(result);
-		return parsed !== null && typeof parsed === "object"
-			? (parsed as Record<string, unknown>)
-			: null;
+		return parseToolJson(parsed, depth + 1);
 	} catch {
 		return null;
 	}
@@ -128,9 +146,11 @@ export function createGuardedEdoTool(
 			const beforeWrite = reuseOrConflict(await readExisting());
 			if (beforeWrite !== null) return beforeWrite;
 
+			const pinned = options.pinnedHypotheses?.[input.id];
 			const result = await underlying.invoke(
 				{
 					...input,
+					...(pinned ?? {}),
 					domain: options.domain,
 					sourceType: "agent",
 					sourceRef: options.sourceRef,

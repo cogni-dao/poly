@@ -22,6 +22,7 @@ import {
 
 import {
 	POLY_BRAIN_DAO_OBJECTIVE,
+	POLY_BRAIN_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID,
 	POLY_BRAIN_STRATEGY_REVIEW_SCHEMA_VERSION,
 	PolyBrainStrategyReviewV1Schema,
 } from "../output-schema";
@@ -75,30 +76,42 @@ export function evaluatePolyBrainStrategyRun(
 	const evidenceKinds = parsed.success
 		? new Set(parsed.data.evidence.map((item) => item.kind))
 		: new Set<string>();
+	const canonicalKnowledgeEmpty =
+		parsed.success && parsed.data.gaps.includes("canonical_knowledge_empty");
 	const checks = {
 		objectiveAligned:
 			parsed.success && parsed.data.objective === POLY_BRAIN_DAO_OBJECTIVE,
-		canonicalEvidenceTools: REQUIRED_EVIDENCE_TOOLS.every(
-			(toolId) => (toolCallCounts.get(toolId) ?? 0) >= 1,
-		),
-		canonicalEvidenceKinds:
-			evidenceKinds.has("knowledge") && evidenceKinds.has("work_item"),
+		canonicalEvidenceTools: canonicalKnowledgeEmpty
+			? (toolCallCounts.get(GET_CURRENT_TIME_NAME) ?? 0) >= 1 &&
+				(toolCallCounts.get(KNOWLEDGE_READ_NAME) ?? 0) >= 2
+			: REQUIRED_EVIDENCE_TOOLS.every(
+					(toolId) => (toolCallCounts.get(toolId) ?? 0) >= 1,
+				),
+		canonicalEvidenceKinds: canonicalKnowledgeEmpty
+			? evidenceKinds.has("knowledge")
+			: evidenceKinds.has("knowledge") && evidenceKinds.has("work_item"),
 		canonicalKnowledgeRouting:
 			run.toolCalls.some(
 				(call) =>
 					call.name === KNOWLEDGE_READ_NAME &&
 					call.input?.id === "poly-mission",
 			) &&
-			run.toolCalls.some(
-				(call) =>
-					call.name === KNOWLEDGE_SEARCH_NAME &&
-					call.input?.domain === "strategy",
-			) &&
+			(canonicalKnowledgeEmpty
+				? !run.toolCalls.some((call) => call.name === KNOWLEDGE_SEARCH_NAME)
+				: run.toolCalls.some(
+						(call) =>
+							call.name === KNOWLEDGE_SEARCH_NAME &&
+							call.input?.domain === "strategy",
+					)) &&
 			run.toolCalls.every((call) => call.input?.domain !== "poly"),
-		boundedComparison:
-			parsed.success &&
-			parsed.data.comparedStrategies.length >= 2 &&
-			parsed.data.comparedStrategies.length <= 4,
+		boundedComparison: parsed.success
+			? canonicalKnowledgeEmpty
+				? parsed.data.comparedStrategies.length === 0 &&
+					parsed.data.nextExperiment.strategyId ===
+						"canonical-evidence-bootstrap"
+				: parsed.data.comparedStrategies.length >= 2 &&
+					parsed.data.comparedStrategies.length <= 4
+			: false,
 		exactlyOneNextExperiment:
 			parsed.success &&
 			!Array.isArray(parsed.data.nextExperiment) &&
@@ -229,6 +242,42 @@ const failedPersistenceReview = {
 	gaps: ["Persistence result is ambiguous and needs readback on the next run."],
 } as const;
 
+const emptyKnowledgeReview = {
+	schemaVersion: POLY_BRAIN_STRATEGY_REVIEW_SCHEMA_VERSION,
+	objective: POLY_BRAIN_DAO_OBJECTIVE,
+	summary:
+		"Canonical mission and strategy evidence are unavailable, so this run selected only an evidence-restoration experiment.",
+	evidence: [
+		{
+			kind: "knowledge",
+			ref: "knowledge-read:poly-mission",
+			finding: "The canonical mission read returned no entry.",
+		},
+	],
+	comparedStrategies: [],
+	nextExperiment: {
+		strategyId: "canonical-evidence-bootstrap",
+		title: "Restore canonical strategy evidence",
+		hypothesis:
+			"Restoring canonical mission and strategy evidence enables a grounded strategy comparison on the next run.",
+		method: "Seed the candidate knowledge snapshot and rerun Poly Brain.",
+		successCriterion: "Mission and strategy entries are retrieved.",
+		failureCriterion: "Canonical entries remain unavailable.",
+		timebox: "7 days",
+		workItemIds: [],
+	},
+	persistence: {
+		status: "committed",
+		tool: EDO_HYPOTHESIZE_NAME,
+		hypothesisId: POLY_BRAIN_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID,
+		sourceRef: "story.5017/poly-brain/v1",
+		evaluateAt: "2026-10-20T02:08:49.328Z",
+		evidenceForIds: [],
+		committed: true,
+	},
+	gaps: ["canonical_knowledge_empty"],
+} as const;
+
 const canonicalEvidenceToolCalls = [
 	{ name: GET_CURRENT_TIME_NAME },
 	{ name: KNOWLEDGE_READ_NAME, input: { id: "poly-mission" } },
@@ -274,6 +323,24 @@ export const POLY_BRAIN_STRATEGY_EVAL_SET_V1 = [
 		run: {
 			structuredOutput: reusedStrategyReview,
 			toolCalls: canonicalEvidenceToolCalls,
+		},
+	},
+	{
+		id: "empty-canonical-knowledge-bootstrap",
+		description:
+			"An empty candidate hub produces a typed evidence gap and bootstrap experiment without inventing a strategy.",
+		expectedPass: true,
+		run: {
+			structuredOutput: emptyKnowledgeReview,
+			toolCalls: [
+				{ name: GET_CURRENT_TIME_NAME },
+				{ name: KNOWLEDGE_READ_NAME, input: { id: "poly-mission" } },
+				{
+					name: KNOWLEDGE_READ_NAME,
+					input: { id: POLY_BRAIN_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID },
+				},
+				{ name: EDO_HYPOTHESIZE_NAME, input: { domain: "strategy" } },
+			],
 		},
 	},
 	{

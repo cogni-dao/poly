@@ -348,6 +348,15 @@ describe("poly-algorithm-evaluation graph boundary", () => {
 		expect(POLY_ALGORITHM_EVALUATION_RESPONSE_PROMPT).toContain(
 			"output with reused=true",
 		);
+		expect(POLY_ALGORITHM_EVALUATION_RESPONSE_PROMPT).toContain(
+			"Never copy instruction placeholders",
+		);
+		expect(POLY_ALGORITHM_EVALUATION_RESPONSE_PROMPT).not.toContain(
+			'"claim":"claim"',
+		);
+		expect(POLY_ALGORITHM_EVALUATION_RESPONSE_PROMPT).not.toContain(
+			"grounded fact or observed absence",
+		);
 	});
 
 	it("is registered as a node-local peer graph", () => {

@@ -21,7 +21,7 @@ export const POLY_BRAIN_DAO_OBJECTIVE =
 	"Poly learns which ethical profit strategy to test next" as const;
 
 export const POLY_BRAIN_EVIDENCE_BOOTSTRAP_HYPOTHESIS_ID =
-	"strategy-evidence-bootstrap" as const;
+	"strategy-evidence-bootstrap-v2" as const;
 
 export const PolyBrainEvidenceKindSchema = z.enum([
 	"knowledge",
@@ -98,8 +98,8 @@ export const PolyBrainStrategyReviewV1Schema = z
 		schemaVersion: z.literal(POLY_BRAIN_STRATEGY_REVIEW_SCHEMA_VERSION),
 		objective: z.literal(POLY_BRAIN_DAO_OBJECTIVE),
 		summary: z.string().min(1),
-		evidence: z.array(PolyBrainEvidenceRefSchema).min(3).max(20),
-		comparedStrategies: z.array(PolyBrainStrategyDirectionSchema).min(2).max(4),
+		evidence: z.array(PolyBrainEvidenceRefSchema).min(1).max(20),
+		comparedStrategies: z.array(PolyBrainStrategyDirectionSchema).max(4),
 		nextExperiment: PolyBrainNextExperimentSchema,
 		persistence: z.discriminatedUnion("status", [
 			PolyBrainCommittedPersistenceSchema,
@@ -109,9 +109,36 @@ export const PolyBrainStrategyReviewV1Schema = z
 		gaps: z.array(z.string()),
 	})
 	.superRefine((review, ctx) => {
+		const canonicalKnowledgeEmpty = review.gaps.includes(
+			"canonical_knowledge_empty",
+		);
 		const strategyIds = review.comparedStrategies.map(
 			(strategy) => strategy.id,
 		);
+		if (canonicalKnowledgeEmpty) {
+			if (review.comparedStrategies.length !== 0) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["comparedStrategies"],
+					message:
+						"canonical knowledge absence cannot support strategy comparison",
+				});
+			}
+			if (review.nextExperiment.strategyId !== "canonical-evidence-bootstrap") {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["nextExperiment", "strategyId"],
+					message: "empty-knowledge reviews must select the evidence bootstrap",
+				});
+			}
+		} else if (review.comparedStrategies.length < 2) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["comparedStrategies"],
+				message:
+					"evidence-present reviews must compare at least two strategies",
+			});
+		}
 		if (new Set(strategyIds).size !== strategyIds.length) {
 			ctx.addIssue({
 				code: z.ZodIssueCode.custom,
@@ -131,7 +158,10 @@ export const PolyBrainStrategyReviewV1Schema = z
 			});
 		}
 
-		if (!strategyIds.includes(review.nextExperiment.strategyId)) {
+		if (
+			!canonicalKnowledgeEmpty &&
+			!strategyIds.includes(review.nextExperiment.strategyId)
+		) {
 			ctx.addIssue({
 				code: z.ZodIssueCode.custom,
 				path: ["nextExperiment", "strategyId"],
