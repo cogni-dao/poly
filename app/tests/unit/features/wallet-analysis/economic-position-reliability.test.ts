@@ -98,12 +98,21 @@ describe("economic-position projection reliability", () => {
     expect(query).toContain("poly_trader_fill_rollup_cursors");
     expect(query).toContain("effective_rollup_cursor AS MATERIALIZED");
     expect(query).toContain("single_wallet_unrolled_tail AS MATERIALIZED");
-    expect(query).toContain("CROSS JOIN LATERAL");
-    expect(query).toContain(
+    const lateralAt = query.indexOf("CROSS JOIN LATERAL");
+    const cursorAt = query.indexOf(
       "(f.created_at, f.id) > (cursor.last_created_at, cursor.last_fill_id)"
     );
-    expect(query).toContain("ORDER BY f.created_at ASC, f.id ASC");
-    expect(query).toContain("JOIN single_wallet_unrolled_tail f");
+    const insertionOrderAt = query.indexOf(
+      "ORDER BY f.created_at ASC, f.id ASC"
+    );
+    const pullupFenceAt = query.indexOf("OFFSET 0", insertionOrderAt);
+    const drivenFilterAt = query.indexOf("JOIN driven_keys k", pullupFenceAt);
+    expect(lateralAt).toBeGreaterThan(-1);
+    expect(cursorAt).toBeGreaterThan(lateralAt);
+    expect(insertionOrderAt).toBeGreaterThan(cursorAt);
+    expect(pullupFenceAt).toBeGreaterThan(insertionOrderAt);
+    expect(drivenFilterAt).toBeGreaterThan(pullupFenceAt);
+    expect(query).toContain("FROM single_wallet_unrolled_tail f");
     expect(query).not.toContain("fill_identity_anchors AS MATERIALIZED");
     expect(query).toContain("AT TIME ZONE 'UTC'");
     expect(query).toContain("f.observed_at <=");

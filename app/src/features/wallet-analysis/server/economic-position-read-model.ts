@@ -164,7 +164,11 @@ export async function readEconomicPositionProjection(params: {
             AND (f.created_at, f.id) >
               (cursor.last_created_at, cursor.last_fill_id)
           ORDER BY f.created_at ASC, f.id ASC
+          OFFSET 0
         ) f
+        JOIN driven_keys k
+          ON k.condition_id = lower(f.condition_id)
+         AND k.token_id = f.token_id
         WHERE f.observed_at < date_trunc(
           'day', ${params.capturedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC'
         ) AT TIME ZONE 'UTC'
@@ -229,10 +233,7 @@ export async function readEconomicPositionProjection(params: {
             CASE WHEN f.side = 'SELL' THEN f.shares ELSE 0 END,
             CASE WHEN f.side = 'BUY' THEN f.observed_at END,
             f.observed_at
-          FROM driven_keys k
-          JOIN single_wallet_unrolled_tail f
-            ON lower(f.condition_id) = k.condition_id
-           AND f.token_id = k.token_id
+          FROM single_wallet_unrolled_tail f
         ) parts
         GROUP BY lower(parts.condition_id), parts.token_id
       ) flows
