@@ -98,15 +98,19 @@ describe("economic-position projection reliability", () => {
     expect(query).toContain("poly_trader_fill_rollup_cursors");
     expect(query).toContain("effective_rollup_cursor AS MATERIALIZED");
     expect(query).toContain("single_wallet_unrolled_tail AS MATERIALIZED");
-    const lateralAt = query.indexOf("CROSS JOIN LATERAL");
-    const cursorAt = query.indexOf(
+    const normalizedQuery = query.replace(/\s+/g, " ").trim();
+    const lateralAt = normalizedQuery.indexOf("CROSS JOIN LATERAL");
+    const cursorAt = normalizedQuery.indexOf(
       "(f.created_at, f.id) > (cursor.last_created_at, cursor.last_fill_id)"
     );
-    const insertionOrderAt = query.indexOf(
+    const insertionOrderAt = normalizedQuery.indexOf(
       "ORDER BY f.created_at ASC, f.id ASC"
     );
-    const pullupFenceAt = query.indexOf("OFFSET 0", insertionOrderAt);
-    const drivenFilterAt = query.indexOf("JOIN driven_keys k", pullupFenceAt);
+    const pullupFenceAt = normalizedQuery.indexOf("OFFSET 0", insertionOrderAt);
+    const drivenFilterAt = normalizedQuery.indexOf(
+      "JOIN driven_keys k",
+      pullupFenceAt
+    );
     expect(lateralAt).toBeGreaterThan(-1);
     expect(cursorAt).toBeGreaterThan(lateralAt);
     expect(insertionOrderAt).toBeGreaterThan(cursorAt);
