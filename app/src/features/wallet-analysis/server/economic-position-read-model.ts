@@ -24,6 +24,12 @@ import { portfolioWindowStart } from "./portfolio-window";
 
 type ExecuteDb = { execute(query: SQL): Promise<unknown> };
 
+export type EconomicPositionReadDiagnostics = {
+  economicWalletIdentityMs?: number;
+  economicWalletIdentityCount?: number;
+  economicProjectionQueryMs?: number;
+};
+
 const LIVE_LIMIT = 500;
 const CLOSED_LIMIT = 30;
 
@@ -93,6 +99,7 @@ export async function readEconomicPositionProjection(params: {
   connectionKind: "privy_live" | "paper";
   capturedAt: Date;
   interval: PolyWalletOverviewInterval;
+  diagnostics?: EconomicPositionReadDiagnostics;
 }): Promise<EconomicPositionRead> {
   const mode = params.connectionKind === "paper" ? "paper" : "live";
   const walletKind = mode === "paper" ? "paper_wallet" : "cogni_wallet";
@@ -101,7 +108,264 @@ export async function readEconomicPositionProjection(params: {
     ? sql`closed_at >= ${windowStart.toISOString()}::timestamptz`
     : sql`TRUE`;
 
-  const rows = normalizeRows<EconomicRow>(await params.db.execute(sql`
+  // The rollup fast path is safe only when the canonical wallet identity has
+  // one physical row. Multiple siblings must retain source/native consensus,
+  // including changed-key conflict detection across those siblings.
+  const identityStartedAt = performance.now();
+  let walletResult: unknown = [];
+  try {
+    walletResult = await params.db.execute(sql`
+      SELECT w.id
+      FROM poly_trader_wallets w
+      WHERE lower(w.wallet_address) = lower(${params.walletAddress})
+        AND w.kind = ${walletKind}
+      ORDER BY w.updated_at DESC, w.created_at DESC, w.id
+    `);
+  } finally {
+    recordEconomicDiagnostic(
+      params.diagnostics,
+      "economicWalletIdentityMs",
+      Math.max(0, Math.round(performance.now() - identityStartedAt))
+    );
+  }
+  const walletRows = normalizeRows<{ id: string }>(walletResult);
+  recordEconomicDiagnostic(
+    params.diagnostics,
+    "economicWalletIdentityCount",
+    // Terminal telemetry needs only the branch (0, 1, or 2+), not an
+    // unbounded identity cardinality.
+    Math.min(walletRows.length, 2)
+  );
+  const singleWalletId =
+    walletRows.length === 1 && walletRows[0] ? walletRows[0].id : null;
+  const singleWalletFlows = singleWalletId === null
+    ? sql`SELECT NULL::text AS condition_id, NULL::text AS token_id,
+        NULL::numeric AS total_buy_usdc, NULL::numeric AS total_sell_usdc,
+        NULL::numeric AS total_buy_shares, NULL::numeric AS total_sell_shares,
+        NULL::timestamptz AS first_buy_at, NULL::timestamptz AS last_flow_at,
+        NULL::numeric AS last_price WHERE FALSE`
+    : sql`
+      WITH effective_rollup_cursor AS MATERIALIZED (
+        SELECT
+          COALESCE(c.last_created_at, 'epoch'::timestamptz) AS last_created_at,
+          COALESCE(
+            c.last_fill_id,
+            '00000000-0000-0000-0000-000000000000'::uuid
+          ) AS last_fill_id
+        FROM (SELECT 1) seed
+        LEFT JOIN poly_trader_fill_rollup_cursors c
+          ON c.trader_wallet_id = ${singleWalletId}::uuid
+      ), single_wallet_unrolled_tail AS MATERIALIZED (
+        -- The inner OFFSET 0 is load-bearing: only the predicates served by
+        -- the existing wallet/condition/token/observed index live inside its
+        -- fence. The cursor tuple stays outside so Postgres cannot choose the
+        -- wallet/created index once per driven key and rescan the same tail.
+        SELECT
+          f.condition_id, f.token_id, f.side, f.size_usdc, f.shares,
+          f.observed_at
+        FROM effective_rollup_cursor cursor
+        CROSS JOIN driven_keys k
+        CROSS JOIN LATERAL (
+          SELECT
+            f.condition_id, f.token_id, f.side, f.size_usdc, f.shares,
+            f.observed_at
+          FROM (
+            SELECT
+              keyed.condition_id, keyed.token_id, keyed.side,
+              keyed.size_usdc, keyed.shares, keyed.observed_at,
+              keyed.created_at, keyed.id
+            FROM poly_trader_fills keyed
+            WHERE keyed.trader_wallet_id = ${singleWalletId}::uuid
+              AND lower(keyed.condition_id) = k.condition_id
+              AND keyed.token_id = k.token_id
+              AND keyed.observed_at < date_trunc(
+                'day', ${params.capturedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC'
+              ) AT TIME ZONE 'UTC'
+              AND keyed.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+            OFFSET 0
+          ) f
+          WHERE (f.created_at, f.id) >
+            (cursor.last_created_at, cursor.last_fill_id)
+        ) f
+      )
+      SELECT
+        flows.condition_id,
+        flows.token_id,
+        flows.total_buy_usdc,
+        flows.total_sell_usdc,
+        flows.total_buy_shares,
+        flows.total_sell_shares,
+        flows.first_buy_at,
+        flows.last_flow_at,
+        latest.price::numeric AS last_price
+      FROM (
+        SELECT
+          lower(parts.condition_id) AS condition_id,
+          parts.token_id,
+          SUM(parts.buy_usdc)::numeric AS total_buy_usdc,
+          SUM(parts.sell_usdc)::numeric AS total_sell_usdc,
+          SUM(parts.buy_shares)::numeric AS total_buy_shares,
+          SUM(parts.sell_shares)::numeric AS total_sell_shares,
+          MIN(parts.first_buy_at) AS first_buy_at,
+          MAX(parts.last_flow_at) AS last_flow_at
+        FROM (
+          SELECT
+            r.condition_id, r.token_id,
+            r.buy_usdc, r.sell_usdc, r.buy_shares, r.sell_shares,
+            r.first_buy_observed_at AS first_buy_at,
+            r.last_observed_at AS last_flow_at
+          FROM driven_keys k
+          JOIN poly_trader_fill_rollups_daily r
+            ON r.trader_wallet_id = ${singleWalletId}::uuid
+           AND lower(r.condition_id) = k.condition_id
+           AND r.token_id = k.token_id
+           AND r.day < (${params.capturedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC')::date
+          UNION ALL
+          SELECT
+            f.condition_id, f.token_id,
+            CASE WHEN f.side = 'BUY' THEN f.size_usdc ELSE 0 END,
+            CASE WHEN f.side = 'SELL' THEN f.size_usdc ELSE 0 END,
+            CASE WHEN f.side = 'BUY' THEN f.shares ELSE 0 END,
+            CASE WHEN f.side = 'SELL' THEN f.shares ELSE 0 END,
+            CASE WHEN f.side = 'BUY' THEN f.observed_at END,
+            f.observed_at
+          FROM driven_keys k
+          JOIN poly_trader_fills f
+           ON f.trader_wallet_id = ${singleWalletId}::uuid
+           AND lower(f.condition_id) = k.condition_id
+           AND f.token_id = k.token_id
+           AND f.observed_at >= date_trunc(
+             'day', ${params.capturedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC'
+           ) AT TIME ZONE 'UTC'
+           AND f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+          UNION ALL
+          SELECT
+            f.condition_id, f.token_id,
+            CASE WHEN f.side = 'BUY' THEN f.size_usdc ELSE 0 END,
+            CASE WHEN f.side = 'SELL' THEN f.size_usdc ELSE 0 END,
+            CASE WHEN f.side = 'BUY' THEN f.shares ELSE 0 END,
+            CASE WHEN f.side = 'SELL' THEN f.shares ELSE 0 END,
+            CASE WHEN f.side = 'BUY' THEN f.observed_at END,
+            f.observed_at
+          FROM single_wallet_unrolled_tail f
+        ) parts
+        GROUP BY lower(parts.condition_id), parts.token_id
+      ) flows
+      LEFT JOIN LATERAL (
+        SELECT f.price
+        FROM poly_trader_fills f
+        WHERE f.trader_wallet_id = ${singleWalletId}::uuid
+          AND lower(f.condition_id) = flows.condition_id
+          AND f.token_id = flows.token_id
+          AND f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+        ORDER BY f.observed_at DESC, f.id DESC
+        LIMIT 1
+      ) latest ON TRUE
+    `;
+  const rawPositionFlowCtes = singleWalletId !== null
+    ? sql`
+      fill_conflicted_keys AS MATERIALIZED (
+        SELECT NULL::text AS condition_id, NULL::text AS token_id WHERE FALSE
+      ), raw_position_flows AS MATERIALIZED (
+        SELECT
+          NULL::text AS condition_id, NULL::text AS token_id,
+          NULL::numeric AS total_buy_usdc, NULL::numeric AS total_sell_usdc,
+          NULL::numeric AS total_buy_shares, NULL::numeric AS total_sell_shares,
+          NULL::timestamptz AS first_buy_at,
+          NULL::timestamptz AS last_flow_at,
+          NULL::numeric AS last_price,
+          NULL::boolean AS fill_identity_conflict
+        WHERE FALSE
+      )`
+    : sql`
+      fill_identity_anchors AS MATERIALIZED (
+        SELECT DISTINCT f.source, f.native_id
+        FROM poly_trader_fills f
+        JOIN wallet_identity w ON w.id = f.trader_wallet_id
+        JOIN driven_keys k
+          ON k.condition_id = lower(f.condition_id)
+         AND k.token_id = f.token_id
+        WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+      ), fill_candidates AS MATERIALIZED (
+        SELECT
+          f.id,
+          f.source,
+          f.native_id,
+          f.condition_id,
+          f.token_id,
+          f.side,
+          f.price,
+          f.shares,
+          f.size_usdc,
+          f.observed_at,
+          w.updated_at AS wallet_updated_at,
+          w.created_at AS wallet_created_at,
+          w.id AS wallet_id
+        FROM fill_identity_anchors identity
+        JOIN wallet_identity w ON TRUE
+        JOIN poly_trader_fills f
+          ON f.trader_wallet_id = w.id
+         AND f.source = identity.source
+         AND f.native_id = identity.native_id
+        WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+      ), fill_groups AS MATERIALIZED (
+        SELECT
+          f.source,
+          f.native_id,
+          (array_agg(f.id ORDER BY
+            f.wallet_updated_at DESC,
+            f.wallet_created_at DESC,
+            f.wallet_id,
+            f.id
+          ))[1] AS chosen_id,
+          count(DISTINCT md5(concat_ws('|',
+            lower(f.condition_id), f.token_id, f.side, f.price::text,
+            f.shares::text, f.size_usdc::text, f.observed_at::text
+          )))::int AS fact_variants
+        FROM fill_candidates f
+        GROUP BY f.source, f.native_id
+      ), fill_conflicted_keys AS MATERIALIZED (
+        SELECT DISTINCT lower(f.condition_id) AS condition_id, f.token_id
+        FROM fill_candidates f
+        JOIN fill_groups g
+          ON g.source = f.source
+         AND g.native_id = f.native_id
+         AND g.fact_variants > 1
+        JOIN driven_keys k
+          ON k.condition_id = lower(f.condition_id)
+         AND k.token_id = f.token_id
+      ), canonical_fills AS MATERIALIZED (
+        SELECT
+          lower(f.condition_id) AS condition_id,
+          f.token_id,
+          f.side,
+          f.price,
+          f.shares,
+          f.size_usdc,
+          f.observed_at,
+          g.fact_variants
+        FROM fill_groups g
+        JOIN fill_candidates f ON f.id = g.chosen_id
+      ), raw_position_flows AS MATERIALIZED (
+        SELECT
+          condition_id,
+          token_id,
+          SUM(size_usdc) FILTER (WHERE side = 'BUY')::numeric AS total_buy_usdc,
+          COALESCE(SUM(size_usdc) FILTER (WHERE side = 'SELL'), 0)::numeric AS total_sell_usdc,
+          SUM(shares) FILTER (WHERE side = 'BUY')::numeric AS total_buy_shares,
+          COALESCE(SUM(shares) FILTER (WHERE side = 'SELL'), 0)::numeric AS total_sell_shares,
+          MIN(observed_at) FILTER (WHERE side = 'BUY') AS first_buy_at,
+          MAX(observed_at) AS last_flow_at,
+          (array_agg(price ORDER BY observed_at DESC))[1]::numeric AS last_price,
+          bool_or(fact_variants > 1) AS fill_identity_conflict
+        FROM canonical_fills
+        GROUP BY condition_id, token_id
+      )`;
+
+  const queryStartedAt = performance.now();
+  let queryResult: unknown = [];
+  try {
+    queryResult = await params.db.execute(sql`
     WITH wallet_identity AS MATERIALIZED (
       SELECT w.id, w.updated_at, w.created_at
       FROM poly_trader_wallets w
@@ -133,30 +397,30 @@ export async function readEconomicPositionProjection(params: {
       LEFT JOIN poly_trader_ingestion_cursors c
         ON c.trader_wallet_id = w.id
        AND c.source = ${mode === "paper" ? "paper-ledger-positions" : "data-api-positions"}
-    ), ledger_candidates AS MATERIALIZED (
-      SELECT
+    ), ledger_candidate_refs AS MATERIALIZED (
+      SELECT DISTINCT ON (
+        lower(NULLIF(COALESCE(
+          NULLIF(f.attributes->>'condition_id', ''),
+          NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), '')
+        ), '')),
+        NULLIF(f.attributes->>'token_id', '')
+      )
         lower(NULLIF(COALESCE(
           NULLIF(f.attributes->>'condition_id', ''),
           NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), '')
         ), '')) AS condition_id,
         NULLIF(f.attributes->>'token_id', '') AS token_id,
-        f.position_lifecycle,
-        f.observed_at,
-        f.updated_at,
-        f.attributes,
-        row_number() OVER (
-          PARTITION BY
-            lower(NULLIF(COALESCE(
-              NULLIF(f.attributes->>'condition_id', ''),
-              NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), '')
-            ), '')),
-            NULLIF(f.attributes->>'token_id', '')
-          ORDER BY f.updated_at DESC, f.observed_at DESC, f.client_order_id DESC
-        ) AS metadata_rank
+        f.target_id,
+        f.fill_id
       FROM poly_copy_trade_fills f
       WHERE f.billing_account_id = ${params.billingAccountId}
         AND f.mode = ${mode}
         AND f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+        AND lower(NULLIF(COALESCE(
+          NULLIF(f.attributes->>'condition_id', ''),
+          NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), '')
+        ), '')) IS NOT NULL
+        AND NULLIF(f.attributes->>'token_id', '') IS NOT NULL
         AND (
           f.position_lifecycle IS NOT NULL
           OR CASE
@@ -170,9 +434,30 @@ export async function readEconomicPositionProjection(params: {
             AND (f.attributes->>'size_usdc')::numeric > 0
           )
         )
-    ), origin_keys AS MATERIALIZED (
-      SELECT * FROM ledger_candidates
-      WHERE condition_id IS NOT NULL AND token_id IS NOT NULL
+      ORDER BY
+        lower(NULLIF(COALESCE(
+          NULLIF(f.attributes->>'condition_id', ''),
+          NULLIF(regexp_replace(f.market_id, '^prediction-market:polymarket:', ''), '')
+        ), '')),
+        NULLIF(f.attributes->>'token_id', ''),
+        f.updated_at DESC,
+        f.observed_at DESC,
+        f.client_order_id DESC
+    ), ledger_candidates AS MATERIALIZED (
+      SELECT
+        r.condition_id,
+        r.token_id,
+        f.position_lifecycle,
+        f.observed_at,
+        f.updated_at,
+        f.attributes
+      FROM ledger_candidate_refs r
+      JOIN poly_copy_trade_fills f
+        ON f.billing_account_id = ${params.billingAccountId}
+       AND f.target_id = r.target_id
+       AND f.fill_id = r.fill_id
+      WHERE f.mode = ${mode}
+        AND f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
     ), current_groups AS MATERIALIZED (
       SELECT
         lower(p.condition_id) AS condition_id,
@@ -210,7 +495,7 @@ export async function readEconomicPositionProjection(params: {
        AND p.condition_id = g.chosen_condition_id
        AND p.token_id = g.token_id
     ), driven_keys AS MATERIALIZED (
-      SELECT condition_id, token_id FROM origin_keys
+      SELECT condition_id, token_id FROM ledger_candidates
       UNION
       SELECT condition_id, token_id FROM current_facts
       WHERE shares > 0
@@ -229,68 +514,16 @@ export async function readEconomicPositionProjection(params: {
        AND k.token_id = p.token_id
       WHERE target.billing_account_id = ${params.billingAccountId}
         AND target.disabled_at IS NULL
-    ), driven_fill_identities AS MATERIALIZED (
-      SELECT DISTINCT f.source, f.native_id
-      FROM poly_trader_fills f
-      JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      JOIN driven_keys k
-        ON k.condition_id = lower(f.condition_id)
-       AND k.token_id = f.token_id
-      WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-    ), fill_groups AS MATERIALIZED (
-      SELECT
-        f.source,
-        f.native_id,
-        (array_agg(f.id ORDER BY w.updated_at DESC, w.created_at DESC, w.id, f.id))[1] AS chosen_id,
-        count(DISTINCT md5(concat_ws('|',
-          lower(f.condition_id), f.token_id, f.side, f.price::text,
-          f.shares::text, f.size_usdc::text, f.observed_at::text
-        )))::int AS fact_variants
-      FROM poly_trader_fills f
-      JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      JOIN driven_fill_identities identity
-        ON identity.source = f.source
-       AND identity.native_id = f.native_id
-      WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-      GROUP BY f.source, f.native_id
-    ), fill_conflicted_keys AS MATERIALIZED (
-      SELECT DISTINCT lower(f.condition_id) AS condition_id, f.token_id
-      FROM poly_trader_fills f
-      JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      JOIN fill_groups g
-        ON g.source = f.source
-       AND g.native_id = f.native_id
-       AND g.fact_variants > 1
-      JOIN driven_keys k
-        ON k.condition_id = lower(f.condition_id)
-       AND k.token_id = f.token_id
-      WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-    ), canonical_fills AS MATERIALIZED (
-      SELECT
-        lower(f.condition_id) AS condition_id,
-        f.token_id,
-        f.side,
-        f.price,
-        f.shares,
-        f.size_usdc,
-        f.observed_at,
-        g.fact_variants
-      FROM fill_groups g
-      JOIN poly_trader_fills f ON f.id = g.chosen_id
+    ), ${rawPositionFlowCtes}, single_position_flows AS MATERIALIZED (
+      ${singleWalletFlows}
     ), position_flows AS MATERIALIZED (
       SELECT
-        condition_id,
-        token_id,
-        SUM(size_usdc) FILTER (WHERE side = 'BUY')::numeric AS total_buy_usdc,
-        COALESCE(SUM(size_usdc) FILTER (WHERE side = 'SELL'), 0)::numeric AS total_sell_usdc,
-        SUM(shares) FILTER (WHERE side = 'BUY')::numeric AS total_buy_shares,
-        COALESCE(SUM(shares) FILTER (WHERE side = 'SELL'), 0)::numeric AS total_sell_shares,
-        MIN(observed_at) FILTER (WHERE side = 'BUY') AS first_buy_at,
-        MAX(observed_at) AS last_flow_at,
-        (array_agg(price ORDER BY observed_at DESC))[1]::numeric AS last_price,
-        bool_or(fact_variants > 1) AS fill_identity_conflict
-      FROM canonical_fills
-      GROUP BY condition_id, token_id
+        condition_id, token_id, total_buy_usdc, total_sell_usdc,
+        total_buy_shares, total_sell_shares, first_buy_at, last_flow_at,
+        last_price, false AS fill_identity_conflict
+      FROM single_position_flows
+      UNION ALL
+      SELECT * FROM raw_position_flows
     ), outcome_consensus AS MATERIALIZED (
       SELECT
         lower(o.condition_id) AS condition_id,
@@ -353,10 +586,9 @@ export async function readEconomicPositionProjection(params: {
       LEFT JOIN fill_conflicted_keys ck USING (condition_id, token_id)
       LEFT JOIN outcome_consensus oc USING (condition_id, token_id)
       LEFT JOIN current_facts cf USING (condition_id, token_id)
-      LEFT JOIN origin_keys lc
+      LEFT JOIN ledger_candidates lc
         ON lc.condition_id = k.condition_id
        AND lc.token_id = k.token_id
-       AND lc.metadata_rank = 1
       LEFT JOIN LATERAL (
         SELECT candidate.lifecycle_state
         FROM poly_redeem_jobs candidate
@@ -516,7 +748,15 @@ export async function readEconomicPositionProjection(params: {
     CROSS JOIN observer_summary observer
     LEFT JOIN preview p ON TRUE
     ORDER BY p.economic_bucket, p.bucket_rank
-  `));
+    `);
+  } finally {
+    recordEconomicDiagnostic(
+      params.diagnostics,
+      "economicProjectionQueryMs",
+      Math.max(0, Math.round(performance.now() - queryStartedAt))
+    );
+  }
+  const rows = normalizeRows<EconomicRow>(queryResult);
 
   const first = rows[0];
   const livePositions: WalletExecutionPosition[] = [];
@@ -549,6 +789,19 @@ export async function readEconomicPositionProjection(params: {
     livePositions,
     closedPositions,
   };
+}
+
+function recordEconomicDiagnostic<K extends keyof EconomicPositionReadDiagnostics>(
+  diagnostics: EconomicPositionReadDiagnostics | undefined,
+  key: K,
+  value: EconomicPositionReadDiagnostics[K]
+): void {
+  if (!diagnostics) return;
+  try {
+    diagnostics[key] = value;
+  } catch {
+    // Diagnostics are fail-open and cannot alter saved economic truth.
+  }
 }
 
 function toPosition(row: EconomicRow, capturedAt: Date): WalletExecutionPosition | null {

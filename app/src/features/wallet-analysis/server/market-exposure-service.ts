@@ -367,7 +367,7 @@ export async function buildBoundedMarketExposureGroups(params: {
     recordComparisonDiagnostic(
       params.diagnostics,
       "fallbackTargetFailureClass",
-      classifyComparisonReadFailure(error)
+      classifyDatabaseReadFailure(error)
     );
     throw error;
   } finally {
@@ -403,7 +403,7 @@ export async function buildBoundedMarketExposureGroups(params: {
     recordComparisonDiagnostic(
       params.diagnostics,
       "fallbackFillRollupFailureClass",
-      classifyComparisonReadFailure(error)
+      classifyDatabaseReadFailure(error)
     );
     throw error;
   } finally {
@@ -556,7 +556,7 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
     recordComparisonDiagnostic(
       params.diagnostics,
       "bundleQueryFailureClass",
-      classifyComparisonReadFailure(error)
+      classifyDatabaseReadFailure(error)
     );
     throw error;
   } finally {
@@ -586,7 +586,7 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
     recordComparisonDiagnostic(
       params.diagnostics,
       "bundleFillRollupFailureClass",
-      classifyComparisonReadFailure(error)
+      classifyDatabaseReadFailure(error)
     );
     throw error;
   } finally {
@@ -630,18 +630,19 @@ function elapsedMs(startedAt: number): number {
   return Math.max(0, Math.round(performance.now() - startedAt));
 }
 
-function classifyComparisonReadFailure(
+export function classifyDatabaseReadFailure(
   error: unknown
 ): ComparisonReadFailureClass {
   let candidate: unknown = error;
+  let sawDatabaseCode = false;
   for (let depth = 0; depth < 4; depth += 1) {
     if (!candidate || typeof candidate !== "object") break;
     const record = candidate as { code?: unknown; cause?: unknown };
     if (record.code === "57014") return "statement_timeout";
-    if (typeof record.code === "string") return "database_error";
+    if (typeof record.code === "string") sawDatabaseCode = true;
     candidate = record.cause;
   }
-  return "unexpected_error";
+  return sawDatabaseCode ? "database_error" : "unexpected_error";
 }
 
 /**

@@ -362,6 +362,48 @@ export const polyCopyTradeFills = pgTable(
       table.targetId.desc(),
       table.fillId.desc()
     ),
+    // bug.5036 — authoritative economic-position reads choose one latest
+    // exposure row per canonical (condition, token) leg. The partial index is
+    // deliberately expression- and predicate-identical to ledger_candidate_refs
+    // so Postgres can avoid re-evaluating every tenant ledger row and sorting
+    // the full history under active position-gap load. target/fill finish the
+    // key so the first pass can stay index-only before fetching the winner's
+    // lifecycle/attributes through the table primary key.
+    index("poly_copy_trade_fills_economic_projection_idx")
+      .on(
+        table.billingAccountId,
+        table.mode,
+        sql`lower(NULLIF(COALESCE(
+          NULLIF(${table.attributes}->>'condition_id', ''),
+          NULLIF(regexp_replace(${table.marketId}, '^prediction-market:polymarket:', ''), '')
+        ), ''))`,
+        sql`NULLIF(${table.attributes}->>'token_id', '')`,
+        table.updatedAt.desc(),
+        table.observedAt.desc(),
+        table.clientOrderId.desc(),
+        table.targetId,
+        table.fillId
+      )
+      .where(
+        sql`lower(NULLIF(COALESCE(
+            NULLIF(${table.attributes}->>'condition_id', ''),
+            NULLIF(regexp_replace(${table.marketId}, '^prediction-market:polymarket:', ''), '')
+          ), '')) IS NOT NULL
+          AND NULLIF(${table.attributes}->>'token_id', '') IS NOT NULL
+          AND (
+            ${table.positionLifecycle} IS NOT NULL
+            OR CASE
+              WHEN COALESCE(${table.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'
+                THEN (${table.attributes}->>'filled_size_usdc')::numeric > 0
+              ELSE false
+            END
+            OR (
+              ${table.status} IN ('filled', 'partial')
+              AND COALESCE(${table.attributes}->>'size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'
+              AND (${table.attributes}->>'size_usdc')::numeric > 0
+            )
+          )`
+      ),
     // fill_id format is owned by per-source helpers in @cogni/poly-market-provider.
     // Dedupe is enforced by the partial unique index on (target_id, fill_id).
     check(

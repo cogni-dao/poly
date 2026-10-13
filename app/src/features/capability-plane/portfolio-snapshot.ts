@@ -235,6 +235,24 @@ export function portfolioSnapshotExtra(
     positionsMtmUsdc: response.overview.usdc_positions_mtm,
     totalUsdc: response.overview.usdc_total,
     warningCodes: response.warnings.map((entry) => entry.code),
+    economicProjectionMs: diagnostics?.economicProjectionMs ?? null,
+    economicWalletIdentityMs: diagnostics?.economicWalletIdentityMs ?? null,
+    economicWalletIdentityCount:
+      diagnostics?.economicWalletIdentityCount ?? null,
+    economicProjectionQueryMs: diagnostics?.economicProjectionQueryMs ?? null,
+    economicProjectionFailureClass:
+      diagnostics?.economicProjectionFailureClass ?? null,
+    economicProjectionPlanMs: diagnostics?.economicProjectionPlanMs ?? null,
+    economicProjectionPlanStatement:
+      diagnostics?.economicProjectionPlanStatement ?? null,
+    economicProjectionPlanEstimatedTotalCost:
+      diagnostics?.economicProjectionPlanEstimatedTotalCost ?? null,
+    economicProjectionPlanEstimatedRows:
+      diagnostics?.economicProjectionPlanEstimatedRows ?? null,
+    economicProjectionPlanNodes:
+      diagnostics?.economicProjectionPlanNodes ?? [],
+    economicProjectionPlanFailureClass:
+      diagnostics?.economicProjectionPlanFailureClass ?? null,
     comparisonReadPath: diagnostics?.comparisonPath ?? "unknown",
     comparisonIdentityMs: diagnostics?.comparisonIdentityMs ?? null,
     comparisonBundleTotalMs: diagnostics?.comparisonBundleTotalMs ?? null,
