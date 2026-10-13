@@ -237,6 +237,8 @@ export function portfolioSnapshotExtra(
     warningCodes: response.warnings.map((entry) => entry.code),
     economicProjectionMs: diagnostics?.economicProjectionMs ?? null,
     economicWalletIdentityMs: diagnostics?.economicWalletIdentityMs ?? null,
+    economicWalletIdentityCount:
+      diagnostics?.economicWalletIdentityCount ?? null,
     economicProjectionQueryMs: diagnostics?.economicProjectionQueryMs ?? null,
     economicProjectionFailureClass:
       diagnostics?.economicProjectionFailureClass ?? null,

@@ -26,6 +26,7 @@ type ExecuteDb = { execute(query: SQL): Promise<unknown> };
 
 export type EconomicPositionReadDiagnostics = {
   economicWalletIdentityMs?: number;
+  economicWalletIdentityCount?: number;
   economicProjectionQueryMs?: number;
 };
 
@@ -128,6 +129,13 @@ export async function readEconomicPositionProjection(params: {
     );
   }
   const walletRows = normalizeRows<{ id: string }>(walletResult);
+  recordEconomicDiagnostic(
+    params.diagnostics,
+    "economicWalletIdentityCount",
+    // Terminal telemetry needs only the branch (0, 1, or 2+), not an
+    // unbounded identity cardinality.
+    Math.min(walletRows.length, 2)
+  );
   const singleWalletId =
     walletRows.length === 1 && walletRows[0] ? walletRows[0].id : null;
   const singleWalletFlows = singleWalletId === null
@@ -148,31 +156,31 @@ export async function readEconomicPositionProjection(params: {
         LEFT JOIN poly_trader_fill_rollup_cursors c
           ON c.trader_wallet_id = ${singleWalletId}::uuid
       ), single_wallet_unrolled_tail AS MATERIALIZED (
-        -- LATERAL is load-bearing: the insertion watermark becomes an Index
-        -- Cond on (trader_wallet_id, created_at, id), so a caught-up wallet
-        -- does not rescan each driven position's lifetime fill history.
+        -- LATERAL + the exact composite key are load-bearing: each driven leg
+        -- seeks only its insertion-watermark tail. A lagging/absent rollup
+        -- cursor must not materialize every unrolled fill for the wallet
+        -- before discarding unrelated positions.
         SELECT
           f.condition_id, f.token_id, f.side, f.size_usdc, f.shares,
           f.observed_at
         FROM effective_rollup_cursor cursor
+        CROSS JOIN driven_keys k
         CROSS JOIN LATERAL (
           SELECT
             f.condition_id, f.token_id, f.side, f.size_usdc, f.shares,
             f.observed_at, f.created_at, f.id
           FROM poly_trader_fills f
           WHERE f.trader_wallet_id = ${singleWalletId}::uuid
+            AND lower(f.condition_id) = k.condition_id
+            AND f.token_id = k.token_id
             AND (f.created_at, f.id) >
               (cursor.last_created_at, cursor.last_fill_id)
-          ORDER BY f.created_at ASC, f.id ASC
+            AND f.observed_at < date_trunc(
+              'day', ${params.capturedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC'
+            ) AT TIME ZONE 'UTC'
+            AND f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
           OFFSET 0
         ) f
-        JOIN driven_keys k
-          ON k.condition_id = lower(f.condition_id)
-         AND k.token_id = f.token_id
-        WHERE f.observed_at < date_trunc(
-          'day', ${params.capturedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC'
-        ) AT TIME ZONE 'UTC'
-          AND f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
       )
       SELECT
         flows.condition_id,

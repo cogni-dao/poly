@@ -68,6 +68,7 @@ type TradeActivityRow = {
 export type WalletDashboardReadDiagnostics = ComparisonReadDiagnostics & {
   economicProjectionMs?: number;
   economicWalletIdentityMs?: number;
+  economicWalletIdentityCount?: number;
   economicProjectionQueryMs?: number;
   economicProjectionFailureClass?: ComparisonReadFailureClass;
   comparisonPath?:

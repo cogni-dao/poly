@@ -15,13 +15,17 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
 import { portfolioSnapshotExtra } from "@/features/capability-plane/portfolio-snapshot";
-import { readEconomicPositionProjection } from "@/features/wallet-analysis/server/economic-position-read-model";
+import {
+  type EconomicPositionReadDiagnostics,
+  readEconomicPositionProjection,
+} from "@/features/wallet-analysis/server/economic-position-read-model";
 import { classifyDatabaseReadFailure } from "@/features/wallet-analysis/server/market-exposure-service";
 import { portfolioSnapshotFixture } from "../capability-plane/portfolio-snapshot.fixture";
 
 describe("economic-position projection reliability", () => {
   it("anchors position-keyed fills before indexed sibling consensus", async () => {
     const captured: string[] = [];
+    const diagnostics: EconomicPositionReadDiagnostics = {};
     const db = {
       execute: async (query: unknown) => {
         captured.push(new PgDialect().sqlToQuery(query as never).sql);
@@ -42,9 +46,11 @@ describe("economic-position projection reliability", () => {
       connectionKind: "privy_live",
       capturedAt: new Date("2026-10-12T12:00:00.000Z"),
       interval: "ALL",
+      diagnostics,
     });
 
     const query = captured.at(-1) ?? "";
+    expect(diagnostics.economicWalletIdentityCount).toBe(2);
     expect(query).toContain("ledger_candidate_refs AS MATERIALIZED");
     expect(query).toContain("SELECT DISTINCT ON (");
     expect(query).toContain("f.target_id");
@@ -74,6 +80,7 @@ describe("economic-position projection reliability", () => {
 
   it("uses exact rollup plus cutoff-day and unrolled-tail fills for one wallet identity", async () => {
     const captured: string[] = [];
+    const diagnostics: EconomicPositionReadDiagnostics = {};
     const db = {
       execute: async (query: unknown) => {
         captured.push(new PgDialect().sqlToQuery(query as never).sql);
@@ -90,32 +97,50 @@ describe("economic-position projection reliability", () => {
       connectionKind: "paper",
       capturedAt: new Date("2026-10-12T12:00:00.000Z"),
       interval: "ALL",
+      diagnostics,
     });
 
     const query = captured.at(-1) ?? "";
+    expect(diagnostics.economicWalletIdentityCount).toBe(1);
     expect(query).toContain("single_position_flows AS MATERIALIZED");
     expect(query).toContain("poly_trader_fill_rollups_daily");
     expect(query).toContain("poly_trader_fill_rollup_cursors");
     expect(query).toContain("effective_rollup_cursor AS MATERIALIZED");
     expect(query).toContain("single_wallet_unrolled_tail AS MATERIALIZED");
     const normalizedQuery = query.replace(/\s+/g, " ").trim();
+    const drivenKeysAt = normalizedQuery.indexOf("CROSS JOIN driven_keys k");
     const lateralAt = normalizedQuery.indexOf("CROSS JOIN LATERAL");
+    const canonicalKeyAt = normalizedQuery.indexOf(
+      "lower(f.condition_id) = k.condition_id",
+      lateralAt
+    );
+    const tokenKeyAt = normalizedQuery.indexOf(
+      "f.token_id = k.token_id",
+      canonicalKeyAt
+    );
     const cursorAt = normalizedQuery.indexOf(
-      "(f.created_at, f.id) > (cursor.last_created_at, cursor.last_fill_id)"
+      "(f.created_at, f.id) > (cursor.last_created_at, cursor.last_fill_id)",
+      tokenKeyAt
     );
-    const insertionOrderAt = normalizedQuery.indexOf(
-      "ORDER BY f.created_at ASC, f.id ASC"
+    const cutoffDayAt = normalizedQuery.indexOf(
+      "f.observed_at < date_trunc(",
+      cursorAt
     );
-    const pullupFenceAt = normalizedQuery.indexOf("OFFSET 0", insertionOrderAt);
-    const drivenFilterAt = normalizedQuery.indexOf(
-      "JOIN driven_keys k",
-      pullupFenceAt
+    const capturedAtCutoffAt = normalizedQuery.indexOf(
+      "f.observed_at <=",
+      cutoffDayAt
     );
-    expect(lateralAt).toBeGreaterThan(-1);
-    expect(cursorAt).toBeGreaterThan(lateralAt);
-    expect(insertionOrderAt).toBeGreaterThan(cursorAt);
-    expect(pullupFenceAt).toBeGreaterThan(insertionOrderAt);
-    expect(drivenFilterAt).toBeGreaterThan(pullupFenceAt);
+    const pullupFenceAt = normalizedQuery.indexOf("OFFSET 0", capturedAtCutoffAt);
+    const lateralFence = normalizedQuery.slice(lateralAt, pullupFenceAt);
+    expect(drivenKeysAt).toBeGreaterThan(-1);
+    expect(lateralAt).toBeGreaterThan(drivenKeysAt);
+    expect(canonicalKeyAt).toBeGreaterThan(lateralAt);
+    expect(tokenKeyAt).toBeGreaterThan(canonicalKeyAt);
+    expect(cursorAt).toBeGreaterThan(tokenKeyAt);
+    expect(cutoffDayAt).toBeGreaterThan(cursorAt);
+    expect(capturedAtCutoffAt).toBeGreaterThan(cutoffDayAt);
+    expect(pullupFenceAt).toBeGreaterThan(capturedAtCutoffAt);
+    expect(lateralFence).not.toContain("ORDER BY");
     expect(query).toContain("FROM single_wallet_unrolled_tail f");
     expect(query).not.toContain("fill_identity_anchors AS MATERIALIZED");
     expect(query).toContain("AT TIME ZONE 'UTC'");
@@ -146,6 +171,7 @@ describe("economic-position projection reliability", () => {
       {
         economicProjectionMs: 7_999,
         economicWalletIdentityMs: 2,
+        economicWalletIdentityCount: 1,
         economicProjectionQueryMs: 7_997,
         economicProjectionFailureClass: "statement_timeout",
       }
@@ -154,6 +180,7 @@ describe("economic-position projection reliability", () => {
     expect(extra).toMatchObject({
       economicProjectionMs: 7_999,
       economicWalletIdentityMs: 2,
+      economicWalletIdentityCount: 1,
       economicProjectionQueryMs: 7_997,
       economicProjectionFailureClass: "statement_timeout",
     });
