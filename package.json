@@ -32,6 +32,9 @@
       "@assistant-ui/react-ai-sdk": "1.3.7",
       "@assistant-ui/react-data-stream": "0.12.4",
       "@assistant-ui/react-markdown": "0.12.3"
+    },
+    "patchedDependencies": {
+      "postgres@3.4.9": "patches/postgres@3.4.9.patch"
     }
   },
   "devDependencies": {
