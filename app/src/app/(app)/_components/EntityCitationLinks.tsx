@@ -12,6 +12,7 @@
 
 "use client";
 
+import { formatCitationLabel } from "@cogni/knowledge-base-ui";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import type { ReactElement } from "react";
@@ -32,7 +33,7 @@ function otherEndpoint(link: CitationLinkDto, entityId: string) {
 
 function chipLabel(link: CitationLinkDto, entityId: string): string {
   const endpoint = otherEndpoint(link, entityId);
-  return `${link.citationType} ${endpoint.id}`;
+  return formatCitationLabel(link.citationType, endpoint);
 }
 
 export function EntityCitationLinks({
