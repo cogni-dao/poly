@@ -1,0 +1,33 @@
+diff --git a/src/connection.js b/src/connection.js
+--- a/src/connection.js
++++ b/src/connection.js
+@@ -549,6 +549,7 @@
+ 
+     query = results = errorResponse = null
+     result = new Result()
++    rows = 0
+     connectTimer.cancel()
+ 
+     if (initial) {
+diff --git a/cjs/src/connection.js b/cjs/src/connection.js
+--- a/cjs/src/connection.js
++++ b/cjs/src/connection.js
+@@ -549,6 +549,7 @@
+ 
+     query = results = errorResponse = null
+     result = new Result()
++    rows = 0
+     connectTimer.cancel()
+ 
+     if (initial) {
+diff --git a/cf/src/connection.js b/cf/src/connection.js
+--- a/cf/src/connection.js
++++ b/cf/src/connection.js
+@@ -551,6 +551,7 @@
+ 
+     query = results = errorResponse = null
+     result = new Result()
++    rows = 0
+     connectTimer.cancel()
+ 
+     if (initial) {
