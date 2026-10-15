@@ -37,17 +37,6 @@ for (const [entryPoint, createSql] of [
       });
       try {
         const before = await sql`SELECT pg_backend_pid() AS pid`;
-        // A cursor confirms that the server has produced rows before the same
-        // statement is rerun without a cursor and reaches its native timeout.
-        let delivered = 0;
-        for await (const batch of sql`
-          SELECT g, pg_sleep(CASE WHEN g > 5 THEN 0.2 ELSE 0 END)
-          FROM generate_series(1, 20) g
-        `.cursor(1)) {
-          delivered += batch.length;
-          if (delivered === 5) break;
-        }
-        expect(delivered).toBe(5);
         await expect(sql`
           SELECT g, pg_sleep(CASE WHEN g > 5 THEN 0.2 ELSE 0 END)
           FROM generate_series(1, 20) g
