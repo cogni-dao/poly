@@ -8,7 +8,10 @@ import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { persistPositionGapTargetSnapshot } from "@/features/wallet-analysis/server/copy-target-position-hydration-service";
-import { buildBoundedMarketExposureGroups } from "@/features/wallet-analysis/server/market-exposure-service";
+import {
+  buildBoundedMarketExposureGroups,
+  buildBoundedMarketExposureWithCoverage,
+} from "@/features/wallet-analysis/server/market-exposure-service";
 import { refreshMarketMetadata } from "@/features/wallet-analysis/server/poly-market-metadata-service";
 import {
   positionMetadataRequestKey,
@@ -411,6 +414,27 @@ describe("saved metadata publication and indexed exact identity reads", () => {
         relation: "same",
         oppositeTargetTokenIds: [oppositeTokenId],
         metadataAvailability: "available",
+      }),
+    ]);
+    const bundle = await buildBoundedMarketExposureWithCoverage({
+      db,
+      billingAccountId: accountId,
+      walletAddress: ownWallet,
+      connectionKind: "privy_live",
+      livePositions: [own],
+    });
+    const bundledLine = bundle.market.groups[0]?.lines[0];
+    expect(
+      bundledLine?.participants
+        .find((p) => p.side === "copy_target")
+        ?.legs?.map((l) => l.tokenId),
+    ).toEqual([oppositeTokenId, thirdTokenId, tokenId]);
+    expect(bundledLine?.tokenComparisons).toEqual([
+      expect.objectContaining({
+        ourTokenId: tokenId,
+        targetTokenId: tokenId,
+        relation: "same",
+        oppositeTargetTokenIds: [oppositeTokenId],
       }),
     ]);
     await db.execute(sql`UPDATE poly_trader_current_positions SET active=false
