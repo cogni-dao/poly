@@ -220,6 +220,8 @@ describe("authoritative wallet economic-position projection", () => {
         ...entry,
         tokenId: token(entry.conditionId.toLowerCase()),
         resolvedAt: new Date("2026-10-10T12:00:00.000Z"),
+        // The reader is intentionally as-of CAPTURED, not today's seed time.
+        updatedAt: new Date("2026-10-10T12:01:00.000Z"),
       }))
     );
   });
@@ -365,10 +367,11 @@ describe("current quantity authority and whole-position cost", () => {
           outcome: "winner",
           payout: "1",
           resolvedAt: new Date("2026-10-12T11:00:00Z"),
+          updatedAt: new Date("2026-10-12T11:01:00Z"),
         });
       await db.insert(polyTraderCurrentPositions).values({ traderWalletId: wallet.id, conditionId, tokenId: "104", shares: "0", costBasisUsdc: "4", currentValueUsdc: "0", avgPrice: "0.4", active: false, contentHash: "closed-zero", lastObservedAt: observed });
       await db.insert(polyTraderFills).values({ traderWalletId: wallet.id, source: "data-api", nativeId: "closed-zero-buy", conditionId, tokenId: "104", side: "BUY", shares: "10", sizeUsdc: "4", price: "0.4", observedAt: new Date("2026-10-12T10:00:00Z") });
-      await db.insert(polyMarketOutcomes).values({ conditionId, tokenId: "104", outcome: "loser", payout: "0", resolvedAt: new Date("2026-10-12T11:00:00Z") });
+      await db.insert(polyMarketOutcomes).values({ conditionId, tokenId: "104", outcome: "loser", payout: "0", resolvedAt: new Date("2026-10-12T11:00:00Z"), updatedAt: new Date("2026-10-12T11:01:00Z") });
       const read = () =>
         readEconomicPositionProjection({
           db,
