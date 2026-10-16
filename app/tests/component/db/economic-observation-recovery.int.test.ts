@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+  polyTraderCurrentPositions,
   polyTraderFills,
   polyTraderIngestionCursors,
   polyTraderPositionSnapshots,
@@ -71,7 +72,7 @@ describe("native economic observation persistence", () => {
       .values({ walletAddress: address, kind: "cogni_wallet", label: suffix })
       .returning();
     if (!wallet || !winner) throw new Error("fixture failed");
-    const now = new Date("2026-10-16T07:00:00Z");
+    const now = new Date("2026-10-15T14:35:00Z");
     await db
       .insert(polyCopyTradeFills)
       .values({
@@ -95,6 +96,12 @@ describe("native economic observation persistence", () => {
         lastSuccessAt: now,
         status: "ok",
       });
+    const oldInventoryAt = new Date("2026-10-15T14:30:00Z");
+    await db.insert(polyTraderCurrentPositions).values({ traderWalletId: wallet.id, conditionId, tokenId: winner.token_id,
+      shares: "229.28", costBasisUsdc: "49.23874", currentValueUsdc: "229.28", avgPrice: "0.21475375",
+      active: false, contentHash: "pre-redemption-positive", firstObservedAt: new Date("2026-10-15T12:00:00Z"), lastObservedAt: oldInventoryAt,
+      raw: { redeemable: true, curPrice: 1 } });
+    await db.insert(polyTraderIngestionCursors).values({ traderWalletId: wallet.id, source: "data-api-positions", lastSuccessAt: now, status: "ok" });
     const listClosed = vi.fn().mockResolvedValue({ positions, requestCount: 1 });
     const listActivity = vi.fn().mockResolvedValue({ activity, requestCount: 1 });
     const readSettlement = vi
@@ -142,6 +149,11 @@ describe("native economic observation persistence", () => {
         capturedAt: new Date(now.getTime() + 1000),
         interval: "1W",
       });
+      expect(read.positionsMtm).toBeNull(); // payout cannot coexist with an older positive MTM
+      expect(read.positionFacts.find((row) => row.tokenId === winner.token_id)?.inventoryCoverage).toBe("unavailable");
+      const current = await db.select().from(polyTraderCurrentPositions).where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+      expect(current[0]?.shares).toBe("229.28000000");
+      expect(current[0]?.lastObservedAt).toEqual(oldInventoryAt); // history does not publish inventory
       expect(read.closedCount).toBe(2);
       expect(read.closedPositions).toHaveLength(2);
       const proof = read.closedPositions.find(
@@ -181,14 +193,19 @@ describe("native economic observation persistence", () => {
         .select()
         .from(polyTraderIngestionCursors)
         .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
-      expect(cursor).toHaveLength(1);
-      expect(cursor[0]?.lastSeenAt).toEqual(now);
+      expect(cursor).toHaveLength(2);
+      expect(cursor.find((row) => row.source === "data-api-trades")?.lastSeenAt).toEqual(now);
       const ledger = await db
         .select()
         .from(polyCopyTradeFills)
         .where(eq(polyCopyTradeFills.billingAccountId, account));
       expect(ledger[0]?.status).toBe("error");
       expect(ledger[0]?.orderId).toBeNull();
+      // Only a newer canonical publication can clear the held inventory.
+      await db.update(polyTraderCurrentPositions).set({ shares: "0", currentValueUsdc: "0", lastObservedAt: now }).where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+      const afterPublication = await readEconomicPositionProjection({ db, billingAccountId: account, walletAddress: address, connectionKind: "privy_live", capturedAt: new Date(now.getTime()+1000), interval: "1W" });
+      expect(afterPublication.positionsMtm).toBe(0);
+      expect(afterPublication.closedPositions.find((row) => row.asset === winner.token_id)?.economicProof?.lifetimePnlUsdc).toBe(180.04126);
     } finally {
       await db.delete(polyCopyTradeFills).where(eq(polyCopyTradeFills.billingAccountId, account));
       await db.delete(polyTraderWallets).where(eq(polyTraderWallets.id, wallet.id));

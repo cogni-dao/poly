@@ -366,6 +366,9 @@ describe("current quantity authority and whole-position cost", () => {
           payout: "1",
           resolvedAt: new Date("2026-10-12T11:00:00Z"),
         });
+      await db.insert(polyTraderCurrentPositions).values({ traderWalletId: wallet.id, conditionId, tokenId: "104", shares: "0", costBasisUsdc: "4", currentValueUsdc: "0", avgPrice: "0.4", active: false, contentHash: "closed-zero", lastObservedAt: observed });
+      await db.insert(polyTraderFills).values({ traderWalletId: wallet.id, source: "data-api", nativeId: "closed-zero-buy", conditionId, tokenId: "104", side: "BUY", shares: "10", sizeUsdc: "4", price: "0.4", observedAt: new Date("2026-10-12T10:00:00Z") });
+      await db.insert(polyMarketOutcomes).values({ conditionId, tokenId: "104", outcome: "loser", payout: "0", resolvedAt: new Date("2026-10-12T11:00:00Z") });
       const read = () =>
         readEconomicPositionProjection({
           db,
@@ -396,6 +399,11 @@ describe("current quantity authority and whole-position cost", () => {
         economicsCoverage: "partial",
       });
       expect(result.historyIncompleteCount).toBeGreaterThan(0);
+      expect(result.positionFacts.find((row) => row.tokenId === "104")?.inventoryCoverage).toBe("complete");
+      await db.update(polyTraderIngestionCursors).set({ status: "stale", lastSuccessAt: new Date("2026-10-12T10:00:00Z") }).where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
+      const staleZero = (await read()).positionFacts.find((row) => row.tokenId === "104");
+      expect(staleZero).toMatchObject({ heldShares: 0, inventoryCoverage: "stale" });
+      await db.update(polyTraderIngestionCursors).set({ status: "ok", lastSuccessAt: observed }).where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
       // An old zero may not hide a genuinely newer BUY before observation catches up.
       await db
         .insert(polyTraderFills)

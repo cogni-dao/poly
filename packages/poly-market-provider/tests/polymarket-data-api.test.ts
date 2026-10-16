@@ -1266,7 +1266,7 @@ describe("bounded native activity recovery", () => {
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
     await expect(client.listConditionActivityV2(wallet, { conditionId, start: 0, end: 200, maxRequests: 2 })).rejects.toThrow(/overlapping activity pages/);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
-    const single = new PolymarketDataApiClient({ fetch: vi.fn().mockResolvedValue(jsonResponse(page([row]))) });
+    const single = new PolymarketDataApiClient({ fetch: vi.fn().mockResolvedValue(jsonResponse(page([row, { ...row, type: "REDEEM", side: "", token_id: "" }]))) });
     expect((await single.listConditionActivityV2(wallet, { conditionId, start: 0, end: 200, maxRequests: 2 })).activity[0]?.usdc_size).toBe(4.123456);
   });
   it("withholds incomplete cursors and rejects wrong-condition data", async () => {

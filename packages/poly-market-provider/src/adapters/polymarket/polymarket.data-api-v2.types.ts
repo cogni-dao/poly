@@ -124,11 +124,15 @@ export const PolymarketActivityV2Schema = z.object({
   size: z.number().finite().nonnegative(),
   usdc_size: z.number().finite().nonnegative(),
   price: z.number().finite().nonnegative().nullable().optional(),
-  side: z.enum(["BUY", "SELL"]).nullable().optional(),
+  side: z.enum(["BUY", "SELL", ""]).nullable().optional(),
   id: z.union([z.string(), z.number()]).optional(),
   trade_id: z.union([z.string(), z.number()]).optional(),
   log_index: z.number().int().nonnegative().optional(),
-}).passthrough();
+}).passthrough().superRefine((row, context) => {
+  if (row.type === "TRADE" && (row.side !== "BUY" && row.side !== "SELL" || !row.token_id || !/^[0-9]+$/.test(row.token_id))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "TRADE requires an exact token and BUY/SELL side" });
+  }
+});
 export type PolymarketActivityV2 = z.infer<typeof PolymarketActivityV2Schema>;
 export const PolymarketActivityV2ResponseSchema = z.object({
   data: z.array(PolymarketActivityV2Schema).max(1000),

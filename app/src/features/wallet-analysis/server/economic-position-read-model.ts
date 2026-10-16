@@ -434,6 +434,9 @@ export async function readEconomicPositionProjection(params: {
         (b.current_last_observed_at IS NOT NULL
           AND NOT COALESCE(b.current_identity_conflict, false)
           AND b.current_last_observed_at >= COALESCE(b.last_flow_at, '-infinity'::timestamptz)
+          AND (b.economic_observation->>'coverage' IS DISTINCT FROM 'complete'
+            OR b.economic_observation->'closedPosition'->>'last_event_at' IS NULL
+            OR b.current_last_observed_at >= to_timestamp((b.economic_observation->'closedPosition'->>'last_event_at')::numeric))
         ) AS inventory_authoritative,
         (observer.status = 'ok' AND observer.complete
           AND observer.last_success_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'
@@ -452,6 +455,9 @@ export async function readEconomicPositionProjection(params: {
           AND observer.last_success_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'
           AND b.current_last_observed_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'
           AND b.current_last_observed_at >= COALESCE(b.last_flow_at, '-infinity'::timestamptz)
+          AND (b.economic_observation->>'coverage' IS DISTINCT FROM 'complete'
+            OR b.economic_observation->'closedPosition'->>'last_event_at' IS NULL
+            OR b.current_last_observed_at >= to_timestamp((b.economic_observation->'closedPosition'->>'last_event_at')::numeric))
           AND observer.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
         ) AS mark_available,
         CASE

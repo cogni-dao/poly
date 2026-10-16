@@ -340,17 +340,42 @@ export async function recoverEconomicObservations(input: {
     token_id: string;
   }>(
     await input.db.execute(sql`
-    WITH seeds AS (
-      SELECT w.id AS wallet_id, lower(w.wallet_address) AS wallet_address,
-        lower(COALESCE(NULLIF(f.attributes->>'condition_id', ''), regexp_replace(f.market_id, '^prediction-market:polymarket:', ''))) AS condition_id,
-        max(f.attributes->>'token_id') AS token_id,
-        max(f.observed_at) AS latest_at, sum(CASE WHEN COALESCE(f.attributes->>'size_usdc','') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (f.attributes->>'size_usdc')::numeric ELSE 0 END) AS materiality
+    WITH owned_wallets AS MATERIALIZED (
+      SELECT DISTINCT w.id, lower(w.wallet_address) AS wallet_address, connection.billing_account_id
       FROM poly_trader_wallets w
       JOIN poly_wallet_connections connection ON lower(connection.funder_address) = lower(w.wallet_address) AND connection.revoked_at IS NULL
-      JOIN poly_copy_trade_fills f ON f.billing_account_id = connection.billing_account_id AND f.mode = 'live'
       WHERE w.kind = 'cogni_wallet' AND w.active_for_research AND w.disabled_at IS NULL
-        AND f.observed_at >= ${windowStart.toISOString()}::timestamptz AND f.observed_at <= ${input.now.toISOString()}::timestamptz
-      GROUP BY w.id, lower(w.wallet_address), lower(COALESCE(NULLIF(f.attributes->>'condition_id', ''), regexp_replace(f.market_id, '^prediction-market:polymarket:', '')))
+    ), seed_facts AS (
+      SELECT w.id AS wallet_id, w.wallet_address,
+        lower(COALESCE(NULLIF(f.attributes->>'condition_id', ''), regexp_replace(f.market_id, '^prediction-market:polymarket:', ''))) AS condition_id,
+        max(f.attributes->>'token_id') AS token_id, max(f.observed_at) AS latest_at,
+        sum(CASE WHEN COALESCE(f.attributes->>'size_usdc','') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (f.attributes->>'size_usdc')::numeric ELSE 0 END) AS materiality
+      FROM owned_wallets w JOIN poly_copy_trade_fills f ON f.billing_account_id = w.billing_account_id AND f.mode = 'live'
+      WHERE f.observed_at >= ${windowStart.toISOString()}::timestamptz AND f.observed_at <= ${input.now.toISOString()}::timestamptz
+      GROUP BY w.id, w.wallet_address, lower(COALESCE(NULLIF(f.attributes->>'condition_id', ''), regexp_replace(f.market_id, '^prediction-market:polymarket:', '')))
+      UNION ALL
+      SELECT w.id, w.wallet_address, lower(p.condition_id), p.token_id,
+        p.first_observed_at, p.cost_basis_usdc
+      FROM owned_wallets w JOIN poly_trader_current_positions p ON p.trader_wallet_id = w.id
+      WHERE p.last_observed_at >= ${windowStart.toISOString()}::timestamptz
+      UNION ALL
+      SELECT w.id, w.wallet_address, lower(r.condition_id), r.token_id,
+        max(r.last_observed_at), sum(r.buy_usdc)
+      FROM owned_wallets w JOIN poly_trader_fill_rollups_daily r ON r.trader_wallet_id = w.id
+      WHERE r.day >= ${windowStart.toISOString()}::timestamptz::date
+      GROUP BY w.id, w.wallet_address, lower(r.condition_id), r.token_id
+      UNION ALL
+      SELECT w.id, w.wallet_address, lower(f.condition_id), f.token_id,
+        max(f.observed_at), sum(f.size_usdc) FILTER (WHERE f.side = 'BUY')
+      FROM owned_wallets w JOIN poly_trader_fills f ON f.trader_wallet_id = w.id
+      LEFT JOIN poly_trader_fill_rollup_cursors cursor ON cursor.trader_wallet_id = w.id
+      WHERE f.observed_at >= ${windowStart.toISOString()}::timestamptz AND f.observed_at <= ${input.now.toISOString()}::timestamptz
+        AND (f.created_at,f.id) > (COALESCE(cursor.last_created_at,'epoch'::timestamptz), COALESCE(cursor.last_fill_id,'00000000-0000-0000-0000-000000000000'::uuid))
+      GROUP BY w.id, w.wallet_address, lower(f.condition_id), f.token_id
+    ), seeds AS (
+      SELECT wallet_id,wallet_address,condition_id,max(token_id) AS token_id,
+        max(latest_at) AS latest_at,max(materiality) AS materiality FROM seed_facts
+      GROUP BY wallet_id,wallet_address,condition_id
     ), candidates AS (
       SELECT seeds.*, history.captured_at AS last_attempt_at,
         history.raw->'economicObservationV1'->>'coverage' AS coverage
@@ -363,7 +388,7 @@ export async function recoverEconomicObservations(input: {
       ) history ON TRUE
       WHERE seeds.condition_id ~ '^0x[0-9a-f]{64}$'
     ) SELECT wallet_id, wallet_address, condition_id, token_id FROM candidates
-    WHERE coverage IS DISTINCT FROM 'complete' AND token_id ~ '^[0-9]+$'
+    WHERE (coverage IS DISTINCT FROM 'complete' OR latest_at > last_attempt_at) AND token_id ~ '^[0-9]+$'
       AND (last_attempt_at IS NULL OR last_attempt_at < ${new Date(input.now.getTime() - RETRY_MS).toISOString()}::timestamptz)
     ORDER BY last_attempt_at ASC NULLS FIRST, materiality DESC, latest_at DESC, wallet_id, condition_id LIMIT 1
   `),
