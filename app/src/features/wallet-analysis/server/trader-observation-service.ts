@@ -67,14 +67,7 @@ import {
   type PolymarketUserPnlClient,
   type PolymarketUserPosition,
 } from "@cogni/poly-market-provider/adapters/polymarket";
-import {
-  and,
-  eq,
-  exists,
-  isNull,
-  notInArray,
-  sql,
-} from "drizzle-orm";
+import { and, eq, exists, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import pLimit from "p-limit";
@@ -89,6 +82,22 @@ import {
   fetchAndPersistTradingWalletPnlHistory,
   pruneOldTradingWalletPnlPoints,
 } from "./trading-wallet-overview-service";
+
+import {
+  PositionObservationBudget,
+  type PositionObservationController,
+  PositionBalanceTransportError,
+  positionObservationController,
+} from "./position-observation-control";
+
+import {
+  parseTerminalResume,
+  positionErrorMessage,
+  readTerminalRecovery,
+  terminalSweepComplete,
+  type TerminalKey,
+  type TerminalRecovery,
+} from "./terminal-position-recovery";
 
 type Db =
   | NodePgDatabase<Record<string, unknown>>
@@ -158,6 +167,10 @@ export interface TraderObservationTickDeps {
   maxPages?: number;
   positionMaxPages?: number;
   positionPollMs?: number;
+  /** @internal independent process/clock seam for deterministic tests. */
+  positionControl?: PositionObservationController;
+  /** @internal rollback/completion seam; runs inside the positions transaction. */
+  beforePositionCursorPublish?: () => void | Promise<void>;
   /**
    * Cooperative cancellation (task.5015). Armed by the job's tick timeout;
    * checked before each wallet and between upstream pages, and passed to
@@ -238,9 +251,12 @@ export interface CurrentPositionRefreshResult {
   stalePositionRowsDeactivated: number;
   stalePositionRowsPreserved: number;
   failureReason?: PositionObservationFailureReason;
+  deferred?: "floor" | "capacity";
+  originalAsOf?: string | null;
 }
 
 type PersistedCurrentPositions = {
+  controlUpdatedAt?: string;
   observedPositions: PolymarketUserPosition[];
   positionRows: number;
   complete: boolean;
@@ -254,6 +270,8 @@ export interface MissingCurrentPosition {
   shares: number;
   currentValueUsdc: number;
   lastObservedAt: Date;
+  /** PostgreSQL row version used only by the serialized writer recheck. */
+  rowVersion?: string;
 }
 
 /**
@@ -282,6 +300,8 @@ type PositionCursorToken = {
   xmin: string | null;
   lastSuccessAt: string | null;
   status: string | null;
+  terminalResume: string | null;
+  terminalRecovery: TerminalRecovery | null;
 };
 
 export type PositionAuthorityResult = {
@@ -305,7 +325,15 @@ type PreparedPositionPublication = {
   state: PositionPrepareState;
   positions: PolymarketUserPosition[];
   omitted: MissingCurrentPosition[];
+  terminalProbe: MissingCurrentPosition[];
+  terminalProbeLimit: number;
+  terminalZero: MissingCurrentPosition[];
+  terminalResume: string | null;
+  terminalRecovery: TerminalRecovery | null;
+  terminalRecoveryFailed: boolean;
 };
+
+type PositionAuthorityBudget = { startedAt: number; chunkCount: number };
 
 /** Pure exact-zero gate used after every Polygon `balanceOfBatch` chunk. */
 export function classifyMissingPositionBalances(
@@ -484,6 +512,7 @@ export async function runTraderObservationTick(
       }
       try {
         const result = await observeWallet({ ...deps, wallet, logger: log });
+        if (result.activityError) errors += 1;
         fills += result.fills;
         positions += result.positions;
         rollupFills += result.rollupFills;
@@ -701,6 +730,7 @@ export async function refreshCurrentPositionsForWallet(params: {
   client: PolymarketDataApiClient;
   walletAddress: string;
   positionMaxPages?: number;
+  positionControl?: PositionObservationController;
   readPositionBalances?: PositionBalanceBatchReader;
   /** @internal deterministic fault seam for atomic-publication component tests. */
   beforePositionCursorPublish?: () => void | Promise<void>;
@@ -713,6 +743,9 @@ export async function refreshCurrentPositionsForWallet(params: {
   );
   return observePositionsNow({
     db: params.db,
+    ...(params.positionControl
+      ? { positionControl: params.positionControl }
+      : {}),
     client: params.client,
     wallet,
     ...(params.positionMaxPages === undefined
@@ -835,51 +868,13 @@ async function observeWallet(
   deps: TraderObservationTickDeps & {
     wallet: PolyTraderWallet;
   }
-): Promise<{ fills: number; positions: number; rollupFills: number }> {
+): Promise<{
+  fills: number;
+  positions: number;
+  rollupFills: number;
+  activityError?: boolean;
+}> {
   const startedAt = Date.now();
-  const cursor = await deps.db
-    .select()
-    .from(polyTraderIngestionCursors)
-    .where(
-      and(
-        eq(polyTraderIngestionCursors.traderWalletId, deps.wallet.id),
-        eq(polyTraderIngestionCursors.source, TRADE_SOURCE)
-      )
-    )
-    .limit(1);
-  const since = cursor[0]?.lastSeenAt
-    ? Math.floor(cursor[0].lastSeenAt.getTime() / 1000)
-    : undefined;
-
-  const source = createPolymarketActivitySource({
-    client: deps.client,
-    wallet: deps.wallet.walletAddress as `0x${string}`,
-    logger: deps.logger,
-    metrics: deps.metrics,
-    limit: deps.tradePageLimit ?? DEFAULT_TRADE_PAGE_LIMIT,
-    maxPages: deps.maxPages ?? DEFAULT_MAX_PAGES,
-    signal: deps.signal,
-  });
-  const observed = await source.fetchSince(since);
-  // Bulk write, one row per observed fill — the largest DB unit in the wallet
-  // loop and the last unbounded one now that the upstream reads honour the
-  // signal (bug.5297). Per-wallet transaction, deliberately NOT a stage-wide
-  // one: a timeout must cost this wallet's writes only, never roll back the
-  // wallets that already succeeded.
-  // Guarded on non-empty: `upsertObservedFills` returns 0 without touching the
-  // DB when there are no fills, which is the common case on a quiet tick, and
-  // wrapping that unconditionally would spend BEGIN + SET LOCAL + COMMIT to do
-  // nothing. Unlike the positions writer below, which still reconciles stale
-  // rows when upstream returns nothing, this one has no empty-input work.
-  const insertedFills =
-    observed.fills.length === 0
-      ? 0
-      : await withStatementTimeout(
-          deps.db,
-          OBSERVATION_STATEMENT_TIMEOUT_MS,
-          async (tx) =>
-            await upsertObservedFills(tx, deps.wallet.id, observed.fills)
-        );
   // Copy targets publish their bounded, lineage-scoped position truth through
   // the V2 hydrator after this wallet loop. Keep activity/fill observation,
   // but never let the legacy whole-wallet V1 walk compete for those rows or
@@ -909,28 +904,56 @@ async function observeWallet(
           return { positions: 0, complete: false, skipped: false };
         });
 
-  await deps.db
-    .insert(polyTraderIngestionCursors)
-    .values({
-      traderWalletId: deps.wallet.id,
-      source: TRADE_SOURCE,
-      lastSeenAt:
-        observed.newSince > 0
-          ? new Date(observed.newSince * 1000)
-          : cursor[0]?.lastSeenAt,
-      lastSeenNativeId:
-        observed.fills[0]?.fill_id ?? cursor[0]?.lastSeenNativeId,
-      lastSuccessAt: new Date(),
-      status: "ok",
-      errorMessage: null,
-      updatedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: [
-        polyTraderIngestionCursors.traderWalletId,
-        polyTraderIngestionCursors.source,
-      ],
-      set: {
+  try {
+    const cursor = await deps.db
+      .select()
+      .from(polyTraderIngestionCursors)
+      .where(
+        and(
+          eq(polyTraderIngestionCursors.traderWalletId, deps.wallet.id),
+          eq(polyTraderIngestionCursors.source, TRADE_SOURCE)
+        )
+      )
+      .limit(1);
+    const since = cursor[0]?.lastSeenAt
+      ? Math.floor(cursor[0].lastSeenAt.getTime() / 1000)
+      : undefined;
+
+    const source = createPolymarketActivitySource({
+      client: deps.client,
+      wallet: deps.wallet.walletAddress as `0x${string}`,
+      logger: deps.logger,
+      metrics: deps.metrics,
+      limit: deps.tradePageLimit ?? DEFAULT_TRADE_PAGE_LIMIT,
+      maxPages: deps.maxPages ?? DEFAULT_MAX_PAGES,
+      signal: deps.signal,
+    });
+    const observed = await source.fetchSince(since);
+    // Bulk write, one row per observed fill — the largest DB unit in the wallet
+    // loop and the last unbounded one now that the upstream reads honour the
+    // signal (bug.5297). Per-wallet transaction, deliberately NOT a stage-wide
+    // one: a timeout must cost this wallet's writes only, never roll back the
+    // wallets that already succeeded.
+    // Guarded on non-empty: `upsertObservedFills` returns 0 without touching the
+    // DB when there are no fills, which is the common case on a quiet tick, and
+    // wrapping that unconditionally would spend BEGIN + SET LOCAL + COMMIT to do
+    // nothing. Unlike the positions writer below, which still reconciles stale
+    // rows when upstream returns nothing, this one has no empty-input work.
+    const insertedFills =
+      observed.fills.length === 0
+        ? 0
+        : await withStatementTimeout(
+            deps.db,
+            OBSERVATION_STATEMENT_TIMEOUT_MS,
+            async (tx) =>
+              await upsertObservedFills(tx, deps.wallet.id, observed.fills)
+          );
+
+    await deps.db
+      .insert(polyTraderIngestionCursors)
+      .values({
+        traderWalletId: deps.wallet.id,
+        source: TRADE_SOURCE,
         lastSeenAt:
           observed.newSince > 0
             ? new Date(observed.newSince * 1000)
@@ -941,72 +964,125 @@ async function observeWallet(
         status: "ok",
         errorMessage: null,
         updatedAt: new Date(),
-      },
-    });
-
-  // ROLLUPS_FOLLOW_FILLS: fold this wallet's new fills into the daily rollup
-  // AFTER the fills upsert settles (per-wallet writer serialization is what
-  // makes the insertion-key watermark sound — see fill-rollup-service.ts).
-  // Bounded batches per tick; a boot backfill holding the cursor wins via
-  // NOWAIT-skip. DB-only, so a failure is logged and never fails the wallet
-  // or writes a cursor-error row.
-  let rollupFills = 0;
-  if (!deps.signal?.aborted) {
-    try {
-      const rollup = await accumulateFillRollups(deps.db, {
-        traderWalletId: deps.wallet.id,
-        maxBatches: TICK_ROLLUP_MAX_BATCHES,
-        skipIfLocked: true,
-        signal: deps.signal,
+      })
+      .onConflictDoUpdate({
+        target: [
+          polyTraderIngestionCursors.traderWalletId,
+          polyTraderIngestionCursors.source,
+        ],
+        set: {
+          lastSeenAt:
+            observed.newSince > 0
+              ? new Date(observed.newSince * 1000)
+              : cursor[0]?.lastSeenAt,
+          lastSeenNativeId:
+            observed.fills[0]?.fill_id ?? cursor[0]?.lastSeenNativeId,
+          lastSuccessAt: new Date(),
+          status: "ok",
+          errorMessage: null,
+          updatedAt: new Date(),
+        },
       });
-      rollupFills = rollup.fills;
-      if (!rollup.caughtUp || rollup.batches > 1) {
-        deps.logger.info(
+
+    // ROLLUPS_FOLLOW_FILLS: fold this wallet's new fills into the daily rollup
+    // AFTER the fills upsert settles (per-wallet writer serialization is what
+    // makes the insertion-key watermark sound — see fill-rollup-service.ts).
+    // Bounded batches per tick; a boot backfill holding the cursor wins via
+    // NOWAIT-skip. DB-only, so a failure is logged and never fails the wallet
+    // or writes a cursor-error row.
+    let rollupFills = 0;
+    if (!deps.signal?.aborted) {
+      try {
+        const rollup = await accumulateFillRollups(deps.db, {
+          traderWalletId: deps.wallet.id,
+          maxBatches: TICK_ROLLUP_MAX_BATCHES,
+          skipIfLocked: true,
+          signal: deps.signal,
+        });
+        rollupFills = rollup.fills;
+        if (!rollup.caughtUp || rollup.batches > 1) {
+          deps.logger.info(
+            {
+              event: "poly.fill_rollup.tick_accumulate",
+              trader_wallet_id: deps.wallet.id,
+              wallet: deps.wallet.walletAddress,
+              fills: rollup.fills,
+              batches: rollup.batches,
+              caught_up: rollup.caughtUp,
+              skipped_locked: rollup.skippedLocked,
+            },
+            "fill-rollup tick accumulate draining backlog"
+          );
+        }
+      } catch (err: unknown) {
+        if (deps.signal?.aborted) throw err;
+        deps.logger.warn(
           {
-            event: "poly.fill_rollup.tick_accumulate",
+            event: "poly.fill_rollup.tick_accumulate_error",
             trader_wallet_id: deps.wallet.id,
             wallet: deps.wallet.walletAddress,
-            fills: rollup.fills,
-            batches: rollup.batches,
-            caught_up: rollup.caughtUp,
-            skipped_locked: rollup.skippedLocked,
+            err: err instanceof Error ? err.message : String(err),
           },
-          "fill-rollup tick accumulate draining backlog"
+          "fill-rollup tick accumulate failed — readers fall back to the live tail"
         );
       }
-    } catch (err: unknown) {
-      if (deps.signal?.aborted) throw err;
-      deps.logger.warn(
-        {
-          event: "poly.fill_rollup.tick_accumulate_error",
-          trader_wallet_id: deps.wallet.id,
-          wallet: deps.wallet.walletAddress,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        "fill-rollup tick accumulate failed — readers fall back to the live tail"
-      );
     }
-  }
 
-  deps.logger.info(
-    {
-      event: "poly.trader.observe",
-      phase: "wallet_ok",
-      trader_wallet_id: deps.wallet.id,
-      wallet: deps.wallet.walletAddress,
-      kind: deps.wallet.kind,
+    deps.logger.info(
+      {
+        event: "poly.trader.observe",
+        phase: "wallet_ok",
+        trader_wallet_id: deps.wallet.id,
+        wallet: deps.wallet.walletAddress,
+        kind: deps.wallet.kind,
+        fills: insertedFills,
+        positions: positionResult.positions,
+        positions_complete: positionResult.complete,
+        positions_skipped: positionResult.skipped,
+        rollup_fills: rollupFills,
+        new_since: observed.newSince,
+        duration_ms: Date.now() - startedAt,
+      },
+      "trader wallet observed"
+    );
+
+    return {
       fills: insertedFills,
       positions: positionResult.positions,
-      positions_complete: positionResult.complete,
-      positions_skipped: positionResult.skipped,
-      rollup_fills: rollupFills,
-      new_since: observed.newSince,
-      duration_ms: Date.now() - startedAt,
-    },
-    "trader wallet observed"
-  );
-
-  return { fills: insertedFills, positions: positionResult.positions, rollupFills };
+      rollupFills,
+    };
+  } catch (err) {
+    if (deps.signal?.aborted) throw err;
+    deps.logger.error(
+      {
+        event: "poly.trader.observe",
+        phase: "activity_error",
+        trader_wallet_id: deps.wallet.id,
+        wallet: deps.wallet.walletAddress,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "activity failed after independent inventory observation"
+    );
+    try {
+      await markCursorError(deps.db, deps.wallet.id, err);
+    } catch (cursorErr) {
+      deps.logger.error(
+        {
+          event: "poly.trader.observe",
+          phase: "activity_cursor_error",
+          err:
+            cursorErr instanceof Error ? cursorErr.message : String(cursorErr),
+        },
+        "activity error cursor unavailable"
+      );
+    }
+    return {
+      fills: 0,
+      positions: positionResult.positions,
+      rollupFills: 0,
+      activityError: true,
+    };
+  }
 }
 
 async function upsertObservedFills(
@@ -1054,39 +1130,11 @@ async function upsertObservedFills(
 async function observePositionsIfDue(
   deps: TraderObservationTickDeps & { wallet: PolyTraderWallet }
 ): Promise<{ positions: number; complete: boolean; skipped: boolean }> {
-  const cursor = await deps.db
-    .select()
-    .from(polyTraderIngestionCursors)
-    .where(
-      and(
-        eq(polyTraderIngestionCursors.traderWalletId, deps.wallet.id),
-        eq(polyTraderIngestionCursors.source, POSITION_SOURCE)
-      )
-    )
-    .limit(1);
-  const pollMs = deps.positionPollMs ?? DEFAULT_POSITION_POLL_MS;
-  const lastSuccessAt = cursor[0]?.lastSuccessAt;
-  if (lastSuccessAt && Date.now() - lastSuccessAt.getTime() < pollMs) {
-    return {
-      positions: 0,
-      complete: cursor[0]?.status === "ok",
-      skipped: true,
-    };
-  }
-
-  const result = await observePositionsSerialized({
-    db: deps.db,
-    client: deps.client,
-    wallet: deps.wallet,
-    maxPages: deps.positionMaxPages ?? DEFAULT_POSITION_MAX_PAGES,
-    signal: deps.signal,
-    readPositionBalances: deps.readPositionBalances,
-    logger: deps.logger,
-  });
+  const result = await observePositionsNow({ ...deps, trigger: "scheduled" });
   return {
     positions: result.positionRows,
     complete: result.complete,
-    skipped: false,
+    skipped: result.deferred !== undefined,
   };
 }
 
@@ -1095,31 +1143,150 @@ async function observePositionsNow(deps: {
   client: PolymarketDataApiClient;
   wallet: PolyTraderWallet;
   positionMaxPages?: number;
+  positionPollMs?: number;
+  positionControl?: PositionObservationController;
+  trigger?: "scheduled" | "explicit";
   readPositionBalances?: PositionBalanceBatchReader;
   beforePositionCursorPublish?: () => void | Promise<void>;
   logger?: LoggerPort;
   signal?: AbortSignal | undefined;
 }): Promise<CurrentPositionRefreshResult> {
-  const result = await observePositionsSerialized({
-    db: deps.db,
-    client: deps.client,
-    wallet: deps.wallet,
-    maxPages: deps.positionMaxPages ?? DEFAULT_POSITION_MAX_PAGES,
-    readPositionBalances: deps.readPositionBalances,
-    beforePositionCursorPublish: deps.beforePositionCursorPublish,
-    logger: deps.logger,
-    signal: deps.signal,
-  });
-  return {
-    positions: result.observedPositions,
-    positionRows: result.positionRows,
-    complete: result.complete,
-    stalePositionRowsDeactivated: result.stalePositionRowsDeactivated,
-    stalePositionRowsPreserved: result.stalePositionRowsPreserved,
-    ...(result.failureReason === undefined
-      ? {}
-      : { failureReason: result.failureReason }),
+  const control = deps.positionControl ?? positionObservationController;
+  const trigger = deps.trigger ?? "explicit";
+  const startedAt = control.now();
+  const defer = (
+    reason: "capacity" | "floor",
+    asOf: string | null = null,
+    nextEligibleAt?: number,
+    terminalRecovery?: TerminalRecovery | null
+  ): CurrentPositionRefreshResult => {
+    deps.logger?.info(
+      {
+        event: "poly.trader.positions.deferred",
+        trigger,
+        reason,
+        scope: "process",
+        active_count: control.activeCount,
+        active_limit: 3,
+        next_eligible_at:
+          nextEligibleAt === undefined
+            ? null
+            : new Date(nextEligibleAt).toISOString(),
+        terminal_recovery_pending: Boolean(terminalRecovery),
+        terminal_recovery_reason: terminalRecovery?.reason ?? null,
+        original_observation_time: asOf,
+        queue_ms: control.now() - startedAt,
+      },
+      "position observation deferred without upstream work"
+    );
+    return {
+      positions: [],
+      positionRows: 0,
+      complete: false,
+      stalePositionRowsDeactivated: 0,
+      stalePositionRowsPreserved: 0,
+      deferred: reason,
+      originalAsOf: asOf,
+    };
   };
+  const admitted = await control.run(
+    deps.wallet.walletAddress,
+    deps.signal,
+    async () => {
+      const [cursor] = await deps.db
+        .select()
+        .from(polyTraderIngestionCursors)
+        .where(
+          and(
+            eq(polyTraderIngestionCursors.traderWalletId, deps.wallet.id),
+            eq(polyTraderIngestionCursors.source, POSITION_SOURCE)
+          )
+        )
+        .limit(1);
+      deps.signal?.throwIfAborted();
+      const terminalState = readTerminalRecovery(cursor?.errorMessage);
+      if (terminalState.malformed)
+        deps.logger?.warn(
+          {
+            event: "poly.trader.positions.control_invalid",
+            control: "terminal_recovery",
+          },
+          "invalid terminal recovery control; scheduling conservative recovery"
+        );
+      const healthyScheduled =
+        cursor?.status === "ok" &&
+        trigger === "scheduled" &&
+        !terminalState.recovery;
+      const lastAttempt = healthyScheduled
+        ? cursor?.lastSuccessAt
+        : cursor?.updatedAt;
+      const floor = healthyScheduled
+        ? (deps.positionPollMs ?? DEFAULT_POSITION_POLL_MS)
+        : 30_000;
+      const nextEligibleAt = lastAttempt ? lastAttempt.getTime() + floor : 0;
+      if (cursor?.status !== "pending" && nextEligibleAt > control.now()) {
+        return defer(
+          "floor",
+          cursor?.lastSuccessAt?.toISOString() ?? null,
+          nextEligibleAt,
+          terminalState.recovery
+        );
+      }
+      const controller = new AbortController();
+      const onAbort = () => controller.abort(deps.signal?.reason);
+      deps.signal?.addEventListener("abort", onAbort, { once: true });
+      if (deps.signal?.aborted) onAbort();
+      const timer = setTimeout(
+        () =>
+          controller.abort(new Error("position preparation deadline exceeded")),
+        60_000
+      );
+      timer.unref?.();
+      const budget = new PositionObservationBudget(control);
+      try {
+        const result = await observePositionsSerialized({
+          ...deps,
+          signal: controller.signal,
+          budget,
+          trigger,
+          eligibleDelayMs:
+            nextEligibleAt > 0 ? Math.max(0, startedAt - nextEligibleAt) : 0,
+          maxPages: deps.positionMaxPages ?? DEFAULT_POSITION_MAX_PAGES,
+        });
+        return {
+          positions: result.observedPositions,
+          positionRows: result.positionRows,
+          complete: result.complete,
+          stalePositionRowsDeactivated: result.stalePositionRowsDeactivated,
+          stalePositionRowsPreserved: result.stalePositionRowsPreserved,
+          ...(result.failureReason === undefined
+            ? {}
+            : { failureReason: result.failureReason }),
+        };
+      } finally {
+        clearTimeout(timer);
+        deps.signal?.removeEventListener("abort", onAbort);
+        if (controller.signal.aborted)
+          deps.logger?.info(
+            {
+              event: "poly.trader.positions.settled_after_abort",
+              scope: "process",
+              elapsed_ms: control.now() - startedAt,
+            },
+            "position IO settled; releasing admission"
+          );
+      }
+    }
+  );
+  if ("deferred" in admitted) {
+    const [saved] = await deps.db.select({ lastSuccessAt: polyTraderIngestionCursors.lastSuccessAt })
+      .from(polyTraderIngestionCursors).where(and(
+        eq(polyTraderIngestionCursors.traderWalletId, deps.wallet.id),
+        eq(polyTraderIngestionCursors.source, POSITION_SOURCE)
+      )).limit(1);
+    return defer("capacity", saved?.lastSuccessAt?.toISOString() ?? null);
+  }
+  return admitted.value;
 }
 
 async function observePositionsSerialized(deps: {
@@ -1127,6 +1294,9 @@ async function observePositionsSerialized(deps: {
   client: PolymarketDataApiClient;
   wallet: PolyTraderWallet;
   maxPages: number;
+  budget: PositionObservationBudget;
+  trigger: "scheduled" | "explicit";
+  eligibleDelayMs: number;
   signal?: AbortSignal | undefined;
   readPositionBalances?: PositionBalanceBatchReader | undefined;
   beforePositionCursorPublish?: (() => void | Promise<void>) | undefined;
@@ -1135,6 +1305,8 @@ async function observePositionsSerialized(deps: {
   failureReason?: PositionObservationFailureReason;
 }> {
   const startedAt = Date.now();
+  // One budget spans both cohorts AND superseded generation retries.
+  const authorityBudget = deps.budget;
   let lastPositions: PolymarketUserPosition[] = [];
   let lastOmissionCount = 0;
   let lastPages = 0;
@@ -1154,6 +1326,7 @@ async function observePositionsSerialized(deps: {
         client: deps.client,
         walletAddress: deps.wallet.walletAddress,
         maxPages: deps.maxPages,
+        budget: deps.budget,
         signal: deps.signal,
       });
     } catch (err) {
@@ -1163,6 +1336,9 @@ async function observePositionsSerialized(deps: {
         wallet: deps.wallet,
         state,
         signal: deps.signal,
+        onCompleted: (at) => {
+          deps.budget.completedAt = at.toISOString();
+        },
         reason: "data_api_error",
         detail: err instanceof Error ? err.message : String(err),
       });
@@ -1189,6 +1365,9 @@ async function observePositionsSerialized(deps: {
         wallet: deps.wallet,
         state,
         signal: deps.signal,
+        onCompleted: (at) => {
+          deps.budget.completedAt = at.toISOString();
+        },
         reason: "data_api_incomplete",
         detail: `position page cap reached at ${pageResult.positions.length} rows`,
       });
@@ -1216,6 +1395,9 @@ async function observePositionsSerialized(deps: {
         wallet: deps.wallet,
         state,
         signal: deps.signal,
+        onCompleted: (at) => {
+          deps.budget.completedAt = at.toISOString();
+        },
         reason: "data_api_malformed",
         detail: "Data API returned a malformed position row",
       });
@@ -1251,6 +1433,9 @@ async function observePositionsSerialized(deps: {
         wallet: deps.wallet,
         state,
         signal: deps.signal,
+        onCompleted: (at) => {
+          deps.budget.completedAt = at.toISOString();
+        },
         reason: "omission_over_cap",
         detail: `omitted position cap exceeded (${POSITION_MAX_ROWS})`,
       });
@@ -1276,6 +1461,8 @@ async function observePositionsSerialized(deps: {
     const authority = await classifyMissingPositionsWithBalances({
       walletAddress: deps.wallet.walletAddress,
       positions: omitted,
+      stopOnNonzero: true,
+      budget: authorityBudget,
       readPositionBalances: deps.readPositionBalances,
       signal: deps.signal,
     });
@@ -1286,6 +1473,9 @@ async function observePositionsSerialized(deps: {
         wallet: deps.wallet,
         state,
         signal: deps.signal,
+        onCompleted: (at) => {
+          deps.budget.completedAt = at.toISOString();
+        },
         reason: authority.reason,
         detail: `${omitted.length} Data API omissions were not all proven exact-zero on Polygon`,
       });
@@ -1308,18 +1498,115 @@ async function observePositionsSerialized(deps: {
       );
     }
 
+    // Terminal/inactive positive inventory is explanatory, so neither a
+    // nonzero winner nor unavailable terminal RPC may veto the open book.
+    // Spend only the same budget's remaining chunks, after unexplained active
+    // omissions. A durable keyset in the existing positions cursor rotates
+    // attempted terminal rows without fabricating an inventory timestamp.
+    const terminalLimit =
+      deps.wallet.kind === "cogni_wallet"
+        ? (POSITION_BALANCE_MAX_CHUNKS - authorityBudget.chunkCount) *
+          POSITION_BALANCE_CHUNK_SIZE
+        : 0;
+    // Always probe one sentinel, even when active omissions spent all calls.
+    const terminalProbe =
+      deps.wallet.kind === "cogni_wallet"
+        ? await readOmittedCurrentPositions({
+            db: deps.db,
+            wallet: deps.wallet,
+            positions: pageResult.positions,
+            terminal: {
+              limit: Math.min(5_001, terminalLimit + 1),
+              resume: state.cursor.terminalResume,
+            },
+          })
+        : [];
+    const terminalCandidates = terminalProbe.slice(0, terminalLimit);
+    const terminalZero: MissingCurrentPosition[] = [];
+    const terminalClassified: TerminalKey[] = [];
+    let terminalResume = state.cursor.terminalResume;
+    const terminalAuthority = await classifyMissingPositionsWithBalances({
+      walletAddress: deps.wallet.walletAddress,
+      positions: terminalCandidates,
+      readPositionBalances: deps.readPositionBalances,
+      signal: deps.signal,
+      budget: authorityBudget,
+      onAttemptChunk: (chunk) => {
+        const last = chunk.at(-1);
+        if (last)
+          terminalResume = JSON.stringify([last.conditionId, last.tokenId]);
+      },
+      onClassifiedChunk: (chunk, balances) => {
+        for (let i = 0; i < chunk.length; i += 1) {
+          const position = chunk[i];
+          if (position) {
+            terminalClassified.push([position.conditionId, position.tokenId]);
+            if (balances[i] === 0n) terminalZero.push(position);
+          }
+        }
+      },
+    });
+    const terminalRecoveryFailed =
+      (terminalLimit === 0 && terminalProbe.length > 0) ||
+      terminalAuthority.reason === "authority_unavailable" ||
+      terminalAuthority.reason === "authority_malformed";
+    let terminalRecovery = state.cursor.terminalRecovery;
+    if (terminalRecoveryFailed) {
+      terminalRecovery = {
+        reason:
+          terminalLimit === 0 ||
+          deps.budget.budgetExhausted === "authority" ||
+          (terminalAuthority.classifiedCount < terminalCandidates.length &&
+            (authorityBudget.chunkCount >= POSITION_BALANCE_MAX_CHUNKS ||
+              (authorityBudget.startedAt > 0 &&
+                deps.budget.control.now() - authorityBudget.startedAt >=
+                  POSITION_BALANCE_TOTAL_TIMEOUT_MS)))
+            ? "authority_budget"
+            : terminalAuthority.reason === "authority_malformed"
+              ? "authority_malformed"
+              : "authority_unavailable",
+        anchor: parseTerminalResume(terminalResume),
+      };
+    } else if (
+      terminalRecovery &&
+      terminalSweepComplete({
+        anchor: terminalRecovery.anchor,
+        previous: parseTerminalResume(state.cursor.terminalResume),
+        classified: terminalClassified,
+        completePass:
+          terminalProbe.length <= terminalLimit &&
+          terminalAuthority.classifiedCount === terminalCandidates.length,
+      })
+    )
+      terminalRecovery = null;
+    deps.signal?.throwIfAborted();
     const published = await publishPreparedPositions({
       db: deps.db,
       wallet: deps.wallet,
-      prepared: { state, positions: pageResult.positions, omitted },
+      prepared: {
+        state,
+        positions: pageResult.positions,
+        omitted,
+        terminalProbe,
+        terminalProbeLimit: Math.min(5_001, terminalLimit + 1),
+        terminalZero,
+        terminalResume,
+        terminalRecovery,
+        terminalRecoveryFailed,
+      },
       signal: deps.signal,
       beforePositionCursorPublish: deps.beforePositionCursorPublish,
     });
     if (published === "superseded") continue;
+    deps.budget.completedAt = published.controlUpdatedAt ?? null;
     logPositionPublication(deps, {
       state,
       status: "ok",
       reason: "complete_all_zero",
+      terminalAuthority,
+      terminalRecovery,
+      terminalRecoveryFailed,
+      totalChunkCount: authorityBudget.chunkCount,
       pages: pageResult.pages,
       fetchedCount: pageResult.positions.length,
       omittedCount: omitted.length,
@@ -1353,6 +1640,9 @@ async function observePositionsSerialized(deps: {
 function logPositionPublication(
   deps: {
     logger?: LoggerPort | undefined;
+    budget?: PositionObservationBudget;
+    trigger?: "scheduled" | "explicit";
+    eligibleDelayMs?: number;
     wallet: PolyTraderWallet;
     readPositionBalances?: PositionBalanceBatchReader | undefined;
   },
@@ -1364,6 +1654,10 @@ function logPositionPublication(
     fetchedCount: number;
     omittedCount: number;
     authority: PositionAuthorityResult;
+    terminalAuthority?: PositionAuthorityResult;
+    terminalRecovery?: TerminalRecovery | null;
+    terminalRecoveryFailed?: boolean;
+    totalChunkCount?: number;
     published: boolean;
     startedAt: number;
   }
@@ -1372,6 +1666,36 @@ function logPositionPublication(
     {
       event: "poly.trader.positions.publish",
       status: normalizePositionPublishStatus(input.status),
+      trigger: deps.trigger,
+      attempt_count:
+        (deps.budget?.dataApiCalls ?? 0) + (deps.budget?.chunkCount ?? 0),
+      retry_count: deps.budget?.retryCount ?? 0,
+      retry_reason: deps.budget?.retryReason ?? null,
+      recovered_after_retry:
+        input.published && (deps.budget?.retryCount ?? 0) > 0,
+      data_api_call_allowance_used: deps.budget?.dataApiCalls ?? 0,
+      authority_call_allowance_used:
+        deps.budget?.chunkCount ?? input.authority.chunkCount,
+      budget_exhausted: deps.budget?.budgetExhausted ?? null,
+      eligible_delay_ms: deps.eligibleDelayMs ?? 0,
+      recovery_eligibility_ms:
+        input.published &&
+        deps.trigger === "scheduled" &&
+        !input.terminalRecovery
+          ? DEFAULT_POSITION_POLL_MS
+          : 30_000,
+      next_eligible_at: deps.budget?.completedAt
+        ? new Date(
+            Date.parse(deps.budget.completedAt) +
+              (input.published &&
+              deps.trigger === "scheduled" &&
+              !input.terminalRecovery
+                ? DEFAULT_POSITION_POLL_MS
+                : 30_000)
+          ).toISOString()
+        : null,
+      elapsed_ms: Date.now() - input.startedAt,
+      queue_ms: 0,
       reason: input.reason,
       observation_time: input.state.capturedAt,
       wallet: deps.wallet.walletAddress,
@@ -1381,7 +1705,29 @@ function logPositionPublication(
       classified_count: input.authority.classifiedCount,
       zero_count: input.authority.zeroCount,
       nonzero_count: input.authority.nonzeroCount,
-      chunk_count: input.authority.chunkCount,
+      chunk_count: input.totalChunkCount ?? input.authority.chunkCount,
+      terminal_classified_count: input.terminalAuthority?.classifiedCount ?? 0,
+      terminal_zero_count: input.terminalAuthority?.zeroCount ?? 0,
+      terminal_reason: input.terminalAuthority?.reason ?? "not_attempted",
+      terminal_recovery_pending: Boolean(
+        input.published
+          ? input.terminalRecovery
+          : input.state.cursor.terminalRecovery
+      ),
+      terminal_recovery_reason:
+        (input.published
+          ? input.terminalRecovery
+          : input.state.cursor.terminalRecovery
+        )?.reason ?? null,
+      terminal_recovery_action: input.terminalRecoveryFailed
+        ? "set"
+        : !input.published && input.state.cursor.terminalRecovery
+          ? "carried"
+          : input.terminalRecovery
+            ? "carried"
+            : input.published && input.state.cursor.terminalRecovery
+              ? "cleared"
+              : "unchanged",
       cursor_before_status: input.state.cursor.status ?? "missing",
       cursor_after_status: input.published
         ? "ok"
@@ -1464,7 +1810,18 @@ async function readPositionPrepareState(
         FROM poly_trader_ingestion_cursors c
         WHERE c.trader_wallet_id = ${traderWalletId}::uuid
           AND c.source = ${POSITION_SOURCE}
-      ) AS cursor_status
+      ) AS cursor_status,
+      (
+        SELECT c.last_seen_native_id
+        FROM poly_trader_ingestion_cursors c
+        WHERE c.trader_wallet_id = ${traderWalletId}::uuid
+          AND c.source = ${POSITION_SOURCE}
+      ) AS terminal_resume,
+      (
+        SELECT c.error_message FROM poly_trader_ingestion_cursors c
+        WHERE c.trader_wallet_id = ${traderWalletId}::uuid
+          AND c.source = ${POSITION_SOURCE}
+      ) AS cursor_error
   `);
   const row = executionRows<{
     captured_at: string;
@@ -1472,6 +1829,8 @@ async function readPositionPrepareState(
     cursor_xmin: string | null;
     last_success_at: string | null;
     cursor_status: string | null;
+    terminal_resume: string | null;
+    cursor_error: string | null;
   }>(result)[0];
   if (!row) throw new Error("position prepare state query returned no row");
   return {
@@ -1481,8 +1840,16 @@ async function readPositionPrepareState(
       xmin: row.cursor_xmin,
       lastSuccessAt: row.last_success_at,
       status: row.cursor_status,
+      terminalResume: readTerminalResume(row.terminal_resume),
+      terminalRecovery: readTerminalRecovery(row.cursor_error).recovery,
     },
   };
+}
+
+/** Only this writer's two-string keyset is meaningful in the existing cursor. */
+function readTerminalResume(value: string | null): string | null {
+  const key = parseTerminalResume(value);
+  return key ? JSON.stringify(key) : null;
 }
 
 async function readOmittedCurrentPositions(input: {
@@ -1490,6 +1857,7 @@ async function readOmittedCurrentPositions(input: {
   wallet: PolyTraderWallet;
   positions: readonly PolymarketUserPosition[];
   lockRows?: boolean;
+  terminal?: { limit: number; resume: string | null };
 }): Promise<MissingCurrentPosition[]> {
   const observedKeys = JSON.stringify(
     input.positions.map((position) => ({
@@ -1503,30 +1871,29 @@ async function readOmittedCurrentPositions(input: {
       p.token_id,
       p.shares::text,
       p.current_value_usdc::text,
-      p.last_observed_at
+      p.last_observed_at,
+      p.xmin::text AS row_version
     FROM poly_trader_current_positions p
     WHERE p.trader_wallet_id = ${input.wallet.id}::uuid
-      AND p.active = true
-      -- A prior complete page already proved these rows resolved/redeemable.
-      -- They can retain nonzero winner tokens until redemption, but they are
-      -- intentionally outside the open book and must not trip the exact-zero
-      -- omission guard used for unexplained live-position disappearances.
-      AND p.raw->>'redeemable' IS DISTINCT FROM 'true'
-      -- bug.5031: a market that resolved AFTER the last successful page has a
-      -- stale saved raw (redeemable still false), so the flag above misses it.
-      -- Its worthless-loser / unredeemed-winner tokens keep a nonzero on-chain
-      -- balance forever, which trips the authority (balanceOfBatch) guard and
-      -- wedges the observer stale permanently — a deadlock, because the
-      -- in-publication resolved-market deactivation only runs once we publish.
-      -- Trust the authoritative poly_market_outcomes table (same source the
-      -- deactivation uses) to exclude resolved tokens from the omission guard.
-      AND NOT EXISTS (
-        SELECT 1
-        FROM poly_market_outcomes o
-        WHERE o.condition_id = p.condition_id
-          AND o.token_id = p.token_id
-          AND o.outcome IN ('winner', 'loser')
-      )
+      AND ${
+        input.terminal
+          ? sql`p.shares > 0 AND (
+            p.active = false OR p.raw->>'redeemable' = 'true' OR EXISTS (
+              SELECT 1 FROM poly_market_outcomes o
+              WHERE lower(o.condition_id) = lower(p.condition_id)
+                AND o.token_id = p.token_id
+                AND o.outcome IN ('winner', 'loser')
+            )
+          )`
+          : sql`p.active = true
+          AND p.raw->>'redeemable' IS DISTINCT FROM 'true'
+          AND NOT EXISTS (
+            SELECT 1 FROM poly_market_outcomes o
+            WHERE lower(o.condition_id) = lower(p.condition_id)
+              AND o.token_id = p.token_id
+              AND o.outcome IN ('winner', 'loser')
+          )`
+      }
       AND NOT EXISTS (
         SELECT 1
         FROM jsonb_to_recordset(${observedKeys}::jsonb)
@@ -1534,8 +1901,15 @@ async function readOmittedCurrentPositions(input: {
         WHERE observed.condition_id = p.condition_id
           AND observed.token_id = p.token_id
       )
-    ORDER BY p.last_observed_at, p.condition_id, p.token_id
-    LIMIT ${POSITION_OMISSION_LIMIT}
+    ORDER BY ${
+      input.terminal
+        ? sql`CASE WHEN (p.condition_id COLLATE "C", p.token_id COLLATE "C") > (
+          (${input.terminal.resume}::jsonb->>0) COLLATE "C",
+          (${input.terminal.resume}::jsonb->>1) COLLATE "C"
+        ) THEN 0 ELSE 1 END, p.condition_id COLLATE "C", p.token_id COLLATE "C"`
+        : sql`p.last_observed_at, p.condition_id, p.token_id`
+    }
+    LIMIT ${input.terminal?.limit ?? POSITION_OMISSION_LIMIT}
     ${input.lockRows ? sql`FOR UPDATE OF p` : sql``}
   `);
   return executionRows<{
@@ -1544,11 +1918,13 @@ async function readOmittedCurrentPositions(input: {
     shares: string;
     current_value_usdc: string;
     last_observed_at: Date | string;
+    row_version: string;
   }>(result).map((row) => ({
     conditionId: row.condition_id,
     tokenId: row.token_id,
     shares: Number(row.shares),
     currentValueUsdc: Number(row.current_value_usdc),
+    rowVersion: row.row_version,
     lastObservedAt:
       row.last_observed_at instanceof Date
         ? row.last_observed_at
@@ -1561,6 +1937,13 @@ export async function classifyMissingPositionsWithBalances(input: {
   positions: readonly MissingCurrentPosition[];
   readPositionBalances?: PositionBalanceBatchReader | undefined;
   signal?: AbortSignal | undefined;
+  budget?: PositionAuthorityBudget;
+  stopOnNonzero?: boolean;
+  onAttemptChunk?: (chunk: readonly MissingCurrentPosition[]) => void;
+  onClassifiedChunk?: (
+    chunk: readonly MissingCurrentPosition[],
+    balances: readonly bigint[]
+  ) => void;
 }): Promise<PositionAuthorityResult> {
   input.signal?.throwIfAborted();
   if (input.positions.length === 0) return emptyAuthorityResult("all_zero");
@@ -1568,7 +1951,11 @@ export async function classifyMissingPositionsWithBalances(input: {
     return emptyAuthorityResult("authority_unavailable");
   }
 
-  const startedAt = Date.now();
+  const readPositionBalances = input.readPositionBalances;
+  const budget = input.budget ?? { startedAt: 0, chunkCount: 0 };
+  const now =
+    budget instanceof PositionObservationBudget ? budget.control.now : Date.now;
+  if (budget.startedAt === 0) budget.startedAt = now();
   let classifiedCount = 0;
   let zeroCount = 0;
   let nonzeroCount = 0;
@@ -1581,9 +1968,12 @@ export async function classifyMissingPositionsWithBalances(input: {
   }
   for (let offset = 0; offset < input.positions.length; offset += POSITION_BALANCE_CHUNK_SIZE) {
     input.signal?.throwIfAborted();
-    const elapsed = Date.now() - startedAt;
+    const elapsed = now() - budget.startedAt;
     const remainingTotal = POSITION_BALANCE_TOTAL_TIMEOUT_MS - elapsed;
-    if (remainingTotal <= 0) {
+    if (
+      remainingTotal <= 0 ||
+      budget.chunkCount >= POSITION_BALANCE_MAX_CHUNKS
+    ) {
       return {
         reason: "authority_unavailable",
         classifiedCount,
@@ -1598,17 +1988,30 @@ export async function classifyMissingPositionsWithBalances(input: {
     );
     let balances: readonly bigint[];
     try {
-      chunkCount += 1;
-      balances = await readBalanceChunkWithDeadline({
-        read: input.readPositionBalances,
-        walletAddress: input.walletAddress,
-        tokenIds: chunk.map((position) => position.tokenId),
-        timeoutMs: Math.min(
-          POSITION_BALANCE_CHUNK_TIMEOUT_MS,
-          remainingTotal
-        ),
-        parentSignal: input.signal,
-      });
+      input.onAttemptChunk?.(chunk);
+      const read = () =>
+        readBalanceChunkWithDeadline({
+          read: readPositionBalances,
+          walletAddress: input.walletAddress,
+          tokenIds: chunk.map((position) => position.tokenId),
+          timeoutMs: Math.min(
+            POSITION_BALANCE_CHUNK_TIMEOUT_MS,
+            POSITION_BALANCE_TOTAL_TIMEOUT_MS - (now() - budget.startedAt)
+          ),
+          parentSignal: input.signal,
+        });
+      if (budget instanceof PositionObservationBudget) {
+        const before = budget.chunkCount;
+        try {
+          balances = await budget.call("authority", read, input.signal);
+        } finally {
+          chunkCount += budget.chunkCount - before;
+        }
+      } else {
+        chunkCount += 1;
+        budget.chunkCount += 1;
+        balances = await read();
+      }
     } catch (err) {
       if (input.signal?.aborted) throw err;
       return {
@@ -1629,10 +2032,20 @@ export async function classifyMissingPositionsWithBalances(input: {
         chunkCount,
       };
     }
+    input.onClassifiedChunk?.(chunk, balances);
     const chunkZeroCount = balances.filter((balance) => balance === 0n).length;
     classifiedCount += balances.length;
     zeroCount += chunkZeroCount;
     nonzeroCount += balances.length - chunkZeroCount;
+    if (input.stopOnNonzero && nonzeroCount > 0) {
+      return {
+        reason: "authority_nonzero",
+        classifiedCount,
+        zeroCount,
+        nonzeroCount,
+        chunkCount,
+      };
+    }
   }
   return {
     reason: nonzeroCount > 0 ? "authority_nonzero" : "all_zero",
@@ -1654,47 +2067,34 @@ async function readBalanceChunkWithDeadline(input: {
   const abortFromParent = (): void =>
     controller.abort(input.parentSignal?.reason);
   if (input.parentSignal?.aborted) abortFromParent();
-  else input.parentSignal?.addEventListener("abort", abortFromParent, { once: true });
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let rejectOnAbort: (() => void) | undefined;
+  else
+    input.parentSignal?.addEventListener("abort", abortFromParent, {
+      once: true,
+    });
+  const timer = setTimeout(
+    () =>
+      controller.abort(
+        new PositionBalanceTransportError(
+          `position authority timed out after ${input.timeoutMs}ms`
+        )
+      ),
+    Math.max(0, input.timeoutMs)
+  );
+  timer.unref?.();
   try {
-    return await Promise.race([
-      input.read({
-        walletAddress: input.walletAddress,
-        tokenIds: input.tokenIds,
-        signal: controller.signal,
-      }),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => {
-            const error = new Error(
-              `position authority timed out after ${input.timeoutMs}ms`
-            );
-            controller.abort(error);
-            reject(error);
-          },
-          input.timeoutMs
-        );
-        timer.unref?.();
-      }),
-      new Promise<never>((_resolve, reject) => {
-        rejectOnAbort = () =>
-          reject(
-            controller.signal.reason instanceof Error
-              ? controller.signal.reason
-              : new Error("position authority aborted")
-          );
-        if (controller.signal.aborted) rejectOnAbort();
-        else controller.signal.addEventListener("abort", rejectOnAbort, {
-          once: true,
-        });
-      }),
-    ]);
+    // Never release the wallet guard or overlap a retry with an unsettled read.
+    const balances = await input.read({
+      walletAddress: input.walletAddress,
+      tokenIds: input.tokenIds,
+      signal: controller.signal,
+    });
+    controller.signal.throwIfAborted();
+    return balances;
+  } catch (err) {
+    if (controller.signal.aborted) throw controller.signal.reason;
+    throw err;
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
-    if (rejectOnAbort !== undefined) {
-      controller.signal.removeEventListener("abort", rejectOnAbort);
-    }
+    clearTimeout(timer);
     input.parentSignal?.removeEventListener("abort", abortFromParent);
   }
 }
@@ -1727,33 +2127,65 @@ async function publishPreparedPositions(input: {
         positions: input.prepared.positions,
         lockRows: true,
       });
-      if (!samePositionKeys(lockedOmissions, input.prepared.omitted)) {
+      const lockedTerminal =
+        input.wallet.kind === "cogni_wallet"
+          ? await readOmittedCurrentPositions({
+              db: tx,
+              wallet: input.wallet,
+              positions: input.prepared.positions,
+              lockRows: true,
+              terminal: {
+                limit: input.prepared.terminalProbeLimit,
+                resume: input.prepared.state.cursor.terminalResume,
+              },
+            })
+          : [];
+      if (
+        !samePositionKeys(lockedOmissions, input.prepared.omitted) ||
+        !samePositionKeys(lockedTerminal, input.prepared.terminalProbe)
+      ) {
         // `poly_trader_current_positions` is not versioned by the ingestion
         // cursor. Re-reading under the per-wallet writer lock closes the
         // out-of-band-row-change gap: no active omission may be deactivated
         // unless this exact preparation proved its bigint balance was zero.
         return "superseded";
       }
+      input.signal?.throwIfAborted();
       return await persistPreparedCurrentPositions(
         tx,
         input.wallet,
         input.prepared,
-        input.beforePositionCursorPublish
+        input.signal,
+        async () => {
+          await input.beforePositionCursorPublish?.();
+          input.signal?.throwIfAborted();
+        }
       );
     }
   );
 }
 
 function samePositionKeys(
-  left: readonly Pick<MissingCurrentPosition, "conditionId" | "tokenId">[],
-  right: readonly Pick<MissingCurrentPosition, "conditionId" | "tokenId">[]
+  left: readonly Pick<
+    MissingCurrentPosition,
+    "conditionId" | "tokenId" | "rowVersion"
+  >[],
+  right: readonly Pick<
+    MissingCurrentPosition,
+    "conditionId" | "tokenId" | "rowVersion"
+  >[]
 ): boolean {
   if (left.length !== right.length) return false;
   const keys = new Set(
-    left.map((position) => `${position.conditionId}\u0000${position.tokenId}`)
+    left.map(
+      (position) =>
+        `${position.conditionId}\u0000${position.tokenId}\u0000${position.rowVersion}`
+    )
   );
   return right.every((position) =>
-    keys.has(`${position.conditionId}\u0000${position.tokenId}`)
+    keys.has(
+      `${position.conditionId}\u0000${position.tokenId}\u0000${position.rowVersion}`
+    )
   );
 }
 
@@ -1761,12 +2193,19 @@ async function persistPreparedCurrentPositions(
   db: Db,
   wallet: PolyTraderWallet,
   prepared: PreparedPositionPublication,
+  signal: AbortSignal | undefined,
   beforePositionCursorPublish?: () => void | Promise<void>
 ): Promise<PersistedCurrentPositions> {
+  signal?.throwIfAborted();
   const positions = prepared.positions;
   const capturedAt = new Date(prepared.state.capturedAt);
   const values = positions.map((position) => {
     const contentHash = hashPosition(position);
+    // Recovery owns this reserved envelope on the saved current row. A new
+    // vendor page replaces inventory authority, never its historical proof;
+    // an upstream payload cannot supply or overwrite the reserved key.
+    const raw = { ...position } as Record<string, unknown>;
+    delete raw.economicObservationV1;
     return {
       traderWalletId: wallet.id,
       conditionId: position.conditionId,
@@ -1777,7 +2216,7 @@ async function persistPreparedCurrentPositions(
       avgPrice: Math.max(0, position.avgPrice).toFixed(8),
       contentHash,
       capturedAt,
-      raw: position as unknown as Record<string, unknown>,
+      raw,
     };
   });
   if (values.length > 0) {
@@ -1792,6 +2231,7 @@ async function persistPreparedCurrentPositions(
           polyTraderPositionSnapshots.contentHash,
         ],
       });
+    signal?.throwIfAborted();
     await db
       .insert(polyTraderCurrentPositions)
       .values(
@@ -1823,17 +2263,25 @@ async function persistPreparedCurrentPositions(
           avgPrice: sql`excluded.avg_price`,
           contentHash: sql`excluded.content_hash`,
           lastObservedAt: capturedAt,
-          raw: sql`excluded.raw`,
+          raw: sql`excluded.raw || CASE
+            WHEN jsonb_typeof(${polyTraderCurrentPositions.raw}->'economicObservationV1') = 'object'
+              THEN jsonb_build_object(
+                'economicObservationV1',
+                ${polyTraderCurrentPositions.raw}->'economicObservationV1'
+              )
+            ELSE '{}'::jsonb
+          END`,
         },
       });
   }
-  // Resolved-loser terminality is independent of Data-API omission and is
+  // Resolved market terminality is independent of Data-API omission and is
   // retained from the existing writer contract. It executes in this same
   // publication transaction so a later cursor failure rolls it back with
   // snapshots/current upserts and exact-zero omission deactivations.
+  signal?.throwIfAborted();
   await db
     .update(polyTraderCurrentPositions)
-    .set({ active: false, lastObservedAt: capturedAt })
+    .set({ active: false })
     .where(
       and(
         eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
@@ -1844,15 +2292,12 @@ async function persistPreparedCurrentPositions(
             .from(polyMarketOutcomes)
             .where(
               and(
-                eq(
-                  polyMarketOutcomes.conditionId,
-                  polyTraderCurrentPositions.conditionId
-                ),
+                sql`lower(${polyMarketOutcomes.conditionId}) = lower(${polyTraderCurrentPositions.conditionId})`,
                 eq(
                   polyMarketOutcomes.tokenId,
                   polyTraderCurrentPositions.tokenId
                 ),
-                eq(polyMarketOutcomes.outcome, "loser")
+                inArray(polyMarketOutcomes.outcome, ["winner", "loser"])
               )
             )
         )
@@ -1862,9 +2307,10 @@ async function persistPreparedCurrentPositions(
   // an unexplained omission. Keep its saved economics for closed-position
   // history while removing it from the open/current portfolio even when the
   // wallet still holds unredeemed winner tokens on-chain.
+  signal?.throwIfAborted();
   await db
     .update(polyTraderCurrentPositions)
-    .set({ active: false, lastObservedAt: capturedAt })
+    .set({ active: false })
     .where(
       and(
         eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
@@ -1872,13 +2318,15 @@ async function persistPreparedCurrentPositions(
         sql`${polyTraderCurrentPositions.raw}->>'redeemable' = 'true'`
       )
     );
-  if (prepared.omitted.length > 0) {
+  const exactZero = [...prepared.omitted, ...prepared.terminalZero];
+  if (exactZero.length > 0) {
     const omittedKeys = JSON.stringify(
-      prepared.omitted.map((position) => ({
+      exactZero.map((position) => ({
         condition_id: position.conditionId,
         token_id: position.tokenId,
       }))
     );
+    signal?.throwIfAborted();
     await db.execute(sql`
       UPDATE poly_trader_current_positions p
       SET
@@ -1889,7 +2337,6 @@ async function persistPreparedCurrentPositions(
         avg_price = 0,
         last_observed_at = ${prepared.state.capturedAt}::timestamptz
       WHERE p.trader_wallet_id = ${wallet.id}::uuid
-        AND p.active = true
         AND EXISTS (
           SELECT 1
           FROM jsonb_to_recordset(${omittedKeys}::jsonb)
@@ -1906,15 +2353,23 @@ async function persistPreparedCurrentPositions(
   // back without requiring privileged trigger DDL.
   await beforePositionCursorPublish?.();
 
-  await db
+  const completion = executionRows<{ at: Date | string }>(
+    await db.execute(sql`SELECT clock_timestamp() AS at`)
+  )[0];
+  if (!completion) throw new Error("position completion clock returned no row");
+  const completedAt = new Date(completion.at);
+  const terminalError = positionErrorMessage(prepared.terminalRecovery);
+  const [completedCursor] = await db
     .insert(polyTraderIngestionCursors)
     .values({
       traderWalletId: wallet.id,
       source: POSITION_SOURCE,
       lastSuccessAt: capturedAt,
+      lastSeenNativeId: prepared.terminalResume,
       status: "ok",
-      errorMessage: null,
-      updatedAt: capturedAt,
+      errorMessage: terminalError,
+      ...(prepared.terminalRecoveryFailed ? { lastErrorAt: completedAt } : {}),
+      updatedAt: completedAt,
     })
     .onConflictDoUpdate({
       target: [
@@ -1923,17 +2378,26 @@ async function persistPreparedCurrentPositions(
       ],
       set: {
         lastSuccessAt: capturedAt,
+        lastSeenNativeId: prepared.terminalResume,
         status: "ok",
-        errorMessage: null,
-        updatedAt: capturedAt,
+        errorMessage: terminalError,
+        ...(prepared.terminalRecoveryFailed
+          ? { lastErrorAt: completedAt }
+          : {}),
+        updatedAt: completedAt,
       },
-    });
+    })
+    .returning({ updatedAt: polyTraderIngestionCursors.updatedAt });
 
+  signal?.throwIfAborted();
   return {
+    ...(completedCursor
+      ? { controlUpdatedAt: completedCursor.updatedAt.toISOString() }
+      : {}),
     observedPositions: positions,
     positionRows: values.length,
     complete: true,
-    stalePositionRowsDeactivated: prepared.omitted.length,
+    stalePositionRowsDeactivated: exactZero.length,
     stalePositionRowsPreserved: 0,
   };
 }
@@ -1945,6 +2409,7 @@ async function publishPositionFailure(input: {
   signal?: AbortSignal | undefined;
   reason: PositionObservationFailureReason;
   detail: string;
+  onCompleted?: (at: Date) => void;
 }): Promise<"published" | "superseded"> {
   input.signal?.throwIfAborted();
   return await withStatementTimeout(
@@ -1962,15 +2427,18 @@ async function publishPositionFailure(input: {
           : input.reason === "authority_nonzero"
             ? "stale"
             : "error";
-      const capturedAt = new Date(input.state.capturedAt);
-      await tx
+      input.signal?.throwIfAborted();
+      const [completedCursor] = await tx
         .insert(polyTraderIngestionCursors)
         .values({
           traderWalletId: input.wallet.id,
           source: POSITION_SOURCE,
           status,
-          errorMessage: `${input.reason}: ${input.detail}`,
-          updatedAt: capturedAt,
+          errorMessage: positionErrorMessage(
+            input.state.cursor.terminalRecovery,
+            input
+          ),
+          updatedAt: sql`clock_timestamp()`,
         })
         .onConflictDoUpdate({
           target: [
@@ -1979,10 +2447,16 @@ async function publishPositionFailure(input: {
           ],
           set: {
             status,
-            errorMessage: `${input.reason}: ${input.detail}`,
-            updatedAt: capturedAt,
+            errorMessage: positionErrorMessage(
+              input.state.cursor.terminalRecovery,
+              input
+            ),
+            updatedAt: sql`clock_timestamp()`,
           },
-        });
+        })
+        .returning({ updatedAt: polyTraderIngestionCursors.updatedAt });
+      if (completedCursor) input.onCompleted?.(completedCursor.updatedAt);
+      input.signal?.throwIfAborted();
       return "published";
     }
   );
@@ -2049,6 +2523,7 @@ export async function fetchTraderPositionsPages(params: {
   client: PolymarketDataApiClient;
   walletAddress: string;
   maxPages: number;
+  budget?: PositionObservationBudget;
   /** Cooperative cancellation (task.5015): checked before each page and passed to the fetch. */
   signal?: AbortSignal | undefined;
 }): Promise<{
@@ -2060,23 +2535,20 @@ export async function fetchTraderPositionsPages(params: {
     DEFAULT_POSITION_MAX_PAGES,
     Math.max(1, params.maxPages)
   );
+  const budget = params.budget ?? new PositionObservationBudget();
   const positions: PolymarketUserPosition[] = [];
   for (let page = 0; page < maxPages; page += 1) {
     params.signal?.throwIfAborted();
-    const pagePositions = await params.client.listUserPositions(
-      params.walletAddress,
-      {
-        sizeThreshold: 0,
-        // The legacy endpoint otherwise sorts this whale's tens of thousands
-        // of resolved claims ahead of its live book. That makes a bounded,
-        // complete current-position walk impossible and leaves the cursor
-        // permanently partial. Resolved/redeemable claims are not positions
-        // that a BUY-only mirror can reproduce.
-        redeemable: false,
-        limit: POSITION_FETCH_LIMIT,
-        offset: page * POSITION_FETCH_LIMIT,
-        signal: params.signal,
-      }
+    const pagePositions = await budget.call(
+      "data_api",
+      () =>
+        params.client.listUserPositions(params.walletAddress, {
+          sizeThreshold: 0,
+          limit: POSITION_FETCH_LIMIT,
+          offset: page * POSITION_FETCH_LIMIT,
+          signal: params.signal,
+        }),
+      params.signal
     );
     positions.push(...pagePositions.slice(0, POSITION_FETCH_LIMIT));
     if (pagePositions.length > POSITION_FETCH_LIMIT) {
@@ -2357,3 +2829,9 @@ export async function listObservedTraderWallets(db: Db): Promise<
     .orderBy(polyTraderWallets.kind, polyTraderWallets.label);
   return rows;
 }
+
+/** Test/process isolation seam; production callers use the shared default. */
+export {
+  PositionObservationController,
+  PositionBalanceTransportError,
+} from "./position-observation-control";
