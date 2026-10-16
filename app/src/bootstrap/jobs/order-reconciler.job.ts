@@ -162,6 +162,17 @@ function mapReceiptStatus(s: OrderStatus): LedgerStatus {
   }
 }
 
+/** Paper getOrder returns direct sidecar receipts without a source marker. */
+function receiptFillSource(row: LedgerRow, receipt: OrderReceipt) {
+  if (receipt.attributes?.realizedFillSource === "clob_associated_trades")
+    return "clob_associated_trades" as const;
+  if (row.mode === "paper" &&
+      (receipt.attributes?.realizedFillSource === undefined ||
+        receipt.attributes?.realizedFillSource === "paper_order_receipt"))
+    return "paper_order_receipt" as const;
+  return undefined;
+}
+
 /** A local cancellation acknowledgement is insufficient: use the exact
  * authenticated order's final cumulative observation, with explicit evidence. */
 function finalCancellationObservation(
@@ -192,7 +203,7 @@ function finalCancellationObservation(
 		cost > 0 &&
 		Math.abs(shares * price - cost) <= Math.max(0.000001, cost * 0.000001);
 	const evidence =
-		row.mode === "paper" && (cost === 0 || coherentFill)
+		receiptFillSource(row, receipt) === "paper_order_receipt" && (cost === 0 || coherentFill)
 			? ("paper_order_receipt" as const)
 			: cost === 0 && explicitZero
 				? ("explicit_zero_size_matched" as const)
@@ -279,7 +290,10 @@ export async function runReconcileOnce(
 				// even when the next receipt reports more shares. Keep it in recovery.
 				const priorCost = Number(row.attributes?.filled_size_usdc);
 				if (
-					row.attributes?.realized_fill_source === "clob_associated_trades" &&
+					(row.attributes?.realized_fill_source === "clob_associated_trades" ||
+            row.attributes?.realized_fill_source === "paper_order_receipt" ||
+            (row.mode === "paper" && row.attributes?.realized_fill_source === undefined &&
+              typeof row.attributes?.submitted_at === "string" && row.attributes.submitted_at.trim() !== "")) &&
 					Number.isFinite(priorCost) &&
 					priorCost > 0 &&
 					typeof receipt.filled_size_usdc === "number" &&
@@ -297,9 +311,9 @@ export async function runReconcileOnce(
       const filledChanged =
         receipt.filled_size_usdc !== undefined &&
         receipt.filled_size_usdc !== ledgerExecutedUsdc(row);
-      const sourceChanged =
-        receipt.attributes?.realizedFillSource === "clob_associated_trades" &&
-        row.attributes?.realized_fill_source !== "clob_associated_trades";
+      const realizedFillSource = receiptFillSource(row, receipt);
+      const sourceChanged = realizedFillSource !== undefined &&
+        row.attributes?.realized_fill_source !== realizedFillSource;
 				if (
 					newStatus === row.status &&
 					!filledChanged &&
@@ -323,9 +337,8 @@ export async function runReconcileOnce(
         ...(receipt.fees_usdc !== undefined
           ? { fees_usdc: receipt.fees_usdc }
           : {}),
-					...(receipt.attributes?.realizedFillSource ===
-					"clob_associated_trades"
-          ? { realized_fill_source: "clob_associated_trades" as const }
+					...(realizedFillSource
+          ? { realized_fill_source: realizedFillSource }
 						: {}),
 					...(finalObservation
 						? { final_order_observation: finalObservation }

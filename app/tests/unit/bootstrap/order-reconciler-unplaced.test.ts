@@ -178,15 +178,21 @@ describe("read-only conservative order recovery", () => {
 			}),
 		);
 	});
-	it("keeps a verified cost regression unresolved until coherent cumulative proof arrives", async () => {
-		const prior = row({
+  it.each([
+    ["live", "clob_associated_trades"],
+    ["paper", undefined],
+    ["paper", "paper_order_receipt"],
+  ] as const)("keeps %s source=%s cost regression unresolved until coherent proof", async (mode, source) => {
+    const prior = row({
+      mode,
 			order_id: "venue-1",
 			status: "partial",
 			executed_shares: 10,
 			attributes: {
 				size_usdc: 8,
 				filled_size_usdc: 8,
-				realized_fill_source: "clob_associated_trades",
+        submitted_at: NOW.toISOString(),
+        ...(source ? { realized_fill_source: source } : {}),
 			},
 		});
 		const get = vi
@@ -197,6 +203,7 @@ describe("read-only conservative order recovery", () => {
 					total_shares: 12,
 					fill_price: 0.5,
 					filled_size_usdc: 6,
+          attributes: mode === "paper" ? { sizeMatched: 12 } : { realizedFillSource: "clob_associated_trades", sizeMatched: 12 },
 				}),
 			})
 			.mockResolvedValueOnce({
@@ -205,6 +212,7 @@ describe("read-only conservative order recovery", () => {
 					total_shares: 12,
 					fill_price: 0.75,
 					filled_size_usdc: 9,
+          attributes: mode === "paper" ? { sizeMatched: 12 } : { realizedFillSource: "clob_associated_trades", sizeMatched: 12 },
 				}),
 			});
 		const h = harness([prior], get);
@@ -223,6 +231,7 @@ describe("read-only conservative order recovery", () => {
 				total_shares: 12,
 				fill_price: 0.75,
 				filled_size_usdc: 9,
+        realized_fill_source: mode === "paper" ? "paper_order_receipt" : "clob_associated_trades",
 				final_order_observation: expect.objectContaining({
 					filled_size_usdc: 9,
 				}),
@@ -231,17 +240,23 @@ describe("read-only conservative order recovery", () => {
 		expect(h.place).not.toHaveBeenCalled();
 	});
 
-	it("allows authoritative trade accounting to replace a lower-quality estimate", async () => {
+  it.each([
+    ["live", "estimated"],
+    ["paper", "estimated"],
+    ["paper", "data_api_activity_position"],
+  ] as const)("allows authoritative %s receipts to replace %s", async (mode, source) => {
 		const h = harness(
 			[
 				row({
+          mode,
 					order_id: "venue-1",
 					status: "partial",
 					executed_shares: 10,
 					attributes: {
 						size_usdc: 8,
 						filled_size_usdc: 8,
-						realized_fill_source: "estimated",
+						realized_fill_source: source,
+            submitted_at: NOW.toISOString(),
 					},
 				}),
 			],
@@ -251,6 +266,7 @@ describe("read-only conservative order recovery", () => {
 					total_shares: 12,
 					fill_price: 0.5,
 					filled_size_usdc: 6,
+          attributes: mode === "paper" ? { sizeMatched: 12 } : { realizedFillSource: "clob_associated_trades", sizeMatched: 12 },
 				}),
 			})),
 		);
@@ -260,6 +276,7 @@ describe("read-only conservative order recovery", () => {
 				total_shares: 12,
 				fill_price: 0.5,
 				filled_size_usdc: 6,
+        realized_fill_source: mode === "paper" ? "paper_order_receipt" : "clob_associated_trades",
 				final_order_observation: expect.objectContaining({
 					filled_size_usdc: 6,
 				}),

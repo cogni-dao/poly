@@ -400,7 +400,7 @@ export interface UpdateStatusInput {
   total_shares?: number;
   fees_usdc?: number;
   /** Verified cumulative fill accounting source; absent means unverified. */
-  realized_fill_source?: "clob_associated_trades";
+  realized_fill_source?: "clob_associated_trades" | "paper_order_receipt";
   /**
    * Machine-readable promotion reason stored in `attributes.reason`.
    * Used by the reconciler to distinguish "clob_not_found" cancelations from

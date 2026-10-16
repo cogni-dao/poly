@@ -305,20 +305,26 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 	);
 
 	it.each([
-		["clob_associated_trades", 8, 10, 0.8],
-		["estimated", 6, 12, 0.5],
-		["data_api_activity_position", 6, 12, 0.5],
+    ["live", "clob_associated_trades", true, 8, 10, 0.8],
+    ["live", "estimated", true, 6, 12, 0.5],
+    ["live", "data_api_activity_position", true, 6, 12, 0.5],
+    ["paper", undefined, true, 8, 10, 0.8],
+    ["paper", "paper_order_receipt", true, 8, 10, 0.8],
+    ["paper", "estimated", true, 6, 12, 0.5],
+    ["paper", "data_api_activity_position", true, 6, 12, 0.5],
+    ["paper", undefined, false, 6, 12, 0.5],
 	] as const)(
-		"canceled recovery preserves verified cost, allowing stronger source upgrades from %s",
-		async (source, cost, shares, price) => {
-			const h = await harness();
+		"canceled recovery preserves %s source=%s receiptStamp=%s cost=%s",
+		async (mode, source, receiptStamp, cost, shares, price) => {
+      const h = await harness(mode);
 			const order = `cost-floor-${h.account}`;
 			const id = await h.seed(
 				"partial",
 				{
 					size_usdc: 8,
 					filled_size_usdc: 8,
-					realized_fill_source: source,
+					...(source ? { realized_fill_source: source } : {}),
+          ...(receiptStamp ? { submitted_at: observed.toISOString() } : {}),
 				},
 				order,
 			);
@@ -335,8 +341,11 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 				total_shares: 12,
 				fill_price: 0.5,
 				filled_size_usdc: 6,
-				realized_fill_source: "clob_associated_trades",
-				final_order_observation: final(order, 6),
+				realized_fill_source: mode === "paper" ? "paper_order_receipt" : "clob_associated_trades",
+        final_order_observation: {
+          ...final(order, 6),
+          fill_evidence: mode === "paper" ? "paper_order_receipt" : "clob_associated_trades",
+        },
 			});
 			const [stored] = await h.db
 				.select()
@@ -345,7 +354,7 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 			expect(stored?.attributes?.filled_size_usdc).toBe(cost);
 			expect(Number(stored?.shares)).toBe(shares);
 			expect(Number(stored?.price)).toBe(price);
-			if (source === "clob_associated_trades") {
+			if (cost === 8) {
 				expect(stored?.attributes?.final_order_observation).toBeUndefined();
 				const recovery = await h.ledger.listOpenOrPending({
 					olderThanMs: 0,
@@ -372,7 +381,7 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 			});
 			expect(mapped && ledgerCountedIntentUsdc(mapped)).toBe(cost);
 			for (const insert of [h.ledger.insertPending, h.tenant.insertPending]) {
-				const input = h.intent(source === "clob_associated_trades" ? 2 : 1);
+				const input = h.intent(2);
 				input.max_market_intent_usdc = cost;
 				await expect(insert(input)).rejects.toMatchObject({
 					current_intent_usdc: cost,
@@ -382,6 +391,29 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 			}
 		},
 	);
+
+  it("stamps direct paper receipt provenance without treating a paper intent as execution", async () => {
+    const h = await harness("paper");
+    const id = await h.seed("pending");
+    await h.ledger.markOrderId({
+      client_order_id: id,
+      receipt: {
+        order_id: "paper-order",
+        client_order_id: id,
+        status: "partial",
+        filled_size_usdc: 8,
+        total_shares: 10,
+        fill_price: 0.8,
+        submitted_at: observed.toISOString(),
+        attributes: { sizeMatched: 10 },
+      },
+    });
+    const [stored] = await h.db.select().from(polyCopyTradeFills)
+      .where(eq(polyCopyTradeFills.clientOrderId, id));
+    expect(stored?.attributes?.realized_fill_source).toBe("paper_order_receipt");
+    expect(stored?.attributes?.filled_size_usdc).toBe(8);
+    expect(Number(stored?.shares)).toBe(10);
+  });
 
 	it("preserves accepted receipts through both error/receipt orderings and zero observations", async () => {
 		const h = await harness();

@@ -2133,7 +2133,11 @@ async function executeMirrorOrder(
 					: {}),
 				...(receipt.attributes?.realizedFillSource === "clob_associated_trades"
 					? { realized_fill_source: "clob_associated_trades" as const }
-					: {}),
+          : placementMode === "paper" &&
+              (receipt.attributes?.realizedFillSource === undefined ||
+                receipt.attributes?.realizedFillSource === "paper_order_receipt")
+            ? { realized_fill_source: "paper_order_receipt" as const }
+            : {}),
 			});
 		} catch {
 			log.error(

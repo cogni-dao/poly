@@ -1051,6 +1051,7 @@ describe("accepted execution survives secondary failures (bug.5042)", () => {
 				order_id: "known-order",
 				status: "partial",
 				filled_size_usdc: 1,
+        realized_fill_source: "paper_order_receipt",
 			}),
 		);
 		expect(h.markError).not.toHaveBeenCalled();
@@ -1101,6 +1102,11 @@ describe("accepted execution survives secondary failures (bug.5042)", () => {
 		const riskSelect = vi.fn(() => {
 					throw new Error("risk SELECT unavailable");
 		});
+    const risk = createOrderLedger({
+      db: { select: riskSelect } as unknown as Parameters<typeof createOrderLedger>[0]["db"],
+      logger: recordingLogger([]) as unknown as Parameters<typeof createOrderLedger>[0]["logger"],
+      resolveExecutionMode: async () => "paper",
+    });
 		h.tenant.cumulativeIntentForMarketToken = (market, token) =>
 			risk.cumulativeIntentForMarketToken("billing-1", market, token);
 		const deps = commonDeps(
