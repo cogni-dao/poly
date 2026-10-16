@@ -31,7 +31,7 @@ import {
   type TenantTradingAddressReader,
   type TraderObservationStage,
 } from "@/features/wallet-analysis/server/trader-observation-service";
-import { createEconomicSettlementReader } from "@/features/wallet-analysis/server/economic-observation-recovery";
+import { createEconomicSettlementReader, type EconomicSettlementReader } from "@/features/wallet-analysis/server/economic-observation-recovery";
 import { serverEnv } from "@/shared/env/server-env";
 
 type Db =
@@ -71,6 +71,8 @@ export interface TraderObservationJobDeps {
   listActiveTradingAddresses: TenantTradingAddressReader;
   /** Polygon CTF batch authority for omitted current positions. */
   readPositionBalances?: PositionBalanceBatchReader;
+  /** Inject alongside balance authority to run the scheduler without env/IO construction. */
+  readEconomicSettlement?: EconomicSettlementReader;
   /** Off-render Polygon reads persisted for DB-only dashboard GETs. */
   refreshBalanceFacts?: () => Promise<void>;
   logger: LoggerPort;
@@ -81,17 +83,15 @@ export interface TraderObservationJobDeps {
 export function startTraderObservationJob(
   deps: TraderObservationJobDeps
 ): TraderObservationJobStopFn {
-  const readPositionBalances =
-    deps.readPositionBalances ??
-    (() => {
-      const rpcUrl = serverEnv().POLYGON_RPC_URL;
-      return rpcUrl
-        ? createPolygonPositionBalanceBatchReader({ rpcUrl })
-        : undefined;
-    })();
-  const recoveryRpcUrl = serverEnv().POLYGON_RPC_URL;
-  const readEconomicSettlement = recoveryRpcUrl
-    ? createEconomicSettlementReader({ rpcUrl: recoveryRpcUrl }) : undefined;
+  // The default production transport is resolved once. Supplying balance
+  // authority makes this scheduler independent of runtime env; recovery is
+  // optional and can be injected separately with the same DI contract.
+  const rpcUrl = deps.readPositionBalances === undefined
+    ? serverEnv().POLYGON_RPC_URL : undefined;
+  const readPositionBalances = deps.readPositionBalances ?? (rpcUrl
+    ? createPolygonPositionBalanceBatchReader({ rpcUrl }) : undefined);
+  const readEconomicSettlement = deps.readEconomicSettlement ?? (rpcUrl
+    ? createEconomicSettlementReader({ rpcUrl }) : undefined);
   const pollMs = deps.pollMs ?? OBSERVATION_POLL_MS;
   const log = deps.logger.child({ component: "trader-observation-job" });
   let running = false;

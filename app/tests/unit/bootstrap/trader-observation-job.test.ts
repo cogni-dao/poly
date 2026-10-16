@@ -95,6 +95,16 @@ describe("trader-observation job cancellation (task.5015)", () => {
     vi.useRealTimers();
   });
 
+  it("accepts injected read-only recovery without loading production env", async () => {
+    const logger = makeLogger();
+    const readEconomicSettlement = vi.fn().mockResolvedValue(null);
+    tickMock.mockResolvedValue(tickResult());
+    const stop = startTraderObservationJob({ ...makeDeps(logger, 10_000_000), readEconomicSettlement });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tickMock).toHaveBeenCalledWith(expect.objectContaining({ readEconomicSettlement }));
+    stop();
+  });
+
   it("aborts the tick signal on timeout and logs tick_timeout with completed/remaining", async () => {
     const logger = makeLogger();
     let seenSignal: AbortSignal | undefined;
