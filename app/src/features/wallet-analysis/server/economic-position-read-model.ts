@@ -20,6 +20,12 @@ import type {
 import { type SQL, sql } from "drizzle-orm";
 import type { EconomicObservationV1 } from "./economic-observation-recovery";
 import { computeRealizedPnl } from "./market-return-math";
+import {
+  type PositionMetadataKey,
+  positionMetadataDisplay,
+  positionMetadataRequestKey,
+  readPositionMetadata,
+} from "./position-metadata-read";
 import { portfolioWindowStart } from "./portfolio-window";
 
 type ExecuteDb = { execute(query: SQL): Promise<unknown> };
@@ -670,6 +676,8 @@ export async function readEconomicPositionProjection(params: {
   `),
   );
 
+  const metadataKey = (row: EconomicRow): PositionMetadataKey => ({ conditionId: row.condition_id ?? "", tokenId: row.token_id ?? "", walletAddress: params.walletAddress, mode });
+  const metadata = await readPositionMetadata({ db: params.db, keys: rows.map(metadataKey), capturedAt: params.capturedAt.toISOString() });
   const first = rows[0];
   const livePositions: WalletExecutionPosition[] = [];
   const closedPositions: WalletExecutionPosition[] = [];
@@ -678,11 +686,12 @@ export async function readEconomicPositionProjection(params: {
   for (const row of rows) {
     const fact = toEconomicFact(row, mode);
     if (fact) positionFacts.push(fact);
-    const position = toPosition(row, params.capturedAt);
+    const position = toPosition(row, params.capturedAt, mode);
     if (position === null) continue;
     if (row.target_correlated) targetCorrelatedKeys.add(position.positionId);
-    if (row.economic_bucket === "live") livePositions.push(position);
-    if (row.economic_bucket === "closed") closedPositions.push(position);
+    const selectedPosition = { ...position, ...positionMetadataDisplay(metadata.get(positionMetadataRequestKey(metadataKey(row)) ?? "")) };
+    if (row.economic_bucket === "live") livePositions.push(selectedPosition);
+    if (row.economic_bucket === "closed") closedPositions.push(selectedPosition);
   }
   return {
     positionFacts,
@@ -798,7 +807,7 @@ export function toSavedEconomicProof(
   };
 }
 
-function toPosition(row: EconomicRow, capturedAt: Date): WalletExecutionPosition | null {
+function toPosition(row: EconomicRow, capturedAt: Date, mode: "live" | "paper"): WalletExecutionPosition | null {
   if (row.economic_bucket === null || row.condition_id === null || row.token_id === null) {
     return null;
   }
@@ -813,7 +822,7 @@ function toPosition(row: EconomicRow, capturedAt: Date): WalletExecutionPosition
     0,
     numberOf(row.current_price) || numberOf(row.current_avg_price),
   );
-  const fact = toEconomicFact(row, "live");
+  const fact = toEconomicFact(row, mode);
   const hasValuation = row.mark_available === true;
   const currentValue = row.terminal_zero_valuation
     ? 0

@@ -12,7 +12,9 @@ import {
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { type SQL, and, eq, inArray, sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { PAPER_POSITION_CURSOR_SOURCE } from "@/features/wallet-analysis/server/paper-fact-source";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   billingAccounts,
@@ -48,6 +50,7 @@ async function seedConnection(input: {
   userId: string;
   billingAccountId: string;
   address: string;
+  mode?: "live" | "paper";
 }): Promise<SeededWallet> {
   const db = getSeedDb();
   await db.insert(users).values({
@@ -63,6 +66,8 @@ async function seedConnection(input: {
   await db.insert(polyWalletConnections).values({
     billingAccountId: input.billingAccountId,
     createdByUserId: input.userId,
+    kind: input.mode === "paper" ? "paper" : "privy_live",
+    paperSeedUsdc: input.mode === "paper" ? "100" : null,
     privyWalletId: `privy-${input.billingAccountId}`,
     address: input.address,
     funderAddress: input.address,
@@ -84,12 +89,12 @@ async function seedConnection(input: {
   });
   const [wallet] = await db
     .insert(polyTraderWallets)
-    .values({ walletAddress: input.address, kind: "cogni_wallet", label: input.userId })
+    .values({ walletAddress: input.address, kind: input.mode === "paper" ? "paper_wallet" : "cogni_wallet", label: input.userId })
     .returning({ id: polyTraderWallets.id, address: polyTraderWallets.walletAddress });
   if (!wallet) throw new Error("wallet seed failed");
   await db.insert(polyTraderIngestionCursors).values({
     traderWalletId: wallet.id,
-    source: "data-api-positions",
+    source: input.mode === "paper" ? PAPER_POSITION_CURSOR_SOURCE : "data-api-positions",
     status: "ok",
     lastSuccessAt: new Date(),
   });
@@ -487,6 +492,85 @@ describe("wallet dashboard coherent snapshot", () => {
     },
     60_000,
   );
+
+
+  it.each([
+    { mode: "live", fallback: false }, { mode: "live", fallback: true },
+    { mode: "paper", fallback: false }, { mode: "paper", fallback: true },
+  ] as const)("retains nullable $mode economics and third-leg identity, fallback=$fallback", async ({ mode, fallback }) => {
+    const suffix = randomUUID();
+    const userId = `integration-${suffix}`, account = `integration-${suffix}`;
+    const address = `0x${suffix.replaceAll("-", "").padStart(40, "a")}`;
+    const conditionId = `0x${suffix.replaceAll("-", "").padStart(64, "c")}`;
+    const wallet = await seedConnection({ userId, billingAccountId: account, address, mode });
+    const [target] = await db.insert(polyTraderWallets).values({ walletAddress: `0x${suffix.replaceAll("-", "").padStart(40, "1")}`, kind: "copy_target", label: "RN1 third leg" }).returning();
+    if (!target) throw new Error("Missing target");
+    let otherModeWalletId = "";
+    try {
+      // A same-address different mode has tempting complete finance and labels.
+      const [trap] = await db.insert(polyTraderWallets).values({ walletAddress: `0x${address.slice(2).toUpperCase()}`, label: "Other mode trap", kind: mode === "live" ? "paper_wallet" : "cogni_wallet" }).returning();
+      if (!trap) throw new Error("Missing mode trap");
+      otherModeWalletId = trap.id;
+      const observedAt = new Date(Date.now() - 1_000);
+      await db.insert(polyTraderCurrentPositions).values([
+        { ...currentPosition(wallet.id, 0, conditionId), tokenId: "903", shares: "10", costBasisUsdc: "4", currentValueUsdc: "6", avgPrice: ".4", lastObservedAt: observedAt, raw: { title: "Own measured identity", outcome: "Own label" } },
+        { ...currentPosition(wallet.id, 1, conditionId), tokenId: "904", shares: "5", costBasisUsdc: "2", currentValueUsdc: "3", avgPrice: ".4", lastObservedAt: new Date(Date.now() - 60 * 60_000), raw: { title: "Own stale identity", outcome: "Unknown finance" } },
+        { ...currentPosition(trap.id, 0, conditionId), tokenId: "903", shares: "1000", costBasisUsdc: "400", currentValueUsdc: "600", lastObservedAt: observedAt, raw: { title: "Wrong mode trap", outcome: "Wrong mode" } },
+      ]);
+      await db.insert(polyCopyTradeTargets).values({ billingAccountId: account, createdByUserId: userId, targetWallet: target.walletAddress });
+      for (const [index, tokenId] of ["901", "902", "903"].entries()) {
+        const common = { traderWalletId: target.id, conditionId, tokenId, shares: String(30 - index * 10), costBasisUsdc: String(12 - index * 4), currentValueUsdc: String(18 - index * 6), avgPrice: ".4", contentHash: `${suffix}-${tokenId}`, raw: { title: "Target market", outcome: `Target ${tokenId}` } };
+        await db.insert(polyTraderCurrentPositions).values({ ...common, lastObservedAt: observedAt });
+        await db.insert(polyTraderPositionSnapshots).values({ ...common, capturedAt: observedAt });
+      }
+      let injected = false;
+      // Only the bundle SQL fails. Every returned row and fallback builder runs against real PG.
+      const wrap = <T extends { execute(query: SQL): unknown }>(targetDb: T): T => new Proxy(targetDb, {
+        get(targetDb, property) {
+          const value = Reflect.get(targetDb, property);
+          if (property === "execute") return (query: SQL) => {
+            const text = new PgDialect().sqlToQuery(query).sql;
+            if (fallback && !injected && text.includes("target_snapshot_source AS MATERIALIZED")) {
+              injected = true;
+              return targetDb.execute(sql`SELECT integration_forced_bundle_failure`);
+            }
+            return targetDb.execute(query);
+          };
+          if (property === "transaction") return (...args: unknown[]) => Reflect.apply(value, targetDb, [
+            (child: T) => (args[0] as (child: T) => Promise<unknown>)(wrap(child)), ...args.slice(1),
+          ]);
+          return typeof value === "function" ? value.bind(targetDb) : value;
+        },
+      });
+      const diagnostics: import("@/features/wallet-analysis/server/tenant-wallet-dashboard-service").WalletDashboardReadDiagnostics = {};
+      const dashboard = await readTenantWalletDashboard({ db: wrap(db), billingAccountId: account, interval: "1W", adapterConfigured: true, diagnostics });
+      expect(injected).toBe(fallback);
+      expect(diagnostics.comparisonPath).toBe(fallback ? "bundle_fallback" : "bundle");
+      expect(dashboard.execution.live_positions).toHaveLength(2);
+      expect(dashboard.execution.live_positions).toContainEqual(expect.objectContaining({ asset: "903", marketTitle: "Own measured identity", size: 10, pnlUsd: 2 }));
+      expect(dashboard.execution.live_positions).toContainEqual(expect.objectContaining({ asset: "904", marketTitle: "Own stale identity", size: 5, currentValue: null, pnlUsd: null }));
+      const line = dashboard.execution.market_groups.flatMap(group => group.lines).find(line => line.conditionId === conditionId);
+      expect(line?.ourEntryValueUsdc).toBe(6);
+      expect(line?.ourValueUsdc).toBeNull();
+      const own = line?.participants.find(p => p.side === "our_wallet");
+      expect(own?.primary).toMatchObject({ tokenId: "903", shares: 10, costBasisUsdc: 4, currentValueUsdc: 6, pnlUsdc: null });
+      expect(own?.legs).toContainEqual(expect.objectContaining({ tokenId: "904", costBasisUsdc: 2, currentValueUsdc: null, pnlUsdc: null }));
+      expect(line?.participants.find(p => p.side === "copy_target")?.legs?.map(leg => leg.tokenId)).toEqual(["901", "902", "903"]);
+      expect(line?.tokenComparisons).toContainEqual(expect.objectContaining({ ourTokenId: "903", targetTokenId: "903", relation: "same", economicsAvailability: "unavailable" }));
+      expect(line?.edgeGapPct).toBeNull();
+      if (!fallback) {
+        const coverage = dashboard.execution.comparisonCoverage.positions.live;
+        expect(coverage.eligible).toBe(2);
+        expect(coverage.comparable).toBe(1);
+        expect(coverage.sampled).toBe(0);
+        expect(coverage.eligible).toBe((coverage.comparable ?? 0) + (coverage.dropped ?? 0));
+      } else expect(dashboard.execution.comparisonCoverage.positions.live.complete).toBe(false);
+    } finally {
+      await db.delete(billingAccounts).where(eq(billingAccounts.id, account));
+      await db.delete(users).where(eq(users.id, userId));
+      await db.delete(polyTraderWallets).where(inArray(polyTraderWallets.id, [wallet.id, target.id, otherModeWalletId].filter(Boolean)));
+    }
+  });
 
   it("returns exact 501/31 counts with independently bounded 500/30 previews", async () => {
     const result = await readTenantWalletDashboard({

@@ -19,7 +19,6 @@ import {
   readAlgorithmOriginProjection,
   unavailableOriginCoverage,
 } from "./algorithm-origin-read-model";
-import { readCurrentWalletPositionModel } from "./current-position-read-model";
 import { readEconomicPositionProjection } from "./economic-position-read-model";
 import {
   type BoundedMarketExposureRead,
@@ -426,15 +425,6 @@ export async function readTenantWalletDashboardIn(
   const closedPositions = economicRead.ok
     ? economicRead.value.closedPositions.map(attachOrigins)
     : [];
-  // Comparison math consumes `currentValue - pnlUsd` as cost basis. Display
-  // positions carry lifetime economic P/L, so restore that legacy relation
-  // only for the comparison input without weakening the displayed truth.
-  const marketLivePositions = livePositions
-    .filter(hasPositionValuation)
-    .map(toMarketCostBasisPosition);
-  const marketClosedPositions = closedPositions
-    .filter(hasPositionValuation)
-    .map(toMarketCostBasisPosition);
   const historyFact = !economicRead.ok
     ? unavailableFact("saved_wallet_economics")
     : economicRead.value.incompleteCount === 0 &&
@@ -511,8 +501,11 @@ export async function readTenantWalletDashboardIn(
           billingAccountId: input.billingAccountId,
           walletAddress: address,
           connectionKind: connection.connectionKind,
-          livePositions: marketLivePositions,
-          closedPositions: marketClosedPositions,
+          positionFacts: economicRead.ok ? economicRead.value.positionFacts : [],
+          mode: connection.connectionKind === "paper" ? "paper" : "live",
+          capturedAt,
+          livePositions,
+          closedPositions,
           priorityPositionKeys: economicRead.ok
             ? economicRead.value.targetCorrelatedKeys
             : new Set(),
@@ -546,8 +539,11 @@ export async function readTenantWalletDashboardIn(
             db: savepoint,
             billingAccountId: input.billingAccountId,
             walletAddress: address,
-            livePositions: marketLivePositions,
-            closedPositions: marketClosedPositions,
+            positionFacts: economicRead.ok ? economicRead.value.positionFacts : [],
+            mode: connection.connectionKind === "paper" ? "paper" : "live",
+            capturedAt,
+            livePositions,
+            closedPositions,
             priorityPositionKeys: economicRead.ok
               ? economicRead.value.targetCorrelatedKeys
               : new Set(),
@@ -1282,42 +1278,8 @@ function nonnegativeInt(value: string | number | null | undefined): number {
   return Math.max(0, Math.trunc(toNumber(value)));
 }
 
-function nonEmpty(value: string | null): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
 
-type ValuedPosition = WalletExecutionPosition & {
-  currentPrice: number;
-  currentValue: number;
-  pnlUsd: number;
-  pnlPct: number;
-};
-
-function hasPositionValuation(
-  position: WalletExecutionPosition
-): position is ValuedPosition {
-  return position.currentPrice !== null &&
-    position.currentValue !== null &&
-    position.pnlUsd !== null &&
-    position.pnlPct !== null;
-}
-
-function toMarketCostBasisPosition(
-  position: ValuedPosition
-): ValuedPosition {
-  const costBasis = Math.max(0, position.entryPrice * position.size);
-  return {
-    ...position,
-    pnlUsd: roundMoney(position.currentValue - costBasis),
-  };
-}
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
-}
-
-function roundPrecision(value: number, decimals: number): number {
-  const factor = 10 ** decimals;
-  return Math.round((value + Number.EPSILON) * factor) / factor;
 }
