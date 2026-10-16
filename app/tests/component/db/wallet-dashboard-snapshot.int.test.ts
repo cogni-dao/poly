@@ -3,6 +3,10 @@
 
 /** Real-Postgres coherence, component isolation, preview, and tenant bounds. */
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import type { TransactionReceipt } from "viem";
+import type { PolymarketActivityV2, PolymarketUserPositionV2 } from "@cogni/poly-market-provider/adapters/polymarket";
+import { buildEconomicObservations, verifyEconomicSettlement } from "@/features/wallet-analysis/server/economic-observation-recovery";
 import {
   polyMarketOutcomes,
   polyTraderCurrentPositions,
@@ -42,6 +46,8 @@ const OUR_A = `0x${"a1".repeat(20)}`;
 const OUR_B = `0x${"b1".repeat(20)}`;
 const TARGET_A = `0x${"a2".repeat(20)}`;
 const TARGET_B = `0x${"b2".repeat(20)}`;
+const boundedCondition = (index: number) => `0x${(0xb000 + index).toString(16).padStart(64, "0")}`;
+const boundedToken = (target: number, index: number) => String(100000 + target * 1000 + index * 2);
 const TARGET_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 type SeededWallet = { id: string; address: string };
@@ -271,8 +277,8 @@ describe("wallet dashboard coherent snapshot", () => {
     const boundedSnapshots = boundedTargets.flatMap((target, targetIndex) =>
       Array.from({ length: targetIndex === 10 ? 1 : 171 }, (_, conditionIndex) => ({
         traderWalletId: target.id,
-        conditionId: `bounded-condition-${conditionIndex}`,
-        tokenId: `bounded-token-${targetIndex}-${conditionIndex}-yes`,
+        conditionId: boundedCondition(conditionIndex),
+        tokenId: boundedToken(targetIndex, conditionIndex),
         shares: "4",
         costBasisUsdc: "2",
         currentValueUsdc: "3",
@@ -288,8 +294,8 @@ describe("wallet dashboard coherent snapshot", () => {
     );
     boundedSnapshots.push({
       traderWalletId: boundedTargets[0]!.id,
-      conditionId: "bounded-condition-0",
-      tokenId: "bounded-token-0-0-no",
+      conditionId: boundedCondition(0),
+      tokenId: String(Number(boundedToken(0, 0)) + 1),
       shares: "2",
       costBasisUsdc: "1",
       currentValueUsdc: "1.2",
@@ -318,8 +324,8 @@ describe("wallet dashboard coherent snapshot", () => {
       traderWalletId: boundedTargets[0]!.id,
       source: "data-api",
       nativeId: "bounded-gross-buy",
-      conditionId: "bounded-condition-0",
-      tokenId: "bounded-token-0-0-yes",
+      conditionId: boundedCondition(0),
+      tokenId: boundedToken(0, 0),
       side: "BUY",
       price: "0.5",
       shares: "18",
@@ -493,6 +499,83 @@ describe("wallet dashboard coherent snapshot", () => {
     60_000,
   );
 
+
+  it.each([
+    { name: "pre-settlement positive", age: 5, shares: "10", value: "6", expected: null, held: null },
+    { name: "post-settlement positive", age: 1, shares: "4", value: "4", expected: 4, held: 4 },
+    { name: "post-settlement zero", age: 1, shares: "0", value: "0", expected: 0, held: 0 },
+    { name: "clockless authoritative zero dominates old mark", age: 1, shares: "0", value: "6", expected: 0, held: 0, clock: "missing" },
+    { name: "missing event clock", age: 5, shares: "10", value: "6", expected: null, held: null, clock: "missing" },
+    { name: "invalid event clock", age: 5, shares: "10", value: "6", expected: null, held: null, clock: "invalid" },
+    { name: "future envelope", age: 5, shares: "10", value: "6", expected: 6, held: 10, future: true },
+    { name: "future clock with as-of settlement", age: 5, shares: "10", value: "6", expected: null, held: null, clock: "future" },
+  ])("fences partial native winner: $name", async testCase => {
+    const fixture = JSON.parse(readFileSync(new URL("../../_fixtures/poly/economic-recovery-bcgame.json", import.meta.url), "utf8"));
+    const positions = fixture.positions as PolymarketUserPositionV2[];
+    const winner = positions.find(row => row.current_price === 1);
+    if (!winner) throw new Error("Missing native winner");
+    const address = "0x41a7ec25dc776bc364452c5c5cc936ffc6d5f296";
+    const conditionId = fixture.provenance.conditionId as string;
+    const receipt = { ...fixture.receipt, status: "success", blockNumber: BigInt(fixture.receipt.blockNumber),
+      logs: fixture.receipt.logs.map((log: Record<string, unknown>) => ({ ...log, logIndex: Number(log.logIndex), blockNumber: BigInt(String(log.blockNumber)) })),
+    } as TransactionReceipt;
+    const proof = verifyEconomicSettlement({ receipt, walletAddress: address, conditionId,
+      tokenId: winner.token_id, expectedAtomic: 229280000n, canonicalBlockHash: receipt.blockHash,
+      head: receipt.blockNumber + 5n, chainId: 137 });
+    expect(proof).not.toBeNull();
+    if (!proof) throw new Error("Captured routed receipt failed verification");
+    const suffix = randomUUID(), userId = `partial-user-${suffix}`, account = `partial-account-${suffix}`;
+    const wallet = await seedConnection({ userId, billingAccountId: account, address });
+    const now = new Date();
+    const observedAt = new Date(now.getTime() - testCase.age * 60_000);
+    const eventAt = Math.floor(now.getTime() / 1000) + (testCase.clock === "future" ? 60 : -180);
+    // Actual native composition omits the losing CLOSED aggregate; winner proof
+    // and closedPosition survive while the whole cohort becomes partial.
+    const observations = buildEconomicObservations({ walletAddress: address, conditionId,
+      positions: [{ ...winner, last_event_at: eventAt }], activity: fixture.activity as PolymarketActivityV2[],
+      fetchedAt: new Date(now.getTime() + (testCase.future ? 60_000 : -60_000)),
+      windowStart: new Date(now.getTime() - 35 * 86400_000), settlements: [proof] });
+    const observation = observations.find(row => row.tokenId === winner.token_id);
+    if (!observation) throw new Error("Missing composed winner observation");
+    expect(observations).toHaveLength(2);
+    expect(observation).toMatchObject({ coverage: "partial", lifetimePnlUsdc: null, settlements: [proof] });
+    expect(observation.redeemUsdc).toBe(229.28);
+    const envelope = JSON.parse(JSON.stringify(observation));
+    if (testCase.clock === "missing") delete envelope.closedPosition.last_event_at;
+    if (testCase.clock === "invalid") envelope.closedPosition.last_event_at = "unusable";
+    try {
+      await db.update(polyWalletBalanceSnapshots).set({ usdcE: "229.28", pusd: "0", observedAt: now }).where(eq(polyWalletBalanceSnapshots.billingAccountId, account));
+      await db.insert(polyTraderFills).values({ traderWalletId: wallet.id, source: "data-api", nativeId: suffix,
+        conditionId, tokenId: winner.token_id, side: "BUY", price: ".6", shares: "10", sizeUsdc: "6",
+        observedAt: new Date(now.getTime() - 3600_000) });
+      await db.insert(polyMarketOutcomes).values({ conditionId, tokenId: winner.token_id, outcome: "winner", payout: "1",
+        resolvedAt: new Date(now.getTime() - 10 * 60_000), updatedAt: new Date(now.getTime() - 10 * 60_000) });
+      await db.insert(polyTraderCurrentPositions).values({
+        ...currentPosition(wallet.id, 0, conditionId), tokenId: winner.token_id,
+        shares: testCase.shares, currentValueUsdc: testCase.value, costBasisUsdc: "4",
+        firstObservedAt: observedAt, lastObservedAt: observedAt,
+        raw: { economicObservationV1: envelope, curPrice: ".6", outcome: "BC.Game Esports" },
+      });
+      const projection = await readEconomicPositionProjection({ db, billingAccountId: account,
+        walletAddress: address, connectionKind: "privy_live", capturedAt: now, interval: "1W" });
+      expect(projection.positionsMtm).toBe(testCase.expected);
+      expect(projection.positionFacts.find(fact => fact.tokenId === winner.token_id)).toMatchObject({
+        heldShares: testCase.held, currentValueUsdc: testCase.expected,
+        lifetimePnlUsdc: null, economicsCoverage: "partial", observedAt: observedAt.toISOString(),
+      });
+      const dashboard = await readTenantWalletDashboard({ db, billingAccountId: account, interval: "1W", adapterConfigured: true });
+      expect(dashboard.overview.usdc_positions_mtm).toBe(testCase.expected);
+      expect(dashboard.overview.usdc_total).toBe(testCase.expected === null ? null : 229.28 + testCase.expected);
+      expect(dashboard.facts.history.complete).toBe(false);
+      const own = dashboard.execution.market_groups.flatMap(group => group.lines).flatMap(line => line.participants).find(row => row.side === "our_wallet");
+      if (testCase.expected === null) expect(own?.primary?.currentValueUsdc).toBeNull();
+    } finally {
+      await db.delete(polyMarketOutcomes).where(eq(polyMarketOutcomes.conditionId, conditionId));
+      await db.delete(billingAccounts).where(eq(billingAccounts.id, account));
+      await db.delete(users).where(eq(users.id, userId));
+      await db.delete(polyTraderWallets).where(eq(polyTraderWallets.id, wallet.id));
+    }
+  });
 
   it.each([
     { mode: "live", fallback: false }, { mode: "live", fallback: true },
@@ -1031,9 +1114,9 @@ describe("wallet dashboard coherent snapshot", () => {
 
   it("enforces bounded market SQL before hydration with fresh target facts", async () => {
     const positions: WalletExecutionPosition[] = Array.from({ length: 500 }, (_, index) => ({
-      positionId: `bounded-condition-${index}:our-${index}`,
-      conditionId: `bounded-condition-${index}`,
-      asset: `our-${index}`,
+      positionId: `${boundedCondition(index)}:${900000 + index}`,
+      conditionId: boundedCondition(index),
+      asset: String(900000 + index),
       marketTitle: `Bounded market ${index}`,
       eventTitle: `Bounded event ${index % 200}`,
       marketSlug: `bounded-market-${index}`,
@@ -1059,6 +1142,15 @@ describe("wallet dashboard coherent snapshot", () => {
       timeline: [],
       events: [],
     }));
+    // The shared reader requires saved own-wallet metadata for event grouping.
+    const hashes = positions.map((_, index) => `bounded-own-${index}`);
+    await db.insert(polyTraderPositionSnapshots).values(positions.map((position, index) => ({
+      traderWalletId: walletA.id, conditionId: position.conditionId, tokenId: position.asset,
+      shares: "2", costBasisUsdc: "1", currentValueUsdc: "1.2", avgPrice: ".5",
+      capturedAt: new Date(), contentHash: `bounded-own-${index}`,
+      raw: { title: position.marketTitle, eventTitle: position.eventTitle, eventSlug: position.eventSlug, outcome: position.outcome },
+    })));
+    try {
     const bounded = await buildBoundedMarketExposureGroups({
       db,
       billingAccountId: TENANT_A,
@@ -1068,7 +1160,7 @@ describe("wallet dashboard coherent snapshot", () => {
     const participants = bounded.groups.flatMap((group) =>
       group.lines.flatMap((line) => line.participants)
     );
-    expect(bounded.groups.length).toBeLessThanOrEqual(200);
+    expect(bounded.groups).toHaveLength(200);
     expect(participants).toHaveLength(2_200);
     expect(bounded.truncated).toBe(true);
     for (const group of bounded.groups) {
@@ -1077,9 +1169,9 @@ describe("wallet dashboard coherent snapshot", () => {
     }
     const pivotLine = bounded.groups
       .flatMap((group) => group.lines)
-      .find((line) => line.conditionId === "bounded-condition-0");
+      .find((line) => line.conditionId === boundedCondition(0));
     const pivot = pivotLine?.participants.find(
-      (row) => row.label === "Bounded target 0" && row.conditionId === "bounded-condition-0"
+      (row) => row.label === "Bounded target 0" && row.conditionId === boundedCondition(0)
     );
     expect(pivot?.primary?.lifecycle).toBe("active");
     expect(pivot?.hedge).not.toBeNull();
@@ -1108,6 +1200,9 @@ describe("wallet dashboard coherent snapshot", () => {
     });
     expect(boundedRead.truncated).toBe(false);
     expect(boundedRead.groups).toEqual(defaultRead);
+    } finally {
+      await db.delete(polyTraderPositionSnapshots).where(inArray(polyTraderPositionSnapshots.contentHash, hashes));
+    }
   }, 60_000);
 
   it("distinguishes observed zero, partial, stale, and never-observed without false totals", async () => {
@@ -1139,7 +1234,9 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(partial.facts.positions.actionsAllowed).toBe(false);
     expect(partial.execution.live_position_count).toBe(1);
     expect(partial.execution.live_positions).toHaveLength(1);
-    expect(partial.execution.market_groups).toEqual([]);
+    expect(partial.execution.market_groups).toHaveLength(1);
+    expect(partial.execution.market_groups[0]?.ourValueUsdc).toBeNull();
+    expect(partial.execution.market_groups[0]?.lines[0]?.participants.find(row => row.side === "our_wallet")?.primary).toMatchObject({ currentValueUsdc: null, pnlUsdc: null });
     expect(partial.facts.markets.status).toBe("partial");
     expect(partial.execution.comparisonCoverage.positions.live.reasons).toContain(
       "source_incomplete"
@@ -1159,7 +1256,8 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(stale.facts.positions.actionsAllowed).toBe(false);
     expect(stale.execution.live_position_count).toBe(1);
     expect(stale.execution.live_positions).toHaveLength(1);
-    expect(stale.execution.market_groups).toEqual([]);
+    expect(stale.execution.market_groups).toHaveLength(1);
+    expect(stale.execution.market_groups[0]?.ourValueUsdc).toBeNull();
     expect(stale.facts.markets.status).toBe("partial");
     // bug.5031: the stalled-observer case the dashboard actually hit in prod —
     // the frozen inventory's MTM is withheld (null), not a misleading stale
@@ -1172,7 +1270,8 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(unavailable.facts.positions.status).toBe("partial");
     expect(unavailable.execution.live_position_count).toBe(1);
     expect(unavailable.execution.live_positions).toHaveLength(1);
-    expect(unavailable.execution.market_groups).toEqual([]);
+    expect(unavailable.execution.market_groups).toHaveLength(1);
+    expect(unavailable.execution.market_groups[0]?.ourValueUsdc).toBeNull();
     expect(unavailable.execution.comparisonCoverage.positions.live.reasons).toContain(
       "source_incomplete"
     );

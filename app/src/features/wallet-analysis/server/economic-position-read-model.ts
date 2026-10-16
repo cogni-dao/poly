@@ -446,15 +446,32 @@ export async function readEconomicPositionProjection(params: {
         ORDER BY m.fetched_at DESC, m.condition_id
         LIMIT 1
       ) mm ON TRUE
+    ), event_authority AS MATERIALIZED (
+      SELECT b.*,
+        /* Lifetime completeness cannot waive a retained settlement's clock.
+           Future envelopes cannot invalidate an earlier snapshot. A
+           retained proof without an ordering clock cannot bless positive MTM. */
+        CASE
+          WHEN b.economic_observation->>'fetchedAt' <= ${params.capturedAt.toISOString()} THEN
+            CASE WHEN COALESCE(b.economic_observation->'closedPosition'->>'last_event_at', '') ~ '^[0-9]+([.][0-9]+)?$' THEN
+              CASE WHEN (b.economic_observation->'closedPosition'->>'last_event_at')::numeric
+                  <= extract(epoch FROM ${params.capturedAt.toISOString()}::timestamptz)
+                THEN b.current_last_observed_at >= to_timestamp((b.economic_observation->'closedPosition'->>'last_event_at')::numeric)
+                ELSE CASE WHEN jsonb_array_length(COALESCE(b.economic_observation->'settlements', '[]'::jsonb)) > 0
+                  THEN b.current_shares = 0 ELSE true END END
+            ELSE CASE WHEN jsonb_array_length(COALESCE(b.economic_observation->'settlements', '[]'::jsonb)) > 0
+              THEN b.current_shares = 0
+              ELSE true END END
+          ELSE true
+        END AS current_after_economic_event
+      FROM economic_position_base b
     ), classified_raw AS MATERIALIZED (
       SELECT
         b.*,
         (b.current_last_observed_at IS NOT NULL
           AND NOT COALESCE(b.current_identity_conflict, false)
           AND b.current_last_observed_at >= COALESCE(b.last_flow_at, '-infinity'::timestamptz)
-          AND (b.economic_observation->>'coverage' IS DISTINCT FROM 'complete'
-            OR b.economic_observation->'closedPosition'->>'last_event_at' IS NULL
-            OR b.current_last_observed_at >= to_timestamp((b.economic_observation->'closedPosition'->>'last_event_at')::numeric))
+          AND b.current_after_economic_event
         ) AS inventory_authoritative,
         (observer.status = 'ok' AND observer.complete
           AND observer.last_success_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'
@@ -489,9 +506,7 @@ export async function readEconomicPositionProjection(params: {
           AND observer.last_success_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'
           AND b.current_last_observed_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'
           AND b.current_last_observed_at >= COALESCE(b.last_flow_at, '-infinity'::timestamptz)
-          AND (b.economic_observation->>'coverage' IS DISTINCT FROM 'complete'
-            OR b.economic_observation->'closedPosition'->>'last_event_at' IS NULL
-            OR b.current_last_observed_at >= to_timestamp((b.economic_observation->'closedPosition'->>'last_event_at')::numeric))
+          AND b.current_after_economic_event
           AND observer.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
         ) AS mark_available,
         CASE
@@ -532,7 +547,7 @@ export async function readEconomicPositionProjection(params: {
             AND (b.total_buy_shares - b.total_sell_shares) = 0 THEN b.last_flow_at
           ELSE NULL
         END AS closed_at
-      FROM economic_position_base b
+      FROM event_authority b
       CROSS JOIN observer_summary observer
     ), classified AS MATERIALIZED (
       SELECT c.*,
