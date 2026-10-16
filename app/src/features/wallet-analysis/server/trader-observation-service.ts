@@ -1065,8 +1065,16 @@ async function observePositionsIfDue(
     )
     .limit(1);
   const pollMs = deps.positionPollMs ?? DEFAULT_POSITION_POLL_MS;
-  const lastSuccessAt = cursor[0]?.lastSuccessAt;
-  if (lastSuccessAt && Date.now() - lastSuccessAt.getTime() < pollMs) {
+  // A failed page/authority check is still an upstream attempt. Scheduling
+  // from last_success_at alone retries a wedged wallet every 30s, including
+  // its Polygon balanceOfBatch calls, instead of the intended five minutes.
+  // The durable attempt timestamp survives restarts; it does not make the
+  // retained generation fresh or change explicit owner-triggered refreshes.
+  const lastAttemptAt =
+    cursor[0]?.status === "pending"
+      ? cursor[0].lastSuccessAt
+      : (cursor[0]?.updatedAt ?? cursor[0]?.lastSuccessAt);
+  if (lastAttemptAt && Date.now() - lastAttemptAt.getTime() < pollMs) {
     return {
       positions: 0,
       complete: cursor[0]?.status === "ok",

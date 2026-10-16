@@ -12,6 +12,8 @@
  *     decision; no number conversion or dust threshold can prove closure.
  *   - FIVE_SECOND_TRANSPORT_BOUND: the viem HTTP transport is bounded to the
  *     same per-chunk ceiling enforced by the writer.
+ *   - ONE_WIRE_ATTEMPT: the durable observer cadence owns retries. Hidden
+ *     transport retries must not multiply a bounded balance batch on outage.
  * Side-effects: read-only Polygon RPC.
  * Links: work item subtask.5000
  * @public
@@ -31,7 +33,7 @@ export function createPolygonPositionBalanceBatchReader(input: {
 }): PositionBalanceBatchReader {
   const client = createPublicClient({
     chain: polygon,
-    transport: http(input.rpcUrl, { timeout: 5_000 }),
+    transport: http(input.rpcUrl, { timeout: 5_000, retryCount: 0 }),
   });
 
   return async ({ walletAddress, tokenIds, signal }) => {

@@ -16,6 +16,7 @@
 
 import type { PolymarketDataApiClient } from "@cogni/poly-market-provider/adapters/polymarket";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createPolygonPositionBalanceBatchReader } from "@/features/wallet-analysis/server/position-balance-authority";
 import {
   classifyMissingPositionsWithBalances,
   classifyMissingPositionBalances,
@@ -35,9 +36,30 @@ function missing(index: number): MissingCurrentPosition {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("omitted-position exact balance authority", () => {
+  it("sends exactly one wire request on RPC failure instead of hidden transport retries", async () => {
+    const fetch = vi.fn(
+      async () => new Response("upstream unavailable", { status: 503 })
+    );
+    vi.stubGlobal("fetch", fetch);
+    const read = createPolygonPositionBalanceBatchReader({
+      rpcUrl: "https://polygon.invalid",
+    });
+
+    await expect(
+      read({
+        walletAddress: `0x${"a".repeat(40)}`,
+        tokenIds: ["1", "2"],
+        signal: new AbortController().signal,
+      })
+    ).rejects.toThrow();
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("accepts only a complete exact-zero bigint vector", () => {
     expect(classifyMissingPositionBalances([0n, 0n], 2)).toBe("all_zero");
   });
