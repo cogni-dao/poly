@@ -1854,6 +1854,7 @@ export async function classifyMissingPositionsWithBalances(input: {
     return emptyAuthorityResult("authority_unavailable");
   }
 
+  const readPositionBalances = input.readPositionBalances;
   const budget = input.budget ?? { startedAt: 0, chunkCount: 0 };
   const now =
     budget instanceof PositionObservationBudget ? budget.control.now : Date.now;
@@ -1893,7 +1894,7 @@ export async function classifyMissingPositionsWithBalances(input: {
       input.onAttemptChunk?.(chunk);
       const read = () =>
         readBalanceChunkWithDeadline({
-          read: input.readPositionBalances,
+          read: readPositionBalances,
           walletAddress: input.walletAddress,
           tokenIds: chunk.map((position) => position.tokenId),
           timeoutMs: Math.min(

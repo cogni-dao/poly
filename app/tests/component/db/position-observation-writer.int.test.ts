@@ -1090,7 +1090,12 @@ describe("serialized position-observation writer", () => {
       );
     expect(cursor).toMatchObject({ status: "ok" });
     expect(cursor?.lastSuccessAt).toEqual(wallet.lastSuccessAt);
-    expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.info.mock.calls.some(([payload]) =>
+      payload.event === "poly.trader.positions.publish" && payload.published === true
+    )).toBe(false);
+    expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({
+      event: "poly.trader.positions.settled_after_abort"
+    }), expect.any(String));
   });
 
   it("preserves trusted recovery proof while replacing inventory and ignores vendor-supplied reserved keys", async () => {

@@ -40,7 +40,13 @@ vi.mock("@/bootstrap/container", () => ({
           order_id: null,
           status: "filled",
           filled_size_usdc: 4,
-          attributes: { token_id: "123" },
+          position_lifecycle: null,
+          attributes: {
+            token_id: "123",
+            filled_size_usdc: 4,
+            side: "BUY",
+            size_usdc: 4,
+          },
         },
       ],
       updateStatus: mocks.updateStatus,
@@ -70,7 +76,8 @@ vi.mock("@/bootstrap/capabilities/poly-trade-executor", () => ({
     }),
   }),
 }));
-vi.mock("@/features/trading", () => ({
+vi.mock("@/features/trading", async () => ({
+  ...(await import("@/features/trading/ledger-lifecycle")),
   classifyPositionActionability: mocks.classify,
 }));
 vi.mock("@/features/wallet-analysis/server/trader-observation-service", () => ({
@@ -102,6 +109,32 @@ describe("explicit refresh deferred inventory", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
+  it("classifies a real exposed ledger fixture after a complete generation", async () => {
+    mocks.refresh.mockResolvedValue({
+      positions: [{ asset: "123", size: 8, currentValue: 4 }],
+      positionRows: 1,
+      complete: true,
+      stalePositionRowsDeactivated: 0,
+      stalePositionRowsPreserved: 0,
+    });
+    mocks.classify.mockResolvedValue({
+      kind: "data_api_current",
+      currentValueUsdc: 4,
+    });
+    const result = await POST(
+      new Request("http://localhost/api/v1/poly/wallet/refresh", {
+        method: "POST",
+      })
+    );
+    const body = await result.json();
+    expect(result.status).toBe(200);
+    expect(body.warnings).toEqual([]);
+    expect(mocks.classify).toHaveBeenCalledTimes(1);
+    expect(mocks.updateStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ client_order_id: "o", filled_size_usdc: 4 })
+    );
+  });
+
   it.each(["floor", "capacity"])(
     "does no actionability RPCs for repeated %s-deferred refreshes",
     async (deferred) => {
@@ -122,6 +155,9 @@ describe("explicit refresh deferred inventory", () => {
         );
         expect(result.status).toBe(200);
         const body = await result.json();
+        expect(body.warnings).not.toContainEqual(
+          expect.objectContaining({ code: "ledger_refresh_unavailable" })
+        );
         expect(body.warnings).toContainEqual(
           expect.objectContaining({
             code: "positions_reconciliation_partial",
