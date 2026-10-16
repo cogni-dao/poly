@@ -43,8 +43,8 @@ export function positionMetadataSelect(batch: readonly { conditionId: string; to
          ORDER BY m.fetched_at DESC,m.condition_id LIMIT 1)
         UNION ALL
         (SELECT 'current'::text,p.last_observed_at,p.raw FROM poly_trader_current_positions p
-         WHERE p.condition_id=k."conditionId" AND p.token_id=k."tokenId"
-           AND (w.id IS NULL OR p.trader_wallet_id=w.id)
+         WHERE ((p.trader_wallet_id=w.id AND lower(p.condition_id)=k."conditionId")
+             OR (w.id IS NULL AND p.condition_id=k."conditionId")) AND p.token_id=k."tokenId"
            AND nullif(p.raw->>'outcome','') IS NOT NULL
            AND (${capturedAt ?? null}::timestamptz IS NULL OR p.last_observed_at<=${capturedAt ?? null}::timestamptz)
          ORDER BY p.last_observed_at DESC,p.trader_wallet_id LIMIT 1)
