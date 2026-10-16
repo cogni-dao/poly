@@ -1690,7 +1690,7 @@ async function resolveSavedLegMetadata(db: Db, legs: RawLeg[]): Promise<RawLeg[]
   const saved = await readPositionMetadata({ db, keys: legs.map(leg => ({ conditionId: leg.conditionId, tokenId: leg.tokenId, walletAddress: leg.walletAddress })) });
   return legs.map(leg => {
     const metadata = saved.get(positionMetadataRequestKey(leg) ?? "");
-    return metadata ? { ...leg, marketTitle: metadata.marketTitle ?? leg.marketTitle, marketSlug: metadata.marketSlug ?? leg.marketSlug, eventTitle: metadata.eventTitle ?? leg.eventTitle, eventSlug: metadata.eventSlug ?? leg.eventSlug, outcome: metadata.outcome ?? leg.outcome, oppositeTokenId: metadata.oppositeTokenId ?? leg.oppositeTokenId ?? null } : leg;
+    return metadata ? { ...leg, marketTitle: metadata.marketTitle ?? leg.marketTitle, marketSlug: metadata.marketSlug ?? leg.marketSlug, eventTitle: metadata.eventTitle ?? leg.eventTitle, eventSlug: metadata.eventSlug ?? leg.eventSlug, outcome: metadata.availability === "conflict" ? "UNKNOWN" : metadata.outcome ?? leg.outcome, oppositeTokenId: metadata.oppositeTokenId ?? leg.oppositeTokenId ?? null } : leg;
   });
 }
 

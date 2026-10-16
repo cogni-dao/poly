@@ -301,7 +301,8 @@ export function copyTradeAttemptsSelect(
      AND f.fill_id = d.fill_id
      AND f.observed_at <= ${capturedAt}::timestamptz
     LEFT JOIN LATERAL (SELECT market_title FROM poly_market_metadata metadata
-      WHERE lower(metadata.condition_id) = lower(regexp_replace(
+      WHERE metadata.fetched_at <= ${capturedAt}::timestamptz
+        AND lower(metadata.condition_id) = lower(regexp_replace(
            COALESCE(NULLIF(d.intent->>'market_id', ''), f.market_id, ''),
            ${LEDGER_PREFIX_PATTERN},
            ''
@@ -566,7 +567,7 @@ export async function getRecentAttemptsForAccount(
   const metadata = await readPositionMetadata({ db: tx, keys: page.map(row => ({ conditionId: (row.market_id ?? "").replace(/^prediction-market:polymarket:/, ""), tokenId: row.intended_token_id, walletAddress: row.target_wallet })), capturedAt });
   for (const row of page) {
     const saved = metadata.get(positionMetadataRequestKey({ conditionId: (row.market_id ?? "").replace(/^prediction-market:polymarket:/, ""), tokenId: row.intended_token_id, walletAddress: row.target_wallet }) ?? "");
-    if (saved) { row.market_title = saved.marketTitle ?? row.market_title; row.outcome_label = saved.outcome ?? row.outcome_label; }
+    if (saved) { row.market_title = saved.marketTitle ?? row.market_title; row.outcome_label = saved.availability === "conflict" ? null : saved.outcome ?? row.outcome_label; }
   }
   const attempts = page.map((row) => toAttempt(row, capturedAt));
   const last = page.at(-1);

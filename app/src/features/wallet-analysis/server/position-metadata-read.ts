@@ -70,11 +70,11 @@ export async function readPositionMetadata(input: {
             r.token_id === key.tokenId &&
             r.requested_wallet === key.wallet,
         )
-        .map((r) => {
+        .flatMap((r) => {
           const raw = r.raw ?? {};
           const text = (v: unknown): string | null =>
             typeof v === "string" ? v : null;
-          return {
+          const candidate: PositionMetadataCandidate = {
             conditionId: r.condition_id,
             tokenId: r.source === "canonical" ? null : r.token_id,
             source: r.source,
@@ -89,6 +89,13 @@ export async function readPositionMetadata(input: {
             outcome: text(raw.outcome),
             oppositeTokenId: text(raw.oppositeAsset),
           };
+          // SQL keeps two distinct witnesses only when the newest meaningful
+          // source timestamp disagrees. Feed both to the shared selector so
+          // an arbitrary physical row can never become a confident label.
+          const conflictingOutcome = text(raw.conflictingOutcome);
+          return conflictingOutcome === null
+            ? [candidate]
+            : [candidate, { ...candidate, outcome: conflictingOutcome }];
         });
       out.set(
         `${key.key}:${key.wallet ?? "global"}`,
@@ -120,6 +127,15 @@ function meaningful(value: SQL, identityProof = false): SQL {
     ? sql`${value} ~ '^(0|[1-9][0-9]*)$' AND ${value} <> k."tokenId"`
     : sql`nullif(btrim(${value}), '') IS NOT NULL
         AND btrim(${value}) !~* '^(UNKNOWN|Polymarket|Market 0x[0-9a-f]+([.][.][.])?)$'`;
+}
+
+/** Newest source timestamp, retaining bounded witnesses of every tied outcome. */
+function outcomeProbe(source: string, observations: SQL): SQL {
+  return sql`(SELECT ${source}::text AS source, latest.observed_at,
+    jsonb_build_object('outcome', min(latest.value), 'conflictingOutcome',
+      CASE WHEN count(DISTINCT latest.value)>1 THEN max(latest.value) END) AS raw
+    FROM (${observations} ORDER BY observed_at DESC FETCH FIRST 1 ROW WITH TIES) latest
+    GROUP BY latest.observed_at)`;
 }
 
 /**
@@ -161,6 +177,19 @@ export function positionMetadataSelect(
         field === "oppositeAsset"
           ? sql`coalesce(nullif(p.raw->>'oppositeAsset',''),p.raw->>'opposite_token_id')`
           : sql`p.raw->>${field}`;
+      if (field === "outcome") {
+        probes.push(
+          outcomeProbe(
+            source,
+            sql`SELECT p.${sql.raw(time)} AS observed_at,
+          btrim(${value}) AS value FROM ${sql.raw(table)} p
+          WHERE p.trader_wallet_id=w.id AND lower(p.condition_id)=k."conditionId" AND p.token_id=k."tokenId"
+            AND ${meaningful(value)}
+            AND (${cutoff}::timestamptz IS NULL OR p.${sql.raw(time)}<=${cutoff}::timestamptz)`,
+          ),
+        );
+        continue;
+      }
       probes.push(sql`(SELECT ${source}::text, p.${sql.raw(time)},
         jsonb_build_object(${field}::text,${value})
         FROM ${sql.raw(table)} p
@@ -175,6 +204,19 @@ export function positionMetadataSelect(
       field === "outcome"
         ? sql`CASE WHEN ${meaningful(sql`o.raw->>'label'`)} THEN o.raw->>'label' ELSE o.raw->>'outcome' END`
         : sql`coalesce(nullif(o.raw->>'oppositeAsset',''),o.raw->>'opposite_token_id')`;
+    if (field === "outcome") {
+      probes.push(
+        outcomeProbe(
+          "outcome",
+          sql`SELECT o.updated_at AS observed_at,
+        btrim(${value}) AS value FROM poly_market_outcomes o
+        WHERE lower(o.condition_id)=k."conditionId" AND o.token_id=k."tokenId"
+          AND ${meaningful(value)}
+          AND (${cutoff}::timestamptz IS NULL OR o.updated_at<=${cutoff}::timestamptz)`,
+        ),
+      );
+      continue;
+    }
     probes.push(sql`(SELECT 'outcome'::text,o.updated_at,jsonb_build_object(${field}::text,${value})
       FROM poly_market_outcomes o
       WHERE lower(o.condition_id)=k."conditionId" AND o.token_id=k."tokenId"

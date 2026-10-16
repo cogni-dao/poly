@@ -688,7 +688,7 @@ export async function getTargetPositionsForAccount(
 		row.event_title = saved.eventTitle ?? row.event_title;
 		row.market_slug = saved.marketSlug ?? row.market_slug;
 		row.event_slug = saved.eventSlug ?? row.event_slug;
-		row.outcome = saved.outcome ?? row.outcome;
+		row.outcome = saved.availability === "conflict" ? null : saved.outcome ?? row.outcome;
 	}
 	const positions = pageRows.map((row) => ({
 		target_id: row.target_id,
