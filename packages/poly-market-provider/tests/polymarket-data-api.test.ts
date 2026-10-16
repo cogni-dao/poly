@@ -408,6 +408,15 @@ describe("PolymarketDataApiClient.listUserPositionsV2", () => {
     },
   });
 
+  it("allows CLOSED only by explicit recovery opt-in and preserves OPEN defaults", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(page([makePosition(condition(1), "11", { status: "CLOSED", current_size: 0, current_value: 0 })])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    const history = await client.listUserPositionsV2Raw(wallet, { conditions: [condition(1)], status: "CLOSED", maxRequests: 2 });
+    expect(history.positions[0]?.status).toBe("CLOSED");
+    expect(new URL(fetchImpl.mock.calls[0]?.[0] as string).searchParams.get("status")).toBe("CLOSED");
+    await expect(client.listUserPositionsV2Raw(wallet, { conditions: [condition(1)] })).rejects.toThrow(/outside the requested OPEN/);
+  });
+
   it("chunks 21 conditions, follows cursors, and normalizes V2 economics", async () => {
     const conditions = Array.from({ length: 21 }, (_, index) =>
       condition(index + 1)
@@ -1240,5 +1249,33 @@ describe("process-wide in-flight cap (bug.5286)", () => {
       PolyDataApiRateLimitedError
     );
     expect(__polyDataApiInflightForTests()).toEqual({ inFlight: 0, queued: 0 });
+  });
+});
+
+
+describe("bounded native activity recovery", () => {
+  beforeEach(() => __resetPolyDataApiCooldownForTests());
+  const wallet = `0x${"ac".repeat(20)}`;
+  const conditionId = `0x${"bd".repeat(32)}`;
+  const row = { proxy_wallet: wallet, condition_id: conditionId, timestamp: 100,
+    type: "TRADE", token_id: "1", transaction_hash: `0x${"aa".repeat(32)}`,
+    size: 10, usdc_size: 4.123456, price: 0.4123, side: "BUY" };
+  const page = (data: unknown[], cursor: string | null = null) => ({ data, pagination: { has_more: cursor !== null, limit: 1000, offset: 0, next_cursor: cursor } });
+  it("retains native USDC and rejects repeated pages without extra requests", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse(page([row], "next")))
+      .mockResolvedValueOnce(jsonResponse(page([row])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    await expect(client.listConditionActivityV2(wallet, { conditionId, start: 0, end: 200, maxRequests: 2 })).rejects.toThrow(/overlapping activity pages/);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const single = new PolymarketDataApiClient({ fetch: vi.fn().mockResolvedValue(jsonResponse(page([row, { ...row, type: "REDEEM", side: "", token_id: "" }]))) });
+    expect((await single.listConditionActivityV2(wallet, { conditionId, start: 0, end: 200, maxRequests: 2 })).activity[0]?.usdc_size).toBe(4.123456);
+  });
+  it("withholds incomplete cursors and rejects wrong-condition data", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(page([row], "more")));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    await expect(client.listConditionActivityV2(wallet, { conditionId, start: 0, end: 200, maxRequests: 1 })).rejects.toThrow(/request budget exhausted/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const foreign = new PolymarketDataApiClient({ fetch: vi.fn().mockResolvedValue(jsonResponse(page([{ ...row, condition_id: `0x${"ee".repeat(32)}` }]))) });
+    await expect(foreign.listConditionActivityV2(wallet, { conditionId, start: 0, end: 200, maxRequests: 2 })).rejects.toThrow(/outside requested/);
   });
 });
