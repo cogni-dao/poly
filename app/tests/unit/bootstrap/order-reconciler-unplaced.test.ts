@@ -1,126 +1,319 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-/**
- * Module: `@tests/unit/bootstrap/order-reconciler-unplaced`
- * Purpose: Pin UNPLACED_ROWS_TERMINALIZE — a ledger row that never received a
- *   CLOB order id must not stay `pending` forever.
- * Scope: Pure `runReconcileOnce` with fake ledger/getOrder/metrics. No DB, no
- *   network, no timers.
- * Invariants:
- *   - WITHIN_GRACE_IS_UNTOUCHED: placement may still be in flight.
- *   - PAST_GRACE_TERMINALIZES: promoted to `canceled` with reason
- *     `never_placed`, distinct from the not_found branch's `clob_not_found`.
- *   - PLACED_ROWS_UNAFFECTED: a row with an order id still goes to `getOrder`.
- * Side-effects: none
- * Links: src/bootstrap/jobs/order-reconciler.job.ts
- * @internal
- */
-
+/** Recovery reads may repair accepted orders, never infer nonexecution or PLACE. */
 import { describe, expect, it, vi } from "vitest";
+import type { OrderReconcilerDeps } from "@/bootstrap/jobs/order-reconciler.job";
 import { runReconcileOnce } from "@/bootstrap/jobs/order-reconciler.job";
+import type { LedgerRow } from "@/features/trading/order-ledger.types";
 
-const NOT_FOUND_GRACE_MS = 900_000;
-const UNPLACED_GRACE_MS = 24 * 60 * 60 * 1000;
-const NOW = new Date("2026-10-07T00:00:00.000Z");
-
-function row(overrides: Record<string, unknown>) {
+const NOW = new Date("2026-10-16T00:00:00Z");
+function row(overrides: Partial<LedgerRow> = {}): LedgerRow {
   return {
+		target_id: "target",
+		fill_id: "fill",
+		observed_at: NOW,
     client_order_id: "coid-1",
     billing_account_id: "acct-1",
     order_id: null,
     status: "pending",
-    // These cases pin the live venue's 24-hour crash-recovery grace. Paper
-    // rows intentionally use a shorter grace and have their own reconciler
-    // coverage.
+		position_lifecycle: null,
     mode: "live",
-    created_at: new Date(NOW.getTime() - UNPLACED_GRACE_MS * 2),
-    attributes: {},
+		created_at: new Date("2020-01-01"),
+		updated_at: new Date("2020-01-01"),
+		synced_at: null,
+		attributes: { size_usdc: 5 },
+		...overrides,
+	};
+}
+function harness(rows: LedgerRow[], getOrder = vi.fn()) {
+	const updateStatus = vi.fn(async () => {});
+	const markSynced = vi.fn(async () => {});
+	const markReconcileAttempted = vi.fn(async () => {});
+	const leaf = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+	const place = vi.fn();
+	const deps = {
+		ledger: {
+			listOpenOrPending: async () => rows,
+			updateStatus,
+			markSynced,
+			markReconcileAttempted,
+			insertPending: place,
+		},
+		getOrderForTenant: getOrder,
+		logger: { ...leaf, child: () => leaf },
+		metrics: { incr: vi.fn(), observe: vi.fn() },
+		notFoundGraceMs: 1,
+		clock: () => NOW,
+	} as unknown as OrderReconcilerDeps;
+	return {
+		deps,
+		updateStatus,
+		markSynced,
+		markReconcileAttempted,
+		getOrder,
+		place,
+	};
+}
+function receipt(overrides: Record<string, unknown> = {}) {
+	return {
+		order_id: "venue-1",
+		client_order_id: "coid-1",
+		status: "filled",
+		filled_size_usdc: 2,
+		fill_price: 0.5,
+		total_shares: 4,
+		submitted_at: NOW.toISOString(),
+		attributes: { realizedFillSource: "clob_associated_trades" },
     ...overrides,
   };
 }
 
-function harness(rows: unknown[], getOrder = vi.fn()) {
-  const updateStatus = vi.fn(async () => {});
-  const markSynced = vi.fn(async () => {});
-  const leaf = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
-  return {
-    updateStatus,
-    markSynced,
-    getOrder,
-    deps: {
-      ledger: {
-        listOpenOrPending: async () => rows,
-        updateStatus,
-        markSynced,
-      },
-      getOrderForTenant: getOrder,
-      logger: { ...leaf, child: () => leaf },
-      metrics: { incr: vi.fn(), observe: vi.fn() },
-      notFoundGraceMs: NOT_FOUND_GRACE_MS,
-      clock: () => NOW,
-    },
-  } as never as {
-    updateStatus: ReturnType<typeof vi.fn>;
-    markSynced: ReturnType<typeof vi.fn>;
-    getOrder: ReturnType<typeof vi.fn>;
-    // biome-ignore lint/suspicious/noExplicitAny: structural test double
-    deps: any;
-  };
-}
-
-describe("runReconcileOnce — rows that never got a CLOB order id", () => {
-  it("leaves a fresh unplaced row alone (placement may be in flight)", async () => {
-    const h = harness([
-      row({ created_at: new Date(NOW.getTime() - UNPLACED_GRACE_MS / 2) }),
-    ]);
+describe("read-only conservative order recovery", () => {
+	it.each(["live", "paper"] as const)(
+		"never terminalizes old unknown-ID %s execution",
+		async (mode) => {
+			const h = harness([row({ mode })]);
     await runReconcileOnce(h.deps);
     expect(h.updateStatus).not.toHaveBeenCalled();
     expect(h.getOrder).not.toHaveBeenCalled();
-  });
-
-  it("does NOT terminalize on the short not_found grace alone", async () => {
-    // The not_found window answers "CLOB slow to index an order we know
-    // exists". This branch asserts no order exists, so it must not inherit
-    // that window — a crash between venue-accept and markOrderId would be
-    // misread as "never placed" within minutes.
-    const h = harness([
-      row({ created_at: new Date(NOW.getTime() - NOT_FOUND_GRACE_MS * 2) }),
-    ]);
+			expect(h.markSynced).toHaveBeenCalledWith([]);
+			expect(h.markReconcileAttempted).toHaveBeenCalledWith(["coid-1"]);
+			expect(h.place).not.toHaveBeenCalled();
+		},
+	);
+	it("does not release old not_found orders, but records the typed read", async () => {
+		const h = harness(
+			[row({ order_id: "venue-1" })],
+			vi.fn(async () => ({ status: "not_found" })),
+		);
     await runReconcileOnce(h.deps);
     expect(h.updateStatus).not.toHaveBeenCalled();
+		expect(h.markSynced).toHaveBeenCalledWith(["coid-1"]);
+		expect(h.markReconcileAttempted).toHaveBeenCalledWith(["coid-1"]);
   });
-
-  it("terminalizes an unplaced row past the 24h grace window", async () => {
-    // Before this fix the row was `continue`d unconditionally, so a months-old
-    // pending row survived every tick and permanently blocked wallet reset.
-    const h = harness([row({})]);
+	it.each(["error", "partial"] as const)(
+		"repairs %s from an exact authenticated order read",
+		async (status) => {
+			const h = harness(
+				[row({ order_id: "venue-1", status, mode: "paper" })],
+				vi.fn(async () => ({ found: receipt() })),
+			);
     await runReconcileOnce(h.deps);
-    expect(h.updateStatus).toHaveBeenCalledWith({
+			expect(h.getOrder).toHaveBeenCalledWith("acct-1", "venue-1", "paper");
+			expect(h.updateStatus).toHaveBeenCalledWith(
+				expect.objectContaining({
       client_order_id: "coid-1",
-      // `error`, not `canceled` — we never saw a venue response, so asserting
-      // cancellation would claim state we cannot verify.
+					order_id: "venue-1",
+					status: "filled",
+					filled_size_usdc: 2,
+					total_shares: 4,
+					realized_fill_source: "clob_associated_trades",
+				}),
+			);
+			expect(h.place).not.toHaveBeenCalled();
+		},
+	);
+	it.each([undefined, "", "  ", "invalid", "2", 2])(
+		"unavailable realized zero with sizeMatched=%s never releases intent",
+		async (sizeMatched) => {
+			const h = harness(
+				[row({ order_id: "venue-1", status: "canceled" })],
+				vi.fn(async () => ({
+					found: receipt({
+						status: "canceled",
+						filled_size_usdc: 0,
+						fill_price: undefined,
+						total_shares: undefined,
+						attributes: { sizeMatched, realizedFillSource: "unavailable" },
+					}),
+				})),
+			);
+			await runReconcileOnce(h.deps);
+			for (const [update] of h.updateStatus.mock.calls as unknown as Array<
+				[Record<string, unknown>]
+			>)
+				expect(update.final_order_observation).toBeUndefined();
+		},
+	);
+	it.each([0, "0"])(
+		"explicit final zero sizeMatched=%s records independent zero proof",
+		async (sizeMatched) => {
+			const h = harness(
+				[row({ order_id: "venue-1", status: "canceled" })],
+				vi.fn(async () => ({
+					found: receipt({
+						status: "canceled",
+						filled_size_usdc: 0,
+						fill_price: undefined,
+						total_shares: undefined,
+						attributes: { sizeMatched, realizedFillSource: "unavailable" },
+					}),
+				})),
+			);
+			await runReconcileOnce(h.deps);
+			expect(h.updateStatus).toHaveBeenCalledWith(
+				expect.objectContaining({
+					final_order_observation: expect.objectContaining({
+						order_id: "venue-1",
+						filled_size_usdc: 0,
+						fill_evidence: "explicit_zero_size_matched",
+					}),
+				}),
+			);
+		},
+	);
+	it("records coherent canceled fill proof but does not fabricate it from a limit", async () => {
+		const h = harness(
+			[row({ order_id: "venue-1", status: "canceled" })],
+			vi.fn(async () => ({ found: receipt({ status: "canceled" }) })),
+		);
+		await runReconcileOnce(h.deps);
+		expect(h.updateStatus).toHaveBeenCalledWith(
+			expect.objectContaining({
+				final_order_observation: expect.objectContaining({
+					filled_size_usdc: 2,
+					fill_evidence: "clob_associated_trades",
+				}),
+			}),
+		);
+	});
+  it.each([
+    ["live", "clob_associated_trades"],
+    ["paper", undefined],
+    ["paper", "paper_order_receipt"],
+  ] as const)("keeps %s source=%s cost regression unresolved until coherent proof", async (mode, source) => {
+    const prior = row({
+      mode,
+			order_id: "venue-1",
+			status: "partial",
+			executed_shares: 10,
+			attributes: {
+				size_usdc: 8,
+				filled_size_usdc: 8,
+        submitted_at: NOW.toISOString(),
+        ...(source ? { realized_fill_source: source } : {}),
+			},
+		});
+		const get = vi
+			.fn()
+			.mockResolvedValueOnce({
+				found: receipt({
+					status: "canceled",
+					total_shares: 12,
+					fill_price: 0.5,
+					filled_size_usdc: 6,
+          attributes: mode === "paper" ? { sizeMatched: 12 } : { realizedFillSource: "clob_associated_trades", sizeMatched: 12 },
+				}),
+			})
+			.mockResolvedValueOnce({
+				found: receipt({
+					status: "canceled",
+					total_shares: 12,
+					fill_price: 0.75,
+					filled_size_usdc: 9,
+          attributes: mode === "paper" ? { sizeMatched: 12 } : { realizedFillSource: "clob_associated_trades", sizeMatched: 12 },
+				}),
+			});
+		const h = harness([prior], get);
+		await runReconcileOnce(h.deps);
+		expect(h.updateStatus).not.toHaveBeenCalled();
+    expect(h.deps.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: "verified_cumulative_cost_regression" }),
+      expect.any(String),
+    );
+		expect(h.markSynced).toHaveBeenCalledWith(["coid-1"]);
+		expect(h.markReconcileAttempted).toHaveBeenCalledWith(["coid-1"]);
+		await runReconcileOnce(h.deps);
+		expect(h.updateStatus).toHaveBeenCalledOnce();
+		expect(h.updateStatus).toHaveBeenCalledWith(
+			expect.objectContaining({
+				total_shares: 12,
+				fill_price: 0.75,
+				filled_size_usdc: 9,
+        realized_fill_source: mode === "paper" ? "paper_order_receipt" : "clob_associated_trades",
+				final_order_observation: expect.objectContaining({
+					filled_size_usdc: 9,
+				}),
+			}),
+		);
+		expect(h.place).not.toHaveBeenCalled();
+	});
+
+  it.each([
+    ["live", "estimated"],
+    ["paper", "estimated"],
+    ["paper", "data_api_activity_position"],
+  ] as const)("allows authoritative %s receipts to replace %s", async (mode, source) => {
+		const h = harness(
+			[
+				row({
+          mode,
+					order_id: "venue-1",
+					status: "partial",
+					executed_shares: 10,
+					attributes: {
+						size_usdc: 8,
+						filled_size_usdc: 8,
+						realized_fill_source: source,
+            submitted_at: NOW.toISOString(),
+					},
+				}),
+			],
+			vi.fn(async () => ({
+				found: receipt({
+					status: "canceled",
+					total_shares: 12,
+					fill_price: 0.5,
+					filled_size_usdc: 6,
+          attributes: mode === "paper" ? { sizeMatched: 12 } : { realizedFillSource: "clob_associated_trades", sizeMatched: 12 },
+				}),
+			})),
+		);
+		await runReconcileOnce(h.deps);
+		expect(h.updateStatus).toHaveBeenCalledWith(
+			expect.objectContaining({
+				total_shares: 12,
+				fill_price: 0.5,
+				filled_size_usdc: 6,
+        realized_fill_source: mode === "paper" ? "paper_order_receipt" : "clob_associated_trades",
+				final_order_observation: expect.objectContaining({
+					filled_size_usdc: 6,
+				}),
+			}),
+		);
+		expect(h.place).not.toHaveBeenCalled();
+	});
+
+	it("rotates thrown reads and continues independent rows, without fabricating freshness", async () => {
+		const get = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("upstream timeout"))
+			.mockResolvedValueOnce({ found: receipt({ order_id: "venue-2" }) });
+		const h = harness(
+			[
+				row({ order_id: "venue-1" }),
+				row({
+					client_order_id: "coid-2",
+					order_id: "venue-2",
       status: "error",
-      reason: "never_placed",
+				}),
+			],
+			get,
+		);
+		await runReconcileOnce(h.deps);
+		expect(h.markReconcileAttempted).toHaveBeenCalledWith(["coid-1", "coid-2"]);
+		expect(h.markSynced).toHaveBeenCalledWith(["coid-2"]);
+		expect(h.updateStatus).toHaveBeenCalledTimes(1);
+		expect(h.place).not.toHaveBeenCalled();
+	});
+	it("rejects an authenticated response for a different order identity", async () => {
+		const h = harness(
+			[row({ order_id: "venue-other" })],
+			vi.fn(async () => ({ found: receipt() })),
+		);
+		await runReconcileOnce(h.deps);
+		expect(h.updateStatus).not.toHaveBeenCalled();
+		expect(h.markReconcileAttempted).toHaveBeenCalled();
     });
   });
-
-  it("does not stamp synced_at — no CLOB response was ever received", async () => {
-    // `synced_at` means "a typed getOrder answer landed for this row". An
-    // unplaced row never produced one, so claiming otherwise would make the
-    // column lie. It drops out of listOpenOrPending once canceled anyway.
-    const h = harness([row({})]);
-    await runReconcileOnce(h.deps);
-    expect(h.markSynced).toHaveBeenCalledWith([]);
-  });
-
-  it("still routes a row that HAS an order id through getOrder", async () => {
-    const getOrder = vi.fn(async () => ({ found: { status: "CANCELED" } }));
-    const h = harness([row({ order_id: "0xabc", status: "open" })], getOrder);
-    await runReconcileOnce(h.deps);
-    expect(getOrder).toHaveBeenCalledWith("acct-1", "0xabc", "live");
-    expect(h.updateStatus).not.toHaveBeenCalledWith(
-      expect.objectContaining({ reason: "never_placed" })
-    );
-  });
-});
