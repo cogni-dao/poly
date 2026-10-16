@@ -412,7 +412,24 @@ export async function runMirrorTick(deps: MirrorPipelineDeps): Promise<void> {
   deps.setCursor(result.newSince);
 
   for (const fill of result.fills) {
-    await processFill(fill, deps, clock, log, executionMode, assignmentGuard);
+    try {
+      await processFill(fill, deps, clock, log, executionMode, assignmentGuard);
+    } catch (error) {
+      log.error(
+        {
+          event: EVENT_NAMES.POLY_MIRROR_POLL_TICK_ERROR,
+          errorCode: "fill_processing_failed",
+          fill_id: fill.fill_id,
+          correlation_id: clientOrderIdFor(
+            deps.target.billing_account_id,
+            deps.target.target_id,
+            fill.fill_id,
+          ),
+          ...safeErrorDimensions(error),
+        },
+        "mirror pipeline: fill failed; continuing batch",
+      );
+    }
     if (assignmentGuard.retired) break;
   }
 }
@@ -2113,13 +2130,16 @@ function buildDecisionIntentBlob(
 ): Record<string, unknown> {
   return {
     target_wallet: target.target_wallet,
-    market_id: fill.market_id,
     outcome: fill.outcome,
     side: fill.side,
     fill_size_usdc_target: fill.size_usdc,
     fill_price_target: fill.price,
     mirror_usdc: nominalSizeUsdc(target.sizing, fill.size_usdc),
-    client_order_id,
     ...extra,
+    // Audit identity must match the canonical fill, including skipped/errors.
+    market_id: fill.market_id,
+    token_id: fill.attributes?.asset,
+    condition_id: targetConditionIdForFill(fill),
+    client_order_id,
   };
 }
