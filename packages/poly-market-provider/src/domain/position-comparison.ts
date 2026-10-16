@@ -34,16 +34,25 @@ const FIELDS = ["marketTitle", "marketSlug", "eventTitle", "eventSlug", "outcome
 type MetadataField = typeof FIELDS[number];
 export type ResolvedPositionMetadata = Record<MetadataField, string | null> & {
   oppositeTokenId: string | null;
+  oppositeProofAvailability: "available" | "unavailable" | "conflict";
   provenance: Partial<Record<MetadataField, { source: string; observedAt: string | null }>>;
   availability: "complete" | "partial" | "unavailable" | "conflict";
 };
 const useful = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0 && !/^(UNKNOWN|Polymarket|Market 0x[0-9a-f]+(?:\.\.\.)?)$/i.test(value.trim());
 export function selectPositionMetadata(input: PositionIdentityInput, candidates: readonly PositionMetadataCandidate[]): ResolvedPositionMetadata {
   const identity = normalizePositionIdentity(input);
-  const result: ResolvedPositionMetadata = { marketTitle: null, marketSlug: null, eventTitle: null, eventSlug: null, outcome: null, oppositeTokenId: null, provenance: {}, availability: "unavailable" };
+  const result: ResolvedPositionMetadata = { marketTitle: null, marketSlug: null, eventTitle: null, eventSlug: null, outcome: null, oppositeTokenId: null, oppositeProofAvailability: "unavailable", provenance: {}, availability: "unavailable" };
   if (identity.availability !== "available") return result;
   const ordered = candidates.filter(c => c.conditionId.toLowerCase() === identity.conditionId).slice().sort((a,b) => (b.observedAt ?? "").localeCompare(a.observedAt ?? "") || a.source.localeCompare(b.source));
-  result.oppositeTokenId = ordered.find(c => c.tokenId === identity.tokenId && typeof c.oppositeTokenId === "string" && /^(0|[1-9][0-9]*)$/.test(c.oppositeTokenId) && c.oppositeTokenId !== identity.tokenId)?.oppositeTokenId ?? null;
+  const oppositeCandidates = ordered.filter(c => c.tokenId === identity.tokenId && typeof c.oppositeTokenId === "string" && /^(0|[1-9][0-9]*)$/.test(c.oppositeTokenId) && c.oppositeTokenId !== identity.tokenId);
+  const bestOpposite = oppositeCandidates[0];
+  if (bestOpposite) {
+    const conflicted = oppositeCandidates.some(c => c.source === bestOpposite.source && c.observedAt === bestOpposite.observedAt && c.oppositeTokenId !== bestOpposite.oppositeTokenId);
+    // Identity proof availability is independent of display-label availability.
+    // Equal-authority disagreement cannot select an arbitrary opposite mapping.
+    result.oppositeProofAvailability = conflicted ? "conflict" : "available";
+    if (!conflicted) result.oppositeTokenId = bestOpposite.oppositeTokenId ?? null;
+  }
   let conflict = false;
   for (const field of FIELDS) {
     const eligible = ordered.filter(c => useful(c[field]) && (field !== "outcome" || c.tokenId === identity.tokenId));

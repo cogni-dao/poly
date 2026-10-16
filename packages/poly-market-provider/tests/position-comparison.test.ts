@@ -55,3 +55,29 @@ describe("independent source-backed reporting oracle", () => {
     expect(correct/known).toBeGreaterThanOrEqual(.99);
   });
 });
+
+
+describe("independent frozen opposite-proof conflict oracle", () => {
+  const conflictBytes = readFileSync(new URL("./fixtures/position-proof-conflicts-oracle.v1.json", import.meta.url));
+  const conflicts = JSON.parse(conflictBytes.toString());
+  it("preserves all17 independently labeled controls without borrowing identity proof", () => {
+    expect(createHash("sha256").update(conflictBytes).digest("hex")).toBe("4037e031df0a6e7e19fcaa4452f1d1c381b1a4badd349df1c0c311a65c97e965");
+    expect(conflicts.cases).toHaveLength(17);
+    for (const c of conflicts.cases) {
+      for (const reverse of [false, true]) {
+        const left = selectPositionMetadata(c.left.identity, reverse ? [...c.left.candidates].reverse() : c.left.candidates);
+        const right = selectPositionMetadata(c.right.identity, reverse ? [...c.right.candidates].reverse() : c.right.candidates);
+        expect(left.oppositeTokenId, c.id).toBe(c.expected.leftOppositeTokenId);
+        expect(right.oppositeTokenId, c.id).toBe(c.expected.rightOppositeTokenId);
+        expect(left.outcome, c.id).toBe(c.expected.leftOutcome);
+        expect(right.outcome, c.id).toBe(c.expected.rightOutcome);
+        expect(left.availability, c.id).toBe("complete");
+        expect(left.oppositeProofAvailability, c.id).toBe(c.expected.leftOppositeTokenId === null ? "conflict" : "available");
+        const result = comparePositionIdentity({ ...c.left.identity, oppositeTokenId: left.oppositeTokenId }, { ...c.right.identity, oppositeTokenId: right.oppositeTokenId });
+        expect(result.exactMatch, c.id).toBe(c.expected.exactMatch);
+        if (c.expected.relation === "not_opposite") expect(result.relation, c.id).not.toBe("opposite");
+        else expect(result.relation, c.id).toBe(c.expected.relation);
+      }
+    }
+  });
+});

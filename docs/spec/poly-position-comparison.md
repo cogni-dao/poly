@@ -6,7 +6,13 @@ Source: bug.5043, story.5024; provider domain and wallet-analysis saved readers.
 `positionIdentityKey`, `comparePositionIdentity` and `selectPositionMetadata`.
 The identity is lowercased bare condition hex plus the exact decimal token string;
 labels, array order, wallet primary/hedge rank and algorithm never select a match.
-An opposite relationship requires mutual token mapping. Missing identity is
+An opposite relationship requires mutual token mapping. The newest meaningful
+mapping at the selected source/timestamp must be unique; tied witnesses and both
+valid raw aliases participate in that check. A contradictory mapping produces
+`oppositeProofAvailability=conflict` and a null opposite token, independently of
+valid display labels and exact same-token identity. Consumers must not revive a
+rejected mapping from a legacy fallback. Older disagreements do not override a
+uniquely newer mapping. Missing identity is
 unavailable. Condition metadata may supply a title; outcome labels require exact
 condition/token provenance. These functions perform no I/O or economic arithmetic.
 

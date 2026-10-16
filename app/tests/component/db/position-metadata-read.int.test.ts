@@ -33,6 +33,7 @@ const conditionId = `0x${unique}${unique}`;
 const fieldCondition = `0x${unique}${"a".repeat(32)}`;
 const planCondition = `0x${unique}${"b".repeat(32)}`;
 const tiedCondition = `0x${unique}${"c".repeat(32)}`;
+const proofConditions = Array.from({ length: 20 }, (_, index) => `0x${unique}${(index + 1).toString(16).padStart(32, "0")}`);
 const attemptCondition = `0x${unique}${"d".repeat(32)}`;
 const wallet = `0x${unique}aabbccdd`;
 const ownWallet = `0x${unique}eeff0011`;
@@ -153,16 +154,21 @@ describe("saved metadata publication and indexed exact identity reads", () => {
     await db
       .insert(billingAccounts)
       .values({ id: accountId, ownerUserId: userId, balanceCredits: 0n });
+    await db.insert(polyCopyTradeTargets).values({
+      billingAccountId: accountId,
+      createdByUserId: userId,
+      targetWallet: wallet,
+    });
     await db.execute(
       sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label) VALUES (${ownWallet},'cogni_wallet','Our wallet')`,
     );
   });
   afterAll(async () => {
     await db.execute(
-      sql`DELETE FROM poly_market_metadata WHERE lower(condition_id) IN (${conditionId},${fieldCondition},${planCondition},${tiedCondition},${attemptCondition})`,
+      sql`DELETE FROM poly_market_metadata WHERE lower(condition_id) IN (${conditionId},${fieldCondition},${planCondition},${tiedCondition},${attemptCondition},${sql.join(proofConditions.map(condition => sql`${condition}`), sql`,`)})`,
     );
     await db.execute(
-      sql`DELETE FROM poly_market_outcomes WHERE lower(condition_id) IN (${conditionId},${fieldCondition},${planCondition},${tiedCondition},${attemptCondition})`,
+      sql`DELETE FROM poly_market_outcomes WHERE lower(condition_id) IN (${conditionId},${fieldCondition},${planCondition},${tiedCondition},${attemptCondition},${sql.join(proofConditions.map(condition => sql`${condition}`), sql`,`)})`,
     );
     await db.execute(sql`DELETE FROM billing_accounts WHERE id=${accountId}`);
     await db.execute(sql`DELETE FROM users WHERE id=${userId}`);
@@ -357,6 +363,81 @@ describe("saved metadata publication and indexed exact identity reads", () => {
     }
   });
 
+  it.each(["current", "snapshot", "fill", "outcome"] as const)(
+    "preserves %s mapping conflicts through actual saved reader and assembly",
+    async (source) => {
+      const sourceIndex = ["current", "snapshot", "fill", "outcome"].indexOf(source);
+      for (const [scenarioIndex, scenario] of ["tied-conflict", "equal-duplicate", "dual-alias", "equal-alias", "newer-unique"].entries()) {
+        const condition = proofConditions[sourceIndex * 5 + scenarioIndex];
+        if (!condition) throw new Error("Missing proof condition");
+        const mixed = `0x${condition.slice(2).toUpperCase()}`;
+        const exact = "901", opposite = "902", other = "903";
+        const label = "Valid opposite label";
+        await addCurrent(ownWallet, condition, exact, { title: "Proof market", outcome: "Our valid label", oppositeAsset: opposite }, 20);
+        await addCurrent(wallet, condition, exact, { title: "Proof market", outcome: "Our valid label", oppositeAsset: opposite }, 20);
+        await addCurrent(wallet, condition, opposite, { title: "Proof market", outcome: label, oppositeAsset: exact }, 20);
+        const insert = async (physicalCondition: string, raw: Record<string, unknown>, offset: number) => {
+          if (source === "current") {
+            await addCurrent(wallet, physicalCondition, opposite, raw, offset);
+          } else if (source === "snapshot") {
+            await db.execute(sql`INSERT INTO poly_trader_position_snapshots
+              (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,captured_at,raw)
+              SELECT id,${physicalCondition},${opposite},10,4,6,.4,${randomUUID()},${at(offset)}::timestamptz,${JSON.stringify(raw)}::jsonb
+              FROM poly_trader_wallets WHERE wallet_address=${wallet}`);
+          } else if (source === "fill") {
+            await db.execute(sql`INSERT INTO poly_trader_fills
+              (trader_wallet_id,source,native_id,condition_id,token_id,side,price,shares,size_usdc,observed_at,raw)
+              SELECT id,'data-api',${randomUUID()},${physicalCondition},${opposite},'BUY',.4,1,.4,${at(offset)}::timestamptz,${JSON.stringify(raw)}::jsonb
+              FROM poly_trader_wallets WHERE wallet_address=${wallet}`);
+          } else {
+            await db.execute(sql`INSERT INTO poly_market_outcomes (condition_id,token_id,outcome,updated_at,raw)
+              VALUES (${physicalCondition},${opposite},'unknown',${at(offset)}::timestamptz,${JSON.stringify(raw)}::jsonb)
+              ON CONFLICT (condition_id,token_id) DO UPDATE SET updated_at=EXCLUDED.updated_at,raw=EXCLUDED.raw`);
+          }
+        };
+        if (scenario === "dual-alias" || scenario === "equal-alias") {
+          await insert(condition, { outcome: label, oppositeAsset: exact, opposite_token_id: scenario === "equal-alias" ? exact : other }, 30);
+        } else {
+          await insert(mixed, { outcome: label, oppositeAsset: scenario === "equal-duplicate" ? exact : other }, scenario === "newer-unique" ? 29 : 30);
+          await insert(condition, { outcome: label, oppositeAsset: exact }, 30);
+        }
+        const conflicted = scenario === "tied-conflict" || scenario === "dual-alias";
+        const metadata = (await readPositionMetadata({ db, keys: [{ conditionId: condition, tokenId: opposite, walletAddress: wallet }], capturedAt: at(35) })).get(lookup(wallet, condition, opposite));
+        expect(metadata, `${source}:${scenario}`).toMatchObject({
+          outcome: label,
+          oppositeTokenId: conflicted ? null : exact,
+          oppositeProofAvailability: conflicted ? "conflict" : "available",
+        });
+        // Seed the exact publication seam consumed by both market builders.
+        await db.execute(sql`INSERT INTO poly_trader_position_snapshots
+          (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,captured_at,raw)
+          SELECT trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,${randomUUID()},${at(20)}::timestamptz,raw
+          FROM poly_trader_current_positions WHERE trader_wallet_id=(SELECT id FROM poly_trader_wallets WHERE wallet_address=${wallet})
+            AND condition_id=${condition} AND token_id IN (${exact},${opposite})`);
+        const own: WalletExecutionPosition = {
+          positionId: `${condition}:${exact}`, conditionId: condition, asset: exact,
+          marketTitle: "Proof market", marketSlug: null, eventSlug: null, marketUrl: null,
+          outcome: "Our valid label", status: "open", lifecycleState: "open", openedAt: at(20), closedAt: null,
+          resolvesAt: null, size: 10, entryPrice: .4, currentPrice: .6, currentValue: 6,
+          pnlUsd: null, pnlPct: null, heldMinutes: 1, timeline: [], events: [],
+        };
+        const groups = await buildBoundedMarketExposureGroups({ db, billingAccountId: accountId, walletAddress: ownWallet, livePositions: [own] });
+        const line = groups.groups.flatMap(group => group.lines).find(candidate => candidate.conditionId === condition);
+        expect(line?.participants.find(participant => participant.side === "copy_target")?.legs?.find(leg => leg.tokenId === opposite)?.outcome, `${source}:${scenario}`).toBe(label);
+        expect(line?.tokenComparisons, `${source}:${scenario}`).toEqual([expect.objectContaining({
+          ourTokenId: exact, targetTokenId: exact, relation: "same", metadataAvailability: "available",
+          oppositeTargetTokenIds: conflicted ? [] : [opposite],
+        })]);
+        const bundle = await buildBoundedMarketExposureWithCoverage({ db, billingAccountId: accountId, walletAddress: ownWallet, connectionKind: "privy_live", livePositions: [own] });
+        const bundledLine = bundle.market.groups.flatMap(group => group.lines).find(candidate => candidate.conditionId === condition);
+        expect(bundledLine?.tokenComparisons, `${source}:${scenario}:bundle`).toEqual([expect.objectContaining({
+          ourTokenId: exact, targetTokenId: exact, relation: "same", metadataAvailability: "available",
+          oppositeTargetTokenIds: conflicted ? [] : [opposite],
+        })]);
+      }
+    },
+  );
+
   it("does not leak a future-only canonical title through the actual attempts entrypoint", async () => {
     await db.execute(sql`INSERT INTO poly_market_metadata (condition_id,market_title,fetched_at)
       VALUES (${attemptCondition},'Future-only title',${at(40)}::timestamptz)`);
@@ -453,11 +534,6 @@ describe("saved metadata publication and indexed exact identity reads", () => {
       },
       20,
     );
-    await db.insert(polyCopyTradeTargets).values({
-      billingAccountId: accountId,
-      createdByUserId: userId,
-      targetWallet: wallet,
-    });
     const own: WalletExecutionPosition = {
       positionId: `${conditionId}:${tokenId}`,
       conditionId,
