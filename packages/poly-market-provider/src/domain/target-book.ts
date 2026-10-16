@@ -16,6 +16,8 @@ export type TargetBookTokenV1 = Readonly<{
   tokenId: string;
   oppositeTokenId: string;
   outcomeIndex: number;
+  outcome?: string | null;
+  oppositeOutcome?: string | null;
   shares: number;
   markPrice: number;
   averagePrice: number;
@@ -29,6 +31,10 @@ export type TargetBookTokenV1 = Readonly<{
  */
 export type TargetBookConditionV1 = Readonly<{
   conditionId: string;
+  marketTitle?: string | null;
+  marketSlug?: string | null;
+  eventTitle?: string | null;
+  eventSlug?: string | null;
   status: "OPEN";
   redeemable: false;
   endDate: string | null;

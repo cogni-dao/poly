@@ -355,6 +355,12 @@ export async function persistPositionGapTargetSnapshot(input: {
 				currentValue: currentValueUsdc,
 				curPrice: token.markPrice,
 				outcomeIndex: token.outcomeIndex,
+				outcome: token.outcome ?? null,
+				oppositeOutcome: token.oppositeOutcome ?? null,
+				title: condition.marketTitle ?? null,
+				slug: condition.marketSlug ?? null,
+				eventTitle: condition.eventTitle ?? null,
+				eventSlug: condition.eventSlug ?? null,
 				oppositeAsset: token.oppositeTokenId,
 				endDate: condition.endDate,
 				negativeRisk: condition.negativeRisk,
@@ -519,7 +525,13 @@ async function persistTargetPositionFacts(input: {
 						avgPrice: sql`excluded.avg_price`,
 						contentHash: sql`excluded.content_hash`,
 						lastObservedAt: input.observedAt,
-						raw: sql`excluded.raw`,
+						raw: sql`jsonb_strip_nulls(excluded.raw) || jsonb_build_object(
+              'outcome', coalesce(nullif(excluded.raw->>'outcome', ''), ${polyTraderCurrentPositions.raw}->>'outcome'),
+              'title', coalesce(nullif(excluded.raw->>'title', ''), ${polyTraderCurrentPositions.raw}->>'title'),
+              'slug', coalesce(nullif(excluded.raw->>'slug', ''), ${polyTraderCurrentPositions.raw}->>'slug'),
+              'eventTitle', coalesce(nullif(excluded.raw->>'eventTitle', ''), ${polyTraderCurrentPositions.raw}->>'eventTitle'),
+              'eventSlug', coalesce(nullif(excluded.raw->>'eventSlug', ''), ${polyTraderCurrentPositions.raw}->>'eventSlug')
+            )`,
 					},
 					setWhere: sql`${polyTraderCurrentPositions.lastObservedAt} <= excluded.last_observed_at`,
 				});

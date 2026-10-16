@@ -75,3 +75,9 @@ export {
   type RecordedMetric,
   type RecordingMetricsPort,
 } from "./port/observability.port.js";
+
+export {
+  normalizePositionIdentity, positionIdentityKey, comparePositionIdentity, selectPositionMetadata,
+  type PositionIdentityInput, type PositionIdentity, type PositionRelation,
+  type PositionMetadataCandidate, type ResolvedPositionMetadata,
+} from "./domain/position-comparison.js";

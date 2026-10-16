@@ -137,6 +137,25 @@ describe("bounded market exposure", () => {
     expect(db.sql[2]).toContain("selected_keys");
   });
 
+  it("matches our exact target hedge instead of the larger primary and conserves third-leg exposure", async () => {
+    const conditionId = `0x${"ab".repeat(32)}`;
+    const own = { ...position(), conditionId, asset: "111", positionId: `${conditionId}:111`, eventSlug: "event-0" };
+    const base = targetParticipant();
+    const legs = base.legs.map((leg, i) => ({ ...leg, token_id: i === 0 ? "222" : "111" }));
+    legs.push({ ...legs[1]!, token_id: "333", current_value_usdc: "7", cost_basis_usdc: "2", outcome: "Additional" });
+    const db = fakeDb([{ ...base, condition_id: conditionId, legs }]);
+    const read = await buildBoundedMarketExposureGroups({db,billingAccountId:"tenant-a",walletAddress:OUR,livePositions:[own]});
+    const line = read.groups[0]?.lines[0];
+    const target = line?.participants.find(p => p.side === "copy_target");
+    expect(target?.primary?.tokenId).toBe("222");
+    expect(target?.hedge?.tokenId).toBe("111");
+    expect(target?.legs).toHaveLength(3);
+    expect(target?.net.currentValueUsdc).toBe(19);
+    expect(target?.net.pnlUsdc).toBeNull();
+    expect(line?.tokenComparisons).toEqual([expect.objectContaining({ourTokenId:"111",targetTokenId:"111",relation:"same",targetWallet:TARGET})]);
+    expect(line?.edgeGapPct).toBeNull();
+  });
+
   it("marks partial when a group exceeds ten target participants", async () => {
     const db = fakeDb([
       targetParticipant({ total_participants: 10, group_truncated: true }),

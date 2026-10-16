@@ -68,7 +68,7 @@ export type StatusFilter = "live" | "closed";
  */
 export function isAlphaLeak(group: WalletExecutionMarketGroup): boolean {
   if (group.edgeGapPct === null) return false;
-  return group.pnlUsd < 0 && group.edgeGapPct > 0;
+  return group.pnlUsd !== null && group.pnlUsd < 0 && group.edgeGapPct > 0;
 }
 
 export type MarketsTableProps = {
