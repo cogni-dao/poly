@@ -364,9 +364,12 @@ export function buildEconomicObservations(input: {
   );
   const tokens = new Set([
     ...positionsByToken.keys(),
-    ...source.filter((row) => row.type === "TRADE").map((row) => row.token_id),
+    ...source.filter((row) => row.type === "TRADE").map((row) => row.token_id)
+      .filter((tokenId): tokenId is string => typeof tokenId === "string" && tokenId.length > 0),
   ]);
-  const membershipConflict =
+  const unidentifiedTrade = source.some((row) => row.type === "TRADE" &&
+    (typeof row.token_id !== "string" || row.token_id.length === 0));
+  const membershipConflict = unidentifiedTrade ||
     input.positions.length !== positionsByToken.size ||
     tokens.size > positionsByToken.size;
   const observations = [...tokens].map((tokenId): EconomicObservationV1 => {
@@ -399,6 +402,7 @@ export function buildEconomicObservations(input: {
       (isWinner ? proved === payout && proved === bought - sold : position?.current_price === 0);
     const reasons = [
       ...(membershipConflict ? ["native_token_membership_incomplete"] : []),
+      ...(unidentifiedTrade ? ["native_token_identity_missing"] : []),
       ...(!position ? ["closed_aggregate_missing"] : []),
       ...(!completeWindow ? ["history_window_incomplete"] : []),
       ...(!quantityMatches ? ["native_quantity_conflict"] : []),

@@ -120,6 +120,17 @@ describe("independent native economic recovery oracle", () => {
     expect(missing.every((row) => row.coverage === "partial")).toBe(true);
   });
 
+  it("withholds the whole cohort when a TRADE has no exact token identity", () => {
+    const nativeTrade = activity.find((row) => row.type === "TRADE");
+    if (!nativeTrade) throw new Error("missing trade fixture");
+    for (const token_id of [null, undefined, ""]) {
+      const result = buildEconomicObservations({ ...source, activity: [...activity, { ...nativeTrade, token_id }] });
+      expect(result).toHaveLength(2);
+      expect(result.every((row) => row.coverage === "partial" && row.lifetimePnlUsdc === null)).toBe(true);
+      expect(result.every((row) => row.reasons.includes("native_token_identity_missing"))).toBe(true);
+    }
+  });
+
   it("rejects unsupported collateral, unrelated mint, missing conversion and duplicate relevant logs", () => {
     const payoutIndex = receipt.logs.findIndex(
       (log) =>
