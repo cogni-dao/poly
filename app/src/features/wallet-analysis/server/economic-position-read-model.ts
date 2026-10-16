@@ -18,9 +18,8 @@ import type {
   WalletExecutionPosition,
 } from "@cogni/poly-node-contracts";
 import { type SQL, sql } from "drizzle-orm";
-
-import { computeRealizedPnl } from "./market-return-math";
 import type { EconomicObservationV1 } from "./economic-observation-recovery";
+import { computeRealizedPnl } from "./market-return-math";
 import { portfolioWindowStart } from "./portfolio-window";
 
 type ExecuteDb = { execute(query: SQL): Promise<unknown> };
@@ -72,6 +71,7 @@ type EconomicRow = {
   observed_lifetime_pnl: string | number | null;
   current_identity_conflict: boolean | null;
   mark_available: boolean | null;
+  terminal_zero_valuation: boolean | null;
   title: string | null;
   event_title: string | null;
   market_slug: string | null;
@@ -349,6 +349,10 @@ export async function readEconomicPositionProjection(params: {
         count(DISTINCT o.payout) FILTER (
           WHERE o.outcome IN ('winner', 'loser') AND o.payout IS NOT NULL
         )::int AS payout_variants,
+        bool_and(o.payout IS NOT NULL AND (
+          (o.outcome = 'loser' AND o.payout = 0) OR
+          (o.outcome = 'winner' AND o.payout = 1)
+        )) FILTER (WHERE o.outcome IN ('winner', 'loser')) AS payout_consistent,
         max(o.outcome) FILTER (WHERE o.outcome IN ('winner', 'loser')) AS terminal_outcome,
         min(o.resolved_at) FILTER (
           WHERE o.outcome IN ('winner', 'loser') AND o.resolved_at IS NOT NULL
@@ -357,6 +361,8 @@ export async function readEconomicPositionProjection(params: {
       JOIN driven_keys k
         ON k.condition_id = lower(o.condition_id)
        AND k.token_id = o.token_id
+      WHERE o.updated_at <= ${params.capturedAt.toISOString()}::timestamptz
+        AND (o.resolved_at IS NULL OR o.resolved_at <= ${params.capturedAt.toISOString()}::timestamptz)
       GROUP BY lower(o.condition_id), o.token_id
     ), economic_position_base AS MATERIALIZED (
       SELECT
@@ -375,6 +381,9 @@ export async function readEconomicPositionProjection(params: {
         COALESCE(oc.terminal_variants, 0) AS terminal_variants,
         COALESCE(oc.payout_variants, 0) AS payout_variants,
         oc.terminal_outcome,
+        (oc.terminal_variants = 1 AND oc.payout_variants = 1
+          AND oc.payout_consistent AND oc.terminal_outcome = 'loser'
+          AND oc.resolved_at IS NOT NULL) AS terminal_zero_valuation,
         oc.resolved_at,
         cf.shares AS current_shares,
         cf.cost_basis_usdc AS current_cost_basis_usdc,
@@ -429,7 +438,7 @@ export async function readEconomicPositionProjection(params: {
         ORDER BY m.fetched_at DESC, m.condition_id
         LIMIT 1
       ) mm ON TRUE
-    ), classified AS MATERIALIZED (
+    ), classified_raw AS MATERIALIZED (
       SELECT
         b.*,
         (b.current_last_observed_at IS NOT NULL
@@ -517,6 +526,13 @@ export async function readEconomicPositionProjection(params: {
         END AS closed_at
       FROM economic_position_base b
       CROSS JOIN observer_summary observer
+    ), classified AS MATERIALIZED (
+      SELECT c.*,
+        CASE WHEN c.terminal_zero_valuation THEN 0::numeric
+          WHEN c.mark_available THEN c.current_value_usdc
+          WHEN c.inventory_authoritative AND c.current_shares = 0 THEN 0::numeric
+          ELSE NULL END AS effective_current_value_usdc
+      FROM classified_raw c
     ), windowed AS MATERIALIZED (
       SELECT * FROM classified
       WHERE economic_bucket = 'live'
@@ -553,8 +569,9 @@ export async function readEconomicPositionProjection(params: {
       (SELECT count(*)::int FROM outcome_consensus WHERE terminal_variants > 1 OR payout_variants > 1) AS outcome_identity_conflict_count,
       (SELECT count(*)::int FROM current_facts WHERE current_identity_conflict) AS current_identity_conflict_count,
       (SELECT count(*)::int FROM classified
-        WHERE ((current_shares > 0 OR economic_bucket = 'live') AND NOT mark_available)
-          OR (current_shares IS NOT NULL AND NOT inventory_authoritative)) AS missing_mark_count,
+        WHERE NOT COALESCE(terminal_zero_valuation, false) AND (
+          ((current_shares > 0 OR economic_bucket = 'live') AND NOT COALESCE(mark_available, false))
+          OR (current_shares IS NOT NULL AND NOT inventory_authoritative))) AS missing_mark_count,
       observer.last_success_at AS observer_last_success_at,
       observer.status AS observer_status,
       observer.complete AS observer_complete,
@@ -569,13 +586,14 @@ export async function readEconomicPositionProjection(params: {
           AND observer.last_success_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'
           AND NOT EXISTS (
             SELECT 1 FROM classified
-            WHERE ((current_shares > 0 OR economic_bucket = 'live') AND NOT mark_available)
-          OR (current_shares IS NOT NULL AND NOT inventory_authoritative)
+            WHERE NOT COALESCE(terminal_zero_valuation, false) AND (
+              ((current_shares > 0 OR economic_bucket = 'live') AND NOT COALESCE(mark_available, false))
+              OR (current_shares IS NOT NULL AND NOT inventory_authoritative))
           )
         THEN (
-          SELECT COALESCE(sum(current_value_usdc), 0)
+          SELECT COALESCE(sum(effective_current_value_usdc), 0)
           FROM classified
-          WHERE current_shares > 0 AND mark_available
+          WHERE current_shares > 0 OR terminal_zero_valuation
         )
         ELSE NULL
       END AS positions_mtm_usdc,
@@ -609,7 +627,7 @@ export async function readEconomicPositionProjection(params: {
       CASE WHEN ${mode} = 'live' AND p.history_complete THEN (p.economic_observation->>'lifetimeBuyShares')::numeric
         ELSE COALESCE(p.total_buy_shares, p.current_shares) END AS total_buy_shares,
       COALESCE(p.total_buy_shares - p.total_sell_shares, p.current_shares) AS net_shares,
-      p.current_value_usdc,
+      p.effective_current_value_usdc AS current_value_usdc,
       COALESCE(
         CASE WHEN COALESCE(p.raw_cur_price, '') ~ '^[0-9]+(\\.[0-9]+)?$'
           THEN p.raw_cur_price::numeric END,
@@ -631,7 +649,8 @@ export async function readEconomicPositionProjection(params: {
         WHEN COALESCE(p.economic_observation->>'lifetimePnlUsdc', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
         THEN (p.economic_observation->>'lifetimePnlUsdc')::numeric END AS observed_lifetime_pnl,
       p.current_identity_conflict,
-      p.mark_available,
+      (p.mark_available OR p.terminal_zero_valuation) AS mark_available,
+      p.terminal_zero_valuation,
       COALESCE(p.market_title, p.attributes->>'title', 'Polymarket') AS title,
       COALESCE(p.event_title, p.attributes->>'event_title') AS event_title,
       COALESCE(p.market_slug, p.attributes->>'market_slug', p.attributes->>'slug') AS market_slug,
@@ -693,12 +712,17 @@ function toEconomicFact(row: EconomicRow, mode: "live" | "paper"): EconomicPosit
     value === null || value === undefined || !Number.isFinite(Number(value)) ? null : Number(value);
   const authoritative = row.inventory_authoritative === true;
   const held = authoritative ? nullable(row.current_shares) : null;
-  const currentValue =
-    authoritative && held === 0 ? 0 : row.mark_available ? nullable(row.current_value_usdc) : null;
+  const currentValue = row.terminal_zero_valuation
+    ? 0
+    : authoritative && held === 0
+      ? 0
+      : row.mark_available
+        ? nullable(row.current_value_usdc)
+        : null;
   const basis = authoritative ? nullable(row.current_cost_basis_usdc) : null;
   const unrealized =
     row.mark_available && basis !== null && currentValue !== null
-      ? (nullable(row.current_unrealized_pnl) ?? currentValue - basis)
+      ? (row.terminal_zero_valuation ? currentValue - basis : nullable(row.current_unrealized_pnl) ?? currentValue - basis)
       : null;
   const lifetime = row.history_complete ? nullable(row.observed_lifetime_pnl) : null;
   const realized = mode === "paper" && held === 0 && row.history_complete
@@ -789,9 +813,13 @@ function toPosition(row: EconomicRow, capturedAt: Date): WalletExecutionPosition
   );
   const fact = toEconomicFact(row, "live");
   const hasValuation = row.mark_available === true;
-  const currentValue =
-    row.economic_bucket === "closed" && row.history_complete && !(numberOf(row.current_shares) > 0) ? 0 :
-    row.inventory_authoritative && numberOf(row.current_shares) === 0
+  const currentValue = row.terminal_zero_valuation
+    ? 0
+    : row.economic_bucket === "closed" &&
+        row.history_complete &&
+        !(numberOf(row.current_shares) > 0)
+      ? 0
+      : row.inventory_authoritative && numberOf(row.current_shares) === 0
       ? 0
       : hasValuation
         ? Math.max(0, numberOf(row.current_value_usdc))

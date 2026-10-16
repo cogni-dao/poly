@@ -4,6 +4,7 @@
 /** Real-Postgres coherence, component isolation, preview, and tenant bounds. */
 import { randomUUID } from "node:crypto";
 import {
+  polyMarketOutcomes,
   polyTraderCurrentPositions,
   polyTraderFills,
   polyTraderIngestionCursors,
@@ -21,6 +22,7 @@ import {
   polyWalletConnections,
   users,
 } from "@/shared/db/schema";
+import { readEconomicPositionProjection } from "@/features/wallet-analysis/server/economic-position-read-model";
 import { readTenantWalletDashboard } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 import {
   buildBoundedMarketExposureWithCoverage,
@@ -328,6 +330,163 @@ describe("wallet dashboard coherent snapshot", () => {
     await db.delete(users).where(inArray(users.id, [USER_A, USER_B]));
     await db.delete(polyTraderWallets).where(inArray(polyTraderWallets.id, [walletA.id, walletB.id, ...targetWalletIds]));
   });
+
+  it.each([
+    {
+      name: "aged loser",
+      outcome: "loser",
+      payout: "0",
+      ageMinutes: 60,
+      expected: 0,
+    },
+    {
+      name: "older loser",
+      outcome: "loser",
+      payout: "0",
+      ageMinutes: 180,
+      expected: 0,
+    },
+    {
+      name: "fresh winner",
+      outcome: "winner",
+      payout: "1",
+      ageMinutes: 1,
+      expected: 6,
+    },
+    {
+      name: "aged winner",
+      outcome: "winner",
+      payout: "1",
+      ageMinutes: 60,
+      expected: null,
+    },
+    {
+      name: "actual zero winner",
+      outcome: "winner",
+      payout: "1",
+      ageMinutes: 1,
+      expected: 0,
+      zero: true,
+    },
+    {
+      name: "future loser",
+      outcome: "loser",
+      payout: "0",
+      ageMinutes: 60,
+      expected: null,
+      future: true,
+    },
+    {
+      name: "contradictory loser",
+      outcome: "loser",
+      payout: "1",
+      ageMinutes: 60,
+      expected: null,
+    },
+    {
+      name: "redeemable only",
+      outcome: null,
+      payout: null,
+      ageMinutes: 60,
+      expected: null,
+    },
+  ])(
+    "values $name without inventing quantity or history",
+    async (testCase) => {
+      const suffix = randomUUID();
+      const userId = `terminal-user-${suffix}`;
+      const account = `terminal-account-${suffix}`;
+      const address = `0x${suffix.replaceAll("-", "").padStart(40, "0")}`;
+      const conditionId = `0x${suffix.replaceAll("-", "").padStart(64, "a")}`;
+      const tokenId = "12345678901234567890";
+      const wallet = await seedConnection({
+        userId,
+        billingAccountId: account,
+        address,
+      });
+      const now = new Date();
+      const observedAt = new Date(now.getTime() - testCase.ageMinutes * 60_000);
+      try {
+        await db.insert(polyTraderFills).values({
+          traderWalletId: wallet.id,
+          source: "data-api",
+          nativeId: suffix,
+          conditionId,
+          tokenId,
+          side: "BUY",
+          price: "0.6",
+          shares: "10",
+          sizeUsdc: "6",
+          observedAt: new Date(now.getTime() - 4 * 60 * 60_000),
+        });
+        await db.insert(polyTraderCurrentPositions).values({
+          traderWalletId: wallet.id,
+          conditionId,
+          tokenId,
+          active: false,
+          shares: testCase.zero ? "0" : "10",
+          costBasisUsdc: testCase.zero ? "0" : "6",
+          currentValueUsdc: testCase.zero ? "0" : "6",
+          avgPrice: "0.6",
+          contentHash: suffix,
+          firstObservedAt: observedAt,
+          lastObservedAt: observedAt,
+          raw: { redeemable: true, curPrice: testCase.zero ? "0" : "0.6" },
+        });
+        if (testCase.outcome)
+          await db.insert(polyMarketOutcomes).values({
+            conditionId,
+            tokenId,
+            outcome: testCase.outcome,
+            payout: testCase.payout,
+            resolvedAt: new Date(now.getTime() - 30 * 60_000),
+            updatedAt: new Date(now.getTime() + (testCase.future ? 60_000 : -1000)),
+          });
+        const projection = await readEconomicPositionProjection({
+          db,
+          billingAccountId: account,
+          walletAddress: address,
+          connectionKind: "privy_live",
+          capturedAt: now,
+          interval: "1W",
+        });
+        expect(projection.positionsMtm).toBe(testCase.expected);
+        const fact = projection.positionFacts.find((candidate) => candidate.tokenId === tokenId);
+        expect(fact).toMatchObject({
+          heldShares: testCase.zero ? 0 : 10,
+          currentValueUsdc: testCase.expected,
+          observedAt: observedAt.toISOString(),
+          lifetimePnlUsdc: null,
+          economicsCoverage: "partial",
+        });
+        if (testCase.outcome === "loser" && testCase.payout === "0" && !testCase.future) {
+          expect(fact?.inventoryCoverage).toBe("stale");
+          expect(projection.closedPositions[0]).toMatchObject({
+            currentPrice: 0,
+            currentValue: 0,
+            pnlUsd: null,
+          });
+        }
+        const dashboard = await readTenantWalletDashboard({
+          db,
+          billingAccountId: account,
+          interval: "1W",
+          adapterConfigured: true,
+        });
+        expect(dashboard.overview.usdc_positions_mtm).toBe(testCase.expected);
+        expect(dashboard.overview.usdc_total).toBe(
+          testCase.expected === null ? null : 15 + testCase.expected,
+        );
+        expect(dashboard.facts.history.complete).toBe(false);
+      } finally {
+        await db.delete(polyMarketOutcomes).where(eq(polyMarketOutcomes.conditionId, conditionId));
+        await db.delete(billingAccounts).where(eq(billingAccounts.id, account));
+        await db.delete(users).where(eq(users.id, userId));
+        await db.delete(polyTraderWallets).where(eq(polyTraderWallets.id, wallet.id));
+      }
+    },
+    60_000,
+  );
 
   it("returns exact 501/31 counts with independently bounded 500/30 previews", async () => {
     const result = await readTenantWalletDashboard({

@@ -659,8 +659,10 @@ export async function readTenantWalletDashboardIn(
     cashOnChain !== null &&
     positionsMtm !== null &&
     cashFact.complete &&
-    positionFact.complete &&
-    timestampsWithin(cashFact.observedAt, positionFact.observedAt, MAX_FACT_SKEW_MS);
+    currentPositionFact.complete &&
+    // Aggregate valuation authority is separate from physical quantity/history.
+    // Exact terminal losers are worth zero even while their quantity is stale.
+    timestampsWithin(cashFact.observedAt, currentPositionFact.observedAt, MAX_FACT_SKEW_MS);
   const totalFact: WalletDashboardFactMeta = totalCoherent
     ? freshFact("composite", capturedAt)
     : unavailableFact("composite");
