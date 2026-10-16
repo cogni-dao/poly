@@ -3,13 +3,14 @@
 
 /**
  * Module: `@cogni/poly-market-provider/tests/polymarket-user-pnl`
- * Purpose: Unit tests for the Polymarket user P/L client backed by saved live fixtures.
- * Scope: Injected fetch mock only. Does not perform live network I/O or mutate state.
+ * Purpose: Cover the public v2 P/L contract and its legacy chart normalization.
+ * Scope: Injected fetch mocks and saved live fixtures; no live network I/O.
  * Invariants:
- *   - EMPTY_IS_HONEST: an upstream empty array stays empty.
- *   - QUERY_SHAPE_STABLE: requests keep `user_address`, `interval`, and `fidelity`.
+ *   - EMPTY_IS_HONEST: an upstream empty history stays empty; null is not zero.
+ *   - COMPATIBLE_METRIC: native trade_pnl is the legacy chart's p.
+ *   - IDENTITY_REQUIRED: wallet, window and output grid match the request.
  * Side-effects: none
- * Links: docs/research/fixtures/polymarket-user-pnl-week.json
+ * Links: https://data-api.polymarket.com/v2/docs
  * @internal
  */
 
@@ -24,25 +25,28 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const WEEK_FIXTURE = JSON.parse(
-  readFileSync(
-    path.resolve(
-      __dirname,
-      "fixtures/polymarket-user-pnl-week.json"
-    ),
-    "utf8"
-  )
-) as unknown[];
+type PnlFixture = {
+  data: {
+    proxy_wallet: string;
+    interval: "1w" | "all";
+    fidelity: "1h" | "1d";
+    source_fidelity: string;
+    points: { timestamp: number; trade_pnl: number; economic_pnl: number }[];
+  };
+};
 
-const EMPTY_FIXTURE = JSON.parse(
-  readFileSync(
-    path.resolve(
-      __dirname,
-      "fixtures/polymarket-user-pnl-empty.json"
-    ),
-    "utf8"
-  )
-) as unknown[];
+function fixture(name: string): PnlFixture {
+  return JSON.parse(
+    readFileSync(path.resolve(__dirname, "fixtures", name), "utf8")
+  ) as PnlFixture;
+}
+
+// Captured from the public v2 endpoint on 2026-10-16; retain representative
+// first/last points and all native fields, including unavailable cashflows.
+const WEEK_FIXTURE = fixture("polymarket-user-pnl-v2-week.json");
+const ALL_FIXTURE = fixture("polymarket-user-pnl-v2-all.json");
+const wallet = WEEK_FIXTURE.data.proxy_wallet;
+const weeklyParams = { interval: "1w", fidelity: "1h" } as const;
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return {
@@ -54,138 +58,200 @@ function jsonResponse(body: unknown, ok = true, status = 200): Response {
 }
 
 describe("PolymarketUserPnlClient.getUserPnl", () => {
-  const wallet = "0x492442eab586f242b53bda933fd5de859c8a3782";
+  it.each([WEEK_FIXTURE, ALL_FIXTURE])(
+    "normalizes a saved v2 ingestion plan to the compatibility chart metric",
+    async ({ data }) => {
+      const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data }));
+      const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
+      const points = await client.getUserPnl(wallet, {
+        interval: data.interval,
+        fidelity: data.fidelity,
+      });
 
-  it("parses the saved weekly fixture without throwing", () => {
-    const parsed = WEEK_FIXTURE.map((row) =>
-      PolymarketUserPnlPointSchema.parse(row)
-    );
-    expect(parsed.length).toBeGreaterThanOrEqual(2);
-    expect(parsed[0]?.t).toBeTypeOf("number");
-    expect(parsed[0]?.p).toBeTypeOf("number");
-  });
+      expect(points).toEqual(
+        data.points.map(({ timestamp, trade_pnl }) => ({
+          t: timestamp,
+          p: trade_pnl,
+        }))
+      );
+      expect(data.points.some((p) => p.trade_pnl !== p.economic_pnl)).toBe(
+        true
+      );
+      const url = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+      expect(url.origin + url.pathname).toBe(
+        "https://data-api.polymarket.com/v2/user-pnl"
+      );
+      expect(Object.fromEntries(url.searchParams)).toEqual({
+        user: wallet,
+        interval: data.interval,
+        fidelity: data.fidelity,
+      });
+    }
+  );
 
-  it("hits /user-pnl with user_address, interval, and fidelity", async () => {
+  it("accepts the upstream default hourly grid and case-insensitive wallet identity", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(WEEK_FIXTURE));
     const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
-
-    const points = await client.getUserPnl(wallet, {
-      interval: "1w",
-      fidelity: "1d",
-    });
-
-    expect(points).toHaveLength(WEEK_FIXTURE.length);
-    const call = fetchImpl.mock.calls[0]?.[0] as string;
-    expect(call).toContain("/user-pnl");
-    expect(call).toContain(`user_address=${wallet}`);
-    expect(call).toContain("interval=1w");
-    expect(call).toContain("fidelity=1d");
-  });
-
-  it("logs the OUTCOME of a fetch, not just the attempt (bug.5306)", async () => {
-    // Prod emitted 120 `outbound` lines in 11min with no way to tell a healthy
-    // P/L feed from a dead one — success had to be inferred from the observation
-    // job's insert counts, one layer up and one job away.
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(WEEK_FIXTURE));
-    const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
-    const info = vi.fn();
-    const warn = vi.fn();
-
-    await client.getUserPnl(
-      wallet,
-      { interval: "1w", fidelity: "1d" },
-      { logger: { info, warn }, component: "trader-observation" }
-    );
-
-    const events = info.mock.calls.map((c) => c[0].event);
-    expect(events).toContain("poly.user-pnl.outbound");
-    expect(events).toContain("poly.user-pnl.result");
-    const result = info.mock.calls.find(
-      (c) => c[0].event === "poly.user-pnl.result"
-    )?.[0];
-    expect(result).toMatchObject({
-      outcome: "ok",
-      component: "trader-observation",
-      wallet,
-      interval: "1w",
-      points: WEEK_FIXTURE.length,
-    });
-    expect(result.duration_ms).toBeTypeOf("number");
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  it("reports a failed fetch via warn, and still rethrows", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 502,
-      statusText: "Bad Gateway",
-      json: async () => ({}),
-    });
-    const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
-    const info = vi.fn();
-    const warn = vi.fn();
-
     await expect(
-      client.getUserPnl(
-        wallet,
-        { interval: "all" },
-        { logger: { info, warn }, component: "trader-observation" }
-      )
-    ).rejects.toThrow(/502/);
+      client.getUserPnl(`0x${wallet.slice(2).toUpperCase()}`, {
+        interval: "1w",
+      })
+    ).resolves.toHaveLength(WEEK_FIXTURE.data.points.length);
+  });
 
-    // The caller still sees the throw; the log is additive, not a swallow.
+  it.each([
+    { proxy_wallet: "0x0000000000000000000000000000000000000000" },
+    { interval: "all" },
+    { fidelity: "1d" },
+  ])("rejects a mismatched response identity: %j", async (mismatch) => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: { ...WEEK_FIXTURE.data, ...mismatch },
+      })
+    );
+    const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
+    await expect(client.getUserPnl(wallet, weeklyParams)).rejects.toThrow(
+      /identity mismatch/
+    );
+  });
+
+  it.each([
+    null,
+    { data: null },
+    [],
+    { data: { ...WEEK_FIXTURE.data, points: null } },
+    { data: { ...WEEK_FIXTURE.data, source_fidelity: null } },
+  ])("rejects malformed or null response envelopes", async (body) => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(body));
+    const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
+    await expect(client.getUserPnl(wallet, weeklyParams)).rejects.toThrow();
+  });
+
+  it.each([
+    { timestamp: 1791547200, trade_pnl: null },
+    { timestamp: 1791547200 },
+    { timestamp: 1791547200, trade_pnl: "1.5" },
+    { timestamp: 1791547200, trade_pnl: Number.NaN },
+    { timestamp: 1791547200, trade_pnl: Number.POSITIVE_INFINITY },
+    { timestamp: null, trade_pnl: 1.5 },
+    { timestamp: -1, trade_pnl: 1.5 },
+    { timestamp: 1.5, trade_pnl: 1.5 },
+  ])("rejects unavailable or malformed chart facts: %j", async (point) => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: { ...WEEK_FIXTURE.data, points: [point] },
+      })
+    );
+    const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
+    const info = vi.fn();
+    const warn = vi.fn();
+    await expect(
+      client.getUserPnl(wallet, weeklyParams, { logger: { info, warn } })
+    ).rejects.toThrow();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toMatchObject({
       event: "poly.user-pnl.result",
       outcome: "error",
     });
-    expect(String(warn.mock.calls[0]?.[0].err)).toContain("502");
+  });
+
+  it("keeps normalized points strict instead of coercing null into zero", () => {
+    expect(
+      PolymarketUserPnlPointSchema.safeParse({ t: 1, p: null }).success
+    ).toBe(false);
+    expect(
+      PolymarketUserPnlPointSchema.safeParse({ t: null, p: 1 }).success
+    ).toBe(false);
+    expect(PolymarketUserPnlPointSchema.safeParse({ t: 1, p: 0 }).success).toBe(
+      true
+    );
+  });
+
+  it("reports one terminal successful outcome as well as the attempt", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(WEEK_FIXTURE));
+    const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
+    const info = vi.fn();
+    const warn = vi.fn();
+    await client.getUserPnl(wallet, weeklyParams, {
+      logger: { info, warn },
+      component: "trader-observation",
+    });
+    expect(info.mock.calls.map((c) => c[0].event)).toEqual([
+      "poly.user-pnl.outbound",
+      "poly.user-pnl.result",
+    ]);
+    expect(info.mock.calls[1]?.[0]).toMatchObject({
+      outcome: "ok",
+      component: "trader-observation",
+      wallet,
+      points: WEEK_FIXTURE.data.points.length,
+      duration_ms: expect.any(Number),
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed fetch via warn and still rethrows", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(null, false, 502));
+    const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
+    const info = vi.fn();
+    const warn = vi.fn();
+    await expect(
+      client.getUserPnl(wallet, weeklyParams, { logger: { info, warn } })
+    ).rejects.toThrow(/502/);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({
+      event: "poly.user-pnl.result",
+      outcome: "error",
+      err: expect.stringContaining("502"),
+    });
   });
 
   it("falls back to info when the logger has no warn", async () => {
-    // A minimal logger must not silently drop the outcome.
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 500,
-      statusText: "Server Error",
-      json: async () => ({}),
-    });
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(null, false, 500));
     const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
     const info = vi.fn();
-
     await expect(
-      client.getUserPnl(wallet, { interval: "all" }, { logger: { info } })
+      client.getUserPnl(wallet, weeklyParams, { logger: { info } })
     ).rejects.toThrow(/500/);
-
-    const errEvents = info.mock.calls.filter(
-      (c) => c[0].event === "poly.user-pnl.result" && c[0].outcome === "error"
-    );
-    expect(errEvents).toHaveLength(1);
+    expect(
+      info.mock.calls.filter(
+        (c) => c[0].event === "poly.user-pnl.result" && c[0].outcome === "error"
+      )
+    ).toHaveLength(1);
   });
 
   it("supports empty histories without fabricating points", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(EMPTY_FIXTURE));
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: { ...WEEK_FIXTURE.data, points: [] },
+      })
+    );
     const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
-
-    await expect(
-      client.getUserPnl(wallet, { interval: "1w", fidelity: "1d" })
-    ).resolves.toEqual([]);
+    await expect(client.getUserPnl(wallet, weeklyParams)).resolves.toEqual([]);
   });
 
-  it("rejects malformed wallet addresses", async () => {
+  it("rejects malformed wallet addresses before fetching", async () => {
     const fetchImpl = vi.fn();
     const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
     await expect(
-      client.getUserPnl("not-a-wallet", { interval: "1w" })
+      client.getUserPnl("not-a-wallet", weeklyParams)
     ).rejects.toThrow(/Invalid wallet/);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("throws a clear error on non-OK HTTP", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(null, false, 503));
+  it("keeps caller cancellation distinct and reports its terminal outcome", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fetchImpl = vi.fn();
     const client = new PolymarketUserPnlClient({ fetch: fetchImpl });
+    const warn = vi.fn();
     await expect(
-      client.getUserPnl(wallet, { interval: "1w", fidelity: "1d" })
-    ).rejects.toThrow(/503/);
+      client.getUserPnl(wallet, weeklyParams, {
+        signal: controller.signal,
+        logger: { info: vi.fn(), warn },
+      })
+    ).rejects.toThrow();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });

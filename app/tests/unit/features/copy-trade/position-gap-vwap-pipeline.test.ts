@@ -10,6 +10,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { buildMirrorTargetConfig } from "@/bootstrap/jobs/copy-trade-mirror.job";
 import { runMirrorTick } from "@/features/copy-trade/mirror-pipeline";
+import { createOrderLedger } from "@/features/trading/order-ledger";
 import type {
 	OpenOrderRow,
 	OrderLedger,
@@ -41,6 +42,18 @@ const target = buildMirrorTargetConfig({
 	sizingPolicyKind: "position_gap",
 });
 
+const minBetTarget = buildMirrorTargetConfig({
+	targetWallet: buyFill.target_wallet,
+	billingAccountId: "billing-1",
+	createdByUserId: "user-1",
+	sizingPolicyKind: "min_bet",
+});
+
+const expiredFill: Fill = {
+	...buyFill,
+	attributes: { ...buyFill.attributes, end_date: "2026-10-06T00:00:00.000Z" },
+};
+
 function recordingLogger(entries: Record<string, unknown>[]) {
 	const build = (bindings: Record<string, unknown>): LoggerPort => ({
 		debug(obj) {
@@ -64,6 +77,28 @@ function recordingLogger(entries: Record<string, unknown>[]) {
 
 function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 	const decisions: TenantScopedRecordDecisionInput[] = [];
+	// Use the actual persistence guard, with only the database writer stubbed.
+	// Every pipeline decision retains its real canonical token-bearing snapshot.
+	const writes: Record<string, unknown>[] = [];
+	const decisionLedger = createOrderLedger({
+		db: {
+			insert: () => ({
+				values: (value: Record<string, unknown>) => {
+					writes.push(value);
+					return { onConflictDoNothing: async () => undefined };
+				},
+			}),
+			select: () => ({
+				from: () => ({
+					where: () => ({ limit: async () => [{}] }),
+				}),
+			}),
+		} as unknown as Parameters<typeof createOrderLedger>[0]["db"],
+		logger: recordingLogger([]) as unknown as Parameters<
+			typeof createOrderLedger
+		>[0]["logger"],
+		resolveExecutionMode: async () => "paper",
+	});
 	const insertPending = vi.fn<() => Promise<"live" | "paper">>(async () =>
 		Promise.resolve("paper"),
 	);
@@ -83,6 +118,11 @@ function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 		hasOpenForMarket: async () => false,
 		findOpenForMarket: async () => openOrders,
 		recordDecision: async (decision) => {
+			await decisionLedger.recordDecision({
+				...decision,
+				billing_account_id: "billing-1",
+				created_by_user_id: "user-1",
+			});
 			decisions.push(decision);
 		},
 	};
@@ -94,15 +134,23 @@ function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 	} as unknown as OrderLedger;
 	return {
 		decisions,
+		decisionLedger,
 		insertPending,
 		ledger,
 		markCanceled,
 		markError,
 		markOrderId,
+		tenant,
+		writes,
 	};
 }
 
-function commonDeps(fill: Fill, ledger: OrderLedger, logger: LoggerPort) {
+function commonDeps(
+	fill: Fill,
+	ledger: OrderLedger,
+	logger: LoggerPort,
+	mirrorTarget = target,
+) {
 	return {
 		implementationRevision: "0123456789abcdef0123456789abcdef01234567",
 		targetRowId: "target-row-1",
@@ -112,7 +160,7 @@ function commonDeps(fill: Fill, ledger: OrderLedger, logger: LoggerPort) {
 		ledger,
 		getExecutionMode: async () => "paper" as const,
 		placeIntent: vi.fn<() => Promise<OrderReceipt>>(),
-		target,
+		target: mirrorTarget,
 		getCursor: () => undefined,
 		setCursor: () => undefined,
 		logger,
@@ -143,6 +191,181 @@ function commonDeps(fill: Fill, ledger: OrderLedger, logger: LoggerPort) {
 }
 
 describe("position_gap legacy fill-pipeline boundary", () => {
+	it("persists a skipped fill with the exact token and condition through the real ledger guard", async () => {
+		const harness = ledgerHarness();
+		await runMirrorTick(
+			commonDeps(
+				expiredFill,
+				harness.ledger,
+				recordingLogger([]),
+				minBetTarget,
+			),
+		);
+
+		expect(harness.decisions).toHaveLength(1);
+		expect(harness.decisions[0]).toMatchObject({
+			outcome: "skipped",
+			reason: "market_past_end_date",
+			intent: {
+				market_id: buyFill.market_id,
+				token_id: "token-1",
+				condition_id: "condition",
+			},
+			input_snapshot: { canonical_input: { fill: expiredFill } },
+		});
+		expect(harness.writes).toContainEqual(
+			expect.objectContaining({ outcome: "skipped", mode: "paper" }),
+		);
+	});
+
+	it("keeps true token mismatches fail closed before any database write", async () => {
+		const harness = ledgerHarness();
+		await runMirrorTick(
+			commonDeps(
+				expiredFill,
+				harness.ledger,
+				recordingLogger([]),
+				minBetTarget,
+			),
+		);
+		const decision = harness.decisions[0];
+		if (!decision) throw new Error("Expected canonical skipped decision");
+		const writesBefore = harness.writes.length;
+
+		await expect(
+			harness.decisionLedger.recordDecision({
+				...decision,
+				billing_account_id: "billing-1",
+				created_by_user_id: "user-1",
+				intent: { ...decision.intent, token_id: "wrong-token" },
+			}),
+		).rejects.toThrow("lineage_identity_ambiguous");
+		expect(harness.writes).toHaveLength(writesBefore);
+	});
+
+	it("persists an insertion error with canonical identity and never places", async () => {
+		const harness = ledgerHarness();
+		harness.insertPending.mockRejectedValueOnce(
+			new Error("insert unavailable"),
+		);
+		const deps = commonDeps(
+			{ ...buyFill, price: 0.5 },
+			harness.ledger,
+			recordingLogger([]),
+		);
+
+		await runMirrorTick({
+			...deps,
+			target: buildMirrorTargetConfig({
+				targetWallet: buyFill.target_wallet,
+				billingAccountId: "billing-1",
+				createdByUserId: "user-1",
+				sizingPolicyKind: "min_bet",
+			}),
+		});
+
+		expect(deps.placeIntent).not.toHaveBeenCalled();
+		expect(harness.decisions).toContainEqual(
+			expect.objectContaining({
+				outcome: "error",
+				reason: "pending_insert_failed",
+				intent: expect.objectContaining({
+					token_id: "token-1",
+					condition_id: "condition",
+				}),
+			}),
+		);
+	});
+
+	it("places a ready fill only after insertion and persists its canonical audit", async () => {
+		const harness = ledgerHarness();
+		const deps = commonDeps(
+			{ ...buyFill, price: 0.5 },
+			harness.ledger,
+			recordingLogger([]),
+			minBetTarget,
+		);
+		const placeIntent = vi.fn(async (intent: { client_order_id: string }) => ({
+			order_id: "ready-order",
+			client_order_id: intent.client_order_id,
+			status: "open" as const,
+			filled_size_usdc: 0,
+			submitted_at: "2026-10-07T00:00:01.000Z",
+		}));
+
+		await runMirrorTick({ ...deps, placeIntent });
+
+		expect(harness.insertPending).toHaveBeenCalledOnce();
+		expect(placeIntent).toHaveBeenCalledOnce();
+		expect(harness.insertPending.mock.invocationCallOrder[0]).toBeLessThan(
+			placeIntent.mock.invocationCallOrder[0] ?? 0,
+		);
+		expect(harness.decisions).toContainEqual(
+			expect.objectContaining({
+				outcome: "placed",
+				intent: expect.objectContaining({
+					token_id: "token-1",
+					condition_id: "condition",
+				}),
+			}),
+		);
+	});
+
+	it("logs a failed audit and continues subsequent fills without replay or placement", async () => {
+		const harness = ledgerHarness();
+		const entries: Record<string, unknown>[] = [];
+		const recordDecision = harness.tenant.recordDecision;
+		harness.tenant.recordDecision = async (decision) =>
+			recordDecision(
+				decision.fill_id === expiredFill.fill_id
+					? {
+							...decision,
+							intent: { ...decision.intent, token_id: "wrong-token" },
+						}
+					: decision,
+			);
+		const nextFill = { ...expiredFill, fill_id: "chain:next-fill" };
+		const deps = commonDeps(
+			expiredFill,
+			harness.ledger,
+			recordingLogger(entries),
+			minBetTarget,
+		);
+		const setCursor = vi.fn();
+
+		await runMirrorTick({
+			...deps,
+			source: {
+				fetchSince: async () => ({
+					fills: [expiredFill, nextFill],
+					newSince: 2,
+				}),
+			},
+			setCursor,
+		});
+
+		expect(harness.decisions).toHaveLength(1);
+		expect(harness.decisions[0]?.fill_id).toBe(nextFill.fill_id);
+		expect(setCursor).toHaveBeenCalledOnce();
+		expect(setCursor).toHaveBeenCalledWith(2);
+		expect(deps.placeIntent).not.toHaveBeenCalled();
+		expect(entries).toContainEqual(
+			expect.objectContaining({
+				event: "poly.mirror.poll.tick_error",
+				errorCode: "fill_processing_failed",
+				fill_id: buyFill.fill_id,
+				err: "lineage_identity_ambiguous",
+				assignment_id: deps.assignmentId,
+			}),
+		);
+		expect(entries).not.toContainEqual(
+			expect.objectContaining({
+				fill_id: buyFill.fill_id,
+				outcome: "skipped",
+			}),
+		);
+	});
+
 	it("fails closed before source reads when the assignment is retired", async () => {
 		const entries: Record<string, unknown>[] = [];
 		const harness = ledgerHarness();
@@ -256,9 +479,7 @@ describe("position_gap legacy fill-pipeline boundary", () => {
 			),
 		).toHaveLength(1);
 		expect(
-			entries.filter(
-				(entry) => entry.event === "poly.mirror.source_error",
-			),
+			entries.filter((entry) => entry.event === "poly.mirror.source_error"),
 		).toHaveLength(0);
 	});
 
@@ -305,11 +526,7 @@ describe("position_gap legacy fill-pipeline boundary", () => {
 		};
 		const entries: Record<string, unknown>[] = [];
 		const harness = ledgerHarness([openOrder]);
-		const deps = commonDeps(
-			sellFill,
-			harness.ledger,
-			recordingLogger(entries),
-		);
+		const deps = commonDeps(sellFill, harness.ledger, recordingLogger(entries));
 		const isAssignmentCurrent = vi
 			.fn<() => Promise<boolean>>()
 			.mockResolvedValueOnce(true)

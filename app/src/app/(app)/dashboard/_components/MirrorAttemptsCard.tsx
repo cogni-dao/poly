@@ -78,12 +78,31 @@ function fmtUsdc(v: number | null): string {
   return v === null ? "--" : `$${v.toFixed(2)}`;
 }
 
+function formatAttemptTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
+function formatDecisionAge(seconds: number): string {
+  if (seconds < 60) return "less than a minute ago";
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h ago`;
+  return `${Math.floor(seconds / 86_400)}d ${Math.floor((seconds % 86_400) / 3_600)}h ago`;
+}
+
 function attemptMarketLabel(row: PolyCopyTradeAttempt): string {
   const title = row.market_title?.trim();
   if (title && title !== "0" && title !== "1") return title;
   const conditionId = row.market_id?.replace(
     /^prediction-market:polymarket:/,
-    ""
+    "",
   );
   return conditionId ? `Market ${conditionId.slice(0, 10)}…` : "--";
 }
@@ -98,7 +117,7 @@ function executionLabel(row: PolyCopyTradeAttempt): string {
   if (row.executed.availability === "observed") {
     return row.executed.terminal_reason
       ? `${row.executed.status} · ${summarizeLedgerError(
-          row.executed.terminal_reason
+          row.executed.terminal_reason,
         )}`
       : row.executed.status;
   }
@@ -116,12 +135,12 @@ export function MirrorAttemptsCard(): ReactElement {
   });
 
   const rows = data?.attempts ?? [];
+  const freshness = data?.freshness;
   const failures = rows.filter(
     (r) =>
       r.decision.outcome === "error" ||
       r.executed.availability === "ledger_row_missing" ||
-      (r.executed.availability === "observed" &&
-        r.executed.status === "error")
+      (r.executed.availability === "observed" && r.executed.status === "error"),
   ).length;
 
   return (
@@ -137,19 +156,43 @@ export function MirrorAttemptsCard(): ReactElement {
         ) : null}
       </CardHeader>
       <CardContent className="p-0">
+        {isError && rows.length > 0 ? (
+          <p className="px-5 pb-3 text-destructive text-sm">
+            Could not refresh mirror attempts. Showing previously loaded
+            decisions.
+          </p>
+        ) : null}
+        {rows.length > 0 && freshness?.most_recent_attempt_at ? (
+          <p
+            className={cn(
+              "px-5 pb-3 text-sm",
+              freshness.status === "stale"
+                ? "text-destructive"
+                : "text-muted-foreground",
+            )}
+          >
+            {freshness.status === "stale" ? "Stale activity · " : ""}
+            Latest decision:{" "}
+            {formatAttemptTime(freshness.most_recent_attempt_at)}
+            {freshness.staleness_seconds !== null
+              ? ` · ${formatDecisionAge(freshness.staleness_seconds)}`
+              : ""}
+          </p>
+        ) : null}
         {isLoading ? (
           <div className="animate-pulse space-y-px px-5 pb-4">
             <div className="h-10 rounded bg-muted" />
             <div className="h-10 rounded bg-muted" />
           </div>
-        ) : isError ? (
+        ) : isError && rows.length === 0 ? (
           <p className="px-5 pb-4 text-muted-foreground text-sm">
             Could not load mirror attempts.
           </p>
         ) : rows.length === 0 ? (
           <p className="px-5 pb-4 text-muted-foreground text-sm">
-            No algorithm decisions yet. A tracked wallet or reconciliation must
-            produce eligible facts before an attempt appears.
+            {freshness?.status === "never_attempted"
+              ? "No algorithm decisions yet. A tracked wallet or reconciliation must produce eligible facts before an attempt appears."
+              : "No mirror attempts available."}
           </p>
         ) : (
           <Table>
@@ -168,7 +211,9 @@ export function MirrorAttemptsCard(): ReactElement {
               {rows.map((r) => (
                 <TableRow key={r.attempt_id}>
                   <TableCell className="whitespace-nowrap text-muted-foreground text-xs">
-                    {new Date(r.decided_at).toLocaleTimeString()}
+                    <time dateTime={r.decided_at}>
+                      {formatAttemptTime(r.decided_at)}
+                    </time>
                   </TableCell>
                   <TableCell className="max-w-[18rem] truncate text-sm">
                     {attemptMarketLabel(r)}
@@ -189,7 +234,7 @@ export function MirrorAttemptsCard(): ReactElement {
                         ? statusTone("filled")
                         : r.decision.outcome === "error"
                           ? statusTone("error")
-                          : "text-muted-foreground"
+                          : "text-muted-foreground",
                     )}
                   >
                     {r.decision.outcome}
