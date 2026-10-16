@@ -40,8 +40,8 @@ const unknownWallet = `0x${unique}11223344`;
 const tokenId = "6789012345678901234567890";
 const oppositeTokenId = "6789012345678901234567891";
 const thirdTokenId = "6789012345678901234567892";
-const userId = `metadata-user-${unique}`;
-const accountId = `metadata-account-${unique}`;
+const userId = randomUUID();
+const accountId = randomUUID();
 const db = getSeedDb();
 const rows = <T>(result: unknown): T[] =>
   (Array.isArray(result) ? result : (result as { rows: T[] }).rows) as T[];
@@ -363,7 +363,7 @@ describe("saved metadata publication and indexed exact identity reads", () => {
     await db.execute(sql`INSERT INTO poly_copy_trade_decisions
       (billing_account_id,created_by_user_id,target_id,fill_id,outcome,reason,intent,decided_at,mode)
       VALUES (${accountId},${userId},${randomUUID()}::uuid,${randomUUID()},'skipped','cutoff-test',
-        ${JSON.stringify({ market_id: `prediction-market:polymarket:${attemptCondition}`, token_id: tokenId, side: "BUY", target_wallet: wallet })}::jsonb,
+        ${JSON.stringify({ market_id: `prediction-market:polymarket:${attemptCondition}`, token_id: tokenId, side: "BUY", target_wallet: wallet, outcome: "Unverified fallback label" })}::jsonb,
         ${at(10)}::timestamptz,'live')`);
     await db.execute(sql`INSERT INTO poly_market_outcomes (condition_id,token_id,outcome,updated_at,raw)
       VALUES (${attemptCondition},${tokenId},'unknown',${at(10)}::timestamptz,'{"label":"First tied label"}'::jsonb),
