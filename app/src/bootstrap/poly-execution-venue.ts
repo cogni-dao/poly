@@ -27,6 +27,7 @@
  * @internal
  */
 
+import { normalizePositionIdentity, positionIdentityKey } from "@cogni/poly-market-provider";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 
@@ -39,6 +40,7 @@ import {
   type PaperVenuePort,
 } from "@/features/paper-accounts";
 import {
+  PaperFactsUnavailableError,
   readPaperAccountNavUsdc,
   readPaperAccountPositionFacts,
 } from "@/features/wallet-analysis/server/paper-fact-source";
@@ -147,6 +149,80 @@ export function getPaperPortfolio(): PaperPortfolioReader {
     };
   }
   return cachedPaperPortfolio;
+}
+
+/**
+ * Read the complete paper book once, then select exact requested legs. A
+ * missing leg is zero only after the canonical source proves a fresh complete
+ * book; identity conflicts and unavailable source facts always fail closed.
+ */
+export async function readPaperAuthoritativeHoldings(input: {
+	source: Pick<PaperPositionSource, "listOpenPositions">;
+	billingAccountId: string;
+	requested: readonly { conditionId: string; tokenId: string }[];
+	signal?: AbortSignal;
+}): Promise<{ conditionId: string; tokenId: string; shares: number }[]> {
+	const unavailable = () =>
+		new PaperFactsUnavailableError(
+			input.billingAccountId,
+			"projection_incomplete",
+		);
+	input.signal?.throwIfAborted();
+	const requestKeys = new Set<string>();
+	const requestConditions = new Map<string, string>();
+	const requested = input.requested.map((request) => {
+		const identity = normalizePositionIdentity(request);
+		const key = positionIdentityKey(request);
+		if (
+			identity.availability !== "available" ||
+			key === null ||
+			requestKeys.has(key) ||
+			(requestConditions.has(identity.tokenId) &&
+				requestConditions.get(identity.tokenId) !== identity.conditionId)
+		)
+			throw unavailable();
+		requestKeys.add(key);
+		requestConditions.set(identity.tokenId, identity.conditionId);
+		return identity;
+	});
+	// Await the real operation through settlement even if the caller cancels.
+	// No timeout race, detached read, per-token dispatch, or shared book cache.
+	const book = await input.source.listOpenPositions(input.billingAccountId);
+	input.signal?.throwIfAborted();
+	const sharesByKey = new Map<string, number>();
+	const conditionsByToken = new Map<string, string>();
+	for (const position of book) {
+		const identity = normalizePositionIdentity(position);
+		const key = positionIdentityKey(position);
+		if (
+			identity.availability !== "available" ||
+			key === null ||
+			sharesByKey.has(key) ||
+			(conditionsByToken.has(identity.tokenId) &&
+				conditionsByToken.get(identity.tokenId) !== identity.conditionId) ||
+			!Number.isFinite(position.shares) ||
+			position.shares <= 0 ||
+			!Number.isFinite(position.currentValueUsdc) ||
+			position.currentValueUsdc < 0 ||
+			!Number.isFinite(position.avgPrice) ||
+			position.avgPrice < 0
+		)
+			throw unavailable();
+		sharesByKey.set(key, position.shares);
+		conditionsByToken.set(identity.tokenId, identity.conditionId);
+	}
+	return requested.map((identity) => {
+		if (
+			conditionsByToken.has(identity.tokenId) &&
+			conditionsByToken.get(identity.tokenId) !== identity.conditionId
+		)
+			throw unavailable();
+		return {
+			conditionId: identity.conditionId,
+			tokenId: identity.tokenId,
+			shares: sharesByKey.get(identity.key) ?? 0,
+		};
+	});
 }
 
 /** For tests only — clears the memoized instances. */

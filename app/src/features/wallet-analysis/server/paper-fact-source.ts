@@ -95,7 +95,11 @@ import {
   polyWalletBalanceSnapshots,
   polyWalletConnections,
 } from "@cogni/db-schema/wallet-connections";
-import type { LoggerPort } from "@cogni/poly-market-provider";
+import {
+  type LoggerPort,
+  normalizePositionIdentity,
+  positionIdentityKey,
+} from "@cogni/poly-market-provider";
 import {
   polyTraderCurrentPositions,
   polyTraderIngestionCursors,
@@ -1641,10 +1645,10 @@ export type PaperAccountPositionFacts = {
  * @public
  */
 export async function readPaperAccountPositionFacts(input: {
-  db: Db;
-  billingAccountId: string;
-  now?: Date;
-  maxStalenessMs?: number;
+	db: Db;
+	billingAccountId: string;
+	now?: Date;
+	maxStalenessMs?: number;
 }): Promise<PaperAccountPositionFacts> {
   const now = input.now ?? new Date();
   const maxStalenessMs = input.maxStalenessMs ?? PAPER_FACTS_MAX_STALENESS_MS;
@@ -1652,111 +1656,77 @@ export async function readPaperAccountPositionFacts(input: {
   // (DERIVED_ADDRESS_IS_CROSS_CHECKED) — not a second derivation, the same one.
   const address = derivePaperAccountAddress(input.billingAccountId);
 
-  const walletRows = await input.db
-    .select({ id: polyTraderWallets.id })
-    .from(polyTraderWallets)
-    .where(
-      and(
-        eq(polyTraderWallets.walletAddress, address),
-        eq(polyTraderWallets.kind, PAPER_WALLET_KIND),
-        isNull(polyTraderWallets.disabledAt)
-      )
-    )
-    .limit(1);
-  const wallet = walletRows[0];
-  if (!wallet) {
-    throw new PaperFactsUnavailableError(
-      input.billingAccountId,
-      "no_paper_wallet",
-      "no active poly_trader_wallets row for the derived paper address — the projection has not enrolled this account"
-    );
-  }
-
-  const cursorRows = await input.db
-    .select({
-      status: polyTraderIngestionCursors.status,
-      lastSuccessAt: polyTraderIngestionCursors.lastSuccessAt,
-      errorMessage: polyTraderIngestionCursors.errorMessage,
-    })
-    .from(polyTraderIngestionCursors)
-    .where(
-      and(
-        eq(polyTraderIngestionCursors.traderWalletId, wallet.id),
-        eq(polyTraderIngestionCursors.source, PAPER_POSITION_CURSOR_SOURCE)
-      )
-    )
-    .limit(1);
-  const cursor = cursorRows[0];
-  if (!cursor?.lastSuccessAt) {
-    throw new PaperFactsUnavailableError(
-      input.billingAccountId,
-      "never_projected",
-      "position cursor has no last_success_at — no projection tick has completed for this account"
-    );
-  }
-  if (cursor.status !== "ok") {
-    throw new PaperFactsUnavailableError(
-      input.billingAccountId,
-      "projection_incomplete",
-      cursor.errorMessage ??
-        `position cursor status is '${cursor.status}'; exposure may be understated`
-    );
-  }
-  const ageMs = now.getTime() - cursor.lastSuccessAt.getTime();
-  if (ageMs > maxStalenessMs) {
-    throw new PaperFactsUnavailableError(
-      input.billingAccountId,
-      "projection_stale",
-      `last successful projection was ${Math.round(ageMs / 1000)}s ago (bound ${Math.round(maxStalenessMs / 1000)}s)`
-    );
-  }
-
+  // One statement snapshot binds completeness and holdings to the same
+  // projection generation. A LEFT JOIN sentinel preserves a proven empty book.
   const rows = await input.db
     .select({
+      walletId: polyTraderWallets.id,
+      status: polyTraderIngestionCursors.status,
+      lastSuccessAt: polyTraderIngestionCursors.lastSuccessAt,
+      positionWalletId: polyTraderCurrentPositions.traderWalletId,
       conditionId: polyTraderCurrentPositions.conditionId,
       tokenId: polyTraderCurrentPositions.tokenId,
       shares: polyTraderCurrentPositions.shares,
       currentValueUsdc: polyTraderCurrentPositions.currentValueUsdc,
       avgPrice: polyTraderCurrentPositions.avgPrice,
     })
-    .from(polyTraderCurrentPositions)
-    .where(
-      and(
-        eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
-        eq(polyTraderCurrentPositions.active, true)
-      )
-    );
+    .from(polyTraderWallets)
+    .leftJoin(polyTraderIngestionCursors, and(
+      eq(polyTraderIngestionCursors.traderWalletId, polyTraderWallets.id),
+      eq(polyTraderIngestionCursors.source, PAPER_POSITION_CURSOR_SOURCE)
+    ))
+    .leftJoin(polyTraderCurrentPositions, and(
+      eq(polyTraderCurrentPositions.traderWalletId, polyTraderWallets.id),
+      eq(polyTraderCurrentPositions.active, true)
+    ))
+    .where(and(
+      eq(polyTraderWallets.walletAddress, address),
+      eq(polyTraderWallets.kind, PAPER_WALLET_KIND),
+      isNull(polyTraderWallets.disabledAt)
+    ));
+  const cursor = rows[0];
+  if (!cursor) {
+    throw new PaperFactsUnavailableError(input.billingAccountId, "no_paper_wallet");
+  }
+  if (!cursor.lastSuccessAt) {
+    throw new PaperFactsUnavailableError(input.billingAccountId, "never_projected");
+  }
+  const ageMs = now.getTime() - cursor.lastSuccessAt.getTime();
+  if (cursor.status !== "ok" || !Number.isFinite(ageMs) || ageMs < 0 ||
+      !Number.isFinite(maxStalenessMs) || maxStalenessMs < 0) {
+    throw new PaperFactsUnavailableError(input.billingAccountId, "projection_incomplete");
+  }
+  if (ageMs > maxStalenessMs) {
+    throw new PaperFactsUnavailableError(input.billingAccountId, "projection_stale");
+  }
 
   const positions: PaperOpenPosition[] = [];
+  const keys = new Set<string>();
+  const conditionsByToken = new Map<string, string>();
   for (const row of rows) {
+    if (row.positionWalletId === null) continue; // complete empty-book sentinel
+    const identity = normalizePositionIdentity(row);
+    const key = positionIdentityKey(row);
     const shares = Number(row.shares);
     const currentValueUsdc = Number(row.currentValueUsdc);
     const avgPrice = Number(row.avgPrice);
-    if (
-      !Number.isFinite(shares) ||
-      !Number.isFinite(currentValueUsdc) ||
-      !Number.isFinite(avgPrice)
-    ) {
-      // A row we cannot read is not a row we may skip: dropping it understates
-      // the book just as surely as marking it 0 would.
-      throw new PaperFactsUnavailableError(
-        input.billingAccountId,
-        "projection_incomplete",
-        `projected position ${row.conditionId}/${row.tokenId} has an unreadable numeric value`
-      );
+    if (identity.availability !== "available" || key === null || keys.has(key) ||
+        (conditionsByToken.has(identity.tokenId) && conditionsByToken.get(identity.tokenId) !== identity.conditionId) ||
+        row.shares === null || row.currentValueUsdc === null || row.avgPrice === null ||
+        !Number.isFinite(shares) || shares <= 0 ||
+        !Number.isFinite(currentValueUsdc) || currentValueUsdc < 0 ||
+        !Number.isFinite(avgPrice) || avgPrice < 0) {
+      // Never omit a corrupt active leg: that would understate exposure.
+      throw new PaperFactsUnavailableError(input.billingAccountId, "projection_incomplete");
     }
-    if (shares <= 0) continue;
-    positions.push({
-      conditionId: row.conditionId,
-      tokenId: row.tokenId,
-      shares,
-      currentValueUsdc,
-      avgPrice,
-    });
+    keys.add(key);
+    conditionsByToken.set(identity.tokenId, identity.conditionId);
+    positions.push({ conditionId: identity.conditionId, tokenId: identity.tokenId,
+      shares, currentValueUsdc, avgPrice });
   }
 
   return {
-    traderWalletId: wallet.id,
+    traderWalletId: cursor.walletId,
     address,
     observedAt: cursor.lastSuccessAt,
     positions,
