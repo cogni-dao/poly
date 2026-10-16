@@ -99,12 +99,13 @@ function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 		>[0]["logger"],
 		resolveExecutionMode: async () => "paper",
 	});
-	const insertPending = vi.fn<() => Promise<"live" | "paper">>(async () =>
+	const insertPending = vi.fn<TenantOrderLedger["insertPending"]>(async () =>
 		Promise.resolve("paper"),
 	);
 	const markOrderId = vi.fn(async () => undefined);
 	const markError = vi.fn(async () => undefined);
 	const markCanceled = vi.fn(async () => undefined);
+	const updateStatus = vi.fn(async () => undefined);
 	const tenant: TenantOrderLedger = {
 		snapshotState: async () => ({
 			today_spent_usdc: 0,
@@ -131,6 +132,7 @@ function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 		markOrderId,
 		markError,
 		markCanceled,
+		updateStatus,
 	} as unknown as OrderLedger;
 	return {
 		decisions,
@@ -140,6 +142,7 @@ function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 		markCanceled,
 		markError,
 		markOrderId,
+		updateStatus,
 		tenant,
 		writes,
 	};
@@ -705,7 +708,14 @@ describe("position_gap legacy fill-pipeline boundary", () => {
 
 		expect(isAssignmentCurrent).toHaveBeenCalledTimes(2);
 		expect(placeIntent).not.toHaveBeenCalled();
-		expect(harness.markError).not.toHaveBeenCalled();
+		expect(harness.markError).toHaveBeenCalledWith(
+			expect.objectContaining({
+				non_execution_proof: expect.objectContaining({
+					source: "pre_dispatch_retirement",
+					reason: "assignment_retired",
+				}),
+			}),
+		);
 		expect(harness.markCanceled).toHaveBeenCalledWith({
 			client_order_id: expect.stringMatching(/^0x[a-f0-9]{64}$/),
 			reason: "assignment_retired",
@@ -940,4 +950,180 @@ describe("position_gap legacy fill-pipeline boundary", () => {
 			);
 		},
 	);
+});
+
+describe("accepted execution survives secondary failures (bug.5042)", () => {
+	it.each(["audit", "receipt-persistence"] as const)(
+		"%s failure retains reservation and blocks a distinct next fill",
+		async (failure) => {
+			const h = ledgerHarness();
+			const logs: Record<string, unknown>[] = [];
+			let reserved = 0;
+			h.tenant.cumulativeIntentForMarketToken = async () => reserved;
+			h.insertPending.mockImplementation(async (input) => {
+				reserved += input.intent.size_usdc;
+				return "paper";
+			});
+			const record = h.tenant.recordDecision;
+			h.tenant.recordDecision = async (input) => {
+				if (failure === "audit" && input.outcome === "placed")
+					throw new Error("lineage audit failed");
+				await record(input);
+			};
+			if (failure === "receipt-persistence") {
+				h.markOrderId.mockRejectedValue(
+					new Error("DB acknowledgement unavailable"),
+				);
+				h.updateStatus.mockRejectedValue(new Error("DB still unavailable"));
+			}
+			const fill = { ...buyFill, price: 0.5 };
+			const second = { ...fill, fill_id: "chain:distinct-next-fill" };
+			const capped = {
+				...minBetTarget,
+				sizing: { kind: "min_bet" as const, max_usdc_per_condition: 1 },
+			};
+			const deps = commonDeps(fill, h.ledger, recordingLogger(logs), capped);
+			const placeIntent = vi.fn(
+				async (intent: { client_order_id: string }) => ({
+					order_id: "accepted-order",
+					client_order_id: intent.client_order_id,
+					status: "open" as const,
+					filled_size_usdc: 0,
+					submitted_at: fill.observed_at,
+				}),
+			);
+			await runMirrorTick({
+				...deps,
+				placeIntent,
+				source: {
+					fetchSince: async () => ({ fills: [fill, second], newSince: 2 }),
+				},
+			});
+			expect(placeIntent).toHaveBeenCalledOnce();
+			expect(h.insertPending).toHaveBeenCalledOnce();
+			expect(reserved).toBe(1);
+			expect(h.markError).not.toHaveBeenCalled();
+			expect(h.decisions).toContainEqual(
+				expect.objectContaining({
+					fill_id: second.fill_id,
+					outcome: "skipped",
+					reason: "position_cap_reached",
+				}),
+			);
+			expect(logs).toContainEqual(
+				expect.objectContaining({
+					outcome: "placed",
+					order_id: "accepted-order",
+				}),
+			);
+			expect(logs).toContainEqual(
+				expect.objectContaining({
+					errorCode:
+						failure === "audit"
+							? "placement_audit_failed"
+							: "receipt_persistence_failed",
+				}),
+			);
+			expect(logs).not.toContainEqual(
+				expect.objectContaining({ reason: "placement_failed" }),
+			);
+		},
+	);
+
+	it("retries receipt persistence through updateStatus without a second PLACE", async () => {
+		const h = ledgerHarness();
+		h.markOrderId.mockRejectedValue(new Error("DB race"));
+		const fill = { ...buyFill, price: 0.5 };
+		const deps = commonDeps(fill, h.ledger, recordingLogger([]), minBetTarget);
+		const placeIntent = vi.fn(async (intent: { client_order_id: string }) => ({
+			order_id: "known-order",
+			client_order_id: intent.client_order_id,
+			status: "partial" as const,
+			filled_size_usdc: 1,
+			fill_price: 0.5,
+			total_shares: 2,
+			submitted_at: fill.observed_at,
+		}));
+		await runMirrorTick({ ...deps, placeIntent });
+		expect(placeIntent).toHaveBeenCalledOnce();
+		expect(h.updateStatus).toHaveBeenCalledWith(
+			expect.objectContaining({
+				order_id: "known-order",
+				status: "partial",
+				filled_size_usdc: 1,
+        realized_fill_source: "paper_order_receipt",
+			}),
+		);
+		expect(h.markError).not.toHaveBeenCalled();
+	});
+
+	it.each([true, false])(
+		"only definite preflight denial=%s records nonexecution proof",
+		async (denied) => {
+			const h = ledgerHarness();
+			const deps = commonDeps(
+				{ ...buyFill, price: 0.5 },
+				h.ledger,
+				recordingLogger([]),
+				minBetTarget,
+			);
+			const error = Object.assign(
+				new Error(denied ? "not authorized" : "post-dispatch timeout"),
+				denied
+					? {
+							details: {
+								error_class: "PolyTradeExecutorError",
+								error_code: "authorize_denied",
+								reason: "cap_exceeded_per_order",
+							},
+						}
+					: {},
+			);
+			await runMirrorTick({
+				...deps,
+				placeIntent: vi.fn(async () => {
+					throw error;
+				}),
+			});
+			expect(h.markError).toHaveBeenCalledOnce();
+			const call = h.markError.mock.calls[0] as unknown as [
+				Record<string, unknown>,
+			];
+			if (denied)
+				expect(call[0].non_execution_proof).toMatchObject({
+					source: "executor_authorize_denied",
+				});
+			else expect(call[0].non_execution_proof).toBeUndefined();
+		},
+	);
+
+	it("risk SELECT failure forbids PLACE even after snapshot fallback returns empty facts", async () => {
+		const h = ledgerHarness();
+		const riskSelect = vi.fn(() => {
+					throw new Error("risk SELECT unavailable");
+		});
+    const risk = createOrderLedger({
+      db: { select: riskSelect } as unknown as Parameters<typeof createOrderLedger>[0]["db"],
+      logger: recordingLogger([]) as unknown as Parameters<typeof createOrderLedger>[0]["logger"],
+      resolveExecutionMode: async () => "paper",
+    });
+		h.tenant.cumulativeIntentForMarketToken = (market, token) =>
+			risk.cumulativeIntentForMarketToken("billing-1", market, token);
+		const deps = commonDeps(
+			{ ...buyFill, price: 0.5 },
+			h.ledger,
+			recordingLogger([]),
+			minBetTarget,
+		);
+		await runMirrorTick(deps);
+    expect(riskSelect).toHaveBeenCalledOnce();
+		expect(deps.placeIntent).not.toHaveBeenCalled();
+		expect(h.insertPending).not.toHaveBeenCalled();
+		expect(h.decisions).toContainEqual(
+			expect.objectContaining({
+				outcome: "skipped",
+				reason: "invalid_input",
+			}),
+		);
+	});
 });

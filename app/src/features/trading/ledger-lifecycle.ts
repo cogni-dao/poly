@@ -48,7 +48,7 @@ export const TERMINAL_LEDGER_POSITION_LIFECYCLES = [
 const restingStatuses = new Set<LedgerStatus>(RESTING_LEDGER_STATUSES);
 const positionStatuses = new Set<LedgerStatus>(POSITION_LEDGER_STATUSES);
 const terminalPositionLifecycles = new Set<LedgerPositionLifecycle>(
-  TERMINAL_LEDGER_POSITION_LIFECYCLES
+	TERMINAL_LEDGER_POSITION_LIFECYCLES,
 );
 const activeOrderPositionLifecycles = new Set<LedgerPositionLifecycle>([
   "unresolved",
@@ -63,7 +63,7 @@ export function readLedgerString(row: LedgerRow, key: string): string {
 
 export function readLedgerNullableString(
   row: LedgerRow,
-  key: string
+	key: string,
 ): string | null {
   const value = readLedgerString(row, key);
   return value.length > 0 ? value : null;
@@ -82,7 +82,7 @@ export function isLedgerPositionClosed(row: LedgerRow): boolean {
 }
 
 export function readLedgerPositionLifecycle(
-  row: LedgerRow
+	row: LedgerRow,
 ): LedgerPositionLifecycle | null {
   return row.position_lifecycle;
 }
@@ -116,7 +116,7 @@ export function ledgerRemainingUsdc(row: LedgerRow): number {
   return Math.max(
     0,
     readLedgerNumber(row, "size_usdc") -
-      readLedgerNumber(row, "filled_size_usdc")
+			readLedgerNumber(row, "filled_size_usdc"),
   );
 }
 
@@ -133,50 +133,70 @@ export function shouldCountLedgerTrade(row: LedgerRow): boolean {
 
 export function shouldCountLedgerMarketIntent(row: LedgerRow): boolean {
   const lifecycle = readLedgerPositionLifecycle(row);
-  if (lifecycle !== null && !activeOrderPositionLifecycles.has(lifecycle)) {
-    return false;
-  }
-  if (
-    row.status === "pending" ||
-    row.status === "open" ||
-    row.status === "filled" ||
-    row.status === "partial"
-  ) {
-    return true;
-  }
-  // bug.5050 — CAP_COUNTS_REALIZED_ON_CANCEL: a canceled order that filled
-  // any portion before cancel leaves those realized shares in our wallet;
-  // exposure persists past the order's terminal state. Count its realized
-  // (or pessimistic intent) component below in `ledgerCountedIntentUsdc`.
-  if (row.status === "canceled") {
-    return true;
-  }
-  return (
-    row.status === "error" &&
-    readLedgerString(row, "placement") === "market_fok"
-  );
+	return lifecycle === null || !terminalPositionLifecycles.has(lifecycle);
 }
 
-/**
- * USDC component of a ledger row that counts toward the per-market cap.
- * Callers MUST gate with `shouldCountLedgerMarketIntent` first; this function
- * assumes the row has already been accepted by that predicate.
- *
- * Status → component:
- *   - pending, open, filled, partial          : `size_usdc` (full intent)
- *   - error AND placement=market_fok          : `size_usdc` (broadcast race)
- *   - canceled                                 : `filled_size_usdc` if present,
- *                                                else `size_usdc` (pessimistic
- *                                                fallback for legacy rows the
- *                                                reconciler has not yet polled)
- *
- * @internal
- */
+/** Conservative capacity reservation; never a claim of held shares. Mirrors
+ * reservedIntentUsdc in order-ledger.ts, including authenticated proof only. */
 export function ledgerCountedIntentUsdc(row: LedgerRow): number {
-  if (row.status === "canceled") {
-    const filled = readLedgerNumber(row, "filled_size_usdc");
-    if (filled > 0) return filled;
-    return readLedgerNumber(row, "size_usdc");
+	if (!shouldCountLedgerMarketIntent(row)) return 0;
+	const numeric = (value: unknown, fallback?: number): number => {
+		if (value === undefined || value === null)
+			return fallback ?? Number.POSITIVE_INFINITY;
+		if (
+			(typeof value !== "number" && typeof value !== "string") ||
+			(typeof value === "string" && value.trim() === "")
+		)
+			return Number.POSITIVE_INFINITY;
+		const n = Number(value);
+		return Number.isFinite(n) && n >= 0 ? n : Number.POSITIVE_INFINITY;
+	};
+	const filled = numeric(row.attributes?.filled_size_usdc, 0);
+	const hasAcceptedShares =
+		row.executed_shares !== undefined &&
+		(!Number.isFinite(row.executed_shares) || row.executed_shares > 0);
+	const proof = row.attributes?.non_execution_proof as
+		| Record<string, unknown>
+		| undefined;
+	if (
+		!row.order_id &&
+		!hasAcceptedShares &&
+		filled === 0 &&
+		["pending", "error", "canceled"].includes(row.status) &&
+		proof &&
+		(proof.source === "executor_authorize_denied" ||
+			proof.source === "pre_dispatch_retirement") &&
+		typeof proof.observed_at === "string" &&
+		proof.observed_at.length > 0 &&
+		typeof proof.reason === "string" &&
+		proof.reason.length > 0
+	)
+		return 0;
+	const final = row.attributes?.final_order_observation as
+		| Record<string, unknown>
+		| undefined;
+	if (
+		row.status === "canceled" &&
+		(!hasAcceptedShares || filled > 0) &&
+		row.order_id &&
+		final &&
+		final.source === "venue_get_order" &&
+		final.order_id === row.order_id &&
+		final.status === "canceled" &&
+		typeof final.observed_at === "string" &&
+		final.observed_at.length > 0 &&
+		[
+			"explicit_zero_size_matched",
+			"clob_associated_trades",
+			"paper_order_receipt",
+		].includes(String(final.fill_evidence)) &&
+		final.filled_size_usdc !== undefined &&
+		final.filled_size_usdc !== null &&
+    ((final.fill_evidence === "explicit_zero_size_matched" && numeric(final.filled_size_usdc) === 0) ||
+      (final.fill_evidence === "clob_associated_trades" && numeric(final.filled_size_usdc) > 0) ||
+      (final.fill_evidence === "paper_order_receipt" && row.mode === "paper"))
+	) {
+		return Math.max(filled, numeric(final.filled_size_usdc));
   }
-  return readLedgerNumber(row, "size_usdc");
+	return Math.max(filled, numeric(row.attributes?.size_usdc));
 }
