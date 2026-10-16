@@ -564,6 +564,7 @@ export async function runTraderObservationTick(
         logger: log, now: new Date(), signal: deps.signal,
       });
     } catch (err: unknown) {
+      if (deps.signal?.aborted) throw err;
       log.warn({ event: "poly.economic_observation.recovery", status: "partial",
         err: err instanceof Error ? err.message : String(err) }, "economic recovery deferred; forward observation preserved");
     }
@@ -574,7 +575,7 @@ export async function runTraderObservationTick(
   // copy-fill + current-position lineage. The shared V2 reader completes all
   // cursor/chunk walks before this off-render writer publishes any target row.
   let targetPositionRows = 0;
-  if (!tickAborted) {
+  if (!deps.signal?.aborted) {
     stage("hydrate_copy_targets");
     try {
       const hydration = await hydrateCopyTargetPositions({
@@ -600,7 +601,7 @@ export async function runTraderObservationTick(
   }
 
   let prunedPnlPoints = 0;
-  if (deps.userPnlClient && !tickAborted && deps.runRetentionPrune !== false) {
+  if (deps.userPnlClient && !deps.signal?.aborted && deps.runRetentionPrune !== false) {
     stage("prune_pnl_points");
     try {
       const prune = await withStatementTimeout(
@@ -625,7 +626,7 @@ export async function runTraderObservationTick(
   // Runs once per tick after all wallets, mirroring the pnl-points prune;
   // NOT gated on `userPnlClient` because snapshots are written regardless.
   let prunedPositionSnapshots = 0;
-  if (!tickAborted && deps.runRetentionPrune !== false) {
+  if (!deps.signal?.aborted && deps.runRetentionPrune !== false) {
     stage("prune_position_snapshots");
     try {
       // bug.5297 — prod stage telemetry named this stage as a hang site (3x).
@@ -656,7 +657,7 @@ export async function runTraderObservationTick(
   // readers JOIN one canonical typed row per market instead of scraping
   // `poly_trader_current_positions.raw->>'endDate'`. Pure SQL — no HTTP.
   // Soft-failures so a projection error never aborts the wallet tick.
-  if (!tickAborted) {
+  if (!deps.signal?.aborted) {
     stage("refresh_market_metadata");
     try {
       // bug.5297 — named as a hang site (2x) by the same telemetry.

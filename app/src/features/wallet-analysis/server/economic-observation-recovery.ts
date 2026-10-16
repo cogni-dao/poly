@@ -32,7 +32,15 @@ export const ECONOMIC_RECOVERY_BUDGET = {
 } as const;
 type Db = { execute(query: SQL): Promise<unknown> };
 const ZERO = "0x0000000000000000000000000000000000000000";
+// Published Polygon deployments and routed semantics:
+// https://github.com/Polymarket/polymarket-v2-external/blob/main/README.md
+// src/utils/AutoRedeemer.sol redeemBinary; src/collateral/CollateralToken.sol Wrapped.
+const AUTO_REDEEMER = "0xa1200000d0002264c9a1698e001292d00e1b00af";
+const COLLATERAL_ONRAMP = "0x93070a847efef7f70739046a929d47a521f5b8ee";
+const ZERO_COLLECTION = `0x${"00".repeat(32)}`;
 const EVENTS = parseAbi([
+  "event Wrapped(address indexed caller, address indexed asset, address indexed to, uint256 amount)",
+  "event BinaryRedemption(address indexed from, bytes32 indexed conditionId, uint256 payout)",
   "event Transfer(address indexed from, address indexed to, uint256 value)",
   "event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)",
   "event TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values)",
@@ -70,7 +78,7 @@ export type EconomicObservationV1 = {
   windowEnd: string;
   coverage: "complete" | "partial";
   reasons: string[];
-  closedPosition: PolymarketUserPositionV2;
+  closedPosition: PolymarketUserPositionV2 | null;
   lifetimeBuyUsdc: number;
   lifetimeBuyShares: number;
   lifetimeSellUsdc: number;
@@ -103,13 +111,36 @@ export function verifyEconomicSettlement(input: {
   expectedAtomic: bigint;
   canonicalBlockHash: string;
   head: bigint;
+  chainId: number;
 }): EconomicSettlementProof | null {
   const { receipt } = input;
   if (
+    input.chainId !== polygon.id ||
     receipt.status !== "success" ||
     receipt.blockHash !== input.canonicalBlockHash ||
     input.head < receipt.blockNumber + 5n ||
     input.expectedAtomic <= 0n
+  )
+    return null;
+  const relevant = receipt.logs.filter((log) =>
+    [
+      POLYGON_CONDITIONAL_TOKENS.toLowerCase(),
+      POLYGON_USDC_E.toLowerCase(),
+      POLYGON_PUSD.toLowerCase(),
+      AUTO_REDEEMER,
+    ].includes(log.address.toLowerCase()),
+  );
+  if (
+    new Set(relevant.map((log) => log.logIndex)).size !== relevant.length ||
+    relevant.some(
+      (log) =>
+        log.removed ||
+        log.blockHash !== receipt.blockHash ||
+        log.transactionHash !== receipt.transactionHash ||
+        log.blockNumber !== receipt.blockNumber ||
+        !Number.isInteger(log.logIndex) ||
+        log.logIndex < 0,
+    )
   )
     return null;
   const wallet = input.walletAddress.toLowerCase();
@@ -153,8 +184,11 @@ export function verifyEconomicSettlement(input: {
   if (exits.length !== 1) return null;
   const exit = exits[0];
   if (!exit) return null;
-  const redeemer = exit.to === ZERO ? wallet : exit.to;
-  const burn = movements.find(
+  // Only this supported router binds the exact account/condition/token via
+  // redeemBinary's derived binary token IDs. Unknown/direct paths stay partial.
+  if (exit.to !== AUTO_REDEEMER) return null;
+  const redeemer = exit.to;
+  const burns = movements.filter(
     (move) =>
       move.from === redeemer &&
       move.to === ZERO &&
@@ -162,23 +196,58 @@ export function verifyEconomicSettlement(input: {
       move.amount === input.expectedAtomic &&
       move.index >= exit.index,
   );
-  if (exit.to !== ZERO && !burn) return null;
-  const payout = decoded.find(
+  if (burns.length !== 1) return null;
+  const burn = burns[0];
+  if (!burn) return null;
+  const payouts = decoded.filter(
     ({ log, event }) =>
       log.address.toLowerCase() === POLYGON_CONDITIONAL_TOKENS.toLowerCase() &&
       event.eventName === "PayoutRedemption" &&
       event.args.redeemer.toLowerCase() === redeemer &&
       event.args.conditionId.toLowerCase() === input.conditionId.toLowerCase() &&
+      event.args.collateralToken.toLowerCase() ===
+        POLYGON_USDC_E.toLowerCase() &&
+      event.args.parentCollectionId.toLowerCase() === ZERO_COLLECTION &&
+      event.args.indexSets.length === 2 &&
+      event.args.indexSets[0] === 1n &&
+      event.args.indexSets[1] === 2n &&
       event.args.payout === input.expectedAtomic &&
       log.logIndex >= (burn?.index ?? exit.index),
   );
+  if (payouts.length !== 1) return null;
+  const payout = payouts[0];
   if (!payout) return null;
+  const matches = (
+    address: string,
+    from: string,
+    to: string,
+    after: number,
+    before: number,
+  ) =>
+    decoded.filter(
+      ({ log, event }) =>
+        log.address.toLowerCase() === address.toLowerCase() &&
+        event.eventName === "Transfer" &&
+        event.args.from.toLowerCase() === from &&
+        event.args.to.toLowerCase() === to &&
+        event.args.value === input.expectedAtomic &&
+        log.logIndex > after &&
+        log.logIndex < before,
+    );
+  // CTF transfers USDC.e before emitting PayoutRedemption.
+  if (
+    matches(
+      POLYGON_USDC_E,
+      POLYGON_CONDITIONAL_TOKENS.toLowerCase(),
+      redeemer,
+      burn.index,
+      payout.log.logIndex,
+    ).length !== 1) return null;
   const credits = decoded.filter(
     ({ log, event }) =>
-      [POLYGON_USDC_E.toLowerCase(), POLYGON_PUSD.toLowerCase()].includes(
-        log.address.toLowerCase(),
-      ) &&
+        log.address.toLowerCase() === POLYGON_PUSD.toLowerCase() &&
       event.eventName === "Transfer" &&
+      event.args.from.toLowerCase() === ZERO &&
       event.args.to.toLowerCase() === wallet &&
       event.args.value === input.expectedAtomic &&
       log.logIndex >= payout.log.logIndex,
@@ -186,6 +255,40 @@ export function verifyEconomicSettlement(input: {
   if (credits.length !== 1) return null;
   const credit = credits[0];
   if (!credit) return null;
+  if (
+    matches(
+      POLYGON_USDC_E,
+      redeemer,
+      POLYGON_PUSD.toLowerCase(),
+      payout.log.logIndex,
+      credit.log.logIndex,
+    ).length !== 1
+  )
+    return null;
+  const wrapped = decoded.filter(
+    ({ log, event }) =>
+      log.address.toLowerCase() === POLYGON_PUSD.toLowerCase() &&
+      event.eventName === "Wrapped" &&
+      event.args.caller.toLowerCase() === COLLATERAL_ONRAMP &&
+      event.args.asset.toLowerCase() === POLYGON_USDC_E.toLowerCase() &&
+      event.args.to.toLowerCase() === wallet &&
+      event.args.amount === input.expectedAtomic &&
+      log.logIndex > credit.log.logIndex,
+  );
+  if (wrapped.length !== 1) return null;
+  const wrap = wrapped[0];
+  if (!wrap) return null;
+  const redemptions = decoded.filter(
+    ({ log, event }) =>
+      log.address.toLowerCase() === AUTO_REDEEMER &&
+      event.eventName === "BinaryRedemption" &&
+      event.args.from.toLowerCase() === wallet &&
+      event.args.conditionId.toLowerCase() ===
+        input.conditionId.toLowerCase() &&
+      event.args.payout === input.expectedAtomic &&
+      log.logIndex > wrap.log.logIndex,
+  );
+  if (redemptions.length !== 1) return null;
   return {
     txHash: receipt.transactionHash,
     blockNumber: receipt.blockNumber.toString(),
@@ -200,23 +303,28 @@ export function verifyEconomicSettlement(input: {
   };
 }
 
-/** Exactly three RPCs; retries disabled so transport cannot multiply the budget. */
+/** Three network requests, four fixed methods; chain/head share the final batch. */
 export function createEconomicSettlementReader(input: {
   rpcUrl: string;
 }): EconomicSettlementReader {
-  const client = createPublicClient({
-    chain: polygon,
-    transport: http(input.rpcUrl, { timeout: 5_000, retryCount: 0 }),
-  });
   return async (request) => {
     request.signal?.throwIfAborted();
+    const client = createPublicClient({
+      chain: polygon,
+      transport: http(input.rpcUrl, {
+        timeout: 5_000, retryCount: 0, batch: { batchSize: 2, wait: 0 },
+        ...(request.signal ? { fetchOptions: { signal: request.signal } } : {}),
+      }),
+    });
     const receipt = await client.getTransactionReceipt({ hash: request.txHash as `0x${string}` });
     request.signal?.throwIfAborted();
     const block = await client.getBlock({ blockNumber: receipt.blockNumber });
     request.signal?.throwIfAborted();
-    const head = await client.getBlockNumber({ cacheTime: 0 });
+    const [head, chainId] = await Promise.all([
+      client.getBlockNumber({ cacheTime: 0 }), client.getChainId(),
+    ]);
     request.signal?.throwIfAborted();
-    return verifyEconomicSettlement({ ...request, receipt, canonicalBlockHash: block.hash, head });
+    return verifyEconomicSettlement({ ...request, receipt, canonicalBlockHash: block.hash, head, chainId });
   };
 }
 
@@ -252,9 +360,19 @@ export function buildEconomicObservations(input: {
   const redemptions = source.filter((row) => row.type === "REDEEM");
   const winners = input.positions.filter((row) => row.current_price === 1);
   const payout = redemptions.reduce((sum, row) => sum + atoms(row.usdc_size), 0n);
-  const observations = input.positions.map((position): EconomicObservationV1 => {
+  const positionsByToken = new Map( input.positions.map((position) => [position.token_id, position]),
+  );
+  const tokens = new Set([
+    ...positionsByToken.keys(),
+    ...source.filter((row) => row.type === "TRADE").map((row) => row.token_id),
+  ]);
+  const membershipConflict =
+    input.positions.length !== positionsByToken.size ||
+    tokens.size > positionsByToken.size;
+  const observations = [...tokens].map((tokenId): EconomicObservationV1 => {
+    const position = positionsByToken.get(tokenId) ?? null;
     const activity = source.filter(
-      (row) => row.type === "TRADE" && row.token_id === position.token_id,
+      (row) => row.type === "TRADE" && row.token_id === tokenId,
     );
     const buys = activity.filter((row) => row.side === "BUY");
     const sells = activity.filter((row) => row.side === "SELL");
@@ -265,21 +383,23 @@ export function buildEconomicObservations(input: {
     const proof = input.settlements.filter(
       (row) =>
         row.conditionId === input.conditionId.toLowerCase() &&
-        row.tokenId === position.token_id &&
+        row.tokenId === tokenId &&
         row.recipient === input.walletAddress.toLowerCase(),
     );
     const proved = proof.reduce((sum, row) => sum + BigInt(row.atomicAmount), 0n);
-    const isWinner = position.current_price === 1;
+    const isWinner = position?.current_price === 1;
     const completeWindow =
-      position.first_entry_at != null &&
-      position.first_entry_at * 1000 >= input.windowStart.getTime();
-    const quantityMatches = bought === atoms(position.total_size) && bought >= sold;
+      position?.first_entry_at != null &&
+      position?.first_entry_at * 1000 >= input.windowStart.getTime();
+    const quantityMatches = bought === atoms(position?.total_size ?? 0) && bought >= sold;
     const terminalCorroborated =
       winners.length === 1 &&
       payout > 0n &&
       input.settlements.length === 1 &&
-      (isWinner ? proved === payout && proved === bought - sold : position.current_price === 0);
+      (isWinner ? proved === payout && proved === bought - sold : position?.current_price === 0);
     const reasons = [
+      ...(membershipConflict ? ["native_token_membership_incomplete"] : []),
+      ...(!position ? ["closed_aggregate_missing"] : []),
       ...(!completeWindow ? ["history_window_incomplete"] : []),
       ...(!quantityMatches ? ["native_quantity_conflict"] : []),
       ...(!terminalCorroborated ? ["settlement_unverified"] : []),
@@ -294,7 +414,7 @@ export function buildEconomicObservations(input: {
       version: 1,
       wallet: input.walletAddress.toLowerCase(),
       conditionId: input.conditionId.toLowerCase(),
-      tokenId: position.token_id,
+      tokenId,
       fetchedAt: input.fetchedAt.toISOString(),
       windowStart: input.windowStart.toISOString(),
       windowEnd: input.fetchedAt.toISOString(),
@@ -451,6 +571,7 @@ export async function recoverEconomicObservations(input: {
     settlements,
   });
   input.signal?.throwIfAborted();
+  if (observations.length > ECONOMIC_RECOVERY_BUDGET.tokens) return;
   const values = observations.map((observation) => {
     const raw = JSON.stringify({ economicObservationV1: observation });
     const hash = createHash("sha256")

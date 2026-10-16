@@ -16,6 +16,7 @@ import type { PolymarketDataApiClient } from "@cogni/poly-market-provider/adapte
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
+import { getCopyTradeInvestigationSummary } from "@/features/wallet-analysis/server/copy-trade-investigation-service";
 import { readEconomicPositionProjection } from "@/features/wallet-analysis/server/economic-position-read-model";
 import { recoverEconomicObservations } from "@/features/wallet-analysis/server/economic-observation-recovery";
 import {
@@ -206,6 +207,51 @@ describe("native economic observation persistence", () => {
       const afterPublication = await readEconomicPositionProjection({ db, billingAccountId: account, walletAddress: address, connectionKind: "privy_live", capturedAt: new Date(now.getTime()+1000), interval: "1W" });
       expect(afterPublication.positionsMtm).toBe(0);
       expect(afterPublication.closedPositions.find((row) => row.asset === winner.token_id)?.economicProof?.lifetimePnlUsdc).toBe(180.04126);
+      // Populate 31 more recent exits so the audited winner is outside newest 30.
+      await db.insert(polyTraderFills).values(Array.from({length:31}, (_, i) =>
+        (["BUY", "SELL"] as const).map((side) => ({
+          traderWalletId: wallet.id, source: "data-api" as const,
+          nativeId: `preview-${side}-${i}`, conditionId: `${conditionId}-preview-${i}`,
+          tokenId: `preview-${i}`, side, price: "0.5", shares: "1", sizeUsdc: "0.5",
+          observedAt: new Date(now.getTime() - (side === "BUY" ? 1000 : 0)), raw: {},
+        }))
+      ).flat());
+      const bounded = await readEconomicPositionProjection({ db, billingAccountId: account, walletAddress: address,
+        connectionKind: "privy_live", capturedAt: new Date(now.getTime()+1000), interval: "1W" });
+      expect(bounded.closedPositions).toHaveLength(30);
+      expect(bounded.closedPositions.some((row) => row.asset === winner.token_id)).toBe(false);
+      // Exact-condition proof is independent of global preview ordering/caps.
+      const requested = {
+        billing_account_id: account,
+        condition_id: conditionId,
+        mode: "live" as const,
+        token_id: winner.token_id,
+      };
+      const detail = await getCopyTradeInvestigationSummary(db, requested);
+      expect(detail?.economic_proofs).toEqual([
+        { mode: "live", token_id: winner.token_id, proof },
+      ]);
+      expect(detail?.economic_proofs_truncated).toBe(false);
+      expect(
+        (
+          await getCopyTradeInvestigationSummary(db, {
+            ...requested,
+            token_id: "not-this-token",
+          })
+        )?.economic_proofs,
+      ).toEqual([]);
+      expect(
+        await getCopyTradeInvestigationSummary(db, {
+          ...requested,
+          mode: "paper",
+        }),
+      ).toBeNull();
+      expect(
+        await getCopyTradeInvestigationSummary(db, {
+          ...requested,
+          billing_account_id: `other-${suffix}`,
+        }),
+      ).toBeNull();
     } finally {
       await db.delete(polyCopyTradeFills).where(eq(polyCopyTradeFills.billingAccountId, account));
       await db.delete(polyTraderWallets).where(eq(polyTraderWallets.id, wallet.id));

@@ -1254,6 +1254,7 @@ describe("process-wide in-flight cap (bug.5286)", () => {
 
 
 describe("bounded native activity recovery", () => {
+  beforeEach(() => __resetPolyDataApiCooldownForTests());
   const wallet = `0x${"ac".repeat(20)}`;
   const conditionId = `0x${"bd".repeat(32)}`;
   const row = { proxy_wallet: wallet, condition_id: conditionId, timestamp: 100,

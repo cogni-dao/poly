@@ -389,6 +389,7 @@ export async function readEconomicPositionProjection(params: {
           THEN (cf.raw->>'realizedPnl')::numeric END AS current_realized_pnl,
         CASE WHEN cf.raw->'economicObservationV1'->>'fetchedAt' >= COALESCE(hf.observation->>'fetchedAt', '')
           THEN cf.raw->'economicObservationV1' ELSE hf.observation END AS economic_observation,
+        cf.raw AS current_raw,
         cf.raw->>'outcome' AS current_outcome_label,
         cf.raw->>'endDate' AS current_resolves_at,
         cf.current_identity_conflict,
@@ -443,9 +444,25 @@ export async function readEconomicPositionProjection(params: {
           AND observer.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
           AND (b.current_shares = 0 OR b.current_last_observed_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes')
         ) AS inventory_fresh,
-        (b.economic_observation->>'coverage' = 'complete'
+        (CASE WHEN ${mode} = 'paper' THEN
+          b.current_raw->>'source' = 'paper-ledger'
+          AND observer.status = 'ok' AND observer.complete
+          AND observer.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND observer.last_success_at >= b.current_last_observed_at
+          AND observer.last_success_at >= COALESCE(b.last_flow_at, '-infinity'::timestamptz)
+          AND b.current_last_observed_at >= COALESCE(b.last_flow_at, '-infinity'::timestamptz)
+          AND NOT COALESCE(b.current_identity_conflict, false)
+          AND NOT b.fill_identity_conflict
+          AND b.total_buy_usdc IS NOT NULL AND b.total_buy_shares > 0
+          AND b.current_shares = b.net_shares AND b.net_shares >= 0
+          AND b.current_value_usdc IS NOT NULL
+          AND CASE WHEN COALESCE(b.current_raw->>'buyUsdc', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (b.current_raw->>'buyUsdc')::numeric END = b.total_buy_usdc
+          AND CASE WHEN COALESCE(b.current_raw->>'sellUsdc', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (b.current_raw->>'sellUsdc')::numeric END = b.total_sell_usdc
+          AND CASE WHEN COALESCE(b.current_raw->>'buyShares', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (b.current_raw->>'buyShares')::numeric END = b.total_buy_shares
+          ELSE b.economic_observation->>'coverage' = 'complete'
           AND b.economic_observation->>'fetchedAt' <= ${params.capturedAt.toISOString()}
           AND (b.economic_observation->>'windowEnd')::timestamptz >= COALESCE(b.last_flow_at, '-infinity'::timestamptz)
+          END
         ) AS history_complete,
         (
           b.current_value_usdc IS NOT NULL
@@ -585,11 +602,11 @@ export async function readEconomicPositionProjection(params: {
           THEN to_timestamp((p.economic_observation->'closedPosition'->>'first_entry_at')::numeric) END) AS opened_at,
       p.closed_at,
       COALESCE(p.current_last_observed_at, p.ledger_updated_at, p.last_flow_at) AS synced_at,
-      CASE WHEN p.history_complete THEN (p.economic_observation->>'lifetimeBuyUsdc')::numeric
+      CASE WHEN ${mode} = 'live' AND p.history_complete THEN (p.economic_observation->>'lifetimeBuyUsdc')::numeric
         ELSE COALESCE(p.total_buy_usdc, p.current_cost_basis_usdc) END AS total_buy_usdc,
-      CASE WHEN p.history_complete THEN (p.economic_observation->>'lifetimeSellUsdc')::numeric
+      CASE WHEN ${mode} = 'live' AND p.history_complete THEN (p.economic_observation->>'lifetimeSellUsdc')::numeric
         ELSE COALESCE(p.total_sell_usdc, 0) END AS total_sell_usdc,
-      CASE WHEN p.history_complete THEN (p.economic_observation->>'lifetimeBuyShares')::numeric
+      CASE WHEN ${mode} = 'live' AND p.history_complete THEN (p.economic_observation->>'lifetimeBuyShares')::numeric
         ELSE COALESCE(p.total_buy_shares, p.current_shares) END AS total_buy_shares,
       COALESCE(p.total_buy_shares - p.total_sell_shares, p.current_shares) AS net_shares,
       p.current_value_usdc,
@@ -610,7 +627,8 @@ export async function readEconomicPositionProjection(params: {
       p.economic_observation - 'constituents' AS economic_observation,
       jsonb_array_length(p.economic_observation->'constituents') AS economic_record_count,
       p.history_complete,
-      CASE WHEN COALESCE(p.economic_observation->>'lifetimePnlUsdc', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+      CASE WHEN ${mode} = 'paper' AND p.history_complete THEN p.total_sell_usdc + p.current_value_usdc - p.total_buy_usdc
+        WHEN COALESCE(p.economic_observation->>'lifetimePnlUsdc', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
         THEN (p.economic_observation->>'lifetimePnlUsdc')::numeric END AS observed_lifetime_pnl,
       p.current_identity_conflict,
       p.mark_available,
@@ -682,8 +700,9 @@ function toEconomicFact(row: EconomicRow, mode: "live" | "paper"): EconomicPosit
     row.mark_available && basis !== null && currentValue !== null
       ? (nullable(row.current_unrealized_pnl) ?? currentValue - basis)
       : null;
-  const realized = nullable(row.current_realized_pnl);
   const lifetime = row.history_complete ? nullable(row.observed_lifetime_pnl) : null;
+  const realized = mode === "paper" && held === 0 && row.history_complete
+    ? lifetime : nullable(row.current_realized_pnl);
   return {
     mode,
     conditionId: row.condition_id,
@@ -700,7 +719,7 @@ function toEconomicFact(row: EconomicRow, mode: "live" | "paper"): EconomicPosit
         ? "paper_ledger"
         : "current_observation"
       : "unknown",
-    basisSource: basis !== null ? "vendor_current" : "unknown",
+    basisSource: basis !== null ? mode === "paper" ? "complete_history" : "vendor_current" : "unknown",
     inventoryCoverage: row.current_identity_conflict
       ? "conflict" : !authoritative ? "unavailable"
       : row.inventory_fresh && (row.mark_available || held === 0) ? "complete" : "stale",
@@ -709,6 +728,45 @@ function toEconomicFact(row: EconomicRow, mode: "live" | "paper"): EconomicPosit
       : row.history_complete
         ? "complete"
         : "partial",
+  };
+}
+
+/** Shared bounded saved-proof shape for previews and exact-condition investigation. */
+export function toSavedEconomicProof(
+  observation: Omit<EconomicObservationV1, "constituents">,
+  complete: boolean,
+  recordCount: number,
+): NonNullable<WalletExecutionPosition["economicProof"]> {
+  return {
+    source: "native_activity" as const,
+    coverage: complete ? ("complete" as const) : ("partial" as const),
+    buyUsdc: observation.lifetimeBuyUsdc,
+    buyShares: observation.lifetimeBuyShares,
+    sellUsdc: observation.lifetimeSellUsdc,
+    redeemUsdc: observation.redeemUsdc,
+    lifetimePnlUsdc: complete ? observation.lifetimePnlUsdc : null,
+    sourceRecordCount: recordCount,
+    windowStart: observation.windowStart,
+    windowEnd: observation.windowEnd,
+    settlements: observation.settlements.map(
+      ({
+        txHash,
+        blockNumber,
+        logIndex,
+        collateral,
+        atomicAmount,
+        conditionId,
+        tokenId,
+      }) => ({
+        txHash,
+        blockNumber,
+        logIndex,
+        collateral,
+        atomicAmount,
+        conditionId,
+        tokenId,
+      }),
+    ),
   };
 }
 
@@ -826,19 +884,9 @@ function toPosition(row: EconomicRow, capturedAt: Date): WalletExecutionPosition
     syncedAt,
     syncAgeMs: syncedAt === null ? null : Math.max(0, capturedAt.getTime() - Date.parse(syncedAt)),
     syncStale: row.economic_bucket === "live" && !hasValuation,
-    ...(row.economic_observation?.version === 1 ? { economicProof: {
-      source: "native_activity" as const,
-      coverage: row.history_complete ? "complete" as const : "partial" as const,
-      buyUsdc: row.economic_observation.lifetimeBuyUsdc,
-      buyShares: row.economic_observation.lifetimeBuyShares,
-      sellUsdc: row.economic_observation.lifetimeSellUsdc,
-      redeemUsdc: row.economic_observation.redeemUsdc,
-      lifetimePnlUsdc: row.history_complete ? row.economic_observation.lifetimePnlUsdc : null,
-      sourceRecordCount: numberOf(row.economic_record_count),
-      windowStart: row.economic_observation.windowStart,
-      windowEnd: row.economic_observation.windowEnd,
-      settlements: row.economic_observation.settlements.map(({ txHash, blockNumber, logIndex, collateral, atomicAmount, conditionId, tokenId }) => ({ txHash, blockNumber, logIndex, collateral, atomicAmount, conditionId, tokenId })),
-    } } : {}),
+    ...(row.economic_observation?.version === 1 ? {
+      economicProof: toSavedEconomicProof(row.economic_observation, row.history_complete === true, numberOf(row.economic_record_count)),
+    } : {}),
     timeline: [],
     events: [
       {
