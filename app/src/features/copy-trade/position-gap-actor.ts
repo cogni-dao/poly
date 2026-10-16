@@ -237,11 +237,11 @@ export function startPositionGapActor(
 					if (error instanceof AssignmentLivenessUnavailableError) continue;
 					actorLogger.error(
 						{
-							event: "poly.position_gap.v3.run_failed",
+							event: EVENT_NAMES.POLY_POSITION_GAP_V3_RUN_FAILED,
 							billing_account_id: deps.scope.billingAccountId,
 							target_wallet: deps.targetWallet,
 							reasons: batch,
-							err: error instanceof Error ? error.message : String(error),
+							...safeErrorDimensions(error),
 						},
 						"position-gap v3 reconciliation failed",
 					);
