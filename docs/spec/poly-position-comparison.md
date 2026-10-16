@@ -1,5 +1,6 @@
+# Shared position comparison and saved metadata
 
-### Shared position comparison and saved metadata (bug.5043)
+Source: bug.5043, story.5024; provider domain and wallet-analysis saved readers.
 
 `@cogni/poly-market-provider` exports pure `normalizePositionIdentity`,
 `positionIdentityKey`, `comparePositionIdentity` and `selectPositionMetadata`.

@@ -2561,7 +2561,7 @@ function buildTokenComparisons(legs: readonly RawLeg[]): NonNullable<WalletExecu
     return { ourTokenId: our.tokenId, targetWallet: walletAddress, targetTokenId: exact?.tokenId ?? opposite?.tokenId ?? null,
       relation: exact ? "same" as const : opposite ? "opposite" as const : "unavailable" as const,
       reason: exact ? "exact_condition_token" : opposite ? "verified_opposite_tokens" : "no_saved_exact_token_fact",
-      metadataAvailability: exact && exact.outcome !== "UNKNOWN" && our.outcome !== "UNKNOWN" ? "available" as const : "unavailable" as const,
+      metadataAvailability: exact && Boolean(exact.outcome?.trim()) && Boolean(our.outcome?.trim()) && exact.outcome !== "UNKNOWN" && our.outcome !== "UNKNOWN" ? "available" as const : "unavailable" as const,
       economicsAvailability: exact?.economicFact?.economicsCoverage === "complete" && our.economicFact?.economicsCoverage === "complete" ? "available" as const : "unavailable" as const,
       observedAt: exact?.lastObservedAt ?? null,
     };
