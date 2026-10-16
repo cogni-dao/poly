@@ -233,8 +233,8 @@ export const WalletExecutionMarketLegSchema = z.object({
   tokenId: z.string(),
   outcome: z.string(),
   shares: z.number().nonnegative(),
-  currentValueUsdc: z.number().nonnegative(),
-  costBasisUsdc: z.number().nonnegative(),
+  currentValueUsdc: z.number().nonnegative().nullable(),
+  costBasisUsdc: z.number().nonnegative().nullable(),
   vwap: z.number().min(0).nullable(),
   pnlUsdc: z.number().nullable(),
   unrealizedPnlUsdc: z.number().nullable().optional(),
@@ -264,8 +264,8 @@ export const WalletExecutionMarketParticipantRowSchema = z.object({
   /** All legs; primary/hedge are wallet-relative presentation only. */
   legs: z.array(WalletExecutionMarketLegSchema).optional(),
   net: z.object({
-    currentValueUsdc: z.number().nonnegative(),
-    costBasisUsdc: z.number().nonnegative(),
+    currentValueUsdc: z.number().nonnegative().nullable(),
+    costBasisUsdc: z.number().nonnegative().nullable(),
     pnlUsdc: z.number().nullable(),
   }),
   lastObservedAt: z.string().nullable(),
@@ -289,7 +289,7 @@ export const WalletExecutionMarketLineSchema = z.object({
   marketSlug: z.string().nullable(),
   resolvesAt: z.string().nullable(),
   status: WalletExecutionMarketLineStatusSchema,
-  ourValueUsdc: z.number().nonnegative(),
+  ourValueUsdc: z.number().nonnegative().nullable(),
   /** Null when no saved exact target position facts exist for this line. */
   targetValueUsdc: z.number().nonnegative().nullable(),
   /**
@@ -301,7 +301,7 @@ export const WalletExecutionMarketLineSchema = z.object({
    * exit collapses to 0; for closed-line display reach for
    * `ourGrossBuyNotionalUsdc` to show lifetime entry instead.
    */
-  ourEntryValueUsdc: z.number().nonnegative(),
+  ourEntryValueUsdc: z.number().nonnegative().nullable(),
   /** Same as `ourEntryValueUsdc` — Σ snapshot.cost_basis_usdc — but for
    * the target side. P/L denominator for target return %. */
   targetEntryValueUsdc: z.number().nonnegative().nullable(),
@@ -354,11 +354,11 @@ export const WalletExecutionMarketGroupSchema = z.object({
   marketCount: z.number().int().nonnegative(),
   /** `live` if any line in the group is still held, else `closed`. */
   status: WalletExecutionMarketLineStatusSchema,
-  ourValueUsdc: z.number().nonnegative(),
+  ourValueUsdc: z.number().nonnegative().nullable(),
   /** Null when any child line lacks saved target position facts. */
   targetValueUsdc: z.number().nonnegative().nullable(),
   /** Group-level Σ of per-line `ourEntryValueUsdc`. */
-  ourEntryValueUsdc: z.number().nonnegative(),
+  ourEntryValueUsdc: z.number().nonnegative().nullable(),
   /** Group-level Σ of per-line `targetEntryValueUsdc`. */
   targetEntryValueUsdc: z.number().nonnegative().nullable(),
   /** Group-level Σ of per-line `ourGrossBuyNotionalUsdc`. */

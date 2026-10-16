@@ -166,6 +166,8 @@ type RawLeg = {
    */
   pnlUsdc: number;
   economicFact?: ComparisonEconomicFact | undefined;
+  valuationUnavailable?: boolean;
+  basisUnavailable?: boolean;
   oppositeTokenId?: string | null;
   /**
    * CTF redemption credit contributed by this leg ($1 × winning shares
@@ -269,12 +271,7 @@ const BOUNDED_PARTICIPANT_ROW_LIMIT = 2_200;
 const VISIBLE_LIVE_POSITION_LIMIT = 500;
 const VISIBLE_CLOSED_POSITION_LIMIT = 30;
 
-type ValuedExecutionPosition = WalletExecutionPosition & {
-  currentPrice: number;
-  currentValue: number;
-  pnlUsd: number;
-  pnlPct: number;
-};
+type ValuedExecutionPosition = WalletExecutionPosition;
 
 type BoundedOurExposureSelection = {
   allOurLegs: RawLeg[];
@@ -1710,6 +1707,8 @@ function buildOurLegs(
     const vwap = position.entryPrice > 0 ? position.entryPrice : null;
     return {
       economicFact,
+      valuationUnavailable: economicFact ? economicFact.currentValueUsdc === null : position.currentValue === null,
+      basisUnavailable: economicFact ? economicFact.remainingBasisUsdc === null : position.currentValue === null,
       side: "our_wallet",
       source: "ledger",
       label: "Our wallet",
@@ -1723,7 +1722,7 @@ function buildOurLegs(
       outcome: position.outcome,
       shares: position.size,
       costBasisUsdc,
-      currentValueUsdc: position.currentValue,
+      currentValueUsdc: economicFact?.currentValueUsdc ?? position.currentValue ?? 0,
       vwap,
       avgPrice: vwap,
       lifecycle: ourPositionStatus === "closed" ? "inactive" : "active",
@@ -1732,7 +1731,7 @@ function buildOurLegs(
       // Placeholder — `enrichLegWithRollup` overwrites this with the real
       // realized P/L (fills + market outcome). Leaves the pre-fix
       // currentValue-minus-costBasis fallback in case no rollup row exists.
-      pnlUsdc: roundMoney(position.currentValue - costBasisUsdc),
+      pnlUsdc: roundMoney((position.currentValue ?? 0) - costBasisUsdc),
       redemptionProceedsUsdc: 0,
     };
   });
@@ -2217,7 +2216,7 @@ function groupParticipants(
     const targetLegs = conditionLegs.filter(
       (leg) => leg.side === "copy_target"
     );
-    const ourValueUsdc = roundMoney(sumValue(ourLegs));
+    const ourValueUsdc = ourLegs.some(leg => leg.valuationUnavailable) ? null : roundMoney(sumValue(ourLegs));
     const hasTargetFacts = targetLegs.length > 0;
     const targetValueUsdc = hasTargetFacts
       ? roundMoney(sumValue(targetLegs))
@@ -2290,7 +2289,7 @@ function groupParticipants(
       status: lineStatus,
       ourValueUsdc,
       targetValueUsdc,
-      ourEntryValueUsdc: roundMoney(ourAgg.totalBuyNotional),
+      ourEntryValueUsdc: ourLegs.some(leg => leg.basisUnavailable) ? null : roundMoney(ourAgg.totalBuyNotional),
       targetEntryValueUsdc: hasTargetEntryFacts
         ? roundMoney(targetTotalBuyNotional)
         : null,
@@ -2369,15 +2368,11 @@ function groupParticipants(
         eventSlug: bucket.eventSlug,
         marketCount: lines.length,
         status: groupStatus,
-        ourValueUsdc: roundMoney(
-          lines.reduce((sum, line) => sum + line.ourValueUsdc, 0)
-        ),
+        ourValueUsdc: sumAvailableMoney(lines.map(line => line.ourValueUsdc)),
         targetValueUsdc: sumAvailableMoney(
           lines.map((line) => line.targetValueUsdc)
         ),
-        ourEntryValueUsdc: roundMoney(
-          lines.reduce((sum, line) => sum + line.ourEntryValueUsdc, 0)
-        ),
+        ourEntryValueUsdc: sumAvailableMoney(lines.map(line => line.ourEntryValueUsdc)),
         targetEntryValueUsdc: sumAvailableMoney(
           lines.map((line) => line.targetEntryValueUsdc)
         ),
@@ -2401,7 +2396,7 @@ function groupParticipants(
       const lv = left.edgeGapUsdc;
       const rv = right.edgeGapUsdc;
       if (lv === null && rv === null) {
-        return right.ourValueUsdc - left.ourValueUsdc;
+        return (right.ourValueUsdc ?? 0) - (left.ourValueUsdc ?? 0);
       }
       if (lv === null) return 1;
       if (rv === null) return -1;
@@ -2535,12 +2530,8 @@ function pivotParticipants(
       hedge,
       legs: walletLegs.map(toContractLeg),
       net: {
-        currentValueUsdc: roundMoney(
-          walletLegs.reduce((total, leg) => total + leg.currentValueUsdc, 0)
-        ),
-        costBasisUsdc: roundMoney(
-          walletLegs.reduce((total, leg) => total + leg.costBasisUsdc, 0)
-        ),
+        currentValueUsdc: walletLegs.some(leg => leg.valuationUnavailable) ? null : roundMoney(walletLegs.reduce((total, leg) => total + leg.currentValueUsdc, 0)),
+        costBasisUsdc: walletLegs.some(leg => leg.basisUnavailable) ? null : roundMoney(walletLegs.reduce((total, leg) => total + leg.costBasisUsdc, 0)),
         pnlUsdc: sumAvailableMoney(walletLegs.map(leg => leg.economicFact?.lifetimePnlUsdc ?? null)),
       },
       lastObservedAt,
@@ -2573,8 +2564,8 @@ function toContractLeg(leg: RawLeg): WalletExecutionMarketLeg {
     tokenId: leg.tokenId,
     outcome: leg.outcome,
     shares: leg.shares,
-    currentValueUsdc: roundMoney(leg.currentValueUsdc),
-    costBasisUsdc: roundMoney(leg.costBasisUsdc),
+    currentValueUsdc: leg.valuationUnavailable ? null : roundMoney(leg.currentValueUsdc),
+    costBasisUsdc: leg.basisUnavailable ? null : roundMoney(leg.costBasisUsdc),
     vwap: leg.vwap,
     pnlUsdc: leg.economicFact?.lifetimePnlUsdc ?? null,
     unrealizedPnlUsdc: leg.economicFact?.unrealizedPnlUsdc ?? (leg.side === "copy_target" && leg.lifecycle === "active" ? roundMoney(leg.currentValueUsdc - leg.costBasisUsdc) : null),
@@ -2820,7 +2811,7 @@ function compareParticipantRow(
 ): number {
   if (left.side !== right.side) return left.side === "our_wallet" ? -1 : 1;
   return (
-    right.net.currentValueUsdc - left.net.currentValueUsdc ||
+    (right.net.currentValueUsdc ?? 0) - (left.net.currentValueUsdc ?? 0) ||
     left.label.localeCompare(right.label) ||
     left.walletAddress.localeCompare(right.walletAddress)
   );
@@ -2831,7 +2822,7 @@ function compareLine(
   right: WalletExecutionMarketGroup["lines"][number]
 ): number {
   return (
-    right.ourValueUsdc - left.ourValueUsdc ||
+    (right.ourValueUsdc ?? 0) - (left.ourValueUsdc ?? 0) ||
     (right.targetValueUsdc ?? -1) - (left.targetValueUsdc ?? -1) ||
     left.marketTitle.localeCompare(right.marketTitle)
   );

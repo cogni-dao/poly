@@ -42,14 +42,14 @@ describe("saved metadata publication and indexed exact identity reads",()=>{
     expect(wrong.get(positionIdentityKey({conditionId,tokenId:oppositeTokenId})!)?.outcome).toBeNull();
   });
   it("explains the exact bounded production query with existing metadata indexes",async()=>{
-    await db.execute(sql`SET enable_seqscan=off`);
-    try {
+    await db.transaction(async tx => {
+      await tx.execute(sql`SET LOCAL enable_seqscan=off`);
       const query=positionMetadataSelect([{conditionId,tokenId,wallet}]);
-      const result=rows<Record<string,unknown>>(await db.execute(sql`EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS) ${query}`));
+      const result=rows<Record<string,unknown>>(await tx.execute(sql`EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS) ${query}`));
       const plan=JSON.stringify(result);
       expect(plan).toContain("poly_market_metadata_condition_latest_lower_idx");
       expect(plan).toContain("poly_market_outcomes_condition_token_latest_lower_idx");
       expect(plan).toContain("poly_trader_position_snapshots_wallet_condition_latest_lc_idx");
-    } finally {await db.execute(sql`RESET enable_seqscan`);}
+    });
   });
 });

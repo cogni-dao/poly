@@ -156,6 +156,18 @@ describe("bounded market exposure", () => {
     expect(line?.edgeGapPct).toBeNull();
   });
 
+  it("retains closed exact-token identity when valuation and lifetime PnL are unavailable", async () => {
+    const conditionId=`0x${"cd".repeat(32)}`;
+    const own={...position(),conditionId,asset:"111",positionId:`${conditionId}:111`,status:"closed" as const,currentPrice:null,currentValue:null,pnlUsd:null,pnlPct:null};
+    const target=targetParticipant();
+    const db=fakeDb([{...target,condition_id:conditionId,legs:[{...target.legs[0]!,token_id:"111"}]}]);
+    const read=await buildBoundedMarketExposureGroups({db,billingAccountId:"tenant-a",walletAddress:OUR,livePositions:[],closedPositions:[own]});
+    const line=read.groups[0]?.lines[0];
+    expect(line?.tokenComparisons?.[0]).toMatchObject({ourTokenId:"111",targetTokenId:"111",relation:"same",economicsAvailability:"unavailable"});
+    expect(line?.ourValueUsdc).toBeNull();
+    expect(line?.participants.find(p=>p.side==="our_wallet")?.primary?.pnlUsdc).toBeNull();
+  });
+
   it("marks partial when a group exceeds ten target participants", async () => {
     const db = fakeDb([
       targetParticipant({ total_participants: 10, group_truncated: true }),

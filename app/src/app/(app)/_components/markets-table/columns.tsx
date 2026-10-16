@@ -559,7 +559,7 @@ function ParticipantsTable({
   );
 }
 
-function ParticipantRow({
+export function ParticipantRow({
   participant,
   comparisons,
 }: {
