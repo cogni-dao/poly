@@ -20,8 +20,16 @@
  */
 
 import { POLYGON_CONDITIONAL_TOKENS } from "@cogni/poly-market-provider/adapters/polymarket";
-import { createPublicClient, http, parseAbi } from "viem";
+import {
+  BaseError,
+  HttpRequestError,
+  TimeoutError,
+  createPublicClient,
+  http,
+  parseAbi,
+} from "viem";
 import { polygon } from "viem/chains";
+import { PositionBalanceTransportError } from "./position-observation-control";
 import type { PositionBalanceBatchReader } from "./trader-observation-service";
 
 const CTF_BALANCE_OF_BATCH_ABI = parseAbi([
@@ -31,24 +39,71 @@ const CTF_BALANCE_OF_BATCH_ABI = parseAbi([
 export function createPolygonPositionBalanceBatchReader(input: {
   rpcUrl: string;
 }): PositionBalanceBatchReader {
-  const client = createPublicClient({
-    chain: polygon,
-    transport: http(input.rpcUrl, { timeout: 5_000, retryCount: 0 }),
-  });
-
   return async ({ walletAddress, tokenIds, signal }) => {
     signal.throwIfAborted();
-    const account = walletAddress as `0x${string}`;
-    const balances = await client.readContract({
-      address: POLYGON_CONDITIONAL_TOKENS,
-      abi: CTF_BALANCE_OF_BATCH_ABI,
-      functionName: "balanceOfBatch",
-      args: [
-        tokenIds.map(() => account),
-        tokenIds.map((tokenId) => BigInt(tokenId)),
-      ],
+    // The installed viem version prefers fetchOptions.signal to its own
+    // timeout signal. Own that combined deadline and await real settlement.
+    const controller = new AbortController();
+    const onAbort = () => controller.abort(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    const timer = setTimeout(
+      () =>
+        controller.abort(
+          new PositionBalanceTransportError(
+            "Polygon position transport timed out"
+          )
+        ),
+      5_000
+    );
+    timer.unref?.();
+    const client = createPublicClient({
+      chain: polygon,
+      transport: http(input.rpcUrl, {
+        timeout: 0,
+        retryCount: 0,
+        fetchOptions: { signal: controller.signal },
+      }),
     });
-    signal.throwIfAborted();
-    return balances;
+    const account = walletAddress as `0x${string}`;
+    try {
+      const balances = await client.readContract({
+        address: POLYGON_CONDITIONAL_TOKENS,
+        abi: CTF_BALANCE_OF_BATCH_ABI,
+        functionName: "balanceOfBatch",
+        args: [
+          tokenIds.map(() => account),
+          tokenIds.map((tokenId) => BigInt(tokenId)),
+        ],
+      });
+      controller.signal.throwIfAborted();
+      return balances;
+    } catch (err) {
+      if (controller.signal.aborted) throw controller.signal.reason;
+      if (
+        err instanceof SyntaxError ||
+        (err instanceof BaseError &&
+          err.walk((cause) => cause instanceof SyntaxError) instanceof
+            SyntaxError)
+      )
+        throw err;
+      const retryableTransport = (cause: unknown) =>
+        cause instanceof TimeoutError ||
+        (cause instanceof HttpRequestError &&
+          (cause.status === undefined ||
+            cause.status === 408 ||
+            cause.status >= 500));
+      const transport =
+        err instanceof BaseError ? err.walk(retryableTransport) : err;
+      if (retryableTransport(transport)) {
+        throw new PositionBalanceTransportError(
+          "Polygon position transport unavailable"
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    }
   };
 }

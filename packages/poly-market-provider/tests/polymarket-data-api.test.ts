@@ -229,6 +229,42 @@ describe("PolymarketDataApiClient.listUserActivity", () => {
 describe("PolymarketDataApiClient.listUserPositions", () => {
   const wallet = "0x9f2fe025f84839ca81dd8e0338892605702d2ca8";
 
+  it("types the FIRST 429 like the shared cooldown without changing its HTTP message", async () => {
+    __resetPolyDataApiCooldownForTests();
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("busy", {
+          status: 429,
+          statusText: "Too Many Requests",
+          headers: { "retry-after": "9" },
+        })
+    );
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    try {
+      await expect(client.listUserPositions(wallet)).rejects.toMatchObject({
+        name: "PolyDataApiRateLimitedError",
+        status: 429,
+        retryable: false,
+        retryAfterMs: 9000,
+      });
+      await expect(client.listUserPositions(wallet)).rejects.toBeInstanceOf(
+        PolyDataApiRateLimitedError
+      );
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      __resetPolyDataApiCooldownForTests();
+    }
+  });
+
+  it("wraps raw position Zod failures as semantic validation", async () => {
+    const client = new PolymarketDataApiClient({
+      fetch: vi.fn(async () => jsonResponse([{ size: "broken" }])),
+    });
+    await expect(client.listUserPositions(wallet)).rejects.toBeInstanceOf(
+      PolyDataApiValidationError
+    );
+  });
+
   it("hits /positions?user=<wallet> and returns parsed positions", async () => {
     const body = [
       {

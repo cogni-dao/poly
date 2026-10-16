@@ -57,7 +57,12 @@ const walletRow = (id: string, walletAddress: string, kind = "cogni_wallet") => 
  * the provided wallet rows. `execute` is tracked so tests can assert the
  * abort path skips the prune/metadata statements.
  */
-function createFakeDb(walletRows: unknown[], cursorRows: unknown[] = []) {
+function createFakeDb(
+  walletRows: unknown[],
+  cursorRows: unknown[] = [],
+  failActivityCursor = false
+) {
+  let cursorReads = 0;
   const executeCalls: unknown[] = [];
   const makeChain = (kind: "select" | "insert" | "update") => {
     let fromTable: unknown;
@@ -85,6 +90,14 @@ function createFakeDb(walletRows: unknown[], cursorRows: unknown[] = []) {
       onFulfilled?: (value: unknown) => unknown,
       onRejected?: (err: unknown) => unknown
     ) => {
+      if (kind === "select" && fromTable === polyTraderIngestionCursors) {
+        cursorReads += 1;
+        if (failActivityCursor && cursorReads === 2)
+          return Promise.reject(new Error("activity cursor unavailable")).then(
+            onFulfilled,
+            onRejected
+          );
+      }
       const rows =
         kind !== "select"
           ? []
@@ -120,15 +133,12 @@ function createFakeDb(walletRows: unknown[], cursorRows: unknown[] = []) {
         return { rowCount: 0 };
       }
       executeCalls.push(query);
-      if (
-        cursorRows.length > 0 &&
-        description.includes("clock_timestamp()::text AS captured_at")
-      ) {
+      if (description.includes("clock_timestamp()::text AS captured_at")) {
         return [
           {
             captured_at: new Date().toISOString(),
-            row_exists: true,
-            cursor_xmin: "1",
+            row_exists: false,
+            cursor_xmin: null,
             last_success_at: null,
             cursor_status: "pending",
           },
@@ -169,6 +179,44 @@ function tickOkCall(logger: ReturnType<typeof makeLogger>) {
 }
 
 describe("runTraderObservationTick wiring (task.5015)", () => {
+  it("publishes/counts positions before a failing activity cursor read", async () => {
+    const { db } = createFakeDb([walletRow("a", WALLET_A)], [], true);
+    const listUserPositions = vi.fn(async () => [
+      {
+        conditionId: "c",
+        asset: "1",
+        size: 2,
+        avgPrice: 0.5,
+        initialValue: 1,
+        currentValue: 1,
+        redeemable: false,
+      },
+    ]);
+    const listUserActivity = vi.fn(async () => []);
+    const logger = makeLogger();
+    const result = await runTraderObservationTick({
+      db,
+      client: {
+        listUserPositions,
+        listUserActivity,
+      } as unknown as PolymarketDataApiClient,
+      listActiveTradingAddresses: async () => [],
+      logger: logger as never,
+      metrics,
+      runRetentionPrune: false,
+    });
+    expect(listUserPositions).toHaveBeenCalledTimes(1);
+    expect(listUserActivity).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ positions: 1, errors: 1 });
+    expect(
+      logger.info.mock.calls.some(
+        ([payload]) =>
+          payload.event === "poly.trader.positions.publish" &&
+          payload.published === true
+      )
+    ).toBe(true);
+  });
+
   it.each(["stale", "partial", "error"])(
     "does not repeat upstream/Polygon observation for a recent %s attempt, including after restart",
     async (status) => {
@@ -178,7 +226,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
           {
             status,
             lastSuccessAt: new Date(Date.now() - 3 * 86_400_000),
-            updatedAt: new Date(Date.now() - 30_000),
+            updatedAt: new Date(Date.now() - 10_000),
           },
         ]
       );
@@ -219,7 +267,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
   );
 
   it.each([
-    ["stale", 301_000],
+    ["stale", 31_000],
     ["pending", 0],
   ])(
     "retries a %s cursor when due without treating enrollment as an attempt",
@@ -343,7 +391,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     });
     // The failing wallet was logged, not thrown.
     const walletError = logger.error.mock.calls.find(
-      (call) => (call[0] as { phase?: string }).phase === "error"
+      (call) => (call[0] as { phase?: string }).phase === "activity_error"
     );
     expect(walletError?.[0]).toMatchObject({ wallet: WALLET_B });
   });
