@@ -551,6 +551,88 @@ describe("serialized position-observation writer", () => {
     expect(logger.info).not.toHaveBeenCalled();
   });
 
+  it("preserves trusted recovery proof while replacing inventory and ignores vendor-supplied reserved keys", async () => {
+    const wallet = await seedWallet("5112");
+    await seedCurrent(wallet.id, "801");
+    const db = getSeedDb();
+    const economicObservationV1 = {
+      version: 1,
+      fetchedAt: "2026-10-03T18:00:00.000Z",
+      source: "test-recovery",
+    };
+    await db
+      .update(polyTraderCurrentPositions)
+      .set({
+        raw: {
+          ...position("801"),
+          curPrice: 0.9,
+          staleVendorField: "must not survive",
+          economicObservationV1,
+        },
+      })
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+
+    const incoming = ["801", "802"].map((tokenId) => ({
+      ...position(tokenId),
+      economicObservationV1: { source: "untrusted-vendor" },
+    }));
+    const published = await refreshCurrentPositionsForWallet({
+      db: db as unknown as WriterDb,
+      client: clientReturning(async () => incoming),
+      walletAddress: wallet.address,
+      readPositionBalances: async () => [],
+    });
+    expect(published.complete).toBe(true);
+
+    const current = await db
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    const existing = current.find((row) => row.tokenId === "801");
+    const inserted = current.find((row) => row.tokenId === "802");
+    expect(existing).toMatchObject({
+      active: true,
+      shares: "10.00000000",
+      currentValueUsdc: "5.00000000",
+    });
+    expect(existing?.raw).toMatchObject({ curPrice: 0.5, economicObservationV1 });
+    expect(existing?.raw).not.toHaveProperty("staleVendorField");
+    expect(inserted?.raw).not.toHaveProperty("economicObservationV1");
+    const snapshots = await db
+      .select()
+      .from(polyTraderPositionSnapshots)
+      .where(eq(polyTraderPositionSnapshots.traderWalletId, wallet.id));
+    expect(snapshots).toHaveLength(2);
+    for (const snapshot of snapshots) {
+      expect(snapshot.raw).not.toHaveProperty("economicObservationV1");
+    }
+
+    // A later exact-zero authority publication retains historical proof but
+    // never retains the prior held quantity as inventory authority.
+    const zeroed = await refreshCurrentPositionsForWallet({
+      db: db as unknown as WriterDb,
+      client: clientReturning(async () => []),
+      walletAddress: wallet.address,
+      readPositionBalances: async ({ tokenIds }) => tokenIds.map(() => 0n),
+    });
+    expect(zeroed.complete).toBe(true);
+    const [closed] = await db
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(
+        and(
+          eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+          eq(polyTraderCurrentPositions.tokenId, "801")
+        )
+      );
+    expect(closed).toMatchObject({
+      active: false,
+      shares: "0.00000000",
+      currentValueUsdc: "0.00000000",
+    });
+    expect(closed?.raw).toMatchObject({ economicObservationV1 });
+  });
+
   it("rolls back snapshot and current rows when cursor publication fails", async () => {
     const wallet = await seedWallet("5105");
     await seedCurrent(wallet.id, "501");

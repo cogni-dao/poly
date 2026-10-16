@@ -102,11 +102,11 @@ function createFakeDb(walletRows: unknown[], cursorRows: unknown[] = []) {
   // silently defeat the ABORT_SKIPS_MAINTENANCE assertion, which proves the
   // prune/metadata statements are skipped by counting execute calls.
   const timeoutStatements: string[] = [];
-  const isStatementTimeout = (query: unknown): boolean => {
+  const describeQuery = (query: unknown): string => {
     try {
-      return JSON.stringify(query)?.includes("statement_timeout") === true;
+      return JSON.stringify(query) ?? "";
     } catch {
-      return false;
+      return "";
     }
   };
   const db: Record<string, unknown> = {
@@ -114,14 +114,15 @@ function createFakeDb(walletRows: unknown[], cursorRows: unknown[] = []) {
     insert: () => makeChain("insert"),
     update: () => makeChain("update"),
     execute: async (query: unknown) => {
-      if (isStatementTimeout(query)) {
+      const description = describeQuery(query);
+      if (description.includes("statement_timeout")) {
         timeoutStatements.push(JSON.stringify(query));
         return { rowCount: 0 };
       }
       executeCalls.push(query);
       if (
         cursorRows.length > 0 &&
-        JSON.stringify(query).includes("clock_timestamp()::text AS captured_at")
+        description.includes("clock_timestamp()::text AS captured_at")
       ) {
         return [
           {

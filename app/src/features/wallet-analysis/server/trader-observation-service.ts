@@ -1775,6 +1775,11 @@ async function persistPreparedCurrentPositions(
   const capturedAt = new Date(prepared.state.capturedAt);
   const values = positions.map((position) => {
     const contentHash = hashPosition(position);
+    // Recovery owns this reserved envelope on the saved current row. A new
+    // vendor page replaces inventory authority, never its historical proof;
+    // an upstream payload cannot supply or overwrite the reserved key.
+    const raw = { ...position } as Record<string, unknown>;
+    delete raw.economicObservationV1;
     return {
       traderWalletId: wallet.id,
       conditionId: position.conditionId,
@@ -1785,7 +1790,7 @@ async function persistPreparedCurrentPositions(
       avgPrice: Math.max(0, position.avgPrice).toFixed(8),
       contentHash,
       capturedAt,
-      raw: position as unknown as Record<string, unknown>,
+      raw,
     };
   });
   if (values.length > 0) {
@@ -1831,7 +1836,14 @@ async function persistPreparedCurrentPositions(
           avgPrice: sql`excluded.avg_price`,
           contentHash: sql`excluded.content_hash`,
           lastObservedAt: capturedAt,
-          raw: sql`excluded.raw`,
+          raw: sql`excluded.raw || CASE
+            WHEN jsonb_typeof(${polyTraderCurrentPositions.raw}->'economicObservationV1') = 'object'
+              THEN jsonb_build_object(
+                'economicObservationV1',
+                ${polyTraderCurrentPositions.raw}->'economicObservationV1'
+              )
+            ELSE '{}'::jsonb
+          END`,
         },
       });
   }
