@@ -719,7 +719,9 @@ function toEconomicFact(row: EconomicRow, mode: "live" | "paper"): EconomicPosit
         ? "paper_ledger"
         : "current_observation"
       : "unknown",
-    basisSource: basis !== null ? mode === "paper" ? "complete_history" : "vendor_current" : "unknown",
+    basisSource: basis === null ? "unknown" : mode === "paper"
+      ? row.history_complete ? "complete_history" : "unknown"
+      : "vendor_current",
     inventoryCoverage: row.current_identity_conflict
       ? "conflict" : !authoritative ? "unavailable"
       : row.inventory_fresh && (row.mark_available || held === 0) ? "complete" : "stale",
