@@ -265,8 +265,8 @@ describe("serialized position-observation writer", () => {
     // Data-API now drops the worthless loser token while it still has nonzero
     // CTF balance on-chain. Previously that tripped the authority_nonzero
     // omission guard and wedged the observer stale forever. The resolved-market
-    // exclusion must keep the omitted loser OUT of the authority check, so the
-    // writer publishes cleanly and the in-publication deactivation retires it.
+    // exclusion keeps the loser OUT of the blocking authority guard; its
+    // separate nonblocking terminal probe must not prevent publication.
     const wallet = await seedWallet("5111");
     await seedCurrent(wallet.id, "701");
     await seedLoser("701");
@@ -276,8 +276,7 @@ describe("serialized position-observation writer", () => {
       db: getSeedDb() as unknown as WriterDb,
       client: clientReturning(async () => []), // 701 omitted by Data-API
       walletAddress: wallet.address,
-      // Nonzero balance would have tripped authority_nonzero pre-fix; it must
-      // now never be consulted for the excluded resolved token.
+      // Terminal nonzero balances are reconsidered, without blocking the book.
       readPositionBalances: async ({ tokenIds }) => {
         authorityCalls += 1;
         return tokenIds.map(() => 1n);
@@ -286,12 +285,15 @@ describe("serialized position-observation writer", () => {
 
     expect(result.complete).toBe(true);
     expect(result.failureReason).toBeUndefined();
-    expect(authorityCalls).toBe(0); // resolved loser excluded from the guard
+    expect(authorityCalls).toBe(1); // nonblocking terminal probe
     const [current] = await getSeedDb()
       .select()
       .from(polyTraderCurrentPositions)
       .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
     expect(current).toMatchObject({ tokenId: "701", active: false });
+    expect(current?.lastObservedAt).toEqual(
+      new Date("2026-10-03T19:00:00.000Z")
+    );
     const [cursor] = await getSeedDb()
       .select()
       .from(polyTraderIngestionCursors)
@@ -305,6 +307,285 @@ describe("serialized position-observation writer", () => {
     expect(cursor?.lastSuccessAt.getTime()).toBeGreaterThan(
       wallet.lastSuccessAt.getTime()
     );
+  });
+
+  it("retains an unredeemed inactive winner, then publishes a real zero without losing history or touching another wallet", async () => {
+    const wallet = await seedWallet("5201");
+    const other = await seedWallet("5202");
+    const db = getSeedDb();
+    await seedCurrent(other.id, "9101");
+    const deps = {
+      db: db as unknown as WriterDb,
+      walletAddress: wallet.address
+    };
+    const winner = { ...position("9101"), redeemable: true, currentValue: 10 };
+    await refreshCurrentPositionsForWallet({
+      ...deps,
+      client: clientReturning(async () => [winner])
+    });
+    const readWinner = async () =>
+      (
+        await db
+          .select()
+          .from(polyTraderCurrentPositions)
+          .where(
+            and(
+              eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+              eq(polyTraderCurrentPositions.tokenId, "9101")
+            )
+          )
+      )[0];
+    const original = await readWinner();
+    expect(original).toMatchObject({ active: false, shares: "10.00000000" });
+    const economicObservationV1 = {
+      version: 1,
+      fetchedAt: "2026-10-03T18:00:00Z"
+    };
+    await db
+      .update(polyTraderCurrentPositions)
+      .set({ raw: { ...winner, economicObservationV1 } })
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    const held = await refreshCurrentPositionsForWallet({
+      ...deps,
+      client: clientReturning(async () => [position("9102")]),
+      readPositionBalances: async ({ tokenIds }) => {
+        expect(tokenIds).toEqual(["9101"]);
+        return [10_000_000n];
+      }
+    });
+    expect(held.complete).toBe(true);
+    expect(await readWinner()).toMatchObject({
+      active: false,
+      shares: "10.00000000",
+      currentValueUsdc: "10.00000000",
+      lastObservedAt: original?.lastObservedAt,
+      raw: { economicObservationV1 }
+    });
+    const redeemed = await refreshCurrentPositionsForWallet({
+      ...deps,
+      client: clientReturning(async () => [position("9102")]),
+      readPositionBalances: async () => [0n]
+    });
+    expect(redeemed.complete).toBe(true);
+    const zero = await readWinner();
+    expect(zero).toMatchObject({
+      active: false,
+      shares: "0.00000000",
+      currentValueUsdc: "0.00000000",
+      raw: { economicObservationV1 }
+    });
+    expect(zero?.lastObservedAt.getTime()).toBeGreaterThan(
+      original?.lastObservedAt.getTime() ?? 0
+    );
+    const snapshots = await db
+      .select()
+      .from(polyTraderPositionSnapshots)
+      .where(
+        and(
+          eq(polyTraderPositionSnapshots.traderWalletId, wallet.id),
+          eq(polyTraderPositionSnapshots.tokenId, "9101")
+        )
+      );
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.shares).toBe("10.00000000");
+    const [untouched] = await db
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(eq(polyTraderCurrentPositions.traderWalletId, other.id));
+    expect(untouched).toMatchObject({ active: true, shares: "10.00000000" });
+  });
+
+  it("publishes healthy inventory on terminal RPC failure without rejuvenating retained terminal facts", async () => {
+    const wallet = await seedWallet("5203");
+    const db = getSeedDb();
+    await seedCurrent(wallet.id, "9201");
+    await db
+      .update(polyTraderCurrentPositions)
+      .set({ raw: { redeemable: true } })
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    const result = await refreshCurrentPositionsForWallet({
+      db: db as unknown as WriterDb,
+      walletAddress: wallet.address,
+      client: clientReturning(async () => [position("9202")]),
+      readPositionBalances: async () => {
+        throw new Error("RPC unavailable");
+      }
+    });
+    expect(result.complete).toBe(true);
+    const current = await db
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    expect(current.find((row) => row.tokenId === "9201")).toMatchObject({
+      active: false,
+      shares: "10.00000000",
+      currentValueUsdc: "5.00000000",
+      lastObservedAt: new Date("2026-10-03T19:00:00.000Z")
+    });
+    expect(current.find((row) => row.tokenId === "9202")?.active).toBe(true);
+    const [cursor] = await db
+      .select()
+      .from(polyTraderIngestionCursors)
+      .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
+    expect(JSON.parse(cursor?.lastSeenNativeId ?? "null")).toEqual([
+      "condition-9201",
+      "9201"
+    ]);
+  });
+
+  it("rolls back terminal zero, lifecycle changes, healthy rows and fairness cursor together", async () => {
+    const wallet = await seedWallet("5204");
+    const db = getSeedDb();
+    await seedCurrent(wallet.id, "9301");
+    await db
+      .update(polyTraderCurrentPositions)
+      .set({ raw: { redeemable: true } })
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    const [before] = await db
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    await expect(
+      refreshCurrentPositionsForWallet({
+        db: db as unknown as WriterDb,
+        walletAddress: wallet.address,
+        client: clientReturning(async () => [position("9302")]),
+        readPositionBalances: async () => [0n],
+        beforePositionCursorPublish: () => {
+          throw new Error("terminal cursor rollback");
+        }
+      })
+    ).rejects.toThrow("terminal cursor rollback");
+    const current = await db
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    expect(current).toEqual([before]);
+    const [cursor] = await db
+      .select()
+      .from(polyTraderIngestionCursors)
+      .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
+    expect(cursor?.lastSuccessAt).toEqual(wallet.lastSuccessAt);
+    expect(cursor?.lastSeenNativeId).toBeNull();
+  });
+
+  it("aborts terminal authority without publishing healthy rows or changing retained timestamps", async () => {
+    const wallet = await seedWallet("5205");
+    const db = getSeedDb();
+    await seedCurrent(wallet.id, "9401");
+    await seedLoser("9401");
+    const controller = new AbortController();
+    await expect(
+      refreshCurrentPositionsForWallet({
+        db: db as unknown as WriterDb,
+        walletAddress: wallet.address,
+        client: clientReturning(async () => [position("9402")]),
+        signal: controller.signal,
+        readPositionBalances: async () => {
+          controller.abort(new Error("terminal caller aborted"));
+          throw controller.signal.reason;
+        }
+      })
+    ).rejects.toThrow("terminal caller aborted");
+    const rows = await db
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      active: true,
+      shares: "10.00000000",
+      lastObservedAt: new Date("2026-10-03T19:00:00.000Z")
+    });
+  });
+
+  it("rechecks a terminal quantity race before applying old zero proof", async () => {
+    const wallet = await seedWallet("5206");
+    const db = getSeedDb();
+    await seedCurrent(wallet.id, "9501");
+    await db
+      .update(polyTraderCurrentPositions)
+      .set({ active: false })
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    let calls = 0;
+    const result = await refreshCurrentPositionsForWallet({
+      db: db as unknown as WriterDb,
+      walletAddress: wallet.address,
+      client: clientReturning(async () => [position("9502")]),
+      readPositionBalances: async () => {
+        calls += 1;
+        if (calls === 1) {
+          await db
+            .update(polyTraderCurrentPositions)
+            .set({ shares: "35" })
+            .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+          return [0n];
+        }
+        return [35_000_000n];
+      }
+    });
+    expect(result.complete).toBe(true);
+    expect(calls).toBe(2);
+    const [retained] = await db
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(
+        and(
+          eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+          eq(polyTraderCurrentPositions.tokenId, "9501")
+        )
+      );
+    expect(retained).toMatchObject({
+      active: false,
+      shares: "35.00000000",
+      lastObservedAt: new Date("2026-10-03T19:00:00.000Z")
+    });
+  });
+
+  it("shares fifty chunks across open and terminal cohorts and rotates beyond one tick's budget", async () => {
+    const wallet = await seedWallet("5207");
+    const db = getSeedDb();
+    await seedCurrent(wallet.id, "9600"); // blocking active omission goes first
+    const rows = Array.from({ length: 5_001 }, (_, i) => ({
+      traderWalletId: wallet.id,
+      conditionId: "condition-terminal-budget",
+      tokenId: String(100_000 + i),
+      active: false,
+      shares: "10",
+      costBasisUsdc: "4",
+      currentValueUsdc: "5",
+      avgPrice: "0.4",
+      contentHash: `terminal-budget-${i}`,
+      lastObservedAt: new Date("2026-10-03T19:00:00Z")
+    }));
+    for (let i = 0; i < rows.length; i += 500) {
+      await db
+        .insert(polyTraderCurrentPositions)
+        .values(rows.slice(i, i + 500));
+    }
+    const chunks: string[][] = [];
+    const refresh = () =>
+      refreshCurrentPositionsForWallet({
+        db: db as unknown as WriterDb,
+        walletAddress: wallet.address,
+        client: clientReturning(async () => [position("9601")]),
+        readPositionBalances: async ({ tokenIds }) => {
+          chunks.push([...tokenIds]);
+          return tokenIds.map((id) => (id === "9600" ? 0n : 1n));
+        }
+      });
+    expect((await refresh()).complete).toBe(true);
+    expect(chunks).toHaveLength(50);
+    expect(chunks[0]).toEqual(["9600"]);
+    expect(Math.max(...chunks.map((chunk) => chunk.length))).toBe(100);
+    const firstChecked = new Set(chunks.flat());
+    chunks.length = 0;
+    expect((await refresh()).complete).toBe(true);
+    expect(chunks).toHaveLength(50);
+    // The next generation starts at the remaining terminal tokens, rather
+    // than rechecking the first 4,900 indefinitely. Same condition tests the
+    // token half of the durable keyset, not merely condition ordering.
+    expect(chunks[0]?.every((id) => !firstChecked.has(id))).toBe(true);
   });
 
   it("uses xmin to exhaust two same-timestamp superseded attempts without writes", async () => {

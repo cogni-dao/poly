@@ -126,6 +126,40 @@ describe("omitted-position exact balance authority", () => {
     expect(Math.max(...sizes)).toBe(100);
   });
 
+  it("shares the thirty-second deadline and fifty-chunk ceiling across cohorts and retries", async () => {
+    const budget = { startedAt: Date.now(), chunkCount: 49 };
+    const read = vi.fn(async ({ tokenIds }: { tokenIds: readonly string[] }) =>
+      tokenIds.map(() => 0n)
+    );
+    const input = {
+      walletAddress: `0x${"b".repeat(40)}`,
+      budget,
+      readPositionBalances: read
+    };
+    expect(
+      await classifyMissingPositionsWithBalances({
+        ...input,
+        positions: [missing(1)]
+      })
+    ).toMatchObject({ reason: "all_zero", chunkCount: 1 });
+    expect(
+      await classifyMissingPositionsWithBalances({
+        ...input,
+        positions: [missing(2)]
+      })
+    ).toMatchObject({ reason: "authority_unavailable", chunkCount: 0 });
+    expect(read).toHaveBeenCalledTimes(1);
+    budget.chunkCount = 0;
+    budget.startedAt = Date.now() - 30_001;
+    expect(
+      await classifyMissingPositionsWithBalances({
+        ...input,
+        positions: [missing(3)]
+      })
+    ).toMatchObject({ reason: "authority_unavailable", chunkCount: 0 });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a result-length mismatch without inventing decisions", async () => {
     const result = await classifyMissingPositionsWithBalances({
       walletAddress: `0x${"c".repeat(40)}`,
