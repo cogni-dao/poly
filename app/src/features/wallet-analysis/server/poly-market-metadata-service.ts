@@ -16,7 +16,7 @@
  *     `/markets?condition_ids=…` endpoint silently ignores its filter and
  *     was removed; readers fall back via COALESCE to the position raw when
  *     metadata rows haven't materialized yet.
- *   - LAST_OBSERVED_WINS: when multiple traders hold the same market, the
+ *   - NONEMPTY_FIELD_WINS: when multiple traders hold the same market, the
  *     row sourced from the most recently observed position wins
  *     (DISTINCT ON + ORDER BY last_observed_at DESC). Market-level fields
  *     are stable across traders, so this is deterministic in practice.
@@ -62,19 +62,16 @@ export async function refreshMarketMetadata(deps: {
       written: number | string;
     }>(sql`
       WITH candidates AS MATERIALIZED (
-        SELECT DISTINCT ON (condition_id)
-          condition_id,
-          NULLIF(raw->>'title', '')                AS market_title,
-          NULLIF(raw->>'slug', '')                 AS market_slug,
-          NULLIF(raw->>'eventTitle', '')           AS event_title,
-          NULLIF(raw->>'eventSlug', '')            AS event_slug,
-          NULLIF(raw->>'endDate', '')::timestamptz AS end_date,
-          raw
+        SELECT lower(condition_id) AS condition_id,
+          (array_agg(CASE WHEN raw->>'title' !~* '^(Polymarket|UNKNOWN|Market 0x)' THEN NULLIF(raw->>'title', '') END ORDER BY last_observed_at DESC, trader_wallet_id) FILTER (WHERE CASE WHEN raw->>'title' !~* '^(Polymarket|UNKNOWN|Market 0x)' THEN NULLIF(raw->>'title', '') END IS NOT NULL))[1] AS market_title,
+          (array_agg(NULLIF(raw->>'slug', '') ORDER BY last_observed_at DESC, trader_wallet_id) FILTER (WHERE NULLIF(raw->>'slug', '') IS NOT NULL))[1] AS market_slug,
+          (array_agg(NULLIF(raw->>'eventTitle', '') ORDER BY last_observed_at DESC, trader_wallet_id) FILTER (WHERE NULLIF(raw->>'eventTitle', '') IS NOT NULL))[1] AS event_title,
+          (array_agg(NULLIF(raw->>'eventSlug', '') ORDER BY last_observed_at DESC, trader_wallet_id) FILTER (WHERE NULLIF(raw->>'eventSlug', '') IS NOT NULL))[1] AS event_slug,
+          (array_agg((NULLIF(raw->>'endDate', ''))::timestamptz ORDER BY last_observed_at DESC, trader_wallet_id) FILTER (WHERE (NULLIF(raw->>'endDate', ''))::timestamptz IS NOT NULL))[1] AS end_date,
+          (array_agg(raw ORDER BY last_observed_at DESC, trader_wallet_id))[1] AS raw
         FROM poly_trader_current_positions
-        WHERE active = true
-          AND raw IS NOT NULL
-          AND condition_id <> ''
-        ORDER BY condition_id, last_observed_at DESC
+        WHERE active = true AND raw IS NOT NULL AND condition_id <> ''
+        GROUP BY lower(condition_id)
       ),
       upserted AS (
         INSERT INTO poly_market_metadata (
@@ -98,11 +95,11 @@ export async function refreshMarketMetadata(deps: {
           now()
         FROM candidates
         ON CONFLICT (condition_id) DO UPDATE SET
-          market_title = EXCLUDED.market_title,
-          market_slug  = EXCLUDED.market_slug,
-          event_title  = EXCLUDED.event_title,
-          event_slug   = EXCLUDED.event_slug,
-          end_date     = EXCLUDED.end_date,
+          market_title = COALESCE(EXCLUDED.market_title, poly_market_metadata.market_title),
+          market_slug = COALESCE(EXCLUDED.market_slug, poly_market_metadata.market_slug),
+          event_title = COALESCE(EXCLUDED.event_title, poly_market_metadata.event_title),
+          event_slug = COALESCE(EXCLUDED.event_slug, poly_market_metadata.event_slug),
+          end_date = COALESCE(EXCLUDED.end_date, poly_market_metadata.end_date),
           raw          = EXCLUDED.raw,
           fetched_at   = EXCLUDED.fetched_at
         WHERE ROW(
@@ -112,11 +109,11 @@ export async function refreshMarketMetadata(deps: {
           poly_market_metadata.event_slug,
           poly_market_metadata.end_date
         ) IS DISTINCT FROM ROW(
-          EXCLUDED.market_title,
-          EXCLUDED.market_slug,
-          EXCLUDED.event_title,
-          EXCLUDED.event_slug,
-          EXCLUDED.end_date
+          COALESCE(EXCLUDED.market_title, poly_market_metadata.market_title),
+          COALESCE(EXCLUDED.market_slug, poly_market_metadata.market_slug),
+          COALESCE(EXCLUDED.event_title, poly_market_metadata.event_title),
+          COALESCE(EXCLUDED.event_slug, poly_market_metadata.event_slug),
+          COALESCE(EXCLUDED.end_date, poly_market_metadata.end_date)
         )
         RETURNING 1
       )

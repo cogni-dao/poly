@@ -1,0 +1,926 @@
+{
+  "version": 1,
+  "frozenAt": "2026-10-16T08:47:47.673973+00:00",
+  "author": "story.5024 independent manager E2E proof owner",
+  "provenance": "Additive synthetic proof-conflict corpus labeled from uniqueness and mutuality rules before correction; no production helper used to derive expected values. Existing144/246 frozen files untouched. Does not establish live incidence or population99 accuracy. Raw alias conflicts require separate actual saved-reader tests.",
+  "cases": [
+    {
+      "id": "current-contradictory-tie",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "current",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "333",
+            "source": "current",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "current",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": null,
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "not_opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "current-equal-duplicate",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "current",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "current",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "current",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": "222",
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "current-newer-unique",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "333",
+            "source": "current",
+            "observedAt": "2026-10-16T07:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "current",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "current",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": "222",
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "snapshot-contradictory-tie",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "333",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": null,
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "not_opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "snapshot-equal-duplicate",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": "222",
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "snapshot-newer-unique",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "333",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T07:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": "222",
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "fill-contradictory-tie",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "fill",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "333",
+            "source": "fill",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "fill",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": null,
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "not_opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "fill-equal-duplicate",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "fill",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "fill",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "fill",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": "222",
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "fill-newer-unique",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "333",
+            "source": "fill",
+            "observedAt": "2026-10-16T07:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "fill",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "fill",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": "222",
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "outcome-contradictory-tie",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "outcome",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "333",
+            "source": "outcome",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "outcome",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": null,
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "not_opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "outcome-equal-duplicate",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "outcome",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "outcome",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "outcome",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": "222",
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "outcome-newer-unique",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "333",
+            "source": "outcome",
+            "observedAt": "2026-10-16T07:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "outcome",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "outcome",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": "222",
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "same-token-independent-of-proof",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "333",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": null,
+        "rightOppositeTokenId": "222",
+        "leftOutcome": "A",
+        "rightOutcome": "A",
+        "relation": "same",
+        "exactMatch": true
+      }
+    },
+    {
+      "id": "null-time-conflict",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "snapshot",
+            "observedAt": null,
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "333",
+            "source": "snapshot",
+            "observedAt": null,
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "snapshot",
+            "observedAt": null,
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": null,
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "not_opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "invalid-leading-zero-is-not-token-alias",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "0222",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": "222",
+        "rightOppositeTokenId": "111",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "both-sides-conflicted",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "333",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "111",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          },
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "444",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": null,
+        "rightOppositeTokenId": null,
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "not_opposite",
+        "exactMatch": false
+      }
+    },
+    {
+      "id": "nonmutual-map",
+      "left": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "111"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "111",
+            "oppositeTokenId": "222",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "A",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "right": {
+        "identity": {
+          "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tokenId": "222"
+        },
+        "candidates": [
+          {
+            "conditionId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenId": "222",
+            "oppositeTokenId": "333",
+            "source": "snapshot",
+            "observedAt": "2026-10-16T08:00:00.000Z",
+            "outcome": "B",
+            "marketTitle": "Independent binary proof fixture"
+          }
+        ]
+      },
+      "expected": {
+        "leftOppositeTokenId": "222",
+        "rightOppositeTokenId": "333",
+        "leftOutcome": "A",
+        "rightOutcome": "B",
+        "relation": "not_opposite",
+        "exactMatch": false
+      }
+    }
+  ]
+}

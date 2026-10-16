@@ -97,6 +97,8 @@
  * @internal
  */
 
+import { comparePositionIdentity, positionIdentityKey } from "@cogni/poly-market-provider";
+import { readPositionMetadata, positionMetadataRequestKey } from "./position-metadata-read";
 import type {
   WalletDashboardComparisonCoverage,
   WalletDashboardComparisonCoverageLeaf,
@@ -113,7 +115,6 @@ import { EPOCH_ISO, windowedFillFlowsSelect } from "./fill-rollup-service";
 import { liveCurrentPositionSql } from "./current-position-staleness";
 import {
   blendTargetReturns,
-  computeRealizedPnl,
   edgeGap,
   type MarketOutcome,
   positionReturnPct,
@@ -126,6 +127,12 @@ type Db = {
 type ParticipantSide = WalletExecutionMarketParticipantRow["side"];
 type ParticipantSource = WalletExecutionMarketParticipantRow["source"];
 
+export type ComparisonEconomicFact = Readonly<{
+  mode: "live" | "paper"; conditionId: string; tokenId: string;
+  heldShares: number | null; currentValueUsdc: number | null; remainingBasisUsdc: number | null;
+  unrealizedPnlUsdc: number | null; lifetimePnlUsdc: number | null;
+  inventoryCoverage: string; economicsCoverage: string;
+}>;
 type RawLeg = {
   side: ParticipantSide;
   source: ParticipantSource;
@@ -158,6 +165,10 @@ type RawLeg = {
    * fresh-pre-backfill our wallet).
    */
   pnlUsdc: number;
+  economicFact?: ComparisonEconomicFact | undefined;
+  valuationUnavailable?: boolean;
+  basisUnavailable?: boolean;
+  oppositeTokenId?: string | null;
   /**
    * CTF redemption credit contributed by this leg ($1 × winning shares
    * already burned). 0 for losers, open winners, and any leg whose
@@ -260,12 +271,7 @@ const BOUNDED_PARTICIPANT_ROW_LIMIT = 2_200;
 const VISIBLE_LIVE_POSITION_LIMIT = 500;
 const VISIBLE_CLOSED_POSITION_LIMIT = 30;
 
-type ValuedExecutionPosition = WalletExecutionPosition & {
-  currentPrice: number;
-  currentValue: number;
-  pnlUsd: number;
-  pnlPct: number;
-};
+type ValuedExecutionPosition = WalletExecutionPosition;
 
 type BoundedOurExposureSelection = {
   allOurLegs: RawLeg[];
@@ -294,6 +300,8 @@ export async function buildMarketExposureGroups(params: {
   db: Db;
   billingAccountId: string;
   walletAddress: string;
+  positionFacts?: readonly ComparisonEconomicFact[] | undefined;
+  mode?: "live" | "paper";
   livePositions: readonly ValuedExecutionPosition[];
   closedPositions?: readonly ValuedExecutionPosition[];
 }): Promise<WalletExecutionMarketGroup[]> {
@@ -303,8 +311,8 @@ export async function buildMarketExposureGroups(params: {
   }
 
   const ourLegs = [
-    ...buildOurLegs(params.livePositions, params.walletAddress, "live"),
-    ...buildOurLegs(closedPositions, params.walletAddress, "closed"),
+    ...buildOurLegs(params.livePositions, params.walletAddress, "live", params.positionFacts, params.mode ?? "live"),
+    ...buildOurLegs(closedPositions, params.walletAddress, "closed", params.positionFacts, params.mode ?? "live"),
   ];
   const conditions = [...new Set(ourLegs.map((leg) => leg.conditionId))];
   const conditionStatus = conditionStatusFromLegs(ourLegs);
@@ -314,7 +322,7 @@ export async function buildMarketExposureGroups(params: {
     conditions,
     conditionStatus,
   });
-  const rawLegs = [...ourLegs, ...targetLegs];
+  const rawLegs = await resolveSavedLegMetadata(params.db, [...ourLegs, ...targetLegs]);
   const wallets = [...new Set(rawLegs.map((leg) => leg.walletAddress))];
   const rollups = await readFillRollups({
     db: params.db,
@@ -335,6 +343,8 @@ export async function buildBoundedMarketExposureGroups(params: {
   db: Db;
   billingAccountId: string;
   walletAddress: string;
+  positionFacts?: readonly ComparisonEconomicFact[] | undefined;
+  mode?: "live" | "paper";
   livePositions: readonly ValuedExecutionPosition[];
   closedPositions?: readonly ValuedExecutionPosition[];
   priorityPositionKeys?: ReadonlySet<string>;
@@ -346,6 +356,8 @@ export async function buildBoundedMarketExposureGroups(params: {
     livePositions: params.livePositions,
     closedPositions,
     priorityPositionKeys: params.priorityPositionKeys ?? new Set(),
+    positionFacts: params.positionFacts,
+    mode: params.mode ?? "live",
   });
   if (selection.allOurLegs.length === 0) {
     return { groups: [], truncated: false };
@@ -385,7 +397,7 @@ export async function buildBoundedMarketExposureGroups(params: {
         leg.lifecycle === "active"
     ),
   };
-  const rawLegs = [...selection.ourLegs, ...targetRead.legs];
+  const rawLegs = await resolveSavedLegMetadata(params.db, [...selection.ourLegs, ...targetRead.legs]);
   const fillStartedAt = performance.now();
   let rollups: Awaited<ReturnType<typeof readFillRollups>>;
   try {
@@ -431,10 +443,12 @@ function selectBoundedOurExposure(params: {
   livePositions: readonly ValuedExecutionPosition[];
   closedPositions: readonly ValuedExecutionPosition[];
   priorityPositionKeys?: ReadonlySet<string>;
+  positionFacts?: readonly ComparisonEconomicFact[] | undefined;
+  mode?: "live" | "paper";
 }): BoundedOurExposureSelection {
   const allOurLegs = [
-    ...buildOurLegs(params.livePositions, params.walletAddress, "live"),
-    ...buildOurLegs(params.closedPositions, params.walletAddress, "closed"),
+    ...buildOurLegs(params.livePositions, params.walletAddress, "live", params.positionFacts, params.mode ?? "live"),
+    ...buildOurLegs(params.closedPositions, params.walletAddress, "closed", params.positionFacts, params.mode ?? "live"),
   ];
   const grouped = new Map<string, RawLeg[]>();
   for (const leg of allOurLegs) {
@@ -509,6 +523,8 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
   db: Db;
   billingAccountId: string;
   walletAddress: string;
+  positionFacts?: readonly ComparisonEconomicFact[] | undefined;
+  mode?: "live" | "paper";
   connectionKind: DashboardConnectionKind;
   livePositions: readonly ValuedExecutionPosition[];
   closedPositions?: readonly ValuedExecutionPosition[];
@@ -520,6 +536,8 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
     livePositions: params.livePositions,
     closedPositions: params.closedPositions ?? [],
     priorityPositionKeys: params.priorityPositionKeys ?? new Set(),
+    positionFacts: params.positionFacts,
+    mode: executionModeForConnection(params.connectionKind),
   });
   const targetBudget = Math.max(
     0,
@@ -568,7 +586,7 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
   }
   const counts = countRowsFromBundle(rows);
   const targetRead = boundedTargetReadFromRows(participantRowsFromBundle(rows));
-  const rawLegs = [...selection.ourLegs, ...targetRead.legs];
+  const rawLegs = await resolveSavedLegMetadata(params.db, [...selection.ourLegs, ...targetRead.legs]);
   const fillStartedAt = performance.now();
   let rollups: Awaited<ReturnType<typeof readFillRollups>>;
   try {
@@ -1294,9 +1312,8 @@ async function readComparisonBundleRows(params: {
             'last_observed_at', last_observed_at,
             'lifecycle', lifecycle
           ) ORDER BY cost_basis_usdc DESC, token_id
-        ) FILTER (WHERE leg_rank <= 2) AS legs
+        ) AS legs
       FROM preview_projected
-      WHERE leg_rank <= 2
       GROUP BY group_key, wallet_address, label, condition_id
     ), preview_participants_ranked AS (
       SELECT
@@ -1668,46 +1685,36 @@ export function materializeComparisonCoverage(params: {
  * preventing closed positions from collapsing to a 0/0 `currentValue −
  * costBasis` artifact in `toContractLeg`.
  */
-function enrichLegWithRollup(
-  leg: RawLeg,
-  rollups: ReadonlyMap<string, FillRollup>
-): RawLeg {
-  const rollup = rollups.get(
-    rollupKey(leg.walletAddress, leg.conditionId, leg.tokenId)
-  );
-  if (rollup === undefined) {
-    return {
-      ...leg,
-      pnlUsdc: roundMoney(leg.currentValueUsdc - leg.costBasisUsdc),
-      redemptionProceedsUsdc: 0,
-    };
-  }
-  const { pnlUsd, redemptionProceeds } = computeRealizedPnl({
-    totalBuyNotional: rollup.totalBuyNotional,
-    realizedCash: rollup.realizedCash,
-    currentMarkValue: leg.currentValueUsdc,
-    netShares: rollup.netShares,
-    marketOutcome: rollup.marketOutcome,
+async function resolveSavedLegMetadata(db: Db, legs: RawLeg[]): Promise<RawLeg[]> {
+  // Identity proof is required even when every display label is already rich.
+  const saved = await readPositionMetadata({ db, keys: legs.map(leg => ({ conditionId: leg.conditionId, tokenId: leg.tokenId, walletAddress: leg.walletAddress })) });
+  return legs.map(leg => {
+    const metadata = saved.get(positionMetadataRequestKey(leg) ?? "");
+    return metadata ? { ...leg, marketTitle: metadata.marketTitle ?? leg.marketTitle, marketSlug: metadata.marketSlug ?? leg.marketSlug, eventTitle: metadata.eventTitle ?? leg.eventTitle, eventSlug: metadata.eventSlug ?? leg.eventSlug, outcome: metadata.availability === "conflict" ? "UNKNOWN" : metadata.outcome ?? leg.outcome, oppositeTokenId: metadata.oppositeTokenId } : leg;
   });
-  const costBasisUsdc =
-    leg.costBasisUsdc > 0 ? leg.costBasisUsdc : rollup.totalBuyNotional;
-  return {
-    ...leg,
-    costBasisUsdc,
-    pnlUsdc: pnlUsd,
-    redemptionProceedsUsdc: redemptionProceeds,
-  };
+}
+
+function enrichLegWithRollup(leg: RawLeg, _rollups: ReadonlyMap<string, FillRollup>): RawLeg {
+  return leg;
 }
 
 function buildOurLegs(
   positions: readonly ValuedExecutionPosition[],
   walletAddress: string,
-  ourPositionStatus: WalletExecutionMarketLineStatus
+  ourPositionStatus: WalletExecutionMarketLineStatus,
+  facts?: readonly ComparisonEconomicFact[],
+  mode: "live" | "paper" = "live"
 ): RawLeg[] {
   return positions.map((position) => {
-    const costBasisUsdc = costBasisFromExecutionPosition(position);
+    const key = positionIdentityKey({ conditionId: position.conditionId, tokenId: position.asset });
+    const candidates = key ? facts?.filter(f => f.mode === mode && positionIdentityKey(f) === key) ?? [] : [];
+    const economicFact = candidates.length === 1 ? candidates[0] : undefined;
+    const costBasisUsdc = economicFact?.remainingBasisUsdc ?? costBasisFromExecutionPosition(position);
     const vwap = position.entryPrice > 0 ? position.entryPrice : null;
     return {
+      economicFact,
+      valuationUnavailable: economicFact ? economicFact.currentValueUsdc === null : position.currentValue === null,
+      basisUnavailable: economicFact ? economicFact.remainingBasisUsdc === null : position.currentValue === null,
       side: "our_wallet",
       source: "ledger",
       label: "Our wallet",
@@ -1721,7 +1728,7 @@ function buildOurLegs(
       outcome: position.outcome,
       shares: position.size,
       costBasisUsdc,
-      currentValueUsdc: position.currentValue,
+      currentValueUsdc: economicFact?.currentValueUsdc ?? position.currentValue ?? 0,
       vwap,
       avgPrice: vwap,
       lifecycle: ourPositionStatus === "closed" ? "inactive" : "active",
@@ -1730,7 +1737,7 @@ function buildOurLegs(
       // Placeholder — `enrichLegWithRollup` overwrites this with the real
       // realized P/L (fills + market outcome). Leaves the pre-fix
       // currentValue-minus-costBasis fallback in case no rollup row exists.
-      pnlUsdc: roundMoney(position.currentValue - costBasisUsdc),
+      pnlUsdc: roundMoney((position.currentValue ?? 0) - costBasisUsdc),
       redemptionProceedsUsdc: 0,
     };
   });
@@ -2047,9 +2054,8 @@ async function readBoundedTargetLegs(params: {
             'last_observed_at', last_observed_at,
             'lifecycle', lifecycle
           ) ORDER BY cost_basis_usdc DESC, token_id
-        ) FILTER (WHERE leg_rank <= 2) AS legs
+        ) AS legs
       FROM projected
-      WHERE leg_rank <= 2
       GROUP BY group_key, wallet_address, label, condition_id
     ), ranked AS (
       SELECT
@@ -2102,7 +2108,7 @@ function boundedTargetReadFromRows(
     ) {
       continue;
     }
-    for (const value of row.legs.slice(0, 2)) {
+    for (const value of row.legs) {
       if (!value || typeof value !== "object") continue;
       const leg = value as BoundedTargetLeg;
       if (typeof leg.token_id !== "string" || leg.token_id.length === 0)
@@ -2201,6 +2207,7 @@ function groupParticipants(
 
   for (const [conditionId, conditionLegs] of byCondition.entries()) {
     const participants = pivotParticipants(conditionLegs);
+    const tokenComparisons = buildTokenComparisons(conditionLegs);
     const anchor = pickAnchor(conditionLegs);
     if (anchor === null) continue;
     const eventSlug =
@@ -2215,19 +2222,14 @@ function groupParticipants(
     const targetLegs = conditionLegs.filter(
       (leg) => leg.side === "copy_target"
     );
-    const ourValueUsdc = roundMoney(sumValue(ourLegs));
+    const ourValueUsdc = ourLegs.some(leg => leg.valuationUnavailable) ? null : roundMoney(sumValue(ourLegs));
     const hasTargetFacts = targetLegs.length > 0;
     const targetValueUsdc = hasTargetFacts
       ? roundMoney(sumValue(targetLegs))
       : null;
 
     const ourAgg = aggregateWalletReturn(ourLegs, rollups);
-    const ourReturnPct = positionReturnPct({
-      totalBuyNotional: ourAgg.totalBuyNotional,
-      realizedCash: ourAgg.realizedCash,
-      currentMarkValue: ourAgg.currentMarkValue,
-      redemptionProceeds: ourAgg.redemptionProceeds,
-    });
+    const ourReturnPct: number | null = null; // Complete cash-flow coverage is not proven by local rollups.
 
     // Target side: per-target return, then cost-basis-weighted blend.
     const byTargetWallet = new Map<string, RawLeg[]>();
@@ -2260,7 +2262,7 @@ function groupParticipants(
           ? null
           : targetGrossBuyNotional + agg.grossBuyNotional;
     }
-    const targetReturnPct = blendTargetReturns(targetEntries);
+    const targetReturnPct: number | null = null; // Complete cash-flow coverage is not established by a rollup row.
     const targetTotalBuyNotional = targetEntries.reduce(
       (sum, e) => sum + e.totalBuyNotional,
       0
@@ -2293,7 +2295,7 @@ function groupParticipants(
       status: lineStatus,
       ourValueUsdc,
       targetValueUsdc,
-      ourEntryValueUsdc: roundMoney(ourAgg.totalBuyNotional),
+      ourEntryValueUsdc: ourLegs.some(leg => leg.basisUnavailable) ? null : roundMoney(ourAgg.totalBuyNotional),
       targetEntryValueUsdc: hasTargetEntryFacts
         ? roundMoney(targetTotalBuyNotional)
         : null,
@@ -2308,6 +2310,7 @@ function groupParticipants(
       edgeGapPct: rateGapPct,
       hedgeCount: participants.filter((p) => p.hedge !== null).length,
       participants,
+      tokenComparisons,
     };
 
     const bucket = groupBuckets.get(groupKey) ?? {
@@ -2371,15 +2374,11 @@ function groupParticipants(
         eventSlug: bucket.eventSlug,
         marketCount: lines.length,
         status: groupStatus,
-        ourValueUsdc: roundMoney(
-          lines.reduce((sum, line) => sum + line.ourValueUsdc, 0)
-        ),
+        ourValueUsdc: sumAvailableMoney(lines.map(line => line.ourValueUsdc)),
         targetValueUsdc: sumAvailableMoney(
           lines.map((line) => line.targetValueUsdc)
         ),
-        ourEntryValueUsdc: roundMoney(
-          lines.reduce((sum, line) => sum + line.ourEntryValueUsdc, 0)
-        ),
+        ourEntryValueUsdc: sumAvailableMoney(lines.map(line => line.ourEntryValueUsdc)),
         targetEntryValueUsdc: sumAvailableMoney(
           lines.map((line) => line.targetEntryValueUsdc)
         ),
@@ -2389,16 +2388,7 @@ function groupParticipants(
         targetGrossBuyNotionalUsdc: sumAvailableMoney(
           lines.map((line) => line.targetGrossBuyNotionalUsdc)
         ),
-        pnlUsd: roundMoney(
-          lines.reduce(
-            (sum, line) =>
-              sum +
-              line.participants
-                .filter((p) => p.side === "our_wallet")
-                .reduce((rowSum, p) => rowSum + p.net.pnlUsdc, 0),
-            0
-          )
-        ),
+        pnlUsd: sumAvailableMoney(lines.flatMap(line => line.participants.filter(p => p.side === "our_wallet").map(p => p.net.pnlUsdc))),
         edgeGapUsdc: groupGap.sizeScaledGapUsdc,
         edgeGapPct: groupGap.rateGapPct,
         hedgeCount: lines.reduce((sum, line) => sum + line.hedgeCount, 0),
@@ -2412,7 +2402,7 @@ function groupParticipants(
       const lv = left.edgeGapUsdc;
       const rv = right.edgeGapUsdc;
       if (lv === null && rv === null) {
-        return right.ourValueUsdc - left.ourValueUsdc;
+        return (right.ourValueUsdc ?? 0) - (left.ourValueUsdc ?? 0);
       }
       if (lv === null) return 1;
       if (rv === null) return -1;
@@ -2544,14 +2534,11 @@ function pivotParticipants(
       conditionId: anchor.conditionId,
       primary,
       hedge,
+      legs: walletLegs.map(toContractLeg),
       net: {
-        currentValueUsdc: roundMoney(
-          (primary?.currentValueUsdc ?? 0) + (hedge?.currentValueUsdc ?? 0)
-        ),
-        costBasisUsdc: roundMoney(
-          (primary?.costBasisUsdc ?? 0) + (hedge?.costBasisUsdc ?? 0)
-        ),
-        pnlUsdc: roundMoney((primary?.pnlUsdc ?? 0) + (hedge?.pnlUsdc ?? 0)),
+        currentValueUsdc: walletLegs.some(leg => leg.valuationUnavailable) ? null : roundMoney(walletLegs.reduce((total, leg) => total + leg.currentValueUsdc, 0)),
+        costBasisUsdc: walletLegs.some(leg => leg.basisUnavailable) ? null : roundMoney(walletLegs.reduce((total, leg) => total + leg.costBasisUsdc, 0)),
+        pnlUsdc: sumAvailableMoney(walletLegs.map(leg => leg.economicFact?.lifetimePnlUsdc ?? null)),
       },
       lastObservedAt,
     });
@@ -2560,15 +2547,38 @@ function pivotParticipants(
   return rows.sort(compareParticipantRow);
 }
 
+/** Exact token counterpart is independent of each wallet's primary/hedge ranking. */
+function buildTokenComparisons(legs: readonly RawLeg[]): NonNullable<WalletExecutionMarketGroup["lines"][number]["tokenComparisons"]> {
+  const ours = legs.filter(leg => leg.side === "our_wallet");
+  const targets = new Map<string, RawLeg[]>();
+  for (const leg of legs.filter(leg => leg.side === "copy_target")) targets.set(leg.walletAddress, [...(targets.get(leg.walletAddress) ?? []), leg]);
+  return ours.flatMap(our => [...targets].map(([walletAddress, targetLegs]) => {
+    const exact = targetLegs.find(target => comparePositionIdentity(our, target).exactMatch === true);
+    const opposites = targetLegs.filter(target => comparePositionIdentity(our, target).relation === "opposite");
+    const opposite = opposites[0];
+    const counterpart = exact ?? opposite;
+    return { ourTokenId: our.tokenId, targetWallet: walletAddress, targetTokenId: exact?.tokenId ?? opposite?.tokenId ?? null,
+      relation: exact ? "same" as const : opposite ? "opposite" as const : "unavailable" as const,
+      oppositeTargetTokenIds: [...new Set(opposites.map(target => target.tokenId))],
+      reason: exact ? "exact_condition_token" : opposite ? "verified_opposite_tokens" : "no_saved_exact_token_fact",
+      metadataAvailability: counterpart && Boolean(counterpart.outcome?.trim()) && Boolean(our.outcome?.trim()) && counterpart.outcome !== "UNKNOWN" && our.outcome !== "UNKNOWN" ? "available" as const : "unavailable" as const,
+      economicsAvailability: exact?.economicFact?.economicsCoverage === "complete" && our.economicFact?.economicsCoverage === "complete" ? "available" as const : "unavailable" as const,
+      observedAt: counterpart?.lastObservedAt ?? null,
+    };
+  }));
+}
+
 function toContractLeg(leg: RawLeg): WalletExecutionMarketLeg {
   return {
     tokenId: leg.tokenId,
     outcome: leg.outcome,
     shares: leg.shares,
-    currentValueUsdc: roundMoney(leg.currentValueUsdc),
-    costBasisUsdc: roundMoney(leg.costBasisUsdc),
+    currentValueUsdc: leg.valuationUnavailable ? null : roundMoney(leg.currentValueUsdc),
+    costBasisUsdc: leg.basisUnavailable ? null : roundMoney(leg.costBasisUsdc),
     vwap: leg.vwap,
-    pnlUsdc: roundMoney(leg.pnlUsdc),
+    pnlUsdc: leg.economicFact?.lifetimePnlUsdc ?? null,
+    unrealizedPnlUsdc: leg.economicFact?.unrealizedPnlUsdc ?? (leg.side === "copy_target" && leg.lifecycle === "active" ? roundMoney(leg.currentValueUsdc - leg.costBasisUsdc) : null),
+    economicsCoverage: leg.economicFact?.economicsCoverage ?? "unavailable",
     lifecycle: leg.lifecycle,
   };
 }
@@ -2620,7 +2630,7 @@ export function rollupKey(
   conditionId: string,
   tokenId: string
 ): string {
-  return `${canonicalIdentity(walletAddress)}:${canonicalIdentity(conditionId)}:${tokenId}`;
+  return `${canonicalIdentity(walletAddress)}:${positionIdentityKey({ conditionId, tokenId }) ?? `${canonicalIdentity(conditionId)}:${tokenId}`}`;
 }
 
 export function canonicalIdentity(value: string): string {
@@ -2810,7 +2820,7 @@ function compareParticipantRow(
 ): number {
   if (left.side !== right.side) return left.side === "our_wallet" ? -1 : 1;
   return (
-    right.net.currentValueUsdc - left.net.currentValueUsdc ||
+    (right.net.currentValueUsdc ?? 0) - (left.net.currentValueUsdc ?? 0) ||
     left.label.localeCompare(right.label) ||
     left.walletAddress.localeCompare(right.walletAddress)
   );
@@ -2821,7 +2831,7 @@ function compareLine(
   right: WalletExecutionMarketGroup["lines"][number]
 ): number {
   return (
-    right.ourValueUsdc - left.ourValueUsdc ||
+    (right.ourValueUsdc ?? 0) - (left.ourValueUsdc ?? 0) ||
     (right.targetValueUsdc ?? -1) - (left.targetValueUsdc ?? -1) ||
     left.marketTitle.localeCompare(right.marketTitle)
   );
@@ -2830,7 +2840,7 @@ function compareLine(
 function costBasisFromExecutionPosition(
   position: ValuedExecutionPosition
 ): number {
-  return roundMoney(Math.max(0, position.currentValue - position.pnlUsd));
+  return roundMoney(Math.max(0, position.entryPrice * position.size));
 }
 
 function weightedVwap(legs: readonly RawLeg[]): number | null {

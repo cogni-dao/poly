@@ -54,6 +54,7 @@ import {
   type PolyAccountRecentAttemptsResponse,
   type PolyCopyTradeAttempt,
 } from "@cogni/poly-node-contracts";
+import { readPositionMetadata, positionMetadataRequestKey } from "./position-metadata-read";
 import { type SQL, sql } from "drizzle-orm";
 
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
@@ -242,7 +243,7 @@ export function copyTradeAttemptsSelect(
       )                                                 AS target_wallet,
       d.fill_id,
       COALESCE(NULLIF(d.intent->>'market_id', ''), f.market_id) AS market_id,
-      COALESCE(NULLIF(metadata.market_title, ''), NULLIF(f.attributes->>'title', '')) AS market_title,
+      COALESCE(NULLIF(metadata.market_title, ''), NULLIF(d.intent->>'title', ''), NULLIF(d.intent->'attributes'->>'title', ''), NULLIF(f.attributes->>'title', '')) AS market_title,
       COALESCE(NULLIF(d.intent->>'outcome', ''), NULLIF(f.attributes->>'outcome', '')) AS outcome_label,
       d.mode,
       d.algorithm_id,
@@ -285,9 +286,12 @@ export function copyTradeAttemptsSelect(
     FROM poly_copy_trade_decisions d
     -- Target label. Same tenant on both sides so the join cannot widen the
     -- RLS-visible row set.
-    LEFT JOIN poly_copy_trade_targets t
-      ON t.id = d.target_id
-     AND t.billing_account_id = d.billing_account_id
+    LEFT JOIN LATERAL (
+      SELECT target_wallet FROM poly_copy_trade_targets t
+      WHERE t.billing_account_id = d.billing_account_id
+        AND lower(t.target_wallet) = COALESCE(NULLIF(lower(d.intent->>'target_wallet'), ''), NULLIF(lower(d.intent->'attributes'->>'target_wallet'), ''))
+      ORDER BY t.id LIMIT 1
+    ) t ON TRUE
     -- THE CORRELATION: decision evidence -> placement/fill evidence, on the
     -- fills PRIMARY KEY (billing_account_id, target_id, fill_id). LEFT, because
     -- a skipped attempt legitimately has no ledger row.
@@ -296,12 +300,13 @@ export function copyTradeAttemptsSelect(
      AND f.target_id = d.target_id
      AND f.fill_id = d.fill_id
      AND f.observed_at <= ${capturedAt}::timestamptz
-    LEFT JOIN poly_market_metadata metadata
-      ON lower(metadata.condition_id) = lower(regexp_replace(
+    LEFT JOIN LATERAL (SELECT market_title FROM poly_market_metadata metadata
+      WHERE metadata.fetched_at <= ${capturedAt}::timestamptz
+        AND lower(metadata.condition_id) = lower(regexp_replace(
            COALESCE(NULLIF(d.intent->>'market_id', ''), f.market_id, ''),
            ${LEDGER_PREFIX_PATTERN},
            ''
-         ))
+         )) ORDER BY metadata.fetched_at DESC, metadata.condition_id LIMIT 1) metadata ON TRUE
     -- Mark availability: newest price at or before the cutoff for the intended
     -- token. One index probe per row, bounded by the page size.
     LEFT JOIN LATERAL (
@@ -559,6 +564,11 @@ export async function getRecentAttemptsForAccount(
   // limit+1 was fetched, so truncation is OBSERVED rather than inferred.
   const truncated = rawRows.length > limit;
   const page = rawRows.slice(0, limit);
+  const metadata = await readPositionMetadata({ db: tx, keys: page.map(row => ({ conditionId: (row.market_id ?? "").replace(/^prediction-market:polymarket:/, ""), tokenId: row.intended_token_id, walletAddress: row.target_wallet })), capturedAt });
+  for (const row of page) {
+    const saved = metadata.get(positionMetadataRequestKey({ conditionId: (row.market_id ?? "").replace(/^prediction-market:polymarket:/, ""), tokenId: row.intended_token_id, walletAddress: row.target_wallet }) ?? "");
+    if (saved) { row.market_title = saved.marketTitle ?? row.market_title; row.outcome_label = saved.availability === "conflict" ? null : saved.outcome ?? row.outcome_label; }
+  }
   const attempts = page.map((row) => toAttempt(row, capturedAt));
   const last = page.at(-1);
 
