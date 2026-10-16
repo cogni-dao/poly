@@ -251,8 +251,7 @@ describe("trader-observation job cancellation (task.5015)", () => {
 
     // Boot tick does NOT run the prune (never pile prune load onto a restart).
     expect(
-      (tickMock.mock.calls[0]?.[0] as TraderObservationTickDeps)
-        .runRetentionPrune
+      tickMock.mock.calls[0]?.[0]?.runRetentionPrune
     ).toBe(false);
 
     // Every tick for the first 29 minutes keeps skipping the prune.
