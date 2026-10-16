@@ -9,14 +9,14 @@
  *   - READ_ONLY: only GET requests against the public P/L endpoint.
  *   - FAILS_CLOSED: malformed upstream payloads throw instead of being silently reshaped into fake chart points.
  *   - OUTBOUND_OBSERVABLE: callers may pass a structured logger; when provided, every fetch emits one `poly.user-pnl.outbound` event tagged with `component`, used to assert PAGE_LOAD_DB_ONLY (task.5012) in Loki.
- * Side-effects: IO (HTTP fetch to https://user-pnl-api.polymarket.com); optional structured log emit on each call.
+ * Side-effects: IO (HTTP fetch to https://data-api.polymarket.com); optional structured log emit on each call.
  * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5012
  * @public
  */
 
 import { z } from "zod";
 
-const DEFAULT_USER_PNL_BASE_URL = "https://user-pnl-api.polymarket.com";
+const DEFAULT_USER_PNL_BASE_URL = "https://data-api.polymarket.com";
 const DEFAULT_TIMEOUT_MS = 5_000;
 
 export const PolymarketUserPnlIntervalSchema = z.enum([
@@ -44,8 +44,8 @@ export type PolymarketUserPnlFidelity = z.infer<
 >;
 
 export const PolymarketUserPnlPointSchema = z.object({
-  t: z.coerce.number().int().nonnegative(),
-  p: z.coerce.number(),
+  t: z.number().int().nonnegative(),
+  p: z.number().finite(),
 });
 export type PolymarketUserPnlPoint = z.infer<
   typeof PolymarketUserPnlPointSchema
@@ -54,6 +54,25 @@ export type PolymarketUserPnlPoint = z.infer<
 export const PolymarketUserPnlResponseSchema = z.array(
   PolymarketUserPnlPointSchema
 );
+
+// V2 publishes the legacy chart's `p` as `trade_pnl`. Read that native
+// compatibility composition directly; economic_pnl includes different economics.
+// https://data-api.polymarket.com/v2/docs (UserPnlPoint.trade_pnl)
+const UserPnlV2ResponseSchema = z.object({
+  data: z.object({
+    proxy_wallet: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+    interval: PolymarketUserPnlIntervalSchema,
+    fidelity: PolymarketUserPnlFidelitySchema,
+    // Source observations may be daily even on an hourly output grid.
+    source_fidelity: PolymarketUserPnlFidelitySchema,
+    points: z.array(
+      z.object({
+        timestamp: z.number().int().nonnegative(),
+        trade_pnl: z.number().finite(),
+      })
+    ),
+  }),
+});
 
 export interface PolymarketUserPnlClientConfig {
   baseUrl?: string;
@@ -136,8 +155,8 @@ export class PolymarketUserPnlClient {
   ): Promise<PolymarketUserPnlPoint[]> {
     assertWallet(wallet);
 
-    const url = new URL("/user-pnl", this.baseUrl);
-    url.searchParams.set("user_address", wallet);
+    const url = new URL("/v2/user-pnl", this.baseUrl);
+    url.searchParams.set("user", wallet);
     url.searchParams.set("interval", params.interval);
     if (params.fidelity) {
       url.searchParams.set("fidelity", params.fidelity);
@@ -160,7 +179,18 @@ export class PolymarketUserPnlClient {
     } as const;
     try {
       const json = await this.fetchJson(url, opts?.signal);
-      const points = PolymarketUserPnlResponseSchema.parse(json);
+      const { data } = UserPnlV2ResponseSchema.parse(json);
+      if (
+        data.proxy_wallet.toLowerCase() !== wallet.toLowerCase() ||
+        data.interval !== params.interval ||
+        data.fidelity !== (params.fidelity ?? "1h")
+      ) {
+        throw new Error("Polymarket user-pnl API response identity mismatch");
+      }
+      const points = data.points.map(({ timestamp, trade_pnl }) => ({
+        t: timestamp,
+        p: trade_pnl,
+      }));
       opts?.logger?.info({
         event: "poly.user-pnl.result",
         ...base,
