@@ -385,6 +385,8 @@ function buildCondition(
         tokenId: held.oppositeTokenId,
         oppositeTokenId: held.tokenId,
         outcomeIndex: held.outcomeIndex === 0 ? 1 : 0,
+        outcome: first.opposite_outcome ?? null,
+        oppositeOutcome: first.outcome ?? null,
         shares: 0,
         markPrice: 0,
         averagePrice: 0,
@@ -416,6 +418,9 @@ function buildCondition(
 
   return {
     conditionId,
+    marketTitle: first.title ?? null,
+    marketSlug: first.slug ?? null,
+    eventSlug: first.event_slug ?? null,
     status: "OPEN",
     redeemable: false,
     endDate,
@@ -440,6 +445,8 @@ function toToken(row: PolymarketUserPositionV2): TargetBookTokenV1 {
     tokenId: row.token_id,
     oppositeTokenId: opposite,
     outcomeIndex: row.outcome_index,
+    outcome: row.outcome ?? null,
+    oppositeOutcome: row.opposite_outcome ?? null,
     shares: row.current_size,
     markPrice: row.current_price,
     averagePrice: row.avg_price,

@@ -71,7 +71,8 @@ function formatUsd(value: number | null): string {
   return formatMarketUsd(value);
 }
 
-function formatSignedUsd(value: number): string {
+function formatSignedUsd(value: number | null): string {
+  if (value === null) return "—";
   const sign = value > 0 ? "+" : value < 0 ? "-" : "";
   return `${sign}${formatUsd(Math.abs(value))}`;
 }
@@ -85,7 +86,8 @@ function formatShares(value: number): string {
   return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-function pnlClass(value: number): string {
+function pnlClass(value: number | null): string {
+  if (value === null) return "text-muted-foreground";
   if (value > 0) return "text-success";
   if (value < 0) return "text-destructive";
   return "text-muted-foreground";
@@ -548,6 +550,7 @@ function ParticipantsTable({
             <ParticipantRow
               key={`${participant.walletAddress}:${participant.conditionId}`}
               participant={participant}
+              comparisons={line.tokenComparisons?.filter(c => c.targetWallet === participant.walletAddress)}
             />
           ))}
         </TableBody>
@@ -556,10 +559,12 @@ function ParticipantsTable({
   );
 }
 
-function ParticipantRow({
+export function ParticipantRow({
   participant,
+  comparisons,
 }: {
   participant: WalletExecutionMarketParticipantRow;
+  comparisons?: WalletExecutionMarketGroup["lines"][number]["tokenComparisons"];
 }): ReactElement {
   return (
     <TableRow>
@@ -570,14 +575,11 @@ function ParticipantRow({
               ? "Our wallet"
               : participant.label}
           </span>
-          {participant.primary ? (
-            // eslint-disable-next-line ui-governance/no-arbitrary-non-token-values -- pre-existing arbitrary tailwind value; tracked as follow-up
-            <span className="text-[11px] text-muted-foreground">
-              {participant.primary.outcome}
-              {" · "}
-              {formatShares(participant.primary.shares)} sh
-            </span>
-          ) : null}
+          {comparisons?.map(c => <span className="text-xs text-muted-foreground" key={c.ourTokenId}>{c.relation === "same" ? "Same token" : c.relation === "opposite" ? "Opposite token" : "Comparison unavailable"}{" · "}{c.ourTokenId.slice(0, 10)}…</span>)}
+          {comparisons?.filter(c => c.relation === "same" && c.oppositeTargetTokenIds?.length).map(c => <span className="text-xs text-muted-foreground" key={`opposite:${c.ourTokenId}`}>Opposite token{" · "}{c.oppositeTargetTokenIds?.join(", ")}</span>)}
+          {(participant.legs ?? [participant.primary, participant.hedge]).filter((leg): leg is WalletExecutionMarketLeg => leg !== null).map(leg => (
+            <span className="text-xs text-muted-foreground" key={leg.tokenId}>{leg.tokenId === participant.primary?.tokenId ? "Primary" : leg.tokenId === participant.hedge?.tokenId ? "Hedge" : "Additional"}{" · "}{leg.outcome}{" · "}{leg.tokenId}{" · "}{formatShares(leg.shares)} sh{" · "}{formatUsd(leg.currentValueUsdc)}</span>
+          ))}
         </div>
       </TableCell>
       <LegTriple leg={participant.primary} />
@@ -610,6 +612,7 @@ function LegTriple({
   return (
     <>
       <TableCell className="border-l py-1.5 text-right tabular-nums">
+        <span className="block text-xs text-muted-foreground">{leg.outcome}</span>
         {formatUsd(leg.currentValueUsdc)}
       </TableCell>
       <TableCell className="py-1.5 text-right text-muted-foreground tabular-nums">
@@ -618,7 +621,7 @@ function LegTriple({
       <TableCell
         className={cn("py-1.5 text-right tabular-nums", pnlClass(leg.pnlUsdc))}
       >
-        {formatSignedUsd(leg.pnlUsdc)}
+        {leg.pnlUsdc !== null ? formatSignedUsd(leg.pnlUsdc) : leg.unrealizedPnlUsdc != null ? <><span className="block text-xs text-muted-foreground">Unrealized</span>{formatSignedUsd(leg.unrealizedPnlUsdc)}</> : "—"}
       </TableCell>
     </>
   );

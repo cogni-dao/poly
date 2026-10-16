@@ -5,7 +5,7 @@
 import type { WalletExecutionPosition } from "@cogni/poly-node-contracts";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
-import { buildBoundedMarketExposureGroups } from "@/features/wallet-analysis/server/market-exposure-service";
+import { buildBoundedMarketExposureGroups, type ComparisonEconomicFact } from "@/features/wallet-analysis/server/market-exposure-service";
 
 const OUR = `0x${"1".repeat(40)}`;
 const TARGET = `0x${"2".repeat(40)}`;
@@ -86,7 +86,9 @@ function fakeDb(targetRows: unknown[], rollupRows: unknown[] = []) {
   return {
     sql,
     execute: async (query: unknown) => {
-      sql.push(new PgDialect().sqlToQuery(query as never).sql);
+      const statement = new PgDialect().sqlToQuery(query as never).sql;
+      sql.push(statement);
+      if (statement.includes("jsonb_to_recordset")) return [];
       call += 1;
       if (call === 1) return targetRows;
       if (call === 2) return [{ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }];
@@ -135,6 +137,108 @@ describe("bounded market exposure", () => {
     expect(db.sql[0]).toContain("jsonb_agg");
     expect(db.sql[0]).toContain("group_rank <=");
     expect(db.sql[2]).toContain("selected_keys");
+  });
+
+  it("matches our exact target token only in the third leg and conserves all exposure", async () => {
+    const conditionId = `0x${"ab".repeat(32)}`;
+    const own = { ...position(), conditionId, asset: "111", positionId: `${conditionId}:111`, eventSlug: "event-0" };
+    const base = targetParticipant();
+    const legs = base.legs.map((leg, i) => ({ ...leg, token_id: i === 0 ? "222" : "333" }));
+    legs.push({ ...legs[1]!, token_id: "111", current_value_usdc: "7", cost_basis_usdc: "2", outcome: "Additional" });
+    const db = fakeDb([{ ...base, condition_id: conditionId, legs }]);
+    const read = await buildBoundedMarketExposureGroups({db,billingAccountId:"tenant-a",walletAddress:OUR,livePositions:[own]});
+    const line = read.groups[0]?.lines[0];
+    const target = line?.participants.find(p => p.side === "copy_target");
+    expect(target?.primary?.tokenId).toBe("222");
+    expect(target?.hedge?.tokenId).toBe("333");
+    expect(target?.legs).toHaveLength(3);
+    expect(target?.net.currentValueUsdc).toBe(19);
+    expect(target?.net.pnlUsdc).toBeNull();
+    expect(line?.tokenComparisons).toEqual([expect.objectContaining({ourTokenId:"111",targetTokenId:"111",relation:"same",targetWallet:TARGET})]);
+    expect(line?.edgeGapPct).toBeNull();
+  });
+
+  it("retains closed exact-token identity when valuation and lifetime PnL are unavailable", async () => {
+    const conditionId=`0x${"cd".repeat(32)}`;
+    const own={...position(),conditionId,asset:"111",positionId:`${conditionId}:111`,status:"closed" as const,currentPrice:null,currentValue:null,pnlUsd:null,pnlPct:null};
+    const target=targetParticipant();
+    const db=fakeDb([{...target,condition_id:conditionId,legs:[{...target.legs[0]!,token_id:"111"}]}]);
+    const read=await buildBoundedMarketExposureGroups({db,billingAccountId:"tenant-a",walletAddress:OUR,livePositions:[],closedPositions:[own]});
+    const line=read.groups[0]?.lines[0];
+    expect(line?.tokenComparisons?.[0]).toMatchObject({ourTokenId:"111",targetTokenId:"111",relation:"same",economicsAvailability:"unavailable"});
+    expect(line?.ourValueUsdc).toBeNull();
+    expect(line?.participants.find(p=>p.side==="our_wallet")?.primary?.pnlUsdc).toBeNull();
+  });
+
+  it.each(["live", "paper"] as const)(
+    "selects only %s canonical economics for an exact token",
+    async (mode) => {
+      const conditionId = `0x${"ef".repeat(32)}`;
+      const own = {
+        ...position(),
+        conditionId,
+        asset: "111",
+        positionId: `${conditionId}:111`,
+      };
+      const fact = (
+        factMode: "live" | "paper",
+        amount: number,
+      ): ComparisonEconomicFact => ({
+        mode: factMode,
+        conditionId,
+        tokenId: "111",
+        heldShares: 10,
+        currentValueUsdc: amount + 1,
+        remainingBasisUsdc: amount,
+        unrealizedPnlUsdc: 1,
+        lifetimePnlUsdc: amount + 2,
+        inventoryCoverage: "complete",
+        economicsCoverage: "complete",
+      });
+      const read = await buildBoundedMarketExposureGroups({
+        db: fakeDb([]),
+        billingAccountId: "tenant-a",
+        walletAddress: OUR,
+        mode,
+        livePositions: [own],
+        positionFacts: [fact("paper", 40), fact("live", 10)],
+      });
+      const leg = read.groups[0]?.lines[0]?.participants[0]?.primary;
+      expect(leg).toMatchObject({
+        currentValueUsdc: mode === "live" ? 11 : 41,
+        costBasisUsdc: mode === "live" ? 10 : 40,
+        pnlUsdc: mode === "live" ? 12 : 42,
+      });
+    },
+  );
+
+  it("never consumes a sole paper fact for the default live request", async () => {
+    const conditionId = `0x${"ef".repeat(32)}`;
+    const read = await buildBoundedMarketExposureGroups({
+      db: fakeDb([]),
+      billingAccountId: "tenant-a",
+      walletAddress: OUR,
+      livePositions: [{ ...position(), conditionId, asset: "111" }],
+      positionFacts: [
+        {
+          mode: "paper",
+          conditionId,
+          tokenId: "111",
+          heldShares: 10,
+          currentValueUsdc: 999,
+          remainingBasisUsdc: 998,
+          unrealizedPnlUsdc: 1,
+          lifetimePnlUsdc: 997,
+          inventoryCoverage: "complete",
+          economicsCoverage: "complete",
+        },
+      ],
+    });
+    expect(read.groups[0]?.lines[0]?.participants[0]?.primary).toMatchObject({
+      currentValueUsdc: 6,
+      costBasisUsdc: 5,
+      pnlUsdc: null,
+    });
   });
 
   it("marks partial when a group exceeds ten target participants", async () => {
