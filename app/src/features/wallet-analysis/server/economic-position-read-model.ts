@@ -381,7 +381,9 @@ export async function readEconomicPositionProjection(params: {
         COALESCE(oc.terminal_variants, 0) AS terminal_variants,
         COALESCE(oc.payout_variants, 0) AS payout_variants,
         oc.terminal_outcome,
-        (oc.terminal_variants = 1 AND oc.payout_variants = 1
+        (k.condition_id ~ '^0x[0-9a-f]{64}$'
+          AND k.token_id ~ '^(0|[1-9][0-9]*)$'
+          AND oc.terminal_variants = 1 AND oc.payout_variants = 1
           AND oc.payout_consistent AND oc.terminal_outcome = 'loser'
           AND oc.resolved_at IS NOT NULL) AS terminal_zero_valuation,
         oc.resolved_at,
