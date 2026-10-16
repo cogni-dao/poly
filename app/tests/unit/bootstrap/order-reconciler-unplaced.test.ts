@@ -4,7 +4,7 @@
 /** Recovery reads may repair accepted orders, never infer nonexecution or PLACE. */
 import { describe, expect, it, vi } from "vitest";
 import type { OrderReconcilerDeps } from "@/bootstrap/jobs/order-reconciler.job";
-import { runReconcileOnce } from "@/bootstrap/jobs/order-reconciler.job";
+import { ORDER_RECONCILER_METRICS, runReconcileOnce } from "@/bootstrap/jobs/order-reconciler.job";
 import type { LedgerRow } from "@/features/trading/order-ledger.types";
 
 const NOW = new Date("2026-10-16T00:00:00Z");
@@ -48,6 +48,7 @@ function harness(rows: LedgerRow[], getOrder = vi.fn()) {
 	} as unknown as OrderReconcilerDeps;
 	return {
 		deps,
+		leaf,
 		updateStatus,
 		markSynced,
 		markReconcileAttempted,
@@ -215,11 +216,13 @@ describe("read-only conservative order recovery", () => {
           attributes: mode === "paper" ? { sizeMatched: 12 } : { realizedFillSource: "clob_associated_trades", sizeMatched: 12 },
 				}),
 			});
+		const before = structuredClone(prior);
 		const h = harness([prior], get);
 		await runReconcileOnce(h.deps);
 		expect(h.updateStatus).not.toHaveBeenCalled();
+    expect(prior).toEqual(before);
     expect(h.deps.logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ errorCode: "verified_cumulative_cost_regression" }),
+      expect.objectContaining({ errorCode: "verified_cumulative_cost_regression", reconcile_stage: "validate_cumulative_cost" }),
       expect.any(String),
     );
 		expect(h.markSynced).toHaveBeenCalledWith(["coid-1"]);
@@ -317,3 +320,103 @@ describe("read-only conservative order recovery", () => {
 		expect(h.markReconcileAttempted).toHaveBeenCalled();
     });
   });
+
+
+describe("known-order failure boundary diagnostics", () => {
+  const sentinel = "SQL_PARAMS_SECRET_SENTINEL";
+  function databaseFailure(code: string) {
+    return new Error(sentinel, {
+      cause: Object.assign(new Error(sentinel), { name: "PostgresError", code }),
+    });
+  }
+
+  it.each(["live", "paper", "unexpected"] as const)(
+    "correlates nested read failures without changing %s dispatch or freshness",
+    async (mode) => {
+      const first = row({ order_id: "venue-1", mode: mode as LedgerRow["mode"] });
+      const before = structuredClone(first);
+      const h = harness([
+        first,
+        row({ client_order_id: "coid-2", order_id: "venue-2" }),
+      ], vi.fn().mockRejectedValueOnce(databaseFailure("53300"))
+        .mockResolvedValueOnce({ found: receipt({ order_id: "venue-2" }) }));
+      await runReconcileOnce(h.deps);
+      expect(h.getOrder).toHaveBeenNthCalledWith(1, "acct-1", "venue-1", mode);
+      expect(h.leaf.error).toHaveBeenCalledWith({
+        event: "poly.mirror.reconcile.tick_error",
+        errorCode: "reconcile_row_error",
+        client_order_id: "coid-1", order_id: "venue-1",
+        billing_account_id: "acct-1", mode: mode === "unexpected" ? "unknown" : mode,
+        reconcile_stage: "executor_order_read",
+        err_class: "Error", err_code: undefined,
+        cause_class: "PostgresError", cause_code: "53300",
+      }, "reconciler: row processing failed");
+      expect(JSON.stringify(h.leaf.error.mock.calls)).not.toContain(sentinel);
+      expect(first).toEqual(before);
+      expect(h.updateStatus).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ client_order_id: "coid-2" }));
+      expect(h.markReconcileAttempted).toHaveBeenCalledExactlyOnceWith(["coid-1", "coid-2"]);
+      expect(h.markSynced).toHaveBeenCalledExactlyOnceWith(["coid-2"]);
+      expect(h.place).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([null, { found: receipt({ order_id: "wrong" }) }])(
+    "classifies invalid response %s and continues later rows", async (invalid) => {
+      const h = harness([
+        row({ order_id: "venue-1" }),
+        row({ client_order_id: "coid-2", order_id: "venue-2" }),
+      ], vi.fn().mockResolvedValueOnce(invalid)
+        .mockResolvedValueOnce({ found: receipt({ order_id: "venue-2" }) }));
+      await runReconcileOnce(h.deps);
+      expect(h.leaf.error).toHaveBeenCalledWith(expect.objectContaining({
+        reconcile_stage: "validate_order_response", errorCode: "reconcile_row_error",
+      }), "reconciler: row processing failed");
+      expect(h.updateStatus).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ client_order_id: "coid-2" }));
+      expect(h.markSynced).toHaveBeenCalledExactlyOnceWith(["coid-2"]);
+      expect(h.markReconcileAttempted).toHaveBeenCalledExactlyOnceWith(["coid-1", "coid-2"]);
+      expect(h.place).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "prepare_status_update", "persist_status", "notify_order_changed",
+    "record_update_metric", "log_status_updated",
+  ] as const)("reports %s while preserving committed writes and continuation", async (stage) => {
+    const first = row({ order_id: "venue-1", mode: "paper" });
+    const before = structuredClone(first);
+    const h = harness([first, row({ client_order_id: "coid-2", order_id: "venue-2" })],
+      vi.fn().mockResolvedValueOnce({ found: receipt() })
+        .mockResolvedValueOnce({ found: receipt({ order_id: "venue-2" }) }));
+    const committed: string[] = [];
+    h.updateStatus.mockImplementation(async (...args: unknown[]) => {
+      committed.push((args[0] as { client_order_id: string }).client_order_id);
+    });
+    const callback = vi.fn();
+    h.deps.onOrderChanged = callback;
+    const fail = () => { throw databaseFailure("23514"); };
+    if (stage === "prepare_status_update") h.deps.clock = vi.fn().mockImplementationOnce(fail).mockReturnValue(NOW);
+    if (stage === "persist_status") h.updateStatus.mockRejectedValueOnce(databaseFailure("23514"));
+    if (stage === "notify_order_changed") callback.mockImplementationOnce(fail);
+    if (stage === "record_update_metric") vi.mocked(h.deps.metrics.incr).mockImplementationOnce(fail);
+    if (stage === "log_status_updated") h.leaf.info.mockImplementationOnce(fail);
+    await runReconcileOnce(h.deps);
+    const postWrite = stage !== "prepare_status_update" && stage !== "persist_status";
+    expect(committed).toEqual(postWrite ? ["coid-1", "coid-2"] : ["coid-2"]);
+    expect(h.updateStatus).toHaveBeenCalledTimes(stage === "prepare_status_update" ? 1 : 2);
+    expect(callback).toHaveBeenCalledTimes(postWrite ? 2 : 1);
+    if (!postWrite) expect(callback).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ client_order_id: "coid-2" }), { status: "filled" });
+    expect(h.leaf.error).toHaveBeenCalledExactlyOnceWith({
+      event: "poly.mirror.reconcile.tick_error", errorCode: "reconcile_row_error",
+      client_order_id: "coid-1", order_id: "venue-1", billing_account_id: "acct-1", mode: "paper",
+      reconcile_stage: stage, err_class: "Error", err_code: undefined,
+      cause_class: "PostgresError", cause_code: "23514",
+    }, "reconciler: row processing failed");
+    expect(JSON.stringify(h.leaf.error.mock.calls)).not.toContain(sentinel);
+    expect(first).toEqual(before);
+    expect(h.markReconcileAttempted).toHaveBeenCalledExactlyOnceWith(["coid-1", "coid-2"]);
+    expect(h.markSynced).toHaveBeenCalledExactlyOnceWith(["coid-1", "coid-2"]);
+    expect(h.place).not.toHaveBeenCalled();
+    expect(h.deps.metrics.incr).toHaveBeenCalledWith(ORDER_RECONCILER_METRICS.errorsTotal, {});
+  });
+});
