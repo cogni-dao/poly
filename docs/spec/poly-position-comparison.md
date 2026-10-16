@@ -11,7 +11,13 @@ unavailable. Condition metadata may supply a title; outcome labels require exact
 condition/token provenance. These functions perform no I/O or economic arithmetic.
 
 The app's `position-metadata-read` batches saved metadata probes over requested
-keys. Target books retain optional display metadata without making algorithm
+keys. `positionMetadataRequestKey` includes the requested wallet. Wallet observations
+never widen to another wallet when the requested wallet is unregistered; requests
+without a wallet read global canonical/outcome sources only. Each field selects
+its newest meaningful saved value independently, with the request cutoff applied
+to every source. Bounded results do not imply constant work across a requested
+token's sparse history; existing exact-key indexes exclude unrelated history.
+Target books retain optional display metadata without making algorithm
 eligibility depend on it. Sparse publication cannot erase known exact-token
 labels or canonical titles. Attempts, target positions and market participants
 consume the same saved resolver. Current/history integration consumes that seam
@@ -21,7 +27,9 @@ condition-scoped and wallet research aggregates remain wallet-scoped.
 Market participants expose all legs, with compatibility primary/hedge ranking
 kept wallet-relative. `tokenComparisons` anchors each counterpart to our exact
 outcome, so a target's hedge can be the same-token match while its primary is
-opposite. Unknown economics stays nullable; lifetime P/L cannot be inferred from
+opposite. `oppositeTargetTokenIds` retains proven opposite holdings even when an
+exact counterpart also exists. Canonical economic facts are selected by requested
+live/paper mode plus exact identity. Unknown economics stays nullable; lifetime P/L cannot be inferred from
 partial local BUY activity, nor can remaining basis be reconstructed by subtracting
 lifetime P/L from current value. Unrealized P/L is reported separately. Existing
 Modified-Dietz gaps remain unavailable without complete cash-flow evidence.

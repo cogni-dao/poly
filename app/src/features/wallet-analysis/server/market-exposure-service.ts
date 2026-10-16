@@ -98,7 +98,7 @@
  */
 
 import { comparePositionIdentity, positionIdentityKey } from "@cogni/poly-market-provider";
-import { readPositionMetadata } from "./position-metadata-read";
+import { readPositionMetadata, positionMetadataRequestKey } from "./position-metadata-read";
 import type {
   WalletDashboardComparisonCoverage,
   WalletDashboardComparisonCoverageLeaf,
@@ -301,6 +301,7 @@ export async function buildMarketExposureGroups(params: {
   billingAccountId: string;
   walletAddress: string;
   positionFacts?: readonly ComparisonEconomicFact[] | undefined;
+  mode?: "live" | "paper";
   livePositions: readonly ValuedExecutionPosition[];
   closedPositions?: readonly ValuedExecutionPosition[];
 }): Promise<WalletExecutionMarketGroup[]> {
@@ -310,8 +311,8 @@ export async function buildMarketExposureGroups(params: {
   }
 
   const ourLegs = [
-    ...buildOurLegs(params.livePositions, params.walletAddress, "live", params.positionFacts),
-    ...buildOurLegs(closedPositions, params.walletAddress, "closed", params.positionFacts),
+    ...buildOurLegs(params.livePositions, params.walletAddress, "live", params.positionFacts, params.mode ?? "live"),
+    ...buildOurLegs(closedPositions, params.walletAddress, "closed", params.positionFacts, params.mode ?? "live"),
   ];
   const conditions = [...new Set(ourLegs.map((leg) => leg.conditionId))];
   const conditionStatus = conditionStatusFromLegs(ourLegs);
@@ -343,6 +344,7 @@ export async function buildBoundedMarketExposureGroups(params: {
   billingAccountId: string;
   walletAddress: string;
   positionFacts?: readonly ComparisonEconomicFact[] | undefined;
+  mode?: "live" | "paper";
   livePositions: readonly ValuedExecutionPosition[];
   closedPositions?: readonly ValuedExecutionPosition[];
   priorityPositionKeys?: ReadonlySet<string>;
@@ -355,6 +357,7 @@ export async function buildBoundedMarketExposureGroups(params: {
     closedPositions,
     priorityPositionKeys: params.priorityPositionKeys ?? new Set(),
     positionFacts: params.positionFacts,
+    mode: params.mode ?? "live",
   });
   if (selection.allOurLegs.length === 0) {
     return { groups: [], truncated: false };
@@ -441,10 +444,11 @@ function selectBoundedOurExposure(params: {
   closedPositions: readonly ValuedExecutionPosition[];
   priorityPositionKeys?: ReadonlySet<string>;
   positionFacts?: readonly ComparisonEconomicFact[] | undefined;
+  mode?: "live" | "paper";
 }): BoundedOurExposureSelection {
   const allOurLegs = [
-    ...buildOurLegs(params.livePositions, params.walletAddress, "live", params.positionFacts),
-    ...buildOurLegs(params.closedPositions, params.walletAddress, "closed", params.positionFacts),
+    ...buildOurLegs(params.livePositions, params.walletAddress, "live", params.positionFacts, params.mode ?? "live"),
+    ...buildOurLegs(params.closedPositions, params.walletAddress, "closed", params.positionFacts, params.mode ?? "live"),
   ];
   const grouped = new Map<string, RawLeg[]>();
   for (const leg of allOurLegs) {
@@ -520,6 +524,7 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
   billingAccountId: string;
   walletAddress: string;
   positionFacts?: readonly ComparisonEconomicFact[] | undefined;
+  mode?: "live" | "paper";
   connectionKind: DashboardConnectionKind;
   livePositions: readonly ValuedExecutionPosition[];
   closedPositions?: readonly ValuedExecutionPosition[];
@@ -532,6 +537,7 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
     closedPositions: params.closedPositions ?? [],
     priorityPositionKeys: params.priorityPositionKeys ?? new Set(),
     positionFacts: params.positionFacts,
+    mode: executionModeForConnection(params.connectionKind),
   });
   const targetBudget = Math.max(
     0,
@@ -1680,12 +1686,11 @@ export function materializeComparisonCoverage(params: {
  * costBasis` artifact in `toContractLeg`.
  */
 async function resolveSavedLegMetadata(db: Db, legs: RawLeg[]): Promise<RawLeg[]> {
-  const missing = legs.filter(leg => !leg.outcome || leg.outcome === "UNKNOWN" || !leg.marketTitle || /^(Polymarket|Market 0x)/i.test(leg.marketTitle));
-  if (missing.length === 0) return legs;
-  const saved = await readPositionMetadata({ db, keys: missing.map(leg => ({ conditionId: leg.conditionId, tokenId: leg.tokenId, walletAddress: leg.walletAddress })) });
+  // Identity proof is required even when every display label is already rich.
+  const saved = await readPositionMetadata({ db, keys: legs.map(leg => ({ conditionId: leg.conditionId, tokenId: leg.tokenId, walletAddress: leg.walletAddress })) });
   return legs.map(leg => {
-    const metadata = saved.get(positionIdentityKey(leg) ?? "");
-    return metadata ? { ...leg, marketTitle: metadata.marketTitle ?? leg.marketTitle, marketSlug: metadata.marketSlug ?? leg.marketSlug, eventTitle: metadata.eventTitle ?? leg.eventTitle, eventSlug: metadata.eventSlug ?? leg.eventSlug, outcome: metadata.outcome ?? leg.outcome, oppositeTokenId: metadata.oppositeTokenId } : leg;
+    const metadata = saved.get(positionMetadataRequestKey(leg) ?? "");
+    return metadata ? { ...leg, marketTitle: metadata.marketTitle ?? leg.marketTitle, marketSlug: metadata.marketSlug ?? leg.marketSlug, eventTitle: metadata.eventTitle ?? leg.eventTitle, eventSlug: metadata.eventSlug ?? leg.eventSlug, outcome: metadata.outcome ?? leg.outcome, oppositeTokenId: metadata.oppositeTokenId ?? leg.oppositeTokenId ?? null } : leg;
   });
 }
 
@@ -1697,11 +1702,12 @@ function buildOurLegs(
   positions: readonly ValuedExecutionPosition[],
   walletAddress: string,
   ourPositionStatus: WalletExecutionMarketLineStatus,
-  facts?: readonly ComparisonEconomicFact[]
+  facts?: readonly ComparisonEconomicFact[],
+  mode: "live" | "paper" = "live"
 ): RawLeg[] {
   return positions.map((position) => {
     const key = positionIdentityKey({ conditionId: position.conditionId, tokenId: position.asset });
-    const candidates = key ? facts?.filter(f => positionIdentityKey(f) === key) ?? [] : [];
+    const candidates = key ? facts?.filter(f => f.mode === mode && positionIdentityKey(f) === key) ?? [] : [];
     const economicFact = candidates.length === 1 ? candidates[0] : undefined;
     const costBasisUsdc = economicFact?.remainingBasisUsdc ?? costBasisFromExecutionPosition(position);
     const vwap = position.entryPrice > 0 ? position.entryPrice : null;
@@ -2102,7 +2108,7 @@ function boundedTargetReadFromRows(
     ) {
       continue;
     }
-    for (const value of row.legs.slice(0, 2)) {
+    for (const value of row.legs) {
       if (!value || typeof value !== "object") continue;
       const leg = value as BoundedTargetLeg;
       if (typeof leg.token_id !== "string" || leg.token_id.length === 0)
@@ -2548,13 +2554,16 @@ function buildTokenComparisons(legs: readonly RawLeg[]): NonNullable<WalletExecu
   for (const leg of legs.filter(leg => leg.side === "copy_target")) targets.set(leg.walletAddress, [...(targets.get(leg.walletAddress) ?? []), leg]);
   return ours.flatMap(our => [...targets].map(([walletAddress, targetLegs]) => {
     const exact = targetLegs.find(target => comparePositionIdentity(our, target).exactMatch === true);
-    const opposite = targetLegs.find(target => comparePositionIdentity(our, target).relation === "opposite");
+    const opposites = targetLegs.filter(target => comparePositionIdentity(our, target).relation === "opposite");
+    const opposite = opposites[0];
+    const counterpart = exact ?? opposite;
     return { ourTokenId: our.tokenId, targetWallet: walletAddress, targetTokenId: exact?.tokenId ?? opposite?.tokenId ?? null,
       relation: exact ? "same" as const : opposite ? "opposite" as const : "unavailable" as const,
+      oppositeTargetTokenIds: [...new Set(opposites.map(target => target.tokenId))],
       reason: exact ? "exact_condition_token" : opposite ? "verified_opposite_tokens" : "no_saved_exact_token_fact",
-      metadataAvailability: exact && Boolean(exact.outcome?.trim()) && Boolean(our.outcome?.trim()) && exact.outcome !== "UNKNOWN" && our.outcome !== "UNKNOWN" ? "available" as const : "unavailable" as const,
+      metadataAvailability: counterpart && Boolean(counterpart.outcome?.trim()) && Boolean(our.outcome?.trim()) && counterpart.outcome !== "UNKNOWN" && our.outcome !== "UNKNOWN" ? "available" as const : "unavailable" as const,
       economicsAvailability: exact?.economicFact?.economicsCoverage === "complete" && our.economicFact?.economicsCoverage === "complete" ? "available" as const : "unavailable" as const,
-      observedAt: exact?.lastObservedAt ?? null,
+      observedAt: counterpart?.lastObservedAt ?? null,
     };
   }));
 }

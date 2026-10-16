@@ -576,8 +576,9 @@ export function ParticipantRow({
               : participant.label}
           </span>
           {comparisons?.map(c => <span className="text-xs text-muted-foreground" key={c.ourTokenId}>{c.relation === "same" ? "Same token" : c.relation === "opposite" ? "Opposite token" : "Comparison unavailable"}{" · "}{c.ourTokenId.slice(0, 10)}…</span>)}
+          {comparisons?.filter(c => c.relation === "same" && c.oppositeTargetTokenIds?.length).map(c => <span className="text-xs text-muted-foreground" key={`opposite:${c.ourTokenId}`}>Opposite token{" · "}{c.oppositeTargetTokenIds?.join(", ")}</span>)}
           {(participant.legs ?? [participant.primary, participant.hedge]).filter((leg): leg is WalletExecutionMarketLeg => leg !== null).map(leg => (
-            <span className="text-xs text-muted-foreground" key={leg.tokenId}>{leg.outcome}{" · "}{formatShares(leg.shares)} sh{" · "}{formatUsd(leg.currentValueUsdc)}</span>
+            <span className="text-xs text-muted-foreground" key={leg.tokenId}>{leg.tokenId === participant.primary?.tokenId ? "Primary" : leg.tokenId === participant.hedge?.tokenId ? "Hedge" : "Additional"}{" · "}{leg.outcome}{" · "}{leg.tokenId}{" · "}{formatShares(leg.shares)} sh{" · "}{formatUsd(leg.currentValueUsdc)}</span>
           ))}
         </div>
       </TableCell>

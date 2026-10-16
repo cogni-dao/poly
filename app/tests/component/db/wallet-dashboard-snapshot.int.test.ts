@@ -348,7 +348,8 @@ describe("wallet dashboard coherent snapshot", () => {
       eligible: 501,
       comparable: 1,
       dropped: 500,
-      sampled: 1,
+      // Exact identity is comparable, but canonical return inputs are absent.
+      sampled: 0,
       complete: false,
       reasons: [
         "comparison_missing",
@@ -469,36 +470,20 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(labelsB).toContain("Tenant B target");
     expect(labelsB).not.toContain("Tenant A target");
 
-    const finiteGroups = tenantB.execution.market_groups.filter(
-      (group) => group.edgeGapPct !== null && Number.isFinite(group.edgeGapPct)
-    );
-    const finiteLines = new Set(
-      tenantB.execution.market_groups.flatMap((group) =>
-        group.lines
-          .filter(
-            (line) =>
-              line.edgeGapPct !== null && Number.isFinite(line.edgeGapPct)
-          )
-          .map((line) => line.conditionId)
-      )
-    );
-    const comparablePositions = tenantB.execution.live_positions.filter(
-      (position) => finiteLines.has(position.conditionId)
-    );
+    // SQL identity coverage stays separate from finite financial deltas.
+    const classifications = tenantB.execution.comparisonCoverage.positionClassifications;
+    expect(classifications).toContainEqual({
+      conditionId: "condition-0", tokenId: `token-${walletB.id}-0`, status: "live", result: "comparable",
+    });
     expect(tenantB.execution.comparisonCoverage.markets.live).toMatchObject({
-      eligible: tenantB.execution.market_groups.length,
-      comparable: finiteGroups.length,
-      sampled: finiteGroups.length,
-      complete: true,
-      reasons: [],
+      eligible: 1, comparable: 1, dropped: 0, sampled: 0,
+      complete: false, reasons: ["preview_truncated"],
     });
     expect(tenantB.execution.comparisonCoverage.positions.live).toMatchObject({
-      eligible: tenantB.execution.live_position_count,
-      comparable: comparablePositions.length,
-      sampled: comparablePositions.length,
-      complete: true,
-      reasons: [],
+      eligible: 1, comparable: 1, dropped: 0, sampled: 0,
+      complete: false, reasons: ["preview_truncated"],
     });
+    expect(tenantB.execution.market_groups.every(group => group.edgeGapPct === null)).toBe(true);
   });
 
   it("suppresses inactive and stale target current facts for live local rows", async () => {

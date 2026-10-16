@@ -339,6 +339,8 @@ export const WalletExecutionMarketLineSchema = z.object({
   tokenComparisons: z.array(z.object({
     ourTokenId: z.string(), targetWallet: PolyAddressSchema, targetTokenId: z.string().nullable(),
     relation: z.enum(["same", "opposite", "unrelated", "unavailable"]), reason: z.string(),
+    /** Proven opposite exposure may coexist with the exact-token counterpart. */
+    oppositeTargetTokenIds: z.array(z.string()).optional(),
     metadataAvailability: z.enum(["available", "unavailable"]),
     economicsAvailability: z.enum(["available", "unavailable"]), observedAt: z.string().nullable(),
   })).optional(),

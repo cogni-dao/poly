@@ -24,8 +24,7 @@ import {
 	PolyPositionGapDecisionReasonSchema,
 	type PolyTargetPositionsSort,
 } from "@cogni/poly-node-contracts";
-import { positionIdentityKey } from "@cogni/poly-market-provider";
-import { readPositionMetadata } from "./position-metadata-read";
+import { readPositionMetadata, positionMetadataRequestKey } from "./position-metadata-read";
 import { type SQL, sql } from "drizzle-orm";
 
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
@@ -683,7 +682,7 @@ export async function getTargetPositionsForAccount(
 	const pageRows = rawPositions.slice(0, limit);
 	const metadata = await readPositionMetadata({ db: tx, keys: pageRows.map(row => ({ conditionId: row.condition_id, tokenId: row.token_id, walletAddress: row.target_wallet })), capturedAt });
 	for (const row of pageRows) {
-		const saved = metadata.get(positionIdentityKey({ conditionId: row.condition_id, tokenId: row.token_id }) ?? "");
+		const saved = metadata.get(positionMetadataRequestKey({ conditionId: row.condition_id, tokenId: row.token_id, walletAddress: row.target_wallet }) ?? "");
 		if (!saved) continue;
 		row.market_title = saved.marketTitle ?? row.market_title;
 		row.event_title = saved.eventTitle ?? row.event_title;

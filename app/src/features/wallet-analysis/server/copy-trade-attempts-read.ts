@@ -54,8 +54,7 @@ import {
   type PolyAccountRecentAttemptsResponse,
   type PolyCopyTradeAttempt,
 } from "@cogni/poly-node-contracts";
-import { positionIdentityKey } from "@cogni/poly-market-provider";
-import { readPositionMetadata } from "./position-metadata-read";
+import { readPositionMetadata, positionMetadataRequestKey } from "./position-metadata-read";
 import { type SQL, sql } from "drizzle-orm";
 
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
@@ -566,7 +565,7 @@ export async function getRecentAttemptsForAccount(
   const page = rawRows.slice(0, limit);
   const metadata = await readPositionMetadata({ db: tx, keys: page.map(row => ({ conditionId: (row.market_id ?? "").replace(/^prediction-market:polymarket:/, ""), tokenId: row.intended_token_id, walletAddress: row.target_wallet })), capturedAt });
   for (const row of page) {
-    const saved = metadata.get(positionIdentityKey({ conditionId: (row.market_id ?? "").replace(/^prediction-market:polymarket:/, ""), tokenId: row.intended_token_id }) ?? "");
+    const saved = metadata.get(positionMetadataRequestKey({ conditionId: (row.market_id ?? "").replace(/^prediction-market:polymarket:/, ""), tokenId: row.intended_token_id, walletAddress: row.target_wallet }) ?? "");
     if (saved) { row.market_title = saved.marketTitle ?? row.market_title; row.outcome_label = saved.outcome ?? row.outcome_label; }
   }
   const attempts = page.map((row) => toAttempt(row, capturedAt));
