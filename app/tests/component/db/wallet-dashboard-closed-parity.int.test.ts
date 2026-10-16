@@ -262,17 +262,169 @@ describe("authoritative wallet economic-position projection", () => {
     expect([...liveIds, ...closedIds].some((id) => id.includes(CONDITIONS.otherTenant))).toBe(false);
 
     const winner = result.closedPositions.find((position) => position.conditionId === CONDITIONS.winner);
-    expect(winner).toMatchObject({ status: "redeemable", lifecycleState: "winner", pnlUsd: 6 });
+    expect(winner).toMatchObject({ status: "redeemable", lifecycleState: "winner", pnlUsd: null });
     const loser = result.closedPositions.find((position) => position.conditionId === CONDITIONS.loser);
-    expect(loser).toMatchObject({ status: "closed", pnlUsd: -4 });
+    expect(loser).toMatchObject({ status: "closed", pnlUsd: null });
     const fullExit = result.closedPositions.find((position) => position.conditionId === CONDITIONS.fullExit);
-    expect(fullExit).toMatchObject({ status: "closed", pnlUsd: 2, closedAt: "2026-10-04T10:00:00.000Z" });
+    expect(fullExit).toMatchObject({ status: "closed", pnlUsd: null, closedAt: "2026-10-04T10:00:00.000Z" });
 
     const reopened = result.livePositions.find((position) => position.conditionId === CONDITIONS.reopened);
-    expect(reopened).toMatchObject({ positionId: `${CONDITIONS.reopened}:${token(CONDITIONS.reopened)}`, size: 4, currentValue: 1.2, pnlUsd: 1.2 });
+    expect(reopened).toMatchObject({ positionId: `${CONDITIONS.reopened}:${token(CONDITIONS.reopened)}`, size: 4, currentValue: 1.2, pnlUsd: 0.2 });
     const unmarked = result.livePositions.find((position) => position.conditionId === CONDITIONS.partial);
     expect(unmarked).toMatchObject({ size: 6, currentPrice: null, currentValue: null, pnlUsd: null, pnlPct: null });
     const currentConflict = result.livePositions.find((position) => position.conditionId === CONDITIONS.currentConflict);
     expect(currentConflict).toMatchObject({ size: 10, currentPrice: null, currentValue: null, pnlUsd: null, pnlPct: null });
+  });
+});
+
+describe("current quantity authority and whole-position cost", () => {
+  it("conserves newer zero, values held redeemable winners, and withholds a superseded zero", async () => {
+    const db = getSeedDb();
+    const address = `0x${randomUUID().replaceAll("-", "").padStart(40, "0")}`;
+    const [wallet] = await db
+      .insert(polyTraderWallets)
+      .values({
+        walletAddress: address,
+        kind: "cogni_wallet",
+        label: "zero-authority",
+      })
+      .returning();
+    if (!wallet) throw new Error("missing wallet");
+    const conditionId = `0x${randomUUID().replaceAll("-", "").padStart(64, "0")}`;
+    const observed = new Date("2026-10-12T11:59:00Z");
+    try {
+      await db
+        .insert(polyTraderIngestionCursors)
+        .values({
+          traderWalletId: wallet.id,
+          source: "data-api-positions",
+          status: "ok",
+          lastSuccessAt: observed,
+        });
+      await db.insert(polyTraderCurrentPositions).values([
+        {
+          traderWalletId: wallet.id,
+          conditionId,
+          tokenId: "101",
+          shares: "0",
+          costBasisUsdc: "4",
+          currentValueUsdc: "0",
+          avgPrice: "0.4",
+          active: false,
+          contentHash: "zero",
+          lastObservedAt: observed,
+        },
+        {
+          traderWalletId: wallet.id,
+          conditionId,
+          tokenId: "102",
+          shares: "67.41",
+          costBasisUsdc: "28.61",
+          currentValueUsdc: "28.3111",
+          avgPrice: "0.424418",
+          active: true,
+          contentHash: "held",
+          lastObservedAt: observed,
+          raw: { cashPnl: -0.2989, curPrice: 0.42 },
+        },
+        {
+          traderWalletId: wallet.id,
+          conditionId,
+          tokenId: "103",
+          shares: "10",
+          costBasisUsdc: "4",
+          currentValueUsdc: "10",
+          avgPrice: "0.4",
+          active: false,
+          contentHash: "redeemable",
+          lastObservedAt: observed,
+          raw: { redeemable: true, curPrice: 1, cashPnl: 6 },
+        },
+      ]);
+      await db
+        .insert(polyTraderFills)
+        .values(
+          ["101", "102", "103"].map((tokenId) => ({
+            traderWalletId: wallet.id,
+            source: "data-api",
+            nativeId: `partial-${tokenId}`,
+            conditionId,
+            tokenId,
+            side: "BUY",
+            shares: "10",
+            sizeUsdc: "4",
+            price: "0.4",
+            observedAt: new Date("2026-10-12T10:00:00Z"),
+          })),
+        );
+      await db
+        .insert(polyMarketOutcomes)
+        .values({
+          conditionId,
+          tokenId: "103",
+          outcome: "winner",
+          payout: "1",
+          resolvedAt: new Date("2026-10-12T11:00:00Z"),
+        });
+      const read = () =>
+        readEconomicPositionProjection({
+          db,
+          billingAccountId: "no-execution-lineage",
+          walletAddress: address,
+          connectionKind: "privy_live",
+          capturedAt: CAPTURED,
+          interval: "ALL",
+        });
+      const result = await read();
+      expect(result.positionsMtm).toBe(38.31);
+      expect(result.livePositions.map((row) => row.asset)).toEqual(["102"]);
+      expect(result.livePositions[0]).toMatchObject({
+        size: 67.41,
+        currentValue: 28.31,
+        pnlUsd: -0.3,
+      });
+      expect(
+        result.closedPositions.find((row) => row.asset === "103"),
+      ).toMatchObject({ status: "redeemable", currentValue: 10, pnlUsd: null });
+      expect(
+        result.positionFacts.find((row) => row.tokenId === "102"),
+      ).toMatchObject({
+        remainingBasisUsdc: 28.61,
+        unrealizedPnlUsdc: -0.2989,
+        lifetimePnlUsdc: null,
+        inventoryCoverage: "complete",
+        economicsCoverage: "partial",
+      });
+      expect(result.historyIncompleteCount).toBeGreaterThan(0);
+      // An old zero may not hide a genuinely newer BUY before observation catches up.
+      await db
+        .insert(polyTraderFills)
+        .values({
+          traderWalletId: wallet.id,
+          source: "data-api",
+          nativeId: "new-after-zero",
+          conditionId,
+          tokenId: "101",
+          side: "BUY",
+          shares: "5",
+          sizeUsdc: "2",
+          price: "0.4",
+          observedAt: new Date("2026-10-12T11:59:30Z"),
+        });
+      expect((await read()).positionsMtm).toBeNull();
+      // A current row from after the frozen snapshot cannot be borrowed backwards.
+      await db
+        .update(polyTraderCurrentPositions)
+        .set({ lastObservedAt: new Date("2026-10-12T12:01:00Z") })
+        .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+      expect((await read()).positionsMtm).toBeNull();
+    } finally {
+      await db
+        .delete(polyMarketOutcomes)
+        .where(eq(polyMarketOutcomes.conditionId, conditionId));
+      await db
+        .delete(polyTraderWallets)
+        .where(eq(polyTraderWallets.id, wallet.id));
+    }
   });
 });

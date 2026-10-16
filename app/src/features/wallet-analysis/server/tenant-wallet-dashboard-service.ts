@@ -277,10 +277,7 @@ export async function readTenantWalletDashboardIn(
       ? { ...observerAgeFact, status: "partial" as const, complete: false }
       : observerAgeFact;
   const economicProjectionIncomplete = economicRead.ok &&
-    (economicRead.value.incompleteCount > 0 ||
-      economicRead.value.fillIdentityConflictCount > 0 ||
-      economicRead.value.outcomeIdentityConflictCount > 0 ||
-      economicRead.value.currentIdentityConflictCount > 0 ||
+    (economicRead.value.currentIdentityConflictCount > 0 ||
       economicRead.value.missingMarkCount > 0);
   const positionFact = !economicRead.ok
     ? unavailableFact("saved_wallet_economics")
@@ -441,6 +438,7 @@ export async function readTenantWalletDashboardIn(
   const historyFact = !economicRead.ok
     ? unavailableFact("saved_wallet_economics")
     : economicRead.value.incompleteCount === 0 &&
+        economicRead.value.historyIncompleteCount === 0 &&
         economicRead.value.fillIdentityConflictCount === 0 &&
         economicRead.value.outcomeIdentityConflictCount === 0
       ? freshFact("saved_wallet_economics", capturedAt)
