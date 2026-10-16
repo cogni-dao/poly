@@ -1098,16 +1098,8 @@ describe("accepted execution survives secondary failures (bug.5042)", () => {
 
 	it("risk SELECT failure forbids PLACE even after snapshot fallback returns empty facts", async () => {
 		const h = ledgerHarness();
-		const risk = createOrderLedger({
-			db: {
-				select: () => {
+		const riskSelect = vi.fn(() => {
 					throw new Error("risk SELECT unavailable");
-				},
-			} as unknown as Parameters<typeof createOrderLedger>[0]["db"],
-			logger: recordingLogger([]) as unknown as Parameters<
-				typeof createOrderLedger
-			>[0]["logger"],
-			resolveExecutionMode: async () => "paper",
 		});
 		h.tenant.cumulativeIntentForMarketToken = (market, token) =>
 			risk.cumulativeIntentForMarketToken("billing-1", market, token);
@@ -1118,12 +1110,13 @@ describe("accepted execution survives secondary failures (bug.5042)", () => {
 			minBetTarget,
 		);
 		await runMirrorTick(deps);
+    expect(riskSelect).toHaveBeenCalledOnce();
 		expect(deps.placeIntent).not.toHaveBeenCalled();
 		expect(h.insertPending).not.toHaveBeenCalled();
 		expect(h.decisions).toContainEqual(
 			expect.objectContaining({
 				outcome: "skipped",
-				reason: "position_cap_reached",
+				reason: "invalid_input",
 			}),
 		);
 	});

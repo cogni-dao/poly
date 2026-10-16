@@ -275,6 +275,19 @@ export async function runReconcileOnce(
         if (!receipt || receipt.order_id !== row.order_id)
           throw new Error("order_identity_mismatch");
         syncedIds.push(row.client_order_id);
+				// A smaller cumulative verified cost contradicts the accepted trade set,
+				// even when the next receipt reports more shares. Keep it in recovery.
+				const priorCost = Number(row.attributes?.filled_size_usdc);
+				if (
+					row.attributes?.realized_fill_source === "clob_associated_trades" &&
+					Number.isFinite(priorCost) &&
+					priorCost > 0 &&
+					typeof receipt.filled_size_usdc === "number" &&
+					Number.isFinite(receipt.filled_size_usdc) &&
+					receipt.filled_size_usdc < priorCost
+				) {
+					throw new Error("verified_cumulative_cost_regression");
+				}
       const newStatus = mapReceiptStatus(receipt.status);
 				const finalObservation = finalCancellationObservation(
 					row,
@@ -337,12 +350,15 @@ export async function runReconcileOnce(
         },
 					"reconciler: authenticated order observation persisted",
       );
-			} catch {
+			} catch (err: unknown) {
       deps.metrics.incr(ORDER_RECONCILER_METRICS.errorsTotal, {});
       log.error(
         {
           event: EVENT_NAMES.POLY_MIRROR_RECONCILE_TICK_ERROR,
-          errorCode: "reconcile_row_error",
+          errorCode:
+            err instanceof Error && err.message === "verified_cumulative_cost_regression"
+              ? "verified_cumulative_cost_regression"
+              : "reconcile_row_error",
           client_order_id: row.client_order_id,
           order_id: row.order_id,
         },

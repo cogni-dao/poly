@@ -287,7 +287,99 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 			expect(
 				await h.tenant.cumulativeIntentForMarketToken(h.market, "token"),
 			).toBe(Infinity);
+			expect(
+				await h.ledger.cumulativeIntentForMarketToken(
+					h.account,
+					h.market,
+					"token",
+				),
+			).toBe(Infinity);
 			await expect(h.ledger.insertPending(h.intent())).rejects.toThrow();
+			await expect(h.tenant.insertPending(h.intent())).rejects.toThrow();
+			// The failed tenant transaction has rolled back; a subsequent read works
+			// and neither atomic path inserted an order eligible for dispatch.
+			expect(
+				await h.ledger.listRecent({ billing_account_id: h.account }),
+			).toHaveLength(1);
+		},
+	);
+
+	it.each([
+		["clob_associated_trades", 8, 10, 0.8],
+		["estimated", 6, 12, 0.5],
+		["data_api_activity_position", 6, 12, 0.5],
+	] as const)(
+		"canceled recovery preserves verified cost, allowing stronger source upgrades from %s",
+		async (source, cost, shares, price) => {
+			const h = await harness();
+			const order = `cost-floor-${h.account}`;
+			const id = await h.seed(
+				"partial",
+				{
+					size_usdc: 8,
+					filled_size_usdc: 8,
+					realized_fill_source: source,
+				},
+				order,
+			);
+			await h.db
+				.update(polyCopyTradeFills)
+				.set({ shares: "10", price: "0.8" })
+				.where(eq(polyCopyTradeFills.clientOrderId, id));
+			// Each observation is internally coherent, but 12 * .5 = 6 cannot
+			// replace an already verified cumulative spend of 10 * .8 = 8.
+			await h.ledger.updateStatus({
+				client_order_id: id,
+				order_id: order,
+				status: "canceled",
+				total_shares: 12,
+				fill_price: 0.5,
+				filled_size_usdc: 6,
+				realized_fill_source: "clob_associated_trades",
+				final_order_observation: final(order, 6),
+			});
+			const [stored] = await h.db
+				.select()
+				.from(polyCopyTradeFills)
+				.where(eq(polyCopyTradeFills.clientOrderId, id));
+			expect(stored?.attributes?.filled_size_usdc).toBe(cost);
+			expect(Number(stored?.shares)).toBe(shares);
+			expect(Number(stored?.price)).toBe(price);
+			if (source === "clob_associated_trades") {
+				expect(stored?.attributes?.final_order_observation).toBeUndefined();
+				const recovery = await h.ledger.listOpenOrPending({
+					olderThanMs: 0,
+					limit: 10000,
+				});
+				expect(recovery.some((r) => r.client_order_id === id)).toBe(true);
+			} else {
+				expect(stored?.attributes?.final_order_observation).toMatchObject({
+					filled_size_usdc: 6,
+				});
+			}
+			expect(
+				await h.tenant.cumulativeIntentForMarketToken(h.market, "token"),
+			).toBe(cost);
+			expect(
+				await h.ledger.cumulativeIntentForMarketToken(
+					h.account,
+					h.market,
+					"token",
+				),
+			).toBe(cost);
+			const [mapped] = await h.ledger.listRecent({
+				billing_account_id: h.account,
+			});
+			expect(mapped && ledgerCountedIntentUsdc(mapped)).toBe(cost);
+			for (const insert of [h.ledger.insertPending, h.tenant.insertPending]) {
+				const input = h.intent(source === "clob_associated_trades" ? 2 : 1);
+				input.max_market_intent_usdc = cost;
+				await expect(insert(input)).rejects.toMatchObject({
+					current_intent_usdc: cost,
+					proposed_intent_usdc: input.intent.size_usdc,
+					max_intent_usdc: cost,
+				});
+			}
 		},
 	);
 
@@ -332,10 +424,12 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 			expect(row?.status).toBe("canceled");
 			expect(Number(row?.shares)).toBe(2);
 			expect(row?.attributes?.filled_size_usdc).toBe(1);
+      expect(row?.attributes?.final_order_observation).toBeUndefined();
 		}
+    // Contradictory zero proof retains each full intent until coherent recovery.
 		expect(
 			await h.tenant.cumulativeIntentForMarketToken(h.market, "token"),
-		).toBe(2);
+		).toBe(8);
 	});
 
 	it("positive legacy shares with missing cumulative cost conflict with zero-fill proof", async () => {

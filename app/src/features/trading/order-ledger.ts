@@ -342,8 +342,13 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 					snapshotStateOnDb(tx, target_id, ctx.billing_account_id),
         ),
       cumulativeIntentForMarketToken: (market_id, token_id) =>
-        withTenantScope(appDb, actor, async (tx) =>
-					cumulativeIntentImpl(tx, ctx.billing_account_id, market_id, token_id),
+        cumulativeIntentFailClosed(
+          () => withTenantScope(appDb, actor, async (tx) =>
+            cumulativeIntentImpl(tx, ctx.billing_account_id, market_id, token_id),
+          ),
+          ctx.billing_account_id,
+          market_id,
+          token_id,
         ),
       hasOpenForMarket: (args) =>
         withTenantScope(appDb, actor, async (tx) =>
@@ -556,7 +561,6 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     market_id: string,
 		token_id: string,
   ): Promise<number> {
-    try {
       const rows = await db
         .select({
 					sum: sum(reservedIntentUsdc),
@@ -574,6 +578,18 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 			if (!Number.isFinite(total) || total < 0)
 				throw new Error("invalid_reservation");
 			return total;
+	}
+
+  // Catch outside the entire tenant transaction: an SQL error aborts PostgreSQL's
+  // transaction even when an inner callback catches it and returns Infinity.
+  async function cumulativeIntentFailClosed(
+    read: () => Promise<number>,
+    billing_account_id: string,
+    market_id: string,
+    token_id: string,
+  ): Promise<number> {
+    try {
+      return await read();
     } catch (err: unknown) {
       log.warn(
         {
@@ -1099,6 +1115,26 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     realized_fill_source?: "clob_associated_trades";
   };
 
+  function regressesVerifiedCost(
+    attributes: unknown,
+    incomingCost: number | undefined,
+  ): boolean {
+    const current =
+      attributes && typeof attributes === "object"
+        ? (attributes as Record<string, unknown>)
+        : {};
+    const cost = Number(current.filled_size_usdc);
+    return (
+      current.realized_fill_source === "clob_associated_trades" &&
+      Number.isFinite(cost) &&
+      cost > 0 &&
+      typeof incomingCost === "number" &&
+      Number.isFinite(incomingCost) &&
+      incomingCost >= 0 &&
+      incomingCost < cost
+    );
+  }
+
   function acceptedFillAccounting(
     current: {
       price: string | null;
@@ -1111,6 +1147,11 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     columns: Partial<Record<"price" | "shares" | "feesUsdc", string>>;
     attributes: Record<string, unknown>;
   } | null {
+		// Cumulative verified spend cannot fall as shares grow. Retain the whole
+		// accepted observation; mixing old cost with new shares would invent a VWAP.
+		// Estimated accounting may still be replaced by an authoritative trade set.
+		if (regressesVerifiedCost(current.attributes, observation.filled_size_usdc))
+			return null;
     const incomingShares = observation.total_shares;
     const incomingPrice = observation.fill_price;
     const incomingCost = observation.filled_size_usdc;
@@ -1198,13 +1239,13 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     cumulativeIntentForMarketToken(
       billing_account_id: string,
       market_id: string,
-			token_id: string,
+      token_id: string,
     ): Promise<number> {
-      return cumulativeIntentImpl(
-        deps.db,
+      return cumulativeIntentFailClosed(
+        () => cumulativeIntentImpl(deps.db, billing_account_id, market_id, token_id),
         billing_account_id,
         market_id,
-				token_id,
+        token_id,
       );
     },
 
@@ -1466,12 +1507,16 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         );
         const fill = acceptedFillAccounting(current, input);
 				if (
-					input.final_order_observation?.filled_size_usdc === 0 &&
+					regressesVerifiedCost(
+						current.attributes,
+						input.final_order_observation?.filled_size_usdc,
+					) ||
+					(input.final_order_observation?.filled_size_usdc === 0 &&
 					Number(current.shares ?? 0) > 0 &&
 					Number(
 						(current.attributes as Record<string, unknown> | null)
 							?.filled_size_usdc ?? 0,
-					) <= 0
+						) <= 0)
 				) {
 					delete patch.final_order_observation;
 				}

@@ -178,6 +178,96 @@ describe("read-only conservative order recovery", () => {
 			}),
 		);
 	});
+	it("keeps a verified cost regression unresolved until coherent cumulative proof arrives", async () => {
+		const prior = row({
+			order_id: "venue-1",
+			status: "partial",
+			executed_shares: 10,
+			attributes: {
+				size_usdc: 8,
+				filled_size_usdc: 8,
+				realized_fill_source: "clob_associated_trades",
+			},
+		});
+		const get = vi
+			.fn()
+			.mockResolvedValueOnce({
+				found: receipt({
+					status: "canceled",
+					total_shares: 12,
+					fill_price: 0.5,
+					filled_size_usdc: 6,
+				}),
+			})
+			.mockResolvedValueOnce({
+				found: receipt({
+					status: "canceled",
+					total_shares: 12,
+					fill_price: 0.75,
+					filled_size_usdc: 9,
+				}),
+			});
+		const h = harness([prior], get);
+		await runReconcileOnce(h.deps);
+		expect(h.updateStatus).not.toHaveBeenCalled();
+    expect(h.deps.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: "verified_cumulative_cost_regression" }),
+      expect.any(String),
+    );
+		expect(h.markSynced).toHaveBeenCalledWith(["coid-1"]);
+		expect(h.markReconcileAttempted).toHaveBeenCalledWith(["coid-1"]);
+		await runReconcileOnce(h.deps);
+		expect(h.updateStatus).toHaveBeenCalledOnce();
+		expect(h.updateStatus).toHaveBeenCalledWith(
+			expect.objectContaining({
+				total_shares: 12,
+				fill_price: 0.75,
+				filled_size_usdc: 9,
+				final_order_observation: expect.objectContaining({
+					filled_size_usdc: 9,
+				}),
+			}),
+		);
+		expect(h.place).not.toHaveBeenCalled();
+	});
+
+	it("allows authoritative trade accounting to replace a lower-quality estimate", async () => {
+		const h = harness(
+			[
+				row({
+					order_id: "venue-1",
+					status: "partial",
+					executed_shares: 10,
+					attributes: {
+						size_usdc: 8,
+						filled_size_usdc: 8,
+						realized_fill_source: "estimated",
+					},
+				}),
+			],
+			vi.fn(async () => ({
+				found: receipt({
+					status: "canceled",
+					total_shares: 12,
+					fill_price: 0.5,
+					filled_size_usdc: 6,
+				}),
+			})),
+		);
+		await runReconcileOnce(h.deps);
+		expect(h.updateStatus).toHaveBeenCalledWith(
+			expect.objectContaining({
+				total_shares: 12,
+				fill_price: 0.5,
+				filled_size_usdc: 6,
+				final_order_observation: expect.objectContaining({
+					filled_size_usdc: 6,
+				}),
+			}),
+		);
+		expect(h.place).not.toHaveBeenCalled();
+	});
+
 	it("rotates thrown reads and continues independent rows, without fabricating freshness", async () => {
 		const get = vi
 			.fn()
