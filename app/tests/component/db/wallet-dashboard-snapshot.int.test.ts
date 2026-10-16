@@ -342,6 +342,150 @@ describe("wallet dashboard coherent snapshot", () => {
     await db.delete(polyTraderWallets).where(inArray(polyTraderWallets.id, [walletA.id, walletB.id, ...targetWalletIds]));
   });
 
+  // Captured writer publication states, not execution of PR239's writer.
+  it.each([
+    { name: "absent envelope", rowAge: 60_000, value: null },
+    { name: "partial no-event envelope", rowAge: 60_000, value: null, partial: true },
+    { name: "retained terminal 1n", rowAge: 60_000, value: null, terminal: true },
+    { name: "same generation with later completion", rowAge: 0, value: 10 },
+    { name: "genuinely later positive", rowAge: -100, value: 10 },
+    { name: "submillisecond later positive", rowAge: 0, value: 10, subms: true },
+    { name: "post-event exact zero", rowAge: 0, value: 0, zero: true },
+    { name: "typed loser unknown quantity", rowAge: 60_000, value: 0, loser: true },
+    { name: "future typed loser", rowAge: 60_000, value: null, loser: true, futureOutcome: true },
+    { name: "contradictory typed loser", rowAge: 60_000, value: null, loser: true, contradictory: true },
+    { name: "raw redeemable only", rowAge: 60_000, value: null, redeemable: true },
+    { name: "selected missing cursor", rowAge: 0, value: null, cursor: "missing" },
+    { name: "selected wrong-source cursor", rowAge: 0, value: null, cursor: "wrong-source" },
+    { name: "selected disabled wallet", rowAge: 0, value: null, cursor: "disabled" },
+    { name: "future overwritten selected cursor", rowAge: 0, value: null, cursor: "future" },
+    { name: "equal-value older sibling latest generation", rowAge: 60_000, value: null, cursor: "older-sibling" },
+    { name: "healthy same-generation siblings", rowAge: 0, value: 10, cursor: "healthy-sibling" },
+    { name: "future overwritten current sibling", rowAge: 0, value: null, cursor: "future-current" },
+  ])("fences live positive publication: $name", async testCase => {
+    const suffix = randomUUID(), userId = `generation-${suffix}`, account = `generation-${suffix}`;
+    const address = `0x${suffix.replaceAll("-", "").padStart(40, "e")}`;
+    const conditionId = `0x${suffix.replaceAll("-", "").padStart(64, "d")}`;
+    const healthyCondition = `0x${suffix.replaceAll("-", "").padStart(64, "b")}`;
+    const wallet = await seedConnection({ userId, billingAccountId: account, address });
+    const generation = new Date(Date.now() - 1_000), cutoff = new Date();
+    const observedAt = new Date(generation.getTime() - testCase.rowAge);
+    const walletIds = [wallet.id];
+    try {
+      await db.update(polyTraderIngestionCursors).set({ lastSuccessAt: generation,
+        updatedAt: new Date(generation.getTime() + 80) })
+        .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
+      await db.update(polyWalletBalanceSnapshots).set({ usdcE: "100", pusd: "0", observedAt: generation })
+        .where(eq(polyWalletBalanceSnapshots.billingAccountId, account));
+      await db.insert(polyTraderFills).values([
+        { traderWalletId: wallet.id, source: "data-api", nativeId: `${suffix}-W`, conditionId, tokenId: "801",
+          side: "BUY", price: ".6", shares: "10", sizeUsdc: "6", observedAt: new Date(generation.getTime() - 3600_000) },
+        { traderWalletId: wallet.id, source: "data-api", nativeId: `${suffix}-H`, conditionId: healthyCondition, tokenId: "802",
+          side: "BUY", price: ".5", shares: "2", sizeUsdc: "1", observedAt: new Date(generation.getTime() - 3600_000) },
+      ]);
+      // H is the actual healthy page; retained W's old clock never advances.
+      await db.insert(polyTraderCurrentPositions).values([
+        { ...currentPosition(wallet.id, 0, conditionId), tokenId: "801", shares: testCase.zero ? "0" : "10",
+          costBasisUsdc: testCase.zero ? "0" : "6", currentValueUsdc: testCase.zero ? "0" : "10",
+          firstObservedAt: observedAt, lastObservedAt: observedAt, active: !testCase.terminal,
+          raw: { title: "Retained W", curPrice: "1", redeemable: Boolean(testCase.redeemable || testCase.terminal),
+            ...(testCase.partial ? { economicObservationV1: { version: 1, wallet: address, conditionId, tokenId: "801",
+              coverage: "partial", fetchedAt: generation.toISOString(),
+              windowStart: new Date(generation.getTime() - 86400_000).toISOString(), windowEnd: generation.toISOString(),
+              reasons: ["missing_closed_position"], closedPosition: null, lifetimeBuyUsdc: 6, lifetimeBuyShares: 10,
+              lifetimeSellUsdc: 0, lifetimePnlUsdc: null, redeemUsdc: 0, constituents: [], settlements: [] } } : {}) } },
+        { ...currentPosition(wallet.id, 1, healthyCondition), tokenId: "802", lastObservedAt: generation,
+          raw: { title: "Healthy H", curPrice: "1" } },
+      ]);
+      if (testCase.subms) await db.execute(sql`UPDATE poly_trader_current_positions
+        SET last_observed_at = ${generation.toISOString()}::timestamptz + interval '0.000001 seconds'
+        WHERE trader_wallet_id = ${wallet.id} AND token_id = '801'`);
+      if (testCase.loser || testCase.zero) await db.insert(polyMarketOutcomes).values({ conditionId, tokenId: "801",
+        outcome: testCase.loser ? "loser" : "winner", payout: testCase.contradictory ? "1" : testCase.loser ? "0" : "1",
+        resolvedAt: new Date(generation.getTime() - 30_000),
+        updatedAt: new Date(generation.getTime() + (testCase.futureOutcome ? 60_000 : -500)) });
+      if (testCase.cursor) {
+        // A separate eligible physical sibling keeps a healthy cursor. It must
+        // not certify the selected row, or hide a newer generation behind MIN.
+        const [sibling] = await db.insert(polyTraderWallets).values({ walletAddress: `0x${address.slice(2).toUpperCase()}`,
+          kind: "cogni_wallet", label: `generation sibling ${suffix}` }).returning();
+        if (!sibling) throw new Error("Missing generation sibling");
+        walletIds.push(sibling.id);
+        await db.insert(polyTraderIngestionCursors).values({ traderWalletId: sibling.id,
+          source: "data-api-positions", status: "ok", lastSuccessAt: generation });
+        // Place H on the eligible sibling so it remains individually usable.
+        await db.delete(polyTraderCurrentPositions).where(and(eq(polyTraderCurrentPositions.traderWalletId, wallet.id), eq(polyTraderCurrentPositions.tokenId, "802")));
+        await db.insert(polyTraderCurrentPositions).values({ ...currentPosition(sibling.id, 1, healthyCondition),
+          tokenId: "802", lastObservedAt: generation, raw: { title: "Healthy H", curPrice: "1" } });
+        if (testCase.cursor === "missing" || testCase.cursor === "wrong-source") {
+          await db.delete(polyTraderIngestionCursors).where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
+          if (testCase.cursor === "wrong-source") await db.insert(polyTraderIngestionCursors).values({
+            traderWalletId: wallet.id, source: "data-api-trades", status: "ok", lastSuccessAt: generation });
+        }
+        if (testCase.cursor === "disabled") await db.update(polyTraderWallets).set({ disabledAt: generation })
+          .where(eq(polyTraderWallets.id, wallet.id));
+        if (testCase.cursor === "future") await db.update(polyTraderIngestionCursors)
+          .set({ lastSuccessAt: new Date(cutoff.getTime() + 60_000) }).where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
+        if (["older-sibling", "healthy-sibling", "future-current"].includes(testCase.cursor)) {
+          await db.insert(polyTraderCurrentPositions).values({ ...currentPosition(sibling.id, 0, conditionId), tokenId: "801",
+            shares: "10", costBasisUsdc: "6", currentValueUsdc: "10", avgPrice: ".5",
+            lastObservedAt: testCase.cursor === "future-current" ? new Date(cutoff.getTime() + 60_000) : observedAt,
+            raw: { title: "Retained W", curPrice: "1", redeemable: false } });
+          if (testCase.cursor === "older-sibling") await db.update(polyTraderIngestionCursors)
+            .set({ lastSuccessAt: observedAt }).where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
+        }
+      }
+      const saved = await db.select({ observedAt: polyTraderCurrentPositions.lastObservedAt,
+        shares: polyTraderCurrentPositions.shares }).from(polyTraderCurrentPositions)
+        .where(and(eq(polyTraderCurrentPositions.traderWalletId, wallet.id), eq(polyTraderCurrentPositions.tokenId, "801")));
+      expect(saved[0]?.observedAt).toEqual(observedAt);
+      expect(Number(saved[0]?.shares)).toBe(testCase.zero ? 0 : 10);
+      if (!testCase.cursor) {
+        const [cursor] = await db.select().from(polyTraderIngestionCursors)
+          .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
+        expect(cursor).toMatchObject({ status: "ok", lastSuccessAt: generation,
+          updatedAt: new Date(generation.getTime() + 80) });
+      }
+      const projection = await readEconomicPositionProjection({ db, billingAccountId: account, walletAddress: address,
+        connectionKind: "privy_live", capturedAt: cutoff, interval: "1W" });
+      const held = testCase.zero ? 0 : testCase.value === 10 ? 10 : null;
+      const fact = projection.positionFacts.find(row => row.tokenId === "801");
+      expect(fact).toMatchObject({ heldShares: held, remainingBasisUsdc: held === null ? null : testCase.zero ? 0 : 6,
+        currentValueUsdc: testCase.value, lifetimePnlUsdc: null });
+      if (!testCase.subms) expect(fact?.observedAt).toBe(observedAt.toISOString());
+      if (held === null) expect(fact).toMatchObject({ inventoryCoverage: "unavailable", unrealizedPnlUsdc: null });
+      // Preserve whole-wallet completeness: missing/future generations cannot
+      // certify H either; ordinary terminal omission leaves H individually usable.
+      expect(projection.positionFacts.find(row => row.tokenId === "802")?.currentValueUsdc)
+        .toBe(["future", "missing", "wrong-source"].includes(testCase.cursor ?? "") ? null : 2);
+      const expectedMtm = testCase.value === null ? null : testCase.value + 2;
+      expect(projection.positionsMtm).toBe(expectedMtm);
+      const dashboard = await readTenantWalletDashboard({ db, billingAccountId: account, interval: "1W", adapterConfigured: true });
+      expect(dashboard.overview.usdc_positions_mtm).toBe(expectedMtm);
+      expect(dashboard.overview.usdc_total).toBe(expectedMtm === null ? null : 100 + expectedMtm);
+      // Exercise every public builder with the real canonical facts. Historical
+      // display quantity must not revive rejected current money or erase W/H.
+      const params = { db, billingAccountId: account, walletAddress: address, mode: "live" as const,
+        capturedAt: cutoff.toISOString(), livePositions: projection.livePositions, closedPositions: projection.closedPositions,
+        positionFacts: projection.positionFacts };
+      const groups = await buildMarketExposureGroups(params);
+      const bounded = await buildBoundedMarketExposureGroups(params);
+      const coverage = await buildBoundedMarketExposureWithCoverage({ ...params, connectionKind: "privy_live" });
+      for (const result of [groups, bounded.groups, coverage.market.groups]) {
+        const legs = result.flatMap(group => group.lines).flatMap(line => line.participants)
+          .filter(participant => participant.side === "our_wallet").flatMap(participant => participant.legs ?? []);
+        expect(legs).toContainEqual(expect.objectContaining({ tokenId: "801", currentValueUsdc: testCase.value,
+          costBasisUsdc: held === null ? null : testCase.zero ? 0 : 6 }));
+        expect(legs).toContainEqual(expect.objectContaining({ tokenId: "802" }));
+      }
+    } finally {
+      await db.delete(polyMarketOutcomes).where(eq(polyMarketOutcomes.conditionId, conditionId));
+      await db.delete(billingAccounts).where(eq(billingAccounts.id, account));
+      await db.delete(users).where(eq(users.id, userId));
+      await db.delete(polyTraderWallets).where(inArray(polyTraderWallets.id, walletIds));
+    }
+  });
+
   it.each([
     {
       name: "aged loser",
@@ -417,6 +561,9 @@ describe("wallet dashboard coherent snapshot", () => {
       });
       const now = new Date();
       const observedAt = new Date(now.getTime() - testCase.ageMinutes * 60_000);
+      // The fresh winner is an actual generation observation, not a retained row.
+      if (testCase.name === "fresh winner") await db.update(polyTraderIngestionCursors)
+        .set({ lastSuccessAt: observedAt }).where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
       try {
         await db.insert(polyTraderFills).values({
           traderWalletId: wallet.id,
@@ -464,14 +611,14 @@ describe("wallet dashboard coherent snapshot", () => {
         expect(projection.positionsMtm).toBe(testCase.expected);
         const fact = projection.positionFacts.find((candidate) => candidate.tokenId === tokenId);
         expect(fact).toMatchObject({
-          heldShares: testCase.zero ? 0 : 10,
+          heldShares: testCase.zero ? 0 : testCase.name === "fresh winner" ? 10 : null,
           currentValueUsdc: testCase.expected,
           observedAt: observedAt.toISOString(),
           lifetimePnlUsdc: null,
           economicsCoverage: "partial",
         });
         if (testCase.outcome === "loser" && testCase.payout === "0" && !testCase.future) {
-          expect(fact?.inventoryCoverage).toBe("stale");
+          expect(fact?.inventoryCoverage).toBe("unavailable");
           expect(projection.closedPositions[0]).toMatchObject({
             currentPrice: 0,
             currentValue: 0,
@@ -528,6 +675,9 @@ describe("wallet dashboard coherent snapshot", () => {
     const wallet = await seedConnection({ userId, billingAccountId: account, address });
     const now = new Date();
     const observedAt = new Date(now.getTime() - testCase.age * 60_000);
+    // Isolate the existing event fence with a truthful same-generation row.
+    await db.update(polyTraderIngestionCursors).set({ lastSuccessAt: observedAt })
+      .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
     const eventAt = Math.floor(now.getTime() / 1000) + (testCase.clock === "future" ? 60 : -180);
     // Actual native composition omits the losing CLOSED aggregate; winner proof
     // and closedPosition survive while the whole cohort becomes partial.
@@ -595,9 +745,11 @@ describe("wallet dashboard coherent snapshot", () => {
       if (!trap) throw new Error("Missing mode trap");
       otherModeWalletId = trap.id;
       const observedAt = new Date(Date.now() - 1_000);
+      await db.update(polyTraderIngestionCursors).set({ lastSuccessAt: observedAt })
+        .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
       await db.insert(polyTraderCurrentPositions).values([
         { ...currentPosition(wallet.id, 0, conditionId), tokenId: "903", shares: "10", costBasisUsdc: "4", currentValueUsdc: "6", avgPrice: ".4", lastObservedAt: observedAt, raw: { title: "Own measured identity", outcome: "Own label" } },
-        { ...currentPosition(wallet.id, 1, conditionId), tokenId: "904", shares: "5", costBasisUsdc: "2", currentValueUsdc: "3", avgPrice: ".4", lastObservedAt: new Date(Date.now() - 60 * 60_000), raw: { title: "Own stale identity", outcome: "Unknown finance" } },
+        { ...currentPosition(wallet.id, 1, conditionId), tokenId: "904", shares: "5", costBasisUsdc: "2", currentValueUsdc: "3", avgPrice: ".4", lastObservedAt: new Date(Date.now() - (mode === "live" ? 60_000 : 60 * 60_000)), raw: { title: "Own stale identity", outcome: "Unknown finance" } },
         { ...currentPosition(trap.id, 0, conditionId), tokenId: "903", shares: "1000", costBasisUsdc: "400", currentValueUsdc: "600", lastObservedAt: observedAt, raw: { title: "Wrong mode trap", outcome: "Wrong mode" } },
       ]);
       await db.insert(polyCopyTradeTargets).values({ billingAccountId: account, createdByUserId: userId, targetWallet: target.walletAddress });
@@ -633,11 +785,11 @@ describe("wallet dashboard coherent snapshot", () => {
       expect(dashboard.execution.live_positions).toContainEqual(expect.objectContaining({ asset: "903", marketTitle: "Own measured identity", size: 10, pnlUsd: 2 }));
       expect(dashboard.execution.live_positions).toContainEqual(expect.objectContaining({ asset: "904", marketTitle: "Own stale identity", size: 5, currentValue: null, pnlUsd: null }));
       const line = dashboard.execution.market_groups.flatMap(group => group.lines).find(line => line.conditionId === conditionId);
-      expect(line?.ourEntryValueUsdc).toBe(6);
+      expect(line?.ourEntryValueUsdc).toBe(mode === "live" ? null : 6);
       expect(line?.ourValueUsdc).toBeNull();
       const own = line?.participants.find(p => p.side === "our_wallet");
       expect(own?.primary).toMatchObject({ tokenId: "903", shares: 10, costBasisUsdc: 4, currentValueUsdc: 6, pnlUsdc: null });
-      expect(own?.legs).toContainEqual(expect.objectContaining({ tokenId: "904", costBasisUsdc: 2, currentValueUsdc: null, pnlUsdc: null }));
+      expect(own?.legs).toContainEqual(expect.objectContaining({ tokenId: "904", costBasisUsdc: mode === "live" ? null : 2, currentValueUsdc: null, pnlUsdc: null }));
       expect(line?.participants.find(p => p.side === "copy_target")?.legs?.map(leg => leg.tokenId)).toEqual(["901", "902", "903"]);
       expect(line?.tokenComparisons).toContainEqual(expect.objectContaining({ ourTokenId: "903", targetTokenId: "903", relation: "same", economicsAvailability: "unavailable" }));
       expect(line?.edgeGapPct).toBeNull();

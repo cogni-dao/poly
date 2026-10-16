@@ -156,6 +156,7 @@ export async function readEconomicPositionProjection(params: {
     ), observer_summary AS MATERIALIZED (
       SELECT
         min(c.last_success_at) AS last_success_at,
+        max(c.last_success_at) AS latest_generation_at,
         CASE
           WHEN count(w.id) = 0 THEN NULL
           WHEN count(c.trader_wallet_id) < count(w.id) THEN 'partial'
@@ -235,6 +236,7 @@ export async function readEconomicPositionProjection(params: {
       SELECT
         g.condition_id,
         g.token_id,
+        g.chosen_wallet_id,
         p.shares,
         p.cost_basis_usdc,
         p.current_value_usdc,
@@ -393,6 +395,7 @@ export async function readEconomicPositionProjection(params: {
           AND oc.payout_consistent AND oc.terminal_outcome = 'loser'
           AND oc.resolved_at IS NOT NULL) AS terminal_zero_valuation,
         oc.resolved_at,
+        cf.chosen_wallet_id,
         cf.shares AS current_shares,
         cf.cost_basis_usdc AS current_cost_basis_usdc,
         cf.current_value_usdc,
@@ -446,6 +449,37 @@ export async function readEconomicPositionProjection(params: {
         ORDER BY m.fetched_at DESC, m.condition_id
         LIMIT 1
       ) mm ON TRUE
+    ), generation_authority AS MATERIALIZED (
+      SELECT b.*,
+        /* A retained positive is not an observation of a newer publication.
+           Keep the selected physical cursor association; an eligible sibling
+           cannot lend it authority. MAX deliberately includes future clocks:
+           overwritten authority cannot reconstruct an earlier capture. */
+        (${mode} = 'paper' OR b.current_shares = 0 OR COALESCE((
+          b.current_last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND observer.latest_generation_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND b.current_last_observed_at >= observer.latest_generation_at
+          AND NOT EXISTS (
+            SELECT 1 FROM poly_trader_current_positions future
+            JOIN wallet_identity w ON w.id = future.trader_wallet_id
+            WHERE lower(future.condition_id) = b.condition_id
+              AND future.token_id = b.token_id
+              AND future.last_observed_at > ${params.capturedAt.toISOString()}::timestamptz
+          )
+          AND EXISTS (
+            SELECT 1 FROM eligible_wallet_identity selected
+            JOIN poly_trader_ingestion_cursors cursor
+              ON cursor.trader_wallet_id = selected.id
+             AND cursor.source = 'data-api-positions'
+            WHERE selected.id = b.chosen_wallet_id
+              AND cursor.status = 'ok'
+              AND cursor.last_success_at IS NOT NULL
+              AND cursor.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
+              AND b.current_last_observed_at >= cursor.last_success_at
+          )
+        ), false)) AS live_positive_current_currency
+      FROM economic_position_base b
+      CROSS JOIN observer_summary observer
     ), event_authority AS MATERIALIZED (
       SELECT b.*,
         /* Lifetime completeness cannot waive a retained settlement's clock.
@@ -464,7 +498,7 @@ export async function readEconomicPositionProjection(params: {
               ELSE true END END
           ELSE true
         END AS current_after_economic_event
-      FROM economic_position_base b
+      FROM generation_authority b
     ), classified_raw AS MATERIALIZED (
       SELECT
         b.*,
@@ -472,8 +506,9 @@ export async function readEconomicPositionProjection(params: {
           AND NOT COALESCE(b.current_identity_conflict, false)
           AND b.current_last_observed_at >= COALESCE(b.last_flow_at, '-infinity'::timestamptz)
           AND b.current_after_economic_event
+          AND b.live_positive_current_currency
         ) AS inventory_authoritative,
-        (observer.status = 'ok' AND observer.complete
+        (b.live_positive_current_currency AND observer.status = 'ok' AND observer.complete
           AND observer.last_success_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'
           AND observer.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
           AND (b.current_shares = 0 OR b.current_last_observed_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes')
@@ -507,6 +542,7 @@ export async function readEconomicPositionProjection(params: {
           AND b.current_last_observed_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'
           AND b.current_last_observed_at >= COALESCE(b.last_flow_at, '-infinity'::timestamptz)
           AND b.current_after_economic_event
+          AND b.live_positive_current_currency
           AND observer.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
         ) AS mark_available,
         CASE
