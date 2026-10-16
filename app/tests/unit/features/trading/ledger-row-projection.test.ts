@@ -8,7 +8,7 @@
  *   fix): `mapLedgerRow` over the narrowed `LEDGER_ROW_COLUMNS` selection
  *   produces exactly the same `LedgerRow` as over a full `SELECT *` row —
  *   i.e. none of the excluded columns (`createdByUserId`, `marketId`,
- *   `price`, `shares`, `feesUsdc`) ever influenced the mapped output.
+ *   `price`, `feesUsdc`) ever influenced the mapped output.
  * Scope: Unit — pure mapper; no DB.
  * Side-effects: none
  * Links: src/features/trading/order-ledger.ts
@@ -22,6 +22,7 @@ import {
 } from "@/features/trading/order-ledger";
 
 const projectedRow: LedgerSelectedRow = {
+	shares: "50.00000000",
   targetId: "33333333-3333-4333-8333-333333333333",
   fillId: "data-api:fill-1",
   observedAt: new Date("2026-09-29T00:00:00.000Z"),
@@ -74,6 +75,7 @@ describe("mapLedgerRow projection equivalence (dashboard floor fix)", () => {
       observed_at: projectedRow.observedAt,
       client_order_id: projectedRow.clientOrderId,
       order_id: projectedRow.orderId,
+			executed_shares: 50,
       status: "filled",
       position_lifecycle: "open",
       attributes: projectedRow.attributes,
@@ -91,7 +93,7 @@ describe("mapLedgerRow projection equivalence (dashboard floor fix)", () => {
       createdByUserId: "99999999-9999-4999-8999-999999999999",
       marketId: "totally-different",
       price: "0.99000000",
-      shares: "1.00000000",
+
       feesUsdc: "9.99000000",
     };
     expect(mapLedgerRow(mutatedExtras)).toEqual(mapLedgerRow(projectedRow));

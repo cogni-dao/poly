@@ -24,20 +24,11 @@
  *     based redemption detection is deferred (task.0329).
  *   - GETORDER_NEVER_NULL — `getOrder` returns `GetOrderResult`; null is never a
  *     valid return. Callers branch on the discriminant. (task.0328 CP1)
- *   - GRACE_WINDOW_IS_CONFIG — not_found rows older than `notFoundGraceMs` are
- *     promoted to `canceled`; value sourced from `POLY_CLOB_NOT_FOUND_GRACE_MS`
- *     env var (default 900 000 ms). (task.0328 CP2)
- *   - UNPLACED_ROWS_TERMINALIZE — a row with no `order_id` past
- *     `UNPLACED_GRACE_MS` (24h, deliberately NOT the not_found grace) is
- *     promoted to `error` with reason `never_placed`. Without this such rows
- *     stay `pending` forever and permanently block wallet reset, which treats
- *     pending|open as unsettled. Residual risk, accepted and logged at warn:
- *     if placement DID reach the venue and the process died before
- *     `markOrderId`, the real order is no longer represented by this row. 24h
- *     makes that window implausible; dedup is unaffected because
- *     `snapshotState.cidRows` does not filter on status.
- *   - UPGRADE_IS_METERED — each not_found-to-canceled promotion increments
- *     `poly_reconciler_not_found_upgrades_total`. (task.0328 CP2)
+ *   - ABSENCE_IS_NOT_NONEXECUTION — neither age nor not_found releases a
+ *     reservation. Historical accepted errors and partial orders recover by
+ *     authenticated reads only; no PLACE or cancel is issued by this job.
+ *   - FAIR_RECOVERY — every attempted row rotates through a timestamp-only
+ *     scheduling write, including no-ID, not_found and exception outcomes.
  *   - SYNCED_AT_WRITTEN_ON_EVERY_SYNC — `markSynced` is called for every row
  *     for which `getOrder` returned a typed answer. (task.0328 CP3)
  *   - SYNC_HEALTH_IS_PUBLIC — `reconcilerLastTickAt` is stamped each tick and
@@ -57,6 +48,7 @@ import type {
   GetOrderResult,
   LoggerPort,
   MetricsPort,
+	OrderReceipt,
   OrderStatus,
 } from "@cogni/poly-market-provider";
 
@@ -65,6 +57,7 @@ import {
   type LedgerStatus,
   ledgerExecutedUsdc,
   type OrderLedger,
+	type UpdateStatusInput,
 } from "@/features/trading";
 import { EVENT_NAMES } from "@/shared/observability/events";
 
@@ -91,40 +84,6 @@ export const ORDER_RECONCILER_METRICS = {
 
 const RECONCILE_POLL_MS = 60_000;
 const DEFAULT_OLDER_THAN_MS = 30_000;
-/**
- * Grace before a row that never received an `order_id` is terminalized.
- *
- * Deliberately NOT `notFoundGraceMs`. That window answers "the CLOB is slow to
- * index an order we know exists" and 15 minutes is generous for it. This branch
- * asserts the opposite — that no order exists — and it can be wrong: per
- * INSERT_BEFORE_PLACE (`mirror-pipeline.ts`), a crash after the venue accepts
- * but before `markOrderId` leaves a real resting order with no id in the
- * ledger. 24h makes that window implausible while still clearing rows that
- * have been stuck for months.
- */
-const UNPLACED_GRACE_MS = 24 * 60 * 60 * 1000;
-
-/**
- * Paper's unplaced grace. The 24h above is sized for the LIVE CLOB, where a
- * placement really can still be in flight: the request crosses the public
- * internet, the venue may accept it after our client gave up, and promoting
- * the row to `error` too early would deny a resting order that exists.
- *
- * None of that is true for paper. `PaperAdapter` places over POD-LOOPBACK to
- * the sidecar and awaits the response synchronously, so the call either
- * returned an order id or it is never going to. Worse, the sidecar's SQLite is
- * ephemeral (`PM_TRADER_DATA_DIR` under /tmp), so a pod restart erases any
- * order it might have accepted — there is nothing left to deny.
- *
- * Carrying the live grace into paper costs a full DAY of a target's evidence
- * for one bad sidecar response: the null-`order_id` row keeps
- * `listOpenOrPending` returning it, position-gap v3 reads that as an ambiguous
- * placement and halts the target on it. Measured on candidate-a 2026-10-08 —
- * one `502 upstream_engine_failed` wedged RN1 for 24h. Paper experiments are
- * the thing this node runs many of; a day of lost evidence per bad response is
- * the difference between a usable lab and a decorative one.
- */
-const PAPER_UNPLACED_GRACE_MS = 2 * 60 * 1000;
 const DEFAULT_LIMIT = 200;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,20 +106,18 @@ export interface OrderReconcilerDeps {
   getOrderForTenant: (
     billing_account_id: string,
     order_id: string,
-    mode: "live" | "paper"
+		mode: "live" | "paper",
   ) => Promise<GetOrderResult>;
   logger: LoggerPort;
   metrics: MetricsPort;
   /**
-   * Grace window (ms) before a not_found row is promoted to canceled.
-   * GRACE_WINDOW_IS_CONFIG invariant (task.0328 CP2): read from
-   * `POLY_CLOB_NOT_FOUND_GRACE_MS` via server-env; default 900 000 (15 min).
+	 * Retained configuration compatibility. Age is never nonexecution proof.
    */
   notFoundGraceMs: number;
   /** Wake an account-local strategy actor after a durable ledger transition. */
   onOrderChanged?: (
     row: LedgerRow,
-    change: { status: LedgerStatus; reason?: string }
+		change: { status: LedgerStatus; reason?: string },
   ) => void;
   /**
    * Injected clock — returns the current wall time. Defaults to `() => new Date()`
@@ -205,6 +162,55 @@ function mapReceiptStatus(s: OrderStatus): LedgerStatus {
   }
 }
 
+/** A local cancellation acknowledgement is insufficient: use the exact
+ * authenticated order's final cumulative observation, with explicit evidence. */
+function finalCancellationObservation(
+	row: LedgerRow,
+	receipt: OrderReceipt,
+	observedAt: string,
+): UpdateStatusInput["final_order_observation"] {
+	if (receipt.status !== "canceled" || receipt.order_id !== row.order_id)
+		return undefined;
+	const cost = receipt.filled_size_usdc;
+	if (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0)
+		return undefined;
+	const matched = receipt.attributes?.sizeMatched;
+	const explicitZero =
+		(typeof matched === "number" ||
+			(typeof matched === "string" && matched.trim() !== "")) &&
+		Number.isFinite(Number(matched)) &&
+		Number(matched) === 0;
+	const shares = receipt.total_shares;
+	const price = receipt.fill_price;
+	const coherentFill =
+		typeof shares === "number" &&
+		Number.isFinite(shares) &&
+		shares > 0 &&
+		typeof price === "number" &&
+		Number.isFinite(price) &&
+		price > 0 &&
+		cost > 0 &&
+		Math.abs(shares * price - cost) <= Math.max(0.000001, cost * 0.000001);
+	const evidence =
+		row.mode === "paper" && (cost === 0 || coherentFill)
+			? ("paper_order_receipt" as const)
+			: cost === 0 && explicitZero
+				? ("explicit_zero_size_matched" as const)
+				: coherentFill &&
+						receipt.attributes?.realizedFillSource === "clob_associated_trades"
+					? ("clob_associated_trades" as const)
+					: undefined;
+	if (!evidence) return undefined;
+	return {
+		source: "venue_get_order",
+		order_id: receipt.order_id,
+		status: "canceled",
+		filled_size_usdc: cost,
+		observed_at: observedAt,
+		fill_evidence: evidence,
+	};
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure tick — exported for unit tests; job shim wraps it in setInterval.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,7 +222,7 @@ function mapReceiptStatus(s: OrderStatus): LedgerStatus {
  * @public
  */
 export async function runReconcileOnce(
-  deps: OrderReconcilerDeps
+	deps: OrderReconcilerDeps,
 ): Promise<void> {
   const log = deps.logger.child({ component: "order-reconciler" });
   const clock = deps.clock ?? (() => new Date());
@@ -232,124 +238,69 @@ export async function runReconcileOnce(
   // SYNCED_AT_WRITTEN_ON_EVERY_SYNC invariant (task.0328 CP3).
   const syncedIds: string[] = [];
 
+	const attemptedIds: string[] = [];
+	let unresolvedIdentityCount = 0;
+	try {
   for (const row of rows) {
+			attemptedIds.push(row.client_order_id);
+			// No exact venue identity exists. Retain the reservation, never guess
+			// identity from target fills or infer nonacceptance from elapsed time.
     if (!row.order_id) {
-      // No CLOB order id. Within grace this is a placement still in flight —
-      // markOrderId will stamp it. Past UNPLACED_GRACE_MS nothing ever will:
-      // `listOpenOrPending` keeps returning the row and this branch used to
-      // skip it unconditionally, so it stayed `pending` for months and
-      // permanently blocked wallet reset (which counts pending|open as
-      // unsettled). Reason `never_placed` is distinct from the not_found
-      // branch's `clob_not_found` so forensics can tell "never reached the
-      // venue" apart from "reached it, then the venue pruned it".
-      //
-      // Side effect, intended: leaving pending|open also releases this row's
-      // slot in the partial unique index `one_open_per_market`, which the
-      // stuck row had been holding against new mirror orders for that market.
-      const unplacedAgeMs = clock().getTime() - row.created_at.getTime();
-      // VENUE_SETS_THE_UNPLACED_GRACE — see PAPER_UNPLACED_GRACE_MS. `mode` is
-      // stamped on the row at insert from the writing account's own venue
-      // (MODE_STAMPED_FROM_ACCOUNT), so this needs no extra lookup and cannot
-      // disagree with the venue that actually attempted the placement.
-      const graceMs =
-        row.mode === "paper" ? PAPER_UNPLACED_GRACE_MS : UNPLACED_GRACE_MS;
-      if (unplacedAgeMs < graceMs) continue;
-
-      // `error`, not `canceled`. We never saw a venue response for this row,
-      // so claiming it was canceled asserts state we cannot verify. `error`
-      // says what is actually known: the placement never recorded an id.
-      // Both are outside UNSETTLED_ORDER_STATUSES, so either unblocks wallet
-      // reset — but only one of them is honest.
-      await deps.ledger.updateStatus({
-        client_order_id: row.client_order_id,
-        status: "error",
-        reason: "never_placed",
-      });
-      deps.onOrderChanged?.(row, {
-        status: "error",
-        reason: "never_placed",
-      });
-      // NOT pushed to syncedIds: `synced_at` records a typed CLOB response,
-      // and this row never produced one. The row leaves `listOpenOrPending`
-      // on the next tick anyway, so its staleness stops growing regardless.
-      deps.metrics.incr(ORDER_RECONCILER_METRICS.unplacedUpgradesTotal, {});
-      log.warn(
-        {
-          event: EVENT_NAMES.POLY_RECONCILER_UNPLACED_UPGRADE,
-          client_order_id: row.client_order_id,
-          billing_account_id: row.billing_account_id,
-          ageMs: unplacedAgeMs,
-        },
-        "reconciler: terminalizing row that never recorded a CLOB order id — if placement did reach the venue, this row stops representing it"
-      );
+				unresolvedIdentityCount++;
       continue;
     }
-
     try {
       const result = await deps.getOrderForTenant(
         row.billing_account_id,
         row.order_id,
-        row.mode
+					row.mode,
       );
-      // getOrder returned a typed response — mark as synced regardless of branch.
-      syncedIds.push(row.client_order_id);
-
+      if (!result || typeof result !== "object" ||
+        (!("found" in result) && result.status !== "not_found")) {
+        throw new Error("invalid_order_read_response");
+      }
       if (!("found" in result)) {
-        const ageMs = clock().getTime() - row.created_at.getTime();
-        if (ageMs < deps.notFoundGraceMs) {
-          // Still within grace — assume CLOB is just slow to index.
+        syncedIds.push(row.client_order_id);
           log.debug(
             {
               event: EVENT_NAMES.POLY_RECONCILER_NOT_FOUND,
               client_order_id: row.client_order_id,
-              ageMs,
+							errorCode: "order_absence_unresolved",
             },
-            "CLOB getOrder returned not_found (within grace window)"
-          );
-          continue;
-        }
-        // Beyond grace — CLOB has pruned or the order was canceled and we
-        // missed the transition. Promote to canceled with a distinct reason
-        // so forensics can tell this apart from a normal user/market cancel.
-        await deps.ledger.updateStatus({
-          client_order_id: row.client_order_id,
-          status: "canceled",
-          reason: "clob_not_found",
-        });
-        deps.onOrderChanged?.(row, {
-          status: "canceled",
-          reason: "clob_not_found",
-        });
-        deps.metrics.incr(ORDER_RECONCILER_METRICS.notFoundUpgradesTotal, {});
-        log.info(
-          {
-            event: EVENT_NAMES.POLY_RECONCILER_NOT_FOUND_UPGRADE,
-            client_order_id: row.client_order_id,
-            order_id: row.order_id,
-            ageMs,
-          },
-          "reconciler: promoting stuck row to canceled (CLOB not_found > grace)"
+						"reconciler: order not found; reservation retained",
         );
         continue;
       }
       const receipt = result.found;
-
+        if (!receipt || receipt.order_id !== row.order_id)
+          throw new Error("order_identity_mismatch");
+        syncedIds.push(row.client_order_id);
       const newStatus = mapReceiptStatus(receipt.status);
+				const finalObservation = finalCancellationObservation(
+					row,
+					receipt,
+					clock().toISOString(),
+				);
       const filledChanged =
         receipt.filled_size_usdc !== undefined &&
         receipt.filled_size_usdc !== ledgerExecutedUsdc(row);
       const sourceChanged =
         receipt.attributes?.realizedFillSource === "clob_associated_trades" &&
         row.attributes?.realized_fill_source !== "clob_associated_trades";
-      if (newStatus === row.status && !filledChanged && !sourceChanged) {
-        // Nothing changed — avoid a gratuitous UPDATE + updated_at churn.
+				if (
+					newStatus === row.status &&
+					!filledChanged &&
+					!sourceChanged &&
+					!finalObservation
+				)
         continue;
-      }
-
       await deps.ledger.updateStatus({
         client_order_id: row.client_order_id,
+					order_id: row.order_id,
         status: newStatus,
-        filled_size_usdc: receipt.filled_size_usdc ?? undefined,
+					...(receipt.filled_size_usdc !== undefined
+						? { filled_size_usdc: receipt.filled_size_usdc }
+						: {}),
         ...(receipt.fill_price !== undefined
           ? { fill_price: receipt.fill_price }
           : {}),
@@ -359,17 +310,19 @@ export async function runReconcileOnce(
         ...(receipt.fees_usdc !== undefined
           ? { fees_usdc: receipt.fees_usdc }
           : {}),
-        ...(receipt.attributes?.realizedFillSource === "clob_associated_trades"
+					...(receipt.attributes?.realizedFillSource ===
+					"clob_associated_trades"
           ? { realized_fill_source: "clob_associated_trades" as const }
+						: {}),
+					...(finalObservation
+						? { final_order_observation: finalObservation }
           : {}),
       });
       deps.onOrderChanged?.(row, { status: newStatus });
-
       deps.metrics.incr(ORDER_RECONCILER_METRICS.updatesTotal, {
         from: row.status,
         to: newStatus,
       });
-
       log.info(
         {
           event: EVENT_NAMES.POLY_RECONCILER_STATUS_UPDATED,
@@ -377,14 +330,14 @@ export async function runReconcileOnce(
           order_id: row.order_id,
           from: row.status,
           to: newStatus,
+						final_execution_proven: finalObservation !== undefined,
           realized_fill_fields_observed:
             typeof receipt.fill_price === "number" &&
             typeof receipt.total_shares === "number",
         },
-        "reconciler: status updated"
+					"reconciler: authenticated order observation persisted",
       );
-    } catch (err: unknown) {
-      // getOrder threw — do NOT add to syncedIds; row staleness grows.
+			} catch {
       deps.metrics.incr(ORDER_RECONCILER_METRICS.errorsTotal, {});
       log.error(
         {
@@ -392,11 +345,25 @@ export async function runReconcileOnce(
           errorCode: "reconcile_row_error",
           client_order_id: row.client_order_id,
           order_id: row.order_id,
-          err: err instanceof Error ? err.message : String(err),
         },
-        "reconciler: row error (continuing)"
+					"reconciler: row unresolved; reservation retained",
       );
     }
+		}
+	} finally {
+		// Fair scheduling is independent of execution state and venue freshness.
+		await deps.ledger.markReconcileAttempted(attemptedIds);
+	}
+
+	if (unresolvedIdentityCount > 0) {
+		log.warn(
+			{
+				event: EVENT_NAMES.POLY_MIRROR_RECONCILE_TICK_ERROR,
+				errorCode: "unidentified_execution_reservations",
+				unresolved_count: unresolvedIdentityCount,
+			},
+			"reconciler: exact order identity unavailable; reservations retained",
+		);
   }
 
   // Bulk-stamp synced_at for all rows that got a typed CLOB response this tick.
@@ -418,7 +385,7 @@ export async function runReconcileOnce(
  * @public
  */
 export function startOrderReconciler(
-  deps: OrderReconcilerDeps
+	deps: OrderReconcilerDeps,
 ): OrderReconcilerHandle {
   const log = deps.logger.child({
     component: "order-reconciler-job",
@@ -429,7 +396,7 @@ export function startOrderReconciler(
       event: EVENT_NAMES.POLY_MIRROR_RECONCILE_SINGLETON_CLAIM,
       poll_ms: RECONCILE_POLL_MS,
     },
-    "order reconciler starting (SINGLE_WRITER — alert on duplicate pods running this; dispatches getOrder per tenant via billing_account_id)"
+		"order reconciler starting (SINGLE_WRITER — alert on duplicate pods running this; dispatches getOrder per tenant via billing_account_id)",
   );
 
   // In-memory last-tick timestamp. Updated at the END of each successful tick
@@ -452,7 +419,7 @@ export function startOrderReconciler(
           errorCode: "tick_escaped_handler",
           err: err instanceof Error ? err.message : String(err),
         },
-        "order reconciler: tick threw (continuing)"
+				"order reconciler: tick threw (continuing)",
       );
     }
   }
@@ -469,7 +436,7 @@ export function startOrderReconciler(
       clearInterval(intervalHandle);
       log.info(
         { event: EVENT_NAMES.POLY_MIRROR_RECONCILE_STOPPED },
-        "order reconciler stopped"
+				"order reconciler stopped",
       );
     },
     getLastTickAt() {

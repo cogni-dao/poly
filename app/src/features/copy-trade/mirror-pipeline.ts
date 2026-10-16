@@ -624,9 +624,8 @@ async function processFill(
   // plan-mirror.ts:577). When the fill arrives without an asset OR with an
   // empty asset (defensive — buildIntent's fallback shape), skip the cap-read;
   // the planner will treat `cumulative_intent_usdc_for_token` as undefined and
-  // bypass the cap check (preserves SELL/legacy paths). The atomic
-  // `insertPending` cap-check applies the same empty-token bypass, so both
-  // enforcement points agree.
+	// skip its planning cap read. The atomic insert rejects a capped BUY
+	// without an exact token ID, so missing identity never creates capacity.
   const rawFillTokenId =
     typeof fill.attributes?.asset === "string"
       ? fill.attributes.asset
@@ -1818,6 +1817,15 @@ async function executeMirrorOrder(
       client_order_id,
       reason: terminalReason,
     });
+		await deps.ledger.markError({
+			client_order_id,
+			error: terminalReason,
+			non_execution_proof: {
+				source: "pre_dispatch_retirement",
+				reason: terminalReason,
+				observed_at: new Date().toISOString(),
+			},
+		});
     await tenantLedger.recordDecision({
       ...decisionBase,
       mode_override: mode,
@@ -1966,6 +1974,7 @@ async function executeMirrorOrder(
     return;
   }
 
+	let receipt: OrderReceipt;
   try {
     if (placementMode !== planningMode) {
       throw new Error(
@@ -1977,51 +1986,7 @@ async function executeMirrorOrder(
       return;
     }
     venueDispatchStarted = true;
-    const receipt = await executor(intent, placementMode);
-    await deps.ledger.markOrderId({
-      client_order_id,
-      receipt,
-    });
-    emitDecisionMetric(deps.metrics, "placed", reason, source, placement);
-    await tenantLedger.recordDecision({
-      ...decisionBase,
-      mode_override: placementMode,
-      outcome: "placed",
-      reason,
-      intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
-        ...decisionLogFields,
-        side: intent.side,
-        close: intent.side === "SELL",
-        position_branch: decisionLogFields?.position_branch ?? "new_entry",
-      }),
-      receipt: {
-        order_id: receipt.order_id,
-        client_order_id: receipt.client_order_id,
-        status: receipt.status,
-        filled_size_usdc: receipt.filled_size_usdc ?? 0,
-        submitted_at: receipt.submitted_at,
-      },
-    });
-    log.info(
-      {
-        event: EVENT_NAMES.POLY_MIRROR_DECISION,
-        outcome: "placed",
-        reason,
-        source,
-        fill_id: fill.fill_id,
-        client_order_id,
-        order_id: receipt.order_id,
-        // Sized notional from the planner. Lets us verify sizing-policy
-        // effects (D6 proportional scaling, percentile interpolation, follow-
-        // up branch sizing) directly from the decision log — without joining
-        // to `poly.copy_trade.execute` by `client_order_id`.
-        size_usdc: intent.size_usdc,
-        limit_price: intent.limit_price,
-        ...decisionLogFields,
-        execution_mode: placementMode,
-      },
-			"mirror pipeline: placed",
-    );
+		receipt = await executor(intent, placementMode);
   } catch (err: unknown) {
     if (
       !venueDispatchStarted &&
@@ -2053,7 +2018,25 @@ async function executeMirrorOrder(
           ? err.name
           : null;
     deps.metrics.incr(MIRROR_PIPELINE_METRICS.placementErrorsTotal, {});
-    await deps.ledger.markError({ client_order_id, error: msg });
+		await deps.ledger.markError({
+			client_order_id,
+			error: msg,
+			...(!venueDispatchStarted ||
+			(detailsObj.error_class === "PolyTradeExecutorError" &&
+				adapterErrorCode === "authorize_denied")
+				? {
+						non_execution_proof: {
+							source: !venueDispatchStarted
+								? ("pre_dispatch_retirement" as const)
+								: ("executor_authorize_denied" as const),
+							reason: !venueDispatchStarted
+								? "venue_changed_before_dispatch"
+								: "authorize_denied",
+							observed_at: new Date().toISOString(),
+						},
+					}
+				: {}),
+		});
     emitDecisionMetric(
       deps.metrics,
       "error",
@@ -2104,6 +2087,101 @@ async function executeMirrorOrder(
         ? "mirror pipeline: FOK no-match — clean skip, no retry"
 				: "mirror pipeline: placement error",
     );
+		return;
+	}
+
+	// The venue receipt is truth even if subsequent persistence/audit fails.
+	// Emit identity before DB acknowledgement, so an outage is recoverable.
+	log.info(
+		{
+			event: EVENT_NAMES.POLY_MIRROR_DECISION,
+			outcome: "placed",
+			reason,
+			source,
+			fill_id: fill.fill_id,
+			client_order_id,
+			order_id: receipt.order_id,
+			size_usdc: intent.size_usdc,
+			limit_price: intent.limit_price,
+			execution_mode: placementMode,
+			...decisionLogFields,
+		},
+		"mirror pipeline: placed",
+	);
+	try {
+		await deps.ledger.markOrderId({ client_order_id, receipt });
+	} catch {
+		try {
+			await deps.ledger.updateStatus({
+				client_order_id,
+				order_id: receipt.order_id,
+				status:
+					receipt.status === "filled" ||
+					receipt.status === "partial" ||
+					receipt.status === "canceled"
+						? receipt.status
+						: "open",
+				filled_size_usdc: receipt.filled_size_usdc,
+				...(receipt.fill_price !== undefined
+					? { fill_price: receipt.fill_price }
+					: {}),
+				...(receipt.total_shares !== undefined
+					? { total_shares: receipt.total_shares }
+					: {}),
+				...(receipt.fees_usdc !== undefined
+					? { fees_usdc: receipt.fees_usdc }
+					: {}),
+				...(receipt.attributes?.realizedFillSource === "clob_associated_trades"
+					? { realized_fill_source: "clob_associated_trades" as const }
+					: {}),
+			});
+		} catch {
+			log.error(
+				{
+					event: EVENT_NAMES.POLY_MIRROR_DECISION,
+					phase: "receipt_persistence",
+					errorCode: "receipt_persistence_failed",
+					client_order_id,
+					order_id: receipt.order_id,
+					status: receipt.status,
+					filled_size_usdc: receipt.filled_size_usdc,
+				},
+				"mirror pipeline: accepted receipt persistence unresolved; reservation retained",
+			);
+		}
+	}
+	try {
+		emitDecisionMetric(deps.metrics, "placed", reason, source, placement);
+		await tenantLedger.recordDecision({
+			...decisionBase,
+			mode_override: placementMode,
+			outcome: "placed",
+			reason,
+			intent: buildDecisionIntentBlob(fill, deps.target, client_order_id, {
+				...decisionLogFields,
+				side: intent.side,
+				close: intent.side === "SELL",
+				position_branch: decisionLogFields?.position_branch ?? "new_entry",
+			}),
+			receipt: {
+				order_id: receipt.order_id,
+				client_order_id: receipt.client_order_id,
+				status: receipt.status,
+				filled_size_usdc: receipt.filled_size_usdc ?? 0,
+				submitted_at: receipt.submitted_at,
+			},
+		});
+	} catch {
+		log.error(
+			{
+				event: EVENT_NAMES.POLY_MIRROR_DECISION,
+				phase: "audit",
+				errorCode: "placement_audit_failed",
+				client_order_id,
+				order_id: receipt.order_id,
+			},
+			"mirror pipeline: accepted placement audit failed",
+		);
   }
 }
 

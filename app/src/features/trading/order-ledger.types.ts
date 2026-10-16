@@ -54,6 +54,8 @@ export interface LedgerRow {
   observed_at: Date;
   client_order_id: string;
   order_id: string | null;
+	/** Read-only accepted share evidence; capacity helpers never turn intent into holdings. */
+	readonly executed_shares?: number;
   status: LedgerStatus;
   position_lifecycle: LedgerPositionLifecycle | null;
   attributes: Record<string, unknown> | null;
@@ -174,10 +176,10 @@ export class AlreadyRestingError extends Error {
   constructor(
     readonly billing_account_id: string,
     readonly target_id: string,
-    readonly market_id: string
+		readonly market_id: string,
   ) {
     super(
-      `AlreadyRestingError: open mirror order exists for (${billing_account_id}, ${target_id}, ${market_id})`
+			`AlreadyRestingError: open mirror order exists for (${billing_account_id}, ${target_id}, ${market_id})`,
     );
     this.name = "AlreadyRestingError";
   }
@@ -201,10 +203,10 @@ export class PositionCapReachedError extends Error {
     readonly token_id: string,
     readonly current_intent_usdc: number,
     readonly proposed_intent_usdc: number,
-    readonly max_intent_usdc: number
+		readonly max_intent_usdc: number,
   ) {
     super(
-      `PositionCapReachedError: active intent ${current_intent_usdc} + ${proposed_intent_usdc} exceeds ${max_intent_usdc} for (${billing_account_id}, ${market_id}, ${token_id})`
+			`PositionCapReachedError: active intent ${current_intent_usdc} + ${proposed_intent_usdc} exceeds ${max_intent_usdc} for (${billing_account_id}, ${market_id}, ${token_id})`,
     );
     this.name = "PositionCapReachedError";
   }
@@ -365,6 +367,26 @@ export interface ListOpenOrPendingOptions {
   limit?: number;
 }
 
+/** Evidence recorded only before venue dispatch. Absence remains ambiguous. */
+export interface NonExecutionProof {
+	source: "executor_authorize_denied" | "pre_dispatch_retirement";
+	reason: string;
+	observed_at: string;
+}
+
+/** Authenticated final cumulative execution observation for this exact order. */
+export interface FinalOrderObservation {
+	source: "venue_get_order";
+	order_id: string;
+	status: "canceled";
+	filled_size_usdc: number;
+	observed_at: string;
+	fill_evidence:
+		| "explicit_zero_size_matched"
+		| "clob_associated_trades"
+		| "paper_order_receipt";
+}
+
 /** Input to `updateStatus` — reconciler writes new CLOB-derived status. */
 export interface UpdateStatusInput {
   client_order_id: string;
@@ -386,6 +408,7 @@ export interface UpdateStatusInput {
    * `attributes.error`.
    */
   reason?: string;
+	final_order_observation?: FinalOrderObservation;
 }
 
 /** Input to clear ledger exposure after a token is no longer held. */
@@ -464,7 +487,7 @@ export interface TenantOrderLedger {
    */
   cumulativeIntentForMarketToken(
     market_id: string,
-    token_id: string
+		token_id: string,
   ): Promise<number>;
 
   /**
@@ -549,7 +572,7 @@ export interface OrderLedger {
    */
   snapshotState(
     target_id: string,
-    billing_account_id: string
+		billing_account_id: string,
   ): Promise<StateSnapshot>;
 
   /**
@@ -564,27 +587,12 @@ export interface OrderLedger {
    * Operator-level dollar bound lives at `authorizeIntent` (daily / hourly
    * grant caps), not here.
    *
-   * **Intent for active rows, realized for terminated rows.** Per-status weight:
-   *   - `pending | open | filled | partial` → `size_usdc` (full intent — we
-   *     are still committed). v0 chooses intent because the FOK-heavy mirror
-   *     regime fills only ~14% of placements; a purely-filled-based cap would
-   *     let no-match attempts keep firing through the cap. Revisit once
-   *     task.0427's design pass lands and the miss rate drops.
-   *   - `error AND placement = market_fok` → `size_usdc` (bug.0430 broadcast
-   *     race: CLOB returns error but the on-chain CTF can still mint).
-   *   - `canceled` → `filled_size_usdc` if present, else `size_usdc`
-   *     (bug.5050 CAP_COUNTS_REALIZED_ON_CANCEL: a STALE_RESTING_CANCEL_REPLACE
-   *     on a partially-filled order leaves the realized shares in our wallet
-   *     even after `markCanceled` flips status to terminal — those shares
-   *     must still count or the next placement leaks past the cap. The
-   *     `size_usdc` fallback is pessimistic for legacy rows where the
-   *     order-reconciler has not yet populated `filled_size_usdc`).
-   *   - `error AND placement = limit` → 0 (CLOB-rejected at API boundary,
-   *     no chain effect).
-   *
-   * Rows with terminal `position_lifecycle` (closed/redeemed/loser/dust/
-   * abandoned) or `attributes.closed_at IS NOT NULL` are excluded outright —
-   * the position is no longer in our wallet.
+	 * Full intended reservation (at least accepted execution) for every active
+	 * pending/open/partial/filled/error row, including ambiguous failures with
+	 * no order ID. Cancellation releases only its unexecuted remainder after
+	 * authenticated exact-order final execution proof; explicit pre-dispatch
+	 * denial can release only in the absence of contradictory execution.
+	 * Typed terminal lifecycle is authority; JSON closed_at alone is not.
    *
    * Cross-target by design (the cap is on the tenant's exposure to a market×
    * token, not per-target). Fail-closed: returns `Infinity` on DB error so
@@ -598,7 +606,7 @@ export interface OrderLedger {
   cumulativeIntentForMarketToken(
     billing_account_id: string,
     market_id: string,
-    token_id: string
+		token_id: string,
   ): Promise<number>;
 
   /**
@@ -616,7 +624,11 @@ export interface OrderLedger {
   }): Promise<void>;
 
   /** Transition pending → error. `error` is stored in `attributes.error`. */
-  markError(params: { client_order_id: string; error: string }): Promise<void>;
+	markError(params: {
+		client_order_id: string;
+		error: string;
+		non_execution_proof?: NonExecutionProof;
+	}): Promise<void>;
 
   /** Transition any → canceled. Writes `attributes.reason`. task.5001. */
   markCanceled(params: {
@@ -630,7 +642,7 @@ export interface OrderLedger {
    * `attributes.closed_at` as close timestamp metadata.
    */
   markPositionClosedByAsset(
-    input: MarkPositionClosedByAssetInput
+		input: MarkPositionClosedByAssetInput,
   ): Promise<number>;
 
   /**
@@ -641,7 +653,7 @@ export interface OrderLedger {
    * `redeem_pending`.
    */
   markPositionLifecycleByAsset(
-    input: MarkPositionLifecycleByAssetInput
+		input: MarkPositionLifecycleByAssetInput,
   ): Promise<number>;
 
   /**
@@ -650,7 +662,7 @@ export interface OrderLedger {
    * either explicit `attributes.condition_id` or promoted `market_id` values.
    */
   markPositionLifecycleByConditionId(
-    input: MarkPositionLifecycleByConditionIdInput
+		input: MarkPositionLifecycleByConditionIdInput,
   ): Promise<number>;
 
   /**
@@ -716,11 +728,9 @@ export interface OrderLedger {
   }): Promise<Array<{ day: string; n: number }>>;
 
   /**
-   * Return all rows with `status IN ('pending', 'open')` that are older than
-   * `olderThanMs` milliseconds (default 30 000). Ordered by `created_at ASC`
-   * so the reconciler processes oldest-first. Default limit 200.
-   *
-   * Used exclusively by the order reconciler job (task.0323 §2).
+	 * Bounded recovery of pending/open/partial/error and unproven canceled
+	 * rows. Ordered by the latest attempt/venue timestamp, then creation/ID;
+	 * every attempted outcome rotates behind untouched rows. Default limit200.
    */
   listOpenOrPending(opts?: ListOpenOrPendingOptions): Promise<LedgerRow[]>;
 
@@ -746,6 +756,8 @@ export interface OrderLedger {
    * SYNCED_AT_WRITTEN_ON_EVERY_SYNC invariant (task.0328 CP3).
    */
   markSynced(client_order_ids: string[]): Promise<void>;
+	/** Scheduling only: never changes venue truth, fills, or synced_at. */
+	markReconcileAttempted(client_order_ids: string[]): Promise<void>;
 
   /**
    * Return aggregate sync-freshness stats for the health endpoint.

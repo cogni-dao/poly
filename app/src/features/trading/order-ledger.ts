@@ -26,12 +26,12 @@
 import { withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
 import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
-import type { OrderIntent } from "@cogni/poly-market-provider";
 import {
   polyAlgorithmInputSnapshots,
   polyCopyTradeDecisions,
   polyCopyTradeFills,
 } from "@cogni/poly-db-schema/copy-trade";
+import type { OrderIntent } from "@cogni/poly-market-provider";
 import {
   and,
   count,
@@ -61,6 +61,7 @@ import {
   type MarkPositionClosedByAssetInput,
   type MarkPositionLifecycleByAssetInput,
   type MarkPositionLifecycleByConditionIdInput,
+	type NonExecutionProof,
   type OpenOrderRow,
   type OrderLedger,
   type OrderLedgerAlgorithmInputSnapshot,
@@ -227,6 +228,52 @@ const nonTerminalPositionLifecycle = sql`(${polyCopyTradeFills.positionLifecycle
 const activeRestingPositionLifecycle = sql`(${polyCopyTradeFills.positionLifecycle} IS NULL OR ${polyCopyTradeFills.positionLifecycle} IN ('unresolved','open','closing'))`;
 const notPositionTerminal = sql`${nonTerminalPositionLifecycle} AND ${polyCopyTradeFills.attributes}->>'closed_at' IS NULL`;
 const activeRestingPosition = sql`${activeRestingPositionLifecycle} AND ${polyCopyTradeFills.attributes}->>'closed_at' IS NULL`;
+// One reservation amount for the planning read AND the advisory-locked insert.
+// Legacy status/error labels and local cancellation acknowledgements are not
+// evidence that a request never executed. Only authenticated proof releases it.
+const intendedReservation = sql`CASE
+  WHEN COALESCE(${polyCopyTradeFills.attributes}->>'size_usdc', 'missing_intent')::numeric >= 0
+    THEN COALESCE(${polyCopyTradeFills.attributes}->>'size_usdc', 'missing_intent')::numeric
+  ELSE ('invalid_intent_' || ${polyCopyTradeFills.clientOrderId})::numeric END`;
+const acceptedReservation = sql`CASE
+  WHEN COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '0')::numeric >= 0
+    THEN COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '0')::numeric
+  ELSE ('invalid_fill_' || ${polyCopyTradeFills.clientOrderId})::numeric END`;
+const nonExecutionProven = sql`(
+  ${polyCopyTradeFills.orderId} IS NULL AND ${acceptedReservation} = 0
+  AND COALESCE(${polyCopyTradeFills.shares}, 0) <= 0
+  AND ${polyCopyTradeFills.status} IN ('pending','error','canceled')
+  AND ${polyCopyTradeFills.attributes}->'non_execution_proof'->>'source'
+    IN ('executor_authorize_denied','pre_dispatch_retirement')
+  AND NULLIF(${polyCopyTradeFills.attributes}->'non_execution_proof'->>'observed_at', '') IS NOT NULL
+  AND NULLIF(${polyCopyTradeFills.attributes}->'non_execution_proof'->>'reason', '') IS NOT NULL
+)`;
+const finalCancellationProven = sql`(
+  ${polyCopyTradeFills.orderId} IS NOT NULL
+  AND ${polyCopyTradeFills.attributes}->'final_order_observation'->>'source' = 'venue_get_order'
+  AND ${polyCopyTradeFills.attributes}->'final_order_observation'->>'order_id' = ${polyCopyTradeFills.orderId}
+  AND ${polyCopyTradeFills.attributes}->'final_order_observation'->>'status' = 'canceled'
+  AND ${polyCopyTradeFills.attributes}->'final_order_observation'->>'fill_evidence'
+    IN ('explicit_zero_size_matched','clob_associated_trades','paper_order_receipt')
+  AND (
+    (${polyCopyTradeFills.attributes}->'final_order_observation'->>'fill_evidence' = 'explicit_zero_size_matched'
+      AND (${polyCopyTradeFills.attributes}->'final_order_observation'->>'filled_size_usdc')::numeric = 0)
+    OR (${polyCopyTradeFills.attributes}->'final_order_observation'->>'fill_evidence' = 'clob_associated_trades'
+      AND (${polyCopyTradeFills.attributes}->'final_order_observation'->>'filled_size_usdc')::numeric > 0)
+    OR (${polyCopyTradeFills.attributes}->'final_order_observation'->>'fill_evidence' = 'paper_order_receipt'
+      AND ${polyCopyTradeFills.mode} = 'paper')
+  )
+  AND NULLIF(${polyCopyTradeFills.attributes}->'final_order_observation'->>'observed_at', '') IS NOT NULL
+  AND (${polyCopyTradeFills.attributes}->'final_order_observation'->>'filled_size_usdc')::numeric >= 0
+  AND (COALESCE(${polyCopyTradeFills.shares}, 0) <= 0 OR ${acceptedReservation} > 0)
+)`;
+const reservedIntentUsdc = sql<string>`CASE
+  WHEN ${nonExecutionProven} THEN 0
+  WHEN ${polyCopyTradeFills.status} = 'canceled' AND ${finalCancellationProven}
+    THEN GREATEST(${acceptedReservation}, (${polyCopyTradeFills.attributes}->'final_order_observation'->>'filled_size_usdc')::numeric)
+  ELSE GREATEST(${intendedReservation}, ${acceptedReservation})
+END`;
+const reconcileAttemptAt = sql`GREATEST(${polyCopyTradeFills.updatedAt}, COALESCE(${polyCopyTradeFills.syncedAt}, ${polyCopyTradeFills.createdAt}))`;
 const hasPositionLifecycleOrExecution = sql`(
   ${polyCopyTradeFills.positionLifecycle} IS NOT NULL
   OR ${polyCopyTradeFills.status} IN ('filled','partial')
@@ -512,22 +559,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     try {
       const rows = await db
         .select({
-          sum: sum(
-            sql<string>`CASE
-                WHEN ${polyCopyTradeFills.status} = 'canceled'
-                  THEN COALESCE(
-                    (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric,
-                    (${polyCopyTradeFills.attributes}->>'size_usdc')::numeric,
-                    0
-                  )
-                WHEN ${polyCopyTradeFills.status} IN ('pending','open','filled','partial')
-                  THEN COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)
-                WHEN ${polyCopyTradeFills.status} = 'error'
-                     AND ${polyCopyTradeFills.attributes}->>'placement' = 'market_fok'
-                  THEN COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)
-                ELSE 0
-              END`,
-          ),
+					sum: sum(reservedIntentUsdc),
         })
         .from(polyCopyTradeFills)
         .where(
@@ -535,23 +567,13 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             eq(polyCopyTradeFills.billingAccountId, billing_account_id),
             eq(polyCopyTradeFills.marketId, market_id),
             sql`${polyCopyTradeFills.attributes}->>'token_id' = ${token_id}`,
-            activeRestingPosition,
-            or(
-              inArray(polyCopyTradeFills.status, [
-                "pending",
-                "open",
-                "filled",
-                "partial",
-                "canceled",
-              ]),
-              and(
-                eq(polyCopyTradeFills.status, "error"),
-								sql`${polyCopyTradeFills.attributes}->>'placement' = 'market_fok'`,
-							),
-						),
+						nonTerminalPositionLifecycle,
 					),
         );
-      return Number(rows[0]?.sum ?? 0);
+			const total = Number(rows[0]?.sum ?? 0);
+			if (!Number.isFinite(total) || total < 0)
+				throw new Error("invalid_reservation");
+			return total;
     } catch (err: unknown) {
       log.warn(
         {
@@ -804,7 +826,11 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 
     const insert = async (insertDb: AnyDb) => {
 			if (input.input_snapshot) {
-				await persistAlgorithmInputSnapshot(insertDb, input, input.input_snapshot);
+				await persistAlgorithmInputSnapshot(
+					insertDb,
+					input,
+					input.input_snapshot,
+				);
 			}
       await insertDb
         .insert(polyCopyTradeFills)
@@ -822,8 +848,8 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       // CAP_IS_PER_TOKEN_ID (bug.5004): the atomic check requires a real
       // token_id. `plan-mirror.ts::buildIntent` falls back to `""` when
       // `fill.attributes.asset` is non-string (defensive); treat that as
-      // "no per-token cap available" rather than scoping to an empty-string
-      // token (which would silently match no rows and bypass the cap).
+			// invalid capped BUY rather than scoping to an empty-string token
+			// (which would silently match no rows and bypass the cap).
       const rawTokenId =
         typeof input.intent.attributes?.token_id === "string"
           ? input.intent.attributes.token_id
@@ -832,6 +858,17 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         rawTokenId !== undefined && rawTokenId.length > 0
           ? rawTokenId
           : undefined;
+			if (
+				input.max_market_intent_usdc !== undefined &&
+				input.intent.side === "BUY" &&
+				(!intentTokenId ||
+					!Number.isFinite(input.max_market_intent_usdc) ||
+					input.max_market_intent_usdc < 0 ||
+					!Number.isFinite(input.intent.size_usdc) ||
+					input.intent.size_usdc <= 0)
+			) {
+				throw new Error("invalid_cap_intent");
+			}
       if (
         input.max_market_intent_usdc !== undefined &&
         input.intent.side === "BUY" &&
@@ -867,9 +904,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           );
           const rows = await tx
             .select({
-              sum: sum(
-								sql<string>`COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)`,
-              ),
+							sum: sum(reservedIntentUsdc),
             })
             .from(polyCopyTradeFills)
             .where(
@@ -880,22 +915,12 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
                 ),
                 eq(polyCopyTradeFills.marketId, input.intent.market_id),
                 sql`${polyCopyTradeFills.attributes}->>'token_id' = ${lockToken}`,
-                activeRestingPosition,
-                or(
-                  inArray(polyCopyTradeFills.status, [
-                    "pending",
-                    "open",
-                    "filled",
-                    "partial",
-                  ]),
-                  and(
-                    eq(polyCopyTradeFills.status, "error"),
-										sql`${polyCopyTradeFills.attributes}->>'placement' = 'market_fok'`,
-									),
-								),
+								nonTerminalPositionLifecycle,
 							),
             );
           const currentIntent = Number(rows[0]?.sum ?? 0);
+					if (!Number.isFinite(currentIntent) || currentIntent < 0)
+						throw new Error("invalid_reservation");
           if (currentIntent + input.intent.size_usdc > maxMarketIntentUsdc) {
             throw new PositionCapReachedError(
               input.billing_account_id,
@@ -1024,7 +1049,10 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 		) {
 			throw new Error("lineage_identity_ambiguous");
 		}
-		const canonical = snapshot.canonical_input as Record<string, unknown> | null;
+		const canonical = snapshot.canonical_input as Record<
+			string,
+			unknown
+		> | null;
 		const fill = canonical?.fill as Record<string, unknown> | undefined;
 		const intentRecord = intent as Record<string, unknown>;
 		const attributes: Record<string, unknown> =
@@ -1042,13 +1070,22 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 			}
 		}
 		const book = canonical?.snapshot as
-			| { conditions?: Array<{ conditionId?: string; tokens?: Array<{ tokenId?: string }> }> }
+			| {
+					conditions?: Array<{
+						conditionId?: string;
+						tokens?: Array<{ tokenId?: string }>;
+					}>;
+			  }
 			| undefined;
 		if (book?.conditions && attributes.condition_id && attributes.token_id) {
 			const condition = book.conditions.find(
-				(row) => row.conditionId?.toLowerCase() === String(attributes.condition_id).toLowerCase(),
+				(row) =>
+					row.conditionId?.toLowerCase() ===
+					String(attributes.condition_id).toLowerCase(),
 			);
-			if (!condition?.tokens?.some((row) => row.tokenId === attributes.token_id)) {
+			if (
+				!condition?.tokens?.some((row) => row.tokenId === attributes.token_id)
+			) {
 				throw new Error("lineage_identity_ambiguous");
 			}
 		}
@@ -1255,6 +1292,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     async markError(params: {
       client_order_id: string;
       error: string;
+			non_execution_proof?: NonExecutionProof;
     }): Promise<void> {
       // Cap error string at 512 chars — matches executor log truncation to
       // keep jsonb bounded for grafana / dashboard rendering.
@@ -1265,10 +1303,17 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       await deps.db
         .update(polyCopyTradeFills)
         .set({
-          status: "error",
+					status: sql`CASE WHEN ${polyCopyTradeFills.orderId} IS NOT NULL
+            OR ${polyCopyTradeFills.status} IN ('open','partial','filled','canceled')
+            THEN ${polyCopyTradeFills.status} ELSE 'error' END`,
           updatedAt: new Date(),
           attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(
-						{ error: truncated },
+						{
+							error: truncated,
+							...(params.non_execution_proof
+								? { non_execution_proof: params.non_execution_proof }
+								: {}),
+						},
           )}::jsonb`,
         })
         .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id));
@@ -1372,12 +1417,18 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         .from(polyCopyTradeFills)
         .where(
           and(
-            sql`${polyCopyTradeFills.status} IN ('pending','open')`,
-            activeRestingPosition,
-						sql`${polyCopyTradeFills.createdAt} < now() - make_interval(secs => ${olderThanMs} / 1000.0)`,
+						sql`(${polyCopyTradeFills.status} IN ('pending','open','partial','error')
+              OR (${polyCopyTradeFills.status} = 'canceled' AND NOT COALESCE(${finalCancellationProven}, false)))`,
+						nonTerminalPositionLifecycle,
+						sql`NOT COALESCE(${nonExecutionProven}, false)`,
+						sql`${reconcileAttemptAt} < now() - make_interval(secs => ${olderThanMs} / 1000.0)`,
 					),
         )
-        .orderBy(polyCopyTradeFills.createdAt)
+				.orderBy(
+					reconcileAttemptAt,
+					polyCopyTradeFills.createdAt,
+					polyCopyTradeFills.clientOrderId,
+				)
         .limit(limit);
 
       return rows.map(mapLedgerRow);
@@ -1386,6 +1437,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     async updateStatus(input: UpdateStatusInput): Promise<void> {
       // Build the attributes patch only for the fields actually provided.
       const patch: Record<string, unknown> = {};
+			if (input.final_order_observation !== undefined) {
+				patch.final_order_observation = input.final_order_observation;
+			}
       if (input.reason !== undefined) {
         patch.reason = input.reason;
       }
@@ -1411,6 +1465,17 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 					input.filled_size_usdc,
         );
         const fill = acceptedFillAccounting(current, input);
+				if (
+					input.final_order_observation?.filled_size_usdc === 0 &&
+					Number(current.shares ?? 0) > 0 &&
+					Number(
+						(current.attributes as Record<string, unknown> | null)
+							?.filled_size_usdc ?? 0,
+					) <= 0
+				) {
+					delete patch.final_order_observation;
+				}
+
         const attributesPatch = { ...patch, ...(fill?.attributes ?? {}) };
         await tx
           .update(polyCopyTradeFills)
@@ -1435,6 +1500,14 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           })
           .where(eq(polyCopyTradeFills.clientOrderId, input.client_order_id));
       });
+		},
+
+		async markReconcileAttempted(client_order_ids: string[]): Promise<void> {
+			if (client_order_ids.length === 0) return;
+			await deps.db
+				.update(polyCopyTradeFills)
+				.set({ updatedAt: sql`now()` })
+				.where(inArray(polyCopyTradeFills.clientOrderId, client_order_ids));
     },
 
     async markSynced(client_order_ids: string[]): Promise<void> {
@@ -1675,7 +1748,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 /**
  * Explicit projection for `LedgerRow`-producing reads (dashboard floor
  * fix): exactly the columns `mapLedgerRow` consumes. Excluded on purpose:
- * `createdByUserId`, `marketId`, `price`, `shares`, `feesUsdc` — no
+ * `createdByUserId`, `marketId`, `price`, `feesUsdc` — no
  * `LedgerRow` consumer reads them (market/condition ids come from
  * `attributes`). `attributes` itself is selected whole: it is a curated,
  * bounded set of scalar display fields (`insertPending` writes ~17 short
@@ -1686,6 +1759,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
  * add brittleness for no byte savings.
  */
 const LEDGER_ROW_COLUMNS = {
+	shares: polyCopyTradeFills.shares,
   targetId: polyCopyTradeFills.targetId,
   fillId: polyCopyTradeFills.fillId,
   observedAt: polyCopyTradeFills.observedAt,
@@ -1738,6 +1812,7 @@ export function mapLedgerRow(r: LedgerSelectedRow): LedgerRow {
     observed_at: r.observedAt,
     client_order_id: r.clientOrderId,
     order_id: r.orderId,
+		...(r.shares !== null ? { executed_shares: Number(r.shares) } : {}),
     // Schema CHECK enforces the set; cast is safe at the type boundary.
     status: r.status as LedgerRow["status"],
     position_lifecycle:
