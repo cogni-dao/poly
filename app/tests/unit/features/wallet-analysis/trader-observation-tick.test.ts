@@ -133,6 +133,8 @@ function createFakeDb(
         return { rowCount: 0 };
       }
       executeCalls.push(query);
+      if (description.includes("clock_timestamp() AS at"))
+        return [{ at: new Date() }];
       if (description.includes("clock_timestamp()::text AS captured_at")) {
         return [
           {

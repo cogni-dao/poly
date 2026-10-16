@@ -33,6 +33,8 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   refreshCurrentPositionsForWallet as refreshWithProductionControl,
   PositionObservationController,
+  PositionBalanceTransportError,
+  runTraderObservationTick,
 } from "@/features/wallet-analysis/server/trader-observation-service";
 
 // Writer/CAS fixtures simulate independent processes and elapsed eligibility.
@@ -155,6 +157,76 @@ function deferred(): {
     resolve = done;
   });
   return { promise, resolve };
+}
+
+/** Keep real scheduled SQL/cursors scoped to this fixture's enrolled wallet. */
+function scheduledDb(walletId: string): WriterDb {
+  type FixtureDb = ReturnType<typeof getSeedDb>;
+  const wrap = (db: FixtureDb): FixtureDb =>
+    new Proxy(db, {
+      get(target, key) {
+        if (key === "transaction")
+          return (run: (tx: FixtureDb) => Promise<unknown>) =>
+            target.transaction((tx) => run(wrap(tx as unknown as FixtureDb)));
+        if (key === "select")
+          return (...args: []) => {
+            const builder = target.select(...args);
+            const from = builder.from.bind(builder);
+            return new Proxy(builder, {
+              get(select, property) {
+                if (property !== "from") return Reflect.get(select, property);
+                return (...fromArgs: Parameters<typeof from>) => {
+                  const query = from(...fromArgs);
+                  if (fromArgs[0] !== polyTraderWallets) return query;
+                  const where = query.where.bind(query);
+                  return new Proxy(query, {
+                    get(current, operation) {
+                      if (operation === "where")
+                        return (condition: Parameters<typeof where>[0]) =>
+                          where(
+                            and(condition, eq(polyTraderWallets.id, walletId))
+                          );
+                      const value = Reflect.get(current, operation);
+                      return typeof value === "function"
+                        ? value.bind(current)
+                        : value;
+                    },
+                  });
+                };
+              },
+            });
+          };
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  return wrap(getSeedDb()) as unknown as WriterDb;
+}
+
+async function positionCursor(walletId: string) {
+  const [cursor] = await getSeedDb()
+    .select()
+    .from(polyTraderIngestionCursors)
+    .where(
+      and(
+        eq(polyTraderIngestionCursors.traderWalletId, walletId),
+        eq(polyTraderIngestionCursors.source, "data-api-positions")
+      )
+    );
+  if (!cursor) throw new Error("missing position cursor");
+  return cursor;
+}
+
+function scheduledLogger() {
+  const logger = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    child: vi.fn(),
+  };
+  logger.child.mockReturnValue(logger);
+  return logger;
 }
 
 describe("serialized position-observation writer", () => {
@@ -692,6 +764,448 @@ describe("serialized position-observation writer", () => {
       "condition-9201",
       "9201",
     ]);
+  });
+
+  it("recovers failed terminal authority through the real scheduler after DB completion, including restart and explicit-floor parity", async () => {
+    const wallet = await seedWallet("5401");
+    const db = getSeedDb();
+    await seedCurrent(wallet.id, "54011");
+    seededOutcomeTokenIds.push("54011");
+    await db
+      .insert(polyMarketOutcomes)
+      .values({
+        conditionId: "condition-54011",
+        tokenId: "54011",
+        outcome: "winner",
+      });
+    const evidence = { version: 1, native: "trusted" };
+    await db
+      .update(polyTraderCurrentPositions)
+      .set({ active: false, raw: { economicObservationV1: evidence } })
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    const old = (
+      await db
+        .select()
+        .from(polyTraderCurrentPositions)
+        .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id))
+    )[0];
+    const read = vi.fn(async () => [position("54012")]);
+    const authority = vi
+      .fn<
+        NonNullable<
+          Parameters<
+            typeof refreshWithProductionControl
+          >[0]["readPositionBalances"]
+        >
+      >()
+      .mockRejectedValueOnce(new PositionBalanceTransportError("503"))
+      .mockRejectedValueOnce(new PositionBalanceTransportError("503"))
+      .mockResolvedValue([0n]);
+    const logger = scheduledLogger();
+    const client = {
+      listUserPositions: read,
+      listUserActivity: vi.fn(async () => []),
+    } as unknown as PolymarketDataApiClient;
+    const tick = (control: PositionObservationController, delayed = false) =>
+      runTraderObservationTick({
+        db: scheduledDb(wallet.id),
+        client,
+        listActiveTradingAddresses: async () => {
+          throw new Error("fixture already enrolled");
+        },
+        logger: logger as never,
+        metrics: { incr: vi.fn(), observeDurationMs: vi.fn() },
+        runRetentionPrune: false,
+        positionControl: control,
+        readPositionBalances: authority,
+        ...(delayed
+          ? {
+              beforePositionCursorPublish: async () => {
+                await new Promise((resolve) => setTimeout(resolve, 80));
+              },
+            }
+          : {}),
+      });
+    expect(
+      (
+        await tick(
+          new PositionObservationController({
+            wait: async () => {},
+            random: () => 0,
+          }),
+          true
+        )
+      ).positions
+    ).toBe(1);
+    expect(authority).toHaveBeenCalledTimes(2);
+    const failed = await positionCursor(wallet.id);
+    expect(failed.status).toBe("ok");
+    expect(failed.errorMessage).toBe(
+      'terminal_recovery_v1:{"reason":"authority_unavailable","anchor":["condition-54011","54011"]}'
+    );
+    expect(failed.lastErrorAt).toEqual(failed.updatedAt);
+    expect(
+      failed.updatedAt.getTime() - (failed.lastSuccessAt?.getTime() ?? 0)
+    ).toBeGreaterThanOrEqual(60);
+    const retained = (
+      await db
+        .select()
+        .from(polyTraderCurrentPositions)
+        .where(
+          and(
+            eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+            eq(polyTraderCurrentPositions.tokenId, "54011")
+          )
+        )
+    )[0];
+    expect(retained).toEqual(old);
+    expect(
+      (
+        await tick(
+          new PositionObservationController({
+            now: () => failed.updatedAt.getTime() + 29_999,
+          })
+        )
+      ).positions
+    ).toBe(0);
+    expect(
+      await refreshWithProductionControl({
+        db: db as unknown as WriterDb,
+        client,
+        walletAddress: wallet.address,
+        positionControl: new PositionObservationController({
+          now: () => failed.updatedAt.getTime() + 29_999,
+        }),
+        readPositionBalances: authority,
+      })
+    ).toMatchObject({ deferred: "floor" });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(authority).toHaveBeenCalledTimes(2);
+    expect(
+      (
+        await tick(
+          new PositionObservationController({
+            now: () => failed.updatedAt.getTime() + 31_000,
+          })
+        )
+      ).positions
+    ).toBe(1);
+    expect(authority).toHaveBeenCalledTimes(3);
+    expect(read).toHaveBeenCalledTimes(2);
+    const recovered = await positionCursor(wallet.id);
+    expect(recovered.status).toBe("ok");
+    expect(recovered.errorMessage).toBeNull();
+    const closed = (
+      await db
+        .select()
+        .from(polyTraderCurrentPositions)
+        .where(
+          and(
+            eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+            eq(polyTraderCurrentPositions.tokenId, "54011")
+          )
+        )
+    )[0];
+    expect(closed).toMatchObject({
+      active: false,
+      shares: "0.00000000",
+      currentValueUsdc: "0.00000000",
+      raw: { economicObservationV1: evidence },
+      lastObservedAt: recovered.lastSuccessAt,
+    });
+    expect(
+      (
+        await tick(
+          new PositionObservationController({
+            now: () => recovered.updatedAt.getTime() + 31_000,
+          })
+        )
+      ).positions
+    ).toBe(0);
+    expect(authority).toHaveBeenCalledTimes(3);
+    expect(
+      logger.info.mock.calls.some(
+        ([data]) =>
+          data.event === "poly.trader.positions.publish" &&
+          data.terminal_recovery_pending === true &&
+          data.recovery_eligibility_ms === 30_000
+      )
+    ).toBe(true);
+    expect(
+      logger.info.mock.calls.some(
+        ([data]) =>
+          data.event === "poly.trader.positions.publish" &&
+          data.terminal_recovery_action === "cleared" &&
+          data.terminal_recovery_pending === false
+      )
+    ).toBe(true);
+  });
+
+  it("persists malformed terminal recovery without retry and clears invalid reserved state only after an actual complete pass", async () => {
+    const wallet = await seedWallet("5402");
+    const db = getSeedDb();
+    await seedCurrent(wallet.id, "54021");
+    await db
+      .update(polyTraderCurrentPositions)
+      .set({ active: false })
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    const authority = vi.fn(async () => [] as bigint[]);
+    const input = {
+      db: db as unknown as WriterDb,
+      walletAddress: wallet.address,
+      client: clientReturning(async () => [position("54022")]),
+      readPositionBalances: authority,
+    };
+    expect((await refreshCurrentPositionsForWallet(input)).complete).toBe(true);
+    expect(authority).toHaveBeenCalledTimes(1);
+    const malformed = await positionCursor(wallet.id);
+    expect(malformed.errorMessage).toContain('"reason":"authority_malformed"');
+    expect(malformed.status).toBe("ok");
+    expect(
+      await refreshWithProductionControl({
+        ...input,
+        positionControl: new PositionObservationController({
+          now: () => malformed.updatedAt.getTime() + 29_999,
+        }),
+      })
+    ).toMatchObject({ deferred: "floor" });
+    await db
+      .update(polyTraderIngestionCursors)
+      .set({ errorMessage: "terminal_recovery_v9:broken" })
+      .where(
+        and(
+          eq(polyTraderIngestionCursors.traderWalletId, wallet.id),
+          eq(polyTraderIngestionCursors.source, "data-api-positions")
+        )
+      );
+    expect(
+      (
+        await refreshCurrentPositionsForWallet({
+          ...input,
+          readPositionBalances: async () => [1n],
+        })
+      ).complete
+    ).toBe(true);
+    expect((await positionCursor(wallet.id)).errorMessage).toBeNull();
+    const [retained] = await db
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(
+        and(
+          eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+          eq(polyTraderCurrentPositions.tokenId, "54021")
+        )
+      );
+    expect(retained).toMatchObject({
+      shares: "10.00000000",
+      lastObservedAt: new Date("2026-10-03T19:00:00Z"),
+    });
+  });
+
+  it("carries a failed anchor through an ordinary outage and a different fair prefix, then clears after a real 5001-row recovery sweep", async () => {
+    const wallet = await seedWallet("5403");
+    const db = getSeedDb();
+    const rows = Array.from({ length: 5_001 }, (_, i) => ({
+      traderWalletId: wallet.id,
+      conditionId: "terminal-recovery",
+      tokenId: String(200_000 + i),
+      active: false,
+      shares: "10",
+      costBasisUsdc: "4",
+      currentValueUsdc: "5",
+      avgPrice: "0.4",
+      contentHash: `recovery-${i}`,
+      lastObservedAt: new Date("2026-10-03T19:00:00Z"),
+    }));
+    for (let i = 0; i < rows.length; i += 500)
+      await db
+        .insert(polyTraderCurrentPositions)
+        .values(rows.slice(i, i + 500));
+    const read = vi.fn(async () => [position("54032")]);
+    const chunks: string[][] = [];
+    let failing = true;
+    const authority = async ({ tokenIds }: { tokenIds: readonly string[] }) => {
+      chunks.push([...tokenIds]);
+      if (failing) throw new PositionBalanceTransportError("503");
+      return tokenIds.map(() => 1n);
+    };
+    const input = {
+      db: db as unknown as WriterDb,
+      walletAddress: wallet.address,
+      client: clientReturning(read),
+      readPositionBalances: authority,
+    };
+    const refresh = () =>
+      refreshWithProductionControl({
+        ...input,
+        positionControl: new PositionObservationController({
+          now: () => Date.now() + 60_000,
+          wait: async () => {},
+        }),
+      });
+    expect((await refresh()).complete).toBe(true);
+    expect(chunks).toHaveLength(2);
+    const failed = await positionCursor(wallet.id);
+    const anchor = failed.errorMessage;
+    expect(anchor).toContain('"anchor":["terminal-recovery","200099"]');
+    read.mockRejectedValueOnce(
+      new Error("Data API outage\nterminal_recovery_v1:provider-injection")
+    );
+    expect((await refresh()).complete).toBe(false);
+    const outage = await positionCursor(wallet.id);
+    expect(outage.errorMessage?.startsWith("data_api_error: ")).toBe(true);
+    expect(outage.errorMessage?.endsWith(anchor ?? "missing")).toBe(true);
+    expect(outage.lastSeenNativeId).toBe(failed.lastSeenNativeId);
+    expect(outage.updatedAt.getTime()).toBeGreaterThanOrEqual(
+      failed.updatedAt.getTime()
+    );
+    chunks.length = 0;
+    failing = false;
+    expect((await refresh()).complete).toBe(true);
+    expect(chunks).toHaveLength(50);
+    expect(chunks.flat()).toHaveLength(5_000);
+    expect(chunks[0]?.[0]).toBe("200100");
+    const different = await positionCursor(wallet.id);
+    expect(different.status).toBe("ok");
+    expect(different.errorMessage).toBe(anchor);
+    expect(different.lastSeenNativeId).toBe('["terminal-recovery","200098"]');
+    expect((await refresh()).complete).toBe(true);
+    expect(chunks).toHaveLength(100);
+    const recovered = await positionCursor(wallet.id);
+    expect(recovered.errorMessage).toBeNull();
+    const [retained] = await db
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(
+        and(
+          eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+          eq(polyTraderCurrentPositions.tokenId, "200099")
+        )
+      );
+    expect(retained).toMatchObject({
+      shares: "10.00000000",
+      currentValueUsdc: "5.00000000",
+      lastObservedAt: new Date("2026-10-03T19:00:00Z"),
+    });
+  });
+
+  it("records budget recovery for a zero-capacity terminal sentinel without a fifty-first call", async () => {
+    const wallet = await seedWallet("5404");
+    const db = getSeedDb();
+    const rows = Array.from({ length: 5_000 }, (_, i) => ({
+      traderWalletId: wallet.id,
+      conditionId: "open-budget",
+      tokenId: String(300_000 + i),
+      shares: "10",
+      costBasisUsdc: "4",
+      currentValueUsdc: "5",
+      avgPrice: "0.4",
+      contentHash: `open-${i}`,
+      lastObservedAt: new Date("2026-10-03T19:00:00Z"),
+    }));
+    for (let i = 0; i < rows.length; i += 500)
+      await db
+        .insert(polyTraderCurrentPositions)
+        .values(rows.slice(i, i + 500));
+    await seedCurrent(wallet.id, "54041");
+    await db
+      .update(polyTraderCurrentPositions)
+      .set({ active: false })
+      .where(
+        and(
+          eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+          eq(polyTraderCurrentPositions.tokenId, "54041")
+        )
+      );
+    const calls = vi.fn(async ({ tokenIds }: { tokenIds: readonly string[] }) =>
+      tokenIds.map(() => 0n)
+    );
+    expect(
+      (
+        await refreshCurrentPositionsForWallet({
+          db: db as unknown as WriterDb,
+          walletAddress: wallet.address,
+          client: clientReturning(async () => [position("54042")]),
+          readPositionBalances: calls,
+        })
+      ).complete
+    ).toBe(true);
+    expect(calls).toHaveBeenCalledTimes(50);
+    expect(
+      calls.mock.calls.every(([input]) => !input.tokenIds.includes("54041"))
+    ).toBe(true);
+    const cursor = await positionCursor(wallet.id);
+    expect(cursor.status).toBe("ok");
+    expect(cursor.errorMessage).toBe(
+      'terminal_recovery_v1:{"reason":"authority_budget","anchor":null}'
+    );
+    expect(cursor.lastSeenNativeId).toBeNull();
+  });
+
+  it("retains short recovery when a later time-budget failure follows crossing the old anchor", async () => {
+    const wallet = await seedWallet("5405");
+    const db = getSeedDb();
+    const rows = Array.from({ length: 201 }, (_, i) => ({
+      traderWalletId: wallet.id,
+      conditionId: "timed-terminal",
+      tokenId: String(400_000 + i),
+      active: false,
+      shares: "10",
+      costBasisUsdc: "4",
+      currentValueUsdc: "5",
+      avgPrice: "0.4",
+      contentHash: `timed-${i}`,
+      lastObservedAt: new Date("2026-10-03T19:00:00Z"),
+    }));
+    await db.insert(polyTraderCurrentPositions).values(rows);
+    await db
+      .update(polyTraderIngestionCursors)
+      .set({
+        lastSeenNativeId: '["timed-terminal","400200"]',
+        errorMessage:
+          'terminal_recovery_v1:{"reason":"authority_unavailable","anchor":["timed-terminal","400000"]}',
+      })
+      .where(
+        and(
+          eq(polyTraderIngestionCursors.traderWalletId, wallet.id),
+          eq(polyTraderIngestionCursors.source, "data-api-positions")
+        )
+      );
+    let now = Date.now() + 60_000;
+    const authority = vi.fn(
+      async ({ tokenIds }: { tokenIds: readonly string[] }) => {
+        now += 30_001;
+        return tokenIds.map(() => 1n);
+      }
+    );
+    const result = await refreshWithProductionControl({
+      db: db as unknown as WriterDb,
+      walletAddress: wallet.address,
+      client: clientReturning(async () => [position("54052")]),
+      readPositionBalances: authority,
+      positionControl: new PositionObservationController({ now: () => now }),
+    });
+    expect(result.complete).toBe(true);
+    expect(authority).toHaveBeenCalledTimes(1);
+    const cursor = await positionCursor(wallet.id);
+    expect(cursor.status).toBe("ok");
+    expect(cursor.errorMessage).toBe(
+      'terminal_recovery_v1:{"reason":"authority_budget","anchor":["timed-terminal","400099"]}'
+    );
+    expect(cursor.lastErrorAt).toEqual(cursor.updatedAt);
+    const retained = await db
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(
+        and(
+          eq(polyTraderCurrentPositions.traderWalletId, wallet.id),
+          eq(polyTraderCurrentPositions.tokenId, "400100")
+        )
+      );
+    expect(retained[0]).toMatchObject({
+      shares: "10.00000000",
+      lastObservedAt: new Date("2026-10-03T19:00:00Z"),
+    });
   });
 
   it("rolls back terminal zero, lifecycle changes, healthy rows and fairness cursor together", async () => {

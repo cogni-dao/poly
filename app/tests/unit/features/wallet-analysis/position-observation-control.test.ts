@@ -11,6 +11,14 @@ import {
   PositionObservationController,
 } from "@/features/wallet-analysis/server/position-observation-control";
 
+import {
+  parseTerminalResume,
+  positionErrorMessage,
+  readTerminalRecovery,
+  terminalSweepComplete,
+  type TerminalKey,
+} from "@/features/wallet-analysis/server/terminal-position-recovery";
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {
@@ -109,5 +117,88 @@ describe("finite shared invocation allowances", () => {
       "allowance exhausted"
     );
     expect(read).toHaveBeenCalledTimes(21);
+  });
+});
+
+
+describe("durable terminal recovery control", () => {
+  const hint = {
+    reason: "authority_unavailable" as const,
+    anchor: ["c", "100"] as const,
+  };
+  it("preserves the anchor across ordinary errors while preventing provider control-line injection", () => {
+    const message = positionErrorMessage(hint, {
+      reason: "data_api_error",
+      detail: "503\nterminal_recovery_v1:evil",
+    });
+    expect(
+      message?.startsWith("data_api_error: 503 terminal_recovery_v1:evil\n")
+    ).toBe(true);
+    expect(readTerminalRecovery(message)).toEqual({
+      recovery: hint,
+      malformed: false,
+    });
+    expect(
+      readTerminalRecovery("provider said terminal_recovery_v1:evil").recovery
+    ).toBeNull();
+    expect(
+      readTerminalRecovery("data_api_error: terminal_recovery_v1:evil").recovery
+    ).toBeNull();
+    expect(
+      positionErrorMessage(null, {
+        reason: "data_api_error",
+        detail: "x".repeat(4_000),
+      })?.length
+    ).toBeLessThan(2_100);
+  });
+  it.each([
+    'terminal_recovery_v1:{"reason":"authority_unavailable","anchor":[],"extra":1}',
+    "terminal_recovery_v2:{}",
+    "data_api_error: 503\nterminal_recovery_v1:bad",
+    `terminal_recovery_v1:${JSON.stringify({ ...hint, anchor: ["x".repeat(257), "1"] })}`,
+    `terminal_recovery_v1:${JSON.stringify({ ...hint, anchor: ["c\n", "1"] })}`,
+  ])("keeps malformed reserved state conservatively pending: %s", (message) => {
+    expect(readTerminalRecovery(message)).toEqual({
+      recovery: { reason: "authority_unavailable", anchor: null },
+      malformed: true,
+    });
+  });
+  it("strictly bounds and validates fairness keys", () => {
+    expect(parseTerminalResume('["c","1"]')).toEqual(["c", "1"]);
+    for (const value of [
+      '["","1"]',
+      '["c",1]',
+      '["c","1","2"]',
+      " ".repeat(1_101),
+    ])
+      expect(parseTerminalResume(value)).toBeNull();
+  });
+  const key = (token: string): TerminalKey => ["c", token];
+  const sweep = (
+    anchor: TerminalKey | null,
+    previous: TerminalKey | null,
+    tokens: string[],
+    completePass = false
+  ) =>
+    terminalSweepComplete({
+      anchor,
+      previous,
+      classified: tokens.map(key),
+      completePass,
+    });
+  it("does not mistake departure or a different prefix for recovery", () => {
+    expect(sweep(key("100"), key("100"), ["101", "200", "001", "099"])).toBe(
+      false
+    );
+    expect(sweep(key("100"), key("100"), [])).toBe(false);
+    expect(sweep(key("100"), key("100"), ["101", "100"])).toBe(true);
+  });
+  it("detects absent-anchor crossing and split wraps without attempted-key evidence", () => {
+    expect(sweep(key("100"), key("099"), ["101"])).toBe(true);
+    expect(sweep(key("100"), key("200"), ["001"])).toBe(false);
+    expect(sweep(key("100"), key("099"), [])).toBe(false);
+    expect(sweep(null, key("200"), ["001"])).toBe(true);
+    expect(sweep(null, null, ["001", "200"])).toBe(false);
+    expect(sweep(key("100"), null, [], true)).toBe(true);
   });
 });
