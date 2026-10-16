@@ -112,3 +112,25 @@ export const PolymarketDataApiStatusV2Schema = z.object({
 export type PolymarketDataApiStatusV2 = z.infer<
   typeof PolymarketDataApiStatusV2Schema
 >["data"];
+
+/** Native source amounts are retained without multiplying rounded price. */
+export const PolymarketActivityV2Schema = z.object({
+  proxy_wallet: z.string().min(1),
+  timestamp: z.number().int().nonnegative(),
+  condition_id: z.string(),
+  type: z.string().min(1),
+  token_id: z.string().nullable().optional(),
+  transaction_hash: z.string().min(1),
+  size: z.number().finite().nonnegative(),
+  usdc_size: z.number().finite().nonnegative(),
+  price: z.number().finite().nonnegative().nullable().optional(),
+  side: z.enum(["BUY", "SELL"]).nullable().optional(),
+  id: z.union([z.string(), z.number()]).optional(),
+  trade_id: z.union([z.string(), z.number()]).optional(),
+  log_index: z.number().int().nonnegative().optional(),
+}).passthrough();
+export type PolymarketActivityV2 = z.infer<typeof PolymarketActivityV2Schema>;
+export const PolymarketActivityV2ResponseSchema = z.object({
+  data: z.array(PolymarketActivityV2Schema).max(1000),
+  pagination: PolymarketPositionsV2PaginationSchema,
+});

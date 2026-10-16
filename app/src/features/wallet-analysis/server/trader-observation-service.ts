@@ -78,6 +78,7 @@ import {
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import pLimit from "p-limit";
+import { recoverEconomicObservations, type EconomicSettlementReader } from "./economic-observation-recovery";
 import { hydrateCopyTargetPositions } from "./copy-target-position-hydration-service";
 import { PAPER_WALLET_KIND } from "./paper-fact-source";
 import {
@@ -152,6 +153,8 @@ export interface TraderObservationTickDeps {
   listActiveTradingAddresses: TenantTradingAddressReader;
   /** Polygon CTF `balanceOfBatch` authority for Data-API omissions. */
   readPositionBalances?: PositionBalanceBatchReader;
+  /** Internal read-only settlement observation; never signs or enqueues. */
+  readEconomicSettlement?: EconomicSettlementReader;
   logger: LoggerPort;
   metrics: MetricsPort;
   tradePageLimit?: number;
@@ -550,6 +553,21 @@ export async function runTraderObservationTick(
   // Abandoned tick (job timeout fired): skip the post-loop maintenance so the
   // promise settles quickly — no orphan writers past the next tick start.
   const tickAborted = deps.signal?.aborted === true;
+
+  // ONE global condition/RPC budget after all wallets. Recovery cannot
+  // advance forward cursors or turn historical facts into current authority.
+  if (!tickAborted && deps.readEconomicSettlement) {
+    try {
+      await recoverEconomicObservations({
+        db: { execute: (query) => withStatementTimeout(deps.db, OBSERVATION_STATEMENT_TIMEOUT_MS, async (tx) => await tx.execute(query)) },
+        client: deps.client, readSettlement: deps.readEconomicSettlement,
+        logger: log, now: new Date(), signal: deps.signal,
+      });
+    } catch (err: unknown) {
+      log.warn({ event: "poly.economic_observation.recovery", status: "partial",
+        err: err instanceof Error ? err.message : String(err) }, "economic recovery deferred; forward observation preserved");
+    }
+  }
 
   // bug.5007 — a power target's whole-wallet V1 walk may exceed the 5,000
   // row publication cap. Recover only conditions proven by durable local

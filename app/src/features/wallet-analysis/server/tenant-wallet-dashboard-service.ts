@@ -593,9 +593,7 @@ export async function readTenantWalletDashboardIn(
         closedPositions: closedPositions.slice(0, CLOSED_PREVIEW_LIMIT),
         sourceComplete:
           positionFact.status === "fresh" &&
-          positionFact.complete &&
-          historyFact.status === "fresh" &&
-          historyFact.complete,
+          positionFact.complete,
         previewTruncated: marketRead.value.truncated,
       });
   if (originRead.ok) {
@@ -704,6 +702,7 @@ export async function readTenantWalletDashboardIn(
       positions_sync_age_ms: currentPositionFact.ageMs,
       positions_stale: positionFact.status !== "fresh",
       pnlHistory: pnlRead.ok && pnlRead.value.status === "available" ? pnlRead.value.points : [],
+      pnl_basis: connection.connectionKind === "paper" ? "paper_trading_pnl" : "polymarket_trade_pnl_before_fees",
       warnings: warnings
         .filter((entry) => entry.component !== "activity" && entry.component !== "markets" && entry.component !== "history")
         .map(({ code, message }) => ({ code, message })),

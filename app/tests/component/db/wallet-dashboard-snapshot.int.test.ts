@@ -341,7 +341,7 @@ describe("wallet dashboard coherent snapshot", () => {
     expect(result.execution.closed_position_count).toBe(31);
     expect(result.execution.closed_positions).toHaveLength(30);
     expect(result.facts.positions.status).toBe("fresh");
-    expect(result.facts.history.status).toBe("fresh");
+    expect(result.facts.history.status).toBe("partial");
     expect(result.execution.warnings.map((entry) => entry.code)).toContain("positions_preview_truncated");
     expect(result.execution.warnings.map((entry) => entry.code)).not.toContain("realized_pnl_incomplete");
     expect(result.execution.comparisonCoverage.positions.live).toEqual({
@@ -578,6 +578,20 @@ describe("wallet dashboard coherent snapshot", () => {
         );
       expect(targetCurrent).toEqual([]);
 
+      // The comparison fixture explicitly has complete native BUY/SELL
+      // coverage; lifecycle-only or partial fills must not acquire fake P/L.
+      const economicHistoryHash = `complete-closed-${contentHash}`;
+      await db.insert(polyTraderPositionSnapshots).values({
+        traderWalletId: walletA.id, conditionId: "closed-condition-0", tokenId: "closed-token-0",
+        shares: "0", costBasisUsdc: "0", currentValueUsdc: "0", avgPrice: "0", contentHash: economicHistoryHash,
+        capturedAt: new Date(), raw: { economicObservationV1: {
+          version: 1, wallet: OUR_A, conditionId: "closed-condition-0", tokenId: "closed-token-0",
+          fetchedAt: new Date().toISOString(), windowStart: new Date(Date.now()-86_400_000).toISOString(), windowEnd: new Date().toISOString(),
+          coverage: "complete", reasons: [], lifetimeBuyUsdc: 1, lifetimeBuyShares: 2,
+          lifetimeSellUsdc: 1.5, lifetimePnlUsdc: 0.5, redeemUsdc: 0, constituents: [], settlements: [],
+          closedPosition: { current_price: 0.75, last_event_at: Math.floor(Date.now()/1000), first_entry_at: Math.floor(Date.now()/1000)-1 },
+        } },
+      });
       const dashboard = await readTenantWalletDashboard({
         db,
         billingAccountId: TENANT_A,
@@ -626,7 +640,7 @@ describe("wallet dashboard coherent snapshot", () => {
     } finally {
       await db
         .delete(polyTraderPositionSnapshots)
-        .where(eq(polyTraderPositionSnapshots.contentHash, contentHash));
+        .where(inArray(polyTraderPositionSnapshots.contentHash, [contentHash, `complete-closed-${contentHash}`]));
     }
   }, 60_000);
 
@@ -761,8 +775,8 @@ describe("wallet dashboard coherent snapshot", () => {
       expect(result.facts.positions.status).toBe("partial");
       expect(result.facts.positions.complete).toBe(false);
       expect(result.facts.positions.actionsAllowed).toBe(false);
-      expect(result.facts.history.status).toBe("fresh");
-      expect(result.facts.history.complete).toBe(true);
+      expect(result.facts.history.status).toBe("partial");
+      expect(result.facts.history.complete).toBe(false);
       expect(result.overview.usdc_total).toBeNull();
       expect(result.execution.warnings).not.toContainEqual(
         expect.objectContaining({ code: "realized_pnl_identity_ambiguous" })
@@ -860,7 +874,7 @@ describe("wallet dashboard coherent snapshot", () => {
     );
     await db
       .update(polyTraderCurrentPositions)
-      .set({ active: false })
+      .set({ active: false, shares: "0", currentValueUsdc: "0" })
       .where(eq(polyTraderCurrentPositions.traderWalletId, walletB.id));
     const zero = await readTenantWalletDashboard({ db, billingAccountId: TENANT_B, interval: "1W", adapterConfigured: true });
     expect(zero.execution.live_position_count).toBe(0);
@@ -871,7 +885,7 @@ describe("wallet dashboard coherent snapshot", () => {
 
     await db
       .update(polyTraderCurrentPositions)
-      .set({ active: true, lastObservedAt: new Date() })
+      .set({ active: true, shares: "2", currentValueUsdc: "2", lastObservedAt: new Date() })
       .where(eq(polyTraderCurrentPositions.traderWalletId, walletB.id));
     await db
       .update(polyTraderIngestionCursors)

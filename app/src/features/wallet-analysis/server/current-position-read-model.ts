@@ -205,7 +205,10 @@ export async function readCurrentWalletPositionModel(params: {
         SELECT *
         FROM position_candidates p
         WHERE identity_rank = 1
-          AND ${liveCurrentPositionSql("p")}
+          AND p.last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND (${liveCurrentPositionSql("p")}
+            OR (p.shares > 0 AND p.raw->>'redeemable' = 'true'
+              AND p.last_observed_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'))
       )
       SELECT
         lower(p.condition_id) AS condition_id,

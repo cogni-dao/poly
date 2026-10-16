@@ -31,6 +31,7 @@ import {
   type TenantTradingAddressReader,
   type TraderObservationStage,
 } from "@/features/wallet-analysis/server/trader-observation-service";
+import { createEconomicSettlementReader } from "@/features/wallet-analysis/server/economic-observation-recovery";
 import { serverEnv } from "@/shared/env/server-env";
 
 type Db =
@@ -88,6 +89,9 @@ export function startTraderObservationJob(
         ? createPolygonPositionBalanceBatchReader({ rpcUrl })
         : undefined;
     })();
+  const recoveryRpcUrl = serverEnv().POLYGON_RPC_URL;
+  const readEconomicSettlement = recoveryRpcUrl
+    ? createEconomicSettlementReader({ rpcUrl: recoveryRpcUrl }) : undefined;
   const pollMs = deps.pollMs ?? OBSERVATION_POLL_MS;
   const log = deps.logger.child({ component: "trader-observation-job" });
   let running = false;
@@ -156,6 +160,7 @@ export function startTraderObservationJob(
     let lastStage: TraderObservationStage | "not_started" = "not_started";
     const tickPromise = runTraderObservationTick({
       ...deps,
+      ...(readEconomicSettlement ? { readEconomicSettlement } : {}),
       ...(readPositionBalances === undefined ? {} : { readPositionBalances }),
       runRetentionPrune,
       signal: controller.signal,
