@@ -67,11 +67,12 @@ import {
   type RedeemFlavor,
   type RedeemJob,
   type RedeemLifecycleState,
+  RedeemSubmissionError,
   transition,
 } from "@/core";
 import type { RedeemJobsPort } from "@/ports";
 
-import { buildSubmitArgs } from "./build-submit-args";
+import { buildSubmitArgs, type SubmitArgs } from "./build-submit-args";
 import {
   type LedgerLifecycleMirrorPort,
   mirrorRedeemLifecycleToLedger,
@@ -127,8 +128,8 @@ export interface RedeemWorkerDeps {
   funderAddress: `0x${string}`;
   /** Account object the wallet client signs with (must be non-null). */
   account: Account;
-  /** Official gasless Deposit Wallet redemption; omitted for legacy EOA rows. */
-  redeemPosition?: (positionId: string) => Promise<`0x${string}`>;
+  /** Gasless transport of this pipeline's existing legacy CTF dispatch. */
+  redeemPosition?: (job: RedeemJob, args: SubmitArgs) => Promise<`0x${string}`>;
   logger: LoggerLike;
   /** N=5 hard-pinned for v0.2 (FINALITY_IS_FIXED_N). */
   finalityBlocks: bigint;
@@ -281,6 +282,17 @@ export class RedeemWorker {
     );
     if (job === null) return false;
 
+    if (
+      job.funderAddress.toLowerCase() !== this.deps.funderAddress.toLowerCase()
+    ) {
+      await this.deps.redeemJobs.markAbandoned({
+        jobId: job.id,
+        errorClass: "malformed",
+        error: "redeem job funder does not match worker funder",
+      });
+      return false;
+    }
+
     const args = await buildSubmitArgs(job, {
       funderAddress: this.deps.funderAddress,
       readBalance: (funder, positionId) =>
@@ -322,7 +334,7 @@ export class RedeemWorker {
     let txHash: `0x${string}`;
     try {
       if (this.deps.redeemPosition) {
-        txHash = await this.deps.redeemPosition(job.positionId);
+        txHash = await this.deps.redeemPosition(job, args);
       } else if (args.kind === "ctf") {
         // bug.0428: collateralToken from the job row (set at enqueue).
         txHash = await this.deps.walletClient.writeContract({
@@ -355,9 +367,23 @@ export class RedeemWorker {
         reason: revert.reason,
         data: revert.data,
         shortMessage: revert.shortMessage,
+        dispatchFailure:
+          err instanceof RedeemSubmissionError ? err.failureClass : undefined,
       });
 
-      if (errorClass === "rpc_transient") {
+      if (errorClass === "malformed") {
+        await this.deps.redeemJobs.markAbandoned({
+          jobId: job.id,
+          errorClass: "malformed",
+          error: msg,
+        });
+        await this.mirrorLifecycle(
+          job.conditionId,
+          job.positionId,
+          "abandoned",
+          "worker_malformed"
+        );
+      } else if (errorClass === "rpc_transient") {
         const rpcResult = transition(job, {
           kind: "rpc_transient_failure",
           error: msg,
@@ -404,7 +430,9 @@ export class RedeemWorker {
           attempt: job.attemptCount + 1,
           max_attempts: REDEEM_MAX_TRANSIENT_ATTEMPTS,
           error_class: errorClass,
-          consumed_retry_budget: errorClass !== "rpc_transient",
+          consumed_retry_budget:
+            errorClass === "chain_revert" ||
+            errorClass === "submission_rejected",
           revert_reason: revert.reason,
           revert_data: revert.data,
           err_short: revert.shortMessage,
