@@ -29,6 +29,22 @@ function observationClockSql(value: SQL): SQL {
       THEN (${value})::timestamptz END END)`;
 }
 
+/** Guarded scalar parses, for materialized reuse by a scoped receipt query. */
+export function paperFillAccountingValuesSql(alias: string) {
+	if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(alias))
+		throw new Error("invalid ledger SQL alias");
+	const f = sql.raw(alias);
+	const p = sql`${f}.attributes->'paper_receipt_v1'`;
+	return {
+		shares: fillNumericSql(sql`${p}->>'shares'`),
+		cost: fillNumericSql(sql`${p}->>'notional_usdc'`),
+		price: fillNumericSql(sql`${p}->>'price'`),
+		fee: fillNumericSql(sql`${p}->>'fees_usdc'`),
+		durableCost: fillNumericSql(sql`${f}.attributes->>'filled_size_usdc'`),
+		observedAt: observationClockSql(sql`${p}->>'observed_at'`),
+	};
+}
+
 /**
  * alias names a ledger row already scoped by its caller. The canonical connection
  * check binds the saved server context; a source tag or mode alone never passes.
@@ -37,7 +53,11 @@ function observationClockSql(value: SQL): SQL {
 export function paperFillAccountingSql(
 	alias: string,
 	capturedAt: SQL = sql`now()`,
+	parsedAlias?: string,
 ): {
+	bound: SQL;
+	positiveTuple: SQL;
+	zeroTuple: SQL;
 	positive: SQL;
 	zero: SQL;
 	verified: SQL;
@@ -49,12 +69,20 @@ export function paperFillAccountingSql(
 		throw new Error("invalid ledger SQL alias");
 	const f = sql.raw(alias);
 	const p = sql`${f}.attributes->'paper_receipt_v1'`;
-	const shares = fillNumericSql(sql`${p}->>'shares'`);
-	const cost = fillNumericSql(sql`${p}->>'notional_usdc'`);
-	const price = fillNumericSql(sql`${p}->>'price'`);
-	const fee = fillNumericSql(sql`${p}->>'fees_usdc'`);
-	const durableCost = fillNumericSql(sql`${f}.attributes->>'filled_size_usdc'`);
-	const observedAt = observationClockSql(sql`${p}->>'observed_at'`);
+	if (parsedAlias && !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(parsedAlias))
+		throw new Error("invalid parsed receipt SQL alias");
+	const parsed = parsedAlias ? sql.raw(parsedAlias) : null;
+	const values = paperFillAccountingValuesSql(alias);
+	const shares = parsed ? sql`${parsed}.proof_shares` : values.shares;
+	const cost = parsed ? sql`${parsed}.proof_cost` : values.cost;
+	const price = parsed ? sql`${parsed}.proof_price` : values.price;
+	const fee = parsed ? sql`${parsed}.proof_fee` : values.fee;
+	const durableCost = parsed
+		? sql`${parsed}.proof_durable_cost`
+		: values.durableCost;
+	const observedAt = parsed
+		? sql`${parsed}.proof_observed_at`
+		: values.observedAt;
 	const textKey = (value: SQL) =>
 		sql`encode(convert_to(${value}, 'UTF8'), 'hex')`;
 	const numberKey = (value: SQL) => sql`(CASE WHEN ${value} IS NULL THEN 'null'
@@ -110,13 +138,18 @@ export function paperFillAccountingSql(
         AND (paper_proof_connection.revoked_at IS NULL OR paper_proof_connection.revoked_at >= ${observedAt})
     )
   ), false)`;
-	const positive = sql`COALESCE((${bound} AND ${shares} > 0 AND ${cost} > 0 AND ${price} > 0
+	const positiveTuple = sql`COALESCE((${shares} > 0 AND ${cost} > 0 AND ${price} > 0
     AND jsonb_typeof(${p}->'price') = 'number'
     AND round(${price}, 8) = ${f}.price
     AND abs(${shares} * ${price} - ${cost}) <= ${tolerance}), false)`;
-	const zero = sql`COALESCE((${bound} AND ${f}.status = 'canceled' AND ${shares} = 0 AND ${cost} = 0
+	const zeroTuple = sql`COALESCE((${f}.status = 'canceled' AND ${shares} = 0 AND ${cost} = 0
     AND ${p}->'price' = 'null'::jsonb AND COALESCE(${f}.shares, 0) = 0), false)`;
+	const positive = sql`(${bound} AND ${positiveTuple})`;
+	const zero = sql`(${bound} AND ${zeroTuple})`;
 	return {
+		bound,
+		positiveTuple,
+		zeroTuple,
 		positive,
 		zero,
 		verified: sql`(${positive} OR ${zero})`,

@@ -22,9 +22,13 @@ type ExplainNode = {
 	"Node Type": string;
 	"Relation Name"?: string;
 	"Index Name"?: string;
+  "Actual Loops"?: number;
+  "Actual Rows"?: number;
+  "Rows Removed by Filter"?: number;
+  "Subplan Name"?: string;
 	Plans?: ExplainNode[];
 };
-type ExplainDocument = { Plan: ExplainNode; "Execution Time": number };
+type ExplainDocument = { Plan: ExplainNode; "Execution Time": number; "Planning Time": number };
 
 const flatten = (node: ExplainNode): ExplainNode[] => [
 	node,
@@ -171,14 +175,15 @@ describe("position-gap runtime query plan proof", () => {
 	it("uses bounded indexes below 200ms", async () => {
 		await withTenantScope(appDb, userActor(toUserId(userId)), async (rawTx) => {
 			const tx = rawTx as AgentGrantTransaction;
-			const actionRows = await positionGapActionAggregateSelect(tx, accountId, [
-				targetId,
-			]);
-			const verifiedRows = await positionGapActionAggregateSelect(
-				tx,
-				accountId,
-				[verifiedTargetId],
-			);
+      const phase = async <T>(name: string, run: () => PromiseLike<T>) => {
+        const started = performance.now();
+        console.info("position-gap-query-phase", { phase: name, state: "started" });
+        const result = await run();
+        console.info("position-gap-query-phase", { phase: name, state: "complete", elapsed_ms: performance.now() - started });
+        return result;
+      };
+			const actionRows = await phase("aggregate-main", () => positionGapActionAggregateSelect(tx, accountId, [targetId]));
+			const verifiedRows = await phase("aggregate-verified", () => positionGapActionAggregateSelect(tx, accountId, [verifiedTargetId]));
 			expect(verifiedRows).toMatchObject([
 				{
 					reportedMatched: "1",
@@ -194,14 +199,14 @@ describe("position-gap runtime query plan proof", () => {
 				},
 			]);
 			const latest = documentOf(
-				await tx.execute(
+				await phase("explain-latest", () => tx.execute(
 					sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${positionGapLatestRunsSelect(accountId, [targetId])}`,
-				),
+				)),
 			);
 			const actions = documentOf(
-				await tx.execute(
+				await phase("explain-aggregate", () => tx.execute(
 					sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${positionGapActionAggregateSelect(tx, accountId, [targetId])}`,
-				),
+				)),
 			);
 			const latestNodes = flatten(latest.Plan);
 			const actionNodes = flatten(actions.Plan);
@@ -232,6 +237,16 @@ describe("position-gap runtime query plan proof", () => {
 						node["Relation Name"] === "poly_position_gap_actions",
 				),
 			).toBe(false);
+      const connectionNodes = actionNodes.filter(node => node["Relation Name"] === "poly_wallet_connections");
+      console.info("position-gap-query-plan", { latest_planning_ms: latest["Planning Time"], latest_execution_ms: latest["Execution Time"],
+        aggregate_planning_ms: actions["Planning Time"], aggregate_execution_ms: actions["Execution Time"],
+        connection_subplans: connectionNodes.map(node => ({ node: node["Node Type"], loops: node["Actual Loops"] ?? 0 })),
+        subplans: actionNodes.filter(node => node["Subplan Name"]).map(node => ({ name: node["Subplan Name"], loops: node["Actual Loops"] ?? 0 })) });
+      // All selected main-target receipts are unbound LIVE rows. The native
+      // PAPER connection proof must do no work on that population.
+      expect(connectionNodes.every(node => (node["Actual Loops"] ?? 0) === 0)).toBe(true);
+      const actionVisits = actionNodes.filter(node => node["Relation Name"] === "poly_position_gap_actions");
+      expect(actionVisits.every(node => (node["Actual Rows"] ?? 0) + (node["Rows Removed by Filter"] ?? 0) <= ACTION_PLAN_ROWS)).toBe(true);
 			expect(latest["Execution Time"]).toBeLessThan(200);
 			expect(actions["Execution Time"]).toBeLessThan(200);
 		});
