@@ -1,0 +1,13 @@
+# execd isolation/hardening config for the Red sandbox (OpenSandbox OSEP-0018).
+#
+# The hardening floor launches every workload (/command, /code, PTY, and the
+# Caddy entrypoint) through /opt/opensandbox/opensandbox-launcher, which:
+#   - strips execd's credential env (EXECD_ACCESS_TOKEN, ...) from user code,
+#   - sets no_new_privs and applies execd's built-in seccomp denylist
+#     (ptrace, process_vm_readv, mount, bpf, unshare, setns, keyctl, ...).
+# Running unprivileged, the capability bounding-set trim reports "degraded";
+# there are no capabilities to trim. Landlock is intentionally off in v0 so
+# developer tools may write anywhere the sandbox user can.
+[hardening]
+enabled = true
+keep_capabilities = []

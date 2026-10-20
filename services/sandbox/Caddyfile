@@ -1,0 +1,26 @@
+# Red sandbox front door. Env placeholders are resolved by Caddy at config load;
+# entrypoint.sh validates every value before Caddy starts.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:{$PORT} {
+	bind {$HOST}
+
+	# Platform readiness probe: same shape as Red's app /version.
+	handle /version {
+		header Content-Type application/json
+		header Cache-Control no-store
+		respond `{"version":"{$SANDBOX_VERSION}","buildSha":"{$COGNI_REPO_SHA}"}` 200
+	}
+
+	# Everything else → execd (token enforced by execd via X-EXECD-ACCESS-TOKEN).
+	# reverse_proxy upgrades WebSocket automatically; flush_interval -1 keeps SSE streaming.
+	handle {
+		reverse_proxy 127.0.0.1:{$EXECD_PORT} {
+			flush_interval -1
+		}
+	}
+}
