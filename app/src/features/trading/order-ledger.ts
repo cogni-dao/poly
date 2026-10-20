@@ -1618,7 +1618,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       const paperProof = paperFillAccountingSql("poly_copy_trade_fills");
 
       const rows = await deps.db
-        .select({ ...LEDGER_ROW_COLUMNS, paperAccountingValid: sql<boolean>`${paperProof.verified}` })
+        .select()
         .from(polyCopyTradeFills)
         .where(
           and(
@@ -1642,9 +1642,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 				)
         .limit(limit);
 
-      return rows.map((row) => ({ ...mapLedgerRow(row),
-        ...(row.mode === "paper" ? { paper_accounting_valid: row.paperAccountingValid } : {}),
-      }));
+      return rows.map(mapLedgerRow);
     },
 
     async updateStatus(input: UpdateStatusInput): Promise<OrderObservationWriteResult> {

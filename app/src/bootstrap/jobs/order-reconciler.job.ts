@@ -58,12 +58,7 @@ import {
   type OrderLedger,
 	type UpdateStatusInput,
 } from "@/features/trading";
-import {
-  acceptedPaperProof,
-  type ContextualGetOrderResult,
-  normalizeFillCondition,
-  provePaperReceipt,
-} from "@/features/trading/fill-accounting";
+import type { ContextualGetOrderResult } from "@/features/trading/fill-accounting";
 import type { AcceptedOrderObservation } from "@/features/trading/order-ledger.types";
 import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 import { EVENT_NAMES } from "@/shared/observability/events";
@@ -334,26 +329,14 @@ export async function runReconcileOnce(
       const realizedFillSource = receiptFillSource(row, receipt);
       const sourceChanged = realizedFillSource !== undefined &&
         row.attributes?.realized_fill_source !== realizedFillSource;
-      const paperCandidate = row.mode === "paper" && receipt.paper_context
-        ? provePaperReceipt(receipt, {
-          mode: "paper", billing_account_id: row.billing_account_id,
-          connection_id: receipt.paper_context.connection_id,
-          client_order_id: row.client_order_id, order_id: row.order_id,
-          condition_id: normalizeFillCondition(String(row.attributes?.condition_id ?? row.attributes?.market_id ?? "")),
-          token_id: String(row.attributes?.token_id ?? ""),
-          side: row.attributes?.side === "SELL" ? "SELL" : "BUY",
-        }, receipt.paper_context) : null;
-      const paperProof = paperCandidate ? acceptedPaperProof(paperCandidate) : null;
-      const savedPaper = row.attributes?.paper_receipt_v1;
-      const savedPaperKey = savedPaper && typeof savedPaper === "object" && "proof_key" in savedPaper
-        ? savedPaper.proof_key : null;
-      const paperProofChanged = paperProof !== null &&
-        (row.paper_accounting_valid !== true || paperProof.proof_key !== savedPaperKey);
+      // Selected paper rows always reach the locked decoder: semantic equality
+      // does not prove that the saved envelope/clock is valid. The writer keeps
+      // an identical valid proof and its original observation clock unchanged.
 				if (
+					row.mode !== "paper" &&
 					newStatus === row.status &&
 					!filledChanged &&
 					!sourceChanged &&
-					!paperProofChanged &&
 					!finalObservation
 				)
         continue;

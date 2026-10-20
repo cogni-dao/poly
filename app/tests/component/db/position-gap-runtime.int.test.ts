@@ -466,7 +466,7 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				const selected = (
 					await ledger.listOpenOrPending({ olderThanMs: 0 })
 				).find((row) => row.client_order_id === client);
-				expect(selected?.paper_accounting_valid).toBe(false);
+				expect(selected?.client_order_id).toBe(client);
 				await reconcile();
 				const afterProof = acceptedPaperProof(
 					decodeFillAccounting(await read(), scope, new Date()),
@@ -478,6 +478,16 @@ describe("authenticated paper cumulative receipt persistence", () => {
 					fee_known: true,
 				});
 			}
+
+      const monotonicBefore = await read();
+      native = { ...native, total_shares: 3.24999999, fill_price: 0.5, filled_size_usdc: 1.624999995,
+        attributes: { ...native.attributes, sizeMatched: 3.24999999 } };
+      const regressedNative = await executor.getOrder(order);
+      if (!("found" in regressedNative)) throw new Error("regression control receipt absent");
+      const regressionWrite = await ledger.markOrderId({ client_order_id: client, receipt: regressedNative.found });
+      if (!regressionWrite) throw new Error("regression control durable result absent");
+      expect(regressionWrite.accepted).toBe(false);
+      expect((await read()).attributes).toEqual(monotonicBefore.attributes);
 
 			const zeroClient = `paper-zero-${randomUUID()}`;
 			const zeroOrder = `paper-zero-order-${randomUUID()}`;

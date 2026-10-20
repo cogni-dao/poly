@@ -68,8 +68,6 @@ export interface LedgerRow {
   observed_at: Date;
   client_order_id: string;
   order_id: string | null;
-	/** Reconciler-only strict SQL proof validity at selection time, never a source tag. */
-	readonly paper_accounting_valid?: boolean;
 	/** Read-only accepted share evidence; capacity helpers never turn intent into holdings. */
 	readonly executed_shares?: number;
   status: LedgerStatus;
