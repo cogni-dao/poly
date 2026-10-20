@@ -12,6 +12,7 @@ import {
 import { noopLogger, noopMetrics, type OrderReceipt, type TargetBookSnapshotV1 } from "@cogni/poly-market-provider";
 import { createPolyTradeExecutorFactory } from "@/bootstrap/capabilities/poly-trade-executor";
 import { createExecutionVenueResolver, createPaperVenue, derivePaperAccountAddress } from "@/features/paper-accounts";
+import { readActivePaperAccounts, syncPaperTraderWallets } from "@/features/wallet-analysis/server/paper-fact-source";
 import { createOrderLedger } from "@/features/trading/order-ledger";
 import {
   PolymarketDataApiClient,
@@ -48,7 +49,8 @@ const suffix = randomUUID().replaceAll("-", "");
 const USER_ID = `target-hydration-user-${suffix}`;
 const BILLING_ID = `target-hydration-billing-${suffix}`;
 const OUR_WALLET = `0x${"31".repeat(20)}` as `0x${string}`;
-const PAPER_LOCAL_WALLET = `0x${"32".repeat(20)}` as `0x${string}`;
+const ORPHAN_PAPER_WALLET = `0x${"32".repeat(20)}` as `0x${string}`;
+const PAPER_LOCAL_WALLET = derivePaperAccountAddress(BILLING_ID);
 const TARGET_WALLET = `0x${"42".repeat(20)}` as `0x${string}`;
 const CONDITION = `0x${"a1".repeat(32)}`;
 const UNRELATED_CONDITION = `0x${"b2".repeat(32)}`;
@@ -260,6 +262,8 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			hourlyFillsCap: 100,
 			expiresAt: new Date("2099-01-01T00:00:00Z"),
 		});
+    const paperConnection = randomUUID();
+
 		const [ourWallet] = await db
 			.insert(polyTraderWallets)
 			.values({
@@ -386,6 +390,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				price: "0.5",
 				feesUsdc: "0",
 				attributes: {
+					side: "BUY",
 					target_wallet: TARGET_WALLET,
 					condition_id: PAPER_CONDITION,
 					token_id: PAPER_TOKEN,
@@ -479,6 +484,37 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				lastObservedAt: new Date(),
 			},
 		]);
+    await db.insert(polyWalletConnections).values({ id: paperConnection, billingAccountId: BILLING_ID,
+      createdByUserId: USER_ID, kind: "paper", address: PAPER_LOCAL_WALLET, funderAddress: PAPER_LOCAL_WALLET,
+      paperSeedUsdc: "100", tradingApprovalsReadyAt: new Date(), custodialConsentAcceptedAt: new Date(),
+      custodialConsentActorKind: "user", custodialConsentActorId: USER_ID });
+    await db.insert(polyWalletGrants).values({ billingAccountId: BILLING_ID, walletConnectionId: paperConnection,
+      createdByUserId: USER_ID, scopes: ["poly:trade:buy"], perOrderUsdcCap: "10", dailyUsdcCap: "1000", hourlyFillsCap: 1000 });
+    const native: OrderReceipt = { order_id: `order-paper-${suffix}`, client_order_id: `hydration-paper-${suffix}`,
+      status: "filled", filled_size_usdc: 5, total_shares: 10, fill_price: .5, fees_usdc: 0,
+      submitted_at: new Date().toISOString(), attributes: { market: PAPER_CONDITION, tokenId: PAPER_TOKEN, side: "BUY", sizeMatched: 10 } };
+    const nativeTransport = vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = new URL(String(input));
+      expect(url.origin).toBe("http://paper.retained-hydration.test");
+      expect(url.pathname).toBe(`/orders/${native.order_id}`);
+      expect(url.searchParams.get("account_id")).toBe(paperConnection);
+      return Response.json(native);
+    });
+    try {
+      const resolver = createExecutionVenueResolver({ db });
+      expect(await resolver(BILLING_ID)).toBe("live");
+      const factory = createPolyTradeExecutorFactory({ logger: noopLogger as never, metrics: noopMetrics,
+        paperSidecarUrl: "http://paper.retained-hydration.test", paperVenue: createPaperVenue({ db }), resolveExecutionVenue: resolver });
+      // This is a historical PAPER binding; normal mixed-account dispatch stays LIVE.
+      const executor = await factory.getPolyTradeExecutorForVenue(BILLING_ID, "paper");
+      const actual = await executor.getOrder(native.order_id);
+      if (!("found" in actual)) throw new Error("retained hydration paper native receipt absent");
+      const ledger = createOrderLedger({ db, logger: noopLogger as never, resolveExecutionMode: resolver });
+      const accepted = await ledger.markOrderId({ client_order_id: native.client_order_id, receipt: actual.found });
+      if (!accepted) throw new Error("retained hydration paper observation absent");
+      expect(accepted.accepted).toBe(true);
+      await syncPaperTraderWallets(db, await readActivePaperAccounts(db, noopLogger));
+    } finally { nativeTransport.mockRestore(); }
 	});
 
 	afterAll(async () => {
@@ -503,6 +539,37 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		await db.delete(billingAccounts).where(eq(billingAccounts.id, BILLING_ID));
 		await db.delete(users).where(eq(users.id, USER_ID));
 	});
+
+  it("retires the old orphan paper identity while canonical enrollment preserves its positive replacement", async () => {
+    const [orphan] = await db.insert(polyTraderWallets).values({ walletAddress: ORPHAN_PAPER_WALLET,
+      kind: "paper_wallet", label: "Old orphan hydration fixture" }).returning({ id: polyTraderWallets.id });
+    if (!orphan) throw new Error("orphan hydration identity absent");
+    try {
+      await db.insert(polyTraderCurrentPositions).values({ traderWalletId: orphan.id, conditionId: PAPER_CONDITION,
+        tokenId: PAPER_TOKEN, shares: "10", costBasisUsdc: "5", currentValueUsdc: "6", avgPrice: ".5",
+        contentHash: randomUUID(), active: true, lastObservedAt: new Date() });
+      // Keep the deterministic reproduction atomic with respect to other workers.
+      await db.transaction(async tx => {
+        await tx.update(polyTraderWallets).set({ activeForResearch: true, disabledAt: null }).where(eq(polyTraderWallets.id, orphan.id));
+        const before = await readFullComparisonCoverageCounts({ db: tx, billingAccountId: BILLING_ID,
+          walletAddress: ORPHAN_PAPER_WALLET, connectionKind: "paper" });
+        expect(before.find(row => row.entity === "positions" && row.status === "live")).toMatchObject({ eligible: 1, comparable: 1 });
+        const accounts = await readActivePaperAccounts(tx as never, noopLogger);
+        expect(accounts.some(account => account.address === PAPER_LOCAL_WALLET)).toBe(true);
+        expect(accounts.some(account => account.address === ORPHAN_PAPER_WALLET)).toBe(false);
+        await syncPaperTraderWallets(tx as never, accounts);
+        const [state] = await tx.select({ active: polyTraderWallets.activeForResearch, disabledAt: polyTraderWallets.disabledAt })
+          .from(polyTraderWallets).where(eq(polyTraderWallets.id, orphan.id));
+        expect(state).toMatchObject({ active: false, disabledAt: expect.any(Date) });
+        const retired = await readFullComparisonCoverageCounts({ db: tx, billingAccountId: BILLING_ID,
+          walletAddress: ORPHAN_PAPER_WALLET, connectionKind: "paper" });
+        expect(retired.find(row => row.entity === "positions" && row.status === "live")).toMatchObject({ eligible: 0, comparable: 0 });
+        const retained = await readFullComparisonCoverageCounts({ db: tx, billingAccountId: BILLING_ID,
+          walletAddress: PAPER_LOCAL_WALLET, connectionKind: "paper" });
+        expect(retained.find(row => row.entity === "positions" && row.status === "live")).toMatchObject({ eligible: 1, comparable: 1 });
+      });
+    } finally { await db.delete(polyTraderWallets).where(eq(polyTraderWallets.id, orphan.id)); }
+  });
 
 	it("rejects target-wallet attributes that disagree with deterministic target lineage", async () => {
 		const mismatchedTargetId = randomUUID();
@@ -565,14 +632,15 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		await db
 			.update(polyWalletConnections)
 			.set({ funderAddress: null })
-			.where(eq(polyWalletConnections.billingAccountId, BILLING_ID));
+			.where(and(eq(polyWalletConnections.billingAccountId, BILLING_ID), eq(polyWalletConnections.kind, "privy_live")));
 		try {
-			expect(await readCopyTargetPositionCohorts(db)).toEqual([]);
+			expect(await readCopyTargetPositionCohorts(db)).toEqual([{ targetWallet: TARGET_WALLET, conditions: [PAPER_CONDITION],
+        exactLocalKeys: [{ conditionId: PAPER_CONDITION, tokenId: PAPER_TOKEN }] }]);
 		} finally {
 			await db
 				.update(polyWalletConnections)
 				.set({ funderAddress: OUR_WALLET })
-				.where(eq(polyWalletConnections.billingAccountId, BILLING_ID));
+				.where(and(eq(polyWalletConnections.billingAccountId, BILLING_ID), eq(polyWalletConnections.kind, "privy_live")));
 		}
 	});
 
@@ -581,10 +649,11 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		expect(cohorts).toEqual([
 			{
 				targetWallet: TARGET_WALLET,
-				conditions: [CONDITION, ZERO_VALUE_CONDITION],
+				conditions: [CONDITION, ZERO_VALUE_CONDITION, PAPER_CONDITION],
 				exactLocalKeys: [
 					{ conditionId: CONDITION, tokenId: LOCAL_TOKEN },
 					{ conditionId: ZERO_VALUE_CONDITION, tokenId: ZERO_VALUE_TOKEN },
+          { conditionId: PAPER_CONDITION, tokenId: PAPER_TOKEN },
 				],
 			},
 		]);
@@ -598,7 +667,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			before.find((row) => row.entity === "positions" && row.status === "live"),
 		).toMatchObject({ eligible: 2, comparable: 1 });
     const paperEligibilityState = () => db.execute(sql`
-      SELECT w.kind, w.active_for_research, w.disabled_at,
+      SELECT w.kind, w.active_for_research, w.disabled_at, w.updated_at,
         p.active, p.shares, p.cost_basis_usdc, p.current_value_usdc, p.last_observed_at,
         p.raw->>'redeemable' AS redeemable, p.raw->>'endDate' AS end_date,
         o.outcome, o.payout, o.resolved_at
@@ -608,6 +677,14 @@ describe("lineage-scoped copy-target V2 hydration", () => {
       LEFT JOIN poly_market_outcomes o ON o.condition_id=p.condition_id AND o.token_id=p.token_id
       WHERE w.id=${paperTraderWalletId}`);
     const paperEligibilityBefore = await paperEligibilityState();
+    expect(paperEligibilityBefore).toMatchObject([{ kind: "paper_wallet", active_for_research: true,
+      disabled_at: null, active: true, shares: "10.00000000", current_value_usdc: "6.00000000" }]);
+    // Enrollment may legitimately refresh its bookkeeping clock while preserving
+    // all eligibility/current-position facts. Keep that clock in the captured
+    // evidence, but compare the predicate inputs independently of it.
+    const eligibilityFacts = (rows: Awaited<ReturnType<typeof paperEligibilityState>>) =>
+      rows.map(({ updated_at: _updatedAt, ...eligibility }) => eligibility);
+
 		const paperBefore = await readFullComparisonCoverageCounts({
 			db,
 			billingAccountId: BILLING_ID,
@@ -632,6 +709,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 					redeemable: true,
 				},
 				position(OPPOSITE_TOKEN),
+        position(PAPER_TOKEN, PAPER_CONDITION),
 				{
 					...position(ZERO_VALUE_TOKEN, ZERO_VALUE_CONDITION),
 					initialValue: 0,
@@ -654,10 +732,10 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			client,
 			logger: logger as never,
 		});
-    expect(await paperEligibilityState()).toEqual(paperEligibilityBefore);
-		expect(first).toEqual({ cohorts: 1, conditions: 2, rows: 3, errors: 0 });
+    expect(eligibilityFacts(await paperEligibilityState())).toEqual(eligibilityFacts(paperEligibilityBefore));
+		expect(first).toEqual({ cohorts: 1, conditions: 3, rows: 4, errors: 0 });
 		expect(listUserPositionsV2).toHaveBeenLastCalledWith(TARGET_WALLET, {
-			conditions: [CONDITION, ZERO_VALUE_CONDITION],
+			conditions: [CONDITION, ZERO_VALUE_CONDITION, PAPER_CONDITION],
 		});
 		const cursors = await db
 			.select({
@@ -771,7 +849,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			)?.targetEntryValueUsdc,
 		).toBeNull();
 
-    expect(await paperEligibilityState()).toEqual(paperEligibilityBefore);
+    expect(eligibilityFacts(await paperEligibilityState())).toEqual(eligibilityFacts(paperEligibilityBefore));
 		const disabledAt = new Date();
 		await db
 			.update(polyCopyTradeTargets)
@@ -804,7 +882,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				(row) => row.entity === "positions" && row.status === "live",
 			),
 		).toMatchObject({ eligible: 2, comparable: 1, source_ambiguous: false });
-    expect(await paperEligibilityState()).toEqual(paperEligibilityBefore);
+    expect(eligibilityFacts(await paperEligibilityState())).toEqual(eligibilityFacts(paperEligibilityBefore));
 		const disabledPaperCoverage = await readFullComparisonCoverageCounts({
 			db,
 			billingAccountId: BILLING_ID,
@@ -865,7 +943,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		});
 		expect(omitted).toEqual({
 			cohorts: 1,
-			conditions: 2,
+			conditions: 3,
 			rows: 0,
 			errors: 0,
 		});
