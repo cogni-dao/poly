@@ -45,7 +45,6 @@
 
 // TODO(task.0329): redemption-sync will add `getOperatorPositions` back.
 import type {
-  GetOrderResult,
   LoggerPort,
   MetricsPort,
 	OrderReceipt,
@@ -59,6 +58,8 @@ import {
   type OrderLedger,
 	type UpdateStatusInput,
 } from "@/features/trading";
+import type { ContextualGetOrderResult } from "@/features/trading/fill-accounting";
+import type { AcceptedOrderObservation } from "@/features/trading/order-ledger.types";
 import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 import { EVENT_NAMES } from "@/shared/observability/events";
 
@@ -108,7 +109,7 @@ export interface OrderReconcilerDeps {
     billing_account_id: string,
     order_id: string,
 		mode: "live" | "paper",
-  ) => Promise<GetOrderResult>;
+  ) => Promise<ContextualGetOrderResult>;
   logger: LoggerPort;
   metrics: MetricsPort;
   /**
@@ -118,7 +119,7 @@ export interface OrderReconcilerDeps {
   /** Wake an account-local strategy actor after a durable ledger transition. */
   onOrderChanged?: (
     row: LedgerRow,
-		change: { status: LedgerStatus; reason?: string },
+		change: { status: LedgerStatus; reason?: string; acceptedObservation?: AcceptedOrderObservation },
   ) => void;
   /**
    * Injected clock — returns the current wall time. Defaults to `() => new Date()`
@@ -328,7 +329,11 @@ export async function runReconcileOnce(
       const realizedFillSource = receiptFillSource(row, receipt);
       const sourceChanged = realizedFillSource !== undefined &&
         row.attributes?.realized_fill_source !== realizedFillSource;
+      // Selected paper rows always reach the locked decoder: semantic equality
+      // does not prove that the saved envelope/clock is valid. The writer keeps
+      // an identical valid proof and its original observation clock unchanged.
 				if (
+					row.mode !== "paper" &&
 					newStatus === row.status &&
 					!filledChanged &&
 					!sourceChanged &&
@@ -336,10 +341,11 @@ export async function runReconcileOnce(
 				)
         continue;
       reconcileStage = "persist_status";
-      await deps.ledger.updateStatus({
+      const accepted = await deps.ledger.updateStatus({
         client_order_id: row.client_order_id,
 					order_id: row.order_id,
         status: newStatus,
+        ...(row.mode === "paper" ? { paper_receipt: receipt } : {}),
 					...(receipt.filled_size_usdc !== undefined
 						? { filled_size_usdc: receipt.filled_size_usdc }
 						: {}),
@@ -360,7 +366,10 @@ export async function runReconcileOnce(
           : {}),
       });
       reconcileStage = "notify_order_changed";
-      deps.onOrderChanged?.(row, { status: newStatus });
+      let acceptedStatus = newStatus;
+      if (accepted) acceptedStatus = accepted.status;
+      deps.onOrderChanged?.(row, { status: acceptedStatus,
+        ...(accepted ? { acceptedObservation: accepted } : {}) });
       reconcileStage = "record_update_metric";
       deps.metrics.incr(ORDER_RECONCILER_METRICS.updatesTotal, {
         from: row.status,

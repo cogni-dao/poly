@@ -93,6 +93,11 @@ import {
   type ClobExecutor,
   createClobExecutor,
 } from "@/features/trading/clob-executor";
+import {
+  type ContextualGetOrderResult,
+  type ContextualOrderReceipt,
+  normalizeFillCondition,
+} from "@/features/trading/fill-accounting";
 
 export {
   classifyClobCredentialRotationError,
@@ -205,7 +210,7 @@ export interface PolyTradeExecutor {
    * The mirror-pipeline consumes this verbatim; the caller has already
    * selected sizing + client_order_id via `planMirrorFromFill`.
    */
-  placeIntent: (intent: OrderIntent) => Promise<OrderReceipt>;
+  placeIntent: (intent: OrderIntent) => Promise<ContextualOrderReceipt>;
   /**
    * Autonomous SELL-to-close path. Finds the operator's position for the
    * token, caps size at position value, then routes through `placeIntent`
@@ -226,7 +231,7 @@ export interface PolyTradeExecutor {
    * `VENUE_RESOLVED_FROM_ACCOUNT`: a paper account's executor reads the
    * sidecar, a live account's reads the CLOB.
    */
-  getOrder: (orderId: string) => Promise<GetOrderResult>;
+  getOrder: (orderId: string) => Promise<ContextualGetOrderResult>;
   /**
    * Per-tenant cancel seam (task.5001). Wraps the underlying adapter's
    * `cancelOrder` with an audit log so the cancel boundary is tenant-
@@ -1048,7 +1053,7 @@ async function buildPaperOnlyExecutor(
 
   const authorizedPlace = async (
     intent: OrderIntent
-  ): Promise<OrderReceipt> => {
+  ): Promise<ContextualOrderReceipt> => {
     // AUTHORIZED_PLACE_ONLY applies to paper exactly as it does to live: the
     // grant row, its scopes, and its per-order / daily / hourly caps decide.
     // Read fresh on every call, so a revoke that lands after this executor was
@@ -1091,7 +1096,23 @@ async function buildPaperOnlyExecutor(
       },
       "poly-trade-executor (paper): authorized → placeOrder"
     );
-    return paperPlace(intent);
+    const receipt = await paperPlace(intent);
+    const native = receipt.attributes ?? {};
+    const condition = normalizeFillCondition(intent.market_id);
+    if (receipt.client_order_id !== intent.client_order_id ||
+      (typeof intent.attributes?.condition_id === "string" && normalizeFillCondition(intent.attributes.condition_id) !== condition) ||
+      typeof native.market !== "string" || normalizeFillCondition(native.market) !== condition ||
+      native.tokenId !== intent.attributes?.token_id || native.side !== intent.side) {
+      throw new Error("paper_receipt_identity_mismatch");
+    }
+    return {
+      ...receipt,
+      paper_context: {
+        billing_account_id: billingAccountId,
+        connection_id: account.connectionId,
+        observed_at: new Date().toISOString(),
+      },
+    };
   };
 
   const paperPositions = deps.paperPositions;
@@ -1183,7 +1204,19 @@ async function buildPaperOnlyExecutor(
         "paper_positions_shape_unavailable",
         "the Data-API position shape cannot be produced from paper facts; use the paper portfolio snapshot"
       ),
-    getOrder: paperAdapter.getOrder.bind(paperAdapter),
+    getOrder: async (orderId) => {
+      const result = await paperAdapter.getOrder(orderId);
+      if (!("found" in result)) return result;
+      if (result.found.order_id !== orderId) throw new Error("paper_receipt_order_mismatch");
+      return { found: {
+        ...result.found,
+        paper_context: {
+          billing_account_id: billingAccountId,
+          connection_id: account.connectionId,
+          observed_at: new Date().toISOString(),
+        },
+      } };
+    },
     cancelOrder: paperAdapter.cancelOrder.bind(paperAdapter),
     getMarketConstraints: adapter.getMarketConstraints.bind(adapter),
     listOpenOrders: async () =>

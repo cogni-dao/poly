@@ -14,9 +14,10 @@ import {
 	polyPositionGapRuns,
 } from "@cogni/db-schema/position-gap";
 import { toUserId, userActor } from "@cogni/ids";
+import { noopLogger, noopMetrics, type OrderReceipt } from "@cogni/poly-market-provider";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { eq, inArray } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { eq, inArray, sql } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { Database } from "@/adapters/server/db/client";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
@@ -27,7 +28,12 @@ import {
 	PositionGapRuntimeStore,
 } from "@/features/copy-trade/position-gap-runtime-store";
 import { createOrderLedger } from "@/features/trading/order-ledger";
-import { billingAccounts, users } from "@/shared/db/schema";
+import { createPolyTradeExecutorFactory } from "@/bootstrap/capabilities/poly-trade-executor";
+import { runReconcileOnce } from "@/bootstrap/jobs/order-reconciler.job";
+import { createExecutionVenueResolver, createPaperVenue, derivePaperAccountAddress } from "@/features/paper-accounts";
+import { acceptedPaperProof, decodeFillAccounting, type FillAccountingScope } from "@/features/trading/fill-accounting";
+import { paperFillAccountingSql } from "@/features/trading/fill-accounting-sql";
+import { billingAccounts, polyWalletConnections, polyWalletGrants, users } from "@/shared/db/schema";
 import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 
 const future = new Date("2099-01-01T00:00:00.000Z");
@@ -42,6 +48,538 @@ const algorithmLineage = {
 	assignment_id: "position-gap-component",
 	correlation_id: "position-gap-component",
 };
+
+describe("authenticated paper cumulative receipt persistence", () => {
+	it("repairs terminal equal tuples and known-zero fees through the real factory, ledger, reconciler and SQL", async () => {
+		const db = getSeedDb();
+		const owner = randomUUID();
+		const account = randomUUID();
+		const connection = randomUUID();
+		const target = randomUUID();
+		const condition = `0x${"d".repeat(64)}`;
+		const token = "1234567890123456789012345678901234567890";
+		const client = `paper-proof-${randomUUID()}`;
+		const order = `paper-order-${randomUUID()}`;
+		await db.insert(users).values({
+			id: owner,
+			name: "Paper proof owner",
+			walletAddress: `0x${owner.replaceAll("-", "")}12345678`,
+		});
+		await db
+			.insert(billingAccounts)
+			.values({ id: account, ownerUserId: owner, balanceCredits: 0n });
+		const address = derivePaperAccountAddress(account);
+		await db.insert(polyWalletConnections).values({
+			id: connection,
+			billingAccountId: account,
+			createdByUserId: owner,
+			kind: "paper",
+			address,
+			funderAddress: address,
+			paperSeedUsdc: "100",
+			custodialConsentAcceptedAt: asOf,
+			custodialConsentActorKind: "user",
+			custodialConsentActorId: owner,
+			tradingApprovalsReadyAt: asOf,
+		});
+		await db.insert(polyWalletGrants).values({
+			billingAccountId: account,
+			walletConnectionId: connection,
+			createdByUserId: owner,
+			scopes: ["poly:trade:buy"],
+			perOrderUsdcCap: "10",
+			dailyUsdcCap: "1000",
+			hourlyFillsCap: 1000,
+		});
+		let native: OrderReceipt = {
+			order_id: order,
+			client_order_id: client,
+			status: "filled",
+			filled_size_usdc: 1.5,
+			fill_price: 0.5,
+			total_shares: 3,
+			submitted_at: asOf.toISOString(),
+			attributes: {
+				market: condition,
+				tokenId: token,
+				side: "BUY",
+				sizeMatched: 3,
+			},
+		};
+		const transport = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async (input, init) => {
+				const url = new URL(String(input));
+				expect(url.origin).toBe("http://paper.receipt.test");
+				if (url.pathname === "/place-order") {
+					const request = JSON.parse(String(init?.body));
+					expect(request.account_id).toBe(connection);
+					expect(request.client_order_id).toBe(native.client_order_id);
+				} else {
+					expect(url.searchParams.get("account_id")).toBe(connection);
+					expect(url.pathname).toBe(`/orders/${native.order_id}`);
+				}
+				return Response.json(native);
+			});
+		try {
+			const factory = createPolyTradeExecutorFactory({
+				logger: noopLogger as never,
+				metrics: noopMetrics,
+				paperSidecarUrl: "http://paper.receipt.test",
+				paperVenue: createPaperVenue({ db }),
+				resolveExecutionVenue: createExecutionVenueResolver({ db }),
+			});
+			const executor = await factory.getPolyTradeExecutorFor(account);
+			const ledger = createOrderLedger({
+				db,
+				logger: noopLogger as never,
+				resolveExecutionMode: createExecutionVenueResolver({ db }),
+			});
+			const intent = {
+				provider: "polymarket" as const,
+				market_id: `prediction-market:polymarket:${condition}`,
+				outcome: "0",
+				side: "BUY" as const,
+				size_usdc: 2.5,
+				limit_price: 0.5,
+				client_order_id: client,
+				attributes: {
+					token_id: token,
+					condition_id: condition,
+					placement: "limit",
+				},
+			};
+			await ledger.insertPending({
+				billing_account_id: account,
+				created_by_user_id: owner,
+				target_id: target,
+				fill_id: `paper-proof:${client}`,
+				observed_at: asOf,
+				intent,
+			});
+			const receipt = await executor.placeIntent(intent);
+			expect(receipt.paper_context?.connection_id).toBe(connection);
+			const first = await ledger.markOrderId({
+				client_order_id: client,
+				receipt,
+			});
+			if (!first)
+				throw new Error("paper writer returned no durable observation");
+			expect(first.accepted).toBe(true);
+			expect(first.accounting).toMatchObject({
+				status: "verified_positive",
+				facts: {
+					shares: 3,
+					notional_usdc: 1.5,
+					price: 0.5,
+					fee_known: false,
+					fees_usdc: null,
+					connection_id: connection,
+				},
+			});
+			const scope: FillAccountingScope = {
+				mode: "paper",
+				billing_account_id: account,
+				connection_id: connection,
+				client_order_id: client,
+				order_id: order,
+				condition_id: condition,
+				token_id: token,
+				side: "BUY",
+			};
+			const read = async () => {
+				const [row] = await db
+					.select()
+					.from(polyCopyTradeFills)
+					.where(eq(polyCopyTradeFills.clientOrderId, client));
+				if (!row) throw new Error("paper proof row missing");
+				return row;
+			};
+			const sqlProof = paperFillAccountingSql("f");
+			const readSql = async () => {
+				const rows =
+					await db.execute(sql`SELECT ${sqlProof.positive} AS positive, ${sqlProof.zero} AS zero,
+          ${sqlProof.feeKnown} AS fee_known FROM poly_copy_trade_fills f WHERE f.client_order_id = ${client}`);
+				return rows[0];
+			};
+			expect(
+				decodeFillAccounting(await read(), scope, new Date()),
+			).toMatchObject({ status: "verified_positive" });
+			expect(await readSql()).toMatchObject({
+				positive: true,
+				zero: false,
+				fee_known: false,
+			});
+
+			// Historical source-only terminal rows must be selected despite the closed
+			// lifecycle and unchanged status/cost/source. No immutable fill is rewritten.
+			await db
+				.update(polyCopyTradeFills)
+				.set({
+					positionLifecycle: "closed",
+					updatedAt: asOf,
+					syncedAt: asOf,
+					attributes: sql`${polyCopyTradeFills.attributes} - 'paper_receipt_v1'`,
+				})
+				.where(eq(polyCopyTradeFills.clientOrderId, client));
+			expect(
+				(await ledger.listOpenOrPending({ olderThanMs: 0 })).some(
+					(row) => row.client_order_id === client,
+				),
+			).toBe(true);
+			const reconcile = () =>
+				runReconcileOnce({
+					ledger,
+					logger: noopLogger,
+					metrics: noopMetrics,
+					notFoundGraceMs: 0,
+					getOrderForTenant: async (billing, orderId, mode) => {
+						expect(billing).toBe(account);
+						expect(mode).toBe("paper");
+						return executor.getOrder(orderId);
+					},
+				});
+			await reconcile();
+			const repaired = await read();
+			expect(repaired.positionLifecycle).toBe("closed");
+			expect(repaired.attributes?.paper_receipt_v1).toBeDefined();
+			expect(
+				acceptedPaperProof(decodeFillAccounting(repaired, scope, new Date()))
+					?.fee_known,
+			).toBe(false);
+
+			native = { ...native, fees_usdc: 0 };
+			await db
+				.update(polyCopyTradeFills)
+				.set({ updatedAt: asOf, syncedAt: asOf })
+				.where(eq(polyCopyTradeFills.clientOrderId, client));
+			await reconcile();
+			const known = await read();
+			expect(Number(known.shares)).toBe(3);
+			expect(Number(known.feesUsdc)).toBe(0);
+			expect(known.attributes?.filled_size_usdc).toBe(1.5);
+			expect(await readSql()).toMatchObject({
+				positive: true,
+				zero: false,
+				fee_known: true,
+			});
+			const knownProof = acceptedPaperProof(
+				decodeFillAccounting(known, scope, new Date()),
+			);
+			expect(knownProof?.fee_known).toBe(true);
+			const repeat = await executor.getOrder(order);
+			if (!("found" in repeat))
+				throw new Error("paper receipt unexpectedly absent");
+			await ledger.markOrderId({
+				client_order_id: client,
+				receipt: repeat.found,
+			});
+			expect((await read()).attributes?.paper_receipt_v1).toEqual(
+				known.attributes?.paper_receipt_v1,
+			);
+			expect(
+				(await ledger.listOpenOrPending({ olderThanMs: 0 })).some(
+					(row) => row.client_order_id === client,
+				),
+			).toBe(false);
+
+			for (const conflict of [
+				{ total_shares: 4, fill_price: 0.25, filled_size_usdc: 1 },
+				{ total_shares: 3, fill_price: 1 / 3, filled_size_usdc: 1 },
+			]) {
+				native = {
+					...native,
+					...conflict,
+					attributes: {
+						...native.attributes,
+						sizeMatched: conflict.total_shares,
+					},
+				};
+				const incoming = await executor.getOrder(order);
+				if (!("found" in incoming))
+					throw new Error("conflicting receipt unexpectedly absent");
+				const rejected = await ledger.markOrderId({
+					client_order_id: client,
+					receipt: incoming.found,
+				});
+				if (!rejected)
+					throw new Error("paper writer returned no durable observation");
+				expect(rejected.accepted).toBe(false);
+				expect((await read()).attributes).toEqual(known.attributes);
+			}
+			native = {
+				...native,
+				filled_size_usdc: 1.5,
+				total_shares: 3,
+				fill_price: 0.5,
+				attributes: {
+					...native.attributes,
+					sizeMatched: 3,
+					tokenId: "9999999999999999999999999",
+				},
+			};
+			const wrongToken = await executor.getOrder(order);
+			if (!("found" in wrongToken))
+				throw new Error("wrong token receipt unexpectedly absent");
+			const wrongTokenWrite = await ledger.markOrderId({
+				client_order_id: client,
+				receipt: wrongToken.found,
+			});
+			if (!wrongTokenWrite)
+				throw new Error("paper writer returned no durable observation");
+			expect(wrongTokenWrite.accepted).toBe(false);
+			expect((await read()).attributes).toEqual(known.attributes);
+
+			// Malformed historical JSON must return false, never throw a SQL cast error.
+			for (const invalid of [
+				"not-a-number",
+				"NaN",
+				"Infinity",
+				"1e99999",
+				null,
+			]) {
+				await db
+					.update(polyCopyTradeFills)
+					.set({
+						attributes: sql`jsonb_set(${JSON.stringify(known.attributes)}::jsonb,
+          '{paper_receipt_v1,shares}', ${JSON.stringify(invalid)}::jsonb)`,
+					})
+					.where(eq(polyCopyTradeFills.clientOrderId, client));
+				expect(await readSql()).toMatchObject({ positive: false, zero: false });
+				expect(
+					decodeFillAccounting(await read(), scope, new Date()).status,
+				).not.toBe("verified_positive");
+			}
+			await db
+				.update(polyCopyTradeFills)
+				.set({ attributes: known.attributes })
+				.where(eq(polyCopyTradeFills.clientOrderId, client));
+			expect(decodeFillAccounting(await read(), scope, asOf).status).toBe(
+				"pending",
+			);
+			const oldCutoff = paperFillAccountingSql(
+				"f",
+				sql`${asOf.toISOString()}::timestamptz`,
+			);
+			const past = await db.execute(
+				sql`SELECT ${oldCutoff.positive} AS positive FROM poly_copy_trade_fills f WHERE f.client_order_id = ${client}`,
+			);
+			expect(past[0]?.positive).toBe(false);
+
+			// These independent decimals exercise binary/decimal half boundaries. The
+			// authoritative envelope retains native precision; the existing columns
+			// must use PostgreSQL numeric rounding on both the writer and reader.
+			native = {
+				...native,
+				total_shares: 3.250000005,
+				fill_price: 0.500000005,
+				filled_size_usdc: 1.62500001875,
+				fees_usdc: 0.000000005,
+				attributes: {
+					market: condition,
+					tokenId: token,
+					side: "BUY",
+					sizeMatched: 3.250000005,
+				},
+			};
+			const halfBoundary = await executor.getOrder(order);
+			if (!("found" in halfBoundary))
+				throw new Error("half-boundary receipt unexpectedly absent");
+			const halfWrite = await ledger.markOrderId({
+				client_order_id: client,
+				receipt: halfBoundary.found,
+			});
+			if (!halfWrite)
+				throw new Error("paper writer returned no durable observation");
+			expect(halfWrite.accepted).toBe(true);
+			const rounded = await read();
+			expect(rounded.shares).toBe("3.25000001");
+			expect(rounded.price).toBe("0.50000001");
+			expect(rounded.feesUsdc).toBe("0.00000001");
+			expect(
+				acceptedPaperProof(decodeFillAccounting(rounded, scope, new Date())),
+			).toMatchObject({
+				shares: 3.250000005,
+				price: 0.500000005,
+				fees_usdc: 0.000000005,
+				notional_usdc: 1.62500001875,
+			});
+			expect(await readSql()).toMatchObject({
+				positive: true,
+				zero: false,
+				fee_known: true,
+			});
+			const decimalOracle =
+				await db.execute(sql`SELECT round(3.250000005::numeric, 8)::text AS shares,
+        round(0.500000005::numeric, 8)::text AS price, round(0.000000005::numeric, 8)::text AS fee`);
+			expect(decimalOracle[0]).toMatchObject({
+				shares: "3.25000001",
+				price: "0.50000001",
+				fee: "0.00000001",
+			});
+
+			// Missing envelopes compare native observations against the precision of
+			// the legacy columns, rather than falsely calling half-rounding regression.
+			await db
+				.update(polyCopyTradeFills)
+				.set({
+					positionLifecycle: "closed",
+					updatedAt: asOf,
+					syncedAt: asOf,
+					attributes: sql`${polyCopyTradeFills.attributes} - 'paper_receipt_v1'`,
+				})
+				.where(eq(polyCopyTradeFills.clientOrderId, client));
+			await reconcile();
+			expect((await read()).shares).toBe("3.25000001");
+			expect(
+				acceptedPaperProof(
+					decodeFillAccounting(await read(), scope, new Date()),
+				)?.shares,
+			).toBe(3.250000005);
+			expect(await readSql()).toMatchObject({
+				positive: true,
+				fee_known: true,
+			});
+
+			// Clocks are intentionally absent from semantic keys. A matching key is
+			// insufficient when the saved proof has an invalid or future observation.
+			for (const corruptClock of [
+				"not-an-observation-clock",
+				"2099-01-01T00:00:00.000Z",
+			]) {
+				const beforeClockRepair = await read();
+				const beforeProof = acceptedPaperProof(
+					decodeFillAccounting(beforeClockRepair, scope, new Date()),
+				);
+				if (!beforeProof)
+					throw new Error("clock-repair starting proof missing");
+				await db
+					.update(polyCopyTradeFills)
+					.set({
+						updatedAt: asOf,
+						syncedAt: asOf,
+						attributes: sql`jsonb_set(${JSON.stringify(beforeClockRepair.attributes)}::jsonb,
+            '{paper_receipt_v1,observed_at}', ${JSON.stringify(corruptClock)}::jsonb)`,
+					})
+					.where(eq(polyCopyTradeFills.clientOrderId, client));
+				expect(await readSql()).toMatchObject({ positive: false });
+				const selected = (
+					await ledger.listOpenOrPending({ olderThanMs: 0 })
+				).find((row) => row.client_order_id === client);
+				expect(selected?.client_order_id).toBe(client);
+				await reconcile();
+				const afterProof = acceptedPaperProof(
+					decodeFillAccounting(await read(), scope, new Date()),
+				);
+				expect(afterProof?.proof_key).toBe(beforeProof.proof_key);
+				expect(afterProof?.observed_at).not.toBe(corruptClock);
+				expect(await readSql()).toMatchObject({
+					positive: true,
+					fee_known: true,
+				});
+			}
+
+      const monotonicBefore = await read();
+      native = { ...native, total_shares: 3.24999999, fill_price: 0.5, filled_size_usdc: 1.624999995,
+        attributes: { ...native.attributes, sizeMatched: 3.24999999 } };
+      const regressedNative = await executor.getOrder(order);
+      if (!("found" in regressedNative)) throw new Error("regression control receipt absent");
+      const regressionWrite = await ledger.markOrderId({ client_order_id: client, receipt: regressedNative.found });
+      if (!regressionWrite) throw new Error("regression control durable result absent");
+      expect(regressionWrite.accepted).toBe(false);
+      expect((await read()).attributes).toEqual(monotonicBefore.attributes);
+
+			const zeroClient = `paper-zero-${randomUUID()}`;
+			const zeroOrder = `paper-zero-order-${randomUUID()}`;
+			const zeroToken = "9876543210987654321098765432109876543210";
+			const zeroIntent = {
+				...intent,
+				client_order_id: zeroClient,
+				attributes: { ...intent.attributes, token_id: zeroToken },
+			};
+			await ledger.insertPending({
+				billing_account_id: account,
+				created_by_user_id: owner,
+				target_id: target,
+				fill_id: `paper-proof:${zeroClient}`,
+				observed_at: asOf,
+				intent: zeroIntent,
+			});
+			native = {
+				order_id: zeroOrder,
+				client_order_id: zeroClient,
+				status: "canceled",
+				filled_size_usdc: 0,
+				fees_usdc: 0,
+				submitted_at: asOf.toISOString(),
+				attributes: {
+					market: condition,
+					tokenId: zeroToken,
+					side: "BUY",
+					sizeMatched: 0,
+				},
+			};
+			const zeroReceipt = await executor.placeIntent(zeroIntent);
+			const zeroWrite = await ledger.markOrderId({
+				client_order_id: zeroClient,
+				receipt: zeroReceipt,
+			});
+			if (!zeroWrite)
+				throw new Error("zero writer returned no durable observation");
+			expect(zeroWrite.accepted).toBe(true);
+			expect(zeroWrite.accounting).toMatchObject({
+				status: "verified_zero",
+				finalProof: {
+					shares: 0,
+					notional_usdc: 0,
+					price: null,
+					fee_known: true,
+					fees_usdc: 0,
+					terminal: true,
+				},
+			});
+			const [zeroRow] = await db
+				.select()
+				.from(polyCopyTradeFills)
+				.where(eq(polyCopyTradeFills.clientOrderId, zeroClient));
+			if (!zeroRow) throw new Error("zero durable row missing");
+			expect(zeroRow.attributes?.final_order_observation).toMatchObject({
+				order_id: zeroOrder,
+				filled_size_usdc: 0,
+				status: "canceled",
+			});
+			expect(
+				decodeFillAccounting(
+					zeroRow,
+					{
+						...scope,
+						client_order_id: zeroClient,
+						order_id: zeroOrder,
+						token_id: zeroToken,
+					},
+					new Date(),
+				).status,
+			).toBe("verified_zero");
+			const zeroSql =
+				await db.execute(sql`SELECT ${sqlProof.positive} AS positive, ${sqlProof.zero} AS zero
+        FROM poly_copy_trade_fills f WHERE f.client_order_id = ${zeroClient}`);
+			expect(zeroSql[0]).toMatchObject({ positive: false, zero: true });
+		} finally {
+			transport.mockRestore();
+			await db
+				.delete(polyCopyTradeFills)
+				.where(eq(polyCopyTradeFills.billingAccountId, account));
+			await db
+				.delete(polyWalletGrants)
+				.where(eq(polyWalletGrants.billingAccountId, account));
+			await db
+				.delete(polyWalletConnections)
+				.where(eq(polyWalletConnections.billingAccountId, account));
+			await db.delete(billingAccounts).where(eq(billingAccounts.id, account));
+			await db.delete(users).where(eq(users.id, owner));
+		}
+	});
+});
 
 describe("position-gap runtime persistence", () => {
 	let appDb: Database;
