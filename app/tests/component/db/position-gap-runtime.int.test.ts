@@ -33,9 +33,11 @@ import { createPolyTradeExecutorFactory } from "@/bootstrap/capabilities/poly-tr
 import { runReconcileOnce } from "@/bootstrap/jobs/order-reconciler.job";
 import { createExecutionVenueResolver, createPaperVenue, derivePaperAccountAddress } from "@/features/paper-accounts";
 import { acceptedPaperProof, decodeFillAccounting, type FillAccountingScope } from "@/features/trading/fill-accounting";
-import { paperFillAccountingSql } from "@/features/trading/fill-accounting-sql";
+import { copyFillAccountingSql, paperFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import { billingAccounts, polyWalletConnections, polyWalletGrants, users } from "@/shared/db/schema";
 import { polyCopyTradeOrdersOperation } from "@cogni/poly-node-contracts";
+import { getCopyTradePnlForTenant } from "@/features/wallet-analysis/server/copy-trade-pnl-service";
+import { readPositionGapRuntimeByWallet } from "@/features/wallet-analysis/server/position-gap-runtime-read";
 import { listCopyTradeOrdersForAccount } from "@/features/wallet-analysis/server/copy-trade-orders-read";
 import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 
@@ -222,6 +224,17 @@ describe("authenticated paper cumulative receipt persistence", () => {
 
       const publicOrders = () => withTenantScope(getAppDb(), userActor(toUserId(owner)), tx =>
         listCopyTradeOrdersForAccount(tx as never, { limit: 200 }, account));
+      const liveMissingClient = `live-unverified-${randomUUID()}`;
+      await db.insert(polyCopyTradeFills).values({ billingAccountId: account, createdByUserId: owner,
+        targetId: target, fillId: liveMissingClient, clientOrderId: liveMissingClient, orderId: `order-${liveMissingClient}`,
+        marketId: intent.market_id, mode: "live", status: "filled", shares: "3", price: ".5", observedAt: asOf,
+        attributes: { position_gap_version: "3", side: "BUY", token_id: token, filled_size_usdc: 1.5 } });
+      const liveGate = copyFillAccountingSql("f");
+      const liveUnverified = await db.execute(sql`SELECT ${liveGate.realized} AS realized, ${liveGate.positionGapVerified} AS verified
+        FROM poly_copy_trade_fills f WHERE f.client_order_id=${liveMissingClient}`);
+      expect(liveUnverified[0]).toEqual({ realized: false, verified: false });
+      const livePnl = await getCopyTradePnlForTenant(db, account, "live");
+      expect(livePnl).toMatchObject({ summary: { total_realized_size_usdc: 0, accounting_pending_count: 1, fill_accounting_status: "partial" } });
       const publicPositive = polyCopyTradeOrdersOperation.output.parse(await publicOrders());
       expect(publicPositive.orders.find(row => row.client_order_id === client)).toMatchObject({ filled_size_usdc: 1.5,
         fill_accounting: { status: "verified", source: "paper_order_receipt", matched_order_count: 1,
@@ -782,7 +795,7 @@ describe("authenticated paper cumulative receipt persistence", () => {
 					eligibleNetNavUsdc: 100,
 					scale: 1,
 					walletCashUsdc: 100,
-					plan: { version: 1, status: "ready" },
+					plan: { version: 1, status: "ready", blockReason: null, diagnostics: [], intents: [], lockedOverweights: [] },
 					cohortReductions: [],
 				};
 				const buyInput = (suffix: string) => ({
@@ -1102,6 +1115,33 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				} finally {
 					await actor.stop().catch(() => {});
 				}
+        if (executed === 0) {
+          const publicRuntime = () => withTenantScope(getAppDb(), userActor(toUserId(owner)), tx =>
+            readPositionGapRuntimeByWallet(tx as never, account, [wallet], new Date()));
+          const expectPendingRuntime = async () => expect((await publicRuntime()).get(wallet)).toMatchObject({
+            status: "observed", execution: { fill_accounting: { status: "pending" } } });
+          await expectPendingRuntime();
+          await db.update(polyCopyTradeFills).set({ mode: "live" }).where(eq(polyCopyTradeFills.clientOrderId, b.clientOrderId));
+          await expectPendingRuntime();
+          // The schema permits a legacy non-BUY action with a client binding.
+          // It must not count toward the BUY zero-proof denominator.
+          await db.update(polyPositionGapActions).set({ kind: "cancel" }).where(eq(polyPositionGapActions.id, a.id));
+          await expectPendingRuntime();
+          await db.update(polyPositionGapActions).set({ kind: "buy" }).where(eq(polyPositionGapActions.id, a.id));
+          await db.update(polyCopyTradeFills).set({ mode: "paper" }).where(eq(polyCopyTradeFills.clientOrderId, b.clientOrderId));
+          native = { order_id: `native-${b.clientOrderId}`, client_order_id: b.clientOrderId, status: "partial",
+            filled_size_usdc: 1.5, total_shares: 3, fill_price: .5, fees_usdc: 0, submitted_at: asOf.toISOString(),
+            attributes: { market: runtimeCondition, tokenId: runtimeToken, side: "BUY", sizeMatched: 3 } };
+          const bNative = await executor.getOrder(native.order_id);
+          if (!("found" in bNative)) throw new Error("positive crash control native absent");
+          const bDurable = await ledger.markOrderId({ client_order_id: b.clientOrderId, receipt: bNative.found });
+          if (!bDurable) throw new Error("positive crash control durable result absent");
+          expect(bDurable.accepted).toBe(true);
+          // B's action still reports zero: A's true final-zero cannot hide B's
+          // accepted positive ledger economics while publication is interrupted.
+          expect(Number((await readRuntime()).actions.find(entry => entry.id === b.id)?.filledShares)).toBe(0);
+          await expectPendingRuntime();
+        }
 			}
 		} finally {
 			transport.mockRestore();

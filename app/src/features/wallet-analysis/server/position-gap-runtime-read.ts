@@ -508,7 +508,7 @@ export const positionGapActionAggregateSelect = (
 			verifiedShares: sql<string>`COALESCE(SUM(${polyCopyTradeFills.shares}) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills").positionGapVerified} AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'), 0)`,
 			verifiedUsdc: sql<string>`COALESCE(SUM(CASE WHEN ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills").positionGapVerified} AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric ELSE 0 END), 0)`,
       paperVerified: sql<string>`count(*) FILTER (WHERE ${copyFillAccountingSql("poly_copy_trade_fills").positive})`,
-      paperZero: sql<string>`count(*) FILTER (WHERE ${copyFillAccountingSql("poly_copy_trade_fills").zero})`,
+      paperZero: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills").zero})`,
       verifiedModes: sql<string>`count(DISTINCT ${polyCopyTradeFills.mode}) FILTER (WHERE ${copyFillAccountingSql("poly_copy_trade_fills").positionGapVerified})`,
 			clobVerified: sql<string>`count(*) FILTER (WHERE ${polyCopyTradeFills.mode} = 'live' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades')`,
 			dataApiVerified: sql<string>`count(*) FILTER (WHERE ${polyCopyTradeFills.mode} = 'live' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'data_api_activity_position')`,
