@@ -711,6 +711,33 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				}
 			}
 
+      for (const feeKnown of [false, true]) {
+        const feeClient = `paper-fee-floor-${randomUUID()}`;
+        const feeOrder = `native-fee-${feeClient}`;
+        const feeIntent = { ...intent, client_order_id: feeClient };
+        await ledger.insertPending({ billing_account_id: account, created_by_user_id: owner, target_id: target,
+          fill_id: feeClient, observed_at: asOf, intent: feeIntent });
+        await db.update(polyCopyTradeFills).set({ feesUsdc: "1", attributes: sql`${polyCopyTradeFills.attributes} || '{"realized_fill_source":"estimated"}'::jsonb` })
+          .where(eq(polyCopyTradeFills.clientOrderId, feeClient));
+        native = { order_id: feeOrder, client_order_id: feeClient, status: "filled", filled_size_usdc: 1.5,
+          total_shares: 3, fill_price: 0.5, ...(feeKnown ? { fees_usdc: 1 } : {}), submitted_at: asOf.toISOString(),
+          attributes: { market: condition, tokenId: token, side: "BUY", sizeMatched: 3 } };
+        const initialFeeReceipt = await executor.placeIntent(feeIntent);
+        const firstFeeWrite = await ledger.markOrderId({ client_order_id: feeClient, receipt: initialFeeReceipt });
+        if (!firstFeeWrite) throw new Error("fee floor initial observation absent");
+        expect(firstFeeWrite.accepted).toBe(true);
+        expect(acceptedPaperProof(firstFeeWrite.accounting)?.fee_known).toBe(feeKnown);
+        native = { ...native, fees_usdc: 0 };
+        const zeroFee = await executor.getOrder(feeOrder);
+        if (!("found" in zeroFee)) throw new Error("fee floor zero observation absent");
+        const zeroFeeWrite = await ledger.markOrderId({ client_order_id: feeClient, receipt: zeroFee.found });
+        if (!zeroFeeWrite) throw new Error("fee floor zero result absent");
+        expect(zeroFeeWrite.accepted).toBe(!feeKnown);
+        expect(acceptedPaperProof(zeroFeeWrite.accounting)).toMatchObject({ fee_known: true, fees_usdc: feeKnown ? 1 : 0 });
+        const [feeRow] = await db.select().from(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, feeClient));
+        expect(Number(feeRow?.feesUsdc)).toBe(feeKnown ? 1 : 0);
+      }
+
 			// Counterexample fixed by the terminal-transition guard: A reserves five,
 			// executes two, cancels three; B reserves five. A's fee/proof upgrades must
 			// leave remaining/open/acquired at 3/5/2, including after a process crash.
