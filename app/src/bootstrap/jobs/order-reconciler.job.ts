@@ -45,7 +45,6 @@
 
 // TODO(task.0329): redemption-sync will add `getOperatorPositions` back.
 import type {
-  GetOrderResult,
   LoggerPort,
   MetricsPort,
 	OrderReceipt,
@@ -59,6 +58,13 @@ import {
   type OrderLedger,
 	type UpdateStatusInput,
 } from "@/features/trading";
+import {
+  acceptedPaperProof,
+  type ContextualGetOrderResult,
+  normalizeFillCondition,
+  provePaperReceipt,
+} from "@/features/trading/fill-accounting";
+import type { AcceptedOrderObservation } from "@/features/trading/order-ledger.types";
 import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 import { EVENT_NAMES } from "@/shared/observability/events";
 
@@ -108,7 +114,7 @@ export interface OrderReconcilerDeps {
     billing_account_id: string,
     order_id: string,
 		mode: "live" | "paper",
-  ) => Promise<GetOrderResult>;
+  ) => Promise<ContextualGetOrderResult>;
   logger: LoggerPort;
   metrics: MetricsPort;
   /**
@@ -118,7 +124,7 @@ export interface OrderReconcilerDeps {
   /** Wake an account-local strategy actor after a durable ledger transition. */
   onOrderChanged?: (
     row: LedgerRow,
-		change: { status: LedgerStatus; reason?: string },
+		change: { status: LedgerStatus; reason?: string; acceptedObservation?: AcceptedOrderObservation },
   ) => void;
   /**
    * Injected clock — returns the current wall time. Defaults to `() => new Date()`
@@ -328,18 +334,34 @@ export async function runReconcileOnce(
       const realizedFillSource = receiptFillSource(row, receipt);
       const sourceChanged = realizedFillSource !== undefined &&
         row.attributes?.realized_fill_source !== realizedFillSource;
+      const paperCandidate = row.mode === "paper" && receipt.paper_context
+        ? provePaperReceipt(receipt, {
+          mode: "paper", billing_account_id: row.billing_account_id,
+          connection_id: receipt.paper_context.connection_id,
+          client_order_id: row.client_order_id, order_id: row.order_id,
+          condition_id: normalizeFillCondition(String(row.attributes?.condition_id ?? row.attributes?.market_id ?? "")),
+          token_id: String(row.attributes?.token_id ?? ""),
+          side: row.attributes?.side === "SELL" ? "SELL" : "BUY",
+        }, receipt.paper_context) : null;
+      const paperProof = paperCandidate ? acceptedPaperProof(paperCandidate) : null;
+      const savedPaper = row.attributes?.paper_receipt_v1;
+      const savedPaperKey = savedPaper && typeof savedPaper === "object" && "proof_key" in savedPaper
+        ? savedPaper.proof_key : null;
+      const paperProofChanged = paperProof !== null && paperProof.proof_key !== savedPaperKey;
 				if (
 					newStatus === row.status &&
 					!filledChanged &&
 					!sourceChanged &&
+					!paperProofChanged &&
 					!finalObservation
 				)
         continue;
       reconcileStage = "persist_status";
-      await deps.ledger.updateStatus({
+      const accepted = await deps.ledger.updateStatus({
         client_order_id: row.client_order_id,
 					order_id: row.order_id,
         status: newStatus,
+        ...(row.mode === "paper" ? { paper_receipt: receipt } : {}),
 					...(receipt.filled_size_usdc !== undefined
 						? { filled_size_usdc: receipt.filled_size_usdc }
 						: {}),
@@ -360,7 +382,10 @@ export async function runReconcileOnce(
           : {}),
       });
       reconcileStage = "notify_order_changed";
-      deps.onOrderChanged?.(row, { status: newStatus });
+      let acceptedStatus = newStatus;
+      if (accepted) acceptedStatus = accepted.status;
+      deps.onOrderChanged?.(row, { status: acceptedStatus,
+        ...(accepted ? { acceptedObservation: accepted } : {}) });
       reconcileStage = "record_update_metric";
       deps.metrics.incr(ORDER_RECONCILER_METRICS.updatesTotal, {
         from: row.status,

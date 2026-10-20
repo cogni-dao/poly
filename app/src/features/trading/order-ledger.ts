@@ -31,6 +31,7 @@ import {
   polyCopyTradeDecisions,
   polyCopyTradeFills,
 } from "@cogni/poly-db-schema/copy-trade";
+import { polyWalletConnections } from "@cogni/poly-db-schema/wallet-connections";
 import type { OrderIntent } from "@cogni/poly-market-provider";
 import {
   and,
@@ -46,9 +47,25 @@ import {
 } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { Logger } from "pino";
+import {
+  acceptedPaperProof,
+  type ContextualOrderReceipt,
+  decodeFillAccounting,
+  type FillAccountingRow,
+  type FillAccountingScope,
+  fillColumnText,
+  fillNotionalTolerance,
+  fillNumber,
+  FILL_SHARE_TOLERANCE,
+  normalizeFillCondition,
+  paperProofKey,
+  provePaperReceipt,
+} from "./fill-accounting";
+import { paperFillAccountingSql } from "./fill-accounting-sql";
 
 import {
   AlreadyRestingError,
+  type AcceptedOrderObservation,
   type InsertPendingInput,
   type LedgerCancelReason,
   type LedgerMode,
@@ -64,6 +81,7 @@ import {
 	type NonExecutionProof,
   type OpenOrderRow,
   type OrderLedger,
+  type OrderObservationWriteResult,
   type OrderLedgerAlgorithmInputSnapshot,
   PositionCapReachedError,
   type PositionIntentAggregate,
@@ -1221,6 +1239,117 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     };
   }
 
+  type PaperLedgerCurrent = FillAccountingRow & {
+    paperConnectionId: string | null;
+    paperConnectionCreatedAt: Date | null;
+    paperConnectionRevokedAt: Date | null;
+  };
+
+  /** Runs only inside the existing exact-order lock and uses its canonical join. */
+  async function acceptPaperObservation(
+    tx: AnyDb,
+    current: PaperLedgerCurrent,
+    receipt: ContextualOrderReceipt | undefined,
+    reason?: string,
+  ): Promise<AcceptedOrderObservation> {
+    const now = new Date();
+    const context = receipt?.paper_context;
+    const makeScope = (orderId: string): FillAccountingScope => ({
+      mode: "paper", billing_account_id: current.billingAccountId,
+      connection_id: current.paperConnectionId ?? "",
+      client_order_id: current.clientOrderId, order_id: orderId,
+      condition_id: normalizeFillCondition(String(current.attributes?.condition_id ?? current.marketId)),
+      token_id: String(current.attributes?.token_id ?? ""),
+      side: current.attributes?.side === "SELL" ? "SELL" : "BUY",
+    });
+    const priorAccounting = decodeFillAccounting(current, makeScope(current.orderId ?? ""), now);
+    const prior = acceptedPaperProof(priorAccounting);
+    const result = (accepted: boolean, accounting = priorAccounting): AcceptedOrderObservation => ({
+      mode: "paper", client_order_id: current.clientOrderId,
+      order_id: current.orderId, status: current.status as LedgerStatus, accepted, accounting,
+    });
+    const reject = (detail: string) => result(false, prior ? priorAccounting : { status: "mismatch", reason: detail });
+    if (!receipt || !context || context.billing_account_id !== current.billingAccountId ||
+      context.connection_id !== current.paperConnectionId ||
+      !current.paperConnectionCreatedAt ||
+      new Date(context.observed_at) < current.paperConnectionCreatedAt ||
+      (current.paperConnectionRevokedAt !== null && new Date(context.observed_at) > current.paperConnectionRevokedAt) ||
+      (current.orderId !== null && current.orderId !== receipt.order_id) ||
+      normalizeFillCondition(current.marketId) !== makeScope(receipt.order_id).condition_id ||
+      (current.attributes?.side !== "BUY" && current.attributes?.side !== "SELL") ||
+      !Number.isFinite(Date.parse(context.observed_at)) || new Date(context.observed_at) > now) {
+      return reject("paper_trusted_context_missing_or_mismatched");
+    }
+    const candidate = provePaperReceipt(receipt, makeScope(receipt.order_id), context);
+    const proof = acceptedPaperProof(candidate);
+    if (!proof) {
+      // An authenticated acknowledged open order can bind its ID without claiming
+      // execution or finality. Unknown/contradictory amounts retain every old fact.
+      if (candidate.status !== "pending" || receipt.filled_size_usdc !== 0 ||
+        (receipt.status !== "open" && receipt.status !== "pending") || prior ||
+        Number(current.shares ?? 0) > 0 || Number(current.attributes?.filled_size_usdc ?? 0) > 0) {
+        return reject(candidate.status === "pending" || candidate.status === "mismatch" ? candidate.reason : "paper_receipt_unavailable");
+      }
+      const status = monotonicLedgerStatus(current.status, receipt.status);
+      await tx.update(polyCopyTradeFills).set({
+        orderId: receipt.order_id, status, updatedAt: now,
+        attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify({ submitted_at: receipt.submitted_at })}::jsonb`,
+      }).where(eq(polyCopyTradeFills.clientOrderId, current.clientOrderId));
+      return { ...result(true, candidate), order_id: receipt.order_id, status };
+    }
+    const oldShares = prior?.shares ?? fillNumber(current.shares) ?? 0;
+    const oldCost = prior?.notional_usdc ?? fillNumber(current.attributes?.filled_size_usdc) ?? 0;
+    const oldFee = fillNumber(current.feesUsdc);
+    const equalShares = Math.abs(proof.shares - oldShares) <= FILL_SHARE_TOLERANCE;
+    if (proof.shares + FILL_SHARE_TOLERANCE < oldShares ||
+      proof.notional_usdc + fillNotionalTolerance(oldCost) < oldCost ||
+      (equalShares && oldCost > 0 && Math.abs(proof.notional_usdc - oldCost) > fillNotionalTolerance(oldCost)) ||
+      (proof.fee_known && oldFee !== null && proof.fees_usdc !== null &&
+        (proof.fees_usdc < oldFee - 1e-8 || (equalShares && prior?.fee_known && Math.abs(proof.fees_usdc - oldFee) > 1e-8))) ||
+      (proof.shares === 0 && (oldShares > 0 || oldCost > 0)) ||
+      ((current.status === "filled" || current.status === "canceled") && current.status !== proof.venue_status)) {
+      return reject("paper_cumulative_observation_contradiction");
+    }
+    if (prior && equalShares && Math.abs(proof.notional_usdc - prior.notional_usdc) <= fillNotionalTolerance(oldCost)) {
+      // Fee/envelope/finality upgrades do not replace coherent accepted economics
+      // with harmless polling jitter or release any reservation by themselves.
+      proof.shares = prior.shares;
+      proof.notional_usdc = prior.notional_usdc;
+      proof.price = prior.price;
+      // A later status-only observation cannot erase an already known cumulative fee.
+      if (prior.fee_known) {
+        proof.fee_known = true;
+        proof.fees_usdc = prior.fees_usdc;
+      }
+      proof.proof_key = paperProofKey(proof);
+      if (proof.proof_key === prior.proof_key) return result(true);
+    }
+    const patch = {
+      submitted_at: receipt.submitted_at,
+      filled_size_usdc: proof.notional_usdc,
+      realized_fill_source: "paper_order_receipt",
+      paper_receipt_v1: proof,
+      ...(reason ? { reason } : {}),
+      ...(proof.venue_status === "canceled" ? { final_order_observation: {
+        source: "venue_get_order", order_id: proof.order_id, status: "canceled",
+        filled_size_usdc: proof.notional_usdc, observed_at: proof.observed_at,
+        fill_evidence: "paper_order_receipt",
+      } } : {}),
+    };
+    const status = proof.venue_status;
+    const positionLifecycle = lifecycleFromOrderUpdate(status, proof.notional_usdc);
+    await tx.update(polyCopyTradeFills).set({
+      orderId: proof.order_id, status,
+      shares: fillColumnText(proof.shares),
+      ...(proof.price !== null ? { price: fillColumnText(proof.price) } : {}),
+      ...(proof.fee_known && proof.fees_usdc !== null ? { feesUsdc: fillColumnText(proof.fees_usdc) } : {}),
+      ...(positionLifecycle !== null ? { positionLifecycle: preserveTerminalLifecycle(positionLifecycle) } : {}),
+      updatedAt: now,
+      attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`,
+    }).where(eq(polyCopyTradeFills.clientOrderId, current.clientOrderId));
+    return { ...result(true, candidate), order_id: proof.order_id, status };
+  }
+
   function monotonicLedgerStatus(
     current: string,
 		observed: LedgerStatus,
@@ -1271,8 +1400,8 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 
     async markOrderId(params: {
       client_order_id: string;
-      receipt: import("@cogni/poly-market-provider").OrderReceipt;
-    }): Promise<void> {
+      receipt: ContextualOrderReceipt;
+    }): Promise<OrderObservationWriteResult> {
       // Update by `client_order_id` — unique-by-construction across rows since
       // cid is deterministic from `(target_id, fill_id)` (PK).
       const status: LedgerRow["status"] = mapReceiptStatus(
@@ -1283,12 +1412,19 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         "clob_associated_trades"
           ? "clob_associated_trades"
           : undefined;
-      await deps.db.transaction(async (tx) => {
+      return deps.db.transaction(async (tx) => {
         await tx.execute(
 					sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${polyCopyTradeFills.clientOrderId} = ${params.client_order_id} FOR UPDATE`,
         );
         const [current] = await tx
           .select({
+            billingAccountId: polyCopyTradeFills.billingAccountId,
+            clientOrderId: polyCopyTradeFills.clientOrderId,
+            orderId: polyCopyTradeFills.orderId,
+            marketId: polyCopyTradeFills.marketId,
+            paperConnectionId: polyWalletConnections.id,
+            paperConnectionCreatedAt: polyWalletConnections.createdAt,
+            paperConnectionRevokedAt: polyWalletConnections.revokedAt,
             mode: polyCopyTradeFills.mode,
             price: polyCopyTradeFills.price,
             shares: polyCopyTradeFills.shares,
@@ -1297,9 +1433,15 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             status: polyCopyTradeFills.status,
           })
           .from(polyCopyTradeFills)
+          .leftJoin(polyWalletConnections, and(
+            eq(polyWalletConnections.billingAccountId, polyCopyTradeFills.billingAccountId),
+            eq(polyWalletConnections.kind, "paper"),
+            sql`${polyWalletConnections.id}::text = COALESCE(${params.receipt.paper_context?.connection_id ?? null}, ${polyCopyTradeFills.attributes}->'paper_receipt_v1'->>'connection_id')`,
+          ))
           .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id))
           .limit(1);
         if (!current) return;
+        if (current.mode === "paper") return acceptPaperObservation(tx, current, params.receipt);
         const nextStatus = monotonicLedgerStatus(current.status, status);
         const positionLifecycle = lifecycleFromOrderUpdate(
           nextStatus,
@@ -1469,15 +1611,22 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     ): Promise<LedgerRow[]> {
       const olderThanMs = opts?.olderThanMs ?? 30_000;
       const limit = opts?.limit ?? 200;
+      const paperProof = paperFillAccountingSql("poly_copy_trade_fills");
 
       const rows = await deps.db
         .select()
         .from(polyCopyTradeFills)
         .where(
           and(
-						sql`(${polyCopyTradeFills.status} IN ('pending','open','partial','error')
-              OR (${polyCopyTradeFills.status} = 'canceled' AND NOT COALESCE(${finalCancellationProven}, false)))`,
-						nonTerminalPositionLifecycle,
+            or(
+              and(
+                sql`(${polyCopyTradeFills.status} IN ('pending','open','partial','error')
+                  OR (${polyCopyTradeFills.status} = 'canceled' AND NOT COALESCE(${finalCancellationProven}, false)))`,
+                nonTerminalPositionLifecycle,
+              ),
+              sql`(${polyCopyTradeFills.mode} = 'paper' AND ${polyCopyTradeFills.orderId} IS NOT NULL
+                AND (NOT COALESCE(${paperProof.verified}, false) OR NOT COALESCE(${paperProof.feeKnown}, false)))`,
+            ),
 						sql`NOT COALESCE(${nonExecutionProven}, false)`,
 						sql`${reconcileAttemptAt} < now() - make_interval(secs => ${olderThanMs} / 1000.0)`,
 					),
@@ -1492,7 +1641,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       return rows.map(mapLedgerRow);
     },
 
-    async updateStatus(input: UpdateStatusInput): Promise<void> {
+    async updateStatus(input: UpdateStatusInput): Promise<OrderObservationWriteResult> {
       // Build the attributes patch only for the fields actually provided.
       const patch: Record<string, unknown> = {};
 			if (input.final_order_observation !== undefined) {
@@ -1501,12 +1650,19 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       if (input.reason !== undefined) {
         patch.reason = input.reason;
       }
-      await deps.db.transaction(async (tx) => {
+      return deps.db.transaction(async (tx) => {
         await tx.execute(
 					sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${polyCopyTradeFills.clientOrderId} = ${input.client_order_id} FOR UPDATE`,
         );
         const [current] = await tx
           .select({
+            billingAccountId: polyCopyTradeFills.billingAccountId,
+            clientOrderId: polyCopyTradeFills.clientOrderId,
+            orderId: polyCopyTradeFills.orderId,
+            marketId: polyCopyTradeFills.marketId,
+            paperConnectionId: polyWalletConnections.id,
+            paperConnectionCreatedAt: polyWalletConnections.createdAt,
+            paperConnectionRevokedAt: polyWalletConnections.revokedAt,
             mode: polyCopyTradeFills.mode,
             price: polyCopyTradeFills.price,
             shares: polyCopyTradeFills.shares,
@@ -1515,9 +1671,15 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             status: polyCopyTradeFills.status,
           })
           .from(polyCopyTradeFills)
+          .leftJoin(polyWalletConnections, and(
+            eq(polyWalletConnections.billingAccountId, polyCopyTradeFills.billingAccountId),
+            eq(polyWalletConnections.kind, "paper"),
+            sql`${polyWalletConnections.id}::text = COALESCE(${input.paper_receipt?.paper_context?.connection_id ?? null}, ${polyCopyTradeFills.attributes}->'paper_receipt_v1'->>'connection_id')`,
+          ))
           .where(eq(polyCopyTradeFills.clientOrderId, input.client_order_id))
           .limit(1);
         if (!current) return;
+        if (current.mode === "paper") return acceptPaperObservation(tx, current, input.paper_receipt, input.reason);
         const nextStatus = monotonicLedgerStatus(current.status, input.status);
         const positionLifecycle = lifecycleFromOrderUpdate(
           nextStatus,
