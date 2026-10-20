@@ -55,6 +55,7 @@ describe("authenticated paper cumulative receipt persistence", () => {
 		const db = getSeedDb();
 		const owner = randomUUID();
 		const account = randomUUID();
+		const foreignAccount = randomUUID();
 		const connection = randomUUID();
 		const target = randomUUID();
 		const condition = `0x${"d".repeat(64)}`;
@@ -68,7 +69,13 @@ describe("authenticated paper cumulative receipt persistence", () => {
 		});
 		await db
 			.insert(billingAccounts)
-			.values({ id: account, ownerUserId: owner, balanceCredits: 0n });
+			.values(
+				[account, foreignAccount].map((id) => ({
+					id,
+					ownerUserId: owner,
+					balanceCredits: 0n,
+				})),
+			);
 		const address = derivePaperAccountAddress(account);
 		await db.insert(polyWalletConnections).values({
 			id: connection,
@@ -228,18 +235,62 @@ describe("authenticated paper cumulative receipt persistence", () => {
 					(row) => row.client_order_id === client,
 				),
 			).toBe(true);
-			const reconcile = () =>
-				runReconcileOnce({
-					ledger,
+			const foreignClient = `paper-foreign-sentinel-${randomUUID()}`;
+			await db
+				.insert(polyCopyTradeFills)
+				.values({
+					billingAccountId: foreignAccount,
+					createdByUserId: owner,
+					targetId: target,
+					fillId: foreignClient,
+					marketId: intent.market_id,
+					observedAt: asOf,
+					clientOrderId: foreignClient,
+					orderId: `foreign-${foreignClient}`,
+					mode: "paper",
+					status: "filled",
+					updatedAt: asOf,
+					syncedAt: asOf,
+					attributes: { position_gap_version: "3" },
+				});
+			const foreignClock = async () => {
+				const [row] = await db
+					.select({
+						updated: polyCopyTradeFills.updatedAt,
+						synced: polyCopyTradeFills.syncedAt,
+					})
+					.from(polyCopyTradeFills)
+					.where(eq(polyCopyTradeFills.clientOrderId, foreignClient));
+				return row;
+			};
+			const foreignBefore = await foreignClock();
+			const observedTenants: string[] = [];
+			const reconcile = async () => {
+				await runReconcileOnce({
+					ledger: {
+						...ledger,
+						listOpenOrPending: async (input) =>
+							(await ledger.listOpenOrPending(input)).filter(
+								(row) =>
+									row.billing_account_id === account &&
+									row.client_order_id === client,
+							),
+					},
 					logger: noopLogger,
 					metrics: noopMetrics,
 					notFoundGraceMs: 0,
 					getOrderForTenant: async (billing, orderId, mode) => {
+						observedTenants.push(billing);
 						expect(billing).toBe(account);
 						expect(mode).toBe("paper");
 						return executor.getOrder(orderId);
 					},
 				});
+				expect(observedTenants.every((billing) => billing === account)).toBe(
+					true,
+				);
+				expect(await foreignClock()).toEqual(foreignBefore);
+			};
 			await reconcile();
 			const repaired = await read();
 			expect(repaired.positionLifecycle).toBe("closed");
@@ -1028,14 +1079,21 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				.where(eq(polyPositionGapRuns.billingAccountId, account));
 			await db
 				.delete(polyCopyTradeFills)
-				.where(eq(polyCopyTradeFills.billingAccountId, account));
+				.where(
+					inArray(polyCopyTradeFills.billingAccountId, [
+						account,
+						foreignAccount,
+					]),
+				);
 			await db
 				.delete(polyWalletGrants)
 				.where(eq(polyWalletGrants.billingAccountId, account));
 			await db
 				.delete(polyWalletConnections)
 				.where(eq(polyWalletConnections.billingAccountId, account));
-			await db.delete(billingAccounts).where(eq(billingAccounts.id, account));
+			await db
+				.delete(billingAccounts)
+				.where(inArray(billingAccounts.id, [account, foreignAccount]));
 			await db.delete(users).where(eq(users.id, owner));
 		}
 	});

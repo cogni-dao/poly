@@ -103,6 +103,9 @@ export function paperFillAccountingSql(
       WHERE paper_proof_connection.id::text = ${p}->>'connection_id'
         AND paper_proof_connection.billing_account_id = ${f}.billing_account_id
         AND paper_proof_connection.kind = 'paper'
+        AND lower(paper_proof_connection.address) = '0x' || substr(encode(sha256(convert_to(
+          'cogni:poly:paper-account:v1:' || ${f}.billing_account_id, 'UTF8')), 'hex'), 1, 40)
+        AND lower(paper_proof_connection.funder_address) = lower(paper_proof_connection.address)
         AND paper_proof_connection.created_at <= ${observedAt}
         AND (paper_proof_connection.revoked_at IS NULL OR paper_proof_connection.revoked_at >= ${observedAt})
     )
