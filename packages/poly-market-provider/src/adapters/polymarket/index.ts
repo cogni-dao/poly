@@ -74,6 +74,8 @@ export {
   type ListUserTradesParams,
   PolyDataApiPositionsV2Error,
   PolyDataApiValidationError,
+  PolyDataApiRateLimitedError,
+  PolyDataApiRequestError,
   PolymarketDataApiClient,
   type PolymarketDataApiClientConfig,
   type PolymarketTokenMetadata,
