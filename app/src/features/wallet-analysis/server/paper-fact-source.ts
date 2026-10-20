@@ -168,12 +168,10 @@ export const PAPER_TRADER_WALLET_LABEL = "Paper trading account";
 
 /**
  * Ledger statuses whose realized `price`/`shares` are frozen.
- * See PROJECT_ONLY_TERMINAL_REALIZED. `canceled` and `error` are included
- * because a cancel-after-partial still realized shares
- * (CAP_COUNTS_REALIZED_ON_CANCEL in `order-ledger.ts`); the realized-columns
- * predicate is what filters out the ones that realized nothing.
+ * Accepted final receipts freeze cumulative execution. A status-only error
+ * does not establish finality and stays in current observation coverage.
  */
-const TERMINAL_LEDGER_STATUSES = ["filled", "canceled", "error"] as const;
+const TERMINAL_LEDGER_STATUSES = ["filled", "canceled"] as const;
 
 /**
  * `(…)` list for the status predicate, each value bound as a parameter.
