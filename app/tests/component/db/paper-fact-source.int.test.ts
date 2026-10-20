@@ -1043,7 +1043,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
         } else {
           const [sibling] = await db.insert(polyTraderWallets).values({
             walletAddress: `0x${wallet.account.address.slice(2).toUpperCase()}`,
-            kind: PAPER_WALLET_KIND, activeForResearch: true,
+            kind: PAPER_WALLET_KIND, label: `Future paper ${futureKind}`, activeForResearch: true,
           }).returning({ id: polyTraderWallets.id });
           if (!sibling) throw new Error("future physical paper sibling missing");
           await db.insert(polyTraderIngestionCursors).values({ traderWalletId: sibling.id,
