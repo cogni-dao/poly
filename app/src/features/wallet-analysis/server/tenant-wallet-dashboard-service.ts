@@ -1092,7 +1092,7 @@ export async function readTradeActivity(
 function countedTradePredicate(capturedAt: Date): SQL {
   return sql`(
     CASE WHEN (
-        ${copyFillAccountingSql("f", sql`${capturedAt}::timestamptz`).realized}
+        ${copyFillAccountingSql("f", sql`${capturedAt.toISOString()}::timestamptz`).realized}
       ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
       THEN (f.attributes->>'filled_size_usdc')::numeric ELSE 0 END > 0
     OR (
