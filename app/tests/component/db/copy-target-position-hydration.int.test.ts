@@ -16,7 +16,7 @@ import type {
 } from "@cogni/poly-market-provider/adapters/polymarket";
 import type { WalletExecutionPosition } from "@cogni/poly-node-contracts";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { dbTargetSource } from "@/features/copy-trade/target-source";
 import {
@@ -594,6 +594,17 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		expect(
 			before.find((row) => row.entity === "positions" && row.status === "live"),
 		).toMatchObject({ eligible: 2, comparable: 1 });
+    const paperEligibilityState = () => db.execute(sql`
+      SELECT w.kind, w.active_for_research, w.disabled_at,
+        p.active, p.shares, p.cost_basis_usdc, p.current_value_usdc, p.last_observed_at,
+        p.raw->>'redeemable' AS redeemable, p.raw->>'endDate' AS end_date,
+        o.outcome, o.payout, o.resolved_at
+      FROM poly_trader_wallets w
+      LEFT JOIN poly_trader_current_positions p ON p.trader_wallet_id=w.id
+        AND p.condition_id=${PAPER_CONDITION} AND p.token_id=${PAPER_TOKEN}
+      LEFT JOIN poly_market_outcomes o ON o.condition_id=p.condition_id AND o.token_id=p.token_id
+      WHERE w.id=${paperTraderWalletId}`);
+    const paperEligibilityBefore = await paperEligibilityState();
 		const paperBefore = await readFullComparisonCoverageCounts({
 			db,
 			billingAccountId: BILLING_ID,
@@ -640,6 +651,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			client,
 			logger: logger as never,
 		});
+    expect(await paperEligibilityState()).toEqual(paperEligibilityBefore);
 		expect(first).toEqual({ cohorts: 1, conditions: 2, rows: 3, errors: 0 });
 		expect(listUserPositionsV2).toHaveBeenLastCalledWith(TARGET_WALLET, {
 			conditions: [CONDITION, ZERO_VALUE_CONDITION],
@@ -756,6 +768,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			)?.targetEntryValueUsdc,
 		).toBeNull();
 
+    expect(await paperEligibilityState()).toEqual(paperEligibilityBefore);
 		const disabledAt = new Date();
 		await db
 			.update(polyCopyTradeTargets)
@@ -788,6 +801,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				(row) => row.entity === "positions" && row.status === "live",
 			),
 		).toMatchObject({ eligible: 2, comparable: 1, source_ambiguous: false });
+    expect(await paperEligibilityState()).toEqual(paperEligibilityBefore);
 		const disabledPaperCoverage = await readFullComparisonCoverageCounts({
 			db,
 			billingAccountId: BILLING_ID,
