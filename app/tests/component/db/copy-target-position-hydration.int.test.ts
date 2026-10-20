@@ -1253,7 +1253,7 @@ describe("authenticated paper-only REAL target hydration", () => {
         custodialConsentAcceptedAt: new Date(), custodialConsentActorKind: "user", custodialConsentActorId: owner });
       await db.insert(polyWalletGrants).values({ billingAccountId: account, walletConnectionId: liveConnection,
         createdByUserId: owner, scopes: ["poly:trade:buy"], perOrderUsdcCap: "10", dailyUsdcCap: "1000", hourlyFillsCap: 1000 });
-      const [liveWallet] = await db.insert(polyTraderWallets).values({ walletAddress: liveAddress, kind: "cogni_wallet" }).returning({ id: polyTraderWallets.id });
+      const [liveWallet] = await db.insert(polyTraderWallets).values({ walletAddress: liveAddress, kind: "cogni_wallet", label: "Mixed hydration live wallet" }).returning({ id: polyTraderWallets.id });
       if (!liveWallet) throw new Error("mixed hydration live wallet absent");
       await db.insert(polyTraderCurrentPositions).values({ traderWalletId: liveWallet.id, conditionId: condition,
         tokenId: "987001", shares: "3", costBasisUsdc: "1.5", currentValueUsdc: "1.8", avgPrice: ".5",
