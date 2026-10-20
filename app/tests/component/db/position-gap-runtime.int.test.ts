@@ -37,7 +37,7 @@ import { copyFillAccountingSql, paperFillAccountingSql } from "@/features/tradin
 import { billingAccounts, polyWalletConnections, polyWalletGrants, users } from "@/shared/db/schema";
 import { polyCopyTradeOrdersOperation } from "@cogni/poly-node-contracts";
 import { getCopyTradePnlForTenant } from "@/features/wallet-analysis/server/copy-trade-pnl-service";
-import { readPositionGapRuntimeByWallet } from "@/features/wallet-analysis/server/position-gap-runtime-read";
+import { positionGapActionAggregateSelect, readPositionGapRuntimeByWallet } from "@/features/wallet-analysis/server/position-gap-runtime-read";
 import { listCopyTradeOrdersForAccount } from "@/features/wallet-analysis/server/copy-trade-orders-read";
 import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 
@@ -1129,6 +1129,30 @@ describe("authenticated paper cumulative receipt persistence", () => {
           const expectPendingRuntime = async () => expect((await publicRuntime()).get(wallet)).toMatchObject({
             status: "observed", execution: { fill_accounting: { status: "pending" } } });
           await expectPendingRuntime();
+          const [beforeMalformed] = await db.select().from(polyCopyTradeFills)
+            .where(eq(polyCopyTradeFills.clientOrderId, b.clientOrderId));
+          if (!beforeMalformed) throw new Error("malformed aggregate control row absent");
+          // A rejected PAPER proof and a non-BUY LIVE row must never cast their
+          // legacy notional, even when its decimal grammar exceeds PG numeric.
+          try {
+            for (const control of [{ mode: "paper" as const, kind: "buy" as const },
+              { mode: "live" as const, kind: "cancel" as const }]) {
+              await db.update(polyCopyTradeFills).set({ mode: control.mode, attributes: {
+                ...beforeMalformed.attributes, paper_receipt_v1: null,
+                filled_size_usdc: "9".repeat(131073),
+                realized_fill_source: control.mode === "paper" ? "paper_order_receipt" : "clob_associated_trades",
+              } }).where(eq(polyCopyTradeFills.clientOrderId, b.clientOrderId));
+              await db.update(polyPositionGapActions).set({ kind: control.kind })
+                .where(eq(polyPositionGapActions.id, b.id));
+              const aggregate = await withTenantScope(getAppDb(), userActor(toUserId(owner)), tx =>
+                positionGapActionAggregateSelect(tx as never, account, [runtimeTarget], new Date()));
+              expect(aggregate).toMatchObject([{ verifiedMatched: "0", verifiedUsdc: "0" }]);
+            }
+          } finally {
+            await db.update(polyCopyTradeFills).set({ mode: beforeMalformed.mode, attributes: beforeMalformed.attributes })
+              .where(eq(polyCopyTradeFills.clientOrderId, b.clientOrderId));
+            await db.update(polyPositionGapActions).set({ kind: "buy" }).where(eq(polyPositionGapActions.id, b.id));
+          }
           await db.update(polyCopyTradeFills).set({ mode: "live" }).where(eq(polyCopyTradeFills.clientOrderId, b.clientOrderId));
           await expectPendingRuntime();
           // The schema permits a legacy non-BUY action with a client binding.

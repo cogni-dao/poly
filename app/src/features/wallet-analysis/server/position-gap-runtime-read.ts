@@ -526,8 +526,6 @@ export const positionGapActionAggregateSelect = (
         CASE WHEN mode='paper' THEN ${values.fee} END AS proof_fee,
         CASE WHEN mode='paper' THEN ${values.durableCost} END AS proof_durable_cost,
         CASE WHEN mode='paper' THEN ${values.observedAt} END AS proof_observed_at,
-        CASE WHEN attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
-          THEN (attributes->>'filled_size_usdc')::numeric END AS realized_notional,
         COALESCE(mode='live' AND attributes->>'realized_fill_source' IN
           ('clob_associated_trades','data_api_activity_position'), false) AS live_verified
       FROM scoped
@@ -540,7 +538,10 @@ export const positionGapActionAggregateSelect = (
         (proof_bound AND ${paper.zeroTuple}) AS paper_zero
       FROM bound_receipts
     )
-    SELECT accepted.*, (paper_positive OR live_verified) AS accounting_verified
+    SELECT accepted.*, (paper_positive OR live_verified) AS accounting_verified,
+      CASE WHEN kind='buy' AND (paper_positive OR live_verified)
+        AND attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
+        THEN (attributes->>'filled_size_usdc')::numeric END AS realized_notional
     FROM accepted
   ) AS receipts`;
   return tx.select({
