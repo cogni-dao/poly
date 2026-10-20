@@ -396,7 +396,15 @@ export const polyPositionGapActions = pgTable(
 		),
 		pgPolicy("poly_position_gap_actions_select", {
 			for: "select",
-			using: mayReadAccount(table.billingAccountId),
+			// Account IDs are NOT NULL; membership preserves grant truth without
+			// correlating the eligible-account subquery with each action row.
+			using: sql`${ownsAccount(table.billingAccountId)} OR ${table.billingAccountId} IN (
+        SELECT grant_row.billing_account_id FROM agent_capability_grants grant_row
+        WHERE grant_row.grantee_principal_id = current_setting('app.current_user_id', true)
+          AND grant_row.revoked_at IS NULL
+          AND grant_row.expires_at > now()
+          AND grant_row.scopes && ARRAY['account:read','performance:read']::text[]
+      )`,
 		}),
 		pgPolicy("poly_position_gap_actions_insert", {
 			for: "insert",

@@ -4,9 +4,10 @@
 /** Index and latency guard for the exact latest-run and action queries. */
 
 import { randomUUID } from "node:crypto";
+import { agentCapabilityGrants } from "@cogni/db-schema/agent-capability-grants";
 import { toUserId, userActor } from "@cogni/ids";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
@@ -26,6 +27,8 @@ type ExplainNode = {
   "Actual Rows"?: number;
   "Rows Removed by Filter"?: number;
   "Subplan Name"?: string;
+  Filter?: string;
+  Output?: string[];
   "Parent Relationship"?: string;
   "Startup Cost"?: number;
   "Total Cost"?: number;
@@ -58,6 +61,7 @@ describe("position-gap runtime query plan proof", () => {
 	const appDb = getAppDb();
 	const seedDb = getSeedDb();
 	const userId = randomUUID();
+	const delegateId = randomUUID();
 	const accountId = randomUUID();
 	const targetId = randomUUID();
 	const verifiedTargetId = randomUUID();
@@ -66,14 +70,16 @@ describe("position-gap runtime query plan proof", () => {
 	const cohortId = randomUUID();
 
 	beforeAll(async () => {
-		await seedDb.insert(users).values({
-			id: userId,
-			name: "position-gap-plan",
-			walletAddress: `0x${randomUUID().replaceAll("-", "").padEnd(40, "0").slice(0, 40)}`,
-		});
+		await seedDb.insert(users).values([userId, delegateId].map(id => ({
+      id, name: "position-gap-plan",
+      walletAddress: `0x${randomUUID().replaceAll("-", "").padEnd(40, "0").slice(0, 40)}`,
+    })));
 		await seedDb
 			.insert(billingAccounts)
 			.values({ id: accountId, ownerUserId: userId, balanceCredits: 0n });
+    await seedDb.insert(agentCapabilityGrants).values({ billingAccountId: accountId,
+      granteePrincipalId: delegateId, createdByUserId: userId, scopes: ["account:read"],
+      expiresAt: new Date("2099-01-01T00:00:00Z") });
 		await seedDb.execute(sql`
 			INSERT INTO poly_position_gap_runs (
 				id, billing_account_id, created_by_user_id, target_id,
@@ -179,11 +185,12 @@ describe("position-gap runtime query plan proof", () => {
 		await seedDb
 			.delete(billingAccounts)
 			.where(eq(billingAccounts.id, accountId));
-		await seedDb.delete(users).where(eq(users.id, userId));
+		await seedDb.delete(users).where(inArray(users.id, [userId, delegateId]));
 	}, 180_000);
 
-	it("uses bounded indexes below 200ms", async () => {
-		await withTenantScope(appDb, userActor(toUserId(userId)), async (rawTx) => {
+	it.each([{ persona: "owner", principal: userId }, { persona: "delegate", principal: delegateId }])(
+    "$persona uses bounded indexes below 200ms", async ({ persona, principal }) => {
+		await withTenantScope(appDb, userActor(toUserId(principal)), async (rawTx) => {
 			const tx = rawTx as AgentGrantTransaction;
       const phase = async <T>(name: string, run: () => PromiseLike<T>) => {
         const started = performance.now();
@@ -210,12 +217,12 @@ describe("position-gap runtime query plan proof", () => {
 			]);
 			const latest = documentOf(
 				await phase("explain-latest", () => tx.execute(
-					sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${positionGapLatestRunsSelect(accountId, [targetId])}`,
+					sql`EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) ${positionGapLatestRunsSelect(accountId, [targetId])}`,
 				)),
 			);
 			const actions = documentOf(
 				await phase("explain-aggregate", () => tx.execute(
-					sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${positionGapActionAggregateSelect(tx, accountId, [targetId])}`,
+					sql`EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) ${positionGapActionAggregateSelect(tx, accountId, [targetId])}`,
 				)),
 			);
 			const latestNodes = flatten(latest.Plan);
@@ -248,11 +255,11 @@ describe("position-gap runtime query plan proof", () => {
 				),
 			).toBe(false);
       const connectionNodes = actionNodes.filter(node => node["Relation Name"] === "poly_wallet_connections");
-      console.info("position-gap-query-plan", { latest_planning_ms: latest["Planning Time"], latest_execution_ms: latest["Execution Time"],
+      console.info("position-gap-query-plan", { persona, latest_planning_ms: latest["Planning Time"], latest_execution_ms: latest["Execution Time"],
         aggregate_planning_ms: actions["Planning Time"], aggregate_execution_ms: actions["Execution Time"],
         aggregate_jit: actions.JIT ?? null,
         aggregate_nodes: actionNodes.map(node => ({ node: node["Node Type"], relation: node["Relation Name"],
-          parent: node["Parent Relationship"], subplan: node["Subplan Name"], index: node["Index Name"],
+          filter: node.Filter, output: node.Output, parent: node["Parent Relationship"], subplan: node["Subplan Name"], index: node["Index Name"],
           startup_cost: node["Startup Cost"], total_cost: node["Total Cost"], estimated_rows: node["Plan Rows"],
           actual_startup_ms: node["Actual Startup Time"], actual_total_ms: node["Actual Total Time"],
           rows: node["Actual Rows"], filtered: node["Rows Removed by Filter"], loops: node["Actual Loops"],
@@ -260,6 +267,13 @@ describe("position-gap runtime query plan proof", () => {
           temp_read: node["Temp Read Blocks"], temp_written: node["Temp Written Blocks"] })),
         connection_subplans: connectionNodes.map(node => ({ node: node["Node Type"], loops: node["Actual Loops"] ?? 0 })),
         subplans: actionNodes.filter(node => node["Subplan Name"]).map(node => ({ name: node["Subplan Name"], loops: node["Actual Loops"] ?? 0 })) });
+      const grantNodes = actionNodes.filter(node => node["Relation Name"] === "agent_capability_grants");
+      // The action grant set is statement-scoped; connection proof remains empty.
+      // Capture actual membership execution rather than infer it from owner short-circuiting.
+      expect(grantNodes.every(node => (node["Actual Loops"] ?? 0) <= 1)).toBe(true);
+      if (persona === "delegate") {
+        expect(grantNodes.some(node => node["Actual Loops"] === 1)).toBe(true);
+      }
       // All selected main-target receipts are unbound LIVE rows. The native
       // PAPER connection proof must do no work on that population.
       expect(connectionNodes.every(node => (node["Actual Loops"] ?? 0) === 0)).toBe(true);

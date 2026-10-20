@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
 import { randomUUID } from "node:crypto";
+import { createAppDbClient } from "@cogni/db-client";
 import { agentCapabilityGrants } from "@cogni/db-schema/agent-capability-grants";
 import {
 	polyAlgorithmInputSnapshots,
@@ -40,6 +41,7 @@ import { getCopyTradePnlForTenant } from "@/features/wallet-analysis/server/copy
 import { positionGapActionAggregateSelect, readPositionGapRuntimeByWallet } from "@/features/wallet-analysis/server/position-gap-runtime-read";
 import { listCopyTradeOrdersForAccount } from "@/features/wallet-analysis/server/copy-trade-orders-read";
 import { targetIdFromWallet } from "@/shared/util/poly-target-id";
+import { serverEnv } from "@/shared/env";
 
 const future = new Date("2099-01-01T00:00:00.000Z");
 const asOf = new Date("2026-10-08T00:00:00.000Z");
@@ -3449,4 +3451,208 @@ describe("position-gap runtime persistence", () => {
 		expect(Number(cohort?.openOrderShares)).toBe(0);
 		expect(Number(cohort?.remainingShares)).toBe(6);
 	});
+});
+
+/** Actual migrated action-policy conformance; seed role never performs assertions. */
+describe("action account membership RLS", () => {
+  const appDb = getAppDb();
+  const seedDb = getSeedDb();
+  const names = [
+    "ownerA", "ownerB", "ownerC", "canonical", "legacy", "multi", "stranger",
+    "research", "propose", "paperAssign", "liveApprove", "liveAssign", "mixture",
+    "expired", "revoked", "boundary", "revocation", "otherAccount",
+  ] as const;
+  const principal = Object.fromEntries(names.map(name => [name, randomUUID()])) as Record<typeof names[number], string>;
+  const accounts = [randomUUID(), randomUUID(), randomUUID()] as const;
+  const owners = [principal.ownerA, principal.ownerB, principal.ownerC] as const;
+  const pair = (): [string, string] => { const ids: [string, string] = [randomUUID(), randomUUID()]; return ids.sort(); };
+  const actionIds = [pair(), pair(), pair()] as const;
+  const boundaryGrant = randomUUID();
+  const revocationGrant = randomUUID();
+  const read = async (tx: { execute: Database["execute"] }) => {
+    const rows = await tx.execute(sql`SELECT id::text AS id FROM poly_position_gap_actions
+      WHERE billing_account_id IN (${sql.join(accounts.map(id => sql`${id}`), sql`, `)}) ORDER BY id`);
+    return Array.from(rows, row => String(row.id));
+  };
+  const asPrincipal = <T>(id: string, fn: (tx: Parameters<Parameters<Database["transaction"]>[0]>[0]) => Promise<T>) =>
+    withTenantScope(appDb, userActor(toUserId(id)), fn);
+
+  beforeAll(async () => {
+    await seedDb.insert(users).values(Object.entries(principal).map(([name, id]) => ({
+      id, name: `Action RLS ${name}`, walletAddress: `0x${id.replaceAll("-", "")}12345678`,
+    })));
+    await seedDb.insert(billingAccounts).values(accounts.map((id, i) => ({ id, ownerUserId: owners[i as 0 | 1 | 2], balanceCredits: 0n })));
+    for (const i of [0, 1, 2] as const) {
+      const account = accounts[i];
+      const run = randomUUID();
+      const cohort = randomUUID();
+      const target = randomUUID();
+      await seedDb.insert(polyPositionGapRuns).values({ id: run, billingAccountId: account,
+        createdByUserId: owners[i], targetId: target, budgetUsdc: "10", walletCashUsdcAtStart: "10", status: "completed" });
+      await seedDb.insert(polyPositionGapCohorts).values({ id: cohort, billingAccountId: account,
+        createdByUserId: owners[i], targetId: target, cohortKey: "action-rls", sourceKind: "activation",
+        sourceSnapshotId: "snapshot", sourceSnapshotHash: "hash", sourceSnapshotAsOf: asOf,
+        sourceProvenance: {}, createdRunId: run, conditionId: "condition", tokenId: "token",
+        marketId: "market", outcome: "0", targetDeltaShares: "1", scaleAtCreation: "1",
+        allowedMirrorShares: "1", initialAllowedMirrorShares: "1", benchmarkTargetVwap: "0.5", remainingShares: "1" });
+      await seedDb.insert(polyPositionGapActions).values(actionIds[i].map((id, n) => ({ id,
+        billingAccountId: account, createdByUserId: owners[i], targetId: target, runId: run,
+        cohortId: cohort, cohortKey: "action-rls", actionKey: `rls-${n}`, kind: "cancel",
+        conditionId: "condition", tokenId: "token", marketId: "market", outcome: "0", plannerAction: {}, status: "canceled" })));
+    }
+    const grant = (name: keyof typeof principal, i: 0 | 1 | 2 = 0, scopes = ["account:read"], extra = {}) => ({
+      billingAccountId: accounts[i], granteePrincipalId: principal[name], createdByUserId: owners[i],
+      scopes, createdAt: new Date("1999-01-01T00:00:00Z"), expiresAt: future, ...extra,
+    });
+    await seedDb.insert(agentCapabilityGrants).values([
+      grant("canonical"), grant("legacy", 0, ["performance:read"]), grant("multi"),
+      grant("multi", 1), grant("otherAccount", 1),
+      grant("research", 0, ["research:run"]), grant("propose", 0, ["policy:propose"]),
+      grant("paperAssign", 0, ["paper:assign"]), grant("liveApprove", 0, ["live:approve"]),
+      grant("liveAssign", 0, ["live:assign"]), grant("mixture", 0, ["research:run", "live:approve", "policy:propose"]),
+      grant("expired", 0, ["account:read"], { expiresAt: new Date("2000-01-01T00:00:00Z") }),
+      grant("revoked", 0, ["account:read"], { revokedAt: asOf, revokedByUserId: owners[0] }),
+      grant("boundary", 0, ["account:read"], { id: boundaryGrant }),
+      grant("revocation", 0, ["account:read"], { id: revocationGrant }),
+      // Valid historical duplicates never violate the single-current-grant index.
+      ...[1, 2].map(() => grant("canonical", 0, ["account:read"], { revokedAt: asOf, revokedByUserId: owners[0] })),
+      // A reverse-direction / foreign-account grant does not authorize A or C.
+      grant("ownerA", 1, ["research:run"]),
+      grant("ownerA", 0, ["account:read"], { revokedAt: asOf, revokedByUserId: owners[0] }),
+    ]);
+  });
+
+  afterAll(async () => {
+    for (const table of ["poly_position_gap_actions", "poly_position_gap_cohorts", "poly_position_gap_runs"]) {
+      await seedDb.execute(sql`DELETE FROM ${sql.identifier(table)} WHERE billing_account_id IN
+        (${sql.join(accounts.map(id => sql`${id}`), sql`, `)})`);
+    }
+    await seedDb.delete(billingAccounts).where(inArray(billingAccounts.id, accounts));
+    await seedDb.delete(users).where(inArray(users.id, Object.values(principal)));
+  });
+
+  it("uses the provisioned app role without BYPASSRLS and actual FORCE policies", async () => {
+    const roles = await appDb.execute(sql`SELECT current_user AS name, rolbypassrls, rolsuper
+      FROM pg_roles WHERE rolname = current_user`);
+    expect(roles[0]).toMatchObject({ name: "app_apptest", rolbypassrls: false, rolsuper: false });
+    const tables = await appDb.execute(sql`SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class
+      WHERE oid IN ('poly_position_gap_actions'::regclass, 'agent_capability_grants'::regclass, 'billing_accounts'::regclass) ORDER BY relname`);
+    expect(Array.from(tables)).toEqual([
+      { relname: "agent_capability_grants", relrowsecurity: true, relforcerowsecurity: true },
+      { relname: "billing_accounts", relrowsecurity: true, relforcerowsecurity: true },
+      { relname: "poly_position_gap_actions", relrowsecurity: true, relforcerowsecurity: true },
+    ]);
+    const policies = await appDb.execute(sql`SELECT polcmd, polpermissive, polroles::text AS roles,
+      pg_get_expr(polqual, polrelid) AS expression FROM pg_policy
+      WHERE polrelid = 'poly_position_gap_actions'::regclass AND polname = 'poly_position_gap_actions_select'`);
+    expect(policies).toHaveLength(1);
+    expect(policies[0]).toMatchObject({ polcmd: "r", polpermissive: true, roles: "{0}" });
+    expect(String(policies[0]?.expression)).toContain("grant_row.billing_account_id");
+    expect(String(policies[0]?.expression)).not.toContain("grant_row.billing_account_id = poly_position_gap_actions.billing_account_id");
+  });
+
+  it.each([
+    ["ownerA", 0], ["ownerB", 1], ["ownerC", 2], ["canonical", 0], ["legacy", 0], ["otherAccount", 1],
+  ] as const)("%s reads exactly its authorized account", async (name, index) => {
+    expect(await asPrincipal(principal[name], read)).toEqual(actionIds[index]);
+  });
+
+  it.each(["stranger", "research", "propose", "paperAssign", "liveApprove", "liveAssign", "mixture", "expired", "revoked"] as const)(
+    "%s cannot read any action", async name => {
+      expect(await asPrincipal(principal[name], read)).toEqual([]);
+    });
+
+  it("returns the exact multi-account union without history duplicates", async () => {
+    expect(await asPrincipal(principal.multi, read)).toEqual([...actionIds[0], ...actionIds[1]].sort());
+    expect(await asPrincipal(principal.canonical, read)).toEqual(actionIds[0]);
+  });
+
+  it("fails closed for a NULL/missing principal on a fresh app connection and an empty setting", async () => {
+    const fresh = createAppDbClient(serverEnv().DATABASE_URL, { max: 1 });
+    try {
+      const setting = await fresh.execute(sql`SELECT current_setting('app.current_user_id', true) AS principal`);
+      expect(setting[0]).toEqual({ principal: null });
+      expect(await read(fresh)).toEqual([]);
+      await fresh.transaction(async tx => {
+        await tx.execute(sql`SELECT set_config('app.current_user_id', '', true)`);
+        expect(await read(tx)).toEqual([]);
+      });
+    } finally {
+      await fresh.$client.end();
+    }
+  });
+
+  it("uses strict transaction-start expiry and rebinds the principal on one connection", async () => {
+    await asPrincipal(principal.ownerA, async tx => {
+      const pid = await tx.execute(sql`SELECT pg_backend_pid() AS pid`);
+      await tx.execute(sql`UPDATE agent_capability_grants SET expires_at = now() WHERE id = ${boundaryGrant}::uuid`);
+      await tx.execute(sql`SELECT set_config('app.current_user_id', ${principal.boundary}, true)`);
+      expect(await read(tx)).toEqual([]); // equality is expired
+      await tx.execute(sql`SELECT set_config('app.current_user_id', ${principal.ownerA}, true)`);
+      await tx.execute(sql`UPDATE agent_capability_grants SET expires_at = now() + interval '1 microsecond' WHERE id = ${boundaryGrant}::uuid`);
+      await tx.execute(sql`SELECT set_config('app.current_user_id', ${principal.boundary}, true)`);
+      expect(await read(tx)).toEqual(actionIds[0]); // now() is stable in this transaction
+      await tx.execute(sql`SELECT set_config('app.current_user_id', ${principal.ownerB}, true)`);
+      expect(await read(tx)).toEqual(actionIds[1]);
+      await tx.execute(sql`SELECT set_config('app.current_user_id', '', true)`);
+      expect(await read(tx)).toEqual([]);
+      expect(await tx.execute(sql`SELECT pg_backend_pid() AS pid`)).toEqual(pid);
+    });
+  });
+
+  it("observes committed revocation in the next delegated transaction", async () => {
+    expect(await asPrincipal(principal.revocation, read)).toEqual(actionIds[0]);
+    await asPrincipal(principal.ownerA, async tx => {
+      await tx.update(agentCapabilityGrants).set({ revokedAt: new Date(), revokedByUserId: principal.ownerA })
+        .where(eq(agentCapabilityGrants.id, revocationGrant));
+    });
+    expect(await asPrincipal(principal.revocation, read)).toEqual([]);
+  });
+
+  it("keeps delegate writes and account reassignment denied, including RETURNING", async () => {
+    await asPrincipal(principal.canonical, async tx => {
+      expect(await tx.update(polyPositionGapActions).set({ status: "rejected" })
+        .where(eq(polyPositionGapActions.id, actionIds[0][0])).returning({ id: polyPositionGapActions.id })).toEqual([]);
+      expect(await tx.update(polyPositionGapActions).set({ billingAccountId: accounts[1] })
+        .where(eq(polyPositionGapActions.id, actionIds[0][0])).returning({ id: polyPositionGapActions.id })).toEqual([]);
+      expect(await tx.delete(polyPositionGapActions).where(eq(polyPositionGapActions.id, actionIds[0][0]))
+        .returning({ id: polyPositionGapActions.id })).toEqual([]);
+    });
+    const [sample] = await asPrincipal(principal.ownerA, tx => tx.select().from(polyPositionGapActions).where(eq(polyPositionGapActions.id, actionIds[0][0])));
+    if (!sample) throw new Error("owner action fixture missing");
+    await expect(asPrincipal(principal.canonical, tx => tx.insert(polyPositionGapActions)
+      .values({ ...sample, id: randomUUID(), actionKey: randomUUID() }).returning({ id: polyPositionGapActions.id })))
+      .rejects.toThrow(/row-level security/i);
+    expect(await asPrincipal(principal.ownerA, read)).toEqual(actionIds[0]);
+  });
+
+  it("preserves owner mutations while denying foreign writes and reassignment", async () => {
+    await asPrincipal(principal.ownerA, async tx => {
+      expect(await tx.update(polyPositionGapActions).set({ status: "rejected" })
+        .where(eq(polyPositionGapActions.id, actionIds[0][0])).returning({ id: polyPositionGapActions.id }))
+        .toEqual([{ id: actionIds[0][0] }]);
+      expect(await tx.update(polyPositionGapActions).set({ status: "rejected" })
+        .where(eq(polyPositionGapActions.id, actionIds[1][0])).returning({ id: polyPositionGapActions.id })).toEqual([]);
+      expect(await tx.delete(polyPositionGapActions).where(eq(polyPositionGapActions.id, actionIds[1][0]))
+        .returning({ id: polyPositionGapActions.id })).toEqual([]);
+    });
+    await expect(asPrincipal(principal.ownerA, tx => tx.update(polyPositionGapActions).set({ billingAccountId: accounts[1] })
+      .where(eq(polyPositionGapActions.id, actionIds[0][0])).returning({ id: polyPositionGapActions.id })))
+      .rejects.toThrow(/row-level security/i);
+    const [sample] = await asPrincipal(principal.ownerA, tx => tx.select().from(polyPositionGapActions).where(eq(polyPositionGapActions.id, actionIds[0][0])));
+    if (!sample) throw new Error("owner action fixture missing");
+    const temporary = randomUUID();
+    await asPrincipal(principal.ownerA, async tx => {
+      expect(await tx.insert(polyPositionGapActions).values({ ...sample, id: temporary, actionKey: temporary })
+        .returning({ id: polyPositionGapActions.id })).toEqual([{ id: temporary }]);
+      expect(await tx.delete(polyPositionGapActions).where(eq(polyPositionGapActions.id, temporary))
+        .returning({ id: polyPositionGapActions.id })).toEqual([{ id: temporary }]);
+    });
+    await expect(asPrincipal(principal.ownerA, tx => tx.insert(polyPositionGapActions)
+      .values({ ...sample, id: randomUUID(), actionKey: randomUUID(), billingAccountId: accounts[1] })
+      .returning({ id: polyPositionGapActions.id }))).rejects.toThrow(/row-level security/i);
+    for (const index of [0, 1, 2] as const) {
+      expect(await asPrincipal(owners[index], read)).toEqual(actionIds[index]);
+    }
+  });
 });
