@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   polyTraderCurrentPositions,
+  polyTraderFillRollupsDaily,
   polyTraderFills,
   polyTraderIngestionCursors,
   polyTraderPositionSnapshots,
@@ -34,6 +35,56 @@ const fixture = JSON.parse(
 );
 
 describe("native economic observation persistence", () => {
+  it.each(["current", "same-day rollup", "future-day rollup"] as const)(
+    "does not discover a future %s cohort or call its upstream client",
+    async (source) => {
+      const db = getSeedDb();
+      const userId = randomUUID(), account = randomUUID();
+      const address = `0x${randomUUID().replaceAll("-", "").padStart(40, "0")}`;
+      // An early fixed capture also makes every other suite's contemporary
+      // fixture a future neighbor rather than legitimate recovery work.
+      const now = new Date("2000-01-15T12:00:00Z");
+      const future = new Date(now.getTime() + (source === "future-day rollup" ? 86_400_000 : 60_000));
+      const conditionId = `0x${"8".repeat(64)}`;
+      await db.insert(users).values({ id: userId, name: "future recovery neighbor" });
+      await db.insert(billingAccounts).values({ id: account, ownerUserId: userId, balanceCredits: 0n });
+      await db.insert(polyWalletConnections).values({ billingAccountId: account, createdByUserId: userId,
+        address, funderAddress: address, privyWalletId: userId,
+        clobApiKeyCiphertext: Buffer.from("test"), encryptionKeyId: "test",
+        custodialConsentAcceptedAt: now, custodialConsentActorKind: "user", custodialConsentActorId: userId });
+      const [wallet] = await db.insert(polyTraderWallets).values({ walletAddress: address, kind: "cogni_wallet" }).returning();
+      if (!wallet) throw new Error("future recovery wallet missing");
+      try {
+        if (source === "current") {
+          await db.insert(polyTraderCurrentPositions).values({ traderWalletId: wallet.id, conditionId, tokenId: "888",
+            shares: "10", costBasisUsdc: "4", currentValueUsdc: "6", avgPrice: "0.4",
+            contentHash: "future-recovery-current", firstObservedAt: future, lastObservedAt: future, raw: {} });
+        } else {
+          await db.insert(polyTraderFillRollupsDaily).values({ traderWalletId: wallet.id, conditionId, tokenId: "888",
+            day: future.toISOString().slice(0, 10), fillCount: 1, buyCount: 1, sellCount: 0,
+            buyUsdc: "4", sellUsdc: "0", buyShares: "10", sellShares: "0",
+            firstBuyObservedAt: future, firstObservedAt: future, lastObservedAt: future });
+        }
+        const listClosed = vi.fn().mockResolvedValue({ positions: [], requestCount: 1 });
+        const listActivity = vi.fn().mockResolvedValue({ activity: [], requestCount: 1 });
+        const readSettlement = vi.fn();
+        await recoverEconomicObservations({ db, now, client: {
+          listUserPositionsV2Raw: listClosed, listConditionActivityV2: listActivity,
+        } as unknown as PolymarketDataApiClient, readSettlement,
+          logger: { info: vi.fn() } as unknown as LoggerPort });
+        expect(listClosed).not.toHaveBeenCalled();
+        expect(listActivity).not.toHaveBeenCalled();
+        expect(readSettlement).not.toHaveBeenCalled();
+        expect(await db.select().from(polyTraderPositionSnapshots).where(eq(polyTraderPositionSnapshots.traderWalletId, wallet.id))).toEqual([]);
+        expect(await db.select().from(polyTraderIngestionCursors).where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id))).toEqual([]);
+      } finally {
+        await db.delete(polyTraderWallets).where(eq(polyTraderWallets.id, wallet.id));
+        await db.delete(billingAccounts).where(eq(billingAccounts.id, account));
+        await db.delete(users).where(eq(users.id, userId));
+      }
+    },
+  );
+
   it("recovers both false-error legs once, preserving execution/fill cursors and exact native economics", async () => {
     const db = getSeedDb();
     const suffix = randomUUID();
