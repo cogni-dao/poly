@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { TransactionReceipt } from "viem";
-import type { PolymarketActivityV2, PolymarketUserPositionV2 } from "@cogni/poly-market-provider/adapters/polymarket";
+import type { PolymarketActivityV2, PolymarketDataApiClient, PolymarketUserPosition, PolymarketUserPositionV2 } from "@cogni/poly-market-provider/adapters/polymarket";
 import { buildEconomicObservations, verifyEconomicSettlement } from "@/features/wallet-analysis/server/economic-observation-recovery";
 import {
   polyMarketOutcomes,
@@ -19,7 +19,7 @@ import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { type SQL, and, eq, inArray, sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { PAPER_POSITION_CURSOR_SOURCE } from "@/features/wallet-analysis/server/paper-fact-source";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   billingAccounts,
   polyCopyTradeFills,
@@ -36,6 +36,11 @@ import {
   buildMarketExposureGroups,
 } from "@/features/wallet-analysis/server/market-exposure-service";
 import { readWalletBalanceFact } from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
+import {
+  PositionBalanceTransportError,
+  PositionObservationController,
+  refreshCurrentPositionsForWallet,
+} from "@/features/wallet-analysis/server/trader-observation-service";
 import type { WalletExecutionPosition } from "@cogni/poly-node-contracts";
 
 const USER_A = `dashboard-snapshot-user-a-${randomUUID()}`;
@@ -342,7 +347,143 @@ describe("wallet dashboard coherent snapshot", () => {
     await db.delete(polyTraderWallets).where(inArray(polyTraderWallets.id, [walletA.id, walletB.id, ...targetWalletIds]));
   });
 
-  // Captured writer publication states, not execution of PR239's writer.
+  it.each([
+    { envelope: "absent", authority: "unavailable" },
+    { envelope: "partial", authority: "unavailable" },
+    { envelope: "absent", authority: "1n" },
+    { envelope: "partial", authority: "1n" },
+  ] as const)("composes the real writer and economics: $envelope envelope, terminal $authority", async testCase => {
+    const suffix = randomUUID(), userId = `writer-economics-${suffix}`, account = `writer-economics-${suffix}`;
+    const address = `0x${suffix.replaceAll("-", "").padStart(40, "f")}`;
+    const conditionId = `0x${suffix.replaceAll("-", "").padStart(64, "d")}`;
+    const healthyCondition = `0x${suffix.replaceAll("-", "").padStart(64, "b")}`;
+    const wallet = await seedConnection({ userId, billingAccountId: account, address });
+    const position = (winner: boolean): PolymarketUserPosition => ({
+      proxyWallet: address, asset: winner ? "811" : "812", conditionId: winner ? conditionId : healthyCondition,
+      size: winner ? 10 : 2, avgPrice: winner ? .6 : .5, initialValue: winner ? 6 : 1,
+      currentValue: winner ? 10 : 2, cashPnl: winner ? 4 : 1, percentPnl: winner ? 100 * 4 / 6 : 100,
+      totalBought: winner ? 10 : 2, realizedPnl: 0, percentRealizedPnl: 0, curPrice: 1,
+      redeemable: winner, mergeable: false, title: winner ? "Retained winner W" : "Healthy H",
+      slug: winner ? "winner-w" : "healthy-h", icon: "", eventId: suffix, eventSlug: suffix,
+      outcome: "Yes", outcomeIndex: 0, oppositeOutcome: "No", oppositeAsset: winner ? "813" : "814",
+      endDate: "2027-01-01", negativeRisk: false,
+    });
+    let page = [position(true), position(false)];
+    const listUserPositions = vi.fn(async () => page);
+    const readPositionBalances = vi.fn<NonNullable<Parameters<typeof refreshCurrentPositionsForWallet>[0]["readPositionBalances"]>>();
+    const refresh = (delayed = false) => refreshCurrentPositionsForWallet({
+      db, walletAddress: address, client: { listUserPositions } as unknown as PolymarketDataApiClient,
+      // Only admission time is advanced. Preparation/publication clocks and
+      // every successful query still come from real PostgreSQL.
+      positionControl: new PositionObservationController({ now: () => Date.now() + 60_000, wait: async () => {}, random: () => 0 }),
+      readPositionBalances,
+      ...(delayed ? { beforePositionCursorPublish: async () => { await new Promise(resolve => setTimeout(resolve, 80)); } } : {}),
+    });
+    const saved = async () => {
+      const rows = await db.select().from(polyTraderCurrentPositions).where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+      const [cursor] = await db.select().from(polyTraderIngestionCursors).where(and(
+        eq(polyTraderIngestionCursors.traderWalletId, wallet.id), eq(polyTraderIngestionCursors.source, "data-api-positions")));
+      const winner = rows.find(row => row.tokenId === "811"), healthy = rows.find(row => row.tokenId === "812");
+      if (!winner || !healthy || !cursor?.lastSuccessAt) throw new Error("Writer did not persist the complete publication");
+      return { winner, healthy, cursor: { ...cursor, lastSuccessAt: cursor.lastSuccessAt } };
+    };
+    const read = async () => {
+      const projection = await readEconomicPositionProjection({ db, billingAccountId: account, walletAddress: address,
+        connectionKind: "privy_live", capturedAt: new Date(), interval: "1W" });
+      const dashboard = await readTenantWalletDashboard({ db, billingAccountId: account, interval: "1W", adapterConfigured: true });
+      return { projection, dashboard };
+    };
+    try {
+      await db.insert(polyTraderFills).values([
+        { traderWalletId: wallet.id, source: "data-api", nativeId: `${suffix}-W`, conditionId, tokenId: "811",
+          side: "BUY", price: ".6", shares: "10", sizeUsdc: "6", observedAt: new Date(Date.now() - 3600_000) },
+        { traderWalletId: wallet.id, source: "data-api", nativeId: `${suffix}-H`, conditionId: healthyCondition, tokenId: "812",
+          side: "BUY", price: ".5", shares: "2", sizeUsdc: "1", observedAt: new Date(Date.now() - 3600_000) },
+      ]);
+      await db.update(polyWalletBalanceSnapshots).set({ usdcE: "90", pusd: "0", observedAt: new Date() })
+        .where(eq(polyWalletBalanceSnapshots.billingAccountId, account));
+      expect(await refresh(true)).toMatchObject({ complete: true, positionRows: 2 });
+      expect(readPositionBalances).not.toHaveBeenCalled();
+      const initial = await saved();
+      expect(initial.winner).toMatchObject({ active: false, shares: "10.00000000", currentValueUsdc: "10.00000000", lastObservedAt: initial.cursor.lastSuccessAt });
+      expect(initial.healthy.lastObservedAt).toEqual(initial.cursor.lastSuccessAt);
+      expect(initial.cursor.updatedAt.getTime() - initial.cursor.lastSuccessAt.getTime()).toBeGreaterThanOrEqual(60);
+      const positive = await read();
+      expect(positive.projection.positionFacts.find(row => row.tokenId === "811")).toMatchObject({ heldShares: 10, currentValueUsdc: 10, remainingBasisUsdc: 6 });
+      expect(positive.dashboard.overview).toMatchObject({ usdc_positions_mtm: 12, usdc_total: 102 });
+
+      if (testCase.envelope === "partial") {
+        // Historical recovery owns this reserved envelope; it does not publish
+        // quantity. The next real writer must preserve it without a new clock.
+        await db.update(polyTraderCurrentPositions).set({ raw: { ...initial.winner.raw as Record<string, unknown>,
+          economicObservationV1: { version: 1, wallet: address, conditionId, tokenId: "811", coverage: "partial",
+            fetchedAt: initial.cursor.lastSuccessAt.toISOString(), windowStart: new Date(Date.now() - 86400_000).toISOString(),
+            windowEnd: initial.cursor.lastSuccessAt.toISOString(), reasons: ["missing_closed_position"], closedPosition: null,
+            lifetimeBuyUsdc: 6, lifetimeBuyShares: 10, lifetimeSellUsdc: 0, lifetimePnlUsdc: null, redeemUsdc: 0, constituents: [], settlements: [] } } })
+          .where(and(eq(polyTraderCurrentPositions.traderWalletId, wallet.id), eq(polyTraderCurrentPositions.tokenId, "811")));
+      }
+      const beforeOmission = await saved();
+      page = [position(false)];
+      if (testCase.authority === "unavailable") readPositionBalances.mockRejectedValue(new PositionBalanceTransportError("RPC unavailable"));
+      else readPositionBalances.mockResolvedValue([1n]);
+      expect(await refresh()).toMatchObject({ complete: true, positionRows: 1 });
+      expect(readPositionBalances).toHaveBeenCalledTimes(testCase.authority === "unavailable" ? 2 : 1);
+      for (const [input] of readPositionBalances.mock.calls) expect(input).toMatchObject({ walletAddress: address, tokenIds: ["811"] });
+      const omitted = await saved();
+      expect(omitted.winner).toEqual(beforeOmission.winner);
+      expect(omitted.cursor.status).toBe("ok");
+      expect(omitted.cursor.lastSuccessAt.getTime()).toBeGreaterThan(initial.cursor.lastSuccessAt.getTime());
+      expect(omitted.healthy.lastObservedAt).toEqual(omitted.cursor.lastSuccessAt);
+      expect(omitted.cursor.errorMessage).toBe(testCase.authority === "unavailable"
+        ? `terminal_recovery_v1:{"reason":"authority_unavailable","anchor":["${conditionId}","811"]}` : null);
+      await db.update(polyWalletBalanceSnapshots).set({ usdcE: "100", pusd: "0", observedAt: new Date() })
+        .where(eq(polyWalletBalanceSnapshots.billingAccountId, account));
+      const pending = await read();
+      expect(pending.projection.positionFacts.find(row => row.tokenId === "811")).toMatchObject({
+        heldShares: null, currentValueUsdc: null, remainingBasisUsdc: null, unrealizedPnlUsdc: null,
+        observedAt: initial.winner.lastObservedAt.toISOString(), inventoryCoverage: "unavailable", lifetimePnlUsdc: null });
+      expect(pending.projection.positionFacts.find(row => row.tokenId === "812")).toMatchObject({ heldShares: 2, currentValueUsdc: 2 });
+      expect(pending.projection.positionsMtm).toBeNull();
+      expect(pending.dashboard.overview).toMatchObject({ usdc_available: 100, usdc_positions_mtm: null, usdc_total: null });
+      const params = { db, billingAccountId: account, walletAddress: address, mode: "live" as const,
+        capturedAt: new Date().toISOString(), livePositions: pending.projection.livePositions, closedPositions: pending.projection.closedPositions,
+        positionFacts: pending.projection.positionFacts };
+      const groups = await buildMarketExposureGroups(params);
+      const bounded = await buildBoundedMarketExposureGroups(params);
+      const coverage = await buildBoundedMarketExposureWithCoverage({ ...params, connectionKind: "privy_live" });
+      for (const result of [groups, bounded.groups, coverage.market.groups, pending.dashboard.execution.market_groups]) {
+        const legs = result.flatMap(group => group.lines).flatMap(line => line.participants)
+          .filter(participant => participant.side === "our_wallet").flatMap(participant => participant.legs ?? []);
+        expect(legs).toContainEqual(expect.objectContaining({ tokenId: "811", currentValueUsdc: null, costBasisUsdc: null, pnlUsdc: null }));
+        expect(legs).toContainEqual(expect.objectContaining({ tokenId: "812", currentValueUsdc: 2 }));
+      }
+
+      readPositionBalances.mockClear().mockResolvedValue([0n]);
+      expect(await refresh()).toMatchObject({ complete: true, positionRows: 1 });
+      expect(readPositionBalances).toHaveBeenCalledTimes(1);
+      const recovered = await saved();
+      expect(recovered.winner).toMatchObject({ active: false, shares: "0.00000000", currentValueUsdc: "0.00000000", costBasisUsdc: "0.00000000", raw: beforeOmission.winner.raw });
+      // Exact-zero publication retains PostgreSQL's submillisecond capture;
+      // its ordered authority may be later than the cursor's Date precision.
+      expect(recovered.winner.lastObservedAt.getTime()).toBeGreaterThanOrEqual(recovered.cursor.lastSuccessAt.getTime());
+      expect(recovered.winner.lastObservedAt.getTime()).toBeGreaterThan(initial.winner.lastObservedAt.getTime());
+      expect(recovered.cursor.errorMessage).toBeNull();
+      const recoveredRead = await read();
+      expect(recoveredRead.projection.positionFacts.find(row => row.tokenId === "811")).toMatchObject({ heldShares: 0, currentValueUsdc: 0, remainingBasisUsdc: 0, lifetimePnlUsdc: null });
+      expect(recoveredRead.dashboard.overview).toMatchObject({ usdc_available: 100, usdc_positions_mtm: 2, usdc_total: 102 });
+      const snapshots = await db.select().from(polyTraderPositionSnapshots).where(and(
+        eq(polyTraderPositionSnapshots.traderWalletId, wallet.id), eq(polyTraderPositionSnapshots.tokenId, "811")));
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toMatchObject({ shares: "10.00000000", capturedAt: initial.cursor.lastSuccessAt });
+      expect(listUserPositions).toHaveBeenCalledTimes(3);
+    } finally {
+      await db.delete(billingAccounts).where(eq(billingAccounts.id, account));
+      await db.delete(users).where(eq(users.id, userId));
+      await db.delete(polyTraderWallets).where(eq(polyTraderWallets.id, wallet.id));
+    }
+  });
+
+  // Captured writer publication states, separate from actual execution above.
   it.each([
     { name: "absent envelope", rowAge: 60_000, value: null },
     { name: "partial no-event envelope", rowAge: 60_000, value: null, partial: true },
