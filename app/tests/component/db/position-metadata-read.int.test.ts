@@ -1214,6 +1214,8 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 				expect(row.attributes.outcome).toBe("1");
 				expect(row.attributes.labelKind).toBeUndefined();
 				expect(row.attributes.outcomeIndex).toBeUndefined();
+        expect(row.attributes.paper_receipt_v1).toMatchObject({ fee_known: true, fees_usdc: 0,
+          shares: 10, notional_usdc: 4 });
 			}
 			await observePaperWallet({
 				db: db as unknown as Parameters<typeof observePaperWallet>[0]["db"],
@@ -1346,8 +1348,11 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 			expect(
 				orders?.orders.every(
 					(order) =>
-						order.fill_accounting?.status === "pending" &&
-						order.filled_size_usdc === null,
+            order.fill_accounting?.status === "verified" &&
+            order.fill_accounting.source === "paper_order_receipt" &&
+            order.fill_accounting.realized_shares === 10 &&
+            order.fill_accounting.realized_entry_notional_usdc === 4 &&
+            order.filled_size_usdc === 4,
 				),
 			).toBe(true);
 			const own = after[0].positions[0];

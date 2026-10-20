@@ -571,6 +571,24 @@ describe("lineage-scoped copy-target V2 hydration", () => {
     } finally { await db.delete(polyTraderWallets).where(eq(polyTraderWallets.id, orphan.id)); }
   });
 
+  it("withholds intended closed cost for an unverified LIVE v3 fill through the real comparison reader", async () => {
+    const condition = `0x${randomUUID().replaceAll("-", "").repeat(2)}`;
+    const token = "193001";
+    const client = `closed-unverified-${randomUUID()}`;
+    await db.insert(polyCopyTradeFills).values({ billingAccountId: BILLING_ID, createdByUserId: USER_ID,
+      targetId: targetIdFromWallet(TARGET_WALLET), fillId: client, clientOrderId: client, orderId: `order-${client}`, marketId: `prediction-market:polymarket:${condition}`,
+      mode: "live", status: "filled", positionLifecycle: "closed", observedAt: new Date(), shares: "10", price: ".5",
+      attributes: { position_gap_version: "3", target_wallet: TARGET_WALLET, condition_id: condition,
+        token_id: token, side: "BUY", size_usdc: 5, filled_size_usdc: 5 } });
+    try {
+      const result = await buildBoundedMarketExposureWithCoverage({ db, billingAccountId: BILLING_ID,
+        walletAddress: OUR_WALLET, connectionKind: "privy_live", livePositions: [],
+        closedPositions: [localExecutionPosition({ conditionId: condition, tokenId: token, status: "closed" })] });
+      expect(result.positionClassifications).toContainEqual({ conditionId: condition, tokenId: token,
+        status: "closed", result: "local_entry_unavailable" });
+    } finally { await db.delete(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, client)); }
+  });
+
 	it("rejects target-wallet attributes that disagree with deterministic target lineage", async () => {
 		const mismatchedTargetId = randomUUID();
 		await db.insert(polyTraderCurrentPositions).values({
