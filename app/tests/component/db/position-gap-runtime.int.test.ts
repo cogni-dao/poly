@@ -54,6 +54,7 @@ describe("authenticated paper cumulative receipt persistence", () => {
 	it("repairs terminal equal tuples and known-zero fees through the real factory, ledger, reconciler and SQL", async () => {
 		const db = getSeedDb();
 		const owner = randomUUID();
+    const foreignOwner = randomUUID();
 		const account = randomUUID();
 		const foreignAccount = randomUUID();
 		const connection = randomUUID();
@@ -62,17 +63,15 @@ describe("authenticated paper cumulative receipt persistence", () => {
 		const token = "1234567890123456789012345678901234567890";
 		const client = `paper-proof-${randomUUID()}`;
 		const order = `paper-order-${randomUUID()}`;
-		await db.insert(users).values({
-			id: owner,
-			name: "Paper proof owner",
-			walletAddress: `0x${owner.replaceAll("-", "")}12345678`,
-		});
+    await db.insert(users).values([owner, foreignOwner].map(id => ({
+      id, name: "Paper proof owner", walletAddress: `0x${id.replaceAll("-", "")}12345678`,
+    })));
 		await db
 			.insert(billingAccounts)
 			.values(
-				[account, foreignAccount].map((id) => ({
+				[account, foreignAccount].map((id, index) => ({
 					id,
-					ownerUserId: owner,
+					ownerUserId: index === 0 ? owner : foreignOwner,
 					balanceCredits: 0n,
 				})),
 			);
@@ -240,7 +239,7 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				.insert(polyCopyTradeFills)
 				.values({
 					billingAccountId: foreignAccount,
-					createdByUserId: owner,
+					createdByUserId: foreignOwner,
 					targetId: target,
 					fillId: foreignClient,
 					marketId: intent.market_id,
@@ -1121,7 +1120,7 @@ describe("authenticated paper cumulative receipt persistence", () => {
 			await db
 				.delete(billingAccounts)
 				.where(inArray(billingAccounts.id, [account, foreignAccount]));
-			await db.delete(users).where(eq(users.id, owner));
+			await db.delete(users).where(inArray(users.id, [owner, foreignOwner]));
 		}
 	});
 });
