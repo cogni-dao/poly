@@ -28,8 +28,14 @@
 
 import { randomUUID } from "node:crypto";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { eq } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { and, eq } from "drizzle-orm";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { __resetPolyExecutionVenueForTests, getPaperPortfolio, readPaperAuthoritativeHoldings } from "@/bootstrap/poly-execution-venue";
+
+// Redirect only the client factory; every SQL statement/result remains real.
+vi.mock("@/adapters/server/db/drizzle.service-client", () => ({
+  getServiceDb: () => getSeedDb(),
+}));
 
 import { derivePaperAccountAddress } from "@/features/paper-accounts";
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
@@ -49,6 +55,8 @@ import {
   billingAccounts,
   polyCopyTradeFills,
   polyTraderIngestionCursors,
+  polyTraderCurrentPositions,
+  polyTraderWallets,
   polyWalletBalanceSnapshots,
   polyWalletConnections,
   users,
@@ -174,11 +182,11 @@ describe("paper position + NAV read-back", () => {
   const unenrolled = tenant("Paper tenant never projected");
   const tenants = [holder, flat, unmarked, unenrolled];
 
-  const condA = `0xcond${"1".repeat(60)}`;
+  const condA = `0x${"1".repeat(64)}`;
   const tokenA = "44444444444444444444444444444444";
-  const condB = `0xcond${"2".repeat(60)}`;
+  const condB = `0x${"2".repeat(64)}`;
   const tokenB = "55555555555555555555555555555555";
-  const condU = `0xcond${"3".repeat(60)}`;
+  const condU = `0x${"3".repeat(64)}`;
   const tokenU = "66666666666666666666666666666666";
 
   const SEED = "1000.00000000";
@@ -446,4 +454,278 @@ describe("paper position + NAV read-back", () => {
       ).toBe("projection_incomplete");
     });
   });
+});
+
+/** Independent test cohort: direct fixtures stay inside the disposable PG DB. */
+async function freshPaperBook(
+	name: string,
+	positions: readonly {
+		conditionId: string;
+		tokenId: string;
+		shares: string;
+		currentValueUsdc?: string;
+		avgPrice?: string;
+	}[] = [],
+) {
+	const owner = tenant(name);
+	const db = getSeedDb();
+	await db
+		.insert(users)
+		.values({ id: owner.userId, name, walletAddress: address() });
+	await db
+		.insert(billingAccounts)
+		.values({
+			id: owner.billingAccountId,
+			ownerUserId: owner.userId,
+			balanceCredits: 0n,
+		});
+	await seedPaperConnection(owner, "1000");
+	const wallet = await enrol(owner);
+	const observedAt = new Date();
+	await db
+		.insert(polyTraderIngestionCursors)
+		.values({
+			traderWalletId: wallet.traderWalletId,
+			source: PAPER_POSITION_CURSOR_SOURCE,
+			status: "ok",
+			lastSuccessAt: observedAt,
+		});
+	if (positions.length)
+		await db.insert(polyTraderCurrentPositions).values(
+			positions.map((position) => ({
+				traderWalletId: wallet.traderWalletId,
+				...position,
+				costBasisUsdc: "1",
+				currentValueUsdc: position.currentValueUsdc ?? "1",
+				avgPrice: position.avgPrice ?? "0.4",
+				active: true,
+				contentHash: randomUUID(),
+				lastObservedAt: observedAt,
+			})),
+		);
+	return { owner, wallet, observedAt };
+}
+const exactCondition = `0x${"a".repeat(64)}`;
+const otherCondition = `0x${"b".repeat(64)}`;
+const exactToken =
+	"110616094455216194978699423493753093017667578376232016563683270718005271026032";
+
+function barrier() {
+	let release!: () => void;
+	const promise = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { promise, release };
+}
+
+describe("one coherent canonical paper holdings query", () => {
+	it.each([84, 840])(
+		"uses the real bootstrap portfolio and ONE physical SELECT for %i legs",
+		async (count) => {
+			const { owner } = await freshPaperBook(`bounded-${count}`, [
+				{
+					conditionId: exactCondition,
+					tokenId: exactToken,
+					shares: "229.28000000",
+				},
+			]);
+			// A different tenant's same token must never leak into this book.
+			await freshPaperBook(`other-${count}`, [
+				{ conditionId: exactCondition, tokenId: exactToken, shares: "999" },
+			]);
+			__resetPolyExecutionVenueForTests();
+			const portfolio = getPaperPortfolio();
+			const source = vi.spyOn(portfolio, "listOpenPositions");
+			// Spy through the actual postgres-js dispatch, preserving its implementation.
+			const wire = vi.spyOn(getSeedDb().$client, "unsafe");
+			try {
+				const requested = [
+					{ conditionId: exactCondition, tokenId: exactToken },
+					...Array.from({ length: count - 1 }, (_, i) => ({
+						conditionId: exactCondition,
+						tokenId: String(i + 1),
+					})),
+				];
+				const holdings = await readPaperAuthoritativeHoldings({
+					source: portfolio,
+					billingAccountId: owner.billingAccountId,
+					requested,
+				});
+				expect(source).toHaveBeenCalledTimes(1);
+				expect(source).toHaveBeenCalledWith(owner.billingAccountId);
+				expect(
+					wire.mock.calls.filter(([query]) => /^\s*select\b/i.test(query)),
+				).toHaveLength(1);
+				expect(holdings).toHaveLength(count);
+				expect(holdings[0]).toEqual({
+					conditionId: exactCondition,
+					tokenId: exactToken,
+					shares: 229.28,
+				});
+				expect(holdings.slice(1).every((leg) => leg.shares === 0)).toBe(true);
+			} finally {
+				wire.mockRestore();
+				source.mockRestore();
+				__resetPolyExecutionVenueForTests();
+			}
+		},
+	);
+
+	it("reads complete old and new cursor/book cohorts across a real writer commit barrier", async () => {
+		const { owner, wallet, observedAt } = await freshPaperBook(
+			"atomic-old-new",
+			[{ conditionId: exactCondition, tokenId: exactToken, shares: "7" }],
+		);
+		const newObservedAt = new Date(observedAt.getTime() + 1);
+		const updated = barrier();
+		const commit = barrier();
+		const writer = getSeedDb().transaction(async (tx) => {
+			await tx
+				.update(polyTraderCurrentPositions)
+				.set({
+					shares: "19",
+					currentValueUsdc: "9.5",
+					lastObservedAt: newObservedAt,
+				})
+				.where(
+					eq(polyTraderCurrentPositions.traderWalletId, wallet.traderWalletId),
+				);
+			await tx
+				.update(polyTraderIngestionCursors)
+				.set({ lastSuccessAt: newObservedAt })
+				.where(
+					and(
+						eq(
+							polyTraderIngestionCursors.traderWalletId,
+							wallet.traderWalletId,
+						),
+						eq(polyTraderIngestionCursors.source, PAPER_POSITION_CURSOR_SOURCE),
+					),
+				);
+			updated.release();
+			await commit.promise;
+		});
+		try {
+			await Promise.race([updated.promise, writer.then(() => { throw new Error("writer ended before barrier"); })]);
+			const before = await readPaperAccountPositionFacts({
+				db: paperDb(),
+				billingAccountId: owner.billingAccountId,
+				now: newObservedAt,
+			});
+			expect([
+				before.observedAt.getTime(),
+				before.positions[0]?.shares,
+				before.positions[0]?.currentValueUsdc,
+			]).toEqual([observedAt.getTime(), 7, 1]);
+		} finally {
+			commit.release();
+			await writer;
+		}
+		const after = await readPaperAccountPositionFacts({
+			db: paperDb(),
+			billingAccountId: owner.billingAccountId,
+			now: newObservedAt,
+		});
+		expect([
+			after.observedAt.getTime(),
+			after.positions[0]?.shares,
+			after.positions[0]?.currentValueUsdc,
+		]).toEqual([newObservedAt.getTime(), 19, 9.5]);
+	});
+
+	it("refuses missing, wrong-kind and disabled wallets without borrowing another mode", async () => {
+		const never = tenant("not-enrolled-anywhere");
+		expect(
+			await reasonOf(
+				readPaperAccountPositionFacts({
+					db: paperDb(),
+					billingAccountId: never.billingAccountId,
+				}),
+			),
+		).toBe("no_paper_wallet");
+		const { owner, wallet } = await freshPaperBook("wrong-kind");
+		await getSeedDb()
+			.update(polyTraderWallets)
+			.set({ kind: "cogni_wallet" })
+			.where(eq(polyTraderWallets.id, wallet.traderWalletId));
+		expect(
+			await reasonOf(
+				readPaperAccountPositionFacts({
+					db: paperDb(),
+					billingAccountId: owner.billingAccountId,
+				}),
+			),
+		).toBe("no_paper_wallet");
+		await getSeedDb()
+			.update(polyTraderWallets)
+			.set({ kind: "paper_wallet", disabledAt: new Date() })
+			.where(eq(polyTraderWallets.id, wallet.traderWalletId));
+		expect(
+			await reasonOf(
+				readPaperAccountPositionFacts({
+					db: paperDb(),
+					billingAccountId: owner.billingAccountId,
+				}),
+			),
+		).toBe("no_paper_wallet");
+	});
+
+	it("rejects future cursor authority", async () => {
+		const { owner, wallet, observedAt } = await freshPaperBook("future-cursor");
+		await getSeedDb()
+			.update(polyTraderIngestionCursors)
+			.set({ lastSuccessAt: new Date(observedAt.getTime() + 60_000) })
+			.where(
+				eq(polyTraderIngestionCursors.traderWalletId, wallet.traderWalletId),
+			);
+		expect(
+			await reasonOf(
+				readPaperAccountPositionFacts({
+					db: paperDb(),
+					billingAccountId: owner.billingAccountId,
+					now: observedAt,
+				}),
+			),
+		).toBe("projection_incomplete");
+	});
+
+	it.each([
+		[{ conditionId: "0xinvalid", tokenId: exactToken, shares: "1" }],
+		[{ conditionId: exactCondition, tokenId: "01", shares: "1" }],
+		[{ conditionId: exactCondition, tokenId: exactToken, shares: "0" }],
+		[{ conditionId: exactCondition, tokenId: exactToken, shares: "NaN" }],
+		[
+			{
+				conditionId: exactCondition,
+				tokenId: exactToken,
+				shares: "1",
+				avgPrice: "-1",
+			},
+		],
+		[
+			{ conditionId: exactCondition, tokenId: exactToken, shares: "1" },
+			{ conditionId: otherCondition, tokenId: exactToken, shares: "2" },
+		],
+		[
+			{ conditionId: exactCondition, tokenId: exactToken, shares: "1" },
+			{ conditionId: `0x${"A".repeat(64)}`, tokenId: exactToken, shares: "2" },
+		],
+	])(
+		"fails closed on persisted malformed, unreadable or conflicting legs %#",
+		async (...positions) => {
+			const { owner, observedAt } = await freshPaperBook(
+				"corrupt-book",
+				positions,
+			);
+			expect(
+				await reasonOf(
+					readPaperAccountPositionFacts({
+						db: paperDb(),
+						billingAccountId: owner.billingAccountId,
+						now: observedAt,
+					}),
+				),
+			).toBe("projection_incomplete");
+		},
+	);
 });
