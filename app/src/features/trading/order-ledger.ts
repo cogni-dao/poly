@@ -4,8 +4,7 @@
 /**
  * Module: `@features/trading/order-ledger`
  * Purpose: Drizzle-backed `OrderLedger` adapter. Reads + writes `poly_copy_trade_fills` + `poly_copy_trade_decisions`. Every placement path (agent tool, mirror-coordinator, future WS ingester) reads + writes through this adapter. The canonical per-tenant entry point is `OrderLedger.forTenant(ctx)` (bug.5022) — returns a `TenantOrderLedger` whose every method runs inside `withTenantScope(appDb, ctx.created_by_user_id, ...)` so Postgres RLS on `poly_copy_trade_{fills,decisions}` becomes the runtime backstop. Legacy root methods that still take explicit tenant args (e.g. the deprecated `snapshotState(target_id, billing_account_id)`) carry the same defensive `eq(billingAccountId, ...)` filter inside the query, fixing the pre-bug.5022 cross-tenant leak.
- * Scope: Drizzle queries only. Does not build a DB client (caller injects); does not import { derivePaperAccountAddress } from "@/features/paper-accounts/paper-account-address";
-import from `adapters/server/*` (layer boundary); does not know about copy-trade or wallet-watch (TRADING_IS_GENERIC).
+ * Scope: Drizzle queries only. Does not build a DB client (caller injects); does not import from `adapters/server/*` (layer boundary); does not know about copy-trade or wallet-watch (TRADING_IS_GENERIC).
  * Invariants:
  *   - TRADING_IS_GENERIC — no imports from `features/copy-trade/` or `features/wallet-watch/`.
  *   - FAIL_CLOSED_ON_SNAPSHOT_READ — `snapshotState` returns zeroes/empty arrays on any DB error and logs at `warn`. Never throws. (bug.0438 dropped the kill-switch read; only cap counters + dedup keys remain.)
@@ -24,6 +23,7 @@ import from `adapters/server/*` (layer boundary); does not know about copy-trade
  * @public
  */
 
+import { derivePaperAccountAddress } from "@/features/paper-accounts/paper-account-address";
 import { withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
 import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
