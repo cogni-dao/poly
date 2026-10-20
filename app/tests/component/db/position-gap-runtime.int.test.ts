@@ -35,6 +35,8 @@ import { createExecutionVenueResolver, createPaperVenue, derivePaperAccountAddre
 import { acceptedPaperProof, decodeFillAccounting, type FillAccountingScope } from "@/features/trading/fill-accounting";
 import { paperFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import { billingAccounts, polyWalletConnections, polyWalletGrants, users } from "@/shared/db/schema";
+import { polyCopyTradeOrdersOperation } from "@cogni/poly-node-contracts";
+import { listCopyTradeOrdersForAccount } from "@/features/wallet-analysis/server/copy-trade-orders-read";
 import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 
 const future = new Date("2099-01-01T00:00:00.000Z");
@@ -217,6 +219,13 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				zero: false,
 				fee_known: false,
 			});
+
+      const publicOrders = () => withTenantScope(getAppDb(), userActor(toUserId(owner)), tx =>
+        listCopyTradeOrdersForAccount(tx as never, { limit: 200 }, account));
+      const publicPositive = polyCopyTradeOrdersOperation.output.parse(await publicOrders());
+      expect(publicPositive.orders.find(row => row.client_order_id === client)).toMatchObject({ filled_size_usdc: 1.5,
+        fill_accounting: { status: "verified", source: "paper_order_receipt", matched_order_count: 1,
+          realized_shares: 3, realized_entry_notional_usdc: 1.5 } });
 
 			// Historical source-only terminal rows must be selected despite the closed
 			// lifecycle and unchanged status/cost/source. No immutable fill is rewritten.
@@ -625,6 +634,11 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				await db.execute(sql`SELECT ${sqlProof.positive} AS positive, ${sqlProof.zero} AS zero
         FROM poly_copy_trade_fills f WHERE f.client_order_id = ${zeroClient}`);
 			expect(zeroSql[0]).toMatchObject({ positive: false, zero: true });
+      const publicZero = polyCopyTradeOrdersOperation.output.parse(await publicOrders());
+      expect(publicZero.orders.find(row => row.client_order_id === zeroClient)).toMatchObject({ filled_size_usdc: 0,
+        fill_accounting: { status: "verified_zero", source: "paper_order_receipt", matched_order_count: 1,
+          realized_shares: 0, realized_entry_notional_usdc: 0 } });
+
 			for (const protectedNative of [false, true]) {
 				const upgradeClient = `paper-authority-floor-${randomUUID()}`;
 				const upgradeOrder = `paper-authority-order-${randomUUID()}`;

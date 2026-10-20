@@ -18,6 +18,8 @@ import {
 } from "@cogni/poly-node-contracts";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
+import { paperFillAccountingPresentation } from "@/features/trading/fill-accounting";
+import { copyFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
 import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 
@@ -48,6 +50,10 @@ type Run = {
 };
 
 type RecentOrder = {
+  ledgerMode?: string;
+  paperPositive?: boolean;
+  paperZero?: boolean;
+  paperFeeKnown?: boolean;
 	id: string;
 	targetId: string;
 	clientOrderId: string;
@@ -93,8 +99,8 @@ function toRecentOrder(row: RecentOrder) {
 	const realizedUsdc = numberOf(attributes.filled_size_usdc);
 	const realizedPrice = numberOf(row.ledgerPrice);
 	const verified =
-		(source === "clob_associated_trades" ||
-			source === "data_api_activity_position") &&
+    (row.ledgerMode === "paper" ? row.paperPositive === true :
+      (source === "clob_associated_trades" || source === "data_api_activity_position")) &&
 		realizedShares !== null &&
 		realizedShares > 0 &&
 		realizedUsdc !== null &&
@@ -107,7 +113,7 @@ function toRecentOrder(row: RecentOrder) {
 					row.plannerAction.fill_accounting_mismatch_reason,
 				).data
 			: undefined;
-	const fillAccounting = verified
+	const fillAccounting = row.ledgerMode === "paper" ? paperFillAccountingPresentation({ positive: row.paperPositive, zero: row.paperZero, shares: realizedShares, notional: realizedUsdc }) : verified
 		? {
 				status: "verified" as const,
 				source,
@@ -139,7 +145,7 @@ function toRecentOrder(row: RecentOrder) {
 		limit_price: numberOf(row.limitPrice),
 		fill_accounting: fillAccounting,
 		realized_fill_price: verified ? realizedPrice : null,
-		fees_usdc: verified ? numberOf(row.ledgerFeesUsdc) : null,
+		fees_usdc: (verified || row.paperZero) && (row.ledgerMode !== "paper" || row.paperFeeKnown) ? numberOf(row.ledgerFeesUsdc) : null,
 	};
 }
 
@@ -153,6 +159,9 @@ function runtimeFromRun(
 		verifiedUsdc: unknown;
 		clobVerified: unknown;
 		dataApiVerified: unknown;
+    paperVerified?: unknown;
+    paperZero?: unknown;
+    verifiedModes?: unknown;
 		mismatched: unknown;
 		mismatchReason: unknown;
 	},
@@ -244,13 +253,14 @@ function runtimeFromRun(
 	const mismatched = numberOf(execution.mismatched) ?? 0;
 	const clobVerified = (numberOf(execution.clobVerified) ?? 0) > 0;
 	const dataApiVerified = (numberOf(execution.dataApiVerified) ?? 0) > 0;
-	const verifiedSource =
+	const verifiedSource = (numberOf(execution.paperVerified) ?? 0) > 0 ? "paper_order_receipt" as const :
 		clobVerified && dataApiVerified
 			? ("mixed_verified_sources" as const)
 			: dataApiVerified
 				? ("data_api_activity_position" as const)
 				: ("clob_associated_trades" as const);
 	const fillAccounting =
+    (numberOf(execution.verifiedModes) ?? 1) === 1 &&
 		reportedMatched > 0 &&
 		reportedMatched === verifiedMatched &&
 		verifiedShares > 0 &&
@@ -262,7 +272,9 @@ function runtimeFromRun(
 					realized_shares: verifiedShares,
 					realized_entry_notional_usdc: verifiedUsdc,
 				}
-			: mismatched > 0 && mismatchReason !== null
+			: reportedMatched === 0 && numberOf(execution.paperZero) === 1
+        ? paperFillAccountingPresentation({ positive: false, zero: true, shares: 0, notional: 0 })
+      : mismatched > 0 && mismatchReason !== null
 				? {
 						status: "mismatch" as const,
 						source: "data_api_activity_position" as const,
@@ -414,6 +426,10 @@ export const positionGapRecentOrdersSelect = (
 		a.notional_usdc AS "notionalUsdc", a.limit_price AS "limitPrice",
 		a.planner_action AS "plannerAction", f.price AS "ledgerPrice",
 		f.shares AS "ledgerShares", f.fees_usdc AS "ledgerFeesUsdc",
+    f.mode AS "ledgerMode",
+    ${copyFillAccountingSql("f").positive} AS "paperPositive",
+    ${copyFillAccountingSql("f").zero} AS "paperZero",
+    ${copyFillAccountingSql("f").feeKnown} AS "paperFeeKnown",
 		f.attributes AS "ledgerAttributes"
 	FROM unnest(ARRAY[${sql.join(
 		targetIds.map((id) => sql`${id}::uuid`),
@@ -485,11 +501,14 @@ export const positionGapActionAggregateSelect = (
 			targetId: polyPositionGapActions.targetId,
 			submitted: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.submittedAt} IS NOT NULL)`,
 			reportedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.filledShares} > 0)`,
-			verifiedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position') AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$')`,
-			verifiedShares: sql<string>`COALESCE(SUM(${polyCopyTradeFills.shares}) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position') AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'), 0)`,
-			verifiedUsdc: sql<string>`COALESCE(SUM(CASE WHEN ${polyPositionGapActions.kind} = 'buy' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position') AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric ELSE 0 END), 0)`,
-			clobVerified: sql<string>`count(*) FILTER (WHERE ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades')`,
-			dataApiVerified: sql<string>`count(*) FILTER (WHERE ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'data_api_activity_position')`,
+			verifiedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills").positionGapVerified} AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$')`,
+			verifiedShares: sql<string>`COALESCE(SUM(${polyCopyTradeFills.shares}) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills").positionGapVerified} AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'), 0)`,
+			verifiedUsdc: sql<string>`COALESCE(SUM(CASE WHEN ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills").positionGapVerified} AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric ELSE 0 END), 0)`,
+      paperVerified: sql<string>`count(*) FILTER (WHERE ${copyFillAccountingSql("poly_copy_trade_fills").positive})`,
+      paperZero: sql<string>`count(*) FILTER (WHERE ${copyFillAccountingSql("poly_copy_trade_fills").zero})`,
+      verifiedModes: sql<string>`count(DISTINCT ${polyCopyTradeFills.mode}) FILTER (WHERE ${copyFillAccountingSql("poly_copy_trade_fills").positionGapVerified})`,
+			clobVerified: sql<string>`count(*) FILTER (WHERE ${polyCopyTradeFills.mode} = 'live' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades')`,
+			dataApiVerified: sql<string>`count(*) FILTER (WHERE ${polyCopyTradeFills.mode} = 'live' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'data_api_activity_position')`,
 			mismatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.plannerAction}->>'fill_accounting_status' = 'mismatch')`,
 			mismatchReason: sql<
 				string | null

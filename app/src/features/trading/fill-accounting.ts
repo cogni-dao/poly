@@ -397,3 +397,35 @@ export function acceptedPaperProof(
 			? result.finalProof
 			: null;
 }
+
+/** Public economics only after the independent SQL gate validates the durable row. */
+export function paperFillAccountingPresentation(input: {
+	positive: boolean | null | undefined;
+	zero: boolean | null | undefined;
+	shares: number | null;
+	notional: number | null;
+}) {
+	if (input.zero === true)
+		return {
+			status: "verified_zero" as const,
+			source: "paper_order_receipt" as const,
+			matched_order_count: 1 as const,
+			realized_shares: 0 as const,
+			realized_entry_notional_usdc: 0 as const,
+		};
+	if (
+		input.positive === true &&
+		input.shares !== null &&
+		input.shares > 0 &&
+		input.notional !== null &&
+		input.notional > 0
+	)
+		return {
+			status: "verified" as const,
+			source: "paper_order_receipt" as const,
+			matched_order_count: 1,
+			realized_shares: input.shares,
+			realized_entry_notional_usdc: input.notional,
+		};
+	return { status: "pending" as const, source: "clob_order_receipt" as const };
+}

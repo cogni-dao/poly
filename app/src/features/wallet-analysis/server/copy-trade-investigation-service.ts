@@ -16,6 +16,8 @@
  * @public
  */
 
+import { paperFillAccountingPresentation } from "@/features/trading/fill-accounting";
+import { copyFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import type {
   PolyResearchCopyTradeInvestigationEvidenceQuery,
   PolyResearchCopyTradeInvestigationEvidenceResponse,
@@ -145,6 +147,10 @@ type FillEvidenceRow = {
   fees_usdc: string | number | null;
   intent_size_usdc: string | number | null;
   filled_size_usdc: string | number | null;
+  mode?: string;
+  paper_positive?: boolean;
+  paper_zero?: boolean;
+  paper_fee_known?: boolean;
   position_gap_version: string | null;
   realized_fill_source: string | null;
   position_lifecycle: string | null;
@@ -328,8 +334,7 @@ export async function getCopyTradeInvestigationSummary(
   const rawMirrorRows = rowsOf<MirrorLegRow>(await db.execute(sql`
     WITH execution_source AS (
       SELECT f.*, (
-        COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-        OR COALESCE(f.attributes->>'realized_fill_source', '') IN ('clob_associated_trades', 'data_api_activity_position')
+        ${copyFillAccountingSql("f", sql`${capturedAt}::timestamptz`).realized}
       ) AS accounting_verified
       FROM poly_copy_trade_fills f
       WHERE f.billing_account_id = ${query.billing_account_id}
@@ -355,10 +360,11 @@ export async function getCopyTradeInvestigationSummary(
         THEN (SUM(CASE WHEN f.accounting_verified AND f.attributes->>'side' = 'SELL' THEN f.price * f.shares ELSE 0 END)
           / SUM(CASE WHEN f.accounting_verified AND f.attributes->>'side' = 'SELL' THEN f.shares ELSE 0 END))::text
         ELSE NULL END AS sell_vwap,
-      COALESCE(SUM(CASE WHEN f.accounting_verified THEN f.fees_usdc ELSE 0 END), 0)::text AS fees_usdc,
+      CASE WHEN BOOL_OR(f.mode = 'paper' AND NOT ${copyFillAccountingSql("f", sql`${capturedAt}::timestamptz`).feeKnown}) THEN NULL
+        ELSE COALESCE(SUM(CASE WHEN f.accounting_verified THEN f.fees_usdc ELSE 0 END), 0)::text END AS fees_usdc,
       COUNT(*) FILTER (
-        WHERE f.status IN ('filled', 'partial')
-          AND (NOT f.accounting_verified OR f.price IS NULL OR f.shares IS NULL)
+        WHERE (f.status IN ('filled', 'partial') AND (NOT f.accounting_verified OR f.price IS NULL OR f.shares IS NULL))
+          OR (f.mode = 'paper' AND NOT ${copyFillAccountingSql("f", sql`${capturedAt}::timestamptz`).feeKnown})
       )::int AS missing_realized_rows,
       MIN(f.observed_at) AS first_observed_at,
       MAX(f.observed_at) AS last_observed_at
@@ -583,7 +589,7 @@ export async function getCopyTradeInvestigationSummary(
       sell_usdc: number(row.sell_usdc),
       buy_vwap: nullableNumber(row.buy_vwap),
       sell_vwap: nullableNumber(row.sell_vwap),
-      fees_usdc: number(row.fees_usdc),
+      fees_usdc: nullableNumber(row.fees_usdc),
       mark_price: markPrice,
       marked_value_usdc:
         markPrice === null ? null : round(Math.max(0, netShares) * markPrice),
@@ -760,14 +766,15 @@ export async function getCopyTradeInvestigationEvidence(
   const items =
     query.kind === "fills"
       ? (page as FillEvidenceRow[]).map((row) => {
-          const positionGapV3 = row.position_gap_version === "3";
+          const paper = row.mode === "paper";
+          const positionGapV3 = paper || row.position_gap_version === "3";
           const price = nullableNumber(row.price);
           const shares = nullableNumber(row.shares);
           const notional = nullableNumber(row.filled_size_usdc);
           const verified =
             positionGapV3 &&
-            (row.realized_fill_source === "clob_associated_trades" ||
-              row.realized_fill_source === "data_api_activity_position") &&
+            (paper ? row.paper_positive === true : (row.realized_fill_source === "clob_associated_trades" ||
+              row.realized_fill_source === "data_api_activity_position")) &&
             price !== null &&
             shares !== null &&
             shares > 0 &&
@@ -784,15 +791,15 @@ export async function getCopyTradeInvestigationEvidence(
             side: orderSide(row.side),
             status: row.status,
             price: positionGapV3 && !verified ? null : price,
-            shares: positionGapV3 && !verified ? null : shares,
+            shares: positionGapV3 && !verified && !row.paper_zero ? null : shares,
             fees_usdc:
-              positionGapV3 && !verified
+              (paper && row.paper_fee_known !== true) || (positionGapV3 && !verified && !row.paper_zero)
                 ? null
                 : nullableNumber(row.fees_usdc),
             intent_size_usdc: nullableNumber(row.intent_size_usdc),
             filled_size_usdc:
-              positionGapV3 && !verified ? null : notional,
-            fill_accounting: positionGapV3
+              positionGapV3 && !verified && !row.paper_zero ? null : notional,
+            fill_accounting: paper ? paperFillAccountingPresentation({ positive: row.paper_positive, zero: row.paper_zero, shares, notional }) : positionGapV3
               ? verified
                 ? {
                     status: "verified" as const,
@@ -866,6 +873,10 @@ export function copyTradeFillEvidenceSelect(
   const window = windowSql(query, "f.observed_at");
   return sql`
     SELECT
+      f.mode,
+      ${copyFillAccountingSql("f", sql`${query.captured_at}::timestamptz`).positive} AS paper_positive,
+      ${copyFillAccountingSql("f", sql`${query.captured_at}::timestamptz`).zero} AS paper_zero,
+      ${copyFillAccountingSql("f", sql`${query.captured_at}::timestamptz`).feeKnown} AS paper_fee_known,
       f.target_id::text || ':' || f.fill_id AS evidence_id,
       f.observed_at AS occurred_at,
       f.target_id,
@@ -874,20 +885,16 @@ export function copyTradeFillEvidenceSelect(
       NULLIF(f.attributes->>'token_id', '') AS token_id,
       CASE WHEN f.attributes->>'side' IN ('BUY', 'SELL') THEN f.attributes->>'side' ELSE NULL END AS side,
       f.status,
-      CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-        AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
+      CASE WHEN NOT (${copyFillAccountingSql("f", sql`${query.captured_at}::timestamptz`).realized} OR ${copyFillAccountingSql("f", sql`${query.captured_at}::timestamptz`).zero})
         THEN NULL ELSE f.price END AS price,
-      CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-        AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
+      CASE WHEN NOT (${copyFillAccountingSql("f", sql`${query.captured_at}::timestamptz`).realized} OR ${copyFillAccountingSql("f", sql`${query.captured_at}::timestamptz`).zero})
         THEN NULL ELSE f.shares END AS shares,
-      CASE WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-        AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
+      CASE WHEN NOT (${copyFillAccountingSql("f", sql`${query.captured_at}::timestamptz`).realized} OR ${copyFillAccountingSql("f", sql`${query.captured_at}::timestamptz`).zero})
         THEN NULL ELSE f.fees_usdc END AS fees_usdc,
       CASE WHEN f.attributes->>'size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
         THEN (f.attributes->>'size_usdc')::numeric ELSE NULL END AS intent_size_usdc,
       CASE WHEN (
-          COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-          OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
+          ${copyFillAccountingSql("f", sql`${query.captured_at}::timestamptz`).realized} OR ${copyFillAccountingSql("f", sql`${query.captured_at}::timestamptz`).zero}
         ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
         THEN (f.attributes->>'filled_size_usdc')::numeric ELSE NULL END AS filled_size_usdc,
       f.attributes->>'position_gap_version' AS position_gap_version,
