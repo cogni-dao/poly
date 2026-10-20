@@ -21,7 +21,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { Database } from "@/adapters/server/db/client";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
-import { buildPositionGapBuyIntent } from "@/features/copy-trade/position-gap-actor";
+import { buildPositionGapBuyIntent, startPositionGapActor } from "@/features/copy-trade/position-gap-actor";
+import { PositionGapTargetRefreshCoordinator } from "@/features/copy-trade/position-gap-target-refresh";
 import { projectPositionGapCohorts } from "@/features/copy-trade/position-gap-cohorts";
 import {
 	PositionGapReservationConflictError,
@@ -479,15 +480,25 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				});
 			}
 
-      const monotonicBefore = await read();
-      native = { ...native, total_shares: 3.24999999, fill_price: 0.5, filled_size_usdc: 1.624999995,
-        attributes: { ...native.attributes, sizeMatched: 3.24999999 } };
-      const regressedNative = await executor.getOrder(order);
-      if (!("found" in regressedNative)) throw new Error("regression control receipt absent");
-      const regressionWrite = await ledger.markOrderId({ client_order_id: client, receipt: regressedNative.found });
-      if (!regressionWrite) throw new Error("regression control durable result absent");
-      expect(regressionWrite.accepted).toBe(false);
-      expect((await read()).attributes).toEqual(monotonicBefore.attributes);
+			const monotonicBefore = await read();
+			native = {
+				...native,
+				total_shares: 3.24999999,
+				fill_price: 0.5,
+				filled_size_usdc: 1.624999995,
+				attributes: { ...native.attributes, sizeMatched: 3.24999999 },
+			};
+			const regressedNative = await executor.getOrder(order);
+			if (!("found" in regressedNative))
+				throw new Error("regression control receipt absent");
+			const regressionWrite = await ledger.markOrderId({
+				client_order_id: client,
+				receipt: regressedNative.found,
+			});
+			if (!regressionWrite)
+				throw new Error("regression control durable result absent");
+			expect(regressionWrite.accepted).toBe(false);
+			expect((await read()).attributes).toEqual(monotonicBefore.attributes);
 
 			const zeroClient = `paper-zero-${randomUUID()}`;
 			const zeroOrder = `paper-zero-order-${randomUUID()}`;
@@ -564,42 +575,457 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				await db.execute(sql`SELECT ${sqlProof.positive} AS positive, ${sqlProof.zero} AS zero
         FROM poly_copy_trade_fills f WHERE f.client_order_id = ${zeroClient}`);
 			expect(zeroSql[0]).toMatchObject({ positive: false, zero: true });
-      for (const protectedNative of [false, true]) {
-        const upgradeClient = `paper-authority-floor-${randomUUID()}`;
-        const upgradeOrder = `paper-authority-order-${randomUUID()}`;
-        const upgradeIntent = { ...intent, size_usdc: 8, limit_price: 2 / 3,
-          client_order_id: upgradeClient, attributes: { ...intent.attributes, token_id: "5555555555555555555555555555555555555555" } };
-        await ledger.insertPending({ billing_account_id: account, created_by_user_id: owner, target_id: target,
-          fill_id: `paper-proof:${upgradeClient}`, observed_at: asOf, intent: upgradeIntent });
-        native = { order_id: upgradeOrder, client_order_id: upgradeClient, status: "filled", filled_size_usdc: protectedNative ? 8 : 6,
-          total_shares: 12, fill_price: protectedNative ? 2 / 3 : 0.5, fees_usdc: 0, submitted_at: asOf.toISOString(),
-          attributes: { market: condition, tokenId: upgradeIntent.attributes.token_id, side: "BUY", sizeMatched: 12 } };
-        if (!protectedNative) {
-          // The prior $8 is explicitly unprotected estimated/cross-mode cost.
-          await db.update(polyCopyTradeFills).set({ shares: "12", price: "0.66666667", feesUsdc: "0",
-            attributes: sql`${polyCopyTradeFills.attributes} || '{"filled_size_usdc":8,"realized_fill_source":"data_api_activity_position"}'::jsonb`,
-          }).where(eq(polyCopyTradeFills.clientOrderId, upgradeClient));
-        }
-        const authoritative = await executor.placeIntent(upgradeIntent);
-        const write = await ledger.markOrderId({ client_order_id: upgradeClient, receipt: authoritative });
-        if (!write) throw new Error("authority floor observation absent");
-        expect(write.accepted).toBe(true);
-        const [durable] = await db.select().from(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, upgradeClient));
-        expect(durable?.attributes?.filled_size_usdc).toBe(protectedNative ? 8 : 6);
-        expect(durable?.attributes?.realized_fill_source).toBe("paper_order_receipt");
-        if (protectedNative) {
-          native = { ...native, filled_size_usdc: 6, fill_price: 0.5 };
-          const regressed = await executor.getOrder(upgradeOrder);
-          if (!("found" in regressed)) throw new Error("protected regression receipt absent");
-          const rejection = await ledger.markOrderId({ client_order_id: upgradeClient, receipt: regressed.found });
-          if (!rejection) throw new Error("protected regression result absent");
-          expect(rejection.accepted).toBe(false);
-          const [retained] = await db.select().from(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, upgradeClient));
-          expect(retained?.attributes).toEqual(durable?.attributes);
-        }
-      }
+			for (const protectedNative of [false, true]) {
+				const upgradeClient = `paper-authority-floor-${randomUUID()}`;
+				const upgradeOrder = `paper-authority-order-${randomUUID()}`;
+				const upgradeIntent = {
+					...intent,
+					size_usdc: 8,
+					limit_price: 2 / 3,
+					client_order_id: upgradeClient,
+					attributes: {
+						...intent.attributes,
+						token_id: "5555555555555555555555555555555555555555",
+					},
+				};
+				await ledger.insertPending({
+					billing_account_id: account,
+					created_by_user_id: owner,
+					target_id: target,
+					fill_id: `paper-proof:${upgradeClient}`,
+					observed_at: asOf,
+					intent: upgradeIntent,
+				});
+				native = {
+					order_id: upgradeOrder,
+					client_order_id: upgradeClient,
+					status: "filled",
+					filled_size_usdc: protectedNative ? 8 : 6,
+					total_shares: 12,
+					fill_price: protectedNative ? 2 / 3 : 0.5,
+					fees_usdc: 0,
+					submitted_at: asOf.toISOString(),
+					attributes: {
+						market: condition,
+						tokenId: upgradeIntent.attributes.token_id,
+						side: "BUY",
+						sizeMatched: 12,
+					},
+				};
+				if (!protectedNative) {
+					// The prior $8 is explicitly unprotected estimated/cross-mode cost.
+					await db
+						.update(polyCopyTradeFills)
+						.set({
+							shares: "12",
+							price: "0.66666667",
+							feesUsdc: "0",
+							attributes: sql`${polyCopyTradeFills.attributes} || '{"filled_size_usdc":8,"realized_fill_source":"data_api_activity_position"}'::jsonb`,
+						})
+						.where(eq(polyCopyTradeFills.clientOrderId, upgradeClient));
+				}
+				const authoritative = await executor.placeIntent(upgradeIntent);
+				const write = await ledger.markOrderId({
+					client_order_id: upgradeClient,
+					receipt: authoritative,
+				});
+				if (!write) throw new Error("authority floor observation absent");
+				expect(write.accepted).toBe(true);
+				const [durable] = await db
+					.select()
+					.from(polyCopyTradeFills)
+					.where(eq(polyCopyTradeFills.clientOrderId, upgradeClient));
+				expect(durable?.attributes?.filled_size_usdc).toBe(
+					protectedNative ? 8 : 6,
+				);
+				expect(durable?.attributes?.realized_fill_source).toBe(
+					"paper_order_receipt",
+				);
+				if (protectedNative) {
+					native = { ...native, filled_size_usdc: 6, fill_price: 0.5 };
+					const regressed = await executor.getOrder(upgradeOrder);
+					if (!("found" in regressed))
+						throw new Error("protected regression receipt absent");
+					const rejection = await ledger.markOrderId({
+						client_order_id: upgradeClient,
+						receipt: regressed.found,
+					});
+					if (!rejection) throw new Error("protected regression result absent");
+					expect(rejection.accepted).toBe(false);
+					const [retained] = await db
+						.select()
+						.from(polyCopyTradeFills)
+						.where(eq(polyCopyTradeFills.clientOrderId, upgradeClient));
+					expect(retained?.attributes).toEqual(durable?.attributes);
+				}
+			}
+
+			// Counterexample fixed by the terminal-transition guard: A reserves five,
+			// executes two, cancels three; B reserves five. A's fee/proof upgrades must
+			// leave remaining/open/acquired at 3/5/2, including after a process crash.
+			for (const executed of [2, 0]) {
+				const wallet =
+					`0x${executed === 2 ? "7" : "8"}${"1".repeat(39)}` as `0x${string}`;
+				const runtimeTarget = targetIdFromWallet(wallet);
+				const runtimeScope = {
+					billingAccountId: account,
+					createdByUserId: owner,
+					targetId: runtimeTarget,
+				};
+				const cohortKey = `paper-once-${randomUUID()}`;
+				const runtimeCondition = `0x${(executed === 2 ? "a" : "b").repeat(64)}`;
+				const runtimeToken = `${executed + 1}${"2".repeat(37)}`;
+				const store = new PositionGapRuntimeStore(db);
+				const common = {
+					scope: runtimeScope,
+					triggerReasons: ["activation"],
+					snapshot: {
+						id: cohortKey,
+						hash: cohortKey,
+						asOf,
+						expiresAt: future,
+						value: { version: 1, complete: true },
+					},
+					plannerVersion: "test",
+					budgetUsdc: 100,
+					eligibleNetNavUsdc: 100,
+					scale: 1,
+					walletCashUsdc: 100,
+					plan: { version: 1, status: "ready" },
+					cohortReductions: [],
+				};
+				const buyInput = (suffix: string) => ({
+					actionKey: `${cohortKey}-${suffix}`,
+					cohortKey,
+					conditionId: runtimeCondition,
+					tokenId: runtimeToken,
+					marketId: `prediction-market:polymarket:${runtimeCondition}`,
+					outcome: "0",
+					shares: 5,
+					notionalUsdc: 2.5,
+					limitPrice: 0.5,
+					clientOrderId: `${cohortKey}-${suffix}`,
+					plannerAction: { side: "BUY" },
+				});
+				const initial = await store.persistPlan({
+					...common,
+					cohortCreations: [
+						{
+							cohortKey,
+							sourceKind: "activation",
+							sourceEventId: null,
+							sourceConfigRevision: "proof-recovery-v1",
+							conditionId: runtimeCondition,
+							tokenId: runtimeToken,
+							marketId: `prediction-market:polymarket:${runtimeCondition}`,
+							outcome: "0",
+							targetDeltaShares: 10,
+							scaleAtCreation: 1,
+							allowedMirrorShares: 10,
+							benchmarkTargetVwap: 0.5,
+							remainingShares: 10,
+							createdAtMs: asOf.getTime(),
+							provenance: { created_at_ms: asOf.getTime() },
+						},
+					],
+					buys: [buyInput("a")],
+					cancellations: [],
+				});
+				const a = initial.buys[0];
+				if (!a) throw new Error("paper once-only action A absent");
+				const runtimeIntent = (clientId: string) => ({
+					...intent,
+					client_order_id: clientId,
+					market_id: `prediction-market:polymarket:${runtimeCondition}`,
+					attributes: {
+						...intent.attributes,
+						condition_id: runtimeCondition,
+						token_id: runtimeToken,
+						target_wallet: wallet,
+						position_gap_version: "3",
+						position_gap_cohort_key: cohortKey,
+					},
+				});
+				const aOrder = `native-${a.clientOrderId}`;
+				await ledger.insertPending({
+					billing_account_id: account,
+					created_by_user_id: owner,
+					target_id: runtimeTarget,
+					fill_id: `position-gap-v3:${a.actionKey}`,
+					observed_at: asOf,
+					intent: runtimeIntent(a.clientOrderId),
+				});
+				await store.markLedgered(a.id);
+				await store.markSubmitting(a.id);
+				native = {
+					order_id: aOrder,
+					client_order_id: a.clientOrderId,
+					status: executed ? "partial" : "open",
+					filled_size_usdc: executed / 2,
+					...(executed ? { total_shares: executed, fill_price: 0.5 } : {}),
+					submitted_at: asOf.toISOString(),
+					attributes: {
+						market: runtimeCondition,
+						tokenId: runtimeToken,
+						side: "BUY",
+						sizeMatched: executed,
+					},
+				};
+				const aReceipt = await executor.placeIntent(
+					runtimeIntent(a.clientOrderId),
+				);
+				const aAccepted = await ledger.markOrderId({
+					client_order_id: a.clientOrderId,
+					receipt: aReceipt,
+				});
+				if (!aAccepted) throw new Error("A accepted observation absent");
+				await store.markPlacementReceipt(a.id, undefined, aAccepted);
+				const cancelPlan = await store.persistPlan({
+					...common,
+					cohortCreations: [],
+					buys: [],
+					cancellations: [
+						{
+							actionKey: `${cohortKey}-cancel`,
+							cohortKey,
+							orderId: aOrder,
+							reason: "runtime_safety",
+							plannerAction: { reason: "runtime_safety" },
+						},
+					],
+				});
+				const cancellation = cancelPlan.cancellations[0];
+				if (!cancellation) throw new Error("paper cancellation absent");
+				native = { ...native, status: "canceled" };
+				const canceled = await executor.getOrder(aOrder);
+				if (!("found" in canceled))
+					throw new Error("paper canceled receipt absent");
+				const canceledAccepted = await ledger.markOrderId({
+					client_order_id: a.clientOrderId,
+					receipt: canceled.found,
+				});
+				if (!canceledAccepted)
+					throw new Error("paper cancellation accepted observation absent");
+				await store.markPlacementReceipt(a.id, undefined, canceledAccepted);
+				await store.markCancelConfirmed(cancellation.id);
+				const next = await store.persistPlan({
+					...common,
+					cohortCreations: [],
+					buys: [buyInput("b")],
+					cancellations: [],
+				});
+				const b = next.buys[0];
+				if (!b) throw new Error("paper once-only action B absent");
+				await ledger.insertPending({
+					billing_account_id: account,
+					created_by_user_id: owner,
+					target_id: runtimeTarget,
+					fill_id: `position-gap-v3:${b.actionKey}`,
+					observed_at: asOf,
+					intent: runtimeIntent(b.clientOrderId),
+				});
+				await store.markLedgered(b.id);
+				await store.markSubmitting(b.id);
+				native = {
+					order_id: `native-${b.clientOrderId}`,
+					client_order_id: b.clientOrderId,
+					status: "open",
+					filled_size_usdc: 0,
+					submitted_at: asOf.toISOString(),
+					attributes: {
+						market: runtimeCondition,
+						tokenId: runtimeToken,
+						side: "BUY",
+						sizeMatched: 0,
+					},
+				};
+				const bReceipt = await executor.placeIntent(
+					runtimeIntent(b.clientOrderId),
+				);
+				const bAccepted = await ledger.markOrderId({
+					client_order_id: b.clientOrderId,
+					receipt: bReceipt,
+				});
+				if (!bAccepted) throw new Error("B acknowledgement absent");
+				await store.markPlacementReceipt(b.id, undefined, bAccepted);
+				const readRuntime = async () => {
+					const [cohort] = await db
+						.select()
+						.from(polyPositionGapCohorts)
+						.where(eq(polyPositionGapCohorts.cohortKey, cohortKey));
+					const actions = await db
+						.select()
+						.from(polyPositionGapActions)
+						.where(
+							inArray(polyPositionGapActions.id, [a.id, b.id, cancellation.id]),
+						);
+					const reservations = await db
+						.select()
+						.from(polyPositionGapReservations)
+						.where(
+							inArray(polyPositionGapReservations.buyActionId, [a.id, b.id]),
+						);
+					return { cohort, actions, reservations };
+				};
+				const baseline = await readRuntime();
+				expect(Number(baseline.cohort?.remainingShares)).toBe(5 - executed);
+				expect(Number(baseline.cohort?.openOrderShares)).toBe(5);
+				expect(Number(baseline.cohort?.acquiredShares)).toBe(executed);
+				const economicState = (
+					state: Awaited<ReturnType<typeof readRuntime>>,
+				) => ({
+					cohort: {
+						remaining: state.cohort?.remainingShares,
+						open: state.cohort?.openOrderShares,
+						acquired: state.cohort?.acquiredShares,
+						status: state.cohort?.status,
+					},
+					reservations: state.reservations,
+					actions: state.actions
+						.map(
+							({
+								id,
+								desiredShares,
+								notionalUsdc,
+								filledShares,
+								filledUsdc,
+								status,
+								submittedAt,
+								completedAt,
+							}) => ({
+								id,
+								desiredShares,
+								notionalUsdc,
+								filledShares,
+								filledUsdc,
+								status,
+								submittedAt,
+								completedAt,
+							}),
+						)
+						.sort((x, y) => x.id.localeCompare(y.id)),
+				});
+				// Durable ledger write succeeds, then the process dies before action publication.
+				native = { ...canceled.found, fees_usdc: 0 };
+				const feeReceipt = await executor.getOrder(aOrder);
+				if (!("found" in feeReceipt))
+					throw new Error("paper fee upgrade absent");
+				const feeAccepted = await ledger.markOrderId({
+					client_order_id: a.clientOrderId,
+					receipt: feeReceipt.found,
+				});
+				if (!feeAccepted)
+					throw new Error("paper fee accepted observation absent");
+				const proof = acceptedPaperProof(feeAccepted.accounting);
+				if (!proof) throw new Error("paper fee proof absent");
+				const restartedStore = new PositionGapRuntimeStore(db);
+				expect(
+					(await restartedStore.loadPlannerState(runtimeScope)).activeBuys.map(
+						(entry) => entry.id,
+					),
+				).toContain(a.id);
+				const unavailable = vi.fn(async () => {
+					throw new Error("controlled unavailable venue");
+				});
+				const actor = startPositionGapActor({
+					implementationRevision: "f".repeat(40),
+					targetRowId: randomUUID(),
+					isAssignmentCurrent: async () => true,
+					scope: runtimeScope,
+					targetWallet: wallet,
+					configRevision: "proof-recovery-v1",
+					configuredBudgetUsdc: 100,
+					positionGapBudgetGroup: {
+						positionGapTargetCount: 1,
+						explicitBudgetTotalUsdc: 100,
+						automaticTargetCount: 0,
+						unbudgetedTargetCount: 0,
+					},
+					source: { fetchSince: unavailable },
+					refresh: new PositionGapTargetRefreshCoordinator({
+						readFresh: () => null,
+						refreshFull: unavailable,
+						refreshDirty: unavailable,
+						invalidate: () => {},
+					}),
+					store: restartedStore,
+					ledger,
+					getExecutionMode: async () => "paper",
+					executionForMode: () => ({
+						placeBuy: unavailable,
+						cancelBuy: unavailable,
+						getBuy: unavailable,
+						getMarketConstraints: unavailable,
+						listOpenOrders: unavailable,
+					}),
+					fillEvidence: {
+						getWalletAddress: unavailable,
+						listActivity: unavailable,
+						listPositions: unavailable,
+					},
+					getWalletCashUsdc: unavailable,
+					getTargetCashUsdc: unavailable,
+					getAuthoritativeHoldings: unavailable,
+					publishTargetSnapshot: unavailable,
+					logger: noopLogger as never,
+				});
+				try {
+					await vi.waitFor(async () => {
+						const state = await readRuntime();
+						expect(
+							state.actions.find((entry) => entry.id === a.id)?.plannerAction,
+						).toMatchObject({
+							accepted_paper_proof_key: proof.proof_key,
+							accepted_paper_fee_known: true,
+							accepted_paper_fees_usdc: 0,
+						});
+						expect(unavailable).toHaveBeenCalled();
+					});
+					expect(economicState(await readRuntime())).toEqual(
+						economicState(baseline),
+					);
+					await restartedStore.markPlacementReceipt(
+						a.id,
+						undefined,
+						feeAccepted,
+					);
+					expect(economicState(await readRuntime())).toEqual(
+						economicState(baseline),
+					);
+					// Legacy terminal actions may have published the same economics before
+					// the envelope existed. Missing keys are never a new cancellation.
+					await db
+						.update(polyPositionGapActions)
+						.set({
+							plannerAction: sql`${polyPositionGapActions.plannerAction} - 'accepted_paper_proof_key'`,
+						})
+						.where(eq(polyPositionGapActions.id, a.id));
+					await restartedStore.markPlacementReceipt(
+						a.id,
+						undefined,
+						feeAccepted,
+					);
+					expect(economicState(await readRuntime())).toEqual(
+						economicState(baseline),
+					);
+				} finally {
+					await actor.stop().catch(() => {});
+				}
+			}
 		} finally {
 			transport.mockRestore();
+			await db
+				.delete(polyPositionGapReservations)
+				.where(eq(polyPositionGapReservations.billingAccountId, account));
+			await db
+				.delete(polyPositionGapActions)
+				.where(eq(polyPositionGapActions.billingAccountId, account));
+			await db
+				.delete(polyPositionGapCohorts)
+				.where(eq(polyPositionGapCohorts.billingAccountId, account));
+			await db
+				.delete(polyPositionGapRuns)
+				.where(eq(polyPositionGapRuns.billingAccountId, account));
 			await db
 				.delete(polyCopyTradeFills)
 				.where(eq(polyCopyTradeFills.billingAccountId, account));
