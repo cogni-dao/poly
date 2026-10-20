@@ -465,6 +465,15 @@ export async function readEconomicPositionProjection(params: {
            overwritten authority cannot reconstruct an earlier capture. */
         (CASE WHEN ${mode} = 'paper' THEN (SELECT inventory_complete FROM paper_coverage)
           AND b.current_raw->>'source' = 'paper-ledger' AND b.current_shares = b.net_shares
+          AND b.current_last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND observer.latest_generation_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND NOT EXISTS (
+            SELECT 1 FROM poly_trader_current_positions future
+            JOIN wallet_identity w ON w.id = future.trader_wallet_id
+            WHERE lower(future.condition_id) = b.condition_id
+              AND future.token_id = b.token_id
+              AND future.last_observed_at > ${params.capturedAt.toISOString()}::timestamptz
+          )
           ELSE b.current_shares = 0 OR COALESCE((
           b.current_last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
           AND observer.latest_generation_at <= ${params.capturedAt.toISOString()}::timestamptz
@@ -525,6 +534,7 @@ export async function readEconomicPositionProjection(params: {
         ) AS inventory_fresh,
         (CASE WHEN ${mode} = 'paper' THEN
           (SELECT finance_complete FROM paper_coverage)
+          AND b.live_positive_current_currency
           AND b.current_raw->>'source' = 'paper-ledger'
           AND observer.status = 'ok' AND observer.complete
           AND observer.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz

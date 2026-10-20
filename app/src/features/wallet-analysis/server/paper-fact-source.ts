@@ -475,8 +475,10 @@ export function paperAccountingCtes(input: {
       WHERE p.trader_wallet_id IN (${input.walletIds})
         AND p.source = 'paper-ledger' AND ${input.enabled !== false}
     ), paper_inventory_facts AS MATERIALIZED (
+      /* Authentication gates availability at proof time; it cannot move an
+         immutable trade's entry/exit time when only its fee proof improves. */
       (SELECT DISTINCT ON (native_id) lower(condition_id) AS condition_id, token_id, side, price, shares,
-        size_usdc, greatest(observed_at, proof_observed_at) AS observed_at
+        size_usdc, observed_at
       FROM paper_projected WHERE authenticated
       ORDER BY native_id, observed_at DESC, id)
       UNION ALL

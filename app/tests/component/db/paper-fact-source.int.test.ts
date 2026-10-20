@@ -1021,6 +1021,91 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       return db.select().from(polyTraderFills).where(eq(polyTraderFills.traderWalletId, wallet.traderWalletId));
     }
 
+    it.each(["generation", "current", "current sibling", "generation sibling"] as const)(
+      "withholds earlier paper quantity and basis after a future %s publication",
+      async (futureKind) => {
+        const { owner, db, wallet } = await setup(`Future paper ${futureKind}`);
+        await seedLedgerFill(owner, randomUUID(), { conditionId: condition, tokenId: token,
+          side: "BUY", shares: "5", price: "0.4", observedAt: t0 });
+        expect((await project(db, wallet, later(1))).navPublished).toBe(true);
+        const capturedAt = later(2);
+        const before = await canonical(db, owner, capturedAt);
+        expect(before.positionFacts[0]).toMatchObject({ heldShares: 5, remainingBasisUsdc: 2,
+          currentValueUsdc: 2.5, lifetimePnlUsdc: 0.5, quantitySource: "paper_ledger" });
+
+        if (futureKind === "generation") {
+          // The writer legitimately reuses the prior real mark without changing
+          // its clock. A later cursor still cannot certify an earlier capture.
+          await project(db, wallet, later(3));
+        } else if (futureKind === "current") {
+          await db.update(polyTraderCurrentPositions).set({ lastObservedAt: later(3) })
+            .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.traderWalletId));
+        } else {
+          const [sibling] = await db.insert(polyTraderWallets).values({
+            walletAddress: `0x${wallet.account.address.slice(2).toUpperCase()}`,
+            kind: PAPER_WALLET_KIND, activeForResearch: true,
+          }).returning({ id: polyTraderWallets.id });
+          if (!sibling) throw new Error("future physical paper sibling missing");
+          await db.insert(polyTraderIngestionCursors).values({ traderWalletId: sibling.id,
+            source: PAPER_POSITION_CURSOR_SOURCE, status: "ok",
+            lastSuccessAt: futureKind === "generation sibling" ? later(3) : later(1) });
+          if (futureKind === "current sibling") {
+            const [prior] = await current(db, wallet);
+            if (!prior) throw new Error("prior paper observation missing");
+            await db.insert(polyTraderCurrentPositions).values({
+              traderWalletId: sibling.id, conditionId: condition, tokenId: token,
+              active: true, shares: prior.shares, costBasisUsdc: prior.costBasisUsdc,
+              currentValueUsdc: prior.currentValueUsdc, avgPrice: prior.avgPrice,
+              contentHash: "future-paper-sibling", firstObservedAt: later(1), lastObservedAt: later(3), raw: prior.raw,
+            });
+          }
+        }
+
+        const withheld = await canonical(db, owner, capturedAt);
+        expect(withheld.positionFacts[0]).toMatchObject({ heldShares: null, remainingBasisUsdc: null,
+          currentValueUsdc: null, lifetimePnlUsdc: null, quantitySource: "unknown" });
+        expect(withheld.positionsMtm).toBeNull();
+        expect(withheld.historyIncompleteCount).toBeGreaterThan(0);
+        if (futureKind === "generation") {
+          // Retained real marks remain usable once that publication is in scope.
+          expect((await canonical(db, owner, later(3))).positionFacts[0]).toMatchObject({
+            heldShares: 5, remainingBasisUsdc: 2, currentValueUsdc: 2.5,
+            lifetimePnlUsdc: 0.5, quantitySource: "paper_ledger",
+          });
+        }
+      },
+    );
+
+    it("keeps an immutable exit outside recent history when only its fee proof improves", async () => {
+      const { owner, db, wallet } = await setup("Paper exit fee chronology");
+      await seedLedgerFill(owner, randomUUID(), { conditionId: condition, tokenId: token,
+        side: "BUY", shares: "5", price: "0.4", observedAt: t0 });
+      const sell = await seedLedgerFill(owner, randomUUID(), { conditionId: condition, tokenId: token,
+        side: "SELL", shares: "5", price: "0.6", feesUsdc: null, observedAt: later(1) });
+      if (!sell) throw new Error("native paper exit missing");
+      expect((await project(db, wallet, later(2))).navPublished).toBe(false);
+      const immutable = await fills(db, wallet);
+      expect(immutable).toHaveLength(2);
+      const before = await canonical(db, owner, later(2));
+      expect(before.closedPositions[0]?.closedAt).toBe(later(1).toISOString());
+      expect(before.positionFacts[0]?.lifetimePnlUsdc).toBeNull();
+
+      const upgradeAt = later(10 * 24 * 60 * 60);
+      await sell.accept({ fees_usdc: 0 }, upgradeAt);
+      const capturedAt = new Date(upgradeAt.getTime() + 1000);
+      expect((await project(db, wallet, capturedAt)).navPublished).toBe(true);
+      expect(await fills(db, wallet)).toEqual(immutable);
+      const after = await canonical(db, owner, capturedAt);
+      expect(after.closedPositions[0]?.closedAt).toBe(later(1).toISOString());
+      expect(after.positionFacts[0]).toMatchObject({ heldShares: 0, lifetimePnlUsdc: 1, economicsCoverage: "complete" });
+      const recent = await readEconomicPositionProjection({ db, billingAccountId: owner.billingAccountId,
+        walletAddress: wallet.account.address, connectionKind: "paper", capturedAt, interval: "1W" });
+      expect(recent.closedCount).toBe(0);
+      expect(recent.closedPositions).toEqual([]);
+      // A later proof may authenticate later reads, never an earlier capture.
+      expect((await canonical(db, owner, later(3))).historyIncompleteCount).toBeGreaterThan(0);
+    });
+
     it("updates cumulative partial inventory without events, finalizes once, and upgrades unknown fees to known zero", async () => {
       const { owner, db, wallet } = await setup("Native cumulative paper");
       const native = await seedLedgerFill(owner, randomUUID(), { conditionId: condition, tokenId: token,
