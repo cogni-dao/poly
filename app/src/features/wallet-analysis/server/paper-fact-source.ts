@@ -656,7 +656,7 @@ type PaperPositionRollup = {
 };
 
 /**
- * Aggregate this wallet's projected paper fills into one row per position.
+ * Read account coverage and current paper inventory in one statement snapshot.
  *
  * `GROUP BY (condition_id, token_id)` — the result is bounded by the account's
  * unique position count (tens), never by its fill count, so this is the
@@ -669,12 +669,12 @@ type PaperPositionRollup = {
  * Polymarket's Data-API reports for a live wallet (`avgPrice` / `initialValue`),
  * so a paper position and a live position mean the same thing to every reader.
  */
-async function readPaperPositionRollups(
+async function readPaperGeneration(
   db: Db,
   traderWalletId: string,
   billingAccountId: string,
   capturedAt: Date
-): Promise<readonly PaperPositionRollup[]> {
+): Promise<{ coverage: PaperCoverage; rollups: readonly PaperPositionRollup[] }> {
   const result = await db.execute(sql`
     WITH ${paperAccountingCtes({ billingAccountId, walletIds: sql`${traderWalletId}::uuid`, capturedAt: sql`${capturedAt.toISOString()}::timestamptz` })}, rollups AS (
       SELECT
@@ -689,22 +689,33 @@ async function readPaperPositionRollups(
       GROUP BY condition_id, token_id
     )
     SELECT
+      paper_coverage.fees_usdc,
+      paper_coverage.unknown_fees,
+      paper_coverage.inventory_complete,
+      paper_coverage.finance_complete,
+      paper_coverage.latest_proof_at,
       rollups.*,
       current_position.active AS cached_active,
       current_position.shares AS cached_shares,
       current_position.current_value_usdc AS cached_current_value_usdc,
       current_position.last_observed_at AS cached_last_observed_at,
       current_position.raw AS cached_raw
-    FROM rollups
+    FROM paper_coverage
+    LEFT JOIN rollups ON paper_coverage.inventory_complete
     LEFT JOIN poly_trader_current_positions current_position
       ON current_position.trader_wallet_id = ${traderWalletId}::uuid
      AND current_position.condition_id = rollups.condition_id
      AND current_position.token_id = rollups.token_id
     ORDER BY rollups.condition_id, rollups.token_id
   `);
-  return allRows<{
-    condition_id: string;
-    token_id: string;
+  const rows = allRows<{
+    fees_usdc: string;
+    unknown_fees: string;
+    inventory_complete: boolean;
+    finance_complete: boolean;
+    latest_proof_at: string | Date | null;
+    condition_id: string | null;
+    token_id: string | null;
     net_shares: string;
     buy_shares: string;
     buy_usdc: string;
@@ -715,26 +726,39 @@ async function readPaperPositionRollups(
     cached_current_value_usdc: string | null;
     cached_last_observed_at: string | Date | null;
     cached_raw: Record<string, unknown> | null;
-  }>(result).map((row) => ({
-    conditionId: row.condition_id,
-    tokenId: row.token_id,
-    netShares: Number(row.net_shares),
-    buyShares: Number(row.buy_shares),
-    buyUsdc: Number(row.buy_usdc),
-    sellUsdc: Number(row.sell_usdc),
-    lastFillAt: new Date(row.last_fill_at),
-    cachedActive: row.cached_active,
-    cachedShares: row.cached_shares === null ? null : Number(row.cached_shares),
-    cachedCurrentValueUsdc:
-      row.cached_current_value_usdc === null
-        ? null
-        : Number(row.cached_current_value_usdc),
-    cachedLastObservedAt:
-      row.cached_last_observed_at === null
-        ? null
-        : new Date(row.cached_last_observed_at),
-    cachedRaw: row.cached_raw,
-  }));
+  }>(result);
+  const first = rows[0];
+  const coverage: PaperCoverage = {
+    feesUsdc: Number(first?.fees_usdc ?? 0),
+    rowsMissingFees: Number(first?.unknown_fees ?? 0),
+    inventoryComplete: first?.inventory_complete === true,
+    financeComplete: first?.finance_complete === true,
+    latestProofAt: first?.latest_proof_at ?? null,
+  };
+  const rollups = rows.flatMap((row) => {
+    if (row.condition_id === null || row.token_id === null) return [];
+    return [{
+      conditionId: row.condition_id,
+      tokenId: row.token_id,
+      netShares: Number(row.net_shares),
+      buyShares: Number(row.buy_shares),
+      buyUsdc: Number(row.buy_usdc),
+      sellUsdc: Number(row.sell_usdc),
+      lastFillAt: new Date(row.last_fill_at),
+      cachedActive: row.cached_active,
+      cachedShares: row.cached_shares === null ? null : Number(row.cached_shares),
+      cachedCurrentValueUsdc:
+        row.cached_current_value_usdc === null
+          ? null
+          : Number(row.cached_current_value_usdc),
+      cachedLastObservedAt:
+        row.cached_last_observed_at === null
+          ? null
+          : new Date(row.cached_last_observed_at),
+      cachedRaw: row.cached_raw,
+    }];
+  });
+  return { coverage, rollups };
 }
 
 function paperPositionKey(position: {
@@ -797,38 +821,14 @@ function rotatedMarkWindow(
   return ordered.slice(0, limit);
 }
 
-/**
- * Total simulated fees the tenant's projected paper rows realized.
- *
- * Separate from {@link readPaperPositionRollups} because `poly_trader_fills`
- * has no fees column and must not get one — `size_usdc` is notional, and
- * folding fees into it would corrupt a fact every live reader shares. One
- * extra single-row aggregate over the same tenant-filtered, terminal,
- * realized ledger slice.
- *
- * Also counts rows whose `fees_usdc` is NULL. A NULL fee is "the sidecar did
- * not report one", which is NOT a zero — the count is surfaced on the NAV row's
- * `errors` so the total is never silently understated.
- */
-async function readPaperCoverage(
-  db: Db,
-  billingAccountId: string,
-  traderWalletId: string,
-  capturedAt: Date
-): Promise<{ feesUsdc: number; rowsMissingFees: number; inventoryComplete: boolean; financeComplete: boolean; latestProofAt: string | Date | null }> {
-  const result = await db.execute(sql`
-    WITH ${paperAccountingCtes({ billingAccountId, walletIds: sql`${traderWalletId}::uuid`, capturedAt: sql`${capturedAt.toISOString()}::timestamptz` })}
-    SELECT * FROM paper_coverage
-  `);
-  const row = firstRow<{ fees_usdc: string; unknown_fees: string; inventory_complete: boolean; finance_complete: boolean; latest_proof_at: string | Date | null }>(result);
-  return {
-    feesUsdc: Number(row?.fees_usdc ?? 0),
-    rowsMissingFees: Number(row?.unknown_fees ?? 0),
-    inventoryComplete: row?.inventory_complete === true,
-    financeComplete: row?.finance_complete === true,
-    latestProofAt: row?.latest_proof_at ?? null,
-  };
-}
+/** Scalar account coverage carried by the same snapshot as inventory. */
+type PaperCoverage = {
+  feesUsdc: number;
+  rowsMissingFees: number;
+  inventoryComplete: boolean;
+  financeComplete: boolean;
+  latestProofAt: string | Date | null;
+};
 
 /**
  * Content hash for snapshot dedupe, mirroring {@link hashPosition}'s contract
@@ -902,11 +902,13 @@ export async function projectPaperPositionsAndNav(input: {
 }> {
   const now = input.now ?? new Date();
   const { traderWalletId, account } = input.wallet;
-  const coverage = await readPaperCoverage(input.db, account.billingAccountId, traderWalletId, now);
-  // An unknowable leg cannot turn a retained book into a terminal-only subset.
-  const rollups = coverage.inventoryComplete
-    ? await readPaperPositionRollups(input.db, traderWalletId, account.billingAccountId, now)
-    : [];
+  // READ COMMITTED transactions take a new snapshot for each statement. Read
+  // coverage and grouped inventory together so a late receipt cannot combine
+  // an older complete coverage verdict with newer, incomplete inventory.
+  // The LEFT JOIN keeps scalar coverage even for an empty or withheld book.
+  const { coverage, rollups } = await readPaperGeneration(
+    input.db, traderWalletId, account.billingAccountId, now
+  );
 
   const cursorRows = await input.db
     .select({ lastSeenNativeId: polyTraderIngestionCursors.lastSeenNativeId })

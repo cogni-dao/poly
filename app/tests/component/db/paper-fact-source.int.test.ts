@@ -51,14 +51,12 @@ import {
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
+import { seedNativePaperConnection as seedPaperConnection, seedNativePaperFill, type NativePaperFill } from "./native-paper-receipt.fixture";
 import { type SQL, and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
-import { createExecutionVenueResolver, createPaperVenue, derivePaperAccountAddress } from "@/features/paper-accounts";
-import { noopMetrics, type OrderReceipt } from "@cogni/poly-market-provider";
-import { createPolyTradeExecutorFactory } from "@/bootstrap/capabilities/poly-trade-executor";
-import { createOrderLedger } from "@/features/trading/order-ledger";
+import { derivePaperAccountAddress } from "@/features/paper-accounts";
 import { readEconomicPositionProjection } from "@/features/wallet-analysis/server/economic-position-read-model";
 import {
   type EnrolledPaperWallet,
@@ -82,7 +80,6 @@ import {
   polyCopyTradeFills,
   polyWalletBalanceSnapshots,
   polyWalletConnections,
-  polyWalletGrants,
   users,
 } from "@/shared/db/schema";
 
@@ -141,125 +138,22 @@ function address(): `0x${string}` {
  * latter is what `readWalletBalanceFact` joins on), custody columns NULL,
  * declared seed.
  */
-async function seedPaperConnection(
-  owner: Tenant,
-  seedUsdc: string
-): Promise<`0x${string}`> {
-  const paperAddress = derivePaperAccountAddress(owner.billingAccountId);
-  await getSeedDb()
-    .insert(polyWalletConnections)
-    .values({
-      billingAccountId: owner.billingAccountId,
-      createdByUserId: owner.userId,
-      createdAt: new Date("2026-10-01T00:00:00.000Z"),
-      kind: "paper",
-      address: paperAddress,
-      funderAddress: paperAddress,
-      paperSeedUsdc: seedUsdc,
-      custodialConsentAcceptedAt: new Date("2026-10-01T00:00:00.000Z"),
-      custodialConsentActorKind: "user",
-      custodialConsentActorId: owner.userId,
-      tradingApprovalsReadyAt: new Date("2026-10-01T00:00:00.000Z"),
-    });
-  const [connection] = await getSeedDb().select({ id: polyWalletConnections.id }).from(polyWalletConnections)
-    .where(and(eq(polyWalletConnections.billingAccountId, owner.billingAccountId), eq(polyWalletConnections.kind, "paper")));
-  if (!connection) throw new Error("paper connection missing");
-  await getSeedDb().insert(polyWalletGrants).values({
-    billingAccountId: owner.billingAccountId, walletConnectionId: connection.id,
-    createdByUserId: owner.userId, scopes: ["poly:trade:buy", "poly:trade:sell"],
-    perOrderUsdcCap: "100000", dailyUsdcCap: "1000000", hourlyFillsCap: 1000,
-    createdAt: new Date("2026-10-01T00:00:00.000Z"),
-  });
-  return paperAddress;
-}
-
-type LedgerFill = {
-  tokenId: string;
-  conditionId: string;
-  side: "BUY" | "SELL";
-  /** Realized VWAP. */
-  price: string;
-  /** Realized shares. */
-  shares: string;
-  feesUsdc?: string | null;
-  status?: string;
-  mode?: string;
-  observedAt?: Date;
-};
-
-/**
- * Seed one `poly_copy_trade_fills` row. `side` and `token_id` go into
- * `attributes` because the ledger has no such columns — `market_id` is the
- * conditionId and everything else lives in the JSONB, which is precisely the
- * shape the projection has to read.
- */
-async function seedLedgerFill(
-  owner: Tenant,
-  targetId: string,
-  fill: LedgerFill
-) {
-  const client = `coid-${randomUUID()}`;
-  const order = `order-${randomUUID()}`;
-  const observedAt = fill.observedAt ?? new Date("2026-10-05T12:00:00.000Z");
-  const db = getSeedDb();
-  // Explicit negative fixtures remain unbound; no JSON proof is manufactured.
+async function seedLedgerFill(owner: Tenant, targetId: string, fill: NativePaperFill) {
+  // Explicit negative fixtures stay unbound; never manufacture receipt JSON.
   if (fill.mode === "live" || fill.feesUsdc === "NaN") {
-    await db.insert(polyCopyTradeFills).values({
+    await getSeedDb().insert(polyCopyTradeFills).values({
       billingAccountId: owner.billingAccountId, createdByUserId: owner.userId,
       targetId, fillId: `paper:${randomUUID()}`, marketId: fill.conditionId,
-      observedAt, clientOrderId: client, orderId: order, status: fill.status ?? "filled",
-      mode: fill.mode ?? "paper", price: fill.price, shares: fill.shares,
-      feesUsdc: fill.feesUsdc ?? "0", attributes: {
-        side: fill.side, token_id: fill.tokenId, condition_id: fill.conditionId,
-        size_usdc: Number(fill.price) * Number(fill.shares), limit_price: Number(fill.price),
-      },
+      observedAt: fill.observedAt ?? new Date("2026-10-05T12:00:00.000Z"),
+      clientOrderId: `coid-${randomUUID()}`, orderId: `order-${randomUUID()}`,
+      status: fill.status ?? "filled", mode: fill.mode ?? "paper",
+      price: fill.price, shares: fill.shares, feesUsdc: fill.feesUsdc ?? "0",
+      attributes: { side: fill.side, token_id: fill.tokenId, condition_id: fill.conditionId,
+        size_usdc: Number(fill.price) * Number(fill.shares), limit_price: Number(fill.price) },
     });
     return null;
   }
-  const intent = {
-    provider: "polymarket" as const, market_id: `prediction-market:polymarket:${fill.conditionId}`,
-    outcome: "0", side: fill.side, size_usdc: Number(fill.price) * Number(fill.shares),
-    limit_price: Number(fill.price), client_order_id: client,
-    attributes: { token_id: fill.tokenId, condition_id: fill.conditionId, placement: "limit" },
-  };
-  const ledger = createOrderLedger({ db, logger: logger as never, resolveExecutionMode: createExecutionVenueResolver({ db }) });
-  await ledger.insertPending({ billing_account_id: owner.billingAccountId, created_by_user_id: owner.userId,
-    target_id: targetId, fill_id: `paper:${randomUUID()}`, observed_at: observedAt, intent });
-  const accept = async (next: Partial<OrderReceipt> = {}, at = observedAt, first = false) => {
-    const native: OrderReceipt = {
-      order_id: order, client_order_id: client,
-      status: (fill.status ?? "filled") as OrderReceipt["status"],
-      filled_size_usdc: Number(fill.price) * Number(fill.shares), fill_price: Number(fill.price),
-      total_shares: Number(fill.shares), fees_usdc: fill.feesUsdc === null ? undefined : Number(fill.feesUsdc ?? "0"), submitted_at: observedAt.toISOString(),
-      attributes: { market: fill.conditionId, tokenId: fill.tokenId, side: fill.side, sizeMatched: Number(fill.shares) },
-      ...next,
-    };
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(at);
-    const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const url = new URL(String(input));
-      expect(url.origin).toBe("http://paper.projection.test");
-      if (first) expect(JSON.parse(String(init?.body)).client_order_id).toBe(client);
-      else expect(url.pathname).toBe(`/orders/${order}`);
-      return Response.json(native);
-    });
-    try {
-      const factory = createPolyTradeExecutorFactory({ logger: logger as never, metrics: noopMetrics,
-        paperSidecarUrl: "http://paper.projection.test", paperVenue: createPaperVenue({ db }),
-        resolveExecutionVenue: createExecutionVenueResolver({ db }) });
-      const executor = await factory.getPolyTradeExecutorFor(owner.billingAccountId);
-      const fetched = first ? { found: await executor.placeIntent(intent) } : await executor.getOrder(order);
-      if (!("found" in fetched)) throw new Error("native paper order unavailable");
-      const written = await ledger.markOrderId({ client_order_id: client, receipt: fetched.found });
-      expect(written?.accepted).toBe(true);
-      return written;
-    } finally {
-      transport.mockRestore();
-      vi.useRealTimers();
-    }
-  };
-  await accept({}, observedAt, true);
-  return { client, order, accept };
+  return seedNativePaperFill(owner, targetId, fill);
 }
 
 /** A mid-price reader over a fixed table; absent token => `null` (unknown). */
@@ -1104,6 +998,87 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       expect(recent.closedPositions).toEqual([]);
       // A later proof may authenticate later reads, never an earlier capture.
       expect((await canonical(db, owner, later(3))).historyIncompleteCount).toBeGreaterThan(0);
+    });
+
+    it("reads coverage and inventory from one READ COMMITTED statement snapshot", async () => {
+      const { owner, db, wallet } = await setup("Late paper receipt statement barrier");
+      await seedLedgerFill(owner, randomUUID(), { conditionId: condition, tokenId: token,
+        side: "BUY", shares: "5", price: "0.4", observedAt: t0 });
+      await project(db, wallet, later(1));
+      let crossed = false;
+      const generationQueries: SQL[] = [];
+      await withTenantScope(getAppDb(), userActor(toUserId(owner.userId)), async (tx) => {
+        const executeProxy = new Proxy(tx, {
+          get(target, property) {
+            const value = Reflect.get(target, property);
+            if (property === "execute") return async (query: SQL) => {
+              const text = new PgDialect().sqlToQuery(query).sql;
+              const result = await target.execute(query);
+              if (text.includes("paper_coverage AS MATERIALIZED") &&
+                (text.includes("FROM paper_coverage") || text.includes("FROM rollups"))) {
+                generationQueries.push(query);
+                if (!crossed) {
+                  crossed = true;
+                  // Another connection commits a real accepted native receipt
+                  // after this SELECT, with its observation inside the cutoff.
+                  // READ COMMITTED's next statement can see it; this generation
+                  // must still use the coverage AND inventory it just read.
+                  await seedLedgerFill(owner, randomUUID(), { conditionId: condition, tokenId: token,
+                    side: "BUY", shares: "2", price: "0.4", status: "partial",
+                    feesUsdc: null, observedAt: later(2) });
+                }
+              }
+              return result;
+            };
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+        const generation = await project(executeProxy as unknown as typeof db, wallet, later(3));
+        expect(generation.navPublished).toBe(true);
+        expect(generationQueries).toHaveLength(1);
+        // Execute the captured production SELECT unchanged, then explain the
+        // same statement under the same app-role/tenant transaction. This is
+        // small-fixture structural evidence, never representative p95 proof.
+        const query = generationQueries[0];
+        if (!query) throw new Error("paper generation SELECT not captured");
+        const rows = await tx.execute(query);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ inventory_complete: true, finance_complete: false });
+        expect(new Set(rows.map((row) => `${row.condition_id}|${row.token_id}`)).size).toBe(rows.length);
+        const plan = await tx.execute(sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`);
+        const document = plan[0]?.["QUERY PLAN"] as Array<{
+          "Planning Time": number; "Execution Time": number; Plan: Record<string, unknown>;
+        }>;
+        const explained = document[0];
+        if (!explained) throw new Error("paper generation EXPLAIN document missing");
+        expect(explained["Planning Time"]).toBeGreaterThanOrEqual(0);
+        expect(explained["Execution Time"]).toBeGreaterThanOrEqual(0);
+        const subplans: Array<{ name: unknown; loops: unknown; rows: unknown }> = [];
+        function collect(node: Record<string, unknown>) {
+          if (node["Subplan Name"] !== undefined) subplans.push({
+            name: node["Subplan Name"], loops: node["Actual Loops"], rows: node["Actual Rows"],
+          });
+          for (const child of (node.Plans ?? []) as Record<string, unknown>[]) collect(child);
+        }
+        collect(explained.Plan);
+        console.info("paper generation native fixture plan", {
+          planningMs: explained["Planning Time"], executionMs: explained["Execution Time"],
+          coverageRows: 1, uniquePositionKeys: rows.length, subplans,
+        });
+      });
+      expect(crossed).toBe(true);
+      expect(Number((await current(db, wallet))[0]?.shares)).toBe(5);
+      const [balance] = await db.select().from(polyWalletBalanceSnapshots)
+        .where(eq(polyWalletBalanceSnapshots.billingAccountId, owner.billingAccountId));
+      expect(Number(balance?.usdcE)).toBe(100.5);
+      // The next generation sees the partial, preserves observed inventory,
+      // withholds complete finance, and removes the prior numeric NAV.
+      expect((await project(db, wallet, later(4))).navPublished).toBe(false);
+      expect(Number((await current(db, wallet))[0]?.shares)).toBe(7);
+      expect((await readBalanceAsTenant(owner)).kind).toBe("missing");
+      expect((await canonical(db, owner, later(4))).positionFacts[0]).toMatchObject({
+        heldShares: 7, lifetimePnlUsdc: null, economicsCoverage: "partial",
+      });
     });
 
     it("updates cumulative partial inventory without events, finalizes once, and upgrades unknown fees to known zero", async () => {
