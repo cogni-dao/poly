@@ -3622,7 +3622,7 @@ describe("action account membership RLS", () => {
     if (!sample) throw new Error("owner action fixture missing");
     await expect(asPrincipal(principal.canonical, tx => tx.insert(polyPositionGapActions)
       .values({ ...sample, id: randomUUID(), actionKey: randomUUID() }).returning({ id: polyPositionGapActions.id })))
-      .rejects.toThrow(/row-level security/i);
+      .rejects.toMatchObject({ cause: { code: "42501" } });
     expect(await asPrincipal(principal.ownerA, read)).toEqual(actionIds[0]);
   });
 
@@ -3638,7 +3638,7 @@ describe("action account membership RLS", () => {
     });
     await expect(asPrincipal(principal.ownerA, tx => tx.update(polyPositionGapActions).set({ billingAccountId: accounts[1] })
       .where(eq(polyPositionGapActions.id, actionIds[0][0])).returning({ id: polyPositionGapActions.id })))
-      .rejects.toThrow(/row-level security/i);
+      .rejects.toMatchObject({ cause: { code: "42501" } });
     const [sample] = await asPrincipal(principal.ownerA, tx => tx.select().from(polyPositionGapActions).where(eq(polyPositionGapActions.id, actionIds[0][0])));
     if (!sample) throw new Error("owner action fixture missing");
     const temporary = randomUUID();
@@ -3650,7 +3650,7 @@ describe("action account membership RLS", () => {
     });
     await expect(asPrincipal(principal.ownerA, tx => tx.insert(polyPositionGapActions)
       .values({ ...sample, id: randomUUID(), actionKey: randomUUID(), billingAccountId: accounts[1] })
-      .returning({ id: polyPositionGapActions.id }))).rejects.toThrow(/row-level security/i);
+      .returning({ id: polyPositionGapActions.id }))).rejects.toMatchObject({ cause: { code: "42501" } });
     for (const index of [0, 1, 2] as const) {
       expect(await asPrincipal(owners[index], read)).toEqual(actionIds[index]);
     }
