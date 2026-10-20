@@ -16,9 +16,11 @@ import {
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
+import { seedNativePaperConnection, seedNativePaperFill } from "./native-paper-receipt.fixture";
+import { derivePaperAccountAddress } from "@/features/paper-accounts";
 import { type SQL, and, eq, inArray, sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { PAPER_POSITION_CURSOR_SOURCE } from "@/features/wallet-analysis/server/paper-fact-source";
+import { PAPER_POSITION_CURSOR_SOURCE, observePaperWallet } from "@/features/wallet-analysis/server/paper-fact-source";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   billingAccounts,
@@ -74,20 +76,24 @@ async function seedConnection(input: {
     ownerUserId: input.userId,
     balanceCredits: 0n,
   });
-  await db.insert(polyWalletConnections).values({
-    billingAccountId: input.billingAccountId,
-    createdByUserId: input.userId,
-    kind: input.mode === "paper" ? "paper" : "privy_live",
-    paperSeedUsdc: input.mode === "paper" ? "100" : null,
-    privyWalletId: `privy-${input.billingAccountId}`,
-    address: input.address,
-    funderAddress: input.address,
-    clobApiKeyCiphertext: Buffer.from("component-test"),
-    encryptionKeyId: "component-test",
-    custodialConsentAcceptedAt: new Date(),
-    custodialConsentActorKind: "user",
-    custodialConsentActorId: input.userId,
-  });
+  if (input.mode === "paper") {
+    await seedNativePaperConnection(input, "100");
+  } else {
+    await db.insert(polyWalletConnections).values({
+      billingAccountId: input.billingAccountId,
+      createdByUserId: input.userId,
+      kind: "privy_live",
+      paperSeedUsdc: null,
+      privyWalletId: `privy-${input.billingAccountId}`,
+      address: input.address,
+      funderAddress: input.address,
+      clobApiKeyCiphertext: Buffer.from("component-test"),
+      encryptionKeyId: "component-test",
+      custodialConsentAcceptedAt: new Date(),
+      custodialConsentActorKind: "user",
+      custodialConsentActorId: input.userId,
+    });
+  }
   await db.insert(polyWalletBalanceSnapshots).values({
     billingAccountId: input.billingAccountId,
     address: input.address,
@@ -884,7 +890,7 @@ describe("wallet dashboard coherent snapshot", () => {
   ] as const)("retains nullable $mode economics and third-leg identity, fallback=$fallback", async ({ mode, fallback }) => {
     const suffix = randomUUID();
     const userId = `integration-${suffix}`, account = `integration-${suffix}`;
-    const address = `0x${suffix.replaceAll("-", "").padStart(40, "a")}`;
+    const address = mode === "paper" ? derivePaperAccountAddress(account) : `0x${suffix.replaceAll("-", "").padStart(40, "a")}`;
     const conditionId = `0x${suffix.replaceAll("-", "").padStart(64, "c")}`;
     const wallet = await seedConnection({ userId, billingAccountId: account, address, mode });
     const [target] = await db.insert(polyTraderWallets).values({ walletAddress: `0x${suffix.replaceAll("-", "").padStart(40, "1")}`, kind: "copy_target", label: "RN1 third leg" }).returning();
@@ -898,11 +904,36 @@ describe("wallet dashboard coherent snapshot", () => {
       const observedAt = new Date(Date.now() - 1_000);
       await db.update(polyTraderIngestionCursors).set({ lastSuccessAt: observedAt })
         .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
-      await db.insert(polyTraderCurrentPositions).values([
-        { ...currentPosition(wallet.id, 0, conditionId), tokenId: "903", shares: "10", costBasisUsdc: "4", currentValueUsdc: "6", avgPrice: ".4", lastObservedAt: observedAt, raw: { title: "Own measured identity", outcome: "Own label" } },
-        { ...currentPosition(wallet.id, 1, conditionId), tokenId: "904", shares: "5", costBasisUsdc: "2", currentValueUsdc: "3", avgPrice: ".4", lastObservedAt: new Date(Date.now() - (mode === "live" ? 60_000 : 60 * 60_000)), raw: { title: "Own stale identity", outcome: "Unknown finance" } },
+      if (mode === "paper") {
+        const owner = { userId, billingAccountId: account };
+        const receiptAt = new Date(observedAt.getTime() - 1_000);
+        for (const [tokenId, shares] of [["903", "10"], ["904", "5"]] as const) {
+          await seedNativePaperFill(owner, randomUUID(), { conditionId, tokenId,
+            side: "BUY", price: "0.4", shares, observedAt: receiptAt });
+        }
+        const logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => logger };
+        await observePaperWallet({ db, wallet: { traderWalletId: wallet.id,
+          account: { billingAccountId: account, address: derivePaperAccountAddress(account), seedUsdc: "100" } },
+          now: observedAt, readMidPrice: async () => 0.6, logger: logger as never });
+        // Keep the real generation/proof fields; only the public labels and
+        // second leg's mark clock differ in this nullable-economics fixture.
+        for (const [tokenId, title, outcome, clock] of [
+          ["903", "Own measured identity", "Own label", observedAt],
+          ["904", "Own stale identity", "Unknown finance", new Date(Date.now() - 60 * 60_000)],
+        ] as const) {
+          await db.update(polyTraderCurrentPositions).set({ lastObservedAt: clock,
+            raw: sql`raw || ${JSON.stringify({ title, outcome })}::jsonb` })
+            .where(and(eq(polyTraderCurrentPositions.traderWalletId, wallet.id), eq(polyTraderCurrentPositions.tokenId, tokenId)));
+        }
+      } else {
+        await db.insert(polyTraderCurrentPositions).values([
+          { ...currentPosition(wallet.id, 0, conditionId), tokenId: "903", shares: "10", costBasisUsdc: "4", currentValueUsdc: "6", avgPrice: ".4", lastObservedAt: observedAt, raw: { title: "Own measured identity", outcome: "Own label" } },
+          { ...currentPosition(wallet.id, 1, conditionId), tokenId: "904", shares: "5", costBasisUsdc: "2", currentValueUsdc: "3", avgPrice: ".4", lastObservedAt: new Date(Date.now() - 60_000), raw: { title: "Own stale identity", outcome: "Unknown finance" } },
+        ]);
+      }
+      await db.insert(polyTraderCurrentPositions).values(
         { ...currentPosition(trap.id, 0, conditionId), tokenId: "903", shares: "1000", costBasisUsdc: "400", currentValueUsdc: "600", lastObservedAt: observedAt, raw: { title: "Wrong mode trap", outcome: "Wrong mode" } },
-      ]);
+      );
       await db.insert(polyCopyTradeTargets).values({ billingAccountId: account, createdByUserId: userId, targetWallet: target.walletAddress });
       for (const [index, tokenId] of ["901", "902", "903"].entries()) {
         const common = { traderWalletId: target.id, conditionId, tokenId, shares: String(30 - index * 10), costBasisUsdc: String(12 - index * 4), currentValueUsdc: String(18 - index * 6), avgPrice: ".4", contentHash: `${suffix}-${tokenId}`, raw: { title: "Target market", outcome: `Target ${tokenId}` } };

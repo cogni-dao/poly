@@ -28,6 +28,7 @@
 
 import { randomUUID } from "node:crypto";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
+import { seedNativePaperConnection as seedPaperConnection, seedNativePaperFill as seedLedgerFill } from "./native-paper-receipt.fixture";
 import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { __resetPolyExecutionVenueForTests, getPaperPortfolio, readPaperAuthoritativeHoldings } from "@/bootstrap/poly-execution-venue";
@@ -53,12 +54,10 @@ import {
 } from "@/features/wallet-analysis/server/paper-fact-source";
 import {
   billingAccounts,
-  polyCopyTradeFills,
   polyTraderIngestionCursors,
   polyTraderCurrentPositions,
   polyTraderWallets,
   polyWalletBalanceSnapshots,
-  polyWalletConnections,
   users,
 } from "@/shared/db/schema";
 
@@ -91,62 +90,6 @@ function paperDb(): PaperDb {
 /** A mid-price reader over a fixed table; absent token => `null` (unknown). */
 function midPrices(table: Record<string, number>): PaperMidPriceReader {
   return async (tokenId) => table[tokenId] ?? null;
-}
-
-async function seedPaperConnection(owner: Tenant, seedUsdc: string) {
-  const paperAddress = derivePaperAccountAddress(owner.billingAccountId);
-  await getSeedDb()
-    .insert(polyWalletConnections)
-    .values({
-      billingAccountId: owner.billingAccountId,
-      createdByUserId: owner.userId,
-      kind: "paper",
-      address: paperAddress,
-      funderAddress: paperAddress,
-      paperSeedUsdc: seedUsdc,
-      custodialConsentAcceptedAt: new Date("2026-10-01T00:00:00.000Z"),
-      custodialConsentActorKind: "user",
-      custodialConsentActorId: owner.userId,
-      tradingApprovalsReadyAt: new Date("2026-10-01T00:00:00.000Z"),
-    });
-  return paperAddress;
-}
-
-async function seedLedgerFill(
-  owner: Tenant,
-  targetId: string,
-  fill: {
-    tokenId: string;
-    conditionId: string;
-    side: "BUY" | "SELL";
-    price: string;
-    shares: string;
-  }
-): Promise<void> {
-  await getSeedDb()
-    .insert(polyCopyTradeFills)
-    .values({
-      billingAccountId: owner.billingAccountId,
-      createdByUserId: owner.userId,
-      targetId,
-      fillId: `paper:${randomUUID()}`,
-      marketId: fill.conditionId,
-      observedAt: new Date("2026-10-05T12:00:00.000Z"),
-      clientOrderId: `coid-${randomUUID()}`,
-      orderId: `order-${randomUUID()}`,
-      status: "filled",
-      mode: "paper",
-      price: fill.price,
-      shares: fill.shares,
-      feesUsdc: "0",
-      attributes: {
-        side: fill.side,
-        token_id: fill.tokenId,
-        condition_id: fill.conditionId,
-        size_usdc: Number(fill.price) * Number(fill.shares),
-        limit_price: Number(fill.price),
-      },
-    });
 }
 
 /**
