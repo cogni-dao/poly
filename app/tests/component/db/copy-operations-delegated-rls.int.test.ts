@@ -199,7 +199,7 @@ describe("copy-operations delegated RLS", () => {
     await seedDb.insert(polyTraderCurrentPositions).values({
       traderWalletId: traderWalletA,
       // Mixed case is deliberate: ledger identity is canonical lowercase and
-      // the public orders read must still resolve this persisted title.
+      // a target-only LIVE row cannot establish a historical own-account metadata origin.
       conditionId: titleFallbackCondition.toUpperCase(),
       tokenId: titleFallbackToken,
       shares: "1",
@@ -810,7 +810,7 @@ describe("copy-operations delegated RLS", () => {
     expect(delegated?.budget_allocation).toEqual(owner?.budget_allocation);
   });
 
-  it("orders: resolves a mixed-case current-position title and cancellation code", async () => {
+  it("orders: withholds unsupported target-only LIVE metadata and preserves cancellation", async () => {
     const orders = await asTx(ownerA.userId, (tx) =>
       listCopyTradeOrdersForAccount(
         tx,
@@ -823,8 +823,8 @@ describe("copy-operations delegated RLS", () => {
     );
 
     expect(row).toMatchObject({
-      market_title: "Will the current-position fallback resolve?",
-      outcome: "0",
+      market_title: null,
+      outcome: null,
       status: "canceled",
       error: "position_gap_reconciled",
     });

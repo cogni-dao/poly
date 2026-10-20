@@ -333,9 +333,10 @@ export async function readCurrentWalletPositionModel(params: {
   );
 
   const metadataKey = (row: CurrentPositionRow): PositionMetadataKey => ({ conditionId: row.condition_id ?? "", tokenId: row.token_id ?? "", walletAddress: params.walletAddress, mode: params.mode ?? row.position_mode ?? "live" as const });
-  const metadata = await readPositionMetadata({ db: params.db, keys: rows.map(metadataKey), capturedAt: params.capturedAt.toISOString() });
+  const accountScope = { billingAccountId: params.billingAccountId };
+  const metadata = await readPositionMetadata({ accountScope, db: params.db, keys: rows.map(metadataKey), capturedAt: params.capturedAt.toISOString() });
   const positions = rows.flatMap((row) =>
-    rowToExecutionPosition(row, params.capturedAt).map(position => ({ ...position, ...positionMetadataDisplay(metadata.get(positionMetadataRequestKey(metadataKey(row)) ?? "")) }))
+    rowToExecutionPosition(row, params.capturedAt).map(position => ({ ...position, ...positionMetadataDisplay(metadata.get(positionMetadataRequestKey(metadataKey(row), accountScope) ?? "")) }))
   );
   const syncTimes = rows
     .map(

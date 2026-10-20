@@ -329,7 +329,7 @@ export async function buildMarketExposureGroups(params: {
     conditions,
     conditionStatus,
   });
-  const rawLegs = await resolveSavedLegMetadata(params.db, [...ourLegs, ...targetLegs], params.capturedAt, params.mode ?? "live");
+  const rawLegs = await resolveSavedLegMetadata(params.db, [...ourLegs, ...targetLegs], params.capturedAt, params.mode ?? "live", params.billingAccountId);
   const wallets = [...new Set(rawLegs.map((leg) => leg.walletAddress))];
   const rollups = await readFillRollups({
     db: params.db,
@@ -406,7 +406,7 @@ export async function buildBoundedMarketExposureGroups(params: {
         leg.lifecycle === "active"
     ),
   };
-  const rawLegs = await resolveSavedLegMetadata(params.db, [...selection.ourLegs, ...targetRead.legs], params.capturedAt, params.mode ?? "live");
+  const rawLegs = await resolveSavedLegMetadata(params.db, [...selection.ourLegs, ...targetRead.legs], params.capturedAt, params.mode ?? "live", params.billingAccountId);
   const fillStartedAt = performance.now();
   let rollups: Awaited<ReturnType<typeof readFillRollups>>;
   try {
@@ -597,7 +597,7 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
   }
   const counts = countRowsFromBundle(rows);
   const targetRead = boundedTargetReadFromRows(participantRowsFromBundle(rows));
-  const rawLegs = await resolveSavedLegMetadata(params.db, [...selection.ourLegs, ...targetRead.legs], params.capturedAt, executionModeForConnection(params.connectionKind));
+  const rawLegs = await resolveSavedLegMetadata(params.db, [...selection.ourLegs, ...targetRead.legs], params.capturedAt, executionModeForConnection(params.connectionKind), params.billingAccountId);
   const fillStartedAt = performance.now();
   let rollups: Awaited<ReturnType<typeof readFillRollups>>;
   try {
@@ -1696,11 +1696,12 @@ export function materializeComparisonCoverage(params: {
 }
 
 /** Shared saved metadata is the only display authority, including null/conflict. */
-async function resolveSavedLegMetadata(db: Db, legs: RawLeg[], capturedAt?: string, mode: "live" | "paper" = "live"): Promise<RawLeg[]> {
+async function resolveSavedLegMetadata(db: Db, legs: RawLeg[], capturedAt?: string, mode: "live" | "paper" = "live", billingAccountId?: string): Promise<RawLeg[]> {
+  const accountScope = billingAccountId ? { billingAccountId } : undefined;
   const key = (leg: RawLeg): PositionMetadataKey => ({ conditionId: leg.conditionId, tokenId: leg.tokenId, walletAddress: leg.walletAddress, mode: leg.side === "our_wallet" ? mode : "live" as const });
-  const saved = await readPositionMetadata({ db, keys: legs.map(key), ...(capturedAt ? { capturedAt } : {}) });
+  const saved = await readPositionMetadata({ db, ...(accountScope ? { accountScope } : {}), keys: legs.map(key), ...(capturedAt ? { capturedAt } : {}) });
   return legs.map(leg => {
-    const metadata = saved.get(positionMetadataRequestKey(key(leg)) ?? "");
+    const metadata = saved.get(positionMetadataRequestKey(key(leg), accountScope) ?? "");
     return { ...leg, ...positionMetadataDisplay(metadata), oppositeTokenId: metadata?.oppositeTokenId ?? null };
   });
 }
