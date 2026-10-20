@@ -906,15 +906,18 @@ describe("wallet dashboard coherent snapshot", () => {
         .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
       if (mode === "paper") {
         const owner = { userId, billingAccountId: account };
-        const receiptAt = new Date(observedAt.getTime() - 1_000);
+        // Both accepted BUYs must precede even the retained stale mark.
+        // A quantity observation from before its own fill cannot prove basis.
+        const receiptAt = new Date(observedAt.getTime() - 2 * 60 * 60_000);
         for (const [tokenId, shares] of [["903", "10"], ["904", "5"]] as const) {
           await seedNativePaperFill(owner, randomUUID(), { conditionId, tokenId,
             side: "BUY", price: "0.4", shares, observedAt: receiptAt });
         }
         const logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => logger };
-        await observePaperWallet({ db, wallet: { traderWalletId: wallet.id,
+        const projection = await observePaperWallet({ db, wallet: { traderWalletId: wallet.id,
           account: { billingAccountId: account, address: derivePaperAccountAddress(account), seedUsdc: "100" } },
           now: observedAt, readMidPrice: async () => 0.6, logger: logger as never });
+        expect(projection).toMatchObject({ fills: 2, positions: 2, unpricedPositions: 0, navPublished: true });
         // Keep the real generation/proof fields; only the public labels and
         // second leg's mark clock differ in this nullable-economics fixture.
         for (const [tokenId, title, outcome, clock] of [
