@@ -469,7 +469,17 @@ describe("wallet dashboard coherent snapshot", () => {
       expect(recovered.winner.lastObservedAt.getTime()).toBeGreaterThan(initial.winner.lastObservedAt.getTime());
       expect(recovered.cursor.errorMessage).toBeNull();
       const recoveredRead = await read();
-      expect(recoveredRead.projection.positionFacts.find(row => row.tokenId === "811")).toMatchObject({ heldShares: 0, currentValueUsdc: 0, remainingBasisUsdc: 0, lifetimePnlUsdc: null });
+      // Physical zero does not establish a completed exit or settlement cash.
+      // Without a typed outcome/complete history W has no preview bucket, even
+      // though its durable zero correctly removes it from whole-wallet MTM.
+      expect(recoveredRead.projection.positionFacts.find(row => row.tokenId === "811")).toBeUndefined();
+      expect([
+        ...recoveredRead.projection.livePositions, ...recoveredRead.projection.closedPositions,
+        ...recoveredRead.dashboard.execution.live_positions, ...recoveredRead.dashboard.execution.closed_positions,
+      ].some(row => row.asset === "811")).toBe(false);
+      expect(recoveredRead.projection.closedCount).toBe(0);
+      expect(recoveredRead.projection.historyIncompleteCount).toBeGreaterThan(0);
+      expect(recoveredRead.dashboard.facts.history.complete).toBe(false);
       expect(recoveredRead.dashboard.overview).toMatchObject({ usdc_available: 100, usdc_positions_mtm: 2, usdc_total: 102 });
       const snapshots = await db.select().from(polyTraderPositionSnapshots).where(and(
         eq(polyTraderPositionSnapshots.traderWalletId, wallet.id), eq(polyTraderPositionSnapshots.tokenId, "811")));

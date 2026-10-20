@@ -33,8 +33,8 @@ import { toUserId, userActor } from "@cogni/ids";
 import type { AgentCapabilityScope } from "@cogni/poly-node-contracts";
 import type { PolyAccountPortfolioSnapshotOutput } from "@cogni/poly-node-contracts";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { eq, sql } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { eq, inArray, sql } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Database } from "@/adapters/server/db/client";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
 import { readTenantWalletDashboardIn } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
@@ -401,6 +401,30 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
   });
 
   describe("the new policy does not degrade the identity-read plan", () => {
+    const planOwners = Array.from({ length: 2048 }, (_, index) =>
+      tenant(`Portfolio plan owner ${index}`)
+    );
+
+    beforeAll(async () => {
+      const seedDb = getSeedDb();
+      await seedDb.insert(users).values(
+        planOwners.map(owner => ({ id: owner.userId, name: owner.name, walletAddress: address() }))
+      );
+      await seedDb.insert(billingAccounts).values(
+        planOwners.map(owner => ({ id: owner.billingAccountId, ownerUserId: owner.userId, balanceCredits: 0n }))
+      );
+      // The migrated-table owner can ANALYZE; the BYPASSRLS seeding role
+      // cannot. Refresh only the relation whose tiny-table plan is ambiguous.
+      await db.execute(sql`ANALYZE billing_accounts`);
+    });
+
+    afterAll(async () => {
+      const seedDb = getSeedDb();
+      await seedDb.delete(billingAccounts).where(inArray(billingAccounts.id, planOwners.map(owner => owner.billingAccountId)));
+      await seedDb.delete(users).where(inArray(users.id, planOwners.map(owner => owner.userId)));
+      await db.execute(sql`ANALYZE billing_accounts`);
+    });
+
     /**
      * Adding an RLS policy rewrites the plan of every SELECT on the table,
      * because the policy expression becomes part of the query. The identity
@@ -410,12 +434,12 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
      *
      * WHAT IS ASSERTED: no sequential scan anywhere, and the grant lookup is a
      * SubPlan rather than a per-row join. Deliberately NOT asserted: which
-     * index the planner picks. That is cost-based and fixture-size dependent —
-     * on these two-row tables Postgres picks
-     * `poly_wallet_connections_address_chain_active_idx` plus a Sort, not the
-     * `..._tenant_active_idx` an equality-on-billing_account_id predicate would
-     * use at scale. Pinning an index name here would assert a property of the
-     * fixture, not of the policy, and would break whenever statistics shift.
+     * index the planner picks. That is cost-based and fixture-size dependent.
+     * With only a few owners a billing_accounts sequential scan is cheaper
+     * and legitimate, so these tests add unrelated owner/account cardinality
+     * and fresh statistics before asserting selective access. Wallet/grant
+     * fixtures and planner settings stay unchanged. Pinning an index name
+     * would still assert a fixture property rather than the policy contract.
      */
     async function identityPlan(principalId: string): Promise<string> {
       const rows = await withTenantScope(
@@ -461,7 +485,7 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       // performance property of migration 0075 and it is better than a
       // per-row index probe.
       expect(plan).toContain("SubPlan");
-      expect(plan).toContain("billing_accounts_owner_user_id_unique");
+      expect(plan).toContain('"Relation Name":"billing_accounts"');
       expect(plan).toContain("agent_capability_grants");
       // Neither side of the OR may fall back to a scan. One generic check, not
       // a key-order-specific one: JSON key order is not a stable contract, so
