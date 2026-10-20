@@ -60,43 +60,37 @@ describe("authenticated paper cumulative receipt persistence", () => {
 		const token = "1234567890123456789012345678901234567890";
 		const client = `paper-proof-${randomUUID()}`;
 		const order = `paper-order-${randomUUID()}`;
-		await db
-			.insert(users)
-			.values({
-				id: owner,
-				name: "Paper proof owner",
-				walletAddress: `0x${owner.replaceAll("-", "")}12345678`,
-			});
+		await db.insert(users).values({
+			id: owner,
+			name: "Paper proof owner",
+			walletAddress: `0x${owner.replaceAll("-", "")}12345678`,
+		});
 		await db
 			.insert(billingAccounts)
 			.values({ id: account, ownerUserId: owner, balanceCredits: 0n });
 		const address = derivePaperAccountAddress(account);
-		await db
-			.insert(polyWalletConnections)
-			.values({
-				id: connection,
-				billingAccountId: account,
-				createdByUserId: owner,
-				kind: "paper",
-				address,
-				funderAddress: address,
-				paperSeedUsdc: "100",
-				custodialConsentAcceptedAt: asOf,
-				custodialConsentActorKind: "user",
-				custodialConsentActorId: owner,
-				tradingApprovalsReadyAt: asOf,
-			});
-		await db
-			.insert(polyWalletGrants)
-			.values({
-				billingAccountId: account,
-				walletConnectionId: connection,
-				createdByUserId: owner,
-				scopes: ["poly:trade:buy"],
-				perOrderUsdcCap: "10",
-				dailyUsdcCap: "1000",
-				hourlyFillsCap: 1000,
-			});
+		await db.insert(polyWalletConnections).values({
+			id: connection,
+			billingAccountId: account,
+			createdByUserId: owner,
+			kind: "paper",
+			address,
+			funderAddress: address,
+			paperSeedUsdc: "100",
+			custodialConsentAcceptedAt: asOf,
+			custodialConsentActorKind: "user",
+			custodialConsentActorId: owner,
+			tradingApprovalsReadyAt: asOf,
+		});
+		await db.insert(polyWalletGrants).values({
+			billingAccountId: account,
+			walletConnectionId: connection,
+			createdByUserId: owner,
+			scopes: ["poly:trade:buy"],
+			perOrderUsdcCap: "10",
+			dailyUsdcCap: "1000",
+			hourlyFillsCap: 1000,
+		});
 		let native: OrderReceipt = {
 			order_id: order,
 			client_order_id: client,
@@ -423,6 +417,67 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				price: "0.50000001",
 				fee: "0.00000001",
 			});
+
+			// Missing envelopes compare native observations against the precision of
+			// the legacy columns, rather than falsely calling half-rounding regression.
+			await db
+				.update(polyCopyTradeFills)
+				.set({
+					positionLifecycle: "closed",
+					updatedAt: asOf,
+					syncedAt: asOf,
+					attributes: sql`${polyCopyTradeFills.attributes} - 'paper_receipt_v1'`,
+				})
+				.where(eq(polyCopyTradeFills.clientOrderId, client));
+			await reconcile();
+			expect((await read()).shares).toBe("3.25000001");
+			expect(
+				acceptedPaperProof(
+					decodeFillAccounting(await read(), scope, new Date()),
+				)?.shares,
+			).toBe(3.250000005);
+			expect(await readSql()).toMatchObject({
+				positive: true,
+				fee_known: true,
+			});
+
+			// Clocks are intentionally absent from semantic keys. A matching key is
+			// insufficient when the saved proof has an invalid or future observation.
+			for (const corruptClock of [
+				"not-an-observation-clock",
+				"2099-01-01T00:00:00.000Z",
+			]) {
+				const beforeClockRepair = await read();
+				const beforeProof = acceptedPaperProof(
+					decodeFillAccounting(beforeClockRepair, scope, new Date()),
+				);
+				if (!beforeProof)
+					throw new Error("clock-repair starting proof missing");
+				await db
+					.update(polyCopyTradeFills)
+					.set({
+						updatedAt: asOf,
+						syncedAt: asOf,
+						attributes: sql`jsonb_set(${JSON.stringify(beforeClockRepair.attributes)}::jsonb,
+            '{paper_receipt_v1,observed_at}', ${JSON.stringify(corruptClock)}::jsonb)`,
+					})
+					.where(eq(polyCopyTradeFills.clientOrderId, client));
+				expect(await readSql()).toMatchObject({ positive: false });
+				const selected = (
+					await ledger.listOpenOrPending({ olderThanMs: 0 })
+				).find((row) => row.client_order_id === client);
+				expect(selected?.paper_accounting_valid).toBe(false);
+				await reconcile();
+				const afterProof = acceptedPaperProof(
+					decodeFillAccounting(await read(), scope, new Date()),
+				);
+				expect(afterProof?.proof_key).toBe(beforeProof.proof_key);
+				expect(afterProof?.observed_at).not.toBe(corruptClock);
+				expect(await readSql()).toMatchObject({
+					positive: true,
+					fee_known: true,
+				});
+			}
 
 			const zeroClient = `paper-zero-${randomUUID()}`;
 			const zeroOrder = `paper-zero-order-${randomUUID()}`;

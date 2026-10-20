@@ -54,6 +54,7 @@ import {
   type FillAccountingRow,
   type FillAccountingScope,
   fillColumnText,
+  fillColumnNumber,
   fillNotionalTolerance,
   fillNumber,
   FILL_SHARE_TOLERANCE,
@@ -1300,8 +1301,11 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     const oldShares = prior?.shares ?? fillNumber(current.shares) ?? 0;
     const oldCost = prior?.notional_usdc ?? fillNumber(current.attributes?.filled_size_usdc) ?? 0;
     const oldFee = fillNumber(current.feesUsdc);
-    const equalShares = Math.abs(proof.shares - oldShares) <= FILL_SHARE_TOLERANCE;
-    if (proof.shares + FILL_SHARE_TOLERANCE < oldShares ||
+    // Legacy columns retain eight decimals, whereas a valid envelope retains
+    // native precision. Compare like precision until a native proof exists.
+    const incomingComparableShares = prior ? proof.shares : fillColumnNumber(proof.shares);
+    const equalShares = Math.abs(incomingComparableShares - oldShares) <= FILL_SHARE_TOLERANCE;
+    if (incomingComparableShares + FILL_SHARE_TOLERANCE < oldShares ||
       proof.notional_usdc + fillNotionalTolerance(oldCost) < oldCost ||
       (equalShares && oldCost > 0 && Math.abs(proof.notional_usdc - oldCost) > fillNotionalTolerance(oldCost)) ||
       (proof.fee_known && oldFee !== null && proof.fees_usdc !== null &&
@@ -1614,7 +1618,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       const paperProof = paperFillAccountingSql("poly_copy_trade_fills");
 
       const rows = await deps.db
-        .select()
+        .select({ ...LEDGER_ROW_COLUMNS, paperAccountingValid: sql<boolean>`${paperProof.verified}` })
         .from(polyCopyTradeFills)
         .where(
           and(
@@ -1638,7 +1642,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 				)
         .limit(limit);
 
-      return rows.map(mapLedgerRow);
+      return rows.map((row) => ({ ...mapLedgerRow(row),
+        ...(row.mode === "paper" ? { paper_accounting_valid: row.paperAccountingValid } : {}),
+      }));
     },
 
     async updateStatus(input: UpdateStatusInput): Promise<OrderObservationWriteResult> {

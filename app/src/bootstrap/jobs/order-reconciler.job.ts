@@ -347,7 +347,8 @@ export async function runReconcileOnce(
       const savedPaper = row.attributes?.paper_receipt_v1;
       const savedPaperKey = savedPaper && typeof savedPaper === "object" && "proof_key" in savedPaper
         ? savedPaper.proof_key : null;
-      const paperProofChanged = paperProof !== null && paperProof.proof_key !== savedPaperKey;
+      const paperProofChanged = paperProof !== null &&
+        (row.paper_accounting_valid !== true || paperProof.proof_key !== savedPaperKey);
 				if (
 					newStatus === row.status &&
 					!filledChanged &&
