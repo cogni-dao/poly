@@ -1175,7 +1175,6 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 					intent,
 				});
         const native: OrderReceipt = {
-						provider: "polymarket",
 						order_id: randomUUID(),
 						client_order_id: intent.client_order_id,
 						status: "filled",
