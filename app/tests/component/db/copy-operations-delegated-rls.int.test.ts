@@ -66,6 +66,25 @@ vi.mock("@/app/_lib/auth/session", () => ({
   getSessionUser: vi.fn(),
 }));
 
+// Keep the real DB resolver while avoiding unrelated application background jobs.
+vi.mock("@/bootstrap/container", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/bootstrap/container")>();
+  const { makeLogger } = await import("@/shared/observability");
+  const wrapperDeps = {
+    log: makeLogger({ component: "copy-operations-delegated-rls-test" }),
+    clock: { now: () => "2026-10-04T00:00:00.000Z" },
+    config: { unhandledErrorPolicy: "rethrow" as const },
+  };
+  return { ...actual, getContainer: () => wrapperDeps };
+});
+
+const { unexpectedRedisConstruction } = vi.hoisted(() => ({
+  unexpectedRedisConstruction: vi.fn(function UnexpectedRedisConstruction() {
+    throw new Error("Delegated RLS test must not boot application Redis");
+  }),
+}));
+vi.mock("ioredis", () => ({ default: unexpectedRedisConstruction }));
+
 import type { Database } from "@/adapters/server/db/client";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
 import { getSessionUser } from "@/app/_lib/auth/session";
@@ -1035,6 +1054,7 @@ describe("copy-operations delegated RLS", () => {
     );
     expect(stale.status).toBe(409);
     expect(await stale.json()).toMatchObject({ code: "stale_target_policy" });
+    expect(unexpectedRedisConstruction).not.toHaveBeenCalled();
   });
 
   it("recent-attempts: the tape SHOWS skips, which the fills ledger cannot", async () => {
