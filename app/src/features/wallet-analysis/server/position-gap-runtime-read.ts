@@ -382,7 +382,7 @@ export async function readPositionGapRuntimeByWallet(
 			? []
 			: rowsOf<RecentOrder>(
 					await tx.execute(
-						positionGapRecentOrdersSelect(accountId, observedTargetIds),
+						positionGapRecentOrdersSelect(accountId, observedTargetIds, capturedAt),
 					),
 				);
 	const recentOrdersByTarget = new Map<string, RecentOrder[]>();
@@ -418,6 +418,7 @@ export async function readPositionGapRuntimeByWallet(
 export const positionGapRecentOrdersSelect = (
 	accountId: string,
 	targetIds: readonly string[],
+  capturedAt?: Date,
 ) => sql`
 	SELECT
 		a.id AS "id", a.target_id AS "targetId",
@@ -429,9 +430,9 @@ export const positionGapRecentOrdersSelect = (
 		a.planner_action AS "plannerAction", f.price AS "ledgerPrice",
 		f.shares AS "ledgerShares", f.fees_usdc AS "ledgerFeesUsdc",
     f.mode AS "ledgerMode",
-    ${copyFillAccountingSql("f").positive} AS "paperPositive",
-    ${copyFillAccountingSql("f").zero} AS "paperZero",
-    ${copyFillAccountingSql("f").feeKnown} AS "paperFeeKnown",
+    ${copyFillAccountingSql("f", sql`COALESCE(${capturedAt ?? null}::timestamptz, now())`).positive} AS "paperPositive",
+    ${copyFillAccountingSql("f", sql`COALESCE(${capturedAt ?? null}::timestamptz, now())`).zero} AS "paperZero",
+    ${copyFillAccountingSql("f", sql`COALESCE(${capturedAt ?? null}::timestamptz, now())`).feeKnown} AS "paperFeeKnown",
 		f.attributes AS "ledgerAttributes"
 	FROM unnest(ARRAY[${sql.join(
 		targetIds.map((id) => sql`${id}::uuid`),
@@ -497,6 +498,7 @@ export const positionGapActionAggregateSelect = (
 	tx: AgentGrantTransaction,
 	accountId: string,
 	targetIds: readonly string[],
+  capturedAt?: Date,
 ) =>
 	tx
 		.select({
@@ -504,12 +506,12 @@ export const positionGapActionAggregateSelect = (
 			buyOrders: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy')`,
 			submitted: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.submittedAt} IS NOT NULL)`,
 			reportedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.filledShares} > 0)`,
-			verifiedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills").positionGapVerified} AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$')`,
-			verifiedShares: sql<string>`COALESCE(SUM(${polyCopyTradeFills.shares}) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills").positionGapVerified} AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'), 0)`,
-			verifiedUsdc: sql<string>`COALESCE(SUM(CASE WHEN ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills").positionGapVerified} AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric ELSE 0 END), 0)`,
-      paperVerified: sql<string>`count(*) FILTER (WHERE ${copyFillAccountingSql("poly_copy_trade_fills").positive})`,
-      paperZero: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills").zero})`,
-      verifiedModes: sql<string>`count(DISTINCT ${polyCopyTradeFills.mode}) FILTER (WHERE ${copyFillAccountingSql("poly_copy_trade_fills").positionGapVerified})`,
+			verifiedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills", sql`COALESCE(${capturedAt ?? null}::timestamptz, now())`).positionGapVerified} AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$')`,
+			verifiedShares: sql<string>`COALESCE(SUM(${polyCopyTradeFills.shares}) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills", sql`COALESCE(${capturedAt ?? null}::timestamptz, now())`).positionGapVerified} AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'), 0)`,
+			verifiedUsdc: sql<string>`COALESCE(SUM(CASE WHEN ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills", sql`COALESCE(${capturedAt ?? null}::timestamptz, now())`).positionGapVerified} AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric ELSE 0 END), 0)`,
+      paperVerified: sql<string>`count(*) FILTER (WHERE ${copyFillAccountingSql("poly_copy_trade_fills", sql`COALESCE(${capturedAt ?? null}::timestamptz, now())`).positive})`,
+      paperZero: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills", sql`COALESCE(${capturedAt ?? null}::timestamptz, now())`).zero})`,
+      verifiedModes: sql<string>`count(DISTINCT ${polyCopyTradeFills.mode}) FILTER (WHERE ${copyFillAccountingSql("poly_copy_trade_fills", sql`COALESCE(${capturedAt ?? null}::timestamptz, now())`).positionGapVerified})`,
 			clobVerified: sql<string>`count(*) FILTER (WHERE ${polyCopyTradeFills.mode} = 'live' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades')`,
 			dataApiVerified: sql<string>`count(*) FILTER (WHERE ${polyCopyTradeFills.mode} = 'live' AND ${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'data_api_activity_position')`,
 			mismatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.plannerAction}->>'fill_accounting_status' = 'mismatch')`,

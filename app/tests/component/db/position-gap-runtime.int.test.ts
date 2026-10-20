@@ -1115,6 +1115,14 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				} finally {
 					await actor.stop().catch(() => {});
 				}
+        if (executed === 2) {
+          const historicRuntime = await withTenantScope(getAppDb(), userActor(toUserId(owner)), tx =>
+            readPositionGapRuntimeByWallet(tx as never, account, [wallet], new Date(asOf.getTime() + 1000)));
+          expect(historicRuntime.get(wallet)).toMatchObject({ status: "observed", execution: {
+            fill_accounting: { status: "pending" }, recent_orders: expect.arrayContaining([
+              expect.objectContaining({ client_order_id: a.clientOrderId, fill_accounting: { status: "pending", source: "clob_order_receipt" } }),
+            ]) } });
+        }
         if (executed === 0) {
           const publicRuntime = () => withTenantScope(getAppDb(), userActor(toUserId(owner)), tx =>
             readPositionGapRuntimeByWallet(tx as never, account, [wallet], new Date()));
