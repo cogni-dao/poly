@@ -253,7 +253,9 @@ function retainedTargetProof(
     WHERE t.billing_account_id=${account} AND lower(t.target_wallet)=${targetWallet}
       AND t.created_at<=${observedAt} AND (t.disabled_at IS NULL OR ${observedAt}<t.disabled_at))`;
 }
-/** Phase one: indexed physical LIMIT is inside the lateral, before all JSON/proof predicates. */
+/** Phase one: indexed physical LIMIT is inside the lateral, before all JSON/proof predicates.
+ * Explicit NULLS LAST matches the installed 0073 index, avoiding a blocking sort.
+ */
 export function positionMetadataOriginSelect(
   batch: readonly MetadataKey[],
   accountId: string,
@@ -273,7 +275,7 @@ export function positionMetadataOriginSelect(
       FROM poly_copy_trade_fills f
       WHERE f.billing_account_id=${accountId} AND f.market_id='prediction-market:polymarket:'||k."conditionId"
         AND f.mode=k.mode AND f.observed_at<=COALESCE(${capturedAt ?? null}::timestamptz,transaction_timestamp())
-      ORDER BY f.observed_at DESC,f.target_id DESC,f.fill_id DESC LIMIT ${ORIGIN_CANDIDATE_LIMIT + 1}
+      ORDER BY f.observed_at DESC NULLS LAST,f.target_id DESC NULLS LAST,f.fill_id DESC NULLS LAST LIMIT ${ORIGIN_CANDIDATE_LIMIT + 1}
     ) f WHERE k.mode='paper' AND ${repeatableReadOnly}`;
 }
 

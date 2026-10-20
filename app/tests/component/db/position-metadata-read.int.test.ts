@@ -1537,10 +1537,10 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 				{ isolationLevel: "repeatable read", accessMode: "read only" },
 			);
 			await db.execute(
-				sql`UPDATE poly_trader_current_positions SET raw=raw||jsonb_build_object('asset',${f.tokens[1]}) WHERE lower(condition_id)=${f.condition}`,
+				sql`UPDATE poly_trader_current_positions SET raw=raw||jsonb_build_object('asset',${f.tokens[1]}::text) WHERE lower(condition_id)=${f.condition}`,
 			);
 			await db.execute(
-				sql`UPDATE poly_trader_position_snapshots SET raw=raw||jsonb_build_object('conditionId',${`0x${"f".repeat(64)}`}) WHERE lower(condition_id)=${f.condition}`,
+				sql`UPDATE poly_trader_position_snapshots SET raw=raw||jsonb_build_object('conditionId',${`0x${"f".repeat(64)}`}::text) WHERE lower(condition_id)=${f.condition}`,
 			);
 			expect(
 				f.value(
@@ -1775,6 +1775,24 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 					);
 					const plan = explain[0]?.["QUERY PLAN"][0]?.Plan;
 					if (!plan) throw new Error("Missing overflow plan");
+					const candidateLimits = planNodes(plan).filter(node =>
+						node["Node Type"] === "Limit" && planNodes(node).some(child => child["Relation Name"] === "poly_copy_trade_fills"));
+					// Keep CI diagnostics bounded and omit account, wallet, token and raw values.
+					const physicalPlan = planNodes(plan).filter(node =>
+						node["Relation Name"] === "poly_copy_trade_fills" || ["Limit", "Sort", "Incremental Sort"].includes(String(node["Node Type"])))
+						.slice(0, 12).map(node => ({
+							node: node["Node Type"], index: node["Index Name"], rows: node["Actual Rows"], loops: node["Actual Loops"],
+							removed: node["Rows Removed by Filter"] ?? 0,
+							seekColumns: ["billing_account_id", "market_id", "mode", "observed_at"].filter(column => String(node["Index Cond"] ?? "").includes(column)),
+							blocks: Number(node["Shared Hit Blocks"] ?? 0) + Number(node["Shared Read Blocks"] ?? 0),
+						}));
+					const planEvidence = JSON.stringify({ probe: "metadata_origin_physical_budget", nodes: physicalPlan });
+					console.info(planEvidence);
+					expect(candidateLimits, planEvidence).toHaveLength(1);
+					for (const limit of candidateLimits) {
+						expect(Number(limit["Actual Rows"]), planEvidence).toBe(257);
+						expect(planNodes(limit).some(node => ["Sort", "Incremental Sort"].includes(String(node["Node Type"]))), planEvidence).toBe(false);
+					}
 					const ledgerNodes = planNodes(plan).filter(
 						(node) => node["Relation Name"] === "poly_copy_trade_fills",
 					);
