@@ -34,6 +34,8 @@ import {
   UserValueResponseSchema,
 } from "./polymarket.data-api.types.js";
 import {
+  PolymarketActivityV2ResponseSchema,
+  type PolymarketActivityV2,
   PolymarketDataApiStatusV2Schema,
   type PolymarketDataApiStatusV2,
   PolymarketUserPositionsV2ResponseSchema,
@@ -337,6 +339,8 @@ export interface ListUserPositionsV2Params {
   conditions: readonly string[];
   /** Include user-archived rows. Defaults true for backward compatibility. */
   includeArchived?: boolean;
+  /** Historical recovery opts into CLOSED; existing target readers remain OPEN. */
+  status?: "OPEN" | "CLOSED";
   /** Aggregate request ceiling across all chunks and cursor pages. */
   maxRequests?: number;
   signal?: AbortSignal | undefined;
@@ -575,6 +579,7 @@ export class PolymarketDataApiClient {
   ): Promise<PolymarketPositionsV2Walk> {
     return this.walkUserPositionsV2(wallet, {
       conditions: params.conditions,
+      status: params.status ?? "OPEN",
       includeArchived: params.includeArchived ?? true,
       filterType: "TOKENS",
       filterAmount: 0,
@@ -631,6 +636,7 @@ export class PolymarketDataApiClient {
     wallet: string,
     params: {
       conditions?: readonly string[];
+      status?: "OPEN" | "CLOSED";
       filterType: "CASH" | "TOKENS";
       filterAmount: number;
       includeArchived: boolean;
@@ -694,7 +700,7 @@ export class PolymarketDataApiClient {
         url.searchParams.set("user", wallet);
         // Cursor pages do not retain the filter server-side; resend every time.
         if (chunk) url.searchParams.set("condition", chunk.join(","));
-        url.searchParams.set("status", "OPEN");
+        url.searchParams.set("status", params.status ?? "OPEN");
         url.searchParams.set(
           "include_archived",
           params.includeArchived ? "true" : "false"
@@ -717,9 +723,10 @@ export class PolymarketDataApiClient {
           // The documented OPEN result set includes settled-but-unredeemed
           // winners, whose rows echo REDEEMABLE. CLOSED can never belong to
           // this walk; reject it rather than silently publishing stale facts.
-          if (row.status !== "OPEN" && row.status !== "REDEEMABLE") {
+          if ((params.status === "CLOSED" && row.status !== "CLOSED") ||
+            (params.status !== "CLOSED" && row.status !== "OPEN" && row.status !== "REDEEMABLE")) {
             throw new PolyDataApiPositionsV2Error(
-              `response status ${row.status} was outside the requested OPEN cohort`
+              `response status ${row.status} was outside the requested ${params.status ?? "OPEN"} cohort`
             );
           }
           if (!params.includeArchived && row.archived === true) {
@@ -767,6 +774,56 @@ export class PolymarketDataApiClient {
       }
     }
     return { positions: raw, requestCount };
+  }
+
+  /** Bounded exact-condition native history; no cursor or render-path side effects. */
+  async listConditionActivityV2(wallet: string, params: {
+    conditionId: string; start: number; end: number; maxRequests: number;
+    signal?: AbortSignal | undefined;
+  }): Promise<{ activity: PolymarketActivityV2[]; requestCount: number }> {
+    assertWallet(wallet);
+    if (!CONDITION_ID_PATTERN.test(params.conditionId) || !Number.isInteger(params.maxRequests) ||
+      params.maxRequests < 1 || params.maxRequests > 5 || !Number.isFinite(params.start) ||
+      !Number.isFinite(params.end) || params.start < 0 || params.end < params.start) {
+      throw new PolyDataApiPositionsV2Error("invalid bounded activity cohort");
+    }
+    const activity: PolymarketActivityV2[] = [];
+    const priorPages = new Set<string>();
+    const cursors = new Set<string>();
+    let cursor: string | null = null;
+    for (let page = 0; page < params.maxRequests; page += 1) {
+      params.signal?.throwIfAborted();
+      const url = new URL("/v2/activity", this.baseUrl);
+      url.searchParams.set("user", wallet);
+      url.searchParams.set("condition", params.conditionId);
+      url.searchParams.set("start", String(params.start));
+      url.searchParams.set("end", String(params.end));
+      url.searchParams.set("limit", "1000");
+      url.searchParams.set("exclude_deposits_withdrawals", "false");
+      if (cursor) url.searchParams.set("cursor", cursor);
+      const response = parseResponse(PolymarketActivityV2ResponseSchema,
+        await this.fetchJson(url, params.signal), "/v2/activity");
+      for (const row of response.data) {
+        if (row.proxy_wallet.toLowerCase() !== wallet.toLowerCase() ||
+          row.condition_id.toLowerCase() !== params.conditionId.toLowerCase() ||
+          row.timestamp < params.start || row.timestamp > params.end) {
+          throw new PolyDataApiPositionsV2Error("activity outside requested wallet/condition/window");
+        }
+      }
+      // Identical anonymous records may be distinct matches within one page,
+      // but overlapping pages must never multiply them into economic facts.
+      for (const row of response.data) {
+        if (priorPages.has(JSON.stringify(row))) throw new PolyDataApiPositionsV2Error("overlapping activity pages");
+      }
+      for (const row of response.data) priorPages.add(JSON.stringify(row));
+      activity.push(...response.data);
+      const next = response.pagination.next_cursor;
+      if (next === null) return { activity, requestCount: page + 1 };
+      if (cursors.has(next)) throw new PolyDataApiPositionsV2Error("activity cursor cycle");
+      cursors.add(next);
+      cursor = next;
+    }
+    throw new PolyDataApiPositionsV2Error("activity request budget exhausted", "request_budget");
   }
 
   /**

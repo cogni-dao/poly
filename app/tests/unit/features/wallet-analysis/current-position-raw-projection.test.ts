@@ -29,8 +29,8 @@ const WALLET = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
 
 /** Row with full raw projections + empty-string Gamma title (nonEmpty fallback). */
 const fullRow = {
-  condition_id: "0xcond",
-  token_id: "token1",
+  condition_id: `0x${"ab".repeat(32)}`,
+  token_id: "101",
   shares: "10",
   cost_basis_usdc: "5",
   current_value_usdc: "6.5",
@@ -66,7 +66,7 @@ const fullRow = {
 /** Row with NO raw fields at all — every raw-derived default must fire. */
 const bareRow = {
   ...fullRow,
-  token_id: "token2",
+  token_id: "102",
   raw_cur_price: null,
   raw_end_date: null,
   raw_title: null,
@@ -82,6 +82,13 @@ function fakeDb(rows: unknown[]) {
     captured,
     execute: async (query: unknown) => {
       captured.push(new PgDialect().sqlToQuery(query as never).sql);
+      if (captured.at(-1)?.includes("WITH requested AS")) {
+        return { rows: rows.map((value) => {
+          const row = value as typeof fullRow;
+          return { condition_id: row.condition_id?.toLowerCase(), token_id: row.token_id, requested_wallet: WALLET, requested_mode: "live", source: "current", observed_at: row.last_observed_at,
+            raw: { title: row.raw_title, eventTitle: row.raw_event_title, slug: row.raw_slug, eventSlug: row.raw_event_slug, outcome: row.raw_outcome } };
+        }) };
+      }
       return { rows };
     },
   };
@@ -101,15 +108,15 @@ describe("current-position read model raw->> projection equivalence", () => {
     expect(model.targetCorrelatedKeys.size).toBe(0);
     const position = model.positions[0];
     expect(position).toMatchObject({
-      positionId: "0xcond:token1",
-      conditionId: "0xcond",
-      asset: "token1",
+      positionId: `0x${"ab".repeat(32)}:101`,
+      conditionId: `0x${"ab".repeat(32)}`,
+      asset: "101",
       // Gamma title is "" → NULLIF-mirror falls back to raw projection.
       marketTitle: "Will X happen?",
       eventTitle: "X event",
       marketSlug: "will-x",
       eventSlug: "x-event",
-      marketUrl: "https://polymarket.com/event/x-event/will-x",
+      marketUrl: "https://polymarket.com/event/x-event",
       outcome: "Yes",
       status: "open",
       openedAt: "2026-09-28T00:00:00.000Z",
@@ -146,7 +153,7 @@ describe("current-position read model raw->> projection equivalence", () => {
       capturedAt: CAPTURED_AT,
     });
 
-    expect([...model.targetCorrelatedKeys]).toEqual(["0xcond:token1"]);
+    expect([...model.targetCorrelatedKeys]).toEqual([`0x${"ab".repeat(32)}:101`]);
   });
 
   it("absent raw projections hit the same defaults as absent raw keys", async () => {

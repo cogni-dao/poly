@@ -12,9 +12,12 @@ import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
 import { persistPositionGapTargetSnapshot } from "@/features/wallet-analysis/server/copy-target-position-hydration-service";
 import { getRecentAttemptsForAccount } from "@/features/wallet-analysis/server/copy-trade-attempts-read";
 import {
+  buildMarketExposureGroups,
   buildBoundedMarketExposureGroups,
   buildBoundedMarketExposureWithCoverage,
 } from "@/features/wallet-analysis/server/market-exposure-service";
+import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
+import { readEconomicPositionProjection } from "@/features/wallet-analysis/server/economic-position-read-model";
 import { refreshMarketMetadata } from "@/features/wallet-analysis/server/poly-market-metadata-service";
 import {
   positionMetadataRequestKey,
@@ -34,6 +37,8 @@ const fieldCondition = `0x${unique}${"a".repeat(32)}`;
 const planCondition = `0x${unique}${"b".repeat(32)}`;
 const tiedCondition = `0x${unique}${"c".repeat(32)}`;
 const proofConditions = Array.from({ length: 20 }, (_, index) => `0x${unique}${(index + 1).toString(16).padStart(32, "0")}`);
+const integrationCondition = `0x${unique}${"e".repeat(32)}`;
+const futureCondition = `0x${unique}${"f".repeat(32)}`;
 const attemptCondition = `0x${unique}${"d".repeat(32)}`;
 const wallet = `0x${unique}aabbccdd`;
 const ownWallet = `0x${unique}eeff0011`;
@@ -125,7 +130,7 @@ async function addCurrent(
   await db.execute(sql`INSERT INTO poly_trader_current_positions
     (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,last_observed_at,raw)
     SELECT id,${condition},${token},10,4,6,.4,${randomUUID()},${at(offset)}::timestamptz,${JSON.stringify(raw)}::jsonb
-    FROM poly_trader_wallets WHERE wallet_address=${address}
+    FROM poly_trader_wallets WHERE wallet_address=${address} AND kind <> 'paper_wallet'
     ON CONFLICT (trader_wallet_id,condition_id,token_id) DO UPDATE SET
       active=true,shares=10,cost_basis_usdc=4,current_value_usdc=6,avg_price=.4,
       last_observed_at=EXCLUDED.last_observed_at,raw=EXCLUDED.raw`);
@@ -165,10 +170,10 @@ describe("saved metadata publication and indexed exact identity reads", () => {
   });
   afterAll(async () => {
     await db.execute(
-      sql`DELETE FROM poly_market_metadata WHERE lower(condition_id) IN (${conditionId},${fieldCondition},${planCondition},${tiedCondition},${attemptCondition},${sql.join(proofConditions.map(condition => sql`${condition}`), sql`,`)})`,
+      sql`DELETE FROM poly_market_metadata WHERE lower(condition_id) IN (${conditionId},${fieldCondition},${planCondition},${tiedCondition},${attemptCondition},${integrationCondition},${futureCondition},${sql.join(proofConditions.map(condition => sql`${condition}`), sql`,`)})`,
     );
     await db.execute(
-      sql`DELETE FROM poly_market_outcomes WHERE lower(condition_id) IN (${conditionId},${fieldCondition},${planCondition},${tiedCondition},${attemptCondition},${sql.join(proofConditions.map(condition => sql`${condition}`), sql`,`)})`,
+      sql`DELETE FROM poly_market_outcomes WHERE lower(condition_id) IN (${conditionId},${fieldCondition},${planCondition},${tiedCondition},${attemptCondition},${integrationCondition},${futureCondition},${sql.join(proofConditions.map(condition => sql`${condition}`), sql`,`)})`,
     );
     await db.execute(sql`DELETE FROM billing_accounts WHERE id=${accountId}`);
     await db.execute(sql`DELETE FROM users WHERE id=${userId}`);
@@ -669,6 +674,99 @@ describe("saved metadata publication and indexed exact identity reads", () => {
         metadataAvailability: "available",
       }),
     ]);
+  });
+
+
+  it("shares as-of metadata across current/history/markets without future, wallet or mode revival", async () => {
+    const condition = integrationCondition, exact = "801", closed = "802";
+    const [paper] = rows<{ id: string }>(await db.execute(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label)
+      VALUES (${`0x${ownWallet.slice(2).toUpperCase()}`},'paper_wallet','Mode trap') RETURNING id`));
+    if (!paper) throw new Error("Missing mode trap");
+    const siblingAddress = `${ownWallet.slice(0, -8)}Eeff0011`;
+    const [sibling] = rows<{ id: string }>(await db.execute(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label)
+      VALUES (${siblingAddress},'cogni_wallet','Physical sibling') RETURNING id`));
+    if (!sibling) throw new Error("Missing physical sibling");
+    try {
+      await addCurrent(ownWallet, condition, exact, { title: "Polymarket", outcome: "UNKNOWN", slug: "" }, 10);
+      await addCurrent(wallet, condition, exact, { title: "Other wallet trap", outcome: "Wrong wallet" }, 11);
+      await db.execute(sql`INSERT INTO poly_trader_current_positions
+        (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,last_observed_at,raw)
+        VALUES (${paper.id},${condition},${exact},10,40,60,4,'mode-trap',${at(11)}::timestamptz,'{"title":"Paper trap","outcome":"Wrong mode"}'::jsonb)`);
+      for (const token of [exact, closed]) {
+        await db.execute(sql`INSERT INTO poly_trader_fills
+          (trader_wallet_id,source,native_id,condition_id,token_id,side,price,shares,size_usdc,observed_at,raw)
+          SELECT id,'data-api',${randomUUID()},${condition},${token},'BUY',.4,10,4,${at(1)}::timestamptz,
+            '{"title":"Older exact title","eventTitle":"Older event","eventSlug":"older-event","slug":"older-market","outcome":"Older exact outcome"}'::jsonb
+          FROM poly_trader_wallets WHERE wallet_address=${ownWallet} AND kind='cogni_wallet'`);
+      }
+      await db.execute(sql`INSERT INTO poly_trader_fills
+        (trader_wallet_id,source,native_id,condition_id,token_id,side,price,shares,size_usdc,observed_at,raw)
+        SELECT id,'data-api',${randomUUID()},${condition},${closed},'SELL',.6,10,6,${at(2)}::timestamptz,'{}'::jsonb
+        FROM poly_trader_wallets WHERE wallet_address=${ownWallet} AND kind='cogni_wallet'`);
+      await db.execute(sql`INSERT INTO poly_market_metadata (condition_id,market_title,event_slug,fetched_at)
+        VALUES (${condition},'Future title','future-event',${at(30)}::timestamptz)`);
+      await db.execute(sql`INSERT INTO poly_trader_ingestion_cursors (trader_wallet_id,source,status,last_success_at)
+        SELECT id,'data-api-positions','ok',${at(15)}::timestamptz FROM poly_trader_wallets WHERE wallet_address=${ownWallet} AND kind='cogni_wallet'
+        ON CONFLICT (trader_wallet_id,source) DO UPDATE SET status='ok',last_success_at=EXCLUDED.last_success_at`);
+      const cutoff = at(20);
+      const projection = await readEconomicPositionProjection({ db, billingAccountId: accountId, walletAddress: ownWallet, connectionKind: "privy_live", capturedAt: new Date(cutoff), interval: "1W" });
+      const current = await readCurrentWalletPositionModel({ db, billingAccountId: accountId, walletAddress: ownWallet, mode: "live", capturedAt: new Date(cutoff) });
+      const expected = { marketTitle: "Older exact title", outcome: "Older exact outcome", eventTitle: "Older event", eventSlug: "older-event", marketSlug: "older-market", marketUrl: "https://polymarket.com/event/older-event" };
+      const own = projection.livePositions.find(p => p.conditionId === condition && p.asset === exact);
+      if (!own) throw new Error("Missing real economic position");
+      expect(own).toMatchObject(expected);
+      expect(projection.closedPositions.find(p => p.conditionId === condition && p.asset === closed)).toMatchObject(expected);
+      expect(current.positions.find(p => p.conditionId === condition && p.asset === exact)).toMatchObject(expected);
+      const builders = async (position: WalletExecutionPosition, capturedAt: string) => [
+        await buildMarketExposureGroups({ db, billingAccountId: accountId, walletAddress: ownWallet, livePositions: [position], capturedAt }),
+        (await buildBoundedMarketExposureGroups({ db, billingAccountId: accountId, walletAddress: ownWallet, livePositions: [position], capturedAt })).groups,
+        (await buildBoundedMarketExposureWithCoverage({ db, billingAccountId: accountId, walletAddress: ownWallet, connectionKind: "privy_live", livePositions: [position], capturedAt })).market.groups,
+      ];
+      for (const groups of await builders(own, cutoff)) {
+        const line = groups.flatMap(g => g.lines).find(l => l.conditionId === condition);
+        expect(line?.marketTitle).toBe(expected.marketTitle);
+        expect(line?.marketSlug).toBe("older-market");
+        expect(line?.participants.find(p => p.side === "our_wallet")?.primary?.outcome).toBe(expected.outcome);
+      }
+      const fact = projection.positionFacts.find(f => f.conditionId === condition && f.tokenId === exact);
+      if (!fact) throw new Error("Missing canonical fact");
+      for (const positionFacts of [[], [fact, fact], [{ ...fact, mode: "paper" as const }], [{ ...fact, currentValueUsdc: null, remainingBasisUsdc: null, unrealizedPnlUsdc: null }]]) {
+        const params = { db, billingAccountId: accountId, walletAddress: ownWallet, livePositions: [own], capturedAt: cutoff, mode: "live" as const, positionFacts };
+        const outputs = [await buildMarketExposureGroups(params), (await buildBoundedMarketExposureGroups(params)).groups, (await buildBoundedMarketExposureWithCoverage({ ...params, connectionKind: "privy_live" })).market.groups];
+        for (const groups of outputs) {
+          const line = groups.flatMap(g => g.lines).find(l => l.conditionId === condition);
+          expect(line?.ourEntryValueUsdc).toBeNull();
+          expect(line?.ourValueUsdc).toBeNull();
+          expect(line?.participants.find(p => p.side === "our_wallet")?.primary).toMatchObject({ tokenId: exact, costBasisUsdc: null, currentValueUsdc: null, vwap: null, pnlUsdc: null });
+        }
+      }
+      // Later-only saved target observation cannot certify an earlier comparison.
+      await addCurrent(wallet, futureCondition, exact, { title: "Future target", outcome: "Future outcome" }, 30);
+      await db.execute(sql`INSERT INTO poly_trader_position_snapshots
+        (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,captured_at,raw)
+        SELECT id,${futureCondition},${exact},10,4,6,.4,'future-only',${at(30)}::timestamptz,'{"title":"Future target","outcome":"Future outcome"}'::jsonb
+        FROM poly_trader_wallets WHERE wallet_address=${wallet}`);
+      const futureOwn = { ...own, conditionId: futureCondition, positionId: `${futureCondition}:${exact}`, marketTitle: "Unverified legacy fallback", outcome: "Unverified legacy outcome" };
+      for (const groups of await builders(futureOwn, cutoff)) {
+        const line = groups.flatMap(g => g.lines).find(l => l.conditionId === futureCondition);
+        expect(line?.participants.filter(p => p.side === "copy_target")).toEqual([]);
+        expect(line?.marketTitle).toBe("Polymarket");
+        expect(line?.participants.find(p => p.side === "our_wallet")?.primary?.outcome).toBe("UNKNOWN");
+      }
+      // Same-time physical condition siblings conflict; identity stays visible.
+      const mixed = `0x${condition.slice(2).toUpperCase()}`;
+      await addCurrent(ownWallet, condition, exact, { outcome: "First label" }, 15);
+      await addCurrent(ownWallet, mixed, exact, { outcome: "Second label" }, 15);
+      const conflicted = await readCurrentWalletPositionModel({ db, billingAccountId: accountId, walletAddress: ownWallet, mode: "live", capturedAt: new Date(cutoff) });
+      expect(conflicted.positions.find(p => p.conditionId === condition && p.asset === exact)).toMatchObject({ outcome: "UNKNOWN", marketTitle: "Older exact title" });
+      await db.execute(sql`INSERT INTO poly_trader_current_positions
+        (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,last_observed_at,raw)
+        VALUES (${sibling.id},${condition},${exact},10,4,6,.4,'physical-sibling',${at(15)}::timestamptz,'{"outcome":"First label"}'::jsonb)`);
+      const evidence = rows(await db.execute(positionMetadataSelect([{ conditionId: condition, tokenId: exact, wallet: ownWallet, mode: "live" }], cutoff)));
+      expect(evidence.length).toBeLessThanOrEqual(24);
+    } finally {
+      await db.execute(sql`DELETE FROM poly_trader_wallets WHERE id IN (${paper.id},${sibling.id})`);
+    }
   });
 
   it("proves indexed rows visited and scalar bounds against unrelated and sparse token history", async () => {

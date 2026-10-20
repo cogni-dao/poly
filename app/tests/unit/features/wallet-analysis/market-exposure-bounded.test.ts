@@ -80,7 +80,7 @@ function targetParticipant(overrides?: Record<string, unknown>) {
   };
 }
 
-function fakeDb(targetRows: unknown[], rollupRows: unknown[] = []) {
+function fakeDb(targetRows: unknown[], rollupRows: unknown[] = [], metadataRows: unknown[] = []) {
   const sql: string[] = [];
   let call = 0;
   return {
@@ -88,7 +88,7 @@ function fakeDb(targetRows: unknown[], rollupRows: unknown[] = []) {
     execute: async (query: unknown) => {
       const statement = new PgDialect().sqlToQuery(query as never).sql;
       sql.push(statement);
-      if (statement.includes("jsonb_to_recordset")) return [];
+      if (statement.includes("jsonb_to_recordset")) return metadataRows;
       call += 1;
       if (call === 1) return targetRows;
       if (call === 2) return [{ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }];
@@ -235,8 +235,8 @@ describe("bounded market exposure", () => {
       ],
     });
     expect(read.groups[0]?.lines[0]?.participants[0]?.primary).toMatchObject({
-      currentValueUsdc: 6,
-      costBasisUsdc: 5,
+      currentValueUsdc: null,
+      costBasisUsdc: null,
       pnlUsdc: null,
     });
   });
@@ -350,9 +350,16 @@ describe("bounded market exposure", () => {
   });
 
   it("null-propagates group target totals when any child line lacks target facts", async () => {
-    const db = fakeDb([targetParticipant()]);
+    const identity = (index: number) => ({ conditionId: `0x${String(index + 1).padStart(64, "0")}`, tokenId: String(index + 1) });
+    const identities = [identity(0), identity(1)];
+    const db = fakeDb([targetParticipant({ condition_id: identity(0).conditionId, legs: targetParticipant().legs.map((leg, index) => ({ ...leg, token_id: String(11 + index) })) })], [], identities.map(identity => ({
+      condition_id: identity.conditionId, token_id: identity.tokenId,
+      requested_wallet: OUR, requested_mode: "live", source: "current",
+      observed_at: "2026-10-03T00:00:00.000Z", raw: { eventSlug: "event-0", eventTitle: "Event 0" },
+    })));
     const second = {
       ...position(1),
+      conditionId: identity(1).conditionId, asset: identity(1).tokenId,
       eventTitle: "Event 0",
       eventSlug: "event-0",
     };
@@ -360,7 +367,7 @@ describe("bounded market exposure", () => {
       db,
       billingAccountId: "tenant-a",
       walletAddress: OUR,
-      livePositions: [position(), second],
+      livePositions: [{ ...position(), conditionId: identity(0).conditionId, asset: identity(0).tokenId }, second],
     });
 
     expect(read.groups).toHaveLength(1);

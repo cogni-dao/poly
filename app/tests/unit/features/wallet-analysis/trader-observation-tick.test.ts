@@ -60,7 +60,8 @@ const walletRow = (id: string, walletAddress: string, kind = "cogni_wallet") => 
 function createFakeDb(
   walletRows: unknown[],
   cursorRows: unknown[] = [],
-  failActivityCursor = false
+  failActivityCursor = false,
+  executeResult?: (query: unknown) => unknown
 ) {
   let cursorReads = 0;
   const executeCalls: unknown[] = [];
@@ -146,7 +147,7 @@ function createFakeDb(
           },
         ];
       }
-      return { rowCount: 0 };
+      return executeResult?.(query) ?? { rowCount: 0 };
     },
   };
   // withStatementTimeout runs its body inside a transaction; the fake hands
@@ -506,6 +507,49 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     });
 
     expect(stages).toContain("wallet_loop");
+    expect(stages).not.toContain("prune_position_snapshots");
+    expect(stages).not.toContain("refresh_market_metadata");
+  });
+
+  it("propagates an abort inside recovery before empty-target hydration or maintenance", async () => {
+    const controller = new AbortController();
+    const { db, executeCalls } = createFakeDb([], [], false, (query) =>
+      JSON.stringify(query).includes("WITH owned_wallets")
+        ? [
+            {
+              wallet_id: "wallet-a",
+              wallet_address: WALLET_A,
+              condition_id: `0x${"01".repeat(32)}`,
+              token_id: "1",
+            },
+          ]
+        : [],
+    );
+    const stages: string[] = [];
+    const client = {
+      listUserPositionsV2Raw: vi.fn(async () => {
+        controller.abort(new Error("tick timeout inside recovery"));
+        controller.signal.throwIfAborted();
+      }),
+    } as unknown as PolymarketDataApiClient;
+    await expect(
+      runTraderObservationTick({
+        db,
+        client,
+        listActiveTradingAddresses: async () => [],
+        logger: makeLogger() as never,
+        metrics,
+        signal: controller.signal,
+        readEconomicSettlement: async () => null,
+        onStage: (stage) => {
+          stages.push(stage);
+        },
+      }),
+    ).rejects.toThrow("tick timeout inside recovery");
+    expect(client.listUserPositionsV2Raw).toHaveBeenCalledTimes(1);
+    expect(executeCalls).toHaveLength(2); // selection + bounded attempt, nothing after cancellation
+    expect(stages).not.toContain("hydrate_copy_targets");
+    expect(stages).not.toContain("prune_pnl_points");
     expect(stages).not.toContain("prune_position_snapshots");
     expect(stages).not.toContain("refresh_market_metadata");
   });

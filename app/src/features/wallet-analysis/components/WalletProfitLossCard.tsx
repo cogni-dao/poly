@@ -43,12 +43,14 @@ export type WalletProfitLossCardProps = {
   history?: readonly WalletPnlHistoryPoint[] | undefined;
   interval: PolyWalletOverviewInterval;
   isLoading?: boolean | undefined;
+  source?: "polymarket" | "paper" | undefined;
 };
 
 export function WalletProfitLossCard({
   history,
   interval,
   isLoading = false,
+  source = "polymarket",
 }: WalletProfitLossCardProps): ReactElement {
   if (isLoading) {
     return (
@@ -76,9 +78,12 @@ export function WalletProfitLossCard({
   return (
     <div className="space-y-4 rounded-xl border border-border/60 bg-muted/10 p-4">
       <div className="font-medium text-muted-foreground text-xs uppercase tracking-wider">
-        Profit/Loss
+        {source === "paper" ? "Paper trading P/L" : "Trading P/L before fees"}
       </div>
 
+      <p className="text-muted-foreground text-xs">
+        {source === "paper" ? "Paper account trading results." : "Polymarket trading results before fees. Funding and full account reconciliation are separate."}
+      </p>
       <div className="space-y-1">
         <div className={`font-medium text-sm ${accentClass}`}>Profit/Loss</div>
         <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
