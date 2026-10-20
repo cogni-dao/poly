@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { TransactionReceipt } from "viem";
-import type { PolymarketActivityV2, PolymarketUserPositionV2 } from "@cogni/poly-market-provider/adapters/polymarket";
+import type { PolymarketActivityV2, PolymarketUserPositionV2, PolymarketUserPosition, PolymarketDataApiClient } from "@cogni/poly-market-provider/adapters/polymarket";
 import { buildEconomicObservations, verifyEconomicSettlement } from "@/features/wallet-analysis/server/economic-observation-recovery";
 import {
   polyMarketOutcomes,
@@ -19,7 +19,7 @@ import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { type SQL, and, eq, inArray, sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { PAPER_POSITION_CURSOR_SOURCE } from "@/features/wallet-analysis/server/paper-fact-source";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   billingAccounts,
   polyCopyTradeFills,
@@ -28,6 +28,7 @@ import {
   polyWalletConnections,
   users,
 } from "@/shared/db/schema";
+import { refreshCurrentPositionsForWallet, PositionObservationController, PositionBalanceTransportError } from "@/features/wallet-analysis/server/trader-observation-service";
 import { readEconomicPositionProjection } from "@/features/wallet-analysis/server/economic-position-read-model";
 import { readTenantWalletDashboard } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 import {
@@ -340,6 +341,159 @@ describe("wallet dashboard coherent snapshot", () => {
     await db.delete(billingAccounts).where(inArray(billingAccounts.id, [TENANT_A, TENANT_B]));
     await db.delete(users).where(inArray(users.id, [USER_A, USER_B]));
     await db.delete(polyTraderWallets).where(inArray(polyTraderWallets.id, [walletA.id, walletB.id, ...targetWalletIds]));
+  });
+
+  // Actual composed writer -> durable PG -> economic SQL/dashboard/public builders.
+  // Transport is controlled; every successful database operation is real.
+  it.each([
+    { name: "absent native history", partial: false, positiveDust: false, loser: false },
+    { name: "partial native history without an event", partial: true, positiveDust: false, loser: false },
+    { name: "positive terminal 1n", partial: true, positiveDust: true, loser: false },
+    { name: "typed loser zero valuation", partial: false, positiveDust: false, loser: true },
+  ])("composes actual writer recovery with current economics: $name", async testCase => {
+    const suffix = randomUUID(), userId = `writer-generation-${suffix}`, account = `writer-generation-${suffix}`;
+    const address = `0x${suffix.replaceAll("-", "").padStart(40, "e")}`;
+    const winnerCondition = `0x${suffix.replaceAll("-", "").padStart(64, "d")}`;
+    const healthyCondition = `0x${suffix.replaceAll("-", "").padStart(64, "b")}`;
+    const wallet = await seedConnection({ userId, billingAccountId: account, address });
+    const position = (tokenId: string, conditionId: string, redeemable: boolean): PolymarketUserPosition => ({
+      proxyWallet: address, asset: tokenId, conditionId, size: redeemable ? 10 : 2,
+      avgPrice: redeemable ? .6 : .5, initialValue: redeemable ? 6 : 1,
+      currentValue: redeemable ? 10 : 2, cashPnl: redeemable ? 4 : 1, percentPnl: 0,
+      totalBought: redeemable ? 6 : 1, realizedPnl: 0, percentRealizedPnl: 0, curPrice: 1,
+      redeemable, mergeable: false, title: redeemable ? "Measured W" : "Healthy H",
+      slug: redeemable ? "measured-w" : "healthy-h", icon: "", eventId: conditionId,
+      eventSlug: conditionId, outcome: "Yes", outcomeIndex: 0, oppositeOutcome: "No",
+      oppositeAsset: `${tokenId}9`, endDate: "2027-01-01", negativeRisk: false,
+    });
+    const winner = position("811", winnerCondition, true), healthy = position("812", healthyCondition, false);
+    const read = vi.fn(async () => [winner, healthy]);
+    const client = { listUserPositions: read } as unknown as PolymarketDataApiClient;
+    const authority = vi.fn<NonNullable<Parameters<typeof refreshCurrentPositionsForWallet>[0]["readPositionBalances"]>>();
+    const cursor = async () => {
+      const [saved] = await db.select().from(polyTraderIngestionCursors).where(and(
+        eq(polyTraderIngestionCursors.traderWalletId, wallet.id), eq(polyTraderIngestionCursors.source, "data-api-positions")));
+      if (!saved?.lastSuccessAt) throw new Error("Missing actual writer generation");
+      return { ...saved, lastSuccessAt: saved.lastSuccessAt };
+    };
+    const rows = () => db.select().from(polyTraderCurrentPositions)
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    const publish = async (eligibleAfter: Date, delayed = false) => refreshCurrentPositionsForWallet({
+      db: db as unknown as Parameters<typeof refreshCurrentPositionsForWallet>[0]["db"], client,
+      walletAddress: address, readPositionBalances: authority,
+      // Only eligibility/retry waiting is controlled. All capture/completion
+      // authority is produced by the real PostgreSQL publication transaction.
+      positionControl: new PositionObservationController({ now: () => eligibleAfter.getTime() + 31_000,
+        wait: async () => {}, random: () => 0 }),
+      ...(delayed ? { beforePositionCursorPublish: async () => {
+        await new Promise(resolve => setTimeout(resolve, 80));
+      } } : {}),
+    });
+    try {
+      const flowAt = new Date(Date.now() - 3600_000);
+      await db.insert(polyTraderFills).values([
+        { traderWalletId: wallet.id, source: "data-api", nativeId: `${suffix}-W`, conditionId: winnerCondition,
+          tokenId: "811", side: "BUY", price: ".6", shares: "10", sizeUsdc: "6", observedAt: flowAt },
+        { traderWalletId: wallet.id, source: "data-api", nativeId: `${suffix}-H`, conditionId: healthyCondition,
+          tokenId: "812", side: "BUY", price: ".5", shares: "2", sizeUsdc: "1", observedAt: flowAt },
+      ]);
+      await db.insert(polyMarketOutcomes).values({ conditionId: winnerCondition, tokenId: "811", outcome: "winner",
+        payout: "1", resolvedAt: flowAt, updatedAt: flowAt });
+      // t0 current rows and their clocks come ONLY from the actual writer.
+      expect(await publish(new Date(), true)).toMatchObject({ complete: true, positionRows: 2 });
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(authority).not.toHaveBeenCalled();
+      const initial = await cursor();
+      const before = (await rows()).find(row => row.tokenId === "811");
+      expect(before).toMatchObject({ shares: "10.00000000", currentValueUsdc: "10.00000000",
+        active: false, lastObservedAt: initial.lastSuccessAt });
+      expect(initial.updatedAt.getTime() - initial.lastSuccessAt.getTime()).toBeGreaterThanOrEqual(60);
+      await db.update(polyWalletBalanceSnapshots).set({ usdcE: "90", pusd: "0", observedAt: initial.lastSuccessAt })
+        .where(eq(polyWalletBalanceSnapshots.billingAccountId, account));
+      const initialDashboard = await readTenantWalletDashboard({ db, billingAccountId: account, interval: "1W", adapterConfigured: true });
+      expect(initialDashboard.overview).toMatchObject({ usdc_positions_mtm: 12, usdc_total: 102 });
+
+      // Historical recovery may legitimately arrive between publications; it
+      // updates only trusted raw evidence, never the saved inventory clock.
+      const evidence = testCase.partial ? { version: 1, wallet: address, conditionId: winnerCondition, tokenId: "811",
+        coverage: "partial", fetchedAt: initial.lastSuccessAt.toISOString(), windowStart: flowAt.toISOString(),
+        windowEnd: initial.lastSuccessAt.toISOString(), reasons: ["missing_closed_position"], closedPosition: null,
+        lifetimeBuyUsdc: 6, lifetimeBuyShares: 10, lifetimeSellUsdc: 0, lifetimePnlUsdc: null,
+        redeemUsdc: 0, constituents: [], settlements: [] } : undefined;
+      if (evidence) await db.update(polyTraderCurrentPositions)
+        .set({ raw: { ...winner, economicObservationV1: evidence } })
+        .where(and(eq(polyTraderCurrentPositions.traderWalletId, wallet.id), eq(polyTraderCurrentPositions.tokenId, "811")));
+      if (testCase.loser) await db.update(polyMarketOutcomes).set({ outcome: "loser", payout: "0" })
+        .where(and(eq(polyMarketOutcomes.conditionId, winnerCondition), eq(polyMarketOutcomes.tokenId, "811")));
+      const retainedBefore = (await rows()).find(row => row.tokenId === "811");
+      read.mockImplementation(async () => [healthy]);
+      if (testCase.positiveDust) authority.mockResolvedValueOnce([1n]);
+      else authority.mockRejectedValueOnce(new PositionBalanceTransportError("503"))
+        .mockRejectedValueOnce(new PositionBalanceTransportError("503"));
+      // t1 independently healthy inventory publishes despite unavailable W.
+      expect(await publish(initial.updatedAt, true)).toMatchObject({ complete: true, positionRows: 1 });
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(authority).toHaveBeenCalledTimes(testCase.positiveDust ? 1 : 2);
+      for (const [input] of authority.mock.calls) expect(input).toMatchObject({ walletAddress: address, tokenIds: ["811"] });
+      const omitted = await cursor();
+      expect(omitted.status).toBe("ok");
+      if (testCase.positiveDust) expect(omitted.errorMessage).toBeNull();
+      else expect(omitted.errorMessage).toContain('terminal_recovery_v1:{"reason":"authority_unavailable"');
+      expect(omitted.lastSuccessAt.getTime()).toBeGreaterThan(initial.lastSuccessAt.getTime());
+      expect(omitted.updatedAt.getTime() - omitted.lastSuccessAt.getTime()).toBeGreaterThanOrEqual(60);
+      expect((await rows()).find(row => row.tokenId === "811")).toEqual(retainedBefore);
+      expect((await rows()).find(row => row.tokenId === "812")?.lastObservedAt).toEqual(omitted.lastSuccessAt);
+      await db.update(polyWalletBalanceSnapshots).set({ usdcE: "100", pusd: "0", observedAt: omitted.lastSuccessAt })
+        .where(eq(polyWalletBalanceSnapshots.billingAccountId, account));
+      const cutoff = new Date();
+      const projection = await readEconomicPositionProjection({ db, billingAccountId: account, walletAddress: address,
+        connectionKind: "privy_live", capturedAt: cutoff, interval: "1W" });
+      const value = testCase.loser ? 0 : null;
+      expect(projection.positionFacts.find(row => row.tokenId === "811")).toMatchObject({
+        heldShares: null, remainingBasisUsdc: null, currentValueUsdc: value, unrealizedPnlUsdc: null,
+        observedAt: initial.lastSuccessAt.toISOString(), inventoryCoverage: "unavailable", lifetimePnlUsdc: null });
+      expect(projection.positionFacts.find(row => row.tokenId === "812")).toMatchObject({ heldShares: 2, currentValueUsdc: 2 });
+      expect(projection.positionsMtm).toBe(testCase.loser ? 2 : null);
+      const dashboard = await readTenantWalletDashboard({ db, billingAccountId: account, interval: "1W", adapterConfigured: true });
+      expect(dashboard.overview.usdc_positions_mtm).toBe(testCase.loser ? 2 : null);
+      expect(dashboard.overview.usdc_total).toBe(testCase.loser ? 102 : null);
+      const params = { db, billingAccountId: account, walletAddress: address, mode: "live" as const,
+        capturedAt: cutoff.toISOString(), livePositions: projection.livePositions, closedPositions: projection.closedPositions,
+        positionFacts: projection.positionFacts };
+      const groups = await buildMarketExposureGroups(params);
+      const bounded = await buildBoundedMarketExposureGroups(params);
+      const coverage = await buildBoundedMarketExposureWithCoverage({ ...params, connectionKind: "privy_live" });
+      for (const result of [groups, bounded.groups, coverage.market.groups]) {
+        const legs = result.flatMap(group => group.lines).flatMap(line => line.participants)
+          .filter(participant => participant.side === "our_wallet").flatMap(participant => participant.legs ?? []);
+        expect(legs).toContainEqual(expect.objectContaining({ tokenId: "811", currentValueUsdc: value, costBasisUsdc: null }));
+        expect(legs).toContainEqual(expect.objectContaining({ tokenId: "812", currentValueUsdc: 2, costBasisUsdc: 1 }));
+      }
+      // A real later zero, never the omission/hint/lifecycle, restores authority.
+      authority.mockResolvedValueOnce([0n]);
+      expect(await publish(omitted.updatedAt)).toMatchObject({ complete: true, positionRows: 1 });
+      expect(authority).toHaveBeenCalledTimes(testCase.positiveDust ? 2 : 3);
+      expect(read).toHaveBeenCalledTimes(3);
+      const recovered = await cursor();
+      expect(recovered.errorMessage).toBeNull();
+      const closed = (await rows()).find(row => row.tokenId === "811");
+      expect(closed).toMatchObject({ active: false, shares: "0.00000000", costBasisUsdc: "0.00000000",
+        currentValueUsdc: "0.00000000", lastObservedAt: recovered.lastSuccessAt });
+      expect(closed?.raw).toEqual(retainedBefore?.raw);
+      expect(recovered.lastSuccessAt.getTime()).toBeGreaterThan(omitted.lastSuccessAt.getTime());
+      const finalProjection = await readEconomicPositionProjection({ db, billingAccountId: account, walletAddress: address,
+        connectionKind: "privy_live", capturedAt: new Date(), interval: "1W" });
+      expect(finalProjection.positionFacts.find(row => row.tokenId === "811")).toMatchObject({ heldShares: 0,
+        remainingBasisUsdc: 0, currentValueUsdc: 0, observedAt: recovered.lastSuccessAt.toISOString() });
+      expect(finalProjection.positionsMtm).toBe(2);
+      const finalDashboard = await readTenantWalletDashboard({ db, billingAccountId: account, interval: "1W", adapterConfigured: true });
+      expect(finalDashboard.overview).toMatchObject({ usdc_positions_mtm: 2, usdc_total: 102 });
+    } finally {
+      await db.delete(polyMarketOutcomes).where(eq(polyMarketOutcomes.conditionId, winnerCondition));
+      await db.delete(billingAccounts).where(eq(billingAccounts.id, account));
+      await db.delete(users).where(eq(users.id, userId));
+      await db.delete(polyTraderWallets).where(eq(polyTraderWallets.id, wallet.id));
+    }
   });
 
   // Captured writer publication states, not execution of PR239's writer.
