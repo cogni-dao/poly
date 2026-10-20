@@ -161,6 +161,7 @@ function runtimeFromRun(
 		dataApiVerified: unknown;
     paperVerified?: unknown;
     paperZero?: unknown;
+    buyOrders?: unknown;
     verifiedModes?: unknown;
 		mismatched: unknown;
 		mismatchReason: unknown;
@@ -272,7 +273,8 @@ function runtimeFromRun(
 					realized_shares: verifiedShares,
 					realized_entry_notional_usdc: verifiedUsdc,
 				}
-			: reportedMatched === 0 && numberOf(execution.paperZero) === 1
+			: reportedMatched === 0 && verifiedMatched === 0 && verifiedShares === 0 && verifiedUsdc === 0 &&
+        numberOf(execution.buyOrders) === 1 && numberOf(execution.paperZero) === 1
         ? paperFillAccountingPresentation({ positive: false, zero: true, shares: 0, notional: 0 })
       : mismatched > 0 && mismatchReason !== null
 				? {
@@ -499,6 +501,7 @@ export const positionGapActionAggregateSelect = (
 	tx
 		.select({
 			targetId: polyPositionGapActions.targetId,
+			buyOrders: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy')`,
 			submitted: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.submittedAt} IS NOT NULL)`,
 			reportedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${polyPositionGapActions.filledShares} > 0)`,
 			verifiedMatched: sql<string>`count(*) FILTER (WHERE ${polyPositionGapActions.kind} = 'buy' AND ${copyFillAccountingSql("poly_copy_trade_fills").positionGapVerified} AND ${polyCopyTradeFills.shares} > 0 AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$')`,
