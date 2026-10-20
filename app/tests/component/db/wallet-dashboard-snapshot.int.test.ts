@@ -973,7 +973,9 @@ describe("wallet dashboard coherent snapshot", () => {
       expect(line?.ourEntryValueUsdc).toBe(mode === "live" ? null : 6);
       expect(line?.ourValueUsdc).toBeNull();
       const own = line?.participants.find(p => p.side === "our_wallet");
-      expect(own?.primary).toMatchObject({ tokenId: "903", shares: 10, costBasisUsdc: 4, currentValueUsdc: 6, pnlUsdc: null });
+      // Native paper history proves mark 6 - BUY 4 - known fees 0 = +2.
+      // The live fixture has no complete lifetime history; its P/L stays unknown.
+      expect(own?.primary).toMatchObject({ tokenId: "903", shares: 10, costBasisUsdc: 4, currentValueUsdc: 6, pnlUsdc: mode === "paper" ? 2 : null });
       expect(own?.legs).toContainEqual(expect.objectContaining({ tokenId: "904", costBasisUsdc: mode === "live" ? null : 2, currentValueUsdc: null, pnlUsdc: null }));
       expect(line?.participants.find(p => p.side === "copy_target")?.legs?.map(leg => leg.tokenId)).toEqual(["901", "902", "903"]);
       expect(line?.tokenComparisons).toContainEqual(expect.objectContaining({ ourTokenId: "903", targetTokenId: "903", relation: "same", economicsAvailability: "unavailable" }));
