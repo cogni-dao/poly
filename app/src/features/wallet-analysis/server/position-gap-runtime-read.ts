@@ -375,6 +375,7 @@ export async function readPositionGapRuntimeByWallet(
 					tx,
 					accountId,
 					observedTargetIds,
+          capturedAt,
 				);
 	const execution = new Map(actionRows.map((row) => [row.targetId, row]));
 	const recentOrders =
