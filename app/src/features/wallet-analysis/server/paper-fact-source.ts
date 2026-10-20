@@ -106,10 +106,12 @@ import {
   polyTraderPositionSnapshots,
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
-import { and, eq, isNull, notInArray, sql } from "drizzle-orm";
+import { type SQL, and, eq, isNull, notInArray, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { derivePaperAccountAddress } from "@/features/paper-accounts";
+import { FILL_NOTIONAL_TOLERANCE, FILL_SHARE_TOLERANCE } from "@/features/trading/fill-accounting";
+import { fillNumericSql, paperFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import { EVENT_NAMES } from "@/shared/observability/events";
 import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 import { persistWalletBalanceFact } from "./wallet-balance-snapshot-service";
@@ -435,6 +437,87 @@ async function retireMissingPaperWallets(
 }
 
 /**
+ * One account-scoped SQL authority for current paper inventory and finance.
+ * No raw ledger/fill rows leave SQL. Immutable terminal events are authenticated
+ * against the accepted ledger tuple; cumulative nonterminal facts never become
+ * append-only events. The cutoff includes proof time, not just trade time.
+ */
+export function paperAccountingCtes(input: {
+  billingAccountId: string;
+  walletIds: SQL;
+  capturedAt: SQL;
+  enabled?: boolean;
+}): SQL {
+  const proof = paperFillAccountingSql("f", input.capturedAt);
+  return sql`
+    paper_ledger AS MATERIALIZED (
+      SELECT f.*, ${proof.positive} AS proof_positive,
+        ${proof.verified} AS proof_verified, ${proof.feeKnown} AS proof_fee_known,
+        ${proof.observedAt} AS proof_observed_at
+      FROM poly_copy_trade_fills f
+      WHERE f.billing_account_id = ${input.billingAccountId}
+        AND f.mode = 'paper' AND ${input.enabled !== false}
+    ), paper_projected AS MATERIALIZED (
+      SELECT p.*, l.client_order_id AS bound_client_order_id,
+        COALESCE(l.proof_positive AND l.status IN ('filled', 'canceled')
+          AND p.native_id = l.target_id::text || ':' || l.fill_id
+          AND p.raw->'paper_ledger'->>'client_order_id' = l.client_order_id
+          AND p.raw->'paper_ledger'->>'order_id' = l.order_id
+          AND lower(p.condition_id) = l.attributes->'paper_receipt_v1'->>'condition_id'
+          AND p.token_id = l.attributes->>'token_id' AND p.side = l.attributes->>'side'
+          AND abs(p.shares - l.shares) <= ${FILL_SHARE_TOLERANCE}::numeric
+          AND p.price = l.price
+          AND abs(p.size_usdc - ${fillNumericSql(sql`l.attributes->>'filled_size_usdc'`)})
+            <= greatest(${FILL_NOTIONAL_TOLERANCE}::numeric, abs(p.size_usdc) * ${FILL_NOTIONAL_TOLERANCE}::numeric)
+          AND p.observed_at <= ${input.capturedAt}, false) AS authenticated,
+        l.proof_observed_at
+      FROM poly_trader_fills p
+      LEFT JOIN paper_ledger l
+        ON p.native_id = l.target_id::text || ':' || l.fill_id
+      WHERE p.trader_wallet_id IN (${input.walletIds})
+        AND p.source = 'paper-ledger' AND ${input.enabled !== false}
+    ), paper_inventory_facts AS MATERIALIZED (
+      (SELECT DISTINCT ON (native_id) lower(condition_id) AS condition_id, token_id, side, price, shares,
+        size_usdc, greatest(observed_at, proof_observed_at) AS observed_at
+      FROM paper_projected WHERE authenticated
+      ORDER BY native_id, observed_at DESC, id)
+      UNION ALL
+      SELECT f.attributes->'paper_receipt_v1'->>'condition_id',
+        f.attributes->>'token_id', f.attributes->>'side', f.price, f.shares,
+        ${fillNumericSql(sql`f.attributes->'paper_receipt_v1'->>'notional_usdc'`)},
+        f.proof_observed_at
+      FROM paper_ledger f
+      WHERE f.proof_positive AND f.status NOT IN ('filled', 'canceled')
+        AND NOT EXISTS (SELECT 1 FROM paper_projected p
+          WHERE p.native_id = f.target_id::text || ':' || f.fill_id)
+    ), paper_position_fees AS MATERIALIZED (
+      SELECT attributes->'paper_receipt_v1'->>'condition_id' AS condition_id,
+        attributes->>'token_id' AS token_id, sum(fees_usdc) AS fees_usdc
+      FROM paper_ledger WHERE proof_verified AND proof_fee_known
+      GROUP BY attributes->'paper_receipt_v1'->>'condition_id', attributes->>'token_id'
+    ), paper_coverage_counts AS MATERIALIZED (
+      SELECT
+        (SELECT count(*) FROM paper_ledger WHERE NOT proof_verified) AS invalid_receipts,
+        (SELECT count(*) FROM paper_ledger WHERE proof_positive
+          AND status NOT IN ('filled', 'canceled')) AS partial_receipts,
+        (SELECT count(*) FROM paper_ledger f WHERE f.proof_positive
+          AND f.status IN ('filled', 'canceled') AND NOT EXISTS (
+            SELECT 1 FROM paper_projected p WHERE p.authenticated
+              AND p.native_id = f.target_id::text || ':' || f.fill_id
+          )) AS missing_projections,
+        (SELECT count(*) FROM paper_projected WHERE NOT authenticated) AS conflicting_projections,
+        (SELECT count(*) FROM paper_ledger WHERE proof_verified AND NOT proof_fee_known) AS unknown_fees,
+        (SELECT COALESCE(sum(fees_usdc) FILTER (WHERE proof_fee_known), 0)
+          FROM paper_ledger WHERE proof_verified) AS fees_usdc,
+        (SELECT max(proof_observed_at) FROM paper_ledger) AS latest_proof_at
+    ), paper_coverage AS MATERIALIZED (
+      SELECT *, invalid_receipts + missing_projections + conflicting_projections = 0 AS inventory_complete,
+        invalid_receipts + missing_projections + conflicting_projections + partial_receipts + unknown_fees = 0 AS finance_complete
+      FROM paper_coverage_counts
+    )`;
+}
+
+/**
  * Project the tenant's terminal, realized paper ledger rows into
  * `poly_trader_fills`.
  *
@@ -462,11 +545,13 @@ export async function projectPaperFills(input: {
   billingAccountId: string;
   /** `max(updated_at)` already projected, or null on the first run. */
   watermark: Date | null;
+  capturedAt?: Date;
 }): Promise<{ inserted: number; candidates: number; watermark: Date | null }> {
   const since = input.watermark
     ? new Date(input.watermark.getTime() - PROJECTION_WATERMARK_OVERLAP_MS)
     : null;
 
+  const proof = paperFillAccountingSql("f", sql`${(input.capturedAt ?? new Date()).toISOString()}::timestamptz`);
   const result = await input.db.execute(sql`
     WITH src AS (
       SELECT
@@ -480,7 +565,8 @@ export async function projectPaperFills(input: {
         f.attributes,
         f.updated_at,
         f.observed_at,
-        COALESCE(NULLIF(f.attributes->>'condition_id', ''), f.market_id) AS condition_id,
+        ${proof.observedAt} AS proof_observed_at,
+        f.attributes->'paper_receipt_v1'->>'condition_id' AS condition_id,
         f.attributes->>'token_id' AS token_id,
         f.attributes->>'side' AS side,
         f.price AS price,
@@ -490,6 +576,7 @@ export async function projectPaperFills(input: {
       WHERE f.billing_account_id = ${input.billingAccountId}
         AND f.mode = 'paper'
         AND f.status IN ${terminalStatusList()}
+        AND ${proof.positive}
         AND f.price IS NOT NULL AND f.price > 0
         AND f.shares IS NOT NULL AND f.shares > 0
         AND round(f.price * f.shares, 8) > 0
@@ -515,7 +602,7 @@ export async function projectPaperFills(input: {
         src.size_usdc,
         -- Paper has no chain transaction. NULL, never a synthesised hash.
         NULL,
-        src.observed_at,
+        greatest(src.observed_at, src.proof_observed_at),
         jsonb_build_object(
           'paper_ledger', jsonb_build_object(
             'target_id', src.target_id,
@@ -584,10 +671,12 @@ type PaperPositionRollup = {
  */
 async function readPaperPositionRollups(
   db: Db,
-  traderWalletId: string
+  traderWalletId: string,
+  billingAccountId: string,
+  capturedAt: Date
 ): Promise<readonly PaperPositionRollup[]> {
   const result = await db.execute(sql`
-    WITH rollups AS (
+    WITH ${paperAccountingCtes({ billingAccountId, walletIds: sql`${traderWalletId}::uuid`, capturedAt: sql`${capturedAt.toISOString()}::timestamptz` })}, rollups AS (
       SELECT
         condition_id,
         token_id,
@@ -596,9 +685,7 @@ async function readPaperPositionRollups(
         COALESCE(SUM(size_usdc) FILTER (WHERE side = 'BUY'),  0) AS buy_usdc,
         COALESCE(SUM(size_usdc) FILTER (WHERE side = 'SELL'), 0) AS sell_usdc,
         MAX(observed_at) AS last_fill_at
-      FROM poly_trader_fills
-      WHERE trader_wallet_id = ${traderWalletId}::uuid
-        AND source = ${PAPER_FILL_SOURCE}
+      FROM paper_inventory_facts
       GROUP BY condition_id, token_id
     )
     SELECT
@@ -723,25 +810,23 @@ function rotatedMarkWindow(
  * not report one", which is NOT a zero — the count is surfaced on the NAV row's
  * `errors` so the total is never silently understated.
  */
-async function readPaperFeesUsdc(
+async function readPaperCoverage(
   db: Db,
-  billingAccountId: string
-): Promise<{ feesUsdc: number; rowsMissingFees: number }> {
+  billingAccountId: string,
+  traderWalletId: string,
+  capturedAt: Date
+): Promise<{ feesUsdc: number; rowsMissingFees: number; inventoryComplete: boolean; financeComplete: boolean; latestProofAt: string | Date | null }> {
   const result = await db.execute(sql`
-    SELECT
-      COALESCE(SUM(f.fees_usdc), 0) AS fees_usdc,
-      count(*) FILTER (WHERE f.fees_usdc IS NULL)::int AS rows_missing_fees
-    FROM poly_copy_trade_fills f
-    WHERE f.billing_account_id = ${billingAccountId}
-      AND f.mode = 'paper'
-      AND f.status IN ${terminalStatusList()}
-      AND f.price IS NOT NULL AND f.price > 0
-      AND f.shares IS NOT NULL AND f.shares > 0
+    WITH ${paperAccountingCtes({ billingAccountId, walletIds: sql`${traderWalletId}::uuid`, capturedAt: sql`${capturedAt.toISOString()}::timestamptz` })}
+    SELECT * FROM paper_coverage
   `);
-  const row = firstRow<{ fees_usdc: string; rows_missing_fees: number }>(result);
+  const row = firstRow<{ fees_usdc: string; unknown_fees: string; inventory_complete: boolean; finance_complete: boolean; latest_proof_at: string | Date | null }>(result);
   return {
     feesUsdc: Number(row?.fees_usdc ?? 0),
-    rowsMissingFees: Number(row?.rows_missing_fees ?? 0),
+    rowsMissingFees: Number(row?.unknown_fees ?? 0),
+    inventoryComplete: row?.inventory_complete === true,
+    financeComplete: row?.finance_complete === true,
+    latestProofAt: row?.latest_proof_at ?? null,
   };
 }
 
@@ -817,7 +902,11 @@ export async function projectPaperPositionsAndNav(input: {
 }> {
   const now = input.now ?? new Date();
   const { traderWalletId, account } = input.wallet;
-  const rollups = await readPaperPositionRollups(input.db, traderWalletId);
+  const coverage = await readPaperCoverage(input.db, account.billingAccountId, traderWalletId, now);
+  // An unknowable leg cannot turn a retained book into a terminal-only subset.
+  const rollups = coverage.inventoryComplete
+    ? await readPaperPositionRollups(input.db, traderWalletId, account.billingAccountId, now)
+    : [];
 
   const cursorRows = await input.db
     .select({ lastSeenNativeId: polyTraderIngestionCursors.lastSeenNativeId })
@@ -834,7 +923,10 @@ export async function projectPaperPositionsAndNav(input: {
     (rollup) =>
       rollup.netShares > 0 &&
       rollup.buyShares > 0 &&
-      reusablePaperMark(rollup, now) === null
+      (reusablePaperMark(rollup, now) === null ||
+        (coverage.latestProofAt !== null && (rollup.cachedLastObservedAt === null ||
+          new Date(coverage.latestProofAt).getTime() > rollup.cachedLastObservedAt.getTime())) ||
+        (rollup.cachedRaw?.paperCoverage as { financeComplete?: unknown } | undefined)?.financeComplete !== coverage.financeComplete)
   );
   const refreshWindow = rotatedMarkWindow(
     refreshCandidates,
@@ -900,7 +992,7 @@ export async function projectPaperPositionsAndNav(input: {
           avgPrice: avgPriceStr,
           costBasisUsdc,
         }),
-        raw: paperPositionRaw(rollup, null, 0),
+        raw: paperPositionRaw(rollup, null, 0, coverage.financeComplete, now),
       });
       continue;
     }
@@ -959,7 +1051,7 @@ export async function projectPaperPositionsAndNav(input: {
         avgPrice: avgPriceStr,
         costBasisUsdc,
       }),
-      raw: paperPositionRaw(rollup, mid, currentValue),
+      raw: paperPositionRaw(rollup, mid, currentValue, coverage.financeComplete, now),
     };
     // Reusing a prior real mark contributes to this tick's complete NAV, but
     // must not rewrite last_observed_at and pretend the mark was refreshed.
@@ -984,7 +1076,7 @@ export async function projectPaperPositionsAndNav(input: {
     await writePaperPositionRows(input.db, traderWalletId, prepared, now);
   }
 
-  const fees = await readPaperFeesUsdc(input.db, account.billingAccountId);
+  const fees = coverage;
   const seedUsdc = Number(account.seedUsdc);
 
   // NAV_IS_CASH_PLUS_MARKS. Withheld whenever any open position is unmarked or
@@ -998,7 +1090,8 @@ export async function projectPaperPositionsAndNav(input: {
     incoherent.length +
     (negativeNav ? 1 : 0) +
     (invalidSeed ? 1 : 0) +
-    (invalidNav && !invalidSeed ? 1 : 0);
+    (invalidNav && !invalidSeed ? 1 : 0) +
+    (coverage.financeComplete ? 0 : 1);
   const navPublishable = navBlockers === 0 && Number.isFinite(nav);
   if (negativeNav) {
     input.logger.error(
@@ -1024,16 +1117,23 @@ export async function projectPaperPositionsAndNav(input: {
     input.logger.warn(
       {
         event: EVENT_NAMES.POLY_PAPER_NAV_WITHHELD,
-        errorCode: invalidSeed
+        errorCode: !coverage.inventoryComplete
+          ? "paper_receipt_coverage_incomplete"
+          : !coverage.financeComplete
+            ? "paper_financial_coverage_incomplete"
+          : invalidSeed
           ? "paper_seed_invalid"
           : invalidNav
             ? "paper_nav_non_finite"
             : "paper_position_mark_unavailable",
-        ...(invalidSeed || invalidNav ? {} : { dep: "polymarket_clob" }),
+        ...(invalidSeed || invalidNav || !coverage.financeComplete ? {} : { dep: "polymarket_clob" }),
         trader_wallet_id: traderWalletId,
         billing_account_id: account.billingAccountId,
         unpriced_positions: unpriced.length,
         incoherent_positions: incoherent.length,
+        receipt_inventory_complete: coverage.inventoryComplete,
+        receipt_finance_complete: coverage.financeComplete,
+        rows_missing_fees: coverage.rowsMissingFees,
         seed_usdc_finite: Number.isFinite(seedUsdc),
         nav_usdc_finite: Number.isFinite(nav),
         sample_unpriced: unpriced.slice(0, 5),
@@ -1064,9 +1164,11 @@ export async function projectPaperPositionsAndNav(input: {
   await publishPaperPositionCursor({
     db: input.db,
     traderWalletId,
-    status: navBlockers === 0 ? "ok" : "partial",
+    status: coverage.inventoryComplete && unpriced.length === 0 && incoherent.length === 0 && !invalidSeed && !invalidNav && !negativeNav ? "ok" : "partial",
     errorMessage:
-      negativeNav
+      !coverage.inventoryComplete ? "paper receipt coverage incomplete; prior positions retained and NAV withheld"
+        : !coverage.financeComplete ? "paper final history or fee coverage incomplete; inventory observed and NAV withheld"
+        : negativeNav
         ? `paper NAV computed negative (${nav}); snapshot withheld because cap or fill accounting is inconsistent`
         : invalidSeed
           ? "paper seed is not finite; NAV withheld"
@@ -1100,7 +1202,9 @@ export async function projectPaperPositionsAndNav(input: {
 function paperPositionRaw(
   rollup: PaperPositionRollup,
   mid: number | null,
-  currentValue: number
+  currentValue: number,
+  financeComplete: boolean,
+  generationAt: Date
 ): Record<string, unknown> {
   return {
     source: PAPER_FILL_SOURCE,
@@ -1113,6 +1217,7 @@ function paperPositionRaw(
     curPrice: mid,
     currentValue,
     lastFillAt: rollup.lastFillAt.toISOString(),
+    paperCoverage: { financeComplete, generationAt: generationAt.toISOString() },
   };
 }
 
@@ -1314,6 +1419,7 @@ export async function observePaperWallet(input: {
     traderWalletId,
     billingAccountId: account.billingAccountId,
     watermark: cursor[0]?.lastSeenAt ?? null,
+    capturedAt: now,
   });
 
   await input.db

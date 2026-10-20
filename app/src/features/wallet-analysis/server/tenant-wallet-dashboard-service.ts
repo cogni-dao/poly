@@ -388,7 +388,18 @@ export async function readTenantWalletDashboardIn(
     );
   }
 
-  const cashFact = cashMeta(balance, capturedAtDate);
+  // Paper's saved balance is NAV; unsupported chain assets do not make an
+  // authenticated, complete paper generation financially partial.
+  const paperFinanceValidated = connection.connectionKind === "paper" &&
+    balance.kind === "available" && balance.status !== "error" && balance.usdcE !== null &&
+    balance.observedAt.getTime() <= capturedAtDate.getTime() &&
+    economicRead.ok && economicRead.value.observerComplete && economicRead.value.observerStatus === "ok" &&
+    economicRead.value.historyIncompleteCount === 0 && economicRead.value.incompleteCount === 0 &&
+    economicRead.value.fillIdentityConflictCount === 0 && economicRead.value.currentIdentityConflictCount === 0 &&
+    balance.observedAt.toISOString() === economicRead.value.observerSyncedAt;
+  const cashFact = paperFinanceValidated && balance.kind === "available"
+    ? factFromAge("polygon_balance_snapshot", balance.observedAt.toISOString(), capturedAtDate, WALLET_BALANCE_FRESHNESS_MS)
+    : cashMeta(balance, capturedAtDate);
   if (!balanceRead.ok) {
     // The identity row is authoritative and was resolved before the
     // component savepoint. A cash-table failure must not erase it or
@@ -628,9 +639,12 @@ export async function readTenantWalletDashboardIn(
     );
   }
 
-  const cashOnChain = balance.kind === "available"
-    ? nullableSum(balance.usdcE, balance.pusd)
-    : null;
+  const coherentPaperMtm = economicRead.ok && currentPositionFact.complete
+    ? economicRead.value.positionsMtm : null;
+  const cashOnChain = connection.connectionKind === "paper"
+    ? paperFinanceValidated && balance.kind === "available" && balance.usdcE !== null && coherentPaperMtm !== null
+      ? roundMoney(balance.usdcE - coherentPaperMtm) : null
+    : balance.kind === "available" ? nullableSum(balance.usdcE, balance.pusd) : null;
   const lockedUsdc = orderRead.ok && orderRead.value.lockedUsdc !== null
     ? roundMoney(orderRead.value.lockedUsdc)
     : null;

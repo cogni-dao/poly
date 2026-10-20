@@ -51,10 +51,15 @@ import {
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { and, eq, inArray, isNull } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { type SQL, and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
-import { derivePaperAccountAddress } from "@/features/paper-accounts";
+import { createExecutionVenueResolver, createPaperVenue, derivePaperAccountAddress } from "@/features/paper-accounts";
+import { noopMetrics, type OrderReceipt } from "@cogni/poly-market-provider";
+import { createPolyTradeExecutorFactory } from "@/bootstrap/capabilities/poly-trade-executor";
+import { createOrderLedger } from "@/features/trading/order-ledger";
+import { readEconomicPositionProjection } from "@/features/wallet-analysis/server/economic-position-read-model";
 import {
   type EnrolledPaperWallet,
   observePaperWallet,
@@ -77,6 +82,7 @@ import {
   polyCopyTradeFills,
   polyWalletBalanceSnapshots,
   polyWalletConnections,
+  polyWalletGrants,
   users,
 } from "@/shared/db/schema";
 
@@ -145,6 +151,7 @@ async function seedPaperConnection(
     .values({
       billingAccountId: owner.billingAccountId,
       createdByUserId: owner.userId,
+      createdAt: new Date("2026-10-01T00:00:00.000Z"),
       kind: "paper",
       address: paperAddress,
       funderAddress: paperAddress,
@@ -154,6 +161,15 @@ async function seedPaperConnection(
       custodialConsentActorId: owner.userId,
       tradingApprovalsReadyAt: new Date("2026-10-01T00:00:00.000Z"),
     });
+  const [connection] = await getSeedDb().select({ id: polyWalletConnections.id }).from(polyWalletConnections)
+    .where(and(eq(polyWalletConnections.billingAccountId, owner.billingAccountId), eq(polyWalletConnections.kind, "paper")));
+  if (!connection) throw new Error("paper connection missing");
+  await getSeedDb().insert(polyWalletGrants).values({
+    billingAccountId: owner.billingAccountId, walletConnectionId: connection.id,
+    createdByUserId: owner.userId, scopes: ["poly:trade:buy", "poly:trade:sell"],
+    perOrderUsdcCap: "100000", dailyUsdcCap: "1000000", hourlyFillsCap: 1000,
+    createdAt: new Date("2026-10-01T00:00:00.000Z"),
+  });
   return paperAddress;
 }
 
@@ -165,7 +181,7 @@ type LedgerFill = {
   price: string;
   /** Realized shares. */
   shares: string;
-  feesUsdc?: string;
+  feesUsdc?: string | null;
   status?: string;
   mode?: string;
   observedAt?: Date;
@@ -181,32 +197,69 @@ async function seedLedgerFill(
   owner: Tenant,
   targetId: string,
   fill: LedgerFill
-): Promise<void> {
-  const fillId = `paper:${randomUUID()}`;
-  await getSeedDb()
-    .insert(polyCopyTradeFills)
-    .values({
-      billingAccountId: owner.billingAccountId,
-      createdByUserId: owner.userId,
-      targetId,
-      fillId,
-      marketId: fill.conditionId,
-      observedAt: fill.observedAt ?? new Date("2026-10-05T12:00:00.000Z"),
-      clientOrderId: `coid-${randomUUID()}`,
-      orderId: `order-${randomUUID()}`,
-      status: fill.status ?? "filled",
-      mode: fill.mode ?? "paper",
-      price: fill.price,
-      shares: fill.shares,
-      feesUsdc: fill.feesUsdc ?? "0",
-      attributes: {
-        side: fill.side,
-        token_id: fill.tokenId,
-        condition_id: fill.conditionId,
-        size_usdc: Number(fill.price) * Number(fill.shares),
-        limit_price: Number(fill.price),
+) {
+  const client = `coid-${randomUUID()}`;
+  const order = `order-${randomUUID()}`;
+  const observedAt = fill.observedAt ?? new Date("2026-10-05T12:00:00.000Z");
+  const db = getSeedDb();
+  // Explicit negative fixtures remain unbound; no JSON proof is manufactured.
+  if (fill.mode === "live" || fill.feesUsdc === "NaN") {
+    await db.insert(polyCopyTradeFills).values({
+      billingAccountId: owner.billingAccountId, createdByUserId: owner.userId,
+      targetId, fillId: `paper:${randomUUID()}`, marketId: fill.conditionId,
+      observedAt, clientOrderId: client, orderId: order, status: fill.status ?? "filled",
+      mode: fill.mode ?? "paper", price: fill.price, shares: fill.shares,
+      feesUsdc: fill.feesUsdc ?? "0", attributes: {
+        side: fill.side, token_id: fill.tokenId, condition_id: fill.conditionId,
+        size_usdc: Number(fill.price) * Number(fill.shares), limit_price: Number(fill.price),
       },
     });
+    return null;
+  }
+  const intent = {
+    provider: "polymarket" as const, market_id: `prediction-market:polymarket:${fill.conditionId}`,
+    outcome: "0", side: fill.side, size_usdc: Number(fill.price) * Number(fill.shares),
+    limit_price: Number(fill.price), client_order_id: client,
+    attributes: { token_id: fill.tokenId, condition_id: fill.conditionId, placement: "limit" },
+  };
+  const ledger = createOrderLedger({ db, logger: logger as never, resolveExecutionMode: createExecutionVenueResolver({ db }) });
+  await ledger.insertPending({ billing_account_id: owner.billingAccountId, created_by_user_id: owner.userId,
+    target_id: targetId, fill_id: `paper:${randomUUID()}`, observed_at: observedAt, intent });
+  const accept = async (next: Partial<OrderReceipt> = {}, at = observedAt, first = false) => {
+    const native: OrderReceipt = {
+      order_id: order, client_order_id: client,
+      status: (fill.status ?? "filled") as OrderReceipt["status"],
+      filled_size_usdc: Number(fill.price) * Number(fill.shares), fill_price: Number(fill.price),
+      total_shares: Number(fill.shares), fees_usdc: fill.feesUsdc === null ? undefined : Number(fill.feesUsdc ?? "0"), submitted_at: observedAt.toISOString(),
+      attributes: { market: fill.conditionId, tokenId: fill.tokenId, side: fill.side, sizeMatched: Number(fill.shares) },
+      ...next,
+    };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at);
+    const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      expect(url.origin).toBe("http://paper.projection.test");
+      if (first) expect(JSON.parse(String(init?.body)).client_order_id).toBe(client);
+      else expect(url.pathname).toBe(`/orders/${order}`);
+      return Response.json(native);
+    });
+    try {
+      const factory = createPolyTradeExecutorFactory({ logger: logger as never, metrics: noopMetrics,
+        paperSidecarUrl: "http://paper.projection.test", paperVenue: createPaperVenue({ db }),
+        resolveExecutionVenue: createExecutionVenueResolver({ db }) });
+      const executor = await factory.getPolyTradeExecutorFor(owner.billingAccountId);
+      const fetched = first ? { found: await executor.placeIntent(intent) } : await executor.getOrder(order);
+      if (!("found" in fetched)) throw new Error("native paper order unavailable");
+      const written = await ledger.markOrderId({ client_order_id: client, receipt: fetched.found });
+      expect(written?.accepted).toBe(true);
+      return written;
+    } finally {
+      transport.mockRestore();
+      vi.useRealTimers();
+    }
+  };
+  await accept({}, observedAt, true);
+  return { client, order, accept };
 }
 
 /** A mid-price reader over a fixed table; absent token => `null` (unknown). */
@@ -267,11 +320,11 @@ describe("paper facts project into the live tables (migration 0083)", () => {
   ];
 
   // Deterministic per-scenario market keys so assertions can name them.
-  const condA = `0xcond${"a".repeat(60)}`;
+  const condA = `0x${"a".repeat(64)}`;
   const tokenA = "11111111111111111111111111111111";
-  const condB = `0xcond${"b".repeat(60)}`;
+  const condB = `0x${"b".repeat(64)}`;
   const tokenB = "22222222222222222222222222222222";
-  const condU = `0xcond${"c".repeat(60)}`;
+  const condU = `0x${"c".repeat(64)}`;
   const tokenU = "33333333333333333333333333333333";
 
   const SEED_USDC = "1000.00000000";
@@ -325,15 +378,8 @@ describe("paper facts project into the live tables (migration 0083)", () => {
         price: "0.70000000",
         shares: "50.00000000",
       });
-      // Must NOT project: still resting, so its realized size can still grow.
-      await seedLedgerFill(traded, targetId, {
-        tokenId: tokenA,
-        conditionId: condA,
-        side: "BUY",
-        price: "0.45000000",
-        shares: "10.00000000",
-        status: "open",
-      });
+      // Nonterminal cumulative observations are covered separately below: they
+      // belong in current inventory, never the immutable fill stream.
       // Must NOT project: a LIVE-mode row belonging to the same tenant. If the
       // projection forgets `mode = 'paper'` it silently fabricates paper facts
       // out of real trades.
@@ -401,7 +447,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
         .from(polyTraderFills)
         .where(eq(polyTraderFills.traderWalletId, wallet.traderWalletId));
 
-      // 3 terminal paper rows. The `open` row and the `live`-mode row are out.
+      // Three authenticated terminal paper rows; the LIVE row stays out.
       expect(rows).toHaveLength(3);
       expect(rows.every((row) => row.source === PAPER_FILL_SOURCE)).toBe(true);
       // Paper has no chain transaction — NULL, never a synthesised hash.
@@ -421,8 +467,6 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       );
       expect(Number(sellB?.sizeUsdc)).toBeCloseTo(35, 8);
 
-      // The resting order's price (0.45) must appear nowhere.
-      expect(rows.some((row) => Number(row.price) === 0.45)).toBe(false);
       // Nor the live-mode row's price (0.41).
       expect(rows.some((row) => Number(row.price) === 0.41)).toBe(false);
     });
@@ -554,6 +598,14 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       expect(balance.pol).toBeNull();
       expect(balance.status).toBe("partial");
       expect(balance.errors.length).toBeGreaterThan(0);
+    });
+
+    it("deducts known native fees from canonical lifetime economics", async () => {
+      const read = await readEconomicPositionProjection({ db: getSeedDb(), billingAccountId: traded.billingAccountId,
+        walletAddress: derivePaperAccountAddress(traded.billingAccountId), connectionKind: "paper",
+        capturedAt: new Date("2026-10-07T18:05:00.000Z"), interval: "ALL" });
+      expect(read.positionFacts.find(fact => fact.tokenId === tokenA)).toMatchObject({ lifetimePnlUsdc: 9.5, economicsCoverage: "complete" });
+      expect(read.positionFacts.find(fact => fact.tokenId === tokenB)).toMatchObject({ lifetimePnlUsdc: 5, economicsCoverage: "complete" });
     });
 
     it("keeps the full paper dashboard visible without Privy configuration", async () => {
@@ -708,8 +760,8 @@ describe("paper facts project into the live tables (migration 0083)", () => {
   });
 
   describe("a bounded mark sweep converges across ticks", () => {
-    const conditionA = `0xcond${"d".repeat(60)}`;
-    const conditionB = `0xcond${"e".repeat(60)}`;
+    const conditionA = `0x${"d".repeat(64)}`;
+    const conditionB = `0x${"e".repeat(64)}`;
     const positionA = "44444444444444444444444444444444";
     const positionB = "55555555555555555555555555555555";
     let wallet: Awaited<ReturnType<typeof enrol>>;
@@ -846,7 +898,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
 
       await seedLedgerFill(negative, targetId, {
         tokenId: "44444444444444444444444444444444",
-        conditionId: `0xcond${"d".repeat(60)}`,
+        conditionId: `0x${"d".repeat(64)}`,
         side: "BUY",
         price: "0.50000000",
         shares: "10.00000000",
@@ -915,7 +967,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
 
       await seedLedgerFill(nonfinite, targetId, {
         tokenId: "55555555555555555555555555555555",
-        conditionId: `0xcond${"e".repeat(60)}`,
+        conditionId: `0x${"e".repeat(64)}`,
         side: "BUY",
         price: "0.50000000",
         shares: "1.00000000",
@@ -938,6 +990,181 @@ describe("paper facts project into the live tables (migration 0083)", () => {
           now: new Date("2026-10-07T18:22:01.000Z"),
         })
       ).rejects.toMatchObject({ reason: "nav_missing" });
+    });
+  });
+
+  describe("native receipt authority across inventory and finance", () => {
+    async function setup(name: string) {
+      const owner = tenant(name);
+      const db = getSeedDb();
+      await db.insert(users).values({ id: owner.userId, name, walletAddress: address() });
+      await db.insert(billingAccounts).values({ id: owner.billingAccountId, ownerUserId: owner.userId, balanceCredits: 0n });
+      await seedPaperConnection(owner, "100");
+      return { owner, db, wallet: await enrol(owner) };
+    }
+    const condition = `0x${"f".repeat(64)}`;
+    const token = "812345678901234567890";
+    const t0 = new Date("2026-10-06T12:00:00.000Z");
+    const later = (seconds: number) => new Date(t0.getTime() + seconds * 1000);
+    async function project(db: ReturnType<typeof getSeedDb>, wallet: EnrolledPaperWallet, at: Date) {
+      return observePaperWallet({ db: db as unknown as PaperDb, wallet, now: at,
+        readMidPrice: midPrices({ [token]: 0.5 }), logger });
+    }
+    async function canonical(db: ReturnType<typeof getSeedDb>, owner: Tenant, at: Date) {
+      return readEconomicPositionProjection({ db, billingAccountId: owner.billingAccountId,
+        walletAddress: derivePaperAccountAddress(owner.billingAccountId), connectionKind: "paper", capturedAt: at, interval: "ALL" });
+    }
+    async function current(db: ReturnType<typeof getSeedDb>, wallet: EnrolledPaperWallet) {
+      return db.select().from(polyTraderCurrentPositions).where(eq(polyTraderCurrentPositions.traderWalletId, wallet.traderWalletId));
+    }
+    async function fills(db: ReturnType<typeof getSeedDb>, wallet: EnrolledPaperWallet) {
+      return db.select().from(polyTraderFills).where(eq(polyTraderFills.traderWalletId, wallet.traderWalletId));
+    }
+
+    it("updates cumulative partial inventory without events, finalizes once, and upgrades unknown fees to known zero", async () => {
+      const { owner, db, wallet } = await setup("Native cumulative paper");
+      const native = await seedLedgerFill(owner, randomUUID(), { conditionId: condition, tokenId: token,
+        side: "BUY", shares: "2", price: "0.4", status: "partial", feesUsdc: null, observedAt: t0 });
+      if (!native) throw new Error("native fixture missing");
+      expect((await project(db, wallet, later(1))).navPublished).toBe(false);
+      expect(await fills(db, wallet)).toHaveLength(0);
+      expect(Number((await current(db, wallet))[0]?.shares)).toBe(2);
+      let read = await canonical(db, owner, later(1));
+      expect(read.positionFacts[0]).toMatchObject({ heldShares: 2, currentValueUsdc: 1, lifetimePnlUsdc: null, economicsCoverage: "partial" });
+      expect((await readBalanceAsTenant(owner)).kind).toBe("missing");
+      await native.accept({ status: "partial", total_shares: 4, filled_size_usdc: 1.6,
+        attributes: { market: condition, tokenId: token, side: "BUY", sizeMatched: 4 } }, later(2));
+      await project(db, wallet, later(3));
+      expect(await fills(db, wallet)).toHaveLength(0);
+      expect(Number((await current(db, wallet))[0]?.shares)).toBe(4);
+      await native.accept({ status: "filled", total_shares: 5, filled_size_usdc: 2, fees_usdc: undefined,
+        attributes: { market: condition, tokenId: token, side: "BUY", sizeMatched: 5 } }, later(4));
+      expect((await project(db, wallet, later(5))).navPublished).toBe(false);
+      const immutable = await fills(db, wallet);
+      expect(immutable).toHaveLength(1);
+      expect(Number(immutable[0]?.shares)).toBe(5);
+      expect(Number((await current(db, wallet))[0]?.shares)).toBe(5);
+      read = await canonical(db, owner, later(5));
+      expect(read.positionFacts[0]?.lifetimePnlUsdc).toBeNull();
+      await native.accept({ status: "filled", total_shares: 5, filled_size_usdc: 2, fees_usdc: 0,
+        attributes: { market: condition, tokenId: token, side: "BUY", sizeMatched: 5 } }, later(6));
+      expect((await project(db, wallet, later(7))).navPublished).toBe(true);
+      expect(await fills(db, wallet)).toEqual(immutable);
+      expect(Number((await current(db, wallet))[0]?.shares)).toBe(5);
+      read = await canonical(db, owner, later(7));
+      expect(read.positionFacts[0]).toMatchObject({ heldShares: 5, currentValueUsdc: 2.5, lifetimePnlUsdc: 0.5, economicsCoverage: "complete" });
+      expect((await readPaperAccountNavUsdc({ db: db as unknown as PaperDb, billingAccountId: owner.billingAccountId, now: later(7) })).navUsdc).toBe(100.5);
+    });
+
+    it("authenticates matching immutable legacy events only after proof time, preserving original bytes", async () => {
+      const { owner, db, wallet } = await setup("Matching immutable native paper");
+      const native = await seedLedgerFill(owner, randomUUID(), { conditionId: condition, tokenId: token,
+        side: "BUY", shares: "5", price: "0.4", observedAt: t0 });
+      if (!native) throw new Error("native fixture missing");
+      const [ledger] = await db.select().from(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, native.client));
+      if (!ledger) throw new Error("ledger missing");
+      await db.insert(polyTraderFills).values({ traderWalletId: wallet.traderWalletId, source: PAPER_FILL_SOURCE,
+        nativeId: `${ledger.targetId}:${ledger.fillId}`, conditionId: condition, tokenId: token, side: "BUY", price: "0.4", shares: "5", sizeUsdc: "2",
+        observedAt: later(-10), raw: { legacy: "keep byte-for-byte", paper_ledger: { client_order_id: native.client, order_id: native.order } } });
+      const immutable = await fills(db, wallet);
+      await db.insert(polyTraderIngestionCursors).values({ traderWalletId: wallet.traderWalletId, source: PAPER_POSITION_CURSOR_SOURCE, status: "ok", lastSuccessAt: later(-1) });
+      const before = await canonical(db, owner, later(-1));
+      expect(before.positionsMtm).toBeNull();
+      expect(before.historyIncompleteCount).toBeGreaterThan(0);
+      expect((await project(db, wallet, later(1))).navPublished).toBe(true);
+      expect(await fills(db, wallet)).toEqual(immutable);
+      expect((await canonical(db, owner, later(1))).positionFacts[0]).toMatchObject({ heldShares: 5, economicsCoverage: "complete" });
+    });
+
+    it("retains prior inventory and clocks for immutable conflicts and invalidates a still-fresh NAV", async () => {
+      const { owner, db, wallet } = await setup("Conflicting immutable native paper");
+      const native = await seedLedgerFill(owner, randomUUID(), { conditionId: condition, tokenId: token,
+        side: "BUY", shares: "5", price: "0.4", observedAt: t0 });
+      if (!native) throw new Error("native fixture missing");
+      const [ledger] = await db.select().from(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, native.client));
+      if (!ledger) throw new Error("ledger missing");
+      await db.insert(polyTraderFills).values({ traderWalletId: wallet.traderWalletId, source: PAPER_FILL_SOURCE,
+        nativeId: `${ledger.targetId}:${ledger.fillId}`, conditionId: condition, tokenId: token, side: "BUY", price: "0.4", shares: "9", sizeUsdc: "3.6",
+        observedAt: t0, raw: { paper_ledger: { client_order_id: native.client, order_id: native.order } } });
+      await db.insert(polyTraderCurrentPositions).values({ traderWalletId: wallet.traderWalletId,
+        conditionId: condition, tokenId: token, active: true, shares: "3", costBasisUsdc: "1.2", avgPrice: "0.4", currentValueUsdc: "1.5",
+        contentHash: "retained-native-conflict", firstObservedAt: later(-1), lastObservedAt: later(-1), raw: { retained: true } });
+      await persistWalletBalanceFact(db, { billingAccountId: owner.billingAccountId, address: derivePaperAccountAddress(owner.billingAccountId), usdcE: 100.3, pusd: null, pol: null, errors: ["paper NAV"] }, later(-1));
+      const prior = await current(db, wallet);
+      const immutable = await fills(db, wallet);
+      expect((await project(db, wallet, later(1))).navPublished).toBe(false);
+      expect(await fills(db, wallet)).toEqual(immutable);
+      expect(await current(db, wallet)).toEqual(prior);
+      expect((await readBalanceAsTenant(owner)).kind).toBe("missing");
+      const read = await canonical(db, owner, later(1));
+      expect(read.positionsMtm).toBeNull();
+      expect(read.positionFacts[0]).toMatchObject({ heldShares: null, lifetimePnlUsdc: null });
+      const dashboard = await readTenantWalletDashboard({ db, billingAccountId: owner.billingAccountId, interval: "1W", adapterConfigured: false });
+      expect(dashboard.overview.usdc_total).toBeNull();
+    });
+
+    it.each([false, true])("conserves native paper cash and NAV through the real dashboard, fallback=%s", async (fallback) => {
+      const { owner, db, wallet } = await setup(`Native paper dashboard ${fallback}`);
+      const receiptAt = new Date(Date.now() - 2_000);
+      await seedLedgerFill(owner, randomUUID(), { conditionId: condition, tokenId: token,
+        side: "BUY", shares: "10", price: "0.4", observedAt: receiptAt });
+      const generationAt = new Date(Date.now() - 1_000);
+      expect((await observePaperWallet({ db: db as unknown as PaperDb, wallet, now: generationAt,
+        readMidPrice: midPrices({ [token]: 0.6 }), logger })).navPublished).toBe(true);
+      let injected = false;
+      const wrap = <T extends { execute(query: SQL): unknown }>(targetDb: T): T => new Proxy(targetDb, {
+        get(targetDb, property) {
+          const value = Reflect.get(targetDb, property);
+          if (property === "execute") return (query: SQL) => {
+            const text = new PgDialect().sqlToQuery(query).sql;
+            if (fallback && !injected && text.includes("target_snapshot_source AS MATERIALIZED")) {
+              injected = true;
+              return targetDb.execute(sql`SELECT paper_dashboard_forced_bundle_failure`);
+            }
+            return targetDb.execute(query);
+          };
+          if (property === "transaction") return (...args: unknown[]) => Reflect.apply(value, targetDb, [
+            (child: T) => (args[0] as (child: T) => Promise<unknown>)(wrap(child)), ...args.slice(1),
+          ]);
+          return typeof value === "function" ? value.bind(targetDb) : value;
+        },
+      });
+      const diagnostics: import("@/features/wallet-analysis/server/tenant-wallet-dashboard-service").WalletDashboardReadDiagnostics = {};
+      const dashboard = await readTenantWalletDashboard({ db: wrap(db), billingAccountId: owner.billingAccountId,
+        interval: "1W", adapterConfigured: false, diagnostics });
+      expect(injected).toBe(fallback);
+      expect(diagnostics.comparisonPath).toBe(fallback ? "bundle_fallback" : "bundle");
+      // Independent accounting: seed100 - actual cost4 = cash96; mark6 => NAV102.
+      expect(dashboard.overview).toMatchObject({ usdc_available: 96, usdc_locked: 0, usdc_positions_mtm: 6, usdc_total: 102 });
+      await seedLedgerFill(owner, randomUUID(), { conditionId: condition, tokenId: "999",
+        side: "BUY", shares: "1", price: "0.4", feesUsdc: null, observedAt: new Date() });
+      // The last numeric NAV is still physically present and younger than TTL,
+      // but its generation cannot certify a later unknown-fee observation.
+      const [oldNav] = await db.select().from(polyWalletBalanceSnapshots)
+        .where(eq(polyWalletBalanceSnapshots.billingAccountId, owner.billingAccountId));
+      expect(Number(oldNav?.usdcE)).toBe(102);
+      const withheld = await readTenantWalletDashboard({ db: wrap(db), billingAccountId: owner.billingAccountId,
+        interval: "1W", adapterConfigured: false });
+      expect(withheld.overview.usdc_available).toBeNull();
+      expect(withheld.overview.usdc_total).toBeNull();
+      await observePaperWallet({ db: db as unknown as PaperDb, wallet, now: new Date(),
+        readMidPrice: midPrices({ [token]: 0.6, "999": 0.5 }), logger });
+      expect((await readBalanceAsTenant(owner)).kind).toBe("missing");
+    });
+
+    it("cannot certify an empty book when an unbound row was omitted", async () => {
+      const { owner, db, wallet } = await setup("Unbound omitted paper row");
+      expect((await project(db, wallet, t0)).navPublished).toBe(true);
+      await db.insert(polyCopyTradeFills).values({ billingAccountId: owner.billingAccountId,
+        createdByUserId: owner.userId, targetId: randomUUID(), fillId: `unbound:${randomUUID()}`,
+        marketId: condition, clientOrderId: randomUUID(), status: "partial", mode: "paper", observedAt: t0,
+        price: "0.4", shares: "2", attributes: { condition_id: condition, token_id: token, side: "BUY", realized_fill_source: "paper_order_receipt", filled_size_usdc: 0.8 } });
+      expect((await project(db, wallet, later(1))).navPublished).toBe(false);
+      expect(await current(db, wallet)).toHaveLength(0);
+      const read = await canonical(db, owner, later(1));
+      expect(read.positionsMtm).toBeNull();
+      expect(read.historyIncompleteCount).toBeGreaterThan(0);
+      expect((await readBalanceAsTenant(owner)).kind).toBe("missing");
     });
   });
 
