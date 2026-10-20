@@ -71,6 +71,7 @@ import {
   transition,
 } from "@/core";
 import type { RedeemJobsPort } from "@/ports";
+import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 
 import { buildSubmitArgs, type SubmitArgs } from "./build-submit-args";
 import {
@@ -227,7 +228,10 @@ export class RedeemWorker {
       submitted = await this.drainOnePending();
     } catch (err) {
       this.deps.logger.error(
-        { event: "poly.ctf.redeem.worker_drain_error", err: String(err) },
+        {
+          event: "poly.ctf.redeem.worker_drain_error",
+          ...safeErrorDimensions(err),
+        },
         "redeem-worker drain loop error"
       );
     }
@@ -237,7 +241,10 @@ export class RedeemWorker {
         await this.reapStale();
       } catch (err) {
         this.deps.logger.error(
-          { event: "poly.ctf.redeem.worker_reap_error", err: String(err) },
+          {
+            event: "poly.ctf.redeem.worker_reap_error",
+            ...safeErrorDimensions(err),
+          },
           "redeem-worker reaper loop error"
         );
       }

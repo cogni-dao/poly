@@ -272,3 +272,92 @@ describe("RedeemWorker Deposit Wallet legacy dispatch", () => {
 		);
 	});
 });
+
+describe("RedeemWorker tick persistence diagnostics", () => {
+	it.each([
+		{
+			phase: "drain",
+			code: "53300",
+			event: "poly.ctf.redeem.worker_drain_error",
+			message: "redeem-worker drain loop error",
+		},
+		{
+			phase: "reap",
+			code: "42501",
+			event: "poly.ctf.redeem.worker_reap_error",
+			message: "redeem-worker reaper loop error",
+		},
+	])(
+		"retains bounded safe cause fields for a $phase failure",
+		async ({ phase, code, event, message }) => {
+			const databaseError = Object.assign(
+				new Error(
+					`database failure password=hidden-password Bearer hidden-bearer ${"diagnostic ".repeat(50)}`,
+				),
+				{ code },
+			);
+			const queryError = new Error(
+				`Failed query: SELECT * FROM jobs WHERE id = 'hidden-job' token=hidden-token ${"query ".repeat(100)}`,
+				{ cause: databaseError },
+			);
+			const claimNextPending = vi.fn(async () => {
+				if (phase === "drain") throw queryError;
+				return null;
+			});
+			const claimReaperCandidates = vi.fn(async () => {
+				if (phase === "reap") throw queryError;
+				return [];
+			});
+			const redeemPosition = vi.fn();
+			const writeContract = vi.fn();
+			const error = vi.fn();
+			const worker = new RedeemWorker({
+				redeemJobs: { claimNextPending, claimReaperCandidates } as never,
+				orderLedger: { markPositionLifecycleByAsset: vi.fn() },
+				billingAccountId: "billing-1",
+				publicClient: { getBlockNumber: vi.fn(async () => 100n) } as never,
+				walletClient: { writeContract } as never,
+				funderAddress: FUNDER,
+				account: {} as never,
+				redeemPosition,
+				logger: { info: vi.fn(), warn: vi.fn(), error },
+				finalityBlocks: 5n,
+				tickIntervalMs: 5_000,
+				reaperIntervalMs: 0,
+			});
+
+			await expect(worker.tick()).resolves.toBeUndefined();
+
+			expect(error).toHaveBeenCalledTimes(1);
+			expect(error).toHaveBeenCalledWith(
+				expect.objectContaining({
+					event,
+					err_class: "Error",
+					err: expect.stringContaining("'<redacted>' token=<redacted>"),
+					cause_class: "Error",
+					cause_code: code,
+					cause_message: expect.stringContaining(
+						"password=<redacted> Bearer <redacted>",
+					),
+				}),
+				message,
+			);
+			const fields = error.mock.calls[0]?.[0];
+			expect(fields.err).toHaveLength(300);
+			expect(fields.cause_message).toHaveLength(300);
+			const serialized = JSON.stringify(fields);
+			for (const secret of [
+				"hidden-job",
+				"hidden-token",
+				"hidden-password",
+				"hidden-bearer",
+			]) {
+				expect(serialized).not.toContain(secret);
+			}
+			expect(claimNextPending).toHaveBeenCalledWith(FUNDER);
+			expect(claimReaperCandidates).toHaveBeenCalledWith(100n, 5n);
+			expect(redeemPosition).not.toHaveBeenCalled();
+			expect(writeContract).not.toHaveBeenCalled();
+		},
+	);
+});
