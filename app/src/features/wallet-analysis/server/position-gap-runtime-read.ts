@@ -510,7 +510,7 @@ export const positionGapActionAggregateSelect = (
   // missing-ledger actions bypass native validation entirely. Aggregate FILTERs
   // must not expand the decoder and connection lookup repeatedly.
   const receipts = sql`(
-    WITH scoped AS MATERIALIZED (
+    WITH scoped AS NOT MATERIALIZED (
       SELECT a.target_id, a.kind, a.submitted_at, a.filled_shares, a.planner_action,
         a.billing_account_id, f.client_order_id, f.order_id, f.market_id, f.status,
         f.mode, f.shares, f.price, f.fees_usdc, f.attributes
