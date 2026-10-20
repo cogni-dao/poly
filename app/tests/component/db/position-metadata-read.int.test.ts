@@ -1560,7 +1560,7 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 		const second =
 			`0x${randomUUID().replaceAll("-", "")}aabbccdd` as `0x${string}`;
 		try {
-			await f.seed();
+			await f.seed({ attributes: { title: "Plausible legacy ledger headline" } });
 			await f.publish();
 			await db.insert(polyCopyTradeTargets).values({
 				billingAccountId: f.account,
@@ -1598,6 +1598,19 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 				availability: "conflict",
 				oppositeTokenId: null,
 			});
+			// A plausible legacy title must not revive the shared reader's rejected
+			// tied-origin title through the public orders serialization path.
+			const orders = await withTenantScope(
+				getAppDb(),
+				userActor(toUserId(f.user)),
+				async (tx) => {
+					await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+					return listCopyTradeOrdersForAccount(tx, { status: "all", limit: 200 }, f.account);
+				},
+			);
+			expect(orders?.orders).toHaveLength(2);
+			expect(orders?.orders.map(order => order.market_title)).toEqual([null, null]);
+
 			await addCurrent(
 				second,
 				f.condition,
@@ -1636,7 +1649,7 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
         SELECT ${f.account},${f.user},${targetIdFromWallet(f.target)}::uuid,'unrelated-'||n,
           'prediction-market:polymarket:unrelated-'||n,${at(10)}::timestamptz,${f.account}||'-unrelated-'||n,'filled','paper','{}'::jsonb
         FROM generate_series(1,5000) n`);
-			await db.execute(sql`ANALYZE poly_copy_trade_fills`);
+			await getAppDb().execute(sql`ANALYZE poly_copy_trade_fills`);
 			const dialect = new PgDialect();
 			const statements: string[] = [];
 			await db.transaction(
@@ -1740,7 +1753,7 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
           ${`prediction-market:polymarket:${f.condition}`},${at(15)}::timestamptz,${f.account}||'-overflow-'||n,NULL,'filled','paper',
           CASE WHEN n%2=0 THEN '{}'::jsonb ELSE jsonb_build_object('token_id','wrong-token') END
         FROM generate_series(1,257) n`);
-			await db.execute(sql`ANALYZE poly_copy_trade_fills`);
+			await getAppDb().execute(sql`ANALYZE poly_copy_trade_fills`);
 			await db.transaction(
 				async (tx) => {
 					const query = positionMetadataOriginSelect(

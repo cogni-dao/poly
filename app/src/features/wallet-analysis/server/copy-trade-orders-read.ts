@@ -340,13 +340,7 @@ export async function listCopyTradeOrdersForAccount(
       const result = toContractRow(row, now);
       return {
         ...result,
-        market_title:
-          selected?.marketTitle ??
-          humanMarketTitle(
-            typeof row.attributes?.title === "string"
-              ? row.attributes.title
-              : null,
-          ),
+        market_title: selected?.marketTitle ?? null,
         outcome: selected?.outcome ?? null,
       };
     }),
