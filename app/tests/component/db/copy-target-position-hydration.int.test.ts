@@ -13,9 +13,9 @@ import { noopLogger, noopMetrics, type OrderReceipt, type TargetBookSnapshotV1 }
 import { createPolyTradeExecutorFactory } from "@/bootstrap/capabilities/poly-trade-executor";
 import { createExecutionVenueResolver, createPaperVenue, derivePaperAccountAddress } from "@/features/paper-accounts";
 import { createOrderLedger } from "@/features/trading/order-ledger";
-import type {
-	PolymarketDataApiClient,
-	PolymarketUserPosition,
+import {
+  PolymarketDataApiClient,
+  type PolymarketUserPosition,
 } from "@cogni/poly-market-provider/adapters/polymarket";
 import type { WalletExecutionPosition } from "@cogni/poly-node-contracts";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
@@ -1187,7 +1187,9 @@ describe("authenticated paper-only REAL target hydration", () => {
       const executor = await factory.getPolyTradeExecutorFor(account);
       const ledger = createOrderLedger({ db, logger: noopLogger as never, resolveExecutionMode: async () => "paper" });
       for (const [index, leg] of [...legs, { conditionId: zeroCondition, tokenId: "987004" },
-        { conditionId: zeroCondition, tokenId: "987005" }, { conditionId: zeroCondition, tokenId: "987006" }].entries()) {
+        { conditionId: zeroCondition, tokenId: "987005" }, { conditionId: zeroCondition, tokenId: "987006" },
+        { conditionId: zeroCondition, tokenId: "987007" }, { conditionId: zeroCondition, tokenId: "987008" },
+        { conditionId: zeroCondition, tokenId: "987009" }].entries()) {
         const client = randomUUID(), order = randomUUID();
         const intent = { provider: "polymarket" as const, market_id: `prediction-market:polymarket:${leg.conditionId}`,
           outcome: "0", side: "BUY" as const, size_usdc: 1.5, limit_price: 0.5, client_order_id: client,
@@ -1210,42 +1212,113 @@ describe("authenticated paper-only REAL target hydration", () => {
             attributes: sql`${polyCopyTradeFills.attributes} || '{"filled_size_usdc":1.5,"realized_fill_source":"paper_order_receipt"}'::jsonb` })
             .where(eq(polyCopyTradeFills.clientOrderId, client));
         }
+        if (index === 8) await db.update(polyCopyTradeFills).set({
+          attributes: sql`jsonb_set(${polyCopyTradeFills.attributes}, '{paper_receipt_v1,billing_account_id}', '"wrong-tenant"'::jsonb)` })
+          .where(eq(polyCopyTradeFills.clientOrderId, client));
         await db.insert(polyTraderCurrentPositions).values({ traderWalletId: localWallet.id,
-          conditionId: leg.conditionId, tokenId: leg.tokenId, shares: "3", costBasisUsdc: "1.5",
-          currentValueUsdc: "1.8", avgPrice: ".5", contentHash: randomUUID(), lastObservedAt: new Date(), active: true });
+          conditionId: leg.conditionId, tokenId: index === 7 ? "987099" : leg.tokenId, shares: "3", costBasisUsdc: "1.5",
+          currentValueUsdc: "1.8", avgPrice: ".5", contentHash: randomUUID(), lastObservedAt: new Date(), active: index !== 6 });
       }
       const own = (await readCopyTargetPositionCohorts(db)).find(cohort => cohort.targetWallet === targetWallet);
       expect(own).toEqual({ targetWallet, conditions: [condition, thirdCondition].sort(),
         exactLocalKeys: [...legs].sort((x, y) => x.conditionId.localeCompare(y.conditionId) || x.tokenId.localeCompare(y.tokenId)) });
+      // Revocation blocks new admission while preserving executions accepted
+      // before revocation. An existing cached factory cannot bypass the lock.
+      const revokedAt = new Date();
+      await db.update(polyWalletConnections).set({ revokedAt }).where(eq(polyWalletConnections.id, connection));
+      const rejectedClient = randomUUID(), rejectedOrder = randomUUID();
+      await ledger.insertPending({ billing_account_id: account, created_by_user_id: owner, target_id: targetId,
+        fill_id: rejectedClient, observed_at: new Date(), intent: { provider: "polymarket", market_id: `prediction-market:polymarket:${zeroCondition}`,
+          outcome: "0", side: "BUY", size_usdc: 1.5, limit_price: .5, client_order_id: rejectedClient,
+          attributes: { condition_id: zeroCondition, token_id: "987010", side: "BUY", target_wallet: targetWallet } } });
+      native = { order_id: rejectedOrder, client_order_id: rejectedClient, status: "filled", filled_size_usdc: 1.5,
+        total_shares: 3, fill_price: .5, fees_usdc: 0, submitted_at: new Date().toISOString(),
+        attributes: { market: zeroCondition, tokenId: "987010", side: "BUY", sizeMatched: 3 } };
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date(revokedAt.getTime() + 1));
+      try {
+        const rejected = await executor.getOrder(rejectedOrder);
+        if (!("found" in rejected)) throw new Error("revoked connection native absent");
+        const rejection = await ledger.markOrderId({ client_order_id: rejectedClient, receipt: rejected.found });
+        if (!rejection) throw new Error("revoked connection result absent");
+        expect(rejection.accepted).toBe(false);
+      } finally { vi.useRealTimers(); }
+      expect((await readCopyTargetPositionCohorts(db)).find(cohort => cohort.targetWallet === targetWallet)).toEqual(own);
+      // The same exact key has independent LIVE and PAPER origins in one tenant.
+      const liveAddress = `0x${randomUUID().replaceAll("-", "")}abcdef12`;
+      const liveConnection = randomUUID();
+      await db.insert(polyWalletConnections).values({ id: liveConnection, billingAccountId: account,
+        createdByUserId: owner, kind: "privy_live", address: liveAddress, funderAddress: liveAddress,
+        privyWalletId: `privy-${liveConnection}`, clobApiKeyCiphertext: Buffer.from("component-test"), encryptionKeyId: "component-test",
+        custodialConsentAcceptedAt: new Date(), custodialConsentActorKind: "user", custodialConsentActorId: owner });
+      await db.insert(polyWalletGrants).values({ billingAccountId: account, walletConnectionId: liveConnection,
+        createdByUserId: owner, scopes: ["poly:trade:buy"], perOrderUsdcCap: "10", dailyUsdcCap: "1000", hourlyFillsCap: 1000 });
+      const [liveWallet] = await db.insert(polyTraderWallets).values({ walletAddress: liveAddress, kind: "cogni_wallet" }).returning({ id: polyTraderWallets.id });
+      if (!liveWallet) throw new Error("mixed hydration live wallet absent");
+      await db.insert(polyTraderCurrentPositions).values({ traderWalletId: liveWallet.id, conditionId: condition,
+        tokenId: "987001", shares: "3", costBasisUsdc: "1.5", currentValueUsdc: "1.8", avgPrice: ".5",
+        contentHash: randomUUID(), lastObservedAt: new Date(), active: true });
+      await db.insert(polyCopyTradeFills).values({ billingAccountId: account, createdByUserId: owner, targetId,
+        fillId: randomUUID(), clientOrderId: randomUUID(), orderId: randomUUID(), mode: "live", status: "filled",
+        observedAt: new Date(), marketId: `prediction-market:polymarket:${condition}`, shares: "3", price: ".5",
+        attributes: { target_wallet: targetWallet, condition_id: condition, token_id: "987001", side: "BUY",
+          position_gap_version: "3", realized_fill_source: "clob_associated_trades", filled_size_usdc: 1.5 } });
+      expect((await readCopyTargetPositionCohorts(db)).find(cohort => cohort.targetWallet === targetWallet)).toEqual(own);
       const observed = legs.map((leg, index) => ({ ...position(leg.tokenId, leg.conditionId), proxyWallet: targetWallet,
         outcome: index === 1 ? "NO" : "YES", oppositeAsset: index === 0 ? legs[1]?.tokenId ?? "" : legs[0]?.tokenId ?? "" }));
-      const listUserPositionsV2 = vi.fn(async (wallet: string, input: { conditions: string[] }) => {
-        expect(wallet).toBe(targetWallet);
-        expect(input.conditions).toEqual([condition, thirdCondition].sort());
-        return observed;
+      let failSecondPage = false;
+      const targetFetch = vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        expect(url.origin).toBe("http://real-target.hydration.test");
+        expect(url.pathname).toBe("/v2/positions");
+        expect(url.searchParams.get("user")).toBe(targetWallet);
+        expect(url.searchParams.get("condition")).toBe([condition, thirdCondition].sort().join(","));
+        expect(url.searchParams.get("status")).toBe("OPEN");
+        const second = url.searchParams.get("cursor") === "second-page";
+        if (second && failSecondPage) return new Response("controlled incomplete walk", { status: 503 });
+        const data = (second ? observed.slice(2) : observed.slice(0, 2)).map(row => ({
+          condition_id: row.conditionId, token_id: row.asset, proxy_wallet: targetWallet, status: "OPEN",
+          current_size: row.size, avg_price: row.avgPrice, current_price: row.curPrice, current_value: row.currentValue,
+          entry_cost_usdc: row.initialValue, entry_fees_usdc: 0, total_cost_usdc: row.initialValue,
+          total_pnl: row.cashPnl, total_size: row.totalBought, realized_pnl: row.realizedPnl,
+          percent_pnl: row.percentPnl, percent_realized_pnl: row.percentRealizedPnl, unrealized_pnl: row.cashPnl,
+          title: row.title, outcome: row.outcome, opposite_token_id: row.oppositeAsset, end_date: row.endDate,
+        }));
+        return Response.json({ data, pagination: { has_more: !second, limit: 1000,
+          offset: second ? 2 : 0, next_cursor: second ? null : "second-page" } });
       });
-      const targetClient = { listUserPositionsV2 } as unknown as PolymarketDataApiClient;
+      const targetClient = new PolymarketDataApiClient({ baseUrl: "http://real-target.hydration.test", fetch: targetFetch });
       const hydrated = await hydrateCopyTargetPositions({ db, client: targetClient, logger: noopLogger });
       expect(hydrated.errors).toBe(0);
-      expect(listUserPositionsV2).toHaveBeenCalledTimes(1);
+      expect(targetFetch).toHaveBeenCalledTimes(2);
       const saved = await db.select({ condition: polyTraderCurrentPositions.conditionId,
         token: polyTraderCurrentPositions.tokenId, shares: polyTraderCurrentPositions.shares })
         .from(polyTraderCurrentPositions).innerJoin(polyTraderWallets, eq(polyTraderWallets.id, polyTraderCurrentPositions.traderWalletId))
         .where(eq(polyTraderWallets.walletAddress, targetWallet));
       expect(saved).toHaveLength(3);
-      const fail = vi.fn(async () => { throw new Error("controlled V2 cohort failure"); });
-      const failed = await hydrateCopyTargetPositions({ db, client: { listUserPositionsV2: fail } as unknown as PolymarketDataApiClient, logger: noopLogger });
+      const publication = () => db.execute(sql`SELECT
+        (SELECT count(*) FROM poly_trader_position_snapshots s JOIN poly_trader_wallets w ON w.id=s.trader_wallet_id WHERE w.wallet_address=${targetWallet})::int AS snapshots,
+        (SELECT jsonb_build_object('status',c.status,'seen',c.last_seen_at,'success',c.last_success_at)
+          FROM poly_trader_ingestion_cursors c JOIN poly_trader_wallets w ON w.id=c.trader_wallet_id
+          WHERE w.wallet_address=${targetWallet} AND c.source=${COPY_TARGET_POSITION_CURSOR_SOURCE}) AS cursor`);
+      const completePublication = await publication();
+      expect(completePublication[0]).toMatchObject({ snapshots: 3, cursor: { status: "ok" } });
+      failSecondPage = true;
+      const failed = await hydrateCopyTargetPositions({ db, client: targetClient, logger: noopLogger });
       expect(failed.errors).toBe(1);
       const retained = await db.select({ condition: polyTraderCurrentPositions.conditionId,
         token: polyTraderCurrentPositions.tokenId, shares: polyTraderCurrentPositions.shares })
         .from(polyTraderCurrentPositions).innerJoin(polyTraderWallets, eq(polyTraderWallets.id, polyTraderCurrentPositions.traderWalletId))
         .where(eq(polyTraderWallets.walletAddress, targetWallet));
       expect(retained).toEqual(saved);
+      expect(await publication()).toEqual(completePublication);
+      await db.delete(polyTraderWallets).where(eq(polyTraderWallets.id, liveWallet.id));
     } finally {
       transport.mockRestore();
       await db.delete(polyCopyTradeFills).where(eq(polyCopyTradeFills.billingAccountId, account));
       await db.delete(polyCopyTradeTargets).where(eq(polyCopyTradeTargets.billingAccountId, account));
       await db.delete(polyWalletGrants).where(eq(polyWalletGrants.billingAccountId, account));
+      await db.execute(sql`DELETE FROM poly_trader_wallets WHERE wallet_address IN (SELECT address FROM poly_wallet_connections WHERE billing_account_id=${account})`);
       await db.delete(polyWalletConnections).where(eq(polyWalletConnections.billingAccountId, account));
       await db.delete(polyTraderWallets).where(eq(polyTraderWallets.walletAddress, address));
       await db.delete(polyTraderWallets).where(eq(polyTraderWallets.walletAddress, targetWallet));
