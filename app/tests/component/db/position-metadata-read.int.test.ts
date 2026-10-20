@@ -1134,10 +1134,6 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
       if (!connection) throw new Error("metadata paper connection absent");
       await db.execute(sql`INSERT INTO poly_wallet_grants (billing_account_id,wallet_connection_id,created_by_user_id,scopes,per_order_usdc_cap,daily_usdc_cap,hourly_fills_cap)
         VALUES (${f.account},${connection.id},${f.user},ARRAY['poly:trade:buy'],10,1000,1000)`);
-      const factory = createPolyTradeExecutorFactory({ logger: log, metrics: noopMetrics,
-        paperSidecarUrl: "http://paper.metadata.test", paperVenue: createPaperVenue({ db }),
-        resolveExecutionVenue: createExecutionVenueResolver({ db }) });
-      const executor = await factory.getPolyTradeExecutorFor(f.account);
 			const lineage = {
 				algorithm_id: "poly.copy-mirror.position-gap" as const,
 				algorithm_version_id: `sha256:${"a".repeat(64)}`,
@@ -1197,6 +1193,10 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
         vi.useFakeTimers({ toFake: ["Date"] });
         vi.setSystemTime(new Date(at(10)));
         try {
+      const factory = createPolyTradeExecutorFactory({ logger: log, metrics: noopMetrics,
+        paperSidecarUrl: "http://paper.metadata.test", paperVenue: createPaperVenue({ db }),
+        resolveExecutionVenue: createExecutionVenueResolver({ db }) });
+      const executor = await factory.getPolyTradeExecutorFor(f.account);
           const actual = await executor.getOrder(native.order_id);
           if (!("found" in actual)) throw new Error("metadata native receipt absent");
           const accepted = await ledger.markOrderId({ client_order_id: intent.client_order_id, receipt: actual.found });

@@ -20,6 +20,7 @@
  * @public
  */
 
+import { copyFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import { polyCopyTradeFills } from "@cogni/poly-db-schema/copy-trade";
 import type {
   PolyResearchCopyTradePnlMode,
@@ -96,8 +97,7 @@ export async function getCopyTradePnlForTenant(
       MAX(${polyCopyTradeFills.attributes}->>'target_wallet') AS target_wallet,
       COUNT(*)::int AS fills_count,
       COUNT(*) FILTER (WHERE ${polyCopyTradeFills.status} = 'filled' AND (
-        COALESCE(${polyCopyTradeFills.attributes}->>'position_gap_version', '') <> '3'
-        OR ${polyCopyTradeFills.attributes}->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
+        ${copyFillAccountingSql("poly_copy_trade_fills").realized}
       ))::int AS filled_count,
       COUNT(*) FILTER (WHERE ${polyCopyTradeFills.status} = 'open')::int AS open_count,
       COUNT(*) FILTER (WHERE ${polyCopyTradeFills.status} = 'pending')::int AS pending_count,
@@ -112,10 +112,9 @@ export async function getCopyTradePnlForTenant(
       ), 0)::text AS intent_usdc,
       COALESCE(SUM(
         CASE
-          WHEN ${polyCopyTradeFills.status} IN ('filled','partial')
+          WHEN (${polyCopyTradeFills.status} IN ('filled','partial') OR ${copyFillAccountingSql("poly_copy_trade_fills").positive})
             AND (
-              COALESCE(${polyCopyTradeFills.attributes}->>'position_gap_version', '') <> '3'
-              OR ${polyCopyTradeFills.attributes}->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
+              ${copyFillAccountingSql("poly_copy_trade_fills").realized}
             )
             AND ${polyCopyTradeFills.attributes}->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
           THEN (${polyCopyTradeFills.attributes}->>'filled_size_usdc')::numeric
@@ -123,9 +122,7 @@ export async function getCopyTradePnlForTenant(
         END
       ), 0)::text AS realized_size_usdc,
       COUNT(*) FILTER (WHERE
-        COALESCE(${polyCopyTradeFills.attributes}->>'position_gap_version', '') = '3'
-        AND ${polyCopyTradeFills.status} IN ('filled','partial')
-        AND COALESCE(${polyCopyTradeFills.attributes}->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
+        (${polyCopyTradeFills.status} IN ('filled','partial') AND NOT (${copyFillAccountingSql("poly_copy_trade_fills").realized} OR ${copyFillAccountingSql("poly_copy_trade_fills").zero})) OR (${polyCopyTradeFills.mode} = 'paper' AND NOT ${copyFillAccountingSql("poly_copy_trade_fills").feeKnown})
       )::int AS accounting_pending_count,
       BOOL_OR(
         (${polyCopyTradeFills.positionLifecycle} IS NULL

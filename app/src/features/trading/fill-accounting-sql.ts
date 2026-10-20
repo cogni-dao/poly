@@ -125,3 +125,19 @@ export function paperFillAccountingSql(
 		proofKey: sql`${p}->>'proof_key'`,
 	};
 }
+
+/** Shared mode-aware gate; the historical LIVE publication rule is unchanged. */
+export function copyFillAccountingSql(
+	alias: string,
+	capturedAt: SQL = sql`now()`,
+) {
+	const f = sql.raw(alias);
+	const paper = paperFillAccountingSql(alias, capturedAt);
+	const liveVerified = sql`COALESCE((${f}.mode = 'live' AND ${f}.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')), false)`;
+	return {
+		...paper,
+		positionGapVerified: sql`COALESCE((${paper.positive} OR ${liveVerified}), false)`,
+		realized: sql`COALESCE((${paper.positive} OR (${f}.mode = 'live' AND (COALESCE(${f}.attributes->>'position_gap_version', '') <> '3' OR ${liveVerified}))), false)`,
+		feeAvailable: sql`COALESCE((${f}.mode = 'live' OR ${paper.feeKnown}), false)`,
+	};
+}

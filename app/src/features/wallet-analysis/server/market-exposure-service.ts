@@ -97,6 +97,7 @@
  * @internal
  */
 
+import { copyFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import { comparePositionIdentity, positionIdentityKey } from "@cogni/poly-market-provider";
 import {
   type PositionMetadataKey,
@@ -859,12 +860,11 @@ async function readComparisonBundleRows(params: {
         f.client_order_id,
         NULLIF(f.attributes->>'event_slug', '') AS event_slug,
         CASE
-          WHEN COALESCE(f.attributes->>'position_gap_version', '') = '3'
-            AND COALESCE(f.attributes->>'realized_fill_source', '') NOT IN ('clob_associated_trades', 'data_api_activity_position')
+          WHEN NOT (${copyFillAccountingSql("f", sql`COALESCE(${params.capturedAt ?? null}::timestamptz, now())`).realized} OR ${copyFillAccountingSql("f", sql`COALESCE(${params.capturedAt ?? null}::timestamptz, now())`).zero})
             THEN NULL
           WHEN COALESCE(f.attributes->>'filled_size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'
             THEN (f.attributes->>'filled_size_usdc')::numeric
-          WHEN COALESCE(f.attributes->>'size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'
+          WHEN f.mode = 'live' AND COALESCE(f.attributes->>'size_usdc', '') ~ '^[0-9]+(\\.[0-9]+)?$'
             THEN (f.attributes->>'size_usdc')::numeric
           ELSE 0
         END AS own_cost
@@ -1032,8 +1032,7 @@ async function readComparisonBundleRows(params: {
         AND f.order_id IS NOT NULL
         AND f.mode = ${executionMode}
         AND (
-          COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-          OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
+          ${copyFillAccountingSql("f", sql`COALESCE(${params.capturedAt ?? null}::timestamptz, now())`).realized}
         )
         AND (
           COALESCE(f.shares, 0) > 0
