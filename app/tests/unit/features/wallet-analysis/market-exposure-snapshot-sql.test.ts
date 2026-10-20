@@ -194,9 +194,13 @@ describe("market-exposure latest_snapshots CTE (dashboard floor fix)", () => {
     const comparisonSql = captured[0] ?? "";
     expect(comparisonSql).toContain("attributes->>'position_gap_version'");
     expect(comparisonSql).toContain("attributes->>'realized_fill_source'");
-    expect(comparisonSql).toMatch(
-      /position_gap_version[\s\S]*NOT IN \('clob_associated_trades', 'data_api_activity_position'\)[\s\S]*THEN NULL[\s\S]*filled_size_usdc[\s\S]*size_usdc/
-    );
+    // The real PostgreSQL negative lives in copy-target-position-hydration:
+    // missing-source LIVE v3 closed fills cannot publish intended cost. This
+    // small unit assertion checks only that this reader wires the shared gate.
+    const closedSource = comparisonSql.split("), closed_source AS (")[1] ?? "";
+    const costSource = closedSource.split("), closed_ranked AS (")[0] ?? "";
+    expect(costSource).toMatch(/WHEN NOT[\s\S]*THEN NULL[\s\S]*filled_size_usdc/);
+    expect(costSource).toMatch(/WHEN f\.mode = 'live' AND[\s\S]*size_usdc/);
     expect(comparisonSql).toContain(
       "own_cost IS NULL OR l.own_cost <= 0"
     );

@@ -125,7 +125,7 @@ export const PolyInvestigationMirrorLegSchema = z.object({
   sell_usdc: z.number().nonnegative(),
   buy_vwap: z.number().nonnegative().nullable(),
   sell_vwap: z.number().nonnegative().nullable(),
-  fees_usdc: z.number().nonnegative(),
+  fees_usdc: z.number().nonnegative().nullable(),
   mark_price: z.number().nonnegative().nullable(),
   marked_value_usdc: z.number().nonnegative().nullable(),
   mark_observed_at: z.string().nullable(),
