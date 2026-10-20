@@ -795,7 +795,7 @@ describe("authenticated paper cumulative receipt persistence", () => {
 					eligibleNetNavUsdc: 100,
 					scale: 1,
 					walletCashUsdc: 100,
-					plan: { version: 1, status: "ready", blockReason: null, diagnostics: [], intents: [], lockedOverweights: [] },
+					plan: { version: 1, status: "ready", blockReason: null, minimumFeasibleSleeveUsdc: null, diagnostics: [], intents: [], lockedOverweights: [] },
 					cohortReductions: [],
 				};
 				const buyInput = (suffix: string) => ({
