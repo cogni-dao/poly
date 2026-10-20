@@ -728,7 +728,8 @@ export async function readEconomicPositionProjection(params: {
   );
 
   const metadataKey = (row: EconomicRow): PositionMetadataKey => ({ conditionId: row.condition_id ?? "", tokenId: row.token_id ?? "", walletAddress: params.walletAddress, mode });
-  const metadata = await readPositionMetadata({ db: params.db, keys: rows.map(metadataKey), capturedAt: params.capturedAt.toISOString() });
+  const accountScope = { billingAccountId: params.billingAccountId };
+  const metadata = await readPositionMetadata({ accountScope, db: params.db, keys: rows.map(metadataKey), capturedAt: params.capturedAt.toISOString() });
   const first = rows[0];
   const livePositions: WalletExecutionPosition[] = [];
   const closedPositions: WalletExecutionPosition[] = [];
@@ -740,7 +741,7 @@ export async function readEconomicPositionProjection(params: {
     const position = toPosition(row, params.capturedAt, mode);
     if (position === null) continue;
     if (row.target_correlated) targetCorrelatedKeys.add(position.positionId);
-    const selectedPosition = { ...position, ...positionMetadataDisplay(metadata.get(positionMetadataRequestKey(metadataKey(row)) ?? "")) };
+    const selectedPosition = { ...position, ...positionMetadataDisplay(metadata.get(positionMetadataRequestKey(metadataKey(row), accountScope) ?? "")) };
     if (row.economic_bucket === "live") livePositions.push(selectedPosition);
     if (row.economic_bucket === "closed") closedPositions.push(selectedPosition);
   }

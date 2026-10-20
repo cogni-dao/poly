@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 
 import { toExecuted } from "@/features/wallet-analysis/server/copy-trade-attempts-read";
 import {
-  listCopyTradeOrdersForAccount,
   toContractRow,
 } from "@/features/wallet-analysis/server/copy-trade-orders-read";
 
@@ -69,64 +67,8 @@ function attemptRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Position-gap public fill accounting", () => {
-  it("bounded-joins canonical market metadata before rendering orders", async () => {
-    const captured: string[] = [];
-    const tx = {
-      execute: async (query: unknown) => {
-        captured.push(new PgDialect().sqlToQuery(query as never).sql);
-        return [];
-      },
-    };
-
-    await listCopyTradeOrdersForAccount(
-      tx as never,
-      { limit: 50 },
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-    );
-
-    const query = captured[0] ?? "";
-    expect(query).toContain("WITH ordered_fills AS MATERIALIZED");
-    expect(query).toContain("LEFT JOIN LATERAL");
-    expect(query).toContain('FROM "poly_market_metadata" candidate');
-    expect(query).toContain('FROM "poly_trader_current_positions" candidate');
-    expect(query).toMatch(
-      /lower\(candidate\.condition_id\) = lower\(COALESCE\([\s\S]*attributes->>'condition_id'[\s\S]*regexp_replace\([\s\S]*market_id[\s\S]*\^prediction-market:polymarket:/,
-    );
-    expect(query).toMatch(
-      /lower\(candidate\.condition_id\) = lower\(COALESCE\([\s\S]*candidate\.token_id = NULLIF\(f\.attributes->>'token_id'/,
-    );
-    expect(query).toMatch(/LIMIT \$\d+\s*\)[\s\S]*LEFT JOIN LATERAL/);
-  });
-
-  it("returns a real title from the current-position fallback", async () => {
-    const tx = {
-      execute: async () => [
-        {
-          ...orderRow({
-            condition_id:
-              "0x8f9a4ff725d4f23ac1eea6c611a21193a629de0a6af74f8a28c08fef37908183",
-            token_id: "token-1",
-            outcome: "0",
-            position_gap_version: "3",
-          }),
-          metadataMarketTitle: "Will the canonical market win?",
-        },
-      ],
-    };
-
-    const result = await listCopyTradeOrdersForAccount(
-      tx as never,
-      { limit: 1 },
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-    );
-
-    expect(result?.orders).toHaveLength(1);
-    expect(result?.orders[0]?.market_title).toBe(
-      "Will the canonical market win?",
-    );
-    expect(result?.orders[0]?.outcome).toBe("0");
-  });
-
+  // Orders metadata is proved with real PostgreSQL in position-metadata-read.int.test.ts.
+  // The removed SQL-string/mock-row cases certified the old unscoped target lookup and numeric indexes.
   it("prefers canonical market metadata over the numeric outcome label", () => {
     const order = toContractRow(
       {

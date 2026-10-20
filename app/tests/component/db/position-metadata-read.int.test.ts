@@ -1,35 +1,49 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 /** Real saved publication -> per-field reader -> bounded comparison assembly. */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { toUserId, userActor } from "@cogni/ids";
 import type { TargetBookSnapshotV1 } from "@cogni/poly-market-provider";
 import type { WalletExecutionPosition } from "@cogni/poly-node-contracts";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import pino from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
+import { buildPositionGapBuyIntent } from "@/features/copy-trade/position-gap-actor";
+import { derivePaperAccountAddress } from "@/features/paper-accounts";
+import { createOrderLedger } from "@/features/trading/order-ledger";
 import { persistPositionGapTargetSnapshot } from "@/features/wallet-analysis/server/copy-target-position-hydration-service";
 import { getRecentAttemptsForAccount } from "@/features/wallet-analysis/server/copy-trade-attempts-read";
-import {
-  buildMarketExposureGroups,
-  buildBoundedMarketExposureGroups,
-  buildBoundedMarketExposureWithCoverage,
-} from "@/features/wallet-analysis/server/market-exposure-service";
+import { listCopyTradeOrdersForAccount } from "@/features/wallet-analysis/server/copy-trade-orders-read";
 import { readCurrentWalletPositionModel } from "@/features/wallet-analysis/server/current-position-read-model";
 import { readEconomicPositionProjection } from "@/features/wallet-analysis/server/economic-position-read-model";
+import {
+	buildBoundedMarketExposureGroups,
+	buildBoundedMarketExposureWithCoverage,
+	buildMarketExposureGroups,
+} from "@/features/wallet-analysis/server/market-exposure-service";
+import { observePaperWallet } from "@/features/wallet-analysis/server/paper-fact-source";
 import { refreshMarketMetadata } from "@/features/wallet-analysis/server/poly-market-metadata-service";
 import {
-  positionMetadataRequestKey,
-  positionMetadataSelect,
-  readPositionMetadata,
+	type OriginDescriptor,
+	positionMetadataOriginSelect,
+	positionMetadataRequestKey,
+	positionMetadataSelect,
+	readPositionMetadata,
 } from "@/features/wallet-analysis/server/position-metadata-read";
 import { getTargetPositionsForAccount } from "@/features/wallet-analysis/server/target-positions-read";
 import {
-  billingAccounts,
-  polyCopyTradeTargets,
-  users,
+	billingAccounts,
+	polyCopyTradeFills,
+	polyCopyTradeTargets,
+	polyWalletConnections,
+	users,
 } from "@/shared/db/schema";
+import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 
 const unique = randomUUID().replaceAll("-", "");
 const conditionId = `0x${unique}${unique}`;
@@ -820,4 +834,1010 @@ describe("saved metadata publication and indexed exact identity reads", () => {
       outcome: "Deep saved label",
     });
   });
+});
+
+/** Independent fixtures for account-qualified origins; no shared target enablement or new-fill repair. */
+async function originFixture(metadata?: {
+	condition: string;
+	tokens: readonly [string, string];
+	title: string;
+}) {
+	const user = randomUUID(),
+		account = randomUUID();
+	const target =
+		`0x${randomUUID().replaceAll("-", "")}11223344` as `0x${string}`;
+	const condition =
+		metadata?.condition ?? `0x${randomUUID().replaceAll("-", "").repeat(2)}`;
+	const paper = derivePaperAccountAddress(account);
+	const accountScope = { billingAccountId: account };
+	const tokens =
+		metadata?.tokens ??
+		(["950100000000000000001", "950100000000000000002"] as const);
+	await db.insert(users).values({ id: user, walletAddress: target });
+	await db
+		.insert(billingAccounts)
+		.values({ id: account, ownerUserId: user, balanceCredits: 0n });
+	await db.insert(polyWalletConnections).values({
+		billingAccountId: account,
+		createdByUserId: user,
+		kind: "paper",
+		address: paper,
+		funderAddress: paper,
+		paperSeedUsdc: "1000",
+		createdAt: new Date(at(0)),
+		custodialConsentAcceptedAt: new Date(at(0)),
+		custodialConsentActorKind: "user",
+		custodialConsentActorId: user,
+	});
+	await db.insert(polyCopyTradeTargets).values({
+		billingAccountId: account,
+		createdByUserId: user,
+		targetWallet: target,
+		createdAt: new Date(at(0)),
+		disabledAt: new Date(at(20)),
+	});
+	const [paperRow] = rows<{ id: string }>(
+		await db.execute(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label)
+    VALUES (${paper},'paper_wallet','Metadata origin fixture') RETURNING id`),
+	);
+	if (!paperRow) throw new Error("Missing fixture paper wallet");
+	const key = (token: string = tokens[0]) => ({
+		conditionId: condition,
+		tokenId: token,
+		walletAddress: paper,
+		mode: "paper" as const,
+	});
+	const batch = (token: string = tokens[0]) => [
+		{
+			conditionId: condition,
+			tokenId: token,
+			wallet: paper,
+			mode: "paper" as const,
+		},
+	];
+	const value = (
+		result: Awaited<ReturnType<typeof readPositionMetadata>>,
+		token: string = tokens[0],
+	) => result.get(positionMetadataRequestKey(key(token), accountScope) ?? "");
+	const read = (
+		connection: { execute(query: SQL): Promise<unknown> } = db,
+		token: string = tokens[0],
+	) =>
+		readPositionMetadata({
+			db: connection,
+			keys: [key(token)],
+			accountScope,
+			capturedAt: at(30),
+		});
+	async function seed(
+		overrides: {
+			token?: string;
+			targetId?: string;
+			targetWallet?: string;
+			mode?: "paper" | "live";
+			conditionId?: string;
+			orderId?: string | null;
+			observedAt?: string;
+			attributes?: Record<string, unknown>;
+		} = {},
+	) {
+		await db.insert(polyCopyTradeFills).values({
+			billingAccountId: account,
+			createdByUserId: user,
+			targetId: overrides.targetId ?? targetIdFromWallet(target),
+			fillId: randomUUID(),
+			marketId: `prediction-market:polymarket:${condition}`,
+			observedAt: new Date(overrides.observedAt ?? at(10)),
+			clientOrderId: randomUUID(),
+			orderId:
+				overrides.orderId === undefined ? randomUUID() : overrides.orderId,
+			status: "filled",
+			mode: overrides.mode ?? "paper",
+			shares: "10",
+			price: ".4",
+			feesUsdc: "0",
+			attributes: {
+				side: "BUY",
+				token_id: overrides.token ?? tokens[0],
+				condition_id: overrides.conditionId ?? condition,
+				target_wallet: overrides.targetWallet ?? target,
+				...overrides.attributes,
+			},
+		});
+	}
+	async function publish(
+		labels: readonly [string, string] = ["Sangal", "Over"],
+		offset = 5,
+	) {
+		const saved = snapshot(offset, true);
+		const market = saved.conditions[0];
+		if (!market) throw new Error("Missing fixture market");
+		await persistPositionGapTargetSnapshot({
+			db,
+			snapshot: {
+				...saved,
+				snapshotId: `${condition}-${offset}`,
+				targetWallet: target,
+				conditions: [
+					{
+						...market,
+						conditionId: condition,
+						marketTitle: metadata?.title ?? "Retained filled market",
+						tokens: [
+							{
+								...market.tokens[0],
+								tokenId: tokens[0],
+								oppositeTokenId: tokens[1],
+								shares: 10,
+								outcome: labels[0],
+							},
+							{
+								...market.tokens[1],
+								tokenId: tokens[1],
+								oppositeTokenId: tokens[0],
+								shares: 10,
+								outcome: labels[1],
+							},
+						],
+					},
+				],
+			},
+		});
+	}
+	async function cleanup() {
+		await db.execute(
+			sql`DELETE FROM poly_copy_trade_fills WHERE billing_account_id=${account}`,
+		);
+		await db.execute(
+			sql`DELETE FROM poly_copy_trade_targets WHERE billing_account_id=${account}`,
+		);
+		await db.execute(sql`DELETE FROM billing_accounts WHERE id=${account}`);
+		await db.execute(sql`DELETE FROM users WHERE id=${user}`);
+		await db.execute(
+			sql`DELETE FROM poly_trader_wallets WHERE lower(wallet_address) IN (${paper},${target})`,
+		);
+		await db.execute(
+			sql`DELETE FROM poly_market_metadata WHERE lower(condition_id)=${condition}`,
+		);
+		await db.execute(
+			sql`DELETE FROM poly_market_outcomes WHERE lower(condition_id)=${condition}`,
+		);
+	}
+	return {
+		user,
+		account,
+		accountScope,
+		paper,
+		paperRow,
+		target,
+		condition,
+		tokens,
+		key,
+		batch,
+		value,
+		read,
+		seed,
+		publish,
+		cleanup,
+	};
+}
+
+describe("bounded PAPER saved-origin metadata authorization", () => {
+	it("preserves the frozen additive eight exact-token names and index traps without changing denominators", async () => {
+		const bytes = readFileSync(
+			new URL(
+				"../../../../packages/poly-market-provider/tests/fixtures/position-paper-metadata-oracle.v1.json",
+				import.meta.url,
+			),
+		);
+		expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+			"25e615d861e190ab91c095d30193a7b5f6f41c8a5294fc5d845aa4fb82c92bac",
+		);
+		const oracle = JSON.parse(bytes.toString()) as {
+			cases: Array<{
+				caseId: string;
+				conditionId: string;
+				tokenId: string;
+				expectedNamedOutcome?: string;
+				expectedMarketTitle?: string;
+				candidateLabel?: string;
+				expectedLabelIsNamedOutcome?: boolean;
+			}>;
+		};
+		expect(oracle.cases).toHaveLength(8);
+		const named = oracle.cases.filter(
+			(c) => c.expectedNamedOutcome !== undefined,
+		);
+		expect(named).toHaveLength(4);
+		for (const condition of [...new Set(named.map((c) => c.conditionId))]) {
+			const pair = named.filter((c) => c.conditionId === condition);
+			const [left, right] = pair;
+			if (
+				!left?.expectedNamedOutcome ||
+				!right?.expectedNamedOutcome ||
+				!left.expectedMarketTitle
+			)
+				throw new Error("Malformed frozen named pair");
+			const f = await originFixture({
+				condition,
+				tokens: [left.tokenId, right.tokenId],
+				title: left.expectedMarketTitle,
+			});
+			try {
+				for (const token of f.tokens) {
+					const trap = oracle.cases.find(
+						(c) =>
+							c.conditionId === condition &&
+							c.tokenId === token &&
+							c.candidateLabel !== undefined,
+					);
+					expect(trap?.expectedLabelIsNamedOutcome).toBe(false);
+					await f.seed({
+						token,
+						attributes: {
+							outcome: trap?.candidateLabel,
+							position_gap_version: "3",
+						},
+					});
+					await db.execute(sql`INSERT INTO poly_trader_current_positions
+            (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,last_observed_at,raw)
+            VALUES (${f.paperRow.id},${condition},${token},10,4,6,.4,${randomUUID()},${at(25)}::timestamptz,
+              ${JSON.stringify({ outcome: trap?.candidateLabel, position_gap_version: "3" })}::jsonb)`);
+					expect(
+						f.value(
+							await db.transaction((tx) => f.read(tx, token), {
+								isolationLevel: "repeatable read",
+								accessMode: "read only",
+							}),
+							token,
+						)?.outcome,
+					).toBeNull();
+				}
+				await f.publish([
+					left.expectedNamedOutcome,
+					right.expectedNamedOutcome,
+				]);
+				for (const expected of pair) {
+					const result = f.value(
+						await db.transaction((tx) => f.read(tx, expected.tokenId), {
+							isolationLevel: "repeatable read",
+							accessMode: "read only",
+						}),
+						expected.tokenId,
+					);
+					expect(result, expected.caseId).toMatchObject({
+						marketTitle: expected.expectedMarketTitle,
+						outcome: expected.expectedNamedOutcome,
+						oppositeTokenId: null,
+					});
+				}
+			} finally {
+				await f.cleanup();
+			}
+		}
+	});
+
+	it("recovers both disabled filled legs through real intent, ledger, paper publication, orders and canonical readers without changing finance", async () => {
+		const f = await originFixture();
+		try {
+			const log = pino({ enabled: false });
+			const ledger = createOrderLedger({
+				db: db as unknown as PostgresJsDatabase<Record<string, unknown>>,
+				appDb: getAppDb() as unknown as PostgresJsDatabase<
+					Record<string, unknown>
+				>,
+				logger: log,
+				resolveExecutionMode: async () => "paper",
+			});
+			const lineage = {
+				algorithm_id: "poly.copy-mirror.position-gap" as const,
+				algorithm_version_id: `sha256:${"a".repeat(64)}`,
+				config_hash: `sha256:${"b".repeat(64)}`,
+				input_snapshot_id: `sha256:${"c".repeat(64)}`,
+				assignment_id: randomUUID(),
+				correlation_id: randomUUID(),
+			};
+			// Old index and future literal named '1' serialize identically: extra DTO hints are discarded by the real ledger.
+			for (const [index, token] of f.tokens.entries()) {
+				const intent = buildPositionGapBuyIntent({
+					marketId: `prediction-market:polymarket:${f.condition}`,
+					outcome: "1",
+					notionalUsdc: 4,
+					limitPrice: 0.4,
+					clientOrderId: randomUUID(),
+					tokenId: token,
+					conditionId: f.condition,
+					cohortKey: randomUUID(),
+					targetWallet: f.target,
+					lineage,
+				});
+				if (index === 1)
+					intent.attributes = {
+						...intent.attributes,
+						labelKind: "named",
+						outcomeIndex: 1,
+					};
+				await ledger.insertPending({
+					billing_account_id: f.account,
+					created_by_user_id: f.user,
+					target_id: targetIdFromWallet(f.target),
+					fill_id: randomUUID(),
+					observed_at: new Date(at(10)),
+					intent,
+				});
+				await ledger.markOrderId({
+					client_order_id: intent.client_order_id,
+					receipt: {
+						provider: "polymarket",
+						order_id: randomUUID(),
+						client_order_id: intent.client_order_id,
+						status: "filled",
+						filled_size_usdc: 4,
+						fill_price: 0.4,
+						total_shares: 10,
+						fees_usdc: 0,
+						submitted_at: at(10),
+					},
+				});
+			}
+			const serialized = rows<{ attributes: Record<string, unknown> }>(
+				await db.execute(
+					sql`SELECT attributes FROM poly_copy_trade_fills WHERE billing_account_id=${f.account}`,
+				),
+			);
+			expect(serialized).toHaveLength(2);
+			for (const row of serialized) {
+				expect(row.attributes.outcome).toBe("1");
+				expect(row.attributes.labelKind).toBeUndefined();
+				expect(row.attributes.outcomeIndex).toBeUndefined();
+			}
+			await observePaperWallet({
+				db: db as unknown as Parameters<typeof observePaperWallet>[0]["db"],
+				wallet: {
+					traderWalletId: f.paperRow.id,
+					account: {
+						billingAccountId: f.account,
+						address: f.paper,
+						seedUsdc: "1000",
+					},
+				},
+				readMidPrice: async () => 0.6,
+				logger: log,
+				now: new Date(at(15)),
+			});
+			const projected = rows<{ raw: Record<string, unknown> }>(
+				await db.execute(
+					sql`SELECT raw FROM poly_trader_fills WHERE trader_wallet_id=${f.paperRow.id}`,
+				),
+			);
+			expect(projected).toHaveLength(2);
+			for (const row of projected) {
+				expect(row.raw.attributes).toMatchObject({ outcome: "1" });
+				expect(
+					(row.raw.attributes as Record<string, unknown>).labelKind,
+				).toBeUndefined();
+			}
+			const readModels = (
+				tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+			) =>
+				Promise.all([
+					readCurrentWalletPositionModel({
+						db: tx,
+						billingAccountId: f.account,
+						walletAddress: f.paper,
+						mode: "paper",
+						capturedAt: new Date(at(30)),
+					}),
+					readEconomicPositionProjection({
+						db: tx,
+						billingAccountId: f.account,
+						walletAddress: f.paper,
+						connectionKind: "paper",
+						capturedAt: new Date(at(30)),
+						interval: "1W",
+					}),
+				]);
+			const before = await db.transaction(readModels, {
+				isolationLevel: "repeatable read",
+				accessMode: "read only",
+			});
+			const unknown = await db.transaction((tx) => f.read(tx), {
+				isolationLevel: "repeatable read",
+				accessMode: "read only",
+			});
+			expect(f.value(unknown)?.outcome).toBeNull();
+			const financialBytes = JSON.stringify(
+				rows(
+					await db.execute(
+						sql`SELECT shares,price,fees_usdc,attributes FROM poly_copy_trade_fills WHERE billing_account_id=${f.account} ORDER BY fill_id`,
+					),
+				),
+			);
+			// This is saved metadata publication only: original filled rows and disabled target are retained unchanged.
+			await f.publish();
+			const after = await db.transaction(readModels, {
+				isolationLevel: "repeatable read",
+				accessMode: "read only",
+			});
+			expect(after[1].positionFacts).toEqual(before[1].positionFacts);
+			expect(JSON.stringify(after[1].positionFacts)).toBe(
+				JSON.stringify(before[1].positionFacts),
+			);
+			expect(
+				after[0].positions.map(
+					({
+						marketTitle: _title,
+						outcome: _outcome,
+						eventTitle: _eventTitle,
+						eventSlug: _eventSlug,
+						marketSlug: _marketSlug,
+						marketUrl: _url,
+						...financial
+					}) => financial,
+				),
+			).toEqual(
+				before[0].positions.map(
+					({
+						marketTitle: _title,
+						outcome: _outcome,
+						eventTitle: _eventTitle,
+						eventSlug: _eventSlug,
+						marketSlug: _marketSlug,
+						marketUrl: _url,
+						...financial
+					}) => financial,
+				),
+			);
+			expect(after[0].positions.map((p) => p.outcome).sort()).toEqual([
+				"Over",
+				"Sangal",
+			]);
+			expect(financialBytes).toBe(
+				JSON.stringify(
+					rows(
+						await db.execute(
+							sql`SELECT shares,price,fees_usdc,attributes FROM poly_copy_trade_fills WHERE billing_account_id=${f.account} ORDER BY fill_id`,
+						),
+					),
+				),
+			);
+			const orders = await withTenantScope(
+				getAppDb(),
+				userActor(toUserId(f.user)),
+				async (tx) => {
+					await tx.execute(
+						sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`,
+					);
+					return listCopyTradeOrdersForAccount(
+						tx,
+						{ status: "all", limit: 200 },
+						f.account,
+					);
+				},
+			);
+			expect(orders?.orders.map((order) => order.outcome).sort()).toEqual([
+				"Over",
+				"Sangal",
+			]);
+			expect(
+				orders?.orders.every(
+					(order) =>
+						order.fill_accounting?.status === "pending" &&
+						order.filled_size_usdc === null,
+				),
+			).toBe(true);
+			const own = after[0].positions[0];
+			if (!own) throw new Error("Missing filled own fixture position");
+			await db.transaction(
+				async (tx) => {
+					const params = {
+						db: tx,
+						billingAccountId: f.account,
+						walletAddress: f.paper,
+						mode: "paper" as const,
+						capturedAt: at(30),
+						livePositions: [own],
+						positionFacts: after[1].positionFacts,
+					};
+					const outputs = [
+						await buildMarketExposureGroups(params),
+						(await buildBoundedMarketExposureGroups(params)).groups,
+						(
+							await buildBoundedMarketExposureWithCoverage({
+								...params,
+								connectionKind: "paper",
+							})
+						).market.groups,
+					];
+					for (const groups of outputs) {
+						expect(
+							groups
+								.flatMap((g) => g.lines)
+								.flatMap((l) => l.participants)
+								.find((p) => p.side === "our_wallet")?.primary?.outcome,
+						).toBe(own.outcome);
+					}
+				},
+				{ isolationLevel: "repeatable read", accessMode: "read only" },
+			);
+			expect(
+				rows<{ disabled_at: unknown }>(
+					await db.execute(
+						sql`SELECT disabled_at FROM poly_copy_trade_targets WHERE billing_account_id=${f.account}`,
+					),
+				)[0]?.disabled_at,
+			).not.toBeNull();
+		} finally {
+			await f.cleanup();
+		}
+	});
+
+	it("classifies lossless numeric provider names before priority while preserving missing, primary conflict and opposite authority", async () => {
+		const f = await originFixture();
+		try {
+			await f.seed();
+			await f.publish(["1", "0"]);
+			const first = await db.transaction((tx) => f.read(tx), {
+				isolationLevel: "repeatable read",
+				accessMode: "read only",
+			});
+			expect(f.value(first)).toMatchObject({
+				outcome: "1",
+				originAvailability: "available",
+				oppositeTokenId: null,
+			});
+			const provider = await readPositionMetadata({
+				db,
+				keys: [
+					{
+						conditionId: f.condition,
+						tokenId: f.tokens[0],
+						walletAddress: f.target,
+					},
+				],
+			});
+			expect(
+				provider.get(
+					positionMetadataRequestKey({
+						conditionId: f.condition,
+						tokenId: f.tokens[0],
+						walletAddress: f.target,
+					}) ?? "",
+				)?.outcome,
+			).toBe("1");
+			await db.execute(sql`INSERT INTO poly_trader_current_positions
+        (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,last_observed_at,raw)
+        VALUES (${f.paperRow.id},${f.condition},${f.tokens[0]},10,4,6,.4,'untyped-index',${at(25)}::timestamptz,'{"outcome":"1","position_gap_version":"3","title":"Own title"}'::jsonb)`);
+			const newerUntyped = await db.transaction((tx) => f.read(tx), {
+				isolationLevel: "repeatable read",
+				accessMode: "read only",
+			});
+			expect(f.value(newerUntyped)).toMatchObject({
+				outcome: "1",
+				marketTitle: "Own title",
+			});
+			expect(f.value(newerUntyped)?.provenance.outcome?.source).toBe(
+				"origin_current",
+			);
+			for (const label of ["Primary one", "Primary two"]) {
+				await db.execute(sql`INSERT INTO poly_trader_position_snapshots
+          (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,captured_at,raw)
+          VALUES (${f.paperRow.id},${f.condition},${f.tokens[0]},10,4,6,.4,${randomUUID()},${at(26)}::timestamptz,${JSON.stringify({ outcome: label })}::jsonb)`);
+			}
+			const conflict = await db.transaction((tx) => f.read(tx), {
+				isolationLevel: "repeatable read",
+				accessMode: "read only",
+			});
+			expect(f.value(conflict)).toMatchObject({
+				outcome: null,
+				availability: "conflict",
+				oppositeTokenId: null,
+				marketTitle: "Own title",
+			});
+			expect(f.value(await f.read())).toMatchObject({
+				outcome: null,
+				availability: "conflict",
+			});
+		} finally {
+			await f.cleanup();
+		}
+	});
+	it("denies wrong account, own wallet, mode, UUID, token, retained identity and future clocks while keeping primary titles", async () => {
+		const f = await originFixture();
+		try {
+			await f.publish();
+			await db.execute(sql`INSERT INTO poly_market_metadata (condition_id,market_title,fetched_at)
+        VALUES (${f.condition},'Independent primary title',${at(1)}::timestamptz)`);
+      const [retainedTarget] = rows<{ id: string }>(await db.execute(sql`SELECT id FROM poly_copy_trade_targets WHERE billing_account_id=${f.account}`));
+      if (!retainedTarget) throw new Error("Missing retained target UUIDv4");
+			const negatives: Array<Parameters<typeof f.seed>[0]> = [
+				{ token: f.tokens[1] },
+				{ targetId: randomUUID() },
+        { targetId: retainedTarget.id },
+				{ targetWallet: `0x${"f".repeat(40)}` },
+				{ conditionId: `0x${"f".repeat(64)}` },
+				{ mode: "live" },
+				{ observedAt: at(31) },
+				{ observedAt: at(20) },
+				{ orderId: null },
+				{ targetWallet: "malformed" },
+			];
+			for (const negative of negatives) {
+				await db.execute(
+					sql`DELETE FROM poly_copy_trade_fills WHERE billing_account_id=${f.account}`,
+				);
+				await f.seed(negative);
+				const result = await db.transaction((tx) => f.read(tx), {
+					isolationLevel: "repeatable read",
+					accessMode: "read only",
+				});
+				expect(f.value(result), JSON.stringify(negative)).toMatchObject({
+					outcome: null,
+					marketTitle: "Independent primary title",
+					originAvailability: "unavailable",
+				});
+			}
+			await db.execute(
+				sql`DELETE FROM poly_copy_trade_fills WHERE billing_account_id=${f.account}`,
+			);
+			await f.seed();
+			for (const change of [
+				sql`UPDATE poly_wallet_connections SET created_at=${at(11)}::timestamptz WHERE billing_account_id=${f.account}`,
+				sql`UPDATE poly_wallet_connections SET revoked_at=${at(15)}::timestamptz WHERE billing_account_id=${f.account}`,
+				sql`UPDATE poly_wallet_connections SET funder_address=NULL WHERE billing_account_id=${f.account}`,
+				sql`UPDATE poly_copy_trade_targets SET created_at=${at(11)}::timestamptz WHERE billing_account_id=${f.account}`,
+			]) {
+				await db.execute(change);
+				const result = await db.transaction((tx) => f.read(tx), {
+					isolationLevel: "repeatable read",
+					accessMode: "read only",
+				});
+				expect(f.value(result)).toMatchObject({
+					outcome: null,
+					marketTitle: "Independent primary title",
+					originAvailability: "unavailable",
+				});
+				await db.execute(
+					sql`UPDATE poly_wallet_connections SET created_at=${at(0)}::timestamptz,revoked_at=NULL,funder_address=${f.paper} WHERE billing_account_id=${f.account}`,
+				);
+				await db.execute(
+					sql`UPDATE poly_copy_trade_targets SET created_at=${at(0)}::timestamptz WHERE billing_account_id=${f.account}`,
+				);
+			}
+      await f.publish(["Future name", "Future other"], 31);
+      expect(f.value(await db.transaction(tx => f.read(tx), { isolationLevel: "repeatable read", accessMode: "read only" }))?.outcome).toBe("Sangal");
+			await db.transaction(
+				async (tx) => {
+					for (const key of [
+						{ ...f.key(), walletAddress: f.target },
+						{ ...f.key(), mode: "live" as const },
+					]) {
+						const result = await readPositionMetadata({
+							db: tx,
+							accountScope: f.accountScope,
+							keys: [key],
+							capturedAt: at(30),
+						});
+						expect(
+							result.get(positionMetadataRequestKey(key, f.accountScope) ?? "")
+								?.originAvailability,
+						).toBe("unavailable");
+					}
+					const wrongScope = { billingAccountId: randomUUID() };
+					const result = await readPositionMetadata({
+						db: tx,
+						accountScope: wrongScope,
+						keys: [f.key()],
+						capturedAt: at(30),
+					});
+					expect(
+						result.get(positionMetadataRequestKey(f.key(), wrongScope) ?? ""),
+					).toMatchObject({ outcome: null, originAvailability: "unavailable" });
+				},
+				{ isolationLevel: "repeatable read", accessMode: "read only" },
+			);
+			await db.execute(
+				sql`UPDATE poly_trader_current_positions SET raw=raw||jsonb_build_object('asset',${f.tokens[1]}::text) WHERE lower(condition_id)=${f.condition}`,
+			);
+			await db.execute(
+				sql`UPDATE poly_trader_position_snapshots SET raw=raw||jsonb_build_object('conditionId',${`0x${"f".repeat(64)}`}::text) WHERE lower(condition_id)=${f.condition}`,
+			);
+			expect(
+				f.value(
+					await db.transaction((tx) => f.read(tx), {
+						isolationLevel: "repeatable read",
+						accessMode: "read only",
+					}),
+				)?.outcome,
+			).toBeNull();
+		} finally {
+			await f.cleanup();
+		}
+	});
+
+	it("uses all retained origins and retains equal-time conflicts and agreement across physical siblings", async () => {
+		const f = await originFixture();
+		const second =
+			`0x${randomUUID().replaceAll("-", "")}aabbccdd` as `0x${string}`;
+		try {
+			await f.seed({ attributes: { title: "Plausible legacy ledger headline" } });
+			await f.publish();
+			await db.insert(polyCopyTradeTargets).values({
+				billingAccountId: f.account,
+				createdByUserId: f.user,
+				targetWallet: second,
+				createdAt: new Date(at(0)),
+				disabledAt: new Date(at(20)),
+			});
+			await db.execute(
+				sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label) VALUES (${second},'copy_target','Second retained origin')`,
+			);
+			await addCurrent(
+				second,
+				f.condition,
+				f.tokens[0],
+				{
+					title: "Conflicting title",
+					outcome: "Conflicting named origin",
+					slug: "conflicting-slug",
+				},
+				5,
+			);
+			await f.seed({
+				targetWallet: second,
+				targetId: targetIdFromWallet(second),
+			});
+			const conflict = await db.transaction((tx) => f.read(tx), {
+				isolationLevel: "repeatable read",
+				accessMode: "read only",
+			});
+			expect(f.value(conflict)).toMatchObject({
+				outcome: null,
+				marketTitle: null,
+				marketSlug: null,
+				availability: "conflict",
+				oppositeTokenId: null,
+			});
+			// A plausible legacy title must not revive the shared reader's rejected
+			// tied-origin title through the public orders serialization path.
+			const orders = await withTenantScope(
+				getAppDb(),
+				userActor(toUserId(f.user)),
+				async (tx) => {
+					await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+					return listCopyTradeOrdersForAccount(tx, { status: "all", limit: 200 }, f.account);
+				},
+			);
+			expect(orders?.orders).toHaveLength(2);
+			expect(orders?.orders.map(order => order.market_title)).toEqual([null, null]);
+
+			await addCurrent(
+				second,
+				f.condition,
+				f.tokens[0],
+				{
+					title: "Retained filled market",
+					outcome: "Sangal",
+					slug: "known-market",
+				},
+				5,
+			);
+			expect(
+				f.value(
+					await db.transaction((tx) => f.read(tx), {
+						isolationLevel: "repeatable read",
+						accessMode: "read only",
+					}),
+				),
+			).toMatchObject({ outcome: "Sangal" });
+		} finally {
+			await f.cleanup();
+			await db.execute(
+				sql`DELETE FROM poly_trader_wallets WHERE wallet_address=${second}`,
+			);
+		}
+	});
+
+	it("bounds physical candidates before malformed eligibility, revalidates PKs, and proves two SELECTs in one read-only snapshot", async () => {
+		const f = await originFixture();
+		try {
+			await f.seed();
+			await f.publish();
+			// A large unrelated physical market population makes a true account/market seek observable.
+			await db.execute(sql`INSERT INTO poly_copy_trade_fills
+        (billing_account_id,created_by_user_id,target_id,fill_id,market_id,observed_at,client_order_id,status,mode,attributes)
+        SELECT ${f.account},${f.user},${targetIdFromWallet(f.target)}::uuid,'unrelated-'||n,
+          'prediction-market:polymarket:unrelated-'||n,${at(10)}::timestamptz,${f.account}||'-unrelated-'||n,'filled','paper','{}'::jsonb
+        FROM generate_series(1,5000) n`);
+			await getAppDb().execute(sql`ANALYZE poly_copy_trade_fills`);
+			const dialect = new PgDialect();
+			const statements: string[] = [];
+			await db.transaction(
+				async (tx) => {
+					const sameSnapshot = await f.read({
+						execute: async (query) => {
+							const text = dialect.sqlToQuery(query).sql;
+							statements.push(text);
+							const result = await tx.execute(query);
+							if (statements.length === 1) {
+								await db.execute(sql`UPDATE poly_trader_current_positions SET raw=raw||'{"outcome":"New concurrent label"}'::jsonb
+              WHERE trader_wallet_id IN (SELECT id FROM poly_trader_wallets WHERE wallet_address=${f.target})`);
+							}
+							return result;
+						},
+					});
+					expect(f.value(sameSnapshot)?.outcome).toBe("Sangal");
+				},
+				{ isolationLevel: "repeatable read", accessMode: "read only" },
+			);
+			expect(statements).toHaveLength(2);
+			expect(
+				statements.every(
+					(text) => !/\b(INSERT|UPDATE|DELETE|MERGE)\b/i.test(text),
+				),
+			).toBe(true);
+			expect(f.value(await f.read())).toMatchObject({
+				outcome: null,
+				originAvailability: "unavailable",
+			});
+			await db.transaction(
+				async (tx) => {
+					const descriptorQuery = positionMetadataOriginSelect(
+						f.batch(),
+						f.account,
+						at(30),
+					);
+					const descriptors = rows<OriginDescriptor>(
+						await tx.execute(descriptorQuery),
+					);
+					expect(descriptors).toHaveLength(1);
+					const metadataQuery = positionMetadataSelect(
+						f.batch(),
+						at(30),
+						descriptors,
+					);
+					const evidence = rows<{ raw: Record<string, unknown> }>(
+						await tx.execute(metadataQuery),
+					);
+					expect(evidence.length).toBeLessThanOrEqual(24);
+					const plans: Plan[][] = [];
+					for (const query of [descriptorQuery, metadataQuery]) {
+						const result = rows<{ "QUERY PLAN": Array<{ Plan: Plan }> }>(
+							await tx.execute(
+								sql`EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS) ${query}`,
+							),
+						);
+						const plan = result[0]?.["QUERY PLAN"][0]?.Plan;
+						if (!plan) throw new Error("Missing origin query plan");
+						plans.push(planNodes(plan));
+					}
+					expect(
+						plans[0]?.some(
+							(node) =>
+								node["Index Name"] ===
+								"poly_copy_trade_fills_investigation_idx",
+						),
+					).toBe(true);
+					expect(
+						plans[1]?.some((node) =>
+							String(node["Index Name"]).includes(
+								"poly_copy_trade_fills_billing_account_id_target_id_fill_id_pk",
+							),
+						),
+					).toBe(true);
+					for (const nodes of plans) {
+						for (const node of nodes.filter(
+							(node) => node["Relation Name"] === "poly_copy_trade_fills",
+						)) {
+							expect(String(node["Node Type"])).not.toBe("Seq Scan");
+						}
+					}
+					const tampered = descriptors.map((d) => ({
+						...d,
+						order_id: randomUUID(),
+					}));
+					expect(
+						rows(
+							await tx.execute(
+								positionMetadataSelect(f.batch(), at(30), tampered),
+							),
+						),
+					).toHaveLength(0);
+				},
+				{ isolationLevel: "repeatable read", accessMode: "read only" },
+			);
+			// 257 wrong-token/malformed records must consume the physical budget, even with a valid row deeper in history.
+			await db.execute(sql`INSERT INTO poly_copy_trade_fills
+        (billing_account_id,created_by_user_id,target_id,fill_id,market_id,observed_at,client_order_id,order_id,status,mode,attributes)
+        SELECT ${f.account},${f.user},${targetIdFromWallet(f.target)}::uuid,'overflow-'||n,
+          ${`prediction-market:polymarket:${f.condition}`},${at(15)}::timestamptz,${f.account}||'-overflow-'||n,NULL,'filled','paper',
+          CASE WHEN n%2=0 THEN '{}'::jsonb ELSE jsonb_build_object('token_id','wrong-token') END
+        FROM generate_series(1,257) n`);
+			await getAppDb().execute(sql`ANALYZE poly_copy_trade_fills`);
+			await db.transaction(
+				async (tx) => {
+					const query = positionMetadataOriginSelect(
+						f.batch(),
+						f.account,
+						at(30),
+					);
+					const descriptors = rows<OriginDescriptor>(await tx.execute(query));
+					expect(descriptors).toHaveLength(257);
+					const result = await f.read(tx);
+					expect(f.value(result)).toMatchObject({
+						outcome: null,
+						originAvailability: "overflow",
+					});
+					const explain = rows<{ "QUERY PLAN": Array<{ Plan: Plan }> }>(
+						await tx.execute(
+							sql`EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS) ${query}`,
+						),
+					);
+					const plan = explain[0]?.["QUERY PLAN"][0]?.Plan;
+					if (!plan) throw new Error("Missing overflow plan");
+					const candidateLimits = planNodes(plan).filter(node =>
+						node["Node Type"] === "Limit" && planNodes(node).some(child => child["Relation Name"] === "poly_copy_trade_fills"));
+					// Keep CI diagnostics bounded and omit account, wallet, token and raw values.
+					const physicalPlan = planNodes(plan).filter(node =>
+						node["Relation Name"] === "poly_copy_trade_fills" || ["Limit", "Sort", "Incremental Sort"].includes(String(node["Node Type"])))
+						.slice(0, 12).map(node => ({
+							node: node["Node Type"], index: node["Index Name"], rows: node["Actual Rows"], loops: node["Actual Loops"],
+							removed: node["Rows Removed by Filter"] ?? 0,
+							seekColumns: ["billing_account_id", "market_id", "mode", "observed_at"].filter(column => String(node["Index Cond"] ?? "").includes(column)),
+							blocks: Number(node["Shared Hit Blocks"] ?? 0) + Number(node["Shared Read Blocks"] ?? 0),
+						}));
+					const planEvidence = JSON.stringify({ probe: "metadata_origin_physical_budget", nodes: physicalPlan });
+					console.info(planEvidence);
+					expect(candidateLimits, planEvidence).toHaveLength(1);
+					for (const limit of candidateLimits) {
+						expect(Number(limit["Actual Rows"]), planEvidence).toBe(257);
+						expect(planNodes(limit).some(node => ["Sort", "Incremental Sort"].includes(String(node["Node Type"]))), planEvidence).toBe(false);
+					}
+					const ledgerNodes = planNodes(plan).filter(
+						(node) => node["Relation Name"] === "poly_copy_trade_fills",
+					);
+					expect(ledgerNodes.length).toBeGreaterThan(0);
+					for (const node of ledgerNodes) {
+						expect(node["Index Name"]).toBe(
+							"poly_copy_trade_fills_investigation_idx",
+						);
+						expect(
+							Number(node["Actual Rows"]) +
+								Number(node["Rows Removed by Filter"] ?? 0),
+						).toBeLessThanOrEqual(257);
+						expect(
+							Number(node["Shared Hit Blocks"] ?? 0) +
+								Number(node["Shared Read Blocks"] ?? 0),
+						).toBeGreaterThan(0);
+					}
+				},
+				{ isolationLevel: "repeatable read", accessMode: "read only" },
+			);
+			// Keys are batched physically (100 + 1), never silently truncated.
+			await db.transaction(
+				async (tx) => {
+					let calls = 0;
+					const result = await readPositionMetadata({
+						db: {
+							execute: async (query) => {
+								calls++;
+								return tx.execute(query);
+							},
+						},
+						accountScope: f.accountScope,
+						capturedAt: at(30),
+						keys: Array.from({ length: 101 }, (_, n) => ({
+							...f.key(),
+							tokenId: String(n + 1),
+						})),
+					});
+					expect(calls).toBe(4);
+					expect(result.size).toBe(101);
+				},
+				{ isolationLevel: "repeatable read", accessMode: "read only" },
+			);
+		} finally {
+			await f.cleanup();
+		}
+	});
 });
