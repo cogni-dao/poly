@@ -9,7 +9,10 @@ import {
 	polyTraderPositionSnapshots,
 	polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
-import type { TargetBookSnapshotV1 } from "@cogni/poly-market-provider";
+import { noopLogger, noopMetrics, type OrderReceipt, type TargetBookSnapshotV1 } from "@cogni/poly-market-provider";
+import { createPolyTradeExecutorFactory } from "@/bootstrap/capabilities/poly-trade-executor";
+import { createExecutionVenueResolver, createPaperVenue, derivePaperAccountAddress } from "@/features/paper-accounts";
+import { createOrderLedger } from "@/features/trading/order-ledger";
 import type {
 	PolymarketDataApiClient,
 	PolymarketUserPosition,
@@ -1142,4 +1145,112 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				.where(eq(polyTraderWallets.id, wallet.id));
 		}
 	});
+});
+
+
+describe("authenticated paper-only REAL target hydration", () => {
+  it("retains disabled exact opposite and third legs, rejects zero/unbound/wrong-target origins, and preserves saved facts on provider failure", async () => {
+    const db = getSeedDb();
+    const owner = randomUUID(), account = randomUUID(), connection = randomUUID();
+    const targetWallet = `0x${randomUUID().replaceAll("-", "")}12345678` as `0x${string}`;
+    const targetId = targetIdFromWallet(targetWallet);
+    const address = derivePaperAccountAddress(account);
+    const condition = `0x${randomUUID().replaceAll("-", "").repeat(2)}`;
+    const thirdCondition = `0x${randomUUID().replaceAll("-", "").repeat(2)}`;
+    const zeroCondition = `0x${randomUUID().replaceAll("-", "").repeat(2)}`;
+    const legs = [{ conditionId: condition, tokenId: "987001" }, { conditionId: condition, tokenId: "987002" },
+      { conditionId: thirdCondition, tokenId: "987003" }];
+    await db.insert(users).values({ id: owner, walletAddress: targetWallet });
+    await db.insert(billingAccounts).values({ id: account, ownerUserId: owner, balanceCredits: 0n });
+    await db.insert(polyWalletConnections).values({ id: connection, billingAccountId: account,
+      createdByUserId: owner, kind: "paper", address, funderAddress: address, paperSeedUsdc: "100",
+      custodialConsentAcceptedAt: new Date(), custodialConsentActorKind: "user", custodialConsentActorId: owner });
+    await db.insert(polyWalletGrants).values({ billingAccountId: account, walletConnectionId: connection,
+      createdByUserId: owner, scopes: ["poly:trade:buy"], perOrderUsdcCap: "10", dailyUsdcCap: "1000", hourlyFillsCap: 1000 });
+    await db.insert(polyCopyTradeTargets).values({ billingAccountId: account, createdByUserId: owner,
+      targetWallet, disabledAt: new Date() });
+    const [localWallet] = await db.insert(polyTraderWallets).values({ walletAddress: address,
+      kind: "paper_wallet", label: "Authenticated paper hydration" }).returning({ id: polyTraderWallets.id });
+    if (!localWallet) throw new Error("paper hydration local wallet absent");
+    let native: OrderReceipt;
+    const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = new URL(String(input));
+      expect(url.origin).toBe("http://paper.hydration.test");
+      expect(url.searchParams.get("account_id")).toBe(connection);
+      expect(url.pathname).toBe(`/orders/${native.order_id}`);
+      return Response.json(native);
+    });
+    try {
+      const factory = createPolyTradeExecutorFactory({ logger: noopLogger as never, metrics: noopMetrics,
+        paperSidecarUrl: "http://paper.hydration.test", paperVenue: createPaperVenue({ db }),
+        resolveExecutionVenue: createExecutionVenueResolver({ db }) });
+      const executor = await factory.getPolyTradeExecutorFor(account);
+      const ledger = createOrderLedger({ db, logger: noopLogger as never, resolveExecutionMode: async () => "paper" });
+      for (const [index, leg] of [...legs, { conditionId: zeroCondition, tokenId: "987004" },
+        { conditionId: zeroCondition, tokenId: "987005" }, { conditionId: zeroCondition, tokenId: "987006" }].entries()) {
+        const client = randomUUID(), order = randomUUID();
+        const intent = { provider: "polymarket" as const, market_id: `prediction-market:polymarket:${leg.conditionId}`,
+          outcome: "0", side: "BUY" as const, size_usdc: 1.5, limit_price: 0.5, client_order_id: client,
+          attributes: { condition_id: leg.conditionId, token_id: leg.tokenId, placement: "limit", target_wallet: targetWallet, position_gap_version: "3" } };
+        await ledger.insertPending({ billing_account_id: account, created_by_user_id: owner,
+          target_id: index === 5 ? randomUUID() : targetId, fill_id: client, observed_at: new Date(), intent });
+        native = { order_id: order, client_order_id: client, status: index === 3 ? "canceled" : "filled",
+          filled_size_usdc: index === 3 ? 0 : 1.5, ...(index === 3 ? {} : { total_shares: 3, fill_price: 0.5 }),
+          fees_usdc: 0, submitted_at: new Date().toISOString(),
+          attributes: { market: leg.conditionId, tokenId: leg.tokenId, side: "BUY", sizeMatched: index === 3 ? 0 : 3 } };
+        if (index !== 4) {
+          const receipt = await executor.getOrder(order);
+          if (!("found" in receipt)) throw new Error("hydration native receipt absent");
+          const accepted = await ledger.markOrderId({ client_order_id: client, receipt: receipt.found });
+          if (!accepted) throw new Error("hydration accepted ledger observation absent");
+          expect(accepted.accepted).toBe(true);
+        } else {
+          // Source-only historical rows never create positive authority.
+          await db.update(polyCopyTradeFills).set({ orderId: order, status: "filled", shares: "3", price: ".5",
+            attributes: sql`${polyCopyTradeFills.attributes} || '{"filled_size_usdc":1.5,"realized_fill_source":"paper_order_receipt"}'::jsonb` })
+            .where(eq(polyCopyTradeFills.clientOrderId, client));
+        }
+        await db.insert(polyTraderCurrentPositions).values({ traderWalletId: localWallet.id,
+          conditionId: leg.conditionId, tokenId: leg.tokenId, shares: "3", costBasisUsdc: "1.5",
+          currentValueUsdc: "1.8", avgPrice: ".5", contentHash: randomUUID(), lastObservedAt: new Date(), active: true });
+      }
+      const own = (await readCopyTargetPositionCohorts(db)).find(cohort => cohort.targetWallet === targetWallet);
+      expect(own).toEqual({ targetWallet, conditions: [condition, thirdCondition].sort(),
+        exactLocalKeys: [...legs].sort((x, y) => x.conditionId.localeCompare(y.conditionId) || x.tokenId.localeCompare(y.tokenId)) });
+      const observed = legs.map((leg, index) => ({ ...position(leg.tokenId, leg.conditionId), proxyWallet: targetWallet,
+        outcome: index === 1 ? "NO" : "YES", oppositeAsset: index === 0 ? legs[1]?.tokenId ?? "" : legs[0]?.tokenId ?? "" }));
+      const listUserPositionsV2 = vi.fn(async (wallet: string, input: { conditions: string[] }) => {
+        expect(wallet).toBe(targetWallet);
+        expect(input.conditions).toEqual([condition, thirdCondition].sort());
+        return observed;
+      });
+      const targetClient = { listUserPositionsV2 } as unknown as PolymarketDataApiClient;
+      const hydrated = await hydrateCopyTargetPositions({ db, client: targetClient, logger: noopLogger });
+      expect(hydrated.errors).toBe(0);
+      expect(listUserPositionsV2).toHaveBeenCalledTimes(1);
+      const saved = await db.select({ condition: polyTraderCurrentPositions.conditionId,
+        token: polyTraderCurrentPositions.tokenId, shares: polyTraderCurrentPositions.shares })
+        .from(polyTraderCurrentPositions).innerJoin(polyTraderWallets, eq(polyTraderWallets.id, polyTraderCurrentPositions.traderWalletId))
+        .where(eq(polyTraderWallets.walletAddress, targetWallet));
+      expect(saved).toHaveLength(3);
+      const fail = vi.fn(async () => { throw new Error("controlled V2 cohort failure"); });
+      const failed = await hydrateCopyTargetPositions({ db, client: { listUserPositionsV2: fail } as unknown as PolymarketDataApiClient, logger: noopLogger });
+      expect(failed.errors).toBe(1);
+      const retained = await db.select({ condition: polyTraderCurrentPositions.conditionId,
+        token: polyTraderCurrentPositions.tokenId, shares: polyTraderCurrentPositions.shares })
+        .from(polyTraderCurrentPositions).innerJoin(polyTraderWallets, eq(polyTraderWallets.id, polyTraderCurrentPositions.traderWalletId))
+        .where(eq(polyTraderWallets.walletAddress, targetWallet));
+      expect(retained).toEqual(saved);
+    } finally {
+      transport.mockRestore();
+      await db.delete(polyCopyTradeFills).where(eq(polyCopyTradeFills.billingAccountId, account));
+      await db.delete(polyCopyTradeTargets).where(eq(polyCopyTradeTargets.billingAccountId, account));
+      await db.delete(polyWalletGrants).where(eq(polyWalletGrants.billingAccountId, account));
+      await db.delete(polyWalletConnections).where(eq(polyWalletConnections.billingAccountId, account));
+      await db.delete(polyTraderWallets).where(eq(polyTraderWallets.walletAddress, address));
+      await db.delete(polyTraderWallets).where(eq(polyTraderWallets.walletAddress, targetWallet));
+      await db.delete(billingAccounts).where(eq(billingAccounts.id, account));
+      await db.delete(users).where(eq(users.id, owner));
+    }
+  });
 });
