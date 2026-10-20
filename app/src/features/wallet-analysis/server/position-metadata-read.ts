@@ -13,6 +13,7 @@ import { type SQL, sql } from "drizzle-orm";
 type Db = { execute(query: SQL): Promise<unknown> };
 export type PositionMetadataKey = PositionIdentityInput & {
   walletAddress?: string | null;
+  mode?: "live" | "paper";
 };
 
 /** Wallet provenance is part of the lookup; null requests only global venue facts. */
@@ -21,7 +22,7 @@ export function positionMetadataRequestKey(
 ): string | null {
   const identity = normalizePositionIdentity(input);
   return identity.availability === "available"
-    ? `${identity.key}:${input.walletAddress?.toLowerCase() ?? "global"}`
+    ? `${identity.key}:${input.walletAddress?.toLowerCase() ?? "global"}:${input.mode ?? "live"}`
     : null;
 }
 
@@ -29,6 +30,7 @@ type EvidenceRow = {
   condition_id: string;
   token_id: string;
   requested_wallet: string | null;
+  requested_mode: "live" | "paper";
   source: string;
   observed_at: string | Date;
   raw: Record<string, unknown> | null;
@@ -42,12 +44,12 @@ export async function readPositionMetadata(input: {
   const keys = input.keys.flatMap((k) => {
     const identity = normalizePositionIdentity(k);
     return identity.availability === "available"
-      ? [{ ...identity, wallet: k.walletAddress?.toLowerCase() ?? null }]
+      ? [{ ...identity, wallet: k.walletAddress?.toLowerCase() ?? null, mode: k.mode ?? "live" }]
       : [];
   });
   const unique = [
     ...new Map(
-      keys.map((k) => [`${k.key}:${k.wallet ?? "global"}`, k]),
+      keys.map((k) => [`${k.key}:${k.wallet ?? "global"}:${k.mode}`, k]),
     ).values(),
   ];
   const out = new Map<string, ResolvedPositionMetadata>();
@@ -68,7 +70,7 @@ export async function readPositionMetadata(input: {
           (r) =>
             r.condition_id === key.conditionId &&
             r.token_id === key.tokenId &&
-            r.requested_wallet === key.wallet,
+            r.requested_wallet === key.wallet && r.requested_mode === key.mode,
         )
         .flatMap((r) => {
           const raw = r.raw ?? {};
@@ -100,7 +102,7 @@ export async function readPositionMetadata(input: {
           return witnesses;
         });
       out.set(
-        `${key.key}:${key.wallet ?? "global"}`,
+        `${key.key}:${key.wallet ?? "global"}:${key.mode}`,
         selectPositionMetadata(key, candidates),
       );
     }
@@ -160,10 +162,17 @@ export function positionMetadataSelect(
     conditionId: string;
     tokenId: string;
     wallet: string | null;
+    mode?: "live" | "paper";
   }[],
   capturedAt?: string,
 ): SQL {
   const cutoff = capturedAt ?? null;
+  // Resolve across physical siblings inside each probe: <=24 scalar rows per
+  // logical wallet/key, never 24 multiplied by the number of physical rows.
+  const walletIds = sql`SELECT w.id FROM poly_trader_wallets w
+    WHERE lower(w.wallet_address)=k.wallet
+      AND ((k.mode='paper' AND w.kind='paper_wallet')
+        OR (k.mode='live' AND w.kind<>'paper_wallet'))`;
   const probes: SQL[] = canonicalFields.map((field, index) => {
     const value = sql.raw(`m.${field}`);
     return sql`(SELECT 'canonical'::text AS source, m.fetched_at AS observed_at,
@@ -188,7 +197,7 @@ export function positionMetadataSelect(
         probes.push(oppositeProbe(source, sql`SELECT p.${sql.raw(time)} AS observed_at,
           alias.value FROM ${sql.raw(table)} p
           CROSS JOIN LATERAL (VALUES (p.raw->>'oppositeAsset'), (p.raw->>'opposite_token_id')) alias(value)
-          WHERE p.trader_wallet_id=w.id AND lower(p.condition_id)=k."conditionId" AND p.token_id=k."tokenId"
+          WHERE p.trader_wallet_id IN (${walletIds}) AND lower(p.condition_id)=k."conditionId" AND p.token_id=k."tokenId"
             AND ${meaningful(sql`alias.value`, true)}
             AND (${cutoff}::timestamptz IS NULL OR p.${sql.raw(time)}<=${cutoff}::timestamptz)`));
         continue;
@@ -200,7 +209,7 @@ export function positionMetadataSelect(
             source,
             sql`SELECT p.${sql.raw(time)} AS observed_at,
           btrim(${value}) AS value FROM ${sql.raw(table)} p
-          WHERE p.trader_wallet_id=w.id AND lower(p.condition_id)=k."conditionId" AND p.token_id=k."tokenId"
+          WHERE p.trader_wallet_id IN (${walletIds}) AND lower(p.condition_id)=k."conditionId" AND p.token_id=k."tokenId"
             AND ${meaningful(value)}
             AND (${cutoff}::timestamptz IS NULL OR p.${sql.raw(time)}<=${cutoff}::timestamptz)`,
           ),
@@ -210,7 +219,7 @@ export function positionMetadataSelect(
       probes.push(sql`(SELECT ${source}::text, p.${sql.raw(time)},
         jsonb_build_object(${field}::text,${value})
         FROM ${sql.raw(table)} p
-        WHERE p.trader_wallet_id=w.id AND lower(p.condition_id)=k."conditionId" AND p.token_id=k."tokenId"
+        WHERE p.trader_wallet_id IN (${walletIds}) AND lower(p.condition_id)=k."conditionId" AND p.token_id=k."tokenId"
           AND ${meaningful(value)}
           AND (${cutoff}::timestamptz IS NULL OR p.${sql.raw(time)}<=${cutoff}::timestamptz)
         ORDER BY p.${sql.raw(time)} DESC,p.${sql.raw(tie)} LIMIT 1)`);
@@ -241,12 +250,27 @@ export function positionMetadataSelect(
     }
   }
   return sql`WITH requested AS (
-      SELECT * FROM jsonb_to_recordset(${JSON.stringify(batch)}::jsonb)
-        AS k("conditionId" text,"tokenId" text,wallet text)
+      SELECT k."conditionId",k."tokenId",k.wallet,COALESCE(k.mode, 'live') AS mode FROM jsonb_to_recordset(${JSON.stringify(batch)}::jsonb)
+        AS k("conditionId" text,"tokenId" text,wallet text,mode text)
     )
-    SELECT k."conditionId" AS condition_id,k."tokenId" AS token_id,k.wallet AS requested_wallet,
+    SELECT k."conditionId" AS condition_id,k."tokenId" AS token_id,k.wallet AS requested_wallet,k.mode AS requested_mode,
       evidence.source,evidence.observed_at,evidence.raw
     FROM requested k
-    LEFT JOIN poly_trader_wallets w ON w.wallet_address=k.wallet
     CROSS JOIN LATERAL (${sql.join(probes, sql` UNION ALL `)}) evidence`;
+}
+
+/** Project only selected saved metadata; rejected evidence never revives via raw. */
+export function positionMetadataDisplay(metadata: ResolvedPositionMetadata | undefined) {
+  const eventSlug = metadata?.eventSlug ?? null;
+  const marketSlug = metadata?.marketSlug ?? null;
+  return {
+    marketTitle: metadata?.marketTitle ?? "Polymarket",
+    eventTitle: metadata?.eventTitle ?? null,
+    eventSlug,
+    marketSlug,
+    marketUrl: eventSlug
+      ? `https://polymarket.com/event/${encodeURIComponent(eventSlug)}`
+      : marketSlug ? `https://polymarket.com/market/${encodeURIComponent(marketSlug)}` : null,
+    outcome: metadata?.outcome ?? "UNKNOWN",
+  };
 }

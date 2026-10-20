@@ -19,7 +19,6 @@ import {
   readAlgorithmOriginProjection,
   unavailableOriginCoverage,
 } from "./algorithm-origin-read-model";
-import { readCurrentWalletPositionModel } from "./current-position-read-model";
 import { readEconomicPositionProjection } from "./economic-position-read-model";
 import {
   type BoundedMarketExposureRead,
@@ -277,10 +276,7 @@ export async function readTenantWalletDashboardIn(
       ? { ...observerAgeFact, status: "partial" as const, complete: false }
       : observerAgeFact;
   const economicProjectionIncomplete = economicRead.ok &&
-    (economicRead.value.incompleteCount > 0 ||
-      economicRead.value.fillIdentityConflictCount > 0 ||
-      economicRead.value.outcomeIdentityConflictCount > 0 ||
-      economicRead.value.currentIdentityConflictCount > 0 ||
+    (economicRead.value.currentIdentityConflictCount > 0 ||
       economicRead.value.missingMarkCount > 0);
   const positionFact = !economicRead.ok
     ? unavailableFact("saved_wallet_economics")
@@ -429,18 +425,10 @@ export async function readTenantWalletDashboardIn(
   const closedPositions = economicRead.ok
     ? economicRead.value.closedPositions.map(attachOrigins)
     : [];
-  // Comparison math consumes `currentValue - pnlUsd` as cost basis. Display
-  // positions carry lifetime economic P/L, so restore that legacy relation
-  // only for the comparison input without weakening the displayed truth.
-  const marketLivePositions = livePositions
-    .filter(hasPositionValuation)
-    .map(toMarketCostBasisPosition);
-  const marketClosedPositions = closedPositions
-    .filter(hasPositionValuation)
-    .map(toMarketCostBasisPosition);
   const historyFact = !economicRead.ok
     ? unavailableFact("saved_wallet_economics")
     : economicRead.value.incompleteCount === 0 &&
+        economicRead.value.historyIncompleteCount === 0 &&
         economicRead.value.fillIdentityConflictCount === 0 &&
         economicRead.value.outcomeIdentityConflictCount === 0
       ? freshFact("saved_wallet_economics", capturedAt)
@@ -513,8 +501,11 @@ export async function readTenantWalletDashboardIn(
           billingAccountId: input.billingAccountId,
           walletAddress: address,
           connectionKind: connection.connectionKind,
-          livePositions: marketLivePositions,
-          closedPositions: marketClosedPositions,
+          positionFacts: economicRead.ok ? economicRead.value.positionFacts : [],
+          mode: connection.connectionKind === "paper" ? "paper" : "live",
+          capturedAt,
+          livePositions,
+          closedPositions,
           priorityPositionKeys: economicRead.ok
             ? economicRead.value.targetCorrelatedKeys
             : new Set(),
@@ -548,8 +539,11 @@ export async function readTenantWalletDashboardIn(
             db: savepoint,
             billingAccountId: input.billingAccountId,
             walletAddress: address,
-            livePositions: marketLivePositions,
-            closedPositions: marketClosedPositions,
+            positionFacts: economicRead.ok ? economicRead.value.positionFacts : [],
+            mode: connection.connectionKind === "paper" ? "paper" : "live",
+            capturedAt,
+            livePositions,
+            closedPositions,
             priorityPositionKeys: economicRead.ok
               ? economicRead.value.targetCorrelatedKeys
               : new Set(),
@@ -595,9 +589,7 @@ export async function readTenantWalletDashboardIn(
         closedPositions: closedPositions.slice(0, CLOSED_PREVIEW_LIMIT),
         sourceComplete:
           positionFact.status === "fresh" &&
-          positionFact.complete &&
-          historyFact.status === "fresh" &&
-          historyFact.complete,
+          positionFact.complete,
         previewTruncated: marketRead.value.truncated,
       });
   if (originRead.ok) {
@@ -663,8 +655,10 @@ export async function readTenantWalletDashboardIn(
     cashOnChain !== null &&
     positionsMtm !== null &&
     cashFact.complete &&
-    positionFact.complete &&
-    timestampsWithin(cashFact.observedAt, positionFact.observedAt, MAX_FACT_SKEW_MS);
+    currentPositionFact.complete &&
+    // Aggregate valuation authority is separate from physical quantity/history.
+    // Exact terminal losers are worth zero even while their quantity is stale.
+    timestampsWithin(cashFact.observedAt, currentPositionFact.observedAt, MAX_FACT_SKEW_MS);
   const totalFact: WalletDashboardFactMeta = totalCoherent
     ? freshFact("composite", capturedAt)
     : unavailableFact("composite");
@@ -706,6 +700,7 @@ export async function readTenantWalletDashboardIn(
       positions_sync_age_ms: currentPositionFact.ageMs,
       positions_stale: positionFact.status !== "fresh",
       pnlHistory: pnlRead.ok && pnlRead.value.status === "available" ? pnlRead.value.points : [],
+      pnl_basis: connection.connectionKind === "paper" ? "paper_trading_pnl" : "polymarket_trade_pnl_before_fees",
       warnings: warnings
         .filter((entry) => entry.component !== "activity" && entry.component !== "markets" && entry.component !== "history")
         .map(({ code, message }) => ({ code, message })),
@@ -1283,42 +1278,8 @@ function nonnegativeInt(value: string | number | null | undefined): number {
   return Math.max(0, Math.trunc(toNumber(value)));
 }
 
-function nonEmpty(value: string | null): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
 
-type ValuedPosition = WalletExecutionPosition & {
-  currentPrice: number;
-  currentValue: number;
-  pnlUsd: number;
-  pnlPct: number;
-};
-
-function hasPositionValuation(
-  position: WalletExecutionPosition
-): position is ValuedPosition {
-  return position.currentPrice !== null &&
-    position.currentValue !== null &&
-    position.pnlUsd !== null &&
-    position.pnlPct !== null;
-}
-
-function toMarketCostBasisPosition(
-  position: ValuedPosition
-): ValuedPosition {
-  const costBasis = Math.max(0, position.entryPrice * position.size);
-  return {
-    ...position,
-    pnlUsd: roundMoney(position.currentValue - costBasis),
-  };
-}
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
-}
-
-function roundPrecision(value: number, decimals: number): number {
-  const factor = 10 ** decimals;
-  return Math.round((value + Number.EPSILON) * factor) / factor;
 }

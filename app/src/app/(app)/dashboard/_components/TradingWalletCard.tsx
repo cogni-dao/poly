@@ -266,6 +266,7 @@ export function TradingWalletCard(): ReactElement {
               <WalletProfitLossCard
                 history={data.pnlHistory}
                 interval={interval}
+                source={data.account_kind === "paper" ? "paper" : "polymarket"}
               />
             ) : null}
           </div>
