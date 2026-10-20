@@ -564,6 +564,40 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				await db.execute(sql`SELECT ${sqlProof.positive} AS positive, ${sqlProof.zero} AS zero
         FROM poly_copy_trade_fills f WHERE f.client_order_id = ${zeroClient}`);
 			expect(zeroSql[0]).toMatchObject({ positive: false, zero: true });
+      for (const protectedNative of [false, true]) {
+        const upgradeClient = `paper-authority-floor-${randomUUID()}`;
+        const upgradeOrder = `paper-authority-order-${randomUUID()}`;
+        const upgradeIntent = { ...intent, size_usdc: 8, limit_price: 2 / 3,
+          client_order_id: upgradeClient, attributes: { ...intent.attributes, token_id: "5555555555555555555555555555555555555555" } };
+        await ledger.insertPending({ billing_account_id: account, created_by_user_id: owner, target_id: target,
+          fill_id: `paper-proof:${upgradeClient}`, observed_at: asOf, intent: upgradeIntent });
+        native = { order_id: upgradeOrder, client_order_id: upgradeClient, status: "filled", filled_size_usdc: protectedNative ? 8 : 6,
+          total_shares: 12, fill_price: protectedNative ? 2 / 3 : 0.5, fees_usdc: 0, submitted_at: asOf.toISOString(),
+          attributes: { market: condition, tokenId: upgradeIntent.attributes.token_id, side: "BUY", sizeMatched: 12 } };
+        if (!protectedNative) {
+          // The prior $8 is explicitly unprotected estimated/cross-mode cost.
+          await db.update(polyCopyTradeFills).set({ shares: "12", price: "0.66666667", feesUsdc: "0",
+            attributes: sql`${polyCopyTradeFills.attributes} || '{"filled_size_usdc":8,"realized_fill_source":"data_api_activity_position"}'::jsonb`,
+          }).where(eq(polyCopyTradeFills.clientOrderId, upgradeClient));
+        }
+        const authoritative = await executor.placeIntent(upgradeIntent);
+        const write = await ledger.markOrderId({ client_order_id: upgradeClient, receipt: authoritative });
+        if (!write) throw new Error("authority floor observation absent");
+        expect(write.accepted).toBe(true);
+        const [durable] = await db.select().from(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, upgradeClient));
+        expect(durable?.attributes?.filled_size_usdc).toBe(protectedNative ? 8 : 6);
+        expect(durable?.attributes?.realized_fill_source).toBe("paper_order_receipt");
+        if (protectedNative) {
+          native = { ...native, filled_size_usdc: 6, fill_price: 0.5 };
+          const regressed = await executor.getOrder(upgradeOrder);
+          if (!("found" in regressed)) throw new Error("protected regression receipt absent");
+          const rejection = await ledger.markOrderId({ client_order_id: upgradeClient, receipt: regressed.found });
+          if (!rejection) throw new Error("protected regression result absent");
+          expect(rejection.accepted).toBe(false);
+          const [retained] = await db.select().from(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, upgradeClient));
+          expect(retained?.attributes).toEqual(durable?.attributes);
+        }
+      }
 		} finally {
 			transport.mockRestore();
 			await db

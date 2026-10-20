@@ -1299,8 +1299,11 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       return { ...result(true, candidate), order_id: receipt.order_id, status };
     }
     const oldShares = prior?.shares ?? fillNumber(current.shares) ?? 0;
-    const oldCost = prior?.notional_usdc ?? fillNumber(current.attributes?.filled_size_usdc) ?? 0;
-    const oldFee = fillNumber(current.feesUsdc);
+    // Preserve the existing cap authority guard: estimates and cross-mode
+    // Data-API accounting may be replaced by a native authenticated tuple.
+    const protectsLegacyAccounting = hasAuthoritativeFill(current);
+    const oldCost = prior?.notional_usdc ?? (protectsLegacyAccounting ? fillNumber(current.attributes?.filled_size_usdc) ?? 0 : 0);
+    const oldFee = prior || protectsLegacyAccounting ? fillNumber(current.feesUsdc) : null;
     // Legacy columns retain eight decimals, whereas a valid envelope retains
     // native precision. Compare like precision until a native proof exists.
     const incomingComparableShares = prior ? proof.shares : fillColumnNumber(proof.shares);
