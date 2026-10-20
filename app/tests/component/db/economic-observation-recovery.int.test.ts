@@ -4,6 +4,7 @@
 /** Real PostgreSQL: false-error history, atomic native replacement, cursor isolation. */
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { toUserId, userActor } from "@cogni/ids";
 import {
   polyTraderCurrentPositions,
   polyTraderFillRollupsDaily,
@@ -17,6 +18,7 @@ import type { PolymarketDataApiClient } from "@cogni/poly-market-provider/adapte
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
+import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
 import { getCopyTradeInvestigationSummary } from "@/features/wallet-analysis/server/copy-trade-investigation-service";
 import { readEconomicPositionProjection } from "@/features/wallet-analysis/server/economic-position-read-model";
 import { recoverEconomicObservations } from "@/features/wallet-analysis/server/economic-observation-recovery";
@@ -33,6 +35,17 @@ const fixture = JSON.parse(
     "utf8",
   ),
 );
+
+// Discovery deliberately has a global LIMIT 1. Exercise the real SQL with an
+// app-role tenant scope so another suite's valid cohort cannot consume a retry.
+function recoverForUser(
+  userId: string,
+  input: Parameters<typeof recoverEconomicObservations>[0],
+) {
+  return withTenantScope(getAppDb(), userActor(toUserId(userId)), (tx) =>
+    recoverEconomicObservations({ ...input, db: tx as never }),
+  );
+}
 
 describe("native economic observation persistence", () => {
   it.each(["current", "same-day rollup", "future-day rollup"] as const)(
@@ -52,7 +65,7 @@ describe("native economic observation persistence", () => {
         address, funderAddress: address, privyWalletId: userId,
         clobApiKeyCiphertext: Buffer.from("test"), encryptionKeyId: "test",
         custodialConsentAcceptedAt: now, custodialConsentActorKind: "user", custodialConsentActorId: userId });
-      const [wallet] = await db.insert(polyTraderWallets).values({ walletAddress: address, kind: "cogni_wallet" }).returning();
+      const [wallet] = await db.insert(polyTraderWallets).values({ walletAddress: address, kind: "cogni_wallet", label: "future recovery neighbor" }).returning();
       if (!wallet) throw new Error("future recovery wallet missing");
       try {
         if (source === "current") {
@@ -68,7 +81,7 @@ describe("native economic observation persistence", () => {
         const listClosed = vi.fn().mockResolvedValue({ positions: [], requestCount: 1 });
         const listActivity = vi.fn().mockResolvedValue({ activity: [], requestCount: 1 });
         const readSettlement = vi.fn();
-        await recoverEconomicObservations({ db, now, client: {
+        await recoverForUser(userId, { db, now, client: {
           listUserPositionsV2Raw: listClosed, listConditionActivityV2: listActivity,
         } as unknown as PolymarketDataApiClient, readSettlement,
           logger: { info: vi.fn() } as unknown as LoggerPort });
@@ -88,7 +101,7 @@ describe("native economic observation persistence", () => {
   it("recovers both false-error legs once, preserving execution/fill cursors and exact native economics", async () => {
     const db = getSeedDb();
     const suffix = randomUUID();
-    const userId = `native-user-${suffix}`;
+    const userId = randomUUID();
     const account = `native-account-${suffix}`;
     const address = `0x${suffix.replaceAll("-", "").padStart(40, "0")}`;
     const conditionId = fixture.provenance.conditionId;
@@ -188,7 +201,7 @@ describe("native economic observation persistence", () => {
       now,
     };
     try {
-      await recoverEconomicObservations(input);
+      await recoverForUser(userId, input);
       const before = await db
         .select()
         .from(polyTraderPositionSnapshots)
@@ -225,7 +238,7 @@ describe("native economic observation persistence", () => {
         status: "closed",
         pnlUsd: 180.04,
       });
-      await recoverEconomicObservations({ ...input, now: new Date(now.getTime() + 60_000) });
+      await recoverForUser(userId, { ...input, now: new Date(now.getTime() + 60_000) });
       expect(
         await db
           .select()
