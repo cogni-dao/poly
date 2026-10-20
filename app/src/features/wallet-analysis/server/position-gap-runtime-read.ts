@@ -506,8 +506,9 @@ export const positionGapActionAggregateSelect = (
   const guard = paperFillAccountingSql("parsed", cutoff, "parsed");
   const paper = paperFillAccountingSql("bound_receipts", cutoff, "bound_receipts");
   // Every materialization follows the existing account/target clamp. Reuse the
-  // guarded scalar parses and accepted proof once per joined receipt; aggregate
-  // FILTERs must not expand the entire decoder and connection lookup repeatedly.
+  // guarded scalar parses and accepted proof once per PAPER receipt; LIVE and
+  // missing-ledger actions bypass native validation entirely. Aggregate FILTERs
+  // must not expand the decoder and connection lookup repeatedly.
   const receipts = sql`(
     WITH scoped AS MATERIALIZED (
       SELECT a.target_id, a.kind, a.submitted_at, a.filled_shares, a.planner_action,
@@ -520,29 +521,35 @@ export const positionGapActionAggregateSelect = (
         AND ${inArray(sql`a.target_id`, [...targetIds])}
     ), parsed AS MATERIALIZED (
       SELECT scoped.*,
-        CASE WHEN mode='paper' THEN ${values.shares} END AS proof_shares,
-        CASE WHEN mode='paper' THEN ${values.cost} END AS proof_cost,
-        CASE WHEN mode='paper' THEN ${values.price} END AS proof_price,
-        CASE WHEN mode='paper' THEN ${values.fee} END AS proof_fee,
-        CASE WHEN mode='paper' THEN ${values.durableCost} END AS proof_durable_cost,
-        CASE WHEN mode='paper' THEN ${values.observedAt} END AS proof_observed_at,
-        COALESCE(mode='live' AND attributes->>'realized_fill_source' IN
-          ('clob_associated_trades','data_api_activity_position'), false) AS live_verified
-      FROM scoped
+        ${values.shares} AS proof_shares, ${values.cost} AS proof_cost,
+        ${values.price} AS proof_price, ${values.fee} AS proof_fee,
+        ${values.durableCost} AS proof_durable_cost, ${values.observedAt} AS proof_observed_at
+      FROM scoped WHERE mode='paper'
     ), bound_receipts AS MATERIALIZED (
-      SELECT parsed.*, CASE WHEN mode='paper' THEN ${guard.bound} ELSE false END AS proof_bound
+      SELECT parsed.*, ${guard.bound} AS proof_bound
       FROM parsed
     ), accepted AS MATERIALIZED (
       SELECT bound_receipts.*,
         (proof_bound AND ${paper.positiveTuple}) AS paper_positive,
         (proof_bound AND ${paper.zeroTuple}) AS paper_zero
       FROM bound_receipts
+    ), classified AS MATERIALIZED (
+      -- Keep historical LIVE and missing-ledger actions out of native parsing.
+      SELECT target_id, kind, submitted_at, filled_shares, planner_action,
+        mode, shares, attributes, false AS paper_positive, false AS paper_zero,
+        COALESCE(mode='live' AND attributes->>'realized_fill_source' IN
+          ('clob_associated_trades','data_api_activity_position'), false) AS accounting_verified
+      FROM scoped WHERE mode IS DISTINCT FROM 'paper'
+      UNION ALL
+      SELECT target_id, kind, submitted_at, filled_shares, planner_action,
+        mode, shares, attributes, paper_positive, paper_zero, paper_positive AS accounting_verified
+      FROM accepted
     )
-    SELECT accepted.*, (paper_positive OR live_verified) AS accounting_verified,
-      CASE WHEN kind='buy' AND (paper_positive OR live_verified)
+    SELECT classified.*,
+      CASE WHEN kind='buy' AND accounting_verified
         AND attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
         THEN (attributes->>'filled_size_usdc')::numeric END AS realized_notional
-    FROM accepted
+    FROM classified
   ) AS receipts`;
   return tx.select({
     targetId: sql<string>`receipts.target_id`,

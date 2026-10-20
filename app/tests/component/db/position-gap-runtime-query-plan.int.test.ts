@@ -26,9 +26,19 @@ type ExplainNode = {
   "Actual Rows"?: number;
   "Rows Removed by Filter"?: number;
   "Subplan Name"?: string;
+  "Parent Relationship"?: string;
+  "Startup Cost"?: number;
+  "Total Cost"?: number;
+  "Plan Rows"?: number;
+  "Actual Startup Time"?: number;
+  "Actual Total Time"?: number;
+  "Shared Hit Blocks"?: number;
+  "Shared Read Blocks"?: number;
+  "Temp Read Blocks"?: number;
+  "Temp Written Blocks"?: number;
 	Plans?: ExplainNode[];
 };
-type ExplainDocument = { Plan: ExplainNode; "Execution Time": number; "Planning Time": number };
+type ExplainDocument = { Plan: ExplainNode; "Execution Time": number; "Planning Time": number; JIT?: Record<string, unknown> };
 
 const flatten = (node: ExplainNode): ExplainNode[] => [
 	node,
@@ -240,11 +250,22 @@ describe("position-gap runtime query plan proof", () => {
       const connectionNodes = actionNodes.filter(node => node["Relation Name"] === "poly_wallet_connections");
       console.info("position-gap-query-plan", { latest_planning_ms: latest["Planning Time"], latest_execution_ms: latest["Execution Time"],
         aggregate_planning_ms: actions["Planning Time"], aggregate_execution_ms: actions["Execution Time"],
+        aggregate_jit: actions.JIT ?? null,
+        aggregate_nodes: actionNodes.map(node => ({ node: node["Node Type"], relation: node["Relation Name"],
+          parent: node["Parent Relationship"], subplan: node["Subplan Name"], index: node["Index Name"],
+          startup_cost: node["Startup Cost"], total_cost: node["Total Cost"], estimated_rows: node["Plan Rows"],
+          actual_startup_ms: node["Actual Startup Time"], actual_total_ms: node["Actual Total Time"],
+          rows: node["Actual Rows"], filtered: node["Rows Removed by Filter"], loops: node["Actual Loops"],
+          shared_hits: node["Shared Hit Blocks"], shared_reads: node["Shared Read Blocks"],
+          temp_read: node["Temp Read Blocks"], temp_written: node["Temp Written Blocks"] })),
         connection_subplans: connectionNodes.map(node => ({ node: node["Node Type"], loops: node["Actual Loops"] ?? 0 })),
         subplans: actionNodes.filter(node => node["Subplan Name"]).map(node => ({ name: node["Subplan Name"], loops: node["Actual Loops"] ?? 0 })) });
       // All selected main-target receipts are unbound LIVE rows. The native
       // PAPER connection proof must do no work on that population.
       expect(connectionNodes.every(node => (node["Actual Loops"] ?? 0) === 0)).toBe(true);
+      const nativeParse = actionNodes.find(node => node["Subplan Name"] === "CTE parsed");
+      expect(nativeParse).toBeDefined();
+      expect(nativeParse?.["Actual Rows"]).toBe(0);
       const actionVisits = actionNodes.filter(node => node["Relation Name"] === "poly_position_gap_actions");
       expect(actionVisits.every(node => (node["Actual Rows"] ?? 0) + (node["Rows Removed by Filter"] ?? 0) <= ACTION_PLAN_ROWS)).toBe(true);
 			expect(latest["Execution Time"]).toBeLessThan(200);
