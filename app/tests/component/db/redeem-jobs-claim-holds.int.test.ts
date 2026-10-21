@@ -225,4 +225,145 @@ describe("redeem durable claim holds (real PostgreSQL)", () => {
 			expect(await h.restart().claimNextPending(h.funder)).toBeNull();
 		},
 	);
+
+	it("claimed submission persists once before another adapter confirms it", async () => {
+		const h = harness();
+		const { jobId } = await h.adapter.enqueue(h.input);
+		await h.adapter.claimNextPending(h.funder);
+		await h.db
+			.update(polyRedeemJobs)
+			.set({ lastError: "retained claim diagnostic" })
+			.where(eq(polyRedeemJobs.id, jobId));
+		await h.adapter.markSubmitted({
+			jobId,
+			txHash: hash,
+			submittedAtBlock: 123n,
+			receiptBurnObserved: true,
+		});
+		const submitted = await h.adapter.findByKey(h.funder, h.input.conditionId);
+		expect(submitted).toMatchObject({
+			status: "submitted",
+			txHashes: [hash],
+			submittedAtBlock: 123n,
+			receiptBurnObserved: true,
+			attemptCount: 1,
+			lastError: null,
+			submittedAt: expect.any(Date),
+			updatedAt: expect.any(Date),
+		});
+		await h.restart().markConfirmed({ jobId, txHash: hash });
+		expect(await h.adapter.findByKey(h.funder, h.input.conditionId)).toEqual({
+			...submitted,
+			status: "confirmed",
+			confirmedAt: expect.any(Date),
+			updatedAt: expect.any(Date),
+		});
+	});
+
+	it("another adapter's catch-up-like confirmation survives a late submission", async () => {
+		const h = harness();
+		const { jobId } = await h.adapter.enqueue(h.input);
+		await h.adapter.claimNextPending(h.funder);
+		await h.db
+			.update(polyRedeemJobs)
+			.set({ lastError: "preserve confirmed audit" })
+			.where(eq(polyRedeemJobs.id, jobId));
+		// Adapter ordering only: no claim of real payout, canonicality or finality.
+		await h.restart().markConfirmed({ jobId, txHash: hash });
+		const confirmed = await h.adapter.findByKey(h.funder, h.input.conditionId);
+		expect(confirmed).toMatchObject({
+			status: "confirmed",
+			lastError: "preserve confirmed audit",
+			attemptCount: 0,
+		});
+		await h.adapter.markSubmitted({
+			jobId,
+			txHash: `0x${"cd".repeat(32)}`,
+			submittedAtBlock: 999n,
+			receiptBurnObserved: true,
+		});
+		expect(await h.restart().findByKey(h.funder, h.input.conditionId)).toEqual(
+			confirmed,
+		);
+		await h.restart().enqueue(h.input);
+		expect(await h.restart().claimNextPending(h.funder)).toBeNull();
+		expect(await h.adapter.findByKey(h.funder, h.input.conditionId)).toEqual(
+			confirmed,
+		);
+	});
+
+	it("two adapters concurrently persist only one submission for a claimed job", async () => {
+		const h = harness();
+		const { jobId } = await h.adapter.enqueue(h.input);
+		await h.adapter.claimNextPending(h.funder);
+		const submissions = [
+			{
+				jobId,
+				txHash: hash,
+				submittedAtBlock: 123n,
+				receiptBurnObserved: true,
+			},
+			{
+				jobId,
+				txHash: `0x${"cd".repeat(32)}` as const,
+				submittedAtBlock: 456n,
+				receiptBurnObserved: false,
+			},
+		] as const;
+		await Promise.all([
+			h.adapter.markSubmitted(submissions[0]),
+			h.restart().markSubmitted(submissions[1]),
+		]);
+		const persisted = await h.adapter.findByKey(h.funder, h.input.conditionId);
+		expect(persisted).toMatchObject({ status: "submitted", attemptCount: 1 });
+		expect(persisted?.txHashes).toHaveLength(1);
+		const winner = submissions.find(
+			(input) => input.txHash === persisted?.txHashes[0],
+		);
+		expect(winner).toBeDefined();
+		expect(persisted?.submittedAtBlock).toBe(winner?.submittedAtBlock);
+		expect(persisted?.receiptBurnObserved).toBe(winner?.receiptBurnObserved);
+	});
+
+	it.each([
+		"pending",
+		"submitted",
+		"confirmed",
+		"failed_transient",
+		"skipped",
+		"abandoned",
+	] as const)("late submissions preserve the entire %s row", async (status) => {
+		const h = harness();
+		const { jobId } = await h.adapter.enqueue(h.input);
+		const timestamp = new Date("2020-01-01T00:00:00Z");
+		await h.db
+			.update(polyRedeemJobs)
+			.set({
+				status,
+				txHashes: [hash],
+				attemptCount: 7,
+				lastError: "preserve state and audit",
+				errorClass: "malformed",
+				submittedAtBlock: 123n,
+				receiptBurnObserved: true,
+				submittedAt: timestamp,
+				confirmedAt: timestamp,
+				abandonedAt: timestamp,
+				updatedAt: timestamp,
+			})
+			.where(eq(polyRedeemJobs.id, jobId));
+		const before = await h.adapter.findByKey(h.funder, h.input.conditionId);
+		expect(before).toMatchObject({ status, attemptCount: 7 });
+		for (let call = 0; call < 2; call++) {
+			await h.restart().markSubmitted({
+				jobId,
+				txHash: `0x${"cd".repeat(32)}`,
+				submittedAtBlock: 999n,
+				receiptBurnObserved: false,
+			});
+			expect(await h.adapter.findByKey(h.funder, h.input.conditionId)).toEqual(
+				before,
+			);
+		}
+	});
 });

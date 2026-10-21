@@ -221,7 +221,10 @@ export class DrizzleRedeemJobsAdapter implements RedeemJobsPort {
         submittedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(polyRedeemJobs.id, input.jobId));
+      .where(
+        sql`${polyRedeemJobs.id} = ${input.jobId}
+          AND ${polyRedeemJobs.status} = 'claimed'`
+      );
   }
 
   async markConfirmed(input: {
