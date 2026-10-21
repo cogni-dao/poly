@@ -28,8 +28,8 @@ export type { RedeemFlavor } from "@cogni/poly-market-provider/policy";
  *  - `claimed` → `submitted`         : worker (post-receipt + burn-decode)
  *  - `claimed` → `failed_transient`  : worker (tx-submit threw; transient)
  *  - `claimed` → `abandoned`         : worker on `attempt_count >= 3` (transient_exhausted)
- *  - `failed_transient` → `claimed`  : adapter (next tick re-claims for retry)
- *  - `submitted` → `confirmed`       : subscriber (observed `PayoutRedemption` from funder at N=5)
+ *  - `failed_transient` / old `claimed`: held; no automatic retry or age-based reclaim.
+ *  - `submitted` → `confirmed`       : subscriber (matching payout event; N5 remains a separate proof gate)
  *  - `submitted` → `failed_transient`: reaper at N=5 when burn was real but reorged out
  *  - `submitted` → `abandoned`       : reaper at N=5 when no burn observed (malformed routing)
  *  - `confirmed` → `submitted`       : subscriber on reorg (removed log) — re-evaluated by reaper
@@ -43,7 +43,7 @@ export type RedeemJobStatus =
   | "abandoned"
   | "skipped";
 
-/** Why a job was abandoned. NULL while non-terminal or transient-retryable. */
+/** Why a job was abandoned. NULL while non-terminal or held after a failure. */
 export type RedeemFailureClass = "transient_exhausted" | "malformed";
 
 /**

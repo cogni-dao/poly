@@ -15,19 +15,28 @@
  */
 
 import { polyWalletConnections } from "@cogni/poly-db-schema";
+import {
+  POLYGON_CONDITIONAL_TOKENS,
+  POLYGON_NEG_RISK_ADAPTER,
+  polymarketCtfRedeemAbi,
+  polymarketNegRiskAdapterAbi,
+} from "@cogni/poly-market-provider/adapters/polymarket";
 import type { PolyClobApiKeyCreds } from "@cogni/poly-wallet";
 import {
   createSecureClient,
+  RequestRejectedError,
   type Signer,
+  TransactionFailedError,
   type TransactionHandle,
+  UserInputError,
 } from "@polymarket/client";
-import { getContractConfig as getClobV2ContractConfig } from "@polymarket/clob-client-v2";
 import {
   createBuilderApiKey,
   prepareGaslessTransaction,
 } from "@polymarket/client/actions";
 import { builderApiKey } from "@polymarket/client/node";
 import { signerFrom as polymarketSignerFrom } from "@polymarket/client/viem";
+import { getContractConfig as getClobV2ContractConfig } from "@polymarket/clob-client-v2";
 import { PrivyClient } from "@privy-io/node";
 import { and, desc, eq } from "drizzle-orm";
 import type { Logger } from "pino";
@@ -56,6 +65,7 @@ import {
   normalizePolymarketApiKeyCreds,
   rotatePolymarketApiKeyForSigner,
 } from "@/bootstrap/capabilities/poly-clob-creds";
+import { RedeemSubmissionError } from "@/core";
 import { LIVE_CONNECTION_KIND } from "@/features/paper-accounts";
 import { serverEnv } from "@/shared/env/server-env";
 
@@ -249,6 +259,109 @@ export async function createOfficialDepositWalletClient({
     apiKey: builderApiKey(builderCredentials),
   });
   return { depositClient, eoaClient, polySigner };
+}
+
+/** Transport the worker's prepared legacy CTF call without V2 position decoding. */
+export async function redeemOfficialDepositWalletCtf(
+  {
+    depositClient,
+    polySigner,
+  }: Pick<
+    Awaited<ReturnType<typeof createOfficialDepositWalletClient>>,
+    "depositClient" | "polySigner"
+  >,
+  input: {
+    expectedFunderAddress: `0x${string}`;
+    conditionId: `0x${string}`;
+    collateralToken: `0x${string}`;
+  } & (
+    | { kind: "ctf"; indexSets: bigint[] }
+    | { kind: "neg-risk"; amounts: readonly [bigint, bigint] }
+  )
+): Promise<`0x${string}`> {
+  if (
+    depositClient.account.wallet.toLowerCase() !==
+    input.expectedFunderAddress.toLowerCase()
+  ) {
+    throw new RedeemSubmissionError(
+      "malformed",
+      "Deposit Wallet address does not match persisted funder"
+    );
+  }
+  let handle: TransactionHandle;
+  try {
+    const call =
+      input.kind === "ctf"
+        ? {
+            to: POLYGON_CONDITIONAL_TOKENS,
+            data: encodeFunctionData({
+              abi: polymarketCtfRedeemAbi,
+              functionName: "redeemPositions",
+              args: [
+                input.collateralToken,
+                "0x0000000000000000000000000000000000000000000000000000000000000000",
+                input.conditionId,
+                input.indexSets,
+              ],
+            }),
+            value: 0n,
+          }
+        : {
+            to: POLYGON_NEG_RISK_ADAPTER,
+            data: encodeFunctionData({
+              abi: polymarketNegRiskAdapterAbi,
+              functionName: "redeemPositions",
+              args: [input.conditionId, [input.amounts[0], input.amounts[1]]],
+            }),
+            value: 0n,
+          };
+    const workflow = await prepareGaslessTransaction(depositClient, {
+      calls: [call],
+      metadata: "Redeem legacy CTF positions",
+    });
+    handle = await completeGaslessWorkflow(workflow, polySigner);
+  } catch (error) {
+    if (error instanceof UserInputError) {
+      throw new RedeemSubmissionError("malformed", error.message, {
+        cause: error,
+      });
+    }
+    // Only explicit HTTP forbidden is classified here. Do not guess an allowlist
+    // denial from arbitrary 400s (wallet-busy/nonce races), 429s or outages.
+    if (
+      error instanceof RequestRejectedError &&
+      error.status === 403 &&
+      error.retryAfter === undefined &&
+      error.restriction === undefined
+    ) {
+      throw new RedeemSubmissionError("submission_rejected", error.message, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+  // A known submitted hash belongs in the existing receipt/reaper path even
+  // when SDK polling would fail. A hash alone never marks a job confirmed.
+  if (handle.transactionHash) return handle.transactionHash;
+  try {
+    const outcome = await handle.wait();
+    return outcome.transactionHash;
+  } catch (error) {
+    // Retain the real provider ID for audit only: it is not a chain hash or
+    // durable automatic recovery protocol. Preserve the original error/cause.
+    const audit = `Relayer transactionId=${handle.transactionId}; chain hash unknown`;
+    if (error instanceof Error) error.message = `${error.message} (${audit})`;
+    if (error instanceof TransactionFailedError) {
+      throw new RedeemSubmissionError("submission_rejected", error.message, {
+        cause: error,
+      });
+    }
+    // No known chain hash: preserve polling failures as uncertain transport,
+    // including UserInputError from a later read, never malformed preflight.
+    throw error instanceof Error
+      ? error
+      : new Error(`${String(error)} (${audit})`, { cause: error });
+  }
 }
 
 /**
