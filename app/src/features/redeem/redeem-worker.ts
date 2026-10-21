@@ -527,10 +527,14 @@ export class RedeemWorker {
 
   private async reapStale(): Promise<void> {
     const headBlock = await this.deps.publicClient.getBlockNumber();
-    const candidates = await this.deps.redeemJobs.claimReaperCandidates(
-      headBlock,
-      this.deps.finalityBlocks
-    );
+    // The shared candidate read can include other pipelines' funders.
+    const funder = this.deps.funderAddress.toLowerCase();
+    const candidates = (
+      await this.deps.redeemJobs.claimReaperCandidates(
+        headBlock,
+        this.deps.finalityBlocks
+      )
+    ).filter((job) => job.funderAddress.toLowerCase() === funder);
     if (candidates.length === 0) return;
 
     // Batch one PayoutRedemption getLogs per flavor group across all

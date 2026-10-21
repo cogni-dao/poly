@@ -46,7 +46,7 @@ function claimedJob(): RedeemJob {
 	};
 }
 
-function fixture(job = claimedJob(), failure?: Error) {
+function fixture(job = claimedJob(), failure?: Error, funderAddress = FUNDER) {
 	let current: RedeemJob | null = job;
 	const redeemPosition = vi.fn(async () => {
 		if (failure) throw failure;
@@ -63,6 +63,7 @@ function fixture(job = claimedJob(), failure?: Error) {
 	});
 	const markRpcDeferred = vi.fn(async () => undefined);
 	const markConfirmed = vi.fn();
+	const setLifecycleState = vi.fn();
 	const markPositionLifecycleByAsset = vi.fn(async () => 1);
 	const publicClient = {
 		readContract: vi.fn(async () => 7_000_000n),
@@ -83,6 +84,7 @@ function fixture(job = claimedJob(), failure?: Error) {
 		markTransientFailure,
 		markRpcDeferred,
 		markConfirmed,
+		setLifecycleState,
 	};
 	const writeContract = vi.fn();
 	const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -92,7 +94,7 @@ function fixture(job = claimedJob(), failure?: Error) {
 		billingAccountId: "billing-1",
 		publicClient: publicClient as never,
 		walletClient: { writeContract } as never,
-		funderAddress: FUNDER,
+		funderAddress,
 		account: {} as never,
 		redeemPosition,
 		logger,
@@ -270,6 +272,160 @@ describe("RedeemWorker Deposit Wallet legacy dispatch", () => {
 		expect(f.redeemJobs.markAbandoned).toHaveBeenCalledWith(
 			expect.objectContaining({ errorClass: "malformed" }),
 		);
+	});
+});
+
+describe("RedeemWorker reaper funder isolation", () => {
+	it.each(["binary", "neg-risk-parent", "neg-risk-adapter"] as const)(
+		"ignores a foreign %s job before payout or balance reads",
+		async (flavor) => {
+			const foreign = {
+				...claimedJob(),
+				funderAddress: "0x3333333333333333333333333333333333333333" as const,
+				flavor,
+				status: "submitted" as const,
+				submittedAtBlock: 1n,
+				txHashes: [TX_HASH],
+			};
+			const f = fixture();
+			f.redeemJobs.claimNextPending.mockResolvedValue(null);
+			f.redeemJobs.claimReaperCandidates.mockResolvedValue([foreign]);
+			f.publicClient.readContract.mockResolvedValue(0n);
+
+			await f.worker.tick();
+
+			expect(f.redeemJobs.claimReaperCandidates).toHaveBeenCalledWith(10n, 5n);
+			expect(f.publicClient.getLogs).not.toHaveBeenCalled();
+			expect(f.publicClient.readContract).not.toHaveBeenCalled();
+			for (const mutation of [
+				f.redeemJobs.markConfirmed,
+				f.redeemJobs.setLifecycleState,
+				f.redeemJobs.markAbandoned,
+				f.redeemJobs.markSubmitted,
+				f.redeemJobs.markTransientFailure,
+				f.redeemJobs.markRpcDeferred,
+				f.markPositionLifecycleByAsset,
+			]) {
+				expect(mutation).not.toHaveBeenCalled();
+			}
+			expect(f.redeemPosition).not.toHaveBeenCalled();
+			expect(f.writeContract).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["binary", "neg-risk-parent", "neg-risk-adapter"] as const)(
+		"advances only the own %s job when funders share a condition",
+		async (flavor) => {
+			const own = {
+				...claimedJob(),
+				flavor,
+				status: "submitted" as const,
+				submittedAtBlock: 1n,
+				txHashes: [TX_HASH],
+			};
+			const foreign = {
+				...own,
+				id: "foreign-job",
+				funderAddress: "0x3333333333333333333333333333333333333333" as const,
+				positionId: "987654321",
+			};
+			const f = fixture();
+			f.redeemJobs.claimNextPending.mockResolvedValue(null);
+			f.redeemJobs.claimReaperCandidates.mockResolvedValue([foreign, own]);
+			f.publicClient.readContract.mockResolvedValue(0n);
+
+			await f.worker.tick();
+
+			expect(f.publicClient.getLogs).toHaveBeenCalledOnce();
+			expect(f.publicClient.readContract).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ args: [FUNDER, BigInt(own.positionId)] }),
+			);
+			expect(f.redeemJobs.markConfirmed).toHaveBeenCalledExactlyOnceWith({
+				jobId: own.id,
+				txHash: TX_HASH,
+			});
+			expect(f.redeemJobs.setLifecycleState).toHaveBeenCalledExactlyOnceWith({
+				jobId: own.id,
+				lifecycleState: "redeemed",
+			});
+			expect(f.markPositionLifecycleByAsset).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({
+					billing_account_id: "billing-1",
+					token_id: own.positionId,
+					lifecycle: "redeemed",
+				}),
+			);
+			expect(f.redeemJobs.markAbandoned).not.toHaveBeenCalled();
+			expect(f.redeemJobs.markSubmitted).not.toHaveBeenCalled();
+			expect(f.redeemJobs.markTransientFailure).not.toHaveBeenCalled();
+			expect(f.redeemJobs.markRpcDeferred).not.toHaveBeenCalled();
+			expect(f.redeemPosition).not.toHaveBeenCalled();
+			expect(f.writeContract).not.toHaveBeenCalled();
+		},
+	);
+
+	it("confirms a valid own payout with case-insensitive funder identity", async () => {
+		const funder = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd" as const;
+		const job = {
+			...claimedJob(),
+			funderAddress: `0x${funder.slice(2).toUpperCase()}` as `0x${string}`,
+			flavor: "neg-risk-adapter" as const,
+			status: "submitted" as const,
+			submittedAtBlock: 1n,
+			txHashes: [TX_HASH],
+		};
+		const f = fixture(job, undefined, funder);
+		f.redeemJobs.claimNextPending.mockResolvedValue(null);
+		f.redeemJobs.claimReaperCandidates.mockResolvedValue([
+			{
+				...job,
+				id: "foreign-job",
+				funderAddress: "0x3333333333333333333333333333333333333333",
+				positionId: "987654321",
+			},
+			job,
+		]);
+		f.publicClient.getLogs.mockResolvedValue([
+			{
+				address: POLYGON_NEG_RISK_ADAPTER,
+				topics: encodeEventTopics({
+					abi: polymarketNegRiskAdapterAbi,
+					eventName: "PayoutRedemption",
+					args: { redeemer: funder, conditionId: job.conditionId },
+				}),
+				data: encodeAbiParameters(parseAbiParameters("uint256[], uint256"), [
+					[7_000_000n, 0n],
+					7_000_000n,
+				]),
+				transactionHash: TX_HASH,
+				removed: false,
+			},
+		]);
+
+		await f.worker.tick();
+
+		expect(f.publicClient.getLogs).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ args: { redeemer: funder } }),
+		);
+		expect(f.redeemJobs.markConfirmed).toHaveBeenCalledExactlyOnceWith({
+			jobId: job.id,
+			txHash: TX_HASH,
+		});
+		expect(f.redeemJobs.setLifecycleState).toHaveBeenCalledExactlyOnceWith({
+			jobId: job.id,
+			lifecycleState: "redeemed",
+		});
+		expect(f.markPositionLifecycleByAsset).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				billing_account_id: "billing-1",
+				token_id: job.positionId,
+				lifecycle: "redeemed",
+			}),
+		);
+		expect(f.publicClient.readContract).not.toHaveBeenCalled();
+		expect(f.redeemJobs.markAbandoned).not.toHaveBeenCalled();
+		expect(f.redeemPosition).not.toHaveBeenCalled();
+		expect(f.writeContract).not.toHaveBeenCalled();
 	});
 });
 
