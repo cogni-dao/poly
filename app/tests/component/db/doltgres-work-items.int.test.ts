@@ -25,6 +25,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
 	DoltgresWorkItemAdapter,
 	WorkItemsBusyError,
+	WorkItemDeletionRetiredError,
 } from "@cogni/work-items/adapters/doltgres";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -77,7 +78,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		}
 
 		execFileSync(process.execPath, [MIGRATE_SCRIPT, MIGRATIONS_DIR], {
-			env: { ...process.env, DATABASE_URL: dbUrl, NODE_NAME: "poly-test" },
+			env: { ...process.env, DATABASE_URL: dbUrl, NODE_NAME: "poly-work-items" },
 			encoding: "utf8",
 			stdio: "pipe",
 		});
@@ -89,7 +90,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		if (container) await container.stop();
 	});
 
-	it("creates, lists, patches, coordinates, and deletes through Dolt branches", async () => {
+	it("creates, lists, patches, and preserves identities through Dolt branches", async () => {
 		const createWorkItemClient = () =>
 			postgres(dbUrl, { max: 1, fetch_types: false });
 		// An EXPLICIT read pool, so `recreateClient` below stays a pure
@@ -209,36 +210,19 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			await verifier.end({ timeout: 0 });
 		}
 
-		const claimed = await adapter.claim({
-			id,
-			runId: "acceptance-run",
-			command: "implement",
-			principalId,
-		});
-		expect(claimed.claimedByRun).toBe("acceptance-run");
-
-		const heartbeat = await adapter.heartbeat({
-			id,
-			runId: "acceptance-run",
-			command: "verify",
-			principalId,
-		});
-		expect(heartbeat.lastCommand).toBe("verify");
-
-		const released = await adapter.release({
-			id,
-			runId: "acceptance-run",
-			principalId,
-		});
-		expect(released.claimedByRun).toBeUndefined();
-		await expect(adapter.delete(id, principalId)).resolves.toBe(true);
-		await expect(adapter.get(id)).resolves.toBeNull();
+		// Lease ownership/heartbeat/release now belong to the real PostgreSQL
+		// composition exercised in installed-work-items-composition.int.test.ts.
+		await expect(adapter.delete(id, principalId)).rejects.toBeInstanceOf(
+			WorkItemDeletionRetiredError,
+		);
+		await expect(adapter.get(id)).resolves.toMatchObject({ id });
 		await readSql.end({ timeout: 0 });
 	}, 60_000);
 
 	it("serves reads past an unprovable operation branch and quarantines it so writes recover", async () => {
 		const branch = "work-item-op/component-unreachable";
 		const maintenance = postgres(dbUrl, { max: 1, fetch_types: false });
+		const readSql = postgres(dbUrl, { max: 1, fetch_types: false });
 		try {
 			await maintenance.unsafe(
 				`SELECT dolt_checkout('-b', '${branch}', 'main')`,
@@ -252,7 +236,8 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			await maintenance.unsafe("SELECT dolt_checkout('main')");
 
 			const adapter = new DoltgresWorkItemAdapter(sql, {
-			logger: stageLogger,
+				readClient: readSql,
+				logger: stageLogger,
 				lockWaitMs: 250,
 				lockRetryMs: 25,
 			});
@@ -338,11 +323,14 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				)
 				.catch(() => undefined);
 			await maintenance.end({ timeout: 0 });
+			await readSql.end({ timeout: 0 });
 		}
 	}, 60_000);
 
 	it("commits only work_items while preserving and deterministically cleaning dirty knowledge", async () => {
+		const readSql = postgres(dbUrl, { max: 1, fetch_types: false });
 		const adapter = new DoltgresWorkItemAdapter(sql, {
+			readClient: readSql,
 			logger: stageLogger,
 			lockWaitMs: 250,
 			lockRetryMs: 25,
@@ -356,7 +344,6 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		let knowledgeSession:
 			| Awaited<ReturnType<typeof knowledgeSql.reserve>>
 			| undefined;
-		let workItemCreated = false;
 		let before = "";
 		let beforeBranches: ReadonlyArray<Record<string, unknown>> = [];
 		let beforeStatus: ReadonlyArray<Record<string, unknown>> = [];
@@ -388,7 +375,6 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				{ id, type: "task", title: "Scoped staging acceptance" },
 				principalId,
 			);
-			workItemCreated = true;
 
 			const afterRows = await sql.unsafe(
 				"SELECT dolt_hashof('main') AS hash",
@@ -411,9 +397,6 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				),
 			).resolves.toHaveLength(1);
 		} finally {
-			if (workItemCreated) {
-				await adapter.delete(id, principalId).catch(() => undefined);
-			}
 			if (knowledgeSession) {
 				await knowledgeSession
 					.unsafe("SELECT dolt_reset('--hard', 'HEAD')")
@@ -427,6 +410,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				knowledgeSession.release();
 			}
 			await knowledgeSql.end({ timeout: 0 });
+			await readSql.end({ timeout: 0 });
 			await sql.unsafe("SELECT dolt_checkout('main')").catch(() => undefined);
 			if (before) {
 				await sql.unsafe(`SELECT dolt_reset('--hard', '${before}')`);
