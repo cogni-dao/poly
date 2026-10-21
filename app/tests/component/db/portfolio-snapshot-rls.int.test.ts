@@ -33,11 +33,14 @@ import { toUserId, userActor } from "@cogni/ids";
 import type { AgentCapabilityScope } from "@cogni/poly-node-contracts";
 import type { PolyAccountPortfolioSnapshotOutput } from "@cogni/poly-node-contracts";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { eq, sql } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { eq, inArray, type SQL, sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Database } from "@/adapters/server/db/client";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
-import { readTenantWalletDashboardIn } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
+import { readTenantWalletDashboardIn, type WalletDashboardReadDiagnostics } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
+import { buildEconomicPositionProjectionQuery } from "@/features/wallet-analysis/server/economic-position-read-model";
+import { createEconomicProjectionPlanProbe } from "@/features/wallet-analysis/server/economic-projection-plan";
 import {
   billingAccounts,
   polyWalletBalanceSnapshots,
@@ -267,6 +270,145 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
     );
   }
 
+  it("captures unchanged LIVE projection plans as real owner and delegated app principals", async () => {
+    const seed = getSeedDb();
+    const wallet = await seed.execute<{ id: string }>(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label)
+      VALUES (${funderA},'cogni_wallet','Projection role plan fixture') RETURNING id`);
+    const walletId = wallet[0]?.id;
+    if (!walletId) throw new Error("Missing projection plan wallet");
+    try {
+      // Same 5080-row sparse/unrelated-history shape as the metadata plan fixture,
+      // now driven by the owned LIVE wallet rather than a copy-target identity.
+      await seed.execute(sql`INSERT INTO poly_trader_position_snapshots
+        (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,captured_at,raw)
+        SELECT ${walletId}::uuid,${`0x${"bc".repeat(32)}`},n::text,1,.4,.5,.4,'role-plan-'||n,
+          now()-(n||' seconds')::interval,'{}'::jsonb FROM generate_series(1,5080) n`);
+      await seed.execute(sql`INSERT INTO poly_trader_fills
+        (trader_wallet_id,source,native_id,condition_id,token_id,side,price,shares,size_usdc,observed_at,raw)
+        SELECT ${walletId}::uuid,'data-api','role-plan-'||n,${`0x${"bc".repeat(32)}`},n::text,
+          'BUY',.4,1,.4,now()-(n||' seconds')::interval,'{}'::jsonb FROM generate_series(1,5080) n`);
+      await seed.execute(sql`ANALYZE poly_trader_position_snapshots`);
+      await seed.execute(sql`ANALYZE poly_trader_fills`);
+      const capturedAt = new Date();
+    for (const [role, actor] of [["owner", ownerA], ["delegated", canonicalAgent]] as const) {
+      await withTenantScope(db, userActor(toUserId(actor.userId)), async tx => {
+        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+        await tx.execute(sql`SET LOCAL statement_timeout = 8000`);
+        const probe = createEconomicProjectionPlanProbe();
+        const result = await probe(tx as unknown as Parameters<typeof probe>[0], buildEconomicPositionProjectionQuery({
+          billingAccountId: ownerA.billingAccountId, walletAddress: funderA,
+          connectionKind: "privy_live", capturedAt, interval: "ALL",
+        }));
+        expect(result.status).toBe("captured");
+        const [context] = await tx.execute(sql`SELECT current_user AS role,
+          (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user) AS bypass_rls,
+          current_setting('app.current_user_id') AS actor,
+          current_setting('transaction_read_only') AS read_only,
+          current_setting('transaction_isolation') AS isolation,
+          current_setting('statement_timeout') AS timeout`);
+        const databaseUrl = process.env.DATABASE_URL;
+        if (!databaseUrl) throw new Error("Missing app database configuration");
+        expect(context).toMatchObject({ role: decodeURIComponent(new URL(databaseUrl).username),
+          bypass_rls: false, actor: actor.userId,
+          read_only: "on", isolation: "repeatable read", timeout: "8s" });
+        expect(JSON.stringify(result)).not.toContain(ownerA.billingAccountId);
+        expect(JSON.stringify(result)).not.toContain(funderA);
+        console.info(JSON.stringify({ probe: "economic_projection_app_role_plan", environment: "ci_fixture", role, ...result }));
+      });
+    }
+    } finally {
+      await seed.execute(sql`DELETE FROM poly_trader_wallets WHERE id=${walletId}::uuid`);
+    }
+  });
+
+  it("probes only after a real projection timeout rolls back and preserves unavailable facts", async () => {
+    await withTenantScope(db, userActor(toUserId(canonicalAgent.userId)), async tx => {
+      await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+      const dialect = new PgDialect();
+      let projectionQuery: ReturnType<typeof dialect.sqlToQuery> | undefined;
+      let explainedQuery: ReturnType<typeof dialect.sqlToQuery> | undefined;
+      const trace: string[] = [];
+      const wrap = (connection: typeof tx): typeof tx => new Proxy(connection, {
+        get(target, property) {
+          if (property === "execute") return async (query: SQL) => {
+            const compiled = dialect.sqlToQuery(query);
+            if (compiled.sql.trim().startsWith("WITH wallet_identity")) {
+              projectionQuery = compiled;
+              await target.execute(sql`SET LOCAL statement_timeout = 5`);
+              return target.execute(sql`SELECT pg_sleep(0.025)`);
+            }
+            if (compiled.sql.startsWith("EXPLAIN")) {
+              explainedQuery = compiled;
+              trace.push("explain");
+            }
+            return target.execute(query);
+          };
+          if (property === "transaction") return async (read: (savepoint: typeof tx) => Promise<unknown>) => {
+            try { return await target.transaction(savepoint => read(wrap(savepoint))); }
+            catch (error) { trace.push("rollback"); throw error; }
+          };
+          const value = Reflect.get(target, property);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      const diagnostics: WalletDashboardReadDiagnostics = {};
+      const result = await readTenantWalletDashboardIn(wrap(tx) as unknown as Parameters<typeof readTenantWalletDashboardIn>[0], {
+        billingAccountId: ownerA.billingAccountId, interval: "ALL", adapterConfigured: true, diagnostics,
+      });
+      expect(diagnostics).toMatchObject({ economicReadPhase: "projection", economicCauseCode: "57014",
+        economicPlanProbe: { status: "captured" } });
+      expect(result.facts.positions.status).toBe("unavailable");
+      expect(result.facts.history.status).toBe("unavailable");
+      expect(result.readiness.connected).toBe(true);
+      expect(result.overview.address).toBe(funderA);
+      expect(projectionQuery).toBeDefined();
+      expect(explainedQuery?.sql).toBe(`EXPLAIN (FORMAT JSON) ${projectionQuery?.sql}`);
+      expect(explainedQuery?.params).toEqual(projectionQuery?.params);
+      expect(trace.indexOf("rollback")).toBeLessThan(trace.indexOf("explain"));
+      const [budget] = await tx.execute(sql`SELECT current_setting('statement_timeout') AS timeout`);
+      expect(budget?.timeout).toBe("8s");
+    });
+  });
+
+  it("bounds failed plan probes to one second and reserves cooldown/inflight before IO", async () => {
+    await withTenantScope(db, userActor(toUserId(ownerA.userId)), async tx => {
+      await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+      await tx.execute(sql`SET LOCAL statement_timeout = 8000`);
+      let clock = 1_000;
+      const probe = createEconomicProjectionPlanProbe(() => clock);
+      let explainCalls = 0;
+      const slowed = new Proxy(tx, { get(target, property) {
+        if (property === "transaction") return async (read: (savepoint: typeof tx) => Promise<unknown>) =>
+          target.transaction(savepoint => read(new Proxy(savepoint, { get(saved, key) {
+            if (key === "execute") return async (query: SQL) => {
+              if (new PgDialect().sqlToQuery(query).sql.startsWith("EXPLAIN")) {
+                explainCalls += 1;
+                // Real PostgreSQL cancellation inside the probe's actual 1s savepoint.
+                return saved.execute(sql`SELECT pg_sleep(1.1)`);
+              }
+              return saved.execute(query);
+            };
+            const value = Reflect.get(saved, key);
+            return typeof value === "function" ? value.bind(saved) : value;
+          } })));
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      } });
+      const query = buildEconomicPositionProjectionQuery({ billingAccountId: ownerA.billingAccountId,
+        walletAddress: funderA, connectionKind: "privy_live", capturedAt: new Date(), interval: "ALL" });
+      const pending = probe(slowed as unknown as Parameters<typeof probe>[0], query);
+      expect((await probe(tx as unknown as Parameters<typeof probe>[0], query)).status).toBe("skipped_inflight");
+      const failed = await pending;
+      expect(failed).toMatchObject({ status: "failed", cause_code: "57014" });
+      expect((await probe(tx as unknown as Parameters<typeof probe>[0], query)).status).toBe("skipped_cooldown");
+      expect(explainCalls).toBe(1);
+      const [budget] = await tx.execute(sql`SELECT current_setting('statement_timeout') AS timeout`);
+      expect(budget?.timeout).toBe("8s");
+      clock += 5 * 60_000;
+      expect((await probe(tx as unknown as Parameters<typeof probe>[0], query)).status).toBe("captured");
+    });
+  });
+
   it("lets the owner read its own identity, readiness and cash", async () => {
     const [connection] = await readConnection(ownerA.userId);
     expect(connection?.address).toBe(addressA);
@@ -401,6 +543,30 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
   });
 
   describe("the new policy does not degrade the identity-read plan", () => {
+    const planOwners = Array.from({ length: 2048 }, (_, index) =>
+      tenant(`Portfolio plan owner ${index}`)
+    );
+
+    beforeAll(async () => {
+      const seedDb = getSeedDb();
+      await seedDb.insert(users).values(
+        planOwners.map(owner => ({ id: owner.userId, name: owner.name, walletAddress: address() }))
+      );
+      await seedDb.insert(billingAccounts).values(
+        planOwners.map(owner => ({ id: owner.billingAccountId, ownerUserId: owner.userId, balanceCredits: 0n }))
+      );
+      // The migrated-table owner can ANALYZE; the BYPASSRLS seeding role
+      // cannot. Refresh only the relation whose tiny-table plan is ambiguous.
+      await db.execute(sql`ANALYZE billing_accounts`);
+    });
+
+    afterAll(async () => {
+      const seedDb = getSeedDb();
+      await seedDb.delete(billingAccounts).where(inArray(billingAccounts.id, planOwners.map(owner => owner.billingAccountId)));
+      await seedDb.delete(users).where(inArray(users.id, planOwners.map(owner => owner.userId)));
+      await db.execute(sql`ANALYZE billing_accounts`);
+    });
+
     /**
      * Adding an RLS policy rewrites the plan of every SELECT on the table,
      * because the policy expression becomes part of the query. The identity
@@ -410,12 +576,12 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
      *
      * WHAT IS ASSERTED: no sequential scan anywhere, and the grant lookup is a
      * SubPlan rather than a per-row join. Deliberately NOT asserted: which
-     * index the planner picks. That is cost-based and fixture-size dependent —
-     * on these two-row tables Postgres picks
-     * `poly_wallet_connections_address_chain_active_idx` plus a Sort, not the
-     * `..._tenant_active_idx` an equality-on-billing_account_id predicate would
-     * use at scale. Pinning an index name here would assert a property of the
-     * fixture, not of the policy, and would break whenever statistics shift.
+     * index the planner picks. That is cost-based and fixture-size dependent.
+     * With only a few owners a billing_accounts sequential scan is cheaper
+     * and legitimate, so these tests add unrelated owner/account cardinality
+     * and fresh statistics before asserting selective access. Wallet/grant
+     * fixtures and planner settings stay unchanged. Pinning an index name
+     * would still assert a fixture property rather than the policy contract.
      */
     async function identityPlan(principalId: string): Promise<string> {
       const rows = await withTenantScope(
@@ -461,7 +627,7 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       // performance property of migration 0075 and it is better than a
       // per-row index probe.
       expect(plan).toContain("SubPlan");
-      expect(plan).toContain("billing_accounts_owner_user_id_unique");
+      expect(plan).toContain('"Relation Name":"billing_accounts"');
       expect(plan).toContain("agent_capability_grants");
       // Neither side of the OR may fall back to a scan. One generic check, not
       // a key-order-specific one: JSON key order is not a stable contract, so

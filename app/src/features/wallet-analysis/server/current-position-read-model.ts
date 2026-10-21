@@ -41,6 +41,12 @@ import type {
 } from "@cogni/poly-node-contracts";
 import { type SQL, sql } from "drizzle-orm";
 import { liveCurrentPositionSql } from "./current-position-staleness";
+import {
+  type PositionMetadataKey,
+  positionMetadataDisplay,
+  positionMetadataRequestKey,
+  readPositionMetadata,
+} from "./position-metadata-read";
 import { PAPER_POSITION_CURSOR_SOURCE } from "./paper-fact-source";
 
 type Db = {
@@ -52,6 +58,7 @@ const POSITION_PREVIEW_LIMIT = 500;
 const OBSERVATION_SOURCE = "data-api-positions";
 
 type CurrentPositionRow = {
+  position_mode: "live" | "paper";
   condition_id: string | null;
   token_id: string | null;
   shares: string | number | null;
@@ -119,6 +126,7 @@ export async function readCurrentWalletPositionModel(params: {
   billingAccountId: string;
   walletAddress: string;
   capturedAt: Date;
+  mode?: "live" | "paper";
 }): Promise<CurrentWalletPositionReadModel> {
   const rows = normalizeRows<CurrentPositionRow>(
     await params.db.execute(sql`
@@ -127,6 +135,7 @@ export async function readCurrentWalletPositionModel(params: {
         FROM poly_trader_wallets w
         WHERE lower(w.wallet_address) = lower(${params.walletAddress})
           AND w.kind IN ('cogni_wallet', 'paper_wallet')
+          AND (${params.mode ?? null}::text IS NULL OR w.kind = ${params.mode === 'paper' ? 'paper_wallet' : 'cogni_wallet'})
           AND w.active_for_research = true
           AND w.disabled_at IS NULL
       ), canonical_wallet_identity AS (
@@ -193,6 +202,7 @@ export async function readCurrentWalletPositionModel(params: {
       ), position_candidates AS (
         SELECT
           p.*,
+          CASE WHEN w.kind = 'paper_wallet' THEN 'paper' ELSE 'live' END AS position_mode,
           lower(p.condition_id) AS condition_key,
           row_number() OVER (
             PARTITION BY lower(p.condition_id), p.token_id
@@ -205,11 +215,15 @@ export async function readCurrentWalletPositionModel(params: {
         SELECT *
         FROM position_candidates p
         WHERE identity_rank = 1
-          AND ${liveCurrentPositionSql("p")}
+          AND p.last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND (${liveCurrentPositionSql("p")}
+            OR (p.shares > 0 AND p.raw->>'redeemable' = 'true'
+              AND p.last_observed_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes'))
       )
       SELECT
         lower(p.condition_id) AS condition_id,
         p.token_id,
+        p.position_mode,
         p.shares,
         p.cost_basis_usdc,
         p.current_value_usdc,
@@ -318,8 +332,11 @@ export async function readCurrentWalletPositionModel(params: {
     `)
   );
 
+  const metadataKey = (row: CurrentPositionRow): PositionMetadataKey => ({ conditionId: row.condition_id ?? "", tokenId: row.token_id ?? "", walletAddress: params.walletAddress, mode: params.mode ?? row.position_mode ?? "live" as const });
+  const accountScope = { billingAccountId: params.billingAccountId };
+  const metadata = await readPositionMetadata({ accountScope, db: params.db, keys: rows.map(metadataKey), capturedAt: params.capturedAt.toISOString() });
   const positions = rows.flatMap((row) =>
-    rowToExecutionPosition(row, params.capturedAt)
+    rowToExecutionPosition(row, params.capturedAt).map(position => ({ ...position, ...positionMetadataDisplay(metadata.get(positionMetadataRequestKey(metadataKey(row), accountScope) ?? "")) }))
   );
   const syncTimes = rows
     .map(
@@ -468,30 +485,7 @@ function rowToExecutionPosition(
       positionId: `${row.condition_id}:${row.token_id}`,
       conditionId: row.condition_id.toLowerCase(),
       asset: row.token_id,
-      // `??` only falls through on null/undefined, so a Gamma row that
-      // landed with `marketTitle = ""` would render as empty instead of
-      // hitting the JSONB fallback. `nonEmpty` collapses both null and ""
-      // to undefined; mirrors the SQL `NULLIF(pmm.col, '')` pattern used
-      // in `market-exposure-service.ts`. The raw_* fallbacks are the SQL
-      // scalar projections of the old `raw->>` reads (same values).
-      marketTitle:
-        nonEmpty(row.metadata_market_title) ??
-        optionalText(row.raw_title) ??
-        "Polymarket",
-      eventTitle:
-        nonEmpty(row.metadata_event_title) ??
-        optionalText(row.raw_event_title) ??
-        null,
-      marketSlug:
-        nonEmpty(row.metadata_market_slug) ??
-        optionalText(row.raw_slug) ??
-        null,
-      eventSlug:
-        nonEmpty(row.metadata_event_slug) ??
-        optionalText(row.raw_event_slug) ??
-        null,
-      marketUrl: marketUrl(row.raw_event_slug, row.raw_slug),
-      outcome: optionalText(row.raw_outcome) ?? "UNKNOWN",
+      ...positionMetadataDisplay(undefined),
       status,
       lifecycleState: row.redeem_lifecycle_state,
       openedAt,
@@ -595,16 +589,6 @@ function normalizeRows<T>(result: unknown): T[] {
   return [];
 }
 
-function marketUrl(
-  rawEventSlug: string | null,
-  rawSlug: string | null
-): string | null {
-  const eventSlug = optionalText(rawEventSlug);
-  const slug = optionalText(rawSlug);
-  if (!eventSlug || !slug) return null;
-  return `https://polymarket.com/event/${eventSlug}/${slug}`;
-}
-
 function isoOrNull(value: Date | string | null): string | null {
   if (value === null) return null;
   const ms = value instanceof Date ? value.getTime() : Date.parse(value);
@@ -644,15 +628,6 @@ function numberFromText(value: string | null): number {
  */
 function optionalText(value: string | null): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-/**
- * Collapse null + empty-string to `undefined` so `??` chains can fall
- * through. Mirrors SQL `NULLIF(value, '')` for the metadata-table reads.
- */
-function nonEmpty(value: string | null): string | undefined {
-  if (value === null || value.length === 0) return undefined;
-  return value;
 }
 
 function positiveOrNull(value: number): number | null {

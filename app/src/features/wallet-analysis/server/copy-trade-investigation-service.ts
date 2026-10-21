@@ -23,12 +23,16 @@ import type {
   PolyResearchCopyTradeInvestigationResponse,
 } from "@cogni/poly-node-contracts";
 import {
+  WalletExecutionPositionSchema,
   POLY_COPY_TRADE_INVESTIGATION_MAX_ACCOUNT_LEGS,
   POLY_COPY_TRADE_INVESTIGATION_MAX_LEGS_PER_PARTICIPANT,
   POLY_COPY_TRADE_INVESTIGATION_MAX_OUTCOMES,
   POLY_COPY_TRADE_INVESTIGATION_MAX_TARGETS,
 } from "@cogni/poly-node-contracts";
 import { type SQL, sql } from "drizzle-orm";
+
+import type { EconomicObservationV1 } from "./economic-observation-recovery";
+import { toSavedEconomicProof } from "./economic-position-read-model";
 
 type Db = { execute(query: SQL): Promise<unknown> };
 
@@ -232,6 +236,69 @@ export async function getCopyTradeInvestigationSummary(
   ) {
     return null;
   }
+
+  // Tenant/mode-bound exact-condition history; constituent bodies never leave SQL.
+  const proofRows =
+    query.mode === "paper"
+      ? []
+      : rowsOf<{
+          token_id: string;
+          observation: Omit<EconomicObservationV1, "constituents">;
+          source_record_count: number;
+          history_complete: boolean;
+        }>(
+          await db.execute(sql`
+    WITH owned_wallets AS MATERIALIZED (
+      SELECT DISTINCT w.id, lower(w.wallet_address) AS wallet_address
+      FROM poly_wallet_connections c
+      JOIN poly_trader_wallets w ON lower(w.wallet_address) = lower(c.funder_address)
+      WHERE c.billing_account_id = ${query.billing_account_id} AND c.revoked_at IS NULL
+        AND c.kind = 'privy_live' AND w.kind = 'cogni_wallet'
+    ), saved AS (
+      SELECT s.token_id, s.raw->'economicObservationV1' AS observation, s.captured_at AS saved_at, w.wallet_address
+      FROM owned_wallets w JOIN poly_trader_position_snapshots s ON s.trader_wallet_id = w.id
+      WHERE lower(s.condition_id) = lower(${conditionId}) AND s.captured_at <= ${capturedAt}::timestamptz
+        ${query.token_id ? sql`AND s.token_id = ${query.token_id}` : sql``}
+      UNION ALL
+      SELECT p.token_id, p.raw->'economicObservationV1', p.last_observed_at, w.wallet_address
+      FROM owned_wallets w JOIN poly_trader_current_positions p ON p.trader_wallet_id = w.id
+      WHERE lower(p.condition_id) = lower(${conditionId}) AND p.last_observed_at <= ${capturedAt}::timestamptz
+        ${query.token_id ? sql`AND p.token_id = ${query.token_id}` : sql``}
+    ), valid AS (
+      SELECT * FROM saved WHERE observation->>'version' = '1'
+        AND observation->>'tokenId' = token_id AND lower(observation->>'conditionId') = lower(${conditionId})
+        AND lower(observation->>'wallet') = wallet_address
+        AND observation->>'fetchedAt' <= ${capturedAt}
+        AND jsonb_typeof(observation->'constituents') = 'array'
+    ), latest AS (
+      SELECT DISTINCT ON (token_id) token_id, observation, saved_at
+      FROM valid ORDER BY token_id, observation->>'fetchedAt' DESC, saved_at DESC
+    ) SELECT token_id, observation - 'constituents' AS observation,
+      jsonb_array_length(observation->'constituents') AS source_record_count,
+      (observation->>'coverage' = 'complete' AND NOT EXISTS (
+        SELECT 1 FROM owned_wallets w JOIN poly_trader_fills f ON f.trader_wallet_id = w.id
+        WHERE lower(f.condition_id) = lower(${conditionId}) AND f.token_id = latest.token_id
+          AND f.observed_at > (latest.observation->>'windowEnd')::timestamptz
+          AND f.observed_at <= ${capturedAt}::timestamptz
+      )) AS history_complete
+    FROM latest ORDER BY token_id LIMIT 21
+  `),
+        );
+  const economicProofs = proofRows.slice(0, 20).flatMap((row) => {
+    if (!Array.isArray(row.observation.settlements)) return [];
+    const parsed = WalletExecutionPositionSchema.shape.economicProof
+      .unwrap()
+      .safeParse(
+        toSavedEconomicProof(
+          row.observation,
+          row.history_complete,
+          Number(row.source_record_count),
+        ),
+      );
+    return parsed.success
+      ? [{ mode: "live" as const, token_id: row.token_id, proof: parsed.data }]
+      : [];
+  });
 
   const marketRows = rowsOf<MarketRow>(await db.execute(sql`
     SELECT event_title, event_slug, market_title, market_slug, end_date, fetched_at
@@ -588,6 +655,8 @@ export async function getCopyTradeInvestigationSummary(
       truncated: accountPositionTruncated,
     },
     targets,
+    economic_proofs: economicProofs,
+    economic_proofs_truncated: proofRows.length > 20,
     aggregates: {
       fills: {
         count: int(fillAggregate?.count),

@@ -19,6 +19,11 @@
  *     `pLimit(4)` (~24 rps); higher concurrency hits a 37% 429 cliff.
  *   - BATCH_BOUNDED: per-tick batch capped (default 100) to bound runtime.
  *     Remaining stale conditions roll over to the next tick.
+ *   - ACCOUNT_RECOVERY_FIRST: unresolved holdings of active trading wallets
+ *     precede research history, so a terminal transition can unblock the
+ *     account position observer without waiting for the historical sweep.
+ *   - FINAL_IS_FINAL: complete terminal facts are never polled again. The
+ *     monotone writer cannot change them; refreshing them only burns budget.
  *   - BACKFILL_ONCE: when `includeBackfill=true` the tick drops the 30-day
  *     rollup filter and walks the full historical condition set;
  *     callers flip the flag back to false after the first complete run.
@@ -48,6 +53,7 @@ type Db =
   | PostgresJsDatabase<Record<string, unknown>>;
 
 const DEFAULT_BATCH_SIZE = 100;
+const UPSTREAM_CONCURRENCY = 4;
 
 // TODO(task.5014, PR #1245): replace inline dedupe with `dedupeByKey`
 // from `./observation-helpers` once CP2 lands on main.
@@ -80,6 +86,7 @@ export interface MarketOutcomeTickResult {
 interface ConditionTokenRow {
   condition_id: string;
   token_id: string;
+  account_holding?: boolean;
 }
 
 interface UpsertRow {
@@ -95,7 +102,11 @@ export async function runMarketOutcomeTick(
   deps: MarketOutcomeTickDeps
 ): Promise<MarketOutcomeTickResult> {
   const log = deps.logger.child({ component: "trader-market-outcome" });
-  const batchSize = deps.batchSize ?? DEFAULT_BATCH_SIZE;
+  const startedAt = Date.now();
+  const requestedBatchSize = deps.batchSize ?? DEFAULT_BATCH_SIZE;
+  const batchSize = Number.isFinite(requestedBatchSize)
+    ? Math.max(1, Math.min(DEFAULT_BATCH_SIZE, Math.floor(requestedBatchSize)))
+    : DEFAULT_BATCH_SIZE;
   const includeBackfill = deps.includeBackfill ?? false;
 
   const rollupFilter = includeBackfill
@@ -120,27 +131,46 @@ export async function runMarketOutcomeTick(
       SELECT lower(condition_id) AS condition_id, token_id
       FROM poly_trader_fill_rollups_daily
       ${rollupFilter}
+    ), account_holdings AS (
+      SELECT DISTINCT lower(p.condition_id) AS condition_id, p.token_id
+      FROM poly_trader_current_positions p
+      JOIN poly_trader_wallets w ON w.id = p.trader_wallet_id
+      WHERE p.active = true
+        AND w.kind = 'cogni_wallet'
+        AND w.active_for_research = true
+        AND w.disabled_at IS NULL
     ), outcome_freshness AS (
-      SELECT lower(condition_id) AS condition_id, token_id, max(updated_at) AS updated_at
+      SELECT lower(condition_id) AS condition_id, token_id,
+        max(updated_at) AS updated_at,
+        bool_or(outcome IN ('winner', 'loser') AND resolved_at IS NOT NULL) AS terminal
       FROM poly_market_outcomes
       GROUP BY lower(condition_id), token_id
     )
-    SELECT a.condition_id, a.token_id
+    SELECT a.condition_id, a.token_id, h.token_id IS NOT NULL AS account_holding
     FROM active_conditions a
     LEFT JOIN outcome_freshness m
       ON m.condition_id = a.condition_id
      AND m.token_id = a.token_id
-    WHERE ${stalenessFilter}
+    LEFT JOIN account_holdings h
+      ON h.condition_id = a.condition_id
+     AND h.token_id = a.token_id
+    WHERE (${stalenessFilter})
+      AND NOT COALESCE(m.terminal, false)
     -- Oldest stale (or never-resolved) rows first so the historical
     -- backfill drains progressively across ticks. Previously
     -- ORDER BY condition_id meant the tick re-processed the same
     -- alphabetically-first 100 every cycle, capping resolution at
     -- one batch per pod restart regardless of how long the job ran.
-    ORDER BY m.updated_at ASC NULLS FIRST, a.condition_id, a.token_id
+    -- A newly resolved, still-held loser can block the entire account's
+    -- position publication until this writer records its terminal outcome.
+    -- Spend the existing bounded budget there before research/backfill.
+    ORDER BY (h.token_id IS NOT NULL) DESC,
+      m.updated_at ASC NULLS FIRST, a.condition_id, a.token_id
     LIMIT ${batchSize}
   `)) as unknown as ConditionTokenRow[];
 
   const totalConditions = candidates.length;
+  const selectionMs = Date.now() - startedAt;
 
   if (totalConditions === 0) {
     log.info(
@@ -152,13 +182,18 @@ export async function runMarketOutcomeTick(
         upserted: 0,
         errors: 0,
         backfill: includeBackfill,
+        account_holding_tokens: 0,
+        upstream_request_limit: batchSize,
+        upstream_concurrency_limit: UPSTREAM_CONCURRENCY,
+        selection_ms: selectionMs,
+        duration_ms: Date.now() - startedAt,
       },
       "market outcome tick — no stale conditions"
     );
     return { conditions: 0, polled: 0, upserted: 0, errors: 0 };
   }
 
-  const upstreamLimit = pLimit(4);
+  const upstreamLimit = pLimit(UPSTREAM_CONCURRENCY);
   let polled = 0;
   let errors = 0;
   const distinctConditions = Array.from(
@@ -299,6 +334,12 @@ export async function runMarketOutcomeTick(
       upserted,
       errors,
       backfill: includeBackfill,
+      account_holding_tokens: candidates.filter((row) => row.account_holding)
+        .length,
+      upstream_request_limit: batchSize,
+      upstream_concurrency_limit: UPSTREAM_CONCURRENCY,
+      selection_ms: selectionMs,
+      duration_ms: Date.now() - startedAt,
     },
     "market outcome tick complete"
   );

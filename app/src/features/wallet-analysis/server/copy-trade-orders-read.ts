@@ -4,10 +4,10 @@
 /**
  * Module: `@features/wallet-analysis/server/copy-trade-orders-read`
  * Purpose: The grant-aware replacement read behind `GET /api/v1/poly/copy-trade/orders`.
- *   One bounded `SELECT` over `poly_copy_trade_fills` on the dispatcher's
+ *   One bounded ledger page over `poly_copy_trade_fills` on the dispatcher's
  *   app-role tenant transaction, plus the `toContractRow` mapping moved here
  *   from the route so the route keeps zero queries of its own.
- * Scope: One query + one pure mapper. No authorization, no HTTP, no container.
+ * Scope: Bounded page + shared saved metadata + pure mapper. No authorization, no HTTP, no container.
  * Invariants:
  *   - NEVER_EXTEND_THE_FROZEN_LEDGER — `features/trading/order-ledger.types.ts`
  *     and `features/trading/index.ts` are port-frozen `exact`/P1, and
@@ -42,16 +42,13 @@
  *   - CANONICAL_MARKET_IDENTITY — the bounded ledger page resolves the bare
  *     condition id through `poly_market_metadata`; saved metadata wins over
  *     legacy display attributes without adding an upstream render call.
- * Side-effects: IO (one SELECT).
+ * Side-effects: IO (bounded DB-only SELECTs).
  * Links: task.1791070959, story.5004, docs/spec/capability-plane.md
  * @public
  */
 
 import { polyCopyTradeFills } from "@cogni/poly-db-schema/copy-trade";
-import {
-  polyMarketMetadata,
-  polyTraderCurrentPositions,
-} from "@cogni/poly-db-schema/trader-activity";
+
 import type {
   PolyCopyTradeOrderRow,
   PolyCopyTradeOrdersInput,
@@ -60,6 +57,12 @@ import type {
 import { and, eq, sql } from "drizzle-orm";
 
 import type { AgentGrantTransaction } from "@/features/agent-grants/authorization";
+import { derivePaperAccountAddress } from "@/features/paper-accounts";
+import {
+  type PositionMetadataKey,
+  positionMetadataRequestKey,
+  readPositionMetadata,
+} from "./position-metadata-read";
 
 /**
  * Hard ceiling on one page, enforced here rather than at the transport. The
@@ -303,44 +306,8 @@ export async function listCopyTradeOrdersForAccount(
         f.mode AS "mode",
         f.shares AS "shares",
         f.attributes AS "attributes",
-        COALESCE(metadata.market_title, position.market_title)
-          AS "metadataMarketTitle"
+        NULL::text AS "metadataMarketTitle"
       FROM ordered_fills f
-      LEFT JOIN LATERAL (
-        SELECT NULLIF(candidate.market_title, '') AS market_title
-        FROM ${polyMarketMetadata} candidate
-        WHERE lower(candidate.condition_id) = lower(COALESCE(
-          NULLIF(f.attributes->>'condition_id', ''),
-          NULLIF(regexp_replace(
-            f.market_id,
-            '^prediction-market:polymarket:',
-            ''
-          ), '')
-        ))
-        ORDER BY candidate.fetched_at DESC, candidate.condition_id
-        LIMIT 1
-      ) metadata ON TRUE
-      -- Position-gap snapshots intentionally carry structural identity only.
-      -- When the metadata projector has not materialized this condition yet,
-      -- recover the same persisted Data-API title from the bounded current-
-      -- position read model. Token identity and the already-bounded ledger page
-      -- constrain each lookup; no upstream request occurs on dashboard render.
-      LEFT JOIN LATERAL (
-        SELECT NULLIF(candidate.raw->>'title', '') AS market_title
-        FROM ${polyTraderCurrentPositions} candidate
-        WHERE lower(candidate.condition_id) = lower(COALESCE(
-          NULLIF(f.attributes->>'condition_id', ''),
-          NULLIF(regexp_replace(
-            f.market_id,
-            '^prediction-market:polymarket:',
-            ''
-          ), '')
-        ))
-          AND candidate.token_id = NULLIF(f.attributes->>'token_id', '')
-          AND NULLIF(candidate.raw->>'title', '') IS NOT NULL
-        ORDER BY candidate.active DESC, candidate.last_observed_at DESC
-        LIMIT 1
-      ) position ON metadata.market_title IS NULL
       ORDER BY f.observed_at DESC, f.target_id DESC, f.fill_id DESC
     `),
   );
@@ -348,5 +315,34 @@ export async function listCopyTradeOrdersForAccount(
   // One clock read for the whole page so two rows in the same response cannot
   // report staleness against different "now"s.
   const now = Date.now();
-  return { orders: rows.map((row) => toContractRow(row, now)) };
+  const accountScope = { billingAccountId };
+  const key = (row: OrdersRow): PositionMetadataKey => ({
+    conditionId:
+      typeof row.attributes?.condition_id === "string"
+        ? row.attributes.condition_id
+        : row.marketId.replace(/^prediction-market:polymarket:/, ""),
+    tokenId: row.attributes?.token_id,
+    walletAddress:
+      row.mode === "paper" ? derivePaperAccountAddress(billingAccountId) : null,
+    mode: row.mode === "paper" ? "paper" : "live",
+  });
+  const metadata = await readPositionMetadata({
+    db: tx,
+    accountScope,
+    keys: rows.map(key),
+    capturedAt: new Date(now).toISOString(),
+  });
+  return {
+    orders: rows.map((row) => {
+      const selected = metadata.get(
+        positionMetadataRequestKey(key(row), accountScope) ?? "",
+      );
+      const result = toContractRow(row, now);
+      return {
+        ...result,
+        market_title: selected?.marketTitle ?? null,
+        outcome: selected?.outcome ?? null,
+      };
+    }),
+  };
 }
