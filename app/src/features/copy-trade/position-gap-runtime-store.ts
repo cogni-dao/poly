@@ -1737,7 +1737,7 @@ export class PositionGapRuntimeStore {
 		});
 	}
 
-	/** Recover terminal ledger evidence even when its callback raced actor boot. */
+	/** Recover LIVE CLOB terminals; PAPER requires accepted native receipt proof. */
 	async reconcileLedgerTerminals(
 		scope: PositionGapRuntimeScope,
 	): Promise<number> {
@@ -1763,6 +1763,7 @@ export class PositionGapRuntimeStore {
 					),
 					eq(polyPositionGapActions.targetId, scope.targetId),
 					eq(polyPositionGapActions.kind, "buy"),
+					eq(polyCopyTradeFills.mode, "live"),
 					inArray(polyPositionGapActions.status, [
 						"reserved",
 						"ledgered",

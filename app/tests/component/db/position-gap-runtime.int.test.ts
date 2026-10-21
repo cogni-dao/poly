@@ -3375,6 +3375,111 @@ describe("position-gap runtime persistence", () => {
 		);
 	});
 
+	it.each([
+		{ mode: "live", reason: "clob_not_found" },
+		{ mode: "paper", reason: "clob_not_found" },
+		{ mode: "live", reason: "never_placed" },
+		{ mode: "paper", reason: "never_placed" },
+	] as const)("legacy $reason releases only LIVE evidence, mode=$mode", async ({ mode, reason }) => {
+		const db = getSeedDb();
+		const targetWallet = `0x${randomUUID().replaceAll("-", "").padStart(40, "c")}` as `0x${string}`;
+		const targetId = targetIdFromWallet(targetWallet), runId = randomUUID(), cohortId = randomUUID(), actionId = randomUUID();
+		const client = `legacy-${randomUUID()}`;
+		const canceled = reason === "clob_not_found";
+		const filledShares = canceled ? 4 : 0, filledUsdc = canceled ? 2 : 0;
+		const scope = { billingAccountId: accountA, createdByUserId: ownerA, targetId };
+		await db.insert(polyPositionGapRuns).values({ id: runId, ...scope,
+			budgetUsdc: "10", walletCashUsdcAtStart: "10", status: "completed" });
+		await db.insert(polyPositionGapCohorts).values({ id: cohortId, ...scope,
+			cohortKey: client, sourceKind: "activation", sourceConfigRevision: "rev",
+			sourceSnapshotId: "snapshot", sourceSnapshotHash: "hash", sourceSnapshotAsOf: asOf,
+			sourceProvenance: {}, createdRunId: runId, conditionId: client, tokenId: client,
+			marketId: client, outcome: "0", targetDeltaShares: "10", scaleAtCreation: "1",
+			allowedMirrorShares: "10", initialAllowedMirrorShares: "10", benchmarkTargetVwap: "0.5",
+			acquiredShares: String(filledShares), openOrderShares: String(10 - filledShares),
+			remainingShares: "0", status: "resting" });
+		await db.insert(polyPositionGapActions).values({ id: actionId, ...scope, runId, cohortId,
+			cohortKey: client, actionKey: client, kind: "buy", conditionId: client, tokenId: client,
+			marketId: client, outcome: "0", desiredShares: "10", filledShares: String(filledShares),
+			filledUsdc: String(filledUsdc), notionalUsdc: "5", limitPrice: "0.5", plannerAction: {},
+			clientOrderId: client, orderId: canceled ? `order-${client}` : null,
+			status: canceled ? "partial" : "submitting" });
+		await db.insert(polyPositionGapReservations).values({ ...scope, cohortId, buyActionId: actionId,
+			budgetNotionalUsdc: "5", executorCashGuardAtomic: "5500000", cashGuardSource: "test" });
+		await db.insert(polyCopyTradeFills).values({ ...scope, fillId: client, marketId: client,
+			observedAt: asOf, clientOrderId: client, orderId: canceled ? `order-${client}` : null,
+			mode, status: canceled ? "canceled" : "error", attributes: { reason } });
+		const read = async () => {
+			const [action] = await db.select().from(polyPositionGapActions).where(eq(polyPositionGapActions.id, actionId));
+			const [reservation] = await db.select().from(polyPositionGapReservations).where(eq(polyPositionGapReservations.buyActionId, actionId));
+			const [cohort] = await db.select().from(polyPositionGapCohorts).where(eq(polyPositionGapCohorts.id, cohortId));
+			return { action, reservation, cohort };
+		};
+		const before = await read();
+		const store = new PositionGapRuntimeStore(db);
+		expect(await store.reconcileLedgerTerminals(scope)).toBe(mode === "live" ? 1 : 0);
+		const after = await read();
+		// A new process gets the same decision; no callback or in-memory receipt exists.
+		expect(await new PositionGapRuntimeStore(db).reconcileLedgerTerminals(scope)).toBe(0);
+		expect(await read()).toEqual(after);
+		if (mode === "live") {
+			expect(after.action?.status).toBe(canceled ? "canceled" : "rejected");
+			expect(after.action?.errorCode).toBe(canceled ? "clob_not_found" : "placement_rejected");
+			expect(after.action?.completedAt).not.toBeNull();
+			expect(Number(after.action?.filledShares)).toBe(filledShares);
+			expect(Number(after.action?.filledUsdc)).toBe(filledUsdc);
+			expect(Number(after.reservation?.releasedBudgetUsdc)).toBe(5 - filledUsdc);
+			expect(after.reservation?.releasedCashGuardAtomic).toBe("5500000");
+			expect(after.reservation?.state).toBe(canceled ? "active" : "released");
+			expect(after.reservation?.releaseReason).toBe(canceled ? "clob_not_found" : "known_rejected");
+			expect(Number(after.cohort?.acquiredShares)).toBe(filledShares);
+			expect(Number(after.cohort?.openOrderShares)).toBe(0);
+			expect(Number(after.cohort?.remainingShares)).toBe(10 - filledShares);
+			return;
+		}
+		expect(after).toEqual(before);
+		// Exercise real actor startup and disable, not just a direct store call.
+		// Typed not-found is still not native PAPER cancellation proof. No saved
+		// snapshot exists, so safe stop must hold rather than invent a release.
+		const restarted = new PositionGapRuntimeStore(db);
+		const sweeps = vi.spyOn(restarted, "reconcileLedgerTerminals");
+		const unavailable = vi.fn(async () => { throw new Error("controlled unavailable snapshot"); });
+		const actor = startPositionGapActor({
+			implementationRevision: "f".repeat(40), targetRowId: randomUUID(), isAssignmentCurrent: async () => true,
+			scope, targetWallet, configRevision: client, configuredBudgetUsdc: 10,
+			positionGapBudgetGroup: { positionGapTargetCount: 1, explicitBudgetTotalUsdc: 10,
+				automaticTargetCount: 0, unbudgetedTargetCount: 0 },
+			source: { fetchSince: unavailable },
+			refresh: new PositionGapTargetRefreshCoordinator({ readFresh: () => null,
+				refreshFull: unavailable, refreshDirty: unavailable, invalidate: () => {} }),
+			store: restarted, ledger: createOrderLedger({ db, logger: noopLogger as never }),
+			getExecutionMode: async () => "paper", executionForMode: () => ({ placeBuy: unavailable,
+				cancelBuy: unavailable, getBuy: async () => ({ status: "not_found" as const }),
+				getMarketConstraints: unavailable, listOpenOrders: unavailable }),
+			fillEvidence: { getWalletAddress: unavailable, listActivity: unavailable, listPositions: unavailable },
+			getWalletCashUsdc: unavailable, getTargetCashUsdc: unavailable,
+			getAuthoritativeHoldings: unavailable, publishTargetSnapshot: unavailable, logger: noopLogger as never,
+		});
+		try {
+			await vi.waitFor(() => expect(sweeps).toHaveBeenCalled());
+			await expect(actor.stop()).rejects.toThrow(canceled
+				? "cannot audit safety cancellation without prior snapshot"
+				: "cannot safely stop position-gap with unresolved");
+			expect(sweeps.mock.calls.length).toBeGreaterThanOrEqual(2);
+			const held = await read();
+			expect(held.reservation).toEqual(before.reservation);
+			expect(held.cohort).toEqual(before.cohort);
+			expect(held.action?.status).toBe(canceled ? "partial" : "ambiguous");
+			expect(held.action?.filledShares).toBe(before.action?.filledShares);
+			expect(held.action?.filledUsdc).toBe(before.action?.filledUsdc);
+			expect(held.action?.notionalUsdc).toBe(before.action?.notionalUsdc);
+			expect(held.action?.completedAt).toBeNull();
+		} finally {
+			await actor.stop().catch(() => {});
+			sweeps.mockRestore();
+		}
+	});
+
 	it("consumes durable CLOB not_found before a stop retry and releases only unfilled", async () => {
 		const db = getSeedDb();
 		const store = new PositionGapRuntimeStore(db);
