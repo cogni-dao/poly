@@ -516,11 +516,14 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
               throw new Error("Missing executed projection plan");
             type PlanNode = Record<string, unknown> & { Plans?: PlanNode[] };
             const nodes: PlanNode[] = [];
-            const visit = (node: PlanNode): void => {
+            const paths = new Map<PlanNode, number[]>();
+            const visit = (node: PlanNode, path: number[]): void => {
               nodes.push(node);
-              for (const child of node.Plans ?? []) visit(child);
+              paths.set(node, path);
+              for (const [index, child] of (node.Plans ?? []).entries())
+                visit(child, [...path, index]);
             };
-            visit(detail.Plan as PlanNode);
+            visit(detail.Plan as PlanNode, []);
             // Numeric timings/costs/loops only: never log predicates, SQL, bindings,
             // account IDs, addresses or row data from the real app-role plan.
             const metric = (
@@ -538,21 +541,59 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
               /^[A-Za-z][A-Za-z0-9_ .-]{0,119}$/.test(value)
                 ? value
                 : null;
-            // Keep inclusive parent context and physical access evidence within
-            // the same 24-node budget. Object identity deduplicates overlap.
-            const rankedNodes = [...nodes].sort(
+            // Search the whole plan: materialized CTE definitions can be separate
+            // InitPlans, not descendants of their consumers. Products rank work;
+            // they are not exclusive timings or independently observed pair counts.
+            const weighted = (node: PlanNode, name: string): number =>
+              (metric(node, "Actual Loops") ?? 0) * (metric(node, name) ?? 0);
+            const criticalRoots = [
+              "CTE classified_raw",
+              "CTE position_flows",
+              "CTE fill_groups",
+              "CTE driven_keys",
+            ]
+              .map((name) => nodes.find((node) => node["Subplan Name"] === name))
+              .filter((node): node is PlanNode => node !== undefined);
+            const joins = nodes.filter((node) => node["Join Type"] !== undefined);
+            const cteScans = nodes.filter((node) => node["CTE Name"] !== undefined);
+            const rankedJoins = [...joins].sort(
               (a, b) =>
-                (metric(b, "Actual Total Time") ?? 0) *
-                  (metric(b, "Actual Loops") ?? 0) -
-                (metric(a, "Actual Total Time") ?? 0) *
-                  (metric(a, "Actual Loops") ?? 0),
+                weighted(b, "Rows Removed by Join Filter") -
+                  weighted(a, "Rows Removed by Join Filter") ||
+                weighted(b, "Actual Rows") +
+                  weighted(b, "Rows Removed by Join Filter") -
+                  weighted(a, "Actual Rows") -
+                  weighted(a, "Rows Removed by Join Filter") ||
+                weighted(b, "Actual Total Time") -
+                  weighted(a, "Actual Total Time"),
             );
+            const rankedCteScans = [...cteScans].sort(
+              (a, b) =>
+                weighted(b, "Actual Rows") +
+                  weighted(b, "Rows Removed by Filter") -
+                  weighted(a, "Actual Rows") -
+                  weighted(a, "Rows Removed by Filter") ||
+                weighted(b, "Actual Total Time") -
+                  weighted(a, "Actual Total Time"),
+            );
+            const remainingLogical = [...new Set([...joins, ...cteScans])].sort(
+              (a, b) =>
+                weighted(b, "Actual Rows") +
+                  weighted(b, "Rows Removed by Join Filter") +
+                  weighted(b, "Rows Removed by Filter") -
+                  weighted(a, "Actual Rows") -
+                  weighted(a, "Rows Removed by Join Filter") -
+                  weighted(a, "Rows Removed by Filter") ||
+                weighted(b, "Actual Total Time") -
+                  weighted(a, "Actual Total Time"),
+            );
+            // Object identity deduplicates overlap; spare slots stay logical.
             const selectedNodes = [...new Set([
-              ...rankedNodes.slice(0, 12),
-              ...rankedNodes.filter(node =>
-                node["Relation Name"] !== undefined || node["Index Name"] !== undefined,
-              ).slice(0, 12),
-            ])];
+              ...criticalRoots,
+              ...rankedJoins.slice(0, 10),
+              ...rankedCteScans.slice(0, 10),
+              ...remainingLogical,
+            ])].slice(0, 24);
             const actual = {
               planningMs: metric(detail, "Planning Time"),
               executionMs: metric(detail, "Execution Time"),
@@ -578,11 +619,26 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
                 : null,
               nodeCount: nodes.length,
               truncated: selectedNodes.length < nodes.length,
+              criticalRootExpected: 4,
+              criticalRootFound: criticalRoots.length,
+              criticalRootEmitted: criticalRoots.filter((node) =>
+                selectedNodes.includes(node),
+              ).length,
+              joinCandidateCount: joins.length,
+              joinEmittedCount: joins.filter((node) =>
+                selectedNodes.includes(node),
+              ).length,
+              cteScanCandidateCount: cteScans.length,
+              cteScanEmittedCount: cteScans.filter((node) =>
+                selectedNodes.includes(node),
+              ).length,
               // Parent timings include child work; never sum these as
               // exclusive or uniquely attributable costs.
               nodes: selectedNodes
                 .map((node) => ({
                   node: label(node["Node Type"]),
+                  path: paths.get(node),
+                  alias: label(node.Alias),
                   relation: label(node["Relation Name"]),
                   index: label(node["Index Name"]),
                   cte: label(node["CTE Name"]),
