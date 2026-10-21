@@ -19,7 +19,7 @@ import {
   readAlgorithmOriginProjection,
   unavailableOriginCoverage,
 } from "./algorithm-origin-read-model";
-import { readEconomicPositionProjection } from "./economic-position-read-model";
+import { type EconomicPositionReadDiagnostics, readEconomicPositionProjection } from "./economic-position-read-model";
 import {
   type BoundedMarketExposureRead,
   buildBoundedMarketExposureGroups,
@@ -62,7 +62,7 @@ type TradeActivityRow = {
   n: string | number | null;
 };
 
-export type WalletDashboardReadDiagnostics = ComparisonReadDiagnostics & {
+export type WalletDashboardReadDiagnostics = ComparisonReadDiagnostics & EconomicPositionReadDiagnostics & {
   comparisonPath?:
     | "cache_hit"
     | "unknown"
@@ -198,6 +198,7 @@ export async function readTenantWalletDashboardIn(
       connectionKind: connection.connectionKind,
       capturedAt: capturedAtDate,
       interval: input.interval,
+      ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
     })
   );
   const originRead = economicRead.ok
