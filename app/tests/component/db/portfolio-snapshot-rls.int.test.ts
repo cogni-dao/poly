@@ -554,6 +554,14 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
             ]
               .map((name) => nodes.find((node) => node["Subplan Name"] === name))
               .filter((node): node is PlanNode => node !== undefined);
+            const directChildren = [...new Set([
+              "CTE fill_groups",
+              "CTE position_flows",
+              "CTE classified_raw",
+              "CTE driven_keys",
+            ].flatMap((name) =>
+              criticalRoots.find((node) => node["Subplan Name"] === name)?.Plans ?? [],
+            ))];
             const joins = nodes.filter((node) => node["Join Type"] !== undefined);
             const cteScans = nodes.filter((node) => node["CTE Name"] !== undefined);
             const rankedJoins = [...joins].sort(
@@ -590,8 +598,9 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
             // Object identity deduplicates overlap; spare slots stay logical.
             const selectedNodes = [...new Set([
               ...criticalRoots,
-              ...rankedJoins.slice(0, 10),
-              ...rankedCteScans.slice(0, 10),
+              ...directChildren.slice(0, 8),
+              ...rankedJoins.slice(0, 6),
+              ...rankedCteScans.slice(0, 6),
               ...remainingLogical,
             ])].slice(0, 24);
             const actual = {
@@ -622,6 +631,10 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
               criticalRootExpected: 4,
               criticalRootFound: criticalRoots.length,
               criticalRootEmitted: criticalRoots.filter((node) =>
+                selectedNodes.includes(node),
+              ).length,
+              directChildCandidateCount: directChildren.length,
+              directChildEmittedCount: directChildren.filter((node) =>
                 selectedNodes.includes(node),
               ).length,
               joinCandidateCount: joins.length,
