@@ -50,7 +50,7 @@ Per DATABASE_RLS_SPEC.md design decision 7: runtime app uses explicit DSNs, no U
 **Direct imports (not in barrel):**
 
 - `db-url.ts`: `buildDatabaseUrl`, `DbEnvInput` — tooling only
-- `order-commitment-sql.ts`: persisted commitment SQL expression; callers apply their own lifecycle/window filters
+- `order-commitment-sql.ts`: `reservedIntentUsdc`, `nonExecutionProven`, `finalCancellationProven` — persisted commitment and release-proof SQL expressions; callers apply their own lifecycle/window filters
 
 **Files considered API:** index.ts (barrel), db-url.ts (tooling)
 **Routes/CLI:** none

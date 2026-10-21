@@ -26,7 +26,7 @@ const acceptedReservation = sql`CASE
     AND COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '0')::numeric NOT IN ('NaN'::numeric, 'Infinity'::numeric)
     THEN COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '0')::numeric
   ELSE ('invalid_fill_' || ${polyCopyTradeFills.clientOrderId})::numeric END`;
-const nonExecutionProven = sql`(
+export const nonExecutionProven = sql`(
   ${polyCopyTradeFills.orderId} IS NULL AND ${acceptedReservation} = 0
   AND COALESCE(${polyCopyTradeFills.shares}, 0) <= 0
   AND ${polyCopyTradeFills.status} IN ('pending','error','canceled')
@@ -41,7 +41,7 @@ const finalObservedReservation = sql`CASE
     AND (${polyCopyTradeFills.attributes}->'final_order_observation'->>'filled_size_usdc')::numeric NOT IN ('NaN'::numeric, 'Infinity'::numeric)
     THEN (${polyCopyTradeFills.attributes}->'final_order_observation'->>'filled_size_usdc')::numeric
   ELSE ('invalid_final_fill_' || ${polyCopyTradeFills.clientOrderId})::numeric END`;
-const finalCancellationProven = sql`(
+export const finalCancellationProven = sql`(
   ${polyCopyTradeFills.orderId} IS NOT NULL
   AND ${polyCopyTradeFills.attributes}->'final_order_observation'->>'source' = 'venue_get_order'
   AND ${polyCopyTradeFills.attributes}->'final_order_observation'->>'order_id' = ${polyCopyTradeFills.orderId}

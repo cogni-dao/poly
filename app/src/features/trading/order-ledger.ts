@@ -46,7 +46,11 @@ import {
 } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { Logger } from "pino";
-import { reservedIntentUsdc } from "@/shared/db/order-commitment-sql";
+import {
+  finalCancellationProven,
+  nonExecutionProven,
+  reservedIntentUsdc,
+} from "@/shared/db/order-commitment-sql";
 
 import {
   AlreadyRestingError,
