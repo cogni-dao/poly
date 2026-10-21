@@ -53,10 +53,10 @@ vi.mock("@/app/_lib/auth/session", () => ({
   getSessionUser: vi.fn().mockResolvedValue(TEST_SESSION_USER_1),
 }));
 
-import * as listHandler from "@/app/api/v1/knowledge/route";
 import * as entryHandler from "@/app/api/v1/knowledge/[id]/route";
 import * as domainsHandler from "@/app/api/v1/knowledge/domains/route";
 import * as graphHandler from "@/app/api/v1/knowledge/graph/route";
+import * as listHandler from "@/app/api/v1/knowledge/route";
 
 const BEARER = { authorization: "Bearer cogni_ag_sk_v1_test.signature" };
 
@@ -117,6 +117,41 @@ describe("knowledge read routes — KNOWLEDGE_READ_REQUIRES_PRINCIPAL", () => {
         expect(body.id).toBe("entry-a");
       },
     });
+  });
+
+  it.each([
+    { id: "entry-a", useWhen: "Use when reviewing this entry." },
+    { id: "entry-b", useWhen: null },
+  ])("serializes the retrieval trigger for $id at the read boundary", async ({
+    id,
+    useWhen,
+  }) => {
+    const entry = await mockStore.getKnowledge(id);
+    if (!entry) throw new Error("Seeded entry is missing");
+    const getKnowledge = vi.spyOn(mockStore, "getKnowledge");
+    // The immutable 0.3.3 fake write path omits useWhen. Supply its typed
+    // read result only for projection coverage, not persistence proof.
+    if (useWhen !== null) {
+      getKnowledge.mockResolvedValueOnce({ ...entry, useWhen });
+    }
+    try {
+      await testApiHandler({
+        appHandler: entryHandler,
+        params: { id },
+        url: `/api/v1/knowledge/${id}`,
+        async test({ fetch }) {
+          const res = await fetch({ method: "GET", headers: BEARER });
+          expect(res.status).toBe(200);
+          const body = await res.json();
+          expect(body.id).toBe(id);
+          expect(body.useWhen).toBe(useWhen);
+        },
+      });
+      expect(getKnowledge).toHaveBeenCalledTimes(1);
+      expect(getKnowledge).toHaveBeenCalledWith(id);
+    } finally {
+      getKnowledge.mockRestore();
+    }
   });
 
   it("GET /knowledge/graph returns 200 + edges for a bearer agent (link-pulling)", async () => {
