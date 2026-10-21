@@ -19,7 +19,8 @@ import {
   readAlgorithmOriginProjection,
   unavailableOriginCoverage,
 } from "./algorithm-origin-read-model";
-import { type EconomicPositionReadDiagnostics, readEconomicPositionProjection } from "./economic-position-read-model";
+import { buildEconomicPositionProjectionQuery, type EconomicPositionReadDiagnostics, readEconomicPositionProjection } from "./economic-position-read-model";
+import { captureEconomicProjectionPlan, type EconomicProjectionPlanProbe } from "./economic-projection-plan";
 import {
   type BoundedMarketExposureRead,
   buildBoundedMarketExposureGroups,
@@ -70,6 +71,7 @@ export type WalletDashboardReadDiagnostics = ComparisonReadDiagnostics & Economi
     | "zero_identity"
     | "bundle"
     | "bundle_fallback";
+  economicPlanProbe?: EconomicProjectionPlanProbe;
   comparisonIdentityMs?: number;
   comparisonBundleTotalMs?: number;
   comparisonFallbackMarketMs?: number;
@@ -190,17 +192,32 @@ export async function readTenantWalletDashboardIn(
   const orderRead = await optionalRead(db, (savepoint) =>
     readOrderSummary(savepoint, input.billingAccountId, capturedAt)
   );
+  const economicInput = {
+    billingAccountId: input.billingAccountId,
+    walletAddress: address,
+    connectionKind: connection.connectionKind,
+    capturedAt: capturedAtDate,
+    interval: input.interval,
+  };
   const economicRead = await optionalRead(db, (savepoint) =>
     readEconomicPositionProjection({
+      ...economicInput,
       db: savepoint,
-      billingAccountId: input.billingAccountId,
-      walletAddress: address,
-      connectionKind: connection.connectionKind,
-      capturedAt: capturedAtDate,
-      interval: input.interval,
       ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
     })
   );
+  // The failed projection savepoint has already rolled back. A planning-only
+  // probe inherits this exact authorized actor/snapshot and cannot replace its result.
+  if (!economicRead.ok && input.diagnostics?.economicReadPhase === "projection" &&
+    (input.diagnostics.economicCauseCode === "57014" || input.diagnostics.economicErrorCode === "57014")) {
+    try {
+      recordDashboardDiagnostic(input.diagnostics, "economicPlanProbe",
+        await captureEconomicProjectionPlan(db, buildEconomicPositionProjectionQuery(economicInput)));
+    } catch {
+      // Optional diagnostics must never alter financial facts or read errors.
+      recordDashboardDiagnostic(input.diagnostics, "economicPlanProbe", { status: "failed", durationMs: null });
+    }
+  }
   const originRead = economicRead.ok
     ? await optionalRead(db, (savepoint) =>
         readAlgorithmOriginProjection({
