@@ -11,8 +11,7 @@
  *   `@core/redeem/transitions`); this adapter just persists what it's told.
  * Invariants:
  *   - REDEEM_DEDUP_IS_PERSISTED — `enqueue` writes through the
- *     `(funder_address, condition_id)` unique key and only revives skipped
- *     rows when the new input is a chain-authoritative winner.
+ *     `(funder_address, condition_id)` unique key without reviving existing rows.
  *   - SKIP_LOCKED_FOR_WORKER — concurrent `claimNextPending` callers never
  *     receive the same row.
  * Side-effects: IO (database operations).
@@ -41,8 +40,6 @@ import type {
 import { polyRedeemJobs, polySubscriptionCursors } from "@/shared/db";
 
 type Row = typeof polyRedeemJobs.$inferSelect;
-
-const STALE_CLAIM_RECLAIM_AFTER_MINUTES = 10;
 
 function mapRow(row: Row): RedeemJob {
   return {
@@ -84,8 +81,8 @@ export class DrizzleRedeemJobsAdapter implements RedeemJobsPort {
   async enqueue(input: EnqueueRedeemJobInput): Promise<EnqueueRedeemJobResult> {
     // UPSERT on the unique `(funder_address, condition_id)` key. ON CONFLICT
     // DO NOTHING + RETURNING gives back only the inserted row; if the row
-    // already existed, a current winner decision may revive stale terminal
-    // read-model rows before we fall back to SELECTing the existing id.
+    // already existed, return its id without resetting status or evidence.
+    // Re-acquisition and terminal recovery remain held rather than re-signed.
     const inserted = await this.db
       .insert(polyRedeemJobs)
       .values({
@@ -109,47 +106,6 @@ export class DrizzleRedeemJobsAdapter implements RedeemJobsPort {
     const insertedRow = inserted[0];
     if (insertedRow !== undefined) {
       return { jobId: insertedRow.id, alreadyExisted: false };
-    }
-
-    if (
-      input.lifecycleState === "winner" &&
-      (input.status === undefined || input.status === "pending")
-    ) {
-      const revived = await this.db
-        .update(polyRedeemJobs)
-        .set({
-          positionId: input.positionId,
-          outcomeIndex: input.outcomeIndex,
-          status: "pending",
-          flavor: input.flavor,
-          indexSet: input.indexSet,
-          collateralToken: input.collateralToken,
-          expectedShares: input.expectedShares,
-          expectedPayoutUsdc: input.expectedPayoutUsdc,
-          txHashes: sql`ARRAY[]::text[]`,
-          attemptCount: 0,
-          lastError: null,
-          errorClass: null,
-          lifecycleState: "winner",
-          receiptBurnObserved: null,
-          submittedAtBlock: null,
-          enqueuedAt: new Date(),
-          submittedAt: null,
-          confirmedAt: null,
-          abandonedAt: null,
-          updatedAt: new Date(),
-        })
-        .where(
-          sql`${polyRedeemJobs.funderAddress} = ${input.funderAddress}
-            AND ${polyRedeemJobs.conditionId} = ${input.conditionId}
-            AND ${polyRedeemJobs.status} IN ('skipped', 'confirmed', 'abandoned')`
-        )
-        .returning({ id: polyRedeemJobs.id });
-
-      const revivedRow = revived[0];
-      if (revivedRow !== undefined) {
-        return { jobId: revivedRow.id, alreadyExisted: true };
-      }
     }
 
     const existing = await this.db
@@ -187,9 +143,9 @@ export class DrizzleRedeemJobsAdapter implements RedeemJobsPort {
     // different tenants — workers for funder B simply skip past funder A's
     // locked rows rather than blocking on them.
     //
-    // `claimed` is normally an in-flight worker-owned state. It is also
-    // durable, so a pod restart between claim and submit can orphan a winner
-    // forever unless a later worker can reclaim old claims.
+    // Neither a failure nor an old claim proves submission did not happen.
+    // Hold both indefinitely; automatic retry and unsent-crash recovery are
+    // deliberately unavailable until authoritative evidence can resolve them.
     //
     // RETURNING is intentionally id-only: `db.execute(sql`…`)` yields raw
     // snake_case rows from postgres, but every consumer of `RedeemJob`
@@ -199,13 +155,7 @@ export class DrizzleRedeemJobsAdapter implements RedeemJobsPort {
     const result = await this.db.execute(sql`
       WITH next_job AS (
         SELECT id FROM ${polyRedeemJobs}
-        WHERE (
-            status IN ('pending', 'failed_transient')
-            OR (
-              status = 'claimed'
-              AND updated_at < now() - make_interval(mins => ${STALE_CLAIM_RECLAIM_AFTER_MINUTES})
-            )
-          )
+        WHERE status = 'pending'
           AND ${polyRedeemJobs.funderAddress} = ${funderAddress}
         ORDER BY enqueued_at ASC
         FOR UPDATE SKIP LOCKED

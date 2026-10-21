@@ -347,6 +347,10 @@ export async function redeemOfficialDepositWalletCtf(
     const outcome = await handle.wait();
     return outcome.transactionHash;
   } catch (error) {
+    // Retain the real provider ID for audit only: it is not a chain hash or
+    // durable automatic recovery protocol. Preserve the original error/cause.
+    const audit = `Relayer transactionId=${handle.transactionId}; chain hash unknown`;
+    if (error instanceof Error) error.message = `${error.message} (${audit})`;
     if (error instanceof TransactionFailedError) {
       throw new RedeemSubmissionError("submission_rejected", error.message, {
         cause: error,
@@ -354,7 +358,9 @@ export async function redeemOfficialDepositWalletCtf(
     }
     // No known chain hash: preserve polling failures as uncertain transport,
     // including UserInputError from a later read, never malformed preflight.
-    throw error;
+    throw error instanceof Error
+      ? error
+      : new Error(`${String(error)} (${audit})`, { cause: error });
   }
 }
 

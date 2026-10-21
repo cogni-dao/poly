@@ -574,28 +574,45 @@ describe("official Deposit Wallet legacy CTF redemption", () => {
 
 	it.each([
 		new TimeoutError("pending without hash"),
+		new TransportError("post-submit network"),
 		new UserInputError("later read failed"),
 		new RequestRejectedError("later poll forbidden", { status: 403 }),
 	])(
 		"does not mislabel post-submit polling as local invalid dispatch: %s",
 		async (error) => {
 			prepareGaslessTransactionMock.mockResolvedValue(workflow());
+			const originalCause = new Error("original polling cause");
+			Object.assign(error, { cause: originalCause });
 			waitMock.mockRejectedValue(error);
 			await expect(
 				redeemOfficialDepositWalletCtf(client as never, input),
 			).rejects.toBe(error);
+			expect(error.cause).toBe(originalCause);
+			expect(error).not.toHaveProperty("failureClass");
+			expect(error).not.toHaveProperty("transactionHash");
+			expect(error.message).toContain(
+				"Relayer transactionId=test-tx; chain hash unknown",
+			);
+			expect(error.message).not.toContain(TX_HASH);
+			expect(prepareGaslessTransactionMock).toHaveBeenCalledOnce();
+			expect(signTypedDataMock).toHaveBeenCalledOnce();
 			expect(waitMock).toHaveBeenCalledOnce();
 		},
 	);
 
 	it("bounds a terminal relayer handle failure without inventing a hash", async () => {
 		prepareGaslessTransactionMock.mockResolvedValue(workflow());
-		waitMock.mockRejectedValue(
-			new TransactionFailedError("terminal relayer failure"),
-		);
+		const error = new TransactionFailedError("terminal relayer failure");
+		waitMock.mockRejectedValue(error);
 		await expect(
 			redeemOfficialDepositWalletCtf(client as never, input),
-		).rejects.toMatchObject({ failureClass: "submission_rejected" });
+		).rejects.toMatchObject({
+			failureClass: "submission_rejected",
+			cause: error,
+			message: expect.stringContaining(
+				"Relayer transactionId=test-tx; chain hash unknown",
+			),
+		});
 	});
 
 	it("crosses actual pinned SDK preparation with controlled relayer transport", async () => {
