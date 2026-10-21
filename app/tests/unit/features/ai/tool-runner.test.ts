@@ -24,7 +24,8 @@ import {
   TEST_TOOL_CALL_ID,
   TEST_TOOL_NAME,
 } from "@tests/_fakes";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { WorkItemWriteOutcomeUnknownError } from "@cogni/work-items";
 import type {
   ToolCallResultEvent,
   ToolCallStartEvent,
@@ -373,5 +374,88 @@ describe("features/ai/tool-runner", () => {
       const startEvents = collector.getByType("tool_call_start");
       expect(startEvents).toHaveLength(0);
     });
+  });
+});
+
+describe("Red tool unknown-write receipt", () => {
+  it("returns and emits the same bounded nonretryable lookup, without replay", async () => {
+    const error = new WorkItemWriteOutcomeUnknownError(
+      "red-tool-op",
+      "ops/red-tool-op",
+      undefined,
+      "task.5278"
+    );
+    const execute = vi.fn().mockRejectedValue(error);
+    const bound = { ...createTestBoundToolRuntime(), exec: execute };
+    const collector = createEventCollector();
+    const runner = createToolRunner(
+      createTestToolSource({ [TEST_TOOL_NAME]: bound }),
+      collector.emit,
+      {
+        policy: TEST_POLICY,
+        ctx: TEST_CTX,
+      }
+    );
+    const result = await runner.exec(
+      TEST_TOOL_NAME,
+      { value: "one intent" },
+      { modelToolCallId: TEST_TOOL_CALL_ID }
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "execution",
+      retryable: false,
+      receipt: error.receipt,
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(collector.getByType("tool_call_result")).toEqual([
+      expect.objectContaining({
+        toolCallId: TEST_TOOL_CALL_ID,
+        isError: true,
+        result: expect.objectContaining({
+          errorCode: error.code,
+          retryable: false,
+          lookup: error.receipt.lookup,
+        }),
+      }),
+    ]);
+    expect(collector.events.map((event) => event.type)).toEqual([
+      "tool_call_start",
+      "tool_call_result",
+    ]);
+  });
+
+  it("does not certify an untrusted retry flag or unbounded lookup as a receipt", async () => {
+    for (const receipt of [
+      { code: "unknown", retryable: true, lookup: { operationId: "red" } },
+      {
+        code: "unknown",
+        retryable: false,
+        lookup: { operationId: "x".repeat(1025) },
+      },
+    ]) {
+      const execute = vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error("failed"), { receipt }));
+      const collector = createEventCollector();
+      const runner = createToolRunner(
+        createTestToolSource({
+          [TEST_TOOL_NAME]: { ...createTestBoundToolRuntime(), exec: execute },
+        }),
+        collector.emit,
+        { policy: TEST_POLICY }
+      );
+      const result = await runner.exec(
+        TEST_TOOL_NAME,
+        { value: "one intent" },
+        { modelToolCallId: TEST_TOOL_CALL_ID }
+      );
+      expect(result).not.toHaveProperty("receipt");
+      expect(result).not.toHaveProperty("retryable");
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(
+        collector.getByType("tool_call_result")[0]?.result
+      ).not.toHaveProperty("lookup");
+    }
   });
 });

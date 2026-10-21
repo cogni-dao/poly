@@ -31,27 +31,35 @@ const DOMAIN = "operator";
 async function seed() {
   const store = new FakeKnowledgeStoreAdapter();
   await store.registerDomain({ id: DOMAIN, name: "Operator" });
-  await store.addKnowledge({
-    id: "k1",
-    domain: DOMAIN,
-    title: "First",
-    content: "...",
-    entryType: "finding",
-    sourceType: "agent",
-  });
-  await store.addKnowledge({
-    id: "k2",
-    domain: DOMAIN,
-    title: "Second",
-    content: "...",
-    entryType: "finding",
-    sourceType: "agent",
-  });
-  await store.addCitation({
-    citingId: "k1",
-    citedId: "k2",
-    citationType: "supports",
-  });
+  await store.withWrite(
+    {
+      operationId: "fixture:knowledge-loaders",
+      message: "Seed knowledge read fixture",
+    },
+    async (write) => {
+      await write.addKnowledge({
+        id: "k1",
+        domain: DOMAIN,
+        title: "First",
+        content: "...",
+        entryType: "finding",
+        sourceType: "agent",
+      });
+      await write.addKnowledge({
+        id: "k2",
+        domain: DOMAIN,
+        title: "Second",
+        content: "...",
+        entryType: "finding",
+        sourceType: "agent",
+      });
+      await write.addCitation({
+        citingId: "k1",
+        citedId: "k2",
+        citationType: "supports",
+      });
+    }
+  );
   return store;
 }
 

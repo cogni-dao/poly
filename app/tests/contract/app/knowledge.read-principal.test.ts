@@ -62,26 +62,34 @@ const BEARER = { authorization: "Bearer cogni_ag_sk_v1_test.signature" };
 
 async function seedStore(store: FakeKnowledgeStoreAdapter) {
   await store.registerDomain({ id: "eng", name: "Engineering" });
-  await store.upsertKnowledge({
-    id: "entry-a",
-    domain: "eng",
-    title: "Entry A",
-    content: "alpha",
-    sourceType: "agent",
-  });
-  await store.upsertKnowledge({
-    id: "entry-b",
-    domain: "eng",
-    title: "Entry B",
-    content: "beta",
-    sourceType: "agent",
-  });
-  // Citation edge so the graph route proves agent link-pulling, not just nodes.
-  await store.addCitation({
-    citingId: "entry-a",
-    citedId: "entry-b",
-    citationType: "extends",
-  });
+  await store.withWrite(
+    {
+      operationId: "fixture:knowledge-read-principal",
+      message: "Seed knowledge read fixture",
+    },
+    async (write) => {
+      await write.upsertKnowledge({
+        id: "entry-a",
+        domain: "eng",
+        title: "Entry A",
+        content: "alpha",
+        sourceType: "agent",
+      });
+      await write.upsertKnowledge({
+        id: "entry-b",
+        domain: "eng",
+        title: "Entry B",
+        content: "beta",
+        sourceType: "agent",
+      });
+      // Citation edge so the graph route proves agent link-pulling, not just nodes.
+      await write.addCitation({
+        citingId: "entry-a",
+        citedId: "entry-b",
+        citationType: "extends",
+      });
+    }
+  );
 }
 
 describe("knowledge read routes — KNOWLEDGE_READ_REQUIRES_PRINCIPAL", () => {

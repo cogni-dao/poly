@@ -25,12 +25,31 @@ vi.mock("@/bootstrap/container", () => ({
 }));
 
 import {
+  claimWorkItem,
+  heartbeatWorkItem,
+  releaseWorkItem,
   createWorkItem,
   getWorkItem,
   listWorkItems,
   patchWorkItem,
   WorkItemsBackendNotReadyError,
 } from "@/app/_facades/work/items.server";
+import {
+  KnowledgeBusyError,
+  KnowledgeWriteConflictError,
+  KnowledgeWriteOutcomeUnknownError,
+  KnowledgeWriteScopeRequiredError,
+} from "@cogni/knowledge-store";
+import { WorkItemWriteOutcomeUnknownError } from "@cogni/work-items";
+import type { SessionUser } from "@cogni/node-shared";
+import {
+  handleCreate,
+  handleAppendCommit,
+  handleMerge,
+  handleClose,
+} from "@/app/api/v1/knowledge/contributions/_handlers";
+import { handleCreate as handleDomain } from "@/app/api/v1/knowledge/domains/_handlers";
+import { handleHypothesize } from "@/app/api/v1/edo/_handlers";
 import { getContainer } from "@/bootstrap/container";
 
 const mockGetContainer = vi.mocked(getContainer);
@@ -274,4 +293,196 @@ describe("app/_facades/work/items.server", () => {
       );
     });
   });
+});
+
+const POLY_USER: SessionUser = {
+  id: "00000000-0000-4000-8000-000000000527",
+  walletAddress: null,
+  displayName: "Poly conformance",
+  avatarColor: null,
+};
+function mutationRequest(body: unknown) {
+  return new Request("http://poly.test/api/v1/conformance", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer fixture",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("Poly owned mutation composition", () => {
+  it("forwards the exact PG lease owner/token without a content lookup", async () => {
+    const heartbeat = vi.fn().mockResolvedValue({ active: true });
+    const release = vi.fn().mockResolvedValue({ active: false });
+    const claim = vi
+      .fn()
+      .mockResolvedValue({ leaseToken: "returned-pg-token" });
+    const get = vi.fn(() => {
+      throw new Error("heartbeat must not look up content");
+    });
+    mockGetContainer.mockReturnValue({
+      doltgresWorkItems: { heartbeat, release, claim, get },
+    } as never);
+    const owner = {
+      id: "task.5278",
+      principalId: POLY_USER.id,
+      runId: "poly-run",
+      leaseToken: "actual-pg-token",
+    };
+    await heartbeatWorkItem({ ...owner, command: "implement" });
+    await releaseWorkItem(owner);
+    await claimWorkItem({
+      id: owner.id,
+      principalId: owner.principalId,
+      runId: owner.runId,
+      command: "implement",
+    });
+    expect(heartbeat).toHaveBeenCalledExactlyOnceWith({
+      ...owner,
+      command: "implement",
+    });
+    expect(release).toHaveBeenCalledExactlyOnceWith(owner);
+    expect(claim).toHaveBeenCalledExactlyOnceWith({
+      id: owner.id,
+      principalId: owner.principalId,
+      runId: owner.runId,
+      command: "implement",
+    });
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("preserves the work-item unknown receipt instead of turning it into retryable capacity", async () => {
+    const unknown = new WorkItemWriteOutcomeUnknownError(
+      "poly-op",
+      "ops/poly-op",
+      undefined,
+      "task.5278"
+    );
+    const patch = vi.fn().mockRejectedValue(unknown);
+    mockGetContainer.mockReturnValue({ doltgresWorkItems: { patch } } as never);
+    const caught = await patchWorkItem(
+      { id: "task.5278", set: { title: "one intent" } },
+      POLY_USER
+    ).catch((error) => error);
+    expect(caught).toBeInstanceOf(WorkItemWriteOutcomeUnknownError);
+    expect(caught.receipt).toEqual(unknown.receipt);
+    expect(patch).toHaveBeenCalledTimes(1);
+  });
+
+  const operations = [
+    {
+      name: "create",
+      method: "create",
+      invoke: () =>
+        handleCreate(mutationRequest({ message: "one intent" }), POLY_USER),
+    },
+    {
+      name: "append",
+      method: "appendCommit",
+      invoke: () =>
+        handleAppendCommit(
+          mutationRequest({
+            message: "one intent",
+            edits: [{ op: "delete", targetRowId: "entry", reason: "reviewed" }],
+          }),
+          "contrib-poly",
+          POLY_USER
+        ),
+    },
+    {
+      name: "merge",
+      method: "merge",
+      invoke: () => handleMerge(mutationRequest({}), "contrib-poly", POLY_USER),
+    },
+    {
+      name: "close",
+      method: "close",
+      invoke: () =>
+        handleClose(
+          mutationRequest({ reason: "reviewed" }),
+          "contrib-poly",
+          POLY_USER
+        ),
+    },
+    {
+      name: "EDO",
+      method: "createEdoHypothesisContribution",
+      invoke: () =>
+        handleHypothesize(
+          mutationRequest({
+            id: "poly-hypothesis",
+            domain: "poly",
+            title: "Ppolyiction",
+            content: "Evidence",
+            evaluateAt: "2030-01-01T00:00:00.000Z",
+            sourceType: "agent",
+          }),
+          POLY_USER
+        ),
+    },
+    {
+      name: "domain",
+      method: "registerDomain",
+      invoke: () =>
+        handleDomain(mutationRequest({ id: "poly", name: "Poly" }), POLY_USER),
+    },
+  ];
+  const failures = [
+    {
+      name: "unknown",
+      error: () =>
+        new KnowledgeWriteOutcomeUnknownError("poly-op", "ops/poly-op"),
+      status: 409,
+      body: {
+        errorCode: "knowledge_write_outcome_unknown",
+        retryable: false,
+        operationId: "poly-op",
+        branch: "ops/poly-op",
+        commitHash: null,
+      },
+    },
+    {
+      name: "conflict",
+      error: () => new KnowledgeWriteConflictError("poly-entry"),
+      status: 409,
+      body: {
+        errorCode: "knowledge_write_conflict",
+        retryable: false,
+        entryId: "poly-entry",
+      },
+    },
+    {
+      name: "scope",
+      error: () => new KnowledgeWriteScopeRequipolyError(),
+      status: 500,
+      body: { errorCode: "knowledge_write_scope_requipoly", retryable: false },
+    },
+    {
+      name: "preadmission busy",
+      error: () => new KnowledgeBusyError(),
+      status: 503,
+      body: { retryable: true },
+    },
+  ];
+  for (const operation of operations) {
+    for (const failure of failures) {
+      it(`${operation.name}: ${failure.name} retains status, lookup and retry policy`, async () => {
+        const mutation = vi.fn().mockRejectedValue(failure.error());
+        mockGetContainer.mockReturnValue({
+          knowledgeContributionService: { [operation.method]: mutation },
+          knowledgeStorePort: { [operation.method]: mutation },
+          log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        } as never);
+        const response = await operation.invoke();
+        expect(response.status).toBe(failure.status);
+        expect(await response.json()).toMatchObject(failure.body);
+        expect(response.headers.get("Retry-After")).toBe(
+          failure.status === 503 ? "2" : null
+        );
+        expect(mutation).toHaveBeenCalledTimes(1);
+      });
+    }
+  }
 });

@@ -29,3 +29,4 @@ export * from "./scheduling";
 export * from "./trader-activity";
 export * from "./wallet-connections";
 export * from "./wallet-grants";
+export * from "./work-item-leases";

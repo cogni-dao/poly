@@ -18,8 +18,9 @@ import type {
 	WorkItemsListInput,
 	WorkItemsListOutput,
 } from "@cogni/node-contracts";
-import type { WorkItem } from "@cogni/work-items";
-import { toWorkItemId } from "@cogni/work-items";
+import type { WorkItem, WorkItemLease } from "@cogni/work-items";
+import { toWorkItemId, WorkItemWriteOutcomeUnknownError } from "@cogni/work-items";
+export { WorkItemWriteOutcomeUnknownError };
 import { getContainer } from "@/bootstrap/container";
 
 export class InvalidCursorError extends Error {
@@ -139,6 +140,7 @@ function dropUndefined<T extends Record<string, unknown>>(
 }
 
 function rethrowBackendError(error: unknown): never {
+	if (error instanceof WorkItemWriteOutcomeUnknownError) throw error;
 	const message = (error as Error)?.message ?? "";
 	const notFound = /^Work item not found: (.+)$/.exec(message);
 	if (notFound?.[1]) throw new WorkItemNotFoundError(notFound[1]);
@@ -275,7 +277,7 @@ export async function claimWorkItem(input: {
 	runId: string;
 	command: string;
 	principalId: string;
-}): Promise<WorkItemDto> {
+}): Promise<WorkItemLease> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.claim({
@@ -284,7 +286,7 @@ export async function claimWorkItem(input: {
 			command: input.command,
 			principalId: input.principalId,
 		});
-		return toDto(item);
+		return item;
 	} catch (error) {
 		if ((error as Error)?.message === `Work item not found: ${input.id}`) {
 			throw new WorkItemNotFoundError(input.id);
@@ -296,16 +298,18 @@ export async function claimWorkItem(input: {
 export async function releaseWorkItem(input: {
 	id: string;
 	runId: string;
+	leaseToken: string;
 	principalId: string;
-}): Promise<WorkItemDto> {
+}): Promise<WorkItemLease> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.release({
 			id: toWorkItemId(input.id),
 			runId: input.runId,
+			leaseToken: input.leaseToken,
 			principalId: input.principalId,
 		});
-		return toDto(item);
+		return item;
 	} catch (error) {
 		if ((error as Error)?.message === `Work item not found: ${input.id}`) {
 			throw new WorkItemNotFoundError(input.id);
@@ -317,18 +321,20 @@ export async function releaseWorkItem(input: {
 export async function heartbeatWorkItem(input: {
 	id: string;
 	runId: string;
+	leaseToken: string;
 	command?: string;
 	principalId: string;
-}): Promise<WorkItemDto> {
+}): Promise<WorkItemLease> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.heartbeat({
 			id: toWorkItemId(input.id),
 			runId: input.runId,
+			leaseToken: input.leaseToken,
 			...(input.command !== undefined && { command: input.command }),
 			principalId: input.principalId,
 		});
-		return toDto(item);
+		return item;
 	} catch (error) {
 		if (error instanceof WorkItemNotFoundError) throw error;
 		rethrowBackendError(error);

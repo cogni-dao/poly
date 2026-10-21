@@ -113,6 +113,7 @@ export const DELETE = wrapRouteHandlerWithLogging<{
     const parsed = workItemsReleaseOperation.input.safeParse({
       id,
       runId: url.searchParams.get("runId") ?? undefined,
+      leaseToken: url.searchParams.get("leaseToken") ?? undefined,
     });
     if (!parsed.success) {
       return NextResponse.json(

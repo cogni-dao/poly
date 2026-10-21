@@ -37,6 +37,9 @@
       "postgres@3.4.9": "patches/postgres@3.4.9.patch"
     }
   },
+  "dependencies": {
+    "@cogni-dao/doltgres-admission": "https://github.com/cogni-dao/node-template/releases/download/doltgres-admission-v0.1.0/cogni-dao-doltgres-admission-0.1.0.tgz"
+  },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
     "@types/node": "^22",

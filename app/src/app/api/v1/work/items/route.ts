@@ -21,6 +21,7 @@ import {
   InvalidCursorError,
   listWorkItems,
   WorkItemsBackendNotReadyError,
+  WorkItemWriteOutcomeUnknownError,
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -113,6 +114,12 @@ export const POST = wrapRouteHandlerWithLogging(
         status: 201,
       });
     } catch (error) {
+      if (error instanceof WorkItemWriteOutcomeUnknownError) {
+        return NextResponse.json(
+          { error: error.code, retryable: false, lookup: error.receipt.lookup, message: error.message },
+          { status: 409 }
+        );
+      }
       if (error instanceof WorkItemsBackendNotReadyError) {
         return NextResponse.json({ error: error.message }, { status: 503 });
       }

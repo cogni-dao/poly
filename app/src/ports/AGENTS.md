@@ -5,6 +5,7 @@
 ## Metadata
 
 - **Owners:** @derekg1729
+- **Last reviewed:** 2026-10-21
 - **Status:** stable
 
 ## Purpose
@@ -34,6 +35,8 @@ Ports describe _what_ the domain needs from external services, not _how_ they wo
 ```
 
 ## Public Surface
+
+- `WorkItemsDoltgresPort` aliases the published content/PG-lease port; heartbeat/release require the issued lease token and return lease-only DTOs.
 
 Two entrypoints enforce Next.js App Router environment boundaries (see bug.0147):
 
