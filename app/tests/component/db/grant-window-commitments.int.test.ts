@@ -379,6 +379,181 @@ describe.each(["live", "paper"] as const)(
 			},
 		);
 
+		it.each([
+			[
+				"zero intended with known order and shares",
+				{
+					status: "open",
+					orderId: "venue-order",
+					shares: "2",
+					attributes: { size_usdc: 0 },
+				},
+				"backend_unreachable",
+			],
+			[
+				"zero intended with known order",
+				{
+					status: "open",
+					orderId: "venue-order",
+					attributes: { size_usdc: 0 },
+				},
+				"backend_unreachable",
+			],
+			[
+				"zero intended with no ID and positive shares",
+				{ shares: "2", attributes: { size_usdc: 0 } },
+				"backend_unreachable",
+			],
+			[
+				"zero intended without execution authority",
+				{ attributes: { size_usdc: 0, filled_size_usdc: 0 } },
+				"backend_unreachable",
+			],
+			[
+				"known order contradicts zero-intent denial",
+				{
+					status: "error",
+					orderId: "venue-order",
+					attributes: { size_usdc: 0, non_execution_proof: denial },
+				},
+				"backend_unreachable",
+			],
+			[
+				"positive shares contradict zero-intent denial",
+				{
+					status: "error",
+					shares: "2",
+					attributes: { size_usdc: 0, non_execution_proof: denial },
+				},
+				"backend_unreachable",
+			],
+			[
+				"wrong order contradicts zero-intent final release",
+				{
+					status: "canceled",
+					orderId: "venue-order",
+					attributes: {
+						size_usdc: 0,
+						final_order_observation: final(0, "different-order"),
+					},
+				},
+				"backend_unreachable",
+			],
+			[
+				"positive shares contradict zero-intent final release",
+				{
+					status: "canceled",
+					orderId: "venue-order",
+					shares: "2",
+					attributes: { size_usdc: 0, final_order_observation: final(0) },
+				},
+				"backend_unreachable",
+			],
+			[
+				"zero-intent authenticated denial releases",
+				{
+					status: "error",
+					attributes: { size_usdc: 0, non_execution_proof: denial },
+				},
+				undefined,
+			],
+			[
+				"zero-intent pre-dispatch retirement releases",
+				{
+					status: "canceled",
+					attributes: {
+						size_usdc: 0,
+						non_execution_proof: {
+							...denial,
+							source: "pre_dispatch_retirement",
+						},
+					},
+				},
+				undefined,
+			],
+			[
+				"zero-intent authenticated final zero releases",
+				{
+					status: "canceled",
+					orderId: "venue-order",
+					attributes: { size_usdc: 0, final_order_observation: final(0) },
+				},
+				undefined,
+			],
+			[
+				"zero-intent accepted spend remains committed",
+				{
+					status: "open",
+					orderId: "venue-order",
+					attributes: { size_usdc: 0, filled_size_usdc: 2 },
+				},
+				"cap_exceeded_hourly_fills",
+			],
+			[
+				"zero-intent accepted spend contradicts final zero",
+				{
+					status: "canceled",
+					orderId: "venue-order",
+					attributes: {
+						size_usdc: 0,
+						filled_size_usdc: 2,
+						final_order_observation: final(0),
+					},
+				},
+				"cap_exceeded_hourly_fills",
+			],
+			[
+				"zero-intent authenticated final spend remains committed",
+				{
+					status: "canceled",
+					orderId: "venue-order",
+					attributes: { size_usdc: 0, final_order_observation: final(2) },
+				},
+				"cap_exceeded_hourly_fills",
+			],
+			[
+				"positive-intent known order remains committed",
+				{
+					status: "open",
+					orderId: "venue-order",
+					shares: "2",
+					attributes: { size_usdc: 4 },
+				},
+				"cap_exceeded_hourly_fills",
+			],
+			[
+				"positive-intent authenticated denial releases",
+				{
+					status: "error",
+					attributes: { size_usdc: 4, non_execution_proof: denial },
+				},
+				undefined,
+			],
+			[
+				"positive-intent authenticated final zero releases",
+				{
+					status: "canceled",
+					orderId: "venue-order",
+					attributes: { size_usdc: 4, final_order_observation: final(0) },
+				},
+				undefined,
+			],
+		] satisfies [string, Fill, string | undefined][])(
+			"zero commitment guard: %s",
+			async (_name, fill, reason) => {
+				await withHarness(
+					mode,
+					async ({ seed, authorize }) => {
+						await seed(fill);
+						const result = await authorize();
+						expect(result.ok).toBe(reason === undefined);
+						if (reason) expect(result.reason).toBe(reason);
+					},
+					{ daily: 100, hourly: 1 },
+				);
+			},
+		);
+
 		it("keeps other account, other mode and old creation time outside both windows", async () => {
 			await withHarness(
 				mode,

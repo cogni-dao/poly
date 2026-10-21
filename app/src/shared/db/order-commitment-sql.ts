@@ -7,6 +7,7 @@
  * consume the grant window in which their intent was created. Invalid amounts
  * raise a SQL error so authorization fails closed, including invalid intended
  * amounts accompanied by positive accepted execution or a release proof.
+ * Zero cost without execution-release authority is unresolved, not free capacity.
  * No queries, connection management, or lifecycle policy live here.
  */
 import { polyCopyTradeFills } from "@cogni/poly-db-schema/copy-trade";
@@ -64,6 +65,8 @@ export const reservedIntentUsdc = sql<string>`CASE
   WHEN ${nonExecutionProven} THEN 0
   WHEN ${polyCopyTradeFills.status} = 'canceled' AND ${finalCancellationProven}
     THEN GREATEST(${acceptedReservation}, ${finalObservedReservation})
-  ELSE GREATEST(${intendedReservation}, ${acceptedReservation})
+  WHEN GREATEST(${intendedReservation}, ${acceptedReservation}) > 0
+    THEN GREATEST(${intendedReservation}, ${acceptedReservation})
+  ELSE ('unresolved_zero_commitment_' || ${polyCopyTradeFills.clientOrderId})::numeric
   END
 END`;
