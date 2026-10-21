@@ -59,6 +59,7 @@ import {
   type OrderLedger,
 	type UpdateStatusInput,
 } from "@/features/trading";
+import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 import { EVENT_NAMES } from "@/shared/observability/events";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -260,12 +261,23 @@ export async function runReconcileOnce(
 				unresolvedIdentityCount++;
       continue;
     }
+    // Diagnostic only: the injected read combines executor construction and wire IO.
+    let reconcileStage:
+      | "executor_order_read"
+      | "validate_order_response"
+      | "validate_cumulative_cost"
+      | "prepare_status_update"
+      | "persist_status"
+      | "notify_order_changed"
+      | "record_update_metric"
+      | "log_status_updated" = "executor_order_read";
     try {
       const result = await deps.getOrderForTenant(
         row.billing_account_id,
         row.order_id,
 					row.mode,
       );
+      reconcileStage = "validate_order_response";
       if (!result || typeof result !== "object" ||
         (!("found" in result) && result.status !== "not_found")) {
         throw new Error("invalid_order_read_response");
@@ -288,6 +300,7 @@ export async function runReconcileOnce(
         syncedIds.push(row.client_order_id);
 				// A smaller cumulative verified cost contradicts the accepted trade set,
 				// even when the next receipt reports more shares. Keep it in recovery.
+				reconcileStage = "validate_cumulative_cost";
 				const priorCost = Number(row.attributes?.filled_size_usdc);
 				if (
 					(row.attributes?.realized_fill_source === "clob_associated_trades" ||
@@ -302,6 +315,7 @@ export async function runReconcileOnce(
 				) {
 					throw new Error("verified_cumulative_cost_regression");
 				}
+      reconcileStage = "prepare_status_update";
       const newStatus = mapReceiptStatus(receipt.status);
 				const finalObservation = finalCancellationObservation(
 					row,
@@ -321,6 +335,7 @@ export async function runReconcileOnce(
 					!finalObservation
 				)
         continue;
+      reconcileStage = "persist_status";
       await deps.ledger.updateStatus({
         client_order_id: row.client_order_id,
 					order_id: row.order_id,
@@ -344,11 +359,14 @@ export async function runReconcileOnce(
 						? { final_order_observation: finalObservation }
           : {}),
       });
+      reconcileStage = "notify_order_changed";
       deps.onOrderChanged?.(row, { status: newStatus });
+      reconcileStage = "record_update_metric";
       deps.metrics.incr(ORDER_RECONCILER_METRICS.updatesTotal, {
         from: row.status,
         to: newStatus,
       });
+      reconcileStage = "log_status_updated";
       log.info(
         {
           event: EVENT_NAMES.POLY_RECONCILER_STATUS_UPDATED,
@@ -364,6 +382,7 @@ export async function runReconcileOnce(
 					"reconciler: authenticated order observation persisted",
       );
 			} catch (err: unknown) {
+      const { err_class, err_code, cause_class, cause_code } = safeErrorDimensions(err);
       deps.metrics.incr(ORDER_RECONCILER_METRICS.errorsTotal, {});
       log.error(
         {
@@ -374,8 +393,15 @@ export async function runReconcileOnce(
               : "reconcile_row_error",
           client_order_id: row.client_order_id,
           order_id: row.order_id,
+          billing_account_id: row.billing_account_id,
+          mode: row.mode === "live" || row.mode === "paper" ? row.mode : "unknown",
+          reconcile_stage: reconcileStage,
+          err_class,
+          err_code,
+          cause_class,
+          cause_code,
         },
-					"reconciler: row unresolved; reservation retained",
+          "reconciler: row processing failed",
       );
     }
 		}

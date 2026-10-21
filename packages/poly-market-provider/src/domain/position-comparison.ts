@@ -59,7 +59,7 @@ export function selectPositionMetadata(input: PositionIdentityInput, candidates:
     const best = eligible[0];
     if (!best) continue;
     const value = best[field] as string;
-    if (field === "outcome" && eligible.some(c => c.observedAt === best.observedAt && c.source === best.source && c[field] !== value)) { conflict = true; continue; }
+    if ((field === "outcome" || best.source.startsWith("origin_")) && eligible.some(c => c.observedAt === best.observedAt && c.source === best.source && c[field] !== value)) { conflict = true; continue; }
     result[field] = value.trim(); result.provenance[field] = { source: best.source, observedAt: best.observedAt };
   }
   result.availability = conflict ? "conflict" : result.marketTitle && result.outcome ? "complete" : FIELDS.some(f => result[f] !== null) ? "partial" : "unavailable";

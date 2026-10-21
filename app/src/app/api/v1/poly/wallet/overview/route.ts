@@ -428,6 +428,7 @@ export const GET = wrapRouteHandlerWithLogging(
           positions_stale:
             currentPositionSummary?.stale ?? positionSummary?.stale ?? false,
           pnlHistory,
+          pnl_basis: balances.connectionKind === "paper" ? "paper_trading_pnl" : "polymarket_trade_pnl_before_fees",
           warnings,
         });
       }

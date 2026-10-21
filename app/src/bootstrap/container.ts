@@ -165,6 +165,7 @@ import {
 	getExecutionVenueResolver,
 	getPaperPortfolio,
 	getPaperVenue,
+	readPaperAuthoritativeHoldings,
 } from "@/bootstrap/poly-execution-venue";
 import {
 	getPolyTraderWalletAdapter,
@@ -1337,14 +1338,13 @@ function createContainer(): Container {
 									};
 								},
 								getAuthoritativeHoldings: async (snapshot, venue) => {
-									const executor = await getExecutor(venue);
 									// VENUE_DECIDES_THE_SHARE_SOURCE (NO_FABRICATED_VALUES). A paper
 									// account's funder address is a real, deterministic SHA-256-derived
 									// address with NO on-chain presence, so `balanceOfBatch` answers 0
 									// for every token. That zero is fabricated: it pins position_gap's
 									// gap math at `desired - 0` forever, which is the exact bug the
 									// paper fact projection exists to remove. Route paper through the
-									// executor instead — its paper build reads the migration-0083
+									// existing paper portfolio once — it reads the migration-0083
 									// projection and raises a typed unavailable when that projection is
 									// absent, incomplete or stale.
 									//
@@ -1353,17 +1353,16 @@ function createContainer(): Container {
 									// paper row resolves to `live` (LIVE_WINS in the venue resolver), so
 									// only a paper-only tenant takes the projection path.
 									if (venue === "paper") {
-										const holdings = await Promise.all(
-											snapshot.conditions.flatMap((condition) =>
-												condition.tokens.map(async (token) => ({
+										const holdings = await readPaperAuthoritativeHoldings({
+											source: paperPortfolio,
+											billingAccountId: enumeratedTarget.billingAccountId,
+											requested: snapshot.conditions.flatMap((condition) =>
+												condition.tokens.map((token) => ({
 													conditionId: condition.conditionId,
 													tokenId: token.tokenId,
-													shares: await executor.getPositionShareBalance(
-														token.tokenId,
-													),
 												})),
 											),
-										);
+										});
 										return {
 											holdings,
 											tokenAliases: holdings.map((holding) => ({
@@ -1371,10 +1370,12 @@ function createContainer(): Container {
 												sourceTokenId: holding.tokenId,
 												canonicalTokenId: holding.tokenId,
 											})),
+											// Compatibility target block, not paper chain authority.
 											observedBlock:
 												snapshot.refreshStats.sourceMaxSyncedBlock,
 										};
 									}
+									const executor = await getExecutor(venue);
 									const canonicalByOutcome = new Map(
 										snapshot.conditions.flatMap((condition) =>
 											condition.tokens.map(

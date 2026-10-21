@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "purpose": "Additive independently captured native PAPER metadata failure oracle; existing407 corpus unchanged",
+  "frozenAt": "2026-10-16T19:27:27.534090+00:00",
+  "baselineSha": "d666d0bc0eb58d2317f5b02e0d5a603771553604",
+  "baselineOwnDisplay": {
+    "Sangal": "Polymarket / 1",
+    "Over": "Polymarket / 0",
+    "snapshot": "9cea255b-0d55-461f-9995-b9631c1585fd",
+    "capturedAt": "2026-10-16T19:22:47.016Z"
+  },
+  "scope": "Exact token metadata only; no quantity/current-counterpart/profitability/population accuracy claim; numeric names elsewhere remain valid",
+  "sources": [
+    {
+      "url": "https://gamma-api.polymarket.com/markets?clob_token_ids=901941919348734784069710710719182508439372678484476674593302935929025563199",
+      "conditionId": "0xad9e57b37cb13a3ed7f422950b24f2fef5f9eb77e34c589103c1caad912a8a4e",
+      "marketTitle": "Counter-Strike: 100 Thieves vs Sangal (BO3) - Stake Pulse Beat III Playoffs",
+      "tokens": [
+        {
+          "tokenId": "22436660167229199622812781382892881227285275488305322380149283413858899737258",
+          "namedOutcome": "100 Thieves",
+          "outcomeIndex": 0
+        },
+        {
+          "tokenId": "901941919348734784069710710719182508439372678484476674593302935929025563199",
+          "namedOutcome": "Sangal",
+          "outcomeIndex": 1
+        }
+      ]
+    },
+    {
+      "url": "https://gamma-api.polymarket.com/markets?clob_token_ids=40180206369707754445489873141214299140252375974153082245453946689226713487146",
+      "conditionId": "0xc098728598f23bc3e4623b2464d0ddb7c4432e3f3d359eebac4791ea2f1d35a5",
+      "marketTitle": "Holstein Kiel vs. Hertha BSC: O/U 0.5",
+      "tokens": [
+        {
+          "tokenId": "40180206369707754445489873141214299140252375974153082245453946689226713487146",
+          "namedOutcome": "Over",
+          "outcomeIndex": 0
+        },
+        {
+          "tokenId": "15876002038634839280546948958351796506836276039012934052083080345870296266013",
+          "namedOutcome": "Under",
+          "outcomeIndex": 1
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "0xad9e57b37cb13a3ed7f422950b24f2fef5f9eb77e34c589103c1caad912a8a4e:22436660167229199622812781382892881227285275488305322380149283413858899737258:named",
+      "conditionId": "0xad9e57b37cb13a3ed7f422950b24f2fef5f9eb77e34c589103c1caad912a8a4e",
+      "tokenId": "22436660167229199622812781382892881227285275488305322380149283413858899737258",
+      "expectedMarketTitle": "Counter-Strike: 100 Thieves vs Sangal (BO3) - Stake Pulse Beat III Playoffs",
+      "expectedNamedOutcome": "100 Thieves",
+      "authority": "gamma_exact_condition_token_map",
+      "expectedAvailable": true
+    },
+    {
+      "caseId": "0xad9e57b37cb13a3ed7f422950b24f2fef5f9eb77e34c589103c1caad912a8a4e:22436660167229199622812781382892881227285275488305322380149283413858899737258:index-trap",
+      "conditionId": "0xad9e57b37cb13a3ed7f422950b24f2fef5f9eb77e34c589103c1caad912a8a4e",
+      "tokenId": "22436660167229199622812781382892881227285275488305322380149283413858899737258",
+      "candidateLabel": "0",
+      "candidateSource": "adapter_outcome_index",
+      "expectedLabelIsNamedOutcome": false
+    },
+    {
+      "caseId": "0xad9e57b37cb13a3ed7f422950b24f2fef5f9eb77e34c589103c1caad912a8a4e:901941919348734784069710710719182508439372678484476674593302935929025563199:named",
+      "conditionId": "0xad9e57b37cb13a3ed7f422950b24f2fef5f9eb77e34c589103c1caad912a8a4e",
+      "tokenId": "901941919348734784069710710719182508439372678484476674593302935929025563199",
+      "expectedMarketTitle": "Counter-Strike: 100 Thieves vs Sangal (BO3) - Stake Pulse Beat III Playoffs",
+      "expectedNamedOutcome": "Sangal",
+      "authority": "gamma_exact_condition_token_map",
+      "expectedAvailable": true
+    },
+    {
+      "caseId": "0xad9e57b37cb13a3ed7f422950b24f2fef5f9eb77e34c589103c1caad912a8a4e:901941919348734784069710710719182508439372678484476674593302935929025563199:index-trap",
+      "conditionId": "0xad9e57b37cb13a3ed7f422950b24f2fef5f9eb77e34c589103c1caad912a8a4e",
+      "tokenId": "901941919348734784069710710719182508439372678484476674593302935929025563199",
+      "candidateLabel": "1",
+      "candidateSource": "adapter_outcome_index",
+      "expectedLabelIsNamedOutcome": false
+    },
+    {
+      "caseId": "0xc098728598f23bc3e4623b2464d0ddb7c4432e3f3d359eebac4791ea2f1d35a5:40180206369707754445489873141214299140252375974153082245453946689226713487146:named",
+      "conditionId": "0xc098728598f23bc3e4623b2464d0ddb7c4432e3f3d359eebac4791ea2f1d35a5",
+      "tokenId": "40180206369707754445489873141214299140252375974153082245453946689226713487146",
+      "expectedMarketTitle": "Holstein Kiel vs. Hertha BSC: O/U 0.5",
+      "expectedNamedOutcome": "Over",
+      "authority": "gamma_exact_condition_token_map",
+      "expectedAvailable": true
+    },
+    {
+      "caseId": "0xc098728598f23bc3e4623b2464d0ddb7c4432e3f3d359eebac4791ea2f1d35a5:40180206369707754445489873141214299140252375974153082245453946689226713487146:index-trap",
+      "conditionId": "0xc098728598f23bc3e4623b2464d0ddb7c4432e3f3d359eebac4791ea2f1d35a5",
+      "tokenId": "40180206369707754445489873141214299140252375974153082245453946689226713487146",
+      "candidateLabel": "0",
+      "candidateSource": "adapter_outcome_index",
+      "expectedLabelIsNamedOutcome": false
+    },
+    {
+      "caseId": "0xc098728598f23bc3e4623b2464d0ddb7c4432e3f3d359eebac4791ea2f1d35a5:15876002038634839280546948958351796506836276039012934052083080345870296266013:named",
+      "conditionId": "0xc098728598f23bc3e4623b2464d0ddb7c4432e3f3d359eebac4791ea2f1d35a5",
+      "tokenId": "15876002038634839280546948958351796506836276039012934052083080345870296266013",
+      "expectedMarketTitle": "Holstein Kiel vs. Hertha BSC: O/U 0.5",
+      "expectedNamedOutcome": "Under",
+      "authority": "gamma_exact_condition_token_map",
+      "expectedAvailable": true
+    },
+    {
+      "caseId": "0xc098728598f23bc3e4623b2464d0ddb7c4432e3f3d359eebac4791ea2f1d35a5:15876002038634839280546948958351796506836276039012934052083080345870296266013:index-trap",
+      "conditionId": "0xc098728598f23bc3e4623b2464d0ddb7c4432e3f3d359eebac4791ea2f1d35a5",
+      "tokenId": "15876002038634839280546948958351796506836276039012934052083080345870296266013",
+      "candidateLabel": "1",
+      "candidateSource": "adapter_outcome_index",
+      "expectedLabelIsNamedOutcome": false
+    }
+  ]
+}
