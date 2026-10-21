@@ -129,6 +129,10 @@ export function paperFillAccountingSql(
     AND EXISTS (
       SELECT 1 FROM poly_wallet_connections paper_proof_connection
       WHERE paper_proof_connection.id::text = ${p}->>'connection_id'
+        AND paper_proof_connection.id = CASE
+          WHEN length(${p}->>'connection_id') = 36
+            AND ${p}->>'connection_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          THEN (${p}->>'connection_id')::uuid END
         AND paper_proof_connection.billing_account_id = ${f}.billing_account_id
         AND paper_proof_connection.kind = 'paper'
         AND lower(paper_proof_connection.address) = '0x' || substr(encode(sha256(convert_to(

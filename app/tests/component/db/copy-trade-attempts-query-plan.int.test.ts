@@ -74,10 +74,17 @@ type ExplainNode = {
   "Relation Name"?: string;
   "Index Name"?: string;
   "Actual Rows"?: number;
+  "Total Cost"?: number;
+  "Plan Rows"?: number;
+  "Subplan Name"?: string;
   Plans?: ExplainNode[];
 };
 
-type ExplainDocument = { Plan: ExplainNode; "Execution Time": number };
+type ExplainDocument = {
+  Plan: ExplainNode;
+  "Execution Time": number;
+  JIT?: { Options?: Record<string, boolean> };
+};
 
 function flattenPlan(node: ExplainNode): ExplainNode[] {
   return [node, ...(node.Plans ?? []).flatMap(flattenPlan)];
@@ -201,6 +208,31 @@ describe("copy-trade attempt tape query plan", () => {
       userActor(toUserId(targetUserId)),
       async (tx) => {
         await tx.execute(sql`SET LOCAL statement_timeout = 10000`);
+        // Same production statement/app-role transaction; READ COMMITTED stays
+        // unchanged. Planning evidence survives a later ANALYZE timeout.
+        const estimated = readExplainDocument(
+          await tx.execute(sql`EXPLAIN (FORMAT JSON) ${statement}`)
+        );
+        const estimatedNodes = flattenPlan(estimated.Plan);
+        const diagnosticNodes = estimatedNodes.filter(
+          (node) =>
+            node["Relation Name"] || node["Index Name"] || node["Subplan Name"]
+        );
+        console.info(JSON.stringify({
+          event: "copy_trade_attempts.estimated_plan",
+          total_cost: estimated.Plan["Total Cost"],
+          estimated_rows: estimated.Plan["Plan Rows"],
+          node_count: estimatedNodes.length,
+          nodes: diagnosticNodes.slice(0, 24).map((node) => ({
+            node: node["Node Type"],
+            relation: node["Relation Name"],
+            index: node["Index Name"],
+            subplan: node["Subplan Name"],
+            estimated_rows: node["Plan Rows"],
+            total_cost: node["Total Cost"],
+          })),
+          jit_options: estimated.JIT?.Options ?? null,
+        }));
         return tx.execute(
           sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${statement}`
         );

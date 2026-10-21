@@ -33,7 +33,7 @@ import { createOrderLedger } from "@/features/trading/order-ledger";
 import { createPolyTradeExecutorFactory } from "@/bootstrap/capabilities/poly-trade-executor";
 import { runReconcileOnce } from "@/bootstrap/jobs/order-reconciler.job";
 import { createExecutionVenueResolver, createPaperVenue, derivePaperAccountAddress } from "@/features/paper-accounts";
-import { acceptedPaperProof, decodeFillAccounting, type FillAccountingScope } from "@/features/trading/fill-accounting";
+import { acceptedPaperProof, decodeFillAccounting, type FillAccountingScope, paperProofKey } from "@/features/trading/fill-accounting";
 import { copyFillAccountingSql, paperFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import { billingAccounts, polyWalletConnections, polyWalletGrants, users } from "@/shared/db/schema";
 import { polyCopyTradeOrdersOperation } from "@cogni/poly-node-contracts";
@@ -429,6 +429,56 @@ describe("authenticated paper cumulative receipt persistence", () => {
 				.update(polyCopyTradeFills)
 				.set({ attributes: known.attributes })
 				.where(eq(polyCopyTradeFills.clientOrderId, client));
+			if (!knownProof) throw new Error("canonical paper receipt proof missing");
+			// Alternate PostgreSQL UUID spellings must not widen receipt authority.
+			// Re-key altered strings so rejection exercises the connection binding.
+			for (const invalid of [
+				undefined,
+				null,
+				42,
+				{ connection_id: connection },
+				"not-a-uuid",
+				"zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz",
+				connection.toUpperCase(),
+				`{${connection}}`,
+				connection.replace(/-/g, ""),
+				"00000000-0000-0000-0000-000000000000",
+			]) {
+				const alteredProof: Record<string, unknown> = {
+					...knownProof,
+					connection_id: invalid,
+				};
+				if (invalid === undefined) delete alteredProof.connection_id;
+				if (typeof invalid === "string") {
+					alteredProof.proof_key = paperProofKey({
+						...knownProof,
+						connection_id: invalid,
+					});
+				}
+				await db
+					.update(polyCopyTradeFills)
+					.set({
+						attributes: {
+							...known.attributes,
+							paper_receipt_v1: alteredProof,
+						},
+					})
+					.where(eq(polyCopyTradeFills.clientOrderId, client));
+				expect(await readSql()).toMatchObject({
+					positive: false,
+					zero: false,
+					fee_known: false,
+				});
+				await db
+					.update(polyCopyTradeFills)
+					.set({ attributes: known.attributes })
+					.where(eq(polyCopyTradeFills.clientOrderId, client));
+				expect(await readSql()).toMatchObject({
+					positive: true,
+					zero: false,
+					fee_known: true,
+				});
+			}
 			expect(decodeFillAccounting(await read(), scope, asOf).status).toBe(
 				"pending",
 			);
