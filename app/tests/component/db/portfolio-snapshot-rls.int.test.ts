@@ -325,9 +325,11 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       await seed.execute(sql`INSERT INTO poly_trader_ingestion_cursors
         (trader_wallet_id,source,last_success_at,status)
         VALUES (${walletId}::uuid,'data-api-positions',${generationAt}::timestamptz,'ok')`);
-      await seed.execute(sql`ANALYZE poly_trader_position_snapshots`);
-      await seed.execute(sql`ANALYZE poly_trader_fills`);
-      await seed.execute(sql`ANALYZE poly_trader_current_positions`);
+      // ANALYZE as the migrated-table owner; the BYPASSRLS seeding role
+      // cannot refresh these statistics. Measured reads keep their app role.
+      await db.execute(sql`ANALYZE poly_trader_position_snapshots`);
+      await db.execute(sql`ANALYZE poly_trader_fills`);
+      await db.execute(sql`ANALYZE poly_trader_current_positions`);
     });
 
     afterAll(async () => {
