@@ -89,6 +89,7 @@ export const EVENT_NAMES = {
   POLY_PAPER_NAV_NEGATIVE: "poly.paper.nav_negative",
   POLY_PAPER_OBSERVE: "poly.paper.observe",
   POLY_PAPER_PROJECT: "poly.paper.project",
+  POLY_POSITION_GAP_V3_RUN_FAILED: "poly.position_gap.v3.run_failed",
   POLY_POSITION_GAP_PAPER_FILL_EVIDENCE_UNAVAILABLE:
     "poly.position_gap.v3.paper_fill_evidence_unavailable",
 	POLY_ALGORITHM_ATTEMPT_COMPLETE: "feature.poly_algorithm.attempt.complete",

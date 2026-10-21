@@ -34,6 +34,8 @@ import {
   UserValueResponseSchema,
 } from "./polymarket.data-api.types.js";
 import {
+  PolymarketActivityV2ResponseSchema,
+  type PolymarketActivityV2,
   PolymarketDataApiStatusV2Schema,
   type PolymarketDataApiStatusV2,
   PolymarketUserPositionsV2ResponseSchema,
@@ -172,13 +174,28 @@ const MAX_429_COOLDOWN_MS = 30_000;
 
 /** Thrown instead of issuing a call while the shared cooldown is active. */
 export class PolyDataApiRateLimitedError extends Error {
+  readonly status = 429;
+  readonly retryable = false;
   readonly retryAfterMs: number;
-  constructor(pathname: string, retryAfterMs: number) {
+  constructor(pathname: string, retryAfterMs: number, message?: string) {
     super(
-      `Polymarket Data API rate-limit cooldown active; skipped ${pathname} (retry in ${retryAfterMs}ms)`
+      message ??
+        `Polymarket Data API rate-limit cooldown active; skipped ${pathname} (retry in ${retryAfterMs}ms)`
     );
     this.name = "PolyDataApiRateLimitedError";
     this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/** Additive classification; consumers choose policy, this client never retries. */
+export class PolyDataApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    readonly status?: number
+  ) {
+    super(message);
+    this.name = "PolyDataApiRequestError";
   }
 }
 
@@ -322,6 +339,8 @@ export interface ListUserPositionsV2Params {
   conditions: readonly string[];
   /** Include user-archived rows. Defaults true for backward compatibility. */
   includeArchived?: boolean;
+  /** Historical recovery opts into CLOSED; existing target readers remain OPEN. */
+  status?: "OPEN" | "CLOSED";
   /** Aggregate request ceiling across all chunks and cursor pages. */
   maxRequests?: number;
   signal?: AbortSignal | undefined;
@@ -498,7 +517,11 @@ export class PolymarketDataApiClient {
     }
 
     const json = await this.fetchJson(url, params?.signal);
-    return PolymarketUserPositionsResponseSchema.parse(json);
+    return parseResponse(
+      PolymarketUserPositionsResponseSchema,
+      json,
+      "/positions"
+    );
   }
 
   /**
@@ -556,6 +579,7 @@ export class PolymarketDataApiClient {
   ): Promise<PolymarketPositionsV2Walk> {
     return this.walkUserPositionsV2(wallet, {
       conditions: params.conditions,
+      status: params.status ?? "OPEN",
       includeArchived: params.includeArchived ?? true,
       filterType: "TOKENS",
       filterAmount: 0,
@@ -612,6 +636,7 @@ export class PolymarketDataApiClient {
     wallet: string,
     params: {
       conditions?: readonly string[];
+      status?: "OPEN" | "CLOSED";
       filterType: "CASH" | "TOKENS";
       filterAmount: number;
       includeArchived: boolean;
@@ -646,7 +671,11 @@ export class PolymarketDataApiClient {
     let requestCount = 0;
     const chunks = conditions
       ? Array.from(
-          { length: Math.ceil(conditions.length / POSITIONS_V2_CONDITION_CHUNK_SIZE) },
+          {
+            length: Math.ceil(
+              conditions.length / POSITIONS_V2_CONDITION_CHUNK_SIZE
+            ),
+          },
           (_, index) =>
             conditions.slice(
               index * POSITIONS_V2_CONDITION_CHUNK_SIZE,
@@ -671,7 +700,7 @@ export class PolymarketDataApiClient {
         url.searchParams.set("user", wallet);
         // Cursor pages do not retain the filter server-side; resend every time.
         if (chunk) url.searchParams.set("condition", chunk.join(","));
-        url.searchParams.set("status", "OPEN");
+        url.searchParams.set("status", params.status ?? "OPEN");
         url.searchParams.set(
           "include_archived",
           params.includeArchived ? "true" : "false"
@@ -694,9 +723,10 @@ export class PolymarketDataApiClient {
           // The documented OPEN result set includes settled-but-unredeemed
           // winners, whose rows echo REDEEMABLE. CLOSED can never belong to
           // this walk; reject it rather than silently publishing stale facts.
-          if (row.status !== "OPEN" && row.status !== "REDEEMABLE") {
+          if ((params.status === "CLOSED" && row.status !== "CLOSED") ||
+            (params.status !== "CLOSED" && row.status !== "OPEN" && row.status !== "REDEEMABLE")) {
             throw new PolyDataApiPositionsV2Error(
-              `response status ${row.status} was outside the requested OPEN cohort`
+              `response status ${row.status} was outside the requested ${params.status ?? "OPEN"} cohort`
             );
           }
           if (!params.includeArchived && row.archived === true) {
@@ -744,6 +774,56 @@ export class PolymarketDataApiClient {
       }
     }
     return { positions: raw, requestCount };
+  }
+
+  /** Bounded exact-condition native history; no cursor or render-path side effects. */
+  async listConditionActivityV2(wallet: string, params: {
+    conditionId: string; start: number; end: number; maxRequests: number;
+    signal?: AbortSignal | undefined;
+  }): Promise<{ activity: PolymarketActivityV2[]; requestCount: number }> {
+    assertWallet(wallet);
+    if (!CONDITION_ID_PATTERN.test(params.conditionId) || !Number.isInteger(params.maxRequests) ||
+      params.maxRequests < 1 || params.maxRequests > 5 || !Number.isFinite(params.start) ||
+      !Number.isFinite(params.end) || params.start < 0 || params.end < params.start) {
+      throw new PolyDataApiPositionsV2Error("invalid bounded activity cohort");
+    }
+    const activity: PolymarketActivityV2[] = [];
+    const priorPages = new Set<string>();
+    const cursors = new Set<string>();
+    let cursor: string | null = null;
+    for (let page = 0; page < params.maxRequests; page += 1) {
+      params.signal?.throwIfAborted();
+      const url = new URL("/v2/activity", this.baseUrl);
+      url.searchParams.set("user", wallet);
+      url.searchParams.set("condition", params.conditionId);
+      url.searchParams.set("start", String(params.start));
+      url.searchParams.set("end", String(params.end));
+      url.searchParams.set("limit", "1000");
+      url.searchParams.set("exclude_deposits_withdrawals", "false");
+      if (cursor) url.searchParams.set("cursor", cursor);
+      const response = parseResponse(PolymarketActivityV2ResponseSchema,
+        await this.fetchJson(url, params.signal), "/v2/activity");
+      for (const row of response.data) {
+        if (row.proxy_wallet.toLowerCase() !== wallet.toLowerCase() ||
+          row.condition_id.toLowerCase() !== params.conditionId.toLowerCase() ||
+          row.timestamp < params.start || row.timestamp > params.end) {
+          throw new PolyDataApiPositionsV2Error("activity outside requested wallet/condition/window");
+        }
+      }
+      // Identical anonymous records may be distinct matches within one page,
+      // but overlapping pages must never multiply them into economic facts.
+      for (const row of response.data) {
+        if (priorPages.has(JSON.stringify(row))) throw new PolyDataApiPositionsV2Error("overlapping activity pages");
+      }
+      for (const row of response.data) priorPages.add(JSON.stringify(row));
+      activity.push(...response.data);
+      const next = response.pagination.next_cursor;
+      if (next === null) return { activity, requestCount: page + 1 };
+      if (cursors.has(next)) throw new PolyDataApiPositionsV2Error("activity cursor cycle");
+      cursors.add(next);
+      cursor = next;
+    }
+    throw new PolyDataApiPositionsV2Error("activity request budget exhausted", "request_budget");
   }
 
   /**
@@ -954,79 +1034,86 @@ export class PolymarketDataApiClient {
    */
   private async fetchJson(url: URL, signal?: AbortSignal): Promise<unknown> {
     signal?.throwIfAborted();
-    // bug.5284 — refuse to add load while upstream is still rate-limiting us.
     const remainingMs = cooldownUntilMs - Date.now();
     if (remainingMs > 0) {
       throw new PolyDataApiRateLimitedError(url.pathname, remainingMs);
     }
-    // bug.5286 — bound concurrent in-flight requests across the whole process,
-    // so a burst cannot all reach upstream before the first 429 comes back.
-    try {
-      await acquireSlot(signal);
-    } catch (err) {
-      // Only an abort rejects here; surface it in the same shape as a
-      // mid-flight caller abort so callers classify it identically.
-      if (signal?.aborted) {
-        throw new Error(
-          `Polymarket Data API request aborted by caller while queued (${url.pathname})`
-        );
-      }
-      throw err;
-    }
-    // Re-check after queueing: a request that waited for a slot may find the
-    // cooldown opened by whichever request was ahead of it. This is the check
-    // the pre-queue test cannot make, and it is where the herd gets stopped.
-    const afterWaitMs = cooldownUntilMs - Date.now();
-    if (afterWaitMs > 0) {
-      releaseSlot();
-      throw new PolyDataApiRateLimitedError(url.pathname, afterWaitMs);
-    }
+    // One deadline includes process-wide admission, transport and body decode.
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    const onCallerAbort = () => controller.abort();
+    const onCallerAbort = () => controller.abort(signal?.reason);
     signal?.addEventListener("abort", onCallerAbort, { once: true });
-    // ALREADY_ABORTED_IS_NOT_A_LISTENER_EVENT (bug.5297): `addEventListener` on
-    // an already-aborted signal never fires, which would leave this request
-    // running to the full `timeoutMs` on a signal nobody will re-fire. Reachable
-    // deterministically: a caller granted its slot in the same turn its signal
-    // aborts takes the slot (rejecting there would leak it) and arrives here
-    // already aborted.
-    if (signal?.aborted) controller.abort();
+    if (signal?.aborted) onCallerAbort();
+    let acquired = false;
     try {
-      const response = await this.fetchImpl(url.toString(), {
-        signal: controller.signal,
-      });
+      try {
+        await acquireSlot(controller.signal);
+        acquired = true;
+      } catch (err) {
+        if (signal?.aborted) {
+          throw new PolyDataApiRequestError(
+            `Polymarket Data API request aborted by caller while queued (${url.pathname})`,
+            false
+          );
+        }
+        throw err;
+      }
+      const afterWaitMs = cooldownUntilMs - Date.now();
+      if (afterWaitMs > 0) {
+        throw new PolyDataApiRateLimitedError(url.pathname, afterWaitMs);
+      }
+      controller.signal.throwIfAborted();
+      let response: Response;
+      try {
+        response = await this.fetchImpl(url.toString(), {
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (controller.signal.aborted) throw err;
+        throw new PolyDataApiRequestError(
+          err instanceof Error ? err.message : String(err),
+          true
+        );
+      }
       if (!response.ok) {
+        const message = `Polymarket Data API error: ${response.status} ${response.statusText} (${url.pathname})`;
         if (response.status === 429) {
-          // Open the shared gate for EVERY client in this process, not just
-          // this instance — the limit is per-IP, so the others are about to
-          // hit the same wall.
           const waitMs = parseRetryAfterMs(
             response.headers?.get?.("retry-after") ?? null
           );
           cooldownUntilMs = Date.now() + waitMs;
+          throw new PolyDataApiRateLimitedError(url.pathname, waitMs, message);
         }
-        throw new Error(
-          `Polymarket Data API error: ${response.status} ${response.statusText} (${url.pathname})`
+        throw new PolyDataApiRequestError(
+          message,
+          response.status === 408 || response.status >= 500,
+          response.status
         );
       }
-      return await response.json();
+      // Invalid JSON is semantic and deliberately remains SyntaxError.
+      const json: unknown = await response.json();
+      controller.signal.throwIfAborted();
+      return json;
     } catch (err) {
       if (signal?.aborted) {
-        throw new Error(
-          `Polymarket Data API request aborted by caller (${url.pathname})`
+        if (err instanceof PolyDataApiRequestError && !err.retryable) throw err;
+        throw new PolyDataApiRequestError(
+          `Polymarket Data API request aborted by caller (${url.pathname})`,
+          false
         );
       }
-      if (err instanceof Error && err.name === "AbortError") {
-        throw new Error(
-          `Polymarket Data API timeout after ${this.timeoutMs}ms (${url.pathname})`
+      if (controller.signal.aborted) {
+        throw new PolyDataApiRequestError(
+          `Polymarket Data API timeout after ${this.timeoutMs}ms (${url.pathname})`,
+          true
         );
       }
       throw err;
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onCallerAbort);
-      releaseSlot();
+      // A caller abort never releases admission until actual IO settles.
+      if (acquired) releaseSlot();
     }
   }
 }
