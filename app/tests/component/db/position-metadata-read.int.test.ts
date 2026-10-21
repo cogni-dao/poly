@@ -1445,111 +1445,118 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 	it("denies wrong account, own wallet, mode, UUID, token, retained identity and future clocks while keeping primary titles", async () => {
 		const f = await originFixture();
 		try {
-			await f.publish();
 			await db.execute(sql`INSERT INTO poly_market_metadata (condition_id,market_title,fetched_at)
         VALUES (${f.condition},'Independent primary title',${at(1)}::timestamptz)`);
-      const [retainedTarget] = rows<{ id: string }>(await db.execute(sql`SELECT id FROM poly_copy_trade_targets WHERE billing_account_id=${f.account}`));
-      if (!retainedTarget) throw new Error("Missing retained target UUIDv4");
-			const negatives: Array<Parameters<typeof f.seed>[0]> = [
-				{ token: f.tokens[1] },
-				{ targetId: randomUUID() },
-        { targetId: retainedTarget.id },
-				{ targetWallet: `0x${"f".repeat(40)}` },
-				{ conditionId: `0x${"f".repeat(64)}` },
-				{ mode: "live" },
-				{ observedAt: at(31) },
-				{ observedAt: at(20) },
-				{ orderId: null },
-				{ targetWallet: "malformed" },
-			];
-			for (const negative of negatives) {
+			// A parallel observation tick refreshes canonical metadata globally.
+			// Lock the committed title before publishing its first current-position
+			// candidate; keep the actual reader transactions independently read-only.
+			await db.transaction(async (guard) => {
+				await guard.execute(sql`SELECT condition_id FROM poly_market_metadata
+					WHERE condition_id=${f.condition} FOR UPDATE`);
+				await f.publish();
+	      const [retainedTarget] = rows<{ id: string }>(await db.execute(sql`SELECT id FROM poly_copy_trade_targets WHERE billing_account_id=${f.account}`));
+	      if (!retainedTarget) throw new Error("Missing retained target UUIDv4");
+				const negatives: Array<Parameters<typeof f.seed>[0]> = [
+					{ token: f.tokens[1] },
+					{ targetId: randomUUID() },
+	        { targetId: retainedTarget.id },
+					{ targetWallet: `0x${"f".repeat(40)}` },
+					{ conditionId: `0x${"f".repeat(64)}` },
+					{ mode: "live" },
+					{ observedAt: at(31) },
+					{ observedAt: at(20) },
+					{ orderId: null },
+					{ targetWallet: "malformed" },
+				];
+				for (const negative of negatives) {
+					await db.execute(
+						sql`DELETE FROM poly_copy_trade_fills WHERE billing_account_id=${f.account}`,
+					);
+					await f.seed(negative);
+					const result = await db.transaction((tx) => f.read(tx), {
+						isolationLevel: "repeatable read",
+						accessMode: "read only",
+					});
+					expect(f.value(result), JSON.stringify(negative)).toMatchObject({
+						outcome: null,
+						marketTitle: "Independent primary title",
+						originAvailability: "unavailable",
+					});
+				}
 				await db.execute(
 					sql`DELETE FROM poly_copy_trade_fills WHERE billing_account_id=${f.account}`,
 				);
-				await f.seed(negative);
-				const result = await db.transaction((tx) => f.read(tx), {
-					isolationLevel: "repeatable read",
-					accessMode: "read only",
-				});
-				expect(f.value(result), JSON.stringify(negative)).toMatchObject({
-					outcome: null,
-					marketTitle: "Independent primary title",
-					originAvailability: "unavailable",
-				});
-			}
-			await db.execute(
-				sql`DELETE FROM poly_copy_trade_fills WHERE billing_account_id=${f.account}`,
-			);
-			await f.seed();
-			for (const change of [
-				sql`UPDATE poly_wallet_connections SET created_at=${at(11)}::timestamptz WHERE billing_account_id=${f.account}`,
-				sql`UPDATE poly_wallet_connections SET revoked_at=${at(15)}::timestamptz WHERE billing_account_id=${f.account}`,
-				sql`UPDATE poly_wallet_connections SET funder_address=NULL WHERE billing_account_id=${f.account}`,
-				sql`UPDATE poly_copy_trade_targets SET created_at=${at(11)}::timestamptz WHERE billing_account_id=${f.account}`,
-			]) {
-				await db.execute(change);
-				const result = await db.transaction((tx) => f.read(tx), {
-					isolationLevel: "repeatable read",
-					accessMode: "read only",
-				});
-				expect(f.value(result)).toMatchObject({
-					outcome: null,
-					marketTitle: "Independent primary title",
-					originAvailability: "unavailable",
-				});
-				await db.execute(
-					sql`UPDATE poly_wallet_connections SET created_at=${at(0)}::timestamptz,revoked_at=NULL,funder_address=${f.paper} WHERE billing_account_id=${f.account}`,
-				);
-				await db.execute(
-					sql`UPDATE poly_copy_trade_targets SET created_at=${at(0)}::timestamptz WHERE billing_account_id=${f.account}`,
-				);
-			}
-      await f.publish(["Future name", "Future other"], 31);
-      expect(f.value(await db.transaction(tx => f.read(tx), { isolationLevel: "repeatable read", accessMode: "read only" }))?.outcome).toBe("Sangal");
-			await db.transaction(
-				async (tx) => {
-					for (const key of [
-						{ ...f.key(), walletAddress: f.target },
-						{ ...f.key(), mode: "live" as const },
-					]) {
+				await f.seed();
+				for (const change of [
+					sql`UPDATE poly_wallet_connections SET created_at=${at(11)}::timestamptz WHERE billing_account_id=${f.account}`,
+					sql`UPDATE poly_wallet_connections SET revoked_at=${at(15)}::timestamptz WHERE billing_account_id=${f.account}`,
+					sql`UPDATE poly_wallet_connections SET funder_address=NULL WHERE billing_account_id=${f.account}`,
+					sql`UPDATE poly_copy_trade_targets SET created_at=${at(11)}::timestamptz WHERE billing_account_id=${f.account}`,
+				]) {
+					await db.execute(change);
+					const result = await db.transaction((tx) => f.read(tx), {
+						isolationLevel: "repeatable read",
+						accessMode: "read only",
+					});
+					expect(f.value(result)).toMatchObject({
+						outcome: null,
+						marketTitle: "Independent primary title",
+						originAvailability: "unavailable",
+					});
+					await db.execute(
+						sql`UPDATE poly_wallet_connections SET created_at=${at(0)}::timestamptz,revoked_at=NULL,funder_address=${f.paper} WHERE billing_account_id=${f.account}`,
+					);
+					await db.execute(
+						sql`UPDATE poly_copy_trade_targets SET created_at=${at(0)}::timestamptz WHERE billing_account_id=${f.account}`,
+					);
+				}
+	      await f.publish(["Future name", "Future other"], 31);
+	      expect(f.value(await db.transaction(tx => f.read(tx), { isolationLevel: "repeatable read", accessMode: "read only" }))?.outcome).toBe("Sangal");
+				await db.transaction(
+					async (tx) => {
+						for (const key of [
+							{ ...f.key(), walletAddress: f.target },
+							{ ...f.key(), mode: "live" as const },
+						]) {
+							const result = await readPositionMetadata({
+								db: tx,
+								accountScope: f.accountScope,
+								keys: [key],
+								capturedAt: at(30),
+							});
+							expect(
+								result.get(positionMetadataRequestKey(key, f.accountScope) ?? "")
+									?.originAvailability,
+							).toBe("unavailable");
+						}
+						const wrongScope = { billingAccountId: randomUUID() };
 						const result = await readPositionMetadata({
 							db: tx,
-							accountScope: f.accountScope,
-							keys: [key],
+							accountScope: wrongScope,
+							keys: [f.key()],
 							capturedAt: at(30),
 						});
 						expect(
-							result.get(positionMetadataRequestKey(key, f.accountScope) ?? "")
-								?.originAvailability,
-						).toBe("unavailable");
-					}
-					const wrongScope = { billingAccountId: randomUUID() };
-					const result = await readPositionMetadata({
-						db: tx,
-						accountScope: wrongScope,
-						keys: [f.key()],
-						capturedAt: at(30),
-					});
-					expect(
-						result.get(positionMetadataRequestKey(f.key(), wrongScope) ?? ""),
-					).toMatchObject({ outcome: null, originAvailability: "unavailable" });
-				},
-				{ isolationLevel: "repeatable read", accessMode: "read only" },
-			);
-			await db.execute(
-				sql`UPDATE poly_trader_current_positions SET raw=raw||jsonb_build_object('asset',${f.tokens[1]}::text) WHERE lower(condition_id)=${f.condition}`,
-			);
-			await db.execute(
-				sql`UPDATE poly_trader_position_snapshots SET raw=raw||jsonb_build_object('conditionId',${`0x${"f".repeat(64)}`}::text) WHERE lower(condition_id)=${f.condition}`,
-			);
-			expect(
-				f.value(
-					await db.transaction((tx) => f.read(tx), {
-						isolationLevel: "repeatable read",
-						accessMode: "read only",
-					}),
-				)?.outcome,
-			).toBeNull();
+							result.get(positionMetadataRequestKey(f.key(), wrongScope) ?? ""),
+						).toMatchObject({ outcome: null, originAvailability: "unavailable" });
+					},
+					{ isolationLevel: "repeatable read", accessMode: "read only" },
+				);
+				await db.execute(
+					sql`UPDATE poly_trader_current_positions SET raw=raw||jsonb_build_object('asset',${f.tokens[1]}::text) WHERE lower(condition_id)=${f.condition}`,
+				);
+				await db.execute(
+					sql`UPDATE poly_trader_position_snapshots SET raw=raw||jsonb_build_object('conditionId',${`0x${"f".repeat(64)}`}::text) WHERE lower(condition_id)=${f.condition}`,
+				);
+				expect(
+					f.value(
+						await db.transaction((tx) => f.read(tx), {
+							isolationLevel: "repeatable read",
+							accessMode: "read only",
+						}),
+					)?.outcome,
+				).toBeNull();
+			});
 		} finally {
 			await f.cleanup();
 		}
