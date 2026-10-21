@@ -191,7 +191,7 @@ export async function readTenantWalletDashboardIn(
     );
   }
   const orderRead = await optionalRead(db, (savepoint) =>
-    readOrderSummary(savepoint, input.billingAccountId, capturedAt)
+    readOrderSummary(savepoint, input.billingAccountId, capturedAt, connection.connectionKind === "paper" ? "paper" : "live")
   );
   const economicInput = {
     billingAccountId: input.billingAccountId,
@@ -918,7 +918,8 @@ function walletReadiness(
 export async function readOrderSummary(
   db: ExecuteDb,
   billingAccountId: string,
-  capturedAt: string
+  capturedAt: string,
+  mode: "live" | "paper"
 ) {
   const rows = normalizeRows<OrderSummaryRow>(await db.execute(sql`
     SELECT
@@ -977,6 +978,7 @@ export async function readOrderSummary(
       )::int AS malformed_buy_rows
     FROM poly_copy_trade_fills f
     WHERE f.billing_account_id = ${billingAccountId}
+      AND f.mode = ${mode}
   `));
   const row = rows[0];
   const openOrders = nonnegativeInt(row?.open_orders);

@@ -114,19 +114,19 @@ describe("wallet dashboard order aggregate", () => {
       },
     ]);
 
-    const tenantA = await readOrderSummary(db, TENANT_A, CAPTURED_AT);
+    const tenantA = await readOrderSummary(db, TENANT_A, CAPTURED_AT, "live");
     expect(tenantA.openOrders).toBe(2_001);
     expect(tenantA.malformedBuyRows).toBe(1);
     expect(tenantA.lockedUsdc).toBeNull();
     expect(tenantA.observedAt).toBe(CAPTURED_AT);
 
-    const tenantB = await readOrderSummary(db, TENANT_B, CAPTURED_AT);
+    const tenantB = await readOrderSummary(db, TENANT_B, CAPTURED_AT, "live");
     expect(tenantB.openOrders).toBe(3);
     // Pending PG accounting reserves the full intent; verified accounting may
     // release only its authoritative gross execution notional.
     expect(tenantB.lockedUsdc).toBe(1_008.99);
 
-    const empty = await readOrderSummary(db, "wallet-dashboard-orders-empty", CAPTURED_AT);
+    const empty = await readOrderSummary(db, "wallet-dashboard-orders-empty", CAPTURED_AT, "live");
     expect(empty).toMatchObject({
       openOrders: 0,
       lockedUsdc: 0,

@@ -994,6 +994,52 @@ describe("wallet dashboard coherent snapshot", () => {
     }
   });
 
+  it.each(["live", "paper"] as const)("subtracts only selected %s obligations for a dual-kind tenant", async (mode) => {
+    const suffix = randomUUID();
+    const userId = `dual-cash-${suffix}`, account = `dual-cash-${suffix}`;
+    const liveAddress = `0x${suffix.replaceAll("-", "").padStart(40, "b")}`;
+    const liveWallet = await seedConnection({ userId, billingAccountId: account, address: liveAddress });
+    const paperAddress = await seedNativePaperConnection({ userId, billingAccountId: account }, "100");
+    const [paperWallet] = await db.insert(polyTraderWallets).values({ walletAddress: paperAddress, kind: "paper_wallet", label: "Dual cash paper" }).returning();
+    if (!paperWallet) throw new Error("Missing paper wallet");
+    try {
+      await db.update(polyWalletBalanceSnapshots).set({ usdcE: "100", pusd: "0", observedAt: new Date() })
+        .where(eq(polyWalletBalanceSnapshots.billingAccountId, account));
+      // Retained LIVE obligations survive revocation and must never debit PAPER.
+      if (mode === "paper") {
+        await db.update(polyWalletConnections).set({ revokedAt: new Date() })
+          .where(and(eq(polyWalletConnections.billingAccountId, account), eq(polyWalletConnections.kind, "privy_live")));
+        const projection = await observePaperWallet({ db, wallet: { traderWalletId: paperWallet.id,
+          account: { billingAccountId: account, address: paperAddress, seedUsdc: "100" } },
+          now: new Date(Date.now() - 1_000), readMidPrice: async () => 0.5, logger: {
+            debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => ({})
+          } as never });
+        expect(projection.navPublished).toBe(true);
+      }
+      const otherMode = mode === "live" ? "paper" : "live";
+      await db.insert(polyCopyTradeFills).values({ billingAccountId: account, createdByUserId: userId,
+        targetId: randomUUID(), fillId: `other-mode-${suffix}`, clientOrderId: `other-mode-${suffix}`,
+        marketId: `other-mode-${suffix}`, mode: otherMode, status: "pending", observedAt: new Date(),
+        attributes: { side: "BUY", size_usdc: "5" } });
+      const dashboard = await readTenantWalletDashboard({ db, billingAccountId: account, interval: "1W", adapterConfigured: true });
+      expect(dashboard.overview).toMatchObject({ account_kind: mode === "live" ? "privy_live" : "paper",
+        address: mode === "live" ? liveAddress : paperAddress, usdc_available: 100, usdc_locked: 0, open_orders: 0 });
+      // Positive control: the selected mode's obligation is still reserved.
+      await db.insert(polyCopyTradeFills).values({ billingAccountId: account, createdByUserId: userId,
+        targetId: randomUUID(), fillId: `selected-mode-${suffix}`, clientOrderId: `selected-mode-${suffix}`,
+        marketId: `selected-mode-${suffix}`, mode, status: "pending", observedAt: new Date(),
+        attributes: { side: "BUY", size_usdc: "7" } });
+      const reserved = await readTenantWalletDashboard({ db, billingAccountId: account, interval: "1W", adapterConfigured: true });
+      expect(reserved.overview).toMatchObject({ usdc_locked: 7, open_orders: 1 });
+      // Unauthenticated PAPER intent cannot certify finance; LIVE cash is known.
+      expect(reserved.overview.usdc_available).toBe(mode === "live" ? 93 : null);
+    } finally {
+      await db.delete(billingAccounts).where(eq(billingAccounts.id, account));
+      await db.delete(users).where(eq(users.id, userId));
+      await db.delete(polyTraderWallets).where(inArray(polyTraderWallets.id, [liveWallet.id, paperWallet.id]));
+    }
+  });
+
   it("returns exact 501/31 counts with independently bounded 500/30 previews", async () => {
     const result = await readTenantWalletDashboard({
       db,
