@@ -192,6 +192,7 @@ describe("copy-trade investigation", () => {
           token_id: `quant-multi-token-${index}`,
           outcome: `OPTION_${index}`,
           side: "BUY",
+          size_usdc: 0.1,
         },
       })),
       {
