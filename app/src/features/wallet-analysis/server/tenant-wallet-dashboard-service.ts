@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
 /** Coherent, bounded, DB-only wallet-dashboard read model. */
+import { copyFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import { randomUUID } from "node:crypto";
 import type {
   PolyAccountPortfolioSnapshotOutput,
@@ -406,7 +407,18 @@ export async function readTenantWalletDashboardIn(
     );
   }
 
-  const cashFact = cashMeta(balance, capturedAtDate);
+  // Paper's saved balance is NAV; unsupported chain assets do not make an
+  // authenticated, complete paper generation financially partial.
+  const paperFinanceValidated = connection.connectionKind === "paper" &&
+    balance.kind === "available" && balance.status !== "error" && balance.usdcE !== null &&
+    balance.observedAt.getTime() <= capturedAtDate.getTime() &&
+    economicRead.ok && economicRead.value.observerComplete && economicRead.value.observerStatus === "ok" &&
+    economicRead.value.historyIncompleteCount === 0 && economicRead.value.incompleteCount === 0 &&
+    economicRead.value.fillIdentityConflictCount === 0 && economicRead.value.currentIdentityConflictCount === 0 &&
+    balance.observedAt.toISOString() === economicRead.value.observerSyncedAt;
+  const cashFact = paperFinanceValidated && balance.kind === "available"
+    ? factFromAge("polygon_balance_snapshot", balance.observedAt.toISOString(), capturedAtDate, WALLET_BALANCE_FRESHNESS_MS)
+    : cashMeta(balance, capturedAtDate);
   if (!balanceRead.ok) {
     // The identity row is authoritative and was resolved before the
     // component savepoint. A cash-table failure must not erase it or
@@ -646,9 +658,12 @@ export async function readTenantWalletDashboardIn(
     );
   }
 
-  const cashOnChain = balance.kind === "available"
-    ? nullableSum(balance.usdcE, balance.pusd)
-    : null;
+  const coherentPaperMtm = economicRead.ok && currentPositionFact.complete
+    ? economicRead.value.positionsMtm : null;
+  const cashOnChain = connection.connectionKind === "paper"
+    ? paperFinanceValidated && balance.kind === "available" && balance.usdcE !== null && coherentPaperMtm !== null
+      ? roundMoney(balance.usdcE - coherentPaperMtm) : null
+    : balance.kind === "available" ? nullableSum(balance.usdcE, balance.pusd) : null;
   const lockedUsdc = orderRead.ok && orderRead.value.lockedUsdc !== null
     ? roundMoney(orderRead.value.lockedUsdc)
     : null;
@@ -903,7 +918,7 @@ function walletReadiness(
 export async function readOrderSummary(
   db: ExecuteDb,
   billingAccountId: string,
-  _capturedAt: string
+  capturedAt: string
 ) {
   const rows = normalizeRows<OrderSummaryRow>(await db.execute(sql`
     SELECT
@@ -919,8 +934,7 @@ export async function readOrderSummary(
             COALESCE(f.attributes->>'size_usdc', '') !~ '^[0-9]+(\\.[0-9]+)?$'
             OR (
               (
-                COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-                OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
+                ${copyFillAccountingSql("f", sql`${capturedAt}::timestamptz`).realized}
               )
               AND
               COALESCE(f.attributes->>'filled_size_usdc', '') <> ''
@@ -936,8 +950,7 @@ export async function readOrderSummary(
             CASE WHEN f.attributes->>'size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
               THEN (f.attributes->>'size_usdc')::numeric ELSE 0 END
               - CASE WHEN (
-                  COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-                  OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
+                  ${copyFillAccountingSql("f", sql`${capturedAt}::timestamptz`).realized}
                 ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
                 THEN (f.attributes->>'filled_size_usdc')::numeric ELSE 0 END,
             0
@@ -954,8 +967,7 @@ export async function readOrderSummary(
             COALESCE(f.attributes->>'size_usdc', '') !~ '^[0-9]+(\\.[0-9]+)?$'
             OR (
               (
-                COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-                OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
+                ${copyFillAccountingSql("f", sql`${capturedAt}::timestamptz`).realized}
               )
               AND
               COALESCE(f.attributes->>'filled_size_usdc', '') <> ''
@@ -1011,7 +1023,7 @@ export async function readTradeActivity(
       WHERE f.billing_account_id = ${billingAccountId}
         AND f.observed_at >= ${windowStart.toISOString()}::timestamptz
         AND f.observed_at <= ${capturedAt.toISOString()}::timestamptz
-        AND ${countedTradePredicate()}
+        AND ${countedTradePredicate(capturedAt)}
       GROUP BY 1
       ORDER BY 1
     `));
@@ -1048,7 +1060,7 @@ export async function readTradeActivity(
           : sql`TRUE`
       }
       AND f.observed_at <= ${capturedAt.toISOString()}::timestamptz
-      AND ${countedTradePredicate()}
+      AND ${countedTradePredicate(capturedAt)}
     GROUP BY 1
     ORDER BY 1
   `));
@@ -1095,15 +1107,14 @@ export async function readTradeActivity(
   return { bucketUnit, buckets };
 }
 
-function countedTradePredicate(): SQL {
+function countedTradePredicate(capturedAt: Date): SQL {
   return sql`(
     CASE WHEN (
-        COALESCE(f.attributes->>'position_gap_version', '') <> '3'
-        OR f.attributes->>'realized_fill_source' IN ('clob_associated_trades', 'data_api_activity_position')
+        ${copyFillAccountingSql("f", sql`${capturedAt.toISOString()}::timestamptz`).realized}
       ) AND f.attributes->>'filled_size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
       THEN (f.attributes->>'filled_size_usdc')::numeric ELSE 0 END > 0
     OR (
-      COALESCE(f.attributes->>'position_gap_version', '') <> '3'
+      f.mode = 'live' AND COALESCE(f.attributes->>'position_gap_version', '') <> '3'
       AND f.status IN ('filled', 'partial')
       AND CASE WHEN f.attributes->>'size_usdc' ~ '^[0-9]+(\\.[0-9]+)?$'
         THEN (f.attributes->>'size_usdc')::numeric ELSE 0 END > 0
