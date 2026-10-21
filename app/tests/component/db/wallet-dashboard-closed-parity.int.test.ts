@@ -442,130 +442,133 @@ describe("current quantity authority and whole-position cost", () => {
 
 describe("paper lifetime economics from complete ledger projection", () => {
   it("reports BUY10 at .4 SELL10 at .6 as +$2, withholding incomplete/conflicting paper and live mode", async () => {
-    const db = getSeedDb();
-    const address = `0x${randomUUID().replaceAll("-", "").padStart(40, "0")}`;
-    const [wallet] = await db
-      .insert(polyTraderWallets)
-      .values({
-        walletAddress: address,
-        kind: "paper_wallet",
-        label: "paper-completeness",
-      })
-      .returning();
-    if (!wallet) throw new Error("missing paper wallet");
-    const conditionId = `paper-${randomUUID()}`;
-    const observed = new Date("2026-10-12T11:59:00Z");
-    try {
-      await db
-        .insert(polyTraderIngestionCursors)
+    // Keep this standalone fixture invisible to other files' paper-wallet
+    // retirement sweeps until its assertions and cleanup have finished.
+    await getSeedDb().transaction(async (db) => {
+      const address = `0x${randomUUID().replaceAll("-", "").padStart(40, "0")}`;
+      const [wallet] = await db
+        .insert(polyTraderWallets)
         .values({
-          traderWalletId: wallet.id,
-          source: "paper-ledger-positions",
-          status: "ok",
-          lastSuccessAt: observed,
-        });
-      await db.insert(polyTraderFills).values([
-        {
-          traderWalletId: wallet.id,
-          source: "paper-ledger",
-          nativeId: "paper-buy",
-          conditionId,
-          tokenId: "1",
-          side: "BUY",
-          price: "0.4",
-          shares: "10",
-          sizeUsdc: "4",
-          observedAt: new Date("2026-10-12T10:00:00Z"),
-          raw: {},
-        },
-        {
-          traderWalletId: wallet.id,
-          source: "paper-ledger",
-          nativeId: "paper-sell",
-          conditionId,
-          tokenId: "1",
-          side: "SELL",
-          price: "0.6",
-          shares: "10",
-          sizeUsdc: "6",
-          observedAt: new Date("2026-10-12T11:00:00Z"),
-          raw: {},
-        },
-      ]);
-      await db
-        .insert(polyTraderCurrentPositions)
-        .values({
-          traderWalletId: wallet.id,
-          conditionId,
-          tokenId: "1",
-          shares: "0",
-          costBasisUsdc: "0",
-          currentValueUsdc: "0",
-          avgPrice: "0.4",
-          active: false,
-          contentHash: "paper-complete",
-          lastObservedAt: observed,
-          raw: {
-            source: "paper-ledger",
-            buyUsdc: 4,
-            sellUsdc: 6,
-            buyShares: 10,
-            netShares: 0,
-            lastFillAt: "2026-10-12T11:00:00Z",
-          },
-        });
-      const read = (connectionKind: "paper" | "privy_live" = "paper") =>
-        readEconomicPositionProjection({
-          db,
-          billingAccountId: TENANT,
           walletAddress: address,
-          connectionKind,
-          capturedAt: CAPTURED,
-          interval: "ALL",
-        });
-      const complete = await read();
-      expect(complete.closedPositions).toEqual([
-        expect.objectContaining({ asset: "1", pnlUsd: 2 }),
-      ]);
-      expect(complete.positionFacts).toEqual([
-        expect.objectContaining({
-          mode: "paper",
-          economicsCoverage: "complete",
-          realizedPnlUsdc: 2,
-          lifetimePnlUsdc: 2,
-        }),
-      ]);
-      expect((await read("privy_live")).positionFacts).toHaveLength(0);
-      await db
-        .update(polyTraderIngestionCursors)
-        .set({ status: "partial" })
-        .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
-      expect((await read()).positionFacts).toEqual([
-        expect.objectContaining({
-          economicsCoverage: "partial",
-          lifetimePnlUsdc: null,
-        }),
-      ]);
-      await db
-        .update(polyTraderIngestionCursors)
-        .set({ status: "ok" })
-        .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
-      await db
-        .update(polyTraderCurrentPositions)
-        .set({
-          raw: {
-            source: "paper-ledger",
-            buyUsdc: 3,
-            sellUsdc: 6,
-            buyShares: 10,
-          },
+          kind: "paper_wallet",
+          label: "paper-completeness",
         })
-        .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
-      expect((await read()).closedPositions[0]?.pnlUsd).toBeNull();
-    } finally {
-      await db
-        .delete(polyTraderWallets)
-        .where(eq(polyTraderWallets.id, wallet.id));
-    }
+        .returning();
+      if (!wallet) throw new Error("missing paper wallet");
+      const conditionId = `paper-${randomUUID()}`;
+      const observed = new Date("2026-10-12T11:59:00Z");
+      try {
+        await db
+          .insert(polyTraderIngestionCursors)
+          .values({
+            traderWalletId: wallet.id,
+            source: "paper-ledger-positions",
+            status: "ok",
+            lastSuccessAt: observed,
+          });
+        await db.insert(polyTraderFills).values([
+          {
+            traderWalletId: wallet.id,
+            source: "paper-ledger",
+            nativeId: "paper-buy",
+            conditionId,
+            tokenId: "1",
+            side: "BUY",
+            price: "0.4",
+            shares: "10",
+            sizeUsdc: "4",
+            observedAt: new Date("2026-10-12T10:00:00Z"),
+            raw: {},
+          },
+          {
+            traderWalletId: wallet.id,
+            source: "paper-ledger",
+            nativeId: "paper-sell",
+            conditionId,
+            tokenId: "1",
+            side: "SELL",
+            price: "0.6",
+            shares: "10",
+            sizeUsdc: "6",
+            observedAt: new Date("2026-10-12T11:00:00Z"),
+            raw: {},
+          },
+        ]);
+        await db
+          .insert(polyTraderCurrentPositions)
+          .values({
+            traderWalletId: wallet.id,
+            conditionId,
+            tokenId: "1",
+            shares: "0",
+            costBasisUsdc: "0",
+            currentValueUsdc: "0",
+            avgPrice: "0.4",
+            active: false,
+            contentHash: "paper-complete",
+            lastObservedAt: observed,
+            raw: {
+              source: "paper-ledger",
+              buyUsdc: 4,
+              sellUsdc: 6,
+              buyShares: 10,
+              netShares: 0,
+              lastFillAt: "2026-10-12T11:00:00Z",
+            },
+          });
+        const read = (connectionKind: "paper" | "privy_live" = "paper") =>
+          readEconomicPositionProjection({
+            db,
+            billingAccountId: TENANT,
+            walletAddress: address,
+            connectionKind,
+            capturedAt: CAPTURED,
+            interval: "ALL",
+          });
+        const complete = await read();
+        expect(complete.closedPositions).toEqual([
+          expect.objectContaining({ asset: "1", pnlUsd: 2 }),
+        ]);
+        expect(complete.positionFacts).toEqual([
+          expect.objectContaining({
+            mode: "paper",
+            economicsCoverage: "complete",
+            realizedPnlUsdc: 2,
+            lifetimePnlUsdc: 2,
+          }),
+        ]);
+        expect((await read("privy_live")).positionFacts).toHaveLength(0);
+        await db
+          .update(polyTraderIngestionCursors)
+          .set({ status: "partial" })
+          .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
+        expect((await read()).positionFacts).toEqual([
+          expect.objectContaining({
+            economicsCoverage: "partial",
+            lifetimePnlUsdc: null,
+          }),
+        ]);
+        await db
+          .update(polyTraderIngestionCursors)
+          .set({ status: "ok" })
+          .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
+        await db
+          .update(polyTraderCurrentPositions)
+          .set({
+            raw: {
+              source: "paper-ledger",
+              buyUsdc: 3,
+              sellUsdc: 6,
+              buyShares: 10,
+            },
+          })
+          .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+        expect((await read()).closedPositions[0]?.pnlUsd).toBeNull();
+      } finally {
+        await db
+          .delete(polyTraderWallets)
+          .where(eq(polyTraderWallets.id, wallet.id));
+      }
+    });
   });
 });
