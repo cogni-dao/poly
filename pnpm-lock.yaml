@@ -165,8 +165,8 @@ importers:
         specifier: workspace:*
         version: link:../packages/scheduler-core
       '@cogni/work-items':
-        specifier: https://github.com/cogni-dao/node-template/releases/download/work-items-v0.2.0/cogni-dao-work-items-0.2.0.tgz
-        version: '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.2.0/cogni-dao-work-items-0.2.0.tgz'
+        specifier: https://github.com/cogni-dao/node-template/releases/download/work-items-v0.2.1/cogni-dao-work-items-0.2.1.tgz
+        version: '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.2.1/cogni-dao-work-items-0.2.1.tgz'
       '@dnd-kit/core':
         specifier: ^6.3.1
         version: 6.3.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
@@ -1440,9 +1440,9 @@ packages:
     peerDependencies:
       '@cogni/ai-tools': '*'
 
-  '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.2.0/cogni-dao-work-items-0.2.0.tgz':
-    resolution: {integrity: sha512-vO6i1QhRBMMsCYn11ovMAtG9MiVql/nEOjS4r0geKidwacKI6nFNMsBoqWg3JO1dJ6PqtTq4MESDlb4M5pmP6w==, tarball: https://github.com/cogni-dao/node-template/releases/download/work-items-v0.2.0/cogni-dao-work-items-0.2.0.tgz}
-    version: 0.2.0
+  '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.2.1/cogni-dao-work-items-0.2.1.tgz':
+    resolution: {integrity: sha512-E7H9KwTC4M6Nqg+9bdqPQNHoVc6t66c2NgW2Sh5UOg7kEG3jqiKTOi14L/7Q383QawM2XQDJYt/v+Fz7tuXHSQ==, tarball: https://github.com/cogni-dao/node-template/releases/download/work-items-v0.2.1/cogni-dao-work-items-0.2.1.tgz}
+    version: 0.2.1
 
   '@coinbase/cdp-sdk@1.51.0':
     resolution: {integrity: sha512-XK8+OXDER1jirYpuiOct4ij65ODQ31LsmyRrZi/J7zF4GB89qxWZ0KPfAdsqJMP7VvE4no+Q++MKkQtAJUBoyg==}
@@ -9952,7 +9952,7 @@ snapshots:
       postgres: 3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi)
       zod: 4.4.3
 
-  '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.2.0/cogni-dao-work-items-0.2.0.tgz':
+  '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.2.1/cogni-dao-work-items-0.2.1.tgz':
     dependencies:
       type-fest: 5.7.0
       yaml: 2.9.0
