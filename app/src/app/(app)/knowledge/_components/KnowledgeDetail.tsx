@@ -12,6 +12,7 @@
 
 "use client";
 
+import { KnowledgeUseWhen } from "@cogni/knowledge-base-ui";
 import type { KnowledgeRow } from "@cogni/node-contracts";
 import type { ReactElement } from "react";
 
@@ -50,6 +51,10 @@ export function KnowledgeDetail({
               <SheetTitle className="text-lg leading-snug">
                 {item.title}
               </SheetTitle>
+              <KnowledgeUseWhen
+                useWhen={item.useWhen}
+                className="text-muted-foreground text-sm leading-relaxed [&>span]:font-medium"
+              />
               <div className="flex items-center gap-1.5">
                 <span className="font-mono text-muted-foreground text-xs">
                   {item.id}
