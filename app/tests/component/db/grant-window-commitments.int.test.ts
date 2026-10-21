@@ -53,7 +53,7 @@ async function withHarness(
 		account: string;
 		otherAccount: string;
 		seed: (fill?: Fill) => Promise<void>;
-		authorize: () => Promise<{ ok: boolean; reason?: string }>;
+		authorize: (usdcAmount?: number) => Promise<{ ok: boolean; reason?: string }>;
 	}) => Promise<void>,
 	caps: { daily?: number; hourly?: number } = {},
 ) {
@@ -148,7 +148,8 @@ async function withHarness(
 					db,
 					account,
 					otherAccount,
-					authorize: () => venue.authorizeIntent(account, intent),
+					authorize: (usdcAmount = intent.usdcAmount) =>
+						venue.authorizeIntent(account, { ...intent, usdcAmount }),
 					async seed(fill = {}) {
 						await tx.insert(polyCopyTradeFills).values({
 							billingAccountId: account,
@@ -672,6 +673,22 @@ describe.each(["live", "paper"] as const)(
 				});
 			});
 		});
+
+		it.each([
+			["NaN", "backend_unreachable"],
+			["10", "cap_exceeded_per_order"],
+		] as const)(
+			"checks cap finiteness before per-order denial (daily %s)",
+			async (dailyUsdcCap, reason) => {
+				await withHarness(mode, async ({ db, account, authorize }) => {
+					await db
+						.update(polyWalletGrants)
+						.set({ perOrderUsdcCap: "5", dailyUsdcCap })
+						.where(eq(polyWalletGrants.billingAccountId, account));
+					expect(await authorize(6)).toMatchObject({ ok: false, reason });
+				});
+			},
+		);
 
 		it.each(["5", "NaN"])(
 			"denies persisted NaN caps (per-order %s)",

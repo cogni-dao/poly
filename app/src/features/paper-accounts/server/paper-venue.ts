@@ -19,7 +19,7 @@
  *     hold one active row of each kind, and authorizing a paper intent off the
  *     live row (or vice versa) would charge one account's caps to the other.
  *   - SAME_DECISION_SEQUENCE: approvals stamp → grant presence → expiry →
- *     scope → per-order cap → daily cap → hourly fills cap, in that order,
+ *     scope → finite caps → per-order cap → daily cap → hourly fills cap,
  *     matching `PrivyPolyTraderWalletAdapter.authorizeIntent`. Reordering would
  *     make a paper account's denial reason incomparable to its live twin's,
  *     which is the entire point of running paper.
@@ -115,9 +115,9 @@ export interface PaperGrantFacts {
 
 /**
  * Everything decidable WITHOUT the cap-window counters: approvals stamp, grant
- * presence, expiry, scope, per-order cap. Pure, so the sequence is unit-
- * testable and the DB wrapper can skip the two counter queries whenever one of
- * these already denies.
+ * presence, expiry, scope, finite caps, per-order cap. Pure, so the sequence is
+ * unit-testable and the DB wrapper can skip the two counter queries whenever
+ * one of these already denies.
  *
  * @public
  */
@@ -142,6 +142,13 @@ export function evaluatePaperGrantPreconditions(input: {
     input.intent.side === "BUY" ? "poly:trade:buy" : "poly:trade:sell";
   if (!grant.scopes.includes(requiredScope)) {
     return { ok: false, reason: "scope_missing" };
+  }
+  if (
+    ![grant.perOrderUsdcCap, grant.dailyUsdcCap, grant.hourlyFillsCap].every(
+      Number.isFinite
+    )
+  ) {
+    return { ok: false, reason: "backend_unreachable" };
   }
   if (input.intent.usdcAmount > grant.perOrderUsdcCap) {
     return { ok: false, reason: "cap_exceeded_per_order" };
@@ -294,9 +301,6 @@ export function createPaperVenue(deps: {
           now: now(),
         });
         if (!preconditions.ok || grant === null) return preconditions;
-        if (![grant.perOrderUsdcCap, grant.dailyUsdcCap, grant.hourlyFillsCap].every(Number.isFinite)) {
-          return { ok: false, reason: "backend_unreachable" };
-        }
 
         // CAPS_COUNT_INTENTS + CAP_WINDOWS_ARE_MODE_SCOPED. Filter on
         // `created_at` (intent insertion), not `observed_at` (upstream fill
