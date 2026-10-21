@@ -1639,17 +1639,51 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 	});
 
 	it("bounds physical candidates before malformed eligibility, revalidates PKs, and proves two SELECTs in one read-only snapshot", async () => {
+		const phaseStart = performance.now();
+		let previousPhaseAt = phaseStart;
+		const markPhase = (
+			phase:
+				| "start"
+				| "fixture-ready"
+				| "seeded"
+				| "published"
+				| "population-inserted"
+				| "population-analyzed"
+				| "snapshot-verified"
+				| "primary-plans-verified"
+				| "overflow-inserted"
+				| "overflow-analyzed"
+				| "overflow-verified"
+				| "batch-verified"
+				| "cleanup-start"
+				| "cleanup-complete",
+		) => {
+			const now = performance.now();
+			console.info(JSON.stringify({
+				probe: "metadata_origin_phase",
+				phase,
+				elapsedMs: Math.round(now - phaseStart),
+				phaseMs: Math.round(now - previousPhaseAt),
+			}));
+			previousPhaseAt = now;
+		};
+		markPhase("start");
 		const f = await originFixture();
+		markPhase("fixture-ready");
 		try {
 			await f.seed();
+			markPhase("seeded");
 			await f.publish();
+			markPhase("published");
 			// A large unrelated physical market population makes a true account/market seek observable.
 			await db.execute(sql`INSERT INTO poly_copy_trade_fills
         (billing_account_id,created_by_user_id,target_id,fill_id,market_id,observed_at,client_order_id,status,mode,attributes)
         SELECT ${f.account},${f.user},${targetIdFromWallet(f.target)}::uuid,'unrelated-'||n,
           'prediction-market:polymarket:unrelated-'||n,${at(10)}::timestamptz,${f.account}||'-unrelated-'||n,'filled','paper','{}'::jsonb
         FROM generate_series(1,5000) n`);
+			markPhase("population-inserted");
 			await getAppDb().execute(sql`ANALYZE poly_copy_trade_fills`);
+			markPhase("population-analyzed");
 			const dialect = new PgDialect();
 			const statements: string[] = [];
 			await db.transaction(
@@ -1670,6 +1704,7 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 				},
 				{ isolationLevel: "repeatable read", accessMode: "read only" },
 			);
+			markPhase("snapshot-verified");
 			expect(statements).toHaveLength(2);
 			expect(
 				statements.every(
@@ -1746,6 +1781,7 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 				},
 				{ isolationLevel: "repeatable read", accessMode: "read only" },
 			);
+			markPhase("primary-plans-verified");
 			// 257 wrong-token/malformed records must consume the physical budget, even with a valid row deeper in history.
 			await db.execute(sql`INSERT INTO poly_copy_trade_fills
         (billing_account_id,created_by_user_id,target_id,fill_id,market_id,observed_at,client_order_id,order_id,status,mode,attributes)
@@ -1753,7 +1789,9 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
           ${`prediction-market:polymarket:${f.condition}`},${at(15)}::timestamptz,${f.account}||'-overflow-'||n,NULL,'filled','paper',
           CASE WHEN n%2=0 THEN '{}'::jsonb ELSE jsonb_build_object('token_id','wrong-token') END
         FROM generate_series(1,257) n`);
+			markPhase("overflow-inserted");
 			await getAppDb().execute(sql`ANALYZE poly_copy_trade_fills`);
+			markPhase("overflow-analyzed");
 			await db.transaction(
 				async (tx) => {
 					const query = positionMetadataOriginSelect(
@@ -1813,6 +1851,7 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 				},
 				{ isolationLevel: "repeatable read", accessMode: "read only" },
 			);
+			markPhase("overflow-verified");
 			// Keys are batched physically (100 + 1), never silently truncated.
 			await db.transaction(
 				async (tx) => {
@@ -1836,8 +1875,11 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 				},
 				{ isolationLevel: "repeatable read", accessMode: "read only" },
 			);
+			markPhase("batch-verified");
 		} finally {
+			markPhase("cleanup-start");
 			await f.cleanup();
+			markPhase("cleanup-complete");
 		}
 	});
 });
