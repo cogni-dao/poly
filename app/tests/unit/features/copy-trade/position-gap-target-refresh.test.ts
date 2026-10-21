@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
 import type {
+  OrderReceipt,
 	TargetBookProviderV1,
 	TargetBookSnapshotV1,
 } from "@cogni/poly-market-provider";
@@ -16,6 +17,7 @@ import {
 	startPositionGapActor,
 } from "@/features/copy-trade/position-gap-actor";
 import { recoverableHardClobRejectionCode } from "@/features/copy-trade/position-gap-placement-errors";
+import { provePaperReceipt } from "@/features/trading/fill-accounting";
 import { PositionGapTargetRefreshCoordinator } from "@/features/copy-trade/position-gap-target-refresh";
 
 const snapshot: TargetBookSnapshotV1 = {
@@ -428,10 +430,10 @@ describe("buildPositionGapBuyIntent", () => {
 			runId: "open-run",
 			clientOrderId: "open-client",
 			orderId: "open-order",
-			conditionId: "condition",
-			tokenId: "token",
+			conditionId: `0x${"a".repeat(64)}`,
+			tokenId: "12345",
 			cohortKey: "cohort",
-			marketId: "prediction-market:polymarket:condition",
+			marketId: `prediction-market:polymarket:0x${"a".repeat(64)}`,
 			outcome: "0",
 			shares: 2,
 			filledShares: 0,
@@ -444,8 +446,8 @@ describe("buildPositionGapBuyIntent", () => {
 			openBuyOrders: [
 				{
 					orderId: "open-order",
-					conditionId: "condition",
-					tokenId: "token",
+					conditionId: `0x${"a".repeat(64)}`,
+					tokenId: "12345",
 					cohortId: "cohort",
 					remainingShares: 2,
 					reservedUsdc: 1,
@@ -462,6 +464,8 @@ describe("buildPositionGapBuyIntent", () => {
 					order_id: "open-order",
 					client_order_id: "open-client",
 					status: "open",
+          filled_size_usdc: 0,
+          attributes: { market: `0x${"a".repeat(64)}`, tokenId: "12345", side: "BUY", sizeMatched: 0 },
 					submitted_at: "2026-10-08T00:00:00.000Z",
 				},
 			})
@@ -470,9 +474,19 @@ describe("buildPositionGapBuyIntent", () => {
 					order_id: "open-order",
 					client_order_id: "open-client",
 					status: "canceled",
+          filled_size_usdc: 0,
+          attributes: { market: `0x${"a".repeat(64)}`, tokenId: "12345", side: "BUY", sizeMatched: 0 },
 					submitted_at: "2026-10-08T00:00:00.000Z",
 				},
 			});
+    const markOrderId = vi.fn(async ({ receipt }: { receipt: OrderReceipt }) => ({
+      mode: "paper" as const, client_order_id: receipt.client_order_id, order_id: receipt.order_id,
+      status: receipt.status, accepted: true,
+      accounting: provePaperReceipt(receipt, { mode: "paper", billing_account_id: "billing-account",
+        connection_id: "paper-connection", client_order_id: "open-client", order_id: "open-order",
+        condition_id: `0x${"a".repeat(64)}`, token_id: "12345", side: "BUY" },
+        { billing_account_id: "billing-account", connection_id: "paper-connection", observed_at: "2026-10-08T00:00:00.000Z" }),
+    }));
 		const markCancelConfirmed = vi.fn(async () => undefined);
 		const persistPlan = vi.fn(async () => ({
 			runId: "safety-run",
@@ -543,8 +557,8 @@ describe("buildPositionGapBuyIntent", () => {
 						clientOrderId: "open-client",
 						orderId: "open-order",
 						mode: "paper" as const,
-						conditionId: "condition",
-						tokenId: "token",
+						conditionId: `0x${"a".repeat(64)}`,
+						tokenId: "12345",
 						remainingShares: 1,
 					},
 				]),
@@ -556,7 +570,7 @@ describe("buildPositionGapBuyIntent", () => {
 				finishRun: vi.fn(async () => undefined),
 			} as never,
 			ledger: {
-				markOrderId: vi.fn(async () => undefined),
+				markOrderId,
 				markCanceled: vi.fn(async () => undefined),
 			} as never,
 			getExecutionMode: vi.fn(async () => "paper" as const),
