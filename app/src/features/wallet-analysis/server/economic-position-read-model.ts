@@ -332,10 +332,13 @@ export function buildEconomicPositionProjectionQuery(
         f.source,
         f.native_id,
         (array_agg(f.id ORDER BY w.updated_at DESC, w.created_at DESC, w.id, f.id))[1] AS chosen_id,
-        count(DISTINCT md5(concat_ws('|',
+        min(md5(concat_ws('|',
           lower(f.condition_id), f.token_id, f.side, f.price::text,
           f.shares::text, f.size_usdc::text, f.observed_at::text
-        )))::int AS fact_variants
+        ))) IS DISTINCT FROM max(md5(concat_ws('|',
+          lower(f.condition_id), f.token_id, f.side, f.price::text,
+          f.shares::text, f.size_usdc::text, f.observed_at::text
+        ))) AS identity_conflict
       FROM poly_trader_fills f
       JOIN wallet_identity w ON w.id = f.trader_wallet_id
       LEFT JOIN driven_keys k
@@ -347,7 +350,7 @@ export function buildEconomicPositionProjectionQuery(
     ), conflicted_fill_groups AS MATERIALIZED (
       SELECT source, native_id
       FROM fill_groups
-      WHERE fact_variants > 1
+      WHERE identity_conflict
     ), fill_conflicted_keys AS MATERIALIZED (
       SELECT DISTINCT lower(f.condition_id) AS condition_id, f.token_id
       FROM poly_trader_fills f
@@ -368,7 +371,7 @@ export function buildEconomicPositionProjectionQuery(
         f.shares,
         f.size_usdc,
         f.observed_at,
-        g.fact_variants
+        g.identity_conflict
       FROM fill_groups g
       JOIN poly_trader_fills f ON f.id = g.chosen_id
     ), position_flows AS MATERIALIZED (
@@ -382,7 +385,7 @@ export function buildEconomicPositionProjectionQuery(
         MIN(observed_at) FILTER (WHERE side = 'BUY') AS first_buy_at,
         MAX(observed_at) AS last_flow_at,
         (array_agg(price ORDER BY observed_at DESC))[1]::numeric AS last_price,
-        bool_or(fact_variants > 1) AS fill_identity_conflict
+        bool_or(identity_conflict) AS fill_identity_conflict
       FROM canonical_fills
       GROUP BY condition_id, token_id
     ), outcome_consensus AS MATERIALIZED (
