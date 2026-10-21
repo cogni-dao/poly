@@ -455,9 +455,9 @@ describe("Poly owned mutation composition", () => {
     },
     {
       name: "scope",
-      error: () => new KnowledgeWriteScopeRequipolyError(),
+      error: () => new KnowledgeWriteScopeRequiredError(),
       status: 500,
-      body: { errorCode: "knowledge_write_scope_requipoly", retryable: false },
+      body: { errorCode: "knowledge_write_scope_required", retryable: false },
     },
     {
       name: "preadmission busy",
