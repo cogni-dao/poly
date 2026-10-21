@@ -344,14 +344,17 @@ export function buildEconomicPositionProjectionQuery(
       WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
       GROUP BY f.source, f.native_id
       HAVING bool_or(k.condition_id IS NOT NULL)
+    ), conflicted_fill_groups AS MATERIALIZED (
+      SELECT source, native_id
+      FROM fill_groups
+      WHERE fact_variants > 1
     ), fill_conflicted_keys AS MATERIALIZED (
       SELECT DISTINCT lower(f.condition_id) AS condition_id, f.token_id
       FROM poly_trader_fills f
       JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      JOIN fill_groups g
+      JOIN conflicted_fill_groups g
         ON g.source = f.source
        AND g.native_id = f.native_id
-       AND g.fact_variants > 1
       JOIN driven_keys k
         ON k.condition_id = lower(f.condition_id)
        AND k.token_id = f.token_id
