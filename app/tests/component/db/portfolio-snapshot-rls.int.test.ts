@@ -40,6 +40,7 @@ import type { Database } from "@/adapters/server/db/client";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
 import { readTenantWalletDashboardIn, type WalletDashboardReadDiagnostics } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 import { buildEconomicPositionProjectionQuery } from "@/features/wallet-analysis/server/economic-position-read-model";
+import type { EconomicObservationV1 } from "@/features/wallet-analysis/server/economic-observation-recovery";
 import { createEconomicProjectionPlanProbe } from "@/features/wallet-analysis/server/economic-projection-plan";
 import {
   billingAccounts,
@@ -270,35 +271,58 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
     );
   }
 
-  it("captures unchanged LIVE projection plans as real owner and delegated app principals", async () => {
+  it("executes the full sparse LIVE projection as real owner and delegated app principals", async () => {
     const seed = getSeedDb();
     const wallet = await seed.execute<{ id: string }>(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label)
       VALUES (${funderA},'cogni_wallet','Projection role plan fixture') RETURNING id`);
     const walletId = wallet[0]?.id;
     if (!walletId) throw new Error("Missing projection plan wallet");
     try {
-      // Same 5080-row sparse/unrelated-history shape as the metadata plan fixture,
-      // now driven by the owned LIVE wallet rather than a copy-target identity.
+      // Full history drives 5080 lifetime keys; only 80 have a current
+      // observation. History envelopes are valid but deliberately PARTIAL.
+      const capturedAt = new Date();
+      const generationAt = new Date(capturedAt.getTime() - 1000).toISOString();
+      const conditionId = `0x${"bc".repeat(32)}`;
+      const historyObservation: Omit<EconomicObservationV1, "tokenId"> = {
+        version: 1, wallet: funderA, conditionId, fetchedAt: generationAt,
+        windowStart: new Date(capturedAt.getTime() - 86400_000).toISOString(),
+        windowEnd: generationAt, coverage: "partial", reasons: ["missing_closed_position"],
+        closedPosition: null, lifetimeBuyUsdc: .4, lifetimeBuyShares: 1,
+        lifetimeSellUsdc: 0, lifetimePnlUsdc: null, redeemUsdc: 0,
+        constituents: [], settlements: [],
+      };
       await seed.execute(sql`INSERT INTO poly_trader_position_snapshots
         (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,captured_at,raw)
-        SELECT ${walletId}::uuid,${`0x${"bc".repeat(32)}`},n::text,1,.4,.5,.4,'role-plan-'||n,
-          now()-(n||' seconds')::interval,'{}'::jsonb FROM generate_series(1,5080) n`);
+        SELECT ${walletId}::uuid,${conditionId},n::text,1,.4,.5,.4,'role-plan-'||n,
+          ${generationAt}::timestamptz,jsonb_build_object('economicObservationV1',
+            ${JSON.stringify(historyObservation)}::jsonb || jsonb_build_object('tokenId',n::text))
+        FROM generate_series(1,5080) n`);
       await seed.execute(sql`INSERT INTO poly_trader_fills
         (trader_wallet_id,source,native_id,condition_id,token_id,side,price,shares,size_usdc,observed_at,raw)
-        SELECT ${walletId}::uuid,'data-api','role-plan-'||n,${`0x${"bc".repeat(32)}`},n::text,
-          'BUY',.4,1,.4,now()-(n||' seconds')::interval,'{}'::jsonb FROM generate_series(1,5080) n`);
+        SELECT ${walletId}::uuid,'data-api','role-plan-'||n,${conditionId},n::text,
+          'BUY',.4,1,.4,${generationAt}::timestamptz-(n||' seconds')::interval,'{}'::jsonb
+        FROM generate_series(1,5080) n`);
+      await seed.execute(sql`INSERT INTO poly_trader_current_positions
+        (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,last_observed_at,first_observed_at,raw)
+        SELECT ${walletId}::uuid,${conditionId},n::text,1,.4,.5,.4,'role-current-'||n,
+          ${generationAt}::timestamptz,${generationAt}::timestamptz,'{}'::jsonb
+        FROM generate_series(1,80) n`);
+      await seed.execute(sql`INSERT INTO poly_trader_ingestion_cursors
+        (trader_wallet_id,source,last_success_at,status)
+        VALUES (${walletId}::uuid,'data-api-positions',${generationAt}::timestamptz,'ok')`);
       await seed.execute(sql`ANALYZE poly_trader_position_snapshots`);
       await seed.execute(sql`ANALYZE poly_trader_fills`);
-      const capturedAt = new Date();
+      await seed.execute(sql`ANALYZE poly_trader_current_positions`);
     for (const [role, actor] of [["owner", ownerA], ["delegated", canonicalAgent]] as const) {
       await withTenantScope(db, userActor(toUserId(actor.userId)), async tx => {
         await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
         await tx.execute(sql`SET LOCAL statement_timeout = 8000`);
         const probe = createEconomicProjectionPlanProbe();
-        const result = await probe(tx as unknown as Parameters<typeof probe>[0], buildEconomicPositionProjectionQuery({
+        const query = buildEconomicPositionProjectionQuery({
           billingAccountId: ownerA.billingAccountId, walletAddress: funderA,
           connectionKind: "privy_live", capturedAt, interval: "ALL",
-        }));
+        });
+        const result = await probe(tx as unknown as Parameters<typeof probe>[0], query);
         expect(result.status).toBe("captured");
         const [context] = await tx.execute(sql`SELECT current_user AS role,
           (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user) AS bypass_rls,
@@ -313,6 +337,69 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
           read_only: "on", isolation: "repeatable read", timeout: "8s" });
         expect(JSON.stringify(result)).not.toContain(ownerA.billingAccountId);
         expect(JSON.stringify(result)).not.toContain(funderA);
+        const projected = await tx.execute<{
+          live_count: number; closed_count: number; history_incomplete_count: number;
+          missing_mark_count: number; positions_mtm_usdc: string | null;
+          token_id: string; current_shares: string | null; current_value_usdc: string | null;
+          inventory_authoritative: boolean | null; mark_available: boolean | null;
+          history_complete: boolean | null; economic_bucket: string | null;
+        }>(query);
+        expect(projected).toHaveLength(500);
+        expect(projected[0]).toMatchObject({ live_count: 5080, closed_count: 0,
+          history_incomplete_count: 5080, missing_mark_count: 5000, positions_mtm_usdc: null });
+        expect(projected.every(row => row.economic_bucket === "live" && row.history_complete === false)).toBe(true);
+        const current = projected.filter(row => row.current_shares !== null);
+        expect(current).toHaveLength(80);
+        for (const row of current) {
+          expect(Number(row.current_shares)).toBe(1);
+          expect(Number(row.current_value_usdc)).toBe(.5);
+          expect(row.inventory_authoritative).toBe(true);
+          expect(row.mark_available).toBe(true);
+        }
+        expect(projected.filter(row => row.current_shares === null)
+          .every(row => row.current_value_usdc === null && row.mark_available === false)).toBe(true);
+        const [explained] = await tx.execute<{ "QUERY PLAN": Array<Record<string, unknown>> }>(
+          sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`);
+        const detail = explained?.["QUERY PLAN"][0];
+        if (!detail?.Plan) throw new Error("Missing executed projection plan");
+        type PlanNode = Record<string, unknown> & { Plans?: PlanNode[] };
+        const nodes: PlanNode[] = [];
+        const visit = (node: PlanNode): void => {
+          nodes.push(node);
+          for (const child of node.Plans ?? []) visit(child);
+        };
+        visit(detail.Plan as PlanNode);
+        // Numeric timings/costs/loops only: never log predicates, SQL, bindings,
+        // account IDs, addresses or row data from the real app-role plan.
+        const metric = (node: Record<string, unknown>, name: string): number | null =>
+          typeof node[name] === "number" && Number.isFinite(node[name]) ? node[name] as number : null;
+        const jit = detail.JIT as Record<string, unknown> | undefined;
+        const timing = jit?.Timing as Record<string, unknown> | undefined;
+        const options = jit?.Options as Record<string, unknown> | undefined;
+        const label = (value: unknown): string | null =>
+          typeof value === "string" && /^[A-Za-z][A-Za-z0-9_ .-]{0,119}$/.test(value) ? value : null;
+        const actual = {
+          planningMs: metric(detail, "Planning Time"), executionMs: metric(detail, "Execution Time"),
+          jit: jit ? { functions: metric(jit,"Functions"),
+            generationMs: timing ? metric(timing,"Generation") : null,
+            inliningMs: timing ? metric(timing,"Inlining") : null,
+            optimizationMs: timing ? metric(timing,"Optimization") : null,
+            emissionMs: timing ? metric(timing,"Emission") : null,
+            totalMs: timing ? metric(timing,"Total") : null,
+            inlining: typeof options?.Inlining === "boolean" ? options.Inlining : null,
+            optimization: typeof options?.Optimization === "boolean" ? options.Optimization : null } : null,
+          nodeCount: nodes.length, truncated: nodes.length > 24,
+          nodes: nodes.sort((a,b) => (metric(b,"Actual Total Time") ?? 0) - (metric(a,"Actual Total Time") ?? 0))
+            .slice(0,24).map(node => ({ node: label(node["Node Type"]), relation: label(node["Relation Name"]),
+              cte: label(node["CTE Name"]), subplan: label(node["Subplan Name"]),
+              estimatedRows: metric(node,"Plan Rows"), totalCost: metric(node,"Total Cost"),
+              actualRows: metric(node,"Actual Rows"), actualLoops: metric(node,"Actual Loops"),
+              actualTotalMs: metric(node,"Actual Total Time"),
+              sharedHitBlocks: metric(node,"Shared Hit Blocks"), sharedReadBlocks: metric(node,"Shared Read Blocks") })),
+        };
+        expect(actual.executionMs).not.toBeNull();
+        expect(actual.executionMs).toBeLessThan(8000);
+        console.info(JSON.stringify({ probe: "economic_projection_app_role_execution", environment: "ci_fixture", role, ...actual }));
         console.info(JSON.stringify({ probe: "economic_projection_app_role_plan", environment: "ci_fixture", role, ...result }));
       });
     }

@@ -251,6 +251,33 @@ export function buildEconomicPositionProjectionQuery(
         g.condition_id,
         g.token_id,
         g.chosen_wallet_id,
+        /* A retained positive is not an observation of a newer publication.
+           Evaluate only selected current facts, preserving the physical cursor;
+           an eligible sibling cannot lend authority. MAX includes future clocks:
+           overwritten authority cannot reconstruct an earlier capture. */
+        CASE WHEN ${mode} = 'paper' OR p.shares = 0 THEN NULL ELSE (
+          p.last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND observer.latest_generation_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND p.last_observed_at >= observer.latest_generation_at
+          AND NOT EXISTS (
+            SELECT 1 FROM poly_trader_current_positions future
+            JOIN wallet_identity w ON w.id = future.trader_wallet_id
+            WHERE lower(future.condition_id) = g.condition_id
+              AND future.token_id = g.token_id
+              AND future.last_observed_at > ${params.capturedAt.toISOString()}::timestamptz
+          )
+          AND EXISTS (
+            SELECT 1 FROM eligible_wallet_identity selected
+            JOIN poly_trader_ingestion_cursors cursor
+              ON cursor.trader_wallet_id = selected.id
+             AND cursor.source = 'data-api-positions'
+            WHERE selected.id = g.chosen_wallet_id
+              AND cursor.status = 'ok'
+              AND cursor.last_success_at IS NOT NULL
+              AND cursor.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
+              AND p.last_observed_at >= cursor.last_success_at
+          )
+        ) END AS live_positive_current_currency,
         p.shares,
         p.cost_basis_usdc,
         p.current_value_usdc,
@@ -264,6 +291,7 @@ export function buildEconomicPositionProjectionQuery(
         ON p.trader_wallet_id = g.chosen_wallet_id
        AND p.condition_id = g.chosen_condition_id
        AND p.token_id = g.token_id
+      CROSS JOIN observer_summary observer
     ), driven_keys AS MATERIALIZED (
       SELECT condition_id, token_id FROM origin_keys
       UNION
@@ -410,6 +438,7 @@ export function buildEconomicPositionProjectionQuery(
           AND oc.resolved_at IS NOT NULL) AS terminal_zero_valuation,
         oc.resolved_at,
         cf.chosen_wallet_id,
+        cf.live_positive_current_currency AS selected_current_currency,
         cf.shares AS current_shares,
         cf.cost_basis_usdc AS current_cost_basis_usdc,
         cf.current_value_usdc,
@@ -465,35 +494,11 @@ export function buildEconomicPositionProjectionQuery(
       ) mm ON TRUE
     ), generation_authority AS MATERIALIZED (
       SELECT b.*,
-        /* A retained positive is not an observation of a newer publication.
-           Keep the selected physical cursor association; an eligible sibling
-           cannot lend it authority. MAX deliberately includes future clocks:
-           overwritten authority cannot reconstruct an earlier capture. */
-        (${mode} = 'paper' OR b.current_shares = 0 OR COALESCE((
-          b.current_last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-          AND observer.latest_generation_at <= ${params.capturedAt.toISOString()}::timestamptz
-          AND b.current_last_observed_at >= observer.latest_generation_at
-          AND NOT EXISTS (
-            SELECT 1 FROM poly_trader_current_positions future
-            JOIN wallet_identity w ON w.id = future.trader_wallet_id
-            WHERE lower(future.condition_id) = b.condition_id
-              AND future.token_id = b.token_id
-              AND future.last_observed_at > ${params.capturedAt.toISOString()}::timestamptz
-          )
-          AND EXISTS (
-            SELECT 1 FROM eligible_wallet_identity selected
-            JOIN poly_trader_ingestion_cursors cursor
-              ON cursor.trader_wallet_id = selected.id
-             AND cursor.source = 'data-api-positions'
-            WHERE selected.id = b.chosen_wallet_id
-              AND cursor.status = 'ok'
-              AND cursor.last_success_at IS NOT NULL
-              AND cursor.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
-              AND b.current_last_observed_at >= cursor.last_success_at
-          )
-        ), false)) AS live_positive_current_currency
+        /* The current-fact marker has identical nullable LIVE semantics;
+           PAPER and explicit zero-current positions retain their bypass. */
+        (${mode} = 'paper' OR b.current_shares = 0
+          OR COALESCE(b.selected_current_currency, false)) AS live_positive_current_currency
       FROM economic_position_base b
-      CROSS JOIN observer_summary observer
     ), event_authority AS MATERIALIZED (
       SELECT b.*,
         /* Lifetime completeness cannot waive a retained settlement's clock.
