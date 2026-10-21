@@ -564,16 +564,14 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
               nodeCount: nodes.length,
               truncated: nodes.length > 24,
               nodes: nodes
-                .filter(
-                  (node) =>
-                    node["Relation Name"] ||
-                    node["Index Name"] ||
-                    node["Subplan Name"],
-                )
+                // Rank every node by observed time across loops. Parent timings
+                // include child work; these are inclusive, not exclusive costs.
                 .sort(
                   (a, b) =>
-                    (metric(b, "Total Cost") ?? 0) -
-                    (metric(a, "Total Cost") ?? 0),
+                    (metric(b, "Actual Total Time") ?? 0) *
+                      (metric(b, "Actual Loops") ?? 0) -
+                    (metric(a, "Actual Total Time") ?? 0) *
+                      (metric(a, "Actual Loops") ?? 0),
                 )
                 .slice(0, 24)
                 .map((node) => ({
@@ -582,11 +580,17 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
                   index: label(node["Index Name"]),
                   cte: label(node["CTE Name"]),
                   subplan: label(node["Subplan Name"]),
+                  joinType: label(node["Join Type"]),
                   estimatedRows: metric(node, "Plan Rows"),
                   totalCost: metric(node, "Total Cost"),
                   actualRows: metric(node, "Actual Rows"),
                   actualLoops: metric(node, "Actual Loops"),
                   actualTotalMs: metric(node, "Actual Total Time"),
+                  rowsRemovedByJoinFilter: metric(
+                    node,
+                    "Rows Removed by Join Filter",
+                  ),
+                  rowsRemovedByFilter: metric(node, "Rows Removed by Filter"),
                   sharedHitBlocks: metric(node, "Shared Hit Blocks"),
                   sharedReadBlocks: metric(node, "Shared Read Blocks"),
                 })),
