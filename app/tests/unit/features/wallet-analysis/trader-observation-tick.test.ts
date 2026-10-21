@@ -25,7 +25,10 @@
  * @public
  */
 
-import { polyTraderWallets } from "@cogni/poly-db-schema/trader-activity";
+import {
+  polyTraderIngestionCursors,
+  polyTraderWallets,
+} from "@cogni/poly-db-schema/trader-activity";
 import type { PolymarketDataApiClient } from "@cogni/poly-market-provider/adapters/polymarket";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -54,7 +57,13 @@ const walletRow = (id: string, walletAddress: string, kind = "cogni_wallet") => 
  * the provided wallet rows. `execute` is tracked so tests can assert the
  * abort path skips the prune/metadata statements.
  */
-function createFakeDb(walletRows: unknown[]) {
+function createFakeDb(
+  walletRows: unknown[],
+  cursorRows: unknown[] = [],
+  failActivityCursor = false,
+  executeResult?: (query: unknown) => unknown
+) {
+  let cursorReads = 0;
   const executeCalls: unknown[] = [];
   const makeChain = (kind: "select" | "insert" | "update") => {
     let fromTable: unknown;
@@ -82,8 +91,22 @@ function createFakeDb(walletRows: unknown[]) {
       onFulfilled?: (value: unknown) => unknown,
       onRejected?: (err: unknown) => unknown
     ) => {
+      if (kind === "select" && fromTable === polyTraderIngestionCursors) {
+        cursorReads += 1;
+        if (failActivityCursor && cursorReads === 2)
+          return Promise.reject(new Error("activity cursor unavailable")).then(
+            onFulfilled,
+            onRejected
+          );
+      }
       const rows =
-        kind === "select" && fromTable === polyTraderWallets ? walletRows : [];
+        kind !== "select"
+          ? []
+          : fromTable === polyTraderWallets
+            ? walletRows
+            : fromTable === polyTraderIngestionCursors
+              ? cursorRows
+              : [];
       return Promise.resolve(rows).then(onFulfilled, onRejected);
     };
     return chain;
@@ -93,11 +116,11 @@ function createFakeDb(walletRows: unknown[]) {
   // silently defeat the ABORT_SKIPS_MAINTENANCE assertion, which proves the
   // prune/metadata statements are skipped by counting execute calls.
   const timeoutStatements: string[] = [];
-  const isStatementTimeout = (query: unknown): boolean => {
+  const describeQuery = (query: unknown): string => {
     try {
-      return JSON.stringify(query)?.includes("statement_timeout") === true;
+      return JSON.stringify(query) ?? "";
     } catch {
-      return false;
+      return "";
     }
   };
   const db: Record<string, unknown> = {
@@ -105,12 +128,26 @@ function createFakeDb(walletRows: unknown[]) {
     insert: () => makeChain("insert"),
     update: () => makeChain("update"),
     execute: async (query: unknown) => {
-      if (isStatementTimeout(query)) {
+      const description = describeQuery(query);
+      if (description.includes("statement_timeout")) {
         timeoutStatements.push(JSON.stringify(query));
         return { rowCount: 0 };
       }
       executeCalls.push(query);
-      return { rowCount: 0 };
+      if (description.includes("clock_timestamp() AS at"))
+        return [{ at: new Date() }];
+      if (description.includes("clock_timestamp()::text AS captured_at")) {
+        return [
+          {
+            captured_at: new Date().toISOString(),
+            row_exists: false,
+            cursor_xmin: null,
+            last_success_at: null,
+            cursor_status: "pending",
+          },
+        ];
+      }
+      return executeResult?.(query) ?? { rowCount: 0 };
     },
   };
   // withStatementTimeout runs its body inside a transaction; the fake hands
@@ -145,6 +182,135 @@ function tickOkCall(logger: ReturnType<typeof makeLogger>) {
 }
 
 describe("runTraderObservationTick wiring (task.5015)", () => {
+  it("publishes/counts positions before a failing activity cursor read", async () => {
+    const { db } = createFakeDb([walletRow("a", WALLET_A)], [], true);
+    const listUserPositions = vi.fn(async () => [
+      {
+        conditionId: "c",
+        asset: "1",
+        size: 2,
+        avgPrice: 0.5,
+        initialValue: 1,
+        currentValue: 1,
+        redeemable: false,
+      },
+    ]);
+    const listUserActivity = vi.fn(async () => []);
+    const logger = makeLogger();
+    const result = await runTraderObservationTick({
+      db,
+      client: {
+        listUserPositions,
+        listUserActivity,
+      } as unknown as PolymarketDataApiClient,
+      listActiveTradingAddresses: async () => [],
+      logger: logger as never,
+      metrics,
+      runRetentionPrune: false,
+    });
+    expect(listUserPositions).toHaveBeenCalledTimes(1);
+    expect(listUserActivity).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ positions: 1, errors: 1 });
+    expect(
+      logger.info.mock.calls.some(
+        ([payload]) =>
+          payload.event === "poly.trader.positions.publish" &&
+          payload.published === true
+      )
+    ).toBe(true);
+  });
+
+  it.each(["stale", "partial", "error"])(
+    "does not repeat upstream/Polygon observation for a recent %s attempt, including after restart",
+    async (status) => {
+      const { db } = createFakeDb(
+        [walletRow("wallet-a", WALLET_A)],
+        [
+          {
+            status,
+            lastSuccessAt: new Date(Date.now() - 3 * 86_400_000),
+            updatedAt: new Date(Date.now() - 10_000),
+          },
+        ]
+      );
+      const logger = makeLogger();
+      const readPositionBalances = vi.fn(async () => []);
+      const client = {
+        listUserActivity: vi.fn(async () => []),
+        listUserPositions: vi.fn(async () => []),
+      } as unknown as PolymarketDataApiClient;
+
+      // Separate tick invocations retain no process-local scheduling state:
+      // only the durable cursor tells a restarted observer to back off.
+      for (let tick = 0; tick < 2; tick += 1) {
+        await runTraderObservationTick({
+          db,
+          client,
+          listActiveTradingAddresses: async () => [],
+          readPositionBalances,
+          logger: logger as never,
+          metrics,
+          runRetentionPrune: false,
+        });
+      }
+
+      expect(client.listUserPositions).not.toHaveBeenCalled();
+      expect(readPositionBalances).not.toHaveBeenCalled();
+      const walletLogs = logger.info.mock.calls.filter(
+        (call) => (call[0] as { phase?: string }).phase === "wallet_ok"
+      );
+      expect(walletLogs).toHaveLength(2);
+      for (const [payload] of walletLogs) {
+        expect(payload).toMatchObject({
+          positions_skipped: true,
+          positions_complete: false,
+        });
+      }
+    }
+  );
+
+  it.each([
+    ["stale", 31_000],
+    ["pending", 0],
+  ])(
+    "retries a %s cursor when due without treating enrollment as an attempt",
+    async (status, ageMs) => {
+      const { db } = createFakeDb(
+        [walletRow("wallet-a", WALLET_A)],
+        [
+          {
+            status,
+            lastSuccessAt: null,
+            updatedAt: new Date(Date.now() - Number(ageMs)),
+          },
+        ]
+      );
+      const logger = makeLogger();
+      const controller = new AbortController();
+      const client = {
+        listUserActivity: vi.fn(async () => []),
+        // Stop after scheduling reaches upstream: publication/CAS behavior is
+        // covered by the real-Postgres writer suite, not this fake database.
+        listUserPositions: vi.fn(async () => {
+          controller.abort();
+          throw new Error("cancelled after scheduling");
+        }),
+      } as unknown as PolymarketDataApiClient;
+
+      await runTraderObservationTick({
+        db,
+        client,
+        listActiveTradingAddresses: async () => [],
+        logger: logger as never,
+        metrics,
+        runRetentionPrune: false,
+        signal: controller.signal,
+      });
+
+      expect(client.listUserPositions).toHaveBeenCalledTimes(1);
+    }
+  );
+
   it("keeps copy-target fill ingestion but leaves position publication to V2", async () => {
     const { db } = createFakeDb([
       walletRow("copy-target", WALLET_A, "copy_target"),
@@ -228,7 +394,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     });
     // The failing wallet was logged, not thrown.
     const walletError = logger.error.mock.calls.find(
-      (call) => (call[0] as { phase?: string }).phase === "error"
+      (call) => (call[0] as { phase?: string }).phase === "activity_error"
     );
     expect(walletError?.[0]).toMatchObject({ wallet: WALLET_B });
   });
@@ -341,6 +507,49 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     });
 
     expect(stages).toContain("wallet_loop");
+    expect(stages).not.toContain("prune_position_snapshots");
+    expect(stages).not.toContain("refresh_market_metadata");
+  });
+
+  it("propagates an abort inside recovery before empty-target hydration or maintenance", async () => {
+    const controller = new AbortController();
+    const { db, executeCalls } = createFakeDb([], [], false, (query) =>
+      JSON.stringify(query).includes("WITH owned_wallets")
+        ? [
+            {
+              wallet_id: "wallet-a",
+              wallet_address: WALLET_A,
+              condition_id: `0x${"01".repeat(32)}`,
+              token_id: "1",
+            },
+          ]
+        : [],
+    );
+    const stages: string[] = [];
+    const client = {
+      listUserPositionsV2Raw: vi.fn(async () => {
+        controller.abort(new Error("tick timeout inside recovery"));
+        controller.signal.throwIfAborted();
+      }),
+    } as unknown as PolymarketDataApiClient;
+    await expect(
+      runTraderObservationTick({
+        db,
+        client,
+        listActiveTradingAddresses: async () => [],
+        logger: makeLogger() as never,
+        metrics,
+        signal: controller.signal,
+        readEconomicSettlement: async () => null,
+        onStage: (stage) => {
+          stages.push(stage);
+        },
+      }),
+    ).rejects.toThrow("tick timeout inside recovery");
+    expect(client.listUserPositionsV2Raw).toHaveBeenCalledTimes(1);
+    expect(executeCalls).toHaveLength(2); // selection + bounded attempt, nothing after cancellation
+    expect(stages).not.toContain("hydrate_copy_targets");
+    expect(stages).not.toContain("prune_pnl_points");
     expect(stages).not.toContain("prune_position_snapshots");
     expect(stages).not.toContain("refresh_market_metadata");
   });

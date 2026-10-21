@@ -21,6 +21,7 @@
 import { z } from "zod";
 
 import { PolyPositionGapFillAccountingSchema } from "./poly.account.copy-operations.v1.contract";
+import { WalletExecutionPositionSchema } from "./poly.wallet.execution.v1.contract";
 import { PolyResearchCopyTradePnlModeSchema } from "./poly.research-copy-trade-pnl.v1.contract";
 
 const IsoTimestampSchema = z.string().datetime({ offset: true });
@@ -37,6 +38,7 @@ export const PolyResearchCopyTradeInvestigationQuerySchema = z
   .object({
     billing_account_id: z.string().uuid(),
     condition_id: z.string().trim().min(1).max(256),
+    token_id: z.string().trim().min(1).max(256).optional(),
     mode: PolyResearchCopyTradePnlModeSchema,
     since: OptionalIsoTimestampSchema,
     until: OptionalIsoTimestampSchema,
@@ -212,6 +214,18 @@ export const PolyResearchCopyTradeInvestigationResponseSchema = z.object({
       .max(POLY_COPY_TRADE_INVESTIGATION_MAX_ACCOUNT_LEGS),
     truncated: z.boolean(),
   }),
+  /** Saved native history, independent of bounded mirror legs and the newest-30 preview. */
+  economic_proofs: z
+    .array(
+      z.object({
+        mode: z.literal("live"),
+        token_id: z.string(),
+        proof: WalletExecutionPositionSchema.shape.economicProof.unwrap(),
+      }),
+    )
+    .max(20)
+    .optional(),
+  economic_proofs_truncated: z.boolean().optional(),
   targets: z
     .array(PolyInvestigationTargetSchema)
     .max(POLY_COPY_TRADE_INVESTIGATION_MAX_TARGETS),

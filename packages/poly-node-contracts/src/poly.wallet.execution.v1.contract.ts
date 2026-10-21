@@ -190,6 +190,23 @@ export const WalletExecutionPositionSchema = z.object({
   copyOrigins: z.array(WalletExecutionCopyOriginSchema).max(20).optional(),
   copyOriginLayerCount: z.number().int().nonnegative().optional(),
   copyOriginsTruncated: z.boolean().optional(),
+  /** Saved source proof, independently covered from inventory/algorithm lineage. */
+  economicProof: z.object({
+    source: z.literal("native_activity"),
+    coverage: z.enum(["complete", "partial"]),
+    buyUsdc: z.number().nonnegative(),
+    buyShares: z.number().nonnegative(),
+    sellUsdc: z.number().nonnegative(),
+    redeemUsdc: z.number().nonnegative(),
+    lifetimePnlUsdc: z.number().nullable(),
+    sourceRecordCount: z.number().int().nonnegative(),
+    windowStart: z.string(),
+    windowEnd: z.string(),
+    settlements: z.array(z.object({
+      txHash: z.string(), blockNumber: z.string(), logIndex: z.number().int().nonnegative(),
+      collateral: z.string(), atomicAmount: z.string(), conditionId: z.string(), tokenId: z.string(),
+    })).max(3),
+  }).optional(),
   timeline: z.array(WalletExecutionTimelinePointSchema),
   events: z.array(WalletExecutionEventSchema),
 });

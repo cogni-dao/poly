@@ -92,6 +92,8 @@ export const polyWalletOverviewOperation = {
     positions_sync_age_ms: z.number().int().nonnegative().nullable(),
     positions_stale: z.boolean(),
     pnlHistory: z.array(PolyWalletOverviewPnlPointSchema),
+    /** The historical series is kept in its original metric, never relabeled net. */
+    pnl_basis: z.enum(["polymarket_trade_pnl_before_fees", "paper_trading_pnl"]).optional(),
     warnings: z.array(PolyWalletOverviewWarningSchema),
   }),
 } as const;

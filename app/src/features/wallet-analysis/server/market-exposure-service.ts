@@ -98,7 +98,12 @@
  */
 
 import { comparePositionIdentity, positionIdentityKey } from "@cogni/poly-market-provider";
-import { readPositionMetadata, positionMetadataRequestKey } from "./position-metadata-read";
+import {
+  type PositionMetadataKey,
+  readPositionMetadata,
+  positionMetadataRequestKey,
+  positionMetadataDisplay,
+} from "./position-metadata-read";
 import type {
   WalletDashboardComparisonCoverage,
   WalletDashboardComparisonCoverageLeaf,
@@ -298,6 +303,7 @@ function executionModeForConnection(
 
 export async function buildMarketExposureGroups(params: {
   db: Db;
+  capturedAt?: string | undefined;
   billingAccountId: string;
   walletAddress: string;
   positionFacts?: readonly ComparisonEconomicFact[] | undefined;
@@ -317,12 +323,13 @@ export async function buildMarketExposureGroups(params: {
   const conditions = [...new Set(ourLegs.map((leg) => leg.conditionId))];
   const conditionStatus = conditionStatusFromLegs(ourLegs);
   const targetLegs = await readTargetLegs({
+    capturedAt: params.capturedAt,
     db: params.db,
     billingAccountId: params.billingAccountId,
     conditions,
     conditionStatus,
   });
-  const rawLegs = await resolveSavedLegMetadata(params.db, [...ourLegs, ...targetLegs]);
+  const rawLegs = await resolveSavedLegMetadata(params.db, [...ourLegs, ...targetLegs], params.capturedAt, params.mode ?? "live", params.billingAccountId);
   const wallets = [...new Set(rawLegs.map((leg) => leg.walletAddress))];
   const rollups = await readFillRollups({
     db: params.db,
@@ -341,6 +348,7 @@ export async function buildMarketExposureGroups(params: {
  */
 export async function buildBoundedMarketExposureGroups(params: {
   db: Db;
+  capturedAt?: string | undefined;
   billingAccountId: string;
   walletAddress: string;
   positionFacts?: readonly ComparisonEconomicFact[] | undefined;
@@ -370,6 +378,7 @@ export async function buildBoundedMarketExposureGroups(params: {
   let targetRead: Awaited<ReturnType<typeof readBoundedTargetLegs>>;
   try {
     targetRead = await readBoundedTargetLegs({
+      capturedAt: params.capturedAt,
       db: params.db,
       billingAccountId: params.billingAccountId,
       conditionGroup: selection.conditionGroup,
@@ -397,7 +406,7 @@ export async function buildBoundedMarketExposureGroups(params: {
         leg.lifecycle === "active"
     ),
   };
-  const rawLegs = await resolveSavedLegMetadata(params.db, [...selection.ourLegs, ...targetRead.legs]);
+  const rawLegs = await resolveSavedLegMetadata(params.db, [...selection.ourLegs, ...targetRead.legs], params.capturedAt, params.mode ?? "live", params.billingAccountId);
   const fillStartedAt = performance.now();
   let rollups: Awaited<ReturnType<typeof readFillRollups>>;
   try {
@@ -521,6 +530,7 @@ function conditionStatusFromLegs(
  */
 export async function buildBoundedMarketExposureWithCoverage(params: {
   db: Db;
+  capturedAt?: string | undefined;
   billingAccountId: string;
   walletAddress: string;
   positionFacts?: readonly ComparisonEconomicFact[] | undefined;
@@ -547,6 +557,7 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
   let rows: ComparisonBundleRow[];
   try {
     rows = await readComparisonBundleRows({
+      capturedAt: params.capturedAt,
       db: params.db,
       billingAccountId: params.billingAccountId,
       walletAddress: params.walletAddress,
@@ -586,7 +597,7 @@ export async function buildBoundedMarketExposureWithCoverage(params: {
   }
   const counts = countRowsFromBundle(rows);
   const targetRead = boundedTargetReadFromRows(participantRowsFromBundle(rows));
-  const rawLegs = await resolveSavedLegMetadata(params.db, [...selection.ourLegs, ...targetRead.legs]);
+  const rawLegs = await resolveSavedLegMetadata(params.db, [...selection.ourLegs, ...targetRead.legs], params.capturedAt, executionModeForConnection(params.connectionKind), params.billingAccountId);
   const fillStartedAt = performance.now();
   let rollups: Awaited<ReturnType<typeof readFillRollups>>;
   try {
@@ -735,6 +746,7 @@ export function emptyComparisonCoverageCounts(
  */
 export async function readFullComparisonCoverageCounts(params: {
   db: Db;
+  capturedAt?: string | undefined;
   billingAccountId: string;
   walletAddress: string;
   connectionKind: DashboardConnectionKind;
@@ -750,6 +762,7 @@ export async function readFullComparisonCoverageCounts(params: {
 
 async function readComparisonBundleRows(params: {
   db: Db;
+  capturedAt?: string | undefined;
   billingAccountId: string;
   walletAddress: string;
   connectionKind: DashboardConnectionKind;
@@ -826,6 +839,7 @@ async function readComparisonBundleRows(params: {
         ) AS identity_ambiguous
       FROM poly_trader_current_positions p
       JOIN wallet_scope w ON w.id = p.trader_wallet_id
+      WHERE (${params.capturedAt ?? null}::timestamptz IS NULL OR p.last_observed_at <= ${params.capturedAt ?? null}::timestamptz)
     ), live_latest AS (
       SELECT *
       FROM live_ranked p
@@ -1095,12 +1109,14 @@ async function readComparisonBundleRows(params: {
           WHERE current_position.trader_wallet_id = s.trader_wallet_id
             AND lower(current_position.condition_id) = lower(s.condition_id)
             AND current_position.token_id = s.token_id
+            AND (${params.capturedAt ?? null}::timestamptz IS NULL OR current_position.last_observed_at <= ${params.capturedAt ?? null}::timestamptz)
             AND ${liveCurrentPositionSql("current_position")}
         ) AS current_active,
         a.identity_ambiguous AS wallet_identity_ambiguous
       FROM poly_trader_position_snapshots s
       JOIN observable_targets a ON a.trader_wallet_id = s.trader_wallet_id
-      WHERE lower(s.condition_id) IN (
+      WHERE (${params.capturedAt ?? null}::timestamptz IS NULL OR s.captured_at <= ${params.capturedAt ?? null}::timestamptz)
+        AND lower(s.condition_id) IN (
         SELECT DISTINCT condition_key FROM eligible_positions
       )
         AND (
@@ -1284,6 +1300,7 @@ async function readComparisonBundleRows(params: {
          AND candidate_wallet.preview_eligible
         WHERE lower(candidate.condition_id) = l.condition_key
           AND candidate.token_id = l.token_id
+          AND (${params.capturedAt ?? null}::timestamptz IS NULL OR candidate.last_observed_at <= ${params.capturedAt ?? null}::timestamptz)
         ORDER BY candidate.last_observed_at DESC, candidate.condition_id,
           candidate.trader_wallet_id
         LIMIT 1
@@ -1678,19 +1695,14 @@ export function materializeComparisonCoverage(params: {
   };
 }
 
-/**
- * Fold fill-rollup truth (BUY notional, SELL proceeds, redemption credit)
- * into a `RawLeg`. After this pass every leg carries its realized P/L and
- * a non-zero cost basis whenever the wallet ever bought into the token —
- * preventing closed positions from collapsing to a 0/0 `currentValue −
- * costBasis` artifact in `toContractLeg`.
- */
-async function resolveSavedLegMetadata(db: Db, legs: RawLeg[]): Promise<RawLeg[]> {
-  // Identity proof is required even when every display label is already rich.
-  const saved = await readPositionMetadata({ db, keys: legs.map(leg => ({ conditionId: leg.conditionId, tokenId: leg.tokenId, walletAddress: leg.walletAddress })) });
+/** Shared saved metadata is the only display authority, including null/conflict. */
+async function resolveSavedLegMetadata(db: Db, legs: RawLeg[], capturedAt?: string, mode: "live" | "paper" = "live", billingAccountId?: string): Promise<RawLeg[]> {
+  const accountScope = billingAccountId ? { billingAccountId } : undefined;
+  const key = (leg: RawLeg): PositionMetadataKey => ({ conditionId: leg.conditionId, tokenId: leg.tokenId, walletAddress: leg.walletAddress, mode: leg.side === "our_wallet" ? mode : "live" as const });
+  const saved = await readPositionMetadata({ db, ...(accountScope ? { accountScope } : {}), keys: legs.map(key), ...(capturedAt ? { capturedAt } : {}) });
   return legs.map(leg => {
-    const metadata = saved.get(positionMetadataRequestKey(leg) ?? "");
-    return metadata ? { ...leg, marketTitle: metadata.marketTitle ?? leg.marketTitle, marketSlug: metadata.marketSlug ?? leg.marketSlug, eventTitle: metadata.eventTitle ?? leg.eventTitle, eventSlug: metadata.eventSlug ?? leg.eventSlug, outcome: metadata.availability === "conflict" ? "UNKNOWN" : metadata.outcome ?? leg.outcome, oppositeTokenId: metadata.oppositeTokenId } : leg;
+    const metadata = saved.get(positionMetadataRequestKey(key(leg), accountScope) ?? "");
+    return { ...leg, ...positionMetadataDisplay(metadata), oppositeTokenId: metadata?.oppositeTokenId ?? null };
   });
 }
 
@@ -1709,12 +1721,15 @@ function buildOurLegs(
     const key = positionIdentityKey({ conditionId: position.conditionId, tokenId: position.asset });
     const candidates = key ? facts?.filter(f => f.mode === mode && positionIdentityKey(f) === key) ?? [] : [];
     const economicFact = candidates.length === 1 ? candidates[0] : undefined;
-    const costBasisUsdc = economicFact?.remainingBasisUsdc ?? costBasisFromExecutionPosition(position);
-    const vwap = position.entryPrice > 0 ? position.entryPrice : null;
+    const authoritative = facts !== undefined;
+    const basis = authoritative ? economicFact?.remainingBasisUsdc ?? null : position.currentValue === null || position.pnlUsd === null ? null : costBasisFromExecutionPosition(position);
+    const value = authoritative ? economicFact?.currentValueUsdc ?? null : position.currentValue;
+    const costBasisUsdc = basis ?? 0;
+    const vwap = authoritative ? basis !== null && economicFact?.heldShares && economicFact.heldShares > 0 ? basis / economicFact.heldShares : null : position.entryPrice > 0 ? position.entryPrice : null;
     return {
       economicFact,
-      valuationUnavailable: economicFact ? economicFact.currentValueUsdc === null : position.currentValue === null,
-      basisUnavailable: economicFact ? economicFact.remainingBasisUsdc === null : position.currentValue === null,
+      valuationUnavailable: value === null,
+      basisUnavailable: basis === null,
       side: "our_wallet",
       source: "ledger",
       label: "Our wallet",
@@ -1726,18 +1741,15 @@ function buildOurLegs(
       marketSlug: position.marketSlug ?? null,
       eventSlug: position.eventSlug ?? null,
       outcome: position.outcome,
-      shares: position.size,
+      shares: ourPositionStatus === "live" && authoritative ? economicFact?.heldShares ?? position.size : position.size,
       costBasisUsdc,
-      currentValueUsdc: economicFact?.currentValueUsdc ?? position.currentValue ?? 0,
+      currentValueUsdc: value ?? 0,
       vwap,
       avgPrice: vwap,
       lifecycle: ourPositionStatus === "closed" ? "inactive" : "active",
       lastObservedAt: position.openedAt,
       ourPositionStatus,
-      // Placeholder — `enrichLegWithRollup` overwrites this with the real
-      // realized P/L (fills + market outcome). Leaves the pre-fix
-      // currentValue-minus-costBasis fallback in case no rollup row exists.
-      pnlUsdc: roundMoney((position.currentValue ?? 0) - costBasisUsdc),
+      pnlUsdc: 0, // Internal compatibility field; public P/L uses canonical facts only.
       redemptionProceedsUsdc: 0,
     };
   });
@@ -1745,6 +1757,7 @@ function buildOurLegs(
 
 async function readTargetLegs(params: {
   db: Db;
+  capturedAt?: string | undefined;
   billingAccountId: string;
   conditions: readonly string[];
   conditionStatus: ReadonlyMap<string, WalletExecutionMarketLineStatus>;
@@ -1766,6 +1779,7 @@ async function readTargetLegs(params: {
       WHERE t.billing_account_id = ${params.billingAccountId}
         AND t.disabled_at IS NULL
         AND w.disabled_at IS NULL
+        AND w.kind <> 'paper_wallet'
     ),
     latest_snapshots AS (
       -- Canonical wallet + condition identity leads DISTINCT ON so facts on
@@ -1790,7 +1804,8 @@ async function readTargetLegs(params: {
         s.raw->>'outcome' AS raw_outcome
       FROM poly_trader_position_snapshots s
       JOIN active_targets a ON a.trader_wallet_id = s.trader_wallet_id
-      WHERE lower(s.condition_id) IN (${conditionList})
+      WHERE (${params.capturedAt ?? null}::timestamptz IS NULL OR s.captured_at <= ${params.capturedAt ?? null}::timestamptz)
+        AND lower(s.condition_id) IN (${conditionList})
       -- captured_at is NOT NULL; DESC NULLS LAST documents newest-first and
       -- the remaining physical fields make the selected sibling stable.
       ORDER BY a.wallet_address, lower(s.condition_id), s.token_id,
@@ -1853,6 +1868,7 @@ async function readTargetLegs(params: {
        AND candidate_wallet.wallet_address = ls.wallet_address
       WHERE lower(candidate.condition_id) = ls.condition_id
         AND candidate.token_id = ls.token_id
+        AND (${params.capturedAt ?? null}::timestamptz IS NULL OR candidate.last_observed_at <= ${params.capturedAt ?? null}::timestamptz)
       ORDER BY candidate.last_observed_at DESC, candidate.condition_id,
         candidate.trader_wallet_id
       LIMIT 1
@@ -1905,6 +1921,8 @@ async function readTargetLegs(params: {
         shares,
         costBasisUsdc,
         currentValueUsdc,
+        valuationUnavailable: row.current_value_usdc === null,
+        basisUnavailable: row.cost_basis_usdc === null,
         vwap: positionVwap(costBasisUsdc, shares, avgPrice),
         avgPrice,
         lifecycle,
@@ -1921,6 +1939,7 @@ async function readTargetLegs(params: {
 
 async function readBoundedTargetLegs(params: {
   db: Db;
+  capturedAt?: string | undefined;
   billingAccountId: string;
   conditionGroup: ReadonlyMap<string, string>;
   participantLimit: number;
@@ -1957,6 +1976,7 @@ async function readBoundedTargetLegs(params: {
       WHERE t.billing_account_id = ${params.billingAccountId}
         AND t.disabled_at IS NULL
         AND w.disabled_at IS NULL
+        AND w.kind <> 'paper_wallet'
     ), latest AS (
       SELECT DISTINCT ON (
         sc.group_key, a.wallet_address, lower(s.condition_id), s.token_id
@@ -1981,6 +2001,7 @@ async function readBoundedTargetLegs(params: {
       JOIN poly_trader_position_snapshots s
         ON lower(s.condition_id) = sc.condition_id
       JOIN active_targets a ON a.trader_wallet_id = s.trader_wallet_id
+      WHERE (${params.capturedAt ?? null}::timestamptz IS NULL OR s.captured_at <= ${params.capturedAt ?? null}::timestamptz)
       ORDER BY sc.group_key, a.wallet_address, lower(s.condition_id), s.token_id,
         s.captured_at DESC NULLS LAST, s.condition_id, s.trader_wallet_id
     ), projected AS (
@@ -2020,6 +2041,7 @@ async function readBoundedTargetLegs(params: {
          AND candidate_wallet.wallet_address = l.wallet_address
         WHERE lower(candidate.condition_id) = l.condition_id
           AND candidate.token_id = l.token_id
+          AND (${params.capturedAt ?? null}::timestamptz IS NULL OR candidate.last_observed_at <= ${params.capturedAt ?? null}::timestamptz)
         ORDER BY candidate.last_observed_at DESC, candidate.condition_id,
           candidate.trader_wallet_id
         LIMIT 1
@@ -2132,6 +2154,8 @@ function boundedTargetReadFromRows(
         shares,
         costBasisUsdc,
         currentValueUsdc,
+        valuationUnavailable: leg.current_value_usdc === null,
+        basisUnavailable: leg.cost_basis_usdc === null,
         vwap: positionVwap(costBasisUsdc, shares, avgPrice),
         avgPrice,
         lifecycle: leg.lifecycle === "inactive" ? "inactive" : "active",
@@ -2224,7 +2248,7 @@ function groupParticipants(
     );
     const ourValueUsdc = ourLegs.some(leg => leg.valuationUnavailable) ? null : roundMoney(sumValue(ourLegs));
     const hasTargetFacts = targetLegs.length > 0;
-    const targetValueUsdc = hasTargetFacts
+    const targetValueUsdc = hasTargetFacts && !targetLegs.some(leg => leg.valuationUnavailable)
       ? roundMoney(sumValue(targetLegs))
       : null;
 
@@ -2268,7 +2292,7 @@ function groupParticipants(
       0
     );
     const hasTargetEntryFacts =
-      hasTargetFacts && targetTotalBuyNotional > 0;
+      hasTargetFacts && !targetLegs.some(leg => leg.basisUnavailable) && targetTotalBuyNotional > 0;
 
     const { rateGapPct, sizeScaledGapUsdc } = edgeGap({
       ourReturnPct,
@@ -2577,7 +2601,7 @@ function toContractLeg(leg: RawLeg): WalletExecutionMarketLeg {
     costBasisUsdc: leg.basisUnavailable ? null : roundMoney(leg.costBasisUsdc),
     vwap: leg.vwap,
     pnlUsdc: leg.economicFact?.lifetimePnlUsdc ?? null,
-    unrealizedPnlUsdc: leg.economicFact?.unrealizedPnlUsdc ?? (leg.side === "copy_target" && leg.lifecycle === "active" ? roundMoney(leg.currentValueUsdc - leg.costBasisUsdc) : null),
+    unrealizedPnlUsdc: leg.economicFact?.unrealizedPnlUsdc ?? null,
     economicsCoverage: leg.economicFact?.economicsCoverage ?? "unavailable",
     lifecycle: leg.lifecycle,
   };
@@ -2844,6 +2868,7 @@ function costBasisFromExecutionPosition(
 }
 
 function weightedVwap(legs: readonly RawLeg[]): number | null {
+  if (legs.some(leg => leg.basisUnavailable)) return null;
   const withVwap = legs.filter((leg) => leg.vwap !== null && leg.shares > 0);
   const shares = withVwap.reduce((sum, leg) => sum + leg.shares, 0);
   if (shares <= 0) return null;

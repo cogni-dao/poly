@@ -9,7 +9,7 @@
  *       `captured_at DESC NULLS LAST` with deterministic physical tiebreaks;
  *   (2) the Data-API `raw` jsonb is projected to 5 scalar `raw->>` fields
  *       and never selected wholesale;
- *   and prove the target-leg mapping (raw fallbacks included) is unchanged
+ *   and prove target-leg mapping uses saved exact-token metadata
  *   by feeding a fixture row through `buildMarketExposureGroups`.
  * Scope: Unit — fake `db.execute` capturing rendered SQL; no Postgres.
  * Side-effects: none
@@ -29,12 +29,12 @@ import {
 const BILLING_ACCOUNT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OUR_WALLET = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd";
 const TARGET_WALLET = "0x1234123412341234123412341234123412341234";
-const CONDITION = "0xcond";
+const CONDITION = `0x${"ab".repeat(32)}`;
 
 const ourPosition: WalletExecutionPosition = {
-  positionId: `${CONDITION}:token1`,
+  positionId: `${CONDITION}:111`,
   conditionId: CONDITION,
-  asset: "token1",
+  asset: "111",
   marketTitle: "Will X happen?",
   eventTitle: null,
   marketSlug: "will-x",
@@ -61,12 +61,12 @@ const ourPosition: WalletExecutionPosition = {
   events: [],
 };
 
-/** Target row as the outer SELECT aliases it — raw_* fallbacks in play. */
+/** Target finance row; labels resolve separately through saved metadata. */
 const targetRow = {
   wallet_address: TARGET_WALLET,
   label: "Copy target",
   condition_id: CONDITION,
-  token_id: "token1",
+  token_id: "111",
   market_title: "Will X happen? (raw)",
   event_title: null,
   market_slug: "will-x",
@@ -90,6 +90,11 @@ function fakeDb() {
       call += 1;
       // 1st execute = readTargetLegs; 2nd = readFillRollups. The service
       // casts the execute result to a row ARRAY (postgres-js shape).
+      if (captured.at(-1)?.includes("jsonb_to_recordset")) return [OUR_WALLET, TARGET_WALLET].map(wallet => ({
+        condition_id: CONDITION, token_id: "111", requested_wallet: wallet,
+        requested_mode: "live", source: "current", observed_at: "2026-09-29T00:00:00.000Z",
+        raw: { title: "Saved market", slug: "will-x", outcome: "Yes" },
+      }));
       return call === 1 ? [targetRow] : [];
     },
   };
@@ -112,7 +117,8 @@ describe("market-exposure latest_snapshots CTE (dashboard floor fix)", () => {
     expect(snapshotSql).toMatch(
       /ORDER BY a\.wallet_address, lower\(s\.condition_id\), s\.token_id,\s+s\.captured_at DESC NULLS LAST, s\.condition_id, s\.trader_wallet_id/
     );
-    expect(snapshotSql).toContain("WHERE lower(s.condition_id) IN");
+    expect(snapshotSql).toContain("lower(s.condition_id) IN");
+    expect(snapshotSql).toContain("s.captured_at <=");
   });
 
   it("projects 5 scalar raw->> fields and never selects the raw blob wholesale", async () => {
@@ -134,7 +140,7 @@ describe("market-exposure latest_snapshots CTE (dashboard floor fix)", () => {
     expect(snapshotSql).not.toMatch(/ls\.raw\b/);
   });
 
-  it("maps the target leg the same as before the projection (raw fallbacks intact)", async () => {
+  it("maps target finance with explicitly saved exact-token metadata", async () => {
     const db = fakeDb();
     const groups = await buildMarketExposureGroups({
       db,
@@ -152,7 +158,7 @@ describe("market-exposure latest_snapshots CTE (dashboard floor fix)", () => {
     expect(targetParticipant).toBeDefined();
     expect(targetParticipant?.walletAddress).toBe(TARGET_WALLET);
     expect(targetParticipant?.primary).toMatchObject({
-      tokenId: "token1",
+      tokenId: "111",
       outcome: "Yes",
       shares: 20,
       costBasisUsdc: 8,
@@ -189,7 +195,7 @@ describe("market-exposure latest_snapshots CTE (dashboard floor fix)", () => {
     expect(comparisonSql).toContain("attributes->>'position_gap_version'");
     expect(comparisonSql).toContain("attributes->>'realized_fill_source'");
     expect(comparisonSql).toMatch(
-      /position_gap_version[^]*NOT IN \('clob_associated_trades', 'data_api_activity_position'\)[^]*THEN NULL[^]*filled_size_usdc[^]*size_usdc/
+      /position_gap_version[\s\S]*NOT IN \('clob_associated_trades', 'data_api_activity_position'\)[\s\S]*THEN NULL[\s\S]*filled_size_usdc[\s\S]*size_usdc/
     );
     expect(comparisonSql).toContain(
       "own_cost IS NULL OR l.own_cost <= 0"

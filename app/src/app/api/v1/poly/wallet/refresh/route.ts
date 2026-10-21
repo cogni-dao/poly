@@ -337,8 +337,9 @@ export const POST = wrapRouteHandlerWithLogging(
         if (!currentPositionsResult.result.complete) {
           warnings.push({
             code: "positions_reconciliation_partial",
-            message:
-              "Current positions were fetched up to the configured page cap; missing DB rows were not deactivated.",
+            message: currentPositionsResult.result.deferred
+              ? "Position observation was deferred; saved holdings retain their original observation time. Position actionability was not reclassified."
+              : "Position observation is incomplete; saved holdings were preserved and position actionability was not reclassified.",
           });
         }
         const positionActionabilityFailures: string[] = [];
@@ -349,7 +350,11 @@ export const POST = wrapRouteHandlerWithLogging(
             currentPositionsResult.result.positions
           );
         };
-        const exposureRows = rows.filter(hasPositionExposure);
+        // A deferred/incomplete generation is not evidence of absence. Avoid
+        // all token-actionability RPC fanout until inventory is complete.
+        const exposureRows = currentPositionsResult.result.complete
+          ? rows.filter(hasPositionExposure)
+          : [];
         const exposureUpdateCounts = await mapConcurrent(
           exposureRows,
           REFRESH_CONCURRENCY,
