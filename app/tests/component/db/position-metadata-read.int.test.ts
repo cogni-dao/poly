@@ -165,6 +165,77 @@ function planNodes(plan: Plan): Plan[] {
   return [plan, ...(plan.Plans ?? []).flatMap(planNodes)];
 }
 
+type ExplainedPlan = Record<string, unknown> & { Plan: Plan };
+
+/** CI fixture evidence only: never emit SQL, predicates, raw rows or identities. */
+function logMetadataPlan(
+  phase: string,
+  detail: ExplainedPlan,
+  keyCount: number,
+  queryWallMs: number | null = null,
+) {
+  const metric = (value: unknown): number | null => {
+    if (value === undefined || value === null) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const label = (value: unknown): string | null =>
+    typeof value === "string" && /^[A-Za-z][A-Za-z0-9_ .-]{0,119}$/.test(value)
+      ? value : null;
+  const nodes = planNodes(detail.Plan);
+  const selected = nodes.filter(node => node["Relation Name"] || node["Index Name"] ||
+    ["Sort", "Incremental Sort"].includes(String(node["Node Type"])));
+  const jit = detail.JIT as {
+    Functions?: unknown;
+    Options?: Record<string, boolean>;
+    Timing?: Record<string, unknown>;
+  } | undefined;
+  console.info(JSON.stringify({
+    probe: "metadata_query_plan_baseline",
+    environment: "ci_fixture",
+    phase,
+    keyCount,
+    queryWallMs,
+    planningMs: metric(detail["Planning Time"]),
+    executionMs: metric(detail["Execution Time"]),
+    actualMs: metric(detail.Plan["Actual Total Time"]),
+    totalCost: metric(detail.Plan["Total Cost"]),
+    rootSharedHitBlocks: metric(detail.Plan["Shared Hit Blocks"]),
+    rootSharedReadBlocks: metric(detail.Plan["Shared Read Blocks"]),
+    rootTempReadBlocks: metric(detail.Plan["Temp Read Blocks"]),
+    rootTempWrittenBlocks: metric(detail.Plan["Temp Written Blocks"]),
+    jit: jit ? {
+      functions: metric(jit.Functions),
+      inlining: jit.Options?.Inlining ?? null,
+      optimization: jit.Options?.Optimization ?? null,
+      expressions: jit.Options?.Expressions ?? null,
+      deforming: jit.Options?.Deforming ?? null,
+      generationMs: metric(jit.Timing?.Generation),
+      inliningMs: metric(jit.Timing?.Inlining),
+      optimizationMs: metric(jit.Timing?.Optimization),
+      emissionMs: metric(jit.Timing?.Emission),
+      totalMs: metric(jit.Timing?.Total),
+    } : null,
+    totalNodeCount: nodes.length,
+    selectedNodeCount: selected.length,
+    emittedNodeCount: Math.min(selected.length, 24),
+    truncated: selected.length > 24,
+    nodes: selected.slice(0, 24).map(node => ({
+      node: label(node["Node Type"]),
+      relation: label(node["Relation Name"]),
+      index: label(node["Index Name"]),
+      rows: metric(node["Actual Rows"]),
+      loops: metric(node["Actual Loops"]),
+      removed: metric(node["Rows Removed by Filter"]),
+      actualMs: metric(node["Actual Total Time"]),
+      sharedHitBlocks: metric(node["Shared Hit Blocks"]),
+      sharedReadBlocks: metric(node["Shared Read Blocks"]),
+      tempReadBlocks: metric(node["Temp Read Blocks"]),
+      tempWrittenBlocks: metric(node["Temp Written Blocks"]),
+    })),
+  }));
+}
+
 describe("saved metadata publication and indexed exact identity reads", () => {
   beforeAll(async () => {
     await db
@@ -801,13 +872,18 @@ describe("saved metadata publication and indexed exact identity reads", () => {
     const query = positionMetadataSelect([
       { conditionId: planCondition, tokenId, wallet },
     ]);
+    const queryStartedAt = performance.now();
     const evidence = rows<unknown>(await db.execute(query));
+    const queryWallMs = performance.now() - queryStartedAt;
     expect(evidence.length).toBeLessThanOrEqual(24);
-    const result = rows<{ "QUERY PLAN": Array<{ Plan: Plan }> }>(
+    const result = rows<{ "QUERY PLAN": ExplainedPlan[] }>(
       await db.execute(sql`EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS) ${query}`),
     );
     const plan = result[0]?.["QUERY PLAN"][0]?.Plan;
     if (!plan) throw new Error("Missing Postgres EXPLAIN plan");
+    const detail = result[0]?.["QUERY PLAN"][0];
+    if (!detail) throw new Error("Missing Postgres EXPLAIN detail");
+    logMetadataPlan("primary_sparse_one", detail, 1, queryWallMs);
     const nodes = planNodes(plan);
     for (const relation of [
       "poly_trader_position_snapshots",
@@ -833,6 +909,29 @@ describe("saved metadata publication and indexed exact identity reads", () => {
       marketTitle: "Deep saved title",
       outcome: "Deep saved label",
     });
+    // Reuse existing seeded keys: this amplifies the primary reader only, not
+    // the PAPER origin proof. Measurements are baselines, never a latency pass.
+    for (const probe of [
+      { phase: "primary_sparse_two", keys: [
+        { conditionId: planCondition, tokenId, wallet },
+        { conditionId, tokenId: oppositeTokenId, wallet },
+      ] },
+      { phase: "primary_multi_21", keys: [
+        { conditionId: planCondition, tokenId, wallet },
+        ...proofConditions.map(condition => ({ conditionId: condition, tokenId: "901", wallet })),
+      ] },
+    ]) {
+      const measuredQuery = positionMetadataSelect(probe.keys);
+      const startedAt = performance.now();
+      const measuredRows = rows<unknown>(await db.execute(measuredQuery));
+      const wallMs = performance.now() - startedAt;
+      expect(measuredRows.length).toBeLessThanOrEqual(24 * probe.keys.length);
+      const explained = rows<{ "QUERY PLAN": ExplainedPlan[] }>(
+        await db.execute(sql`EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS) ${measuredQuery}`),
+      )[0]?.["QUERY PLAN"][0];
+      if (!explained) throw new Error("Missing multi-key EXPLAIN detail");
+      logMetadataPlan(probe.phase, explained, probe.keys.length, wallMs);
+    }
   });
 });
 
@@ -1709,13 +1808,16 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 					expect(evidence.length).toBeLessThanOrEqual(24);
 					const plans: Plan[][] = [];
 					for (const query of [descriptorQuery, metadataQuery]) {
-						const result = rows<{ "QUERY PLAN": Array<{ Plan: Plan }> }>(
+						const result = rows<{ "QUERY PLAN": ExplainedPlan[] }>(
 							await tx.execute(
 								sql`EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS) ${query}`,
 							),
 						);
 						const plan = result[0]?.["QUERY PLAN"][0]?.Plan;
 						if (!plan) throw new Error("Missing origin query plan");
+						const detail = result[0]?.["QUERY PLAN"][0];
+						if (!detail) throw new Error("Missing origin EXPLAIN detail");
+						logMetadataPlan(query === descriptorQuery ? "paper_origin_candidates" : "paper_origin_metadata", detail, 1);
 						plans.push(planNodes(plan));
 					}
 					expect(
