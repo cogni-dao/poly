@@ -327,14 +327,6 @@ export function buildEconomicPositionProjectionQuery(
        AND k.token_id = p.token_id
       WHERE target.billing_account_id = ${params.billingAccountId}
         AND target.disabled_at IS NULL
-    ), driven_fill_identities AS MATERIALIZED (
-      SELECT DISTINCT f.source, f.native_id
-      FROM poly_trader_fills f
-      JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      JOIN driven_keys k
-        ON k.condition_id = lower(f.condition_id)
-       AND k.token_id = f.token_id
-      WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
     ), fill_groups AS MATERIALIZED (
       SELECT
         f.source,
@@ -346,11 +338,12 @@ export function buildEconomicPositionProjectionQuery(
         )))::int AS fact_variants
       FROM poly_trader_fills f
       JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      JOIN driven_fill_identities identity
-        ON identity.source = f.source
-       AND identity.native_id = f.native_id
+      LEFT JOIN driven_keys k
+        ON k.condition_id = lower(f.condition_id)
+       AND k.token_id = f.token_id
       WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
       GROUP BY f.source, f.native_id
+      HAVING bool_or(k.condition_id IS NOT NULL)
     ), fill_conflicted_keys AS MATERIALIZED (
       SELECT DISTINCT lower(f.condition_id) AS condition_id, f.token_id
       FROM poly_trader_fills f

@@ -538,6 +538,21 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
               /^[A-Za-z][A-Za-z0-9_ .-]{0,119}$/.test(value)
                 ? value
                 : null;
+            // Keep inclusive parent context and physical access evidence within
+            // the same 24-node budget. Object identity deduplicates overlap.
+            const rankedNodes = [...nodes].sort(
+              (a, b) =>
+                (metric(b, "Actual Total Time") ?? 0) *
+                  (metric(b, "Actual Loops") ?? 0) -
+                (metric(a, "Actual Total Time") ?? 0) *
+                  (metric(a, "Actual Loops") ?? 0),
+            );
+            const selectedNodes = [...new Set([
+              ...rankedNodes.slice(0, 12),
+              ...rankedNodes.filter(node =>
+                node["Relation Name"] !== undefined || node["Index Name"] !== undefined,
+              ).slice(0, 12),
+            ])];
             const actual = {
               planningMs: metric(detail, "Planning Time"),
               executionMs: metric(detail, "Execution Time"),
@@ -562,18 +577,10 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
                   }
                 : null,
               nodeCount: nodes.length,
-              truncated: nodes.length > 24,
-              nodes: nodes
-                // Rank every node by observed time across loops. Parent timings
-                // include child work; these are inclusive, not exclusive costs.
-                .sort(
-                  (a, b) =>
-                    (metric(b, "Actual Total Time") ?? 0) *
-                      (metric(b, "Actual Loops") ?? 0) -
-                    (metric(a, "Actual Total Time") ?? 0) *
-                      (metric(a, "Actual Loops") ?? 0),
-                )
-                .slice(0, 24)
+              truncated: selectedNodes.length < nodes.length,
+              // Parent timings include child work; never sum these as
+              // exclusive or uniquely attributable costs.
+              nodes: selectedNodes
                 .map((node) => ({
                   node: label(node["Node Type"]),
                   relation: label(node["Relation Name"]),
@@ -618,6 +625,107 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       });
     }
   });
+
+  it.each(["cross-key conflict", "equal duplicate", "no driven key", "empty"] as const)(
+    "preserves fill identity groups behind rollup cursors: %s",
+    async (scenario) => {
+      const seed = getSeedDb();
+      const fixtureAddress = `0xab${address().slice(4)}`.toLowerCase();
+      const walletIds: string[] = [];
+      const capturedAt = new Date();
+      const observedAt = new Date(capturedAt.getTime() - 2000).toISOString();
+      const conditionId = `collision-${randomUUID()}`;
+      const tokenId = "driven-token";
+      const nativeId = `collision-${randomUUID()}`;
+      try {
+        // Distinct physical wallets share one case-insensitive identity, allowing
+        // the real source/native uniqueness constraint to retain both siblings.
+        for (const walletAddress of [fixtureAddress, `0x${fixtureAddress.slice(2).toUpperCase()}`]) {
+          const [wallet] = await seed.execute<{ id: string }>(sql`
+            INSERT INTO poly_trader_wallets (wallet_address,kind,label)
+            VALUES (${walletAddress},'cogni_wallet','Fill membership regression')
+            RETURNING id`);
+          if (!wallet) throw new Error("Missing fill membership wallet");
+          walletIds.push(wallet.id);
+        }
+        const [firstWallet, secondWallet] = walletIds;
+        if (!firstWallet || !secondWallet) throw new Error("Missing physical siblings");
+        if (scenario !== "empty") {
+          for (const [index, walletId] of walletIds.entries()) {
+            const siblingConflict = scenario === "cross-key conflict" && index === 1;
+            await seed.execute(sql`INSERT INTO poly_trader_fills
+              (trader_wallet_id,source,native_id,condition_id,token_id,side,price,shares,size_usdc,observed_at,created_at,raw)
+              VALUES (${walletId}::uuid,'data-api',${nativeId},
+                ${siblingConflict ? `${conditionId}-not-driven` : conditionId},
+                ${siblingConflict ? "not-driven-token" : tokenId},
+                'BUY',.4,1,.4,${observedAt}::timestamptz,${observedAt}::timestamptz,'{}'::jsonb)`);
+          }
+        }
+        // Every fill is behind its own physical cursor. No daily rollup is
+        // seeded: neither raw-tail nor rollup discovery can drive a sibling.
+        for (const walletId of walletIds) {
+          await seed.execute(sql`INSERT INTO poly_trader_fill_rollup_cursors
+            (trader_wallet_id,last_created_at,last_fill_id)
+            VALUES (${walletId}::uuid,${capturedAt.toISOString()}::timestamptz,
+              'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)`);
+        }
+        if (scenario === "cross-key conflict" || scenario === "equal duplicate") {
+          const observation: EconomicObservationV1 = {
+            version: 1, wallet: fixtureAddress, conditionId, tokenId,
+            fetchedAt: observedAt, windowStart: observedAt, windowEnd: observedAt,
+            coverage: "partial", reasons: ["missing_closed_position"],
+            closedPosition: null, lifetimeBuyUsdc: 0.4, lifetimeBuyShares: 1,
+            lifetimeSellUsdc: 0, lifetimePnlUsdc: null, redeemUsdc: 0,
+            constituents: [], settlements: [],
+          };
+          // Only this exact key is saved; the conflicting sibling has no
+          // origin, current observation, history envelope or rollup driver.
+          await seed.execute(sql`INSERT INTO poly_trader_position_snapshots
+            (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,captured_at,raw)
+            VALUES (${firstWallet}::uuid,${conditionId},${tokenId},1,.4,.4,.4,
+              ${nativeId},${observedAt}::timestamptz,
+              jsonb_build_object('economicObservationV1',${JSON.stringify(observation)}::jsonb))`);
+        }
+        await withTenantScope(db, userActor(toUserId(ownerA.userId)), async (tx) => {
+          await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+          const [context] = await tx.execute(sql`SELECT
+            (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user) AS bypass_rls,
+            current_setting('app.current_user_id') AS actor`);
+          expect(context).toMatchObject({ bypass_rls: false, actor: ownerA.userId });
+          const [tail] = await tx.execute(sql`SELECT count(*)::int AS count
+            FROM poly_trader_fills f
+            JOIN poly_trader_fill_rollup_cursors c ON c.trader_wallet_id=f.trader_wallet_id
+            WHERE f.trader_wallet_id IN (${firstWallet}::uuid,${secondWallet}::uuid)
+              AND (f.created_at,f.id) > (c.last_created_at,c.last_fill_id)`);
+          expect(tail?.count).toBe(0);
+          const rows = await tx.execute<{
+            live_count: number; closed_count: number; incomplete_count: number;
+            fill_identity_conflict_count: number; token_id: string | null;
+            total_buy_usdc: string | null; total_buy_shares: string | null;
+          }>(buildEconomicPositionProjectionQuery({
+            billingAccountId: ownerA.billingAccountId, walletAddress: fixtureAddress,
+            connectionKind: "privy_live", capturedAt, interval: "ALL",
+          }));
+          expect(rows).toHaveLength(1);
+          if (scenario === "equal duplicate") {
+            expect(rows[0]).toMatchObject({ live_count: 1, closed_count: 0,
+              incomplete_count: 0, fill_identity_conflict_count: 0, token_id: tokenId });
+            expect(Number(rows[0]?.total_buy_usdc)).toBe(0.4);
+            expect(Number(rows[0]?.total_buy_shares)).toBe(1);
+          } else {
+            expect(rows[0]).toMatchObject({ live_count: 0, closed_count: 0,
+              incomplete_count: scenario === "cross-key conflict" ? 1 : 0,
+              fill_identity_conflict_count: scenario === "cross-key conflict" ? 1 : 0,
+              token_id: null });
+          }
+        });
+      } finally {
+        for (const walletId of walletIds) {
+          await seed.execute(sql`DELETE FROM poly_trader_wallets WHERE id=${walletId}::uuid`);
+        }
+      }
+    },
+  );
 
   it("probes only after a real projection timeout rolls back and preserves unavailable facts", async () => {
     await withTenantScope(db, userActor(toUserId(canonicalAgent.userId)), async tx => {
