@@ -104,9 +104,22 @@ const logger = {
  */
 function recordingLogger() {
   const seen: string[] = [];
+  const failures: Array<Record<string, string>> = [];
   const record = (payload: unknown): void => {
-    const phase = (payload as { phase?: unknown } | undefined)?.phase;
+    const fields = payload as Record<string, unknown> | undefined;
+    const phase = fields?.phase;
     if (typeof phase === "string") seen.push(phase);
+    if (phase === "account_failed" && failures.length < 10) {
+      const failure: Record<string, string> = {};
+      // Only bounded class/code labels: never retain identifiers, messages or SQL.
+      for (const key of ["phase", "errorCode", "err_class", "err_code", "cause_class", "cause_code"] as const) {
+        const value = fields?.[key];
+        if (typeof value === "string") {
+          failure[key] = value.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 80);
+        }
+      }
+      failures.push(failure);
+    }
   };
   const self = {
     info: record,
@@ -118,6 +131,7 @@ function recordingLogger() {
   return {
     logger: self as unknown as Parameters<typeof observePaperWallet>[0]["logger"],
     phases: () => [...seen],
+    failures: () => failures.map((failure) => ({ ...failure })),
   };
 }
 
@@ -1467,6 +1481,16 @@ describe("paper facts project into the live tables (migration 0083)", () => {
         }),
         logger: events.logger,
         now: new Date("2026-10-07T20:00:00.000Z"),
+      });
+
+      // Emit before the count assertions so a caught per-account error remains
+      // diagnosable even when the first assertion aborts the test.
+      console.info("paper projection native gate", {
+        paperAccounts: result.paperAccounts,
+        walletsProjected: result.walletsProjected,
+        navsPublished: result.navsPublished,
+        errors: result.errors,
+        accountFailures: events.failures(),
       });
 
       // Both seeded paper tenants are found and projected. Nothing in this
