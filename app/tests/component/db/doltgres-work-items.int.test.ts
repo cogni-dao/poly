@@ -100,7 +100,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		// lane; mixing it in here would mean `sql` sometimes pointed at the read
 		// pool and the pool-death assertions would kill the wrong connection.
 		const readSql = createWorkItemClient();
-		const adapter = new DoltgresWorkItemAdapter(sql, {
+		const createAdapter = () => new DoltgresWorkItemAdapter(sql, {
 			logger: stageLogger,
 			lockWaitMs: 250,
 			lockRetryMs: 25,
@@ -111,6 +111,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				return sql;
 			},
 		});
+		let adapter = createAdapter();
 		const id = toWorkItemId("task.9501");
 		const principalId = "doltgres-acceptance-agent";
 
@@ -157,6 +158,10 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		}
 
 		const oldPool = sql;
+		const oldPid = Number(
+			(await oldPool.unsafe("SELECT pg_backend_pid() AS pid"))[0]?.pid,
+		);
+		expect(Number.isSafeInteger(oldPid)).toBe(true);
 		const lockHolder = createWorkItemClient();
 		try {
 			await lockHolder.unsafe("SELECT pg_advisory_lock(9501002)");
@@ -165,12 +170,18 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				() => undefined,
 				(error) => error,
 			);
-			await new Promise((resolve) => setTimeout(resolve, 50));
-			// A WRITE, not a read: the write pool is the only pool a write uses,
-			// so it is the only operation that can observe that pool dying and
-			// then prove `recreateClient` rebuilt it. Before 0.1.7 a read shared
-			// that pool and stood in for this; it no longer does, and a read
-			// standing in would now assert nothing.
+			await expect
+				.poll(
+					async () =>
+						(
+							await readSql.unsafe(
+								`SELECT pid FROM pg_catalog.pg_stat_activity WHERE pid = ${oldPid} AND state = 'active' AND query LIKE '%pg_advisory_lock(9501002)%'`,
+							)
+						).length,
+					{ timeout: 3_000 },
+				)
+				.toBe(1);
+			// Observe real write-pool transport loss; it cannot prove native settlement.
 			const recoveryAttempt = adapter.patch(
 				{ id, set: { title: "pool death" } },
 				principalId,
@@ -189,10 +200,31 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			await lockHolder.end({ timeout: 0 });
 		}
 
+		// Transport loss never rehabilitates the old adapter, even after unlock.
+		await expect(adapter.get(id)).resolves.toMatchObject({ id });
+		await expect(
+			adapter.patch({ id, set: { title: "no replacement" } }, principalId),
+		).rejects.toMatchObject({ code: "work_items_native_capacity_held" });
+		// This fixture knows the old command was only an advisory-lock SELECT.
+		// Prove its exact native session has departed before a fresh owned client.
+		await expect
+			.poll(
+				async () =>
+					(
+						await readSql.unsafe(
+							`SELECT pid FROM pg_catalog.pg_stat_activity WHERE pid = ${oldPid}`,
+						)
+					).length,
+				{ timeout: 3_000 },
+			)
+			.toBe(0);
+		sql = createWorkItemClient();
+		adapter = createAdapter();
+
 		// Reads kept serving throughout — including while the write pool was
 		// dead, which is the bug.5358 guarantee.
 		await expect(adapter.get(id)).resolves.toMatchObject({ id });
-		// ...and the next WRITE both proves the pool was rebuilt and sweeps the
+		// ...and a fresh writer after proven native absence sweeps the
 		// orphan branch. Sweeping is a branch mutation, so it belongs to the
 		// write plane (COMMAND_QUERY_SEPARATION); a read used to do it here only
 		// because a read used to take the write lock.
@@ -221,6 +253,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 
 	it("serves reads past an unprovable operation branch and quarantines it so writes recover", async () => {
 		const branch = "work-item-op/component-unreachable";
+		const sql = postgres(dbUrl, { max: 1, fetch_types: false });
 		const maintenance = postgres(dbUrl, { max: 1, fetch_types: false });
 		const readSql = postgres(dbUrl, { max: 1, fetch_types: false });
 		try {
@@ -324,10 +357,12 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 				.catch(() => undefined);
 			await maintenance.end({ timeout: 0 });
 			await readSql.end({ timeout: 0 });
+			await sql.end({ timeout: 0 });
 		}
 	}, 60_000);
 
 	it("commits only work_items while preserving and deterministically cleaning dirty knowledge", async () => {
+		const sql = postgres(dbUrl, { max: 1, fetch_types: false });
 		const readSql = postgres(dbUrl, { max: 1, fetch_types: false });
 		const adapter = new DoltgresWorkItemAdapter(sql, {
 			readClient: readSql,
@@ -426,6 +461,7 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 					"SELECT table_name, staged FROM dolt.status ORDER BY table_name",
 				),
 			).resolves.toEqual(beforeStatus);
+			await sql.end({ timeout: 0 });
 		}
 	}, 60_000);
 });
