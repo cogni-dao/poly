@@ -271,25 +271,40 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
     );
   }
 
-  it("executes the full sparse LIVE projection as real owner and delegated app principals", async () => {
-    const seed = getSeedDb();
-    const wallet = await seed.execute<{ id: string }>(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label)
-      VALUES (${funderA},'cogni_wallet','Projection role plan fixture') RETURNING id`);
-    const walletId = wallet[0]?.id;
-    if (!walletId) throw new Error("Missing projection plan wallet");
-    try {
+  describe("full sparse LIVE projection app-role performance", () => {
+    let capturedAt: Date;
+    let walletId: string | undefined;
+
+    beforeAll(async () => {
+      capturedAt = new Date();
+      const seed = getSeedDb();
+      const wallet = await seed.execute<{
+        id: string;
+      }>(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label)
+          VALUES (${funderA},'cogni_wallet','Projection role plan fixture') RETURNING id`);
+      walletId = wallet[0]?.id;
+      if (!walletId) throw new Error("Missing projection plan wallet");
       // Full history drives 5080 lifetime keys; only 80 have a current
       // observation. History envelopes are valid but deliberately PARTIAL.
-      const capturedAt = new Date();
       const generationAt = new Date(capturedAt.getTime() - 1000).toISOString();
       const conditionId = `0x${"bc".repeat(32)}`;
       const historyObservation: Omit<EconomicObservationV1, "tokenId"> = {
-        version: 1, wallet: funderA, conditionId, fetchedAt: generationAt,
+        version: 1,
+        wallet: funderA,
+        conditionId,
+        fetchedAt: generationAt,
         windowStart: new Date(capturedAt.getTime() - 86400_000).toISOString(),
-        windowEnd: generationAt, coverage: "partial", reasons: ["missing_closed_position"],
-        closedPosition: null, lifetimeBuyUsdc: .4, lifetimeBuyShares: 1,
-        lifetimeSellUsdc: 0, lifetimePnlUsdc: null, redeemUsdc: 0,
-        constituents: [], settlements: [],
+        windowEnd: generationAt,
+        coverage: "partial",
+        reasons: ["missing_closed_position"],
+        closedPosition: null,
+        lifetimeBuyUsdc: 0.4,
+        lifetimeBuyShares: 1,
+        lifetimeSellUsdc: 0,
+        lifetimePnlUsdc: null,
+        redeemUsdc: 0,
+        constituents: [],
+        settlements: [],
       };
       await seed.execute(sql`INSERT INTO poly_trader_position_snapshots
         (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,captured_at,raw)
@@ -313,98 +328,288 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       await seed.execute(sql`ANALYZE poly_trader_position_snapshots`);
       await seed.execute(sql`ANALYZE poly_trader_fills`);
       await seed.execute(sql`ANALYZE poly_trader_current_positions`);
-    for (const [role, actor] of [["owner", ownerA], ["delegated", canonicalAgent]] as const) {
-      await withTenantScope(db, userActor(toUserId(actor.userId)), async tx => {
-        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
-        await tx.execute(sql`SET LOCAL statement_timeout = 8000`);
-        const probe = createEconomicProjectionPlanProbe();
-        const query = buildEconomicPositionProjectionQuery({
-          billingAccountId: ownerA.billingAccountId, walletAddress: funderA,
-          connectionKind: "privy_live", capturedAt, interval: "ALL",
-        });
-        const result = await probe(tx as unknown as Parameters<typeof probe>[0], query);
-        expect(result.status).toBe("captured");
-        const [context] = await tx.execute(sql`SELECT current_user AS role,
-          (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user) AS bypass_rls,
-          current_setting('app.current_user_id') AS actor,
-          current_setting('transaction_read_only') AS read_only,
-          current_setting('transaction_isolation') AS isolation,
-          current_setting('statement_timeout') AS timeout`);
-        const databaseUrl = process.env.DATABASE_URL;
-        if (!databaseUrl) throw new Error("Missing app database configuration");
-        expect(context).toMatchObject({ role: decodeURIComponent(new URL(databaseUrl).username),
-          bypass_rls: false, actor: actor.userId,
-          read_only: "on", isolation: "repeatable read", timeout: "8s" });
-        expect(JSON.stringify(result)).not.toContain(ownerA.billingAccountId);
-        expect(JSON.stringify(result)).not.toContain(funderA);
-        const projected = await tx.execute<{
-          live_count: number; closed_count: number; history_incomplete_count: number;
-          missing_mark_count: number; positions_mtm_usdc: string | null;
-          token_id: string; current_shares: string | null; current_value_usdc: string | null;
-          inventory_authoritative: boolean | null; mark_available: boolean | null;
-          history_complete: boolean | null; economic_bucket: string | null;
-        }>(query);
-        expect(projected).toHaveLength(500);
-        expect(projected[0]).toMatchObject({ live_count: 5080, closed_count: 0,
-          history_incomplete_count: 5080, missing_mark_count: 5000, positions_mtm_usdc: null });
-        expect(projected.every(row => row.economic_bucket === "live" && row.history_complete === false)).toBe(true);
-        const current = projected.filter(row => row.current_shares !== null);
-        expect(current).toHaveLength(80);
-        for (const row of current) {
-          expect(Number(row.current_shares)).toBe(1);
-          expect(Number(row.current_value_usdc)).toBe(.5);
-          expect(row.inventory_authoritative).toBe(true);
-          expect(row.mark_available).toBe(true);
-        }
-        expect(projected.filter(row => row.current_shares === null)
-          .every(row => row.current_value_usdc === null && row.mark_available === false)).toBe(true);
-        const [explained] = await tx.execute<{ "QUERY PLAN": Array<Record<string, unknown>> }>(
-          sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`);
-        const detail = explained?.["QUERY PLAN"][0];
-        if (!detail?.Plan) throw new Error("Missing executed projection plan");
-        type PlanNode = Record<string, unknown> & { Plans?: PlanNode[] };
-        const nodes: PlanNode[] = [];
-        const visit = (node: PlanNode): void => {
-          nodes.push(node);
-          for (const child of node.Plans ?? []) visit(child);
-        };
-        visit(detail.Plan as PlanNode);
-        // Numeric timings/costs/loops only: never log predicates, SQL, bindings,
-        // account IDs, addresses or row data from the real app-role plan.
-        const metric = (node: Record<string, unknown>, name: string): number | null =>
-          typeof node[name] === "number" && Number.isFinite(node[name]) ? node[name] as number : null;
-        const jit = detail.JIT as Record<string, unknown> | undefined;
-        const timing = jit?.Timing as Record<string, unknown> | undefined;
-        const options = jit?.Options as Record<string, unknown> | undefined;
-        const label = (value: unknown): string | null =>
-          typeof value === "string" && /^[A-Za-z][A-Za-z0-9_ .-]{0,119}$/.test(value) ? value : null;
-        const actual = {
-          planningMs: metric(detail, "Planning Time"), executionMs: metric(detail, "Execution Time"),
-          jit: jit ? { functions: metric(jit,"Functions"),
-            generationMs: timing ? metric(timing,"Generation") : null,
-            inliningMs: timing ? metric(timing,"Inlining") : null,
-            optimizationMs: timing ? metric(timing,"Optimization") : null,
-            emissionMs: timing ? metric(timing,"Emission") : null,
-            totalMs: timing ? metric(timing,"Total") : null,
-            inlining: typeof options?.Inlining === "boolean" ? options.Inlining : null,
-            optimization: typeof options?.Optimization === "boolean" ? options.Optimization : null } : null,
-          nodeCount: nodes.length, truncated: nodes.length > 24,
-          nodes: nodes.sort((a,b) => (metric(b,"Actual Total Time") ?? 0) - (metric(a,"Actual Total Time") ?? 0))
-            .slice(0,24).map(node => ({ node: label(node["Node Type"]), relation: label(node["Relation Name"]),
-              cte: label(node["CTE Name"]), subplan: label(node["Subplan Name"]),
-              estimatedRows: metric(node,"Plan Rows"), totalCost: metric(node,"Total Cost"),
-              actualRows: metric(node,"Actual Rows"), actualLoops: metric(node,"Actual Loops"),
-              actualTotalMs: metric(node,"Actual Total Time"),
-              sharedHitBlocks: metric(node,"Shared Hit Blocks"), sharedReadBlocks: metric(node,"Shared Read Blocks") })),
-        };
-        expect(actual.executionMs).not.toBeNull();
-        expect(actual.executionMs).toBeLessThan(8000);
-        console.info(JSON.stringify({ probe: "economic_projection_app_role_execution", environment: "ci_fixture", role, ...actual }));
-        console.info(JSON.stringify({ probe: "economic_projection_app_role_plan", environment: "ci_fixture", role, ...result }));
+    });
+
+    afterAll(async () => {
+      if (walletId) {
+        await getSeedDb().execute(
+          sql`DELETE FROM poly_trader_wallets WHERE id=${walletId}::uuid`,
+        );
+      }
+    });
+
+    function projectionQuery() {
+      return buildEconomicPositionProjectionQuery({
+        billingAccountId: ownerA.billingAccountId,
+        walletAddress: funderA,
+        connectionKind: "privy_live",
+        capturedAt,
+        interval: "ALL",
       });
     }
-    } finally {
-      await seed.execute(sql`DELETE FROM poly_trader_wallets WHERE id=${walletId}::uuid`);
+
+    async function expectAppRoleContext(
+      tx: Parameters<Parameters<Database["transaction"]>[0]>[0],
+      actor: Principal,
+    ) {
+      const [context] = await tx.execute(sql`SELECT current_user AS role,
+            (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user) AS bypass_rls,
+            current_setting('app.current_user_id') AS actor,
+            current_setting('transaction_read_only') AS read_only,
+            current_setting('transaction_isolation') AS isolation,
+            current_setting('statement_timeout') AS timeout`);
+      const databaseUrl = process.env.DATABASE_URL;
+      if (!databaseUrl) throw new Error("Missing app database configuration");
+      expect(context).toMatchObject({
+        role: decodeURIComponent(new URL(databaseUrl).username),
+        bypass_rls: false,
+        actor: actor.userId,
+        read_only: "on",
+        isolation: "repeatable read",
+        timeout: "8s",
+      });
+    }
+
+    for (const [role, actor] of [
+      ["owner", ownerA],
+      ["delegated", canonicalAgent],
+    ] as const) {
+      it(`keeps plain projection empirical p95 below 200ms as ${role}`, async () => {
+        await withTenantScope(
+          db,
+          userActor(toUserId(actor.userId)),
+          async (tx) => {
+            await tx.execute(
+              sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`,
+            );
+            await tx.execute(sql`SET LOCAL statement_timeout = 8000`);
+            await expectAppRoleContext(tx, actor);
+            const query = projectionQuery();
+            const sampleCount = 10;
+            const budgetMs = 200;
+            const samplesMs: number[] = [];
+            // Include the first execution: no warmup, EXPLAIN, retries or context
+            // queries inside the measured execute. All samples use this snapshot.
+            for (let sample = 0; sample < sampleCount; sample += 1) {
+              const startedAt = performance.now();
+              await tx.execute(query);
+              const elapsedMs = performance.now() - startedAt;
+              samplesMs.push(elapsedMs);
+              if (elapsedMs >= budgetMs) {
+                console.info(
+                  JSON.stringify({
+                    probe: "economic_projection_app_role_plain_latency",
+                    environment: "ci_fixture",
+                    role,
+                    method: "nearest_rank",
+                    percentile: 0.95,
+                    expectedSampleCount: sampleCount,
+                    observedSampleCount: samplesMs.length,
+                    samplesMs,
+                    complete: false,
+                  }),
+                );
+                // For N=10, nearest-rank p95 is the maximum. One >=200ms
+                // sample makes the gate impossible; do not wait for a 5s timeout
+                // or present this incomplete set as a completed p95 measurement.
+                throw new Error(
+                  `Plain projection ${role}: observed ${samplesMs.length}/${sampleCount} samples; ${elapsedMs.toFixed(3)}ms >= ${budgetMs}ms makes the complete nearest-rank p95 gate impossible`,
+                );
+              }
+            }
+            const sortedMs = [...samplesMs].sort((a, b) => a - b);
+            const p95Ms = sortedMs[Math.ceil(0.95 * sampleCount) - 1];
+            console.info(
+              JSON.stringify({
+                probe: "economic_projection_app_role_plain_latency",
+                environment: "ci_fixture",
+                role,
+                method: "nearest_rank",
+                percentile: 0.95,
+                expectedSampleCount: sampleCount,
+                observedSampleCount: samplesMs.length,
+                samplesMs,
+                p95Ms,
+                complete: true,
+              }),
+            );
+            expect(samplesMs).toHaveLength(sampleCount);
+            expect(p95Ms).toBeLessThan(budgetMs);
+          },
+        );
+      });
+
+      it(`preserves complete projection semantics and plan diagnostics as ${role}`, async () => {
+        await withTenantScope(
+          db,
+          userActor(toUserId(actor.userId)),
+          async (tx) => {
+            await tx.execute(
+              sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`,
+            );
+            await tx.execute(sql`SET LOCAL statement_timeout = 8000`);
+            const probe = createEconomicProjectionPlanProbe();
+            const query = projectionQuery();
+            const result = await probe(
+              tx as unknown as Parameters<typeof probe>[0],
+              query,
+            );
+            expect(result.status).toBe("captured");
+            await expectAppRoleContext(tx, actor);
+            expect(JSON.stringify(result)).not.toContain(ownerA.billingAccountId);
+            expect(JSON.stringify(result)).not.toContain(funderA);
+            const projected = await tx.execute<{
+              live_count: number;
+              closed_count: number;
+              history_incomplete_count: number;
+              missing_mark_count: number;
+              positions_mtm_usdc: string | null;
+              token_id: string;
+              current_shares: string | null;
+              current_value_usdc: string | null;
+              inventory_authoritative: boolean | null;
+              mark_available: boolean | null;
+              history_complete: boolean | null;
+              economic_bucket: string | null;
+            }>(query);
+            expect(projected).toHaveLength(500);
+            expect(projected[0]).toMatchObject({
+              live_count: 5080,
+              closed_count: 0,
+              history_incomplete_count: 5080,
+              missing_mark_count: 5000,
+              positions_mtm_usdc: null,
+            });
+            expect(
+              projected.every(
+                (row) =>
+                  row.economic_bucket === "live" &&
+                  row.history_complete === false,
+              ),
+            ).toBe(true);
+            const current = projected.filter(
+              (row) => row.current_shares !== null,
+            );
+            expect(current).toHaveLength(80);
+            for (const row of current) {
+              expect(Number(row.current_shares)).toBe(1);
+              expect(Number(row.current_value_usdc)).toBe(0.5);
+              expect(row.inventory_authoritative).toBe(true);
+              expect(row.mark_available).toBe(true);
+            }
+            expect(
+              projected
+                .filter((row) => row.current_shares === null)
+                .every(
+                  (row) =>
+                    row.current_value_usdc === null &&
+                    row.mark_available === false,
+                ),
+            ).toBe(true);
+            const [explained] = await tx.execute<{
+              "QUERY PLAN": Array<Record<string, unknown>>;
+            }>(sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`);
+            const detail = explained?.["QUERY PLAN"][0];
+            if (!detail?.Plan)
+              throw new Error("Missing executed projection plan");
+            type PlanNode = Record<string, unknown> & { Plans?: PlanNode[] };
+            const nodes: PlanNode[] = [];
+            const visit = (node: PlanNode): void => {
+              nodes.push(node);
+              for (const child of node.Plans ?? []) visit(child);
+            };
+            visit(detail.Plan as PlanNode);
+            // Numeric timings/costs/loops only: never log predicates, SQL, bindings,
+            // account IDs, addresses or row data from the real app-role plan.
+            const metric = (
+              node: Record<string, unknown>,
+              name: string,
+            ): number | null =>
+              typeof node[name] === "number" && Number.isFinite(node[name])
+                ? (node[name] as number)
+                : null;
+            const jit = detail.JIT as Record<string, unknown> | undefined;
+            const timing = jit?.Timing as Record<string, unknown> | undefined;
+            const options = jit?.Options as Record<string, unknown> | undefined;
+            const label = (value: unknown): string | null =>
+              typeof value === "string" &&
+              /^[A-Za-z][A-Za-z0-9_ .-]{0,119}$/.test(value)
+                ? value
+                : null;
+            const actual = {
+              planningMs: metric(detail, "Planning Time"),
+              executionMs: metric(detail, "Execution Time"),
+              jit: jit
+                ? {
+                    functions: metric(jit, "Functions"),
+                    generationMs: timing ? metric(timing, "Generation") : null,
+                    inliningMs: timing ? metric(timing, "Inlining") : null,
+                    optimizationMs: timing
+                      ? metric(timing, "Optimization")
+                      : null,
+                    emissionMs: timing ? metric(timing, "Emission") : null,
+                    totalMs: timing ? metric(timing, "Total") : null,
+                    inlining:
+                      typeof options?.Inlining === "boolean"
+                        ? options.Inlining
+                        : null,
+                    optimization:
+                      typeof options?.Optimization === "boolean"
+                        ? options.Optimization
+                        : null,
+                  }
+                : null,
+              nodeCount: nodes.length,
+              truncated: nodes.length > 24,
+              nodes: nodes
+                .filter(
+                  (node) =>
+                    node["Relation Name"] ||
+                    node["Index Name"] ||
+                    node["Subplan Name"],
+                )
+                .sort(
+                  (a, b) =>
+                    (metric(b, "Total Cost") ?? 0) -
+                    (metric(a, "Total Cost") ?? 0),
+                )
+                .slice(0, 24)
+                .map((node) => ({
+                  node: label(node["Node Type"]),
+                  relation: label(node["Relation Name"]),
+                  index: label(node["Index Name"]),
+                  cte: label(node["CTE Name"]),
+                  subplan: label(node["Subplan Name"]),
+                  estimatedRows: metric(node, "Plan Rows"),
+                  totalCost: metric(node, "Total Cost"),
+                  actualRows: metric(node, "Actual Rows"),
+                  actualLoops: metric(node, "Actual Loops"),
+                  actualTotalMs: metric(node, "Actual Total Time"),
+                  sharedHitBlocks: metric(node, "Shared Hit Blocks"),
+                  sharedReadBlocks: metric(node, "Shared Read Blocks"),
+                })),
+            };
+            expect(actual.executionMs).not.toBeNull();
+            expect(actual.executionMs).toBeLessThan(8000);
+            console.info(
+              JSON.stringify({
+                probe: "economic_projection_app_role_execution",
+                environment: "ci_fixture",
+                role,
+                ...actual,
+              }),
+            );
+            console.info(
+              JSON.stringify({
+                probe: "economic_projection_app_role_plan",
+                environment: "ci_fixture",
+                role,
+                ...result,
+              }),
+            );
+          },
+        );
+      });
     }
   });
 
