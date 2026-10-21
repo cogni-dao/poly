@@ -46,6 +46,7 @@ import {
 } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { Logger } from "pino";
+import { reservedIntentUsdc } from "@/shared/db/order-commitment-sql";
 
 import {
   AlreadyRestingError,
@@ -228,51 +229,6 @@ const nonTerminalPositionLifecycle = sql`(${polyCopyTradeFills.positionLifecycle
 const activeRestingPositionLifecycle = sql`(${polyCopyTradeFills.positionLifecycle} IS NULL OR ${polyCopyTradeFills.positionLifecycle} IN ('unresolved','open','closing'))`;
 const notPositionTerminal = sql`${nonTerminalPositionLifecycle} AND ${polyCopyTradeFills.attributes}->>'closed_at' IS NULL`;
 const activeRestingPosition = sql`${activeRestingPositionLifecycle} AND ${polyCopyTradeFills.attributes}->>'closed_at' IS NULL`;
-// One reservation amount for the planning read AND the advisory-locked insert.
-// Legacy status/error labels and local cancellation acknowledgements are not
-// evidence that a request never executed. Only authenticated proof releases it.
-const intendedReservation = sql`CASE
-  WHEN COALESCE(${polyCopyTradeFills.attributes}->>'size_usdc', 'missing_intent')::numeric >= 0
-    THEN COALESCE(${polyCopyTradeFills.attributes}->>'size_usdc', 'missing_intent')::numeric
-  ELSE ('invalid_intent_' || ${polyCopyTradeFills.clientOrderId})::numeric END`;
-const acceptedReservation = sql`CASE
-  WHEN COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '0')::numeric >= 0
-    THEN COALESCE(${polyCopyTradeFills.attributes}->>'filled_size_usdc', '0')::numeric
-  ELSE ('invalid_fill_' || ${polyCopyTradeFills.clientOrderId})::numeric END`;
-const nonExecutionProven = sql`(
-  ${polyCopyTradeFills.orderId} IS NULL AND ${acceptedReservation} = 0
-  AND COALESCE(${polyCopyTradeFills.shares}, 0) <= 0
-  AND ${polyCopyTradeFills.status} IN ('pending','error','canceled')
-  AND ${polyCopyTradeFills.attributes}->'non_execution_proof'->>'source'
-    IN ('executor_authorize_denied','pre_dispatch_retirement')
-  AND NULLIF(${polyCopyTradeFills.attributes}->'non_execution_proof'->>'observed_at', '') IS NOT NULL
-  AND NULLIF(${polyCopyTradeFills.attributes}->'non_execution_proof'->>'reason', '') IS NOT NULL
-)`;
-const finalCancellationProven = sql`(
-  ${polyCopyTradeFills.orderId} IS NOT NULL
-  AND ${polyCopyTradeFills.attributes}->'final_order_observation'->>'source' = 'venue_get_order'
-  AND ${polyCopyTradeFills.attributes}->'final_order_observation'->>'order_id' = ${polyCopyTradeFills.orderId}
-  AND ${polyCopyTradeFills.attributes}->'final_order_observation'->>'status' = 'canceled'
-  AND ${polyCopyTradeFills.attributes}->'final_order_observation'->>'fill_evidence'
-    IN ('explicit_zero_size_matched','clob_associated_trades','paper_order_receipt')
-  AND (
-    (${polyCopyTradeFills.attributes}->'final_order_observation'->>'fill_evidence' = 'explicit_zero_size_matched'
-      AND (${polyCopyTradeFills.attributes}->'final_order_observation'->>'filled_size_usdc')::numeric = 0)
-    OR (${polyCopyTradeFills.attributes}->'final_order_observation'->>'fill_evidence' = 'clob_associated_trades'
-      AND (${polyCopyTradeFills.attributes}->'final_order_observation'->>'filled_size_usdc')::numeric > 0)
-    OR (${polyCopyTradeFills.attributes}->'final_order_observation'->>'fill_evidence' = 'paper_order_receipt'
-      AND ${polyCopyTradeFills.mode} = 'paper')
-  )
-  AND NULLIF(${polyCopyTradeFills.attributes}->'final_order_observation'->>'observed_at', '') IS NOT NULL
-  AND (${polyCopyTradeFills.attributes}->'final_order_observation'->>'filled_size_usdc')::numeric >= 0
-  AND (COALESCE(${polyCopyTradeFills.shares}, 0) <= 0 OR ${acceptedReservation} > 0)
-)`;
-const reservedIntentUsdc = sql<string>`CASE
-  WHEN ${nonExecutionProven} THEN 0
-  WHEN ${polyCopyTradeFills.status} = 'canceled' AND ${finalCancellationProven}
-    THEN GREATEST(${acceptedReservation}, (${polyCopyTradeFills.attributes}->'final_order_observation'->>'filled_size_usdc')::numeric)
-  ELSE GREATEST(${intendedReservation}, ${acceptedReservation})
-END`;
 const reconcileAttemptAt = sql`GREATEST(${polyCopyTradeFills.updatedAt}, COALESCE(${polyCopyTradeFills.syncedAt}, ${polyCopyTradeFills.createdAt}))`;
 const hasPositionLifecycleOrExecution = sql`(
   ${polyCopyTradeFills.positionLifecycle} IS NOT NULL

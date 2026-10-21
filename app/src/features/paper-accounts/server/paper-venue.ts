@@ -46,22 +46,11 @@ import {
   polyWalletGrants,
 } from "@cogni/poly-db-schema";
 import type { AuthorizationFailure, OrderIntentSummary } from "@cogni/poly-wallet";
-import { and, count, desc, eq, gte, inArray, isNull, sql, sum } from "drizzle-orm";
+import { and, count, desc, eq, gt, gte, isNull, sql, sum } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { reservedIntentUsdc } from "@/shared/db/order-commitment-sql";
 
 import { PAPER_CONNECTION_KIND } from "./provision-paper-account";
-
-/**
- * Fill statuses that have USDC attached, live or simulated. Same list the live
- * adapter uses (`IN_FLIGHT_FILL_STATUSES`): counting only `filled` lets two
- * concurrent pending orders race past a cap.
- */
-const IN_FLIGHT_FILL_STATUSES = [
-  "pending",
-  "open",
-  "filled",
-  "partial",
-] as const;
 
 /** `poly_copy_trade_{fills,decisions}.mode` value for simulated execution. */
 const PAPER_LEDGER_MODE = "paper";
@@ -305,15 +294,16 @@ export function createPaperVenue(deps: {
           now: now(),
         });
         if (!preconditions.ok || grant === null) return preconditions;
+        if (![grant.perOrderUsdcCap, grant.dailyUsdcCap, grant.hourlyFillsCap].every(Number.isFinite)) {
+          return { ok: false, reason: "backend_unreachable" };
+        }
 
         // CAPS_COUNT_INTENTS + CAP_WINDOWS_ARE_MODE_SCOPED. Filter on
         // `created_at` (intent insertion), not `observed_at` (upstream fill
         // time), so replayed historical target activity cannot backdate caps.
         const [spendRow] = await deps.db
           .select({
-            spent: sum(
-              sql<string>`COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)`
-            ),
+            spent: sum(reservedIntentUsdc),
           })
           .from(polyCopyTradeFills)
           .where(
@@ -323,8 +313,7 @@ export function createPaperVenue(deps: {
               gte(
                 polyCopyTradeFills.createdAt,
                 sql`now() - interval '24 hours'`
-              ),
-              inArray(polyCopyTradeFills.status, [...IN_FLIGHT_FILL_STATUSES])
+              )
             )
           );
 
@@ -336,15 +325,20 @@ export function createPaperVenue(deps: {
               eq(polyCopyTradeFills.billingAccountId, billingAccountId),
               eq(polyCopyTradeFills.mode, PAPER_LEDGER_MODE),
               gte(polyCopyTradeFills.createdAt, sql`now() - interval '1 hour'`),
-              inArray(polyCopyTradeFills.status, [...IN_FLIGHT_FILL_STATUSES])
+            gt(reservedIntentUsdc, 0)
             )
           );
 
+        const spent24hUsdc = Number(spendRow?.spent ?? 0);
+        const fillsLastHour = Number(rateRow?.n ?? 0);
+        if (!Number.isFinite(spent24hUsdc) || !Number.isFinite(fillsLastHour)) {
+          return { ok: false, reason: "backend_unreachable" };
+        }
         return evaluatePaperCapWindows({
           intent,
           grant,
-          spent24hUsdc: Number(spendRow?.spent ?? 0),
-          fillsLastHour: Number(rateRow?.n ?? 0),
+          spent24hUsdc,
+          fillsLastHour,
         });
       } catch {
         // FAIL_CLOSED — identical to the live adapter: any DB failure denies.
