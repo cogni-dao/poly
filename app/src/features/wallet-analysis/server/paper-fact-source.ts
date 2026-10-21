@@ -17,7 +17,8 @@
  *   depends on the cursor and withholding semantics the writer establishes, and
  *   splitting them is how the two drift.
  * Scope: Feature service. Caller injects the DB handle, the logger, and the
- *   mid-price reader, and owns the statement timeout and transaction. Does not
+ *   mid-price reader, and owns the statement timeout. Each account observation
+ *   owns a transaction/savepoint for atomic facts, NAV and prospective P/L. Does not
  *   construct clients, read env, or schedule itself.
  * Invariants:
  *   - SAME_TABLES_NOT_A_MIRROR (migration 0083): paper writes the existing
@@ -369,6 +370,7 @@ export async function syncPaperTraderWallets(
         activeForResearch: true,
         disabledAt: null,
         updatedAt: now,
+        createdAt: now,
       }))
     )
     .onConflictDoUpdate({
@@ -884,7 +886,7 @@ type PreparedPaperPosition = {
  * this table on `lower(address) = lower(funder_address)`, returning
  * `available` only when the row exists.
  */
-export async function projectPaperPositionsAndNav(input: {
+async function projectPaperPositionsAndNav(input: {
   db: Db;
   wallet: EnrolledPaperWallet;
   readMidPrice: PaperMidPriceReader;
@@ -1115,6 +1117,7 @@ export async function projectPaperPositionsAndNav(input: {
       logger: input.logger,
       observedAt: now,
     });
+    await publishPaperPnl(input.db, input.wallet, now);
   } else if (!negativeNav) {
     input.logger.warn(
       {
@@ -1349,6 +1352,34 @@ async function publishPaperNav(input: {
   );
 }
 
+/** Publish only genuine current NAV observations; the buckets are dedupe keys. */
+async function publishPaperPnl(db: Db, wallet: EnrolledPaperWallet, observedAt: Date): Promise<void> {
+  let published = 0;
+  for (const fidelity of ["1h", "1d"] as const) {
+    const rows = allRows<{ fidelity: string }>(await db.execute(sql`
+      INSERT INTO poly_trader_user_pnl_points (trader_wallet_id, fidelity, ts, pnl_usdc, observed_at)
+      SELECT w.id, f.fidelity, date_trunc(f.bucket, ${observedAt}::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
+        (b.usdc_e - c.paper_seed_usdc)::numeric(38,8), ${observedAt}::timestamptz
+      FROM poly_wallet_connections c
+      JOIN poly_trader_wallets w ON w.id = ${wallet.traderWalletId}::uuid AND w.kind = 'paper_wallet'
+        AND lower(w.wallet_address) = lower(c.address) AND w.active_for_research AND w.disabled_at IS NULL
+      JOIN poly_wallet_balance_snapshots b ON b.billing_account_id = c.billing_account_id
+        AND lower(b.address) = lower(c.funder_address) AND b.observed_at = ${observedAt}::timestamptz
+      CROSS JOIN (VALUES (${fidelity}::text, ${fidelity === '1h' ? 'hour' : 'day'}::text)) f(fidelity, bucket)
+      WHERE c.billing_account_id = ${wallet.account.billingAccountId} AND c.kind = 'paper' AND c.revoked_at IS NULL
+        AND c.paper_seed_usdc = ${wallet.account.seedUsdc}::numeric
+        AND lower(c.address) = ${wallet.account.address} AND lower(c.funder_address) = ${wallet.account.address}
+      ON CONFLICT (trader_wallet_id, fidelity, ts) DO UPDATE SET
+        pnl_usdc = excluded.pnl_usdc, observed_at = excluded.observed_at
+      WHERE poly_trader_user_pnl_points.observed_at < excluded.observed_at
+      RETURNING fidelity
+    `));
+    if (rows.length !== 1) throw new Error("paper P/L publication did not acknowledge fidelity");
+    published += rows.length;
+  }
+  if (published !== 2) throw new Error("paper P/L publication did not acknowledge both fidelities");
+}
+
 /** Advance (or fault) the paper position cursor, same shape as the live one. */
 async function publishPaperPositionCursor(input: {
   db: Db;
@@ -1401,95 +1432,132 @@ export async function observePaperWallet(input: {
   now?: Date;
   markRefreshLimit?: number;
 }): Promise<PaperObservationResult> {
-  const startedAt = Date.now();
-  const now = input.now ?? new Date();
-  const { traderWalletId, account } = input.wallet;
+  return input.db.transaction(async (tx) => {
+    const db = tx as unknown as Db;
+    const { traderWalletId, account } = input.wallet;
+    // Existing durable account row serializes observers across processes.
+    const connections = await db.select().from(polyWalletConnections)
+      .where(and(eq(polyWalletConnections.billingAccountId, account.billingAccountId), eq(polyWalletConnections.kind, "paper")))
+      .orderBy(polyWalletConnections.id).limit(2).for("update");
+    const connection = connections[0];
+    const now = input.now ?? new Date();
+    const expected = derivePaperAccountAddress(account.billingAccountId);
+    const [physical] = await db.select().from(polyTraderWallets)
+      .where(eq(polyTraderWallets.id, traderWalletId)).limit(1);
+    if (connections.length !== 1 || !connection || connection.revokedAt !== null ||
+      connection.address.toLowerCase() !== expected || connection.funderAddress.toLowerCase() !== expected ||
+      account.address !== expected || connection.paperSeedUsdc === null ||
+      !Number.isFinite(Number(connection.paperSeedUsdc)) || Number(connection.paperSeedUsdc) <= 0 ||
+      !Number.isFinite(Number(account.seedUsdc)) ||
+      !physical || physical.kind !== PAPER_WALLET_KIND || !physical.activeForResearch || physical.disabledAt !== null ||
+      physical.walletAddress.toLowerCase() !== expected || physical.createdAt < connection.createdAt ||
+      !Number.isFinite(now.getTime()) || now < physical.createdAt || now < connection.createdAt) {
+      throw new Error("paper observation lifecycle is unsupported or changed");
+    }
+    const seedMatch = allRows<{ matches: boolean }>(await db.execute(sql`
+      SELECT ${account.seedUsdc}::numeric(20,8) = ${connection.paperSeedUsdc}::numeric(20,8) AS matches
+    `))[0]?.matches;
+    if (!seedMatch) throw new Error("paper observation seed changed");
+    const previous = allRows<{ latest: Date | string | null }>(await db.execute(sql`
+      SELECT max(generation) AS latest FROM (
+        SELECT last_success_at AS generation FROM poly_trader_ingestion_cursors
+          WHERE trader_wallet_id = ${traderWalletId}::uuid AND source IN (${PAPER_TRADE_CURSOR_SOURCE}, ${PAPER_POSITION_CURSOR_SOURCE})
+        UNION ALL SELECT observed_at FROM poly_wallet_balance_snapshots
+          WHERE billing_account_id = ${account.billingAccountId} AND lower(address) = ${expected}
+        UNION ALL SELECT observed_at FROM poly_trader_user_pnl_points WHERE trader_wallet_id = ${traderWalletId}::uuid
+      ) generations
+    `))[0]?.latest;
+    if (previous !== null && previous !== undefined && now.getTime() <= new Date(previous).getTime()) {
+      throw new Error("paper observation generation must be strictly newer");
+    }
+    const startedAt = Date.now();
 
-  const cursor = await input.db
-    .select({ lastSeenAt: polyTraderIngestionCursors.lastSeenAt })
-    .from(polyTraderIngestionCursors)
-    .where(
-      and(
-        eq(polyTraderIngestionCursors.traderWalletId, traderWalletId),
-        eq(polyTraderIngestionCursors.source, PAPER_TRADE_CURSOR_SOURCE)
+    const cursor = await db
+      .select({ lastSeenAt: polyTraderIngestionCursors.lastSeenAt })
+      .from(polyTraderIngestionCursors)
+      .where(
+        and(
+          eq(polyTraderIngestionCursors.traderWalletId, traderWalletId),
+          eq(polyTraderIngestionCursors.source, PAPER_TRADE_CURSOR_SOURCE)
+        )
       )
-    )
-    .limit(1);
+      .limit(1);
 
-  const projected = await projectPaperFills({
-    db: input.db,
-    traderWalletId,
-    billingAccountId: account.billingAccountId,
-    watermark: cursor[0]?.lastSeenAt ?? null,
-    capturedAt: now,
-  });
-
-  await input.db
-    .insert(polyTraderIngestionCursors)
-    .values({
+    const projected = await projectPaperFills({
+      db,
       traderWalletId,
-      source: PAPER_TRADE_CURSOR_SOURCE,
-      lastSeenAt: projected.watermark,
-      lastSuccessAt: now,
-      status: "ok",
-      errorMessage: null,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: [
-        polyTraderIngestionCursors.traderWalletId,
-        polyTraderIngestionCursors.source,
-      ],
-      set: {
-        lastSeenAt: sql`excluded.last_seen_at`,
+      billingAccountId: account.billingAccountId,
+      watermark: cursor[0]?.lastSeenAt ?? null,
+      capturedAt: now,
+    });
+
+    await db
+      .insert(polyTraderIngestionCursors)
+      .values({
+        traderWalletId,
+        source: PAPER_TRADE_CURSOR_SOURCE,
+        lastSeenAt: projected.watermark,
         lastSuccessAt: now,
         status: "ok",
         errorMessage: null,
         updatedAt: now,
-      },
+      })
+      .onConflictDoUpdate({
+        target: [
+          polyTraderIngestionCursors.traderWalletId,
+          polyTraderIngestionCursors.source,
+        ],
+        set: {
+          lastSeenAt: sql`excluded.last_seen_at`,
+          lastSuccessAt: now,
+          status: "ok",
+          errorMessage: null,
+          updatedAt: now,
+        },
+      });
+
+    const positions = await projectPaperPositionsAndNav({
+      db,
+      wallet: input.wallet,
+      readMidPrice: input.readMidPrice,
+      logger: input.logger,
+      signal: input.signal,
+      now,
+      ...(input.markRefreshLimit === undefined
+        ? {}
+        : { markRefreshLimit: input.markRefreshLimit }),
     });
 
-  const positions = await projectPaperPositionsAndNav({
-    db: input.db,
-    wallet: input.wallet,
-    readMidPrice: input.readMidPrice,
-    logger: input.logger,
-    signal: input.signal,
-    now,
-    ...(input.markRefreshLimit === undefined
-      ? {}
-      : { markRefreshLimit: input.markRefreshLimit }),
-  });
+    input.logger.info(
+      {
+        event: EVENT_NAMES.POLY_PAPER_OBSERVE,
+        phase: "wallet_ok",
+        trader_wallet_id: traderWalletId,
+        billing_account_id: account.billingAccountId,
+        wallet: account.address,
+        fills: projected.inserted,
+        fill_candidates: projected.candidates,
+        positions: positions.positions,
+        unpriced_positions: positions.unpricedPositions,
+        nav_published: positions.navPublished,
+        marks_attempted: positions.marksAttempted,
+        marks_refreshed: positions.marksRefreshed,
+        marks_reused: positions.marksReused,
+        duration_ms: Date.now() - startedAt,
+      },
+      "paper wallet observed"
+    );
 
-  input.logger.info(
-    {
-      event: EVENT_NAMES.POLY_PAPER_OBSERVE,
-      phase: "wallet_ok",
-      trader_wallet_id: traderWalletId,
-      billing_account_id: account.billingAccountId,
-      wallet: account.address,
+    return {
       fills: projected.inserted,
-      fill_candidates: projected.candidates,
       positions: positions.positions,
-      unpriced_positions: positions.unpricedPositions,
-      nav_published: positions.navPublished,
-      marks_attempted: positions.marksAttempted,
-      marks_refreshed: positions.marksRefreshed,
-      marks_reused: positions.marksReused,
-      duration_ms: Date.now() - startedAt,
-    },
-    "paper wallet observed"
-  );
-
-  return {
-    fills: projected.inserted,
-    positions: positions.positions,
-    unpricedPositions: positions.unpricedPositions,
-    navPublished: positions.navPublished,
-    marksAttempted: positions.marksAttempted,
-    marksRefreshed: positions.marksRefreshed,
-    marksReused: positions.marksReused,
-  };
+      unpricedPositions: positions.unpricedPositions,
+      navPublished: positions.navPublished,
+      marksAttempted: positions.marksAttempted,
+      marksRefreshed: positions.marksRefreshed,
+      marksReused: positions.marksReused,
+    };
+  });
 }
 
 /**

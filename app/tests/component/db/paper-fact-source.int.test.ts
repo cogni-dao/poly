@@ -48,12 +48,13 @@ import {
   polyTraderFills,
   polyTraderIngestionCursors,
   polyTraderPositionSnapshots,
+  polyTraderUserPnlPoints,
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { seedNativePaperConnection as seedPaperConnection, seedNativePaperFill, type NativePaperFill } from "./native-paper-receipt.fixture";
 import { type SQL, and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
 import { derivePaperAccountAddress } from "@/features/paper-accounts";
@@ -74,8 +75,10 @@ import {
   persistWalletBalanceFact,
   readWalletBalanceFact,
 } from "@/features/wallet-analysis/server/wallet-balance-snapshot-service";
-import { readTenantWalletDashboard } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
+import { getTradingWalletPnlHistoryRead } from "@/features/wallet-analysis/server/trading-wallet-overview-service";
+import { readTenantWalletDashboard, readTenantWalletDashboardIn } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 import {
+  agentCapabilityGrants,
   billingAccounts,
   polyCopyTradeFills,
   polyWalletBalanceSnapshots,
@@ -206,7 +209,16 @@ function midPrices(table: Record<string, number>): PaperMidPriceReader {
 async function enrolAll(): Promise<Map<string, EnrolledPaperWallet>> {
   const db = getSeedDb() as unknown as PaperDb;
   const accounts = await readActivePaperAccounts(db, logger);
+  const before = new Set((await db.select({ id: polyTraderWallets.id }).from(polyTraderWallets)).map((row) => row.id));
   const enrolled = await syncPaperTraderWallets(db, accounts);
+  // Only our newly seeded physical fixtures use the explicit historical clock.
+  // Foreign cohorts and every previously enrolled creation clock stay untouched.
+  for (const wallet of enrolled) {
+    if (!before.has(wallet.traderWalletId) && ownFixtureBillingIds.has(wallet.account.billingAccountId)) {
+      await db.update(polyTraderWallets).set({ createdAt: new Date("2026-10-01T00:00:00.000Z") })
+        .where(eq(polyTraderWallets.id, wallet.traderWalletId));
+    }
+  }
   return new Map(
     enrolled.map((wallet) => [wallet.account.billingAccountId, wallet])
   );
@@ -236,6 +248,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
   const nonfinite = tenant("Paper tenant with non-finite NAV");
   const dual = tenant("Tenant with live and paper snapshots");
   const live = tenant("Live tenant that must be untouched");
+  let fullPopulationClock: Date;
   const tenants = [
     traded,
     unpriced,
@@ -1399,6 +1412,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
 
       // Now run a paper tick for every paper tenant — one full-set enrollment
       // followed by one projection each, exactly as the tick does.
+      fullPopulationClock = new Date(Date.now() + 1000);
       for (const enrolled of (await enrolAll()).values()) {
         await observePaperWallet({
           db: getSeedDb() as unknown as PaperDb,
@@ -1409,7 +1423,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
             [tokenU]: 0.35,
           }),
           logger,
-          now: new Date("2026-10-07T19:00:00.000Z"),
+          now: fullPopulationClock,
         });
       }
     });
@@ -1499,7 +1513,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
           [tokenU]: 0.35,
         }),
         logger: events.logger,
-        now: new Date("2026-10-07T20:00:00.000Z"),
+        now: new Date(fullPopulationClock.getTime() + 1000),
       });
 
       // Emit before the count assertions so a caught per-account error remains
@@ -1553,8 +1567,8 @@ describe("paper facts project into the live tables (migration 0083)", () => {
             db, wallet, readMidPrice: midPrices({}), logger, now: observedAt,
           });
           if (removed) {
-            // The real cursor write must reject its missing physical-wallet FK.
-            await expect(observation).rejects.toMatchObject({ cause: { code: "23503" } });
+            // The account transaction rejects physical identity loss before any write.
+            await expect(observation).rejects.toThrow("paper observation lifecycle is unsupported or changed");
           } else {
             expect(await observation).toMatchObject({
               fills: 0, positions: 0, unpricedPositions: 0, navPublished: true,
@@ -1576,10 +1590,15 @@ describe("paper facts project into the live tables (migration 0083)", () => {
             observedAt: polyWalletBalanceSnapshots.observedAt,
           }).from(polyWalletBalanceSnapshots)
             .where(eq(polyWalletBalanceSnapshots.billingAccountId, owner.billingAccountId));
+          const pnl = await seedDb.select().from(polyTraderUserPnlPoints)
+            .where(eq(polyTraderUserPnlPoints.traderWalletId, wallet.traderWalletId));
           if (removed) {
+            expect(pnl).toHaveLength(0);
             expect(cursors).toHaveLength(0);
             expect(navs).toHaveLength(0);
           } else {
+            expect(pnl).toHaveLength(2);
+            expect(pnl.every((point) => Number(point.pnlUsdc) === 0 && point.observedAt.getTime() === observedAt.getTime())).toBe(true);
             expect(cursors.map((cursor) => cursor.source).sort()).toEqual(
               ["paper-ledger-trades", PAPER_POSITION_CURSOR_SOURCE].sort()
             );
@@ -1705,4 +1724,272 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       expect(rows[0]?.disabledAt).toBeNull();
     });
   });
+
+  describe("private prospective PAPER P/L observations", () => {
+    const createdOwners: Tenant[] = [];
+    afterEach(async () => {
+      const db = getSeedDb();
+      for (const owner of createdOwners.splice(0)) {
+        await db.delete(billingAccounts).where(eq(billingAccounts.id, owner.billingAccountId));
+        await db.delete(polyTraderWallets).where(eq(polyTraderWallets.walletAddress, derivePaperAccountAddress(owner.billingAccountId)));
+        await db.delete(users).where(eq(users.id, owner.userId));
+        ownFixtureBillingIds.delete(owner.billingAccountId);
+      }
+    });
+    const epoch = new Date("2026-10-06T23:59:59.125Z");
+    const token = "9000123456789";
+    const condition = `0x${"a".repeat(64)}`;
+    async function setup() {
+      const owner = tenant("private PAPER P/L");
+      createdOwners.push(owner);
+      const db = getSeedDb();
+      await db.insert(users).values({ id: owner.userId, name: owner.name, walletAddress: address() });
+      await db.insert(billingAccounts).values({ id: owner.billingAccountId, ownerUserId: owner.userId, balanceCredits: 0n });
+      await seedPaperConnection(owner, "100");
+      const wallet = await enrol(owner);
+      const native = await seedLedgerFill(owner, randomUUID(), { conditionId: condition, tokenId: token,
+        side: "BUY", shares: "10", price: "0.4", feesUsdc: "0.1", observedAt: new Date(epoch.getTime() - 1000) });
+      if (!native) throw new Error("native receipt missing");
+      return { owner, db, wallet, native };
+    }
+    async function observe(fixture: Awaited<ReturnType<typeof setup>>, at: Date, mark = 0.6, db: PaperDb = fixture.db as unknown as PaperDb) {
+      return observePaperWallet({ db, wallet: fixture.wallet, now: at, readMidPrice: midPrices({ [token]: mark }), logger });
+    }
+    async function privateRead(fixture: Awaited<ReturnType<typeof setup>>, generation: Date, navUsdc: number,
+      actorId = fixture.owner.userId, interval: "ALL" | "1W" = "ALL", captured = generation) {
+      return withTenantScope(getAppDb(), userActor(toUserId(actorId)), async (tx) => {
+        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+        return getTradingWalletPnlHistoryRead({ db: tx as unknown as PaperDb,
+          address: fixture.wallet.account.address, interval, capturedAt: captured.toISOString(),
+          paper: { billingAccountId: fixture.owner.billingAccountId, generation: generation.toISOString(), navUsdc } });
+      });
+    }
+    async function saved(fixture: Awaited<ReturnType<typeof setup>>) {
+      return {
+        pnl: await fixture.db.select().from(polyTraderUserPnlPoints).where(eq(polyTraderUserPnlPoints.traderWalletId, fixture.wallet.traderWalletId)).orderBy(polyTraderUserPnlPoints.fidelity, polyTraderUserPnlPoints.ts),
+        nav: await fixture.db.select().from(polyWalletBalanceSnapshots).where(eq(polyWalletBalanceSnapshots.billingAccountId, fixture.owner.billingAccountId)),
+        cursors: await fixture.db.select().from(polyTraderIngestionCursors).where(eq(polyTraderIngestionCursors.traderWalletId, fixture.wallet.traderWalletId)).orderBy(polyTraderIngestionCursors.source),
+        positions: await fixture.db.select().from(polyTraderCurrentPositions).where(eq(polyTraderCurrentPositions.traderWalletId, fixture.wallet.traderWalletId)),
+      };
+    }
+    function failingDb(db: PaperDb, failAt: number): PaperDb {
+      let publications = 0;
+      const wrap = (handle: PaperDb): PaperDb => new Proxy(handle, { get(target, property) {
+        const value = Reflect.get(target, property);
+        if (property === "execute") return (query: SQL) => {
+          if (new PgDialect().sqlToQuery(query).sql.includes("INSERT INTO poly_trader_user_pnl_points") && ++publications === failAt) {
+            return target.execute(sql`SELECT paper_pnl_forced_publication_failure`);
+          }
+          return target.execute(query);
+        };
+        if (property === "transaction") return (callback: (tx: PaperDb) => Promise<unknown>) =>
+          Reflect.apply(value, target, [(tx: PaperDb) => callback(wrap(tx))]);
+        return typeof value === "function" ? value.bind(target) : value;
+      } });
+      return wrap(db);
+    }
+
+    it("preserves actual enrollment chronology for a foreign newer connection", async () => {
+      const db = getSeedDb();
+      // Deliberately absent from ownFixtureBillingIds, as another suite's cohort is.
+      const foreign = { userId: randomUUID(), billingAccountId: randomUUID(), name: "foreign chronology" };
+      createdOwners.push(foreign);
+      await db.insert(users).values({ id: foreign.userId, name: foreign.name, walletAddress: address() });
+      await db.insert(billingAccounts).values({ id: foreign.billingAccountId, ownerUserId: foreign.userId, balanceCredits: 0n });
+      const createdAt = new Date(Date.now() - 1000);
+      await seedPaperConnection(foreign, "100");
+      await db.update(polyWalletConnections).set({ createdAt }).where(eq(polyWalletConnections.billingAccountId, foreign.billingAccountId));
+      const enrolled = (await enrolAll()).get(foreign.billingAccountId);
+      if (!enrolled) throw new Error("foreign wallet not enrolled");
+      const [physical] = await db.select().from(polyTraderWallets).where(eq(polyTraderWallets.id, enrolled.traderWalletId));
+      expect(physical?.createdAt.getTime()).toBeGreaterThanOrEqual(createdAt.getTime());
+      const before = physical?.createdAt;
+      await enrolAll();
+      expect((await db.select().from(polyTraderWallets).where(eq(polyTraderWallets.id, enrolled.traderWalletId)))[0]?.createdAt).toEqual(before);
+    });
+
+    it("publishes authenticated fees at actual times and both UTC buckets, never complete interval history", async () => {
+      const fixture = await setup();
+      expect((await observe(fixture, epoch)).navPublished).toBe(true);
+      const first = await privateRead(fixture, epoch, 101.9);
+      expect(first).toMatchObject({ status: "partial", observedAt: epoch.toISOString(), points: [{ ts: epoch.toISOString(), pnl: 1.9 }] });
+      const next = new Date("2026-10-07T00:11:01.250Z");
+      expect((await observe(fixture, next, 0.5)).navPublished).toBe(true);
+      const state = await saved(fixture);
+      expect(state.pnl).toHaveLength(4);
+      expect(state.pnl.map((row) => [row.fidelity, row.ts.toISOString(), Number(row.pnlUsdc)])).toEqual([
+        ["1d", "2026-10-06T00:00:00.000Z", 1.9], ["1d", "2026-10-07T00:00:00.000Z", 0.9],
+        ["1h", "2026-10-06T23:00:00.000Z", 1.9], ["1h", "2026-10-07T00:00:00.000Z", 0.9],
+      ]);
+      for (const interval of ["ALL", "1W"] as const) {
+        const read = await privateRead(fixture, next, 100.9, fixture.owner.userId, interval);
+        expect(read).toMatchObject({ status: "partial", points: [
+          { ts: epoch.toISOString(), pnl: 1.9 }, { ts: next.toISOString(), pnl: 0.9 },
+        ] });
+        expect((read.points[1]?.pnl ?? 0) - (read.points[0]?.pnl ?? 0)).toBeCloseTo(-1, 8);
+      }
+      const previous = await saved(fixture);
+      await expect(observe(fixture, next, 0.9)).rejects.toThrow("strictly newer");
+      await expect(observe(fixture, epoch, 0.9)).rejects.toThrow("strictly newer");
+      expect(await saved(fixture)).toEqual(previous);
+      const newer = new Date(next.getTime() + 1000);
+      await observe(fixture, newer, 0.5);
+      expect((await saved(fixture)).pnl).toHaveLength(4);
+      expect(await privateRead(fixture, next, 100.9)).toMatchObject({ status: "unavailable", points: [] });
+    });
+
+    it("exposes partial samples through the genuine coherent app owner transaction", async () => {
+      const fixture = await setup();
+      const generation = new Date(Date.now() - 1000);
+      await observe(fixture, generation);
+      const read = await withTenantScope(getAppDb(), userActor(toUserId(fixture.owner.userId)), async (tx) => {
+        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+        return readTenantWalletDashboardIn(tx as unknown as PaperDb, {
+          billingAccountId: fixture.owner.billingAccountId, interval: "ALL", adapterConfigured: false,
+        });
+      });
+      // Independent native receipt arithmetic: seed100 - cost4 - fee0.1 + marked6.
+      expect(read.overview).toMatchObject({ usdc_available: 95.9, usdc_locked: 0, usdc_positions_mtm: 6, usdc_total: 101.9,
+        pnlHistory: [{ ts: generation.toISOString(), pnl: 1.9 }] });
+      expect(read.facts.pnl).toMatchObject({ status: "partial", complete: false, observedAt: generation.toISOString() });
+      expect(read.overview.warnings).toContainEqual({ code: "pnl_history_partial", message: "Recorded paper observations do not establish complete P/L for this interval." });
+    });
+
+    it.each(["nav_future", "cursor_future", "point_future", "point_mismatch", "seed", "stale"])("withholds current generation disagreement %s", async (mutation) => {
+      const fixture = await setup();
+      await observe(fixture, epoch);
+      const future = new Date(epoch.getTime() + 1000);
+      if (mutation === "nav_future") await fixture.db.update(polyWalletBalanceSnapshots).set({ observedAt: future })
+        .where(eq(polyWalletBalanceSnapshots.billingAccountId, fixture.owner.billingAccountId));
+      if (mutation === "cursor_future") await fixture.db.update(polyTraderIngestionCursors).set({ lastSuccessAt: future })
+        .where(and(eq(polyTraderIngestionCursors.traderWalletId, fixture.wallet.traderWalletId), eq(polyTraderIngestionCursors.source, PAPER_POSITION_CURSOR_SOURCE)));
+      if (mutation === "point_future") await fixture.db.update(polyTraderUserPnlPoints).set({ observedAt: future })
+        .where(eq(polyTraderUserPnlPoints.traderWalletId, fixture.wallet.traderWalletId));
+      if (mutation === "point_mismatch") await fixture.db.update(polyTraderUserPnlPoints).set({ pnlUsdc: "7" })
+        .where(eq(polyTraderUserPnlPoints.traderWalletId, fixture.wallet.traderWalletId));
+      if (mutation === "seed") await fixture.db.update(polyWalletConnections).set({ paperSeedUsdc: "101" })
+        .where(eq(polyWalletConnections.billingAccountId, fixture.owner.billingAccountId));
+      expect(await privateRead(fixture, epoch, 101.9, fixture.owner.userId, "ALL",
+        mutation === "stale" ? new Date(epoch.getTime() + 600001) : epoch)).toMatchObject({ status: "unavailable", points: [] });
+    });
+
+    it.each(["input_seed", "address", "funder", "physical_kind", "physical_clock", "generation_clock", "reprovision"])("rejects unsupported lifecycle %s before financial writes", async (mutation) => {
+      const fixture = await setup();
+      if (mutation === "input_seed") fixture.wallet = { ...fixture.wallet, account: { ...fixture.wallet.account, seedUsdc: "101" } };
+      if (mutation === "address") await fixture.db.update(polyWalletConnections).set({ address: address() })
+        .where(eq(polyWalletConnections.billingAccountId, fixture.owner.billingAccountId));
+      if (mutation === "funder") await fixture.db.update(polyWalletConnections).set({ funderAddress: address() })
+        .where(eq(polyWalletConnections.billingAccountId, fixture.owner.billingAccountId));
+      if (mutation === "physical_kind") await fixture.db.update(polyTraderWallets).set({ kind: "cogni_wallet" })
+        .where(eq(polyTraderWallets.id, fixture.wallet.traderWalletId));
+      if (mutation === "physical_clock") await fixture.db.update(polyTraderWallets).set({ createdAt: new Date("2026-09-30T00:00:00Z") })
+        .where(eq(polyTraderWallets.id, fixture.wallet.traderWalletId));
+      if (mutation === "reprovision") {
+        await fixture.db.update(polyWalletConnections).set({ revokedAt: new Date() })
+          .where(eq(polyWalletConnections.billingAccountId, fixture.owner.billingAccountId));
+        await seedPaperConnection(fixture.owner, "100");
+      }
+      const before = await saved(fixture);
+      await expect(observe(fixture, mutation === "generation_clock" ? new Date("2026-09-30T00:00:00Z") : epoch)).rejects.toThrow();
+      expect(await saved(fixture)).toEqual(before);
+    });
+
+    it("records a legitimate zero cumulative sample without inventing an interval baseline", async () => {
+      const fixture = await setup();
+      await observe(fixture, epoch, 0.41);
+      expect(await privateRead(fixture, epoch, 100)).toMatchObject({ status: "partial", observedAt: epoch.toISOString(),
+        points: [{ ts: epoch.toISOString(), pnl: 0 }] });
+    });
+
+    it.each([1, 2])("rolls NAV, both fidelities, cursors and current facts back on publication fault %s", async (failAt) => {
+      const fixture = await setup();
+      await observe(fixture, epoch);
+      const before = await saved(fixture);
+      await expect(observe(fixture, new Date(epoch.getTime() + 2000), 0.5, failingDb(fixture.db as unknown as PaperDb, failAt))).rejects.toThrow();
+      expect(await saved(fixture)).toEqual(before);
+    });
+
+    it.each([[false, false], [false, true], [true, false], [true, true]])("serializes concurrent generations, newer-first=%s cross-bucket=%s", async (newerFirst, crossBucket) => {
+      const fixture = await setup();
+      let unlock: (() => void) | undefined;
+      let entered: (() => void) | undefined;
+      const barrier = new Promise<void>((resolve) => { unlock = resolve; });
+      const locked = new Promise<void>((resolve) => { entered = resolve; });
+      const newer = new Date(epoch.getTime() + (crossBucket ? 2000 : 500));
+      const firstAt = newerFirst ? newer : epoch;
+      const secondAt = newerFirst ? epoch : newer;
+      const first = observePaperWallet({ db: fixture.db as unknown as PaperDb, wallet: fixture.wallet,
+        now: firstAt, logger, readMidPrice: async () => { entered?.(); await barrier; return 0.6; } });
+      await locked;
+      const second = observe(fixture, secondAt);
+      unlock?.();
+      const outcomes = await Promise.allSettled([first, second]);
+      expect(outcomes[0]?.status).toBe("fulfilled");
+      expect(outcomes[1]?.status).toBe(newerFirst ? "rejected" : "fulfilled");
+      expect(await privateRead(fixture, newer, 101.9)).toMatchObject({ status: "partial" });
+      expect((await saved(fixture)).cursors.every((cursor) => cursor.lastSuccessAt?.getTime() === newer.getTime())).toBe(true);
+    });
+
+    it("denies real private samples to default/address-only, service and unrelated readers, preserving existing delegate RLS", async () => {
+      const fixture = await setup();
+      await observe(fixture, epoch);
+      const base = { db: fixture.db as unknown as PaperDb, address: fixture.wallet.account.address,
+        interval: "ALL" as const, capturedAt: epoch.toISOString() };
+      expect(await getTradingWalletPnlHistoryRead(base)).toMatchObject({ status: "wallet_missing", points: [] });
+      expect(await getTradingWalletPnlHistoryRead({ ...base, paper: {
+        billingAccountId: fixture.owner.billingAccountId, generation: epoch.toISOString(), navUsdc: 101.9,
+      } })).toMatchObject({ status: "unavailable", points: [] });
+      const delegate = tenant("paper sample delegate");
+      createdOwners.push(delegate);
+      await fixture.db.insert(users).values({ id: delegate.userId, name: delegate.name, walletAddress: address() });
+      expect(await privateRead(fixture, epoch, 101.9, delegate.userId)).toMatchObject({ status: "unavailable", points: [] });
+      const [grant] = await fixture.db.insert(agentCapabilityGrants).values({
+        billingAccountId: fixture.owner.billingAccountId, granteePrincipalId: delegate.userId,
+        scopes: ["account:read"], expiresAt: new Date(Date.now() + 60000), createdAt: new Date(0), createdByUserId: fixture.owner.userId,
+      }).returning();
+      if (!grant) throw new Error("delegate grant missing");
+      expect(await privateRead(fixture, epoch, 101.9, delegate.userId)).toMatchObject({ status: "partial" });
+      for (const patch of [{ scopes: ["research:run"] }, { scopes: ["account:read"], expiresAt: new Date(1000) },
+        { scopes: ["account:read"], expiresAt: new Date(Date.now() + 60000), revokedAt: new Date(), revokedByUserId: fixture.owner.userId }]) {
+        await fixture.db.update(agentCapabilityGrants).set(patch).where(eq(agentCapabilityGrants.id, grant.id));
+        expect(await privateRead(fixture, epoch, 101.9, delegate.userId)).toMatchObject({ status: "unavailable", points: [] });
+      }
+    });
+
+    it.each(["mark", "unbound_receipt"])("suppresses retained P/L after later invalid %s generation", async (invalid) => {
+      const fixture = await setup();
+      await observe(fixture, epoch);
+      const points = (await saved(fixture)).pnl;
+      const later = new Date(epoch.getTime() + 600001);
+      if (invalid === "unbound_receipt") await fixture.db.insert(polyCopyTradeFills).values({
+        billingAccountId: fixture.owner.billingAccountId, createdByUserId: fixture.owner.userId,
+        targetId: randomUUID(), fillId: `unbound:${randomUUID()}`, marketId: condition,
+        clientOrderId: randomUUID(), status: "partial", mode: "paper", observedAt: later,
+        price: "0.4", shares: "2", attributes: { condition_id: condition, token_id: token, side: "BUY",
+          realized_fill_source: "paper_order_receipt", filled_size_usdc: 0.8 },
+      });
+      expect((await observePaperWallet({ db: fixture.db as unknown as PaperDb, wallet: fixture.wallet,
+        now: later, readMidPrice: invalid === "mark" ? midPrices({}) : midPrices({ [token]: 0.6 }), logger })).navPublished).toBe(false);
+      expect((await saved(fixture)).pnl).toEqual(points);
+      expect(await privateRead(fixture, later, 101.9)).toMatchObject({ status: "unavailable", points: [] });
+    });
+
+    it("withholds physically retained good samples after current unknown-fee invalidation or changed seed", async () => {
+      const fixture = await setup();
+      await observe(fixture, epoch);
+      const points = (await saved(fixture)).pnl;
+      await fixture.db.update(polyWalletConnections).set({ paperSeedUsdc: "101" })
+        .where(eq(polyWalletConnections.billingAccountId, fixture.owner.billingAccountId));
+      expect(await privateRead(fixture, epoch, 101.9)).toMatchObject({ status: "unavailable" });
+      await expect(observe(fixture, new Date(epoch.getTime() + 1000))).rejects.toThrow("seed changed");
+      await fixture.db.update(polyWalletConnections).set({ paperSeedUsdc: "100" })
+        .where(eq(polyWalletConnections.billingAccountId, fixture.owner.billingAccountId));
+      await seedLedgerFill(fixture.owner, randomUUID(), { conditionId: condition, tokenId: "9000999",
+        side: "BUY", shares: "1", price: "0.4", feesUsdc: null, observedAt: new Date(epoch.getTime() + 1000) });
+      expect((await observe(fixture, new Date(epoch.getTime() + 2000))).navPublished).toBe(false);
+      expect((await saved(fixture)).pnl).toEqual(points);
+      expect(await privateRead(fixture, epoch, 101.9)).toMatchObject({ status: "unavailable", points: [] });
+    });
+  });
+
 });

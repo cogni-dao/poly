@@ -6,12 +6,13 @@
  * Purpose: Profit/loss panel — windowed-delta number + area chart for the current `interval`. Stateless presenter; the interval is owned by the parent (page-level `TimeWindowHeader` on the wallet-research page; dashboard owns its own selector via `TimeWindowHeader` too).
  * Scope: Presentational only. Accepts props; does not fetch and no longer renders an interval selector.
  * Invariants:
- *   - PNL_NOT_NAV: plots Polymarket P/L, not wallet balance.
- *   - SAVED_ZERO_IS_DATA: one persisted zero-valued point renders `$0.00` and
- *     a recorded-point state, never the no-history state.
+ *   - PNL_NOT_NAV: plots saved cumulative P/L observations, not wallet balance.
+ *   - SAVED_ZERO_IS_DATA: a saved zero is recorded data. LIVE retains its
+ *     singleton-zero headline; PAPER requires two actual observations for change.
  *   - HEADLINE_IS_WINDOWED_DELTA: the big PnL number is `last.pnl − first.pnl`
  *     of the current interval's series — the chart's start-to-end change. The
- *     upstream `series[last].p` is lifetime cumulative regardless of `interval`,
+ *     PAPER labels only the recorded sample range, never complete interval profit.
+ *     The upstream `series[last].p` is lifetime cumulative regardless of `interval`,
  *     so reading `last` alone would mislabel "Past week" with lifetime PnL
  *     (task.0389). Empty/missing history renders "—", not "$0.00".
  * Side-effects: none
@@ -64,8 +65,13 @@ export function WalletProfitLossCard({
     );
   }
 
-  const windowedPnl = computeWindowedPnl(history);
-  const hasHistory = (history?.length ?? 0) > 0;
+  const paperHistory = source === "paper" ? history?.filter((point) =>
+    Number.isFinite(point.pnl) && Number.isFinite(Date.parse(point.ts))) : history;
+  const displayedHistory = source === "paper" ? paperHistory : history;
+  const windowedPnl = source === "paper"
+    ? (paperHistory && paperHistory.length >= 2 ? computeWindowedPnl(paperHistory) : null)
+    : computeWindowedPnl(history);
+  const hasHistory = (displayedHistory?.length ?? 0) > 0;
   const accentClass =
     windowedPnl === null
       ? "text-muted-foreground"
@@ -82,24 +88,28 @@ export function WalletProfitLossCard({
       </div>
 
       <p className="text-muted-foreground text-xs">
-        {source === "paper" ? "Paper account trading results." : "Polymarket trading results before fees. Funding and full account reconciliation are separate."}
+        {source === "paper" ? "Saved observations only; complete selected-interval P/L is unavailable." : "Polymarket trading results before fees. Funding and full account reconciliation are separate."}
       </p>
       <div className="space-y-1">
-        <div className={`font-medium text-sm ${accentClass}`}>Profit/Loss</div>
+        <div className={`font-medium text-sm ${accentClass}`}>{source === "paper" ? "Change between recorded observations" : "Profit/Loss"}</div>
         <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
           <div className="font-semibold text-4xl tabular-nums tracking-tight">
             {windowedPnl === null ? "—" : formatUsd(windowedPnl)}
           </div>
           <div className="pb-1 text-muted-foreground text-sm">
-            {rangeLabel(interval)}
+            {source === "paper"
+              ? paperHistory && paperHistory.length >= 2
+                ? `${formatDateLabel(paperHistory[0]?.ts ?? "")} – ${formatDateLabel(paperHistory[paperHistory.length - 1]?.ts ?? "")}`
+                : "Recorded observations"
+              : rangeLabel(interval)}
           </div>
         </div>
       </div>
 
-      {history && history.length >= 2 ? (
+      {displayedHistory && displayedHistory.length >= 2 ? (
         <ChartContainer config={CHART_CONFIG} className="h-48 w-full">
           <AreaChart
-            data={history.map((point) => ({ ...point, ts: point.ts }))}
+            data={displayedHistory.map((point) => ({ ...point, ts: point.ts }))}
             margin={{ top: 8, right: 8, left: 8, bottom: 0 }}
           >
             <defs>
