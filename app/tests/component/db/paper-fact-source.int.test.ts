@@ -98,19 +98,32 @@ const logger = {
   child: () => logger,
 } as unknown as Parameters<typeof observePaperWallet>[0]["logger"];
 
+const ownFixtureBillingIds = new Set<string>();
+
 /**
- * Captures the `phase` of every structured log line, so "idle" is provably
- * distinguishable from "broken" rather than both being silence.
+ * Captures phases and bounded safe diagnostics; fixture identifiers stay local.
+ * "Idle" is distinguishable from "broken" rather than both being silence.
  */
 function recordingLogger() {
+  const cohorts = {
+    own_fixture: { wallet_ok: 0, account_failed: 0 },
+    external_fixture: { wallet_ok: 0, account_failed: 0 },
+  };
   const seen: string[] = [];
   const failures: Array<Record<string, string>> = [];
   const record = (payload: unknown): void => {
     const fields = payload as Record<string, unknown> | undefined;
     const phase = fields?.phase;
     if (typeof phase === "string") seen.push(phase);
+    // Classify in memory, then discard every account/wallet identifier.
+    const cohort = typeof fields?.billing_account_id === "string" &&
+      ownFixtureBillingIds.has(fields.billing_account_id)
+      ? "own_fixture" : "external_fixture";
+    if (phase === "wallet_ok" || phase === "account_failed") {
+      cohorts[cohort][phase] += 1;
+    }
     if (phase === "account_failed" && failures.length < 10) {
-      const failure: Record<string, string> = {};
+      const failure: Record<string, string> = { cohort };
       // Only bounded class/code labels: never retain identifiers, messages or SQL.
       for (const key of ["phase", "errorCode", "err_class", "err_code", "cause_class", "cause_code"] as const) {
         const value = fields?.[key];
@@ -131,6 +144,10 @@ function recordingLogger() {
   return {
     logger: self as unknown as Parameters<typeof observePaperWallet>[0]["logger"],
     phases: () => [...seen],
+    cohorts: () => ({
+      own_fixture: { ...cohorts.own_fixture },
+      external_fixture: { ...cohorts.external_fixture },
+    }),
     failures: () => failures.map((failure) => ({ ...failure })),
   };
 }
@@ -138,7 +155,9 @@ function recordingLogger() {
 type Tenant = { userId: string; billingAccountId: string; name: string };
 
 function tenant(name: string): Tenant {
-  return { userId: randomUUID(), billingAccountId: randomUUID(), name };
+  const owner = { userId: randomUUID(), billingAccountId: randomUUID(), name };
+  ownFixtureBillingIds.add(owner.billingAccountId);
+  return owner;
 }
 
 function address(): `0x${string}` {
@@ -1490,6 +1509,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
         walletsProjected: result.walletsProjected,
         navsPublished: result.navsPublished,
         errors: result.errors,
+        cohorts: events.cohorts(),
         accountFailures: events.failures(),
       });
 
@@ -1503,6 +1523,99 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       expect(result.idleReason).toBeUndefined();
       expect(events.phases()).toContain("wallet_ok");
     });
+
+    it.each([false, true])(
+      "isolates a native post-enrollment wallet deletion (removed=%s)",
+      async (removed) => {
+        const owner = tenant(removed ? "lifecycle-removed" : "lifecycle-stable");
+        const seedDb = getSeedDb();
+        const db = seedDb as unknown as PaperDb;
+        const paperAddress = derivePaperAccountAddress(owner.billingAccountId);
+        const events = recordingLogger();
+        let enrolled = false;
+        try {
+          await seedDb.insert(users).values({
+            id: owner.userId, name: owner.name, walletAddress: address(),
+          });
+          await seedDb.insert(billingAccounts).values({
+            id: owner.billingAccountId, ownerUserId: owner.userId, balanceCredits: 0n,
+          });
+          await seedPaperConnection(owner, SEED_USDC);
+          const result = await runPaperProjectionTick({
+            db,
+            readMidPrice: midPrices({ [tokenA]: 0.5, [tokenB]: 0.65, [tokenU]: 0.35 }),
+            logger: events.logger,
+            now: new Date("2026-10-07T20:00:00.000Z"),
+            runBounded: async (fn) => {
+              const projected = await fn(db);
+              // The FIRST callback is global syncPaperTraderWallets; delete only
+              // after that native enrollment finishes and before any observation.
+              if (!enrolled) {
+                enrolled = true;
+                const physical = await seedDb.select({ id: polyTraderWallets.id })
+                  .from(polyTraderWallets)
+                  .where(and(eq(polyTraderWallets.walletAddress, paperAddress),
+                    eq(polyTraderWallets.kind, PAPER_WALLET_KIND)));
+                expect(physical).toHaveLength(1);
+                const physicalWallet = physical[0];
+                if (!physicalWallet) throw new Error("owned lifecycle wallet was not enrolled");
+                if (removed) {
+                  const deleted = await seedDb.delete(polyTraderWallets)
+                    .where(eq(polyTraderWallets.id, physicalWallet.id))
+                    .returning({ id: polyTraderWallets.id });
+                  expect(deleted).toHaveLength(1);
+                }
+              }
+              return projected;
+            },
+          });
+          // A different/extra failure stays FAIL; no external cohort is excused.
+          console.info("paper projection native lifecycle control", {
+            control: removed ? "removed_after_enrollment" : "stable",
+            paperAccounts: result.paperAccounts,
+            walletsProjected: result.walletsProjected,
+            navsPublished: result.navsPublished,
+            errors: result.errors,
+            cohorts: events.cohorts(),
+            accountFailures: events.failures(),
+          });
+          const cohorts = events.cohorts();
+          expect(enrolled).toBe(true);
+          expect(result.paperAccounts).toBeGreaterThanOrEqual(3);
+          expect(result.walletsProjected).toBe(result.paperAccounts - Number(removed));
+          expect(result.errors).toBe(Number(removed));
+          expect(result.idleReason).toBeUndefined();
+          expect(cohorts.own_fixture.account_failed).toBe(Number(removed));
+          expect(cohorts.external_fixture.account_failed).toBe(0);
+          expect(cohorts.own_fixture.wallet_ok + cohorts.external_fixture.wallet_ok)
+            .toBe(result.walletsProjected);
+          expect(events.failures()).toHaveLength(Number(removed));
+          if (removed) {
+            const failure = events.failures()[0];
+            expect(failure).toMatchObject({ cohort: "own_fixture", phase: "account_failed",
+              errorCode: "paper_projection_account_failed" });
+            expect([failure?.err_code, failure?.cause_code]).toContain("23503");
+          }
+          // Only the physical wallet was removed: enrollment still came from
+          // the active connection, and its billing parent survived the error.
+          expect(await seedDb.select({ id: polyWalletConnections.id })
+            .from(polyWalletConnections)
+            .where(and(eq(polyWalletConnections.billingAccountId, owner.billingAccountId),
+              eq(polyWalletConnections.kind, "paper"), isNull(polyWalletConnections.revokedAt))))
+            .toHaveLength(1);
+          expect(await seedDb.select({ id: billingAccounts.id }).from(billingAccounts)
+            .where(eq(billingAccounts.id, owner.billingAccountId))).toHaveLength(1);
+          expect(await seedDb.select({ id: polyTraderWallets.id }).from(polyTraderWallets)
+            .where(eq(polyTraderWallets.walletAddress, paperAddress)))
+            .toHaveLength(removed ? 0 : 1);
+        } finally {
+          await seedDb.delete(billingAccounts).where(eq(billingAccounts.id, owner.billingAccountId));
+          await seedDb.delete(polyTraderWallets).where(eq(polyTraderWallets.walletAddress, paperAddress));
+          await seedDb.delete(users).where(eq(users.id, owner.userId));
+          ownFixtureBillingIds.delete(owner.billingAccountId);
+        }
+      }
+    );
 
     it("logs idle_no_paper_accounts and writes nothing when none exist", async () => {
       const seedDb = getSeedDb();
