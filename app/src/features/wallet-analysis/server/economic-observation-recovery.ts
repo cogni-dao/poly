@@ -533,6 +533,7 @@ export async function recoverEconomicObservations(input: {
   const closed = await input.client.listUserPositionsV2Raw(candidate.wallet_address, {
     conditions: [candidate.condition_id],
     status: "CLOSED",
+    includeArchived: false,
     maxRequests: 2,
     signal: input.signal,
   });
