@@ -31,6 +31,7 @@ import type { PolymarketClobPublicClient } from "@cogni/poly-market-provider/ada
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { runMarketOutcomeTick } from "@/features/wallet-analysis/server/market-outcome-service";
+import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 
 type Db =
   | NodePgDatabase<Record<string, unknown>>
@@ -101,11 +102,15 @@ export function startMarketOutcomeJob(
         );
       }
     } catch (err: unknown) {
+      const { err_class, err_code, cause_class, cause_code } = safeErrorDimensions(err);
       log.error(
         {
           event: "poly.market-outcome.tick_error",
           phase: "tick_error",
-          err: err instanceof Error ? err.message : String(err),
+          err_class,
+          err_code,
+          cause_class,
+          cause_code,
         },
         "market outcome tick escaped"
       );

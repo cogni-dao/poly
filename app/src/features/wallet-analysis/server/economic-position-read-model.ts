@@ -18,6 +18,7 @@ import type {
   WalletExecutionPosition,
 } from "@cogni/poly-node-contracts";
 import { type SQL, sql } from "drizzle-orm";
+import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 import type { EconomicObservationV1 } from "./economic-observation-recovery";
 import { computeRealizedPnl } from "./market-return-math";
 import {
@@ -32,6 +33,17 @@ type ExecuteDb = { execute(query: SQL): Promise<unknown> };
 
 const LIVE_LIMIT = 500;
 const CLOSED_LIMIT = 30;
+
+/** Internal-only timing and bounded error labels; never part of wallet output. */
+export type EconomicPositionReadDiagnostics = {
+  economicReadPhase?: "projection" | "metadata" | "complete";
+  economicProjectionMs?: number;
+  economicMetadataMs?: number;
+  economicErrorClass?: string | undefined;
+  economicErrorCode?: string | undefined;
+  economicCauseClass?: string | undefined;
+  economicCauseCode?: string | undefined;
+};
 
 type EconomicRow = {
   live_count: string | number | null;
@@ -124,23 +136,25 @@ export type EconomicPositionRead = {
   closedPositions: WalletExecutionPosition[];
 };
 
-export async function readEconomicPositionProjection(params: {
-  db: ExecuteDb;
+export type EconomicPositionProjectionQueryInput = {
   billingAccountId: string;
   walletAddress: string;
   connectionKind: "privy_live" | "paper";
   capturedAt: Date;
   interval: PolyWalletOverviewInterval;
-}): Promise<EconomicPositionRead> {
+};
+
+/** The production projection statement, shared unchanged with bounded plan capture. */
+export function buildEconomicPositionProjectionQuery(
+  params: EconomicPositionProjectionQueryInput,
+): SQL {
   const mode = params.connectionKind === "paper" ? "paper" : "live";
   const walletKind = mode === "paper" ? "paper_wallet" : "cogni_wallet";
   const windowStart = portfolioWindowStart(params.interval, params.capturedAt);
   const closedWindow = windowStart
     ? sql`closed_at >= ${windowStart.toISOString()}::timestamptz`
     : sql`TRUE`;
-
-  const rows = normalizeRows<EconomicRow>(
-    await params.db.execute(sql`
+  return sql`
     WITH wallet_identity AS MATERIALIZED (
       SELECT w.id, w.updated_at, w.created_at
       FROM poly_trader_wallets w
@@ -724,12 +738,58 @@ export async function readEconomicPositionProjection(params: {
     CROSS JOIN observer_summary observer
     LEFT JOIN preview p ON TRUE
     ORDER BY p.economic_bucket, p.bucket_rank
-  `),
+  `;
+}
+
+export async function readEconomicPositionProjection(params: {
+  db: ExecuteDb;
+  billingAccountId: string;
+  walletAddress: string;
+  connectionKind: "privy_live" | "paper";
+  capturedAt: Date;
+  interval: PolyWalletOverviewInterval;
+  diagnostics?: EconomicPositionReadDiagnostics;
+}): Promise<EconomicPositionRead> {
+  const record = <K extends keyof EconomicPositionReadDiagnostics>(
+    key: K,
+    value: EconomicPositionReadDiagnostics[K],
+  ): void => {
+    try {
+      if (params.diagnostics) params.diagnostics[key] = value;
+    } catch {
+      // Diagnostics must never alter saved wallet facts or failure handling.
+    }
+  };
+  const readPhase = async <T>(
+    phase: "projection" | "metadata",
+    read: () => Promise<T>,
+  ): Promise<T> => {
+    record("economicReadPhase", phase);
+    const startedAt = performance.now();
+    try {
+      return await read();
+    } catch (error) {
+      const { err_class, err_code, cause_class, cause_code } = safeErrorDimensions(error);
+      record("economicErrorClass", err_class);
+      record("economicErrorCode", err_code);
+      record("economicCauseClass", cause_class);
+      record("economicCauseCode", cause_code);
+      throw error;
+    } finally {
+      record(phase === "projection" ? "economicProjectionMs" : "economicMetadataMs",
+        Math.max(0, Math.round(performance.now() - startedAt)));
+    }
+  };
+  const mode = params.connectionKind === "paper" ? "paper" : "live";
+
+  const rows = normalizeRows<EconomicRow>(
+    await readPhase("projection", () => params.db.execute(buildEconomicPositionProjectionQuery(params))),
   );
 
   const metadataKey = (row: EconomicRow): PositionMetadataKey => ({ conditionId: row.condition_id ?? "", tokenId: row.token_id ?? "", walletAddress: params.walletAddress, mode });
   const accountScope = { billingAccountId: params.billingAccountId };
-  const metadata = await readPositionMetadata({ accountScope, db: params.db, keys: rows.map(metadataKey), capturedAt: params.capturedAt.toISOString() });
+  const metadata = await readPhase("metadata", () => readPositionMetadata({ accountScope, db: params.db, keys: rows.map(metadataKey), capturedAt: params.capturedAt.toISOString() }));
+  record("economicReadPhase", "complete");
   const first = rows[0];
   const livePositions: WalletExecutionPosition[] = [];
   const closedPositions: WalletExecutionPosition[] = [];

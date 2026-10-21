@@ -337,7 +337,7 @@ export interface ListUserPositionsParams {
 export interface ListUserPositionsV2Params {
   /** Exact condition cohort. The client deduplicates and chunks at 20. */
   conditions: readonly string[];
-  /** Include user-archived rows. Defaults true for backward compatibility. */
+  /** Include user-archived rows. Defaults true for OPEN and false for CLOSED. */
   includeArchived?: boolean;
   /** Historical recovery opts into CLOSED; existing target readers remain OPEN. */
   status?: "OPEN" | "CLOSED";
@@ -577,10 +577,11 @@ export class PolymarketDataApiClient {
     wallet: string,
     params: ListUserPositionsV2Params
   ): Promise<PolymarketPositionsV2Walk> {
+    const status = params.status ?? "OPEN";
     return this.walkUserPositionsV2(wallet, {
       conditions: params.conditions,
-      status: params.status ?? "OPEN",
-      includeArchived: params.includeArchived ?? true,
+      status,
+      includeArchived: params.includeArchived ?? status !== "CLOSED",
       filterType: "TOKENS",
       filterAmount: 0,
       maxRequests: params.maxRequests ?? POSITIONS_V2_MAX_CURSOR_PAGES,
@@ -645,6 +646,11 @@ export class PolymarketDataApiClient {
     }
   ): Promise<PolymarketPositionsV2Walk> {
     assertWallet(wallet);
+    if (params.status === "CLOSED" && params.includeArchived) {
+      throw new PolyDataApiPositionsV2Error(
+        "includeArchived is unsupported for CLOSED positions"
+      );
+    }
     if (!Number.isInteger(params.maxRequests) || params.maxRequests <= 0) {
       throw new PolyDataApiPositionsV2Error(
         "request budget must be a positive integer",

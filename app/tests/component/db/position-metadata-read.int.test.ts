@@ -165,6 +165,77 @@ function planNodes(plan: Plan): Plan[] {
   return [plan, ...(plan.Plans ?? []).flatMap(planNodes)];
 }
 
+type ExplainedPlan = Record<string, unknown> & { Plan: Plan };
+
+/** CI fixture evidence only: never emit SQL, predicates, raw rows or identities. */
+function logMetadataPlan(
+  phase: string,
+  detail: ExplainedPlan,
+  keyCount: number,
+  queryWallMs: number | null = null,
+) {
+  const metric = (value: unknown): number | null => {
+    if (value === undefined || value === null) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const label = (value: unknown): string | null =>
+    typeof value === "string" && /^[A-Za-z][A-Za-z0-9_ .-]{0,119}$/.test(value)
+      ? value : null;
+  const nodes = planNodes(detail.Plan);
+  const selected = nodes.filter(node => node["Relation Name"] || node["Index Name"] ||
+    ["Sort", "Incremental Sort"].includes(String(node["Node Type"])));
+  const jit = detail.JIT as {
+    Functions?: unknown;
+    Options?: Record<string, boolean>;
+    Timing?: Record<string, unknown>;
+  } | undefined;
+  console.info(JSON.stringify({
+    probe: "metadata_query_plan_baseline",
+    environment: "ci_fixture",
+    phase,
+    keyCount,
+    queryWallMs,
+    planningMs: metric(detail["Planning Time"]),
+    executionMs: metric(detail["Execution Time"]),
+    actualMs: metric(detail.Plan["Actual Total Time"]),
+    totalCost: metric(detail.Plan["Total Cost"]),
+    rootSharedHitBlocks: metric(detail.Plan["Shared Hit Blocks"]),
+    rootSharedReadBlocks: metric(detail.Plan["Shared Read Blocks"]),
+    rootTempReadBlocks: metric(detail.Plan["Temp Read Blocks"]),
+    rootTempWrittenBlocks: metric(detail.Plan["Temp Written Blocks"]),
+    jit: jit ? {
+      functions: metric(jit.Functions),
+      inlining: jit.Options?.Inlining ?? null,
+      optimization: jit.Options?.Optimization ?? null,
+      expressions: jit.Options?.Expressions ?? null,
+      deforming: jit.Options?.Deforming ?? null,
+      generationMs: metric(jit.Timing?.Generation),
+      inliningMs: metric(jit.Timing?.Inlining),
+      optimizationMs: metric(jit.Timing?.Optimization),
+      emissionMs: metric(jit.Timing?.Emission),
+      totalMs: metric(jit.Timing?.Total),
+    } : null,
+    totalNodeCount: nodes.length,
+    selectedNodeCount: selected.length,
+    emittedNodeCount: Math.min(selected.length, 24),
+    truncated: selected.length > 24,
+    nodes: selected.slice(0, 24).map(node => ({
+      node: label(node["Node Type"]),
+      relation: label(node["Relation Name"]),
+      index: label(node["Index Name"]),
+      rows: metric(node["Actual Rows"]),
+      loops: metric(node["Actual Loops"]),
+      removed: metric(node["Rows Removed by Filter"]),
+      actualMs: metric(node["Actual Total Time"]),
+      sharedHitBlocks: metric(node["Shared Hit Blocks"]),
+      sharedReadBlocks: metric(node["Shared Read Blocks"]),
+      tempReadBlocks: metric(node["Temp Read Blocks"]),
+      tempWrittenBlocks: metric(node["Temp Written Blocks"]),
+    })),
+  }));
+}
+
 describe("saved metadata publication and indexed exact identity reads", () => {
   beforeAll(async () => {
     await db
@@ -801,13 +872,18 @@ describe("saved metadata publication and indexed exact identity reads", () => {
     const query = positionMetadataSelect([
       { conditionId: planCondition, tokenId, wallet },
     ]);
+    const queryStartedAt = performance.now();
     const evidence = rows<unknown>(await db.execute(query));
+    const queryWallMs = performance.now() - queryStartedAt;
     expect(evidence.length).toBeLessThanOrEqual(24);
-    const result = rows<{ "QUERY PLAN": Array<{ Plan: Plan }> }>(
+    const result = rows<{ "QUERY PLAN": ExplainedPlan[] }>(
       await db.execute(sql`EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS) ${query}`),
     );
     const plan = result[0]?.["QUERY PLAN"][0]?.Plan;
     if (!plan) throw new Error("Missing Postgres EXPLAIN plan");
+    const detail = result[0]?.["QUERY PLAN"][0];
+    if (!detail) throw new Error("Missing Postgres EXPLAIN detail");
+    logMetadataPlan("primary_sparse_one", detail, 1, queryWallMs);
     const nodes = planNodes(plan);
     for (const relation of [
       "poly_trader_position_snapshots",
@@ -833,6 +909,29 @@ describe("saved metadata publication and indexed exact identity reads", () => {
       marketTitle: "Deep saved title",
       outcome: "Deep saved label",
     });
+    // Reuse existing seeded keys: this amplifies the primary reader only, not
+    // the PAPER origin proof. Measurements are baselines, never a latency pass.
+    for (const probe of [
+      { phase: "primary_sparse_two", keys: [
+        { conditionId: planCondition, tokenId, wallet },
+        { conditionId, tokenId: oppositeTokenId, wallet },
+      ] },
+      { phase: "primary_multi_21", keys: [
+        { conditionId: planCondition, tokenId, wallet },
+        ...proofConditions.map(condition => ({ conditionId: condition, tokenId: "901", wallet })),
+      ] },
+    ]) {
+      const measuredQuery = positionMetadataSelect(probe.keys);
+      const startedAt = performance.now();
+      const measuredRows = rows<unknown>(await db.execute(measuredQuery));
+      const wallMs = performance.now() - startedAt;
+      expect(measuredRows.length).toBeLessThanOrEqual(24 * probe.keys.length);
+      const explained = rows<{ "QUERY PLAN": ExplainedPlan[] }>(
+        await db.execute(sql`EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS) ${measuredQuery}`),
+      )[0]?.["QUERY PLAN"][0];
+      if (!explained) throw new Error("Missing multi-key EXPLAIN detail");
+      logMetadataPlan(probe.phase, explained, probe.keys.length, wallMs);
+    }
   });
 });
 
@@ -1445,111 +1544,118 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 	it("denies wrong account, own wallet, mode, UUID, token, retained identity and future clocks while keeping primary titles", async () => {
 		const f = await originFixture();
 		try {
-			await f.publish();
 			await db.execute(sql`INSERT INTO poly_market_metadata (condition_id,market_title,fetched_at)
         VALUES (${f.condition},'Independent primary title',${at(1)}::timestamptz)`);
-      const [retainedTarget] = rows<{ id: string }>(await db.execute(sql`SELECT id FROM poly_copy_trade_targets WHERE billing_account_id=${f.account}`));
-      if (!retainedTarget) throw new Error("Missing retained target UUIDv4");
-			const negatives: Array<Parameters<typeof f.seed>[0]> = [
-				{ token: f.tokens[1] },
-				{ targetId: randomUUID() },
-        { targetId: retainedTarget.id },
-				{ targetWallet: `0x${"f".repeat(40)}` },
-				{ conditionId: `0x${"f".repeat(64)}` },
-				{ mode: "live" },
-				{ observedAt: at(31) },
-				{ observedAt: at(20) },
-				{ orderId: null },
-				{ targetWallet: "malformed" },
-			];
-			for (const negative of negatives) {
+			// A parallel observation tick refreshes canonical metadata globally.
+			// Lock the committed title before publishing its first current-position
+			// candidate; keep the actual reader transactions independently read-only.
+			await db.transaction(async (guard) => {
+				await guard.execute(sql`SELECT condition_id FROM poly_market_metadata
+					WHERE condition_id=${f.condition} FOR UPDATE`);
+				await f.publish();
+	      const [retainedTarget] = rows<{ id: string }>(await db.execute(sql`SELECT id FROM poly_copy_trade_targets WHERE billing_account_id=${f.account}`));
+	      if (!retainedTarget) throw new Error("Missing retained target UUIDv4");
+				const negatives: Array<Parameters<typeof f.seed>[0]> = [
+					{ token: f.tokens[1] },
+					{ targetId: randomUUID() },
+	        { targetId: retainedTarget.id },
+					{ targetWallet: `0x${"f".repeat(40)}` },
+					{ conditionId: `0x${"f".repeat(64)}` },
+					{ mode: "live" },
+					{ observedAt: at(31) },
+					{ observedAt: at(20) },
+					{ orderId: null },
+					{ targetWallet: "malformed" },
+				];
+				for (const negative of negatives) {
+					await db.execute(
+						sql`DELETE FROM poly_copy_trade_fills WHERE billing_account_id=${f.account}`,
+					);
+					await f.seed(negative);
+					const result = await db.transaction((tx) => f.read(tx), {
+						isolationLevel: "repeatable read",
+						accessMode: "read only",
+					});
+					expect(f.value(result), JSON.stringify(negative)).toMatchObject({
+						outcome: null,
+						marketTitle: "Independent primary title",
+						originAvailability: "unavailable",
+					});
+				}
 				await db.execute(
 					sql`DELETE FROM poly_copy_trade_fills WHERE billing_account_id=${f.account}`,
 				);
-				await f.seed(negative);
-				const result = await db.transaction((tx) => f.read(tx), {
-					isolationLevel: "repeatable read",
-					accessMode: "read only",
-				});
-				expect(f.value(result), JSON.stringify(negative)).toMatchObject({
-					outcome: null,
-					marketTitle: "Independent primary title",
-					originAvailability: "unavailable",
-				});
-			}
-			await db.execute(
-				sql`DELETE FROM poly_copy_trade_fills WHERE billing_account_id=${f.account}`,
-			);
-			await f.seed();
-			for (const change of [
-				sql`UPDATE poly_wallet_connections SET created_at=${at(11)}::timestamptz WHERE billing_account_id=${f.account}`,
-				sql`UPDATE poly_wallet_connections SET revoked_at=${at(15)}::timestamptz WHERE billing_account_id=${f.account}`,
-				sql`UPDATE poly_wallet_connections SET funder_address=NULL WHERE billing_account_id=${f.account}`,
-				sql`UPDATE poly_copy_trade_targets SET created_at=${at(11)}::timestamptz WHERE billing_account_id=${f.account}`,
-			]) {
-				await db.execute(change);
-				const result = await db.transaction((tx) => f.read(tx), {
-					isolationLevel: "repeatable read",
-					accessMode: "read only",
-				});
-				expect(f.value(result)).toMatchObject({
-					outcome: null,
-					marketTitle: "Independent primary title",
-					originAvailability: "unavailable",
-				});
-				await db.execute(
-					sql`UPDATE poly_wallet_connections SET created_at=${at(0)}::timestamptz,revoked_at=NULL,funder_address=${f.paper} WHERE billing_account_id=${f.account}`,
-				);
-				await db.execute(
-					sql`UPDATE poly_copy_trade_targets SET created_at=${at(0)}::timestamptz WHERE billing_account_id=${f.account}`,
-				);
-			}
-      await f.publish(["Future name", "Future other"], 31);
-      expect(f.value(await db.transaction(tx => f.read(tx), { isolationLevel: "repeatable read", accessMode: "read only" }))?.outcome).toBe("Sangal");
-			await db.transaction(
-				async (tx) => {
-					for (const key of [
-						{ ...f.key(), walletAddress: f.target },
-						{ ...f.key(), mode: "live" as const },
-					]) {
+				await f.seed();
+				for (const change of [
+					sql`UPDATE poly_wallet_connections SET created_at=${at(11)}::timestamptz WHERE billing_account_id=${f.account}`,
+					sql`UPDATE poly_wallet_connections SET revoked_at=${at(15)}::timestamptz WHERE billing_account_id=${f.account}`,
+					sql`UPDATE poly_wallet_connections SET funder_address=NULL WHERE billing_account_id=${f.account}`,
+					sql`UPDATE poly_copy_trade_targets SET created_at=${at(11)}::timestamptz WHERE billing_account_id=${f.account}`,
+				]) {
+					await db.execute(change);
+					const result = await db.transaction((tx) => f.read(tx), {
+						isolationLevel: "repeatable read",
+						accessMode: "read only",
+					});
+					expect(f.value(result)).toMatchObject({
+						outcome: null,
+						marketTitle: "Independent primary title",
+						originAvailability: "unavailable",
+					});
+					await db.execute(
+						sql`UPDATE poly_wallet_connections SET created_at=${at(0)}::timestamptz,revoked_at=NULL,funder_address=${f.paper} WHERE billing_account_id=${f.account}`,
+					);
+					await db.execute(
+						sql`UPDATE poly_copy_trade_targets SET created_at=${at(0)}::timestamptz WHERE billing_account_id=${f.account}`,
+					);
+				}
+	      await f.publish(["Future name", "Future other"], 31);
+	      expect(f.value(await db.transaction(tx => f.read(tx), { isolationLevel: "repeatable read", accessMode: "read only" }))?.outcome).toBe("Sangal");
+				await db.transaction(
+					async (tx) => {
+						for (const key of [
+							{ ...f.key(), walletAddress: f.target },
+							{ ...f.key(), mode: "live" as const },
+						]) {
+							const result = await readPositionMetadata({
+								db: tx,
+								accountScope: f.accountScope,
+								keys: [key],
+								capturedAt: at(30),
+							});
+							expect(
+								result.get(positionMetadataRequestKey(key, f.accountScope) ?? "")
+									?.originAvailability,
+							).toBe("unavailable");
+						}
+						const wrongScope = { billingAccountId: randomUUID() };
 						const result = await readPositionMetadata({
 							db: tx,
-							accountScope: f.accountScope,
-							keys: [key],
+							accountScope: wrongScope,
+							keys: [f.key()],
 							capturedAt: at(30),
 						});
 						expect(
-							result.get(positionMetadataRequestKey(key, f.accountScope) ?? "")
-								?.originAvailability,
-						).toBe("unavailable");
-					}
-					const wrongScope = { billingAccountId: randomUUID() };
-					const result = await readPositionMetadata({
-						db: tx,
-						accountScope: wrongScope,
-						keys: [f.key()],
-						capturedAt: at(30),
-					});
-					expect(
-						result.get(positionMetadataRequestKey(f.key(), wrongScope) ?? ""),
-					).toMatchObject({ outcome: null, originAvailability: "unavailable" });
-				},
-				{ isolationLevel: "repeatable read", accessMode: "read only" },
-			);
-			await db.execute(
-				sql`UPDATE poly_trader_current_positions SET raw=raw||jsonb_build_object('asset',${f.tokens[1]}::text) WHERE lower(condition_id)=${f.condition}`,
-			);
-			await db.execute(
-				sql`UPDATE poly_trader_position_snapshots SET raw=raw||jsonb_build_object('conditionId',${`0x${"f".repeat(64)}`}::text) WHERE lower(condition_id)=${f.condition}`,
-			);
-			expect(
-				f.value(
-					await db.transaction((tx) => f.read(tx), {
-						isolationLevel: "repeatable read",
-						accessMode: "read only",
-					}),
-				)?.outcome,
-			).toBeNull();
+							result.get(positionMetadataRequestKey(f.key(), wrongScope) ?? ""),
+						).toMatchObject({ outcome: null, originAvailability: "unavailable" });
+					},
+					{ isolationLevel: "repeatable read", accessMode: "read only" },
+				);
+				await db.execute(
+					sql`UPDATE poly_trader_current_positions SET raw=raw||jsonb_build_object('asset',${f.tokens[1]}::text) WHERE lower(condition_id)=${f.condition}`,
+				);
+				await db.execute(
+					sql`UPDATE poly_trader_position_snapshots SET raw=raw||jsonb_build_object('conditionId',${`0x${"f".repeat(64)}`}::text) WHERE lower(condition_id)=${f.condition}`,
+				);
+				expect(
+					f.value(
+						await db.transaction((tx) => f.read(tx), {
+							isolationLevel: "repeatable read",
+							accessMode: "read only",
+						}),
+					)?.outcome,
+				).toBeNull();
+			});
 		} finally {
 			await f.cleanup();
 		}
@@ -1737,13 +1843,16 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 					expect(evidence.length).toBeLessThanOrEqual(24);
 					const plans: Plan[][] = [];
 					for (const query of [descriptorQuery, metadataQuery]) {
-						const result = rows<{ "QUERY PLAN": Array<{ Plan: Plan }> }>(
+						const result = rows<{ "QUERY PLAN": ExplainedPlan[] }>(
 							await tx.execute(
 								sql`EXPLAIN (FORMAT JSON, ANALYZE, BUFFERS) ${query}`,
 							),
 						);
 						const plan = result[0]?.["QUERY PLAN"][0]?.Plan;
 						if (!plan) throw new Error("Missing origin query plan");
+						const detail = result[0]?.["QUERY PLAN"][0];
+						if (!detail) throw new Error("Missing origin EXPLAIN detail");
+						logMetadataPlan(query === descriptorQuery ? "paper_origin_candidates" : "paper_origin_metadata", detail, 1);
 						plans.push(planNodes(plan));
 					}
 					expect(

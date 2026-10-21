@@ -47,6 +47,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 import {
   type PolyTraderWallet,
   polyMarketOutcomes,
@@ -618,11 +619,16 @@ export async function runTraderObservationTick(
     } catch (err: unknown) {
       if (deps.signal?.aborted) throw err;
       errors += 1;
+      const { err_class, err_code, cause_class, cause_code } = safeErrorDimensions(err);
       log.warn(
         {
           event: "poly.trader.target_positions_v2",
           phase: "selection_failed",
           error_class: "persistence_read_error",
+          err_class,
+          err_code,
+          cause_class,
+          cause_code,
         },
         "copy-target V2 cohort selection failed; saved facts preserved"
       );

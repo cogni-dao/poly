@@ -449,8 +449,25 @@ describe("PolymarketDataApiClient.listUserPositionsV2", () => {
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
     const history = await client.listUserPositionsV2Raw(wallet, { conditions: [condition(1)], status: "CLOSED", maxRequests: 2 });
     expect(history.positions[0]?.status).toBe("CLOSED");
-    expect(new URL(fetchImpl.mock.calls[0]?.[0] as string).searchParams.get("status")).toBe("CLOSED");
+    const closedUrl = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(closedUrl.searchParams.get("status")).toBe("CLOSED");
+    expect(closedUrl.searchParams.get("include_archived")).toBe("false");
     await expect(client.listUserPositionsV2Raw(wallet, { conditions: [condition(1)] })).rejects.toThrow(/outside the requested OPEN/);
+    expect(new URL(fetchImpl.mock.calls[1]?.[0] as string).searchParams.get("include_archived")).toBe("true");
+  });
+
+  it("rejects CLOSED with archived inclusion before issuing a request", async () => {
+    const fetchImpl = vi.fn();
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    await expect(client.listUserPositionsV2Raw(wallet, {
+      conditions: [condition(1)],
+      status: "CLOSED",
+      includeArchived: true,
+    })).rejects.toMatchObject({
+      code: "INVALID_V2_POSITIONS_WALK",
+      reason: "malformed",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("chunks 21 conditions, follows cursors, and normalizes V2 economics", async () => {
