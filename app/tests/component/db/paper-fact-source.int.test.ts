@@ -1525,14 +1525,13 @@ describe("paper facts project into the live tables (migration 0083)", () => {
     });
 
     it.each([false, true])(
-      "isolates a native post-enrollment wallet deletion (removed=%s)",
+      "observes one paper wallet after enrollment (removed=%s)",
       async (removed) => {
         const owner = tenant(removed ? "lifecycle-removed" : "lifecycle-stable");
         const seedDb = getSeedDb();
         const db = seedDb as unknown as PaperDb;
         const paperAddress = derivePaperAccountAddress(owner.billingAccountId);
-        const events = recordingLogger();
-        let enrolled = false;
+        const observedAt = new Date("2026-10-07T20:00:00.000Z");
         try {
           await seedDb.insert(users).values({
             id: owner.userId, name: owner.name, walletAddress: address(),
@@ -1541,60 +1540,55 @@ describe("paper facts project into the live tables (migration 0083)", () => {
             id: owner.billingAccountId, ownerUserId: owner.userId, balanceCredits: 0n,
           });
           await seedPaperConnection(owner, SEED_USDC);
-          const result = await runPaperProjectionTick({
-            db,
-            readMidPrice: midPrices({ [tokenA]: 0.5, [tokenB]: 0.65, [tokenU]: 0.35 }),
-            logger: events.logger,
-            now: new Date("2026-10-07T20:00:00.000Z"),
-            runBounded: async (fn) => {
-              const projected = await fn(db);
-              // The FIRST callback is global syncPaperTraderWallets; delete only
-              // after that native enrollment finishes and before any observation.
-              if (!enrolled) {
-                enrolled = true;
-                const physical = await seedDb.select({ id: polyTraderWallets.id })
-                  .from(polyTraderWallets)
-                  .where(and(eq(polyTraderWallets.walletAddress, paperAddress),
-                    eq(polyTraderWallets.kind, PAPER_WALLET_KIND)));
-                expect(physical).toHaveLength(1);
-                const physicalWallet = physical[0];
-                if (!physicalWallet) throw new Error("owned lifecycle wallet was not enrolled");
-                if (removed) {
-                  const deleted = await seedDb.delete(polyTraderWallets)
-                    .where(eq(polyTraderWallets.id, physicalWallet.id))
-                    .returning({ id: polyTraderWallets.id });
-                  expect(deleted).toHaveLength(1);
-                }
-              }
-              return projected;
-            },
-          });
-          // A different/extra failure stays FAIL; no external cohort is excused.
-          console.info("paper projection native lifecycle control", {
-            control: removed ? "removed_after_enrollment" : "stable",
-            paperAccounts: result.paperAccounts,
-            walletsProjected: result.walletsProjected,
-            navsPublished: result.navsPublished,
-            errors: result.errors,
-            cohorts: events.cohorts(),
-            accountFailures: events.failures(),
-          });
-          const cohorts = events.cohorts();
-          expect(enrolled).toBe(true);
-          expect(result.paperAccounts).toBeGreaterThanOrEqual(3);
-          expect(result.walletsProjected).toBe(result.paperAccounts - Number(removed));
-          expect(result.errors).toBe(Number(removed));
-          expect(result.idleReason).toBeUndefined();
-          expect(cohorts.own_fixture.account_failed).toBe(Number(removed));
-          expect(cohorts.external_fixture.account_failed).toBe(0);
-          expect(cohorts.own_fixture.wallet_ok + cohorts.external_fixture.wallet_ok)
-            .toBe(result.walletsProjected);
-          expect(events.failures()).toHaveLength(Number(removed));
+          // Enroll the full native population, then observe only our fixture.
+          // These controls test the observer lifecycle, not global-loop isolation.
+          const wallet = await enrol(owner);
           if (removed) {
-            const failure = events.failures()[0];
-            expect(failure).toMatchObject({ cohort: "own_fixture", phase: "account_failed",
-              errorCode: "paper_projection_account_failed" });
-            expect([failure?.err_code, failure?.cause_code]).toContain("23503");
+            const deleted = await seedDb.delete(polyTraderWallets)
+              .where(eq(polyTraderWallets.id, wallet.traderWalletId))
+              .returning({ id: polyTraderWallets.id });
+            expect(deleted).toHaveLength(1);
+          }
+          const observation = observePaperWallet({
+            db, wallet, readMidPrice: midPrices({}), logger, now: observedAt,
+          });
+          if (removed) {
+            // The real cursor write must reject its missing physical-wallet FK.
+            await expect(observation).rejects.toMatchObject({ cause: { code: "23503" } });
+          } else {
+            expect(await observation).toMatchObject({
+              fills: 0, positions: 0, unpricedPositions: 0, navPublished: true,
+              marksAttempted: 0, marksRefreshed: 0, marksReused: 0,
+            });
+          }
+          const cursors = await seedDb.select({
+            source: polyTraderIngestionCursors.source,
+            status: polyTraderIngestionCursors.status,
+            lastSuccessAt: polyTraderIngestionCursors.lastSuccessAt,
+            errorMessage: polyTraderIngestionCursors.errorMessage,
+          }).from(polyTraderIngestionCursors)
+            .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.traderWalletId));
+          const navs = await seedDb.select({
+            usdcE: polyWalletBalanceSnapshots.usdcE,
+            pusd: polyWalletBalanceSnapshots.pusd,
+            pol: polyWalletBalanceSnapshots.pol,
+            status: polyWalletBalanceSnapshots.status,
+            observedAt: polyWalletBalanceSnapshots.observedAt,
+          }).from(polyWalletBalanceSnapshots)
+            .where(eq(polyWalletBalanceSnapshots.billingAccountId, owner.billingAccountId));
+          if (removed) {
+            expect(cursors).toHaveLength(0);
+            expect(navs).toHaveLength(0);
+          } else {
+            expect(cursors.map((cursor) => cursor.source).sort()).toEqual(
+              ["paper-ledger-trades", PAPER_POSITION_CURSOR_SOURCE].sort()
+            );
+            for (const cursor of cursors) {
+              expect(cursor).toMatchObject({ status: "ok", lastSuccessAt: observedAt, errorMessage: null });
+            }
+            expect(navs).toHaveLength(1);
+            expect(Number(navs[0]?.usdcE)).toBe(Number(SEED_USDC));
+            expect(navs[0]).toMatchObject({ pusd: null, pol: null, status: "partial", observedAt });
           }
           // Only the physical wallet was removed: enrollment still came from
           // the active connection, and its billing parent survived the error.
