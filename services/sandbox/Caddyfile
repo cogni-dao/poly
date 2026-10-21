@@ -16,6 +16,21 @@
 		respond `{"version":"{$SANDBOX_VERSION}","buildSha":"{$COGNI_REPO_SHA}"}` 200
 	}
 
+	# Platform serving probe also requires a 2xx /readyz (operator BOOT_SLO_OR_CLOSE). execd
+	# v1.1.0 guards every route, /ping included, so a 401 from /ping proves execd is up and
+	# enforcing its token; a dead execd yields 502. Caddy never holds the token.
+	handle /readyz {
+		rewrite * /ping
+		reverse_proxy 127.0.0.1:{$EXECD_PORT} {
+			@execd_alive status 2xx 401
+			handle_response @execd_alive {
+				header Content-Type application/json
+				header Cache-Control no-store
+				respond `{"status":"ready"}` 200
+			}
+		}
+	}
+
 	# Everything else → execd (token enforced by execd via X-EXECD-ACCESS-TOKEN).
 	# reverse_proxy upgrades WebSocket automatically; flush_interval -1 keeps SSE streaming.
 	handle {
