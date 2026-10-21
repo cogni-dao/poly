@@ -242,6 +242,7 @@ export function portfolioSnapshotExtra(
     economicErrorCode: diagnostics?.economicErrorCode ?? null,
     economicCauseClass: diagnostics?.economicCauseClass ?? null,
     economicCauseCode: diagnostics?.economicCauseCode ?? null,
+    economicPlanProbe: diagnostics?.economicPlanProbe ?? null,
     comparisonReadPath: diagnostics?.comparisonPath ?? "unknown",
     comparisonIdentityMs: diagnostics?.comparisonIdentityMs ?? null,
     comparisonBundleTotalMs: diagnostics?.comparisonBundleTotalMs ?? null,

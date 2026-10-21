@@ -9,6 +9,7 @@ import {
 	readEconomicPositionProjection,
 } from "@/features/wallet-analysis/server/economic-position-read-model";
 import { portfolioSnapshotFixture } from "../capability-plane/portfolio-snapshot.fixture";
+import { summarizeEconomicProjectionPlan } from "@/features/wallet-analysis/server/economic-projection-plan";
 
 const input = {
 	billingAccountId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -27,6 +28,21 @@ const projectionRows = [
 ];
 
 describe("economic read diagnostics", () => {
+  it("bounds estimated plans and omits predicates, functions and identities", () => {
+    const summary = summarizeEconomicProjectionPlan({ Plan: {
+      "Node Type": "Append", "Total Cost": 100, "Plan Rows": 30,
+      Filter: "private_wallet", "Index Cond": "private_account", Output: ["private_function()"],
+      Plans: Array.from({ length: 30 }, (_, index) => ({
+        "Node Type": "Sort", "Total Cost": index, "Plan Rows": index,
+        "Subplan Name": index === 29 ? "CTE history_facts" : "CTE private_wallet",
+        Filter: "private_token",
+      })),
+    }, JIT: { Functions: 7, Options: { Inlining: true }, Timing: { Total: "private_runtime" } } });
+    expect(summary).toMatchObject({ totalNodeCount: 31, emittedNodeCount: 24, truncated: true,
+      maxNodeCost: 100, maxEstimatedRows: 30, estimatedJit: { functions: 7, inlining: true } });
+    expect(summary.nodes[1]).toMatchObject({ totalCost: 29, cte: "history_facts" });
+    expect(JSON.stringify(summary)).not.toMatch(/private|Filter|Index Cond|Output|Timing/);
+  });
 	it.each(["projection", "metadata"] as const)(
 		"attributes a %s SQL failure safely",
 		async (phase) => {
