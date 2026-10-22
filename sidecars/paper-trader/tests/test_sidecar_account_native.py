@@ -316,6 +316,9 @@ def test_constructor_failure_is_unavailable_and_unpublished(native, caplog, monk
 
 @pytest.mark.parametrize("follower_seed", [SEED, SEED + 1])
 def test_concurrent_native_openers_do_not_replace_winner(native, monkeypatch, follower_seed):
+    # Isolate account initialization contention from first-ever WAL/schema setup.
+    seed_native(native, account=False)
+    assert snapshot(native)["account"] == []
     # Both real Engines finish native schema setup BEFORE the winner starts
     # its write transaction. Trace confirms the follower actually attempts
     # BEGIN IMMEDIATE while the winner still owns the SQLite write lock.
