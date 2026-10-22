@@ -29,12 +29,21 @@ import type {
 } from "@cogni/work-items";
 import { toWorkItemId } from "@cogni/work-items";
 
+import { isPrivilegedPriority } from "@cogni/knowledge-store";
+
 /**
  * Dependencies for creating the work item capability.
  */
 export interface WorkItemCapabilityDeps {
   readonly workItemQuery: WorkItemQueryPort;
   readonly workItemCommand: WorkItemCommandPort;
+  /**
+   * QUERY_READS_THE_LIVE_BACKLOG: `query` lists through this when wired — the
+   * node's Doltgres work items (the same read `GET /api/v1/work/items` uses).
+   * The runtime image carries no `work/` tree, so a markdown-bound query always
+   * saw an empty backlog. Writes are unchanged.
+   */
+  readonly backlogReader?: Pick<WorkItemQueryPort, "list">;
 }
 
 function assigneeId(a: SubjectRef): string {
@@ -78,7 +87,7 @@ export function createWorkItemCapability(
 
   return {
     async query(params): Promise<readonly WorkItemInfo[]> {
-      const result = await workItemQuery.list({
+      const result = await (deps.backlogReader ?? workItemQuery).list({
         ...(params.statuses && {
           statuses: params.statuses as readonly WorkItemStatus[],
         }),
@@ -117,6 +126,15 @@ export function createWorkItemCapability(
     },
 
     async patch(input): Promise<WorkItemInfo> {
+      // P0P1_IS_NODE_ADMIN (story.5101): node admin is a wallet-bearing human
+      // session (the container's `nodeAdmin`); a tool invocation carries no
+      // wallet, so an AI patch to priority <= 1 is refused before any write.
+      const priority = input.set.priority;
+      if (priority != null && isPrivilegedPriority(priority)) {
+        throw new Error(
+          `authz_denied: priority ${priority} requires node admin — propose it instead`
+        );
+      }
       const current = await workItemQuery.get(toWorkItemId(input.id));
       if (!current) {
         throw new Error(`Work item not found: ${input.id}`);

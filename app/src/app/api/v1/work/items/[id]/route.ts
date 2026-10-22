@@ -24,6 +24,7 @@ import {
   WorkItemForbiddenError,
   WorkItemNotFoundError,
   WorkItemsBackendNotReadyError,
+  NodeAdminRequiredError,
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -108,6 +109,7 @@ export const PATCH = wrapRouteHandlerWithLogging<{
     try {
       const patched = await patchWorkItem(parsed.data, {
         id: sessionUser.id,
+        walletAddress: sessionUser.walletAddress,
       });
       ctx.log.info({ workItemId: id }, "work.items.patch_success");
       return NextResponse.json(workItemsPatchOperation.output.parse(patched));
@@ -117,6 +119,16 @@ export const PATCH = wrapRouteHandlerWithLogging<{
       }
       if (error instanceof WorkItemForbiddenError) {
         return NextResponse.json({ error: error.message }, { status: 403 });
+      }
+      if (error instanceof NodeAdminRequiredError) {
+        return NextResponse.json(
+          {
+            error: error.message,
+            errorCode: error.errorCode,
+            action: error.action,
+          },
+          { status: error.status }
+        );
       }
       if (error instanceof WorkItemsBackendNotReadyError) {
         return NextResponse.json({ error: error.message }, { status: 503 });

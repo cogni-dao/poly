@@ -11,6 +11,7 @@
  * @public
  */
 
+import { GOALS_BOOTSTRAP_INSTRUCTION, resolveGoals } from "@cogni/knowledge-store";
 import { describe, expect, it } from "vitest";
 import {
 	renderBundleMarkdown,
@@ -43,6 +44,7 @@ const baseInput = {
 		},
 	],
 	orientation: null,
+	goals: { status: "ok", goals: [] },
 } as const;
 
 describe("renderBundleMarkdown", () => {
@@ -267,5 +269,44 @@ describe("resolveOrientation", () => {
 			null
 		);
 		expect(empty).toBeNull();
+	});
+});
+
+describe("Goals section — approved goals right after the orientation (story.5101)", () => {
+	const port = (
+		goals: { id: string; title: string; content: string; evaluateAt: Date | null }[],
+	) => ({ listActiveGoals: async () => goals });
+
+	it("zero goals renders `no approved goals` plus the bootstrap instruction", async () => {
+		const md = renderBundleMarkdown({
+			...baseInput,
+			goals: await resolveGoals(port([])),
+		});
+		expect(md).toContain(`## Goals\n\n${GOALS_BOOTSTRAP_INSTRUCTION}\n`);
+		expect(md).toContain("no approved goals");
+	});
+
+	it("renders a goal after the orientation and before the invariants", async () => {
+		const md = renderBundleMarkdown({
+			...baseInput,
+			orientation: { id: "node-agent-orientation", content: "the map" },
+			goals: await resolveGoals(
+				port([
+					{
+						id: "goal-g1",
+						title: "Goal: outcome 1",
+						content: "Statement: s1.",
+						evaluateAt: new Date("2026-12-01T00:00:00.000Z"),
+					},
+				]),
+			),
+		});
+		expect(md).toContain(
+			"### Goal: outcome 1\n\nBy: 2026-12-01 · `goal-g1`\n\nStatement: s1.",
+		);
+		expect(md).not.toContain("no approved goals");
+		const at = (needle: string) => md.indexOf(needle);
+		expect(at("the map")).toBeLessThan(at("## Goals"));
+		expect(at("## Goals")).toBeLessThan(at("## Tooling invariants"));
 	});
 });
