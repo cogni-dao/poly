@@ -328,25 +328,32 @@ export function buildEconomicPositionProjectionQuery(
       WHERE target.billing_account_id = ${params.billingAccountId}
         AND target.disabled_at IS NULL
     ), fill_groups AS MATERIALIZED (
-      SELECT
-        f.source,
-        f.native_id,
-        (array_agg(f.id ORDER BY w.updated_at DESC, w.created_at DESC, w.id, f.id))[1] AS chosen_id,
-        min(md5(concat_ws('|',
-          lower(f.condition_id), f.token_id, f.side, f.price::text,
-          f.shares::text, f.size_usdc::text, f.observed_at::text
-        ))) IS DISTINCT FROM max(md5(concat_ws('|',
-          lower(f.condition_id), f.token_id, f.side, f.price::text,
-          f.shares::text, f.size_usdc::text, f.observed_at::text
-        ))) AS identity_conflict
-      FROM poly_trader_fills f
-      JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      LEFT JOIN driven_keys k
-        ON k.condition_id = lower(f.condition_id)
-       AND k.token_id = f.token_id
-      WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-      GROUP BY f.source, f.native_id
-      HAVING bool_or(k.condition_id IS NOT NULL)
+      SELECT source, native_id, chosen_id, condition_id, token_id, side,
+        price, shares, size_usdc, observed_at, identity_conflict
+      FROM (
+        SELECT DISTINCT ON (f.source, f.native_id)
+          f.source, f.native_id, f.id AS chosen_id,
+          lower(f.condition_id) AS condition_id, f.token_id, f.side,
+          f.price, f.shares, f.size_usdc, f.observed_at,
+          min(md5(concat_ws('|',
+            lower(f.condition_id), f.token_id, f.side, f.price::text,
+            f.shares::text, f.size_usdc::text, f.observed_at::text
+          ))) OVER identity_group IS DISTINCT FROM max(md5(concat_ws('|',
+            lower(f.condition_id), f.token_id, f.side, f.price::text,
+            f.shares::text, f.size_usdc::text, f.observed_at::text
+          ))) OVER identity_group AS identity_conflict,
+          bool_or(k.condition_id IS NOT NULL) OVER identity_group AS has_driven_key
+        FROM poly_trader_fills f
+        JOIN wallet_identity w ON w.id = f.trader_wallet_id
+        LEFT JOIN driven_keys k
+          ON k.condition_id = lower(f.condition_id)
+         AND k.token_id = f.token_id
+        WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+        WINDOW identity_group AS (PARTITION BY f.source, f.native_id)
+        ORDER BY f.source, f.native_id,
+          w.updated_at DESC, w.created_at DESC, w.id, f.id
+      ) selected
+      WHERE has_driven_key
     ), conflicted_fill_groups AS MATERIALIZED (
       SELECT source, native_id
       FROM fill_groups
@@ -364,16 +371,15 @@ export function buildEconomicPositionProjectionQuery(
       WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
     ), canonical_fills AS (
       SELECT
-        lower(f.condition_id) AS condition_id,
-        f.token_id,
-        f.side,
-        f.price,
-        f.shares,
-        f.size_usdc,
-        f.observed_at,
+        g.condition_id,
+        g.token_id,
+        g.side,
+        g.price,
+        g.shares,
+        g.size_usdc,
+        g.observed_at,
         g.identity_conflict
       FROM fill_groups g
-      JOIN poly_trader_fills f ON f.id = g.chosen_id
     ), position_flows AS MATERIALIZED (
       SELECT
         condition_id,
