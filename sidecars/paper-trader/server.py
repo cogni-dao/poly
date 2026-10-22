@@ -426,20 +426,63 @@ class Sidecar:
         self._stop.clear()
 
         account_dir = DATA_DIR / self.account_key
-        account_dir.mkdir(parents=True, exist_ok=True)
-        self.engine = Engine(data_dir=account_dir)
-        # Idempotent — already-initialized accounts re-init harmlessly OR raise;
-        # we accept either and move on.
+        engine = None
         try:
-            self.engine.init_account(balance=self.starting_balance_usdc)
-        except Exception:
-            # Idempotent — already-initialised accounts may raise; not an error.
-            pass
+            account_dir.mkdir(parents=True, exist_ok=True)
+            engine = Engine(data_dir=account_dir)
+            # The vendor init method resets cash/created_at. Serialize the
+            # first-open check and call it only for an empty native account.
+            with engine.db.conn as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                account = engine.db.get_account()
+                if account is None:
+                    for table in ("trades", "positions", "limit_orders", "market_cache"):
+                        if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                            raise HTTPException(
+                                status_code=503, detail="paper_account_unavailable"
+                            )
+                    engine.init_account(balance=self.starting_balance_usdc)
+                    account = engine.db.get_account()
+                if account is None:
+                    raise HTTPException(
+                        status_code=503, detail="paper_account_unavailable"
+                    )
+                if account.starting_balance != self.starting_balance_usdc:
+                    raise HTTPException(
+                        status_code=409, detail="account_seed_mismatch"
+                    )
+                if not math.isfinite(account.cash):
+                    raise HTTPException(
+                        status_code=503, detail="paper_account_unavailable"
+                    )
+                # The old process's client/token/boot mapping is not persisted.
+                # check_orders can debit cash BEFORE noticing that missing map.
+                if conn.execute(
+                    "SELECT 1 FROM limit_orders WHERE status = 'pending' LIMIT 1"
+                ).fetchone():
+                    raise HTTPException(
+                        status_code=503, detail="paper_account_unavailable"
+                    )
 
-        self._fill_thread = threading.Thread(
-            target=self._fill_loop, daemon=True, name="paper-fill-loop"
-        )
-        self._fill_thread.start()
+            self.engine = engine
+            self._fill_thread = threading.Thread(
+                target=self._fill_loop, daemon=True, name="paper-fill-loop"
+            )
+            self._fill_thread.start()
+        except Exception as error:
+            self._stop.set()
+            self.engine = None
+            self._fill_thread = None
+            if engine is not None:
+                try:
+                    engine.close()
+                except Exception:
+                    pass  # Cleanup must not replace the initialization verdict.
+            if isinstance(error, HTTPException):
+                raise
+            raise HTTPException(
+                status_code=503, detail="paper_account_unavailable"
+            ) from None
         log.info(
             "sidecar started",
             extra={
