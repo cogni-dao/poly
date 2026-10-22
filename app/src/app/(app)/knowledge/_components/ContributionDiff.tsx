@@ -13,6 +13,7 @@
 
 "use client";
 
+import { KnowledgeUseWhen } from "@cogni/knowledge-base-ui";
 import type { ContributionDiffEntry } from "@cogni/node-contracts";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
@@ -84,6 +85,7 @@ export function ContributionDiff({
         const row = (d.after ?? d.before) as {
           id?: string;
           title?: string;
+          useWhen?: string | null;
           content?: string;
           entryType?: string;
         } | null;
@@ -117,6 +119,10 @@ export function ContributionDiff({
                 {String(row.title)}
               </p>
             )}
+            <KnowledgeUseWhen
+              useWhen={row?.useWhen}
+              className="text-muted-foreground text-sm leading-relaxed [&>span]:font-medium"
+            />
             {isHtml && row?.content && (
               <div className="mt-2">
                 <HtmlRenderer
