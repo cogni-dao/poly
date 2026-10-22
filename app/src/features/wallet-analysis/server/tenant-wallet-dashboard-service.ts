@@ -245,7 +245,6 @@ export async function readTenantWalletDashboardIn(
     )
   );
 
-
   const orderFact = orderRead.ok
     ? orderRead.value.malformedBuyRows > 0
       ? {

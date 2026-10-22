@@ -1054,7 +1054,7 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       let crossed = false;
       const generationQueries: SQL[] = [];
       await withTenantScope(getAppDb(), userActor(toUserId(owner.userId)), async (tx) => {
-        const executeProxy = new Proxy(tx, {
+        const wrap = <T extends { execute(query: SQL): unknown }>(handle: T): T => new Proxy(handle, {
           get(target, property) {
             const value = Reflect.get(target, property);
             if (property === "execute") return async (query: SQL) => {
@@ -1076,9 +1076,13 @@ describe("paper facts project into the live tables (migration 0083)", () => {
               }
               return result;
             };
+            if (property === "transaction") return (...args: unknown[]) => Reflect.apply(value, target, [
+              (child: T) => (args[0] as (child: T) => Promise<unknown>)(wrap(child)), ...args.slice(1),
+            ]);
             return typeof value === "function" ? value.bind(target) : value;
           },
         });
+        const executeProxy = wrap(tx);
         const generation = await project(executeProxy as unknown as typeof db, wallet, later(3));
         expect(generation.navPublished).toBe(true);
         expect(generationQueries).toHaveLength(1);
