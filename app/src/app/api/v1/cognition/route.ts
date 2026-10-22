@@ -29,6 +29,7 @@ import {
 	type CognitionDomainPointer,
 	type CognitionSkillPointer,
 } from "@cogni/node-contracts";
+import { resolveGoals } from "@cogni/knowledge-store";
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer } from "@/bootstrap/container";
@@ -130,6 +131,13 @@ export const GET = wrapRouteHandlerWithLogging(
 			? await resolveOrientation(port, exactOrientationId, orientationId)
 			: null;
 
+		// Approved goals: one direct read, never the domain scan. A failure is
+		// rendered visibly in the bundle and logged, never silently omitted.
+		const goals = await resolveGoals(port);
+		if (goals.status === "unavailable") {
+			ctx.log.warn({ reason: goals.reason }, "cognition.goals_unavailable");
+		}
+
 		const toolingInvariants = [...SESSION_BOOTSTRAP_INVARIANTS];
 		const recallProtocol =
 			`RECALL both planes before writing: merged via GET ${origin}/api/v1/knowledge?domain=<domain>, ` +
@@ -147,6 +155,7 @@ export const GET = wrapRouteHandlerWithLogging(
 			skillsIndex,
 			domainPointers,
 			orientation,
+			goals,
 		});
 
 		ctx.log.info(
@@ -156,6 +165,8 @@ export const GET = wrapRouteHandlerWithLogging(
 				skills: skillsIndex.length,
 				domains: domainPointers.length,
 				orientation: orientation?.id ?? null,
+				goalsStatus: goals.status,
+				goals: goals.status === "ok" ? goals.goals.map((g) => g.id) : [],
 				hub: Boolean(port),
 			},
 			"cognition.bundle_success",

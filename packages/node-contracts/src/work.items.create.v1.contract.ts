@@ -58,7 +58,7 @@ export const workItemsCreateOperation = {
     node: z.string().optional(),
     projectId: z.string().optional(),
     parentId: z.string().optional(),
-    priority: z.number().int().optional(),
+    priority: z.number().int().min(0).max(99).optional(),
     rank: z.number().int().optional(),
     estimate: z.number().int().optional(),
     labels: z.array(z.string()).optional(),

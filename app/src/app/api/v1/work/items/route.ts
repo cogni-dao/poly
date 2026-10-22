@@ -21,6 +21,7 @@ import {
   InvalidCursorError,
   listWorkItems,
   WorkItemsBackendNotReadyError,
+  NodeAdminRequiredError,
 } from "@/app/_facades/work/items.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -107,12 +108,23 @@ export const POST = wrapRouteHandlerWithLogging(
     try {
       const created = await createWorkItem(parsed.data, {
         id: sessionUser.id,
+        walletAddress: sessionUser.walletAddress,
       });
       ctx.log.info({ workItemId: created.id }, "work.items.create_success");
       return NextResponse.json(workItemsCreateOperation.output.parse(created), {
         status: 201,
       });
     } catch (error) {
+      if (error instanceof NodeAdminRequiredError) {
+        return NextResponse.json(
+          {
+            error: error.message,
+            errorCode: error.errorCode,
+            action: error.action,
+          },
+          { status: error.status }
+        );
+      }
       if (error instanceof WorkItemsBackendNotReadyError) {
         return NextResponse.json({ error: error.message }, { status: 503 });
       }

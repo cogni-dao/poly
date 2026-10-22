@@ -14,11 +14,16 @@
  *     for skills/domains, but the current-node `<slug>-agent-orientation` entry
  *     is rendered IN FULL — the bootstrap IS the agent's operating map, so the
  *     git skeleton stays minimal and the Dolt orientation carries the substance.
+ *   - GOALS_AFTER_MISSION: the approved goals render as `## Goals` right after
+ *     the orientation. The section text (zero-goal bootstrap instruction,
+ *     `goals unavailable: …`) ships in `@cogni/knowledge-store`'s
+ *     `renderGoalsLines`; this file is only the call site (story.5101).
  * Side-effects: none
  * Links: docs/spec/node-baas-architecture.md
  * @internal
  */
 
+import { type GoalsSection, renderGoalsLines } from "@cogni/knowledge-store";
 import type {
 	CognitionDomainPointer,
 	CognitionSkillPointer,
@@ -139,6 +144,8 @@ export interface RenderBundleInput {
 	domainPointers: readonly CognitionDomainPointer[];
 	/** The current node's `<slug>-agent-orientation` entry (full), or null if unseeded. */
 	orientation: OrientationEntry | null;
+	/** Approved goals (`listActiveGoals`), rendered right after the orientation. */
+	goals: GoalsSection;
 }
 
 /**
@@ -156,6 +163,7 @@ export function renderBundleMarkdown(input: RenderBundleInput): string {
 		buildSha,
 		toolingInvariants,
 		orientation,
+		goals,
 	} = input;
 	const { skillsIndex, domainPointers } = input;
 	// "2026-06-16 14:20" — human date, not an ISO wall of digits.
@@ -218,6 +226,7 @@ export function renderBundleMarkdown(input: RenderBundleInput): string {
 		`> Delivered at session start from ${origin}/api/v1/cognition — replaces git-synced AGENTS.md sprawl. (node \`${node}\` · build \`${buildSha}\`)`,
 		"",
 		...orientationLines,
+		...renderGoalsLines(goals),
 		"",
 		"## Tooling invariants",
 		"",

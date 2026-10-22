@@ -28,6 +28,7 @@ import {
   createWorkItem,
   getWorkItem,
   listWorkItems,
+  NodeAdminRequiredError,
   patchWorkItem,
   WorkItemsBackendNotReadyError,
 } from "@/app/_facades/work/items.server";
@@ -273,5 +274,60 @@ describe("app/_facades/work/items.server", () => {
         "agent-1"
       );
     });
+  });
+});
+
+describe("P0P1_IS_NODE_ADMIN — priority <= 1 needs node admin (story.5101)", () => {
+  const doltgres = () => ({
+    create: vi.fn().mockResolvedValue(SAMPLE_WORK_ITEM),
+    patch: vi.fn().mockResolvedValue(SAMPLE_WORK_ITEM),
+  });
+  const withAuthority = (ok: boolean) => {
+    const store = doltgres();
+    mockGetContainer.mockReturnValue({
+      doltgresWorkItems: store,
+      log: { warn: vi.fn() },
+      nodeAdmin: {
+        check: async () =>
+          ok ? { ok: true } : { ok: false, errorCode: "authz_denied" },
+      },
+    } as never);
+    return store;
+  };
+
+  it("a non-admin patch to p0 (or p1) is refused 403 before the store write", async () => {
+    for (const priority of [0, 1]) {
+      const store = withAuthority(false);
+      const err = await patchWorkItem(
+        { id: "task.5001", set: { priority } } as never,
+        { id: "agent-1", walletAddress: null }
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(NodeAdminRequiredError);
+      expect((err as NodeAdminRequiredError).status).toBe(403);
+      expect(store.patch).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a non-admin create at p1 is refused; p2 is open", async () => {
+    const store = withAuthority(false);
+    await expect(
+      createWorkItem({ type: "task", title: "t", priority: 1 } as never, {
+        id: "agent-1",
+      })
+    ).rejects.toBeInstanceOf(NodeAdminRequiredError);
+    expect(store.create).not.toHaveBeenCalled();
+    await createWorkItem({ type: "task", title: "t", priority: 2 } as never, {
+      id: "agent-1",
+    });
+    expect(store.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("the node admin may set p0", async () => {
+    const store = withAuthority(true);
+    await patchWorkItem({ id: "task.5001", set: { priority: 0 } } as never, {
+      id: "u1",
+      walletAddress: "0xabc",
+    });
+    expect(store.patch).toHaveBeenCalledTimes(1);
   });
 });
