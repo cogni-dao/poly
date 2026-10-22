@@ -134,3 +134,6 @@ jobs:
 
       - name: Doltgres 0.57.3 work-item acceptance
         run: pnpm --filter @cogni/node-template-app test:doltgres
+
+      - name: Paper sidecar native and smoke tests
+        run: docker build --no-cache --progress=plain --target test --file sidecars/paper-trader/Dockerfile sidecars/paper-trader
