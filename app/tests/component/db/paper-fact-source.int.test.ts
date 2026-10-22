@@ -1768,20 +1768,24 @@ describe("paper facts project into the live tables (migration 0083)", () => {
           paper: { billingAccountId: fixture.owner.billingAccountId, generation: generation.toISOString(), navUsdc } });
       });
     }
-    async function saved(fixture: Awaited<ReturnType<typeof setup>>) {
+    async function saved(fixture: Awaited<ReturnType<typeof setup>>, db: PaperDb = fixture.db as unknown as PaperDb) {
       return {
-        pnl: await fixture.db.select().from(polyTraderUserPnlPoints).where(eq(polyTraderUserPnlPoints.traderWalletId, fixture.wallet.traderWalletId)).orderBy(polyTraderUserPnlPoints.fidelity, polyTraderUserPnlPoints.ts),
-        nav: await fixture.db.select().from(polyWalletBalanceSnapshots).where(eq(polyWalletBalanceSnapshots.billingAccountId, fixture.owner.billingAccountId)),
-        cursors: await fixture.db.select().from(polyTraderIngestionCursors).where(eq(polyTraderIngestionCursors.traderWalletId, fixture.wallet.traderWalletId)).orderBy(polyTraderIngestionCursors.source),
-        positions: await fixture.db.select().from(polyTraderCurrentPositions).where(eq(polyTraderCurrentPositions.traderWalletId, fixture.wallet.traderWalletId)),
+        pnl: await db.select().from(polyTraderUserPnlPoints).where(eq(polyTraderUserPnlPoints.traderWalletId, fixture.wallet.traderWalletId)).orderBy(polyTraderUserPnlPoints.fidelity, polyTraderUserPnlPoints.ts),
+        nav: await db.select().from(polyWalletBalanceSnapshots).where(eq(polyWalletBalanceSnapshots.billingAccountId, fixture.owner.billingAccountId)).orderBy(polyWalletBalanceSnapshots.address),
+        cursors: await db.select().from(polyTraderIngestionCursors).where(eq(polyTraderIngestionCursors.traderWalletId, fixture.wallet.traderWalletId)).orderBy(polyTraderIngestionCursors.source),
+        positions: await db.select().from(polyTraderCurrentPositions).where(eq(polyTraderCurrentPositions.traderWalletId, fixture.wallet.traderWalletId)).orderBy(polyTraderCurrentPositions.conditionId, polyTraderCurrentPositions.tokenId),
+        fills: await db.select().from(polyTraderFills).where(eq(polyTraderFills.traderWalletId, fixture.wallet.traderWalletId)).orderBy(polyTraderFills.id),
+        snapshots: await db.select().from(polyTraderPositionSnapshots).where(eq(polyTraderPositionSnapshots.traderWalletId, fixture.wallet.traderWalletId)).orderBy(polyTraderPositionSnapshots.id),
       };
     }
-    function failingDb(db: PaperDb, failAt: number): PaperDb {
+    function failingDb(db: PaperDb, failAt: number, beforeFault: (tx: PaperDb) => Promise<void>): PaperDb {
       let publications = 0;
       const wrap = (handle: PaperDb): PaperDb => new Proxy(handle, { get(target, property) {
         const value = Reflect.get(target, property);
-        if (property === "execute") return (query: SQL) => {
+        if (property === "execute") return async (query: SQL) => {
           if (new PgDialect().sqlToQuery(query).sql.includes("INSERT INTO poly_trader_user_pnl_points") && ++publications === failAt) {
+            await beforeFault(target);
+            // The database raises the actual error inside the real transaction.
             return target.execute(sql`SELECT paper_pnl_forced_publication_failure`);
           }
           return target.execute(query);
@@ -1908,30 +1912,142 @@ describe("paper facts project into the live tables (migration 0083)", () => {
     it.each([1, 2])("rolls NAV, both fidelities, cursors and current facts back on publication fault %s", async (failAt) => {
       const fixture = await setup();
       await observe(fixture, epoch);
+      // Accept a NEW operational receipt before opening the projection transaction.
+      // Without rollback it really adds a fill, inventory, basis and snapshot.
+      const pending = await seedLedgerFill(fixture.owner, randomUUID(), {
+        conditionId: condition, tokenId: token, side: "BUY", shares: "2", price: "0.3", feesUsdc: "0.02",
+        observedAt: new Date(epoch.getTime() + 1000),
+      });
+      if (!pending) throw new Error("pending native receipt missing");
+      const ledgerBefore = await fixture.db.select().from(polyCopyTradeFills)
+        .where(eq(polyCopyTradeFills.billingAccountId, fixture.owner.billingAccountId)).orderBy(polyCopyTradeFills.clientOrderId);
+      expect(ledgerBefore).toHaveLength(2);
+      expect(ledgerBefore.some((row) => row.clientOrderId === pending.client && row.status === "filled")).toBe(true);
       const before = await saved(fixture);
-      await expect(observe(fixture, new Date(epoch.getTime() + 2000), 0.5, failingDb(fixture.db as unknown as PaperDb, failAt))).rejects.toThrow();
+      expect(before.fills).toHaveLength(1);
+      expect(before.snapshots).toHaveLength(1);
+      expect(before.cursors).toHaveLength(2);
+      expect(before.pnl).toHaveLength(2);
+      const next = new Date(epoch.getTime() + 2000);
+      let reachedFault = 0;
+      const faultDb = failingDb(fixture.db as unknown as PaperDb, failAt, async (tx) => {
+        const uncommitted = await saved(fixture, tx);
+        // Read through the SAME native transaction before PostgreSQL aborts it.
+        expect(uncommitted.fills).toHaveLength(2);
+        expect(uncommitted.snapshots).toHaveLength(2);
+        expect(Number(uncommitted.positions[0]?.shares)).toBe(12);
+        expect(Number(uncommitted.positions[0]?.costBasisUsdc)).toBeCloseTo(4.6, 8);
+        expect(uncommitted.positions).not.toEqual(before.positions);
+        expect(uncommitted.nav[0]?.observedAt).toEqual(next);
+        expect(Number(uncommitted.nav[0]?.usdcE)).toBeCloseTo(101.28, 8);
+        expect(uncommitted.pnl.filter((point) => point.observedAt.getTime() === next.getTime())).toHaveLength(failAt - 1);
+        reachedFault += 1;
+      });
+      await expect(observe(fixture, next, 0.5, faultDb)).rejects.toThrow("paper_pnl_forced_publication_failure");
+      expect(reachedFault).toBe(1);
       expect(await saved(fixture)).toEqual(before);
+      expect(await fixture.db.select().from(polyCopyTradeFills)
+        .where(eq(polyCopyTradeFills.billingAccountId, fixture.owner.billingAccountId)).orderBy(polyCopyTradeFills.clientOrderId)).toEqual(ledgerBefore);
+      // The SAME retained accepted receipt succeeds without the SQL fault.
+      const result = await observe(fixture, next, 0.5);
+      expect(result).toMatchObject({ fills: 1, positions: 1, navPublished: true });
+      const committed = await saved(fixture);
+      expect(committed.fills).toHaveLength(2);
+      expect(committed.snapshots).toHaveLength(2);
+      expect(Number(committed.positions[0]?.shares)).toBe(12);
+      expect(Number(committed.positions[0]?.costBasisUsdc)).toBeCloseTo(4.6, 8);
+      expect(Number(committed.positions[0]?.currentValueUsdc)).toBe(6);
+      expect(committed.positions).not.toEqual(before.positions);
+      expect(committed.cursors.every((cursor) => cursor.lastSuccessAt?.getTime() === next.getTime())).toBe(true);
+      expect(committed.pnl.filter((point) => point.observedAt.getTime() === next.getTime())).toHaveLength(2);
+      // Independent arithmetic: seed100 - buys(4+0.6) - fees(0.1+0.02) + shares12*mark0.5.
+      expect(await privateRead(fixture, next, 101.28)).toMatchObject({ status: "partial" });
+      expect(await fixture.db.select().from(polyCopyTradeFills)
+        .where(eq(polyCopyTradeFills.billingAccountId, fixture.owner.billingAccountId)).orderBy(polyCopyTradeFills.clientOrderId)).toEqual(ledgerBefore);
     });
 
     it.each([[false, false], [false, true], [true, false], [true, true]])("serializes concurrent generations, newer-first=%s cross-bucket=%s", async (newerFirst, crossBucket) => {
       const fixture = await setup();
+      // getSeedDb's existing service pool defaults to ten backends. These two
+      // transactions use two; the lock witness uses the FIRST held backend.
       let unlock: (() => void) | undefined;
-      let entered: (() => void) | undefined;
+      let entered: ((held: { tx: PaperDb; pid: number }) => void) | undefined;
+      let firstFailed: ((error: unknown) => void) | undefined;
+      let secondEntered: ((pid: number) => void) | undefined;
+      let secondFailed: ((error: unknown) => void) | undefined;
       const barrier = new Promise<void>((resolve) => { unlock = resolve; });
-      const locked = new Promise<void>((resolve) => { entered = resolve; });
+      const locked = new Promise<{ tx: PaperDb; pid: number }>((resolve, reject) => { entered = resolve; firstFailed = reject; });
+      const secondReady = new Promise<number>((resolve, reject) => { secondEntered = resolve; secondFailed = reject; });
       const newer = new Date(epoch.getTime() + (crossBucket ? 2000 : 500));
       const firstAt = newerFirst ? newer : epoch;
       const secondAt = newerFirst ? epoch : newer;
-      const first = observePaperWallet({ db: fixture.db as unknown as PaperDb, wallet: fixture.wallet,
-        now: firstAt, logger, readMidPrice: async () => { entered?.(); await barrier; return 0.6; } });
-      await locked;
-      const second = observe(fixture, secondAt);
-      unlock?.();
-      const outcomes = await Promise.allSettled([first, second]);
+      const first = fixture.db.transaction(async (tx) => {
+        const [backend] = await tx.execute<{ pid: number }>(sql`SELECT pg_backend_pid() AS pid`);
+        if (!backend) throw new Error("first native backend missing");
+        return observePaperWallet({ db: tx as unknown as PaperDb, wallet: fixture.wallet,
+          now: firstAt, logger, readMidPrice: async () => {
+            entered?.({ tx: tx as unknown as PaperDb, pid: backend.pid });
+            await barrier;
+            return 0.6;
+          } });
+      });
+      void first.catch((error: unknown) => firstFailed?.(error));
+      const held = await locked;
+      const second = fixture.db.transaction(async (tx) => {
+        const [backend] = await tx.execute<{ pid: number }>(sql`SELECT pg_backend_pid() AS pid`);
+        if (!backend) throw new Error("second native backend missing");
+        secondEntered?.(backend.pid);
+        return observe(fixture, secondAt, 0.6, tx as unknown as PaperDb);
+      });
+      // Attach rejection handlers before either observer is allowed to finish.
+      void second.catch((error: unknown) => secondFailed?.(error));
+      const outcomesPromise = Promise.allSettled([first, second]);
+      let outcomes: Awaited<typeof outcomesPromise>;
+      try {
+        const secondPid = await secondReady;
+        expect(secondPid).not.toBe(held.pid);
+        const deadline = Date.now() + 1500;
+        let witnessed = false;
+        for (let probes = 0; probes < 200 && Date.now() < deadline; probes += 1) {
+          // pg_stat_activity must be reread, not a transaction-cached snapshot.
+          await held.tx.execute(sql`SELECT pg_stat_clear_snapshot()`);
+          const result = await held.tx.execute(sql`
+            SELECT pg_backend_pid() AS holder_pid,
+              ${held.pid}::integer = ANY(pg_blocking_pids(a.pid)) AS blocked_by_holder,
+              a.wait_event_type = 'Lock' AS waiting_on_lock,
+              a.query LIKE '%from "poly_wallet_connections"%' AND a.query LIKE '%for update%' AS connection_row_statement
+            FROM pg_stat_activity a WHERE a.pid = ${secondPid}::integer
+          `);
+          const witness = (result as unknown as Array<{ holder_pid: number; blocked_by_holder: boolean; waiting_on_lock: boolean; connection_row_statement: boolean }>)[0];
+          expect(witness?.holder_pid).toBe(held.pid);
+          if (witness?.blocked_by_holder && witness.waiting_on_lock && witness.connection_row_statement) {
+            witnessed = true;
+            break;
+          }
+        }
+        // A later cursor lock cannot satisfy this exact connection-row witness.
+        // No sleep, issued-only signal, SQL text logging or third client is used.
+        expect(witnessed).toBe(true);
+      } finally {
+        unlock?.();
+        outcomes = await outcomesPromise;
+      }
       expect(outcomes[0]?.status).toBe("fulfilled");
       expect(outcomes[1]?.status).toBe(newerFirst ? "rejected" : "fulfilled");
+      if (newerFirst && outcomes[1]?.status === "rejected") {
+        expect(String(outcomes[1].reason)).toContain("strictly newer");
+      }
       expect(await privateRead(fixture, newer, 101.9)).toMatchObject({ status: "partial" });
-      expect((await saved(fixture)).cursors.every((cursor) => cursor.lastSuccessAt?.getTime() === newer.getTime())).toBe(true);
+      const state = await saved(fixture);
+      expect(state.cursors).toHaveLength(2);
+      expect(state.cursors.every((cursor) => cursor.lastSuccessAt?.getTime() === newer.getTime())).toBe(true);
+      expect(state.pnl).toHaveLength(crossBucket && !newerFirst ? 4 : 2);
+      expect(state.nav[0]?.observedAt).toEqual(newer);
+      expect(Number(state.nav[0]?.usdcE)).toBe(101.9);
+      expect(state.fills).toHaveLength(1);
+      expect(state.snapshots).toHaveLength(1);
+      expect(Number(state.positions[0]?.shares)).toBe(10);
+      expect(state.pnl.every((point) => point.observedAt.getTime() === newer.getTime() || (crossBucket && !newerFirst && point.observedAt.getTime() === epoch.getTime()))).toBe(true);
     });
 
     it("denies real private samples to default/address-only, service and unrelated readers, preserving existing delegate RLS", async () => {
