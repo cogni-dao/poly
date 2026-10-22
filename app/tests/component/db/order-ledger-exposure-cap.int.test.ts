@@ -9,6 +9,8 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import pino from "pino";
 import { describe, expect, it, vi } from "vitest";
 import { noopMetrics, type OrderReceipt } from "@cogni/poly-market-provider";
+import { buildMirrorTargetConfig } from "@/bootstrap/jobs/copy-trade-mirror.job";
+import { runMirrorTick } from "@/features/copy-trade/mirror-pipeline";
 import { createPolyTradeExecutorFactory } from "@/bootstrap/capabilities/poly-trade-executor";
 import { createExecutionVenueResolver, createPaperVenue, derivePaperAccountAddress } from "@/features/paper-accounts";
 import { getAppDb } from "@/adapters/server/db/client";
@@ -142,7 +144,7 @@ async function harness(mode: "live" | "paper" = "live", trustedPaper = false) {
 		});
 		return id;
 	}
-	return { db, account, market, token: defaultToken, ledger, tenant, intent, seed, authenticatedReceipt };
+	return { db, userId, account, market, token: defaultToken, ledger, tenant, intent, seed, authenticatedReceipt };
 }
 
 describe("order exposure reservation (real PostgreSQL)", () => {
@@ -458,6 +460,226 @@ describe("order exposure reservation (real PostgreSQL)", () => {
     expect(stored?.attributes?.filled_size_usdc).toBe(8);
     expect(Number(stored?.shares)).toBe(10);
   });
+
+	it.each([false, true])(
+		"PAPER pipeline fallback keeps trusted receipt and durable acknowledgement, rejected=%s",
+		async (rejected) => {
+			const h = await harness("paper", true);
+			const logs: Record<string, unknown>[] = [];
+			const logger = pino(
+				{ level: "trace" },
+				{
+					write(line: string) {
+						logs.push(JSON.parse(line));
+					},
+				},
+			);
+			const target = buildMirrorTargetConfig({
+				targetWallet: `0x${randomUUID().replaceAll("-", "").padEnd(40, "0")}`,
+				billingAccountId: h.account,
+				createdByUserId: h.userId,
+				sizingPolicyKind: "min_bet",
+			});
+			target.sizing = { kind: "min_bet", max_usdc_per_condition: 1 };
+			const fill = {
+				target_wallet: target.target_wallet,
+				fill_id: `chain:${randomUUID()}`,
+				source: "chain" as const,
+				market_id: h.market,
+				outcome: "YES",
+				side: "BUY" as const,
+				price: 0.5,
+				size_usdc: 1,
+				observed_at: observed.toISOString(),
+				attributes: {
+					asset: h.token,
+					condition_id: h.market,
+					end_date: "2027-10-01T00:00:00Z",
+				},
+			};
+			let receipt:
+				| Awaited<ReturnType<typeof h.authenticatedReceipt>>
+				| undefined;
+			let primaryRolledBack = false;
+			const mark = vi
+				.spyOn(h.ledger, "markOrderId")
+				.mockImplementationOnce(async (input) => {
+					try {
+						return await h.db.transaction(async (tx) => {
+							const transactionalLedger = createOrderLedger({
+								db: tx as unknown as PostgresJsDatabase<
+									Record<string, unknown>
+								>,
+								logger: pino({ enabled: false }),
+								resolveExecutionMode: async () => "paper",
+							});
+							const accepted = await transactionalLedger.markOrderId(input);
+							expect(accepted).toMatchObject({
+								accepted: !rejected,
+								client_order_id: input.client_order_id,
+							});
+							if (!rejected) {
+								const [inside] = await tx
+									.select()
+									.from(polyCopyTradeFills)
+									.where(
+										eq(polyCopyTradeFills.clientOrderId, input.client_order_id),
+									);
+								expect(inside?.orderId).toBe(input.receipt.order_id);
+								expect(inside?.attributes?.paper_receipt_v1).toBeDefined();
+							}
+							// An actual native transaction fault rolls back the primary write.
+							await tx.execute(sql`select 1 / 0`);
+							return accepted;
+						});
+					} catch (error) {
+						expect(error).toMatchObject({ cause: { code: "22012" } });
+						const [rolledBack] = await h.db
+							.select()
+							.from(polyCopyTradeFills)
+							.where(
+								eq(polyCopyTradeFills.clientOrderId, input.client_order_id),
+							);
+						expect(rolledBack?.status).toBe("pending");
+						expect(rolledBack?.orderId).toBeNull();
+						expect(rolledBack?.attributes?.paper_receipt_v1).toBeUndefined();
+						primaryRolledBack = true;
+						throw error;
+					}
+				});
+			const fallback = vi.spyOn(h.ledger, "updateStatus");
+			const markError = vi.spyOn(h.ledger, "markError");
+			const placeIntent = vi.fn(async (intent: { client_order_id: string }) => {
+				// INSERT_BEFORE_PLACE is verified against the actual database row.
+				const [pending] = await h.db
+					.select()
+					.from(polyCopyTradeFills)
+					.where(eq(polyCopyTradeFills.clientOrderId, intent.client_order_id));
+				expect(pending?.status).toBe("pending");
+				receipt = await h.authenticatedReceipt({
+					order_id: `paper-fallback-${h.account}`,
+					client_order_id: intent.client_order_id,
+					status: "partial",
+					filled_size_usdc: 1,
+					fill_price: 0.5,
+					total_shares: 2,
+					fees_usdc: 0,
+					submitted_at: observed.toISOString(),
+					attributes: {
+						market: h.market,
+						tokenId: h.token,
+						side: "BUY",
+						sizeMatched: 2,
+					},
+				});
+				// Negative crosses the trusted-context boundary, not a forged positive proof.
+				if (rejected) receipt = { ...receipt, paper_context: undefined };
+				return receipt;
+			});
+			await runMirrorTick({
+				implementationRevision: "0123456789abcdef0123456789abcdef01234567",
+				targetRowId: randomUUID(),
+				assignmentId: `target:${observed.toISOString()}`,
+				isAssignmentCurrent: async () => true,
+				source: {
+					fetchSince: async () => ({
+						fills: [fill, { ...fill, fill_id: `chain:${randomUUID()}` }],
+						newSince: 2,
+					}),
+				},
+				ledger: h.ledger,
+				target,
+				placeIntent,
+				getExecutionMode: async () => "paper",
+				getCursor: () => undefined,
+				setCursor: () => undefined,
+				logger,
+				metrics: noopMetrics,
+				clock: () => new Date("2026-10-01T00:00:01Z"),
+				getTargetConditionPosition: async () => ({
+					condition_id: h.market,
+					tokens: [
+						{
+							token_id: h.token,
+							size_shares: 100,
+							cost_usdc: 50,
+							current_value_usdc: 50,
+						},
+					],
+				}),
+				getTargetPortfolioCurrentValue: async () => 100,
+				getMirrorPortfolioSnapshot: async () => ({
+					currentValueUsdc: 100,
+					positions: [],
+				}),
+				getMarketConstraints: async () => ({
+					minShares: 1,
+					minUsdcNotional: 1,
+					tickSize: 0.001,
+				}),
+			});
+			expect(primaryRolledBack).toBe(true);
+			expect(placeIntent).toHaveBeenCalledOnce();
+			expect(mark).toHaveBeenCalledOnce();
+			expect(fallback).toHaveBeenCalledOnce();
+			expect(fallback.mock.calls[0]?.[0].paper_receipt).toBe(receipt);
+			expect(await fallback.mock.results[0]?.value).toMatchObject({
+				accepted: !rejected,
+				mode: "paper",
+			});
+			expect(markError).not.toHaveBeenCalled();
+			const [stored] = await h.db
+				.select()
+				.from(polyCopyTradeFills)
+				.where(
+					eq(
+						polyCopyTradeFills.clientOrderId,
+						receipt?.client_order_id ?? "missing",
+					),
+				);
+			expect(stored?.status).toBe(rejected ? "pending" : "partial");
+			expect(stored?.orderId).toBe(rejected ? null : receipt?.order_id);
+			if (rejected) {
+				expect(stored?.attributes?.paper_receipt_v1).toBeUndefined();
+				expect(logs).toContainEqual(
+					expect.objectContaining({ errorCode: "receipt_persistence_failed" }),
+				);
+			} else {
+				expect(stored?.attributes?.paper_receipt_v1).toMatchObject({
+					order_id: receipt?.order_id,
+					client_order_id: receipt?.client_order_id,
+					condition_id: h.market,
+					token_id: h.token,
+					shares: 2,
+					notional_usdc: 1,
+					fees_usdc: 0,
+				});
+				expect(Number(stored?.shares)).toBe(2);
+				expect(stored?.attributes?.filled_size_usdc).toBe(1);
+				expect(logs).not.toContainEqual(
+					expect.objectContaining({ errorCode: "receipt_persistence_failed" }),
+				);
+			}
+			expect(
+				await h.tenant.cumulativeIntentForMarketToken(h.market, h.token),
+			).toBe(1);
+			expect(logs).toContainEqual(
+				expect.objectContaining({
+					outcome: "placed",
+					order_id: receipt?.order_id,
+				}),
+			);
+			expect(logs).toContainEqual(
+				expect.objectContaining({
+					outcome: "skipped",
+					reason: "position_cap_reached",
+				}),
+			);
+			expect(logs).not.toContainEqual(
+				expect.objectContaining({ reason: "placement_failed" }),
+			);
+		},
+	);
 
 	it("preserves accepted receipts through both error/receipt orderings and zero observations", async () => {
 		const h = await harness();

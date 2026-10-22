@@ -2109,11 +2109,25 @@ async function executeMirrorOrder(
 		"mirror pipeline: placed",
 	);
 	try {
-		await deps.ledger.markOrderId({ client_order_id, receipt });
+		const acknowledged = await deps.ledger.markOrderId({
+			client_order_id,
+			receipt,
+		});
+		if (
+			placementMode === "paper" &&
+			(!acknowledged ||
+				!acknowledged.accepted ||
+				acknowledged.mode !== "paper" ||
+				acknowledged.client_order_id !== client_order_id ||
+				acknowledged.order_id !== receipt.order_id)
+		) {
+			throw new Error("paper_receipt_acknowledgement_missing_or_rejected");
+		}
 	} catch {
 		try {
-			await deps.ledger.updateStatus({
+			const acknowledged = await deps.ledger.updateStatus({
 				client_order_id,
+				...(placementMode === "paper" ? { paper_receipt: receipt } : {}),
 				order_id: receipt.order_id,
 				status:
 					receipt.status === "filled" ||
@@ -2139,6 +2153,16 @@ async function executeMirrorOrder(
             ? { realized_fill_source: "paper_order_receipt" as const }
             : {}),
 			});
+			if (
+				placementMode === "paper" &&
+				(!acknowledged ||
+					!acknowledged.accepted ||
+					acknowledged.mode !== "paper" ||
+					acknowledged.client_order_id !== client_order_id ||
+					acknowledged.order_id !== receipt.order_id)
+			) {
+				throw new Error("paper_receipt_acknowledgement_missing_or_rejected");
+			}
 		} catch {
 			log.error(
 				{

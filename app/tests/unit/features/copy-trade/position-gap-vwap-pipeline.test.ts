@@ -102,10 +102,31 @@ function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 	const insertPending = vi.fn<TenantOrderLedger["insertPending"]>(async () =>
 		Promise.resolve("paper"),
 	);
-	const markOrderId = vi.fn(async () => undefined);
+	const markOrderId = vi.fn<OrderLedger["markOrderId"]>(
+		async ({ client_order_id, receipt }) => ({
+			mode: "paper",
+			client_order_id,
+			order_id: receipt.order_id,
+			status:
+				receipt.status === "filled" ||
+				receipt.status === "partial" ||
+				receipt.status === "canceled"
+					? receipt.status
+					: "open",
+			accepted: true,
+			accounting: { status: "pending", reason: "unit_writer_acknowledgement" },
+		}),
+	);
 	const markError = vi.fn(async () => undefined);
 	const markCanceled = vi.fn(async () => undefined);
-	const updateStatus = vi.fn(async () => undefined);
+	const updateStatus = vi.fn<OrderLedger["updateStatus"]>(async (input) => ({
+		mode: "paper",
+		client_order_id: input.client_order_id,
+		order_id: input.order_id ?? null,
+		status: input.status,
+		accepted: true,
+		accounting: { status: "pending", reason: "unit_writer_acknowledgement" },
+	}));
 	const tenant: TenantOrderLedger = {
 		snapshotState: async () => ({
 			today_spent_usdc: 0,
@@ -300,6 +321,8 @@ describe("position_gap legacy fill-pipeline boundary", () => {
 
 		expect(harness.insertPending).toHaveBeenCalledOnce();
 		expect(placeIntent).toHaveBeenCalledOnce();
+		expect(harness.markOrderId).toHaveBeenCalledOnce();
+		expect(harness.updateStatus).not.toHaveBeenCalled();
 		expect(harness.insertPending.mock.invocationCallOrder[0]).toBeLessThan(
 			placeIntent.mock.invocationCallOrder[0] ?? 0,
 		);
@@ -1034,8 +1057,19 @@ describe("accepted execution survives secondary failures (bug.5042)", () => {
 		const h = ledgerHarness();
 		h.markOrderId.mockRejectedValue(new Error("DB race"));
 		const fill = { ...buyFill, price: 0.5 };
-		const deps = commonDeps(fill, h.ledger, recordingLogger([]), minBetTarget);
+		const logs: Record<string, unknown>[] = [];
+		const deps = commonDeps(
+			fill,
+			h.ledger,
+			recordingLogger(logs),
+			minBetTarget,
+		);
 		const placeIntent = vi.fn(async (intent: { client_order_id: string }) => ({
+			paper_context: {
+				billing_account_id: "billing-1",
+				connection_id: "paper-connection",
+				observed_at: fill.observed_at,
+			},
 			order_id: "known-order",
 			client_order_id: intent.client_order_id,
 			status: "partial" as const,
@@ -1054,8 +1088,197 @@ describe("accepted execution survives secondary failures (bug.5042)", () => {
         realized_fill_source: "paper_order_receipt",
 			}),
 		);
+		expect(h.updateStatus).toHaveBeenCalledOnce();
+		expect(h.updateStatus.mock.calls[0]?.[0].paper_receipt).toBe(
+			await placeIntent.mock.results[0]?.value,
+		);
+		expect(logs).not.toContainEqual(
+			expect.objectContaining({ errorCode: "receipt_persistence_failed" }),
+		);
 		expect(h.markError).not.toHaveBeenCalled();
 	});
+
+	it.each([false, undefined] as const)(
+		"retries a PAPER primary acknowledgement=%s and accepts fallback",
+		async (acknowledgement) => {
+			const h = ledgerHarness();
+			h.markOrderId.mockImplementation(async ({ client_order_id }) =>
+				acknowledgement === undefined
+					? undefined
+					: {
+							mode: "paper",
+							client_order_id,
+							order_id: null,
+							status: "pending",
+							accepted: false,
+							accounting: {
+								status: "mismatch",
+								reason: "rejected_unit_receipt",
+							},
+						},
+			);
+			const logs: Record<string, unknown>[] = [];
+			const deps = commonDeps(
+				{ ...buyFill, price: 0.5 },
+				h.ledger,
+				recordingLogger(logs),
+				minBetTarget,
+			);
+			const placeIntent = vi.fn(
+				async (intent: { client_order_id: string }) => ({
+					order_id: "accepted-fallback",
+					client_order_id: intent.client_order_id,
+					status: "open" as const,
+					filled_size_usdc: 0,
+					submitted_at: buyFill.observed_at,
+				}),
+			);
+			await runMirrorTick({ ...deps, placeIntent });
+			expect(placeIntent).toHaveBeenCalledOnce();
+			expect(h.updateStatus).toHaveBeenCalledOnce();
+			expect(h.updateStatus.mock.calls[0]?.[0].paper_receipt).toBe(
+				await placeIntent.mock.results[0]?.value,
+			);
+			expect(logs).not.toContainEqual(
+				expect.objectContaining({ errorCode: "receipt_persistence_failed" }),
+			);
+			expect(h.markError).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		[false, false],
+		[false, undefined],
+		[undefined, false],
+		[undefined, undefined],
+	] as const)(
+		"PAPER primary=%s fallback=%s acknowledgements retain reservation and report unresolved",
+		async (primary, fallback) => {
+			const h = ledgerHarness();
+			const rejected = (client_order_id: string) => ({
+				mode: "paper" as const,
+				client_order_id,
+				order_id: null,
+				status: "pending" as const,
+				accepted: false,
+				accounting: {
+					status: "mismatch" as const,
+					reason: "rejected_unit_receipt",
+				},
+			});
+			h.markOrderId.mockImplementation(async ({ client_order_id }) =>
+				primary === undefined ? undefined : rejected(client_order_id),
+			);
+			h.updateStatus.mockImplementation(async ({ client_order_id }) =>
+				fallback === undefined ? undefined : rejected(client_order_id),
+			);
+			let reserved = 0;
+			h.tenant.cumulativeIntentForMarketToken = async () => reserved;
+			h.insertPending.mockImplementation(async ({ intent }) => {
+				reserved += intent.size_usdc;
+				return "paper";
+			});
+			const fill = { ...buyFill, price: 0.5 };
+			const capped = {
+				...minBetTarget,
+				sizing: { kind: "min_bet" as const, max_usdc_per_condition: 1 },
+			};
+			const logs: Record<string, unknown>[] = [];
+			const deps = commonDeps(fill, h.ledger, recordingLogger(logs), capped);
+			const placeIntent = vi.fn(
+				async (intent: { client_order_id: string }) => ({
+					order_id: "unresolved-accepted",
+					client_order_id: intent.client_order_id,
+					status: "open" as const,
+					filled_size_usdc: 0,
+					submitted_at: fill.observed_at,
+				}),
+			);
+			await runMirrorTick({
+				...deps,
+				placeIntent,
+				source: {
+					fetchSince: async () => ({
+						fills: [
+							fill,
+							{ ...fill, fill_id: "chain:distinct-after-rejected-ack" },
+						],
+						newSince: 2,
+					}),
+				},
+			});
+			expect(placeIntent).toHaveBeenCalledOnce();
+			expect(h.insertPending).toHaveBeenCalledOnce();
+			expect(reserved).toBe(1);
+			expect(h.markOrderId).toHaveBeenCalledOnce();
+			expect(h.updateStatus).toHaveBeenCalledOnce();
+			expect(h.markError).not.toHaveBeenCalled();
+			expect(logs).toContainEqual(
+				expect.objectContaining({
+					errorCode: "receipt_persistence_failed",
+					order_id: "unresolved-accepted",
+				}),
+			);
+			expect(logs).toContainEqual(
+				expect.objectContaining({
+					outcome: "placed",
+					order_id: "unresolved-accepted",
+				}),
+			);
+			expect(h.decisions).toContainEqual(
+				expect.objectContaining({
+					outcome: "skipped",
+					reason: "position_cap_reached",
+				}),
+			);
+			expect(logs).not.toContainEqual(
+				expect.objectContaining({ reason: "placement_failed" }),
+			);
+		},
+	);
+
+	it.each([false, true])(
+		"LIVE void acknowledgement remains compatible, fallback=%s",
+		async (fallback) => {
+			const h = ledgerHarness();
+			h.insertPending.mockResolvedValue("live");
+			h.markOrderId.mockResolvedValue(undefined);
+			h.updateStatus.mockResolvedValue(undefined);
+			if (fallback)
+				h.markOrderId.mockRejectedValueOnce(
+					new Error("live DB acknowledgement unavailable"),
+				);
+			const logs: Record<string, unknown>[] = [];
+			const deps = commonDeps(
+				{ ...buyFill, price: 0.5 },
+				h.ledger,
+				recordingLogger(logs),
+				minBetTarget,
+			);
+			const placeIntent = vi.fn(
+				async (intent: { client_order_id: string }) => ({
+					order_id: "live-order",
+					client_order_id: intent.client_order_id,
+					status: "open" as const,
+					filled_size_usdc: 0,
+					submitted_at: buyFill.observed_at,
+				}),
+			);
+			await runMirrorTick({
+				...deps,
+				getExecutionMode: async () => "live",
+				placeIntent,
+			});
+			expect(placeIntent).toHaveBeenCalledOnce();
+			expect(h.updateStatus).toHaveBeenCalledTimes(fallback ? 1 : 0);
+			if (fallback)
+				expect(h.updateStatus.mock.calls[0]?.[0].paper_receipt).toBeUndefined();
+			expect(h.markError).not.toHaveBeenCalled();
+			expect(logs).not.toContainEqual(
+				expect.objectContaining({ errorCode: "receipt_persistence_failed" }),
+			);
+		},
+	);
 
 	it.each([true, false])(
 		"only definite preflight denial=%s records nonexecution proof",
