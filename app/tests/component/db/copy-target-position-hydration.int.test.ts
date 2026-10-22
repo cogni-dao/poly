@@ -673,7 +673,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 					.select()
 					.from(polyCopyTradeFills)
 					.where(eq(polyCopyTradeFills.billingAccountId, BILLING_ID))
-					.orderBy(polyCopyTradeFills.id);
+					.orderBy(polyCopyTradeFills.targetId, polyCopyTradeFills.fillId);
 				expect(
 					originalLedger.find(
 						(row) => row.clientOrderId === `hydration-paper-${suffix}`,
@@ -786,7 +786,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 						.select()
 						.from(polyCopyTradeFills)
 						.where(eq(polyCopyTradeFills.billingAccountId, BILLING_ID))
-						.orderBy(polyCopyTradeFills.id),
+						.orderBy(polyCopyTradeFills.targetId, polyCopyTradeFills.fillId),
 				).toEqual(originalLedger);
 				throw rollback;
 			});
