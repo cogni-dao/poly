@@ -796,6 +796,140 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
     },
   );
 
+  it.each([
+    { name: "future envelope bypasses malformed nested fields", futureEnvelope: true, settlements: "malformed", quantity: 1 },
+    { name: "future event with empty settlements and zero current", futureEnvelope: false, settlements: "empty", quantity: 0 },
+    { name: "future event with empty settlements and positive current", futureEnvelope: false, settlements: "empty", quantity: 1 },
+    { name: "future event with empty settlements and absent current", futureEnvelope: false, settlements: "empty", quantity: null },
+    { name: "future event with retained settlement and zero current", futureEnvelope: false, settlements: "nonempty", quantity: 0 },
+    { name: "future event with retained settlement and positive current", futureEnvelope: false, settlements: "nonempty", quantity: 1 },
+    { name: "future event with retained settlement and absent current", futureEnvelope: false, settlements: "nonempty", quantity: null },
+    { name: "count-only malformed key retains native error", futureEnvelope: false, settlements: "malformed", quantity: null },
+  ] as const)("preserves fully demanded event CASE: $name", async (scenario) => {
+    const seed = getSeedDb();
+    const fixtureAddress = address().toLowerCase();
+    const capturedAt = new Date();
+    const generationAt = new Date(capturedAt.getTime() - 1000).toISOString();
+    const afterCutoff = new Date(capturedAt.getTime() + 60_000);
+    const conditionId = `event-demand-${randomUUID()}`;
+    const tokenId = "event-token";
+    let walletId: string | undefined;
+    try {
+      const [wallet] = await seed.execute<{ id: string }>(sql`
+        INSERT INTO poly_trader_wallets (wallet_address,kind,label)
+        VALUES (${fixtureAddress},'cogni_wallet','Event CASE demand regression') RETURNING id`);
+      walletId = wallet?.id;
+      if (!walletId) throw new Error("Missing event CASE wallet");
+      // Intentionally malformed persisted JSON is not cast to a valid typed
+      // observation. Other fields stay valid to isolate the guarded expression.
+      const observation = {
+        version: 1, wallet: fixtureAddress, conditionId, tokenId,
+        fetchedAt: scenario.futureEnvelope ? afterCutoff.toISOString() : generationAt,
+        windowStart: generationAt, windowEnd: generationAt,
+        coverage: "partial", reasons: ["missing_closed_position"],
+        closedPosition: { last_event_at: scenario.settlements === "malformed"
+          ? "unorderable" : String(afterCutoff.getTime() / 1000) },
+        lifetimeBuyUsdc: 0, lifetimeBuyShares: 0, lifetimeSellUsdc: 0,
+        lifetimePnlUsdc: null, redeemUsdc: 0, constituents: [],
+        settlements: scenario.settlements === "malformed" ? { invalid: true }
+          : scenario.settlements === "empty" ? [] : [{
+            txHash: `0x${"ab".repeat(32)}`, blockNumber: "1", blockHash: `0x${"cd".repeat(32)}`,
+            logIndex: 0, collateral: fixtureAddress, atomicAmount: "1",
+            recipient: fixtureAddress, conditionId, tokenId, sharesAtomic: "1",
+          }],
+      };
+      await seed.execute(sql`INSERT INTO poly_trader_position_snapshots
+        (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,captured_at,raw)
+        VALUES (${walletId}::uuid,${conditionId},${tokenId},1,.4,.5,.4,
+          'event-case-history',${generationAt}::timestamptz,
+          jsonb_build_object('economicObservationV1',${JSON.stringify(observation)}::jsonb))`);
+      if (scenario.quantity !== null) {
+        await seed.execute(sql`INSERT INTO poly_trader_current_positions
+          (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,last_observed_at,first_observed_at,raw)
+          VALUES (${walletId}::uuid,${conditionId},${tokenId},${scenario.quantity},
+            ${scenario.quantity * 0.4},${scenario.quantity * 0.5},.4,'event-case-current',
+            ${generationAt}::timestamptz,${generationAt}::timestamptz,'{}'::jsonb)`);
+      }
+      await seed.execute(sql`INSERT INTO poly_trader_ingestion_cursors
+        (trader_wallet_id,source,last_success_at,status)
+        VALUES (${walletId}::uuid,'data-api-positions',${generationAt}::timestamptz,'ok')`);
+      await withTenantScope(db, userActor(toUserId(ownerA.userId)), async (tx) => {
+        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+        const [context] = await tx.execute(sql`SELECT
+          (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user) AS bypass_rls,
+          current_setting('app.current_user_id') AS actor,
+          current_setting('transaction_isolation') AS isolation,
+          current_setting('transaction_read_only') AS read_only`);
+        expect(context).toMatchObject({ bypass_rls: false, actor: ownerA.userId,
+          isolation: "repeatable read", read_only: "on" });
+        const current = await tx.execute<{ shares: string }>(sql`SELECT shares
+          FROM poly_trader_current_positions WHERE trader_wallet_id=${walletId}::uuid`);
+        expect(current.map((row) => Number(row.shares))).toEqual(
+          scenario.quantity === null ? [] : [scenario.quantity],
+        );
+        const query = buildEconomicPositionProjectionQuery({
+          billingAccountId: ownerA.billingAccountId, walletAddress: fixtureAddress,
+          connectionKind: "privy_live", capturedAt, interval: "ALL",
+        });
+        if (scenario.settlements === "malformed" && !scenario.futureEnvelope) {
+          // No current, fills or outcome: the history key is outside every
+          // preview, but complete counts still demand its event CASE. Roll back
+          // the actual savepoint so the native error cannot poison the parent.
+          await expect(tx.transaction((savepoint) => savepoint.execute(query)))
+            .rejects.toMatchObject({ cause: { code: "22023" } });
+          const [usable] = await tx.execute(sql`SELECT 1::int AS ok`);
+          expect(usable?.ok).toBe(1);
+          return;
+        }
+        const rows = await tx.execute<{
+          live_count: number; closed_count: number; incomplete_count: number;
+          history_incomplete_count: number; missing_mark_count: number;
+          wallet_identity_count: number; observer_complete: boolean;
+          token_id: string | null; economic_bucket: string | null;
+          current_shares: string | null; current_value_usdc: string | null;
+          positions_mtm_usdc: string | null; inventory_authoritative: boolean | null;
+          mark_available: boolean | null; history_complete: boolean | null;
+        }>(query);
+        expect(rows).toHaveLength(1);
+        const row = rows[0];
+        const positive = scenario.quantity === 1;
+        const futureSettlement = positive && scenario.settlements === "nonempty";
+        expect(row).toMatchObject({
+          live_count: positive ? 1 : 0, closed_count: 0,
+          incomplete_count: positive ? 0 : 1, history_incomplete_count: 1,
+          missing_mark_count: futureSettlement ? 1 : 0,
+          wallet_identity_count: 1, observer_complete: true,
+          token_id: positive ? tokenId : null,
+          economic_bucket: positive ? "live" : null,
+        });
+        if (positive) {
+          expect(Number(row?.current_shares)).toBe(1);
+          expect(row?.inventory_authoritative).toBe(!futureSettlement);
+          expect(row?.mark_available).toBe(!futureSettlement);
+          expect(row?.history_complete).toBe(false);
+          if (futureSettlement) {
+            expect(row?.current_value_usdc).toBeNull();
+            expect(row?.positions_mtm_usdc).toBeNull();
+          } else {
+            expect(Number(row?.current_value_usdc)).toBe(0.5);
+            expect(Number(row?.positions_mtm_usdc)).toBe(0.5);
+          }
+        } else {
+          // Count-only keys expose the seed row, not their internal aliases.
+          // Neither explicit zero nor absent current fabricates a preview fact.
+          expect(row?.current_shares).toBeNull();
+          expect(row?.current_value_usdc).toBeNull();
+          expect(row?.inventory_authoritative).toBeNull();
+          expect(row?.mark_available).toBeNull();
+          expect(row?.positions_mtm_usdc).not.toBeNull();
+          expect(Number(row?.positions_mtm_usdc)).toBe(0);
+        }
+      });
+    } finally {
+      if (walletId) await seed.execute(sql`DELETE FROM poly_trader_wallets WHERE id=${walletId}::uuid`);
+    }
+  });
+
   it("probes only after a real projection timeout rolls back and preserves unavailable facts", async () => {
     await withTenantScope(db, userActor(toUserId(canonicalAgent.userId)), async tx => {
       await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);

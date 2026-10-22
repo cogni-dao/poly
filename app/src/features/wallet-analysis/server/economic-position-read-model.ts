@@ -474,7 +474,7 @@ export function buildEconomicPositionProjectionQuery(
         (${mode} = 'paper' OR b.current_shares = 0
           OR COALESCE(b.selected_current_currency, false)) AS live_positive_current_currency
       FROM economic_position_base b
-    ), event_authority AS (
+    ), event_authority AS MATERIALIZED (
       SELECT b.*,
         /* Lifetime completeness cannot waive a retained settlement's clock.
            Future envelopes cannot invalidate an earlier snapshot. A
