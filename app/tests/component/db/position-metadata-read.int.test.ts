@@ -977,8 +977,8 @@ async function originFixture(metadata?: {
 		disabledAt: new Date(at(20)),
 	});
 	const [paperRow] = rows<{ id: string }>(
-		await db.execute(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label)
-    VALUES (${paper},'paper_wallet','Metadata origin fixture') RETURNING id`),
+		await db.execute(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label,created_at)
+    VALUES (${paper},'paper_wallet','Metadata origin fixture',${at(0)}::timestamptz) RETURNING id`),
 	);
 	if (!paperRow) throw new Error("Missing fixture paper wallet");
 	const key = (token: string = tokens[0]) => ({

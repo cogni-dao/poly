@@ -1358,13 +1358,13 @@ async function publishPaperPnl(db: Db, wallet: EnrolledPaperWallet, observedAt: 
   for (const fidelity of ["1h", "1d"] as const) {
     const rows = allRows<{ fidelity: string }>(await db.execute(sql`
       INSERT INTO poly_trader_user_pnl_points (trader_wallet_id, fidelity, ts, pnl_usdc, observed_at)
-      SELECT w.id, f.fidelity, date_trunc(f.bucket, ${observedAt}::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
-        (b.usdc_e - c.paper_seed_usdc)::numeric(38,8), ${observedAt}::timestamptz
+      SELECT w.id, f.fidelity, date_trunc(f.bucket, ${observedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
+        (b.usdc_e - c.paper_seed_usdc)::numeric(38,8), ${observedAt.toISOString()}::timestamptz
       FROM poly_wallet_connections c
       JOIN poly_trader_wallets w ON w.id = ${wallet.traderWalletId}::uuid AND w.kind = 'paper_wallet'
         AND lower(w.wallet_address) = lower(c.address) AND w.active_for_research AND w.disabled_at IS NULL
       JOIN poly_wallet_balance_snapshots b ON b.billing_account_id = c.billing_account_id
-        AND lower(b.address) = lower(c.funder_address) AND b.observed_at = ${observedAt}::timestamptz
+        AND lower(b.address) = lower(c.funder_address) AND b.observed_at = ${observedAt.toISOString()}::timestamptz
       CROSS JOIN (VALUES (${fidelity}::text, ${fidelity === '1h' ? 'hour' : 'day'}::text)) f(fidelity, bucket)
       WHERE c.billing_account_id = ${wallet.account.billingAccountId} AND c.kind = 'paper' AND c.revoked_at IS NULL
         AND c.paper_seed_usdc = ${wallet.account.seedUsdc}::numeric

@@ -137,7 +137,7 @@ describe("paper position + NAV read-back", () => {
   // The shared dashboard reader enforces its production six-hour row TTL
   // against database NOW(). Keep this projection current; refusal tests below
   // advance their own read clock explicitly when proving staleness.
-  const observedAt = new Date();
+  let observedAt: Date;
 
   beforeAll(async () => {
     const seedDb = getSeedDb();
@@ -191,9 +191,11 @@ describe("paper position + NAV read-back", () => {
       shares: "10",
     });
 
+    const holderWallet = await enrol(holder);
+    observedAt = new Date();
     await observePaperWallet({
       db: paperDb(),
-      wallet: await enrol(holder),
+      wallet: holderWallet,
       readMidPrice: midPrices({ [tokenA]: 0.5 }),
       logger,
       now: observedAt,

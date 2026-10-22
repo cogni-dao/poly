@@ -102,18 +102,19 @@ async function seedConnection(input: {
     pol: "1",
     status: "ok",
     errors: [],
-    observedAt: new Date(),
+    observedAt: input.mode === "paper" ? new Date("2026-10-01T00:00:00.000Z") : new Date(),
   });
   const [wallet] = await db
     .insert(polyTraderWallets)
-    .values({ walletAddress: input.address, kind: input.mode === "paper" ? "paper_wallet" : "cogni_wallet", label: input.userId })
+    .values({ walletAddress: input.address, kind: input.mode === "paper" ? "paper_wallet" : "cogni_wallet", label: input.userId,
+      ...(input.mode === "paper" ? { createdAt: new Date("2026-10-01T00:00:00.000Z") } : {}) })
     .returning({ id: polyTraderWallets.id, address: polyTraderWallets.walletAddress });
   if (!wallet) throw new Error("wallet seed failed");
   await db.insert(polyTraderIngestionCursors).values({
     traderWalletId: wallet.id,
     source: input.mode === "paper" ? PAPER_POSITION_CURSOR_SOURCE : "data-api-positions",
     status: "ok",
-    lastSuccessAt: new Date(),
+    lastSuccessAt: input.mode === "paper" ? new Date("2026-10-01T00:00:00.000Z") : new Date(),
   });
   return wallet;
 }
@@ -902,7 +903,7 @@ describe("wallet dashboard coherent snapshot", () => {
       if (!trap) throw new Error("Missing mode trap");
       otherModeWalletId = trap.id;
       const observedAt = new Date(Date.now() - 1_000);
-      await db.update(polyTraderIngestionCursors).set({ lastSuccessAt: observedAt })
+      if (mode === "live") await db.update(polyTraderIngestionCursors).set({ lastSuccessAt: observedAt })
         .where(eq(polyTraderIngestionCursors.traderWalletId, wallet.id));
       if (mode === "paper") {
         const owner = { userId, billingAccountId: account };
@@ -1000,7 +1001,7 @@ describe("wallet dashboard coherent snapshot", () => {
     const liveAddress = `0x${suffix.replaceAll("-", "").padStart(40, "b")}`;
     const liveWallet = await seedConnection({ userId, billingAccountId: account, address: liveAddress });
     const paperAddress = await seedNativePaperConnection({ userId, billingAccountId: account }, "100");
-    const [paperWallet] = await db.insert(polyTraderWallets).values({ walletAddress: paperAddress, kind: "paper_wallet", label: "Dual cash paper" }).returning();
+    const [paperWallet] = await db.insert(polyTraderWallets).values({ walletAddress: paperAddress, kind: "paper_wallet", label: "Dual cash paper", createdAt: new Date("2026-10-01T00:00:00.000Z") }).returning();
     if (!paperWallet) throw new Error("Missing paper wallet");
     try {
       await db.update(polyWalletBalanceSnapshots).set({ usdcE: "100", pusd: "0", observedAt: new Date() })

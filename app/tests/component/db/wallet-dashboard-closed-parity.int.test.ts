@@ -454,6 +454,7 @@ describe("paper lifetime economics from complete ledger projection", () => {
       const address = await seedNativePaperConnection(owner, "100", db);
       const [wallet] = await db.insert(polyTraderWallets).values({
         walletAddress: address, kind: "paper_wallet", label: "paper-completeness",
+        createdAt: new Date("2026-10-01T00:00:00.000Z"),
       }).returning();
       if (!wallet) throw new Error("missing paper wallet");
       const conditionId = `0x${randomUUID().replaceAll("-", "").padStart(64, "0")}`;

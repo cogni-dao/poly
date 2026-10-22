@@ -213,7 +213,7 @@ async function readPrivatePaperPnl(input: {
       JOIN poly_trader_wallets w ON lower(w.wallet_address) = ${expected} AND w.kind = 'paper_wallet'
         AND w.active_for_research AND w.disabled_at IS NULL AND w.created_at >= c.created_at
       JOIN poly_wallet_balance_snapshots b ON b.billing_account_id = c.billing_account_id
-        AND lower(b.address) = ${expected} AND b.observed_at = ${generation}::timestamptz
+        AND lower(b.address) = ${expected} AND b.observed_at = ${generation.toISOString()}::timestamptz
       JOIN poly_trader_ingestion_cursors cursor ON cursor.trader_wallet_id = w.id
         AND cursor.source = 'paper-ledger-positions' AND cursor.status = 'ok'
         AND cursor.last_success_at = b.observed_at
@@ -222,7 +222,7 @@ async function readPrivatePaperPnl(input: {
         AND c.paper_seed_usdc > 0 AND c.paper_seed_usdc NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
         AND b.usdc_e = ${input.paper.navUsdc.toFixed(8)}::numeric
         AND b.usdc_e NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
-        AND c.created_at <= ${generation}::timestamptz AND w.created_at <= ${generation}::timestamptz
+        AND c.created_at <= ${generation.toISOString()}::timestamptz AND w.created_at <= ${generation.toISOString()}::timestamptz
         AND NOT EXISTS (
           SELECT 1 FROM (VALUES ('1h'), ('1d')) f(fidelity)
           LEFT JOIN LATERAL (
@@ -231,7 +231,7 @@ async function readPrivatePaperPnl(input: {
           ) latest ON true
           WHERE latest.observed_at IS DISTINCT FROM b.observed_at
             OR latest.pnl_usdc IS DISTINCT FROM (b.usdc_e - c.paper_seed_usdc)::numeric(38,8)
-            OR latest.ts > ${captured}::timestamptz
+            OR latest.ts > ${captured.toISOString()}::timestamptz
             OR latest.ts IS DISTINCT FROM (date_trunc(CASE f.fidelity WHEN '1h' THEN 'hour' ELSE 'day' END,
               latest.observed_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
         )
@@ -242,9 +242,9 @@ async function readPrivatePaperPnl(input: {
     const rows = rowsOf<{ observed_at: Date | string; pnl_usdc: string }>(await tx.execute(sql`
       SELECT observed_at, pnl_usdc FROM poly_trader_user_pnl_points
       WHERE trader_wallet_id = ${wallet.wallet_id}::uuid AND fidelity = ${input.fidelity}
-        AND observed_at >= ${new Date(wallet.created_at)}::timestamptz
-        ${start ? sql`AND observed_at >= ${start}::timestamptz` : sql``}
-        AND observed_at <= ${captured}::timestamptz AND ts <= ${captured}::timestamptz
+        AND observed_at >= ${new Date(wallet.created_at).toISOString()}::timestamptz
+        ${start ? sql`AND observed_at >= ${start.toISOString()}::timestamptz` : sql``}
+        AND observed_at <= ${captured.toISOString()}::timestamptz AND ts <= ${captured.toISOString()}::timestamptz
         AND ts = (date_trunc(${input.fidelity === "1h" ? "hour" : "day"}, observed_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
       ORDER BY observed_at DESC LIMIT ${PNL_READ_LIMIT}
     `));
