@@ -30,7 +30,22 @@ describe("createWorkItemCapability", () => {
     });
     await cap.query({ statuses: ["needs_implement"] });
     expect(backlog.list).toHaveBeenCalledTimes(1);
+    expect(backlog.list).toHaveBeenCalledWith({
+      statuses: ["needs_implement"],
+    });
     expect(markdown.list).not.toHaveBeenCalled();
+  });
+
+  it("query falls back to the query port when no backlogReader is wired", async () => {
+    const markdown = { list: vi.fn().mockResolvedValue(empty), get: vi.fn() };
+    const cap = createWorkItemCapability({
+      workItemQuery: markdown as unknown as WorkItemQueryPort,
+      workItemCommand: {} as WorkItemCommandPort,
+    });
+    await cap.query({ statuses: ["needs_implement"] });
+    expect(markdown.list).toHaveBeenCalledWith({
+      statuses: ["needs_implement"],
+    });
   });
 
   it("an AI patch to priority <= 1 is refused before any write", async () => {
