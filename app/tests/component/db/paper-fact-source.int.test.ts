@@ -2015,18 +2015,26 @@ describe("paper facts project into the live tables (migration 0083)", () => {
             SELECT pg_backend_pid() AS holder_pid,
               ${held.pid}::integer = ANY(pg_blocking_pids(a.pid)) AS blocked_by_holder,
               a.wait_event_type = 'Lock' AS waiting_on_lock,
-              a.query LIKE '%from "poly_wallet_connections"%' AND a.query LIKE '%for update%' AS connection_row_statement
+              a.query ~* '^select[[:space:]]' AS waiting_select,
+              (SELECT count(DISTINCT l.pid) = 2 FROM pg_locks l
+                WHERE l.pid IN (${held.pid}::integer, ${secondPid}::integer)
+                  AND l.relation = 'poly_wallet_connections'::regclass
+                  AND l.mode = 'RowShareLock' AND l.granted) AS connection_row_locks
             FROM pg_stat_activity a WHERE a.pid = ${secondPid}::integer
           `);
-          const witness = (result as unknown as Array<{ holder_pid: number; blocked_by_holder: boolean; waiting_on_lock: boolean; connection_row_statement: boolean }>)[0];
+          const witness = (result as unknown as Array<{ holder_pid: number; blocked_by_holder: boolean; waiting_on_lock: boolean; waiting_select: boolean; connection_row_locks: boolean }>)[0];
           expect(witness?.holder_pid).toBe(held.pid);
-          if (witness?.blocked_by_holder && witness.waiting_on_lock && witness.connection_row_statement) {
+          if (witness?.blocked_by_holder && witness.waiting_on_lock && witness.waiting_select && witness.connection_row_locks) {
             witnessed = true;
             break;
           }
         }
-        // A later cursor lock cannot satisfy this exact connection-row witness.
-        // No sleep, issued-only signal, SQL text logging or third client is used.
+        // The connection FOR UPDATE is the observer's only locking SELECT.
+        // Both backends must hold its relation's RowShareLock while the second
+        // SELECT waits on the first. Removing that lock loses the relation
+        // witness; weakening it to compatible SHARE/KEY SHARE lets the SELECT
+        // pass, so a later cursor/fill INSERT blocker cannot satisfy this gate.
+        // No SQL-tail/truncation dependency, sleep or third client is used.
         expect(witnessed).toBe(true);
       } finally {
         unlock?.();
