@@ -1445,7 +1445,7 @@ export async function observePaperWallet(input: {
     const [physical] = await db.select().from(polyTraderWallets)
       .where(eq(polyTraderWallets.id, traderWalletId)).limit(1);
     if (connections.length !== 1 || !connection || connection.revokedAt !== null ||
-      connection.address.toLowerCase() !== expected || connection.funderAddress.toLowerCase() !== expected ||
+      connection.address.toLowerCase() !== expected || (connection.funderAddress ?? "").toLowerCase() !== expected ||
       account.address !== expected || connection.paperSeedUsdc === null ||
       !Number.isFinite(Number(connection.paperSeedUsdc)) || Number(connection.paperSeedUsdc) <= 0 ||
       !Number.isFinite(Number(account.seedUsdc)) ||
