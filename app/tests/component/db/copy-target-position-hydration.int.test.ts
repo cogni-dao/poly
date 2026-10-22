@@ -16,9 +16,14 @@ import type {
 } from "@cogni/poly-market-provider/adapters/polymarket";
 import type { WalletExecutionPosition } from "@cogni/poly-node-contracts";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { dbTargetSource } from "@/features/copy-trade/target-source";
+import { derivePaperAccountAddress } from "@/features/paper-accounts";
+import {
+	readActivePaperAccounts,
+	syncPaperTraderWallets,
+} from "@/features/wallet-analysis/server/paper-fact-source";
 import {
 	hydrateCopyTargetPositions,
 	persistPositionGapTargetSnapshot,
@@ -573,6 +578,251 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		}
 	});
 
+	it("withholds an orphan PAPER cohort after full enrollment and restores it on rollback", async () => {
+		const canonicalAddress = derivePaperAccountAddress(BILLING_ID);
+		for (const address of [OUR_WALLET, PAPER_LOCAL_WALLET, TARGET_WALLET]) {
+			expect(canonicalAddress).not.toBe(address);
+		}
+		const rollback = new Error("rollback controlled PAPER retirement witness");
+		const logger: Parameters<typeof readActivePaperAccounts>[1] = {
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
+			debug: vi.fn(),
+			child: () => logger,
+		};
+		const originalWalletIds = [
+			ourTraderWalletId,
+			paperTraderWalletId,
+			targetTraderWalletId,
+		];
+		const walletFlags = {
+			id: polyTraderWallets.id,
+			kind: polyTraderWallets.kind,
+			activeForResearch: polyTraderWallets.activeForResearch,
+			disabledAt: polyTraderWallets.disabledAt,
+		};
+		const expectedFlags = [
+			{
+				id: ourTraderWalletId,
+				kind: "cogni_wallet",
+				activeForResearch: true,
+				disabledAt: null,
+			},
+			{
+				id: paperTraderWalletId,
+				kind: "paper_wallet",
+				activeForResearch: true,
+				disabledAt: null,
+			},
+			{
+				id: targetTraderWalletId,
+				kind: "copy_target",
+				activeForResearch: true,
+				disabledAt: null,
+			},
+		];
+		let temporaryConnectionId = "";
+		try {
+			await db.transaction(async (tx) => {
+				const originalFlags = await tx
+					.select(walletFlags)
+					.from(polyTraderWallets)
+					.where(inArray(polyTraderWallets.id, originalWalletIds))
+					.orderBy(polyTraderWallets.id);
+				expect(originalFlags).toEqual(expect.arrayContaining(expectedFlags));
+				const before = await readFullComparisonCoverageCounts({
+					db: tx,
+					billingAccountId: BILLING_ID,
+					walletAddress: PAPER_LOCAL_WALLET,
+					connectionKind: "paper",
+				});
+				expect(
+					before.find(
+						(row) => row.entity === "positions" && row.status === "live",
+					),
+				).toMatchObject({ eligible: 1, comparable: 1 });
+				const originalPositions = await tx
+					.select()
+					.from(polyTraderCurrentPositions)
+					.where(
+						inArray(
+							polyTraderCurrentPositions.traderWalletId,
+							originalWalletIds,
+						),
+					)
+					.orderBy(
+						polyTraderCurrentPositions.traderWalletId,
+						polyTraderCurrentPositions.conditionId,
+						polyTraderCurrentPositions.tokenId,
+					);
+				expect(
+					originalPositions.find(
+						(row) =>
+							row.traderWalletId === paperTraderWalletId &&
+							row.conditionId === PAPER_CONDITION &&
+							row.tokenId === PAPER_TOKEN,
+					),
+				).toMatchObject({
+					shares: "10.00000000",
+					costBasisUsdc: "5.00000000",
+					currentValueUsdc: "6.00000000",
+					active: true,
+				});
+				const originalLedger = await tx
+					.select()
+					.from(polyCopyTradeFills)
+					.where(eq(polyCopyTradeFills.billingAccountId, BILLING_ID))
+					.orderBy(polyCopyTradeFills.id);
+				expect(
+					originalLedger.find(
+						(row) => row.clientOrderId === `hydration-paper-${suffix}`,
+					),
+				).toMatchObject({
+					mode: "paper",
+					marketId: PAPER_CONDITION,
+					targetId: targetIdFromWallet(TARGET_WALLET),
+					status: "filled",
+					positionLifecycle: "open",
+					shares: "10.00000000",
+					price: "0.50000000",
+					attributes: {
+						target_wallet: TARGET_WALLET,
+						condition_id: PAPER_CONDITION,
+						token_id: PAPER_TOKEN,
+						filled_size_usdc: 5,
+					},
+				});
+				const [connection] = await tx
+					.insert(polyWalletConnections)
+					.values({
+						billingAccountId: BILLING_ID,
+						createdByUserId: USER_ID,
+						kind: "paper",
+						address: canonicalAddress,
+						funderAddress: canonicalAddress,
+						paperSeedUsdc: "100.00000000",
+						custodialConsentAcceptedAt: new Date(),
+						custodialConsentActorKind: "user",
+						custodialConsentActorId: USER_ID,
+					})
+					.returning({ id: polyWalletConnections.id });
+				if (!connection)
+					throw new Error("temporary PAPER connection seed failed");
+				temporaryConnectionId = connection.id;
+				const accounts = await readActivePaperAccounts(tx, logger);
+				expect(accounts.length).toBeGreaterThan(0);
+				const ownAccount = {
+					billingAccountId: BILLING_ID,
+					address: canonicalAddress,
+					seedUsdc: "100.00000000",
+				};
+				expect(accounts).toContainEqual(ownAccount);
+				expect(
+					accounts.some((account) => account.address === PAPER_LOCAL_WALLET),
+				).toBe(false);
+				const enrolled = await syncPaperTraderWallets(tx, accounts);
+				expect(enrolled).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ account: ownAccount }),
+					]),
+				);
+				const [canonical] = await tx
+					.select(walletFlags)
+					.from(polyTraderWallets)
+					.where(eq(polyTraderWallets.walletAddress, canonicalAddress));
+				expect(canonical).toMatchObject({
+					kind: "paper_wallet",
+					activeForResearch: true,
+					disabledAt: null,
+				});
+				const afterFlags = await tx
+					.select(walletFlags)
+					.from(polyTraderWallets)
+					.where(inArray(polyTraderWallets.id, originalWalletIds))
+					.orderBy(polyTraderWallets.id);
+				expect(
+					afterFlags.find((row) => row.id === paperTraderWalletId),
+				).toEqual({
+					id: paperTraderWalletId,
+					kind: "paper_wallet",
+					activeForResearch: false,
+					disabledAt: expect.any(Date),
+				});
+				expect(
+					afterFlags.filter((row) => row.id !== paperTraderWalletId),
+				).toEqual(
+					originalFlags.filter((row) => row.id !== paperTraderWalletId),
+				);
+				const after = await readFullComparisonCoverageCounts({
+					db: tx,
+					billingAccountId: BILLING_ID,
+					walletAddress: PAPER_LOCAL_WALLET,
+					connectionKind: "paper",
+				});
+				expect(
+					after.find(
+						(row) => row.entity === "positions" && row.status === "live",
+					),
+				).toMatchObject({ eligible: 0, comparable: 0 });
+				expect(
+					await tx
+						.select()
+						.from(polyTraderCurrentPositions)
+						.where(
+							inArray(
+								polyTraderCurrentPositions.traderWalletId,
+								originalWalletIds,
+							),
+						)
+						.orderBy(
+							polyTraderCurrentPositions.traderWalletId,
+							polyTraderCurrentPositions.conditionId,
+							polyTraderCurrentPositions.tokenId,
+						),
+				).toEqual(originalPositions);
+				expect(
+					await tx
+						.select()
+						.from(polyCopyTradeFills)
+						.where(eq(polyCopyTradeFills.billingAccountId, BILLING_ID))
+						.orderBy(polyCopyTradeFills.id),
+				).toEqual(originalLedger);
+				throw rollback;
+			});
+			throw new Error(
+				"controlled PAPER retirement transaction unexpectedly committed",
+			);
+		} catch (error) {
+			if (error !== rollback) throw error;
+		}
+		await db.transaction(async (tx) => {
+			const restoredFlags = await tx
+				.select(walletFlags)
+				.from(polyTraderWallets)
+				.where(inArray(polyTraderWallets.id, originalWalletIds));
+			expect(restoredFlags).toEqual(expect.arrayContaining(expectedFlags));
+			const restored = await readFullComparisonCoverageCounts({
+				db: tx,
+				billingAccountId: BILLING_ID,
+				walletAddress: PAPER_LOCAL_WALLET,
+				connectionKind: "paper",
+			});
+			expect(
+				restored.find(
+					(row) => row.entity === "positions" && row.status === "live",
+				),
+			).toMatchObject({ eligible: 1, comparable: 1 });
+			expect(temporaryConnectionId).not.toBe("");
+			expect(
+				await tx
+					.select({ id: polyWalletConnections.id })
+					.from(polyWalletConnections)
+					.where(eq(polyWalletConnections.id, temporaryConnectionId)),
+			).toEqual([]);
+		});
+	});
+
 	it("requires exact condition+token and publishes only complete scoped cohorts", async () => {
 		const cohorts = await readCopyTargetPositionCohorts(db);
 		expect(cohorts).toEqual([
@@ -594,6 +844,19 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		expect(
 			before.find((row) => row.entity === "positions" && row.status === "live"),
 		).toMatchObject({ eligible: 2, comparable: 1 });
+		const [paperEligibility] = await db
+			.select({
+				kind: polyTraderWallets.kind,
+				activeForResearch: polyTraderWallets.activeForResearch,
+				disabledAt: polyTraderWallets.disabledAt,
+			})
+			.from(polyTraderWallets)
+			.where(eq(polyTraderWallets.id, paperTraderWalletId));
+		expect(paperEligibility).toEqual({
+			kind: "paper_wallet",
+			activeForResearch: true,
+			disabledAt: null,
+		});
 		const paperBefore = await readFullComparisonCoverageCounts({
 			db,
 			billingAccountId: BILLING_ID,
