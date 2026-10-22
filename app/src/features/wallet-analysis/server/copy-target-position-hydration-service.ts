@@ -44,6 +44,7 @@ import type {
 import { and, eq, type SQL, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { paperFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import { targetIdFromWallet } from "@/shared/util/poly-target-id";
 import { liveCurrentPositionSql } from "./current-position-staleness";
 import { COPY_TARGET_POSITION_CURSOR_SOURCE } from "./position-observation-sources";
@@ -53,6 +54,7 @@ type Db =
 	| PostgresJsDatabase<Record<string, unknown>>;
 
 type CohortRow = {
+  origin_mode: "live" | "paper";
 	target_wallet: string | null;
 	target_id: string | null;
 	condition_id: string | null;
@@ -182,7 +184,8 @@ export async function readCopyTargetPositionCohorts(db: {
       target.target_wallet,
       lineage.target_id,
       lineage.condition_id,
-      lineage.token_id
+      lineage.token_id,
+      'live' AS origin_mode
     FROM observable_targets target
     JOIN realized_copy_lineage lineage
       ON lineage.billing_account_id = target.billing_account_id
@@ -200,7 +203,35 @@ export async function readCopyTargetPositionCohorts(db: {
       (${liveCurrentPositionSql("local_position")})
       OR lineage.terminal
     )
-    ORDER BY target.target_wallet, lineage.condition_id, lineage.token_id
+    UNION
+    SELECT DISTINCT
+      lower(target.target_wallet) AS target_wallet,
+      f.target_id::text AS target_id,
+      lower(f.attributes->'paper_receipt_v1'->>'condition_id') AS condition_id,
+      f.attributes->'paper_receipt_v1'->>'token_id' AS token_id,
+      'paper' AS origin_mode
+    FROM poly_copy_trade_targets target
+    JOIN poly_copy_trade_fills f
+      ON f.billing_account_id = target.billing_account_id
+     AND lower(f.attributes->>'target_wallet') = lower(target.target_wallet)
+     AND ${paperFillAccountingSql("f").positive}
+    JOIN poly_wallet_connections connection
+      ON connection.billing_account_id = f.billing_account_id
+     AND connection.kind = 'paper'
+     AND connection.id::text = f.attributes->'paper_receipt_v1'->>'connection_id'
+    JOIN poly_trader_wallets local_wallet
+      ON lower(local_wallet.wallet_address) = lower(connection.address)
+     AND local_wallet.kind = 'paper_wallet'
+     AND local_wallet.active_for_research = true
+     AND local_wallet.disabled_at IS NULL
+    LEFT JOIN poly_trader_current_positions local_position
+      ON local_position.trader_wallet_id = local_wallet.id
+     AND lower(local_position.condition_id) = f.attributes->'paper_receipt_v1'->>'condition_id'
+     AND local_position.token_id = f.attributes->'paper_receipt_v1'->>'token_id'
+    WHERE lower(target.target_wallet) <> lower(connection.address)
+      AND ((${liveCurrentPositionSql("local_position")})
+      OR f.position_lifecycle IN ('closed', 'redeemed', 'loser', 'dust'))
+    ORDER BY target_wallet, condition_id, token_id
   `),
 	);
 
@@ -216,6 +247,7 @@ export async function readCopyTargetPositionCohorts(db: {
 			typeof row.token_id !== "string" ||
 			row.token_id.length === 0
 		) {
+      if (row.origin_mode === "paper") continue;
 			throw new Error("invalid copy-target position cohort lineage");
 		}
 		const cohort = byTarget.get(row.target_wallet) ?? {
@@ -226,10 +258,9 @@ export async function readCopyTargetPositionCohorts(db: {
 		if (!cohort.conditions.includes(row.condition_id)) {
 			cohort.conditions.push(row.condition_id);
 		}
-		cohort.exactLocalKeys.push({
-			conditionId: row.condition_id,
-			tokenId: row.token_id,
-		});
+    if (!cohort.exactLocalKeys.some(key => key.conditionId === row.condition_id && key.tokenId === row.token_id)) {
+      cohort.exactLocalKeys.push({ conditionId: row.condition_id, tokenId: row.token_id });
+    }
 		byTarget.set(row.target_wallet, cohort);
 	}
 	return [...byTarget.values()];

@@ -47,6 +47,8 @@
  * @public
  */
 
+import { paperFillAccountingPresentation } from "@/features/trading/fill-accounting";
+import { paperFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import { polyCopyTradeFills } from "@cogni/poly-db-schema/copy-trade";
 
 import type {
@@ -74,6 +76,8 @@ export const ORDERS_DEFAULT_PAGE = 50;
 
 /** The exact column set the contract row needs. Nothing wider is selected. */
 type OrdersRow = {
+  paperPositive?: boolean;
+  paperZero?: boolean;
   targetId: string;
   fillId: string;
   clientOrderId: string;
@@ -154,7 +158,8 @@ export function toContractRow(
       realizedFillSource === "data_api_activity_position");
   const realizedShares = Number(row.shares);
   const realizedNotional = readNum("filled_size_usdc");
-  const fillAccounting = positionGapV3
+  const fillAccounting = row.mode === "paper" ? paperFillAccountingPresentation({ positive: row.paperPositive, zero: row.paperZero,
+    shares: realizedShares, notional: realizedNotional }) : positionGapV3
     ? verifiedPositionGapFill &&
       Number.isFinite(realizedShares) &&
       realizedShares > 0 &&
@@ -206,7 +211,7 @@ export function toContractRow(
     size_usdc: readNum("size_usdc"),
     limit_price: readNum("limit_price"),
     filled_size_usdc:
-      !positionGapV3 || fillAccounting?.status === "verified"
+      (row.mode !== "paper" && !positionGapV3) || fillAccounting?.status === "verified" || fillAccounting?.status === "verified_zero"
         ? realizedNotional
         : null,
     fill_accounting: fillAccounting,
@@ -271,6 +276,9 @@ export async function listCopyTradeOrdersForAccount(
     await tx.execute(sql`
       WITH ordered_fills AS MATERIALIZED (
         SELECT
+          ${polyCopyTradeFills.billingAccountId} AS billing_account_id,
+          ${polyCopyTradeFills.price} AS price,
+          ${polyCopyTradeFills.feesUsdc} AS fees_usdc,
           ${polyCopyTradeFills.targetId} AS target_id,
           ${polyCopyTradeFills.fillId} AS fill_id,
           ${polyCopyTradeFills.clientOrderId} AS client_order_id,
@@ -293,6 +301,8 @@ export async function listCopyTradeOrdersForAccount(
         LIMIT ${limit}
       )
       SELECT
+        ${paperFillAccountingSql("f").positive} AS "paperPositive",
+        ${paperFillAccountingSql("f").zero} AS "paperZero",
         f.target_id AS "targetId",
         f.fill_id AS "fillId",
         f.client_order_id AS "clientOrderId",

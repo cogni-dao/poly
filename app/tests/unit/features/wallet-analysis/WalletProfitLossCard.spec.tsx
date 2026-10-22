@@ -51,3 +51,25 @@ describe("WalletProfitLossCard zero history", () => {
     ).toBeInTheDocument();
   });
 });
+
+
+describe("WalletProfitLossCard recorded paper observations", () => {
+  it.each([0, 1.9])("withholds interval change for one actual paper sample %s", (pnl) => {
+    render(<WalletProfitLossCard source="paper" history={[{ ts: "2026-10-02T12:00:00.000Z", pnl }]} interval="1W" />);
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText("Past week")).not.toBeInTheDocument();
+    expect(screen.getByText(/One P\/L observation recorded/i)).toBeInTheDocument();
+    expect(screen.queryByText("No P/L history yet.")).not.toBeInTheDocument();
+  });
+
+  it("labels only the change between two genuine samples and their actual range", () => {
+    render(<WalletProfitLossCard source="paper" history={[
+      { ts: "2026-10-02T23:59:59.125Z", pnl: 1.9 },
+      { ts: "2026-10-03T00:00:01.250Z", pnl: 0.9 },
+    ]} interval="ALL" />);
+    expect(screen.getByText("Change between recorded observations")).toBeInTheDocument();
+    expect(screen.getByText("-$1.00")).toBeInTheDocument();
+    expect(screen.queryByText("All time")).not.toBeInTheDocument();
+    expect(screen.getByText(/complete selected-interval P\/L is unavailable/)).toBeInTheDocument();
+  });
+});

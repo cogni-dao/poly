@@ -17,7 +17,8 @@
  *   depends on the cursor and withholding semantics the writer establishes, and
  *   splitting them is how the two drift.
  * Scope: Feature service. Caller injects the DB handle, the logger, and the
- *   mid-price reader, and owns the statement timeout and transaction. Does not
+ *   mid-price reader, and owns the statement timeout. Each account observation
+ *   owns a transaction/savepoint for atomic facts, NAV and prospective P/L. Does not
  *   construct clients, read env, or schedule itself.
  * Invariants:
  *   - SAME_TABLES_NOT_A_MIRROR (migration 0083): paper writes the existing
@@ -106,10 +107,12 @@ import {
   polyTraderPositionSnapshots,
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
-import { and, eq, isNull, notInArray, sql } from "drizzle-orm";
+import { type SQL, and, eq, isNull, notInArray, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { derivePaperAccountAddress } from "@/features/paper-accounts";
+import { FILL_NOTIONAL_TOLERANCE, FILL_SHARE_TOLERANCE } from "@/features/trading/fill-accounting";
+import { fillNumericSql, paperFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import { EVENT_NAMES } from "@/shared/observability/events";
 import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 import { persistWalletBalanceFact } from "./wallet-balance-snapshot-service";
@@ -166,12 +169,10 @@ export const PAPER_TRADER_WALLET_LABEL = "Paper trading account";
 
 /**
  * Ledger statuses whose realized `price`/`shares` are frozen.
- * See PROJECT_ONLY_TERMINAL_REALIZED. `canceled` and `error` are included
- * because a cancel-after-partial still realized shares
- * (CAP_COUNTS_REALIZED_ON_CANCEL in `order-ledger.ts`); the realized-columns
- * predicate is what filters out the ones that realized nothing.
+ * Accepted final receipts freeze cumulative execution. A status-only error
+ * does not establish finality and stays in current observation coverage.
  */
-const TERMINAL_LEDGER_STATUSES = ["filled", "canceled", "error"] as const;
+const TERMINAL_LEDGER_STATUSES = ["filled", "canceled"] as const;
 
 /**
  * `(…)` list for the status predicate, each value bound as a parameter.
@@ -369,6 +370,7 @@ export async function syncPaperTraderWallets(
         activeForResearch: true,
         disabledAt: null,
         updatedAt: now,
+        createdAt: now,
       }))
     )
     .onConflictDoUpdate({
@@ -435,6 +437,89 @@ async function retireMissingPaperWallets(
 }
 
 /**
+ * One account-scoped SQL authority for current paper inventory and finance.
+ * No raw ledger/fill rows leave SQL. Immutable terminal events are authenticated
+ * against the accepted ledger tuple; cumulative nonterminal facts never become
+ * append-only events. The cutoff includes proof time, not just trade time.
+ */
+export function paperAccountingCtes(input: {
+  billingAccountId: string;
+  walletIds: SQL;
+  capturedAt: SQL;
+  enabled?: boolean;
+}): SQL {
+  const proof = paperFillAccountingSql("f", input.capturedAt);
+  return sql`
+    paper_ledger AS MATERIALIZED (
+      SELECT f.*, ${proof.positive} AS proof_positive,
+        ${proof.verified} AS proof_verified, ${proof.feeKnown} AS proof_fee_known,
+        ${proof.observedAt} AS proof_observed_at
+      FROM poly_copy_trade_fills f
+      WHERE f.billing_account_id = ${input.billingAccountId}
+        AND f.mode = 'paper' AND ${input.enabled !== false}
+    ), paper_projected AS MATERIALIZED (
+      SELECT p.*, l.client_order_id AS bound_client_order_id,
+        COALESCE(l.proof_positive AND l.status IN ('filled', 'canceled')
+          AND p.native_id = l.target_id::text || ':' || l.fill_id
+          AND p.raw->'paper_ledger'->>'client_order_id' = l.client_order_id
+          AND p.raw->'paper_ledger'->>'order_id' = l.order_id
+          AND lower(p.condition_id) = l.attributes->'paper_receipt_v1'->>'condition_id'
+          AND p.token_id = l.attributes->>'token_id' AND p.side = l.attributes->>'side'
+          AND abs(p.shares - l.shares) <= ${FILL_SHARE_TOLERANCE}::numeric
+          AND p.price = l.price
+          AND abs(p.size_usdc - ${fillNumericSql(sql`l.attributes->>'filled_size_usdc'`)})
+            <= greatest(${FILL_NOTIONAL_TOLERANCE}::numeric, abs(p.size_usdc) * ${FILL_NOTIONAL_TOLERANCE}::numeric)
+          AND p.observed_at <= ${input.capturedAt}, false) AS authenticated,
+        l.proof_observed_at
+      FROM poly_trader_fills p
+      LEFT JOIN paper_ledger l
+        ON p.native_id = l.target_id::text || ':' || l.fill_id
+      WHERE p.trader_wallet_id IN (${input.walletIds})
+        AND p.source = 'paper-ledger' AND ${input.enabled !== false}
+    ), paper_inventory_facts AS MATERIALIZED (
+      /* Authentication gates availability at proof time; it cannot move an
+         immutable trade's entry/exit time when only its fee proof improves. */
+      (SELECT DISTINCT ON (native_id) lower(condition_id) AS condition_id, token_id, side, price, shares,
+        size_usdc, observed_at
+      FROM paper_projected WHERE authenticated
+      ORDER BY native_id, observed_at DESC, id)
+      UNION ALL
+      SELECT f.attributes->'paper_receipt_v1'->>'condition_id',
+        f.attributes->>'token_id', f.attributes->>'side', f.price, f.shares,
+        ${fillNumericSql(sql`f.attributes->'paper_receipt_v1'->>'notional_usdc'`)},
+        f.proof_observed_at
+      FROM paper_ledger f
+      WHERE f.proof_positive AND f.status NOT IN ('filled', 'canceled')
+        AND NOT EXISTS (SELECT 1 FROM paper_projected p
+          WHERE p.native_id = f.target_id::text || ':' || f.fill_id)
+    ), paper_position_fees AS MATERIALIZED (
+      SELECT attributes->'paper_receipt_v1'->>'condition_id' AS condition_id,
+        attributes->>'token_id' AS token_id, sum(fees_usdc) AS fees_usdc
+      FROM paper_ledger WHERE proof_verified AND proof_fee_known
+      GROUP BY attributes->'paper_receipt_v1'->>'condition_id', attributes->>'token_id'
+    ), paper_coverage_counts AS MATERIALIZED (
+      SELECT
+        (SELECT count(*) FROM paper_ledger WHERE NOT proof_verified) AS invalid_receipts,
+        (SELECT count(*) FROM paper_ledger WHERE proof_positive
+          AND status NOT IN ('filled', 'canceled')) AS partial_receipts,
+        (SELECT count(*) FROM paper_ledger f WHERE f.proof_positive
+          AND f.status IN ('filled', 'canceled') AND NOT EXISTS (
+            SELECT 1 FROM paper_projected p WHERE p.authenticated
+              AND p.native_id = f.target_id::text || ':' || f.fill_id
+          )) AS missing_projections,
+        (SELECT count(*) FROM paper_projected WHERE NOT authenticated) AS conflicting_projections,
+        (SELECT count(*) FROM paper_ledger WHERE proof_verified AND NOT proof_fee_known) AS unknown_fees,
+        (SELECT COALESCE(sum(fees_usdc) FILTER (WHERE proof_fee_known), 0)
+          FROM paper_ledger WHERE proof_verified) AS fees_usdc,
+        (SELECT max(proof_observed_at) FROM paper_ledger) AS latest_proof_at
+    ), paper_coverage AS MATERIALIZED (
+      SELECT *, invalid_receipts + missing_projections + conflicting_projections = 0 AS inventory_complete,
+        invalid_receipts + missing_projections + conflicting_projections + partial_receipts + unknown_fees = 0 AS finance_complete
+      FROM paper_coverage_counts
+    )`;
+}
+
+/**
  * Project the tenant's terminal, realized paper ledger rows into
  * `poly_trader_fills`.
  *
@@ -462,11 +547,13 @@ export async function projectPaperFills(input: {
   billingAccountId: string;
   /** `max(updated_at)` already projected, or null on the first run. */
   watermark: Date | null;
+  capturedAt?: Date;
 }): Promise<{ inserted: number; candidates: number; watermark: Date | null }> {
   const since = input.watermark
     ? new Date(input.watermark.getTime() - PROJECTION_WATERMARK_OVERLAP_MS)
     : null;
 
+  const proof = paperFillAccountingSql("f", sql`${(input.capturedAt ?? new Date()).toISOString()}::timestamptz`);
   const result = await input.db.execute(sql`
     WITH src AS (
       SELECT
@@ -480,7 +567,8 @@ export async function projectPaperFills(input: {
         f.attributes,
         f.updated_at,
         f.observed_at,
-        COALESCE(NULLIF(f.attributes->>'condition_id', ''), f.market_id) AS condition_id,
+        ${proof.observedAt} AS proof_observed_at,
+        f.attributes->'paper_receipt_v1'->>'condition_id' AS condition_id,
         f.attributes->>'token_id' AS token_id,
         f.attributes->>'side' AS side,
         f.price AS price,
@@ -490,6 +578,7 @@ export async function projectPaperFills(input: {
       WHERE f.billing_account_id = ${input.billingAccountId}
         AND f.mode = 'paper'
         AND f.status IN ${terminalStatusList()}
+        AND ${proof.positive}
         AND f.price IS NOT NULL AND f.price > 0
         AND f.shares IS NOT NULL AND f.shares > 0
         AND round(f.price * f.shares, 8) > 0
@@ -515,7 +604,7 @@ export async function projectPaperFills(input: {
         src.size_usdc,
         -- Paper has no chain transaction. NULL, never a synthesised hash.
         NULL,
-        src.observed_at,
+        greatest(src.observed_at, src.proof_observed_at),
         jsonb_build_object(
           'paper_ledger', jsonb_build_object(
             'target_id', src.target_id,
@@ -569,7 +658,7 @@ type PaperPositionRollup = {
 };
 
 /**
- * Aggregate this wallet's projected paper fills into one row per position.
+ * Read account coverage and current paper inventory in one statement snapshot.
  *
  * `GROUP BY (condition_id, token_id)` — the result is bounded by the account's
  * unique position count (tens), never by its fill count, so this is the
@@ -582,12 +671,14 @@ type PaperPositionRollup = {
  * Polymarket's Data-API reports for a live wallet (`avgPrice` / `initialValue`),
  * so a paper position and a live position mean the same thing to every reader.
  */
-async function readPaperPositionRollups(
+async function readPaperGeneration(
   db: Db,
-  traderWalletId: string
-): Promise<readonly PaperPositionRollup[]> {
+  traderWalletId: string,
+  billingAccountId: string,
+  capturedAt: Date
+): Promise<{ coverage: PaperCoverage; rollups: readonly PaperPositionRollup[] }> {
   const result = await db.execute(sql`
-    WITH rollups AS (
+    WITH ${paperAccountingCtes({ billingAccountId, walletIds: sql`${traderWalletId}::uuid`, capturedAt: sql`${capturedAt.toISOString()}::timestamptz` })}, rollups AS (
       SELECT
         condition_id,
         token_id,
@@ -596,28 +687,37 @@ async function readPaperPositionRollups(
         COALESCE(SUM(size_usdc) FILTER (WHERE side = 'BUY'),  0) AS buy_usdc,
         COALESCE(SUM(size_usdc) FILTER (WHERE side = 'SELL'), 0) AS sell_usdc,
         MAX(observed_at) AS last_fill_at
-      FROM poly_trader_fills
-      WHERE trader_wallet_id = ${traderWalletId}::uuid
-        AND source = ${PAPER_FILL_SOURCE}
+      FROM paper_inventory_facts
       GROUP BY condition_id, token_id
     )
     SELECT
+      paper_coverage.fees_usdc,
+      paper_coverage.unknown_fees,
+      paper_coverage.inventory_complete,
+      paper_coverage.finance_complete,
+      paper_coverage.latest_proof_at,
       rollups.*,
       current_position.active AS cached_active,
       current_position.shares AS cached_shares,
       current_position.current_value_usdc AS cached_current_value_usdc,
       current_position.last_observed_at AS cached_last_observed_at,
       current_position.raw AS cached_raw
-    FROM rollups
+    FROM paper_coverage
+    LEFT JOIN rollups ON paper_coverage.inventory_complete
     LEFT JOIN poly_trader_current_positions current_position
       ON current_position.trader_wallet_id = ${traderWalletId}::uuid
      AND current_position.condition_id = rollups.condition_id
      AND current_position.token_id = rollups.token_id
     ORDER BY rollups.condition_id, rollups.token_id
   `);
-  return allRows<{
-    condition_id: string;
-    token_id: string;
+  const rows = allRows<{
+    fees_usdc: string;
+    unknown_fees: string;
+    inventory_complete: boolean;
+    finance_complete: boolean;
+    latest_proof_at: string | Date | null;
+    condition_id: string | null;
+    token_id: string | null;
     net_shares: string;
     buy_shares: string;
     buy_usdc: string;
@@ -628,26 +728,39 @@ async function readPaperPositionRollups(
     cached_current_value_usdc: string | null;
     cached_last_observed_at: string | Date | null;
     cached_raw: Record<string, unknown> | null;
-  }>(result).map((row) => ({
-    conditionId: row.condition_id,
-    tokenId: row.token_id,
-    netShares: Number(row.net_shares),
-    buyShares: Number(row.buy_shares),
-    buyUsdc: Number(row.buy_usdc),
-    sellUsdc: Number(row.sell_usdc),
-    lastFillAt: new Date(row.last_fill_at),
-    cachedActive: row.cached_active,
-    cachedShares: row.cached_shares === null ? null : Number(row.cached_shares),
-    cachedCurrentValueUsdc:
-      row.cached_current_value_usdc === null
-        ? null
-        : Number(row.cached_current_value_usdc),
-    cachedLastObservedAt:
-      row.cached_last_observed_at === null
-        ? null
-        : new Date(row.cached_last_observed_at),
-    cachedRaw: row.cached_raw,
-  }));
+  }>(result);
+  const first = rows[0];
+  const coverage: PaperCoverage = {
+    feesUsdc: Number(first?.fees_usdc ?? 0),
+    rowsMissingFees: Number(first?.unknown_fees ?? 0),
+    inventoryComplete: first?.inventory_complete === true,
+    financeComplete: first?.finance_complete === true,
+    latestProofAt: first?.latest_proof_at ?? null,
+  };
+  const rollups = rows.flatMap((row) => {
+    if (row.condition_id === null || row.token_id === null) return [];
+    return [{
+      conditionId: row.condition_id,
+      tokenId: row.token_id,
+      netShares: Number(row.net_shares),
+      buyShares: Number(row.buy_shares),
+      buyUsdc: Number(row.buy_usdc),
+      sellUsdc: Number(row.sell_usdc),
+      lastFillAt: new Date(row.last_fill_at),
+      cachedActive: row.cached_active,
+      cachedShares: row.cached_shares === null ? null : Number(row.cached_shares),
+      cachedCurrentValueUsdc:
+        row.cached_current_value_usdc === null
+          ? null
+          : Number(row.cached_current_value_usdc),
+      cachedLastObservedAt:
+        row.cached_last_observed_at === null
+          ? null
+          : new Date(row.cached_last_observed_at),
+      cachedRaw: row.cached_raw,
+    }];
+  });
+  return { coverage, rollups };
 }
 
 function paperPositionKey(position: {
@@ -710,40 +823,14 @@ function rotatedMarkWindow(
   return ordered.slice(0, limit);
 }
 
-/**
- * Total simulated fees the tenant's projected paper rows realized.
- *
- * Separate from {@link readPaperPositionRollups} because `poly_trader_fills`
- * has no fees column and must not get one — `size_usdc` is notional, and
- * folding fees into it would corrupt a fact every live reader shares. One
- * extra single-row aggregate over the same tenant-filtered, terminal,
- * realized ledger slice.
- *
- * Also counts rows whose `fees_usdc` is NULL. A NULL fee is "the sidecar did
- * not report one", which is NOT a zero — the count is surfaced on the NAV row's
- * `errors` so the total is never silently understated.
- */
-async function readPaperFeesUsdc(
-  db: Db,
-  billingAccountId: string
-): Promise<{ feesUsdc: number; rowsMissingFees: number }> {
-  const result = await db.execute(sql`
-    SELECT
-      COALESCE(SUM(f.fees_usdc), 0) AS fees_usdc,
-      count(*) FILTER (WHERE f.fees_usdc IS NULL)::int AS rows_missing_fees
-    FROM poly_copy_trade_fills f
-    WHERE f.billing_account_id = ${billingAccountId}
-      AND f.mode = 'paper'
-      AND f.status IN ${terminalStatusList()}
-      AND f.price IS NOT NULL AND f.price > 0
-      AND f.shares IS NOT NULL AND f.shares > 0
-  `);
-  const row = firstRow<{ fees_usdc: string; rows_missing_fees: number }>(result);
-  return {
-    feesUsdc: Number(row?.fees_usdc ?? 0),
-    rowsMissingFees: Number(row?.rows_missing_fees ?? 0),
-  };
-}
+/** Scalar account coverage carried by the same snapshot as inventory. */
+type PaperCoverage = {
+  feesUsdc: number;
+  rowsMissingFees: number;
+  inventoryComplete: boolean;
+  financeComplete: boolean;
+  latestProofAt: string | Date | null;
+};
 
 /**
  * Content hash for snapshot dedupe, mirroring {@link hashPosition}'s contract
@@ -799,7 +886,7 @@ type PreparedPaperPosition = {
  * this table on `lower(address) = lower(funder_address)`, returning
  * `available` only when the row exists.
  */
-export async function projectPaperPositionsAndNav(input: {
+async function projectPaperPositionsAndNav(input: {
   db: Db;
   wallet: EnrolledPaperWallet;
   readMidPrice: PaperMidPriceReader;
@@ -817,7 +904,13 @@ export async function projectPaperPositionsAndNav(input: {
 }> {
   const now = input.now ?? new Date();
   const { traderWalletId, account } = input.wallet;
-  const rollups = await readPaperPositionRollups(input.db, traderWalletId);
+  // READ COMMITTED transactions take a new snapshot for each statement. Read
+  // coverage and grouped inventory together so a late receipt cannot combine
+  // an older complete coverage verdict with newer, incomplete inventory.
+  // The LEFT JOIN keeps scalar coverage even for an empty or withheld book.
+  const { coverage, rollups } = await readPaperGeneration(
+    input.db, traderWalletId, account.billingAccountId, now
+  );
 
   const cursorRows = await input.db
     .select({ lastSeenNativeId: polyTraderIngestionCursors.lastSeenNativeId })
@@ -834,7 +927,10 @@ export async function projectPaperPositionsAndNav(input: {
     (rollup) =>
       rollup.netShares > 0 &&
       rollup.buyShares > 0 &&
-      reusablePaperMark(rollup, now) === null
+      (reusablePaperMark(rollup, now) === null ||
+        (coverage.latestProofAt !== null && (rollup.cachedLastObservedAt === null ||
+          new Date(coverage.latestProofAt).getTime() > rollup.cachedLastObservedAt.getTime())) ||
+        (rollup.cachedRaw?.paperCoverage as { financeComplete?: unknown } | undefined)?.financeComplete !== coverage.financeComplete)
   );
   const refreshWindow = rotatedMarkWindow(
     refreshCandidates,
@@ -900,7 +996,7 @@ export async function projectPaperPositionsAndNav(input: {
           avgPrice: avgPriceStr,
           costBasisUsdc,
         }),
-        raw: paperPositionRaw(rollup, null, 0),
+        raw: paperPositionRaw(rollup, null, 0, coverage.financeComplete, now),
       });
       continue;
     }
@@ -959,7 +1055,7 @@ export async function projectPaperPositionsAndNav(input: {
         avgPrice: avgPriceStr,
         costBasisUsdc,
       }),
-      raw: paperPositionRaw(rollup, mid, currentValue),
+      raw: paperPositionRaw(rollup, mid, currentValue, coverage.financeComplete, now),
     };
     // Reusing a prior real mark contributes to this tick's complete NAV, but
     // must not rewrite last_observed_at and pretend the mark was refreshed.
@@ -984,7 +1080,7 @@ export async function projectPaperPositionsAndNav(input: {
     await writePaperPositionRows(input.db, traderWalletId, prepared, now);
   }
 
-  const fees = await readPaperFeesUsdc(input.db, account.billingAccountId);
+  const fees = coverage;
   const seedUsdc = Number(account.seedUsdc);
 
   // NAV_IS_CASH_PLUS_MARKS. Withheld whenever any open position is unmarked or
@@ -998,7 +1094,8 @@ export async function projectPaperPositionsAndNav(input: {
     incoherent.length +
     (negativeNav ? 1 : 0) +
     (invalidSeed ? 1 : 0) +
-    (invalidNav && !invalidSeed ? 1 : 0);
+    (invalidNav && !invalidSeed ? 1 : 0) +
+    (coverage.financeComplete ? 0 : 1);
   const navPublishable = navBlockers === 0 && Number.isFinite(nav);
   if (negativeNav) {
     input.logger.error(
@@ -1020,20 +1117,28 @@ export async function projectPaperPositionsAndNav(input: {
       logger: input.logger,
       observedAt: now,
     });
+    await publishPaperPnl(input.db, input.wallet, now);
   } else if (!negativeNav) {
     input.logger.warn(
       {
         event: EVENT_NAMES.POLY_PAPER_NAV_WITHHELD,
-        errorCode: invalidSeed
+        errorCode: !coverage.inventoryComplete
+          ? "paper_receipt_coverage_incomplete"
+          : !coverage.financeComplete
+            ? "paper_financial_coverage_incomplete"
+          : invalidSeed
           ? "paper_seed_invalid"
           : invalidNav
             ? "paper_nav_non_finite"
             : "paper_position_mark_unavailable",
-        ...(invalidSeed || invalidNav ? {} : { dep: "polymarket_clob" }),
+        ...(invalidSeed || invalidNav || !coverage.financeComplete ? {} : { dep: "polymarket_clob" }),
         trader_wallet_id: traderWalletId,
         billing_account_id: account.billingAccountId,
         unpriced_positions: unpriced.length,
         incoherent_positions: incoherent.length,
+        receipt_inventory_complete: coverage.inventoryComplete,
+        receipt_finance_complete: coverage.financeComplete,
+        rows_missing_fees: coverage.rowsMissingFees,
         seed_usdc_finite: Number.isFinite(seedUsdc),
         nav_usdc_finite: Number.isFinite(nav),
         sample_unpriced: unpriced.slice(0, 5),
@@ -1064,9 +1169,11 @@ export async function projectPaperPositionsAndNav(input: {
   await publishPaperPositionCursor({
     db: input.db,
     traderWalletId,
-    status: navBlockers === 0 ? "ok" : "partial",
+    status: coverage.inventoryComplete && unpriced.length === 0 && incoherent.length === 0 && !invalidSeed && !invalidNav && !negativeNav ? "ok" : "partial",
     errorMessage:
-      negativeNav
+      !coverage.inventoryComplete ? "paper receipt coverage incomplete; prior positions retained and NAV withheld"
+        : !coverage.financeComplete ? "paper final history or fee coverage incomplete; inventory observed and NAV withheld"
+        : negativeNav
         ? `paper NAV computed negative (${nav}); snapshot withheld because cap or fill accounting is inconsistent`
         : invalidSeed
           ? "paper seed is not finite; NAV withheld"
@@ -1100,7 +1207,9 @@ export async function projectPaperPositionsAndNav(input: {
 function paperPositionRaw(
   rollup: PaperPositionRollup,
   mid: number | null,
-  currentValue: number
+  currentValue: number,
+  financeComplete: boolean,
+  generationAt: Date
 ): Record<string, unknown> {
   return {
     source: PAPER_FILL_SOURCE,
@@ -1113,6 +1222,7 @@ function paperPositionRaw(
     curPrice: mid,
     currentValue,
     lastFillAt: rollup.lastFillAt.toISOString(),
+    paperCoverage: { financeComplete, generationAt: generationAt.toISOString() },
   };
 }
 
@@ -1242,6 +1352,34 @@ async function publishPaperNav(input: {
   );
 }
 
+/** Publish only genuine current NAV observations; the buckets are dedupe keys. */
+async function publishPaperPnl(db: Db, wallet: EnrolledPaperWallet, observedAt: Date): Promise<void> {
+  let published = 0;
+  for (const fidelity of ["1h", "1d"] as const) {
+    const rows = allRows<{ fidelity: string }>(await db.execute(sql`
+      INSERT INTO poly_trader_user_pnl_points (trader_wallet_id, fidelity, ts, pnl_usdc, observed_at)
+      SELECT w.id, f.fidelity, date_trunc(f.bucket, ${observedAt.toISOString()}::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
+        (b.usdc_e - c.paper_seed_usdc)::numeric(38,8), ${observedAt.toISOString()}::timestamptz
+      FROM poly_wallet_connections c
+      JOIN poly_trader_wallets w ON w.id = ${wallet.traderWalletId}::uuid AND w.kind = 'paper_wallet'
+        AND lower(w.wallet_address) = lower(c.address) AND w.active_for_research AND w.disabled_at IS NULL
+      JOIN poly_wallet_balance_snapshots b ON b.billing_account_id = c.billing_account_id
+        AND lower(b.address) = lower(c.funder_address) AND b.observed_at = ${observedAt.toISOString()}::timestamptz
+      CROSS JOIN (VALUES (${fidelity}::text, ${fidelity === '1h' ? 'hour' : 'day'}::text)) f(fidelity, bucket)
+      WHERE c.billing_account_id = ${wallet.account.billingAccountId} AND c.kind = 'paper' AND c.revoked_at IS NULL
+        AND c.paper_seed_usdc = ${wallet.account.seedUsdc}::numeric
+        AND lower(c.address) = ${wallet.account.address} AND lower(c.funder_address) = ${wallet.account.address}
+      ON CONFLICT (trader_wallet_id, fidelity, ts) DO UPDATE SET
+        pnl_usdc = excluded.pnl_usdc, observed_at = excluded.observed_at
+      WHERE poly_trader_user_pnl_points.observed_at < excluded.observed_at
+      RETURNING fidelity
+    `));
+    if (rows.length !== 1) throw new Error("paper P/L publication did not acknowledge fidelity");
+    published += rows.length;
+  }
+  if (published !== 2) throw new Error("paper P/L publication did not acknowledge both fidelities");
+}
+
 /** Advance (or fault) the paper position cursor, same shape as the live one. */
 async function publishPaperPositionCursor(input: {
   db: Db;
@@ -1294,94 +1432,132 @@ export async function observePaperWallet(input: {
   now?: Date;
   markRefreshLimit?: number;
 }): Promise<PaperObservationResult> {
-  const startedAt = Date.now();
-  const now = input.now ?? new Date();
-  const { traderWalletId, account } = input.wallet;
+  return input.db.transaction(async (tx) => {
+    const db = tx as unknown as Db;
+    const { traderWalletId, account } = input.wallet;
+    // Existing durable account row serializes observers across processes.
+    const connections = await db.select().from(polyWalletConnections)
+      .where(and(eq(polyWalletConnections.billingAccountId, account.billingAccountId), eq(polyWalletConnections.kind, "paper")))
+      .orderBy(polyWalletConnections.id).limit(2).for("update");
+    const connection = connections[0];
+    const now = input.now ?? new Date();
+    const expected = derivePaperAccountAddress(account.billingAccountId);
+    const [physical] = await db.select().from(polyTraderWallets)
+      .where(eq(polyTraderWallets.id, traderWalletId)).limit(1);
+    if (connections.length !== 1 || !connection || connection.revokedAt !== null ||
+      connection.address.toLowerCase() !== expected || (connection.funderAddress ?? "").toLowerCase() !== expected ||
+      account.address !== expected || connection.paperSeedUsdc === null ||
+      !Number.isFinite(Number(connection.paperSeedUsdc)) || Number(connection.paperSeedUsdc) <= 0 ||
+      !Number.isFinite(Number(account.seedUsdc)) ||
+      !physical || physical.kind !== PAPER_WALLET_KIND || !physical.activeForResearch || physical.disabledAt !== null ||
+      physical.walletAddress.toLowerCase() !== expected || physical.createdAt < connection.createdAt ||
+      !Number.isFinite(now.getTime()) || now < physical.createdAt || now < connection.createdAt) {
+      throw new Error("paper observation lifecycle is unsupported or changed");
+    }
+    const seedMatch = allRows<{ matches: boolean }>(await db.execute(sql`
+      SELECT ${account.seedUsdc}::numeric(20,8) = ${connection.paperSeedUsdc}::numeric(20,8) AS matches
+    `))[0]?.matches;
+    if (!seedMatch) throw new Error("paper observation seed changed");
+    const previous = allRows<{ latest: Date | string | null }>(await db.execute(sql`
+      SELECT max(generation) AS latest FROM (
+        SELECT last_success_at AS generation FROM poly_trader_ingestion_cursors
+          WHERE trader_wallet_id = ${traderWalletId}::uuid AND source IN (${PAPER_TRADE_CURSOR_SOURCE}, ${PAPER_POSITION_CURSOR_SOURCE})
+        UNION ALL SELECT observed_at FROM poly_wallet_balance_snapshots
+          WHERE billing_account_id = ${account.billingAccountId} AND lower(address) = ${expected}
+        UNION ALL SELECT observed_at FROM poly_trader_user_pnl_points WHERE trader_wallet_id = ${traderWalletId}::uuid
+      ) generations
+    `))[0]?.latest;
+    if (previous !== null && previous !== undefined && now.getTime() <= new Date(previous).getTime()) {
+      throw new Error("paper observation generation must be strictly newer");
+    }
+    const startedAt = Date.now();
 
-  const cursor = await input.db
-    .select({ lastSeenAt: polyTraderIngestionCursors.lastSeenAt })
-    .from(polyTraderIngestionCursors)
-    .where(
-      and(
-        eq(polyTraderIngestionCursors.traderWalletId, traderWalletId),
-        eq(polyTraderIngestionCursors.source, PAPER_TRADE_CURSOR_SOURCE)
+    const cursor = await db
+      .select({ lastSeenAt: polyTraderIngestionCursors.lastSeenAt })
+      .from(polyTraderIngestionCursors)
+      .where(
+        and(
+          eq(polyTraderIngestionCursors.traderWalletId, traderWalletId),
+          eq(polyTraderIngestionCursors.source, PAPER_TRADE_CURSOR_SOURCE)
+        )
       )
-    )
-    .limit(1);
+      .limit(1);
 
-  const projected = await projectPaperFills({
-    db: input.db,
-    traderWalletId,
-    billingAccountId: account.billingAccountId,
-    watermark: cursor[0]?.lastSeenAt ?? null,
-  });
-
-  await input.db
-    .insert(polyTraderIngestionCursors)
-    .values({
+    const projected = await projectPaperFills({
+      db,
       traderWalletId,
-      source: PAPER_TRADE_CURSOR_SOURCE,
-      lastSeenAt: projected.watermark,
-      lastSuccessAt: now,
-      status: "ok",
-      errorMessage: null,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: [
-        polyTraderIngestionCursors.traderWalletId,
-        polyTraderIngestionCursors.source,
-      ],
-      set: {
-        lastSeenAt: sql`excluded.last_seen_at`,
+      billingAccountId: account.billingAccountId,
+      watermark: cursor[0]?.lastSeenAt ?? null,
+      capturedAt: now,
+    });
+
+    await db
+      .insert(polyTraderIngestionCursors)
+      .values({
+        traderWalletId,
+        source: PAPER_TRADE_CURSOR_SOURCE,
+        lastSeenAt: projected.watermark,
         lastSuccessAt: now,
         status: "ok",
         errorMessage: null,
         updatedAt: now,
-      },
+      })
+      .onConflictDoUpdate({
+        target: [
+          polyTraderIngestionCursors.traderWalletId,
+          polyTraderIngestionCursors.source,
+        ],
+        set: {
+          lastSeenAt: sql`excluded.last_seen_at`,
+          lastSuccessAt: now,
+          status: "ok",
+          errorMessage: null,
+          updatedAt: now,
+        },
+      });
+
+    const positions = await projectPaperPositionsAndNav({
+      db,
+      wallet: input.wallet,
+      readMidPrice: input.readMidPrice,
+      logger: input.logger,
+      signal: input.signal,
+      now,
+      ...(input.markRefreshLimit === undefined
+        ? {}
+        : { markRefreshLimit: input.markRefreshLimit }),
     });
 
-  const positions = await projectPaperPositionsAndNav({
-    db: input.db,
-    wallet: input.wallet,
-    readMidPrice: input.readMidPrice,
-    logger: input.logger,
-    signal: input.signal,
-    now,
-    ...(input.markRefreshLimit === undefined
-      ? {}
-      : { markRefreshLimit: input.markRefreshLimit }),
-  });
+    input.logger.info(
+      {
+        event: EVENT_NAMES.POLY_PAPER_OBSERVE,
+        phase: "wallet_ok",
+        trader_wallet_id: traderWalletId,
+        billing_account_id: account.billingAccountId,
+        wallet: account.address,
+        fills: projected.inserted,
+        fill_candidates: projected.candidates,
+        positions: positions.positions,
+        unpriced_positions: positions.unpricedPositions,
+        nav_published: positions.navPublished,
+        marks_attempted: positions.marksAttempted,
+        marks_refreshed: positions.marksRefreshed,
+        marks_reused: positions.marksReused,
+        duration_ms: Date.now() - startedAt,
+      },
+      "paper wallet observed"
+    );
 
-  input.logger.info(
-    {
-      event: EVENT_NAMES.POLY_PAPER_OBSERVE,
-      phase: "wallet_ok",
-      trader_wallet_id: traderWalletId,
-      billing_account_id: account.billingAccountId,
-      wallet: account.address,
+    return {
       fills: projected.inserted,
-      fill_candidates: projected.candidates,
       positions: positions.positions,
-      unpriced_positions: positions.unpricedPositions,
-      nav_published: positions.navPublished,
-      marks_attempted: positions.marksAttempted,
-      marks_refreshed: positions.marksRefreshed,
-      marks_reused: positions.marksReused,
-      duration_ms: Date.now() - startedAt,
-    },
-    "paper wallet observed"
-  );
-
-  return {
-    fills: projected.inserted,
-    positions: positions.positions,
-    unpricedPositions: positions.unpricedPositions,
-    navPublished: positions.navPublished,
-    marksAttempted: positions.marksAttempted,
-    marksRefreshed: positions.marksRefreshed,
-    marksReused: positions.marksReused,
-  };
+      unpricedPositions: positions.unpricedPositions,
+      navPublished: positions.navPublished,
+      marksAttempted: positions.marksAttempted,
+      marksRefreshed: positions.marksRefreshed,
+      marksReused: positions.marksReused,
+    };
+  });
 }
 
 /**
