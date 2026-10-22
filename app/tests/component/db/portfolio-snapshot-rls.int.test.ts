@@ -1167,6 +1167,28 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       // The migrated-table owner can ANALYZE; the BYPASSRLS seeding role
       // cannot. Refresh only the relation whose tiny-table plan is ambiguous.
       await db.execute(sql`ANALYZE billing_accounts`);
+      // Runs after both ordinary N10 gates; estimates may lag or be unknown.
+      const relationObservations = await seedDb.execute(sql`
+        SELECT counts.relation, counts.actual_count,
+          c.reltuples, c.relpages, s.n_live_tup::text, s.n_dead_tup::text,
+          s.n_mod_since_analyze::text, s.last_analyze::text, s.last_autoanalyze::text
+        FROM (
+          SELECT 'poly_wallet_connections' AS relation,
+            'public.poly_wallet_connections'::regclass AS relation_oid,
+            count(*)::text AS actual_count FROM public.poly_wallet_connections
+          UNION ALL
+          SELECT 'billing_accounts', 'public.billing_accounts'::regclass,
+            count(*)::text FROM public.billing_accounts
+          UNION ALL
+          SELECT 'agent_capability_grants', 'public.agent_capability_grants'::regclass,
+            count(*)::text FROM public.agent_capability_grants
+        ) counts
+        JOIN pg_class c ON c.oid = counts.relation_oid
+        LEFT JOIN pg_stat_all_tables s ON s.relid = c.oid
+      `);
+      for (const row of relationObservations) {
+        console.info(JSON.stringify({ probe: "identity_fixture_relations", ...row }));
+      }
     });
 
     afterAll(async () => {

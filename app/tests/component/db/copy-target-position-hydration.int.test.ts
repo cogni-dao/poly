@@ -578,7 +578,51 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		}
 	});
 
-	it("withholds an orphan PAPER cohort after full enrollment and restores it on rollback", async () => {
+	it("withholds an orphan PAPER cohort after full enrollment and restores it on rollback", async ({ onTestFinished }) => {
+		// This hook observes post-cleanup progress, not cancellation or the timeout deadline.
+		type Phase =
+			| "transaction_requested"
+			| "transaction_entered"
+			| "initial_flags"
+			| "baseline_coverage"
+			| "baseline_conservation_reads"
+			| "temporary_connection_insert"
+			| "full_active_accounts_read"
+			| "enrollment_and_retirement_sync"
+			| "retirement_flags"
+			| "after_coverage"
+			| "conservation_reads"
+			| "sentinel_thrown"
+			| "rollback_settled"
+			| "restoration_transaction_requested"
+			| "restored_flags"
+			| "restored_coverage"
+			| "temporary_absence_check"
+			| "restoration_transaction_settled";
+		const startedAt = performance.now();
+		let phase: Phase = "transaction_requested";
+		let phaseStartedAt = startedAt;
+		let runnerFinished = false;
+		let rollbackSettled = false;
+		let restorationSettled = false;
+		const mark = (
+			next: Phase,
+			state: "started" | "completed" | "runner_finished",
+		) => {
+			const now = performance.now();
+			if (next !== phase || state === "started") phaseStartedAt = now;
+			phase = next;
+			console.info(JSON.stringify({
+				probe: "native_await_progress", test: "retirement", phase, state,
+				elapsedMs: now - startedAt, phaseElapsedMs: now - phaseStartedAt,
+				wallTime: new Date().toISOString(), afterRunnerFinished: runnerFinished,
+				rollbackSettled, restorationSettled,
+			}));
+		};
+		onTestFinished(() => {
+			runnerFinished = true;
+			mark(phase, "runner_finished");
+		});
 		const canonicalAddress = derivePaperAccountAddress(BILLING_ID);
 		for (const address of [OUR_WALLET, PAPER_LOCAL_WALLET, TARGET_WALLET]) {
 			expect(canonicalAddress).not.toBe(address);
@@ -623,25 +667,31 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			},
 		];
 		let temporaryConnectionId = "";
+		mark("transaction_requested", "started");
 		try {
 			await db.transaction(async (tx) => {
+				mark("transaction_entered", "completed");
 				const originalFlags = await tx
 					.select(walletFlags)
 					.from(polyTraderWallets)
 					.where(inArray(polyTraderWallets.id, originalWalletIds))
 					.orderBy(polyTraderWallets.id);
 				expect(originalFlags).toEqual(expect.arrayContaining(expectedFlags));
+				mark("initial_flags", "completed");
+				mark("baseline_coverage", "started");
 				const before = await readFullComparisonCoverageCounts({
 					db: tx,
 					billingAccountId: BILLING_ID,
 					walletAddress: PAPER_LOCAL_WALLET,
 					connectionKind: "paper",
 				});
+				mark("baseline_coverage", "completed");
 				expect(
 					before.find(
 						(row) => row.entity === "positions" && row.status === "live",
 					),
 				).toMatchObject({ eligible: 1, comparable: 1 });
+				mark("baseline_conservation_reads", "started");
 				const originalPositions = await tx
 					.select()
 					.from(polyTraderCurrentPositions)
@@ -693,6 +743,8 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 						filled_size_usdc: 5,
 					},
 				});
+				mark("baseline_conservation_reads", "completed");
+				mark("temporary_connection_insert", "started");
 				const [connection] = await tx
 					.insert(polyWalletConnections)
 					.values({
@@ -710,7 +762,10 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				if (!connection)
 					throw new Error("temporary PAPER connection seed failed");
 				temporaryConnectionId = connection.id;
+				mark("temporary_connection_insert", "completed");
+				mark("full_active_accounts_read", "started");
 				const accounts = await readActivePaperAccounts(tx, logger);
+				mark("full_active_accounts_read", "completed");
 				expect(accounts.length).toBeGreaterThan(0);
 				const ownAccount = {
 					billingAccountId: BILLING_ID,
@@ -721,12 +776,15 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				expect(
 					accounts.some((account) => account.address === PAPER_LOCAL_WALLET),
 				).toBe(false);
+				mark("enrollment_and_retirement_sync", "started");
 				const enrolled = await syncPaperTraderWallets(tx, accounts);
+				mark("enrollment_and_retirement_sync", "completed");
 				expect(enrolled).toEqual(
 					expect.arrayContaining([
 						expect.objectContaining({ account: ownAccount }),
 					]),
 				);
+				mark("retirement_flags", "started");
 				const [canonical] = await tx
 					.select(walletFlags)
 					.from(polyTraderWallets)
@@ -754,17 +812,21 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				).toEqual(
 					originalFlags.filter((row) => row.id !== paperTraderWalletId),
 				);
+				mark("retirement_flags", "completed");
+				mark("after_coverage", "started");
 				const after = await readFullComparisonCoverageCounts({
 					db: tx,
 					billingAccountId: BILLING_ID,
 					walletAddress: PAPER_LOCAL_WALLET,
 					connectionKind: "paper",
 				});
+				mark("after_coverage", "completed");
 				expect(
 					after.find(
 						(row) => row.entity === "positions" && row.status === "live",
 					),
 				).toMatchObject({ eligible: 0, comparable: 0 });
+				mark("conservation_reads", "started");
 				expect(
 					await tx
 						.select()
@@ -788,6 +850,8 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 						.where(eq(polyCopyTradeFills.billingAccountId, BILLING_ID))
 						.orderBy(polyCopyTradeFills.targetId, polyCopyTradeFills.fillId),
 				).toEqual(originalLedger);
+				mark("conservation_reads", "completed");
+				mark("sentinel_thrown", "completed");
 				throw rollback;
 			});
 			throw new Error(
@@ -795,24 +859,31 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			);
 		} catch (error) {
 			if (error !== rollback) throw error;
+			rollbackSettled = true;
+			mark("rollback_settled", "completed");
 		}
+		mark("restoration_transaction_requested", "started");
 		await db.transaction(async (tx) => {
 			const restoredFlags = await tx
 				.select(walletFlags)
 				.from(polyTraderWallets)
 				.where(inArray(polyTraderWallets.id, originalWalletIds));
 			expect(restoredFlags).toEqual(expect.arrayContaining(expectedFlags));
+			mark("restored_flags", "completed");
+			mark("restored_coverage", "started");
 			const restored = await readFullComparisonCoverageCounts({
 				db: tx,
 				billingAccountId: BILLING_ID,
 				walletAddress: PAPER_LOCAL_WALLET,
 				connectionKind: "paper",
 			});
+			mark("restored_coverage", "completed");
 			expect(
 				restored.find(
 					(row) => row.entity === "positions" && row.status === "live",
 				),
 			).toMatchObject({ eligible: 1, comparable: 1 });
+			mark("temporary_absence_check", "started");
 			expect(temporaryConnectionId).not.toBe("");
 			expect(
 				await tx
@@ -820,11 +891,54 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 					.from(polyWalletConnections)
 					.where(eq(polyWalletConnections.id, temporaryConnectionId)),
 			).toEqual([]);
+			mark("temporary_absence_check", "completed");
 		});
+		restorationSettled = true;
+		mark("restoration_transaction_settled", "completed");
 	});
 
-	it("requires exact condition+token and publishes only complete scoped cohorts", async () => {
+	it("requires exact condition+token and publishes only complete scoped cohorts", async ({ onTestFinished }) => {
+		// This hook observes post-cleanup progress, not cancellation or the timeout deadline.
+		type Phase =
+			| "initial_cohorts"
+			| "live_before_coverage"
+			| "paper_before_coverage"
+			| "first_hydration"
+			| "after_coverage"
+			| "first_preview"
+			| "disabled_targets"
+			| "disabled_live_coverage"
+			| "disabled_paper_coverage"
+			| "disabled_preview"
+			| "second_hydration"
+			| "post_omission_reads"
+			| "post_omission_coverage"
+			| "post_omission_preview"
+			| "assertions_complete";
+		const startedAt = performance.now();
+		let phase: Phase = "initial_cohorts";
+		let phaseStartedAt = startedAt;
+		let runnerFinished = false;
+		const mark = (
+			next: Phase,
+			state: "started" | "completed" | "runner_finished",
+		) => {
+			const now = performance.now();
+			if (next !== phase || state === "started") phaseStartedAt = now;
+			phase = next;
+			console.info(JSON.stringify({
+				probe: "native_await_progress", test: "cohort", phase, state,
+				elapsedMs: now - startedAt, phaseElapsedMs: now - phaseStartedAt,
+				wallTime: new Date().toISOString(), afterRunnerFinished: runnerFinished,
+			}));
+		};
+		onTestFinished(() => {
+			runnerFinished = true;
+			mark(phase, "runner_finished");
+		});
+		mark("initial_cohorts", "started");
 		const cohorts = await readCopyTargetPositionCohorts(db);
+		mark("initial_cohorts", "completed");
 		expect(cohorts).toEqual([
 			{
 				targetWallet: TARGET_WALLET,
@@ -835,12 +949,14 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				],
 			},
 		]);
+		mark("live_before_coverage", "started");
 		const before = await readFullComparisonCoverageCounts({
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: OUR_WALLET,
 			connectionKind: "privy_live",
 		});
+		mark("live_before_coverage", "completed");
 		expect(
 			before.find((row) => row.entity === "positions" && row.status === "live"),
 		).toMatchObject({ eligible: 2, comparable: 1 });
@@ -857,12 +973,14 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			activeForResearch: true,
 			disabledAt: null,
 		});
+		mark("paper_before_coverage", "started");
 		const paperBefore = await readFullComparisonCoverageCounts({
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: PAPER_LOCAL_WALLET,
 			connectionKind: "paper",
 		});
+		mark("paper_before_coverage", "completed");
 		expect(
 			paperBefore.find(
 				(row) => row.entity === "positions" && row.status === "live",
@@ -898,11 +1016,13 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			errorMessage: "omission_over_cap",
 		});
 
+		mark("first_hydration", "started");
 		const first = await hydrateCopyTargetPositions({
 			db,
 			client,
 			logger: logger as never,
 		});
+		mark("first_hydration", "completed");
 		expect(first).toEqual({ cohorts: 1, conditions: 2, rows: 3, errors: 0 });
 		expect(listUserPositionsV2).toHaveBeenLastCalledWith(TARGET_WALLET, {
 			conditions: [CONDITION, ZERO_VALUE_CONDITION],
@@ -931,12 +1051,14 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				},
 			]),
 		);
+		mark("after_coverage", "started");
 		const after = await readFullComparisonCoverageCounts({
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: OUR_WALLET,
 			connectionKind: "privy_live",
 		});
+		mark("after_coverage", "completed");
 		expect(
 			after.find((row) => row.entity === "positions" && row.status === "live"),
 		).toMatchObject({ eligible: 2, comparable: 2 });
@@ -956,6 +1078,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				),
 			);
 		expect(zeroEntry?.costBasisUsdc).toBe("0.00000000");
+		mark("first_preview", "started");
 		const bounded = await buildBoundedMarketExposureWithCoverage({
 			db,
 			billingAccountId: BILLING_ID,
@@ -981,6 +1104,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				}),
 			],
 		});
+		mark("first_preview", "completed");
 		expect(bounded.positionClassifications).toContainEqual({
 			conditionId: CONDITION,
 			tokenId: LOCAL_TOKEN,
@@ -1019,6 +1143,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			)?.targetEntryValueUsdc,
 		).toBeNull();
 
+		mark("disabled_targets", "started");
 		const disabledAt = new Date();
 		await db
 			.update(polyCopyTradeTargets)
@@ -1039,29 +1164,35 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			executionTargets.some((target) => target.billingAccountId === BILLING_ID),
 		).toBe(false);
 		expect(await readCopyTargetPositionCohorts(db)).toEqual(cohorts);
+		mark("disabled_targets", "completed");
 
+		mark("disabled_live_coverage", "started");
 		const disabledCoverage = await readFullComparisonCoverageCounts({
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: OUR_WALLET,
 			connectionKind: "privy_live",
 		});
+		mark("disabled_live_coverage", "completed");
 		expect(
 			disabledCoverage.find(
 				(row) => row.entity === "positions" && row.status === "live",
 			),
 		).toMatchObject({ eligible: 2, comparable: 1, source_ambiguous: false });
+		mark("disabled_paper_coverage", "started");
 		const disabledPaperCoverage = await readFullComparisonCoverageCounts({
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: PAPER_LOCAL_WALLET,
 			connectionKind: "paper",
 		});
+		mark("disabled_paper_coverage", "completed");
 		expect(
 			disabledPaperCoverage.find(
 				(row) => row.entity === "positions" && row.status === "live",
 			),
 		).toMatchObject({ eligible: 1, comparable: 1, source_ambiguous: false });
+		mark("disabled_preview", "started");
 		const disabledPreview = await buildBoundedMarketExposureWithCoverage({
 			db,
 			billingAccountId: BILLING_ID,
@@ -1081,6 +1212,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			],
 			closedPositions: [],
 		});
+		mark("disabled_preview", "completed");
 		expect(disabledPreview.positionClassifications).toContainEqual({
 			conditionId: CONDITION,
 			tokenId: LOCAL_TOKEN,
@@ -1104,11 +1236,13 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			?.participants.find((participant) => participant.side === "copy_target");
 		expect(disabledTarget?.hedge).toMatchObject({ tokenId: OPPOSITE_TOKEN });
 
+		mark("second_hydration", "started");
 		const omitted = await hydrateCopyTargetPositions({
 			db,
 			client,
 			logger: logger as never,
 		});
+		mark("second_hydration", "completed");
 		expect(omitted).toEqual({
 			cohorts: 1,
 			conditions: 2,
@@ -1116,6 +1250,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			errors: 0,
 		});
 		expect(logger.warn).not.toHaveBeenCalled();
+		mark("post_omission_reads", "started");
 		const selectedRows = await db
 			.select({
 				tokenId: polyTraderCurrentPositions.tokenId,
@@ -1134,12 +1269,15 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				{ tokenId: OPPOSITE_TOKEN, active: false },
 			]),
 		);
+		mark("post_omission_reads", "completed");
+		mark("post_omission_coverage", "started");
 		const afterOmission = await readFullComparisonCoverageCounts({
 			db,
 			billingAccountId: BILLING_ID,
 			walletAddress: OUR_WALLET,
 			connectionKind: "privy_live",
 		});
+		mark("post_omission_coverage", "completed");
 		expect(
 			afterOmission.find(
 				(row) => row.entity === "positions" && row.status === "live",
@@ -1150,6 +1288,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				(row) => row.entity === "positions" && row.status === "closed",
 			),
 		).toMatchObject({ eligible: 1, comparable: 0 });
+		mark("post_omission_preview", "started");
 		const boundedAfterOmission = await buildBoundedMarketExposureWithCoverage({
 			db,
 			billingAccountId: BILLING_ID,
@@ -1164,6 +1303,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				}),
 			],
 		});
+		mark("post_omission_preview", "completed");
 		expect(boundedAfterOmission.positionClassifications).toContainEqual({
 			conditionId: ZERO_VALUE_CONDITION,
 			tokenId: ZERO_VALUE_TOKEN,
@@ -1189,6 +1329,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 				),
 			);
 		expect(unrelated?.active).toBe(true);
+		mark("assertions_complete", "completed");
 	});
 
 	it("projects complete Position-gap books monotonically into shared target facts", async () => {
