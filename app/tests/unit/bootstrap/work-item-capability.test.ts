@@ -59,4 +59,31 @@ describe("createWorkItemCapability", () => {
     );
     expect(command.patch).not.toHaveBeenCalled();
   });
+
+  it("WRITES_NOT_WIDENED: transitionStatus/patch stay on workItemQuery + workItemCommand, never the backlogReader", async () => {
+    const item = { id: "task.5001", status: "needs_implement", revision: 3 };
+    const markdown = { list: vi.fn(), get: vi.fn().mockResolvedValue(item) };
+    const command = {
+      transitionStatus: vi.fn().mockResolvedValue({ ...item, status: "done", revision: 4 }),
+      patch: vi.fn().mockResolvedValue({
+        ...item,
+        type: "task",
+        title: "t",
+        labels: [],
+        assignees: [],
+      }),
+    };
+    const backlog = { list: vi.fn() };
+    const cap = createWorkItemCapability({
+      workItemQuery: markdown as unknown as WorkItemQueryPort,
+      workItemCommand: command as unknown as WorkItemCommandPort,
+      backlogReader: backlog as unknown as Pick<WorkItemQueryPort, "list">,
+    });
+    await cap.transitionStatus({ id: "task.5001", toStatus: "done" });
+    await cap.patch({ id: "task.5001", set: { priority: 3 } });
+    expect(markdown.get).toHaveBeenCalledTimes(2);
+    expect(command.transitionStatus).toHaveBeenCalledTimes(1);
+    expect(command.patch).toHaveBeenCalledTimes(1);
+    expect(backlog.list).not.toHaveBeenCalled();
+  });
 });
