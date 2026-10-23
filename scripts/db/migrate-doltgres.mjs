@@ -18,7 +18,7 @@ import { writeSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 import { createHash } from "node:crypto";
-import { DoltNativeSessionExecutor, DoltBranchMutationUncertainError, runDoltBranchMutation } from "@cogni-dao/doltgres-admission";
+import { createDoltgresMigrationRunner, isDoltgresMigrationOutcomeUncertain } from "@cogni-dao/knowledge-store/migrations";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import postgres from "postgres";
 
@@ -120,7 +120,7 @@ const retainedPools = new WeakSet();
 function terminateMigration(error) {
   const text = (value) => typeof value === "string" ? value : null;
   writeSync(2, `MIGRATION_OUTCOME ${JSON.stringify({
-    code: text(error?.code) ?? (error instanceof DoltBranchMutationUncertainError ? "migration_write_outcome_unknown" : "migration_failed"),
+    code: text(error?.code) ?? (isDoltgresMigrationOutcomeUncertain(error) ? "migration_write_outcome_unknown" : "migration_failed"),
     retryable: error?.retryable === true,
     operationId: text(error?.operationId), branch: text(error?.branch),
     commitHash: text(error?.commitHash), reason: text(error?.reason),
@@ -283,12 +283,12 @@ async function migrate(folder, before) {
         code: "migration_write_outcome_unknown", retryable: false, operationId: id, branch, commitHash: commitHash ?? null,
       }),
     };
-    const executor = new DoltNativeSessionExecutor(pool, { errors, writerProtocol: "database" });
+    const runner = createDoltgresMigrationRunner(pool, { errors, writerProtocol: "database" });
     // First legacy→database activation requires real maintenance source/native
     // drain; fresh birth requires no prior producer. Thereafter the durable
     // delivery floor excludes old writers and every mutation shares this key.
     try {
-      return await executor.run(operationId, async (sql, guard, owner) => {
+      return await runner.run(operationId, async ({ sql, mutate }) => {
         const [identity] = await sql.unsafe("SELECT current_database() AS database");
         if (identity?.database !== expectedDatabase) throw new Error("migration_database_identity_mismatch");
         if (before) await before(sql);
@@ -297,19 +297,12 @@ async function migrate(folder, before) {
           await verifyDoltgresSchema(sql, folder);
           return { applied: 0, committed: false };
         }
-        const result = await runDoltBranchMutation(sql, {
-          guard, operationId, message: "migration: drizzle-kit batch",
-          onSessionUncertain: (error) => executor.retire(sql, error),
-          onReconcile: owner.registerReconciliation,
-          onCommitted: owner.committed,
-          run: async (scoped) => {
-            const applied = await applyPending(scoped, folder);
-            await verifyDoltgresSchema(scoped, folder);
-            return { applied, committed: true };
-          },
+        return mutate("migration: drizzle-kit batch", async (scoped) => {
+          const applied = await applyPending(scoped, folder);
+          await verifyDoltgresSchema(scoped, folder);
+          return { applied, committed: true };
         });
-        return result.value;
-      }, { operationId, awaitSettlement: true });
+      });
     } catch (error) {
       // Keep the executor's session intact. Only the actual runtime entry exits;
       // native socket-death settlement retains the DB guard until work settles.
