@@ -25,6 +25,7 @@ import {
 	polyPositionGapRuns,
 } from "@cogni/db-schema/position-gap";
 import { polyWalletGrants } from "@cogni/db-schema/wallet-grants";
+import { polyWalletConnections } from "@cogni/db-schema/wallet-connections";
 import type {
 	OrderReceipt,
 	TargetBookSnapshotV1,
@@ -63,6 +64,9 @@ import type {
 	PositionGapPriceCohortV1,
 } from "@/features/copy-trade/position-gap-v3/model";
 import { targetIdFromWallet } from "@/shared/util/poly-target-id";
+import { acceptedPaperProof, type ContextualOrderReceipt, decodeFillAccounting, fillColumnText, normalizeFillCondition } from "@/features/trading/fill-accounting";
+import { paperFillAccountingSql } from "@/features/trading/fill-accounting-sql";
+import type { AcceptedOrderObservation } from "@/features/trading/order-ledger.types";
 
 const CASH_GUARD_SOURCE = "poly_trade_executor.requiredBuyCollateralAtomic/v1";
 const EPSILON = 1e-9;
@@ -322,6 +326,7 @@ export class PositionGapRuntimeStore {
 		activeBuys: readonly PositionGapActiveBuy[];
 		provisionalFilledHoldings: readonly PositionGapHoldingV1[];
 	}> {
+		const paperRepair = paperFillAccountingSql("paper_recovery_ledger");
 		const [
 			cohortRows,
 			activeActionRows,
@@ -371,8 +376,18 @@ export class PositionGapRuntimeStore {
 						eq(polyPositionGapActions.targetId, scope.targetId),
 						eq(polyPositionGapActions.kind, "buy"),
 						inArray(polyPositionGapActions.status, ["filled", "canceled"]),
-						sql`${polyPositionGapActions.filledShares} > 0`,
-						notExists(
+            or(
+              sql`EXISTS (SELECT 1 FROM poly_copy_trade_fills paper_recovery_ledger
+                WHERE paper_recovery_ledger.billing_account_id = ${scope.billingAccountId}
+                  AND paper_recovery_ledger.target_id = ${scope.targetId}::uuid
+                  AND paper_recovery_ledger.client_order_id = ${polyPositionGapActions.clientOrderId}
+                  AND paper_recovery_ledger.mode = 'paper'
+                  AND (NOT ${paperRepair.verified} OR NOT ${paperRepair.feeKnown}
+                    OR ${paperRepair.proofKey} IS DISTINCT FROM ${polyPositionGapActions.plannerAction}->>'accepted_paper_proof_key'
+                    OR paper_recovery_ledger.status IS DISTINCT FROM ${polyPositionGapActions.status}
+                    OR paper_recovery_ledger.attributes->'paper_receipt_v1'->>'shares' IS DISTINCT FROM ${polyPositionGapActions.plannerAction}->>'accepted_paper_shares'
+                    OR paper_recovery_ledger.attributes->'paper_receipt_v1'->>'notional_usdc' IS DISTINCT FROM ${polyPositionGapActions.plannerAction}->>'accepted_paper_notional_usdc'))`,
+              and(sql`${polyPositionGapActions.filledShares} > 0`, notExists(
 							this.db
 								.select({ one: sql`1` })
 								.from(polyCopyTradeFills)
@@ -388,12 +403,14 @@ export class PositionGapRuntimeStore {
 										),
 										eq(polyCopyTradeFills.targetId, scope.targetId),
 										or(
+                      eq(polyCopyTradeFills.mode, "paper"),
 											sql`${polyCopyTradeFills.attributes}->>'realized_fill_source' = 'clob_associated_trades'`,
 											sql`${polyCopyTradeFills.attributes}->>'realized_fill_source' = ${POSITION_GAP_DATA_API_FILL_SOURCE}`,
 										),
 									),
 								),
-						),
+              )),
+            ),
 					),
 				)
 				.orderBy(
@@ -593,16 +610,31 @@ export class PositionGapRuntimeStore {
 		scope: PositionGapRuntimeScope,
 		clientOrderIds: readonly string[],
 	): Promise<
-		ReadonlyMap<string, { mode: "live" | "paper"; status: string }>
+		ReadonlyMap<string, { mode: "live" | "paper"; status: string; acceptedObservation?: AcceptedOrderObservation }>
 	> {
 		if (clientOrderIds.length === 0) return new Map();
+    const paper = paperFillAccountingSql("poly_copy_trade_fills");
 		const rows = await this.db
 			.select({
+				billingAccountId: polyCopyTradeFills.billingAccountId,
+				orderId: polyCopyTradeFills.orderId,
+				marketId: polyCopyTradeFills.marketId,
+				shares: polyCopyTradeFills.shares,
+				price: polyCopyTradeFills.price,
+				feesUsdc: polyCopyTradeFills.feesUsdc,
+				attributes: polyCopyTradeFills.attributes,
+        connectionId: polyWalletConnections.id,
+        paperVerified: sql<boolean>`${paper.verified}`,
 				clientOrderId: polyCopyTradeFills.clientOrderId,
 				mode: polyCopyTradeFills.mode,
 				status: polyCopyTradeFills.status,
 			})
 			.from(polyCopyTradeFills)
+      .leftJoin(polyWalletConnections, and(
+        eq(polyWalletConnections.billingAccountId, polyCopyTradeFills.billingAccountId),
+        eq(polyWalletConnections.kind, "paper"),
+        sql`${polyWalletConnections.id}::text = ${polyCopyTradeFills.attributes}->'paper_receipt_v1'->>'connection_id'`,
+      ))
 			.where(
 				and(
 					eq(polyCopyTradeFills.billingAccountId, scope.billingAccountId),
@@ -619,7 +651,18 @@ export class PositionGapRuntimeStore {
 				}
 				return [
 					row.clientOrderId,
-					{ mode: row.mode, status: row.status },
+          { mode: row.mode, status: row.status,
+            ...(row.mode === "paper" ? { acceptedObservation: {
+              mode: "paper" as const, client_order_id: row.clientOrderId, order_id: row.orderId,
+              status: row.status as AcceptedOrderObservation["status"], accepted: row.paperVerified,
+              accounting: row.paperVerified ? decodeFillAccounting(row, {
+                mode: "paper", billing_account_id: row.billingAccountId, connection_id: row.connectionId ?? "",
+                client_order_id: row.clientOrderId, order_id: row.orderId ?? "",
+                condition_id: normalizeFillCondition(String(row.attributes?.condition_id ?? row.marketId)),
+                token_id: String(row.attributes?.token_id ?? ""), side: row.attributes?.side === "SELL" ? "SELL" : "BUY",
+              }, new Date()) : { status: "pending" as const, reason: "paper_bound_receipt_missing" },
+            } } : {}),
+          },
 				] as const;
 			}),
 		);
@@ -1694,7 +1737,7 @@ export class PositionGapRuntimeStore {
 		});
 	}
 
-	/** Recover terminal ledger evidence even when its callback raced actor boot. */
+	/** Recover LIVE CLOB terminals; PAPER requires accepted native receipt proof. */
 	async reconcileLedgerTerminals(
 		scope: PositionGapRuntimeScope,
 	): Promise<number> {
@@ -1720,6 +1763,7 @@ export class PositionGapRuntimeStore {
 					),
 					eq(polyPositionGapActions.targetId, scope.targetId),
 					eq(polyPositionGapActions.kind, "buy"),
+					eq(polyCopyTradeFills.mode, "live"),
 					inArray(polyPositionGapActions.status, [
 						"reserved",
 						"ledgered",
@@ -1752,7 +1796,8 @@ export class PositionGapRuntimeStore {
 
 	async markPlacementReceipt(
 		actionId: string,
-		receipt: OrderReceipt,
+		receipt: ContextualOrderReceipt | undefined,
+    accepted?: AcceptedOrderObservation,
 	): Promise<void> {
 		await this.db.transaction(async (tx) => {
 			await tx.execute(
@@ -1764,12 +1809,45 @@ export class PositionGapRuntimeStore {
 				.where(eq(polyPositionGapActions.id, actionId))
 				.limit(1);
 			if (!before) return;
-			const observedFilledUsdc = Math.max(0, receipt.filled_size_usdc ?? 0);
+      const paper = accepted?.mode === "paper" ? accepted : null;
+      if (!paper && receipt?.paper_context) throw new Error("paper_action_requires_accepted_ledger_observation");
+      const proof = paper ? acceptedPaperProof(paper.accounting) : null;
+      if (paper && (!proof || proof.billing_account_id !== before.billingAccountId ||
+        proof.client_order_id !== before.clientOrderId || proof.condition_id !== before.conditionId.toLowerCase() ||
+        proof.token_id !== before.tokenId || proof.side !== "BUY" || proof.order_id !== paper.order_id ||
+        proof.venue_status !== paper.status)) {
+        // A bound acknowledgement may set the order ID, but cannot publish an
+        // execution, terminalize an action, or release a reservation.
+        if (paper.accepted && paper.client_order_id === before.clientOrderId && paper.order_id &&
+          (paper.status === "open" || paper.status === "pending") && !["filled", "canceled"].includes(before.status)) {
+          await tx.update(polyPositionGapActions).set({ orderId: paper.order_id,
+            status: nextActionStatus(before.status, "open") ?? before.status,
+            venueStatus: paper.status, venueObservedAt: new Date(), updatedAt: new Date(),
+          }).where(eq(polyPositionGapActions.id, actionId));
+        }
+        return;
+      }
+      const observation = proof ? {
+        order_id: proof.order_id, status: proof.venue_status, filled_size_usdc: proof.notional_usdc,
+        total_shares: proof.shares, fill_price: proof.price ?? undefined,
+        attributes: { realizedFillSource: "paper_order_receipt" },
+      } : receipt;
+      if (!observation) return;
+      const priorTerminal = ["filled", "canceled"].includes(before.status);
+      if (proof && before.plannerAction.accepted_paper_proof_key === proof.proof_key &&
+        numberOf(before.filledShares) === Number(fillColumnText(proof.shares)) &&
+        numberOf(before.filledUsdc) === Number(fillColumnText(proof.notional_usdc)) && before.status === statusFromReceipt(proof.venue_status === "error" ? "partial" : proof.venue_status)) {
+        await tx.update(polyPositionGapActions).set({ plannerAction: { ...before.plannerAction,
+          fill_accounting_last_attempt_at: new Date().toISOString() }, updatedAt: new Date(),
+        }).where(eq(polyPositionGapActions.id, actionId));
+        return;
+      }
+			const observedFilledUsdc = Math.max(0, observation.filled_size_usdc ?? 0);
 			const observedFilledShares = Math.max(
 				0,
-				receipt.total_shares ??
-					(receipt.fill_price && receipt.fill_price > 0
-						? observedFilledUsdc / receipt.fill_price
+				observation.total_shares ??
+					(observation.fill_price && observation.fill_price > 0
+						? observedFilledUsdc / observation.fill_price
 						: 0),
 			);
 			const oldFilledShares = numberOf(before.filledShares);
@@ -1777,28 +1855,28 @@ export class PositionGapRuntimeStore {
 			const desiredShares = numberOf(before.desiredShares);
 			const intendedNotional = numberOf(before.notionalUsdc);
 			const authoritativeTradeCost =
-				receipt.attributes?.realizedFillSource === "clob_associated_trades";
+				proof !== null || observation.attributes?.realizedFillSource === "clob_associated_trades";
 			const priorTradeCostSource =
 				before.plannerAction.realized_fill_source ===
 				"clob_associated_trades";
 			const authoritativeObservationIsCurrent =
-				authoritativeTradeCost &&
+				(proof !== null || authoritativeTradeCost &&
 				(observedFilledShares > oldFilledShares + EPSILON ||
 					(!priorTradeCostSource &&
-						observedFilledShares + EPSILON >= oldFilledShares));
-			const filledShares = Math.min(
+						observedFilledShares + EPSILON >= oldFilledShares)));
+			const filledShares = proof ? Number(fillColumnText(observedFilledShares)) : Math.min(
 				desiredShares,
 				Math.max(oldFilledShares, observedFilledShares),
 			);
-			const filledUsdc = Math.min(
+			const filledUsdc = proof ? Number(fillColumnText(observedFilledUsdc)) : Math.min(
 				intendedNotional,
 				authoritativeObservationIsCurrent
 					? observedFilledUsdc
 					: Math.max(oldFilledUsdc, observedFilledUsdc),
 			);
 			const deltaFilledShares = Math.max(0, filledShares - oldFilledShares);
-			const observedStatus = statusFromReceipt(receipt.status);
-			const nextStatus = nextActionStatus(before.status, observedStatus);
+			const observedStatus = statusFromReceipt(proof && observation.status === "error" ? "partial" : observation.status);
+			const nextStatus = proof && (priorTerminal || before.status === "ambiguous") ? observedStatus : nextActionStatus(before.status, observedStatus);
 			const correctsTerminalTradeCost =
 				nextStatus === null &&
 				authoritativeObservationIsCurrent &&
@@ -1810,35 +1888,40 @@ export class PositionGapRuntimeStore {
 				| "filled"
 				| "cancel_requested"
 				| "canceled";
+			const firstCancellation = status === "canceled" && (!proof || !priorTerminal);
 			const limitPrice = numberOf(before.limitPrice);
 			const unfilledShares = Math.max(0, desiredShares - filledShares);
 			await tx
 				.update(polyPositionGapActions)
 				.set({
-					orderId: receipt.order_id,
+					orderId: observation.order_id,
 					status,
-					venueStatus: receipt.status,
-					venueObservedAt: new Date(),
+					venueStatus: observation.status,
+					venueObservedAt: proof ? new Date(proof.observed_at) : new Date(),
 					filledShares: filledShares.toString(),
 					filledUsdc: filledUsdc.toString(),
 					plannerAction: authoritativeObservationIsCurrent
 						? {
 								...before.plannerAction,
-								realized_fill_source: "clob_associated_trades",
-								fill_accounting_status: "verified",
+								realized_fill_source: proof ? "paper_order_receipt" : "clob_associated_trades",
+                ...(proof ? { accepted_paper_proof_key: proof.proof_key, accepted_paper_shares: proof.shares,
+                  accepted_paper_notional_usdc: proof.notional_usdc, accepted_paper_fee_known: proof.fee_known,
+                  accepted_paper_fees_usdc: proof.fees_usdc, accepted_paper_observed_at: proof.observed_at,
+                } : {}),
+								fill_accounting_status: proof?.shares === 0 ? "verified_zero" : "verified",
 								fill_accounting_last_attempt_at: new Date().toISOString(),
 							}
 						: before.plannerAction,
 					errorCode: authoritativeObservationIsCurrent ? null : before.errorCode,
 					errorDetail: authoritativeObservationIsCurrent ? null : before.errorDetail,
-					submittedAt: new Date(),
-					...(status === "filled" || status === "canceled"
+					submittedAt: proof && before.submittedAt ? before.submittedAt : new Date(),
+					...((status === "filled" || status === "canceled") && !(proof && priorTerminal)
 						? { completedAt: new Date() }
 						: {}),
 					updatedAt: new Date(),
 				})
 				.where(eq(polyPositionGapActions.id, actionId));
-			if (status === "canceled") {
+			if (firstCancellation) {
 				await tx
 					.update(polyPositionGapActions)
 					.set({
@@ -1867,7 +1950,7 @@ export class PositionGapRuntimeStore {
 				.from(polyPositionGapReservations)
 				.where(eq(polyPositionGapReservations.buyActionId, actionId))
 				.limit(1);
-			if (reservation) {
+			if (reservation && (!proof || deltaFilledShares > EPSILON || Math.abs(filledUsdc - oldFilledUsdc) > 1e-6 || status !== before.status)) {
 				const originalGuard = BigInt(reservation.executorCashGuardAtomic);
 				const releasedGuardNow =
 					originalGuard > desiredCashGuard
@@ -1889,9 +1972,9 @@ export class PositionGapRuntimeStore {
 					.update(polyPositionGapReservations)
 					.set({
 						filledCostUsdc: filledUsdc.toString(),
-						releasedBudgetUsdc: releasedBudget.toString(),
-						releasedCashGuardAtomic: releasedGuard.toString(),
-						...(status === "canceled" && filledUsdc <= EPSILON
+						...(!(proof && priorTerminal) ? { releasedBudgetUsdc: releasedBudget.toString(),
+              releasedCashGuardAtomic: releasedGuard.toString() } : {}),
+						...(firstCancellation && filledUsdc <= EPSILON
 							? {
 									state: "released" as const,
 									releaseReason: "venue_cancel_confirmed",
@@ -1902,8 +1985,8 @@ export class PositionGapRuntimeStore {
 					})
 					.where(eq(polyPositionGapReservations.id, reservation.id));
 			}
-			let restoreCanceledEntitlement = status === "canceled";
-			if (status === "canceled") {
+			let restoreCanceledEntitlement = firstCancellation;
+			if (firstCancellation) {
 				const [requestedCancel] = await tx
 					.select({ plannerAction: polyPositionGapActions.plannerAction })
 					.from(polyPositionGapActions)
@@ -1925,22 +2008,26 @@ export class PositionGapRuntimeStore {
 					"runtime_safety",
 				].includes(reason);
 			}
-			if (deltaFilledShares > EPSILON || status === "canceled") {
+			if (deltaFilledShares > EPSILON || firstCancellation) {
 				await tx
 					.update(polyPositionGapCohorts)
 					.set({
 						acquiredShares: sql`${polyPositionGapCohorts.acquiredShares} + ${deltaFilledShares}`,
 						openOrderShares: sql`GREATEST(0, ${polyPositionGapCohorts.openOrderShares} - ${
-							status === "canceled"
+							proof && priorTerminal ? 0 : firstCancellation
 								? deltaFilledShares + unfilledShares
 								: deltaFilledShares
 						})`,
-						...(status === "canceled" && restoreCanceledEntitlement
+              ...(proof && before.status === "canceled" && deltaFilledShares > EPSILON
+                ? { remainingShares: sql`GREATEST(0, ${polyPositionGapCohorts.remainingShares} - ${deltaFilledShares})` }
+                : {}),
+						...(firstCancellation && restoreCanceledEntitlement
 							? {
 									remainingShares: sql`LEAST(GREATEST(0, ${polyPositionGapCohorts.allowedMirrorShares} - ${polyPositionGapCohorts.acquiredShares} - ${deltaFilledShares}), ${polyPositionGapCohorts.remainingShares} + ${unfilledShares})`,
 								}
 							: {}),
 						status:
+              proof && priorTerminal ? sql`${polyPositionGapCohorts.status}` :
 							status === "filled"
 								? "exhausted"
 								: status === "canceled"

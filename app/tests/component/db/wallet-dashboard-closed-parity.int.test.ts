@@ -11,6 +11,8 @@ import {
   polyTraderWallets,
 } from "@cogni/poly-db-schema/trader-activity";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
+import { type NativePaperFixtureDb, seedNativePaperConnection, seedNativePaperFill } from "./native-paper-receipt.fixture";
+import { observePaperWallet } from "@/features/wallet-analysis/server/paper-fact-source";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readEconomicPositionProjection } from "@/features/wallet-analysis/server/economic-position-read-model";
@@ -442,84 +444,34 @@ describe("current quantity authority and whole-position cost", () => {
 
 describe("paper lifetime economics from complete ledger projection", () => {
   it("reports BUY10 at .4 SELL10 at .6 as +$2, withholding incomplete/conflicting paper and live mode", async () => {
-    // Keep this standalone fixture invisible to other files' paper-wallet
-    // retirement sweeps until its assertions and cleanup have finished.
-    await getSeedDb().transaction(async (db) => {
-      const address = `0x${randomUUID().replaceAll("-", "").padStart(40, "0")}`;
-      const [wallet] = await db
-        .insert(polyTraderWallets)
-        .values({
-          walletAddress: address,
-          kind: "paper_wallet",
-          label: "paper-completeness",
-        })
-        .returning();
+    // Keep native connection, receipt acceptance, observation and reads in the
+    // same transaction, invisible to concurrent global retirement sweeps.
+    await getSeedDb().transaction(async (tx) => {
+      const db = tx as unknown as NativePaperFixtureDb;
+      const owner = { userId: randomUUID(), billingAccountId: randomUUID() };
+      await db.insert(users).values({ id: owner.userId, name: "native paper completeness" });
+      await db.insert(billingAccounts).values({ id: owner.billingAccountId, ownerUserId: owner.userId, balanceCredits: 0n });
+      const address = await seedNativePaperConnection(owner, "100", db);
+      const [wallet] = await db.insert(polyTraderWallets).values({
+        walletAddress: address, kind: "paper_wallet", label: "paper-completeness",
+        createdAt: new Date("2026-10-01T00:00:00.000Z"),
+      }).returning();
       if (!wallet) throw new Error("missing paper wallet");
-      const conditionId = `paper-${randomUUID()}`;
+      const conditionId = `0x${randomUUID().replaceAll("-", "").padStart(64, "0")}`;
       const observed = new Date("2026-10-12T11:59:00Z");
       try {
-        await db
-          .insert(polyTraderIngestionCursors)
-          .values({
-            traderWalletId: wallet.id,
-            source: "paper-ledger-positions",
-            status: "ok",
-            lastSuccessAt: observed,
-          });
-        await db.insert(polyTraderFills).values([
-          {
-            traderWalletId: wallet.id,
-            source: "paper-ledger",
-            nativeId: "paper-buy",
-            conditionId,
-            tokenId: "1",
-            side: "BUY",
-            price: "0.4",
-            shares: "10",
-            sizeUsdc: "4",
-            observedAt: new Date("2026-10-12T10:00:00Z"),
-            raw: {},
-          },
-          {
-            traderWalletId: wallet.id,
-            source: "paper-ledger",
-            nativeId: "paper-sell",
-            conditionId,
-            tokenId: "1",
-            side: "SELL",
-            price: "0.6",
-            shares: "10",
-            sizeUsdc: "6",
-            observedAt: new Date("2026-10-12T11:00:00Z"),
-            raw: {},
-          },
-        ]);
-        await db
-          .insert(polyTraderCurrentPositions)
-          .values({
-            traderWalletId: wallet.id,
-            conditionId,
-            tokenId: "1",
-            shares: "0",
-            costBasisUsdc: "0",
-            currentValueUsdc: "0",
-            avgPrice: "0.4",
-            active: false,
-            contentHash: "paper-complete",
-            lastObservedAt: observed,
-            raw: {
-              source: "paper-ledger",
-              buyUsdc: 4,
-              sellUsdc: 6,
-              buyShares: 10,
-              netShares: 0,
-              lastFillAt: "2026-10-12T11:00:00Z",
-            },
-          });
+        await seedNativePaperFill(owner, randomUUID(), { conditionId, tokenId: "1",
+          side: "BUY", price: "0.4", shares: "10", observedAt: new Date("2026-10-12T10:00:00Z") }, db);
+        await seedNativePaperFill(owner, randomUUID(), { conditionId, tokenId: "1",
+          side: "SELL", price: "0.6", shares: "10", observedAt: new Date("2026-10-12T11:00:00Z") }, db);
+        const logger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, child: () => logger };
+        await observePaperWallet({ db, wallet: { traderWalletId: wallet.id,
+          account: { billingAccountId: owner.billingAccountId, address, seedUsdc: "100" } },
+          now: observed, readMidPrice: async () => null, logger: logger as never });
         const read = (connectionKind: "paper" | "privy_live" = "paper") =>
           readEconomicPositionProjection({
             db,
-            billingAccountId: TENANT,
+            billingAccountId: owner.billingAccountId,
             walletAddress: address,
             connectionKind,
             capturedAt: CAPTURED,
@@ -565,6 +517,8 @@ describe("paper lifetime economics from complete ledger projection", () => {
           .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
         expect((await read()).closedPositions[0]?.pnlUsd).toBeNull();
       } finally {
+        await db.delete(billingAccounts).where(eq(billingAccounts.id, owner.billingAccountId));
+        await db.delete(users).where(eq(users.id, owner.userId));
         await db
           .delete(polyTraderWallets)
           .where(eq(polyTraderWallets.id, wallet.id));

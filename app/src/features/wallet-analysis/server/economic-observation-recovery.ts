@@ -482,11 +482,14 @@ export async function recoverEconomicObservations(input: {
         p.first_observed_at, p.cost_basis_usdc
       FROM owned_wallets w JOIN poly_trader_current_positions p ON p.trader_wallet_id = w.id
       WHERE p.last_observed_at >= ${windowStart.toISOString()}::timestamptz
+        AND p.last_observed_at <= ${input.now.toISOString()}::timestamptz
       UNION ALL
       SELECT w.id, w.wallet_address, lower(r.condition_id), r.token_id,
         max(r.last_observed_at), sum(r.buy_usdc)
       FROM owned_wallets w JOIN poly_trader_fill_rollups_daily r ON r.trader_wallet_id = w.id
       WHERE r.day >= ${windowStart.toISOString()}::timestamptz::date
+        AND r.day <= ${input.now.toISOString()}::timestamptz::date
+        AND r.last_observed_at <= ${input.now.toISOString()}::timestamptz
       GROUP BY w.id, w.wallet_address, lower(r.condition_id), r.token_id
       UNION ALL
       SELECT w.id, w.wallet_address, lower(f.condition_id), f.token_id,

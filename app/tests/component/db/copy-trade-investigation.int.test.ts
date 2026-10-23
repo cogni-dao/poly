@@ -34,15 +34,17 @@ import {
   getCopyTradeInvestigationSummary,
   InvalidInvestigationCapturedAtError,
 } from "@/features/wallet-analysis/server/copy-trade-investigation-service";
-import { billingAccounts, users } from "@/shared/db/schema";
+import { billingAccounts, polyWalletConnections, polyWalletGrants, users } from "@/shared/db/schema";
 
-const CONDITION_A = `quant-a-${randomUUID()}`;
+import { seedNativePaperConnection, seedNativePaperFill } from "./native-paper-receipt.fixture";
+
+const CONDITION_A = `0x${randomUUID().replaceAll("-", "").repeat(2)}`;
 const CONDITION_B = `quant-b-${randomUUID()}`;
 const CONDITION_MULTI = `quant-multi-${randomUUID()}`;
 const MARKET_A = `prediction-market:polymarket:${CONDITION_A}`;
 const MARKET_B = `prediction-market:polymarket:${CONDITION_B}`;
 const MARKET_MULTI = `prediction-market:polymarket:${CONDITION_MULTI}`;
-const TOKEN_YES = `quant-token-${randomUUID()}`;
+const TOKEN_YES = BigInt(`0x${randomUUID().replaceAll("-", "")}`).toString();
 const TARGET_WALLET = `0x${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`.slice(0, 42);
 const future = new Date("2099-01-01T00:00:00.000Z");
 
@@ -73,6 +75,7 @@ describe("copy-trade investigation", () => {
   const targetRowId = randomUUID();
   let db: Database;
   let targetTraderWalletId = "";
+  let paperAddress = "";
 
   beforeAll(async () => {
     db = getAppDb();
@@ -170,30 +173,6 @@ describe("copy-trade investigation", () => {
     });
 
     await seedDb.insert(polyCopyTradeFills).values([
-      ...[0, 1, 2].map((index) => ({
-        billingAccountId: ownerA.billingAccountId,
-        createdByUserId: ownerA.userId,
-        targetId: fillTargetId,
-        fillId: `data-api:quant-a-${index}`,
-        marketId: MARKET_A,
-        observedAt: new Date(`2026-10-03T12:0${5 + index}:00.000Z`),
-        clientOrderId: `quant-a-${index}-${randomUUID()}`,
-        orderId: `quant-order-${index}-${randomUUID()}`,
-        status: "filled" as const,
-        positionLifecycle: "open",
-        mode: "paper" as const,
-        price: "0.50000000",
-        shares: "2.00000000",
-        feesUsdc: "0.01000000",
-        attributes: {
-          target_wallet: TARGET_WALLET,
-          token_id: TOKEN_YES,
-          outcome: "YES",
-          side: "BUY",
-          size_usdc: "1",
-          filled_size_usdc: "1",
-        },
-      })),
       ...[0, 1, 2, 3, 4].map((index) => ({
         billingAccountId: ownerA.billingAccountId,
         createdByUserId: ownerA.userId,
@@ -213,6 +192,7 @@ describe("copy-trade investigation", () => {
           token_id: `quant-multi-token-${index}`,
           outcome: `OPTION_${index}`,
           side: "BUY",
+          size_usdc: 0.1,
         },
       })),
       {
@@ -228,6 +208,15 @@ describe("copy-trade investigation", () => {
         attributes: { marker: "tenant-b" },
       },
     ]);
+    paperAddress = await seedNativePaperConnection(ownerA, "100");
+    for (const index of [0, 1, 2]) {
+      const native = await seedNativePaperFill(ownerA, fillTargetId, { conditionId: CONDITION_A,
+        tokenId: TOKEN_YES, side: "BUY", price: ".5", shares: "2", feesUsdc: ".01",
+        observedAt: new Date(`2026-10-03T12:0${5 + index}:00.000Z`) });
+      await seedDb.update(polyCopyTradeFills).set({ fillId: `data-api:quant-a-${index}`,
+        attributes: sql`${polyCopyTradeFills.attributes} || ${JSON.stringify({ target_wallet: TARGET_WALLET, outcome: "YES" })}::jsonb` })
+        .where(eq(polyCopyTradeFills.clientOrderId, native.client));
+    }
     await seedDb.insert(polyCopyTradeDecisions).values(
       [0, 1, 2].map((index) => ({
         billingAccountId: ownerA.billingAccountId,
@@ -296,6 +285,9 @@ describe("copy-trade investigation", () => {
     await seedDb
       .delete(polyTraderWallets)
       .where(eq(polyTraderWallets.id, targetTraderWalletId));
+    await seedDb.delete(polyWalletGrants).where(eq(polyWalletGrants.billingAccountId, ownerA.billingAccountId));
+    await seedDb.delete(polyWalletConnections).where(eq(polyWalletConnections.billingAccountId, ownerA.billingAccountId));
+    await seedDb.delete(polyTraderWallets).where(eq(polyTraderWallets.walletAddress, paperAddress));
     await seedDb
       .delete(billingAccounts)
       .where(inArray(billingAccounts.id, [ownerA.billingAccountId, ownerB.billingAccountId]));
