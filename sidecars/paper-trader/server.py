@@ -421,25 +421,68 @@ class Sidecar:
     def start(self) -> None:
         from pm_trader.engine import Engine
 
-        # Reset stop flag so a restarted lifespan (e.g. across tests) gets a
-        # fresh thread that doesn't see a stale set-event and exit immediately.
-        self._stop.clear()
+        # Unavailability is sticky for this resident account, including restart.
+        if self._stop.is_set():
+            raise HTTPException(status_code=503, detail="paper_account_unavailable")
 
         account_dir = DATA_DIR / self.account_key
-        account_dir.mkdir(parents=True, exist_ok=True)
-        self.engine = Engine(data_dir=account_dir)
-        # Idempotent — already-initialized accounts re-init harmlessly OR raise;
-        # we accept either and move on.
+        engine = None
         try:
-            self.engine.init_account(balance=self.starting_balance_usdc)
-        except Exception:
-            # Idempotent — already-initialised accounts may raise; not an error.
-            pass
+            account_dir.mkdir(parents=True, exist_ok=True)
+            engine = Engine(data_dir=account_dir)
+            # The vendor init method resets cash/created_at. Serialize the
+            # first-open check and call it only for an empty native account.
+            with engine.db.conn as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                account = engine.db.get_account()
+                if account is None:
+                    for table in ("trades", "positions", "limit_orders", "market_cache"):
+                        if conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                            raise HTTPException(
+                                status_code=503, detail="paper_account_unavailable"
+                            )
+                    engine.init_account(balance=self.starting_balance_usdc)
+                    account = engine.db.get_account()
+                if account is None:
+                    raise HTTPException(
+                        status_code=503, detail="paper_account_unavailable"
+                    )
+                if account.starting_balance != self.starting_balance_usdc:
+                    raise HTTPException(
+                        status_code=409, detail="account_seed_mismatch"
+                    )
+                if not math.isfinite(account.cash):
+                    raise HTTPException(
+                        status_code=503, detail="paper_account_unavailable"
+                    )
+                # The old process's client/token/boot mapping is not persisted.
+                # check_orders can debit cash BEFORE noticing that missing map.
+                if conn.execute(
+                    "SELECT 1 FROM limit_orders WHERE status = 'pending' LIMIT 1"
+                ).fetchone():
+                    raise HTTPException(
+                        status_code=503, detail="paper_account_unavailable"
+                    )
 
-        self._fill_thread = threading.Thread(
-            target=self._fill_loop, daemon=True, name="paper-fill-loop"
-        )
-        self._fill_thread.start()
+            self.engine = engine
+            self._fill_thread = threading.Thread(
+                target=self._fill_loop, daemon=True, name="paper-fill-loop"
+            )
+            self._fill_thread.start()
+        except Exception as error:
+            self._stop.set()
+            self.engine = None
+            self._fill_thread = None
+            if engine is not None:
+                try:
+                    engine.close()
+                except Exception:
+                    pass  # Cleanup must not replace the initialization verdict.
+            if isinstance(error, HTTPException):
+                raise
+            raise HTTPException(
+                status_code=503, detail="paper_account_unavailable"
+            ) from None
         log.info(
             "sidecar started",
             extra={
@@ -462,105 +505,138 @@ class Sidecar:
             except Exception:
                 pass
 
+    def _withhold(self, *, close: bool = True) -> HTTPException:
+        """Called under the account lock; stop access BEFORE uncertain cleanup."""
+        already_stopped = self._stop.is_set()
+        self._stop.set()
+        if close and not already_stopped and self.engine is not None:
+            try:
+                self.engine.close()
+            except Exception:
+                pass  # Cleanup cannot restore authority or hide committed effects.
+        return HTTPException(status_code=503, detail="paper_account_unavailable")
+
+    def _require_available(self, reason: str = "dirty_entry") -> None:
+        """Guard before EVERY native/provider/cache/shadow operation, under lock."""
+        if self._stop.is_set() or self.engine is None:
+            raise HTTPException(status_code=503, detail="paper_account_unavailable")
+        if getattr(self.engine.db.conn, "in_transaction", False):
+            # An incoming caller owns this transaction, including its rollback.
+            raise self._withhold(close=reason != "dirty_entry")
+
     def _fill_loop(self) -> None:
         """Polls `engine.check_orders()` on a fixed interval. Without this,
         resting paper limits never transition to filled. Emits a per-tick
         heartbeat so Loki has a presence signal (per observability self-check
         #4: explicit failure logs + heartbeat for adapter liveness)."""
         while not self._stop.wait(CHECK_ORDERS_INTERVAL_SECONDS):
-            try:
-                with self.lock:
+            with self.lock:
+                try:
+                    self._require_available()
                     filled = self.engine.check_orders()  # type: ignore[union-attr]
-                filled_count = 0
-                dropped_count = 0
-                # `engine.check_orders()` returns wrapped entries:
-                # ``[{"order": {"id": <int>, ...}, "action": "filled" | ...}]``
-                # — see ``_order_to_dict`` in ``vendor/pm_trader/engine.py``.
-                # Reading ``d["id"]`` directly returns "" and every fill is
-                # silently dropped (server kept OrderState="open" forever,
-                # cogni reconciler never observed paper fills). The action
-                # filter limits us to genuine fills — expired/rejected entries
-                # don't get the same OrderState transition.
-                for d in filled:
-                    if d.get("action") != "filled":
-                        continue
-                    upstream_id = d.get("order", {}).get("id", "")
-                    oid = _externalize(self.account_key, upstream_id)
-                    st = self.orders.get(oid)
-                    if st is None:
-                        # Engine reported a fill we never placed (different
-                        # BOOT_ID after pod restart, or a manual upstream
-                        # write). Surface it instead of dropping silently —
-                        # the prior silent-drop on every fill is exactly how
-                        # paper trade reported 0 fills for weeks. See
-                        # ERROR_FILL_LOOP_UNMAPPED_ID.
-                        dropped_count += 1
-                        log.warning(
-                            "fill loop result unmapped to local OrderState",
+                    self._require_available("mutation_ambiguous")
+                    filled_count = 0
+                    dropped_count = 0
+                    # `engine.check_orders()` returns wrapped entries:
+                    # ``[{"order": {"id": <int>, ...}, "action": "filled" | ...}]``
+                    # — see ``_order_to_dict`` in ``vendor/pm_trader/engine.py``.
+                    # Reading ``d["id"]`` directly returns "" and every fill is
+                    # silently dropped (server kept OrderState="open" forever,
+                    # cogni reconciler never observed paper fills). The action
+                    # filter limits us to genuine fills — expired/rejected entries
+                    # don't get the same OrderState transition.
+                    for d in filled:
+                        if d.get("action") != "filled":
+                            continue
+                        upstream_id = d.get("order", {}).get("id", "")
+                        oid = _externalize(self.account_key, upstream_id)
+                        st = self.orders.get(oid)
+                        if st is None:
+                            # Engine reported a fill we never placed (different
+                            # BOOT_ID after pod restart, or a manual upstream
+                            # write). Surface it instead of dropping silently —
+                            # the prior silent-drop on every fill is exactly how
+                            # paper trade reported 0 fills for weeks. See
+                            # ERROR_FILL_LOOP_UNMAPPED_ID.
+                            dropped_count += 1
+                            log.warning(
+                                "fill loop result unmapped to local OrderState",
+                                extra={
+                                    "event": EVENT_FILL_LOOP_DROPPED,
+                                    "errorCode": ERROR_FILL_LOOP_UNMAPPED_ID,
+                                    "upstream_id": str(upstream_id),
+                                    "oid": oid,
+                                },
+                            )
+                            raise RuntimeError("committed native fill has no shadow")
+                        # bug.5018 — engine attaches realized fill data on
+                        # `action="filled"` entries. amount_usd is realized
+                        # notional (not intent), avg_price is VWAP across
+                        # matched levels, fee is realized fee in USDC.
+                        fill = d["fill"]
+                        amount = float(fill["amount_usd"])
+                        price = float(fill["avg_price"])
+                        shares = float(fill["total_shares"])
+                        fee = float(fill["fee"])
+                        if not all(math.isfinite(v) for v in (amount, price, shares, fee)) or (
+                            amount <= 0 or price <= 0 or shares <= 0 or fee < 0
+                        ):
+                            raise ValueError("invalid committed native fill")
+                        st.filled_size_usdc = amount
+                        st.fill_price = price
+                        st.total_shares = shares
+                        st.fees_usdc = fee
+                        st.status = "filled"
+                        st.extra.update(d)
+                        _to_receipt(st)
+                        filled_count += 1
+                        log.info(
+                            "order filled",
                             extra={
-                                "event": EVENT_FILL_LOOP_DROPPED,
-                                "errorCode": ERROR_FILL_LOOP_UNMAPPED_ID,
-                                "upstream_id": str(upstream_id),
-                                "oid": oid,
+                                "event": EVENT_ORDER_FILLED,
+                                "order_id": oid,
+                                "client_order_id": st.client_order_id,
+                                "filled_size_usdc": st.filled_size_usdc,
+                                "fill_price": st.fill_price,
+                                "total_shares": st.total_shares,
+                                "fees_usdc": st.fees_usdc,
                             },
                         )
-                        continue
-                    st.status = "filled"
-                    # bug.5018 — engine attaches realized fill data on
-                    # `action="filled"` entries. amount_usd is realized
-                    # notional (not intent), avg_price is VWAP across
-                    # matched levels, fee is realized fee in USDC.
-                    fill = d["fill"]
-                    st.filled_size_usdc = float(fill["amount_usd"])
-                    st.fill_price = float(fill["avg_price"])
-                    st.total_shares = float(fill["total_shares"])
-                    st.fees_usdc = float(fill["fee"])
-                    st.extra.update(d)
-                    filled_count += 1
+                    # Heartbeat — emit every tick so an absence alert in Loki can
+                    # detect a stuck/crashed fill loop. Low volume (2/min at 30s).
+                    # `dropped_count` distinguishes "engine produced no fills"
+                    # (the normal quiet case) from "engine produced fills but
+                    # OrderState mapping silently dropped them" (the prior bug).
                     log.info(
-                        "order filled",
+                        "fill loop tick",
                         extra={
-                            "event": EVENT_ORDER_FILLED,
-                            "order_id": oid,
-                            "client_order_id": st.client_order_id,
-                            "filled_size_usdc": st.filled_size_usdc,
-                            "fill_price": st.fill_price,
-                            "total_shares": st.total_shares,
-                            "fees_usdc": st.fees_usdc,
+                            "event": EVENT_FILL_LOOP_TICK,
+                            "pending_count": len(
+                                [s for s in self.orders.values() if s.status == "open"]
+                            ),
+                            "filled_count": filled_count,
+                            "dropped_count": dropped_count,
                         },
                     )
-                # Heartbeat — emit every tick so an absence alert in Loki can
-                # detect a stuck/crashed fill loop. Low volume (2/min at 30s).
-                # `dropped_count` distinguishes "engine produced no fills"
-                # (the normal quiet case) from "engine produced fills but
-                # OrderState mapping silently dropped them" (the prior bug).
-                log.info(
-                    "fill loop tick",
-                    extra={
-                        "event": EVENT_FILL_LOOP_TICK,
-                        "pending_count": len(
-                            [s for s in self.orders.values() if s.status == "open"]
-                        ),
-                        "filled_count": filled_count,
-                        "dropped_count": dropped_count,
-                    },
-                )
-            except Exception as e:
-                log.error(
-                    "fill loop iteration failed",
-                    extra={
-                        "event": EVENT_FILL_LOOP_ERROR,
-                        "errorCode": ERROR_FILL_LOOP_ITERATION,
-                        "errClass": type(e).__name__,
-                    },
-                    exc_info=True,
-                )
+                except Exception as e:
+                    self._withhold(close=getattr(e, "reason", None) != "dirty_entry")
+                    log.error(
+                        "fill loop iteration failed",
+                        extra={
+                            "event": EVENT_FILL_LOOP_ERROR,
+                            "errorCode": ERROR_FILL_LOOP_ITERATION,
+                            "errClass": type(e).__name__,
+                        },
+                        exc_info=True,
+                    )
+                    break
 
     # ── handlers ───────────────────────────────────────────────────────────
 
     def place(self, req: PlaceOrderRequest) -> OrderReceipt:
         slug_or_id = _resolve_slug_or_id(req)
         with self.lock:
+            self._require_available()
             try:
                 d: dict[str, Any] = self.engine.place_limit_order(  # type: ignore[union-attr]
                     slug_or_id=slug_or_id,
@@ -570,6 +646,64 @@ class Sidecar:
                     limit_price=req.limit_price,
                     order_type="gtc",
                 )
+                self._require_available("mutation_ambiguous")
+                upstream_id = d.get("id")
+                if upstream_id is None:
+                    log.error(
+                        "place_order upstream returned no order id",
+                        extra={
+                            "event": EVENT_PLACE_ERROR,
+                            "errorCode": ERROR_UPSTREAM_NO_ORDER_ID,
+                            "client_order_id": req.client_order_id,
+                            "upstream_keys": list(d.keys()),
+                        },
+                    )
+                    raise HTTPException(status_code=502, detail=ERROR_UPSTREAM_NO_ORDER_ID)
+                oid = _externalize(self.account_key, upstream_id)
+
+                upstream_status = str(d.get("status", "pending")).lower()
+                cogni_status = UPSTREAM_TO_COGNI_STATUS.get(upstream_status, "open")
+                submitted_at = (
+                    d.get("created_at")
+                    or datetime.now(timezone.utc).isoformat(timespec="seconds")
+                )
+
+                # bug.5018 — at place time the upstream engine returns pending (GTC)
+                # with no realized fill yet. filled_size_usdc / fill_price /
+                # total_shares / fees_usdc all stay 0 / None until the fill loop
+                # observes a real match via `check_orders()` and populates from
+                # `Trade.amount_usd` etc. NEVER echo intent.size_usdc here.
+                st = OrderState(
+                    upstream_id=oid,
+                    client_order_id=req.client_order_id,
+                    intent_size_usdc=req.size_usdc,
+                    status=cogni_status,
+                    filled_size_usdc=0.0,
+                    submitted_at=str(submitted_at),
+                    extra={
+                        **d,
+                        "market": req.market_id,
+                        "tokenId": req.token_id,
+                        "outcome": req.outcome,
+                        "side": req.side,
+                        "price": req.limit_price,
+                        "originalSize": req.size_usdc / req.limit_price,
+                    },
+                )
+                self.orders[oid] = st
+                log.info(
+                    "order placed",
+                    extra={
+                        "event": EVENT_PLACE_COMPLETE,
+                        "order_id": oid,
+                        "client_order_id": req.client_order_id,
+                        "status": cogni_status,
+                        "side": req.side,
+                        "size_usdc": req.size_usdc,
+                        "limit_price": req.limit_price,
+                    },
+                )
+                return _to_receipt(st)
             except Exception as e:
                 log.error(
                     "place_order upstream failure",
@@ -581,133 +715,107 @@ class Sidecar:
                     },
                     exc_info=True,
                 )
-                raise HTTPException(
-                    status_code=502, detail=ERROR_UPSTREAM_ENGINE_FAILED
-                )
-
-        upstream_id = d.get("id")
-        if upstream_id is None:
-            log.error(
-                "place_order upstream returned no order id",
-                extra={
-                    "event": EVENT_PLACE_ERROR,
-                    "errorCode": ERROR_UPSTREAM_NO_ORDER_ID,
-                    "client_order_id": req.client_order_id,
-                    "upstream_keys": list(d.keys()),
-                },
-            )
-            raise HTTPException(status_code=502, detail=ERROR_UPSTREAM_NO_ORDER_ID)
-        oid = _externalize(self.account_key, upstream_id)
-
-        upstream_status = str(d.get("status", "pending")).lower()
-        cogni_status = UPSTREAM_TO_COGNI_STATUS.get(upstream_status, "open")
-        submitted_at = (
-            d.get("created_at")
-            or datetime.now(timezone.utc).isoformat(timespec="seconds")
-        )
-
-        # bug.5018 — at place time the upstream engine returns pending (GTC)
-        # with no realized fill yet. filled_size_usdc / fill_price /
-        # total_shares / fees_usdc all stay 0 / None until the fill loop
-        # observes a real match via `check_orders()` and populates from
-        # `Trade.amount_usd` etc. NEVER echo intent.size_usdc here.
-        st = OrderState(
-            upstream_id=oid,
-            client_order_id=req.client_order_id,
-            intent_size_usdc=req.size_usdc,
-            status=cogni_status,
-            filled_size_usdc=0.0,
-            submitted_at=str(submitted_at),
-            extra={
-                **d,
-                "market": req.market_id,
-                "tokenId": req.token_id,
-                "outcome": req.outcome,
-                "side": req.side,
-                "price": req.limit_price,
-                "originalSize": req.size_usdc / req.limit_price,
-            },
-        )
-        self.orders[oid] = st
-        log.info(
-            "order placed",
-            extra={
-                "event": EVENT_PLACE_COMPLETE,
-                "order_id": oid,
-                "client_order_id": req.client_order_id,
-                "status": cogni_status,
-                "side": req.side,
-                "size_usdc": req.size_usdc,
-                "limit_price": req.limit_price,
-            },
-        )
-        return _to_receipt(st)
+                raise self._withhold(
+                    close=getattr(e, "reason", None) != "dirty_entry"
+                ) from e
 
     def cancel(self, order_id: str) -> None:
-        int_id = _to_upstream_int(order_id, self.account_key)
-        if int_id is None:
-            # Different BOOT_ID (issued by a prior process), missing prefix, or
-            # not parseable as int — none of those can exist in this engine.
-            raise HTTPException(status_code=404, detail=ERROR_NOT_FOUND)
-
         with self.lock:
+            self._require_available()
+            int_id = _to_upstream_int(order_id, self.account_key)
+            st = self.orders.get(order_id)
+            if int_id is None or st is None or st.status != "open":
+                raise HTTPException(status_code=404, detail=ERROR_NOT_FOUND)
+            # Only this process's newly mapped, untouched pending shadow may
+            # acquire known-zero authority. Never upgrade contradictory evidence.
+            zero_candidate = (
+                st.upstream_id == order_id and st.extra.get("id") == int_id
+                and st.extra.get("status") == "pending"
+                and st.filled_size_usdc == 0.0 and st.fill_price is None
+                and st.total_shares is None and st.fees_usdc is None
+            )
             try:
-                result = self.engine.cancel_limit_order(int_id)  # type: ignore[union-attr]
-            except Exception as e:
+                result = self.engine.cancel_limit_order(int_id)
+            except Exception as error:
                 log.error(
                     "cancel_order upstream failure",
                     extra={
                         "event": EVENT_CANCEL_ERROR,
                         "errorCode": ERROR_UPSTREAM_ENGINE_FAILED,
-                        "errClass": type(e).__name__,
+                        "errClass": type(error).__name__,
                         "order_id": order_id,
                     },
                     exc_info=True,
                 )
-                raise HTTPException(
-                    status_code=502, detail=ERROR_UPSTREAM_ENGINE_FAILED
+                raise self._withhold(
+                    close=getattr(error, "reason", None) != "dirty_entry"
+                ) from error
+            if result is None:
+                raise HTTPException(status_code=404, detail=ERROR_NOT_FOUND)
+            try:
+                if result.get("id") != int_id or result.get("status") != "cancelled":
+                    raise ValueError("unproven native cancellation")
+                self._require_available("mutation_ambiguous")
+                st.status = "canceled"
+                st.extra.update({"status": result["status"]})
+                if zero_candidate:
+                    st.fees_usdc = 0.0
+                _to_receipt(st)
+                log.info(
+                    "order cancelled",
+                    extra={
+                        "event": EVENT_CANCEL_COMPLETE,
+                        "order_id": order_id,
+                        "client_order_id": st.client_order_id,
+                    },
                 )
-        if result is None:
-            raise HTTPException(status_code=404, detail=ERROR_NOT_FOUND)
-        st = self.orders.get(order_id)
-        if st is not None:
-            # The vendored engine stores ``cancelled``; our HTTP contract is
-            # the provider-neutral Cogni spelling accepted by OrderReceiptSchema.
-            st.status = "canceled"
-        log.info(
-            "order cancelled",
-            extra={
-                "event": EVENT_CANCEL_COMPLETE,
-                "order_id": order_id,
-                "client_order_id": st.client_order_id if st else None,
-            },
-        )
+            except Exception as error:
+                log.error(
+                    "cancel_order upstream failure",
+                    extra={
+                        "event": EVENT_CANCEL_ERROR,
+                        "errorCode": ERROR_UPSTREAM_ENGINE_FAILED,
+                        "errClass": type(error).__name__,
+                        "order_id": order_id,
+                    },
+                    exc_info=True,
+                )
+                raise self._withhold(
+                    close=getattr(error, "reason", None) != "dirty_entry"
+                ) from error
 
     def get(self, order_id: str) -> OrderReceipt:
-        st = self.orders.get(order_id)
-        if st is None:
-            raise HTTPException(status_code=404, detail="not_found")
-        return _to_receipt(st)
+        with self.lock:
+            self._require_available()
+            st = self.orders.get(order_id)
+            if st is None:
+                raise HTTPException(status_code=404, detail="not_found")
+            try:
+                return _to_receipt(st)
+            except Exception as error:
+                raise self._withhold() from error
 
     def list_open_orders(self) -> list[OrderReceipt]:
-        """Return this account's authoritative current open-order book.
-
-        The engine's SQLite rows are the order-state authority. The receipt
-        shadow supplies the client id and original intent fields. A missing
-        shadow is typed unavailable, never an invented empty list.
-        """
+        """Return native orders and coherent same-lock receipt shadows."""
         with self.lock:
-            pending = self.engine.get_pending_orders()  # type: ignore[union-attr]
-        receipts: list[OrderReceipt] = []
-        for order in pending:
-            oid = _externalize(self.account_key, order.get("id", ""))
-            st = self.orders.get(oid)
-            if st is None:
-                raise HTTPException(
-                    status_code=503, detail="open_order_shadow_unavailable"
-                )
-            receipts.append(_to_receipt(st))
-        return receipts
+            self._require_available()
+            try:
+                pending = self.engine.get_pending_orders()
+                self._require_available("mutation_ambiguous")
+                receipts: list[OrderReceipt] = []
+                for order in pending:
+                    oid = _externalize(self.account_key, order.get("id", ""))
+                    st = self.orders.get(oid)
+                    if st is None:
+                        raise HTTPException(
+                            status_code=503, detail="open_order_shadow_unavailable"
+                        )
+                    receipts.append(_to_receipt(st))
+                return receipts
+            except Exception:
+                # A missing receipt is never authority for an empty book.
+                self._withhold()
+                raise
 
     # ── pm_trader pass-throughs (account-scoped PnL surface) ─────────────
     # These expose pm_trader.Engine's existing PnL/portfolio/history methods
@@ -715,15 +823,31 @@ class Sidecar:
     # Every value belongs to this Sidecar's one account namespace.
     def balance(self) -> dict[str, Any]:
         with self.lock:
-            return self.engine.get_balance()  # type: ignore[union-attr]
+            self._require_available()
+            try:
+                result = self.engine.get_balance()
+            except Exception:
+                self._require_available("mutation_ambiguous")
+                raise
+            self._require_available("mutation_ambiguous")
+            return result
 
     def portfolio(self) -> list[dict[str, Any]]:
         with self.lock:
-            return self.engine.get_portfolio()  # type: ignore[union-attr]
+            self._require_available()
+            try:
+                result = self.engine.get_portfolio()
+            except Exception:
+                self._require_available("mutation_ambiguous")
+                raise
+            self._require_available("mutation_ambiguous")
+            return result
 
     def history(self, limit: int) -> list[dict[str, Any]]:
         with self.lock:
-            trades = self.engine.get_history(limit=limit)  # type: ignore[union-attr]
+            self._require_available()
+            trades = self.engine.get_history(limit=limit)
+            self._require_available("mutation_ambiguous")
         # pm_trader returns dataclass Trade instances; coerce to plain dicts
         # so FastAPI's serializer doesn't need a model. Trade is a frozen
         # dataclass — `vars()` is the canonical conversion.
@@ -816,6 +940,8 @@ def readyz() -> dict[str, str]:
     if not sidecars.started:
         raise HTTPException(status_code=503, detail="registry_not_started")
     for account in sidecars.snapshot():
+        with account.lock:
+            account._require_available()
         if account._fill_thread is None or not account._fill_thread.is_alive():
             raise HTTPException(status_code=503, detail="fill_loop_not_running")
         if account.engine is None:
