@@ -156,6 +156,16 @@ function dropUndefined<T extends Record<string, unknown>>(
 
 function rethrowBackendError(error: unknown): never {
 	if (error instanceof WorkItemWriteOutcomeUnknownError) throw error;
+	// Published adapter and root entries may carry separate error constructors.
+	if ((error as Error)?.name === "WorkItemWriteOutcomeUnknownError") {
+		const receipt = error as WorkItemWriteOutcomeUnknownError;
+		throw new WorkItemWriteOutcomeUnknownError(
+			receipt.operationId,
+			receipt.branch,
+			receipt.commitHash,
+			receipt.itemId,
+		);
+	}
 	const message = (error as Error)?.message ?? "";
 	const notFound = /^Work item not found: (.+)$/.exec(message);
 	if (notFound?.[1]) throw new WorkItemNotFoundError(notFound[1]);

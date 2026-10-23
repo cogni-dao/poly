@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-/** Actual PATCH handler and facade, with only authentication/logging and the port stubbed. */
+/** Actual mutation handlers and facade, with only authentication/logging and the port stubbed. */
 
 import { WorkItemWriteOutcomeUnknownError } from "@cogni/work-items";
+import { WorkItemWriteOutcomeUnknownError as AdapterWriteOutcomeUnknownError } from "@cogni/work-items/adapters/doltgres";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ patch: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  patch: vi.fn(),
+  create: vi.fn(),
+  sessionUser: { id: "agent:cas" } as { id: string } | null,
+}));
 vi.mock("@/bootstrap/container", () => ({
-  getContainer: () => ({ doltgresWorkItems: { patch: mocks.patch } }),
+  getContainer: () => ({
+    doltgresWorkItems: { patch: mocks.patch, create: mocks.create },
+  }),
 }));
 vi.mock("@/app/_lib/auth/session", () => ({ getSessionUser: vi.fn() }));
 vi.mock("@/bootstrap/http", () => ({
@@ -19,7 +26,7 @@ vi.mock("@/bootstrap/http", () => ({
       handler(
         { log: { info: vi.fn() } },
         request,
-        { id: "agent:cas" },
+        mocks.sessionUser,
         context
       ),
 }));
@@ -32,6 +39,8 @@ vi.mock("@cogni/node-contracts", async (importOriginal) => ({
 }));
 
 import { PATCH } from "@/app/api/v1/work/items/[id]/route";
+import { POST } from "@/app/api/v1/work/items/route";
+import { patchWorkItem } from "@/app/_facades/work/items.server";
 
 const item = {
   id: "task.0001",
@@ -58,10 +67,21 @@ function patch(body: unknown) {
     { params: Promise.resolve({ id: item.id }) }
   );
 }
+function create() {
+  return POST(
+    new NextRequest("https://poly.cognidao.org/api/v1/work/items", {
+      method: "POST",
+      body: JSON.stringify({ type: "task", title: "Created" }),
+      headers: { "content-type": "application/json" },
+    })
+  );
+}
 describe("work-item HTTP revision CAS", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    mocks.sessionUser = { id: "agent:cas" };
     mocks.patch.mockResolvedValue(item);
+    mocks.create.mockResolvedValue(item);
   });
   it.each([
     0, 2,
@@ -162,5 +182,57 @@ describe("work-item HTTP revision CAS", () => {
       lookup: error.receipt.lookup,
     });
     expect(mocks.patch).toHaveBeenCalledTimes(1);
+  });
+  it("preserves the root error instance through the facade", async () => {
+    const error = new WorkItemWriteOutcomeUnknownError("operation", "branch");
+    mocks.patch.mockRejectedValue(error);
+    await expect(patchWorkItem(
+      { id: item.id, set: { title: "Updated" } }, { id: "agent:cas" }
+    )).rejects.toBe(error);
+    expect(mocks.patch).toHaveBeenCalledTimes(1);
+  });
+  describe.each(["patch", "create"] as const)("%s adapter error boundary", (operation) => {
+    const invoke = () => operation === "patch"
+      ? patch({ set: { title: "Updated" }, expectedRevision: 2 })
+      : create();
+    it.each([
+      { commitHash: "commit", itemId: item.id },
+      { commitHash: undefined, itemId: item.id },
+      { commitHash: "commit", itemId: undefined },
+      { commitHash: undefined, itemId: undefined },
+    ])("returns the exact nonretryable receipt for %j", async ({ commitHash, itemId }) => {
+      // Use the public adapter entry: its packed constructor can differ from root.
+      const error = new AdapterWriteOutcomeUnknownError(
+        "adapter-operation", "adapter-branch", commitHash, itemId
+      );
+      mocks[operation].mockRejectedValue(error);
+      const response = await invoke();
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: "work_item_write_outcome_unknown",
+        retryable: false,
+        lookup: {
+          operationId: "adapter-operation",
+          branch: "adapter-branch",
+          commitHash: commitHash ?? null,
+          itemId: itemId ?? null,
+        },
+        message: error.message,
+      });
+      expect(mocks[operation]).toHaveBeenCalledTimes(1);
+      expect(mocks[operation === "patch" ? "create" : "patch"]).not.toHaveBeenCalled();
+    });
+    it("preserves unrelated errors without retry", async () => {
+      const error = new Error("unrelated port failure");
+      mocks[operation].mockRejectedValue(error);
+      await expect(invoke()).rejects.toBe(error);
+      expect(mocks[operation]).toHaveBeenCalledTimes(1);
+    });
+    it("requires authentication before mutation", async () => {
+      mocks.sessionUser = null;
+      expect((await invoke()).status).toBe(401);
+      expect(mocks.patch).not.toHaveBeenCalled();
+      expect(mocks.create).not.toHaveBeenCalled();
+    });
   });
 });
