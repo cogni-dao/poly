@@ -711,6 +711,7 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		});
 		// The shared PAPER fixture is now a real canonical account. Keep it as a
 		// retained control and retire a separate orphan through a temporary account.
+		const retirementUserId = `retirement-user-${randomUUID()}`;
 		const retirementBillingId = `retirement-${randomUUID()}`;
 		const canonicalAddress = derivePaperAccountAddress(retirementBillingId);
 		for (const address of [OUR_WALLET, ORPHAN_PAPER_WALLET, TARGET_WALLET, PAPER_LOCAL_WALLET]) {
@@ -726,9 +727,10 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 		};
 		let orphanPaperWalletId = "";
 		try {
+			await db.insert(users).values({ id: retirementUserId });
 			await db.insert(billingAccounts).values({
 				id: retirementBillingId,
-				ownerUserId: USER_ID,
+				ownerUserId: retirementUserId,
 				balanceCredits: 0n,
 			});
 			const [orphan] = await db.insert(polyTraderWallets).values({
@@ -900,14 +902,14 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 						.insert(polyWalletConnections)
 						.values({
 							billingAccountId: retirementBillingId,
-							createdByUserId: USER_ID,
+							createdByUserId: retirementUserId,
 							kind: "paper",
 							address: canonicalAddress,
 							funderAddress: canonicalAddress,
 							paperSeedUsdc: "100.00000000",
 							custodialConsentAcceptedAt: new Date(),
 							custodialConsentActorKind: "user",
-							custodialConsentActorId: USER_ID,
+							custodialConsentActorId: retirementUserId,
 						})
 						.returning({ id: polyWalletConnections.id });
 					if (!connection)
@@ -1054,6 +1056,8 @@ describe("lineage-scoped copy-target V2 hydration", () => {
 			}
 			await db.delete(billingAccounts)
 				.where(eq(billingAccounts.id, retirementBillingId));
+			await db.delete(users)
+				.where(eq(users.id, retirementUserId));
 		}
 	});
 
