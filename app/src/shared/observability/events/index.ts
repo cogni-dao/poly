@@ -93,6 +93,10 @@ export const EVENT_NAMES = {
   POLY_POSITION_GAP_PAPER_FILL_EVIDENCE_UNAVAILABLE:
     "poly.position_gap.v3.paper_fill_evidence_unavailable",
 	POLY_ALGORITHM_ATTEMPT_COMPLETE: "feature.poly_algorithm.attempt.complete",
+
+  // Process health (bug.5520). One info line per 60s window: the max event-loop
+  // block is the direct signal for in-process sync work stalling every request.
+  PROCESS_EVENT_LOOP_DELAY: "process.event_loop_delay",
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];

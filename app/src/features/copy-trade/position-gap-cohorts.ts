@@ -6,9 +6,12 @@
  * Purpose: Derive durable quantity+price entitlement mutations before planning.
  * Scope: Pure cohort arithmetic. No database, provider, or execution IO.
  * Invariants: ALLOWANCE_NEVER_INCREASES_IN_PLACE, GROWTH_CREATES_A_COHORT,
- *   REDUCE_HIGHEST_PRICE_THEN_NEWEST, NO_DENOMINATOR_GROWTH.
+ *   REDUCE_HIGHEST_PRICE_THEN_NEWEST, NO_DENOMINATOR_GROWTH,
+ *   LINEAR_GROUPING (bug.5520: one pass per cohort, never tokens x cohorts),
+ *   ORDER_EQUALS_LOCALE_COMPARE (cheap comparators only where provably
+ *   identical to `String#localeCompare`; otherwise localeCompare itself).
  * Side-effects: none
- * Links: story.5015, task.1791070974
+ * Links: story.5015, task.1791070974, bug.5520
  * @public
  */
 
@@ -107,6 +110,58 @@ export interface ProjectPositionGapCohortsInput {
 	scale: number;
 	activation: boolean;
 	nowMs: number;
+}
+
+type StringComparator = (left: string, right: string) => number;
+
+const compareLocale: StringComparator = (left, right) =>
+	left.localeCompare(right);
+
+const compareCodeUnits: StringComparator = (left, right) =>
+	left < right ? -1 : left > right ? 1 : 0;
+
+/**
+ * Strings drawn only from [0-9a-z] (lowercase hex addresses, sha256 keys,
+ * decimal token ids, `0x` prefixes). In CLDR root/en collation these 36
+ * characters each carry a distinct primary weight ordered exactly like their
+ * UTF-16 code units, with no ignorables, contractions, or expansions — so the
+ * first differing character decides, a strict prefix sorts first, and only
+ * identical strings compare 0, in both orders. Anything else (uppercase,
+ * punctuation such as `:` or `-`, non-ASCII) keeps localeCompare.
+ */
+const CODE_UNIT_SAFE = /^[0-9a-z]*$/;
+
+/**
+ * Guard against a runtime default locale that tailors this alphabet
+ * (e.g. da "aa" after "z", lt "y" after "i", et "z" after "s", cs "ch").
+ */
+const LOCALE_MATCHES_CODE_UNITS = (() => {
+	const probe = [
+		..."0123456789abcdefghijklmnopqrstuvwxyz",
+		"aa",
+		"ab",
+		"ch",
+		"ci",
+		"ll",
+		"lm",
+		"zz",
+		"0x",
+		"0x0",
+		"10",
+		"9",
+	];
+	const byLocale = [...probe].sort(compareLocale);
+	const byCodeUnit = [...probe].sort(compareCodeUnits);
+	return byLocale.every((value, index) => value === byCodeUnit[index]);
+})();
+
+/** Exact localeCompare order, via code-unit comparison when provably equal. */
+function comparatorFor(values: Iterable<string>): StringComparator {
+	if (!LOCALE_MATCHES_CODE_UNITS) return compareLocale;
+	for (const value of values) {
+		if (!CODE_UNIT_SAFE.test(value)) return compareLocale;
+	}
+	return compareCodeUnits;
 }
 
 function stableKey(parts: readonly string[]): string {
@@ -256,10 +311,13 @@ export function projectPositionGapCohorts(
 		}
 	}
 
+	const compareFillId = comparatorFor(
+		input.activity.map((event) => event.fillId),
+	);
 	for (const event of [...input.activity].sort(
 		(left, right) =>
 			left.observedAtMs - right.observedAtMs ||
-			left.fillId.localeCompare(right.fillId),
+			compareFillId(left.fillId, right.fillId),
 	)) {
 		if (event.side !== "BUY") continue;
 		const position = positionByToken.get(event.tokenId);
@@ -307,11 +365,21 @@ export function projectPositionGapCohorts(
 		})),
 	];
 
+	// Group in one pass. Map insertion order = first appearance in `projected`,
+	// and each group keeps `projected` order, matching the former per-token
+	// `filter`; the stable sort below therefore sees identical input.
+	const cohortsByToken = new Map<string, PositionGapCohortState[]>();
+	for (const cohort of projected) {
+		const group = cohortsByToken.get(cohort.tokenId);
+		if (group) group.push(cohort);
+		else cohortsByToken.set(cohort.tokenId, [cohort]);
+	}
+	const compareCohortKey = comparatorFor(
+		projected.map((cohort) => cohort.cohortKey),
+	);
+
 	const reductions: PositionGapCohortReduction[] = [];
-	for (const tokenId of new Set(projected.map((cohort) => cohort.tokenId))) {
-		const tokenCohorts = projected.filter(
-			(cohort) => cohort.tokenId === tokenId,
-		);
+	for (const [tokenId, tokenCohorts] of cohortsByToken) {
 		const desiredMaximum =
 			(positionByToken.get(tokenId)?.netShares ?? 0) * input.scale;
 		let excess = Math.max(
@@ -325,7 +393,7 @@ export function projectPositionGapCohorts(
 			(left, right) =>
 				right.benchmarkTargetVwap - left.benchmarkTargetVwap ||
 				right.createdAtMs - left.createdAtMs ||
-				right.cohortKey.localeCompare(left.cohortKey),
+				compareCohortKey(right.cohortKey, left.cohortKey),
 		)) {
 			if (excess <= EPSILON) break;
 			const reducible = Math.max(
@@ -361,15 +429,19 @@ export function projectPositionGapCohorts(
 		}
 	}
 
+	const compareConditionId = comparatorFor(
+		projected.map((cohort) => cohort.conditionId),
+	);
+	const compareTokenId = comparatorFor(cohortsByToken.keys());
 	return {
 		creations,
 		reductions,
 		cohorts: projected.sort(
 			(left, right) =>
-				left.conditionId.localeCompare(right.conditionId) ||
-				left.tokenId.localeCompare(right.tokenId) ||
+				compareConditionId(left.conditionId, right.conditionId) ||
+				compareTokenId(left.tokenId, right.tokenId) ||
 				left.createdAtMs - right.createdAtMs ||
-				left.cohortKey.localeCompare(right.cohortKey),
+				compareCohortKey(left.cohortKey, right.cohortKey),
 		),
 	};
 }
