@@ -11,10 +11,11 @@
  *   - FILL_ID_COMPOSITE: Fill.fill_id is `"<source>:<native_id>"` per P0.2 (task.0315 Phase 0 Findings).
  *   - GETORDER_NEVER_NULL: `getOrder` callers receive a discriminated `GetOrderResult`; null is
  *     never a valid return. Callers MUST branch on the discriminant. (task.0328 CP1)
- *   - RECEIPT_FILL_FIELDS_UNDEFINED_WHEN_UNFILLED (bug.5018): `fill_price` / `total_shares` /
- *     `fees_usdc` are populated ONLY for realized fills (status ∈ filled | partial). Open /
- *     pending / canceled / error receipts leave them `undefined` — distinct from "the adapter
- *     dropped them". Adapter symmetry is CI-gated by `tests/adapter-equivalence.test.ts`.
+ *   - RECEIPT_FILL_FIELDS_UNDEFINED_WHEN_UNFILLED (bug.5018): `fill_price` / `total_shares`
+ *     are populated ONLY for realized fills (status ∈ filled | partial). Non-fill fees stay
+ *     `undefined` except known-zero fees for the identity-proven, same-process untouched
+ *     pending native paper cancellation specified below; zero fees alone is not receipt proof.
+ *     Canonical-fill adapter symmetry is CI-gated by `tests/adapter-equivalence.test.ts`.
  * Side-effects: none
  * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 — First live order),
  *   docs/spec/poly-paper-trading-shortcomings.md (S3/S4 — closed by bug.5018)
@@ -141,10 +142,16 @@ export function normalizeLimitPriceToTick(
  *   - `filled_size_usdc` is REALIZED USDC notional on matched volume, never the
  *     intent's submitted size. Adapters that have no realized fill data MUST
  *     emit 0 (canceled before any match) — never echo back `intent.size_usdc`.
- *   - `fill_price`, `total_shares`, `fees_usdc` are populated ONLY when the
- *     receipt represents a realized fill (status ∈ {filled, partial}). They
- *     MUST be `undefined` for open / pending / canceled / error receipts —
- *     distinct from "the adapter dropped the field".
+ *   - `fill_price` and `total_shares` are populated ONLY when the receipt
+ *     represents a realized fill (status ∈ {filled, partial}). They MUST be
+ *     `undefined` for open / pending / canceled / error receipts.
+ *   - `fees_usdc` describes realized fees on filled / partial receipts. It MUST
+ *     be `undefined` on open / pending / error and unproven canceled receipts.
+ *     The sole non-fill exception is known-zero fees after identity-matching
+ *     native paper cancellation of that process's newly mapped, untouched
+ *     pending order. Unknown / ambiguous / not-found / restart-only cancellation
+ *     evidence MUST NOT infer zero. Zero fees alone proves neither order
+ *     identity nor realized economics; all other receipt proof remains required.
  *   - `fill_price` is VWAP across all matched levels (cumulative USDC / cumulative shares).
  *   - Both PaperAdapter and PolymarketClobAdapter MUST produce structurally
  *     identical values for these fields on a canonical fill (CI-gated by
@@ -162,7 +169,7 @@ export const OrderReceiptSchema = z.object({
   fill_price: z.number().positive().optional(),
   /** Realized shares filled (cumulative across matched levels). Undefined when no fill yet. */
   total_shares: z.number().positive().optional(),
-  /** Realized fees in USDC. Often 0 on prod Polymarket. Undefined when no fill yet. */
+  /** Realized fees in USDC; undefined without a fill except the proven native cancellation above. */
   fees_usdc: z.number().min(0).optional(),
   /** ISO-8601 — platform-reported submission time (falls back to adapter clock). */
   submitted_at: z.string().min(1),

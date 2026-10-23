@@ -29,12 +29,15 @@ Design (see work/projects/proj.poly-paper-trading.md § "Design — PR 3"):
   need to echo back). Pod restart wipes this — by design for v0; the cogni
   reconciler treats orphan pending rows the same as a CLOB outage would.
 - bug.5018 — `filled_size_usdc` is the REALIZED USDC notional from the
-  engine's `Trade.amount_usd`. `fill_price` / `total_shares` / `fees_usdc`
-  carry the matching realized values. Populated ONLY on `status="filled"`.
-  Receipts for non-filled statuses leave them unset; the FastAPI routes
-  serialize with `response_model_exclude_none=True` so the wire OMITS those
-  keys (the cogni TS `OrderReceiptSchema` accepts missing/undefined, not
-  `null`). NEVER echo `intent.size_usdc` as realized.
+  engine's `Trade.amount_usd`; NEVER echo `intent.size_usdc` as realized.
+  `fill_price` / `total_shares` describe realized fills and remain unset on
+  non-filled receipts. `fees_usdc` also remains unset for open/pending/error
+  or unproven cancellations. The sole non-fill exception is known-zero fees
+  after identity-matching native cancellation of this process's newly mapped,
+  untouched pending order. Ambiguous, not-found, or restart-only cancellation
+  evidence never grants that exception; zero fees alone proves neither order
+  identity nor realized economics. FastAPI's `response_model_exclude_none=True`
+  OMITS unset keys (the TS `OrderReceiptSchema` accepts undefined, not null).
 
 This file deliberately writes NO fill logic. All matching, fee math, and
 book-walk happens inside `pm_trader.Engine`. If upstream is wrong, file
@@ -254,8 +257,11 @@ class PlaceOrderRequest(BaseModel):
 
 class OrderReceipt(BaseModel):
     """Mirrors `OrderReceiptSchema` in nodes/poly/packages/market-provider/
-    src/domain/order.ts:134. fill_price / total_shares / fees_usdc are
-    populated only on realized fills (status=filled) per bug.5018."""
+    src/domain/order.ts:134. fill_price / total_shares describe realized fills
+    only. fees_usdc is also unset without a fill, except for known-zero fees
+    after identity-matching native cancellation of this process's newly mapped,
+    untouched pending order. Unknown/ambiguous/not-found/restart cancellations
+    do not establish zero fees; fee zero alone is not receipt proof."""
 
     order_id: str
     client_order_id: str
