@@ -9,7 +9,7 @@
  *   - Contract remains stable; breaking changes require new version
  *   - All consumers use z.infer types
  *   - PATCH_ALLOWLIST: only fields in `set` are mutable. id/created_at/updated_at are server-managed.
- *   - v0 has no expectedRevision optimistic concurrency and no transition state-machine — whoever holds a valid token is trusted.
+ *   - expectedRevision optionally enforces optimistic concurrency; omission preserves legacy patch behavior.
  * Side-effects: none
  * Links: /api/v1/work/items/[id] route, docs/spec/work-items-port.md, work/items/task.0423.doltgres-work-items-source-of-truth.md
  * @internal
@@ -38,6 +38,7 @@ export const workItemsPatchOperation = {
     "Updates a subset of fields on a work item. Whitelisted fields only — id, created_at, updated_at are server-managed.",
   input: z.object({
     id: z.string(),
+    expectedRevision: z.number().int().nonnegative().optional(),
     set: z
       .strictObject({
         title: z.string().min(1).max(500).optional(),

@@ -51,6 +51,21 @@ export class WorkItemLeaseConflictError extends Error {
 	}
 }
 
+/** Recognize the published port conflict without importing its runtime adapter. */
+export function isWorkItemRevisionConflictError(
+	error: unknown,
+): error is Error & { currentRevision: number } {
+	if (typeof error !== "object" || error === null) return false;
+	const conflict = error as Record<string, unknown>;
+	return (
+		conflict.name === "WorkItemRevisionConflictError" &&
+		typeof conflict.message === "string" &&
+		typeof conflict.currentRevision === "number" &&
+		Number.isSafeInteger(conflict.currentRevision) &&
+		conflict.currentRevision >= 0
+	);
+}
+
 export class WorkItemsBackendNotReadyError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -245,7 +260,13 @@ export async function patchWorkItem(
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.patch(
-			{ id: toWorkItemId(input.id), set: dropUndefined(input.set) },
+			{
+				id: toWorkItemId(input.id),
+				set: dropUndefined(input.set),
+				...(input.expectedRevision !== undefined && {
+					expectedRevision: input.expectedRevision,
+				}),
+			},
 			sessionUser.id,
 		);
 		return toDto(item);
