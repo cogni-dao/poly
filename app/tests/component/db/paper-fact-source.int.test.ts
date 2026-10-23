@@ -556,13 +556,33 @@ describe("paper facts project into the live tables (migration 0083)", () => {
       expect(balance.errors.length).toBeGreaterThan(0);
     });
 
-    it("keeps the full paper dashboard visible without Privy configuration", async () => {
+    it("keeps the full paper dashboard visible without Privy configuration", async ({ onTestFinished }) => {
+      // Outer-only observation; this hook does not observe inner work or cancel it.
+      const startedAt = performance.now();
+      let completed = false;
+      let runnerFinished = false;
+      const mark = (state: "started" | "completed" | "runner_finished") => {
+        console.info(JSON.stringify({
+          probe: "native_await_progress", test: "dashboard",
+          phase: completed ? "outer_dashboard_completed" : "outer_dashboard", state,
+          elapsedMs: performance.now() - startedAt, wallTime: new Date().toISOString(),
+          afterRunnerFinished: runnerFinished,
+        }));
+      };
+      onTestFinished(() => {
+        runnerFinished = true;
+        mark("runner_finished");
+      });
+      mark("started");
       const dashboard = await readTenantWalletDashboard({
         db: getSeedDb(),
         billingAccountId: traded.billingAccountId,
         interval: "1W",
         adapterConfigured: false,
       });
+
+      completed = true;
+      mark("completed");
 
       expect(dashboard.overview.account_kind).toBe("paper");
       expect(dashboard.overview.configured).toBe(true);

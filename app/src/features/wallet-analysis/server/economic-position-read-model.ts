@@ -251,6 +251,33 @@ export function buildEconomicPositionProjectionQuery(
         g.condition_id,
         g.token_id,
         g.chosen_wallet_id,
+        /* A retained positive is not an observation of a newer publication.
+           Evaluate only selected current facts, preserving the physical cursor;
+           an eligible sibling cannot lend authority. MAX includes future clocks:
+           overwritten authority cannot reconstruct an earlier capture. */
+        CASE WHEN ${mode} = 'paper' OR p.shares = 0 THEN NULL ELSE (
+          p.last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND observer.latest_generation_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND p.last_observed_at >= observer.latest_generation_at
+          AND NOT EXISTS (
+            SELECT 1 FROM poly_trader_current_positions future
+            JOIN wallet_identity w ON w.id = future.trader_wallet_id
+            WHERE lower(future.condition_id) = g.condition_id
+              AND future.token_id = g.token_id
+              AND future.last_observed_at > ${params.capturedAt.toISOString()}::timestamptz
+          )
+          AND EXISTS (
+            SELECT 1 FROM eligible_wallet_identity selected
+            JOIN poly_trader_ingestion_cursors cursor
+              ON cursor.trader_wallet_id = selected.id
+             AND cursor.source = 'data-api-positions'
+            WHERE selected.id = g.chosen_wallet_id
+              AND cursor.status = 'ok'
+              AND cursor.last_success_at IS NOT NULL
+              AND cursor.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
+              AND p.last_observed_at >= cursor.last_success_at
+          )
+        ) END AS live_positive_current_currency,
         p.shares,
         p.cost_basis_usdc,
         p.current_value_usdc,
@@ -264,6 +291,7 @@ export function buildEconomicPositionProjectionQuery(
         ON p.trader_wallet_id = g.chosen_wallet_id
        AND p.condition_id = g.chosen_condition_id
        AND p.token_id = g.token_id
+      CROSS JOIN observer_summary observer
     ), driven_keys AS MATERIALIZED (
       SELECT condition_id, token_id FROM origin_keys
       UNION
@@ -299,54 +327,59 @@ export function buildEconomicPositionProjectionQuery(
        AND k.token_id = p.token_id
       WHERE target.billing_account_id = ${params.billingAccountId}
         AND target.disabled_at IS NULL
-    ), driven_fill_identities AS MATERIALIZED (
-      SELECT DISTINCT f.source, f.native_id
-      FROM poly_trader_fills f
-      JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      JOIN driven_keys k
-        ON k.condition_id = lower(f.condition_id)
-       AND k.token_id = f.token_id
-      WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
     ), fill_groups AS MATERIALIZED (
-      SELECT
-        f.source,
-        f.native_id,
-        (array_agg(f.id ORDER BY w.updated_at DESC, w.created_at DESC, w.id, f.id))[1] AS chosen_id,
-        count(DISTINCT md5(concat_ws('|',
-          lower(f.condition_id), f.token_id, f.side, f.price::text,
-          f.shares::text, f.size_usdc::text, f.observed_at::text
-        )))::int AS fact_variants
-      FROM poly_trader_fills f
-      JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      JOIN driven_fill_identities identity
-        ON identity.source = f.source
-       AND identity.native_id = f.native_id
-      WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-      GROUP BY f.source, f.native_id
+      SELECT source, native_id, chosen_id, condition_id, token_id, side,
+        price, shares, size_usdc, observed_at, identity_conflict
+      FROM (
+        SELECT DISTINCT ON (f.source, f.native_id)
+          f.source, f.native_id, f.id AS chosen_id,
+          lower(f.condition_id) AS condition_id, f.token_id, f.side,
+          f.price, f.shares, f.size_usdc, f.observed_at,
+          min(md5(concat_ws('|',
+            lower(f.condition_id), f.token_id, f.side, f.price::text,
+            f.shares::text, f.size_usdc::text, f.observed_at::text
+          ))) OVER identity_group IS DISTINCT FROM max(md5(concat_ws('|',
+            lower(f.condition_id), f.token_id, f.side, f.price::text,
+            f.shares::text, f.size_usdc::text, f.observed_at::text
+          ))) OVER identity_group AS identity_conflict,
+          bool_or(k.condition_id IS NOT NULL) OVER identity_group AS has_driven_key
+        FROM poly_trader_fills f
+        JOIN wallet_identity w ON w.id = f.trader_wallet_id
+        LEFT JOIN driven_keys k
+          ON k.condition_id = lower(f.condition_id)
+         AND k.token_id = f.token_id
+        WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+        WINDOW identity_group AS (PARTITION BY f.source, f.native_id)
+        ORDER BY f.source, f.native_id,
+          w.updated_at DESC, w.created_at DESC, w.id, f.id
+      ) selected
+      WHERE has_driven_key
+    ), conflicted_fill_groups AS MATERIALIZED (
+      SELECT source, native_id
+      FROM fill_groups
+      WHERE identity_conflict
     ), fill_conflicted_keys AS MATERIALIZED (
       SELECT DISTINCT lower(f.condition_id) AS condition_id, f.token_id
       FROM poly_trader_fills f
       JOIN wallet_identity w ON w.id = f.trader_wallet_id
-      JOIN fill_groups g
+      JOIN conflicted_fill_groups g
         ON g.source = f.source
        AND g.native_id = f.native_id
-       AND g.fact_variants > 1
       JOIN driven_keys k
         ON k.condition_id = lower(f.condition_id)
        AND k.token_id = f.token_id
       WHERE f.observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-    ), canonical_fills AS MATERIALIZED (
+    ), canonical_fills AS (
       SELECT
-        lower(f.condition_id) AS condition_id,
-        f.token_id,
-        f.side,
-        f.price,
-        f.shares,
-        f.size_usdc,
-        f.observed_at,
-        g.fact_variants
+        g.condition_id,
+        g.token_id,
+        g.side,
+        g.price,
+        g.shares,
+        g.size_usdc,
+        g.observed_at,
+        g.identity_conflict
       FROM fill_groups g
-      JOIN poly_trader_fills f ON f.id = g.chosen_id
     ), position_flows AS MATERIALIZED (
       SELECT
         condition_id,
@@ -358,7 +391,7 @@ export function buildEconomicPositionProjectionQuery(
         MIN(observed_at) FILTER (WHERE side = 'BUY') AS first_buy_at,
         MAX(observed_at) AS last_flow_at,
         (array_agg(price ORDER BY observed_at DESC))[1]::numeric AS last_price,
-        bool_or(fact_variants > 1) AS fill_identity_conflict
+        bool_or(identity_conflict) AS fill_identity_conflict
       FROM canonical_fills
       GROUP BY condition_id, token_id
     ), outcome_consensus AS MATERIALIZED (
@@ -386,7 +419,7 @@ export function buildEconomicPositionProjectionQuery(
       WHERE o.updated_at <= ${params.capturedAt.toISOString()}::timestamptz
         AND (o.resolved_at IS NULL OR o.resolved_at <= ${params.capturedAt.toISOString()}::timestamptz)
       GROUP BY lower(o.condition_id), o.token_id
-    ), economic_position_base AS MATERIALIZED (
+    ), economic_position_base AS (
       SELECT
         k.condition_id,
         k.token_id,
@@ -410,6 +443,7 @@ export function buildEconomicPositionProjectionQuery(
           AND oc.resolved_at IS NOT NULL) AS terminal_zero_valuation,
         oc.resolved_at,
         cf.chosen_wallet_id,
+        cf.live_positive_current_currency AS selected_current_currency,
         cf.shares AS current_shares,
         cf.cost_basis_usdc AS current_cost_basis_usdc,
         cf.current_value_usdc,
@@ -426,74 +460,20 @@ export function buildEconomicPositionProjectionQuery(
         cf.raw AS current_raw,
         cf.raw->>'outcome' AS current_outcome_label,
         cf.raw->>'endDate' AS current_resolves_at,
-        cf.current_identity_conflict,
-        lc.position_lifecycle,
-        lc.observed_at AS ledger_observed_at,
-        lc.updated_at AS ledger_updated_at,
-        lc.attributes,
-        r.lifecycle_state AS redeem_lifecycle_state,
-        mm.market_title,
-        mm.event_title,
-        mm.market_slug,
-        mm.event_slug,
-        mm.end_date
+        cf.current_identity_conflict
       FROM driven_keys k
       LEFT JOIN position_flows pf USING (condition_id, token_id)
       LEFT JOIN fill_conflicted_keys ck USING (condition_id, token_id)
       LEFT JOIN outcome_consensus oc USING (condition_id, token_id)
       LEFT JOIN current_facts cf USING (condition_id, token_id)
       LEFT JOIN history_facts hf USING (condition_id, token_id)
-      LEFT JOIN origin_keys lc
-        ON lc.condition_id = k.condition_id
-       AND lc.token_id = k.token_id
-       AND lc.metadata_rank = 1
-      LEFT JOIN LATERAL (
-        SELECT candidate.lifecycle_state
-        FROM poly_redeem_jobs candidate
-        WHERE lower(candidate.funder_address) = lower(${params.walletAddress})
-          AND lower(candidate.condition_id) = k.condition_id
-          AND candidate.position_id = k.token_id
-        ORDER BY candidate.updated_at DESC, candidate.id
-        LIMIT 1
-      ) r ON TRUE
-      LEFT JOIN LATERAL (
-        SELECT m.market_title, m.event_title, m.market_slug, m.event_slug, m.end_date
-        FROM poly_market_metadata m
-        WHERE lower(m.condition_id) = k.condition_id
-        ORDER BY m.fetched_at DESC, m.condition_id
-        LIMIT 1
-      ) mm ON TRUE
-    ), generation_authority AS MATERIALIZED (
+    ), generation_authority AS (
       SELECT b.*,
-        /* A retained positive is not an observation of a newer publication.
-           Keep the selected physical cursor association; an eligible sibling
-           cannot lend it authority. MAX deliberately includes future clocks:
-           overwritten authority cannot reconstruct an earlier capture. */
-        (${mode} = 'paper' OR b.current_shares = 0 OR COALESCE((
-          b.current_last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-          AND observer.latest_generation_at <= ${params.capturedAt.toISOString()}::timestamptz
-          AND b.current_last_observed_at >= observer.latest_generation_at
-          AND NOT EXISTS (
-            SELECT 1 FROM poly_trader_current_positions future
-            JOIN wallet_identity w ON w.id = future.trader_wallet_id
-            WHERE lower(future.condition_id) = b.condition_id
-              AND future.token_id = b.token_id
-              AND future.last_observed_at > ${params.capturedAt.toISOString()}::timestamptz
-          )
-          AND EXISTS (
-            SELECT 1 FROM eligible_wallet_identity selected
-            JOIN poly_trader_ingestion_cursors cursor
-              ON cursor.trader_wallet_id = selected.id
-             AND cursor.source = 'data-api-positions'
-            WHERE selected.id = b.chosen_wallet_id
-              AND cursor.status = 'ok'
-              AND cursor.last_success_at IS NOT NULL
-              AND cursor.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
-              AND b.current_last_observed_at >= cursor.last_success_at
-          )
-        ), false)) AS live_positive_current_currency
+        /* The current-fact marker has identical nullable LIVE semantics;
+           PAPER and explicit zero-current positions retain their bypass. */
+        (${mode} = 'paper' OR b.current_shares = 0
+          OR COALESCE(b.selected_current_currency, false)) AS live_positive_current_currency
       FROM economic_position_base b
-      CROSS JOIN observer_summary observer
     ), event_authority AS MATERIALIZED (
       SELECT b.*,
         /* Lifetime completeness cannot waive a retained settlement's clock.
@@ -682,17 +662,17 @@ export function buildEconomicPositionProjectionQuery(
       COALESCE(p.terminal_outcome, CASE WHEN p.history_complete
         THEN CASE p.economic_observation->'closedPosition'->>'current_price' WHEN '1' THEN 'winner' WHEN '0' THEN 'loser' END END) AS market_outcome,
       CASE
-        WHEN p.terminal_outcome = 'winner' AND COALESCE(p.redeem_lifecycle_state, '')
+        WHEN p.terminal_outcome = 'winner' AND COALESCE(r.lifecycle_state, '')
           NOT IN ('winner', 'redeem_pending', 'redeemed', 'abandoned') THEN 'winner'
-        WHEN p.terminal_outcome = 'loser' AND COALESCE(p.redeem_lifecycle_state, '')
+        WHEN p.terminal_outcome = 'loser' AND COALESCE(r.lifecycle_state, '')
           NOT IN ('loser', 'redeemed', 'dust', 'closed') THEN 'loser'
-        ELSE COALESCE(p.redeem_lifecycle_state, p.position_lifecycle)
+        ELSE COALESCE(r.lifecycle_state, lc.position_lifecycle)
       END AS lifecycle_state,
-      COALESCE(p.first_buy_at, p.current_first_observed_at, p.ledger_observed_at,
+      COALESCE(p.first_buy_at, p.current_first_observed_at, lc.observed_at,
         CASE WHEN p.history_complete AND COALESCE(p.economic_observation->'closedPosition'->>'first_entry_at','') ~ '^[0-9]+$'
           THEN to_timestamp((p.economic_observation->'closedPosition'->>'first_entry_at')::numeric) END) AS opened_at,
       p.closed_at,
-      COALESCE(p.current_last_observed_at, p.ledger_updated_at, p.last_flow_at) AS synced_at,
+      COALESCE(p.current_last_observed_at, lc.updated_at, p.last_flow_at) AS synced_at,
       CASE WHEN ${mode} = 'live' AND p.history_complete THEN (p.economic_observation->>'lifetimeBuyUsdc')::numeric
         ELSE COALESCE(p.total_buy_usdc, p.current_cost_basis_usdc) END AS total_buy_usdc,
       CASE WHEN ${mode} = 'live' AND p.history_complete THEN (p.economic_observation->>'lifetimeSellUsdc')::numeric
@@ -724,19 +704,39 @@ export function buildEconomicPositionProjectionQuery(
       p.current_identity_conflict,
       (p.mark_available OR p.terminal_zero_valuation) AS mark_available,
       p.terminal_zero_valuation,
-      COALESCE(p.market_title, p.attributes->>'title', 'Polymarket') AS title,
-      COALESCE(p.event_title, p.attributes->>'event_title') AS event_title,
-      COALESCE(p.market_slug, p.attributes->>'market_slug', p.attributes->>'slug') AS market_slug,
-      COALESCE(p.event_slug, p.attributes->>'event_slug') AS event_slug,
-      COALESCE(p.current_outcome_label, p.attributes->>'outcome') AS outcome_label,
+      COALESCE(mm.market_title, lc.attributes->>'title', 'Polymarket') AS title,
+      COALESCE(mm.event_title, lc.attributes->>'event_title') AS event_title,
+      COALESCE(mm.market_slug, lc.attributes->>'market_slug', lc.attributes->>'slug') AS market_slug,
+      COALESCE(mm.event_slug, lc.attributes->>'event_slug') AS event_slug,
+      COALESCE(p.current_outcome_label, lc.attributes->>'outcome') AS outcome_label,
       COALESCE(
-        p.end_date,
+        mm.end_date,
         CASE WHEN COALESCE(p.current_resolves_at, '') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
           THEN p.current_resolves_at::timestamptz END
       ) AS resolves_at
     FROM (SELECT 1) seed
     CROSS JOIN observer_summary observer
     LEFT JOIN preview p ON TRUE
+    LEFT JOIN origin_keys lc
+      ON lc.condition_id = p.condition_id
+     AND lc.token_id = p.token_id
+     AND lc.metadata_rank = 1
+    LEFT JOIN LATERAL (
+      SELECT candidate.lifecycle_state
+      FROM poly_redeem_jobs candidate
+      WHERE lower(candidate.funder_address) = lower(${params.walletAddress})
+        AND lower(candidate.condition_id) = p.condition_id
+        AND candidate.position_id = p.token_id
+      ORDER BY candidate.updated_at DESC, candidate.id
+      LIMIT 1
+    ) r ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT m.market_title, m.event_title, m.market_slug, m.event_slug, m.end_date
+      FROM poly_market_metadata m
+      WHERE lower(m.condition_id) = p.condition_id
+      ORDER BY m.fetched_at DESC, m.condition_id
+      LIMIT 1
+    ) mm ON TRUE
     ORDER BY p.economic_bucket, p.bucket_rank
   `;
 }
