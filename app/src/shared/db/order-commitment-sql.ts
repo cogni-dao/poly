@@ -3,7 +3,7 @@
 
 /**
  * Conservative persisted order commitment, before position-lifecycle filtering.
- * Shared by position reservations and grant windows; closed holdings still
+ * Shared by live and paper grant-window authorizers; closed holdings still
  * consume the grant window in which their intent was created. Invalid amounts
  * raise a SQL error so authorization fails closed, including invalid intended
  * amounts accompanied by positive accepted execution or a release proof.
@@ -13,7 +13,7 @@
 import { polyCopyTradeFills } from "@cogni/poly-db-schema/copy-trade";
 import { sql } from "drizzle-orm";
 
-// One reservation amount for the planning read AND the advisory-locked insert.
+// One commitment amount for live and paper grant-window sums and counts.
 // Legacy status/error labels and local cancellation acknowledgements are not
 // evidence that a request never executed. Only authenticated proof releases it.
 const intendedReservation = sql`CASE

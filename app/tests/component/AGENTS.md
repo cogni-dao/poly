@@ -6,10 +6,11 @@
 
 - **Owners:** @derekg1729
 - **Status:** draft
+- **Last reviewed:** 2026-10-23
 
 ## Purpose
 
-Component tests using isolated docker testcontainers. Tests adapter implementations against real dependencies without a running application stack.
+Component tests using isolated docker testcontainers. Tests adapter implementations and feature-owned PostgreSQL persistence, reads, and authorization against real dependencies without a running application stack.
 
 ## Pointers
 
@@ -25,12 +26,15 @@ Component tests using isolated docker testcontainers. Tests adapter implementati
     "adapters/server",
     "adapters/worker",
     "ports",
+    "features",
     "shared",
     "tests"
   ],
-  "must_not_import": ["core", "features", "app", "mcp"]
+  "must_not_import": ["core", "app", "mcp"]
 }
 ```
+
+Feature imports are permitted only to exercise production feature-owned persistence, reads, or database-backed authorization against real PostgreSQL. Execute the production SQL; never mock the database or replace its queries. Pure feature/domain logic and graph orchestration belong in unit tests; HTTP/API/UI behavior belongs in stack/e2e tests. This test-only permission does not change production import boundaries.
 
 ## Public Surface
 
@@ -40,8 +44,8 @@ Component tests using isolated docker testcontainers. Tests adapter implementati
 
 ## Responsibilities
 
-- This directory **does:** run port test suites against concrete adapters; smoke test infra clients (DB, LLM proxy, wallet verification); test repo adapter and brain tool wiring against real git repos
-- This directory **does not:** test domain/business logic, UI, or Next routes
+- This directory **does:** run port test suites against concrete adapters; smoke test infra clients (DB, LLM proxy, wallet verification); verify feature-owned PostgreSQL persistence, reads, and authorization; test repo adapter and brain tool wiring against real git repos
+- This directory **does not:** test pure domain/business logic, graph orchestration, UI, or Next routes
 
 ## Usage
 
@@ -60,7 +64,7 @@ pnpm test tests/component/adapters/ai
 
 ## Dependencies
 
-- **Internal:** src/adapters, src/ports, src/shared, tests/ports, @cogni/ai-tools
+- **Internal:** src/adapters, src/ports, src/shared, src/features (PostgreSQL integration only), tests/ports, @cogni/ai-tools
 - **External:** vitest, docker (for local testing), test environment configs, ripgrep binary (for repo/ tests)
 
 ## Change Protocol
@@ -72,5 +76,5 @@ pnpm test tests/component/adapters/ai
 
 ## Notes
 
-- If a spec requires the HTTP boundary, move it to e2e/ (API/UI). Keep this folder adapter-focused
+- If a spec requires the HTTP boundary, move it to e2e/ (API/UI). Keep this folder focused on real dependency integration
 - If an adapter leaks business logic, refactor: rules belong in core or features
