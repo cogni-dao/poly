@@ -109,6 +109,9 @@ COPY --from=builder --chown=nextjs:nodejs /app/app/src/adapters/server/db/doltgr
 # and runs the post-migrate schema check before any tracking-row stamping,
 # closing the silent-skip gap from drizzle-orm's folderMillis-only "applied?"
 # check.
+# Public migrator is outside Next's traced app graph.
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@cogni-dao/knowledge-store/dist /app/node_modules/@cogni-dao/knowledge-store/dist
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@cogni-dao/knowledge-store/package.json /app/node_modules/@cogni-dao/knowledge-store/package.json
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/db/migrate-doltgres.mjs /app/app/migrate-doltgres.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/db/verify-doltgres-schema.mjs /app/app/verify-doltgres-schema.mjs
 

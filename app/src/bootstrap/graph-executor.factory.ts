@@ -30,7 +30,7 @@
  */
 
 import type { SourceSystem, ToolSourcePort } from "@cogni/ai-core";
-import { CORE_TOOL_BUNDLE } from "@cogni/ai-tools";
+import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 import type {
   ExecutionContext,
   GraphFinal,
@@ -577,7 +577,7 @@ function createInProcProvider(
     inprocAdapter,
     composeToolSources(principalToolSource, container.toolSource),
     () => cache.getSource(),
-    [...CORE_TOOL_BUNDLE, ...PRINCIPAL_TOOL_BUNDLE],
+    [...POLY_CORE_TOOL_BUNDLE, ...PRINCIPAL_TOOL_BUNDLE],
     POLY_NODE_LANGGRAPH_CATALOG
   );
 }

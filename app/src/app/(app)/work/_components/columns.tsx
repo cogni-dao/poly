@@ -34,6 +34,14 @@ const formatStatus = (v: string) =>
 const formatProject = (v: string) => v.replace("proj.", "");
 
 export const columns = [
+  col.accessor("rankScore", {
+    header: ({ column }) => <DataGridColumnHeader column={column} title="Rank" />,
+    size: 75,
+    sortDescFirst: true,
+    sortUndefined: "last",
+    cell: (info) => info.getValue()?.toFixed(2) ?? "—",
+    meta: { headerTitle: "Rank" },
+  }),
   col.accessor("priority", {
     header: ({ column }) => (
       <DataGridColumnHeader column={column} title="Pri" />

@@ -11,5 +11,6 @@ export default defineConfig({
     "@langchain/langgraph",
     "@cogni/ai-tools",
     "@cogni/langgraph-graphs",
+    "@cogni/shared-langgraph-graphs",
   ],
 });
