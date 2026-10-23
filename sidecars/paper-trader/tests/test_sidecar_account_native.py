@@ -386,3 +386,516 @@ def test_concurrent_native_openers_do_not_replace_winner(native, monkeypatch, fo
     assert snapshot(native)["account"][0][1:3] == (SEED, SEED)
     for registry in registries:
         registry.stop()
+
+
+# bug.5043: native execution and receipt publication share one account lock.
+from unittest.mock import MagicMock
+
+from pm_trader.api import PolymarketClient
+from pm_trader.models import Market, OrderBook, OrderBookLevel
+from pm_trader.orders import create_order, get_order
+
+
+@pytest.fixture
+def active(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        server, "threading", types.SimpleNamespace(
+            Thread=RecordingThread, Lock=threading.Lock, Event=threading.Event
+        ),
+    )
+    def no_network(*args, **kwargs):
+        pytest.fail("native fixture must not contact a provider")
+    monkeypatch.setattr(httpx.Client, "request", no_network)
+    registry = server.SidecarRegistry()
+    registry.start()
+    account = registry.get_or_create(ACCOUNT, SEED)
+    market = Market(
+        condition_id="0xabc123", slug="test-market", question="Test?", description="",
+        outcomes=["Yes", "No"], outcome_prices=[0.5, 0.5],
+        tokens=[{"token_id": "yes-token", "outcome": "Yes"}, {"token_id": "no-token", "outcome": "No"}],
+        active=True, closed=False,
+    )
+    account.engine.api.get_market = MagicMock(return_value=market)
+    account.engine.api.get_order_book = MagicMock(return_value=OrderBook(bids=[], asks=[]))
+    account.engine.api.get_trades_since = MagicMock(return_value=[])
+    account.engine.api.get_fee_rate = MagicMock(return_value=100)
+    yield registry, account
+    registry.stop()
+
+
+def request(**changes):
+    fields = dict(
+        account_id=ACCOUNT, starting_balance_usdc=SEED, client_order_id="native-atomic-client",
+        market_id="test-market", outcome="Yes", side="BUY", size_usdc=10, limit_price=0.5,
+    )
+    fields.update(changes)
+    return server.PlaceOrderRequest(**fields)
+
+
+def durable_account(account):
+    with sqlite3.connect(account.engine.db.db_path) as conn:
+        return {
+            table: conn.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+            for table in TABLES
+        }
+
+
+def tick(account, monkeypatch):
+    # Exercise the actual loop once, including its lock/exception/stop boundary.
+    waits = iter((False, True))
+    monkeypatch.setattr(account._stop, "wait", lambda _: next(waits))
+    account._fill_loop()
+
+
+def crossing(account, path="snapshot", side="buy"):
+    account.engine.api.get_order_book.return_value = OrderBook(
+        bids=[OrderBookLevel(price=0.5, size=100)],
+        asks=[OrderBookLevel(price=0.5, size=100)],
+    )
+    account.engine.api.get_trades_since.return_value = [
+        {"side": "SELL" if side == "buy" else "BUY", "price": 0.5,
+         "size": 100, "timestamp": 1000000}
+    ] if path == "maker" else []
+
+
+def assert_all_entries_refuse(account, oid):
+    calls = (
+        lambda: account.place(request(outcome="0", token_id="yes-token")),
+        lambda: account.cancel(oid), lambda: account.get(oid),
+        account.list_open_orders, account.balance, account.portfolio,
+        lambda: account.history(10),
+    )
+    for call in calls:
+        with pytest.raises(HTTPException) as error:
+            call()
+        assert error.value.status_code == 503
+        assert error.value.detail == "paper_account_unavailable"
+
+
+class OutcomeConnection:
+    def __init__(self, real, fault):
+        self.real = real
+        self.fault = fault
+        self.rollbacks = 0
+        self.closes = 0
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+    def commit(self):
+        if self.fault == "commit_then_raise":
+            self.real.commit()
+        if self.fault in ("commit_then_raise", "commit_failure"):
+            raise sqlite3.OperationalError(self.fault)
+        return self.real.commit()
+    def rollback(self):
+        self.rollbacks += 1
+        if self.fault == "rollback_failure":
+            raise sqlite3.OperationalError(self.fault)
+        return self.real.rollback()
+    def close(self):
+        self.closes += 1
+        if self.fault == "close_failure":
+            raise sqlite3.OperationalError(self.fault)
+        return self.real.close()
+
+
+@pytest.mark.parametrize("path", ["maker", "snapshot"])
+@pytest.mark.parametrize("side", ["buy", "sell"])
+@pytest.mark.parametrize("fault", ["commit_then_raise", "commit_failure", "rollback_failure", "close_failure"])
+def test_ambiguous_native_effects_stop_same_account_and_never_mint_zero(active, monkeypatch, path, side, fault):
+    registry, account = active
+    if side == "sell":
+        account.engine.db.upsert_position(
+            market_condition_id="0xabc123", market_slug="test-market", market_question="Test?",
+            outcome="yes", shares=100, avg_entry_price=0.5, total_cost=50,
+        )
+    oid = account.place(request(side=side.upper(), size_usdc=10 if side == "buy" else 20)).order_id
+    before = durable_account(account)
+    crossing(account, path, side)
+    real = account.engine.db.conn
+    if fault in ("rollback_failure", "close_failure"):
+        real.execute(
+            "CREATE TRIGGER fail_fill BEFORE UPDATE OF status ON limit_orders "
+            "WHEN NEW.status='filled' BEGIN SELECT RAISE(ABORT, 'before mark'); END"
+        )
+        real.commit()
+    proxy = OutcomeConnection(real, fault)
+    if fault == "close_failure":
+        # An uncaught mutation error reaches cleanup; cleanup itself also fails.
+        def mutation_error():
+            account.engine.db.conn.execute("UPDATE account SET cash=1")
+            raise RuntimeError("uncaught native mutation")
+        monkeypatch.setattr(account.engine, "check_orders", mutation_error)
+    account.engine.db._conn = proxy
+    try:
+        tick(account, monkeypatch)
+        assert account._stop.is_set()
+        assert proxy.closes == 1
+        assert_all_entries_refuse(account, oid)
+        assert registry.get_or_create(ACCOUNT, SEED) is account
+        with pytest.raises(HTTPException):
+            account.start()
+        assert account.orders[oid].fees_usdc is None
+        assert account.orders[oid].status == "open"
+        after = durable_account(account)
+        if fault == "commit_then_raise":
+            assert after != before
+            assert len(after["trades"]) == 1
+            assert after["limit_orders"][0][9] == "filled"
+            assert after["account"][0][2] == pytest.approx(89.95 if side == "buy" else 109.9)
+        else:
+            assert after == before
+        # A later tick is also refused and cannot invoke native work.
+        monkeypatch.setattr(account.engine, "check_orders", MagicMock(side_effect=AssertionError("stopped")))
+        tick(account, monkeypatch)
+        account.engine.check_orders.assert_not_called()
+        assert durable_account(account) == after
+        # Another tenant remains independent.
+        healthy = registry.get_or_create("other-native-account", SEED)
+        assert healthy is not account and not healthy._stop.is_set()
+    finally:
+        account.engine.db._conn = real
+        try:
+            real.rollback()
+        except sqlite3.ProgrammingError:  # A successful close already discarded the failed unit.
+            pass
+
+
+@pytest.mark.parametrize("publication", ["fill_fields", "shadow_update", "receipt"])
+def test_committed_fill_publication_failure_withholds_all_later_reads(active, monkeypatch, publication):
+    _, account = active
+    oid = account.place(request()).order_id
+    crossing(account)
+    real_check = account.engine.check_orders
+    if publication == "fill_fields":
+        def corrupt_result():
+            result = real_check()
+            del result[0]["fill"]["fee"]
+            return result
+        monkeypatch.setattr(account.engine, "check_orders", corrupt_result)
+    elif publication == "shadow_update":
+        class FailingExtra(dict):
+            def update(self, *_args, **_kwargs):
+                raise RuntimeError("shadow publication failed")
+        account.orders[oid].extra = FailingExtra(account.orders[oid].extra)
+    else:
+        monkeypatch.setattr(server, "_to_receipt", lambda _: (_ for _ in ()).throw(RuntimeError("receipt failed")))
+    tick(account, monkeypatch)
+    assert account._stop.is_set()
+    assert_all_entries_refuse(account, oid)
+    after = durable_account(account)
+    assert after["account"][0][2] == pytest.approx(89.95)
+    assert len(after["trades"]) == len(after["positions"]) == 1
+    assert after["limit_orders"][0][9] == "filled"
+
+
+def test_dirty_entry_precedes_actual_gtd_expiry_cache_miss_and_all_entries(active, monkeypatch):
+    _, account = active
+    oid = account.place(request()).order_id
+    engine = account.engine
+    expired = create_order(
+        engine.db.conn, market_slug="test-market", market_condition_id="0xabc123",
+        outcome="yes", side="buy", amount=10, limit_price=0.5,
+        order_type="gtd", expires_at="2000-01-01T00:00:00Z",
+    )
+    # Use the REAL native cache-miss -> provider response -> set_cache path.
+    gamma = MagicMock(return_value=[{
+        "conditionId": "0xabc123", "slug": "test-market", "question": "Test?",
+        "outcomes": '["Yes","No"]', "outcomePrices": '["0.5","0.5"]',
+        "clobTokenIds": '["yes-token","no-token"]', "active": True, "closed": False,
+    }])
+    monkeypatch.setattr(engine.api, "_gamma_get", gamma)
+    monkeypatch.setattr(engine.api, "get_market", types.MethodType(PolymarketClient.get_market, engine.api))
+    assert engine.db.get_cache("market:test-market") is None
+    before = durable_account(account)
+    engine.db.conn.execute("UPDATE account SET cash=1")
+    real = engine.db.conn
+    closed = MagicMock(side_effect=AssertionError("must not close caller transaction"))
+    monkeypatch.setattr(engine, "close", closed)
+    tick(account, monkeypatch)
+    assert account._stop.is_set()
+    assert_all_entries_refuse(account, oid)
+    gamma.assert_not_called()
+    closed.assert_not_called()
+    assert real.in_transaction and engine.db.get_account().cash == 1
+    assert get_order(real, expired.id).status == "pending"
+    assert engine.db.get_cache("market:test-market") is None
+    assert durable_account(account) == before
+    real.rollback()
+    assert durable_account(account) == before
+    # Native clean controls really execute both paths; stopped Sidecar stays stopped.
+    assert engine.check_orders()[0]["action"] == "expired"
+    assert gamma.call_count == 1
+    assert engine.db.get_cache("market:test-market") is not None
+    assert_all_entries_refuse(account, oid)
+    monkeypatch.undo()  # Restore real close before fixture cleanup.
+
+
+@pytest.mark.parametrize("entry", ["place", "cancel", "get", "list", "balance", "portfolio", "history"])
+def test_every_entry_checks_dirty_before_provider_or_shadow(active, monkeypatch, entry):
+    _, account = active
+    oid = account.place(request()).order_id
+    before = durable_account(account)
+    account.engine.db.conn.execute("UPDATE account SET cash=1")
+    provider = MagicMock(side_effect=AssertionError("provider before dirty guard"))
+    monkeypatch.setattr(account.engine.api, "get_market", provider)
+    calls = {
+        "place": lambda: account.place(request(outcome="0", token_id="yes-token")),
+        "cancel": lambda: account.cancel(oid), "get": lambda: account.get(oid),
+        "list": account.list_open_orders, "balance": account.balance,
+        "portfolio": account.portfolio, "history": lambda: account.history(10),
+    }
+    with pytest.raises(HTTPException) as error:
+        calls[entry]()
+    assert error.value.status_code == 503
+    provider.assert_not_called()
+    assert account._stop.is_set() and account.engine.db.conn.in_transaction
+    assert durable_account(account) == before
+    account.engine.db.conn.rollback()
+    assert_all_entries_refuse(account, oid)
+
+
+def test_healthy_cancel_publishes_known_zero_only_once(active):
+    _, account = active
+    oid = account.place(request()).order_id
+    assert account.get(oid).fees_usdc is None
+    account.cancel(oid)
+    receipt = account.get(oid)
+    assert receipt.status == "canceled" and receipt.fees_usdc == 0
+    assert receipt.filled_size_usdc == 0
+    assert receipt.fill_price is None and receipt.total_shares is None
+    assert account.list_open_orders() == []
+    with pytest.raises(HTTPException) as error:
+        account.cancel(oid)
+    assert error.value.status_code == 404
+    assert account.get(oid).fees_usdc == 0
+    assert durable_account(account)["account"][0][2] == SEED
+    assert durable_account(account)["trades"] == []
+
+
+@pytest.mark.parametrize("evidence", ["positive", "partial", "price", "fee", "filled", "prior_cancel", "foreign", "unmapped"])
+def test_conflicting_repeated_foreign_and_unmapped_cancel_never_upgrade_zero(active, evidence):
+    _, account = active
+    oid = account.place(request()).order_id
+    st = account.orders[oid]
+    if evidence == "positive": st.filled_size_usdc = 1
+    elif evidence == "partial": st.total_shares = 1
+    elif evidence == "price": st.fill_price = 0.5
+    elif evidence == "fee": st.fees_usdc = 0.1
+    elif evidence == "filled": st.status = "filled"
+    elif evidence == "prior_cancel": st.status = "canceled"
+    elif evidence == "unmapped": del account.orders[oid]
+    cancel_id = oid.replace(server.BOOT_ID, "foreign-boot") if evidence == "foreign" else oid
+    if evidence in ("foreign", "unmapped", "filled", "prior_cancel"):
+        with pytest.raises(HTTPException) as error:
+            account.cancel(cancel_id)
+        assert error.value.status_code == 404
+        assert get_order(account.engine.db.conn, 1).status == "pending"
+    else:
+        account.cancel(cancel_id)
+    assert st.fees_usdc == (0.1 if evidence == "fee" else None)
+
+
+@pytest.mark.parametrize("failure", ["native", "shadow"])
+def test_failed_cancellation_stops_without_zero_authority(active, monkeypatch, failure):
+    _, account = active
+    oid = account.place(request()).order_id
+    if failure == "native":
+        account.engine.db.conn.execute(
+            "CREATE TRIGGER deny_cancel BEFORE UPDATE OF status ON limit_orders "
+            "WHEN NEW.status='cancelled' BEGIN SELECT RAISE(ABORT,'cancel failed'); END"
+        )
+        account.engine.db.conn.commit()
+    else:
+        class FailExtra(dict):
+            def update(self, *_args): raise RuntimeError("cancel publication")
+        account.orders[oid].extra = FailExtra(account.orders[oid].extra)
+    with pytest.raises(HTTPException) as error:
+        account.cancel(oid)
+    assert error.value.status_code == 503
+    assert account.orders[oid].fees_usdc is None
+    assert_all_entries_refuse(account, oid)
+    assert durable_account(account)["trades"] == []
+
+
+def test_readyz_reflects_sticky_stop_before_thread_exits(active, monkeypatch):
+    registry, account = active
+    monkeypatch.setattr(server, "sidecars", registry)
+    monkeypatch.setattr(account._fill_thread, "is_alive", lambda: True)
+    assert server.readyz() == {"status": "ok"}
+    account._stop.set()
+    with pytest.raises(HTTPException) as error:
+        server.readyz()
+    assert error.value.status_code == 503
+
+
+@pytest.mark.parametrize("path", ["maker", "snapshot"])
+def test_known_rollback_keeps_same_sidecar_healthy_for_exactly_one_retry(active, monkeypatch, path):
+    _, account = active
+    oid = account.place(request()).order_id
+    crossing(account, path)
+    conn = account.engine.db.conn
+    conn.execute(
+        "CREATE TRIGGER known_rollback AFTER INSERT ON trades "
+        "BEGIN SELECT RAISE(ABORT,'retry'); END"
+    )
+    conn.commit()
+    before = durable_account(account)
+    tick(account, monkeypatch)
+    assert not account._stop.is_set()
+    assert account.get(oid).status == "open"
+    assert durable_account(account) == before
+    conn.execute("DROP TRIGGER known_rollback")
+    conn.commit()
+    tick(account, monkeypatch)
+    receipt = account.get(oid)
+    assert receipt.status == "filled" and receipt.fees_usdc == pytest.approx(0.05)
+    assert receipt.filled_size_usdc == 10 and receipt.total_shares == 20
+    assert len(durable_account(account)["trades"]) == 1
+    with pytest.raises(HTTPException) as error:
+        account.cancel(oid)
+    assert error.value.status_code == 404
+    assert account.get(oid).fees_usdc == pytest.approx(0.05)
+    tick(account, monkeypatch)
+    assert len(durable_account(account)["trades"]) == 1
+
+
+def test_placement_maps_before_native_tick_can_enter(active, monkeypatch):
+    _, account = active
+    native_done = threading.Event()
+    publish = threading.Event()
+    tick_entered = threading.Event()
+    results = {}
+    original_state = server.OrderState
+    original_check = account.engine.check_orders
+    def pause_mapping(**fields):
+        native_done.set()
+        assert publish.wait(3)
+        return original_state(**fields)
+    def check():
+        tick_entered.set()
+        assert len(account.orders) == 1
+        return original_check()
+    monkeypatch.setattr(server, "OrderState", pause_mapping)
+    monkeypatch.setattr(account.engine, "check_orders", check)
+    crossing(account)
+    def place():
+        try: results["place"] = account.place(request())
+        except Exception as error: results["place"] = error
+    placer = threading.Thread(target=place)
+    placer.start()
+    try:
+        assert native_done.wait(3)
+        assert_lock_held(account.lock)
+        assert len(durable_account(account)["limit_orders"]) == 1
+        worker = threading.Thread(target=lambda: tick(account, monkeypatch))
+        worker.start()
+        assert not tick_entered.wait(0.05)
+    finally:
+        publish.set()
+    placer.join(timeout=3)
+    worker.join(timeout=3)
+    assert not placer.is_alive() and not worker.is_alive()
+    assert isinstance(results["place"], server.OrderReceipt)
+    assert tick_entered.is_set() and not account._stop.is_set()
+    assert account.get(results["place"].order_id).status == "filled"
+    assert len(durable_account(account)["trades"]) == 1
+
+
+@pytest.mark.parametrize("operation", ["get", "list", "cancel"])
+def test_fill_publication_holds_same_lock_against_reads_and_cancellation(active, monkeypatch, operation):
+    _, account = active
+    oid = account.place(request()).order_id
+    crossing(account)
+    native_done = threading.Event()
+    publish = threading.Event()
+    attempting = threading.Event()
+    completed = threading.Event()
+    results = {}
+    original_receipt = server._to_receipt
+    def pause_receipt(st):
+        if threading.current_thread().name == "native-publisher":
+            native_done.set()
+            assert publish.wait(3)
+        return original_receipt(st)
+    monkeypatch.setattr(server, "_to_receipt", pause_receipt)
+    worker = threading.Thread(target=lambda: tick(account, monkeypatch), name="native-publisher")
+    worker.start()
+    reader = None
+    try:
+        assert native_done.wait(3)
+        assert_lock_held(account.lock)
+        assert durable_account(account)["limit_orders"][0][9] == "filled"
+        def read():
+            attempting.set()
+            try:
+                results["read"] = {
+                    "get": lambda: account.get(oid), "list": account.list_open_orders,
+                    "cancel": lambda: account.cancel(oid),
+                }[operation]()
+            except Exception as error:
+                results["read"] = error
+            finally:
+                completed.set()
+        reader = threading.Thread(target=read)
+        reader.start()
+        assert attempting.wait(3)
+        assert not completed.wait(0.05)
+    finally:
+        publish.set()
+    worker.join(timeout=3)
+    if reader is not None: reader.join(timeout=3)
+    assert not worker.is_alive() and reader is not None and not reader.is_alive()
+    assert not account._stop.is_set()
+    if operation == "get":
+        assert results["read"].status == "filled"
+        assert results["read"].fees_usdc == pytest.approx(0.05)
+        assert results["read"].total_shares == 20
+    elif operation == "list": assert results["read"] == []
+    else:
+        assert isinstance(results["read"], HTTPException)
+        assert results["read"].status_code == 404
+    assert len(durable_account(account)["trades"]) == 1
+
+
+def test_cancel_publication_holds_lock_until_known_zero_receipt(active, monkeypatch):
+    _, account = active
+    oid = account.place(request()).order_id
+    committed = threading.Event()
+    publish = threading.Event()
+    completed = threading.Event()
+    original_cancel = account.engine.cancel_limit_order
+    result = {}
+    def pause_cancel(int_id):
+        value = original_cancel(int_id)
+        committed.set()
+        assert publish.wait(3)
+        return value
+    monkeypatch.setattr(account.engine, "cancel_limit_order", pause_cancel)
+    canceller = threading.Thread(target=lambda: account.cancel(oid))
+    canceller.start()
+    reader = None
+    try:
+        assert committed.wait(3)
+        assert_lock_held(account.lock)
+        def read():
+            result["receipt"] = account.get(oid)
+            completed.set()
+        reader = threading.Thread(target=read)
+        reader.start()
+        assert not completed.wait(0.05)
+    finally:
+        publish.set()
+    canceller.join(timeout=3)
+    if reader is not None: reader.join(timeout=3)
+    assert not canceller.is_alive() and reader is not None and not reader.is_alive()
+    assert result["receipt"].status == "canceled"
+    assert result["receipt"].fees_usdc == 0
+    assert durable_account(account)["trades"] == []
+
+
+def assert_lock_held(lock):
+    acquired = lock.acquire(blocking=False)
+    if acquired:
+        lock.release()
+    assert not acquired

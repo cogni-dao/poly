@@ -120,8 +120,10 @@ class Database:
 
     def update_cash(self, new_cash: float) -> None:
         """Update the account cash balance."""
+        owns_transaction = not self.conn.in_transaction
         self.conn.execute("UPDATE account SET cash = ? WHERE id = 1", (new_cash,))
-        self.conn.commit()
+        if owns_transaction:
+            self.conn.commit()
 
     # ------------------------------------------------------------------
     # Reset
@@ -163,6 +165,7 @@ class Database:
         is_partial: bool,
     ) -> Trade:
         """Insert a trade and return the Trade object."""
+        owns_transaction = not self.conn.in_transaction
         cursor = self.conn.execute(
             """\
             INSERT INTO trades (
@@ -181,7 +184,8 @@ class Database:
                 levels_filled, int(is_partial),
             ),
         )
-        self.conn.commit()
+        if owns_transaction:
+            self.conn.commit()
         trade_id = cursor.lastrowid
         row = self.conn.execute(
             "SELECT * FROM trades WHERE id = ?", (trade_id,)
@@ -212,6 +216,7 @@ class Database:
         realized_pnl: float = 0.0,
     ) -> Position:
         """Insert or update a position and return it."""
+        owns_transaction = not self.conn.in_transaction
         self.conn.execute(
             """\
             INSERT INTO positions (
@@ -229,7 +234,8 @@ class Database:
                 outcome, shares, avg_entry_price, total_cost, realized_pnl,
             ),
         )
-        self.conn.commit()
+        if owns_transaction:
+            self.conn.commit()
         return self.get_position(market_condition_id, outcome)
 
     def get_position(self, market_condition_id: str, outcome: str) -> Position | None:
