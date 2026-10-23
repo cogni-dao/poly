@@ -107,7 +107,8 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
       const scored = await adapter.patch({ id, expectedRevision: created.revision, set: { scores } }, collaborator);
       expect(scored.scores).toEqual(scores);
       await expect(adapter.patch({ id, expectedRevision: created.revision, set: { scores: null } }, collaborator)).rejects.toMatchObject({ name: "WorkItemRevisionConflictError" });
-      await expect(adapter.patch({ id, set: { title: "Foreign content" } }, collaborator)).rejects.toMatchObject({ name: "WorkItemAuthorizationError" });
+      await expect(adapter.patch({ id, set: { title: "Foreign content", scores: null } }, collaborator)).rejects.toMatchObject({ name: "WorkItemAuthorizationError" });
+      expect(await adapter.get(id)).toMatchObject({ title: "Shared evaluation composition", scores, revision: scored.revision });
       const claimed = await adapter.claim({ id, runId: "baseline-run", command: "/baseline", principalId: owner });
       expect(claimed.claimedByRun).toBe("baseline-run");
       expect(claimed.scores).toEqual(scores);
