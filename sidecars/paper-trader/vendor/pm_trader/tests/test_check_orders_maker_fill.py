@@ -749,3 +749,225 @@ class TestFillPriceAtLimit:
         assert len(results) == 1
         trade = _latest_trade_row(engine)
         assert trade["avg_price"] == pytest.approx(0.50)
+
+
+# bug.5043: actual SQLite atomicity, with an independent durable-state reader.
+import sqlite3
+
+from pm_trader.engine import NativeAccountUnavailableError
+from pm_trader.models import InsufficientBalanceError
+from pm_trader.orders import get_order, mark_filled
+
+
+def _durable(engine):
+    with sqlite3.connect(engine.db.db_path) as reader:
+        return {
+            table: reader.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+            for table in ("account", "trades", "positions", "limit_orders")
+        }
+
+
+def _atomic_order(engine, path, side):
+    _mock_api(
+        engine,
+        book=_book(bids=[(0.5, 100)], asks=[(0.5, 100)]),
+        fee_rate=100,
+        trades=[_trade(0.5, 100, "SELL" if side == "buy" else "BUY")]
+        if path == "maker" else [],
+    )
+    if side == "buy":
+        return _make_buy(engine, amount=10, limit=0.5)
+    return _make_sell(engine, shares=20, limit=0.5)
+
+
+def _install_fault(engine, fault, side):
+    events = {
+        "after_debit": "AFTER UPDATE OF cash ON account",
+        "after_trade": "AFTER INSERT ON trades",
+        "after_position": "AFTER INSERT ON positions" if side == "buy"
+        else "AFTER UPDATE ON positions",
+        "before_mark": "BEFORE UPDATE OF status ON limit_orders WHEN NEW.status = 'filled'",
+    }
+    engine.db.conn.execute(
+        f"CREATE TRIGGER atomic_fault {events[fault]} "
+        "BEGIN SELECT RAISE(ABORT, 'atomic fill fault'); END"
+    )
+    engine.db.conn.commit()
+
+
+@pytest.mark.parametrize("path", ["maker", "snapshot"])
+@pytest.mark.parametrize("side", ["buy", "sell"])
+@pytest.mark.parametrize("fault", ["after_debit", "after_trade", "after_position", "before_mark"])
+def test_fill_transaction_fault_matrix_preserves_durable_state_and_retries_once(engine, path, side, fault):
+    oid = _atomic_order(engine, path, side)
+    before = _durable(engine)
+    _install_fault(engine, fault, side)
+    assert engine.check_orders() == []
+    assert not engine.db.conn.in_transaction
+    assert _durable(engine) == before
+    assert get_order(engine.db.conn, oid).status == "pending"
+    engine.db.conn.execute("DROP TRIGGER atomic_fault")
+    engine.db.conn.commit()
+    fills = engine.check_orders()
+    assert len(fills) == 1
+    assert fills[0]["order"]["id"] == oid
+    assert fills[0]["action"] == "filled"
+    assert fills[0]["fill"]["amount_usd"] == pytest.approx(10)
+    assert fills[0]["fill"]["total_shares"] == pytest.approx(20)
+    assert fills[0]["fill"]["avg_price"] == 0.5
+    assert fills[0]["fill"]["fee"] == pytest.approx(0.05 if side == "buy" else 0.1)
+    after = _durable(engine)
+    assert len(after["trades"]) == 1
+    assert after["account"][0][2] == pytest.approx(9989.95 if side == "buy" else 10009.9)
+    assert get_order(engine.db.conn, oid).status == "filled"
+    assert engine.check_orders() == []
+    assert _durable(engine) == after
+
+
+@pytest.mark.parametrize("path", ["maker", "snapshot"])
+@pytest.mark.parametrize("side", ["buy", "sell"])
+def test_clean_begin_busy_has_no_effect_then_recovers(engine, path, side):
+    _atomic_order(engine, path, side)
+    before = _durable(engine)
+    engine.db.conn.execute("PRAGMA busy_timeout=0")
+    blocker = sqlite3.connect(engine.db.db_path)
+    try:
+        blocker.execute("BEGIN IMMEDIATE")
+        assert engine.check_orders() == []
+        assert not engine.db.conn.in_transaction
+        assert _durable(engine) == before
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert len(engine.check_orders()) == 1
+    assert len(_durable(engine)["trades"]) == 1
+
+
+def test_incoming_transaction_is_untouched_before_expiry_provider_and_cancel(engine, monkeypatch):
+    oid = create_order(
+        engine.db.conn, market_slug="test-market", market_condition_id="0xabc123",
+        outcome="Yes", side="buy", amount=10, limit_price=0.5,
+        order_type="gtd", expires_at="2000-01-01T00:00:00Z",
+    ).id
+    before = _durable(engine)
+    engine.db.conn.execute("UPDATE account SET cash=1")
+    engine.api.get_market = MagicMock(side_effect=AssertionError("provider before guard"))
+    with pytest.raises(NativeAccountUnavailableError, match="dirty_entry"):
+        engine.check_orders()
+    with pytest.raises(NativeAccountUnavailableError, match="dirty_entry"):
+        engine.cancel_limit_order(oid)
+    assert engine.db.conn.in_transaction
+    assert engine.db.get_account().cash == 1
+    assert _durable(engine) == before
+    engine.api.get_market.assert_not_called()
+    engine.db.conn.rollback()
+    assert _durable(engine) == before
+    assert engine.check_orders()[0]["action"] == "expired"
+
+
+def _write_all_four(engine, oid):
+    engine.db.update_cash(123)
+    trade = engine.db.insert_trade(
+        market_condition_id="0xabc123", market_slug="test-market", market_question="Test market",
+        outcome="Yes", side="buy", order_type="fak", avg_price=0.5,
+        amount_usd=10, shares=20, fee_rate_bps=100, fee=0.1, slippage=0,
+        levels_filled=1, is_partial=False,
+    )
+    position = engine.db.upsert_position(
+        market_condition_id="0xabc123", market_slug="test-market", market_question="Test market",
+        outcome="Yes", shares=20, avg_entry_price=0.5, total_cost=10.1,
+    )
+    order = mark_filled(engine.db.conn, oid)
+    assert trade.id and position.shares == 20 and order.status == "filled"
+
+
+def test_four_mutators_preserve_caller_ownership_and_standalone_commits(engine):
+    oid = _make_buy(engine, amount=10, limit=0.5)
+    before = _durable(engine)
+    engine.db.conn.execute("BEGIN IMMEDIATE")
+    _write_all_four(engine, oid)
+    assert engine.db.conn.in_transaction
+    assert _durable(engine) == before
+    engine.db.conn.rollback()
+    assert _durable(engine) == before
+    _write_all_four(engine, oid)
+    assert not engine.db.conn.in_transaction
+    after = _durable(engine)
+    assert after["account"][0][2] == 123
+    assert len(after["trades"]) == len(after["positions"]) == 1
+    assert after["limit_orders"][0][9] == "filled"
+
+
+class _OutcomeConnection:
+    """Delegate every SQL operation to SQLite; inject only outcome acknowledgement."""
+    def __init__(self, conn, fault):
+        self.real = conn
+        self.fault = fault
+        self.rollbacks = 0
+
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+    def commit(self):
+        if self.fault == "commit_then_raise":
+            self.real.commit()
+        if self.fault in ("commit_then_raise", "commit_failure"):
+            raise sqlite3.OperationalError(self.fault)
+        return self.real.commit()
+
+    def rollback(self):
+        self.rollbacks += 1
+        if self.fault == "rollback_failure":
+            raise sqlite3.OperationalError(self.fault)
+        return self.real.rollback()
+
+
+@pytest.mark.parametrize("path", ["maker", "snapshot"])
+@pytest.mark.parametrize("side", ["buy", "sell"])
+@pytest.mark.parametrize("fault", ["commit_then_raise", "commit_failure", "rollback_failure"])
+def test_ambiguous_transaction_outcome_escapes_all_fallbacks(engine, path, side, fault):
+    oid = _atomic_order(engine, path, side)
+    before = _durable(engine)
+    if fault == "rollback_failure":
+        _install_fault(engine, "before_mark", side)
+    real = engine.db.conn
+    proxy = _OutcomeConnection(real, fault)
+    engine.db._conn = proxy
+    try:
+        with pytest.raises(NativeAccountUnavailableError, match="mutation_ambiguous"):
+            engine.check_orders()
+        durable = _durable(engine)
+        if fault == "commit_then_raise":
+            assert not real.in_transaction
+            assert durable != before
+            assert len(durable["trades"]) == 1
+            assert get_order(real, oid).status == "filled"
+            assert durable["account"][0][2] == pytest.approx(9989.95 if side == "buy" else 10009.9)
+            assert proxy.rollbacks == 0
+        else:
+            assert real.in_transaction
+            assert durable == before
+            assert proxy.rollbacks == (1 if fault == "rollback_failure" else 0)
+    finally:
+        engine.db._conn = real
+        real.rollback()
+
+
+@pytest.mark.parametrize("path", ["maker", "snapshot"])
+@pytest.mark.parametrize("side", ["buy", "sell"])
+def test_acknowledged_rollback_retains_permanent_rejection(engine, monkeypatch, path, side):
+    oid = _atomic_order(engine, path, side)
+    before = _durable(engine)
+    def reject_after_write(*args):
+        engine.db.update_cash(1)
+        raise InsufficientBalanceError(required=10001, available=10000)
+    monkeypatch.setattr(engine, "_execute_limit_" + side, reject_after_write)
+    results = engine.check_orders()
+    assert len(results) == 1
+    assert results[0]["action"] == "rejected"
+    assert not engine.db.conn.in_transaction
+    after = _durable(engine)
+    for table in ("account", "trades", "positions"):
+        assert after[table] == before[table]
+    assert get_order(engine.db.conn, oid).status == "rejected"
+    assert engine.check_orders() == []
