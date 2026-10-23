@@ -5,7 +5,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { OrderReconcilerDeps } from "@/bootstrap/jobs/order-reconciler.job";
 import { ORDER_RECONCILER_METRICS, runReconcileOnce } from "@/bootstrap/jobs/order-reconciler.job";
-import type { LedgerRow } from "@/features/trading/order-ledger.types";
+import type {
+	AcceptedOrderObservation,
+	LedgerRow,
+	OrderObservationWriteResult,
+} from "@/features/trading/order-ledger.types";
+import { EVENT_NAMES } from "@/shared/observability/events";
 
 const NOW = new Date("2026-10-16T00:00:00Z");
 function row(overrides: Partial<LedgerRow> = {}): LedgerRow {
@@ -27,7 +32,7 @@ function row(overrides: Partial<LedgerRow> = {}): LedgerRow {
 	};
 }
 function harness(rows: LedgerRow[], getOrder = vi.fn()) {
-	const updateStatus = vi.fn(async () => {});
+	const updateStatus = vi.fn(async (): Promise<OrderObservationWriteResult> => {});
 	const markSynced = vi.fn(async () => {});
 	const markReconcileAttempted = vi.fn(async () => {});
 	const leaf = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
@@ -321,6 +326,150 @@ describe("read-only conservative order recovery", () => {
     });
   });
 
+
+describe("durable observation success reporting", () => {
+	it.each([
+		{ accepted: false, retainedProof: false },
+		{ accepted: false, retainedProof: true },
+		{ accepted: true, retainedProof: true },
+	])(
+		"reports durable status with accepted=$accepted and retainedProof=$retainedProof",
+		async ({ accepted, retainedProof }) => {
+			const prior = row({
+				order_id: "venue-1",
+				mode: "paper",
+				status: !accepted && retainedProof ? "partial" : "open",
+			});
+			const h = harness(
+				[prior],
+				vi.fn(async () => ({ found: receipt() })),
+			);
+			const observation: AcceptedOrderObservation = {
+				mode: "paper",
+				client_order_id: "coid-1",
+				order_id: "venue-1",
+				status: accepted ? "partial" : prior.status,
+				accepted,
+				accounting: retainedProof
+					? {
+							status: "verified_positive",
+							facts: {
+								version: 1,
+								mode: "paper",
+								source: "paper_order_receipt",
+								billing_account_id: "acct-1",
+								connection_id: "connection-1",
+								client_order_id: "coid-1",
+								order_id: "venue-1",
+								condition_id: `0x${"a".repeat(64)}`,
+								token_id: "123",
+								side: "BUY",
+								shares: 2,
+								notional_usdc: 1,
+								price: 0.5,
+								fee_known: true,
+								fees_usdc: 0,
+								venue_status: "partial",
+								terminal: false,
+								observed_at: NOW.toISOString(),
+								proof_key: "prior-proof",
+							},
+						}
+					: {
+							status: "mismatch",
+							reason: "paper_cumulative_observation_contradiction",
+						},
+			};
+			h.updateStatus.mockResolvedValueOnce(observation);
+			const callback = vi.fn();
+			h.deps.onOrderChanged = callback;
+
+			await runReconcileOnce(h.deps);
+
+			expect(h.updateStatus).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ status: "filled" }),
+			);
+			expect(callback).toHaveBeenCalledExactlyOnceWith(prior, {
+				status: observation.status,
+				acceptedObservation: observation,
+			});
+			if (accepted) {
+				expect(h.deps.metrics.incr).toHaveBeenCalledWith(
+					ORDER_RECONCILER_METRICS.updatesTotal,
+					{ from: "open", to: "partial" },
+				);
+				expect(h.leaf.info).toHaveBeenCalledExactlyOnceWith(
+					expect.objectContaining({
+						event: EVENT_NAMES.POLY_RECONCILER_STATUS_UPDATED,
+						from: "open",
+						to: "partial",
+					}),
+					"reconciler: authenticated order observation persisted",
+				);
+				expect(h.leaf.warn).not.toHaveBeenCalled();
+			} else {
+				expect(h.deps.metrics.incr).not.toHaveBeenCalledWith(
+					ORDER_RECONCILER_METRICS.updatesTotal,
+					expect.anything(),
+				);
+				expect(h.leaf.info).not.toHaveBeenCalled();
+				expect(h.leaf.warn).toHaveBeenCalledExactlyOnceWith(
+					{
+						event: EVENT_NAMES.POLY_MIRROR_RECONCILE_TICK_ERROR,
+						errorCode: "order_observation_rejected",
+					},
+					"reconciler: authenticated order observation rejected",
+				);
+				expect(callback.mock.invocationCallOrder[0]).toBeLessThan(
+					h.leaf.warn.mock.invocationCallOrder[0],
+				);
+			}
+			expect(h.deps.metrics.incr).not.toHaveBeenCalledWith(
+				ORDER_RECONCILER_METRICS.updatesTotal,
+				{ from: prior.status, to: "filled" },
+			);
+			expect(h.leaf.error).not.toHaveBeenCalled();
+			expect(h.markSynced).toHaveBeenCalledExactlyOnceWith(["coid-1"]);
+			expect(h.markReconcileAttempted).toHaveBeenCalledExactlyOnceWith([
+				"coid-1",
+			]);
+			expect(h.deps.metrics.incr).toHaveBeenCalledWith(
+				ORDER_RECONCILER_METRICS.ticksTotal,
+				{},
+			);
+			expect(h.place).not.toHaveBeenCalled();
+		},
+	);
+
+	it("preserves live success reporting for a void writer acknowledgment", async () => {
+		const prior = row({ order_id: "venue-1", status: "open" });
+		const h = harness(
+			[prior],
+			vi.fn(async () => ({ found: receipt() })),
+		);
+		const callback = vi.fn();
+		h.deps.onOrderChanged = callback;
+
+		await runReconcileOnce(h.deps);
+
+		expect(callback).toHaveBeenCalledExactlyOnceWith(prior, {
+			status: "filled",
+		});
+		expect(h.deps.metrics.incr).toHaveBeenCalledWith(
+			ORDER_RECONCILER_METRICS.updatesTotal,
+			{ from: "open", to: "filled" },
+		);
+		expect(h.leaf.info).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				event: EVENT_NAMES.POLY_RECONCILER_STATUS_UPDATED,
+				from: "open",
+				to: "filled",
+			}),
+			"reconciler: authenticated order observation persisted",
+		);
+		expect(h.leaf.error).not.toHaveBeenCalled();
+	});
+});
 
 describe("known-order failure boundary diagnostics", () => {
   const sentinel = "SQL_PARAMS_SECRET_SENTINEL";

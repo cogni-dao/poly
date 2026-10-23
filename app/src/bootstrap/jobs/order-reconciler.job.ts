@@ -370,10 +370,20 @@ export async function runReconcileOnce(
       if (accepted) acceptedStatus = accepted.status;
       deps.onOrderChanged?.(row, { status: acceptedStatus,
         ...(accepted ? { acceptedObservation: accepted } : {}) });
+      if (accepted && !accepted.accepted) {
+        log.warn(
+          {
+            event: EVENT_NAMES.POLY_MIRROR_RECONCILE_TICK_ERROR,
+            errorCode: "order_observation_rejected",
+          },
+          "reconciler: authenticated order observation rejected",
+        );
+        continue;
+      }
       reconcileStage = "record_update_metric";
       deps.metrics.incr(ORDER_RECONCILER_METRICS.updatesTotal, {
         from: row.status,
-        to: newStatus,
+        to: acceptedStatus,
       });
       reconcileStage = "log_status_updated";
       log.info(
@@ -382,7 +392,7 @@ export async function runReconcileOnce(
           client_order_id: row.client_order_id,
           order_id: row.order_id,
           from: row.status,
-          to: newStatus,
+          to: acceptedStatus,
 						final_execution_proven: finalObservation !== undefined,
           realized_fill_fields_observed:
             typeof receipt.fill_price === "number" &&
