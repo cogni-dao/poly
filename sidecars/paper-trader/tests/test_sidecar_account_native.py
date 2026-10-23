@@ -899,3 +899,50 @@ def assert_lock_held(lock):
     if acquired:
         lock.release()
     assert not acquired
+
+
+@pytest.mark.parametrize("side", ["BUY", "SELL"])
+def test_native_cancel_preserves_canonical_receipt_envelope(active, side):
+    _, account = active
+    intent = request(
+        market_id="prediction-market:polymarket:0xabc123",
+        token_id="yes-token", outcome="0", side=side,
+    )
+    placed = account.place(intent)
+    oid = placed.order_id
+    before_extra = dict(account.orders[oid].extra)
+    before_native = durable_account(account)
+    assert placed.attributes["market"] == intent.market_id
+    assert placed.attributes["tokenId"] == intent.token_id
+    assert placed.attributes["side"] == side
+    assert placed.attributes["outcome"] == intent.outcome
+    assert placed.attributes["price"] == intent.limit_price
+    assert placed.attributes["originalSize"] == intent.size_usdc / intent.limit_price
+    assert placed.attributes["upstream_id"] == oid
+    assert placed.client_order_id == intent.client_order_id
+    assert placed.fees_usdc is None
+
+    account.cancel(oid)
+    receipt = account.get(oid)
+    assert receipt.order_id == placed.order_id
+    assert receipt.client_order_id == placed.client_order_id
+    assert receipt.submitted_at == placed.submitted_at
+    assert receipt.attributes == {**placed.attributes, "upstream_status": "cancelled"}
+    assert account.orders[oid].extra == {**before_extra, "status": "cancelled"}
+    assert receipt.status == "canceled" and receipt.fees_usdc == 0.0
+    assert receipt.filled_size_usdc == 0.0
+    assert receipt.fill_price is None and receipt.total_shares is None
+    assert receipt.attributes["sizeMatched"] == 0.0
+    assert account.list_open_orders() == []
+    after_native = durable_account(account)
+    for table in ("account", "trades", "positions", "market_cache"):
+        assert after_native[table] == before_native[table]
+    assert after_native["account"][0][2] == SEED
+    assert after_native["trades"] == after_native["positions"] == []
+    assert get_order(account.engine.db.conn, 1).status == "cancelled"
+
+    with pytest.raises(HTTPException) as error:
+        account.cancel(oid)
+    assert error.value.status_code == 404
+    assert account.get(oid) == receipt
+    assert durable_account(account) == after_native

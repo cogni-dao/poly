@@ -757,7 +757,7 @@ class Sidecar:
                     raise ValueError("unproven native cancellation")
                 self._require_available("mutation_ambiguous")
                 st.status = "canceled"
-                st.extra.update(result)
+                st.extra.update({"status": result["status"]})
                 if zero_candidate:
                     st.fees_usdc = 0.0
                 _to_receipt(st)
