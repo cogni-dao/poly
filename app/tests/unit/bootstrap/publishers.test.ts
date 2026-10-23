@@ -15,6 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { startProcessHealthPublisher } from "@/bootstrap/publishers";
+import { EVENT_NAMES } from "@/shared/observability/events";
 
 function createMockPort() {
   return {
@@ -75,6 +76,35 @@ describe("startProcessHealthPublisher", () => {
     expect(event.rssMb).toBeGreaterThan(0);
     expect(typeof event.uptimeSeconds).toBe("number");
     expect(typeof event.eventLoopDelayMs).toBe("number");
+
+    controller.abort();
+  });
+
+  it("logs the window event-loop delay max once per 60s (bug.5520)", async () => {
+    const port = createMockPort();
+    const logger = createMockLogger();
+    const controller = new AbortController();
+
+    startProcessHealthPublisher({
+      port: port as never,
+      streamKey: "node:test:events",
+      signal: controller.signal,
+      logger: logger as never,
+      environment: "test",
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(logger.info).toHaveBeenCalledTimes(1);
+    const fields = logger.info.mock.calls[0]?.[0];
+    expect(fields).toMatchObject({
+      event: EVENT_NAMES.PROCESS_EVENT_LOOP_DELAY,
+      window_ms: 60_000,
+    });
+    expect(typeof fields.event_loop_delay_max_ms).toBe("number");
+    expect(typeof fields.event_loop_delay_p99_ms).toBe("number");
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(logger.info).toHaveBeenCalledTimes(2);
 
     controller.abort();
   });

@@ -8,14 +8,16 @@
  *   External source monitoring uses ingestion-core + Temporal. See data-streams.md.
  * Invariants:
  *   - PROCESS_HEALTH_ONLY: No external source polling from bootstrap
- * Side-effects: IO (Redis publish via NodeStreamPort)
- * Links: docs/spec/data-streams.md, @cogni/node-streams
+ * Side-effects: IO (Redis publish via NodeStreamPort; one info log per window)
+ * Links: docs/spec/data-streams.md, @cogni/node-streams, bug.5520
  * @internal
  */
 
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { NodeStreamPort, ProcessHealthEvent } from "@cogni/node-streams";
 import type { Logger } from "pino";
+
+import { EVENT_NAMES } from "@/shared/observability/events";
 
 const HEALTH_INTERVAL_MS = 60_000;
 
@@ -29,7 +31,9 @@ interface PublisherDeps {
 
 /**
  * Start process health publisher. Call once after container wiring.
- * Publishes heap/RSS/uptime/event-loop-delay every 60s.
+ * Publishes heap/RSS/uptime/event-loop-delay every 60s, and logs the window's
+ * event-loop delay max/p99 (bug.5520). The histogram resets each window so
+ * both figures describe the last 60s, not process lifetime.
  *
  * This is the ONLY acceptable bootstrap publisher pattern.
  * External sources (GitHub, Polymarket, etc.) flow through
@@ -47,6 +51,18 @@ export function startProcessHealthPublisher({
   signal.addEventListener("abort", () => histogram.disable());
 
   const publish = async () => {
+    const eventLoopDelayMaxMs = Math.round(histogram.max / 1e6);
+    const eventLoopDelayP99Ms = Math.round(histogram.percentile(99) / 1e6);
+    histogram.reset();
+    logger.info(
+      {
+        event: EVENT_NAMES.PROCESS_EVENT_LOOP_DELAY,
+        event_loop_delay_max_ms: eventLoopDelayMaxMs,
+        event_loop_delay_p99_ms: eventLoopDelayP99Ms,
+        window_ms: HEALTH_INTERVAL_MS,
+      },
+      "event loop delay"
+    );
     try {
       const mem = process.memoryUsage();
       const event: ProcessHealthEvent = {
@@ -56,7 +72,7 @@ export function startProcessHealthPublisher({
         heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
         rssMb: Math.round(mem.rss / 1024 / 1024),
         uptimeSeconds: Math.round(process.uptime()),
-        eventLoopDelayMs: Math.round(histogram.percentile(99) / 1e6),
+        eventLoopDelayMs: eventLoopDelayP99Ms,
         environment,
       };
       await port.publish(streamKey, event);

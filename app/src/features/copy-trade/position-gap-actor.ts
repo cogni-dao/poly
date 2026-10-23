@@ -582,9 +582,12 @@ export function startPositionGapActor(
 			targetCash.usdcEUsdc;
 		const scale =
 			targetTotalWealthUsdc > 0 ? budgetUsdc / targetTotalWealthUsdc : 0;
+		const loadCohortsStartedMs = performance.now();
 		const existingCohorts = await deps.store.loadCohorts(deps.scope);
+		const loadCohortsMs = performance.now() - loadCohortsStartedMs;
 		const previousBudget = await deps.store.previousBudgetUsdc(deps.scope);
 		const snapshotHash = hashJson(freshSnapshot);
+		const projectionStartedMs = performance.now();
 		const cohortProjection = projectPositionGapCohorts({
 			existing: existingCohorts,
 			netTargetPositions: netBook.positions.map((position) =>
@@ -604,6 +607,12 @@ export function startPositionGapActor(
 			activation: true,
 			nowMs: now(),
 		});
+		// bug.5520: projection runs synchronously on the web process event loop.
+		const cohortTiming = {
+			cohortCount: cohortProjection.cohorts.length,
+			loadCohortsMs: Math.round(loadCohortsMs),
+			projectionMs: Math.round(performance.now() - projectionStartedMs),
+		};
 		const reservations = await deps.store.activeReservationTotals(deps.scope);
 		const capacity = await deps.store.loadConfirmedCapacity(deps.scope);
 		const cashAtomic = BigInt(
@@ -699,6 +708,7 @@ export function startPositionGapActor(
 			inputSnapshot: evaluation.inputSnapshot,
 			cohortCreations: cohortProjection.creations,
 			cohortReductions: cohortProjection.reductions,
+			cohortTiming,
 			accountingTransitions,
 			planningMode,
 		});
@@ -1168,6 +1178,11 @@ export function startPositionGapActor(
 		cohortReductions: ReturnType<
 			typeof projectPositionGapCohorts
 		>["reductions"];
+		cohortTiming: {
+			cohortCount: number;
+			loadCohortsMs: number;
+			projectionMs: number;
+		};
 		accountingTransitions: readonly PositionGapAccountingTransition[];
 		planningMode: "live" | "paper";
 	}): Promise<void> {
@@ -1580,6 +1595,9 @@ export function startPositionGapActor(
 					trigger_reasons: input.triggerReasons,
 					fill_accounting_transitions: input.accountingTransitions,
 					outcome,
+					cohort_count: input.cohortTiming.cohortCount,
+					load_cohorts_ms: input.cohortTiming.loadCohortsMs,
+					projection_ms: input.cohortTiming.projectionMs,
 					snapshot_id: input.snapshot.snapshotId,
 					snapshot_as_of: input.snapshot.updatedAtMs,
 					eligible_net_nav_usdc: input.plan.eligibleNetNavUsdc,
