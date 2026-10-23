@@ -37,6 +37,10 @@
       "postgres@3.4.9": "patches/postgres@3.4.9.patch"
     }
   },
+  "dependencies": {
+    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.4.4/cogni-dao-knowledge-store-0.4.4.tgz",
+    "@cogni/ai-tools": "workspace:*"
+  },
   "devDependencies": {
     "@playwright/test": "^1.56.1",
     "@types/node": "^22",

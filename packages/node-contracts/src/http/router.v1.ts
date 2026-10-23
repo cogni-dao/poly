@@ -108,7 +108,7 @@ export const ApiContractV1 = c.router({
     description: workItemsDeleteOperation.description,
     body: c.noBody(),
     responses: {
-      200: workItemsDeleteOperation.output,
+      410: workItemsDeleteOperation.output,
     },
   },
   workItemsClaim: {

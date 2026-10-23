@@ -52,6 +52,7 @@ import {
 import {
 	buildDoltgresClient,
 	createDoltgresPusher,
+	DoltBranchSessionRunner,
 	DoltgresEdoResolverAdapter,
 	DoltgresKnowledgeContributionAdapter,
 	DoltgresKnowledgeStoreAdapter,
@@ -68,7 +69,12 @@ import { numberToPpm } from "@cogni/operator-wallet";
 import { PrivyOperatorWalletAdapter } from "@cogni/operator-wallet/adapters/privy";
 import { noopMetrics as noopMetricsForExecutor } from "@cogni/poly-market-provider";
 import type { ScheduleControlPort } from "@cogni/scheduler-core";
-import type { WorkItemCommandPort, WorkItemQueryPort } from "@cogni/work-items";
+import {
+	type WorkItemCommandPort,
+	type WorkItemQueryPort,
+	withWorkItemLeases,
+} from "@cogni/work-items";
+import { PostgresWorkItemLeaseAdapter } from "@cogni/work-items/adapters/postgres";
 import {
 	Client as TemporalClient,
 	Connection as TemporalConnection,
@@ -2394,13 +2400,40 @@ function createContainer(): Container {
 				max: 1,
 			});
 		const workItemClient = buildWorkItemClient();
-		workItemAdapter = new DoltgresPolyWorkItemAdapter(
+		const workItemContent = new DoltgresPolyWorkItemAdapter(
 			workItemClient,
 			log.child({ component: "doltgres-work-items" }),
-			{ recreateClient: buildWorkItemClient },
+			{
+				// Initial activation requires the sanctioned legacy-producer source/native fence.
+				writerLockProtocol: "database",
+				recreateClient: buildWorkItemClient,
+			},
+		);
+		workItemAdapter = {
+			...withWorkItemLeases(
+				workItemContent,
+				new PostgresWorkItemLeaseAdapter(serviceDb.$client, { logger: log }),
+			),
+			// Poly tools use this real query surface; the published lease wrapper owns only content+leases.
+			listRelations: (id) => workItemContent.listRelations(id),
+		};
+		const createKnowledgeBranchClient = () =>
+			buildDoltgresClient({
+				connectionString: doltgresUrl,
+				applicationName: `cogni_knowledge_branch_${env.SERVICE_NAME ?? "app"}`,
+				max: 1,
+			});
+		const knowledgeWriter = new DoltBranchSessionRunner(
+			createKnowledgeBranchClient(),
+			{
+				writerProtocol: "database",
+				logger: log,
+				recreateClient: createKnowledgeBranchClient,
+			},
 		);
 		const knowledgePort = new DoltgresKnowledgeStoreAdapter({
 			sql: doltClient,
+			writerSession: knowledgeWriter,
 		});
 		knowledgeStorePort = knowledgePort;
 		knowledgeCapability = createKnowledgeCapability(knowledgePort);
@@ -2411,6 +2444,8 @@ function createContainer(): Container {
 		edoCapability = createEdoCapability(knowledgePort, edoResolver);
 		const contributionPort = new DoltgresKnowledgeContributionAdapter({
 			sql: doltClient,
+			writerSession: knowledgeWriter,
+			logger: log,
 		});
 		// Optional post-merge mirror to DoltHub (task.5069). Disabled when
 		// DOLTHUB_REMOTE_URL is unset. Gate-by-secret-presence follows the

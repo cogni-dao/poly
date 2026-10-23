@@ -75,7 +75,7 @@ describe("agent access discovery", () => {
     }
   });
 
-  it("publishes the complete canonical work-item lifecycle", async () => {
+  it("publishes the supported canonical work-item lifecycle with fenced leases", async () => {
     const response = await GET(
       new Request("http://0.0.0.0:3000/.well-known/agent.json", {
         headers: {
@@ -104,7 +104,6 @@ describe("agent access discovery", () => {
       createWorkItem: ["POST", "https://poly.example.test/api/v1/work/items"],
       getWorkItem: ["GET", "https://poly.example.test/api/v1/work/items/{id}"],
       updateWorkItem: ["PATCH", "https://poly.example.test/api/v1/work/items/{id}"],
-      deleteWorkItem: ["DELETE", "https://poly.example.test/api/v1/work/items/{id}"],
       claimWorkItem: [
         "POST",
         "https://poly.example.test/api/v1/work/items/{id}/claims",
@@ -115,13 +114,30 @@ describe("agent access discovery", () => {
       ],
       releaseWorkItem: [
         "DELETE",
-        "https://poly.example.test/api/v1/work/items/{id}/claims?runId={runId}",
+        "https://poly.example.test/api/v1/work/items/{id}/claims?runId={runId}&leaseToken={leaseToken}",
       ],
       getWorkItemCoordination: [
         "GET",
         "https://poly.example.test/api/v1/work/items/{id}/coordination",
       ],
     } as const;
+
+    // Content DELETE is intentionally retired (410), so discovery must not advertise it.
+    expect(body.actions.deleteWorkItem).toBeUndefined();
+    for (const name of ["claimWorkItem", "heartbeatWorkItem", "releaseWorkItem"]) {
+      const schema = body.actions[name]?.outputSchema as {
+        properties: Record<string, unknown>;
+        required: string[];
+      };
+      expect(schema.required).toEqual(
+        expect.arrayContaining(["id", "runId", "leaseToken", "active"]),
+      );
+      expect(schema.properties).not.toHaveProperty("title");
+    }
+    for (const name of ["heartbeatWorkItem", "releaseWorkItem"]) {
+      const schema = body.actions[name]?.inputSchema as { required: string[] };
+      expect(schema.required).toContain("leaseToken");
+    }
 
     for (const [name, [method, endpoint]] of Object.entries(expected)) {
       expect(body.actions[name]).toMatchObject({

@@ -74,6 +74,7 @@ export const POST = wrapRouteHandlerWithLogging<{
       const result = await heartbeatWorkItem({
         id: parsed.data.id,
         runId: parsed.data.runId,
+        leaseToken: parsed.data.leaseToken,
         ...(parsed.data.command !== undefined && {
           command: parsed.data.command,
         }),

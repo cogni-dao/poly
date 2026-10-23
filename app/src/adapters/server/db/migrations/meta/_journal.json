@@ -624,6 +624,13 @@
       "when": 1791869650247,
       "tag": "0088_striped_silvermane",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1792566725938,
+      "tag": "0089_pretty_skullbuster",
+      "breakpoints": true
     }
   ]
 }

@@ -12,10 +12,9 @@
  */
 
 import type {
-  WorkItem,
   WorkItemCommandPort,
   WorkItemId,
-  WorkQuery,
+  WorkItemsPort,
 } from "@cogni/work-items";
 
 export type WorkItemsCreateInput = Parameters<WorkItemCommandPort["create"]>[0];
@@ -34,31 +33,5 @@ export interface WorkItemsPatchInput {
   readonly set: WorkItemsPatchSet;
 }
 
-export interface WorkItemsDoltgresPort {
-  get(id: WorkItemId): Promise<WorkItem | null>;
-  list(query?: WorkQuery): Promise<{
-    items: WorkItem[];
-    nextCursor?: string;
-    pageInfo: { endCursor: string | null; hasMore: boolean };
-  }>;
-  create(input: WorkItemsCreateInput, principalId: string): Promise<WorkItem>;
-  patch(input: WorkItemsPatchInput, principalId: string): Promise<WorkItem>;
-  delete(id: WorkItemId, principalId: string): Promise<boolean>;
-  claim(input: {
-    id: WorkItemId;
-    runId: string;
-    command: string;
-    principalId: string;
-  }): Promise<WorkItem>;
-  heartbeat(input: {
-    id: WorkItemId;
-    runId: string;
-    command?: string;
-    principalId: string;
-  }): Promise<WorkItem>;
-  release(input: {
-    id: WorkItemId;
-    runId: string;
-    principalId: string;
-  }): Promise<WorkItem>;
-}
+/** Published content + the sole PostgreSQL lease authority; no local lease protocol. */
+export type WorkItemsDoltgresPort = WorkItemsPort;
