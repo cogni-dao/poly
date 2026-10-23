@@ -43,6 +43,9 @@ class RecordingThread:
     def is_alive(self):
         return False
 
+    def join(self, timeout=None):
+        pass
+
 
 @pytest.fixture
 def native(tmp_path, monkeypatch, caplog):
