@@ -40,6 +40,7 @@ import type { Database } from "@/adapters/server/db/client";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
 import { readTenantWalletDashboardIn, type WalletDashboardReadDiagnostics } from "@/features/wallet-analysis/server/tenant-wallet-dashboard-service";
 import { buildEconomicPositionProjectionQuery } from "@/features/wallet-analysis/server/economic-position-read-model";
+import type { EconomicObservationV1 } from "@/features/wallet-analysis/server/economic-observation-recovery";
 import { createEconomicProjectionPlanProbe } from "@/features/wallet-analysis/server/economic-projection-plan";
 import {
   billingAccounts,
@@ -142,6 +143,20 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
   const addressB = address();
   const funderA = address();
 
+    const connection = (owner: Tenant, addr: `0x${string}`, funder?: string) => ({
+      billingAccountId: owner.billingAccountId,
+      createdByUserId: owner.userId,
+      privyWalletId: `privy-${randomUUID()}`,
+      address: addr,
+      ...(funder ? { funderAddress: funder } : {}),
+      clobApiKeyCiphertext: Buffer.from("ciphertext"),
+      encryptionKeyId: "test-key",
+      custodialConsentAcceptedAt: new Date("2026-10-01T00:00:00.000Z"),
+      custodialConsentActorKind: "user",
+      custodialConsentActorId: owner.userId,
+      tradingApprovalsReadyAt: new Date("2026-10-02T00:00:00.000Z"),
+    });
+
   beforeAll(async () => {
     db = getAppDb();
     const seedDb = getSeedDb();
@@ -188,20 +203,6 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
         revokedByUserId: ownerA.userId,
       }),
     ]);
-
-    const connection = (owner: Tenant, addr: `0x${string}`, funder?: string) => ({
-      billingAccountId: owner.billingAccountId,
-      createdByUserId: owner.userId,
-      privyWalletId: `privy-${randomUUID()}`,
-      address: addr,
-      ...(funder ? { funderAddress: funder } : {}),
-      clobApiKeyCiphertext: Buffer.from("ciphertext"),
-      encryptionKeyId: "test-key",
-      custodialConsentAcceptedAt: new Date("2026-10-01T00:00:00.000Z"),
-      custodialConsentActorKind: "user",
-      custodialConsentActorId: owner.userId,
-      tradingApprovalsReadyAt: new Date("2026-10-02T00:00:00.000Z"),
-    });
 
     await seedDb
       .insert(polyWalletConnections)
@@ -270,54 +271,662 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
     );
   }
 
-  it("captures unchanged LIVE projection plans as real owner and delegated app principals", async () => {
-    const seed = getSeedDb();
-    const wallet = await seed.execute<{ id: string }>(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label)
-      VALUES (${funderA},'cogni_wallet','Projection role plan fixture') RETURNING id`);
-    const walletId = wallet[0]?.id;
-    if (!walletId) throw new Error("Missing projection plan wallet");
-    try {
-      // Same 5080-row sparse/unrelated-history shape as the metadata plan fixture,
-      // now driven by the owned LIVE wallet rather than a copy-target identity.
+  describe("full sparse LIVE projection app-role performance", () => {
+    let capturedAt: Date;
+    let walletId: string | undefined;
+
+    beforeAll(async () => {
+      capturedAt = new Date();
+      const seed = getSeedDb();
+      const wallet = await seed.execute<{
+        id: string;
+      }>(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label)
+          VALUES (${funderA},'cogni_wallet','Projection role plan fixture') RETURNING id`);
+      walletId = wallet[0]?.id;
+      if (!walletId) throw new Error("Missing projection plan wallet");
+      // Full history drives 5080 lifetime keys; only 80 have a current
+      // observation. History envelopes are valid but deliberately PARTIAL.
+      const generationAt = new Date(capturedAt.getTime() - 1000).toISOString();
+      const conditionId = `0x${"bc".repeat(32)}`;
+      const historyObservation: Omit<EconomicObservationV1, "tokenId"> = {
+        version: 1,
+        wallet: funderA,
+        conditionId,
+        fetchedAt: generationAt,
+        windowStart: new Date(capturedAt.getTime() - 86400_000).toISOString(),
+        windowEnd: generationAt,
+        coverage: "partial",
+        reasons: ["missing_closed_position"],
+        closedPosition: null,
+        lifetimeBuyUsdc: 0.4,
+        lifetimeBuyShares: 1,
+        lifetimeSellUsdc: 0,
+        lifetimePnlUsdc: null,
+        redeemUsdc: 0,
+        constituents: [],
+        settlements: [],
+      };
       await seed.execute(sql`INSERT INTO poly_trader_position_snapshots
         (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,captured_at,raw)
-        SELECT ${walletId}::uuid,${`0x${"bc".repeat(32)}`},n::text,1,.4,.5,.4,'role-plan-'||n,
-          now()-(n||' seconds')::interval,'{}'::jsonb FROM generate_series(1,5080) n`);
+        SELECT ${walletId}::uuid,${conditionId},n::text,1,.4,.5,.4,'role-plan-'||n,
+          ${generationAt}::timestamptz,jsonb_build_object('economicObservationV1',
+            ${JSON.stringify(historyObservation)}::jsonb || jsonb_build_object('tokenId',n::text))
+        FROM generate_series(1,5080) n`);
       await seed.execute(sql`INSERT INTO poly_trader_fills
         (trader_wallet_id,source,native_id,condition_id,token_id,side,price,shares,size_usdc,observed_at,raw)
-        SELECT ${walletId}::uuid,'data-api','role-plan-'||n,${`0x${"bc".repeat(32)}`},n::text,
-          'BUY',.4,1,.4,now()-(n||' seconds')::interval,'{}'::jsonb FROM generate_series(1,5080) n`);
-      await seed.execute(sql`ANALYZE poly_trader_position_snapshots`);
-      await seed.execute(sql`ANALYZE poly_trader_fills`);
-      const capturedAt = new Date();
-    for (const [role, actor] of [["owner", ownerA], ["delegated", canonicalAgent]] as const) {
-      await withTenantScope(db, userActor(toUserId(actor.userId)), async tx => {
-        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
-        await tx.execute(sql`SET LOCAL statement_timeout = 8000`);
-        const probe = createEconomicProjectionPlanProbe();
-        const result = await probe(tx as unknown as Parameters<typeof probe>[0], buildEconomicPositionProjectionQuery({
-          billingAccountId: ownerA.billingAccountId, walletAddress: funderA,
-          connectionKind: "privy_live", capturedAt, interval: "ALL",
-        }));
-        expect(result.status).toBe("captured");
-        const [context] = await tx.execute(sql`SELECT current_user AS role,
-          (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user) AS bypass_rls,
-          current_setting('app.current_user_id') AS actor,
-          current_setting('transaction_read_only') AS read_only,
-          current_setting('transaction_isolation') AS isolation,
-          current_setting('statement_timeout') AS timeout`);
-        const databaseUrl = process.env.DATABASE_URL;
-        if (!databaseUrl) throw new Error("Missing app database configuration");
-        expect(context).toMatchObject({ role: decodeURIComponent(new URL(databaseUrl).username),
-          bypass_rls: false, actor: actor.userId,
-          read_only: "on", isolation: "repeatable read", timeout: "8s" });
-        expect(JSON.stringify(result)).not.toContain(ownerA.billingAccountId);
-        expect(JSON.stringify(result)).not.toContain(funderA);
-        console.info(JSON.stringify({ probe: "economic_projection_app_role_plan", environment: "ci_fixture", role, ...result }));
+        SELECT ${walletId}::uuid,'data-api','role-plan-'||n,${conditionId},n::text,
+          'BUY',.4,1,.4,${generationAt}::timestamptz-(n||' seconds')::interval,'{}'::jsonb
+        FROM generate_series(1,5080) n`);
+      await seed.execute(sql`INSERT INTO poly_trader_current_positions
+        (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,last_observed_at,first_observed_at,raw)
+        SELECT ${walletId}::uuid,${conditionId},n::text,1,.4,.5,.4,'role-current-'||n,
+          ${generationAt}::timestamptz,${generationAt}::timestamptz,'{}'::jsonb
+        FROM generate_series(1,80) n`);
+      await seed.execute(sql`INSERT INTO poly_trader_ingestion_cursors
+        (trader_wallet_id,source,last_success_at,status)
+        VALUES (${walletId}::uuid,'data-api-positions',${generationAt}::timestamptz,'ok')`);
+      // ANALYZE as the migrated-table owner; the BYPASSRLS seeding role
+      // cannot refresh these statistics. Measured reads keep their app role.
+      await db.execute(sql`ANALYZE poly_trader_position_snapshots`);
+      await db.execute(sql`ANALYZE poly_trader_fills`);
+      await db.execute(sql`ANALYZE poly_trader_current_positions`);
+    });
+
+    afterAll(async () => {
+      if (walletId) {
+        await getSeedDb().execute(
+          sql`DELETE FROM poly_trader_wallets WHERE id=${walletId}::uuid`,
+        );
+      }
+    });
+
+    function projectionQuery() {
+      return buildEconomicPositionProjectionQuery({
+        billingAccountId: ownerA.billingAccountId,
+        walletAddress: funderA,
+        connectionKind: "privy_live",
+        capturedAt,
+        interval: "ALL",
       });
     }
+
+    async function expectAppRoleContext(
+      tx: Parameters<Parameters<Database["transaction"]>[0]>[0],
+      actor: Principal,
+    ) {
+      const [context] = await tx.execute(sql`SELECT current_user AS role,
+            (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user) AS bypass_rls,
+            current_setting('app.current_user_id') AS actor,
+            current_setting('transaction_read_only') AS read_only,
+            current_setting('transaction_isolation') AS isolation,
+            current_setting('statement_timeout') AS timeout`);
+      const databaseUrl = process.env.DATABASE_URL;
+      if (!databaseUrl) throw new Error("Missing app database configuration");
+      expect(context).toMatchObject({
+        role: decodeURIComponent(new URL(databaseUrl).username),
+        bypass_rls: false,
+        actor: actor.userId,
+        read_only: "on",
+        isolation: "repeatable read",
+        timeout: "8s",
+      });
+    }
+
+    for (const [role, actor] of [
+      ["owner", ownerA],
+      ["delegated", canonicalAgent],
+    ] as const) {
+      it(`keeps plain projection empirical p95 below 200ms as ${role}`, async () => {
+        await withTenantScope(
+          db,
+          userActor(toUserId(actor.userId)),
+          async (tx) => {
+            await tx.execute(
+              sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`,
+            );
+            await tx.execute(sql`SET LOCAL statement_timeout = 8000`);
+            await expectAppRoleContext(tx, actor);
+            const query = projectionQuery();
+            const sampleCount = 10;
+            const budgetMs = 200;
+            const samplesMs: number[] = [];
+            // Include the first execution: no warmup, EXPLAIN, retries or context
+            // queries inside the measured execute. All samples use this snapshot.
+            for (let sample = 0; sample < sampleCount; sample += 1) {
+              const startedAt = performance.now();
+              await tx.execute(query);
+              const elapsedMs = performance.now() - startedAt;
+              samplesMs.push(elapsedMs);
+              if (elapsedMs >= budgetMs) {
+                console.info(
+                  JSON.stringify({
+                    probe: "economic_projection_app_role_plain_latency",
+                    environment: "ci_fixture",
+                    role,
+                    method: "nearest_rank",
+                    percentile: 0.95,
+                    expectedSampleCount: sampleCount,
+                    observedSampleCount: samplesMs.length,
+                    samplesMs,
+                    complete: false,
+                  }),
+                );
+                // For N=10, nearest-rank p95 is the maximum. One >=200ms
+                // sample makes the gate impossible; do not wait for a 5s timeout
+                // or present this incomplete set as a completed p95 measurement.
+                throw new Error(
+                  `Plain projection ${role}: observed ${samplesMs.length}/${sampleCount} samples; ${elapsedMs.toFixed(3)}ms >= ${budgetMs}ms makes the complete nearest-rank p95 gate impossible`,
+                );
+              }
+            }
+            const sortedMs = [...samplesMs].sort((a, b) => a - b);
+            const p95Ms = sortedMs[Math.ceil(0.95 * sampleCount) - 1];
+            console.info(
+              JSON.stringify({
+                probe: "economic_projection_app_role_plain_latency",
+                environment: "ci_fixture",
+                role,
+                method: "nearest_rank",
+                percentile: 0.95,
+                expectedSampleCount: sampleCount,
+                observedSampleCount: samplesMs.length,
+                samplesMs,
+                p95Ms,
+                complete: true,
+              }),
+            );
+            expect(samplesMs).toHaveLength(sampleCount);
+            expect(p95Ms).toBeLessThan(budgetMs);
+          },
+        );
+      });
+
+      it(`preserves complete projection semantics and plan diagnostics as ${role}`, async () => {
+        await withTenantScope(
+          db,
+          userActor(toUserId(actor.userId)),
+          async (tx) => {
+            await tx.execute(
+              sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`,
+            );
+            await tx.execute(sql`SET LOCAL statement_timeout = 8000`);
+            const probe = createEconomicProjectionPlanProbe();
+            const query = projectionQuery();
+            const result = await probe(
+              tx as unknown as Parameters<typeof probe>[0],
+              query,
+            );
+            expect(result.status).toBe("captured");
+            await expectAppRoleContext(tx, actor);
+            expect(JSON.stringify(result)).not.toContain(ownerA.billingAccountId);
+            expect(JSON.stringify(result)).not.toContain(funderA);
+            const projected = await tx.execute<{
+              live_count: number;
+              closed_count: number;
+              history_incomplete_count: number;
+              missing_mark_count: number;
+              positions_mtm_usdc: string | null;
+              token_id: string;
+              current_shares: string | null;
+              current_value_usdc: string | null;
+              inventory_authoritative: boolean | null;
+              mark_available: boolean | null;
+              history_complete: boolean | null;
+              economic_bucket: string | null;
+            }>(query);
+            expect(projected).toHaveLength(500);
+            expect(projected[0]).toMatchObject({
+              live_count: 5080,
+              closed_count: 0,
+              history_incomplete_count: 5080,
+              missing_mark_count: 5000,
+              positions_mtm_usdc: null,
+            });
+            expect(
+              projected.every(
+                (row) =>
+                  row.economic_bucket === "live" &&
+                  row.history_complete === false,
+              ),
+            ).toBe(true);
+            const current = projected.filter(
+              (row) => row.current_shares !== null,
+            );
+            expect(current).toHaveLength(80);
+            for (const row of current) {
+              expect(Number(row.current_shares)).toBe(1);
+              expect(Number(row.current_value_usdc)).toBe(0.5);
+              expect(row.inventory_authoritative).toBe(true);
+              expect(row.mark_available).toBe(true);
+            }
+            expect(
+              projected
+                .filter((row) => row.current_shares === null)
+                .every(
+                  (row) =>
+                    row.current_value_usdc === null &&
+                    row.mark_available === false,
+                ),
+            ).toBe(true);
+            const [explained] = await tx.execute<{
+              "QUERY PLAN": Array<Record<string, unknown>>;
+            }>(sql`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query}`);
+            const detail = explained?.["QUERY PLAN"][0];
+            if (!detail?.Plan)
+              throw new Error("Missing executed projection plan");
+            type PlanNode = Record<string, unknown> & { Plans?: PlanNode[] };
+            const nodes: PlanNode[] = [];
+            const paths = new Map<PlanNode, number[]>();
+            const visit = (node: PlanNode, path: number[]): void => {
+              nodes.push(node);
+              paths.set(node, path);
+              for (const [index, child] of (node.Plans ?? []).entries())
+                visit(child, [...path, index]);
+            };
+            visit(detail.Plan as PlanNode, []);
+            // Numeric timings/costs/loops only: never log predicates, SQL, bindings,
+            // account IDs, addresses or row data from the real app-role plan.
+            const metric = (
+              node: Record<string, unknown>,
+              name: string,
+            ): number | null =>
+              typeof node[name] === "number" && Number.isFinite(node[name])
+                ? (node[name] as number)
+                : null;
+            const jit = detail.JIT as Record<string, unknown> | undefined;
+            const timing = jit?.Timing as Record<string, unknown> | undefined;
+            const options = jit?.Options as Record<string, unknown> | undefined;
+            const label = (value: unknown): string | null =>
+              typeof value === "string" &&
+              /^[A-Za-z][A-Za-z0-9_ .-]{0,119}$/.test(value)
+                ? value
+                : null;
+            // Search the whole plan: materialized CTE definitions can be separate
+            // InitPlans, not descendants of their consumers. Products rank work;
+            // they are not exclusive timings or independently observed pair counts.
+            const weighted = (node: PlanNode, name: string): number =>
+              (metric(node, "Actual Loops") ?? 0) * (metric(node, name) ?? 0);
+            const criticalRoots = [
+              "CTE classified_raw",
+              "CTE position_flows",
+              "CTE fill_groups",
+              "CTE driven_keys",
+            ]
+              .map((name) => nodes.find((node) => node["Subplan Name"] === name))
+              .filter((node): node is PlanNode => node !== undefined);
+            const directChildren = [...new Set([
+              "CTE fill_groups",
+              "CTE position_flows",
+              "CTE classified_raw",
+              "CTE driven_keys",
+            ].flatMap((name) =>
+              criticalRoots.find((node) => node["Subplan Name"] === name)?.Plans ?? [],
+            ))];
+            const joins = nodes.filter((node) => node["Join Type"] !== undefined);
+            const cteScans = nodes.filter((node) => node["CTE Name"] !== undefined);
+            const rankedJoins = [...joins].sort(
+              (a, b) =>
+                weighted(b, "Rows Removed by Join Filter") -
+                  weighted(a, "Rows Removed by Join Filter") ||
+                weighted(b, "Actual Rows") +
+                  weighted(b, "Rows Removed by Join Filter") -
+                  weighted(a, "Actual Rows") -
+                  weighted(a, "Rows Removed by Join Filter") ||
+                weighted(b, "Actual Total Time") -
+                  weighted(a, "Actual Total Time"),
+            );
+            const rankedCteScans = [...cteScans].sort(
+              (a, b) =>
+                weighted(b, "Actual Rows") +
+                  weighted(b, "Rows Removed by Filter") -
+                  weighted(a, "Actual Rows") -
+                  weighted(a, "Rows Removed by Filter") ||
+                weighted(b, "Actual Total Time") -
+                  weighted(a, "Actual Total Time"),
+            );
+            const remainingLogical = [...new Set([...joins, ...cteScans])].sort(
+              (a, b) =>
+                weighted(b, "Actual Rows") +
+                  weighted(b, "Rows Removed by Join Filter") +
+                  weighted(b, "Rows Removed by Filter") -
+                  weighted(a, "Actual Rows") -
+                  weighted(a, "Rows Removed by Join Filter") -
+                  weighted(a, "Rows Removed by Filter") ||
+                weighted(b, "Actual Total Time") -
+                  weighted(a, "Actual Total Time"),
+            );
+            // Object identity deduplicates overlap; spare slots stay logical.
+            const selectedNodes = [...new Set([
+              ...criticalRoots,
+              ...directChildren.slice(0, 8),
+              ...rankedJoins.slice(0, 6),
+              ...rankedCteScans.slice(0, 6),
+              ...remainingLogical,
+            ])].slice(0, 24);
+            const actual = {
+              planningMs: metric(detail, "Planning Time"),
+              executionMs: metric(detail, "Execution Time"),
+              jit: jit
+                ? {
+                    functions: metric(jit, "Functions"),
+                    generationMs: timing ? metric(timing, "Generation") : null,
+                    inliningMs: timing ? metric(timing, "Inlining") : null,
+                    optimizationMs: timing
+                      ? metric(timing, "Optimization")
+                      : null,
+                    emissionMs: timing ? metric(timing, "Emission") : null,
+                    totalMs: timing ? metric(timing, "Total") : null,
+                    inlining:
+                      typeof options?.Inlining === "boolean"
+                        ? options.Inlining
+                        : null,
+                    optimization:
+                      typeof options?.Optimization === "boolean"
+                        ? options.Optimization
+                        : null,
+                  }
+                : null,
+              nodeCount: nodes.length,
+              truncated: selectedNodes.length < nodes.length,
+              criticalRootExpected: 4,
+              criticalRootFound: criticalRoots.length,
+              criticalRootEmitted: criticalRoots.filter((node) =>
+                selectedNodes.includes(node),
+              ).length,
+              directChildCandidateCount: directChildren.length,
+              directChildEmittedCount: directChildren.filter((node) =>
+                selectedNodes.includes(node),
+              ).length,
+              joinCandidateCount: joins.length,
+              joinEmittedCount: joins.filter((node) =>
+                selectedNodes.includes(node),
+              ).length,
+              cteScanCandidateCount: cteScans.length,
+              cteScanEmittedCount: cteScans.filter((node) =>
+                selectedNodes.includes(node),
+              ).length,
+              // Parent timings include child work; never sum these as
+              // exclusive or uniquely attributable costs.
+              nodes: selectedNodes
+                .map((node) => ({
+                  node: label(node["Node Type"]),
+                  path: paths.get(node),
+                  alias: label(node.Alias),
+                  relation: label(node["Relation Name"]),
+                  index: label(node["Index Name"]),
+                  cte: label(node["CTE Name"]),
+                  subplan: label(node["Subplan Name"]),
+                  joinType: label(node["Join Type"]),
+                  estimatedRows: metric(node, "Plan Rows"),
+                  totalCost: metric(node, "Total Cost"),
+                  actualRows: metric(node, "Actual Rows"),
+                  actualLoops: metric(node, "Actual Loops"),
+                  actualTotalMs: metric(node, "Actual Total Time"),
+                  rowsRemovedByJoinFilter: metric(
+                    node,
+                    "Rows Removed by Join Filter",
+                  ),
+                  rowsRemovedByFilter: metric(node, "Rows Removed by Filter"),
+                  sharedHitBlocks: metric(node, "Shared Hit Blocks"),
+                  sharedReadBlocks: metric(node, "Shared Read Blocks"),
+                })),
+            };
+            expect(actual.executionMs).not.toBeNull();
+            expect(actual.executionMs).toBeLessThan(8000);
+            console.info(
+              JSON.stringify({
+                probe: "economic_projection_app_role_execution",
+                environment: "ci_fixture",
+                role,
+                ...actual,
+              }),
+            );
+            console.info(
+              JSON.stringify({
+                probe: "economic_projection_app_role_plan",
+                environment: "ci_fixture",
+                role,
+                ...result,
+              }),
+            );
+          },
+        );
+      });
+    }
+  });
+
+  it.each(["cross-key conflict", "equal duplicate", "no driven key", "empty"] as const)(
+    "preserves fill identity groups behind rollup cursors: %s",
+    async (scenario) => {
+      const seed = getSeedDb();
+      const fixtureAddress = `0xab${address().slice(4)}`.toLowerCase();
+      const walletIds: string[] = [];
+      const capturedAt = new Date();
+      const observedAt = new Date(capturedAt.getTime() - 2000).toISOString();
+      const conditionId = `collision-${randomUUID()}`;
+      const tokenId = "driven-token";
+      const nativeId = `collision-${randomUUID()}`;
+      try {
+        // Distinct physical wallets share one case-insensitive identity, allowing
+        // the real source/native uniqueness constraint to retain both siblings.
+        for (const walletAddress of [fixtureAddress, `0x${fixtureAddress.slice(2).toUpperCase()}`]) {
+          const [wallet] = await seed.execute<{ id: string }>(sql`
+            INSERT INTO poly_trader_wallets (wallet_address,kind,label)
+            VALUES (${walletAddress},'cogni_wallet','Fill membership regression')
+            RETURNING id`);
+          if (!wallet) throw new Error("Missing fill membership wallet");
+          walletIds.push(wallet.id);
+        }
+        const [firstWallet, secondWallet] = walletIds;
+        if (!firstWallet || !secondWallet) throw new Error("Missing physical siblings");
+        if (scenario !== "empty") {
+          for (const [index, walletId] of walletIds.entries()) {
+            const siblingConflict = scenario === "cross-key conflict" && index === 1;
+            await seed.execute(sql`INSERT INTO poly_trader_fills
+              (trader_wallet_id,source,native_id,condition_id,token_id,side,price,shares,size_usdc,observed_at,created_at,raw)
+              VALUES (${walletId}::uuid,'data-api',${nativeId},
+                ${siblingConflict ? `${conditionId}-not-driven` : conditionId},
+                ${siblingConflict ? "not-driven-token" : tokenId},
+                'BUY',.4,1,.4,${observedAt}::timestamptz,${observedAt}::timestamptz,'{}'::jsonb)`);
+          }
+        }
+        // Every fill is behind its own physical cursor. No daily rollup is
+        // seeded: neither raw-tail nor rollup discovery can drive a sibling.
+        for (const walletId of walletIds) {
+          await seed.execute(sql`INSERT INTO poly_trader_fill_rollup_cursors
+            (trader_wallet_id,last_created_at,last_fill_id)
+            VALUES (${walletId}::uuid,${capturedAt.toISOString()}::timestamptz,
+              'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid)`);
+        }
+        if (scenario === "cross-key conflict" || scenario === "equal duplicate") {
+          const observation: EconomicObservationV1 = {
+            version: 1, wallet: fixtureAddress, conditionId, tokenId,
+            fetchedAt: observedAt, windowStart: observedAt, windowEnd: observedAt,
+            coverage: "partial", reasons: ["missing_closed_position"],
+            closedPosition: null, lifetimeBuyUsdc: 0.4, lifetimeBuyShares: 1,
+            lifetimeSellUsdc: 0, lifetimePnlUsdc: null, redeemUsdc: 0,
+            constituents: [], settlements: [],
+          };
+          // Only this exact key is saved; the conflicting sibling has no
+          // origin, current observation, history envelope or rollup driver.
+          await seed.execute(sql`INSERT INTO poly_trader_position_snapshots
+            (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,captured_at,raw)
+            VALUES (${firstWallet}::uuid,${conditionId},${tokenId},1,.4,.4,.4,
+              ${nativeId},${observedAt}::timestamptz,
+              jsonb_build_object('economicObservationV1',${JSON.stringify(observation)}::jsonb))`);
+        }
+        await withTenantScope(db, userActor(toUserId(ownerA.userId)), async (tx) => {
+          await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+          const [context] = await tx.execute(sql`SELECT
+            (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user) AS bypass_rls,
+            current_setting('app.current_user_id') AS actor`);
+          expect(context).toMatchObject({ bypass_rls: false, actor: ownerA.userId });
+          const [tail] = await tx.execute(sql`SELECT count(*)::int AS count
+            FROM poly_trader_fills f
+            JOIN poly_trader_fill_rollup_cursors c ON c.trader_wallet_id=f.trader_wallet_id
+            WHERE f.trader_wallet_id IN (${firstWallet}::uuid,${secondWallet}::uuid)
+              AND (f.created_at,f.id) > (c.last_created_at,c.last_fill_id)`);
+          expect(tail?.count).toBe(0);
+          const rows = await tx.execute<{
+            live_count: number; closed_count: number; incomplete_count: number;
+            fill_identity_conflict_count: number; token_id: string | null;
+            total_buy_usdc: string | null; total_buy_shares: string | null;
+          }>(buildEconomicPositionProjectionQuery({
+            billingAccountId: ownerA.billingAccountId, walletAddress: fixtureAddress,
+            connectionKind: "privy_live", capturedAt, interval: "ALL",
+          }));
+          expect(rows).toHaveLength(1);
+          if (scenario === "equal duplicate") {
+            expect(rows[0]).toMatchObject({ live_count: 1, closed_count: 0,
+              incomplete_count: 0, fill_identity_conflict_count: 0, token_id: tokenId });
+            expect(Number(rows[0]?.total_buy_usdc)).toBe(0.4);
+            expect(Number(rows[0]?.total_buy_shares)).toBe(1);
+          } else {
+            expect(rows[0]).toMatchObject({ live_count: 0, closed_count: 0,
+              incomplete_count: scenario === "cross-key conflict" ? 1 : 0,
+              fill_identity_conflict_count: scenario === "cross-key conflict" ? 1 : 0,
+              token_id: null });
+          }
+        });
+      } finally {
+        for (const walletId of walletIds) {
+          await seed.execute(sql`DELETE FROM poly_trader_wallets WHERE id=${walletId}::uuid`);
+        }
+      }
+    },
+  );
+
+  it.each([
+    { name: "future envelope bypasses malformed nested fields", futureEnvelope: true, settlements: "malformed", quantity: 1 },
+    { name: "future event with empty settlements and zero current", futureEnvelope: false, settlements: "empty", quantity: 0 },
+    { name: "future event with empty settlements and positive current", futureEnvelope: false, settlements: "empty", quantity: 1 },
+    { name: "future event with empty settlements and absent current", futureEnvelope: false, settlements: "empty", quantity: null },
+    { name: "future event with retained settlement and zero current", futureEnvelope: false, settlements: "nonempty", quantity: 0 },
+    { name: "future event with retained settlement and positive current", futureEnvelope: false, settlements: "nonempty", quantity: 1 },
+    { name: "future event with retained settlement and absent current", futureEnvelope: false, settlements: "nonempty", quantity: null },
+    { name: "count-only malformed key retains native error", futureEnvelope: false, settlements: "malformed", quantity: null },
+  ] as const)("preserves fully demanded event CASE: $name", async (scenario) => {
+    const seed = getSeedDb();
+    const fixtureAddress = address().toLowerCase();
+    const capturedAt = new Date();
+    const generationAt = new Date(capturedAt.getTime() - 1000).toISOString();
+    const afterCutoff = new Date(capturedAt.getTime() + 60_000);
+    const conditionId = `event-demand-${randomUUID()}`;
+    const tokenId = "event-token";
+    let walletId: string | undefined;
+    try {
+      const [wallet] = await seed.execute<{ id: string }>(sql`
+        INSERT INTO poly_trader_wallets (wallet_address,kind,label)
+        VALUES (${fixtureAddress},'cogni_wallet','Event CASE demand regression') RETURNING id`);
+      walletId = wallet?.id;
+      if (!walletId) throw new Error("Missing event CASE wallet");
+      // Intentionally malformed persisted JSON is not cast to a valid typed
+      // observation. Other fields stay valid to isolate the guarded expression.
+      const observation = {
+        version: 1, wallet: fixtureAddress, conditionId, tokenId,
+        fetchedAt: scenario.futureEnvelope ? afterCutoff.toISOString() : generationAt,
+        windowStart: generationAt, windowEnd: generationAt,
+        coverage: "partial", reasons: ["missing_closed_position"],
+        closedPosition: { last_event_at: scenario.settlements === "malformed"
+          ? "unorderable" : String(afterCutoff.getTime() / 1000) },
+        lifetimeBuyUsdc: 0, lifetimeBuyShares: 0, lifetimeSellUsdc: 0,
+        lifetimePnlUsdc: null, redeemUsdc: 0, constituents: [],
+        settlements: scenario.settlements === "malformed" ? { invalid: true }
+          : scenario.settlements === "empty" ? [] : [{
+            txHash: `0x${"ab".repeat(32)}`, blockNumber: "1", blockHash: `0x${"cd".repeat(32)}`,
+            logIndex: 0, collateral: fixtureAddress, atomicAmount: "1",
+            recipient: fixtureAddress, conditionId, tokenId, sharesAtomic: "1",
+          }],
+      };
+      await seed.execute(sql`INSERT INTO poly_trader_position_snapshots
+        (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,captured_at,raw)
+        VALUES (${walletId}::uuid,${conditionId},${tokenId},1,.4,.5,.4,
+          'event-case-history',${generationAt}::timestamptz,
+          jsonb_build_object('economicObservationV1',${JSON.stringify(observation)}::jsonb))`);
+      if (scenario.quantity !== null) {
+        await seed.execute(sql`INSERT INTO poly_trader_current_positions
+          (trader_wallet_id,condition_id,token_id,shares,cost_basis_usdc,current_value_usdc,avg_price,content_hash,last_observed_at,first_observed_at,raw)
+          VALUES (${walletId}::uuid,${conditionId},${tokenId},${scenario.quantity},
+            ${scenario.quantity * 0.4},${scenario.quantity * 0.5},.4,'event-case-current',
+            ${generationAt}::timestamptz,${generationAt}::timestamptz,'{}'::jsonb)`);
+      }
+      await seed.execute(sql`INSERT INTO poly_trader_ingestion_cursors
+        (trader_wallet_id,source,last_success_at,status)
+        VALUES (${walletId}::uuid,'data-api-positions',${generationAt}::timestamptz,'ok')`);
+      await withTenantScope(db, userActor(toUserId(ownerA.userId)), async (tx) => {
+        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`);
+        const [context] = await tx.execute(sql`SELECT
+          (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user) AS bypass_rls,
+          current_setting('app.current_user_id') AS actor,
+          current_setting('transaction_isolation') AS isolation,
+          current_setting('transaction_read_only') AS read_only`);
+        expect(context).toMatchObject({ bypass_rls: false, actor: ownerA.userId,
+          isolation: "repeatable read", read_only: "on" });
+        const current = await tx.execute<{ shares: string }>(sql`SELECT shares
+          FROM poly_trader_current_positions WHERE trader_wallet_id=${walletId}::uuid`);
+        expect(current.map((row) => Number(row.shares))).toEqual(
+          scenario.quantity === null ? [] : [scenario.quantity],
+        );
+        const query = buildEconomicPositionProjectionQuery({
+          billingAccountId: ownerA.billingAccountId, walletAddress: fixtureAddress,
+          connectionKind: "privy_live", capturedAt, interval: "ALL",
+        });
+        if (scenario.settlements === "malformed" && !scenario.futureEnvelope) {
+          // No current, fills or outcome: the history key is outside every
+          // preview, but complete counts still demand its event CASE. Roll back
+          // the actual savepoint so the native error cannot poison the parent.
+          await expect(tx.transaction((savepoint) => savepoint.execute(query)))
+            .rejects.toMatchObject({ cause: { code: "22023" } });
+          const [usable] = await tx.execute(sql`SELECT 1::int AS ok`);
+          expect(usable?.ok).toBe(1);
+          return;
+        }
+        const rows = await tx.execute<{
+          live_count: number; closed_count: number; incomplete_count: number;
+          history_incomplete_count: number; missing_mark_count: number;
+          wallet_identity_count: number; observer_complete: boolean;
+          token_id: string | null; economic_bucket: string | null;
+          current_shares: string | null; current_value_usdc: string | null;
+          positions_mtm_usdc: string | null; inventory_authoritative: boolean | null;
+          mark_available: boolean | null; history_complete: boolean | null;
+        }>(query);
+        expect(rows).toHaveLength(1);
+        const row = rows[0];
+        const positive = scenario.quantity === 1;
+        const futureSettlement = positive && scenario.settlements === "nonempty";
+        expect(row).toMatchObject({
+          live_count: positive ? 1 : 0, closed_count: 0,
+          incomplete_count: positive ? 0 : 1, history_incomplete_count: 1,
+          missing_mark_count: futureSettlement ? 1 : 0,
+          wallet_identity_count: 1, observer_complete: true,
+          token_id: positive ? tokenId : null,
+          economic_bucket: positive ? "live" : null,
+        });
+        if (positive) {
+          expect(Number(row?.current_shares)).toBe(1);
+          expect(row?.inventory_authoritative).toBe(!futureSettlement);
+          expect(row?.mark_available).toBe(!futureSettlement);
+          expect(row?.history_complete).toBe(false);
+          if (futureSettlement) {
+            expect(row?.current_value_usdc).toBeNull();
+            expect(row?.positions_mtm_usdc).toBeNull();
+          } else {
+            expect(Number(row?.current_value_usdc)).toBe(0.5);
+            expect(Number(row?.positions_mtm_usdc)).toBe(0.5);
+          }
+        } else {
+          // Count-only keys expose the seed row, not their internal aliases.
+          // Neither explicit zero nor absent current fabricates a preview fact.
+          expect(row?.current_shares).toBeNull();
+          expect(row?.current_value_usdc).toBeNull();
+          expect(row?.inventory_authoritative).toBeNull();
+          expect(row?.mark_available).toBeNull();
+          expect(row?.positions_mtm_usdc).not.toBeNull();
+          expect(Number(row?.positions_mtm_usdc)).toBe(0);
+        }
+      });
     } finally {
-      await seed.execute(sql`DELETE FROM poly_trader_wallets WHERE id=${walletId}::uuid`);
+      if (walletId) await seed.execute(sql`DELETE FROM poly_trader_wallets WHERE id=${walletId}::uuid`);
     }
   });
 
@@ -555,9 +1164,35 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       await seedDb.insert(billingAccounts).values(
         planOwners.map(owner => ({ id: owner.billingAccountId, ownerUserId: owner.userId, balanceCredits: 0n }))
       );
-      // The migrated-table owner can ANALYZE; the BYPASSRLS seeding role
-      // cannot. Refresh only the relation whose tiny-table plan is ambiguous.
+      await seedDb.insert(polyWalletConnections).values(
+        planOwners.map(owner => connection(owner, address()))
+      );
+      // Refresh both selective-access fixture relations as their migrated owner;
+      // the BYPASSRLS seeding role cannot ANALYZE them.
       await db.execute(sql`ANALYZE billing_accounts`);
+      await db.execute(sql`ANALYZE poly_wallet_connections`);
+      // Runs after both ordinary N10 gates; estimates may lag or be unknown.
+      const relationObservations = await seedDb.execute(sql`
+        SELECT counts.relation, counts.actual_count,
+          c.reltuples, c.relpages, s.n_live_tup::text, s.n_dead_tup::text,
+          s.n_mod_since_analyze::text, s.last_analyze::text, s.last_autoanalyze::text
+        FROM (
+          SELECT 'poly_wallet_connections' AS relation,
+            'public.poly_wallet_connections'::regclass AS relation_oid,
+            count(*)::text AS actual_count FROM public.poly_wallet_connections
+          UNION ALL
+          SELECT 'billing_accounts', 'public.billing_accounts'::regclass,
+            count(*)::text FROM public.billing_accounts
+          UNION ALL
+          SELECT 'agent_capability_grants', 'public.agent_capability_grants'::regclass,
+            count(*)::text FROM public.agent_capability_grants
+        ) counts
+        JOIN pg_class c ON c.oid = counts.relation_oid
+        LEFT JOIN pg_stat_all_tables s ON s.relid = c.oid
+      `);
+      for (const row of relationObservations) {
+        console.info(JSON.stringify({ probe: "identity_fixture_relations", ...row }));
+      }
     });
 
     afterAll(async () => {
@@ -565,6 +1200,7 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       await seedDb.delete(billingAccounts).where(inArray(billingAccounts.id, planOwners.map(owner => owner.billingAccountId)));
       await seedDb.delete(users).where(inArray(users.id, planOwners.map(owner => owner.userId)));
       await db.execute(sql`ANALYZE billing_accounts`);
+      await db.execute(sql`ANALYZE poly_wallet_connections`);
     });
 
     /**
@@ -579,8 +1215,9 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
      * index the planner picks. That is cost-based and fixture-size dependent.
      * With only a few owners a billing_accounts sequential scan is cheaper
      * and legitimate, so these tests add unrelated owner/account cardinality
-     * and fresh statistics before asserting selective access. Wallet/grant
-     * fixtures and planner settings stay unchanged. Pinning an index name
+     * plus one wallet connection each and fresh statistics before asserting
+     * selective access. Grant fixtures and planner settings stay unchanged.
+     * Pinning an index name
      * would still assert a fixture property rather than the policy contract.
      */
     async function identityPlan(principalId: string): Promise<string> {

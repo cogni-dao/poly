@@ -3,10 +3,13 @@
 
 /** Bounded planning-only diagnostics; never executes a projection or changes wallet truth. */
 import { type SQL, sql } from "drizzle-orm";
-import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 
-type Db = PostgresJsDatabase<Record<string, unknown>>;
+type Db = {
+  transaction<T>(
+    work: (savepoint: { execute(query: SQL): Promise<unknown> }) => Promise<T>
+  ): Promise<T>;
+};
 type Plan = Record<string, unknown> & { Plans?: Plan[] };
 const COOLDOWN_MS = 5 * 60_000;
 const PLAN_TIMEOUT_MS = 1_000;
@@ -146,8 +149,9 @@ export function createEconomicProjectionPlanProbe(
 		inFlight = true;
 		const startedAt = performance.now();
 		try {
-			// Caller owns the app-role READ ONLY REPEATABLE READ transaction. This
-			// nested transaction is a savepoint after the original failed read rolled back.
+			// Preserve the caller role and transaction context: production economic
+			// callers use app-role RO/RR; the native comparison witness uses service/RW.
+			// This nested transaction is a savepoint within that same caller context.
 			const plan = await db.transaction(async (tx) => {
 				const previous = rows<{ value: string }>(
 					await tx.execute(

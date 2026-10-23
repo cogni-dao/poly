@@ -761,8 +761,7 @@ export async function readFullComparisonCoverageCounts(params: {
   return countRowsFromBundle(rows);
 }
 
-async function readComparisonBundleRows(params: {
-  db: Db;
+type ComparisonBundleQueryInput = {
   capturedAt?: string | undefined;
   billingAccountId: string;
   walletAddress: string;
@@ -774,7 +773,20 @@ async function readComparisonBundleRows(params: {
     tokenId: string;
     status: WalletExecutionMarketLineStatus;
   }[];
-}): Promise<ComparisonBundleRow[]> {
+};
+
+async function readComparisonBundleRows(
+  params: ComparisonBundleQueryInput & { db: Db }
+): Promise<ComparisonBundleRow[]> {
+  return (await params.db.execute(
+    buildComparisonBundleQuery(params)
+  )) as unknown as ComparisonBundleRow[];
+}
+
+/** Pure statement construction for the existing comparison bundle. */
+export function buildComparisonBundleQuery(
+  params: ComparisonBundleQueryInput
+): SQL {
   const traderWalletKind = traderWalletKindForConnection(
     params.connectionKind
   );
@@ -800,7 +812,7 @@ async function readComparisonBundleRows(params: {
           ),
           sql`, `
         )}`;
-  return (await params.db.execute(sql`
+  return sql`
     WITH selected_conditions(condition_id, group_key) AS (
       ${selectedConditions}
     ), selected_position_keys(condition_id, token_id, status) AS (
@@ -1453,7 +1465,7 @@ async function readComparisonBundleRows(params: {
      AND selected.status = p.status
     ORDER BY record_kind, entity, status, group_key, wallet_address,
       condition_id, token_id
-  `)) as unknown as ComparisonBundleRow[];
+  `;
 }
 
 function countRowsFromBundle(
