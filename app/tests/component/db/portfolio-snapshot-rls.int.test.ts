@@ -541,62 +541,6 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
               /^[A-Za-z][A-Za-z0-9_ .-]{0,119}$/.test(value)
                 ? value
                 : null;
-            // CTE definitions may be separate InitPlans; inspect the whole plan.
-            const criticalRoots = [
-              "CTE classified_raw",
-              "CTE position_flows",
-              "CTE fill_groups",
-              "CTE driven_keys",
-            ]
-              .map((name) => nodes.find((node) => node["Subplan Name"] === name))
-              .filter((node): node is PlanNode => node !== undefined);
-            const directChildren = [...new Set([
-              "CTE fill_groups",
-              "CTE position_flows",
-              "CTE classified_raw",
-              "CTE driven_keys",
-            ].flatMap((name) =>
-              criticalRoots.find((node) => node["Subplan Name"] === name)?.Plans ?? [],
-            ))];
-            const joins = nodes.filter((node) => node["Join Type"] !== undefined);
-            const cteScans = nodes.filter((node) => node["CTE Name"] !== undefined);
-            const ordinaryChildren = (node: PlanNode): PlanNode[] =>
-              (node.Plans ?? []).filter(
-                (child) =>
-                  child["Parent Relationship"] !== "InitPlan" &&
-                  child["Parent Relationship"] !== "SubPlan",
-              );
-            const frontierCandidates = nodes.filter((node) =>
-              [
-                "CTE economic_position_base",
-                "CTE event_authority",
-                "CTE canonical_fills",
-              ].includes(String(node["Subplan Name"])),
-            );
-            const frontierRoots = frontierCandidates.filter(
-              (node) =>
-                frontierCandidates.filter(
-                  (candidate) =>
-                    candidate["Subplan Name"] === node["Subplan Name"],
-                ).length === 1,
-            );
-            const frontierChildren = frontierRoots.flatMap(ordinaryChildren);
-            const sortParents = directChildren.filter(
-              (node) => node["Node Type"] === "Sort",
-            );
-            const sortInputs = sortParents.flatMap((node) =>
-              ordinaryChildren(node).length === 1 ? ordinaryChildren(node) : [],
-            );
-            // Missing or ambiguous seams stay unknown; identity dedup precedes the cap.
-            const selectedNodes = [
-              ...new Set([
-                ...criticalRoots,
-                ...directChildren,
-                ...frontierRoots,
-                ...frontierChildren,
-                ...sortInputs,
-              ]),
-            ].slice(0, 24);
             const actual = {
               planningMs: metric(detail, "Planning Time"),
               executionMs: metric(detail, "Execution Time"),
@@ -621,50 +565,10 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
                   }
                 : null,
               nodeCount: nodes.length,
-              truncated: selectedNodes.length < nodes.length,
-              criticalRootExpected: 4,
-              criticalRootFound: criticalRoots.length,
-              criticalRootEmitted: criticalRoots.filter((node) =>
-                selectedNodes.includes(node),
-              ).length,
-              directChildCandidateCount: directChildren.length,
-              directChildEmittedCount: directChildren.filter((node) =>
-                selectedNodes.includes(node),
-              ).length,
-              joinCandidateCount: joins.length,
-              joinEmittedCount: joins.filter((node) =>
-                selectedNodes.includes(node),
-              ).length,
-              cteScanCandidateCount: cteScans.length,
-              cteScanEmittedCount: cteScans.filter((node) =>
-                selectedNodes.includes(node),
-              ).length,
-              mechanismCoverage: {
-                namedRootRequested: 3,
-                namedRootCandidateCount: frontierCandidates.length,
-                namedRootFoundCount: frontierRoots.length,
-                namedRootEmittedCount: frontierRoots.filter((node) =>
-                  selectedNodes.includes(node),
-                ).length,
-                rootChildCandidateCount: frontierChildren.length,
-                rootChildEmittedCount: frontierChildren.filter((node) =>
-                  selectedNodes.includes(node),
-                ).length,
-                sortParentCandidateCount: sortParents.length,
-                sortInputCandidateCount:
-                  sortParents.flatMap(ordinaryChildren).length,
-                sortInputFoundCount: sortInputs.length,
-                sortInputEmittedCount: sortInputs.filter((node) =>
-                  selectedNodes.includes(node),
-                ).length,
-                lateralRelationRequested: 0,
-                lateralRelationSearched: 0,
-                deeperSortDescendantRequested: 0,
-                deeperSortDescendantSearched: 0,
-              },
+              truncated: false,
               // Parent timings include child work; never sum these as
               // exclusive or uniquely attributable costs.
-              nodes: selectedNodes
+              nodes: nodes
                 .map((node) => ({
                   node: label(node["Node Type"]),
                   path: paths.get(node),
