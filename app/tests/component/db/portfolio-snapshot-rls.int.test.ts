@@ -541,11 +541,7 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
               /^[A-Za-z][A-Za-z0-9_ .-]{0,119}$/.test(value)
                 ? value
                 : null;
-            // Search the whole plan: materialized CTE definitions can be separate
-            // InitPlans, not descendants of their consumers. Products rank work;
-            // they are not exclusive timings or independently observed pair counts.
-            const weighted = (node: PlanNode, name: string): number =>
-              (metric(node, "Actual Loops") ?? 0) * (metric(node, name) ?? 0);
+            // CTE definitions may be separate InitPlans; inspect the whole plan.
             const criticalRoots = [
               "CTE classified_raw",
               "CTE position_flows",
@@ -564,45 +560,43 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
             ))];
             const joins = nodes.filter((node) => node["Join Type"] !== undefined);
             const cteScans = nodes.filter((node) => node["CTE Name"] !== undefined);
-            const rankedJoins = [...joins].sort(
-              (a, b) =>
-                weighted(b, "Rows Removed by Join Filter") -
-                  weighted(a, "Rows Removed by Join Filter") ||
-                weighted(b, "Actual Rows") +
-                  weighted(b, "Rows Removed by Join Filter") -
-                  weighted(a, "Actual Rows") -
-                  weighted(a, "Rows Removed by Join Filter") ||
-                weighted(b, "Actual Total Time") -
-                  weighted(a, "Actual Total Time"),
+            const ordinaryChildren = (node: PlanNode): PlanNode[] =>
+              (node.Plans ?? []).filter(
+                (child) =>
+                  child["Parent Relationship"] !== "InitPlan" &&
+                  child["Parent Relationship"] !== "SubPlan",
+              );
+            const frontierCandidates = nodes.filter((node) =>
+              [
+                "CTE economic_position_base",
+                "CTE event_authority",
+                "CTE canonical_fills",
+              ].includes(String(node["Subplan Name"])),
             );
-            const rankedCteScans = [...cteScans].sort(
-              (a, b) =>
-                weighted(b, "Actual Rows") +
-                  weighted(b, "Rows Removed by Filter") -
-                  weighted(a, "Actual Rows") -
-                  weighted(a, "Rows Removed by Filter") ||
-                weighted(b, "Actual Total Time") -
-                  weighted(a, "Actual Total Time"),
+            const frontierRoots = frontierCandidates.filter(
+              (node) =>
+                frontierCandidates.filter(
+                  (candidate) =>
+                    candidate["Subplan Name"] === node["Subplan Name"],
+                ).length === 1,
             );
-            const remainingLogical = [...new Set([...joins, ...cteScans])].sort(
-              (a, b) =>
-                weighted(b, "Actual Rows") +
-                  weighted(b, "Rows Removed by Join Filter") +
-                  weighted(b, "Rows Removed by Filter") -
-                  weighted(a, "Actual Rows") -
-                  weighted(a, "Rows Removed by Join Filter") -
-                  weighted(a, "Rows Removed by Filter") ||
-                weighted(b, "Actual Total Time") -
-                  weighted(a, "Actual Total Time"),
+            const frontierChildren = frontierRoots.flatMap(ordinaryChildren);
+            const sortParents = directChildren.filter(
+              (node) => node["Node Type"] === "Sort",
             );
-            // Object identity deduplicates overlap; spare slots stay logical.
-            const selectedNodes = [...new Set([
-              ...criticalRoots,
-              ...directChildren.slice(0, 8),
-              ...rankedJoins.slice(0, 6),
-              ...rankedCteScans.slice(0, 6),
-              ...remainingLogical,
-            ])].slice(0, 24);
+            const sortInputs = sortParents.flatMap((node) =>
+              ordinaryChildren(node).length === 1 ? ordinaryChildren(node) : [],
+            );
+            // Missing or ambiguous seams stay unknown; identity dedup precedes the cap.
+            const selectedNodes = [
+              ...new Set([
+                ...criticalRoots,
+                ...directChildren,
+                ...frontierRoots,
+                ...frontierChildren,
+                ...sortInputs,
+              ]),
+            ].slice(0, 24);
             const actual = {
               planningMs: metric(detail, "Planning Time"),
               executionMs: metric(detail, "Execution Time"),
@@ -645,6 +639,29 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
               cteScanEmittedCount: cteScans.filter((node) =>
                 selectedNodes.includes(node),
               ).length,
+              mechanismCoverage: {
+                namedRootRequested: 3,
+                namedRootCandidateCount: frontierCandidates.length,
+                namedRootFoundCount: frontierRoots.length,
+                namedRootEmittedCount: frontierRoots.filter((node) =>
+                  selectedNodes.includes(node),
+                ).length,
+                rootChildCandidateCount: frontierChildren.length,
+                rootChildEmittedCount: frontierChildren.filter((node) =>
+                  selectedNodes.includes(node),
+                ).length,
+                sortParentCandidateCount: sortParents.length,
+                sortInputCandidateCount:
+                  sortParents.flatMap(ordinaryChildren).length,
+                sortInputFoundCount: sortInputs.length,
+                sortInputEmittedCount: sortInputs.filter((node) =>
+                  selectedNodes.includes(node),
+                ).length,
+                lateralRelationRequested: 0,
+                lateralRelationSearched: 0,
+                deeperSortDescendantRequested: 0,
+                deeperSortDescendantSearched: 0,
+              },
               // Parent timings include child work; never sum these as
               // exclusive or uniquely attributable costs.
               nodes: selectedNodes
