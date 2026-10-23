@@ -102,8 +102,8 @@ import {
   count,
   desc,
   eq,
+  gt,
   gte,
-  inArray,
   isNull,
   sql,
   sum,
@@ -125,6 +125,7 @@ import {
   type WalletClient,
 } from "viem";
 import { polygon } from "viem/chains";
+import { reservedIntentUsdc } from "@/shared/db/order-commitment-sql";
 import { EVENT_NAMES } from "@/shared/observability/events";
 
 /** Provider identifier pinned into the AEAD AAD envelope. */
@@ -374,19 +375,6 @@ const DEFAULT_GRANT_SCOPES = ["poly:trade:buy", "poly:trade:sell"] as const;
  * Kept high for dev / stress testing; existing tenant rows keep their stored cap.
  */
 const DEFAULT_GRANT_HOURLY_FILLS_CAP = 10_000;
-
-/**
- * Fill statuses that commit (or already committed) USDC to the exchange. Used
- * by the authorize-intent daily / hourly cap windows so two concurrent pending
- * orders cannot race past the cap (the canonical bug that "count only filled"
- * exhibits). `canceled` + `error` are excluded — no USDC attached.
- */
-const IN_FLIGHT_FILL_STATUSES = [
-  "pending",
-  "open",
-  "filled",
-  "partial",
-] as const;
 
 /**
  * Grant caps the consent UI collects. The HTTP contract validates bounds
@@ -1412,8 +1400,8 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
    * constructed.
    *
    * Cap windows count any fill status that currently commits or has
-   * committed USDC (pending / open / filled / partial). Counting only
-   * `filled` would let two concurrent pending orders race past the cap.
+   * committed USDC, including ambiguous errors and unproved cancellation.
+   * Only persisted nonexecution/final cancellation proof releases a commitment.
    */
   async authorizeIntent(
     billingAccountId: string,
@@ -1539,6 +1527,15 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       }
 
       const perOrderCap = Number(grant.perOrderUsdcCap);
+      const dailyCap = Number(grant.dailyUsdcCap);
+      if (![perOrderCap, dailyCap, grant.hourlyFillsCap].every(Number.isFinite)) {
+        return this.denyAuthorization(
+          billingAccountId,
+          intent,
+          "backend_unreachable",
+          grant.id
+        );
+      }
       if (intent.usdcAmount > perOrderCap) {
         return this.denyAuthorization(
           billingAccountId,
@@ -1548,8 +1545,8 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
         );
       }
 
-      // Cap windows — include every status that has USDC attached (pending /
-      // open / filled / partial). CAPS_COUNT_INTENTS: filter by createdAt
+      // Cap windows retain unresolved and accepted commitments regardless of
+      // local status or terminal holdings. CAPS_COUNT_INTENTS: filter by createdAt
       // (intent insertion time) NOT observedAt (upstream fill time) so
       // historical target activity doesn't artificially backdate caps.
       //
@@ -1566,22 +1563,26 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
       // filter (`mode = 'paper'`), so the two budgets are disjoint.
       const [spendRow] = await this.serviceDb
         .select({
-          spent: sum(
-            sql<string>`COALESCE((${polyCopyTradeFills.attributes}->>'size_usdc')::numeric, 0)`
-          ),
+          spent: sum(reservedIntentUsdc),
         })
         .from(polyCopyTradeFills)
         .where(
           and(
             eq(polyCopyTradeFills.billingAccountId, billingAccountId),
             eq(polyCopyTradeFills.mode, "live"),
-            gte(polyCopyTradeFills.createdAt, sql`now() - interval '24 hours'`),
-            inArray(polyCopyTradeFills.status, [...IN_FLIGHT_FILL_STATUSES])
+            gte(polyCopyTradeFills.createdAt, sql`now() - interval '24 hours'`)
           )
         );
 
       const spent24h = Number(spendRow?.spent ?? 0);
-      const dailyCap = Number(grant.dailyUsdcCap);
+      if (!Number.isFinite(spent24h)) {
+        return this.denyAuthorization(
+          billingAccountId,
+          intent,
+          "backend_unreachable",
+          grant.id
+        );
+      }
       if (spent24h + intent.usdcAmount > dailyCap) {
         return this.denyAuthorization(
           billingAccountId,
@@ -1600,10 +1601,18 @@ export class PrivyPolyTraderWalletAdapter implements PolyTraderWalletPort {
             eq(polyCopyTradeFills.billingAccountId, billingAccountId),
             eq(polyCopyTradeFills.mode, "live"),
             gte(polyCopyTradeFills.createdAt, sql`now() - interval '1 hour'`),
-            inArray(polyCopyTradeFills.status, [...IN_FLIGHT_FILL_STATUSES])
+            gt(reservedIntentUsdc, 0)
           )
         );
       const fillsLastHour = Number(rateRow?.n ?? 0);
+      if (!Number.isFinite(fillsLastHour)) {
+        return this.denyAuthorization(
+          billingAccountId,
+          intent,
+          "backend_unreachable",
+          grant.id
+        );
+      }
       if (fillsLastHour >= grant.hourlyFillsCap) {
         return this.denyAuthorization(
           billingAccountId,
