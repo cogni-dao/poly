@@ -3,6 +3,7 @@
 
 "use client";
 
+import { hasScores, WorkItemScoresRadar } from "@cogni/knowledge-base-ui";
 import type { WorkItemDto } from "@cogni/node-contracts";
 import type { ReactElement } from "react";
 import {
@@ -134,6 +135,10 @@ export function WorkItemDetail({
                   </span>
                 )}
               </div>
+
+              {hasScores(item.scores) && (
+                <Field label="Evaluation"><WorkItemScoresRadar scores={item.scores} /></Field>
+              )}
 
               {/* Summary */}
               {item.summary && (

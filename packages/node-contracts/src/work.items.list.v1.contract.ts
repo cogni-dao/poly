@@ -29,6 +29,10 @@ const ExternalRefSchema = z.object({
   title: z.string().optional(),
 });
 
+export const WorkItemScoresInputSchema = z.record(
+  z.string(), z.looseObject({ v: z.number(), ev: z.string().optional() })
+);
+
 export const WorkItemDtoSchema = z.object({
   id: z.string(),
   type: z.string(),
@@ -37,6 +41,8 @@ export const WorkItemDtoSchema = z.object({
   priority: z.number().optional(),
   rank: z.number().optional(),
   estimate: z.number().optional(),
+  scores: WorkItemScoresInputSchema.optional(),
+  rankScore: z.number().optional(),
   summary: z.string().optional(),
   outcome: z.string().optional(),
   projectId: z.string().optional(),

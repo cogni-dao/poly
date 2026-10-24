@@ -18,6 +18,8 @@ import {
 import { NextResponse } from "next/server";
 import {
   createWorkItem,
+  WorkItemScoresInvalidError,
+  WorkItemRevisionConflictError,
   InvalidCursorError,
   listWorkItems,
   WorkItemsBackendNotReadyError,
@@ -67,6 +69,16 @@ export const GET = wrapRouteHandlerWithLogging(
     try {
       result = await listWorkItems(input);
     } catch (error) {
+      if (error instanceof WorkItemScoresInvalidError) {
+        return NextResponse.json({ error: "invalid input", errorCode: error.code, issues: error.issues }, { status: 400 });
+      }
+      if (error instanceof WorkItemRevisionConflictError) {
+        return NextResponse.json({ error: "revision_conflict", expectedRevision: error.expectedRevision, currentRevision: error.currentRevision }, { status: 409 });
+      }
+      if ((error as Error)?.name === "WorkItemWriteOutcomeUnknownError") {
+        const unknown = error as { code: string; receipt: { lookup: unknown } };
+        return NextResponse.json({ error: unknown.code, retryable: false, lookup: unknown.receipt.lookup }, { status: 503 });
+      }
       if (error instanceof InvalidCursorError) {
         return NextResponse.json({ error: "invalid cursor" }, { status: 400 });
       }
@@ -113,6 +125,16 @@ export const POST = wrapRouteHandlerWithLogging(
         status: 201,
       });
     } catch (error) {
+      if (error instanceof WorkItemScoresInvalidError) {
+        return NextResponse.json({ error: "invalid input", errorCode: error.code, issues: error.issues }, { status: 400 });
+      }
+      if (error instanceof WorkItemRevisionConflictError) {
+        return NextResponse.json({ error: "revision_conflict", expectedRevision: error.expectedRevision, currentRevision: error.currentRevision }, { status: 409 });
+      }
+      if ((error as Error)?.name === "WorkItemWriteOutcomeUnknownError") {
+        const unknown = error as { code: string; receipt: { lookup: unknown } };
+        return NextResponse.json({ error: unknown.code, retryable: false, lookup: unknown.receipt.lookup }, { status: 503 });
+      }
       if (error instanceof WorkItemsBackendNotReadyError) {
         return NextResponse.json({ error: error.message }, { status: 503 });
       }

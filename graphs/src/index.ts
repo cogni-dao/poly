@@ -1,3 +1,4 @@
+import { LANGGRAPH_CATALOG as SHARED_LANGGRAPH_CATALOG } from "@cogni/shared-langgraph-graphs";
 export {
   createPolyBrainGraph,
   createPolyResearchGraph,
@@ -40,6 +41,7 @@ interface CatalogEntry {
 }
 
 export const POLY_LANGGRAPH_CATALOG: Readonly<Record<string, CatalogEntry>> = {
+  "work-prioritizer": SHARED_LANGGRAPH_CATALOG["work-prioritizer"]!,
   [POLY_BRAIN_GRAPH_NAME]: {
     displayName: "Poly Brain",
     description:

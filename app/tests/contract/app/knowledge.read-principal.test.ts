@@ -62,14 +62,15 @@ const BEARER = { authorization: "Bearer cogni_ag_sk_v1_test.signature" };
 
 async function seedStore(store: FakeKnowledgeStoreAdapter) {
   await store.registerDomain({ id: "eng", name: "Engineering" });
-  await store.upsertKnowledge({
+  await store.withWrite({ operationId: "test.seed", message: "Seed knowledge read fixture" }, async (write) => {
+  await write.upsertKnowledge({
     id: "entry-a",
     domain: "eng",
     title: "Entry A",
     content: "alpha",
     sourceType: "agent",
   });
-  await store.upsertKnowledge({
+  await write.upsertKnowledge({
     id: "entry-b",
     domain: "eng",
     title: "Entry B",
@@ -77,10 +78,11 @@ async function seedStore(store: FakeKnowledgeStoreAdapter) {
     sourceType: "agent",
   });
   // Citation edge so the graph route proves agent link-pulling, not just nodes.
-  await store.addCitation({
+  await write.addCitation({
     citingId: "entry-a",
     citedId: "entry-b",
     citationType: "extends",
+  });
   });
 }
 

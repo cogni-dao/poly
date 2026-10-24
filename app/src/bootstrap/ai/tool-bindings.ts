@@ -23,14 +23,11 @@ import type {
   ToolImplementation,
   VcsCapability,
   WebSearchCapability,
-  WorkItemCapability,
 } from "@cogni/ai-tools";
 import {
-  createEdoDecideImplementation,
   createEdoHypothesizeImplementation,
   createEdoRecordOutcomeImplementation,
   createKnowledgeReadImplementation,
-  createKnowledgeSearchImplementation,
   createKnowledgeWriteImplementation,
   createMetricsQueryImplementation,
   createRepoListImplementation,
@@ -44,13 +41,10 @@ import {
   createVcsListPrsImplementation,
   createVcsMergePrImplementation,
   createWebSearchImplementation,
-  createWorkItemQueryImplementation,
-  createWorkItemTransitionImplementation,
   EDO_DECIDE_NAME,
   EDO_HYPOTHESIZE_NAME,
   EDO_RECORD_OUTCOME_NAME,
   GET_CURRENT_TIME_NAME,
-  getCurrentTimeImplementation,
   KNOWLEDGE_READ_NAME,
   KNOWLEDGE_SEARCH_NAME,
   KNOWLEDGE_WRITE_NAME,
@@ -70,11 +64,23 @@ import {
   WORK_ITEM_TRANSITION_NAME,
 } from "@cogni/ai-tools";
 
+import {
+  createEdoDecideImplementation,
+  createKnowledgeSearchImplementation,
+  createWorkItemQueryImplementation,
+  createWorkItemTransitionImplementation,
+  createGoalListImplementation,
+  getCurrentTimeImplementation,
+  GOAL_LIST_NAME,
+  type WorkItemCapability,
+} from "@cogni/shared-ai-tools";
+
 /**
  * Dependencies required to create tool bindings.
  * These are resolved from the container at bootstrap time.
  */
 export interface ToolBindingDeps {
+  readonly nodePublicOrigin?: string | undefined;
   readonly knowledgeCapability: KnowledgeCapability;
   readonly edoCapability: EdoCapability;
   readonly metricsCapability: MetricsCapability;
@@ -114,9 +120,15 @@ export function createToolBindings(deps: ToolBindingDeps): ToolBindings {
     [GET_CURRENT_TIME_NAME]:
       getCurrentTimeImplementation as AnyToolImplementation,
 
+    [GOAL_LIST_NAME]: createGoalListImplementation({
+      knowledgeCapability: deps.knowledgeCapability,
+      nodePublicOrigin: deps.nodePublicOrigin,
+    }) as AnyToolImplementation,
+
     // Knowledge tools (Doltgres-backed knowledge store)
     [KNOWLEDGE_SEARCH_NAME]: createKnowledgeSearchImplementation({
       knowledgeCapability: deps.knowledgeCapability,
+      nodePublicOrigin: deps.nodePublicOrigin,
     }) as AnyToolImplementation,
     [KNOWLEDGE_READ_NAME]: createKnowledgeReadImplementation({
       knowledgeCapability: deps.knowledgeCapability,
@@ -188,6 +200,7 @@ export function createToolBindings(deps: ToolBindingDeps): ToolBindings {
 
     [WORK_ITEM_QUERY_NAME]: createWorkItemQueryImplementation({
       workItemCapability: deps.workItemCapability,
+      nodePublicOrigin: deps.nodePublicOrigin,
     }) as AnyToolImplementation,
 
     [WORK_ITEM_TRANSITION_NAME]: createWorkItemTransitionImplementation({

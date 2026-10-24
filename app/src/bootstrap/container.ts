@@ -21,7 +21,7 @@ import type {
 	RepoCapability,
 	WebSearchCapability,
 } from "@cogni/ai-tools";
-import { CORE_TOOL_BUNDLE } from "@cogni/ai-tools";
+import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 import type { AttributionStore } from "@cogni/attribution-ledger";
 import {
 	createDefaultRegistries,
@@ -54,6 +54,7 @@ import {
 	createDoltgresPusher,
 	DoltgresEdoResolverAdapter,
 	DoltgresKnowledgeContributionAdapter,
+  DoltBranchSessionRunner,
 	DoltgresKnowledgeStoreAdapter,
 	wrapPushSafe,
 } from "@cogni/knowledge-store/adapters/doltgres";
@@ -93,6 +94,7 @@ import {
 	GITHUB_ADAPTER_VERSION,
 	GitHubWebhookNormalizer,
 	getAppDb,
+	getExecutionScope,
 	LangfuseAdapter,
 	LiteLlmAdapter,
 	type MimirAdapterConfig,
@@ -2397,10 +2399,18 @@ function createContainer(): Container {
 		workItemAdapter = new DoltgresPolyWorkItemAdapter(
 			workItemClient,
 			log.child({ component: "doltgres-work-items" }),
-			{ recreateClient: buildWorkItemClient },
+			{ recreateClient: buildWorkItemClient, legacyClient: buildWorkItemClient() },
 		);
+		const createKnowledgeBranchClient = () => buildDoltgresClient({
+			connectionString: doltgresUrl,
+			applicationName: `cogni_knowledge_branch_${env.SERVICE_NAME ?? "app"}`,
+			max: 1,
+		});
+		const knowledgeWriter = new DoltBranchSessionRunner(createKnowledgeBranchClient(), {
+			writerProtocol: "bridge", logger: log, recreateClient: createKnowledgeBranchClient,
+		});
 		const knowledgePort = new DoltgresKnowledgeStoreAdapter({
-			sql: doltClient,
+			sql: doltClient, writerSession: knowledgeWriter,
 		});
 		knowledgeStorePort = knowledgePort;
 		knowledgeCapability = createKnowledgeCapability(knowledgePort);
@@ -2411,6 +2421,7 @@ function createContainer(): Container {
 		edoCapability = createEdoCapability(knowledgePort, edoResolver);
 		const contributionPort = new DoltgresKnowledgeContributionAdapter({
 			sql: doltClient,
+			writerSession: knowledgeWriter,
 		});
 		// Optional post-merge mirror to DoltHub (task.5069). Disabled when
 		// DOLTHUB_REMOTE_URL is unset. Gate-by-secret-presence follows the
@@ -2474,10 +2485,19 @@ function createContainer(): Container {
 	const workItemCapability = createWorkItemCapability({
 		workItemQuery: workItemAdapter,
 		workItemCommand,
+		backlogWriter: {
+			store: workItemAdapter,
+			principalId: () => {
+				const actor = getExecutionScope().actorUserId;
+				if (!actor) throw new Error("Authenticated work-item actor required");
+				return actor;
+			},
+		},
 	});
 
 	// ToolSource with real implementations (per CAPABILITY_INJECTION)
 	const toolBindings = createToolBindings({
+		nodePublicOrigin: env.APP_BASE_URL,
 		knowledgeCapability,
 		edoCapability,
 		metricsCapability,
@@ -2487,7 +2507,7 @@ function createContainer(): Container {
 		vcsCapability: stubVcsCapability,
 		workItemCapability,
 	});
-	const toolSource = createBoundToolSource([...CORE_TOOL_BUNDLE], toolBindings);
+	const toolSource = createBoundToolSource([...POLY_CORE_TOOL_BUNDLE], toolBindings);
 
 	// Config: rethrow in dev/test for diagnosis, respond_500 in production for safety
 	const config: ContainerConfig = {

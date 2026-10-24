@@ -17,7 +17,7 @@
 
 import { z } from "zod";
 
-import { WorkItemDtoSchema } from "./work.items.list.v1.contract";
+import { WorkItemDtoSchema, WorkItemScoresInputSchema } from "./work.items.list.v1.contract";
 
 const WorkItemStatusSchema = z.enum([
   "needs_triage",
@@ -38,6 +38,7 @@ export const workItemsPatchOperation = {
     "Updates a subset of fields on a work item. Whitelisted fields only — id, created_at, updated_at are server-managed.",
   input: z.object({
     id: z.string(),
+    expectedRevision: z.number().int().nonnegative().optional(),
     set: z
       .strictObject({
         title: z.string().min(1).max(500).optional(),
@@ -47,6 +48,7 @@ export const workItemsPatchOperation = {
         priority: z.number().int().optional(),
         rank: z.number().int().optional(),
         estimate: z.number().int().optional(),
+        scores: WorkItemScoresInputSchema.nullable().optional(),
         labels: z.array(z.string()).optional(),
         specRefs: z.array(z.string()).optional(),
         branch: z.string().optional(),
