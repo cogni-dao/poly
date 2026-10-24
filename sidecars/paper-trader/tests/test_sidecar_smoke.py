@@ -200,8 +200,11 @@ class FakeEngine:
         pass
 
 
+# Keep the real stdlib-only rejection type available while stubbing Engine.
+from pm_trader.models import OrderRejectedError  # noqa: E402, F401
+
 # Inject the fake module so `from pm_trader.engine import Engine` in server.py
-# finds it without needing the real upstream package installed.
+# finds it without constructing the real Engine or contacting a provider.
 _fake_engine_module = types.ModuleType("pm_trader.engine")
 _fake_engine_module.Engine = FakeEngine  # type: ignore[attr-defined]
 _fake_pm_trader_module = types.ModuleType("pm_trader")

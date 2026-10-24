@@ -395,7 +395,7 @@ def test_concurrent_native_openers_do_not_replace_winner(native, monkeypatch, fo
 from unittest.mock import MagicMock
 
 from pm_trader.api import PolymarketClient
-from pm_trader.models import Market, OrderBook, OrderBookLevel
+from pm_trader.models import Market, OrderBook, OrderBookLevel, OrderRejectedError
 from pm_trader.orders import create_order, get_order
 
 
@@ -949,3 +949,109 @@ def test_native_cancel_preserves_canonical_receipt_envelope(active, side):
     assert error.value.status_code == 404
     assert account.get(oid) == receipt
     assert durable_account(account) == after_native
+
+
+@pytest.mark.parametrize("valid_side", ["BUY", "buy", "SELL", "sell"])
+@pytest.mark.parametrize("invalid", [
+    {"size_usdc": 0.1}, {"side": "INVALID"}, {"limit_price": 1.0},
+])
+def test_definite_native_input_rejection_preserves_healthy_account(active, monkeypatch, valid_side, invalid):
+    registry, account = active
+    monkeypatch.setattr(server, "sidecars", registry)
+    monkeypatch.setattr(account._fill_thread, "is_alive", lambda: True)
+    placed = account.place(request(side=valid_side))
+    before = durable_account(account)
+    assert len(before["limit_orders"]) == 1
+    assert before["trades"] == [] and before["positions"] == []
+    assert before["account"][0][1:3] == (SEED, SEED)
+    with pytest.raises(HTTPException) as error:
+        account.place(request(**invalid))
+    assert isinstance(error.value.__cause__, OrderRejectedError)
+    assert error.value.status_code == 502
+    assert error.value.detail == server.ERROR_UPSTREAM_ENGINE_FAILED
+    assert durable_account(account) == before
+    assert not account._stop.is_set()
+    assert not account.engine.db.conn.in_transaction
+    assert registry.get_or_create(ACCOUNT, SEED) is account
+    assert account.get(placed.order_id) == placed
+    assert account.list_open_orders() == [placed]
+    assert account.balance()["cash"] == SEED
+    assert server.readyz() == {"status": "ok"}
+    account.cancel(placed.order_id)
+    canceled = account.get(placed.order_id)
+    assert canceled.status == "canceled" and canceled.fees_usdc == 0
+    assert account.list_open_orders() == []
+    after = durable_account(account)
+    assert after["limit_orders"][0][9] == "cancelled"
+    for table in ("account", "trades", "positions", "market_cache"):
+        assert after[table] == before[table]
+    assert server.readyz() == {"status": "ok"}
+
+
+@pytest.mark.parametrize("publication", ["shadow", "receipt"])
+def test_late_native_rejection_type_cannot_disguise_committed_placement(active, monkeypatch, publication):
+    _, account = active
+    before = durable_account(account)
+    def fail(*_args, **_kwargs):
+        raise OrderRejectedError("publication failed after native order commit")
+    if publication == "shadow":
+        class FailingOrders(dict):
+            def __setitem__(self, *_args):
+                fail()
+        account.orders = FailingOrders()
+    else:
+        monkeypatch.setattr(server, "_to_receipt", fail)
+    with pytest.raises(HTTPException) as error:
+        account.place(request())
+    assert error.value.status_code == 503
+    assert error.value.detail == "paper_account_unavailable"
+    assert isinstance(error.value.__cause__, OrderRejectedError)
+    assert account._stop.is_set()
+    after = durable_account(account)
+    assert len(after["limit_orders"]) == len(before["limit_orders"]) + 1
+    assert after["limit_orders"][0][9] == "pending"
+    for table in ("account", "trades", "positions", "market_cache"):
+        assert after[table] == before[table]
+    oid = server._externalize(account.account_key, after["limit_orders"][0][0])
+    assert_all_entries_refuse(account, oid)
+
+
+@pytest.mark.parametrize("invalid", [
+    {"size_usdc": 0.1}, {"side": "INVALID"}, {"limit_price": 1.0},
+])
+def test_definite_invalid_input_cannot_bypass_dirty_entry(active, invalid):
+    _, account = active
+    oid = account.place(request()).order_id
+    before = durable_account(account)
+    account.engine.db.conn.execute("UPDATE account SET cash=1")
+    with pytest.raises(HTTPException) as error:
+        account.place(request(**invalid))
+    assert error.value.status_code == 503
+    assert error.value.detail == "paper_account_unavailable"
+    assert account._stop.is_set() and account.engine.db.conn.in_transaction
+    assert durable_account(account) == before
+    account.engine.db.conn.rollback()
+    assert_all_entries_refuse(account, oid)
+
+
+@pytest.mark.parametrize("error_type", [ValueError, sqlite3.OperationalError])
+def test_uncertain_native_placement_failure_retains_committed_order_and_withholds(active, monkeypatch, error_type):
+    _, account = active
+    before = durable_account(account)
+    place = account.engine.place_limit_order
+    def commit_then_fail(**kwargs):
+        place(**kwargs)
+        raise error_type("native placement result unavailable")
+    monkeypatch.setattr(account.engine, "place_limit_order", commit_then_fail)
+    with pytest.raises(HTTPException) as error:
+        account.place(request())
+    assert error.value.status_code == 503
+    assert error.value.detail == "paper_account_unavailable"
+    assert isinstance(error.value.__cause__, error_type)
+    after = durable_account(account)
+    assert len(after["limit_orders"]) == len(before["limit_orders"]) + 1
+    assert after["limit_orders"][0][9] == "pending"
+    for table in ("account", "trades", "positions", "market_cache"):
+        assert after[table] == before[table]
+    oid = server._externalize(account.account_key, after["limit_orders"][0][0])
+    assert_all_entries_refuse(account, oid)
