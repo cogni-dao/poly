@@ -18,7 +18,7 @@
 
 import { z } from "zod";
 
-import { WorkItemDtoSchema } from "./work.items.list.v1.contract";
+import { WorkItemDtoSchema, WorkItemScoresInputSchema } from "./work.items.list.v1.contract";
 
 const SubjectRefSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("user"), userId: z.string() }),
@@ -61,6 +61,7 @@ export const workItemsCreateOperation = {
     priority: z.number().int().optional(),
     rank: z.number().int().optional(),
     estimate: z.number().int().optional(),
+        scores: WorkItemScoresInputSchema.nullable().optional(),
     labels: z.array(z.string()).optional(),
     specRefs: z.array(z.string()).optional(),
     assignees: z.array(SubjectRefSchema).optional(),

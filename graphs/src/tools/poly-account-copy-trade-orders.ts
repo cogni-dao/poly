@@ -64,7 +64,7 @@
  * @public
  */
 
-import type { BoundTool, ToolContract } from "@cogni/ai-tools";
+import type { BoundTool, ToolContract } from "@cogni/local-ai-tools";
 import type { PolyCopyTradeOrdersInput } from "@cogni/poly-node-contracts";
 import { z } from "zod";
 

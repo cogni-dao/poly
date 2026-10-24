@@ -17,7 +17,7 @@ import type {
   WorkItemCapability,
   WorkItemInfo,
   WorkItemTransitionResult,
-} from "@cogni/ai-tools";
+} from "@cogni/shared-ai-tools";
 import type {
   ActorKind,
   SubjectRef,
@@ -27,7 +27,9 @@ import type {
   WorkItemStatus,
   WorkItemType,
 } from "@cogni/work-items";
-import { toWorkItemId } from "@cogni/work-items";
+import { rankScore, toWorkItemId } from "@cogni/work-items";
+import { WorkItemPatchConflictError } from "@cogni/shared-ai-tools";
+import type { WorkItemsDoltgresPort } from "@/ports/work-items-doltgres.port";
 
 /**
  * Dependencies for creating the work item capability.
@@ -35,6 +37,7 @@ import { toWorkItemId } from "@cogni/work-items";
 export interface WorkItemCapabilityDeps {
   readonly workItemQuery: WorkItemQueryPort;
   readonly workItemCommand: WorkItemCommandPort;
+  readonly backlogWriter?: { readonly store: Pick<WorkItemsDoltgresPort, "patch">; readonly principalId: () => string };
 }
 
 function assigneeId(a: SubjectRef): string {
@@ -49,6 +52,7 @@ function assigneeId(a: SubjectRef): string {
 }
 
 function toWorkItemInfo(item: WorkItem): WorkItemInfo {
+  const evaluationRank = rankScore(item.scores);
   return {
     id: item.id,
     type: item.type,
@@ -57,6 +61,13 @@ function toWorkItemInfo(item: WorkItem): WorkItemInfo {
     labels: [...item.labels],
     assignees: item.assignees.map((a) => ({ kind: a.kind, id: assigneeId(a) })),
     updatedAt: item.updatedAt,
+    revision: item.revision,
+    ...(item.scores !== undefined && { scores: item.scores }),
+    ...(evaluationRank !== undefined && { rankScore: evaluationRank }),
+    ...(item.outcome !== undefined && { outcome: item.outcome }),
+    ...(item.estimate !== undefined && { estimate: item.estimate }),
+    ...(item.parentId !== undefined && { parentId: item.parentId }),
+    ...(item.specRefs !== undefined && { specRefs: [...item.specRefs] }),
     ...(item.actor !== "either" && { actor: item.actor }),
     ...(item.priority !== undefined && { priority: item.priority }),
     ...(item.rank !== undefined && { rank: item.rank }),
@@ -79,6 +90,8 @@ export function createWorkItemCapability(
   return {
     async query(params): Promise<readonly WorkItemInfo[]> {
       const result = await workItemQuery.list({
+        ...(params.ids && { ids: params.ids.map(toWorkItemId) }),
+        ...(params.cursor && { cursor: params.cursor }),
         ...(params.statuses && {
           statuses: params.statuses as readonly WorkItemStatus[],
         }),
@@ -93,6 +106,26 @@ export function createWorkItemCapability(
         ...(params.limit && { limit: params.limit }),
       });
       return result.items.map(toWorkItemInfo);
+    },
+
+    async queryPage(params) {
+      const result = await workItemQuery.list({
+        ...(params.ids && { ids: params.ids.map(toWorkItemId) }),
+        ...(params.cursor && { cursor: params.cursor }),
+        ...(params.statuses && {
+          statuses: params.statuses as readonly WorkItemStatus[],
+        }),
+        ...(params.types && {
+          types: params.types as readonly WorkItemType[],
+        }),
+        ...(params.text && { text: params.text }),
+        ...(params.actor && { actor: params.actor as ActorKind }),
+        ...(params.projectId && {
+          projectId: toWorkItemId(params.projectId),
+        }),
+        ...(params.limit && { limit: params.limit }),
+      });
+      return { items: result.items.map(toWorkItemInfo), ...(result.nextCursor !== undefined && { nextCursor: result.nextCursor }) };
     },
 
     async transitionStatus(input): Promise<WorkItemTransitionResult> {
@@ -117,6 +150,23 @@ export function createWorkItemCapability(
     },
 
     async patch(input): Promise<WorkItemInfo> {
+      const writer = deps.backlogWriter;
+      if (writer) {
+        try {
+          const updated = await writer.store.patch({
+            id: toWorkItemId(input.id), set: input.set,
+            ...(input.expectedRevision !== undefined && { expectedRevision: input.expectedRevision }),
+          }, writer.principalId());
+          return toWorkItemInfo(updated);
+        } catch (error) {
+          if ((error as Error)?.name === "WorkItemRevisionConflictError") {
+            const conflict = error as { id: string; expectedRevision: number; currentRevision: number };
+            throw new WorkItemPatchConflictError(conflict.id, conflict.expectedRevision, conflict.currentRevision);
+          }
+          throw error;
+        }
+      }
+      if (input.expectedRevision !== undefined) throw new Error("Doltgres backlog writer unavailable");
       const current = await workItemQuery.get(toWorkItemId(input.id));
       if (!current) {
         throw new Error(`Work item not found: ${input.id}`);

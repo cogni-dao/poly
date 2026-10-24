@@ -25,7 +25,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
 	DoltgresWorkItemAdapter,
 	WorkItemsBusyError,
-} from "@cogni/work-items/adapters/doltgres";
+} from "@cogni/legacy-work-items/adapters/doltgres";
+import { DoltgresPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../..");
@@ -38,7 +39,7 @@ const MIGRATIONS_DIR = path.resolve(
 	"app/src/adapters/server/db/doltgres-migrations",
 );
 const DOLTGRES_IMAGE = "dolthub/doltgresql:0.57.3";
-const DB_NAME = "knowledge_poly_work_items";
+const DB_NAME = "knowledge_poly_test";
 const PASSWORD = "doltgres";
 
 describe("Doltgres 0.57.3 work-item acceptance", () => {
@@ -88,6 +89,45 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		if (sql) await sql.end({ timeout: 5 });
 		if (container) await container.stop();
 	});
+
+  it("composes published scores and v1 leases without changing protected content", async () => {
+    const pools: Sql[] = [];
+    const client = () => {
+      const pool = postgres(dbUrl, { max: 1, fetch_types: false });
+      pools.push(pool);
+      return pool;
+    };
+    const adapter = new DoltgresPolyWorkItemAdapter(client(), stageLogger, { legacyClient: client(), recreateClient: client });
+    const id = toWorkItemId("task.9598");
+    const owner = "baseline-owner";
+    const collaborator = "baseline-collaborator";
+    const scores = { goal: { v: 3 }, time: { v: 2 }, unblocks: { v: 3 }, ease: { v: 4, ev: "https://example.org/proof?q=1#section" }, confidence: { v: 3 }, agent: { v: 3 } };
+    try {
+      const created = await adapter.create({ id, type: "task", title: "Shared evaluation composition" }, owner);
+      const scored = await adapter.patch({ id, expectedRevision: created.revision, set: { scores } }, collaborator);
+      expect(scored.scores).toEqual(scores);
+      await expect(adapter.patch({ id, expectedRevision: created.revision, set: { scores: null } }, collaborator)).rejects.toMatchObject({ name: "WorkItemRevisionConflictError" });
+      await expect(adapter.patch({ id, set: { title: "Foreign content", scores: null } }, collaborator)).rejects.toMatchObject({ name: "WorkItemAuthorizationError" });
+      expect(await adapter.get(id)).toMatchObject({ title: "Shared evaluation composition", scores, revision: scored.revision });
+      const claimed = await adapter.claim({ id, runId: "baseline-run", command: "/baseline", principalId: owner });
+      expect(claimed.claimedByRun).toBe("baseline-run");
+      expect(claimed.scores).toEqual(scores);
+      expect(claimed.revision).toBeGreaterThan(scored.revision);
+      expect((await adapter.get(id))?.claimedByRun).toBe("baseline-run");
+      expect((await adapter.list({ ids: [id] })).items[0]).toMatchObject({ scores, claimedByRun: "baseline-run" });
+      await expect(adapter.claim({ id, runId: "intruder", command: "/baseline", principalId: collaborator })).rejects.toMatchObject({ name: "WorkItemLeaseConflictError" });
+      const beat = await adapter.heartbeat({ id, runId: "baseline-run", principalId: owner });
+      expect(beat.scores).toEqual(scores);
+      const released = await adapter.release({ id, runId: "baseline-run", principalId: owner });
+      expect(released.claimedByRun).toBeUndefined();
+      expect(released.scores).toEqual(scores);
+      const cleared = await adapter.patch({ id, expectedRevision: released.revision, set: { scores: null } }, collaborator);
+      expect(cleared.scores).toBeUndefined();
+      await expect(adapter.delete(id, owner)).resolves.toBe(true);
+    } finally {
+      await Promise.all(pools.map((pool) => pool.end({ timeout: 0 }).catch(() => undefined)));
+    }
+  }, 60_000);
 
 	it("creates, lists, patches, coordinates, and deletes through Dolt branches", async () => {
 		const createWorkItemClient = () =>
