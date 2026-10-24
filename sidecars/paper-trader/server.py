@@ -59,6 +59,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
+from pm_trader.models import OrderRejectedError
+
 # SQLite default: a connection can only be used in the thread that created it.
 # pm_trader.Engine opens its SQLite connection in its constructor (called on
 # the lifespan thread), but our handlers run on FastAPI's threadpool and the
@@ -652,6 +654,36 @@ class Sidecar:
                     limit_price=req.limit_price,
                     order_type="gtc",
                 )
+            except OrderRejectedError as e:
+                # In this native call, this type is raised only by validation
+                # before create_order; publication below has a separate catch.
+                log.error(
+                    "place_order upstream rejection",
+                    extra={
+                        "event": EVENT_PLACE_ERROR,
+                        "errorCode": ERROR_UPSTREAM_ENGINE_FAILED,
+                        "errClass": type(e).__name__,
+                        "client_order_id": req.client_order_id,
+                    },
+                )
+                raise HTTPException(
+                    status_code=502, detail=ERROR_UPSTREAM_ENGINE_FAILED
+                ) from e
+            except Exception as e:
+                log.error(
+                    "place_order upstream failure",
+                    extra={
+                        "event": EVENT_PLACE_ERROR,
+                        "errorCode": ERROR_UPSTREAM_ENGINE_FAILED,
+                        "errClass": type(e).__name__,
+                        "client_order_id": req.client_order_id,
+                    },
+                    exc_info=True,
+                )
+                raise self._withhold(
+                    close=getattr(e, "reason", None) != "dirty_entry"
+                ) from e
+            try:
                 self._require_available("mutation_ambiguous")
                 upstream_id = d.get("id")
                 if upstream_id is None:
