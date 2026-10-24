@@ -136,3 +136,84 @@ describe("PolymarketClobPublicClient.getMarkPrice", () => {
 		await expect(client.getMarkPrice(conditionId, winner)).resolves.toBeNull();
 	});
 });
+
+describe("PolymarketClobPublicClient resolution evidence admission", () => {
+	const validTokens = [
+		{ token_id: "111", winner: true },
+		{ token_id: "222", winner: false },
+	];
+
+	it.each([undefined, null, "true", "false", 1, 0])(
+		"does not coerce closed=%s into terminal authority",
+		async (closed) => {
+			const client = new PolymarketClobPublicClient({
+				fetch: vi
+					.fn()
+					.mockResolvedValue(jsonResponse({ closed, tokens: validTokens })),
+			});
+			await expect(
+				client.getMarketResolution("0xcondition"),
+			).resolves.toMatchObject({ closed: false });
+		},
+	);
+
+	it.each(
+		[
+			[{ token_id: "111", winner: true }, { token_id: "222" }],
+			[
+				{ token_id: "111", winner: true },
+				{ token_id: "222", winner: "false" },
+			],
+			[
+				{ token_id: "111", winner: "true" },
+				{ token_id: "222", winner: false },
+			],
+			[{ token_id: "111", winner: true }, { winner: false }],
+			[
+				{ token_id: "111", winner: true },
+				{ token_id: 222, winner: false },
+			],
+			[
+				{ token_id: "111", winner: true },
+				{ token_id: "", winner: false },
+			],
+			[
+				{ token_id: "111", winner: true },
+				{ token_id: "111", winner: false },
+			],
+			[
+				{ token_id: "111", winner: true },
+				{ token_id: "111", winner: true },
+			],
+			[null],
+			null,
+			{},
+		].map((tokens) => ({ tokens })),
+	)(
+		"keeps closed malformed evidence unavailable without a stale-trade fallback",
+		async ({ tokens }) => {
+			const fetchImpl = vi
+				.fn()
+				.mockResolvedValueOnce(jsonResponse({}, false, 404))
+				.mockResolvedValueOnce(jsonResponse({ closed: true, tokens }))
+				.mockResolvedValueOnce(jsonResponse({ price: "0.37", side: "BUY" }));
+			const client = new PolymarketClobPublicClient({ fetch: fetchImpl });
+			await expect(
+				client.getMarkPrice("0xcondition", "222"),
+			).resolves.toBeNull();
+			expect(fetchImpl).toHaveBeenCalledTimes(2);
+		},
+	);
+
+	it("preserves a valid unique winner and exact token identities", async () => {
+		const client = new PolymarketClobPublicClient({
+			fetch: vi
+				.fn()
+				.mockResolvedValue(jsonResponse({ closed: true, tokens: validTokens })),
+		});
+		await expect(client.getMarketResolution("0xcondition")).resolves.toEqual({
+			closed: true,
+			tokens: validTokens,
+		});
+	});
+});

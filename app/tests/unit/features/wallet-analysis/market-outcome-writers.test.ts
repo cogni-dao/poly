@@ -142,6 +142,64 @@ describe("market outcome writers", () => {
     expect(rendered(capture.set.payout)).toContain("<> EXCLUDED.outcome");
   });
 
+  it.each([
+    [true, false, false],
+    [true, true, true],
+    [false, true, false],
+  ])(
+    "keeps closed=%s with winner flags %s/%s nonterminal without proof",
+    async (closed, first, second) => {
+      const { db, capture } = captureWriteDb([
+        { condition_id: "0xabc", token_id: "101" },
+        { condition_id: "0xabc", token_id: "102" },
+      ]);
+      const result = await runMarketOutcomeTick({
+        db: db as never,
+        clobClient: {
+          getMarketResolution: async () => ({
+            closed,
+            tokens: [
+              { token_id: "101", winner: first },
+              { token_id: "102", winner: second },
+            ],
+          }),
+        },
+        logger: logger as never,
+        metrics: {} as never,
+      });
+      expect(result).toMatchObject({ conditions: 2, polled: 1, upserted: 2 });
+      expect(capture.values).toHaveLength(2);
+      for (const value of capture.values) {
+        expect(value).toMatchObject({
+          outcome: "unknown",
+          payout: null,
+          resolvedAt: null,
+        });
+      }
+    }
+  );
+
+  it("does not invent a missing selected token from a valid settlement", async () => {
+    const { db, capture } = captureWriteDb([
+      { condition_id: "0xabc", token_id: "103" },
+    ]);
+    await runMarketOutcomeTick({
+      db: db as never,
+      clobClient: {
+        getMarketResolution: async () => ({
+          closed: true,
+          tokens: [
+            { token_id: "101", winner: true },
+            { token_id: "102", winner: false },
+          ],
+        }),
+      },
+      logger: logger as never,
+      metrics: {} as never,
+    });
+    expect(capture.values).toHaveLength(0);
+  });
+
   it("chain writer lowercases identity, supplies missing resolution time, and preserves terminal consensus", async () => {
     const { db, capture } = captureWriteDb();
     const adapter = new DrizzleMarketOutcomesAdapter(db as never);
