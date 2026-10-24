@@ -142,6 +142,20 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
   const addressB = address();
   const funderA = address();
 
+    const connection = (owner: Tenant, addr: `0x${string}`, funder?: string) => ({
+      billingAccountId: owner.billingAccountId,
+      createdByUserId: owner.userId,
+      privyWalletId: `privy-${randomUUID()}`,
+      address: addr,
+      ...(funder ? { funderAddress: funder } : {}),
+      clobApiKeyCiphertext: Buffer.from("ciphertext"),
+      encryptionKeyId: "test-key",
+      custodialConsentAcceptedAt: new Date("2026-10-01T00:00:00.000Z"),
+      custodialConsentActorKind: "user",
+      custodialConsentActorId: owner.userId,
+      tradingApprovalsReadyAt: new Date("2026-10-02T00:00:00.000Z"),
+    });
+
   beforeAll(async () => {
     db = getAppDb();
     const seedDb = getSeedDb();
@@ -188,20 +202,6 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
         revokedByUserId: ownerA.userId,
       }),
     ]);
-
-    const connection = (owner: Tenant, addr: `0x${string}`, funder?: string) => ({
-      billingAccountId: owner.billingAccountId,
-      createdByUserId: owner.userId,
-      privyWalletId: `privy-${randomUUID()}`,
-      address: addr,
-      ...(funder ? { funderAddress: funder } : {}),
-      clobApiKeyCiphertext: Buffer.from("ciphertext"),
-      encryptionKeyId: "test-key",
-      custodialConsentAcceptedAt: new Date("2026-10-01T00:00:00.000Z"),
-      custodialConsentActorKind: "user",
-      custodialConsentActorId: owner.userId,
-      tradingApprovalsReadyAt: new Date("2026-10-02T00:00:00.000Z"),
-    });
 
     await seedDb
       .insert(polyWalletConnections)
@@ -287,8 +287,8 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
         (trader_wallet_id,source,native_id,condition_id,token_id,side,price,shares,size_usdc,observed_at,raw)
         SELECT ${walletId}::uuid,'data-api','role-plan-'||n,${`0x${"bc".repeat(32)}`},n::text,
           'BUY',.4,1,.4,now()-(n||' seconds')::interval,'{}'::jsonb FROM generate_series(1,5080) n`);
-      await seed.execute(sql`ANALYZE poly_trader_position_snapshots`);
-      await seed.execute(sql`ANALYZE poly_trader_fills`);
+      await db.execute(sql`ANALYZE poly_trader_position_snapshots`);
+      await db.execute(sql`ANALYZE poly_trader_fills`);
       const capturedAt = new Date();
     for (const [role, actor] of [["owner", ownerA], ["delegated", canonicalAgent]] as const) {
       await withTenantScope(db, userActor(toUserId(actor.userId)), async tx => {
@@ -555,9 +555,13 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       await seedDb.insert(billingAccounts).values(
         planOwners.map(owner => ({ id: owner.billingAccountId, ownerUserId: owner.userId, balanceCredits: 0n }))
       );
-      // The migrated-table owner can ANALYZE; the BYPASSRLS seeding role
-      // cannot. Refresh only the relation whose tiny-table plan is ambiguous.
+      await seedDb.insert(polyWalletConnections).values(
+        planOwners.map(owner => connection(owner, address()))
+      );
+      // Refresh both selective-access fixture relations as their migrated owner;
+      // the BYPASSRLS seeding role cannot ANALYZE them.
       await db.execute(sql`ANALYZE billing_accounts`);
+      await db.execute(sql`ANALYZE poly_wallet_connections`);
     });
 
     afterAll(async () => {
@@ -565,6 +569,7 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
       await seedDb.delete(billingAccounts).where(inArray(billingAccounts.id, planOwners.map(owner => owner.billingAccountId)));
       await seedDb.delete(users).where(inArray(users.id, planOwners.map(owner => owner.userId)));
       await db.execute(sql`ANALYZE billing_accounts`);
+      await db.execute(sql`ANALYZE poly_wallet_connections`);
     });
 
     /**
@@ -579,8 +584,9 @@ describe("portfolio snapshot delegated SELECT (migration 0075)", () => {
      * index the planner picks. That is cost-based and fixture-size dependent.
      * With only a few owners a billing_accounts sequential scan is cheaper
      * and legitimate, so these tests add unrelated owner/account cardinality
-     * and fresh statistics before asserting selective access. Wallet/grant
-     * fixtures and planner settings stay unchanged. Pinning an index name
+     * plus one wallet connection each and fresh statistics before asserting
+     * selective access. Grant fixtures and planner settings stay unchanged.
+     * Pinning an index name
      * would still assert a fixture property rather than the policy contract.
      */
     async function identityPlan(principalId: string): Promise<string> {
