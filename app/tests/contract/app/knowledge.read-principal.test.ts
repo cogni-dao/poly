@@ -61,8 +61,8 @@ import * as listHandler from "@/app/api/v1/knowledge/route";
 const BEARER = { authorization: "Bearer cogni_ag_sk_v1_test.signature" };
 
 async function seedStore(store: FakeKnowledgeStoreAdapter) {
+  await store.registerDomain({ id: "eng", name: "Engineering" });
   await store.withWrite({ operationId: "test.seed", message: "Seed knowledge read fixture" }, async (write) => {
-  await write.registerDomain({ id: "eng", name: "Engineering" });
   await write.upsertKnowledge({
     id: "entry-a",
     domain: "eng",

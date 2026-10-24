@@ -30,8 +30,8 @@ const DOMAIN = "operator";
 
 async function seed() {
   const store = new FakeKnowledgeStoreAdapter();
+  await store.registerDomain({ id: DOMAIN, name: "Operator" });
   await store.withWrite({ operationId: "test.seed", message: "Seed knowledge loader fixture" }, async (write) => {
-  await write.registerDomain({ id: DOMAIN, name: "Operator" });
   await write.addKnowledge({
     id: "k1",
     domain: DOMAIN,
