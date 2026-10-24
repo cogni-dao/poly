@@ -410,11 +410,11 @@ export function buildEconomicPositionProjectionQuery(
         COALESCE(oc.terminal_variants, 0) AS terminal_variants,
         COALESCE(oc.payout_variants, 0) AS payout_variants,
         oc.terminal_outcome,
-        (k.condition_id ~ '^0x[0-9a-f]{64}$'
-          AND k.token_id ~ '^(0|[1-9][0-9]*)$'
+        (oc.resolved_at IS NOT NULL
           AND oc.terminal_variants = 1 AND oc.payout_variants = 1
           AND oc.payout_consistent AND oc.terminal_outcome = 'loser'
-          AND oc.resolved_at IS NOT NULL) AS terminal_zero_valuation,
+          AND k.condition_id ~ '^0x[0-9a-f]{64}$'
+          AND k.token_id ~ '^(0|[1-9][0-9]*)$') AS terminal_zero_valuation,
         oc.resolved_at,
         cf.chosen_wallet_id,
         cf.shares AS current_shares,
@@ -424,9 +424,9 @@ export function buildEconomicPositionProjectionQuery(
         cf.last_observed_at AS current_last_observed_at,
         cf.first_observed_at AS current_first_observed_at,
         cf.raw->>'curPrice' AS raw_cur_price,
-        CASE WHEN COALESCE(cf.raw->>'cashPnl', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+        CASE WHEN cf.raw->>'cashPnl' ~ '^-?[0-9]+(\\.[0-9]+)?$'
           THEN (cf.raw->>'cashPnl')::numeric END AS current_unrealized_pnl,
-        CASE WHEN COALESCE(cf.raw->>'realizedPnl', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+        CASE WHEN cf.raw->>'realizedPnl' ~ '^-?[0-9]+(\\.[0-9]+)?$'
           THEN (cf.raw->>'realizedPnl')::numeric END AS current_realized_pnl,
         CASE WHEN cf.raw->'economicObservationV1'->>'fetchedAt' >= COALESCE(hf.observation->>'fetchedAt', '')
           THEN cf.raw->'economicObservationV1' ELSE hf.observation END AS economic_observation,
@@ -490,7 +490,7 @@ export function buildEconomicPositionProjectionQuery(
            retained proof without an ordering clock cannot bless positive MTM. */
         CASE
           WHEN b.economic_observation->>'fetchedAt' <= ${params.capturedAt.toISOString()} THEN
-            CASE WHEN COALESCE(b.economic_observation->'closedPosition'->>'last_event_at', '') ~ '^[0-9]+([.][0-9]+)?$' THEN
+            CASE WHEN b.economic_observation->'closedPosition'->>'last_event_at' ~ '^[0-9]+([.][0-9]+)?$' THEN
               CASE WHEN (b.economic_observation->'closedPosition'->>'last_event_at')::numeric
                   <= extract(epoch FROM ${params.capturedAt.toISOString()}::timestamptz)
                 THEN b.current_last_observed_at >= to_timestamp((b.economic_observation->'closedPosition'->>'last_event_at')::numeric)
@@ -532,9 +532,9 @@ export function buildEconomicPositionProjectionQuery(
           AND b.total_buy_usdc IS NOT NULL AND b.total_buy_shares > 0
           AND b.current_shares = b.net_shares AND b.net_shares >= 0
           AND b.current_value_usdc IS NOT NULL
-          AND CASE WHEN COALESCE(b.current_raw->>'buyUsdc', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (b.current_raw->>'buyUsdc')::numeric END = b.total_buy_usdc
-          AND CASE WHEN COALESCE(b.current_raw->>'sellUsdc', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (b.current_raw->>'sellUsdc')::numeric END = b.total_sell_usdc
-          AND CASE WHEN COALESCE(b.current_raw->>'buyShares', '') ~ '^[0-9]+(\\.[0-9]+)?$' THEN (b.current_raw->>'buyShares')::numeric END = b.total_buy_shares
+          AND CASE WHEN b.current_raw->>'buyUsdc' ~ '^[0-9]+(\\.[0-9]+)?$' THEN (b.current_raw->>'buyUsdc')::numeric END = b.total_buy_usdc
+          AND CASE WHEN b.current_raw->>'sellUsdc' ~ '^[0-9]+(\\.[0-9]+)?$' THEN (b.current_raw->>'sellUsdc')::numeric END = b.total_sell_usdc
+          AND CASE WHEN b.current_raw->>'buyShares' ~ '^[0-9]+(\\.[0-9]+)?$' THEN (b.current_raw->>'buyShares')::numeric END = b.total_buy_shares
           ELSE b.economic_observation->>'coverage' = 'complete'
           AND b.economic_observation->>'fetchedAt' <= ${params.capturedAt.toISOString()}
           AND (b.economic_observation->>'windowEnd')::timestamptz >= COALESCE(b.last_flow_at, '-infinity'::timestamptz)
@@ -583,7 +583,7 @@ export function buildEconomicPositionProjectionQuery(
         END AS closed_reason,
         CASE
           WHEN b.economic_observation->>'coverage' = 'complete'
-            AND COALESCE(b.economic_observation->'closedPosition'->>'last_event_at', '') ~ '^[0-9]+$'
+            AND b.economic_observation->'closedPosition'->>'last_event_at' ~ '^[0-9]+$'
             THEN to_timestamp((b.economic_observation->'closedPosition'->>'last_event_at')::numeric)
           WHEN b.terminal_variants = 1 THEN b.resolved_at
           WHEN b.terminal_variants = 0 AND b.total_buy_shares > 0
@@ -694,7 +694,7 @@ export function buildEconomicPositionProjectionQuery(
         ELSE COALESCE(r.lifecycle_state, lc.position_lifecycle)
       END AS lifecycle_state,
       COALESCE(proof.first_buy_at, proof.current_first_observed_at, lc.observed_at,
-        CASE WHEN proof.history_complete AND COALESCE(proof.economic_observation->'closedPosition'->>'first_entry_at','') ~ '^[0-9]+$'
+        CASE WHEN proof.history_complete AND proof.economic_observation->'closedPosition'->>'first_entry_at' ~ '^[0-9]+$'
           THEN to_timestamp((proof.economic_observation->'closedPosition'->>'first_entry_at')::numeric) END) AS opened_at,
       p.closed_at,
       COALESCE(proof.current_last_observed_at, lc.updated_at, proof.last_flow_at) AS synced_at,
@@ -707,7 +707,7 @@ export function buildEconomicPositionProjectionQuery(
       COALESCE(proof.total_buy_shares - proof.total_sell_shares, proof.current_shares) AS net_shares,
       p.effective_current_value_usdc AS current_value_usdc,
       COALESCE(
-        CASE WHEN COALESCE(proof.raw_cur_price, '') ~ '^[0-9]+(\\.[0-9]+)?$'
+        CASE WHEN proof.raw_cur_price ~ '^[0-9]+(\\.[0-9]+)?$'
           THEN proof.raw_cur_price::numeric END,
         proof.last_price,
         proof.current_avg_price
@@ -724,7 +724,7 @@ export function buildEconomicPositionProjectionQuery(
       jsonb_array_length(proof.economic_observation->'constituents') AS economic_record_count,
       proof.history_complete,
       CASE WHEN ${mode} = 'paper' AND proof.history_complete THEN proof.total_sell_usdc + proof.current_value_usdc - proof.total_buy_usdc - COALESCE(proof.paper_fees_usdc, 0)
-        WHEN COALESCE(proof.economic_observation->>'lifetimePnlUsdc', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+        WHEN proof.economic_observation->>'lifetimePnlUsdc' ~ '^-?[0-9]+(\\.[0-9]+)?$'
         THEN (proof.economic_observation->>'lifetimePnlUsdc')::numeric END AS observed_lifetime_pnl,
       proof.current_identity_conflict,
       (proof.mark_available OR proof.terminal_zero_valuation) AS mark_available,
@@ -736,7 +736,7 @@ export function buildEconomicPositionProjectionQuery(
       COALESCE(proof.current_outcome_label, lc.attributes->>'outcome') AS outcome_label,
       COALESCE(
         mm.end_date,
-        CASE WHEN COALESCE(proof.current_resolves_at, '') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+        CASE WHEN proof.current_resolves_at ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
           THEN proof.current_resolves_at::timestamptz END
       ) AS resolves_at
     FROM (SELECT 1) seed
