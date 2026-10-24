@@ -21,6 +21,8 @@ import {
   deleteWorkItem,
   getWorkItem,
   patchWorkItem,
+  WorkItemScoresInvalidError,
+  WorkItemRevisionConflictError,
   WorkItemForbiddenError,
   WorkItemNotFoundError,
   WorkItemsBackendNotReadyError,
@@ -46,6 +48,16 @@ export const GET = wrapRouteHandlerWithLogging<{
     try {
       item = await getWorkItem(id);
     } catch (error) {
+      if (error instanceof WorkItemScoresInvalidError) {
+        return NextResponse.json({ error: "invalid input", errorCode: error.code, issues: error.issues }, { status: 400 });
+      }
+      if (error instanceof WorkItemRevisionConflictError) {
+        return NextResponse.json({ error: "revision_conflict", expectedRevision: error.expectedRevision, currentRevision: error.currentRevision }, { status: 409 });
+      }
+      if ((error as Error)?.name === "WorkItemWriteOutcomeUnknownError") {
+        const unknown = error as { code: string; receipt: { lookup: unknown } };
+        return NextResponse.json({ error: unknown.code, retryable: false, lookup: unknown.receipt.lookup }, { status: 503 });
+      }
       if (error instanceof WorkItemsBackendNotReadyError) {
         return NextResponse.json({ error: error.message }, { status: 503 });
       }
@@ -112,6 +124,16 @@ export const PATCH = wrapRouteHandlerWithLogging<{
       ctx.log.info({ workItemId: id }, "work.items.patch_success");
       return NextResponse.json(workItemsPatchOperation.output.parse(patched));
     } catch (error) {
+      if (error instanceof WorkItemScoresInvalidError) {
+        return NextResponse.json({ error: "invalid input", errorCode: error.code, issues: error.issues }, { status: 400 });
+      }
+      if (error instanceof WorkItemRevisionConflictError) {
+        return NextResponse.json({ error: "revision_conflict", expectedRevision: error.expectedRevision, currentRevision: error.currentRevision }, { status: 409 });
+      }
+      if ((error as Error)?.name === "WorkItemWriteOutcomeUnknownError") {
+        const unknown = error as { code: string; receipt: { lookup: unknown } };
+        return NextResponse.json({ error: unknown.code, retryable: false, lookup: unknown.receipt.lookup }, { status: 503 });
+      }
       if (error instanceof WorkItemNotFoundError) {
         return NextResponse.json({ error: error.message }, { status: 404 });
       }
@@ -159,6 +181,16 @@ export const DELETE = wrapRouteHandlerWithLogging<{
         workItemsDeleteOperation.output.parse({ id, deleted: true })
       );
     } catch (error) {
+      if (error instanceof WorkItemScoresInvalidError) {
+        return NextResponse.json({ error: "invalid input", errorCode: error.code, issues: error.issues }, { status: 400 });
+      }
+      if (error instanceof WorkItemRevisionConflictError) {
+        return NextResponse.json({ error: "revision_conflict", expectedRevision: error.expectedRevision, currentRevision: error.currentRevision }, { status: 409 });
+      }
+      if ((error as Error)?.name === "WorkItemWriteOutcomeUnknownError") {
+        const unknown = error as { code: string; receipt: { lookup: unknown } };
+        return NextResponse.json({ error: unknown.code, retryable: false, lookup: unknown.receipt.lookup }, { status: 503 });
+      }
       if (error instanceof WorkItemForbiddenError) {
         return NextResponse.json({ error: error.message }, { status: 403 });
       }
