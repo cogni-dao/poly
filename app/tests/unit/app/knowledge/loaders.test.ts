@@ -31,7 +31,8 @@ const DOMAIN = "operator";
 async function seed() {
   const store = new FakeKnowledgeStoreAdapter();
   await store.registerDomain({ id: DOMAIN, name: "Operator" });
-  await store.addKnowledge({
+  await store.withWrite({ operationId: "test.seed", message: "Seed knowledge loader fixture" }, async (write) => {
+  await write.addKnowledge({
     id: "k1",
     domain: DOMAIN,
     title: "First",
@@ -39,7 +40,7 @@ async function seed() {
     entryType: "finding",
     sourceType: "agent",
   });
-  await store.addKnowledge({
+  await write.addKnowledge({
     id: "k2",
     domain: DOMAIN,
     title: "Second",
@@ -47,10 +48,11 @@ async function seed() {
     entryType: "finding",
     sourceType: "agent",
   });
-  await store.addCitation({
+  await write.addCitation({
     citingId: "k1",
     citedId: "k2",
     citationType: "supports",
+  });
   });
   return store;
 }

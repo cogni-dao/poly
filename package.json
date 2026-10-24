@@ -47,5 +47,9 @@
     "tsx": "^4.20.6",
     "typescript": "^5",
     "yaml": "^2.8.3"
+  },
+  "dependencies": {
+    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.4.4/cogni-dao-knowledge-store-0.4.4.tgz",
+    "@cogni/ai-tools": "workspace:*"
   }
 }

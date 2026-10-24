@@ -31,6 +31,7 @@ export type WorkItemsPatchSet = NonNullable<
 
 export interface WorkItemsPatchInput {
   readonly id: WorkItemId;
+  readonly expectedRevision?: number;
   readonly set: WorkItemsPatchSet;
 }
 

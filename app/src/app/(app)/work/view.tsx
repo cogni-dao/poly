@@ -113,7 +113,7 @@ export function WorkDashboardView({
       const id = desc ? sortParam.slice(1) : sortParam;
       return [{ id, desc }];
     }
-    return [{ id: "priority", desc: false }];
+    return [{ id: "rankScore", desc: true }];
   }, [searchParams]);
 
   const [sorting, setSorting] = useState<SortingState>(initialSorting);

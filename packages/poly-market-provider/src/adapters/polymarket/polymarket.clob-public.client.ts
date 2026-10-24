@@ -91,16 +91,28 @@ export class PolymarketClobPublicClient {
       });
       if (!response.ok) return null;
       const json = (await response.json()) as Record<string, unknown>;
-      const rawTokens =
-        (json.tokens as Array<Record<string, unknown>> | undefined) ?? [];
+      const rawTokens: unknown[] = Array.isArray(json.tokens) ? json.tokens : [];
+      const tokens = rawTokens.every(
+        (token): token is MarketResolutionInput["tokens"][number] =>
+          typeof token === "object" &&
+          token !== null &&
+          "token_id" in token &&
+          typeof token.token_id === "string" &&
+          token.token_id.length > 0 &&
+          "winner" in token &&
+          typeof token.winner === "boolean"
+      )
+        ? rawTokens.map((token) => ({
+            token_id: token.token_id,
+            winner: token.winner,
+          }))
+        : [];
       return {
-        closed: Boolean(json.closed),
-        tokens: rawTokens.map((t) => ({
-          token_id: String(t.token_id),
-          // Only the literal boolean is authority. String coercion would turn
-          // `"false"` into true and could fabricate a settled $1 mark.
-          winner: t.winner === true,
-        })),
+        closed: json.closed === true,
+        tokens:
+          new Set(tokens.map((token) => token.token_id)).size === tokens.length
+            ? tokens
+            : [],
       };
     } catch {
       return null;

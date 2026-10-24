@@ -49,6 +49,7 @@ import {
   createPolyBrainGraph,
   POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
   POLY_BRAIN_GRAPH_NAME,
+  POLY_LANGGRAPH_CATALOG,
 } from "@cogni/poly-graphs";
 
 import type { LangGraphCatalog } from "@/adapters/server/ai/langgraph/catalog";
@@ -79,6 +80,7 @@ export const POLY_BRAIN_NODE_TOOL_IDS: readonly string[] = [
  */
 export const POLY_NODE_LANGGRAPH_CATALOG: LangGraphCatalog<CreateGraphFn> = {
   ...(LANGGRAPH_CATALOG as LangGraphCatalog<CreateGraphFn>),
+  "work-prioritizer": POLY_LANGGRAPH_CATALOG["work-prioritizer"]!,
   [POLY_BRAIN_GRAPH_NAME]: {
     displayName: "Poly Brain",
     description:

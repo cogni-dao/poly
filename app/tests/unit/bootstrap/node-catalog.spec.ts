@@ -53,8 +53,9 @@ describe("this node's langgraph catalog", () => {
     for (const graphName of Object.keys(LANGGRAPH_CATALOG)) {
       expect(POLY_NODE_LANGGRAPH_CATALOG[graphName]).toBeDefined();
     }
+    expect(POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.graphFactory).toBeTypeOf("function");
     expect(Object.keys(POLY_NODE_LANGGRAPH_CATALOG)).toHaveLength(
-      Object.keys(LANGGRAPH_CATALOG).length + 1
+      Object.keys(LANGGRAPH_CATALOG).length + 2
     );
   });
 

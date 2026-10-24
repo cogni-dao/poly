@@ -254,7 +254,10 @@ export async function runMarketOutcomeTick(
       (t) => t.token_id === row.token_id
     );
     if (!tokenEntry) return [];
-    const outcome: UpsertRow["outcome"] = !resolution.closed
+    const resolved =
+      resolution.closed &&
+      resolution.tokens.filter((token) => token.winner).length === 1;
+    const outcome: UpsertRow["outcome"] = !resolved
       ? "unknown"
       : tokenEntry.winner
         ? "winner"
@@ -265,7 +268,7 @@ export async function runMarketOutcomeTick(
         tokenId: row.token_id,
         outcome,
         payout: null,
-        resolvedAt: resolution.closed ? new Date() : null,
+        resolvedAt: resolved ? new Date() : null,
         raw: resolution as unknown as Record<string, unknown>,
       },
     ];
