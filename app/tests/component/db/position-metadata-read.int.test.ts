@@ -867,8 +867,8 @@ describe("saved metadata publication and indexed exact identity reads", () => {
         'BUY',.4,1,.4,${at(15)}::timestamptz-(n||' seconds')::interval,
         CASE WHEN n=80 THEN '{"title":"Deep saved title"}'::jsonb ELSE '{}'::jsonb END
       FROM poly_trader_wallets w CROSS JOIN generate_series(1,5080) n WHERE w.wallet_address=${wallet}`);
-    await db.execute(sql`ANALYZE poly_trader_position_snapshots`);
-    await db.execute(sql`ANALYZE poly_trader_fills`);
+    await getAppDb().execute(sql`ANALYZE poly_trader_position_snapshots`);
+    await getAppDb().execute(sql`ANALYZE poly_trader_fills`);
     const query = positionMetadataSelect([
       { conditionId: planCondition, tokenId, wallet },
     ]);
