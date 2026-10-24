@@ -784,7 +784,6 @@ class Sidecar:
                         "errClass": type(error).__name__,
                         "order_id": order_id,
                     },
-                    exc_info=True,
                 )
                 raise self._withhold(
                     close=getattr(error, "reason", None) != "dirty_entry"
