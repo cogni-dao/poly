@@ -39,7 +39,7 @@ const MIGRATIONS_DIR = path.resolve(
 	"app/src/adapters/server/db/doltgres-migrations",
 );
 const DOLTGRES_IMAGE = "dolthub/doltgresql:0.57.3";
-const DB_NAME = "knowledge_poly_work_items";
+const DB_NAME = "knowledge_poly_test";
 const PASSWORD = "doltgres";
 
 describe("Doltgres 0.57.3 work-item acceptance", () => {

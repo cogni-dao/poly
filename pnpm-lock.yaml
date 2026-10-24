@@ -498,6 +498,9 @@ importers:
       '@cogni/langgraph-graphs':
         specifier: workspace:*
         version: link:../packages/langgraph-graphs
+      '@cogni/local-ai-tools':
+        specifier: workspace:@cogni/ai-tools@*
+        version: link:../packages/ai-tools
       '@cogni/node-contracts':
         specifier: workspace:*
         version: link:../packages/node-contracts

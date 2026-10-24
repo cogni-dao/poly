@@ -35,7 +35,8 @@
     "@langchain/langgraph": "^1.0.7",
     "zod": "^3.24.0",
     "@cogni/shared-langgraph-graphs": "https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.1.1/cogni-dao-langgraph-graphs-0.1.1.tgz",
-    "@cogni/ai-core": "workspace:*"
+    "@cogni/ai-core": "workspace:*",
+    "@cogni/local-ai-tools": "workspace:@cogni/ai-tools@*"
   },
   "devDependencies": {
     "tsup": "^8.5.1",

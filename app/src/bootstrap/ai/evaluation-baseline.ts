@@ -12,9 +12,7 @@ const baselineIds = new Set([
 const localById = new Map(CORE_TOOL_BUNDLE.map((tool) => [tool.contract.name, tool]));
 const replacements = SHARED_TOOL_BUNDLE.filter((tool) => baselineIds.has(tool.contract.name)).map((shared) => {
   const local = localById.get(shared.contract.name);
-  return local?.contract.requires === undefined ? shared : {
-    ...shared, contract: { ...shared.contract, requires: local.contract.requires },
-  };
+  return local ? { ...shared, contract: { ...local.contract, ...shared.contract } } : shared;
 });
 export const POLY_CORE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
   ...CORE_TOOL_BUNDLE.filter((tool) => !baselineIds.has(tool.contract.name)), ...replacements,
