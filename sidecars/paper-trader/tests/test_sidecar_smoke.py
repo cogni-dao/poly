@@ -43,6 +43,29 @@ os.environ.setdefault("PAPER_CHECK_ORDERS_INTERVAL_SECONDS", "0.1")
 os.environ.setdefault("PM_TRADER_DATA_DIR", "/tmp/pm_trader-test")
 
 
+class FakeStartupDatabase:
+    """Startup wiring only; real SQLite preservation has a separate suite."""
+
+    def __init__(self) -> None:
+        self.conn = self
+        self.account = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, _sql):
+        return self
+
+    def fetchone(self):
+        return None
+
+    def get_account(self):
+        return self.account
+
+
 class FakeEngine:
     """In-memory stub of `pm_trader.engine.Engine` — just enough surface for
     the sidecar to exercise place / cancel / get / fill-loop semantics."""
@@ -55,9 +78,11 @@ class FakeEngine:
         # test setup) get filled on the next check_orders tick. Default: empty.
         self.fill_on_next_check: set[int] = set()
         self.init_account_called = False
+        self.db = FakeStartupDatabase()
 
     def init_account(self, balance: float) -> dict[str, Any]:
         self.init_account_called = True
+        self.db.account = types.SimpleNamespace(starting_balance=balance, cash=balance)
         return {"balance": balance}
 
     def place_limit_order(

@@ -69,6 +69,14 @@ _PERMANENT_ORDER_ERRORS = (
 )
 
 
+class NativeAccountUnavailableError(RuntimeError):
+    """Native effects cannot safely be retried or reported by this account."""
+
+    def __init__(self, reason: str = "mutation_ambiguous") -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 class Engine:
     """Paper trading engine — 1:1 faithful to Polymarket execution."""
 
@@ -107,6 +115,10 @@ class Engine:
     # ------------------------------------------------------------------
     # Validation helpers
     # ------------------------------------------------------------------
+
+    def _require_clean(self, reason: str = "mutation_ambiguous") -> None:
+        if self.db.conn.in_transaction:
+            raise NativeAccountUnavailableError(reason)
 
     def _require_account(self) -> Account:
         return self.get_account()
@@ -465,11 +477,16 @@ class Engine:
         return [_order_to_dict(o) for o in orders]
 
     def cancel_limit_order(self, order_id: int) -> dict | None:
-        """Cancel a pending limit order."""
-        order = cancel_order(self.db.conn, order_id)
-        if order is None:
-            return None
-        return _order_to_dict(order)
+        """Cancel only from a clean connection; uncertain writes are fatal."""
+        self._require_clean("dirty_entry")
+        try:
+            order = cancel_order(self.db.conn, order_id)
+            self._require_clean()
+            return _order_to_dict(order) if order is not None else None
+        except NativeAccountUnavailableError:
+            raise
+        except Exception as error:
+            raise NativeAccountUnavailableError() from error
 
     def check_orders(self) -> list[dict]:
         """Check all pending orders against live prices and execute fills.
@@ -494,11 +511,16 @@ class Engine:
            size at crossing levels (bug.5016). Guarantees no "price-through"
            fills.
         """
+        self._require_clean("dirty_entry")
         self._require_account()
         results = []
 
         # First expire any GTD orders past their deadline
-        expired = expire_orders(self.db.conn)
+        try:
+            expired = expire_orders(self.db.conn)
+            self._require_clean()
+        except Exception as error:
+            raise NativeAccountUnavailableError() from error
         for o in expired:
             results.append({"order": _order_to_dict(o), "action": "expired"})
 
@@ -506,9 +528,15 @@ class Engine:
         # matched by ambient taker flow during the polling interval. Orders
         # filled here are skipped by the snapshot loop below.
         pending = get_pending_orders(self.db.conn)
+        maker_results_start = len(results)
         try:
             filled_via_maker = self._apply_maker_fills(pending, results)
-        except Exception:
+        except NativeAccountUnavailableError:
+            raise
+        except Exception as error:
+            self._require_clean()
+            if len(results) != maker_results_start:
+                raise NativeAccountUnavailableError() from error
             # Don't let maker-fill failures abort the loop — snapshot path
             # still runs for every order this tick. Log the exception so a
             # consistently-throwing maker pass surfaces in Loki rather than
@@ -525,6 +553,7 @@ class Engine:
                 token_id = market.get_token_id(order.outcome)
                 book = self.api.get_order_book(token_id)
                 fee_rate_bps = self.api.get_fee_rate(token_id)
+                self._require_clean()
 
                 # Cogni-poly local patch (bug.5016). When the snapshot crosses
                 # our limit, fill at ``order.limit_price``, not at the observed
@@ -570,35 +599,67 @@ class Engine:
                 if not fill.filled and not fill.is_partial:
                     continue  # No fillable liquidity within limit
 
-                # Execute the fill through normal trade recording
-                if order.side == "buy":
-                    trade = self._execute_limit_buy(market, order, fill, fee_rate_bps)
-                else:
-                    trade = self._execute_limit_sell(market, order, fill, fee_rate_bps)
+                self._require_clean()
+                conn = self.db.conn
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                except Exception:
+                    self._require_clean()
+                    raise
+                try:
+                    if order.side == "buy":
+                        trade = self._execute_limit_buy(market, order, fill, fee_rate_bps)
+                    else:
+                        trade = self._execute_limit_sell(market, order, fill, fee_rate_bps)
 
-                updated = mark_filled(self.db.conn, order.id)
-                # bug.5018 — surface realized fill data on the result entry so
-                # the sidecar's fill loop can populate OrderReceipt.fill_price
-                # / total_shares / fees_usdc without a follow-up history lookup.
-                results.append({
-                    "order": _order_to_dict(updated),
-                    "action": "filled",
-                    "fill": {
-                        "avg_price": trade.avg_price,
-                        "total_shares": trade.shares,
-                        "fee": trade.fee,
-                        "amount_usd": trade.amount_usd,
-                    },
-                })
+                    updated = mark_filled(conn, order.id)
+                    # bug.5018 — surface realized fill data on the result entry so
+                    # the sidecar's fill loop can populate OrderReceipt.fill_price
+                    # / total_shares / fees_usdc without a follow-up history lookup.
+                    result = {
+                        "order": _order_to_dict(updated),
+                        "action": "filled",
+                        "fill": {
+                            "avg_price": trade.avg_price,
+                            "total_shares": trade.shares,
+                            "fee": trade.fee,
+                            "amount_usd": trade.amount_usd,
+                        },
+                    }
+                except Exception:
+                    try:
+                        conn.rollback()
+                        self._require_clean()
+                    except Exception as error:
+                        raise NativeAccountUnavailableError() from error
+                    raise
+                try:
+                    conn.commit()
+                    self._require_clean()
+                except Exception as error:
+                    raise NativeAccountUnavailableError() from error
+                try:
+                    results.append(result)
+                except Exception as error:
+                    raise NativeAccountUnavailableError() from error
+            except NativeAccountUnavailableError:
+                raise
             except _PERMANENT_ORDER_ERRORS as e:
+                self._require_clean()
                 # Permanent failure — mark rejected so it's not retried
-                updated = reject_order(self.db.conn, order.id)
-                results.append({
-                    "order": _order_to_dict(updated),
-                    "action": "rejected",
-                    "reason": str(e),
-                })
+                try:
+                    updated = reject_order(self.db.conn, order.id)
+                    self._require_clean()
+                    results.append({
+                        "order": _order_to_dict(updated),
+                        "action": "rejected",
+                        "reason": str(e),
+                    })
+                except Exception as error:
+                    raise NativeAccountUnavailableError() from error
+
             except Exception:
+                self._require_clean()
                 continue  # Transient errors (network, API) — retry next check
 
         return results
@@ -648,7 +709,11 @@ class Engine:
                 market = self.api.get_market(market_slug)
                 token_id = market.get_token_id(outcome)
                 fee_rate_bps = self.api.get_fee_rate(token_id)
+                self._require_clean()
+            except NativeAccountUnavailableError:
+                raise
             except Exception:
+                self._require_clean()
                 # Snapshot path will retry on this token; we just skip
                 # the maker pre-pass for it this tick.
                 _log.exception(
@@ -680,7 +745,11 @@ class Engine:
                     token_id=token_id,
                     since_ts=since_ts,
                 )
+                self._require_clean()
+            except NativeAccountUnavailableError:
+                raise
             except Exception:
+                self._require_clean()
                 # Data-API down or rate-limited. Advance the cursor by the
                 # bounded amount, then fall through to snapshot for this
                 # token. Log so persistent failures show up in Loki.
@@ -821,38 +890,71 @@ class Engine:
                     # fills so trade rows, position deltas, and cash
                     # accounting are identical in shape.
                     try:
-                        if order.side == "buy":
-                            trade = self._execute_limit_buy(
-                                market, order, fill, fee_rate_bps
-                            )
-                        else:
-                            trade = self._execute_limit_sell(
-                                market, order, fill, fee_rate_bps
-                            )
-                        updated = mark_filled(self.db.conn, order.id)
-                        filled_ids.add(order.id)
-                        # bug.5018 — see snapshot pass above; same shape.
-                        results.append({
-                            "order": _order_to_dict(updated),
-                            "action": "filled",
-                            "fill": {
-                                "avg_price": trade.avg_price,
-                                "total_shares": trade.shares,
-                                "fee": trade.fee,
-                                "amount_usd": trade.amount_usd,
-                            },
-                        })
+                        self._require_clean()
+                        conn = self.db.conn
+                        try:
+                            conn.execute("BEGIN IMMEDIATE")
+                        except Exception:
+                            self._require_clean()
+                            raise
+                        try:
+                            if order.side == "buy":
+                                trade = self._execute_limit_buy(
+                                    market, order, fill, fee_rate_bps
+                                )
+                            else:
+                                trade = self._execute_limit_sell(
+                                    market, order, fill, fee_rate_bps
+                                )
+                            updated = mark_filled(conn, order.id)
+                            # bug.5018 — see snapshot pass above; same shape.
+                            result = {
+                                "order": _order_to_dict(updated),
+                                "action": "filled",
+                                "fill": {
+                                    "avg_price": trade.avg_price,
+                                    "total_shares": trade.shares,
+                                    "fee": trade.fee,
+                                    "amount_usd": trade.amount_usd,
+                                },
+                            }
+                        except Exception:
+                            try:
+                                conn.rollback()
+                                self._require_clean()
+                            except Exception as error:
+                                raise NativeAccountUnavailableError() from error
+                            raise
+                        try:
+                            conn.commit()
+                            self._require_clean()
+                        except Exception as error:
+                            raise NativeAccountUnavailableError() from error
+                        try:
+                            results.append(result)
+                            filled_ids.add(order.id)
+                        except Exception as error:
+                            raise NativeAccountUnavailableError() from error
+                    except NativeAccountUnavailableError:
+                        raise
                     except _PERMANENT_ORDER_ERRORS as e:
-                        updated = reject_order(self.db.conn, order.id)
-                        # Mark as handled so the snapshot path doesn't retry
-                        # and double-reject.
-                        filled_ids.add(order.id)
-                        results.append({
-                            "order": _order_to_dict(updated),
-                            "action": "rejected",
-                            "reason": str(e),
-                        })
+                        self._require_clean()
+                        try:
+                            updated = reject_order(self.db.conn, order.id)
+                            self._require_clean()
+                            # Mark as handled so the snapshot path doesn't retry
+                            # and double-reject.
+                            filled_ids.add(order.id)
+                            results.append({
+                                "order": _order_to_dict(updated),
+                                "action": "rejected",
+                                "reason": str(e),
+                            })
+                        except Exception as error:
+                            raise NativeAccountUnavailableError() from error
+
                     except Exception:
+                        self._require_clean()
                         # Transient — leave the order unfilled, snapshot
                         # path may pick it up this tick or it'll be retried
                         # next tick. Log so we can tell "every tick throws"
