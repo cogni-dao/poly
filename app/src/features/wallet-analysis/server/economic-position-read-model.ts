@@ -433,40 +433,31 @@ export function buildEconomicPositionProjectionQuery(
         cf.raw AS current_raw,
         cf.raw->>'outcome' AS current_outcome_label,
         cf.raw->>'endDate' AS current_resolves_at,
-        cf.current_identity_conflict
-      FROM driven_keys k
-      LEFT JOIN position_flows pf USING (condition_id, token_id)
-      LEFT JOIN paper_position_fees paper_fees USING (condition_id, token_id)
-      LEFT JOIN fill_conflicted_keys ck USING (condition_id, token_id)
-      LEFT JOIN outcome_consensus oc USING (condition_id, token_id)
-      LEFT JOIN current_facts cf USING (condition_id, token_id)
-      LEFT JOIN history_facts hf USING (condition_id, token_id)
-    ), generation_authority AS (
-      SELECT b.*,
+        cf.current_identity_conflict,
         /* A retained positive is not an observation of a newer publication.
            Keep the selected physical cursor association; an eligible sibling
            cannot lend it authority. MAX deliberately includes future clocks:
            overwritten authority cannot reconstruct an earlier capture. */
         (CASE WHEN ${mode} = 'paper' THEN (SELECT inventory_complete FROM paper_coverage)
-          AND b.current_raw->>'source' = 'paper-ledger' AND b.current_shares = b.net_shares
-          AND b.current_last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND cf.raw->>'source' = 'paper-ledger' AND cf.shares = (pf.total_buy_shares - pf.total_sell_shares)
+          AND cf.last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
           AND observer.latest_generation_at <= ${params.capturedAt.toISOString()}::timestamptz
           AND NOT EXISTS (
             SELECT 1 FROM poly_trader_current_positions future
             JOIN wallet_identity w ON w.id = future.trader_wallet_id
-            WHERE lower(future.condition_id) = b.condition_id
-              AND future.token_id = b.token_id
+            WHERE lower(future.condition_id) = k.condition_id
+              AND future.token_id = k.token_id
               AND future.last_observed_at > ${params.capturedAt.toISOString()}::timestamptz
           )
-          ELSE b.current_shares = 0 OR COALESCE((
-          b.current_last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+          ELSE cf.shares = 0 OR COALESCE((
+          cf.last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
           AND observer.latest_generation_at <= ${params.capturedAt.toISOString()}::timestamptz
-          AND b.current_last_observed_at >= observer.latest_generation_at
+          AND cf.last_observed_at >= observer.latest_generation_at
           AND NOT EXISTS (
             SELECT 1 FROM poly_trader_current_positions future
             JOIN wallet_identity w ON w.id = future.trader_wallet_id
-            WHERE lower(future.condition_id) = b.condition_id
-              AND future.token_id = b.token_id
+            WHERE lower(future.condition_id) = k.condition_id
+              AND future.token_id = k.token_id
               AND future.last_observed_at > ${params.capturedAt.toISOString()}::timestamptz
           )
           AND EXISTS (
@@ -474,14 +465,20 @@ export function buildEconomicPositionProjectionQuery(
             JOIN poly_trader_ingestion_cursors cursor
               ON cursor.trader_wallet_id = selected.id
              AND cursor.source = 'data-api-positions'
-            WHERE selected.id = b.chosen_wallet_id
+            WHERE selected.id = cf.chosen_wallet_id
               AND cursor.status = 'ok'
               AND cursor.last_success_at IS NOT NULL
               AND cursor.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
-              AND b.current_last_observed_at >= cursor.last_success_at
+              AND cf.last_observed_at >= cursor.last_success_at
           )
         ), false) END) AS live_positive_current_currency
-      FROM economic_position_base b
+      FROM driven_keys k
+      LEFT JOIN position_flows pf USING (condition_id, token_id)
+      LEFT JOIN paper_position_fees paper_fees USING (condition_id, token_id)
+      LEFT JOIN fill_conflicted_keys ck USING (condition_id, token_id)
+      LEFT JOIN outcome_consensus oc USING (condition_id, token_id)
+      LEFT JOIN current_facts cf USING (condition_id, token_id)
+      LEFT JOIN history_facts hf USING (condition_id, token_id)
       CROSS JOIN observer_summary observer
     ), event_authority AS (
       SELECT b.*,
@@ -501,7 +498,7 @@ export function buildEconomicPositionProjectionQuery(
               ELSE true END END
           ELSE true
         END AS current_after_economic_event
-      FROM generation_authority b
+      FROM economic_position_base b
     ), classified_raw AS MATERIALIZED (
       SELECT
         b.*,
