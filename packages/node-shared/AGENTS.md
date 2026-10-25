@@ -74,3 +74,5 @@ pnpm --filter @cogni/node-shared build
 - Extracted from `apps/operator/src/shared/` (task.0248 Phase 1b)
 - App-local files remain in each app's `src/shared/`: env, db, hooks, config server, model-catalog, wagmi, evm-wagmi, onchain, logger, metrics, redact, cn
 - Mixed barrels (`@/shared/observability`, `@/shared/web3`, `@/shared/util`) re-export from both local files and `@cogni/node-shared`
+
+Owned schedule detail/history and saved-thread reads use registered metadata-only events (`SCHEDULE_DETAIL_READ`, `SCHEDULE_HISTORY_READ`, `AI_THREAD_READ`) with request identity and terminal outcome.
