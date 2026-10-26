@@ -123,11 +123,13 @@ def cancel_order(conn: sqlite3.Connection, order_id: int) -> LimitOrder | None:
 
 def mark_filled(conn: sqlite3.Connection, order_id: int) -> LimitOrder:
     """Mark an order as filled."""
+    owns_transaction = not conn.in_transaction
     conn.execute(
         "UPDATE limit_orders SET status = 'filled', filled_at = datetime('now') WHERE id = ?",
         (order_id,),
     )
-    conn.commit()
+    if owns_transaction:
+        conn.commit()
     return _get_order(conn, order_id)
 
 

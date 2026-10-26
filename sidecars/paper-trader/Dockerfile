@@ -65,5 +65,6 @@ ENV PAPER_CHECK_ORDERS_INTERVAL_SECONDS=0.1
 # `pm_trader.engine` via `sys.modules` at import time, which would poison the
 # subsequent real-Engine maker-fill tests if they shared a process. Separate
 # processes = clean import state for each suite.
-RUN pytest -q /app/tests \
-  && pytest -q /app/vendor/pm_trader/tests/test_check_orders_maker_fill.py
+RUN pytest -q /app/tests --ignore=/app/tests/test_sidecar_account_native.py \
+  && pytest -q /app/vendor/pm_trader/tests/test_check_orders_maker_fill.py \
+    /app/tests/test_sidecar_account_native.py
