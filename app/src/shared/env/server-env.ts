@@ -101,12 +101,12 @@ export const serverSchema = z.object({
   // Three pools per pod: app (RLS), service (jobs/writers), service-read
   // (dashboard/research reads off a separate BYPASSRLS pool so jobs can't
   // starve them). Worst-case backends per pod = sum of the three (defaults
-  // 10 + 10 + 5 = 25); size against Postgres max_connections. Backend math
+  // 1 + 10 + 5 = 16); size against Postgres max_connections. Backend math
   // lives in packages/db-client/src/build-client.ts.
   // emptyToUndefined: compose passes "" through for unset vars — treat as default.
   DB_POOL_MAX: z.preprocess(
     emptyToUndefined,
-    z.coerce.number().int().positive().default(10)
+    z.coerce.number().int().positive().default(1)
   ),
   DB_SERVICE_POOL_MAX: z.preprocess(
     emptyToUndefined,
