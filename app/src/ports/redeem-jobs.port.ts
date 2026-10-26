@@ -93,16 +93,17 @@ export class RedeemJobNotFoundPortError extends Error {
 export interface RedeemJobsPort {
   /**
    * UPSERT a job row. Returns `alreadyExisted: true` if a row already exists
-   * for `(funder_address, condition_id)`. A current `winner` enqueue may
-   * revive an existing `skipped` row to `pending`; skipped rows are read-model
-   * classifications, not proof that a later chain-authoritative winner
-   * decision should be ignored.
+   * for `(funder_address, condition_id)`, preserving its status and evidence.
+   * Existing keys are never revived, including genuine re-acquisitions or
+   * previously skipped/abandoned winners; their recovery remains held.
    */
   enqueue(input: EnqueueRedeemJobInput): Promise<EnqueueRedeemJobResult>;
 
   /**
-   * Atomically claim the next `pending`, `failed_transient`, or stale `claimed`
-   * row for `funderAddress` using `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1`.
+   * Atomically claim only the next `pending` row for `funderAddress` using
+   * `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1`. Failed and claimed rows
+   * remain held regardless of attempts or age: neither proves non-submission.
+   * This also stops ordinary retry and unsent-crash automatic recovery.
    * Two concurrent workers — even for the same funder — never claim the same
    * row. Cross-tenant claims are impossible because the predicate is
    * funder-scoped: a worker bound to funder A never picks up a job for funder B
@@ -133,7 +134,7 @@ export interface RedeemJobsPort {
   markTransientFailure(input: { jobId: string; error: string }): Promise<void>;
 
   /**
-   * RPC-infrastructure failure — defers the row to `failed_transient`
+   * RPC-infrastructure failure — holds the row in `failed_transient`
    * without bumping `attempt_count`. Counterpart to `markTransientFailure`,
    * which does bump.
    */

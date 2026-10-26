@@ -74,9 +74,13 @@ import {
   runRedeemDiffTick,
 } from "@/features/redeem";
 import type { LedgerLifecycleMirrorPort } from "@/features/redeem/mirror-ledger-lifecycle";
+import type { RedeemWorkerDeps } from "@/features/redeem/redeem-worker";
 import type { RedeemJobsPort } from "@/ports";
 import { EVENT_NAMES } from "@/shared/observability/events";
-import { createOfficialDepositWalletClient } from "./poly-trader-wallet";
+import {
+  createOfficialDepositWalletClient,
+  redeemOfficialDepositWalletCtf,
+} from "./poly-trader-wallet";
 
 const REDEEM_POLL_INTERVAL_MS = 10 * 60 * 1000;
 const REDEEM_WORKER_DRAIN_INTERVAL_MS = 5_000;
@@ -228,25 +232,19 @@ async function startOneTenantPipeline(
   let depositClientPromise:
     | ReturnType<typeof createOfficialDepositWalletClient>
     | undefined;
-  const redeemPosition = usesDepositWallet
-    ? async (positionId: string): Promise<`0x${string}`> => {
+  const redeemPosition: RedeemWorkerDeps["redeemPosition"] = usesDepositWallet
+    ? async (job, args) => {
         depositClientPromise ??= createOfficialDepositWalletClient({
           signer: signing.account,
           clobCreds: signing.clobCreds,
           polygonRpcUrl: deps.polygonRpcUrl,
         });
-        const { depositClient } = await depositClientPromise;
-        if (
-          depositClient.account.wallet.toLowerCase() !==
-          funderAddress.toLowerCase()
-        ) {
-          throw new Error(
-            "redeem pipeline: derived Deposit Wallet does not match persisted funder"
-          );
-        }
-        const handle = await depositClient.redeemPositions({ positionId });
-        const outcome = await handle.wait();
-        return outcome.transactionHash;
+        return redeemOfficialDepositWalletCtf(await depositClientPromise, {
+          expectedFunderAddress: funderAddress,
+          conditionId: job.conditionId,
+          collateralToken: job.collateralToken,
+          ...args,
+        });
       }
     : undefined;
 

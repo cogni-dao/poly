@@ -1,8 +1,17 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
+import {
+	POLYGON_NEG_RISK_ADAPTER,
+	polymarketNegRiskAdapterAbi,
+} from "@cogni/poly-market-provider/adapters/polymarket";
+import {
+	encodeAbiParameters,
+	encodeEventTopics,
+	parseAbiParameters,
+} from "viem";
 import { describe, expect, it, vi } from "vitest";
-import type { RedeemJob } from "@/core";
+import { type RedeemJob, RedeemSubmissionError } from "@/core";
 import { RedeemWorker } from "@/features/redeem";
 
 const FUNDER = "0x1111111111111111111111111111111111111111" as `0x${string}`;
@@ -37,55 +46,474 @@ function claimedJob(): RedeemJob {
 	};
 }
 
-describe("RedeemWorker V2 Deposit Wallet", () => {
-	it("routes redemption through the injected gasless action", async () => {
+function fixture(job = claimedJob(), failure?: Error, funderAddress = FUNDER) {
+	let current: RedeemJob | null = job;
+	const redeemPosition = vi.fn(async () => {
+		if (failure) throw failure;
+		return TX_HASH;
+	});
+	const markSubmitted = vi.fn(async () => {
+		current = null;
+	});
+	const markAbandoned = vi.fn(async () => {
+		current = null;
+	});
+	const markTransientFailure = vi.fn(async () => {
+		job.attemptCount++;
+	});
+	const markRpcDeferred = vi.fn(async () => undefined);
+	const markConfirmed = vi.fn();
+	const setLifecycleState = vi.fn();
+	const markPositionLifecycleByAsset = vi.fn(async () => 1);
+	const publicClient = {
+		readContract: vi.fn(async () => 7_000_000n),
+		waitForTransactionReceipt: vi.fn(async () => {
+			throw new Error("receipt pending");
+		}),
+		getTransactionReceipt: vi.fn(async () => {
+			throw new Error("receipt pending");
+		}),
+		getBlockNumber: vi.fn(async () => 10n),
+		getLogs: vi.fn(async () => [] as unknown[]),
+	};
+	const redeemJobs = {
+		claimNextPending: vi.fn(async () => current),
+		claimReaperCandidates: vi.fn(async () => [] as RedeemJob[]),
+		markSubmitted,
+		markAbandoned,
+		markTransientFailure,
+		markRpcDeferred,
+		markConfirmed,
+		setLifecycleState,
+	};
+	const writeContract = vi.fn();
+	const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+	const worker = new RedeemWorker({
+		redeemJobs: redeemJobs as never,
+		orderLedger: { markPositionLifecycleByAsset },
+		billingAccountId: "billing-1",
+		publicClient: publicClient as never,
+		walletClient: { writeContract } as never,
+		funderAddress,
+		account: {} as never,
+		redeemPosition,
+		logger,
+		finalityBlocks: 5n,
+		tickIntervalMs: 5_000,
+		reaperIntervalMs: 0,
+	});
+	return {
+		worker,
+		redeemPosition,
+		redeemJobs,
+		publicClient,
+		writeContract,
+		logger,
+		markPositionLifecycleByAsset,
+	};
+}
+
+describe("RedeemWorker Deposit Wallet legacy dispatch", () => {
+	it.each(["binary", "multi-outcome"] as const)(
+		"preserves %s job and prepared index sets",
+		async (flavor) => {
+			const job = { ...claimedJob(), flavor, indexSet: ["1", "4", "8"] };
+			const f = fixture(job);
+			await f.worker.tick();
+			expect(f.redeemPosition).toHaveBeenCalledWith(job, {
+				kind: "ctf",
+				indexSets: [1n, 4n, 8n],
+			});
+			expect(f.writeContract).not.toHaveBeenCalled();
+			expect(f.redeemJobs.markSubmitted).toHaveBeenCalledWith({
+				jobId: job.id,
+				txHash: TX_HASH,
+				submittedAtBlock: null,
+				receiptBurnObserved: false,
+			});
+			expect(f.redeemJobs.markConfirmed).not.toHaveBeenCalled();
+			expect(f.markPositionLifecycleByAsset).toHaveBeenCalledWith(
+				expect.objectContaining({
+					billing_account_id: "billing-1",
+					token_id: job.positionId,
+					lifecycle: "redeem_pending",
+				}),
+			);
+		},
+	);
+
+	it.each([
+		["neg-risk-parent", 0, [7_000_000n, 0n]],
+		["neg-risk-parent", 1, [0n, 7_000_000n]],
+		["neg-risk-adapter", 0, [7_000_000n, 0n]],
+		["neg-risk-adapter", 1, [0n, 7_000_000n]],
+	] as const)(
+		"passes fresh %s outcome %s balances",
+		async (flavor, outcomeIndex, amounts) => {
+			const job = { ...claimedJob(), flavor, outcomeIndex };
+			const f = fixture(job);
+			await f.worker.tick();
+			expect(f.publicClient.readContract).toHaveBeenCalledWith(
+				expect.objectContaining({ args: [FUNDER, BigInt(job.positionId)] }),
+			);
+			expect(f.redeemPosition).toHaveBeenCalledWith(job, {
+				kind: "neg-risk",
+				amounts,
+			});
+			expect(f.writeContract).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["zero balance", "invalid outcome", "wrong funder"])(
+		"never submits %s dispatch",
+		async (kind) => {
+			const job = { ...claimedJob(), flavor: "neg-risk-parent" as const };
+			if (kind === "invalid outcome") job.outcomeIndex = 2;
+			if (kind === "wrong funder")
+				job.funderAddress = "0x3333333333333333333333333333333333333333";
+			const f = fixture(job);
+			if (kind === "zero balance")
+				f.publicClient.readContract.mockResolvedValue(0n);
+			await f.worker.tick();
+			expect(f.redeemPosition).not.toHaveBeenCalled();
+			expect(f.writeContract).not.toHaveBeenCalled();
+			expect(f.redeemJobs.markAbandoned).toHaveBeenCalledWith(
+				expect.objectContaining({ errorClass: "malformed" }),
+			);
+			expect(f.redeemJobs.markSubmitted).not.toHaveBeenCalled();
+		},
+	);
+
+	it("typed local validation abandons once without RPC deferral or settlement", async () => {
+		const f = fixture(
+			claimedJob(),
+			new RedeemSubmissionError("malformed", "unsupported dispatch"),
+		);
+		await f.worker.tick();
+		await f.worker.tick();
+		expect(f.redeemPosition).toHaveBeenCalledOnce();
+		expect(f.redeemJobs.markAbandoned).toHaveBeenCalledWith(
+			expect.objectContaining({ errorClass: "malformed" }),
+		);
+		expect(f.redeemJobs.markRpcDeferred).not.toHaveBeenCalled();
+		expect(f.redeemJobs.markSubmitted).not.toHaveBeenCalled();
+		expect(f.redeemJobs.markConfirmed).not.toHaveBeenCalled();
+	});
+
+	it("bounds explicit service rejection to the existing three failures", async () => {
+		const f = fixture(
+			claimedJob(),
+			new RedeemSubmissionError("submission_rejected", "forbidden"),
+		);
+		for (let i = 0; i < 4; i++) await f.worker.tick();
+		expect(f.redeemPosition).toHaveBeenCalledTimes(3);
+		expect(f.redeemJobs.markTransientFailure).toHaveBeenCalledTimes(2);
+		expect(f.redeemJobs.markAbandoned).toHaveBeenCalledWith(
+			expect.objectContaining({ errorClass: "transient_exhausted" }),
+		);
+		expect(f.redeemJobs.markRpcDeferred).not.toHaveBeenCalled();
+		expect(f.redeemJobs.markSubmitted).not.toHaveBeenCalled();
+		expect(f.redeemJobs.markConfirmed).not.toHaveBeenCalled();
+		expect(f.logger.warn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				error_class: "submission_rejected",
+				consumed_retry_budget: true,
+			}),
+			expect.any(String),
+		);
+	});
+
+	it("transport failures stay deferred without consuming attempts", async () => {
 		const job = claimedJob();
-		const redeemPosition = vi.fn(async () => TX_HASH);
-		const writeContract = vi.fn();
-		const markSubmitted = vi.fn(async () => undefined);
-		const markPositionLifecycleByAsset = vi.fn(async () => 1);
+		const f = fixture(job, new Error("transport timeout"));
+		for (let i = 0; i < 4; i++) await f.worker.tick();
+		expect(f.redeemJobs.markRpcDeferred).toHaveBeenCalledTimes(4);
+		expect(job.attemptCount).toBe(0);
+		expect(f.redeemJobs.markTransientFailure).not.toHaveBeenCalled();
+		expect(f.redeemJobs.markAbandoned).not.toHaveBeenCalled();
+		expect(f.redeemJobs.markSubmitted).not.toHaveBeenCalled();
+	});
 
-		const worker = new RedeemWorker({
-			redeemJobs: {
-				claimNextPending: vi.fn(async () => job),
-				markSubmitted,
-			} as never,
-			orderLedger: { markPositionLifecycleByAsset },
-			billingAccountId: "billing-1",
-			publicClient: {
-				waitForTransactionReceipt: vi.fn(async () => {
-					throw new Error("receipt pending");
+	it("foreign-funder adapter payout cannot confirm the held position", async () => {
+		const job = {
+			...claimedJob(),
+			flavor: "neg-risk-adapter" as const,
+			status: "submitted" as const,
+			submittedAtBlock: 1n,
+			txHashes: [TX_HASH],
+		};
+		const f = fixture(job);
+		f.redeemJobs.claimNextPending.mockResolvedValue(null);
+		f.redeemJobs.claimReaperCandidates.mockResolvedValue([job]);
+		f.publicClient.getLogs.mockResolvedValue([
+			{
+				address: POLYGON_NEG_RISK_ADAPTER,
+				topics: encodeEventTopics({
+					abi: polymarketNegRiskAdapterAbi,
+					eventName: "PayoutRedemption",
+					args: {
+						redeemer: "0x3333333333333333333333333333333333333333",
+						conditionId: job.conditionId,
+					},
 				}),
-				getTransactionReceipt: vi.fn(async () => {
-					throw new Error("receipt pending");
+				data: encodeAbiParameters(parseAbiParameters("uint256[], uint256"), [
+					[7_000_000n, 0n],
+					7_000_000n,
+				]),
+				transactionHash: TX_HASH,
+				removed: false,
+			},
+		]);
+		await f.worker.tick();
+		expect(f.publicClient.getLogs).toHaveBeenCalledWith(
+			expect.objectContaining({ args: { redeemer: FUNDER } }),
+		);
+		expect(f.redeemJobs.markConfirmed).not.toHaveBeenCalled();
+		expect(f.redeemJobs.markAbandoned).toHaveBeenCalledWith(
+			expect.objectContaining({ errorClass: "malformed" }),
+		);
+	});
+});
+
+describe("RedeemWorker reaper funder isolation", () => {
+	it.each(["binary", "neg-risk-parent", "neg-risk-adapter"] as const)(
+		"ignores a foreign %s job before payout or balance reads",
+		async (flavor) => {
+			const foreign = {
+				...claimedJob(),
+				funderAddress: "0x3333333333333333333333333333333333333333" as const,
+				flavor,
+				status: "submitted" as const,
+				submittedAtBlock: 1n,
+				txHashes: [TX_HASH],
+			};
+			const f = fixture();
+			f.redeemJobs.claimNextPending.mockResolvedValue(null);
+			f.redeemJobs.claimReaperCandidates.mockResolvedValue([foreign]);
+			f.publicClient.readContract.mockResolvedValue(0n);
+
+			await f.worker.tick();
+
+			expect(f.redeemJobs.claimReaperCandidates).toHaveBeenCalledWith(10n, 5n);
+			expect(f.publicClient.getLogs).not.toHaveBeenCalled();
+			expect(f.publicClient.readContract).not.toHaveBeenCalled();
+			for (const mutation of [
+				f.redeemJobs.markConfirmed,
+				f.redeemJobs.setLifecycleState,
+				f.redeemJobs.markAbandoned,
+				f.redeemJobs.markSubmitted,
+				f.redeemJobs.markTransientFailure,
+				f.redeemJobs.markRpcDeferred,
+				f.markPositionLifecycleByAsset,
+			]) {
+				expect(mutation).not.toHaveBeenCalled();
+			}
+			expect(f.redeemPosition).not.toHaveBeenCalled();
+			expect(f.writeContract).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["binary", "neg-risk-parent", "neg-risk-adapter"] as const)(
+		"advances only the own %s job when funders share a condition",
+		async (flavor) => {
+			const own = {
+				...claimedJob(),
+				flavor,
+				status: "submitted" as const,
+				submittedAtBlock: 1n,
+				txHashes: [TX_HASH],
+			};
+			const foreign = {
+				...own,
+				id: "foreign-job",
+				funderAddress: "0x3333333333333333333333333333333333333333" as const,
+				positionId: "987654321",
+			};
+			const f = fixture();
+			f.redeemJobs.claimNextPending.mockResolvedValue(null);
+			f.redeemJobs.claimReaperCandidates.mockResolvedValue([foreign, own]);
+			f.publicClient.readContract.mockResolvedValue(0n);
+
+			await f.worker.tick();
+
+			expect(f.publicClient.getLogs).toHaveBeenCalledOnce();
+			expect(f.publicClient.readContract).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ args: [FUNDER, BigInt(own.positionId)] }),
+			);
+			expect(f.redeemJobs.markConfirmed).toHaveBeenCalledExactlyOnceWith({
+				jobId: own.id,
+				txHash: TX_HASH,
+			});
+			expect(f.redeemJobs.setLifecycleState).toHaveBeenCalledExactlyOnceWith({
+				jobId: own.id,
+				lifecycleState: "redeemed",
+			});
+			expect(f.markPositionLifecycleByAsset).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({
+					billing_account_id: "billing-1",
+					token_id: own.positionId,
+					lifecycle: "redeemed",
 				}),
-			} as never,
-			walletClient: { writeContract } as never,
-			funderAddress: FUNDER,
-			account: {} as never,
-			redeemPosition,
-			logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-			finalityBlocks: 5n,
-			tickIntervalMs: 5_000,
-			reaperIntervalMs: Number.MAX_SAFE_INTEGER,
-		});
+			);
+			expect(f.redeemJobs.markAbandoned).not.toHaveBeenCalled();
+			expect(f.redeemJobs.markSubmitted).not.toHaveBeenCalled();
+			expect(f.redeemJobs.markTransientFailure).not.toHaveBeenCalled();
+			expect(f.redeemJobs.markRpcDeferred).not.toHaveBeenCalled();
+			expect(f.redeemPosition).not.toHaveBeenCalled();
+			expect(f.writeContract).not.toHaveBeenCalled();
+		},
+	);
 
-		await worker.tick();
+	it("confirms a valid own payout with case-insensitive funder identity", async () => {
+		const funder = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd" as const;
+		const job = {
+			...claimedJob(),
+			funderAddress: `0x${funder.slice(2).toUpperCase()}` as `0x${string}`,
+			flavor: "neg-risk-adapter" as const,
+			status: "submitted" as const,
+			submittedAtBlock: 1n,
+			txHashes: [TX_HASH],
+		};
+		const f = fixture(job, undefined, funder);
+		f.redeemJobs.claimNextPending.mockResolvedValue(null);
+		f.redeemJobs.claimReaperCandidates.mockResolvedValue([
+			{
+				...job,
+				id: "foreign-job",
+				funderAddress: "0x3333333333333333333333333333333333333333",
+				positionId: "987654321",
+			},
+			job,
+		]);
+		f.publicClient.getLogs.mockResolvedValue([
+			{
+				address: POLYGON_NEG_RISK_ADAPTER,
+				topics: encodeEventTopics({
+					abi: polymarketNegRiskAdapterAbi,
+					eventName: "PayoutRedemption",
+					args: { redeemer: funder, conditionId: job.conditionId },
+				}),
+				data: encodeAbiParameters(parseAbiParameters("uint256[], uint256"), [
+					[7_000_000n, 0n],
+					7_000_000n,
+				]),
+				transactionHash: TX_HASH,
+				removed: false,
+			},
+		]);
 
-		expect(redeemPosition).toHaveBeenCalledWith(job.positionId);
-		expect(writeContract).not.toHaveBeenCalled();
-		expect(markSubmitted).toHaveBeenCalledWith({
+		await f.worker.tick();
+
+		expect(f.publicClient.getLogs).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ args: { redeemer: funder } }),
+		);
+		expect(f.redeemJobs.markConfirmed).toHaveBeenCalledExactlyOnceWith({
 			jobId: job.id,
 			txHash: TX_HASH,
-			submittedAtBlock: null,
-			receiptBurnObserved: false,
 		});
-		expect(markPositionLifecycleByAsset).toHaveBeenCalledWith(
+		expect(f.redeemJobs.setLifecycleState).toHaveBeenCalledExactlyOnceWith({
+			jobId: job.id,
+			lifecycleState: "redeemed",
+		});
+		expect(f.markPositionLifecycleByAsset).toHaveBeenCalledExactlyOnceWith(
 			expect.objectContaining({
 				billing_account_id: "billing-1",
 				token_id: job.positionId,
-				lifecycle: "redeem_pending",
+				lifecycle: "redeemed",
 			}),
 		);
+		expect(f.publicClient.readContract).not.toHaveBeenCalled();
+		expect(f.redeemJobs.markAbandoned).not.toHaveBeenCalled();
+		expect(f.redeemPosition).not.toHaveBeenCalled();
+		expect(f.writeContract).not.toHaveBeenCalled();
 	});
+});
+
+describe("RedeemWorker tick persistence diagnostics", () => {
+	it.each([
+		{
+			phase: "drain",
+			code: "53300",
+			event: "poly.ctf.redeem.worker_drain_error",
+			message: "redeem-worker drain loop error",
+		},
+		{
+			phase: "reap",
+			code: "42501",
+			event: "poly.ctf.redeem.worker_reap_error",
+			message: "redeem-worker reaper loop error",
+		},
+	])(
+		"retains bounded safe cause fields for a $phase failure",
+		async ({ phase, code, event, message }) => {
+			const databaseError = Object.assign(
+				new Error(
+					`database failure password=hidden-password Bearer hidden-bearer ${"diagnostic ".repeat(50)}`,
+				),
+				{ code },
+			);
+			const queryError = new Error(
+				`Failed query: SELECT * FROM jobs WHERE id = 'hidden-job' token=hidden-token ${"query ".repeat(100)}`,
+				{ cause: databaseError },
+			);
+			const claimNextPending = vi.fn(async () => {
+				if (phase === "drain") throw queryError;
+				return null;
+			});
+			const claimReaperCandidates = vi.fn(async () => {
+				if (phase === "reap") throw queryError;
+				return [];
+			});
+			const redeemPosition = vi.fn();
+			const writeContract = vi.fn();
+			const error = vi.fn();
+			const worker = new RedeemWorker({
+				redeemJobs: { claimNextPending, claimReaperCandidates } as never,
+				orderLedger: { markPositionLifecycleByAsset: vi.fn() },
+				billingAccountId: "billing-1",
+				publicClient: { getBlockNumber: vi.fn(async () => 100n) } as never,
+				walletClient: { writeContract } as never,
+				funderAddress: FUNDER,
+				account: {} as never,
+				redeemPosition,
+				logger: { info: vi.fn(), warn: vi.fn(), error },
+				finalityBlocks: 5n,
+				tickIntervalMs: 5_000,
+				reaperIntervalMs: 0,
+			});
+
+			await expect(worker.tick()).resolves.toBeUndefined();
+
+			expect(error).toHaveBeenCalledTimes(1);
+			expect(error).toHaveBeenCalledWith(
+				expect.objectContaining({
+					event,
+					err_class: "Error",
+					err: expect.stringContaining("'<redacted>' token=<redacted>"),
+					cause_class: "Error",
+					cause_code: code,
+					cause_message: expect.stringContaining(
+						"password=<redacted> Bearer <redacted>",
+					),
+				}),
+				message,
+			);
+			const fields = error.mock.calls[0]?.[0];
+			expect(fields.err).toHaveLength(300);
+			expect(fields.cause_message).toHaveLength(300);
+			const serialized = JSON.stringify(fields);
+			for (const secret of [
+				"hidden-job",
+				"hidden-token",
+				"hidden-password",
+				"hidden-bearer",
+			]) {
+				expect(serialized).not.toContain(secret);
+			}
+			expect(claimNextPending).toHaveBeenCalledWith(FUNDER);
+			expect(claimReaperCandidates).toHaveBeenCalledWith(100n, 5n);
+			expect(redeemPosition).not.toHaveBeenCalled();
+			expect(writeContract).not.toHaveBeenCalled();
+		},
+	);
 });
