@@ -6,6 +6,7 @@
  * Purpose: Vitest configuration for component tests using isolated docker testcontainers.
  * Scope: Configures component test environment for tests that use testcontainers. Does not handle unit tests.
  * Invariants: Uses tsconfigPaths plugin for clean `@/core` resolution; loads .env.test for DB connection; anchored at repo root.
+ * Files share one database epoch and must serialize global lifecycle sweeps.
  * Side-effects: process.env (.env.test injection), database connections
  * Notes: Plugin-only approach eliminates manual alias conflicts; explicit tsconfig.base.json reference ensures path accuracy.
  * Links: tsconfig.base.json paths, component test files
@@ -46,6 +47,7 @@ export default defineConfig({
     environment: "node",
     setupFiles: ["./tests/setup.ts"],
     globalSetup: ["./tests/component/setup/testcontainers-postgres.global.ts"],
+    fileParallelism: false,
     sequence: { concurrent: false },
   },
   resolve: {
