@@ -14,7 +14,9 @@
 
 import { createAppDbClient, type Database } from "@cogni/db-client";
 
+import { getNodeId } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env";
+import { EVENT_NAMES, makeLogger } from "@/shared/observability";
 
 export type { Database };
 
@@ -24,12 +26,22 @@ let _db: Database | null = null;
 function createDb(): Database {
   if (!_db) {
     const env = serverEnv();
-    // Pool budget: DB_POOL_MAX (default 10). Backend math: packages/db-client/src/build-client.ts.
+    // Pool budget: DB_POOL_MAX (default 1; explicit overrides are preserved). Backend math: packages/db-client/src/build-client.ts.
     _db = createAppDbClient(env.DATABASE_URL, { max: env.DB_POOL_MAX });
+    // Construction is not a request; this is configuration, not connection success.
+    makeLogger({ nodeId: getNodeId() }).info(
+      {
+        event: EVENT_NAMES.DB_POOL_CONFIGURED,
+        role: "app",
+        requestedMax: env.DB_POOL_MAX,
+        max: env.DB_POOL_MAX,
+        pid: process.pid,
+      },
+      EVENT_NAMES.DB_POOL_CONFIGURED
+    );
   }
   return _db;
 }
 
 // Export lazy database getter to avoid top-level runtime env access
 export const getAppDb = createDb;
-

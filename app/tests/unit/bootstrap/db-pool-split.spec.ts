@@ -64,7 +64,7 @@ describe("DB pool split (task.5014)", { timeout: 30_000 }, () => {
     );
   });
 
-  it("uses default pool sizes (10/10/5) when env vars are unset", async () => {
+  it("uses default pool sizes (1/10/5) when env vars are unset", async () => {
     Object.assign(process.env, BASE_VALID_ENV);
     delete process.env.DB_POOL_MAX;
     delete process.env.DB_SERVICE_POOL_MAX;
@@ -73,7 +73,7 @@ describe("DB pool split (task.5014)", { timeout: 30_000 }, () => {
     const { resolveAppDb, resolveServiceDb, resolveServiceReadDb } =
       await import("@/bootstrap/container");
 
-    expect(resolveAppDb().$client.options.max).toBe(10);
+    expect(resolveAppDb().$client.options.max).toBe(1);
     expect(resolveServiceDb().$client.options.max).toBe(10);
     expect(resolveServiceReadDb().$client.options.max).toBe(5);
   });

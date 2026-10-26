@@ -70,3 +70,5 @@ pnpm db:migrate
 
 - Contains migration files in migrations/ subdirectory
 - Shared by all database adapters (accounts, etc.)
+
+App-role pool defaults to one connection per process; explicit `DB_POOL_MAX` overrides remain authoritative. Construction emits registered `adapter.db_pool.configured` metadata with requested/effective maximum and PID, never DSNs. This bounded default does not prove aggregate native-role budget compliance; service/read/leader pools are unchanged.

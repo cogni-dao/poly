@@ -28,7 +28,7 @@ export default function AppLayout({
   return (
     <SidebarProvider>
       <AppSidebar brandMark={brandMark} />
-      <SidebarInset>
+      <SidebarInset className="min-w-0">
         <AppTopBar />
         <div className="flex flex-1 flex-col overflow-auto">{children}</div>
       </SidebarInset>

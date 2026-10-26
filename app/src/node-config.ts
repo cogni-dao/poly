@@ -14,6 +14,7 @@
 import type { NodeAppConfig } from "@cogni/node-app/extensions";
 import {
   Briefcase,
+  CalendarClock,
   Coins,
   FlaskConical,
   Github,
@@ -28,6 +29,7 @@ export const nodeConfig: NodeAppConfig = {
   navItems: [
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
     { href: "/research", label: "Research", icon: FlaskConical },
+    { href: "/schedules", label: "Schedules", icon: CalendarClock },
     { href: "/work", label: "Work", icon: Briefcase },
     { href: "/gov", label: "Gov", icon: Vote },
     { href: "/credits", label: "Money", icon: Coins },
