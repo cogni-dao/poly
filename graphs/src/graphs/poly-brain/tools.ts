@@ -3,36 +3,44 @@
 
 /**
  * Module: `@cogni/poly-graphs/graphs/poly-brain/tools`
- * Purpose: Tool IDs for poly-brain graph (single source of truth).
+ * Purpose: Tool IDs the poly-brain strategy reviewer can use.
  * Scope: Exports tool capability metadata. Does not enforce policy.
  * Invariants: SINGLE_SOURCE_OF_TRUTH, CAPABILITY_NOT_POLICY.
  * Side-effects: none
- * Links: work/items/task.0230.market-data-package.md
+ * Links: task.1791070993, story.5017
  * @public
  */
 
-import { WEB_SEARCH_NAME } from "@cogni/ai-tools";
 import {
-  MARKET_LIST_NAME,
-  WALLET_TOP_TRADERS_NAME,
-} from "@cogni/poly-ai-tools";
+	EDO_HYPOTHESIZE_NAME,
+	GET_CURRENT_TIME_NAME,
+	KNOWLEDGE_READ_NAME,
+	KNOWLEDGE_SEARCH_NAME,
+	REPO_LIST_NAME,
+	REPO_OPEN_NAME,
+	REPO_SEARCH_NAME,
+	WEB_SEARCH_NAME,
+	WORK_ITEM_QUERY_NAME,
+} from "@cogni/ai-tools";
 
 /**
- * Tool IDs for poly-brain graph.
- * market_list: browse/search live prediction markets
- * wallet_top_traders: scoreboard of top Polymarket wallets by PnL (day/week/month/all)
- * web_search: research events that affect market prices
+ * The graph reads current time, node knowledge, work priorities, repository
+ * evidence, and the web. Its sole write is one falsifiable EDO hypothesis for
+ * the selected next experiment.
  *
- * NOTE: poly_place_trade / poly_list_orders / poly_cancel_order were removed
- * post-Ckpt-3 (bug.0319) — their contracts still live in @cogni/poly-ai-tools
- * but they are absent from POLY_TOOL_BUNDLE pending per-tenant routing through
- * PolyTradeExecutor with actor identity at tool-invocation time. Re-add to
- * POLY_BRAIN_TOOL_IDS only after the trade tools are bound again.
+ * Deliberately absent: knowledge_write, work_item_transition, schedule_manage,
+ * wallet/policy/order/trade tools, and the other EDO mutation tools.
  */
 export const POLY_BRAIN_TOOL_IDS = [
-  MARKET_LIST_NAME,
-  WALLET_TOP_TRADERS_NAME,
-  WEB_SEARCH_NAME,
+	GET_CURRENT_TIME_NAME,
+	KNOWLEDGE_SEARCH_NAME,
+	KNOWLEDGE_READ_NAME,
+	WORK_ITEM_QUERY_NAME,
+	REPO_LIST_NAME,
+	REPO_SEARCH_NAME,
+	REPO_OPEN_NAME,
+	WEB_SEARCH_NAME,
+	EDO_HYPOTHESIZE_NAME,
 ] as const;
 
 export type PolyBrainToolId = (typeof POLY_BRAIN_TOOL_IDS)[number];
