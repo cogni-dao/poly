@@ -147,7 +147,7 @@ describe("session cognition hook", () => {
 		const agents = readFileSync(path.join(REPO_ROOT, "AGENTS.md"), "utf8");
 
 		expect(agents).not.toContain("pnpm codex:cognition:install");
-		expect(agents).toContain("already model-visible before the first reply");
+		expect(agents).toContain("model-visible before normal work");
 	});
 
 	it("presents only to Codex while Claude reads the complete cache import (story.5070)", () => {
