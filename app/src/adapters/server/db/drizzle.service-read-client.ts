@@ -8,7 +8,7 @@
  * dashboard/research queries only — no writes, no background jobs.
  * Invariants:
  * - Same app_service credentials as drizzle.service-client.ts but its OWN connection
- *   budget (DB_READ_POOL_MAX, default 5) and application_name (cogni_service_read),
+ *   budget (DB_READ_POOL_MAX, default 2) and application_name (cogni_service_read),
  *   so background jobs on the main service pool cannot starve dashboard reads (task.5014)
  * - MUST NOT be imported from general src/ code — reach it via
  *   resolveServiceReadDb() in bootstrap/container.ts
@@ -28,7 +28,7 @@ let _serviceReadDb: Database | null = null;
 function createServiceReadDb(): Database {
   if (!_serviceReadDb) {
     const env = serverEnv();
-    // Pool budget: DB_READ_POOL_MAX (default 5). Backend math: packages/db-client/src/build-client.ts.
+    // Pool budget: DB_READ_POOL_MAX (default 2). Backend math: packages/db-client/src/build-client.ts.
     _serviceReadDb = createServiceReadDbClient(env.DATABASE_SERVICE_URL, {
       max: env.DB_READ_POOL_MAX,
     });

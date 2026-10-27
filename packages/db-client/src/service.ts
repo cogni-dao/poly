@@ -15,16 +15,24 @@
  * @public
  */
 
-import {
-  type BuildClientOptions,
-  buildClient,
-  DEFAULT_POOL_MAX,
-} from "./build-client";
+import { type BuildClientOptions, buildClient } from "./build-client";
 
 export type { BuildClientOptions };
 
-/** Default `max` for the service READ pool (smaller: read-only dashboard traffic). */
-export const DEFAULT_READ_POOL_MAX = 5;
+/**
+ * Default `max` for the service (jobs/writers) pool. With the read + leader pools
+ * this fits the service_poly role ceiling 8 (service 4 + read 2 + leader 1 = 7/8)
+ * of the dedicated budget profile (bug.5045). Mirrors the applied env default
+ * (`DB_SERVICE_POOL_MAX`) so package and runtime defaults agree.
+ */
+export const DEFAULT_SERVICE_POOL_MAX = 4;
+
+/**
+ * Default `max` for the service READ pool (smaller: read-only dashboard traffic).
+ * Part of the same service_poly budget (service 4 + read 2 + leader 1 = 7/8) of
+ * the dedicated budget profile (bug.5045).
+ */
+export const DEFAULT_READ_POOL_MAX = 2;
 
 /**
  * Creates a Drizzle database client for the `app_service` role (BYPASSRLS).
@@ -33,14 +41,14 @@ export const DEFAULT_READ_POOL_MAX = 5;
  * Must NOT be used in the Next.js web runtime (enforced by dependency-cruiser).
  *
  * @param options - Pool tuning; `max` is env-derived at the app layer
- *   (`DB_SERVICE_POOL_MAX`, default 10). See build-client.ts header for backend math.
+ *   (`DB_SERVICE_POOL_MAX`, default 4). See build-client.ts header for backend math.
  */
 export function createServiceDbClient(
   connectionString: string,
   options: BuildClientOptions = {}
 ) {
   return buildClient(connectionString, "cogni_service", {
-    max: options.max ?? DEFAULT_POOL_MAX,
+    max: options.max ?? DEFAULT_SERVICE_POOL_MAX,
   });
 }
 
@@ -52,7 +60,7 @@ export function createServiceDbClient(
  * changes for the read path are explicitly out of scope here.
  *
  * @param options - Pool tuning; `max` is env-derived at the app layer
- *   (`DB_READ_POOL_MAX`, default 5). See build-client.ts header for backend math.
+ *   (`DB_READ_POOL_MAX`, default 2). See build-client.ts header for backend math.
  */
 export function createServiceReadDbClient(
   connectionString: string,

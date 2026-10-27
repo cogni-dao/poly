@@ -2792,7 +2792,7 @@ export function resolveServiceDb(): Database {
 
 /**
  * Resolve the service READ pool (BYPASSRLS, same app_service credentials as
- * resolveServiceDb but a separate postgres-js pool: DB_READ_POOL_MAX, default 5,
+ * resolveServiceDb but a separate postgres-js pool: DB_READ_POOL_MAX, default 2,
  * application_name cogni_service_read). Dashboard/research READ routes use this
  * so background jobs cannot starve them (task.5014). Never use for writes/jobs.
  */

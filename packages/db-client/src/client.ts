@@ -38,7 +38,7 @@ export interface LoggerLike {
  * Use this for all user-facing request paths.
  *
  * @param options - Pool tuning; `max` is env-derived at the app layer
- *   (`DB_POOL_MAX`, default 10). See build-client.ts header for backend math.
+ *   (`DB_POOL_MAX`, default 1). See build-client.ts header for backend math.
  */
 export function createAppDbClient(
   connectionString: string,
