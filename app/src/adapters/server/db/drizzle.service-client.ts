@@ -26,7 +26,7 @@ let _serviceDb: Database | null = null;
 function createServiceDb(): Database {
   if (!_serviceDb) {
     const env = serverEnv();
-    // Pool budget: DB_SERVICE_POOL_MAX (default 10). Backend math: packages/db-client/src/build-client.ts.
+    // Pool budget: DB_SERVICE_POOL_MAX (default 4). Backend math: packages/db-client/src/build-client.ts.
     _serviceDb = createServiceDbClient(env.DATABASE_SERVICE_URL, {
       max: env.DB_SERVICE_POOL_MAX,
     });

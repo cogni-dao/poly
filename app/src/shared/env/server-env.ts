@@ -97,12 +97,18 @@ export const serverSchema = z.object({
   // app_service role (BYPASSRLS) — used by auth, workers, bootstrap
   DATABASE_SERVICE_URL: z.string().url(),
 
-  // DB pool sizing (task.5014) — per-pool postgres-js `max`, non-secret env.
-  // Three pools per pod: app (RLS), service (jobs/writers), service-read
-  // (dashboard/research reads off a separate BYPASSRLS pool so jobs can't
-  // starve them). Worst-case backends per pod = sum of the three (defaults
-  // 1 + 10 + 5 = 16); size against Postgres max_connections. Backend math
-  // lives in packages/db-client/src/build-client.ts.
+  // DB pool sizing (task.5014, bug.5045) — per-pool postgres-js `max`, non-secret env.
+  // Three pools per pod: app (RLS, app_poly), service (jobs/writers, service_poly),
+  // service-read (dashboard/research reads, service_poly — separate pool so jobs
+  // can't starve them). The budget is per Postgres ROLE: app_poly carries the app
+  // pool; service_poly carries service + read + the leader connection (task.5016).
+  // Defaults 1 / 4 / 2 + leader 1 = 8 backends per pod fit the dedicated budget
+  // profile's role ceilings (app 4, service 8 → app 1/4, service 4+2+1=7/8), the
+  // same budget production runs via runtimePoolLimits (infra/catalog/poly.yaml).
+  // These defaults are the APPLIED budget on any lane WITHOUT runtimePoolLimits
+  // (candidate-a, preview); production overrides them, so lowering them is inert
+  // there. The old service 10 + read 5 = 15 exceeded the service_poly ceiling 8
+  // and caused SQLSTATE 53300 role exhaustion (bug.5045). Do NOT restore them.
   // emptyToUndefined: compose passes "" through for unset vars — treat as default.
   DB_POOL_MAX: z.preprocess(
     emptyToUndefined,
@@ -110,11 +116,11 @@ export const serverSchema = z.object({
   ),
   DB_SERVICE_POOL_MAX: z.preprocess(
     emptyToUndefined,
-    z.coerce.number().int().positive().default(10)
+    z.coerce.number().int().positive().default(4)
   ),
   DB_READ_POOL_MAX: z.preprocess(
     emptyToUndefined,
-    z.coerce.number().int().positive().default(5)
+    z.coerce.number().int().positive().default(2)
   ),
 
   // NextAuth secret (required for JWT signing)

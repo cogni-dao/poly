@@ -64,7 +64,10 @@ describe("DB pool split (task.5014)", { timeout: 30_000 }, () => {
     );
   });
 
-  it("uses default pool sizes (1/10/5) when env vars are unset", async () => {
+  it("uses default pool sizes (1/4/2) when env vars are unset", async () => {
+    // bug.5045: service+read+leader share role service_poly; defaults fit the
+    // dedicated ceiling (app 4, service 8) so a lane without runtimePoolLimits
+    // can't exhaust a role (service 4 + read 2 + leader 1 = 7/8; app 1/4).
     Object.assign(process.env, BASE_VALID_ENV);
     delete process.env.DB_POOL_MAX;
     delete process.env.DB_SERVICE_POOL_MAX;
@@ -74,8 +77,8 @@ describe("DB pool split (task.5014)", { timeout: 30_000 }, () => {
       await import("@/bootstrap/container");
 
     expect(resolveAppDb().$client.options.max).toBe(1);
-    expect(resolveServiceDb().$client.options.max).toBe(10);
-    expect(resolveServiceReadDb().$client.options.max).toBe(5);
+    expect(resolveServiceDb().$client.options.max).toBe(4);
+    expect(resolveServiceReadDb().$client.options.max).toBe(2);
   });
 
   it("returns the same read-pool instance on repeated resolution (lazy singleton)", async () => {
