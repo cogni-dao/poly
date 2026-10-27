@@ -5,7 +5,7 @@
  * Module: `@tests/unit/adapters/db/pool-config`
  * Purpose: Verify the conservative app default preserves explicit runtime overrides.
  * Scope: Lazy client binding and nonsecret configuration evidence.
- * Invariants: No clamp; service/read pool defaults remain unchanged.
+ * Invariants: No clamp; pool defaults fit the dedicated role ceilings app 4 / service 8 (bug.5045).
  * Side-effects: none (mocked factories/logger).
  * @internal
  */
@@ -50,7 +50,7 @@ describe("app runtime pool configuration", () => {
     );
   });
 
-  it("defaults only the app pool to one and preserves injected settings", () => {
+  it("defaults pools to fit role ceilings (1/4/2) and preserves injected settings", () => {
     const schema = serverSchema.pick({
       DB_POOL_MAX: true,
       DB_SERVICE_POOL_MAX: true,
@@ -58,8 +58,8 @@ describe("app runtime pool configuration", () => {
     });
     expect(schema.parse({})).toEqual({
       DB_POOL_MAX: 1,
-      DB_SERVICE_POOL_MAX: 10,
-      DB_READ_POOL_MAX: 5,
+      DB_SERVICE_POOL_MAX: 4,
+      DB_READ_POOL_MAX: 2,
     });
     expect(
       schema.parse({
@@ -67,7 +67,7 @@ describe("app runtime pool configuration", () => {
         DB_SERVICE_POOL_MAX: "",
         DB_READ_POOL_MAX: "",
       })
-    ).toEqual({ DB_POOL_MAX: 1, DB_SERVICE_POOL_MAX: 10, DB_READ_POOL_MAX: 5 });
+    ).toEqual({ DB_POOL_MAX: 1, DB_SERVICE_POOL_MAX: 4, DB_READ_POOL_MAX: 2 });
     expect(
       schema.parse({
         DB_POOL_MAX: "3",
