@@ -37,6 +37,7 @@
     "@cogni/knowledge-base-ui": "https://github.com/cogni-dao/node-template/releases/download/knowledge-base-ui-v0.2.2/cogni-dao-knowledge-base-ui-0.2.2.tgz",
     "@cogni/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.4.4/cogni-dao-knowledge-store-0.4.4.tgz",
     "@cogni/langgraph-graphs": "workspace:*",
+    "@cogni/money-plane": "https://github.com/cogni-dao/node-template/releases/download/money-plane-v0.2.0/cogni-dao-money-plane-0.2.0.tgz",
     "@cogni/node-app": "workspace:*",
     "@cogni/node-contracts": "workspace:*",
     "@cogni/node-core": "workspace:*",
