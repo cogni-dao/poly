@@ -2412,7 +2412,7 @@ function createContainer(): Container {
 			max: 1,
 		});
 		const knowledgeWriter = new DoltBranchSessionRunner(createKnowledgeBranchClient(), {
-			writerProtocol: "bridge", logger: log, recreateClient: createKnowledgeBranchClient,
+			writerProtocol: "database", logger: log, recreateClient: createKnowledgeBranchClient,
 		});
 		const knowledgePort = new DoltgresKnowledgeStoreAdapter({
 			sql: doltClient, writerSession: knowledgeWriter,
@@ -2427,6 +2427,7 @@ function createContainer(): Container {
 		const contributionPort = new DoltgresKnowledgeContributionAdapter({
 			sql: doltClient,
 			writerSession: knowledgeWriter,
+			logger: log,
 		});
 		// Optional post-merge mirror to DoltHub (task.5069). Disabled when
 		// DOLTHUB_REMOTE_URL is unset. Gate-by-secret-presence follows the

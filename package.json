@@ -49,7 +49,7 @@
     "yaml": "^2.8.3"
   },
   "dependencies": {
-    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.4.4/cogni-dao-knowledge-store-0.4.4.tgz",
+    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.5.1/cogni-dao-knowledge-store-0.5.1.tgz",
     "@cogni/ai-tools": "workspace:*"
   }
 }
