@@ -12,7 +12,21 @@
  * @public
  */
 
-import type { OrderIntent, OrderReceipt } from "@cogni/poly-market-provider";
+import type { OrderIntent } from "@cogni/poly-market-provider";
+import type { ContextualOrderReceipt, FillAccountingResult } from "./fill-accounting";
+
+/** Rejected incoming evidence may still expose the prior accepted durable proof. */
+export interface AcceptedOrderObservation {
+  mode: LedgerMode;
+  client_order_id: string;
+  order_id: string | null;
+  status: LedgerStatus;
+  accepted: boolean;
+  accounting: FillAccountingResult;
+}
+
+/** Existing live writers and test adapters acknowledge a write without an observation. */
+export type OrderObservationWriteResult = AcceptedOrderObservation | Awaited<Promise<void>>;
 
 /** Canonical status set for `poly_copy_trade_fills.status` (migration 0027 CHECK). */
 export type LedgerStatus =
@@ -409,6 +423,8 @@ export interface UpdateStatusInput {
    */
   reason?: string;
 	final_order_observation?: FinalOrderObservation;
+  /** Original authenticated response; a scalar source tag cannot bind paper identity. */
+  paper_receipt?: ContextualOrderReceipt;
 }
 
 /** Input to clear ledger exposure after a token is no longer held. */
@@ -620,8 +636,8 @@ export interface OrderLedger {
   /** Transition pending → filled/open/partial, stamping the `order_id`. */
   markOrderId(params: {
     client_order_id: string;
-    receipt: OrderReceipt;
-  }): Promise<void>;
+    receipt: ContextualOrderReceipt;
+  }): Promise<OrderObservationWriteResult>;
 
   /** Transition pending → error. `error` is stored in `attributes.error`. */
 	markError(params: {
@@ -741,7 +757,7 @@ export interface OrderLedger {
    * Called by the order reconciler and explicit user refresh — no page-load
    * route should drive status after placement.
    */
-  updateStatus(input: UpdateStatusInput): Promise<void>;
+  updateStatus(input: UpdateStatusInput): Promise<OrderObservationWriteResult>;
 
   /**
    * Bulk-stamp `synced_at = now()` on the rows whose `client_order_id` values

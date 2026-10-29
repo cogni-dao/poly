@@ -382,6 +382,8 @@ function runtimeSummary(
 	const execution =
 		fills.status === "verified"
 			? `${runtime.execution.submitted_order_count} submitted · ${fills.matched_order_count} verified`
+      : fills.status === "verified_zero"
+        ? `${runtime.execution.submitted_order_count} submitted · zero fills verified`
 			: runtime.execution.submitted_order_count === 0
 				? "no fills"
 				: `${runtime.execution.submitted_order_count} submitted · fills pending`;

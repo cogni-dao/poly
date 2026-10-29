@@ -13,10 +13,8 @@ import {
 	BELOW_MARKET_MIN_CODE,
 	clientOrderIdFor,
 	type Fill,
-	type GetOrderResult,
 	type LoggerPort,
 	type OrderIntent,
-	type OrderReceipt,
 	type TargetBookSnapshotV1,
 } from "@cogni/poly-market-provider";
 import {
@@ -65,6 +63,8 @@ import type {
 } from "@/features/copy-trade/position-gap-v3/model";
 import { netTargetBook } from "@/features/copy-trade/position-gap-v3/netting";
 import type { OrderLedger } from "@/features/trading";
+import { acceptedPaperProof, type ContextualGetOrderResult, type ContextualOrderReceipt } from "@/features/trading/fill-accounting";
+import type { AcceptedOrderObservation } from "@/features/trading/order-ledger.types";
 import type { WalletActivitySource } from "@/features/wallet-watch";
 import { EVENT_NAMES, logEvent } from "@/shared/observability";
 import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
@@ -85,9 +85,9 @@ class AssignmentLivenessUnavailableError extends Error {
 }
 
 export interface PositionGapBuyExecutionPort {
-	placeBuy(intent: OrderIntent & { side: "BUY" }): Promise<OrderReceipt>;
+	placeBuy(intent: OrderIntent & { side: "BUY" }): Promise<ContextualOrderReceipt>;
 	cancelBuy(orderId: string): Promise<void>;
-	getBuy(orderId: string): Promise<GetOrderResult>;
+	getBuy(orderId: string): Promise<ContextualGetOrderResult>;
 	getMarketConstraints(
 		tokenId: string,
 		placement: "limit",
@@ -767,6 +767,19 @@ export function startPositionGapActor(
 			deps.scope,
 			runtime.activeBuys.map((action) => action.clientOrderId),
 		);
+    // Consume the durable side of a ledger/action crash before attempting the
+    // venue. Its absence or failure cannot erase a previously accepted proof.
+    for (const action of runtime.activeBuys) {
+      const binding = ledgerByClientOrderId.get(action.clientOrderId);
+      const accepted = binding?.acceptedObservation;
+      const proof = accepted ? acceptedPaperProof(accepted.accounting) : null;
+      if (binding?.mode !== "paper" || !accepted || !proof) continue;
+      await deps.store.markPlacementReceipt(action.id, undefined, accepted);
+      action.orderId = proof.order_id;
+      action.status = proof.venue_status;
+      action.filledShares = proof.shares;
+      ledgerTerminals.delete(action.clientOrderId);
+    }
 
 		// LEDGER_TERMINAL_SURVIVES_RESTART (bug.5023). `ledgerTerminals` is an
 		// in-memory map fed by `observeLedgerTerminal`, which the shared
@@ -790,6 +803,7 @@ export function startPositionGapActor(
 		);
 		if (unplacedAmbiguous.length > 0) {
 			for (const action of unplacedAmbiguous) {
+        if (ledgerByClientOrderId.get(action.clientOrderId)?.mode === "paper") continue;
 				const status = ledgerByClientOrderId.get(action.clientOrderId)?.status;
 				// `error` is what the reconciler writes for `never_placed`;
 				// `canceled` means it was retired without ever reporting an id.
@@ -813,6 +827,10 @@ export function startPositionGapActor(
 
 		for (const action of runtime.activeBuys) {
 			const terminalReason = ledgerTerminals.get(action.clientOrderId);
+      if (terminalReason && ledgerByClientOrderId.get(action.clientOrderId)?.mode === "paper") {
+        ledgerTerminals.delete(action.clientOrderId);
+        continue;
+      }
 			if (terminalReason === "clob_not_found") {
 				await deps.store.markVenueNotFoundCanceled(action.id);
 				ledgerTerminals.delete(action.clientOrderId);
@@ -862,10 +880,12 @@ export function startPositionGapActor(
 			}
 			const actionMode = ledgerRow.mode;
 			const execution = deps.executionForMode(actionMode);
-			let result: GetOrderResult;
+			let result: ContextualGetOrderResult;
 			try {
 				result = await execution.getBuy(action.orderId);
 			} catch (error) {
+        if (actionMode === "paper" && ledgerRow.acceptedObservation &&
+          acceptedPaperProof(ledgerRow.acceptedObservation.accounting)) continue;
 				if (error instanceof FillAccountingPendingError) {
 					if (["filled", "canceled"].includes(action.status)) {
 						transitions.push(await repairFromVenueEvidence(action, actionMode));
@@ -887,12 +907,15 @@ export function startPositionGapActor(
 				throw error;
 			}
 			if ("found" in result) {
-				await deps.store.markPlacementReceipt(action.id, result.found);
-				await deps.ledger.markOrderId({
-					client_order_id: action.clientOrderId,
-					receipt: result.found,
-				});
+        if (actionMode === "paper") {
+          await persistAcceptedPaperReceipt({ ledger: deps.ledger, store: deps.store, action, receipt: result.found });
+        } else {
+          await deps.store.markPlacementReceipt(action.id, result.found);
+          await deps.ledger.markOrderId({ client_order_id: action.clientOrderId, receipt: result.found });
+        }
 			} else if (["filled", "canceled"].includes(action.status)) {
+        if (actionMode === "paper" && ledgerRow.acceptedObservation &&
+          acceptedPaperProof(ledgerRow.acceptedObservation.accounting)) continue;
 				transitions.push(await repairFromVenueEvidence(action, actionMode));
 			}
 		}
@@ -1332,6 +1355,12 @@ export function startPositionGapActor(
 			await execution.cancelBuy(cancellation.orderId);
 			const observed = await execution.getBuy(cancellation.orderId);
 			if ("found" in observed && observed.found.status === "canceled") {
+        if (mode === "paper") {
+          const accepted = await persistAcceptedPaperReceipt({ ledger: deps.ledger, store: deps.store, action: active, receipt: observed.found });
+          if (acceptedPaperProof(accepted.accounting)?.venue_status !== "canceled") throw new Error("paper_cancellation_not_proven");
+          await deps.store.markCancelConfirmed(cancellation.id);
+          continue;
+        }
 				// The terminal receipt can contain a final provisional partial fill.
 				// Persist that quantity into the cohort in the same transaction that
 				// releases the order reservation before acknowledging the cancel row.
@@ -1458,12 +1487,15 @@ export function startPositionGapActor(
 				const receipt = await deps
 					.executionForMode(input.planningMode)
 					.placeBuy(intent);
-				await deps.store.markPlacementReceipt(buy.id, receipt);
+        const paperAccepted = input.planningMode === "paper"
+          ? await persistAcceptedPaperReceipt({ ledger: deps.ledger, store: deps.store,
+            action: { id: buy.id, clientOrderId: prepared.clientOrderId }, receipt }) : null;
+        if (!paperAccepted) await deps.store.markPlacementReceipt(buy.id, receipt);
 				placedCount += 1;
-				if (receipt.status === "filled" || receipt.status === "partial") {
+				if (paperAccepted ? acceptedPaperProof(paperAccepted.accounting)?.shares : receipt.status === "filled" || receipt.status === "partial") {
 					filledCount += 1;
 				}
-				await deps.ledger.markOrderId({
+        if (!paperAccepted) await deps.ledger.markOrderId({
 					client_order_id: prepared.clientOrderId,
 					receipt,
 				});
@@ -1774,6 +1806,7 @@ export function startPositionGapActor(
 					);
 				}
 				await requireConfirmedSafetyCancellation({
+					mode,
 					execution: deps.executionForMode(mode),
 					store: deps.store,
 					ledger: deps.ledger,
@@ -2083,7 +2116,23 @@ export function knownNoOrder(error: unknown): boolean {
 	return (error as Error & { code?: string }).code === BELOW_MARKET_MIN_CODE;
 }
 
+async function persistAcceptedPaperReceipt(input: {
+  ledger: Pick<OrderLedger, "markOrderId">;
+  store: Pick<PositionGapRuntimeStore, "markPlacementReceipt">;
+  action: { id: string; clientOrderId: string };
+  receipt: ContextualOrderReceipt;
+}): Promise<AcceptedOrderObservation> {
+  const accepted = await input.ledger.markOrderId({ client_order_id: input.action.clientOrderId, receipt: input.receipt });
+  if (!accepted) throw new Error("paper_accepted_ledger_observation_unavailable");
+  if (accepted.mode !== "paper") throw new Error("paper_accepted_ledger_observation_unavailable");
+  if (!acceptedPaperProof(accepted.accounting) && !(accepted.accepted && accepted.order_id &&
+    (accepted.status === "open" || accepted.status === "pending"))) throw new Error("paper_execution_observation_rejected");
+  await input.store.markPlacementReceipt(input.action.id, undefined, accepted);
+  return accepted;
+}
+
 export async function requireConfirmedSafetyCancellation(input: {
+  mode?: "live" | "paper";
 	execution: Pick<PositionGapBuyExecutionPort, "cancelBuy" | "getBuy">;
 	store: Pick<
 		PositionGapRuntimeStore,
@@ -2095,6 +2144,15 @@ export async function requireConfirmedSafetyCancellation(input: {
 }): Promise<void> {
 	await input.execution.cancelBuy(input.cancellation.orderId);
 	const observed = await input.execution.getBuy(input.cancellation.orderId);
+  if (input.mode === "paper" || ("found" in observed && observed.found.paper_context)) {
+    if (!("found" in observed) || !input.active) throw new Error("paper_safety_cancellation_unconfirmed");
+    const accepted = await persistAcceptedPaperReceipt({ ledger: input.ledger, store: input.store,
+      action: input.active, receipt: observed.found });
+    const proof = acceptedPaperProof(accepted.accounting);
+    if (!proof?.terminal) throw new Error("paper_safety_cancellation_unconfirmed");
+    if (proof.venue_status === "canceled") await input.store.markCancelConfirmed(input.cancellation.id);
+    return;
+  }
 	if ("found" in observed && observed.found.status === "canceled") {
 		if (input.active) {
 			await input.store.markPlacementReceipt(input.active.id, observed.found);

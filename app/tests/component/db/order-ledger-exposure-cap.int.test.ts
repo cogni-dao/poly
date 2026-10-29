@@ -7,7 +7,10 @@ import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import pino from "pino";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { noopMetrics, type OrderReceipt } from "@cogni/poly-market-provider";
+import { createPolyTradeExecutorFactory } from "@/bootstrap/capabilities/poly-trade-executor";
+import { createExecutionVenueResolver, createPaperVenue, derivePaperAccountAddress } from "@/features/paper-accounts";
 import { getAppDb } from "@/adapters/server/db/client";
 import { ledgerCountedIntentUsdc } from "@/features/trading/ledger-lifecycle";
 import { createOrderLedger } from "@/features/trading/order-ledger";
@@ -16,7 +19,7 @@ import {
 	type LedgerRow,
 	PositionCapReachedError,
 } from "@/features/trading/order-ledger.types";
-import { billingAccounts, polyCopyTradeFills, users } from "@/shared/db/schema";
+import { billingAccounts, polyCopyTradeFills, polyWalletConnections, polyWalletGrants, users } from "@/shared/db/schema";
 
 const observed = new Date("2026-10-01T00:00:00Z");
 const deny = {
@@ -35,11 +38,12 @@ const final = (orderId: string, cost: number) => ({
 			? ("explicit_zero_size_matched" as const)
 			: ("clob_associated_trades" as const),
 });
-async function harness(mode: "live" | "paper" = "live") {
+async function harness(mode: "live" | "paper" = "live", trustedPaper = false) {
 	const db = getSeedDb();
 	const userId = randomUUID();
 	const account = randomUUID();
-	const market = randomUUID();
+	const market = trustedPaper ? `0x${randomUUID().replaceAll("-", "").repeat(2)}` : randomUUID();
+  const defaultToken = trustedPaper ? "12345678901234567890" : "token";
 	await db.insert(users).values({
 		id: userId,
 		walletAddress: `0x${randomUUID().replaceAll("-", "").padEnd(40, "0")}`,
@@ -47,6 +51,34 @@ async function harness(mode: "live" | "paper" = "live") {
 	await db
 		.insert(billingAccounts)
 		.values({ id: account, ownerUserId: userId, balanceCredits: 0n });
+  const connectionId = randomUUID();
+  if (trustedPaper) {
+    const address = derivePaperAccountAddress(account);
+    await db.insert(polyWalletConnections).values({ id: connectionId, billingAccountId: account,
+      createdByUserId: userId, kind: "paper", address, funderAddress: address, paperSeedUsdc: "100",
+      custodialConsentAcceptedAt: observed, custodialConsentActorKind: "user", custodialConsentActorId: userId,
+      tradingApprovalsReadyAt: observed });
+    await db.insert(polyWalletGrants).values({ billingAccountId: account, walletConnectionId: connectionId,
+      createdByUserId: userId, scopes: ["poly:trade:buy"], perOrderUsdcCap: "10", dailyUsdcCap: "1000", hourlyFillsCap: 1000 });
+  }
+  const authenticatedReceipt = async (native: OrderReceipt) => {
+    const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = new URL(String(input));
+      expect(url.origin).toBe("http://paper.exposure.test");
+      expect(url.searchParams.get("account_id")).toBe(connectionId);
+      expect(url.pathname).toBe(`/orders/${native.order_id}`);
+      return Response.json(native);
+    });
+    try {
+      const factory = createPolyTradeExecutorFactory({ logger: pino({ enabled: false }), metrics: noopMetrics,
+        paperSidecarUrl: "http://paper.exposure.test", paperVenue: createPaperVenue({ db }),
+        resolveExecutionVenue: createExecutionVenueResolver({ db }) });
+      const executor = await factory.getPolyTradeExecutorFor(account);
+      const result = await executor.getOrder(native.order_id);
+      if (!("found" in result)) throw new Error("authenticated paper exposure receipt absent");
+      return result.found;
+    } finally { transport.mockRestore(); }
+  };
 	const ledger = createOrderLedger({
 		db: db as unknown as PostgresJsDatabase<Record<string, unknown>>,
 		appDb: getAppDb() as unknown as PostgresJsDatabase<Record<string, unknown>>,
@@ -59,7 +91,7 @@ async function harness(mode: "live" | "paper" = "live") {
 	});
 	const intent = (
 		size = 1,
-		token = "token",
+		token = defaultToken,
 		target = randomUUID(),
 	): InsertPendingInput => ({
 		billing_account_id: account,
@@ -100,7 +132,8 @@ async function harness(mode: "live" | "paper" = "live") {
       mode,
 			attributes: {
 				size_usdc: 4,
-				token_id: "token",
+				token_id: defaultToken,
+        ...(trustedPaper ? { condition_id: market, side: "BUY" } : {}),
 				placement: "limit",
 				...attributes,
 			},
@@ -109,7 +142,7 @@ async function harness(mode: "live" | "paper" = "live") {
 		});
 		return id;
 	}
-	return { db, account, market, ledger, tenant, intent, seed };
+	return { db, account, market, token: defaultToken, ledger, tenant, intent, seed, authenticatedReceipt };
 }
 
 describe("order exposure reservation (real PostgreSQL)", () => {
@@ -316,7 +349,7 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 	] as const)(
 		"canceled recovery preserves %s source=%s receiptStamp=%s cost=%s",
 		async (mode, source, receiptStamp, cost, shares, price) => {
-      const h = await harness(mode);
+      const h = await harness(mode, mode === "paper");
 			const order = `cost-floor-${h.account}`;
 			const id = await h.seed(
 				"partial",
@@ -341,6 +374,10 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 				total_shares: 12,
 				fill_price: 0.5,
 				filled_size_usdc: 6,
+        ...(mode === "paper" ? { paper_receipt: await h.authenticatedReceipt({ order_id: order,
+          client_order_id: id, status: "canceled", filled_size_usdc: 6, total_shares: 12, fill_price: 0.5,
+          fees_usdc: 0, submitted_at: observed.toISOString(), attributes: { market: h.market, tokenId: h.token,
+            side: "BUY", sizeMatched: 12 } }) } : {}),
 				realized_fill_source: mode === "paper" ? "paper_order_receipt" : "clob_associated_trades",
         final_order_observation: {
           ...final(order, 6),
@@ -367,13 +404,13 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 				});
 			}
 			expect(
-				await h.tenant.cumulativeIntentForMarketToken(h.market, "token"),
+				await h.tenant.cumulativeIntentForMarketToken(h.market, h.token),
 			).toBe(cost);
 			expect(
 				await h.ledger.cumulativeIntentForMarketToken(
 					h.account,
 					h.market,
-					"token",
+					h.token,
 				),
 			).toBe(cost);
 			const [mapped] = await h.ledger.listRecent({
@@ -393,7 +430,7 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 	);
 
   it("stamps direct paper receipt provenance without treating a paper intent as execution", async () => {
-    const h = await harness("paper");
+    const h = await harness("paper", true);
     const id = await h.seed("pending");
     await h.ledger.markOrderId({
       client_order_id: id,
@@ -408,6 +445,13 @@ describe("order exposure reservation (real PostgreSQL)", () => {
         attributes: { sizeMatched: 10 },
       },
     });
+    const [unbound] = await h.db.select().from(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, id));
+    expect(unbound?.attributes?.realized_fill_source).toBeUndefined();
+    expect(Number(unbound?.shares ?? 0)).toBe(0);
+    const trusted = await h.authenticatedReceipt({ order_id: "paper-order", client_order_id: id, status: "partial",
+      filled_size_usdc: 8, total_shares: 10, fill_price: 0.8, submitted_at: observed.toISOString(),
+      attributes: { market: h.market, tokenId: h.token, side: "BUY", sizeMatched: 10 } });
+    await h.ledger.markOrderId({ client_order_id: id, receipt: trusted });
     const [stored] = await h.db.select().from(polyCopyTradeFills)
       .where(eq(polyCopyTradeFills.clientOrderId, id));
     expect(stored?.attributes?.realized_fill_source).toBe("paper_order_receipt");

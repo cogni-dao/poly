@@ -274,6 +274,7 @@ export const PolyPositionGapFillAccountingSchema = z.discriminatedUnion(
           "clob_associated_trades",
           "data_api_activity_position",
           "mixed_verified_sources",
+          "paper_order_receipt",
         ]),
         matched_order_count: z.number().int().positive(),
         realized_shares: z.number().positive(),
@@ -281,6 +282,13 @@ export const PolyPositionGapFillAccountingSchema = z.discriminatedUnion(
         realized_entry_notional_usdc: z.number().positive(),
       })
       .strict(),
+    z.object({
+      status: z.literal("verified_zero"),
+      source: z.literal("paper_order_receipt"),
+      matched_order_count: z.literal(1),
+      realized_shares: z.literal(0),
+      realized_entry_notional_usdc: z.literal(0),
+    }).strict(),
   ],
 );
 

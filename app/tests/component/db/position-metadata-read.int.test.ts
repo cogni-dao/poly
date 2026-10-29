@@ -4,17 +4,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { toUserId, userActor } from "@cogni/ids";
-import type { TargetBookSnapshotV1 } from "@cogni/poly-market-provider";
+import { noopMetrics, type OrderReceipt, type TargetBookSnapshotV1 } from "@cogni/poly-market-provider";
 import type { WalletExecutionPosition } from "@cogni/poly-node-contracts";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { type SQL, sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import pino from "pino";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { createPolyTradeExecutorFactory } from "@/bootstrap/capabilities/poly-trade-executor";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
 import { buildPositionGapBuyIntent } from "@/features/copy-trade/position-gap-actor";
-import { derivePaperAccountAddress } from "@/features/paper-accounts";
+import { createExecutionVenueResolver, createPaperVenue, derivePaperAccountAddress } from "@/features/paper-accounts";
 import { createOrderLedger } from "@/features/trading/order-ledger";
 import { persistPositionGapTargetSnapshot } from "@/features/wallet-analysis/server/copy-target-position-hydration-service";
 import { getRecentAttemptsForAccount } from "@/features/wallet-analysis/server/copy-trade-attempts-read";
@@ -976,8 +977,8 @@ async function originFixture(metadata?: {
 		disabledAt: new Date(at(20)),
 	});
 	const [paperRow] = rows<{ id: string }>(
-		await db.execute(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label)
-    VALUES (${paper},'paper_wallet','Metadata origin fixture') RETURNING id`),
+		await db.execute(sql`INSERT INTO poly_trader_wallets (wallet_address,kind,label,created_at)
+    VALUES (${paper},'paper_wallet','Metadata origin fixture',${at(0)}::timestamptz) RETURNING id`),
 	);
 	if (!paperRow) throw new Error("Missing fixture paper wallet");
 	const key = (token: string = tokens[0]) => ({
@@ -1228,6 +1229,10 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 				logger: log,
 				resolveExecutionMode: async () => "paper",
 			});
+      const [connection] = rows<{ id: string }>(await db.execute(sql`SELECT id FROM poly_wallet_connections WHERE billing_account_id=${f.account} AND kind='paper'`));
+      if (!connection) throw new Error("metadata paper connection absent");
+      await db.execute(sql`INSERT INTO poly_wallet_grants (billing_account_id,wallet_connection_id,created_by_user_id,scopes,per_order_usdc_cap,daily_usdc_cap,hourly_fills_cap)
+        VALUES (${f.account},${connection.id},${f.user},ARRAY['poly:trade:buy'],10,1000,1000)`);
 			const lineage = {
 				algorithm_id: "poly.copy-mirror.position-gap" as const,
 				algorithm_version_id: `sha256:${"a".repeat(64)}`,
@@ -1264,10 +1269,7 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 					observed_at: new Date(at(10)),
 					intent,
 				});
-				await ledger.markOrderId({
-					client_order_id: intent.client_order_id,
-					receipt: {
-						provider: "polymarket",
+        const native: OrderReceipt = {
 						order_id: randomUUID(),
 						client_order_id: intent.client_order_id,
 						status: "filled",
@@ -1275,9 +1277,31 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 						fill_price: 0.4,
 						total_shares: 10,
 						fees_usdc: 0,
-						submitted_at: at(10),
-					},
-				});
+            submitted_at: at(10),
+            attributes: { market: f.condition, tokenId: token, side: "BUY", sizeMatched: 10 },
+        };
+        const transport = vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+          const url = new URL(String(input));
+          expect(url.origin).toBe("http://paper.metadata.test");
+          expect(url.searchParams.get("account_id")).toBe(connection.id);
+          expect(url.pathname).toBe(`/orders/${native.order_id}`);
+          return Response.json(native);
+        });
+        // The native observation belongs before the existing projection cutoff.
+        // Only the test clock changes; the factory still creates trusted context.
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date(at(10)));
+        try {
+      const factory = createPolyTradeExecutorFactory({ logger: log, metrics: noopMetrics,
+        paperSidecarUrl: "http://paper.metadata.test", paperVenue: createPaperVenue({ db }),
+        resolveExecutionVenue: createExecutionVenueResolver({ db }) });
+      const executor = await factory.getPolyTradeExecutorFor(f.account);
+          const actual = await executor.getOrder(native.order_id);
+          if (!("found" in actual)) throw new Error("metadata native receipt absent");
+          const accepted = await ledger.markOrderId({ client_order_id: intent.client_order_id, receipt: actual.found });
+          if (!accepted) throw new Error("metadata accepted paper observation absent");
+          expect(accepted.accepted).toBe(true);
+        } finally { transport.mockRestore(); vi.useRealTimers(); }
 			}
 			const serialized = rows<{ attributes: Record<string, unknown> }>(
 				await db.execute(
@@ -1289,6 +1313,8 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 				expect(row.attributes.outcome).toBe("1");
 				expect(row.attributes.labelKind).toBeUndefined();
 				expect(row.attributes.outcomeIndex).toBeUndefined();
+        expect(row.attributes.paper_receipt_v1).toMatchObject({ fee_known: true, fees_usdc: 0,
+          shares: 10, notional_usdc: 4 });
 			}
 			await observePaperWallet({
 				db: db as unknown as Parameters<typeof observePaperWallet>[0]["db"],
@@ -1421,8 +1447,11 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 			expect(
 				orders?.orders.every(
 					(order) =>
-						order.fill_accounting?.status === "pending" &&
-						order.filled_size_usdc === null,
+            order.fill_accounting?.status === "verified" &&
+            order.fill_accounting.source === "paper_order_receipt" &&
+            order.fill_accounting.realized_shares === 10 &&
+            order.fill_accounting.realized_entry_notional_usdc === 4 &&
+            order.filled_size_usdc === 4,
 				),
 			).toBe(true);
 			const own = after[0].positions[0];

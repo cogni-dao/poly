@@ -8,7 +8,8 @@
  * Scope: Read + write + retention helpers. Reader is page-load safe (no outbound
  *        HTTP). Writer runs in poll/refresh jobs only.
  * Invariants:
- *   - PNL_NOT_NAV: the returned series is Polymarket P/L, not reconstructed wallet balance.
+ *   - PNL_NOT_NAV: LIVE is saved provider P/L. PAPER is private, prospective
+ *     cumulative saved NAV minus its declared seed, always partial history.
  *   - EMPTY_IS_HONEST: zero stored points returns `[]` — readers do not fall back to live HTTP.
  *   - MISSING_IS_NOT_EMPTY: the structured reader distinguishes an absent
  *     observer wallet from an observed wallet with no saved P/L points.
@@ -37,9 +38,10 @@ import type {
   PolyWalletOverviewInterval,
   PolyWalletOverviewPnlPoint,
 } from "@cogni/poly-node-contracts";
-import { and, desc, eq, gte, isNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import { derivePaperAccountAddress } from "@/features/paper-accounts";
 import { withResearchReadTimeout } from "./fill-rollup-service";
 import { dedupeByKey } from "./observation-helpers";
 import { portfolioWindowStart } from "./portfolio-window";
@@ -71,6 +73,8 @@ export function __setTradingWalletOverviewUserPnlClientForTests(
 }
 
 export type TradingWalletPnlHistoryStatus =
+  | "partial"
+  | "unavailable"
   | "available"
   | "no_history"
   | "stale"
@@ -97,9 +101,12 @@ export async function getTradingWalletPnlHistoryRead(input: {
   address: `0x${string}`;
   interval: PolyWalletOverviewInterval;
   capturedAt?: string;
+  /** Internal coherent tenant-snapshot context, never a public request flag. */
+  paper?: { billingAccountId: string; generation: string; navUsdc: number };
 }): Promise<TradingWalletPnlHistoryRead> {
   const capturedAt = input.capturedAt ?? new Date().toISOString();
   const fidelity = readFidelityForInterval(input.interval);
+  if (input.paper) return readPrivatePaperPnl({ ...input, capturedAt, fidelity, paper: input.paper });
   const { traderWalletId, rows } = await withResearchReadTimeout(
     input.db,
     async (tx) => {
@@ -109,6 +116,7 @@ export async function getTradingWalletPnlHistoryRead(input: {
         .where(
           and(
             eq(polyTraderWallets.walletAddress, input.address.toLowerCase()),
+            ne(polyTraderWallets.kind, "paper_wallet"),
             eq(polyTraderWallets.activeForResearch, true),
             isNull(polyTraderWallets.disabledAt)
           )
@@ -172,6 +180,80 @@ export async function getTradingWalletPnlHistoryRead(input: {
     return { points: [], status: "stale", observedAt };
   }
   return { points: history, status: "available", observedAt };
+}
+
+/** Existing tenant RLS is mandatory: an address or service handle conveys no authority. */
+async function readPrivatePaperPnl(input: {
+  db: Db; address: `0x${string}`; interval: PolyWalletOverviewInterval;
+  capturedAt: string; fidelity: Fidelity;
+  paper: { billingAccountId: string; generation: string; navUsdc: number };
+}): Promise<TradingWalletPnlHistoryRead> {
+  const unavailable: TradingWalletPnlHistoryRead = { points: [], status: "unavailable" };
+  const captured = new Date(input.capturedAt);
+  const generation = new Date(input.paper.generation);
+  const expected = derivePaperAccountAddress(input.paper.billingAccountId);
+  if (input.address.toLowerCase() !== expected || !Number.isFinite(captured.getTime()) ||
+    !Number.isFinite(generation.getTime()) || generation > captured ||
+    captured.getTime() - generation.getTime() > PNL_FRESHNESS_MS || !Number.isFinite(input.paper.navUsdc)) return unavailable;
+  return withResearchReadTimeout(input.db, async (tx) => {
+    const rowsOf = <T>(value: unknown): T[] => Array.isArray(value) ? value as T[] :
+      ((value as { rows?: T[] }).rows ?? []);
+    const guard = rowsOf<{ allowed: boolean }>(await tx.execute(sql`
+      SELECT nullif(current_setting('app.current_user_id', true), '') IS NOT NULL
+        AND row_security_active('poly_wallet_connections'::regclass)
+        AND row_security_active('poly_wallet_balance_snapshots'::regclass) AS allowed
+    `))[0];
+    if (!guard?.allowed) return unavailable;
+    // All retained lifecycles count, including revoked/address-mismatched rows.
+    const valid = rowsOf<{ wallet_id: string; created_at: Date | string }>(await tx.execute(sql`
+      WITH connections AS MATERIALIZED (
+        SELECT * FROM poly_wallet_connections WHERE billing_account_id = ${input.paper.billingAccountId} AND kind = 'paper'
+      )
+      SELECT w.id AS wallet_id, c.created_at FROM connections c
+      JOIN poly_trader_wallets w ON lower(w.wallet_address) = ${expected} AND w.kind = 'paper_wallet'
+        AND w.active_for_research AND w.disabled_at IS NULL AND w.created_at >= c.created_at
+      JOIN poly_wallet_balance_snapshots b ON b.billing_account_id = c.billing_account_id
+        AND lower(b.address) = ${expected} AND b.observed_at = ${generation.toISOString()}::timestamptz
+      JOIN poly_trader_ingestion_cursors cursor ON cursor.trader_wallet_id = w.id
+        AND cursor.source = 'paper-ledger-positions' AND cursor.status = 'ok'
+        AND cursor.last_success_at = b.observed_at
+      WHERE (SELECT count(*) FROM connections) = 1 AND c.revoked_at IS NULL
+        AND lower(c.address) = ${expected} AND lower(c.funder_address) = ${expected}
+        AND c.paper_seed_usdc > 0 AND c.paper_seed_usdc NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+        AND b.usdc_e = ${input.paper.navUsdc.toFixed(8)}::numeric
+        AND b.usdc_e NOT IN ('NaN'::numeric, 'Infinity'::numeric, '-Infinity'::numeric)
+        AND c.created_at <= ${generation.toISOString()}::timestamptz AND w.created_at <= ${generation.toISOString()}::timestamptz
+        AND NOT EXISTS (
+          SELECT 1 FROM (VALUES ('1h'), ('1d')) f(fidelity)
+          LEFT JOIN LATERAL (
+            SELECT p.* FROM poly_trader_user_pnl_points p WHERE p.trader_wallet_id = w.id AND p.fidelity = f.fidelity
+            ORDER BY p.observed_at DESC, p.ts DESC LIMIT 1
+          ) latest ON true
+          WHERE latest.observed_at IS DISTINCT FROM b.observed_at
+            OR latest.pnl_usdc IS DISTINCT FROM (b.usdc_e - c.paper_seed_usdc)::numeric(38,8)
+            OR latest.ts > ${captured.toISOString()}::timestamptz
+            OR latest.ts IS DISTINCT FROM (date_trunc(CASE f.fidelity WHEN '1h' THEN 'hour' ELSE 'day' END,
+              latest.observed_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+        )
+    `));
+    if (valid.length !== 1 || !valid[0]) return unavailable;
+    const wallet = valid[0];
+    const start = portfolioWindowStart(input.interval, input.capturedAt);
+    const rows = rowsOf<{ observed_at: Date | string; pnl_usdc: string }>(await tx.execute(sql`
+      SELECT observed_at, pnl_usdc FROM poly_trader_user_pnl_points
+      WHERE trader_wallet_id = ${wallet.wallet_id}::uuid AND fidelity = ${input.fidelity}
+        AND observed_at >= ${new Date(wallet.created_at).toISOString()}::timestamptz
+        ${start ? sql`AND observed_at >= ${start.toISOString()}::timestamptz` : sql``}
+        AND observed_at <= ${captured.toISOString()}::timestamptz AND ts <= ${captured.toISOString()}::timestamptz
+        AND ts = (date_trunc(${input.fidelity === "1h" ? "hour" : "day"}, observed_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+      ORDER BY observed_at DESC LIMIT ${PNL_READ_LIMIT}
+    `));
+    if (rows.length === 0) return { points: [], status: "no_history" };
+    if (rows.some((row) => !Number.isFinite(Number(row.pnl_usdc)) || !Number.isFinite(new Date(row.observed_at).getTime()))) return unavailable;
+    return { status: "partial", observedAt: generation.toISOString(), points: rows.reverse().map((row) => ({
+      ts: new Date(row.observed_at).toISOString(), pnl: roundUsd(Number(row.pnl_usdc)),
+    })) };
+  });
 }
 
 /**

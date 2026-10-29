@@ -624,6 +624,13 @@
       "when": 1791869650247,
       "tag": "0088_striped_silvermane",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1792534156915,
+      "tag": "0089_flashy_tusk",
+      "breakpoints": true
     }
   ]
 }

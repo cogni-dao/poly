@@ -47,6 +47,8 @@
  * @public
  */
 
+import { paperFillAccountingPresentation } from "@/features/trading/fill-accounting";
+import { paperFillAccountingSql } from "@/features/trading/fill-accounting-sql";
 import {
   POLY_COPY_ATTEMPTS_MAX_LIMIT,
   PolyAlgorithmIdSchema,
@@ -145,6 +147,10 @@ type AttemptRow = {
   intended_size_usdc: string | number | null;
   position_branch: string | null;
   target_position_usdc: string | number | null;
+  exec_mode?: string | null;
+  exec_paper_positive?: boolean;
+  exec_paper_zero?: boolean;
+  exec_paper_fee_known?: boolean;
   exec_status: string | null;
   exec_order_id: string | null;
   exec_observed_at: Date | string | null;
@@ -261,7 +267,11 @@ export function copyTradeAttemptsSelect(
       NULLIF(d.intent->>'size_usdc', '')::numeric       AS intended_size_usdc,
       NULLIF(d.intent->>'position_branch', '')          AS position_branch,
       NULLIF(d.intent->>'target_position_usdc', '')::numeric AS target_position_usdc,
-      f.status                                          AS exec_status,
+      f.mode AS exec_mode,
+      ${paperFillAccountingSql("f", sql`${capturedAt}::timestamptz`).positive} AS exec_paper_positive,
+      ${paperFillAccountingSql("f", sql`${capturedAt}::timestamptz`).zero} AS exec_paper_zero,
+      ${paperFillAccountingSql("f", sql`${capturedAt}::timestamptz`).feeKnown} AS exec_paper_fee_known,
+      f.status AS exec_status,
       f.order_id                                        AS exec_order_id,
       f.observed_at                                     AS exec_observed_at,
       f.position_lifecycle                              AS exec_position_lifecycle,
@@ -342,8 +352,9 @@ export function copyTradeAttemptsSelect(
 export function toExecuted(row: AttemptRow): PolyCopyTradeAttempt["executed"] {
   const observedAt = toIso(row.exec_observed_at);
   if (row.exec_status !== null && observedAt !== null) {
-    const positionGapV3 = row.exec_position_gap_version === "3";
-    const sourceVerified =
+    const paper = row.exec_mode === "paper";
+    const positionGapV3 = paper || row.exec_position_gap_version === "3";
+    const sourceVerified = paper ? row.exec_paper_positive === true :
       row.exec_realized_fill_source === "clob_associated_trades" ||
       row.exec_realized_fill_source === "data_api_activity_position";
     const rawPrice = nullableNumber(row.exec_price);
@@ -360,8 +371,8 @@ export function toExecuted(row: AttemptRow): PolyCopyTradeAttempt["executed"] {
       rawNotional > 0;
     const price = positionGapV3 && !verifiedPositionGapFill ? null : rawPrice;
     const shares =
-      positionGapV3 && !verifiedPositionGapFill ? null : rawShares;
-    const fillAccounting = positionGapV3
+      positionGapV3 && !verifiedPositionGapFill && !row.exec_paper_zero ? null : rawShares;
+    const fillAccounting = paper ? paperFillAccountingPresentation({ positive: row.exec_paper_positive, zero: row.exec_paper_zero, shares: rawShares, notional: rawNotional }) : positionGapV3
       ? verifiedPositionGapFill
         ? {
             status: "verified" as const,
@@ -386,13 +397,13 @@ export function toExecuted(row: AttemptRow): PolyCopyTradeAttempt["executed"] {
       price,
       shares,
       fees_usdc:
-        positionGapV3 && !verifiedPositionGapFill
+        (paper && row.exec_paper_fee_known !== true) || (positionGapV3 && !verifiedPositionGapFill && !row.exec_paper_zero)
           ? null
           : nullableNumber(row.exec_fees_usdc),
       // Executed notional is only knowable once BOTH legs are realized.
       // Deriving it from one of them would fabricate a value.
       filled_size_usdc: positionGapV3
-        ? verifiedPositionGapFill
+        ? verifiedPositionGapFill || row.exec_paper_zero
           ? rawNotional
           : null
         : price !== null && shares !== null

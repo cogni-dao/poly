@@ -27,6 +27,7 @@ import {
   positionMetadataRequestKey,
   readPositionMetadata,
 } from "./position-metadata-read";
+import { paperAccountingCtes } from "./paper-fact-source";
 import { portfolioWindowStart } from "./portfolio-window";
 
 type ExecuteDb = { execute(query: SQL): Promise<unknown> };
@@ -187,7 +188,12 @@ export function buildEconomicPositionProjectionQuery(
       LEFT JOIN poly_trader_ingestion_cursors c
         ON c.trader_wallet_id = w.id
        AND c.source = ${mode === "paper" ? "paper-ledger-positions" : "data-api-positions"}
-    ), ledger_candidates AS MATERIALIZED (
+    ), ${paperAccountingCtes({
+      billingAccountId: params.billingAccountId,
+      walletIds: sql`SELECT id FROM wallet_identity`,
+      capturedAt: sql`least(${params.capturedAt.toISOString()}::timestamptz, COALESCE((SELECT latest_generation_at FROM observer_summary), ${params.capturedAt.toISOString()}::timestamptz))`,
+      enabled: mode === "paper",
+    })}, ledger_candidates AS MATERIALIZED (
       SELECT
         lower(NULLIF(COALESCE(
           NULLIF(f.attributes->>'condition_id', ''),
@@ -359,7 +365,7 @@ export function buildEconomicPositionProjectionQuery(
         MAX(observed_at) AS last_flow_at,
         (array_agg(price ORDER BY observed_at DESC))[1]::numeric AS last_price,
         bool_or(fact_variants > 1) AS fill_identity_conflict
-      FROM canonical_fills
+      FROM ${mode === "paper" ? sql`(SELECT *, 1 AS fact_variants FROM paper_inventory_facts) paper_flows` : sql`canonical_fills`}
       GROUP BY condition_id, token_id
     ), outcome_consensus AS MATERIALIZED (
       SELECT
@@ -394,6 +400,7 @@ export function buildEconomicPositionProjectionQuery(
         pf.total_sell_usdc,
         pf.total_buy_shares,
         pf.total_sell_shares,
+        paper_fees.fees_usdc AS paper_fees_usdc,
         pf.total_buy_shares - pf.total_sell_shares AS net_shares,
         pf.first_buy_at,
         pf.last_flow_at,
@@ -439,6 +446,7 @@ export function buildEconomicPositionProjectionQuery(
         mm.end_date
       FROM driven_keys k
       LEFT JOIN position_flows pf USING (condition_id, token_id)
+      LEFT JOIN paper_position_fees paper_fees USING (condition_id, token_id)
       LEFT JOIN fill_conflicted_keys ck USING (condition_id, token_id)
       LEFT JOIN outcome_consensus oc USING (condition_id, token_id)
       LEFT JOIN current_facts cf USING (condition_id, token_id)
@@ -469,7 +477,18 @@ export function buildEconomicPositionProjectionQuery(
            Keep the selected physical cursor association; an eligible sibling
            cannot lend it authority. MAX deliberately includes future clocks:
            overwritten authority cannot reconstruct an earlier capture. */
-        (${mode} = 'paper' OR b.current_shares = 0 OR COALESCE((
+        (CASE WHEN ${mode} = 'paper' THEN (SELECT inventory_complete FROM paper_coverage)
+          AND b.current_raw->>'source' = 'paper-ledger' AND b.current_shares = b.net_shares
+          AND b.current_last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND observer.latest_generation_at <= ${params.capturedAt.toISOString()}::timestamptz
+          AND NOT EXISTS (
+            SELECT 1 FROM poly_trader_current_positions future
+            JOIN wallet_identity w ON w.id = future.trader_wallet_id
+            WHERE lower(future.condition_id) = b.condition_id
+              AND future.token_id = b.token_id
+              AND future.last_observed_at > ${params.capturedAt.toISOString()}::timestamptz
+          )
+          ELSE b.current_shares = 0 OR COALESCE((
           b.current_last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
           AND observer.latest_generation_at <= ${params.capturedAt.toISOString()}::timestamptz
           AND b.current_last_observed_at >= observer.latest_generation_at
@@ -491,7 +510,7 @@ export function buildEconomicPositionProjectionQuery(
               AND cursor.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
               AND b.current_last_observed_at >= cursor.last_success_at
           )
-        ), false)) AS live_positive_current_currency
+        ), false) END) AS live_positive_current_currency
       FROM economic_position_base b
       CROSS JOIN observer_summary observer
     ), event_authority AS MATERIALIZED (
@@ -528,12 +547,16 @@ export function buildEconomicPositionProjectionQuery(
           AND (b.current_shares = 0 OR b.current_last_observed_at >= ${params.capturedAt.toISOString()}::timestamptz - INTERVAL '10 minutes')
         ) AS inventory_fresh,
         (CASE WHEN ${mode} = 'paper' THEN
-          b.current_raw->>'source' = 'paper-ledger'
+          (SELECT finance_complete FROM paper_coverage)
+          AND b.live_positive_current_currency
+          AND b.current_raw->>'source' = 'paper-ledger'
           AND observer.status = 'ok' AND observer.complete
           AND observer.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
           AND observer.last_success_at >= b.current_last_observed_at
           AND observer.last_success_at >= COALESCE(b.last_flow_at, '-infinity'::timestamptz)
           AND b.current_last_observed_at >= COALESCE(b.last_flow_at, '-infinity'::timestamptz)
+          AND b.current_raw->'paperCoverage'->>'financeComplete' = 'true'
+          AND b.current_raw->'paperCoverage'->>'generationAt' = to_char(b.current_last_observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
           AND NOT COALESCE(b.current_identity_conflict, false)
           AND NOT b.fill_identity_conflict
           AND b.total_buy_usdc IS NOT NULL AND b.total_buy_shares > 0
@@ -636,7 +659,8 @@ export function buildEconomicPositionProjectionQuery(
       (SELECT count(*)::int FROM windowed WHERE economic_bucket = 'live') AS live_count,
       (SELECT count(*)::int FROM windowed WHERE economic_bucket = 'closed') AS closed_count,
       (SELECT count(*)::int FROM classified WHERE economic_bucket IS NULL) AS incomplete_count,
-      (SELECT count(*)::int FROM classified WHERE history_complete IS NOT TRUE) AS history_incomplete_count,
+      ((SELECT count(*)::int FROM classified WHERE history_complete IS NOT TRUE)
+        + CASE WHEN ${mode} = 'paper' AND NOT (SELECT finance_complete FROM paper_coverage) THEN 1 ELSE 0 END) AS history_incomplete_count,
       (SELECT count(*)::int FROM wallet_identity) AS wallet_identity_count,
       (SELECT count(*)::int FROM fill_conflicted_keys) AS fill_identity_conflict_count,
       (SELECT count(*)::int FROM outcome_consensus WHERE terminal_variants > 1 OR payout_variants > 1) AS outcome_identity_conflict_count,
@@ -649,7 +673,8 @@ export function buildEconomicPositionProjectionQuery(
       observer.status AS observer_status,
       observer.complete AS observer_complete,
       CASE
-        WHEN observer.status = 'ok' AND observer.complete
+        WHEN (${mode} <> 'paper' OR (SELECT inventory_complete FROM paper_coverage))
+          AND observer.status = 'ok' AND observer.complete
           AND observer.last_success_at <= ${params.capturedAt.toISOString()}::timestamptz
           AND NOT EXISTS (
             SELECT 1 FROM poly_trader_current_positions future
@@ -718,7 +743,7 @@ export function buildEconomicPositionProjectionQuery(
       p.economic_observation - 'constituents' AS economic_observation,
       jsonb_array_length(p.economic_observation->'constituents') AS economic_record_count,
       p.history_complete,
-      CASE WHEN ${mode} = 'paper' AND p.history_complete THEN p.total_sell_usdc + p.current_value_usdc - p.total_buy_usdc
+      CASE WHEN ${mode} = 'paper' AND p.history_complete THEN p.total_sell_usdc + p.current_value_usdc - p.total_buy_usdc - COALESCE(p.paper_fees_usdc, 0)
         WHEN COALESCE(p.economic_observation->>'lifetimePnlUsdc', '') ~ '^-?[0-9]+(\\.[0-9]+)?$'
         THEN (p.economic_observation->>'lifetimePnlUsdc')::numeric END AS observed_lifetime_pnl,
       p.current_identity_conflict,
