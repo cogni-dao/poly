@@ -102,11 +102,10 @@ export async function loadDomains(
 export async function loadKnowledgeGraph(
   port: KnowledgeStorePort
 ): Promise<KnowledgeGraphModel> {
-  const domains = await port.listDomains();
-  const perDomain = await Promise.all(
-    domains.map((d) => port.listKnowledge(d, { limit: 10_000 }))
-  );
-  const entries = perDomain.flat();
-  const citations = await port.listAllCitations();
-  return buildKnowledgeGraph({ domains, entries, citations });
+  const [domains, nodes, citations] = await Promise.all([
+    port.listDomains(),
+    port.listKnowledgeGraphNodes(),
+    port.listAllCitations(),
+  ]);
+  return buildKnowledgeGraph({ domains, nodes, citations });
 }
