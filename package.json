@@ -49,7 +49,8 @@
     "yaml": "^2.8.3"
   },
   "dependencies": {
-    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.6.0/cogni-dao-knowledge-store-0.6.0.tgz",
-    "@cogni/ai-tools": "workspace:*"
+    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.8.0/cogni-dao-knowledge-store-0.8.0.tgz",
+    "@cogni/ai-tools": "workspace:*",
+    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.4.0/cogni-dao-work-items-0.4.0.tgz"
   }
 }

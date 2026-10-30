@@ -65,6 +65,10 @@ All require `Authorization: Bearer ${SCHEDULER_API_TOKEN}`.
 - **Internal:** `@cogni/ai-core`, `@cogni/aragon-osx`, `@cogni/node-core`
 - **External:** `zod`, `@ts-rest/core`
 
+## Adoption boundary
+
+WorkItemDtoSchema and KnowledgeRowSchema delegate to their published domain owners. knowledge.domains.v1.contract adds item GET/PATCH/DELETE operations with typed error bodies.
+
 ## Notes
 
 - Extracted from `apps/operator/src/contracts/` (task.0248 Phase 1)

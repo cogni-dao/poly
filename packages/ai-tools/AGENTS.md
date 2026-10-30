@@ -108,6 +108,10 @@ pnpm --filter @cogni/ai-tools build
 - Changes require updating `@cogni/langgraph-graphs` wrappers
 - Coordinate with TOOL_USE_SPEC.md invariants
 
+## Adoption boundary
+
+Read/query/search contracts and execution delegate to immutable shared-ai-tools. Local Zod 3 operators and the Poly bundle remain local; schema compilation accepts published Zod 4 read contracts.
+
 ## Notes
 
 - Per LANGGRAPH_AI.md: tool contracts live here, LangChain `tool()` wrappers in langgraph-graphs

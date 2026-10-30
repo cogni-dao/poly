@@ -26,6 +26,7 @@ import {
   buildKnowledgeGraph,
   type KnowledgeGraphModel,
   type KnowledgeStorePort,
+  toKnowledgeRow,
 } from "@cogni/knowledge-store";
 import {
   type DomainsListResponse,
@@ -48,7 +49,7 @@ export interface KnowledgeListOpts {
  */
 export async function loadKnowledgeList(
   port: KnowledgeStorePort,
-  opts: KnowledgeListOpts = {}
+  opts: KnowledgeListOpts = {},
 ): Promise<KnowledgeListResponse> {
   const allDomains = await port.listDomains();
   const targetDomains = opts.domain
@@ -57,27 +58,15 @@ export async function loadKnowledgeList(
 
   const perDomain = await Promise.all(
     targetDomains.map((d) =>
-      port.listKnowledge(d, opts.limit != null ? { limit: opts.limit } : {})
-    )
+      port.listKnowledge(d, opts.limit != null ? { limit: opts.limit } : {}),
+    ),
   );
 
   const items: KnowledgeRow[] = [];
   for (const rows of perDomain) {
     for (const r of rows) {
       if (opts.sourceType && r.sourceType !== opts.sourceType) continue;
-      items.push({
-        id: r.id,
-        domain: r.domain,
-        entityId: r.entityId ?? null,
-        title: r.title,
-        content: r.content,
-        entryType: r.entryType ?? "finding",
-        confidencePct: r.confidencePct ?? null,
-        sourceType: r.sourceType,
-        sourceRef: r.sourceRef ?? null,
-        tags: r.tags ?? null,
-        createdAt: r.createdAt ? r.createdAt.toISOString() : null,
-      });
+      items.push(toKnowledgeRow(r));
       if (opts.limit != null && items.length >= opts.limit) break;
     }
     if (opts.limit != null && items.length >= opts.limit) break;
@@ -88,7 +77,7 @@ export async function loadKnowledgeList(
 
 /** Registered domains + entry counts. Mirrors GET /api/v1/knowledge/domains. */
 export async function loadDomains(
-  port: KnowledgeStorePort
+  port: KnowledgeStorePort,
 ): Promise<DomainsListResponse> {
   const domains = await port.listDomainsFull();
   return DomainsListResponseSchema.parse({ domains });
@@ -100,7 +89,7 @@ export async function loadDomains(
  * assembles nodes/edges via the shared `buildKnowledgeGraph`.
  */
 export async function loadKnowledgeGraph(
-  port: KnowledgeStorePort
+  port: KnowledgeStorePort,
 ): Promise<KnowledgeGraphModel> {
   const [domains, nodes, citations] = await Promise.all([
     port.listDomains(),

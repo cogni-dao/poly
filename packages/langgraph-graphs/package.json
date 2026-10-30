@@ -47,7 +47,10 @@
     "@langchain/mcp-adapters": "^1.1.3",
     "@langchain/openai": "^1.2.2",
     "langchain": "^1.2.0",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "@cogni/shared-langgraph-graphs": "https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.2.1/cogni-dao-langgraph-graphs-0.2.1.tgz",
+    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.4.0/cogni-dao-work-items-0.4.0.tgz",
+    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.8.0/cogni-dao-knowledge-store-0.8.0.tgz"
   },
   "devDependencies": {
     "@langchain/langgraph-cli": "^1.1.11",
