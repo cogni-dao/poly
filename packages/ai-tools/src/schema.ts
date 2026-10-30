@@ -14,6 +14,10 @@
  */
 
 import type { ToolSpec } from "@cogni/ai-core";
+import {
+  type ToolContract as SharedToolContract,
+  toToolSpec as sharedToToolSpec,
+} from "@cogni/shared-ai-tools";
 import type { JSONSchema7 } from "json-schema";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
@@ -37,8 +41,13 @@ export interface ToToolSpecResult {
  * @returns Result with spec and any warnings
  */
 export function toToolSpec(
-  contract: ToolContract<string, unknown, unknown, unknown>
+  contract: ToolContract<string, unknown, unknown, unknown>,
 ): ToToolSpecResult {
+  if ("_zod" in contract.inputSchema) {
+    return sharedToToolSpec(
+      contract as SharedToolContract<string, unknown, unknown, unknown>,
+    );
+  }
   const rawSchema = zodToJsonSchema(contract.inputSchema, {
     $refStrategy: "none",
   });
@@ -79,7 +88,7 @@ export interface ToToolSpecsResult {
  * @returns Result with specs and aggregated warnings
  */
 export function toToolSpecs(
-  contracts: ReadonlyArray<ToolContract<string, unknown, unknown, unknown>>
+  contracts: ReadonlyArray<ToolContract<string, unknown, unknown, unknown>>,
 ): ToToolSpecsResult {
   const allWarnings: string[] = [];
   const specs = contracts.map((contract) => {

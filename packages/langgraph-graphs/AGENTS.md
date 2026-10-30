@@ -115,6 +115,10 @@ pnpm --filter @cogni/langgraph-graphs test
 - Changes to graph contracts require updating `src/adapters/server/ai/langgraph/inproc.provider.ts`
 - Coordinate with LANGGRAPH_AI.md invariants
 
+## Adoption boundary
+
+Generic LangChain tool wrapping delegates to the immutable shared-langgraph-graphs runtime; Poly graph factories, catalogs and ALS context stay local.
+
 ## Notes
 
 - Per NO_LANGCHAIN_IN_SRC: `src/**` cannot import `@langchain/*` — only this package

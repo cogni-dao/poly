@@ -17,6 +17,7 @@
  */
 
 import type { ToolEffect } from "@cogni/ai-core";
+import type { ToolContract as SharedToolContract } from "@cogni/shared-ai-tools";
 import type { z } from "zod";
 
 /**
@@ -74,11 +75,15 @@ export interface ToolContract<
    * Zod schema for input validation.
    * Source of truth — used by LangChain wrappers and compiled to JSONSchema7.
    */
-  readonly inputSchema: z.ZodType<TInput>;
+  readonly inputSchema:
+    | z.ZodType<TInput>
+    | SharedToolContract<TName, TInput, TOutput, TRedacted>["inputSchema"];
   /**
    * Zod schema for output validation.
    */
-  readonly outputSchema: z.ZodType<TOutput>;
+  readonly outputSchema:
+    | z.ZodType<TOutput>
+    | SharedToolContract<TName, TInput, TOutput, TRedacted>["outputSchema"];
   /** Redact output to UI-safe fields */
   readonly redact: (output: TOutput) => TRedacted;
   /** Allowlisted fields that appear in redacted output */

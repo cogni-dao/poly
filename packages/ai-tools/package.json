@@ -7,8 +7,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
+      "import": "./dist/bundled/index.js",
+      "default": "./dist/bundled/index.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "postbuild": "node -e \"const fs=require('fs'); if(!fs.existsSync('dist/index.js')){console.error('ERROR: dist/index.js missing'); process.exit(1)}\"",
+    "postbuild": "node -e \"const fs=require('fs'); if(!fs.existsSync('dist/bundled/index.js')){console.error('ERROR: dist/bundled/index.js missing'); process.exit(1)}\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
@@ -27,7 +27,10 @@
     "@cogni/ai-core": "workspace:*",
     "@types/json-schema": "^7.0.15",
     "zod": "^3.24.1",
-    "zod-to-json-schema": "^3.24.1"
+    "zod-to-json-schema": "^3.24.1",
+    "@cogni/shared-ai-tools": "https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.3.0/cogni-dao-ai-tools-0.3.0.tgz",
+    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.4.0/cogni-dao-work-items-0.4.0.tgz",
+    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.8.0/cogni-dao-knowledge-store-0.8.0.tgz"
   },
   "devDependencies": {
     "tsup": "^8.5.1",

@@ -19,7 +19,7 @@ import type {
 	WorkItemsListOutput,
 } from "@cogni/node-contracts";
 import type { WorkItem } from "@cogni/work-items";
-import { rankScore, toWorkItemId, WorkItemScoresInvalidError } from "@cogni/work-items";
+import { toWorkItemDto, toWorkItemId, WorkItemScoresInvalidError } from "@cogni/work-items";
 import { WorkItemRevisionConflictError, WorkItemWriteOutcomeUnknownError } from "@cogni/work-items/adapters/doltgres";
 export { WorkItemScoresInvalidError, WorkItemRevisionConflictError, WorkItemWriteOutcomeUnknownError };
 import { getContainer } from "@/bootstrap/container";
@@ -93,40 +93,7 @@ function nextActionForWorkItem(item: WorkItem): string | null {
 	}
 }
 
-function toDto(item: WorkItem): WorkItemDto {
-	return {
-		id: item.id as string,
-		type: item.type,
-		title: item.title,
-		status: item.status,
-		...(item.actor !== "either" && { actor: item.actor }),
-		priority: item.priority,
-		rank: item.rank,
-		estimate: item.estimate,
-		scores: item.scores,
-		rankScore: rankScore(item.scores),
-		summary: item.summary,
-		outcome: item.outcome,
-		projectId: item.projectId as string | undefined,
-		parentId: item.parentId as string | undefined,
-		node: item.node,
-		assignees: item.assignees as WorkItemDto["assignees"],
-		externalRefs: item.externalRefs as WorkItemDto["externalRefs"],
-		labels: item.labels as string[],
-		specRefs: item.specRefs as string[],
-		branch: item.branch,
-		pr: item.pr,
-		reviewer: item.reviewer,
-		revision: item.revision,
-		blockedBy: item.blockedBy as string | undefined,
-		deployVerified: item.deployVerified,
-		claimedByRun: item.claimedByRun,
-		claimedAt: item.claimedAt,
-		lastCommand: item.lastCommand,
-		createdAt: item.createdAt,
-		updatedAt: item.updatedAt,
-	};
-}
+const toDto = toWorkItemDto;
 
 type StripUndefined<T> = {
 	[K in keyof T]?: Exclude<T[K], undefined>;

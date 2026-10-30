@@ -14,6 +14,7 @@
  * @public
  */
 
+import type { CatalogBoundTool as SharedCatalogBoundTool } from "@cogni/shared-ai-tools";
 import { edoDecideBoundTool } from "./tools/edo-decide";
 import { edoHypothesizeBoundTool } from "./tools/edo-hypothesize";
 import { edoRecordOutcomeBoundTool } from "./tools/edo-record-outcome";
@@ -41,12 +42,9 @@ import type { BoundTool } from "./types";
  * Generic bound tool type for catalog entries.
  * Uses widened types to allow any conforming BoundTool.
  */
-export type CatalogBoundTool = BoundTool<
-  string,
-  unknown,
-  unknown,
-  Record<string, unknown>
->;
+export type CatalogBoundTool =
+  | BoundTool<string, unknown, unknown, Record<string, unknown>>
+  | SharedCatalogBoundTool;
 
 /**
  * Tool catalog type.
@@ -71,7 +69,7 @@ export type ToolCatalog = Readonly<Record<string, CatalogBoundTool>>;
  * ```
  */
 export function createToolCatalog(
-  tools: readonly CatalogBoundTool[]
+  tools: readonly CatalogBoundTool[],
 ): ToolCatalog {
   const catalog: Record<string, CatalogBoundTool> = {};
 
@@ -82,7 +80,7 @@ export function createToolCatalog(
     if (toolId in catalog) {
       throw new Error(
         `TOOL_ID_STABILITY violation: Duplicate tool ID "${toolId}" in catalog. ` +
-          "Tool IDs must be unique. Check for duplicate registrations."
+          "Tool IDs must be unique. Check for duplicate registrations.",
       );
     }
 

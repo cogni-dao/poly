@@ -16,6 +16,8 @@ import { defineConfig } from "tsup";
 export const tsupConfig = defineConfig({
   entry: ["src/index.ts"],
   format: ["esm"],
+  // tsc -b emits unbundled JS into dist; native ESM must keep using the bundle.
+  outDir: "dist/bundled",
   dts: false, // tsc -b emits per-file declarations; tsup handles JS only
   clean: false, // preserve .d.ts files from tsc -b (incremental builds)
   sourcemap: true,
