@@ -13,7 +13,7 @@
 
 import type { ReactNode } from "react";
 
-import { AppShell } from "@/features/layout/components/AppShell";
+import { AppShell } from "@/features/layout";
 import { getBrandMark } from "@/shared/config/repoSpec.server";
 
 export default function AppLayout({

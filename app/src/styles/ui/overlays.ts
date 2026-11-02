@@ -33,7 +33,9 @@ export const brainLoadingSpectrum = cva(
   "brain-loading-spectrum block size-full motion-safe:animate-spin"
 );
 
-export const brainLoadingTrack = cva("absolute inset-0 size-20 text-foreground/70");
+export const brainLoadingTrack = cva(
+  "absolute inset-0 size-20 text-foreground/70"
+);
 
 export const brainLoadingMark = cva("brain-loading-mark size-12");
 

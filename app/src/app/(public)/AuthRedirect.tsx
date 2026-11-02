@@ -17,8 +17,8 @@
 
 import { useSession } from "next-auth/react";
 import { useEffect } from "react";
-import { BrainLoading } from "@/components/kit/feedback/BrainLoading";
-import { AppShell } from "@/features/layout/components/AppShell";
+import { BrainLoading } from "@/components";
+import { AppShell } from "@/features/layout";
 import type { BrandMark } from "@/shared/config/repoSpec.server";
 
 export function AuthRedirect({
