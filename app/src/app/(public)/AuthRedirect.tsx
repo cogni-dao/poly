@@ -16,24 +16,31 @@
 "use client";
 
 import { useSession } from "next-auth/react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import { BrainLoading } from "@/components/kit/feedback/BrainLoading";
+import { AppShell } from "@/features/layout/components/AppShell";
+import type { BrandMark } from "@/shared/config/repoSpec.server";
 
-export function AuthRedirect(): React.JSX.Element | null {
+export function AuthRedirect({
+  brandMark,
+}: {
+  brandMark: BrandMark;
+}): React.JSX.Element | null {
   const { status } = useSession();
-  const [redirecting, setRedirecting] = useState(false);
 
   useEffect(() => {
     if (status === "authenticated") {
-      setRedirecting(true);
       window.location.replace("/dashboard");
     }
   }, [status]);
 
-  if (!redirecting) return null;
+  if (status !== "authenticated") return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
-      <p className="text-muted-foreground text-sm">Redirecting…</p>
+    <div className="fixed inset-0 z-50 overflow-hidden bg-background">
+      <AppShell brandMark={brandMark}>
+        <BrainLoading />
+      </AppShell>
     </div>
   );
 }

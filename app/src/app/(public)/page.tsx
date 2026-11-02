@@ -18,6 +18,7 @@ import { BrainFeed } from "@/components/BrainFeed";
 import { Hero } from "@/components/Hero";
 import { MarketCards } from "@/components/MarketCards";
 import { getServerSessionUser } from "@/lib/auth/server";
+import { getBrandMark } from "@/shared/config/repoSpec.server";
 
 import { AuthRedirect } from "./AuthRedirect";
 
@@ -29,7 +30,7 @@ export default async function HomePage(): Promise<ReactElement> {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <AuthRedirect />
+      <AuthRedirect brandMark={getBrandMark()} />
       <Hero />
       <MarketCards />
       <BrainFeed />
