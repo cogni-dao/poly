@@ -2,6 +2,7 @@
 # node-deploy verb. `POST /api/v1/deploy/workloads {nodeId, env, workload: "poly", sourceSha}`
 # reads this file at sourceSha. Image "." = the image this repo's CI built at that sha.
 # Runtime env and secrets come from the operator (OpenBao custody), never from this file.
+# Each merge to main ships through that one verb (story.5127): build once, blue/green, exact SHA.
 apiVersion: score.dev/v1b1
 metadata:
   # The workload is named for the node: the actuator binds poly's dedicated database cell to the
