@@ -4,22 +4,17 @@
 /**
  * Module: `@app/(app)/chat/page`
  * Purpose: Server entrypoint for the chat page.
- * Scope: Server component only; delegates all client-side behavior to ChatView. Suspense boundary required for useSearchParams().
- * Invariants: Auth enforced by (app) layout guard.
+ * Scope: Server component only; delegates all client-side behavior to ChatView. Route loading boundary covers useSearchParams().
+ * Invariants: Auth enforced by proxy.
  * Side-effects: none (server render only)
  * Links: src/app/(app)/chat/view.tsx
  * @public
  */
 
 import type { ReactElement } from "react";
-import { Suspense } from "react";
 
 import { ChatView } from "./view";
 
 export default function ChatPage(): ReactElement {
-  return (
-    <Suspense>
-      <ChatView />
-    </Suspense>
-  );
+  return <ChatView />;
 }

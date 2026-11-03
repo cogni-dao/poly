@@ -30,7 +30,7 @@ App-shell layout components: header, footer, sidebar, and top bar. Composes kit/
 
 ## Public Surface
 
-- **Exports:** `AccountSlot`, `AppHeader`, `AppFooter`, `AppSidebar`, `AppTopBar` via `index.ts`
+- **Exports:** `AccountSlot`, `AppHeader`, `AppFooter`, `AppShell`, `AppSidebar`, `AppTopBar` via `index.ts`
 - **Files considered API:** `index.ts`
 
 ## Responsibilities
@@ -49,6 +49,7 @@ pnpm build
 
 - All vendor/shadcn imports must go through `@/components` barrel — never import vendor paths directly.
 - Sidebar tokens (`sidebar-*`) are part of the design system (registered in ESLint allowlist).
+- `AppShell` is shared by protected pages and the authenticated handoff; preserve their geometry.
 - `AppSidebar` uses Zustand store (`useChatSidebarStore`) to bridge chat thread state from the chat page — sidebar is a sibling of content, not an ancestor.
 
 ## Dependencies

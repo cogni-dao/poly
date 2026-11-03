@@ -23,7 +23,7 @@ Provides reusable feedback UI components for error states, loading indicators, a
 ```json
 {
   "layer": "components",
-  "may_import": ["shared", "types"],
+  "may_import": ["shared", "types", "styles"],
   "must_not_import": [
     "app",
     "features",
@@ -37,8 +37,8 @@ Provides reusable feedback UI components for error states, loading indicators, a
 
 ## Public Surface
 
-- **Exports (via index.ts and ../index.ts):** ErrorAlert
-- **Files considered API:** ErrorAlert.tsx, index.ts
+- **Exports (via `@/components`):** ErrorAlert, BrainLoading
+- **Files considered API:** ErrorAlert.tsx, BrainLoading.tsx
 
 ## Responsibilities
 
@@ -67,7 +67,8 @@ import { ErrorAlert } from "@/components";
 - Generic components only (no contract imports)
 - Semantic tokens for all styling
 - Support deduplication (same error code shown once)
-- Export through parent index.ts
+- Export through `@/components`
+- `BrainLoading` provides a wordless accessible status; keep its mark stationary and respect reduced motion
 - Action buttons are optional props (consumers control visibility)
 
 ## Dependencies
@@ -77,7 +78,7 @@ import { ErrorAlert } from "@/components";
 
 ## Change Protocol
 
-- Update index.ts and parent index.ts when adding component exports
+- Update the `@/components` barrel when adding component exports
 - Prop changes are breaking (require consumer updates)
 - Keep components domain-agnostic (presenters receive primitive props)
 
