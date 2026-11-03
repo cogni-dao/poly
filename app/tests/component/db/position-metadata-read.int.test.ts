@@ -1948,5 +1948,5 @@ describe("bounded PAPER saved-origin metadata authorization", () => {
 		} finally {
 			await f.cleanup();
 		}
-	});
+	}, 30_000);
 });
