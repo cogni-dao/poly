@@ -1,0 +1,39 @@
+# Workload manifest (hub `workload-manifest`, task.5272): Red's code-execution sandbox (OpenSandbox execd
+# behind Caddy, services/sandbox) as its OWN lease, so a sandbox resize or re-mint never touches the app.
+# It is a worker: the operator gives it ONLY the secret_refs of the `sandbox` service in
+# .cogni/repo-spec.yaml (SANDBOX_EXECD_TOKEN, from OpenBao), never the app's database or auth secrets.
+# The app derives this origin from its own host (`red.cognidao.org` -> `red-sandbox.cognidao.org`;
+# candidate-a `red-sandbox-test`, preview `red-sandbox-preview`), so the sandbox keeps a route on that
+# host. Execd enforces the token on every request except /version and /readyz.
+#
+# The image is digest-pinned (image "." is the app image). When services/sandbox changes, bump the digest
+# to the `ghcr.io/cogni-dao/red-sandbox:sha-<commit>` image CI built for that commit.
+apiVersion: score.dev/v1b1
+metadata:
+  name: sandbox
+  annotations:
+    cogni.dev/exclusive: "false"
+    cogni.dev/ephemeral-storage: 5Gi
+containers:
+  sandbox:
+    image: ghcr.io/cogni-dao/red-sandbox@sha256:34118061741a75bd08b134cfd8a1614044ec8460a198ddd81bb2ddb52cdbebc0
+    resources:
+      requests:
+        cpu: "1"
+        memory: 1024Mi
+    readinessProbe:
+      httpGet:
+        path: /readyz
+        port: 8080
+service:
+  ports:
+    web:
+      port: 80
+      targetPort: 8080
+resources:
+  web:
+    type: route
+    params:
+      host: red-sandbox.cognidao.org
+      path: /
+      port: 80

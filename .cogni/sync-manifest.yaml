@@ -46,3 +46,6 @@ node_local:
   # described the template it was minted from. A README is the first thing a human or
   # an agent reads on the repo; by the rule above it is identity, not substrate.
   - "README.md"
+  # Workload manifests name this node's own production hosts and images; fork-sync must never copy
+  # another node's (story.5137, hub `deploy-a-declared-workload`).
+  - ".cogni/workloads/**"
