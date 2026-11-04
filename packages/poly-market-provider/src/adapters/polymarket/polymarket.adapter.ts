@@ -34,6 +34,10 @@ const DEFAULT_GAMMA_BASE_URL = "https://gamma-api.polymarket.com";
 export interface PolymarketAdapterConfig extends MarketProviderConfig {
   /** Gamma API base URL (default: https://gamma-api.polymarket.com) */
   baseUrl?: string;
+  /** Optional caller lifetime, including response body reads. */
+  signal?: AbortSignal;
+  /** Native HTTP injection for bounded callers and tests. */
+  fetchImpl?: typeof fetch;
 }
 
 /**
@@ -44,9 +48,13 @@ export interface PolymarketAdapterConfig extends MarketProviderConfig {
 export class PolymarketAdapter implements MarketProviderPort {
   readonly provider = "polymarket" as const;
   private readonly baseUrl: string;
+  private readonly signal: AbortSignal | undefined;
+  private readonly fetchImpl: typeof fetch;
 
   constructor(config?: PolymarketAdapterConfig) {
     this.baseUrl = config?.baseUrl ?? DEFAULT_GAMMA_BASE_URL;
+    this.signal = config?.signal;
+    this.fetchImpl = config?.fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
   async listMarkets(params?: ListMarketsParams): Promise<NormalizedMarket[]> {
@@ -65,7 +73,8 @@ export class PolymarketAdapter implements MarketProviderPort {
       url.searchParams.set("_q", params.search);
     }
 
-    const response = await fetch(url.toString());
+    this.signal?.throwIfAborted();
+    const response = await this.fetchImpl(url.toString(), { ...(this.signal ? { signal: this.signal } : {}) });
     if (!response.ok) {
       throw new Error(
         `Polymarket API error: ${response.status} ${response.statusText}`
@@ -73,6 +82,7 @@ export class PolymarketAdapter implements MarketProviderPort {
     }
 
     const json: unknown = await response.json();
+    this.signal?.throwIfAborted();
     const raw = PolymarketMarketsResponseSchema.parse(json);
 
     return raw.map(normalizePolymarketMarket);

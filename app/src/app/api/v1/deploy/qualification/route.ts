@@ -2,7 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 /** One bounded service-authenticated proof capability; no human-session or account wire input. */
 import { NextResponse } from "next/server";
-import { qualifyDeployment } from "@/app/_facades/deploy-qualification.server";
+import {
+	authenticateQualification,
+	qualifyDeployment,
+} from "@/app/_facades/deploy-qualification.server";
+import { readQualificationBody } from "@/app/_lib/qualification-body";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { qualificationOperation } from "@/contracts/deploy.qualification.v1.contract";
 import { QualificationError } from "@/features/deploy-qualification/challenge";
@@ -12,16 +16,23 @@ export const dynamic = "force-dynamic";
 export const POST = wrapRouteHandlerWithLogging(
 	{ routeId: "deploy.qualification", auth: { mode: "none" } },
 	async (ctx, request) => {
+		const controller = new AbortController();
+		const deadlineAt = Date.now() + 19000;
+		const timer = setTimeout(
+			() => controller.abort(new QualificationError("qualification_timeout")),
+			19000,
+		);
+		const signal = AbortSignal.any([controller.signal, request.signal]);
 		try {
-			const parsed = qualificationOperation.input.safeParse(
-				await request.json(),
-			);
-			if (!parsed.success)
-				return NextResponse.json({ error: "invalid_request" }, { status: 400 });
-			const result = await qualifyDeployment(
+			const challenge = await authenticateQualification(
 				request.headers.get("authorization"),
-				parsed.data.mode,
 			);
+			signal.throwIfAborted();
+			const body = await readQualificationBody(request, signal);
+			if (body.mode !== challenge.mode)
+				throw new QualificationError("qualification_auth_invalid", 401);
+			signal.throwIfAborted();
+			const result = await qualifyDeployment(challenge, signal, deadlineAt);
 			ctx.log.info(
 				{
 					client_order_id: result.evidenceId,
@@ -42,6 +53,7 @@ export const POST = wrapRouteHandlerWithLogging(
 				headers: { "cache-control": "no-store" },
 			});
 		} catch (error) {
+			if (!request.body?.locked) void request.body?.cancel().catch(() => {});
 			const known = error instanceof QualificationError;
 			ctx.log.warn(
 				{ error: known ? error.code : "qualification_failed" },
@@ -51,6 +63,8 @@ export const POST = wrapRouteHandlerWithLogging(
 				{ error: known ? error.code : "qualification_failed" },
 				{ status: known ? error.status : 503 },
 			);
+		} finally {
+			clearTimeout(timer);
 		}
 	},
 );

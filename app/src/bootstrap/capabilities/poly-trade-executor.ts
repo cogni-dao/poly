@@ -440,7 +440,7 @@ export function createPolyTradeExecutorFactory(
     billingAccountId: string,
     venue: "live" | "paper"
   ) => Promise<PolyTradeExecutor>;
-  getBoundedPaperExecutor: (billingAccountId: string, signal: AbortSignal) => Promise<PolyTradeExecutor>;
+  getBoundedPaperExecutor: (billingAccountId: string, signal: AbortSignal, scoped?: Pick<PolyTradeExecutorFactoryDeps, "resolveExecutionVenue" | "paperVenue">) => Promise<PolyTradeExecutor>;
   invalidatePolyTradeExecutorFor: (billingAccountId: string) => void;
 } {
   const cache = new Map<string, CachedExecutor>();
@@ -501,13 +501,14 @@ export function createPolyTradeExecutorFactory(
   return {
     getPolyTradeExecutorFor,
     getPolyTradeExecutorForVenue,
-    async getBoundedPaperExecutor(billingAccountId, signal) {
+    async getBoundedPaperExecutor(billingAccountId, signal, scoped) {
+      const boundedDeps = { ...deps, ...scoped, paperAbortSignal: signal };
       signal.throwIfAborted();
-      if (await deps.resolveExecutionVenue(billingAccountId) !== "paper") {
+      if (await boundedDeps.resolveExecutionVenue(billingAccountId) !== "paper") {
         throw new PolyTradeExecutorError("not_authorized", "Qualification requires a paper-only account");
       }
       signal.throwIfAborted();
-      return (await buildPaperOnlyExecutor(billingAccountId, { ...deps, paperAbortSignal: signal })).executor;
+      return (await buildPaperOnlyExecutor(billingAccountId, boundedDeps)).executor;
     },
     invalidatePolyTradeExecutorFor,
   };
@@ -991,7 +992,9 @@ async function buildPaperOnlyExecutor(
   }
   // Throws `PaperAccountUnavailableError` when the paper row vanished between
   // venue resolution and here (a revoke mid-build). Fail, never substitute.
+  deps.paperAbortSignal?.throwIfAborted();
   const account = await paperVenue.resolveAccount(billingAccountId);
+  deps.paperAbortSignal?.throwIfAborted();
   const funderAddress = account.funderAddress;
 
   const { PolymarketClobAdapter } = await import(
@@ -1003,6 +1006,8 @@ async function buildPaperOnlyExecutor(
   const { createWalletClient, http } = await import("viem");
   const { privateKeyToAccount } = await import("viem/accounts");
   const { polygon } = await import("viem/chains");
+
+  deps.paperAbortSignal?.throwIfAborted();
 
   // Stable, well-known throwaway private key. Used only to satisfy the
   // ClobClient SDK constructor's signer requirement — the paper venue never

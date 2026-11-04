@@ -7,7 +7,7 @@ import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import pino from "pino";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { getAppDb } from "@/adapters/server/db/client";
 import { ledgerCountedIntentUsdc } from "@/features/trading/ledger-lifecycle";
 import { createOrderLedger } from "@/features/trading/order-ledger";
@@ -17,6 +17,11 @@ import {
 	PositionCapReachedError,
 } from "@/features/trading/order-ledger.types";
 import { billingAccounts, polyCopyTradeFills, users } from "@/shared/db/schema";
+
+const qualificationExecutor = vi.hoisted(() => vi.fn());
+vi.mock("@/bootstrap/container", () => ({ getContainer: () => ({
+  log: pino({ enabled: false }), getBoundedPaperExecutor: qualificationExecutor,
+}) }));
 
 const observed = new Date("2026-10-01T00:00:00Z");
 const deny = {
@@ -545,6 +550,67 @@ describe("release qualification claim (real PostgreSQL)", () => {
     const saved = await restarted.readOperation(input.target_id, input.fill_id);
     expect(saved).toMatchObject({ order_id: null, mode: "paper", attributes: { release_qualification: { allocation: "allocation-a", helper: { bootId: "boot-a" } } } });
     expect(await restarted.claimPending(input)).toEqual({ inserted: false, mode: "paper" });
+  });
+  it("saves only the exact tenant PK even when other rows share its client id", async () => {
+    const h = await harness("paper"), other = await harness("paper");
+    const input = h.intent(), foreignInput = other.intent(), sibling = h.intent();
+    foreignInput.intent.client_order_id = input.intent.client_order_id;
+    sibling.intent.client_order_id = input.intent.client_order_id;
+    await h.tenant.claimPending(input);
+    await other.tenant.claimPending(foreignInput);
+    await h.tenant.claimPending(sibling);
+    const before = await h.db.select().from(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, input.intent.client_order_id));
+    const receipt = {
+      client_order_id: input.intent.client_order_id, order_id: "real-paper-receipt",
+      status: "partial" as const, submitted_at: observed.toISOString(),
+      filled_size_usdc: 0.5, fill_price: 0.25, total_shares: 2, fees_usdc: 0,
+    };
+    await h.tenant.markReceipt(input.target_id, input.fill_id, receipt);
+    expect(await h.tenant.readOperation(input.target_id, input.fill_id)).toMatchObject({
+      order_id: "real-paper-receipt", status: "partial", executed_shares: 2,
+      attributes: { filled_size_usdc: 0.5, realized_fill_source: "paper_order_receipt" },
+    });
+    const after = await h.db.select().from(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, input.intent.client_order_id));
+    for (const original of before.filter(row => row.fillId !== input.fill_id))
+      expect(after.find(row => row.fillId === original.fillId)).toEqual(original);
+    const wrongPrincipal = h.ledger.forTenant({ billing_account_id: h.account, created_by_user_id: foreignInput.created_by_user_id });
+    await expect(wrongPrincipal.markReceipt(input.target_id, input.fill_id, { ...receipt, order_id: "forged" })).rejects.toThrow("ledger_receipt_not_found");
+    expect((await h.tenant.readOperation(input.target_id, input.fill_id))?.order_id).toBe("real-paper-receipt");
+  });
+  it("aborts a native blocked fixture read without closing the shared pool or dispatching later", async () => {
+    const { resolveQualificationDependencies } = await import("@/bootstrap/qualification");
+    const h = await harness("paper"), input = h.intent();
+    let release!: () => void, locked!: () => void;
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const blocker = h.db.transaction(async tx => {
+      await tx.execute(sql`LOCK TABLE billing_accounts IN ACCESS EXCLUSIVE MODE`);
+      locked();
+      await held;
+    });
+    await acquired;
+    const controller = new AbortController();
+    const deadlineAt = Date.now() + 250;
+    qualificationExecutor.mockClear();
+    const deps = resolveQualificationDependencies({ accountId: h.account, ownerId: input.created_by_user_id }, "http://127.0.0.1:9100", controller.signal, deadlineAt);
+    expect(() => resolveQualificationDependencies({ accountId: h.account, ownerId: input.created_by_user_id }, "http://127.0.0.1:9100", controller.signal, deadlineAt)).toThrow("qualification_busy");
+    const timer = setTimeout(() => controller.abort(new Error("action deadline")), 250);
+    try {
+      const started = Date.now();
+      await expect(deps.checkFixture()).rejects.toThrow();
+      await deps.dispose();
+      expect(Date.now() - started).toBeLessThan(1500);
+    } finally {
+      clearTimeout(timer);
+      await deps.dispose();
+      release();
+      await blocker;
+    }
+    // The action's native connection was closed; other tenants' app pool survives.
+    await expect(getAppDb().execute(sql`SELECT 1 AS ok`)).resolves.toMatchObject([{ ok: 1 }]);
+    expect(qualificationExecutor).not.toHaveBeenCalled();
+    const next = resolveQualificationDependencies({ accountId: h.account, ownerId: input.created_by_user_id }, "http://127.0.0.1:9100", new AbortController().signal, Date.now() + 1000);
+    await next.dispose();
   });
   it("RLS refuses another owner's claim and operation read", async () => {
     const h = await harness("paper"), other = await harness("paper");

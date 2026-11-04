@@ -502,6 +502,9 @@ export interface TenantOrderLedger {
   /** Exact immutable operation lookup, RLS-scoped; no dispatch authority. */
   readOperation(target_id: string, fill_id: string): Promise<LedgerRow | null>;
 
+  /** Save normal receipt accounting on the exact tenant ledger PK under RLS. */
+  markReceipt(target_id: string, fill_id: string, receipt: import("@cogni/poly-market-provider").OrderReceipt): Promise<void>;
+
   /** True only for the committed insert winner; errors are never permission to dispatch. */
   claimPending(input: TenantScopedInsertPendingInput): Promise<{ inserted: boolean; mode: LedgerMode }>;
 

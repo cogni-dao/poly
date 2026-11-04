@@ -107,6 +107,8 @@ export const SNAPSHOT_DEDUP_ROW_CAP = 5000;
 
 /** Dependencies injected at the `bootstrap/container.ts` boundary. */
 export interface OrderLedgerDeps {
+  /** Optional common action deadline; the caller owns/cancels the injected DB client. */
+  tenantLifetime?: { signal: AbortSignal; deadlineAt: number };
   /**
    * Drizzle client used by the LEGACY root surface — `serviceDb` (BYPASSRLS).
    * Every per-tenant op carries an explicit `billing_account_id` filter
@@ -336,14 +338,16 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
       );
     }
     const actor = userActor(toUserId(ctx.created_by_user_id));
+    const scoped = <T>(fn: Parameters<typeof withTenantScope<T, Record<string, unknown>>>[2]) =>
+      withTenantScope(appDb, actor, fn, deps.tenantLifetime);
     return {
       snapshotState: (target_id) =>
-        withTenantScope(appDb, actor, async (tx) =>
+        scoped(async (tx) =>
 					snapshotStateOnDb(tx, target_id, ctx.billing_account_id),
         ),
       cumulativeIntentForMarketToken: (market_id, token_id) =>
         cumulativeIntentFailClosed(
-          () => withTenantScope(appDb, actor, async (tx) =>
+          () => scoped(async (tx) =>
             cumulativeIntentImpl(tx, ctx.billing_account_id, market_id, token_id),
           ),
           ctx.billing_account_id,
@@ -351,7 +355,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           token_id,
         ),
       hasOpenForMarket: (args) =>
-        withTenantScope(appDb, actor, async (tx) =>
+        scoped(async (tx) =>
           hasOpenForMarketImpl(tx, {
             billing_account_id: ctx.billing_account_id,
             target_id: args.target_id,
@@ -359,7 +363,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 					}),
         ),
       findOpenForMarket: (args) =>
-        withTenantScope(appDb, actor, async (tx) =>
+        scoped(async (tx) =>
           findOpenForMarketImpl(tx, {
             billing_account_id: ctx.billing_account_id,
             target_id: args.target_id,
@@ -378,7 +382,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         // Venue read first, OUTSIDE the tenant transaction (see the `mode`
         // param docs on `insertPendingOnDb`).
         const mode = await deps.resolveExecutionMode(ctx.billing_account_id);
-        await withTenantScope(appDb, actor, async (tx) =>
+        await scoped(async (tx) =>
           insertPendingOnDb(
             tx,
             {
@@ -392,7 +396,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         return mode;
       },
       readOperation: (target_id, fill_id) =>
-        withTenantScope(appDb, actor, async (tx) => {
+        scoped(async (tx) => {
           const [row] = await tx.select(LEDGER_ROW_COLUMNS).from(polyCopyTradeFills).where(and(
             eq(polyCopyTradeFills.billingAccountId, ctx.billing_account_id),
             eq(polyCopyTradeFills.targetId, target_id),
@@ -400,9 +404,18 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           )).limit(1);
           return row ? mapLedgerRow(row) : null;
         }),
+      markReceipt: (target_id, fill_id, receipt) =>
+        scoped((tx) => markReceiptOnDb(tx,
+          { client_order_id: receipt.client_order_id, receipt },
+          and(
+            eq(polyCopyTradeFills.billingAccountId, ctx.billing_account_id),
+            eq(polyCopyTradeFills.targetId, target_id),
+            eq(polyCopyTradeFills.fillId, fill_id),
+            eq(polyCopyTradeFills.clientOrderId, receipt.client_order_id),
+          ) ?? sql`false`, true)),
       claimPending: async (input: TenantScopedInsertPendingInput) => {
         const mode = await deps.resolveExecutionMode(ctx.billing_account_id);
-        const inserted = await withTenantScope(appDb, actor, async (tx) =>
+        const inserted = await scoped(async (tx) =>
           insertPendingOnDb(tx, {
             ...input,
             billing_account_id: ctx.billing_account_id,
@@ -416,7 +429,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
           input.mode_override ??
           (await deps.resolveExecutionMode(ctx.billing_account_id));
         const { mode_override: _modeOverride, ...decision } = input;
-        return withTenantScope(appDb, actor, async (tx) =>
+        return scoped(async (tx) =>
           recordDecisionOnDb(
             tx,
             {
@@ -1254,50 +1267,12 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     return observed;
   }
 
-  const root: OrderLedger = {
-    forTenant: buildTenantSurface,
-
-    // bug.5022 — legacy root entry point. Delegates to `snapshotStateOnDb`
-    // running on `deps.db` (serviceDb / BYPASSRLS). `forTenant(ctx).snapshotState`
-    // is the RLS-enforced canonical surface. Marked `@deprecated` in the
-    // OrderLedger interface; task.5012 migrates the remaining callers.
-    snapshotState(
-      target_id: string,
-			billing_account_id: string,
-    ): Promise<StateSnapshot> {
-      return snapshotStateOnDb(deps.db, target_id, billing_account_id);
-    },
-
-    // bug.5022 — legacy root entry point. Delegates to `cumulativeIntentImpl`
-    // running on `deps.db`. `forTenant(ctx).cumulativeIntentForMarketToken`
-    // is the RLS-enforced canonical surface.
-    cumulativeIntentForMarketToken(
-      billing_account_id: string,
-      market_id: string,
-      token_id: string,
-    ): Promise<number> {
-      return cumulativeIntentFailClosed(
-        () => cumulativeIntentImpl(deps.db, billing_account_id, market_id, token_id),
-        billing_account_id,
-        market_id,
-        token_id,
-      );
-    },
-
-    // bug.5022 — legacy root entry point. Delegates to `insertPendingOnDb`
-    // running on `deps.db`. `forTenant(ctx).insertPending` is the
-    // RLS-enforced canonical surface; both paths share one implementation.
-    async insertPending(input: InsertPendingInput): Promise<void> {
-      const mode = await deps.resolveExecutionMode(input.billing_account_id);
-      await insertPendingOnDb(deps.db, input, mode);
-    },
-
-    async markOrderId(params: {
-      client_order_id: string;
-      receipt: import("@cogni/poly-market-provider").OrderReceipt;
-    }): Promise<void> {
-      // Update by `client_order_id` — unique-by-construction across rows since
-      // cid is deterministic from `(target_id, fill_id)` (PK).
+  // Shared normal receipt accounting. Legacy COID callers retain their behavior;
+  // tenant callers supply the complete ledger PK plus the expected client id.
+  async function markReceiptOnDb(db: AnyDb, params: {
+    client_order_id: string;
+    receipt: import("@cogni/poly-market-provider").OrderReceipt;
+  }, predicate: import("drizzle-orm").SQL, requireVisible = false): Promise<void> {
       const status: LedgerRow["status"] = mapReceiptStatus(
 				params.receipt.status,
       );
@@ -1306,9 +1281,9 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         "clob_associated_trades"
           ? "clob_associated_trades"
           : undefined;
-      await deps.db.transaction(async (tx) => {
+      await db.transaction(async (tx: AnyDb) => {
         await tx.execute(
-					sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${polyCopyTradeFills.clientOrderId} = ${params.client_order_id} FOR UPDATE`,
+					sql`SELECT 1 FROM ${polyCopyTradeFills} WHERE ${predicate} FOR UPDATE`,
         );
         const [current] = await tx
           .select({
@@ -1320,9 +1295,12 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             status: polyCopyTradeFills.status,
           })
           .from(polyCopyTradeFills)
-          .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id))
+          .where(predicate)
           .limit(1);
-        if (!current) return;
+        if (!current) {
+          if (requireVisible) throw new Error("ledger_receipt_not_found");
+          return;
+        }
         const nextStatus = monotonicLedgerStatus(current.status, status);
         const positionLifecycle = lifecycleFromOrderUpdate(
           nextStatus,
@@ -1366,9 +1344,50 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             updatedAt: new Date(),
             attributes: sql`COALESCE(${polyCopyTradeFills.attributes}, '{}'::jsonb) || ${JSON.stringify(attributesPatch)}::jsonb`,
           })
-          .where(eq(polyCopyTradeFills.clientOrderId, params.client_order_id));
+          .where(predicate);
       });
+  }
+
+  const root: OrderLedger = {
+    forTenant: buildTenantSurface,
+
+    // bug.5022 — legacy root entry point. Delegates to `snapshotStateOnDb`
+    // running on `deps.db` (serviceDb / BYPASSRLS). `forTenant(ctx).snapshotState`
+    // is the RLS-enforced canonical surface. Marked `@deprecated` in the
+    // OrderLedger interface; task.5012 migrates the remaining callers.
+    snapshotState(
+      target_id: string,
+			billing_account_id: string,
+    ): Promise<StateSnapshot> {
+      return snapshotStateOnDb(deps.db, target_id, billing_account_id);
     },
+
+    // bug.5022 — legacy root entry point. Delegates to `cumulativeIntentImpl`
+    // running on `deps.db`. `forTenant(ctx).cumulativeIntentForMarketToken`
+    // is the RLS-enforced canonical surface.
+    cumulativeIntentForMarketToken(
+      billing_account_id: string,
+      market_id: string,
+      token_id: string,
+    ): Promise<number> {
+      return cumulativeIntentFailClosed(
+        () => cumulativeIntentImpl(deps.db, billing_account_id, market_id, token_id),
+        billing_account_id,
+        market_id,
+        token_id,
+      );
+    },
+
+    // bug.5022 — legacy root entry point. Delegates to `insertPendingOnDb`
+    // running on `deps.db`. `forTenant(ctx).insertPending` is the
+    // RLS-enforced canonical surface; both paths share one implementation.
+    async insertPending(input: InsertPendingInput): Promise<void> {
+      const mode = await deps.resolveExecutionMode(input.billing_account_id);
+      await insertPendingOnDb(deps.db, input, mode);
+    },
+
+    markOrderId: (params) => markReceiptOnDb(deps.db, params,
+      eq(polyCopyTradeFills.clientOrderId, params.client_order_id)),
 
     async markError(params: {
       client_order_id: string;

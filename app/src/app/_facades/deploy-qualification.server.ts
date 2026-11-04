@@ -3,6 +3,7 @@
 /** Authenticate service principal and bind only configured release-proof dependencies. */
 import { resolveQualificationDependencies } from "@/bootstrap/qualification";
 import {
+	type QualificationChallenge,
 	qualificationOperation,
 	qualificationSubject,
 } from "@/contracts/deploy.qualification.v1.contract";
@@ -15,19 +16,24 @@ import { qualifyRelease } from "@/features/deploy-qualification/service";
 import { getNodeId } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env";
 
-export async function qualifyDeployment(
-	authorization: string | null,
-	mode: "qualify" | "readback",
-) {
+export async function authenticateQualification(authorization: string | null) {
 	const env = serverEnv();
-	const c = await verifyQualificationChallenge({
+	return verifyQualificationChallenge({
 		authorization,
-		mode,
 		authSecret: env.AUTH_SECRET,
 		nodeId: getNodeId(),
 		env: env.DEPLOY_ENVIRONMENT,
 		sourceSha: env.APP_BUILD_SHA,
 	});
+}
+
+export async function qualifyDeployment(
+	c: QualificationChallenge,
+	signal: AbortSignal,
+	deadlineAt: number,
+) {
+	signal.throwIfAborted();
+	const env = serverEnv();
 	if (c.env === "production")
 		return qualificationOperation.output.parse({
 			...qualificationSubject.parse(c),
@@ -37,21 +43,15 @@ export async function qualifyDeployment(
 		});
 	if (!env.PAPER_SIDECAR_URL)
 		throw new QualificationError("paper_binding_missing");
-	const signal = AbortSignal.timeout(19000);
-	const operation = qualifyRelease(
-		c,
-		resolveQualificationDependencies(
-			qualificationFixtures[c.env],
-			env.PAPER_SIDECAR_URL,
-			signal,
-		),
+	const deps = resolveQualificationDependencies(
+		qualificationFixtures[c.env],
+		env.PAPER_SIDECAR_URL,
 		signal,
+		deadlineAt,
 	);
-	return new Promise<Awaited<typeof operation>>((resolve, reject) => {
-		const abort = () => reject(new QualificationError("qualification_timeout"));
-		signal.addEventListener("abort", abort, { once: true });
-		operation
-			.then(resolve, reject)
-			.finally(() => signal.removeEventListener("abort", abort));
-	});
+	try {
+		return await qualifyRelease(c, deps, signal);
+	} finally {
+		await deps.dispose();
+	}
 }

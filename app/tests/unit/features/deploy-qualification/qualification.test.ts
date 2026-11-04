@@ -120,6 +120,27 @@ describe("release qualification dispatch ownership", () => {
 				.clientOrderId,
 		);
 	});
+	it.each([false, true])("cancels a known open receipt after save fails (cancel also fails: %s)", async (cancelFails) => {
+    const { deps, state } = rig();
+    const failure = new Error("receipt persistence failed");
+    deps.save = vi.fn(async () => { throw failure; });
+    if (cancelFails) deps.cancel = vi.fn(async () => { throw new Error("cancel failed"); });
+    await expect(qualifyRelease(challenge, deps, signal())).rejects.toBe(failure);
+    expect(deps.cancel).toHaveBeenCalledExactlyOnceWith("venue-order-1", expect.any(AbortSignal));
+    expect(state.row).toMatchObject({ status: "pending", order_id: null });
+    await expect(qualifyRelease(challenge, { ...deps }, signal())).rejects.toThrow("qualification_receipt_missing");
+    expect(deps.place).toHaveBeenCalledTimes(1);
+    expect(deps.cancel).toHaveBeenCalledTimes(1);
+  });
+  it("retains a real saved open receipt when cancellation fails; retry is readback-only", async () => {
+    const { deps, state } = rig();
+    deps.cancel = vi.fn(async () => { throw new Error("cancel failed"); });
+    await expect(qualifyRelease(challenge, deps, signal())).rejects.toThrow("cancel failed");
+    expect(state.row).toMatchObject({ status: "open", order_id: "venue-order-1" });
+    await expect(qualifyRelease(challenge, { ...deps }, signal())).rejects.toThrow("qualification_receipt_missing");
+    expect(deps.place).toHaveBeenCalledTimes(1);
+    expect(deps.cancel).toHaveBeenCalledTimes(1);
+  });
 	it("allows at most one placement under concurrent qualification requests", async () => {
 		const { deps } = rig();
 		const results = await Promise.allSettled(
@@ -267,7 +288,7 @@ describe("release qualification dispatch ownership", () => {
 		const { deps, state } = rig();
 		const save = deps.save;
 		deps.save = async (receipt) => {
-			await save(receipt);
+			await save(receipt, qualificationOperationIds(deps.fixture.accountId, challenge.releaseId));
 			if (receipt.status === "canceled") state.boot = "boot-b";
 		};
 		await expect(qualifyRelease(challenge, deps, signal())).rejects.toThrow(
@@ -406,4 +427,51 @@ it("accepts null helper boot for excluded-companion production readback", async 
 	await expect(
 		verify(token, { env: "production", mode: "readback" }),
 	).resolves.toMatchObject({ env: "production", services: { app: image } });
+});
+
+
+describe("qualification native discovery cancellation", () => {
+  it.each(["headers", "body"] as const)("cancels discovery stalled at %s and cannot place later", async (stage) => {
+    const { PolymarketAdapter } = await import("../../../../../packages/poly-market-provider/src/adapters/polymarket/polymarket.adapter");
+    const { deps } = rig();
+    const controller = new AbortController();
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let released = false;
+    const blocked = () => new Promise<never>((_, reject) => {
+      entered();
+      controller.signal.addEventListener("abort", () => { released = true; reject(controller.signal.reason); }, { once: true });
+    });
+    const fetchImpl: typeof fetch = vi.fn(async (_url, init) => {
+      expect(init?.signal).toBe(controller.signal);
+      if (stage === "headers") return blocked();
+      return { ok: true, json: blocked } as Response;
+    });
+    deps.selectIntent = async (actionSignal) => {
+      await new PolymarketAdapter({ signal: actionSignal, fetchImpl }).listMarkets();
+      return { market_id: "late-market", outcome: "YES" };
+    };
+    const action = qualifyRelease(challenge, deps, controller.signal);
+    const rejected = expect(action).rejects.toThrow("deadline");
+    await started;
+    controller.abort(new Error("deadline"));
+    await rejected;
+    expect(released).toBe(true);
+    expect(deps.claim).not.toHaveBeenCalled();
+    expect(deps.place).not.toHaveBeenCalled();
+  });
+  it("cannot dispatch when a prerequisite completes after the shared deadline", async () => {
+    const { deps } = rig();
+    const controller = new AbortController();
+    let finish!: () => void;
+    deps.checkFixture = () => new Promise<void>(resolve => { finish = resolve; });
+    const action = qualifyRelease(challenge, deps, controller.signal);
+    const rejected = expect(action).rejects.toThrow("deadline");
+    controller.abort(new Error("deadline"));
+    finish();
+    await rejected;
+    expect(deps.helper).not.toHaveBeenCalled();
+    expect(deps.claim).not.toHaveBeenCalled();
+    expect(deps.place).not.toHaveBeenCalled();
+  });
 });

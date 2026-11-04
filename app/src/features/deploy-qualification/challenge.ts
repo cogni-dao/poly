@@ -18,7 +18,7 @@ export class QualificationError extends Error {
 }
 export async function verifyQualificationChallenge(input: {
 	authorization: string | null;
-	mode: "qualify" | "readback";
+	mode?: "qualify" | "readback";
 	authSecret: string;
 	nodeId: string;
 	env: string | undefined;
@@ -60,7 +60,7 @@ export async function verifyQualificationChallenge(input: {
 			c.nodeId !== input.nodeId ||
 			c.env !== input.env ||
 			c.sourceSha !== input.sourceSha ||
-			c.mode !== input.mode ||
+			(input.mode !== undefined && c.mode !== input.mode) ||
 			(c.mode === "qualify" || c.env === "production"
 				? c.helperBootId !== null
 				: !c.helperBootId)

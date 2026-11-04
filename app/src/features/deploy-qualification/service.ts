@@ -49,7 +49,10 @@ export interface QualificationDependencies {
 	place(intent: OrderIntent, signal: AbortSignal): Promise<OrderReceipt>;
 	getOrder(orderId: string, signal: AbortSignal): Promise<GetOrderResult>;
 	cancel(orderId: string, signal: AbortSignal): Promise<void>;
-	save(receipt: OrderReceipt): Promise<void>;
+	save(
+		receipt: OrderReceipt,
+		ids: ReturnType<typeof qualificationOperationIds>,
+	): Promise<void>;
 	now(): Date;
 }
 export function qualificationOperationIds(
@@ -104,6 +107,7 @@ export async function qualifyRelease(
 	await deps.checkFixture();
 	signal.throwIfAborted();
 	const before = qualificationHelper.parse(await deps.helper(signal));
+	signal.throwIfAborted();
 	if (
 		before.buildSha !== c.sourceSha ||
 		(c.mode === "readback" && c.helperBootId !== before.bootId)
@@ -111,6 +115,7 @@ export async function qualifyRelease(
 		throw new QualificationError("helper_identity_changed");
 	const ids = qualificationOperationIds(deps.fixture.accountId, c.releaseId);
 	const existing = await deps.load(ids);
+	signal.throwIfAborted();
 	let winner = false;
 	if (!existing && c.mode === "qualify") {
 		const market = await deps.selectIntent(signal);
@@ -142,18 +147,33 @@ export async function qualifyRelease(
 			const receipt = await deps.place(intent, signal);
 			if (receipt.client_order_id !== ids.clientOrderId)
 				throw new QualificationError("paper_receipt_mismatch");
-			// Preserve the real venue id before any further IO, including cancel.
-			await deps.save(receipt);
-			signal.throwIfAborted();
-			if (["open", "partial", "pending"].includes(receipt.status)) {
-				await deps.cancel(receipt.order_id, signal);
+			// Attempt to preserve the real venue id before normal cancellation.
+			let persistenceFailed = false;
+			let persistenceFailure: unknown;
+			try {
+				await deps.save(receipt, ids);
+			} catch (error) {
+				persistenceFailed = true;
+				persistenceFailure = error;
 			}
+			// A known synthetic order still needs normal cleanup if saving its id failed.
+			// Cleanup shares the action budget; neither failure permits another dispatch.
+			try {
+				signal.throwIfAborted();
+				if (["open", "partial", "pending"].includes(receipt.status)) {
+					await deps.cancel(receipt.order_id, signal);
+				}
+			} catch (error) {
+				if (!persistenceFailed) throw error;
+			}
+			if (persistenceFailed) throw persistenceFailure;
 			signal.throwIfAborted();
 			const read = await deps.getOrder(receipt.order_id, signal);
 			if (!("found" in read))
 				throw new QualificationError("paper_order_not_found");
 			assertReceipt(read.found, ids.clientOrderId, receipt.order_id);
-			await deps.save(read.found);
+			signal.throwIfAborted();
+			await deps.save(read.found, ids);
 		}
 	}
 	signal.throwIfAborted();
