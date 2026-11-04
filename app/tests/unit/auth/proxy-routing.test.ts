@@ -390,7 +390,7 @@ describe("qualification route body admission", () => {
     if (kind !== "malformed") expect(cancel).toHaveBeenCalledTimes(1);
     expect(qualificationRun).not.toHaveBeenCalled();
   });
-  it.each(["{", '{"mode":"qualify","accountId":"foreign"}', '{"mode":"other"}', 'null'])("rejects malformed or non-strict authenticated JSON: %s", async body => {
+  it.each(["{", '{"mode":"qualify","accountId":"foreign"}', '{"mode":"qualify","companionReadiness":{"paper-trader":{"port":9100,"path":"/healthz"}}}', '{"mode":"qualify","companionBootIds":{"paper-trader":"boot-a"}}', '{"mode":"other"}', 'null'])("rejects malformed or non-strict authenticated JSON: %s", async body => {
     expect((await post(body)).status).toBe(400);
     expect(qualificationRun).not.toHaveBeenCalled();
   });

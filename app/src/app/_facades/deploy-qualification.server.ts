@@ -8,6 +8,7 @@ import {
 	qualificationSubject,
 } from "@/contracts/deploy.qualification.v1.contract";
 import {
+	assertQualificationCompanions,
 	QualificationError,
 	verifyQualificationChallenge,
 } from "@/features/deploy-qualification/challenge";
@@ -33,11 +34,13 @@ export async function qualifyDeployment(
 	deadlineAt: number,
 ) {
 	signal.throwIfAborted();
+	assertQualificationCompanions(c);
 	const env = serverEnv();
 	if (c.env === "production")
 		return qualificationOperation.output.parse({
 			...qualificationSubject.parse(c),
 			status: "not_declared",
+			companions: {},
 			observedAt: new Date().toISOString(),
 			nonce: c.jti,
 		});

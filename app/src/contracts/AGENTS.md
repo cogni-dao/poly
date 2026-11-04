@@ -85,6 +85,7 @@ This prevents drift between routes, facades, services, tests, and UI clients. Th
 ## Standards
 
 - Zod schemas only; export Input/Output TS types via z.infer.
+- Unreleased deploy.qualification.v1 requires signed companionReadiness and companionBootIds and complete response companions observations; no legacy claim fallback.
 - Contract IDs are namespaced and versioned, e.g. `chat.completions.v1`, `admin.accounts.register.v1`.
 - Breaking changes require new version suffix.
 

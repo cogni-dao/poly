@@ -5,6 +5,7 @@ import { hkdfSync } from "node:crypto";
 import type { OrderIntent, OrderReceipt } from "@cogni/poly-market-provider";
 import { SignJWT } from "jose";
 import { describe, expect, it, vi } from "vitest";
+import { observePaperCompanion } from "@/bootstrap/qualification-companion";
 import type { QualificationChallenge } from "@/contracts/deploy.qualification.v1.contract";
 import { verifyQualificationChallenge } from "@/features/deploy-qualification/challenge";
 import {
@@ -12,6 +13,11 @@ import {
 	qualificationOperationIds,
 	qualifyRelease,
 } from "@/features/deploy-qualification/service";
+
+const qualificationComposition = vi.hoisted(() => ({ resolve: vi.fn(), env: vi.fn(() => ({})) }));
+vi.mock("@/bootstrap/qualification", () => ({ resolveQualificationDependencies: qualificationComposition.resolve }));
+vi.mock("@/shared/env", () => ({ serverEnv: qualificationComposition.env }));
+vi.mock("@/shared/config/repoSpec.server", () => ({ getNodeId: () => "4b06359a-a859-4399-888e-a8c7a6696f7e" }));
 
 const now = new Date("2026-11-04T20:00:00.000Z");
 const sha = "a".repeat(40);
@@ -32,6 +38,8 @@ const challenge: QualificationChallenge = {
 	allocation: "allocation-a",
 	mode: "qualify",
 	helperBootId: null,
+	companionReadiness: { "paper-trader": { port: 9100, path: "/healthz" } },
+	companionBootIds: null,
 };
 const signal = () => new AbortController().signal;
 function rig() {
@@ -53,7 +61,7 @@ function rig() {
 		fixture,
 		now: () => now,
 		checkFixture: vi.fn(async () => {}),
-		helper: vi.fn(async () => ({ buildSha: sha, bootId: state.boot })),
+		helper: vi.fn(async (_signal, readiness) => ({ buildSha: sha, bootId: state.boot, ready: { ...readiness, status: 200, observedAt: deps.now().toISOString() } })),
 		selectIntent: vi.fn(async () => ({
 			market_id: "prediction-market:polymarket:real-discovered-condition",
 			outcome: "YES",
@@ -194,6 +202,7 @@ describe("release qualification dispatch ownership", () => {
 				...challenge,
 				mode: "readback",
 				helperBootId: "boot-a",
+				companionBootIds: { "paper-trader": "boot-a" },
 				jti: "fresh-nonce",
 			},
 			restarted,
@@ -254,6 +263,7 @@ describe("release qualification dispatch ownership", () => {
 					allocation: "allocation-b",
 					mode: "readback",
 					helperBootId: "boot-a",
+				companionBootIds: { "paper-trader": "boot-a" },
 				},
 				deps,
 				signal(),
@@ -403,6 +413,7 @@ describe("qualification wire v1 service authentication", () => {
 					...challenge,
 					mode: "readback",
 					helperBootId: "boot-a",
+				companionBootIds: { "paper-trader": "boot-a" },
 				}),
 				{ mode: "readback" },
 			),
@@ -421,6 +432,8 @@ it("accepts null helper boot for excluded-companion production readback", async 
 		...challenge,
 		env: "production",
 		services: { app: image },
+		companionReadiness: {},
+		companionBootIds: {},
 		mode: "readback",
 		helperBootId: null,
 	});
@@ -474,4 +487,537 @@ describe("qualification native discovery cancellation", () => {
     expect(deps.claim).not.toHaveBeenCalled();
     expect(deps.place).not.toHaveBeenCalled();
   });
+});
+
+describe("selected companion readiness claims", () => {
+	it("refuses the unreleased legacy wire without new signed maps", async () => {
+		const {
+			companionReadiness: _readiness,
+			companionBootIds: _boots,
+			...legacy
+		} = challenge;
+		await expect(verify(await signed(legacy))).rejects.toThrow(
+			"qualification_auth_invalid",
+		);
+	});
+	it("returns actual readiness evidence for every selected companion", async () => {
+		const { deps } = rig();
+		const result = await qualifyRelease(challenge, deps, signal());
+		expect(result).toHaveProperty("companions.paper-trader.ready.status", 200);
+	});
+});
+
+describe("complete signed companion coverage", () => {
+	it.each([
+		{ companionReadiness: undefined },
+		{ companionBootIds: undefined },
+		{ companionReadiness: {} },
+		{ companionReadiness: { other: { port: 9100, path: "/healthz" } } },
+		{
+			companionReadiness: {
+				...challenge.companionReadiness,
+				extra: { port: 9100, path: "/healthz" },
+			},
+		},
+		{ services: { app: image, "paper-trader": image, extra: image } },
+		{ services: { app: image, extra: image } },
+		{ services: { "app,paper-trader": image } },
+		{ companionBootIds: {} },
+		{
+			companionReadiness: { "paper-trader": { port: 9101, path: "/healthz" } },
+		},
+		{
+			companionReadiness: {
+				"paper-trader": {
+					port: 9100,
+					path: "/healthz",
+					host: "external.invalid",
+				},
+			},
+		},
+	])(
+		"refuses missing, unsupported or inconsistent selection: %j",
+		async (patch) => {
+			await expect(
+				verify(await signed({ ...challenge, ...patch })),
+			).rejects.toThrow("qualification_auth_invalid");
+		},
+	);
+	it.each([
+		"https://external.invalid/ready",
+		"//external.invalid/ready",
+		"/\\external.invalid",
+		"/../ready",
+		"/x/./ready",
+		"/%2e%2e/ready",
+		"/healthz?target=external",
+		"/healthz#fragment",
+		"/x//ready",
+		"/healthz\n",
+	])("refuses unsafe signed readiness path %j", async (path) => {
+		await expect(
+			verify(
+				await signed({
+					...challenge,
+					companionReadiness: { "paper-trader": { port: 9100, path } },
+				}),
+			),
+		).rejects.toThrow("qualification_auth_invalid");
+	});
+	it.each([
+		null,
+		{},
+		{ other: "boot-a" },
+		{ "paper-trader": "boot-a", extra: "boot-a" },
+		{ "paper-trader": "boot-b" },
+	])(
+		"requires the full previous boot map consistent with the useful helper: %j",
+		async (companionBootIds) => {
+			await expect(
+				verify(
+					await signed({
+						...challenge,
+						mode: "readback",
+						helperBootId: "boot-a",
+						companionBootIds,
+					}),
+					{ mode: "readback" },
+				),
+			).rejects.toThrow("qualification_auth_invalid");
+		},
+	);
+	it.each(["candidate-a", "preview"] as const)(
+		"accepts the supported signed selection in %s",
+		async (env) => {
+			await expect(
+				verify(await signed({ ...challenge, env }), { env }),
+			).resolves.toMatchObject({
+				companionReadiness: challenge.companionReadiness,
+			});
+		},
+	);
+	it.each(["qualify", "readback"] as const)(
+		"requires an empty production selection in %s",
+		async (mode) => {
+			const empty = {
+				...challenge,
+				env: "production",
+				mode,
+				helperBootId: null,
+				services: { app: image },
+				companionReadiness: {},
+				companionBootIds: mode === "qualify" ? null : {},
+			};
+			await expect(
+				verify(await signed(empty), { env: "production", mode }),
+			).resolves.toMatchObject({ companionReadiness: {} });
+			await expect(
+				verify(
+					await signed({
+						...empty,
+						companionReadiness: challenge.companionReadiness,
+					}),
+					{ env: "production", mode },
+				),
+			).rejects.toThrow("qualification_auth_invalid");
+		},
+	);
+	it("does not replace a receipt when the readiness declaration changes", async () => {
+		const { deps } = rig();
+		await qualifyRelease(challenge, deps, signal());
+		await expect(
+			qualifyRelease(
+				{
+					...challenge,
+					companionReadiness: {
+						"paper-trader": { port: 9100, path: "/different-ready" },
+					},
+				},
+				deps,
+				signal(),
+			),
+		).rejects.toThrow("qualification_subject_stale");
+		expect(deps.place).toHaveBeenCalledTimes(1);
+	});
+	it.each(["path", "port", "time", "status"])(
+		"refuses unobserved or mismatched readiness %s",
+		async (field) => {
+			const { deps } = rig();
+			const observed = {
+				buildSha: sha,
+				bootId: "boot-a",
+				ready: {
+					port: 9100,
+					path: "/healthz",
+					status: 200,
+					observedAt: now.toISOString(),
+				},
+			};
+			const patch =
+				field === "path"
+					? { path: "/other" }
+					: field === "port"
+						? { port: 9101 }
+						: field === "status"
+							? { status: 503 }
+							: { observedAt: new Date(now.getTime() - 1).toISOString() };
+			deps.helper = vi.fn(async () => ({
+				...observed,
+				ready: { ...observed.ready, ...patch },
+			})) as QualificationDependencies["helper"];
+			await expect(qualifyRelease(challenge, deps, signal())).rejects.toThrow();
+			expect(deps.claim).not.toHaveBeenCalled();
+			expect(deps.place).not.toHaveBeenCalled();
+		},
+	);
+});
+
+function observedFetch(
+	boot: () => string,
+	readyStatus: () => number = () => 200,
+) {
+	return vi.fn<typeof fetch>(async (input, init) => {
+		expect(init?.redirect).toBe("error");
+		expect(init?.cache).toBe("no-store");
+		expect(init?.headers).toBeUndefined();
+		expect(new URL(String(input)).origin).toBe("http://paper-trader:9100");
+		return new URL(String(input)).pathname === "/version"
+			? Response.json({ buildSha: sha, bootId: boot() })
+			: new Response(null, { status: readyStatus() });
+	});
+}
+describe("actual private companion readiness transport", () => {
+	it("uses the signed path on the configured private host before/after work and fresh readback", async () => {
+		const { deps, state } = rig();
+		const native = observedFetch(() => state.boot);
+		vi.stubGlobal("fetch", native);
+		try {
+			deps.helper = (actionSignal, readiness) =>
+				observePaperCompanion(
+					"http://paper-trader:9100",
+					readiness,
+					actionSignal,
+					deps.now,
+				);
+			const declared = {
+				...challenge,
+				companionReadiness: {
+					"paper-trader": { port: 9100, path: "/declared-ready" },
+				},
+			};
+			const actionSignal = signal();
+			const first = await qualifyRelease(declared, deps, actionSignal);
+			expect(first.companions).toEqual({
+				"paper-trader": {
+					buildSha: sha,
+					bootId: "boot-a",
+					ready: {
+						port: 9100,
+						path: "/declared-ready",
+						status: 200,
+						observedAt: now.toISOString(),
+					},
+				},
+			});
+			expect(first.helper).toEqual({
+				service: "paper-trader",
+				buildSha: sha,
+				bootId: "boot-a",
+			});
+			const later = new Date(now.getTime() + 1000);
+			deps.now = () => later;
+			const fresh = await qualifyRelease(
+				{
+					...declared,
+					mode: "readback",
+					helperBootId: "boot-a",
+					companionBootIds: { "paper-trader": "boot-a" },
+				},
+				deps,
+				actionSignal,
+			);
+			expect(fresh.companions["paper-trader"]?.ready.observedAt).toBe(
+				later.toISOString(),
+			);
+			expect(
+				native.mock.calls.map(([url]) => new URL(String(url)).pathname),
+			).toEqual(
+				Array.from({ length: 4 }, () => [
+					"/version",
+					"/declared-ready",
+					"/version",
+				]).flat(),
+			);
+			expect(deps.place).toHaveBeenCalledTimes(1);
+			expect(deps.cancel).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+	it("refuses a newly signed failing readiness endpoint even when version and default readiness work", async () => {
+		const { deps, state } = rig();
+		const native = observedFetch(() => state.boot);
+		native.mockImplementation(async (input) =>
+			new URL(String(input)).pathname === "/fails"
+				? new Response(null, { status: 503 })
+				: new URL(String(input)).pathname === "/version"
+					? Response.json({ buildSha: sha, bootId: state.boot })
+					: new Response(null, { status: 200 }),
+		);
+		vi.stubGlobal("fetch", native);
+		try {
+			deps.helper = (actionSignal, readiness) =>
+				observePaperCompanion(
+					"http://paper-trader:9100",
+					readiness,
+					actionSignal,
+					deps.now,
+				);
+			await qualifyRelease(challenge, deps, signal());
+			const calls = native.mock.calls.length;
+			await expect(
+				qualifyRelease(
+					{
+						...challenge,
+						mode: "readback",
+						helperBootId: "boot-a",
+						companionBootIds: { "paper-trader": "boot-a" },
+						companionReadiness: {
+							"paper-trader": { port: 9100, path: "/fails" },
+						},
+					},
+					deps,
+					signal(),
+				),
+			).rejects.toThrow("companion_readiness_failed");
+			expect(
+				native.mock.calls
+					.slice(calls)
+					.map(([url]) => new URL(String(url)).pathname),
+			).toEqual(["/version", "/fails"]);
+			expect(deps.place).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+	it("refuses readiness that fails after useful work or on a fresh readback", async () => {
+		const { deps, state } = rig();
+		let ready = true;
+		vi.stubGlobal(
+			"fetch",
+			observedFetch(
+				() => state.boot,
+				() => (ready ? 200 : 503),
+			),
+		);
+		try {
+			deps.helper = (actionSignal, readiness) =>
+				observePaperCompanion(
+					"http://paper-trader:9100",
+					readiness,
+					actionSignal,
+					deps.now,
+				);
+			const save = deps.save;
+			deps.save = async (...args) => {
+				await save(...args);
+				if (args[0].status === "canceled") ready = false;
+			};
+			await expect(qualifyRelease(challenge, deps, signal())).rejects.toThrow(
+				"companion_readiness_failed",
+			);
+			await expect(
+				qualifyRelease(
+					{
+						...challenge,
+						mode: "readback",
+						helperBootId: "boot-a",
+						companionBootIds: { "paper-trader": "boot-a" },
+					},
+					deps,
+					signal(),
+				),
+			).rejects.toThrow("companion_readiness_failed");
+			expect(deps.place).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+	it("refuses a boot change across the actual readiness request", async () => {
+		let version = 0;
+		vi.stubGlobal(
+			"fetch",
+			observedFetch(() => (++version === 1 ? "boot-a" : "boot-b")),
+		);
+		try {
+			await expect(
+				observePaperCompanion(
+					"http://paper-trader:9100",
+					{ port: 9100, path: "/healthz" },
+					signal(),
+					() => now,
+				),
+			).rejects.toThrow("helper_identity_changed");
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+	it.each(["headers", "body"] as const)(
+		"cancels native observation stalled at %s through the same operation signal",
+		async (stage) => {
+			const controller = new AbortController();
+			let entered!: () => void;
+			const started = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
+			let released = false;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn<typeof fetch>(async (_url, init) => {
+					const blocked = () =>
+						new Promise<never>((_, reject) => {
+							expect(init?.signal).toBeInstanceOf(AbortSignal);
+							init?.signal?.addEventListener(
+								"abort",
+								() => {
+									released = true;
+									reject(init.signal?.reason);
+								},
+								{ once: true },
+							);
+							entered();
+						});
+					return stage === "headers"
+						? blocked()
+						: ({ status: 200, json: blocked } as Response);
+				}),
+			);
+			try {
+				const observed = observePaperCompanion(
+					"http://paper-trader:9100",
+					{ port: 9100, path: "/healthz" },
+					controller.signal,
+					() => now,
+				);
+				const rejection = expect(observed).rejects.toThrow("deadline");
+				await started;
+				controller.abort(new Error("deadline"));
+				await rejection;
+				expect(released).toBe(true);
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		},
+	);
+	it.each([
+		["http://paper-trader:9101", { port: 9100, path: "/healthz" }],
+		["http://paper-trader:9100", { port: 9101, path: "/healthz" }],
+		[
+			"http://paper-trader:9100",
+			{ port: 9100, path: "//external.invalid/healthz" },
+		],
+		["http://paper-trader:9100/other", { port: 9100, path: "/healthz" }],
+	] as const)(
+		"rejects port or path disagreement before private HTTP: %s %j",
+		async (binding, readiness) => {
+			const native = vi.fn();
+			vi.stubGlobal("fetch", native);
+			try {
+				await expect(
+					observePaperCompanion(binding, readiness, signal(), () => now),
+				).rejects.toThrow();
+				expect(native).not.toHaveBeenCalled();
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		},
+	);
+	it("refuses redirects from the declared readiness endpoint", async () => {
+		const { deps, state } = rig();
+		vi.stubGlobal(
+			"fetch",
+			observedFetch(
+				() => state.boot,
+				() => 302,
+			),
+		);
+		try {
+			deps.helper = (actionSignal, readiness) =>
+				observePaperCompanion(
+					"http://paper-trader:9100",
+					readiness,
+					actionSignal,
+					deps.now,
+				);
+			await expect(qualifyRelease(challenge, deps, signal())).rejects.toThrow(
+				"companion_readiness_failed",
+			);
+			expect(deps.place).not.toHaveBeenCalled();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});
+
+describe("production companion exclusion", () => {
+	it.each(["qualify", "readback"] as const)(
+		"returns not_declared and no companion observations in %s",
+		async (mode) => {
+			const { qualifyDeployment } = await import(
+				"@/app/_facades/deploy-qualification.server"
+			);
+			qualificationComposition.resolve.mockClear();
+			const result = await qualifyDeployment(
+				{
+					...challenge,
+					env: "production",
+					services: { app: image },
+					mode,
+					helperBootId: null,
+					companionReadiness: {},
+					companionBootIds: mode === "qualify" ? null : {},
+				},
+				signal(),
+				Date.now() + 19000,
+			);
+			expect(result).toMatchObject({
+				status: "not_declared",
+				companions: {},
+				services: { app: image },
+			});
+			expect(result.helper).toBeUndefined();
+			expect(result.evidenceId).toBeUndefined();
+			expect(qualificationComposition.resolve).not.toHaveBeenCalled();
+		},
+	);
+});
+
+it("rejects an empty-name companion even when production expects zero keys", async () => {
+  await expect(verify(await signed({ ...challenge, env: "production", services: { app: image }, companionReadiness: { "": { port: 9100, path: "/healthz" } } }), { env: "production" })).rejects.toThrow("qualification_auth_invalid");
+});
+
+it("the native observation budget also cancels a stalled declared readiness request", async () => {
+  const actionSignal = signal();
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  let released = false;
+  const native = vi.fn<typeof fetch>(async (url, init) => {
+    if (new URL(String(url)).pathname === "/version") return Response.json({ buildSha: sha, bootId: "boot-a" });
+    expect(new URL(String(url)).pathname).toBe("/declared-ready");
+    return new Promise<never>((_, reject) => {
+      init?.signal?.addEventListener("abort", () => { released = true; reject(init.signal?.reason); }, { once: true });
+      entered();
+    });
+  });
+  vi.stubGlobal("fetch", native);
+  try {
+    const result = observePaperCompanion("http://paper-trader:9100", { port: 9100, path: "/declared-ready" }, actionSignal, () => now);
+    const rejected = expect(result).rejects.toThrow();
+    await started;
+    await rejected;
+    expect(released).toBe(true);
+    expect(actionSignal.aborted).toBe(false);
+    expect(native.mock.calls).toHaveLength(2);
+    expect(native.mock.calls[0]?.[1]?.signal).toBe(native.mock.calls[1]?.[1]?.signal);
+  } finally { vi.unstubAllGlobals(); }
 });

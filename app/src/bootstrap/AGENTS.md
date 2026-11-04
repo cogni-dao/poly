@@ -53,6 +53,7 @@ System setup installers were moved to `scripts/bootstrap/` and are out of scope 
   - `getContainer()` - Singleton DI container with logger and config
   - `resetContainer()` - Reset singleton (tests only)
   - `resolveQualificationDependencies(fixture, sidecarUrl, signal, deadlineAt)` — existing RLS ledger and authorized bounded paper executor composition; action-owned app-role connection with dispose(), native deadline cancellation and one transient backend maximum per process
+  - `observePaperCompanion(sidecarUrl, declared, signal, now?)` — private port 9100 version/readiness/version observation; safe signed relative path, configured host only, no redirects, one native budget within the action deadline
   - `Container` interface - Ports + logger + config (includes scheduleRunReader using the existing app-role Sql, accountsForUser(userId), serviceAccountService, metricsQuery, metricsCapability, repoCapability, toolSource, threadPersistenceForUser(userId), modelCatalog, providerResolver; no usageService)
   - `ContainerConfig` interface - Runtime config (unhandledErrorPolicy, rateLimitBypass, DEPLOY_ENVIRONMENT)
   - `resolveIdentityBindingDependencies()` - Identity binding adapter/clock/randomness composition; policy remains in the feature service

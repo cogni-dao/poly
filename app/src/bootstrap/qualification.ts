@@ -5,7 +5,7 @@ import { createAppDbClient, withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
 import { PolymarketAdapter } from "@cogni/poly-market-provider/adapters/polymarket";
 import { getContainer } from "@/bootstrap/container";
-import { qualificationHelper } from "@/contracts/deploy.qualification.v1.contract";
+import { observePaperCompanion } from "@/bootstrap/qualification-companion";
 import { QualificationError } from "@/features/deploy-qualification/challenge";
 import { assertQualificationFixture } from "@/features/deploy-qualification/fixture-access";
 import type { QualificationFixture } from "@/features/deploy-qualification/fixtures";
@@ -105,16 +105,8 @@ export function resolveQualificationDependencies(
 		now: () => new Date(),
 		checkFixture: () =>
 			scoped((tx) => assertQualificationFixture(tx, fixture, new Date())),
-		helper: async (requestSignal) => {
-			const response = await fetch(new URL("/version", sidecarUrl), {
-				redirect: "error",
-				cache: "no-store",
-				signal: AbortSignal.any([requestSignal, AbortSignal.timeout(2000)]),
-			});
-			if (!response.ok)
-				throw new QualificationError("paper_helper_unreachable");
-			return qualificationHelper.parse(await response.json());
-		},
+		helper: (requestSignal, readiness) =>
+			observePaperCompanion(sidecarUrl, readiness, requestSignal),
 		selectIntent: async (requestSignal) => {
 			// Real discovery, not a claim that this order will fill. The engine must accept it.
 			const markets = await new PolymarketAdapter({

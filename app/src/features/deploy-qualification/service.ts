@@ -12,16 +12,24 @@ import type {
 import { z } from "zod";
 import {
 	type QualificationChallenge,
+	type QualificationCompanion,
 	type QualificationHelper,
+	type QualificationReadiness,
+	qualificationCompanion,
 	qualificationHelper,
 	qualificationOperation,
+	qualificationReadinessMap,
 	qualificationSubject,
 } from "@/contracts/deploy.qualification.v1.contract";
-import { QualificationError } from "./challenge";
+import { assertQualificationCompanions, QualificationError } from "./challenge";
 import type { QualificationFixture } from "./fixtures";
 
 const reservationSchema = qualificationSubject
-	.extend({ helper: qualificationHelper, reservedAt: z.iso.datetime() })
+	.extend({
+		helper: qualificationHelper,
+		companionReadiness: qualificationReadinessMap,
+		reservedAt: z.iso.datetime(),
+	})
 	.strict();
 type SavedOperation = {
 	status: string;
@@ -34,7 +42,10 @@ type SavedOperation = {
 export interface QualificationDependencies {
 	fixture: QualificationFixture;
 	checkFixture(): Promise<void>;
-	helper(signal: AbortSignal): Promise<QualificationHelper>;
+	helper(
+		signal: AbortSignal,
+		readiness: QualificationReadiness,
+	): Promise<QualificationCompanion>;
 	selectIntent(
 		signal: AbortSignal,
 	): Promise<Pick<OrderIntent, "market_id" | "outcome">>;
@@ -104,13 +115,35 @@ export async function qualifyRelease(
 	signal: AbortSignal,
 ) {
 	signal.throwIfAborted();
+	assertQualificationCompanions(c);
+	const readiness = c.companionReadiness["paper-trader"];
+	if (!readiness)
+		throw new QualificationError("qualification_companions_invalid");
+	const observe = async () => {
+		const started = deps.now().getTime();
+		const observation = qualificationCompanion.parse(
+			await deps.helper(signal, readiness),
+		);
+		signal.throwIfAborted();
+		const observedAt = Date.parse(observation.ready.observedAt);
+		if (
+			observation.ready.port !== readiness.port ||
+			observation.ready.path !== readiness.path ||
+			observedAt < started ||
+			observedAt > deps.now().getTime()
+		)
+			throw new QualificationError("companion_readiness_unproven");
+		return observation;
+	};
 	await deps.checkFixture();
 	signal.throwIfAborted();
-	const before = qualificationHelper.parse(await deps.helper(signal));
+	const before = await observe();
 	signal.throwIfAborted();
 	if (
 		before.buildSha !== c.sourceSha ||
-		(c.mode === "readback" && c.helperBootId !== before.bootId)
+		(c.mode === "readback" &&
+			(c.helperBootId !== before.bootId ||
+				c.companionBootIds?.["paper-trader"] !== before.bootId))
 	)
 		throw new QualificationError("helper_identity_changed");
 	const ids = qualificationOperationIds(deps.fixture.accountId, c.releaseId);
@@ -123,7 +156,8 @@ export async function qualifyRelease(
 		const now = deps.now();
 		const reservation = {
 			...qualificationSubject.parse(c),
-			helper: before,
+			helper: qualificationHelper.parse(before),
+			companionReadiness: c.companionReadiness,
 			reservedAt: now.toISOString(),
 		};
 		const intent: OrderIntent = {
@@ -192,6 +226,8 @@ export async function qualifyRelease(
 	if (
 		!reserved.success ||
 		!sameSubject(reserved.data, c) ||
+		JSON.stringify(Object.entries(reserved.data.companionReadiness).sort()) !==
+			JSON.stringify(Object.entries(c.companionReadiness).sort()) ||
 		!sameHelper(reserved.data.helper, before) ||
 		deps.now().getTime() - Date.parse(reserved.data.reservedAt) > 60000 ||
 		Date.parse(reserved.data.reservedAt) > deps.now().getTime()
@@ -202,14 +238,15 @@ export async function qualifyRelease(
 	if (!("found" in current))
 		throw new QualificationError("paper_order_not_found");
 	assertReceipt(current.found, ids.clientOrderId, saved.order_id);
-	const after = qualificationHelper.parse(await deps.helper(signal));
+	const after = await observe();
 	signal.throwIfAborted();
 	if (!sameHelper(before, after))
 		throw new QualificationError("helper_identity_changed");
 	return qualificationOperation.output.parse({
 		...qualificationSubject.parse(c),
 		status: "qualified",
-		helper: { service: "paper-trader", ...after },
+		helper: { service: "paper-trader", ...qualificationHelper.parse(after) },
+		companions: { "paper-trader": after },
 		evidenceId: ids.clientOrderId,
 		observedAt: deps.now().toISOString(),
 		nonce: c.jti,

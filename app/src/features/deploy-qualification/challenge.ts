@@ -16,6 +16,28 @@ export class QualificationError extends Error {
 		super(code);
 	}
 }
+/** Poly supports precisely its declared private paper service, or none in production. */
+export function assertQualificationCompanions(c: QualificationChallenge) {
+	const selected = c.env === "production" ? [] : ["paper-trader"];
+	const exactKeys = (map: Record<string, unknown>, expected = selected) =>
+		Object.keys(map).length === expected.length &&
+		expected.every((service) => Object.hasOwn(map, service));
+	if (
+		!exactKeys(c.services, ["app", ...selected]) ||
+		!exactKeys(c.companionReadiness) ||
+		(selected.length > 0 &&
+			c.companionReadiness["paper-trader"]?.port !== 9100) ||
+		(c.mode === "qualify"
+			? c.helperBootId !== null || c.companionBootIds !== null
+			: c.companionBootIds === null ||
+				!exactKeys(c.companionBootIds) ||
+				(selected.length === 0
+					? c.helperBootId !== null
+					: !c.helperBootId ||
+						c.helperBootId !== c.companionBootIds["paper-trader"]))
+	)
+		throw new QualificationError("qualification_companions_invalid", 401);
+}
 export async function verifyQualificationChallenge(input: {
 	authorization: string | null;
 	mode?: "qualify" | "readback";
@@ -60,15 +82,10 @@ export async function verifyQualificationChallenge(input: {
 			c.nodeId !== input.nodeId ||
 			c.env !== input.env ||
 			c.sourceSha !== input.sourceSha ||
-			(input.mode !== undefined && c.mode !== input.mode) ||
-			(c.mode === "qualify" || c.env === "production"
-				? c.helperBootId !== null
-				: !c.helperBootId)
+			(input.mode !== undefined && c.mode !== input.mode)
 		)
 			throw new Error();
-		const expected = c.env === "production" ? ["app"] : ["app", "paper-trader"];
-		if (Object.keys(c.services).sort().join() !== expected.sort().join())
-			throw new Error();
+		assertQualificationCompanions(c);
 		return c;
 	} catch {
 		throw new QualificationError("qualification_auth_invalid", 401);
