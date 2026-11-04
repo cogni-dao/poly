@@ -22,8 +22,8 @@
  *     not have. Creating one must not depend on live-custody config being
  *     present. (The adapter's paper-mode stub is gone — it now simply throws
  *     `WalletAdapterUnconfiguredError`, and nothing on the paper path calls it.)
- *   - CONSENT_ACTOR_IS_THE_SESSION: `custodial_consent_actor_id` is the session
- *     user's id, never a value from the wire.
+ *   - CONSENT_ACTOR_IS_THE_PRINCIPAL: `custodial_consent_actor_id` is the session
+ *     user's id, never a value from the wire. Kind comes from verified request provenance.
  *   - IDEMPOTENT: an existing active paper account is returned with
  *     `created: false` and HTTP 200; re-posting never mints a second account
  *     and never re-seeds a balance that may already have been traded against.
@@ -40,6 +40,7 @@ import {
 } from "@cogni/poly-node-contracts";
 import { NextResponse } from "next/server";
 import { getAppDb, withTenantScope } from "@/adapters/server/db/client";
+import { resolveRequestActorKind } from "@/app/_lib/auth/request-identity";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -83,6 +84,7 @@ export const POST = wrapRouteHandlerWithLogging(
       );
     }
 
+    const actorKind = await resolveRequestActorKind(sessionUser.id);
     const container = getContainer();
     const account = await container
       .accountsForUser(toUserId(sessionUser.id))
@@ -97,7 +99,7 @@ export const POST = wrapRouteHandlerWithLogging(
           provisionPaperAccount(tx, {
             billingAccountId: account.id,
             createdByUserId: sessionUser.id,
-            actorKind: "user",
+            actorKind,
             actorId: sessionUser.id,
             seedUsdc: parsed.data.seedUsdc,
             defaultGrant: parsed.data.defaultGrant,

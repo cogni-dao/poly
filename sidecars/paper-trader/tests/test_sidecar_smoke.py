@@ -223,8 +223,9 @@ def test_version_returns_pinned_shas(client):
     r = client.get("/version")
     assert r.status_code == 200
     body = r.json()
-    assert set(body.keys()) == {"buildSha", "upstreamPaperTraderSha"}
+    assert set(body.keys()) == {"buildSha", "bootId", "upstreamPaperTraderSha"}
     assert isinstance(body["buildSha"], str) and body["buildSha"]
+    assert isinstance(body["bootId"], str) and body["bootId"]
     assert isinstance(body["upstreamPaperTraderSha"], str) and body["upstreamPaperTraderSha"]
 
 

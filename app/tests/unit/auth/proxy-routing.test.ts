@@ -316,3 +316,37 @@ describe("proxy — unmatched routes", () => {
 		expect(mockGetToken).not.toHaveBeenCalled();
 	});
 });
+
+describe("proxy — release qualification service authentication", () => {
+  it("passes the exact proof capability to its own JWT verifier without a browser session", async () => {
+    mockGetToken.mockReset();
+    const result = await proxy(new NextRequest(new URL("/api/v1/deploy/qualification", "http://localhost:3000"), {
+      method: "POST", headers: { authorization: "Bearer service-jwt" },
+    }));
+    expect(result.status).toBe(200);
+    expect(mockGetToken).not.toHaveBeenCalled();
+  });
+  it("does not extend this exception to sibling or nested routes", async () => {
+    mockGetToken.mockResolvedValue(null);
+    for (const path of ["/api/v1/deploy/qualification/other", "/api/v1/deploy/other"]) {
+      expect((await proxy(makeRequest(path))).status).toBe(401);
+    }
+  });
+});
+
+let requestHeaders = new Headers();
+vi.mock("next/headers", () => ({ headers: async () => requestHeaders }));
+vi.mock("@/shared/env/server", () => ({ serverEnv: () => ({ AUTH_SECRET: "purpose-separated-secret-at-least-32-characters" }) }));
+vi.mock("@/lib/auth/server", () => ({ getServerSessionUser: async () => null }));
+describe("paper provision consent actor provenance", () => {
+  it("takes agent kind only from a verified token for the same authenticated principal", async () => {
+    const { resolveRequestActorKind, issueAgentApiKey } = await import("@/app/_lib/auth/request-identity");
+    requestHeaders = new Headers({ authorization: `Bearer ${issueAgentApiKey({ userId: "fixture-owner", displayName: "fixture" })}` });
+    await expect(resolveRequestActorKind("fixture-owner")).resolves.toBe("agent");
+    await expect(resolveRequestActorKind("different-user")).rejects.toThrow("invalid_principal_provenance");
+    requestHeaders = new Headers({ authorization: "Bearer invalid" });
+    await expect(resolveRequestActorKind("fixture-owner")).rejects.toThrow("invalid_principal_provenance");
+    requestHeaders = new Headers();
+    await expect(resolveRequestActorKind("browser-owner")).resolves.toBe("user");
+  });
+});

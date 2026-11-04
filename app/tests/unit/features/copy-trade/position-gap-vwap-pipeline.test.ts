@@ -116,6 +116,8 @@ function ledgerHarness(openOrders: OpenOrderRow[] = []) {
 		}),
 		cumulativeIntentForMarketToken: async () => 0,
 		insertPending,
+		claimPending: async () => ({ inserted: true, mode: "paper" }),
+		readOperation: async () => null,
 		hasOpenForMarket: async () => false,
 		findOpenForMarket: async () => openOrders,
 		recordDecision: async (decision) => {

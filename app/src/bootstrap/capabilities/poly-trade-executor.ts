@@ -307,6 +307,8 @@ export interface PaperPositionSource {
 }
 
 export interface PolyTradeExecutorFactoryDeps {
+  /** Optional request lifetime for an uncached bounded paper executor. */
+  paperAbortSignal?: AbortSignal;
   /**
    * Live custody + authorization port. Optional because a deployment can serve
    * paper accounts with no Privy / AEAD credentials at all (the case bug.5253
@@ -438,6 +440,7 @@ export function createPolyTradeExecutorFactory(
     billingAccountId: string,
     venue: "live" | "paper"
   ) => Promise<PolyTradeExecutor>;
+  getBoundedPaperExecutor: (billingAccountId: string, signal: AbortSignal) => Promise<PolyTradeExecutor>;
   invalidatePolyTradeExecutorFor: (billingAccountId: string) => void;
 } {
   const cache = new Map<string, CachedExecutor>();
@@ -498,6 +501,14 @@ export function createPolyTradeExecutorFactory(
   return {
     getPolyTradeExecutorFor,
     getPolyTradeExecutorForVenue,
+    async getBoundedPaperExecutor(billingAccountId, signal) {
+      signal.throwIfAborted();
+      if (await deps.resolveExecutionVenue(billingAccountId) !== "paper") {
+        throw new PolyTradeExecutorError("not_authorized", "Qualification requires a paper-only account");
+      }
+      signal.throwIfAborted();
+      return (await buildPaperOnlyExecutor(billingAccountId, { ...deps, paperAbortSignal: signal })).executor;
+    },
     invalidatePolyTradeExecutorFor,
   };
 }
@@ -1038,6 +1049,12 @@ async function buildPaperOnlyExecutor(
       ? { sidecarBaseUrl: deps.paperSidecarUrl }
       : {}),
     readSource: adapter,
+    ...(deps.paperAbortSignal ? { fetchImpl: (url: string | URL | Request, init?: RequestInit) => {
+      const signal = deps.paperAbortSignal;
+      if (!signal) throw new Error("missing paper request signal");
+      signal.throwIfAborted();
+      return fetch(url, { ...init, redirect: "error", signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]) });
+    } } : {}),
   });
 
   const paperPlace: ClobExecutor = createClobExecutor({
@@ -1091,6 +1108,7 @@ async function buildPaperOnlyExecutor(
       },
       "poly-trade-executor (paper): authorized → placeOrder"
     );
+    deps.paperAbortSignal?.throwIfAborted();
     return paperPlace(intent);
   };
 

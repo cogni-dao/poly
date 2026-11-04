@@ -136,3 +136,13 @@ export async function resolveRequestIdentity(): Promise<SessionUser | null> {
 
   return getServerSessionUser();
 }
+
+/** Validated request provenance, only after resolveRequestIdentity succeeded. */
+export async function resolveRequestActorKind(userId: string): Promise<"agent" | "user"> {
+  const h = await headers();
+  const token = extractBearerToken(h.get("authorization"));
+  if (!token) return "user";
+  const payload = parseAgentToken(token);
+  if (!payload || payload.sub !== userId) throw new Error("invalid_principal_provenance");
+  return "agent";
+}

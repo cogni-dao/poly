@@ -391,6 +391,26 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         );
         return mode;
       },
+      readOperation: (target_id, fill_id) =>
+        withTenantScope(appDb, actor, async (tx) => {
+          const [row] = await tx.select(LEDGER_ROW_COLUMNS).from(polyCopyTradeFills).where(and(
+            eq(polyCopyTradeFills.billingAccountId, ctx.billing_account_id),
+            eq(polyCopyTradeFills.targetId, target_id),
+            eq(polyCopyTradeFills.fillId, fill_id),
+          )).limit(1);
+          return row ? mapLedgerRow(row) : null;
+        }),
+      claimPending: async (input: TenantScopedInsertPendingInput) => {
+        const mode = await deps.resolveExecutionMode(ctx.billing_account_id);
+        const inserted = await withTenantScope(appDb, actor, async (tx) =>
+          insertPendingOnDb(tx, {
+            ...input,
+            billing_account_id: ctx.billing_account_id,
+            created_by_user_id: ctx.created_by_user_id,
+          }, mode),
+        );
+        return { inserted, mode };
+      },
       recordDecision: async (input: TenantScopedRecordDecisionInput) => {
         const mode =
           input.mode_override ??
@@ -746,12 +766,14 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     db: AnyDb,
     input: InsertPendingInput,
 		mode: LedgerMode,
-  ): Promise<void> {
+  ): Promise<boolean> {
     // Stash placement-display fields in `attributes` so the read API +
     // dashboard don't need to re-derive from the intent blob.
 		const lineage = readAlgorithmLineage(input.intent.attributes);
 		assertSnapshotIdentity(lineage, input.input_snapshot, input.intent);
     const attrs = {
+      ...(input.intent.attributes?.release_qualification !== undefined
+        ? { release_qualification: input.intent.attributes.release_qualification } : {}),
       size_usdc: input.intent.size_usdc,
       limit_price: input.intent.limit_price,
       market_id: input.intent.market_id,
@@ -848,7 +870,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 					input.input_snapshot,
 				);
 			}
-      await insertDb
+      const rows = await insertDb
         .insert(polyCopyTradeFills)
         .values(values)
         .onConflictDoNothing({
@@ -857,7 +879,8 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
             polyCopyTradeFills.targetId,
             polyCopyTradeFills.fillId,
           ],
-        });
+        }).returning({ fillId: polyCopyTradeFills.fillId });
+      return rows.length === 1;
     };
 
     try {
@@ -914,7 +937,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
         // tuple's cap-check serialization, not correctness. The two fixed
         // string keys are asserted non-colliding in
         // tests/component/jobs/job-leader-election.int.test.ts.
-        await db.transaction(async (tx: AnyDb) => {
+        return await db.transaction(async (tx: AnyDb) => {
           await tx.execute(
 						sql`SELECT pg_advisory_xact_lock(hashtext(${`${input.billing_account_id}:${input.intent.market_id}:${lockToken}`}))`,
           );
@@ -947,10 +970,10 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 							maxMarketIntentUsdc,
             );
           }
-          await insert(tx);
+          return insert(tx);
         });
       } else {
-        await insert(db);
+        return await insert(db);
       }
     } catch (err: unknown) {
       // Partial unique index rejection → typed AlreadyRestingError. task.5001.
@@ -1266,7 +1289,7 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     // RLS-enforced canonical surface; both paths share one implementation.
     async insertPending(input: InsertPendingInput): Promise<void> {
       const mode = await deps.resolveExecutionMode(input.billing_account_id);
-      return insertPendingOnDb(deps.db, input, mode);
+      await insertPendingOnDb(deps.db, input, mode);
     },
 
     async markOrderId(params: {

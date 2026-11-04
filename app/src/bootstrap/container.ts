@@ -325,6 +325,7 @@ export interface Container {
 	serviceDb: Database;
 	/** Poly copy-trade/order ledger. Cross-tenant root surface; tenant calls use forTenant(ctx). */
 	orderLedger: OrderLedger;
+	getBoundedPaperExecutor: ReturnType<typeof createPolyTradeExecutorFactory>["getBoundedPaperExecutor"];
 	/** Copy-trade target source (DB-backed). Reads per-user target rows for HTTP routes. */
 	copyTradeTargetSource: CopyTradeTargetSource;
 	/** Redeem pipeline handles keyed by billing account id; empty when pipelines are not running in this process. */
@@ -2696,6 +2697,7 @@ function createContainer(): Container {
 		connectionBroker,
 		serviceDb,
 		orderLedger,
+		getBoundedPaperExecutor: polyTradeExecutorFactory.getBoundedPaperExecutor,
 		copyTradeTargetSource,
 		redeemPipelineFor: (billingAccountId: string) =>
 			redeemPipelines.get(billingAccountId),

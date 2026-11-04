@@ -9,7 +9,7 @@
 
 ## Purpose
 
-Python sidecar wrapping [`agent-next/polymarket-paper-trader`](https://github.com/agent-next/polymarket-paper-trader) (MIT) behind an HTTP API. The TS `PaperAdapter` in `@cogni/poly-market-provider/adapters/paper` speaks HTTP to this sidecar over pod-loopback. Together they implement the paper-trading backend used by `mode='paper'` copy-trade targets and the always-paper `candidate-a` / `preview` overlays.
+Python sidecar wrapping [`agent-next/polymarket-paper-trader`](https://github.com/agent-next/polymarket-paper-trader) (MIT) behind an HTTP API. The TS `PaperAdapter` in `@cogni/poly-market-provider/adapters/paper` speaks HTTP to this sidecar over an operator-derived private allocation binding. Together they implement the paper-trading backend used by `mode='paper'` copy-trade targets and the always-paper `candidate-a` / `preview` overlays.
 
 ## Pointers
 
@@ -51,7 +51,7 @@ Python sidecar wrapping [`agent-next/polymarket-paper-trader`](https://github.co
 | -------------------------------- | ---------------------------- | ---------------------------------------- | ------------------------------ |
 | `GET /healthz`                   | Liveness probe               | `200 {status}`                           | —                              |
 | `GET /readyz`                    | Readiness (fill loop alive)  | `200 {status}`                           | `503` if fill loop dead        |
-| `GET /version`                   | Pinned build + upstream SHAs | `200 {buildSha, upstreamPaperTraderSha}` | —                              |
+| `GET /version`                   | Pinned build + upstream SHAs | `200 {buildSha, bootId, upstreamPaperTraderSha}` | —                              |
 | `POST /place-order`              | Submit a paper limit order   | `200 OrderReceipt`                       | `502` per upstream cause       |
 | `GET /orders?account_id=...&starting_balance_usdc=...` | Account open-order truth | `200 OrderReceipt[]` | `503` if shadow unavailable |
 | `POST /orders/{order_id}/cancel` | Idempotent cancel            | `204`                                    | `404` swallowed by adapter     |
@@ -82,5 +82,5 @@ Cogni `market_id` is shaped `"prediction-market:polymarket:<conditionId>"` (per 
 
 - v0 ships **ephemeral SQLite** at `${PM_TRADER_DATA_DIR}/<opaque-account-key>/`. Each request carries a connection id and declared seed; one tenant can never see another tenant's cash, orders, positions, or fill loop.
 - Account starting balance comes from the tenant's immutable `paper_seed_usdc`. Cogni's grant caps remain the authorization gate; the engine balance is account state, never a deployment-wide substitute.
-- This image is consumed **only** as a pod-loopback sidecar. Must never be exposed to a Service or Ingress — `PaperAdapter`'s base URL defaults to `http://localhost:9100` and is only constructor-injected, never DNS-resolved.
+- This image is a trusted private companion in the same workload allocation. The operator derives PAPER_SIDECAR_URL from its declared private port; no public ingress is allowed. Local Compose may still use loopback. AUTH_SECRET and database credentials stay on the app.
 - Logging: JSON-ish single-line to stdout, with `event=…` keys + `client_order_id=…` for cross-service joins in Grafana/Loki.

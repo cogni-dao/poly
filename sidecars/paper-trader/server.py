@@ -181,7 +181,13 @@ ERROR_FILL_LOOP_UNMAPPED_ID = "fill_loop_result_unmapped_id"
 # request — including it here as a structured field lets Grafana join sidecar
 # logs to TS Pino logs on the same `client_order_id`.
 
-_BASE_FIELDS = {"nodeId": NODE_ID, "service": SERVICE_NAME, "bootId": BOOT_ID}
+_BASE_FIELDS = {
+    "nodeId": NODE_ID,
+    "service": SERVICE_NAME,
+    "bootId": BOOT_ID,
+    "buildSha": BUILD_SHA,
+    "env": os.environ.get("DEPLOY_ENVIRONMENT", "unknown"),
+}
 
 
 class _JsonFormatter(logging.Formatter):
@@ -827,6 +833,7 @@ def readyz() -> dict[str, str]:
 def version() -> dict[str, str]:
     return {
         "buildSha": BUILD_SHA,
+        "bootId": BOOT_ID,
         "upstreamPaperTraderSha": UPSTREAM_PAPER_TRADER_SHA,
     }
 

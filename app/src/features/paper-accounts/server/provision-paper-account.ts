@@ -141,6 +141,21 @@ export async function provisionPaperAccount(
 
   if (existing[0]) {
     const row = existing[0];
+    // A normal authenticated owner POST may reaffirm consent provenance after a
+    // legacy writer stamped every principal as user. Never reseed or alter grants.
+    if (input.actorId === input.createdByUserId) {
+      await tx.update(polyWalletConnections).set({
+        custodialConsentAcceptedAt: now,
+        custodialConsentActorKind: input.actorKind,
+        custodialConsentActorId: input.actorId,
+      }).where(and(
+        eq(polyWalletConnections.id, row.id),
+        eq(polyWalletConnections.billingAccountId, input.billingAccountId),
+        eq(polyWalletConnections.createdByUserId, input.createdByUserId),
+        eq(polyWalletConnections.kind, PAPER_CONNECTION_KIND),
+        isNull(polyWalletConnections.revokedAt),
+      ));
+    }
     // IDEMPOTENT: do not re-seed. The account may already have traded, and
     // rewriting its starting balance would silently invalidate every NAV
     // point derived from it.

@@ -90,19 +90,18 @@ deployment:
       runtime_profile: cogni-node-app-v1
       bindings:
         # Operator resolves this to the paper-trader sidecar's URL. The app only
-        # ROUTES to it when PAPER_ENFORCE_MODE=paper (set per-env, candidate/
-        # preview only); the live builder ignores it, so prod stays live-CLOB.
+        # routes paper-venue accounts through it. The companion is selected
+        # only for candidate-a and preview by its declaration below.
         PAPER_SIDECAR_URL: paper-trader
       # Node-owned secret env the akash lease must map into the app container.
       # The runtime_profile injects the A1 baseline (AUTH_SECRET, DATABASE_URL,
       # EVM_RPC_URL, …) automatically — those are NOT listed here (operator #40
       # pruned them; listing profile keys is redundant). These are the A2 node
       # secrets the profile does NOT know about: the per-tenant Polymarket
-      # trading-wallet creds + the paper-mode switch. Values are written per-env
+      # trading-wallet creds + the retained paper-mode compatibility switch. Values are written per-env
       # via self-serve `POST /nodes/{id}/secrets`; each key resolves from this
-      # node's OpenBao bank (`cogni/<env>/poly/<KEY>`). PAPER_ENFORCE_MODE is the
-      # domino: without it in the pod, `getPolyTraderWalletAdapter` throws, the
-      # executor factory is undefined, and no mirror poll runs (bug.5253).
+      # node's OpenBao bank (`cogni/<env>/poly/<KEY>`). Execution venue is
+      # resolved per account; paper accounts need no live custody credentials.
       # NOTE (BRANCH_HEAD_IS_LEASE): akash leases redeploy only when the
       # deploy/<env>-<node> branch head moves. After writing new secret VALUES,
       # a fresh source SHA is required to force ArgoCD to redeploy the lease so
@@ -125,7 +124,7 @@ deployment:
         # self-serve set; 403 key_reserved is correct). Declared here so the
         # operator projects it into the pod: without it the live-CLOB executor
         # throws WalletAdapterUnconfigured and no mirror poll runs. Required for
-        # prod live trading (paper mode's stub covers its absence; live does not).
+        # prod live trading. Paper accounts use their own real grant and no custody.
         - key: POLY_WALLET_AEAD_KEY_HEX
       bind_host: 0.0.0.0
       resources:
@@ -134,10 +133,9 @@ deployment:
         storage_mi: 4096
     # Paper-trading sidecar (as-built from cogni-poly). FastAPI wrapper over the
     # vendored polymarket-paper-trader; the app's buildPaperOnlyExecutor talks to
-    # it over PAPER_SIDECAR_URL. Private (loopback-tier); no runtime_profile (not
+    # it over PAPER_SIDECAR_URL. Private within the allocation; no runtime_profile (not
     # a cogni-node-app). Gated to the paper-trading envs via `envs` (story.5043):
-    # production runs live-CLOB (PAPER_ENFORCE_MODE=live) and never routes to the
-    # sidecar, so excluding it keeps prod a 1-service akash lease that ships
+    # production excludes this companion, keeping a 1-service akash lease that ships
     # in-place — no lease re-mint (prod is the activity_env and cannot re-mint).
     - name: paper-trader
       artifact:

@@ -531,3 +531,46 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 		expect(changed[0]?.syncedAt).toBeNull();
 	});
 });
+
+// CI-only proof here: the session's local budget selects the qualification and proxy unit files.
+describe("release qualification claim (real PostgreSQL)", () => {
+  it("returns one committed insertion winner, visible through a new tenant handle", async () => {
+    const h = await harness("paper");
+    const input = h.intent();
+    input.intent.attributes = { ...input.intent.attributes, release_qualification: { allocation: "allocation-a", helper: { bootId: "boot-a" } } };
+    const claims = await Promise.all(Array.from({ length: 8 }, () => h.tenant.claimPending(input)));
+    expect(claims.filter(c => c.inserted)).toHaveLength(1);
+    expect(claims.every(c => c.mode === "paper")).toBe(true);
+    const restarted = h.ledger.forTenant({ billing_account_id: input.billing_account_id, created_by_user_id: input.created_by_user_id });
+    const saved = await restarted.readOperation(input.target_id, input.fill_id);
+    expect(saved).toMatchObject({ order_id: null, mode: "paper", attributes: { release_qualification: { allocation: "allocation-a", helper: { bootId: "boot-a" } } } });
+    expect(await restarted.claimPending(input)).toEqual({ inserted: false, mode: "paper" });
+  });
+  it("RLS refuses another owner's claim and operation read", async () => {
+    const h = await harness("paper"), other = await harness("paper");
+    const input = h.intent();
+    expect((await h.tenant.claimPending(input)).inserted).toBe(true);
+    const foreign = h.ledger.forTenant({ billing_account_id: input.billing_account_id, created_by_user_id: other.intent().created_by_user_id });
+    expect(await foreign.readOperation(input.target_id, input.fill_id)).toBeNull();
+    await expect(foreign.claimPending({ ...input, fill_id: "foreign-attempt" })).rejects.toThrow();
+  });
+});
+
+it("reaffirms a registered owner's paper consent without reseeding or replacing grants", async () => {
+  const { withTenantScope } = await import("@cogni/db-client");
+  const { toUserId, userActor } = await import("@cogni/ids");
+  const { provisionPaperAccount } = await import("@/features/paper-accounts");
+  const { polyWalletConnections, polyWalletGrants } = await import("@cogni/poly-db-schema");
+  const h = await harness("paper");
+  const ownerId = h.intent().created_by_user_id;
+  const input = { billingAccountId: h.account, createdByUserId: ownerId, actorKind: "user" as const, actorId: ownerId,
+    seedUsdc: 1000, defaultGrant: { perOrderUsdcCap: 1, dailyUsdcCap: 200 } };
+  const db = getAppDb();
+  const first = await withTenantScope(db, userActor(toUserId(ownerId)), tx => provisionPaperAccount(tx, input));
+  const grantsBefore = await h.db.select().from(polyWalletGrants).where(eq(polyWalletGrants.billingAccountId, h.account));
+  const again = await withTenantScope(db, userActor(toUserId(ownerId)), tx => provisionPaperAccount(tx, { ...input, actorKind: "agent", seedUsdc: 9999 }));
+  expect(again).toMatchObject({ connectionId: first.connectionId, created: false, seedUsdc: "1000.00000000" });
+  const [row] = await h.db.select().from(polyWalletConnections).where(eq(polyWalletConnections.id, first.connectionId));
+  expect(row).toMatchObject({ custodialConsentActorKind: "agent", custodialConsentActorId: ownerId, paperSeedUsdc: "1000.00000000" });
+  expect(await h.db.select().from(polyWalletGrants).where(eq(polyWalletGrants.billingAccountId, h.account))).toEqual(grantsBefore);
+});

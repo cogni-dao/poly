@@ -499,6 +499,12 @@ export interface TenantOrderLedger {
    */
   insertPending(input: TenantScopedInsertPendingInput): Promise<LedgerMode>;
 
+  /** Exact immutable operation lookup, RLS-scoped; no dispatch authority. */
+  readOperation(target_id: string, fill_id: string): Promise<LedgerRow | null>;
+
+  /** True only for the committed insert winner; errors are never permission to dispatch. */
+  claimPending(input: TenantScopedInsertPendingInput): Promise<{ inserted: boolean; mode: LedgerMode }>;
+
   /**
    * Partial-unique-index existence check scoped to this tenant.
    */
