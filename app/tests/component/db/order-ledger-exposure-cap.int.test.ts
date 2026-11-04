@@ -7,7 +7,7 @@ import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import pino from "pino";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { getAppDb } from "@/adapters/server/db/client";
 import { ledgerCountedIntentUsdc } from "@/features/trading/ledger-lifecycle";
 import { createOrderLedger } from "@/features/trading/order-ledger";
@@ -539,9 +539,14 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 
 // CI-only proof here: the session's local budget selects the qualification and proxy unit files.
 describe("release qualification claim (real PostgreSQL)", () => {
+  let resolveQualificationDependencies: typeof import("@/bootstrap/qualification").resolveQualificationDependencies;
+  let qualifyRelease: typeof import("@/features/deploy-qualification/service").qualifyRelease;
+  let qualificationOperationIds: typeof import("@/features/deploy-qualification/service").qualificationOperationIds;
+  beforeAll(async () => {
+    ({ resolveQualificationDependencies } = await import("@/bootstrap/qualification"));
+    ({ qualifyRelease, qualificationOperationIds } = await import("@/features/deploy-qualification/service"));
+  }, 30000);
   it("cancels before native receipt persistence blocks to the deadline; retains that failure and cannot redispatch", async () => {
-    const { resolveQualificationDependencies } = await import("@/bootstrap/qualification");
-    const { qualifyRelease, qualificationOperationIds } = await import("@/features/deploy-qualification/service");
     const h = await harness("paper"), input = h.intent();
     const controller = new AbortController();
     const deadlineAt = Date.now() + 2000;
@@ -563,15 +568,25 @@ describe("release qualification claim (real PostgreSQL)", () => {
     const saveEntered = new Promise<void>(resolve => { saving = resolve; });
     let blocker: Promise<unknown> | undefined;
     let persistenceFailure: unknown;
+    let claimFailure: unknown;
+    const bounded = async <T>(phase: string, promise: Promise<T>): Promise<T> => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([promise, new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error(`${phase} timed out`)), 3000);
+        })]);
+      } finally { clearTimeout(timeout); }
+    };
     const receipt = { order_id: `paper-${randomUUID()}`, client_order_id: ids.clientOrderId, status: "open" as const, filled_size_usdc: 0, submitted_at: new Date().toISOString() };
     const cancel = vi.fn(async () => { expect(controller.signal.aborted).toBe(false); });
     const place = vi.fn(async () => {
       blocker = h.db.transaction(async tx => {
-        await tx.execute(sql`SELECT 1 FROM poly_copy_trade_fills WHERE billing_account_id=${h.account} AND target_id=${ids.targetId} AND fill_id=${ids.fillId} FOR UPDATE`);
+        const rows = await tx.execute(sql`SELECT 1 FROM poly_copy_trade_fills WHERE billing_account_id=${h.account} AND target_id=${ids.targetId} AND fill_id=${ids.fillId} FOR UPDATE`);
+        expect(rows).toHaveLength(1);
         locked();
         await held;
       });
-      await acquired;
+      await bounded("row lock", Promise.race([acquired, blocker.then(() => { throw new Error("row lock ended early"); })]));
       return receipt;
     });
     qualificationExecutor.mockResolvedValue({ placeIntent: place, cancelOrder: cancel });
@@ -580,7 +595,10 @@ describe("release qualification claim (real PostgreSQL)", () => {
       checkFixture: async () => {},
       helper: async (_signal: AbortSignal, readiness: { port: number; path: string }) => ({ buildSha: sha, bootId: "boot-a", ready: { ...readiness, status: 200 as const, observedAt: new Date().toISOString() } }),
       selectIntent: async () => ({ market_id: input.intent.market_id, outcome: "YES" }),
-      claim: (intent: typeof input.intent) => h.tenant.claimPending({ ...input, target_id: ids.targetId, fill_id: ids.fillId, intent }),
+      claim: async (intent: typeof input.intent, operationIds: typeof ids, observedAt: Date) => {
+        try { return await h.tenant.claimPending({ target_id: operationIds.targetId, fill_id: operationIds.fillId, observed_at: observedAt, intent }); }
+        catch (error) { claimFailure = error; throw error; }
+      },
       save: async (...args: Parameters<typeof native.save>) => {
         saving();
         try { await native.save(...args); }
@@ -589,17 +607,19 @@ describe("release qualification claim (real PostgreSQL)", () => {
     };
     const timer = setTimeout(() => controller.abort(new Error("action deadline")), Math.max(1, deadlineAt-Date.now()));
     try {
-      const action = qualifyRelease(challenge, deps, controller.signal).catch(error => error);
-      await saveEntered;
+      const action = qualifyRelease(challenge, deps, controller.signal);
+      const prematureAction = action.then(() => { throw new Error("action completed before receipt save"); }, error => { throw claimFailure ?? error; });
+      await bounded("receipt save entry", Promise.race([saveEntered, prematureAction]));
       expect(cancel).toHaveBeenCalledExactlyOnceWith(receipt.order_id);
-      const failure = await action;
+      expect(place).toHaveBeenCalledTimes(1);
+      const failure = await bounded("action deadline", action.then(() => { throw new Error("action unexpectedly succeeded"); }, error => error));
       expect(persistenceFailure).toBeDefined();
       expect(failure).toBe(persistenceFailure);
     } finally {
       clearTimeout(timer);
-      await native.dispose();
       release();
-      await blocker;
+      await bounded("native disposal", native.dispose());
+      if (blocker) await bounded("row lock release", blocker);
     }
     const saved = await h.tenant.readOperation(ids.targetId, ids.fillId);
     expect(saved).toMatchObject({ status: "pending", order_id: null });
