@@ -88,6 +88,7 @@ export function resolveQualificationDependencies(
 	});
 	const executor = () =>
 		container.getBoundedPaperExecutor(fixture.accountId, signal, {
+			paperActionDeadlineAt: deadlineAt,
 			resolveExecutionVenue,
 			paperVenue,
 		});

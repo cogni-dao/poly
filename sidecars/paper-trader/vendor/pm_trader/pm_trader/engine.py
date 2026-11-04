@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pm_trader.api import PolymarketClient
+from pm_trader.deadline import ActionDeadline
 
 # Cogni-poly local patch (bug.5005). Module logger for the maker-fill branch
 # — the sidecar's stdout is harvested by Alloy → Loki, so structured single-
@@ -430,6 +431,8 @@ class Engine:
         limit_price: float,
         order_type: str = "gtc",
         expires_at: str | None = None,
+        *,
+        deadline: ActionDeadline | None = None,
     ) -> dict:
         """Place a GTC or GTD limit order."""
         self._require_account()
@@ -444,7 +447,7 @@ class Engine:
         if side == "buy" and amount < MIN_ORDER_USD:
             raise OrderRejectedError(f"Minimum buy order size is ${MIN_ORDER_USD:.2f}, got ${amount:.2f}")
 
-        market = self.api.get_market(slug_or_id)
+        market = self.api.get_market(slug_or_id, **({"deadline": deadline} if deadline is not None else {}))
         outcome = self._validate_outcome(outcome, market)
         order = create_order(
             self.db.conn,
@@ -456,6 +459,7 @@ class Engine:
             limit_price=limit_price,
             order_type=order_type,
             expires_at=expires_at,
+            deadline=deadline,
         )
         return _order_to_dict(order)
 

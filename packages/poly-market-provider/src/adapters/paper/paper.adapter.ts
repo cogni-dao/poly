@@ -49,6 +49,8 @@ import {
 const DEFAULT_SIDECAR_BASE_URL = "http://localhost:9100";
 
 export interface PaperAdapterConfig extends MarketProviderConfig {
+  /** Absolute qualification deadline (epoch ms), enforced by the native helper too. */
+  actionDeadlineAt?: number;
   /** Durable account identity carried on every stateful sidecar request. */
   accountId?: string;
   /** Seed used only when the sidecar first opens this account namespace. */
@@ -115,6 +117,7 @@ export class PaperAdapterError extends Error {
 
 /** Request body shape posted to the sidecar's place-order endpoint. */
 const PlaceOrderRequestSchema = z.object({
+  action_deadline_at_ms: z.number().int().positive().optional(),
   account_id: z.string().min(1),
   starting_balance_usdc: z.number().positive(),
   client_order_id: z.string().min(1),
@@ -144,6 +147,7 @@ export class PaperAdapter implements MarketProviderPort {
   private readonly startingBalanceUsdc: number | undefined;
   private readonly readSource: MarketProviderPort | undefined;
   private readonly fetchImpl: typeof fetch;
+  private readonly actionDeadlineAt: number | undefined;
 
   constructor(config: PaperAdapterConfig = {}) {
     this.provider = config.providerIdentity ?? "polymarket";
@@ -151,6 +155,7 @@ export class PaperAdapter implements MarketProviderPort {
       config.sidecarBaseUrl ?? DEFAULT_SIDECAR_BASE_URL
     ).replace(/\/$/, "");
     this.accountId = config.accountId;
+    this.actionDeadlineAt = config.actionDeadlineAt;
     this.startingBalanceUsdc = config.startingBalanceUsdc;
     this.readSource = config.readSource;
     this.fetchImpl =
@@ -175,6 +180,7 @@ export class PaperAdapter implements MarketProviderPort {
     // Sidecar speaks the same shape as our OrderIntent (minus provider — implied
     // by sidecar identity). Strip provider; the rest passes through.
     const parsed = PlaceOrderRequestSchema.safeParse({
+      action_deadline_at_ms: this.actionDeadlineAt,
       client_order_id: intent.client_order_id,
       market_id: intent.market_id,
       token_id:

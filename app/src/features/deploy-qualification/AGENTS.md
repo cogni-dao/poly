@@ -15,9 +15,10 @@ Bounded release proof for Poly's declared private paper companion. The service o
 
 - Only a confirmed committed ledger-PK insertion winner may place once. Errors, conflicts, pending operations and caller restarts are readback-only.
 - Qualification and readback use the normal authorized paper executor. The service never POSTs directly to the helper.
-- Known open/partial/pending receipts get bounded normal cancellation even if persistence fails; the original save error wins. Unknown outcomes never qualify or permit another dispatch.
+- Known open/partial/pending receipts get bounded normal cancellation immediately before receipt persistence. A blocked save cannot consume that opportunity; the original save error wins even if cancellation also fails. Unknown outcomes never qualify or permit another dispatch.
 - The purpose-specific capability is verified before reading the strict mode body (256 bytes / 1 second). Authentication, body and action share a 19-second request deadline.
 - Discovery and executor HTTP use native abort signals. Fixture, authorization and ledger transactions share the remaining deadline on one action-owned app-role connection; only that connection is closed on abort. At most one qualification connection per process; shared pools are never closed.
+- The bounded paper executor forwards the absolute action deadline to the existing helper placement endpoint. Native account/registry lock waits, discovery and SQLite mutation/commit enforce expiry; aborting fetch alone is insufficient. Ordinary callers omit the optional deadline and retain their defaults.
 - Every proof binds the exact signed release, digest set, attempt, allocation and current helper boot. Changed subjects fail closed.
 - Signed readiness and boot maps cover the exact selected companion set. Poly accepts only paper-trader on private port 9100 in candidate-a/preview; production requires empty maps. No legacy missing claims are accepted.
 - Observe the signed safe relative readiness path through the configured PAPER_SIDECAR_URL before/after useful work and on readback. Bracket readiness with build/boot reads; all HTTP shares the action signal, refuses redirects and uses one bounded native observation budget. Saved reservations also bind the readiness declaration.

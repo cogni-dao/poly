@@ -8,12 +8,14 @@ prices and order books are NEVER cached (always live).
 from __future__ import annotations
 
 import json
+import asyncio
 import time
 from datetime import datetime, timezone
 
 import httpx
 
 from pm_trader.db import Database
+from pm_trader.deadline import ActionDeadline
 from pm_trader.models import (
     ApiError,
     Market,
@@ -70,11 +72,26 @@ class PolymarketClient:
     # Gamma API — market discovery
     # ------------------------------------------------------------------
 
-    def _gamma_get(self, path: str, params: dict | None = None) -> list | dict:
+    def _get(self, url: str, params: dict | None, deadline: ActionDeadline | None) -> httpx.Response:
+        if deadline is None:
+            return self._http.get(url, params=params)
+
+        async def bounded_get() -> httpx.Response:
+            # Native coroutine cancellation covers connect, headers AND body,
+            # including trickling responses. No background thread survives timeout.
+            async with asyncio.timeout(deadline.remaining()):
+                async with httpx.AsyncClient(timeout=deadline.remaining()) as client:
+                    return await client.get(url, params=params)
+
+        response = asyncio.run(bounded_get())
+        deadline.remaining()
+        return response
+
+    def _gamma_get(self, path: str, params: dict | None = None, *, deadline: ActionDeadline | None = None) -> list | dict:
         """Make a GET request to the Gamma API."""
         url = f"{GAMMA_BASE}{path}"
         try:
-            resp = self._http.get(url, params=params)
+            resp = self._get(url, params, deadline)
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
@@ -85,11 +102,11 @@ class PolymarketClient:
         except httpx.RequestError as e:
             raise ApiError(f"Gamma API request failed: {e}") from e
 
-    def _clob_get(self, path: str, params: dict | None = None) -> dict | list:
+    def _clob_get(self, path: str, params: dict | None = None, *, deadline: ActionDeadline | None = None) -> dict | list:
         """Make a GET request to the CLOB API."""
         url = f"{CLOB_BASE}{path}"
         try:
-            resp = self._http.get(url, params=params)
+            resp = self._get(url, params, deadline)
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
@@ -124,31 +141,42 @@ class PolymarketClient:
     # Market resolution (slug or condition_id → Market)
     # ------------------------------------------------------------------
 
-    def get_market(self, slug_or_id: str) -> Market:
+    def get_market(self, slug_or_id: str, *, deadline: ActionDeadline | None = None) -> Market:
         """Resolve a slug or condition_id to a full Market object.
 
         Market metadata is cached for 5 minutes.  Tries slug first
         (Gamma API), then condition_id (CLOB API).
         """
         cache_key = f"market:{slug_or_id}"
+        if deadline is not None:
+            deadline.remaining()
         cached = self._get_cached(cache_key)
         if cached is not None:
             return _parse_market(cached)
 
         # Try by slug first (Gamma API)
-        data = self._gamma_get("/markets", params={"slug": slug_or_id})
+        kwargs = {"deadline": deadline} if deadline is not None else {}
+        # Qualification discovery reads caches but does not write them. Its only
+        # mutation is the separately fenced order transaction below the engine.
+        def cache(data: dict | list) -> None:
+            if deadline is None:
+                self._set_cached(cache_key, data)
+            else:
+                deadline.remaining()
+
+        data = self._gamma_get("/markets", params={"slug": slug_or_id}, **kwargs)
         if isinstance(data, list) and len(data) > 0:
             market_data = data[0]
-            self._set_cached(cache_key, market_data)
+            cache(market_data)
             return _parse_market(market_data)
         if isinstance(data, dict) and _has_condition_id(data):
-            self._set_cached(cache_key, data)
+            cache(data)
             return _parse_market(data)
 
         # Try by condition_id via CLOB API (reliable exact match)
         if slug_or_id.startswith("0x"):
             try:
-                clob_data = self._clob_get(f"/markets/{slug_or_id}")
+                clob_data = self._clob_get(f"/markets/{slug_or_id}", **kwargs)
                 if isinstance(clob_data, dict) and clob_data.get("condition_id"):
                     # CLOB returns tokens with outcome/token_id — enrich with Gamma data
                     market = _parse_clob_market(clob_data)
@@ -156,15 +184,15 @@ class PolymarketClient:
                     if market.slug:
                         try:
                             gamma_data = self._gamma_get(
-                                "/markets", params={"slug": market.slug}
+                                "/markets", params={"slug": market.slug}, **kwargs
                             )
                             if isinstance(gamma_data, list) and len(gamma_data) > 0:
-                                self._set_cached(cache_key, gamma_data[0])
+                                cache(gamma_data[0])
                                 return _parse_market(gamma_data[0])
                         except Exception:
                             pass
                     # Fall back to CLOB-only data
-                    self._set_cached(cache_key, clob_data)
+                    cache(clob_data)
                     return market
             except ApiError:
                 pass

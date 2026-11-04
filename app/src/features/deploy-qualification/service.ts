@@ -181,26 +181,22 @@ export async function qualifyRelease(
 			const receipt = await deps.place(intent, signal);
 			if (receipt.client_order_id !== ids.clientOrderId)
 				throw new QualificationError("paper_receipt_mismatch");
-			// Attempt to preserve the real venue id before normal cancellation.
-			let persistenceFailed = false;
-			let persistenceFailure: unknown;
-			try {
-				await deps.save(receipt, ids);
-			} catch (error) {
-				persistenceFailed = true;
-				persistenceFailure = error;
-			}
-			// A known synthetic order still needs normal cleanup if saving its id failed.
-			// Cleanup shares the action budget; neither failure permits another dispatch.
+			// Cleanup gets the first opportunity after a known placement. A native DB
+			// row lock must not consume the cancellation window. Retain the venue id
+			// even if cancellation fails; a save failure remains the primary failure.
+			let cleanupFailed = false;
+			let cleanupFailure: unknown;
 			try {
 				signal.throwIfAborted();
 				if (["open", "partial", "pending"].includes(receipt.status)) {
 					await deps.cancel(receipt.order_id, signal);
 				}
 			} catch (error) {
-				if (!persistenceFailed) throw error;
+				cleanupFailed = true;
+				cleanupFailure = error;
 			}
-			if (persistenceFailed) throw persistenceFailure;
+			await deps.save(receipt, ids);
+			if (cleanupFailed) throw cleanupFailure;
 			signal.throwIfAborted();
 			const read = await deps.getOrder(receipt.order_id, signal);
 			if (!("found" in read))

@@ -539,6 +539,75 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 
 // CI-only proof here: the session's local budget selects the qualification and proxy unit files.
 describe("release qualification claim (real PostgreSQL)", () => {
+  it("cancels before native receipt persistence blocks to the deadline; retains that failure and cannot redispatch", async () => {
+    const { resolveQualificationDependencies } = await import("@/bootstrap/qualification");
+    const { qualifyRelease, qualificationOperationIds } = await import("@/features/deploy-qualification/service");
+    const h = await harness("paper"), input = h.intent();
+    const controller = new AbortController();
+    const deadlineAt = Date.now() + 2000;
+    const native = resolveQualificationDependencies({ accountId: h.account, ownerId: input.created_by_user_id }, "http://127.0.0.1:9100", controller.signal, deadlineAt);
+    const sha = "a".repeat(40), image = `ghcr.io/cogni-dao/poly@sha256:${"b".repeat(64)}`;
+    const challenge = {
+      iss: "cogni-operator" as const, aud: "cogni-release-qualification" as const,
+      iat: Date.now()/1000, exp: Date.now()/1000+60, jti: "blocked-save",
+      nodeId: "4b06359a-a859-4399-888e-a8c7a6696f7e", env: "candidate-a" as const,
+      releaseId: randomUUID(), sourceSha: sha, bundleDigest: image,
+      services: { app: image, "paper-trader": image }, attemptId: "attempt-a", allocation: "allocation-a",
+      mode: "qualify" as const, helperBootId: null, companionBootIds: null,
+      companionReadiness: { "paper-trader": { port: 9100, path: "/readyz" } },
+    };
+    const ids = qualificationOperationIds(h.account, challenge.releaseId);
+    let release!: () => void, locked!: () => void, saving!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const saveEntered = new Promise<void>(resolve => { saving = resolve; });
+    let blocker: Promise<unknown> | undefined;
+    let persistenceFailure: unknown;
+    const receipt = { order_id: `paper-${randomUUID()}`, client_order_id: ids.clientOrderId, status: "open" as const, filled_size_usdc: 0, submitted_at: new Date().toISOString() };
+    const cancel = vi.fn(async () => { expect(controller.signal.aborted).toBe(false); });
+    const place = vi.fn(async () => {
+      blocker = h.db.transaction(async tx => {
+        await tx.execute(sql`SELECT 1 FROM poly_copy_trade_fills WHERE billing_account_id=${h.account} AND target_id=${ids.targetId} AND fill_id=${ids.fillId} FOR UPDATE`);
+        locked();
+        await held;
+      });
+      await acquired;
+      return receipt;
+    });
+    qualificationExecutor.mockResolvedValue({ placeIntent: place, cancelOrder: cancel });
+    const deps = {
+      ...native,
+      checkFixture: async () => {},
+      helper: async (_signal: AbortSignal, readiness: { port: number; path: string }) => ({ buildSha: sha, bootId: "boot-a", ready: { ...readiness, status: 200 as const, observedAt: new Date().toISOString() } }),
+      selectIntent: async () => ({ market_id: input.intent.market_id, outcome: "YES" }),
+      claim: (intent: typeof input.intent) => h.tenant.claimPending({ ...input, target_id: ids.targetId, fill_id: ids.fillId, intent }),
+      save: async (...args: Parameters<typeof native.save>) => {
+        saving();
+        try { await native.save(...args); }
+        catch (error) { persistenceFailure = error; throw error; }
+      },
+    };
+    const timer = setTimeout(() => controller.abort(new Error("action deadline")), Math.max(1, deadlineAt-Date.now()));
+    try {
+      const action = qualifyRelease(challenge, deps, controller.signal).catch(error => error);
+      await saveEntered;
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(receipt.order_id);
+      const failure = await action;
+      expect(persistenceFailure).toBeDefined();
+      expect(failure).toBe(persistenceFailure);
+    } finally {
+      clearTimeout(timer);
+      await native.dispose();
+      release();
+      await blocker;
+    }
+    const saved = await h.tenant.readOperation(ids.targetId, ids.fillId);
+    expect(saved).toMatchObject({ status: "pending", order_id: null });
+    await expect(qualifyRelease(challenge, { ...deps, load: () => h.tenant.readOperation(ids.targetId, ids.fillId) }, new AbortController().signal)).rejects.toThrow("qualification_receipt_missing");
+    expect(place).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    await expect(getAppDb().execute(sql`SELECT 1 AS ok`)).resolves.toMatchObject([{ ok: 1 }]);
+  });
   it("returns one committed insertion winner, visible through a new tenant handle", async () => {
     const h = await harness("paper");
     const input = h.intent();

@@ -32,6 +32,8 @@ import sys
 import threading
 import time
 import types
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -180,6 +182,7 @@ class FakeEngine:
 _fake_engine_module = types.ModuleType("pm_trader.engine")
 _fake_engine_module.Engine = FakeEngine  # type: ignore[attr-defined]
 _fake_pm_trader_module = types.ModuleType("pm_trader")
+_fake_pm_trader_module.__path__ = [str(Path(__file__).resolve().parents[1] / "vendor/pm_trader/pm_trader")]
 _fake_pm_trader_module.engine = _fake_engine_module  # type: ignore[attr-defined]
 sys.modules.setdefault("pm_trader", _fake_pm_trader_module)
 sys.modules["pm_trader.engine"] = _fake_engine_module
@@ -673,3 +676,132 @@ def test_lock_serializes_engine_calls(client):
 
     assert len(results) == 20
     assert len(set(results)) == 20, f"duplicate order_ids: {sorted(results)}"
+
+
+@pytest.mark.parametrize("stage", ["account_lock", "registry_lock", "discovery_headers", "discovery_body", "sqlite_lock", "before_insert", "before_commit", "bounded_success", "normal"])
+def test_native_qualification_deadline(stage: str) -> None:
+    """Fresh process: the REAL helper, vendored engine/client and SQLite, no Engine stub.
+
+    Block at native seams, expire, release, then inspect actual SQLite and prove
+    that the same account still accepts an ordinary call with default behavior.
+    This runs in the existing image smoke gate, never against a live venue.
+    """
+    script = r'''
+import json, sqlite3, sys, tempfile, threading, time
+from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from types import SimpleNamespace
+
+root, stage = Path(sys.argv[1]), sys.argv[2]
+sys.path[:0] = [str(root), str(root / "vendor/pm_trader")]
+import server
+from pm_trader.engine import Engine
+import pm_trader.api as api
+
+entered, release = threading.Event(), threading.Event()
+class GatedConnection(sqlite3.Connection):
+    armed = False
+    def execute(self, sql, *args, **kwargs):
+        if self.armed and stage == "before_insert" and sql.lstrip().startswith("INSERT INTO limit_orders"):
+            entered.set()
+            assert release.wait(3)
+        return super().execute(sql, *args, **kwargs)
+    def commit(self):
+        if self.armed and stage == "before_commit":
+            entered.set()
+            assert release.wait(3)
+        return super().commit()
+
+with tempfile.TemporaryDirectory() as directory:
+    account = server.Sidecar("qualification-native", 100)
+    engine = Engine(Path(directory))
+    engine.init_account(balance=100)
+    # Replace only the connection's test gate, retaining the real on-disk schema.
+    engine.db.conn.close()
+    conn = sqlite3.connect(str(engine.db.db_path), factory=GatedConnection)
+    conn.row_factory = sqlite3.Row
+    engine.db._conn = conn
+    account.engine = engine
+    server.sidecars.accounts["qualification-native"] = account
+    market = SimpleNamespace(slug="fixture", condition_id="0xcondition", outcomes=["Yes", "No"])
+    original_get_market = engine.api.get_market
+    engine.api.get_market = lambda *a, **k: market
+    httpd = None
+    if stage.startswith("discovery_"):
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_GET(self):
+                entered.set()
+                if stage == "discovery_headers":
+                    release.wait(3)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                if stage == "discovery_body":
+                    release.wait(3)
+                try: self.wfile.write(b"[]")
+                except (BrokenPipeError, ConnectionResetError): pass
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        api.GAMMA_BASE = f"http://127.0.0.1:{httpd.server_port}"
+        engine.api.get_market = original_get_market
+
+    blocker = None
+    lock = account.lock if stage == "account_lock" else server.sidecars.lock
+    if stage in ("account_lock", "registry_lock"):
+        lock.acquire()
+    if stage == "sqlite_lock":
+        blocker = sqlite3.connect(str(engine.db.db_path))
+        blocker.execute("BEGIN IMMEDIATE")
+    req = server.PlaceOrderRequest(account_id="qualification-native", starting_balance_usdc=100,
+        client_order_id="qualification-one", market_id="fixture", outcome="YES", side="BUY",
+        size_usdc=1, limit_price=0.01,
+        **({} if stage == "normal" else {"action_deadline_at_ms": int(time.time()*1000)+(1000 if stage.startswith("discovery_") else 250)}))
+    conn.armed = True
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        action = pool.submit(server.place_order, req)
+        if stage.startswith("discovery_") or stage in ("before_insert", "before_commit"):
+            assert entered.wait(2), stage
+        if stage in ("before_insert", "before_commit"):
+            time.sleep(0.3)
+            release.set()
+        if stage in ("normal", "bounded_success"):
+            result = action.result(timeout=2)
+            assert result.status == "open"
+        else:
+            try:
+                action.result(timeout=1.5)
+                raise AssertionError("expired placement succeeded: " + stage)
+            except server.HTTPException:
+                pass
+            assert time.monotonic()-started < 1.5, stage
+        if stage in ("account_lock", "registry_lock"):
+            lock.release()
+        if blocker:
+            blocker.rollback()
+            blocker.close()
+        release.set()
+    conn.armed = False
+    rows = conn.execute("SELECT * FROM limit_orders").fetchall()
+    assert len(rows) == (1 if stage in ("normal", "bounded_success") else 0), (stage, rows)
+    assert not account.orders if stage not in ("normal", "bounded_success") else len(account.orders) == 1
+    # Timeout hooks and client settings cannot poison the next ordinary caller.
+    engine.api.get_market = lambda *a, **k: market
+    ordinary = req.model_copy(update={"action_deadline_at_ms": None, "client_order_id": "ordinary"})
+    result = server.place_order(ordinary)
+    assert result.status == "open"
+    assert len(conn.execute("SELECT * FROM limit_orders").fetchall()) == len(rows)+1
+    if httpd:
+        httpd.shutdown()
+        httpd.server_close()
+    engine.close()
+print("native deadline scenario passed:", stage)
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(Path(__file__).resolve().parents[1]), stage],
+        capture_output=True, text=True, timeout=12,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

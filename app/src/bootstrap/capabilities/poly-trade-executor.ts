@@ -309,6 +309,8 @@ export interface PaperPositionSource {
 export interface PolyTradeExecutorFactoryDeps {
   /** Optional request lifetime for an uncached bounded paper executor. */
   paperAbortSignal?: AbortSignal;
+  /** Absolute action deadline forwarded only by the uncached qualification executor. */
+  paperActionDeadlineAt?: number;
   /**
    * Live custody + authorization port. Optional because a deployment can serve
    * paper accounts with no Privy / AEAD credentials at all (the case bug.5253
@@ -440,7 +442,7 @@ export function createPolyTradeExecutorFactory(
     billingAccountId: string,
     venue: "live" | "paper"
   ) => Promise<PolyTradeExecutor>;
-  getBoundedPaperExecutor: (billingAccountId: string, signal: AbortSignal, scoped?: Pick<PolyTradeExecutorFactoryDeps, "resolveExecutionVenue" | "paperVenue">) => Promise<PolyTradeExecutor>;
+  getBoundedPaperExecutor: (billingAccountId: string, signal: AbortSignal, scoped?: Pick<PolyTradeExecutorFactoryDeps, "resolveExecutionVenue" | "paperVenue" | "paperActionDeadlineAt">) => Promise<PolyTradeExecutor>;
   invalidatePolyTradeExecutorFor: (billingAccountId: string) => void;
 } {
   const cache = new Map<string, CachedExecutor>();
@@ -1048,6 +1050,9 @@ async function buildPaperOnlyExecutor(
   });
 
   const paperAdapter = new PaperAdapter({
+    ...(deps.paperActionDeadlineAt !== undefined
+      ? { actionDeadlineAt: deps.paperActionDeadlineAt }
+      : {}),
     accountId: account.connectionId,
     startingBalanceUsdc: Number(account.seedUsdc),
     ...(deps.paperSidecarUrl !== undefined

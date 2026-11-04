@@ -13,6 +13,10 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from contextlib import contextmanager
+from typing import Iterator
+
+from pm_trader.deadline import ActionDeadline
 
 
 def _normalize_timestamp(ts: str) -> str:
@@ -67,6 +71,31 @@ def init_orders_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(ORDERS_SCHEMA)
 
 
+@contextmanager
+def _placement_transaction(conn: sqlite3.Connection, deadline: ActionDeadline | None) -> Iterator[None]:
+    if deadline is None:
+        yield
+        return
+    # The account lock owns this connection. Bound SQLite's native lock wait,
+    # then recheck AFTER acquiring the write lock and BEFORE insertion/commit.
+    # The VM hook also refuses a statement resumed after the budget expires.
+    remaining_ms = int(deadline.remaining() * 1000)
+    previous_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    conn.execute(f"PRAGMA busy_timeout={remaining_ms}")
+    conn.set_progress_handler(lambda: int(deadline.expired()), 1)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        deadline.remaining()
+        yield
+    except BaseException:
+        conn.set_progress_handler(None, 0)
+        conn.rollback()
+        raise
+    finally:
+        conn.set_progress_handler(None, 0)
+        conn.execute(f"PRAGMA busy_timeout={previous_timeout}")
+
+
 def create_order(
     conn: sqlite3.Connection,
     *,
@@ -78,20 +107,24 @@ def create_order(
     limit_price: float,
     order_type: str = "gtc",
     expires_at: str | None = None,
+    deadline: ActionDeadline | None = None,
 ) -> LimitOrder:
     """Create a new pending limit order."""
     normalized_expires = _normalize_timestamp(expires_at) if expires_at else None
-    cursor = conn.execute(
-        """\
-        INSERT INTO limit_orders (
-            market_slug, market_condition_id, outcome, side,
-            amount, limit_price, order_type, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (market_slug, market_condition_id, outcome, side,
-         amount, limit_price, order_type, normalized_expires),
-    )
-    conn.commit()
+    with _placement_transaction(conn, deadline):
+        cursor = conn.execute(
+            """\
+            INSERT INTO limit_orders (
+                market_slug, market_condition_id, outcome, side,
+                amount, limit_price, order_type, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (market_slug, market_condition_id, outcome, side,
+             amount, limit_price, order_type, normalized_expires),
+        )
+        if deadline is not None:
+            deadline.remaining()
+        conn.commit()
     return _get_order(conn, cursor.lastrowid)
 
 

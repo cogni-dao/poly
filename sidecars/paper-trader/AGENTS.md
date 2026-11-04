@@ -43,7 +43,7 @@ Python sidecar wrapping [`agent-next/polymarket-paper-trader`](https://github.co
 
 - `Dockerfile` — multi-stage. `base` is the runtime image; `test` runs pytest under a stubbed `pm_trader.Engine` as a build-blocker. `UPSTREAM_PAPER_TRADER_SHA` build-arg pins the upstream commit (current: `8a0a3ee2` = upstream v0.1.6).
 - `server.py` — FastAPI app: `/healthz`, `/readyz`, `/version`, `POST /place-order`, `GET /orders`, `POST /orders/{id}/cancel`, `GET /orders/{id}`. One Engine + lock + fill loop per paper account keeps tenant state isolated. Daemon threads poll `engine.check_orders()` every `PAPER_CHECK_ORDERS_INTERVAL_SECONDS` (default 30s, aligns with cogni reconciler's 60s tick).
-- `tests/test_sidecar_smoke.py` — fast smoke suite. Stubs `pm_trader.engine` via `sys.modules`. Wired into `.github/workflows/build-poly-paper-sidecar.yml` as a CI build-blocker (red ⇒ no image push).
+- `tests/test_sidecar_smoke.py` — smoke suite with mapping stubs plus fresh subprocesses using the real helper, engine, HTTP client and SQLite for qualification deadline cases. The existing image test stage is a CI build-blocker (red ⇒ no image push).
 
 ## HTTP contract (consumed by `PaperAdapter`)
 
@@ -58,6 +58,8 @@ Python sidecar wrapping [`agent-next/polymarket-paper-trader`](https://github.co
 | `GET /orders/{order_id}`         | Status lookup                | `200 OrderReceipt`                       | `404` → `not_found` in adapter |
 
 Response shape on `200`: matches `OrderReceiptSchema` from `@cogni/poly-market-provider`. Filled receipts use the engine's realized `amount_usd`, average price, shares, and fee. Non-filled receipts omit those realized fields rather than echoing intent values.
+
+`POST /place-order` accepts optional `action_deadline_at_ms` from the bounded qualification executor. Registry/account locks use the remaining lifetime. Discovery uses request-local native HTTP cancellation, including response bodies; shared client defaults never change. SQLite lock waits and VM progress are bounded, with expiry checks after acquiring write authority and before mutation/commit. Expired work rolls back, cannot insert later, and confers no retry authority. Ordinary callers omit the field.
 
 ## Market identity translation
 

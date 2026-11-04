@@ -2,6 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 /** Port-level behavioral proof: dispatch ownership, unknown outcomes and stale runtime subjects. */
 import { hkdfSync } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 import type { OrderIntent, OrderReceipt } from "@cogni/poly-market-provider";
 import { SignJWT } from "jose";
 import { describe, expect, it, vi } from "vitest";
@@ -104,6 +106,28 @@ function rig() {
 }
 
 describe("release qualification dispatch ownership", () => {
+	it("cancels before a blocked receipt save exhausts the action; preserves failure and never redispatches", async () => {
+		const { deps, state } = rig();
+		const controller = new AbortController();
+		const failure = new Error("blocked receipt save expired");
+		let entered!: () => void;
+		const saving = new Promise<void>((resolve) => { entered = resolve; });
+		deps.save = vi.fn(() => new Promise<void>((_resolve, reject) => {
+			entered();
+			controller.signal.addEventListener("abort", () => reject(failure), { once: true });
+		}));
+		const action = expect(qualifyRelease(challenge, deps, controller.signal)).rejects.toBe(failure);
+		await saving;
+		const canceledBeforeSaveExpired = vi.mocked(deps.cancel).mock.calls.length === 1;
+		controller.abort(new Error("action deadline"));
+		await action;
+		expect(canceledBeforeSaveExpired).toBe(true);
+		expect(deps.cancel).toHaveBeenCalledExactlyOnceWith("venue-order-1", controller.signal);
+		expect(state.receipt?.status).toBe("canceled");
+		await expect(qualifyRelease(challenge, { ...deps }, signal())).rejects.toThrow("qualification_receipt_missing");
+		expect(deps.place).toHaveBeenCalledTimes(1);
+		expect(deps.cancel).toHaveBeenCalledTimes(1);
+	});
 	it("reserves then uses normal place/cancel/get and saves the real receipt", async () => {
 		const { deps, state } = rig();
 		const result = await qualifyRelease(challenge, deps, signal());
@@ -444,6 +468,76 @@ it("accepts null helper boot for excluded-companion production readback", async 
 
 
 describe("qualification native discovery cancellation", () => {
+	it("rolls back real native SQLite work released after expiry and preserves ordinary defaults", () => {
+		const result = spawnSync("python3", ["-c", `
+import sqlite3, sys, tempfile, threading, time
+sys.path.insert(0, sys.argv[1])
+from pm_trader.deadline import ActionDeadline
+from pm_trader.orders import init_orders_schema, create_order
+
+for stage in ("lock", "insert", "commit"):
+    entered, release = threading.Event(), threading.Event()
+    class GatedConnection(sqlite3.Connection):
+        armed = False
+        def execute(self, sql, *args):
+            if self.armed and stage == "insert" and sql.lstrip().startswith("INSERT INTO limit_orders"):
+                entered.set()
+                assert release.wait(2)
+            return super().execute(sql, *args)
+        def commit(self):
+            if self.armed and stage == "commit":
+                entered.set()
+                assert release.wait(2)
+            return super().commit()
+    with tempfile.TemporaryDirectory() as directory:
+        conn = sqlite3.connect(directory+"/paper.db", factory=GatedConnection, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        init_orders_schema(conn)
+        blocker = sqlite3.connect(directory+"/paper.db")
+        if stage == "lock": blocker.execute("BEGIN IMMEDIATE")
+        args = dict(market_slug="fixture", market_condition_id="condition", outcome="Yes", side="buy", amount=1, limit_price=0.01)
+        errors = []
+        conn.armed = True
+        def action():
+            try: create_order(conn, **args, deadline=ActionDeadline(int(time.time()*1000)+80))
+            except Exception as error: errors.append(error)
+        worker = threading.Thread(target=action)
+        worker.start()
+        if stage != "lock": assert entered.wait(1)
+        time.sleep(0.12)
+        blocker.rollback()
+        release.set()
+        worker.join(1)
+        assert not worker.is_alive()
+        assert len(errors) == 1, (stage, errors)
+        assert conn.execute("SELECT count(*) FROM limit_orders").fetchone()[0] == 0, stage
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+        conn.armed = False
+        create_order(conn, **args)
+        assert conn.execute("SELECT count(*) FROM limit_orders").fetchone()[0] == 1
+        blocker.close()
+        conn.close()
+print("native SQLite expiry and ordinary defaults passed")
+`, resolve(process.cwd(), "../sidecars/paper-trader/vendor/pm_trader")], { encoding: "utf8", timeout: 5000 });
+		expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: "" });
+		expect(result.stdout).toContain("native SQLite expiry and ordinary defaults passed");
+	});
+	it("carries the absolute action deadline to the native helper without changing normal callers", async () => {
+		const { PaperAdapter } = await import("../../../../../packages/poly-market-provider/src/adapters/paper/paper.adapter");
+		const sent: Record<string, unknown>[] = [];
+		const fetchImpl: typeof fetch = vi.fn(async (_url, init) => {
+			const body = JSON.parse(String(init?.body));
+			sent.push(body);
+			return Response.json({ order_id: "paper-1", client_order_id: body.client_order_id, status: "open", filled_size_usdc: 0, submitted_at: now.toISOString() });
+		});
+		const intent: OrderIntent = { provider: "polymarket", market_id: "market", outcome: "YES", side: "BUY", size_usdc: 1, limit_price: 0.01, client_order_id: "proof" };
+		const config = { accountId: "fixture", startingBalanceUsdc: 100, fetchImpl };
+		const actionDeadlineAt = Date.now() + 5000;
+		await new PaperAdapter({ ...config, actionDeadlineAt }).placeOrder(intent);
+		await new PaperAdapter(config).placeOrder(intent);
+		expect(sent[0]).toHaveProperty("action_deadline_at_ms", actionDeadlineAt);
+		expect(sent[1]).not.toHaveProperty("action_deadline_at_ms");
+	});
   it.each(["headers", "body"] as const)("cancels discovery stalled at %s and cannot place later", async (stage) => {
     const { PolymarketAdapter } = await import("../../../../../packages/poly-market-provider/src/adapters/polymarket/polymarket.adapter");
     const { deps } = rig();
