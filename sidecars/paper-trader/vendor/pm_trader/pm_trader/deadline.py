@@ -1,4 +1,4 @@
-"""Optional action lifetime for native paper placement (Cogni bug.5568).
+"""Optional action lifetime for native paper operations (Cogni bug.5568).
 
 One received epoch deadline becomes a monotonic budget. It never changes a
 shared HTTP client or another account's connection. Ordinary calls omit it.
@@ -43,7 +43,7 @@ def action_lock(lock: Lock, deadline: ActionDeadline | None) -> Iterator[None]:
 
 @contextmanager
 def sqlite_lifetime(conn: sqlite3.Connection | None, deadline: ActionDeadline | None) -> Iterator[None]:
-    """Scope native SQLite read/lock waits to this account's placement only."""
+    """Scope native SQLite read/lock waits to one account operation."""
     if deadline is None:
         yield
         return
@@ -57,3 +57,34 @@ def sqlite_lifetime(conn: sqlite3.Connection | None, deadline: ActionDeadline | 
     finally:
         conn.set_progress_handler(None, 0)
         conn.execute(f"PRAGMA busy_timeout={previous_timeout}")
+
+
+@contextmanager
+def sqlite_transaction(conn: sqlite3.Connection, deadline: ActionDeadline | None) -> Iterator[None]:
+    """Acquire write authority within the action lifetime; fence mutation/commit.
+
+    Ordinary callers retain their existing transaction and commit behavior.
+    Bounded callers must check before each mutation and commit in this scope.
+    """
+    with sqlite_lifetime(conn, deadline):
+        try:
+            if deadline is not None:
+                conn.execute("BEGIN IMMEDIATE")
+                deadline.remaining()
+            yield
+        except BaseException:
+            if deadline is not None:
+                conn.set_progress_handler(None, 0)
+                conn.rollback()
+            raise
+
+
+def execute_schema(conn: sqlite3.Connection, sql: str, deadline: ActionDeadline | None) -> None:
+    """Run the existing schema without executescript's implicit pre-commit."""
+    if deadline is None:
+        conn.executescript(sql)
+        return
+    for statement in sql.split(";"):
+        if statement.strip():
+            deadline.remaining()
+            conn.execute(statement)

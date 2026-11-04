@@ -13,10 +13,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from contextlib import contextmanager
-from typing import Iterator
-
-from pm_trader.deadline import ActionDeadline
+from pm_trader.deadline import ActionDeadline, execute_schema, sqlite_transaction
 
 
 def _normalize_timestamp(ts: str) -> str:
@@ -66,34 +63,9 @@ CREATE TABLE IF NOT EXISTS limit_orders (
 """
 
 
-def init_orders_schema(conn: sqlite3.Connection) -> None:
+def init_orders_schema(conn: sqlite3.Connection, deadline: ActionDeadline | None = None) -> None:
     """Create the limit_orders table if it doesn't exist."""
-    conn.executescript(ORDERS_SCHEMA)
-
-
-@contextmanager
-def _placement_transaction(conn: sqlite3.Connection, deadline: ActionDeadline | None) -> Iterator[None]:
-    if deadline is None:
-        yield
-        return
-    # The account lock owns this connection. Bound SQLite's native lock wait,
-    # then recheck AFTER acquiring the write lock and BEFORE insertion/commit.
-    # The VM hook also refuses a statement resumed after the budget expires.
-    remaining_ms = int(deadline.remaining() * 1000)
-    previous_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
-    conn.execute(f"PRAGMA busy_timeout={remaining_ms}")
-    conn.set_progress_handler(lambda: int(deadline.expired()), 1)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        deadline.remaining()
-        yield
-    except BaseException:
-        conn.set_progress_handler(None, 0)
-        conn.rollback()
-        raise
-    finally:
-        conn.set_progress_handler(None, 0)
-        conn.execute(f"PRAGMA busy_timeout={previous_timeout}")
+    execute_schema(conn, ORDERS_SCHEMA, deadline)
 
 
 def create_order(
@@ -111,7 +83,7 @@ def create_order(
 ) -> LimitOrder:
     """Create a new pending limit order."""
     normalized_expires = _normalize_timestamp(expires_at) if expires_at else None
-    with _placement_transaction(conn, deadline):
+    with sqlite_transaction(conn, deadline):
         cursor = conn.execute(
             """\
             INSERT INTO limit_orders (
@@ -141,17 +113,26 @@ def get_order(conn: sqlite3.Connection, order_id: int) -> LimitOrder | None:
     return _get_order(conn, order_id)
 
 
-def cancel_order(conn: sqlite3.Connection, order_id: int) -> LimitOrder | None:
+def cancel_order(conn: sqlite3.Connection, order_id: int, deadline: ActionDeadline | None = None) -> LimitOrder | None:
     """Cancel a pending order. Returns the updated order or None if not found."""
-    order = _get_order(conn, order_id)
-    if order is None or order.status != "pending":
-        return None
-    conn.execute(
-        "UPDATE limit_orders SET status = 'cancelled' WHERE id = ?",
-        (order_id,),
-    )
-    conn.commit()
-    return _get_order(conn, order_id)
+    with sqlite_transaction(conn, deadline):
+        order = _get_order(conn, order_id)
+        if order is None or order.status != "pending":
+            if deadline is not None:
+                deadline.remaining()
+                conn.commit()
+            return None
+        if deadline is not None:
+            deadline.remaining()
+        conn.execute(
+            "UPDATE limit_orders SET status = 'cancelled' WHERE id = ?",
+            (order_id,),
+        )
+        result = _get_order(conn, order_id)
+        if deadline is not None:
+            deadline.remaining()
+        conn.commit()
+    return result
 
 
 def mark_filled(conn: sqlite3.Connection, order_id: int) -> LimitOrder:

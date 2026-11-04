@@ -255,7 +255,7 @@ export class PaperAdapter implements MarketProviderPort {
   async cancelOrder(orderId: string): Promise<void> {
     const account = this.requirePaperAccount("cancelOrder");
     const response = await this.fetchWithTimeout(
-      `${this.sidecarBaseUrl}/orders/${encodeURIComponent(orderId)}/cancel?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}`,
+      `${this.sidecarBaseUrl}/orders/${encodeURIComponent(orderId)}/cancel?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}${this.actionDeadlineQuery()}`,
       { method: "POST" }
     );
 
@@ -297,7 +297,7 @@ export class PaperAdapter implements MarketProviderPort {
   async getOrder(orderId: string): Promise<GetOrderResult> {
     const account = this.requirePaperAccount("getOrder");
     const response = await this.fetchWithTimeout(
-      `${this.sidecarBaseUrl}/orders/${encodeURIComponent(orderId)}?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}`,
+      `${this.sidecarBaseUrl}/orders/${encodeURIComponent(orderId)}?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}${this.actionDeadlineQuery()}`,
       { method: "GET" }
     );
 
@@ -327,7 +327,7 @@ export class PaperAdapter implements MarketProviderPort {
   async listOpenOrders(): Promise<OrderReceiptSchemaInferred[]> {
     const account = this.requirePaperAccount("listOpenOrders");
     const response = await this.fetchWithTimeout(
-      `${this.sidecarBaseUrl}/orders?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}`,
+      `${this.sidecarBaseUrl}/orders?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}${this.actionDeadlineQuery()}`,
       { method: "GET" }
     );
     if (!response.ok) {
@@ -344,6 +344,12 @@ export class PaperAdapter implements MarketProviderPort {
       );
     }
     return z.array(OrderReceiptSchema).parse(await response.json());
+  }
+
+  private actionDeadlineQuery(): string {
+    return this.actionDeadlineAt === undefined
+      ? ""
+      : `&action_deadline_at_ms=${encodeURIComponent(String(this.actionDeadlineAt))}`;
   }
 
   private requirePaperAccount(

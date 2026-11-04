@@ -473,14 +473,19 @@ describe("qualification native discovery cancellation", () => {
 import sqlite3, sys, tempfile, threading, time
 sys.path.insert(0, sys.argv[1])
 from pm_trader.deadline import ActionDeadline
-from pm_trader.orders import init_orders_schema, create_order
+from pathlib import Path
+from pm_trader.db import Database
+from pm_trader.deadline import sqlite_transaction
+from pm_trader.orders import init_orders_schema, create_order, cancel_order
 
-for stage in ("lock", "insert", "commit"):
+for operation in ("place", "cancel", "account", "schema", "open"):
+  for stage in (("lock", "mutation", "commit") if operation != "open" else ("mutation",)):
     entered, release = threading.Event(), threading.Event()
     class GatedConnection(sqlite3.Connection):
         armed = False
         def execute(self, sql, *args):
-            if self.armed and stage == "insert" and sql.lstrip().startswith("INSERT INTO limit_orders"):
+            target = {"place": "INSERT INTO limit_orders", "cancel": "UPDATE limit_orders", "account": "INSERT OR REPLACE INTO account", "schema": "CREATE TABLE", "open": "PRAGMA journal_mode=WAL"}[operation]
+            if self.armed and stage == "mutation" and sql.lstrip().startswith(target):
                 entered.set()
                 assert release.wait(2)
             return super().execute(sql, *args)
@@ -490,35 +495,81 @@ for stage in ("lock", "insert", "commit"):
                 assert release.wait(2)
             return super().commit()
     with tempfile.TemporaryDirectory() as directory:
-        conn = sqlite3.connect(directory+"/paper.db", factory=GatedConnection, check_same_thread=False)
+        path = Path(directory)
+        conn = sqlite3.connect(str(path / "paper.db"), factory=GatedConnection, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        init_orders_schema(conn)
-        blocker = sqlite3.connect(directory+"/paper.db")
-        if stage == "lock": blocker.execute("BEGIN IMMEDIATE")
+        db = Database(path)
+        db._conn = conn
+        if operation not in ("schema", "open"):
+            db.init_schema()
+            init_orders_schema(conn)
         args = dict(market_slug="fixture", market_condition_id="condition", outcome="Yes", side="buy", amount=1, limit_price=0.01)
+        if operation == "cancel": create_order(conn, **args)
+        blocker = sqlite3.connect(str(db.db_path))
+        if stage == "lock": blocker.execute("BEGIN IMMEDIATE")
         errors = []
         conn.armed = True
+        original_connect = sqlite3.connect
+        def connect(*a, **kw):
+            kw["factory"] = GatedConnection
+            kw["check_same_thread"] = False
+            result = original_connect(*a, **kw)
+            result.armed = True
+            return result
         def action():
-            try: create_order(conn, **args, deadline=ActionDeadline(int(time.time()*1000)+80))
+            try:
+                deadline = ActionDeadline(int(time.time()*1000)+80)
+                if operation == "place": create_order(conn, **args, deadline=deadline)
+                elif operation == "cancel": cancel_order(conn, 1, deadline=deadline)
+                elif operation == "account": db.init_account(100, deadline=deadline)
+                elif operation == "schema":
+                    with sqlite_transaction(conn, deadline):
+                        db.init_schema(deadline=deadline)
+                        init_orders_schema(conn, deadline=deadline)
+                        deadline.remaining()
+                        conn.commit()
+                else:
+                    sqlite3.connect = connect
+                    try: Database(path, deadline=deadline)
+                    finally: sqlite3.connect = original_connect
             except Exception as error: errors.append(error)
         worker = threading.Thread(target=action)
         worker.start()
-        if stage != "lock": assert entered.wait(1)
+        if stage != "lock": assert entered.wait(1), (operation, stage)
         time.sleep(0.12)
         blocker.rollback()
         release.set()
         worker.join(1)
         assert not worker.is_alive()
-        assert len(errors) == 1, (stage, errors)
-        assert conn.execute("SELECT count(*) FROM limit_orders").fetchone()[0] == 0, stage
-        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+        assert len(errors) == 1, (operation, stage, errors)
+        assert not conn.in_transaction, (operation, stage)
         conn.armed = False
-        create_order(conn, **args)
-        assert conn.execute("SELECT count(*) FROM limit_orders").fetchone()[0] == 1
+        if operation in ("schema", "open"):
+            assert conn.execute("SELECT count(*) FROM sqlite_master WHERE name IN ('account','limit_orders')").fetchone()[0] == 0
+            deadline = ActionDeadline(int(time.time()*1000)+1000)
+            fresh = Database(path, deadline=deadline)
+            with sqlite_transaction(fresh.conn, deadline):
+                fresh.init_schema(deadline=deadline)
+                init_orders_schema(fresh.conn, deadline=deadline)
+                deadline.remaining()
+                fresh.conn.commit()
+            assert fresh.init_account(100, deadline=deadline).cash == 100
+            fresh.close()
+        elif operation == "account":
+            assert db.get_account() is None
+            assert db.init_account(100).cash == 100
+        elif operation == "cancel":
+            assert conn.execute("SELECT status FROM limit_orders WHERE id=1").fetchone()[0] == "pending"
+            assert cancel_order(conn, 1).status == "cancelled"
+        else:
+            assert conn.execute("SELECT count(*) FROM limit_orders").fetchone()[0] == 0
+            create_order(conn, **args)
+            assert conn.execute("SELECT count(*) FROM limit_orders").fetchone()[0] == 1
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
         blocker.close()
         conn.close()
 print("native SQLite expiry and ordinary defaults passed")
-`, resolve(process.cwd(), "../sidecars/paper-trader/vendor/pm_trader")], { encoding: "utf8", timeout: 5000 });
+`, resolve(process.cwd(), "../sidecars/paper-trader/vendor/pm_trader")], { encoding: "utf8", timeout: 10000 });
 		expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: "" });
 		expect(result.stdout).toContain("native SQLite expiry and ordinary defaults passed");
 	});
@@ -538,6 +589,30 @@ print("native SQLite expiry and ordinary defaults passed")
 		expect(sent[0]).toHaveProperty("action_deadline_at_ms", actionDeadlineAt);
 		expect(sent[1]).not.toHaveProperty("action_deadline_at_ms");
 	});
+  it("carries lifetime and account identity on cancel and read paths; ordinary callers omit it", async () => {
+    const { PaperAdapter } = await import("../../../../../packages/poly-market-provider/src/adapters/paper/paper.adapter");
+    const calls: URL[] = [];
+    const fetchImpl: typeof fetch = vi.fn(async (url, init) => {
+      calls.push(new URL(String(url)));
+      if (init?.method === "POST") return new Response(null, { status: 204 });
+      if (new URL(String(url)).pathname === "/orders") return Response.json([]);
+      return new Response(null, { status: 404 });
+    });
+    const actionDeadlineAt = Date.now() + 5000;
+    for (const bounded of [true, false]) {
+      const adapter = new PaperAdapter({ accountId: "fixture / exact", startingBalanceUsdc: 100, fetchImpl, ...(bounded ? { actionDeadlineAt } : {}) });
+      await adapter.cancelOrder("boot/order");
+      expect(await adapter.getOrder("boot/order")).toEqual({ status: "not_found" });
+      expect(await adapter.listOpenOrders()).toEqual([]);
+    }
+    expect(calls).toHaveLength(6);
+    calls.forEach((url, index) => {
+      expect(url.searchParams.get("account_id")).toBe("fixture / exact");
+      expect(url.searchParams.get("starting_balance_usdc")).toBe("100");
+      expect(url.searchParams.get("action_deadline_at_ms")).toBe(index < 3 ? String(actionDeadlineAt) : null);
+    });
+    expect(calls[0]?.pathname).toBe("/orders/boot%2Forder/cancel");
+  });
   it.each(["headers", "body"] as const)("cancels discovery stalled at %s and cannot place later", async (stage) => {
     const { PolymarketAdapter } = await import("../../../../../packages/poly-market-provider/src/adapters/polymarket/polymarket.adapter");
     const { deps } = rig();
