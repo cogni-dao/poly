@@ -1222,7 +1222,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-async function deadlineRoute(deps: QualificationDependencies & { dispose(): Promise<void> }, requestSignal?: AbortSignal) {
+async function deadlineRoute(deps: QualificationDependencies & { dispose(): Promise<void> }, requestSignal?: AbortSignal, beforeImport?: Promise<void>) {
   qualificationComposition.env.mockReturnValue({
     AUTH_SECRET: secret, DEPLOY_ENVIRONMENT: challenge.env, APP_BUILD_SHA: sha,
     PAPER_SIDECAR_URL: "http://paper-trader:9100",
@@ -1230,6 +1230,7 @@ async function deadlineRoute(deps: QualificationDependencies & { dispose(): Prom
   qualificationComposition.resolve.mockReturnValue(deps);
   routeLog.info.mockClear();
   routeLog.warn.mockClear();
+  await beforeImport;
   const { POST } = await import("@/app/api/v1/deploy/qualification/route");
   return POST(new NextRequest("https://poly.invalid/api/v1/deploy/qualification", {
     method: "POST", headers: { authorization: await signed(), "content-type": "application/json" },
@@ -1542,17 +1543,24 @@ describe("exported POST entry owns logging prelude and combined budget", () => {
     const { deps } = rig();
     const gate = deferred<void>();
     const controller = new AbortController();
-    envelope.prelude.mockImplementationOnce(() => gate.promise);
+    const entered = deferred<void>();
+    const importGate = deferred<void>();
+    envelope.prelude.mockClear();
+    envelope.prelude.mockImplementationOnce(() => { entered.resolve(); return gate.promise; });
     envelope.start.mockClear(); envelope.end.mockClear(); envelope.count.mockClear();
     qualificationComposition.resolve.mockClear();
     let settled = false;
-    const response = deadlineRoute({ ...deps, dispose: async () => {} }, controller.signal).then(value => { settled = true; return value; });
+    const settledLatch = deferred<void>();
+    const response = deadlineRoute({ ...deps, dispose: async () => {} }, controller.signal, importGate.promise).then(value => { settled = true; settledLatch.resolve(); return value; });
     try {
-      await vi.advanceTimersByTimeAsync(0);
+      expect(envelope.prelude).not.toHaveBeenCalled();
+      importGate.resolve();
+      await entered.promise;
       if (mode === "abort") controller.abort(new Error("request aborted in prelude"));
       else await vi.advanceTimersByTimeAsync(19000);
       await vi.advanceTimersByTimeAsync(0);
       expect(settled).toBe(true);
+      await settledLatch.promise;
       expect((await response).status).toBe(503);
       expect(qualificationComposition.resolve).not.toHaveBeenCalled();
       if (mode !== "never") { gate.resolve(); await vi.advanceTimersByTimeAsync(0); }
@@ -1562,23 +1570,26 @@ describe("exported POST entry owns logging prelude and combined budget", () => {
       expect(envelope.start).toHaveBeenCalledTimes(1);
       expect(envelope.end).toHaveBeenCalledTimes(1);
       expect(envelope.count).toHaveBeenCalledTimes(1);
-    } finally { gate.resolve(); await response; envelope.prelude.mockReset().mockResolvedValue(); vi.useRealTimers(); }
+    } finally { importGate.resolve(); gate.resolve(); await response; envelope.prelude.mockReset().mockResolvedValue(); vi.useRealTimers(); }
   });
 
   it("charges prelude plus feature waiting to the single entry deadline", async () => {
     vi.useFakeTimers({ now });
     const { deps } = rig();
-    envelope.prelude.mockImplementationOnce(() => new Promise(resolve => setTimeout(resolve, 3000)));
+    const entered = deferred<void>();
+    envelope.prelude.mockImplementationOnce(() => { entered.resolve(); return new Promise(resolve => setTimeout(resolve, 3000)); });
     const working = deferred<number>();
     deps.checkFixture = async () => { working.resolve(Date.now()); await new Promise(resolve => setTimeout(resolve, 18000)); };
     let settled = false;
-    const response = deadlineRoute({ ...deps, dispose: async () => {} }).then(value => { settled = true; return value; });
+    const settledLatch = deferred<void>();
+    const response = deadlineRoute({ ...deps, dispose: async () => {} }).then(value => { settled = true; settledLatch.resolve(); return value; });
     try {
-      await vi.advanceTimersByTimeAsync(0);
+      await entered.promise;
       await vi.advanceTimersByTimeAsync(3000);
       expect(await working.promise).toBe(now.getTime() + 3000);
       await vi.advanceTimersByTimeAsync(16000);
       expect(settled).toBe(true);
+      await settledLatch.promise;
       expect((await response).status).toBe(503);
       expect(qualificationComposition.resolve.mock.lastCall?.[3]).toBe(now.getTime() + 19000);
       await vi.advanceTimersByTimeAsync(2000);
