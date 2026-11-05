@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import type { OrderIntent, OrderReceipt } from "@cogni/poly-market-provider";
 import { SignJWT } from "jose";
+import { NextRequest, NextResponse } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 import { observePaperCompanion } from "@/bootstrap/qualification-companion";
 import type { QualificationChallenge } from "@/contracts/deploy.qualification.v1.contract";
@@ -20,6 +21,11 @@ const qualificationComposition = vi.hoisted(() => ({ resolve: vi.fn(), env: vi.f
 vi.mock("@/bootstrap/qualification", () => ({ resolveQualificationDependencies: qualificationComposition.resolve }));
 vi.mock("@/shared/env", () => ({ serverEnv: qualificationComposition.env }));
 vi.mock("@/shared/config/repoSpec.server", () => ({ getNodeId: () => "4b06359a-a859-4399-888e-a8c7a6696f7e" }));
+const routeLog = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn() }));
+vi.mock("@/bootstrap/http", () => ({
+  wrapRouteHandlerWithLogging: (_options: unknown, handler: (ctx: unknown, request: Request) => Promise<Response>) =>
+    (request: Request) => handler({ log: routeLog }, request),
+}));
 
 const now = new Date("2026-11-04T20:00:00.000Z");
 const sha = "a".repeat(40);
@@ -1189,4 +1195,256 @@ it("the native observation budget also cancels a stalled declared readiness requ
     expect(native.mock.calls).toHaveLength(2);
     expect(native.mock.calls[0]?.[1]?.signal).toBe(native.mock.calls[1]?.[1]?.signal);
   } finally { vi.unstubAllGlobals(); }
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((ok, fail) => { resolve = ok; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+async function deadlineRoute(deps: QualificationDependencies & { dispose(): Promise<void> }, requestSignal?: AbortSignal) {
+  qualificationComposition.env.mockReturnValue({
+    AUTH_SECRET: secret, DEPLOY_ENVIRONMENT: challenge.env, APP_BUILD_SHA: sha,
+    PAPER_SIDECAR_URL: "http://paper-trader:9100",
+  });
+  qualificationComposition.resolve.mockReturnValue(deps);
+  routeLog.info.mockClear();
+  routeLog.warn.mockClear();
+  const { POST } = await import("@/app/api/v1/deploy/qualification/route");
+  return POST(new NextRequest("https://poly.invalid/api/v1/deploy/qualification", {
+    method: "POST", headers: { authorization: await signed(), "content-type": "application/json" },
+    body: JSON.stringify({ mode: "qualify" }), ...(requestSignal ? { signal: requestSignal } : {}),
+  }));
+}
+
+describe("whole qualification lifetime including disposal", () => {
+  it.each(["late", "never", "reject"])("fails by 19 seconds while %s disposal remains owned; replay never dispatches", async (completion) => {
+    vi.useFakeTimers({ now });
+    const { deps, state } = rig();
+    const closing = deferred<void>();
+    const disposing = deferred<void>();
+    const check = deps.checkFixture;
+    const started = deferred<void>();
+    deps.checkFixture = async () => {
+      started.resolve();
+      await new Promise(resolve => setTimeout(resolve, 18000));
+      await check();
+    };
+    const dispose = vi.fn(() => { disposing.resolve(); return closing.promise; });
+    let settled = false;
+    const response = deadlineRoute({ ...deps, dispose }).then(value => { settled = true; return value; });
+    try {
+      await started.promise;
+      await vi.advanceTimersByTimeAsync(18000);
+      await disposing.promise;
+      expect(state.row).toMatchObject({ status: "canceled", order_id: "venue-order-1" });
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(settled, "response must not await native close beyond the action bound").toBe(true);
+      const failed = await response;
+      expect(failed.status).toBe(503);
+      expect(await failed.json()).toEqual({ error: "qualification_timeout" });
+      expect(routeLog.info).not.toHaveBeenCalled();
+      expect(routeLog.warn).toHaveBeenCalledTimes(1);
+      expect(dispose).toHaveBeenCalledTimes(1);
+      if (completion === "late") closing.resolve();
+      if (completion === "reject") closing.reject(new Error("native close failed later"));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(routeLog.info).not.toHaveBeenCalled();
+      expect(deps.place).toHaveBeenCalledTimes(1);
+      await qualifyRelease(challenge, { ...deps, checkFixture: check }, signal());
+      expect(deps.place).toHaveBeenCalledTimes(1);
+      expect(deps.cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      closing.resolve();
+      await response;
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds failed useful work even if its finally disposal never settles", async () => {
+    vi.useFakeTimers({ now });
+    const { deps } = rig();
+    deps.checkFixture = async () => { throw new Error("fixture refused"); };
+    const disposing = deferred<void>();
+    const closing = deferred<void>();
+    const dispose = vi.fn(() => { disposing.resolve(); return closing.promise; });
+    let settled = false;
+    const response = deadlineRoute({ ...deps, dispose }).then(value => { settled = true; return value; });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await disposing.promise;
+      await vi.advanceTimersByTimeAsync(19000);
+      expect(settled).toBe(true);
+      expect((await response).status).toBe(503);
+      expect(routeLog.info).not.toHaveBeenCalled();
+      expect(deps.claim).not.toHaveBeenCalled();
+      expect(deps.place).not.toHaveBeenCalled();
+      expect(dispose).toHaveBeenCalledTimes(1);
+    } finally {
+      closing.resolve();
+      await response;
+      vi.useRealTimers();
+    }
+  });
+
+  it("cannot grant dispatch authority to a claim that completes after timeout", async () => {
+    vi.useFakeTimers({ now });
+    const { deps } = rig();
+    const committed = deferred<void>();
+    const claiming = deferred<void>();
+    const claim = deps.claim;
+    deps.claim = async (...args) => {
+      const winner = await claim(...args);
+      claiming.resolve();
+      await committed.promise;
+      return winner;
+    };
+    const dispose = vi.fn(async () => {});
+    let settled = false;
+    const response = deadlineRoute({ ...deps, dispose }).then(value => { settled = true; return value; });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await claiming.promise;
+      await vi.advanceTimersByTimeAsync(19000);
+      expect(settled).toBe(true);
+      expect((await response).status).toBe(503);
+      committed.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(deps.place).not.toHaveBeenCalled();
+      await expect(qualifyRelease(challenge, deps, signal())).rejects.toThrow("qualification_receipt_missing");
+      expect(deps.place).not.toHaveBeenCalled();
+      expect(routeLog.info).not.toHaveBeenCalled();
+    } finally {
+      committed.resolve();
+      await response;
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["clock", "abort"])("rejects success after disposal on %s without waiting for a timer callback", async (expiry) => {
+    vi.useFakeTimers({ now });
+    const { deps } = rig();
+    const controller = new AbortController();
+    const dispose = vi.fn(async () => {
+      if (expiry === "clock") vi.setSystemTime(now.getTime() + 19001);
+      else controller.abort(new Error("request gone"));
+    });
+    try {
+      const response = await deadlineRoute({ ...deps, dispose }, controller.signal);
+      expect(response.status).toBe(503);
+      expect(routeLog.info).not.toHaveBeenCalled();
+      expect(deps.place).toHaveBeenCalledTimes(1);
+      expect(dispose).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+it("fences response serialization immediately before any successful publication", async () => {
+  vi.useFakeTimers({ now });
+  const { deps } = rig();
+  const json = NextResponse.json;
+  const serialize = vi.spyOn(NextResponse, "json").mockImplementationOnce((...args) => {
+    const response = json(...args);
+    vi.setSystemTime(now.getTime() + 19001); // Timers have not fired.
+    return response;
+  });
+  try {
+    const response = await deadlineRoute({ ...deps, dispose: async () => {} });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "qualification_timeout" });
+    expect(routeLog.info).not.toHaveBeenCalled();
+  } finally { serialize.mockRestore(); vi.useRealTimers(); }
+});
+
+it("bounds admission waiting and prevents work after authentication completes late", async () => {
+  const facade = await import("@/app/_facades/deploy-qualification.server");
+  const admission = deferred<QualificationChallenge>();
+  const entered = deferred<void>();
+  const authenticate = vi.spyOn(facade, "authenticateQualification").mockImplementation(() => {
+    entered.resolve();
+    return admission.promise;
+  });
+  vi.useFakeTimers({ now });
+  const { deps } = rig();
+  qualificationComposition.resolve.mockClear();
+  let settled = false;
+  const response = deadlineRoute({ ...deps, dispose: async () => {} }).then(value => { settled = true; return value; });
+  try {
+    await entered.promise;
+    await vi.advanceTimersByTimeAsync(19000);
+    expect(settled).toBe(true);
+    expect((await response).status).toBe(503);
+    admission.resolve(challenge);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(qualificationComposition.resolve).not.toHaveBeenCalled();
+    expect(deps.place).not.toHaveBeenCalled();
+    expect(routeLog.info).not.toHaveBeenCalled();
+  } finally { admission.resolve(challenge); await response; authenticate.mockRestore(); vi.useRealTimers(); }
+});
+
+it("keeps JWT expiry as admission policy and succeeds when required disposal completes inside the action bound", async () => {
+  vi.useFakeTimers({ now: now.getTime() + 59000 });
+  const { deps } = rig();
+  const disposing = deferred<void>();
+  const closing = deferred<void>();
+  const dispose = vi.fn(() => { disposing.resolve(); return closing.promise; });
+  const response = deadlineRoute({ ...deps, dispose });
+  try {
+    await disposing.promise;
+    await vi.advanceTimersByTimeAsync(2000); // JWT is expired, admitted action still has 17s.
+    closing.resolve();
+    const success = await response;
+    expect(success.status).toBe(200);
+    expect(await success.json()).toMatchObject({ status: "qualified", releaseId: challenge.releaseId });
+    expect(routeLog.info).toHaveBeenCalledTimes(1);
+    expect(routeLog.warn).not.toHaveBeenCalled();
+    expect(deps.place).toHaveBeenCalledTimes(1);
+  } finally { closing.resolve(); await response; vi.useRealTimers(); }
+});
+
+it("bounds facade disposal for direct callers even without a route-owned abort timer", async () => {
+  const { qualifyDeployment } = await import("@/app/_facades/deploy-qualification.server");
+  vi.useFakeTimers({ now });
+  const { deps } = rig();
+  const closing = deferred<void>();
+  const disposing = deferred<void>();
+  qualificationComposition.env.mockReturnValue({ PAPER_SIDECAR_URL: "http://paper-trader:9100" });
+  const dispose = vi.fn(() => { disposing.resolve(); return closing.promise; });
+  qualificationComposition.resolve.mockReturnValue({ ...deps, dispose });
+  let settled = false;
+  const action = qualifyDeployment(challenge, signal(), Date.now() + 19000).finally(() => { settled = true; });
+  const rejected = expect(action).rejects.toThrow("qualification_timeout");
+  try {
+    await disposing.promise;
+    await vi.advanceTimersByTimeAsync(19000);
+    expect(settled).toBe(true);
+    await rejected;
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(qualificationComposition.resolve.mock.lastCall?.[2].aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { closing.resolve(); await rejected; vi.useRealTimers(); }
+});
+
+it("returns promptly on request cancellation while disposal remains pending", async () => {
+  vi.useFakeTimers({ now });
+  const { deps } = rig();
+  const closing = deferred<void>();
+  const disposing = deferred<void>();
+  const controller = new AbortController();
+  const dispose = vi.fn(() => { disposing.resolve(); return closing.promise; });
+  const response = deadlineRoute({ ...deps, dispose }, controller.signal);
+  try {
+    await disposing.promise;
+    controller.abort(new Error("request canceled"));
+    const failed = await response;
+    expect(failed.status).toBe(503);
+    expect(Date.now()).toBe(now.getTime());
+    expect(routeLog.info).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { closing.resolve(); await response; vi.useRealTimers(); }
 });

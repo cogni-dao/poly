@@ -52,7 +52,9 @@ export function resolveQualificationDependencies(
 		return closing;
 	};
 	const abort = () => {
-		void close();
+		// dispose() still owns the same close promise, including its failure.
+		// An abort listener must not create a second unhandled rejection chain.
+		void close().catch(() => {});
 	};
 	signal.addEventListener("abort", abort, { once: true });
 	const scoped = <T>(

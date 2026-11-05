@@ -729,3 +729,56 @@ it("reaffirms a registered owner's paper consent without reseeding or replacing 
   expect(row).toMatchObject({ custodialConsentActorKind: "agent", custodialConsentActorId: ownerId, paperSeedUsdc: "1000.00000000" });
   expect(await h.db.select().from(polyWalletGrants).where(eq(polyWalletGrants.billingAccountId, h.account))).toEqual(grantsBefore);
 });
+
+it("retains native qualification singleflight ownership across abort and repeated disposal until close completes", async () => {
+  const dbClient = await import("@cogni/db-client");
+  const { resolveQualificationDependencies } = await import("@/bootstrap/qualification");
+  const h = await harness("paper"), input = h.intent();
+  let finishClose!: () => void, enteredClose!: () => void;
+  const closeGate = new Promise<void>(resolve => { finishClose = resolve; });
+  const closing = new Promise<void>(resolve => { enteredClose = resolve; });
+  const create = dbClient.createAppDbClient;
+  const end = vi.fn();
+  const createClient = vi.spyOn(dbClient, "createAppDbClient").mockImplementation((...args) => {
+    const db = create(...args); // Real app-role connection and real tenant query below.
+    const nativeEnd = db.$client.end.bind(db.$client);
+    vi.spyOn(db.$client, "end").mockImplementation(async options => {
+      end();
+      enteredClose();
+      await closeGate;
+      await nativeEnd(options);
+    });
+    return db;
+  });
+  const controller = new AbortController();
+  const deadlineAt = Date.now() + 1000;
+  const fixture = { accountId: h.account, ownerId: input.created_by_user_id };
+  const owned = resolveQualificationDependencies(fixture, "http://127.0.0.1:9100", controller.signal, deadlineAt);
+  const expired = new Promise<void>(resolve => controller.signal.addEventListener("abort", () => resolve(), { once: true }));
+  const timer = setTimeout(() => controller.abort(new Error("response deadline")), deadlineAt - Date.now());
+  let disposing: Promise<void> | undefined;
+  try {
+    await expect(owned.load({ targetId: input.target_id, fillId: input.fill_id, clientOrderId: input.intent.client_order_id })).resolves.toBeNull();
+    disposing = owned.dispose();
+    await closing;
+    await expired;
+    expect(Date.now() - deadlineAt).toBeLessThan(1500);
+    expect(() => resolveQualificationDependencies(fixture, "http://127.0.0.1:9100", new AbortController().signal, Date.now() + 1000)).toThrow("qualification_busy");
+    const repeated = owned.dispose();
+    expect(end).toHaveBeenCalledTimes(1);
+    expect(createClient).toHaveBeenCalledTimes(1);
+    finishClose();
+    await repeated;
+    const next = resolveQualificationDependencies(fixture, "http://127.0.0.1:9100", new AbortController().signal, Date.now() + 1000);
+    await next.dispose();
+    expect(createClient).toHaveBeenCalledTimes(2);
+    expect(end).toHaveBeenCalledTimes(2);
+    await expect(getAppDb().execute(sql`SELECT 1 AS ok`)).resolves.toMatchObject([{ ok: 1 }]);
+  } finally {
+    finishClose();
+    clearTimeout(timer);
+    await owned.dispose();
+    await disposing;
+    createClient.mockRestore();
+  }
+});
