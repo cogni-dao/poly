@@ -6,11 +6,11 @@ import {
 	authenticateQualification,
 	qualifyDeployment,
 } from "@/app/_facades/deploy-qualification.server";
-import { readQualificationBody } from "@/app/_lib/qualification-body";
 import {
 	assertQualificationLifetime,
+	readQualificationBody,
 	withinQualificationLifetime,
-} from "@/app/_lib/qualification-lifetime";
+} from "@/app/_lib/qualification-body";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 import { qualificationOperation } from "@/contracts/deploy.qualification.v1.contract";
 import { QualificationError } from "@/features/deploy-qualification/challenge";

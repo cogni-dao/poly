@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 /** Authenticate service principal and bind only configured release-proof dependencies. */
 
-import { withinQualificationLifetime } from "@/app/_lib/qualification-lifetime";
+import { withinQualificationLifetime } from "@/app/_lib/qualification-body";
 import { resolveQualificationDependencies } from "@/bootstrap/qualification";
 import {
 	type QualificationChallenge,
