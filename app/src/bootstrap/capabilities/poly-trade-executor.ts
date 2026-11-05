@@ -307,6 +307,10 @@ export interface PaperPositionSource {
 }
 
 export interface PolyTradeExecutorFactoryDeps {
+  /** Optional request lifetime for an uncached bounded paper executor. */
+  paperAbortSignal?: AbortSignal;
+  /** Absolute action deadline forwarded only by the uncached qualification executor. */
+  paperActionDeadlineAt?: number;
   /**
    * Live custody + authorization port. Optional because a deployment can serve
    * paper accounts with no Privy / AEAD credentials at all (the case bug.5253
@@ -438,6 +442,7 @@ export function createPolyTradeExecutorFactory(
     billingAccountId: string,
     venue: "live" | "paper"
   ) => Promise<PolyTradeExecutor>;
+  getBoundedPaperExecutor: (billingAccountId: string, signal: AbortSignal, scoped?: Pick<PolyTradeExecutorFactoryDeps, "resolveExecutionVenue" | "paperVenue" | "paperActionDeadlineAt">) => Promise<PolyTradeExecutor>;
   invalidatePolyTradeExecutorFor: (billingAccountId: string) => void;
 } {
   const cache = new Map<string, CachedExecutor>();
@@ -498,6 +503,15 @@ export function createPolyTradeExecutorFactory(
   return {
     getPolyTradeExecutorFor,
     getPolyTradeExecutorForVenue,
+    async getBoundedPaperExecutor(billingAccountId, signal, scoped) {
+      const boundedDeps = { ...deps, ...scoped, paperAbortSignal: signal };
+      signal.throwIfAborted();
+      if (await boundedDeps.resolveExecutionVenue(billingAccountId) !== "paper") {
+        throw new PolyTradeExecutorError("not_authorized", "Qualification requires a paper-only account");
+      }
+      signal.throwIfAborted();
+      return (await buildPaperOnlyExecutor(billingAccountId, boundedDeps)).executor;
+    },
     invalidatePolyTradeExecutorFor,
   };
 }
@@ -980,7 +994,9 @@ async function buildPaperOnlyExecutor(
   }
   // Throws `PaperAccountUnavailableError` when the paper row vanished between
   // venue resolution and here (a revoke mid-build). Fail, never substitute.
+  deps.paperAbortSignal?.throwIfAborted();
   const account = await paperVenue.resolveAccount(billingAccountId);
+  deps.paperAbortSignal?.throwIfAborted();
   const funderAddress = account.funderAddress;
 
   const { PolymarketClobAdapter } = await import(
@@ -992,6 +1008,8 @@ async function buildPaperOnlyExecutor(
   const { createWalletClient, http } = await import("viem");
   const { privateKeyToAccount } = await import("viem/accounts");
   const { polygon } = await import("viem/chains");
+
+  deps.paperAbortSignal?.throwIfAborted();
 
   // Stable, well-known throwaway private key. Used only to satisfy the
   // ClobClient SDK constructor's signer requirement — the paper venue never
@@ -1032,12 +1050,24 @@ async function buildPaperOnlyExecutor(
   });
 
   const paperAdapter = new PaperAdapter({
+    ...(deps.paperActionDeadlineAt !== undefined
+      ? { actionDeadlineAt: deps.paperActionDeadlineAt }
+      : {}),
     accountId: account.connectionId,
     startingBalanceUsdc: Number(account.seedUsdc),
     ...(deps.paperSidecarUrl !== undefined
       ? { sidecarBaseUrl: deps.paperSidecarUrl }
       : {}),
     readSource: adapter,
+    ...(deps.paperAbortSignal ? { fetchImpl: (url: string | URL | Request, init?: RequestInit) => {
+      const signal = deps.paperAbortSignal;
+      if (!signal) throw new Error("missing paper request signal");
+      signal.throwIfAborted();
+      const request = { ...init, redirect: "error" as const, signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]) };
+      if (deps.paperActionDeadlineAt !== undefined && Date.now() >= deps.paperActionDeadlineAt)
+        throw new DOMException("paper action deadline exceeded", "TimeoutError");
+      return fetch(url, request);
+    } } : {}),
   });
 
   const paperPlace: ClobExecutor = createClobExecutor({
@@ -1091,6 +1121,7 @@ async function buildPaperOnlyExecutor(
       },
       "poly-trade-executor (paper): authorized → placeOrder"
     );
+    deps.paperAbortSignal?.throwIfAborted();
     return paperPlace(intent);
   };
 

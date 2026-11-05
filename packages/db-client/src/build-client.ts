@@ -15,6 +15,10 @@
  *     1. app pool        (app_user, RLS)          — `DB_POOL_MAX`,         default 1, application_name `cogni_template_app`
  *     2. service pool    (app_service, BYPASSRLS) — `DB_SERVICE_POOL_MAX`, default 4, application_name `cogni_service` (background jobs + writers)
  *     3. service-read pool (app_service, BYPASSRLS) — `DB_READ_POOL_MAX`,  default 2,  application_name `cogni_service_read` (dashboard/research reads)
+ *   Release qualification may own ONE transient app-role backend per process,
+ *   closed on its action deadline/finally. With the default app pool of 1,
+ *   blue + green each holding a qualification connection use 4 app backends,
+ *   within the dedicated app-role ceiling of 4. It never closes shared pools.
  *   Plus ONE dedicated leader-election connection (task.5016) outside these
  *   pools: a `max: 1` postgres-js client pinned via `reserve()` holding the
  *   session-level job-runner advisory lock, application_name
@@ -52,6 +56,9 @@ export const DEFAULT_POOL_MAX = 1;
 export interface BuildClientOptions {
   /** Max connections for this pool (postgres-js `max`). Defaults to {@link DEFAULT_POOL_MAX}. */
   max?: number;
+  /** Optional native limits for an action-owned client; existing pools keep defaults. */
+  connectTimeoutSeconds?: number;
+  statementTimeoutMs?: number;
 }
 
 export function buildClient(
@@ -62,9 +69,14 @@ export function buildClient(
   const client = postgres(connectionString, {
     max: options.max ?? DEFAULT_POOL_MAX,
     idle_timeout: 20,
-    connect_timeout: 10,
+    connect_timeout: options.connectTimeoutSeconds ?? 10,
     connection: {
       application_name: applicationName,
+      ...(options.statementTimeoutMs !== undefined ? {
+        statement_timeout: options.statementTimeoutMs,
+        lock_timeout: options.statementTimeoutMs,
+        idle_in_transaction_session_timeout: options.statementTimeoutMs,
+      } : {}),
     },
   });
 

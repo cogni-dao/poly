@@ -400,6 +400,26 @@ export const GET = wrapRouteHandlerWithLogging(
       // MVP readiness: env + runtime secrets (sync), then substrate checks.
       assertRuntimeSecrets(env);
 
+      // A selected private companion is a synchronous trading dependency.
+      // This probe only reads readiness; it never places an order.
+      if (
+        (env.DEPLOY_ENVIRONMENT === "candidate-a" ||
+          env.DEPLOY_ENVIRONMENT === "preview") &&
+        !env.PAPER_SIDECAR_URL
+      ) {
+        throw new InfraConnectivityError("paper-trader binding missing");
+      }
+      if (env.PAPER_SIDECAR_URL) {
+        const paperReady = await fetch(new URL("/readyz", env.PAPER_SIDECAR_URL), {
+          signal: AbortSignal.timeout(2000),
+          redirect: "error",
+          cache: "no-store",
+        });
+        if (!paperReady.ok) {
+          throw new InfraConnectivityError("paper-trader readiness failed");
+        }
+      }
+
       // EVM RPC is baseline node substrate, not conditional payment state.
       // Missing config is a deployment error. Transient connectivity remains
       // non-fatal for the default K8s probe so an upstream 429/blip cannot drain

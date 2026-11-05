@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pm_trader.api import PolymarketClient
+from pm_trader.deadline import ActionDeadline, sqlite_transaction
 
 # Cogni-poly local patch (bug.5005). Module logger for the maker-fill branch
 # — the sidecar's stdout is harvested by Alloy → Loki, so structured single-
@@ -72,11 +73,23 @@ _PERMANENT_ORDER_ERRORS = (
 class Engine:
     """Paper trading engine — 1:1 faithful to Polymarket execution."""
 
-    def __init__(self, data_dir: Path) -> None:
-        self.db = Database(data_dir)
-        self.db.init_schema()
-        init_orders_schema(self.db.conn)
-        self.api = PolymarketClient(self.db)
+    def __init__(self, data_dir: Path, deadline: ActionDeadline | None = None) -> None:
+        self.db = Database(data_dir, deadline=deadline)
+        try:
+            with sqlite_transaction(self.db.conn, deadline):
+                self.db.init_schema(deadline=deadline)
+                init_orders_schema(self.db.conn, deadline=deadline)
+                if deadline is not None:
+                    deadline.remaining()
+                    self.db.conn.commit()
+            self.api = PolymarketClient(self.db)
+            if deadline is not None:
+                deadline.remaining()
+        except BaseException:
+            if hasattr(self, "api"):
+                self.api.close()
+            self.db.close()
+            raise
         # Cogni-poly local patch (bug.5005): per-token cursor for the
         # maker-fill (trade-prints) branch of `check_orders`. Volatile —
         # rebuilt on pod restart from order.created_at for any pending
@@ -91,8 +104,8 @@ class Engine:
     # Account
     # ------------------------------------------------------------------
 
-    def init_account(self, balance: float = 10_000.0) -> Account:
-        return self.db.init_account(balance)
+    def init_account(self, balance: float = 10_000.0, deadline: ActionDeadline | None = None) -> Account:
+        return self.db.init_account(balance, deadline=deadline)
 
     def get_account(self) -> Account:
         account = self.db.get_account()
@@ -430,6 +443,8 @@ class Engine:
         limit_price: float,
         order_type: str = "gtc",
         expires_at: str | None = None,
+        *,
+        deadline: ActionDeadline | None = None,
     ) -> dict:
         """Place a GTC or GTD limit order."""
         self._require_account()
@@ -444,7 +459,7 @@ class Engine:
         if side == "buy" and amount < MIN_ORDER_USD:
             raise OrderRejectedError(f"Minimum buy order size is ${MIN_ORDER_USD:.2f}, got ${amount:.2f}")
 
-        market = self.api.get_market(slug_or_id)
+        market = self.api.get_market(slug_or_id, **({"deadline": deadline} if deadline is not None else {}))
         outcome = self._validate_outcome(outcome, market)
         order = create_order(
             self.db.conn,
@@ -456,6 +471,7 @@ class Engine:
             limit_price=limit_price,
             order_type=order_type,
             expires_at=expires_at,
+            deadline=deadline,
         )
         return _order_to_dict(order)
 
@@ -464,9 +480,9 @@ class Engine:
         orders = get_pending_orders(self.db.conn)
         return [_order_to_dict(o) for o in orders]
 
-    def cancel_limit_order(self, order_id: int) -> dict | None:
+    def cancel_limit_order(self, order_id: int, deadline: ActionDeadline | None = None) -> dict | None:
         """Cancel a pending limit order."""
-        order = cancel_order(self.db.conn, order_id)
+        order = cancel_order(self.db.conn, order_id, deadline=deadline)
         if order is None:
             return None
         return _order_to_dict(order)

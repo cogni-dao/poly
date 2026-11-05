@@ -9,7 +9,7 @@
 # upstreamPaperTraderSha — and must be kept in lockstep with PROVENANCE.md's
 # "Pinned SHA". Bumping the vendored upstream: see vendor/pm_trader/PROVENANCE.md.
 
-FROM python:3.12-slim AS base
+FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
@@ -44,8 +44,9 @@ CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "9100"]
 
 # ---- test stage: runs pytest against server.py under a stubbed PolymarketClient
 # (sidecar smoke) AND against the vendored Engine's maker-fill branch (bug.5005).
-# The CI workflow targets this stage with --target=test as a build-blocker.
-FROM base AS test
+# The published base target copies proof from this stage, so smoke execution
+# is a build dependency even when CI selects --target=base.
+FROM runtime AS test
 
 RUN pip install --no-cache-dir "pytest>=8" "httpx>=0.27"
 
@@ -66,4 +67,10 @@ ENV PAPER_CHECK_ORDERS_INTERVAL_SECONDS=0.1
 # subsequent real-Engine maker-fill tests if they shared a process. Separate
 # processes = clean import state for each suite.
 RUN pytest -q /app/tests \
-  && pytest -q /app/vendor/pm_trader/tests/test_check_orders_maker_fill.py
+  && pytest -q /app/vendor/pm_trader/tests/test_check_orders_maker_fill.py \
+  && printf 'paper-smoke-passed\n' > /tmp/paper-smoke-proof
+
+# Only the constant proof crosses from test. Runtime keeps its existing
+# environment, dependencies and command without pytest or test-only files.
+FROM runtime AS base
+COPY --from=test /tmp/paper-smoke-proof /app/paper-smoke-proof

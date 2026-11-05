@@ -49,6 +49,7 @@ Next.js App Router delivery layer. UI pages and API routes that expose features 
 - **Routes (if any):**
   - Public pages: `/` (homepage via `(public)/page.tsx`)
   - Protected pages: `/chat` (via `(app)/chat/page.tsx`)
+  - Release proof: `/api/v1/deploy/qualification` [POST] — service JWT, bounded paper proof and readback
   - Infra: `/health`, `/openapi.json`, `/meta/route-manifest` (via `(infra)/*`)
   - API: `/api/auth/*`, `/api/v1/chat/completions`
   - Wallet recovery: `/api/v1/poly/wallet/reset-connection` [POST] (owner session; tenant derived server-side)

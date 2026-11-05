@@ -7,7 +7,7 @@ import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { eq, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import pino from "pino";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { getAppDb } from "@/adapters/server/db/client";
 import { ledgerCountedIntentUsdc } from "@/features/trading/ledger-lifecycle";
 import { createOrderLedger } from "@/features/trading/order-ledger";
@@ -17,6 +17,11 @@ import {
 	PositionCapReachedError,
 } from "@/features/trading/order-ledger.types";
 import { billingAccounts, polyCopyTradeFills, users } from "@/shared/db/schema";
+
+const qualificationExecutor = vi.hoisted(() => vi.fn());
+vi.mock("@/bootstrap/container", () => ({ getContainer: () => ({
+  log: pino({ enabled: false }), getBoundedPaperExecutor: qualificationExecutor,
+}) }));
 
 const observed = new Date("2026-10-01T00:00:00Z");
 const deny = {
@@ -530,4 +535,250 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 		expect(changed[0]?.status).toBe("error");
 		expect(changed[0]?.syncedAt).toBeNull();
 	});
+});
+
+// CI-only proof here: the session's local budget selects the qualification and proxy unit files.
+describe("release qualification claim (real PostgreSQL)", () => {
+  let resolveQualificationDependencies: typeof import("@/bootstrap/qualification").resolveQualificationDependencies;
+  let qualifyRelease: typeof import("@/features/deploy-qualification/service").qualifyRelease;
+  let qualificationOperationIds: typeof import("@/features/deploy-qualification/service").qualificationOperationIds;
+  beforeAll(async () => {
+    ({ resolveQualificationDependencies } = await import("@/bootstrap/qualification"));
+    ({ qualifyRelease, qualificationOperationIds } = await import("@/features/deploy-qualification/service"));
+  }, 30000);
+  it("cancels before native receipt persistence blocks to the deadline; retains that failure and cannot redispatch", async () => {
+    const h = await harness("paper"), input = h.intent();
+    const controller = new AbortController();
+    const deadlineAt = Date.now() + 2000;
+    const native = resolveQualificationDependencies({ accountId: h.account, ownerId: input.created_by_user_id }, "http://127.0.0.1:9100", controller.signal, deadlineAt);
+    const sha = "a".repeat(40), image = `ghcr.io/cogni-dao/poly@sha256:${"b".repeat(64)}`;
+    const challenge = {
+      iss: "cogni-operator" as const, aud: "cogni-release-qualification" as const,
+      iat: Date.now()/1000, exp: Date.now()/1000+60, jti: "blocked-save",
+      nodeId: "4b06359a-a859-4399-888e-a8c7a6696f7e", env: "candidate-a" as const,
+      releaseId: randomUUID(), sourceSha: sha, bundleDigest: image,
+      services: { app: image, "paper-trader": image }, attemptId: "attempt-a", allocation: "allocation-a",
+      mode: "qualify" as const, helperBootId: null, companionBootIds: null,
+      companionReadiness: { "paper-trader": { port: 9100, path: "/readyz" } },
+    };
+    const ids = qualificationOperationIds(h.account, challenge.releaseId);
+    let release!: () => void, locked!: () => void, saving!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const saveEntered = new Promise<void>(resolve => { saving = resolve; });
+    let blocker: Promise<unknown> | undefined;
+    let persistenceFailure: unknown;
+    let claimFailure: unknown;
+    const bounded = async <T>(phase: string, promise: Promise<T>): Promise<T> => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([promise, new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error(`${phase} timed out`)), 3000);
+        })]);
+      } finally { clearTimeout(timeout); }
+    };
+    const receipt = { order_id: `paper-${randomUUID()}`, client_order_id: ids.clientOrderId, status: "open" as const, filled_size_usdc: 0, submitted_at: new Date().toISOString() };
+    const cancel = vi.fn(async () => { expect(controller.signal.aborted).toBe(false); });
+    const place = vi.fn(async () => {
+      blocker = h.db.transaction(async tx => {
+        const rows = await tx.execute(sql`SELECT 1 FROM poly_copy_trade_fills WHERE billing_account_id=${h.account} AND target_id=${ids.targetId} AND fill_id=${ids.fillId} FOR UPDATE`);
+        expect(rows).toHaveLength(1);
+        locked();
+        await held;
+      });
+      await bounded("row lock", Promise.race([acquired, blocker.then(() => { throw new Error("row lock ended early"); })]));
+      return receipt;
+    });
+    qualificationExecutor.mockResolvedValue({ placeIntent: place, cancelOrder: cancel });
+    const deps = {
+      ...native,
+      checkFixture: async () => {},
+      helper: async (_signal: AbortSignal, readiness: { port: number; path: string }) => ({ buildSha: sha, bootId: "boot-a", ready: { ...readiness, status: 200 as const, observedAt: new Date().toISOString() } }),
+      selectIntent: async () => ({ market_id: input.intent.market_id, outcome: "YES" }),
+      claim: async (intent: typeof input.intent, operationIds: typeof ids, observedAt: Date) => {
+        try { return await h.tenant.claimPending({ target_id: operationIds.targetId, fill_id: operationIds.fillId, observed_at: observedAt, intent }); }
+        catch (error) { claimFailure = error; throw error; }
+      },
+      save: async (...args: Parameters<typeof native.save>) => {
+        saving();
+        try { await native.save(...args); }
+        catch (error) { persistenceFailure = error; throw error; }
+      },
+    };
+    const timer = setTimeout(() => controller.abort(new Error("action deadline")), Math.max(1, deadlineAt-Date.now()));
+    try {
+      const action = qualifyRelease(challenge, deps, controller.signal);
+      const prematureAction = action.then(() => { throw new Error("action completed before receipt save"); }, error => { throw claimFailure ?? error; });
+      await bounded("receipt save entry", Promise.race([saveEntered, prematureAction]));
+      expect(cancel).toHaveBeenCalledExactlyOnceWith(receipt.order_id);
+      expect(place).toHaveBeenCalledTimes(1);
+      const failure = await bounded("action deadline", action.then(() => { throw new Error("action unexpectedly succeeded"); }, error => error));
+      expect(persistenceFailure).toBeDefined();
+      expect(failure).toBe(persistenceFailure);
+    } finally {
+      clearTimeout(timer);
+      release();
+      await bounded("native disposal", native.dispose());
+      if (blocker) await bounded("row lock release", blocker);
+    }
+    const saved = await h.tenant.readOperation(ids.targetId, ids.fillId);
+    expect(saved).toMatchObject({ status: "pending", order_id: null });
+    await expect(qualifyRelease(challenge, { ...deps, load: () => h.tenant.readOperation(ids.targetId, ids.fillId) }, new AbortController().signal)).rejects.toThrow("qualification_receipt_missing");
+    expect(place).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    await expect(getAppDb().execute(sql`SELECT 1 AS ok`)).resolves.toMatchObject([{ ok: 1 }]);
+  });
+  it("returns one committed insertion winner, visible through a new tenant handle", async () => {
+    const h = await harness("paper");
+    const input = h.intent();
+    input.intent.attributes = { ...input.intent.attributes, release_qualification: { allocation: "allocation-a", helper: { bootId: "boot-a" } } };
+    const claims = await Promise.all(Array.from({ length: 8 }, () => h.tenant.claimPending(input)));
+    expect(claims.filter(c => c.inserted)).toHaveLength(1);
+    expect(claims.every(c => c.mode === "paper")).toBe(true);
+    const restarted = h.ledger.forTenant({ billing_account_id: input.billing_account_id, created_by_user_id: input.created_by_user_id });
+    const saved = await restarted.readOperation(input.target_id, input.fill_id);
+    expect(saved).toMatchObject({ order_id: null, mode: "paper", attributes: { release_qualification: { allocation: "allocation-a", helper: { bootId: "boot-a" } } } });
+    expect(await restarted.claimPending(input)).toEqual({ inserted: false, mode: "paper" });
+  });
+  it("saves only the exact tenant PK even when other rows share its client id", async () => {
+    const h = await harness("paper"), other = await harness("paper");
+    const input = h.intent(), foreignInput = other.intent(), sibling = h.intent();
+    foreignInput.intent.client_order_id = input.intent.client_order_id;
+    sibling.intent.client_order_id = input.intent.client_order_id;
+    await h.tenant.claimPending(input);
+    await other.tenant.claimPending(foreignInput);
+    await h.tenant.claimPending(sibling);
+    const before = await h.db.select().from(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, input.intent.client_order_id));
+    const receipt = {
+      client_order_id: input.intent.client_order_id, order_id: "real-paper-receipt",
+      status: "partial" as const, submitted_at: observed.toISOString(),
+      filled_size_usdc: 0.5, fill_price: 0.25, total_shares: 2, fees_usdc: 0,
+    };
+    await h.tenant.markReceipt(input.target_id, input.fill_id, receipt);
+    expect(await h.tenant.readOperation(input.target_id, input.fill_id)).toMatchObject({
+      order_id: "real-paper-receipt", status: "partial", executed_shares: 2,
+      attributes: { filled_size_usdc: 0.5, realized_fill_source: "paper_order_receipt" },
+    });
+    const after = await h.db.select().from(polyCopyTradeFills).where(eq(polyCopyTradeFills.clientOrderId, input.intent.client_order_id));
+    for (const original of before.filter(row => row.fillId !== input.fill_id))
+      expect(after.find(row => row.fillId === original.fillId)).toEqual(original);
+    const wrongPrincipal = h.ledger.forTenant({ billing_account_id: h.account, created_by_user_id: foreignInput.created_by_user_id });
+    await expect(wrongPrincipal.markReceipt(input.target_id, input.fill_id, { ...receipt, order_id: "forged" })).rejects.toThrow("ledger_receipt_not_found");
+    expect((await h.tenant.readOperation(input.target_id, input.fill_id))?.order_id).toBe("real-paper-receipt");
+  });
+  it("aborts a native blocked fixture read without closing the shared pool or dispatching later", async () => {
+    const { resolveQualificationDependencies } = await import("@/bootstrap/qualification");
+    const h = await harness("paper"), input = h.intent();
+    let release!: () => void, locked!: () => void;
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const blocker = h.db.transaction(async tx => {
+      await tx.execute(sql`LOCK TABLE billing_accounts IN ACCESS EXCLUSIVE MODE`);
+      locked();
+      await held;
+    });
+    await acquired;
+    const controller = new AbortController();
+    const deadlineAt = Date.now() + 250;
+    qualificationExecutor.mockClear();
+    const deps = resolveQualificationDependencies({ accountId: h.account, ownerId: input.created_by_user_id }, "http://127.0.0.1:9100", controller.signal, deadlineAt);
+    expect(() => resolveQualificationDependencies({ accountId: h.account, ownerId: input.created_by_user_id }, "http://127.0.0.1:9100", controller.signal, deadlineAt)).toThrow("qualification_busy");
+    const timer = setTimeout(() => controller.abort(new Error("action deadline")), 250);
+    try {
+      const started = Date.now();
+      await expect(deps.checkFixture()).rejects.toThrow();
+      await deps.dispose();
+      expect(Date.now() - started).toBeLessThan(1500);
+    } finally {
+      clearTimeout(timer);
+      await deps.dispose();
+      release();
+      await blocker;
+    }
+    // The action's native connection was closed; other tenants' app pool survives.
+    await expect(getAppDb().execute(sql`SELECT 1 AS ok`)).resolves.toMatchObject([{ ok: 1 }]);
+    expect(qualificationExecutor).not.toHaveBeenCalled();
+    const next = resolveQualificationDependencies({ accountId: h.account, ownerId: input.created_by_user_id }, "http://127.0.0.1:9100", new AbortController().signal, Date.now() + 1000);
+    await next.dispose();
+  });
+  it("RLS refuses another owner's claim and operation read", async () => {
+    const h = await harness("paper"), other = await harness("paper");
+    const input = h.intent();
+    expect((await h.tenant.claimPending(input)).inserted).toBe(true);
+    const foreign = h.ledger.forTenant({ billing_account_id: input.billing_account_id, created_by_user_id: other.intent().created_by_user_id });
+    expect(await foreign.readOperation(input.target_id, input.fill_id)).toBeNull();
+    await expect(foreign.claimPending({ ...input, fill_id: "foreign-attempt" })).rejects.toThrow();
+  });
+});
+
+it("reaffirms a registered owner's paper consent without reseeding or replacing grants", async () => {
+  const { withTenantScope } = await import("@cogni/db-client");
+  const { toUserId, userActor } = await import("@cogni/ids");
+  const { provisionPaperAccount } = await import("@/features/paper-accounts");
+  const { polyWalletConnections, polyWalletGrants } = await import("@cogni/poly-db-schema");
+  const h = await harness("paper");
+  const ownerId = h.intent().created_by_user_id;
+  const input = { billingAccountId: h.account, createdByUserId: ownerId, actorKind: "user" as const, actorId: ownerId,
+    seedUsdc: 1000, defaultGrant: { perOrderUsdcCap: 1, dailyUsdcCap: 200 } };
+  const db = getAppDb();
+  const first = await withTenantScope(db, userActor(toUserId(ownerId)), tx => provisionPaperAccount(tx, input));
+  const grantsBefore = await h.db.select().from(polyWalletGrants).where(eq(polyWalletGrants.billingAccountId, h.account));
+  const again = await withTenantScope(db, userActor(toUserId(ownerId)), tx => provisionPaperAccount(tx, { ...input, actorKind: "agent", seedUsdc: 9999 }));
+  expect(again).toMatchObject({ connectionId: first.connectionId, created: false, seedUsdc: "1000.00000000" });
+  const [row] = await h.db.select().from(polyWalletConnections).where(eq(polyWalletConnections.id, first.connectionId));
+  expect(row).toMatchObject({ custodialConsentActorKind: "agent", custodialConsentActorId: ownerId, paperSeedUsdc: "1000.00000000" });
+  expect(await h.db.select().from(polyWalletGrants).where(eq(polyWalletGrants.billingAccountId, h.account))).toEqual(grantsBefore);
+});
+
+it("retains native qualification singleflight ownership across abort and repeated disposal until close completes", async () => {
+  const dbClient = await import("@cogni/db-client");
+  const { resolveQualificationDependencies } = await import("@/bootstrap/qualification");
+  const h = await harness("paper"), input = h.intent();
+  let finishClose!: () => void, enteredClose!: () => void;
+  const closeGate = new Promise<void>(resolve => { finishClose = resolve; });
+  const closing = new Promise<void>(resolve => { enteredClose = resolve; });
+  const create = dbClient.createAppDbClient;
+  const end = vi.fn();
+  const createClient = vi.spyOn(dbClient, "createAppDbClient").mockImplementation((...args) => {
+    const db = create(...args); // Real app-role connection and real tenant query below.
+    const nativeEnd = db.$client.end.bind(db.$client);
+    vi.spyOn(db.$client, "end").mockImplementation(async options => {
+      end();
+      enteredClose();
+      await closeGate;
+      await nativeEnd(options);
+    });
+    return db;
+  });
+  const controller = new AbortController();
+  const deadlineAt = Date.now() + 1000;
+  const fixture = { accountId: h.account, ownerId: input.created_by_user_id };
+  const owned = resolveQualificationDependencies(fixture, "http://127.0.0.1:9100", controller.signal, deadlineAt);
+  const expired = new Promise<void>(resolve => controller.signal.addEventListener("abort", () => resolve(), { once: true }));
+  const timer = setTimeout(() => controller.abort(new Error("response deadline")), deadlineAt - Date.now());
+  let disposing: Promise<void> | undefined;
+  try {
+    await expect(owned.load({ targetId: input.target_id, fillId: input.fill_id, clientOrderId: input.intent.client_order_id })).resolves.toBeNull();
+    disposing = owned.dispose();
+    await closing;
+    await expired;
+    expect(Date.now() - deadlineAt).toBeLessThan(1500);
+    expect(() => resolveQualificationDependencies(fixture, "http://127.0.0.1:9100", new AbortController().signal, Date.now() + 1000)).toThrow("qualification_busy");
+    const repeated = owned.dispose();
+    expect(end).toHaveBeenCalledTimes(1);
+    expect(createClient).toHaveBeenCalledTimes(1);
+    finishClose();
+    await repeated;
+    const next = resolveQualificationDependencies(fixture, "http://127.0.0.1:9100", new AbortController().signal, Date.now() + 1000);
+    await next.dispose();
+    expect(createClient).toHaveBeenCalledTimes(2);
+    expect(end).toHaveBeenCalledTimes(2);
+    await expect(getAppDb().execute(sql`SELECT 1 AS ok`)).resolves.toMatchObject([{ ok: 1 }]);
+  } finally {
+    finishClose();
+    clearTimeout(timer);
+    await owned.dispose();
+    await disposing;
+    createClient.mockRestore();
+  }
 });

@@ -11,6 +11,8 @@ metadata:
   annotations:
     cogni.dev/exclusive: "false"
     cogni.dev/ephemeral-storage: 4Gi
+    cogni.dev/qualification-path: /api/v1/deploy/qualification
+    cogni.dev/qualification-timeout-ms: "20000"
 containers:
   app:
     image: .
@@ -22,6 +24,16 @@ containers:
       httpGet:
         path: /readyz
         port: 3200
+  paper-trader:
+    image: .
+    resources:
+      requests:
+        cpu: "0.5"
+        memory: 384Mi
+    readinessProbe:
+      httpGet:
+        path: /readyz
+        port: 9100
 service:
   ports:
     web:

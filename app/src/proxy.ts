@@ -61,6 +61,8 @@ function isPublicApiRoute(pathname: string): boolean {
 	return (
 		pathname.startsWith("/api/v1/public/") ||
 		pathname === "/api/v1/agent/register" ||
+        // Purpose-separated JWT is verified by this exact route, never session auth.
+        pathname === "/api/v1/deploy/qualification" ||
 		pathname === "/api/v1/identity/bindings/import/start"
 	);
 }

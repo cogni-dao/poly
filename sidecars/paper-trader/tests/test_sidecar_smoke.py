@@ -32,6 +32,8 @@ import sys
 import threading
 import time
 import types
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -180,6 +182,7 @@ class FakeEngine:
 _fake_engine_module = types.ModuleType("pm_trader.engine")
 _fake_engine_module.Engine = FakeEngine  # type: ignore[attr-defined]
 _fake_pm_trader_module = types.ModuleType("pm_trader")
+_fake_pm_trader_module.__path__ = [str(Path(__file__).resolve().parents[1] / "vendor/pm_trader/pm_trader")]
 _fake_pm_trader_module.engine = _fake_engine_module  # type: ignore[attr-defined]
 sys.modules.setdefault("pm_trader", _fake_pm_trader_module)
 sys.modules["pm_trader.engine"] = _fake_engine_module
@@ -223,8 +226,9 @@ def test_version_returns_pinned_shas(client):
     r = client.get("/version")
     assert r.status_code == 200
     body = r.json()
-    assert set(body.keys()) == {"buildSha", "upstreamPaperTraderSha"}
+    assert set(body.keys()) == {"buildSha", "bootId", "upstreamPaperTraderSha"}
     assert isinstance(body["buildSha"], str) and body["buildSha"]
+    assert isinstance(body["bootId"], str) and body["bootId"]
     assert isinstance(body["upstreamPaperTraderSha"], str) and body["upstreamPaperTraderSha"]
 
 
@@ -672,3 +676,296 @@ def test_lock_serializes_engine_calls(client):
 
     assert len(results) == 20
     assert len(set(results)) == 20, f"duplicate order_ids: {sorted(results)}"
+
+
+@pytest.mark.parametrize("stage", ["account_lock", "registry_lock", "discovery_headers", "discovery_body", "sqlite_lock", "before_insert", "before_commit", "bounded_success", "normal"])
+def test_native_qualification_deadline(stage: str) -> None:
+    """Fresh process: the REAL helper, vendored engine/client and SQLite, no Engine stub.
+
+    Block at native seams, expire, release, then inspect actual SQLite and prove
+    that the same account still accepts an ordinary call with default behavior.
+    This runs in the existing image smoke gate, never against a live venue.
+    """
+    script = r'''
+import json, sqlite3, sys, tempfile, threading, time
+from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from types import SimpleNamespace
+
+root, stage = Path(sys.argv[1]), sys.argv[2]
+sys.path[:0] = [str(root), str(root / "vendor/pm_trader")]
+import server
+from pm_trader.engine import Engine
+import pm_trader.api as api
+
+entered, release = threading.Event(), threading.Event()
+class GatedConnection(sqlite3.Connection):
+    armed = False
+    def execute(self, sql, *args, **kwargs):
+        if self.armed and stage == "before_insert" and sql.lstrip().startswith("INSERT INTO limit_orders"):
+            entered.set()
+            assert release.wait(3)
+        return super().execute(sql, *args, **kwargs)
+    def commit(self):
+        if self.armed and stage == "before_commit":
+            entered.set()
+            assert release.wait(3)
+        return super().commit()
+
+with tempfile.TemporaryDirectory() as directory:
+    account = server.Sidecar("qualification-native", 100)
+    engine = Engine(Path(directory))
+    engine.init_account(balance=100)
+    # Replace only the connection's test gate, retaining the real on-disk schema.
+    engine.db.conn.close()
+    conn = sqlite3.connect(str(engine.db.db_path), factory=GatedConnection)
+    conn.row_factory = sqlite3.Row
+    engine.db._conn = conn
+    account.engine = engine
+    server.sidecars.accounts["qualification-native"] = account
+    market = SimpleNamespace(slug="fixture", condition_id="0xcondition", outcomes=["Yes", "No"])
+    original_get_market = engine.api.get_market
+    engine.api.get_market = lambda *a, **k: market
+    httpd = None
+    if stage.startswith("discovery_"):
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_GET(self):
+                entered.set()
+                if stage == "discovery_headers":
+                    release.wait(3)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                if stage == "discovery_body":
+                    release.wait(3)
+                try: self.wfile.write(b"[]")
+                except (BrokenPipeError, ConnectionResetError): pass
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        api.GAMMA_BASE = f"http://127.0.0.1:{httpd.server_port}"
+        engine.api.get_market = original_get_market
+
+    blocker = None
+    lock = account.lock if stage == "account_lock" else server.sidecars.lock
+    if stage in ("account_lock", "registry_lock"):
+        lock.acquire()
+    if stage == "sqlite_lock":
+        blocker = sqlite3.connect(str(engine.db.db_path))
+        blocker.execute("BEGIN IMMEDIATE")
+    req = server.PlaceOrderRequest(account_id="qualification-native", starting_balance_usdc=100,
+        client_order_id="qualification-one", market_id="fixture", outcome="YES", side="BUY",
+        size_usdc=1, limit_price=0.01,
+        **({} if stage == "normal" else {"action_deadline_at_ms": int(time.time()*1000)+(1000 if stage.startswith("discovery_") else 250)}))
+    conn.armed = True
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        action = pool.submit(server.place_order, req)
+        if stage.startswith("discovery_") or stage in ("before_insert", "before_commit"):
+            assert entered.wait(2), stage
+        if stage in ("before_insert", "before_commit"):
+            time.sleep(0.3)
+            release.set()
+        if stage in ("normal", "bounded_success"):
+            result = action.result(timeout=2)
+            assert result.status == "open"
+        else:
+            try:
+                action.result(timeout=1.5)
+                raise AssertionError("expired placement succeeded: " + stage)
+            except server.HTTPException:
+                pass
+            assert time.monotonic()-started < 1.5, stage
+        if stage in ("account_lock", "registry_lock"):
+            lock.release()
+        if blocker:
+            blocker.rollback()
+            blocker.close()
+        release.set()
+    conn.armed = False
+    rows = conn.execute("SELECT * FROM limit_orders").fetchall()
+    assert len(rows) == (1 if stage in ("normal", "bounded_success") else 0), (stage, rows)
+    assert not account.orders if stage not in ("normal", "bounded_success") else len(account.orders) == 1
+    # Timeout hooks and client settings cannot poison the next ordinary caller.
+    engine.api.get_market = lambda *a, **k: market
+    ordinary = req.model_copy(update={"action_deadline_at_ms": None, "client_order_id": "ordinary"})
+    result = server.place_order(ordinary)
+    assert result.status == "open"
+    assert len(conn.execute("SELECT * FROM limit_orders").fetchall()) == len(rows)+1
+    if httpd:
+        httpd.shutdown()
+        httpd.server_close()
+    engine.close()
+print("native deadline scenario passed:", stage)
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(Path(__file__).resolve().parents[1]), stage],
+        capture_output=True, text=True, timeout=12,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("stage", [
+    "cold_open_lock", "cold_open_mutation", "cold_schema_lock", "cold_schema_mutation",
+    "cold_schema_commit", "cold_account_mutation", "cold_account_commit", "cold_publish",
+    "cold_success", "cold_get_account_mutation", "cold_list_account_commit",
+    "cancel_account_lock", "cancel_registry_lock", "cancel_sqlite_lock",
+    "cancel_mutation", "cancel_commit", "cancel_success", "cancel_normal",
+])
+def test_native_cold_and_cancel_lifetime(stage: str) -> None:
+    """Actual HTTP routes, fresh real Engine and SQLite; no manual warm-up.
+
+    SQL gates delay the real native statements/commit past the same received
+    deadline. Inspect native state after release and retry ordinary operations.
+    The declared runtime image build must execute this existing smoke suite.
+    """
+    script = r'''
+import sqlite3, sys, tempfile, threading, time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from types import SimpleNamespace
+root, stage = Path(sys.argv[1]), sys.argv[2]
+sys.path[:0] = [str(root), str(root / "vendor/pm_trader")]
+import server
+from fastapi.testclient import TestClient
+from pm_trader.engine import Engine
+from pm_trader.api import PolymarketClient
+
+entered, release = threading.Event(), threading.Event()
+created_threads = []
+original_connect, original_start = sqlite3.connect, threading.Thread.start
+armed = False
+phase = stage.replace("cold_get_", "cold_").replace("cold_list_", "cold_")
+class GatedConnection(sqlite3.Connection):
+    last_mutation = ""
+    def execute(self, sql, *args, **kwargs):
+        text = sql.lstrip()
+        if text.startswith("CREATE TABLE"): self.last_mutation = "schema"
+        if text.startswith("INSERT OR REPLACE INTO account"): self.last_mutation = "account"
+        if text.startswith("UPDATE limit_orders"): self.last_mutation = "cancel"
+        target = {"cold_open_mutation": "PRAGMA journal_mode=WAL", "cold_schema_mutation": "CREATE TABLE",
+            "cold_account_mutation": "INSERT OR REPLACE INTO account", "cancel_mutation": "UPDATE limit_orders"}.get(phase)
+        if armed and target and text.startswith(target):
+            entered.set()
+            assert release.wait(4), stage
+        return super().execute(sql, *args, **kwargs)
+    def commit(self):
+        if armed and phase == ("cancel_commit" if self.last_mutation == "cancel" else "cold_"+self.last_mutation+"_commit"):
+            entered.set()
+            assert release.wait(4), stage
+        return super().commit()
+def connect(*a, **kw):
+    kw["factory"] = GatedConnection
+    return original_connect(*a, **kw)
+def start(thread, *a, **kw):
+    result = original_start(thread, *a, **kw)
+    if thread.name == "paper-fill-loop":
+        created_threads.append(thread)
+        if armed and stage == "cold_publish":
+            entered.set()
+            assert release.wait(4), stage
+    return result
+sqlite3.connect, threading.Thread.start = connect, start
+# Real native lifecycle/SQL; fixture market metadata alone avoids a venue call.
+PolymarketClient.get_market = lambda *a, **k: SimpleNamespace(slug="fixture", condition_id="0xcondition", outcomes=["Yes", "No"])
+with tempfile.TemporaryDirectory() as directory:
+    server.DATA_DIR = Path(directory)
+    account_id = "qualification-native-cold-cancel"
+    query = {"account_id": account_id, "starting_balance_usdc": 100}
+    request = dict(**query, client_order_id="native-one", market_id="fixture", outcome="YES", side="BUY", size_usdc=1, limit_price=0.01)
+    path = server.DATA_DIR / server._account_key(account_id) / "paper.db"
+    blocker, held = None, None
+    with TestClient(server.app, raise_server_exceptions=False) as client:
+        if stage.startswith("cancel_"):
+            placed = client.post("/place-order", json=request)
+            assert placed.status_code == 200, placed.text
+            oid = placed.json()["order_id"]
+            account = server.sidecars.accounts[account_id]
+            conn = account.engine.db.conn
+            if stage in ("cancel_account_lock", "cancel_registry_lock"):
+                held = account.lock if stage == "cancel_account_lock" else server.sidecars.lock
+                held.acquire()
+            if stage == "cancel_sqlite_lock":
+                blocker = original_connect(str(path))
+                blocker.execute("BEGIN IMMEDIATE")
+        elif stage in ("cold_open_lock", "cold_schema_lock"):
+            path.parent.mkdir(parents=True)
+            blocker = original_connect(str(path))
+            if stage == "cold_schema_lock": blocker.execute("PRAGMA journal_mode=WAL")
+            blocker.execute("BEGIN EXCLUSIVE" if stage == "cold_open_lock" else "BEGIN IMMEDIATE")
+        expiry = int(time.time()*1000)+800
+        ordinary = stage == "cancel_normal"
+        success = stage in ("cold_success", "cancel_success", "cancel_normal")
+        armed = True
+        def action():
+            if stage.startswith("cancel_"):
+                return client.post("/orders/"+oid+"/cancel", params={**query, **({} if ordinary else {"action_deadline_at_ms": expiry})})
+            if stage.startswith("cold_get_"):
+                return client.get("/orders/missing", params={**query, "action_deadline_at_ms": expiry})
+            if stage.startswith("cold_list_"):
+                return client.get("/orders", params={**query, "action_deadline_at_ms": expiry})
+            return client.post("/place-order", json={**request, "action_deadline_at_ms": expiry})
+        started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(action)
+            if phase.endswith(("mutation", "commit")) or stage == "cold_publish":
+                assert entered.wait(2), stage
+                time.sleep(max(0, expiry/1000-time.time())+0.05)
+                release.set()
+            response = future.result(timeout=2)
+            assert time.monotonic()-started < 2, stage
+            if success:
+                assert response.status_code == (204 if stage.startswith("cancel_") else 200), response.text
+            else:
+                assert response.status_code >= 400, (stage, response.status_code, response.text)
+            if held: held.release()
+            if blocker:
+                blocker.rollback()
+                blocker.close()
+            release.set()
+        armed = False
+        # Observe after blocked work is released: a failed action cannot mutate later.
+        if stage.startswith("cancel_"):
+            expected = "cancelled" if success else "pending"
+            assert conn.execute("SELECT status FROM limit_orders").fetchone()[0] == expected, stage
+            assert not conn.in_transaction
+            assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+            assert account.orders[oid].status == ("canceled" if success else "open")
+            # Preserve boot/account identity on the native route.
+            bad = oid.replace(server.BOOT_ID, "another-boot")
+            assert client.post("/orders/"+bad+"/cancel", params=query).status_code == 404
+            assert client.post("/orders/"+oid+"/cancel", params={**query, "account_id": "other-account"}).status_code == 404
+            assert client.post("/orders/"+oid+"/cancel", params=query).status_code == (404 if success else 204)
+            assert conn.execute("SELECT status FROM limit_orders").fetchone()[0] == "cancelled"
+        elif not success:
+            assert account_id not in server.sidecars.accounts, stage
+            for thread in created_threads:
+                thread.join(0.5)
+                assert not thread.is_alive(), stage
+            check = original_connect(str(path))
+            tables = {r[0] for r in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if phase.startswith(("cold_open_", "cold_schema_")):
+                assert "account" not in tables and "limit_orders" not in tables, (stage, tables)
+            if "account" in tables:
+                assert check.execute("SELECT count(*) FROM account").fetchone()[0] == (1 if stage == "cold_publish" else 0), stage
+            if "limit_orders" in tables:
+                assert check.execute("SELECT count(*) FROM limit_orders").fetchone()[0] == 0, stage
+            check.close()
+            # The same cold request can bootstrap automatically after failure.
+            repaired = client.post("/place-order", json={**request, "action_deadline_at_ms": int(time.time()*1000)+3000})
+            assert repaired.status_code == 200, repaired.text
+        account = server.sidecars.accounts[account_id]
+        assert account.engine.db.get_account().cash == 100
+        assert account._fill_thread.is_alive()
+        # Ordinary callers on that native connection retain their default behavior.
+        assert account.engine.db.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+        assert client.post("/place-order", json={**request, "client_order_id": "ordinary-after"}).status_code == 200
+print("native cold/cancel HTTP scenario passed:", stage)
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(Path(__file__).resolve().parents[1]), stage],
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

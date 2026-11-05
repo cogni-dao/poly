@@ -48,7 +48,7 @@ Standalone workspace package (`@cogni/poly-market-provider`) providing a typed p
 
 **Subpath** (`@cogni/market-provider/adapters/polymarket`):
 
-- `PolymarketAdapter`, `PolymarketAdapterConfig` (Gamma reads; Run methods throw `OrderNotSupportedError` in CP1 baseline; CP3 lands the CLOB surface)
+- `PolymarketAdapter`, `PolymarketAdapterConfig` (optional signal/fetchImpl injection bounds native discovery and body reads; Gamma reads; Run methods throw `OrderNotSupportedError` in CP1 baseline; CP3 lands the CLOB surface)
 - `createPolymarketActivitySource`, `WalletActivitySource`, `NextFillsResult`, `POLYMARKET_ACTIVITY_SOURCE_METRICS` for public Data-API wallet activity normalization used by copy trading and research observation.
 
 **Subpath** (`@cogni/market-provider/adapters/kalshi`):
@@ -57,7 +57,7 @@ Standalone workspace package (`@cogni/poly-market-provider`) providing a typed p
 
 **Subpath** (`@cogni/market-provider/adapters/paper`):
 
-- `PaperAdapter`, `PaperAdapterConfig` (Phase-1 stub; body lands in Phase 3 per task.0315). Sidecar `OrderReceipt` carries optional realized-fill fields (`fill_price`, `total_shares`, `fees_usdc`) populated by the upstream engine's `Trade` row — see bug.5018.
+- `PaperAdapter`, `PaperAdapterConfig` (optional `actionDeadlineAt` checks the absolute epoch-ms qualification lifetime immediately before each HTTP dispatch and forwards it to the native helper; omitted by ordinary callers). Sidecar `OrderReceipt` carries optional realized-fill fields (`fill_price`, `total_shares`, `fees_usdc`) populated by the upstream engine's `Trade` row — see bug.5018.
 
 **Subpath** (`@cogni/poly-market-provider/analysis`):
 

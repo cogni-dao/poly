@@ -13,6 +13,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pm_trader.deadline import ActionDeadline, execute_schema, sqlite_transaction
 
 
 def _normalize_timestamp(ts: str) -> str:
@@ -62,9 +63,9 @@ CREATE TABLE IF NOT EXISTS limit_orders (
 """
 
 
-def init_orders_schema(conn: sqlite3.Connection) -> None:
+def init_orders_schema(conn: sqlite3.Connection, deadline: ActionDeadline | None = None) -> None:
     """Create the limit_orders table if it doesn't exist."""
-    conn.executescript(ORDERS_SCHEMA)
+    execute_schema(conn, ORDERS_SCHEMA, deadline)
 
 
 def create_order(
@@ -78,20 +79,24 @@ def create_order(
     limit_price: float,
     order_type: str = "gtc",
     expires_at: str | None = None,
+    deadline: ActionDeadline | None = None,
 ) -> LimitOrder:
     """Create a new pending limit order."""
     normalized_expires = _normalize_timestamp(expires_at) if expires_at else None
-    cursor = conn.execute(
-        """\
-        INSERT INTO limit_orders (
-            market_slug, market_condition_id, outcome, side,
-            amount, limit_price, order_type, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (market_slug, market_condition_id, outcome, side,
-         amount, limit_price, order_type, normalized_expires),
-    )
-    conn.commit()
+    with sqlite_transaction(conn, deadline):
+        cursor = conn.execute(
+            """\
+            INSERT INTO limit_orders (
+                market_slug, market_condition_id, outcome, side,
+                amount, limit_price, order_type, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (market_slug, market_condition_id, outcome, side,
+             amount, limit_price, order_type, normalized_expires),
+        )
+        if deadline is not None:
+            deadline.remaining()
+        conn.commit()
     return _get_order(conn, cursor.lastrowid)
 
 
@@ -108,17 +113,26 @@ def get_order(conn: sqlite3.Connection, order_id: int) -> LimitOrder | None:
     return _get_order(conn, order_id)
 
 
-def cancel_order(conn: sqlite3.Connection, order_id: int) -> LimitOrder | None:
+def cancel_order(conn: sqlite3.Connection, order_id: int, deadline: ActionDeadline | None = None) -> LimitOrder | None:
     """Cancel a pending order. Returns the updated order or None if not found."""
-    order = _get_order(conn, order_id)
-    if order is None or order.status != "pending":
-        return None
-    conn.execute(
-        "UPDATE limit_orders SET status = 'cancelled' WHERE id = ?",
-        (order_id,),
-    )
-    conn.commit()
-    return _get_order(conn, order_id)
+    with sqlite_transaction(conn, deadline):
+        order = _get_order(conn, order_id)
+        if order is None or order.status != "pending":
+            if deadline is not None:
+                deadline.remaining()
+                conn.commit()
+            return None
+        if deadline is not None:
+            deadline.remaining()
+        conn.execute(
+            "UPDATE limit_orders SET status = 'cancelled' WHERE id = ?",
+            (order_id,),
+        )
+        result = _get_order(conn, order_id)
+        if deadline is not None:
+            deadline.remaining()
+        conn.commit()
+    return result
 
 
 def mark_filled(conn: sqlite3.Connection, order_id: int) -> LimitOrder:

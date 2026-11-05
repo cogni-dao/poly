@@ -9,7 +9,7 @@
 
 ## Purpose
 
-Python sidecar wrapping [`agent-next/polymarket-paper-trader`](https://github.com/agent-next/polymarket-paper-trader) (MIT) behind an HTTP API. The TS `PaperAdapter` in `@cogni/poly-market-provider/adapters/paper` speaks HTTP to this sidecar over pod-loopback. Together they implement the paper-trading backend used by `mode='paper'` copy-trade targets and the always-paper `candidate-a` / `preview` overlays.
+Python sidecar wrapping [`agent-next/polymarket-paper-trader`](https://github.com/agent-next/polymarket-paper-trader) (MIT) behind an HTTP API. The TS `PaperAdapter` in `@cogni/poly-market-provider/adapters/paper` speaks HTTP to this sidecar over an operator-derived private allocation binding. Together they implement the paper-trading backend used by `mode='paper'` copy-trade targets and the always-paper `candidate-a` / `preview` overlays.
 
 ## Pointers
 
@@ -41,9 +41,9 @@ Python sidecar wrapping [`agent-next/polymarket-paper-trader`](https://github.co
 
 ## Public Surface
 
-- `Dockerfile` — multi-stage. `base` is the runtime image; `test` runs pytest under a stubbed `pm_trader.Engine` as a build-blocker. `UPSTREAM_PAPER_TRADER_SHA` build-arg pins the upstream commit (current: `8a0a3ee2` = upstream v0.1.6).
+- `Dockerfile` — multi-stage. `runtime` holds runtime dependencies and command; `test` derives from it and executes pytest. Published `base` derives from `runtime` and copies a constant proof from `test`, forcing smoke success without test-only tools in the runtime. `UPSTREAM_PAPER_TRADER_SHA` build-arg pins the upstream commit (current: `8a0a3ee2` = upstream v0.1.6).
 - `server.py` — FastAPI app: `/healthz`, `/readyz`, `/version`, `POST /place-order`, `GET /orders`, `POST /orders/{id}/cancel`, `GET /orders/{id}`. One Engine + lock + fill loop per paper account keeps tenant state isolated. Daemon threads poll `engine.check_orders()` every `PAPER_CHECK_ORDERS_INTERVAL_SECONDS` (default 30s, aligns with cogni reconciler's 60s tick).
-- `tests/test_sidecar_smoke.py` — fast smoke suite. Stubs `pm_trader.engine` via `sys.modules`. Wired into `.github/workflows/build-poly-paper-sidecar.yml` as a CI build-blocker (red ⇒ no image push).
+- `tests/test_sidecar_smoke.py` — smoke suite with mapping stubs plus fresh subprocesses using the real helper, engine, HTTP client and SQLite for qualification deadline cases. The existing image test stage is a CI build-blocker (red ⇒ no image push).
 
 ## HTTP contract (consumed by `PaperAdapter`)
 
@@ -51,13 +51,15 @@ Python sidecar wrapping [`agent-next/polymarket-paper-trader`](https://github.co
 | -------------------------------- | ---------------------------- | ---------------------------------------- | ------------------------------ |
 | `GET /healthz`                   | Liveness probe               | `200 {status}`                           | —                              |
 | `GET /readyz`                    | Readiness (fill loop alive)  | `200 {status}`                           | `503` if fill loop dead        |
-| `GET /version`                   | Pinned build + upstream SHAs | `200 {buildSha, upstreamPaperTraderSha}` | —                              |
+| `GET /version`                   | Pinned build + upstream SHAs | `200 {buildSha, bootId, upstreamPaperTraderSha}` | —                              |
 | `POST /place-order`              | Submit a paper limit order   | `200 OrderReceipt`                       | `502` per upstream cause       |
 | `GET /orders?account_id=...&starting_balance_usdc=...` | Account open-order truth | `200 OrderReceipt[]` | `503` if shadow unavailable |
 | `POST /orders/{order_id}/cancel` | Idempotent cancel            | `204`                                    | `404` swallowed by adapter     |
 | `GET /orders/{order_id}`         | Status lookup                | `200 OrderReceipt`                       | `404` → `not_found` in adapter |
 
 Response shape on `200`: matches `OrderReceiptSchema` from `@cogni/poly-market-provider`. Filled receipts use the engine's realized `amount_usd`, average price, shares, and fee. Non-filled receipts omit those realized fields rather than echoing intent values.
+
+`POST /place-order`, cancel, order lookup and open-order listing accept optional `action_deadline_at_ms` from the bounded qualification executor. Cold startup forwards the same lifetime through SQLite open, schema/account writes and registry/thread publication; failed startup publishes no account and stops its fill thread. Registry/account locks use the remaining lifetime. Discovery uses request-local native HTTP cancellation, including response bodies; shared client defaults never change. SQLite lock waits and VM progress are bounded, with expiry checks after acquiring write authority and before mutation/commit. Expired work rolls back, cannot insert later, and confers no retry authority. Ordinary callers omit the field.
 
 ## Market identity translation
 
@@ -75,12 +77,12 @@ Cogni `market_id` is shaped `"prediction-market:polymarket:<conditionId>"` (per 
 3. Verify `Engine.place_limit_order`, `cancel_limit_order`, `check_orders` signatures match what `server.py` calls. If a signature changes, update `server.py` + tests in the same commit.
 4. Port-forward any local diff (see `vendor/pm_trader/PROVENANCE.md`'s diff log) onto the new upstream.
 5. Update `UPSTREAM_PAPER_TRADER_SHA` in the `Dockerfile` `ARG` line — note that this value is now **metadata-only** (surfaced on `/version.upstreamPaperTraderSha` for provenance); the actual installed code is the vendored copy.
-6. Re-run the in-image pytest. CI's `pr-build` matrix runs it automatically via `infra/catalog/poly.yaml`'s `build.test_target: test` whenever files under `path_prefix: nodes/poly/sidecars/paper-trader/` change.
-7. The sidecar smoke at `tests/test_sidecar_smoke.py` uses a stubbed Engine via `sys.modules`, so it'll pass any API-shape regression. A real fee/fill-fidelity smoke against a recorded book fixture is still pending (project roadmap PR3 follow-up).
+6. Re-run the in-image pytest. The standalone node's declared paper artifact targets `base`; its Docker dependency on `test` runs the smoke and maker-fill suites before publication.
+7. The sidecar smoke at `tests/test_sidecar_smoke.py` combines stubbed mapping tests with fresh subprocesses that exercise the real FastAPI/HTTPX/Engine/SQLite startup, placement and cancellation paths. A real fee/fill-fidelity smoke against a recorded book fixture is still pending (project roadmap PR3 follow-up).
 
 ## Notes
 
 - v0 ships **ephemeral SQLite** at `${PM_TRADER_DATA_DIR}/<opaque-account-key>/`. Each request carries a connection id and declared seed; one tenant can never see another tenant's cash, orders, positions, or fill loop.
 - Account starting balance comes from the tenant's immutable `paper_seed_usdc`. Cogni's grant caps remain the authorization gate; the engine balance is account state, never a deployment-wide substitute.
-- This image is consumed **only** as a pod-loopback sidecar. Must never be exposed to a Service or Ingress — `PaperAdapter`'s base URL defaults to `http://localhost:9100` and is only constructor-injected, never DNS-resolved.
+- This image is a trusted private companion in the same workload allocation. The operator derives PAPER_SIDECAR_URL from its declared private port; no public ingress is allowed. Local Compose may still use loopback. AUTH_SECRET and database credentials stay on the app.
 - Logging: JSON-ish single-line to stdout, with `event=…` keys + `client_order_id=…` for cross-service joins in Grafana/Loki.

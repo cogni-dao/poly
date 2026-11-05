@@ -77,6 +77,7 @@ sqlite3.connect = _connect_no_thread_check  # type: ignore[assignment]
 
 from fastapi import FastAPI, HTTPException, Response  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
+from pm_trader.deadline import ActionDeadline, action_lock, sqlite_lifetime  # noqa: E402
 
 # ─── Config (env-driven; defaults sourced from Dockerfile ENV) ──────────────
 
@@ -181,7 +182,13 @@ ERROR_FILL_LOOP_UNMAPPED_ID = "fill_loop_result_unmapped_id"
 # request — including it here as a structured field lets Grafana join sidecar
 # logs to TS Pino logs on the same `client_order_id`.
 
-_BASE_FIELDS = {"nodeId": NODE_ID, "service": SERVICE_NAME, "bootId": BOOT_ID}
+_BASE_FIELDS = {
+    "nodeId": NODE_ID,
+    "service": SERVICE_NAME,
+    "bootId": BOOT_ID,
+    "buildSha": BUILD_SHA,
+    "env": os.environ.get("DEPLOY_ENVIRONMENT", "unknown"),
+}
 
 
 class _JsonFormatter(logging.Formatter):
@@ -241,6 +248,8 @@ class PlaceOrderRequest(BaseModel):
     src/adapters/paper/paper.adapter.ts:80."""
 
     account_id: str = Field(..., min_length=1)
+    # Optional epoch deadline from the bounded qualification executor only.
+    action_deadline_at_ms: Optional[int] = Field(None, gt=0)
     starting_balance_usdc: float = Field(..., gt=0)
     client_order_id: str = Field(..., min_length=1)
     market_id: str = Field(..., min_length=1)
@@ -354,7 +363,7 @@ def _resolve_slug_or_id(req: PlaceOrderRequest) -> str:
     return req.market_id
 
 
-def _resolve_outcome(req: PlaceOrderRequest, engine: Any, slug_or_id: str) -> str:
+def _resolve_outcome(req: PlaceOrderRequest, engine: Any, slug_or_id: str, deadline: ActionDeadline | None = None) -> str:
     """Map cogni `outcome` → an upstream outcome NAME.
 
     OUTCOME_IS_A_NAME_UPSTREAM. Cogni carries the outcome as the CTF leg INDEX
@@ -383,7 +392,7 @@ def _resolve_outcome(req: PlaceOrderRequest, engine: Any, slug_or_id: str) -> st
     if not needs_mapping:
         return raw
 
-    market = engine.api.get_market(slug_or_id)
+    market = engine.api.get_market(slug_or_id, **({"deadline": deadline} if deadline is not None else {}))
     outcomes = list(getattr(market, "outcomes", []) or [])
 
     if token_id:
@@ -418,7 +427,7 @@ class Sidecar:
         self._fill_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
-    def start(self) -> None:
+    def start(self, deadline: ActionDeadline | None = None) -> None:
         from pm_trader.engine import Engine
 
         # Reset stop flag so a restarted lifespan (e.g. across tests) gets a
@@ -426,20 +435,30 @@ class Sidecar:
         self._stop.clear()
 
         account_dir = DATA_DIR / self.account_key
-        account_dir.mkdir(parents=True, exist_ok=True)
-        self.engine = Engine(data_dir=account_dir)
-        # Idempotent — already-initialized accounts re-init harmlessly OR raise;
-        # we accept either and move on.
         try:
-            self.engine.init_account(balance=self.starting_balance_usdc)
-        except Exception:
-            # Idempotent — already-initialised accounts may raise; not an error.
-            pass
-
-        self._fill_thread = threading.Thread(
-            target=self._fill_loop, daemon=True, name="paper-fill-loop"
-        )
-        self._fill_thread.start()
+            options = {"deadline": deadline} if deadline is not None else {}
+            self.engine = Engine(data_dir=account_dir, **options)
+            try:
+                self.engine.init_account(balance=self.starting_balance_usdc, **options)
+            except Exception:
+                # Preserve the ordinary legacy startup policy. Bounded startup
+                # cannot swallow an expired or failed native initialization.
+                if deadline is not None:
+                    raise
+            if deadline is not None:
+                deadline.remaining()
+            self._fill_thread = threading.Thread(
+                target=self._fill_loop, daemon=True, name="paper-fill-loop"
+            )
+            self._fill_thread.start()
+            if deadline is not None:
+                deadline.remaining()
+        except BaseException:
+            self._stop.set()
+            if self.engine is not None:
+                self.engine.close()
+                self.engine = None
+            raise
         log.info(
             "sidecar started",
             extra={
@@ -470,6 +489,8 @@ class Sidecar:
         while not self._stop.wait(CHECK_ORDERS_INTERVAL_SECONDS):
             try:
                 with self.lock:
+                    if self._stop.is_set():
+                        return
                     filled = self.engine.check_orders()  # type: ignore[union-attr]
                 filled_count = 0
                 dropped_count = 0
@@ -558,18 +579,23 @@ class Sidecar:
 
     # ── handlers ───────────────────────────────────────────────────────────
 
-    def place(self, req: PlaceOrderRequest) -> OrderReceipt:
+    def place(self, req: PlaceOrderRequest, deadline: ActionDeadline | None = None) -> OrderReceipt:
         slug_or_id = _resolve_slug_or_id(req)
-        with self.lock:
+        with action_lock(self.lock, deadline), sqlite_lifetime(
+            self.engine.db.conn if deadline is not None else None, deadline
+        ):
             try:
                 d: dict[str, Any] = self.engine.place_limit_order(  # type: ignore[union-attr]
                     slug_or_id=slug_or_id,
-                    outcome=_resolve_outcome(req, self.engine, slug_or_id),
+                    outcome=_resolve_outcome(req, self.engine, slug_or_id, deadline),
                     side=req.side.lower(),
                     amount=req.size_usdc,
                     limit_price=req.limit_price,
                     order_type="gtc",
+                    **({"deadline": deadline} if deadline is not None else {}),
                 )
+            except TimeoutError:
+                raise
             except Exception as e:
                 log.error(
                     "place_order upstream failure",
@@ -643,16 +669,20 @@ class Sidecar:
         )
         return _to_receipt(st)
 
-    def cancel(self, order_id: str) -> None:
+    def cancel(self, order_id: str, deadline: ActionDeadline | None = None) -> None:
         int_id = _to_upstream_int(order_id, self.account_key)
         if int_id is None:
             # Different BOOT_ID (issued by a prior process), missing prefix, or
             # not parseable as int — none of those can exist in this engine.
             raise HTTPException(status_code=404, detail=ERROR_NOT_FOUND)
 
-        with self.lock:
+        with action_lock(self.lock, deadline):
             try:
-                result = self.engine.cancel_limit_order(int_id)  # type: ignore[union-attr]
+                result = self.engine.cancel_limit_order(  # type: ignore[union-attr]
+                    int_id, **({"deadline": deadline} if deadline is not None else {})
+                )
+            except TimeoutError:
+                raise
             except Exception as e:
                 log.error(
                     "cancel_order upstream failure",
@@ -683,20 +713,24 @@ class Sidecar:
             },
         )
 
-    def get(self, order_id: str) -> OrderReceipt:
+    def get(self, order_id: str, deadline: ActionDeadline | None = None) -> OrderReceipt:
+        if deadline is not None:
+            deadline.remaining()
         st = self.orders.get(order_id)
         if st is None:
             raise HTTPException(status_code=404, detail="not_found")
         return _to_receipt(st)
 
-    def list_open_orders(self) -> list[OrderReceipt]:
+    def list_open_orders(self, deadline: ActionDeadline | None = None) -> list[OrderReceipt]:
         """Return this account's authoritative current open-order book.
 
         The engine's SQLite rows are the order-state authority. The receipt
         shadow supplies the client id and original intent fields. A missing
         shadow is typed unavailable, never an invented empty list.
         """
-        with self.lock:
+        with action_lock(self.lock, deadline), sqlite_lifetime(
+            self.engine.db.conn if deadline is not None else None, deadline
+        ):
             pending = self.engine.get_pending_orders()  # type: ignore[union-attr]
         receipts: list[OrderReceipt] = []
         for order in pending:
@@ -758,7 +792,7 @@ class SidecarRegistry:
             account.stop()
 
     def get_or_create(
-        self, account_id: str, starting_balance_usdc: float
+        self, account_id: str, starting_balance_usdc: float, deadline: ActionDeadline | None = None
     ) -> Sidecar:
         if (
             not account_id
@@ -766,7 +800,7 @@ class SidecarRegistry:
             or starting_balance_usdc <= 0
         ):
             raise HTTPException(status_code=422, detail="paper_account_invalid")
-        with self.lock:
+        with action_lock(self.lock, deadline):
             existing = self.accounts.get(account_id)
             if existing is not None:
                 if existing.starting_balance_usdc != starting_balance_usdc:
@@ -775,8 +809,21 @@ class SidecarRegistry:
                     )
                 return existing
             account = Sidecar(account_id, starting_balance_usdc)
-            account.start()
-            self.accounts[account_id] = account
+            # Prevent the new fill thread from running native work until its
+            # account has passed the publication fence. Failed startup stops
+            # the thread before it can acquire this lock.
+            with action_lock(account.lock, deadline):
+                try:
+                    account.start(deadline)
+                    if deadline is not None:
+                        deadline.remaining()
+                    self.accounts[account_id] = account
+                except BaseException:
+                    account._stop.set()
+                    if account.engine is not None:
+                        account.engine.close()
+                        account.engine = None
+                    raise
             return account
 
     def get(self, account_id: str) -> Sidecar:
@@ -827,6 +874,7 @@ def readyz() -> dict[str, str]:
 def version() -> dict[str, str]:
     return {
         "buildSha": BUILD_SHA,
+        "bootId": BOOT_ID,
         "upstreamPaperTraderSha": UPSTREAM_PAPER_TRADER_SHA,
     }
 
@@ -838,33 +886,49 @@ def version() -> dict[str, str]:
 # pending-state receipt with `fill_price`/`total_shares`/`fees_usdc` = null.
 @app.post("/place-order", response_model_exclude_none=True)
 def place_order(req: PlaceOrderRequest) -> OrderReceipt:
-    return sidecars.get_or_create(
-        req.account_id, req.starting_balance_usdc
-    ).place(req)
+    deadline = ActionDeadline(req.action_deadline_at_ms) if req.action_deadline_at_ms is not None else None
+    try:
+        return sidecars.get_or_create(
+            req.account_id, req.starting_balance_usdc, deadline
+        ).place(req, deadline)
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="paper_action_expired")
 
 
 @app.post("/orders/{order_id}/cancel")
 def cancel_order(
-    order_id: str, account_id: str, starting_balance_usdc: float
+    order_id: str, account_id: str, starting_balance_usdc: float,
+    action_deadline_at_ms: int | None = None,
 ) -> Response:
-    sidecars.get_or_create(account_id, starting_balance_usdc).cancel(order_id)
+    deadline = ActionDeadline(action_deadline_at_ms) if action_deadline_at_ms is not None else None
+    try:
+        sidecars.get_or_create(account_id, starting_balance_usdc, deadline).cancel(order_id, deadline)
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="paper_action_expired")
     return Response(status_code=204)
 
 
 @app.get("/orders", response_model_exclude_none=True)
 def list_open_orders(
-    account_id: str, starting_balance_usdc: float
+    account_id: str, starting_balance_usdc: float, action_deadline_at_ms: int | None = None
 ) -> list[OrderReceipt]:
-    return sidecars.get_or_create(
-        account_id, starting_balance_usdc
-    ).list_open_orders()
+    deadline = ActionDeadline(action_deadline_at_ms) if action_deadline_at_ms is not None else None
+    try:
+        return sidecars.get_or_create(account_id, starting_balance_usdc, deadline).list_open_orders(deadline)
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="paper_action_expired")
 
 
 @app.get("/orders/{order_id}", response_model_exclude_none=True)
 def get_order(
-    order_id: str, account_id: str, starting_balance_usdc: float
+    order_id: str, account_id: str, starting_balance_usdc: float,
+    action_deadline_at_ms: int | None = None,
 ) -> OrderReceipt:
-    return sidecars.get_or_create(account_id, starting_balance_usdc).get(order_id)
+    deadline = ActionDeadline(action_deadline_at_ms) if action_deadline_at_ms is not None else None
+    try:
+        return sidecars.get_or_create(account_id, starting_balance_usdc, deadline).get(order_id, deadline)
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="paper_action_expired")
 
 
 # ─── pm_trader pass-through: PnL, portfolio, history ────────────────────────

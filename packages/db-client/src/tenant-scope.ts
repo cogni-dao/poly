@@ -31,6 +31,8 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
  * Generic over any PostgresJsDatabase schema type — callers pass their
  * concrete `db` instance and TypeScript infers the schema.
  *
+ * @param lifetime - Optional common deadline. The caller must own/cancel its DB
+ * client to bound connection/BEGIN waits; these transaction timeouts alone cannot.
  * @param actorId - Branded ActorId (validated UUID at construction time)
  */
 export async function withTenantScope<
@@ -41,13 +43,28 @@ export async function withTenantScope<
   actorId: ActorId,
   fn: (
     tx: Parameters<Parameters<PostgresJsDatabase<TSchema>["transaction"]>[0]>[0]
-  ) => Promise<T>
+  ) => Promise<T>,
+  lifetime?: { signal: AbortSignal; deadlineAt: number }
 ): Promise<T> {
+  lifetime?.signal.throwIfAborted();
   return db.transaction(async (tx) => {
+    lifetime?.signal.throwIfAborted();
+    if (lifetime) {
+      const remaining = Math.floor(lifetime.deadlineAt - Date.now());
+      if (remaining <= 0) throw new Error("database_action_deadline");
+      await tx.execute(sql`SELECT
+        set_config('statement_timeout', ${String(remaining)}, true),
+        set_config('lock_timeout', ${String(remaining)}, true),
+        set_config('idle_in_transaction_session_timeout', ${String(remaining)}, true)`);
+      lifetime.signal.throwIfAborted();
+    }
     await tx.execute(
       sql`SET LOCAL app.current_user_id = '${sql.raw(actorId)}'`
     );
-    return fn(tx);
+    const result = await fn(tx);
+    lifetime?.signal.throwIfAborted();
+    if (lifetime && Date.now() >= lifetime.deadlineAt) throw new Error("database_action_deadline");
+    return result;
   });
 }
 
