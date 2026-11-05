@@ -30,9 +30,16 @@ vi.mock("@/auth", () => ({
 // Perimeter observability — keep this a true unit (no pino/prom-client) and
 // capture the denial event the proxy emits before any route handler runs.
 const mockLoggerInfo = vi.fn();
-vi.mock("@/shared/observability", () => ({
+vi.mock("@/shared/observability", async () => ({
+  createRequestContext: (await import("../../../../packages/node-shared/src/observability/context/factory")).createRequestContext,
 	EVENT_NAMES: { AUTH_PERIMETER_DENIED: "auth.perimeter.denied" },
-	makeLogger: () => ({ info: mockLoggerInfo }),
+	makeLogger: () => {
+    const logger = { info: mockLoggerInfo, warn: vi.fn(), child: () => logger };
+    return logger;
+  },
+  logRequestStart: vi.fn(), logRequestEnd: vi.fn(),
+  httpRequestsTotal: { inc: vi.fn() }, httpRequestDurationMs: { observe: vi.fn() },
+  statusBucket: (status: number) => `${Math.floor(status / 100)}xx`,
 }));
 vi.mock("@/shared/config", () => ({
 	getNodeId: () => "test-node",
@@ -358,10 +365,7 @@ vi.mock("@/app/_facades/deploy-qualification.server", () => ({
   authenticateQualification: qualificationAuth,
   qualifyDeployment: qualificationRun,
 }));
-vi.mock("@/bootstrap/http", () => ({
-  wrapRouteHandlerWithLogging: (_config: unknown, handler: (ctx: unknown, request: Request) => Promise<Response>) =>
-    (request: Request) => handler({ log: { info: vi.fn(), warn: vi.fn() } }, request),
-}));
+
 
 describe("qualification route body admission", () => {
   beforeEach(() => {
@@ -376,7 +380,7 @@ describe("qualification route body admission", () => {
       method: "POST", body, duplex: "half",
       headers: { authorization: "Bearer purpose-token", "content-type": "application/json", ...headers },
     } as RequestInit);
-    return POST(request as NextRequest, { params: Promise.resolve({}) });
+    return POST(request as NextRequest);
   }
   it.each(["oversized", "slow", "malformed"])("rejects %s input before reading when capability authentication fails", async (kind) => {
     const { QualificationError } = await import("@/features/deploy-qualification/challenge");

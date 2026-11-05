@@ -383,7 +383,12 @@ export class PaperAdapter implements MarketProviderPort {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SIDECAR_TIMEOUT_MS);
     try {
-      return await this.fetchImpl(url, { ...init, signal: controller.signal });
+      const request = { ...init, signal: controller.signal };
+      // Timer callbacks may lag synchronous work. Check at the dispatch seam,
+      // independently of the deadline forwarded to native helper admission.
+      if (this.actionDeadlineAt !== undefined && Date.now() >= this.actionDeadlineAt)
+        throw new DOMException("paper action deadline exceeded", "TimeoutError");
+      return await this.fetchImpl(url, request);
     } finally {
       clearTimeout(timer);
     }

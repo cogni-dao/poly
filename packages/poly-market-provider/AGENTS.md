@@ -57,7 +57,7 @@ Standalone workspace package (`@cogni/poly-market-provider`) providing a typed p
 
 **Subpath** (`@cogni/market-provider/adapters/paper`):
 
-- `PaperAdapter`, `PaperAdapterConfig` (optional `actionDeadlineAt` forwards an absolute epoch-ms qualification lifetime to the native helper; omitted by ordinary callers). Sidecar `OrderReceipt` carries optional realized-fill fields (`fill_price`, `total_shares`, `fees_usdc`) populated by the upstream engine's `Trade` row — see bug.5018.
+- `PaperAdapter`, `PaperAdapterConfig` (optional `actionDeadlineAt` checks the absolute epoch-ms qualification lifetime immediately before each HTTP dispatch and forwards it to the native helper; omitted by ordinary callers). Sidecar `OrderReceipt` carries optional realized-fill fields (`fill_price`, `total_shares`, `fees_usdc`) populated by the upstream engine's `Trade` row — see bug.5018.
 
 **Subpath** (`@cogni/poly-market-provider/analysis`):
 

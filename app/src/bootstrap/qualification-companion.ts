@@ -14,6 +14,7 @@ export async function observePaperCompanion(
 	declared: QualificationReadiness,
 	signal: AbortSignal,
 	now: () => Date = () => new Date(),
+	deadlineAt?: number,
 ) {
 	signal.throwIfAborted();
 	const readiness = qualificationReadiness.parse(declared);
@@ -35,12 +36,17 @@ export async function observePaperCompanion(
 		signal,
 		AbortSignal.timeout(2000),
 	]);
-	const get = (path: string) =>
-		fetch(new URL(path, base), {
+	const get = (path: string) => {
+		const url = new URL(path, base);
+		observationSignal.throwIfAborted();
+		if (deadlineAt !== undefined && Date.now() >= deadlineAt)
+			throw new QualificationError("qualification_timeout");
+		return fetch(url, {
 			redirect: "error",
 			cache: "no-store",
 			signal: observationSignal,
 		});
+	};
 	const identity = async () => {
 		const response = await get("/version");
 		if (response.status !== 200) {

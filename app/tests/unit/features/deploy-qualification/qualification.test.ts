@@ -21,10 +21,28 @@ const qualificationComposition = vi.hoisted(() => ({ resolve: vi.fn(), env: vi.f
 vi.mock("@/bootstrap/qualification", () => ({ resolveQualificationDependencies: qualificationComposition.resolve }));
 vi.mock("@/shared/env", () => ({ serverEnv: qualificationComposition.env }));
 vi.mock("@/shared/config/repoSpec.server", () => ({ getNodeId: () => "4b06359a-a859-4399-888e-a8c7a6696f7e" }));
-const routeLog = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn() }));
+const routeLog = vi.hoisted(() => {
+  const log = { info: vi.fn(), warn: vi.fn(), child: vi.fn() };
+  log.child.mockImplementation(() => log);
+  return log;
+});
+const envelope = vi.hoisted(() => ({ prelude: vi.fn(async () => {}), start: vi.fn(), end: vi.fn(), count: vi.fn(), duration: vi.fn(), legacy: vi.fn() }));
+vi.mock("@/shared/observability", async () => ({
+  createRequestContext: (await import("../../../../../packages/node-shared/src/observability/context/factory")).createRequestContext,
+  makeLogger: () => routeLog, statusBucket: (status: number) => `${Math.floor(status / 100)}xx`,
+  logRequestStart: envelope.start, logRequestEnd: envelope.end,
+  httpRequestsTotal: { inc: envelope.count }, httpRequestDurationMs: { observe: envelope.duration },
+}));
+vi.mock("@/bootstrap/otel", () => ({
+  getCurrentTraceId: () => "0".repeat(32),
+  withRootSpan: async (_name: string, _attrs: unknown, action: (ctx: unknown) => Promise<unknown>) => {
+    await envelope.prelude();
+    return action({ traceId: "1".repeat(32), span: { setAttribute: vi.fn() } });
+  },
+}));
 vi.mock("@/bootstrap/http", () => ({
   wrapRouteHandlerWithLogging: (_options: unknown, handler: (ctx: unknown, request: Request) => Promise<Response>) =>
-    (request: Request) => handler({ log: routeLog }, request),
+    (request: Request) => { envelope.legacy(); return handler({ log: routeLog }, request); },
 }));
 
 const now = new Date("2026-11-04T20:00:00.000Z");
@@ -1447,4 +1465,225 @@ it("returns promptly on request cancellation while disposal remains pending", as
     expect(dispose).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   } finally { closing.resolve(); await response; vi.useRealTimers(); }
+});
+
+
+describe("actual dispatch checks absolute time without timer callbacks", () => {
+  it.each(["place", "cancel", "getOrder", "listOpenOrders"])("fences %s fetch but preserves optional ordinary callers", async (operation) => {
+    const { PaperAdapter } = await import("../../../../../packages/poly-market-provider/src/adapters/paper/paper.adapter");
+    vi.useFakeTimers({ now });
+    const native = vi.fn<typeof fetch>(async () => new Response("{}", { status: operation === "place" ? 503 : 404 }));
+    const deadlineAt = now.getTime() + 1000;
+    const config = { accountId: "fixture", startingBalanceUsdc: 100, fetchImpl: native };
+    const call = (adapter: InstanceType<typeof PaperAdapter>) => operation === "place"
+      ? adapter.placeOrder({ provider: "polymarket", market_id: "market", outcome: "YES", side: "BUY", size_usdc: 1, limit_price: 0.01, client_order_id: "client" })
+      : operation === "cancel" ? adapter.cancelOrder("order") : operation === "getOrder" ? adapter.getOrder("order") : adapter.listOpenOrders();
+    try {
+      vi.setSystemTime(deadlineAt);
+      await expect(call(new PaperAdapter({ ...config, actionDeadlineAt: deadlineAt }))).rejects.toThrow();
+      expect(native).not.toHaveBeenCalled();
+      await call(new PaperAdapter(config)).catch(() => {});
+      expect(native).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each([1, 2, 3])("fences companion request %s after clock-only expiry", async (requestNumber) => {
+    vi.useFakeTimers({ now });
+    const controller = new AbortController();
+    const deadlineAt = now.getTime() + 1000;
+    let calls = 0;
+    const native = vi.fn<typeof fetch>(async () => {
+      calls += 1;
+      const response = calls === 2 ? new Response(null) : Response.json({ buildSha: sha, bootId: "boot-a" });
+      if (calls === requestNumber - 1) vi.setSystemTime(deadlineAt);
+      return response;
+    });
+    vi.stubGlobal("fetch", native);
+    if (requestNumber === 1) vi.setSystemTime(deadlineAt);
+    try {
+      await expect(observePaperCompanion("http://paper-trader:9100", { port: 9100, path: "/healthz" }, controller.signal, () => new Date(), deadlineAt)).rejects.toThrow();
+      expect(controller.signal.aborted).toBe(false);
+      expect(native).toHaveBeenCalledTimes(requestNumber - 1);
+    } finally { vi.unstubAllGlobals(); vi.useRealTimers(); }
+  });
+
+  it.each(["place", "cancel"])("retains reservation and readback-only replay after expired %s fetch", async (seam) => {
+    const { PaperAdapter } = await import("../../../../../packages/poly-market-provider/src/adapters/paper/paper.adapter");
+    vi.useFakeTimers({ now });
+    const { deps, state } = rig();
+    const native = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+    const deadlineAt = now.getTime() + 1000;
+    const adapter = new PaperAdapter({ accountId: "fixture", startingBalanceUsdc: 100, fetchImpl: native, actionDeadlineAt: deadlineAt });
+    if (seam === "place") {
+      const claim = deps.claim;
+      deps.claim = async (...args) => { const result = await claim(...args); vi.setSystemTime(deadlineAt); return result; };
+      deps.place = vi.fn((intent) => adapter.placeOrder(intent));
+    } else {
+      const place = deps.place;
+      deps.place = async (...args) => { const result = await place(...args); vi.setSystemTime(deadlineAt); return result; };
+      deps.cancel = vi.fn((id) => adapter.cancelOrder(id));
+    }
+    try {
+      expect((await deadlineRoute({ ...deps, dispose: async () => {} })).status).toBe(503);
+      expect(native).not.toHaveBeenCalled();
+      const reserved = state.row;
+      expect(reserved?.status).toBe(seam === "place" ? "pending" : "open");
+      await expect(qualifyRelease(challenge, deps, signal())).rejects.toThrow("qualification_receipt_missing");
+      expect(state.row).toBe(reserved);
+      expect(native).not.toHaveBeenCalled();
+      expect(routeLog.info).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+describe("exported POST entry owns logging prelude and combined budget", () => {
+  it.each(["late", "never", "abort"])("bounds %s prelude and prevents late useful work", async (mode) => {
+    vi.useFakeTimers({ now });
+    const { deps } = rig();
+    const gate = deferred<void>();
+    const controller = new AbortController();
+    envelope.prelude.mockImplementationOnce(() => gate.promise);
+    envelope.start.mockClear(); envelope.end.mockClear(); envelope.count.mockClear();
+    qualificationComposition.resolve.mockClear();
+    let settled = false;
+    const response = deadlineRoute({ ...deps, dispose: async () => {} }, controller.signal).then(value => { settled = true; return value; });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      if (mode === "abort") controller.abort(new Error("request aborted in prelude"));
+      else await vi.advanceTimersByTimeAsync(19000);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(true);
+      expect((await response).status).toBe(503);
+      expect(qualificationComposition.resolve).not.toHaveBeenCalled();
+      if (mode !== "never") { gate.resolve(); await vi.advanceTimersByTimeAsync(0); }
+      expect(deps.place).not.toHaveBeenCalled();
+      expect(qualificationComposition.resolve).not.toHaveBeenCalled();
+      expect(routeLog.info).not.toHaveBeenCalled();
+      expect(envelope.start).toHaveBeenCalledTimes(1);
+      expect(envelope.end).toHaveBeenCalledTimes(1);
+      expect(envelope.count).toHaveBeenCalledTimes(1);
+    } finally { gate.resolve(); await response; envelope.prelude.mockReset().mockResolvedValue(); vi.useRealTimers(); }
+  });
+
+  it("charges prelude plus feature waiting to the single entry deadline", async () => {
+    vi.useFakeTimers({ now });
+    const { deps } = rig();
+    envelope.prelude.mockImplementationOnce(() => new Promise(resolve => setTimeout(resolve, 3000)));
+    const working = deferred<number>();
+    deps.checkFixture = async () => { working.resolve(Date.now()); await new Promise(resolve => setTimeout(resolve, 18000)); };
+    let settled = false;
+    const response = deadlineRoute({ ...deps, dispose: async () => {} }).then(value => { settled = true; return value; });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(await working.promise).toBe(now.getTime() + 3000);
+      await vi.advanceTimersByTimeAsync(16000);
+      expect(settled).toBe(true);
+      expect((await response).status).toBe(503);
+      expect(qualificationComposition.resolve.mock.lastCall?.[3]).toBe(now.getTime() + 19000);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(deps.claim).not.toHaveBeenCalled();
+      expect(deps.place).not.toHaveBeenCalled();
+      expect(routeLog.info).not.toHaveBeenCalled();
+    } finally { await vi.advanceTimersByTimeAsync(30000); await response; envelope.prelude.mockReset().mockResolvedValue(); vi.useRealTimers(); }
+  });
+
+  it("rejects invalid capability before DI logging/container and qualification work", async () => {
+    vi.useFakeTimers({ now });
+    envelope.legacy.mockClear(); qualificationComposition.resolve.mockClear();
+    const { POST } = await import("@/app/api/v1/deploy/qualification/route");
+    try {
+      const response = await POST(new NextRequest("https://poly.invalid/api/v1/deploy/qualification", { method: "POST", headers: { authorization: "Bearer invalid" } }));
+      expect(response.status).toBe(401);
+      expect(envelope.legacy).not.toHaveBeenCalled();
+      expect(qualificationComposition.resolve).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+
+describe("exported request bounds actual lazy qualification module initialization", () => {
+  it.each(["late", "never", "abort"])("bounds %s module initialization without resetting deadline", async (completion) => {
+    vi.useFakeTimers({ now });
+    const { deps } = rig();
+    const gate = deferred<void>();
+    const entered = deferred<void>();
+    const controller = new AbortController();
+    vi.resetModules();
+    vi.doMock("@/bootstrap/qualification", async () => {
+      entered.resolve();
+      await gate.promise;
+      return { resolveQualificationDependencies: qualificationComposition.resolve };
+    });
+    qualificationComposition.resolve.mockClear();
+    let settled = false;
+    const response = deadlineRoute({ ...deps, dispose: async () => {} }, controller.signal).then(value => { settled = true; return value; });
+    try {
+      await entered.promise;
+      if (completion === "abort") controller.abort(new Error("aborted during initialization"));
+      else await vi.advanceTimersByTimeAsync(19000);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(true);
+      expect((await response).status).toBe(503);
+      if (completion !== "never") { gate.resolve(); await vi.advanceTimersByTimeAsync(0); }
+      expect(qualificationComposition.resolve).not.toHaveBeenCalled();
+      expect(deps.place).not.toHaveBeenCalled();
+      expect(routeLog.info).not.toHaveBeenCalled();
+    } finally {
+      gate.resolve(); await response;
+      vi.doMock("@/bootstrap/qualification", () => ({ resolveQualificationDependencies: qualificationComposition.resolve }));
+      vi.resetModules(); vi.useRealTimers();
+    }
+  });
+
+  it("does not even load qualification dependencies for an invalid capability", async () => {
+    vi.useFakeTimers({ now });
+    const loading = vi.fn(() => { throw new Error("unauthenticated dependency load"); });
+    vi.resetModules(); vi.doMock("@/bootstrap/qualification", loading);
+    try {
+      const { POST } = await import("@/app/api/v1/deploy/qualification/route");
+      const response = await POST(new NextRequest("https://poly.invalid/api/v1/deploy/qualification", { method: "POST", headers: { authorization: "Bearer invalid" } }));
+      expect(response.status).toBe(401);
+      expect(loading).not.toHaveBeenCalled();
+    } finally {
+      vi.doMock("@/bootstrap/qualification", () => ({ resolveQualificationDependencies: qualificationComposition.resolve }));
+      vi.resetModules(); vi.useRealTimers();
+    }
+  });
+});
+
+
+it("does not invoke native fetch when authorization logging crosses the deadline before placement", async () => {
+  const { PaperAdapter } = await import("../../../../../packages/poly-market-provider/src/adapters/paper/paper.adapter");
+  vi.doMock("@cogni/poly-market-provider/adapters/paper", () => ({ PaperAdapter }));
+  vi.doMock("@cogni/poly-market-provider/adapters/polymarket", () => ({
+    PolymarketClobAdapter: class { async getMarketConstraints() { throw new Error("unused read-only source"); } },
+  }));
+  const { createPolyTradeExecutorFactory } = await import("@/bootstrap/capabilities/poly-trade-executor");
+  vi.useFakeTimers({ now });
+  const deadlineAt = now.getTime() + 1000;
+  const controller = new AbortController();
+  const native = vi.fn<typeof fetch>(async () => { throw new Error("late native dispatch"); });
+  vi.stubGlobal("fetch", native);
+  const logger = {
+    child: () => logger, debug: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    info: vi.fn((fields: { event?: string }) => { if (fields.event === "poly.mirror.place.tenant") vi.setSystemTime(deadlineAt); }),
+  };
+  const authorizeIntent = vi.fn(async () => ({ ok: true as const, grantId: "real-authority-port-grant" }));
+  try {
+    const factory = createPolyTradeExecutorFactory({
+      logger: logger as unknown as import("pino").Logger,
+      metrics: { incr: vi.fn(), observeDurationMs: vi.fn() },
+      resolveExecutionVenue: async () => "paper",
+      paperVenue: {
+        resolveAccount: async () => ({ connectionId: "fixture", funderAddress: "0x1111111111111111111111111111111111111111", seedUsdc: "100" }),
+        authorizeIntent,
+      },
+    });
+    const executor = await factory.getBoundedPaperExecutor("fixture", controller.signal, { paperActionDeadlineAt: deadlineAt, resolveExecutionVenue: async () => "paper" });
+    await expect(executor.placeIntent({ provider: "polymarket", market_id: "market", outcome: "YES", side: "BUY", size_usdc: 1, limit_price: 0.01, client_order_id: "proof" })).rejects.toThrow("deadline");
+    expect(authorizeIntent).toHaveBeenCalledTimes(1);
+    expect(controller.signal.aborted).toBe(false);
+    expect(native).not.toHaveBeenCalled();
+  } finally { vi.doUnmock("@cogni/poly-market-provider/adapters/paper"); vi.doUnmock("@cogni/poly-market-provider/adapters/polymarket"); vi.unstubAllGlobals(); vi.useRealTimers(); }
 });

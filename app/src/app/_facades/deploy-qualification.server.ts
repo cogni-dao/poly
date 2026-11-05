@@ -2,8 +2,10 @@
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 /** Authenticate service principal and bind only configured release-proof dependencies. */
 
-import { withinQualificationLifetime } from "@/app/_lib/qualification-body";
-import { resolveQualificationDependencies } from "@/bootstrap/qualification";
+import {
+	assertQualificationLifetime,
+	withinQualificationLifetime,
+} from "@/app/_lib/qualification-body";
 import {
 	type QualificationChallenge,
 	qualificationOperation,
@@ -51,6 +53,12 @@ export async function qualifyDeployment(
 				});
 			if (!env.PAPER_SIDECAR_URL)
 				throw new QualificationError("paper_binding_missing");
+			// Capability admission precedes loading/initializing trading dependencies.
+			// This import and all required disposal spend the original entry budget.
+			const { resolveQualificationDependencies } = await import(
+				"@/bootstrap/qualification"
+			);
+			assertQualificationLifetime(actionSignal, deadlineAt);
 			const deps = resolveQualificationDependencies(
 				qualificationFixtures[c.env],
 				env.PAPER_SIDECAR_URL,

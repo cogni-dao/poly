@@ -109,11 +109,23 @@ export function resolveQualificationDependencies(
 		checkFixture: () =>
 			scoped((tx) => assertQualificationFixture(tx, fixture, new Date())),
 		helper: (requestSignal, readiness) =>
-			observePaperCompanion(sidecarUrl, readiness, requestSignal),
+			observePaperCompanion(
+				sidecarUrl,
+				readiness,
+				requestSignal,
+				undefined,
+				deadlineAt,
+			),
 		selectIntent: async (requestSignal) => {
 			// Real discovery, not a claim that this order will fill. The engine must accept it.
 			const markets = await new PolymarketAdapter({
 				signal: requestSignal,
+				fetchImpl: (url, init) => {
+					requestSignal.throwIfAborted();
+					if (Date.now() >= deadlineAt)
+						throw new QualificationError("qualification_timeout");
+					return fetch(url, init);
+				},
 			}).listMarkets({
 				activeOnly: true,
 				limit: 20,

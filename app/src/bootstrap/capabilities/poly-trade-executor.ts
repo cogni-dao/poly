@@ -1063,7 +1063,10 @@ async function buildPaperOnlyExecutor(
       const signal = deps.paperAbortSignal;
       if (!signal) throw new Error("missing paper request signal");
       signal.throwIfAborted();
-      return fetch(url, { ...init, redirect: "error", signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]) });
+      const request = { ...init, redirect: "error" as const, signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]) };
+      if (deps.paperActionDeadlineAt !== undefined && Date.now() >= deps.paperActionDeadlineAt)
+        throw new DOMException("paper action deadline exceeded", "TimeoutError");
+      return fetch(url, request);
     } } : {}),
   });
 
