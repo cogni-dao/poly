@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import type {
 	GetOrderResult,
+	NormalizedMarket,
 	OrderIntent,
 	OrderReceipt,
 } from "@cogni/poly-market-provider";
@@ -18,11 +19,95 @@ import {
 	qualificationCompanion,
 	qualificationHelper,
 	qualificationOperation,
+	qualificationReadiness,
 	qualificationReadinessMap,
 	qualificationSubject,
 } from "@/contracts/deploy.qualification.v1.contract";
 import { assertQualificationCompanions, QualificationError } from "./challenge";
 import type { QualificationFixture } from "./fixtures";
+
+/** Configured native HTTP resource. Features never construct fetch or adapter clients. */
+export interface QualificationCompanionTransport {
+	binding: string;
+	open(signal: AbortSignal): {
+		signal: AbortSignal;
+		get(path: string): Promise<Response>;
+	};
+}
+
+/** Select the safe useful-work intent through injected market discovery. */
+export function createQualificationIntentSelector(
+	discover: (signal: AbortSignal) => Promise<NormalizedMarket[]>,
+) {
+	return async (signal: AbortSignal) => {
+		const markets = await discover(signal);
+		signal.throwIfAborted();
+		const market = markets.find(
+			(m) =>
+				m.active &&
+				Date.parse(m.resolvesAt) > Date.now() &&
+				typeof m.attributes.conditionId === "string" &&
+				m.outcomes.some((o) => o.label.toUpperCase() === "YES"),
+		);
+		const outcome = market?.outcomes.find(
+			(o) => o.label.toUpperCase() === "YES",
+		);
+		if (!market || !outcome)
+			throw new QualificationError("qualification_market_unavailable");
+		return {
+			market_id: `prediction-market:polymarket:${market.attributes.conditionId}`,
+			outcome: outcome.label,
+		};
+	};
+}
+
+export async function observePaperCompanion(
+	transport: QualificationCompanionTransport,
+	declared: QualificationReadiness,
+	signal: AbortSignal,
+	now: () => Date = () => new Date(),
+) {
+	signal.throwIfAborted();
+	const readiness = qualificationReadiness.parse(declared);
+	const base = new URL(transport.binding);
+	if (
+		readiness.port !== 9100 ||
+		base.port !== String(readiness.port) ||
+		!["http:", "https:"].includes(base.protocol) ||
+		base.username ||
+		base.password ||
+		base.search ||
+		base.hash ||
+		base.pathname !== "/"
+	)
+		throw new QualificationError("paper_binding_invalid");
+	// The injected transport opens one native budget for all three reads.
+	const { signal: observationSignal, get } = transport.open(signal);
+	const identity = async () => {
+		const response = await get("/version");
+		if (response.status !== 200) {
+			await response.body?.cancel();
+			throw new QualificationError("paper_helper_unreachable");
+		}
+		const value = qualificationHelper.parse(await response.json());
+		observationSignal.throwIfAborted();
+		return value;
+	};
+	const before = await identity();
+	const response = await get(readiness.path);
+	await response.body?.cancel();
+	observationSignal.throwIfAborted();
+	if (response.status !== 200)
+		throw new QualificationError("companion_readiness_failed");
+	const observedAt = now().toISOString();
+	const after = await identity();
+	if (before.buildSha !== after.buildSha || before.bootId !== after.bootId)
+		throw new QualificationError("helper_identity_changed");
+	return qualificationCompanion.parse({
+		...after,
+		ready: { ...readiness, status: 200, observedAt },
+	});
+}
 
 const reservationSchema = qualificationSubject
 	.extend({

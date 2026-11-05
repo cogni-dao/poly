@@ -15,7 +15,7 @@ System setup installers were moved to `scripts/bootstrap/` and are out of scope 
 ## Pointers
 
 - [Root AGENTS.md](../../../../AGENTS.md)
-- [Architecture](../../../../docs/spec/architecture.md)
+- [Node-owned composition](https://cognidao.org/knowledge/keep-node-product-local)
 - [Platform bootstrap (installers)](../../../../scripts/bootstrap/README.md)
 
 ## Boundaries
@@ -30,11 +30,11 @@ System setup installers were moved to `scripts/bootstrap/` and are out of scope 
     "adapters/cli",
     "shared",
     "types",
+    "features",
     "bootstrap"
   ],
   "must_not_import": [
     "app",
-    "features",
     "core",
     "contracts",
     "components",
@@ -43,6 +43,13 @@ System setup installers were moved to `scripts/bootstrap/` and are out of scope 
   ]
 }
 ```
+
+Feature imports construct services or bind their injected ports. Feature policy,
+wire parsing and observation orchestration stay in features; native resources,
+adapter construction and disposal stay here. Contracts remain forbidden.
+This reconciles the inherited feature prohibition with this directory's composition
+role and deploy-qualification's feature contract. Node composition is locally owned;
+operator dependency-cruiser rules do not run in this repository.
 
 ## Public Surface
 
@@ -53,7 +60,7 @@ System setup installers were moved to `scripts/bootstrap/` and are out of scope 
   - `getContainer()` - Singleton DI container with logger and config
   - `resetContainer()` - Reset singleton (tests only)
   - `resolveQualificationDependencies(fixture, sidecarUrl, signal, deadlineAt)` — existing RLS ledger and authorized bounded paper executor composition; action-owned app-role connection with dispose(), native deadline cancellation and one transient backend maximum per process
-  - `observePaperCompanion(sidecarUrl, declared, signal, now?, deadlineAt?)` — private port 9100 version/readiness/version observation; safe signed relative path, configured host only, no redirects, one native budget within the action deadline
+  - `createPaperCompanionTransport(binding, deadlineAt, timeoutError)` — configured native fetch resource; one observation budget, no redirects and a final dispatch fence; feature service owns wire validation and version/readiness/version policy
   - `Container` interface - Ports + logger + config (includes scheduleRunReader using the existing app-role Sql, accountsForUser(userId), serviceAccountService, metricsQuery, metricsCapability, repoCapability, toolSource, threadPersistenceForUser(userId), modelCatalog, providerResolver; no usageService)
   - `ContainerConfig` interface - Runtime config (unhandledErrorPolicy, rateLimitBypass, DEPLOY_ENVIRONMENT)
   - `resolveIdentityBindingDependencies()` - Identity binding adapter/clock/randomness composition; policy remains in the feature service
@@ -107,7 +114,7 @@ Bootstrap application runtime dependencies.
 
 ## Dependencies
 
-- **Internal:** ports, adapters, shared, types
+- **Internal:** ports, adapters, shared, types; features for service construction and port binding only
 - **External:** Node.js runtime
 
 ## Change Protocol

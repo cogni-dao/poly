@@ -4,18 +4,33 @@
 import { hkdfSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import type { OrderIntent, OrderReceipt } from "@cogni/poly-market-provider";
+import type { NormalizedMarket, OrderIntent, OrderReceipt } from "@cogni/poly-market-provider";
 import { SignJWT } from "jose";
 import { NextRequest, NextResponse } from "next/server";
 import { describe, expect, it, vi } from "vitest";
-import { observePaperCompanion } from "@/bootstrap/qualification-companion";
-import type { QualificationChallenge } from "@/contracts/deploy.qualification.v1.contract";
-import { verifyQualificationChallenge } from "@/features/deploy-qualification/challenge";
+import { createPaperCompanionTransport } from "@/bootstrap/qualification-companion";
+import type { QualificationChallenge, QualificationReadiness } from "@/contracts/deploy.qualification.v1.contract";
+import { QualificationError, verifyQualificationChallenge } from "@/features/deploy-qualification/challenge";
 import {
 	type QualificationDependencies,
+	createQualificationIntentSelector,
+	observePaperCompanion as observeCompanion,
 	qualificationOperationIds,
 	qualifyRelease,
 } from "@/features/deploy-qualification/service";
+
+// Exercise the feature policy with its real native transport, including dispatch fences.
+function observePaperCompanion(
+  binding: string,
+  readiness: QualificationReadiness,
+  signal: AbortSignal,
+  now?: () => Date,
+  deadlineAt?: number,
+) {
+  return observeCompanion(createPaperCompanionTransport(
+    binding, deadlineAt, () => new QualificationError("qualification_timeout"),
+  ), readiness, signal, now);
+}
 
 const qualificationComposition = vi.hoisted(() => ({ resolve: vi.fn(), env: vi.fn(() => ({})) }));
 vi.mock("@/bootstrap/qualification", () => ({ resolveQualificationDependencies: qualificationComposition.resolve }));
@@ -1697,4 +1712,51 @@ it("does not invoke native fetch when authorization logging crosses the deadline
     expect(controller.signal.aborted).toBe(false);
     expect(native).not.toHaveBeenCalled();
   } finally { vi.doUnmock("@cogni/poly-market-provider/adapters/paper"); vi.doUnmock("@cogni/poly-market-provider/adapters/polymarket"); vi.unstubAllGlobals(); vi.useRealTimers(); }
+});
+
+
+describe("qualification feature policy through injected resources", () => {
+  it("observes the declared path and stable identity with one injected observation lifetime", async () => {
+    const actionSignal = signal();
+    const get = vi.fn(async (path: string) => path === "/version"
+      ? Response.json({ buildSha: sha, bootId: "boot-port" })
+      : new Response(null, { status: 200 }));
+    const open = vi.fn((requestSignal: AbortSignal) => ({ signal: requestSignal, get }));
+    const result = await observeCompanion({ binding: "http://paper-trader:9100", open }, { port: 9100, path: "/declared-ready" }, actionSignal, () => now);
+    expect(open).toHaveBeenCalledExactlyOnceWith(actionSignal);
+    expect(get.mock.calls.map(([path]) => path)).toEqual(["/version", "/declared-ready", "/version"]);
+    expect(result).toEqual({ buildSha: sha, bootId: "boot-port", ready: { port: 9100, path: "/declared-ready", status: 200, observedAt: now.toISOString() } });
+  });
+
+  it("rejects an invalid configured binding before opening the injected resource", async () => {
+    const open = vi.fn(() => { throw new Error("invalid resource opened"); });
+    await expect(observeCompanion({ binding: "http://paper-trader:9200", open }, { port: 9100, path: "/healthz" }, signal(), () => now)).rejects.toThrow("paper_binding_invalid");
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("selects the active future YES condition through discovery and rejects an unavailable market", async () => {
+    const valid: NormalizedMarket = {
+      id: "prediction-market:polymarket:source", provider: "polymarket", sourceId: "source", title: "proof", category: "test", probabilityBps: 5000, spreadBps: 1, volume: 1,
+      outcomes: [{ label: "Yes", probabilityBps: 5000 }], resolvesAt: "2099-01-01T00:00:00Z", active: true, attributes: { conditionId: "condition" }, updatedAt: now.toISOString(),
+    };
+    const invalid = [
+      { ...valid, active: false },
+      { ...valid, resolvesAt: "2000-01-01T00:00:00Z" },
+      { ...valid, attributes: {} },
+      { ...valid, outcomes: [{ label: "NO", probabilityBps: 5000 }] },
+    ];
+    const discover = vi.fn(async (_signal: AbortSignal) => [...invalid, valid]);
+    const select = createQualificationIntentSelector(discover);
+    const actionSignal = signal();
+    expect(await select(actionSignal)).toEqual({ market_id: "prediction-market:polymarket:condition", outcome: "Yes" });
+    expect(discover).toHaveBeenCalledExactlyOnceWith(actionSignal);
+    discover.mockResolvedValue(invalid);
+    await expect(select(actionSignal)).rejects.toThrow("qualification_market_unavailable");
+  });
+
+  it("refuses a late discovery result after caller abort", async () => {
+    const controller = new AbortController();
+    const select = createQualificationIntentSelector(async () => { controller.abort(new Error("caller aborted")); return []; });
+    await expect(select(controller.signal)).rejects.toThrow("caller aborted");
+  });
 });

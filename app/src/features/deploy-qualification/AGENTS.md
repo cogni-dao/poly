@@ -7,6 +7,8 @@ Bounded release proof for Poly's declared private paper companion. The service o
 ## Public Surface
 
 - `verifyQualificationChallenge`: wire v1 HKDF/jose verification against runtime node, environment and full source SHA.
+- `observePaperCompanion`: wire and before/after identity policy through the injected native HTTP transport; no native fetch or adapter construction.
+- `createQualificationIntentSelector`: useful-work market policy through injected discovery.
 - `qualifyRelease`: fixed-fixture reservation, authorized placement, cancellation, persisted receipt and current-helper readback.
 - `qualificationFixtures`: public IDs created through normal per-environment agent registration. Keys never belong here.
 - `assertQualificationFixture`: registered machine owner, consent principal, paper-only connection and real wallet-grant checks under owner RLS.

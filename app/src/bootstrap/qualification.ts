@@ -5,11 +5,15 @@ import { createAppDbClient, withTenantScope } from "@cogni/db-client";
 import { toUserId, userActor } from "@cogni/ids";
 import { PolymarketAdapter } from "@cogni/poly-market-provider/adapters/polymarket";
 import { getContainer } from "@/bootstrap/container";
-import { observePaperCompanion } from "@/bootstrap/qualification-companion";
+import { createPaperCompanionTransport } from "@/bootstrap/qualification-companion";
 import { QualificationError } from "@/features/deploy-qualification/challenge";
 import { assertQualificationFixture } from "@/features/deploy-qualification/fixture-access";
 import type { QualificationFixture } from "@/features/deploy-qualification/fixtures";
-import type { QualificationDependencies } from "@/features/deploy-qualification/service";
+import {
+	createQualificationIntentSelector,
+	observePaperCompanion,
+	type QualificationDependencies,
+} from "@/features/deploy-qualification/service";
 import {
 	createExecutionVenueResolver,
 	createPaperVenue,
@@ -99,6 +103,11 @@ export function resolveQualificationDependencies(
 		executorPromise ??= executor();
 		return executorPromise;
 	};
+	const companionTransport = createPaperCompanionTransport(
+		sidecarUrl,
+		deadlineAt,
+		() => new QualificationError("qualification_timeout"),
+	);
 	return {
 		dispose: async () => {
 			signal.removeEventListener("abort", abort);
@@ -109,16 +118,10 @@ export function resolveQualificationDependencies(
 		checkFixture: () =>
 			scoped((tx) => assertQualificationFixture(tx, fixture, new Date())),
 		helper: (requestSignal, readiness) =>
-			observePaperCompanion(
-				sidecarUrl,
-				readiness,
-				requestSignal,
-				undefined,
-				deadlineAt,
-			),
-		selectIntent: async (requestSignal) => {
-			// Real discovery, not a claim that this order will fill. The engine must accept it.
-			const markets = await new PolymarketAdapter({
+			observePaperCompanion(companionTransport, readiness, requestSignal),
+		selectIntent: createQualificationIntentSelector(async (requestSignal) => {
+			// Real discovery through the action-owned native adapter and dispatch fence.
+			return new PolymarketAdapter({
 				signal: requestSignal,
 				fetchImpl: (url, init) => {
 					requestSignal.throwIfAborted();
@@ -126,28 +129,8 @@ export function resolveQualificationDependencies(
 						throw new QualificationError("qualification_timeout");
 					return fetch(url, init);
 				},
-			}).listMarkets({
-				activeOnly: true,
-				limit: 20,
-			});
-			requestSignal.throwIfAborted();
-			const market = markets.find(
-				(m) =>
-					m.active &&
-					Date.parse(m.resolvesAt) > Date.now() &&
-					typeof m.attributes.conditionId === "string" &&
-					m.outcomes.some((o) => o.label.toUpperCase() === "YES"),
-			);
-			const outcome = market?.outcomes.find(
-				(o) => o.label.toUpperCase() === "YES",
-			);
-			if (!market || !outcome)
-				throw new QualificationError("qualification_market_unavailable");
-			return {
-				market_id: `prediction-market:polymarket:${market.attributes.conditionId}`,
-				outcome: outcome.label,
-			};
-		},
+			}).listMarkets({ activeOnly: true, limit: 20 });
+		}),
 		claim: (intent, ids, observedAt) =>
 			ledger.claimPending({
 				target_id: ids.targetId,
