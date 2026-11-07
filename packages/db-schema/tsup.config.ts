@@ -39,7 +39,7 @@ export const tsupConfig = defineConfig({
   clean: false, // preserve .d.ts files from tsc -b (incremental builds)
   sourcemap: true,
   platform: "node",
-  external: ["drizzle-orm", "@cogni/scheduler-core"],
+  external: ["drizzle-orm", "@cogni/scheduler-core", "@cogni-dao/metrics"],
 });
 
 export default tsupConfig;

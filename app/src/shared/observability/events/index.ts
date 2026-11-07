@@ -20,6 +20,9 @@ import {
 export const EVENT_NAMES = {
 	...SHARED_EVENT_NAMES,
 	DB_POOL_CONFIGURED: "adapter.db_pool.configured",
+	// Goal metrics (story.0021): refresh dispatch receipt and goals read.
+	METRIC_REFRESH_COMPLETE: "metric.refresh_complete",
+	GOALS_PROGRESS_READ: "goals.progress_read",
 	// Auth perimeter (proxy): request rejected before reaching any route handler,
 	// so the request-scoped logger never sees it — emitted directly from the proxy.
 	AUTH_PERIMETER_DENIED: "auth.perimeter.denied",
