@@ -468,3 +468,85 @@ describe("work.convergence@1 over Dolt main history", () => {
 		expect(snapshot.historicalWindows).toBeFalsy();
 	});
 });
+
+describe("metric refresh clock dispatch shape", () => {
+	// Without the NodeTaskWorkflow payload the worker receives graph-run input
+	// and the refresh route never runs.
+	async function captureArgs(params: Record<string, unknown>) {
+		const { TemporalScheduleControlAdapter } = await import(
+			"@/adapters/server/temporal/schedule-control.adapter"
+		);
+		const { ScheduleNotFoundError } = await import("@temporalio/client");
+		const adapter = new TemporalScheduleControlAdapter({
+			address: "unused:7233",
+			namespace: "test",
+			taskQueue: "q",
+		});
+		const captured: { create?: unknown[]; update?: unknown[] } = {};
+		(adapter as unknown as { client: unknown }).client = {
+			schedule: {
+				create: async (options: { action: { args: unknown[] } }) => {
+					captured.create = options.action.args;
+				},
+				getHandle: (id: string) => ({
+					describe: async () => {
+						throw new ScheduleNotFoundError("not found", id);
+					},
+					update: async (
+						fn: (previous: unknown) => { action: { args: unknown[] } },
+					) => {
+						captured.update = fn({ action: {} }).action.args;
+					},
+				}),
+			},
+		};
+		const p = params as never;
+		await adapter.createSchedule(p);
+		await adapter.updateSchedule(params.scheduleId as string, p);
+		return captured;
+	}
+	const base = {
+		scheduleId: "metrics:test-node:refresh",
+		nodeId: "test-node",
+		ownerUserId: "00000000-0000-4000-8000-000000000000",
+		cron: "* * * * *",
+		timezone: "UTC",
+		executionGrantId: "00000000-0000-4000-8000-000000000001",
+		input: { executionGrantId: "00000000-0000-4000-8000-000000000001" },
+	};
+
+	it("sends the NodeTaskWorkflow route payload on create and update", async () => {
+		const expected = {
+			nodeId: "test-node",
+			route: "/api/internal/metrics/refresh",
+			payload: base.input,
+			scheduleId: base.scheduleId,
+			executionGrantId: base.executionGrantId,
+		};
+		const captured = await captureArgs({
+			...base,
+			graphId: "task:/api/internal/metrics/refresh",
+			workflowType: "NodeTaskWorkflow",
+		});
+		expect(captured.create).toEqual([expected]);
+		expect(captured.update).toEqual([expected]);
+	});
+
+	it("keeps graph-run schedules unchanged and rejects non-internal task routes", async () => {
+		const captured = await captureArgs({ ...base, graphId: "langgraph:poet" });
+		expect(captured.create).toEqual([
+			expect.objectContaining({
+				graphId: "langgraph:poet",
+				runKind: "system_scheduled",
+				temporalScheduleId: base.scheduleId,
+			}),
+		]);
+		await expect(
+			captureArgs({
+				...base,
+				graphId: "task:/api/v1/metrics",
+				workflowType: "NodeTaskWorkflow",
+			}),
+		).rejects.toThrow();
+	});
+});
