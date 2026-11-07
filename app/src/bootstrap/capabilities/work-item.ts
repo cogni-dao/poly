@@ -27,7 +27,12 @@ import type {
   WorkItemStatus,
   WorkItemType,
 } from "@cogni/work-items";
-import { toWorkItemDto, toWorkItemId } from "@cogni/work-items";
+import {
+  toWorkItemDto,
+  toWorkItemId,
+  WORK_ITEM_SORT_FIELDS,
+  type WorkItemSortBy,
+} from "@cogni/work-items";
 import type { WorkItemsDoltgresPort } from "@/ports/work-items-doltgres.port";
 
 /**
@@ -40,6 +45,19 @@ export interface WorkItemCapabilityDeps {
     readonly store: Pick<WorkItemsDoltgresPort, "patch">;
     readonly principalId: () => string;
   };
+}
+
+/**
+ * The published tool schema (ai-tools 0.4.2) offers sort fields this node's
+ * pinned work-items store does not order by yet; reject them explicitly instead
+ * of letting the store fail on an unknown order.
+ */
+function supportedSortBy(sortBy: string): WorkItemSortBy {
+  if ((WORK_ITEM_SORT_FIELDS as readonly string[]).includes(sortBy))
+    return sortBy as WorkItemSortBy;
+  throw new Error(
+    `unsupported sortBy "${sortBy}"; use one of ${WORK_ITEM_SORT_FIELDS.join(", ")}`,
+  );
 }
 
 function toWorkItemInfo(item: WorkItem): WorkItemInfo {
@@ -57,7 +75,9 @@ export function createWorkItemCapability(
   return {
     async query(params): Promise<readonly WorkItemInfo[]> {
       const result = await workItemQuery.list({
-        ...(params.sortBy !== undefined && { sortBy: params.sortBy }),
+        ...(params.sortBy !== undefined && {
+          sortBy: supportedSortBy(params.sortBy),
+        }),
         ...(params.sortDirection !== undefined && {
           sortDirection: params.sortDirection,
         }),
@@ -86,7 +106,9 @@ export function createWorkItemCapability(
 
     async queryPage(params) {
       const result = await workItemQuery.list({
-        ...(params.sortBy !== undefined && { sortBy: params.sortBy }),
+        ...(params.sortBy !== undefined && {
+          sortBy: supportedSortBy(params.sortBy),
+        }),
         ...(params.sortDirection !== undefined && {
           sortDirection: params.sortDirection,
         }),

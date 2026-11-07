@@ -4,7 +4,7 @@
 /**
  * Module: `@app/(app)/knowledge/_components/KnowledgeEntryView`
  * Purpose: Full-page view of a single knowledge entry — the permalink target.
- *   Fetches the entry by id, renders the shared body + direct links + a copy-link.
+ *   Fetches the entry by id, renders the selected body, direct links, and a copy-link.
  * Scope: Presentation. Fetches via React Query (cookie-session).
  * Side-effects: IO (GET /api/v1/knowledge/[id]).
  * @internal
@@ -13,79 +13,136 @@
 "use client";
 
 import { KnowledgeUseWhen } from "@cogni/knowledge-base-ui";
+import { KpiBindingsSchema } from "@cogni-dao/metrics/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
+import { GoalsBoard, MetricEvidence } from "@/features/goals";
 
 import { fetchKnowledgeEntry } from "../_api/fetchKnowledgeEntry";
 import { CopyLinkButton } from "./CopyLinkButton";
 import { KnowledgeEntryFields } from "./KnowledgeEntryFields";
 
 export function KnowledgeEntryView({ id }: { readonly id: string }) {
-  const query = useQuery({
-    queryKey: ["knowledge", "entry", id],
-    queryFn: () => fetchKnowledgeEntry(id),
-    staleTime: 30_000,
-    retry: false,
-  });
+	const query = useQuery({
+		queryKey: ["knowledge", "entry", id],
+		queryFn: () => fetchKnowledgeEntry(id),
+		staleTime: 30_000,
+		retry: false,
+	});
 
-  return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-5 md:p-6">
-      <Link
-        href="/knowledge"
-        className="inline-flex w-fit items-center gap-1.5 text-muted-foreground text-xs hover:text-foreground"
-      >
-        <ArrowLeft className="size-3.5" />
-        Knowledge
-      </Link>
+	return (
+		<div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-5 md:p-6">
+			<Link
+				href="/knowledge"
+				className="inline-flex w-fit items-center gap-1.5 text-muted-foreground text-xs hover:text-foreground"
+			>
+				<ArrowLeft className="size-3.5" />
+				Knowledge
+			</Link>
 
-      {query.isLoading && (
-        <p className="py-12 text-center text-muted-foreground text-sm">
-          Loading entry…
-        </p>
-      )}
+			{query.isLoading && (
+				<p className="py-12 text-center text-muted-foreground text-sm">
+					Loading entry…
+				</p>
+			)}
 
-      {query.error && (
-        <div className="flex flex-col items-center gap-2 rounded-lg border border-border/60 bg-muted/20 px-6 py-16 text-center">
-          <p className="font-medium text-sm">Entry not found.</p>
-          <p className="max-w-md text-muted-foreground text-xs leading-relaxed">
-            No knowledge entry with id <code className="font-mono">{id}</code>{" "}
-            exists on <code className="font-mono">main</code>, or it isn't
-            visible to you.
-          </p>
-        </div>
-      )}
+			{query.error && (
+				<div className="flex flex-col items-center gap-2 rounded-lg border border-border/60 bg-muted/20 px-6 py-16 text-center">
+					<p className="font-medium text-sm">Entry not found.</p>
+					<p className="max-w-md text-muted-foreground text-xs leading-relaxed">
+						No knowledge entry with id <code className="font-mono">{id}</code>{" "}
+						exists on <code className="font-mono">main</code>, or it isn't
+						visible to you.
+					</p>
+				</div>
+			)}
 
-      {query.data && (
-        <>
-          <div className="flex flex-col gap-2">
-            <span className="font-mono text-muted-foreground text-xs">
-              {query.data.domain}
-              {query.data.entityId ? ` · ${query.data.entityId}` : ""}
-            </span>
-            <h1 className="font-semibold text-xl leading-snug tracking-tight md:text-2xl">
-              {query.data.title}
-            </h1>
-            <KnowledgeUseWhen
-              useWhen={query.data.useWhen}
-              className="text-muted-foreground text-sm leading-relaxed [&>span]:font-medium"
-            />
-            <div className="flex items-center gap-1.5">
-              <span className="font-mono text-muted-foreground text-xs">
-                {query.data.id}
-              </span>
-              <CopyLinkButton
-                path={`/knowledge/${query.data.id}`}
-                label="Copy block link"
-              />
-            </div>
-          </div>
+			{query.data && (
+				<>
+					<div className="flex flex-col gap-2">
+						<span className="font-mono text-muted-foreground text-xs">
+							{query.data.domain}
+							{query.data.entityId ? ` · ${query.data.entityId}` : ""}
+						</span>
+						<h1 className="font-semibold text-xl leading-snug tracking-tight md:text-2xl">
+							{query.data.title}
+						</h1>
+						<KnowledgeUseWhen
+							useWhen={query.data.useWhen}
+							className="text-muted-foreground text-sm leading-relaxed [&>span]:font-medium"
+						/>
+						<div className="flex items-center gap-1.5">
+							<span className="font-mono text-muted-foreground text-xs">
+								{query.data.id}
+							</span>
+							<CopyLinkButton
+								path={`/knowledge/${query.data.id}`}
+								label="Copy block link"
+							/>
+						</div>
+					</div>
 
-          <div className="mt-2">
-            <KnowledgeEntryFields item={query.data} />
-          </div>
-        </>
-      )}
-    </div>
-  );
+					{query.data.entryType === "goal" && (
+						<GoalsBoard goalId={query.data.id} />
+					)}
+					{query.data.metricSpec && <MetricEvidence id={query.data.id} />}
+					{query.data.entryType === "hypothesis" &&
+						!!query.data.kpiBindings?.length && (
+							<section
+								className="space-y-2 rounded border p-4 text-sm"
+								aria-label="Goal KPI measurements"
+							>
+								<h2 className="font-medium">KPI evidence</h2>
+								{(
+									KpiBindingsSchema.safeParse(query.data.kpiBindings).data ?? []
+									).map((binding, index) => {
+										// The service returns one result for each ordered binding.
+										const reading = query.data.kpis?.[index];
+									const observation = reading?.observation;
+									return (
+											<div key={`${binding.metricId}:${index}`} className="space-y-1">
+											<p>
+												<Link
+													className="underline"
+													href={`/knowledge/${binding.metricId}`}
+												>
+													{binding.metricId}
+												</Link>{" "}
+												· target{" "}
+												{binding.comparator === "gte"
+													? "≥"
+													: binding.comparator === "lte"
+														? "≤"
+														: "="}{" "}
+												{binding.target.value} {binding.target.unit}
+												{binding.evaluationAt
+													? ` · evaluate ${binding.evaluationAt}`
+													: ""}
+											</p>
+											<p>
+												{observation?.value ?? "Unknown"}{" "}
+												{observation?.unit ?? binding.target.unit} ·{" "}
+												{reading?.viewState ?? "unavailable"}
+											</p>
+											{observation && (
+												<Link
+													className="block break-all text-xs underline"
+													href={`/knowledge/${binding.metricId}?observation=${observation.id}#observation-${observation.id}`}
+												>
+													Observation {observation.id}
+												</Link>
+											)}
+										</div>
+									);
+								})}
+							</section>
+						)}
+					<div className="mt-2">
+						<KnowledgeEntryFields item={query.data} />
+					</div>
+				</>
+			)}
+		</div>
+	);
 }
