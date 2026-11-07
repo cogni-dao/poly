@@ -4,18 +4,20 @@
 /**
  * Module: `@app/(app)/work/view`
  * Purpose: Client-side work dashboard. ReUI DataGrid table (default) or the
- *          shared `WorkBoard` (`?view=board`) over one TanStack table, with
- *          per-column header dropdowns owning sort + filter, single top-right
- *          Columns toggle, search input, URL-driven state, detail panel.
+ *          published work board (`?view=board`, `@cogni/knowledge-base-ui`)
+ *          over one TanStack table, with URL-driven state and detail panel.
  * Scope: Presentation. Fetches data via React Query.
  * Invariants:
+ *   - BOARD_FROM_PACKAGE — board mode renders only `WorkBoardToolbar` and
+ *     `WorkBoardView` from `@cogni/knowledge-base-ui` (task.0044).
  *   - HEADER_OWNS_SORT_AND_FILTER — sort + per-column facet filter live in
- *     the column header dropdown (see `_components/columns.tsx`).
- *   - SINGLE_COLUMNS_TOGGLE — visibility lives in one toolbar button
+ *     the package column headers (see `_components/columns.tsx`).
+ *   - SINGLE_COLUMNS_TOGGLE — table visibility lives in one toolbar button
  *     (`DataGridColumnVisibility`), not on every column dropdown.
- *   - URL_DRIVEN_STATE — filters / sort / search / view persist in URL params.
- *   - ONE_ROW_MODEL — the board renders the same filtered, sorted page of rows
- *     as the table (task.0044).
+ *   - URL_DRIVEN_STATE — filters / sort / search / rank range / view / board
+ *     columns persist in URL params.
+ *   - ONE_ROW_MODEL — the board renders the table's filtered, sorted rows
+ *     (unpaginated); the table paginates the same rows.
  *   - CONTRACTS_ARE_TRUTH — types derived from `WorkItemDto`.
  * Side-effects: IO (fetches from /api/v1/work/items)
  * Links: [WorkPage](./page.tsx), [fetchWorkItems](./_api/fetchWorkItems.ts)
@@ -24,6 +26,14 @@
 
 "use client";
 
+import {
+  ACTIVE_WORK_STATUSES,
+  WORK_STATUSES,
+  WorkBoardToolbar,
+  WorkBoardView,
+  type WorkTableMeta,
+  workItemGlobalFilterFn,
+} from "@cogni/knowledge-base-ui";
 import type { WorkItemDto } from "@cogni/node-contracts";
 import {
   DataGrid,
@@ -35,6 +45,7 @@ import { DataGridTable } from "@cogni/node-ui-kit/reui/data-grid/data-grid-table
 import { useQuery } from "@tanstack/react-query";
 import {
   type ColumnFiltersState,
+  functionalUpdate,
   getCoreRowModel,
   getFacetedRowModel,
   getFacetedUniqueValues,
@@ -48,12 +59,12 @@ import {
 import { Columns3, List, Settings2 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Button, Input } from "@/components";
+import { Button } from "@/components";
 
 import { fetchWorkItem, fetchWorkItems } from "./_api/fetchWorkItems";
 import { columns } from "./_components/columns";
 import { WorkItemDetail } from "./_components/WorkItemDetail";
-import { WorkKanban } from "./_components/WorkKanban";
+import { WorkGoalLink } from "./_components/WorkKanban";
 import {
   closeWorkItemPermalink,
   openWorkItemPermalink,
@@ -62,17 +73,43 @@ import {
   workViewHref,
 } from "./_lib/workItemNavigation";
 
-const ACTIVE_STATUSES = [
-  "needs_triage",
-  "needs_research",
-  "needs_design",
-  "needs_implement",
-  "needs_closeout",
-  "needs_merge",
-  "blocked",
-];
+const ALL_STATUSES = WORK_STATUSES;
+const ACTIVE_STATUSES = ACTIVE_WORK_STATUSES;
 
-const BOARD_STATUSES = [...ACTIVE_STATUSES, "done", "cancelled"];
+type RankRange = [number | undefined, number | undefined];
+
+function readFilters(searchParams: URLSearchParams): ColumnFiltersState {
+  const filters: ColumnFiltersState = [];
+  const typeParam = searchParams.get("type");
+  if (typeParam) filters.push({ id: "type", value: typeParam.split(",") });
+  const statusParam = searchParams.get("status");
+  if (statusParam && statusParam !== "all") {
+    filters.push({ id: "status", value: statusParam.split(",") });
+  } else if (!statusParam) {
+    filters.push({ id: "status", value: [...ACTIVE_STATUSES] });
+  }
+  const projectParam = searchParams.get("project");
+  if (projectParam)
+    filters.push({ id: "projectId", value: projectParam.split(",") });
+  const numberParam = (key: string) => {
+    const raw = searchParams.get(key);
+    if (!raw?.trim()) return undefined;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : undefined;
+  };
+  const rankRange: RankRange = [numberParam("rankMin"), numberParam("rankMax")];
+  if (rankRange.some((value) => value !== undefined)) {
+    filters.push({ id: "rankScore", value: rankRange });
+  }
+  return filters;
+}
+
+function readColumns(params: URLSearchParams): string[] {
+  const value = params.get("columns");
+  return value === null
+    ? [...ACTIVE_STATUSES]
+    : value.split(",").filter((status) => ALL_STATUSES.includes(status));
+}
 
 export function WorkDashboardView({
   selectedItemId,
@@ -99,21 +136,10 @@ export function WorkDashboardView({
     staleTime: 30_000,
   });
 
-  const initialFilters = useMemo((): ColumnFiltersState => {
-    const filters: ColumnFiltersState = [];
-    const typeParam = searchParams.get("type");
-    if (typeParam) filters.push({ id: "type", value: typeParam.split(",") });
-    const statusParam = searchParams.get("status");
-    if (statusParam) {
-      filters.push({ id: "status", value: statusParam.split(",") });
-    } else {
-      filters.push({ id: "status", value: ACTIVE_STATUSES });
-    }
-    const projectParam = searchParams.get("project");
-    if (projectParam)
-      filters.push({ id: "projectId", value: projectParam.split(",") });
-    return filters;
-  }, [searchParams]);
+  const initialFilters = useMemo(
+    () => readFilters(new URLSearchParams(searchParams.toString())),
+    [searchParams]
+  );
 
   const initialSorting = useMemo((): SortingState => {
     const sortParam = searchParams.get("sort");
@@ -137,6 +163,10 @@ export function WorkDashboardView({
       newSorting: SortingState,
       newQuery: string
     ) => {
+      const rankRange =
+        (newFilters.find((filter) => filter.id === "rankScore")?.value as
+          | RankRange
+          | undefined) ?? ([undefined, undefined] as RankRange);
       const valuesFor = (id: string): readonly string[] => {
         const value = newFilters.find((filter) => filter.id === id)?.value;
         return Array.isArray(value) ? (value as string[]) : [];
@@ -149,6 +179,7 @@ export function WorkDashboardView({
           project: valuesFor("projectId"),
           sort: sort ? `${sort.desc ? "-" : ""}${sort.id}` : null,
           query: newQuery,
+          rankRange,
         }),
         { scroll: false }
       );
@@ -170,6 +201,7 @@ export function WorkDashboardView({
   const table = useReactTable({
     data: items,
     columns,
+    meta: { isLoading } satisfies WorkTableMeta,
     state: { sorting, columnFilters, globalFilter, columnVisibility },
     onSortingChange: (updater) => {
       const next = typeof updater === "function" ? updater(sorting) : updater;
@@ -182,23 +214,20 @@ export function WorkDashboardView({
       setColumnFilters(next);
       syncUrl(next, sorting, globalFilter);
     },
-    onGlobalFilterChange: setGlobalFilter,
+    onGlobalFilterChange: (updater) => {
+      const next = functionalUpdate(updater, globalFilter);
+      setGlobalFilter(next);
+      syncUrl(columnFilters, sorting, next);
+    },
     onColumnVisibilityChange: setColumnVisibility,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
+    // Board mode shows every filtered row; only the table paginates.
+    ...(boardView ? {} : { getPaginationRowModel: getPaginationRowModel() }),
     getFacetedRowModel: getFacetedRowModel(),
     getFacetedUniqueValues: getFacetedUniqueValues(),
-    globalFilterFn: (row, _columnId, filterValue: string) => {
-      const q = filterValue.toLowerCase();
-      const d = row.original;
-      return (
-        d.id.toLowerCase().includes(q) ||
-        d.title.toLowerCase().includes(q) ||
-        d.labels.some((l: string) => l.toLowerCase().includes(q))
-      );
-    },
+    globalFilterFn: workItemGlobalFilterFn,
   });
 
   const rows = table.getRowModel().rows;
@@ -250,13 +279,7 @@ export function WorkDashboardView({
     return () => document.removeEventListener("keydown", handleKey);
   }, [rows, focusedRowIndex, selectedItemId, openItem, closeItem]);
 
-  const hasActiveFilters = columnFilters.length > 0;
-
-  const statusFilter = columnFilters.find((filter) => filter.id === "status")
-    ?.value as string[] | undefined;
-  const boardStatuses = statusFilter?.length
-    ? BOARD_STATUSES.filter((status) => statusFilter.includes(status))
-    : BOARD_STATUSES;
+  const visibleStatuses = readColumns(searchParams);
 
   const setView = (view: "board" | "table") => {
     const params = new URLSearchParams(searchParams.toString());
@@ -276,68 +299,61 @@ export function WorkDashboardView({
         Work Dashboard
       </h1>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Input
-          data-search-input
-          className="h-9 w-full sm:w-56"
-          placeholder="Search id, title, labels... ( / )"
-          value={globalFilter}
-          onChange={(e) => {
-            setGlobalFilter(e.target.value);
-            syncUrl(columnFilters, sorting, e.target.value);
-          }}
-        />
-        {hasActiveFilters && (
-          <button
-            type="button"
-            className="text-muted-foreground text-xs underline hover:text-foreground"
-            onClick={() => {
-              setColumnFilters([]);
-              syncUrl([], sorting, globalFilter);
-            }}
+      <WorkBoardToolbar
+        table={table}
+        visibleStatuses={visibleStatuses}
+        onVisibleStatusesChange={(updater) => {
+          const params = new URLSearchParams(searchParams.toString());
+          params.set(
+            "columns",
+            functionalUpdate(updater, readColumns(params)).join(",")
+          );
+          router.replace(
+            selectedItemId
+              ? workItemHref(selectedItemId, params)
+              : workListHref(params),
+            { scroll: false }
+          );
+        }}
+        showBoardColumns={boardView}
+      >
+        <fieldset
+          className="inline-flex min-w-0 rounded-lg border bg-muted/30 p-1"
+          aria-label="Work view"
+        >
+          <Button
+            variant={boardView ? "ghost" : "secondary"}
+            size="sm"
+            className="h-7 gap-1.5"
+            aria-pressed={!boardView}
+            onClick={() => setView("table")}
           >
-            Clear filters
-          </button>
+            <List className="size-3.5" />
+            Table
+          </Button>
+          <Button
+            variant={boardView ? "secondary" : "ghost"}
+            size="sm"
+            className="h-7 gap-1.5"
+            aria-pressed={boardView}
+            onClick={() => setView("board")}
+          >
+            <Columns3 className="size-3.5" />
+            Board
+          </Button>
+        </fieldset>
+        {!boardView && (
+          <DataGridColumnVisibility
+            table={table}
+            trigger={
+              <Button variant="outline" size="sm" className="h-9 gap-1.5">
+                <Settings2 className="size-3.5" />
+                Columns
+              </Button>
+            }
+          />
         )}
-        <div className="ml-auto flex items-center gap-2">
-          <fieldset
-            className="inline-flex min-w-0 rounded-lg border bg-muted/30 p-1"
-            aria-label="Work view"
-          >
-            <Button
-              variant={boardView ? "ghost" : "secondary"}
-              size="sm"
-              className="h-7 gap-1.5"
-              aria-pressed={!boardView}
-              onClick={() => setView("table")}
-            >
-              <List className="size-3.5" />
-              Table
-            </Button>
-            <Button
-              variant={boardView ? "secondary" : "ghost"}
-              size="sm"
-              className="h-7 gap-1.5"
-              aria-pressed={boardView}
-              onClick={() => setView("board")}
-            >
-              <Columns3 className="size-3.5" />
-              Board
-            </Button>
-          </fieldset>
-          {!boardView && (
-            <DataGridColumnVisibility
-              table={table}
-              trigger={
-                <Button variant="outline" size="sm" className="h-9 gap-1.5">
-                  <Settings2 className="size-3.5" />
-                  Columns
-                </Button>
-              }
-            />
-          )}
-        </div>
-      </div>
+      </WorkBoardToolbar>
 
       {error && (
         <p className="py-8 text-center text-destructive">
@@ -345,7 +361,17 @@ export function WorkDashboardView({
         </p>
       )}
 
-      {!error && (
+      {!error && boardView && (
+        <WorkBoardView
+          table={table}
+          visibleStatuses={visibleStatuses}
+          isLoading={isLoading}
+          onOpenItem={openItem}
+          renderGoalLink={WorkGoalLink}
+        />
+      )}
+
+      {!error && !boardView && (
         <DataGrid
           table={table}
           recordCount={items.length}
@@ -363,18 +389,9 @@ export function WorkDashboardView({
           }}
           emptyMessage="No work items found."
         >
-          {boardView ? (
-            <WorkKanban
-              items={rows.map((row) => row.original)}
-              statuses={boardStatuses}
-              isLoading={isLoading}
-              onOpenItem={openItem}
-            />
-          ) : (
-            <DataGridContainer className="overflow-x-auto">
-              <DataGridTable />
-            </DataGridContainer>
-          )}
+          <DataGridContainer className="overflow-x-auto">
+            <DataGridTable />
+          </DataGridContainer>
           <DataGridPagination sizes={[25, 50, 100]} />
         </DataGrid>
       )}

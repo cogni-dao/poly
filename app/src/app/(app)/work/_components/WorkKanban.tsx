@@ -23,7 +23,8 @@ interface WorkKanbanProps {
   readonly onOpenItem: (item: WorkItemDto) => void;
 }
 
-function GoalLink({ href, className, label }: WorkBoardGoalLink) {
+/** Renders a board goal pointer with this node's router link. */
+export function WorkGoalLink({ href, className, label }: WorkBoardGoalLink) {
   return (
     <Link href={href} prefetch={false} className={className}>
       {label}
@@ -32,5 +33,5 @@ function GoalLink({ href, className, label }: WorkBoardGoalLink) {
 }
 
 export function WorkKanban(props: WorkKanbanProps) {
-  return <WorkBoard {...props} renderGoalLink={GoalLink} />;
+  return <WorkBoard {...props} renderGoalLink={WorkGoalLink} />;
 }

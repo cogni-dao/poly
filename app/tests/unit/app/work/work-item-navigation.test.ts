@@ -63,6 +63,19 @@ describe("work-item permalink navigation", () => {
     );
   });
 
+  it("carries the rank range and an explicit empty status filter in the URL", () => {
+    expect(
+      workViewHref(undefined, new URLSearchParams("view=board"), {
+        type: [],
+        status: [],
+        project: [],
+        sort: "-rankScore",
+        query: "",
+        rankRange: [0.5, undefined],
+      })
+    ).toBe("/work?view=board&status=all&sort=-rankScore&rankMin=0.5&rankMax=");
+  });
+
   it("replaces a closed sheet with its preserved list URL", () => {
     const router = { push: vi.fn(), replace: vi.fn() };
 

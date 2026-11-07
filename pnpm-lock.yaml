@@ -123,8 +123,8 @@ importers:
         specifier: workspace:*
         version: link:../packages/ingestion-core
       '@cogni/knowledge-base-ui':
-        specifier: https://github.com/cogni-dao/node-template/releases/download/knowledge-base-ui-v0.3.0/cogni-dao-knowledge-base-ui-0.3.0.tgz
-        version: '@cogni-dao/knowledge-base-ui@https://github.com/cogni-dao/node-template/releases/download/knowledge-base-ui-v0.3.0/cogni-dao-knowledge-base-ui-0.3.0.tgz(@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.4.0/cogni-dao-work-items-0.4.0.tgz)(@dnd-kit/core@6.3.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(@dnd-kit/sortable@10.0.0(@dnd-kit/core@6.3.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(react@19.0.0))(@dnd-kit/utilities@3.2.2(react@19.0.0))(clsx@2.1.1)(lucide-react@0.552.0(react@19.0.0))(radix-ui@1.4.3(@types/react-dom@19.2.3(@types/react@19.2.16))(@types/react@19.2.16)(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(react-dom@19.0.0(react@19.0.0))(react@19.0.0)(tailwind-merge@3.6.0)'
+        specifier: https://github.com/cogni-dao/node-template/releases/download/knowledge-base-ui-v0.4.0/cogni-dao-knowledge-base-ui-0.4.0.tgz
+        version: '@cogni-dao/knowledge-base-ui@https://github.com/cogni-dao/node-template/releases/download/knowledge-base-ui-v0.4.0/cogni-dao-knowledge-base-ui-0.4.0.tgz(@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.4.0/cogni-dao-work-items-0.4.0.tgz)(@dnd-kit/core@6.3.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(@dnd-kit/sortable@10.0.0(@dnd-kit/core@6.3.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(react@19.0.0))(@dnd-kit/utilities@3.2.2(react@19.0.0))(@tanstack/react-table@8.21.3(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(clsx@2.1.1)(lucide-react@0.552.0(react@19.0.0))(radix-ui@1.4.3(@types/react-dom@19.2.3(@types/react@19.2.16))(@types/react@19.2.16)(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(react-dom@19.0.0(react@19.0.0))(react@19.0.0)(tailwind-merge@3.6.0)'
       '@cogni/knowledge-store':
         specifier: https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.9.0/cogni-dao-knowledge-store-0.9.0.tgz
         version: '@cogni-dao/knowledge-store@https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.9.0/cogni-dao-knowledge-store-0.9.0.tgz'
@@ -1485,14 +1485,15 @@ packages:
       '@cogni-dao/knowledge-store': 0.9.0
       '@cogni-dao/work-items': 0.4.0
 
-  '@cogni-dao/knowledge-base-ui@https://github.com/cogni-dao/node-template/releases/download/knowledge-base-ui-v0.3.0/cogni-dao-knowledge-base-ui-0.3.0.tgz':
-    resolution: {tarball: https://github.com/cogni-dao/node-template/releases/download/knowledge-base-ui-v0.3.0/cogni-dao-knowledge-base-ui-0.3.0.tgz}
-    version: 0.3.0
+  '@cogni-dao/knowledge-base-ui@https://github.com/cogni-dao/node-template/releases/download/knowledge-base-ui-v0.4.0/cogni-dao-knowledge-base-ui-0.4.0.tgz':
+    resolution: {tarball: https://github.com/cogni-dao/node-template/releases/download/knowledge-base-ui-v0.4.0/cogni-dao-knowledge-base-ui-0.4.0.tgz}
+    version: 0.4.0
     peerDependencies:
       '@cogni/work-items': '>=0.2.4'
       '@dnd-kit/core': ^6.3.1
       '@dnd-kit/sortable': ^10.0.0
       '@dnd-kit/utilities': ^3.2.2
+      '@tanstack/react-table': ^8.20.0
       clsx: ^2.0.0
       lucide-react: '>=0.552.0 <1'
       radix-ui: ^1.4.3
@@ -10010,12 +10011,13 @@ snapshots:
       '@types/json-schema': 7.0.15
       zod: 4.4.3
 
-  '@cogni-dao/knowledge-base-ui@https://github.com/cogni-dao/node-template/releases/download/knowledge-base-ui-v0.3.0/cogni-dao-knowledge-base-ui-0.3.0.tgz(@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.4.0/cogni-dao-work-items-0.4.0.tgz)(@dnd-kit/core@6.3.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(@dnd-kit/sortable@10.0.0(@dnd-kit/core@6.3.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(react@19.0.0))(@dnd-kit/utilities@3.2.2(react@19.0.0))(clsx@2.1.1)(lucide-react@0.552.0(react@19.0.0))(radix-ui@1.4.3(@types/react-dom@19.2.3(@types/react@19.2.16))(@types/react@19.2.16)(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(react-dom@19.0.0(react@19.0.0))(react@19.0.0)(tailwind-merge@3.6.0)':
+  '@cogni-dao/knowledge-base-ui@https://github.com/cogni-dao/node-template/releases/download/knowledge-base-ui-v0.4.0/cogni-dao-knowledge-base-ui-0.4.0.tgz(@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.4.0/cogni-dao-work-items-0.4.0.tgz)(@dnd-kit/core@6.3.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(@dnd-kit/sortable@10.0.0(@dnd-kit/core@6.3.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(react@19.0.0))(@dnd-kit/utilities@3.2.2(react@19.0.0))(@tanstack/react-table@8.21.3(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(clsx@2.1.1)(lucide-react@0.552.0(react@19.0.0))(radix-ui@1.4.3(@types/react-dom@19.2.3(@types/react@19.2.16))(@types/react@19.2.16)(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(react-dom@19.0.0(react@19.0.0))(react@19.0.0)(tailwind-merge@3.6.0)':
     dependencies:
       '@cogni/work-items': '@cogni-dao/work-items@https://github.com/cogni-dao/node-template/releases/download/work-items-v0.4.0/cogni-dao-work-items-0.4.0.tgz'
       '@dnd-kit/core': 6.3.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
       '@dnd-kit/sortable': 10.0.0(@dnd-kit/core@6.3.1(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(react@19.0.0)
       '@dnd-kit/utilities': 3.2.2(react@19.0.0)
+      '@tanstack/react-table': 8.21.3(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
       clsx: 2.1.1
       lucide-react: 0.552.0(react@19.0.0)
       radix-ui: 1.4.3(@types/react-dom@19.2.3(@types/react@19.2.16))(@types/react@19.2.16)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
