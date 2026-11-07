@@ -11,6 +11,10 @@ metadata:
   annotations:
     cogni.dev/exclusive: "false"
     cogni.dev/ephemeral-storage: 4Gi
+    # story.5141: Poly owns its placement. Polymarket-allowed countries only
+    # (https://docs.polymarket.com/api-reference/geoblock). Read by the operator at this source SHA.
+    cogni.dev/placement-countries-production: "BG,CZ,FI,NL,PT,UA"
+    cogni.dev/placement-countries-candidate-a: "FI,NL,PT,UA"
 containers:
   app:
     image: .
