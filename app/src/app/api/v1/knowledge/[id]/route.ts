@@ -13,6 +13,7 @@
  * @public
  */
 
+import { KpiBindingsSchema } from "@cogni-dao/metrics/contracts";
 import { toKnowledgeRow } from "@cogni/knowledge-store";
 import { KnowledgeRowSchema } from "@cogni/node-contracts";
 import { NextResponse } from "next/server";
@@ -56,6 +57,22 @@ export const GET = wrapRouteHandlerWithLogging<{
 
     ctx.log.info({ id }, "knowledge.get_success");
 
-    return NextResponse.json(KnowledgeRowSchema.parse(toKnowledgeRow(entry)));
+    const goalMetrics = getContainer().goalMetrics;
+    const kpiBindings = KpiBindingsSchema.safeParse(entry.kpiBindings ?? []);
+    const measured =
+      ["goal", "hypothesis"].includes(entry.entryType ?? "") &&
+      kpiBindings.success &&
+      kpiBindings.data.length > 0 &&
+      goalMetrics;
+    return NextResponse.json({
+      ...KnowledgeRowSchema.parse(toKnowledgeRow(entry)),
+      ...(measured
+        ? {
+            kpis: await goalMetrics.bindings(kpiBindings.data, {
+              hypothesis: entry.entryType === "hypothesis",
+            }),
+          }
+        : {}),
+    });
   },
 );

@@ -13,6 +13,8 @@
  * @internal
  */
 
+import { calculatorShape } from "@cogni-dao/metrics";
+import { displayFits, KpiBindingsSchema, StoredMetricSpecSchema } from "@cogni-dao/metrics/contracts";
 import {
   CitationTargetNotFoundError,
   CitationTypeMismatchError,
@@ -130,6 +132,16 @@ export async function handleCreate(
       { status: 400 }
     );
 
+  for (const edit of parsed.data.edits ?? []) {
+    if (edit.op !== "insert" && edit.op !== "update") continue;
+    const entry = edit.entry;
+    if (entry.metricSpec != null) {
+      const invalid = validateMetricSpec(entry.metricSpec, entry.id ?? ("targetRowId" in edit ? edit.targetRowId : "metric"), entry.title);
+      if (invalid) return invalid;
+    }
+    if (entry.kpiBindings != null && !KpiBindingsSchema.safeParse(entry.kpiBindings).success) return NextResponse.json({ error: "invalid KPI bindings" }, { status: 400 });
+    if (entry.entryType === "hypothesis" && Array.isArray(entry.kpiBindings) && entry.kpiBindings.length && !entry.kpiBindings.every(binding => binding.evaluationAt && binding.baselineObservationId)) return NextResponse.json({ error: "hypothesis KPI bindings require a fixed evaluation and baseline observation" }, { status: 422 });
+  }
   const principal = sessionUserToPrincipal(sessionUser, authSource(request));
   const createBody = {
     message: parsed.data.message,
@@ -236,6 +248,16 @@ export async function handleAppendCommit(
       { status: 400 }
     );
 
+  for (const edit of parsed.data.edits ?? []) {
+    if (edit.op !== "insert" && edit.op !== "update") continue;
+    const entry = edit.entry;
+    if (entry.metricSpec != null) {
+      const invalid = validateMetricSpec(entry.metricSpec, entry.id ?? ("targetRowId" in edit ? edit.targetRowId : "metric"), entry.title);
+      if (invalid) return invalid;
+    }
+    if (entry.kpiBindings != null && !KpiBindingsSchema.safeParse(entry.kpiBindings).success) return NextResponse.json({ error: "invalid KPI bindings" }, { status: 400 });
+    if (entry.entryType === "hypothesis" && Array.isArray(entry.kpiBindings) && entry.kpiBindings.length && !entry.kpiBindings.every(binding => binding.evaluationAt && binding.baselineObservationId)) return NextResponse.json({ error: "hypothesis KPI bindings require a fixed evaluation and baseline observation" }, { status: 422 });
+  }
   const principal = sessionUserToPrincipal(sessionUser, authSource(request));
   try {
     const commit = await svc.appendCommit({
@@ -380,4 +402,20 @@ export async function handleClose(
   } catch (e) {
     return mapError(e);
   }
+}
+
+/** A stored metric spec must parse strictly, name a registered calculator and carry a display its unit can honour. */
+function validateMetricSpec(stored: unknown, id: string, title: string): NextResponse | null {
+  const parsed = StoredMetricSpecSchema.safeParse(stored);
+  if (!parsed.success) return NextResponse.json({ error: "invalid metric definition", issues: parsed.error.issues }, { status: 400 });
+  const { display, ...spec } = parsed.data;
+  const registry = getContainer().goalMetrics?.registry;
+  try {
+    registry?.validate({ id, title, revision: "proposed", spec });
+  } catch {
+    return NextResponse.json({ error: "unsupported calculator or parameters" }, { status: 422 });
+  }
+  if (display && registry && !displayFits(display, calculatorShape(registry.get(spec.calculatorId), spec.params).unit))
+    return NextResponse.json({ error: "display does not fit the metric unit (slo needs %)" }, { status: 422 });
+  return null;
 }
