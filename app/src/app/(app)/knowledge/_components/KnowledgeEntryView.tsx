@@ -13,7 +13,9 @@
 "use client";
 
 import { KnowledgeUseWhen } from "@cogni/knowledge-base-ui";
+import type { MetricService } from "@cogni-dao/metrics";
 import { KpiBindingsSchema } from "@cogni-dao/metrics/contracts";
+import type { KnowledgeRow } from "@cogni/node-contracts";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
@@ -26,7 +28,11 @@ import { KnowledgeEntryFields } from "./KnowledgeEntryFields";
 export function KnowledgeEntryView({ id }: { readonly id: string }) {
 	const query = useQuery({
 		queryKey: ["knowledge", "entry", id],
-		queryFn: () => fetchKnowledgeEntry(id),
+		// Goal and hypothesis reads carry their KPI readings (GET /api/v1/knowledge/{id}).
+		queryFn: () =>
+			fetchKnowledgeEntry(id) as Promise<
+				KnowledgeRow & { kpis?: Awaited<ReturnType<MetricService["bindings"]>> }
+			>,
 		staleTime: 30_000,
 		retry: false,
 	});
