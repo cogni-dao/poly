@@ -26,8 +26,8 @@ import type {
 import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 import { KpiBindingsSchema } from "@cogni-dao/metrics/contracts";
 import type { GoalsProgress, MetricService } from "@cogni-dao/metrics";
-import { createGoalMetricTools } from "@/bootstrap/capabilities/goal-metric-tools";
 import {
+	createGoalMetricTools,
 	createGoalMetrics,
 	createGoalProgressReader,
 } from "@/bootstrap/capabilities/goal-metrics";

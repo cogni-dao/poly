@@ -18,9 +18,9 @@ import { z } from "zod";
 import {
 	doltInstant,
 	readWorkConvergence,
-} from "@/adapters/server/metrics/sources";
-import { createGoalMetricTools } from "@/bootstrap/capabilities/goal-metric-tools";
+} from "@cogni-dao/metrics/sources";
 import {
+	createGoalMetricTools,
 	createGoalMetrics,
 	createGoalProgressReader,
 } from "@/bootstrap/capabilities/goal-metrics";
