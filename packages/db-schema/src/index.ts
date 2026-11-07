@@ -29,3 +29,8 @@ export * from "./scheduling";
 export * from "./trader-activity";
 export * from "./wallet-connections";
 export * from "./wallet-grants";
+// Goal-metric evidence tables are defined once in @cogni-dao/metrics; migrations stay node-local.
+export {
+  metricObservations,
+  metricRefreshCursors,
+} from "@cogni-dao/metrics/schema";

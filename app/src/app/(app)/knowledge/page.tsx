@@ -12,14 +12,18 @@
  * Invariants: Protected route (server-side auth check); SSR_SEEDS_REACT_QUERY
  *   (loaders return the exact wire shape the client fetchers do, so
  *   initialData === post-hydration refetch — no hydration shift). Graph data is
- *   only pre-read on a `?mode=graph` deep-link; otherwise it stays deferred.
+ *   only pre-read on a `?mode=graph` deep-link; goal progress only on a
+ *   `?mode=goals` deep-link (parsed with the shared GoalsProgressSchema, so a
+ *   shape drift degrades to a client fetch instead of a hydration mismatch).
  * Side-effects: IO (Doltgres reads via container port)
  * Links: [KnowledgeDashboardView](./view.tsx), ./_server/loaders.ts, docs/spec/knowledge-syntropy.md
  * @public
  */
 
+import { GoalsProgressSchema } from "@cogni-dao/metrics/contracts";
 import { redirect } from "next/navigation";
 
+import { loadGoalsProgress } from "@/app/_facades/metrics.server";
 import { getContainer } from "@/bootstrap/container";
 import { getServerSessionUser } from "@/lib/auth/server";
 import {
@@ -55,6 +59,13 @@ export default async function KnowledgePage({
   const port = getContainer().knowledgeStorePort;
   const { mode } = await searchParams;
 
+  const goalsSeed =
+    mode === "goals"
+      ? safe(loadGoalsProgress()).then(
+          (d) => GoalsProgressSchema.safeParse(d).data
+        )
+      : Promise.resolve(undefined);
+
   const [initialList, initialDomains, initialGraph] = port
     ? await Promise.all([
         // limit=500 matches the browse client fetcher (LIST_LIMIT_PARITY).
@@ -65,12 +76,14 @@ export default async function KnowledgePage({
           : Promise.resolve(undefined),
       ])
     : [undefined, undefined, undefined];
+  const initialGoals = await goalsSeed;
 
   return (
     <KnowledgeDashboardView
       initialList={initialList}
       initialDomains={initialDomains}
       initialGraph={initialGraph}
+      initialGoals={initialGoals}
     />
   );
 }
