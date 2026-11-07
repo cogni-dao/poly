@@ -11,13 +11,19 @@ metadata:
   annotations:
     cogni.dev/exclusive: "false"
     cogni.dev/ephemeral-storage: 4Gi
+    # story.5141: Poly owns its placement. Polymarket-allowed countries only
+    # (https://docs.polymarket.com/api-reference/geoblock). Read by the operator at this source SHA.
+    cogni.dev/placement-countries-production: "BG,CZ,FI,NL,PT,UA"
+    cogni.dev/placement-countries-candidate-a: "FI,NL,PT,UA"
 containers:
   app:
     image: .
     resources:
       requests:
         cpu: "2"
-        memory: 2048Mi
+        # story.5142: 2 GiB drew no Polymarket-allowed bid (0 of 5 probe auctions, 2026-11-07); with
+        # more than 2 GiB the BG digitalfrontier provider bid every time (8 of 8).
+        memory: 4096Mi
     readinessProbe:
       httpGet:
         path: /readyz
