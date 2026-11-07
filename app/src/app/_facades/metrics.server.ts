@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 /** Authenticated HTTP delegation and subject projection; computation stays in the package. */
 import {
-	KpiBindingsSchema,
 	MetricComputeInputSchema,
 	MetricError,
 	MetricHistoryInputSchema,
@@ -91,20 +90,5 @@ export async function metricCompute(id: string, request: Request) {
 	);
 	return NextResponse.json(result, {
 		status: result.status === "pending" ? 409 : 200,
-	});
-}
-export async function metricSubject(id: string) {
-	const row = await getContainer().knowledgeStorePort?.getKnowledge(id);
-	if (!row || !["goal", "hypothesis"].includes(row.entryType ?? ""))
-		throw new MetricError("subject_not_found", 404);
-	const bindings = KpiBindingsSchema.parse(row.kpiBindings ?? []);
-	return NextResponse.json({
-		id: row.id,
-		title: row.title,
-		entryType: row.entryType,
-		kpis: await getGoalMetrics().bindings(bindings, {
-			hypothesis: row.entryType === "hypothesis",
-			deadline: row.evaluateAt?.toISOString() ?? null,
-		}),
 	});
 }
