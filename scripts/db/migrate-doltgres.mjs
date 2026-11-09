@@ -136,7 +136,16 @@ async function applyPending(sql, folder) {
 
 const retainedPools = new WeakSet();
 
+function describeCause(error) {
+  const parts = [];
+  for (let e = error, i = 0; e && i < 4; e = e.cause, i += 1)
+    parts.push(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+  return parts.join(" <- ");
+}
+
 function terminateMigration(error) {
+  // Diagnostic only: the structured MIGRATION_OUTCOME below stays the contract.
+  writeSync(2, `MIGRATION_ERROR ${describeCause(error)}\n`);
   const text = (value) => typeof value === "string" ? value : null;
   writeSync(2, `MIGRATION_OUTCOME ${JSON.stringify({
     code: text(error?.code) ?? (isDoltgresMigrationOutcomeUncertain(error) ? "migration_write_outcome_unknown" : "migration_failed"),
