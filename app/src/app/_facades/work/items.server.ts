@@ -17,8 +17,15 @@ import type {
 	WorkItemDto,
 	WorkItemsListInput,
 	WorkItemsListOutput,
+	WorkItemSummariesListInput,
+	WorkItemSummariesListOutput,
 } from "@cogni/node-contracts";
-import type { WorkItem } from "@cogni/work-items";
+import type {
+	WorkBoardColumnPages,
+	WorkItem,
+	WorkQuery,
+	WorkSummaryReadOptions,
+} from "@cogni/work-items";
 import { toWorkItemDto, toWorkItemId, WorkItemScoresInvalidError } from "@cogni/work-items";
 import { WorkItemRevisionConflictError, WorkItemWriteOutcomeUnknownError } from "@cogni/work-items/adapters/doltgres";
 export { WorkItemScoresInvalidError, WorkItemRevisionConflictError, WorkItemWriteOutcomeUnknownError };
@@ -169,6 +176,91 @@ export async function listWorkItems(
 		}
 		rethrowBackendError(error);
 	}
+}
+
+/** The store query for one decoded summary request (the published codec already bounded it). */
+function summaryQuery(input: WorkItemSummariesListInput): WorkQuery {
+	return {
+		...(input.sortBy !== undefined && { sortBy: input.sortBy }),
+		...(input.sortDirection !== undefined && {
+			sortDirection: input.sortDirection,
+		}),
+		...(input.types && { types: input.types as WorkItem["type"][] }),
+		...(input.statuses && { statuses: input.statuses as WorkItem["status"][] }),
+		...(input.text && { text: input.text }),
+		...(input.actor && { actor: input.actor as WorkItem["actor"] }),
+		...(input.projectId && { projectId: toWorkItemId(input.projectId) }),
+		...(input.projectIds && { projectIds: input.projectIds.map(toWorkItemId) }),
+		...(input.rankMin !== undefined && { rankMin: input.rankMin }),
+		...(input.rankMax !== undefined && { rankMax: input.rankMax }),
+		...(input.node && { node: input.node }),
+		...(input.labels && { labels: input.labels }),
+		...(input.labelPrefix !== undefined && { labelPrefix: input.labelPrefix }),
+		...(input.scored !== undefined && { scored: input.scored }),
+		limit: input.limit ?? 25,
+		...(input.cursor && { cursor: input.cursor }),
+	};
+}
+
+function rethrowReadError(error: unknown): never {
+	if ((error as Error)?.name === "InvalidCursorError") {
+		throw new InvalidCursorError((error as Error).message);
+	}
+	rethrowBackendError(error);
+}
+
+/**
+ * One bounded summary page (task.0056). `options` (signal, shared deadline,
+ * scan budget) only tightens the read. Poly's Doltgres hub is the only backend;
+ * an unconfigured hub surfaces as `WorkItemsBackendNotReadyError` (503).
+ */
+export async function listWorkSummaries(
+	input: WorkItemSummariesListInput,
+	options?: WorkSummaryReadOptions,
+): Promise<WorkItemSummariesListOutput> {
+	try {
+		return await getContainer().doltgresWorkItems.listSummaries(
+			summaryQuery(input),
+			options,
+		);
+	} catch (error) {
+		rethrowReadError(error);
+	}
+}
+
+/**
+ * First page of every listed board column in ONE store read when the port
+ * composes it (task.0056); otherwise one bounded summary read per column.
+ * Text queries never reach here (the package keeps them per-column).
+ */
+export async function listWorkBoardColumns(
+	input: WorkItemSummariesListInput,
+	statuses: readonly string[],
+	perColumn: number,
+	options?: { readonly signal?: AbortSignal },
+): Promise<WorkBoardColumnPages> {
+	const port = getContainer().doltgresWorkItems;
+	if (port.listBoardColumns) {
+		try {
+			return await port.listBoardColumns(
+				summaryQuery(input),
+				statuses,
+				perColumn,
+				options,
+			);
+		} catch (error) {
+			rethrowReadError(error);
+		}
+	}
+	const columns = [];
+	for (const status of statuses) {
+		const page = await listWorkSummaries(
+			{ ...input, statuses: [status], limit: perColumn },
+			options,
+		);
+		columns.push({ status, items: page.items, pageInfo: page.pageInfo });
+	}
+	return { columns, queryCount: columns.length };
 }
 
 export async function getWorkItem(id: string): Promise<WorkItemDto | null> {

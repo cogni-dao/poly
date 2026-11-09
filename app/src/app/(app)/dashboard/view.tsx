@@ -7,6 +7,7 @@
  * Scope: Client-side view managing data fetching via React Query. Does not implement business logic.
  * Invariants:
  *   - Polls runs at 5s, work items at 30s, activity at 30s
+ *   - BOUNDED_BOARD_READS: Active Work is the package's `useOpenWork` — one `/api/v1/work/summaries` request for at most 5 active-status summaries, rank-sorted; full detail is fetched only for the item a person opens (task.0056)
  *   - Runs deduplicated by stateKey (one row per conversation thread)
  *   - "System Runs" tab shows system-scoped runs and activity
  *   - Activity charts scope matches active tab (user or system)
@@ -17,11 +18,9 @@
 
 "use client";
 
-import type {
-  ActivityGroupBy,
-  TimeRange,
-  WorkItemDto,
-} from "@cogni/node-contracts";
+import { useOpenWork } from "@cogni/knowledge-base-ui";
+import type { ActivityGroupBy, TimeRange } from "@cogni/node-contracts";
+import type { WorkSummaryPage } from "@cogni/work-items";
 import {
   useIsFetching,
   useMutation,
@@ -57,6 +56,7 @@ import {
 import type { RunCardData } from "@/components/kit/data-display/RunCard";
 import { cn } from "@/shared/util/cn";
 import { fetchActivity } from "../activity/_api/fetchActivity";
+import { fetchWorkItem } from "../work/_api/fetchWorkItems";
 import { WorkItemDetail } from "../work/_components/WorkItemDetail";
 import { StatusPill, TypeIcon } from "../work/_components/work-item-icons";
 import { postPolymarketRefresh } from "./_api/fetchPolymarketRefresh";
@@ -168,14 +168,25 @@ function dedupeByThread(runs: RunCardData[]): RunCardData[] {
 
 /* ─── data fetchers ─── */
 
-async function fetchWorkItems(): Promise<{ items: WorkItemDto[] }> {
+const NO_WORK: WorkSummaryPage = {
+  items: [],
+  pageInfo: { endCursor: null, hasMore: false },
+};
+
+/** The node's summaries endpoint for the package's open-work request. */
+async function fetchOpenWorkPage(
+  params: URLSearchParams,
+  signal: AbortSignal
+): Promise<WorkSummaryPage> {
   try {
-    const res = await fetch("/api/v1/work/items");
+    const res = await fetch(`/api/v1/work/summaries?${params}`, { signal });
     if (res.ok) return res.json();
-    if (res.status === 404) return { items: [] };
-    throw new Error(`Failed to fetch work items: ${res.status}`);
+    if (res.status === 404) return NO_WORK;
+    throw Object.assign(new Error(`Failed to fetch work items: ${res.status}`), {
+      status: res.status,
+    });
   } catch (err) {
-    if (err instanceof TypeError) return { items: [] };
+    if (err instanceof TypeError) return NO_WORK;
     throw err;
   }
 }
@@ -189,7 +200,7 @@ export function DashboardView(): ReactElement {
   const [activityGroupBy, setActivityGroupBy] = useState<
     ActivityGroupBy | undefined
   >("model");
-  const [selectedWorkItem, setSelectedWorkItem] = useState<WorkItemDto | null>(
+  const [selectedWorkItemId, setSelectedWorkItemId] = useState<string | null>(
     null
   );
 
@@ -206,11 +217,18 @@ export function DashboardView(): ReactElement {
     gcTime: 60_000,
   });
 
-  const { data: workData, isLoading: workLoading } = useQuery({
-    queryKey: ["dashboard-work"],
-    queryFn: fetchWorkItems,
+  // One request: the top open items by rank (package-owned shape, ≤ 5 rows).
+  const { items: workItems, isLoading: workLoading } = useOpenWork({
+    fetchPage: fetchOpenWorkPage,
+  });
+
+  const selectedWorkItem = useQuery({
+    queryKey: ["work-item", selectedWorkItemId],
+    queryFn: ({ signal }) =>
+      fetchWorkItem(selectedWorkItemId as string, signal),
+    enabled: selectedWorkItemId !== null,
+    retry: false,
     staleTime: 30_000,
-    gcTime: 60_000,
   });
 
   const { data: activityData, isLoading: activityLoading } = useQuery({
@@ -243,9 +261,6 @@ export function DashboardView(): ReactElement {
   const agents = dedupeByThread(runs);
   const activeCount = runs.filter((r) => r.status === "running").length;
 
-  const workItems = (workData?.items ?? [])
-    .filter((i) => i.status !== "done" && i.status !== "cancelled")
-    .slice(0, 5);
 
   // Activity chart data
   const hasActivity = activityData && !activityLoading;
@@ -456,7 +471,7 @@ export function DashboardView(): ReactElement {
                     type="button"
                     key={item.id}
                     className="flex w-full items-center gap-3 px-5 py-2.5 text-left hover:bg-muted/50"
-                    onClick={() => setSelectedWorkItem(item)}
+                    onClick={() => setSelectedWorkItemId(item.id)}
                   >
                     <TypeIcon type={item.type} className="size-3.5 shrink-0" />
                     <StatusPill status={item.status} className="shrink-0" />
@@ -544,10 +559,13 @@ export function DashboardView(): ReactElement {
       </div>
 
       <WorkItemDetail
-        item={selectedWorkItem}
-        open={selectedWorkItem !== null}
+        item={selectedWorkItem.data ?? null}
+        {...(selectedWorkItemId !== null && { itemId: selectedWorkItemId })}
+        isLoading={selectedWorkItem.isLoading}
+        error={selectedWorkItem.error}
+        open={selectedWorkItemId !== null}
         onOpenChange={(open) => {
-          if (!open) setSelectedWorkItem(null);
+          if (!open) setSelectedWorkItemId(null);
         }}
       />
     </div>

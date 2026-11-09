@@ -25,6 +25,8 @@ export const EVENT_NAMES = {
 	GOALS_PROGRESS_READ: "goals.progress_read",
 	// Row history reads (story.0023): one terminal event per read, counts only.
 	WORK_ITEMS_HISTORY_READ: "work.items.history_read",
+	// Bounded work reads (task.0056): one terminal event per /work/summaries or /work/board request.
+	WORK_ITEMS_LIST_COMPLETE: "work.items.list_complete",
 	KNOWLEDGE_HISTORY_READ: "knowledge.history_read",
 	// Auth perimeter (proxy): request rejected before reaching any route handler,
 	// so the request-scoped logger never sees it — emitted directly from the proxy.
