@@ -77,7 +77,8 @@ const ADD_COLUMN =
   /^ALTER TABLE\s+"?([A-Za-z0-9_]+)"?\s+ADD COLUMN\s+(?:IF NOT EXISTS\s+)?"?([A-Za-z0-9_]+)"?/i;
 
 async function isColumnPresent(sql, stmt) {
-  const match = ADD_COLUMN.exec(stmt);
+  // A migration's leading `--` comment lines belong to its first statement chunk.
+  const match = ADD_COLUMN.exec(stmt.replace(/^(?:\s*--[^\n]*\n)+/, "").trimStart());
   if (!match) return false;
   const rows = await sql.unsafe(
     `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ${sqlEscape(match[1])} AND column_name = ${sqlEscape(match[2])}`
