@@ -109,3 +109,5 @@ When adding new protected pages (e.g., `/billing`, `/api-keys`), place them unde
 
 - Uses Next.js App Router patterns
 - API routes are thin adapters that delegate to features
+
+Goals mount (story.0021): the Goals board, KPI chart, metric evidence and hypothesis KPI evidence render only from `@cogni/knowledge-base-ui/goals` (node mount: `(app)/knowledge/_components/GoalsMount.tsx`: Next `Link`, `?observation=`, the tab badge read, one `KnowledgeGoalsProvider` for board and badge). The `/api/v1/metrics/*` routes keep only auth, path parameters, logging and `metricResponse`; parsing, contract validation and error mapping are `@cogni-dao/metrics/http` (`_facades/metrics.server.ts` binds its ports to the container).

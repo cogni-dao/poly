@@ -27,7 +27,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@cogni/ai-tools": "https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.4.8/cogni-dao-ai-tools-0.4.8.tgz",
+    "@cogni/ai-tools": "https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.4.10/cogni-dao-ai-tools-0.4.10.tgz",
     "@cogni/langgraph-graphs": "workspace:*",
     "@cogni/poly-ai-tools": "workspace:*",
     "@cogni/node-contracts": "workspace:*",
@@ -39,7 +39,7 @@
     "@cogni/local-ai-tools": "workspace:@cogni/ai-tools@*",
     "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.7.0/cogni-dao-work-items-0.7.0.tgz",
     "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.11.0/cogni-dao-knowledge-store-0.11.0.tgz",
-    "@cogni-dao/metrics": "https://github.com/cogni-dao/node-template/releases/download/metrics-v0.3.0/cogni-dao-metrics-0.3.0.tgz"
+    "@cogni-dao/metrics": "https://github.com/cogni-dao/node-template/releases/download/metrics-v0.7.0/cogni-dao-metrics-0.7.0.tgz"
   },
   "devDependencies": {
     "tsup": "^8.5.1",

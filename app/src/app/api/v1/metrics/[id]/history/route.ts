@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
-/** Ranged metric history: aligned half-open buckets, same authorization as metric read. */
+/** Ranged metric history, same authorization as metric read. Auth and logging here; the handler is `@cogni-dao/metrics/http`. */
 import { NextResponse } from "next/server";
-import { metricHistory, metricHttpError } from "@/app/_facades/metrics.server";
+import {
+	metricHandlers,
+	metricHttpError,
+	metricResponse,
+} from "@/app/_facades/metrics.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
 export const dynamic = "force-dynamic";
@@ -19,9 +23,9 @@ export const GET = wrapRouteHandlerWithLogging<{
 		try {
 			if (!context) throw new Error("route_context_missing");
 			const { id } = await context.params;
-			const response = await metricHistory(id, request);
-			response.headers.set("Cache-Control", "no-store");
-			return response;
+			return metricResponse(
+				await metricHandlers().history(id, new URL(request.url).searchParams),
+			);
 		} catch (error) {
 			return metricHttpError(error);
 		}
