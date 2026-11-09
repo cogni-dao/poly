@@ -4,9 +4,9 @@
 -- absent; reads tolerate the gap (row.metric_spec ?? null), so only those writes
 -- fail. Forward-only: 0004 stays untouched (applied-migration immutability).
 --
--- Idempotent on every DB that already has the columns (candidate-a, fresh
--- births): ADD COLUMN IF NOT EXISTS is a no-op there. Plain ADD COLUMN would
--- throw `column ... already exists`, which scripts/db/migrate-doltgres.mjs does
--- not tolerate (isAlreadyExists covers table/index/schema/relation/constraint).
-ALTER TABLE "knowledge" ADD COLUMN IF NOT EXISTS "metric_spec" jsonb;--> statement-breakpoint
-ALTER TABLE "knowledge" ADD COLUMN IF NOT EXISTS "kpi_bindings" jsonb;
+-- Plain ADD COLUMN on purpose: Doltgres 0.57.3 rejects ADD COLUMN IF NOT EXISTS
+-- ("not supported yet"). scripts/db/migrate-doltgres.mjs skips an ADD COLUMN
+-- whose live column already exists, so this is a no-op where 0004 landed
+-- (candidate-a, fresh births) and the repair where it did not.
+ALTER TABLE "knowledge" ADD COLUMN "metric_spec" jsonb;--> statement-breakpoint
+ALTER TABLE "knowledge" ADD COLUMN "kpi_bindings" jsonb;

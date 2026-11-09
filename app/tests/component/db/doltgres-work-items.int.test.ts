@@ -10,6 +10,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -89,6 +90,59 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 		if (sql) await sql.end({ timeout: 5 });
 		if (container) await container.stop();
 	});
+
+	it("repairs knowledge metric columns missing behind a recorded ledger (bug.0015)", async () => {
+		const REPAIR_DB = "knowledge_poly_production";
+		const repairUrl = dbUrl.replace(`/${DB_NAME}`, `/${REPAIR_DB}`);
+		const bootstrap = postgres(dbUrl.replace(`/${DB_NAME}`, "/postgres"), {
+			max: 1,
+			fetch_types: false,
+		});
+		try {
+			await bootstrap.unsafe(`CREATE DATABASE ${REPAIR_DB}`);
+		} finally {
+			await bootstrap.end({ timeout: 5 });
+		}
+		const migrate = () =>
+			execFileSync(process.execPath, [MIGRATE_SCRIPT, MIGRATIONS_DIR], {
+				env: { ...process.env, DATABASE_URL: repairUrl, NODE_NAME: "poly" },
+				encoding: "utf8",
+				stdio: "pipe",
+			});
+		const repair = JSON.parse(
+			readFileSync(path.join(MIGRATIONS_DIR, "meta/_journal.json"), "utf8"),
+		).entries.find(
+			(e: { tag: string }) => e.tag === "0005_repair_knowledge_metric_columns",
+		);
+		const db = postgres(repairUrl, { max: 1, fetch_types: false });
+		const metricColumns = async () =>
+			(
+				await db.unsafe(
+					"SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'knowledge' AND column_name IN ('metric_spec', 'kpi_bindings') ORDER BY column_name",
+				)
+			).map((row) => row.column_name);
+		try {
+			// Candidate shape: 0004 already added the columns, so 0005 is a no-op.
+			migrate();
+			expect(await metricColumns()).toEqual(["kpi_bindings", "metric_spec"]);
+
+			// Production shape: ledger records 0004 but the columns are absent.
+			await db.unsafe('ALTER TABLE "knowledge" DROP COLUMN "metric_spec"');
+			await db.unsafe('ALTER TABLE "knowledge" DROP COLUMN "kpi_bindings"');
+			await db.unsafe(
+				`DELETE FROM drizzle.__drizzle_migrations WHERE created_at = ${repair.when}`,
+			);
+			await db.unsafe(
+				"SELECT dolt_commit('-Am', 'test: stale knowledge table behind recorded ledger')",
+			);
+			expect(await metricColumns()).toEqual([]);
+
+			migrate();
+			expect(await metricColumns()).toEqual(["kpi_bindings", "metric_spec"]);
+		} finally {
+			await db.end({ timeout: 5 });
+		}
+	}, 120_000);
 
   it("composes published scores and v1 leases without changing protected content", async () => {
     const pools: Sql[] = [];
