@@ -1,7 +1,7 @@
 # Workload manifest (hub `workload-manifest`, task.5272): Red's code-execution sandbox (OpenSandbox execd
 # behind Caddy, services/sandbox) as its OWN lease, so a sandbox resize or re-mint never touches the app.
-# It is a worker: the operator gives it ONLY the secret_refs of the `sandbox` service in
-# .cogni/repo-spec.yaml (SANDBOX_EXECD_TOKEN, from OpenBao), never the app's database or auth secrets.
+# It is a worker: the operator gives it ONLY the catalog keys whose `workloads` names `sandbox`
+# (.cogni/secrets-catalog.yaml: SANDBOX_EXECD_TOKEN, from OpenBao), never the app's database or auth secrets.
 # The app derives this origin from its own host (`red.cognidao.org` -> `red-sandbox.cognidao.org`;
 # candidate-a `red-sandbox-test`, preview `red-sandbox-preview`), so the sandbox keeps a route on that
 # host. Execd enforces the token on every request except /version and /readyz.
