@@ -67,6 +67,25 @@ function isHarmlessDropMiss(stmt, err) {
   );
 }
 
+// Idempotency for ADD COLUMN: Doltgres 0.57.3 rejects `ADD COLUMN IF NOT EXISTS`
+// ("not supported yet"), and a duplicate plain ADD COLUMN is a hard error the
+// "already exists" tolerance above does not cover. So a forward repair
+// migration (bug.0015) states a plain ADD COLUMN and the migrator skips it when
+// the live column is already there: a no-op where the column landed, the repair
+// where a recorded ledger outran the schema.
+const ADD_COLUMN =
+  /^ALTER TABLE\s+"?([A-Za-z0-9_]+)"?\s+ADD COLUMN\s+(?:IF NOT EXISTS\s+)?"?([A-Za-z0-9_]+)"?/i;
+
+async function isColumnPresent(sql, stmt) {
+  // A migration's leading `--` comment lines belong to its first statement chunk.
+  const match = ADD_COLUMN.exec(stmt.replace(/^(?:\s*--[^\n]*\n)+/, "").trimStart());
+  if (!match) return false;
+  const rows = await sql.unsafe(
+    `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ${sqlEscape(match[1])} AND column_name = ${sqlEscape(match[2])}`
+  );
+  return rows.length > 0;
+}
+
 /**
  * Apply pending migrations via simple-protocol sql.unsafe — the Doltgres-safe
  * equivalent of `drizzle-orm/postgres-js/migrator`'s `migrate()`. Same journal
@@ -96,8 +115,11 @@ async function applyPending(sql, folder) {
       const trimmed = stmt.trim();
       if (!trimmed) continue;
       try {
+        if (await isColumnPresent(sql, trimmed)) continue;
         await sql.unsafe(trimmed);
       } catch (err) {
+        // Diagnostic only: the branch-mutation wrapper reports an unknown outcome and drops the cause.
+        console.error(`MIGRATION_STATEMENT_ERROR ${describeCause(err)} :: ${trimmed.slice(0, 160)}`);
         // Idempotent recovery for CREATE collisions and DROP misses. A prior
         // partial run committed the DDL but failed to record it; replay must
         // not fail loud here. Anything outside these two shapes is real
@@ -117,7 +139,16 @@ async function applyPending(sql, folder) {
 
 const retainedPools = new WeakSet();
 
+function describeCause(error) {
+  const parts = [];
+  for (let e = error, i = 0; e && i < 4; e = e.cause, i += 1)
+    parts.push(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+  return parts.join(" <- ");
+}
+
 function terminateMigration(error) {
+  // Diagnostic only: the structured MIGRATION_OUTCOME below stays the contract.
+  writeSync(2, `MIGRATION_ERROR ${describeCause(error)}\n`);
   const text = (value) => typeof value === "string" ? value : null;
   writeSync(2, `MIGRATION_OUTCOME ${JSON.stringify({
     code: text(error?.code) ?? (isDoltgresMigrationOutcomeUncertain(error) ? "migration_write_outcome_unknown" : "migration_failed"),
