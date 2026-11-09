@@ -12,9 +12,11 @@
  */
 
 import type {
+  HistoryEntry,
   WorkItem,
   WorkItemCommandPort,
   WorkItemId,
+  WorkItemSummary,
   WorkQuery,
 } from "@cogni/work-items";
 
@@ -33,6 +35,8 @@ export interface WorkItemsPatchInput {
   readonly id: WorkItemId;
   readonly expectedRevision?: number;
   readonly set: WorkItemsPatchSet;
+  /** One-line change reason; stored in the Dolt commit message, never in the item (task.0052). */
+  readonly reason?: string;
 }
 
 export interface WorkItemsDoltgresPort {
@@ -42,9 +46,16 @@ export interface WorkItemsDoltgresPort {
     nextCursor?: string;
     pageInfo: { endCursor: string | null; hasMore: boolean };
   }>;
+  listSummaries(query?: WorkQuery): Promise<{
+    items: WorkItemSummary[];
+    nextCursor?: string;
+    pageInfo: { endCursor: string | null; hasMore: boolean };
+  }>;
   create(input: WorkItemsCreateInput, principalId: string): Promise<WorkItem>;
   patch(input: WorkItemsPatchInput, principalId: string): Promise<WorkItem>;
   delete(id: WorkItemId, principalId: string): Promise<boolean>;
+  /** Versions of one item, newest first, with their change reasons (task.0052). */
+  history?(id: WorkItemId): Promise<HistoryEntry[]>;
   claim(input: {
     id: WorkItemId;
     runId: string;

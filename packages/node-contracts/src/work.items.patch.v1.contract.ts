@@ -17,6 +17,8 @@
 
 import { z } from "zod";
 
+import { ChangeReasonSchema } from "@cogni/work-items";
+
 import { WorkItemDtoSchema, WorkItemScoresInputSchema } from "./work.items.list.v1.contract";
 
 const WorkItemStatusSchema = z.enum([
@@ -35,10 +37,12 @@ export const workItemsPatchOperation = {
   id: "work.items.patch.v1",
   summary: "Patch a work item",
   description:
-    "Updates a subset of fields on a work item. Whitelisted fields only — id, created_at, updated_at are server-managed.",
+    "Updates a subset of fields on a work item. Whitelisted fields only — id, created_at, updated_at are server-managed. Optional reason (one line, 1-512 chars) says why; it is stored in history (GET /work/items/{id}/history), not in the item.",
   input: z.object({
     id: z.string(),
     expectedRevision: z.number().int().nonnegative().optional(),
+    // The adapter turns CR/LF into spaces and trims; this checks the result fits.
+    reason: ChangeReasonSchema.optional(),
     set: z
       .strictObject({
         title: z.string().min(1).max(500).optional(),

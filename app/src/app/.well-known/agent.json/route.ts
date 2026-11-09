@@ -30,12 +30,14 @@ import {
 	MetricViewSchema,
 } from "@cogni-dao/metrics/contracts";
 import {
+	knowledgeHistoryOperation,
 	workItemsClaimOperation,
 	workItemsCoordinationOperation,
 	workItemsCreateOperation,
 	workItemsDeleteOperation,
 	workItemsGetOperation,
 	workItemsHeartbeatOperation,
+	workItemsHistoryOperation,
 	workItemsListOperation,
 	workItemsPatchOperation,
 	workItemsReleaseOperation,
@@ -268,6 +270,20 @@ export async function GET(request: Request) {
 				auth: { type: "bearer" },
 				inputSchema: z.toJSONSchema(workItemsReleaseOperation.input),
 				outputSchema: z.toJSONSchema(workItemsReleaseOperation.output),
+			},
+			getWorkItemHistory: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/work/items/{id}/history`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(workItemsHistoryOperation.input),
+				outputSchema: z.toJSONSchema(workItemsHistoryOperation.output),
+			},
+			getKnowledgeHistory: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/knowledge/{id}/history`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(knowledgeHistoryOperation.input),
+				outputSchema: z.toJSONSchema(knowledgeHistoryOperation.output),
 			},
 			getWorkItemCoordination: {
 				method: "GET",

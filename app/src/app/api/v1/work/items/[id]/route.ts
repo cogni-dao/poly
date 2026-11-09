@@ -121,7 +121,7 @@ export const PATCH = wrapRouteHandlerWithLogging<{
       const patched = await patchWorkItem(parsed.data, {
         id: sessionUser.id,
       });
-      ctx.log.info({ workItemId: id }, "work.items.patch_success");
+      ctx.log.info({ workItemId: id, hasReason: parsed.data.reason !== undefined }, "work.items.patch_success");
       return NextResponse.json(workItemsPatchOperation.output.parse(patched));
     } catch (error) {
       if (error instanceof WorkItemScoresInvalidError) {
