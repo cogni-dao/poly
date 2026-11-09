@@ -13,11 +13,13 @@
 
 import type {
   HistoryEntry,
+  WorkBoardColumnPages,
   WorkItem,
   WorkItemCommandPort,
   WorkItemId,
   WorkItemSummary,
   WorkQuery,
+  WorkSummaryReadOptions,
 } from "@cogni/work-items";
 
 export type WorkItemsCreateInput = Parameters<WorkItemCommandPort["create"]>[0];
@@ -46,11 +48,22 @@ export interface WorkItemsDoltgresPort {
     nextCursor?: string;
     pageInfo: { endCursor: string | null; hasMore: boolean };
   }>;
-  listSummaries(query?: WorkQuery): Promise<{
+  /** One bounded summary page; `options` (signal, deadline, scan budget) only tightens the read (task.0056). */
+  listSummaries(
+    query?: WorkQuery,
+    options?: WorkSummaryReadOptions,
+  ): Promise<{
     items: WorkItemSummary[];
     nextCursor?: string;
-    pageInfo: { endCursor: string | null; hasMore: boolean };
+    pageInfo: { endCursor: string | null; hasMore: boolean; rowsScanned?: number };
   }>;
+  /** First page of every listed board column in ONE store read (no text); cursors equal `listSummaries`' (task.0056). */
+  listBoardColumns?(
+    query: WorkQuery,
+    statuses: readonly string[],
+    perColumn: number,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<WorkBoardColumnPages>;
   create(input: WorkItemsCreateInput, principalId: string): Promise<WorkItem>;
   patch(input: WorkItemsPatchInput, principalId: string): Promise<WorkItem>;
   delete(id: WorkItemId, principalId: string): Promise<boolean>;

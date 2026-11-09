@@ -28,8 +28,8 @@
     "@types/json-schema": "^7.0.15",
     "zod": "^3.24.1",
     "zod-to-json-schema": "^3.24.1",
-    "@cogni/shared-ai-tools": "https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.4.6/cogni-dao-ai-tools-0.4.6.tgz",
-    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.6.0/cogni-dao-work-items-0.6.0.tgz",
+    "@cogni/shared-ai-tools": "https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.4.8/cogni-dao-ai-tools-0.4.8.tgz",
+    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.7.0/cogni-dao-work-items-0.7.0.tgz",
     "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.11.0/cogni-dao-knowledge-store-0.11.0.tgz",
     "@cogni-dao/metrics": "https://github.com/cogni-dao/node-template/releases/download/metrics-v0.3.0/cogni-dao-metrics-0.3.0.tgz"
   },
