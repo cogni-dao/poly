@@ -23,6 +23,9 @@ export const EVENT_NAMES = {
 	// Goal metrics (story.0021): refresh dispatch receipt and goals read.
 	METRIC_REFRESH_COMPLETE: "metric.refresh_complete",
 	GOALS_PROGRESS_READ: "goals.progress_read",
+	// Row history reads (story.0023): one terminal event per read, counts only.
+	WORK_ITEMS_HISTORY_READ: "work.items.history_read",
+	KNOWLEDGE_HISTORY_READ: "knowledge.history_read",
 	// Auth perimeter (proxy): request rejected before reaching any route handler,
 	// so the request-scoped logger never sees it — emitted directly from the proxy.
 	AUTH_PERIMETER_DENIED: "auth.perimeter.denied",

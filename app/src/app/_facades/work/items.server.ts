@@ -225,7 +225,7 @@ export async function patchWorkItem(
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.patch(
-			{ id: toWorkItemId(input.id), ...(input.expectedRevision !== undefined && { expectedRevision: input.expectedRevision }), set: dropUndefined(input.set) },
+			{ id: toWorkItemId(input.id), ...(input.expectedRevision !== undefined && { expectedRevision: input.expectedRevision }), ...(input.reason !== undefined && { reason: input.reason }), set: dropUndefined(input.set) },
 			sessionUser.id,
 		);
 		return toDto(item);
