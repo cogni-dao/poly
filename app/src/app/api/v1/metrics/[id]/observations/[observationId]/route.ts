@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+/** Authenticated immutable observation read. Auth and logging here; the handler is `@cogni-dao/metrics/http`. */
 import { NextResponse } from "next/server";
 import {
+	metricHandlers,
 	metricHttpError,
-	metricObservation,
+	metricResponse,
 } from "@/app/_facades/metrics.server";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -21,18 +23,9 @@ export const GET = wrapRouteHandlerWithLogging<{
 		try {
 			if (!context) throw new Error("route_context_missing");
 			const { id, observationId } = await context.params;
-			if (
-				!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-					observationId,
-				)
-			)
-				return NextResponse.json(
-					{ error: "invalid_observation_id" },
-					{ status: 400 },
-				);
-			const response = await metricObservation(id, observationId);
-			response.headers.set("Cache-Control", "no-store");
-			return response;
+			return metricResponse(
+				await metricHandlers().observation(id, observationId),
+			);
 		} catch (error) {
 			return metricHttpError(error);
 		}

@@ -14,15 +14,18 @@
 
 import { KnowledgeUseWhen } from "@cogni/knowledge-base-ui";
 import type { MetricService } from "@cogni-dao/metrics";
-import { KpiBindingsSchema } from "@cogni-dao/metrics/contracts";
 import type { KnowledgeRow } from "@cogni/node-contracts";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
-import { GoalsBoard, MetricEvidence } from "@/features/goals";
 
 import { fetchKnowledgeEntry } from "../_api/fetchKnowledgeEntry";
 import { CopyLinkButton } from "./CopyLinkButton";
+import {
+	KnowledgeGoalsBoard,
+	KnowledgeKpiEvidence,
+	KnowledgeMetricEvidence,
+} from "./GoalsMount";
 import { KnowledgeEntryFields } from "./KnowledgeEntryFields";
 
 export function KnowledgeEntryView({ id }: { readonly id: string }) {
@@ -90,60 +93,17 @@ export function KnowledgeEntryView({ id }: { readonly id: string }) {
 					</div>
 
 					{query.data.entryType === "goal" && (
-						<GoalsBoard goalId={query.data.id} />
+						<KnowledgeGoalsBoard goalId={query.data.id} />
 					)}
-					{query.data.metricSpec && <MetricEvidence id={query.data.id} />}
-					{query.data.entryType === "hypothesis" &&
-						!!query.data.kpiBindings?.length && (
-							<section
-								className="space-y-2 rounded border p-4 text-sm"
-								aria-label="Goal KPI measurements"
-							>
-								<h2 className="font-medium">KPI evidence</h2>
-								{(
-									KpiBindingsSchema.safeParse(query.data.kpiBindings).data ?? []
-									).map((binding, index) => {
-										// The service returns one result for each ordered binding.
-										const reading = query.data.kpis?.[index];
-									const observation = reading?.observation;
-									return (
-											<div key={`${binding.metricId}:${index}`} className="space-y-1">
-											<p>
-												<Link
-													className="underline"
-													href={`/knowledge/${binding.metricId}`}
-												>
-													{binding.metricId}
-												</Link>{" "}
-												· target{" "}
-												{binding.comparator === "gte"
-													? "≥"
-													: binding.comparator === "lte"
-														? "≤"
-														: "="}{" "}
-												{binding.target.value} {binding.target.unit}
-												{binding.evaluationAt
-													? ` · evaluate ${binding.evaluationAt}`
-													: ""}
-											</p>
-											<p>
-												{observation?.value ?? "Unknown"}{" "}
-												{observation?.unit ?? binding.target.unit} ·{" "}
-												{reading?.viewState ?? "unavailable"}
-											</p>
-											{observation && (
-												<Link
-													className="block break-all text-xs underline"
-													href={`/knowledge/${binding.metricId}?observation=${observation.id}#observation-${observation.id}`}
-												>
-													Observation {observation.id}
-												</Link>
-											)}
-										</div>
-									);
-								})}
-							</section>
-						)}
+					{query.data.metricSpec && (
+						<KnowledgeMetricEvidence id={query.data.id} />
+					)}
+					{query.data.entryType === "hypothesis" && (
+						<KnowledgeKpiEvidence
+							kpiBindings={query.data.kpiBindings}
+							kpis={query.data.kpis}
+						/>
+					)}
 					<div className="mt-2">
 						<KnowledgeEntryFields item={query.data} />
 					</div>
