@@ -113,10 +113,12 @@ async function applyPending(sql, folder) {
     for (const stmt of migration.sql) {
       const trimmed = stmt.trim();
       if (!trimmed) continue;
-      if (await isColumnPresent(sql, trimmed)) continue;
       try {
+        if (await isColumnPresent(sql, trimmed)) continue;
         await sql.unsafe(trimmed);
       } catch (err) {
+        // Diagnostic only: the branch-mutation wrapper reports an unknown outcome and drops the cause.
+        console.error(`MIGRATION_STATEMENT_ERROR ${describeCause(err)} :: ${trimmed.slice(0, 160)}`);
         // Idempotent recovery for CREATE collisions and DROP misses. A prior
         // partial run committed the DDL but failed to record it; replay must
         // not fail loud here. Anything outside these two shapes is real
