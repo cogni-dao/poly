@@ -262,20 +262,55 @@ describe("PolymarketDataApiClient.listUserTrades", () => {
     );
   });
 
+  it.each([[""], [null], [undefined]])(
+    "accepts an empty/null/missing outcome label (%j) as an empty string, never inferred",
+    async (outcome) => {
+      const row = v2Trade({ outcome, outcome_index: 1 });
+      if (outcome === undefined) delete (row as Record<string, unknown>).outcome;
+      const rejections: unknown[] = [];
+      setPolyDataApiRowRejectionSink((r) => rejections.push(r));
+      try {
+        const client = new PolymarketDataApiClient({
+          fetch: vi.fn().mockResolvedValue(jsonResponse(v2Page([row]))),
+        });
+        const [trade] = await client.listUserTrades(wallet);
+        expect(trade).toMatchObject({ outcome: "", outcomeIndex: 1, asset: TOKEN });
+        expect(rejections).toHaveLength(0);
+      } finally {
+        setPolyDataApiRowRejectionSink(undefined);
+      }
+    }
+  );
+
   it("drops a non-identity-bad trade row (counted + reported) without failing the page", async () => {
-    const rejections: Array<{ endpoint: string; totalRejected: number }> = [];
+    const rejections: Array<{
+      endpoint: string;
+      rejectedCount: number;
+      sampleReason: string;
+      totalRejected: number;
+    }> = [];
     setPolyDataApiRowRejectionSink((r) => rejections.push(r));
     try {
       const fetchImpl = vi.fn().mockResolvedValue(
         jsonResponse(
-          v2Page([v2Trade({ outcome: "", timestamp: 1 }), v2Trade({ timestamp: 2 })])
+          v2Page([
+            v2Trade({ price: -1, timestamp: 1 }),
+            v2Trade({ price: -2, timestamp: 2 }),
+            v2Trade({ timestamp: 3 }),
+          ])
         )
       );
       const client = new PolymarketDataApiClient({ fetch: fetchImpl });
       const trades = await client.listUserTrades(wallet);
-      expect(trades.map((t) => t.timestamp)).toEqual([2]);
+      expect(trades.map((t) => t.timestamp)).toEqual([3]);
+      // One aggregated report for the page, not one per row.
       expect(rejections).toHaveLength(1);
-      expect(rejections[0]?.endpoint).toBe("/v2/trades");
+      expect(rejections[0]).toMatchObject({
+        endpoint: "/v2/trades",
+        rejectedCount: 2,
+        totalRejected: expect.any(Number),
+      });
+      expect(rejections[0]?.sampleReason).toMatch(/^price:/);
     } finally {
       setPolyDataApiRowRejectionSink(undefined);
     }
@@ -428,6 +463,16 @@ describe("PolymarketDataApiClient.listUserPositions (single cursor page)", () =>
       outcomeIndex: 0,
       oppositeAsset: "y",
     });
+  });
+
+  it("accepts a null outcome label on a position", async () => {
+    const client = new PolymarketDataApiClient({
+      fetch: vi.fn(async () =>
+        jsonResponse(v2Page([v2PositionWire({ outcome: null })]))
+      ),
+    });
+    const page = await client.listUserPositions(wallet);
+    expect(page.rows[0]).toMatchObject({ outcome: "", outcomeIndex: 0 });
   });
 
   it("keeps a missing opposite token null, never an empty string", async () => {

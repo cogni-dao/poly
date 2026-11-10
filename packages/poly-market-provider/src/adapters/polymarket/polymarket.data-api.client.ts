@@ -245,11 +245,13 @@ function parseResponse<S extends ZodTypeAny>(
   return result.data;
 }
 
-/** One row dropped by per-row validation (never an identity failure). */
+/** Rows dropped by per-row validation in ONE page (never an identity failure). */
 export interface PolyDataApiRowRejection {
   endpoint: string;
-  /** `path: message` of the first zod issue. */
-  reason: string;
+  /** Rows dropped from this page. */
+  rejectedCount: number;
+  /** `path: message` of the first zod issue on the page. */
+  sampleReason: string;
   /** Running process-wide total of rejected rows. */
   totalRejected: number;
 }
@@ -281,6 +283,8 @@ function parsePagedRows<S extends ZodTypeAny>(
 } {
   const envelope = parseResponse(PolymarketPagedRowsV2Schema, json, endpoint);
   const data: Array<z.output<S>> = [];
+  let rejectedCount = 0;
+  let sampleReason = "";
   for (const row of envelope.data) {
     const parsed = rowSchema.safeParse(row);
     if (parsed.success) {
@@ -291,11 +295,19 @@ function parsePagedRows<S extends ZodTypeAny>(
     if (!idResult.success) {
       throw new PolyDataApiValidationError(endpoint, idResult.error.issues);
     }
-    rejectedRowsTotal += 1;
-    const issue = parsed.error.issues[0];
+    rejectedCount += 1;
+    if (rejectedCount === 1) {
+      const issue = parsed.error.issues[0];
+      sampleReason = `${issue?.path.join(".") || "<root>"}: ${issue?.message ?? "invalid"}`;
+    }
+  }
+  if (rejectedCount > 0) {
+    // One report per page, not per row.
+    rejectedRowsTotal += rejectedCount;
     rowRejectionSink?.({
       endpoint,
-      reason: `${issue?.path.join(".") || "<root>"}: ${issue?.message ?? "invalid"}`,
+      rejectedCount,
+      sampleReason,
       totalRejected: rejectedRowsTotal,
     });
   }
@@ -1231,7 +1243,7 @@ function normalizeV2Position(
     icon: row.icon,
     eventId: row.event_id,
     eventSlug: row.event_slug,
-    outcome: row.outcome,
+    outcome: row.outcome ?? "",
     outcomeIndex: row.outcome_index,
     oppositeOutcome: row.opposite_outcome,
     oppositeAsset: row.opposite_token_id ?? null,
@@ -1253,7 +1265,7 @@ function toUserTrade(row: PolymarketTradeV2): PolymarketUserTrade {
     slug: row.slug ?? "",
     eventSlug: row.event_slug ?? "",
     icon: row.icon ?? "",
-    outcome: row.outcome,
+    outcome: row.outcome ?? "",
     outcomeIndex: row.outcome_index,
     transactionHash: row.transaction_hash,
   };

@@ -27,7 +27,8 @@ export type PolymarketNormalizeSkipReason =
   | "non_positive_size"
   | "invalid_side"
   | "missing_asset"
-  | "missing_condition_id";
+  | "missing_condition_id"
+  | "missing_outcome_label";
 
 export type PolymarketNormalizeResult =
   | { ok: true; fill: Fill }
@@ -63,6 +64,9 @@ export function normalizePolymarketDataApiFill(
   }
   if (!trade.asset) return { ok: false, reason: "missing_asset" };
   if (!trade.conditionId) return { ok: false, reason: "missing_condition_id" };
+  // The outcome is only a label, but a Fill requires one and it is never
+  // inferred (not from outcome_index, not defaulted): skip, counted by reason.
+  if (!trade.outcome) return { ok: false, reason: "missing_outcome_label" };
   if (!(trade.price > 0)) return { ok: false, reason: "non_positive_price" };
   if (!(trade.size > 0)) return { ok: false, reason: "non_positive_size" };
   if (trade.side !== "BUY" && trade.side !== "SELL") {

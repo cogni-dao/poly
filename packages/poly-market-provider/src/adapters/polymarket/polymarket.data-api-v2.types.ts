@@ -40,7 +40,8 @@ export const PolymarketUserPositionV2Schema = z
     negative_risk: z.boolean().optional(),
     opposite_outcome: z.string().nullable().optional(),
     opposite_token_id: z.string().nullable().optional(),
-    outcome: z.string().optional(),
+    // Label only (may be empty/null upstream); identity is token_id/condition_id.
+    outcome: z.string().nullable().optional(),
     outcome_index: z.number().int().nonnegative(),
     percent_pnl: z.number().finite(),
     percent_realized_pnl: z.number().finite(),
@@ -174,7 +175,8 @@ export const PolymarketTradeV2Schema = z
     price: z.number().finite().nonnegative(),
     timestamp: z.number().int().nonnegative(),
     transaction_hash: z.string(),
-    outcome: z.string().min(1),
+    // Label only: ~1% of the global feed has an empty outcome. Never inferred.
+    outcome: z.string().nullable().optional(),
     outcome_index: z.number().int().nonnegative(),
     title: z.string().nullable().optional(),
     slug: z.string().nullable().optional(),

@@ -1030,10 +1030,11 @@ function createContainer(): Container {
 						{
 							event: "poly.data_api.row_rejected",
 							endpoint: rejection.endpoint,
-							reason: rejection.reason,
+							rejected_count: rejection.rejectedCount,
+							sample_reason: rejection.sampleReason,
 							total_rejected: rejection.totalRejected,
 						},
-						"Data API row rejected by per-row validation",
+						"Data API rows rejected by per-row validation",
 					),
 				);
 				// task.5043 / bug.5049 — Polygon `OrderFilled` chain logs are the
