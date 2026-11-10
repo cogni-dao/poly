@@ -80,12 +80,14 @@ export const PolymarketPositionsV2PaginationSchema = z
     }
   });
 
-/** Identity fields: a row failing these is never skipped, it fails the page closed. */
+/** Identity fields (+ status enum): a row failing these is never skipped, it fails the page closed. */
 export const PolymarketPositionIdentityV2Schema = z.object({
   proxy_wallet: z.string().min(1),
   token_id: z.string().min(1),
   condition_id: z.string().min(1),
   outcome_index: z.number().int().nonnegative(),
+  // Lifecycle enum drift is a contract change, not a bad row: fail closed.
+  status: PolymarketPositionStatusV2Schema,
 });
 
 /**
