@@ -20,14 +20,16 @@ export const PolymarketPositionStatusV2Schema = z.enum([
 export const PolymarketUserPositionV2Schema = z
   .object({
     archived: z.boolean().optional(),
-    avg_price: z.number().finite().nonnegative(),
+    avg_price: z.number().finite(),
     condition_id: z.string().min(1),
-    current_price: z.number().finite().nonnegative(),
+    current_price: z.number().finite(),
     current_size: z.number().finite().nonnegative(),
     current_value: z.number().finite().nonnegative(),
     end_date: z.string().nullable().optional(),
-    entry_cost_usdc: z.number().finite().nonnegative(),
-    entry_fees_usdc: z.number().finite().nonnegative().optional(),
+    // Cost / price / pnl may be slightly negative on dust rows (live:
+    // entry_cost_usdc -0.0035 on a REDEEMABLE row), so they are not sign-checked.
+    entry_cost_usdc: z.number().finite(),
+    entry_fees_usdc: z.number().finite().optional(),
     event_id: z.string().nullable().optional(),
     event_slug: z.string().nullable().optional(),
     first_entry_at: z.number().finite().nonnegative().nullable().optional(),
@@ -50,7 +52,7 @@ export const PolymarketUserPositionV2Schema = z
     status: PolymarketPositionStatusV2Schema,
     title: z.string().nullable().optional(),
     token_id: z.string().min(1),
-    total_cost_usdc: z.number().finite().nonnegative(),
+    total_cost_usdc: z.number().finite(),
     total_pnl: z.number().finite(),
     total_size: z.number().finite().nonnegative(),
     unrealized_pnl: z.number().finite(),
@@ -78,13 +80,23 @@ export const PolymarketPositionsV2PaginationSchema = z
     }
   });
 
-export const PolymarketUserPositionsV2ResponseSchema = z.object({
-  data: z.array(PolymarketUserPositionV2Schema),
+/** Identity fields: a row failing these is never skipped, it fails the page closed. */
+export const PolymarketPositionIdentityV2Schema = z.object({
+  proxy_wallet: z.string().min(1),
+  token_id: z.string().min(1),
+  condition_id: z.string().min(1),
+  outcome_index: z.number().int().nonnegative(),
+});
+
+/**
+ * Cursor-paged envelope whose rows are validated one by one by the client, so
+ * one malformed non-identity row is dropped (counted + logged) instead of
+ * blinding the whole page.
+ */
+export const PolymarketPagedRowsV2Schema = z.object({
+  data: z.array(z.unknown()),
   pagination: PolymarketPositionsV2PaginationSchema,
 });
-export type PolymarketUserPositionsV2Response = z.infer<
-  typeof PolymarketUserPositionsV2ResponseSchema
->;
 
 export const PolymarketDataApiStatusV2Schema = z.object({
   data: z.object({
@@ -169,9 +181,11 @@ export const PolymarketTradeV2Schema = z
   })
   .passthrough();
 export type PolymarketTradeV2 = z.infer<typeof PolymarketTradeV2Schema>;
-export const PolymarketTradesV2ResponseSchema = z.object({
-  data: z.array(PolymarketTradeV2Schema),
-  pagination: PolymarketPositionsV2PaginationSchema,
+export const PolymarketTradeIdentityV2Schema = z.object({
+  proxy_wallet: z.string().min(1),
+  token_id: z.string().regex(TOKEN_ID_PATTERN),
+  condition_id: z.string().min(1),
+  outcome_index: z.number().int().nonnegative(),
 });
 
 /** `/v2/holders`: one group per outcome token, each with its holders. */

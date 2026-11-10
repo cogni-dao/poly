@@ -18,6 +18,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PolyDataApiValidationError,
   PolymarketDataApiClient,
+  setPolyDataApiRowRejectionSink,
 } from "../src/adapters/polymarket/index.js";
 import {
   __polyDataApiInflightForTests,
@@ -250,16 +251,34 @@ describe("PolymarketDataApiClient.listUserTrades", () => {
     ["token_id", undefined],
     ["condition_id", undefined],
     ["outcome_index", undefined],
-    ["outcome", ""],
   ])("rejects a row whose %s is missing instead of defaulting it", async (field, value) => {
     const row = v2Trade({ [field]: value });
-    if (value === undefined) delete (row as Record<string, unknown>)[field];
+    delete (row as Record<string, unknown>)[field];
     const client = new PolymarketDataApiClient({
       fetch: vi.fn().mockResolvedValue(jsonResponse(v2Page([row]))),
     });
     await expect(client.listUserTrades(wallet)).rejects.toBeInstanceOf(
       PolyDataApiValidationError
     );
+  });
+
+  it("drops a non-identity-bad trade row (counted + reported) without failing the page", async () => {
+    const rejections: Array<{ endpoint: string; totalRejected: number }> = [];
+    setPolyDataApiRowRejectionSink((r) => rejections.push(r));
+    try {
+      const fetchImpl = vi.fn().mockResolvedValue(
+        jsonResponse(
+          v2Page([v2Trade({ outcome: "", timestamp: 1 }), v2Trade({ timestamp: 2 })])
+        )
+      );
+      const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+      const trades = await client.listUserTrades(wallet);
+      expect(trades.map((t) => t.timestamp)).toEqual([2]);
+      expect(rejections).toHaveLength(1);
+      expect(rejections[0]?.endpoint).toBe("/v2/trades");
+    } finally {
+      setPolyDataApiRowRejectionSink(undefined);
+    }
   });
 
   it("filters by sinceTs and also sends it as the window start", async () => {
@@ -419,6 +438,15 @@ describe("PolymarketDataApiClient.listUserPositions (single cursor page)", () =>
     });
     const page = await client.listUserPositions(wallet);
     expect(page.rows[0]?.oppositeAsset).toBeNull();
+  });
+
+  it("uses a CASH filter when minValueUsdc is set", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(v2Page([])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    await client.listUserPositions(wallet, { minValueUsdc: 0.000001 });
+    const url = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(url.searchParams.get("filter_type")).toBe("CASH");
+    expect(url.searchParams.get("filter_amount")).toBe("0.000001");
   });
 
   it("sends v2 params, never offset, and drops limit on cursor pages", async () => {
@@ -600,17 +628,84 @@ describe("PolymarketDataApiClient.listUserPositionsV2", () => {
     expect(third.searchParams.get("condition")).toBe(conditions[20]);
   });
 
-  it("rejects duplicate condition/token rows across a cursor walk", async () => {
-    const row = makePosition(condition(1), "11");
+  it("dedupes a condition/token row repeated across a cursor walk, last wins", async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(page([row], "cursor-2")))
-      .mockResolvedValueOnce(jsonResponse(page([row])));
+      .mockResolvedValueOnce(
+        jsonResponse(page([makePosition(condition(1), "11", { current_value: 1 })], "cursor-2"))
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(page([makePosition(condition(1), "11", { current_value: 9 })]))
+      );
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
 
-    await expect(
-      client.listUserPositionsV2(wallet, { conditions: [condition(1)] })
-    ).rejects.toThrow(/duplicate position key/);
+    const positions = await client.listUserPositionsV2(wallet, {
+      conditions: [condition(1)],
+    });
+    expect(positions).toHaveLength(1);
+    expect(positions[0]?.currentValue).toBe(9);
+  });
+
+  it("looks up one condition with a single request", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(page([makePosition(condition(1), "11")])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    await client.listUserPositionsV2(wallet, { conditions: [condition(1)] });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(
+      new URL(fetchImpl.mock.calls[0]?.[0] as string).searchParams.get("condition")
+    ).toBe(condition(1));
+  });
+
+  it("keeps a dust row with a negative cost and drops a row with a null numeric, without failing the walk", async () => {
+    const rejections: unknown[] = [];
+    setPolyDataApiRowRejectionSink((r) => rejections.push(r));
+    try {
+      const dust = makePosition(condition(1), "11", {
+        status: "REDEEMABLE",
+        redeemable: undefined,
+        entry_cost_usdc: -0.0035,
+        avg_price: 0,
+      });
+      const broken = makePosition(condition(2), "22", { percent_pnl: null });
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue(jsonResponse(page([dust, broken, makePosition(condition(3), "33")])));
+      const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+      const positions = await client.listAllUserPositions(wallet);
+      expect(positions.map((p) => p.asset)).toEqual(["11", "33"]);
+      expect(positions[0]?.redeemable).toBe(true);
+      expect(rejections).toHaveLength(1);
+    } finally {
+      setPolyDataApiRowRejectionSink(undefined);
+    }
+  });
+
+  it("still fails the walk closed on a row missing its identity", async () => {
+    const row = makePosition(condition(1), "11");
+    delete (row as Record<string, unknown>).token_id;
+    const client = new PolymarketDataApiClient({
+      fetch: vi.fn().mockResolvedValue(jsonResponse(page([row]))),
+    });
+    await expect(client.listAllUserPositions(wallet)).rejects.toBeInstanceOf(
+      PolyDataApiValidationError
+    );
+  });
+
+  it("walks value-bearing positions with a CASH filter", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(page([makePosition(condition(1), "11")])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    const positions = await client.listPositiveValueUserPositions(wallet);
+    expect(positions).toHaveLength(1);
+    const url = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(url.searchParams.get("filter_type")).toBe("CASH");
+    expect(url.searchParams.get("filter_amount")).toBe("0.000001");
   });
 
   it("rejects mismatched cohorts, malformed pagination, and statuses outside an OPEN walk", async () => {

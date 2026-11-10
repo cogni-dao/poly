@@ -34,10 +34,13 @@ import {
   type PolymarketDataApiStatusV2,
   PolymarketHoldersV2ResponseSchema,
   PolymarketLeaderboardV2ResponseSchema,
-  PolymarketTradesV2ResponseSchema,
+  PolymarketPagedRowsV2Schema,
+  PolymarketPositionIdentityV2Schema,
+  PolymarketTradeIdentityV2Schema,
   type PolymarketTradeV2,
-  PolymarketUserPositionsV2ResponseSchema,
+  PolymarketTradeV2Schema,
   type PolymarketUserPositionV2,
+  PolymarketUserPositionV2Schema,
   PolymarketValueV2ResponseSchema,
 } from "./polymarket.data-api-v2.types.js";
 
@@ -242,6 +245,63 @@ function parseResponse<S extends ZodTypeAny>(
   return result.data;
 }
 
+/** One row dropped by per-row validation (never an identity failure). */
+export interface PolyDataApiRowRejection {
+  endpoint: string;
+  /** `path: message` of the first zod issue. */
+  reason: string;
+  /** Running process-wide total of rejected rows. */
+  totalRejected: number;
+}
+
+let rejectedRowsTotal = 0;
+let rowRejectionSink: ((rejection: PolyDataApiRowRejection) => void) | undefined;
+
+/** Install the process-wide sink (the app logs a counted warn). */
+export function setPolyDataApiRowRejectionSink(
+  sink: ((rejection: PolyDataApiRowRejection) => void) | undefined
+): void {
+  rowRejectionSink = sink;
+}
+
+/**
+ * Validate a cursor-paged envelope row by row. A row failing `identity`
+ * (token / condition / wallet / outcome_index) fails the whole page closed; a
+ * row failing only on other fields is dropped, counted and reported, so one
+ * dust row with an odd number cannot blind a tenant.
+ */
+function parsePagedRows<S extends ZodTypeAny>(
+  rowSchema: S,
+  identity: ZodTypeAny,
+  json: unknown,
+  endpoint: string
+): {
+  data: Array<z.output<S>>;
+  pagination: z.output<typeof PolymarketPagedRowsV2Schema>["pagination"];
+} {
+  const envelope = parseResponse(PolymarketPagedRowsV2Schema, json, endpoint);
+  const data: Array<z.output<S>> = [];
+  for (const row of envelope.data) {
+    const parsed = rowSchema.safeParse(row);
+    if (parsed.success) {
+      data.push(parsed.data);
+      continue;
+    }
+    const idResult = identity.safeParse(row);
+    if (!idResult.success) {
+      throw new PolyDataApiValidationError(endpoint, idResult.error.issues);
+    }
+    rejectedRowsTotal += 1;
+    const issue = parsed.error.issues[0];
+    rowRejectionSink?.({
+      endpoint,
+      reason: `${issue?.path.join(".") || "<root>"}: ${issue?.message ?? "invalid"}`,
+      totalRejected: rejectedRowsTotal,
+    });
+  }
+  return { data, pagination: envelope.pagination };
+}
+
 const DEFAULT_DATA_API_BASE_URL = "https://data-api.polymarket.com";
 const DEFAULT_GAMMA_BASE_URL = "https://gamma-api.polymarket.com";
 
@@ -309,6 +369,12 @@ export interface ListUserPositionsParams {
   market?: string;
   /** Minimum CURRENT holding in shares. Omitted: the API's 0.1 dust floor. */
   sizeThreshold?: number;
+  /**
+   * Minimum current value in USDC (`filter_type=CASH`); wins over
+   * `sizeThreshold`. A positive floor returns only value-bearing rows, which
+   * keeps a 39k-row book to a few hundred rows.
+   */
+  minValueUsdc?: number;
   /** Rows per first page (API ceiling 1000). Ignored once `cursor` is set. */
   limit?: number;
   /** Opaque `nextCursor` from the previous page. Re-send every other filter unchanged. */
@@ -479,8 +545,9 @@ export class PolymarketDataApiClient {
         start: since,
         ...pageWindow(cursor, params?.limit ?? 20),
       });
-      const response = parseResponse(
-        PolymarketTradesV2ResponseSchema,
+      const response = parsePagedRows(
+        PolymarketTradeV2Schema,
+        PolymarketTradeIdentityV2Schema,
         await this.fetchJson(url, params?.signal),
         "/v2/trades"
       );
@@ -506,13 +573,14 @@ export class PolymarketDataApiClient {
     const url = v2Url(this.baseUrl, "/v2/positions", {
       user: wallet,
       condition: params?.market?.toLowerCase(),
-      filter_type: "TOKENS",
-      filter_amount: params?.sizeThreshold,
+      filter_type: params?.minValueUsdc === undefined ? "TOKENS" : "CASH",
+      filter_amount: params?.minValueUsdc ?? params?.sizeThreshold,
       include_archived: true,
       ...pageWindow(params?.cursor, params?.limit),
     });
-    const response = parseResponse(
-      PolymarketUserPositionsV2ResponseSchema,
+    const response = parsePagedRows(
+      PolymarketUserPositionV2Schema,
+      PolymarketPositionIdentityV2Schema,
       await this.fetchJson(url, params?.signal),
       "/v2/positions"
     );
@@ -581,6 +649,27 @@ export class PolymarketDataApiClient {
   }
 
   /**
+   * Every value-bearing position (`current_value > 0`, OPEN incl. redeemable)
+   * in one cursor walk. Prefer this to `listAllUserPositions` on hot paths:
+   * dust and worthless rows (tens of thousands on a whale target) are filtered
+   * server-side.
+   */
+  async listPositiveValueUserPositions(
+    wallet: string,
+    params?: { signal?: AbortSignal | undefined }
+  ): Promise<PolymarketUserPosition[]> {
+    const walk = await this.walkUserPositionsV2(wallet, {
+      filterType: "CASH",
+      // One atomic USDC unit, as a decimal (see listPositiveOpenUserPositionsV2).
+      filterAmount: 0.000001,
+      includeArchived: true,
+      maxRequests: 10,
+      signal: params?.signal,
+    });
+    return walk.positions.map(normalizeV2Position);
+  }
+
+  /**
    * Cursor-complete enumeration of every position (OPEN incl. redeemable,
    * archived included, dust included).
    */
@@ -637,8 +726,7 @@ export class PolymarketDataApiClient {
       );
     }
 
-    const raw: PolymarketUserPositionV2[] = [];
-    const seenPositionKeys = new Set<string>();
+    const raw = new Map<string, PolymarketUserPositionV2>();
     let requestCount = 0;
     const chunks = conditions
       ? Array.from(
@@ -684,8 +772,9 @@ export class PolymarketDataApiClient {
           url.searchParams.set("cursor", cursor);
         }
 
-        const response = parseResponse(
-          PolymarketUserPositionsV2ResponseSchema,
+        const response = parsePagedRows(
+          PolymarketUserPositionV2Schema,
+          PolymarketPositionIdentityV2Schema,
           await this.fetchJson(url, params.signal),
           "/v2/positions"
         );
@@ -716,14 +805,9 @@ export class PolymarketDataApiClient {
               `response wallet ${row.proxy_wallet} did not match the requested wallet`
             );
           }
-          const key = `${conditionId}\u0000${row.token_id}`;
-          if (seenPositionKeys.has(key)) {
-            throw new PolyDataApiPositionsV2Error(
-              `duplicate position key ${conditionId}/${row.token_id}`
-            );
-          }
-          seenPositionKeys.add(key);
-          raw.push(row);
+          // Keyset paging over a moving sort can return a row twice; the
+          // later read is fresher, so last wins.
+          raw.set(`${conditionId}\u0000${row.token_id}`, row);
         }
 
         const nextCursor = response.pagination.next_cursor;
@@ -744,7 +828,7 @@ export class PolymarketDataApiClient {
         );
       }
     }
-    return { positions: raw, requestCount };
+    return { positions: [...raw.values()], requestCount };
   }
 
   /** Bounded exact-condition native history; no cursor or render-path side effects. */
@@ -892,8 +976,9 @@ export class PolymarketDataApiClient {
       taker_only: params?.takerOnly !== false,
       ...pageWindow(params?.cursor, params?.limit ?? 100),
     });
-    const response = parseResponse(
-      PolymarketTradesV2ResponseSchema,
+    const response = parsePagedRows(
+      PolymarketTradeV2Schema,
+      PolymarketTradeIdentityV2Schema,
       await this.fetchJson(url),
       "/v2/trades?condition="
     );
@@ -1139,7 +1224,7 @@ function normalizeV2Position(
     realizedPnl: row.realized_pnl,
     percentRealizedPnl: row.percent_realized_pnl,
     curPrice: row.current_price,
-    redeemable: row.redeemable,
+    redeemable: row.redeemable ?? row.status === "REDEEMABLE",
     mergeable: row.mergeable,
     title: row.title ?? "",
     slug: row.slug,

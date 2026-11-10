@@ -46,9 +46,9 @@ describe("polymarket chain source — cache-miss refresh cooldown (bug.5276)", (
     // unresolvable — the exact prod shape that produced
     // `429 Too Many Requests (/positions)`: 29 distinct tokenIds driving 180
     // metadata_unresolved events, each previously re-walking the full API.
-    const listAllUserPositions = vi.fn(async () => []);
+    const listPositiveValueUserPositions = vi.fn(async () => []);
     const client = {
-      listAllUserPositions,
+      listPositiveValueUserPositions,
       listUserPositions: vi.fn(async () => []),
     } as unknown as PolymarketDataApiClient;
 
@@ -62,14 +62,14 @@ describe("polymarket chain source — cache-miss refresh cooldown (bug.5276)", (
     });
 
     // Let the fire-and-forget cold_start refresh settle.
-    await vi.waitFor(() => expect(listAllUserPositions).toHaveBeenCalled());
-    const afterColdStart = listAllUserPositions.mock.calls.length;
+    await vi.waitFor(() => expect(listPositiveValueUserPositions).toHaveBeenCalled());
+    const afterColdStart = listPositiveValueUserPositions.mock.calls.length;
     expect(afterColdStart).toBe(1);
 
     // Any further cache-miss-driven refresh inside the 60s cooldown must be
     // suppressed. Before this fix each miss re-walked the paginated API.
     await new Promise((r) => setTimeout(r, 20));
-    expect(listAllUserPositions.mock.calls.length).toBe(afterColdStart);
+    expect(listPositiveValueUserPositions.mock.calls.length).toBe(afterColdStart);
 
     source.stop();
   });

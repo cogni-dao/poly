@@ -377,12 +377,12 @@ export function createPolymarketChainActivitySource(
         deps.metrics.incr(WALLET_WATCH_CHAIN_METRICS.metadataRefreshTotal, {
           trigger,
         });
-        // bug.5055: must paginate. A single `/v2/positions` page holds at most
-        // 1000 rows and active targets hold thousands; any tokenId outside the
-        // first page → permanent metadata_unresolved skip. Use the
-        // cursor-walking helper.
+        // bug.5055: must cover every held token. A whale target has ~39k
+        // rows but only a few hundred value-bearing ones, so ask the server
+        // for `filter_type=CASH` and walk that; a token that is not held any
+        // more resolves through the exact-token Gamma backstop instead.
         const positions: PolymarketUserPosition[] =
-          await deps.client.listAllUserPositions(deps.wallet);
+          await deps.client.listPositiveValueUserPositions(deps.wallet);
         for (const p of positions) {
           if (!p.asset || !p.conditionId) continue;
           tokenMeta.set(p.asset, {

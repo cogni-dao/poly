@@ -110,6 +110,7 @@ const POSITION_SOURCE = "data-api-positions";
 const DEFAULT_TRADE_PAGE_LIMIT = 100;
 const DEFAULT_MAX_PAGES = 10;
 const POSITION_FETCH_LIMIT = 500;
+const POSITION_MIN_VALUE_USDC = 0.000001;
 const DEFAULT_POSITION_MAX_PAGES = 10;
 const POSITION_MAX_ROWS = POSITION_FETCH_LIMIT * DEFAULT_POSITION_MAX_PAGES;
 const POSITION_OMISSION_LIMIT = POSITION_MAX_ROWS + 1;
@@ -2569,7 +2570,9 @@ export async function fetchTraderPositionsPages(params: {
       "data_api",
       () =>
         params.client.listUserPositions(params.walletAddress, {
-          sizeThreshold: 0,
+          // Value-bearing rows only: a whale's 39k-row book (mostly worthless
+          // REDEEMABLE) would otherwise never fit the page cap.
+          minValueUsdc: POSITION_MIN_VALUE_USDC,
           limit: POSITION_FETCH_LIMIT,
           ...(cursor !== undefined && { cursor }),
           signal: params.signal,
