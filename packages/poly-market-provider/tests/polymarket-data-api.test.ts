@@ -3,11 +3,11 @@
 
 /**
  * Module: `@cogni/poly-market-provider/tests/polymarket-data-api`
- * Purpose: Unit tests for the Polymarket Data API client — leaderboard, user trades, user positions.
+ * Purpose: Unit tests for the Polymarket Data API v2 client — leaderboard, user trades, user positions, activity, value, holders.
  * Scope: Uses an injected fetch mock + the saved fixture JSON. Does not perform live network I/O, does not mutate state.
  * Invariants: TS_ONLY_RUNTIME, CONTRACT_IS_SOT.
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md, docs/research/fixtures/polymarket-leaderboard.json
+ * Links: work/items/task.0315.poly-copy-trade-prototype.md, work/items/bug.5049, tests/fixtures/polymarket-leaderboard.json
  * @internal
  */
 
@@ -18,7 +18,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PolyDataApiValidationError,
   PolymarketDataApiClient,
-  PolymarketLeaderboardEntrySchema,
+  setPolyDataApiRowRejectionSink,
 } from "../src/adapters/polymarket/index.js";
 import {
   __polyDataApiInflightForTests,
@@ -38,7 +38,72 @@ const LEADERBOARD_FIXTURE = JSON.parse(
     ),
     "utf8"
   )
-) as unknown[];
+) as { data: Array<{ rank: number; user_id: string; pnl: number; volume: number }> };
+
+const WALLET = "0x9f2fe025f84839ca81dd8e0338892605702d2ca8";
+const CONDITION = `0x${"ab".repeat(32)}`;
+const TOKEN = "48392";
+
+/** A v2 cursor-paged envelope. */
+function v2Page(data: unknown[], nextCursor: string | null = null) {
+  return {
+    data,
+    pagination: {
+      has_more: nextCursor !== null,
+      limit: 20,
+      offset: 0,
+      next_cursor: nextCursor,
+    },
+  };
+}
+
+function v2Trade(overrides: Record<string, unknown> = {}) {
+  return {
+    proxy_wallet: WALLET,
+    side: "BUY",
+    token_id: TOKEN,
+    condition_id: CONDITION,
+    size: 100,
+    price: 0.75,
+    timestamp: 1776353664,
+    title: "Some market",
+    slug: "some-market",
+    event_slug: "some-event",
+    icon: "",
+    outcome: "Yes",
+    outcome_index: 0,
+    transaction_hash: `0x${"11".repeat(32)}`,
+    ...overrides,
+  };
+}
+
+function v2PositionWire(overrides: Record<string, unknown> = {}) {
+  return {
+    proxy_wallet: WALLET,
+    token_id: "x",
+    condition_id: CONDITION,
+    current_size: 10,
+    avg_price: 0.4,
+    entry_cost_usdc: 4,
+    entry_fees_usdc: 0.02,
+    total_cost_usdc: 4.02,
+    total_size: 10,
+    current_value: 8,
+    unrealized_pnl: 4,
+    total_pnl: 4,
+    percent_pnl: 100,
+    realized_pnl: 0,
+    percent_realized_pnl: 0,
+    current_price: 0.8,
+    outcome: "Yes",
+    outcome_index: 0,
+    opposite_outcome: "No",
+    opposite_token_id: "y",
+    status: "OPEN",
+    redeemable: false,
+    ...overrides,
+  };
+}
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
   return {
@@ -50,47 +115,50 @@ function jsonResponse(body: unknown, ok = true, status = 200): Response {
 }
 
 describe("PolymarketDataApiClient.listTopTraders", () => {
-  it("parses the saved leaderboard fixture without throwing", () => {
-    const parsed = LEADERBOARD_FIXTURE.map((row) =>
-      PolymarketLeaderboardEntrySchema.parse(row)
-    );
-    expect(parsed.length).toBeGreaterThanOrEqual(10);
-    const first = parsed[0];
-    if (!first) throw new Error("fixture is empty");
+  it("maps the saved /v2/leaderboard fixture onto domain entries", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(LEADERBOARD_FIXTURE));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    const entries = await client.listTopTraders();
+    expect(entries).toHaveLength(LEADERBOARD_FIXTURE.data.length);
+    expect(entries.length).toBeGreaterThanOrEqual(10);
+    const first = entries[0];
+    const raw = LEADERBOARD_FIXTURE.data[0];
+    if (!first || !raw) throw new Error("fixture is empty");
+    expect(first).toMatchObject({
+      rank: String(raw.rank),
+      proxyWallet: raw.user_id,
+      pnl: raw.pnl,
+      vol: raw.volume,
+    });
     expect(first.proxyWallet).toMatch(/^0x[a-f0-9]{40}$/);
-    expect(typeof first.pnl).toBe("number");
-    expect(typeof first.vol).toBe("number");
   });
 
-  it("hits /v1/leaderboard with timePeriod + orderBy + limit and returns parsed entries", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(jsonResponse(LEADERBOARD_FIXTURE));
+  it("hits /v2/leaderboard with time_period + sort_by + limit", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [] }));
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
 
-    const entries = await client.listTopTraders({
+    await client.listTopTraders({
       timePeriod: "DAY",
-      orderBy: "PNL",
+      orderBy: "VOL",
       limit: 10,
     });
 
-    expect(entries).toHaveLength(LEADERBOARD_FIXTURE.length);
-    const call = fetchImpl.mock.calls[0]?.[0] as string;
-    expect(call).toContain("/v1/leaderboard");
-    expect(call).toContain("timePeriod=DAY");
-    expect(call).toContain("orderBy=PNL");
-    expect(call).toContain("limit=10");
+    const url = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(url.pathname).toBe("/v2/leaderboard");
+    expect(url.searchParams.get("time_period")).toBe("day");
+    expect(url.searchParams.get("sort_by")).toBe("VOLUME");
+    expect(url.searchParams.get("limit")).toBe("10");
   });
 
-  it("defaults to timePeriod=WEEK, orderBy=PNL, limit=10 when params omitted", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([]));
+  it("defaults to week / PNL / limit 10 when params omitted", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: [] }));
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
 
     await client.listTopTraders();
-    const call = fetchImpl.mock.calls[0]?.[0] as string;
-    expect(call).toContain("timePeriod=WEEK");
-    expect(call).toContain("orderBy=PNL");
-    expect(call).toContain("limit=10");
+    const url = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(url.searchParams.get("time_period")).toBe("week");
+    expect(url.searchParams.get("sort_by")).toBe("PNL");
+    expect(url.searchParams.get("limit")).toBe("10");
   });
 
   it("throws a clear error on non-OK HTTP", async () => {
@@ -102,9 +170,11 @@ describe("PolymarketDataApiClient.listTopTraders", () => {
   it("throws on schema mismatch (fails closed)", async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValue(jsonResponse([{ rank: 1, wallet: "oops" }]));
+      .mockResolvedValue(jsonResponse({ data: [{ rank: 1, wallet: "oops" }] }));
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-    await expect(client.listTopTraders()).rejects.toThrow();
+    await expect(client.listTopTraders()).rejects.toBeInstanceOf(
+      PolyDataApiValidationError
+    );
   });
 
   it("aborts and throws a timeout error when the upstream stalls past timeoutMs", async () => {
@@ -130,104 +200,162 @@ describe("PolymarketDataApiClient.listTopTraders", () => {
   });
 });
 
-describe("PolymarketDataApiClient.listUserActivity", () => {
-  const wallet = "0x9f2fe025f84839ca81dd8e0338892605702d2ca8";
+describe("PolymarketDataApiClient.listUserTrades", () => {
+  const wallet = WALLET;
 
-  it("hits /trades?user=<wallet> and returns parsed trades", async () => {
-    const body = [
+  it("hits /v2/trades?user=<wallet> with taker_only=false and maps rows to the domain trade", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(v2Page([v2Trade()])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    const trades = await client.listUserTrades(wallet);
+    expect(trades).toEqual([
       {
         proxyWallet: wallet,
         side: "BUY",
-        asset: "48392",
-        conditionId: "0xabc",
+        asset: TOKEN,
+        conditionId: CONDITION,
         size: 100,
         price: 0.75,
         timestamp: 1776353664,
         title: "Some market",
+        slug: "some-market",
+        eventSlug: "some-event",
+        icon: "",
         outcome: "Yes",
+        outcomeIndex: 0,
+        transactionHash: `0x${"11".repeat(32)}`,
       },
-    ];
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(body));
-    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-
-    const trades = await client.listUserActivity(wallet);
-    expect(trades).toHaveLength(1);
-    expect(trades[0]?.price).toBe(0.75);
-    const call = fetchImpl.mock.calls[0]?.[0] as string;
-    expect(call).toContain("/trades?user=");
-    expect(call).toContain(wallet);
+    ]);
+    const url = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(url.pathname).toBe("/v2/trades");
+    expect(url.searchParams.get("user")).toBe(wallet);
+    expect(url.searchParams.get("taker_only")).toBe("false");
+    expect(url.searchParams.get("limit")).toBe("20");
+    expect(url.searchParams.has("offset")).toBe(false);
   });
 
-  it("filters by sinceTs", async () => {
-    const body = [
-      {
-        proxyWallet: wallet,
-        side: "BUY",
-        asset: "a",
-        conditionId: "c",
-        size: 1,
-        price: 0.5,
-        timestamp: 1000,
-      },
-      {
-        proxyWallet: wallet,
-        side: "SELL",
-        asset: "a",
-        conditionId: "c",
-        size: 1,
-        price: 0.6,
-        timestamp: 3000,
-      },
-    ];
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(body));
+  it("lowercases condition_id at the adapter boundary", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(
+        v2Page([v2Trade({ condition_id: `0x${"AB".repeat(32)}` })])
+      )
+    );
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    const [trade] = await client.listUserTrades(wallet);
+    expect(trade?.conditionId).toBe(CONDITION);
+  });
+
+  it.each([
+    ["token_id", undefined],
+    ["condition_id", undefined],
+    ["outcome_index", undefined],
+  ])("rejects a row whose %s is missing instead of defaulting it", async (field, value) => {
+    const row = v2Trade({ [field]: value });
+    delete (row as Record<string, unknown>)[field];
+    const client = new PolymarketDataApiClient({
+      fetch: vi.fn().mockResolvedValue(jsonResponse(v2Page([row]))),
+    });
+    await expect(client.listUserTrades(wallet)).rejects.toBeInstanceOf(
+      PolyDataApiValidationError
+    );
+  });
+
+  it("drops a non-identity-bad trade row (counted + reported) without failing the page", async () => {
+    const rejections: Array<{ endpoint: string; totalRejected: number }> = [];
+    setPolyDataApiRowRejectionSink((r) => rejections.push(r));
+    try {
+      const fetchImpl = vi.fn().mockResolvedValue(
+        jsonResponse(
+          v2Page([v2Trade({ outcome: "", timestamp: 1 }), v2Trade({ timestamp: 2 })])
+        )
+      );
+      const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+      const trades = await client.listUserTrades(wallet);
+      expect(trades.map((t) => t.timestamp)).toEqual([2]);
+      expect(rejections).toHaveLength(1);
+      expect(rejections[0]?.endpoint).toBe("/v2/trades");
+    } finally {
+      setPolyDataApiRowRejectionSink(undefined);
+    }
+  });
+
+  it("filters by sinceTs and also sends it as the window start", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(
+        v2Page([v2Trade({ timestamp: 1000 }), v2Trade({ timestamp: 3000 })])
+      )
+    );
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
 
-    const trades = await client.listUserActivity(wallet, { sinceTs: 2000 });
+    const trades = await client.listUserTrades(wallet, { sinceTs: 2000 });
     expect(trades).toHaveLength(1);
     expect(trades[0]?.timestamp).toBe(3000);
+    expect(
+      new URL(fetchImpl.mock.calls[0]?.[0] as string).searchParams.get("start")
+    ).toBe("2000");
   });
 
   it("excludes the boundary timestamp from sinceTs (strict >, not >=) — bug.0426", async () => {
-    const body = [
-      {
-        proxyWallet: wallet,
-        side: "BUY",
-        asset: "a",
-        conditionId: "c",
-        size: 1,
-        price: 0.5,
-        timestamp: 1000,
-      },
-      {
-        proxyWallet: wallet,
-        side: "BUY",
-        asset: "a",
-        conditionId: "c",
-        size: 1,
-        price: 0.5,
-        timestamp: 1001,
-      },
-    ];
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(body));
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(
+        v2Page([v2Trade({ timestamp: 1000 }), v2Trade({ timestamp: 1001 })])
+      )
+    );
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
 
-    const trades = await client.listUserActivity(wallet, { sinceTs: 1000 });
+    const trades = await client.listUserTrades(wallet, { sinceTs: 1000 });
     expect(trades).toHaveLength(1);
     expect(trades[0]?.timestamp).toBe(1001);
+  });
+
+  it("follows next_cursor up to maxPages, resending filters and dropping limit on cursor pages", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(v2Page([v2Trade({ timestamp: 30 })], "cursor-2"))
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(v2Page([v2Trade({ timestamp: 20 })], "cursor-3"))
+      );
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    const trades = await client.listUserTrades(wallet, {
+      limit: 5,
+      maxPages: 2,
+      takerOnly: true,
+    });
+
+    expect(trades.map((t) => t.timestamp)).toEqual([30, 20]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const second = new URL(fetchImpl.mock.calls[1]?.[0] as string);
+    expect(second.searchParams.get("cursor")).toBe("cursor-2");
+    expect(second.searchParams.get("taker_only")).toBe("true");
+    expect(second.searchParams.has("limit")).toBe(false);
+  });
+
+  it("stops as soon as the feed is exhausted", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(v2Page([v2Trade()])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    await client.listUserTrades(wallet, { maxPages: 10 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("rejects malformed wallet addresses", async () => {
     const fetchImpl = vi.fn();
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-    await expect(client.listUserActivity("not-a-wallet")).rejects.toThrow(
+    await expect(client.listUserTrades("not-a-wallet")).rejects.toThrow(
       /Invalid wallet/
     );
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
-describe("PolymarketDataApiClient.listUserPositions", () => {
-  const wallet = "0x9f2fe025f84839ca81dd8e0338892605702d2ca8";
+describe("PolymarketDataApiClient.listUserPositions (single cursor page)", () => {
+  const wallet = WALLET;
 
   it("types the FIRST 429 like the shared cooldown without changing its HTTP message", async () => {
     __resetPolyDataApiCooldownForTests();
@@ -258,132 +386,96 @@ describe("PolymarketDataApiClient.listUserPositions", () => {
 
   it("wraps raw position Zod failures as semantic validation", async () => {
     const client = new PolymarketDataApiClient({
-      fetch: vi.fn(async () => jsonResponse([{ size: "broken" }])),
+      fetch: vi.fn(async () =>
+        jsonResponse(v2Page([{ current_size: "broken" }]))
+      ),
     });
     await expect(client.listUserPositions(wallet)).rejects.toBeInstanceOf(
       PolyDataApiValidationError
     );
   });
 
-  it("hits /positions?user=<wallet> and returns parsed positions", async () => {
-    const body = [
-      {
-        proxyWallet: wallet,
-        asset: "x",
-        conditionId: "c",
-        size: 10,
-        avgPrice: 0.4,
-        initialValue: 4,
-        currentValue: 8,
-        cashPnl: 4,
-        percentPnl: 100,
-        realizedPnl: 0,
-        curPrice: 0.8,
-        redeemable: false,
-      },
-    ];
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(body));
-    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-    const positions = await client.listUserPositions(wallet);
-    expect(positions).toHaveLength(1);
-    expect(positions[0]?.cashPnl).toBe(4);
+  it("rejects a row without outcome_index instead of defaulting it to 0", async () => {
+    const row = v2PositionWire();
+    delete (row as Record<string, unknown>).outcome_index;
+    const client = new PolymarketDataApiClient({
+      fetch: vi.fn(async () => jsonResponse(v2Page([row]))),
+    });
+    await expect(client.listUserPositions(wallet)).rejects.toBeInstanceOf(
+      PolyDataApiValidationError
+    );
   });
 
-  it("forwards sizeThreshold + offset when provided", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([]));
+  it("maps /v2/positions rows onto the domain position and reports the next cursor", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(v2Page([v2PositionWire()], "more")));
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    const page = await client.listUserPositions(wallet);
+    expect(page.nextCursor).toBe("more");
+    expect(page.rows).toHaveLength(1);
+    expect(page.rows[0]).toMatchObject({
+      proxyWallet: wallet,
+      asset: "x",
+      conditionId: CONDITION,
+      size: 10,
+      avgPrice: 0.4,
+      initialValue: 4,
+      grossInitialValue: 4.02,
+      entryFeesUsdc: 0.02,
+      currentValue: 8,
+      cashPnl: 4,
+      outcomeIndex: 0,
+      oppositeAsset: "y",
+    });
+  });
+
+  it("keeps a missing opposite token null, never an empty string", async () => {
+    const client = new PolymarketDataApiClient({
+      fetch: vi.fn(async () =>
+        jsonResponse(v2Page([v2PositionWire({ opposite_token_id: null })]))
+      ),
+    });
+    const page = await client.listUserPositions(wallet);
+    expect(page.rows[0]?.oppositeAsset).toBeNull();
+  });
+
+  it("uses a CASH filter when minValueUsdc is set", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(v2Page([])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    await client.listUserPositions(wallet, { minValueUsdc: 0.000001 });
+    const url = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(url.searchParams.get("filter_type")).toBe("CASH");
+    expect(url.searchParams.get("filter_amount")).toBe("0.000001");
+  });
+
+  it("sends v2 params, never offset, and drops limit on cursor pages", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(v2Page([])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    await client.listUserPositions(wallet, {
+      market: CONDITION.toUpperCase().replace("0X", "0x"),
+      sizeThreshold: 100,
+      limit: 25,
+    });
     await client.listUserPositions(wallet, {
       sizeThreshold: 100,
       limit: 25,
-      offset: 50,
+      cursor: "cursor-2",
     });
-    const call = fetchImpl.mock.calls[0]?.[0] as string;
-    expect(call).toContain("sizeThreshold=100");
-    expect(call).toContain("limit=25");
-    expect(call).toContain("offset=50");
-  });
-});
-
-describe("PolymarketDataApiClient.listAllUserPositions", () => {
-  const wallet = "0x9f2fe025f84839ca81dd8e0338892605702d2ca8";
-
-  function makePosition(asset: string) {
-    return {
-      proxyWallet: wallet,
-      asset,
-      conditionId: `c-${asset}`,
-      size: 1,
-      avgPrice: 0.5,
-      initialValue: 0.5,
-      currentValue: 0.5,
-      cashPnl: 0,
-      percentPnl: 0,
-      realizedPnl: 0,
-      curPrice: 0.5,
-      redeemable: false,
-    };
-  }
-
-  it("walks pages until a short page is returned and concatenates rows", async () => {
-    const fullPage = Array.from({ length: 500 }, (_, i) => makePosition(`a${i}`));
-    const tailPage = Array.from({ length: 17 }, (_, i) => makePosition(`b${i}`));
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse(fullPage))
-      .mockResolvedValueOnce(jsonResponse(tailPage));
-    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-
-    const all = await client.listAllUserPositions(wallet);
-
-    expect(all).toHaveLength(517);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    const firstUrl = fetchImpl.mock.calls[0]?.[0] as string;
-    const secondUrl = fetchImpl.mock.calls[1]?.[0] as string;
-    expect(firstUrl).toContain("limit=500");
-    expect(firstUrl).toContain("offset=0");
-    expect(secondUrl).toContain("limit=500");
-    expect(secondUrl).toContain("offset=500");
-  });
-
-  it("stops at the first page when fewer than PAGE_SIZE rows are returned", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([makePosition("only")]));
-    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-
-    const all = await client.listAllUserPositions(wallet);
-
-    expect(all).toHaveLength(1);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns [] when the wallet holds no positions", async () => {
-    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse([]));
-    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-    expect(await client.listAllUserPositions(wallet)).toEqual([]);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  it("forwards baseParams (sizeThreshold) on every page", async () => {
-    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse([]));
-    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-    await client.listAllUserPositions(wallet, { sizeThreshold: 5 });
-    const url = fetchImpl.mock.calls[0]?.[0] as string;
-    expect(url).toContain("sizeThreshold=5");
-    expect(url).toContain("limit=500");
-    expect(url).toContain("offset=0");
-  });
-
-  it("defaults sizeThreshold=0 so sub-dollar positions are not silently omitted", async () => {
-    // Polymarket's /positions endpoint applies a non-zero default threshold
-    // server-side. Without an explicit `sizeThreshold=0`, winning positions
-    // with `currentValue < ~$1` are dropped from the response — leaving the
-    // redeem-diff blind to them and stranding them indefinitely.
-    const fetchImpl = vi.fn().mockResolvedValueOnce(jsonResponse([]));
-    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-    await client.listAllUserPositions(wallet);
-    const url = fetchImpl.mock.calls[0]?.[0] as string;
-    expect(url).toContain("sizeThreshold=0");
+    const first = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(first.pathname).toBe("/v2/positions");
+    expect(first.searchParams.get("user")).toBe(wallet);
+    expect(first.searchParams.get("condition")).toBe(CONDITION);
+    expect(first.searchParams.get("filter_type")).toBe("TOKENS");
+    expect(first.searchParams.get("filter_amount")).toBe("100");
+    expect(first.searchParams.get("limit")).toBe("25");
+    expect(first.searchParams.has("offset")).toBe(false);
+    const second = new URL(fetchImpl.mock.calls[1]?.[0] as string);
+    expect(second.searchParams.get("cursor")).toBe("cursor-2");
+    expect(second.searchParams.get("filter_amount")).toBe("100");
+    expect(second.searchParams.has("limit")).toBe(false);
   });
 });
 
@@ -536,17 +628,84 @@ describe("PolymarketDataApiClient.listUserPositionsV2", () => {
     expect(third.searchParams.get("condition")).toBe(conditions[20]);
   });
 
-  it("rejects duplicate condition/token rows across a cursor walk", async () => {
-    const row = makePosition(condition(1), "11");
+  it("dedupes a condition/token row repeated across a cursor walk, last wins", async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(page([row], "cursor-2")))
-      .mockResolvedValueOnce(jsonResponse(page([row])));
+      .mockResolvedValueOnce(
+        jsonResponse(page([makePosition(condition(1), "11", { current_value: 1 })], "cursor-2"))
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(page([makePosition(condition(1), "11", { current_value: 9 })]))
+      );
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
 
-    await expect(
-      client.listUserPositionsV2(wallet, { conditions: [condition(1)] })
-    ).rejects.toThrow(/duplicate position key/);
+    const positions = await client.listUserPositionsV2(wallet, {
+      conditions: [condition(1)],
+    });
+    expect(positions).toHaveLength(1);
+    expect(positions[0]?.currentValue).toBe(9);
+  });
+
+  it("looks up one condition with a single request", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(page([makePosition(condition(1), "11")])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    await client.listUserPositionsV2(wallet, { conditions: [condition(1)] });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(
+      new URL(fetchImpl.mock.calls[0]?.[0] as string).searchParams.get("condition")
+    ).toBe(condition(1));
+  });
+
+  it("keeps a dust row with a negative cost and drops a row with a null numeric, without failing the walk", async () => {
+    const rejections: unknown[] = [];
+    setPolyDataApiRowRejectionSink((r) => rejections.push(r));
+    try {
+      const dust = makePosition(condition(1), "11", {
+        status: "REDEEMABLE",
+        redeemable: undefined,
+        entry_cost_usdc: -0.0035,
+        avg_price: 0,
+      });
+      const broken = makePosition(condition(2), "22", { percent_pnl: null });
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue(jsonResponse(page([dust, broken, makePosition(condition(3), "33")])));
+      const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+      const positions = await client.listAllUserPositions(wallet);
+      expect(positions.map((p) => p.asset)).toEqual(["11", "33"]);
+      expect(positions[0]?.redeemable).toBe(true);
+      expect(rejections).toHaveLength(1);
+    } finally {
+      setPolyDataApiRowRejectionSink(undefined);
+    }
+  });
+
+  it("still fails the walk closed on a row missing its identity", async () => {
+    const row = makePosition(condition(1), "11");
+    delete (row as Record<string, unknown>).token_id;
+    const client = new PolymarketDataApiClient({
+      fetch: vi.fn().mockResolvedValue(jsonResponse(page([row]))),
+    });
+    await expect(client.listAllUserPositions(wallet)).rejects.toBeInstanceOf(
+      PolyDataApiValidationError
+    );
+  });
+
+  it("walks value-bearing positions with a CASH filter", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(page([makePosition(condition(1), "11")])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+
+    const positions = await client.listPositiveValueUserPositions(wallet);
+    expect(positions).toHaveLength(1);
+    const url = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(url.searchParams.get("filter_type")).toBe("CASH");
+    expect(url.searchParams.get("filter_amount")).toBe("0.000001");
   });
 
   it("rejects mismatched cohorts, malformed pagination, and statuses outside an OPEN walk", async () => {
@@ -680,7 +839,7 @@ describe("PolymarketDataApiClient.listUserPositionsV2", () => {
       .mockResolvedValueOnce(jsonResponse(page([])));
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
 
-    const positions = await client.listAllUserPositionsV2(wallet);
+    const positions = await client.listAllUserPositions(wallet);
 
     expect(positions).toHaveLength(1);
     expect(positions[0]).toMatchObject({
@@ -745,43 +904,103 @@ describe("PolymarketDataApiClient.getStatusV2", () => {
 });
 
 describe("PolymarketDataApiClient.listActivity", () => {
-  const wallet = "0x9f2fe025f84839ca81dd8e0338892605702d2ca8";
+  const wallet = WALLET;
+  const activityRow = (overrides: Record<string, unknown> = {}) => ({
+    proxy_wallet: wallet,
+    timestamp: 1776000000,
+    condition_id: CONDITION,
+    type: "TRADE",
+    token_id: TOKEN,
+    transaction_hash: `0x${"22".repeat(32)}`,
+    size: 10,
+    usdc_size: 5,
+    price: 0.5,
+    side: "BUY",
+    title: "Some market",
+    event_slug: "some-event",
+    ...overrides,
+  });
 
-  it("hits /activity with type/side/start/end/limit/offset and parses the response", async () => {
-    const body = [
-      {
-        proxyWallet: wallet,
-        type: "TRADE",
-        side: "BUY",
-        timestamp: 1776000000,
-        size: 10,
-        price: 0.5,
-      },
-    ];
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(body));
+  it("hits /v2/activity with type/side/start/end/limit and maps the page", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(v2Page([activityRow()], "next")));
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-    const events = await client.listActivity(wallet, {
+    const page = await client.listActivity(wallet, {
       type: "TRADE",
       side: "BUY",
       start: 1770000000,
       end: 1780000000,
       limit: 50,
-      offset: 0,
     });
-    expect(events).toHaveLength(1);
-    const call = fetchImpl.mock.calls[0]?.[0] as string;
-    expect(call).toContain("/activity?user=");
-    expect(call).toContain("type=TRADE");
-    expect(call).toContain("side=BUY");
-    expect(call).toContain("start=1770000000");
-    expect(call).toContain("end=1780000000");
-    expect(call).toContain("limit=50");
+    expect(page.nextCursor).toBe("next");
+    expect(page.rows).toEqual([
+      {
+        proxyWallet: wallet,
+        type: "TRADE",
+        timestamp: 1776000000,
+        conditionId: CONDITION,
+        asset: TOKEN,
+        side: "BUY",
+        size: 10,
+        usdcSize: 5,
+        price: 0.5,
+        outcome: null,
+        title: "Some market",
+        slug: null,
+        eventSlug: "some-event",
+        transactionHash: `0x${"22".repeat(32)}`,
+      },
+    ]);
+    const url = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(url.pathname).toBe("/v2/activity");
+    expect(url.searchParams.get("user")).toBe(wallet);
+    expect(url.searchParams.get("type")).toBe("TRADE");
+    expect(url.searchParams.get("side")).toBe("BUY");
+    expect(url.searchParams.get("start")).toBe("1770000000");
+    expect(url.searchParams.get("end")).toBe("1780000000");
+    expect(url.searchParams.get("limit")).toBe("50");
+    expect(url.searchParams.has("offset")).toBe(false);
+  });
+
+  it("maps a lifecycle row with no token / side / price to nulls", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(
+        v2Page([
+          activityRow({
+            type: "REDEEM",
+            token_id: null,
+            side: "",
+            price: null,
+          }),
+        ])
+      )
+    );
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    const page = await client.listActivity(wallet);
+    expect(page.rows[0]).toMatchObject({
+      type: "REDEEM",
+      asset: null,
+      side: null,
+      price: null,
+    });
+  });
+
+  it("rejects a TRADE row without an exact token id", async () => {
+    const client = new PolymarketDataApiClient({
+      fetch: vi
+        .fn()
+        .mockResolvedValue(jsonResponse(v2Page([activityRow({ token_id: null })]))),
+    });
+    await expect(client.listActivity(wallet)).rejects.toBeInstanceOf(
+      PolyDataApiValidationError
+    );
   });
 
   it("throws on schema mismatch (fails closed)", async () => {
     const fetchImpl = vi
       .fn()
-      .mockResolvedValue(jsonResponse([{ totally: "wrong" }]));
+      .mockResolvedValue(jsonResponse(v2Page([{ totally: "wrong" }])));
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
     await expect(client.listActivity(wallet)).rejects.toThrow();
   });
@@ -797,80 +1016,138 @@ describe("PolymarketDataApiClient.listActivity", () => {
 });
 
 describe("PolymarketDataApiClient.getValue", () => {
-  const wallet = "0x9f2fe025f84839ca81dd8e0338892605702d2ca8";
+  const wallet = WALLET;
 
-  it("returns the first `{ user, value }` entry from /value", async () => {
-    const fetchImpl = vi
-      .fn()
-      .mockResolvedValue(jsonResponse([{ user: wallet, value: 123.45 }]));
+  it("returns `{ user, value }` from /v2/value and scopes by condition", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({ data: { proxy_wallet: wallet, value: 123.45 } })
+    );
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-    const result = await client.getValue(wallet, { market: "0xabc" });
+    const result = await client.getValue(wallet, { market: CONDITION });
     expect(result.user).toBe(wallet);
     expect(result.value).toBeCloseTo(123.45);
-    const call = fetchImpl.mock.calls[0]?.[0] as string;
-    expect(call).toContain("/value?user=");
-    expect(call).toContain("market=0xabc");
+    const url = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(url.pathname).toBe("/v2/value");
+    expect(url.searchParams.get("user")).toBe(wallet);
+    expect(url.searchParams.get("condition")).toBe(CONDITION);
   });
 
-  it("returns zero when the endpoint yields an empty array", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([]));
+  it("returns zero for the documented miss (data: null)", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ data: null }));
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
     const result = await client.getValue(wallet);
-    expect(result.value).toBe(0);
+    expect(result).toEqual({ user: wallet, value: 0 });
+  });
+
+  it("rejects a non-hex market before any request", async () => {
+    const fetchImpl = vi.fn();
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    await expect(
+      client.getValue(wallet, { market: "0xabc" })
+    ).rejects.toThrow(/Invalid condition id/);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
 describe("PolymarketDataApiClient.getHolders", () => {
-  it("hits /holders?market=<id>&limit and returns parsed holders", async () => {
-    const body = [
-      {
-        proxyWallet: "0xAAA",
-        outcomeIndex: 0,
-        outcome: "Yes",
-        amount: 500,
-      },
-    ];
+  const holder = (overrides: Record<string, unknown> = {}) => ({
+    proxy_wallet: "0xaaa",
+    token_id: TOKEN,
+    outcome_index: 0,
+    amount: 500,
+    name: "alice",
+    pseudonym: "Quiet-Fox",
+    display_username_public: true,
+    ...overrides,
+  });
+
+  it("hits /v2/holders?condition=<id>&limit and flattens token groups", async () => {
+    const body = {
+      data: [
+        { token_id: TOKEN, holders: [holder()] },
+        {
+          token_id: "999",
+          holders: [holder({ token_id: "999", outcome_index: 1, amount: 7 })],
+        },
+      ],
+    };
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(body));
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-    const holders = await client.getHolders("0xCONDITION", { limit: 10 });
-    expect(holders).toHaveLength(1);
-    const call = fetchImpl.mock.calls[0]?.[0] as string;
-    expect(call).toContain("/holders?market=0xCONDITION");
-    expect(call).toContain("limit=10");
+    const holders = await client.getHolders(CONDITION, { limit: 10 });
+    expect(holders).toEqual([
+      {
+        proxyWallet: "0xaaa",
+        asset: TOKEN,
+        outcomeIndex: 0,
+        amount: 500,
+        name: "alice",
+        pseudonym: "Quiet-Fox",
+        displayUsernamePublic: true,
+      },
+      {
+        proxyWallet: "0xaaa",
+        asset: "999",
+        outcomeIndex: 1,
+        amount: 7,
+        name: "alice",
+        pseudonym: "Quiet-Fox",
+        displayUsernamePublic: true,
+      },
+    ]);
+    const url = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(url.pathname).toBe("/v2/holders");
+    expect(url.searchParams.get("condition")).toBe(CONDITION);
+    expect(url.searchParams.get("limit")).toBe("10");
+  });
+
+  it("rejects a holder whose token_id differs from its group", async () => {
+    const client = new PolymarketDataApiClient({
+      fetch: vi.fn().mockResolvedValue(
+        jsonResponse({
+          data: [{ token_id: TOKEN, holders: [holder({ token_id: "999" })] }],
+        })
+      ),
+    });
+    await expect(client.getHolders(CONDITION)).rejects.toBeInstanceOf(
+      PolyDataApiValidationError
+    );
   });
 
   it("throws on empty market", async () => {
     const client = new PolymarketDataApiClient({ fetch: vi.fn() });
-    await expect(client.getHolders("")).rejects.toThrow(/market/);
+    await expect(client.getHolders("")).rejects.toThrow(/condition/);
   });
 });
 
 describe("PolymarketDataApiClient.listMarketTrades", () => {
-  it("hits /trades?market=<id> (no user) and sets takerOnly", async () => {
-    const body = [
-      {
-        proxyWallet: "0xTAKER",
-        makerAddress: "0xMAKER",
-        side: "BUY",
-        asset: "a",
-        conditionId: "c",
-        size: 10,
-        price: 0.5,
-        timestamp: 1776000000,
-      },
-    ];
-    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(body));
+  it("hits /v2/trades?condition=<id> (no user), defaults taker_only=true, and returns a page", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse(
+        v2Page([v2Trade({ proxy_wallet: "0xtaker" })], "next")
+      )
+    );
     const client = new PolymarketDataApiClient({ fetch: fetchImpl });
-    const trades = await client.listMarketTrades("0xCONDITION", {
-      takerOnly: true,
-      limit: 50,
-      offset: 0,
-    });
-    expect(trades).toHaveLength(1);
-    const call = fetchImpl.mock.calls[0]?.[0] as string;
-    expect(call).toContain("/trades?market=0xCONDITION");
-    expect(call).toContain("takerOnly=true");
-    expect(call).not.toContain("user=");
+    const page = await client.listMarketTrades(CONDITION, { limit: 50 });
+    expect(page.rows).toHaveLength(1);
+    expect(page.rows[0]?.proxyWallet).toBe("0xtaker");
+    expect(page.nextCursor).toBe("next");
+    const url = new URL(fetchImpl.mock.calls[0]?.[0] as string);
+    expect(url.pathname).toBe("/v2/trades");
+    expect(url.searchParams.get("condition")).toBe(CONDITION);
+    expect(url.searchParams.get("taker_only")).toBe("true");
+    expect(url.searchParams.get("limit")).toBe("50");
+    expect(url.searchParams.has("user")).toBe(false);
+  });
+
+  it("includes maker rows when takerOnly is explicitly false", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(v2Page([])));
+    const client = new PolymarketDataApiClient({ fetch: fetchImpl });
+    await client.listMarketTrades(CONDITION, { takerOnly: false });
+    expect(
+      new URL(fetchImpl.mock.calls[0]?.[0] as string).searchParams.get(
+        "taker_only"
+      )
+    ).toBe("false");
   });
 });
 
@@ -1024,8 +1301,8 @@ describe("PolymarketDataApiClient Zod envelope", () => {
   const wallet = "0x1234567890abcdef1234567890abcdef12345678";
 
   it("throws PolyDataApiValidationError with endpoint + issues when /activity response is malformed", async () => {
-    // Missing required `proxyWallet` on the event — should fail the envelope parse.
-    const malformed = [{ type: "TRADE", timestamp: 1700000000 }];
+    // Missing required `proxy_wallet` on the event — should fail the envelope parse.
+    const malformed = v2Page([{ type: "TRADE", timestamp: 1700000000 }]);
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(malformed));
     const client = new PolymarketDataApiClient({
       fetch: fetchImpl,
@@ -1040,12 +1317,12 @@ describe("PolymarketDataApiClient Zod envelope", () => {
       expect(err).toBeInstanceOf(PolyDataApiValidationError);
       const typed = err as PolyDataApiValidationError;
       expect(typed.code).toBe("VALIDATION_FAILED");
-      expect(typed.endpoint).toBe("/activity");
+      expect(typed.endpoint).toBe("/v2/activity");
       expect(typed.issues.length).toBeGreaterThan(0);
     }
   });
 
-  it("throws PolyDataApiValidationError when /holders returns a non-array", async () => {
+  it("throws PolyDataApiValidationError when /v2/holders returns no data envelope", async () => {
     const fetchImpl = vi
       .fn()
       .mockResolvedValue(jsonResponse({ error: "not an array" }));
@@ -1054,7 +1331,7 @@ describe("PolymarketDataApiClient Zod envelope", () => {
       baseUrl: "http://fake.test",
     });
     await expect(
-      client.getHolders("0xabc", { limit: 10 })
+      client.getHolders(CONDITION, { limit: 10 })
     ).rejects.toBeInstanceOf(PolyDataApiValidationError);
   });
 });
@@ -1081,14 +1358,14 @@ describe("process-wide 429 cooldown (bug.5284)", () => {
       status: 200,
       statusText: "OK",
       headers: { get: () => null },
-      json: async () => [],
+      json: async () => v2Page([]),
     })) as unknown as typeof fetch;
 
     const a = new PolymarketDataApiClient({ fetch: firstFetch });
-    await expect(a.listUserActivity("0x2005d16a84ceefa912d4e380cd32e7ff827875ea")).rejects.toThrow(/429/);
+    await expect(a.listUserTrades("0x2005d16a84ceefa912d4e380cd32e7ff827875ea")).rejects.toThrow(/429/);
 
     const b = new PolymarketDataApiClient({ fetch: secondFetch });
-    await expect(b.listUserActivity("0x2005d16a84ceefa912d4e380cd32e7ff827875ea")).rejects.toThrow(
+    await expect(b.listUserTrades("0x2005d16a84ceefa912d4e380cd32e7ff827875ea")).rejects.toThrow(
       PolyDataApiRateLimitedError
     );
     // The decisive assertion — the second client never issued a request.
@@ -1129,7 +1406,7 @@ describe("process-wide in-flight cap (bug.5286)", () => {
         status: 200,
         statusText: "OK",
         headers: { get: () => null },
-        json: async () => [],
+        json: async () => v2Page([]),
       };
     }) as unknown as typeof fetch;
 
@@ -1140,8 +1417,8 @@ describe("process-wide in-flight cap (bug.5286)", () => {
     );
     const wallets = "0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
     const calls = clients.flatMap((c) => [
-      c.listUserActivity(wallets),
-      c.listUserActivity(wallets),
+      c.listUserTrades(wallets),
+      c.listUserTrades(wallets),
     ]);
 
     await vi.waitFor(() => expect(peak).toBeGreaterThan(0));
@@ -1171,16 +1448,16 @@ describe("process-wide in-flight cap (bug.5286)", () => {
         status: 200,
         statusText: "OK",
         headers: { get: () => null },
-        json: async () => [],
+        json: async () => v2Page([]),
       };
     }) as unknown as typeof fetch;
 
     const c = new PolymarketDataApiClient({ fetch: fetchImpl });
     const w = "0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
     // Saturate the cap, then queue one more behind it with its own signal.
-    const inflight = [c.listUserActivity(w), c.listUserActivity(w)];
+    const inflight = [c.listUserTrades(w), c.listUserTrades(w)];
     const controller = new AbortController();
-    const queued = c.listUserActivity(w, { signal: controller.signal });
+    const queued = c.listUserTrades(w, { signal: controller.signal });
 
     await vi.waitFor(() =>
       expect(__polyDataApiInflightForTests().queued).toBe(1)
@@ -1263,10 +1540,10 @@ describe("process-wide in-flight cap (bug.5286)", () => {
     // would otherwise only settle on the timer, long after this test ends.
     const saturating = new AbortController();
     const inflight = [
-      c.listUserActivity(w, { signal: saturating.signal }),
-      c.listUserActivity(w, { signal: saturating.signal }),
+      c.listUserTrades(w, { signal: saturating.signal }),
+      c.listUserTrades(w, { signal: saturating.signal }),
     ];
-    const queued = c.listUserActivity(w, { signal: controller.signal });
+    const queued = c.listUserTrades(w, { signal: controller.signal });
     await vi.waitFor(() =>
       expect(__polyDataApiInflightForTests().queued).toBe(1)
     );
@@ -1297,8 +1574,8 @@ describe("process-wide in-flight cap (bug.5286)", () => {
     })) as unknown as typeof fetch;
     const c = new PolymarketDataApiClient({ fetch: fetchImpl });
     const w = "0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
-    await expect(c.listUserActivity(w)).rejects.toThrow(/429/);
-    await expect(c.listUserActivity(w)).rejects.toThrow(
+    await expect(c.listUserTrades(w)).rejects.toThrow(/429/);
+    await expect(c.listUserTrades(w)).rejects.toThrow(
       PolyDataApiRateLimitedError
     );
     expect(__polyDataApiInflightForTests()).toEqual({ inFlight: 0, queued: 0 });

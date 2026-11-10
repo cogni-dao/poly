@@ -64,7 +64,7 @@ function orderFilledLog(logIndex = 7, maker = WALLET) {
 
 describe("polymarket chain source — exact-token Gamma fallback", () => {
   it("does not await a stalled positions walk, preserves the fill, and creates its forward cohort", async () => {
-    const listAllUserPositions = vi.fn(
+    const listPositiveValueUserPositions = vi.fn(
       () => new Promise<never>(() => undefined)
     );
     const resolveTokenMetadata = vi.fn(async () => ({
@@ -78,7 +78,7 @@ describe("polymarket chain source — exact-token Gamma fallback", () => {
     const source = createPolymarketChainActivitySource({
       publicClient: chain.client,
       client: {
-        listAllUserPositions,
+        listPositiveValueUserPositions,
         resolveTokenMetadata,
       } as unknown as PolymarketDataApiClient,
       wallet: WALLET,
@@ -86,7 +86,7 @@ describe("polymarket chain source — exact-token Gamma fallback", () => {
       metrics: { incr: vi.fn(), observeDurationMs: vi.fn() } as never,
       heartbeatIntervalMs: 0,
     });
-    await vi.waitFor(() => expect(listAllUserPositions).toHaveBeenCalled());
+    await vi.waitFor(() => expect(listPositiveValueUserPositions).toHaveBeenCalled());
 
     const woke = new Promise<void>((resolve) => source.subscribeWake(resolve));
     chain.subscriptions[0]?.onLogs([orderFilledLog()]);
@@ -180,7 +180,7 @@ describe("polymarket chain source — exact-token Gamma fallback", () => {
     const source = createPolymarketChainActivitySource({
       publicClient: chain.client,
       client: {
-        listAllUserPositions: vi.fn(async () => []),
+        listPositiveValueUserPositions: vi.fn(async () => []),
         resolveTokenMetadata,
       } as unknown as PolymarketDataApiClient,
       wallet: secondWallet,
@@ -217,7 +217,7 @@ describe("polymarket chain source — exact-token Gamma fallback", () => {
     const source = createPolymarketChainActivitySource({
       publicClient: chain.client,
       client: {
-        listAllUserPositions: vi.fn(async () => []),
+        listPositiveValueUserPositions: vi.fn(async () => []),
         resolveTokenMetadata,
       } as unknown as PolymarketDataApiClient,
       wallet: thirdWallet,

@@ -29,7 +29,11 @@ const BASE: PolymarketUserTrade = {
   price: 0.602,
   timestamp: 1713300000,
   title: "Open Capfinances Rouen Metropole: Marta Kostyuk vs Ann Li",
+  slug: "wta-kostyuk-li-2024-04-16",
+  eventSlug: "wta-kostyuk-li-2024-04-16",
+  icon: "",
   outcome: "Ann Li",
+  outcomeIndex: 1,
   transactionHash:
     "0x2c800bf0692f5b7b691a136e1413eab5298352bec342ea1a97433f8f25178b7b",
 };

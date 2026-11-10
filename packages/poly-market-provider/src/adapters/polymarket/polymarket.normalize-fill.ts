@@ -3,7 +3,7 @@
 
 /**
  * Module: `@cogni/poly-market-provider/adapters/polymarket/polymarket.normalize-fill`
- * Purpose: Pure normalizer — maps Polymarket Data-API `/trades` rows to the canonical `Fill` shape that the copy-trade feature layer consumes. Rejects empty-transactionHash rows so they cannot be placed into the copy-trade pipeline.
+ * Purpose: Pure normalizer — maps Polymarket Data-API `/v2/trades` rows to the canonical `Fill` shape that the copy-trade feature layer consumes. Rejects empty-transactionHash rows so they cannot be placed into the copy-trade pipeline.
  * Scope: Pure function + Zod validation. Does not perform I/O, does not emit metrics itself, does not know the container. Callers decide what to do with the `skipped` reason.
  * Invariants:
  *   - FILL_ID_SHAPE_DECIDED — `fill_id = "data-api:" + transactionHash + ":" + asset + ":" + side + ":" + timestamp` per task.0315 P0.2.
@@ -48,7 +48,7 @@ export function polymarketDataApiFillId(
 }
 
 /**
- * Normalize one Polymarket Data-API `/trades` row to a canonical `Fill`.
+ * Normalize one Polymarket Data-API `/v2/trades` row to a canonical `Fill`.
  *
  * Returns `{ok: false, reason}` for rejected rows instead of throwing so
  * callers can bucket skip reasons into a bounded metric label.
@@ -77,7 +77,7 @@ export function normalizePolymarketDataApiFill(
     fill_id: polymarketDataApiFillId(trade),
     source: "data-api",
     market_id: `prediction-market:polymarket:${trade.conditionId}`,
-    outcome: trade.outcome || "YES",
+    outcome: trade.outcome,
     side: trade.side,
     price: trade.price,
     size_usdc,
@@ -89,9 +89,6 @@ export function normalizePolymarketDataApiFill(
       title: trade.title,
       slug: trade.slug,
       event_slug: trade.eventSlug,
-      event_title: readOptionalString(trade, "eventTitle"),
-      end_date: readOptionalString(trade, "endDate"),
-      game_start_time: readOptionalString(trade, "gameStartTime"),
       timestamp_unix: trade.timestamp,
     },
   };
@@ -100,12 +97,4 @@ export function normalizePolymarketDataApiFill(
   // that would otherwise pass a malformed Fill into decide(). Throwing here
   // is correct: it indicates a type/shape bug, not a skippable data row.
   return { ok: true, fill: FillSchema.parse(fill) };
-}
-
-function readOptionalString(
-  value: Record<string, unknown>,
-  key: string
-): string | undefined {
-  const field = value[key];
-  return typeof field === "string" && field.length > 0 ? field : undefined;
 }

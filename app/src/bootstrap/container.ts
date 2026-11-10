@@ -1019,8 +1019,22 @@ function createContainer(): Container {
 					POLYGON_USDC_E,
 					PolymarketDataApiClient,
 					createPolymarketTargetBookProviderV1,
+					setPolyDataApiRowRejectionSink,
 				} = await import(
 					"@cogni/poly-market-provider/adapters/polymarket"
+				);
+				// bug.5049: a malformed non-identity Data API row is dropped, not
+				// fatal; surface the running count so it is visible in Loki.
+				setPolyDataApiRowRejectionSink((rejection) =>
+					log.warn(
+						{
+							event: "poly.data_api.row_rejected",
+							endpoint: rejection.endpoint,
+							reason: rejection.reason,
+							total_rejected: rejection.totalRejected,
+						},
+						"Data API row rejected by per-row validation",
+					),
 				);
 				// task.5043 / bug.5049 — Polygon `OrderFilled` chain logs are the
 				// wallet-watch source. bug.5051: use a WebSocket transport so viem's
@@ -1277,10 +1291,8 @@ function createContainer(): Container {
 									listActivity: async (wallet, params) =>
 										dataApiClient.listActivity(wallet, params),
 									listPositions: async (wallet, conditionId) =>
-										dataApiClient.listUserPositions(wallet, {
-											market: conditionId,
-											sizeThreshold: 0,
-											limit: 500,
+										dataApiClient.listUserPositionsV2(wallet, {
+											conditions: [conditionId],
 										}),
 								},
 								getWalletCashUsdc: async (cashVenue) => {
@@ -1526,23 +1538,47 @@ function createContainer(): Container {
 						// Short caches keep a burst of fills coherent without turning each fill
 						// into another API walk.
 						type PositionSnapshot = Awaited<
-							ReturnType<typeof dataApiClient.listAllUserPositions>
+							ReturnType<typeof dataApiClient.listPositiveValueUserPositions>
 						>;
-						let targetPositionsCache:
-							| { capturedAt: number; positions: PositionSnapshot }
-							| undefined;
-						const getTargetPositions = async (): Promise<PositionSnapshot> => {
-							if (
-								targetPositionsCache &&
-								Date.now() - targetPositionsCache.capturedAt < 10_000
-							) {
-								return targetPositionsCache.positions;
+						// Per-fill hot path: never walk the whole target book (a whale
+						// holds ~39k rows). Each query is one server-filtered request,
+						// and concurrent fills share the in-flight promise for 10s.
+						const targetReadCache = new Map<
+							string,
+							{ capturedAt: number; result: Promise<PositionSnapshot> }
+						>();
+						const readTargetCoalesced = (
+							key: string,
+							read: () => Promise<PositionSnapshot>,
+						): Promise<PositionSnapshot> => {
+							const hit = targetReadCache.get(key);
+							if (hit && Date.now() - hit.capturedAt < 10_000) {
+								return hit.result;
 							}
-							const positions =
-								await dataApiClient.listAllUserPositions(targetWallet);
-							targetPositionsCache = { capturedAt: Date.now(), positions };
-							return positions;
+							const result = read();
+							targetReadCache.set(key, { capturedAt: Date.now(), result });
+							// A failed read must not be served for the rest of the window.
+							result.catch(() => {
+								if (targetReadCache.get(key)?.result === result) {
+									targetReadCache.delete(key);
+								}
+							});
+							return result;
 						};
+						// Value-bearing rows only (`filter_type=CASH`): ~hundreds, one page.
+						const getTargetPositions = (): Promise<PositionSnapshot> =>
+							readTargetCoalesced("value", () =>
+								dataApiClient.listPositiveValueUserPositions(targetWallet),
+							);
+						// Exact condition cohort: one request, `condition=<id>`.
+						const getTargetConditionPositions = (
+							conditionId: string,
+						): Promise<PositionSnapshot> =>
+							readTargetCoalesced(`condition:${conditionId.toLowerCase()}`, () =>
+								dataApiClient.listUserPositionsV2(targetWallet, {
+									conditions: [conditionId],
+								}),
+							);
 						// `OperatorPosition`-shaped: exactly `{asset, size, currentValue}`,
 						// the only fields position_gap and the SELL branch consume. Both
 						// venues can supply all three as facts.
@@ -1695,7 +1731,9 @@ function createContainer(): Container {
 									return executor.getMarketConstraints(tokenId);
 								},
 								getTargetConditionPosition: async (params) => {
-									const positions = await getTargetPositions();
+									const positions = await getTargetConditionPositions(
+										params.conditionId,
+									);
 									return targetConditionPositionFromDataApiPositions(
 										params.conditionId,
 										positions,

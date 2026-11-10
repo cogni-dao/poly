@@ -70,7 +70,7 @@ export interface PolymarketActivitySourceDeps {
   /** Caller-supplied metrics sink. */
   metrics: MetricsPort;
   /**
-   * Page size forwarded to the Data-API (cap is ~500 server-side). Callers that
+   * Page size forwarded to the Data-API (cap is 1000 server-side). Callers that
    * expect bursty targets can raise this to avoid missing trades between polls.
    */
   limit?: number;
@@ -107,33 +107,14 @@ export function createPolymarketActivitySource(
 
       const pageLimit = deps.limit ?? 20;
       const maxPages = Math.max(1, deps.maxPages ?? 1);
-      const trades: Awaited<
-        ReturnType<PolymarketDataApiClient["listUserActivity"]>
-      > = [];
-      let reachedSince = false;
-      for (let page = 0; page < maxPages; page += 1) {
-        deps.signal?.throwIfAborted();
-        const params: {
-          sinceTs?: number;
-          limit: number;
-          offset: number;
-          signal?: AbortSignal | undefined;
-        } = {
-          limit: pageLimit,
-          offset: page * pageLimit,
-          signal: deps.signal,
-        };
-        if (since !== undefined) params.sinceTs = since;
-        const pageTrades = await deps.client.listUserActivity(
-          deps.wallet,
-          params
-        );
-        trades.push(...pageTrades);
-        reachedSince =
-          since !== undefined &&
-          pageTrades.some((trade) => trade.timestamp <= since);
-        if (pageTrades.length < pageLimit || reachedSince) break;
-      }
+      // Cursor walk + `start` watermark live in the client; the feed is
+      // newest-first, so `maxPages` bounds a bursty target's backlog.
+      const trades = await deps.client.listUserTrades(deps.wallet, {
+        limit: pageLimit,
+        maxPages,
+        signal: deps.signal,
+        ...(since !== undefined && { sinceTs: since }),
+      });
       const duration_ms = Date.now() - start;
       deps.metrics.observeDurationMs(
         POLYMARKET_ACTIVITY_SOURCE_METRICS.fetchDurationMs,
@@ -194,7 +175,6 @@ export function createPolymarketActivitySource(
           new_since: newSince,
           max_pages: maxPages,
           page_limit: pageLimit,
-          reached_since: reachedSince,
         },
         "wallet-watch fetch: ok"
       );

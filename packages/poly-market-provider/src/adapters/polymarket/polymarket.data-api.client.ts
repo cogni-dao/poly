@@ -3,7 +3,7 @@
 
 /**
  * Module: `@cogni/poly-market-provider/adapters/polymarket/polymarket.data-api.client`
- * Purpose: Client for the public Polymarket Data API + Gamma handle resolver — leaderboard, user activity / trades / positions / value, market holders + trades, username search.
+ * Purpose: Client for the public Polymarket Data API v2 + Gamma handle resolver — leaderboard, user activity / trades / positions / value, market holders + trades, username search. v1 is retired upstream (410); every read here is `/v2/*`.
  * Scope: HTTP fetch + Zod validation. Does not load env, does not manage credentials, does not place orders, does not implement `MarketProviderPort`.
  * Invariants: PACKAGES_NO_ENV, READ_ONLY, CONTRACT_IS_SOT, PROCESS_WIDE_RATE_GATE (the 429 cooldown and the in-flight cap are module-scoped on purpose — Polymarket limits per-IP and the app builds one client per consumer; both honour the caller's AbortSignal).
  * Side-effects: IO (HTTP fetch to https://data-api.polymarket.com and https://gamma-api.polymarket.com), mutates the module-scoped cooldown + in-flight counters
@@ -14,32 +14,34 @@
 import type { ZodIssue, ZodTypeAny, z } from "zod";
 import {
   type ActivityEvent,
-  ActivityEventsResponseSchema,
   type ActivityEventType,
+  type DataApiPage,
   type GammaProfile,
   GammaPublicSearchResponseSchema,
   GammaTokenMarketsResponseSchema,
   type MarketHolder,
-  MarketHoldersResponseSchema,
-  type MarketTrade,
-  MarketTradesResponseSchema,
   type PolymarketLeaderboardEntry,
   type PolymarketLeaderboardOrderBy,
-  PolymarketLeaderboardResponseSchema,
   type PolymarketLeaderboardTimePeriod,
   type PolymarketUserPosition,
-  PolymarketUserPositionsResponseSchema,
+  PolymarketUserPositionSchema,
   type PolymarketUserTrade,
-  PolymarketUserTradesResponseSchema,
-  UserValueResponseSchema,
 } from "./polymarket.data-api.types.js";
 import {
   PolymarketActivityV2ResponseSchema,
   type PolymarketActivityV2,
   PolymarketDataApiStatusV2Schema,
   type PolymarketDataApiStatusV2,
-  PolymarketUserPositionsV2ResponseSchema,
+  PolymarketHoldersV2ResponseSchema,
+  PolymarketLeaderboardV2ResponseSchema,
+  PolymarketPagedRowsV2Schema,
+  PolymarketPositionIdentityV2Schema,
+  PolymarketTradeIdentityV2Schema,
+  type PolymarketTradeV2,
+  PolymarketTradeV2Schema,
   type PolymarketUserPositionV2,
+  PolymarketUserPositionV2Schema,
+  PolymarketValueV2ResponseSchema,
 } from "./polymarket.data-api-v2.types.js";
 
 /**
@@ -243,6 +245,63 @@ function parseResponse<S extends ZodTypeAny>(
   return result.data;
 }
 
+/** One row dropped by per-row validation (never an identity failure). */
+export interface PolyDataApiRowRejection {
+  endpoint: string;
+  /** `path: message` of the first zod issue. */
+  reason: string;
+  /** Running process-wide total of rejected rows. */
+  totalRejected: number;
+}
+
+let rejectedRowsTotal = 0;
+let rowRejectionSink: ((rejection: PolyDataApiRowRejection) => void) | undefined;
+
+/** Install the process-wide sink (the app logs a counted warn). */
+export function setPolyDataApiRowRejectionSink(
+  sink: ((rejection: PolyDataApiRowRejection) => void) | undefined
+): void {
+  rowRejectionSink = sink;
+}
+
+/**
+ * Validate a cursor-paged envelope row by row. A row failing `identity`
+ * (token / condition / wallet / outcome_index) fails the whole page closed; a
+ * row failing only on other fields is dropped, counted and reported, so one
+ * dust row with an odd number cannot blind a tenant.
+ */
+function parsePagedRows<S extends ZodTypeAny>(
+  rowSchema: S,
+  identity: ZodTypeAny,
+  json: unknown,
+  endpoint: string
+): {
+  data: Array<z.output<S>>;
+  pagination: z.output<typeof PolymarketPagedRowsV2Schema>["pagination"];
+} {
+  const envelope = parseResponse(PolymarketPagedRowsV2Schema, json, endpoint);
+  const data: Array<z.output<S>> = [];
+  for (const row of envelope.data) {
+    const parsed = rowSchema.safeParse(row);
+    if (parsed.success) {
+      data.push(parsed.data);
+      continue;
+    }
+    const idResult = identity.safeParse(row);
+    if (!idResult.success) {
+      throw new PolyDataApiValidationError(endpoint, idResult.error.issues);
+    }
+    rejectedRowsTotal += 1;
+    const issue = parsed.error.issues[0];
+    rowRejectionSink?.({
+      endpoint,
+      reason: `${issue?.path.join(".") || "<root>"}: ${issue?.message ?? "invalid"}`,
+      totalRejected: rejectedRowsTotal,
+    });
+  }
+  return { data, pagination: envelope.pagination };
+}
+
 const DEFAULT_DATA_API_BASE_URL = "https://data-api.polymarket.com";
 const DEFAULT_GAMMA_BASE_URL = "https://gamma-api.polymarket.com";
 
@@ -275,12 +334,6 @@ export interface PolymarketTokenMetadata {
 
 const DEFAULT_TIMEOUT_MS = 5000;
 
-/** `/positions` page ceiling enforced by the API (verified 2026-05). */
-const LIST_ALL_POSITIONS_PAGE_SIZE = 500;
-/** Hard upper bound on `listAllUserPositions` pages — defends against a server
- * that always returns a full page. 50 × 500 = 25k rows; well above the largest
- * funder we have observed (~150). */
-const LIST_ALL_POSITIONS_MAX_PAGES = 50;
 const POSITIONS_V2_CONDITION_CHUNK_SIZE = 20;
 const POSITIONS_V2_MAX_CURSOR_PAGES = 100;
 const POSITIONS_V2_PAGE_SIZE = 1000;
@@ -291,27 +344,19 @@ export interface ListTopTradersParams {
   timePeriod?: PolymarketLeaderboardTimePeriod;
   /** Sort metric (default: PNL). */
   orderBy?: PolymarketLeaderboardOrderBy;
-  /** Max rows (API caps at 50, default: 10). */
+  /** Max rows of the first page (default: 10, API ceiling 1000). */
   limit?: number;
-}
-
-export interface ListUserActivityParams {
-  /** Rows per page (API caps at ~500). Default: 100. */
-  limit?: number;
-  /** Optional offset for pagination. */
-  offset?: number;
-  /** Only return trades at or after this unix-seconds timestamp. */
-  sinceTs?: number;
-  /** Cooperative cancellation — aborts the underlying fetch (task.5015). */
-  signal?: AbortSignal | undefined;
 }
 
 export interface ListUserTradesParams {
-  /** Rows per page. Default: 20. Polymarket's `/trades` cache appears to serve a stale page at limits >20 (verified 2026-05-01: limit=1000 was 2min behind limit=20 for an active trader). Callers needing deeper history should paginate or accept staleness. */
+  /** Rows per page (default 20, API ceiling 1000). */
   limit?: number;
-  /** Optional offset for pagination. */
-  offset?: number;
-  /** Only return trades at or after this unix-seconds timestamp. */
+  /**
+   * Max cursor pages to read (default 1). The walk also ends when the feed is
+   * exhausted; `sinceTs` bounds the window server-side.
+   */
+  maxPages?: number;
+  /** Only return trades strictly after this unix-seconds timestamp (also sent as the window `start`). */
   sinceTs?: number;
   /** When true, only include fills where the user was the TAKER. Default: false (includes maker fills — required for position tracking). */
   takerOnly?: boolean;
@@ -320,16 +365,20 @@ export interface ListUserTradesParams {
 }
 
 export interface ListUserPositionsParams {
-  /** Optional conditionId filter. */
+  /** Optional exact conditionId filter. */
   market?: string;
-  /** Optional minimum position size (USDC). */
+  /** Minimum CURRENT holding in shares. Omitted: the API's 0.1 dust floor. */
   sizeThreshold?: number;
-  /** Restrict resolved/redeemable rows. `false` is the complete open book. */
-  redeemable?: boolean;
-  /** Optional position cap. */
+  /**
+   * Minimum current value in USDC (`filter_type=CASH`); wins over
+   * `sizeThreshold`. A positive floor returns only value-bearing rows, which
+   * keeps a 39k-row book to a few hundred rows.
+   */
+  minValueUsdc?: number;
+  /** Rows per first page (API ceiling 1000). Ignored once `cursor` is set. */
   limit?: number;
-  /** Optional offset for pagination. */
-  offset?: number;
+  /** Opaque `nextCursor` from the previous page. Re-send every other filter unchanged. */
+  cursor?: string;
   /** Cooperative cancellation — aborts the underlying fetch (task.5015). */
   signal?: AbortSignal | undefined;
 }
@@ -377,29 +426,30 @@ export interface ListActivityParams {
   start?: number;
   /** Unix-seconds upper bound (inclusive). */
   end?: number;
-  /** Rows per page (1-500). */
+  /** Rows per first page (API ceiling 1000). Ignored once `cursor` is set. */
   limit?: number;
-  /** Pagination offset. */
-  offset?: number;
+  /** Opaque `nextCursor` from the previous page. Re-send every other filter unchanged. */
+  cursor?: string;
+  signal?: AbortSignal | undefined;
 }
 
 export interface GetValueParams {
-  /** Optional conditionId filter to restrict valuation to a single market. */
+  /** Optional exact conditionId filter to restrict valuation to a single market. */
   market?: string;
 }
 
 export interface GetHoldersParams {
-  /** Max holders to return (1-100). */
+  /** Max holders per outcome token (API ceiling 1000). */
   limit?: number;
 }
 
 export interface ListMarketTradesParams {
-  /** When true, only include trades where the `proxyWallet` was the taker. */
+  /** Default true (each fill once, on its taker side); false includes maker rows. */
   takerOnly?: boolean;
-  /** Rows per page (1-500). */
+  /** Rows per first page (API ceiling 1000). Ignored once `cursor` is set. */
   limit?: number;
-  /** Pagination offset. */
-  offset?: number;
+  /** Opaque `nextCursor` from the previous page. Re-send every other filter unchanged. */
+  cursor?: string;
 }
 
 export interface ResolveUsernameParams {
@@ -408,21 +458,19 @@ export interface ResolveUsernameParams {
 }
 
 /**
- * Polymarket Data API client.
+ * Polymarket Data API v2 client. Every read maps the snake_case `/v2/*` wire
+ * rows onto the camelCase domain types at this boundary.
  *
- * Endpoints:
- * - `GET /v1/leaderboard?timePeriod=DAY|WEEK|MONTH|ALL&orderBy=PNL|VOL&limit=<n>`
- * - `GET /trades?user=<wallet>&limit=<n>`
- * - `GET /positions?user=<wallet>&limit=<n>`
+ * Endpoints: `/v2/leaderboard`, `/v2/trades`, `/v2/positions`, `/v2/activity`,
+ * `/v2/value`, `/v2/holders`, `/v2/status`.
  *
- * All endpoints are public — no auth required.
- * Verified against live data 2026-04-17 (see research doc).
+ * All endpoints are public — no auth required. Pagination is cursor-only
+ * (`pagination.next_cursor`); an `offset` param is a 400 upstream.
  *
- * Note: `/trades` defaults `takerOnly=true` server-side, hiding maker-side
+ * Note: `/v2/trades` defaults `taker_only=true` server-side, hiding maker-side
  * fills. `listUserTrades` always sends the param explicitly and defaults to
  * `false` so position-tracking callers (mirror, audit) see every CTF-balance
  * change.
-
  */
 export class PolymarketDataApiClient {
   private readonly baseUrl: string;
@@ -440,13 +488,26 @@ export class PolymarketDataApiClient {
   async listTopTraders(
     params?: ListTopTradersParams
   ): Promise<PolymarketLeaderboardEntry[]> {
-    const url = new URL("/v1/leaderboard", this.baseUrl);
-    url.searchParams.set("timePeriod", params?.timePeriod ?? "WEEK");
-    url.searchParams.set("orderBy", params?.orderBy ?? "PNL");
-    url.searchParams.set("limit", String(params?.limit ?? 10));
-
-    const json = await this.fetchJson(url);
-    return PolymarketLeaderboardResponseSchema.parse(json);
+    const url = v2Url(this.baseUrl, "/v2/leaderboard", {
+      time_period: (params?.timePeriod ?? "WEEK").toLowerCase(),
+      sort_by: (params?.orderBy ?? "PNL") === "VOL" ? "VOLUME" : "PNL",
+      limit: params?.limit ?? 10,
+    });
+    const response = parseResponse(
+      PolymarketLeaderboardV2ResponseSchema,
+      await this.fetchJson(url),
+      "/v2/leaderboard"
+    );
+    return response.data.map((row) => ({
+      rank: String(row.rank),
+      proxyWallet: row.user_id,
+      userName: row.user_name ?? "",
+      xUsername: row.x_username ?? "",
+      verifiedBadge: row.verified ?? false,
+      vol: row.volume,
+      pnl: row.pnl,
+      profileImage: row.profile_image ?? "",
+    }));
   }
 
   /** Data API's own serving/ingestion freshness evidence. */
@@ -462,102 +523,71 @@ export class PolymarketDataApiClient {
     ).data;
   }
 
-  async listUserActivity(
-    wallet: string,
-    params?: ListUserActivityParams
-  ): Promise<PolymarketUserTrade[]> {
-    return this.listUserTrades(wallet, params);
-  }
-
+  /**
+   * `GET /v2/trades?user=<wallet>` — the wallet's trade feed, newest first,
+   * walked by cursor for up to `maxPages` pages.
+   */
   async listUserTrades(
     wallet: string,
     params?: ListUserTradesParams
   ): Promise<PolymarketUserTrade[]> {
     assertWallet(wallet);
-    const url = new URL("/trades", this.baseUrl);
-    url.searchParams.set("user", wallet);
-    url.searchParams.set("limit", String(params?.limit ?? 20));
-    url.searchParams.set(
-      "takerOnly",
-      params?.takerOnly === true ? "true" : "false"
-    );
-    if (params?.offset !== undefined) {
-      url.searchParams.set("offset", String(params.offset));
+    const maxPages = Math.max(1, params?.maxPages ?? 1);
+    const since = params?.sinceTs;
+    const trades: PolymarketUserTrade[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < maxPages; page += 1) {
+      params?.signal?.throwIfAborted();
+      // Cursor pages keep only the seek anchor: resend every filter each page.
+      const url = v2Url(this.baseUrl, "/v2/trades", {
+        user: wallet,
+        taker_only: params?.takerOnly === true,
+        start: since,
+        ...pageWindow(cursor, params?.limit ?? 20),
+      });
+      const response = parsePagedRows(
+        PolymarketTradeV2Schema,
+        PolymarketTradeIdentityV2Schema,
+        await this.fetchJson(url, params?.signal),
+        "/v2/trades"
+      );
+      trades.push(...response.data.map(toUserTrade));
+      const next = response.pagination.next_cursor;
+      if (next === null) break;
+      cursor = next;
     }
-
-    const json = await this.fetchJson(url, params?.signal);
-    const trades = PolymarketUserTradesResponseSchema.parse(json);
-
-    if (params?.sinceTs !== undefined) {
-      const since = params.sinceTs;
-      return trades.filter((t) => t.timestamp > since);
-    }
-    return trades;
-  }
-
-  async listUserPositions(
-    wallet: string,
-    params?: ListUserPositionsParams
-  ): Promise<PolymarketUserPosition[]> {
-    assertWallet(wallet);
-    const url = new URL("/positions", this.baseUrl);
-    url.searchParams.set("user", wallet);
-    if (params?.market) url.searchParams.set("market", params.market);
-    if (params?.sizeThreshold !== undefined) {
-      url.searchParams.set("sizeThreshold", String(params.sizeThreshold));
-    }
-    if (params?.redeemable !== undefined) {
-      url.searchParams.set("redeemable", String(params.redeemable));
-    }
-    if (params?.limit !== undefined) {
-      url.searchParams.set("limit", String(params.limit));
-    }
-    if (params?.offset !== undefined) {
-      url.searchParams.set("offset", String(params.offset));
-    }
-
-    const json = await this.fetchJson(url, params?.signal);
-    return parseResponse(
-      PolymarketUserPositionsResponseSchema,
-      json,
-      "/positions"
-    );
+    return since === undefined
+      ? trades
+      : trades.filter((trade) => trade.timestamp > since);
   }
 
   /**
-   * Walk every page of `/positions` for `wallet` and return the concatenated
-   * result. The single-call `listUserPositions` silently caps at ~100 rows
-   * (Polymarket's default page); callers that need full enumeration (boot
-   * backfill, recovery sweeps) must paginate or they will miss everything
-   * past page 1 (bug.5027).
-   *
-   * Pages at `LIST_ALL_POSITIONS_PAGE_SIZE` (500, the API ceiling) and stops
-   * when a page returns fewer rows than requested. Hard-bounded to
-   * `LIST_ALL_POSITIONS_MAX_PAGES` to defend against a misbehaving server
-   * that always returns full pages.
-   *
-   * Defaults `sizeThreshold: 0` so sub-dollar positions are included. The
-   * Polymarket API silently omits them otherwise, which left winner positions
-   * with `currentValue < ~$1` invisible to the redeem-diff input set — the
-   * redeem pipeline never saw them and never enqueued. Callers that want the
-   * stricter default (research/screening) override via `baseParams`.
+   * One cursor page of `GET /v2/positions?user=<wallet>`. Full enumeration is
+   * `listAllUserPositions`; this is for callers that budget each request.
    */
-  async listAllUserPositions(
+  async listUserPositions(
     wallet: string,
-    baseParams?: Omit<ListUserPositionsParams, "limit" | "offset">
-  ): Promise<PolymarketUserPosition[]> {
-    const all: PolymarketUserPosition[] = [];
-    for (let page = 0; page < LIST_ALL_POSITIONS_MAX_PAGES; page += 1) {
-      const rows = await this.listUserPositions(wallet, {
-        sizeThreshold: 0,
-        ...baseParams,
-        limit: LIST_ALL_POSITIONS_PAGE_SIZE,
-        offset: page * LIST_ALL_POSITIONS_PAGE_SIZE,
-      });
-      all.push(...rows);
-      if (rows.length < LIST_ALL_POSITIONS_PAGE_SIZE) return all;
-    }
-    return all;
+    params?: ListUserPositionsParams
+  ): Promise<DataApiPage<PolymarketUserPosition>> {
+    assertWallet(wallet);
+    const url = v2Url(this.baseUrl, "/v2/positions", {
+      user: wallet,
+      condition: params?.market?.toLowerCase(),
+      filter_type: params?.minValueUsdc === undefined ? "TOKENS" : "CASH",
+      filter_amount: params?.minValueUsdc ?? params?.sizeThreshold,
+      include_archived: true,
+      ...pageWindow(params?.cursor, params?.limit),
+    });
+    const response = parsePagedRows(
+      PolymarketUserPositionV2Schema,
+      PolymarketPositionIdentityV2Schema,
+      await this.fetchJson(url, params?.signal),
+      "/v2/positions"
+    );
+    return {
+      rows: response.data.map(normalizeV2Position),
+      nextCursor: response.pagination.next_cursor,
+    };
   }
 
   /**
@@ -618,8 +648,32 @@ export class PolymarketDataApiClient {
     };
   }
 
-  /** Cursor-complete V2 replacement for legacy offset redemption reads. */
-  async listAllUserPositionsV2(
+  /**
+   * Every value-bearing position (`current_value > 0`, OPEN incl. redeemable)
+   * in one cursor walk. Prefer this to `listAllUserPositions` on hot paths:
+   * dust and worthless rows (tens of thousands on a whale target) are filtered
+   * server-side.
+   */
+  async listPositiveValueUserPositions(
+    wallet: string,
+    params?: { signal?: AbortSignal | undefined }
+  ): Promise<PolymarketUserPosition[]> {
+    const walk = await this.walkUserPositionsV2(wallet, {
+      filterType: "CASH",
+      // One atomic USDC unit, as a decimal (see listPositiveOpenUserPositionsV2).
+      filterAmount: 0.000001,
+      includeArchived: true,
+      maxRequests: 10,
+      signal: params?.signal,
+    });
+    return walk.positions.map(normalizeV2Position);
+  }
+
+  /**
+   * Cursor-complete enumeration of every position (OPEN incl. redeemable,
+   * archived included, dust included).
+   */
+  async listAllUserPositions(
     wallet: string,
     params?: { signal?: AbortSignal | undefined }
   ): Promise<PolymarketUserPosition[]> {
@@ -672,8 +726,7 @@ export class PolymarketDataApiClient {
       );
     }
 
-    const raw: PolymarketUserPositionV2[] = [];
-    const seenPositionKeys = new Set<string>();
+    const raw = new Map<string, PolymarketUserPositionV2>();
     let requestCount = 0;
     const chunks = conditions
       ? Array.from(
@@ -719,8 +772,9 @@ export class PolymarketDataApiClient {
           url.searchParams.set("cursor", cursor);
         }
 
-        const response = parseResponse(
-          PolymarketUserPositionsV2ResponseSchema,
+        const response = parsePagedRows(
+          PolymarketUserPositionV2Schema,
+          PolymarketPositionIdentityV2Schema,
           await this.fetchJson(url, params.signal),
           "/v2/positions"
         );
@@ -751,14 +805,9 @@ export class PolymarketDataApiClient {
               `response wallet ${row.proxy_wallet} did not match the requested wallet`
             );
           }
-          const key = `${conditionId}\u0000${row.token_id}`;
-          if (seenPositionKeys.has(key)) {
-            throw new PolyDataApiPositionsV2Error(
-              `duplicate position key ${conditionId}/${row.token_id}`
-            );
-          }
-          seenPositionKeys.add(key);
-          raw.push(row);
+          // Keyset paging over a moving sort can return a row twice; the
+          // later read is fresher, so last wins.
+          raw.set(`${conditionId}\u0000${row.token_id}`, row);
         }
 
         const nextCursor = response.pagination.next_cursor;
@@ -779,7 +828,7 @@ export class PolymarketDataApiClient {
         );
       }
     }
-    return { positions: raw, requestCount };
+    return { positions: [...raw.values()], requestCount };
   }
 
   /** Bounded exact-condition native history; no cursor or render-path side effects. */
@@ -833,101 +882,110 @@ export class PolymarketDataApiClient {
   }
 
   /**
-   * `GET /activity?user=<wallet>` — lifecycle events (TRADE/SPLIT/MERGE/REDEEM/...).
-   * Distinct from `/trades`; do not delegate.
+   * One cursor page of `GET /v2/activity?user=<wallet>` — lifecycle events
+   * (TRADE/SPLIT/MERGE/REDEEM/...). Distinct from `/v2/trades`.
    */
   async listActivity(
     wallet: string,
     params?: ListActivityParams
-  ): Promise<ActivityEvent[]> {
+  ): Promise<DataApiPage<ActivityEvent>> {
     assertWallet(wallet);
-    const url = new URL("/activity", this.baseUrl);
-    url.searchParams.set("user", wallet);
-    if (params?.type) url.searchParams.set("type", params.type);
-    if (params?.side) url.searchParams.set("side", params.side);
-    if (params?.start !== undefined) {
-      url.searchParams.set("start", String(params.start));
-    }
-    if (params?.end !== undefined) {
-      url.searchParams.set("end", String(params.end));
-    }
-    if (params?.limit !== undefined) {
-      url.searchParams.set("limit", String(params.limit));
-    }
-    if (params?.offset !== undefined) {
-      url.searchParams.set("offset", String(params.offset));
-    }
-
-    const json = await this.fetchJson(url);
-    return parseResponse(ActivityEventsResponseSchema, json, "/activity");
+    const url = v2Url(this.baseUrl, "/v2/activity", {
+      user: wallet,
+      type: params?.type,
+      side: params?.side,
+      start: params?.start,
+      end: params?.end,
+      ...pageWindow(params?.cursor, params?.limit),
+    });
+    const response = parseResponse(
+      PolymarketActivityV2ResponseSchema,
+      await this.fetchJson(url, params?.signal),
+      "/v2/activity"
+    );
+    return {
+      rows: response.data.map(toActivityEvent),
+      nextCursor: response.pagination.next_cursor,
+    };
   }
 
   /**
-   * `GET /value?user=<wallet>` — cheap wallet-value probe.
-   * Returns the first entry; endpoint is `[{ user, value }]`.
+   * `GET /v2/value?user=<wallet>` — cheap wallet-value probe. A documented
+   * miss (`data: null`) is a wallet with no priced holdings: value 0.
    */
   async getValue(
     wallet: string,
     params?: GetValueParams
   ): Promise<{ user: string; value: number }> {
     assertWallet(wallet);
-    const url = new URL("/value", this.baseUrl);
-    url.searchParams.set("user", wallet);
-    if (params?.market) url.searchParams.set("market", params.market);
-
-    const json = await this.fetchJson(url);
-    const entries = parseResponse(UserValueResponseSchema, json, "/value");
-    const first = entries[0];
-    if (!first) {
-      return { user: wallet, value: 0 };
-    }
-    return { user: first.user, value: first.value };
+    const url = v2Url(this.baseUrl, "/v2/value", {
+      user: wallet,
+      condition: params?.market ? assertCondition(params.market) : undefined,
+    });
+    const response = parseResponse(
+      PolymarketValueV2ResponseSchema,
+      await this.fetchJson(url),
+      "/v2/value"
+    );
+    return response.data
+      ? { user: response.data.proxy_wallet, value: response.data.value }
+      : { user: wallet, value: 0 };
   }
 
   /**
-   * `GET /holders?market=<conditionId>` — current shareholders on a market.
-   * Hidden-gem discovery input for wallet research.
+   * `GET /v2/holders?condition=<conditionId>` — current shareholders of every
+   * outcome token of a market, flattened. Hidden-gem discovery input.
    */
   async getHolders(
     market: string,
     params?: GetHoldersParams
   ): Promise<MarketHolder[]> {
-    if (!market || typeof market !== "string") {
-      throw new Error("getHolders: market (conditionId) is required");
-    }
-    const url = new URL("/holders", this.baseUrl);
-    url.searchParams.set("market", market);
-    if (params?.limit !== undefined) {
-      url.searchParams.set("limit", String(params.limit));
-    }
-
-    const json = await this.fetchJson(url);
-    return parseResponse(MarketHoldersResponseSchema, json, "/holders");
+    const url = v2Url(this.baseUrl, "/v2/holders", {
+      condition: assertCondition(market),
+      limit: params?.limit,
+    });
+    const response = parseResponse(
+      PolymarketHoldersV2ResponseSchema,
+      await this.fetchJson(url),
+      "/v2/holders"
+    );
+    return response.data.flatMap((group) =>
+      group.holders.map((holder) => ({
+        proxyWallet: holder.proxy_wallet,
+        asset: holder.token_id,
+        outcomeIndex: holder.outcome_index,
+        amount: holder.amount,
+        name: holder.name ?? null,
+        pseudonym: holder.pseudonym ?? null,
+        displayUsernamePublic: holder.display_username_public ?? false,
+      }))
+    );
   }
 
   /**
-   * `GET /trades?market=<conditionId>` — market-level trade stream.
-   * Used for counterparty harvesting (NOT per-user history — see `listUserTrades`).
+   * One cursor page of `GET /v2/trades?condition=<conditionId>` — market-level
+   * trade stream. Used for counterparty harvesting (NOT per-user history — see
+   * `listUserTrades`).
    */
   async listMarketTrades(
     market: string,
     params?: ListMarketTradesParams
-  ): Promise<MarketTrade[]> {
-    if (!market || typeof market !== "string") {
-      throw new Error("listMarketTrades: market (conditionId) is required");
-    }
-    const url = new URL("/trades", this.baseUrl);
-    url.searchParams.set("market", market);
-    if (params?.takerOnly) url.searchParams.set("takerOnly", "true");
-    if (params?.limit !== undefined) {
-      url.searchParams.set("limit", String(params.limit));
-    }
-    if (params?.offset !== undefined) {
-      url.searchParams.set("offset", String(params.offset));
-    }
-
-    const json = await this.fetchJson(url);
-    return parseResponse(MarketTradesResponseSchema, json, "/trades?market=");
+  ): Promise<DataApiPage<PolymarketUserTrade>> {
+    const url = v2Url(this.baseUrl, "/v2/trades", {
+      condition: assertCondition(market),
+      taker_only: params?.takerOnly !== false,
+      ...pageWindow(params?.cursor, params?.limit ?? 100),
+    });
+    const response = parsePagedRows(
+      PolymarketTradeV2Schema,
+      PolymarketTradeIdentityV2Schema,
+      await this.fetchJson(url),
+      "/v2/trades?condition="
+    );
+    return {
+      rows: response.data.map(toUserTrade),
+      nextCursor: response.pagination.next_cursor,
+    };
   }
 
   /**
@@ -1148,14 +1206,17 @@ function nonemptyStringOrNull(value: string | null | undefined): string | null {
 function normalizeV2Position(
   row: PolymarketUserPositionV2
 ): PolymarketUserPosition {
-  return PolymarketUserPositionsResponseSchema.element.parse({
+  return PolymarketUserPositionSchema.parse({
     ...row,
     proxyWallet: row.proxy_wallet,
     asset: row.token_id,
-    conditionId: row.condition_id,
+    conditionId: row.condition_id.toLowerCase(),
     size: row.current_size,
     avgPrice: row.avg_price,
     initialValue: row.entry_cost_usdc,
+    // `total_cost_usdc` = entry cost + entry fees: the gross opening cash.
+    grossInitialValue: row.total_cost_usdc,
+    entryFeesUsdc: row.entry_fees_usdc,
     currentValue: row.current_value,
     cashPnl: row.unrealized_pnl,
     percentPnl: row.percent_pnl,
@@ -1163,7 +1224,7 @@ function normalizeV2Position(
     realizedPnl: row.realized_pnl,
     percentRealizedPnl: row.percent_realized_pnl,
     curPrice: row.current_price,
-    redeemable: row.redeemable,
+    redeemable: row.redeemable ?? row.status === "REDEEMABLE",
     mergeable: row.mergeable,
     title: row.title ?? "",
     slug: row.slug,
@@ -1173,10 +1234,80 @@ function normalizeV2Position(
     outcome: row.outcome,
     outcomeIndex: row.outcome_index,
     oppositeOutcome: row.opposite_outcome,
-    oppositeAsset: row.opposite_token_id,
+    oppositeAsset: row.opposite_token_id ?? null,
     endDate: row.end_date,
     negativeRisk: row.negative_risk,
   });
+}
+
+function toUserTrade(row: PolymarketTradeV2): PolymarketUserTrade {
+  return {
+    proxyWallet: row.proxy_wallet,
+    side: row.side,
+    asset: row.token_id,
+    conditionId: row.condition_id.toLowerCase(),
+    size: row.size,
+    price: row.price,
+    timestamp: row.timestamp,
+    title: row.title ?? "",
+    slug: row.slug ?? "",
+    eventSlug: row.event_slug ?? "",
+    icon: row.icon ?? "",
+    outcome: row.outcome,
+    outcomeIndex: row.outcome_index,
+    transactionHash: row.transaction_hash,
+  };
+}
+
+function toActivityEvent(row: PolymarketActivityV2): ActivityEvent {
+  return {
+    proxyWallet: row.proxy_wallet,
+    type: row.type,
+    timestamp: row.timestamp,
+    conditionId: row.condition_id.toLowerCase(),
+    asset: row.token_id ?? null,
+    side: row.side === "BUY" || row.side === "SELL" ? row.side : null,
+    size: row.size,
+    usdcSize: row.usdc_size,
+    price: row.price ?? null,
+    outcome: row.outcome ?? null,
+    title: row.title ?? null,
+    slug: row.slug ?? null,
+    eventSlug: row.event_slug ?? null,
+    transactionHash: row.transaction_hash,
+  };
+}
+
+/**
+ * `limit` only applies to the first page; once a cursor exists it carries its
+ * own size (the API ignores `limit` then), so it is not re-sent.
+ */
+function pageWindow(
+  cursor: string | undefined,
+  limit: number | undefined
+): { cursor?: string; limit?: number | undefined } {
+  return cursor === undefined ? { limit } : { cursor };
+}
+
+type QueryValue = string | number | boolean | undefined;
+
+function v2Url(
+  baseUrl: string,
+  pathname: string,
+  query: Record<string, QueryValue>
+): URL {
+  const url = new URL(pathname, baseUrl);
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined) url.searchParams.set(key, String(value));
+  }
+  return url;
+}
+
+function assertCondition(conditionId: string): string {
+  if (!CONDITION_ID_PATTERN.test(conditionId)) {
+    throw new Error(`Invalid condition id: ${conditionId}`);
+  }
+  return conditionId.toLowerCase();
 }
 
 function assertWallet(wallet: string): void {

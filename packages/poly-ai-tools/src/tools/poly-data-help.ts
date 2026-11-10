@@ -44,38 +44,38 @@ export const POLY_DATA_HELP_NAME = "core__poly_data_help" as const;
 const ENDPOINTS: PolyDataHelpOutput["endpoints"] = [
   {
     name: "core__poly_data_positions",
-    path: "GET /positions",
-    params: ["user", "market?", "sizeThreshold?", "limit?", "offset?"],
+    path: "GET /v2/positions",
+    params: ["user", "market?", "sizeThreshold?", "limit?", "cursor?"],
     notes:
       "Open positions for a proxy-wallet. Empty when `user` is the signing EOA, not the Safe.",
   },
   {
     name: "core__poly_data_activity",
-    path: "GET /activity",
-    params: ["user", "type?", "side?", "start?", "end?", "limit?", "offset?"],
+    path: "GET /v2/activity",
+    params: ["user", "type?", "side?", "start?", "end?", "limit?", "cursor?"],
     notes:
       "Lifecycle events (TRADE/SPLIT/MERGE/REDEEM/...). Distinct from /trades.",
   },
   {
     name: "core__poly_data_value",
-    path: "GET /value",
+    path: "GET /v2/value",
     params: ["user", "market?"],
     notes:
       "Cheap USDC-value probe. Use as pre-filter before /positions and /activity.",
   },
   {
     name: "core__poly_data_holders",
-    path: "GET /holders",
+    path: "GET /v2/holders",
     params: ["market", "limit?"],
     notes:
       "Current shareholders of a market (conditionId). Core hidden-gem wallet-discovery primitive.",
   },
   {
     name: "core__poly_data_trades_market",
-    path: "GET /trades",
-    params: ["market", "takerOnly?", "limit?", "offset?"],
+    path: "GET /v2/trades",
+    params: ["market", "takerOnly?", "limit?", "cursor?"],
     notes:
-      "Market-level trade stream — exposes taker + maker addresses for counterparty harvesting.",
+      "Market-level trade stream — each row names the trading wallet, for counterparty harvesting.",
   },
   {
     name: "core__poly_data_resolve_username",
@@ -86,10 +86,10 @@ const ENDPOINTS: PolyDataHelpOutput["endpoints"] = [
   },
   {
     name: "core__wallet_top_traders",
-    path: "GET /v1/leaderboard",
+    path: "GET /v2/leaderboard",
     params: ["timePeriod", "orderBy?", "limit?"],
     notes:
-      "Global leaderboard. Capped at offset=1000 — leaderboard-only discovery misses hidden gems.",
+      "Global leaderboard. Only the top ranks are reachable — leaderboard-only discovery misses hidden gems.",
   },
 ];
 
@@ -100,13 +100,13 @@ const DISCOVERY_STRATEGY = [
   "4) Cheap-filter with /value?user=<wallet> to drop sub-$1k wallets.",
   "5) Profile survivors: /positions (unrealized) + /activity (realized-PnL reconstruction).",
   "6) Rank by consistency: ≥N resolved markets, win-rate ≥60%, positive PnL across ≥3 events.",
-  "7) Cross-check against /leaderboard (offset 0..1000) — if absent, genuine hidden gem.",
+  "7) Cross-check against /leaderboard (top ranks only) — if absent, genuine hidden gem.",
 ].join("\n");
 
 const GOTCHAS: string[] = [
   "USER_PARAM_IS_PROXY_WALLET — always pass the Safe proxy, NOT the signing EOA. Empty /positions is almost always this.",
   "Data API is Cloudflare-throttled ~60 rpm per IP. Throttled silently (no 429). Keep /holders harvesting ≤200 markets per run.",
-  "/leaderboard is capped at offset=1000 — that's why holders-based discovery exists.",
+  "/leaderboard only exposes the top ranks — that's why holders-based discovery exists.",
   "/public-search (handle resolver) is on gamma-api.polymarket.com, a different host from data-api.polymarket.com.",
   "`market` parameter is a conditionId (hex), NOT the slug and NOT the CTF tokenId.",
   "Realized PnL is reconstructed from /activity — /positions only exposes unrealized PnL on open positions.",

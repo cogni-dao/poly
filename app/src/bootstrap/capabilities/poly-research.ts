@@ -33,18 +33,17 @@ export function createPolyResearchCapability(
 
   return {
     getPositions: async (params) => {
-      const limit = params.limit ?? 50;
-      const positions = await dataApiClient.listUserPositions(params.user, {
+      const page = await dataApiClient.listUserPositions(params.user, {
         ...(params.market !== undefined && { market: params.market }),
         ...(params.sizeThreshold !== undefined && {
           sizeThreshold: params.sizeThreshold,
         }),
-        limit,
-        ...(params.offset !== undefined && { offset: params.offset }),
+        limit: params.limit ?? 50,
+        ...(params.cursor !== undefined && { cursor: params.cursor }),
       });
       return {
         user: params.user,
-        positions: positions.map((p) => ({
+        positions: page.rows.map((p) => ({
           proxyWallet: p.proxyWallet,
           asset: p.asset,
           conditionId: p.conditionId,
@@ -58,36 +57,37 @@ export function createPolyResearchCapability(
           eventSlug: p.eventSlug ?? "",
           outcome: p.outcome ?? "",
         })),
-        count: positions.length,
-        hasMore: positions.length >= limit,
+        count: page.rows.length,
+        hasMore: page.nextCursor !== null,
+        nextCursor: page.nextCursor,
       };
     },
 
     listActivity: async (params) => {
-      const limit = params.limit ?? 100;
-      const events = await dataApiClient.listActivity(params.user, {
+      const page = await dataApiClient.listActivity(params.user, {
         ...(params.type !== undefined && { type: params.type }),
         ...(params.side !== undefined && { side: params.side }),
         ...(params.start !== undefined && { start: params.start }),
         ...(params.end !== undefined && { end: params.end }),
-        limit,
-        ...(params.offset !== undefined && { offset: params.offset }),
+        limit: params.limit ?? 100,
+        ...(params.cursor !== undefined && { cursor: params.cursor }),
       });
       return {
         user: params.user,
-        events: events.map((e) => ({
+        events: page.rows.map((e) => ({
           type: e.type,
           timestamp: e.timestamp,
-          conditionId: e.conditionId ?? "",
-          side: e.side ?? "",
+          conditionId: e.conditionId,
+          side: e.side,
           size: e.size,
           price: e.price,
           title: e.title ?? "",
           eventSlug: e.eventSlug ?? "",
-          transactionHash: e.transactionHash ?? "",
+          transactionHash: e.transactionHash,
         })),
-        count: events.length,
-        hasMore: events.length >= limit,
+        count: page.rows.length,
+        hasMore: page.nextCursor !== null,
+        nextCursor: page.nextCursor,
       };
     },
 
@@ -110,37 +110,35 @@ export function createPolyResearchCapability(
         market: params.market,
         holders: holders.map((h) => ({
           proxyWallet: h.proxyWallet,
-          outcome: h.outcome ?? "",
+          asset: h.asset,
           outcomeIndex: h.outcomeIndex,
           amount: h.amount,
-          userName: h.displayUsername || h.name || null,
+          userName: h.displayUsernamePublic ? h.name : h.pseudonym,
         })),
         count: holders.length,
       };
     },
 
     listMarketTrades: async (params) => {
-      const limit = params.limit ?? 100;
-      const trades = await dataApiClient.listMarketTrades(params.market, {
+      const page = await dataApiClient.listMarketTrades(params.market, {
         ...(params.takerOnly !== undefined && { takerOnly: params.takerOnly }),
-        limit,
-        ...(params.offset !== undefined && { offset: params.offset }),
+        limit: params.limit ?? 100,
+        ...(params.cursor !== undefined && { cursor: params.cursor }),
       });
       return {
         market: params.market,
-        trades: trades.map((t) => ({
+        trades: page.rows.map((t) => ({
           proxyWallet: t.proxyWallet,
-          makerAddress: t.makerAddress ?? "",
-          takerAddress: t.takerAddress ?? "",
           side: t.side,
           asset: t.asset,
           size: t.size,
           price: t.price,
           timestamp: t.timestamp,
-          outcome: t.outcome ?? "",
+          outcome: t.outcome,
         })),
-        count: trades.length,
-        hasMore: trades.length >= limit,
+        count: page.rows.length,
+        hasMore: page.nextCursor !== null,
+        nextCursor: page.nextCursor,
       };
     },
 

@@ -43,15 +43,16 @@ export const PolyDataActivityInputSchema = z.object({
     .number()
     .int()
     .min(1)
-    .max(500)
+    .max(1000)
     .optional()
-    .describe("Rows per page (1-500, default 100)."),
-  offset: z
-    .number()
-    .int()
-    .nonnegative()
+    .describe("Rows per first page (1-1000, default 100)."),
+  cursor: z
+    .string()
+    .min(1)
     .optional()
-    .describe("Pagination offset."),
+    .describe(
+      "Opaque `nextCursor` from the previous page; re-send every other argument unchanged."
+    ),
 });
 export type PolyDataActivityInput = z.infer<typeof PolyDataActivityInputSchema>;
 
@@ -59,9 +60,9 @@ const ActivityEntrySchema = z.object({
   type: z.string(),
   timestamp: z.number(),
   conditionId: z.string(),
-  side: z.string(),
+  side: z.string().nullable(),
   size: z.number(),
-  price: z.number(),
+  price: z.number().nullable(),
   title: z.string(),
   eventSlug: z.string(),
   transactionHash: z.string(),
@@ -72,6 +73,7 @@ export const PolyDataActivityOutputSchema = z.object({
   events: z.array(ActivityEntrySchema),
   count: z.number().int().nonnegative(),
   hasMore: z.boolean(),
+  nextCursor: z.string().nullable(),
 });
 export type PolyDataActivityOutput = z.infer<
   typeof PolyDataActivityOutputSchema
@@ -95,7 +97,7 @@ export const polyDataActivityContract: ToolContract<
   inputSchema: PolyDataActivityInputSchema,
   outputSchema: PolyDataActivityOutputSchema,
   redact: (out) => out,
-  allowlist: ["user", "events", "count", "hasMore"] as const,
+  allowlist: ["user", "events", "count", "hasMore", "nextCursor"] as const,
 };
 
 export interface PolyDataActivityDeps {
@@ -114,7 +116,7 @@ export function createPolyDataActivityImplementation(
         ...(input.start !== undefined && { start: input.start }),
         ...(input.end !== undefined && { end: input.end }),
         limit: input.limit ?? 100,
-        offset: input.offset ?? 0,
+        ...(input.cursor !== undefined && { cursor: input.cursor }),
       }),
   };
 }
@@ -128,6 +130,7 @@ export const polyDataActivityStubImplementation: ToolImplementation<
     events: [],
     count: 0,
     hasMore: false,
+    nextCursor: null,
   }),
 };
 

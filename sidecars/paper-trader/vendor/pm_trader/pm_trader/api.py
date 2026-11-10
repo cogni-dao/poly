@@ -271,8 +271,9 @@ class PolymarketClient:
     ) -> list[dict]:
         """Return market-level trade prints on ``token_id`` newer than ``since_ts``.
 
-        Hits Polymarket Data API ``GET /trades?market=<conditionId>`` and
-        filters in-client to ``asset == token_id`` and ``timestamp > since_ts``.
+        Hits Polymarket Data API ``GET /v2/trades?condition=<conditionId>`` and
+        filters in-client to rows whose ``token_id`` is the requested token and
+        ``timestamp > since_ts``.
         The data-api endpoint returns trades for the whole condition (both
         YES + NO tokens); we keep only the side the caller asked about.
 
@@ -292,13 +293,17 @@ class PolymarketClient:
           trades at ``price <= L`` would have matched our bid. The engine
           applies that filter, not this client.
         - Returns raw dicts (no pydantic schema); the engine consumes only
-          ``price``, ``size``, ``side``, ``asset``, ``timestamp``.
+          ``price``, ``size``, ``side``, ``asset``, ``timestamp``. ``asset`` is
+          the exact v2 ``token_id`` this call was filtered on.
         - On any HTTP / parse error, raises ``ApiError`` — callers (the engine's
           maker-fill branch) catch and degrade gracefully per the bug.5005
           GRACEFUL_DEGRADATION_ON_API_ERROR invariant.
         """
-        params = {"market": condition_id, "limit": limit}
-        data = self._data_api_get("/trades", params=params)
+        # Data API v2 (v1 retired, bug.5049): `condition` is the market key,
+        # rows live under the `data` envelope and carry `token_id`.
+        params = {"condition": condition_id, "limit": limit}
+        envelope = self._data_api_get("/v2/trades", params=params)
+        data = envelope.get("data") if isinstance(envelope, dict) else None
         if not isinstance(data, list):
             return []
 
@@ -306,7 +311,7 @@ class PolymarketClient:
         for raw in data:
             if not isinstance(raw, dict):
                 continue
-            if raw.get("asset") != token_id:
+            if raw.get("token_id") != token_id:
                 continue
             try:
                 ts = float(raw.get("timestamp", 0))

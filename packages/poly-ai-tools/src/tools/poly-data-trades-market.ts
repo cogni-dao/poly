@@ -25,21 +25,22 @@ export const PolyDataTradesMarketInputSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "When true, only include trades where `proxyWallet` was the taker."
+      "Default false: include maker-side rows too. True: each fill once, on its taker side."
     ),
   limit: z
     .number()
     .int()
     .min(1)
-    .max(500)
+    .max(1000)
     .optional()
-    .describe("Rows per page (1-500, default 100)."),
-  offset: z
-    .number()
-    .int()
-    .nonnegative()
+    .describe("Rows per first page (1-1000, default 100)."),
+  cursor: z
+    .string()
+    .min(1)
     .optional()
-    .describe("Pagination offset (default 0)."),
+    .describe(
+      "Opaque `nextCursor` from the previous page; re-send every other argument unchanged."
+    ),
 });
 export type PolyDataTradesMarketInput = z.infer<
   typeof PolyDataTradesMarketInputSchema
@@ -47,8 +48,6 @@ export type PolyDataTradesMarketInput = z.infer<
 
 const MarketTradeEntrySchema = z.object({
   proxyWallet: z.string(),
-  makerAddress: z.string(),
-  takerAddress: z.string(),
   side: z.enum(["BUY", "SELL"]),
   asset: z.string(),
   size: z.number(),
@@ -62,6 +61,7 @@ export const PolyDataTradesMarketOutputSchema = z.object({
   trades: z.array(MarketTradeEntrySchema),
   count: z.number().int().nonnegative(),
   hasMore: z.boolean(),
+  nextCursor: z.string().nullable(),
 });
 export type PolyDataTradesMarketOutput = z.infer<
   typeof PolyDataTradesMarketOutputSchema
@@ -80,14 +80,14 @@ export const polyDataTradesMarketContract: ToolContract<
   name: POLY_DATA_TRADES_MARKET_NAME,
   description:
     "List recent trades on a Polymarket market across ALL wallets (not a single user's history). " +
-    "Use for counterparty harvesting — every trade exposes taker + maker addresses, surfacing " +
+    "Use for counterparty harvesting — every trade row exposes the trading wallet, surfacing " +
     "wallets that traded the market. Paired with `core__poly_data_holders` to discover active " +
     "participants. `market` is the conditionId (hex).",
   effect: "read_only",
   inputSchema: PolyDataTradesMarketInputSchema,
   outputSchema: PolyDataTradesMarketOutputSchema,
   redact: (out) => out,
-  allowlist: ["market", "trades", "count", "hasMore"] as const,
+  allowlist: ["market", "trades", "count", "hasMore", "nextCursor"] as const,
 };
 
 export interface PolyDataTradesMarketDeps {
@@ -103,7 +103,7 @@ export function createPolyDataTradesMarketImplementation(
         market: input.market,
         takerOnly: input.takerOnly ?? false,
         limit: input.limit ?? 100,
-        offset: input.offset ?? 0,
+        ...(input.cursor !== undefined && { cursor: input.cursor }),
       }),
   };
 }
@@ -117,6 +117,7 @@ export const polyDataTradesMarketStubImplementation: ToolImplementation<
     trades: [],
     count: 0,
     hasMore: false,
+    nextCursor: null,
   }),
 };
 

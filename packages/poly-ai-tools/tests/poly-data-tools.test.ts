@@ -62,12 +62,14 @@ function mkCapability(
       positions: [],
       count: 0,
       hasMore: false,
+      nextCursor: null,
     })),
     listActivity: vi.fn(async () => ({
       user: PROXY_WALLET,
       events: [],
       count: 0,
       hasMore: false,
+      nextCursor: null,
     })),
     getValue: vi.fn(async () => ({
       user: PROXY_WALLET,
@@ -84,6 +86,7 @@ function mkCapability(
       trades: [],
       count: 0,
       hasMore: false,
+      nextCursor: null,
     })),
     resolveUsername: vi.fn(async () => ({
       profiles: [],
@@ -161,7 +164,7 @@ describe("core__poly_data_positions", () => {
     ).toThrow();
   });
 
-  it("delegates to capability with defaults (limit=50, offset=0)", async () => {
+  it("delegates to capability with defaults (limit=50, no cursor)", async () => {
     const cap = mkCapability();
     const impl = createPolyDataPositionsImplementation({
       polyDataCapability: cap,
@@ -170,7 +173,6 @@ describe("core__poly_data_positions", () => {
     expect(cap.getPositions).toHaveBeenCalledWith({
       user: PROXY_WALLET,
       limit: 50,
-      offset: 0,
     });
   });
 
@@ -184,14 +186,14 @@ describe("core__poly_data_positions", () => {
       market: "0xMARKET",
       sizeThreshold: 500,
       limit: 10,
-      offset: 20,
+      cursor: "opaque-cursor",
     });
     expect(cap.getPositions).toHaveBeenCalledWith({
       user: PROXY_WALLET,
       market: "0xMARKET",
       sizeThreshold: 500,
       limit: 10,
-      offset: 20,
+      cursor: "opaque-cursor",
     });
   });
 });
@@ -215,7 +217,6 @@ describe("core__poly_data_activity", () => {
     expect(cap.listActivity).toHaveBeenCalledWith({
       user: EOA,
       limit: 100,
-      offset: 0,
     });
   });
 });
@@ -255,7 +256,7 @@ describe("core__poly_data_holders", () => {
 });
 
 describe("core__poly_data_trades_market", () => {
-  it("delegates with defaults takerOnly=false, limit=100, offset=0", async () => {
+  it("delegates with defaults takerOnly=false, limit=100, no cursor", async () => {
     const cap = mkCapability();
     const impl = createPolyDataTradesMarketImplementation({
       polyDataCapability: cap,
@@ -265,7 +266,6 @@ describe("core__poly_data_trades_market", () => {
       market: "0xCONDITION",
       takerOnly: false,
       limit: 100,
-      offset: 0,
     });
   });
 });

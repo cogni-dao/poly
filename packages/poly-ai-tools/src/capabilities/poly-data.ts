@@ -7,7 +7,7 @@
  * Scope: Contract + output types for `core__poly_data_*` tools. Does not implement transport, does not load env.
  * Invariants:
  *   - NO_NEW_PORT: Research is read-only HTTP; lives in ai-tools/capabilities, not nodes/poly/app/src/ports
- *   - PAGINATION_CONSISTENT: Paginated outputs expose `{ count, hasMore }`
+ *   - PAGINATION_CONSISTENT: Paginated outputs expose `{ count, hasMore, nextCursor }`; pages advance by the opaque `cursor` (Data API v2 has no offset)
  *   - USER_PARAM_IS_PROXY_WALLET: `user` is validated as 0x40-hex by the tool input schema
  * Side-effects: none (interface only)
  * Links: work/items/task.0386.poly-agent-wallet-research-v0.md
@@ -44,6 +44,7 @@ export interface PolyDataPositionsOutput {
   }>;
   count: number;
   hasMore: boolean;
+  nextCursor: string | null;
 }
 
 export interface PolyDataActivityOutput {
@@ -52,15 +53,16 @@ export interface PolyDataActivityOutput {
     type: string;
     timestamp: number;
     conditionId: string;
-    side: string;
+    side: string | null;
     size: number;
-    price: number;
+    price: number | null;
     title: string;
     eventSlug: string;
     transactionHash: string;
   }>;
   count: number;
   hasMore: boolean;
+  nextCursor: string | null;
 }
 
 export interface PolyDataValueOutput {
@@ -73,7 +75,7 @@ export interface PolyDataHoldersOutput {
   market: string;
   holders: Array<{
     proxyWallet: string;
-    outcome: string;
+    asset: string;
     outcomeIndex: number;
     amount: number;
     userName: string | null;
@@ -85,8 +87,6 @@ export interface PolyDataMarketTradesOutput {
   market: string;
   trades: Array<{
     proxyWallet: string;
-    makerAddress: string;
-    takerAddress: string;
     side: "BUY" | "SELL";
     asset: string;
     size: number;
@@ -96,6 +96,7 @@ export interface PolyDataMarketTradesOutput {
   }>;
   count: number;
   hasMore: boolean;
+  nextCursor: string | null;
 }
 
 export interface PolyDataResolveUsernameOutput {
@@ -132,7 +133,7 @@ export interface PolyDataCapability {
     market?: string;
     sizeThreshold?: number;
     limit?: number;
-    offset?: number;
+    cursor?: string;
   }): Promise<PolyDataPositionsOutput>;
 
   listActivity(params: {
@@ -142,7 +143,7 @@ export interface PolyDataCapability {
     start?: number;
     end?: number;
     limit?: number;
-    offset?: number;
+    cursor?: string;
   }): Promise<PolyDataActivityOutput>;
 
   getValue(params: {
@@ -159,7 +160,7 @@ export interface PolyDataCapability {
     market: string;
     takerOnly?: boolean;
     limit?: number;
-    offset?: number;
+    cursor?: string;
   }): Promise<PolyDataMarketTradesOutput>;
 
   resolveUsername(params: {
