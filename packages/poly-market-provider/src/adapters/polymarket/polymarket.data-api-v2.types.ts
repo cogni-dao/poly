@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 // SPDX-FileCopyrightText: 2026 Cogni-DAO
 
-/** Strict schemas for condition-scoped Polymarket Data API V2 positions. */
+/** Strict wire schemas for the Polymarket Data API v2 reads (positions, trades, activity, holders, leaderboard, value). */
 import { z } from "zod";
 
 /**
@@ -39,7 +39,7 @@ export const PolymarketUserPositionV2Schema = z
     opposite_outcome: z.string().nullable().optional(),
     opposite_token_id: z.string().nullable().optional(),
     outcome: z.string().optional(),
-    outcome_index: z.number().int().nonnegative().optional(),
+    outcome_index: z.number().int().nonnegative(),
     percent_pnl: z.number().finite(),
     percent_realized_pnl: z.number().finite(),
     profile_image: z.string().nullable().optional(),
@@ -125,6 +125,10 @@ export const PolymarketActivityV2Schema = z.object({
   usdc_size: z.number().finite().nonnegative(),
   price: z.number().finite().nonnegative().nullable().optional(),
   side: z.enum(["BUY", "SELL", ""]).nullable().optional(),
+  outcome: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
+  slug: z.string().nullable().optional(),
+  event_slug: z.string().nullable().optional(),
   id: z.union([z.string(), z.number()]).optional(),
   trade_id: z.union([z.string(), z.number()]).optional(),
   log_index: z.number().int().nonnegative().optional(),
@@ -137,4 +141,97 @@ export type PolymarketActivityV2 = z.infer<typeof PolymarketActivityV2Schema>;
 export const PolymarketActivityV2ResponseSchema = z.object({
   data: z.array(PolymarketActivityV2Schema).max(1000),
   pagination: PolymarketPositionsV2PaginationSchema,
+});
+
+const TOKEN_ID_PATTERN = /^[0-9]+$/;
+
+/**
+ * One `/v2/trades` row (user feed and condition feed share the shape).
+ * Identity is exact: a row without `token_id`, `condition_id` or
+ * `outcome_index` fails validation; nothing is inferred from position or index.
+ */
+export const PolymarketTradeV2Schema = z
+  .object({
+    proxy_wallet: z.string().min(1),
+    side: z.enum(["BUY", "SELL"]),
+    token_id: z.string().regex(TOKEN_ID_PATTERN),
+    condition_id: z.string().min(1),
+    size: z.number().finite().nonnegative(),
+    price: z.number().finite().nonnegative(),
+    timestamp: z.number().int().nonnegative(),
+    transaction_hash: z.string(),
+    outcome: z.string().min(1),
+    outcome_index: z.number().int().nonnegative(),
+    title: z.string().nullable().optional(),
+    slug: z.string().nullable().optional(),
+    event_slug: z.string().nullable().optional(),
+    icon: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type PolymarketTradeV2 = z.infer<typeof PolymarketTradeV2Schema>;
+export const PolymarketTradesV2ResponseSchema = z.object({
+  data: z.array(PolymarketTradeV2Schema),
+  pagination: PolymarketPositionsV2PaginationSchema,
+});
+
+/** `/v2/holders`: one group per outcome token, each with its holders. */
+export const PolymarketHoldersV2ResponseSchema = z.object({
+  data: z.array(
+    z
+      .object({
+      token_id: z.string().regex(TOKEN_ID_PATTERN),
+      holders: z.array(
+        z
+          .object({
+            proxy_wallet: z.string().min(1),
+            token_id: z.string().regex(TOKEN_ID_PATTERN),
+            outcome_index: z.number().int().nonnegative(),
+            amount: z.number().finite().nonnegative(),
+            name: z.string().nullable().optional(),
+            pseudonym: z.string().nullable().optional(),
+            display_username_public: z.boolean().optional(),
+          })
+          .passthrough()
+      ),
+    })
+    .superRefine((group, context) => {
+      // Exact identity: a holder row is never re-keyed onto another token.
+      if (group.holders.some((holder) => holder.token_id !== group.token_id)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "holder token_id must equal its group token_id",
+          path: ["holders"],
+        });
+      }
+    })
+  ),
+});
+
+/** `/v2/leaderboard` board page (`user=` single-wallet lookups are not used). */
+export const PolymarketLeaderboardV2ResponseSchema = z.object({
+  data: z.array(
+    z
+      .object({
+        rank: z.number().int().positive(),
+        user_id: z.string().min(1),
+        pnl: z.number().finite(),
+        volume: z.number().finite(),
+        user_name: z.string().nullable().optional(),
+        x_username: z.string().nullable().optional(),
+        profile_image: z.string().nullable().optional(),
+        verified: z.boolean().optional(),
+      })
+      .passthrough()
+  ),
+});
+
+/** `/v2/value`: `data` is `null` for a documented miss. */
+export const PolymarketValueV2ResponseSchema = z.object({
+  data: z
+    .object({
+      proxy_wallet: z.string().min(1),
+      value: z.number().finite().nonnegative(),
+    })
+    .passthrough()
+    .nullable(),
 });

@@ -1277,10 +1277,8 @@ function createContainer(): Container {
 									listActivity: async (wallet, params) =>
 										dataApiClient.listActivity(wallet, params),
 									listPositions: async (wallet, conditionId) =>
-										dataApiClient.listUserPositions(wallet, {
-											market: conditionId,
-											sizeThreshold: 0,
-											limit: 500,
+										dataApiClient.listUserPositionsV2(wallet, {
+											conditions: [conditionId],
 										}),
 								},
 								getWalletCashUsdc: async (cashVenue) => {

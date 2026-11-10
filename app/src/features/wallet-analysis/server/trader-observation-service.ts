@@ -2562,30 +2562,32 @@ export async function fetchTraderPositionsPages(params: {
   );
   const budget = params.budget ?? new PositionObservationBudget();
   const positions: PolymarketUserPosition[] = [];
+  let cursor: string | undefined;
   for (let page = 0; page < maxPages; page += 1) {
     params.signal?.throwIfAborted();
-    const pagePositions = await budget.call(
+    const pageResult = await budget.call(
       "data_api",
       () =>
         params.client.listUserPositions(params.walletAddress, {
           sizeThreshold: 0,
           limit: POSITION_FETCH_LIMIT,
-          offset: page * POSITION_FETCH_LIMIT,
+          ...(cursor !== undefined && { cursor }),
           signal: params.signal,
         }),
       params.signal
     );
-    positions.push(...pagePositions.slice(0, POSITION_FETCH_LIMIT));
-    if (pagePositions.length > POSITION_FETCH_LIMIT) {
+    positions.push(...pageResult.rows.slice(0, POSITION_FETCH_LIMIT));
+    if (pageResult.rows.length > POSITION_FETCH_LIMIT) {
       return { positions, complete: false, pages: page + 1 };
     }
-    if (pagePositions.length < POSITION_FETCH_LIMIT) {
+    if (pageResult.nextCursor === null) {
       return {
         positions: dedupePositions(positions),
         complete: true,
         pages: page + 1,
       };
     }
+    cursor = pageResult.nextCursor;
   }
   return { positions, complete: false, pages: maxPages };
 }

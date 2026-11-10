@@ -142,10 +142,18 @@ async function seedLoser(tokenId: string): Promise<void> {
     });
 }
 
+/** `listUserPositions` is a single cursor page; these fakes always exhaust the feed. */
 function clientReturning(
   read: () => Promise<PolymarketUserPosition[]>
 ): PolymarketDataApiClient {
-  return { listUserPositions: read } as unknown as PolymarketDataApiClient;
+  return {
+    listUserPositions: vi.fn(async (...args: unknown[]) => ({
+      rows: await (read as (...a: unknown[]) => Promise<PolymarketUserPosition[]>)(
+        ...args
+      ),
+      nextCursor: null,
+    })),
+  } as unknown as PolymarketDataApiClient;
 }
 
 function deferred(): {
@@ -423,7 +431,7 @@ describe("serialized position-observation writer", () => {
     const listUserPositions = vi.fn(
       async (_wallet: string, params: unknown) => {
         expect(params).not.toHaveProperty("redeemable");
-        return [loser, position("5302")];
+        return { rows: [loser, position("5302")], nextCursor: null };
       }
     );
     const readPositionBalances = vi.fn(async () => [21_140_000n]);
@@ -803,8 +811,8 @@ describe("serialized position-observation writer", () => {
       .mockResolvedValue([0n]);
     const logger = scheduledLogger();
     const client = {
-      listUserPositions: read,
-      listUserActivity: vi.fn(async () => []),
+      listUserPositions: clientReturning(read).listUserPositions,
+      listUserTrades: vi.fn(async () => []),
     } as unknown as PolymarketDataApiClient;
     const tick = (control: PositionObservationController, delayed = false) =>
       runTraderObservationTick({

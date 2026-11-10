@@ -312,7 +312,10 @@ export function targetConditionPositionFromDataApiPositions(
   return {
     condition_id: conditionId,
     tokens: positions
-      .filter((position) => position.conditionId === conditionId)
+      .filter(
+        (position) =>
+          position.conditionId.toLowerCase() === conditionId.toLowerCase()
+      )
       .map((position) => ({
         token_id: position.asset,
         size_shares: Math.max(0, position.size),

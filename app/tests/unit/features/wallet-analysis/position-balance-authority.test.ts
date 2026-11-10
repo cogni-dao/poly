@@ -34,6 +34,14 @@ function missing(index: number): MissingCurrentPosition {
   };
 }
 
+const V2_PAGINATION = {
+  has_more: false,
+  limit: 500,
+  offset: 0,
+  next_cursor: null,
+};
+const EMPTY_V2_PAGE = JSON.stringify({ data: [], pagination: V2_PAGINATION });
+
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -80,13 +88,14 @@ describe("omitted-position exact balance authority", () => {
     );
   });
 
-  it("marks a full tenth 500-row Data API page incomplete at 5,000 rows", async () => {
-    const listUserPositions = vi.fn(async () =>
-      Array.from({ length: 500 }, (_value, index) => ({
+  it("marks a tenth 500-row Data API page that still has a cursor incomplete at 5,000 rows", async () => {
+    const listUserPositions = vi.fn(async () => ({
+      rows: Array.from({ length: 500 }, (_value, index) => ({
         conditionId: `condition-${index}`,
         asset: String(index),
-      }))
-    );
+      })),
+      nextCursor: "more",
+    }));
     const result = await fetchTraderPositionsPages({
       client: { listUserPositions } as unknown as PolymarketDataApiClient,
       walletAddress: `0x${"a".repeat(40)}`,
@@ -246,22 +255,31 @@ describe("bounded prompt position recovery", () => {
       .mockResolvedValueOnce(new Response("bad", { status: 503 }))
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify([
-            {
-              proxyWallet: `0x${"a".repeat(40)}`,
-              asset: "1",
-              conditionId: "c",
-              size: 21.14,
-              avgPrice: 0.4,
-              initialValue: 8,
-              currentValue: 0,
-              cashPnl: -8,
-              percentPnl: -100,
-              realizedPnl: 0,
-              curPrice: 0,
-              redeemable: true,
-            },
-          ]),
+          JSON.stringify({
+            data: [
+              {
+                proxy_wallet: `0x${"a".repeat(40)}`,
+                token_id: "1",
+                condition_id: `0x${"c".repeat(64)}`,
+                current_size: 21.14,
+                avg_price: 0.4,
+                entry_cost_usdc: 8,
+                total_cost_usdc: 8,
+                total_size: 21.14,
+                current_value: 0,
+                unrealized_pnl: -8,
+                total_pnl: -8,
+                percent_pnl: -100,
+                realized_pnl: 0,
+                percent_realized_pnl: 0,
+                current_price: 0,
+                outcome_index: 0,
+                status: "REDEEMABLE",
+                redeemable: true,
+              },
+            ],
+            pagination: V2_PAGINATION,
+          }),
           { status: 200 }
         )
       );
@@ -279,10 +297,9 @@ describe("bounded prompt position recovery", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(wait).toHaveBeenCalledWith(1000, undefined);
     const urls = fetch.mock.calls.map(([url]) => new URL(url));
-    expect(urls.map((url) => url.searchParams.get("offset"))).toEqual([
-      "0",
-      "0",
-    ]);
+    expect(urls.every((url) => url.pathname === "/v2/positions")).toBe(true);
+    expect(urls.every((url) => !url.searchParams.has("offset"))).toBe(true);
+    expect(urls.every((url) => !url.searchParams.has("cursor"))).toBe(true);
     expect(urls.every((url) => !url.searchParams.has("redeemable"))).toBe(true);
     expect(budget.dataApiCalls).toBe(2);
   });
@@ -400,7 +417,7 @@ describe("transport timeout recovery and settlement", () => {
             );
           });
         expect(signal.aborted).toBe(false);
-        return new Response("[]", { status: 200 });
+        return new Response(EMPTY_V2_PAGE, { status: 200 });
       }
     );
     const budget = new PositionObservationBudget(

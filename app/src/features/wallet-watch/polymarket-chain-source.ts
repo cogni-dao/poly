@@ -377,10 +377,10 @@ export function createPolymarketChainActivitySource(
         deps.metrics.incr(WALLET_WATCH_CHAIN_METRICS.metadataRefreshTotal, {
           trigger,
         });
-        // bug.5055: must paginate. Single-call `listUserPositions` caps at
-        // ~100 rows (Polymarket default page). Active targets hold thousands
-        // of positions; any tokenId outside the top page → permanent
-        // metadata_unresolved skip. Use the page-walking helper.
+        // bug.5055: must paginate. A single `/v2/positions` page holds at most
+        // 1000 rows and active targets hold thousands; any tokenId outside the
+        // first page → permanent metadata_unresolved skip. Use the
+        // cursor-walking helper.
         const positions: PolymarketUserPosition[] =
           await deps.client.listAllUserPositions(deps.wallet);
         for (const p of positions) {

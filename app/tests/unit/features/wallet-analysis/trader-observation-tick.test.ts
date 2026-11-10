@@ -184,24 +184,27 @@ function tickOkCall(logger: ReturnType<typeof makeLogger>) {
 describe("runTraderObservationTick wiring (task.5015)", () => {
   it("publishes/counts positions before a failing activity cursor read", async () => {
     const { db } = createFakeDb([walletRow("a", WALLET_A)], [], true);
-    const listUserPositions = vi.fn(async () => [
-      {
-        conditionId: "c",
-        asset: "1",
-        size: 2,
-        avgPrice: 0.5,
-        initialValue: 1,
-        currentValue: 1,
-        redeemable: false,
-      },
-    ]);
-    const listUserActivity = vi.fn(async () => []);
+    const listUserPositions = vi.fn(async () => ({
+      rows: [
+        {
+          conditionId: "c",
+          asset: "1",
+          size: 2,
+          avgPrice: 0.5,
+          initialValue: 1,
+          currentValue: 1,
+          redeemable: false,
+        },
+      ],
+      nextCursor: null,
+    }));
+    const listUserTrades = vi.fn(async () => []);
     const logger = makeLogger();
     const result = await runTraderObservationTick({
       db,
       client: {
         listUserPositions,
-        listUserActivity,
+        listUserTrades,
       } as unknown as PolymarketDataApiClient,
       listActiveTradingAddresses: async () => [],
       logger: logger as never,
@@ -209,7 +212,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
       runRetentionPrune: false,
     });
     expect(listUserPositions).toHaveBeenCalledTimes(1);
-    expect(listUserActivity).not.toHaveBeenCalled();
+    expect(listUserTrades).not.toHaveBeenCalled();
     expect(result).toMatchObject({ positions: 1, errors: 1 });
     expect(
       logger.info.mock.calls.some(
@@ -236,8 +239,8 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
       const logger = makeLogger();
       const readPositionBalances = vi.fn(async () => []);
       const client = {
-        listUserActivity: vi.fn(async () => []),
-        listUserPositions: vi.fn(async () => []),
+        listUserTrades: vi.fn(async () => []),
+        listUserPositions: vi.fn(async () => ({ rows: [], nextCursor: null })),
       } as unknown as PolymarketDataApiClient;
 
       // Separate tick invocations retain no process-local scheduling state:
@@ -288,7 +291,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
       const logger = makeLogger();
       const controller = new AbortController();
       const client = {
-        listUserActivity: vi.fn(async () => []),
+        listUserTrades: vi.fn(async () => []),
         // Stop after scheduling reaches upstream: publication/CAS behavior is
         // covered by the real-Postgres writer suite, not this fake database.
         listUserPositions: vi.fn(async () => {
@@ -317,8 +320,8 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     ]);
     const logger = makeLogger();
     const client = {
-      listUserActivity: vi.fn(async () => []),
-      listUserPositions: vi.fn(async () => []),
+      listUserTrades: vi.fn(async () => []),
+      listUserPositions: vi.fn(async () => ({ rows: [], nextCursor: null })),
     } as unknown as PolymarketDataApiClient;
 
     const result = await runTraderObservationTick({
@@ -330,7 +333,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     });
 
     expect(result).toMatchObject({ walletsProcessed: 1, errors: 0 });
-    expect(client.listUserActivity).toHaveBeenCalledWith(
+    expect(client.listUserTrades).toHaveBeenCalledWith(
       WALLET_A,
       expect.any(Object)
     );
@@ -354,11 +357,11 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     ]);
     const logger = makeLogger();
     const client = {
-      listUserActivity: vi.fn(async (wallet: string) => {
+      listUserTrades: vi.fn(async (wallet: string) => {
         if (wallet === WALLET_B) throw new Error("data-api 500");
         return [];
       }),
-      listUserPositions: vi.fn(async () => []),
+      listUserPositions: vi.fn(async () => ({ rows: [], nextCursor: null })),
     } as unknown as PolymarketDataApiClient;
 
     const result = await runTraderObservationTick({
@@ -418,13 +421,13 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     const logger = makeLogger();
     let timeoutsBeforeFirstWalletCall = -1;
     const client = {
-      listUserActivity: vi.fn(async () => {
+      listUserTrades: vi.fn(async () => {
         if (timeoutsBeforeFirstWalletCall < 0) {
           timeoutsBeforeFirstWalletCall = timeoutStatements.length;
         }
         return [];
       }),
-      listUserPositions: vi.fn(async () => []),
+      listUserPositions: vi.fn(async () => ({ rows: [], nextCursor: null })),
     } as unknown as PolymarketDataApiClient;
 
     const result = await runTraderObservationTick({
@@ -454,8 +457,8 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     const { db } = createFakeDb([walletRow("wallet-a", WALLET_A)]);
     const logger = makeLogger();
     const client = {
-      listUserActivity: vi.fn(async () => []),
-      listUserPositions: vi.fn(async () => []),
+      listUserTrades: vi.fn(async () => []),
+      listUserPositions: vi.fn(async () => ({ rows: [], nextCursor: null })),
     } as unknown as PolymarketDataApiClient;
     const stages: string[] = [];
 
@@ -487,8 +490,8 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     const { db } = createFakeDb([walletRow("wallet-a", WALLET_A)]);
     const logger = makeLogger();
     const client = {
-      listUserActivity: vi.fn(async () => []),
-      listUserPositions: vi.fn(async () => []),
+      listUserTrades: vi.fn(async () => []),
+      listUserPositions: vi.fn(async () => ({ rows: [], nextCursor: null })),
     } as unknown as PolymarketDataApiClient;
     const controller = new AbortController();
     controller.abort(new Error("tick timeout"));
@@ -561,8 +564,8 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
     ]);
     const logger = makeLogger();
     const client = {
-      listUserActivity: vi.fn(async () => []),
-      listUserPositions: vi.fn(async () => []),
+      listUserTrades: vi.fn(async () => []),
+      listUserPositions: vi.fn(async () => ({ rows: [], nextCursor: null })),
     } as unknown as PolymarketDataApiClient;
     const controller = new AbortController();
     controller.abort(new Error("tick timeout"));
@@ -583,7 +586,7 @@ describe("runTraderObservationTick wiring (task.5015)", () => {
       errors: 0,
       prunedPositionSnapshots: 0,
     });
-    expect(client.listUserActivity).not.toHaveBeenCalled();
+    expect(client.listUserTrades).not.toHaveBeenCalled();
     // Snapshot prune + metadata refresh both go through db.execute — the
     // aborted tick must not run either (no orphan writers).
     expect(executeCalls).toHaveLength(0);

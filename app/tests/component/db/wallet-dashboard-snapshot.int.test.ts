@@ -369,7 +369,7 @@ describe("wallet dashboard coherent snapshot", () => {
       endDate: "2027-01-01", negativeRisk: false,
     });
     let page = [position(true), position(false)];
-    const listUserPositions = vi.fn(async () => page);
+    const listUserPositions = vi.fn(async () => ({ rows: page, nextCursor: null }));
     const readPositionBalances = vi.fn<NonNullable<Parameters<typeof refreshCurrentPositionsForWallet>[0]["readPositionBalances"]>>();
     const refresh = (delayed = false) => refreshCurrentPositionsForWallet({
       db, walletAddress: address, client: { listUserPositions } as unknown as PolymarketDataApiClient,

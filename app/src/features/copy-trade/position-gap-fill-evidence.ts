@@ -28,7 +28,7 @@ export interface PositionGapActivityEvidence {
 	side?: string | null;
 	size?: number;
 	usdcSize?: number;
-	price?: number;
+	price?: number | null;
 	transactionHash?: string | null;
 }
 
@@ -46,8 +46,11 @@ export interface PositionGapFillEvidencePort {
 	getWalletAddress(): Promise<`0x${string}`>;
 	listActivity(
 		wallet: `0x${string}`,
-		params: { start: number; end: number; limit: number; offset: number },
-	): Promise<readonly PositionGapActivityEvidence[]>;
+		params: { start: number; end: number; limit: number; cursor?: string },
+	): Promise<{
+		rows: readonly PositionGapActivityEvidence[];
+		nextCursor: string | null;
+	}>;
 	listPositions(
 		wallet: `0x${string}`,
 		conditionId: string,
@@ -132,20 +135,23 @@ export async function reconcilePositionGapFillEvidence(input: {
 	}
 
 	const wallet = await input.port.getWalletAddress();
+	const conditionId = input.conditionId.toLowerCase();
 	const activity: PositionGapActivityEvidence[] = [];
 	let complete = false;
+	let cursor: string | undefined;
 	for (let page = 0; page < MAX_PAGES; page += 1) {
-		const rows = await input.port.listActivity(wallet, {
+		const result = await input.port.listActivity(wallet, {
 			start,
 			end,
 			limit: PAGE_SIZE,
-			offset: page * PAGE_SIZE,
+			...(cursor !== undefined && { cursor }),
 		});
-		activity.push(...rows);
-		if (rows.length < PAGE_SIZE) {
+		activity.push(...result.rows);
+		if (result.nextCursor === null) {
 			complete = true;
 			break;
 		}
+		cursor = result.nextCursor;
 	}
 	if (!complete) {
 		return mismatch(
@@ -160,7 +166,7 @@ export async function reconcilePositionGapFillEvidence(input: {
 			Number.isFinite(row.timestamp) &&
 			row.timestamp >= start &&
 			row.timestamp <= end &&
-			row.conditionId === input.conditionId &&
+			row.conditionId?.toLowerCase() === conditionId &&
 			row.asset === input.tokenId,
 	);
 	if (exactTokenActivity.length === 0) {
@@ -208,11 +214,11 @@ export async function reconcilePositionGapFillEvidence(input: {
 	}
 
 	const positions = (
-		await input.port.listPositions(wallet, input.conditionId)
+		await input.port.listPositions(wallet, conditionId)
 	).filter(
 		(position) =>
 			equalAddress(position.proxyWallet, wallet) &&
-			position.conditionId === input.conditionId &&
+			position.conditionId.toLowerCase() === conditionId &&
 			position.asset === input.tokenId,
 	);
 	if (positions.length === 0) {

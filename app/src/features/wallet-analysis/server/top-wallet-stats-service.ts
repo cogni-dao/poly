@@ -3,7 +3,7 @@
 
 /**
  * Module: `@features/wallet-analysis/server/top-wallet-stats-service`
- * Purpose: Mirror the Polymarket `/v1/leaderboard` (plus the per-wallet
+ * Purpose: Mirror the Polymarket `/v2/leaderboard` (plus the per-wallet
  *          `/trades`-count enrichment) into `poly_top_wallet_stats` so the
  *          Top Wallets dashboard/research card reads from our DB, never from
  *          upstream on render (bug.5017).
@@ -57,7 +57,7 @@ type Db =
 /** Narrow client surface the tick needs — fakes implement exactly this. */
 export type TopWalletStatsDataApi = Pick<
   PolymarketDataApiClient,
-  "listTopTraders" | "listUserActivity"
+  "listTopTraders" | "listUserTrades"
 >;
 
 export const TOP_WALLET_TIME_PERIODS = [
@@ -298,7 +298,7 @@ export async function runTopWalletStatsTick(
           return;
         }
         try {
-          const trades = await client.listUserActivity(wallet, {
+          const trades = await client.listUserTrades(wallet, {
             limit: TRADES_ENRICHMENT_LIMIT,
           });
           numTradesByWallet.set(wallet, trades.length);

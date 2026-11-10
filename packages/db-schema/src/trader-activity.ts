@@ -605,7 +605,7 @@ export const polyMarketMetadata = pgTable(
 /**
  * Observation read-model for the dashboard/research "Top Wallets" leaderboard
  * (bug.5017). One row per `(time_period, order_by, wallet_address)` — the
- * Polymarket `/v1/leaderboard` entry plus the `/trades`-count enrichment the
+ * Polymarket `/v2/leaderboard` entry plus the `/trades`-count enrichment the
  * UI consumes. Written only by the top-wallet-stats tick; page-load reads go
  * through `readTopTradersFromDb` (PAGE_LOAD_DB_ONLY). No tenant FK → no RLS,
  * matching the other `poly_trader_*` / `poly_market_*` observation tables.

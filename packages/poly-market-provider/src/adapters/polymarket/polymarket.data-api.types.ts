@@ -3,8 +3,8 @@
 
 /**
  * Module: `@cogni/poly-market-provider/adapters/polymarket/polymarket.data-api.types`
- * Purpose: Zod schemas for the Polymarket Data API + Gamma public-search — leaderboard, user trades / activity / positions / value, market holders + trades, profiles.
- * Scope: Pure type definitions for API response validation. Does not contain I/O or runtime logic.
+ * Purpose: Domain types for the Polymarket Data API v2 reads (leaderboard, trades, positions, activity, holders) plus Gamma public-search / token-market schemas.
+ * Scope: Pure type definitions; wire (snake_case) schemas live in `polymarket.data-api-v2.types.ts`. Does not contain I/O or runtime logic.
  * Invariants: PACKAGES_NO_ENV.
  * Side-effects: none
  * Links: work/items/task.0315.poly-copy-trade-prototype.md, work/items/task.0386.poly-agent-wallet-research-v0.md, docs/research/poly-copy-trading-wallets.md
@@ -14,9 +14,8 @@
 import { z } from "zod";
 
 /**
- * Leaderboard time window.
- * Matches the `timePeriod` query param on `GET /v1/leaderboard`.
- * Verified 2026-04-17 — see docs/research/poly-copy-trading-wallets.md.
+ * Leaderboard time window. The client lower-cases it onto `time_period` of
+ * `GET /v2/leaderboard`.
  */
 export const PolymarketLeaderboardTimePeriodSchema = z.enum([
   "DAY",
@@ -28,72 +27,61 @@ export type PolymarketLeaderboardTimePeriod = z.infer<
   typeof PolymarketLeaderboardTimePeriodSchema
 >;
 
-/** Leaderboard sort metric. */
+/** Leaderboard sort metric (`PNL` | `VOL`; the client maps VOL -> `VOLUME`). */
 export const PolymarketLeaderboardOrderBySchema = z.enum(["PNL", "VOL"]);
 export type PolymarketLeaderboardOrderBy = z.infer<
   typeof PolymarketLeaderboardOrderBySchema
 >;
 
-/**
- * Raw leaderboard entry from `GET /v1/leaderboard`.
- * Fixture: `docs/research/fixtures/polymarket-leaderboard.json`.
- * Gotchas: `rank` is a string ("1", "2", …), not a number.
- */
-export const PolymarketLeaderboardEntrySchema = z.object({
-  rank: z.string(),
-  proxyWallet: z.string(),
-  userName: z.string().nullable().default(""),
-  xUsername: z.string().nullable().default(""),
-  verifiedBadge: z.boolean().default(false),
-  vol: z.coerce.number().default(0),
-  pnl: z.coerce.number().default(0),
-  profileImage: z.string().nullable().default(""),
-});
-export type PolymarketLeaderboardEntry = z.infer<
-  typeof PolymarketLeaderboardEntrySchema
->;
+// ─────────────────────────────────────────────────────────────────────────────
+// Domain rows. The client maps the snake_case `/v2/*` wire rows
+// (`polymarket.data-api-v2.types.ts`) onto these camelCase types at the adapter
+// boundary, so consumers never see wire shapes. Identity fields (`asset`,
+// `conditionId`, `outcomeIndex`) are always exact and required: a wire row that
+// lacks one is rejected by the wire schema, never defaulted here.
+// ─────────────────────────────────────────────────────────────────────────────
 
-export const PolymarketLeaderboardResponseSchema = z.array(
-  PolymarketLeaderboardEntrySchema
-);
+/** One `GET /v2/leaderboard` row. `rank` is kept as a string for consumers. */
+export type PolymarketLeaderboardEntry = {
+  rank: string;
+  proxyWallet: string;
+  userName: string;
+  xUsername: string;
+  verifiedBadge: boolean;
+  vol: number;
+  pnl: number;
+  profileImage: string;
+};
 
-/**
- * Raw user trade from `GET /trades?user=<wallet>`.
- * Only the fields we rely on are validated; extras pass through via `.passthrough()`.
- */
-export const PolymarketUserTradeSchema = z
-  .object({
-    proxyWallet: z.string(),
-    side: z.enum(["BUY", "SELL"]),
-    asset: z.string(),
-    conditionId: z.string(),
-    size: z.coerce.number(),
-    price: z.coerce.number(),
-    timestamp: z.coerce.number(),
-    title: z.string().optional().default(""),
-    slug: z.string().optional().nullable().default(""),
-    eventSlug: z.string().optional().nullable().default(""),
-    icon: z.string().optional().nullable().default(""),
-    outcome: z.string().optional().default(""),
-    outcomeIndex: z.coerce.number().optional().default(0),
-    transactionHash: z.string().optional().default(""),
-  })
-  .passthrough();
-export type PolymarketUserTrade = z.infer<typeof PolymarketUserTradeSchema>;
-
-export const PolymarketUserTradesResponseSchema = z.array(
-  PolymarketUserTradeSchema
-);
+/** One `GET /v2/trades` row (user feed or market feed). */
+export type PolymarketUserTrade = {
+  proxyWallet: string;
+  side: "BUY" | "SELL";
+  /** Exact CLOB token id (`token_id` on the wire). */
+  asset: string;
+  conditionId: string;
+  size: number;
+  price: number;
+  timestamp: number;
+  title: string;
+  slug: string;
+  eventSlug: string;
+  icon: string;
+  outcome: string;
+  outcomeIndex: number;
+  transactionHash: string;
+};
 
 /**
- * Raw user position from `GET /positions?user=<wallet>`.
- * Covers open positions only — historical/closed are not exposed by the Data API.
+ * Position row (`GET /v2/positions`), mapped onto the legacy camelCase names.
+ * `.passthrough()` keeps the raw snake_case wire fields next to the mapped ones
+ * because persisted `raw` metadata reads both spellings.
  */
 export const PolymarketUserPositionSchema = z
   .object({
     proxyWallet: z.string(),
-    asset: z.string(),
-    conditionId: z.string(),
+    asset: z.string().min(1),
+    conditionId: z.string().min(1),
     size: z.coerce.number(),
     avgPrice: z.coerce.number(),
     initialValue: z.coerce.number(),
@@ -116,9 +104,11 @@ export const PolymarketUserPositionSchema = z
     eventId: z.string().optional().nullable().default(""),
     eventSlug: z.string().optional().nullable().default(""),
     outcome: z.string().optional().default(""),
-    outcomeIndex: z.coerce.number().optional().default(0),
+    /** Exact wire value; a row without `outcome_index` never reaches here. */
+    outcomeIndex: z.number().int().nonnegative(),
     oppositeOutcome: z.string().optional().nullable().default(""),
-    oppositeAsset: z.string().optional().nullable().default(""),
+    /** `null` when the wire row carries no opposite token — never `""`. */
+    oppositeAsset: z.string().nullable(),
     endDate: z.string().optional().nullable().default(""),
     negativeRisk: z.boolean().optional().default(false),
   })
@@ -127,17 +117,9 @@ export type PolymarketUserPosition = z.infer<
   typeof PolymarketUserPositionSchema
 >;
 
-export const PolymarketUserPositionsResponseSchema = z.array(
-  PolymarketUserPositionSchema
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Additional Data API schemas (task.0386 — agent wallet research)
-// ─────────────────────────────────────────────────────────────────────────────
-
 /**
- * Lifecycle event type on `GET /activity`.
- * Distinct from `/trades` — activity covers TRADE, SPLIT, MERGE, REDEEM, etc.
+ * Lifecycle event type filter on `GET /v2/activity` (the API accepts more
+ * values; these are the ones the research tools expose).
  */
 export const ActivityEventTypeSchema = z.enum([
   "TRADE",
@@ -149,88 +131,42 @@ export const ActivityEventTypeSchema = z.enum([
 ]);
 export type ActivityEventType = z.infer<typeof ActivityEventTypeSchema>;
 
-/**
- * Raw activity event from `GET /activity?user=<wallet>`.
- * `.passthrough()` — /activity responses are richer than /trades and vary by type.
- */
-export const ActivityEventSchema = z
-  .object({
-    proxyWallet: z.string(),
-    type: z.string(),
-    timestamp: z.coerce.number(),
-    conditionId: z.string().optional().nullable().default(""),
-    asset: z.string().optional().nullable().default(""),
-    side: z.string().optional().nullable().default(""),
-    size: z.coerce.number().optional().default(0),
-    usdcSize: z.coerce.number().optional().default(0),
-    price: z.coerce.number().optional().default(0),
-    outcome: z.string().optional().nullable().default(""),
-    title: z.string().optional().nullable().default(""),
-    slug: z.string().optional().nullable().default(""),
-    eventSlug: z.string().optional().nullable().default(""),
-    transactionHash: z.string().optional().nullable().default(""),
-  })
-  .passthrough();
-export type ActivityEvent = z.infer<typeof ActivityEventSchema>;
+/** One `GET /v2/activity` row. Non-trade rows carry no token / side / price. */
+export type ActivityEvent = {
+  proxyWallet: string;
+  type: string;
+  timestamp: number;
+  conditionId: string;
+  asset: string | null;
+  side: "BUY" | "SELL" | null;
+  size: number;
+  usdcSize: number;
+  price: number | null;
+  outcome: string | null;
+  title: string | null;
+  slug: string | null;
+  eventSlug: string | null;
+  transactionHash: string;
+};
 
-export const ActivityEventsResponseSchema = z.array(ActivityEventSchema);
+/** One holder of one outcome token (`GET /v2/holders`, flattened across tokens). */
+export type MarketHolder = {
+  proxyWallet: string;
+  /** Exact CLOB token id this balance is held in. */
+  asset: string;
+  outcomeIndex: number;
+  amount: number;
+  name: string | null;
+  pseudonym: string | null;
+  /** False when the holder opted out of showing `name` publicly. */
+  displayUsernamePublic: boolean;
+};
 
-/**
- * `GET /value?user=<wallet>` — cheap wallet-value probe.
- * Shape verified against shaunlebron data-api gist: `[{ user, value }]`.
- */
-export const UserValueEntrySchema = z
-  .object({
-    user: z.string(),
-    value: z.coerce.number(),
-  })
-  .passthrough();
-export const UserValueResponseSchema = z.array(UserValueEntrySchema);
-
-/**
- * Single holder entry from `GET /holders?market=<conditionId>`.
- * Hidden-gem discovery input — lists wallets holding shares on a given market.
- */
-export const MarketHolderSchema = z
-  .object({
-    proxyWallet: z.string(),
-    asset: z.string().optional().nullable().default(""),
-    outcomeIndex: z.coerce.number().optional().default(0),
-    outcome: z.string().optional().nullable().default(""),
-    amount: z.coerce.number().optional().default(0),
-    name: z.string().optional().nullable().default(""),
-    displayUsername: z.string().optional().nullable().default(""),
-  })
-  .passthrough();
-export type MarketHolder = z.infer<typeof MarketHolderSchema>;
-
-export const MarketHoldersResponseSchema = z.array(MarketHolderSchema);
-
-/**
- * Raw trade on `GET /trades?market=<conditionId>` (market-level, no user filter).
- * Distinct from `PolymarketUserTrade` — includes both taker (proxyWallet) + maker addrs.
- */
-export const MarketTradeSchema = z
-  .object({
-    proxyWallet: z.string(),
-    makerAddress: z.string().optional().nullable().default(""),
-    takerAddress: z.string().optional().nullable().default(""),
-    side: z.enum(["BUY", "SELL"]),
-    asset: z.string(),
-    conditionId: z.string(),
-    size: z.coerce.number(),
-    price: z.coerce.number(),
-    timestamp: z.coerce.number(),
-    outcome: z.string().optional().default(""),
-    outcomeIndex: z.coerce.number().optional().default(0),
-    transactionHash: z.string().optional().default(""),
-    name: z.string().optional().nullable().default(""),
-    title: z.string().optional().nullable().default(""),
-  })
-  .passthrough();
-export type MarketTrade = z.infer<typeof MarketTradeSchema>;
-
-export const MarketTradesResponseSchema = z.array(MarketTradeSchema);
+/** A cursor-paged read: `nextCursor === null` means the feed is exhausted. */
+export type DataApiPage<T> = {
+  rows: T[];
+  nextCursor: string | null;
+};
 
 /**
  * Gamma `/public-search?profile=true` — handle → proxyWallet resolution.
