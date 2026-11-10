@@ -33,7 +33,7 @@
   "dependencies": {
     "@cogni/ai-tools": "workspace:*",
     "@cogni/knowledge-base": "https://github.com/cogni-dao/node-template/releases/download/knowledge-base-v0.3.0/cogni-dao-knowledge-base-0.3.0.tgz",
-    "@cogni/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.11.0/cogni-dao-knowledge-store-0.11.0.tgz",
+    "@cogni/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.13.1/cogni-dao-knowledge-store-0.13.1.tgz",
     "drizzle-orm": "^0.44.7"
   },
   "devDependencies": {
