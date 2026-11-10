@@ -281,12 +281,11 @@ export class PositionGapRuntimeStore {
 	constructor(private readonly db: Database) {}
 
 	/**
-	 * Non-resolved cohorts only, in the exact deterministic projection order
-	 * (created_at, cohort_key). bug.5051: the former unbounded `select *` over
-	 * every historical cohort (incl. `source_provenance` jsonb) timed out at 8s
-	 * (SQLSTATE 57014) once a long-lived target accumulated ~40k rows. Resolved
-	 * cohorts are terminal; their identity keys come from
-	 * `loadResolvedCohortKeys` so activation/target-buy creation stays exact-once.
+	 * Every cohort for the target (resolved included: they still feed the
+	 * per-token allowance sum, held-share attribution and creation dedupe), in
+	 * the exact projection order (created_at, cohort_key). bug.5051: selects only
+	 * the mapped columns; the former `select *` also detoasted
+	 * `source_provenance` jsonb for ~40k rows and hit the 8s statement timeout.
 	 */
 	async loadCohorts(
 		scope: PositionGapRuntimeScope,
@@ -314,7 +313,6 @@ export class PositionGapRuntimeStore {
 				and(
 					eq(polyPositionGapCohorts.billingAccountId, scope.billingAccountId),
 					eq(polyPositionGapCohorts.targetId, scope.targetId),
-					sql`${polyPositionGapCohorts.status} <> 'resolved'`,
 				),
 			)
 			.orderBy(
@@ -339,27 +337,6 @@ export class PositionGapRuntimeStore {
 			remainingShares: numberOf(row.remainingShares),
 			createdAtMs: row.createdAt.getTime(),
 		}));
-	}
-
-	/**
-	 * Identity keys of resolved (terminal) cohorts. Keys only: no jsonb, no
-	 * numerics. Retained as tombstones so a late activation or replayed target
-	 * BUY can never recreate retired entitlement.
-	 */
-	async loadResolvedCohortKeys(
-		scope: PositionGapRuntimeScope,
-	): Promise<ReadonlySet<string>> {
-		const rows = await this.db
-			.select({ cohortKey: polyPositionGapCohorts.cohortKey })
-			.from(polyPositionGapCohorts)
-			.where(
-				and(
-					eq(polyPositionGapCohorts.billingAccountId, scope.billingAccountId),
-					eq(polyPositionGapCohorts.targetId, scope.targetId),
-					eq(polyPositionGapCohorts.status, "resolved"),
-				),
-			);
-		return new Set(rows.map((row) => row.cohortKey));
 	}
 
 	async loadPlannerState(scope: PositionGapRuntimeScope): Promise<{

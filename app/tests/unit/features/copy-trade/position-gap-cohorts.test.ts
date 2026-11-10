@@ -262,65 +262,39 @@ describe("projectPositionGapCohorts", () => {
 		).toMatchObject({ allowedMirrorShares: 10 });
 	});
 
-	it("treats retired (resolved) keys as tombstones that block recreation but never enter the projection", () => {
-		const activity = [
-			{
-				fillId: "data-api:trade-retired",
-				side: "BUY" as const,
-				conditionId: position.conditionId,
-				tokenId: position.tokenId,
-				marketId: position.marketId,
-				outcome: position.outcome,
-				shares: 20,
-				price: 0.35,
-				observedAtMs: 2_000,
-			},
-		];
-		const input = base({ activation: true, activity });
-		const fresh = projectPositionGapCohorts(input);
-		expect(fresh.creations).toHaveLength(2);
-
-		const retiredCohortKeys = new Set(
-			fresh.creations.map((creation) => creation.cohortKey),
+	it("counts fully acquired (resolved-like) rows in the per-token allowance, so live cohorts shrink (bug.5051 behavior pin)", () => {
+		// loadCohorts must keep returning resolved rows: dropping them would leave
+		// the live cohort at 8 instead of shrinking it to 2.
+		const result = projectPositionGapCohorts(
+			base({
+				netTargetPositions: [{ ...position, netShares: 120 }],
+				existing: [
+					cohort({
+						id: "resolved-like",
+						cohortKey: "resolved-like",
+						allowedMirrorShares: 10,
+						acquiredShares: 10,
+						remainingShares: 0,
+						createdAtMs: 1,
+					}),
+					cohort({
+						id: "live",
+						cohortKey: "live",
+						allowedMirrorShares: 8,
+						remainingShares: 8,
+						createdAtMs: 2,
+					}),
+				],
+			}),
 		);
-		const replay = projectPositionGapCohorts({ ...input, retiredCohortKeys });
 
-		expect(replay.creations).toEqual([]);
-		expect(replay.reductions).toEqual([]);
-		expect(replay.cohorts).toEqual([]);
-	});
-
-	it("retired keys suppress only their own creation and keep live ordering", () => {
-		const activity = [
-			{
-				fillId: "data-api:trade-live",
-				side: "BUY" as const,
-				conditionId: position.conditionId,
-				tokenId: position.tokenId,
-				marketId: position.marketId,
-				outcome: position.outcome,
-				shares: 20,
-				price: 0.35,
-				observedAtMs: 2_000,
-			},
-		];
-		const input = base({ activation: true, activity });
-		const fresh = projectPositionGapCohorts(input);
-		const activation = fresh.creations.find(
-			(creation) => creation.sourceKind === "activation",
-		);
-		if (!activation) throw new Error("activation creation missing");
-
-		const replay = projectPositionGapCohorts({
-			...input,
-			retiredCohortKeys: new Set([activation.cohortKey]),
+		expect(result.reductions.map((entry) => entry.cohortId)).toEqual(["live"]);
+		expect(result.cohorts.map((entry) => entry.id).sort()).toEqual([
+			"live",
+			"resolved-like",
+		]);
+		expect(result.cohorts.find((entry) => entry.id === "live")).toMatchObject({
+			allowedMirrorShares: 2,
 		});
-
-		expect(replay.creations.map((creation) => creation.sourceKind)).toEqual([
-			"target_buy",
-		]);
-		expect(replay.cohorts.map((entry) => entry.sourceKind)).toEqual([
-			"target_buy",
-		]);
 	});
 });

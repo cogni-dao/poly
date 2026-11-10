@@ -75,11 +75,18 @@ const FULL_REFRESH_MS = 5 * 60_000;
 const VENUE_CACHE_MS = 30_000;
 const MAX_VENUE_CANDIDATES = 16;
 const WARMUP_SECONDS = 60;
-/** Wakes that must never wait out a failure backoff (safety / operator intent). */
+/**
+ * Wakes that must never wait out a failure backoff (safety / operator intent).
+ * `safety_check` is the cheap in-memory stale-snapshot / invalid-budget pass
+ * that a deferred timer wake still gets, so backoff never delays a safety
+ * cancellation (bug.5051).
+ */
+const SAFETY_CHECK_REASON = "safety_check";
 const BACKOFF_BYPASS_REASONS: ReadonlySet<string> = new Set([
 	"disabled",
 	"config",
 	"order_event",
+	SAFETY_CHECK_REASON,
 ]);
 const POSITION_GAP_DEFINITION =
 	ALGORITHM_DEFINITIONS["poly.copy-mirror.position-gap"];
@@ -242,7 +249,13 @@ export function startPositionGapActor(
 						await cancelAll("disabled");
 						continue;
 					}
-					await reconcile(batch);
+					const work = batch.filter((reason) => reason !== SAFETY_CHECK_REASON);
+					if (work.length === 0) {
+						// Backoff-window safety pass only: never touches the backoff.
+						await safetyCheck();
+						continue;
+					}
+					await reconcile(work);
 					const endedFailures = failureBackoff.recordSuccess();
 					if (endedFailures > 0) {
 						actorLogger.info(
@@ -256,9 +269,21 @@ export function startPositionGapActor(
 				} catch (error) {
 					if (batch.includes("disabled")) stopFailure = error;
 					if (error instanceof AssignmentLivenessUnavailableError) continue;
-					const { consecutiveFailures, backoffMs } = batch.includes("disabled")
-						? { consecutiveFailures: 0, backoffMs: 0 }
-						: failureBackoff.recordFailure(now());
+					const safetyOnly = batch.every(
+						(reason) => reason === SAFETY_CHECK_REASON,
+					);
+					const { consecutiveFailures, backoffMs } =
+						batch.includes("disabled") || safetyOnly
+							? { consecutiveFailures: 0, backoffMs: 0 }
+							: failureBackoff.recordFailure(now());
+					if (backoffMs > 0) {
+						// Retry the failed batch's own reasons (e.g. `config`), not just
+						// whatever timer wake arrives next.
+						for (const reason of batch) {
+							if (reason !== SAFETY_CHECK_REASON) deferredReasons.add(reason);
+						}
+						scheduleBackoffWake();
+					}
 					actorLogger.error(
 						{
 							event: EVENT_NAMES.POLY_POSITION_GAP_V3_RUN_FAILED,
@@ -310,6 +335,12 @@ export function startPositionGapActor(
 		) {
 			deferredReasons.add(reason);
 			scheduleBackoffWake();
+			// The timer is the stale-snapshot watchdog: it still gets a cheap
+			// in-memory safety pass inside the window.
+			if (reason === "timer") {
+				reasons.add(SAFETY_CHECK_REASON);
+				void drain();
+			}
 			return;
 		}
 		reasons.add(reason);
@@ -410,6 +441,36 @@ export function startPositionGapActor(
 			if (stopFailure) throw stopFailure;
 		},
 	};
+
+	/**
+	 * Safety-only pass for timer wakes inside a failure-backoff window. Mirrors
+	 * the reconcile entry, invalid-budget and stale-snapshot cancel conditions
+	 * using in-memory facts only (no cohort reads, no RPC), so a failing DB can
+	 * never postpone cancelling GTCs backed by an expired snapshot.
+	 */
+	async function safetyCheck(): Promise<void> {
+		if (!(await assignmentStillCurrent("backoff_safety"))) {
+			await cancelAll("disabled");
+			return;
+		}
+		// Static budget-group / configured-budget validity; NAV is irrelevant
+		// to it, so any finite non-negative probe NAV decides the same way.
+		if (
+			!effectivePositionGapBudget({
+				configuredBudgetUsdc: deps.configuredBudgetUsdc,
+				mirrorNavUsdc: 0,
+				group: deps.positionGapBudgetGroup,
+			})
+		) {
+			await cancelAll("invalid_budget_group");
+			return;
+		}
+		const snapshot = deps.refresh.readFresh(deps.targetWallet) ?? lastSnapshot;
+		if (!snapshot || !snapshot.complete || now() >= snapshot.expiresAtMs) {
+			causalHoldLogged = false;
+			await cancelAll("stale_snapshot");
+		}
+	}
 
 	async function reconcile(triggerReasons: readonly string[]): Promise<void> {
 		if (!(await assignmentStillCurrent("reconcile_entry"))) {
@@ -642,18 +703,13 @@ export function startPositionGapActor(
 		const scale =
 			targetTotalWealthUsdc > 0 ? budgetUsdc / targetTotalWealthUsdc : 0;
 		const loadCohortsStartedMs = performance.now();
-		// Sequential on purpose: one pooled connection at a time (bug.5045).
 		const existingCohorts = await deps.store.loadCohorts(deps.scope);
-		const retiredCohortKeys = await deps.store.loadResolvedCohortKeys(
-			deps.scope,
-		);
 		const loadCohortsMs = performance.now() - loadCohortsStartedMs;
 		const previousBudget = await deps.store.previousBudgetUsdc(deps.scope);
 		const snapshotHash = hashJson(freshSnapshot);
 		const projectionStartedMs = performance.now();
 		const cohortProjection = projectPositionGapCohorts({
 			existing: existingCohorts,
-			retiredCohortKeys,
 			netTargetPositions: netBook.positions.map((position) =>
 				toCohortPosition(freshSnapshot, position),
 			),
