@@ -88,4 +88,76 @@ describe("RedeemWorker V2 Deposit Wallet", () => {
 			}),
 		);
 	});
+
+	function workerFor(
+		job: RedeemJob,
+		redeemPosition: () => Promise<`0x${string}`>,
+	) {
+		const redeemJobs = {
+			claimNextPending: vi.fn(async () => job),
+			markAbandoned: vi.fn(async () => undefined),
+			markTransientFailure: vi.fn(async () => undefined),
+			markRpcDeferred: vi.fn(async () => undefined),
+		};
+		const worker = new RedeemWorker({
+			redeemJobs: redeemJobs as never,
+			orderLedger: { markPositionLifecycleByAsset: vi.fn(async () => 1) },
+			billingAccountId: "billing-1",
+			publicClient: {} as never,
+			walletClient: { writeContract: vi.fn() } as never,
+			funderAddress: FUNDER,
+			account: {} as never,
+			redeemPosition,
+			logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+			finalityBlocks: 5n,
+			tickIntervalMs: 5_000,
+			reaperIntervalMs: Number.MAX_SAFE_INTEGER,
+		});
+		return { worker, redeemJobs };
+	}
+
+	it("parks a deterministic unsupported-module rejection instead of retrying (bug.5047)", async () => {
+		const job = claimedJob();
+		const err = new Error(
+			"Position ID must use a supported protocol v2 module",
+		);
+		err.name = "UserInputError";
+		const { worker, redeemJobs } = workerFor(job, async () => {
+			throw err;
+		});
+
+		await worker.tick();
+
+		expect(redeemJobs.markAbandoned).toHaveBeenCalledWith({
+			jobId: job.id,
+			errorClass: "malformed",
+			error: `unsupported_position_module: ${err.message}`,
+		});
+		expect(redeemJobs.markRpcDeferred).not.toHaveBeenCalled();
+		expect(redeemJobs.markTransientFailure).not.toHaveBeenCalled();
+	});
+
+	it("budgets an unclassified failure (attempt_count bumps) rather than deferring free", async () => {
+		const job = claimedJob();
+		const { worker, redeemJobs } = workerFor(job, async () => {
+			throw new Error("something unexpected");
+		});
+
+		await worker.tick();
+
+		expect(redeemJobs.markTransientFailure).toHaveBeenCalledTimes(1);
+		expect(redeemJobs.markRpcDeferred).not.toHaveBeenCalled();
+	});
+
+	it("still defers genuine RPC transport failures without budget", async () => {
+		const job = claimedJob();
+		const { worker, redeemJobs } = workerFor(job, async () => {
+			throw new Error("fetch failed");
+		});
+
+		await worker.tick();
+
+		expect(redeemJobs.markRpcDeferred).toHaveBeenCalledTimes(1);
+		expect(redeemJobs.markTransientFailure).not.toHaveBeenCalled();
+	});
 });
