@@ -144,6 +144,7 @@ import {
 	startGovernanceSyncOnBoot,
 	startMetricsSyncOnBoot,
 } from "@/bootstrap/startup-reconcile";
+import { startSystemTenantAssertionOnBoot } from "@/bootstrap/startup-assertions";
 import { createBoundToolSource } from "@/bootstrap/ai/tool-source.factory";
 import {
 	createPolyTradeExecutorFactory,
@@ -553,6 +554,8 @@ function stopAllJobHandles(): void {
 export function getContainer(): Container {
 	if (!_container) {
 		_container = createContainer();
+		// bug.0022: provisioning is asserted once at boot (fail the pod), not on /readyz.
+		void startSystemTenantAssertionOnBoot(_container.serviceAccountService);
 		startGovernanceSyncOnBoot(_container.log);
 		if (_container.goalMetrics) startMetricsSyncOnBoot(_container.log);
 	}
