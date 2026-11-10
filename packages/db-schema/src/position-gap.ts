@@ -248,6 +248,14 @@ export const polyPositionGapCohorts = pgTable(
 			table.targetId,
 			table.cohortKey,
 		),
+		// bug.5051: serves loadCohorts/loadPlannerState `ORDER BY created_at,
+		// cohort_key` per (account, target) without a ~42k-row sort.
+		index("poly_position_gap_cohorts_serving_idx").on(
+			table.billingAccountId,
+			table.targetId,
+			table.createdAt,
+			table.cohortKey,
+		),
 		index("poly_position_gap_cohorts_reduction_idx").on(
 			table.billingAccountId,
 			table.targetId,

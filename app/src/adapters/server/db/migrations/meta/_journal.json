@@ -631,6 +631,13 @@
       "when": 1794015358908,
       "tag": "0089_yummy_the_stranger",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1794350710597,
+      "tag": "0090_open_sunspot",
+      "breakpoints": true
     }
   ]
 }
