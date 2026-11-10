@@ -994,7 +994,7 @@ async function fetchTargetConditionPosition(args: {
         market_id: fill.market_id,
         err: err instanceof Error ? err.message : String(err),
       },
-			"mirror pipeline: target position fetch failed; follow-up branch will fail closed",
+			"mirror pipeline: target position fetch failed; BUYs that need target facts skip as target_position_unavailable",
     );
     return undefined;
   }

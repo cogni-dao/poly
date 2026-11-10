@@ -5,7 +5,7 @@
  * Module: `@features/copy-trade/plan-mirror`
  * Purpose: Pure copy-trade planning function — given a normalized Fill, the target config, and a runtime-state snapshot, return either `place` with a concrete OrderIntent or `skip` with a bounded reason code. Branch selection is target-dominance-driven: target's per-condition cost fractions decide entry/layer/hedge first, then our position state routes within (bug.5048).
  * Scope: Pure function. Does not perform I/O, does not read env, does not import adapters. All runtime state (idempotency set + per-condition target/our position snapshots) is supplied by the caller.
- * Exports: `planMirrorFromFill()` (planner), `analyzeTargetDominance()` (per-condition side-fraction analyzer), `targetVwapForToken()` (per-token VWAP from target_position), `applySizingPolicy()` (sizing helper).
+ * Exports: `planMirrorFromFill()` (planner), `planRequiresTargetPosition()` (config predicate), `analyzeTargetDominance()` (per-condition side-fraction analyzer), `targetVwapForToken()` (per-token VWAP from target_position), `applySizingPolicy()` (sizing helper).
  * Invariants:
  *   - IDEMPOTENT_BY_CLIENT_ID — repeat of the same `(target_id, fill_id)` is silently dropped via `already_placed_ids`. Matches the DB PK on `poly_copy_trade_fills`.
  *   - PLAN_IS_PURE — no side effects; same input → same output.
@@ -14,9 +14,10 @@
  *   - TARGET_DOMINANCE_DRIVES_BRANCH (bug.5048): when `config.min_target_side_fraction` is set + target_position is available, `decideMirrorBranch` computes target's dominant side first, then routes by our position state per the spec branch table. Below-threshold (minority) fills always skip as `target_dominant_other_side` — master switch covering entry, layer, AND hedge. When disabled (threshold unset / no target data), legacy our-position routing applies for backward-compat.
  *   - SIZING_PROPORTIONAL_TO_TARGET_SHARE (charter D6): for `target_percentile_scaled`, mirror intent is scaled by target's cost-basis fraction on the fill's token. Minority-side fills sized below market min skip rather than place. Prevents the inverted-weighting failure mode (Sinner/Ruud 2026-05-17, target 99.5/0.5 → mirror 28/72 inverted). Tactical fix; true position-proportional alignment is D2.
  *   - GAP_DRIVES_SIZING (D2 phase 2): for `position_gap`, intent is `(desired_shares − our_shares) × fill.price`, where `desired_shares = target_shares × target_scale`. Each fill is a re-evaluation trigger, not the sizing input. Layer/hedge dispatch short-circuits when this kind is active — gap math produces layering via `desired − ours` directly. `gap ≤ 0` skips `followup_not_needed`; gap below market min skips `below_market_min`. Phase 4's GapExecutor dissolves the remaining fill-driven scaffolding.
- *   - NEVER_PAY_ABOVE_TARGET_VWAP (bug.5048, bug.5008): when `config.vwap_tolerance` is set, `applyVwapGate` skips `vwap_floor_breach` if `fill.price > target_vwap_for_fill_token + tolerance`. Asymmetric upward gate. Missing/invalid VWAP fails closed for position_gap BUYs; legacy policies retain fail-open compatibility.
+ *   - NEVER_PAY_ABOVE_TARGET_VWAP (bug.5048, bug.5008): when `config.vwap_tolerance` is set, `applyVwapGate` skips `vwap_floor_breach` if `fill.price > target_vwap_for_fill_token + tolerance`. Asymmetric upward gate. A configured tolerance with missing/invalid target VWAP fails closed for every policy; position_gap BUYs also fail closed with no tolerance.
+ *   - BUY_GATES_FAIL_CLOSED_WITHOUT_TARGET_POSITION (bug.5053): a BUY whose config relies on target-position facts (`planRequiresTargetPosition`) and has no `state.target_position` skips `target_position_unavailable` instead of running with the dominance/VWAP gates silently off. SELL/close paths are unaffected.
  *   - HEDGE_PREDICATE_NOOPS_ON_UNKNOWN_OPPOSITE: hedge branch fires only when `state.position.opposite_token_id` is known from prior aggregation. No inference from condition structure alone.
- * Skip-reason precedence (first match wins): already_placed → market_past_end_date → price_outside_clob_bounds → target_dominant_other_side → vwap_floor_breach → sizing-reason skip (below_target_percentile / below_market_min / position_cap_reached / target_position_below_threshold / followup_position_too_small / followup_not_needed) → place.
+ * Skip-reason precedence (first match wins): already_placed → market_past_end_date → price_outside_clob_bounds → target_position_unavailable → target_dominant_other_side → vwap_floor_breach → sizing-reason skip (below_target_percentile / below_market_min / position_cap_reached / target_position_below_threshold / followup_position_too_small / followup_not_needed) → place.
  * Side-effects: none
  * Links: docs/spec/poly-copy-trade-execution.md, docs/spec/poly-tenant-and-collateral.md, work/items/bug.5048, work/items/task.0318
  * @public
@@ -354,6 +355,7 @@ function applyMarketFloors(
  *   1. already placed (PK+cid)        → skip/already_placed
  *   2. market past Gamma `end_date`   → skip/market_past_end_date  (bug.5043)
  *   3. price outside CLOB tick grid   → skip/price_outside_clob_bounds
+ *   3b. BUY needing target facts, no target_position → skip/target_position_unavailable (bug.5053)
  *   4. `decideMirrorBranch`           → skip/target_dominant_other_side (bug.5048)
  *                                       OR place-branch selection (new_entry / layer / hedge)
  *                                       with pre-computed `SizingResult`
@@ -426,6 +428,20 @@ export function planMirrorFromFill(input: PlanMirrorInput): MirrorPlan {
     };
   }
 
+  // bug.5053 — fail closed: without a target position the dominance and VWAP
+  // gates cannot be evaluated, so a BUY that relies on them must not place.
+  if (
+    fill.side === "BUY" &&
+    !state.target_position &&
+    planRequiresTargetPosition(config)
+  ) {
+    return {
+      kind: "skip",
+      reason: "target_position_unavailable",
+      position_branch: "new_entry",
+    };
+  }
+
   const planningInput =
     normalizedPrice.price === fill.price
       ? input
@@ -449,9 +465,8 @@ export function planMirrorFromFill(input: PlanMirrorInput): MirrorPlan {
   }
 
   // VWAP gate (bug.5048 / bug.5008) — applied AFTER branch selection, BEFORE
-  // sizing finalization. Fires on every place-bound BUY branch. position_gap
-  // fails closed when target VWAP is unavailable; legacy policies retain
-  // their historical fail-open behavior.
+  // sizing finalization. Fires on every place-bound BUY branch and fails
+  // closed whenever a tolerance is configured but target VWAP is unavailable.
   const vwapSkip = applyVwapGate(planningInput);
   if (vwapSkip !== undefined) {
     return {
@@ -490,8 +505,8 @@ export function planMirrorFromFill(input: PlanMirrorInput): MirrorPlan {
 /**
  * bug.5048 — analyze target's per-condition cost distribution and report
  * whether the incoming fill is on target's minority side. Gate disabled when
- * `threshold` is undefined or target_position is unavailable (fail-open per
- * TARGET_DOMINANCE_FAIL_OPEN_ON_MISSING_DATA).
+ * `threshold` is undefined. BUYs that need target facts never reach here
+ * without a target_position (`target_position_unavailable` skips first).
  */
 interface TargetDominanceSignal {
   /** True when threshold + target data are both available and total cost > 0. */
@@ -553,8 +568,8 @@ export function analyzeTargetDominance(
 /**
  * bug.5048 — target's VWAP on a specific token, derived from
  * `cost_usdc / size_shares`. Returns undefined when the token is absent or the
- * result cannot be a valid Polymarket entry price. Callers choose fail-open or
- * fail-closed semantics by policy.
+ * result cannot be a valid Polymarket entry price. `applyVwapGate` treats
+ * `undefined` as fail closed when a tolerance is configured.
  */
 export function targetVwapForToken(
   targetPosition: TargetConditionPositionView | undefined,
@@ -578,36 +593,56 @@ export function targetVwapForToken(
 }
 
 /**
- * bug.5048 / bug.5008 — refuse to place above target's average entry on the
- * fill's token. Tolerance is asymmetric (upward only); we are happy to enter
- * below target VWAP. position_gap BUYs fail closed when either the explicit
- * tolerance or a valid target-token VWAP is unavailable. Legacy policies
- * retain their historical fail-open behavior; SELL convergence is routed
- * before this planner in mirror-pipeline and is also excluded defensively.
+ * bug.5048 / bug.5008 / bug.5053 — refuse to place above target's average
+ * entry on the fill's token. Tolerance is asymmetric (upward only); we are
+ * happy to enter below target VWAP. A configured tolerance with a missing or
+ * invalid target-token VWAP fails closed for every policy; position_gap BUYs
+ * also fail closed when no tolerance is configured. A BUY without any target
+ * position never reaches here (`target_position_unavailable`). SELL
+ * convergence is routed before this planner in mirror-pipeline and is also
+ * excluded defensively.
  */
 function applyVwapGate(
   input: PlanMirrorInput
 ): "vwap_floor_breach" | undefined {
   if (input.fill.side !== "BUY") return undefined;
-  const failClosed = input.config.sizing.kind === "position_gap";
   const tolerance = input.config.vwap_tolerance;
   if (
     tolerance === undefined ||
     !Number.isFinite(tolerance) ||
     tolerance < 0
   ) {
-    return failClosed ? "vwap_floor_breach" : undefined;
+    return input.config.sizing.kind === "position_gap" ||
+      tolerance !== undefined
+      ? "vwap_floor_breach"
+      : undefined;
   }
   const tokenId =
     typeof input.fill.attributes?.asset === "string"
       ? input.fill.attributes.asset
       : "";
   const vwap = targetVwapForToken(input.state.target_position, tokenId);
-  if (vwap === undefined) {
-    return failClosed ? "vwap_floor_breach" : undefined;
-  }
+  if (vwap === undefined) return "vwap_floor_breach";
   if (input.fill.price > vwap + tolerance) return "vwap_floor_breach";
   return undefined;
+}
+
+/**
+ * bug.5053 — true when the policy's BUY decisions rely on target-position
+ * facts: a dominance threshold, a VWAP tolerance, follow-up routing, or
+ * target-based sizing. Such BUYs must fail closed without a target position.
+ */
+export function planRequiresTargetPosition(
+  config: PlanMirrorInput["config"]
+): boolean {
+  return (
+    config.min_target_side_fraction !== undefined ||
+    config.vwap_tolerance !== undefined ||
+    config.position_followup?.enabled === true ||
+    config.sizing.kind === "target_percentile" ||
+    config.sizing.kind === "target_percentile_scaled" ||
+    config.sizing.kind === "position_gap"
+  );
 }
 
 /**
