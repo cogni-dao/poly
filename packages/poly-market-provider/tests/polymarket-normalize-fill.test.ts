@@ -47,6 +47,11 @@ describe("polymarketDataApiFillId — golden-vector shape", () => {
 });
 
 describe("normalizePolymarketDataApiFill", () => {
+  it("skips a trade with an empty outcome label instead of inventing one", () => {
+    const r = normalizePolymarketDataApiFill({ ...BASE, outcome: "" });
+    expect(r).toEqual({ ok: false, reason: "missing_outcome_label" });
+  });
+
   it("normalizes a well-formed Data-API trade into a Fill", () => {
     const r = normalizePolymarketDataApiFill(BASE);
     expect(r.ok).toBe(true);
