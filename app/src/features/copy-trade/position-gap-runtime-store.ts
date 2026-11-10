@@ -280,11 +280,34 @@ function nextActionStatus(
 export class PositionGapRuntimeStore {
 	constructor(private readonly db: Database) {}
 
+	/**
+	 * Every cohort for the target (resolved included: they still feed the
+	 * per-token allowance sum, held-share attribution and creation dedupe), in
+	 * the exact projection order (created_at, cohort_key). bug.5051: selects only
+	 * the mapped columns; the former `select *` also detoasted
+	 * `source_provenance` jsonb for ~40k rows and hit the 8s statement timeout.
+	 */
 	async loadCohorts(
 		scope: PositionGapRuntimeScope,
 	): Promise<readonly PositionGapCohortState[]> {
 		const rows = await this.db
-			.select()
+			.select({
+				id: polyPositionGapCohorts.id,
+				cohortKey: polyPositionGapCohorts.cohortKey,
+				sourceKind: polyPositionGapCohorts.sourceKind,
+				conditionId: polyPositionGapCohorts.conditionId,
+				tokenId: polyPositionGapCohorts.tokenId,
+				marketId: polyPositionGapCohorts.marketId,
+				outcome: polyPositionGapCohorts.outcome,
+				targetDeltaShares: polyPositionGapCohorts.targetDeltaShares,
+				scaleAtCreation: polyPositionGapCohorts.scaleAtCreation,
+				allowedMirrorShares: polyPositionGapCohorts.allowedMirrorShares,
+				benchmarkTargetVwap: polyPositionGapCohorts.benchmarkTargetVwap,
+				acquiredShares: polyPositionGapCohorts.acquiredShares,
+				openOrderShares: polyPositionGapCohorts.openOrderShares,
+				remainingShares: polyPositionGapCohorts.remainingShares,
+				createdAt: polyPositionGapCohorts.createdAt,
+			})
 			.from(polyPositionGapCohorts)
 			.where(
 				and(
@@ -329,7 +352,16 @@ export class PositionGapRuntimeStore {
 			provisionalHoldingRows,
 		] = await Promise.all([
 			this.db
-				.select()
+				.select({
+					cohortKey: polyPositionGapCohorts.cohortKey,
+					sourceKind: polyPositionGapCohorts.sourceKind,
+					conditionId: polyPositionGapCohorts.conditionId,
+					tokenId: polyPositionGapCohorts.tokenId,
+					allowedMirrorShares: polyPositionGapCohorts.allowedMirrorShares,
+					acquiredShares: polyPositionGapCohorts.acquiredShares,
+					remainingShares: polyPositionGapCohorts.remainingShares,
+					benchmarkTargetVwap: polyPositionGapCohorts.benchmarkTargetVwap,
+				})
 				.from(polyPositionGapCohorts)
 				.where(
 					and(

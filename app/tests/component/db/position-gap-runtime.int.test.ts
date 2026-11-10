@@ -1153,8 +1153,16 @@ describe("position-gap runtime persistence", () => {
 			.update(polyPositionGapCohorts)
 			.set({ status: "resolved" })
 			.where(eq(polyPositionGapCohorts.cohortKey, lateCreation.cohortKey));
+		const afterResolve = await new PositionGapRuntimeStore(db).loadCohorts(
+			scope,
+		);
+		// bug.5051: resolved rows are still loaded (they feed allowance sums,
+		// held-share attribution and creation dedupe); only the jsonb is skipped.
+		expect(afterResolve.map((row) => row.cohortKey)).toContain(
+			lateCreation.cohortKey,
+		);
 		const resolvedReplay = projection(
-			await new PositionGapRuntimeStore(db).loadCohorts(scope),
+			afterResolve,
 			[firstPosition, latePosition],
 			5,
 		);

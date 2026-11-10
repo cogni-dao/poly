@@ -261,4 +261,40 @@ describe("projectPositionGapCohorts", () => {
 			result.cohorts.find((entry) => entry.id === "cohort-1"),
 		).toMatchObject({ allowedMirrorShares: 10 });
 	});
+
+	it("counts fully acquired (resolved-like) rows in the per-token allowance, so live cohorts shrink (bug.5051 behavior pin)", () => {
+		// loadCohorts must keep returning resolved rows: dropping them would leave
+		// the live cohort at 8 instead of shrinking it to 2.
+		const result = projectPositionGapCohorts(
+			base({
+				netTargetPositions: [{ ...position, netShares: 120 }],
+				existing: [
+					cohort({
+						id: "resolved-like",
+						cohortKey: "resolved-like",
+						allowedMirrorShares: 10,
+						acquiredShares: 10,
+						remainingShares: 0,
+						createdAtMs: 1,
+					}),
+					cohort({
+						id: "live",
+						cohortKey: "live",
+						allowedMirrorShares: 8,
+						remainingShares: 8,
+						createdAtMs: 2,
+					}),
+				],
+			}),
+		);
+
+		expect(result.reductions.map((entry) => entry.cohortId)).toEqual(["live"]);
+		expect(result.cohorts.map((entry) => entry.id).sort()).toEqual([
+			"live",
+			"resolved-like",
+		]);
+		expect(result.cohorts.find((entry) => entry.id === "live")).toMatchObject({
+			allowedMirrorShares: 2,
+		});
+	});
 });
