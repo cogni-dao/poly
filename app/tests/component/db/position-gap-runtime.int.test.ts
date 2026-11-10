@@ -461,7 +461,9 @@ describe("position-gap runtime persistence", () => {
 				...base,
 				inputSnapshot: {
 					...base.inputSnapshot,
-					canonical_input: { version: 2, exact: "collision" },
+					// bug.5051: identity is compared by primary key; the SHA-256 id
+					// already binds canonical_input, so no full-jsonb equality read.
+					input_contract_version: "position-gap-collision-contract",
 				},
 				buys: [],
 				cohortCreations: [],

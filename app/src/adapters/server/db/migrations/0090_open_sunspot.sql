@@ -1,0 +1,1 @@
+CREATE INDEX "poly_position_gap_cohorts_serving_idx" ON "poly_position_gap_cohorts" USING btree ("billing_account_id","target_id","created_at","cohort_key");

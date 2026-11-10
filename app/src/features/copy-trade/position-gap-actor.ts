@@ -784,7 +784,15 @@ export function startPositionGapActor(
 			confirmedRemainingIntentCount: capacity.remainingIntentCount,
 			maxIntents: 8,
 			venues,
-			cohorts: cohortProjection.cohorts.map((cohort) => ({
+			// bug.5051: the planner reads cohorts only for target-book tokens and
+			// open BUY orders. Retired history (~42k RN1 rows) stays in the
+			// durable cohort table but is not part of this decision's facts, so it
+			// is not persisted into the content-addressed input snapshot.
+			cohorts: selectPlannerRelevantCohorts({
+				snapshot: freshSnapshot,
+				openBuyOrders: runtime.openBuyOrders,
+				cohorts: cohortProjection.cohorts,
+			}).map((cohort) => ({
 				cohortId: cohort.cohortKey,
 				conditionId: cohort.conditionId,
 				tokenId: cohort.tokenId,
@@ -2333,6 +2341,34 @@ function blockedSafetyPlan(
 		diagnostics: [],
 		minimumFeasibleSleeveUsdc: null,
 	};
+}
+
+/**
+ * Cohorts the pure planner can observe: exactly the (condition, token) pairs of
+ * the target book plus pairs with an owned open BUY (`knownCohortKeys`).
+ * Order-preserving, so planner output is byte-identical to the unfiltered input.
+ */
+export function selectPlannerRelevantCohorts<
+	T extends { conditionId: string; tokenId: string },
+>(input: {
+	snapshot: TargetBookSnapshotV1;
+	openBuyOrders: readonly { conditionId: string; tokenId: string }[];
+	cohorts: readonly T[];
+}): readonly T[] {
+	const pairKey = (conditionId: string, tokenId: string) =>
+		`${conditionId}\u0000${tokenId}`;
+	const relevant = new Set<string>();
+	for (const condition of input.snapshot.conditions) {
+		for (const token of condition.tokens) {
+			relevant.add(pairKey(condition.conditionId, token.tokenId));
+		}
+	}
+	for (const order of input.openBuyOrders) {
+		relevant.add(pairKey(order.conditionId, order.tokenId));
+	}
+	return input.cohorts.filter((cohort) =>
+		relevant.has(pairKey(cohort.conditionId, cohort.tokenId)),
+	);
 }
 
 export function selectPositionGapVenueCandidates(input: {
