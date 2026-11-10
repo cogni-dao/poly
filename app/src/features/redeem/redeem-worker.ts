@@ -62,6 +62,7 @@ import { polygon } from "viem/chains";
 
 import {
   classifyRedeemError,
+  permanentRedeemReason,
   REDEEM_MAX_TRANSIENT_ATTEMPTS,
   type RedeemErrorClass,
   type RedeemFlavor,
@@ -355,7 +356,49 @@ export class RedeemWorker {
         reason: revert.reason,
         data: revert.data,
         shortMessage: revert.shortMessage,
+        errorName: err instanceof Error ? err.name : null,
+        message: msg,
       });
+
+      if (errorClass === "permanent_input") {
+        // bug.5047 DETERMINISTIC_REJECTION_IS_TERMINAL: the SDK rejected the
+        // input before building a tx; retrying can never succeed. Park the
+        // job with a named reason (no tx, no gas spent). error_class stays
+        // within the existing CHECK set; the reason lives in last_error.
+        const reason = permanentRedeemReason({
+          reason: revert.reason,
+          data: revert.data,
+          shortMessage: revert.shortMessage,
+          message: msg,
+        });
+        await this.deps.redeemJobs.markAbandoned({
+          jobId: job.id,
+          errorClass: "malformed",
+          error: `${reason}: ${msg}`,
+        });
+        await this.mirrorLifecycle(
+          job.conditionId,
+          job.positionId,
+          "abandoned",
+          `worker_${reason}`
+        );
+        this.deps.logger.error(
+          {
+            event: "poly.ctf.redeem.parked_permanent",
+            job_id: job.id,
+            condition_id: job.conditionId,
+            position_id: job.positionId,
+            funder: job.funderAddress,
+            flavor: job.flavor,
+            collateral_token: job.collateralToken,
+            expected_payout_usdc: job.expectedPayoutUsdc,
+            reason,
+            err_short: revert.shortMessage,
+          },
+          "redeem-worker: deterministic rejection; job parked (not retried)"
+        );
+        return false;
+      }
 
       if (errorClass === "rpc_transient") {
         const rpcResult = transition(job, {
