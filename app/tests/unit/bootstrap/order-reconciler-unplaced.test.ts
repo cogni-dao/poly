@@ -419,4 +419,48 @@ describe("known-order failure boundary diagnostics", () => {
     expect(h.place).not.toHaveBeenCalled();
     expect(h.deps.metrics.incr).toHaveBeenCalledWith(ORDER_RECONCILER_METRICS.errorsTotal, {});
   });
+
+  describe("bug.5050 account gate", () => {
+    const noWallet = () =>
+      Object.assign(new Error("no active trading wallet for billingAccountId=acct-1"), {
+        name: "PolyTradeExecutorError", code: "not_authorized", reason: "no_connection",
+      });
+
+    it("logs one account_unavailable line and zero row errors for a wallet-less account", async () => {
+      const get = vi.fn(async (acct: string, orderId: string) => {
+        if (acct === "acct-1") throw noWallet();
+        return { found: receipt({ order_id: orderId }) };
+      });
+      const h = harness([
+        row({ client_order_id: "a1", order_id: "v1" }),
+        row({ client_order_id: "a2", order_id: "v2" }),
+        row({ client_order_id: "a3", order_id: "v3" }),
+        row({ client_order_id: "b1", order_id: "v4", billing_account_id: "acct-2" }),
+      ], get);
+      await runReconcileOnce(h.deps);
+      expect(h.leaf.error).not.toHaveBeenCalled();
+      expect(h.leaf.warn).toHaveBeenCalledExactlyOnceWith({
+        event: "poly.mirror.reconcile.account_unavailable",
+        billing_account_id: "acct-1", mode: "live", reason: "no_connection", row_count: 3,
+      }, expect.any(String));
+      // Executor probed once for the wallet-less account; healthy account still reconciled.
+      expect(get.mock.calls.filter(([a]) => a === "acct-1")).toHaveLength(1);
+      expect(h.updateStatus).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ client_order_id: "b1" }));
+      expect(h.markSynced).toHaveBeenCalledExactlyOnceWith(["b1"]);
+      expect(h.markReconcileAttempted).toHaveBeenCalledExactlyOnceWith(["a1", "a2", "a3", "b1"]);
+      expect(h.place).not.toHaveBeenCalled();
+    });
+
+    it("keeps healthy accounts silent and still logs per-row errors with the executor reason", async () => {
+      const denied = Object.assign(new Error("denied"), {
+        name: "PolyTradeExecutorError", code: "not_authorized", reason: "trading_not_ready",
+      });
+      const h = harness([row({ order_id: "venue-1" })], vi.fn().mockRejectedValueOnce(denied));
+      await runReconcileOnce(h.deps);
+      expect(h.leaf.warn).not.toHaveBeenCalled();
+      expect(h.leaf.error).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        errorCode: "reconcile_row_error", err_code: "not_authorized", err_reason: "trading_not_ready",
+      }), "reconciler: row processing failed");
+    });
+  });
 });
