@@ -5,8 +5,8 @@
  * Module: `@tests/contract/readyz-substrate.contract`
  * Purpose: Prove the shallow/deep readiness contract for async substrate dependencies.
  * Scope: Exercises the /readyz route with isolated Temporal and scheduler-worker probes. Does not perform network or database IO.
- * Invariants: Default readiness stays healthy while emitting critical dependency events; `?deep=1` returns 503 for either missing dependency and names every failing declared dependency in `unreachable`.
- *             Default readiness runs checks concurrently: slow non-fatal checks are bounded and degrade, a slow system tenant is a 503, and only tenant success is cached (task.5298).
+ * Invariants: Default readiness stays healthy while emitting critical dependency events (including a failing Postgres system tenant, bug.0022); `?deep=1` returns 503 for either missing dependency and for a failing system tenant, and names every failing declared dependency in `unreachable`.
+ *             Default readiness runs checks concurrently: slow non-fatal checks are bounded and degrade, a slow or failing system tenant degrades (never 503), and only tenant success is cached (task.5298).
  * Side-effects: none
  * Links: src/app/(infra)/readyz/route.ts, Cogni-DAO/cogni#1860
  * @internal
@@ -119,6 +119,7 @@ vi.mock("@/shared/observability/server/metrics", () => ({
   setBuildInfo: (...args: unknown[]) => mocks.setBuildInfo(...args),
 }));
 
+import { EnvValidationError } from "@/shared/env";
 import {
   InfraConnectivityError,
   RuntimeSecretError,
@@ -465,7 +466,7 @@ describe("GET /readyz async substrate contract", () => {
     );
   });
 
-  it("returns 503 when the system tenant check exceeds its budget", async () => {
+  it("stays ready and reports degraded when the system tenant check exceeds its budget (bug.0022)", async () => {
     vi.useFakeTimers();
     mocks.verifySystemTenant.mockReturnValue(new Promise<never>(() => {}));
 
@@ -473,12 +474,89 @@ describe("GET /readyz async substrate contract", () => {
     await vi.advanceTimersByTimeAsync(2000);
     const response = await pending;
 
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ status: "healthy" });
+    expect(mocks.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "substrate.postgres.unreachable",
+        severity: "critical",
+        reason: "INFRA_UNREACHABLE",
+        dependency: "postgres",
+        message: "System tenant check exceeded 2000ms budget",
+      }),
+      expect.stringContaining("Returning ready")
+    );
+    expect(mocks.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checks: expect.objectContaining({
+          systemTenant: { status: "degraded", durationMs: 2000 },
+        }),
+      }),
+      "readiness: checks complete"
+    );
+  });
+
+  it("default readiness stays 200 with systemTenant degraded and a critical log when the tenant check rejects (bug.0022)", async () => {
+    mocks.verifySystemTenant.mockRejectedValue(
+      new Error("FATAL: cogni_system billing account missing. Run migrations.")
+    );
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      status: "healthy",
+      buildSha: "readyz-contract-sha",
+    });
+    expect(mocks.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "substrate.postgres.unreachable",
+        severity: "critical",
+        dependency: "postgres",
+        message: expect.stringContaining("cogni_system billing account missing"),
+      }),
+      expect.stringContaining("Returning ready")
+    );
+    expect(mocks.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checks: expect.objectContaining({
+          systemTenant: { status: "degraded", durationMs: expect.any(Number) },
+        }),
+      }),
+      "readiness: checks complete"
+    );
+  });
+
+  it("default readiness still returns 503 when runtime secrets are missing, before any check runs", async () => {
+    mocks.assertRuntimeSecrets.mockImplementationOnce(() => {
+      throw new RuntimeSecretError("secret missing");
+    });
+    mocks.verifySystemTenant.mockRejectedValue(new Error("pg down"));
+
+    const response = await GET(request());
+
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({
       status: "error",
-      reason: "INFRA_UNREACHABLE",
-      message: "System tenant check exceeded 2000ms budget",
+      reason: "MISSING_RUNTIME_SECRET",
+      message: "secret missing",
     });
+    expect(mocks.verifySystemTenant).not.toHaveBeenCalled();
+  });
+
+  it("default readiness still returns 503 on invalid environment, before any check runs", async () => {
+    mocks.serverEnv.mockImplementationOnce(() => {
+      throw new EnvValidationError({
+        code: "INVALID_ENV",
+        missing: ["DATABASE_URL"],
+        invalid: [],
+      });
+    });
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(503);
+    expect(mocks.verifySystemTenant).not.toHaveBeenCalled();
   });
 
   it("caches only system tenant success, for at most 30s", async () => {
@@ -491,16 +569,18 @@ describe("GET /readyz async substrate contract", () => {
       })
     );
 
-    // Failure is never cached: the next probe re-checks the database.
-    expect((await GET(request())).status).toBe(503);
+    // Failure is non-fatal (bug.0022) and never cached: the next probe re-checks the database.
+    expect((await GET(request())).status).toBe(200);
     expect(mocks.error).toHaveBeenCalledWith(
       expect.objectContaining({
-        reason: "INTERNAL_ERROR",
-        error: "Failed query",
+        event: "substrate.postgres.unreachable",
+        severity: "critical",
+        reason: "SYSTEM_TENANT_CHECK_FAILED",
+        message: "Failed query",
         causeCode: "ECONNREFUSED",
         causeMessage: "connection refused",
       }),
-      "readiness check failed: internal error"
+      expect.stringContaining("Returning ready")
     );
     expect((await GET(request())).status).toBe(200);
     expect(mocks.verifySystemTenant).toHaveBeenCalledTimes(2);
@@ -579,7 +659,12 @@ describe("GET /readyz async substrate contract", () => {
     await vi.advanceTimersByTimeAsync(1000);
     const second = GET(request()); // joins the in-flight query
     await vi.advanceTimersByTimeAsync(1000);
-    expect((await first).status).toBe(503);
+    // Budget exceeded is non-fatal (bug.0022): ready, tenant reported degraded.
+    expect((await first).status).toBe(200);
+    expect(mocks.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "substrate.postgres.unreachable" }),
+      expect.any(String)
+    );
 
     await vi.advanceTimersByTimeAsync(500); // query resolves at 2.5s
     expect((await second).status).toBe(200);
@@ -596,8 +681,12 @@ describe("GET /readyz async substrate contract", () => {
     for (let probe = 0; probe < 5; probe++) {
       const pending = GET(request());
       await vi.advanceTimersByTimeAsync(2000);
-      expect((await pending).status).toBe(503);
+      expect((await pending).status).toBe(200); // degraded, never 503 (bug.0022)
     }
+    expect(mocks.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "substrate.postgres.unreachable" }),
+      expect.any(String)
+    );
     expect(mocks.verifySystemTenant).toHaveBeenCalledOnce(); // probes joined query 1
 
     await vi.advanceTimersByTimeAsync(1); // query 1 is now older than 10s
@@ -695,11 +784,8 @@ describe("GET /readyz async substrate contract", () => {
     );
     mocks.verifySystemTenant.mockRejectedValue(new Error("pg down"));
     const shallow = await GET(request());
-    expect(shallow.status).toBe(503);
-    expect(await shallow.json()).toEqual({
-      status: "error",
-      reason: "INTERNAL_ERROR",
-    });
+    expect(shallow.status).toBe(200);
+    expect(await shallow.json()).not.toHaveProperty("unreachable");
     mocks.assertRuntimeSecrets.mockImplementationOnce(() => {
       throw new RuntimeSecretError("secret missing");
     });
