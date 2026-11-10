@@ -161,12 +161,14 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
       const scored = await adapter.patch({ id, expectedRevision: created.revision, set: { scores } }, collaborator);
       expect(scored.scores).toEqual(scores);
       await expect(adapter.patch({ id, expectedRevision: created.revision, set: { scores: null } }, collaborator)).rejects.toMatchObject({ name: "WorkItemRevisionConflictError" });
-      await expect(adapter.patch({ id, set: { title: "Foreign content", scores: null } }, collaborator)).rejects.toMatchObject({ name: "WorkItemAuthorizationError" });
-      expect(await adapter.get(id)).toMatchObject({ title: "Shared evaluation composition", scores, revision: scored.revision });
+      // bug.0019 / bug.5619: the adapter no longer gates on creator; a non-creator may patch any field.
+      const foreign = await adapter.patch({ id, expectedRevision: scored.revision, set: { title: "Non-creator content" } }, collaborator);
+      expect(foreign.title).toBe("Non-creator content");
+      expect(await adapter.get(id)).toMatchObject({ title: "Non-creator content", scores, revision: foreign.revision });
       const claimed = await adapter.claim({ id, runId: "baseline-run", command: "/baseline", principalId: owner });
       expect(claimed.claimedByRun).toBe("baseline-run");
       expect(claimed.scores).toEqual(scores);
-      expect(claimed.revision).toBeGreaterThan(scored.revision);
+      expect(claimed.revision).toBeGreaterThan(foreign.revision);
       expect((await adapter.get(id))?.claimedByRun).toBe("baseline-run");
       expect((await adapter.list({ ids: [id] })).items[0]).toMatchObject({ scores, claimedByRun: "baseline-run" });
       await expect(adapter.claim({ id, runId: "intruder", command: "/baseline", principalId: collaborator })).rejects.toMatchObject({ name: "WorkItemLeaseConflictError" });
