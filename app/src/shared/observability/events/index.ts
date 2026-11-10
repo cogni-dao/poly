@@ -20,6 +20,9 @@ import {
 export const EVENT_NAMES = {
 	...SHARED_EVENT_NAMES,
 	DB_POOL_CONFIGURED: "adapter.db_pool.configured",
+	// Reconciler skipped an account with no buildable executor (bug.5050): one per account per tick.
+	POLY_MIRROR_RECONCILE_ACCOUNT_UNAVAILABLE:
+		"poly.mirror.reconcile.account_unavailable",
 	// Goal metrics (story.0021): refresh dispatch receipt and goals read.
 	METRIC_REFRESH_COMPLETE: "metric.refresh_complete",
 	GOALS_PROGRESS_READ: "goals.progress_read",

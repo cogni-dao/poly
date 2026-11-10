@@ -31,6 +31,11 @@
  *     scheduling write, including no-ID, not_found and exception outcomes.
  *   - SYNCED_AT_WRITTEN_ON_EVERY_SYNC — `markSynced` is called for every row
  *     for which `getOrder` returned a typed answer. (task.0328 CP3)
+ *   - ACCOUNT_UNAVAILABLE_IS_ONE_LINE — an account whose executor cannot be built
+ *     (`not_authorized` / `no_connection`, e.g. no trading wallet) is skipped for
+ *     the rest of the tick and logged once as
+ *     `poly.mirror.reconcile.account_unavailable` with a row count, not once per
+ *     row. Rows are still rotated (FAIR_RECOVERY) and reservations stay retained.
  *   - SYNC_HEALTH_IS_PUBLIC — `reconcilerLastTickAt` is stamped each tick and
  *     surfaced by the `/api/v1/poly/internal/sync-health` endpoint. (task.0328 CP4)
  * Side-effects: starts a `setInterval`, emits logs + metrics.
@@ -143,6 +148,29 @@ export interface OrderReconcilerHandle {
   getLastTickAt: () => Date | null;
 }
 
+/**
+ * Account-level executor-unavailable signal: `buildExecutor` throws
+ * `PolyTradeExecutorError("not_authorized", …, "no_connection")` when the account
+ * has no trading wallet (or the venue port is not configured). Duck-typed so the
+ * job does not import the executor module. Returns the safe reason label.
+ */
+function accountUnavailableReason(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const e = err as { code?: unknown; reason?: unknown };
+  if (e.code !== "not_authorized" || e.reason !== "no_connection")
+    return undefined;
+  return "no_connection";
+}
+
+/** Executor sub-code (e.g. `no_connection`, `trading_not_ready`) as a safe label. */
+function executorReason(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const reason = (err as { reason?: unknown }).reason;
+  return typeof reason === "string" && reason.length > 0
+    ? reason.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 80)
+    : undefined;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Receipt status → LedgerStatus map (mirrors order-ledger.ts `mapReceiptStatus`)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -252,6 +280,12 @@ export async function runReconcileOnce(
 
 	const attemptedIds: string[] = [];
 	let unresolvedIdentityCount = 0;
+	// Accounts whose executor could not be built this tick (no trading wallet).
+	// Keyed by account+mode; one warn per entry after the loop, rows skipped.
+	const unavailableAccounts = new Map<
+		string,
+		{ billing_account_id: string; mode: string; reason: string; rows: number }
+	>();
 	try {
   for (const row of rows) {
 			attemptedIds.push(row.client_order_id);
@@ -259,6 +293,13 @@ export async function runReconcileOnce(
 			// identity from target fills or infer nonacceptance from elapsed time.
     if (!row.order_id) {
 				unresolvedIdentityCount++;
+      continue;
+    }
+    const unavailableKey = `${row.billing_account_id}:${row.mode}`;
+    const unavailable = unavailableAccounts.get(unavailableKey);
+    if (unavailable) {
+      // Executor already proven unconstructable for this account this tick.
+      unavailable.rows++;
       continue;
     }
     // Diagnostic only: the injected read combines executor construction and wire IO.
@@ -382,6 +423,19 @@ export async function runReconcileOnce(
 					"reconciler: authenticated order observation persisted",
       );
 			} catch (err: unknown) {
+      const unavailableReason =
+        reconcileStage === "executor_order_read"
+          ? accountUnavailableReason(err)
+          : undefined;
+      if (unavailableReason) {
+        unavailableAccounts.set(`${row.billing_account_id}:${row.mode}`, {
+          billing_account_id: row.billing_account_id,
+          mode: row.mode === "live" || row.mode === "paper" ? row.mode : "unknown",
+          reason: unavailableReason,
+          rows: 1,
+        });
+        continue;
+      }
       const { err_class, err_code, cause_class, cause_code } = safeErrorDimensions(err);
       deps.metrics.incr(ORDER_RECONCILER_METRICS.errorsTotal, {});
       log.error(
@@ -398,6 +452,7 @@ export async function runReconcileOnce(
           reconcile_stage: reconcileStage,
           err_class,
           err_code,
+          ...(executorReason(err) ? { err_reason: executorReason(err) } : {}),
           cause_class,
           cause_code,
         },
@@ -408,6 +463,19 @@ export async function runReconcileOnce(
 	} finally {
 		// Fair scheduling is independent of execution state and venue freshness.
 		await deps.ledger.markReconcileAttempted(attemptedIds);
+	}
+
+	for (const acct of unavailableAccounts.values()) {
+		log.warn(
+			{
+				event: EVENT_NAMES.POLY_MIRROR_RECONCILE_ACCOUNT_UNAVAILABLE,
+				billing_account_id: acct.billing_account_id,
+				mode: acct.mode,
+				reason: acct.reason,
+				row_count: acct.rows,
+			},
+			"reconciler: account executor unavailable; rows skipped, reservations retained",
+		);
 	}
 
 	if (unresolvedIdentityCount > 0) {
