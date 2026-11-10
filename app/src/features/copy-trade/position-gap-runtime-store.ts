@@ -280,16 +280,41 @@ function nextActionStatus(
 export class PositionGapRuntimeStore {
 	constructor(private readonly db: Database) {}
 
+	/**
+	 * Non-resolved cohorts only, in the exact deterministic projection order
+	 * (created_at, cohort_key). bug.5051: the former unbounded `select *` over
+	 * every historical cohort (incl. `source_provenance` jsonb) timed out at 8s
+	 * (SQLSTATE 57014) once a long-lived target accumulated ~40k rows. Resolved
+	 * cohorts are terminal; their identity keys come from
+	 * `loadResolvedCohortKeys` so activation/target-buy creation stays exact-once.
+	 */
 	async loadCohorts(
 		scope: PositionGapRuntimeScope,
 	): Promise<readonly PositionGapCohortState[]> {
 		const rows = await this.db
-			.select()
+			.select({
+				id: polyPositionGapCohorts.id,
+				cohortKey: polyPositionGapCohorts.cohortKey,
+				sourceKind: polyPositionGapCohorts.sourceKind,
+				conditionId: polyPositionGapCohorts.conditionId,
+				tokenId: polyPositionGapCohorts.tokenId,
+				marketId: polyPositionGapCohorts.marketId,
+				outcome: polyPositionGapCohorts.outcome,
+				targetDeltaShares: polyPositionGapCohorts.targetDeltaShares,
+				scaleAtCreation: polyPositionGapCohorts.scaleAtCreation,
+				allowedMirrorShares: polyPositionGapCohorts.allowedMirrorShares,
+				benchmarkTargetVwap: polyPositionGapCohorts.benchmarkTargetVwap,
+				acquiredShares: polyPositionGapCohorts.acquiredShares,
+				openOrderShares: polyPositionGapCohorts.openOrderShares,
+				remainingShares: polyPositionGapCohorts.remainingShares,
+				createdAt: polyPositionGapCohorts.createdAt,
+			})
 			.from(polyPositionGapCohorts)
 			.where(
 				and(
 					eq(polyPositionGapCohorts.billingAccountId, scope.billingAccountId),
 					eq(polyPositionGapCohorts.targetId, scope.targetId),
+					sql`${polyPositionGapCohorts.status} <> 'resolved'`,
 				),
 			)
 			.orderBy(
@@ -316,6 +341,27 @@ export class PositionGapRuntimeStore {
 		}));
 	}
 
+	/**
+	 * Identity keys of resolved (terminal) cohorts. Keys only: no jsonb, no
+	 * numerics. Retained as tombstones so a late activation or replayed target
+	 * BUY can never recreate retired entitlement.
+	 */
+	async loadResolvedCohortKeys(
+		scope: PositionGapRuntimeScope,
+	): Promise<ReadonlySet<string>> {
+		const rows = await this.db
+			.select({ cohortKey: polyPositionGapCohorts.cohortKey })
+			.from(polyPositionGapCohorts)
+			.where(
+				and(
+					eq(polyPositionGapCohorts.billingAccountId, scope.billingAccountId),
+					eq(polyPositionGapCohorts.targetId, scope.targetId),
+					eq(polyPositionGapCohorts.status, "resolved"),
+				),
+			);
+		return new Set(rows.map((row) => row.cohortKey));
+	}
+
 	async loadPlannerState(scope: PositionGapRuntimeScope): Promise<{
 		cohorts: readonly PositionGapPriceCohortV1[];
 		openBuyOrders: readonly PositionGapOpenBuyOrderV1[];
@@ -329,7 +375,16 @@ export class PositionGapRuntimeStore {
 			provisionalHoldingRows,
 		] = await Promise.all([
 			this.db
-				.select()
+				.select({
+					cohortKey: polyPositionGapCohorts.cohortKey,
+					sourceKind: polyPositionGapCohorts.sourceKind,
+					conditionId: polyPositionGapCohorts.conditionId,
+					tokenId: polyPositionGapCohorts.tokenId,
+					allowedMirrorShares: polyPositionGapCohorts.allowedMirrorShares,
+					acquiredShares: polyPositionGapCohorts.acquiredShares,
+					remainingShares: polyPositionGapCohorts.remainingShares,
+					benchmarkTargetVwap: polyPositionGapCohorts.benchmarkTargetVwap,
+				})
 				.from(polyPositionGapCohorts)
 				.where(
 					and(

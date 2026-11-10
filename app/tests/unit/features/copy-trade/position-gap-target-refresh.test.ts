@@ -840,6 +840,7 @@ describe("buildPositionGapBuyIntent", () => {
 				releaseTerminalExposure: vi.fn(async () => undefined),
 				loadLastSnapshot: vi.fn(async () => snapshot),
 				loadCohorts: vi.fn(async () => []),
+				loadResolvedCohortKeys: vi.fn(async () => new Set<string>()),
 				previousBudgetUsdc: vi.fn(async () => 10),
 				activeReservationTotals: vi.fn(async () => ({
 					budgetUsdc: 0,
@@ -977,5 +978,106 @@ describe("buildPositionGapBuyIntent", () => {
 			"database detail must not leak",
 		);
 		void handle;
+	});
+
+	it("backs off failed runs instead of re-running on every timer or wake (bug.5051)", async () => {
+		let nowMs = 1_000_000;
+		const getExecutionMode = vi.fn(async (): Promise<"live" | "paper"> => {
+			throw new Error("canceling statement due to statement timeout");
+		});
+		const intervals: (() => void)[] = [];
+		const timeouts: { callback: () => void; delayMs: number }[] = [];
+		const loggerError = vi.fn();
+		const actorLogger = {
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: loggerError,
+			child() {
+				return this;
+			},
+		};
+		const handle = startPositionGapActor({
+			implementationRevision: "0123456789abcdef0123456789abcdef01234567",
+			targetRowId: "target-row",
+			isAssignmentCurrent: vi.fn(async () => true),
+			scope: {
+				billingAccountId: "billing-account",
+				createdByUserId: "user",
+				targetId: "wallet-derived-target",
+			},
+			targetWallet: "0x1111111111111111111111111111111111111111",
+			configRevision: "revision",
+			configuredBudgetUsdc: 10,
+			positionGapBudgetGroup: {
+				positionGapTargetCount: 1,
+				explicitBudgetTotalUsdc: 10,
+				automaticTargetCount: 0,
+				unbudgetedTargetCount: 0,
+			},
+			source: { fetchSince: vi.fn() },
+			refresh: { refreshFull: vi.fn(), readFresh: vi.fn() } as never,
+			store: {
+				recoverSubmittingAsAmbiguous: vi.fn(async () => 0),
+			} as never,
+			ledger: {} as never,
+			getExecutionMode,
+			executionForMode: vi.fn(() => ({}) as never),
+			fillEvidence: {} as never,
+			getWalletCashUsdc: vi.fn(),
+			getTargetCashUsdc: vi.fn(),
+			getAuthoritativeHoldings: vi.fn(),
+			publishTargetSnapshot: vi.fn(),
+			logger: { ...actorLogger, child: vi.fn(() => actorLogger) },
+			now: () => nowMs,
+			setInterval: vi.fn((callback: () => void) => {
+				intervals.push(callback);
+				return intervals.length as never;
+			}) as never,
+			clearInterval: vi.fn(),
+			setTimeout: vi.fn((callback: () => void, delayMs?: number) => {
+				timeouts.push({ callback, delayMs: delayMs ?? 0 });
+				return timeouts.length as never;
+			}) as never,
+			clearTimeout: vi.fn(),
+		});
+
+		// Activation run fails -> 15s backoff window, logged.
+		await vi.waitFor(() => expect(loggerError).toHaveBeenCalledTimes(1));
+		expect(loggerError).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				event: "poly.position_gap.v3.run_failed",
+				consecutive_failures: 1,
+				backoff_ms: 15_000,
+			}),
+			expect.any(String),
+		);
+
+		// Timer and periodic wakes inside the window are deferred behind ONE timeout.
+		intervals[0]?.();
+		intervals[1]?.();
+		handle.wake("target_activity");
+		await Promise.resolve();
+		expect(getExecutionMode).toHaveBeenCalledTimes(1);
+		expect(timeouts).toHaveLength(1);
+		expect(timeouts[0]?.delayMs).toBe(15_000);
+
+		// Window elapses: one retry runs and fails again with a doubled window.
+		nowMs += 15_000;
+		timeouts[0]?.callback();
+		await vi.waitFor(() => expect(loggerError).toHaveBeenCalledTimes(2));
+		expect(getExecutionMode).toHaveBeenCalledTimes(2);
+		expect(loggerError).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				consecutive_failures: 2,
+				backoff_ms: 30_000,
+				reasons: expect.arrayContaining(["timer", "target_activity"]),
+			}),
+			expect.any(String),
+		);
+
+		// Operator intent (config) bypasses the backoff window.
+		handle.wake("config");
+		await vi.waitFor(() => expect(getExecutionMode).toHaveBeenCalledTimes(3));
 	});
 });

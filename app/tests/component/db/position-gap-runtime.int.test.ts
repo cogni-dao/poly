@@ -1041,9 +1041,11 @@ describe("position-gap runtime persistence", () => {
 			existing: Awaited<ReturnType<typeof store.loadCohorts>>,
 			positions: readonly (typeof firstPosition)[],
 			snapshot: number,
+			retiredCohortKeys: ReadonlySet<string> = new Set(),
 		) =>
 			projectPositionGapCohorts({
 				existing,
+				retiredCohortKeys,
 				netTargetPositions: positions,
 				activity: [],
 				snapshotId: `activation-snapshot-${snapshot}`,
@@ -1153,10 +1155,19 @@ describe("position-gap runtime persistence", () => {
 			.update(polyPositionGapCohorts)
 			.set({ status: "resolved" })
 			.where(eq(polyPositionGapCohorts.cohortKey, lateCreation.cohortKey));
+		const resolvedStore = new PositionGapRuntimeStore(db);
+		const liveAfterResolve = await resolvedStore.loadCohorts(scope);
+		const resolvedKeys = await resolvedStore.loadResolvedCohortKeys(scope);
+		// bug.5051: resolved rows leave the live read and surface as keys only.
+		expect(liveAfterResolve.map((row) => row.cohortKey)).not.toContain(
+			lateCreation.cohortKey,
+		);
+		expect([...resolvedKeys]).toEqual([lateCreation.cohortKey]);
 		const resolvedReplay = projection(
-			await new PositionGapRuntimeStore(db).loadCohorts(scope),
+			liveAfterResolve,
 			[firstPosition, latePosition],
 			5,
+			resolvedKeys,
 		);
 		expect(resolvedReplay.creations).toEqual([]);
 

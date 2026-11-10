@@ -98,7 +98,13 @@ export interface PositionGapCohortProjection {
 }
 
 export interface ProjectPositionGapCohortsInput {
+	/** Live (non-resolved) cohorts: the only rows reductions and the planner see. */
 	existing: readonly PositionGapCohortState[];
+	/**
+	 * Identity keys of resolved cohorts (bug.5051). Keys only: they block
+	 * recreation of retired entitlement but take no part in reductions.
+	 */
+	retiredCohortKeys?: ReadonlySet<string>;
 	netTargetPositions: readonly PositionGapNetTargetPosition[];
 	activity: readonly PositionGapTargetActivity[];
 	snapshotId: string;
@@ -255,6 +261,7 @@ export function projectPositionGapCohorts(
 	const existingKeys = new Set(
 		input.existing.map((cohort) => cohort.cohortKey),
 	);
+	for (const key of input.retiredCohortKeys ?? []) existingKeys.add(key);
 	const positionByToken = new Map(
 		input.netTargetPositions.map((position) => [position.tokenId, position]),
 	);

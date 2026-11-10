@@ -40,6 +40,7 @@ import {
 	type PositionGapTargetActivity,
 	projectPositionGapCohorts,
 } from "@/features/copy-trade/position-gap-cohorts";
+import { PositionGapFailureBackoff } from "@/features/copy-trade/position-gap-failure-backoff";
 import {
 	type PositionGapFillEvidencePort,
 	reconcilePositionGapFillEvidence,
@@ -74,6 +75,12 @@ const FULL_REFRESH_MS = 5 * 60_000;
 const VENUE_CACHE_MS = 30_000;
 const MAX_VENUE_CANDIDATES = 16;
 const WARMUP_SECONDS = 60;
+/** Wakes that must never wait out a failure backoff (safety / operator intent). */
+const BACKOFF_BYPASS_REASONS: ReadonlySet<string> = new Set([
+	"disabled",
+	"config",
+	"order_event",
+]);
 const POSITION_GAP_DEFINITION =
 	ALGORITHM_DEFINITIONS["poly.copy-mirror.position-gap"];
 
@@ -206,6 +213,10 @@ export function startPositionGapActor(
 	let causalWatermarkMs = 0;
 	let causalRetry: ReturnType<typeof globalThis.setTimeout> | null = null;
 	let causalHoldLogged = false;
+	// bug.5051: failed runs back off instead of re-enqueueing every wake/timer.
+	const failureBackoff = new PositionGapFailureBackoff();
+	const deferredReasons = new Set<string>();
+	let backoffWake: ReturnType<typeof globalThis.setTimeout> | null = null;
 	let publishedTargetSnapshotId: string | null = null;
 	const venueCache = new Map<
 		string,
@@ -232,15 +243,30 @@ export function startPositionGapActor(
 						continue;
 					}
 					await reconcile(batch);
+					const endedFailures = failureBackoff.recordSuccess();
+					if (endedFailures > 0) {
+						actorLogger.info(
+							{
+								event: EVENT_NAMES.POLY_POSITION_GAP_V3_RUN_RECOVERED,
+								consecutive_failures_ended: endedFailures,
+							},
+							"position-gap v3 reconciliation recovered; failure backoff reset",
+						);
+					}
 				} catch (error) {
 					if (batch.includes("disabled")) stopFailure = error;
 					if (error instanceof AssignmentLivenessUnavailableError) continue;
+					const { consecutiveFailures, backoffMs } = batch.includes("disabled")
+						? { consecutiveFailures: 0, backoffMs: 0 }
+						: failureBackoff.recordFailure(now());
 					actorLogger.error(
 						{
 							event: EVENT_NAMES.POLY_POSITION_GAP_V3_RUN_FAILED,
 							billing_account_id: deps.scope.billingAccountId,
 							target_wallet: deps.targetWallet,
 							reasons: batch,
+							consecutive_failures: consecutiveFailures,
+							backoff_ms: backoffMs,
 							...safeErrorDimensions(error),
 						},
 						"position-gap v3 reconciliation failed",
@@ -254,8 +280,38 @@ export function startPositionGapActor(
 		return draining;
 	};
 
+	const scheduleBackoffWake = (): void => {
+		if (backoffWake) return;
+		backoffWake = scheduleTimeout(
+			() => {
+				backoffWake = null;
+				if (disabled || assignmentRetired) {
+					deferredReasons.clear();
+					return;
+				}
+				// A bypass-woken run may have failed again and extended the window.
+				if (failureBackoff.remainingMs(now()) > 0) {
+					scheduleBackoffWake();
+					return;
+				}
+				for (const reason of deferredReasons) reasons.add(reason);
+				deferredReasons.clear();
+				void drain();
+			},
+			Math.max(1, failureBackoff.remainingMs(now())),
+		);
+	};
+
 	const enqueue = (reason: string): void => {
 		if ((disabled || assignmentRetired) && reason !== "disabled") return;
+		if (
+			!BACKOFF_BYPASS_REASONS.has(reason) &&
+			failureBackoff.remainingMs(now()) > 0
+		) {
+			deferredReasons.add(reason);
+			scheduleBackoffWake();
+			return;
+		}
 		reasons.add(reason);
 		void drain();
 	};
@@ -337,6 +393,9 @@ export function startPositionGapActor(
 				cancelInterval(timer);
 				cancelInterval(fullRefreshTimer);
 				if (causalRetry) cancelTimeout(causalRetry);
+				if (backoffWake) cancelTimeout(backoffWake);
+				backoffWake = null;
+				deferredReasons.clear();
 				unsubscribe?.();
 			}
 			stopFailure = null;
@@ -583,13 +642,18 @@ export function startPositionGapActor(
 		const scale =
 			targetTotalWealthUsdc > 0 ? budgetUsdc / targetTotalWealthUsdc : 0;
 		const loadCohortsStartedMs = performance.now();
+		// Sequential on purpose: one pooled connection at a time (bug.5045).
 		const existingCohorts = await deps.store.loadCohorts(deps.scope);
+		const retiredCohortKeys = await deps.store.loadResolvedCohortKeys(
+			deps.scope,
+		);
 		const loadCohortsMs = performance.now() - loadCohortsStartedMs;
 		const previousBudget = await deps.store.previousBudgetUsdc(deps.scope);
 		const snapshotHash = hashJson(freshSnapshot);
 		const projectionStartedMs = performance.now();
 		const cohortProjection = projectPositionGapCohorts({
 			existing: existingCohorts,
+			retiredCohortKeys,
 			netTargetPositions: netBook.positions.map((position) =>
 				toCohortPosition(freshSnapshot, position),
 			),

@@ -261,4 +261,66 @@ describe("projectPositionGapCohorts", () => {
 			result.cohorts.find((entry) => entry.id === "cohort-1"),
 		).toMatchObject({ allowedMirrorShares: 10 });
 	});
+
+	it("treats retired (resolved) keys as tombstones that block recreation but never enter the projection", () => {
+		const activity = [
+			{
+				fillId: "data-api:trade-retired",
+				side: "BUY" as const,
+				conditionId: position.conditionId,
+				tokenId: position.tokenId,
+				marketId: position.marketId,
+				outcome: position.outcome,
+				shares: 20,
+				price: 0.35,
+				observedAtMs: 2_000,
+			},
+		];
+		const input = base({ activation: true, activity });
+		const fresh = projectPositionGapCohorts(input);
+		expect(fresh.creations).toHaveLength(2);
+
+		const retiredCohortKeys = new Set(
+			fresh.creations.map((creation) => creation.cohortKey),
+		);
+		const replay = projectPositionGapCohorts({ ...input, retiredCohortKeys });
+
+		expect(replay.creations).toEqual([]);
+		expect(replay.reductions).toEqual([]);
+		expect(replay.cohorts).toEqual([]);
+	});
+
+	it("retired keys suppress only their own creation and keep live ordering", () => {
+		const activity = [
+			{
+				fillId: "data-api:trade-live",
+				side: "BUY" as const,
+				conditionId: position.conditionId,
+				tokenId: position.tokenId,
+				marketId: position.marketId,
+				outcome: position.outcome,
+				shares: 20,
+				price: 0.35,
+				observedAtMs: 2_000,
+			},
+		];
+		const input = base({ activation: true, activity });
+		const fresh = projectPositionGapCohorts(input);
+		const activation = fresh.creations.find(
+			(creation) => creation.sourceKind === "activation",
+		);
+		if (!activation) throw new Error("activation creation missing");
+
+		const replay = projectPositionGapCohorts({
+			...input,
+			retiredCohortKeys: new Set([activation.cohortKey]),
+		});
+
+		expect(replay.creations.map((creation) => creation.sourceKind)).toEqual([
+			"target_buy",
+		]);
+		expect(replay.cohorts.map((entry) => entry.sourceKind)).toEqual([
+			"target_buy",
+		]);
+	});
 });
