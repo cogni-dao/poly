@@ -1356,6 +1356,7 @@ async function observePositionsSerialized(deps: {
         walletAddress: deps.wallet.walletAddress,
         maxPages: deps.maxPages,
         budget: deps.budget,
+        ...positionPageValueFloor(deps.wallet),
         signal: deps.signal,
       });
     } catch (err) {
@@ -2639,11 +2640,33 @@ function isValidObservedPosition(position: PolymarketUserPosition): boolean {
   );
 }
 
+/**
+ * Tenant wallets (`cogni_wallet`) hold hundreds of rows and the dashboard
+ * total is only coherent when EVERY held token carries a fresh saved mark, so
+ * they read the complete book. Only a copy target's whale book (~39k, mostly
+ * worthless REDEEMABLE rows — bug.5049) needs the value floor to fit the cap.
+ * bug.5062: the floor on tenant wallets stopped refreshing worthless rows,
+ * leaving stale marks that withheld the wallet total.
+ */
+export function positionPageValueFloor(
+  wallet: Pick<PolyTraderWallet, "kind">
+): { minValueUsdc?: number } {
+  return wallet.kind === "cogni_wallet"
+    ? {}
+    : { minValueUsdc: POSITION_MIN_VALUE_USDC };
+}
+
 export async function fetchTraderPositionsPages(params: {
   client: PolymarketDataApiClient;
   walletAddress: string;
   maxPages: number;
   budget?: PositionObservationBudget;
+  /**
+   * Value floor (`filter_type=CASH`). Omitted: the complete book
+   * (`sizeThreshold=0`), so every held token — including worthless REDEEMABLE
+   * rows — is refreshed each pass and carries a fresh saved mark.
+   */
+  minValueUsdc?: number | undefined;
   /** Cooperative cancellation (task.5015): checked before each page and passed to the fetch. */
   signal?: AbortSignal | undefined;
 }): Promise<{
@@ -2664,9 +2687,9 @@ export async function fetchTraderPositionsPages(params: {
       "data_api",
       () =>
         params.client.listUserPositions(params.walletAddress, {
-          // Value-bearing rows only: a whale's 39k-row book (mostly worthless
-          // REDEEMABLE) would otherwise never fit the page cap.
-          minValueUsdc: POSITION_MIN_VALUE_USDC,
+          ...(params.minValueUsdc === undefined
+            ? { sizeThreshold: 0 }
+            : { minValueUsdc: params.minValueUsdc }),
           limit: POSITION_FETCH_LIMIT,
           ...(cursor !== undefined && { cursor }),
           signal: params.signal,

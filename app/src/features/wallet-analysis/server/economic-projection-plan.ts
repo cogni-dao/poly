@@ -17,7 +17,7 @@ const CTE_NAMES = new Set([
 	"ledger_candidates",
 	"origin_keys",
 	"history_facts",
-	"current_groups",
+	"current_ranked",
 	"current_facts",
 	"driven_keys",
 	"target_correlated_keys",
