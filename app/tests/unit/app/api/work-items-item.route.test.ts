@@ -47,7 +47,7 @@ describe("PATCH /api/v1/work/items/:id", () => {
 
 	it("rejects a body id that differs from the path id", async () => {
 		const response = await PATCH(
-			request({ id: "task.9999", set: { title: "wrong target" } }),
+			request({ id: "task.9999", reason: "test change", set: { title: "wrong target" } }),
 			context,
 		);
 
@@ -71,10 +71,13 @@ describe("PATCH /api/v1/work/items/:id", () => {
 			createdAt: "2026-10-02T12:00:00.000Z",
 			updatedAt: "2026-10-02T12:01:00.000Z",
 		});
-		await PATCH(request({ set: { title: "right target" } }), context);
+		await PATCH(
+			request({ reason: "test change", set: { title: "right target" } }),
+			context,
+		);
 
 		expect(mockPatchWorkItem).toHaveBeenCalledWith(
-			{ id: "task.5001", set: { title: "right target" } },
+			{ id: "task.5001", reason: "test change", set: { title: "right target" } },
 			{ id: "agent-1" },
 		);
 	});

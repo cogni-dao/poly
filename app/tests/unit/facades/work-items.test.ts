@@ -261,13 +261,14 @@ describe("app/_facades/work/items.server", () => {
       });
 
       await patchWorkItem(
-        { id: "task.0001", set: { deployVerified: true, blockedBy: null } },
+        { id: "task.0001", reason: "test change", set: { deployVerified: true, blockedBy: null } },
         { id: "agent-1" }
       );
 
       expect(mockPort.patch).toHaveBeenCalledWith(
         {
           id: toWorkItemId("task.0001"),
+          reason: "test change",
           set: { deployVerified: true, blockedBy: null },
         },
         "agent-1"

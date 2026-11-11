@@ -6,6 +6,8 @@
  * Purpose: Factory for WorkItemCapability — bridges ai-tools interface to WorkItemQueryPort + WorkItemCommandPort.
  * Scope: Creates WorkItemCapability that delegates to hexagonal ports. Does not implement transport.
  * Invariants:
+ *   - PATCH_REASON_AND_CITES (task.0086): the required `reason` and the optional `cites` are forwarded to the Doltgres store, the one enforcer;
+ *     the command-port fallback is Poly's unavailable stub (mutations use the HTTP command plane), so it never receives them.
  *   - PORTS_ARE_AUTHORITY: All operations delegate to WorkItemQueryPort/WorkItemCommandPort
  *   - TRANSITION_TABLE_ENFORCED: CommandPort validates transitions
  * Side-effects: none (factory only)
@@ -63,6 +65,10 @@ function supportedSortBy(sortBy: string): WorkItemSortBy {
 function toWorkItemInfo(item: WorkItem): WorkItemInfo {
   return toWorkItemDto(item);
 }
+
+/** The patch `set` without explicit-undefined keys (the route facade drops them the same way). */
+const definedOnly = (set: object): object =>
+  Object.fromEntries(Object.entries(set).filter(([, v]) => v !== undefined));
 
 /**
  * Create a WorkItemCapability backed by hexagonal ports.
@@ -168,10 +174,14 @@ export function createWorkItemCapability(
           const updated = await writer.store.patch(
             {
               id: toWorkItemId(input.id),
-              set: input.set,
+              set: definedOnly(input.set) as Parameters<
+                typeof writer.store.patch
+              >[0]["set"],
               ...(input.expectedRevision !== undefined && {
                 expectedRevision: input.expectedRevision,
               }),
+              reason: input.reason,
+              ...(input.cites !== undefined && { cites: input.cites }),
             },
             writer.principalId(),
           );
@@ -202,7 +212,9 @@ export function createWorkItemCapability(
       const updated = await workItemCommand.patch({
         id: toWorkItemId(input.id),
         expectedRevision: String(current.revision),
-        set: input.set,
+        set: definedOnly(input.set) as NonNullable<
+          Parameters<typeof workItemCommand.patch>[0]["set"]
+        >,
       });
 
       return toWorkItemInfo(updated);

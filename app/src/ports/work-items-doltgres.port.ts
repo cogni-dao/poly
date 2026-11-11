@@ -12,6 +12,7 @@
  */
 
 import type {
+  CiteRef,
   HistoryEntry,
   WorkBoardColumnPages,
   WorkItem,
@@ -37,8 +38,10 @@ export interface WorkItemsPatchInput {
   readonly id: WorkItemId;
   readonly expectedRevision?: number;
   readonly set: WorkItemsPatchSet;
-  /** One-line change reason; stored in the Dolt commit message, never in the item (task.0052). */
-  readonly reason?: string;
+  /** Required one-line change reason (at most 25 words); stored in the Dolt commit message, never in the item (task.0052, task.0086). */
+  readonly reason: string;
+  /** Hub atoms this change used (at most 8); the adapter pins each to a commit in history (task.0086). */
+  readonly cites?: readonly CiteRef[];
 }
 
 export interface WorkItemsDoltgresPort {

@@ -31,14 +31,18 @@ export type ToLangChainToolsCapturedOptions = Omit<
 
 // LangChain accepts both local Zod 3 schemas and the published Zod 4 schemas.
 // The published wrapper owns deny-by-default, config propagation and result handling.
-export function makeLangChainTool(options: MakeLangChainToolOptions) {
+export function makeLangChainTool(
+  options: MakeLangChainToolOptions,
+): ReturnType<typeof sharedTool> {
   return sharedTool(options as SharedToolOptions);
 }
-export function makeLangChainTools(options: MakeLangChainToolsOptions) {
+export function makeLangChainTools(
+  options: MakeLangChainToolsOptions,
+): ReturnType<typeof sharedTools> {
   return sharedTools(options as SharedToolsOptions);
 }
 export function toLangChainToolsCaptured(
   options: ToLangChainToolsCapturedOptions,
-) {
+): ReturnType<typeof sharedCaptured> {
   return sharedCaptured(options as SharedCapturedOptions);
 }

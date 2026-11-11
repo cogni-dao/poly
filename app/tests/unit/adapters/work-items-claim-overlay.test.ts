@@ -15,11 +15,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const content = {
+  get: vi.fn(),
+  patch: vi.fn(),
   list: vi.fn(),
   listSummaries: vi.fn(),
   listBoardColumns: vi.fn(),
 };
-const legacy = { list: vi.fn() };
+const legacy = { get: vi.fn(), list: vi.fn(), patch: vi.fn() };
 
 vi.mock("@cogni/work-items/adapters/doltgres", async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -33,6 +35,7 @@ vi.mock("@cogni/legacy-work-items/adapters/doltgres", () => ({
   }),
 }));
 
+import { DoltgresWorkItemAdapter } from "@cogni/work-items/adapters/doltgres";
 import { DoltgresPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
 
 const item = (id: string) => ({ id, title: id, type: "task", status: "needs_implement" });
@@ -90,5 +93,32 @@ describe("DoltgresPolyWorkItemAdapter claim overlay (task.0056)", () => {
       { signal }
     );
     expect(legacy.list).not.toHaveBeenCalled();
+  });
+
+  it("passes entryResolver to the content adapter and never to the legacy lease adapter (task.0086)", () => {
+    const entryResolver = { resolve: vi.fn() } as never;
+    new DoltgresPolyWorkItemAdapter({} as never, undefined, { entryResolver });
+
+    expect(DoltgresWorkItemAdapter).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ entryResolver, writerLockProtocol: "bridge" })
+    );
+  });
+
+  it("routes every patch through the content adapter so reason and cites are enforced once (task.0086)", async () => {
+    content.patch.mockResolvedValue(item("task.5001"));
+    legacy.get.mockResolvedValue(null);
+    const adapter = new DoltgresPolyWorkItemAdapter({} as never);
+    const input = {
+      id: "task.5001",
+      reason: "test change",
+      cites: [{ id: "change-history-design" }],
+      set: { title: "t" },
+    } as never;
+
+    await adapter.patch(input, "agent-1");
+
+    expect(content.patch).toHaveBeenCalledWith(input, "agent-1");
+    expect(legacy.patch).not.toHaveBeenCalled();
   });
 });

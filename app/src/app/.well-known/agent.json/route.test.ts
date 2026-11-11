@@ -50,5 +50,10 @@ describe("GET /.well-known/agent.json", () => {
     expect(body.actions.updateWorkItem.inputSchema.properties).toHaveProperty(
       "set"
     );
+    // task.0086: the reason is required and cites are offered.
+    expect(body.actions.updateWorkItem.inputSchema.required).toContain("reason");
+    expect(body.actions.updateWorkItem.inputSchema.properties).toHaveProperty(
+      "cites"
+    );
   });
 });

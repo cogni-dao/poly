@@ -14,6 +14,7 @@ curl -X PATCH https://cognidao.org/api/v1/work/items/<id> \
   -H "authorization: Bearer $COGNI_KEY" \
   -H 'content-type: application/json' \
   -d '{
+    "reason": "<why, one line, at most 25 words>",
     "set": {
       "projectId": "proj.<parent-or-omit-if-standalone>",
       "status": "<next-status-per-table-below>",

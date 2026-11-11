@@ -19,11 +19,33 @@ import {
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-const base = { id: "task.0001", set: { title: "t" } };
+const base = { id: "task.0001", reason: "test change", set: { title: "t" } };
 
 describe("work.items.patch.v1 reason", () => {
-  it("accepts a patch without a reason", () => {
+  it("accepts a patch with a reason", () => {
     expect(workItemsPatchOperation.input.safeParse(base).success).toBe(true);
+  });
+
+  it("rejects a patch without a reason", () => {
+    const { reason: _reason, ...withoutReason } = base;
+    expect(workItemsPatchOperation.input.safeParse(withoutReason).success).toBe(
+      false
+    );
+  });
+
+  it("accepts cites and rejects more than eight", () => {
+    expect(
+      workItemsPatchOperation.input.safeParse({
+        ...base,
+        cites: [{ id: "change-history-design" }],
+      }).success
+    ).toBe(true);
+    expect(
+      workItemsPatchOperation.input.safeParse({
+        ...base,
+        cites: Array.from({ length: 9 }, (_, i) => ({ id: `atom-${i}` })),
+      }).success
+    ).toBe(false);
   });
 
   it("accepts a one-line reason beside expectedRevision", () => {
@@ -35,14 +57,14 @@ describe("work.items.patch.v1 reason", () => {
     expect(parsed.success).toBe(true);
   });
 
-  it("rejects an empty or over-512-character reason", () => {
+  it("rejects an empty or over-240-character reason", () => {
     expect(
       workItemsPatchOperation.input.safeParse({ ...base, reason: "" }).success
     ).toBe(false);
     expect(
       workItemsPatchOperation.input.safeParse({
         ...base,
-        reason: "x".repeat(513),
+        reason: "x".repeat(241),
       }).success
     ).toBe(false);
   });
