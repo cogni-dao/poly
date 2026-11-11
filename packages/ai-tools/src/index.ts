@@ -376,6 +376,24 @@ export {
   workItemTransitionContract,
   workItemTransitionStubImplementation,
 } from "./tools/work-item-transition";
+export {
+  createWorkItemReadImplementation,
+  WORK_ITEM_READ_NAME,
+  workItemReadBoundTool,
+  workItemReadContract,
+} from "./tools/work-item-read";
+export {
+  createWorkItemUpdateImplementation,
+  WORK_ITEM_UPDATE_NAME,
+  type WorkItemUpdateDeps,
+  WorkItemUpdateConflictSchema,
+  type WorkItemUpdateInput,
+  type WorkItemUpdateOutput,
+  WorkItemUpdateOutputSchema,
+  WorkItemUpdateSuccessSchema,
+  workItemUpdateBoundTool,
+  workItemUpdateContract,
+} from "./tools/work-item-update";
 // Tool types
 export type {
   BoundTool,

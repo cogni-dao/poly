@@ -61,7 +61,9 @@ import {
   VCS_MERGE_PR_NAME,
   WEB_SEARCH_NAME,
   WORK_ITEM_QUERY_NAME,
+  WORK_ITEM_READ_NAME,
   WORK_ITEM_TRANSITION_NAME,
+  WORK_ITEM_UPDATE_NAME,
 } from "@cogni/ai-tools";
 
 import {
@@ -69,7 +71,9 @@ import {
   createGoalListImplementation,
   createKnowledgeSearchImplementation,
   createWorkItemQueryImplementation,
+  createWorkItemReadImplementation,
   createWorkItemTransitionImplementation,
+  createWorkItemUpdateImplementation,
   GOAL_LIST_NAME,
   getCurrentTimeImplementation,
   type WorkItemCapability,
@@ -204,7 +208,16 @@ export function createToolBindings(deps: ToolBindingDeps): ToolBindings {
       nodePublicOrigin: deps.nodePublicOrigin,
     }) as AnyToolImplementation,
 
+    [WORK_ITEM_READ_NAME]: createWorkItemReadImplementation({
+      workItemCapability: deps.workItemCapability,
+      nodePublicOrigin: deps.nodePublicOrigin,
+    }) as AnyToolImplementation,
+
     [WORK_ITEM_TRANSITION_NAME]: createWorkItemTransitionImplementation({
+      workItemCapability: deps.workItemCapability,
+    }) as AnyToolImplementation,
+    // task.0086: the work-prioritizer's only write door; mirrors PATCH, grant work_item:transition.
+    [WORK_ITEM_UPDATE_NAME]: createWorkItemUpdateImplementation({
       workItemCapability: deps.workItemCapability,
     }) as AnyToolImplementation,
   };

@@ -17,7 +17,12 @@
  * @internal
  */
 
-import { CORE_TOOL_BUNDLE, WEB_SEARCH_NAME } from "@cogni/ai-tools";
+import {
+  CORE_TOOL_BUNDLE,
+  WEB_SEARCH_NAME,
+  WORK_ITEM_READ_NAME,
+  WORK_ITEM_UPDATE_NAME,
+} from "@cogni/ai-tools";
 import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
 import { POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME } from "@cogni/poly-graphs";
 import { describe, expect, it } from "vitest";
@@ -26,7 +31,9 @@ import {
   POLY_BRAIN_NODE_TOOL_IDS,
   POLY_NODE_LANGGRAPH_CATALOG,
 } from "@/bootstrap/ai/node-catalog";
+import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 import { PRINCIPAL_TOOL_BUNDLE } from "@/bootstrap/ai/principal-tool-source";
+import { createToolBindings } from "@/bootstrap/ai/tool-bindings";
 
 const POLY_BRAIN = "poly-brain";
 
@@ -99,5 +106,29 @@ describe("this node's langgraph catalog", () => {
     }
     expect(POLY_BRAIN_NODE_TOOL_IDS).not.toContain("core__poly_place_trade");
     expect(POLY_BRAIN_NODE_TOOL_IDS).not.toContain("core__poly_cancel_order");
+  });
+
+  // task.0086: the shared work-prioritizer writes only through core__work_item_update
+  // and reads items with core__work_item_read; a node that binds neither runs it read-blind.
+  it("offers work-prioritizer core__work_item_update and core__work_item_read, bound and granted", () => {
+    const toolIds = POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.toolIds ?? [];
+    expect(toolIds).toContain(WORK_ITEM_UPDATE_NAME);
+    expect(toolIds).toContain(WORK_ITEM_READ_NAME);
+
+    const byId = new Map(
+      POLY_CORE_TOOL_BUNDLE.map((bound) => [bound.contract.name, bound.contract])
+    );
+    const bindings = createToolBindings({
+      workItemCapability: {},
+    } as unknown as Parameters<typeof createToolBindings>[0]);
+    for (const toolId of toolIds) {
+      expect(byId.has(toolId), `${toolId} in the node tool bundle`).toBe(true);
+    }
+    for (const toolId of [WORK_ITEM_UPDATE_NAME, WORK_ITEM_READ_NAME]) {
+      expect(bindings[toolId], `${toolId} bound`).toBeDefined();
+    }
+    expect(byId.get(WORK_ITEM_UPDATE_NAME)?.requires?.scope).toBe(
+      "work_item:transition"
+    );
   });
 });
