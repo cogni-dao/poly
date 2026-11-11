@@ -313,12 +313,20 @@ export async function handleDiff(
       { error: `contribution not found: ${contributionId}` },
       { status: 404 }
     );
-  const entries = await svc.diff(contributionId);
-  return NextResponse.json({
-    contributionId,
-    branch: record.branch,
-    entries,
-  });
+  try {
+    const [entries, citations] = await Promise.all([
+      svc.diff(contributionId),
+      svc.diffCitations(contributionId),
+    ]);
+    return NextResponse.json({
+      contributionId,
+      branch: record.branch,
+      entries,
+      citations,
+    });
+  } catch (e) {
+    return mapError(e);
+  }
 }
 
 export async function handleMerge(

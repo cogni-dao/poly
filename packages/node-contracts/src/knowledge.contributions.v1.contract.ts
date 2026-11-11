@@ -17,6 +17,7 @@
  */
 
 import {
+  ContributionCitationDiffEntrySchema,
   ContributionCommitRecordSchema,
   ContributionDiffEntrySchema,
   ContributionRecordSchema,
@@ -72,6 +73,10 @@ export type ContributionCommitRecord = z.infer<
 
 export type ContributionDiffEntry = z.infer<typeof ContributionDiffEntrySchema>;
 
+export type ContributionCitationDiffEntry = z.infer<
+  typeof ContributionCitationDiffEntrySchema
+>;
+
 export const ContributionsListResponseSchema = z.object({
   contributions: z.array(ContributionRecordSchema),
 });
@@ -83,6 +88,8 @@ export const ContributionDiffResponseSchema = z.object({
   contributionId: z.string(),
   branch: z.string(),
   entries: z.array(ContributionDiffEntrySchema),
+  /** Every citation edge the contribution adds, removes or re-contexts. */
+  citations: z.array(ContributionCitationDiffEntrySchema),
 });
 export type ContributionDiffResponse = z.infer<
   typeof ContributionDiffResponseSchema

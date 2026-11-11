@@ -15,6 +15,7 @@ import type { ReactNode } from "react";
 
 import { AppShell } from "@/features/layout";
 import { getBrandMark } from "@/shared/config/repoSpec.server";
+import { EntityPeekProvider } from "./_components/EntityPeek";
 
 export default function AppLayout({
   children,
@@ -24,5 +25,9 @@ export default function AppLayout({
   // Server-side, build-safe repo-spec read; passed to the (client) sidebar as a
   // serializable prop so the sidebar never imports server-only repo-spec IO.
   const brandMark = getBrandMark();
-  return <AppShell brandMark={brandMark}>{children}</AppShell>;
+  return (
+    <AppShell brandMark={brandMark}>
+      <EntityPeekProvider>{children}</EntityPeekProvider>
+    </AppShell>
+  );
 }
