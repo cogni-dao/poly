@@ -39,8 +39,10 @@ import {
 } from "@cogni/node-contracts";
 import type { SessionUser } from "@cogni/node-shared";
 import { NextResponse } from "next/server";
+import type { Logger } from "pino";
 
 import { getContainer } from "@/bootstrap/container";
+import { EVENT_NAMES, logEvent } from "@/shared/observability";
 
 function service() {
   const svc = getContainer().knowledgeContributionService;
@@ -296,8 +298,12 @@ export async function handleListCommits(
 
 export async function handleDiff(
   contributionId: string,
-  sessionUser: SessionUser | null
+  sessionUser: SessionUser | null,
+  log: Logger,
+  reqId: string,
+  routeId: string
 ): Promise<NextResponse> {
+  const startedAt = Date.now();
   if (!sessionUser)
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const svc = service();
@@ -313,12 +319,30 @@ export async function handleDiff(
       { error: `contribution not found: ${contributionId}` },
       { status: 404 }
     );
-  const entries = await svc.diff(contributionId);
-  return NextResponse.json({
-    contributionId,
-    branch: record.branch,
-    entries,
-  });
+  try {
+    const [entries, citations] = await Promise.all([
+      svc.diff(contributionId),
+      svc.diffCitations(contributionId),
+    ]);
+    logEvent(log, EVENT_NAMES.KNOWLEDGE_CONTRIBUTION_DIFF_SUCCESS, {
+      reqId,
+      routeId,
+      contributionId,
+      entryCount: entries.length,
+      citationCount: citations.length,
+      outcome: "success",
+      status: 200,
+      durationMs: Date.now() - startedAt,
+    });
+    return NextResponse.json({
+      contributionId,
+      branch: record.branch,
+      entries,
+      citations,
+    });
+  } catch (e) {
+    return mapError(e);
+  }
 }
 
 export async function handleMerge(

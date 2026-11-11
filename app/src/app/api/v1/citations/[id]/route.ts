@@ -13,6 +13,7 @@
  * @public
  */
 
+import { describeCitation } from "@cogni/knowledge-store";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -38,6 +39,9 @@ const CitationLinkSchema = z.object({
   source: CitationEndpointSchema,
   target: CitationEndpointSchema,
   context: z.string().nullable(),
+  /** This side's reading from CITATION_TYPE_DEFINITIONS ("supported by" on the cited side). */
+  label: z.string(),
+  tone: z.enum(["positive", "negative", "warning", "neutral", "muted"]),
 });
 
 const CitationLinksResponseSchema = z.object({
@@ -96,14 +100,19 @@ export const GET = wrapRouteHandlerWithLogging<{
       return NextResponse.json({ error: "invalid cursor" }, { status: 400 });
     }
     const page = await port.listCitationLinks(id, parsed.data.cursor);
-    const links = page.links.map((citation) => ({
-      id: citation.id,
-      direction: citation.citingId === id ? ("out" as const) : ("in" as const),
-      citationType: citation.citationType,
-      source: endpoint(citation.citingId, citation.sourceTitle),
-      target: endpoint(citation.citedId, citation.targetTitle),
-      context: citation.context,
-    }));
+    const links = page.links.map((citation) => {
+      const direction =
+        citation.citingId === id ? ("out" as const) : ("in" as const);
+      return {
+        id: citation.id,
+        direction,
+        citationType: citation.citationType,
+        source: endpoint(citation.citingId, citation.sourceTitle),
+        target: endpoint(citation.citedId, citation.targetTitle),
+        context: citation.context,
+        ...describeCitation(citation.citationType, direction),
+      };
+    });
     ctx.log.info(
       { id, count: links.length, hasMore: page.nextCursor !== null },
       "citations.links_success"

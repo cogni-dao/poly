@@ -32,6 +32,7 @@ Protected (authenticated) pages wrapped in `SidebarProvider` + `AppSidebar` + `A
 - **Exports:** none
 - **Routes:** `/chat`, `/dashboard`, `/work`, `/work/items/[id]`, `/activity`, `/gov`, `/credits`, `/schedules`, `/schedules/[scheduleId]`, `/setup`
 - BOUNDED_BOARD_READS (task.0056): `/work` and `/dashboard` never download the backlog. The `/work` board makes one `/api/v1/work/board` request plus one `/api/v1/work/summaries` request per column "Load more" through the package `useWorkBoard`; the table requests one cursor page through `useWorkTablePage`; `/dashboard` uses `useOpenWork` (at most 5 active summaries). No client code walks cursors.
+- PEEK_KEEPS_PAGE (bug.0011): citation links in entry Links and inbox cards render through `PeekLink` (`_components/EntityPeek.tsx`). A plain click on a knowledge id opens it in the shell-level side sheet (`EntityPeekProvider` in `layout.tsx`), and links inside the sheet swap its entry. Modified clicks, work-item ids and links outside the provider navigate.
 - **Files considered API:** `layout.tsx`
 
 ## Responsibilities

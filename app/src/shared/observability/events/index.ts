@@ -31,6 +31,7 @@ export const EVENT_NAMES = {
 	// Bounded work reads (task.0056): one terminal event per /work/summaries or /work/board request.
 	WORK_ITEMS_LIST_COMPLETE: "work.items.list_complete",
 	KNOWLEDGE_HISTORY_READ: "knowledge.history_read",
+	KNOWLEDGE_CONTRIBUTION_DIFF_SUCCESS: "knowledge.contribution.diff_success",
 	// Auth perimeter (proxy): request rejected before reaching any route handler,
 	// so the request-scoped logger never sees it — emitted directly from the proxy.
 	AUTH_PERIMETER_DENIED: "auth.perimeter.denied",
