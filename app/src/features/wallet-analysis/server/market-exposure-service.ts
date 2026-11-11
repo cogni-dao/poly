@@ -80,6 +80,13 @@
  *     NegRiskAdapter MERGE + ConditionalTokens PayoutRedemption events
  *     as realized cash flows; Modified-Dietz on rollup BUY + all cash
  *     recoveries gives a clean answer even without a held position.
+ *   - EXACT_TOKEN_RETURN_GAP (bug.5061): since #241 nulled every Δ, the
+ *     return gap compares only exact same-token (our, target) pairs on their
+ *     own saved capital base. Ours = saved `pnlPct` (live: unrealized ÷
+ *     remaining basis; closed: lifetime P/L ÷ lifetime BUY); null when the
+ *     saved economics are incomplete. Target = `(value − cost) ÷ cost` of the
+ *     last observed snapshot, outcome-resolved when the market resolved.
+ *     Partial fill rollups are never mixed into either side.
  *   - EDGE_GAP_NULL_WITHOUT_TARGETS: `edgeGapUsdc` and `edgeGapPct` are null
  *     on lines/groups with zero target legs that have positive buy notional.
  *     "Edge gap vs. nobody" is undefined, not `-ourPnl`.
@@ -173,6 +180,14 @@ type RawLeg = {
   economicFact?: ComparisonEconomicFact | undefined;
   valuationUnavailable?: boolean;
   basisUnavailable?: boolean;
+  /**
+   * `our_wallet` legs only: exact saved return (fraction) of this position on
+   * its own capital base — live: unrealized P/L ÷ remaining basis; closed:
+   * lifetime P/L ÷ lifetime BUY. Null whenever the saved economics are
+   * incomplete (UNKNOWN_IS_NOT_ZERO). Weighted by `returnWeightUsdc`.
+   */
+  returnFraction?: number | null;
+  returnWeightUsdc?: number;
   oppositeTokenId?: string | null;
   /**
    * CTF redemption credit contributed by this leg ($1 × winning shares
@@ -1575,6 +1590,8 @@ export function materializeComparisonCoverage(params: {
                   .flatMap((participant) => [
                     participant.primary?.tokenId,
                     participant.hedge?.tokenId,
+                    // Exact-token matches can sit on a third+ leg.
+                    ...(participant.legs ?? []).map((leg) => leg.tokenId),
                   ])
                   .filter(
                     (tokenId): tokenId is string => tokenId !== undefined
@@ -1649,11 +1666,12 @@ export function materializeComparisonCoverage(params: {
     if (!identityAmbiguous && sampled > comparable) {
       return unavailableCoverageLeaf();
     }
-    // Ambiguous or incomplete sources do not feed a histogram. `sampled`
-    // describes trusted finite values actually supplied to that chart, not
-    // merely finite numbers present in the bounded transport payload.
-    const trustedSampled =
-      identityAmbiguous || !params.sourceComplete ? 0 : sampled;
+    // Ambiguous identity never feeds a histogram. An incomplete source does:
+    // the chart always plots the finite exact-token deltas it has
+    // (DELTA_HISTOGRAM_ALWAYS_VISIBLE), so `sampled` reports them and the
+    // `source_incomplete` reason keeps `complete` false. Zeroing `sampled`
+    // here made a populated chart read as "0 sampled" (empty) in coverage.
+    const trustedSampled = identityAmbiguous ? 0 : sampled;
     const reasons: WalletDashboardComparisonCoverageReason[] = [];
     if (!params.sourceComplete) reasons.push("source_incomplete");
     if (dropped > 0) reasons.push("comparison_missing");
@@ -1751,8 +1769,115 @@ function buildOurLegs(
       ourPositionStatus,
       pnlUsdc: 0, // Internal compatibility field; public P/L uses canonical facts only.
       redemptionProceedsUsdc: 0,
+      returnFraction: ownReturnFraction(position),
+      returnWeightUsdc: round4(position.size * position.entryPrice),
     };
   });
+}
+
+/**
+ * Saved per-position return as a fraction. `pnlPct` is already derived by the
+ * economic read model from exact facts only (live: unrealized ÷ remaining
+ * basis, closed: lifetime ÷ lifetime BUY) and is null when unknown.
+ */
+function ownReturnFraction(position: ValuedExecutionPosition): number | null {
+  const pct = position.pnlPct;
+  return typeof pct === "number" && Number.isFinite(pct)
+    ? round4(pct / 100)
+    : null;
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
+}
+
+/**
+ * Target-side held return for one exact token: `(value − cost) ÷ cost` over the
+ * last observed vendor cost basis. A resolved market's outcome — not a stale
+ * mark — dictates the remaining value. Null (never zero) without a positive
+ * observed basis and a finite value.
+ */
+function targetHeldReturn(
+  leg: RawLeg,
+  rollups: ReadonlyMap<string, FillRollup>
+): { cost: number; pnl: number } | null {
+  if (leg.basisUnavailable || leg.valuationUnavailable) return null;
+  if (!Number.isFinite(leg.costBasisUsdc) || leg.costBasisUsdc <= 0) return null;
+  if (!Number.isFinite(leg.currentValueUsdc)) return null;
+  const outcome = rollups.get(
+    rollupKey(leg.walletAddress, leg.conditionId, leg.tokenId)
+  )?.marketOutcome;
+  const value =
+    outcome === "winner"
+      ? leg.shares
+      : outcome === "loser"
+        ? 0
+        : leg.currentValueUsdc;
+  return { cost: leg.costBasisUsdc, pnl: value - leg.costBasisUsdc };
+}
+
+/**
+ * Exact same-token return comparison for one condition. Only our positions
+ * with known saved economics paired with a copy-target holding the identical
+ * token contribute; opposite/hedge legs and unknown economics are omitted, not
+ * zeroed.
+ */
+function exactTokenReturns(
+  ourLegs: readonly RawLeg[],
+  targetLegs: readonly RawLeg[],
+  rollups: ReadonlyMap<string, FillRollup>
+): {
+  ourReturnPct: number | null;
+  targetReturnPct: number | null;
+  ourWeight: number;
+  targetWeight: number;
+} {
+  const matchedOur = new Map<string, RawLeg>();
+  const matchedTarget = new Map<string, { wallet: string; cost: number; pnl: number }>();
+  for (const our of ourLegs) {
+    const weight = our.returnWeightUsdc ?? 0;
+    if (our.returnFraction == null || !(weight > 0)) continue;
+    for (const target of targetLegs) {
+      if (comparePositionIdentity(our, target).exactMatch !== true) continue;
+      const held = targetHeldReturn(target, rollups);
+      if (held === null) continue;
+      matchedOur.set(our.tokenId, our);
+      matchedTarget.set(`${target.walletAddress}:${target.tokenId}`, {
+        wallet: target.walletAddress,
+        ...held,
+      });
+    }
+  }
+  const ourWeight = [...matchedOur.values()].reduce(
+    (sum, leg) => sum + (leg.returnWeightUsdc ?? 0),
+    0
+  );
+  const ourReturnPct =
+    ourWeight > 0
+      ? round4(
+          [...matchedOur.values()].reduce(
+            (sum, leg) => sum + (leg.returnWeightUsdc ?? 0) * (leg.returnFraction ?? 0),
+            0
+          ) / ourWeight
+        )
+      : null;
+  const byWallet = new Map<string, { cost: number; pnl: number }>();
+  for (const held of matchedTarget.values()) {
+    const agg = byWallet.get(held.wallet) ?? { cost: 0, pnl: 0 };
+    agg.cost += held.cost;
+    agg.pnl += held.pnl;
+    byWallet.set(held.wallet, agg);
+  }
+  const entries = [...byWallet.values()].map((agg) => ({
+    totalBuyNotional: agg.cost,
+    returnPct: round4(agg.pnl / agg.cost),
+  }));
+  return {
+    ourReturnPct,
+    targetReturnPct: blendTargetReturns(entries),
+    ourWeight,
+    targetWeight: entries.reduce((sum, entry) => sum + entry.totalBuyNotional, 0),
+  };
 }
 
 async function readTargetLegs(params: {
@@ -2211,6 +2336,10 @@ function groupParticipants(
     line: Line;
     /** Our combined buy notional on this line; weight for group blending. */
     ourTotalBuyNotional: number;
+    /** Capital base of the exact-token pairs behind `ourReturnPct`. */
+    ourReturnWeight: number;
+    /** Capital base of the exact-token pairs behind `targetReturnPct`. */
+    targetReturnWeight: number;
     /** Combined target buy notional across ALL targets on this line. */
     targetTotalBuyNotional: number;
     /** Internal: per-line our return (Modified-Dietz). Used to roll up
@@ -2253,7 +2382,11 @@ function groupParticipants(
       : null;
 
     const ourAgg = aggregateWalletReturn(ourLegs, rollups);
-    const ourReturnPct: number | null = null; // Complete cash-flow coverage is not proven by local rollups.
+    // EXACT_TOKEN_RETURN_GAP: cash-flow history is not complete for every
+    // wallet, so lifetime returns are never inferred from partial fills. The
+    // gap compares only exact same-token pairs on their own saved capital base.
+    const returns = exactTokenReturns(ourLegs, targetLegs, rollups);
+    const ourReturnPct = returns.ourReturnPct;
 
     // Target side: per-target return, then cost-basis-weighted blend.
     const byTargetWallet = new Map<string, RawLeg[]>();
@@ -2286,7 +2419,7 @@ function groupParticipants(
           ? null
           : targetGrossBuyNotional + agg.grossBuyNotional;
     }
-    const targetReturnPct: number | null = null; // Complete cash-flow coverage is not established by a rollup row.
+    const targetReturnPct = returns.targetReturnPct;
     const targetTotalBuyNotional = targetEntries.reduce(
       (sum, e) => sum + e.totalBuyNotional,
       0
@@ -2297,7 +2430,7 @@ function groupParticipants(
     const { rateGapPct, sizeScaledGapUsdc } = edgeGap({
       ourReturnPct,
       targetReturnPct,
-      ourTotalBuyNotional: ourAgg.totalBuyNotional,
+      ourTotalBuyNotional: returns.ourWeight,
     });
 
     const lineStatus: WalletExecutionMarketLineStatus = ourLegs.some(
@@ -2348,6 +2481,8 @@ function groupParticipants(
     bucket.lines.push({
       line,
       ourTotalBuyNotional: ourAgg.totalBuyNotional,
+      ourReturnWeight: returns.ourWeight,
+      targetReturnWeight: returns.targetWeight,
       targetTotalBuyNotional,
       ourReturnPct,
       targetReturnPct,
@@ -2372,18 +2507,18 @@ function groupParticipants(
       // single-line formula one level up.
       const groupOurReturnPct = blendTargetReturns(
         sorted.map((entry) => ({
-          totalBuyNotional: entry.ourTotalBuyNotional,
+          totalBuyNotional: entry.ourReturnWeight,
           returnPct: entry.ourReturnPct,
         }))
       );
       const groupTargetReturnPct = blendTargetReturns(
         sorted.map((entry) => ({
-          totalBuyNotional: entry.targetTotalBuyNotional,
+          totalBuyNotional: entry.targetReturnWeight,
           returnPct: entry.targetReturnPct,
         }))
       );
       const groupOurTotalBuyNotional = sorted.reduce(
-        (sum, entry) => sum + entry.ourTotalBuyNotional,
+        (sum, entry) => sum + entry.ourReturnWeight,
         0
       );
       const groupGap = edgeGap({

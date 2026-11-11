@@ -943,12 +943,14 @@ describe("wallet dashboard coherent snapshot", () => {
       expect(own?.legs).toContainEqual(expect.objectContaining({ tokenId: "904", costBasisUsdc: mode === "live" ? null : 2, currentValueUsdc: null, pnlUsdc: null }));
       expect(line?.participants.find(p => p.side === "copy_target")?.legs?.map(leg => leg.tokenId)).toEqual(["901", "902", "903"]);
       expect(line?.tokenComparisons).toContainEqual(expect.objectContaining({ ourTokenId: "903", targetTokenId: "903", relation: "same", economicsAvailability: "unavailable" }));
-      expect(line?.edgeGapPct).toBeNull();
+      // Exact token 903: ours +50% (2 / 4 saved basis) vs target +50% ((6-4)/4) → gap 0.
+      // The unmeasured 904 leg has no exact target token and never feeds a delta.
+      expect(line?.edgeGapPct).toBeCloseTo(0, 6);
       if (!fallback) {
         const coverage = dashboard.execution.comparisonCoverage.positions.live;
         expect(coverage.eligible).toBe(2);
         expect(coverage.comparable).toBe(1);
-        expect(coverage.sampled).toBe(0);
+        expect(coverage.sampled).toBe(1);
         expect(coverage.eligible).toBe((coverage.comparable ?? 0) + (coverage.dropped ?? 0));
       } else expect(dashboard.execution.comparisonCoverage.positions.live.complete).toBe(false);
     } finally {
