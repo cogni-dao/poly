@@ -2,19 +2,34 @@
 // SPDX-FileCopyrightText: 2025 Cogni-DAO
 
 import { NextRequest } from "next/server";
+import {
+	CitesUnsupportedError,
+	EntryResolverUnavailableError,
+	EntryUnresolvedError,
+} from "@cogni/work-items";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockPatchWorkItem = vi.fn();
 const SESSION_USER = { id: "agent-1", displayName: "Agent" };
 
-vi.mock("@/app/_facades/work/items.server", () => ({
+vi.mock("@/app/_facades/work/items.server", async () => {
+	const pkg = await import("@cogni/work-items");
+	return {
+	ChangeReasonInvalidError: pkg.ChangeReasonInvalidError,
+	CitesInvalidError: pkg.CitesInvalidError,
+	CitesUnsupportedError: pkg.CitesUnsupportedError,
+	EntryResolverUnavailableError: pkg.EntryResolverUnavailableError,
+	EntryUnresolvedError: pkg.EntryUnresolvedError,
+	WorkItemScoresInvalidError: class WorkItemScoresInvalidError extends Error {},
+	WorkItemRevisionConflictError: class WorkItemRevisionConflictError extends Error {},
 	deleteWorkItem: vi.fn(),
 	getWorkItem: vi.fn(),
 	patchWorkItem: (...args: unknown[]) => mockPatchWorkItem(...args),
 	WorkItemForbiddenError: class WorkItemForbiddenError extends Error {},
 	WorkItemNotFoundError: class WorkItemNotFoundError extends Error {},
 	WorkItemsBackendNotReadyError: class WorkItemsBackendNotReadyError extends Error {},
-}));
+	};
+});
 
 vi.mock("@/app/_lib/auth/session", () => ({ getSessionUser: vi.fn() }));
 
@@ -80,5 +95,53 @@ describe("PATCH /api/v1/work/items/:id", () => {
 			{ id: "task.5001", reason: "test change", set: { title: "right target" } },
 			{ id: "agent-1" },
 		);
+	});
+
+	// task.0086: reason is required and cites are pinned by the adapter; each failure writes nothing.
+	it("rejects a PATCH with no reason as 400 and writes nothing", async () => {
+		const response = await PATCH(request({ set: { title: "no reason" } }), context);
+
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe("invalid input");
+		expect(body.issues.some((i: { path: unknown[] }) => i.path[0] === "reason")).toBe(true);
+		expect(mockPatchWorkItem).not.toHaveBeenCalled();
+	});
+
+	it("maps an unresolved cite to 400 cite_unresolved", async () => {
+		mockPatchWorkItem.mockRejectedValue(new EntryUnresolvedError(["no-such-atom"]));
+		const response = await PATCH(
+			request({ reason: "test change", cites: [{ id: "no-such-atom" }], set: { title: "t" } }),
+			context,
+		);
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({
+			error: "invalid input",
+			errorCode: "cite_unresolved",
+			ids: ["no-such-atom"],
+		});
+	});
+
+	it("maps cites with no resolver wired to 400 cites_unsupported", async () => {
+		mockPatchWorkItem.mockRejectedValue(new CitesUnsupportedError());
+		const response = await PATCH(
+			request({ reason: "test change", cites: [{ id: "some-atom" }], set: { title: "t" } }),
+			context,
+		);
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({ errorCode: "cites_unsupported" });
+	});
+
+	it("maps a resolver failure to 503", async () => {
+		mockPatchWorkItem.mockRejectedValue(new EntryResolverUnavailableError("hub down"));
+		const response = await PATCH(
+			request({ reason: "test change", cites: [{ id: "some-atom" }], set: { title: "t" } }),
+			context,
+		);
+
+		expect(response.status).toBe(503);
+		expect(await response.json()).toMatchObject({ error: "cites_unavailable" });
 	});
 });
