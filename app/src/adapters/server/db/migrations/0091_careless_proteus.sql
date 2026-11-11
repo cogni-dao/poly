@@ -1,0 +1,1 @@
+CREATE INDEX "poly_trader_position_snapshots_economic_observation_idx" ON "poly_trader_position_snapshots" USING btree ("trader_wallet_id",lower("condition_id"),"token_id","captured_at" DESC NULLS LAST) WHERE "poly_trader_position_snapshots"."raw"->'economicObservationV1'->>'version' = '1';
