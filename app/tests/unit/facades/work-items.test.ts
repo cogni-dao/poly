@@ -16,7 +16,14 @@ import {
   workItemsListOperation,
 } from "@cogni/node-contracts";
 import type { WorkItem } from "@cogni/work-items";
-import { toWorkItemId } from "@cogni/work-items";
+import {
+  ChangeReasonInvalidError,
+  CitesInvalidError,
+  CitesUnsupportedError,
+  EntryResolverUnavailableError,
+  EntryUnresolvedError,
+  toWorkItemId,
+} from "@cogni/work-items";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the container
@@ -273,6 +280,79 @@ describe("app/_facades/work/items.server", () => {
         },
         "agent-1"
       );
+    });
+
+    // task.0086: the adapter is the one enforcer; a copy of its error classes bundled elsewhere
+    // is matched by name and rebuilt as this facade's typed classes. Nothing is swallowed.
+    describe("reason and cites (task.0086)", () => {
+      const foreign = (name: string, message: string, extra: object = {}) =>
+        Object.assign(new Error(message), { name }, extra);
+      const input = {
+        id: "task.0001",
+        reason: "test change",
+        cites: [{ id: "change-history-design" }],
+        set: { title: "t" },
+      };
+
+      it("forwards reason and cites to the Doltgres port", async () => {
+        mockPort.patch.mockResolvedValue(SAMPLE_WORK_ITEM);
+
+        await patchWorkItem(input, { id: "agent-1" });
+
+        expect(mockPort.patch).toHaveBeenCalledWith(
+          {
+            id: toWorkItemId("task.0001"),
+            reason: "test change",
+            cites: [{ id: "change-history-design" }],
+            set: { title: "t" },
+          },
+          "agent-1"
+        );
+      });
+
+      it("rebuilds EntryUnresolvedError with its ids", async () => {
+        mockPort.patch.mockRejectedValue(
+          foreign("EntryUnresolvedError", "unresolved", { ids: ["a", "b"] })
+        );
+        const error = await patchWorkItem(input, { id: "agent-1" }).catch((e) => e);
+        expect(error).toBeInstanceOf(EntryUnresolvedError);
+        expect(error.ids).toEqual(["a", "b"]);
+        expect(error.code).toBe("cite_unresolved");
+      });
+
+      it("rebuilds CitesUnsupportedError", async () => {
+        mockPort.patch.mockRejectedValue(foreign("CitesUnsupportedError", "x"));
+        const error = await patchWorkItem(input, { id: "agent-1" }).catch((e) => e);
+        expect(error).toBeInstanceOf(CitesUnsupportedError);
+        expect(error.code).toBe("cites_unsupported");
+      });
+
+      it("rebuilds EntryResolverUnavailableError with its message", async () => {
+        mockPort.patch.mockRejectedValue(
+          foreign("EntryResolverUnavailableError", "hub down")
+        );
+        const error = await patchWorkItem(input, { id: "agent-1" }).catch((e) => e);
+        expect(error).toBeInstanceOf(EntryResolverUnavailableError);
+        expect(error.message).toBe("hub down");
+      });
+
+      it("rebuilds ChangeReasonInvalidError with its message", async () => {
+        mockPort.patch.mockRejectedValue(
+          foreign("ChangeReasonInvalidError", "reason too long")
+        );
+        const error = await patchWorkItem(input, { id: "agent-1" }).catch((e) => e);
+        expect(error).toBeInstanceOf(ChangeReasonInvalidError);
+        expect(error.message).toBe("reason too long");
+      });
+
+      it("rebuilds CitesInvalidError with its issues", async () => {
+        mockPort.patch.mockRejectedValue(
+          foreign("CitesInvalidError", "bad cites", { issues: ["too many"] })
+        );
+        const error = await patchWorkItem(input, { id: "agent-1" }).catch((e) => e);
+        expect(error).toBeInstanceOf(CitesInvalidError);
+        expect(error.issues).toEqual(["too many"]);
+      });
     });
   });
 });

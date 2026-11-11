@@ -28,6 +28,20 @@ describe("shared evaluation capability", () => {
     await f.capability.patch({ id: item.id, expectedRevision: 3, reason: "test change", set: { scores: null } });
     expect(f.patch).toHaveBeenLastCalledWith({ id: item.id, expectedRevision: 3, reason: "test change", set: { scores: null } }, "actor-b");
   });
+  it("forwards the required reason and the cites to the live store (task.0086)", async () => {
+    const f = fixture();
+    const cites = [{ id: "change-history-design" }];
+    await f.capability.patch({ id: item.id, reason: "scope follows the design", cites, set: { rank: 2 } });
+    expect(f.patch).toHaveBeenLastCalledWith(
+      { id: item.id, reason: "scope follows the design", cites, set: { rank: 2 } },
+      "actor-a",
+    );
+    await f.capability.patch({ id: item.id, reason: "no cites here", set: { rank: 3 } });
+    expect(f.patch).toHaveBeenLastCalledWith(
+      { id: item.id, reason: "no cites here", set: { rank: 3 } },
+      "actor-a",
+    );
+  });
   it("preserves conflicts and paginated score-bearing readback", async () => {
     const f = fixture();
     f.patch.mockRejectedValue(new WorkItemRevisionConflictError(item.id, 2, 3));

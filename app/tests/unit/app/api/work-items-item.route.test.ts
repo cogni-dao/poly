@@ -3,6 +3,8 @@
 
 import { NextRequest } from "next/server";
 import {
+	ChangeReasonInvalidError,
+	CitesInvalidError,
 	CitesUnsupportedError,
 	EntryResolverUnavailableError,
 	EntryUnresolvedError,
@@ -143,5 +145,35 @@ describe("PATCH /api/v1/work/items/:id", () => {
 
 		expect(response.status).toBe(503);
 		expect(await response.json()).toMatchObject({ error: "cites_unavailable" });
+	});
+
+	it("maps a ChangeReasonInvalidError from the adapter to 400 with an issue at reason", async () => {
+		mockPatchWorkItem.mockRejectedValue(new ChangeReasonInvalidError("reason must be at most 25 words"));
+		const response = await PATCH(
+			request({ reason: "test change", set: { title: "t" } }),
+			context,
+		);
+
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe("invalid input");
+		expect(body.issues).toEqual([
+			{ code: "custom", path: ["reason"], message: "reason must be at most 25 words" },
+		]);
+	});
+
+	it("maps a CitesInvalidError from the adapter to 400 with issues at cites", async () => {
+		mockPatchWorkItem.mockRejectedValue(new CitesInvalidError(["too many cites"]));
+		const response = await PATCH(
+			request({ reason: "test change", cites: [{ id: "a" }], set: { title: "t" } }),
+			context,
+		);
+
+		expect(response.status).toBe(400);
+		const body = await response.json();
+		expect(body.error).toBe("invalid input");
+		expect(body.issues).toEqual([
+			{ code: "custom", path: ["cites"], message: "too many cites" },
+		]);
 	});
 });

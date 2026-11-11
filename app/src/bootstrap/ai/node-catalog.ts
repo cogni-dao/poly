@@ -86,6 +86,14 @@ const SHARED_WORK_PRIORITIZER = POLY_LANGGRAPH_CATALOG["work-prioritizer"]!;
 export const POLY_WORK_PRIORITIZER_NODE_TOOL_IDS: readonly string[] =
   SHARED_WORK_PRIORITIZER.toolIds.filter((id) => id !== WORK_ITEM_UPDATE_NAME);
 
+/** Appended to the shared decide prompt, which otherwise requires writes and calls NO_CHANGE a failure. */
+export const POLY_WORK_PRIORITIZER_READ_ONLY_NOTE =
+  "READ-ONLY ON THIS NODE: triage writes are off and core__work_item_update is not available. Do not try to change any item. Report the routes, scores and cancels you would make, each with a reason; that report satisfies the run.";
+// The entry is the published shared one at runtime; its `systemPrompt` is not in the local entry type.
+const SHARED_WORK_PRIORITIZER_PROMPT = (
+  SHARED_WORK_PRIORITIZER as { readonly systemPrompt?: string }
+).systemPrompt;
+
 /**
  * This node's catalog: the shared base, plus `poly-brain`.
  *
@@ -98,6 +106,9 @@ export const POLY_NODE_LANGGRAPH_CATALOG: LangGraphCatalog<CreateGraphFn> = {
   "work-prioritizer": {
     ...SHARED_WORK_PRIORITIZER,
     toolIds: POLY_WORK_PRIORITIZER_NODE_TOOL_IDS,
+    systemPrompt: [SHARED_WORK_PRIORITIZER_PROMPT, POLY_WORK_PRIORITIZER_READ_ONLY_NOTE]
+      .filter(Boolean)
+      .join("\n\n"),
   },
   [POLY_BRAIN_GRAPH_NAME]: {
     displayName: "Poly Brain",

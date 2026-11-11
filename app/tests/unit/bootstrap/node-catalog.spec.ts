@@ -23,12 +23,16 @@ import {
   WORK_ITEM_READ_NAME,
 } from "@cogni/ai-tools";
 import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
-import { POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME } from "@cogni/poly-graphs";
+import {
+  POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
+  POLY_LANGGRAPH_CATALOG,
+} from "@cogni/poly-graphs";
 import { WORK_ITEM_UPDATE_NAME } from "@cogni/shared-ai-tools";
 import { describe, expect, it } from "vitest";
 
 import {
   POLY_BRAIN_NODE_TOOL_IDS,
+  POLY_WORK_PRIORITIZER_READ_ONLY_NOTE,
   POLY_NODE_LANGGRAPH_CATALOG,
 } from "@/bootstrap/ai/node-catalog";
 import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
@@ -132,5 +136,15 @@ describe("this node's langgraph catalog", () => {
     for (const toolId of toolIds) {
       expect(byId.get(toolId)?.effect, `${toolId} effect`).not.toBe("state_change");
     }
+  });
+
+  it("tells work-prioritizer it is read-only, after the shared prompt", () => {
+    const prompt = POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.systemPrompt ?? "";
+    const shared = (POLY_LANGGRAPH_CATALOG["work-prioritizer"] as { systemPrompt?: string } | undefined)
+      ?.systemPrompt;
+    expect(shared).toBeTruthy();
+    expect(prompt).toContain(POLY_WORK_PRIORITIZER_READ_ONLY_NOTE);
+    expect(prompt).toContain("READ-ONLY ON THIS NODE: triage writes are off");
+    expect(prompt.startsWith(shared as string)).toBe(true);
   });
 });
