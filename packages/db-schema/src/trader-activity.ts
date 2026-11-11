@@ -376,6 +376,23 @@ export const polyTraderPositionSnapshots = pgTable(
       table.tokenId,
       table.capturedAt.desc()
     ),
+    // Economic-observation history (bug.5058): the dashboard projection's
+    // `history_facts` CTE selects the newest `raw.economicObservationV1`
+    // envelope per (wallet, lower(condition_id), token_id). Only the recovery
+    // writer attaches that envelope (the observer strips it from every regular
+    // snapshot), so it lives on a tiny fraction of rows. Without this partial
+    // index the predicate forces a heap-fetch of EVERY snapshot of the wallet
+    // (millions of jsonb rows for a long-observed wallet -> 8s statement
+    // timeout). The WHERE clause must stay textually identical to the
+    // projection's `version = '1'` predicate for the planner to use it.
+    index("poly_trader_position_snapshots_economic_observation_idx")
+      .on(
+        table.traderWalletId,
+        sql`lower(${table.conditionId})`,
+        table.tokenId,
+        table.capturedAt.desc()
+      )
+      .where(sql`${table.raw}->'economicObservationV1'->>'version' = '1'`),
     // Retention pruner (task.5012): the candidate scan is a bare
     // `captured_at < cutoff` with no wallet/condition predicate. Neither
     // `_latest_idx` (trader_wallet_id-led) nor `_market_latest_idx`

@@ -128,6 +128,12 @@ export async function readTenantWalletDashboardIn(
   input: TenantWalletDashboardReadInput
 ): Promise<PolyAccountPortfolioSnapshotOutput> {
   await db.execute(sql.raw(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`));
+  // bug.5058: the economic projection is ~35 materialized CTEs whose planner
+  // cost estimates are inflated (CTE scans estimate 1 row), which trips
+  // jit_above_cost and burns seconds compiling ~450 JIT functions for a query
+  // that executes in ~150ms interpreted. This read is latency-bound, never
+  // CPU-bound, so JIT is pure overhead here.
+  await db.execute(sql.raw("SET LOCAL jit = off"));
   const clockRows = normalizeRows<{ captured_at: Date | string }>(
     await db.execute(sql`SELECT clock_timestamp() AS captured_at`)
   );
