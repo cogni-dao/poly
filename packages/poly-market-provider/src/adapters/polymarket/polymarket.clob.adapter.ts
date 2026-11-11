@@ -1091,6 +1091,32 @@ export class PolymarketClobAdapter implements MarketProviderPort {
       );
       // GETORDER_NEVER_NULL (task.0328 CP1): a null / empty body from the CLOB
       // means the order is not found — return the discriminant rather than null.
+      // bug.5060 — the SDK returns HTTP failures (401/400/429/5xx) as an
+      // `{ error, status }` object instead of throwing. Only a genuine 404 /
+      // "not found" is absence; any other error object is an unavailable read
+      // and must surface loudly, not masquerade as `not_found` (which the
+      // reconciler logs at debug and silently skips forever).
+      if (open && !open.id) {
+        const errObj = open as unknown as { error?: unknown; status?: unknown };
+        if (errObj.error !== undefined || typeof errObj.status === "number") {
+          const text = String(
+            typeof errObj.error === "string"
+              ? errObj.error
+              : JSON.stringify(errObj.error ?? "")
+          ).toLowerCase();
+          const httpStatus =
+            typeof errObj.status === "number" ? errObj.status : undefined;
+          if (
+            httpStatus !== 404 &&
+            !text.includes("not found") &&
+            !text.includes("does not exist")
+          ) {
+            throw new Error(
+              `PolymarketClobAdapter.getOrder: CLOB read failed (http_status=${httpStatus ?? "unknown"})`
+            );
+          }
+        }
+      }
       if (!open || !open.id) {
         const duration_ms = Date.now() - start;
         this.metrics.incr(POLY_CLOB_METRICS.getOrderTotal, {

@@ -601,6 +601,24 @@ describe("PolymarketClobAdapter", () => {
     return adapter;
   }
 
+  it("getOrder surfaces an SDK HTTP-error object as a thrown read failure, not not_found (bug.5060)", async () => {
+    const getOrder = vi
+      .fn()
+      .mockResolvedValue({ error: "Unauthorized", status: 401 });
+    const adapter = makeAdapter({ getOrder });
+    await expect(adapter.getOrder("0xorder")).rejects.toThrow(/http_status=401/);
+  });
+
+  it("getOrder still maps a genuine 404 error object to not_found (bug.5060)", async () => {
+    const getOrder = vi
+      .fn()
+      .mockResolvedValue({ error: "order not found", status: 404 });
+    const adapter = makeAdapter({ getOrder });
+    await expect(adapter.getOrder("0xorder")).resolves.toEqual({
+      status: "not_found",
+    });
+  });
+
   it("reads wallet collateral without token_id and selects the regular exchange allowance", async () => {
     const getBalanceAllowance = vi.fn().mockResolvedValue({
       balance: "702010",

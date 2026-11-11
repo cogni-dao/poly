@@ -29,7 +29,12 @@
  */
 
 import { EVENT_NAMES } from "@cogni/node-shared/observability/events";
-import type { LoggerPort, MetricsPort } from "@cogni/poly-market-provider";
+import type {
+  GetOrderResult,
+  LoggerPort,
+  MetricsPort,
+  OrderReceipt,
+} from "@cogni/poly-market-provider";
 
 import type { OrderLedger } from "@/features/trading";
 
@@ -44,6 +49,18 @@ export interface RestingSweepDeps {
     billing_account_id: string,
     mode: "live" | "paper"
   ) => Promise<(order_id: string) => Promise<void>>;
+  /**
+   * bug.5060 — per-tenant authenticated order read (same executor read the
+   * reconciler uses). The sweep reads fill state BEFORE canceling so an order
+   * that already matched is recorded as filled, never marked canceled.
+   * Optional for back-compat; when absent or when the read fails the sweep
+   * keeps its prior cancel-and-mark behavior (the reconciler still recovers
+   * canceled rows via authenticated reads).
+   */
+  getOrderFor?: (
+    billing_account_id: string,
+    mode: "live" | "paper"
+  ) => Promise<(order_id: string) => Promise<GetOrderResult>>;
   logger: LoggerPort;
   metrics: MetricsPort;
   /** Sweep cadence (ms). Default 60_000 (1 min). */
@@ -55,6 +72,15 @@ export interface RestingSweepDeps {
 export type RestingSweepStopFn = () => void;
 
 const DEFAULT_INTERVAL_MS = 60_000;
+
+function hasExecution(receipt: OrderReceipt): boolean {
+  return (
+    receipt.status === "filled" ||
+    receipt.status === "partial" ||
+    (typeof receipt.filled_size_usdc === "number" &&
+      receipt.filled_size_usdc > 0)
+  );
+}
 const DEFAULT_TTL_MINUTES = 2;
 
 /**
@@ -179,10 +205,90 @@ export function startRestingSweep(deps: RestingSweepDeps): RestingSweepStopFn {
         continue;
       }
 
+      let readOrder: ((order_id: string) => Promise<GetOrderResult>) | undefined;
+      if (deps.getOrderFor) {
+        try {
+          readOrder = await deps.getOrderFor(billingAccountId, mode);
+        } catch (err: unknown) {
+          log.warn(
+            {
+              event: EVENT_NAMES.POLY_MIRROR_DECISION,
+              phase: "sweep_read_unavailable",
+              billing_account_id: billingAccountId,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "mirror resting-sweep: order read unavailable; canceling without fill check"
+          );
+        }
+      }
+
       for (const row of tenantRows) {
         if (row.order_id === null) continue;
         try {
+          // bug.5060 — read fill state first; record executions, never cancel
+          // (or mark canceled) a fully matched order.
+          let executed: OrderReceipt | undefined;
+          if (readOrder) {
+            try {
+              const result = await readOrder(row.order_id);
+              if (
+                "found" in result &&
+                result.found &&
+                result.found.order_id === row.order_id &&
+                hasExecution(result.found)
+              ) {
+                executed = result.found;
+              }
+            } catch (err: unknown) {
+              log.warn(
+                {
+                  event: EVENT_NAMES.POLY_MIRROR_DECISION,
+                  phase: "sweep_read_failed",
+                  client_order_id: row.client_order_id,
+                  order_id: row.order_id,
+                  err: err instanceof Error ? err.message : String(err),
+                },
+                "mirror resting-sweep: order read failed; canceling without fill check"
+              );
+            }
+          }
+          if (executed) {
+            await deps.ledger.updateStatus({
+              client_order_id: row.client_order_id,
+              order_id: row.order_id,
+              status: executed.status === "filled" ? "filled" : "partial",
+              filled_size_usdc: executed.filled_size_usdc,
+              ...(executed.fill_price !== undefined
+                ? { fill_price: executed.fill_price }
+                : {}),
+              ...(executed.total_shares !== undefined
+                ? { total_shares: executed.total_shares }
+                : {}),
+              ...(executed.fees_usdc !== undefined
+                ? { fees_usdc: executed.fees_usdc }
+                : {}),
+              ...(executed.attributes?.realizedFillSource ===
+              "clob_associated_trades"
+                ? { realized_fill_source: "clob_associated_trades" as const }
+                : {}),
+            });
+            log.info(
+              {
+                event: EVENT_NAMES.POLY_MIRROR_DECISION,
+                phase: "sweep_recorded_fill",
+                client_order_id: row.client_order_id,
+                order_id: row.order_id,
+                market_id: row.market_id,
+                venue_status: executed.status,
+                filled_size_usdc: executed.filled_size_usdc,
+              },
+              "mirror resting-sweep: order has fills; recorded instead of canceling"
+            );
+            if (executed.status === "filled") continue;
+          }
           await cancel(row.order_id);
+          // Partially filled: fills were recorded above (attributes/shares kept);
+          // only the unfilled remainder is canceled.
           await deps.ledger.markCanceled({
             client_order_id: row.client_order_id,
             reason: "ttl_expired",
