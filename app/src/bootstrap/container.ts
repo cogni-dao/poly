@@ -1820,6 +1820,12 @@ function createContainer(): Container {
 					restingSweepStop();
 					return;
 				}
+				// bug.5057 — never leave a previous handle running un-stopped.
+				try {
+					_restingSweepStop?.();
+				} catch {
+					// Best-effort.
+				}
 				_restingSweepStop = restingSweepStop;
 			} catch (err: unknown) {
 				log.error(

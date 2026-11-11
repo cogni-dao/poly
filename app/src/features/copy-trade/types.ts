@@ -257,6 +257,15 @@ export const MirrorTargetConfigSchema = z.object({
    * (0.5pp) in bootstrap — covers tick-grid rounding + ladder slippage.
    */
   vwap_tolerance: z.number().min(0).max(1).optional(),
+  /**
+   * bug.5057 — bounded upward slippage (0–1 price units) added to the target's
+   * fill price for a BUY limit so it is marketable against the ask the target
+   * just swept. Effective limit = ceilTick(fill + allowance), still capped at
+   * target VWAP + `vwap_tolerance` and 0.99, with sizing recomputed at that
+   * price. Undefined / 0 ⇒ legacy (limit = target fill price). Default 0.02 in
+   * bootstrap for the non-verbatim fill policies.
+   */
+  buy_slippage_allowance: z.number().min(0).max(0.2).optional(),
 });
 export type MirrorTargetConfig = z.infer<typeof MirrorTargetConfigSchema>;
 

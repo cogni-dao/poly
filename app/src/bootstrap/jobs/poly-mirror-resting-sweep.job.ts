@@ -18,6 +18,11 @@
  *   - Cancel routes through the per-tenant executor (404-idempotent).
  *   - Pending rows (no `order_id` yet) are skipped — race with in-flight
  *     placement is acceptable for v0.
+ *   - SINGLE_SWEEP_PER_PROCESS (bug.5057): at most one interval is live per
+ *     process. A second `startRestingSweep` (leader re-acquire racing a stop,
+ *     duplicate container/module instance) stops the previous sweep first, and
+ *     a stop fn only stops its own sweep. Ticks never overlap (a slow cancel
+ *     batch cannot be re-entered by the next interval).
  * Side-effects: setInterval, HTTPS to Polymarket CLOB (cancel), Postgres UPDATE.
  * Links: work/items/task.5001
  * @public
@@ -53,11 +58,40 @@ const DEFAULT_INTERVAL_MS = 60_000;
 const DEFAULT_TTL_MINUTES = 2;
 
 /**
+ * Process-wide registry of the live sweep. Keyed on `globalThis` (not a module
+ * variable) so duplicate bundled copies of this module still share one slot.
+ */
+const ACTIVE_SWEEP_KEY = Symbol.for("cogni.poly.mirror-resting-sweep.active");
+type ActiveSweep = { stop: () => void };
+function activeSweepSlot(): { current: ActiveSweep | null } {
+  const g = globalThis as unknown as Record<
+    symbol,
+    { current: ActiveSweep | null } | undefined
+  >;
+  let slot = g[ACTIVE_SWEEP_KEY];
+  if (!slot) {
+    slot = { current: null };
+    g[ACTIVE_SWEEP_KEY] = slot;
+  }
+  return slot;
+}
+
+/**
  * Start the TTL sweep. Returns a stop fn.
  *
  * @public
  */
 export function startRestingSweep(deps: RestingSweepDeps): RestingSweepStopFn {
+  const slot = activeSweepSlot();
+  if (slot.current) {
+    const previous = slot.current;
+    slot.current = null;
+    deps.logger.warn(
+      { job: "mirror-resting-sweep" },
+      "mirror resting-sweep already running in this process — replacing it (bug.5057)"
+    );
+    previous.stop();
+  }
   const intervalMs = deps.intervalMs ?? DEFAULT_INTERVAL_MS;
   const ttlMinutes = deps.ttlMinutes ?? DEFAULT_TTL_MINUTES;
   const log = deps.logger.child({
@@ -75,9 +109,19 @@ export function startRestingSweep(deps: RestingSweepDeps): RestingSweepStopFn {
   );
 
   let stopped = false;
+  let ticking = false;
 
   async function tick(): Promise<void> {
-    if (stopped) return;
+    if (stopped || ticking) return;
+    ticking = true;
+    try {
+      await runTick();
+    } finally {
+      ticking = false;
+    }
+  }
+
+  async function runTick(): Promise<void> {
     let rows: Awaited<ReturnType<typeof deps.ledger.findStaleOpen>>;
     try {
       rows = await deps.ledger.findStaleOpen({ max_age_minutes: ttlMinutes });
@@ -177,8 +221,12 @@ export function startRestingSweep(deps: RestingSweepDeps): RestingSweepStopFn {
     void tick();
   }, intervalMs);
 
-  return () => {
+  const stop = (): void => {
     stopped = true;
     clearInterval(handle);
+    if (slot.current === active) slot.current = null;
   };
+  const active: ActiveSweep = { stop };
+  slot.current = active;
+  return stop;
 }

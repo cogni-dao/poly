@@ -142,6 +142,7 @@ const FillAlgorithmConfigSchema = MirrorTargetConfigSchema.pick({
 	position_followup: true,
 	min_target_side_fraction: true,
 	vwap_tolerance: true,
+	buy_slippage_allowance: true,
 }).strict();
 
 export type FillAlgorithmConfig = z.infer<typeof FillAlgorithmConfigSchema>;
@@ -384,15 +385,15 @@ const positionGapDefinition: AlgorithmDefinition<
 export const ALGORITHM_DEFINITIONS = Object.freeze({
 	"poly.copy-mirror.min-bet": fillDefinition(
 		"poly.copy-mirror.min-bet",
-		"min-bet-v1",
+		"min-bet-v2",
 	),
 	"poly.copy-mirror.target-percentile": fillDefinition(
 		"poly.copy-mirror.target-percentile",
-		"target-percentile-v1",
+		"target-percentile-v2",
 	),
 	"poly.copy-mirror.target-percentile-scaled": fillDefinition(
 		"poly.copy-mirror.target-percentile-scaled",
-		"target-percentile-scaled-v1",
+		"target-percentile-scaled-v2",
 	),
 	"poly.copy-mirror.fill-exact": fillDefinition(
 		"poly.copy-mirror.fill-exact",
@@ -431,6 +432,7 @@ export function fillAlgorithmConfig(
 		position_followup: target.position_followup,
 		min_target_side_fraction: target.min_target_side_fraction,
 		vwap_tolerance: target.vwap_tolerance,
+		buy_slippage_allowance: target.buy_slippage_allowance,
 	});
 }
 
