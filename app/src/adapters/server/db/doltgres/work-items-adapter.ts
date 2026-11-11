@@ -7,6 +7,11 @@
  * The legacy reconciler treats scores as opaque; the new writer validates them.
  * No PostgreSQL lease migration, token conversion or database-only lock cutover.
  *
+ * ONE_PATCH_ENFORCER (task.0086): every patch commits through the content adapter, which alone enforces the
+ * required reason and the pinned cites; `entryResolver` passes to it through `contentOptions`. The legacy lease
+ * adapter only claims, heartbeats, releases and deletes; its `patch` is never called, so no content commit
+ * can bypass that enforcer.
+ *
  * BOUNDED_CLAIM_OVERLAY (task.0056): the legacy claim overlay applies only to the
  * full-item agent list, and reads exactly the page's ids (limit = page length),
  * never a fixed 500-row window. Summary pages and board columns (the /work and

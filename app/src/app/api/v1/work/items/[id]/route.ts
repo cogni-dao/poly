@@ -6,6 +6,7 @@
  * Purpose: HTTP endpoints for a single Dolt-backed work item.
  * Scope: Auth-protected GET, PATCH, and DELETE endpoints.
  * Invariants: VALIDATE_IO, CONTRACTS_ARE_TRUTH
+ * Reason + cites (task.0086): a missing or over-cap reason is HTTP400 `invalid input` with an issue at `reason`; an unknown cite id or a closed inbox is HTTP400 `cite_unresolved`; cites with no resolver wired is HTTP400 `cites_unsupported`; a resolver failure is HTTP503. Nothing is written in each case.
  * Side-effects: IO (HTTP response, Doltgres read/write via port)
  * Links: contracts/work.items.{get,patch,delete}.v1.contract
  * @public
@@ -20,6 +21,11 @@ import { NextResponse } from "next/server";
 import {
   deleteWorkItem,
   getWorkItem,
+  ChangeReasonInvalidError,
+  CitesInvalidError,
+  CitesUnsupportedError,
+  EntryResolverUnavailableError,
+  EntryUnresolvedError,
   patchWorkItem,
   WorkItemScoresInvalidError,
   WorkItemRevisionConflictError,
@@ -121,11 +127,59 @@ export const PATCH = wrapRouteHandlerWithLogging<{
       const patched = await patchWorkItem(parsed.data, {
         id: sessionUser.id,
       });
-      ctx.log.info({ workItemId: id, hasReason: parsed.data.reason !== undefined }, "work.items.patch_success");
+      ctx.log.info({ workItemId: id, citeCount: parsed.data.cites?.length ?? 0 }, "work.items.patch_success");
       return NextResponse.json(workItemsPatchOperation.output.parse(patched));
     } catch (error) {
       if (error instanceof WorkItemScoresInvalidError) {
         return NextResponse.json({ error: "invalid input", errorCode: error.code, issues: error.issues }, { status: 400 });
+      }
+      // The adapter is the one enforcer of reason and cites (task.0086); the schema above
+      // says the same thing earlier, so these cover a rule the schema could not see.
+      if (error instanceof ChangeReasonInvalidError) {
+        return NextResponse.json(
+          { error: "invalid input", issues: [{ code: "custom", path: ["reason"], message: error.message }] },
+          { status: 400 }
+        );
+      }
+      if (error instanceof CitesInvalidError) {
+        return NextResponse.json(
+          {
+            error: "invalid input",
+            issues: error.issues.map((message) => ({ code: "custom", path: ["cites"], message })),
+          },
+          { status: 400 }
+        );
+      }
+      if (error instanceof EntryUnresolvedError) {
+        return NextResponse.json(
+          {
+            error: "invalid input",
+            errorCode: error.code,
+            ids: error.ids,
+            issues: error.ids.map((cited) => ({
+              code: "custom",
+              path: ["cites"],
+              message: `cited entry not found: ${cited}`,
+            })),
+          },
+          { status: 400 }
+        );
+      }
+      if (error instanceof CitesUnsupportedError) {
+        return NextResponse.json(
+          {
+            error: "invalid input",
+            errorCode: error.code,
+            issues: [{ code: "custom", path: ["cites"], message: error.message }],
+          },
+          { status: 400 }
+        );
+      }
+      if (error instanceof EntryResolverUnavailableError) {
+        return NextResponse.json(
+          { error: "cites_unavailable", errorCode: error.code, message: error.message },
+          { status: 503 }
+        );
       }
       if (error instanceof WorkItemRevisionConflictError) {
         return NextResponse.json({ error: "revision_conflict", expectedRevision: error.expectedRevision, currentRevision: error.currentRevision }, { status: 409 });

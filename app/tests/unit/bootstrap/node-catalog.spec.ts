@@ -17,16 +17,27 @@
  * @internal
  */
 
-import { CORE_TOOL_BUNDLE, WEB_SEARCH_NAME } from "@cogni/ai-tools";
+import {
+  CORE_TOOL_BUNDLE,
+  WEB_SEARCH_NAME,
+  WORK_ITEM_READ_NAME,
+} from "@cogni/ai-tools";
 import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
-import { POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME } from "@cogni/poly-graphs";
+import {
+  POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME,
+  POLY_LANGGRAPH_CATALOG,
+} from "@cogni/poly-graphs";
+import { WORK_ITEM_UPDATE_NAME } from "@cogni/shared-ai-tools";
 import { describe, expect, it } from "vitest";
 
 import {
   POLY_BRAIN_NODE_TOOL_IDS,
+  POLY_WORK_PRIORITIZER_READ_ONLY_NOTE,
   POLY_NODE_LANGGRAPH_CATALOG,
 } from "@/bootstrap/ai/node-catalog";
+import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 import { PRINCIPAL_TOOL_BUNDLE } from "@/bootstrap/ai/principal-tool-source";
+import { createToolBindings } from "@/bootstrap/ai/tool-bindings";
 
 const POLY_BRAIN = "poly-brain";
 
@@ -99,5 +110,41 @@ describe("this node's langgraph catalog", () => {
     }
     expect(POLY_BRAIN_NODE_TOOL_IDS).not.toContain("core__poly_place_trade");
     expect(POLY_BRAIN_NODE_TOOL_IDS).not.toContain("core__poly_cancel_order");
+  });
+
+  // task.0086: the shared work-prioritizer writes only through core__work_item_update, guarded only
+  // when the runner passes `program`. This node's runner does not, so triage writes are off.
+  it("offers work-prioritizer core__work_item_read and no work-item write tool", () => {
+    const toolIds = POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.toolIds ?? [];
+    expect(toolIds).toContain(WORK_ITEM_READ_NAME);
+    expect(toolIds).not.toContain(WORK_ITEM_UPDATE_NAME);
+    expect(toolIds).not.toContain("core__work_item_transition");
+
+    const byId = new Map(
+      POLY_CORE_TOOL_BUNDLE.map((bound) => [bound.contract.name, bound.contract])
+    );
+    const bindings = createToolBindings({
+      workItemCapability: {},
+    } as unknown as Parameters<typeof createToolBindings>[0]);
+    for (const toolId of toolIds) {
+      if (toolId.startsWith("core__metric") || toolId === "core__goal_progress")
+        continue; // bound separately by the metric tools
+      expect(byId.has(toolId), `${toolId} in the node tool bundle`).toBe(true);
+      expect(bindings[toolId], `${toolId} bound`).toBeDefined();
+    }
+    // Nothing offered may change state.
+    for (const toolId of toolIds) {
+      expect(byId.get(toolId)?.effect, `${toolId} effect`).not.toBe("state_change");
+    }
+  });
+
+  it("tells work-prioritizer it is read-only, after the shared prompt", () => {
+    const prompt = POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.systemPrompt ?? "";
+    const shared = (POLY_LANGGRAPH_CATALOG["work-prioritizer"] as { systemPrompt?: string } | undefined)
+      ?.systemPrompt;
+    expect(shared).toBeTruthy();
+    expect(prompt).toContain(POLY_WORK_PRIORITIZER_READ_ONLY_NOTE);
+    expect(prompt).toContain("READ-ONLY ON THIS NODE: triage writes are off");
+    expect(prompt.startsWith(shared as string)).toBe(true);
   });
 });

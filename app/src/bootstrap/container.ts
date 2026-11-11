@@ -60,6 +60,7 @@ import {
 } from "@cogni/knowledge-store";
 import {
 	buildDoltgresClient,
+	createDoltgresEntryResolver,
 	createDoltgresPusher,
 	DoltgresEdoResolverAdapter,
 	DoltgresKnowledgeContributionAdapter,
@@ -2462,7 +2463,13 @@ function createContainer(): Container {
 		workItemAdapter = new DoltgresPolyWorkItemAdapter(
 			workItemClient,
 			log.child({ component: "doltgres-work-items" }),
-			{ recreateClient: buildWorkItemClient, legacyClient: buildWorkItemClient() },
+			{
+				recreateClient: buildWorkItemClient,
+				legacyClient: buildWorkItemClient(),
+				// task.0086: pins a patch's cites to commits with lock-free reads on the
+				// knowledge pool, never on the writer connection that holds the lock.
+				entryResolver: createDoltgresEntryResolver(doltClient),
+			},
 		);
 		const createKnowledgeBranchClient = () => buildDoltgresClient({
 			connectionString: doltgresUrl,

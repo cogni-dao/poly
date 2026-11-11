@@ -2,7 +2,7 @@ It's time to hand this project off to a new developer. Assume they have no conte
 
 Persist the handoff into the dolt work item — not a repo file (`work/handoffs/` is retired). First make dolt accurate, then emit the copy/paste block below.
 
-- `PATCH /api/v1/work/items/{id}` with `{set:{...}}`:
+- `PATCH /api/v1/work/items/{id}` with `{reason:"<why, one line, at most 25 words>",set:{...}}` (`reason` is required):
   - `outcome` = **Goal** + **E2E validation** + **Design / Implementation Target** + **Next Actions** as an ordered checklist — each rung marked proven (with evidence link) or pending. This is the next developer's plan.
   - `summary` = **Mission/Pickup** + **Current State** facts: branch, PRs, what is done, what is blocked, wrong turns already ruled out. Rewrite in place, don't append.
 - If a hub design/knowledge entry was sharpened or disproven this session, refine it in place via your open contribution.
