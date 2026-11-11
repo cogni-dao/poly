@@ -155,7 +155,9 @@ describe("bounded market exposure", () => {
     expect(target?.net.currentValueUsdc).toBe(19);
     expect(target?.net.pnlUsdc).toBeNull();
     expect(line?.tokenComparisons).toEqual([expect.objectContaining({ourTokenId:"111",targetTokenId:"111",relation:"same",targetWallet:TARGET})]);
-    expect(line?.edgeGapPct).toBeNull();
+    // Ours +20% (saved pnlPct) vs target 111: (7 - 2) / 2 = +250% → gap 2.3.
+    expect(line?.edgeGapPct).toBe(2.3);
+    expect(line?.edgeGapUsdc).toBe(11.5);
   });
 
   it("retains closed exact-token identity when valuation and lifetime PnL are unavailable", async () => {
@@ -238,6 +240,113 @@ describe("bounded market exposure", () => {
       currentValueUsdc: null,
       costBasisUsdc: null,
       pnlUsdc: null,
+    });
+  });
+
+  describe("exact-token return gap (bug.5061: the |Δ| chart must not be empty)", () => {
+    const closedOwn = (conditionId: string, asset: string, pnlPct: number | null) => ({
+      ...position(),
+      conditionId,
+      asset,
+      positionId: `${conditionId}:${asset}`,
+      status: "closed" as const,
+      size: 20,
+      entryPrice: 0.5,
+      currentValue: 0,
+      currentPrice: 0,
+      pnlUsd: pnlPct === null ? null : (pnlPct / 100) * 10,
+      pnlPct,
+    });
+    const targetRow = (conditionId: string, legs: Record<string, unknown>[], wallet = TARGET) => ({
+      ...targetParticipant(),
+      wallet_address: wallet,
+      condition_id: conditionId,
+      legs: legs.map((leg) => ({ ...targetParticipant().legs[0]!, ...leg })),
+    });
+    const rollup = (conditionId: string, tokenId: string, outcome: string) => ({
+      wallet_address: TARGET,
+      condition_id: conditionId,
+      token_id: tokenId,
+      total_buy_notional: "1",
+      realized_cash: "0",
+      net_shares: "1",
+      market_outcome: outcome,
+    });
+
+    it("plots a closed position against the target's resolved outcome, not a stale mark", async () => {
+      const c = `0x${"a1".repeat(32)}`;
+      // Target held 10 sh at $0.40 (cost 4) and the market resolved a winner:
+      // value = shares = 10 → +150%. Snapshot mark was stale at 0.9 (value 9).
+      const db = fakeDb(
+        [targetRow(c, [{ token_id: "111", shares: "10", cost_basis_usdc: "4", current_value_usdc: "9", lifecycle: "inactive" }])],
+        [rollup(c, "111", "winner")]
+      );
+      const read = await buildBoundedMarketExposureGroups({
+        db, billingAccountId: "tenant-a", walletAddress: OUR,
+        livePositions: [], closedPositions: [closedOwn(c, "111", 100)],
+      });
+      const line = read.groups[0]?.lines[0];
+      expect(line?.status).toBe("closed");
+      expect(line?.edgeGapPct).toBe(0.5); // 1.5 - 1.0
+      expect(read.groups[0]?.edgeGapPct).toBe(0.5);
+      expect(line?.edgeGapUsdc).toBe(5); // 0.5 × our $10 lifetime BUY
+    });
+
+    it("uses 0 value for a resolved loser and the last mark when unresolved", async () => {
+      const c1 = `0x${"b1".repeat(32)}`;
+      const c2 = `0x${"b2".repeat(32)}`;
+      const db = fakeDb(
+        [
+          targetRow(c1, [{ token_id: "111", shares: "10", cost_basis_usdc: "4", current_value_usdc: "1", lifecycle: "inactive" }]),
+          targetRow(c2, [{ token_id: "222", shares: "10", cost_basis_usdc: "4", current_value_usdc: "6", lifecycle: "inactive" }]),
+        ],
+        [rollup(c1, "111", "loser")]
+      );
+      const read = await buildBoundedMarketExposureGroups({
+        db, billingAccountId: "tenant-a", walletAddress: OUR,
+        livePositions: [],
+        closedPositions: [closedOwn(c1, "111", -100), closedOwn(c2, "222", 25)],
+      });
+      const byCondition = new Map(read.groups.flatMap((g) => g.lines).map((l) => [l.conditionId, l]));
+      expect(byCondition.get(c1)?.edgeGapPct).toBe(0); // target -100%, ours -100%
+      expect(byCondition.get(c2)?.edgeGapPct).toBe(0.25); // target +50%, ours +25%
+    });
+
+    it("never fabricates a delta from unknown economics, opposite tokens, or a zero target basis", async () => {
+      const unknownOwn = `0x${"c1".repeat(32)}`;
+      const oppositeOnly = `0x${"c2".repeat(32)}`;
+      const zeroBasis = `0x${"c3".repeat(32)}`;
+      const db = fakeDb([
+        targetRow(unknownOwn, [{ token_id: "111", lifecycle: "inactive" }]),
+        targetRow(oppositeOnly, [{ token_id: "999", lifecycle: "inactive" }]),
+        targetRow(zeroBasis, [{ token_id: "333", cost_basis_usdc: "0", lifecycle: "inactive" }]),
+      ]);
+      const read = await buildBoundedMarketExposureGroups({
+        db, billingAccountId: "tenant-a", walletAddress: OUR,
+        livePositions: [],
+        closedPositions: [
+          closedOwn(unknownOwn, "111", null),
+          closedOwn(oppositeOnly, "222", 10),
+          closedOwn(zeroBasis, "333", 10),
+        ],
+      });
+      expect(read.groups.flatMap((g) => g.lines).map((l) => l.edgeGapPct)).toEqual([null, null, null]);
+      expect(read.groups.map((g) => g.edgeGapPct)).toEqual([null, null, null]);
+    });
+
+    it("cost-weights several targets that hold the same exact token", async () => {
+      const c = `0x${"d1".repeat(32)}`;
+      const OTHER = `0x${"3".repeat(40)}`;
+      const db = fakeDb([
+        targetRow(c, [{ token_id: "111", cost_basis_usdc: "10", current_value_usdc: "12", lifecycle: "inactive" }]),
+        targetRow(c, [{ token_id: "111", cost_basis_usdc: "30", current_value_usdc: "45", lifecycle: "inactive" }], OTHER),
+      ]);
+      const read = await buildBoundedMarketExposureGroups({
+        db, billingAccountId: "tenant-a", walletAddress: OUR,
+        livePositions: [], closedPositions: [closedOwn(c, "111", 0)],
+      });
+      // (0.2 * 10 + 0.5 * 30) / 40 = 0.425 target vs 0 ours.
+      expect(read.groups[0]?.lines[0]?.edgeGapPct).toBe(0.425);
     });
   });
 
