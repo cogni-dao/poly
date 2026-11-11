@@ -29,6 +29,9 @@ importers:
         specifier: workspace:*
         version: link:packages/ai-tools
     devDependencies:
+      '@cogni/node-declarations':
+        specifier: https://github.com/cogni-dao/node-template/releases/download/node-declarations-v0.1.0/cogni-dao-node-declarations-0.1.0.tgz
+        version: '@cogni-dao/node-declarations@https://github.com/cogni-dao/node-template/releases/download/node-declarations-v0.1.0/cogni-dao-node-declarations-0.1.0.tgz'
       '@playwright/test':
         specifier: ^1.56.1
         version: 1.61.0
@@ -1585,6 +1588,11 @@ packages:
     peerDependenciesMeta:
       react:
         optional: true
+
+  '@cogni-dao/node-declarations@https://github.com/cogni-dao/node-template/releases/download/node-declarations-v0.1.0/cogni-dao-node-declarations-0.1.0.tgz':
+    resolution: {tarball: https://github.com/cogni-dao/node-template/releases/download/node-declarations-v0.1.0/cogni-dao-node-declarations-0.1.0.tgz}
+    version: 0.1.0
+    hasBin: true
 
   '@cogni-dao/scheduling@https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.1.0/cogni-dao-scheduling-0.1.0.tgz':
     resolution: {tarball: https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.1.0/cogni-dao-scheduling-0.1.0.tgz}
@@ -10331,6 +10339,11 @@ snapshots:
   '@cogni-dao/money-plane@https://github.com/cogni-dao/node-template/releases/download/money-plane-v0.2.0/cogni-dao-money-plane-0.2.0.tgz(react@19.0.0)':
     optionalDependencies:
       react: 19.0.0
+
+  '@cogni-dao/node-declarations@https://github.com/cogni-dao/node-template/releases/download/node-declarations-v0.1.0/cogni-dao-node-declarations-0.1.0.tgz':
+    dependencies:
+      yaml: 2.9.0
+      zod: 3.25.76
 
   '@cogni-dao/scheduling@https://github.com/cogni-dao/node-template/releases/download/scheduling-v0.1.0/cogni-dao-scheduling-0.1.0.tgz(postgres@3.4.9(patch_hash=fux5zxnjvcl5durhcguouaxpzi))':
     dependencies:
