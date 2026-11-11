@@ -27,7 +27,7 @@ export function KnowledgeSelection({
 }): ReactElement {
   const detail = useQuery({
     queryKey: ["knowledge", "detail", id],
-    queryFn: () => fetchKnowledgeEntry(id ?? ""),
+    queryFn: ({ signal }) => fetchKnowledgeEntry(id ?? "", signal),
     enabled: id !== null,
     staleTime: 30_000,
     retry: false,
@@ -39,6 +39,9 @@ export function KnowledgeSelection({
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
+      loading={detail.isFetching}
+      error={detail.error}
+      onRetry={() => void detail.refetch()}
     />
   );
 }
