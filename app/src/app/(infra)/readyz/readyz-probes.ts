@@ -23,6 +23,7 @@
  */
 
 import {
+  type DeepChecks,
   DeepProbeFailure,
   findUnclassifiedSubstrateKeys as pkgFindUnclassifiedSubstrateKeys,
   type ProbeDependency as PkgProbeDependency,
@@ -46,7 +47,7 @@ import type { RequestContext } from "@/shared/observability";
 
 // Re-exported from the package so `route.ts` keeps one import site and the
 // parity meta-test can assert the node uses the package's class by identity.
-export { DeepProbeFailure, SUBSTRATE_ENV_KEY_PATTERN };
+export { type DeepChecks, DeepProbeFailure, SUBSTRATE_ENV_KEY_PATTERN };
 
 type Container = ReturnType<typeof getContainer>;
 type Env = ReturnType<typeof serverEnv>;
@@ -85,8 +86,8 @@ export type DeepDependency =
 export async function runDeepChecks(
   ctx: RequestContext,
   checks: ReadonlyArray<readonly [DeepDependency, () => Promise<unknown>]>
-): Promise<void> {
-  await pkgRunDeepChecks(checks, {
+): Promise<DeepChecks> {
+  return pkgRunDeepChecks(checks, {
     log: (fields, message) => ctx.log.info(fields, message),
     timeoutError: (dependency, budgetMs) =>
       new InfraConnectivityError(

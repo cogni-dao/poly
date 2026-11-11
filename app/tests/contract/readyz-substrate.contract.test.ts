@@ -12,6 +12,7 @@
  * @internal
  */
 
+import { readDeepReadiness } from "@cogni/substrate-health";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -722,6 +723,12 @@ describe("GET /readyz async substrate contract", () => {
         "scheduler-worker",
         "postgres",
       ],
+      checks: expect.objectContaining({
+        "evm-rpc": expect.objectContaining({ status: "failed" }),
+        postgres: expect.objectContaining({ status: "failed" }),
+        redis: expect.objectContaining({ status: "ok" }),
+      }),
+      buildSha: "readyz-contract-sha",
     });
   });
 
@@ -760,7 +767,31 @@ describe("GET /readyz async substrate contract", () => {
       reason: "INFRA_UNREACHABLE",
       message: "scheduler-worker check exceeded 3000ms budget",
       unreachable: ["scheduler-worker"],
+      checks: expect.objectContaining({
+        "scheduler-worker": expect.objectContaining({ status: "failed" }),
+      }),
+      buildSha: "readyz-contract-sha",
     });
+  });
+
+  it("serves a deep body the shared reader judges per dependency (story.0029)", async () => {
+    const healthy = await GET(request("/readyz?deep=1"));
+    const healthyBody = await healthy.json();
+    expect(healthyBody.checks.postgres.status).toBe("ok");
+    expect(
+      readDeepReadiness(healthy.status, healthyBody).dependencyState("postgres")
+    ).toBe("reached");
+
+    // An unrelated dependency down must not hide that Postgres answered.
+    mocks.assertSchedulerWorkerConnectivity.mockRejectedValue(
+      new InfraConnectivityError("worker is unavailable")
+    );
+    const degraded = await GET(request("/readyz?deep=1"));
+    const reading = readDeepReadiness(degraded.status, await degraded.json());
+    expect(degraded.status).toBe(503);
+    expect(reading.buildSha).toBe("readyz-contract-sha");
+    expect(reading.dependencyState("postgres")).toBe("reached");
+    expect(reading.dependencyState("scheduler-worker")).toBe("unreached");
   });
 
   it("bounds a hung deep check and still names the others", async () => {

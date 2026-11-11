@@ -8,7 +8,7 @@
  * Invariants: EGRESS_GEOBLOCK_LATCH_IS_FATAL: when the boot-time egress assertion latched (N consecutive literal `blocked:true` verdicts from Polymarket inside the boot window), this endpoint 503s with reason `EGRESS_GEOBLOCKED` so the operator's boot SLO refuses the lease and re-mints elsewhere (story.5050). That latch is sticky, boot-window-bounded and never set by an unreachable oracle, so it cannot reproduce the 2026-06-26 drain; this route only READS it and performs zero IO for it. Always returns valid readyz schema; force-dynamic runtime. Every managed non-test node requires and exercises EVM RPC even before payment activation. The default path does not drain the fleet for a transient upstream failure (incident 2026-06-26: scheduler-worker hiccup → fleet-wide 502); `?deep=1` forces a live RPC read and makes EVM RPC, Temporal, and scheduler-worker failures fatal (503).
  *             The default path runs every check concurrently and is bounded (task.5298): non-fatal checks get NON_FATAL_CHECK_BUDGET_MS and are reported degraded on timeout; the system tenant (DB verdict, NON-FATAL since bug.0022: failure logs critical and reports degraded; provisioning is asserted once at boot by bootstrap/startup-assertions) gets SYSTEM_TENANT_BUDGET_MS and only its success is cached for SYSTEM_TENANT_OK_TTL_MS. The first probe after boot always performs the real DB check. `?deep=1` runs the declared-dependency registry concurrently and uncached, each check bounded by DEEP_CHECK_BUDGET_MS. The egress latch read stays first and zero-IO.
  * Side-effects: IO (HTTP response, structured logging, network calls to RPC, Temporal, LiteLLM, Redis, Doltgres)
- *             `?deep=1` probes exactly the Depend-class dependencies this node DECLARES, from the `SUBSTRATE_DEPENDENCIES` registry (readyz-probes.ts, built on `@cogni-dao/substrate-health`): evm-rpc, temporal, scheduler-worker, postgres, redis, litellm-gateway, and doltgres (only when DOLTGRES_URL is set). They run concurrently, each under DEEP_CHECK_BUDGET_MS, and a 503 body adds `unreachable`: every failing declared dependency. `reason`/`message` come from the first failure in registry order. Config errors (env, secrets, egress latch) return before any check and carry no `unreachable`. The default path never adds the field and does no new IO. Poly-specific optional keys (POLYGON_RPC_URL/WSS, PAPER_SIDECAR_URL) are N/A-with-reason in the registry, not probed. A CI parity test keeps the registry in sync with the env schema.
+ *             `?deep=1` probes exactly the Depend-class dependencies this node DECLARES, from the `SUBSTRATE_DEPENDENCIES` registry (readyz-probes.ts, built on `@cogni-dao/substrate-health`): evm-rpc, temporal, scheduler-worker, postgres, redis, litellm-gateway, and doltgres (only when DOLTGRES_URL is set). They run concurrently, each under DEEP_CHECK_BUDGET_MS, and a deep body adds `checks` (each probed dependency's status, on 200 and 503); a deep 503 also adds `unreachable` (every failing declared dependency) and `buildSha`. Readers parse it only through `readDeepReadiness` (@cogni-dao/substrate-health). `reason`/`message` come from the first failure in registry order. Config errors (env, secrets, egress latch) return before any check and carry no `unreachable`. The default path never adds the field and does no new IO. Poly-specific optional keys (POLYGON_RPC_URL/WSS, PAPER_SIDECAR_URL) are N/A-with-reason in the registry, not probed. A CI parity test keeps the registry in sync with the env schema.
  * Notes: Used by Docker HEALTHCHECK, deployment validation, K8s readiness probes.
  *        HTTP status is primary truth: 200 = ready, 503 = not ready.
  *        Provisioning / smoke checks that must assert the substrate is up call `/readyz?deep=1`.
@@ -37,6 +37,7 @@ import type { RequestContext } from "@/shared/observability";
 import { setBuildInfo } from "@/shared/observability/server/metrics";
 import {
   buildDeepChecks,
+  type DeepChecks,
   DeepProbeFailure,
   runDeepChecks,
 } from "./readyz-probes";
@@ -376,8 +377,11 @@ export const GET = wrapRouteHandlerWithLogging(
     // `?deep=1` restores hard-fail substrate semantics for provisioning /
     // stack-test smoke checks; the default (k8s probe) path is non-fatal.
     const deep = new URL(request.url).searchParams.get("deep") === "1";
+    // Set once env parses, so a deep 503 names the revision that answered.
+    let buildSha: string | undefined;
     try {
       const env = serverEnv();
+      buildSha = env.APP_BUILD_SHA || undefined;
       const container = getContainer();
 
       // Set build info for metrics (canonical source: APP_BUILD_SHA from serverEnv())
@@ -442,11 +446,13 @@ export const GET = wrapRouteHandlerWithLogging(
         dependency: "scheduler-worker",
       };
 
+      let checks: DeepChecks | undefined;
       if (deep) {
         // Deep probe: concurrent, uncached, hard-fail. Probe exactly the
-        // dependencies this node declares; every failing one is named in the
-        // 503 body (`unreachable`). Registry: readyz-probes.ts.
-        await runDeepChecks(ctx, buildDeepChecks(ctx, container, env));
+        // dependencies this node declares; every probed one is in the body's
+        // `checks`, every failing one in the 503 body's `unreachable`.
+        // Registry: readyz-probes.ts.
+        checks = await runDeepChecks(ctx, buildDeepChecks(ctx, container, env));
       } else {
         // Default probe: run everything concurrently. Every check is bounded
         // and degrades (including the system tenant, bug.0022: a shared DB must
@@ -494,7 +500,8 @@ export const GET = wrapRouteHandlerWithLogging(
         status: "healthy" as const,
         timestamp: new Date().toISOString(),
         version: process.env.npm_package_version || undefined,
-        buildSha: env.APP_BUILD_SHA || undefined,
+        buildSha,
+        ...(checks ? { checks } : {}),
       };
 
       const parsed = metaReadyzOperation.output.parse(payload);
@@ -505,7 +512,7 @@ export const GET = wrapRouteHandlerWithLogging(
         caught instanceof DeepProbeFailure ? (caught.primary as Error) : caught;
       const unreachable =
         caught instanceof DeepProbeFailure
-          ? { unreachable: caught.unreachable }
+          ? { unreachable: caught.unreachable, checks: caught.checks, buildSha }
           : {};
       // HTTP status is primary truth for K8s: 503 = not ready
       // Log failure before returning 503 for deployment debugging
