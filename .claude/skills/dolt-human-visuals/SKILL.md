@@ -1,13 +1,19 @@
 ---
 name: dolt-human-visuals
-description: Use when authoring a Cogni knowledge entry whose primary consumer is a HUMAN reviewing it visually (design diagram, scorecard, roadmap, status surface, PR-review summary). Routes you to entryType html instead of text-heavy prose. Trigger when a /design run produces its human-facing design, or when posting to /api/v1/knowledge/contributions for human review.
+description: Use before authoring or reviewing a Cogni knowledge entry with entryType html — a diagram, matrix or status grid for human review. Html is diagram-first, themed by the renderer, and nearly prose-free; anything an agent must recall stays a markdown text atom.
+metadata:
+  role: specialist
+  scope: implementation
 ---
 
 # dolt-human-visuals
 
-This file is only the trigger. The knowledge hub is the authoritative, refinable contract.
+> The contract lives in the node-template hub, not here. This file is only the trigger.
 
-Read this operator-owned entry with the separate `COGNI_OPERATOR_NODE_API_KEY`, then follow it:
-- `GET https://cognidao.org/api/v1/knowledge/knowledge-human-visuals`
+Read these node-template-owned entries with `COGNI_NODE_TEMPLATE_API_KEY` (on node-template itself, `COGNI_NODE_API_KEY`), then follow them:
+- `GET https://node-template.cognidao.org/api/v1/knowledge/knowledge-human-visuals` — the diagram-first budget, fragment-only shape, theme tokens, `cogni-*` classes and review checklist
+- Reference atom: `GET https://node-template.cognidao.org/api/v1/knowledge/cogni-harness-design`
 
-Do not reconstruct or preserve a fallback copy in this repository.
+No key yet? Register once with `POST https://node-template.cognidao.org/api/v1/agent/register` and `{"name":"<agent name>"}`, then save the key in the gitignored `.env.cogni`.
+
+Write the html entry itself to this node's own hub. Do not reconstruct or preserve a fallback copy in this repository.
