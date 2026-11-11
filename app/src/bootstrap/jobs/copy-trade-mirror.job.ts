@@ -82,6 +82,14 @@ const DEFAULT_MIN_TARGET_SIDE_FRACTION = 0.2;
  * slippage. Above this we refuse to place (`vwap_floor_breach`).
  */
 const DEFAULT_VWAP_TOLERANCE = 0.005;
+/**
+ * bug.5057 — bounded upward slippage over the target's fill price so a BUY is
+ * marketable against the ask the target just swept (a bid AT the fill price
+ * rested below the new best ask and the TTL sweep canceled it unfilled). The
+ * effective limit is still capped at target VWAP + DEFAULT_VWAP_TOLERANCE and
+ * 0.99, and sizing is recomputed at the higher price (spend never rises).
+ */
+const DEFAULT_BUY_SLIPPAGE_ALLOWANCE = 0.02;
 const DEFAULT_POSITION_FOLLOWUP_POLICY: PositionFollowupPolicy = {
   enabled: true,
   min_mirror_position_usdc: 5,
@@ -290,6 +298,7 @@ export function buildMirrorTargetConfig(params: {
                 min_target_side_fraction: DEFAULT_MIN_TARGET_SIDE_FRACTION,
               }),
           vwap_tolerance: DEFAULT_VWAP_TOLERANCE,
+          buy_slippage_allowance: DEFAULT_BUY_SLIPPAGE_ALLOWANCE,
         }),
     ...(!isSelfContainedPolicy &&
     snapshotForTargetWallet(params.targetWallet) !== undefined

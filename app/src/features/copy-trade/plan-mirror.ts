@@ -16,6 +16,7 @@
  *   - GAP_DRIVES_SIZING (D2 phase 2): for `position_gap`, intent is `(desired_shares − our_shares) × fill.price`, where `desired_shares = target_shares × target_scale`. Each fill is a re-evaluation trigger, not the sizing input. Layer/hedge dispatch short-circuits when this kind is active — gap math produces layering via `desired − ours` directly. `gap ≤ 0` skips `followup_not_needed`; gap below market min skips `below_market_min`. Phase 4's GapExecutor dissolves the remaining fill-driven scaffolding.
  *   - NEVER_PAY_ABOVE_TARGET_VWAP (bug.5048, bug.5008): when `config.vwap_tolerance` is set, `applyVwapGate` skips `vwap_floor_breach` if `fill.price > target_vwap_for_fill_token + tolerance`. Asymmetric upward gate. A configured tolerance with missing/invalid target VWAP fails closed for every policy; position_gap BUYs also fail closed with no tolerance.
  *   - BUY_GATES_FAIL_CLOSED_WITHOUT_TARGET_POSITION (bug.5053): a BUY whose config relies on target-position facts (`planRequiresTargetPosition`) and has no `state.target_position` skips `target_position_unavailable` instead of running with the dominance/VWAP gates silently off. SELL/close paths are unaffected.
+ *   - MARKETABLE_BUY_WITHIN_BOUNDS (bug.5057): when `config.buy_slippage_allowance` is set, a BUY limit is `ceilTick(fill + allowance)` capped at `floorTick(target VWAP + vwap_tolerance)` and 0.99, never below the target fill price. Sizing is recomputed at that limit so per-condition / cumulative / share-floor caps hold; spend never exceeds the legacy cap and shares shrink as price rises. Unset / no tick size / SELL / fill-exact / position-gap keep the target fill price.
  *   - HEDGE_PREDICATE_NOOPS_ON_UNKNOWN_OPPOSITE: hedge branch fires only when `state.position.opposite_token_id` is known from prior aggregation. No inference from condition structure alone.
  * Skip-reason precedence (first match wins): already_placed → market_past_end_date → price_outside_clob_bounds → target_position_unavailable → target_dominant_other_side → vwap_floor_breach → sizing-reason skip (below_target_percentile / below_market_min / position_cap_reached / target_position_below_threshold / followup_position_too_small / followup_not_needed) → place.
  * Side-effects: none
@@ -484,13 +485,47 @@ export function planMirrorFromFill(input: PlanMirrorInput): MirrorPlan {
     };
   }
 
+  // bug.5057 — make the BUY marketable against the book the target just swept.
+  // Re-size at the higher limit so every USDC / share-floor / cumulative cap is
+  // evaluated at the price we will actually bid; fall back to the target fill
+  // price (legacy behavior) when the re-sized plan no longer places.
+  let sizeUsdc = decision.sizing.size_usdc;
+  let limitPrice = normalizedPrice.price;
+  const marketableLimit = marketableBuyLimit({
+    fillPrice: normalizedPrice.price,
+    side: fill.side,
+    config,
+    tick_size,
+    targetVwap: targetVwapForToken(
+      state.target_position,
+      typeof fill.attributes?.asset === "string" ? fill.attributes.asset : ""
+    ),
+  });
+  if (marketableLimit > normalizedPrice.price) {
+    const repriced = decideMirrorBranch(
+      {
+        ...planningInput,
+        fill: { ...planningInput.fill, price: marketableLimit },
+      },
+      min_shares,
+      min_usdc_notional
+    );
+    if (
+      repriced.kind === "place" &&
+      repriced.sizing.ok &&
+      repriced.position_branch === decision.position_branch
+    ) {
+      sizeUsdc = repriced.sizing.size_usdc;
+      limitPrice = marketableLimit;
+    }
+  }
   const intent = buildIntent(
     fill,
-    decision.sizing.size_usdc,
+    sizeUsdc,
     client_order_id,
     config.placement,
     decision.position_branch,
-    normalizedPrice.price
+    limitPrice
   );
 
   return {
@@ -500,6 +535,55 @@ export function planMirrorFromFill(input: PlanMirrorInput): MirrorPlan {
     intent,
     wrong_side_holding_detected: decision.wrong_side_holding_detected,
   };
+}
+
+/** bug.5057 — hard ceiling for a marketable BUY limit (a 0.99+ bid is never worth chasing). */
+export const MAX_MARKETABLE_BUY_PRICE = 0.99;
+
+/**
+ * bug.5057 — marketable BUY limit. The target's fill just swept the ask at
+ * `fillPrice`, so a bid AT that price rests below the new best ask and the
+ * resting sweep cancels it unfilled. Allow a bounded slippage above the fill:
+ *
+ *   limit = ceilTick(fill + allowance), capped at floorTick(target VWAP +
+ *   vwap_tolerance) and 0.99, and never below the fill price itself.
+ *
+ * Returns `fillPrice` unchanged (legacy behavior) for SELLs, when no allowance
+ * is configured, when the tick size is unknown, and for verbatim / book-plan
+ * policies. The caller re-sizes at the returned price so USDC caps hold.
+ */
+function marketableBuyLimit(args: {
+  fillPrice: number;
+  side: "BUY" | "SELL";
+  config: PlanMirrorInput["config"];
+  tick_size: number | undefined;
+  targetVwap: number | undefined;
+}): number {
+  const { fillPrice, side, config, tick_size, targetVwap } = args;
+  const allowance = config.buy_slippage_allowance;
+  if (
+    side !== "BUY" ||
+    allowance === undefined ||
+    !Number.isFinite(allowance) ||
+    allowance <= 0 ||
+    tick_size === undefined ||
+    config.sizing.kind === "mirror_fill_exact" ||
+    config.sizing.kind === "position_gap"
+  ) {
+    return fillPrice;
+  }
+  const scale = Math.round(1 / tick_size);
+  if (scale <= 1 || Math.abs(1 / scale - tick_size) > 1e-12) return fillPrice;
+  const EPS = 1e-9;
+  const fillTicks = Math.round(fillPrice * scale);
+  let ticks = Math.ceil((fillPrice + allowance) * scale - EPS);
+  ticks = Math.min(ticks, Math.floor(MAX_MARKETABLE_BUY_PRICE * scale + EPS));
+  const tolerance = config.vwap_tolerance;
+  if (tolerance !== undefined && targetVwap !== undefined) {
+    ticks = Math.min(ticks, Math.floor((targetVwap + tolerance) * scale + EPS));
+  }
+  ticks = Math.min(ticks, scale - 1);
+  return Math.max(ticks, fillTicks) / scale;
 }
 
 /**
