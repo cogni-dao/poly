@@ -494,6 +494,28 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 		expect(recovery.some((r) => r.client_order_id === id)).toBe(true);
 	});
 
+	it("bug.5060: an identified order_id row is selected ahead of 200 older no-ID rows", async () => {
+		const h = await harness();
+		for (let n = 0; n < 200; n++) await h.seed("error");
+		const identified = await h.seed("pending", {}, `venue-${h.account}`);
+		await h.db
+			.update(polyCopyTradeFills)
+			.set({ createdAt: new Date("2000-01-01"), updatedAt: new Date("2000-01-01") })
+			.where(sql`${polyCopyTradeFills.billingAccountId} = ${h.account} AND ${polyCopyTradeFills.orderId} IS NULL`);
+		await h.db
+			.update(polyCopyTradeFills)
+			.set({ updatedAt: new Date("2000-01-02") })
+			.where(eq(polyCopyTradeFills.clientOrderId, identified));
+		await h.db
+			.update(polyCopyTradeFills)
+			.set({ updatedAt: sql`now() + interval '1 hour'` })
+			.where(
+				sql`${polyCopyTradeFills.billingAccountId} <> ${h.account} AND ${polyCopyTradeFills.orderId} IS NOT NULL`,
+			);
+		const batch = await h.ledger.listOpenOrPending({ limit: 200 });
+		expect(batch[0]?.client_order_id).toBe(identified);
+	});
+
 	it("rotates 200 ambiguous no-ID rows ahead of the next eligible recovery row", async () => {
 		const h = await harness();
 		const ids = [];
@@ -507,6 +529,15 @@ describe("order exposure reservation (real PostgreSQL)", () => {
 				updatedAt: new Date("2000-01-01"),
 			})
 			.where(sql`${polyCopyTradeFills.billingAccountId} = ${h.account}`);
+		// bug.5060 — identified (order_id) rows now sort ahead of unidentified
+		// ones. Park other tests' identified fixtures as freshly attempted so
+		// only this test's no-ID rows compete for the bounded batch.
+		await h.db
+			.update(polyCopyTradeFills)
+			.set({ updatedAt: sql`now() + interval '1 hour'` })
+			.where(
+				sql`${polyCopyTradeFills.billingAccountId} <> ${h.account} AND ${polyCopyTradeFills.orderId} IS NOT NULL`,
+			);
 		const first = await h.ledger.listOpenOrPending({ limit: 200 });
 		expect(first).toHaveLength(200);
 		await h.ledger.markReconcileAttempted(first.map((r) => r.client_order_id));
