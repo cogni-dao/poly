@@ -87,6 +87,7 @@ import {
 
 import {
   PositionObservationBudget,
+  PositionObservationBudgetError,
   type PositionObservationController,
   PositionBalanceTransportError,
   positionObservationController,
@@ -114,6 +115,8 @@ const POSITION_MIN_VALUE_USDC = 0.000001;
 const DEFAULT_POSITION_MAX_PAGES = 10;
 const POSITION_MAX_ROWS = POSITION_FETCH_LIMIT * DEFAULT_POSITION_MAX_PAGES;
 const POSITION_OMISSION_LIMIT = POSITION_MAX_ROWS + 1;
+/** Matches the client's `condition=` chunk ceiling: one budget call per chunk. */
+const POSITION_REREAD_CONDITION_CHUNK_SIZE = 20;
 const POSITION_BALANCE_CHUNK_SIZE = 100;
 const POSITION_BALANCE_MAX_CHUNKS = 50;
 const POSITION_BALANCE_CHUNK_TIMEOUT_MS = 5_000;
@@ -1446,12 +1449,37 @@ async function observePositionsSerialized(deps: {
       );
     }
 
-    const omitted = await readOmittedCurrentPositions({
+    let omitted = await readOmittedCurrentPositions({
       db: deps.db,
       wallet: deps.wallet,
       positions: pageResult.positions,
     });
     deps.signal?.throwIfAborted();
+    if (omitted.length > 0 && omitted.length < POSITION_OMISSION_LIMIT) {
+      // bug.5059: the CASH page drops REDEEMABLE current_value=0 rows (a fresh
+      // loser). Re-read just the omitted conditions unfiltered so the vendor's
+      // own row explains the omission instead of the on-chain balance vetoing.
+      const reread = await rereadOmittedPositions({
+        client: deps.client,
+        omitted,
+        budget: deps.budget,
+        signal: deps.signal,
+        logger: deps.logger,
+        wallet: deps.wallet,
+      });
+      if (reread.length > 0) {
+        pageResult.positions = dedupePositions([
+          ...pageResult.positions,
+          ...reread,
+        ]);
+        omitted = await readOmittedCurrentPositions({
+          db: deps.db,
+          wallet: deps.wallet,
+          positions: pageResult.positions,
+        });
+        deps.signal?.throwIfAborted();
+      }
+    }
     lastOmissionCount = omitted.length;
     if (omitted.length >= POSITION_OMISSION_LIMIT) {
       const published = await publishPositionFailure({
@@ -1876,6 +1904,71 @@ async function readPositionPrepareState(
 function readTerminalResume(value: string | null): string | null {
   const key = parseTerminalResume(value);
   return key ? JSON.stringify(key) : null;
+}
+
+/**
+ * Condition-scoped, unfiltered re-read of active rows the CASH page omitted.
+ * Returns only vendor rows whose exact (condition, token) key was omitted and
+ * that are well-formed; anything still absent (closed/sold, errors, exhausted
+ * data-API allowance) stays omitted and falls through to the on-chain
+ * authority check, so genuinely missing rows keep failing closed.
+ */
+export async function rereadOmittedPositions(input: {
+  client: PolymarketDataApiClient;
+  omitted: readonly MissingCurrentPosition[];
+  budget: PositionObservationBudget;
+  wallet: Pick<PolyTraderWallet, "walletAddress">;
+  signal?: AbortSignal | undefined;
+  logger?: LoggerPort | undefined;
+}): Promise<PolymarketUserPosition[]> {
+  const wanted = new Set(
+    input.omitted.map((row) => `${row.conditionId}\u0000${row.tokenId}`)
+  );
+  const conditions = [...new Set(input.omitted.map((row) => row.conditionId))];
+  const found: PolymarketUserPosition[] = [];
+  for (
+    let offset = 0;
+    offset < conditions.length;
+    offset += POSITION_REREAD_CONDITION_CHUNK_SIZE
+  ) {
+    input.signal?.throwIfAborted();
+    const chunk = conditions.slice(
+      offset,
+      offset + POSITION_REREAD_CONDITION_CHUNK_SIZE
+    );
+    try {
+      const rows = await input.budget.call(
+        "data_api",
+        () =>
+          input.client.listUserPositionsV2(input.wallet.walletAddress, {
+            conditions: chunk,
+            signal: input.signal,
+          }),
+        input.signal
+      );
+      for (const row of rows) {
+        if (
+          wanted.has(`${row.conditionId}\u0000${row.asset}`) &&
+          isValidObservedPosition(row)
+        ) {
+          found.push(row);
+        }
+      }
+    } catch (err) {
+      if (input.signal?.aborted) throw err;
+      input.logger?.warn(
+        {
+          event: "poly.trader.positions.omitted_reread_failed",
+          wallet: input.wallet.walletAddress,
+          conditions: chunk.length,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        "omitted position re-read failed; falling back to chain authority"
+      );
+      if (err instanceof PositionObservationBudgetError) break;
+    }
+  }
+  return found;
 }
 
 async function readOmittedCurrentPositions(input: {
