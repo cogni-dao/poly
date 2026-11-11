@@ -1956,7 +1956,8 @@ export async function rereadOmittedPositions(input: {
       }
     } catch (err) {
       if (input.signal?.aborted) throw err;
-      input.logger?.warn(
+      // Diagnostics must never turn a recoverable re-read into a hard failure.
+      input.logger?.warn?.(
         {
           event: "poly.trader.positions.omitted_reread_failed",
           wallet: input.wallet.walletAddress,
