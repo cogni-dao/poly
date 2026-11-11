@@ -224,6 +224,24 @@ function buildUtcDayWindow(capturedAt: Date, windowDays: number): string[] {
   }
   return days;
 }
+  /** @internal exported for unit tests (bug.5060). */
+export function monotonicLedgerStatus(
+    current: string,
+		observed: LedgerStatus,
+  ): LedgerStatus {
+    if (current === "filled") return current;
+    // bug.5060 — a local cancel acknowledgement (resting-sweep `markCanceled`)
+    // is not venue truth: an order matched before/while the cancel landed.
+    // Authenticated fill observations beat the cancel; other statuses cannot
+    // resurrect a canceled row.
+    if (current === "canceled") {
+      return observed === "filled" || observed === "partial"
+        ? observed
+        : current;
+    }
+    return observed;
+  }
+
 const nonTerminalPositionLifecycle = sql`(${polyCopyTradeFills.positionLifecycle} IS NULL OR ${polyCopyTradeFills.positionLifecycle} NOT IN ('closed','redeemed','loser','dust','abandoned'))`;
 const activeRestingPositionLifecycle = sql`(${polyCopyTradeFills.positionLifecycle} IS NULL OR ${polyCopyTradeFills.positionLifecycle} IN ('unresolved','open','closing'))`;
 const notPositionTerminal = sql`${nonTerminalPositionLifecycle} AND ${polyCopyTradeFills.attributes}->>'closed_at' IS NULL`;
@@ -1221,16 +1239,6 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
     };
   }
 
-  function monotonicLedgerStatus(
-    current: string,
-		observed: LedgerStatus,
-  ): LedgerStatus {
-    if (current === "filled" || current === "canceled") {
-      return current;
-    }
-    return observed;
-  }
-
   const root: OrderLedger = {
     forTenant: buildTenantSurface,
 
@@ -1483,6 +1491,10 @@ export function createOrderLedger(deps: OrderLedgerDeps): OrderLedger {
 					),
         )
 				.orderBy(
+					// bug.5060 — rows with an exact venue order id are the only ones the
+					// reconciler can resolve; never let permanently-unidentified rows
+					// (no order_id) crowd them out of the bounded batch.
+					sql`(${polyCopyTradeFills.orderId} IS NULL)`,
 					reconcileAttemptAt,
 					polyCopyTradeFills.createdAt,
 					polyCopyTradeFills.clientOrderId,

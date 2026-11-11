@@ -1812,6 +1812,14 @@ function createContainer(): Container {
 							);
 						return exec.cancelOrder.bind(exec);
 					},
+					getOrderFor: async (billing_account_id, mode) => {
+						const exec =
+							await executorFactory.getPolyTradeExecutorForVenue(
+								billing_account_id,
+								mode,
+							);
+						return exec.getOrder.bind(exec);
+					},
 					logger: sweepLogger,
 					metrics: noopMetricsForSweep,
 				});
