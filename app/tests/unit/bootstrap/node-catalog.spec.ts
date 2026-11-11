@@ -21,10 +21,10 @@ import {
   CORE_TOOL_BUNDLE,
   WEB_SEARCH_NAME,
   WORK_ITEM_READ_NAME,
-  WORK_ITEM_UPDATE_NAME,
 } from "@cogni/ai-tools";
 import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
 import { POLY_ACCOUNT_COPY_TRADE_ORDERS_TOOL_NAME } from "@cogni/poly-graphs";
+import { WORK_ITEM_UPDATE_NAME } from "@cogni/shared-ai-tools";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -108,12 +108,13 @@ describe("this node's langgraph catalog", () => {
     expect(POLY_BRAIN_NODE_TOOL_IDS).not.toContain("core__poly_cancel_order");
   });
 
-  // task.0086: the shared work-prioritizer writes only through core__work_item_update
-  // and reads items with core__work_item_read; a node that binds neither runs it read-blind.
-  it("offers work-prioritizer core__work_item_update and core__work_item_read, bound and granted", () => {
+  // task.0086: the shared work-prioritizer writes only through core__work_item_update, guarded only
+  // when the runner passes `program`. This node's runner does not, so triage writes are off.
+  it("offers work-prioritizer core__work_item_read and no work-item write tool", () => {
     const toolIds = POLY_NODE_LANGGRAPH_CATALOG["work-prioritizer"]?.toolIds ?? [];
-    expect(toolIds).toContain(WORK_ITEM_UPDATE_NAME);
     expect(toolIds).toContain(WORK_ITEM_READ_NAME);
+    expect(toolIds).not.toContain(WORK_ITEM_UPDATE_NAME);
+    expect(toolIds).not.toContain("core__work_item_transition");
 
     const byId = new Map(
       POLY_CORE_TOOL_BUNDLE.map((bound) => [bound.contract.name, bound.contract])
@@ -122,13 +123,14 @@ describe("this node's langgraph catalog", () => {
       workItemCapability: {},
     } as unknown as Parameters<typeof createToolBindings>[0]);
     for (const toolId of toolIds) {
+      if (toolId.startsWith("core__metric") || toolId === "core__goal_progress")
+        continue; // bound separately by the metric tools
       expect(byId.has(toolId), `${toolId} in the node tool bundle`).toBe(true);
-    }
-    for (const toolId of [WORK_ITEM_UPDATE_NAME, WORK_ITEM_READ_NAME]) {
       expect(bindings[toolId], `${toolId} bound`).toBeDefined();
     }
-    expect(byId.get(WORK_ITEM_UPDATE_NAME)?.requires?.scope).toBe(
-      "work_item:transition"
-    );
+    // Nothing offered may change state.
+    for (const toolId of toolIds) {
+      expect(byId.get(toolId)?.effect, `${toolId} effect`).not.toBe("state_change");
+    }
   });
 });

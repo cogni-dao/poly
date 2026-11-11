@@ -51,6 +51,7 @@ import {
   POLY_BRAIN_GRAPH_NAME,
   POLY_LANGGRAPH_CATALOG,
 } from "@cogni/poly-graphs";
+import { WORK_ITEM_UPDATE_NAME } from "@cogni/shared-ai-tools";
 
 import type { LangGraphCatalog } from "@/adapters/server/ai/langgraph/catalog";
 
@@ -72,6 +73,20 @@ export const POLY_BRAIN_NODE_TOOL_IDS: readonly string[] = [
 ];
 
 /**
+ * Tool allowlist for `work-prioritizer` on this node: the shared 0.7.0 list without
+ * `core__work_item_update`. Triage writes off until program plumbing is ported.
+ *
+ * The shared prioritizer writes only through `core__work_item_update`, and it is guarded
+ * (triage guard, run receipts, step-budget report) only when the in-proc runner and provider
+ * pass `program`, `sourceContext` and the run hooks. This node's runner and provider do not
+ * yet, so the graph would run as a plain agent with the full unguarded PATCH schema. It keeps
+ * the read tools (including `core__work_item_read`) and is offered no work-item write tool.
+ */
+const SHARED_WORK_PRIORITIZER = POLY_LANGGRAPH_CATALOG["work-prioritizer"]!;
+export const POLY_WORK_PRIORITIZER_NODE_TOOL_IDS: readonly string[] =
+  SHARED_WORK_PRIORITIZER.toolIds.filter((id) => id !== WORK_ITEM_UPDATE_NAME);
+
+/**
  * This node's catalog: the shared base, plus `poly-brain`.
  *
  * `poly-brain` is keyed by `POLY_BRAIN_GRAPH_NAME` ("poly-brain"), which is what
@@ -80,7 +95,10 @@ export const POLY_BRAIN_NODE_TOOL_IDS: readonly string[] = [
  */
 export const POLY_NODE_LANGGRAPH_CATALOG: LangGraphCatalog<CreateGraphFn> = {
   ...(LANGGRAPH_CATALOG as LangGraphCatalog<CreateGraphFn>),
-  "work-prioritizer": POLY_LANGGRAPH_CATALOG["work-prioritizer"]!,
+  "work-prioritizer": {
+    ...SHARED_WORK_PRIORITIZER,
+    toolIds: POLY_WORK_PRIORITIZER_NODE_TOOL_IDS,
+  },
   [POLY_BRAIN_GRAPH_NAME]: {
     displayName: "Poly Brain",
     description:
