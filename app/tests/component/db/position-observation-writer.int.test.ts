@@ -404,6 +404,63 @@ describe("serialized position-observation writer", () => {
     );
   });
 
+  it("publishes (omitted_count 0) when the CASH page drops a fresh REDEEMABLE zero-value loser that still holds on-chain balance (bug.5059)", async () => {
+    const wallet = await seedWallet("5059");
+    await seedCurrent(wallet.id, "801");
+    const loser = {
+      ...position("801"),
+      size: 5.03,
+      redeemable: true,
+      currentValue: 0,
+      curPrice: 0,
+    };
+    const listUserPositions = vi.fn(async () => ({
+      rows: [position("802")], // CASH page: the zero-value loser is filtered out
+      nextCursor: null,
+    }));
+    const listUserPositionsV2 = vi.fn(async () => [loser]);
+    const readPositionBalances = vi.fn(async () => [5_030_000n]);
+    const logger = { info: vi.fn() };
+
+    const result = await refreshCurrentPositionsForWallet({
+      db: getSeedDb() as unknown as WriterDb,
+      walletAddress: wallet.address,
+      client: {
+        listUserPositions,
+        listUserPositionsV2,
+      } as unknown as PolymarketDataApiClient,
+      readPositionBalances,
+      logger: logger as never,
+    });
+
+    expect(result.complete).toBe(true);
+    expect(result.failureReason).toBeUndefined();
+    expect(listUserPositionsV2).toHaveBeenCalledWith(
+      wallet.address,
+      expect.objectContaining({ conditions: ["condition-801"] })
+    );
+    expect(readPositionBalances).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "poly.trader.positions.publish",
+        status: "published",
+        omitted_count: 0,
+        published: true,
+      }),
+      "trader positions publication finished"
+    );
+    const current = await getSeedDb()
+      .select()
+      .from(polyTraderCurrentPositions)
+      .where(eq(polyTraderCurrentPositions.traderWalletId, wallet.id));
+    expect(current.find((row) => row.tokenId === "801")).toMatchObject({
+      active: false,
+      shares: "5.03000000",
+      currentValueUsdc: "0.00000000",
+      raw: { redeemable: true },
+    });
+  });
+
   it("publishes an upstream-resolved/local-unknown positive loser from one unfiltered generation", async () => {
     const wallet = await seedWallet("5301");
     const db = getSeedDb();
