@@ -1001,26 +1001,53 @@ function targetFollowupThreshold(policy: SizingPolicy): number {
  *
  * Fix: for date-only inputs, shift the comparison to `endMs + 24h` so the
  * gate only fires after the day printed in `endDate` has fully elapsed in
- * UTC. Full ISO-8601 timestamps (rare; some markets do carry these) compare
- * verbatim — the existing tests asserting `>=` at the exact ISO boundary
- * still hold for that path.
+ * UTC.
+ *
+ * bug.5056: full ISO-8601 timestamps are NOT scheduled closes for in-play
+ * sports markets — Gamma sets them to kickoff while CLOB reports
+ * `accepting_orders=true, closed=false` for the whole game (65% of prod
+ * decisions were wrongly skipped). Order of precedence: (1) liveness facts on
+ * `fill.attributes` (`closed` / `accepting_orders`) win outright; (2) else a
+ * bounded 6h grace past max(endDate, game_start_time). Known-closed markets
+ * still skip (fail-safe).
  *
  * Caveat (unchanged from bug.5045): catches the case where the chain settles
  * AFTER scheduled close, not the inverse. Markets that resolve early (sports
  * markets settle when the game ends) are still NOT caught here — those need
  * a `poly_market_outcomes.resolved_at` join at snapshot time.
  */
+/** bug.5007: date-only `endDate` means end-of-day UTC. */
+const DATE_ONLY_END_GRACE_MS = 24 * 60 * 60 * 1000;
+/** bug.5056: full-ISO `endDate` is often kickoff for in-play sports markets. */
+const FULL_ISO_END_GRACE_MS = 6 * 60 * 60 * 1000;
+
 function isFillPastMarketEndDate(
   fill: PlanMirrorInput["fill"],
   nowMs: number
 ): boolean {
-  const raw = fill.attributes?.end_date;
+  const attrs = fill.attributes;
+
+  // bug.5056 — direct liveness facts beat any date heuristic. A market known
+  // closed / not accepting orders is past end; one known to be accepting
+  // orders (and not closed) is alive regardless of what `endDate` says.
+  if (attrs?.closed === true || attrs?.accepting_orders === false) return true;
+  if (attrs?.accepting_orders === true) return false;
+
+  const raw = attrs?.end_date;
   if (typeof raw !== "string" || raw.length === 0) return false;
   const endMs = Date.parse(raw);
   if (!Number.isFinite(endMs)) return false;
   const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw);
-  const effectiveEndMs = isDateOnly ? endMs + 24 * 60 * 60 * 1000 : endMs;
-  return nowMs >= effectiveEndMs;
+  if (isDateOnly) return nowMs >= endMs + DATE_ONLY_END_GRACE_MS;
+
+  // Full-ISO `endDate` (bug.5056): for in-play sports markets Gamma sets this
+  // to kickoff (== gameStartTime) while the market stays live for the whole
+  // game. An end at/before kickoff is a start marker, not a close, so anchor
+  // on the later of the two and give a bounded grace for the game to finish.
+  const startRaw = attrs?.game_start_time;
+  const startMs = typeof startRaw === "string" ? Date.parse(startRaw) : NaN;
+  const anchorMs = Number.isFinite(startMs) ? Math.max(endMs, startMs) : endMs;
+  return nowMs >= anchorMs + FULL_ISO_END_GRACE_MS;
 }
 
 function targetTokenCostUsdc(
