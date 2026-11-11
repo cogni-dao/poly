@@ -21,6 +21,7 @@ import {
   classifyMissingPositionsWithBalances,
   classifyMissingPositionBalances,
   fetchTraderPositionsPages,
+  positionPageValueFloor,
   rereadOmittedPositions,
   type MissingCurrentPosition,
 } from "@/features/wallet-analysis/server/trader-observation-service";
@@ -87,6 +88,27 @@ describe("omitted-position exact balance authority", () => {
     expect(classifyMissingPositionBalances(balances, expected)).toBe(
       "authority_malformed"
     );
+  });
+
+  it("reads the complete book for tenant wallets and floors only copy targets (bug.5062)", async () => {
+    expect(positionPageValueFloor({ kind: "cogni_wallet" })).toEqual({});
+    expect(positionPageValueFloor({ kind: "copy_target" })).toEqual({
+      minValueUsdc: 0.000001,
+    });
+    const listUserPositions = vi.fn(async () => ({ rows: [], nextCursor: null }));
+    const client = { listUserPositions } as unknown as PolymarketDataApiClient;
+    const walletAddress = `0x${"a".repeat(40)}`;
+    await fetchTraderPositionsPages({ client, walletAddress, maxPages: 1 });
+    await fetchTraderPositionsPages({
+      client,
+      walletAddress,
+      maxPages: 1,
+      ...positionPageValueFloor({ kind: "copy_target" }),
+    });
+    expect(listUserPositions.mock.calls[0]?.[1]).toMatchObject({ sizeThreshold: 0 });
+    expect(listUserPositions.mock.calls[0]?.[1]).not.toHaveProperty("minValueUsdc");
+    expect(listUserPositions.mock.calls[1]?.[1]).toMatchObject({ minValueUsdc: 0.000001 });
+    expect(listUserPositions.mock.calls[1]?.[1]).not.toHaveProperty("sizeThreshold");
   });
 
   it("marks a tenth 500-row Data API page that still has a cursor incomplete at 5,000 rows", async () => {
