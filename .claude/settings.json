@@ -1,5 +1,9 @@
 {
   "outputStyle": "Cogni Contract",
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
   "hooks": {
     "SessionStart": [
       {
