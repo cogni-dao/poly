@@ -813,6 +813,11 @@ async function processFill(
         source,
         fill_id: fill.fill_id,
         client_order_id,
+        market_id: fill.market_id,
+        end_date:
+          typeof fill.attributes?.end_date === "string"
+            ? fill.attributes.end_date
+            : null,
         ...decisionLogFields,
       },
 			"mirror pipeline: skip",
