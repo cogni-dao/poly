@@ -67,6 +67,21 @@ const RETRY_BASE_MS = 1_000;
 /** Maximum retry delay, including a server-provided Retry-After. */
 const RETRY_CAP_MS = 30_000;
 
+// Keep limits in UTF-8 bytes and never split a multibyte character.
+function truncateLine(line: string): string {
+  const bytes = Buffer.from(line, "utf8");
+  if (bytes.length <= MAX_LINE_BYTES) return line;
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  for (let end = MAX_LINE_BYTES; end >= MAX_LINE_BYTES - 3; end--) {
+    try {
+      return decoder.decode(bytes.subarray(0, end));
+    } catch {
+      // The cut falls inside a multibyte character; move to its boundary.
+    }
+  }
+  return "";
+}
+
 type LokiValue = [timestamp: string, line: string];
 
 interface ActiveBatch {
@@ -167,14 +182,14 @@ export function createLokiPushStream(
       ) {
         const oldestQueued = buffer.shift();
         if (!oldestQueued) break;
-        bufferedBytes -= oldestQueued[1].length;
+        bufferedBytes -= Buffer.byteLength(oldestQueued[1], "utf8");
         dropped += 1;
       }
     };
 
     const enqueue = (line: string): void => {
       buffer.push([issueTimestamp(), line]);
-      bufferedBytes += line.length;
+      bufferedBytes += Buffer.byteLength(line, "utf8");
       enforceCap();
     };
 
@@ -202,17 +217,17 @@ export function createLokiPushStream(
       ];
 
       let lines = diagnosticLines();
-      let bytes = lines.reduce((sum, line) => sum + line.length, 0);
+      let bytes = lines.reduce((sum, line) => sum + Buffer.byteLength(line, "utf8"), 0);
       while (
         buffer.length + lines.length > MAX_BUFFER_ENTRIES ||
         bufferedBytes + bytes > MAX_BUFFER_BYTES
       ) {
         const oldestQueued = buffer.shift();
         if (!oldestQueued) break;
-        bufferedBytes -= oldestQueued[1].length;
+        bufferedBytes -= Buffer.byteLength(oldestQueued[1], "utf8");
         dropped += 1;
         lines = diagnosticLines();
-        bytes = lines.reduce((sum, line) => sum + line.length, 0);
+        bytes = lines.reduce((sum, line) => sum + Buffer.byteLength(line, "utf8"), 0);
       }
       const values: LokiValue[] = lines.map((line) => [issueTimestamp(), line]);
       buffer.push(...values);
@@ -230,13 +245,13 @@ export function createLokiPushStream(
       while (values.length < MAX_BATCH_ENTRIES && buffer.length > 0) {
         const next = buffer[0];
         if (!next) break;
-        if (values.length > 0 && bytes + next[1].length > MAX_BATCH_BYTES) {
+        if (values.length > 0 && bytes + Buffer.byteLength(next[1], "utf8") > MAX_BATCH_BYTES) {
           break;
         }
         buffer.shift();
-        bufferedBytes -= next[1].length;
+        bufferedBytes -= Buffer.byteLength(next[1], "utf8");
         values.push(next);
-        bytes += next[1].length;
+        bytes += Buffer.byteLength(next[1], "utf8");
       }
       active = {
         values,
@@ -330,8 +345,7 @@ export function createLokiPushStream(
         try {
           for (const raw of line.split("\n")) {
             if (raw === "") continue;
-            const entry =
-              raw.length > MAX_LINE_BYTES ? raw.slice(0, MAX_LINE_BYTES) : raw;
+            const entry = truncateLine(raw);
             enqueue(entry);
           }
         } catch {

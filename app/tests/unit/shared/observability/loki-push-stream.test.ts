@@ -409,9 +409,15 @@ describe("createLokiPushStream", () => {
       return Promise.resolve(new Response(null, { status: 204 }));
     });
     const stream = createLokiPushStream({ env: BASE_ENV, fetchFn });
-    const line = "x".repeat(32_768);
-    for (let i = 0; i < 40; i++) stream?.write(`${line}\n`);
+    const line = "界".repeat(10_922);
+    for (let i = 0; i < 8; i++) stream?.write(`${line}\n`);
+    expect(fetchFn).not.toHaveBeenCalled();
+    stream?.flushNow();
+    expect(fetchFn).toHaveBeenCalledTimes(1);
     const activeBody = bodyAt(fetchFn, 0);
+    for (let i = 0; i < 40; i++) stream?.write(`${line}\n`);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(bodyAt(fetchFn, 0)).toEqual(activeBody);
     resolveFirst?.(new Response(null, { status: 204 }));
     await settlePromises();
 
@@ -424,7 +430,7 @@ describe("createLokiPushStream", () => {
     ).toBe(true);
     for (const call of calls) {
       const bytes = (call.streams[0]?.values ?? []).reduce(
-        (sum, [, value]) => sum + value.length,
+        (sum, [, value]) => sum + Buffer.byteLength(value, "utf8"),
         0
       );
       expect(bytes).toBeLessThanOrEqual(262_144);
@@ -437,6 +443,17 @@ describe("createLokiPushStream", () => {
     stream?.write(`${"x".repeat(100_000)}\n`);
     stream?.flushNow();
     expect(bodyAt(fetchFn, 0).streams[0]?.values[0]?.[1]).toHaveLength(32_768);
+  });
+
+  it("truncates multibyte lines at a valid UTF-8 boundary", () => {
+    const fetchFn = makeFetchMock();
+    const stream = createLokiPushStream({ env: BASE_ENV, fetchFn });
+    stream?.write(`${"界".repeat(20_000)}\n`);
+    expect(fetchFn).not.toHaveBeenCalled();
+    stream?.flushNow();
+    const line = bodyAt(fetchFn, 0).streams[0]?.values[0]?.[1] ?? "";
+    expect(Buffer.byteLength(line, "utf8")).toBe(32_766);
+    expect(line).toBe("界".repeat(10_922));
   });
 
   it("never throws from write or flush when fetch throws synchronously", () => {

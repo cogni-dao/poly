@@ -72,7 +72,7 @@ export function startSystemTenantAssertionOnBoot(
     try {
       makeLogger({ component: "startup-assertions" }).error(
         { event: "startup.system_tenant.failed", severity: "critical", errorCode: "SYSTEM_TENANT_QUALIFICATION_FAILED" },
-        "system tenant qualification failed"
+        "system tenant qualification failed; exiting"
       );
     } catch {
       // Diagnostics cannot replace the qualification rejection or prevent exit.
