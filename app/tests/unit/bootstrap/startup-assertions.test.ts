@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   verifySystemTenant: vi.fn(),
+  loggerConstruction: vi.fn(),
   error: vi.fn(),
 }));
 
@@ -22,7 +23,7 @@ vi.mock("@/bootstrap/healthchecks", () => ({
   verifySystemTenant: (...args: unknown[]) => mocks.verifySystemTenant(...args),
 }));
 vi.mock("@/shared/observability", () => ({
-  makeLogger: () => ({ error: mocks.error }),
+  makeLogger: () => { mocks.loggerConstruction(); return { error: mocks.error }; },
 }));
 
 import type { ServiceAccountService } from "@/ports";
@@ -50,7 +51,9 @@ describe("boot system-tenant assertion (bug.0022)", () => {
     );
     const exit = vi.fn();
 
-    await startSystemTenantAssertionOnBoot(service, { exit, force: true });
+    const pending = startSystemTenantAssertionOnBoot(service, { exit, force: true });
+    expect(startSystemTenantAssertionOnBoot(service, { exit, force: true })).toBe(pending);
+    await expect(pending).rejects.toThrow();
 
     expect(mocks.verifySystemTenant).toHaveBeenCalledWith(service);
     expect(exit).toHaveBeenCalledExactlyOnceWith(1);
@@ -91,8 +94,9 @@ describe("boot system-tenant assertion (bug.0022)", () => {
       force: true,
       timeoutMs: 5000,
     });
+    const rejection = expect(pending).rejects.toThrow("exceeded");
     await vi.advanceTimersByTimeAsync(5000);
-    await pending;
+    await rejection;
 
     expect(exit).toHaveBeenCalledExactlyOnceWith(1);
     expect(mocks.error).toHaveBeenCalledWith(
@@ -119,4 +123,27 @@ describe("boot system-tenant assertion (bug.0022)", () => {
     expect(mocks.verifySystemTenant).not.toHaveBeenCalled();
     expect(exit).not.toHaveBeenCalled();
   });
+  it("exits once and retains the original rejection if diagnostic emission fails", async () => {
+    const original = new Error("private-tenant-detail");
+    mocks.verifySystemTenant.mockRejectedValue(original);
+    mocks.error.mockImplementationOnce(() => { throw new Error("logger failed"); });
+    const exit = vi.fn();
+    const pending = startSystemTenantAssertionOnBoot(service, { exit, force: true });
+    await expect(pending).rejects.toBe(original);
+    expect(startSystemTenantAssertionOnBoot(service, { exit, force: true })).toBe(pending);
+    await expect(pending).rejects.toBe(original);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it("exits once and retains the rejection if diagnostic construction fails", async () => {
+    const original = new Error("private-tenant-detail");
+    mocks.verifySystemTenant.mockRejectedValue(original);
+    mocks.loggerConstruction.mockImplementationOnce(() => { throw new Error("logger failed"); });
+    const exit = vi.fn();
+    const pending = startSystemTenantAssertionOnBoot(service, { exit, force: true });
+    await expect(pending).rejects.toBe(original);
+    expect(startSystemTenantAssertionOnBoot(service, { exit, force: true })).toBe(pending);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
 });

@@ -85,7 +85,7 @@ import {
 	Connection as TemporalConnection,
 	type WorkflowClient,
 } from "@temporalio/client";
-import Redis from "ioredis";
+import { createStreamRedisClient } from "@/bootstrap/stream-redis-client";
 import type { Logger } from "pino";
 import {
 	ALCHEMY_ADAPTER_VERSION,
@@ -145,7 +145,7 @@ import {
 	startGovernanceSyncOnBoot,
 	startMetricsSyncOnBoot,
 } from "@/bootstrap/startup-reconcile";
-import { startSystemTenantAssertionOnBoot } from "@/bootstrap/startup-assertions";
+import { localReadinessPreflight } from "@/bootstrap/local-readiness-preflight";
 import { createBoundToolSource } from "@/bootstrap/ai/tool-source.factory";
 import {
 	createPolyTradeExecutorFactory,
@@ -555,8 +555,6 @@ function stopAllJobHandles(): void {
 export function getContainer(): Container {
 	if (!_container) {
 		_container = createContainer();
-		// bug.0022: provisioning is asserted once at boot (fail the pod), not on /readyz.
-		void startSystemTenantAssertionOnBoot(_container.serviceAccountService);
 		startGovernanceSyncOnBoot(_container.log);
 		if (_container.goalMetrics) startMetricsSyncOnBoot(_container.log);
 	}
@@ -737,7 +735,7 @@ export async function finalizeEpochInProcess(
 }
 
 function createContainer(): Container {
-	const env = serverEnv();
+	const env = localReadinessPreflight();
 	const algorithmImplementationRevision =
 		env.APP_BUILD_SHA ?? env.COGNI_REPO_SHA;
 	const nodeId = getNodeId();
@@ -2735,10 +2733,7 @@ function createContainer(): Container {
 
 	// Redis client for run event streaming (ephemeral stream plane)
 	// Per REDIS_IS_STREAM_PLANE: only transient data, no durable state
-	const redisClient = new Redis(env.REDIS_URL, {
-		lazyConnect: true,
-		maxRetriesPerRequest: 3,
-	});
+	const redisClient = createStreamRedisClient(env.REDIS_URL);
 	const runStream = new RedisRunStreamAdapter(redisClient);
 	const nodeStream = new RedisNodeStreamAdapter(redisClient);
 
