@@ -30,7 +30,6 @@ import {
   probeKnowledgePlane,
   probeLiteLlmGateway,
   probeRedisStream,
-  runDeepChecks as pkgRunDeepChecks,
   type SubstrateDependency as PkgSubstrateDependency,
   SUBSTRATE_ENV_KEY_PATTERN,
 } from "@cogni/substrate-health";
@@ -77,24 +76,10 @@ export type DeepDependency =
   | "litellm-gateway"
   | "doltgres";
 
-/**
- * Deep path: run every declared dependency check concurrently and report every
- * failure, with per-dependency observability. Thin wrapper that injects this
- * node's logger, connectivity error and deep budget into the package runner; the
- * package throws the shared `DeepProbeFailure` and emits `substrate.deep.complete`.
- */
-export async function runDeepChecks(
-  ctx: RequestContext,
-  checks: ReadonlyArray<readonly [DeepDependency, () => Promise<unknown>]>
-): Promise<DeepChecks> {
-  return pkgRunDeepChecks(checks, {
-    log: (fields, message) => ctx.log.info(fields, message),
-    timeoutError: (dependency, budgetMs) =>
-      new InfraConnectivityError(
-        `${dependency} check exceeded ${budgetMs}ms budget`
-      ),
-    budgetMs: DEEP_CHECK_BUDGET_MS,
-  });
+export function deepRuntime(ctx: RequestContext) {
+  return { log: (fields: Record<string, unknown>, message: string) => ctx.log.info(fields, message),
+    timeoutError: (dependency: string, budgetMs: number) => new InfraConnectivityError(`${dependency} check exceeded ${budgetMs}ms budget`),
+    budgetMs: DEEP_CHECK_BUDGET_MS };
 }
 
 /**
@@ -102,7 +87,7 @@ export async function runDeepChecks(
  * keeps its own non-fatal EVM check inline in `route.ts`.
  */
 export async function checkEvmRpc(
-  ctx: RequestContext,
+  _ctx: RequestContext,
   container: Container,
   env: Env
 ): Promise<void> {
@@ -113,27 +98,8 @@ export async function checkEvmRpc(
   );
   if (!evmRpcResult.ok) {
     const message = `EVM RPC connectivity check failed: ${evmRpcResult.errorMessage ?? "unknown"}`;
-    ctx.log.error(
-      {
-        event: "substrate.evm_rpc.unreachable",
-        severity: "critical",
-        reason: "INFRA_UNREACHABLE",
-        dependency: "evm-rpc",
-        source: evmRpcResult.source,
-        message,
-      },
-      "deep readiness: EVM RPC unreachable"
-    );
     throw new InfraConnectivityError(message);
   }
-  ctx.log.info(
-    {
-      event: "substrate.evm_rpc.reachable",
-      dependency: "evm-rpc",
-      source: evmRpcResult.source,
-    },
-    "deep readiness: EVM RPC reachable"
-  );
 }
 
 /**

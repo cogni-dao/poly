@@ -334,12 +334,6 @@ export function createLokiPushStream(
               raw.length > MAX_LINE_BYTES ? raw.slice(0, MAX_LINE_BYTES) : raw;
             enqueue(entry);
           }
-          if (
-            buffer.length >= MAX_BATCH_ENTRIES ||
-            bufferedBytes >= MAX_BATCH_BYTES
-          ) {
-            flush();
-          }
         } catch {
           // FAIL_OPEN: a sink defect must never surface into app code paths.
         }

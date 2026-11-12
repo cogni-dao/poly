@@ -48,9 +48,10 @@ System setup installers were moved to `scripts/bootstrap/` and are out of scope 
 
 - **Exports:**
   - `verifySystemTenant(serviceAccountService)` - Startup healthcheck: fails fast if cogni_system billing account missing (per SYSTEM_TENANT_STARTUP_CHECK)
-  - `startSystemTenantAssertionOnBoot(serviceAccountService)` - Once-per-process boot assertion (bug.0022): a missing/unreachable cogni_system tenant logs critical and exits 1 so the pod crash-loops; `/readyz` default path is fail-open on this check. Inert in tests
+  - `startSystemTenantAssertionOnBoot(serviceAccountService)` - Native startup awaits the retained tenant qualification; failures exit 1. Inert in tests
   - `runGovernanceSchedulesSyncJob()` - Job: advisory lock + governance schedule sync via container
   - `startGovernanceSyncOnBoot(log)` - Direct, bounded, observable schedule reconcile at process startup
+  - `createStreamRedisClient(url)` - Lazy stream Redis client with a native error listener
   - `getContainer()` - Singleton DI container with logger and config
   - `resetContainer()` - Reset singleton (tests only)
   - `Container` interface - Ports + logger + config (includes scheduleRunReader using the existing app-role Sql, accountsForUser(userId), serviceAccountService, metricsQuery, metricsCapability, repoCapability, toolSource, threadPersistenceForUser(userId), modelCatalog, providerResolver; no usageService)

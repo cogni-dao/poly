@@ -4,7 +4,7 @@
 /**
  * Module: `@bootstrap/startup-assertions`
  * Purpose: Assert node provisioning invariants once at process boot (bug.0022).
- * Scope: Verifies the cogni_system tenant exists on first container use; a pod that fails it exits non-zero. Does not monitor ongoing health.
+ * Scope: Verifies the cogni_system tenant exists on native startup; a pod that fails it exits non-zero. Does not monitor ongoing health.
  * Invariants:
  *   - SYSTEM_TENANT_STARTUP_CHECK: an unprovisioned pod crash-loops instead of serving; `/readyz` no longer hard-gates on this DB check.
  *   - Bounded: a hung connect fails the pod after BOOT_SYSTEM_TENANT_TIMEOUT_MS rather than hanging boot.
@@ -22,7 +22,7 @@ import { verifySystemTenant } from "./healthchecks";
 /** Upper bound on the boot-time tenant query so a wedged connect cannot hang boot. */
 export const BOOT_SYSTEM_TENANT_TIMEOUT_MS = 10_000;
 
-let started = false;
+let started: Promise<void> | undefined;
 
 /** Reject if the system tenant is absent, the DB errors, or the budget is exceeded. */
 export async function assertSystemTenantAtBoot(
@@ -62,26 +62,28 @@ export function startSystemTenantAssertionOnBoot(
 ): Promise<void> {
   // biome-ignore lint/style/noProcessEnv: startup gate before container config
   const isTest = process.env.APP_ENV === "test" || process.env.VITEST === "true";
-  if ((isTest && !options.force) || started) return Promise.resolve();
-  started = true;
+  if (started) return started;
+  if (isTest && !options.force) return Promise.resolve();
   const exit = options.exit ?? ((code: number) => process.exit(code));
-  return assertSystemTenantAtBoot(
+  started = assertSystemTenantAtBoot(
     serviceAccountService,
     options.timeoutMs
   ).catch((error: unknown) => {
-    makeLogger({ component: "startup-assertions" }).error(
-      {
-        event: "startup.system_tenant.failed",
-        severity: "critical",
-        err: error,
-      },
-      "boot assertion failed: cogni_system tenant not provisioned or unreachable — exiting so the pod crash-loops"
-    );
+    try {
+      makeLogger({ component: "startup-assertions" }).error(
+        { event: "startup.system_tenant.failed", severity: "critical", errorCode: "SYSTEM_TENANT_QUALIFICATION_FAILED" },
+        "system tenant qualification failed"
+      );
+    } catch {
+      // Diagnostics cannot replace the qualification rejection or prevent exit.
+    }
     exit(1);
+    throw error;
   });
+  return started;
 }
 
 /** Test-only: allow the once-per-process guard to re-arm. */
 export function resetStartupAssertionsForTest(): void {
-  started = false;
+  started = undefined;
 }

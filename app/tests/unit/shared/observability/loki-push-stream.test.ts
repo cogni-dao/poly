@@ -103,10 +103,12 @@ describe("createLokiPushStream", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
-  it("flushes immediately once the batch threshold is reached", () => {
+  it("queues at the batch threshold until an explicit flush", () => {
     const fetchFn = makeFetchMock();
     const stream = createLokiPushStream({ env: BASE_ENV, fetchFn });
     for (let i = 0; i < 500; i++) stream?.write(`{"i":${i}}\n`);
+    expect(fetchFn).not.toHaveBeenCalled();
+    stream?.flushNow();
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
@@ -235,6 +237,7 @@ describe("createLokiPushStream", () => {
     });
     const stream = createLokiPushStream({ env: BASE_ENV, fetchFn });
     for (let i = 0; i < 500; i++) stream?.write(`{"active":${i}}\n`);
+    stream?.flushNow();
     for (let i = 0; i < 500; i++) stream?.write(`{"queued":${i}}\n`);
     stream?.flushNow();
     await vi.advanceTimersByTimeAsync(10_000);
@@ -376,6 +379,7 @@ describe("createLokiPushStream", () => {
     });
     const stream = createLokiPushStream({ env: BASE_ENV, fetchFn });
     for (let i = 0; i < 500; i++) stream?.write(`{"active":${i}}\n`);
+    stream?.flushNow();
     const activeBody = bodyAt(fetchFn, 0);
     for (let i = 0; i < 2_500; i++) stream?.write(`{"queued":${i}}\n`);
     expect(bodyAt(fetchFn, 0)).toEqual(activeBody);
