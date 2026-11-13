@@ -19,6 +19,7 @@ import type {
   WorkItemCommandPort,
   WorkItemId,
   WorkItemSummary,
+  WorkItemWriterHealth,
   WorkQuery,
   WorkSummaryReadOptions,
 } from "@cogni/work-items";
@@ -72,6 +73,8 @@ export interface WorkItemsDoltgresPort {
   delete(id: WorkItemId, principalId: string): Promise<boolean>;
   /** Versions of one item, newest first, with their change reasons (task.0052). */
   history?(id: WorkItemId): Promise<HistoryEntry[]>;
+  /** In-memory writer state for deep readiness; makes no database call (bug.0042). */
+  writerHealth?(): WorkItemWriterHealth;
   claim(input: {
     id: WorkItemId;
     runId: string;

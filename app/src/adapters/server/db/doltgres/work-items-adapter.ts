@@ -93,6 +93,7 @@ export class DoltgresPolyWorkItemAdapter implements WorkItemsDoltgresPort {
     return this.content.listBoardColumns(query, statuses, perColumn, options);
   }
   history(id: WorkItemId) { return this.content.history(id); }
+  writerHealth() { return this.content.writerHealth(); }
   async create(...args: Parameters<WorkItemsDoltgresPort["create"]>) {
     const item = await this.content.create(...args);
     return project(item, await this.legacy.get(item.id));
