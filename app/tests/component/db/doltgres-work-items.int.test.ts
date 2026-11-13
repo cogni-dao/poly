@@ -129,8 +129,10 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
 			// Production shape: ledger records 0004 but the columns are absent.
 			await db.unsafe('ALTER TABLE "knowledge" DROP COLUMN "metric_spec"');
 			await db.unsafe('ALTER TABLE "knowledge" DROP COLUMN "kpi_bindings"');
+			// The migrator applies by `when`, so every ledger row from the repair on goes
+			// (later migrations, such as 0006 moves, are no-ops where their column exists).
 			await db.unsafe(
-				`DELETE FROM drizzle.__drizzle_migrations WHERE created_at = ${repair.when}`,
+				`DELETE FROM drizzle.__drizzle_migrations WHERE created_at >= ${repair.when}`,
 			);
 			await db.unsafe(
 				"SELECT dolt_commit('-Am', 'test: stale knowledge table behind recorded ledger')",

@@ -162,9 +162,22 @@ describe("goal progress parity", () => {
 		if (!tool || !bindings.core__goal_progress) throw new Error("tool missing");
 		const viaRoute = await read();
 		const viaTool = tool.contract.outputSchema.parse(
+			await bindings.core__goal_progress.execute({ history: "full" }),
+		);
+		expect(viaTool).toEqual({ ...viaRoute, historyMode: "full" });
+		const bounded = tool.contract.outputSchema.parse(
 			await bindings.core__goal_progress.execute({}),
 		);
-		expect(viaTool).toEqual(viaRoute);
+		expect(bounded.historyMode).toBe("none");
+		expect(bounded.goals[0]?.kpis.map((kpi) => kpi.assessment)).toEqual(
+			viaRoute.goals[0]?.kpis.map((kpi) => kpi.assessment),
+		);
+		for (const goal of bounded.goals) {
+			for (const kpi of goal.kpis) {
+				expect(kpi.trend).toBeNull();
+				expect(kpi.recent).toBeNull();
+			}
+		}
 		expect(GoalsProgressSchema.parse(viaRoute)).toEqual(viaRoute);
 		const [ratio, validated] = viaRoute.goals[0]?.kpis ?? [];
 		expect(ratio?.assessment).toMatchObject({
@@ -424,12 +437,10 @@ describe("work.convergence@1 over Dolt main history", () => {
 		});
 		const page = await service.list(1);
 		expect(page.items.map((v) => v.definition.id)).toEqual(["b-good"]);
-		// The package's built-in definitions follow the hub rows on later pages.
-		expect(page.nextCursor).toBe("b-good");
+		// The package serves no definition: nothing follows the hub rows.
+		expect(page.nextCursor).toBeNull();
 		const next = await service.list(1, "b-good");
-		expect(next.items.map((v) => v.definition.id)).toEqual([
-			"brief-conformance-entries",
-		]);
+		expect(next.items).toEqual([]);
 		expect(events).toContainEqual({
 			event: "metric.definition_invalid",
 			metricId: "a-bad",

@@ -275,7 +275,13 @@ describe("Knowledge metric evidence mount", () => {
       </QueryClientProvider>
     );
     await screen.findByText(/Linked immutable evidence/);
-    expect(fetchMock.mock.calls.map(([u]) => u)).toEqual([
+    // The evidence view also reads the shared goals progress (its chart subject); that read is
+    // the Metrics page's cache entry, so this assertion covers the metric's own reads.
+    expect(
+      fetchMock.mock.calls
+        .map(([u]) => u)
+        .filter((u) => u !== "/api/v1/metrics/goals")
+    ).toEqual([
       "/api/v1/metrics/work",
       `/api/v1/metrics/work/observations/${id}`,
     ]);
