@@ -6,8 +6,7 @@
  * Purpose: Next.js 16 proxy (formerly middleware) for route protection.
  * Scope: Root-level proxy. Enforces session auth on /api/v1/* routes and page-level routing (redirect unauthenticated users away from app routes, redirect authenticated users from landing to /chat). Does not handle public infrastructure endpoints (e.g., /api/metrics, /api/health).
  * Invariants: /api/v1/public/* accessible without auth; /api/v1/* with cogni_ag_sk_v1_ bearer
- *   passes through (route handler validates token); a revocable-key bearer passes only when its shape and checksum hold (else 401 here,
- *   before any database read); other /api/v1/* require session.
+ *   passes through (route handler validates token); other /api/v1/* require session.
  *   Single authority for auth routing — no client-side redirect logic.
  * Side-effects: none
  * Links: docs/spec/security-auth.md
@@ -17,10 +16,6 @@
 /* eslint-disable boundaries/no-unknown-files */
 
 import { randomUUID } from "node:crypto";
-import {
-	isWellFormedRevocableKey,
-	REVOCABLE_KEY_PREFIX,
-} from "@cogni/agent-grants/credentials";
 import { type NextRequest, NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
 
@@ -50,11 +45,7 @@ function isAppRoute(pathname: string): boolean {
 	);
 }
 
-// The signed-key prefix is wire format; the revocable-key prefix has ONE definition, in the package.
-const AGENT_BEARER_PREFIXES = [
-	"Bearer cogni_ag_sk_v1_",
-	`Bearer ${REVOCABLE_KEY_PREFIX}`,
-];
+const AGENT_BEARER_PREFIX = "Bearer cogni_ag_sk_v1_";
 
 function isPublicApiRoute(pathname: string): boolean {
 	// Agent register is the one bootstrap seam left open: register → key →
@@ -75,43 +66,15 @@ function isPublicApiRoute(pathname: string): boolean {
 	);
 }
 
-// ADMIN_ACTS_IN_ADMIN: the Admin area is a browser-session area. A key never reaches it.
-// Same code as `HUMAN_SESSION_REQUIRED` in @cogni/node-contracts (kept literal: the proxy imports no contracts).
-const HUMAN_SESSION_REQUIRED = "human_session_required";
-function isAdminArea(pathname: string): boolean {
-	return (
-		pathname === "/admin" ||
-		pathname.startsWith("/admin/") ||
-		pathname === "/api/v1/admin" ||
-		pathname.startsWith("/api/v1/admin/")
-	);
-}
-
 function isAgentApiRoute(pathname: string): boolean {
 	// Any /api/v1/* route may accept machine bearer tokens — route handlers
 	// do the actual token validation and return 401 for invalid/missing creds.
 	return pathname.startsWith("/api/v1/");
 }
 
-/**
- * A revocable-key bearer whose shape or checksum fails (CHECKSUM_BEFORE_DB). Refused at the perimeter, so it never reaches a route handler,
- * the credential store or its pool. The format has ONE definition, in the package.
- */
-function hasMalformedRevocableBearer(req: NextRequest): boolean {
-	const authorization = req.headers.get("authorization");
-	const bearerPrefix = `Bearer ${REVOCABLE_KEY_PREFIX}`;
-	return (
-		authorization !== null &&
-		authorization.startsWith(bearerPrefix) &&
-		!isWellFormedRevocableKey(authorization.slice("Bearer ".length))
-	);
-}
-
 function hasAgentBearer(req: NextRequest): boolean {
-	const authorization = req.headers.get("authorization");
 	return (
-		authorization !== null &&
-		AGENT_BEARER_PREFIXES.some((prefix) => authorization.startsWith(prefix))
+		req.headers.get("authorization")?.startsWith(AGENT_BEARER_PREFIX) ?? false
 	);
 }
 
@@ -135,7 +98,7 @@ function perimeterLog(): ReturnType<typeof makeLogger> {
 }
 
 /** Why an unauthenticated /api/v1 request was rejected at the perimeter. */
-type PerimeterDenyReason = "no_session" | "no_auth_secret" | "bad_key_format";
+type PerimeterDenyReason = "no_session" | "no_auth_secret";
 
 function logPerimeterDenial(
 	req: NextRequest,
@@ -167,22 +130,9 @@ export async function proxy(req: NextRequest): Promise<NextResponse> {
 	const isPublicApi = isPublicApiRoute(pathname);
 	const isAgentBearerRequest = isAgentApiRoute(pathname) && hasAgentBearer(req);
 
-	// Any Authorization header on /admin or /api/v1/admin is refused before the app runs.
-	if (isAdminArea(pathname) && req.headers.has("authorization")) {
-		return NextResponse.json(
-			{ error: HUMAN_SESSION_REQUIRED, code: HUMAN_SESSION_REQUIRED },
-			{ status: 403, headers: { "cache-control": "no-store" } },
-		);
-	}
-
 	// Allow public namespace without authentication
 	if (isPublicApi) {
 		return NextResponse.next();
-	}
-
-	if (isAgentApiRoute(pathname) && hasMalformedRevocableBearer(req)) {
-		logPerimeterDenial(req, "bad_key_format");
-		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 	}
 
 	// Resolve token once — reused for both page and API checks.

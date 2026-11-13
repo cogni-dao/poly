@@ -6,8 +6,6 @@
  * Purpose: Route wrapper to eliminate boilerplate for request logging envelope and metrics.
  * Scope: Bootstrap-layer utility. Handles ctx creation, timing, envelope logging, and Prometheus metrics. Does not implement route-specific business logic.
  * Invariants: Always logs request start/end exactly once; always measures duration; catches unhandled errors; always records metrics (even on 5xx).
- *   The session is resolved inside the request lifecycle, so a credential-store outage (503), a rate-limited key (429) and a superseded signed key (401)
- *   are logged, measured and traced like any other response.
  * Side-effects: IO (creates request context, emits structured log entries, records Prometheus metrics). Container loaded via dynamic import to avoid Turbopack per-route module duplication.
  * Notes: Use this wrapper for all instrumented routes. Domain events go in facades/features, not here.
  *        logRequestEnd runs exactly once in the finally block for all paths (success, 401, 5xx).
@@ -18,21 +16,12 @@
  * @public
  */
 
-import {
-  CredentialRateLimitedError,
-  CredentialStoreUnavailableError,
-  credentialErrorHttp,
-  isRevocableKey,
-  storeFailureFields,
-  V1SupersededError,
-} from "@cogni/agent-grants/credentials";
 import type { SessionUser } from "@cogni/node-shared";
 import { type NextRequest, NextResponse } from "next/server";
 import type { Container } from "@/bootstrap/container";
 import { withRootSpan } from "@/bootstrap/otel";
 import {
   createRequestContext,
-  EVENT_NAMES,
   httpRequestDurationMs,
   httpRequestsTotal,
   logRequestEnd,
@@ -42,18 +31,6 @@ import {
   type RequestContext,
   statusBucket,
 } from "@/shared/observability";
-
-/** One log line for a credential outcome that answers before the handler. Fields: routeId, plus userId (v1_superseded) or errorClass and sqlState (outage). Never a key, a hash or a message. */
-function logCredentialRefusal(log: RequestContext["log"], error: unknown, routeId: string): void {
-  if (error instanceof V1SupersededError) {
-    // A signed key used after its user confirmed a revocable key: the best "leaked signed key is being replayed" signal. userId only.
-    log.warn({ event: EVENT_NAMES.AGENT_CREDENTIAL_V1_SUPERSEDED_DENIED, routeId, userId: error.userId }, EVENT_NAMES.AGENT_CREDENTIAL_V1_SUPERSEDED_DENIED);
-  } else if (error instanceof CredentialRateLimitedError) {
-    log.warn({ event: EVENT_NAMES.AGENT_CREDENTIAL_RATE_LIMITED, routeId }, EVENT_NAMES.AGENT_CREDENTIAL_RATE_LIMITED);
-  } else if (error instanceof CredentialStoreUnavailableError) {
-    log.warn({ event: EVENT_NAMES.AGENT_CREDENTIAL_STORE_UNAVAILABLE, routeId, ...storeFailureFields(error) }, EVENT_NAMES.AGENT_CREDENTIAL_STORE_UNAVAILABLE);
-  }
-}
 
 type AuthRequiredHandler<TContext = unknown> = (
   ctx: RequestContext,
@@ -71,12 +48,6 @@ type AuthOptionalHandler<TContext = unknown> = (
 
 type AuthRequiredOptions = {
   routeId: string;
-  /**
-   * SAME_DOOR: this route twins a guarded tool. Before the handler runs, the caller passes the same `authorize()` check as
-   * the tool guard: a bearer caller needs a live role row for the tool's scope (403 `policy_denied`, 503 `authz_unavailable`);
-   * a signed-in human passes the subject rules. Declared once in `SAME_DOOR_ROUTES` (`@cogni/agent-grants`).
-   */
-  sameDoor?: string;
   auth: {
     mode: "required";
     getSessionUser: () => Promise<SessionUser | null>;
@@ -188,28 +159,18 @@ export function wrapRouteHandlerWithLogging<TContext = unknown>(
       );
     }
 
+    // Fetch session based on auth mode
+    const sessionUser =
+      options.auth && options.auth.mode !== "none"
+        ? await options.auth.getSessionUser()
+        : null;
+
     // Wrap entire request in OTel root span for distributed tracing
     // Per AI_SETUP_SPEC.md: root span bound to context via context.with()
     return withRootSpan(
       `${request.method} ${options.routeId}`,
       { route_id: options.routeId },
       async ({ traceId, span }) => {
-        const start = performance.now();
-
-        // Resolve the session INSIDE the span, so a credential outcome (401 v1_superseded, 429, 503) is logged, measured and traced like every
-        // other response. The error is held here and answered in the try below, where `finally` logs the request end and records the metric
-        // exactly once. A revocable key whose store cannot answer is 503, never a false 401 (STORE_OUTAGE_IS_NOT_401). The context is built once,
-        // after this, with the session, exactly as before (no logger `.child` is assumed beyond what `createRequestContext` already uses).
-        let sessionUser: SessionUser | null = null;
-        let sessionError: unknown;
-        if (options.auth && options.auth.mode !== "none") {
-          try {
-            sessionUser = await options.auth.getSessionUser();
-          } catch (error) {
-            sessionError = error;
-          }
-        }
-
         const ctx = createRequestContext(
           { baseLog: container.log, clock: container.clock },
           request,
@@ -224,55 +185,21 @@ export function wrapRouteHandlerWithLogging<TContext = unknown>(
         span.setAttribute("request_id", ctx.reqId);
 
         logRequestStart(ctx.log);
+        const start = performance.now();
 
         // Track response for metrics/logging (captured in try/catch, used in finally)
         let responseStatus = 500;
         let response: NextResponse;
 
         try {
-          if (sessionError !== undefined) {
-            const refusal = credentialErrorHttp(sessionError);
-            if (!refusal) throw sessionError;
-            logCredentialRefusal(ctx.log, sessionError, options.routeId);
-            responseStatus = refusal.status;
-            response = NextResponse.json(refusal.body, { status: refusal.status, headers: { ...refusal.headers } });
-            return response;
-          }
-
           // Check session requirement before calling handler
           if (options.auth?.mode === "required" && !sessionUser) {
             responseStatus = 401;
-            // A refused revocable key (unknown, revoked, expired, wrong state) is a credential denial; logged with routeId only.
-            if (isRevocableKey(request.headers.get("authorization")?.slice("Bearer ".length) ?? "")) {
-              ctx.log.warn(
-                { event: EVENT_NAMES.AGENT_CREDENTIAL_INVALID_DENIED, routeId: options.routeId },
-                EVENT_NAMES.AGENT_CREDENTIAL_INVALID_DENIED
-              );
-            }
             response = NextResponse.json(
               { error: "Session required" },
               { status: responseStatus }
             );
             return response;
-          }
-
-          const sameDoor = "sameDoor" in options ? options.sameDoor : undefined;
-          if (sameDoor && sessionUser) {
-            const decision = await container.agentAuthority.authorizeRoute({
-              toolId: sameDoor,
-              routeId: options.routeId,
-              userId: sessionUser.id,
-              // Fail closed: only an identity that says `session` takes the human rules; an absent or unknown `via` is strict.
-              via: sessionUser.via === "session" ? "session" : "bearer",
-            });
-            if (decision.decision === "deny") {
-              const unavailable = decision.code === "authz_unavailable";
-              responseStatus = unavailable ? 503 : 403;
-              return NextResponse.json(
-                { error: decision.code, code: decision.code },
-                { status: responseStatus, headers: { "cache-control": "no-store" } }
-              );
-            }
           }
 
           // Safe cast: for mode "required", the guard above returns 401 if null.

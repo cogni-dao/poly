@@ -22,7 +22,6 @@ export {
   LANGGRAPH_PROVIDER_ID,
   type LangGraphCatalogKeys,
   type LangGraphGraphId,
-  NODE_AI_PRINCIPAL,
 } from "./catalog";
 
 // Re-export graph constants and factories

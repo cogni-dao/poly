@@ -391,8 +391,6 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
         );
       }
 
-      // The run's subject is its execution-grant owner (runGraphWithScope: subject = ctx.actorUserId unless it is
-      // the system principal). An agent that owns the schedule is an agent subject: it fails `admin` tools.
       actorUserId = grant.userId;
       billingAccountId = grant.billingAccountId;
       virtualKeyId = billingAccount.defaultVirtualKeyId;

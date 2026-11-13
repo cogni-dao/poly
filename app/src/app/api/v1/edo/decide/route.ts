@@ -22,7 +22,6 @@ export const runtime = "nodejs";
 export const POST = wrapRouteHandlerWithLogging(
   {
     routeId: "edo.decide",
-    sameDoor: "core__edo_decide",
     auth: { mode: "required", getSessionUser },
   },
   async (_ctx, request, sessionUser) => handleDecide(request, sessionUser)

@@ -67,13 +67,6 @@ export const vcsCreateBranchContract: ToolContract<
     "Use branch naming convention: agent/<work-item-id>/<description>. " +
     "Always branch from 'staging' for feature work.",
   effect: "state_change",
-  requires: {
-    scope: "vcs:create_branch",
-    kind: "node",
-    subject: "admin",
-    label: "Create code branches",
-    description: "Make a new branch of code.",
-  },
   inputSchema: VcsCreateBranchInputSchema,
   outputSchema: VcsCreateBranchOutputSchema,
   redact: (output: VcsCreateBranchOutput): VcsCreateBranchRedacted => output,

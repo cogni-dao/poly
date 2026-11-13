@@ -22,7 +22,6 @@ export const runtime = "nodejs";
 export const POST = wrapRouteHandlerWithLogging(
   {
     routeId: "edo.record_outcome",
-    sameDoor: "core__edo_record_outcome",
     auth: { mode: "required", getSessionUser },
   },
   async (_ctx, request, sessionUser) =>

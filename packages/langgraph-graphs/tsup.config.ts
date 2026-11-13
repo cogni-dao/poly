@@ -30,7 +30,6 @@ export const tsupConfig = defineConfig({
     "@langchain/langgraph",
     "@cogni/ai-core",
     "@cogni/ai-tools",
-    "@cogni/agent-grants",
     "zod",
   ],
 });

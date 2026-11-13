@@ -7,7 +7,7 @@
  * Scope: Operator-side wiring only. Does not contain business logic, validation, or storage I/O — those live in the port/adapter.
  * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, DOMAIN_LIST_REQUIRES_PRINCIPAL
  *   (any authenticated principal — session human or bearer agent — may list
- *   domains, mirroring KNOWLEDGE_READ_NEEDS_GRANT on /knowledge),
+ *   domains, mirroring KNOWLEDGE_READ_REQUIRES_PRINCIPAL on /knowledge),
  *   DOMAIN_REGISTER_BEARER_OR_SESSION (federation: external bearer agents may
  *   register a domain on-demand so that downstream writes — knowledge
  *   contributions, EDO hypothesize/decide/record-outcome — can proceed against
@@ -52,8 +52,9 @@ export async function handleList(
 ): Promise<NextResponse> {
   if (!sessionUser)
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-  // The route's knowledge.read door already ran: a human, or a bearer with the knowledge:read role.
-  // (KNOWLEDGE_READ_NEEDS_GRANT, as on /knowledge.)
+  // Any authenticated principal may list domains (DOMAIN_LIST_REQUIRES_PRINCIPAL).
+  // Bearer agents need the registry to recall + target writes, mirroring
+  // KNOWLEDGE_READ_REQUIRES_PRINCIPAL on /knowledge.
   const p = port();
   if (!p)
     return NextResponse.json(

@@ -9,8 +9,6 @@
  *   - TOOLS_VIA_TOOLRUNNER: All tool execution flows through createToolRunner
  *   - TOOL_SAME_PATH_ALL_EXECUTORS: Same policy/redaction path as InProc
  *   - DENY_BY_DEFAULT: Uses createToolAllowlistPolicy
- *   - GUARD_COVERS_EVERY_RUNNER_SITE: runtimes pass through agent-grants guardTools. The dev server has
- *     no run scope (no principal, no subject, no store), so every scoped or non-read_only tool is denied.
  * Side-effects: none (events are internal to dev server)
  * Links: TOOL_USE_SPEC.md, LANGGRAPH_SERVER.md
  * @internal
@@ -24,7 +22,6 @@ import {
   createToolRunner,
   type ToolExecFn,
 } from "@cogni/ai-core";
-import { type GuardScope, guardTools, type ToolRequires } from "@cogni/agent-grants";
 import { type CatalogBoundTool, toBoundToolRuntime } from "@cogni/ai-tools";
 
 /**
@@ -44,26 +41,16 @@ const devEmit = (_event: AiEvent): void => {
  * Per TOOL_SAME_PATH_ALL_EXECUTORS: Same enforcement as InProc provider.
  *
  * @param boundTools - Map of tool name to bound tool from catalog
- * @param scope - Run scope for the guard. Absent in the dev server, so scoped tools are denied.
  * @returns ToolExecFn that delegates to toolRunner.exec()
  */
 export function createDevToolExecFn(
-  boundTools: Readonly<Record<string, CatalogBoundTool>>,
-  scope: GuardScope = {}
+  boundTools: Readonly<Record<string, CatalogBoundTool>>
 ): ToolExecFn {
-  // Convert CatalogBoundTool to BoundToolRuntime, then guard every runtime.
-  const unguarded: Record<string, BoundToolRuntime> = {};
-  const requiresById: Record<string, ToolRequires> = {};
+  // Convert CatalogBoundTool to BoundToolRuntime
+  const runtimeTools: Record<string, BoundToolRuntime> = {};
   for (const [id, tool] of Object.entries(boundTools)) {
-    unguarded[id] = toBoundToolRuntime(tool);
-    if (tool.contract.requires) requiresById[id] = tool.contract.requires;
+    runtimeTools[id] = toBoundToolRuntime(tool);
   }
-  const runtimeTools = guardTools(unguarded, requiresById, scope, {
-    withStore: async () => {
-      throw new Error("dev_runner_has_no_store");
-    },
-    adminCheck: async () => "unavailable",
-  });
 
   // Create tool runner with DENY_ALL_POLICY by default
   // The toLangChainTool wrapper will check configurable.toolIds BEFORE calling exec

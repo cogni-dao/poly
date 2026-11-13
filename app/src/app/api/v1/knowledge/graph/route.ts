@@ -6,11 +6,11 @@
  * Purpose: GET /api/v1/knowledge/graph — full node (entry) + edge (citation) set
  *   for the 3D knowledge graph view. Reads every domain's entries plus each
  *   entry's outgoing citations via container.knowledgeStorePort.
- * Scope: Signed-in human, or a bearer agent holding the knowledge:read role (sameDoor `knowledge.read`), like /knowledge.
+ * Scope: Any authenticated principal (cookie-session human OR bearer agent), like /knowledge.
  *   Edges gathered from per-node outgoing citations — every citation has exactly
  *   one citing node in the set, so this yields the complete edge list. Bearer
  *   agents traverse the citation graph (link-pulling) just like the human 3D view.
- * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, KNOWLEDGE_READ_NEEDS_GRANT,
+ * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, KNOWLEDGE_READ_REQUIRES_PRINCIPAL,
  *   EDGE_ENDPOINTS_EXIST (edges whose cited target isn't in the node set are dropped).
  * Side-effects: IO (HTTP response, Doltgres reads via container port)
  * Links: docs/spec/knowledge-syntropy.md
@@ -52,7 +52,6 @@ const GraphResponseSchema = z.object({
 export const GET = wrapRouteHandlerWithLogging(
   {
     routeId: "knowledge.graph",
-    sameDoor: "knowledge.read",
     auth: { mode: "required", getSessionUser },
   },
   async (ctx, _request, sessionUser) => {

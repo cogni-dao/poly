@@ -110,13 +110,6 @@ export const knowledgeWriteContract: ToolContract<
     "Include a sourceRef (URL, DOI, signal ID) for provenance tracking. " +
     "Every write creates a versioned Doltgres commit automatically.",
   effect: "state_change",
-  requires: {
-    scope: "knowledge:write",
-    kind: "node",
-    subject: "admin",
-    label: "Save notes to this node's knowledge base",
-    description: "Save notes straight into the knowledge base.",
-  },
   inputSchema: KnowledgeWriteInputSchema,
   outputSchema: KnowledgeWriteOutputSchema,
   redact: (output) => output,
