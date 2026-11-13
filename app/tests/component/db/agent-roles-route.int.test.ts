@@ -17,7 +17,7 @@
 import { randomUUID } from "node:crypto";
 import { guardTools } from "@cogni/agent-grants";
 import { CORE_TOOL_BUNDLE } from "@cogni/ai-tools";
-import { PRIORITIZER_PRINCIPAL_USER_ID } from "@cogni/node-shared";
+import { NODE_AI_PRINCIPAL_USER_ID, PRIORITIZER_PRINCIPAL_USER_ID } from "@cogni/node-shared";
 import postgres, { type Sql } from "postgres";
 import pino from "pino";
 import { NextRequest } from "next/server";
@@ -175,18 +175,20 @@ describe("agent roles route (real Postgres, real repo-spec admin)", () => {
     const before = (await (await getView()).json()) as { canManage: boolean; permissions: Row[] };
     expect(before.canManage).toBe(true);
     const mine = before.permissions.filter((r) => r.section === "node");
-    expect([...new Set(mine.map((r) => r.who))].sort()).toEqual(["node-ai", "prioritizer"]);
-    const scorer = mine.filter((r) => r.who === "prioritizer");
-    expect(scorer).toEqual([expect.objectContaining({ scope: "work_item:transition", on: false, until: null, principalUserId: PRIORITIZER_PRINCIPAL_USER_ID })]);
-    expect(scorer[0]?.label).toMatch(/work items/i);
-    expect(scorer[0]?.description.length).toBeGreaterThan(15);
+    // Poly's node AI is `node-ai` (the graphs it runs); its rows are the write scopes of the tools those graphs list.
+    expect([...new Set(mine.map((r) => r.who))].sort()).toEqual(["node-ai"]);
+    const aiBody = { principal: "node-ai", scope: "schedule:manage" };
+    const scheduler = mine.filter((r) => r.scope === "schedule:manage");
+    expect(scheduler).toEqual([expect.objectContaining({ scope: "schedule:manage", on: false, until: null, principalUserId: NODE_AI_PRINCIPAL_USER_ID })]);
+    expect(scheduler[0]?.label.length).toBeGreaterThan(5);
+    expect(scheduler[0]?.description.length).toBeGreaterThan(15);
     expect(JSON.stringify(mine)).not.toMatch(/\bjobs?\b|risk|blurb/i);
-    expect((await call(POST, body)).status).toBe(200);
+    expect((await call(POST, aiBody)).status).toBe(200);
     const after = (await (await getView()).json()) as typeof before;
-    expect(after.permissions.find((r) => r.principalUserId === PRIORITIZER_PRINCIPAL_USER_ID)?.on).toBe(true);
-    expect((await call(DELETE, body)).status).toBe(200);
+    expect(after.permissions.find((r) => r.principalUserId === NODE_AI_PRINCIPAL_USER_ID && r.scope === "schedule:manage")?.on).toBe(true);
+    expect((await call(DELETE, aiBody)).status).toBe(200);
     const removed = (await (await getView()).json()) as typeof before;
-    expect(removed.permissions.find((r) => r.principalUserId === PRIORITIZER_PRINCIPAL_USER_ID)?.on).toBe(false);
+    expect(removed.permissions.find((r) => r.principalUserId === NODE_AI_PRINCIPAL_USER_ID && r.scope === "schedule:manage")?.on).toBe(false);
     expect((await getView()).headers.get("cache-control")).toBe("no-store");
   });
 

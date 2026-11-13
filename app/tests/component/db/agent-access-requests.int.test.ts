@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { CORE_TOOL_BUNDLE } from "@cogni/ai-tools";
+import { POLY_GRANT_DECLARATION_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 import { MAX_PENDING_PER_AGENT, MAX_PENDING_TOTAL } from "@cogni/agent-grants";
 import { NextRequest } from "next/server";
 import pino from "pino";
@@ -110,7 +110,7 @@ describe("access requests: an ask is an off row (real Postgres)", () => {
       sql: service as unknown as AgentAuthoritySql,
       nodeAdmin,
       log: logger,
-      toolBundle: [...CORE_TOOL_BUNDLE],
+      toolBundle: [...POLY_GRANT_DECLARATION_BUNDLE],
     });
     holder.container = { log: logger, config: { unhandledErrorPolicy: "rethrow" }, agentAuthority: authority, nodeAdmin, nodeAdminPort: createNodeAdminPort(authority) };
   });
