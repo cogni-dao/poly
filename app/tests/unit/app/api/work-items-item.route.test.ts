@@ -8,6 +8,8 @@ import {
 	CitesUnsupportedError,
 	EntryResolverUnavailableError,
 	EntryUnresolvedError,
+	MetricBaselineUnavailableError,
+	MovesInvalidError,
 } from "@cogni/work-items";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -175,5 +177,61 @@ describe("PATCH /api/v1/work/items/:id", () => {
 		expect(body.issues).toEqual([
 			{ code: "custom", path: ["cites"], message: "too many cites" },
 		]);
+	});
+
+	// story.0033: `set.moves` errors map through the package table, with the issue at `set.moves`.
+	it("maps an unknown metric in set.moves to 400 cite_unresolved with an issue at set.moves", async () => {
+		mockPatchWorkItem.mockRejectedValue(
+			new EntryUnresolvedError(["no-such-metric"], "moves"),
+		);
+		const response = await PATCH(
+			request({
+				reason: "test change",
+				set: { moves: [{ metricId: "no-such-metric", direction: "up" }] },
+			}),
+			context,
+		);
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({
+			errorCode: "cite_unresolved",
+			ids: ["no-such-metric"],
+			issues: [
+				{
+					path: ["set", "moves"],
+					message: "metric not found or deprecated: no-such-metric",
+				},
+			],
+		});
+	});
+
+	it("maps a bad moves list to 400 moves_invalid at set.moves", async () => {
+		mockPatchWorkItem.mockRejectedValue(new MovesInvalidError(["too many moves"]));
+		const response = await PATCH(
+			request({ reason: "test change", set: { moves: [] } }),
+			context,
+		);
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({
+			errorCode: "moves_invalid",
+			issues: [{ path: ["set", "moves"], message: "too many moves" }],
+		});
+	});
+
+	it("maps a baseline failure to 503 metric_baseline_unavailable", async () => {
+		mockPatchWorkItem.mockRejectedValue(new MetricBaselineUnavailableError("metrics down"));
+		const response = await PATCH(
+			request({
+				reason: "test change",
+				set: { moves: [{ metricId: "m", direction: "up" }] },
+			}),
+			context,
+		);
+
+		expect(response.status).toBe(503);
+		expect(await response.json()).toMatchObject({
+			errorCode: "metric_baseline_unavailable",
+		});
 	});
 });

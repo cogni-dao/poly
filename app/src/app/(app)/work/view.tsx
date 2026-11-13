@@ -89,6 +89,7 @@ import {
 import { columns } from "./_components/columns";
 import { WorkItemDetail } from "./_components/WorkItemDetail";
 import { WorkGoalLink } from "./_components/WorkKanban";
+import { WorkGoalsMount } from "./_components/WorkGoalsMount";
 import {
   closeWorkItemPermalink,
   openWorkItemPermalink,
@@ -112,9 +113,6 @@ function readFilters(searchParams: URLSearchParams): ColumnFiltersState {
   } else if (!statusParam) {
     filters.push({ id: "status", value: [...ACTIVE_STATUSES] });
   }
-  const projectParam = searchParams.get("project");
-  if (projectParam)
-    filters.push({ id: "projectId", value: projectParam.split(",") });
   const numberParam = (key: string) => {
     const raw = searchParams.get(key);
     if (!raw?.trim()) return undefined;
@@ -240,7 +238,6 @@ export function WorkDashboardView({
         workViewHref(selectedItemId, searchParams, {
           type: valuesFor("type"),
           status: valuesFor("status"),
-          project: valuesFor("projectId"),
           sort: sort ? `${sort.desc ? "-" : ""}${sort.id}` : null,
           query: newQuery,
           rankRange,
@@ -375,6 +372,7 @@ export function WorkDashboardView({
   };
 
   return (
+    <WorkGoalsMount>
     <div className="flex flex-col gap-4 p-5 md:p-6">
       <h1 className="font-semibold text-xl tracking-tight md:text-2xl">
         Work Dashboard
@@ -550,5 +548,6 @@ export function WorkDashboardView({
         }}
       />
     </div>
+    </WorkGoalsMount>
   );
 }

@@ -19,6 +19,7 @@
 "use client";
 
 import { useOpenWork } from "@cogni/knowledge-base-ui";
+import { GoalsProvider } from "@cogni/knowledge-base-ui/goals";
 import type { ActivityGroupBy, TimeRange } from "@cogni/node-contracts";
 import type { WorkSummaryPage } from "@cogni/work-items";
 import {
@@ -57,6 +58,7 @@ import type { RunCardData } from "@/components/kit/data-display/RunCard";
 import { cn } from "@/shared/util/cn";
 import { fetchActivity } from "../activity/_api/fetchActivity";
 import { fetchWorkItem } from "../work/_api/fetchWorkItems";
+import { NODE_GOALS_HOST } from "../_components/goals-host";
 import { WorkItemDetail } from "../work/_components/WorkItemDetail";
 import { StatusPill, TypeIcon } from "../work/_components/work-item-icons";
 import { postPolymarketRefresh } from "./_api/fetchPolymarketRefresh";
@@ -558,16 +560,19 @@ export function DashboardView(): ReactElement {
         ) : null}
       </div>
 
-      <WorkItemDetail
-        item={selectedWorkItem.data ?? null}
-        {...(selectedWorkItemId !== null && { itemId: selectedWorkItemId })}
-        isLoading={selectedWorkItem.isLoading}
-        error={selectedWorkItem.error}
-        open={selectedWorkItemId !== null}
-        onOpenChange={(open) => {
-          if (!open) setSelectedWorkItemId(null);
-        }}
-      />
+      {/* The detail's Moves block links goals and metrics with the node's client-navigation Link. */}
+      <GoalsProvider {...NODE_GOALS_HOST}>
+        <WorkItemDetail
+          item={selectedWorkItem.data ?? null}
+          {...(selectedWorkItemId !== null && { itemId: selectedWorkItemId })}
+          isLoading={selectedWorkItem.isLoading}
+          error={selectedWorkItem.error}
+          open={selectedWorkItemId !== null}
+          onOpenChange={(open) => {
+            if (!open) setSelectedWorkItemId(null);
+          }}
+        />
+      </GoalsProvider>
     </div>
   );
 }

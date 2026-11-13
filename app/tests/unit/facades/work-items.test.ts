@@ -16,14 +16,7 @@ import {
   workItemsListOperation,
 } from "@cogni/node-contracts";
 import type { WorkItem } from "@cogni/work-items";
-import {
-  ChangeReasonInvalidError,
-  CitesInvalidError,
-  CitesUnsupportedError,
-  EntryResolverUnavailableError,
-  EntryUnresolvedError,
-  toWorkItemId,
-} from "@cogni/work-items";
+import { toWorkItemId, workItemWriteErrorResponse } from "@cogni/work-items";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the container
@@ -282,8 +275,9 @@ describe("app/_facades/work/items.server", () => {
       );
     });
 
-    // task.0086: the adapter is the one enforcer; a copy of its error classes bundled elsewhere
-    // is matched by name and rebuilt as this facade's typed classes. Nothing is swallowed.
+    // task.0086, task.0097: the adapter is the one enforcer. Its errors pass through the facade
+    // unchanged; `workItemWriteErrorResponse` (a table keyed by error name, so a copy of the
+    // class bundled elsewhere still maps) answers them in the route. Nothing is swallowed.
     describe("reason and cites (task.0086)", () => {
       const foreign = (name: string, message: string, extra: object = {}) =>
         Object.assign(new Error(message), { name }, extra);
@@ -310,48 +304,51 @@ describe("app/_facades/work/items.server", () => {
         );
       });
 
-      it("rebuilds EntryUnresolvedError with its ids", async () => {
+      it("passes an unresolved cite through for the package to map to 400", async () => {
         mockPort.patch.mockRejectedValue(
           foreign("EntryUnresolvedError", "unresolved", { ids: ["a", "b"] })
         );
         const error = await patchWorkItem(input, { id: "agent-1" }).catch((e) => e);
-        expect(error).toBeInstanceOf(EntryUnresolvedError);
-        expect(error.ids).toEqual(["a", "b"]);
-        expect(error.code).toBe("cite_unresolved");
+        expect(workItemWriteErrorResponse(error, "patch")).toMatchObject({
+          status: 400,
+          errorCode: "cite_unresolved",
+          body: { ids: ["a", "b"] },
+        });
       });
 
-      it("rebuilds CitesUnsupportedError", async () => {
-        mockPort.patch.mockRejectedValue(foreign("CitesUnsupportedError", "x"));
-        const error = await patchWorkItem(input, { id: "agent-1" }).catch((e) => e);
-        expect(error).toBeInstanceOf(CitesUnsupportedError);
-        expect(error.code).toBe("cites_unsupported");
-      });
-
-      it("rebuilds EntryResolverUnavailableError with its message", async () => {
+      it("passes an unresolved metric in moves through, mapped at set.moves", async () => {
         mockPort.patch.mockRejectedValue(
-          foreign("EntryResolverUnavailableError", "hub down")
+          foreign("EntryUnresolvedError", "unresolved", {
+            ids: ["m"],
+            field: "moves",
+          })
         );
         const error = await patchWorkItem(input, { id: "agent-1" }).catch((e) => e);
-        expect(error).toBeInstanceOf(EntryResolverUnavailableError);
-        expect(error.message).toBe("hub down");
+        expect(workItemWriteErrorResponse(error, "patch")?.body).toMatchObject({
+          issues: [{ path: ["set", "moves"] }],
+        });
+        expect(workItemWriteErrorResponse(error, "create")?.body).toMatchObject({
+          issues: [{ path: ["moves"] }],
+        });
       });
 
-      it("rebuilds ChangeReasonInvalidError with its message", async () => {
-        mockPort.patch.mockRejectedValue(
-          foreign("ChangeReasonInvalidError", "reason too long")
-        );
-        const error = await patchWorkItem(input, { id: "agent-1" }).catch((e) => e);
-        expect(error).toBeInstanceOf(ChangeReasonInvalidError);
-        expect(error.message).toBe("reason too long");
-      });
-
-      it("rebuilds CitesInvalidError with its issues", async () => {
-        mockPort.patch.mockRejectedValue(
-          foreign("CitesInvalidError", "bad cites", { issues: ["too many"] })
-        );
-        const error = await patchWorkItem(input, { id: "agent-1" }).catch((e) => e);
-        expect(error).toBeInstanceOf(CitesInvalidError);
-        expect(error.issues).toEqual(["too many"]);
+      it("passes the cites and reason errors through with their messages", async () => {
+        for (const [name, extra, status, errorCode] of [
+          ["CitesUnsupportedError", {}, 400, "cites_unsupported"],
+          ["ChangeReasonInvalidError", {}, 400, "reason_invalid"],
+          ["CitesInvalidError", { issues: ["too many"] }, 400, "cites_invalid"],
+          ["EntryResolverUnavailableError", {}, 503, "cite_resolver_unavailable"],
+        ] as const) {
+          mockPort.patch.mockRejectedValue(foreign(name, "boom", extra));
+          const error = await patchWorkItem(input, { id: "agent-1" }).catch(
+            (e) => e
+          );
+          expect(error.message).toBe("boom");
+          expect(workItemWriteErrorResponse(error, "patch")).toMatchObject({
+            status,
+            errorCode,
+          });
+        }
       });
     });
   });

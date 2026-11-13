@@ -112,7 +112,7 @@
   },
   "dependencies": {
     "drizzle-orm": "^0.44.7",
-    "@cogni-dao/metrics": "https://github.com/cogni-dao/node-template/releases/download/metrics-v0.7.0/cogni-dao-metrics-0.7.0.tgz"
+    "@cogni-dao/metrics": "https://github.com/cogni-dao/node-template/releases/download/metrics-v0.14.1/cogni-dao-metrics-0.14.1.tgz"
   },
   "devDependencies": {
     "tsup": "^8.5.1",

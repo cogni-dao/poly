@@ -164,6 +164,7 @@ import { createRepoCapability } from "@/bootstrap/capabilities/repo";
 import { createScheduleCapability } from "@/bootstrap/capabilities/schedule";
 import { stubVcsCapability } from "@/bootstrap/capabilities/vcs";
 import { createWebSearchCapability } from "@/bootstrap/capabilities/web-search";
+import { createCitationLinksPort } from "@/bootstrap/capabilities/citation-links";
 import { createWorkItemCapability } from "@/bootstrap/capabilities/work-item";
 import {
 	type AgentAuthoritySql,
@@ -172,6 +173,7 @@ import {
 } from "@/bootstrap/agent-authority";
 import { PRINCIPAL_TOOL_BUNDLE } from "@/bootstrap/ai/principal-tool-source";
 import { createApproversNodeAdminAuthority } from "@/bootstrap/node-admin-gate";
+import { createMoveMetricPorts } from "@/bootstrap/capabilities/work-item-moves";
 import type { RateLimitBypassConfig } from "@/bootstrap/http/wrapPublicRoute";
 import {
 	type AutoWrapJobHandle,
@@ -2479,6 +2481,12 @@ function createContainer(): Container {
 	let edoCapability: EdoCapability;
 	let knowledgeContributionService: ContributionService | undefined;
 	let knowledgeStorePort: KnowledgeStorePort | undefined;
+	// story.0033: the work-items `moves` ports over this node's metrics service.
+	// `goalMetrics` and `knowledgeStorePort` are assigned below and read only at call time.
+	const moveMetrics = createMoveMetricPorts(
+		() => goalMetrics,
+		() => knowledgeStorePort,
+	);
 	if (env.DOLTGRES_URL) {
 		const doltgresUrl = env.DOLTGRES_URL;
 		const doltClient = buildDoltgresClient({
@@ -2501,6 +2509,8 @@ function createContainer(): Container {
 				// task.0086: pins a patch's cites to commits with lock-free reads on the
 				// knowledge pool, never on the writer connection that holds the lock.
 				entryResolver: createDoltgresEntryResolver(doltClient),
+				// story.0033: a `moves` entry pins the metric's latest good observation as its baseline.
+				metricBaseline: moveMetrics.baselines,
 			},
 		);
 		const createKnowledgeBranchClient = () => buildDoltgresClient({
@@ -2618,6 +2628,10 @@ function createContainer(): Container {
 	const workItemCapability = createWorkItemCapability({
 		workItemQuery: workItemAdapter,
 		workItemCommand,
+		moveReadings: moveMetrics.readings,
+		// task.0118: first page of an item's citation links, the same read the UI and the route use.
+		links: createCitationLinksPort(() => knowledgeStorePort),
+		log: (event) => log.warn(event, "work.items.envelope_degraded"),
 		backlogWriter: {
 			store: workItemAdapter,
 			principalId: () => {
