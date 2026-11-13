@@ -17,11 +17,14 @@ import {
   CredentialStoreUnavailableError,
   type CredentialStore,
   createPostgresCredentialStore,
+  createPostgresSpawnStore,
+  type SpawnStore,
 } from "@cogni/agent-grants/credentials";
 import { resolveServiceDb } from "@/bootstrap/container";
 import { credentialLookupLimiter, extractEdgeClientIp } from "@/bootstrap/http/rateLimiter";
 
 let store: CredentialStore | undefined;
+let spawnStore: SpawnStore | undefined;
 
 /** A missing or broken service connection is an outage (503), never a 500 or a 401. */
 export function getAgentCredentialStore(): CredentialStore {
@@ -33,6 +36,19 @@ export function getAgentCredentialStore(): CredentialStore {
     throw new CredentialStoreUnavailableError(cause);
   }
   return store;
+}
+
+/**
+ * The spawn-grant store (issue, redeem, list owned): the same service-role connection, because `agent_spawn_grants` is deny-all for the app role
+ * and `agent_principals` is writable only by the service role. A missing connection is an outage (503), never a 500 or a refusal.
+ */
+export function getAgentSpawnStore(): SpawnStore {
+  try {
+    spawnStore ??= createPostgresSpawnStore(resolveServiceDb().$client as unknown as CredentialSql);
+  } catch (cause) {
+    throw new CredentialStoreUnavailableError(cause);
+  }
+  return spawnStore;
 }
 
 /**

@@ -55,7 +55,9 @@ export const agentRolesListOperation = {
     canManage: z.boolean(),
     permissions: z.array(
       z.object({
-        section: z.enum(["pending", "node", "outside"]),
+        section: z.enum(["pending", "node", "outside", "personal"]),
+        /** The row's id (`?request=<id>` in its approval link), so the page can highlight it. */
+        requestId: z.string().optional(),
         principalUserId: z.string(),
         who: z.string(),
         outside: z.boolean(),

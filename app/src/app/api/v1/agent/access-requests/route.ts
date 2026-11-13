@@ -11,11 +11,14 @@
  *   No authority logic.
  * Invariants:
  *   - KIND_PICKS_THE_PLANE: a browser session (or a request with no machine credential) gets 404, never a result. Token
- *     verification stays in the request-identity resolver; a bad bearer never falls back to a cookie.
+ *     verification stays in the request-identity resolver; a bad bearer never falls back to a cookie. The node-permission ask
+ *     needs a verified bearer identity (`via`); the account-read ask also needs the machine credential header.
  *   - SELF_REQUEST_ONLY: the caller's own user id is the principal and the requester. The body never names another agent.
  *   - NO_SELF_APPROVAL: a node-permission ask writes a row with no approver. It opens no lock. Only an admin session on
  *     /api/v1/admin/ai-access sets an approver.
  *   - The ask door is open by design: any authenticated bearer may ask with no prior grant (OPEN_BY_DESIGN_ROUTES).
+ *   - APPROVAL_URL: every answer carries `approvalUrl`, the page of THIS ask. An owned agent asking for a delegable scope (`knowledge:read`, `knowledge:contribute`)
+ *     gets its owner's profile page; every other ask gets the Admin page. The origin comes from config, never from the Host header.
  *   - NODE_DECLARED_SCOPES: an undeclared scope is 400 `invalid_scope`; a scope no route an outside agent can call uses is 400
  *     `no_external_door`. Open asks are capped per agent and across the node (429).
  *   - GET returns the node-permission list (`{ requests: [{ scope, state, at }] }`); `GET ?kind=account` returns the
@@ -42,6 +45,7 @@ import {
   createAgentAccessRequestFacade,
   listAgentAccessRequestsFacade,
 } from "@/app/_facades/poly/agent-access-requests.server";
+import { configuredUrl } from "@/app/_lib/agent-access/setup-line";
 import { getSessionUser } from "@/app/_lib/auth/session";
 import { getContainer } from "@/bootstrap/container";
 import { wrapRouteHandlerWithLogging } from "@/bootstrap/http";
@@ -71,7 +75,9 @@ export const POST = wrapRouteHandlerWithLogging(
   },
   async (ctx, request, sessionUser) => {
     // AI plane: a bearer only. A browser session gets 404, as if the route did not exist for it.
-    if (!isAgentBearerRequest(request)) return json({ error: "not_found" }, 404);
+    const viaBearer = sessionUser.via === "bearer";
+    const headerBearer = isAgentBearerRequest(request);
+    if (!viaBearer && !headerBearer) return json({ error: "not_found" }, 404);
 
     let body: unknown;
     try {
@@ -87,6 +93,7 @@ export const POST = wrapRouteHandlerWithLogging(
       "expires_at" in body &&
       !("scope" in body)
     ) {
+      if (!headerBearer) return accountErrorResponse("not_found", 404);
       const parsedAccount =
         polyAgentAccessRequestCreateOperation.input.safeParse(body);
       if (!parsedAccount.success)
@@ -115,6 +122,7 @@ export const POST = wrapRouteHandlerWithLogging(
       }
     }
 
+    if (!viaBearer) return json({ error: "not_found" }, 404);
     const parsed = agentAccessRequestCreateOperation.input.safeParse(body);
     if (!parsed.success)
       return json({ error: "invalid input", issues: parsed.error.issues }, 400);
@@ -124,10 +132,12 @@ export const POST = wrapRouteHandlerWithLogging(
         principalUserId: sessionUser.id,
         scope: parsed.data.scope,
       });
+      const { approvalPath, ...answer } = result;
       return json(
         agentAccessRequestCreateOperation.output.parse({
           scope: parsed.data.scope,
-          ...result,
+          ...answer,
+          approvalUrl: approvalPath ? configuredUrl(approvalPath) : null,
         }),
         result.created ? 201 : 200
       );
@@ -151,10 +161,13 @@ export const GET = wrapRouteHandlerWithLogging(
     auth: { mode: "required", getSessionUser },
   },
   async (_ctx, request, sessionUser) => {
-    if (!isAgentBearerRequest(request)) return json({ error: "not_found" }, 404);
+    const viaBearer = sessionUser.via === "bearer";
+    const headerBearer = isAgentBearerRequest(request);
+    if (!viaBearer && !headerBearer) return json({ error: "not_found" }, 404);
 
     const searchParams = new URL(request.url).searchParams;
     if (searchParams.get("kind") === "account") {
+      if (!headerBearer) return accountErrorResponse("not_found", 404);
       searchParams.delete("kind");
       const parsedAccount =
         polyAgentAccessRequestAgentListOperation.input.safeParse(
@@ -168,11 +181,14 @@ export const GET = wrapRouteHandlerWithLogging(
       );
     }
 
+    if (!viaBearer) return json({ error: "not_found" }, 404);
     try {
-      const requests = await getContainer().agentAuthority.listOwnAccess(
-        sessionUser.id
+      const requests = await getContainer().agentAuthority.listOwnAccess(sessionUser.id);
+      return json(
+        agentAccessRequestListOperation.output.parse({
+          requests: requests.map(({ approvalPath, ...row }) => ({ ...row, ...(approvalPath ? { approvalUrl: configuredUrl(approvalPath) } : {}) })),
+        })
       );
-      return json(agentAccessRequestListOperation.output.parse({ requests }));
     } catch {
       return json({ error: "authz_unavailable" }, 503);
     }

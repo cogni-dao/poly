@@ -15,7 +15,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { formatRevocableKey, REVOCABLE_KEY_PREFIX } from "@cogni/agent-grants/credentials";
-import { memoryCredentialStore } from "../../../../../packages/agent-grants/tests/credentials-memory-store";
+import { memoryCredentialStore } from "@tests/helpers/credentials-memory-store";
 
 const fake = vi.hoisted(() => ({
   headers: new Map<string, string>(),

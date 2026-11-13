@@ -125,14 +125,14 @@ describe("access requests: an ask is an off row (real Postgres)", () => {
     as(agent, "bearer");
     const first = await ask(SCOPE);
     expect(first.status).toBe(201);
-    expect(await first.json()).toEqual({ scope: SCOPE, state: "pending", created: true });
+    expect(await first.json()).toEqual({ scope: SCOPE, state: "pending", created: true, approvalUrl: expect.stringMatching(/\/admin\/ai-access\?request=[0-9a-f-]{36}$/) }); // work_item:transition is an admin's scope
     const row = (await service`SELECT approved_by, granted_at, requested_by, revoked_at FROM agent_roles WHERE principal_user_id = ${agent}`)[0];
     expect(row).toMatchObject({ approved_by: null, granted_at: null, requested_by: agent, revoked_at: null }); // an OFF row
 
     expect(await door(agent)).toMatchObject({ decision: "deny", reason: "no_role" }); // a pending ask opens nothing
 
     const pending = (await adminView()).permissions.filter((r) => r.section === "pending" && r.principalUserId === agent);
-    expect(pending).toEqual([expect.objectContaining({ who: "Helper bot", outside: true, scope: SCOPE, on: false, hint: expect.stringMatching(/^GitHub id gh-/), principalUserId: agent })]);
+    expect(pending).toEqual([expect.objectContaining({ who: "Helper bot", outside: true, scope: SCOPE, on: false, hint: expect.stringMatching(/^No owner · GitHub id gh-/), principalUserId: agent })]);
 
     const approve = await roles(rolesPost, { principalUserId: agent, scope: SCOPE });
     expect(approve.status).toBe(200);

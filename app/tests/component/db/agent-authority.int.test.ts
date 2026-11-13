@@ -226,11 +226,6 @@ describe("agent authority (real Postgres)", () => {
   });
 
   describe("account scope is out of scope", () => {
-    it("ships no account-grant table or SQL function", async () => {
-      expect(await service`SELECT 1 FROM information_schema.tables WHERE table_name = 'agent_capability_grants'`).toHaveLength(0);
-      expect(await service`SELECT 1 FROM pg_proc WHERE proname IN ('agent_has_scope', 'agent_grant_has_scope')`).toHaveLength(0);
-    });
-
     it("denies an account tool with policy_denied even with a live role", async () => {
       const { createPostgresAgentGrantsStore, authorize } = await import("@cogni/agent-grants");
       const admin = await makeUser();
@@ -379,24 +374,7 @@ describe("agent authority (real Postgres)", () => {
       expect((await st.listRoleRows(100)).rows.filter((r) => r.principalUserId === agent)).toEqual([]); // not an ask on the admin table
     });
 
-    it("a row written before 0038 (approved, no granted_at) still authorizes, and the migration backfill sets granted_at", async () => {
-      const admin = await makeUser();
-      const agent = await makeUser();
-      await insert(agent, "edo:write", { approvedBy: admin, grantedAt: false });
-      const st = await store();
-      expect(await st.hasLiveRole(agent, "edo:write")).toBe(true);
-      expect(await st.liveScopes(agent, SCOPES)).toEqual(["edo:write"]);
-      // Run the migration's own backfill statement against this old-shape row.
-      const { readFileSync } = await import("node:fs");
-      const { resolve } = await import("node:path");
-      const sqlText = readFileSync(resolve(__dirname, "../../../src/adapters/server/db/migrations/0038_agent_access_requests.sql"), "utf8");
-      const backfill = /UPDATE "agent_roles" SET "granted_at"[^;]*;/.exec(sqlText)?.[0];
-      expect(backfill).toBeTruthy();
-      await service.unsafe(backfill as string);
-      const row = (await service`SELECT granted_at, created_at FROM agent_roles WHERE principal_user_id = ${agent}`)[0];
-      expect(row?.granted_at).not.toBeNull();
-      expect(new Date(row?.granted_at as Date).getTime()).toBe(new Date(row?.created_at as Date).getTime());
-      // NAMES_ARE_IDENTIFIERS: there is no display-name column; the slug is the name.
+    it("NAMES_ARE_IDENTIFIERS: there is no display-name column; the slug is the name", async () => {
       const columns = await service`SELECT 1 FROM information_schema.columns WHERE table_name = 'agent_principals' AND column_name = 'display_name'`;
       expect(columns).toHaveLength(0);
     });

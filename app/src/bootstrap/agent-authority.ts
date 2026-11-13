@@ -13,6 +13,8 @@
  *   - AGENTS_HOLD_NO_WALLET (a payout guard, not an authority rule): an agent user has no wallet binding, so today it fails `adminCheck`.
  *     Admin is any principal the DAO approves (AUTHORITY_IS_NOT_KIND); an approved AI identity is item I2, so none passes yet.
  *   - DECLARED_SCOPES_FROM_CONTRACTS: the scopes a role may name are exactly those the node's tool contracts declare.
+ *   - PERSONAL_DELEGATION: a delegable scope (`knowledge:read`, `knowledge:contribute`) asked by an OWNED agent is a personal row; only its owner turns it On and Off
+ *     (`turnPersonalOn`, `turnPersonalOff`, `decideOwnerRequest`). `grantRole` (the admin) refuses it for an agent that has an owner; `revokeRole` (the admin) may end any live row.
  *   - NO_SECRETS_IN_LOGS: `agent_tool.authz` carries ids, tool, decision and code only.
  * Side-effects: IO (service-role database reads and writes)
  * Links: packages/agent-grants, https://cognidao.org/knowledge/node-capability-grants-standard
@@ -24,6 +26,10 @@ import {
   agentNameKey,
   type AuthzDecision,
   authorizeCaller,
+  buildYourAisView,
+  decideAsOwner,
+  grantPersonal,
+  revokePersonal,
   ROUTE_ONLY_CAPABILITIES,
   type AuthzEvent,
   createPostgresAgentGrantsStore,
@@ -34,13 +40,14 @@ import {
   listOwnAccess,
   type PrincipalRef,
   requestAccess,
-  type RoleState,
   type NodeAiPermissionView,
+  type OwnRoleRow,
   resolveInternalPrincipal,
   revokeRole,
   type SqlTag,
   type ToolRequires,
   type WithStore,
+  type YourAiPermissionView,
 } from "@cogni/agent-grants";
 import type { CatalogBoundTool } from "@cogni/ai-tools";
 import { LANGGRAPH_CATALOG } from "@cogni/langgraph-graphs";
@@ -77,14 +84,22 @@ export interface AgentToolAuthority {
   requestAccess(input: {
     principalUserId: string;
     scope: string;
-  }): Promise<{ state: "pending" | "granted"; created: boolean }>;
+  }): Promise<{ state: "pending" | "granted"; created: boolean; approvalPath: string | null }>;
   /**
    * True when `name` matches (case, spacing and look-alike forms ignored) any user's name or any of this node's AI slugs. Used at
    * registration so an outside agent cannot take a name that looks like this node's AI on the screen where an admin says yes.
    */
   nameTaken(name: string): Promise<boolean>;
-  /** The agent's own rows by state. */
-  listOwnAccess(principalUserId: string): Promise<Array<{ scope: string; state: RoleState; at: string }>>;
+  /** The agent's own rows by state. A live account permission also names the account its owner opened to it. */
+  listOwnAccess(principalUserId: string): Promise<OwnRoleRow[]>;
+  /** The owner decides ONE ask by id (Approve or Deny): one atomic write. Throws AgentRolesError. */
+  decideOwnerRequest(input: { ownerUserId: string; requestId: string; decision: "approve" | "deny" }): Promise<{ principalUserId: string; scope: string; changed: boolean }>;
+  /** The person's own AIs' asks and live grants (personal rows only; node rows are Admin's). */
+  listYourAis(ownerUserId: string): Promise<YourAiPermissionView[]>;
+  /** The owner turns a personal row ON: approves their own AI's ask. Throws AgentRolesError (`principal_not_found` for an AI that is not theirs). */
+  turnPersonalOn(input: { ownerUserId: string; principalUserId: string; scope: string }): Promise<{ principalUserId: string; created: boolean }>;
+  /** The owner turns a personal row OFF (revoke), or dismisses an ask (`deny`). */
+  turnPersonalOff(input: { ownerUserId: string; principalUserId: string; scope: string; deny?: boolean }): Promise<{ principalUserId: string; changed: boolean }>;
   /**
    * The admin table: one row per grant row, in three blocks. Name and description come from the declarations only.
    * Outside rows are bounded (`MAX_ADMIN_OUTSIDE_ROWS`); `more` counts the ones cut.
@@ -145,8 +160,7 @@ export function createAgentToolAuthority(deps: {
 }): AgentToolAuthority {
   const requiresById = buildRequiresById(deps.toolBundle);
   // Declared once, shown everywhere: one derivation feeds the role routes, the ask door and agent discovery.
-  const { declarations, declaredScopes, askableScopes } =
-    buildPermissionCatalog(requiresById);
+  const { declarations, declaredScopes, askableScopes, scopes } = buildPermissionCatalog(requiresById);
   const adminCheck = createAdminCheck(deps.sql, deps.nodeAdmin);
 
   // One transaction per call, so a role read sees one consistent snapshot.
@@ -210,12 +224,63 @@ export function createAgentToolAuthority(deps: {
         reason: decision.decision === "allow" ? decision.basis : decision.reason,
         runId: null,
         route: routeId,
+        ...(decision.decision === "allow" && decision.owner ? { owner: decision.owner } : {}),
       });
       return decision;
     },
+    async decideOwnerRequest(input) {
+      const result = await withStore((store) => decideAsOwner(store, input));
+      if (result.changed)
+        deps.log.info(
+          {
+            event: input.decision === "approve" ? EVENT_NAMES.AGENT_ROLE_GRANTED : EVENT_NAMES.AGENT_ROLE_DENIED,
+            principalUserId: result.principalUserId,
+            scope: result.scope,
+            ...(input.decision === "approve" ? { approvedBy: input.ownerUserId } : { deniedBy: input.ownerUserId }),
+            resource: "personal",
+            requestId: input.requestId,
+          },
+          input.decision === "approve" ? EVENT_NAMES.AGENT_ROLE_GRANTED : EVENT_NAMES.AGENT_ROLE_DENIED
+        );
+      return result;
+    },
+    listYourAis: (ownerUserId) =>
+      withStore(async (store) =>
+        buildYourAisView({ declarations, rows: await store.listPersonalRows(ownerUserId) })
+      ),
+    async turnPersonalOn(input) {
+      const result = await withStore((store) => grantPersonal(store, { ...input, scopes }));
+      if (result.created)
+        deps.log.info(
+          {
+            event: EVENT_NAMES.AGENT_ROLE_GRANTED,
+            principalUserId: result.principalUserId,
+            scope: input.scope,
+            approvedBy: input.ownerUserId,
+            resource: "personal",
+          },
+          EVENT_NAMES.AGENT_ROLE_GRANTED
+        );
+      return result;
+    },
+    async turnPersonalOff(input) {
+      const result = await withStore((store) => revokePersonal(store, { ...input, scopes }));
+      if (result.changed)
+        deps.log.info(
+          {
+            event: input.deny ? EVENT_NAMES.AGENT_ROLE_DENIED : EVENT_NAMES.AGENT_ROLE_REVOKED,
+            principalUserId: result.principalUserId,
+            scope: input.scope,
+            ...(input.deny ? { deniedBy: input.ownerUserId } : { revokedBy: input.ownerUserId }),
+            resource: "personal",
+          },
+          input.deny ? EVENT_NAMES.AGENT_ROLE_DENIED : EVENT_NAMES.AGENT_ROLE_REVOKED
+        );
+      return result;
+    },
     async grantRole(input) {
       const result = await withStore((store) =>
-        grantRole(store, { ...input, declaredScopes })
+        grantRole(store, { ...input, declaredScopes, scopes })
       );
       if (result.created)
         deps.log.info(
@@ -273,7 +338,7 @@ export function createAgentToolAuthority(deps: {
     },
     async requestAccess(input) {
       const result = await withStore((store) =>
-        requestAccess(store, { ...input, declaredScopes, askableScopes })
+        requestAccess(store, { ...input, declaredScopes, askableScopes, scopes })
       );
       if (result.created)
         deps.log.info(

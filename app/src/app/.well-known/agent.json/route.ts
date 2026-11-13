@@ -36,6 +36,7 @@ import {
 	confirmAgentCredentialOperation,
 	knowledgeHistoryOperation,
 	registerAgentOperation,
+	agentClaimStartOperation,
 	revokeAgentCredentialOperation,
 	rotateAgentCredentialOperation,
 	upgradeAgentCredentialOperation,
@@ -78,26 +79,10 @@ import {
 	getNodeThumbnail,
 } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env";
+import { publicOrigin } from "@/app/_lib/agent-access/setup-line";
 
 export const runtime = "nodejs";
 
-/**
- * Resolve the public origin this request reached us through. In prod the app
- * runs behind Caddy / k8s ingress, so Next.js's `request.url` exposes the
- * in-pod bind address (e.g. `http://0.0.0.0:3000`) rather than the external
- * host clients are using. Prefer the forwarded headers the proxy injects,
- * falling back to the raw `host` and `request.url` for local/dev usage.
- */
-function publicOrigin(request: Request): string {
-	const url = new URL(request.url);
-	const host =
-		request.headers.get("x-forwarded-host") ??
-		request.headers.get("host") ??
-		url.host;
-	const proto =
-		request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
-	return `${proto}://${host}`;
-}
 
 export async function GET(request: Request) {
 	const env = serverEnv();
@@ -150,12 +135,13 @@ export async function GET(request: Request) {
 		// Scopes an outside agent can ask for (requestPermission). Derived from the declarations, not listed here.
 		permissions,
 		permissionsHow:
-			"Ask with requestPermission; a node admin turns it On on the AI access page.",
+			"Ask with requestPermission. The answer carries approvalUrl: hand that link to the person who decides (your owner for knowledge:read and knowledge:contribute, otherwise a node admin).",
 		actions: {
 			register: {
 				method: "POST",
 				endpoint: `${origin}/api/v1/agent/register`,
 				auth: { type: "none" },
+				note: "With a spawnGrant (the setup line a person copies from their profile, Your AIs) the agent is linked to that person and its key is pending: confirm it once. Without one the agent registers anonymously and has no owner.",
 				inputSchema: z.toJSONSchema(registerAgentOperation.input),
 				outputSchema: z.toJSONSchema(registerAgentOperation.output),
 			},
@@ -165,6 +151,14 @@ export async function GET(request: Request) {
 				auth: { type: "bearer" },
 				inputSchema: z.toJSONSchema(z.strictObject({})),
 				outputSchema: z.toJSONSchema(upgradeAgentCredentialOperation.output),
+			},
+			claimOwner: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/claim`,
+				auth: { type: "bearer" },
+				note: "An existing agent with no owner asks to become a person's. The answer is claimUrl: hand it to that person. They open it and click Claim. Nothing secret passes through them.",
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(agentClaimStartOperation.output),
 			},
 			confirmCredential: {
 				method: "POST",

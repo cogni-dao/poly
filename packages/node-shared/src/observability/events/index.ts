@@ -43,6 +43,13 @@ export const EVENT_NAMES = {
 	AGENT_CREDENTIAL_STORE_UNAVAILABLE: "agent.credential.store_unavailable",
 	/** A signed (v1) key was used after its user confirmed a revocable key: 401 `v1_superseded`. The best replay signal for a leaked signed key. Carries routeId and userId only. */
 	AGENT_CREDENTIAL_V1_SUPERSEDED_DENIED: "agent.credential.v1_superseded_denied",
+	/** Spawn grants (task.5474): a person issued a setup code, an agent redeemed one (userId = the new agent, ownerUserId = the issuer), a redeem was refused (reason only), the owner revoked an owned agent's keys. Never a grant, key or hash. */
+	AGENT_SPAWN_GRANT_ISSUED: "agent.spawn_grant.issued",
+	AGENT_SPAWN_GRANT_REDEEMED: "agent.spawn_grant.redeemed",
+	AGENT_SPAWN_GRANT_REFUSED: "agent.spawn_grant.refused",
+	AGENT_OWNER_REVOKED: "agent.owner.revoked",
+	AGENT_CLAIM_STARTED: "agent.claim.started",
+	AGENT_OWNER_CLAIMED: "agent.owner.claimed",
 	/** A revocable key was refused as invalid (unknown, revoked, expired or wrong state): 401. Carries routeId only: no key, hash or prefix. */
 	AGENT_CREDENTIAL_INVALID_DENIED: "agent.credential.invalid_denied",
 	/** A client went over the per-IP limit on credential lookups: 429, no store read. Carries routeId only. */

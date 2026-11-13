@@ -113,7 +113,7 @@ DROP TRIGGER IF EXISTS "agent_credentials_external_principal_only" ON "agent_cre
 CREATE TRIGGER "agent_credentials_external_principal_only"
   BEFORE INSERT OR UPDATE OF user_id ON "agent_credentials"
   FOR EACH ROW EXECUTE FUNCTION agent_credentials_require_external_principal();--> statement-breakpoint
--- Seed: this node's internal agent principal, `node-ai` (idempotent). Each principal is a `users` row with NO wallet and NO credential, plus an
+-- Seed: internal agent principals (idempotent). Each principal is a `users` row with NO wallet and NO credential, plus an
 -- `agent_principals` row of kind 'internal' with a unique slug. The graph catalog names the slug; a missing row denies the run.
 -- IDs are deterministic and match packages/node-shared/src/constants/agent-principals.ts. No role rows are seeded: a node admin
 -- grants each role on /admin/ai-access.
@@ -122,10 +122,17 @@ SELECT set_config('app.current_user_id', '00000000-0000-4000-a000-0000000a0001',
 INSERT INTO "users" ("id", "name", "wallet_address")
 VALUES ('00000000-0000-4000-a000-0000000a0001', 'node-ai', NULL)
 ON CONFLICT ("id") DO NOTHING;--> statement-breakpoint
+SELECT set_config('app.current_user_id', '00000000-0000-4000-a000-0000000a0002', true);--> statement-breakpoint
+INSERT INTO "users" ("id", "name", "wallet_address")
+VALUES ('00000000-0000-4000-a000-0000000a0002', 'prioritizer', NULL)
+ON CONFLICT ("id") DO NOTHING;--> statement-breakpoint
 -- agent_principals is FORCE RLS with a select-only policy, so even its owner cannot INSERT. The migrating role owns the table, so
 -- lift FORCE for the seed only; this runs inside the migration transaction, so no other session sees it.
 ALTER TABLE "agent_principals" NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 INSERT INTO "agent_principals" ("kind", "slug", "user_id")
 VALUES ('internal', 'node-ai', '00000000-0000-4000-a000-0000000a0001')
+ON CONFLICT ("user_id") DO NOTHING;--> statement-breakpoint
+INSERT INTO "agent_principals" ("kind", "slug", "user_id")
+VALUES ('internal', 'prioritizer', '00000000-0000-4000-a000-0000000a0002')
 ON CONFLICT ("user_id") DO NOTHING;--> statement-breakpoint
 ALTER TABLE "agent_principals" FORCE ROW LEVEL SECURITY;

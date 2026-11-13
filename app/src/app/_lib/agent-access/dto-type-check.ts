@@ -46,6 +46,7 @@ export function viewIsWire(view: NodeAiAccessView): Wire {
     more: view.more,
     permissions: view.permissions.map((row) => ({
       section: row.section,
+      ...(row.requestId ? { requestId: row.requestId } : {}),
       principalUserId: row.principalUserId,
       who: row.who,
       outside: row.outside,

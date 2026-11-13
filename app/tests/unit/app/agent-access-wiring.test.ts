@@ -40,14 +40,30 @@ describe("S1 wiring", () => {
   it("uses that endpoint in the admin AI-access client and mounts the block there", () => {
     const view = read("app/(admin)/admin/ai-access/AiAccess.client.tsx");
     expect(view).toContain('from "./agent-access-endpoints"');
-    expect(view).toContain("<AgentAccessSection endpoints={AGENT_ACCESS_ENDPOINTS} />");
+    expect(view).toContain("<AgentAccessSection endpoints={AGENT_ACCESS_ENDPOINTS} highlightId={highlightId} />");
+    expect(view).toContain('useSearchParams().get("request")'); // an approval link highlights its row
     expect(view).not.toMatch(/\/api\/v1\/agent\/roles/);
   });
 
-  it("no longer mounts the node-wide block on the profile page, and links the admin page from the admin index", () => {
+  it("the profile renders the SAME shared section with the OWNER endpoints only (no admin route, no app-local AI-access component), and the admin page is linked from the admin index", () => {
     const profile = read("app/(app)/profile/view.tsx");
-    expect(profile).not.toContain("AgentAccessSection");
+    expect(profile).toContain("<AgentAccessSection");
+    expect(profile).toContain("endpoints={OWNER_ACCESS_ENDPOINTS}");
+    expect(profile).toContain('searchParams.get("request")');
+    expect(profile).toContain('searchParams.get("claim")');
+    for (const path of ["/api/v1/agent-access/mine", "/api/v1/profile/ai", "/api/v1/profile/ai/revoke", "/api/v1/agent-access/mine/requests", "/api/v1/profile/ai/claims"])
+      expect(profile).toContain(`"${path}"`);
+    expect(profile).not.toMatch(/\/api\/v1\/admin\//);
     expect(profile).not.toContain("agent-access-endpoints");
+    // No bespoke page or app-local component for AI access is left.
+    for (const gone of [
+      "app/(app)/profile/YourAis.tsx",
+      "app/(app)/profile/YourAiAccess.tsx",
+      "app/(app)/profile/ai",
+      "app/(admin)/admin/ai-access/requests",
+      "app/api/v1/admin/ai-access/requests",
+    ])
+      expect(existsSync(resolve(SRC, gone)), gone).toBe(false);
     expect(existsSync(resolve(SRC, "app/(app)/profile/agent-access-endpoints.ts"))).toBe(false);
     expect(read("app/(admin)/admin/page.tsx")).toContain('href="/admin/ai-access"');
     expect(existsSync(resolve(SRC, "app/(app)/gov/ai-access"))).toBe(false);

@@ -14,10 +14,13 @@
 "use client";
 
 import { AgentAccessSection } from "@cogni/knowledge-base-ui";
+import { useSearchParams } from "next/navigation";
 import type { ReactElement } from "react";
 
 import { AGENT_ACCESS_ENDPOINTS } from "./agent-access-endpoints";
 
 export function AiAccessClient(): ReactElement {
-	return <AgentAccessSection endpoints={AGENT_ACCESS_ENDPOINTS} />;
+	// ?request=<id> (an ask's approval link) scrolls to and highlights that row.
+	const highlightId = useSearchParams().get("request") ?? undefined;
+	return <AgentAccessSection endpoints={AGENT_ACCESS_ENDPOINTS} highlightId={highlightId} />;
 }

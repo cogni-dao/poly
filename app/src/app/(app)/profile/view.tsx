@@ -34,7 +34,17 @@ import {
 import { Spinner } from "@cogni/node-ui-kit/shadcn/spinner";
 import { OpenAIIcon } from "@/features/ai/icons/providers/OpenAIIcon";
 
-import { AgentAccessSection } from "./_components/AgentAccessSection";
+import { AgentAccessSection } from "@cogni/knowledge-base-ui";
+import { AgentAccessSection as AccountAccessSection } from "./_components/AgentAccessSection";
+
+/** The owner's endpoints for the shared AI-access section: the person's own AIs and personal rows only. Session only; nothing here is an admin route. */
+const OWNER_ACCESS_ENDPOINTS = {
+  mine: "/api/v1/agent-access/mine",
+  ais: "/api/v1/profile/ai",
+  aisRevoke: "/api/v1/profile/ai/revoke",
+  requests: "/api/v1/agent-access/mine/requests",
+  claims: "/api/v1/profile/ai/claims",
+} as const;
 
 /* ─── Types ────────────────────────────────────────────────────────── */
 
@@ -1064,7 +1074,16 @@ export function ProfileView(): ReactElement {
       {/* ── AI access ── */}
 
       <SectionHeading>AI Access</SectionHeading>
-      <AgentAccessSection />
+      <AccountAccessSection />
+
+      {/* ── Your AIs: the shared AgentAccessSection the admin page renders, with the owner's endpoints. ?request=<id> or ?claim=<id> highlights that row. ── */}
+
+      <AgentAccessSection
+        endpoints={OWNER_ACCESS_ENDPOINTS}
+        highlightId={
+          searchParams.get("request") ?? searchParams.get("claim") ?? undefined
+        }
+      />
 
       {/* ── Ownership ── */}
 

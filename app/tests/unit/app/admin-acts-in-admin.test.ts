@@ -25,7 +25,6 @@ const PORT_WIRING = ["ports/node-admin.port.ts", "ports/index.ts", "bootstrap/no
 const ASK_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [
   { path: "app/api/v1/attribution/epochs/", reason: "epoch review, finalize, sign and distribution routes" }, // task.0115
   { path: "app/api/v1/attribution/_lib/approver-guard.ts", reason: "checkApprover definition" }, // task.0115
-  { path: "app/_facades/work/items.server.ts", reason: "work-items facade: priority 0/1" }, // task.0115
   { path: "bootstrap/node-admin-gate.ts", reason: "the node-admin check itself" }, // task.0115
   { path: "bootstrap/agent-authority.ts", reason: "tool-guard admin check" }, // task.0115
   { path: "app/(admin)/layout.tsx", reason: "layout gate" }, // task.0115
@@ -50,12 +49,31 @@ const outsideAdmin = files.filter((f) => !ADMIN_DIRS.some((dir) => f.rel.startsW
 const importsOf = (text: string) => text.match(/import[^;]*?from\s*["'][^"']+["']/g) ?? [];
 
 describe("ADMIN_ACTS_IN_ADMIN", () => {
-  it("imports AgentAccessSection and the agent-access endpoints only from the Admin area", () => {
-    const importers = files.filter(
-      (f) => /import[^;]*\bAgentAccessSection\b[^;]*from/.test(f.text) || /from\s+["'][^"']*agent-access-endpoints["']/.test(f.text)
-    );
-    expect(importers.length).toBeGreaterThan(0);
-    expect(importers.map((f) => f.rel).filter((rel) => !ADMIN_DIRS.some((dir) => rel.startsWith(dir)))).toEqual([]);
+  it("imports the admin agent-access endpoints only from the Admin area; AgentAccessSection is shared, and outside Admin it gets owner endpoints only", () => {
+    const endpointImporters = files.filter((f) => /from\s+["'][^"']*agent-access-endpoints["']/.test(f.text));
+    expect(endpointImporters.length).toBeGreaterThan(0);
+    expect(endpointImporters.map((f) => f.rel).filter((rel) => !ADMIN_DIRS.some((dir) => rel.startsWith(dir)))).toEqual([]);
+    const sectionUsers = files.filter((f) => /import[^;]*\bAgentAccessSection\b[^;]*from/.test(f.text));
+    const outside = sectionUsers.filter((f) => !ADMIN_DIRS.some((dir) => f.rel.startsWith(dir)));
+    expect(outside.map((f) => f.rel)).toEqual(["app/(app)/profile/view.tsx"]); // the profile, and only the profile
+    for (const f of outside) {
+      expect(f.text).toContain("endpoints={OWNER_ACCESS_ENDPOINTS}");
+      expect(code(f.text)).not.toMatch(/AGENT_ACCESS_ENDPOINTS|\/api\/v1\/admin\//);
+      // The shared section picks its plane by the endpoints it gets: a `roles` key would make the profile instance the admin table. The owner constant has none.
+      const literal = /const OWNER_ACCESS_ENDPOINTS = \{([\s\S]*?)\} as const;/.exec(code(f.text))?.[1] ?? "";
+      expect(literal.length).toBeGreaterThan(0);
+      expect(literal).not.toMatch(/\broles\b/);
+      expect([...literal.matchAll(/(\w+):/g)].map((m) => m[1]).sort()).toEqual(["ais", "aisRevoke", "claims", "mine", "requests"]);
+    }
+  });
+
+  it("keeps the person's own profile blocks (Your AIs) free of any Admin import or admin control", () => {
+    const profile = files.filter((f) => f.rel.startsWith("app/(app)/profile/") || f.rel.startsWith("app/api/v1/agent-access/mine/"));
+    expect(profile.length).toBeGreaterThan(1);
+    const offenders = profile
+      .filter((f) => importsOf(f.text).some((i) => /\(admin\)|admin-session|node-admin\.port|agent-access-endpoints/.test(i)) || /\/api\/v1\/admin\//.test(code(f.text)))
+      .map((f) => f.rel);
+    expect(offenders).toEqual([]);
   });
 
   it("names NodeAdminPort, AdminSession, nodeAdminPort or the admin-session mint only in the Admin area and the explicit port wiring", () => {
