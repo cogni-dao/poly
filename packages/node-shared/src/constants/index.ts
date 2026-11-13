@@ -19,3 +19,6 @@ export * from "./payments";
 
 /* System tenant */
 export * from "./system-tenant";
+
+/* Seeded internal agent principals */
+export * from "./agent-principals";

@@ -21,4 +21,9 @@ export interface SessionUser {
   walletAddress: string | null;
   displayName: string | null;
   avatarColor: string | null;
+  /**
+   * How this request authenticated (`bearer` machine key or `session` cookie). For logging only: it never
+   * decides authority. Every authenticated caller is the run subject.
+   */
+  via?: "bearer" | "session";
 }

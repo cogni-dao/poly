@@ -105,7 +105,11 @@ function handleRouteError(
  * POST /api/v1/schedules - Create a new schedule.
  */
 export const POST = wrapRouteHandlerWithLogging(
-  { routeId: "schedules.create", auth: { mode: "required", getSessionUser } },
+  {
+    routeId: "schedules.create",
+    sameDoor: "core__schedule_manage",
+    auth: { mode: "required", getSessionUser },
+  },
   async (ctx, request, sessionUser) => {
     try {
       // Parse JSON body

@@ -5,7 +5,7 @@
  * Module: `@app/api/v1/knowledge/contributions/[id]/commits/route`
  * Purpose: Append and list Dolt commits for an open knowledge contribution branch.
  * Scope: Auth-protected POST/GET wrappers. Delegates contribution policy and Dolt I/O to the shared service.
- * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, CONTRIBUTION_OWNER_CAN_APPEND.
+ * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, SAME_DOOR (append passes the `knowledge:contribute` authorize() check; the contribution author is attribution, not a gate: bug.0019).
  * Side-effects: IO (HTTP response, Doltgres branch writes via container service)
  * Links: docs/design/knowledge-contribution-api.md
  * @public
@@ -23,6 +23,7 @@ export const POST = wrapRouteHandlerWithLogging<{
 }>(
   {
     routeId: "knowledge.contributions.commits.append",
+    sameDoor: "knowledge.contribute",
     auth: { mode: "required", getSessionUser },
   },
   async (_ctx, request, sessionUser, context) => {

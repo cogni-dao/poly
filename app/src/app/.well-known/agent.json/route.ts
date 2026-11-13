@@ -18,6 +18,7 @@
  * @public
  */
 
+import { REVOCABLE_KEY_PREFIX } from "@cogni/agent-grants/credentials";
 import {
 	GoalsProgressSchema,
 	MetricComputeInputSchema,
@@ -30,7 +31,15 @@ import {
 	MetricViewSchema,
 } from "@cogni-dao/metrics/contracts";
 import {
+	agentAccessRequestCreateOperation,
+	agentAccessRequestListOperation,
+	confirmAgentCredentialOperation,
 	knowledgeHistoryOperation,
+	registerAgentOperation,
+	agentClaimStartOperation,
+	revokeAgentCredentialOperation,
+	rotateAgentCredentialOperation,
+	upgradeAgentCredentialOperation,
 	workItemsClaimOperation,
 	workItemsCoordinationOperation,
 	workItemsCreateOperation,
@@ -49,6 +58,11 @@ import {
 } from "@cogni/poly-node-contracts";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import {
+	buildPermissionCatalog,
+	buildRequiresById,
+} from "@/bootstrap/agent-permissions";
+import { POLY_GRANT_DECLARATION_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 // Imported from the discovery module directly, not the feature barrel: this
 // public endpoint must stay a pure projection and never pull the executor (and
 // therefore a DB client) into its module graph.
@@ -65,30 +79,18 @@ import {
 	getNodeThumbnail,
 } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env";
+import { publicOrigin } from "@/app/_lib/agent-access/setup-line";
 
 export const runtime = "nodejs";
 
-/**
- * Resolve the public origin this request reached us through. In prod the app
- * runs behind Caddy / k8s ingress, so Next.js's `request.url` exposes the
- * in-pod bind address (e.g. `http://0.0.0.0:3000`) rather than the external
- * host clients are using. Prefer the forwarded headers the proxy injects,
- * falling back to the raw `host` and `request.url` for local/dev usage.
- */
-function publicOrigin(request: Request): string {
-	const url = new URL(request.url);
-	const host =
-		request.headers.get("x-forwarded-host") ??
-		request.headers.get("host") ??
-		url.host;
-	const proto =
-		request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
-	return `${proto}://${host}`;
-}
 
 export async function GET(request: Request) {
 	const env = serverEnv();
 	const origin = publicOrigin(request);
+	// DECLARED_ONCE_SHOWN_EVERYWHERE: rendered from the grant declarations on every read, never a copy table.
+	const { permissions } = buildPermissionCatalog(
+		buildRequiresById([...POLY_GRANT_DECLARATION_BUNDLE]),
+	);
 	return NextResponse.json({
 		name: "Cogni Node API",
 		version: "v1",
@@ -107,7 +109,12 @@ export async function GET(request: Request) {
 			},
 		},
 		registrationUrl: `${origin}/api/v1/agent/register`,
-		auth: { type: "bearer", keyPrefix: "cogni_ag_sk_v1_" },
+		auth: {
+			type: "bearer",
+			keyPrefix: "cogni_ag_sk_v1_",
+			// The revocable key an agent upgrades to (POST /api/v1/agent/credentials/upgrade).
+			revocableKeyPrefix: REVOCABLE_KEY_PREFIX,
+		},
 		endpoints: {
 			openapi: `${origin}/openapi.json`,
 			completions: `${origin}/api/v1/chat/completions`,
@@ -125,7 +132,69 @@ export async function GET(request: Request) {
 			// GENERATED_DISCOVERY: one entry per account-read descriptor.
 			...accountReadDiscoveryEndpoints(origin),
 		},
+		// Scopes an outside agent can ask for (requestPermission). Derived from the declarations, not listed here.
+		permissions,
+		permissionsHow:
+			"Ask with requestPermission. The answer carries approvalUrl: hand that link to the person who decides (your owner for knowledge:read and knowledge:contribute, otherwise a node admin).",
 		actions: {
+			register: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/register`,
+				auth: { type: "none" },
+				note: "With a spawnGrant (the setup line a person copies from their profile, Your AIs) the agent is linked to that person and its key is pending: confirm it once. Without one the agent registers anonymously and has no owner.",
+				inputSchema: z.toJSONSchema(registerAgentOperation.input),
+				outputSchema: z.toJSONSchema(registerAgentOperation.output),
+			},
+			upgradeCredential: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/credentials/upgrade`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(upgradeAgentCredentialOperation.output),
+			},
+			claimOwner: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/claim`,
+				auth: { type: "bearer" },
+				note: "An existing agent with no owner asks to become a person's. The answer is claimUrl: hand it to that person. They open it and click Claim. Nothing secret passes through them.",
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(agentClaimStartOperation.output),
+			},
+			confirmCredential: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/credentials/confirm`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(confirmAgentCredentialOperation.output),
+			},
+			rotateCredential: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/credentials/rotate`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(rotateAgentCredentialOperation.output),
+			},
+			revokeCredential: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/credentials/revoke`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(revokeAgentCredentialOperation.input),
+				outputSchema: z.toJSONSchema(revokeAgentCredentialOperation.output),
+			},
+			requestPermission: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/agent/access-requests`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(agentAccessRequestCreateOperation.input),
+				outputSchema: z.toJSONSchema(agentAccessRequestCreateOperation.output),
+			},
+			listMyPermissions: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/agent/access-requests`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(agentAccessRequestListOperation.output),
+			},
 			readGoalsProgress: {
 				method: "GET",
 				endpoint: `${origin}/api/v1/metrics/goals`,
@@ -180,7 +249,7 @@ export async function GET(request: Request) {
 			},
 			listOwnAgentAccessRequests: {
 				method: "GET",
-				endpoint: `${origin}/api/v1/agent/access-requests`,
+				endpoint: `${origin}/api/v1/agent/access-requests?kind=account`,
 				auth: { type: "bearer" },
 				inputSchema: z.toJSONSchema(
 					polyAgentAccessRequestAgentListOperation.input,

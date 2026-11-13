@@ -21,6 +21,7 @@ export const runtime = "nodejs";
 export const POST = wrapRouteHandlerWithLogging(
   {
     routeId: "knowledge.contributions.create",
+    sameDoor: "knowledge.contribute",
     auth: { mode: "required", getSessionUser },
   },
   async (_ctx, request, sessionUser) => handleCreate(request, sessionUser)

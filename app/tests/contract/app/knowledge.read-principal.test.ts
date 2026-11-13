@@ -24,6 +24,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Fresh fake store per test (reassigned in beforeEach); the container mock
 // hands the current instance to every route. Lazy factory => reads latest value.
 let mockStore: FakeKnowledgeStoreAdapter;
+// The knowledge.read door (sameDoor): a bearer needs a live `knowledge:read` role row; its decision is the node's agent authority.
+// The real `authorizeRoute` is proven in the agent-grants package and same-door-routes.test.ts; here the door is a switch.
+const door = vi.hoisted(() => ({
+  decision: { decision: "allow", basis: "role" } as
+    | { decision: "allow"; basis: string }
+    | { decision: "deny"; code: string },
+}));
 
 vi.mock("@/bootstrap/container", () => ({
   getContainer: vi.fn(() => ({
@@ -42,6 +49,7 @@ vi.mock("@/bootstrap/container", () => ({
     clock: { now: vi.fn(() => new Date("2026-01-01T00:00:00Z")) },
     config: { unhandledErrorPolicy: "rethrow" },
     knowledgeStorePort: mockStore,
+    agentAuthority: { authorizeRoute: vi.fn(async () => door.decision) },
   })),
 }));
 
@@ -86,11 +94,29 @@ async function seedStore(store: FakeKnowledgeStoreAdapter) {
   });
 }
 
-describe("knowledge read routes — KNOWLEDGE_READ_REQUIRES_PRINCIPAL", () => {
+describe("knowledge read routes — KNOWLEDGE_READ_NEEDS_GRANT", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    door.decision = { decision: "allow", basis: "role" };
     mockStore = new FakeKnowledgeStoreAdapter();
     await seedStore(mockStore);
+  });
+
+  it.each([
+    { name: "list", appHandler: listHandler, url: "/api/v1/knowledge" },
+    { name: "domains", appHandler: domainsHandler, url: "/api/v1/knowledge/domains" },
+    { name: "graph", appHandler: graphHandler, url: "/api/v1/knowledge/graph" },
+  ])("GET $name: a bearer with no knowledge:read row is 403 policy_denied", async ({ appHandler, url }) => {
+    door.decision = { decision: "deny", code: "policy_denied" };
+    await testApiHandler({
+      appHandler,
+      url,
+      async test({ fetch }) {
+        const res = await fetch({ method: "GET", headers: BEARER });
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ error: "policy_denied" });
+      },
+    });
   });
 
   it("GET /knowledge returns 200 for a bearer agent (not 403)", async () => {

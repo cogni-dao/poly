@@ -103,6 +103,13 @@ export const edoHypothesizeContract: ToolContract<
     "and your confidence updates mechanically. Bypassing this tool by writing entry_type='hypothesis' " +
     "via core__knowledge_write is rejected.",
   effect: "state_change",
+  requires: {
+    scope: "edo:write",
+    kind: "node",
+    subject: "member",
+    label: "Log decisions and what happened",
+    description: "Write down guesses, choices and how they turned out.",
+  },
   inputSchema: EdoHypothesizeInputSchema,
   outputSchema: EdoHypothesizeOutputSchema,
   redact: (output) => output,

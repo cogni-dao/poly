@@ -33,11 +33,19 @@ vi.mock("next/headers", () => ({
   headers: (...args: unknown[]) => mockHeaders(...args),
 }));
 
+const mockEverConfirmed = vi.fn();
+vi.mock("@/bootstrap/agent-credentials", () => ({
+  getAgentCredentialStore: () => ({ everConfirmed: (...args: unknown[]) => mockEverConfirmed(...args) }),
+}));
+
 vi.mock("@/shared/env/server", () => ({
   serverEnv: () => ({ AUTH_SECRET: "test-secret-for-unit-tests-only" }),
 }));
 
-import { resolveRequestIdentity } from "@/app/_lib/auth/request-identity";
+import {
+  issueAgentApiKey,
+  resolveRequestIdentity,
+} from "@/app/_lib/auth/request-identity";
 
 function headersFromRecord(record: Record<string, string>) {
   const normalized = new Map(
@@ -66,7 +74,7 @@ describe("resolveRequestIdentity — circular-recursion regression", () => {
 
     const user = await resolveRequestIdentity();
 
-    expect(user).toEqual(FAKE_SESSION_USER);
+    expect(user).toEqual({ ...FAKE_SESSION_USER, via: "session" });
     expect(mockGetServerSessionUser).toHaveBeenCalledTimes(1);
   });
 
@@ -99,5 +107,52 @@ describe("resolveRequestIdentity — circular-recursion regression", () => {
     expect(mockGetServerSessionUser).toHaveBeenCalledTimes(ITERATIONS);
     // Loose upper bound — a healthy resolver finishes 1000 mocked calls in well under 1s.
     expect(elapsedMs).toBeLessThan(1000);
+  });
+});
+
+describe("resolveRequestIdentity — via is recorded for logging (task.5456)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockEverConfirmed.mockResolvedValue(false);
+  });
+
+  it("marks a cookie session as via=session", async () => {
+    mockHeaders.mockResolvedValue(headersFromRecord({}));
+    mockGetServerSessionUser.mockResolvedValue(FAKE_SESSION_USER);
+    expect((await resolveRequestIdentity())?.via).toBe("session");
+  });
+
+  it("marks a valid machine bearer as via=bearer and never reads the session", async () => {
+    const apiKey = issueAgentApiKey({ userId: "agent-1", displayName: "Agent" });
+    mockHeaders.mockResolvedValue(
+      headersFromRecord({ authorization: `Bearer ${apiKey}` })
+    );
+    const user = await resolveRequestIdentity();
+    expect(user).toMatchObject({ id: "agent-1", via: "bearer" });
+    expect(mockGetServerSessionUser).not.toHaveBeenCalled();
+  });
+
+  it("V1_SUPERSEDED: a valid signed key whose user holds a confirmed revocable key is refused with v1_superseded", async () => {
+    mockEverConfirmed.mockResolvedValue(true);
+    const apiKey = issueAgentApiKey({ userId: "agent-1", displayName: "Agent" });
+    mockHeaders.mockResolvedValue(headersFromRecord({ authorization: `Bearer ${apiKey}` }));
+    await expect(resolveRequestIdentity()).rejects.toMatchObject({ code: "v1_superseded" });
+    expect(mockEverConfirmed).toHaveBeenCalledWith("agent-1");
+  });
+
+  it("a forged signed key never reads the store, and a store failure on the v1 gate is an outage (503), not a 401", async () => {
+    mockHeaders.mockResolvedValue(headersFromRecord({ authorization: "Bearer cogni_ag_sk_v1_forged.sig" }));
+    expect(await resolveRequestIdentity()).toBeNull();
+    expect(mockEverConfirmed).not.toHaveBeenCalled();
+    mockEverConfirmed.mockRejectedValue(new Error("db down"));
+    const apiKey = issueAgentApiKey({ userId: "agent-1", displayName: "Agent" });
+    mockHeaders.mockResolvedValue(headersFromRecord({ authorization: `Bearer ${apiKey}` }));
+    await expect(resolveRequestIdentity()).rejects.toMatchObject({ code: "authz_unavailable" });
+  });
+
+  it("returns null for a missing session without inventing a via", async () => {
+    mockHeaders.mockResolvedValue(headersFromRecord({}));
+    mockGetServerSessionUser.mockResolvedValue(null);
+    expect(await resolveRequestIdentity()).toBeNull();
   });
 });

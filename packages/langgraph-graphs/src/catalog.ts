@@ -69,6 +69,8 @@ import {
 import { RESEARCH_TOOL_IDS } from "./graphs/research/tools";
 import type { CreateGraphFn } from "./inproc/types";
 
+export const NODE_AI_PRINCIPAL = "node-ai" as const;
+
 /**
  * Catalog entry shape.
  *
@@ -78,6 +80,11 @@ import type { CreateGraphFn } from "./inproc/types";
 interface CatalogEntry {
   readonly displayName: string;
   readonly description: string;
+  /**
+   * Internal agent principal slug this graph acts as (an `agent_principals` row). A graph with no
+   * principal gets no scoped tool; a slug with no seed row denies the run before any tool runs.
+   */
+  readonly principal?: string;
   /** Native tool IDs this graph may use. Providers resolve from TOOL_CATALOG. */
   readonly toolIds: readonly string[];
   /** MCP server names whose tools this graph may use. Empty = no MCP tools. */
@@ -135,6 +142,7 @@ export const LANGGRAPH_CATALOG: Readonly<Record<string, CatalogEntry>> = {
   [BRAIN_GRAPH_NAME]: {
     displayName: "Brain",
     description: "Code-aware assistant with repository search and file access",
+    principal: NODE_AI_PRINCIPAL,
     toolIds: BRAIN_TOOL_IDS,
     graphFactory: createBrainGraph,
   },

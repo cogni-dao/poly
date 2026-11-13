@@ -4,8 +4,8 @@
 /**
  * Module: `@app/api/v1/knowledge/route`
  * Purpose: GET /api/v1/knowledge — list knowledge entries across all domains for the human browse UI and external agent recall.
- * Scope: Any authenticated principal (cookie-session human OR bearer agent). Reads via container.knowledgeStorePort: listDomains then per-domain listKnowledge.
- * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, KNOWLEDGE_READ_REQUIRES_PRINCIPAL.
+ * Scope: Signed-in human, or a bearer agent holding the knowledge:read role (sameDoor `knowledge.read`). Reads via container.knowledgeStorePort: listDomains then per-domain listKnowledge.
+ * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, KNOWLEDGE_READ_NEEDS_GRANT.
  * Side-effects: IO (HTTP response, Doltgres reads via container port)
  * Links: docs/spec/knowledge-syntropy.md
  * @public
@@ -24,14 +24,15 @@ export const runtime = "nodejs";
 export const GET = wrapRouteHandlerWithLogging(
   {
     routeId: "knowledge.list",
+    sameDoor: "knowledge.read",
     auth: { mode: "required", getSessionUser },
   },
   async (ctx, request, sessionUser) => {
     if (!sessionUser) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
-    // Any authenticated principal may read (KNOWLEDGE_READ_REQUIRES_PRINCIPAL).
-    // Bearer agents recall the merged plane just like the human browse UI;
+    // A signed-in human reads. A bearer agent needs the knowledge:read role (sameDoor knowledge.read; KNOWLEDGE_READ_NEEDS_GRANT).
+    // The merged plane is not open to any registered key;
     // per-principal x402 metering for external readers remains future work.
 
     const port = getContainer().knowledgeStorePort;

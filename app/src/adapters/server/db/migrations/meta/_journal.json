@@ -645,6 +645,27 @@
       "when": 1794376187208,
       "tag": "0091_careless_proteus",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1794530343153,
+      "tag": "0092_agent_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1794546531236,
+      "tag": "0093_agent_spawn_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1794546533674,
+      "tag": "0094_agent_personal_grants",
+      "breakpoints": true
     }
   ]
 }

@@ -95,7 +95,7 @@ describe("agent access request auth boundary", () => {
       })
     );
     const listResponse = await AGENT_LIST(
-      new NextRequest("http://localhost/api/v1/agent/access-requests")
+      new NextRequest("http://localhost/api/v1/agent/access-requests?kind=account")
     );
     const pollResponse = await POLL(
       new NextRequest(
@@ -119,7 +119,7 @@ describe("agent access request auth boundary", () => {
         "content-type": "application/json",
       };
       const listResponse = await AGENT_LIST(
-        new NextRequest("http://localhost/api/v1/agent/access-requests", {
+        new NextRequest("http://localhost/api/v1/agent/access-requests?kind=account", {
           headers,
         })
       );
@@ -224,7 +224,7 @@ describe("agent access request auth boundary", () => {
       approval_url: string;
     };
     const listResponse = await AGENT_LIST(
-      new NextRequest("http://attacker.example/api/v1/agent/access-requests", {
+      new NextRequest("http://attacker.example/api/v1/agent/access-requests?kind=account", {
         headers,
       })
     );
@@ -249,7 +249,7 @@ describe("agent access request auth boundary", () => {
   it("rejects all query selectors on the bearer self-list", async () => {
     const response = await AGENT_LIST(
       new NextRequest(
-        "http://localhost/api/v1/agent/access-requests?billing_account_id=attacker-selected",
+        "http://localhost/api/v1/agent/access-requests?kind=account&billing_account_id=attacker-selected",
         {
           headers: {
             authorization: "Bearer cogni_ag_sk_v1_machine-token",

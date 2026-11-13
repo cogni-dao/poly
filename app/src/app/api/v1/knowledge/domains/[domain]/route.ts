@@ -4,8 +4,8 @@
 /**
  * Module: `@app/api/v1/knowledge/domains/[domain]/route`
  * Purpose: HTTP endpoints for one knowledge domain — GET read, PATCH name/description, DELETE if empty.
- * Scope: All verbs accept any authenticated principal (cookie-session human OR bearer agent), the same auth as POST /domains. Does not contain business logic; delegates to ../_handlers.ts and the container's KnowledgeStorePort.
- * Invariants: VALIDATE_IO, CONTRACTS_ARE_TRUTH, AUTH_VIA_GETSESSIONUSER, DOMAIN_READ_REQUIRES_PRINCIPAL,
+ * Scope: GET needs a signed-in human or a bearer agent holding the knowledge:read role (sameDoor `knowledge.read`); PATCH and DELETE keep the auth they had. Does not contain business logic; delegates to ../_handlers.ts and the container's KnowledgeStorePort.
+ * Invariants: VALIDATE_IO, CONTRACTS_ARE_TRUTH, AUTH_VIA_GETSESSIONUSER, DOMAIN_READ_NEEDS_GRANT,
  *   DOMAIN_MUTATION_BEARER_OR_SESSION, DOMAIN_ID_IS_IMMUTABLE, DOMAIN_DELETE_REFUSES_NONEMPTY.
  *   PUT is not supported (405): PATCH is the partial update.
  * Side-effects: IO (HTTP response, Doltgres read/write via container port; one Dolt commit per mutation)
@@ -25,6 +25,7 @@ type DomainRouteContext = { params: Promise<{ domain: string }> };
 export const GET = wrapRouteHandlerWithLogging<DomainRouteContext>(
   {
     routeId: "knowledge.domains.get",
+    sameDoor: "knowledge.read",
     auth: { mode: "required", getSessionUser },
   },
   async (_ctx, _request, sessionUser, context) => {
