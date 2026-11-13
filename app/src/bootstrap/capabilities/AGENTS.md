@@ -28,9 +28,9 @@ Capability factories bridging ai-tools interfaces to adapters. Creates environme
 
 ## Public Surface
 
-- **Exports:** `createMetricsCapability()`, `stubMetricsCapability`, `createRepoCapability()`, `stubRepoCapability`, `createWebSearchCapability()`
+- **Exports:** `createMetricsCapability()`, `stubMetricsCapability`, `createRepoCapability()`, `stubRepoCapability`, `createWebSearchCapability()`, `createMoveMetricPorts()` (work-items `moves` baseline and readings over the metrics service, story.0033), `createCitationLinksPort()` and `readCitationLinksPage()` (the one citation-links read, task.0118)
 - **Env/Config keys:** PROMETHEUS_REMOTE_WRITE_URL, PROMETHEUS_QUERY_URL, PROMETHEUS_READ_USERNAME, PROMETHEUS_READ_PASSWORD, COGNI_REPO_PATH, COGNI_REPO_ROOT, TAVILY_API_KEY via ServerEnv
-- **Files considered API:** `metrics.ts`, `repo.ts`, `web-search.ts`
+- **Files considered API:** `metrics.ts`, `repo.ts`, `web-search.ts`, `work-item-moves.ts`, `citation-links.ts`
 
 ## Responsibilities
 

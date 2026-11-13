@@ -18,60 +18,18 @@
  * @internal
  */
 
-import { z } from "zod";
+import { WorkItemPatchInputSchema } from "@cogni/work-items";
+import type { z } from "zod";
 
-import { CITE_MAX, ChangeReasonSchema, CiteRefSchema } from "@cogni/work-items";
-
-import { WorkItemDtoSchema, WorkItemScoresInputSchema } from "./work.items.list.v1.contract";
-
-const WorkItemStatusSchema = z.enum([
-  "needs_triage",
-  "needs_research",
-  "needs_design",
-  "needs_implement",
-  "needs_closeout",
-  "needs_merge",
-  "done",
-  "blocked",
-  "cancelled",
-]);
+import { WorkItemDtoSchema } from "./work.items.list.v1.contract";
 
 export const workItemsPatchOperation = {
   id: "work.items.patch.v1",
   summary: "Patch a work item",
   description:
-    "Updates a subset of fields on a work item. Whitelisted fields only — id, created_at, updated_at are server-managed. Optional expectedRevision makes the patch compare-and-set; a stale revision returns 409 without writing. Required reason (one line, at most 25 words and 240 chars) says why; a PATCH without it is a 400. It is stored in history (GET /work/items/{id}/history), not in the item. Optional cites (at most 8, each { id } or { id, contribution }) name hub atoms you read; each is pinned to its commit in history, and an unknown id is a 400.",
-  input: z.object({
-    id: z.string(),
-    expectedRevision: z.number().int().nonnegative().optional(),
-    // The adapter turns CR/LF into spaces and trims; this checks the result fits.
-    reason: ChangeReasonSchema,
-    cites: z.array(CiteRefSchema).max(CITE_MAX).optional(),
-    set: z
-      .strictObject({
-        title: z.string().min(1).max(500).optional(),
-        summary: z.string().optional(),
-        outcome: z.string().optional(),
-        status: WorkItemStatusSchema.optional(),
-        priority: z.number().int().optional(),
-        rank: z.number().int().optional(),
-        estimate: z.number().int().optional(),
-        scores: WorkItemScoresInputSchema.nullable().optional(),
-        labels: z.array(z.string()).optional(),
-        specRefs: z.array(z.string()).optional(),
-        branch: z.string().optional(),
-        pr: z.string().optional(),
-        reviewer: z.string().optional(),
-        node: z.string().optional(),
-        deployVerified: z.boolean().optional(),
-        projectId: z.string().nullable().optional(),
-        parentId: z.string().nullable().optional(),
-        blockedBy: z.string().nullable().optional(),
-      })
-      .refine((v) => Object.keys(v).length > 0, {
-        message: "set must contain at least one field",
-      }),
-  }),
+    "Updates whitelisted fields on a work item. Optional expectedRevision makes the patch compare-and-set; a stale revision returns 409 without writing. Required reason (one line, at most 25 words and 240 chars) says why; a PATCH without it is a 400. It is stored in history (GET /work/items/{id}/history), not in the item. Optional cites (at most 8, each { id } or { id, contribution }) name hub atoms you read; each is pinned to its commit in history, and an unknown id is a 400.",
+  // One schema for the route and the agent tool (core__work_item_update); it lives in @cogni-dao/work-items.
+  input: WorkItemPatchInputSchema,
   output: WorkItemDtoSchema,
 } as const;
 

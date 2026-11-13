@@ -27,20 +27,20 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@cogni/ai-tools": "https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.8.0/cogni-dao-ai-tools-0.8.0.tgz",
+    "@cogni/ai-tools": "https://github.com/cogni-dao/node-template/releases/download/ai-tools-v0.12.0/cogni-dao-ai-tools-0.12.0.tgz",
     "@cogni/langgraph-graphs": "workspace:*",
     "@cogni/poly-ai-tools": "workspace:*",
     "@cogni/node-contracts": "workspace:*",
     "@cogni/poly-node-contracts": "workspace:*",
     "@langchain/langgraph": "1.4.10",
     "zod": "^3.24.0",
-    "@cogni/shared-langgraph-graphs": "https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.7.0/cogni-dao-langgraph-graphs-0.7.0.tgz",
+    "@cogni/shared-langgraph-graphs": "https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.9.0/cogni-dao-langgraph-graphs-0.9.0.tgz",
     "@cogni/agent-grants": "https://github.com/cogni-dao/node-template/releases/download/agent-grants-v0.2.0/cogni-dao-agent-grants-0.2.0.tgz",
     "@cogni/ai-core": "workspace:*",
     "@cogni/local-ai-tools": "workspace:@cogni/ai-tools@*",
-    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.9.0/cogni-dao-work-items-0.9.0.tgz",
-    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.17.0/cogni-dao-knowledge-store-0.17.0.tgz",
-    "@cogni-dao/metrics": "https://github.com/cogni-dao/node-template/releases/download/metrics-v0.7.0/cogni-dao-metrics-0.7.0.tgz"
+    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.13.0/cogni-dao-work-items-0.13.0.tgz",
+    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.18.0/cogni-dao-knowledge-store-0.18.0.tgz",
+    "@cogni-dao/metrics": "https://github.com/cogni-dao/node-template/releases/download/metrics-v0.14.1/cogni-dao-metrics-0.14.1.tgz"
   },
   "devDependencies": {
     "tsup": "^8.5.1",

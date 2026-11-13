@@ -6,7 +6,10 @@
  * Purpose: HTTP endpoints for a single Dolt-backed work item.
  * Scope: Auth-protected GET, PATCH, and DELETE endpoints.
  * Invariants: VALIDATE_IO, CONTRACTS_ARE_TRUTH
+ * Write errors (task.0097): `workItemWriteErrorResponse` from @cogni/work-items answers every write-contract error; this route keeps only auth, 403, 404 and backend-unavailable.
  * Reason + cites (task.0086): a missing or over-cap reason is HTTP400 `invalid input` with an issue at `reason`; an unknown cite id or a closed inbox is HTTP400 `cite_unresolved`; cites with no resolver wired is HTTP400 `cites_unsupported`; a resolver failure is HTTP503. Nothing is written in each case.
+ * Moves (story.0033): `set.moves` with an unknown or deprecated metric id is HTTP400 `cite_unresolved` with an issue at `set.moves`; a bad list is HTTP400 `invalid input`; a non-empty list with no metric wiring is HTTP400 `moves_unsupported`; a resolver failure is HTTP503 `cite_resolver_unavailable`; a baseline failure is HTTP503 `metric_baseline_unavailable`. The client never sets a baseline: the server pins it.
+ * Envelope (task.0118): GET returns each `moves` entry with its metric, KPI and goal; `?include=links` adds the first page of citation links (same read as /api/v1/citations/{id}); an unknown include is HTTP400.
  * Side-effects: IO (HTTP response, Doltgres read/write via port)
  * Links: contracts/work.items.{get,patch,delete}.v1.contract
  * @public
@@ -17,18 +20,12 @@ import {
   workItemsGetOperation,
   workItemsPatchOperation,
 } from "@cogni/node-contracts";
+import { workItemWriteErrorResponse } from "@cogni/work-items";
 import { NextResponse } from "next/server";
 import {
   deleteWorkItem,
   getWorkItem,
-  ChangeReasonInvalidError,
-  CitesInvalidError,
-  CitesUnsupportedError,
-  EntryResolverUnavailableError,
-  EntryUnresolvedError,
   patchWorkItem,
-  WorkItemScoresInvalidError,
-  WorkItemRevisionConflictError,
   WorkItemForbiddenError,
   WorkItemNotFoundError,
   WorkItemsBackendNotReadyError,
@@ -46,24 +43,33 @@ export const GET = wrapRouteHandlerWithLogging<{
   params: Promise<{ id: string }>;
 }>(
   { routeId: "work.items.get", auth: { mode: "required", getSessionUser } },
-  async (ctx, _request, _sessionUser, context) => {
+  async (ctx, request, _sessionUser, context) => {
     if (!context) throw new Error("context required for dynamic routes");
     const { id } = await context.params;
 
+    // `?include=links` (comma list): optional envelope parts. Unknown parts are a 400, not ignored.
+    const requested = new URL(request.url).searchParams
+      .getAll("include")
+      .flatMap((value) => value.split(","))
+      .filter(Boolean);
+    const input = workItemsGetOperation.input.safeParse({
+      id,
+      ...(requested.length && { include: requested }),
+    });
+    if (!input.success) {
+      return NextResponse.json(
+        { error: "invalid input", issues: input.error.issues },
+        { status: 400 }
+      );
+    }
+
     let item: Awaited<ReturnType<typeof getWorkItem>>;
     try {
-      item = await getWorkItem(id);
+      item = await getWorkItem(id, {
+        signal: request.signal,
+        includeLinks: input.data.include?.includes("links") ?? false,
+      });
     } catch (error) {
-      if (error instanceof WorkItemScoresInvalidError) {
-        return NextResponse.json({ error: "invalid input", errorCode: error.code, issues: error.issues }, { status: 400 });
-      }
-      if (error instanceof WorkItemRevisionConflictError) {
-        return NextResponse.json({ error: "revision_conflict", expectedRevision: error.expectedRevision, currentRevision: error.currentRevision }, { status: 409 });
-      }
-      if ((error as Error)?.name === "WorkItemWriteOutcomeUnknownError") {
-        const unknown = error as { code: string; receipt: { lookup: unknown } };
-        return NextResponse.json({ error: unknown.code, retryable: false, lookup: unknown.receipt.lookup }, { status: 503 });
-      }
       if (error instanceof WorkItemsBackendNotReadyError) {
         return NextResponse.json({ error: error.message }, { status: 503 });
       }
@@ -130,63 +136,11 @@ export const PATCH = wrapRouteHandlerWithLogging<{
       ctx.log.info({ workItemId: id, citeCount: parsed.data.cites?.length ?? 0 }, "work.items.patch_success");
       return NextResponse.json(workItemsPatchOperation.output.parse(patched));
     } catch (error) {
-      if (error instanceof WorkItemScoresInvalidError) {
-        return NextResponse.json({ error: "invalid input", errorCode: error.code, issues: error.issues }, { status: 400 });
-      }
-      // The adapter is the one enforcer of reason and cites (task.0086); the schema above
-      // says the same thing earlier, so these cover a rule the schema could not see.
-      if (error instanceof ChangeReasonInvalidError) {
-        return NextResponse.json(
-          { error: "invalid input", issues: [{ code: "custom", path: ["reason"], message: error.message }] },
-          { status: 400 }
-        );
-      }
-      if (error instanceof CitesInvalidError) {
-        return NextResponse.json(
-          {
-            error: "invalid input",
-            issues: error.issues.map((message) => ({ code: "custom", path: ["cites"], message })),
-          },
-          { status: 400 }
-        );
-      }
-      if (error instanceof EntryUnresolvedError) {
-        return NextResponse.json(
-          {
-            error: "invalid input",
-            errorCode: error.code,
-            ids: error.ids,
-            issues: error.ids.map((cited) => ({
-              code: "custom",
-              path: ["cites"],
-              message: `cited entry not found: ${cited}`,
-            })),
-          },
-          { status: 400 }
-        );
-      }
-      if (error instanceof CitesUnsupportedError) {
-        return NextResponse.json(
-          {
-            error: "invalid input",
-            errorCode: error.code,
-            issues: [{ code: "custom", path: ["cites"], message: error.message }],
-          },
-          { status: 400 }
-        );
-      }
-      if (error instanceof EntryResolverUnavailableError) {
-        return NextResponse.json(
-          { error: "cites_unavailable", errorCode: error.code, message: error.message },
-          { status: 503 }
-        );
-      }
-      if (error instanceof WorkItemRevisionConflictError) {
-        return NextResponse.json({ error: "revision_conflict", expectedRevision: error.expectedRevision, currentRevision: error.currentRevision }, { status: 409 });
-      }
-      if ((error as Error)?.name === "WorkItemWriteOutcomeUnknownError") {
-        const unknown = error as { code: string; receipt: { lookup: unknown } };
-        return NextResponse.json({ error: unknown.code, retryable: false, lookup: unknown.receipt.lookup }, { status: 503 });
+      // The package owns every write-contract answer (scores, reason, cites, moves, revision
+      // conflict, write outcome unknown, resolver and baseline failures) and matches by name.
+      const mapped = workItemWriteErrorResponse(error, "patch");
+      if (mapped) {
+        return NextResponse.json(mapped.body, { status: mapped.status });
       }
       if (error instanceof WorkItemNotFoundError) {
         return NextResponse.json({ error: error.message }, { status: 404 });
@@ -235,16 +189,6 @@ export const DELETE = wrapRouteHandlerWithLogging<{
         workItemsDeleteOperation.output.parse({ id, deleted: true })
       );
     } catch (error) {
-      if (error instanceof WorkItemScoresInvalidError) {
-        return NextResponse.json({ error: "invalid input", errorCode: error.code, issues: error.issues }, { status: 400 });
-      }
-      if (error instanceof WorkItemRevisionConflictError) {
-        return NextResponse.json({ error: "revision_conflict", expectedRevision: error.expectedRevision, currentRevision: error.currentRevision }, { status: 409 });
-      }
-      if ((error as Error)?.name === "WorkItemWriteOutcomeUnknownError") {
-        const unknown = error as { code: string; receipt: { lookup: unknown } };
-        return NextResponse.json({ error: unknown.code, retryable: false, lookup: unknown.receipt.lookup }, { status: 503 });
-      }
       if (error instanceof WorkItemForbiddenError) {
         return NextResponse.json({ error: error.message }, { status: 403 });
       }
