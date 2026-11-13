@@ -5,9 +5,9 @@
  * Module: `@app/api/v1/knowledge/[id]/route`
  * Purpose: GET /api/v1/knowledge/[id] — fetch a single knowledge entry for the routable
  *   full-page view (the permalink target humans click and AI emits).
- * Scope: Signed-in human, or a bearer agent holding the knowledge:read role (sameDoor `knowledge.read`), mirroring the list route.
+ * Scope: Any authenticated principal (cookie-session human OR bearer agent), mirroring the list route.
  *   Reads via container.knowledgeStorePort.getKnowledge.
- * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, KNOWLEDGE_READ_NEEDS_GRANT.
+ * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, KNOWLEDGE_READ_REQUIRES_PRINCIPAL.
  * Side-effects: IO (HTTP response, Doltgres read via container port)
  * Links: docs/spec/knowledge-syntropy.md
  * @public
@@ -29,15 +29,14 @@ export const GET = wrapRouteHandlerWithLogging<{
 }>(
   {
     routeId: "knowledge.get",
-    sameDoor: "knowledge.read",
     auth: { mode: "required", getSessionUser },
   },
   async (ctx, _request, sessionUser, context) => {
     if (!sessionUser) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
-    // A signed-in human reads. A bearer agent needs the knowledge:read role (sameDoor knowledge.read; KNOWLEDGE_READ_NEEDS_GRANT).
-    // Merged entries are not open to any registered key;
+    // Any authenticated principal may read (KNOWLEDGE_READ_REQUIRES_PRINCIPAL).
+    // Bearer agents recall merged entries just like the human browse UI;
     // per-principal x402 metering for external readers remains future work.
 
     const port = getContainer().knowledgeStorePort;

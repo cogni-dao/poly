@@ -3,10 +3,10 @@
 
 /**
  * Module: `@app/api/v1/knowledge/domains/route`
- * Purpose: HTTP endpoints for the knowledge domain registry collection — GET list with entry counts and POST register a new domain. Item-scoped get/update/delete live in ./[domain]/route.ts.
- * Scope: Signed-in human, or a bearer agent holding the knowledge:read role (sameDoor `knowledge.read`). Does not contain business logic; delegates to _handlers.ts and the container's KnowledgeStorePort.
+ * Purpose: HTTP endpoints for the knowledge domain registry — GET list with entry counts and POST register a new domain.
+ * Scope: Any authenticated principal (cookie-session human OR bearer agent). Does not contain business logic; delegates to _handlers.ts and the container's KnowledgeStorePort.
  * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, DOMAIN_HTTP_REQUIRES_PRINCIPAL
- *   (list: knowledge.read door; register: bearer-or-session), DOMAIN_REGISTER_AUTOCOMMITS.
+ *   (list: any principal; register: bearer-or-session), DOMAIN_REGISTER_AUTOCOMMITS.
  * Side-effects: IO (HTTP response, Doltgres read/write via container port)
  * Links: docs/spec/knowledge-domain-registry.md
  * @public
@@ -22,7 +22,6 @@ export const runtime = "nodejs";
 export const GET = wrapRouteHandlerWithLogging(
   {
     routeId: "knowledge.domains.list",
-    sameDoor: "knowledge.read",
     auth: { mode: "required", getSessionUser },
   },
   async (_ctx, request, sessionUser) => handleList(request, sessionUser)

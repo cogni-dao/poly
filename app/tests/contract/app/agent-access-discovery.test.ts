@@ -44,8 +44,7 @@ describe("agent access discovery", () => {
 
     expect(body.actions.listOwnAgentAccessRequests).toMatchObject({
       method: "GET",
-      endpoint:
-        "https://poly.example.test/api/v1/agent/access-requests?kind=account",
+      endpoint: "https://poly.example.test/api/v1/agent/access-requests",
       auth: { type: "bearer" },
     });
     expect(body.actions.requestAgentAccess).toMatchObject({

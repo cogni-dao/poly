@@ -21,7 +21,6 @@ export const runtime = "nodejs";
 export const POST = wrapRouteHandlerWithLogging(
   {
     routeId: "edo.hypothesize",
-    sameDoor: "core__edo_hypothesize",
     auth: { mode: "required", getSessionUser },
   },
   async (_ctx, request, sessionUser) => handleHypothesize(request, sessionUser)

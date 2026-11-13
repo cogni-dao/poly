@@ -30,11 +30,7 @@ export type { AgentCatalogProvider } from "./ai/agent-catalog.provider";
 export { AggregatingAgentCatalog } from "./ai/aggregating-agent-catalog";
 export type { ExecutionScope } from "./ai/execution-scope";
 // Execution scope (ALS) — per-run billing + actor context for tools
-export {
-  getExecutionScope,
-  runInScope,
-  scopeUserId,
-} from "./ai/execution-scope";
+export { getExecutionScope, runInScope } from "./ai/execution-scope";
 export {
   type CompletionStreamFn,
   type CompletionStreamParams,

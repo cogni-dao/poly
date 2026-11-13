@@ -33,7 +33,6 @@ export const tsupConfig = defineConfig({
     "src/trader-activity.ts",
     "src/wallet-connections.ts",
     "src/wallet-grants.ts",
-    "src/agent-authority.ts",
   ],
   format: ["esm"],
   dts: false, // tsc -b emits per-file declarations; tsup handles JS only

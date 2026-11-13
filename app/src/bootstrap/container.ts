@@ -23,10 +23,7 @@ import type {
 	RepoCapability,
 	WebSearchCapability,
 } from "@cogni/ai-tools";
-import {
-	POLY_CORE_TOOL_BUNDLE,
-	POLY_GRANT_DECLARATION_BUNDLE,
-} from "@/bootstrap/ai/evaluation-baseline";
+import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
 import { KpiBindingsSchema } from "@cogni-dao/metrics/contracts";
 import type { GoalsProgress, MetricService } from "@cogni-dao/metrics";
 import {
@@ -59,7 +56,6 @@ import {
 	createKnowledgeCapability,
 	defaultCanMergeKnowledge,
 	type KnowledgeStorePort,
-	type NodeAdminAuthority,
 	shapeGate,
 } from "@cogni/knowledge-store";
 import {
@@ -109,7 +105,6 @@ import {
 	GitHubWebhookNormalizer,
 	getAppDb,
 	getExecutionScope,
-	scopeUserId,
 	LangfuseAdapter,
 	LiteLlmAdapter,
 	type MimirAdapterConfig,
@@ -166,13 +161,6 @@ import { stubVcsCapability } from "@/bootstrap/capabilities/vcs";
 import { createWebSearchCapability } from "@/bootstrap/capabilities/web-search";
 import { createCitationLinksPort } from "@/bootstrap/capabilities/citation-links";
 import { createWorkItemCapability } from "@/bootstrap/capabilities/work-item";
-import {
-	type AgentAuthoritySql,
-	type AgentToolAuthority,
-	createAgentToolAuthority,
-} from "@/bootstrap/agent-authority";
-import { PRINCIPAL_TOOL_BUNDLE } from "@/bootstrap/ai/principal-tool-source";
-import { createApproversNodeAdminAuthority } from "@/bootstrap/node-admin-gate";
 import { createMoveMetricPorts } from "@/bootstrap/capabilities/work-item-moves";
 import type { RateLimitBypassConfig } from "@/bootstrap/http/wrapPublicRoute";
 import {
@@ -195,7 +183,6 @@ import {
 	getPolyTraderWalletAdapter,
 	WalletAdapterUnconfiguredError,
 } from "@/bootstrap/poly-trader-wallet";
-import { createNodeAdminPort } from "@/bootstrap/node-admin-port";
 import { startProcessHealthPublisher } from "@/bootstrap/publishers";
 import type { RedeemPipelineHandles } from "@/bootstrap/redeem-pipeline";
 import {
@@ -218,7 +205,6 @@ import type {
 	MetricsQueryPort,
 	ModelCatalogPort,
 	ModelProviderResolverPort,
-	NodeAdminPort,
 	OnChainVerifier,
 	OperatorWalletPort,
 	PaymentAttemptServiceRepository,
@@ -307,12 +293,6 @@ export interface Container {
 	toolSource: ToolSourcePort;
 	/** External-agent knowledge contribution service — undefined when DOLTGRES_URL is unset */
 	knowledgeContributionService: ContributionService | undefined;
-	/** GOAL_CHANGE_IS_NODE_ADMIN / P0P1_IS_NODE_ADMIN: this node's one node-admin authority (repo-spec admin wallets). */
-	nodeAdmin: NodeAdminAuthority;
-	/** Runtime tool authority: principal lookup, guard wiring and role grant/revoke (task.5456). */
-	agentAuthority: AgentToolAuthority;
-	/** ADMIN_ACTS_IN_ADMIN: the only door for node-admin writes; callable only with an `AdminSession` minted in `(admin)/`. */
-	nodeAdminPort: NodeAdminPort;
 	/** Direct knowledge store port — exposed for the cookie-only browse endpoint. Undefined when DOLTGRES_URL is unset. */
 	knowledgeStorePort: KnowledgeStorePort | undefined;
 	/** EDO hypothesis-loop capability for the langgraph tool bindings AND the bearer-auth REST routes under /api/v1/edo. Always present (stubs throw when DOLTGRES_URL is unset). */
@@ -2635,7 +2615,7 @@ function createContainer(): Container {
 		backlogWriter: {
 			store: workItemAdapter,
 			principalId: () => {
-				const actor = scopeUserId(getExecutionScope());
+				const actor = getExecutionScope().actorUserId;
 				if (!actor) throw new Error("Authenticated work-item actor required");
 				return actor;
 			},
@@ -2664,8 +2644,6 @@ function createContainer(): Container {
 		metrics: () => goalMetrics,
 		goalProgress,
 	});
-	// GOAL_CHANGE_IS_NODE_ADMIN: repo-spec admin wallets are this node's one node-admin authority.
-	const nodeAdmin = createApproversNodeAdminAuthority();
 	const toolSource = createBoundToolSource([...POLY_CORE_TOOL_BUNDLE], {
 		...toolBindings,
 		...metricTools.bindings,
@@ -2785,14 +2763,6 @@ function createContainer(): Container {
 		environment: env.DEPLOY_ENVIRONMENT ?? "local",
 	});
 
-	const agentAuthority = createAgentToolAuthority({
-		// Service role: agent_roles / agent_principals are deny-all for the app role.
-		sql: serviceDb.$client as unknown as AgentAuthoritySql,
-		nodeAdmin,
-		log,
-		toolBundle: [...POLY_GRANT_DECLARATION_BUNDLE, ...PRINCIPAL_TOOL_BUNDLE],
-	});
-
 	return {
 		log,
 		config,
@@ -2826,9 +2796,6 @@ function createContainer(): Container {
 		repoCapability,
 		toolSource,
 		knowledgeContributionService,
-		nodeAdmin,
-		agentAuthority,
-		nodeAdminPort: createNodeAdminPort(agentAuthority),
 		knowledgeStorePort,
 		edoCapability,
 		threadPersistenceForUser: (userId: UserId) =>
