@@ -51,6 +51,7 @@ import {
   McpToolSource,
   parseMcpConfigFromEnv,
 } from "@cogni/langgraph-graphs";
+import { COGNI_SYSTEM_PRINCIPAL_USER_ID } from "@cogni/node-shared";
 import { trace } from "@opentelemetry/api";
 import {
   type CompletionStreamFn,
@@ -320,7 +321,11 @@ export function runGraphWithScope(params: {
       billing,
       llmService,
       usageSource,
-      ...(ctx?.actorUserId ? { actorUserId: ctx.actorUserId } : {}),
+      // THREE_IDENTITIES: the authenticated caller is the subject, bearer agents included. The system
+      // principal never acts as a subject; a run with no caller has none.
+      ...(ctx?.actorUserId && ctx.actorUserId !== COGNI_SYSTEM_PRINCIPAL_USER_ID
+        ? { subjectUserId: ctx.actorUserId }
+        : {}),
       ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
     },
     () => executor.runGraph(req, ctx)
@@ -578,7 +583,8 @@ function createInProcProvider(
     composeToolSources(principalToolSource, container.toolSource),
     () => cache.getSource(),
     [...POLY_CORE_TOOL_BUNDLE, ...PRINCIPAL_TOOL_BUNDLE],
-    POLY_NODE_LANGGRAPH_CATALOG
+    POLY_NODE_LANGGRAPH_CATALOG,
+    container.agentAuthority
   );
 }
 

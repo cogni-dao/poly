@@ -86,7 +86,11 @@ export const GET = wrapRouteHandlerWithLogging<{
 export const PATCH = wrapRouteHandlerWithLogging<{
   params: Promise<{ id: string }>;
 }>(
-  { routeId: "work.items.patch", auth: { mode: "required", getSessionUser } },
+  {
+    routeId: "work.items.patch",
+    sameDoor: "core__work_item_update",
+    auth: { mode: "required", getSessionUser },
+  },
   async (ctx, request, sessionUser, context) => {
     if (!context) throw new Error("context required for dynamic routes");
     if (!sessionUser) {

@@ -53,6 +53,10 @@ vi.mock("@/bootstrap/container", () => ({
     },
     accountsForUser: vi.fn(() => mockAccountService),
     scheduleManager: mockScheduleManager,
+    // SAME_DOOR: the schedules routes call the route door; this test is about the credit gate, so the door is open.
+    agentAuthority: {
+      authorizeRoute: vi.fn(async () => ({ decision: "allow", basis: "signed_in" })),
+    },
   })),
 }));
 

@@ -15,6 +15,7 @@ export const POST = wrapRouteHandlerWithLogging<{
 }>(
 	{
 		routeId: "metrics.metricCompute",
+    sameDoor: "core__metric_compute",
 		auth: { mode: "required", getSessionUser },
 	},
 	async (_ctx, request, user, context) => {

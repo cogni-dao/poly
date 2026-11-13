@@ -39,6 +39,10 @@ vi.mock("@/shared/config", () => ({
 }));
 
 // Import after mocks
+import {
+	formatRevocableKey,
+	REVOCABLE_KEY_PREFIX,
+} from "@cogni/agent-grants/credentials";
 import { proxy } from "@/proxy";
 
 // --- Helpers ---
@@ -47,11 +51,12 @@ function makeRequest(path: string): NextRequest {
 	return new NextRequest(new URL(path, "http://localhost:3000"));
 }
 
-function makeAgentRequest(path: string): NextRequest {
+function makeAgentRequest(
+	path: string,
+	authorization = "Bearer cogni_ag_sk_v1_test.payload.signature",
+): NextRequest {
 	return new NextRequest(new URL(path, "http://localhost:3000"), {
-		headers: {
-			authorization: "Bearer cogni_ag_sk_v1_test.payload.signature",
-		},
+		headers: { authorization },
 	});
 }
 
@@ -209,6 +214,51 @@ describe("proxy — API route protection", () => {
 		expect(mockGetToken).not.toHaveBeenCalled();
 	});
 
+	it("allows a well-formed revocable bearer through the perimeter, and rejects an unknown bearer prefix (task.0070)", async () => {
+		mockGetToken.mockResolvedValue(null);
+
+		const revocable = await proxy(
+			makeAgentRequest(
+				"/api/v1/agent/credentials/rotate",
+				`Bearer ${formatRevocableKey("a".repeat(43))}`,
+			),
+		);
+		expect(revocable.status).toBe(200);
+		expect(mockGetToken).not.toHaveBeenCalled();
+
+		const v3 = await proxy(
+			makeAgentRequest("/api/v1/agent/credentials/rotate", "Bearer cogni_ag_sk_v3_abc"),
+		);
+		expect(v3.status).toBe(401);
+	});
+
+	it("rejects a revocable bearer with a bad shape or checksum at the perimeter, before any route handler (CHECKSUM_BEFORE_DB)", async () => {
+		mockGetToken.mockResolvedValue(null);
+		mockLoggerInfo.mockClear();
+		const good = formatRevocableKey("a".repeat(43));
+		const badChecksum = `${good.slice(0, -1)}${good.endsWith("A") ? "B" : "A"}`;
+		for (const token of [
+			`${REVOCABLE_KEY_PREFIX}abc`,
+			badChecksum,
+			`${good}x`,
+		]) {
+			const res = await proxy(
+				makeAgentRequest("/api/v1/knowledge", `Bearer ${token}`),
+			);
+			expect(res.status).toBe(401);
+		}
+		expect(mockLoggerInfo).toHaveBeenCalledWith(
+			expect.objectContaining({
+				routeId: "auth.perimeter",
+				reason: "bad_key_format",
+				status: 401,
+			}),
+			expect.anything(),
+		);
+		// The denial event never carries the token.
+		expect(JSON.stringify(mockLoggerInfo.mock.calls)).not.toContain(good.slice(-10));
+	});
+
 	it("rejects unauthenticated on /api/v1/*", async () => {
 		mockGetToken.mockResolvedValue(null);
 
@@ -299,6 +349,34 @@ describe("proxy — API route protection", () => {
 
 		expect(res.status).toBe(200);
 		expect(mockGetToken).not.toHaveBeenCalled();
+	});
+});
+
+describe("proxy — Admin area refuses any Authorization header (ADMIN_ACTS_IN_ADMIN)", () => {
+	beforeEach(() => {
+		mockGetToken.mockReset();
+	});
+
+	it.each([
+		"/api/v1/admin/ai-access",
+		"/admin/ai-access",
+		"/admin",
+	])("403 human_session_required on %s, even with a valid session, before getToken", async (path) => {
+		mockGetToken.mockResolvedValue({ sub: "admin-1" });
+
+		const res = await proxy(makeAgentRequest(path));
+
+		expect(res.status).toBe(403);
+		expect(await res.json()).toMatchObject({ code: "human_session_required" });
+		expect(mockGetToken).not.toHaveBeenCalled();
+	});
+
+	it("still lets a session-only request through to /api/v1/admin/*", async () => {
+		mockGetToken.mockResolvedValue({ sub: "admin-1" });
+
+		const res = await proxy(makeRequest("/api/v1/admin/ai-access"));
+
+		expect(res.status).toBe(200);
 	});
 });
 

@@ -12,11 +12,14 @@
  *   other /api/v1/* route. auth.mode=none because the endpoint is the
  *   onboarding seam itself — callers can't present credentials they haven't
  *   been issued yet. Security hardening (invitation token) tracked in bug.0297.
+ *   The name is the text an admin reads on the access table, so a hidden-character name is 400 and a name that matches an
+ *   existing user or one of this node's AI is 409 `name_taken`.
  * Links: docs/spec/security-auth.md, bug.0297
  * @public
  */
 
 import { randomUUID } from "node:crypto";
+import { hasHiddenCharacters } from "@cogni/agent-grants";
 import { users } from "@cogni/db-schema";
 import { registerAgentOperation } from "@cogni/node-contracts";
 import { NextResponse } from "next/server";
@@ -33,7 +36,17 @@ export const POST = wrapRouteHandlerWithLogging(
     if (!parsed.success) {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 });
     }
-    const input = parsed.data;
+    // The name is what an admin reads when deciding on this agent's asks. Refuse hidden or direction characters, and any name that
+    // matches (case, spacing, look-alike forms) an existing user or one of this node's AI. A concurrent pair can still race
+    // (no unique index on users.name by design: humans share names); the admin table marks every outside name and shows
+    // the proven binding beside it.
+    if (hasHiddenCharacters(parsed.data.name)) {
+      return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+    }
+    const input = { ...parsed.data, name: parsed.data.name.trim().replace(/\s+/g, " ") };
+    if (await getContainer().agentAuthority.nameTaken(input.name)) {
+      return NextResponse.json({ error: "name_taken" }, { status: 409 });
+    }
 
     const db = resolveServiceDb();
     const id = randomUUID();

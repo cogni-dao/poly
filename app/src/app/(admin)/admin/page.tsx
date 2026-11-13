@@ -14,6 +14,7 @@
 import {
 	ChevronRight,
 	FileSignature,
+	KeyRound,
 	Layers,
 	PieChart,
 	ShieldCheck,
@@ -151,6 +152,30 @@ export default async function AdminIndexPage(): Promise<ReactElement> {
 								</div>
 								<p className="text-muted-foreground text-sm">
 									View DAO treasury, operating costs, and funding evidence.
+								</p>
+							</div>
+						</CardContent>
+					</Card>
+				</Link>
+			</section>
+
+			<section className="space-y-3">
+				<h2 className="font-medium text-muted-foreground text-xs uppercase tracking-wider">
+					AI
+				</h2>
+				<Link href="/admin/ai-access" className="group block">
+					<Card className="h-full transition hover:border-primary/50 hover:shadow-md">
+						<CardContent className="flex items-start gap-4 p-5">
+							<div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+								<KeyRound className="h-5 w-5 text-primary" />
+							</div>
+							<div className="min-w-0 flex-1 space-y-1">
+								<div className="flex items-center justify-between gap-2">
+									<h3 className="font-semibold">AI access</h3>
+									<ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition group-hover:translate-x-1 group-hover:text-primary" />
+								</div>
+								<p className="text-muted-foreground text-sm">
+									Permissions you approve here apply to the whole node.
 								</p>
 							</div>
 						</CardContent>

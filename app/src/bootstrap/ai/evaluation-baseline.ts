@@ -22,3 +22,15 @@ export const POLY_CORE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
   ...CORE_TOOL_BUNDLE.filter((tool) => !baselineIds.has(tool.contract.name)), ...replacements,
   ...METRIC_TOOL_BUNDLE,
 ];
+
+/**
+ * Every tool contract whose `requires` this node declares to the grant system (permission catalog and route doors).
+ * `core__work_item_update` is the contract the work-item PATCH route twins (SAME_DOOR_ROUTES in `@cogni/agent-grants`); it is
+ * declared here for its `requires` only and is not bound or offered to any graph.
+ */
+export const POLY_GRANT_DECLARATION_BUNDLE: readonly CatalogBoundTool[] = [
+  ...POLY_CORE_TOOL_BUNDLE,
+  ...SHARED_TOOL_BUNDLE.filter(
+    (tool) => tool.contract.name === "core__work_item_update"
+  ),
+];

@@ -4,7 +4,7 @@
 /**
  * Module: `@bootstrap/capabilities/schedule`
  * Purpose: Factory for ScheduleCapability — bridges ai-tools interface to ScheduleUserPort with RLS-scoped user identity.
- * Scope: Creates ScheduleCapability that reads actorUserId from ExecutionScope (ALS) at invocation time. Does not implement transport.
+ * Scope: Creates ScheduleCapability that reads the subject (else principal) user id from ExecutionScope (ALS) at invocation time. Does not implement transport.
  * Invariants:
  *   - RLS_ENFORCED: All schedule operations use the real user's identity, never system principal
  *   - CRUD_IS_TEMPORAL_AUTHORITY: All mutations go through ScheduleUserPort → Temporal
@@ -23,7 +23,7 @@ import type { UserId } from "@cogni/ids";
 import { toUserId } from "@cogni/ids";
 import type { ScheduleUserPort } from "@cogni/scheduler-core";
 
-import { getExecutionScope } from "@/adapters/server";
+import { getExecutionScope, scopeUserId } from "@/adapters/server";
 import { getNodeId } from "@/shared/config";
 
 /**
@@ -35,18 +35,18 @@ export interface ScheduleCapabilityDeps {
 }
 
 /**
- * Resolve the current actor's userId from ExecutionScope (ALS).
- * Throws if no execution scope or no actorUserId — tools must run within a graph execution.
+ * Resolve the user id schedule operations run as from ExecutionScope (ALS): the subject, else the principal.
+ * Throws if no execution scope or no identity — tools must run within a graph execution.
  */
 function resolveUserId(): UserId {
-  const scope = getExecutionScope();
-  if (!scope.actorUserId) {
+  const userId = scopeUserId(getExecutionScope());
+  if (!userId) {
     throw new Error(
-      "ScheduleCapability: actorUserId not set in ExecutionScope. " +
+      "ScheduleCapability: no subject or principal in ExecutionScope. " +
         "Schedule tools must run within an authenticated graph execution."
     );
   }
-  return toUserId(scope.actorUserId);
+  return toUserId(userId);
 }
 
 function toScheduleInfo(spec: {

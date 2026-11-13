@@ -76,6 +76,11 @@
       "import": "./dist/poly-redeem-jobs.js",
       "default": "./dist/poly-redeem-jobs.js"
     },
+    "./agent-authority": {
+      "types": "./dist/agent-authority.d.ts",
+      "import": "./dist/agent-authority.js",
+      "default": "./dist/agent-authority.js"
+    },
     "./profile": {
       "types": "./dist/profile.d.ts",
       "import": "./dist/profile.js",

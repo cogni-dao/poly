@@ -174,7 +174,11 @@ export const GET = wrapRouteHandlerWithLogging<{
 export const PATCH = wrapRouteHandlerWithLogging<{
   params: Promise<{ scheduleId: string }>;
 }>(
-  { routeId: "schedules.update", auth: { mode: "required", getSessionUser } },
+  {
+    routeId: "schedules.update",
+    sameDoor: "core__schedule_manage",
+    auth: { mode: "required", getSessionUser },
+  },
   async (ctx, request, sessionUser, context) => {
     try {
       if (!context) throw new Error("context required for dynamic routes");
@@ -233,7 +237,11 @@ export const PATCH = wrapRouteHandlerWithLogging<{
 export const DELETE = wrapRouteHandlerWithLogging<{
   params: Promise<{ scheduleId: string }>;
 }>(
-  { routeId: "schedules.delete", auth: { mode: "required", getSessionUser } },
+  {
+    routeId: "schedules.delete",
+    sameDoor: "core__schedule_manage",
+    auth: { mode: "required", getSessionUser },
+  },
   async (ctx, _request, sessionUser, context) => {
     try {
       if (!context) throw new Error("context required for dynamic routes");
