@@ -26,6 +26,8 @@ export const EVENT_NAMES = {
 	// Goal metrics (story.0021): refresh dispatch receipt and goals read.
 	METRIC_REFRESH_COMPLETE: "metric.refresh_complete",
 	GOALS_PROGRESS_READ: "goals.progress_read",
+	// Work item expectations read (task.0112): one terminal event per request, no row content.
+	WORK_EXPECTATIONS_READ: "work.expectations.read",
 	// Row history reads (story.0023): one terminal event per read, counts only.
 	WORK_ITEMS_HISTORY_READ: "work.items.history_read",
 	// Bounded work reads (task.0056): one terminal event per /work/summaries or /work/board request.

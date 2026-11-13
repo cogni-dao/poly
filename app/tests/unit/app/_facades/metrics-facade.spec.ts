@@ -54,7 +54,7 @@ describe("metrics facade", () => {
     expect(out).toEqual({
       status: 200,
       cache: "no-store",
-      body: { asOf: "2026-11-02T10:00:00.000Z", environment: "local", goals: [] },
+      body: { asOf: "2026-11-02T10:00:00.000Z", environment: "local", goals: [], historyMode: "full" },
     });
   });
 

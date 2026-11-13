@@ -12,7 +12,6 @@ type WorkRouter = {
 interface WorkListState {
   readonly type: readonly string[];
   readonly status: readonly string[];
-  readonly project: readonly string[];
   readonly sort: string | null;
   readonly query: string;
   readonly rankRange?: readonly [number | undefined, number | undefined];
@@ -51,7 +50,8 @@ export function workViewHref(
   setListParam(params, "type", state.type);
   setListParam(params, "status", state.status);
   if (state.status.length === 0) params.set("status", "all");
-  setListParam(params, "project", state.project);
+  // The Project filter was replaced by the Goal column (task.0112); an old link's value is dropped on the next edit.
+  params.delete("project");
   params.delete("sort");
   if (state.sort) params.set("sort", state.sort);
   params.delete("q");

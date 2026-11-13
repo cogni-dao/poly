@@ -43,6 +43,13 @@
       "when": 1794261318375,
       "tag": "0005_repair_knowledge_metric_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794540014405,
+      "tag": "0006_work_item_moves",
+      "breakpoints": true
     }
   ]
 }
