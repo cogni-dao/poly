@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
   // Deep-probe dependencies added with the declared-dependency registry.
   streamLength: vi.fn(),
   getKnowledge: vi.fn(),
+  writerHealth: vi.fn(() => ({ state: "available" })),
   fetch: vi.fn(),
 }));
 
@@ -51,6 +52,9 @@ vi.mock("@/bootstrap/container", () => ({
     },
     knowledgeStorePort: {
       getKnowledge: (...args: unknown[]) => mocks.getKnowledge(...args),
+    },
+    doltgresWorkItems: {
+      writerHealth: () => mocks.writerHealth(),
     },
   }),
 }));
@@ -544,6 +548,39 @@ describe("GET /readyz async substrate contract", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.getKnowledge).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails the Doltgres probe while the work-item writer is held, naming the hold (bug.0042)", async () => {
+    mocks.serverEnv.mockReturnValue({
+      APP_BUILD_SHA: "readyz-contract-sha",
+      APP_ENV: "production",
+      LITELLM_BASE_URL: "http://litellm:4000",
+      LITELLM_MASTER_KEY: "sk-readyz-test",
+      REDIS_URL: "redis://localhost:6379",
+      DOLTGRES_URL: "postgresql://doltgres:5432/knowledge",
+    });
+    mocks.writerHealth.mockReturnValueOnce({
+      state: "held",
+      nativeState: "unknown",
+      since: "2026-11-13T17:05:15.813Z",
+      heldMs: 42_000,
+      reason: "outcome_unknown",
+      stage: "lock.try",
+      operationId: "op-1",
+      operation: "patch task.0120",
+      settleAttempts: 2,
+      settling: false,
+    });
+
+    const response = await GET(request("/readyz?deep=1"));
+
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toMatchObject({ unreachable: ["doltgres"] });
+    expect(body.message).toMatch(
+      /Work-item writer held 42000ms .*outcome_unknown at lock\.try \(operation op-1/
+    );
+    expect(mocks.getKnowledge).not.toHaveBeenCalled();
   });
 
   it("skips the Doltgres probe when DOLTGRES_URL is unset", async () => {

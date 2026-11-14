@@ -53,6 +53,6 @@
   "dependencies": {
     "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.18.0/cogni-dao-knowledge-store-0.18.0.tgz",
     "@cogni/ai-tools": "workspace:*",
-    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.13.0/cogni-dao-work-items-0.13.0.tgz"
+    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.14.0/cogni-dao-work-items-0.14.0.tgz"
   }
 }
