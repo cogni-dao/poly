@@ -9,7 +9,7 @@
  *   - NO_BILLING_LEAKAGE: No billingAccountId, virtualKeyId, or billing types
  *   - NO_TRACING_LEAKAGE: No traceId — flows via OTel context propagation
  * Side-effects: none (type only)
- * Links: docs/spec/unified-graph-launch.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/unified-graph-launch.md
  * @public
  */
 

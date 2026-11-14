@@ -11,7 +11,7 @@
  * - WEBHOOK_VERIFY_BEFORE_NORMALIZE: verify() must be called before normalize() — enforced by feature service
  * - ACTIVITY_IDEMPOTENT: Deterministic event IDs from tx hash (same tx hash always produces same event ID)
  * Side-effects: none
- * Links: docs/spec/governance-signal-execution.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/governance-signal-execution.md
  * @internal
  */
 

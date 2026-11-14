@@ -9,7 +9,7 @@
  *   - REDACT_SECRETS_BEFORE_PERSIST: applied before saveThread()
  *   - Best-effort only — stored content must still be treated as sensitive data via RLS + retention
  * Side-effects: none
- * Links: docs/spec/thread-persistence.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/thread-persistence.md
  * @public
  */
 

@@ -9,7 +9,7 @@
  *   passes through (route handler validates token); other /api/v1/* require session.
  *   Single authority for auth routing — no client-side redirect logic.
  * Side-effects: none
- * Links: docs/spec/security-auth.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/security-auth.md
  * @public
  */
 

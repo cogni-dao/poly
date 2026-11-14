@@ -21,7 +21,7 @@
  *   - NO_REDOS: extractBearerToken uses startsWith/slice (O(n)), not regex
  *     backtracking. Flagged by SonarQube on the original /^Bearer\s+(.+)$/i.
  * Side-effects: IO (next/headers read, NextAuth session fetch via server.ts).
- * Links: docs/spec/security-auth.md, docs/spec/identity-model.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/security-auth.md, https://cognidao.org/knowledge/node-template-identity-model
  * @public
  */
 

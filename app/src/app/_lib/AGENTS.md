@@ -15,7 +15,7 @@ Private app-layer helpers for route handlers. Provides server-side utilities lik
 
 - [Root AGENTS.md](../../../../../AGENTS.md)
 - [App Layer](../AGENTS.md)
-- [Model Selection](../../../../../docs/spec/model-selection.md)
+- [Model Selection](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/model-selection.md)
 
 ## Boundaries
 

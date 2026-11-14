@@ -15,10 +15,10 @@ AI feature owns all LLM interaction endpoints, runtimes, and services. Provides 
 ## Pointers
 
 - [Root AGENTS.md](../../../../../AGENTS.md)
-- [Architecture](../../../../../docs/spec/architecture.md)
-- [AI Setup Spec](../../../../../docs/spec/ai-setup.md) (P0/P1 checklists, invariants)
-- [LangGraph Server](../../../../../docs/spec/langgraph-server.md) (external runtime, adapter implementation)
-- [LangGraph Patterns](../../../../../docs/spec/langgraph-patterns.md) (graph patterns, anti-patterns)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
+- [AI Setup Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md) (P0/P1 checklists, invariants)
+- [LangGraph Server](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md) (external runtime, adapter implementation)
+- [LangGraph Patterns](https://node-template.cognidao.org/knowledge/graph-execution-invariants) (graph patterns, anti-patterns)
 - [Chat subfeature](./chat/AGENTS.md)
 - **Related:** [../payments/](../payments/) (credits), [../../contracts/](../../contracts/) (ai.completions.v1, ai.chat.v1, ai.models.v1)
 
@@ -60,7 +60,7 @@ AI feature owns all LLM interaction endpoints, runtimes, and services. Provides 
 - **Subdirectories:**
   - Note: `runners/` and `graphs/` DELETED — logic absorbed by `LangGraphInProcProvider` in adapters layer.
   - Note: Tool contracts live in `@cogni/ai-tools` package (per TOOLS_IN_PACKAGES invariant).
-  - Note: LangGraph graphs live in `packages/langgraph-graphs/` — provider wires them via catalog. See [LangGraph Patterns](../../../../../docs/spec/langgraph-patterns.md).
+  - Note: LangGraph graphs live in `packages/langgraph-graphs/` — provider wires them via catalog. See [LangGraph Patterns](https://node-template.cognidao.org/knowledge/graph-execution-invariants).
   - `services/` - AI service modules:
     - `completion.ts` - Orchestrator with internal DRY helpers (execute, executeStream)
     - `message-preparation.ts` - Message filtering, validation, fallbackPromptHash
@@ -76,7 +76,7 @@ AI feature owns all LLM interaction endpoints, runtimes, and services. Provides 
 ## Ports
 
 - **Uses ports:** AccountService (recordChargeReceipt), AiTelemetryPort (recordInvocation), LangfusePort (createTrace, recordGeneration), GraphExecutorPort (runGraph — used by internal execution route, not facade)
-  - `LlmService` (completionStream) is **executor-internal only** — consumed solely by `services/completion.ts` (`executeStream`) and the in-proc completion adapter. It carries NO preflight credit gate and NO usage-receipt commit on its own (those live in the GraphExecutorPort decorator stack). Features/routes MUST NOT inject or call it directly — that silently bypasses fair billing (bug.5042). Enforced by `no-direct-completion-executestream.stack.test.ts`. Build AI features via the graph executor / `completionStream` facade. See [agent-development.md](../../../../docs/guides/agent-development.md#billing-safe-ai-the-only-way-to-call-an-llm).
+  - `LlmService` (completionStream) is **executor-internal only** — consumed solely by `services/completion.ts` (`executeStream`) and the in-proc completion adapter. It carries NO preflight credit gate and NO usage-receipt commit on its own (those live in the GraphExecutorPort decorator stack). Features/routes MUST NOT inject or call it directly — that silently bypasses fair billing (bug.5042). Enforced by `no-direct-completion-executestream.stack.test.ts`. Build AI features via the graph executor / `completionStream` facade. See [agent-development.md](https://node-template.cognidao.org/knowledge/agent-development).
 - **Implements ports:** none
 - **Contracts:** chat.completions.v1, ai.chat.v1, ai.threads.v1, ai.models.v1, ai.activity.v1
 

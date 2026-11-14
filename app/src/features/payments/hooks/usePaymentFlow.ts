@@ -8,7 +8,7 @@
  * Invariants: Single payment at a time; attemptId guard cancels stale async on reset; creditsAdded uses usdCentsToCredits.
  * Side-effects: IO (paymentsClient, wagmi); React state (useReducer, polling).
  * Notes: Implements attemptId pattern to prevent stale async continuations from corrupting state after reset/cancel.
- * Links: docs/spec/payments-design.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

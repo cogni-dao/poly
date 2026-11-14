@@ -8,7 +8,7 @@
  * Invariants: Fixed time windows only (7d/30d/90d); all numeric values nullable (k-anonymity); no PII.
  * Side-effects: none
  * Notes: Public endpoint with aggressive caching; k-anonymity suppression at service layer.
- * Links: docs/spec/public-analytics.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/public-analytics.md
  * @public
  */
 

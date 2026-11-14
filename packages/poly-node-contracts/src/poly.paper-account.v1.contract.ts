@@ -26,7 +26,7 @@
  *   - IDEMPOTENT: re-posting for a tenant that already holds an active paper
  *     account returns that account with `created: false` rather than erroring.
  * Side-effects: none (schema only)
- * Links: docs/spec/capability-plane.md, docs/spec/poly-tenant-and-collateral.md
+ * Links: https://poly.cognidao.org/knowledge/capability-plane-contract, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md
  * @public
  */
 

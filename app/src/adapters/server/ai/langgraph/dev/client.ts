@@ -9,7 +9,7 @@
  *   - OFFICIAL_SDK_ONLY: Uses official SDK, no manual SSE parsing
  *   - MVP_DEV_ONLY: Port 2024 for langgraph dev (not 8123 for docker)
  * Side-effects: none
- * Links: LANGGRAPH_SERVER.md (MVP section)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md
  * @internal
  */
 

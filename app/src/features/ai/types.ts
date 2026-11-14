@@ -12,7 +12,7 @@
  *   - UsageReportEvent carries UsageFact for billing subscriber (never to UI)
  * Side-effects: none (types only)
  * Notes: Per AI_SETUP_SPEC.md P1 invariant AI_RUNTIME_EMITS_AIEVENTS, GRAPH_EXECUTION.md
- * Links: ai_runtime.ts, tool-runner.ts, AI_SETUP_SPEC.md, GRAPH_EXECUTION.md, @cogni/node-core.ts
+ * Links: ai_runtime.ts, tool-runner.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md, https://node-template.cognidao.org/knowledge/graph-execution-invariants, @cogni/node-core.ts
  * @internal
  */
 

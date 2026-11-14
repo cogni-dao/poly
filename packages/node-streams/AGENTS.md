@@ -13,8 +13,8 @@ Generic streaming backbone for continuous node-level data streams. Provides port
 
 ## Pointers
 
-- [Data Streams Spec](../../docs/spec/data-streams.md): Design, invariants, polling budget
-- [Packages Architecture](../../docs/spec/packages-architecture.md): Package boundaries
+- [Data Streams Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/data-streams.md): Design, invariants, polling budget
+- [Packages Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md): Package boundaries
 
 ## Boundaries
 

@@ -12,7 +12,7 @@
  *   - USAGE_ALWAYS_EMITTED: Emits usage_report for every successful completion regardless of provider
  *   - NO_AWAIT_FINAL_IN_LOOP: Must break out of for-await before awaiting final (prevents deadlock)
  * Side-effects: IO (via injected completion function)
- * Links: AGENT_DISCOVERY.md, GRAPH_EXECUTION.md, features/ai/services/completion.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/agent-discovery.md, https://node-template.cognidao.org/knowledge/graph-execution-invariants, features/ai/services/completion.ts
  * @public
  */
 

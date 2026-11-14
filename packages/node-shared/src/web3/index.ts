@@ -7,7 +7,7 @@
  * Scope: Pure data and constants only. Does NOT include wagmi/viem runtime deps — evm-wagmi + onchain interface stay app-local.
  * Invariants: PURE_LIBRARY — pure data and constants only.
  * Side-effects: none
- * Links: docs/spec/packages-architecture.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @public
  */
 

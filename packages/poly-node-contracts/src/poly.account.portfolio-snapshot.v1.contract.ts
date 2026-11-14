@@ -38,7 +38,7 @@
  *     omits it and the account comes from the principal.
  * Side-effects: none
  * Links: story.5004, story.5006, task.1791070962,
- *   docs/spec/dashboard-agent-parity-inventory.md (rows 2.x-7.x, 10.3, 11.5-11.7)
+ *   https://poly.cognidao.org/knowledge/dashboard-parity-field-map (rows 2.x-7.x, 10.3, 11.5-11.7)
  * @public
  */
 

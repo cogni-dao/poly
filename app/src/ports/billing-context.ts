@@ -9,7 +9,7 @@
  *   - APP_LAYER_ONLY: These types never appear in @cogni/graph-execution-core
  *   - BILLING_RESOLVED_AT_LAUNCHER: Each launcher (chat, schedule, webhook) resolves billing once before execution
  * Side-effects: none (interface only)
- * Links: docs/spec/unified-graph-launch.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/unified-graph-launch.md
  * @public
  */
 

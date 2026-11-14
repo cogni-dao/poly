@@ -10,7 +10,7 @@
  *   - Deletion also revokes the associated grant
  *   - Returns 204 No Content on success
  * Side-effects: none
- * Links: /api/v1/schedules/[scheduleId] route, docs/spec/scheduler.md
+ * Links: /api/v1/schedules/[scheduleId] route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md
  * @internal
  */
 

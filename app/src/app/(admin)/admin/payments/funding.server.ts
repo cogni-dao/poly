@@ -11,7 +11,7 @@
  *   Does not move funds or write anything.
  * Invariants: NEVER throws — every read is try/caught to null; the panel must always render.
  * Side-effects: IO (OpenRouter HTTPS GET, Base RPC reads).
- * Links: src/app/(admin)/admin/payments/AiFundingPanel.client.tsx, docs/design/node-steward-wallet.md
+ * Links: src/app/(admin)/admin/payments/AiFundingPanel.client.tsx, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/node-steward-wallet.md
  * @public
  */
 

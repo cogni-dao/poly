@@ -10,7 +10,6 @@
  *   - DA_EMPTY_HASH_REJECTED — rows with `transactionHash === ""` are never normalized; the caller MUST increment `data_api_empty_tx_hash_total` on its own MetricsPort when it observes a skipped return.
  *   - SIZE_IS_USDC_NOTIONAL — `size_usdc = shares × price` (Data-API `size` is in outcome shares).
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 CP4.1 — pure decide/normalize layer)
  * @public
  */
 

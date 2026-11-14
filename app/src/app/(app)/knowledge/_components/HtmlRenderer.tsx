@@ -9,7 +9,7 @@
  *   and passes the result into the shell so the artifact matches the parent.
  * Scope: Theme-aware shell composition. `@cogni/knowledge-base-ui` owns the
  *   normalized-link and iframe sandbox security boundary shared by every node.
- * Links: docs/spec/knowledge-html-style.md
+ * Links: https://node-template.cognidao.org/knowledge/knowledge-human-visuals
  * @internal
  */
 

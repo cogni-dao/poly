@@ -18,7 +18,7 @@
  *   - WEBHOOK_ONLY_SKIPS_POLL: a spawned node has webhook-only registrations; collect skips polling
  *     and runs selection/enrichment/allocation over delivered receipts.
  * Side-effects: IO (reads/writes this node's attribution ledger via AttributionStore)
- * Links: docs/design/attribution-operator-gateway.md, attribution.receipts.internal.v1.contract, story.5023
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/attribution-operator-gateway.md, attribution.receipts.internal.v1.contract, story.5023
  * @internal
  */
 

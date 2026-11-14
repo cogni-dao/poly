@@ -10,7 +10,7 @@
  *   - LangfusePort optional (only when LANGFUSE_SECRET_KEY set)
  * Side-effects: none (interfaces only)
  * Notes: Per AI_SETUP_SPEC.md P0 scope. LlmError types moved to llm.port.ts.
- * Links: AI_SETUP_SPEC.md, completion.ts, DrizzleAiTelemetryAdapter
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md, completion.ts, DrizzleAiTelemetryAdapter
  * @public
  */
 

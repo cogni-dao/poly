@@ -24,7 +24,7 @@
  *   - ORACLE_IS_TRUTH: on mismatch, fix the rollup reader or the fixture —
  *     never the oracle (data-research skill § 5).
  * Side-effects: IO (test database seed + cleanup)
- * Links: work/items/task.research-rollup-read-models.md
+ * Links: https://poly.cognidao.org/work/items/task.1791071006
  * @public
  */
 

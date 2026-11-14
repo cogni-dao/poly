@@ -7,7 +7,6 @@
  * Scope: Contract shape + schemas + capability delegation + stubs + help static data. Does not hit the Data API, does not perform network IO.
  * Invariants: TOOL_ID_NAMESPACED, EFFECT_READ_ONLY, REDACTION_ALLOWLIST, USER_PARAM_IS_PROXY_WALLET, PAGINATION_CONSISTENT.
  * Side-effects: none
- * Links: work/items/task.0386.poly-agent-wallet-research-v0.md
  * @internal
  */
 

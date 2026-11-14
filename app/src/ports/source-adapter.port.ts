@@ -7,7 +7,7 @@
  * Scope: Type re-exports only. Does not contain implementations — canonical types live in the package.
  * Invariants: No runtime code. No adapter deps.
  * Side-effects: none
- * Links: docs/spec/attribution-ledger.md#source-adapter-interface
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @public
  */
 

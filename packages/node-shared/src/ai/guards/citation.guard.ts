@@ -10,7 +10,7 @@
  *   - Fail-closed: Missing sources → one retrieval retry → refuse
  *   - Brain-only: Non-brain routes pass requireCitations=false (guard is inert)
  * Side-effects: none (pure validation)
- * Links: COGNI_BRAIN_SPEC.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md
  * @public
  */
 

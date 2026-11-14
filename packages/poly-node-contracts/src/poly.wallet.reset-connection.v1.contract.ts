@@ -26,7 +26,7 @@
  *   - NO_FUND_MOVEMENT — this operation never transfers, wraps, or withdraws.
  *     Recovery is a separate, explicit action.
  * Side-effects: none (schema only)
- * Links: docs/spec/poly-tenant-and-collateral.md, task.5167
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, task.5167
  * @public
  */
 

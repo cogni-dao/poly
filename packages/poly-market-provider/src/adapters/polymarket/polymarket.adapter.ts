@@ -7,7 +7,6 @@
  * Scope: Implements MarketProviderPort for Polymarket. Config via constructor injection. Does not load env vars or manage lifecycle.
  * Invariants: ADAPTERS_NOT_IN_CORE, PACKAGES_NO_ENV.
  * Side-effects: IO (HTTP fetch to Polymarket Gamma API)
- * Links: work/items/task.0230.market-data-package.md
  * @public
  */
 

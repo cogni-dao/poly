@@ -8,7 +8,6 @@
  * Invariants:
  * - ENVELOPE_VALIDATED_ON_WRITE: All evaluation writes pass through validateEvaluationEnvelope.
  * Side-effects: none (delegates to inner store)
- * Links: work/items/task.0113.epoch-artifact-pipeline.md
  * @public
  */
 

@@ -10,7 +10,7 @@
  *   - Names are dot-separated, lowercase, snake_case segments
  *   - Max 20 events for MVP (keep count tight)
  * Side-effects: none
- * Links: docs/analytics/events.v0.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/analytics/events.v0.md
  * @public
  */
 

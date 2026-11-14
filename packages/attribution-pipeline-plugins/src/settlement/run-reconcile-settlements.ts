@@ -11,7 +11,7 @@
  * - LINK_AFTER_FINALIZE: unresolved liabilities remain pending and are retried independently of epoch lifecycle.
  * - HEAD_CONFLICT_RETRY: a stale snapshot is rebuilt from the new head; it is never force-written.
  * Side-effects: IO through injected ports only.
- * Links: docs/spec/attribution-ledger.md, docs/spec/tokenomics.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tokenomics.md
  * @public
  */
 

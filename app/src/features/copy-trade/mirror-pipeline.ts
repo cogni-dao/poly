@@ -20,7 +20,7 @@
  *   - MIRROR_BUY_CANCELED_ON_TARGET_SELL — every SELL fill cancels open mirror orders on `(target, market)` BEFORE the position-close path. `cancelOrder` is optional in tests; production wiring always sets it. Pending rows (no `order_id`) are silently skipped — race with in-flight placement is acceptable for v0. task.5001.
  *   - STALE_RESTING_CANCEL_REPLACE — BUY path: when an open row's `attributes.limit_price` differs from the new intent's `limit_price` by ≥3pp in the disadvantageous direction, the cancel pre-step runs (same machinery as MIRROR_BUY_CANCELED_ON_TARGET_SELL) and placement proceeds. Pending rows (no `order_id`) are treated as not-stale to avoid racing in-flight placements. bug.5035.
  * Side-effects: delegated — DB I/O via `OrderLedger`, HTTP via `WalletActivitySource`, Polymarket CLOB via `placeIntent`/`cancelOrder`. Pipeline itself is pure sequencing + logger/metrics calls.
- * Links: work/items/task.0318 (Phase B3), work/items/task.5001, docs/spec/poly-copy-trade-execution.md, docs/spec/poly-tenant-and-collateral.md
+ * Links: work/items/task.0318 (Phase B3), work/items/task.5001, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md
  * @public
  */
 
@@ -95,7 +95,7 @@ function nominalSizeUsdc(sizing: SizingPolicy, fillSizeUsdc: number): number {
 /**
  * Build the durable `receipt` JSONB for a `placement_failed` decision row.
  * Before this, `receipt` was `null` for every error, so SQL could not group
- * the 19k+ placement failures by cause. Per docs/spec/observability.md only
+ * the 19k+ placement failures by cause. Per https://cognidao.org/knowledge/node-observability-finish-pass only
  * stable structured fields are persisted — no raw SDK message text.
  * Adapter throws attach `.details: ClobFailureDetails`; raw Errors fall
  * through to `error_code: "unknown"` + `err.name`. We read `err.name`

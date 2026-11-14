@@ -9,7 +9,7 @@
  *   - GENERIC_CRUD: No day-plan, planner, or UI concepts — pure schedule operations
  *   - CAPABILITY_INJECTION: Implementation injected at bootstrap, not imported
  * Side-effects: none (interface only)
- * Links: docs/spec/scheduler.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md
  * @public
  */
 

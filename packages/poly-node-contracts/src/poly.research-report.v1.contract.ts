@@ -9,7 +9,6 @@
  *   - PURE_LIBRARY: No env, no adapters
  *   - SINGLE_CONTRACT_SOURCE: Tool graph imports from here, never redefines
  * Side-effects: none
- * Links: work/items/task.0386.poly-agent-wallet-research-v0.md
  * @public
  */
 

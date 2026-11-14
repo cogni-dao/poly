@@ -16,10 +16,9 @@ Cross-process importers (scheduler-worker, Temporal worker, `@cogni/poly-graphs`
 
 ## Pointers
 
-- [Databases Spec](../../../../docs/spec/databases.md) — migration architecture + per-node schema invariants
-- [Packages Architecture](../../../../docs/spec/packages-architecture.md) — workspace package shape
+- [Databases Spec](https://cognidao.org/knowledge/node-database-contract) — migration architecture + per-node schema invariants
+- [Packages Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md) — workspace package shape
 - [@cogni/db-schema](../../../../packages/db-schema/AGENTS.md) — core (cross-node) table definitions
-- [task.0324](../../../../work/items/task.0324.per-node-db-schema-independence.md) — rationale for per-node DB packages
 
 ## Boundaries
 
@@ -45,10 +44,10 @@ Cross-process importers (scheduler-worker, Temporal worker, `@cogni/poly-graphs`
 
 - **Subpath exports (mirrors `@cogni/db-schema` shape):**
   - `@cogni/poly-db-schema` — root barrel re-exports every slice
-  - `@cogni/poly-db-schema/copy-trade` — `polyCopyTradeTargets` (tenant-scoped tracked-wallet records, born in migration 0029), `polyCopyTradeFills` (`billingAccountId` + `createdByUserId` + `syncedAt` + bug.5018 realized-fill columns `price` / `shares` / `feesUsdc`), `polyCopyTradeDecisions` (tenant-scoped). RLS via `tenant_isolation` policy — see [docs/spec/poly-tenant-and-collateral.md](../../../../docs/spec/poly-tenant-and-collateral.md). (bug.0438 dropped `polyCopyTradeConfig`; the cross-tenant enumerator's target × connection × grant join is the sole gate.)
+  - `@cogni/poly-db-schema/copy-trade` — `polyCopyTradeTargets` (tenant-scoped tracked-wallet records, born in migration 0029), `polyCopyTradeFills` (`billingAccountId` + `createdByUserId` + `syncedAt` + bug.5018 realized-fill columns `price` / `shares` / `feesUsdc`), `polyCopyTradeDecisions` (tenant-scoped). RLS via `tenant_isolation` policy — see [https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md). (bug.0438 dropped `polyCopyTradeConfig`; the cross-tenant enumerator's target × connection × grant join is the sole gate.)
   - `@cogni/poly-db-schema/trader-activity` — observed public wallet activity read-model for copy targets and Cogni wallets: `polyTraderWallets`, `polyTraderIngestionCursors`, `polyTraderFills`, `polyTraderPositionSnapshots`, `polyCopyTradeAttribution`, `polyMarketOutcomes` (task.5005). Operational Postgres data, not copy-trade policy and not Doltgres knowledge.
   - `@cogni/poly-db-schema/wallet-connections` — `polyWalletConnections` (one active row per tenant; carries `custodial_consent_accepted_at` + `clob_connection_id` → `connections.id`; born in migration 0030). RLS keyed on `billing_accounts.owner_user_id` via EXISTS.
-  - `@cogni/poly-db-schema/wallet-grants` — `polyWalletGrants` (per-tenant trade-authorization grant; CHECK-enforced caps with `daily_usdc_cap >= per_order_usdc_cap`; scopes `text[]`; born in migration 0031). Consumed by `PrivyPolyTraderWalletAdapter.authorizeIntent`. See [docs/spec/poly-tenant-and-collateral.md](../../../../docs/spec/poly-tenant-and-collateral.md).
+  - `@cogni/poly-db-schema/wallet-grants` — `polyWalletGrants` (per-tenant trade-authorization grant; CHECK-enforced caps with `daily_usdc_cap >= per_order_usdc_cap`; scopes `text[]`; born in migration 0031). Consumed by `PrivyPolyTraderWalletAdapter.authorizeIntent`. See [https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md).
 - **Files considered API:** all `src/*.ts` via package.json exports
 
 ## Ports

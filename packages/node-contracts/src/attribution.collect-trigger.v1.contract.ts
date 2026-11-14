@@ -9,7 +9,7 @@
  *   - Session auth required (any logged-in user)
  *   - Response shape remains stable
  * Side-effects: none
- * Links: /api/v1/attribution/collect route, docs/spec/attribution-ledger.md
+ * Links: /api/v1/attribution/collect route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @public
  */
 

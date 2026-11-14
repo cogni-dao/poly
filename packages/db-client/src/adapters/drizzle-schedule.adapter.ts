@@ -13,7 +13,7 @@
  * - Per DB_TIMING_IS_CACHE_ONLY: next_run_at/last_run_at are cache columns
  * - withTenantScope called on every method (uniform invariant, no-op on serviceDb)
  * Side-effects: IO (database operations, schedule control RPC)
- * Links: ports/scheduling/schedule-manager.port.ts, docs/spec/scheduler.md
+ * Links: ports/scheduling/schedule-manager.port.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md
  * @public
  */
 

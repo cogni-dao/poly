@@ -62,8 +62,8 @@
  *     Polymarket mainnet addresses HARDCODED in this module. No env, no
  *     user input. Matches `scripts/experiments/approve-polymarket-allowances.ts`.
  * Side-effects: IO (Privy API, DB reads/writes, AEAD crypto).
- * Links: docs/spec/poly-tenant-and-collateral.md,
- *        docs/spec/poly-tenant-and-collateral.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md,
+ *        https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md
  * @internal
  */
 

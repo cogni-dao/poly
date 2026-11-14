@@ -7,7 +7,7 @@
  * Scope: Pure-function tests. Does not touch network, filesystem, or any capability.
  * Invariants: NUMERICAL_ROBUSTNESS, PURE.
  * Side-effects: none
- * Links: work/charters/POLY_WALLET_RESEARCH.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/work/charters/POLY_WALLET_RESEARCH.md
  * @internal
  */
 

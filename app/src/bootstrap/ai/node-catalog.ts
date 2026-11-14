@@ -15,7 +15,7 @@
  *   providers rather than imported by them, so those adapters stay
  *   node-agnostic and discovery can never list a graph execution cannot run.
  * Invariants:
- *   - NODE_RUNTIME_CATALOG_BOUNDARY (docs/spec/langgraph-patterns.md:49) — app
+ *   - NODE_RUNTIME_CATALOG_BOUNDARY (https://node-template.cognidao.org/knowledge/graph-execution-invariants) — app
  *     runtimes get their catalog from the node, not from shared
  *     `@cogni/langgraph-graphs`, which owns reusable graph implementations and
  *     base catalogs but NOT app runtime policy. Every app consumer of a catalog
@@ -35,8 +35,8 @@
  *   - NO_LANGCHAIN_IN_SRC — graph FACTORIES are imported as opaque values from
  *     the graph packages. Nothing here imports `@langchain/*`.
  * Side-effects: none
- * Links: task.1791070967, story.5006, docs/spec/langgraph-patterns.md,
- *   docs/spec/capability-plane.md
+ * Links: task.1791070967, story.5006, https://poly.cognidao.org/knowledge/poly-graph-catalog-binding, https://node-template.cognidao.org/knowledge/graph-execution-invariants,
+ *   https://poly.cognidao.org/knowledge/capability-plane-contract
  * @internal
  */
 

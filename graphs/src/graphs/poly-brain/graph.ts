@@ -7,7 +7,6 @@
  * Scope: Creates LangGraph React agent with market + web search tools. Does not execute graphs or read env.
  * Invariants: Pure factory, TYPE_TRANSPARENT_RETURN, PACKAGES_NO_ENV.
  * Side-effects: none
- * Links: work/items/task.0230.market-data-package.md
  * @public
  */
 

@@ -36,7 +36,7 @@
  *     than through `accountReadGetHandler` (that adapter emits no headers).
  * Side-effects: IO (DB reads via the capability plane).
  * Links: packages/poly-node-contracts/src/poly.account.portfolio-snapshot.v1.contract.ts,
- *   docs/spec/capability-plane.md, story.5004, task.1791070962
+ *   https://poly.cognidao.org/knowledge/capability-plane-contract, story.5004, task.1791070962
  * @public
  */
 

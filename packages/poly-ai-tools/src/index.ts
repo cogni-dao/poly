@@ -11,7 +11,6 @@
  *   - PURE_LIBRARY: no env loading, no process lifecycle
  *   - TOOL_ID_STABILITY: IDs unchanged from packages/ai-tools (no rename in this phase)
  * Side-effects: none
- * Links: work/items/bug.0319.ai-tools-per-node-packages.md (Phase 2)
  * @public
  */
 

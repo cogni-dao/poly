@@ -19,7 +19,6 @@
  *     `fill_price` and `total_shares` from CLOB `makingAmount`/`takingAmount`.
  *     `fees_usdc` remains undefined when the venue does not report charged USDC.
  * Side-effects: IO (HTTPS to the Polymarket CLOB).
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 CP3.2), docs/spec/poly-paper-trading-shortcomings.md (bug.5018 — adapter symmetry)
  * @public
  */
 
@@ -1609,7 +1608,7 @@ export interface ClobFailureDetails {
    * string that says WHY was classified and then dropped. Emitted on the
    * `poly.clob.place` error log so `unknown` rejections are diagnosable from
    * Loki alone. NOT persisted to the `poly_copy_trade_decisions` receipt —
-   * docs/spec/observability.md keeps raw SDK text out of durable rows.
+   * https://cognidao.org/knowledge/node-observability-finish-pass keeps raw SDK text out of durable rows.
    */
   error_text?: string;
 }

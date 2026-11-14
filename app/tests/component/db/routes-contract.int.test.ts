@@ -8,7 +8,7 @@
  * Invariants: HTTP status codes correct; Zod schemas enforced; auth failures return 401; ownership returns 404/409.
  * Side-effects: IO (database via test harness)
  * Notes: Focuses on HTTP layer only - contract compliance, not payment scenarios.
- * Links: docs/spec/payments-design.md, src/app/api/v1/payments
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md, src/app/api/v1/payments
  * @public
  */
 

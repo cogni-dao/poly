@@ -8,7 +8,7 @@
  * Invariants: Close when txHash null triggers reset; auto-opens on transitions only; userClosedOnChain tracks chip visibility.
  * Side-effects: none
  * Notes: Transition-based auto-open prevents flash loops; phase-aware close decides cancel vs preserve.
- * Links: docs/spec/payments-design.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

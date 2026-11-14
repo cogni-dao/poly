@@ -13,10 +13,10 @@ GitHub API adapters for PR review: Check Run lifecycle, PR comment posting with 
 
 ## Pointers
 
-- [VCS Integration Spec](../../../../../../docs/spec/vcs-integration.md)
+- [VCS Integration Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/vcs-integration.md)
 - [Review Feature](../../../features/review/) (business logic, gate orchestrator)
 - [Bootstrap Wiring](../../../bootstrap/review-adapter.factory.ts) (creates adapter closures)
-- [GitHub App Webhook Setup](../../../../../../docs/guides/github-app-webhook-setup.md)
+- [GitHub App Webhook Setup](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/github-app-webhook-setup.md)
 
 ## Boundaries
 

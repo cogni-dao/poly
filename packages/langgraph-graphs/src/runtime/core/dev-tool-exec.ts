@@ -10,7 +10,7 @@
  *   - TOOL_SAME_PATH_ALL_EXECUTORS: Same policy/redaction path as InProc
  *   - DENY_BY_DEFAULT: Uses createToolAllowlistPolicy
  * Side-effects: none (events are internal to dev server)
- * Links: TOOL_USE_SPEC.md, LANGGRAPH_SERVER.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md
  * @internal
  */
 

@@ -11,7 +11,7 @@
  *   - Non-success entries and unresolvable billing accounts are skipped
  *   - Response shape: { processed, skipped }
  * Side-effects: none
- * Links: src/app/api/internal/billing/ingest/route.ts, docs/spec/billing-ingest.md
+ * Links: src/app/api/internal/billing/ingest/route.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/billing-ingest.md
  * @internal
  */
 

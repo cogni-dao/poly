@@ -19,8 +19,8 @@
  *     runtime catalog, not here, so named tools are described conditionally. A
  *     node may bind a subset.
  * Side-effects: none
- * Links: work/items/task.0230.market-data-package.md, task.1791070967,
- *   docs/spec/capability-plane.md
+ * Links: task.1791070967,
+ *   https://poly.cognidao.org/knowledge/capability-plane-contract
  * @public
  */
 

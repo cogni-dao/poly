@@ -25,7 +25,7 @@
  *     paper-ness in the address too would invite readers to sniff the string
  *     instead of reading the column, and would be the first thing to rot.
  * Side-effects: none
- * Links: docs/spec/poly-tenant-and-collateral.md, migration 0082
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, migration 0082
  * @public
  */
 

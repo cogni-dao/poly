@@ -100,7 +100,7 @@
  *   `poly_trader_wallets`, `poly_trader_position_snapshots`,
  *   `poly_trader_fill_rollups_daily` (+ the unrolled `poly_trader_fills`
  *   tail). No upstream Polymarket calls.
- * Links: docs/spec/poly-copy-trade-execution.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md
  * @internal
  */
 

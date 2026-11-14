@@ -23,7 +23,7 @@
  *     `poly_wallet_connections.kind` — the env var is declared (bug.5277 keeps
  *     the declaration) and deliberately unread.
  * Side-effects: constructs the service Drizzle client on first call.
- * Links: docs/spec/capability-plane.md, migration 0082
+ * Links: https://poly.cognidao.org/knowledge/capability-plane-contract, migration 0082
  * @internal
  */
 

@@ -11,7 +11,7 @@
  *   - EMPHASIS_IS_DECLARATIVE — `emphasis: "primary" | "secondary"` lets the policy mark the *active* threshold without the renderer knowing the configured percentile.
  *   - POLICY_OWNS_ITS_ANNOTATIONS — the emitter that knows what to show for a policy lives in the same package as the policy. When copy-trade extracts to a shared package, the visualizer contract travels with it.
  * Side-effects: none
- * Links: docs/spec/poly-copy-trade-execution.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md
  * @public
  */
 

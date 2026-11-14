@@ -9,7 +9,7 @@
  *   - DETERMINISTIC_RESULTS: Always returns same structure for same query
  *   - NO_SUBPROCESS: Never spawns child processes
  * Side-effects: none
- * Links: COGNI_BRAIN_SPEC.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md
  * @internal
  */
 

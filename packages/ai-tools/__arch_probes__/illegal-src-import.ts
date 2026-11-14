@@ -7,7 +7,7 @@
  * Scope: Test fixture only; NOT production code.
  * Invariants: PACKAGES_NO_SRC_IMPORTS — uncommenting import should fail depcruise.
  * Side-effects: none
- * Links: .dependency-cruiser.cjs, PACKAGES_ARCHITECTURE.md
+ * Links: .dependency-cruiser.cjs, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @internal
  */
 

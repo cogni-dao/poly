@@ -9,7 +9,7 @@
  *   - P0_AGENT_GRAPH_IDENTITY: agentId === graphId for all agents
  *   - LANGGRAPH_SERVER_ALIGNED: response shape matches contract
  * Side-effects: IO
- * Links: /api/v1/ai/agents, AGENT_DISCOVERY.md
+ * Links: /api/v1/ai/agents, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/agent-discovery.md
  * @public
  */
 

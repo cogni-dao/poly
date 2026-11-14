@@ -14,10 +14,9 @@ Presentational UI for trading-policy controls — the user-facing surface over `
 ## Pointers
 
 - [Root AGENTS.md](../../../../../../AGENTS.md)
-- [task.0347 — Minimal policy UI](../../../../../../work/items/task.0347.poly-wallet-preferences-sizing-config.md)
-- [proj.poly-bet-sizer](../../../../../../work/projects/proj.poly-bet-sizer.md)
+- [proj.poly-bet-sizer](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/work/projects/proj.poly-bet-sizer.md)
 - [Sketch + current state](../../../../../../docs/design/poly-policy-ui/)
-- [UI Implementation Guide](../../../../../../docs/spec/ui-implementation.md)
+- [UI Implementation Guide](https://node-template.cognidao.org/knowledge/frontend-development)
 
 ## Boundaries
 

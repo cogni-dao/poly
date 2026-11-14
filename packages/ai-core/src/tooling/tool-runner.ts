@@ -14,7 +14,7 @@
  *   - DENY_BY_DEFAULT: Default to DenyAllPolicy if no policy provided
  *   - SPAN_PORT_HANDLES_SCRUBBING: ai-core passes raw data to spanPort; adapter handles scrubbing/truncation
  * Side-effects: none (AiEvent emission via injected callback is caller's responsibility)
- * Links: @cogni/ai-tools, AI_SETUP_SPEC.md, TOOL_USE_SPEC.md
+ * Links: @cogni/ai-tools, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 

@@ -8,7 +8,7 @@
  * Invariants: NO refetchInterval, NO refetchOnWindowFocus; rely on staleTime only.
  * Side-effects: IO (HTTP GET to treasury snapshot API)
  * Notes: Phase 2: USDC balance only. Returns full snapshot (address, chainId, balance, staleWarning).
- * Links: docs/spec/onchain-readers.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/onchain-readers.md
  * @public
  */
 

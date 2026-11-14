@@ -10,7 +10,7 @@
  *   - PACKAGES_NO_SRC_IMPORTS: No imports from src/**
  *   - Adding a graph = add entry here, not touch bootstrap
  * Side-effects: none
- * Links: GRAPH_EXECUTION.md, LANGGRAPH_AI.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

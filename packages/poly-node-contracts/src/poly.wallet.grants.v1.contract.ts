@@ -10,9 +10,9 @@
  *   - CAPS_POSITIVE — both caps > 0.
  *   - NO_HOURLY_FILLS_EDIT — schema field exists but is not on the wire.
  * Side-effects: none
- * Links: docs/spec/poly-tenant-and-collateral.md,
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md,
  *        nodes/poly/packages/db-schema/src/wallet-grants.ts,
- *        work/items/task.0347.poly-wallet-preferences-sizing-config.md
+ *        task.0347
  * @public
  */
 

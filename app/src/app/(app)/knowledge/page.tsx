@@ -16,7 +16,7 @@
  *   `?mode=goals` deep-link (parsed with the shared GoalsProgressSchema, so a
  *   shape drift degrades to a client fetch instead of a hydration mismatch).
  * Side-effects: IO (Doltgres reads via container port)
- * Links: [KnowledgeDashboardView](./view.tsx), ./_server/loaders.ts, docs/spec/knowledge-syntropy.md
+ * Links: [KnowledgeDashboardView](./view.tsx), ./_server/loaders.ts, https://node-template.cognidao.org/knowledge/knowledge-write-contract
  * @public
  */
 

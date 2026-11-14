@@ -13,7 +13,7 @@
  *   - P0 has NO OTel exporter (IDs + Langfuse only; no Tempo/Grafana traces yet)
  * Side-effects: IO (OTel SDK global state initialization)
  * Notes: Next.js calls register() once per Node.js process on startup.
- * Links: AI_SETUP_SPEC.md, bootstrap/otel.ts for span helpers, src/lib/egress-geoblock.ts (story.5050)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md, bootstrap/otel.ts for span helpers, src/lib/egress-geoblock.ts (story.5050)
  * @public
  */
 

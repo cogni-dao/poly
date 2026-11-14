@@ -8,7 +8,7 @@
  * Invariants: LEDGER_PORT_SHAPE_IS_STABLE — adding fields is a breaking change. INSERT_BEFORE_PLACE is a caller invariant, not a ledger one.
  * Side-effects: none
  * Public types: `LedgerRow` (includes `synced_at`, `position_lifecycle`, `mode`), `LedgerStatus`, `LedgerMode`, `LedgerPositionLifecycle`, `StateSnapshot`, `TenantBinding`, `InsertPendingInput` (extends TenantBinding; carries `intent.attributes.token_id` for the per-token atomic cap-check), `RecordDecisionInput` (extends TenantBinding), `ListRecentOptions` (tenant-required), `ListOpenOrPendingOptions`, `UpdateStatusInput`, `SyncHealthSummary`, `OrderLedger` (snapshotState takes `(target_id, billing_account_id)`; `cumulativeIntentForMarketToken` takes `(billing_account_id, market_id, token_id)` per bug.5004 `CAP_IS_PER_TOKEN_ID`).
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (CP4.3b), work/items/task.0328.poly-sync-truth-ledger-cache.md, docs/spec/poly-tenant-and-collateral.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md
  * @public
  */
 
@@ -264,7 +264,7 @@ export interface TenantBinding {
  * still required, while `TenantContext` is the standalone envelope passed
  * to `forTenant()`.
  *
- * See docs/spec/poly-tenant-and-collateral.md ORDER_LEDGER_TENANT_CONTEXT_ENVELOPE.
+ * See https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md ORDER_LEDGER_TENANT_CONTEXT_ENVELOPE.
  */
 export type TenantContext = {
   billing_account_id: string;
@@ -545,7 +545,7 @@ export type TenantScopedRecordDecisionInput = Omit<
  * app reads + writes through this interface.
  *
  * Tenant-scoped reads + writes go via `forTenant(ctx)` — see bug.5022 +
- * `docs/spec/poly-tenant-and-collateral.md` ORDER_LEDGER_TENANT_CONTEXT_ENVELOPE.
+ * `https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md` ORDER_LEDGER_TENANT_CONTEXT_ENVELOPE.
  * The unscoped methods kept on this root remain for back-compat; task.5012
  * migrates each one onto the tenant-scoped surface (or, for explicitly
  * cross-tenant ops like `findStaleOpen`, names them as such and keeps them

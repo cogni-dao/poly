@@ -12,7 +12,7 @@
  *   - CATALOG_MANUAL_SYNC_P0: Reads from static catalog (same as InProc)
  * Side-effects: none
  * Notes: P1 will call /assistants/search for dynamic discovery
- * Links: LANGGRAPH_SERVER.md (MVP section), agent-catalog.provider.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md, agent-catalog.provider.ts
  * @internal
  */
 

@@ -13,8 +13,7 @@ Generic Polymarket placement + order-ledger substrate. Every path that places an
 
 ## Pointers
 
-- [task.0315 — Phase 1 plan](../../../../../../work/items/task.0315.poly-copy-trade-prototype.md)
-- [Phase 1 spec](../../../../../../docs/spec/poly-copy-trade-execution.md)
+- [Phase 1 spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md)
 - [Root poly node AGENTS.md](../AGENTS.md)
 - Sibling layers: [../copy-trade/AGENTS.md](../copy-trade/AGENTS.md), [../wallet-watch/AGENTS.md](../wallet-watch/AGENTS.md)
 
@@ -52,7 +51,7 @@ Generic Polymarket placement + order-ledger substrate. Every path that places an
 - **TENANT_SCOPED_OPS_REQUIRE_CTX** _(bug.5022)_ — the canonical entry point for tenant-scoped reads + writes is `OrderLedger.forTenant(ctx: TenantContext) → TenantOrderLedger`. Methods on `TenantOrderLedger` close over the tenant so callers cannot accidentally cross-pollinate state. New mirror algorithms MUST go through `forTenant(ctx)`; root legacy methods are `@deprecated` and migrate in task.5012.
 - **TENANT_FILTER_IN_EVERY_SNAPSHOT_QUERY** _(bug.5022)_ — every SQL read/write that touches `poly_copy_trade_{fills,decisions}` filters explicitly on `billing_account_id`. Even legacy root methods carry this filter (back-compatible bug fix).
 - **FORTENANT_RUNS_UNDER_RLS** _(bug.5022)_ — every method on the `TenantOrderLedger` returned by `OrderLedger.forTenant(ctx)` runs inside `withTenantScope(appDb, ctx.created_by_user_id, ...)`. This covers all 6 v0 methods — 4 reads (`snapshotState`, `cumulativeIntentForMarketToken`, `hasOpenForMarket`, `findOpenForMarket`) AND 2 writes (`insertPending`, `recordDecision`). Postgres RLS on `poly_copy_trade_{fills,decisions}` is the runtime backstop: even if a query forgets the explicit `eq(billingAccountId, ...)` filter, the DB layer strips rows owned by another `created_by_user_id`. `insertPending`'s advisory_xact_lock cap path nests under withTenantScope's tx as a SAVEPOINT — same atomicity as the legacy root path.
-- **CROSS_TENANT_OPS_NAMED_EXPLICITLY** _(bug.5022)_ — `findStaleOpen` (TTL sweeper) and `syncHealthSummary` are explicitly cross-tenant by design; both stay on the root `OrderLedger`. New cross-tenant ops require an explicit design callout in `docs/spec/poly-tenant-and-collateral.md`.
+- **CROSS_TENANT_OPS_NAMED_EXPLICITLY** _(bug.5022)_ — `findStaleOpen` (TTL sweeper) and `syncHealthSummary` are explicitly cross-tenant by design; both stay on the root `OrderLedger`. New cross-tenant ops require an explicit design callout in `https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md`.
 - **CAP_COUNTS_REALIZED_ON_CANCEL** _(bug.5050)_ — `cumulativeIntentForMarketToken` counts `canceled` rows by their `filled_size_usdc` (or `size_usdc` if not populated). A STALE_RESTING_CANCEL_REPLACE on a partially-filled order leaves the realized shares in our wallet past the order's terminal state; the cap must reflect that exposure or follow-on placements leak past `max_market_intent_usdc`. The SQL CASE in `order-ledger.ts` and the helper `ledgerCountedIntentUsdc` in `ledger-lifecycle.ts` MUST stay in sync. Per `CAP_IS_PER_TOKEN_ID` (bug.5004) the sum is also scoped to `attributes->>'token_id'`.
 - **BOUNDED_METRIC_RESULT** — the executor's `result` label is one of `{ok, rejected, error}`.
 

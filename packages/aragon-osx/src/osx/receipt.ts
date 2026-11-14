@@ -7,7 +7,7 @@
  * Scope: Pure decoding; does not make RPC calls. Throws if expected events not found.
  * Invariants: No fallback heuristics. Missing events throw errors.
  * Side-effects: none
- * Links: docs/spec/node-formation.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-formation.md
  * @public
  */
 

@@ -8,7 +8,7 @@
  * Invariants: No request body (GET); response always returns 200 with optional staleWarning.
  * Side-effects: none (schema definition only)
  * Notes: Phase 2: ETH balance only. staleWarning indicates RPC timeout/error.
- * Links: docs/spec/onchain-readers.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/onchain-readers.md
  * @public
  */
 

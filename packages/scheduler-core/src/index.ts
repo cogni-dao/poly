@@ -9,7 +9,7 @@
  * - FORBIDDEN: `@/`, `src/`, drizzle-orm, any I/O
  * - ALLOWED: Pure TypeScript types/interfaces only
  * Side-effects: none
- * Links: docs/spec/scheduler.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md
  * @public
  */
 

@@ -7,7 +7,7 @@
  * Scope: Pure observability utilities. Does NOT include logger factory (makeLogger), metrics, or redact — those stay app-local.
  * Invariants: PURE_LIBRARY — no pino runtime, no prom-client runtime.
  * Side-effects: none
- * Links: docs/spec/packages-architecture.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @public
  */
 

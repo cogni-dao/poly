@@ -9,7 +9,7 @@
  *   - NO_LANGCHAIN_IN_SRC: src/** must not import @langchain/* (except SDK in dev adapter)
  *   - OFFICIAL_SDK_ONLY: @langchain/langgraph-sdk allowed in langgraph dev adapter
  * Side-effects: none (read-only grep)
- * Links: LANGGRAPH_AI.md, GRAPH_EXECUTION.md, LANGGRAPH_SERVER.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md
  * @internal
  */
 

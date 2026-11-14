@@ -8,7 +8,7 @@
  * Invariants: MVP uses service-auth mode - no key storage column or sentinels in src/**
  * Side-effects: process.env (read-only file scan via child_process)
  * Notes: When real API keys are introduced, update allowlist in this file.
- * Links: docs/spec/security-auth.md, src/shared/db/schema.billing.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/security-auth.md, src/shared/db/schema.billing.ts
  * @public
  */
 

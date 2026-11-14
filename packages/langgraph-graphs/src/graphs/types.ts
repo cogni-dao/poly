@@ -9,7 +9,7 @@
  *   - SINGLE_INVOKABLE_INTERFACE: All graphs implement InvokableGraph<I,O>
  *   - LANGCHAIN_ALIGNED: Uses RunnableConfig/RunnableInterface from @langchain/core
  * Side-effects: none
- * Links: LANGGRAPH_AI.md, AGENT_DEVELOPMENT_GUIDE.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, https://node-template.cognidao.org/knowledge/agent-development
  * @public
  */
 

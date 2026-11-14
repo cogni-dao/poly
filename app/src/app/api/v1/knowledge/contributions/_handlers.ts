@@ -9,7 +9,7 @@
  * Scope: Operator-side wiring only. Mirrors poly's identical handler set.
  * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, KNOWLEDGE_MERGE_REQUIRES_ADMIN_SESSION.
  * Side-effects: IO (HTTP response, Doltgres read/write via container service)
- * Links: docs/design/knowledge-contribution-api.md, packages/knowledge-store
+ * Links: https://node-template.cognidao.org/knowledge/knowledge-contribution-flow, packages/knowledge-store
  * @internal
  */
 

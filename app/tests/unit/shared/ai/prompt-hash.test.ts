@@ -8,7 +8,7 @@
  * Invariants: Per AI_SETUP_SPEC.md Test Gates - P0 required tests.
  * Side-effects: none
  * Notes: Uses existing message builders from _fakes.
- * Links: AI_SETUP_SPEC.md, shared/ai/prompt-hash.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md, shared/ai/prompt-hash.ts
  * @internal
  */
 

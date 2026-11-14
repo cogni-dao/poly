@@ -9,7 +9,7 @@
  * - ENRICHER_ORDER_EXPLICIT: declared order must be a valid topological sort of the dependency graph.
  * - FRAMEWORK_NO_IO: this module contains zero I/O.
  * Side-effects: none
- * Links: docs/spec/plugin-attribution-pipeline.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/plugin-attribution-pipeline.md
  * @public
  */
 

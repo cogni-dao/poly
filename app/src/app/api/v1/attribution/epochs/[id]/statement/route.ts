@@ -7,7 +7,7 @@
  * Scope: SIWE-protected GET endpoint. Returns statement or null if none exists. Does not contain business logic.
  * Invariants: NODE_SCOPED, ALL_MATH_BIGINT, VALIDATE_IO.
  * Side-effects: IO (HTTP response, database read)
- * Links: docs/spec/attribution-ledger.md, contracts/attribution.epoch-statement.v1.contract
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md, contracts/attribution.epoch-statement.v1.contract
  * @public
  */
 

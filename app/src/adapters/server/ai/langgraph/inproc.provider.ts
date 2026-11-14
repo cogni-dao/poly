@@ -23,7 +23,7 @@
  *   - MCP_VIA_ASYNC_SOURCE: MCP tools resolved via async getMcpToolSource() function (shared cache with reconnect-on-error)
  * Side-effects: IO (executes graphs via package runner, MCP tool resolution via HTTP)
  * Notes: Discovery is in LangGraphInProcAgentCatalogProvider, not here.
- * Links: GRAPH_EXECUTION.md, LANGGRAPH_AI.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @internal
  */
 

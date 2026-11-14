@@ -19,7 +19,7 @@
  *   - PAPER_ROWS_ONLY, FAIL_CLOSED (paper-venue.ts)
  *   - ONE_ROW_PER_TARGET, ACTIVATION_IS_KIND_AGNOSTIC (target-source.ts)
  * Side-effects: IO (testcontainers Postgres)
- * Links: migrations/0082_poly_paper_accounts.sql, docs/spec/capability-plane.md
+ * Links: migrations/0082_poly_paper_accounts.sql, https://poly.cognidao.org/knowledge/capability-plane-contract
  * @internal
  */
 

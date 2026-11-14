@@ -13,8 +13,8 @@ PURE_LIBRARY package providing graph execution decorator infrastructure — bill
 
 ## Pointers
 
-- [Graph Execution Spec](../../docs/spec/graph-execution.md)
-- [Packages Architecture](../../docs/spec/packages-architecture.md)
+- [Graph Execution Spec](https://node-template.cognidao.org/knowledge/graph-execution-invariants)
+- [Packages Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md)
 - [GraphExecutorPort](../graph-execution-core/src/graph-executor.port.ts)
 
 ## Boundaries

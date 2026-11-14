@@ -7,7 +7,7 @@
  * Scope: Tests catalog construction, collision detection, and lookup functions. Does not test tool execution.
  * Invariants: TOOL_ID_STABILITY - duplicate IDs throw at construction.
  * Side-effects: none
- * Links: src/catalog.ts, TOOL_USE_SPEC.md
+ * Links: src/catalog.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @internal
  */
 

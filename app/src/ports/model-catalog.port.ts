@@ -9,7 +9,7 @@
  * Invariants:
  *   - SELECTION_ONLY: This port lists models. It does not create LlmServices or check billing policy.
  * Side-effects: none (interface only)
- * Links: docs/spec/multi-provider-llm.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/multi-provider-llm.md
  * @public
  */
 

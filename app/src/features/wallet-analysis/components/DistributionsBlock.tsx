@@ -9,7 +9,7 @@
  *   - MODE_HIGHLIGHTED — every chart paints the modal bucket green and the rest neutral grey, so the dominant behaviour reads at a glance. Win/lost/pending data stays on the wire (`PENDING_IS_FIRST_CLASS`) and surfaces in tooltips.
  *   - DISTRIBUTIONS_ARE_PURE_DERIVATIONS — the component never recomputes buckets; it renders what the server returned.
  * Side-effects: none
- * Links: docs/design/wallet-analysis-components.md (Checkpoint D), work/items/task.0431.poly-wallet-orderflow-distributions-d1.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md
  * @public
  */
 

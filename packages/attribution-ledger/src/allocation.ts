@@ -10,7 +10,7 @@
  * - ALL_MATH_BIGINT: All weight and unit computation uses BigInt.
  * - WEIGHTS_VALIDATED: rejects floats, NaN, Infinity, unsafe integers.
  * Side-effects: none
- * Links: docs/spec/attribution-ledger.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @public
  */
 

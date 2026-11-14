@@ -12,7 +12,7 @@
  *   - DISTRIBUTOR_NULLABLE: distributor is null until the on-chain contract is deployed.
  *   - Contract remains stable; breaking changes require a new version.
  * Side-effects: none
- * Links: docs/spec/attribution-pipeline-overview.md, packages/aragon-osx/src/token-distribution.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-pipeline-overview.md, packages/aragon-osx/src/token-distribution.ts
  * @public
  */
 

@@ -39,11 +39,11 @@
  *   - SYNC_HEALTH_IS_PUBLIC — `reconcilerLastTickAt` is stamped each tick and
  *     surfaced by the `/api/v1/poly/internal/sync-health` endpoint. (task.0328 CP4)
  * Side-effects: starts a `setInterval`, emits logs + metrics.
- * Links: work/items/task.0323 §2, docs/spec/poly-copy-trade-execution.md
+ * Links: work/items/task.0323 §2, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md
  *
  * @scaffolding
  * Deleted-in-phase: 4 (replaced by Temporal-hosted WS ingester workflow; see
- *   work/items/task.0322.poly-copy-trade-phase4-design-prep.md).
+ *   task.0322).
  *
  * @internal
  */

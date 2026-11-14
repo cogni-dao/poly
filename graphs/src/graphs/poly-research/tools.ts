@@ -7,7 +7,6 @@
  * Scope: Exports the ID array consumed by the inproc runner to bind contracts+impls. Does not enforce policy, does not execute tools.
  * Invariants: SINGLE_SOURCE_OF_TRUTH.
  * Side-effects: none
- * Links: work/items/task.0386.poly-agent-wallet-research-v0.md
  * @public
  */
 

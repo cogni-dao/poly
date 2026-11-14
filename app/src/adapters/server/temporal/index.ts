@@ -7,7 +7,7 @@
  * Scope: Re-exports Temporal schedule control adapters. Does not contain implementations.
  * Invariants: Named exports only
  * Side-effects: none
- * Links: ScheduleControlPort, docs/spec/scheduler.md
+ * Links: ScheduleControlPort, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md
  * @public
  */
 

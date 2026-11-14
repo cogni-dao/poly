@@ -7,7 +7,7 @@
  * Scope: Re-exports all public types from submodules. Does not implement logic or carry billing/tracing concerns.
  * Invariants: NO_BILLING_LEAKAGE, NO_TRACING_LEAKAGE, AI_CORE_ONLY_DEP
  * Side-effects: none
- * Links: docs/spec/unified-graph-launch.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/unified-graph-launch.md
  * @public
  */
 

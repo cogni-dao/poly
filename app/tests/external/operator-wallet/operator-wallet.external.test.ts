@@ -7,7 +7,7 @@
  * Scope: Tests wallet verification, address lookup, and distributeSplit() against Base mainnet.
  * Invariants: Requires PRIVY_APP_ID, PRIVY_APP_SECRET, PRIVY_SIGNING_KEY in env. Skips gracefully if missing.
  * Side-effects: IO (Privy API, Base RPC — each distributeSplit() call costs gas on Base mainnet)
- * Links: packages/operator-wallet/src/adapters/privy/privy-operator-wallet.adapter.ts, docs/spec/operator-wallet.md
+ * Links: packages/operator-wallet/src/adapters/privy/privy-operator-wallet.adapter.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/operator-wallet.md
  * @internal
  */
 

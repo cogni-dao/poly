@@ -2,7 +2,7 @@
 
 > Load when: the hardcoded `TOP_TARGET_SIZE_SNAPSHOTS` in `app/src/bootstrap/jobs/copy-trade-mirror.job.ts` looks stale, or someone asks "is our copy-target sizing config still right?", or a target wallet's trading volume has changed significantly. Also: when designing a config change to `sizing_min_target_usdc` / `sizing_max_target_usdc` / `DEFAULT_CONVICTION_FILTER_PERCENTILE`.
 >
-> Canonical example of running this loop: PR #83 + task.5045 — full record at [`docs/research/poly/copy-target-north-star-2026-05-16.md`](../../../docs/research/poly/copy-target-north-star-2026-05-16.md) and reproducible queries at [`docs/research/poly/queries/`](../../../docs/research/poly/queries/).
+> Canonical example of running this loop: PR #83 + task.5045 — full record at copy-target-north-star-2026-05-16 and reproducible queries at [`docs/research/poly/queries/`](../../../docs/research/poly/queries/).
 
 ## The mental model (read before running queries)
 
@@ -32,7 +32,7 @@ Most copy-target wallets have continuous live-tick observations in prod. For a f
 ./scripts/grafana-postgres-query.sh "select trader_wallet_id, min(observed_at) as earliest, max(observed_at) as latest, count(*) as fills from poly_trader_fills where trader_wallet_id = '<id>' and observed_at >= now() - interval '30 days' group by 1" <operator-provided-poly-postgres-datasource>
 ```
 
-If past-30d fills < ~5,000: percentiles will be noisy. Either pick a larger window or backfill earlier history via `scripts/experiments/poly-backfill/walk-windows.sh + load.ts` (spike.5024). See [`docs/guides/poly-target-backfill.md`](../../../docs/guides/poly-target-backfill.md).
+If past-30d fills < ~5,000: percentiles will be noisy. Either pick a larger window or backfill earlier history via `scripts/experiments/poly-backfill/walk-windows.sh + load.ts` (spike.5024). See [poly-target-backfill](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/poly-target-backfill.md).
 
 ### 2. Compute primary-side pXX (the one query that matters)
 

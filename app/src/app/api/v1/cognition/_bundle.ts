@@ -15,7 +15,6 @@
  *     is rendered IN FULL — the bootstrap IS the agent's operating map, so the
  *     git skeleton stays minimal and the Dolt orientation carries the substance.
  * Side-effects: none
- * Links: docs/spec/node-baas-architecture.md
  * @internal
  */
 

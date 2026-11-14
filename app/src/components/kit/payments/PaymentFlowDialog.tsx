@@ -8,7 +8,7 @@
  * Invariants: Dismissible when isInFlight OR isTerminal; parent (UsdcPaymentFlow) decides cancel vs close semantics via onClose callback.
  * Side-effects: none
  * Notes: Dialog uses desktop-only pattern; parent handles escape/backdrop logic via dismissible prop derivation.
- * Links: docs/spec/payments-design.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

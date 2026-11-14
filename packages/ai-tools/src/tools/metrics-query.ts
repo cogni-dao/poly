@@ -14,7 +14,7 @@
  *   - NO LangChain imports (LangChain wrapping in langgraph-graphs)
  * Side-effects: IO (HTTP requests to metrics backend via capability)
  * Notes: Requires MetricsCapability to be configured
- * Links: TOOL_USE_SPEC.md #17 (GOVERNED_METRICS), #18 (QUERY_PROVENANCE)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md, #18 (QUERY_PROVENANCE)
  * @public
  */
 

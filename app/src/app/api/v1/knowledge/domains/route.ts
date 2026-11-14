@@ -8,7 +8,7 @@
  * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, DOMAIN_HTTP_REQUIRES_PRINCIPAL
  *   (list: any principal; register: bearer-or-session), DOMAIN_REGISTER_AUTOCOMMITS.
  * Side-effects: IO (HTTP response, Doltgres read/write via container port)
- * Links: docs/spec/knowledge-domain-registry.md
+ * Links: https://node-template.cognidao.org/knowledge/knowledge-domain-management
  * @public
  */
 

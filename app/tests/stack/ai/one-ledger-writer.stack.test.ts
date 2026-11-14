@@ -9,7 +9,7 @@
  *   - ONE_LEDGER_WRITER: Only billing.ts may call recordChargeReceipt
  * Side-effects: IO (grep subprocess)
  * Notes: Complements depcruise rule. Catches call sites that depcruise's import-based analysis might miss.
- * Links: GRAPH_EXECUTION.md, billing.ts
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, billing.ts
  * @public
  */
 

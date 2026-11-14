@@ -7,7 +7,7 @@
  * Scope: Verifies system tenant billing account exists at startup. Does not perform ongoing health monitoring.
  * Invariants: SYSTEM_TENANT_STARTUP_CHECK — app must not start without system tenant billing account.
  * Side-effects: IO (database query via ServiceAccountService port)
- * Links: docs/spec/system-tenant.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/system-tenant.md
  * @public
  */
 

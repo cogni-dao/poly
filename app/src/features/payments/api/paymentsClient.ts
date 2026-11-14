@@ -8,7 +8,7 @@
  * Invariants: Always parses JSON body to surface server error codes; returns discriminated union for pattern matching.
  * Side-effects: IO (fetch API); never throws on HTTP errors (returns ApiError instead).
  * Notes: All types derived from contracts via z.infer; hook layer handles business logic.
- * Links: docs/spec/payments-design.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

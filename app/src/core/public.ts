@@ -7,7 +7,7 @@
  * Scope: Re-export barrel + node-specific extensions. Does NOT duplicate platform core logic.
  * Invariants: Re-exports @cogni/node-core platform surface; node-specific named exports below
  * Side-effects: none
- * Links: @cogni/node-core, docs/spec/node-app-shell.md
+ * Links: @cogni/node-core, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-app-shell.md
  * @public
  */
 

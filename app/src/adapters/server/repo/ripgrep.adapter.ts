@@ -14,7 +14,7 @@
  *   - RG_BINARY_NOT_NPM: Uses system `rg` binary
  *   - PATH_CANONICAL: All output paths use canonical format (no leading ./)
  * Side-effects: IO (subprocess execution, file reads)
- * Links: COGNI_BRAIN_SPEC.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md
  * @internal
  */
 

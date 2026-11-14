@@ -9,7 +9,7 @@
  *   - HIERARCHICAL_PROMPTS: Separate prompts for each agent role
  *   - TOOL_AWARE: Prompts reference available tools by name
  * Side-effects: none
- * Links: LANGGRAPH_AI.md, open-deep-research reference
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, open-deep-research reference
  * @public
  */
 

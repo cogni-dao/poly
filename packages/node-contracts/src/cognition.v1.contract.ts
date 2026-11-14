@@ -16,7 +16,7 @@
  *     render even when the hub is empty or unreachable, so a session always
  *     bootstraps.
  * Side-effects: none
- * Links: docs/spec/node-baas-architecture.md, docs/spec/knowledge-syntropy.md
+ * Links: https://node-template.cognidao.org/knowledge/knowledge-write-contract
  * @internal
  */
 

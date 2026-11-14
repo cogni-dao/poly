@@ -11,7 +11,6 @@
  *   - READ_ONLY: All methods are GET wrappers
  *   - PAGINATION_CONSISTENT: `hasMore = items.length >= limit`
  * Side-effects: none (factory; returned closures do IO)
- * Links: work/items/task.0386.poly-agent-wallet-research-v0.md
  * @internal
  */
 

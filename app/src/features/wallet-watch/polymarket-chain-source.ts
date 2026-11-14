@@ -14,7 +14,7 @@
  *   - METADATA_FROM_POSITIONS — `(condition_id, outcome, end_date)` is normally enriched from periodic `listAllUserPositions(wallet)` snapshots (paginated to exhaustion — bug.5055). A fill never waits for that full-wallet walk.
  *   - EXACT_TOKEN_METADATA_BACKSTOP — when the wallet position snapshot does not yet contain a just-filled token (or `/positions` is stalled/rate-limited), resolve that exact CLOB token through Gamma first. Results and in-flight work are coalesced per `(target wallet, token)` across tenant sources. Missing or ambiguous mappings still fail closed. Empty-outcome skip prevents wrong-leg mirroring on NegRisk multi-outcome markets.
  * Side-effects: opens 2 viem RPC subscriptions; HTTPS GETs to data-api.polymarket.com on each metadata refresh; logger + metrics; periodic heartbeat info log.
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5043, work/items/task.5042
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/task.5043, work/items/task.5042
  * @public
  */
 

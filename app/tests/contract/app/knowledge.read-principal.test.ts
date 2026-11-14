@@ -12,7 +12,7 @@
  * Invariants: a bearer-bearing read returns 200 (never 403); link-pulling
  *   (graph edges) is reachable by agents.
  * Side-effects: none (container + auth mocked, fake in-memory store)
- * Links: src/app/api/v1/knowledge, docs/spec/knowledge-syntropy.md
+ * Links: src/app/api/v1/knowledge, https://node-template.cognidao.org/knowledge/knowledge-write-contract
  * @internal
  */
 

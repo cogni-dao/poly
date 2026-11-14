@@ -8,7 +8,7 @@
  * Invariants: Credits via usdCentsToCredits (integer math); idempotent on clientPaymentId; system tenant bonus sequential + idempotent.
  * Side-effects: IO (via AccountService and ServiceAccountService ports).
  * Notes: Billing account resolved at app layer. Reads SYSTEM_TENANT_REVENUE_SHARE from env (llmPricingPolicy pattern).
- * Links: docs/spec/payments-design.md, docs/spec/system-tenant.md, src/core/billing/pricing.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/system-tenant.md, src/core/billing/pricing.ts
  * @public
  */
 

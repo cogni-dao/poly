@@ -10,7 +10,7 @@
  *   - FAILS_CLOSED: malformed upstream payloads throw instead of being silently reshaped into fake chart points.
  *   - OUTBOUND_OBSERVABLE: callers may pass a structured logger; when provided, every fetch emits one `poly.user-pnl.outbound` event tagged with `component`, used to assert PAGE_LOAD_DB_ONLY (task.5012) in Loki.
  * Side-effects: IO (HTTP fetch to https://data-api.polymarket.com); optional structured log emit on each call.
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5012
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/task.5012
  * @public
  */
 

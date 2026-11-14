@@ -23,8 +23,8 @@
  *     pre-date bug.5018 (forward-only — no backfill). `WHERE price IS NOT NULL` discriminates
  *     post-fix rows; PnL/VWAP aggregations read column data, not JSONB.
  * Side-effects: none (schema definitions only)
- * Links: docs/spec/poly-tenant-and-collateral.md, work/items/task.0318,
- *   docs/spec/poly-paper-trading-shortcomings.md (bug.5018 — S3/S4 closed)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, work/items/task.0318,
+ *   poly-paper-trading-shortcomings (bug.5018 — S3/S4 closed)
  * @public
  */
 
@@ -78,7 +78,7 @@ export const polyCopyTradeTargets = pgTable(
      * users/AI pin a target to a specific policy. The discriminated union
      * lives in `SizingPolicySchema` (poly/app features/copy-trade/types.ts);
      * adding a new variant means appending here AND there. See spec:
-     * docs/spec/poly-copy-trade-position-mirror.md (Phase 1).
+     * poly-copy-trade-position-mirror (Phase 1).
      */
     sizingPolicyKind: text("sizing_policy_kind").notNull().default("auto"),
     /** Legacy position_gap v1 range; v2 ignores it. */
@@ -523,7 +523,7 @@ export const polyCopyTradeDecisions = pgTable(
  * task.5014 — per-(billing_account, target, condition) baseline snapshot of
  * target's cumulative position USDC at first post-activation observation.
  * Insert-once via `ON CONFLICT DO NOTHING`. Read by `applyPositionGapSizing`.
- * See docs/research/poly/range-relative-mirror-2026-05-26.md.
+ * See range-relative-mirror-2026-05-26.
  *
  * @public
  */

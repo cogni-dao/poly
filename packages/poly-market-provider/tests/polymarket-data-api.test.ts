@@ -7,7 +7,7 @@
  * Scope: Uses an injected fetch mock + the saved fixture JSON. Does not perform live network I/O, does not mutate state.
  * Invariants: TS_ONLY_RUNTIME, CONTRACT_IS_SOT.
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md, work/items/bug.5049, tests/fixtures/polymarket-leaderboard.json
+ * Links: work/items/bug.5049, tests/fixtures/polymarket-leaderboard.json
  * @internal
  */
 

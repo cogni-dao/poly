@@ -8,7 +8,7 @@
  * Invariants: All classes use semantic tokens (no raw colors/spacing); follows mobile-first responsive patterns.
  * Side-effects: none
  * Notes: Token compliance enforced by ESLint no-raw-colors + CI ripgrep checks.
- * Links: docs/spec/ui-implementation.md, docs/spec/payments-design.md
+ * Links: https://node-template.cognidao.org/knowledge/frontend-development, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

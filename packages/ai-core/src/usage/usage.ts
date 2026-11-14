@@ -13,7 +13,7 @@
  *   - executorType is REQUIRED for executor-agnostic billing/history
  *   - billingAccountId / virtualKeyId may be attached upstream by a wrapper; schemas enforce them at billing ingestion
  * Side-effects: none (types only)
- * Links: billing.ts (computeIdempotencyKey, commitUsageFact), GRAPH_EXECUTION.md, LANGGRAPH_SERVER.md
+ * Links: billing.ts (computeIdempotencyKey, commitUsageFact), https://node-template.cognidao.org/knowledge/graph-execution-invariants, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md
  * @public
  */
 

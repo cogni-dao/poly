@@ -7,7 +7,7 @@
  * Scope: Type-only port + input shapes derived from `@cogni/work-items` `WorkItemCommandPort`. Concrete adapter lives in `@/adapters/server/db/doltgres/work-items-adapter`.
  * Invariants: Routes/facades depend on this port, NEVER on the concrete adapter. Container wires either the real adapter or a `NotConfigured` impl when DOLTGRES_URL is unset.
  * Side-effects: none
- * Links: docs/spec/work-items-port.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/work-items-port.md
  * @public
  */
 

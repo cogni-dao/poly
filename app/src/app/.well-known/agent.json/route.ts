@@ -14,7 +14,7 @@
  *   - NO_INTERNAL_BIND_ADDR: URLs must never expose `0.0.0.0:3000` or other
  *     in-pod addresses. Always derive origin from forwarded headers first.
  * Side-effects: none
- * Links: docs/guides/agent-api-validation.md
+ * Links: https://cognidao.org/knowledge/prove-node-agent-api
  * @public
  */
 

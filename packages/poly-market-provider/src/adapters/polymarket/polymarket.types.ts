@@ -7,7 +7,6 @@
  * Scope: Pure type definitions for API response validation. Does not contain I/O or runtime logic.
  * Invariants: PACKAGES_NO_ENV.
  * Side-effects: none
- * Links: work/items/task.0230.market-data-package.md
  * @public
  */
 

@@ -9,7 +9,7 @@
  * - Must trigger no-service-db-package-import (direct package import)
  * - Must trigger no-service-db-adapter-import (adapter singleton import)
  * Side-effects: none
- * Links: .dependency-cruiser.cjs, docs/spec/database-rls.md
+ * Links: .dependency-cruiser.cjs, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md
  * @internal
  */
 

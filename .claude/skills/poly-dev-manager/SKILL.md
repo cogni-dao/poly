@@ -67,25 +67,25 @@ Load multiple if you're crossing domains (e.g., a research view that drives a ta
 
 **Specs (as-built):**
 
-- [docs/spec/poly-copy-trade-execution.md](../../../docs/spec/poly-copy-trade-execution.md) — Phase 1 layer boundaries, invariants, `fill_id` shape
-- [docs/spec/poly-copy-trade-execution.md](../../../docs/spec/poly-copy-trade-execution.md) — order status vs position lifecycle vs redeem job state machine
-- [docs/spec/poly-tenant-and-collateral.md](../../../docs/spec/poly-tenant-and-collateral.md) — Phase A tenant-scoped copy-trade tables + RLS
-- [docs/spec/poly-tenant-and-collateral.md](../../../docs/spec/poly-tenant-and-collateral.md) — Phase B `PolyTraderWalletPort` (AEAD, consent, invariants)
+- [poly-copy-trade-execution](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md) — Phase 1 layer boundaries, invariants, `fill_id` shape
+- [poly-copy-trade-execution](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md) — order status vs position lifecycle vs redeem job state machine
+- [poly-tenant-and-collateral](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md) — Phase A tenant-scoped copy-trade tables + RLS
+- [poly-tenant-and-collateral](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md) — Phase B `PolyTraderWalletPort` (AEAD, consent, invariants)
 
 **Current design/research pointers:**
 
-- [docs/spec/poly-copy-trade-execution.md](../../../docs/spec/poly-copy-trade-execution.md) — `MirrorPositionView`, position authority boundaries, follow-up branch predicates, decision-log observability contract
-- [docs/spec/poly-copy-trade-execution.md](../../../docs/spec/poly-copy-trade-execution.md) — canonical position model; do not confuse local mirror policy cache with chain/Data API authority
-- [docs/spec/poly-copy-trade-execution.md](../../../docs/spec/poly-copy-trade-execution.md) — current as-built hardcoded RN1/swisstony target-position pXX policy
-- [docs/research/poly/layering-policy-spike-2026-05-02.md](../../../docs/research/poly/layering-policy-spike-2026-05-02.md) — historical layering research; do not treat its order-flow pXX as the active position-pXX policy
+- [poly-copy-trade-execution](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md) — `MirrorPositionView`, position authority boundaries, follow-up branch predicates, decision-log observability contract
+- [poly-copy-trade-execution](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md) — canonical position model; do not confuse local mirror policy cache with chain/Data API authority
+- [poly-copy-trade-execution](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md) — current as-built hardcoded RN1/swisstony target-position pXX policy
+- [layering-policy-spike-2026-05-02](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/poly/layering-policy-spike-2026-05-02.md) — historical layering research; do not treat its order-flow pXX as the active position-pXX policy
 - [app/src/bootstrap/jobs/copy-trade-mirror.job.ts](../../../app/src/bootstrap/jobs/copy-trade-mirror.job.ts) — current hardcoded v0 sizing snapshots and position-follow-up defaults
 - [app/src/features/copy-trade/plan-mirror.ts](../../../app/src/features/copy-trade/plan-mirror.ts) — pure planner for pXX, layer, hedge, and SELL-close branch decisions
 - [app/src/features/copy-trade/mirror-pipeline.ts](../../../app/src/features/copy-trade/mirror-pipeline.ts) — sequencing, target-position hydration, ledger decision recording, Loki fields
 
 **Guides:**
 
-- [docs/guides/poly-wallet-provisioning.md](../../../docs/guides/poly-wallet-provisioning.md) — per-tenant flow + honest architecture accounting
-- [docs/guides/polymarket-account-setup.md](../../../docs/guides/polymarket-account-setup.md) — shared-operator onboarding (legacy)
+- [poly-wallet-provisioning](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/poly-wallet-provisioning.md) — per-tenant flow + honest architecture accounting
+- [polymarket-account-setup](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/polymarket-account-setup.md) — shared-operator onboarding (legacy)
 
 **Operational data tables (where research / data-science work lands):**
 
@@ -106,9 +106,9 @@ Load multiple if you're crossing domains (e.g., a research view that drives a ta
 
 Work items live in the Poly node hub (`https://poly.cognidao.org/api/v1/work/items`) when `COGNI_NODE_API_KEY` is available. If session cognition or node credentials are missing, say so and use local markdown only as a temporary reference surface.
 
-- [proj.poly-copy-trading](../../../work/projects/proj.poly-copy-trading.md) — full roadmap, open bugs, constraints (still markdown)
-- [chr.poly-copy-delta](../../../work/charters/POLY_COPY_DELTA.md) — failure-mode taxonomy (D1–D8 classes); every delta-minimizer report cites a row here
-- [chr.poly-algo-tenant-matrix](../../../work/charters/POLY_ALGO_TENANT_MATRIX.md) — per-(env, tenant) paper-trading accounts we operate for algo A/B; tells you which `POLY_<ENV>_TENANT_<ROLE>_*` env key drives which tenant, and which policies are under test
+- [proj.poly-copy-trading](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/work/projects/proj.poly-copy-trading.md) — full roadmap, open bugs, constraints (still markdown)
+- chr.poly-copy-delta — failure-mode taxonomy (D1–D8 classes); every delta-minimizer report cites a row here
+- chr.poly-algo-tenant-matrix — per-(env, tenant) paper-trading accounts we operate for algo A/B; tells you which `POLY_<ENV>_TENANT_<ROLE>_*` env key drives which tenant, and which policies are under test
 - Active poly items: `GET https://poly.cognidao.org/api/v1/work/items?node=poly&statuses=needs_implement,needs_design,in_review`
 - Specific item: `GET https://poly.cognidao.org/api/v1/work/items/{id}` (e.g. `task.5012`, `task.0322`, `bug.5012`, `spike.5024`)
 

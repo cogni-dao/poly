@@ -8,7 +8,7 @@
  * Invariants:
  *   - NO_LANGCHAIN_IN_ADAPTERS_ROOT: LangChain imports only in this directory
  * Side-effects: none
- * Links: GRAPH_EXECUTION.md, LANGGRAPH_AI.md, AGENT_DISCOVERY.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/agent-discovery.md
  * @public
  */
 

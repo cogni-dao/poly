@@ -10,7 +10,7 @@
  *   - TOOL_ID_STABILITY: Duplicate IDs throw at construction time
  *   - TOOL_ID_NAMESPACED: IDs use core__<name> format
  * Side-effects: none
- * Links: docs/spec/tool-use.md, work/items/bug.0319.ai-tools-per-node-packages.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 

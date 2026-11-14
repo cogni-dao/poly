@@ -12,7 +12,7 @@
  *   - PURE_LIBRARY: no env vars, no process lifecycle
  * Side-effects: none (delegates to providers)
  * Notes: Discovery (listAgents) is in AggregatingAgentCatalog, not here.
- * Links: GRAPH_EXECUTION.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

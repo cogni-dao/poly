@@ -14,7 +14,7 @@ Test double implementations of AI service ports for deterministic testing.
 ## Pointers
 
 - [Real adapters](../../server/ai/)
-- [System Test Architecture](../../../../../../work/projects/proj.system-test-architecture.md)
+- [System Test Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/work/projects/proj.system-test-architecture.md)
 
 ## Boundaries
 
@@ -62,4 +62,4 @@ pnpm test tests/component/
 ## Notes
 
 - LLM adapter (FakeLlmAdapter) was removed — test stacks use real LiteLLM with mock-openai-api backend
-- See docs/spec/system-test-architecture.md for details
+- See https://node-template.cognidao.org/knowledge/node-test-contract for details

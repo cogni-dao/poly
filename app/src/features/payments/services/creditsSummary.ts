@@ -8,7 +8,7 @@
  * Invariants: Returns ledger entries ordered by newest first; relies on AccountService for data access.
  * Side-effects: IO (via AccountService port).
  * Notes: Does not perform authentication; billing account resolution handled by app layer.
- * Links: docs/spec/payments-design.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

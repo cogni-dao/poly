@@ -9,7 +9,7 @@
  *   - LANGGRAPH_JSON_POINTS_TO_SERVER_ONLY: Referenced by langgraph.json
  *   - HELPERS_DO_NOT_IMPORT_CATALOG: Uses makeServerGraph with explicit toolIds
  * Side-effects: process.env (via makeServerGraph)
- * Links: COGNI_BRAIN_SPEC.md, GRAPH_EXECUTION.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md, https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @internal
  */
 

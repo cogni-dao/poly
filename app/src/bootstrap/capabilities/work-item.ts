@@ -14,7 +14,7 @@
  *   - PORTS_ARE_AUTHORITY: All operations delegate to WorkItemQueryPort/WorkItemCommandPort
  *   - TRANSITION_TABLE_ENFORCED: CommandPort validates transitions
  * Side-effects: none (factory only)
- * Links: docs/spec/development-lifecycle.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/development-lifecycle.md
  * @internal
  */
 

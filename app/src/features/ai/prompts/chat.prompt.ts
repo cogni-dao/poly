@@ -10,7 +10,7 @@
  *   - prompt_hash computed by litellm.adapter.ts only (not here)
  * Side-effects: none
  * Notes: P1 skeleton - expand with graph-specific prompts as needed
- * Links: chat.graph.ts, litellm.adapter.ts, AI_SETUP_SPEC.md
+ * Links: chat.graph.ts, litellm.adapter.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md
  * @internal
  */
 

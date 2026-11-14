@@ -10,7 +10,7 @@
  *   - Metric fields return `null` when `resolved.length < minResolvedForMetrics` (default 5) — callers decide how to render insufficient-data state.
  *   - Follows math frozen in `scripts/experiments/wallet-screen-resolved.ts` (spike.0323 v3 screen) so metrics displayed in the app agree with research fixtures.
  * Side-effects: none
- * Links: docs/design/wallet-analysis-components.md, work/items/task.0329.wallet-analysis-component-extraction.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md
  * @public
  */
 

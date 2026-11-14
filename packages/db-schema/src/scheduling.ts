@@ -12,7 +12,7 @@
  * - Per SCHEDULER_SPEC.md: job_key = scheduleId:scheduledFor for Graphile Worker
  * - UNIQUE(schedule_id, scheduled_for) WHERE schedule_id IS NOT NULL on graph_runs prevents duplicate run records per slot
  * Side-effects: none (schema definitions only)
- * Links: docs/spec/scheduler.md, docs/spec/unified-graph-launch.md, types/scheduling.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/unified-graph-launch.md, types/scheduling.ts
  * @public
  */
 

@@ -12,7 +12,7 @@
  *   - Tools are pure functions with Zod validation
  *   - inputSchema is the source of truth; validateInput derives from it
  * Side-effects: none (types only)
- * Links: LANGGRAPH_AI.md, TOOL_USE_SPEC.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 

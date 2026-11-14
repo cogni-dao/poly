@@ -23,7 +23,7 @@
  *   - GENERATED_DISCOVERY: `.well-known/agent.json` is a typed projection of
  *     `POLY_ACCOUNT_READ_OPERATIONS`, never hand-authored schemas.
  * Side-effects: none
- * Links: story.5006, story.5004, task.1791070961, docs/spec/capability-plane.md
+ * Links: story.5006, story.5004, task.1791070961, https://poly.cognidao.org/knowledge/capability-plane-contract
  * @public
  */
 

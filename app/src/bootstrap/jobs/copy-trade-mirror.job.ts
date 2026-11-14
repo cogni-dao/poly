@@ -12,11 +12,11 @@
  *   - NO_CURSOR_PERSISTENCE_V0 — cursor lives in-memory and resets on boot. On startup the initial cursor is `Math.floor(now/1000) - WARMUP_BACKLOG_SEC` so we don't replay a target's months-deep history through `planMirrorFromFill()`.
  *   - CAPS_LIVE_IN_GRANT — daily / hourly USDC caps are enforced downstream by `authorizeIntent` inside the per-tenant `placeIntent` executor (see `bootstrap/capabilities/poly-trade-executor.ts`). Mirror-sizing here is notional only.
  * Side-effects: starts a `setInterval`, emits logs + metrics.
- * Links: work/items/task.0318 (Phase B3), docs/spec/poly-tenant-and-collateral.md
+ * Links: work/items/task.0318 (Phase B3), https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md
  *
  * @scaffolding
  * Deleted-in-phase: 4 (replaced by Temporal-hosted WS ingester workflow; see
- *   work/items/task.0322.poly-copy-trade-phase4-design-prep.md).
+ *   task.0322).
  *
  * @internal
  */

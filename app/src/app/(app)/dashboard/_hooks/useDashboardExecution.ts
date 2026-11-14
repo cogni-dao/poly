@@ -9,7 +9,7 @@
  * (task.5009).
  * Scope: Client-side React Query composition only. No route logic.
  * Side-effects: IO (HTTP fetch via React Query).
- * Links: docs/spec/poly-copy-trade-execution.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md
  * @internal
  */
 

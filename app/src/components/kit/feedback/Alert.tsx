@@ -8,7 +8,7 @@
  * Invariants: Forwards ref; accepts aria-* and data-* unchanged; uses semantic tokens only.
  * Side-effects: none
  * Notes: Extends shadcn default/destructive with success variant for positive feedback states.
- * Links: docs/spec/ui-implementation.md, docs/spec/payments-design.md
+ * Links: https://node-template.cognidao.org/knowledge/frontend-development, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

@@ -9,7 +9,7 @@
  *   - TOOL_SOURCE_RETURNS_BOUND_TOOL: Returns BoundToolRuntime from map
  *   - TOOL_ID_STABILITY: No mutations after construction
  * Side-effects: none
- * Links: TOOL_USE_SPEC.md #27
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 

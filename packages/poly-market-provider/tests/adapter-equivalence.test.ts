@@ -28,7 +28,7 @@
  *     the stub injects a `fee` field. Real prod calls leave fees_usdc
  *     undefined; the equivalence here is about adapter symmetry, not prod
  *     reality.
- * Links: docs/spec/poly-paper-trading-shortcomings.md (S8), work item bug.5018
+ * Links: work item bug.5018
  * @internal
  */
 

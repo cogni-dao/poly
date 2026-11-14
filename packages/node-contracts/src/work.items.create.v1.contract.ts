@@ -12,7 +12,7 @@
  *   - status defaults to "needs_triage" if not provided
  *   - node defaults to "shared"
  * Side-effects: none
- * Links: /api/v1/work/items route, docs/spec/work-items-port.md, work/items/task.0423.doltgres-work-items-source-of-truth.md
+ * Links: /api/v1/work/items route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/work-items-port.md
  * @internal
  */
 

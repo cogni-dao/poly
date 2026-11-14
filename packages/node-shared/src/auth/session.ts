@@ -8,7 +8,7 @@
  * Invariants: id is always DB UUID; serializable primitives only, no runtime behavior; fields are strict nullable (string | null), never optional.
  * Side-effects: none
  * Notes: walletAddress is null when user authenticated via OAuth (GitHub) without a linked wallet.
- * Links: app/_lib/auth/session, docs/spec/security-auth.md
+ * Links: app/_lib/auth/session, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/security-auth.md
  * @public
  */
 export interface SessionUser {

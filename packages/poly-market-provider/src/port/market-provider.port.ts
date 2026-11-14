@@ -10,7 +10,6 @@
  *   - PORT_IS_EXISTING (task.0315): Run-phase methods extend THIS port; no new port package.
  *   - IDEMPOTENT_BY_CLIENT_ID: `placeOrder` dedupes server-side on `intent.client_order_id`.
  * Side-effects: none
- * Links: work/items/task.0230.market-data-package.md, work/items/task.0315.poly-copy-trade-prototype.md
  * @public
  */
 

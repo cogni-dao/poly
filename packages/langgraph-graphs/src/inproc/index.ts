@@ -7,7 +7,7 @@
  * Scope: Re-exports runner and types. Does NOT import from src/.
  * Invariants: PACKAGES_NO_SRC_IMPORTS
  * Side-effects: none
- * Links: LANGGRAPH_AI.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

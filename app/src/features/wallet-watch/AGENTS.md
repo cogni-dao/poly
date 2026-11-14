@@ -13,9 +13,7 @@ Generic Polymarket wallet observation primitive. Emits normalized `Fill[]` for a
 
 ## Pointers
 
-- [task.0315 — Phase 1 plan](../../../../../../work/items/task.0315.poly-copy-trade-prototype.md)
-- [task.5043 — Polygon chain-log source (current)](../../../../../../work/items/task.5043.md)
-- [Phase 1 spec](../../../../../../docs/spec/poly-copy-trade-execution.md)
+- [Phase 1 spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md)
 - [Root poly node AGENTS.md](../AGENTS.md)
 - Sibling layers: [../copy-trade/AGENTS.md](../copy-trade/AGENTS.md), [../trading/AGENTS.md](../trading/AGENTS.md)
 

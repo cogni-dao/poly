@@ -7,7 +7,7 @@
  * Scope: Build tooling only. Does not contain runtime code.
  * Invariants: Output must be ESM with type declarations.
  * Side-effects: IO
- * Links: docs/design/attribution-operator-gateway.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/attribution-operator-gateway.md
  * @internal
  */
 

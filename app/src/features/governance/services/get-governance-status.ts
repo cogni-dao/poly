@@ -10,7 +10,7 @@
  * - BIGINT_SERIALIZATION: Balance converted to string for JSON compatibility
  * - FEATURE_SERVICE_LAYER: Route delegates here, never queries DB directly
  * Side-effects: IO (reads via ports)
- * Links: docs/spec/governance-status-api.md, src/ports/governance-status.port.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/governance-status-api.md, src/ports/governance-status.port.ts
  * @public
  */
 

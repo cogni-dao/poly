@@ -10,7 +10,6 @@
  *   - PAGINATION_CONSISTENT: Paginated outputs expose `{ count, hasMore, nextCursor }`; pages advance by the opaque `cursor` (Data API v2 has no offset)
  *   - USER_PARAM_IS_PROXY_WALLET: `user` is validated as 0x40-hex by the tool input schema
  * Side-effects: none (interface only)
- * Links: work/items/task.0386.poly-agent-wallet-research-v0.md
  * @public
  */
 

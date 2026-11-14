@@ -7,7 +7,7 @@
  * Scope: logEvent wrapper + request lifecycle helpers (type-only pino dependency). Does NOT include logger factory, metrics, or redact.
  * Invariants: PURE_LIBRARY — logger/metrics/redact stay app-local.
  * Side-effects: none
- * Links: docs/spec/packages-architecture.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @public
  */
 

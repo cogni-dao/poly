@@ -9,7 +9,7 @@
  *   - SINGLE_SOURCE_OF_TRUTH: This is the canonical definition; src/types re-exports
  *   - Each adapter has exactly one source system for billing attribution
  * Side-effects: none (constants and types only)
- * Links: LANGGRAPH_SERVER.md, GRAPH_EXECUTION.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md, https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

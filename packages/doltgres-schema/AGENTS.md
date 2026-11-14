@@ -16,9 +16,9 @@ Contents: re-exports from `@cogni/knowledge-base` of the 6 syntropy-seed tables 
 
 ## Pointers
 
-- Work Items Port Spec in `Cogni-DAO/cogni/docs/spec/work-items-port.md` — port + adapter contract
-- Knowledge Data Plane Spec in `Cogni-DAO/cogni/docs/spec/knowledge-data-plane.md` — Doltgres-side architecture
-- Packages Architecture in `Cogni-DAO/cogni/docs/spec/packages-architecture.md` — workspace package shape
+- Work Items Port Spec in `https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/work-items-port.md` — port + adapter contract
+- Knowledge Data Plane Spec in `https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/knowledge-data-plane.md` — Doltgres-side architecture
+- Packages Architecture in `https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md` — workspace package shape
 - `@cogni/operator-doltgres-schema` in the operator monorepo — sibling package; reference structure
 - task.5077 — substrate + contributions API port that created this package
 

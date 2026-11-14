@@ -7,7 +7,7 @@
  * Scope: Defines the funding interface and context type. Provider-agnostic (OpenRouter today, others tomorrow).
  * Invariants: PORT_BOUNDARY_CLEAN — separate from TreasurySettlementPort. SETTLEMENT_NON_BLOCKING — caller handles errors.
  * Side-effects: none (interface definition only)
- * Links: docs/spec/web3-openrouter-payments.md, task.0086
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/web3-openrouter-payments.md, task.0086
  * @public
  */
 

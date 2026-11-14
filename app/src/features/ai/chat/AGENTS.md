@@ -16,8 +16,8 @@ Chat subfeature of AI — provides assistant-ui + AI SDK streaming integration f
 
 - [Root AGENTS.md](../../../../../../AGENTS.md)
 - [Parent: AI Feature](../AGENTS.md)
-- [Architecture](../../../../../../docs/spec/architecture.md)
-- [UI Implementation Guide](../../../../../../docs/spec/ui-implementation.md)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
+- [UI Implementation Guide](https://node-template.cognidao.org/knowledge/frontend-development)
 - **Related:** [../services/](../services/) (completion, AI logic), [../../payments/](../../payments/) (credits), [adapters/](adapters/) (dictation adapter)
 
 ## Boundaries

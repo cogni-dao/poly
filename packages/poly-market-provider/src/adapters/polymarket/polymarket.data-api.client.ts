@@ -7,7 +7,7 @@
  * Scope: HTTP fetch + Zod validation. Does not load env, does not manage credentials, does not place orders, does not implement `MarketProviderPort`.
  * Invariants: PACKAGES_NO_ENV, READ_ONLY, CONTRACT_IS_SOT, PROCESS_WIDE_RATE_GATE (the 429 cooldown and the in-flight cap are module-scoped on purpose — Polymarket limits per-IP and the app builds one client per consumer; both honour the caller's AbortSignal).
  * Side-effects: IO (HTTP fetch to https://data-api.polymarket.com and https://gamma-api.polymarket.com), mutates the module-scoped cooldown + in-flight counters
- * Links: work/items/task.0315.poly-copy-trade-prototype.md, work/items/task.0386.poly-agent-wallet-research-v0.md, docs/research/poly-copy-trading-wallets.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/poly-copy-trading-wallets.md
  * @public
  */
 

@@ -31,7 +31,7 @@
  *   service_poly ceiling 8 and caused SQLSTATE 53300 (bug.5045). Tune per-env via
  *   the three env vars in `app/src/shared/env/server-env.ts` — this package never
  *   reads process.env.
- * Links: docs/spec/database-rls.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md
  * @internal
  */
 

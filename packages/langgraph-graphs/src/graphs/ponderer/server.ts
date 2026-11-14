@@ -9,7 +9,7 @@
  *   - LANGGRAPH_JSON_POINTS_TO_SERVER_ONLY: Referenced by langgraph.json
  *   - HELPERS_DO_NOT_IMPORT_CATALOG: Uses makeServerGraph with explicit toolIds
  * Side-effects: process.env (via makeServerGraph)
- * Links: GRAPH_EXECUTION.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @internal
  */
 

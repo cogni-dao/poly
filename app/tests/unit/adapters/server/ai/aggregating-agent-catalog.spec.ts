@@ -9,7 +9,7 @@
  *   - DISCOVERY_NO_EXECUTION_DEPS: Catalog does not require execution infrastructure
  *   - P0_AGENT_GRAPH_IDENTITY: agentId === graphId
  * Side-effects: none
- * Links: aggregating-agent-catalog.ts, AGENT_DISCOVERY.md
+ * Links: aggregating-agent-catalog.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/agent-discovery.md
  * @public
  */
 

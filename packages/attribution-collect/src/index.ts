@@ -9,7 +9,7 @@
  *   - PURE_FACTORIES: activity factories are pure over their injected deps.
  *   - WORKER_BEHAVIOR_UNCHANGED: the ledger worker imports the same factories from here — a pure move, no runtime change.
  * Side-effects: none (re-export barrel)
- * Links: docs/design/attribution-operator-gateway.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/attribution-operator-gateway.md
  * @public
  */
 

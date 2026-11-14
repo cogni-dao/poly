@@ -7,7 +7,7 @@
  * Scope: Server layout component providing sidebar + top bar shell for all routes under (app). Does not handle authentication — proxy.ts guarantees only authenticated users reach this layout.
  * Invariants: Auth enforced at proxy level; this layout is a pure UI shell. The brand mark is read server-side from repo-spec and passed to the client sidebar, mirroring `(public)/layout.tsx`.
  * Side-effects: repo-spec read on first call (cached)
- * Links: docs/spec/security-auth.md, src/proxy.ts, src/app/(public)/layout.tsx
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/security-auth.md, src/proxy.ts, src/app/(public)/layout.tsx
  * @public
  */
 
