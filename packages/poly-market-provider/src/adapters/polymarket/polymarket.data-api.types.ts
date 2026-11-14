@@ -7,7 +7,7 @@
  * Scope: Pure type definitions; wire (snake_case) schemas live in `polymarket.data-api-v2.types.ts`. Does not contain I/O or runtime logic.
  * Invariants: PACKAGES_NO_ENV.
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md, work/items/task.0386.poly-agent-wallet-research-v0.md, docs/research/poly-copy-trading-wallets.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/poly-copy-trading-wallets.md
  * @public
  */
 

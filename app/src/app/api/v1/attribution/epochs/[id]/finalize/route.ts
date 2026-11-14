@@ -7,7 +7,7 @@
  * Scope: Auth-protected POST endpoint. Finalizes IN-PROCESS on this node's own DB (story.5007 finalize-in-process) — no Temporal round-trip, no ledger-tasks queue. Returns 200 + the statement + R3 cumulative distribution. Delegates all logic to `finalizeEpochInProcess` (bootstrap) → `runFinalizeEpoch`.
  * Invariants: WRITE_ROUTES_APPROVER_GATED, FINALIZE_IN_PROCESS, EPOCH_FINALIZE_IDEMPOTENT (a re-POST repairs; fold FREEZE preserves a published manifest).
  * Side-effects: IO (HTTP response, service-DB finalize transaction, viem EIP-712 verify).
- * Links: docs/spec/attribution-ledger.md, contracts/attribution.finalize-epoch.v1.contract, bootstrap/container#finalizeEpochInProcess
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md, contracts/attribution.finalize-epoch.v1.contract, bootstrap/container#finalizeEpochInProcess
  * @public
  */
 

@@ -8,7 +8,7 @@
  * Invariants: Returns null for unknown chains; reads explorer URLs from chain.ts CHAINS map.
  * Side-effects: none
  * Notes: All chain-specific config centralized in chain.ts; no parallel maps here.
- * Links: src/shared/web3/chain.ts, docs/spec/payments-design.md
+ * Links: src/shared/web3/chain.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

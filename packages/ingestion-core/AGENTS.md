@@ -13,8 +13,8 @@ Pure domain types, port interface, and helpers for activity ingestion source ada
 
 ## Pointers
 
-- [Attribution Ledger Spec](../../docs/spec/attribution-ledger.md)
-- [Packages Architecture](../../docs/spec/packages-architecture.md)
+- [Attribution Ledger Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md)
+- [Packages Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md)
 
 ## Boundaries
 

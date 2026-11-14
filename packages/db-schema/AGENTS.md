@@ -14,9 +14,9 @@ Drizzle ORM table definitions for all database domains. Provides type-safe schem
 
 ## Pointers
 
-- [Scheduler Spec](../../docs/spec/scheduler.md): Scheduling domain invariants
-- [Databases](../../docs/spec/databases.md): Database architecture and migrations
-- [Packages Architecture](../../docs/spec/packages-architecture.md): Package isolation boundaries
+- [Scheduler Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md): Scheduling domain invariants
+- [Databases](https://cognidao.org/knowledge/node-database-contract): Database architecture and migrations
+- [Packages Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md): Package isolation boundaries
 
 ## Boundaries
 

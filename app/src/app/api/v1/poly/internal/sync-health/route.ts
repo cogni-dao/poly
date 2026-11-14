@@ -15,7 +15,7 @@
  * Notes: reconciler_last_tick_at is the latest durable `synced_at` written by
  *   the reconciler after a typed CLOB response. It is null when no ledger row
  *   has ever completed reconciliation.
- * Links: work/items/task.0328.md, docs/spec/poly-copy-trade-execution.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md
  * @public
  */
 

@@ -10,7 +10,7 @@
  *   - All LangChain graph creation code lives here
  *   - Shared types prevent per-graph interface duplication
  * Side-effects: none
- * Links: LANGGRAPH_AI.md, AGENT_DEVELOPMENT_GUIDE.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, https://node-template.cognidao.org/knowledge/agent-development
  * @public
  */
 

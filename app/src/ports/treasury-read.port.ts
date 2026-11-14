@@ -8,7 +8,7 @@
  * Invariants: Port is read-only (no mutations); adapter handles EVM vs Solana vs other chains.
  * Side-effects: none (interface definition only)
  * Notes: Phase 2: ETH balance only via ViemTreasuryAdapter. Future: multi-token support.
- * Links: docs/spec/onchain-readers.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/onchain-readers.md
  * @public
  */
 

@@ -31,7 +31,7 @@
  *     deliberately re-resolves per write so a venue change can never mislabel
  *     a row it is stamping.
  * Side-effects: IO (one SELECT).
- * Links: docs/spec/capability-plane.md, docs/spec/poly-tenant-and-collateral.md,
+ * Links: https://poly.cognidao.org/knowledge/capability-plane-contract, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md,
  *   migration 0082
  * @public
  */

@@ -9,7 +9,7 @@
  *   - THREAD_KEY_REQUIRED: Missing stateKey returns invalid_request error
  *   - STATEFUL_ONLY: Only last user message sent to server
  * Side-effects: none (mocked SDK)
- * Links: src/adapters/server/ai/langgraph/dev/provider.ts, LANGGRAPH_SERVER.md
+ * Links: src/adapters/server/ai/langgraph/dev/provider.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md
  * @public
  */
 

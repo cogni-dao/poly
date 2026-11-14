@@ -9,7 +9,7 @@
  *   - SOFT_DELETE: Sets revoked_at, never hard-deletes
  *   - TENANT_SCOPED: Only disconnects connections belonging to the authenticated user
  * Side-effects: IO (DB update)
- * Links: docs/spec/tenant-connections.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tenant-connections.md
  * @public
  */
 

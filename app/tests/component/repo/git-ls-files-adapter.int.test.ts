@@ -10,7 +10,7 @@
  *   - PATH_CANONICAL: no leading "./" in any tool output
  *   - HARD_BOUNDS: list capped at limit, truncated flag honest
  * Side-effects: IO (filesystem, git/rg subprocesses)
- * Links: src/adapters/server/repo/git-ls-files.adapter.ts, COGNI_BRAIN_SPEC.md
+ * Links: src/adapters/server/repo/git-ls-files.adapter.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md
  * @public
  */
 

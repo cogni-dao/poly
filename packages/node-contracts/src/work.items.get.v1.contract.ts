@@ -10,7 +10,7 @@
  *   - All consumers use z.infer types
  *   - Additive envelope (task.0118): `moves` entries carry metric, kpi and goal; `?include=links` adds `links`. Both derive from the one WorkItemDtoSchema.
  * Side-effects: none
- * Links: /api/v1/work/items/[id] route, docs/spec/work-items-port.md
+ * Links: /api/v1/work/items/[id] route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/work-items-port.md
  * @internal
  */
 

@@ -7,7 +7,7 @@
  * Scope: Pure function tests; no I/O.
  * Invariants: PURE, PENDING_IS_FIRST_CLASS, DISTRIBUTIONS_ARE_PURE_DERIVATIONS.
  * Side-effects: none
- * Links: docs/design/wallet-analysis-components.md, work/items/task.0431.poly-wallet-orderflow-distributions-d1.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md
  * @internal
  */
 

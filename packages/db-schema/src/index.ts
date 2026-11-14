@@ -7,7 +7,7 @@
  * Scope: Re-exports only. Does not define any tables.
  * Invariants: Must re-export every slice so the resulting namespace matches src/shared/db/schema.ts.
  * Side-effects: none
- * Links: docs/spec/packages-architecture.md, docs/spec/database-rls.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md
  * @public
  */
 

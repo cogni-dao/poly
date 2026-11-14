@@ -7,7 +7,7 @@
  * Scope: Input (query params with filtering + cursor pagination) and output (run list + next cursor). Does not contain business logic.
  * Invariants: CONTRACTS_ARE_TRUTH — single source for run list API shape
  * Side-effects: none
- * Links: docs/spec/unified-graph-launch.md, packages/scheduler-core/src/types.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/unified-graph-launch.md, packages/scheduler-core/src/types.ts
  * @public
  */
 

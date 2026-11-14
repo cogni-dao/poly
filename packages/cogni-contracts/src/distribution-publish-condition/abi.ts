@@ -11,7 +11,7 @@
  *   `src/distribution-publish-condition/DistributionPublishCondition.sol` at the pinned
  *   compiler settings (see bytecode.ts provenance).
  * Side-effects: none
- * Links: docs/spec/tokenomics-distribution.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tokenomics-distribution.md
  * @public
  */
 

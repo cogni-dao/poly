@@ -52,7 +52,7 @@
  *   - NEVER_THROW — a throwing tool becomes an opaque `execution` error to the
  *     model, which is exactly when models start guessing.
  * Side-effects: IO, entirely via `executeAccountRead` (one Postgres transaction).
- * Links: task.1791070967, story.5006, docs/spec/capability-plane.md
+ * Links: task.1791070967, story.5006, https://poly.cognidao.org/knowledge/capability-plane-contract
  * @public
  */
 

@@ -14,7 +14,7 @@ Protected (authenticated) pages wrapped in `SidebarProvider` + `AppSidebar` + `A
 ## Pointers
 
 - [App AGENTS.md](../AGENTS.md)
-- [Architecture](../../../../../docs/spec/architecture.md)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
 - [Layout Feature](../../features/layout/AGENTS.md)
 
 ## Boundaries

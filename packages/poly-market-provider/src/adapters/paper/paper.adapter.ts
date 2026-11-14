@@ -23,7 +23,6 @@
  *   - PAPER_GETORDER_NEVER_NULL — the discriminated `GetOrderResult` is enforced exactly as in
  *     the CLOB adapter (task.0328 CP1).
  * Side-effects: HTTP IO to the loopback sidecar.
- * Links: docs/research/poly-paper-trading-mode.md, work/projects/proj.poly-paper-trading.md
  * @public
  */
 

@@ -11,7 +11,7 @@
  *   - Uses ToolSpec (compiled JSONSchema7), not ToolContract (Zod)
  *   - Double enforcement: catalog filters visibility, toolRunner enforces at runtime
  * Side-effects: none
- * Links: TOOL_USE_SPEC.md, tool-policy.ts, @cogni/ai-core/tooling/types.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md, tool-policy.ts, @cogni/ai-core/tooling/types.ts
  * @public
  */
 

@@ -10,7 +10,7 @@
  *   - MODEL_READ_FROM_CONFIGURABLE_AT_RUNNABLE_BOUNDARY (#37): Model resolved in invoke()
  *   - THROWS_FAST_IF_MISSING: Throws if model missing from configurable
  * Side-effects: none (all mocked)
- * Links: GRAPH_EXECUTION.md, completion-adapter.ts
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, completion-adapter.ts
  * @internal
  */
 

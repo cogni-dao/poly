@@ -16,7 +16,7 @@
  *   - lifecycleState (optional) reflects redeem-pipeline operations. It never
  *     drives Open vs History membership; absent / null means unclassified.
  * Side-effects: none
- * Links: docs/spec/poly-copy-trade-execution.md, docs/design/wallet-analysis-components.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md
  * @public
  */
 
@@ -268,7 +268,7 @@ export type WalletExecutionMarketLeg = z.infer<
  * VWAP, and P/L for both legs side-by-side and a `net` summary across them.
  * Hedge classification is current-state only (smaller cost-basis leg of a
  * two-leg condition). Server-side pivot per
- * docs/spec/poly-copy-trade-execution.md.
+ * https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md.
  */
 export const WalletExecutionMarketParticipantRowSchema = z.object({
   side: WalletExecutionMarketPositionSideSchema,

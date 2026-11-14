@@ -10,7 +10,7 @@
  *   - All consumers use z.infer types
  *   - Stored moves (story.0033): list and summary items carry `moves` from the one WorkItemDtoSchema; the metric, KPI and goal chain is read on the single-item GET only (task.0118).
  * Side-effects: none
- * Links: /api/v1/work/items route, docs/spec/work-items-port.md
+ * Links: /api/v1/work/items route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/work-items-port.md
  * @internal
  */
 

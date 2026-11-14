@@ -13,7 +13,7 @@
  *   - updateSchedule preserves existing state (pause, notes) via previous.state
  *   - describeSchedule extracts input + dbScheduleId from action.args[0]; cron returns null (compiled to calendars by Temporal)
  * Side-effects: IO (Temporal RPC calls)
- * Links: docs/spec/scheduler.md, docs/spec/temporal-patterns.md, ScheduleControlPort
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, https://cognidao.org/knowledge/temporal-workflow-rules, ScheduleControlPort
  * @public
  */
 

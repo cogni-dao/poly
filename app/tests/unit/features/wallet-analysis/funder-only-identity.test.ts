@@ -15,7 +15,6 @@
  *   emitted SQL, so the stub must not encode the query's current clause list —
  *   it previously did, and adding `LIVE_WINS_PAPER_SHOWS`'s `.orderBy()` to the
  *   read broke all three cases without any of them changing meaning.
- * Links: docs/porting/poly-parity-contract.md (Amendment 2)
  */
 
 import { fakeSelectDb } from "@tests/_fakes/drizzle-query-chain";

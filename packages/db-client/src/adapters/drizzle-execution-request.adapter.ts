@@ -12,7 +12,7 @@
  *   - idempotencyKey uniqueness enforced at DB level (primary key)
  *   - requestHash mismatch detection returns 'mismatch' status
  * Side-effects: IO (database operations)
- * Links: ports/scheduling/execution-request.port.ts, docs/spec/scheduler.md
+ * Links: ports/scheduling/execution-request.port.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md
  * @public
  */
 

@@ -15,7 +15,7 @@
  *     so reading `last` alone would mislabel "Past week" with lifetime PnL
  *     (task.0389). Empty/missing history renders "—", not "$0.00".
  * Side-effects: none
- * Links: docs/design/wallet-analysis-components.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md
  * @public
  */
 

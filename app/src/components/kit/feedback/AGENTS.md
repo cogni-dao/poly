@@ -15,8 +15,8 @@ Provides reusable feedback UI components for error states, loading indicators, a
 ## Pointers
 
 - [Parent: Kit Components](../../../AGENTS.md)
-- [UI Implementation Guide](../../../../../../docs/spec/ui-implementation.md)
-- [Error Handling Architecture](../../../../../../docs/spec/error-handling.md)
+- [UI Implementation Guide](https://node-template.cognidao.org/knowledge/frontend-development)
+- [Error Handling Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/error-handling.md)
 
 ## Boundaries
 

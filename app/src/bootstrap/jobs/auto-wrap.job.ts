@@ -20,7 +20,6 @@
  *   - CONSENT_REVOCABLE — each tick re-derives the consent set from DB; a
  *     revoke is honored on the next tick with no extra plumbing.
  * Side-effects: starts a `setInterval`, emits logs + metrics.
- * Links: work/items/task.0429.poly-auto-wrap-consent-loop.md
  *
  * @public
  */

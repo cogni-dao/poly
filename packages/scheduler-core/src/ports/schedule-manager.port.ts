@@ -10,7 +10,7 @@
  * - Per SCHEDULER_SPEC.md: next_run_at is cache-only (Temporal is authoritative)
  * - Schedule access scoped to owner (callerUserId)
  * Side-effects: none (interface definition only)
- * Links: docs/spec/scheduler.md, types/scheduling.ts, DrizzleScheduleManagerAdapter
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, types/scheduling.ts, DrizzleScheduleManagerAdapter
  * @public
  */
 

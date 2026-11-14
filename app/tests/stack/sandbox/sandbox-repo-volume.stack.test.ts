@@ -11,7 +11,7 @@
  *   - /repo/current contains a valid git checkout (40-hex SHA)
  * Precondition: pnpm dev:stack (git-sync has populated repo_data)
  * Side-effects: IO (Docker containers, filesystem)
- * Links: docs/spec/sandboxed-agents.md, docs/spec/git-sync-repo-mount.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/git-sync-repo-mount.md
  * @public
  */
 

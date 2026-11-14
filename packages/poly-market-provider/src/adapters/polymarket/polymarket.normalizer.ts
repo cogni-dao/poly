@@ -7,7 +7,6 @@
  * Scope: Stateless transform for Polymarket raw types. Does not perform I/O or fetch.
  * Invariants: OBSERVATION_IDEMPOTENT (deterministic IDs), PACKAGES_NO_ENV.
  * Side-effects: none
- * Links: work/items/task.0230.market-data-package.md
  * @public
  */
 

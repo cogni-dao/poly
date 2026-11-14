@@ -13,9 +13,7 @@ Standalone workspace package (`@cogni/poly-market-provider`) providing a typed p
 
 ## Pointers
 
-- [task.0230](../../../../work/items/task.0230.market-data-package.md) — implementation work item
-- [Monitoring Engine Spec](../../../../docs/spec/monitoring-engine.md) — observation pipeline
-- [proj.poly-prediction-bot](../../../../work/projects/proj.poly-prediction-bot.md) — parent project
+- [proj.poly-prediction-bot](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/work/projects/proj.poly-prediction-bot.md) — parent project
 
 ## Boundaries
 

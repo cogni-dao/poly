@@ -13,8 +13,8 @@ Pure TypeScript types, port interfaces, and orchestration services for the sched
 
 ## Pointers
 
-- [Scheduler Spec](../../docs/spec/scheduler.md): Scheduling architecture and invariants
-- [Temporal Patterns](../../docs/spec/temporal-patterns.md): Temporal patterns and anti-patterns
+- [Scheduler Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md): Scheduling architecture and invariants
+- [Temporal Patterns](https://cognidao.org/knowledge/temporal-workflow-rules): Temporal patterns and anti-patterns
 
 ## Boundaries
 

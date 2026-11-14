@@ -10,7 +10,7 @@
  *   - createSchedule creates grant + schedule + enqueues job atomically
  *   - Disabled schedules have nextRunAt = null
  * Side-effects: IO (database, job queue)
- * Links: /api/v1/schedules, docs/spec/scheduler.md
+ * Links: /api/v1/schedules, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md
  * @public
  */
 

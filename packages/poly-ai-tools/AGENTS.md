@@ -15,8 +15,7 @@ domain. Mirrors the `nodes/poly/packages/knowledge/` shape.
 
 ## Pointers
 
-- [Tool Use Spec](../../../../../../docs/spec/tool-use.md)
-- [Bug 0319](../../../../../../work/items/bug.0319.ai-tools-per-node-packages.md)
+- [Tool Use Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md)
 
 ## Boundaries
 

@@ -18,8 +18,8 @@
  *     different topic hash than CTF `PayoutRedemption`. Subscriber must
  *     subscribe both independently.
  * Side-effects: none (pure constants + parseAbi)
- * Links: docs/spec/poly-copy-trade-execution.md § Three-subscription topology,
- *   work/items/task.0388.poly-redeem-job-queue-capability-b.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md,
+ *   task.0388
  *   <https://polygonscan.com/address/0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296#code>
  * @public
  */

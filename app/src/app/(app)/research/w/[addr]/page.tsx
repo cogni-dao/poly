@@ -13,7 +13,7 @@
  *   - Wallet-analysis data, including Polymarket P/L, is fetched by the shared
  *     client container so the page and drawer stay standardized.
  * Side-effects: none in this file.
- * Links: docs/design/wallet-analysis-components.md, nodes/poly/app/src/features/wallet-analysis/
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md, nodes/poly/app/src/features/wallet-analysis/
  * @public
  */
 

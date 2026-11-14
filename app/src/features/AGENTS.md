@@ -14,7 +14,7 @@ Vertical slices containing use cases like accounts/, ai/, and home/. Orchestrate
 ## Pointers
 
 - [Root AGENTS.md](../../../../AGENTS.md)
-- [Architecture](../../../../docs/spec/architecture.md)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
 
 ## Boundaries
 
@@ -40,7 +40,7 @@ Vertical slices containing use cases like accounts/, ai/, and home/. Orchestrate
 }
 ```
 
-**Import Rules:** See [Architecture Enforcement Rules](../../../../docs/spec/architecture.md#enforcement-rules) for canonical entry points (@/core, @/ports, etc.) and type-only requirements.
+**Import Rules:** See [Architecture Enforcement Rules](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md) for canonical entry points (@/core, @/ports, etc.) and type-only requirements.
 
 ## Public Surface
 

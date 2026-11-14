@@ -7,7 +7,7 @@
  * Scope: Renders epoch data, settlement evidence, and the existing contribution sync trigger.
  * Invariants: NO_ADMIN_SETTLEMENT_ACTIONS, SAME_RAIL_EVERY_EPOCH, UNKNOWN_NEVER_COMPLETE.
  * Side-effects: IO (via epoch query and contribution sync hooks)
- * Links: docs/spec/epoch-ledger.md, src/features/governance/types.ts
+ * Links: src/features/governance/types.ts
  * @public
  */
 

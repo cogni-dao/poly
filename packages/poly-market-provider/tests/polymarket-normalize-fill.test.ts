@@ -7,7 +7,6 @@
  * Scope: Pure data transforms. Does not hit the network, does not require fixtures beyond inline objects.
  * Invariants: DA_EMPTY_HASH_REJECTED; FILL_ID_SHAPE_DECIDED (golden-vector).
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 CP4.1)
  * @internal
  */
 

@@ -11,7 +11,7 @@
  *   - EDIT_POLICY_ENFORCED: Rejects mutations on schedules with editPolicy=human_only
  *   - NO_ONEOF_IN_SCHEMA: Uses flat z.object (not discriminatedUnion) per tool-use.md #10
  * Side-effects: IO (creates/updates/deletes schedules via capability)
- * Links: docs/spec/scheduler.md, docs/spec/tool-use.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 

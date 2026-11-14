@@ -14,7 +14,7 @@
  *   - Funder cannot simultaneously hold both YES and NO sides at non-zero amounts
  *     in this v0.2 path (Polymarket's neg-risk children are single-sided).
  * Side-effects: none
- * Links: docs/spec/poly-copy-trade-execution.md § Three-subscription topology, task.0388 § Dispatch table
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, task.0388 § Dispatch table
  * @public
  */
 

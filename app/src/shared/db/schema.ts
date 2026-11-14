@@ -7,7 +7,7 @@
  * Scope: Re-exports only. Does not define any tables - all schema definitions live in packages/db-schema.
  * Invariants: This file must not define any tables - only re-export from the package.
  * Side-effects: none
- * Links: docs/spec/packages-architecture.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @public
  */
 

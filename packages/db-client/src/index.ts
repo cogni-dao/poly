@@ -10,7 +10,7 @@
  * - createServiceDbClient is NOT re-exported here (use @cogni/db-client/service)
  * - Re-exports full schema (all domain slices)
  * Side-effects: IO (database operations)
- * Links: docs/spec/packages-architecture.md, docs/spec/database-rls.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md
  * @public
  */
 

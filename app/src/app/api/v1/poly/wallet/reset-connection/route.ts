@@ -12,7 +12,7 @@
  *   - FAIL_CLOSED: unreadable balances, funds, positions, orders, or active
  *     copy targets prevent an immediate revoke.
  * Side-effects: Delegates tenant-scoped DB and Polygon reads plus revoke.
- * Links: docs/spec/poly-tenant-and-collateral.md, task.5167
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, task.5167
  * @public
  */
 

@@ -16,8 +16,7 @@ Shared shape `WalletAnalysisData` mirrors the v1 wallet-analysis HTTP contract t
 ## Pointers
 
 - [App AGENTS.md](../../app/AGENTS.md)
-- [Design](../../../../../docs/design/wallet-analysis-components.md)
-- [Work item](../../../../../work/items/task.0329.wallet-analysis-component-extraction.md)
+- [Design](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md)
 
 ## Boundaries
 

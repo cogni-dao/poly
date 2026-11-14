@@ -7,7 +7,7 @@
  * Scope: Pure constants only; does not read env or make RPC calls.
  * Invariants: Must match deployed contracts on the selected chain.
  * Side-effects: none
- * Links: docs/spec/node-formation.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-formation.md
  * @public
  */
 

@@ -7,7 +7,6 @@
  * Scope: Pure mapping helpers (exported) + adapter methods driven by a mocked ClobClient. Does not exercise real HTTPS, Privy, or viem signing.
  * Invariants: IDEMPOTENT_BY_CLIENT_ID (client_order_id echoes intent verbatim), status mapping is total.
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 — CP3.2)
  * @internal
  */
 

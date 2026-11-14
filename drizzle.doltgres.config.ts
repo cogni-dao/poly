@@ -8,7 +8,7 @@
  * Invariants: Schema glob targets ONLY the per-node Doltgres package (packages/doltgres-schema) — NOT globbed by the Postgres drizzle config, preserving dialect separation. Migrations dir is node-template-owned and checked in. DATABASE_URL must be provided by the caller.
  * Side-effects: IO (drizzle-kit writes to ./app/src/adapters/server/db/doltgres-migrations when generating; writes to the Doltgres server when migrating).
  * Notes: No relative TS imports — drizzle-kit compiles configs to a temp dir, breaking `./app/...`-style paths. All paths are repo-root-relative. DATABASE_URL here points at a Doltgres DSN (knowledge_node_template), not a Postgres DSN.
- * Links: packages/doltgres-schema/AGENTS.md, docs/spec/knowledge-data-plane.md, work/items/task.5077.node-template-doltgres-substrate.md
+ * Links: packages/doltgres-schema/AGENTS.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/knowledge-data-plane.md
  * @internal
  */
 

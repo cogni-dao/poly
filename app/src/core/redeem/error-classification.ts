@@ -22,7 +22,6 @@
  *     else is `unclassified` and consumes the 3-strike retry budget, so no
  *     failure can stay at attempt 1/3 forever.
  * Side-effects: none
- * Links: docs/research/poly/redeem-worker-resilience-handoff-2026-05-09.md,
  *   work/items/bug.5041, work/items/bug.5047
  * @public
  */

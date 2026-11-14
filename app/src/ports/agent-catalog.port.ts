@@ -11,7 +11,7 @@
  *   - UI_ONLY_TALKS_TO_PORT: UI calls listAgents() via port; does not know providers
  *   - LANGGRAPH_SERVER_ALIGNED: Field names match LangGraph Server assistant model
  * Side-effects: none (interface only)
- * Links: AGENT_DISCOVERY.md, ai.agents.v1.contract.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/agent-discovery.md, ai.agents.v1.contract.ts
  * @public
  */
 

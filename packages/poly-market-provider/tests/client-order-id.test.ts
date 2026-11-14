@@ -11,8 +11,7 @@
  *     produce N DIFFERENT client_order_ids. Asserts the property the legacy
  *     2-arg form silently violated (regression-guard for multi-tenant correctness fix).
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 CP3.3),
- *   work/projects/proj.poly-paper-trading.md (multi-tenant fills PK + clientOrderId fix)
+ *   proj.poly-paper-trading (multi-tenant fills PK + clientOrderId fix)
  * @internal
  */
 

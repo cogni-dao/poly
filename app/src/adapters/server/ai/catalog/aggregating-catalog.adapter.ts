@@ -9,7 +9,7 @@
  * Invariants:
  *   - SELECTION_ONLY: This adapter lists models. Runtime dispatch is separate (ProviderResolver).
  * Side-effects: IO (delegates to providers which may fetch from external APIs)
- * Links: docs/spec/multi-provider-llm.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/multi-provider-llm.md
  * @internal
  */
 

@@ -11,7 +11,7 @@
  *   - REDIS_IS_STREAM_PLANE: Redis holds only ephemeral stream data; loss = stream interruption
  *   - Auth: session-required, verifies requestedBy matches authenticated user
  * Side-effects: IO (Redis stream subscription, HTTP SSE response)
- * Links: docs/spec/unified-graph-launch.md §4 (Reconnection), RunStreamPort, GraphRunRepository
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/unified-graph-launch.md, RunStreamPort, GraphRunRepository
  * @public
  */
 

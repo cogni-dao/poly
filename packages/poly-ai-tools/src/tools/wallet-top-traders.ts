@@ -11,7 +11,6 @@
  *   - REDACTION_REQUIRED: Allowlist in contract
  *   - NO LangChain imports
  * Side-effects: IO (HTTP to Polymarket Data API via capability)
- * Links: work/items/task.0315.poly-copy-trade-prototype.md
  * @public
  */
 

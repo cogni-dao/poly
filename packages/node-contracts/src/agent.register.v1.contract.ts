@@ -7,7 +7,7 @@
  * Scope: Input (agent display name) and output (issued machine credentials + actor identity). Does not contain business logic.
  * Invariants: CONTRACTS_ARE_TRUTH — single source for registration wire shape.
  * Side-effects: none
- * Links: docs/spec/identity-model.md, docs/spec/node-operator-contract.md
+ * Links: https://cognidao.org/knowledge/node-template-identity-model, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-operator-contract.md
  * @public
  */
 

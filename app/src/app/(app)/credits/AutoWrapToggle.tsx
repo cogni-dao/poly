@@ -18,7 +18,7 @@
  *     so a toggle flip immediately reflects in any sibling reader.
  * Side-effects: IO (fetch). Optimistic mutation rolls back on error.
  * Links: nodes/poly/packages/node-contracts/src/poly.wallet.auto-wrap.v1.contract.ts,
- *        work/items/task.0429.poly-auto-wrap-consent-loop.md
+ *        task.0429
  * @public
  */
 

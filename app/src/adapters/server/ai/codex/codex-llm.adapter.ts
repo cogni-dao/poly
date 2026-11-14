@@ -18,7 +18,7 @@
  *   - INVARIANT_DEVIATION: TOOLS_VIA_TOOLRUNNER — Codex calls MCP tools directly via config.toml,
  *     bypassing toolRunner.exec(). Mitigated by server-level scoping + $0 billing (user-funded).
  * Side-effects: IO (spawns subprocess, writes temp auth.json + config.toml, cleans up)
- * Links: docs/research/openai-oauth-byo-ai.md, bug.0232
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/openai-oauth-byo-ai.md, bug.0232
  * @internal
  */
 

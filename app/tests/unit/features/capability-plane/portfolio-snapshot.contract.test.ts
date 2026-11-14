@@ -7,7 +7,7 @@
  *   `poly.account.portfolio-snapshot.v1` — the ones that make dashboard/agent
  *   parity structural rather than something a runtime test has to chase.
  * Scope: Pure contract assertions. No DB, no HTTP, no mocks.
- * Links: story.5004, task.1791070962, docs/spec/capability-plane.md
+ * Links: story.5004, task.1791070962, https://poly.cognidao.org/knowledge/capability-plane-contract
  * @internal
  */
 

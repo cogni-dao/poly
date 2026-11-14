@@ -9,7 +9,7 @@
  * Invariants:
  *   - PROCESS_HEALTH_ONLY: No external source polling from bootstrap
  * Side-effects: IO (Redis publish via NodeStreamPort; one info log per window)
- * Links: docs/spec/data-streams.md, @cogni/node-streams, bug.5520
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/data-streams.md, @cogni/node-streams, bug.5520
  * @internal
  */
 

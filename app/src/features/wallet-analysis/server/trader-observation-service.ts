@@ -42,7 +42,7 @@
  *     account list, so a transient read of zero accounts cannot wipe
  *     enrollment (a stronger form of ENROLLMENT_FAILURE_IS_NOT_A_WIPE).
  * Side-effects: IO through injected Data API client + optional user-pnl client + injected DB.
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5015
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5015
  * @public
  */
 

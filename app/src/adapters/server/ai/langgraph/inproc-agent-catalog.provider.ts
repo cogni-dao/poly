@@ -14,7 +14,7 @@
  *   - P0_AGENT_GRAPH_IDENTITY: agentId === graphId (one agent per graph)
  * Side-effects: none
  * Notes: P1 will add LangGraphServerAgentCatalogProvider calling /assistants/search
- * Links: AGENT_DISCOVERY.md, agent-catalog.provider.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/agent-discovery.md, agent-catalog.provider.ts
  * @internal
  */
 

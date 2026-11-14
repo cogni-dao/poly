@@ -13,8 +13,8 @@ Shared domain models, types, and pure business logic for all node apps. Contains
 
 ## Pointers
 
-- [Packages Architecture](../../docs/spec/packages-architecture.md)
-- [Node App Shell Spec](../../docs/spec/node-app-shell.md)
+- [Packages Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md)
+- [Node App Shell Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-app-shell.md)
 
 ## Boundaries
 

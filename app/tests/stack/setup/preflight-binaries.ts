@@ -7,7 +7,7 @@
  * Scope: Fails fast with actionable install instructions. Does not install anything.
  * Invariants: Must run before any stack test that exercises RipgrepAdapter.
  * Side-effects: none (read-only checks)
- * Links: scripts/bootstrap/install/install-ripgrep.sh, docs/spec/cogni-brain.md
+ * Links: scripts/bootstrap/install/install-ripgrep.sh, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md
  * @internal
  */
 

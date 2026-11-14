@@ -16,7 +16,7 @@
  * - ServiceDrizzleAccountService uses serviceDb directly (BYPASSRLS)
  * Side-effects: IO (database operations)
  * Notes: Uses transactions for consistency; recordChargeReceipt is non-blocking (never throws InsufficientCredits per ACTIVITY_METRICS.md)
- * Links: Implements AccountService port, uses shared database schema, docs/spec/activity-metrics.md, docs/spec/graph-execution.md, docs/spec/financial-ledger.md, types/billing.ts
+ * Links: Implements AccountService port, uses shared database schema, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/activity-metrics.md, https://node-template.cognidao.org/knowledge/graph-execution-invariants, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/financial-ledger.md, types/billing.ts
  * @public
  */
 

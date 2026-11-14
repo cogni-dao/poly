@@ -10,7 +10,7 @@
  * - CANONICAL_JSON: canonicalJsonStringify sorts keys at every depth, no whitespace, BigInt as string.
  * - Allocations are canonically sorted before hashing.
  * Side-effects: none (uses Web Crypto API)
- * Links: docs/spec/attribution-ledger.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @public
  */
 

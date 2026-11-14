@@ -11,7 +11,7 @@
  *   - NEG_RISK_REDEEM_IS_DISTINCT — `negativeRisk:true` never routes to `binary`.
  *   - POSITION_IDENTITY_IS_CHAIN_KEYED — caller passes `(funder, positionId)` reads.
  * Side-effects: none
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.0387, work/items/bug.0384
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/task.0387, work/items/bug.0384
  * @public
  */
 
@@ -49,7 +49,7 @@ export type RedeemSkipReason =
 
 /** Why a redeem decision is malformed — caller should NOT retry without a
  * fixture + code fix. These are the design-bug class from bug.0384.
- * See `docs/spec/poly-copy-trade-execution.md` § Abandoned-position runbook (Class A). */
+ * See `https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md` § Abandoned-position runbook (Class A). */
 export type RedeemMalformedReason =
   | "invalid_outcome_index"
   | "outcome_index_out_of_range"

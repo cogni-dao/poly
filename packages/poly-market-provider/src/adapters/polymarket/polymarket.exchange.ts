@@ -10,7 +10,7 @@
  *   - ORDERFILLED_SHAPE_PINNED — keccak256 of the event signature MUST equal `POLY_ORDERFILLED_TOPIC0` (verified against the deployed contracts via `eth_getTransactionReceipt` + openchain.xyz lookup). If parseAbi here drifts from the deployed shape, the RPC-layer topic filter matches zero events and the chain wallet-watch source goes silent — bug.5049.
  *   - SIDE_IS_ENUM_FROM_PARAMS_MAKER — the `side` field is the Side enum (0=BUY, 1=SELL) for whichever party occupies the `maker` slot of the `OrderFilledParams` struct, NOT a global match direction. The contract emits one event per party per match, so filtering on `maker = target_wallet` catches every target trade and `side` is target's order side directly.
  * Side-effects: none (pure constants + parseAbi)
- * Links: docs/spec/poly-tenant-and-collateral.md (V2 cutover), work/items/bug.5049, https://sourcify.dev/server/files/any/137/0xE111180000d2663C0091e4f400237545B87B996B
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, work/items/bug.5049, https://sourcify.dev/server/files/any/137/0xE111180000d2663C0091e4f400237545B87B996B
  * @public
  */
 

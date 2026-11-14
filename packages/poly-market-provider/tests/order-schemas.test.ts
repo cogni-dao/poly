@@ -7,7 +7,6 @@
  * Scope: Parses valid and invalid payloads against OrderIntent, OrderReceipt, and Fill schemas; asserts the read-only adapters throw OrderNotSupportedError. Does not exercise network I/O, DB state, or adapter signing — those land in CP2+ tests.
  * Invariants: FILL_ID_COMPOSITE, IDEMPOTENT_BY_CLIENT_ID, PROVIDER_AGNOSTIC.
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 — CP1)
  * @internal
  */
 

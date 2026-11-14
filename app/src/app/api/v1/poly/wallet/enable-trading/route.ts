@@ -22,8 +22,8 @@
  *   stamp on success).
  * Links: nodes/poly/packages/node-contracts/src/poly.wallet.enable-trading.v1.contract.ts,
  *        nodes/poly/packages/wallet/src/port/poly-trader-wallet.port.ts,
- *        docs/spec/poly-tenant-and-collateral.md,
- *        work/items/task.0355.poly-trading-wallet-enable-trading.md
+ *        https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md,
+ *        task.0355
  * @public
  */
 

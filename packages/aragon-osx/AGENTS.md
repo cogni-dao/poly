@@ -13,7 +13,7 @@ Pure TypeScript package for Node Formation P0. Provides Aragon OSx encoding, add
 
 ## Pointers
 
-- [Node Formation Spec](../../docs/spec/node-formation.md)
+- [Node Formation Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-formation.md)
 
 ## Boundaries
 
@@ -79,7 +79,7 @@ pnpm --filter @aragon-osx test
 
 - Update this file when public exports or boundaries change
 - Encoding struct changes require parity test update
-- Address changes must sync with [Node Formation Spec](../../docs/spec/node-formation.md) appendix
+- Address changes must sync with [Node Formation Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-formation.md) appendix
 
 ## Notes
 

@@ -7,7 +7,6 @@
  * Scope: Tool contract + factory + stub. Pure package. Does not read env, does not import `@polymarket/clob-client`, does not access any adapter directly.
  * Invariants: TOOL_ID_NAMESPACED (core__poly_cancel_order), EFFECT_TYPED (state_change), REDACTION_REQUIRED, NO_LANGCHAIN, CAPABILITY_NOT_ADAPTER.
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md
  * @public
  */
 

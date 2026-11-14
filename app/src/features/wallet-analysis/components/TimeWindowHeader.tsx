@@ -8,7 +8,7 @@
  * Invariants:
  *   - SINGLE_SOURCE_OF_TRUTH — this is the only time-window control on the page; per-card range tabs (PnL, distributions) hide when the parent passes them their interval.
  * Side-effects: none
- * Links: docs/design/wallet-analysis-components.md (Checkpoint D — page narrative)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md
  * @public
  */
 

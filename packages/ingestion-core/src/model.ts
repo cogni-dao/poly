@@ -10,7 +10,7 @@
  * - Adapter-side type only — mapping to DB tables (which add node_id) is the workflow/store's job.
  * - payloadHash is PROVENANCE_REQUIRED (SHA-256 of canonical payload).
  * Side-effects: none
- * Links: docs/spec/attribution-ledger.md#source-adapter-interface
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @public
  */
 

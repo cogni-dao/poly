@@ -9,7 +9,7 @@
  *   - NO_ALS_IMPORTS: Core modules do not import from cogni/ or use AsyncLocalStorage
  *   - REUSABLE: These utilities can be used by any LangGraph executor
  * Side-effects: none
- * Links: LANGGRAPH_AI.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

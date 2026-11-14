@@ -15,7 +15,7 @@
  *     execution provider. Discovery and execution must not disagree on which
  *     graphs exist.
  * Side-effects: none
- * Links: AGENT_DISCOVERY.md, agent-catalog.port.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/agent-discovery.md, agent-catalog.port.ts
  * @public
  */
 

@@ -66,6 +66,11 @@ jobs:
       - name: Node declarations check
         run: pnpm check:declarations
 
+      # story.0046: node Markdown lives in the hub. Fails on tracked Markdown outside
+      # the bootstrap set and on any repo docs/ or work/ Markdown path reference.
+      - name: Markdown references check
+        run: pnpm check:markdown-refs
+
       - name: Reject retired operations bearer tokens
         run: bash scripts/ci/tests/no-legacy-ops-token.test.sh
 

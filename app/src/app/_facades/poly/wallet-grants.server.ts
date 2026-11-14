@@ -12,11 +12,11 @@
  *   - NO_HOURLY_EDIT: the input type does not carry `hourly_fills_cap`; it is read-only on this surface.
  * Side-effects: IO (Postgres reads + writes via appDb).
  * Notes: facades own DTO mapping (DB row → contract), routes own HTTP shape. Errors bubble as typed instances; the route maps `PolyWalletGrantsError` → 4xx.
- * Links: docs/spec/poly-tenant-and-collateral.md,
- *        docs/spec/poly-tenant-and-collateral.md,
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md,
+ *        https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md,
  *        nodes/poly/packages/db-schema/src/wallet-grants.ts,
  *        nodes/poly/packages/node-contracts/src/poly.wallet.grants.v1.contract.ts,
- *        work/items/task.0347.poly-wallet-preferences-sizing-config.md
+ *        task.0347
  * @public
  */
 

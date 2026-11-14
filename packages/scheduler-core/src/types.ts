@@ -11,7 +11,7 @@
  * - Grant scopes constrain which graphIds can be executed (GRANT_SCOPES_CONSTRAIN_GRAPHS)
  * - Per SINGLE_RUN_LEDGER: GraphRun is the canonical run record type for all execution types
  * Side-effects: none (constants and types only)
- * Links: docs/spec/scheduler.md, docs/spec/unified-graph-launch.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/unified-graph-launch.md
  * @public
  */
 

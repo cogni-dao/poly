@@ -10,7 +10,7 @@
  * - TOKENOMICS_GENESIS_MINT_IS_CONCRETE: current formation mints only to explicit receiver addresses.
  * - TOKENOMICS_FUTURE_SUPPLY_IS_NOT_ONCHAIN: future supply is policy math until a distributor/emissions holder is deployed.
  * Side-effects: none
- * Links: docs/spec/node-formation.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-formation.md
  * @public
  */
 

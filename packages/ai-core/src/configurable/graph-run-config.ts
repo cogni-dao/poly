@@ -10,7 +10,7 @@
  *   - RUNID_SERVER_AUTHORITY: runId only from provider/invoker, never from client payload.
  *   - JSON-serializable (no functions, no object instances).
  * Side-effects: none
- * Links: GRAPH_EXECUTION.md, LANGGRAPH_AI.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

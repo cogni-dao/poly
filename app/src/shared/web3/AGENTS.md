@@ -14,7 +14,7 @@ Shared blockchain configuration for web3 integrations. Provides Base mainnet cha
 ## Pointers
 
 - [Root AGENTS.md](../../../../../AGENTS.md)
-- [Chain Configuration](../../../../../docs/spec/chain-config.md)
+- [Chain Configuration](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/chain-config.md)
 - [Repo Spec](../../../../../.cogni/repo-spec.yaml)
 
 ## Boundaries

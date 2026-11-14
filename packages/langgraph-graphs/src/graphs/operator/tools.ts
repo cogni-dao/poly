@@ -9,7 +9,7 @@
  *   - SINGLE_SOURCE_OF_TRUTH: This is THE list of tools each operator role can use
  *   - CAPABILITY_NOT_POLICY: These are capabilities, not authorization
  * Side-effects: none
- * Links: agent-roles spec, TOOL_USE_SPEC.md
+ * Links: agent-roles spec, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 

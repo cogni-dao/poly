@@ -13,7 +13,7 @@
  * Invariants: NODE_RUNTIME_CATALOG_BOUNDARY; BASE_IS_SPREAD_NEVER_EDITED;
  *   TOOL_ALLOWLIST_IS_APP_POLICY; NO_WRITE_SCOPE.
  * Side-effects: none
- * Links: task.1791070967, story.5006, docs/spec/langgraph-patterns.md
+ * Links: task.1791070967, story.5006, https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @internal
  */
 

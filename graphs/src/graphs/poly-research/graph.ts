@@ -8,7 +8,6 @@
  * Scope: Pure factory. Does not load env, does not perform IO, does not import adapters.
  * Invariants: TYPE_TRANSPARENT_RETURN, PACKAGES_NO_ENV, GRAPH_PEER_NOT_NESTED.
  * Side-effects: none
- * Links: work/items/task.0386.poly-agent-wallet-research-v0.md
  * @public
  */
 

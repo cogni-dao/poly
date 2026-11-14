@@ -34,7 +34,7 @@
  *     escalate via `transitions` to `abandoned/transient_exhausted`.
  *   - FINALITY_IS_FIXED_N — reaper uses `REDEEM_FINALITY_BLOCKS` from env.
  * Side-effects: IO (Polygon RPC writes + reads, DB).
- * Links: docs/spec/poly-copy-trade-execution.md § Worker, work/items/task.0388,
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/task.0388,
  *   work/items/bug.0403
  * @public
  */

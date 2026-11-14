@@ -20,7 +20,7 @@
  *     and the connection mutation handles that appear nowhere in this payload
  *     are owner-UI affordances; nothing here implies an agent may act.
  * Side-effects: IO (DB reads via the capability plane).
- * Links: docs/spec/capability-plane.md, docs/spec/dashboard-agent-parity-inventory.md,
+ * Links: https://poly.cognidao.org/knowledge/capability-plane-contract, https://poly.cognidao.org/knowledge/dashboard-parity-field-map,
  *   story.5004, task.1791070962
  * @public
  */

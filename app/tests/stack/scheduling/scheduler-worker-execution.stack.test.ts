@@ -11,7 +11,7 @@
  *   - Per SLOT_IDEMPOTENCY_VIA_EXECUTION_REQUESTS: idempotency_key = scheduleId:scheduledFor
  * Side-effects: IO (database, Temporal, internal API via worker)
  * Notes: Requires full stack running (pnpm dev:stack:test) including scheduler-worker.
- * Links: docs/spec/scheduler.md, services/scheduler-worker/
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, services/scheduler-worker/
  * @public
  */
 

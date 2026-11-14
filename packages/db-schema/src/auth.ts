@@ -8,7 +8,7 @@
  * Invariants: wallet_address is the primary user identifier for SIWE authentication.
  * Side-effects: none (schema definitions only)
  * Notes: JWT strategy does not use sessions or accounts tables.
- * Links: docs/spec/security-auth.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/security-auth.md
  * @public
  */
 

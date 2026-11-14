@@ -14,7 +14,7 @@
  *   - Optional `cites` (at most 8 hub atoms) are pinned to commits in history; an unknown id is a 400.
  *   - No transition state-machine — whoever holds a valid token is trusted.
  * Side-effects: none
- * Links: /api/v1/work/items/[id] route, docs/spec/work-items-port.md, work/items/task.0423.doltgres-work-items-source-of-truth.md
+ * Links: /api/v1/work/items/[id] route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/work-items-port.md
  * @internal
  */
 

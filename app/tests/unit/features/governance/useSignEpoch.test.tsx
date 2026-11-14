@@ -7,7 +7,7 @@
  * Scope: Hook orchestration with mocked HTTP and wallet signing only.
  * Invariants: REVIEW_SEAL_BEFORE_SIGN_DATA, REVIEW_FAILURE_STOPS_SIGNING.
  * Side-effects: mocked HTTP and wallet signing
- * Links: src/features/governance/hooks/useSignEpoch.ts, work/items/bug.5044.md
+ * Links: src/features/governance/hooks/useSignEpoch.ts
  * @public
  * @vitest-environment jsdom
  */

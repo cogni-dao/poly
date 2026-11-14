@@ -8,7 +8,7 @@
  * Scope: Client component. Owns React Query wiring for copy targets and grants;
  *        delegates shared visual controls to kit components.
  * Side-effects: IO (fetch copy targets, mutate target rows, read/write grants).
- * Links: docs/spec/poly-copy-trade-execution.md,
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md,
  *        nodes/poly/packages/node-contracts/src/poly.copy-trade.targets.v1.contract.ts
  * @public
  */

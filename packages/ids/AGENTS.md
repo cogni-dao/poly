@@ -13,8 +13,8 @@ Branded ID types for compile-time RLS enforcement across the monorepo. Provides 
 
 ## Pointers
 
-- [Database RLS Spec](../../docs/spec/database-rls.md): RLS architecture and actor model
-- [Packages Architecture](../../docs/spec/packages-architecture.md): Package conventions
+- [Database RLS Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md): RLS architecture and actor model
+- [Packages Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md): Package conventions
 
 ## Boundaries
 

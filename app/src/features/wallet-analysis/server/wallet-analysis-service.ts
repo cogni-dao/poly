@@ -17,7 +17,7 @@
  *   - ROLLUP_BACKED_SNAPSHOT (task.research-rollup-read-models): `getSnapshotSlice`'s per-position aggregate and 30-day activity count read `poly_trader_fill_rollups_daily` (+ unrolled tail) via `fill-rollup-service` — no full fills-history scan on the request path. Parity vs the legacy full-scan SQL is enforced by the component rollup parity suite.
  * Side-effects: IO (DB reads only post-CP7; trader-observation + market-outcome + price-history ticks are the only writers).
  * Notes: Cache is process-scoped — see `instrumentation.ts` single-replica boot assert.
- * Links: docs/design/wallet-analysis-components.md, nodes/poly/packages/market-provider/src/analysis/wallet-metrics.ts, nodes/poly/packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts, nodes/poly/packages/node-contracts/src/poly.wallet.execution.v1.contract.ts, work/items/task.5012, work/items/task.5015
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md, nodes/poly/packages/market-provider/src/analysis/wallet-metrics.ts, nodes/poly/packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts, nodes/poly/packages/node-contracts/src/poly.wallet.execution.v1.contract.ts, work/items/task.5012, work/items/task.5015
  * @public
  */
 
@@ -97,7 +97,7 @@ const SNAPSHOT_MIN_RESOLVED = 5;
  * Distributions slice still loads raw fills into JS to feed `summariseOrderFlow`
  * (per-fill histograms + per-group quantiles). Until that helper is rewritten
  * against SQL `width_bucket` + `PERCENTILE_DISC` (CP9 in
- * docs/research/poly/backfill-spike-2026-05-05.md), bound the read at
+ * https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/poly/backfill-spike-2026-05-05.md), bound the read at
  * 25K most-recent fills to keep the JS heap below ~50 MB. This is a TEMPORARY
  * safety cap on a single slice; `getSnapshotSlice` proves the SQL-aggregated
  * pattern and is unbounded.
@@ -1061,7 +1061,7 @@ async function readFillsForActivePositionsFromDb(
 /**
  * TEMPORARY — distributions-slice fill read with a 25 K most-recent cap.
  * Removed when `summariseOrderFlow` is rewritten to consume SQL aggregates
- * (CP9 in docs/research/poly/backfill-spike-2026-05-05.md). Unlike snapshot's
+ * (CP9 in https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/poly/backfill-spike-2026-05-05.md). Unlike snapshot's
  * SQL-aggregated path, distributions still computes histograms in JS, so the
  * cap is a memory safety net. Documented as `slice_truncated` warnings would
  * blank the slice on the dashboard, so we silently truncate (matches

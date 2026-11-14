@@ -14,7 +14,7 @@
  *   - LANGFUSE_TOOL_SPANS_NOT_LOGS: Tool spans visible, not logged
  * Side-effects: IO (database writes, spy captures)
  * Notes: Requires dev stack running (pnpm dev:stack:test). Uses SpyLangfusePort to capture calls.
- * Links: docs/spec/observability.md#langfuse-integration, AI_SETUP_SPEC.md
+ * Links: https://cognidao.org/knowledge/node-observability-finish-pass, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md
  * @public
  */
 

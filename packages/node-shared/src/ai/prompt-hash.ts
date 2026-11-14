@@ -12,7 +12,7 @@
  *   - Hash is identical across runs given identical logical payload
  * Side-effects: none (pure computation)
  * Notes: Per AI_SETUP_SPEC.md - computed BEFORE LLM call so available on error paths.
- * Links: AI_SETUP_SPEC.md, litellm.adapter.ts, completion.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md, litellm.adapter.ts, completion.ts
  * @public
  */
 

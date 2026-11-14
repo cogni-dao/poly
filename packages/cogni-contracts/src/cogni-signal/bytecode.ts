@@ -7,7 +7,7 @@
  * Scope: Bytecode constant only; does not include ABI or addresses.
  * Invariants: Bytecode must be 0x-prefixed hex string from solc 0.8.30.
  * Side-effects: none
- * Links: docs/spec/node-formation.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-formation.md
  * @public
  */
 

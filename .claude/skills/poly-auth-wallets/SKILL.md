@@ -19,7 +19,7 @@ You are the expert for every seam that **gets a wallet into a signing-ready stat
 
 ## Per-tenant provisioning (Phase B, shipped)
 
-`deploy_verified: true` as of 2026-04-22 via [task.0318](../../../work/items/task.0318.poly-wallet-multi-tenant-auth.md). The canonical flow:
+`deploy_verified: true` as of 2026-04-22 via task.0318. The canonical flow:
 
 1. **Tenant hits `POST /api/v1/poly/wallet/connect`** with body `{ custodialConsentActorId, custodialConsentVersion }` — the Zod contract `poly.wallet.connection.v1.contract.ts` validates at the HTTP boundary.
 2. **Route handler** (`app/src/app/api/v1/poly/wallet/connect/route.ts`):
@@ -33,16 +33,16 @@ You are the expert for every seam that **gets a wallet into a signing-ready stat
    - Encrypts CLOB API creds with AES-256-GCM, AAD bound to `(billing_account_id, connection_id, provider)`.
    - Upserts `poly_wallet_connections` row + consent audit.
 4. **RLS** on `poly_wallet_connections`: tenant isolation via `EXISTS(SELECT 1 FROM billing_accounts WHERE id = billing_account_id AND owner_user_id = current_setting('app.current_user_id')::uuid)`. **Not** keyed on `created_by_user_id` — the pivot through `billing_accounts.owner_user_id` makes the policy principal-agnostic and forward-compatible with multi-user billing + agents-as-actors.
-5. **Response** — `{ connection_id, funder_address, requires_funding, suggested_usdc, suggested_matic }`. `requires_funding` + suggestions are currently hardcoded — [task.0347](../../../work/items/task.0347.poly-wallet-preferences-sizing-config.md) replaces them with honest RPC-backed reads + tenant-configured preferences.
+5. **Response** — `{ connection_id, funder_address, requires_funding, suggested_usdc, suggested_matic }`. `requires_funding` + suggestions are currently hardcoded — task.0347 replaces them with honest RPC-backed reads + tenant-configured preferences.
 
-### Invariants (from `docs/spec/poly-tenant-and-collateral.md`)
+### Invariants (from `https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md`)
 
 - **`CUSTODIAL_CONSENT`** — enforced at _two_ layers:
   1. Zod (HTTP boundary): the `poly.wallet.connect.request.v1` schema requires both consent fields.
   2. TypeScript (port boundary): `PolyTraderWalletPort.provision`'s `input.custodialConsent: CustodialConsent` is non-optional. The adapter **cannot** be called without consent because the type system rejects it.
      The runtime `if (!consent) throw` check was removed because the type-system enforcement is strictly stronger. If you re-introduce it, you've accidentally weakened the invariant.
 - **`CREDS_AT_REST`** — all CLOB API keys AEAD-encrypted at rest; AAD binds ciphertext to `(billing_account_id, connection_id, provider)`. Swapping AAD shape is a **cross-node breaking change** (tracked as `D-5` on task.0318 review) — every existing ciphertext in prod uses the current shape. Don't "standardize" without a migration plan.
-- **`ORPHAN_FREE`** — every successful Privy wallet creation is traceable to a `poly_wallet_connections` row. The `idempotencyKey` + advisory-lock pair guarantees retries of a failed provision converge rather than creating new Privy wallets. [task.0346](../../../work/items/task.0346.poly-wallet-orphan-sweep.md) is the cleanup for any pre-Phase-B orphans.
+- **`ORPHAN_FREE`** — every successful Privy wallet creation is traceable to a `poly_wallet_connections` row. The `idempotencyKey` + advisory-lock pair guarantees retries of a failed provision converge rather than creating new Privy wallets. task.0346 is the cleanup for any pre-Phase-B orphans.
 - **`RLS_ENFORCED`** — `poly_wallet_connections` reads under `appDb` must filter by the policy. Only the rate-limit helper and the mirror-poll enumerator may use `serviceDb` / `BYPASSRLS`, and both are audited seams.
 - **`CONSENT_ACTOR_MATCHES_SESSION`** — session.userId must equal custodialConsent.actorId. Agent-API-key paths (future) must re-derive the actor from the key, not trust the body.
 
@@ -66,14 +66,14 @@ Polymarket uses **two** conditional-tokens contracts on Polygon:
 1. **Standard CTF** (`0x4D97DCd97eC945f40cF65F87097ACe5EA0476045`) — for regular binary markets.
 2. **Neg-risk CTF** (`0xC5d563A36AE78145C45a50134d48A1215220f80a`) — for neg-risk markets. **Separate approval.**
 
-Both need `setApprovalForAll(clobExchangeAddress, true)` from the trading wallet before the CLOB will accept SELL / close-position orders. Missing the neg-risk approval is the root cause of [bug.0329](../../../work/items/bug.0329.poly-sell-neg-risk-empty-reject.md) — any position opened on a neg-risk market becomes roach-motel.
+Both need `setApprovalForAll(clobExchangeAddress, true)` from the trading wallet before the CLOB will accept SELL / close-position orders. Missing the neg-risk approval is the root cause of bug.0329 — any position opened on a neg-risk market becomes roach-motel.
 
 USDC.e (`0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` on Polygon PoS) is deposited **to the EOA directly** — no Safe bridging step, because we trade EOA-direct (see `poly-market-data` for the EOA-vs-Safe gotcha).
 
 Guides:
 
-- [`docs/guides/polymarket-account-setup.md`](../../../docs/guides/polymarket-account-setup.md) — shared-operator onboarding (legacy path, still applicable to USDC.e + CTF mechanics)
-- [`docs/guides/poly-wallet-provisioning.md`](../../../docs/guides/poly-wallet-provisioning.md) — Phase B per-tenant flow + honest accounting of what's shipped
+- [polymarket-account-setup](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/polymarket-account-setup.md) — shared-operator onboarding (legacy path, still applicable to USDC.e + CTF mechanics)
+- [poly-wallet-provisioning](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/poly-wallet-provisioning.md) — Phase B per-tenant flow + honest accounting of what's shipped
 
 ## Scripts arsenal (wallet-relevant)
 
@@ -140,8 +140,8 @@ The 2026-04-22 validation that flipped task.0318 ran exactly this flow — see t
 
 ## Active bugs on the auth/wallets seam
 
-- [bug.0335](../../../work/items/bug.0335.poly-clob-buy-empty-reject-candidate-a.md) — shared operator BUY empty reject. Not a per-tenant issue; specific to the legacy `POLY_PROTO_*`-backed shared wallet on candidate-a. Suspects: stale Privy keys, balance / allowance drift, chain-id mismatch. Per-tenant wallets (Phase B) bypass this failure domain.
-- [bug.0329](../../../work/items/bug.0329.poly-sell-neg-risk-empty-reject.md) — as noted above, missing neg-risk CTF approval blocks SELL. Fix is a one-time `setApprovalForAll` against `0xC5d56…f80a`.
+- bug.0335 — shared operator BUY empty reject. Not a per-tenant issue; specific to the legacy `POLY_PROTO_*`-backed shared wallet on candidate-a. Suspects: stale Privy keys, balance / allowance drift, chain-id mismatch. Per-tenant wallets (Phase B) bypass this failure domain.
+- bug.0329 — as noted above, missing neg-risk CTF approval blocks SELL. Fix is a one-time `setApprovalForAll` against `0xC5d56…f80a`.
 
 ## Anti-patterns specific to wallets
 

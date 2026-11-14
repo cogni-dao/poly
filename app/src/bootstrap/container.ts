@@ -1180,7 +1180,7 @@ function createContainer(): Container {
 
 				// Target-set reconciler — ticks listAllActive every 30s, starts/stops
 				// per-wallet polls to match. First tick fires immediately. See
-				// docs/spec/poly-tenant-and-collateral.md § POLL_RECONCILES_PER_TICK.
+				// https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md § POLL_RECONCILES_PER_TICK.
 				//
 				// `listAllActive` requires an active `poly_wallet_connections` row with
 				// an active `poly_wallet_grants` row, so the reconciler only hands us
@@ -2552,7 +2552,7 @@ function createContainer(): Container {
 		// is only granted to the production GitHub Environment Secret scope, so
 		// candidate-a/preview boot with the hook undefined and never push. v0
 		// invariant: prod is the only writer. Bootstrap: see
-		// docs/runbooks/dolthub-remote-bootstrap.md.
+		// https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/runbooks/dolthub-remote-bootstrap.md.
 		const remoteUrl = env.DOLTHUB_REMOTE_URL;
 		const pushMainOnMerge = remoteUrl
 			? wrapPushSafe(
@@ -2576,7 +2576,7 @@ function createContainer(): Container {
 			// Provenance is stamped by the adapter (`source_type='external'`,
 			// `source_ref='contribution:<id>:<seq>'`), so the provenance gate is
 			// reserved for internal `core__knowledge_write` where the caller
-			// controls those fields. See work/projects/proj.knowledge-syntropy.md.
+			// controls those fields. See https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/work/projects/proj.knowledge-syntropy.md.
 			gates: [shapeGate],
 			...(pushMainOnMerge ? { pushMainOnMerge } : {}),
 		});

@@ -7,7 +7,6 @@
  * Scope: Re-exports only. Does not contain runtime logic.
  * Invariants: PACKAGES_NO_ENV.
  * Side-effects: none
- * Links: work/items/task.0230.market-data-package.md
  * @public
  */
 

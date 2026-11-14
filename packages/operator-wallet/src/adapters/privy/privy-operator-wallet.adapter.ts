@@ -7,7 +7,7 @@
  * Scope: Implements OperatorWalletPort via @privy-io/node SDK. Does not hold raw key material — Privy HSM signs transactions. Does not load env or manage process lifecycle.
  * Invariants: KEY_NEVER_IN_APP, ADDRESS_VERIFIED_AT_STARTUP (lazy on first use), NO_GENERIC_SIGNING, PRIVY_SIGNED_REQUESTS.
  * Side-effects: IO (Privy API calls for wallet verification and tx submission)
- * Links: docs/spec/operator-wallet.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/operator-wallet.md
  * @public
  */
 

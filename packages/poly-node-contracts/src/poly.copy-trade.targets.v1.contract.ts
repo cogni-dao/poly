@@ -18,7 +18,7 @@
  * Side-effects: none
  * Notes: Target rows own the copy filter percentile and per-target max bet. Wallet grants
  *        remain the downstream authorization/cap layer before placement.
- * Links: docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
  * @public
  */
 

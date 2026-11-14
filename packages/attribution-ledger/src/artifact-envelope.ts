@@ -9,7 +9,6 @@
  * - EVALUATION_REF_NAMESPACED: evaluationRef must match `namespace.name.vN` pattern.
  * - HASH_HEX_64: inputsHash and payloadHash must be 64-char lowercase hex (SHA-256).
  * Side-effects: none
- * Links: work/items/task.0113.epoch-artifact-pipeline.md
  * @public
  */
 

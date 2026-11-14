@@ -19,7 +19,7 @@
  *   - SYNCED_AT_WRITTEN_ON_EVERY_SYNC — `markSynced` sets `synced_at = now()` for every row for which the reconciler received a typed CLOB response (found OR not_found). Rows never checked show `synced_at IS NULL`. (task.0328 CP3)
  *   - REALIZED_COLUMNS_WRITTEN (bug.5018) — `markOrderId` and `updateStatus` write `price` / `shares` / `fees_usdc` directly into first-class columns (NOT JSONB) when the receipt carries them. Fields are skipped (column left NULL) when the upstream did not surface a realized value — distinct from "wrote 0". JSONB `attributes` carries only adapter-specific metadata (rawStatus, transactionsHashes, sidecar diagnostics) — no double-write.
  * Side-effects: IO (Postgres reads + writes).
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (CP4.3b), work/items/task.0328.poly-sync-truth-ledger-cache.md, work/items/bug.5022.md (forTenant envelope), work/items/task.5012.md (cascade), docs/spec/poly-copy-trade-execution.md, docs/spec/poly-tenant-and-collateral.md (ORDER_LEDGER_TENANT_CONTEXT_ENVELOPE), docs/spec/poly-paper-trading-shortcomings.md (bug.5018)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md
  * @public
  */
 

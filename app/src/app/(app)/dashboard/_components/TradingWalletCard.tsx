@@ -39,7 +39,6 @@
  *     shows accurate cash+orders+positions=total and simply renders an unknown
  *     leg as "—" without an alarming banner.
  * Side-effects: IO (React Query reads; session-bound paper-account POST).
- * Links: work/items/task.0361.poly-first-user-onboarding-flow-v0.md
  * @public
  */
 

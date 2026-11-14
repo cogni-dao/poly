@@ -15,7 +15,7 @@ Contract (consumed by the cogni TS PaperAdapter at
   GET  /orders                        — account-scoped open OrderReceipt[]
   GET  /orders/{order_id}             — 200 OrderReceipt | 404 not_found
 
-Design (see work/projects/proj.poly-paper-trading.md § "Design — PR 3"):
+Design (see proj.poly-paper-trading § "Design — PR 3"):
 
 - One Engine per paper account, created lazily in an opaque account directory.
   Cash, SQLite state, orders, and fill loops never cross tenants.
@@ -87,7 +87,7 @@ CHECK_ORDERS_INTERVAL_SECONDS = float(
 BUILD_SHA = os.environ.get("BUILD_SHA", "unknown")
 UPSTREAM_PAPER_TRADER_SHA = os.environ.get("UPSTREAM_PAPER_TRADER_SHA", "unknown")
 
-# Multi-node identity (docs/spec/observability.md § Multi-Node Identity). The
+# Multi-node identity (https://cognidao.org/knowledge/node-observability-finish-pass § Multi-Node Identity). The
 # sidecar is currently poly-specific (no envFrom on its container patch); if
 # this image is ever generalised, lift NODE_ID into the ConfigMap and read
 # from env. Hardcoded for now keeps every log + Loki query node-discriminable
@@ -173,7 +173,7 @@ ERROR_FILL_LOOP_UNMAPPED_ID = "fill_loop_result_unmapped_id"
 
 # ─── Structured JSON logging — one JSON object per line for Alloy → Loki ────
 #
-# Required base fields per docs/spec/observability.md § Multi-Node Identity:
+# Required base fields per https://cognidao.org/knowledge/node-observability-finish-pass § Multi-Node Identity:
 #   - `nodeId` for cross-node disambiguation
 #   - `service` for Loki `{service="..."}` filter
 #   - `event` for stable event-name queries

@@ -7,7 +7,7 @@
  * Scope: Pure validation — parseCitation, validateSources, needsCitationRetry. Does NOT test adapter IO or LLM integration.
  * Invariants: NO_CLAIMS_WITHOUT_CITES, fail-closed on missing sources.
  * Side-effects: none
- * Links: COGNI_BRAIN_SPEC.md, shared/ai/guards/citation.guard.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md, shared/ai/guards/citation.guard.ts
  * @internal
  */
 

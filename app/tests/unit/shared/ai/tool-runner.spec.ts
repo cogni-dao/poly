@@ -11,7 +11,7 @@
  *   - tool_call_result isError=true when denied
  *   - Implementation NOT called when denied
  * Side-effects: none
- * Links: tool-runner.ts, tool-policy.ts, TOOL_USE_SPEC.md
+ * Links: tool-runner.ts, tool-policy.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @internal
  */
 

@@ -7,7 +7,6 @@
  * Scope: Root barrel exports port interface, Zod schemas, and normalizers. Does not export adapter implementations (use subpath imports).
  * Invariants: PACKAGES_NO_ENV, PACKAGES_NO_LIFECYCLE, PACKAGES_NO_SRC_IMPORTS.
  * Side-effects: none
- * Links: work/items/task.0230.market-data-package.md, work/items/task.0315.poly-copy-trade-prototype.md
  * @public
  */
 

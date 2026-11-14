@@ -23,7 +23,6 @@
  *     handles `Σ ≤ 0` semantics (e.g. planner skips
  *     `target_position_below_threshold`).
  * Side-effects: none
- * Links: docs/spec/poly-copy-trade-position-mirror.md (locked design note)
  * @public
  */
 

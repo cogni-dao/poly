@@ -7,7 +7,7 @@
  *          Two query shapes: `listForActor(userId)` for user-scoped HTTP routes (RLS via
  *          appDb), and `listAllActive()` for the cross-tenant mirror-poll enumerator
  *          (BYPASSRLS via serviceDb — the ONE sanctioned cross-tenant read path).
- *          Per docs/spec/poly-tenant-and-collateral.md.
+ *          Per https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md.
  * Scope: Two impls today — `envTargetSource` (local-dev fallback) and `dbTargetSource`
  *        (production, reads `poly_copy_trade_targets`). Target rows carry the user-facing
  *        mirror filter percentile and max bet. No per-target enable flag and no mode
@@ -33,7 +33,7 @@
  *   - ENV_IMPL_LOCAL_DEV_ONLY — `envTargetSource` is wired only when APP_ENV=test;
  *     production wires `dbTargetSource`.
  * Side-effects: dbTargetSource → DB I/O. envTargetSource → none.
- * Links: docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
  *
  * @public
  */

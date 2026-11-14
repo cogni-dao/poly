@@ -9,7 +9,7 @@
  *   - CALLER_DRAIN_OBLIGATION: Every runGraph() consumer must drain the stream for billing to fire
  * Side-effects: IO (grep subprocess)
  * Notes: Decorator/router call sites are excluded (they wrap and re-yield, not consume). This complements the JSDoc on GraphExecutorPort.runGraph().
- * Links: src/ports/graph-executor.port.ts, usage-commit.decorator.ts, GRAPH_EXECUTION.md
+ * Links: src/ports/graph-executor.port.ts, usage-commit.decorator.ts, https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

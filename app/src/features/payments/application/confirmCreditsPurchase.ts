@@ -14,7 +14,7 @@
  *   - CO_WRITE_NON_BLOCKING: TigerBeetle writes fire-and-forget
  * Notes: The dead OpenRouter/Coinbase provider top-up path (old steps 5-6: the provider funding port + the OperatorFloat→ProviderFloat co-write) was retired — OpenRouter 410'd programmatic crypto top-up. Inbound crediting + Split distribute are unchanged.
  * Side-effects: IO (via delegated ports)
- * Links: docs/spec/financial-ledger.md, task.0086
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/financial-ledger.md, task.0086
  * @public
  */
 

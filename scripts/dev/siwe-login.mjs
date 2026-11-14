@@ -21,7 +21,7 @@
  * Usage:
  *   node scripts/dev/siwe-login.mjs <base-url> [--slug name] [--pk 0x...] [--chain-id 8453]
  *   node scripts/dev/siwe-login.mjs https://poly-test.cognidao.org --slug candidate-a-poly
- * Links: docs/guides/candidate-auth-bootstrap.md, app/src/auth.ts
+ * Links: https://cognidao.org/knowledge/candidate-auth-bootstrap, app/src/auth.ts
  * @internal
  */
 

@@ -10,7 +10,7 @@
  *   - Status transitions are monotonic at the adapter layer: pending → running → (success|error|timeout|skipped|cancelled)
  *   - All consumers use z.infer types
  * Side-effects: none
- * Links: /api/internal/graph-runs/[runId] route, docs/spec/scheduler.md, task.0280
+ * Links: /api/internal/graph-runs/[runId] route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, task.0280
  * @internal
  */
 

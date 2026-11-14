@@ -8,7 +8,7 @@
  * Invariants: PROMPTHASH_DUAL_RESOLUTION - fallbackPromptHash available for error paths.
  * Side-effects: none
  * Notes: MVP tests only - core functions (filter, trim, validate) tested in @/core.
- * Links: message-preparation.ts, COMPLETION_REFACTOR_PLAN.md
+ * Links: message-preparation.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/archive/COMPLETION_REFACTOR_PLAN.md
  * @public
  */
 

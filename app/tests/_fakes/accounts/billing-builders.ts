@@ -7,7 +7,7 @@
  * Scope: Creates minimal charge_receipt test data per ACTIVITY_METRICS.md. Does not include forbidden fields.
  * Invariants: No model/tokens/usage fields - LiteLLM is canonical for telemetry
  * Side-effects: none
- * Links: docs/spec/activity-metrics.md, src/shared/db/schema.billing.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/activity-metrics.md, src/shared/db/schema.billing.ts
  * @public
  */
 

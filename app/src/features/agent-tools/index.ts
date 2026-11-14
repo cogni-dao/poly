@@ -14,7 +14,7 @@
  * Invariants: nothing exported here holds a principal, a database handle, or a
  *   service-role connection. Each transport takes them as arguments.
  * Side-effects: none
- * Links: task.1791070967, story.5006, docs/spec/capability-plane.md
+ * Links: task.1791070967, story.5006, https://poly.cognidao.org/knowledge/capability-plane-contract
  * @public
  */
 

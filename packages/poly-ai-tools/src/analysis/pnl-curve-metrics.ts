@@ -11,7 +11,7 @@
  *   - SELF_NORMALIZED_SPARKLINE: sparkline maps wallet's own min/max to 8 quantile blocks — magnitude lives in metric strip, not shape.
  * Side-effects: none
  * Notes: Intentional v0 duplication of `packages/market-provider/src/analysis/pnl-curve-metrics.ts` (PR #1120) to keep this PR single-domain (poly-only). Once #1120 merges, this module collapses into the shared one and the tool re-imports.
- * Links: work/charters/POLY_WALLET_RESEARCH.md, work/items/task.0420.poly-wallet-curve-metrics-tools.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/work/charters/POLY_WALLET_RESEARCH.md
  * @public
  */
 

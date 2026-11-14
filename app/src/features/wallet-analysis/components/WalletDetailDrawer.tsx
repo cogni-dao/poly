@@ -7,7 +7,7 @@
  * Scope: Client component. Renders the shared `WalletAnalysisSurface`, which fetches the wallet-analysis slices. Injects a "Copy wallet" toggle and an "Open in page" link as inline `headerActions` next to the wallet's Polymarket / Polygonscan links — the drawer has no chrome of its own beyond the Sheet's auto-rendered close button.
  * Invariants: SKELETON_FIRST — Sheet animates in immediately; molecules render their own loading skeletons via `WalletAnalysisView`'s `isLoading` prop. PAUSED_WHEN_CLOSED — `useWalletAnalysis` is `enabled=false` when the drawer is closed so we don't background-fetch for nothing.
  * Side-effects: IO (via `WalletAnalysisSurface`).
- * Links: docs/design/wallet-analysis-components.md, work/items/task.0344.wallet-row-drawer.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md
  * @public
  */
 

@@ -46,7 +46,7 @@
  *     it stays correct past the page bound.
  * Side-effects: IO (three bounded SELECTs).
  * Links: task.1791070959, story.5004, bug.5288, bug.0438,
- *   docs/spec/dashboard-agent-parity-inventory.md §8
+ *   https://poly.cognidao.org/knowledge/dashboard-parity-field-map §8
  * @public
  */
 

@@ -10,7 +10,7 @@
  *   - NO_LANGCHAIN_IN_SRC: Only this package imports @langchain/*
  *   - PACKAGES_NO_SRC_IMPORTS: Never import from src/
  * Side-effects: none
- * Links: LANGGRAPH_AI.md, GRAPH_EXECUTION.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

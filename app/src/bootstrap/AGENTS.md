@@ -15,7 +15,7 @@ System setup installers were moved to `scripts/bootstrap/` and are out of scope 
 ## Pointers
 
 - [Root AGENTS.md](../../../../AGENTS.md)
-- [Architecture](../../../../docs/spec/architecture.md)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
 - [Platform bootstrap (installers)](../../../../scripts/bootstrap/README.md)
 
 ## Boundaries

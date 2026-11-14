@@ -16,12 +16,12 @@ AI service adapters including LiteLLM completion/streaming, usage telemetry, age
 - [LlmService port](../../../ports/llm.port.ts)
 - [AgentCatalogPort](../../../ports/agent-catalog.port.ts)
 - [GraphExecutorPort](../../../../../../packages/graph-execution-core/src/graph-executor.port.ts)
-- [Agent Discovery Design](../../../../../../docs/spec/agent-discovery.md)
+- [Agent Discovery Design](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/agent-discovery.md)
 - [LiteLLM configuration](../../../../../../infra/compose/runtime/configs/)
-- [Activity Metrics Design](../../../../../../docs/spec/activity-metrics.md)
-- [Graph Execution Design](../../../../../../docs/spec/graph-execution.md)
-- [LangGraph Server Design](../../../../../../docs/spec/langgraph-server.md)
-- [Thread Persistence Spec](../../../../../../docs/spec/thread-persistence.md)
+- [Activity Metrics Design](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/activity-metrics.md)
+- [Graph Execution Design](https://node-template.cognidao.org/knowledge/graph-execution-invariants)
+- [LangGraph Server Design](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md)
+- [Thread Persistence Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/thread-persistence.md)
 
 ## Boundaries
 

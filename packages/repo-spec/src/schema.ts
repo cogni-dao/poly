@@ -7,7 +7,7 @@
  * Scope: Validates governance-managed payment, governance schedule, and activity ledger configuration structures. Does not enforce chain/token values (chain validation happens in accessor layer via chainId parameter).
  * Invariants: EVM address format required; activity sources require source_refs. REPO_SPEC_AUTHORITY — single canonical schema definition.
  * Side-effects: none
- * Links: .cogni/repo-spec.yaml, docs/spec/node-operator-contract.md
+ * Links: .cogni/repo-spec.yaml, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-operator-contract.md
  * @public
  */
 
@@ -538,7 +538,7 @@ export type OperatorWalletSpec = z.infer<typeof operatorWalletSpecSchema>;
  * Privy wallet funds this one pinned address via a single constrained transfer
  * (OperatorWalletPort.withdrawToSteward); a human then completes each vendor
  * checkout in USDC. Deliberately node-generic and NOT named "operator" to avoid
- * overloading the operator node / operator wallet. See docs/design/node-steward-wallet.md.
+ * overloading the operator node / operator wallet. See https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/node-steward-wallet.md.
  */
 export const stewardWalletSpecSchema = z.object({
   /** Checksummed EVM address of the human-custodied steward wallet (USDC on Base). */

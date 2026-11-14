@@ -11,7 +11,7 @@
  *   - HARD_DELETE: row is removed from work_items; recovery via dolt_revert on the deletion commit
  *   - AUTHOR_ATTRIBUTED: author handle embedded in the dolt_log commit message
  * Side-effects: none
- * Links: /api/v1/work/items/[id] route, docs/spec/work-items-port.md
+ * Links: /api/v1/work/items/[id] route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/work-items-port.md
  * @internal
  */
 

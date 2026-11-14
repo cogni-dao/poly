@@ -10,7 +10,7 @@
  *   - AUTH_VIA_CAPABILITY_INTERFACE: exec() receives capabilities, not raw secrets
  *   - Zod validation stays in this layer; ai-core sees only the interface
  * Side-effects: none
- * Links: TOOL_USE_SPEC.md #27
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 

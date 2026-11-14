@@ -7,7 +7,7 @@
  * Scope: Parity test for critical structs; does not test runtime behavior.
  * Invariants: If this test fails, createDao will revert on-chain.
  * Side-effects: none
- * Links: docs/spec/node-formation.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-formation.md
  * @internal
  */
 

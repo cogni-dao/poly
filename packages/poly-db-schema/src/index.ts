@@ -7,7 +7,7 @@
  * Scope: Re-exports only. Does not define any tables.
  * Invariants: Re-exports every schema slice so the resulting namespace matches nodes/poly/app/src/shared/db/schema.ts's expectation when it `export * from "@cogni/poly-db-schema"`.
  * Side-effects: none
- * Links: docs/spec/databases.md, docs/spec/packages-architecture.md, work/items/task.0324.per-node-db-schema-independence.md
+ * Links: https://cognidao.org/knowledge/node-database-contract, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @public
  */
 

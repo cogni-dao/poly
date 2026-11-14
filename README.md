@@ -18,4 +18,4 @@ Open this repository in Claude Code, Codex, or OpenCode and paste:
 Every supported harness receives this node's cognition automatically; contributors install no
 per-node prompt configuration.
 
-[PolyForm Shield license](LICENSE.md)
+[PolyForm Shield license](https://polyformproject.org/licenses/shield/1.0.0)

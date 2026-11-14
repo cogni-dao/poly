@@ -9,7 +9,7 @@
  *   - SSE_RESUME_SAFE: EventSource natively passes Last-Event-ID on reconnect
  *   - NO_PROVIDER_WRAPPER: Standalone hook, no React Context
  * Side-effects: IO (EventSource SSE connection)
- * Links: docs/spec/data-streams.md, @cogni/node-streams
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/data-streams.md, @cogni/node-streams
  * @public
  */
 

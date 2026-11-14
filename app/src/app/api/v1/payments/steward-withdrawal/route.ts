@@ -6,7 +6,7 @@
  * Purpose: The "TRIGGER" rung of the manual provider top-up flow — an approver-gated
  *   POST that funds the human-custodied steward wallet from the operator wallet via a
  *   single pinned USDC transfer, so a human can then settle vendor invoices (OpenRouter)
- *   through the vendor's hosted crypto checkout. See docs/design/node-steward-wallet.md.
+ *   through the vendor's hosted crypto checkout. See https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/node-steward-wallet.md.
  * Scope: Session + steward-self-authorized. Delegates to OperatorWalletPort.withdrawToSteward
  *   (destination is repo-spec-pinned, caller picks amount only). Does NOT complete the vendor
  *   checkout (human step) or read provider balances (separate surface).
@@ -15,7 +15,7 @@
  *   - STEWARD_PINNED_DESTINATION — destination is payments_out.steward_wallet, never caller-supplied.
  *   - FAIL_CLOSED — 503 when the operator/steward wallet is unconfigured in this environment.
  * Side-effects: IO (on-chain USDC transfer via Privy HSM; structured log event).
- * Links: docs/design/node-steward-wallet.md, OperatorWalletPort.withdrawToSteward
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/node-steward-wallet.md, OperatorWalletPort.withdrawToSteward
  * @public
  */
 

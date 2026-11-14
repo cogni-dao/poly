@@ -13,7 +13,7 @@
  *   - bug.5020 execute-guard: a non-production runtime refuses to build a distribution against the production Cogni DAO; fail-closed on a null emissions holder (baked-fallback path).
  *   - FOLD_NEVER_UNDOES_FINALIZE: the cumulative fold runs AFTER the atomic off-chain finalize commits, in try/catch — a fold failure leaves the signed statement intact.
  * Side-effects: IO (AttributionStore DB, viem EIP-712 verification, optional HTTP/in-process config resolver).
- * Links: docs/spec/attribution-ledger.md, packages/aragon-osx/src/epoch-distribution-service.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md, packages/aragon-osx/src/epoch-distribution-service.ts
  * @public
  */
 

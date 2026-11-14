@@ -19,7 +19,7 @@
  *     emits `payout_redemption_observed` (worker only emits `submitted`).
  *   - SWEEP_IS_NOT_AN_ARCHITECTURE — no Data-API enumerate-and-fire.
  * Side-effects: IO (Polygon RPC long-poll, DB writes).
- * Links: docs/spec/poly-copy-trade-execution.md § Three-subscription topology, task.0388
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, task.0388
  * @public
  */
 

@@ -9,7 +9,7 @@
  *   - NO_GENERIC_SIGNING — the port has no `signTransaction(calldata)` / `signMessage(bytes)` surface.
  *   - KEY_NEVER_IN_APP — no raw key material.
  * Side-effects: none (interface definition only)
- * Links: docs/spec/operator-wallet.md, work/items/task.0315.poly-copy-trade-prototype.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/operator-wallet.md
  * @public
  */
 

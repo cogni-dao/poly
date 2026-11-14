@@ -13,7 +13,7 @@
  *   - Uses AiExecutionErrorCode from @cogni/ai-core (no parallel error system)
  *   - HTTP errors for auth/validation (401/403/404/422), not response body
  * Side-effects: none
- * Links: /api/internal/graphs/[graphId]/runs route, docs/spec/scheduler.md
+ * Links: /api/internal/graphs/[graphId]/runs route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md
  * @internal
  */
 

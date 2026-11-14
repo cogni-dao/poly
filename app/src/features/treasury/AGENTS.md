@@ -15,7 +15,7 @@ Client-side treasury balance display feature. Fetches DAO treasury USDC balance 
 
 - [TreasuryBadge.tsx](components/TreasuryBadge.tsx): Header badge component
 - [useTreasurySnapshot.ts](hooks/useTreasurySnapshot.ts): React Query hook
-- [docs/spec/onchain-readers.md](../../../../../docs/spec/onchain-readers.md): Treasury snapshot architecture
+- [https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/onchain-readers.md](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/onchain-readers.md): Treasury snapshot architecture
 
 ## Boundaries
 

@@ -14,7 +14,6 @@
  *   - HASH_IS_PINNED: task.0315 CP3.3 migration header cites this exact function — the
  *     executor (CP4) AND any future WS path MUST use this helper, never a local copy.
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 CP3.3)
  * @public
  */
 

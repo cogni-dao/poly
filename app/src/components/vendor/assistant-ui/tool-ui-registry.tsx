@@ -3,7 +3,7 @@
 
 /**
  * Module: `@components/vendor/assistant-ui/tool-ui-registry`
- * Purpose: Mounts every per-tool assistant-ui renderer once, inside the AssistantRuntimeProvider tree. Empty for node-template until the first per-tool UI is added — see `docs/guides/assistant-ui-tool-rendering.md`.
+ * Purpose: Mounts every per-tool assistant-ui renderer once, inside the AssistantRuntimeProvider tree. Empty for node-template until the first per-tool UI is added — see `https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/assistant-ui-tool-rendering.md`.
  * Scope: Single source of truth for which tools have dedicated UI. Adding a tool UI = adding one line here.
  * Side-effects: none
  * @public

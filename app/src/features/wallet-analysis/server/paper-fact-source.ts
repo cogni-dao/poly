@@ -41,7 +41,7 @@
  *     writer plus an additive `(created_at, id)`-watermarked rollup
  *     accumulator — projecting a mutable row would freeze its first-seen size
  *     and silently desynchronise `poly_trader_fill_rollups_daily`.
- *   - NO_FABRICATED_VALUES (docs/spec/capability-plane.md): an open position
+ *   - NO_FABRICATED_VALUES (https://poly.cognidao.org/knowledge/capability-plane-contract): an open position
  *     whose mark cannot be read is NOT marked to 0. A prior authoritative mark
  *     may be reused only inside its explicit freshness bound (settlement 0/1 is
  *     immutable); otherwise the position cursor records `partial` and any prior
@@ -85,7 +85,7 @@
  *     SIGNS_FROM was written for).
  * Side-effects: IO — DB reads/writes through the injected handle, plus a
  *   bounded cursor-resumed window of CLOB mark reads.
- * Links: docs/spec/capability-plane.md, docs/spec/poly-copy-trade-execution.md,
+ * Links: https://poly.cognidao.org/knowledge/capability-plane-contract, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md,
  *   migration 0082, migration 0083
  * @public
  */

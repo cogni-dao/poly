@@ -57,7 +57,7 @@ Code references: `OrderActivityCard.tsx` links at Polygon tx hashes, never Polym
 ## Active bugs on the CLOB seam
 
 - `bug.0335` historical context — shared-wallet BUY empty reject on candidate-a. Suspects: wallet balance / allowance state / stale Privy keys / drift between chain-id declared + signed. Treat this as a deploy-state/operator-secret investigation unless local code disproves that.
-- [bug.0329](../../../work/items/bug.0329.poly-sell-neg-risk-empty-reject.md) — SELL on a `neg_risk=true` market empty reject. Root cause: missing CTF `setApprovalForAll` for the neg-risk conditional-tokens contract. Blocks close-position. Fix lives in `poly-auth-wallets` (CTF approvals), not here. Any position on a neg-risk market is roach-motel until resolved.
+- bug.0329 — SELL on a `neg_risk=true` market empty reject. Root cause: missing CTF `setApprovalForAll` for the neg-risk conditional-tokens contract. Blocks close-position. Fix lives in `poly-auth-wallets` (CTF approvals), not here. Any position on a neg-risk market is roach-motel until resolved.
 
 ## Data-API specifics
 
@@ -79,13 +79,13 @@ Scripts under `scripts/experiments/` (read-only, don't require PKs):
 - `poly-wallet-research/top-wallet-research-v1.ts`
 - `poly-wallet-research/top-wallet-research-v2-focus-3day.ts`
 - `wallet-screen.ts`, `wallet-screen-v2-filtered.ts`, `wallet-screen-v3-weighted.ts`, `wallet-screen-v4-data-api.ts`
-- Results: [`docs/design/wallet-analysis-components.md`](../../../docs/design/wallet-analysis-components.md)
+- Results: [wallet-analysis-components](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md)
 
 Known adversarial failure: wash-trading, round-tripping through split Safes, Sybil-funded sock-puppets. task.0322 Phase 4 has the full "adversarial-robust ranking" design bucket (cross-wallet cluster detection, leakage attribution, counterfactual PnL net of slippage + fees).
 
 ## Phase 4 streaming — design-only
 
-[task.0322](../../../work/items/task.0322.poly-copy-trade-phase4-design-prep.md) — `Needs Design`. Deliverables:
+task.0322 — `Needs Design`. Deliverables:
 
 - **CLOB WebSocket adapter** — `wss://…/ws/user?…` with EIP-712 auth; reconnect + backfill logic.
 - **Target ranker** — multi-factor scoring (realized edge, win-rate, size discipline, cluster-independence).

@@ -22,7 +22,7 @@
  *     `BACKFILL_ENQUEUE_CONCURRENCY = 4` + `Promise.allSettled` so one
  *     condition's failure doesn't halt the rest.
  * Side-effects: IO (Data-API read, DB read, per-condition enqueue).
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/bug.5028
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/bug.5028
  * @public
  */
 

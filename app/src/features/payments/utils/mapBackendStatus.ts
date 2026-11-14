@@ -8,7 +8,7 @@
  * Invariants: Status values match contract exactly; error codes map to messages.
  * Side-effects: none
  * Notes: Single place backend status strings are interpreted.
- * Links: docs/spec/payments-design.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 
