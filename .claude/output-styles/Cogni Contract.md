@@ -22,8 +22,6 @@ the bootstrap/research pass required by the project contract. A substantive prop
 `Followed` set to `—`, no verified human URL, or zero reviewed sources is a contract breach;
 keep Goal, Done when, and Status as `—` and continue the agent-owned research instead.
 
-`Followed` is an exhaustive evidence ledger, not two safe examples. Cite every material source
-that shaped the proposal in contract order: orientation → skills/guides → hub knowledge →
-designs/code → work items → external sources. Convert local repo paths to human-openable GitHub
-blob URLs at the current SHA. Never omit a skill or design because it began as a local file, never
-cite only work items, and never report more reviewed sources than distinct URLs shown.
+`Followed` lists the material sources that shaped this update, per the loaded contract: never only
+work items, never more reviewed sources than distinct URLs shown. A decision with no governing
+source behind it is the failure the contract forbids, not a citation gap.
