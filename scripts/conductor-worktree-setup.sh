@@ -4,8 +4,9 @@
 
 # Module: scripts/conductor-worktree-setup.sh
 # Purpose: Prepare a Conductor-created node-template worktree for agent development.
-# Side-effects: refreshes origin/main, links shared local auth/secrets when available,
-#   installs deps, builds package declarations, and writes a setup proof marker.
+# Side-effects: links shared local auth/secrets when available, refreshes the
+#   session cognition cache first, refreshes origin/main, installs deps, builds package
+#   declarations, and writes a setup proof marker.
 
 set -euo pipefail
 
@@ -249,15 +250,33 @@ fs.writeFileSync(
 EOF
 }
 
-refresh_workspace_base_ref
-sync_workspace_to_base
-refresh_auth_root_main
+# Warm the session cognition cache before anything slow. Every agent session
+# fetches its own bundle when it starts; this cache is only the offline fallback
+# for a session that starts while the hub is down.
+warm_cognition_cache() {
+  local attempt started
+  started=$(date +%s)
+  for attempt in 1 2 3; do
+    if bash scripts/agent/session-cognition.sh --refresh </dev/null >/dev/null 2>&1; then
+      printf 'cognition cache refreshed from the hub in %ss (attempt %s)\n' "$(($(date +%s) - started))" "$attempt"
+      return 0
+    fi
+    [[ "$attempt" -lt 3 ]] && sleep 2
+  done
+  warn "cognition hub fetch failed; each agent session retries when it starts"
+}
+
 ensure_auth_root_cogni_env
 
 # Symlink, never copy, so secret rotation and captured auth in the human's
 # canonical checkout are immediately reflected in active Conductor worktrees.
 link_from_auth_root ".env.cogni"
 link_from_auth_root ".local-auth"
+warm_cognition_cache
+
+refresh_workspace_base_ref
+sync_workspace_to_base
+refresh_auth_root_main
 
 # Codex requires hook trust per config source. Keep one stable, user-level
 # presenter installed so every local Conductor worktree inherits the

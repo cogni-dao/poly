@@ -5,7 +5,7 @@
 # agent self-corrects on the NEXT turn, but it NEVER re-prompts or hard-blocks. A hard Stop-block
 # runs on every agent on the node, so one over-strict check wedges the whole fleet (the pre-#2722
 # per-reply /work/items/ loop) and can only grade format, taxing substantive replies with re-emit
-# round-trips. See .claude/skills/cognition-expert/SKILL.md (warn-only is canon).
+# round-trips. See https://cognidao.org/knowledge/cognition-expert (warn-only is canon).
 
 set -euo pipefail
 
