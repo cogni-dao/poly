@@ -31,11 +31,6 @@ const EXCEPTIONS = [
     path: "docs/guides/new-worktree-setup.md",
     why: "ride-along file-path matcher for operator PR diffs; a string literal compared with a changed-file path",
   },
-  {
-    file: "packages/langgraph-graphs/src/graphs/pr-manager/prompts.ts",
-    path: "docs/guides/pr-management-playbook.md",
-    why: "runtime prompt, separate PR",
-  },
 ];
 
 const ALLOWED_MD = [
