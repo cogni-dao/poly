@@ -32,8 +32,6 @@ describe("DB pool split (task.5014)", { timeout: 30_000 }, () => {
       DB_POOL_MAX: "7",
       DB_SERVICE_POOL_MAX: "9",
       DB_READ_POOL_MAX: "3",
-      // Raised budget so the env-tuned maxes pass through unclamped (bug.5064).
-      DB_SERVICE_ROLE_BUDGET: "20",
     });
 
     const { resolveAppDb, resolveServiceDb, resolveServiceReadDb } =
@@ -66,9 +64,9 @@ describe("DB pool split (task.5014)", { timeout: 30_000 }, () => {
     );
   });
 
-  it("uses default pool sizes (1/2/1) when env vars are unset", async () => {
-    // bug.5064: service+read+leader share role service_poly (ceiling 8, two pods
-    // during blue/green) so one pod holds at most 4: service 2 + read 1 + leader 1.
+  it("uses default pool sizes (1/1/1) when no runtimePoolLimits are injected", async () => {
+    // bug.5064: no injected limits (candidate-a/preview, shared tier service role 4):
+    // service 1 + read 1 + leader 1 = 3, one spare.
     Object.assign(process.env, BASE_VALID_ENV);
     delete process.env.DB_POOL_MAX;
     delete process.env.DB_SERVICE_POOL_MAX;
@@ -79,30 +77,24 @@ describe("DB pool split (task.5014)", { timeout: 30_000 }, () => {
       await import("@/bootstrap/container");
 
     expect(resolveAppDb().$client.options.max).toBe(1);
-    expect(resolveServiceDb().$client.options.max).toBe(2);
+    expect(resolveServiceDb().$client.options.max).toBe(1);
     expect(resolveServiceReadDb().$client.options.max).toBe(1);
   });
 
-  it("clamps injected runtimePoolLimits (service 4 / read 2) to the per-pod service_poly budget", async () => {
-    // Production injects 4/2 (7 per pod with the leader, 14 across two blue/green
-    // pods against a role ceiling of 8 → SQLSTATE 53300, bug.5064).
+  it("honors injected runtimePoolLimits exactly (service 4 / read 2)", async () => {
+    // The operator catalog is the authority: declared values are used as-is.
     Object.assign(process.env, BASE_VALID_ENV, {
       DB_SERVICE_POOL_MAX: "4",
       DB_READ_POOL_MAX: "2",
     });
     delete process.env.DB_SERVICE_ROLE_BUDGET;
-    delete process.env.JOB_LEADER_ELECTION_ENABLED;
 
     const { resolveServiceDb, resolveServiceReadDb } = await import(
       "@/bootstrap/container"
     );
-    const service = resolveServiceDb().$client.options.max;
-    const read = resolveServiceReadDb().$client.options.max;
 
-    expect(service).toBe(2);
-    expect(read).toBe(1);
-    // + 1 leader connection <= 4 per pod; two pods <= role ceiling 8.
-    expect(service + read + 1).toBeLessThanOrEqual(4);
+    expect(resolveServiceDb().$client.options.max).toBe(4);
+    expect(resolveServiceReadDb().$client.options.max).toBe(2);
   });
 
   it("returns the same read-pool instance on repeated resolution (lazy singleton)", async () => {

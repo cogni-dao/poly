@@ -8,7 +8,7 @@
  * dashboard/research queries only — no writes, no background jobs.
  * Invariants:
  * - Same app_service credentials as drizzle.service-client.ts but its OWN connection
- *   budget (DB_READ_POOL_MAX, default 1, clamped by the per-pod service_poly budget) and application_name (cogni_service_read),
+ *   budget (DB_READ_POOL_MAX when injected, default 1) and application_name (cogni_service_read),
  *   so background jobs on the main service pool cannot starve dashboard reads (task.5014)
  * - MUST NOT be imported from general src/ code — reach it via
  *   resolveServiceReadDb() in bootstrap/container.ts
@@ -18,7 +18,10 @@
  */
 
 import type { Database } from "@cogni/db-client";
-import { createServiceReadDbClient } from "@cogni/db-client/service";
+import {
+  createServiceReadDbClient,
+  DEFAULT_READ_POOL_MAX,
+} from "@cogni/db-client/service";
 
 import { serverEnv } from "@/shared/env";
 
@@ -33,14 +36,17 @@ let _serviceReadDb: Database | null = null;
 function createServiceReadDb(): Database {
   if (!_serviceReadDb) {
     const env = serverEnv();
-    // Pool budget: DB_READ_POOL_MAX (default 1), clamped to the per-pod service_poly
-    // budget shared with the service pool + leader (bug.5064). Backend math:
-    // packages/db-client/src/build-client.ts.
+    // Pool budget: declared DB_READ_POOL_MAX when injected, else default 1 (bug.5064).
+    // Backend math: packages/db-client/src/build-client.ts.
     const budget = resolveServiceRoleBudgetFromEnv();
     _serviceReadDb = createServiceReadDbClient(env.DATABASE_SERVICE_URL, {
       max: budget.readMax,
     });
-    logServicePoolConfigured("service_read", env.DB_READ_POOL_MAX, budget);
+    logServicePoolConfigured(
+      "service_read",
+      env.DB_READ_POOL_MAX ?? DEFAULT_READ_POOL_MAX,
+      budget
+    );
   }
   return _serviceReadDb;
 }

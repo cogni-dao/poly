@@ -102,31 +102,33 @@ export const serverSchema = z.object({
   // service-read (dashboard/research reads, service_poly — separate pool so jobs
   // can't starve them). The budget is per Postgres ROLE: app_poly carries the app
   // pool; service_poly carries service + read + the leader connection (task.5016).
-  // service_poly's ceiling is 8 and blue/green runs TWO pods at once, so ONE pod
-  // may hold at most DB_SERVICE_ROLE_BUDGET (default 4) service_poly backends:
-  // leader 1 + service + read. The two pool maxes below are REQUESTS, clamped to
-  // that budget at construction (adapters/server/db/service-role-budget.ts), so an
-  // injected runtimePoolLimits of 4/2 (7/pod → 14 across two pods → SQLSTATE
-  // 53300, bug.5064) cannot exceed the role ceiling. Defaults 2 / 1 + leader 1 = 4.
-  // emptyToUndefined: compose passes "" through for unset vars — treat as default.
+  // AUTHORITY: the operator catalog `database.<env>.runtimePoolLimits {app, service,
+  // read}` (hub: database-state-cell-lifecycle). When it is injected, DB_SERVICE_POOL_MAX
+  // and DB_READ_POOL_MAX are used EXACTLY (the pod holds declared service + read + leader).
+  // They are therefore optional here: ABSENT means "no injected limits"
+  // (candidate-a/preview on the shared tier, `shared-default-v1` = 4 service
+  // connections), and the node falls back to defaults service 1 / read 1 + leader 1 = 3,
+  // one spare, bounded by DB_SERVICE_ROLE_BUDGET (default 3). The old defaults 4 + 2 + 1 = 7
+  // exceeded the shared-tier role and caused SQLSTATE 53300 (bug.5064).
+  // emptyToUndefined: compose passes "" through for unset vars — treat as absent.
   DB_POOL_MAX: z.preprocess(
     emptyToUndefined,
     z.coerce.number().int().positive().default(1)
   ),
   DB_SERVICE_POOL_MAX: z.preprocess(
     emptyToUndefined,
-    z.coerce.number().int().positive().default(2)
+    z.coerce.number().int().positive().optional()
   ),
   DB_READ_POOL_MAX: z.preprocess(
     emptyToUndefined,
-    z.coerce.number().int().positive().default(1)
+    z.coerce.number().int().positive().optional()
   ),
-  // Per-POD ceiling on service_poly backends (service + read + leader). Default 4 =
-  // half the role ceiling 8 so two overlapping blue/green pods fit. Minimum 3
-  // (leader 1 + one connection per pool). Lower the ceiling only with the role.
+  // Per-POD ceiling on service_poly backends (service + read + leader) when NO pool
+  // limits are injected. Default 3 = service 1 + read 1 + leader 1, leaving one spare
+  // under the shared-tier service role (4). Minimum 3 (leader + one connection per pool).
   DB_SERVICE_ROLE_BUDGET: z.preprocess(
     emptyToUndefined,
-    z.coerce.number().int().min(3).default(4)
+    z.coerce.number().int().min(3).default(3)
   ),
 
   // NextAuth secret (required for JWT signing)

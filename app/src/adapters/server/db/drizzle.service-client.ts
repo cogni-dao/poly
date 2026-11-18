@@ -14,7 +14,11 @@
  */
 
 import type { Database } from "@cogni/db-client";
-import { createServiceDbClient } from "@cogni/db-client/service";
+import {
+  createServiceDbClient,
+  DEFAULT_READ_POOL_MAX,
+  DEFAULT_SERVICE_POOL_MAX,
+} from "@cogni/db-client/service";
 
 import { getNodeId } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env";
@@ -32,21 +36,26 @@ let _serviceDb: Database | null = null;
 
 /**
  * Per-pod service_poly budget (bug.5064): the service pool, the read pool and the
- * leader connection all draw from role service_poly (ceiling 8, two pods during
- * blue/green). Env-requested maxes are clamped so a pod never holds more than
- * DB_SERVICE_ROLE_BUDGET (default 4), whatever runtimePoolLimits injects.
+ * leader connection all draw from role service_poly. The operator catalog
+ * `database.<env>.runtimePoolLimits` is the authority: when it injects
+ * DB_SERVICE_POOL_MAX / DB_READ_POOL_MAX they are used exactly. Absent (no injected
+ * limits — candidate-a/preview on the shared tier) the defaults service 1 / read 1 +
+ * leader 1 = 3 apply, bounded by DB_SERVICE_ROLE_BUDGET (default 3, one spare under 4).
  */
 export function resolveServiceRoleBudgetFromEnv(): ServiceRoleBudget {
   const env = serverEnv();
   return resolveServiceRoleBudget({
-    requestedService: env.DB_SERVICE_POOL_MAX,
-    requestedRead: env.DB_READ_POOL_MAX,
+    requestedService: env.DB_SERVICE_POOL_MAX ?? DEFAULT_SERVICE_POOL_MAX,
+    requestedRead: env.DB_READ_POOL_MAX ?? DEFAULT_READ_POOL_MAX,
+    injected:
+      env.DB_SERVICE_POOL_MAX !== undefined ||
+      env.DB_READ_POOL_MAX !== undefined,
     leaderConnections: env.JOB_LEADER_ELECTION_ENABLED ? 1 : 0,
     podBudget: env.DB_SERVICE_ROLE_BUDGET,
   });
 }
 
-/** Configuration receipt (not connection success): requested vs effective pool max. */
+/** Configuration receipt (not connection success): declared/requested vs effective pool max. */
 export function logServicePoolConfigured(
   role: "service" | "service_read",
   requestedMax: number,
@@ -62,6 +71,7 @@ export function logServicePoolConfigured(
       leaderConnections: budget.leaderConnections,
       podTotal: budget.podTotal,
       podBudget: budget.podBudget,
+      injected: budget.injected,
       clamped: budget.clamped,
       pid: process.pid,
     },
@@ -72,13 +82,17 @@ export function logServicePoolConfigured(
 function createServiceDb(): Database {
   if (!_serviceDb) {
     const env = serverEnv();
-    // Pool budget: DB_SERVICE_POOL_MAX (default 2), clamped to the per-pod service_poly
-    // budget. Backend math: packages/db-client/src/build-client.ts.
+    // Pool budget: declared DB_SERVICE_POOL_MAX when injected, else default 1.
+    // Backend math: packages/db-client/src/build-client.ts.
     const budget = resolveServiceRoleBudgetFromEnv();
     _serviceDb = createServiceDbClient(env.DATABASE_SERVICE_URL, {
       max: budget.serviceMax,
     });
-    logServicePoolConfigured("service", env.DB_SERVICE_POOL_MAX, budget);
+    logServicePoolConfigured(
+      "service",
+      env.DB_SERVICE_POOL_MAX ?? DEFAULT_SERVICE_POOL_MAX,
+      budget
+    );
   }
   return _serviceDb;
 }

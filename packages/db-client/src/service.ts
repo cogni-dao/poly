@@ -20,17 +20,16 @@ import { type BuildClientOptions, buildClient } from "./build-client";
 export type { BuildClientOptions };
 
 /**
- * Default `max` for the service (jobs/writers) pool. service_poly's ceiling is 8
- * and blue/green runs two pods at once, so ONE pod holds at most 4 backends on the
- * role: service 2 + read 1 + leader 1 (bug.5064). Mirrors the env default
- * (`DB_SERVICE_POOL_MAX`) so package and runtime defaults agree; the app clamps
- * env-injected values to the per-pod budget (service-role-budget.ts).
+ * Default `max` for the service (jobs/writers) pool when the operator injects no
+ * `runtimePoolLimits`. The shared tier gives the service role 4 connections
+ * (`shared-default-v1`); service 1 + read 1 + leader 1 = 3 leaves one spare
+ * (bug.5064). Injected `DB_SERVICE_POOL_MAX` is the authority and is used exactly.
  */
-export const DEFAULT_SERVICE_POOL_MAX = 2;
+export const DEFAULT_SERVICE_POOL_MAX = 1;
 
 /**
- * Default `max` for the service READ pool (read-only dashboard/research traffic).
- * Part of the same per-pod service_poly budget (2 + 1 + leader 1 = 4, bug.5064).
+ * Default `max` for the service READ pool (read-only dashboard/research traffic) when no
+ * `runtimePoolLimits` are injected. Part of the same 1 + 1 + leader 1 = 3 budget.
  */
 export const DEFAULT_READ_POOL_MAX = 1;
 
@@ -41,7 +40,7 @@ export const DEFAULT_READ_POOL_MAX = 1;
  * Must NOT be used in the Next.js web runtime (enforced by dependency-cruiser).
  *
  * @param options - Pool tuning; `max` is env-derived at the app layer
- *   (`DB_SERVICE_POOL_MAX`, default 2). See build-client.ts header for backend math.
+ *   (`DB_SERVICE_POOL_MAX` when injected, default 1). See build-client.ts header for backend math.
  */
 export function createServiceDbClient(
   connectionString: string,

@@ -5,7 +5,7 @@
  * Module: `@tests/unit/adapters/db/pool-config`
  * Purpose: Verify the conservative app default preserves explicit runtime overrides.
  * Scope: Lazy client binding and nonsecret configuration evidence.
- * Invariants: App pool is not clamped; service/read defaults fit the per-pod service_poly budget (bug.5064).
+ * Invariants: App pool is not clamped; injected service/read limits are used exactly, absent ones default to 1/1 (bug.5064).
  * Side-effects: none (mocked factories/logger).
  * @internal
  */
@@ -50,19 +50,18 @@ describe("app runtime pool configuration", () => {
     );
   });
 
-  it("defaults pools to the per-pod service_poly budget (1/2/1 + leader 1) and preserves injected settings", () => {
+  it("leaves service/read unset (no injected limits), defaults the pod budget to 3, and carries injected values verbatim", () => {
     const schema = serverSchema.pick({
       DB_POOL_MAX: true,
       DB_SERVICE_POOL_MAX: true,
       DB_READ_POOL_MAX: true,
       DB_SERVICE_ROLE_BUDGET: true,
     });
-    // bug.5064: service 2 + read 1 + leader 1 = 4 per pod; two blue/green pods = 8 = role ceiling.
+    // bug.5064: absent service/read == "no runtimePoolLimits"; the resolver then uses
+    // service 1 + read 1 + leader 1 = 3 (one spare under the shared-tier role of 4).
     expect(schema.parse({})).toEqual({
       DB_POOL_MAX: 1,
-      DB_SERVICE_POOL_MAX: 2,
-      DB_READ_POOL_MAX: 1,
-      DB_SERVICE_ROLE_BUDGET: 4,
+      DB_SERVICE_ROLE_BUDGET: 3,
     });
     expect(
       schema.parse({
@@ -71,13 +70,7 @@ describe("app runtime pool configuration", () => {
         DB_READ_POOL_MAX: "",
         DB_SERVICE_ROLE_BUDGET: "",
       })
-    ).toEqual({
-      DB_POOL_MAX: 1,
-      DB_SERVICE_POOL_MAX: 2,
-      DB_READ_POOL_MAX: 1,
-      DB_SERVICE_ROLE_BUDGET: 4,
-    });
-    // Injected requests stay parseable (the clamp happens at pool construction).
+    ).toEqual({ DB_POOL_MAX: 1, DB_SERVICE_ROLE_BUDGET: 3 });
     expect(
       schema.parse({
         DB_POOL_MAX: "3",
