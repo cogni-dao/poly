@@ -252,7 +252,7 @@ export function buildMirrorTargetConfig(params: {
   positionGapBudgetGroup?: PositionGapBudgetGroup;
   /**
    * story.5028 — optional entry-price floor (0–1) for `target_percentile_scaled`.
-   * Omitted ⇒ off. Not yet persisted per target; callers pass it explicitly.
+   * Omitted ⇒ off. Persisted per target (`min_entry_price`); container passes it when non-null.
    */
   minEntryPrice?: number;
 }): MirrorTargetConfig {

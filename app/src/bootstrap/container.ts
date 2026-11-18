@@ -1229,6 +1229,9 @@ function createContainer(): Container {
 							mirrorCapitalBudgetUsdc:
 								enumeratedTarget.mirrorCapitalBudgetUsdc,
 							positionGapBudgetGroup: enumeratedTarget.positionGapBudgetGroup,
+							...(enumeratedTarget.minEntryPrice !== null
+								? { minEntryPrice: enumeratedTarget.minEntryPrice }
+								: {}),
 						});
 						const source = createPolymarketChainActivitySource({
 							publicClient: chainPublicClient,

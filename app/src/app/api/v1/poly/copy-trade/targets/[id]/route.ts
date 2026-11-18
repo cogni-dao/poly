@@ -159,6 +159,12 @@ export const PATCH = wrapRouteHandlerWithLogging<{
           ? null
           : parsed.data.mirror_capital_budget_usdc.toFixed(2);
     }
+    if (parsed.data.min_entry_price !== undefined) {
+      updateSet.minEntryPrice =
+        parsed.data.min_entry_price === null
+          ? null
+          : parsed.data.min_entry_price.toFixed(4);
+    }
 
     const updateResult = await withTenantScope(appDb, actorId, async (tx) => {
       const currentRows = await tx
@@ -209,6 +215,7 @@ export const PATCH = wrapRouteHandlerWithLogging<{
             polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
           mirror_capital_budget_usdc:
             polyCopyTradeTargets.mirrorCapitalBudgetUsdc,
+          min_entry_price: polyCopyTradeTargets.minEntryPrice,
           mirror_activated_at: polyCopyTradeTargets.mirrorActivatedAt,
         });
 
@@ -273,6 +280,8 @@ export const PATCH = wrapRouteHandlerWithLogging<{
       row.mirror_capital_budget_usdc === null
         ? null
         : Number(row.mirror_capital_budget_usdc);
+    const minEntryPrice =
+      row.min_entry_price === null ? null : Number(row.min_entry_price);
 
     ctx.log.info(
       {
@@ -283,6 +292,7 @@ export const PATCH = wrapRouteHandlerWithLogging<{
         target_range_max_usdc: targetRangeMaxUsdc,
         mirror_max_alloc_per_condition_usdc: mirrorMaxAllocPerConditionUsdc,
         mirror_capital_budget_usdc: mirrorCapitalBudgetUsdc,
+        min_entry_price: minEntryPrice,
       },
       "poly.copy_trade.targets.update_success",
     );
@@ -302,6 +312,7 @@ export const PATCH = wrapRouteHandlerWithLogging<{
           target_range_max_usdc: targetRangeMaxUsdc,
           mirror_max_alloc_per_condition_usdc: mirrorMaxAllocPerConditionUsdc,
           mirror_capital_budget_usdc: mirrorCapitalBudgetUsdc,
+          min_entry_price: minEntryPrice,
           mirror_activated_at: row.mirror_activated_at.toISOString(),
           source: "db",
         },

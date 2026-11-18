@@ -99,6 +99,12 @@ export const polyCopyTradeTargets = pgTable(
       precision: 12,
       scale: 2,
     }),
+    /**
+     * story.5028 — optional entry-price floor (0..1 exclusive) for
+     * `target_percentile_scaled` sizing. NULL = off (legacy behavior). A BUY whose
+     * target fill price is below this skips `below_entry_price_floor`.
+     */
+    minEntryPrice: numeric("min_entry_price", { precision: 5, scale: 4 }),
     /** task.5014 — cold-start fence; defines "first post-activation fill" for the baseline snapshot in `poly_copy_target_condition_baseline`. */
     mirrorActivatedAt: timestamp("mirror_activated_at", { withTimezone: true })
       .notNull()
@@ -137,6 +143,10 @@ export const polyCopyTradeTargets = pgTable(
     check(
       "poly_copy_trade_targets_capital_budget_positive",
       sql`${table.mirrorCapitalBudgetUsdc} IS NULL OR ${table.mirrorCapitalBudgetUsdc} > 0`
+    ),
+    check(
+      "poly_copy_trade_targets_min_entry_price_range",
+      sql`${table.minEntryPrice} IS NULL OR (${table.minEntryPrice} > 0 AND ${table.minEntryPrice} < 1)`
     ),
     // One active row per (tenant, wallet). Soft-deleted rows allowed to coexist
     // so a previously-disabled wallet can be re-added without violating uniqueness.
