@@ -13,8 +13,8 @@
  * Notes — backend math (task.5014, bug.5045):
  *   Each app pod holds THREE postgres-js pools, each with its own `max`:
  *     1. app pool        (app_user, RLS)          — `DB_POOL_MAX`,         default 1, application_name `cogni_template_app`
- *     2. service pool    (app_service, BYPASSRLS) — `DB_SERVICE_POOL_MAX`, default 4, application_name `cogni_service` (background jobs + writers)
- *     3. service-read pool (app_service, BYPASSRLS) — `DB_READ_POOL_MAX`,  default 2,  application_name `cogni_service_read` (dashboard/research reads)
+ *     2. service pool    (app_service, BYPASSRLS) — `DB_SERVICE_POOL_MAX`, default 2, application_name `cogni_service` (background jobs + writers)
+ *     3. service-read pool (app_service, BYPASSRLS) — `DB_READ_POOL_MAX`,  default 1,  application_name `cogni_service_read` (dashboard/research reads)
  *   Plus ONE dedicated leader-election connection (task.5016) outside these
  *   pools: a `max: 1` postgres-js client pinned via `reserve()` holding the
  *   session-level job-runner advisory lock, application_name
@@ -22,15 +22,16 @@
  *   absent when JOB_LEADER_ELECTION_ENABLED=false).
  *   The real budget is per Postgres ROLE, not just `max_connections`: the app
  *   pool is role app_poly; the service pool + read pool + leader all share role
- *   service_poly. Worst-case backends per pod = DB_POOL_MAX + DB_SERVICE_POOL_MAX
- *   + DB_READ_POOL_MAX + 1 (defaults: 1 + 4 + 2 + 1 = 8), of which app_poly = 1
- *   and service_poly = 7. The dedicated budget profile ceilings are app 4 /
- *   service 8, so defaults fit as app 1/4 and service 7/8 — the budget production
- *   runs. Lanes without runtimePoolLimits (candidate-a, preview) inherit these
- *   defaults as their APPLIED budget; the old service 10 + read 5 exceeded the
- *   service_poly ceiling 8 and caused SQLSTATE 53300 (bug.5045). Tune per-env via
- *   the three env vars in `app/src/shared/env/server-env.ts` — this package never
- *   reads process.env.
+ *   service_poly, whose ceiling is 8. Blue/green runs TWO pods at once (the old
+ *   pod keeps its pooled sessions and its leader connection until it retires), so
+ *   ONE pod may hold at most 4 service_poly backends: service + read + leader
+ *   <= DB_SERVICE_ROLE_BUDGET (default 4 = 2 + 1 + 1). The app clamps env-injected
+ *   maxes to that budget (app/src/adapters/server/db/service-role-budget.ts), so
+ *   runtimePoolLimits cannot push a pod over it. The former 4 + 2 + 1 = 7 per pod
+ *   (14 across two pods) caused SQLSTATE 53300 on research/PnL reads (bug.5064);
+ *   service 10 + read 5 did the same earlier (bug.5045). Do NOT restore them.
+ *   Tune per-env via the env vars in `app/src/shared/env/server-env.ts` — this
+ *   package never reads process.env.
  * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md
  * @internal
  */

@@ -20,19 +20,19 @@ import { type BuildClientOptions, buildClient } from "./build-client";
 export type { BuildClientOptions };
 
 /**
- * Default `max` for the service (jobs/writers) pool. With the read + leader pools
- * this fits the service_poly role ceiling 8 (service 4 + read 2 + leader 1 = 7/8)
- * of the dedicated budget profile (bug.5045). Mirrors the applied env default
- * (`DB_SERVICE_POOL_MAX`) so package and runtime defaults agree.
+ * Default `max` for the service (jobs/writers) pool. service_poly's ceiling is 8
+ * and blue/green runs two pods at once, so ONE pod holds at most 4 backends on the
+ * role: service 2 + read 1 + leader 1 (bug.5064). Mirrors the env default
+ * (`DB_SERVICE_POOL_MAX`) so package and runtime defaults agree; the app clamps
+ * env-injected values to the per-pod budget (service-role-budget.ts).
  */
-export const DEFAULT_SERVICE_POOL_MAX = 4;
+export const DEFAULT_SERVICE_POOL_MAX = 2;
 
 /**
- * Default `max` for the service READ pool (smaller: read-only dashboard traffic).
- * Part of the same service_poly budget (service 4 + read 2 + leader 1 = 7/8) of
- * the dedicated budget profile (bug.5045).
+ * Default `max` for the service READ pool (read-only dashboard/research traffic).
+ * Part of the same per-pod service_poly budget (2 + 1 + leader 1 = 4, bug.5064).
  */
-export const DEFAULT_READ_POOL_MAX = 2;
+export const DEFAULT_READ_POOL_MAX = 1;
 
 /**
  * Creates a Drizzle database client for the `app_service` role (BYPASSRLS).
@@ -41,7 +41,7 @@ export const DEFAULT_READ_POOL_MAX = 2;
  * Must NOT be used in the Next.js web runtime (enforced by dependency-cruiser).
  *
  * @param options - Pool tuning; `max` is env-derived at the app layer
- *   (`DB_SERVICE_POOL_MAX`, default 4). See build-client.ts header for backend math.
+ *   (`DB_SERVICE_POOL_MAX`, default 2). See build-client.ts header for backend math.
  */
 export function createServiceDbClient(
   connectionString: string,
@@ -60,7 +60,7 @@ export function createServiceDbClient(
  * changes for the read path are explicitly out of scope here.
  *
  * @param options - Pool tuning; `max` is env-derived at the app layer
- *   (`DB_READ_POOL_MAX`, default 2). See build-client.ts header for backend math.
+ *   (`DB_READ_POOL_MAX`, default 1). See build-client.ts header for backend math.
  */
 export function createServiceReadDbClient(
   connectionString: string,

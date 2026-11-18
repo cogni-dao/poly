@@ -5,7 +5,7 @@
  * Module: `@tests/unit/adapters/db/pool-config`
  * Purpose: Verify the conservative app default preserves explicit runtime overrides.
  * Scope: Lazy client binding and nonsecret configuration evidence.
- * Invariants: No clamp; pool defaults fit the dedicated role ceilings app 4 / service 8 (bug.5045).
+ * Invariants: App pool is not clamped; service/read defaults fit the per-pod service_poly budget (bug.5064).
  * Side-effects: none (mocked factories/logger).
  * @internal
  */
@@ -50,30 +50,46 @@ describe("app runtime pool configuration", () => {
     );
   });
 
-  it("defaults pools to fit role ceilings (1/4/2) and preserves injected settings", () => {
+  it("defaults pools to the per-pod service_poly budget (1/2/1 + leader 1) and preserves injected settings", () => {
     const schema = serverSchema.pick({
       DB_POOL_MAX: true,
       DB_SERVICE_POOL_MAX: true,
       DB_READ_POOL_MAX: true,
+      DB_SERVICE_ROLE_BUDGET: true,
     });
+    // bug.5064: service 2 + read 1 + leader 1 = 4 per pod; two blue/green pods = 8 = role ceiling.
     expect(schema.parse({})).toEqual({
       DB_POOL_MAX: 1,
-      DB_SERVICE_POOL_MAX: 4,
-      DB_READ_POOL_MAX: 2,
+      DB_SERVICE_POOL_MAX: 2,
+      DB_READ_POOL_MAX: 1,
+      DB_SERVICE_ROLE_BUDGET: 4,
     });
     expect(
       schema.parse({
         DB_POOL_MAX: "",
         DB_SERVICE_POOL_MAX: "",
         DB_READ_POOL_MAX: "",
+        DB_SERVICE_ROLE_BUDGET: "",
       })
-    ).toEqual({ DB_POOL_MAX: 1, DB_SERVICE_POOL_MAX: 4, DB_READ_POOL_MAX: 2 });
+    ).toEqual({
+      DB_POOL_MAX: 1,
+      DB_SERVICE_POOL_MAX: 2,
+      DB_READ_POOL_MAX: 1,
+      DB_SERVICE_ROLE_BUDGET: 4,
+    });
+    // Injected requests stay parseable (the clamp happens at pool construction).
     expect(
       schema.parse({
         DB_POOL_MAX: "3",
         DB_SERVICE_POOL_MAX: "4",
         DB_READ_POOL_MAX: "2",
       })
-    ).toEqual({ DB_POOL_MAX: 3, DB_SERVICE_POOL_MAX: 4, DB_READ_POOL_MAX: 2 });
+    ).toMatchObject({
+      DB_POOL_MAX: 3,
+      DB_SERVICE_POOL_MAX: 4,
+      DB_READ_POOL_MAX: 2,
+    });
+    // The per-pod budget cannot be set below leader + one connection per pool.
+    expect(() => schema.parse({ DB_SERVICE_ROLE_BUDGET: "2" })).toThrow();
   });
 });

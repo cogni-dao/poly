@@ -16,20 +16,69 @@
 import type { Database } from "@cogni/db-client";
 import { createServiceDbClient } from "@cogni/db-client/service";
 
+import { getNodeId } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env";
+import { EVENT_NAMES, makeLogger } from "@/shared/observability";
+
+import {
+  resolveServiceRoleBudget,
+  type ServiceRoleBudget,
+} from "./service-role-budget";
 
 // Lazy service-role connection (BYPASSRLS) for auth, workers, and bootstrap.
 // DATABASE_SERVICE_URL is required in all environments (no fallback).
 // Read-path service queries use the separate pool in drizzle.service-read-client.ts.
 let _serviceDb: Database | null = null;
 
+/**
+ * Per-pod service_poly budget (bug.5064): the service pool, the read pool and the
+ * leader connection all draw from role service_poly (ceiling 8, two pods during
+ * blue/green). Env-requested maxes are clamped so a pod never holds more than
+ * DB_SERVICE_ROLE_BUDGET (default 4), whatever runtimePoolLimits injects.
+ */
+export function resolveServiceRoleBudgetFromEnv(): ServiceRoleBudget {
+  const env = serverEnv();
+  return resolveServiceRoleBudget({
+    requestedService: env.DB_SERVICE_POOL_MAX,
+    requestedRead: env.DB_READ_POOL_MAX,
+    leaderConnections: env.JOB_LEADER_ELECTION_ENABLED ? 1 : 0,
+    podBudget: env.DB_SERVICE_ROLE_BUDGET,
+  });
+}
+
+/** Configuration receipt (not connection success): requested vs effective pool max. */
+export function logServicePoolConfigured(
+  role: "service" | "service_read",
+  requestedMax: number,
+  budget: ServiceRoleBudget
+): void {
+  makeLogger({ nodeId: getNodeId() }).info(
+    {
+      event: EVENT_NAMES.DB_POOL_CONFIGURED,
+      role,
+      pgRole: "service_poly",
+      requestedMax,
+      max: role === "service" ? budget.serviceMax : budget.readMax,
+      leaderConnections: budget.leaderConnections,
+      podTotal: budget.podTotal,
+      podBudget: budget.podBudget,
+      clamped: budget.clamped,
+      pid: process.pid,
+    },
+    EVENT_NAMES.DB_POOL_CONFIGURED
+  );
+}
+
 function createServiceDb(): Database {
   if (!_serviceDb) {
     const env = serverEnv();
-    // Pool budget: DB_SERVICE_POOL_MAX (default 4). Backend math: packages/db-client/src/build-client.ts.
+    // Pool budget: DB_SERVICE_POOL_MAX (default 2), clamped to the per-pod service_poly
+    // budget. Backend math: packages/db-client/src/build-client.ts.
+    const budget = resolveServiceRoleBudgetFromEnv();
     _serviceDb = createServiceDbClient(env.DATABASE_SERVICE_URL, {
-      max: env.DB_SERVICE_POOL_MAX,
+      max: budget.serviceMax,
     });
+    logServicePoolConfigured("service", env.DB_SERVICE_POOL_MAX, budget);
   }
   return _serviceDb;
 }
