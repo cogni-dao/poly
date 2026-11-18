@@ -25,123 +25,59 @@ env:
   POSTHOG_API_KEY: phc_test_key_for_ci
   POSTHOG_HOST: http://localhost:18000
 
+# story.0052: the CI logic is one composite action in cogni-dao/node-template, pinned below by full
+# commit SHA; this file keeps only the node's triggers, env and thin lane callers. The job names ARE
+# the required status contexts (.cogni/repo-policy.json): a job that runs the action keeps its bare
+# name, which a reusable workflow call would not (it reports `<caller> / <job>`).
 jobs:
   static:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
         with:
+          # The classifier diffs a PR against its base, so it needs the merge base history.
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@c5ba7f7862a0f64c1b1a05fbac13e0b8e86ba08c # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: cogni-dao/node-template/.github/actions/node-ci@904e63d569ebb864f16dffd4b57fd6c406d55e00
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Install pinned Foundry
-        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1
-        with:
-          version: v1.7.1
-
-      - name: Verify publish-condition artifact and behavior
-        run: pnpm --filter @cogni/cogni-contracts check:solidity
-
-      - name: Build workspace packages
-        run: pnpm packages:build
-
-      - name: Type check
-        run: pnpm typecheck
-
-      - name: Workflow contract check
-        run: pnpm check:workflow
-
-      # bug.5254: the same schema and sovereign policy the deploy verb runs (passes 1 and 2),
-      # plus the retired `secret_refs` refusal. Pass 3 (reserved, inherited and off-cluster keys)
-      # is operator data and runs only at deploy.
-      - name: Node declarations check
-        run: pnpm check:declarations
-
-      # story.0046: node Markdown lives in the hub. Fails on tracked Markdown outside
-      # the bootstrap set and on any repo docs/ or work/ Markdown path reference.
-      - name: Markdown references check
-        run: pnpm check:markdown-refs
+          lane: static
+          node_version: ${{ env.NODE_VERSION }}
 
       - name: Reject retired operations bearer tokens
         run: bash scripts/ci/tests/no-legacy-ops-token.test.sh
 
   unit:
     runs-on: ubuntu-latest
-    # No `needs: static`: unit does its own install + packages:build and consumes
-    # no artifact from static, so gating on it only serialized the fast gate onto
-    # the critical path for a fail-fast the merge queue re-checks anyway. Running
-    # in parallel with static drops the ci.yaml critical path to max(job).
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
-
-      - uses: pnpm/action-setup@c5ba7f7862a0f64c1b1a05fbac13e0b8e86ba08c # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
+          # The classifier diffs a PR against its base, so it needs the merge base history.
+          fetch-depth: 0
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build workspace packages
-        run: pnpm packages:build
-
-      - name: Unit + contract coverage tests
-        run: pnpm test:ci
+      - uses: cogni-dao/node-template/.github/actions/node-ci@904e63d569ebb864f16dffd4b57fd6c406d55e00
+        with:
+          lane: unit
+          node_version: ${{ env.NODE_VERSION }}
 
   component:
-    # Required by .cogni/repo-policy.json on both pull_request and merge_group.
-    # A required job must never disappear from a merge-queue candidate.
-    runs-on: ubuntu-latest # GitHub-hosted runners provide Docker for testcontainers
-    # No `needs: static` — component does its own install + build and shares no
-    # artifact with static; running in parallel keeps it off the critical path.
+    runs-on: ubuntu-latest
+    env:
+      # Route Docker Hub image substitution through Google's trusted mirror
+      # to avoid anonymous Hub quota failures on merge-queue runners.
+      TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
-
-      - uses: pnpm/action-setup@c5ba7f7862a0f64c1b1a05fbac13e0b8e86ba08c # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build workspace packages
-        run: pnpm packages:build
-
-      # The repo/ripgrep-adapter component test shells out to `rg`; its adapter
-      # ships in the scaffold, so the binary must be present (mirrors operator).
-      - name: Install ripgrep
-        uses: taiki-e/install-action@735e5933943122c5ac182670a935f54a949265c1 # v2
-        with:
-          tool: ripgrep
-
-      - name: Verify ripgrep
-        run: rg --version
-
-      - name: Component tests (testcontainers)
-        env:
-          # Route Docker Hub image substitution through Google's trusted mirror
-          # to avoid anonymous Hub quota failures on merge-queue runners.
-          TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/
-        run: pnpm test:component
+          # The classifier diffs a PR against its base, so it needs the merge base history.
+          fetch-depth: 0
 
       - name: Preload Doltgres 0.57.3 from trusted mirror
         run: |
           docker pull mirror.gcr.io/dolthub/doltgresql:0.57.3
           docker tag mirror.gcr.io/dolthub/doltgresql:0.57.3 dolthub/doltgresql:0.57.3
 
-      - name: Doltgres 0.57.3 work-item acceptance
-        run: pnpm --filter @cogni/node-template-app test:doltgres
+      - uses: cogni-dao/node-template/.github/actions/node-ci@904e63d569ebb864f16dffd4b57fd6c406d55e00
+        with:
+          lane: component
+          node_version: ${{ env.NODE_VERSION }}
+          doltgres_command: pnpm --filter @cogni/node-template-app test:doltgres
