@@ -5,7 +5,7 @@
  * Module: `@tests/unit/packages/db-client/pool-options`
  * Purpose: Verifies pool-size options and application_name wiring of the db-client factories (task.5014).
  * Scope: Constructs clients against a dummy DSN and inspects postgres-js `$client.options`. Does NOT open connections (postgres-js pools are lazy until first query).
- * Invariants: No live DB required; every client is `end()`ed; package defaults 1/4/2 for app/service/service-read (bug.5045 — fit the dedicated role ceilings app 4 / service 8).
+ * Invariants: No live DB required; every client is `end()`ed; package defaults 1/2/1 for app/service/service-read (bug.5064 — one pod holds <=4 service_poly backends with the leader, so two blue/green pods fit the ceiling 8).
  * Side-effects: none (no sockets opened)
  * Links: packages/db-client/src/build-client.ts, packages/db-client/src/service.ts
  * @public
@@ -40,17 +40,17 @@ describe("db-client pool options (task.5014)", () => {
     );
   });
 
-  it("service pool defaults to max 4 (DEFAULT_SERVICE_POOL_MAX) with application_name cogni_service", () => {
+  it("service pool defaults to max 2 (DEFAULT_SERVICE_POOL_MAX) with application_name cogni_service", () => {
     const db = track(createServiceDbClient(DSN));
-    expect(db.$client.options.max).toBe(4);
+    expect(db.$client.options.max).toBe(2);
     expect(db.$client.options.connection.application_name).toBe(
       "cogni_service"
     );
   });
 
-  it("service READ pool defaults to max 2 (DEFAULT_READ_POOL_MAX) with application_name cogni_service_read", () => {
+  it("service READ pool defaults to max 1 (DEFAULT_READ_POOL_MAX) with application_name cogni_service_read", () => {
     const db = track(createServiceReadDbClient(DSN));
-    expect(db.$client.options.max).toBe(2);
+    expect(db.$client.options.max).toBe(1);
     expect(db.$client.options.connection.application_name).toBe(
       "cogni_service_read"
     );
