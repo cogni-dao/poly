@@ -3,7 +3,7 @@
 
 /**
  * Module: `@bootstrap/capabilities/goal-metrics`
- * Purpose: Node composition of goal metrics and their agent tools. Calculators, budgets, the source allow-list and tool contracts are published (@cogni-dao/metrics/knowledge, @cogni-dao/ai-tools); this node binds its own id.
+ * Purpose: Node composition of goal metrics and their agent tools. Calculators, budgets, the source allow-list and tool contracts are published (@cogni-dao/metrics/knowledge, @cogni-dao/ai-tools); this node binds its own id and registers its own calculators (`poly.wallet-pnl@1`).
  * Scope: Composition only; no measurement logic lives here.
  * Invariants: Observations are scoped to this node's id and deploy environment; the HTTP route and core__goal_progress share one goal-progress reader.
  * Side-effects: none (factories only)
@@ -19,6 +19,7 @@ import type { GoalsProgress, MetricService } from "@cogni-dao/metrics";
 import { createMetricTools } from "@cogni/shared-ai-tools";
 import type { Sql } from "postgres";
 import { getNodeId } from "@/shared/config";
+import { createWalletPnlCalculator } from "./wallet-pnl-calculator";
 
 export { createGoalProgressReader, createGoalSource };
 
@@ -28,7 +29,13 @@ export function createGoalMetrics(deps: {
   environment: string;
   log(event: object): void;
 }) {
-  return createPublishedGoalMetrics({ ...deps, node: getNodeId() });
+  return createPublishedGoalMetrics({
+    ...deps,
+    node: getNodeId(),
+    // Node-owned families only (never a reserved package family). Each reads a
+    // source this node owns or public data; none reads private connection data.
+    nodeCalculators: [createWalletPnlCalculator()],
+  });
 }
 
 /** Bind the published core__goal_progress and core__metric_* tools to this node's reader. */
