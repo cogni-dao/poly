@@ -9,6 +9,8 @@
  *   - SYSTEM_TENANT_STARTUP_CHECK: an unprovisioned pod crash-loops instead of serving; `/readyz` no longer hard-gates on this DB check.
  *   - Bounded: a hung connect fails the pod after BOOT_SYSTEM_TENANT_TIMEOUT_MS rather than hanging boot.
  *   - The failure is never swallowed: it is logged critical, then the process exits 1.
+ *   - CAPACITY_IS_NOT_UNPROVISIONED (bug.5064): a DB connection-capacity failure (53300) is
+ *     logged as a warning and boot continues — only a real missing tenant / other error exits.
  *   - Tests are inert (APP_ENV=test / VITEST).
  * Side-effects: IO (one database query), process exit on failure.
  * Links: bootstrap/healthchecks.ts, bootstrap/container.ts, app/(infra)/readyz/readyz-probes.ts
@@ -17,6 +19,8 @@
 
 import type { ServiceAccountService } from "@/ports";
 import { makeLogger } from "@/shared/observability";
+import { isDbCapacityError } from "@/shared/observability/db-capacity-error";
+import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 import { verifySystemTenant } from "./healthchecks";
 
 /** Upper bound on the boot-time tenant query so a wedged connect cannot hang boot. */
@@ -69,6 +73,25 @@ export function startSystemTenantAssertionOnBoot(
     serviceAccountService,
     options.timeoutMs
   ).catch((error: unknown) => {
+    // bug.5064: a saturated service role (SQLSTATE 53300) says nothing about
+    // provisioning — it is transient capacity shared across lanes. Exiting here
+    // crash-loops the pod so /version never answers. Serve instead; /readyz?deep=1
+    // keeps reporting postgres failed until a connection is available.
+    if (isDbCapacityError(error)) {
+      try {
+        makeLogger({ component: "startup-assertions" }).warn(
+          {
+            event: "startup.system_tenant.deferred_db_capacity",
+            severity: "warning",
+            ...safeErrorDimensions(error),
+          },
+          "system tenant check skipped: database connection capacity exhausted; serving"
+        );
+      } catch {
+        // Diagnostics must never block boot.
+      }
+      return;
+    }
     try {
       makeLogger({ component: "startup-assertions" }).error(
         { event: "startup.system_tenant.failed", severity: "critical", errorCode: "SYSTEM_TENANT_QUALIFICATION_FAILED" },

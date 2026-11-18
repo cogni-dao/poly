@@ -18,14 +18,10 @@
  */
 
 import { EVENT_NAMES, makeLogger } from "@/shared/observability";
+import { isDbCapacityError } from "@/shared/observability/db-capacity-error";
 import { safeErrorDimensions } from "@/shared/observability/safe-error-dimensions";
 
-/** SQLSTATE 53300 too_many_connections; 53000/53400 are the sibling resource limits. */
-const DB_CAPACITY_SQLSTATES: ReadonlySet<string> = new Set([
-  "53300",
-  "53000",
-  "53400",
-]);
+export { isDbCapacityError };
 
 export interface SliceFailureLogger {
   warn: (fields: Record<string, unknown>, message: string) => void;
@@ -44,16 +40,6 @@ export function sliceFailureFields(
     // Drizzle wraps the driver error as `cause`; postgres-js errors carry `code` directly.
     cause_code: dims.cause_code ?? dims.err_code,
   };
-}
-
-/** True when the failure is Postgres refusing a connection (role/db/server limit). */
-export function isDbCapacityError(err: unknown): boolean {
-  const dims = safeErrorDimensions(err);
-  const code = dims.cause_code ?? dims.err_code;
-  if (code !== undefined && DB_CAPACITY_SQLSTATES.has(code)) return true;
-  return /too many connections/i.test(
-    `${dims.err ?? ""} ${dims.cause_message ?? ""}`
-  );
 }
 
 /** Emit the one structured warn for a swallowed slice failure. */
