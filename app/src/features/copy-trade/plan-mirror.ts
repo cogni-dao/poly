@@ -17,8 +17,9 @@
  *   - NEVER_PAY_ABOVE_TARGET_VWAP (bug.5048, bug.5008): when `config.vwap_tolerance` is set, `applyVwapGate` skips `vwap_floor_breach` if `fill.price > target_vwap_for_fill_token + tolerance`. Asymmetric upward gate. A configured tolerance with missing/invalid target VWAP fails closed for every policy; position_gap BUYs also fail closed with no tolerance.
  *   - BUY_GATES_FAIL_CLOSED_WITHOUT_TARGET_POSITION (bug.5053): a BUY whose config relies on target-position facts (`planRequiresTargetPosition`) and has no `state.target_position` skips `target_position_unavailable` instead of running with the dominance/VWAP gates silently off. SELL/close paths are unaffected.
  *   - MARKETABLE_BUY_WITHIN_BOUNDS (bug.5057): when `config.buy_slippage_allowance` is set, a BUY limit is `ceilTick(fill + allowance)` capped at `floorTick(target VWAP + vwap_tolerance)` and 0.99, never below the target fill price. Sizing is recomputed at that limit so per-condition / cumulative / share-floor caps hold; spend never exceeds the legacy cap and shares shrink as price rises. Unset / no tick size / SELL / fill-exact / position-gap keep the target fill price.
+ *   - ENTRY_PRICE_FLOOR_OPT_IN (story.5028): `target_percentile_scaled` sizing may carry `min_entry_price`; a BUY whose tick-normalized target fill price is below it skips `below_entry_price_floor` (every branch: entry, layer, hedge). Undefined ⇒ gate off, behavior identical to before. SELLs are never gated.
  *   - HEDGE_PREDICATE_NOOPS_ON_UNKNOWN_OPPOSITE: hedge branch fires only when `state.position.opposite_token_id` is known from prior aggregation. No inference from condition structure alone.
- * Skip-reason precedence (first match wins): already_placed → market_past_end_date → price_outside_clob_bounds → target_position_unavailable → target_dominant_other_side → vwap_floor_breach → sizing-reason skip (below_target_percentile / below_market_min / position_cap_reached / target_position_below_threshold / followup_position_too_small / followup_not_needed) → place.
+ * Skip-reason precedence (first match wins): already_placed → market_past_end_date → price_outside_clob_bounds → below_entry_price_floor → target_position_unavailable → target_dominant_other_side → vwap_floor_breach → sizing-reason skip (below_target_percentile / below_market_min / position_cap_reached / target_position_below_threshold / followup_position_too_small / followup_not_needed) → place.
  * Side-effects: none
  * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, work/items/bug.5048, work/items/task.0318
  * @public
@@ -356,6 +357,7 @@ function applyMarketFloors(
  *   1. already placed (PK+cid)        → skip/already_placed
  *   2. market past Gamma `end_date`   → skip/market_past_end_date  (bug.5043)
  *   3. price outside CLOB tick grid   → skip/price_outside_clob_bounds
+ *   3a. BUY below `sizing.min_entry_price` (scaled policy, opt-in) → skip/below_entry_price_floor (story.5028)
  *   3b. BUY needing target facts, no target_position → skip/target_position_unavailable (bug.5053)
  *   4. `decideMirrorBranch`           → skip/target_dominant_other_side (bug.5048)
  *                                       OR place-branch selection (new_entry / layer / hedge)
@@ -425,6 +427,23 @@ export function planMirrorFromFill(input: PlanMirrorInput): MirrorPlan {
     return {
       kind: "skip",
       reason: "price_outside_clob_bounds",
+      position_branch: "new_entry",
+    };
+  }
+
+  // story.5028 — entry-price floor. BUYs only; opt-in via the scaled sizing
+  // policy's `min_entry_price` (undefined ⇒ off, legacy behavior). Compared
+  // against the tick-normalized target fill price; the marketable limit is
+  // never below it, so a fill at/above the floor can never place below it.
+  if (
+    fill.side === "BUY" &&
+    config.sizing.kind === "target_percentile_scaled" &&
+    config.sizing.min_entry_price !== undefined &&
+    normalizedPrice.price + 1e-9 < config.sizing.min_entry_price
+  ) {
+    return {
+      kind: "skip",
+      reason: "below_entry_price_floor",
       position_branch: "new_entry",
     };
   }

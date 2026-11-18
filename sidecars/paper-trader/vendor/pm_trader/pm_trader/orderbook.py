@@ -7,7 +7,7 @@ trade simulation.
 
 from __future__ import annotations
 
-from pm_trader.models import Fill, FillResult, OrderBook
+from pm_trader.models import FeeSchedule, Fill, FillResult, OrderBook
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +34,38 @@ def calculate_fee(fee_rate_bps: int, price: float, size: float) -> float:
         fee = max(fee, 0.0001)
 
     return fee
+
+
+FEE_DECIMALS = 5  # Polymarket rounds each taker fee to 5 dp (min 0.00001 USDC)
+
+
+def calculate_taker_fee(
+    schedule: FeeSchedule | None, price: float, shares: float
+) -> float:
+    """Return the Polymarket taker fee in USDC for one match.
+
+    Cogni-poly local patch (story.5028). Formula (docs.polymarket.com/trading/fees)::
+
+        fee = C * rate * (p * (1 - p)) ** exponent      # rounded to 5 dp
+
+    with ``C`` = shares matched, ``p`` = match price, and ``rate`` / ``exponent``
+    taken from the market's CLOB ``fd {r, e}`` schedule. Takers only; ``None``
+    schedule means the market is fee-free. Symmetric around p = 0.50.
+    """
+    if schedule is None or schedule.rate <= 0 or shares <= 0:
+        return 0.0
+    if not 0.0 < price < 1.0:
+        return 0.0
+    fee = shares * schedule.rate * (price * (1.0 - price)) ** schedule.exponent
+    return round(fee, FEE_DECIMALS)
+
+
+def _fills_taker_fee(schedule: FeeSchedule | None, fills: list[Fill]) -> float:
+    """Sum the per-match taker fee across every book level consumed."""
+    return round(
+        sum(calculate_taker_fee(schedule, f.price, f.shares) for f in fills),
+        FEE_DECIMALS,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +107,7 @@ def simulate_buy_fill(
     fee_rate_bps: int,
     order_type: str = "fok",
     max_price: float | None = None,
+    fee_schedule: FeeSchedule | None = None,
 ) -> FillResult:
     """Simulate buying shares by spending *amount_usd*.
 
@@ -88,7 +121,8 @@ def simulate_buy_fill(
     amount_usd:
         Total USD to spend on shares (before fees).
     fee_rate_bps:
-        Market fee rate in basis points.
+        LEGACY bps-based fee (``min(p, 1-p) * bps``). Ignored when
+        ``fee_schedule`` is given.
     order_type:
         ``"fok"`` (fill-or-kill: all or nothing) or
         ``"fak"`` (fill-and-kill: partial fills allowed).
@@ -153,7 +187,11 @@ def simulate_buy_fill(
         return _empty_fill_result()
 
     avg_price = total_cost / total_shares if total_shares > 0 else 0.0
-    fee = calculate_fee(fee_rate_bps, avg_price, total_cost)
+    fee = (
+        _fills_taker_fee(fee_schedule, fills)
+        if fee_schedule is not None
+        else calculate_fee(fee_rate_bps, avg_price, total_cost)
+    )
 
     midpoint = _midpoint(book)
     if midpoint and midpoint > 0:
@@ -184,6 +222,7 @@ def simulate_sell_fill(
     fee_rate_bps: int,
     order_type: str = "fok",
     min_price: float | None = None,
+    fee_schedule: FeeSchedule | None = None,
 ) -> FillResult:
     """Simulate selling *shares* into the order book.
 
@@ -197,7 +236,8 @@ def simulate_sell_fill(
     shares:
         Number of shares to sell.
     fee_rate_bps:
-        Market fee rate in basis points.
+        LEGACY bps-based fee (``min(p, 1-p) * bps``). Ignored when
+        ``fee_schedule`` is given.
     order_type:
         ``"fok"`` (fill-or-kill) or ``"fak"`` (fill-and-kill).
     min_price:
@@ -260,7 +300,11 @@ def simulate_sell_fill(
         return _empty_fill_result()
 
     avg_price = total_cost / total_shares if total_shares > 0 else 0.0
-    fee = calculate_fee(fee_rate_bps, avg_price, total_shares)
+    fee = (
+        _fills_taker_fee(fee_schedule, fills)
+        if fee_schedule is not None
+        else calculate_fee(fee_rate_bps, avg_price, total_shares)
+    )
 
     midpoint = _midpoint(book)
     if midpoint and midpoint > 0:

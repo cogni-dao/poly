@@ -64,12 +64,12 @@ Cogni `market_id` is shaped `"prediction-market:polymarket:<conditionId>"` (per 
 ## Responsibilities
 
 - This directory **does**: build a Python sidecar image; expose the HTTP contract above; map cogni request/response shapes to upstream's; run a background fill-poll loop; **vendor + locally patch** the upstream `agent-next/polymarket-paper-trader` source under `vendor/pm_trader/`.
-- This directory **does not**: implement fill logic, fee math, queue-position modelling, or any other simulation behaviour from scratch. All of that lives in the vendored package. Local patches on top of the vendored copy (e.g. the maker-fill branch from `bug.5005`) are tracked in `vendor/pm_trader/PROVENANCE.md`'s diff log.
+- This directory **does not**: implement fill logic, fee math, queue-position modelling, or any other simulation behaviour from scratch. All of that lives in the vendored package. Local patches on top of the vendored copy (e.g. the maker-fill branch from `bug.5005`, the real taker-fee schedule from `story.5028`) are tracked in `vendor/pm_trader/PROVENANCE.md`'s diff log.
 
 ## Bumping the vendored upstream
 
 1. Pull the new upstream commit into `/tmp/pm_trader_src/` (see the step-by-step in `vendor/pm_trader/PROVENANCE.md`).
-2. Audit the diff — focus on `engine.py` (method signatures + `check_orders` shape), `orders.py` (LimitOrder dataclass fields), `orderbook.py` (`simulate_*_fill` return shape), and the fee formula (`bps/10000 × min(p, 1-p) × shares`).
+2. Audit the diff — focus on `engine.py` (method signatures + `check_orders` shape), `orders.py` (LimitOrder dataclass fields), `orderbook.py` (`simulate_*_fill` return shape), and the fee formula (story.5028 patch: `shares × rate × (p·(1-p))^exponent` per matched level from CLOB `/clob-markets/{conditionId}` → `fd {r, e}`, rounded 5 dp; `/fee-rate` is an on/off flag, never a rate; paper fills are charged as takers).
 3. Verify `Engine.place_limit_order`, `cancel_limit_order`, `check_orders` signatures match what `server.py` calls. If a signature changes, update `server.py` + tests in the same commit.
 4. Port-forward any local diff (see `vendor/pm_trader/PROVENANCE.md`'s diff log) onto the new upstream.
 5. Update `UPSTREAM_PAPER_TRADER_SHA` in the `Dockerfile` `ARG` line — note that this value is now **metadata-only** (surfaced on `/version.upstreamPaperTraderSha` for provenance); the actual installed code is the vendored copy.

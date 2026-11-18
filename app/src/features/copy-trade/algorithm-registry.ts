@@ -393,7 +393,8 @@ export const ALGORITHM_DEFINITIONS = Object.freeze({
 	),
 	"poly.copy-mirror.target-percentile-scaled": fillDefinition(
 		"poly.copy-mirror.target-percentile-scaled",
-		"target-percentile-scaled-v2",
+		// v3 (story.5028): optional `sizing.min_entry_price` entry-price floor.
+		"target-percentile-scaled-v3",
 	),
 	"poly.copy-mirror.fill-exact": fillDefinition(
 		"poly.copy-mirror.fill-exact",

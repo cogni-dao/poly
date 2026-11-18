@@ -104,6 +104,13 @@ export const TargetPercentileScaledSizingPolicySchema = z.object({
   kind: z.literal("target_percentile_scaled"),
   max_usdc_per_condition: z.number().positive(),
   statistic: WalletSizeStatisticSchema,
+  /**
+   * story.5028 — optional entry-price floor (0–1). A BUY whose target fill
+   * price is below this skips `below_entry_price_floor`. Undefined ⇒ off
+   * (legacy behavior; the key is omitted so `config_hash` is unchanged).
+   * Evidence: RN1 leg-copies entered <0.50 returned -14.8% vs +3.6% >=0.50.
+   */
+  min_entry_price: z.number().min(0).max(1).optional(),
 });
 export type TargetPercentileScaledSizingPolicy = z.infer<
   typeof TargetPercentileScaledSizingPolicySchema
@@ -556,6 +563,12 @@ export const MirrorReasonSchema = z.enum([
   "assignment_retired",
   /** Assignment authority could not be read, so the runtime failed closed. */
   "assignment_liveness_unavailable",
+  /**
+   * story.5028 — a BUY whose target fill price is below the sizing policy's
+   * `min_entry_price` entry floor. Checked before any target-position fact is
+   * needed, so it fires even when the target position is unavailable.
+   */
+  "below_entry_price_floor",
   /**
    * task.5014 — first post-activation observation on a (billing, target,
    * condition) triple. The pipeline just captured the baseline snapshot; the

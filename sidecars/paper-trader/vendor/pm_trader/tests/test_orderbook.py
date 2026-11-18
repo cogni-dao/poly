@@ -668,3 +668,85 @@ class TestDesignDocExample:
 
         expected_fee = (200 / 10_000) * min(result.avg_price, 1.0 - result.avg_price) * 100.0
         assert result.fee == pytest.approx(expected_fee)
+
+
+# =========================================================================
+# STORY.5028 — Polymarket taker fee: fee = C * rate * (p * (1 - p)) ** exponent
+# =========================================================================
+
+from pm_trader.models import FeeSchedule  # noqa: E402
+from pm_trader.orderbook import calculate_taker_fee  # noqa: E402
+
+
+class TestTakerFee:
+    def test_none_schedule_is_fee_free(self) -> None:
+        assert calculate_taker_fee(None, 0.5, 100.0) == 0.0
+
+    def test_midpoint(self) -> None:
+        # 100 * 0.04 * 0.25 = 1.00
+        assert calculate_taker_fee(FeeSchedule(0.04, 1.0), 0.50, 100.0) == 1.0
+
+    def test_hub_table_sports_rate(self) -> None:
+        # docs fee table, 100 shares at $0.30, rate 0.05: 100*0.05*0.21 = 1.05
+        assert calculate_taker_fee(FeeSchedule(0.05, 1.0), 0.30, 100.0) == pytest.approx(1.05)
+
+    def test_symmetric_around_half(self) -> None:
+        s = FeeSchedule(0.05, 1.0)
+        assert calculate_taker_fee(s, 0.30, 100.0) == pytest.approx(
+            calculate_taker_fee(s, 0.70, 100.0)
+        )
+
+    def test_exponent_applies_to_price_component(self) -> None:
+        # exponent 2 (legacy crypto shape): 100 * 0.25 * (0.25) ** 2 = 1.5625
+        assert calculate_taker_fee(FeeSchedule(0.25, 2.0), 0.50, 100.0) == pytest.approx(1.5625)
+
+    def test_rounds_to_five_decimals(self) -> None:
+        fee = calculate_taker_fee(FeeSchedule(0.04, 1.0), 0.37, 1.234567)
+        assert fee == round(fee, 5)
+        assert fee == pytest.approx(1.234567 * 0.04 * 0.37 * 0.63, abs=5e-6)
+
+    def test_sub_minimum_fee_rounds_to_zero(self) -> None:
+        # Smallest fee Polymarket charges is 0.00001 USDC.
+        assert calculate_taker_fee(FeeSchedule(0.04, 1.0), 0.01, 0.01) == 0.0
+
+    def test_out_of_range_price_is_zero(self) -> None:
+        s = FeeSchedule(0.04, 1.0)
+        assert calculate_taker_fee(s, 0.0, 10.0) == 0.0
+        assert calculate_taker_fee(s, 1.0, 10.0) == 0.0
+
+
+class TestScheduleDrivenFills:
+    SCHEDULE = FeeSchedule(0.04, 1.0)
+
+    def test_buy_fee_is_per_level_on_shares_not_notional(
+        self, multi_level_book: OrderBook
+    ) -> None:
+        result = simulate_buy_fill(
+            multi_level_book, 100.0, 0, fee_schedule=self.SCHEDULE
+        )
+        expected = round(
+            sum(round(f.shares * 0.04 * f.price * (1 - f.price), 5) for f in result.fills),
+            5,
+        )
+        assert result.fee == pytest.approx(expected, abs=1e-9)
+        assert result.fee > 0
+
+    def test_sell_fee_uses_same_formula_as_buy(self, multi_level_book: OrderBook) -> None:
+        result = simulate_sell_fill(
+            multi_level_book, 100.0, 0, fee_schedule=self.SCHEDULE
+        )
+        # 100 shares fill at bid 0.64 -> 100 * 0.04 * 0.64 * 0.36 = 0.92160
+        assert result.avg_price == pytest.approx(0.64)
+        assert result.fee == pytest.approx(0.9216, abs=1e-9)
+
+    def test_schedule_overrides_legacy_bps(self, multi_level_book: OrderBook) -> None:
+        with_both = simulate_buy_fill(
+            multi_level_book, 100.0, 1000, fee_schedule=self.SCHEDULE
+        )
+        schedule_only = simulate_buy_fill(
+            multi_level_book, 100.0, 0, fee_schedule=self.SCHEDULE
+        )
+        assert with_both.fee == schedule_only.fee  # the 1000 flag is NOT a rate
+
+    def test_no_schedule_keeps_legacy_zero(self, multi_level_book: OrderBook) -> None:
+        assert simulate_buy_fill(multi_level_book, 100.0, 0).fee == 0.0

@@ -117,6 +117,24 @@ class ApiError(SimError):
 # Market
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class FeeSchedule:
+    """A market's taker-fee schedule (CLOB ``fd {r, e, to}``).
+
+    Cogni-poly local patch (story.5028). ``fee = C * rate * (p * (1 - p)) ** exponent``
+    charged to takers only. ``None`` (no schedule) means the market is fee-free.
+    """
+
+    rate: float
+    exponent: float = 1.0
+    taker_only: bool = True
+
+    @property
+    def rate_bps(self) -> int:
+        """Informational bps view of ``rate`` (NOT used to compute fees)."""
+        return int(round(self.rate * 10_000))
+
+
 @dataclass
 class Market:
     """A Polymarket prediction market (binary: YES/NO)."""
