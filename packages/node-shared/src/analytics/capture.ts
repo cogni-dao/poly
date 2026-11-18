@@ -13,7 +13,7 @@
  *   - Server-side only (minimal HTTP batch client, no posthog-node dependency)
  * Side-effects: IO (HTTP to PostHog API)
  * Notes: Supports both self-hosted PostHog and PostHog Cloud via POSTHOG_HOST + POSTHOG_API_KEY env vars.
- * Links: docs/analytics/events.v0.md, docs/spec/posthog.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/analytics/events.v0.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/posthog.md
  * @public
  */
 

@@ -10,7 +10,7 @@
  *   transfers ownership to the DAO).
  * Invariants: Must export all public symbols from submodules.
  * Side-effects: none
- * Links: docs/spec/attribution-pipeline-overview.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-pipeline-overview.md
  * @public
  */
 

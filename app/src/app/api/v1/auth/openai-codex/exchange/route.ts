@@ -11,7 +11,7 @@
  *   - TOKENS_NEVER_LOGGED: No tokens in logs or responses
  *   - TENANT_SCOPED: Connection belongs to authenticated user's billing account
  * Side-effects: IO (HTTP token exchange, DB insert)
- * Links: docs/research/openai-oauth-byo-ai.md, docs/spec/tenant-connections.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/openai-oauth-byo-ai.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tenant-connections.md
  * @public
  */
 

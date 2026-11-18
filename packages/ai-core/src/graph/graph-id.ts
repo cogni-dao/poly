@@ -8,7 +8,7 @@
  * Invariants:
  *   - GRAPH_ID_NAMESPACED: format is ${providerId}:${graphName}
  * Side-effects: none
- * Links: GRAPH_EXECUTION.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

@@ -9,6 +9,8 @@
     "packages:build": "pnpm build:packages",
     "build:app": "pnpm --filter @cogni/node-template-app build",
     "check:workflow": "node scripts/check-node-ci-workflow.mjs && node scripts/check-node-ci-workflow.test.mjs",
+    "check:declarations": "node scripts/check-node-declarations.mjs",
+    "check:markdown-refs": "node scripts/check-markdown-refs.mjs",
     "conductor:setup": "bash scripts/conductor-worktree-setup.sh",
     "codex:cognition:install": "bash scripts/agent/install-codex-cognition-hook.sh",
     "poly:delta-investigation": "tsx scripts/poly-delta-investigation.ts",
@@ -38,6 +40,7 @@
     }
   },
   "devDependencies": {
+    "@cogni/node-declarations": "https://github.com/cogni-dao/node-template/releases/download/node-declarations-v0.1.0/cogni-dao-node-declarations-0.1.0.tgz",
     "@playwright/test": "^1.56.1",
     "@types/node": "^22",
     "dotenv-cli": "^8.0.0",
@@ -49,8 +52,8 @@
     "yaml": "^2.8.3"
   },
   "dependencies": {
-    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.9.0/cogni-dao-knowledge-store-0.9.0.tgz",
+    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.18.0/cogni-dao-knowledge-store-0.18.0.tgz",
     "@cogni/ai-tools": "workspace:*",
-    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.4.0/cogni-dao-work-items-0.4.0.tgz"
+    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.14.0/cogni-dao-work-items-0.14.0.tgz"
   }
 }

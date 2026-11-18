@@ -16,8 +16,7 @@
  *   - DUST_GUARD: floor (atomic 6-dp USDC.e) MUST be > 0. Default 1_000_000
  *     (= 1.00 USDC.e) is enforced server-side; the wire field is optional.
  * Side-effects: none
- * Links: work/items/task.0429.poly-auto-wrap-consent-loop.md,
- *        docs/spec/poly-tenant-and-collateral.md
+ *        https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md
  * @public
  */
 

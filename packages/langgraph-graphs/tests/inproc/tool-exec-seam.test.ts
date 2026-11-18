@@ -10,7 +10,7 @@
  *   - Tool events flow to stream when ToolExecFn emits them
  *   - done is last event
  * Side-effects: none (all mocked at completion boundary)
- * Links: LANGGRAPH_AI.md, runner.ts
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, runner.ts
  * @internal
  */
 

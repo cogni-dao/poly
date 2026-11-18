@@ -19,8 +19,8 @@ description: "Compare a flighted paper-trading twin tenant against live trading 
 
 ## Required reading BEFORE you analyze
 
-- [`work/projects/proj.poly-paper-trading.md`](../../../work/projects/proj.poly-paper-trading.md) — project charter, Phase 1 trust-twin plan, fidelity ceiling (~96-98% under limit-only + ride-to-redemption), v0 deferrals.
-- [`docs/spec/poly-copy-trade-execution.md`](../../../docs/spec/poly-copy-trade-execution.md) — the live algorithm. `MODE_STAMPED_AT_LEDGER_FROM_ENV` (task.5003 — `PAPER_ENFORCE_MODE` env is the sole authority; the order-ledger writes the resolved value onto every `poly_copy_trade_{fills,decisions}.mode` insert), `PAPER_DISPATCH_IS_ENV_ONLY`, `CAP_COUNTS_REALIZED_ON_CANCEL`, cancel triggers (TTL=2min, target-SELL, stale-resting). Paper inherits all unchanged.
+- proj.poly-paper-trading — project charter, Phase 1 trust-twin plan, fidelity ceiling (~96-98% under limit-only + ride-to-redemption), v0 deferrals.
+- [poly-copy-trade-execution](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md) — the live algorithm. `MODE_STAMPED_AT_LEDGER_FROM_ENV` (task.5003 — `PAPER_ENFORCE_MODE` env is the sole authority; the order-ledger writes the resolved value onto every `poly_copy_trade_{fills,decisions}.mode` insert), `PAPER_DISPATCH_IS_ENV_ONLY`, `CAP_COUNTS_REALIZED_ON_CANCEL`, cancel triggers (TTL=2min, target-SELL, stale-resting). Paper inherits all unchanged.
 - [`.context/handoff-paper-trading-review.md`](../../../.context/handoff-paper-trading-review.md) — fidelity gap catalog: queue position not modeled, `filled_size_usdc` v0 hardcode, sidecar SQLite ephemeral.
 - [`.context/handoff-paper-trading-next.md`](../../../.context/handoff-paper-trading-next.md) — current state + carryover risks: PVC missing, Data-API ~5min lag, realized $-PnL JOIN deferred.
 - [`app/src/app/api/v1/poly/research/copy-trade-pnl/route.ts`](../../../app/src/app/api/v1/poly/research/copy-trade-pnl/route.ts) — SQL-aggregated per-tenant rollup the tool reads.

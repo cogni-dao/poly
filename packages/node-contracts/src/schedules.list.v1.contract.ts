@@ -10,7 +10,7 @@
  *   - All consumers use z.infer types
  *   - Returns only schedules owned by the caller
  * Side-effects: none
- * Links: /api/v1/schedules route, docs/spec/scheduler.md
+ * Links: /api/v1/schedules route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md
  * @internal
  */
 

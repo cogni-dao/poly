@@ -8,7 +8,7 @@
  * Invariants: Returns client-visible status (PENDING_VERIFICATION | CONFIRMED | FAILED); verification throttled server-side.
  * Side-effects: none
  * Notes: Status enum imported from /types (canonical source).
- * Links: docs/spec/payments-design.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

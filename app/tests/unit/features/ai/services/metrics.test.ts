@@ -8,7 +8,7 @@
  * Invariants: Success records duration/tokens/cost; error records error counter only.
  * Side-effects: none (mocked)
  * Notes: MVP tests only - verifies correct metrics called per path.
- * Links: metrics.ts, COMPLETION_REFACTOR_PLAN.md
+ * Links: metrics.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/archive/COMPLETION_REFACTOR_PLAN.md
  * @public
  */
 

@@ -8,7 +8,7 @@
  * Invariants: Per AI_SETUP_SPEC.md Test Gates - P0 required test.
  * Side-effects: none (uses in-memory noop tracer by default)
  * Notes: In real runtime with SDK initialized, traceId would be non-zero.
- * Links: AI_SETUP_SPEC.md, bootstrap/otel.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md, bootstrap/otel.ts
  * @internal
  */
 

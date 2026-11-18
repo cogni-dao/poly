@@ -51,7 +51,7 @@
  *     proxy to Polymarket.
  * Side-effects: none
  * Links: story.5004, story.5006, story.5051, task.1791070959,
- *   docs/spec/capability-plane.md, docs/spec/dashboard-agent-parity-inventory.md
+ *   https://poly.cognidao.org/knowledge/capability-plane-contract, https://poly.cognidao.org/knowledge/dashboard-parity-field-map
  * @public
  */
 

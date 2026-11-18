@@ -10,7 +10,7 @@
  *   - Implements AsyncIterable for consumer
  *   - close() signals end of stream
  * Side-effects: none
- * Links: LANGGRAPH_AI.md (invoke + AsyncQueue pattern)
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

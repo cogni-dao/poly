@@ -13,7 +13,7 @@
  * - MUST NOT be imported from general src/ code — reach it via
  *   resolveServiceReadDb() in bootstrap/container.ts
  * Side-effects: IO (database connections) - only on first access
- * Links: docs/spec/database-rls.md, packages/db-client/src/build-client.ts (backend math)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md, packages/db-client/src/build-client.ts (backend math)
  * @internal
  */
 

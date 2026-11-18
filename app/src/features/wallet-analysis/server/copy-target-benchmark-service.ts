@@ -9,7 +9,7 @@
  *   - QUERY_WINDOWS_NOT_INGESTION_WINDOWS: 1D/1W/1M are SQL windows over saved observations.
  *   - SAME_OBSERVED_TRADE_TABLE: target and Cogni VWAP use `poly_trader_fills`.
  * Side-effects: DB reads only.
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/task.5005
  * @public
  */
 

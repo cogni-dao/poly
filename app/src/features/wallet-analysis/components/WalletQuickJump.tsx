@@ -11,7 +11,7 @@
  *   - Empty input: button disabled; no error shown.
  *   - Invalid: error shown, navigation blocked.
  * Side-effects: router navigation on submit.
- * Links: docs/design/wallet-analysis-components.md, nodes/poly/packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md, nodes/poly/packages/node-contracts/src/poly.wallet-analysis.v1.contract.ts
  * @public
  */
 

@@ -7,7 +7,6 @@
  * Scope: Build tooling only; does not contain runtime code.
  * Invariants: Output must be ESM with type declarations.
  * Side-effects: IO
- * Links: work/items/task.0230.market-data-package.md
  * @internal
  */
 

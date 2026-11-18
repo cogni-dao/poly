@@ -9,7 +9,7 @@
  *   - IDEMPOTENT_CHARGES: DB unique on (source_system, source_reference) prevents duplicate charges
  * Side-effects: IO (database writes, LLM calls via mock-openai-api in test mode)
  * Notes: Requires dev stack with DB running (pnpm dev:stack:test). Discovers values from actual execution.
- * Links: GRAPH_EXECUTION.md, billing.ts, schema.billing.ts
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, billing.ts, schema.billing.ts
  * @public
  */
 

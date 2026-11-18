@@ -21,7 +21,7 @@
  *   - Per EPOCH_FINALIZE_IDEMPOTENT: finalizeEpoch returns existing statement if already finalized
  *   - Per FINALIZE_CLAIMANT_AWARE: finalizeEpoch loads locked claimant rows from epoch_receipt_claimants, dispatches the pinned allocator, explodes to claimant allocations, and stores claimant metadata in attribution statement lines
  * Side-effects: IO (database, GitHub API, viem EIP-712 verification)
- * Links: docs/spec/attribution-ledger.md, docs/spec/temporal-patterns.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md, https://cognidao.org/knowledge/temporal-workflow-rules
  * @internal
  */
 

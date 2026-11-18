@@ -60,7 +60,7 @@
  *     It exists so the provider can publish the spec to the model; execution
  *     must come from the per-request, principal-scoped source.
  * Side-effects: none
- * Links: task.1791070967, story.5006, docs/spec/capability-plane.md
+ * Links: task.1791070967, story.5006, https://poly.cognidao.org/knowledge/capability-plane-contract
  * @public
  */
 

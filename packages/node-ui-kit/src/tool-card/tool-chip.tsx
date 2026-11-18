@@ -7,7 +7,7 @@
  * Scope: Presentational. Used inside ToolCard `title`. Does not own state, does not fetch data, does not depend on `@assistant-ui/react`.
  * Invariants: LINK_OPENS_NEW_TAB — `href` chips render with `target="_blank" rel="noopener noreferrer"`.
  * Side-effects: none
- * Links: docs/guides/assistant-ui-tool-rendering.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/assistant-ui-tool-rendering.md
  * @public
  */
 

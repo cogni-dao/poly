@@ -10,7 +10,7 @@
  *   - Additional mounts respect mode (ro/rw)
  *   - No orphan containers after tests
  * Side-effects: IO (Docker containers, filesystem)
- * Links: docs/spec/sandboxed-agents.md, src/adapters/server/sandbox/
+ * Links: src/adapters/server/sandbox/
  * @public
  */
 

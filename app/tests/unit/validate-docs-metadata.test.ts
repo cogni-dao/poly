@@ -8,7 +8,7 @@
  * Invariants: All validation rules from DOCS_ORGANIZATION_PLAN.md must be tested.
  * Side-effects: none
  * Notes: Uses vitest; tests validator functions in isolation.
- * Links: scripts/validate-docs-metadata.mjs, docs/archive/DOCS_ORGANIZATION_PLAN.md
+ * Links: scripts/validate-docs-metadata.mjs, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/archive/DOCS_ORGANIZATION_PLAN.md
  * @internal
  */
 

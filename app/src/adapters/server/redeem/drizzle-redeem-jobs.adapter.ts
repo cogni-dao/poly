@@ -24,12 +24,14 @@
 import { eq, sql } from "drizzle-orm";
 
 import type { Database } from "@/adapters/server/db/client";
-import type {
-  RedeemFailureClass,
-  RedeemFlavor,
-  RedeemJob,
-  RedeemJobStatus,
-  RedeemLifecycleState,
+import {
+  INVALID_POSITION_INPUT_REASON,
+  type RedeemFailureClass,
+  type RedeemFlavor,
+  type RedeemJob,
+  type RedeemJobStatus,
+  type RedeemLifecycleState,
+  UNSUPPORTED_POSITION_MODULE_REASON,
 } from "@/core";
 import type {
   EnqueueRedeemJobInput,
@@ -142,7 +144,14 @@ export class DrizzleRedeemJobsAdapter implements RedeemJobsPort {
         .where(
           sql`${polyRedeemJobs.funderAddress} = ${input.funderAddress}
             AND ${polyRedeemJobs.conditionId} = ${input.conditionId}
-            AND ${polyRedeemJobs.status} IN ('skipped', 'confirmed', 'abandoned')`
+            AND ${polyRedeemJobs.status} IN ('skipped', 'confirmed', 'abandoned')
+            AND NOT (
+              ${polyRedeemJobs.status} = 'abandoned'
+              AND (
+                COALESCE(${polyRedeemJobs.lastError}, '') LIKE ${`${UNSUPPORTED_POSITION_MODULE_REASON}:%`}
+                OR COALESCE(${polyRedeemJobs.lastError}, '') LIKE ${`${INVALID_POSITION_INPUT_REASON}:%`}
+              )
+            )`
         )
         .returning({ id: polyRedeemJobs.id });
 

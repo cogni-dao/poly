@@ -11,7 +11,7 @@
  * Side-effects: IO (database operations via testcontainers)
  * Notes: Uses production app_user role (FORCE RLS via provision.sh) for rlsDb.
  *        getSeedDb() (app_service, BYPASSRLS) handles seed/cleanup.
- * Links: docs/spec/database-rls.md (Adapter Wiring Tracker), rls-tenant-isolation.int.test.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md, rls-tenant-isolation.int.test.ts
  * @public
  */
 

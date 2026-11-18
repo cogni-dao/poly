@@ -10,7 +10,7 @@
  *   - Tool calls properly mapped between formats
  *   - Compatible with src/core/chat/model.ts Message type
  * Side-effects: none
- * Links: LANGGRAPH_AI.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

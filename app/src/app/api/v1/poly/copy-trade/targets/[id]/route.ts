@@ -5,7 +5,7 @@
  * Module: `@app/api/v1/poly/copy-trade/targets/[id]`
  * Purpose: HTTP DELETE/PATCH for one of the calling user's tracked Polymarket wallets.
  *          DELETE soft-deletes by setting `disabled_at`; PATCH updates the per-target
- *          mirror sizing policy. Per docs/spec/poly-tenant-and-collateral.md.
+ *          mirror sizing policy. Per https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md.
  * Scope: Validators + RLS-scoped UPDATEs. No cross-tenant access.
  * Invariants:
  *   - TENANT_SCOPED: UPDATE runs under `withTenantScope(appDb, sessionUser.id)`. RLS
@@ -16,7 +16,7 @@
  *   - SAFE_POLICY_ASSIGNMENT: PATCH compares `mirror_activated_at`, advances it
  *     as the config revision, and clears old position-gap baselines atomically.
  * Side-effects: IO (Postgres UPDATE via appDb).
- * Links: docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
  * @public
  */
 

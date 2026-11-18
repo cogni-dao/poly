@@ -12,7 +12,7 @@
  *   - COST_ORACLE_IS_LITELLM: Cost from callback response_cost field
  *   - NO_SYNCHRONOUS_RECEIPT_BARRIER: Never blocks LLM response (async callback)
  * Side-effects: IO (HTTP request/response, database via commitUsageFact)
- * Links: docs/spec/billing-ingest.md, billing-ingest.internal.v1.contract
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/billing-ingest.md, billing-ingest.internal.v1.contract
  * @internal
  */
 

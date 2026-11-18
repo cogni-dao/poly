@@ -16,7 +16,7 @@
  *   - Molecules render from `{ data, isLoading, error }`; partial failure is never silent.
  * Side-effects: none
  * Notes: Route handler enforces auth explicitly via getServerSessionUser(); Zod validation runs before any client call.
- * Links: docs/design/wallet-analysis-components.md, work/items/task.0329.wallet-analysis-component-extraction.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md
  * @public
  */
 

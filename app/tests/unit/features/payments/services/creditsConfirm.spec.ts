@@ -8,7 +8,7 @@
  * Invariants: 1 cent = 100,000 credits (CREDITS_PER_USD / 100); idempotent per clientPaymentId; system tenant bonus is sequential + idempotent.
  * Side-effects: none
  * Notes: Uses mocked AccountService and ServiceAccountService with stub implementations.
- * Links: docs/spec/payments-design.md, docs/spec/system-tenant.md, src/features/payments/services/creditsConfirm.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/system-tenant.md, src/features/payments/services/creditsConfirm.ts
  * @public
  */
 

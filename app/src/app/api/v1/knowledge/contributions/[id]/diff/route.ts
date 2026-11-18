@@ -24,9 +24,9 @@ export const GET = wrapRouteHandlerWithLogging<{
     routeId: "knowledge.contributions.diff",
     auth: { mode: "required", getSessionUser },
   },
-  async (_ctx, _request, sessionUser, context) => {
+  async (ctx, _request, sessionUser, context) => {
     if (!context) throw new Error("context required for dynamic routes");
     const { id } = await context.params;
-    return handleDiff(id, sessionUser);
+    return handleDiff(id, sessionUser, ctx.log, ctx.reqId, ctx.routeId);
   }
 );

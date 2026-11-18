@@ -13,8 +13,8 @@ Shared Zod route contracts and HTTP router definitions for all node apps. PURE_L
 
 ## Pointers
 
-- [Packages Architecture](../../docs/spec/packages-architecture.md)
-- [Architecture — Contracts Layer](../../docs/spec/architecture.md)
+- [Packages Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md)
+- [Architecture — Contracts Layer](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
 
 ## Boundaries
 

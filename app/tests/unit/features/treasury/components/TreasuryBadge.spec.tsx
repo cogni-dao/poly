@@ -7,7 +7,7 @@
  * Scope: Tests public data invariant - treasury balance accessible to all users. Does not test wallet integration or auth flows.
  * Invariants: TreasuryBadge MUST render without authentication; graceful degradation on API errors.
  * Side-effects: none (mocked fetch)
- * Links: docs/spec/onchain-readers.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/onchain-readers.md
  * @vitest-environment jsdom
  */
 

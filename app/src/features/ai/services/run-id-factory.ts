@@ -11,7 +11,7 @@
  *   - P1: runId allocated from RunStore; ingressRequestId is delivery correlation only
  *   - RUNID_IS_CANONICAL: runId is execution identity; ingressRequestId is transport correlation
  * Side-effects: none
- * Links: ai_runtime.ts, GRAPH_EXECUTION.md
+ * Links: ai_runtime.ts, https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

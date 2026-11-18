@@ -7,7 +7,7 @@
  * Scope: Re-exports only. Defines no behavior.
  * Invariants: Callers import from here, not from internal paths.
  * Side-effects: none
- * Links: docs/spec/capability-plane.md, migration 0082
+ * Links: https://poly.cognidao.org/knowledge/capability-plane-contract, migration 0082
  * @public
  */
 

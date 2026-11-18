@@ -7,7 +7,7 @@
  * Scope: Creates its own fixtures, exercises createAttributionActivities pipeline. Cleans up after. Does not run in CI.
  * Invariants: Requires GH_REVIEW_APP_ID + GH_REVIEW_APP_PRIVATE_KEY_BASE64 in env. Skips gracefully if missing.
  * Side-effects: IO (GitHub GraphQL, git push, testcontainers PostgreSQL)
- * Links: services/scheduler-worker/src/activities/ledger.ts, docs/spec/attribution-ledger.md
+ * Links: services/scheduler-worker/src/activities/ledger.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @internal
  */
 

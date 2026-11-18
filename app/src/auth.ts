@@ -8,7 +8,7 @@
  * Invariants: SIWE + OAuth resolve to canonical user_id via user_bindings ; NO_AUTO_MERGE enforced on link-intent conflicts ; atomic new-user tx (user + binding + event)
  * Side-effects: IO
  * Notes: Handles session creation, validation, and persistence.
- * Links: docs/spec/authentication.md
+ * Links: https://cognidao.org/knowledge/node-template-identity-model
  * @public
  */
 

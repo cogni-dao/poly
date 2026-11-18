@@ -11,7 +11,7 @@
  *   - GRANT_VALIDATED_TWICE: Grant re-validated at execution time
  * Side-effects: IO (database writes, graph execution via mock-openai-api in test mode)
  * Notes: Requires dev stack with DB running (pnpm dev:stack:test).
- * Links: docs/spec/scheduler.md, graphs.run.internal.v1.contract
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, graphs.run.internal.v1.contract
  * @public
  */
 

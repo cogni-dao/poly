@@ -15,8 +15,8 @@ Next.js App Router delivery layer. UI pages and API routes that expose features 
 ## Pointers
 
 - [Root AGENTS.md](../../../../AGENTS.md)
-- [Architecture](../../../../docs/spec/architecture.md)
-- [Feature Development Guide](../../../../docs/guides/feature-development.md)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
+- [Feature Development Guide](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/feature-development.md)
 
 ## Boundaries
 
@@ -110,3 +110,5 @@ When adding new protected pages (e.g., `/billing`, `/api-keys`), place them unde
 
 - Uses Next.js App Router patterns
 - API routes are thin adapters that delegate to features
+
+Goals mount (story.0021): the Goals board, KPI chart, metric evidence and hypothesis KPI evidence render only from `@cogni/knowledge-base-ui/goals` (node mount: `(app)/knowledge/_components/GoalsMount.tsx`: Next `Link`, `?observation=`, the tab badge read, one `KnowledgeGoalsProvider` for board and badge). The `/api/v1/metrics/*` routes keep only auth, path parameters, logging and `metricResponse`; parsing, contract validation and error mapping are `@cogni-dao/metrics/http` (`_facades/metrics.server.ts` binds its ports to the container).

@@ -5,7 +5,7 @@
  * Module: `@/node-config`
  * Purpose: Poly node shell navigation and external links.
  * Scope: Static `nodeConfig` export only.
- * Invariants: Research and Money remain reachable; identity points at Poly.
+ * Invariants: Research, Metrics and Money remain reachable; identity points at Poly.
  * Side-effects: none
  * Links: app/src/features/layout/components/AppSidebar.tsx
  * @public
@@ -13,6 +13,7 @@
 
 import type { NodeAppConfig } from "@cogni/node-app/extensions";
 import {
+  Activity,
   Briefcase,
   CalendarClock,
   Coins,
@@ -31,6 +32,7 @@ export const nodeConfig: NodeAppConfig = {
     { href: "/research", label: "Research", icon: FlaskConical },
     { href: "/schedules", label: "Schedules", icon: CalendarClock },
     { href: "/work", label: "Work", icon: Briefcase },
+    { href: "/metrics", label: "Metrics", icon: Activity },
     { href: "/gov", label: "Gov", icon: Vote },
     { href: "/credits", label: "Money", icon: Coins },
   ],

@@ -7,7 +7,7 @@
  * Scope: Path parameter validation. Response is SSE (not JSON), so no output schema.
  * Invariants: CONTRACTS_ARE_TRUTH — single source for path param shape
  * Side-effects: none
- * Links: docs/spec/unified-graph-launch.md §4 (Reconnection)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/unified-graph-launch.md
  * @public
  */
 

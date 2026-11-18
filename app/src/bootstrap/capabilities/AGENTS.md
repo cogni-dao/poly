@@ -13,8 +13,8 @@ Capability factories bridging ai-tools interfaces to adapters. Creates environme
 
 ## Pointers
 
-- [Tool Use Spec](../../../../../docs/spec/tool-use.md)
-- [Tools Authoring](../../../../../docs/guides/tools-authoring.md)
+- [Tool Use Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md)
+- [Tools Authoring](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/tools-authoring.md)
 
 ## Boundaries
 
@@ -28,9 +28,9 @@ Capability factories bridging ai-tools interfaces to adapters. Creates environme
 
 ## Public Surface
 
-- **Exports:** `createMetricsCapability()`, `stubMetricsCapability`, `createRepoCapability()`, `stubRepoCapability`, `createWebSearchCapability()`
+- **Exports:** `createMetricsCapability()`, `stubMetricsCapability`, `createRepoCapability()`, `stubRepoCapability`, `createWebSearchCapability()`, `createMoveMetricPorts()` (work-items `moves` baseline and readings over the metrics service, story.0033), `createCitationLinksPort()` and `readCitationLinksPage()` (the one citation-links read, task.0118), `createWalletPnlCalculator()` (node calculator `poly.wallet-pnl@1`: public Data API v2 wallet P&L, registered by `goal-metrics.ts` via `nodeCalculators`)
 - **Env/Config keys:** PROMETHEUS_REMOTE_WRITE_URL, PROMETHEUS_QUERY_URL, PROMETHEUS_READ_USERNAME, PROMETHEUS_READ_PASSWORD, COGNI_REPO_PATH, COGNI_REPO_ROOT, TAVILY_API_KEY via ServerEnv
-- **Files considered API:** `metrics.ts`, `repo.ts`, `web-search.ts`
+- **Files considered API:** `metrics.ts`, `repo.ts`, `web-search.ts`, `work-item-moves.ts`, `citation-links.ts`
 
 ## Responsibilities
 

@@ -10,7 +10,7 @@
  * - RLS_COMPATIBLE: Queries use owner_user_id filter
  * - Returns Date objects (not ISO strings)
  * Side-effects: IO (database reads)
- * Links: src/ports/governance-status.port.ts, docs/spec/governance-status-api.md
+ * Links: src/ports/governance-status.port.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/governance-status-api.md
  * @public
  */
 

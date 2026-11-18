@@ -7,7 +7,7 @@
  * Scope: Pure types. Does not contain business logic or perform I/O.
  * Invariants: Mirrors epoch-ledger spec schema; all credit/unit fields are bigint (ALL_MATH_BIGINT).
  * Side-effects: none
- * Links: docs/spec/attribution-ledger.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @public
  */
 

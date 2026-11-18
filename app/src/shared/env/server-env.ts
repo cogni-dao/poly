@@ -87,7 +87,7 @@ export const serverSchema = z.object({
   USER_PRICE_MARKUP_FACTOR: z.coerce.number().min(1.0).default(2.0),
 
   // System tenant revenue share — fraction of user credits minted as bonus to system tenant
-  // 0 = disabled, 0.75 = 75% bonus (default). Per docs/spec/system-tenant.md
+  // 0 = disabled, 0.75 = 75% bonus (default). Per https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/system-tenant.md
   SYSTEM_TENANT_REVENUE_SHARE: z.coerce.number().min(0).max(1).default(0.75),
 
   // Database connections — both required, no component-piece fallback.
@@ -206,7 +206,7 @@ export const serverSchema = z.object({
 
   // DoltHub credentials — service-side push of knowledge hubs to DoltHub
   // remote (cogni-dao/knowledge-<node>). v0 push uses DoltHub Dolt creds
-  // (keypair, see docs/runbooks/dolthub-remote-bootstrap.md). DOLTHUB_REMOTE_URL
+  // (keypair, see https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/runbooks/dolthub-remote-bootstrap.md). DOLTHUB_REMOTE_URL
   // gates the push job — when unset, merges still succeed locally and never
   // attempt a push. DOLTHUB_API_TOKEN (PAT) is for the REST/SQL HTTP API only
   // (future librarian/x402 reads). DoltHub OAuth pair is reserved for v1
@@ -415,7 +415,7 @@ export const serverSchema = z.object({
   CONNECTIONS_ENCRYPTION_KEY: optionalString,
 
   // PostHog product analytics — required
-  // See docs/guides/posthog-setup.md for setup
+  // See https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/posthog-setup.md for setup
   // PostHog Cloud free tier: 1M events/month at https://us.i.posthog.com
   POSTHOG_API_KEY: optionalString,
   POSTHOG_HOST: optionalUrl,

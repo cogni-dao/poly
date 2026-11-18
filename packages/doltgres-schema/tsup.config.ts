@@ -7,7 +7,7 @@
  * Scope: Build tooling only; does not contain runtime code.
  * Invariants: Output is ESM. Mirrors @cogni/operator-doltgres-schema shape — per-slice entry points so downstream importers can tree-shake via subpath imports.
  * Side-effects: IO
- * Links: docs/spec/packages-architecture.md, work/items/task.5077.node-template-doltgres-substrate.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @internal
  */
 

@@ -14,7 +14,7 @@
  *   - IDEMPOTENCY_KEY_IS_LITELLM_CALL_ID: source_reference = runId/attempt/usageUnitId; DB constraint prevents duplicates
  * Side-effects: IO (writes charge receipt via AccountService)
  * Notes: Per GRAPH_EXECUTION.md, COMPLETION_REFACTOR_PLAN.md P2 extraction
- * Links: completion.ts, ports/account.port.ts, llmPricingPolicy.ts, GRAPH_EXECUTION.md
+ * Links: completion.ts, ports/account.port.ts, llmPricingPolicy.ts, https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

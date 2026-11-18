@@ -26,7 +26,7 @@ Recipe 5 compares those numbers to the _current_ distribution.
 
 ## Pre-reqs
 
-- `scripts/grafana-postgres-query.sh` works (`docs/runbooks/grafana-postgres-readonly.md`).
+- `scripts/grafana-postgres-query.sh` works (`https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/runbooks/grafana-postgres-readonly.md`).
 - Use the operator-provided read credentials/data source for the target environment. Do not invent `.env.<env>` files or copy Grafana/DB secrets into the repo.
 - `poly_copy_trade_attribution` is intended to back recipes 2 + 4 once the writer ships. Until then, the recipes derive the same fields directly from `poly_trader_fills` + `poly_copy_trade_decisions` + `poly_copy_trade_fills`. When attribution is populated, the agent prefers `poly_copy_trade_attribution` (it carries pre-computed `target_vwap` / `cogni_vwap`).
 

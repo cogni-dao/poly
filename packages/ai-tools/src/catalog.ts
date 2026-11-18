@@ -10,7 +10,7 @@
  *   - TOOL_ID_STABILITY: Duplicate IDs throw at construction time
  *   - TOOL_ID_NAMESPACED: IDs use core__<name> format
  * Side-effects: none
- * Links: docs/spec/tool-use.md, work/items/bug.0319.ai-tools-per-node-packages.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 
@@ -35,6 +35,7 @@ import { vcsListPrsBoundTool } from "./tools/vcs-list-prs";
 import { vcsMergePrBoundTool } from "./tools/vcs-merge-pr";
 import { webSearchBoundTool } from "./tools/web-search";
 import { workItemQueryBoundTool } from "./tools/work-item-query";
+import { workItemReadBoundTool } from "./tools/work-item-read";
 import { workItemTransitionBoundTool } from "./tools/work-item-transition";
 import type { BoundTool } from "./types";
 
@@ -124,6 +125,7 @@ export const CORE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
   vcsMergePrBoundTool as CatalogBoundTool,
   webSearchBoundTool as CatalogBoundTool,
   workItemQueryBoundTool as CatalogBoundTool,
+  workItemReadBoundTool as CatalogBoundTool,
   workItemTransitionBoundTool as CatalogBoundTool,
 ];
 

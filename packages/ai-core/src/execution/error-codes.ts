@@ -11,7 +11,7 @@
  *   - AiExecutionError carries structured code through call chains
  *   - Recognizes both AiExecutionError (.code) and LlmError (.kind, .status)
  * Side-effects: none
- * Links: GRAPH_EXECUTION.md, ERROR_HANDLING_ARCHITECTURE.md, llm-errors.ts
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/error-handling.md, llm-errors.ts
  * @public
  */
 
@@ -89,7 +89,7 @@ export function isAiExecutionError(error: unknown): error is AiExecutionError {
  * FAULT_PARTY_BEFORE_BUCKET: upstream provider failures the operator must fix
  * (402 unfunded provider account, 5xx provider outage) map to "provider_unavailable",
  * NOT "internal". Collapsing them to "internal" is what masked bug.5056 as a generic
- * "Something went wrong" 500. See docs/spec/error-handling.md.
+ * "Something went wrong" 500. See https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/error-handling.md.
  */
 export function normalizeErrorToExecutionCode(
   error: unknown

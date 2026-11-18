@@ -10,7 +10,7 @@
  *   - NO_SECRETS_IN_CONTEXT: Capabilities resolve secrets, never stored in context
  *   - FIX_LAYERING_CAPABILITY_TYPES: Capability interfaces live here, NOT in ai-core
  * Side-effects: none
- * Links: TOOL_USE_SPEC.md #29, TENANT_CONNECTIONS_SPEC.md #9
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tenant-connections.md
  * @public
  */
 

@@ -9,7 +9,7 @@
  * Invariants:
  *   - TOKENS_NEVER_LOGGED: No credentials in logs
  * Side-effects: IO (HTTP request to OpenAI)
- * Links: docs/research/openai-oauth-byo-ai.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/openai-oauth-byo-ai.md
  * @public
  */
 

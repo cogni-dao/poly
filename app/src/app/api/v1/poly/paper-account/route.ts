@@ -28,7 +28,7 @@
  *     `created: false` and HTTP 200; re-posting never mints a second account
  *     and never re-seeds a balance that may already have been traded against.
  * Side-effects: IO (DB writes).
- * Links: docs/spec/capability-plane.md, docs/spec/poly-tenant-and-collateral.md,
+ * Links: https://poly.cognidao.org/knowledge/capability-plane-contract, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md,
  *        migration 0082
  * @public
  */

@@ -9,7 +9,7 @@
  *   - ONE_SOURCE_OF_TRUTH_FOR_PXX — every consumer of pXX thresholds (bootstrap, research, future visualizers) imports from this module. No parallel snapshot tables.
  *   - SNAPSHOT_IS_FROZEN_PER_TARGET — `captured_at` is the one-time capture date; consumers MUST surface it so stale-data risk is visible. When snapshots become dynamic, persist them on `poly_copy_trade_decisions` (separate change).
  * Side-effects: none
- * Links: docs/spec/poly-copy-trade-execution.md, work/charters/POLY_COPY_DELTA.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md
  * @public
  */
 
@@ -34,7 +34,7 @@ const SWISSTONY_WALLET = "0x204f72f35326db932158cba6adff0b9a1da95e14";
 // effectively sees per decision.
 //
 // Source query: docs/research/poly/queries/q15-past-month-pXX-primary-vs-hedge.sql
-// Methodology + cross-validation: docs/research/poly/copy-target-north-star-2026-05-16.md
+// Methodology + cross-validation: copy-target-north-star-2026-05-16
 // Recipe for re-calibration: .claude/skills/data-research/recipes/copy-target-pXX-calibration.md
 // Prior snapshot (2026-05-03, mixed primary+hedge) was 2-3× too low at p75/p90
 // because hedge tokens deflated the low-end percentiles.

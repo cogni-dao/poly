@@ -11,7 +11,7 @@
  *   - Cron must be valid 5-field expression
  *   - Timezone must be valid IANA timezone
  * Side-effects: none
- * Links: /api/v1/schedules route, docs/spec/scheduler.md
+ * Links: /api/v1/schedules route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md
  * @internal
  */
 

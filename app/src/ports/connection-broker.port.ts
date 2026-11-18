@@ -11,7 +11,7 @@
  * - TENANT_SCOPED: Verifies connection belongs to the caller's billing account.
  * - TOKENS_NEVER_LOGGED: Resolved credentials must not appear in logs or error messages.
  * Side-effects: none (interface only)
- * Links: docs/spec/tenant-connections.md, nodes/operator/app/src/adapters/server/connections/drizzle-broker.adapter.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tenant-connections.md, nodes/operator/app/src/adapters/server/connections/drizzle-broker.adapter.ts
  * @public
  */
 

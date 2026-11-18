@@ -10,7 +10,7 @@
  *   - POSITION_MATCH_KEY: live overlays match only by `(conditionId, asset)`.
  *   - TRACE_IS_OBSERVED: missing live trace stays empty; no synthetic flatlines.
  * Side-effects: none
- * Links: docs/spec/poly-copy-trade-execution.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md
  * @internal
  */
 

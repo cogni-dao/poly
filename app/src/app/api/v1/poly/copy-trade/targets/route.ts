@@ -4,7 +4,7 @@
 /**
  * Module: `@app/api/v1/poly/copy-trade/targets`
  * Purpose: HTTP GET (list) + POST (create) for the calling user's tracked Polymarket
- *          wallets. Per docs/spec/poly-tenant-and-collateral.md.
+ *          wallets. Per https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md.
  * Scope: GET is the owner transport for `poly.account.copy-setup.v1`; POST is
  *        the existing RLS-scoped create path. No cross-tenant access.
  * Invariants:
@@ -21,7 +21,7 @@
  * Side-effects: IO (Postgres reads + writes via appDb).
  * Notes: DELETE/PATCH live in `[id]/route.ts`. Wallet grants remain downstream
  *        authorization/cap enforcement; target rows own the user-facing copy policy.
- * Links: docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
  * @public
  */
 

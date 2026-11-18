@@ -31,10 +31,10 @@ Practical rule: **only the policy-match-to-live tenant counts as a trust twin.**
 
 ## Required reading
 
-- [`docs/spec/poly-tenant-matrix-evaluator.md`](../../../docs/spec/poly-tenant-matrix-evaluator.md) — spec, invariants, done condition
-- [`work/charters/POLY_ALGO_TENANT_MATRIX.md`](../../../work/charters/POLY_ALGO_TENANT_MATRIX.md) — the matrix this tool consumes
+- poly-tenant-matrix-evaluator — spec, invariants, done condition
+- POLY_ALGO_TENANT_MATRIX — the matrix this tool consumes
 - `/delta-minimizer` (Dolt-delivered skill) — finding discipline (one primary, % confidence, file:line cite, charter class)
-- [`work/charters/POLY_COPY_DELTA.md`](../../../work/charters/POLY_COPY_DELTA.md) — D-class taxonomy used in findings
+- POLY_COPY_DELTA — D-class taxonomy used in findings
 
 ## Outcome contract
 
@@ -92,7 +92,7 @@ pnpm tsx scripts/tenant-matrix-evaluator.ts \
 - **% confidence mandatory.** ≥85% needs code-path read + decision-count verification. Don't write findings under 60%.
 - **Cite file:line** for any algorithmic claim.
 - **Sample-size honesty.** Decisions < 50 or resolved markets < 3 → 🟡; finding must acknowledge the floor. "Insufficient sample, re-run after N hours" is a valid finding.
-- **Charter class.** Pick from `work/charters/POLY_COPY_DELTA.md` D1–D8, or set `primary_class: null` with reason. Do not invent a new D-row without explicit user approval in-turn.
+- **Charter class.** Pick from `POLY_COPY_DELTA` D1–D8, or set `primary_class: null` with reason. Do not invent a new D-row without explicit user approval in-turn.
 
 ## Meta loop — improving the matrix itself
 
@@ -105,8 +105,8 @@ Each invocation is also an opportunity to ask "is the matrix or the tool the bot
 ## Pointers
 
 - Tool: `scripts/tenant-matrix-evaluator.ts`
-- Spec: `docs/spec/poly-tenant-matrix-evaluator.md`
-- Charter: `work/charters/POLY_ALGO_TENANT_MATRIX.md`
+- Spec: `poly-tenant-matrix-evaluator`
+- Charter: `POLY_ALGO_TENANT_MATRIX`
 - Output dir: `research/tenant-matrix/<iso>/`
 - Sibling skills: `/delta-minimizer`, [`/paper-trade-diff-analysis`](../paper-trade-diff-analysis/SKILL.md)
 - Planner cheat-sheet: `app/src/features/copy-trade/plan-mirror.ts`

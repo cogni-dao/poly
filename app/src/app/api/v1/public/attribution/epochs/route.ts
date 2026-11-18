@@ -7,7 +7,7 @@
  * Scope: Public route using wrapPublicRoute(); only returns finalized epochs. Does not expose open/review epoch data.
  * Invariants: NODE_SCOPED, ALL_MATH_BIGINT, VALIDATE_IO, PUBLIC_READS_FINALIZED_ONLY.
  * Side-effects: IO (HTTP response, database read)
- * Links: docs/spec/attribution-ledger.md, contracts/attribution.list-epochs.v1.contract
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md, contracts/attribution.list-epochs.v1.contract
  * @public
  */
 

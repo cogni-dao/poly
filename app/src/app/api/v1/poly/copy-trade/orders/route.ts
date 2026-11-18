@@ -36,7 +36,7 @@
  *   necessarily `accountFrom: "principal"` and therefore cannot be aimed at a
  *   delegated account; `poly.account.recent-attempts.v1` is the delegable and
  *   strictly more informative successor.
- * Links: task.1791070959, story.5004, docs/spec/capability-plane.md
+ * Links: task.1791070959, story.5004, https://poly.cognidao.org/knowledge/capability-plane-contract
  * @public
  */
 

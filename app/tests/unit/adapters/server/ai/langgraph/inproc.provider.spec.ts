@@ -9,7 +9,7 @@
  *   - Valid graphId: events reflect adapter stream
  *   - Invalid graphId: emits client error (not_found), done is last
  * Side-effects: none (all mocked)
- * Links: inproc.provider.ts, GRAPH_EXECUTION.md
+ * Links: inproc.provider.ts, https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @internal
  */
 

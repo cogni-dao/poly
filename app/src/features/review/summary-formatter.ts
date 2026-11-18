@@ -7,7 +7,7 @@
  * Scope: Pure formatting — receives review results, returns markdown strings. Does not perform I/O.
  * Invariants: Output is valid GitHub-flavored markdown. Format aligns with cogni-git-review.
  * Side-effects: none
- * Links: docs/spec/governance-signal-execution.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/governance-signal-execution.md
  * @public
  */
 

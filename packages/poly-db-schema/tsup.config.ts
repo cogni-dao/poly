@@ -7,7 +7,7 @@
  * Scope: Build tooling only; does not contain runtime code.
  * Invariants: Output is ESM. Each slice in src/ has its own entry point so downstream importers can tree-shake via subpath imports.
  * Side-effects: IO
- * Links: docs/spec/packages-architecture.md, work/items/task.0324.per-node-db-schema-independence.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @internal
  */
 

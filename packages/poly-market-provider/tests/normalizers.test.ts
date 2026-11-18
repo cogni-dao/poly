@@ -7,7 +7,6 @@
  * Scope: Tests deterministic ID generation, price conversion, and field mapping. Does not perform network I/O.
  * Invariants: OBSERVATION_IDEMPOTENT (IDs must be deterministic).
  * Side-effects: none
- * Links: work/items/task.0230.market-data-package.md
  * @internal
  */
 

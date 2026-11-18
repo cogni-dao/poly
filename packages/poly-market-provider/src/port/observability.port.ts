@@ -7,7 +7,6 @@
  * Scope: Port + no-op default sinks only. Adapters receive sinks via constructor; node apps wire real pino/prom at the boundary. Does not import pino/prom, does not read env, does not define metric schemas.
  * Invariants: PURE_LIBRARY — no env vars, no singletons, no side effects on import.
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 — observability)
  * @public
  */
 

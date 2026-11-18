@@ -11,7 +11,7 @@
  *   - COST_AUTHORITY_IS_LITELLM: response_cost from callback writes to charge_receipts
  * Side-effects: IO (database writes via commitUsageFact)
  * Notes: Requires dev:stack:test running (DB + app).
- * Links: src/app/api/internal/billing/ingest/route.ts, docs/spec/billing-ingest.md
+ * Links: src/app/api/internal/billing/ingest/route.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/billing-ingest.md
  * @public
  */
 

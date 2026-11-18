@@ -10,7 +10,7 @@
  * - FORBIDDEN: @/shared/env, process.env, Next.js imports
  * - createServiceDbClient lives in service.ts, NOT here
  * Side-effects: IO (database connections)
- * Links: docs/spec/packages-architecture.md, docs/spec/database-rls.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md
  * @public
  */
 

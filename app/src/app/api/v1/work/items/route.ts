@@ -6,6 +6,7 @@
  * Purpose: HTTP endpoints for listing and creating Dolt-backed work items.
  * Scope: Auth-protected GET and POST endpoints. Does not contain business logic.
  * Invariants: VALIDATE_IO, CONTRACTS_ARE_TRUTH
+ * Write errors (task.0097): `workItemWriteErrorResponse` from @cogni/work-items answers every write-contract error, `moves` errors included (story.0033); this route keeps only auth, already-exists and backend-unavailable.
  * Side-effects: IO (HTTP response, Doltgres read/write via port)
  * Links: contracts/work.items.{list,create}.v1.contract
  * @public
@@ -15,11 +16,10 @@ import {
   workItemsCreateOperation,
   workItemsListOperation,
 } from "@cogni/node-contracts";
+import { workItemWriteErrorResponse } from "@cogni/work-items";
 import { NextResponse } from "next/server";
 import {
   createWorkItem,
-  WorkItemScoresInvalidError,
-  WorkItemRevisionConflictError,
   InvalidCursorError,
   listWorkItems,
   WorkItemsBackendNotReadyError,
@@ -69,16 +69,6 @@ export const GET = wrapRouteHandlerWithLogging(
     try {
       result = await listWorkItems(input);
     } catch (error) {
-      if (error instanceof WorkItemScoresInvalidError) {
-        return NextResponse.json({ error: "invalid input", errorCode: error.code, issues: error.issues }, { status: 400 });
-      }
-      if (error instanceof WorkItemRevisionConflictError) {
-        return NextResponse.json({ error: "revision_conflict", expectedRevision: error.expectedRevision, currentRevision: error.currentRevision }, { status: 409 });
-      }
-      if ((error as Error)?.name === "WorkItemWriteOutcomeUnknownError") {
-        const unknown = error as { code: string; receipt: { lookup: unknown } };
-        return NextResponse.json({ error: unknown.code, retryable: false, lookup: unknown.receipt.lookup }, { status: 503 });
-      }
       if (error instanceof InvalidCursorError) {
         return NextResponse.json({ error: "invalid cursor" }, { status: 400 });
       }
@@ -125,15 +115,9 @@ export const POST = wrapRouteHandlerWithLogging(
         status: 201,
       });
     } catch (error) {
-      if (error instanceof WorkItemScoresInvalidError) {
-        return NextResponse.json({ error: "invalid input", errorCode: error.code, issues: error.issues }, { status: 400 });
-      }
-      if (error instanceof WorkItemRevisionConflictError) {
-        return NextResponse.json({ error: "revision_conflict", expectedRevision: error.expectedRevision, currentRevision: error.currentRevision }, { status: 409 });
-      }
-      if ((error as Error)?.name === "WorkItemWriteOutcomeUnknownError") {
-        const unknown = error as { code: string; receipt: { lookup: unknown } };
-        return NextResponse.json({ error: unknown.code, retryable: false, lookup: unknown.receipt.lookup }, { status: 503 });
+      const mapped = workItemWriteErrorResponse(error, "create");
+      if (mapped) {
+        return NextResponse.json(mapped.body, { status: mapped.status });
       }
       if (error instanceof WorkItemsBackendNotReadyError) {
         return NextResponse.json({ error: error.message }, { status: 503 });

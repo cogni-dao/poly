@@ -7,7 +7,6 @@
  * Scope: Exports tool capability metadata. Does not enforce policy.
  * Invariants: SINGLE_SOURCE_OF_TRUTH, CAPABILITY_NOT_POLICY.
  * Side-effects: none
- * Links: work/items/task.0230.market-data-package.md
  * @public
  */
 

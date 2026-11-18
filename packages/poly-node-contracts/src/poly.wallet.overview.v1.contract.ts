@@ -12,7 +12,7 @@
  *   - PARTIAL_FAILURE_NEVER_THROWS: individual upstream failures surface via
  *     nullable fields plus `warnings[]`, not a 5xx.
  * Side-effects: none
- * Links: docs/spec/poly-copy-trade-execution.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md
  * @public
  */
 

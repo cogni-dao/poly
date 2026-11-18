@@ -280,11 +280,34 @@ function nextActionStatus(
 export class PositionGapRuntimeStore {
 	constructor(private readonly db: Database) {}
 
+	/**
+	 * Every cohort for the target (resolved included: they still feed the
+	 * per-token allowance sum, held-share attribution and creation dedupe), in
+	 * the exact projection order (created_at, cohort_key). bug.5051: selects only
+	 * the mapped columns; the former `select *` also detoasted
+	 * `source_provenance` jsonb for ~40k rows and hit the 8s statement timeout.
+	 */
 	async loadCohorts(
 		scope: PositionGapRuntimeScope,
 	): Promise<readonly PositionGapCohortState[]> {
 		const rows = await this.db
-			.select()
+			.select({
+				id: polyPositionGapCohorts.id,
+				cohortKey: polyPositionGapCohorts.cohortKey,
+				sourceKind: polyPositionGapCohorts.sourceKind,
+				conditionId: polyPositionGapCohorts.conditionId,
+				tokenId: polyPositionGapCohorts.tokenId,
+				marketId: polyPositionGapCohorts.marketId,
+				outcome: polyPositionGapCohorts.outcome,
+				targetDeltaShares: polyPositionGapCohorts.targetDeltaShares,
+				scaleAtCreation: polyPositionGapCohorts.scaleAtCreation,
+				allowedMirrorShares: polyPositionGapCohorts.allowedMirrorShares,
+				benchmarkTargetVwap: polyPositionGapCohorts.benchmarkTargetVwap,
+				acquiredShares: polyPositionGapCohorts.acquiredShares,
+				openOrderShares: polyPositionGapCohorts.openOrderShares,
+				remainingShares: polyPositionGapCohorts.remainingShares,
+				createdAt: polyPositionGapCohorts.createdAt,
+			})
 			.from(polyPositionGapCohorts)
 			.where(
 				and(
@@ -329,7 +352,16 @@ export class PositionGapRuntimeStore {
 			provisionalHoldingRows,
 		] = await Promise.all([
 			this.db
-				.select()
+				.select({
+					cohortKey: polyPositionGapCohorts.cohortKey,
+					sourceKind: polyPositionGapCohorts.sourceKind,
+					conditionId: polyPositionGapCohorts.conditionId,
+					tokenId: polyPositionGapCohorts.tokenId,
+					allowedMirrorShares: polyPositionGapCohorts.allowedMirrorShares,
+					acquiredShares: polyPositionGapCohorts.acquiredShares,
+					remainingShares: polyPositionGapCohorts.remainingShares,
+					benchmarkTargetVwap: polyPositionGapCohorts.benchmarkTargetVwap,
+				})
 				.from(polyPositionGapCohorts)
 				.where(
 					and(
@@ -815,6 +847,58 @@ export class PositionGapRuntimeStore {
 		};
 	}
 
+	/**
+	 * Insert-only, content-addressed lineage. `input_snapshot_id` is the SHA-256
+	 * of {algorithm_id, input_contract_version, canonical_input}, so an existing
+	 * row with the same id already holds these bytes: compare identity by primary
+	 * key only. bug.5051: the former full `canonical_input = $json::jsonb`
+	 * re-select detoasted and compared a multi-MB document under the 8s timeout.
+	 */
+	private async persistInputSnapshot(
+		scope: PositionGapRuntimeScope,
+		snapshot: NonNullable<PersistPositionGapPlanInput["inputSnapshot"]>,
+	): Promise<void> {
+		const inserted = await this.db
+			.insert(polyAlgorithmInputSnapshots)
+			.values({
+				billingAccountId: scope.billingAccountId,
+				createdByUserId: scope.createdByUserId,
+				inputSnapshotId: snapshot.input_snapshot_id,
+				algorithmId: snapshot.algorithm_id,
+				inputContractVersion: snapshot.input_contract_version,
+				canonicalInput: snapshot.canonical_input,
+				quality: snapshot.quality,
+			})
+			.onConflictDoNothing({
+				target: [
+					polyAlgorithmInputSnapshots.billingAccountId,
+					polyAlgorithmInputSnapshots.inputSnapshotId,
+				],
+			})
+			.returning({ id: polyAlgorithmInputSnapshots.inputSnapshotId });
+		if (inserted.length > 0) return;
+		const [existing] = await this.db
+			.select({
+				algorithmId: polyAlgorithmInputSnapshots.algorithmId,
+				inputContractVersion: polyAlgorithmInputSnapshots.inputContractVersion,
+			})
+			.from(polyAlgorithmInputSnapshots)
+			.where(
+				and(
+					eq(polyAlgorithmInputSnapshots.billingAccountId, scope.billingAccountId),
+					eq(polyAlgorithmInputSnapshots.inputSnapshotId, snapshot.input_snapshot_id),
+				),
+			)
+			.limit(1);
+		if (
+			!existing ||
+			existing.algorithmId !== snapshot.algorithm_id ||
+			existing.inputContractVersion !== snapshot.input_contract_version
+		) {
+			throw new Error("algorithm_input_snapshot_collision");
+		}
+	}
+
 	async persistPlan(
 		input: PersistPositionGapPlanInput,
 	): Promise<PersistedPositionGapPlan> {
@@ -835,6 +919,13 @@ export class PositionGapRuntimeStore {
 			) {
 				throw new Error("invalid position-gap BUY plan");
 			}
+		}
+
+		// bug.5051: lineage, not a lock-bearing fact. Written before the
+		// reservation transaction so a multi-MB insert never holds the advisory
+		// lock; an orphan row after a rolled-back plan is inert (content-addressed).
+		if (input.inputSnapshot) {
+			await this.persistInputSnapshot(input.scope, input.inputSnapshot);
 		}
 
 		return this.db.transaction(async (tx) => {
@@ -999,39 +1090,6 @@ export class PositionGapRuntimeStore {
 			}
 
 			const runId = randomUUID();
-			if (input.inputSnapshot) {
-				await tx
-					.insert(polyAlgorithmInputSnapshots)
-					.values({
-					billingAccountId: input.scope.billingAccountId,
-					createdByUserId: input.scope.createdByUserId,
-					inputSnapshotId: input.inputSnapshot.input_snapshot_id,
-					algorithmId: input.inputSnapshot.algorithm_id,
-					inputContractVersion: input.inputSnapshot.input_contract_version,
-					canonicalInput: input.inputSnapshot.canonical_input,
-					quality: input.inputSnapshot.quality,
-					})
-					.onConflictDoNothing({
-					target: [
-						polyAlgorithmInputSnapshots.billingAccountId,
-						polyAlgorithmInputSnapshots.inputSnapshotId,
-					],
-					});
-				const [matchingSnapshot] = await tx
-				.select({ id: polyAlgorithmInputSnapshots.inputSnapshotId })
-				.from(polyAlgorithmInputSnapshots)
-				.where(
-					and(
-						eq(polyAlgorithmInputSnapshots.billingAccountId, input.scope.billingAccountId),
-						eq(polyAlgorithmInputSnapshots.inputSnapshotId, input.inputSnapshot.input_snapshot_id),
-						eq(polyAlgorithmInputSnapshots.algorithmId, input.inputSnapshot.algorithm_id),
-						eq(polyAlgorithmInputSnapshots.inputContractVersion, input.inputSnapshot.input_contract_version),
-						sql`${polyAlgorithmInputSnapshots.canonicalInput} = ${JSON.stringify(input.inputSnapshot.canonical_input)}::jsonb`,
-					),
-				)
-				.limit(1);
-				if (!matchingSnapshot) throw new Error("algorithm_input_snapshot_collision");
-			}
 			await tx.insert(polyPositionGapRuns).values({
 				id: runId,
 				billingAccountId: input.scope.billingAccountId,

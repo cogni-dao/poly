@@ -7,7 +7,6 @@
  * Scope: Pure data transforms. Does not hit the network, does not require fixtures beyond inline objects.
  * Invariants: DA_EMPTY_HASH_REJECTED; FILL_ID_SHAPE_DECIDED (golden-vector).
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 CP4.1)
  * @internal
  */
 
@@ -29,7 +28,11 @@ const BASE: PolymarketUserTrade = {
   price: 0.602,
   timestamp: 1713300000,
   title: "Open Capfinances Rouen Metropole: Marta Kostyuk vs Ann Li",
+  slug: "wta-kostyuk-li-2024-04-16",
+  eventSlug: "wta-kostyuk-li-2024-04-16",
+  icon: "",
   outcome: "Ann Li",
+  outcomeIndex: 1,
   transactionHash:
     "0x2c800bf0692f5b7b691a136e1413eab5298352bec342ea1a97433f8f25178b7b",
 };
@@ -43,6 +46,11 @@ describe("polymarketDataApiFillId — golden-vector shape", () => {
 });
 
 describe("normalizePolymarketDataApiFill", () => {
+  it("skips a trade with an empty outcome label instead of inventing one", () => {
+    const r = normalizePolymarketDataApiFill({ ...BASE, outcome: "" });
+    expect(r).toEqual({ ok: false, reason: "missing_outcome_label" });
+  });
+
   it("normalizes a well-formed Data-API trade into a Fill", () => {
     const r = normalizePolymarketDataApiFill(BASE);
     expect(r.ok).toBe(true);

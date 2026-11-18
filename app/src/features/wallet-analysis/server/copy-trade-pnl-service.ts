@@ -16,7 +16,7 @@
  *   DEDUPE_AT_DB partial-unique predicate so the boolean lines up with what the
  *   placement path treats as "an active resting slot."
  * Side-effects: IO (DB reads only).
- * Links: docs/spec/poly-copy-trade-execution.md · work/projects/proj.poly-paper-trading.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md
  * @public
  */
 

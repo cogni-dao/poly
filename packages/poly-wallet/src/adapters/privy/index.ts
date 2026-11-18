@@ -7,7 +7,7 @@
  * Scope: Barrel placeholder only. Does not export any runtime today.
  * Invariants: none (placeholder file).
  * Side-effects: none
- * Links: docs/spec/poly-tenant-and-collateral.md §§ Adapter, Behavior
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, Behavior
  * @public
  */
 

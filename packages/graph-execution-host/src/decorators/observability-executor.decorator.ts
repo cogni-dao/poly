@@ -14,7 +14,7 @@
  *   - ERROR_NORMALIZATION_ONCE: Catch block uses normalizeErrorToExecutionCode()
  *   - PURE_LIBRARY: no env vars, no process lifecycle, no @opentelemetry/api dep
  * Side-effects: IO (Langfuse API calls via adapter)
- * Links: OBSERVABILITY.md#langfuse-integration, ERROR_HANDLING_ARCHITECTURE.md
+ * Links: https://cognidao.org/knowledge/node-observability-finish-pass, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/error-handling.md
  * @public
  */
 

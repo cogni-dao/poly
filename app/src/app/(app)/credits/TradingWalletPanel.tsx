@@ -32,11 +32,11 @@
  * Links: nodes/poly/packages/node-contracts/src/poly.wallet.connection.v1.contract.ts,
  *        nodes/poly/packages/node-contracts/src/poly.wallet.balances.v1.contract.ts,
  *        nodes/poly/packages/node-contracts/src/poly.wallet.enable-trading.v1.contract.ts,
- *        work/items/task.0355.poly-trading-wallet-enable-trading.md,
- *        work/items/task.0361.poly-first-user-onboarding-flow-v0.md,
- *        work/items/task.0365.poly-onboarding-ux-polish-v0-1.md,
- *        work/items/task.0351.poly-trading-wallet-withdrawal.md,
- *        work/items/task.0352.poly-trading-wallet-fund-flow.md
+ *        task.0355,
+ *        task.0361,
+ *        task.0365,
+ *        task.0351,
+ *        task.0352
  * @public
  */
 

@@ -13,8 +13,8 @@ Pure parsing and typed extraction for `.cogni/repo-spec.yaml` — the governance
 
 ## Pointers
 
-- [Node vs Operator Contract](../../docs/spec/node-operator-contract.md)
-- [Packages Architecture](../../docs/spec/packages-architecture.md)
+- [Node vs Operator Contract](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-operator-contract.md)
+- [Packages Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md)
 
 ## Boundaries
 

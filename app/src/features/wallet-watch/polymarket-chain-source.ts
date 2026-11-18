@@ -14,7 +14,7 @@
  *   - METADATA_FROM_POSITIONS — `(condition_id, outcome, end_date)` is normally enriched from periodic `listAllUserPositions(wallet)` snapshots (paginated to exhaustion — bug.5055). A fill never waits for that full-wallet walk.
  *   - EXACT_TOKEN_METADATA_BACKSTOP — when the wallet position snapshot does not yet contain a just-filled token (or `/positions` is stalled/rate-limited), resolve that exact CLOB token through Gamma first. Results and in-flight work are coalesced per `(target wallet, token)` across tenant sources. Missing or ambiguous mappings still fail closed. Empty-outcome skip prevents wrong-leg mirroring on NegRisk multi-outcome markets.
  * Side-effects: opens 2 viem RPC subscriptions; HTTPS GETs to data-api.polymarket.com on each metadata refresh; logger + metrics; periodic heartbeat info log.
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5043, work/items/task.5042
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/task.5043, work/items/task.5042
  * @public
  */
 
@@ -377,12 +377,12 @@ export function createPolymarketChainActivitySource(
         deps.metrics.incr(WALLET_WATCH_CHAIN_METRICS.metadataRefreshTotal, {
           trigger,
         });
-        // bug.5055: must paginate. Single-call `listUserPositions` caps at
-        // ~100 rows (Polymarket default page). Active targets hold thousands
-        // of positions; any tokenId outside the top page → permanent
-        // metadata_unresolved skip. Use the page-walking helper.
+        // bug.5055: must cover every held token. A whale target has ~39k
+        // rows but only a few hundred value-bearing ones, so ask the server
+        // for `filter_type=CASH` and walk that; a token that is not held any
+        // more resolves through the exact-token Gamma backstop instead.
         const positions: PolymarketUserPosition[] =
-          await deps.client.listAllUserPositions(deps.wallet);
+          await deps.client.listPositiveValueUserPositions(deps.wallet);
         for (const p of positions) {
           if (!p.asset || !p.conditionId) continue;
           tokenMeta.set(p.asset, {

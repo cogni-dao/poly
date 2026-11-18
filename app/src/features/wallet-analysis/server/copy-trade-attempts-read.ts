@@ -43,7 +43,7 @@
  *     unresolved market is never a loss.
  * Side-effects: IO (two bounded SELECTs).
  * Links: task.1791070959, story.5004, story.5051,
- *   docs/spec/dashboard-agent-parity-inventory.md §9.2
+ *   https://poly.cognidao.org/knowledge/dashboard-parity-field-map §9.2
  * @public
  */
 

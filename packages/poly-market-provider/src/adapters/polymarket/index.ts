@@ -7,7 +7,6 @@
  * Scope: Re-exports only. Does not contain runtime logic.
  * Invariants: PACKAGES_NO_ENV.
  * Side-effects: none
- * Links: work/items/task.0230.market-data-package.md
  * @public
  */
 
@@ -66,7 +65,6 @@ export {
   type ListActivityParams,
   type ListMarketTradesParams,
   type ListTopTradersParams,
-  type ListUserActivityParams,
   type ListUserPositionsParams,
   type ListUserPositionsV2Params,
   type PolymarketPositionsV2Walk,
@@ -75,6 +73,8 @@ export {
   PolyDataApiPositionsV2Error,
   PolyDataApiValidationError,
   PolyDataApiRateLimitedError,
+  setPolyDataApiRowRejectionSink,
+  type PolyDataApiRowRejection,
   PolyDataApiRequestError,
   PolymarketDataApiClient,
   type PolymarketDataApiClientConfig,
@@ -83,34 +83,21 @@ export {
 } from "./polymarket.data-api.client.js";
 export {
   type ActivityEvent,
-  ActivityEventSchema,
-  ActivityEventsResponseSchema,
   type ActivityEventType,
   ActivityEventTypeSchema,
+  type DataApiPage,
   type GammaProfile,
   GammaProfileSchema,
   GammaPublicSearchResponseSchema,
   type MarketHolder,
-  MarketHolderSchema,
-  MarketHoldersResponseSchema,
-  type MarketTrade,
-  MarketTradeSchema,
-  MarketTradesResponseSchema,
   type PolymarketLeaderboardEntry,
-  PolymarketLeaderboardEntrySchema,
   type PolymarketLeaderboardOrderBy,
   PolymarketLeaderboardOrderBySchema,
-  PolymarketLeaderboardResponseSchema,
   type PolymarketLeaderboardTimePeriod,
   PolymarketLeaderboardTimePeriodSchema,
   type PolymarketUserPosition,
   PolymarketUserPositionSchema,
-  PolymarketUserPositionsResponseSchema,
   type PolymarketUserTrade,
-  PolymarketUserTradeSchema,
-  PolymarketUserTradesResponseSchema,
-  UserValueEntrySchema,
-  UserValueResponseSchema,
 } from "./polymarket.data-api.types.js";
 export {
   PolymarketActivityV2Schema,
@@ -118,11 +105,17 @@ export {
   type PolymarketActivityV2,
   PolymarketDataApiStatusV2Schema,
   type PolymarketDataApiStatusV2,
+  PolymarketHoldersV2ResponseSchema,
+  PolymarketLeaderboardV2ResponseSchema,
   PolymarketPositionsV2PaginationSchema,
-  PolymarketUserPositionsV2ResponseSchema,
-  type PolymarketUserPositionsV2Response,
+  type PolymarketTradeV2,
+  PolymarketTradeV2Schema,
+  PolymarketPagedRowsV2Schema,
+  PolymarketPositionIdentityV2Schema,
+  PolymarketTradeIdentityV2Schema,
   type PolymarketUserPositionV2,
   PolymarketUserPositionV2Schema,
+  PolymarketValueV2ResponseSchema,
 } from "./polymarket.data-api-v2.types.js";
 export {
   createPolymarketTargetBookProviderV1,

@@ -7,7 +7,7 @@
  * Scope: Build tooling configuration only. Does not contain runtime code or exports.
  * Invariants: ESM output with type declarations.
  * Side-effects: IO
- * Links: docs/spec/poly-tenant-and-collateral.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md
  * @internal
  */
 

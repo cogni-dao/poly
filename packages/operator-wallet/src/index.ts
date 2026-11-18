@@ -7,7 +7,7 @@
  * Scope: Exports port interface, split allocation math, and domain constants. Does not export Privy adapter (use subpath `@cogni/operator-wallet/adapters/privy`).
  * Invariants: NO_SRC_IMPORTS, NO_SERVICE_IMPORTS, PURE_LIBRARY.
  * Side-effects: none
- * Links: docs/spec/operator-wallet.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/operator-wallet.md
  * @public
  */
 

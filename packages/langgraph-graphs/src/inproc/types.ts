@@ -10,7 +10,7 @@
  *   - Single queue pattern: runner creates queue, passes emit to caller's factory
  *   - LANGCHAIN_ALIGNED: Graph types aligned with graphs/types.ts
  * Side-effects: none
- * Links: LANGGRAPH_AI.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

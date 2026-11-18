@@ -16,7 +16,7 @@
  *   - EFFECT_STATE_CHANGE: the cache write upserts a knowledge-store row on every cache miss; this is by-design idempotent (same wallet → same id) but is still a state change for policy purposes.
  *   - DETERMINISTIC_FOR_FIXED_NOW: pure modulo the upstream fetch + the `now` clock; cache replays are fully deterministic.
  * Side-effects: IO (PolyDataCapability.getUserPnl + KnowledgeCapability.get/write)
- * Links: work/charters/POLY_WALLET_RESEARCH.md, work/items/task.0422.poly-data-user-pnl-summary-tool.md, docs/research/poly-wallet-methodology-self-review.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/work/charters/POLY_WALLET_RESEARCH.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/poly-wallet-methodology-self-review.md
  * @public
  */
 

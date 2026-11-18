@@ -9,7 +9,7 @@
  *   - SINGLE_SOURCE_OF_TRUTH: Canonical definitions in @cogni/ai-core
  *   - This file only re-exports; no local type definitions allowed
  * Side-effects: none (re-exports only)
- * Links: packages/ai-core/src/context/run-context.ts, LANGGRAPH_SERVER.md
+ * Links: packages/ai-core/src/context/run-context.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md
  * @public
  */
 

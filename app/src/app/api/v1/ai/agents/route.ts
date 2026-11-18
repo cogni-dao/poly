@@ -11,7 +11,7 @@
  *   - P0_AGENT_GRAPH_IDENTITY: agentId === graphId (one agent per graph)
  * Side-effects: IO (HTTP request/response)
  * Notes: Implements SEC-001 (auth-protected). Uses discovery pipeline via bootstrap helper.
- * Links: ai.agents.v1.contract, AGENT_DISCOVERY.md
+ * Links: ai.agents.v1.contract, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/agent-discovery.md
  * @public
  */
 

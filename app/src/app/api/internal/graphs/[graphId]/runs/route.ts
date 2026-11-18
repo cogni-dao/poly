@@ -17,7 +17,7 @@
  *   - Per IDEMPOTENT_THREAD_PERSIST: assistant message ID = `assistant-{runId}` — skips if already persisted
  *   - Scheduled run stateKey = sha256(idempotencyKey) — one isolated thread per execution slot, not per schedule
  * Side-effects: IO (HTTP request/response, database, graph execution, Redis stream publishing, thread persistence)
- * Links: docs/spec/scheduler.md, graphs.run.internal.v1.contract
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, graphs.run.internal.v1.contract
  * @internal
  */
 

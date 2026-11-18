@@ -13,7 +13,7 @@
  *   - USER_PNL_OPTIONAL: `userPnlClient` is optional; when omitted (e.g. in component tests), the tick skips the user-pnl read model writer and prune entirely.
  *   - RETENTION_PRUNE_CADENCE (prod EXPLAIN 2026-10-01): the two retention prunes run at most once per RETENTION_PRUNE_INTERVAL_MS (via `runRetentionPrune`), never every poll, and never on the boot tick — prod EXPLAIN showed the snapshot prune burning 30-72s of disk I/O per tick to delete zero rows on a bloated heap.
  * Side-effects: starts a timer, performs IO through injected deps.
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5015
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5015
  * @internal
  */
 

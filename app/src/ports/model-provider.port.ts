@@ -10,7 +10,7 @@
  *   - ONE_GATE: No provider ships without implementing this shape.
  *   - POLICY_ON_PROVIDER: requiresPlatformCredits and usageSource live here, not on ModelRef.
  * Side-effects: none (interface only)
- * Links: docs/spec/multi-provider-llm.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/multi-provider-llm.md
  * @public
  */
 

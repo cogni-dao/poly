@@ -8,7 +8,7 @@
  * Invariants:
  * - ADAPTERS_NOT_IN_CORE: Only types here. No I/O, no deps.
  * Side-effects: none
- * Links: docs/spec/attribution-ledger.md, services/scheduler-worker/src/adapters/ingestion/github-auth.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md, services/scheduler-worker/src/adapters/ingestion/github-auth.ts
  * @public
  */
 

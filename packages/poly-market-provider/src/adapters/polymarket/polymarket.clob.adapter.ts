@@ -19,7 +19,6 @@
  *     `fill_price` and `total_shares` from CLOB `makingAmount`/`takingAmount`.
  *     `fees_usdc` remains undefined when the venue does not report charged USDC.
  * Side-effects: IO (HTTPS to the Polymarket CLOB).
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 CP3.2), docs/spec/poly-paper-trading-shortcomings.md (bug.5018 — adapter symmetry)
  * @public
  */
 
@@ -1091,6 +1090,32 @@ export class PolymarketClobAdapter implements MarketProviderPort {
       );
       // GETORDER_NEVER_NULL (task.0328 CP1): a null / empty body from the CLOB
       // means the order is not found — return the discriminant rather than null.
+      // bug.5060 — the SDK returns HTTP failures (401/400/429/5xx) as an
+      // `{ error, status }` object instead of throwing. Only a genuine 404 /
+      // "not found" is absence; any other error object is an unavailable read
+      // and must surface loudly, not masquerade as `not_found` (which the
+      // reconciler logs at debug and silently skips forever).
+      if (open && !open.id) {
+        const errObj = open as unknown as { error?: unknown; status?: unknown };
+        if (errObj.error !== undefined || typeof errObj.status === "number") {
+          const text = String(
+            typeof errObj.error === "string"
+              ? errObj.error
+              : JSON.stringify(errObj.error ?? "")
+          ).toLowerCase();
+          const httpStatus =
+            typeof errObj.status === "number" ? errObj.status : undefined;
+          if (
+            httpStatus !== 404 &&
+            !text.includes("not found") &&
+            !text.includes("does not exist")
+          ) {
+            throw new Error(
+              `PolymarketClobAdapter.getOrder: CLOB read failed (http_status=${httpStatus ?? "unknown"})`
+            );
+          }
+        }
+      }
       if (!open || !open.id) {
         const duration_ms = Date.now() - start;
         this.metrics.incr(POLY_CLOB_METRICS.getOrderTotal, {
@@ -1583,7 +1608,7 @@ export interface ClobFailureDetails {
    * string that says WHY was classified and then dropped. Emitted on the
    * `poly.clob.place` error log so `unknown` rejections are diagnosable from
    * Loki alone. NOT persisted to the `poly_copy_trade_decisions` receipt —
-   * docs/spec/observability.md keeps raw SDK text out of durable rows.
+   * https://cognidao.org/knowledge/node-observability-finish-pass keeps raw SDK text out of durable rows.
    */
   error_text?: string;
 }

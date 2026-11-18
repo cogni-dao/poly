@@ -17,7 +17,7 @@
  *     acceptable — this is a research aggregate over observed history. The
  *     real fix is tick-written rollup tables (separate design).
  * Side-effects: DB reads only.
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/task.5005
  * @public
  */
 

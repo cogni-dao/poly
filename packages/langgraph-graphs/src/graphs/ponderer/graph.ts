@@ -10,7 +10,7 @@
  *   - LLM and tools are injected, not instantiated
  *   - TYPE_TRANSPARENT_RETURN: No explicit return type annotation to preserve CompiledStateGraph for CLI schema extraction
  * Side-effects: none
- * Links: LANGGRAPH_AI.md, AGENT_DEVELOPMENT_GUIDE.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, https://node-template.cognidao.org/knowledge/agent-development
  * @public
  */
 

@@ -18,7 +18,7 @@
  *   - SEPARATE_PRIVY_APP: enforced at adapter construction time (see
  *     `@/adapters/server/wallet#getPolyTraderWalletAdapter`).
  * Side-effects: IO (Privy API call, DB writes).
- * Links: docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
  * @public
  */
 

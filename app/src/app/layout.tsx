@@ -11,7 +11,7 @@
  *   - Stays a server component so `headers()` is callable cheaply.
  *   - `initialState` MUST be sourced from `cookieToInitialState(wagmiConfig, cookie)`.
  * Side-effects: reads request headers (Next.js dynamic API).
- * Links: ./providers.client, @/shared/web3/wagmi.config, docs/spec/architecture.md §SSR-unsafe libraries
+ * Links: ./providers.client, @/shared/web3/wagmi.config, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md
  * @public
  */
 

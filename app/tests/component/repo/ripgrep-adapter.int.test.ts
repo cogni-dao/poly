@@ -10,7 +10,7 @@
  *   - SHA_STAMPED: all results include sha7
  *   - HARD_BOUNDS: open capped at 200 lines, search bounded, files ≤256KB
  * Side-effects: IO (filesystem, rg/git subprocesses)
- * Links: src/adapters/server/repo/ripgrep.adapter.ts, COGNI_BRAIN_SPEC.md
+ * Links: src/adapters/server/repo/ripgrep.adapter.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md
  * @public
  */
 

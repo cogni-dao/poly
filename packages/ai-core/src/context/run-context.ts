@@ -11,7 +11,7 @@
  *   - ingressRequestId is transport correlation only, NEVER for idempotency
  *   - runId + attempt form execution identity
  * Side-effects: none (types only)
- * Links: ai_runtime.ts (RunEventRelay), billing.ts (commitUsageFact), GRAPH_EXECUTION.md
+ * Links: ai_runtime.ts (RunEventRelay), billing.ts (commitUsageFact), https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

@@ -12,7 +12,7 @@
  *   - status is 'success' or 'error'
  * Side-effects: none (schema definitions only)
  * Notes: Per AI_SETUP_SPEC.md P0 scope. Separate from charge_receipts (billing).
- * Links: AI_SETUP_SPEC.md, AiTelemetryPort, DrizzleAiTelemetryAdapter
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md, AiTelemetryPort, DrizzleAiTelemetryAdapter
  * @public
  */
 

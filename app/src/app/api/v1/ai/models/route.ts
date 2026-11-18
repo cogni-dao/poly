@@ -7,7 +7,7 @@
  * Scope: Auth-protected GET endpoint that returns aggregated model list via ModelCatalogPort.
  * Invariants: Uses ModelCatalogPort (providers handle caching), validates with contract.
  * Side-effects: IO (HTTP request/response)
- * Links: ai.models.v1.contract, ModelCatalogPort, docs/spec/multi-provider-llm.md
+ * Links: ai.models.v1.contract, ModelCatalogPort, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/multi-provider-llm.md
  * @public
  */
 

@@ -35,7 +35,7 @@
  *   - DB_ONLY: no Polymarket calls — the Data-API limiter is untouched.
  * Side-effects: DB reads/writes; timers; logs.
  * Links: src/features/wallet-analysis/server/fill-rollup-service.ts,
- *   work/items/task.research-rollup-read-models.md
+ *   https://poly.cognidao.org/work/items/task.1791071006
  * @internal
  */
 

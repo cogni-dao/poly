@@ -12,7 +12,7 @@
  *   - SCOPE_GENERALIZED (M2, task.5029): `scope` is the required scope string ("graph:execute:<id>" or "task:dispatch:<nodeId>:<route>"). `graphId` retained (optional) for back-compat callers that haven't migrated; the route derives `scope` from `graphId` when `scope` is absent.
  *   - All consumers use z.infer types
  * Side-effects: none
- * Links: /api/internal/grants/[grantId]/validate route, docs/spec/scheduler.md, task.0280, task.5029
+ * Links: /api/internal/grants/[grantId]/validate route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, task.0280, task.5029
  * @internal
  */
 

@@ -10,7 +10,7 @@
  *   - oldest_synced_row_age_ms is null when no row has a non-null synced_at (never-synced rows have no age — use rows_never_synced for that signal).
  * Side-effects: none
  * Notes: reconciler_last_tick_at is null when the reconciler has not ticked in this process yet (e.g. Polymarket creds absent).
- * Links: work/items/task.0328.md, docs/spec/poly-copy-trade-execution.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md
  * @public
  */
 

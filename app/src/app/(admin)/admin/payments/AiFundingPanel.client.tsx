@@ -12,7 +12,7 @@
  *   The OpenRouter top-up itself is an external human checkout (we only link to it).
  * Invariants: AMOUNT_ONLY (destination pinned server-side); semantic color tokens only.
  * Side-effects: IO (fetch POST → on-chain transfer).
- * Links: src/app/api/v1/payments/steward-withdrawal/route.ts, funding.server.ts, docs/design/node-steward-wallet.md
+ * Links: src/app/api/v1/payments/steward-withdrawal/route.ts, funding.server.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/node-steward-wallet.md
  * @public
  */
 

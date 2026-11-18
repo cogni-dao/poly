@@ -7,7 +7,7 @@
  * Scope: Shared constants for payment features. Does not contain business logic.
  * Invariants: widget_payment is the only allowed reason for widget-funded credits.
  * Side-effects: none
- * Links: docs/spec/payments-design.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

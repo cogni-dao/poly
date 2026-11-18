@@ -42,7 +42,7 @@
  *     account list, so a transient read of zero accounts cannot wipe
  *     enrollment (a stronger form of ENROLLMENT_FAILURE_IS_NOT_A_WIPE).
  * Side-effects: IO through injected Data API client + optional user-pnl client + injected DB.
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5015
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5015
  * @public
  */
 
@@ -87,6 +87,7 @@ import {
 
 import {
   PositionObservationBudget,
+  PositionObservationBudgetError,
   type PositionObservationController,
   PositionBalanceTransportError,
   positionObservationController,
@@ -110,9 +111,12 @@ const POSITION_SOURCE = "data-api-positions";
 const DEFAULT_TRADE_PAGE_LIMIT = 100;
 const DEFAULT_MAX_PAGES = 10;
 const POSITION_FETCH_LIMIT = 500;
+const POSITION_MIN_VALUE_USDC = 0.000001;
 const DEFAULT_POSITION_MAX_PAGES = 10;
 const POSITION_MAX_ROWS = POSITION_FETCH_LIMIT * DEFAULT_POSITION_MAX_PAGES;
 const POSITION_OMISSION_LIMIT = POSITION_MAX_ROWS + 1;
+/** Matches the client's `condition=` chunk ceiling: one budget call per chunk. */
+const POSITION_REREAD_CONDITION_CHUNK_SIZE = 20;
 const POSITION_BALANCE_CHUNK_SIZE = 100;
 const POSITION_BALANCE_MAX_CHUNKS = 50;
 const POSITION_BALANCE_CHUNK_TIMEOUT_MS = 5_000;
@@ -1352,6 +1356,7 @@ async function observePositionsSerialized(deps: {
         walletAddress: deps.wallet.walletAddress,
         maxPages: deps.maxPages,
         budget: deps.budget,
+        ...positionPageValueFloor(deps.wallet),
         signal: deps.signal,
       });
     } catch (err) {
@@ -1445,12 +1450,37 @@ async function observePositionsSerialized(deps: {
       );
     }
 
-    const omitted = await readOmittedCurrentPositions({
+    let omitted = await readOmittedCurrentPositions({
       db: deps.db,
       wallet: deps.wallet,
       positions: pageResult.positions,
     });
     deps.signal?.throwIfAborted();
+    if (omitted.length > 0 && omitted.length < POSITION_OMISSION_LIMIT) {
+      // bug.5059: the CASH page drops REDEEMABLE current_value=0 rows (a fresh
+      // loser). Re-read just the omitted conditions unfiltered so the vendor's
+      // own row explains the omission instead of the on-chain balance vetoing.
+      const reread = await rereadOmittedPositions({
+        client: deps.client,
+        omitted,
+        budget: deps.budget,
+        signal: deps.signal,
+        logger: deps.logger,
+        wallet: deps.wallet,
+      });
+      if (reread.length > 0) {
+        pageResult.positions = dedupePositions([
+          ...pageResult.positions,
+          ...reread,
+        ]);
+        omitted = await readOmittedCurrentPositions({
+          db: deps.db,
+          wallet: deps.wallet,
+          positions: pageResult.positions,
+        });
+        deps.signal?.throwIfAborted();
+      }
+    }
     lastOmissionCount = omitted.length;
     if (omitted.length >= POSITION_OMISSION_LIMIT) {
       const published = await publishPositionFailure({
@@ -1875,6 +1905,72 @@ async function readPositionPrepareState(
 function readTerminalResume(value: string | null): string | null {
   const key = parseTerminalResume(value);
   return key ? JSON.stringify(key) : null;
+}
+
+/**
+ * Condition-scoped, unfiltered re-read of active rows the CASH page omitted.
+ * Returns only vendor rows whose exact (condition, token) key was omitted and
+ * that are well-formed; anything still absent (closed/sold, errors, exhausted
+ * data-API allowance) stays omitted and falls through to the on-chain
+ * authority check, so genuinely missing rows keep failing closed.
+ */
+export async function rereadOmittedPositions(input: {
+  client: PolymarketDataApiClient;
+  omitted: readonly MissingCurrentPosition[];
+  budget: PositionObservationBudget;
+  wallet: Pick<PolyTraderWallet, "walletAddress">;
+  signal?: AbortSignal | undefined;
+  logger?: LoggerPort | undefined;
+}): Promise<PolymarketUserPosition[]> {
+  const wanted = new Set(
+    input.omitted.map((row) => `${row.conditionId}\u0000${row.tokenId}`)
+  );
+  const conditions = [...new Set(input.omitted.map((row) => row.conditionId))];
+  const found: PolymarketUserPosition[] = [];
+  for (
+    let offset = 0;
+    offset < conditions.length;
+    offset += POSITION_REREAD_CONDITION_CHUNK_SIZE
+  ) {
+    input.signal?.throwIfAborted();
+    const chunk = conditions.slice(
+      offset,
+      offset + POSITION_REREAD_CONDITION_CHUNK_SIZE
+    );
+    try {
+      const rows = await input.budget.call(
+        "data_api",
+        () =>
+          input.client.listUserPositionsV2(input.wallet.walletAddress, {
+            conditions: chunk,
+            signal: input.signal,
+          }),
+        input.signal
+      );
+      for (const row of rows) {
+        if (
+          wanted.has(`${row.conditionId}\u0000${row.asset}`) &&
+          isValidObservedPosition(row)
+        ) {
+          found.push(row);
+        }
+      }
+    } catch (err) {
+      if (input.signal?.aborted) throw err;
+      // Diagnostics must never turn a recoverable re-read into a hard failure.
+      input.logger?.warn?.(
+        {
+          event: "poly.trader.positions.omitted_reread_failed",
+          wallet: input.wallet.walletAddress,
+          conditions: chunk.length,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        "omitted position re-read failed; falling back to chain authority"
+      );
+      if (err instanceof PositionObservationBudgetError) break;
+    }
+  }
+  return found;
 }
 
 async function readOmittedCurrentPositions(input: {
@@ -2544,11 +2640,33 @@ function isValidObservedPosition(position: PolymarketUserPosition): boolean {
   );
 }
 
+/**
+ * Tenant wallets (`cogni_wallet`) hold hundreds of rows and the dashboard
+ * total is only coherent when EVERY held token carries a fresh saved mark, so
+ * they read the complete book. Only a copy target's whale book (~39k, mostly
+ * worthless REDEEMABLE rows — bug.5049) needs the value floor to fit the cap.
+ * bug.5062: the floor on tenant wallets stopped refreshing worthless rows,
+ * leaving stale marks that withheld the wallet total.
+ */
+export function positionPageValueFloor(
+  wallet: Pick<PolyTraderWallet, "kind">
+): { minValueUsdc?: number } {
+  return wallet.kind === "cogni_wallet"
+    ? {}
+    : { minValueUsdc: POSITION_MIN_VALUE_USDC };
+}
+
 export async function fetchTraderPositionsPages(params: {
   client: PolymarketDataApiClient;
   walletAddress: string;
   maxPages: number;
   budget?: PositionObservationBudget;
+  /**
+   * Value floor (`filter_type=CASH`). Omitted: the complete book
+   * (`sizeThreshold=0`), so every held token — including worthless REDEEMABLE
+   * rows — is refreshed each pass and carries a fresh saved mark.
+   */
+  minValueUsdc?: number | undefined;
   /** Cooperative cancellation (task.5015): checked before each page and passed to the fetch. */
   signal?: AbortSignal | undefined;
 }): Promise<{
@@ -2562,30 +2680,34 @@ export async function fetchTraderPositionsPages(params: {
   );
   const budget = params.budget ?? new PositionObservationBudget();
   const positions: PolymarketUserPosition[] = [];
+  let cursor: string | undefined;
   for (let page = 0; page < maxPages; page += 1) {
     params.signal?.throwIfAborted();
-    const pagePositions = await budget.call(
+    const pageResult = await budget.call(
       "data_api",
       () =>
         params.client.listUserPositions(params.walletAddress, {
-          sizeThreshold: 0,
+          ...(params.minValueUsdc === undefined
+            ? { sizeThreshold: 0 }
+            : { minValueUsdc: params.minValueUsdc }),
           limit: POSITION_FETCH_LIMIT,
-          offset: page * POSITION_FETCH_LIMIT,
+          ...(cursor !== undefined && { cursor }),
           signal: params.signal,
         }),
       params.signal
     );
-    positions.push(...pagePositions.slice(0, POSITION_FETCH_LIMIT));
-    if (pagePositions.length > POSITION_FETCH_LIMIT) {
+    positions.push(...pageResult.rows.slice(0, POSITION_FETCH_LIMIT));
+    if (pageResult.rows.length > POSITION_FETCH_LIMIT) {
       return { positions, complete: false, pages: page + 1 };
     }
-    if (pagePositions.length < POSITION_FETCH_LIMIT) {
+    if (pageResult.nextCursor === null) {
       return {
         positions: dedupePositions(positions),
         complete: true,
         pages: page + 1,
       };
     }
+    cursor = pageResult.nextCursor;
   }
   return { positions, complete: false, pages: maxPages };
 }

@@ -13,7 +13,7 @@
  *     fails upstream before usable creds are produced.
  *   - NO_POISONED_CREDS — empty or error-shaped CLOB responses are rejected
  *     before encryption/storage.
- * Links: docs/guides/poly-wallet-provisioning.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/poly-wallet-provisioning.md
  * @internal
  */
 

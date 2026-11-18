@@ -7,7 +7,7 @@
  * Scope: Exports chain ID, token addresses, explorer URLs, and payment constants; does not perform network calls or expose framework types (wagmi). EVM-only; Solana requires separate config.
  * Invariants: Single active chain per deployment; repo-spec chain_id must match CHAIN_ID or startup fails; all chain config in CHAINS map.
  * Side-effects: none
- * Links: docs/spec/chain-config.md, docs/spec/payments-design.md, src/shared/web3/evm-wagmi.ts (for wagmi Chain mapping)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/chain-config.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md, src/shared/web3/evm-wagmi.ts (for wagmi Chain mapping)
  * @public
  */
 

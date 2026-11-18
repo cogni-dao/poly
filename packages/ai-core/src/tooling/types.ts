@@ -12,7 +12,7 @@
  *   - No Zod dependency — compiled from @cogni/ai-tools via toToolSpec()
  *   - ToolSpec uses JSONSchema7 for inputSchema (compiled from Zod)
  * Side-effects: none (types only)
- * Links: TOOL_USE_SPEC.md, GRAPH_EXECUTION.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md, https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

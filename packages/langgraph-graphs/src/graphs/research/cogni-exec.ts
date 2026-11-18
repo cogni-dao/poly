@@ -9,7 +9,7 @@
  *   - HELPERS_DO_NOT_IMPORT_CATALOG: Uses makeCogniGraph with explicit toolIds
  *   - NO_CROSSING_THE_STREAMS: Never imports initChatModel or reads env
  * Side-effects: none
- * Links: GRAPH_EXECUTION.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

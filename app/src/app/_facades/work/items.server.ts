@@ -6,6 +6,9 @@
  * Purpose: Server-side facade for work item read/write operations.
  * Scope: Maps Work item ports to contract DTOs. Does not contain business logic.
  * Invariants: PORT_VIA_CONTAINER, CONTRACTS_ARE_TRUTH
+ * Write errors pass through unchanged; `workItemWriteErrorResponse` (@cogni/work-items) maps them to HTTP in the route (task.0097).
+ * Moves (story.0033): create and patch resolve new metric links and pin baselines. Detail and bounded summary reads add authorized observations and directional verdicts.
+ * Envelope (task.0118): `getWorkItem` is the one single-item read; each move also carries its metric, KPI and goal, and `includeLinks` adds the first page of citation links. List and summary reads stay summary-sized.
  * Side-effects: IO (Doltgres read/write via port)
  * Links: [work.items.list.v1.contract](../../../contracts/work.items.list.v1.contract.ts)
  * @internal
@@ -17,11 +20,25 @@ import type {
 	WorkItemDto,
 	WorkItemsListInput,
 	WorkItemsListOutput,
+	WorkItemSummariesListInput,
+	WorkItemSummariesListOutput,
 } from "@cogni/node-contracts";
-import type { WorkItem } from "@cogni/work-items";
-import { toWorkItemDto, toWorkItemId, WorkItemScoresInvalidError } from "@cogni/work-items";
-import { WorkItemRevisionConflictError, WorkItemWriteOutcomeUnknownError } from "@cogni/work-items/adapters/doltgres";
-export { WorkItemScoresInvalidError, WorkItemRevisionConflictError, WorkItemWriteOutcomeUnknownError };
+import type {
+	WorkBoardColumnPages,
+	WorkItem,
+	WorkQuery,
+	WorkSummaryReadOptions,
+} from "@cogni/work-items";
+import {
+	composeItemEnvelope,
+	judgeMoveSummaries,
+	toWorkItemDto,
+	toWorkItemId,
+	toWorkItemsCreateInput,
+	toWorkItemsPatchInput,
+} from "@cogni/work-items";
+import { createCitationLinksPort } from "@/bootstrap/capabilities/citation-links";
+import { createMoveMetricPorts } from "@/bootstrap/capabilities/work-item-moves";
 import { getContainer } from "@/bootstrap/container";
 
 export class InvalidCursorError extends Error {
@@ -95,32 +112,74 @@ function nextActionForWorkItem(item: WorkItem): string | null {
 
 const toDto = toWorkItemDto;
 
-type StripUndefined<T> = {
-	[K in keyof T]?: Exclude<T[K], undefined>;
-};
+/**
+ * MOVES_READ_AT_READ_TIME: add each move's baseline, current reading and verdict to a
+ * single item. Never throws: a lookup that fails reads `unknown`. A list read does not call this.
+ */
+async function withMoveReadings(
+	dto: WorkItemDto,
+	options?: WorkSummaryReadOptions,
+): Promise<WorkItemDto> {
+	if (!dto.moves?.length) return dto;
+	const container = getContainer();
+	// No metrics service on this node: every move reads `unknown` (metrics_unavailable).
+	const readings = container.goalMetrics
+		? createMoveMetricPorts(() => container.goalMetrics).readings
+		: undefined;
+	return (await judgeMoveSummaries([dto], readings, options))[0] ?? dto;
+}
 
-function dropUndefined<T extends Record<string, unknown>>(
-	value: T,
-): StripUndefined<T> {
-	const result: Record<string, unknown> = {};
-	for (const [key, item] of Object.entries(value)) {
-		if (item !== undefined) result[key] = item;
-	}
-	return result as StripUndefined<T>;
+async function withSummaryReadings<T extends { moves?: WorkItemDto["moves"] }>(
+	items: readonly T[],
+	options?: WorkSummaryReadOptions,
+): Promise<T[]> {
+	const container = getContainer();
+	const readings = container.goalMetrics
+		? createMoveMetricPorts(() => container.goalMetrics).readings
+		: undefined;
+	return judgeMoveSummaries(items, readings, options);
+}
+
+/** Single-item read options; `includeLinks` adds the first page of citation links (`?include=links`). */
+export interface WorkItemReadOptions extends WorkSummaryReadOptions {
+	readonly includeLinks?: boolean;
+	/** Set false for a caller that needs only the stored move ids (the EDO expectations read). Default: resolve the chain. */
+	readonly chain?: boolean;
+}
+
+/**
+ * THE single-item envelope (task.0118): the stored item plus, for each move, its readings, verdict
+ * and the metric → KPI → goal chain, and optionally the first page of citation links. Never throws
+ * for either: an unresolved chain reads `context: "unavailable"` and unreadable links read `unavailable`.
+ */
+async function withItemEnvelope(
+	dto: WorkItemDto,
+	options?: WorkItemReadOptions,
+): Promise<WorkItemDto> {
+	const container = getContainer();
+	const readings = container.goalMetrics
+		? createMoveMetricPorts(
+				() => container.goalMetrics,
+				() => container.knowledgeStorePort,
+			).readings
+		: undefined;
+	// ONE_COMPOSITION: the same `composeItemEnvelope` the agent tool's capability calls.
+	return composeItemEnvelope(
+		dto,
+		{
+			readings,
+			links: createCitationLinksPort(() => container.knowledgeStorePort),
+			log: (event) => container.log.warn(event, "work.items.envelope_degraded"),
+		},
+		options,
+	);
 }
 
 function rethrowBackendError(error: unknown): never {
 	const message = (error as Error)?.message ?? "";
-	if ((error as Error)?.name === "WorkItemScoresInvalidError") {
-		const issues = (error as WorkItemScoresInvalidError).issues;
-		throw new WorkItemScoresInvalidError(Array.isArray(issues) ? issues : []);
-	}
-	if ((error as Error)?.name === "WorkItemRevisionConflictError") {
-		const conflict = error as WorkItemRevisionConflictError;
-		throw new WorkItemRevisionConflictError(conflict.id, conflict.expectedRevision, conflict.currentRevision);
-	}
-	if ((error as Error)?.name === "WorkItemWriteOutcomeUnknownError") throw error;
-
+	// Errors the package owns (revision conflict, scores, reason, cites, moves, resolver and
+	// baseline failures, write-outcome-unknown) pass through: the route maps them with
+	// `workItemWriteErrorResponse`, which matches by name across bundled copies (task.0097).
 	const notFound = /^Work item not found: (.+)$/.exec(message);
 	if (notFound?.[1]) throw new WorkItemNotFoundError(notFound[1]);
 	if (
@@ -171,11 +230,113 @@ export async function listWorkItems(
 	}
 }
 
-export async function getWorkItem(id: string): Promise<WorkItemDto | null> {
+/** The store query for one decoded summary request (the published codec already bounded it). */
+function summaryQuery(input: WorkItemSummariesListInput): WorkQuery {
+	return {
+		...(input.sortBy !== undefined && { sortBy: input.sortBy }),
+		...(input.sortDirection !== undefined && {
+			sortDirection: input.sortDirection,
+		}),
+		...(input.types && { types: input.types as WorkItem["type"][] }),
+		...(input.statuses && { statuses: input.statuses as WorkItem["status"][] }),
+		...(input.text && { text: input.text }),
+		...(input.actor && { actor: input.actor as WorkItem["actor"] }),
+		...(input.projectId && { projectId: toWorkItemId(input.projectId) }),
+		...(input.projectIds && { projectIds: input.projectIds.map(toWorkItemId) }),
+		...(input.rankMin !== undefined && { rankMin: input.rankMin }),
+		...(input.rankMax !== undefined && { rankMax: input.rankMax }),
+		...(input.node && { node: input.node }),
+		...(input.labels && { labels: input.labels }),
+		...(input.labelPrefix !== undefined && { labelPrefix: input.labelPrefix }),
+		...(input.scored !== undefined && { scored: input.scored }),
+		limit: input.limit ?? 25,
+		...(input.cursor && { cursor: input.cursor }),
+	};
+}
+
+function rethrowReadError(error: unknown): never {
+	if ((error as Error)?.name === "InvalidCursorError") {
+		throw new InvalidCursorError((error as Error).message);
+	}
+	rethrowBackendError(error);
+}
+
+/**
+ * One bounded summary page (task.0056). `options` (signal, shared deadline,
+ * scan budget) only tightens the read. Poly's Doltgres hub is the only backend;
+ * an unconfigured hub surfaces as `WorkItemsBackendNotReadyError` (503).
+ */
+export async function listWorkSummaries(
+	input: WorkItemSummariesListInput,
+	options?: WorkSummaryReadOptions,
+): Promise<WorkItemSummariesListOutput> {
+	try {
+		const page = await getContainer().doltgresWorkItems.listSummaries(
+			summaryQuery(input),
+			options,
+		);
+		return { ...page, items: await withSummaryReadings(page.items, options) };
+	} catch (error) {
+		rethrowReadError(error);
+	}
+}
+
+/**
+ * First page of every listed board column in ONE store read when the port
+ * composes it (task.0056); otherwise one bounded summary read per column.
+ * Text queries never reach here (the package keeps them per-column).
+ */
+export async function listWorkBoardColumns(
+	input: WorkItemSummariesListInput,
+	statuses: readonly string[],
+	perColumn: number,
+	options?: WorkSummaryReadOptions,
+): Promise<WorkBoardColumnPages> {
+	const port = getContainer().doltgresWorkItems;
+	if (port.listBoardColumns) {
+		try {
+			const page = await port.listBoardColumns(
+				summaryQuery(input),
+				statuses,
+				perColumn,
+				options,
+			);
+			const items = await withSummaryReadings(
+				page.columns.flatMap((column) => column.items),
+				options,
+			);
+			let offset = 0;
+			return {
+				...page,
+				columns: page.columns.map((column) => {
+					const start = offset;
+					offset += column.items.length;
+					return { ...column, items: items.slice(start, offset) };
+				}),
+			};
+		} catch (error) {
+			rethrowReadError(error);
+		}
+	}
+	const columns = [];
+	for (const status of statuses) {
+		const page = await listWorkSummaries(
+			{ ...input, statuses: [status], limit: perColumn },
+			options,
+		);
+		columns.push({ status, items: page.items, pageInfo: page.pageInfo });
+	}
+	return { columns, queryCount: columns.length };
+}
+
+export async function getWorkItem(
+	id: string,
+	options?: WorkItemReadOptions,
+): Promise<WorkItemDto | null> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.get(toWorkItemId(id));
-		return item ? toDto(item) : null;
+		return item ? await withItemEnvelope(toDto(item), options) : null;
 	} catch (error) {
 		rethrowBackendError(error);
 	}
@@ -188,31 +349,11 @@ export async function createWorkItem(
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.create(
-			{
-				...(input.id && { id: toWorkItemId(input.id) }),
-				type: input.type,
-				title: input.title,
-				...(input.summary !== undefined && { summary: input.summary }),
-				...(input.outcome !== undefined && { outcome: input.outcome }),
-				...(input.specRefs !== undefined && { specRefs: input.specRefs }),
-				...(input.projectId !== undefined && {
-					projectId: toWorkItemId(input.projectId),
-				}),
-				...(input.parentId !== undefined && {
-					parentId: toWorkItemId(input.parentId),
-				}),
-				...(input.labels !== undefined && { labels: input.labels }),
-				...(input.assignees !== undefined && { assignees: input.assignees }),
-				...(input.node !== undefined && { node: input.node }),
-				...(input.status !== undefined && { status: input.status }),
-				...(input.priority !== undefined && { priority: input.priority }),
-				...(input.rank !== undefined && { rank: input.rank }),
-				...(input.estimate !== undefined && { estimate: input.estimate }),
-				...(input.scores != null && { scores: input.scores }),
-			},
+			// A null `scores` never reaches the store: it reads as absent.
+			toWorkItemsCreateInput({ ...input, scores: input.scores ?? undefined }),
 			sessionUser.id,
 		);
-		return toDto(item);
+		return await withMoveReadings(toDto(item));
 	} catch (error) {
 		rethrowBackendError(error);
 	}
@@ -225,10 +366,10 @@ export async function patchWorkItem(
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.patch(
-			{ id: toWorkItemId(input.id), ...(input.expectedRevision !== undefined && { expectedRevision: input.expectedRevision }), set: dropUndefined(input.set) },
+			toWorkItemsPatchInput(input),
 			sessionUser.id,
 		);
-		return toDto(item);
+		return await withMoveReadings(toDto(item));
 	} catch (error) {
 		if ((error as Error)?.message === `Work item not found: ${input.id}`) {
 			throw new WorkItemNotFoundError(input.id);

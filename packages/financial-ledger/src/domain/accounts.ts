@@ -10,7 +10,7 @@
  *   - ALL_MATH_BIGINT: All account IDs are bigint (u128)
  *   - MVP_MINIMAL: Only accounts for flows that exist today (credits + USDC)
  * Side-effects: none
- * Links: docs/spec/financial-ledger.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/financial-ledger.md
  * @public
  */
 

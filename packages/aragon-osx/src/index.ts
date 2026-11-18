@@ -7,7 +7,7 @@
  * Scope: Re-exports only; does not contain implementation logic.
  * Invariants: All public APIs exported from this barrel file.
  * Side-effects: none
- * Links: docs/spec/node-formation.md, docs/spec/packages-architecture.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-formation.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @public
  */
 

@@ -8,7 +8,7 @@
  * Invariants:
  *   - TOKENS_NEVER_LOGGED: Only returns boolean + ID, never credential data
  * Side-effects: IO (DB query)
- * Links: docs/spec/tenant-connections.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tenant-connections.md
  * @public
  */
 

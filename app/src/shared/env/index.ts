@@ -8,7 +8,7 @@
  * Invariants: Only re-exports public APIs; utility helpers fail fast on missing vars; maintains type safety.
  * Side-effects: process.env
  * Notes: Includes fallback helpers for edge cases; changes here affect environment module public API contract.
- * Links: ARCHITECTURE.md#public-surface
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md
  * @public
  */
 

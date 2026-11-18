@@ -9,7 +9,7 @@
  * Scope: Type + interface re-exports only. Does not export adapter implementations or expose runtime.
  * Invariants: none (barrel file).
  * Side-effects: none
- * Links: docs/spec/poly-tenant-and-collateral.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md
  * @public
  */
 

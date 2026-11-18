@@ -11,7 +11,7 @@
  *   - SHA_STAMPED: All results include HEAD sha7
  *   - HARD_BOUNDS: search≤50 hits, snippet≤20 lines, open≤200 lines, max 256KB
  * Side-effects: none (interface only)
- * Links: COGNI_BRAIN_SPEC.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md
  * @public
  */
 

@@ -15,7 +15,7 @@
  *   - UPSERT_IS_IDEMPOTENT — re-receiving the same chain log produces the same
  *     row state.
  * Side-effects: none (interface).
- * Links: docs/spec/poly-copy-trade-execution.md, bug.5008
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, bug.5008
  * @public
  */
 

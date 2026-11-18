@@ -18,7 +18,7 @@
  *   - PNL_TIMESERIES_KEYED_BY_FIDELITY: `poly_trader_user_pnl_points` PK is `(trader_wallet_id, fidelity, ts)`; reader picks `1h` for short windows, `1d` for long.
  *   - PRICE_HISTORY_TIMESERIES_KEYED: `poly_market_price_history` PK is `(asset, fidelity, ts)`; reader picks `1h` for windows up to ~1 month, `1d` for longer.
  * Side-effects: none
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5018
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/task.5005, work/items/task.5012, work/items/task.5018
  * @public
  */
 
@@ -376,6 +376,23 @@ export const polyTraderPositionSnapshots = pgTable(
       table.tokenId,
       table.capturedAt.desc()
     ),
+    // Economic-observation history (bug.5058): the dashboard projection's
+    // `history_facts` CTE selects the newest `raw.economicObservationV1`
+    // envelope per (wallet, lower(condition_id), token_id). Only the recovery
+    // writer attaches that envelope (the observer strips it from every regular
+    // snapshot), so it lives on a tiny fraction of rows. Without this partial
+    // index the predicate forces a heap-fetch of EVERY snapshot of the wallet
+    // (millions of jsonb rows for a long-observed wallet -> 8s statement
+    // timeout). The WHERE clause must stay textually identical to the
+    // projection's `version = '1'` predicate for the planner to use it.
+    index("poly_trader_position_snapshots_economic_observation_idx")
+      .on(
+        table.traderWalletId,
+        sql`lower(${table.conditionId})`,
+        table.tokenId,
+        table.capturedAt.desc()
+      )
+      .where(sql`${table.raw}->'economicObservationV1'->>'version' = '1'`),
     // Retention pruner (task.5012): the candidate scan is a bare
     // `captured_at < cutoff` with no wallet/condition predicate. Neither
     // `_latest_idx` (trader_wallet_id-led) nor `_market_latest_idx`
@@ -605,7 +622,7 @@ export const polyMarketMetadata = pgTable(
 /**
  * Observation read-model for the dashboard/research "Top Wallets" leaderboard
  * (bug.5017). One row per `(time_period, order_by, wallet_address)` — the
- * Polymarket `/v1/leaderboard` entry plus the `/trades`-count enrichment the
+ * Polymarket `/v2/leaderboard` entry plus the `/trades`-count enrichment the
  * UI consumes. Written only by the top-wallet-stats tick; page-load reads go
  * through `readTopTradersFromDb` (PAGE_LOAD_DB_ONLY). No tenant FK → no RLS,
  * matching the other `poly_trader_*` / `poly_market_*` observation tables.

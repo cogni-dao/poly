@@ -10,7 +10,7 @@
  *   - NO_FABRICATED_VALUES: a missing/contradictory settlement remains null.
  *   - SETTLEMENT_IS_AUTHORITATIVE: a closed market's winner is 1 and loser 0.
  * Side-effects: none.
- * Links: docs/spec/capability-plane.md, story.5016
+ * Links: https://poly.cognidao.org/knowledge/capability-plane-contract, story.5016
  * @internal
  */
 

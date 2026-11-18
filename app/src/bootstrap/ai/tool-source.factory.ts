@@ -13,7 +13,7 @@
  *     need stubs for tools they don't own.
  *   - IMPLEMENTATIONS_FROM_BINDINGS: Uses implementations from tool-bindings
  * Side-effects: none
- * Links: TOOL_USE_SPEC.md, container.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md, container.ts
  * @internal
  */
 

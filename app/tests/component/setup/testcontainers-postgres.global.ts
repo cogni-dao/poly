@@ -164,7 +164,7 @@ export async function setup() {
   // `%user_id` column match) so external identifiers like ingestion_receipts.
   // platform_user_id are correctly ignored. Transitive tenancy (FK to
   // billing_accounts, not users) is covered by hand-written policies, not here.
-  // See docs/spec/database-rls.md RLS_COVERAGE.
+  // See https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md RLS_COVERAGE.
   const coverageCheck = await c.exec([
     "bash",
     "-c",
@@ -180,7 +180,7 @@ export async function setup() {
       `Preflight failed: tables with a FK to users lack RLS: ${uncoveredUserTables.join(", ")}. ` +
         `Every tenant-scoped table (a foreign key to users) must ENABLE + FORCE row-level security. ` +
         `Add an owner-scoped policy, or ENABLE+FORCE with no policy (deny-all) if the table is ` +
-        `service-role-only. See docs/spec/database-rls.md (RLS_COVERAGE).`
+        `service-role-only. See https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md (RLS_COVERAGE).`
     );
   }
 

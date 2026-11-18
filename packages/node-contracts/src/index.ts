@@ -9,7 +9,7 @@
  *   - PURE_LIBRARY: No process lifecycle, no env vars, no framework deps
  *   - NO_SRC_IMPORTS: Never imports @/ or src/ paths
  * Side-effects: none
- * Links: docs/spec/architecture.md, docs/spec/packages-architecture.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @public
  */
 
@@ -102,6 +102,7 @@ export * from "./users.ownership.v1.contract";
 export * from "./users.profile.v1.contract";
 // ── VCS ─────────────────────────────────────────────────────────────────────
 export * from "./vcs.flight.v1.contract";
+export * from "./history.v1.contract";
 export * from "./work.items.create.v1.contract";
 export * from "./work.items.coordination.v1.contract";
 export * from "./work.items.delete.v1.contract";

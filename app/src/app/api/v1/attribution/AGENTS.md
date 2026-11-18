@@ -13,7 +13,7 @@ Authenticated HTTP endpoints for attribution operations. SIWE-protected reads fo
 
 ## Pointers
 
-- [Attribution Ledger Spec](../../../../../../../docs/spec/attribution-ledger.md)
+- [Attribution Ledger Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md)
 - [Attribution Contracts](../../../../contracts/attribution.list-epochs.v1.contract.ts)
 
 ## Boundaries

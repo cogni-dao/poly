@@ -8,7 +8,7 @@
  *   rate-gap / size-scaled-gap pair that drives the "alpha leak" sort.
  *   No DB, no env, no logging — every input is provided by the caller
  *   so this module can be unit-tested directly against the worked
- *   examples in docs/design/poly-markets-aggregation-redesign.md §3.3.
+ *   examples in poly-markets-aggregation-redesign §3.3.
  * Scope: Pure functions. Imported by `market-exposure-service.ts`.
  * Invariants:
  *   - MODIFIED_DIETZ_V_BEGIN_ZERO: positionReturnPct treats every BUY as
@@ -30,7 +30,6 @@
  *     redeemed winner's P/L. `currentMarkValue` is only consulted for
  *     unresolved markets (`outcome` null or `"unknown"`).
  * Side-effects: none
- * Links: docs/design/poly-markets-aggregation-redesign.md §3
  * @internal
  */
 

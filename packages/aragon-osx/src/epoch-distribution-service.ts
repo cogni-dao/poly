@@ -11,7 +11,7 @@
  * - EPOCH_DISTRIBUTION_NO_INVENTED_WALLET: a claimant with no resolved wallet is excluded and reported as a `claimants_unresolved` blocker — never given a synthesized address.
  * - EPOCH_DISTRIBUTION_CONTRIBUTOR_WALLET: tokens are allocated to the contributor's own wallet (no-central-custody).
  * Side-effects: none (awaits the injected read-only resolver; no writes)
- * Links: docs/spec/tokenomics.md, docs/spec/attribution-ledger.md, packages/aragon-osx/src/token-distribution.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tokenomics.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md, packages/aragon-osx/src/token-distribution.ts
  * @public
  */
 

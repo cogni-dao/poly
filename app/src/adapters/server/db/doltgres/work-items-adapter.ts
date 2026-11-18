@@ -6,8 +6,23 @@
  * Both immutable adapters serialize through legacy advisory key 5001001.
  * The legacy reconciler treats scores as opaque; the new writer validates them.
  * No PostgreSQL lease migration, token conversion or database-only lock cutover.
+ *
+ * ONE_PATCH_ENFORCER (task.0086): every patch commits through the content adapter, which alone enforces the
+ * required reason and the pinned cites; `entryResolver` passes to it through `contentOptions`. The legacy lease
+ * adapter only claims, heartbeats, releases and deletes; its `patch` is never called, so no content commit
+ * can bypass that enforcer.
+ *
+ * BOUNDED_CLAIM_OVERLAY (task.0056): the legacy claim overlay applies only to the
+ * full-item agent list, and reads exactly the page's ids (limit = page length),
+ * never a fixed 500-row window. Summary pages and board columns (the /work and
+ * /dashboard read path) carry no claim fields and never touch the legacy adapter.
  */
-import type { WorkItem, WorkItemId, WorkQuery } from "@cogni/work-items";
+import type {
+  WorkItem,
+  WorkItemId,
+  WorkQuery,
+  WorkSummaryReadOptions,
+} from "@cogni/work-items";
 import {
   DoltgresWorkItemAdapter,
   type DoltgresWorkItemAdapterOptions,
@@ -60,10 +75,25 @@ export class DoltgresPolyWorkItemAdapter implements WorkItemsDoltgresPort {
   async list(query?: WorkQuery) {
     const result = await this.content.list(query);
     if (!result.items.length) return result;
-    const claims = await this.legacy.list({ ids: result.items.map((item) => item.id), limit: 500 });
+    // One keyed read of this page's ids only; the page itself is already bounded.
+    const ids = result.items.map((item) => item.id);
+    const claims = await this.legacy.list({ ids, limit: ids.length });
     const byId = new Map(claims.items.map((item) => [item.id, item]));
     return { ...result, items: result.items.map((item) => project(item, byId.get(item.id) ?? null)) };
   }
+  listSummaries(query?: WorkQuery, options?: WorkSummaryReadOptions) {
+    return this.content.listSummaries(query, options);
+  }
+  listBoardColumns(
+    query: WorkQuery,
+    statuses: readonly string[],
+    perColumn: number,
+    options?: { readonly signal?: AbortSignal },
+  ) {
+    return this.content.listBoardColumns(query, statuses, perColumn, options);
+  }
+  history(id: WorkItemId) { return this.content.history(id); }
+  writerHealth() { return this.content.writerHealth(); }
   async create(...args: Parameters<WorkItemsDoltgresPort["create"]>) {
     const item = await this.content.create(...args);
     return project(item, await this.legacy.get(item.id));

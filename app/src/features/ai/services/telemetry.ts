@@ -12,7 +12,7 @@
  *   - Never throws (telemetry should not block response)
  * Side-effects: IO (writes to DB via AiTelemetryPort)
  * Notes: Decorator creates trace; LiteLLM creates generations; this service only records to DB.
- * Links: completion.ts, ports/ai-telemetry.port.ts, AI_SETUP_SPEC.md
+ * Links: completion.ts, ports/ai-telemetry.port.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md
  * @public
  */
 

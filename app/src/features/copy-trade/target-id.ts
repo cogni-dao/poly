@@ -12,7 +12,7 @@
  * Invariants: TARGET_ID_DETERMINISTIC — same wallet, same uuid (case-insensitive
  *             on the input). Namespace UUID is fixed; never change it.
  * Side-effects: none
- * Links: docs/spec/poly-copy-trade-execution.md (IDEMPOTENT_BY_CLIENT_ID), docs/spec/poly-tenant-and-collateral.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md
  * @public
  */
 

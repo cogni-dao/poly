@@ -7,7 +7,6 @@
  * Scope: Read-only `GET /positions` wrapper via PolyDataCapability. Does not place trades, does not load env.
  * Invariants: TOOL_ID_NAMESPACED, EFFECT_READ_ONLY, REDACTION_ALLOWLIST, USER_PARAM_IS_PROXY_WALLET, PAGINATION_CONSISTENT, NO_LANGCHAIN_IMPORT.
  * Side-effects: IO (capability)
- * Links: work/items/task.0386.poly-agent-wallet-research-v0.md
  * @public
  */
 
@@ -32,20 +31,21 @@ export const PolyDataPositionsInputSchema = z.object({
     .number()
     .nonnegative()
     .optional()
-    .describe("Optional minimum position size (USDC)."),
+    .describe("Optional minimum position size (shares)."),
   limit: z
     .number()
     .int()
     .min(1)
-    .max(200)
+    .max(1000)
     .optional()
-    .describe("Rows per page (1-200, default 50)."),
-  offset: z
-    .number()
-    .int()
-    .nonnegative()
+    .describe("Rows per first page (1-1000, default 50)."),
+  cursor: z
+    .string()
+    .min(1)
     .optional()
-    .describe("Pagination offset (default 0)."),
+    .describe(
+      "Opaque `nextCursor` from the previous page; re-send every other argument unchanged."
+    ),
 });
 export type PolyDataPositionsInput = z.infer<
   typeof PolyDataPositionsInputSchema
@@ -71,6 +71,7 @@ export const PolyDataPositionsOutputSchema = z.object({
   positions: z.array(PositionEntrySchema),
   count: z.number().int().nonnegative(),
   hasMore: z.boolean(),
+  nextCursor: z.string().nullable(),
 });
 export type PolyDataPositionsOutput = z.infer<
   typeof PolyDataPositionsOutputSchema
@@ -95,7 +96,7 @@ export const polyDataPositionsContract: ToolContract<
   inputSchema: PolyDataPositionsInputSchema,
   outputSchema: PolyDataPositionsOutputSchema,
   redact: (out) => out,
-  allowlist: ["user", "positions", "count", "hasMore"] as const,
+  allowlist: ["user", "positions", "count", "hasMore", "nextCursor"] as const,
 };
 
 export interface PolyDataPositionsDeps {
@@ -114,7 +115,7 @@ export function createPolyDataPositionsImplementation(
           sizeThreshold: input.sizeThreshold,
         }),
         limit: input.limit ?? 50,
-        offset: input.offset ?? 0,
+        ...(input.cursor !== undefined && { cursor: input.cursor }),
       }),
   };
 }
@@ -128,6 +129,7 @@ export const polyDataPositionsStubImplementation: ToolImplementation<
     positions: [],
     count: 0,
     hasMore: false,
+    nextCursor: null,
   }),
 };
 

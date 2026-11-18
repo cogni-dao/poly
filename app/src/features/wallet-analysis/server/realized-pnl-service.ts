@@ -34,7 +34,7 @@
  *     readers can transparently switch from this on-read computation
  *     to a pre-materialized table without changing the contract.
  * Side-effects: DB read only.
- * Links: work/items/bug.* (closed-position P/L), docs/spec/poly-copy-trade-execution.md
+ * Links: work/items/bug.* (closed-position P/L), https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md
  * @public
  */
 

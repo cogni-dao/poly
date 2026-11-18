@@ -13,7 +13,7 @@ Cross-cutting observability concerns: structured logging, request context, and e
 
 ## Pointers
 
-- [Observability](../../../../../docs/spec/observability.md) - Observability system documentation
+- [Observability](https://cognidao.org/knowledge/node-observability-finish-pass) - Observability system documentation
 - [Event Registry](events/index.ts) - EVENT_NAMES as const (single source of truth)
 - [Server Logger](server/logger.ts) - Pino factory with sync mode
 - [Client Logger](client/logger.ts) - Browser console logger with event registry
@@ -145,7 +145,7 @@ export function MyComponent() {
 ## Change Protocol
 
 - Update this file when exports, event schemas, or boundaries change
-- Update docs/spec/observability.md for architecture changes
+- Update https://cognidao.org/knowledge/node-observability-finish-pass for architecture changes
 - Ensure arch:check passes after boundary changes
 
 ## Notes

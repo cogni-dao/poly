@@ -12,7 +12,7 @@
  *   - NO_EXEC_IN_BRAIN: Only spawns `git` with fixed flags
  *   - SINGLE_RESPONSIBILITY: Owns git concerns (ls-files + rev-parse). Search/open live in RipgrepAdapter.
  * Side-effects: IO (subprocess execution)
- * Links: COGNI_BRAIN_SPEC.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md
  * @internal
  */
 

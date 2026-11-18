@@ -12,11 +12,11 @@
  *   - NO_CURSOR_PERSISTENCE_V0 — cursor lives in-memory and resets on boot. On startup the initial cursor is `Math.floor(now/1000) - WARMUP_BACKLOG_SEC` so we don't replay a target's months-deep history through `planMirrorFromFill()`.
  *   - CAPS_LIVE_IN_GRANT — daily / hourly USDC caps are enforced downstream by `authorizeIntent` inside the per-tenant `placeIntent` executor (see `bootstrap/capabilities/poly-trade-executor.ts`). Mirror-sizing here is notional only.
  * Side-effects: starts a `setInterval`, emits logs + metrics.
- * Links: work/items/task.0318 (Phase B3), docs/spec/poly-tenant-and-collateral.md
+ * Links: work/items/task.0318 (Phase B3), https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md
  *
  * @scaffolding
  * Deleted-in-phase: 4 (replaced by Temporal-hosted WS ingester workflow; see
- *   work/items/task.0322.poly-copy-trade-phase4-design-prep.md).
+ *   task.0322).
  *
  * @internal
  */
@@ -82,6 +82,14 @@ const DEFAULT_MIN_TARGET_SIDE_FRACTION = 0.2;
  * slippage. Above this we refuse to place (`vwap_floor_breach`).
  */
 const DEFAULT_VWAP_TOLERANCE = 0.005;
+/**
+ * bug.5057 — bounded upward slippage over the target's fill price so a BUY is
+ * marketable against the ask the target just swept (a bid AT the fill price
+ * rested below the new best ask and the TTL sweep canceled it unfilled). The
+ * effective limit is still capped at target VWAP + DEFAULT_VWAP_TOLERANCE and
+ * 0.99, and sizing is recomputed at the higher price (spend never rises).
+ */
+const DEFAULT_BUY_SLIPPAGE_ALLOWANCE = 0.02;
 const DEFAULT_POSITION_FOLLOWUP_POLICY: PositionFollowupPolicy = {
   enabled: true,
   min_mirror_position_usdc: 5,
@@ -290,6 +298,7 @@ export function buildMirrorTargetConfig(params: {
                 min_target_side_fraction: DEFAULT_MIN_TARGET_SIDE_FRACTION,
               }),
           vwap_tolerance: DEFAULT_VWAP_TOLERANCE,
+          buy_slippage_allowance: DEFAULT_BUY_SLIPPAGE_ALLOWANCE,
         }),
     ...(!isSelfContainedPolicy &&
     snapshotForTargetWallet(params.targetWallet) !== undefined
@@ -312,7 +321,10 @@ export function targetConditionPositionFromDataApiPositions(
   return {
     condition_id: conditionId,
     tokens: positions
-      .filter((position) => position.conditionId === conditionId)
+      .filter(
+        (position) =>
+          position.conditionId.toLowerCase() === conditionId.toLowerCase()
+      )
       .map((position) => ({
         token_id: position.asset,
         size_shares: Math.max(0, position.size),

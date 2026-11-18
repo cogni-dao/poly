@@ -13,7 +13,7 @@
  *   - COALESCE_UNCHANGED: `coalesce()` semantics are untouched; both helpers share one Map so `clearTtlCache`/`clearTtlCacheByPrefix` cover SWR entries too.
  * Side-effects: holds a Map in module scope; no I/O of its own.
  * Notes: Use `clearTtlCache()` in tests to reset module state between specs. Routes that mutate wallet state can selectively evict stale slices with `clearTtlCacheByPrefix(...)`.
- * Links: docs/design/wallet-analysis-components.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md
  * @public
  */
 

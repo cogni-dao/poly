@@ -8,7 +8,7 @@
  * Invariants: SAVE_REJECT_REVERTS — on `onToggle` Promise rejection, the visible state stays at the prior value (no optimistic flip). PURE_PROPS — no derived state held; the `active` prop is the source of truth.
  * Side-effects: none.
  * Notes: Pairs with `<PolicyControls readonly />` on the per-target view (Research wallet detail). Two affordances total: this toggle + the Edit-on-Money link, matching the user sketch (`docs/design/poly-policy-ui/desired-policy-ui.png`).
- * Links: work/items/task.0347.poly-wallet-preferences-sizing-config.md, nodes/poly/packages/db-schema/src/copy-trade.ts
+ * Links: nodes/poly/packages/db-schema/src/copy-trade.ts
  * @public
  */
 

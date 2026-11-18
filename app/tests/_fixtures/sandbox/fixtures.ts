@@ -7,7 +7,6 @@
  * Scope: Provides runner helpers, container exec helpers (with configurable timeout), context setup/teardown, and common assertions. Does not contain test logic or assertions.
  * Invariants: All sandbox tests use same image, same limits defaults.
  * Side-effects: IO (Docker containers, filesystem)
- * Links: docs/spec/sandboxed-agents.md
  * @internal
  */
 

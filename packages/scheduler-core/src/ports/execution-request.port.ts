@@ -11,7 +11,7 @@
  *   - idempotencyKey uniqueness enforced at DB level (primary key)
  *   - requestHash mismatch detection for payload integrity
  * Side-effects: none (interface definition only)
- * Links: docs/spec/scheduler.md, execution_requests table
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, execution_requests table
  * @public
  */
 

@@ -9,7 +9,7 @@
  * - MUST NOT be imported from general src/ code (enforced by dependency-cruiser)
  * - Only auth.ts and explicitly-allowed files may import this
  * Side-effects: IO (database connections) - only on first access
- * Links: docs/spec/database-rls.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md
  * @internal
  */
 

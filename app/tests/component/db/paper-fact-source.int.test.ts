@@ -37,7 +37,7 @@
  *     Both run every tick; either one retiring the other's population loses a
  *     dashboard.
  * Side-effects: IO (testcontainers Postgres)
- * Links: migrations/0083_poly_paper_fact_source.sql, docs/spec/capability-plane.md
+ * Links: migrations/0083_poly_paper_fact_source.sql, https://poly.cognidao.org/knowledge/capability-plane-contract
  * @internal
  */
 

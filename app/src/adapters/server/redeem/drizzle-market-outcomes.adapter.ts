@@ -13,7 +13,7 @@
  *   - TERMINAL_FACTS_ARE_MONOTONE — lowercase identity is canonical; once a
  *     winner/loser tuple exists, conflicting/unknown writes cannot rewrite it.
  * Side-effects: IO (database writes).
- * Links: docs/spec/poly-copy-trade-execution.md, bug.5008
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, bug.5008
  * @public
  */
 

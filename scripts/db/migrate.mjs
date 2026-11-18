@@ -8,7 +8,7 @@
  * Invariants: NODE_NAME + DATABASE_URL from env; argv[2] migrations dir; lock auto-releases on session end; success prints a declared-vs-applied receipt
  * Side-effects: IO (Postgres connect, advisory lock, migrate, read drizzle ledger, unlock).
  * Notes: COPY'd into each runtime image at /app/nodes/<node>/app/migrate.mjs. LOCK_KEY shared safely — advisory locks are database-scoped.
- * Links: docs/spec/databases.md §2 Migration Strategy, Cogni-DAO/cogni `nodes/operator/app/src/shared/migrations/migration-receipt.ts` (the parser twin), work/items/task.0371.kill-presync-migration-hook-step-1.md
+ * Links: https://cognidao.org/knowledge/node-database-contract, Cogni-DAO/cogni `nodes/operator/app/src/shared/migrations/migration-receipt.ts` (the parser twin)
  * @internal
  */
 
@@ -60,7 +60,7 @@ function readJournal(folder) {
  *
  * Reads drizzle's OWN ledger (`drizzle.__drizzle_migrations`) with the node's OWN DSN — the one
  * credential that is allowed to see it. The operator collects this line from the migration Job it
- * created; it never connects to this database (docs/spec/multi-node-tenancy.md NO_CROSS_NODE_QUERIES).
+ * created; it never connects to this database (https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/multi-node-tenancy.md NO_CROSS_NODE_QUERIES).
  *
  * Best-effort by construction: a receipt is deployment METADATA, and failing to describe a
  * successful migration must never turn it into a failed one.

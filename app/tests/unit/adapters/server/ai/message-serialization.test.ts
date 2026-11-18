@@ -12,7 +12,7 @@
  *   - Tool message count equals tool_calls count
  * Side-effects: none
  * Notes: Tests the fix for 400 Bad Request on agentic loop second call.
- * Links: litellm.adapter.ts, TOOL_USE_SPEC.md
+ * Links: litellm.adapter.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 

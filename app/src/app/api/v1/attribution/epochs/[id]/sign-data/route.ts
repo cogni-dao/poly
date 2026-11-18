@@ -7,7 +7,7 @@
  * Scope: Auth-protected GET endpoint. Returns typed data for epochs in review status. Does not perform mutations.
  * Invariants: WRITE_ROUTES_APPROVER_GATED, SIGNATURE_SCOPE_BOUND.
  * Side-effects: IO (HTTP response, database read)
- * Links: docs/spec/attribution-ledger.md, contracts/attribution.sign-data.v1.contract
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md, contracts/attribution.sign-data.v1.contract
  * @public
  */
 

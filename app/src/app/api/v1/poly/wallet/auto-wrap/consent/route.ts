@@ -15,7 +15,6 @@
  *   - DUST_GUARD: optional `floorUsdceAtomic` is validated > 0 by the Zod
  *     contract; the DB CHECK is the backstop.
  * Side-effects: IO (DB writes; POST starts one fire-and-forget wrap attempt).
- * Links: work/items/task.0429.poly-auto-wrap-consent-loop.md
  * @public
  */
 

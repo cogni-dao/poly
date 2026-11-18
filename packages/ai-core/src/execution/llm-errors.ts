@@ -10,7 +10,7 @@
  *   - classifyLlmErrorFromStatus maps HTTP codes to LlmErrorKind
  *   - isLlmError type guard for instanceof checks
  * Side-effects: none
- * Links: ERROR_HANDLING_ARCHITECTURE.md, error-codes.ts (normalizeErrorToExecutionCode)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/error-handling.md, error-codes.ts (normalizeErrorToExecutionCode)
  * @public
  */
 

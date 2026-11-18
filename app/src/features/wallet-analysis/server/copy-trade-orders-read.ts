@@ -43,7 +43,7 @@
  *     condition id through `poly_market_metadata`; saved metadata wins over
  *     legacy display attributes without adding an upstream render call.
  * Side-effects: IO (bounded DB-only SELECTs).
- * Links: task.1791070959, story.5004, docs/spec/capability-plane.md
+ * Links: task.1791070959, story.5004, https://poly.cognidao.org/knowledge/capability-plane-contract
  * @public
  */
 

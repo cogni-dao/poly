@@ -8,7 +8,7 @@
  * Invariants: Ownership enforced via session billing account; verification throttled to 10-second intervals server-side.
  * Side-effects: IO (reads payment_attempts, may trigger verification and update status).
  * Notes: Returns 404 if attempt not found or not owned; polling endpoint for client to check status.
- * Links: docs/spec/payments-design.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

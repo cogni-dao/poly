@@ -62,7 +62,7 @@ When in doubt, surface **both** and label which one drives the decision. Future 
 
 ## Schema gotchas
 
-- **`poly_copy_trade_decisions.target_id` and `poly_copy_trade_fills.target_id` are deterministic UUIDv5** of the lowercased target wallet, while `poly_copy_trade_targets.id` is random UUIDv4. Naively joining decisions/fills to the targets row on `target_id = id` returns zero rows. To go target-row → decisions, filter by `intent->>'target_wallet'` or derive the v5 via `targetIdFromWallet(wallet)`. Full canonical note: [`docs/spec/poly-copy-trade-execution.md` § "Target identity in the decision/fill ledger"](../../../docs/spec/poly-copy-trade-execution.md#target-identity-in-the-decisionfill-ledger). The Decision-coverage and Skip-by-reason KPIs below both depend on getting this right.
+- **`poly_copy_trade_decisions.target_id` and `poly_copy_trade_fills.target_id` are deterministic UUIDv5** of the lowercased target wallet, while `poly_copy_trade_targets.id` is random UUIDv4. Naively joining decisions/fills to the targets row on `target_id = id` returns zero rows. To go target-row → decisions, filter by `intent->>'target_wallet'` or derive the v5 via `targetIdFromWallet(wallet)`. Full canonical note: [poly-copy-trade-execution](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md#target-identity-in-the-decisionfill-ledger). The Decision-coverage and Skip-by-reason KPIs below both depend on getting this right.
 
 ## KPIs the Research tab tracks
 
@@ -280,10 +280,10 @@ Add a new recipe when a debugging path has been walked twice. The bar is reuse, 
 
 ## Reference incidents and patterns
 
-- **PR #83 + task.5045 — copy-target pXX re-snapshot (2026-05-17)** — canonical example of the full reproducibility protocol: 5.2M-fill backfill into candidate-a, 14 saved SQL queries with `qNN-name.sql` + `qNN-name.results.md` run-by-run tracking, primary-vs-hedge distinction, Grafana 30s timeout workarounds, three corrections-with-traceability (basket-arb misread, bundesliga over-claim, condition-vs-fill-level bucketing error), single-page north-star synthesis. Start at [`docs/research/poly/copy-target-north-star-2026-05-16.md`](../../../docs/research/poly/copy-target-north-star-2026-05-16.md) → drill into [`docs/research/poly/queries/`](../../../docs/research/poly/queries/) for any cited number.
+- **PR #83 + task.5045 — copy-target pXX re-snapshot (2026-05-17)** — canonical example of the full reproducibility protocol: 5.2M-fill backfill into candidate-a, 14 saved SQL queries with `qNN-name.sql` + `qNN-name.results.md` run-by-run tracking, primary-vs-hedge distinction, Grafana 30s timeout workarounds, three corrections-with-traceability (basket-arb misread, bundesliga over-claim, condition-vs-fill-level bucketing error), single-page north-star synthesis. Start at copy-target-north-star-2026-05-16 → drill into [`docs/research/poly/queries/`](../../../docs/research/poly/queries/) for any cited number.
 - **bug.5012** — poly prod OOM crashloop. Reading `wallet-analysis-service.ts:readDbFillsAsOrderFlowTrades` against RN1's 825k-fill backfill (spike.5024) blew the heap. Fix: SQL aggregation per `computeWalletMetrics` field, no raw fills in V8.
 - **PR #1257** (`cc0e70fe8`) — heap-bump + `pLimit(4)` cap on the redeem-catchup boot loop. Stops a _different_ OOM (boot-fan-out), not the read-path one. Sometimes both apply; they're orthogonal.
-- **`docs/research/nextjs-node-memory-sizing.md`** — Tier 0/1 sizing standard. Useful background but **not a substitute for SQL aggregation**. Tier 1 buys ~3× the heap; one big SELECT eats it.
+- **`https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/nextjs-node-memory-sizing.md`** — Tier 0/1 sizing standard. Useful background but **not a substitute for SQL aggregation**. Tier 1 buys ~3× the heap; one big SELECT eats it.
 - **`features/wallet-analysis/server/wallet-analysis-service.ts`** — the canonical "before" (V8 reduce) and "after" (SQL aggregate) example once the SQL refactor lands.
 - **`app/api/v1/poly/research/trader-comparison/route.ts`** — canonical research-route shape (Zod, partial-failure-200, service-DB delegation).
 

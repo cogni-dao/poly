@@ -12,7 +12,7 @@
  *   - SIZING_POLICY_IS_DISCRIMINATED — MirrorTargetConfig.sizing is a discriminated union on `kind`; future policies (proportional, percentile) add variants, never flat fields.
  *   - CAPS_LIVE_IN_GRANT — daily + hourly caps are enforced by `PolyTraderWalletPort.authorizeIntent` against the per-tenant `poly_wallet_grants` row. `planMirrorFromFill` no longer owns those checks; this config surface no longer carries them.
  * Side-effects: none
- * Links: docs/spec/poly-tenant-and-collateral.md, work/items/task.0318, work/items/task.0404, work/items/bug.5045
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, work/items/task.0318, work/items/task.0404, work/items/bug.5045
  * @public
  */
 
@@ -251,17 +251,27 @@ export const MirrorTargetConfigSchema = z.object({
   /**
    * bug.5048 — upward tolerance (in 0–1 price units) above target's VWAP on
    * the fill's token. When `fill.price > target_vwap + vwap_tolerance`, the
-   * planner skips with `vwap_floor_breach`. Undefined ⇒ VWAP gate disabled
-   * for legacy policies, but position_gap BUYs fail closed. Default 0.005
+   * planner skips with `vwap_floor_breach`; configured but missing/invalid
+   * target VWAP also skips (fail closed). Undefined ⇒ VWAP gate disabled,
+   * except position_gap BUYs, which always fail closed. Default 0.005
    * (0.5pp) in bootstrap — covers tick-grid rounding + ladder slippage.
    */
   vwap_tolerance: z.number().min(0).max(1).optional(),
+  /**
+   * bug.5057 — bounded upward slippage (0–1 price units) added to the target's
+   * fill price for a BUY limit so it is marketable against the ask the target
+   * just swept. Effective limit = ceilTick(fill + allowance), still capped at
+   * target VWAP + `vwap_tolerance` and 0.99, with sizing recomputed at that
+   * price. Undefined / 0 ⇒ legacy (limit = target fill price). Default 0.02 in
+   * bootstrap for the non-verbatim fill policies.
+   */
+  buy_slippage_allowance: z.number().min(0).max(0.2).optional(),
 });
 export type MirrorTargetConfig = z.infer<typeof MirrorTargetConfigSchema>;
 
 /**
  * Mirror's local-DB cache view of our own exposure on a single Polymarket
- * `condition_id`. **Authority #4 only** (per `docs/spec/poly-copy-trade-execution.md`).
+ * `condition_id`. **Authority #4 only** (per `https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md`).
  * Used as a *signal* input for mirror policy decisions (hedge-followup,
  * layering, SELL-routing pre-check). Never authority for "do we still hold
  * shares on chain?" — that path goes through `getOperatorPositions` (#3 →
@@ -533,6 +543,13 @@ export const MirrorReasonSchema = z.enum([
    * We refuse to place above an evidenced target entry on this token.
    */
   "vwap_floor_breach",
+  /**
+   * bug.5053 — a BUY whose policy relies on target-position facts (dominance
+   * threshold, VWAP tolerance, follow-up, or target-based sizing) arrived
+   * without a target position (fetch failed or the source was unavailable).
+   * Fail closed: the dominance and VWAP gates cannot be evaluated.
+   */
+  "target_position_unavailable",
   /** Multiple position-gap targets share indistinguishable wallet holdings. */
   "multi_target_position_gap_unsupported",
   /** Assignment changed after planning; pending intent was canceled before venue dispatch. */

@@ -14,8 +14,8 @@ Deterministic fake implementations of ports for CI and test environments. No ext
 ## Pointers
 
 - [Root AGENTS.md](../../../../../AGENTS.md)
-- [Architecture](../../../../../docs/spec/architecture.md)
-- [Testing Documentation](../../../../../docs/guides/testing.md)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
+- [Testing Documentation](https://node-template.cognidao.org/knowledge/node-test-contract)
 
 ## Boundaries
 

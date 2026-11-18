@@ -19,7 +19,7 @@
  *     cumulative-total difference. Unknown/diverged/unreadable roots fail closed.
  *   - APPROVER_GATED: node ledger approver (repo-spec) authorizes the read.
  * Side-effects: IO (HTTP response, database read, viem RPC read of the live merkle root)
- * Links: docs/spec/attribution-ledger.md, packages/attribution-ledger/src/store.ts (SettlementStore)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md, packages/attribution-ledger/src/store.ts (SettlementStore)
  * @public
  */
 

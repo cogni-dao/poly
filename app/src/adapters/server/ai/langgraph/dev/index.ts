@@ -8,7 +8,7 @@
  * Invariants:
  *   - BARREL_ONLY: Re-exports only, no logic
  * Side-effects: none
- * Links: LANGGRAPH_SERVER.md (MVP section)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md
  * @public
  */
 

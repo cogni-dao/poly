@@ -31,7 +31,7 @@
  *     verbatim as a fixed-point string. Nothing here defaults, rounds toward,
  *     or infers a starting balance.
  * Side-effects: IO (DB writes inside a caller-visible transaction).
- * Links: docs/spec/capability-plane.md, migration 0082
+ * Links: https://poly.cognidao.org/knowledge/capability-plane-contract, migration 0082
  * @public
  */
 

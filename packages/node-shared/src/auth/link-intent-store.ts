@@ -8,7 +8,7 @@
  * Invariants: Request-scoped via AsyncLocalStorage. Requires Node.js runtime (not Edge).
  *   Discriminated union: pending intent carries txId for DB verification, failed intent carries rejection reason.
  * Side-effects: none
- * Links: docs/spec/authentication.md
+ * Links: https://cognidao.org/knowledge/node-template-identity-model
  * @public
  */
 

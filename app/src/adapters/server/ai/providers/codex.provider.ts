@@ -10,7 +10,7 @@
  *   - requiresPlatformCredits always false (user-funded)
  *   - requiresConnection always true (needs OAuth credentials)
  * Side-effects: none (adapter creation is lazy)
- * Links: docs/spec/multi-provider-llm.md, docs/research/openai-oauth-byo-ai.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/multi-provider-llm.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/openai-oauth-byo-ai.md
  * @internal
  */
 

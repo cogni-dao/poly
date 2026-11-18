@@ -11,7 +11,7 @@
  *   - POLICY_VIA_PROVIDER: billing policy comes from PlatformCreditChecker, not string matching
  *   - PURE_LIBRARY: no env vars, no process lifecycle
  * Side-effects: IO (via injected checkFn → accountService.getBalance)
- * Links: docs/spec/multi-provider-llm.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/multi-provider-llm.md
  * @public
  */
 

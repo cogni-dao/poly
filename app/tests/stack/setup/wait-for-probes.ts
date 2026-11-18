@@ -10,7 +10,7 @@
  * Side-effects: IO (HTTP probe requests to TEST_BASE_URL)
  * Notes: Implements CI contract: livez (10-20s, fail-fast) then deep readyz (60-120s, correctness gate).
  *        Validates /readyz?deep=1 contract (status === 'healthy'); prints response body on failures.
- * Links: vitest.stack.config.mts, docs/spec/health-probes.md, meta.readyz.read.v1.contract
+ * Links: vitest.stack.config.mts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/health-probes.md, meta.readyz.read.v1.contract
  * @internal
  */
 

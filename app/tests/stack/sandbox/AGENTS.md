@@ -13,7 +13,6 @@ Stack tests for the ephemeral sandbox (P0.5, P0.5a). Proves socket bridge, proxy
 
 ## Pointers
 
-- [Sandbox Spec](../../../../../docs/spec/sandboxed-agents.md)
 - [Sandbox Adapter](../../../src/adapters/server/sandbox/)
 - [Shared Fixtures](../../_fixtures/sandbox/fixtures.ts)
 

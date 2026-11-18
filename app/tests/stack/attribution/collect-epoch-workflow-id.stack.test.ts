@@ -10,7 +10,7 @@
  *   - Deterministic workflow IDs must either: (a) include run date, or (b) use ALLOW_DUPLICATE policy
  *   - This test documents the current behavior and will catch regressions on either approach
  * Side-effects: IO (Temporal gRPC)
- * Links: packages/temporal-workflows/src/workflows/collect-epoch.workflow.ts, docs/spec/attribution-ledger.md
+ * Links: packages/temporal-workflows/src/workflows/collect-epoch.workflow.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @internal
  */
 

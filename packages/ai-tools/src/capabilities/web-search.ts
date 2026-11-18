@@ -9,7 +9,7 @@
  *   - NO_SECRETS_IN_CONTEXT: Capability resolves auth, never stored in context
  *   - STRUCTURED_RESULTS: Returns typed search results with title, url, content
  * Side-effects: none (interface only)
- * Links: TOOL_USE_SPEC.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 

@@ -11,7 +11,7 @@
  *   - PROVIDER_SPECIFIC_CATALOG: Used only by LangGraphInProcProvider
  *   - TOOL_CATALOG_IS_CANONICAL: Tools referenced by ID, resolved from TOOL_CATALOG
  * Side-effects: none
- * Links: GRAPH_EXECUTION.md, LANGGRAPH_AI.md, inproc.provider.ts
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, inproc.provider.ts
  * @internal
  */
 

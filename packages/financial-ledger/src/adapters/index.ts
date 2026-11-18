@@ -7,7 +7,7 @@
  * Scope: Re-exports TigerBeetleAdapter only. Does not contain implementation logic.
  * Invariants: Importing `@cogni/financial-ledger` does NOT load this module.
  * Side-effects: IO (loads tigerbeetle-node N-API addon on import)
- * Links: docs/spec/packages-architecture.md (N-API Bundler Handling)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @public
  */
 

@@ -10,7 +10,7 @@
  *   - PAYLOAD_CAPS: Hard limits enforced; exceeded => summary + hash + bytes
  *   - USER_OPT_OUT: maskContent=true => hashes only
  * Side-effects: none (pure functions)
- * Links: OBSERVABILITY.md#langfuse-integration
+ * Links: https://cognidao.org/knowledge/node-observability-finish-pass
  * @public
  */
 

@@ -13,8 +13,6 @@ Python sidecar wrapping [`agent-next/polymarket-paper-trader`](https://github.co
 
 ## Pointers
 
-- [Project](../../../work/projects/proj.poly-paper-trading.md) — design + roadmap
-- [Research](../../../docs/research/poly-paper-trading-mode.md) — OSS survey
 - [TS adapter](../../../nodes/poly/packages/market-provider/src/adapters/paper/paper.adapter.ts)
 - Upstream: `agent-next/polymarket-paper-trader` (MIT) — pinned via `UPSTREAM_PAPER_TRADER_SHA` build-arg
 

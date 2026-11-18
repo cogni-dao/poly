@@ -10,7 +10,7 @@
  * - TENANT_SCOPED: Connections belong to billing_account_id. Cross-tenant access forbidden.
  * - SOFT_DELETE: Revocation sets revoked_at, never hard-deletes.
  * Side-effects: none (schema definitions only)
- * Links: docs/spec/tenant-connections.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tenant-connections.md
  * @public
  */
 

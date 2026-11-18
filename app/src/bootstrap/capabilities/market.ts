@@ -9,7 +9,7 @@
  *   - NO_SECRETS_IN_CONTEXT: Kalshi credentials resolved from env, never passed to tools
  *   - READ_ONLY: Only listMarkets, no order placement
  * Side-effects: none (factory only)
- * Links: nodes/poly/packages/market-provider/, work/items/task.0230.market-data-package.md
+ * Links: nodes/poly/packages/market-provider/
  * @internal
  */
 

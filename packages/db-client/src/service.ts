@@ -11,7 +11,7 @@
  * - Read pool shares app_service credentials but has its own connection budget
  *   and application_name so jobs cannot starve dashboard/research reads (task.5014)
  * Side-effects: IO (database connections)
- * Links: docs/spec/database-rls.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md
  * @public
  */
 

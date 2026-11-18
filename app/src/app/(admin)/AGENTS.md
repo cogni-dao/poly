@@ -20,7 +20,7 @@ admin-only surfaces in one role-gated shell.
 - [App AGENTS.md](../AGENTS.md)
 - [Approver guard pattern (API)](../api/v1/attribution/_lib/approver-guard.ts)
 - [Repo-spec accessor](../../shared/config/repoSpec.server.ts)
-- [Multi-tenant + route-group research](../../../../../docs/research/node-scaling-multitenant-strategy.md)
+- [Multi-tenant + route-group research](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/node-scaling-multitenant-strategy.md)
 
 ## Boundaries
 

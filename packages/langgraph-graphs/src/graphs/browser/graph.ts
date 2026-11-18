@@ -10,7 +10,7 @@
  *   - LLM and tools are injected, not instantiated
  *   - TYPE_TRANSPARENT_RETURN: No explicit return type
  * Side-effects: none
- * Links: LANGGRAPH_AI.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

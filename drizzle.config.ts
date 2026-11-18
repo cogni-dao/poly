@@ -8,7 +8,6 @@
  * Invariants: Core schema only — node-local tables are added post-fork via a schema array extension. DATABASE_URL must be provided by caller.
  * Side-effects: IO (drizzle-kit writes to ./app/src/adapters/server/db/migrations).
  * Notes: No relative imports — drizzle-kit compiles configs to a temp dir, breaking `./app/...`-style paths. All paths are repo-root-relative.
- * Links: work/items/task.0324.per-node-db-schema-independence.md
  * @internal
  */
 

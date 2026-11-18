@@ -9,7 +9,7 @@
  *   - Schedule ownership enforced (callerUserId must match ownerUserId)
  *   - Delete also revokes the associated grant
  * Side-effects: IO (HTTP request/response, database)
- * Links: docs/spec/scheduler.md, schedules.*.v1.contract
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, schedules.*.v1.contract
  * @public
  */
 

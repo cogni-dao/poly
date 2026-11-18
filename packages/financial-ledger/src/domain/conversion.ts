@@ -9,7 +9,7 @@
  *   - ALL_MATH_BIGINT: All monetary calculations use bigint
  *   - Integer math only: credits = micro_usdc * 10 (no floats)
  * Side-effects: none
- * Links: docs/spec/financial-ledger.md (Cross-Ledger Transfers)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/financial-ledger.md
  * @public
  */
 

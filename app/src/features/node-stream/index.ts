@@ -8,7 +8,7 @@
  * Invariants:
  *   - GENERIC_PORT: Hook returns base StreamEvent, consumers narrow by type
  * Side-effects: none
- * Links: docs/spec/data-streams.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/data-streams.md
  * @public
  */
 

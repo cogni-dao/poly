@@ -7,7 +7,6 @@
  * Scope: Prompt text only. Does not contain runtime logic or I/O.
  * Invariants: PACKAGES_NO_ENV.
  * Side-effects: none
- * Links: work/items/task.0386.poly-agent-wallet-research-v0.md, work/items/bug.0385.core-market-list-missing-condition-id.md
  * @public
  */
 

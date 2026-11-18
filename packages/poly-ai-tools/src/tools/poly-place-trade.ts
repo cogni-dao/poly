@@ -13,7 +13,6 @@
  *   - PLACE_TRADE_IS_BUY_ONLY: `placeTrade` on the capability rejects SELL (agent-safety). The coordinator/reconciler use `closePosition` which lifts this restriction for autonomous exit.
  *   - CAPABILITY_NOT_ADAPTER: the tool talks to `PolyTradeCapability`, never `PolymarketClobAdapter` directly
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 CP4.25), work/items/task.0323.md
  * @public
  */
 

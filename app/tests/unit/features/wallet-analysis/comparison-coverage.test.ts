@@ -124,6 +124,51 @@ describe("wallet dashboard comparison coverage", () => {
     expect(coverage.positions.live.eligible).toBe(5);
   });
 
+  it("reports the plotted sample under an incomplete source (prod 1M CEO shape, bug.5061)", () => {
+    // Prod 3102becb: closed eligible 37 / comparable 19 / dropped 18, live 2/2/0,
+    // positionStatus=partial (sourceComplete=false), preview truncated.
+    const closedGroups = Array.from({ length: 19 }, (_, i) => {
+      const g = group({ conditionId: `closed-${i}`, status: "closed", edgeGapPct: i / 10 });
+      // The target holds the exact token we hold (what makes a position comparable).
+      g.lines[0]!.participants = [
+        { side: "copy_target", primary: { tokenId: `closed-${i}-our-token` }, hedge: null },
+      ] as never;
+      return g;
+    });
+    const liveGroups = [
+      group({ conditionId: "live-0", status: "live", edgeGapPct: 0.05 }),
+      group({ conditionId: "live-1", status: "live", edgeGapPct: null }),
+    ];
+    const closedPositions = Array.from({ length: 19 }, (_, i) => position(`closed-${i}`, "closed"));
+    const coverage = materializeComparisonCoverage({
+      counts: [
+        { entity: "markets", status: "live", eligible: 2, comparable: 2, ambiguous: 0, source_ambiguous: false },
+        { entity: "markets", status: "closed", eligible: 37, comparable: 19, ambiguous: 0, source_ambiguous: false },
+        { entity: "positions", status: "live", eligible: 2, comparable: 2, ambiguous: 0, source_ambiguous: false },
+        { entity: "positions", status: "closed", eligible: 37, comparable: 19, ambiguous: 0, source_ambiguous: false },
+      ],
+      groups: [...liveGroups, ...closedGroups],
+      livePositions: [position("live-0", "live"), position("live-1", "live")],
+      closedPositions,
+      sourceComplete: false,
+      previewTruncated: true,
+    });
+    for (const leaf of [coverage.markets.closed, coverage.positions.closed]) {
+      expect(leaf).toEqual({
+        eligible: 37,
+        comparable: 19,
+        dropped: 18,
+        sampled: 19,
+        complete: false,
+        reasons: ["source_incomplete", "comparison_missing", "preview_truncated"],
+      });
+    }
+    // Live: one of two comparable lines has a finite delta; labelled partial, never empty.
+    expect(coverage.markets.live).toMatchObject({ comparable: 2, sampled: 1, complete: false });
+    expect(coverage.markets.live.reasons).toEqual(["source_incomplete", "preview_truncated"]);
+    expect(WalletDashboardComparisonCoverageLeafSchema.safeParse(coverage.positions.closed).success).toBe(true);
+  });
+
   it("uses null counts instead of fabricated zeroes when the source fails", () => {
     const coverage = unavailableComparisonCoverage();
     expect(coverage.positions.live).toEqual({

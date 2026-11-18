@@ -7,7 +7,7 @@
  * Scope: Tests page-level routing (authed on / → /chat, unauthed on app routes → /) and API protection. Does not test NextAuth internals.
  * Invariants: Single authority for auth routing; no client-side redirect logic.
  * Side-effects: none (mocked getToken)
- * Links: src/proxy.ts, docs/spec/security-auth.md
+ * Links: src/proxy.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/security-auth.md
  * @public
  */
 

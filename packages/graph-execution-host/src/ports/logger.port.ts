@@ -7,7 +7,7 @@
  * Scope: Defines LoggerPort shape to avoid a pino runtime dependency. Does not contain logging implementation.
  * Invariants: PURE_LIBRARY — no env vars, no process lifecycle.
  * Side-effects: none
- * Links: docs/spec/packages-architecture.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @public
  */
 export interface LoggerPort {

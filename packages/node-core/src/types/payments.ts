@@ -8,7 +8,7 @@
  * Invariants: All exports are types, interfaces, or domain constants (amount bounds).
  * Side-effects: none
  * Notes: Single source of truth for payment types; prevents circular dependencies.
- * Links: docs/spec/payments-design.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

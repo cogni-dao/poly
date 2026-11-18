@@ -11,7 +11,7 @@
  *   - SINGLE_FETCH_SOURCE: this is the owner for wallet-analysis HTTP reads.
  *   - PAUSED_WHEN_DISABLED: no background fetches when `enabled=false`.
  * Side-effects: IO (via `useWalletAnalysis`).
- * Links: docs/design/wallet-analysis-components.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md
  * @public
  */
 

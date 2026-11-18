@@ -8,7 +8,7 @@
  * Invariants: Amounts in USD (not atomic units). `locked` = sum of open-order USD notional from Polymarket; `available` = on-chain USDC.e balance.
  * Side-effects: none
  * Notes: HARDCODED_USER — single operator wallet per pod in v0. `change_over_time` is out-of-scope (vNext).
- * Links: work/items/task.0315.poly-copy-trade-prototype.md, docs/spec/poly-copy-trade-execution.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md
  * @public
  */
 

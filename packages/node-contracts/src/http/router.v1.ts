@@ -26,6 +26,10 @@ import {
   workItemsHeartbeatOperation,
   workItemsReleaseOperation,
 } from "../work.items.coordination.v1.contract";
+import {
+  knowledgeHistoryOperation,
+  workItemsHistoryOperation,
+} from "../history.v1.contract";
 import { workItemsListOperation } from "../work.items.list.v1.contract";
 import { workItemsPatchOperation } from "../work.items.patch.v1.contract";
 
@@ -99,6 +103,24 @@ export const ApiContractV1 = c.router({
     body: workItemsPatchOperation.input.omit({ id: true }),
     responses: {
       200: workItemsPatchOperation.output,
+    },
+  },
+  workItemsHistory: {
+    method: "GET",
+    path: "/work/items/:id/history",
+    summary: workItemsHistoryOperation.summary,
+    description: workItemsHistoryOperation.description,
+    responses: {
+      200: workItemsHistoryOperation.output,
+    },
+  },
+  knowledgeHistory: {
+    method: "GET",
+    path: "/knowledge/:id/history",
+    summary: knowledgeHistoryOperation.summary,
+    description: knowledgeHistoryOperation.description,
+    responses: {
+      200: knowledgeHistoryOperation.output,
     },
   },
   workItemsDelete: {

@@ -10,7 +10,7 @@
  *   - CLAIMANTS_ARE_PLURAL: finalized attribution is claimant-based, not user-only
  *   - Contract remains stable; breaking changes require new version
  * Side-effects: none
- * Links: docs/spec/attribution-ledger.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @public
  */
 

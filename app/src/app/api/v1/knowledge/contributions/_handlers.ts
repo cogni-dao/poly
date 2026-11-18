@@ -9,10 +9,12 @@
  * Scope: Operator-side wiring only. Mirrors poly's identical handler set.
  * Invariants: VALIDATE_IO, AUTH_VIA_GETSESSIONUSER, KNOWLEDGE_MERGE_REQUIRES_ADMIN_SESSION.
  * Side-effects: IO (HTTP response, Doltgres read/write via container service)
- * Links: docs/design/knowledge-contribution-api.md, packages/knowledge-store
+ * Links: https://node-template.cognidao.org/knowledge/knowledge-contribution-flow, packages/knowledge-store
  * @internal
  */
 
+import { calculatorShape } from "@cogni-dao/metrics";
+import { displayFits, KpiBindingsSchema, StoredMetricSpecSchema } from "@cogni-dao/metrics/contracts";
 import {
   CitationTargetNotFoundError,
   CitationTypeMismatchError,
@@ -37,8 +39,10 @@ import {
 } from "@cogni/node-contracts";
 import type { SessionUser } from "@cogni/node-shared";
 import { NextResponse } from "next/server";
+import type { Logger } from "pino";
 
 import { getContainer } from "@/bootstrap/container";
+import { EVENT_NAMES, logEvent } from "@/shared/observability";
 
 function service() {
   const svc = getContainer().knowledgeContributionService;
@@ -130,6 +134,16 @@ export async function handleCreate(
       { status: 400 }
     );
 
+  for (const edit of parsed.data.edits ?? []) {
+    if (edit.op !== "insert" && edit.op !== "update") continue;
+    const entry = edit.entry;
+    if (entry.metricSpec != null) {
+      const invalid = validateMetricSpec(entry.metricSpec, entry.id ?? ("targetRowId" in edit ? edit.targetRowId : "metric"), entry.title);
+      if (invalid) return invalid;
+    }
+    if (entry.kpiBindings != null && !KpiBindingsSchema.safeParse(entry.kpiBindings).success) return NextResponse.json({ error: "invalid KPI bindings" }, { status: 400 });
+    if (entry.entryType === "hypothesis" && Array.isArray(entry.kpiBindings) && entry.kpiBindings.length && !entry.kpiBindings.every(binding => binding.evaluationAt && binding.baselineObservationId)) return NextResponse.json({ error: "hypothesis KPI bindings require a fixed evaluation and baseline observation" }, { status: 422 });
+  }
   const principal = sessionUserToPrincipal(sessionUser, authSource(request));
   const createBody = {
     message: parsed.data.message,
@@ -236,6 +250,16 @@ export async function handleAppendCommit(
       { status: 400 }
     );
 
+  for (const edit of parsed.data.edits ?? []) {
+    if (edit.op !== "insert" && edit.op !== "update") continue;
+    const entry = edit.entry;
+    if (entry.metricSpec != null) {
+      const invalid = validateMetricSpec(entry.metricSpec, entry.id ?? ("targetRowId" in edit ? edit.targetRowId : "metric"), entry.title);
+      if (invalid) return invalid;
+    }
+    if (entry.kpiBindings != null && !KpiBindingsSchema.safeParse(entry.kpiBindings).success) return NextResponse.json({ error: "invalid KPI bindings" }, { status: 400 });
+    if (entry.entryType === "hypothesis" && Array.isArray(entry.kpiBindings) && entry.kpiBindings.length && !entry.kpiBindings.every(binding => binding.evaluationAt && binding.baselineObservationId)) return NextResponse.json({ error: "hypothesis KPI bindings require a fixed evaluation and baseline observation" }, { status: 422 });
+  }
   const principal = sessionUserToPrincipal(sessionUser, authSource(request));
   try {
     const commit = await svc.appendCommit({
@@ -274,8 +298,12 @@ export async function handleListCommits(
 
 export async function handleDiff(
   contributionId: string,
-  sessionUser: SessionUser | null
+  sessionUser: SessionUser | null,
+  log: Logger,
+  reqId: string,
+  routeId: string
 ): Promise<NextResponse> {
+  const startedAt = Date.now();
   if (!sessionUser)
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const svc = service();
@@ -291,12 +319,30 @@ export async function handleDiff(
       { error: `contribution not found: ${contributionId}` },
       { status: 404 }
     );
-  const entries = await svc.diff(contributionId);
-  return NextResponse.json({
-    contributionId,
-    branch: record.branch,
-    entries,
-  });
+  try {
+    const [entries, citations] = await Promise.all([
+      svc.diff(contributionId),
+      svc.diffCitations(contributionId),
+    ]);
+    logEvent(log, EVENT_NAMES.KNOWLEDGE_CONTRIBUTION_DIFF_SUCCESS, {
+      reqId,
+      routeId,
+      contributionId,
+      entryCount: entries.length,
+      citationCount: citations.length,
+      outcome: "success",
+      status: 200,
+      durationMs: Date.now() - startedAt,
+    });
+    return NextResponse.json({
+      contributionId,
+      branch: record.branch,
+      entries,
+      citations,
+    });
+  } catch (e) {
+    return mapError(e);
+  }
 }
 
 export async function handleMerge(
@@ -380,4 +426,20 @@ export async function handleClose(
   } catch (e) {
     return mapError(e);
   }
+}
+
+/** A stored metric spec must parse strictly, name a registered calculator and carry a display its unit can honour. */
+function validateMetricSpec(stored: unknown, id: string, title: string): NextResponse | null {
+  const parsed = StoredMetricSpecSchema.safeParse(stored);
+  if (!parsed.success) return NextResponse.json({ error: "invalid metric definition", issues: parsed.error.issues }, { status: 400 });
+  const { display, ...spec } = parsed.data;
+  const registry = getContainer().goalMetrics?.registry;
+  try {
+    registry?.validate({ id, title, revision: "proposed", spec });
+  } catch {
+    return NextResponse.json({ error: "unsupported calculator or parameters" }, { status: 422 });
+  }
+  if (display && registry && !displayFits(display, calculatorShape(registry.get(spec.calculatorId), spec.params).unit))
+    return NextResponse.json({ error: "display does not fit the metric unit (slo needs %)" }, { status: 422 });
+  return null;
 }

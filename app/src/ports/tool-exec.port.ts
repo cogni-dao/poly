@@ -8,7 +8,7 @@
  * Invariants:
  *   - TOOL_EXEC_TYPES_IN_AI_CORE: Canonical definitions in @cogni/ai-core
  * Side-effects: none
- * Links: @cogni/ai-core/tooling/types.ts, TOOL_USE_SPEC.md
+ * Links: @cogni/ai-core/tooling/types.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 

@@ -7,7 +7,6 @@
  * Scope: Implements MarketProviderPort for Kalshi. Config via constructor injection. Does not call POST/PUT endpoints or load env vars.
  * Invariants: ADAPTERS_NOT_IN_CORE, PACKAGES_NO_ENV, CONNECTION_ID_ONLY.
  * Side-effects: IO (HTTP fetch to Kalshi Trading API)
- * Links: work/items/task.0230.market-data-package.md
  * @public
  */
 

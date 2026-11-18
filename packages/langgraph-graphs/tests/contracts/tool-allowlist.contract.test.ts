@@ -10,7 +10,7 @@
  *   - Tool in allowlist => exec called
  *   - Tool not in allowlist => exec NOT called
  * Side-effects: none (all mocked)
- * Links: TOOL_USE_SPEC.md, langchain-tools.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md, langchain-tools.ts
  * @internal
  */
 

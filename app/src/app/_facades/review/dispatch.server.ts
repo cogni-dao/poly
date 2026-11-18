@@ -11,7 +11,7 @@
  *   - No inline graph execution — all AI runs through GraphRunWorkflow child
  *   - No secrets in workflow input — only installationId (public)
  * Side-effects: IO (starts Temporal workflow)
- * Links: task.0191, docs/spec/temporal-patterns.md
+ * Links: task.0191, https://cognidao.org/knowledge/temporal-workflow-rules
  * @public
  */
 

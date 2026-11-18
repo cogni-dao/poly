@@ -15,7 +15,7 @@
  *   - TOOLS_VIA_ALS: Tools read toolExecFn from ALS at invocation time
  *   - TYPE_TRANSPARENT_RETURN: Returns ReturnType<TCreateGraph> to preserve concrete types
  * Side-effects: none
- * Links: GRAPH_EXECUTION.md, LANGGRAPH_AI.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

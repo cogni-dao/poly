@@ -10,7 +10,7 @@
  *   - GRAPH_FINALIZATION_ONCE: exactly one done per run, always last
  *   - RESULT_REFLECTS_OUTCOME: final.ok matches stream outcome
  * Side-effects: none (all mocked)
- * Links: LANGGRAPH_AI.md, runner.ts
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, runner.ts
  * @internal
  */
 

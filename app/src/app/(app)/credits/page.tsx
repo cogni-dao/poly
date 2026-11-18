@@ -7,7 +7,7 @@
  * Scope: Server component only; delegates all client-side behavior to CreditsPageClient; does not perform data fetching or payment wiring.
  * Invariants: All payment configuration handled via backend intent endpoint (chain-agnostic).
  * Side-effects: none (server render only)
- * Links: docs/spec/payments-design.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

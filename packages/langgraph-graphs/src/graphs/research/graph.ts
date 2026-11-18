@@ -11,7 +11,7 @@
  *   - STRUCTURED_OUTPUT_ROUTING: Supervisor uses tool-like structured outputs to delegate
  *   - TYPE_TRANSPARENT_RETURN: No explicit return type for CLI schema extraction
  * Side-effects: none
- * Links: LANGGRAPH_AI.md, open-deep-research reference
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, open-deep-research reference
  * @public
  */
 

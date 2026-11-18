@@ -16,8 +16,7 @@
  *     pending / canceled / error receipts leave them `undefined` — distinct from "the adapter
  *     dropped them". Adapter symmetry is CI-gated by `tests/adapter-equivalence.test.ts`.
  * Side-effects: none
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (Phase 1 — First live order),
- *   docs/spec/poly-paper-trading-shortcomings.md (S3/S4 — closed by bug.5018)
+ *   poly-paper-trading-shortcomings (S3/S4 — closed by bug.5018)
  * @public
  */
 

@@ -8,7 +8,7 @@
  * Invariants: Billing account from session identity only; return types use z.infer; Date fields map to ISO strings.
  * Side-effects: IO (via AccountService port).
  * Notes: Errors bubble to route handlers for HTTP mapping. Facades own DTO mapping (port types → contract types).
- * Links: docs/spec/payments-design.md, src/contracts/AGENTS.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md, src/contracts/AGENTS.md
  * @public
  */
 

@@ -10,7 +10,7 @@
  *   - CLOB_NOT_ON_PAGE_LOAD: dashboard live positions come from DB only.
  *   - SYNC_METADATA_AVAILABLE: every row exposes sync freshness fields.
  * Side-effects: none
- * Links: bug.5001, task.5006, work/items/task.0328.poly-sync-truth-ledger-cache.md
+ * Links: bug.5001, task.5006
  * @internal
  */
 

@@ -16,7 +16,7 @@
  *   - PATCH_ALLOWLIST: server-managed columns (`id`, `created_at`, `updated_at`)
  *     are not in the adapter's PATCH allowlist.
  * Side-effects: none
- * Links: docs/spec/work-items-port.md, docs/spec/knowledge-data-plane.md, docs/research/dolt-baseline-port-syntropy.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/work-items-port.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/knowledge-data-plane.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/research/dolt-baseline-port-syntropy.md
  * @public
  */
 

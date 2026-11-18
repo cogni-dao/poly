@@ -6,7 +6,7 @@
  * Purpose: Copy-trade candidate research synthesis — static dossier.
  * Scope: Auth-gated shell; content is static client view.
  * Side-effects: IO (auth check)
- * Links: [ResearchView](./view), work/items/spike.0323.poly-copy-trade-candidate-identification.md
+ * Links: [ResearchView](./view)
  * @public
  */
 

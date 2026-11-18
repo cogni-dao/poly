@@ -10,7 +10,7 @@
  *   - P0: Both 'deny' and 'require_approval' exclude tools from catalog
  * Side-effects: none
  * Notes: Tests double-enforcement visibility filtering per TOOL_USE_SPEC.md
- * Links: tool-catalog.ts, tool-policy.ts, TOOL_USE_SPEC.md
+ * Links: tool-catalog.ts, tool-policy.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @internal
  */
 

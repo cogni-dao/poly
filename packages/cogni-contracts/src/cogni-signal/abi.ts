@@ -7,7 +7,7 @@
  * Scope: ABI constant only; does not include bytecode or addresses.
  * Invariants: ABI must match solc 0.8.30 compiled output.
  * Side-effects: none
- * Links: docs/spec/node-formation.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-formation.md
  * @public
  */
 

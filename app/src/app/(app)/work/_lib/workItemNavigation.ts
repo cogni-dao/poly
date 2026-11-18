@@ -12,9 +12,9 @@ type WorkRouter = {
 interface WorkListState {
   readonly type: readonly string[];
   readonly status: readonly string[];
-  readonly project: readonly string[];
   readonly sort: string | null;
   readonly query: string;
+  readonly rankRange?: readonly [number | undefined, number | undefined];
 }
 
 export function workListHref(searchParams: SerializableSearchParams): string {
@@ -49,11 +49,19 @@ export function workViewHref(
   const params = new URLSearchParams(searchParams.toString());
   setListParam(params, "type", state.type);
   setListParam(params, "status", state.status);
-  setListParam(params, "project", state.project);
+  if (state.status.length === 0) params.set("status", "all");
+  // The Project filter was replaced by the Goal column (task.0112); an old link's value is dropped on the next edit.
+  params.delete("project");
   params.delete("sort");
   if (state.sort) params.set("sort", state.sort);
   params.delete("q");
   if (state.query) params.set("q", state.query);
+  if (state.rankRange !== undefined) {
+    for (const [index, key] of ["rankMin", "rankMax"].entries()) {
+      const value = state.rankRange[index];
+      params.set(key, value === undefined ? "" : String(value));
+    }
+  }
   return selectedItemId
     ? workItemHref(selectedItemId, params)
     : workListHref(params);

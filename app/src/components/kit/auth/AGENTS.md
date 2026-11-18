@@ -14,7 +14,7 @@ Authentication UI components. Provides the wallet connection button (RainbowKit)
 ## Pointers
 
 - [Root AGENTS.md](../../../../../../AGENTS.md)
-- [Authentication](../../../../../../docs/spec/authentication.md)
+- [Authentication](https://cognidao.org/knowledge/node-template-identity-model)
 
 ## Boundaries
 

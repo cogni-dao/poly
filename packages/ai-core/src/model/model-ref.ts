@@ -9,7 +9,7 @@
  *   - MODELREF_NO_POLICY: ModelRef is a pure reference, never carries requiresPlatformCredits/capabilities.
  *   - MODELREF_FULLY_RESOLVED: No defaulting at execution time. Schedules persist exact ModelRef.
  * Side-effects: none
- * Links: docs/spec/multi-provider-llm.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/multi-provider-llm.md
  * @public
  */
 

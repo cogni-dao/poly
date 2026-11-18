@@ -13,7 +13,7 @@ Server-side authentication helpers: session retrieval and billing account mappin
 
 ## Pointers
 
-- [Authentication](../../../../../docs/spec/authentication.md): Auth architecture
+- [Authentication](https://cognidao.org/knowledge/node-template-identity-model): Auth architecture
 - [AccountService port](../../ports/accounts.port.ts)
 
 ## Boundaries

@@ -14,17 +14,30 @@
  *   - NO_INTERNAL_BIND_ADDR: URLs must never expose `0.0.0.0:3000` or other
  *     in-pod addresses. Always derive origin from forwarded headers first.
  * Side-effects: none
- * Links: docs/guides/agent-api-validation.md
+ * Links: https://cognidao.org/knowledge/prove-node-agent-api
  * @public
  */
 
 import {
+	GoalsProgressSchema,
+	MetricComputeInputSchema,
+	MetricHistoryInputSchema,
+	MetricHistorySchema,
+	MetricListInputSchema,
+	MetricListResponseSchema,
+	MetricObservationSchema,
+	MetricSnapshotSchema,
+	MetricViewSchema,
+} from "@cogni-dao/metrics/contracts";
+import {
+	knowledgeHistoryOperation,
 	workItemsClaimOperation,
 	workItemsCoordinationOperation,
 	workItemsCreateOperation,
 	workItemsDeleteOperation,
 	workItemsGetOperation,
 	workItemsHeartbeatOperation,
+	workItemsHistoryOperation,
 	workItemsListOperation,
 	workItemsPatchOperation,
 	workItemsReleaseOperation,
@@ -113,6 +126,58 @@ export async function GET(request: Request) {
 			...accountReadDiscoveryEndpoints(origin),
 		},
 		actions: {
+			readGoalsProgress: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/metrics/goals`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(z.strictObject({})),
+				outputSchema: z.toJSONSchema(GoalsProgressSchema),
+			},
+			readMetricHistory: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/metrics/{id}/history?from={from}&to={to}&step={step}`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(
+					MetricHistoryInputSchema.extend({ id: z.string() }),
+				),
+				outputSchema: z.toJSONSchema(MetricHistorySchema),
+			},
+			listMetrics: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/metrics`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(MetricListInputSchema),
+				outputSchema: z.toJSONSchema(MetricListResponseSchema),
+			},
+			readMetric: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/metrics/{id}`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(z.object({ id: z.string() })),
+				outputSchema: z.toJSONSchema(
+					MetricViewSchema.extend({
+						history: z.array(MetricObservationSchema),
+					}),
+				),
+			},
+			readMetricObservation: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/metrics/{id}/observations/{observationId}`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(
+					z.object({ id: z.string(), observationId: z.uuid() }),
+				),
+				outputSchema: z.toJSONSchema(MetricSnapshotSchema),
+			},
+			computeMetric: {
+				method: "POST",
+				endpoint: `${origin}/api/v1/metrics/{id}/compute`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(
+					MetricComputeInputSchema.extend({ id: z.string() }),
+				),
+				outputSchema: z.toJSONSchema(MetricObservationSchema),
+			},
 			listOwnAgentAccessRequests: {
 				method: "GET",
 				endpoint: `${origin}/api/v1/agent/access-requests`,
@@ -205,6 +270,20 @@ export async function GET(request: Request) {
 				auth: { type: "bearer" },
 				inputSchema: z.toJSONSchema(workItemsReleaseOperation.input),
 				outputSchema: z.toJSONSchema(workItemsReleaseOperation.output),
+			},
+			getWorkItemHistory: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/work/items/{id}/history`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(workItemsHistoryOperation.input),
+				outputSchema: z.toJSONSchema(workItemsHistoryOperation.output),
+			},
+			getKnowledgeHistory: {
+				method: "GET",
+				endpoint: `${origin}/api/v1/knowledge/{id}/history`,
+				auth: { type: "bearer" },
+				inputSchema: z.toJSONSchema(knowledgeHistoryOperation.input),
+				outputSchema: z.toJSONSchema(knowledgeHistoryOperation.output),
 			},
 			getWorkItemCoordination: {
 				method: "GET",

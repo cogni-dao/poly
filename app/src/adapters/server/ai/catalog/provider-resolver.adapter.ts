@@ -9,7 +9,7 @@
  *   - RUNTIME_ONLY: Resolves providers, does not list models.
  *   - THROWS_ON_UNKNOWN: Unknown providerKey throws immediately (fail-fast).
  * Side-effects: none
- * Links: docs/spec/multi-provider-llm.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/multi-provider-llm.md
  * @internal
  */
 

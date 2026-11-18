@@ -14,9 +14,9 @@ Feature layer for USDC payment attempts with backend verification. Handles payme
 ## Pointers
 
 - [Root AGENTS.md](../../../../../AGENTS.md)
-- [Payments Design](../../../../../docs/spec/payments-design.md)
-- [DAO Enforcement](../../../../../docs/spec/dao-enforcement.md)
-- [Billing Evolution](../../../../../docs/spec/billing-evolution.md)
+- [Payments Design](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md)
+- [DAO Enforcement](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/dao-enforcement.md)
+- [Billing Evolution](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/billing-evolution.md)
 
 ## Boundaries
 

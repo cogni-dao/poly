@@ -51,6 +51,9 @@ export function KnowledgeEntryFields({
         <ConfidenceBar value={item.confidencePct} width={120} />
       </Field>
 
+      {/* The link network is what a reviewer reads first, ahead of the body. */}
+      <EntityCitationLinks entityId={item.id} />
+
       <Field label="Content">
         {isHtml ? (
           <HtmlRenderer html={item.content} title={item.title} />
@@ -67,8 +70,6 @@ export function KnowledgeEntryFields({
           )}
         </div>
       </Field>
-
-      <EntityCitationLinks entityId={item.id} />
 
       {item.tags && item.tags.length > 0 && (
         <Field label="Tags">

@@ -113,19 +113,24 @@ function emptyLatch(): MutableLatch {
   };
 }
 
-let latchState: MutableLatch = emptyLatch();
+// Next can compile instrumentation and routes into separate module instances.
+// Keep one process-wide latch so both observe the same boot verdict.
+const latchGlobal = globalThis as typeof globalThis & {
+  __polyEgressLatch?: { state: MutableLatch };
+};
+const latchStore = (latchGlobal.__polyEgressLatch ??= { state: emptyLatch() });
 
 /**
  * Cached latch read for `/readyz`. Performs ZERO IO — the probe runs in the
  * background at boot and this only reports what it concluded.
  */
 export function getEgressGeoblockLatch(): EgressGeoblockLatch {
-  return { ...latchState };
+  return { ...latchStore.state };
 }
 
 /** Reset module state between tests. */
 export function _resetEgressGeoblockLatchForTest(): void {
-  latchState = emptyLatch();
+  latchStore.state = emptyLatch();
 }
 
 /** Resolve config straight from process.env (this runs before the env framework). */
@@ -242,7 +247,7 @@ export async function runEgressGeoblockAssertion(
     return getEgressGeoblockLatch();
   }
 
-  if (latchState.latched) {
+  if (latchStore.state.latched) {
     // LATCH_IS_STICKY: nothing re-opens a closed latch in this process.
     return getEgressGeoblockLatch();
   }
@@ -261,15 +266,15 @@ export async function runEgressGeoblockAssertion(
     }
 
     const outcome = await probeOnce(fetchImpl);
-    latchState.lastVerdict = outcome.verdict;
+    latchStore.state.lastVerdict = outcome.verdict;
     if (outcome.verdict === "blocked") {
-      latchState.consecutiveBlocked += 1;
-      latchState.egressIp = outcome.ip;
-      latchState.egressCountry = outcome.country;
-      latchState.egressRegion = outcome.region;
+      latchStore.state.consecutiveBlocked += 1;
+      latchStore.state.egressIp = outcome.ip;
+      latchStore.state.egressCountry = outcome.country;
+      latchStore.state.egressRegion = outcome.region;
     } else {
       // A permitted OR an unreachable verdict breaks the streak.
-      latchState.consecutiveBlocked = 0;
+      latchStore.state.consecutiveBlocked = 0;
     }
 
     log.info(
@@ -282,7 +287,7 @@ export async function runEgressGeoblockAssertion(
         egress_country: outcome.country,
         egress_region: outcome.region,
         attempt,
-        consecutive_blocked: latchState.consecutiveBlocked,
+        consecutive_blocked: latchStore.state.consecutiveBlocked,
         ...(outcome.errorClass ? { error_class: outcome.errorClass } : {}),
       },
       outcome.verdict === "permitted"
@@ -299,7 +304,7 @@ export async function runEgressGeoblockAssertion(
       return getEgressGeoblockLatch();
     }
 
-    if (latchState.consecutiveBlocked >= requiredConsecutive) {
+    if (latchStore.state.consecutiveBlocked >= requiredConsecutive) {
       // Re-check the window at the latch site, not only at the loop head: the
       // latch is the destructive act and must be guarded where it happens.
       if (now() - startedAt > bootWindowMs) {
@@ -308,25 +313,25 @@ export async function runEgressGeoblockAssertion(
             event: "poly.egress.geoblock.not_latched",
             severity: "degraded",
             reason: "OUTSIDE_BOOT_WINDOW",
-            consecutive_blocked: latchState.consecutiveBlocked,
+            consecutive_blocked: latchStore.state.consecutiveBlocked,
           },
           "egress BLOCKED but the boot window has closed — refusing to latch a running pod dead (incident 2026-06-26)"
         );
         return getEgressGeoblockLatch();
       }
-      latchState.latched = true;
-      latchState.reason = "EGRESS_GEOBLOCKED";
-      latchState.latchedAt = new Date(now()).toISOString();
+      latchStore.state.latched = true;
+      latchStore.state.reason = "EGRESS_GEOBLOCKED";
+      latchStore.state.latchedAt = new Date(now()).toISOString();
       log.error(
         {
           event: "poly.egress.geoblock.latched",
           severity: "critical",
           reason: "EGRESS_GEOBLOCKED",
           dependency: "polymarket-egress",
-          consecutive_blocked: latchState.consecutiveBlocked,
-          egress_ip: latchState.egressIp,
-          egress_country: latchState.egressCountry,
-          egress_region: latchState.egressRegion,
+          consecutive_blocked: latchStore.state.consecutiveBlocked,
+          egress_ip: latchStore.state.egressIp,
+          egress_country: latchStore.state.egressCountry,
+          egress_region: latchStore.state.egressRegion,
         },
         "readiness LATCHED FAILED: Polymarket geoblocks this lease's egress — /readyz now 503s so the operator's boot SLO refuses this lease and re-mints elsewhere"
       );
@@ -342,8 +347,8 @@ export async function runEgressGeoblockAssertion(
     {
       event: "poly.egress.geoblock.inconclusive",
       attempts: maxProbes,
-      last_verdict: latchState.lastVerdict,
-      consecutive_blocked: latchState.consecutiveBlocked,
+      last_verdict: latchStore.state.lastVerdict,
+      consecutive_blocked: latchStore.state.consecutiveBlocked,
     },
     "egress geoblock assertion inconclusive after all probes — not latching (unreachable is not blocked)"
   );

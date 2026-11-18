@@ -9,7 +9,7 @@
  *   - USES_ALS: All modules here use or depend on CogniExecContext (AsyncLocalStorage)
  *   - COGNI_SPECIFIC: Not for use by generic LangGraph server
  * Side-effects: none
- * Links: LANGGRAPH_AI.md, GRAPH_EXECUTION.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

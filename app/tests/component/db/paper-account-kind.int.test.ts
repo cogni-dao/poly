@@ -28,7 +28,7 @@
  *   - TENANT_ISOLATED — a paper row is exactly as isolated as a live one;
  *     `kind` is not an RLS key and must not become an escape hatch.
  * Side-effects: IO (testcontainers Postgres)
- * Links: migrations/0082_poly_paper_accounts.sql, docs/spec/capability-plane.md
+ * Links: migrations/0082_poly_paper_accounts.sql, https://poly.cognidao.org/knowledge/capability-plane-contract
  * @internal
  */
 

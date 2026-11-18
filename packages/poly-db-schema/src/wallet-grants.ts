@@ -18,7 +18,7 @@
  *   - ACTIVE_GRANT_QUERY_SHAPE: active = revoked_at IS NULL AND
  *     (expires_at IS NULL OR expires_at > now()).
  * Side-effects: none (schema only)
- * Links: docs/spec/poly-tenant-and-collateral.md,
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md,
  *        .cursor/plans/poly-per-tenant-trade-execution_92073c70.plan.md
  * @public
  */

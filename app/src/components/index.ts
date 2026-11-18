@@ -8,7 +8,7 @@
  * Invariants: Only re-exports from component files; no circular dependencies; maintains type exports.
  * Side-effects: none
  * Notes: Changes here affect components public API contract; follows barrel export pattern.
- * Links: ARCHITECTURE.md#public-surface
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md
  * @public
  */
 

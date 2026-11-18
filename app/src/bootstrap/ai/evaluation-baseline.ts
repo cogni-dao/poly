@@ -3,7 +3,10 @@
 
 /** Published evaluation behavior composed with Poly's existing product policy. */
 import { type CatalogBoundTool, CORE_TOOL_BUNDLE } from "@cogni/ai-tools";
-import { CORE_TOOL_BUNDLE as SHARED_TOOL_BUNDLE } from "@cogni/shared-ai-tools";
+import {
+  METRIC_TOOL_BUNDLE,
+  CORE_TOOL_BUNDLE as SHARED_TOOL_BUNDLE,
+} from "@cogni/shared-ai-tools";
 
 const baselineIds = new Set([
   "core__goal_list", "core__work_item_query", "core__work_item_transition",
@@ -14,6 +17,8 @@ const replacements = SHARED_TOOL_BUNDLE.filter((tool) => baselineIds.has(tool.co
   const local = localById.get(shared.contract.name);
   return local ? { ...shared, contract: { ...local.contract, ...shared.contract } } : shared;
 });
+/** Published goal-progress and metric tools (core__goal_progress, core__metric_*), bound in the container. */
 export const POLY_CORE_TOOL_BUNDLE: readonly CatalogBoundTool[] = [
   ...CORE_TOOL_BUNDLE.filter((tool) => !baselineIds.has(tool.contract.name)), ...replacements,
+  ...METRIC_TOOL_BUNDLE,
 ];

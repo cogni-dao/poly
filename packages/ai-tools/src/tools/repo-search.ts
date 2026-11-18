@@ -14,7 +14,7 @@
  *   - NO LangChain imports (LangChain wrapping in langgraph-graphs)
  * Side-effects: IO (file system access via capability)
  * Notes: Requires RepoCapability to be configured
- * Links: COGNI_BRAIN_SPEC.md, TOOL_USE_SPEC.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 

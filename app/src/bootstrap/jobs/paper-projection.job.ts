@@ -35,7 +35,7 @@
  *   - TICK_TIMEOUT_IS_REAL_CANCELLATION: the timeout aborts an AbortSignal
  *     threaded into the tick, which stops between accounts.
  * Side-effects: starts a timer, performs IO through injected deps.
- * Links: migration 0083, docs/spec/capability-plane.md
+ * Links: migration 0083, https://poly.cognidao.org/knowledge/capability-plane-contract
  * @internal
  */
 

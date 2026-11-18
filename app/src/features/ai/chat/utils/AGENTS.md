@@ -15,7 +15,7 @@ Utilities for chat error mapping and UI presentation logic.
 ## Pointers
 
 - [Parent: AI Chat Feature](../AGENTS.md)
-- [Error Handling Architecture](../../../../../../../docs/spec/error-handling.md)
+- [Error Handling Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/error-handling.md)
 - [Chat Error Contract](../../../../contracts/error.chat.v1.contract.ts)
 
 ## Boundaries

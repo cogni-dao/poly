@@ -11,7 +11,7 @@
  *   - Per APPEND_ONLY_AUDIT: Access logs written by proxy container, collected on stop
  *   - No host-installed nginx required (hermetic)
  * Side-effects: IO (Docker containers, writes config files to tmpdir)
- * Links: docs/spec/sandboxed-agents.md, infra/compose/sandbox-proxy/nginx.conf.template
+ * Links: infra/compose/sandbox-proxy/nginx.conf.template
  * @internal
  */
 

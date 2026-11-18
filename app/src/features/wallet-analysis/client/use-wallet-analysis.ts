@@ -8,7 +8,7 @@
  * Invariants: Independent React Query keys per slice. Skeleton-first behaviour: callers receive `isLoading: true` immediately and a partial `data` shape that fills in as slices land.
  * Side-effects: IO (HTTP fetch).
  * Notes: The address is lowercased before fetch; coalesce + p-limit live server-side in `wallet-analysis-service`.
- * Links: docs/design/wallet-analysis-components.md, work/items/task.0344.wallet-row-drawer.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md
  * @public
  */
 

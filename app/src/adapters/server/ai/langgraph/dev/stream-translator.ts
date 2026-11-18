@@ -11,7 +11,7 @@
  *   - DEV_TOOL_EVENT_STREAMING: Emits tool events with chunk buffering (64KB args, 100 pending results)
  *   - GRAPH_FINALIZATION_ONCE: Exactly one done event per run
  * Side-effects: none
- * Links: LANGGRAPH_SERVER.md (MVP section)
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md
  * @internal
  */
 

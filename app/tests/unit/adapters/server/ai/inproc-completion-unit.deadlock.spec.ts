@@ -7,7 +7,7 @@
  * Scope: Reproduces the deadlock where awaiting final inside for-await prevents stream completion. Does NOT test happy-path streaming or error flows.
  * Invariants: NO_AWAIT_FINAL_IN_LOOP (must break out of for-await before awaiting final)
  * Side-effects: none
- * Links: GRAPH_EXECUTION.md, AGENT_DISCOVERY.md, inproc-completion-unit.adapter.ts
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/agent-discovery.md, inproc-completion-unit.adapter.ts
  * @internal
  */
 

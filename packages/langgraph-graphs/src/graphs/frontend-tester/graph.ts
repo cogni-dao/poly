@@ -9,7 +9,7 @@
  *   - Pure factory function — no side effects, no env reads
  *   - TYPE_TRANSPARENT_RETURN: No explicit return type
  * Side-effects: none
- * Links: LANGGRAPH_AI.md
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

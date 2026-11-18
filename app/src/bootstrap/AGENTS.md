@@ -15,7 +15,7 @@ System setup installers were moved to `scripts/bootstrap/` and are out of scope 
 ## Pointers
 
 - [Root AGENTS.md](../../../../AGENTS.md)
-- [Node-owned composition](https://cognidao.org/knowledge/keep-node-product-local)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
 - [Platform bootstrap (installers)](../../../../scripts/bootstrap/README.md)
 
 ## Boundaries
@@ -55,8 +55,10 @@ operator dependency-cruiser rules do not run in this repository.
 
 - **Exports:**
   - `verifySystemTenant(serviceAccountService)` - Startup healthcheck: fails fast if cogni_system billing account missing (per SYSTEM_TENANT_STARTUP_CHECK)
+  - `startSystemTenantAssertionOnBoot(serviceAccountService)` - Native startup awaits the retained tenant qualification; failures exit 1. Inert in tests
   - `runGovernanceSchedulesSyncJob()` - Job: advisory lock + governance schedule sync via container
   - `startGovernanceSyncOnBoot(log)` - Direct, bounded, observable schedule reconcile at process startup
+  - `createStreamRedisClient(url)` - Lazy stream Redis client with a native error listener
   - `getContainer()` - Singleton DI container with logger and config
   - `resetContainer()` - Reset singleton (tests only)
   - `resolveQualificationDependencies(fixture, sidecarUrl, signal, deadlineAt)` — existing RLS ledger and authorized bounded paper executor composition; action-owned app-role connection with dispose(), native deadline cancellation and one transient backend maximum per process

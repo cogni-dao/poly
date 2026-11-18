@@ -14,7 +14,7 @@
  * - Only edge code (HTTP handlers, env parsing, test fixtures) should call toUserId()
  * - No `as UserId` / `as ActorId` casts outside test fixtures — enforced by PR review
  * Side-effects: none
- * Links: docs/spec/database-rls.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md
  * @public
  */
 

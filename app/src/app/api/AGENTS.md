@@ -15,8 +15,8 @@ HTTP API endpoints using Next.js App Router. Contract-validated entry points tha
 ## Pointers
 
 - [App AGENTS.md](../AGENTS.md)
-- [Architecture](../../../../../docs/spec/architecture.md)
-- [Feature Development Guide](../../../../../docs/guides/feature-development.md)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
+- [Feature Development Guide](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/feature-development.md)
 
 ## Boundaries
 
@@ -48,7 +48,7 @@ routes direct adapter, persistence or feature-policy ownership.
   - `/api/setup/verify` [POST] - DAO formation verification
   - `/api/internal/billing/ingest` [POST] - LiteLLM generic_api callback receiver (bearer auth, Docker-internal only)
   - `/api/v1/poly/wallet/reset-connection` [POST] - owner-scoped wallet reset; billing account derived from session
-  - `/api/v1/chat/completions` [POST] - OpenAI-compatible chat completions (streaming + non-streaming, `cogni_status` extension); see [completions spec](../../../docs/spec/completions-api.md)
+  - `/api/v1/chat/completions` [POST] - OpenAI-compatible chat completions (streaming + non-streaming, `cogni_status` extension); see [completions spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/completions-api.md)
   - `/api/v1/ai/chat` [POST] - streaming chat with server-authoritative thread persistence
   - `/api/v1/activity` [GET]
   - `/api/v1/identity/bindings/import/start` [POST] - mint a session-owned nonce and return the pinned operator broker URL
@@ -66,8 +66,11 @@ routes direct adapter, persistence or feature-policy ownership.
   - `/api/v1/attribution/epochs/[id]/pool-components` [POST] - record pool component (SIWE + approver)
   - `/api/v1/users/me` [GET, PATCH] - current profile
   - `/api/v1/users/me/ownership` [GET] - current ownership summary derived from linked identities
+  - `/api/v1/work/summaries` [GET] - one bounded page (default 25, max 100; text scans ≤1000 rows) of projected Work summaries; auth + logging + the published `handleWorkSummariesRequest` (task.0056)
+  - `/api/v1/work/board` [GET] - first page (≤20) of each visible status column in one composed read; auth + logging + the published `handleWorkBoardRequest`; column cursors continue through `/summaries` (task.0056)
   - `/api/v1/work/items` [GET, POST] - list/create Dolt-backed work items (SIWE or node-agent auth)
-  - `/api/v1/work/items/[id]` [GET, PATCH, DELETE] - read/update/delete a Dolt-backed work item (SIWE or node-agent auth)
+  - `/api/v1/work/items/[id]` [GET, PATCH, DELETE] - read/update/delete a Dolt-backed work item (SIWE or node-agent auth); GET returns each `moves` entry with its metric, KPI and goal, and `?include=links` adds the first page of citation links; create and PATCH accept `moves` (server pins the baseline)
+  - `/api/v1/work/items/[id]/expectations` [GET] - recorded EDO expectations and their metric assessments for one item
   - `/api/v1/work/items/[id]/{claims,heartbeat,coordination}` - Dolt-backed agent coordination state
   - `/api/v1/knowledge/domains/[domain]` [GET, PATCH, DELETE] - authenticated domain read/update/delete; baseline and nonempty deletion refused
   - `/api/v1/knowledge/index` [GET] - content-free knowledge routing projection with optional useWhen filter

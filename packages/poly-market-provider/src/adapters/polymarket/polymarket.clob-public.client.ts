@@ -13,7 +13,7 @@
  *     treats a missing resolution as still-open; the paper fact source refuses to
  *     mark a position it cannot price) depend on being able to tell those apart.
  * Side-effects: IO (HTTP fetch to https://clob.polymarket.com)
- * Links: docs/design/wallet-analysis-components.md, nodes/poly/packages/market-provider/src/analysis/wallet-metrics.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md, nodes/poly/packages/market-provider/src/analysis/wallet-metrics.ts
  * @public
  */
 

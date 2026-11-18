@@ -24,6 +24,13 @@ import type {
 	WebSearchCapability,
 } from "@cogni/ai-tools";
 import { POLY_CORE_TOOL_BUNDLE } from "@/bootstrap/ai/evaluation-baseline";
+import { KpiBindingsSchema } from "@cogni-dao/metrics/contracts";
+import type { GoalsProgress, MetricService } from "@cogni-dao/metrics";
+import {
+	createGoalMetricTools,
+	createGoalMetrics,
+	createGoalProgressReader,
+} from "@/bootstrap/capabilities/goal-metrics";
 import type { AttributionStore } from "@cogni/attribution-ledger";
 import {
 	createDefaultRegistries,
@@ -53,6 +60,7 @@ import {
 } from "@cogni/knowledge-store";
 import {
 	buildDoltgresClient,
+	createDoltgresEntryResolver,
 	createDoltgresPusher,
 	DoltgresEdoResolverAdapter,
 	DoltgresKnowledgeContributionAdapter,
@@ -77,7 +85,7 @@ import {
 	Connection as TemporalConnection,
 	type WorkflowClient,
 } from "@temporalio/client";
-import Redis from "ioredis";
+import { createStreamRedisClient } from "@/bootstrap/stream-redis-client";
 import type { Logger } from "pino";
 import {
 	ALCHEMY_ADAPTER_VERSION,
@@ -133,7 +141,11 @@ import {
 	getTestOperatorWallet,
 } from "@/adapters/test";
 import { createToolBindings } from "@/bootstrap/ai/tool-bindings";
-import { startGovernanceSyncOnBoot } from "@/bootstrap/startup-reconcile";
+import {
+	startGovernanceSyncOnBoot,
+	startMetricsSyncOnBoot,
+} from "@/bootstrap/startup-reconcile";
+import { localReadinessPreflight } from "@/bootstrap/local-readiness-preflight";
 import { createBoundToolSource } from "@/bootstrap/ai/tool-source.factory";
 import {
 	createPolyTradeExecutorFactory,
@@ -147,7 +159,9 @@ import { createRepoCapability } from "@/bootstrap/capabilities/repo";
 import { createScheduleCapability } from "@/bootstrap/capabilities/schedule";
 import { stubVcsCapability } from "@/bootstrap/capabilities/vcs";
 import { createWebSearchCapability } from "@/bootstrap/capabilities/web-search";
+import { createCitationLinksPort } from "@/bootstrap/capabilities/citation-links";
 import { createWorkItemCapability } from "@/bootstrap/capabilities/work-item";
+import { createMoveMetricPorts } from "@/bootstrap/capabilities/work-item-moves";
 import type { RateLimitBypassConfig } from "@/bootstrap/http/wrapPublicRoute";
 import {
 	type AutoWrapJobHandle,
@@ -267,6 +281,10 @@ export interface Container {
 	scheduleRunReader: ScheduleRunReader;
 	/** Metrics capability for AI tools - requires PROMETHEUS_URL to be configured */
 	metricsCapability: MetricsCapability;
+	/** Goal metrics engine (@cogni-dao/metrics); undefined without DOLTGRES_URL. */
+	goalMetrics: MetricService | undefined;
+	/** The node's one goal-progress read; HTTP, SSR and core__goal_progress share it. */
+	goalProgress: () => Promise<GoalsProgress>;
 	/** Web search capability for AI tools - requires TAVILY_API_KEY to be configured */
 	webSearchCapability: WebSearchCapability;
 	/** Repo capability for AI tools - requires COGNI_REPO_PATH */
@@ -541,6 +559,7 @@ export function getContainer(): Container {
 	if (!_container) {
 		_container = createContainer();
 		startGovernanceSyncOnBoot(_container.log);
+		if (_container.goalMetrics) startMetricsSyncOnBoot(_container.log);
 	}
 	return _container;
 }
@@ -719,7 +738,7 @@ export async function finalizeEpochInProcess(
 }
 
 function createContainer(): Container {
-	const env = serverEnv();
+	const env = localReadinessPreflight();
 	const algorithmImplementationRevision =
 		env.APP_BUILD_SHA ?? env.COGNI_REPO_SHA;
 	const nodeId = getNodeId();
@@ -1005,8 +1024,23 @@ function createContainer(): Container {
 					POLYGON_USDC_E,
 					PolymarketDataApiClient,
 					createPolymarketTargetBookProviderV1,
+					setPolyDataApiRowRejectionSink,
 				} = await import(
 					"@cogni/poly-market-provider/adapters/polymarket"
+				);
+				// bug.5049: a malformed non-identity Data API row is dropped, not
+				// fatal; surface the running count so it is visible in Loki.
+				setPolyDataApiRowRejectionSink((rejection) =>
+					log.warn(
+						{
+							event: "poly.data_api.row_rejected",
+							endpoint: rejection.endpoint,
+							rejected_count: rejection.rejectedCount,
+							sample_reason: rejection.sampleReason,
+							total_rejected: rejection.totalRejected,
+						},
+						"Data API rows rejected by per-row validation",
+					),
 				);
 				// task.5043 / bug.5049 — Polygon `OrderFilled` chain logs are the
 				// wallet-watch source. bug.5051: use a WebSocket transport so viem's
@@ -1147,7 +1181,7 @@ function createContainer(): Container {
 
 				// Target-set reconciler — ticks listAllActive every 30s, starts/stops
 				// per-wallet polls to match. First tick fires immediately. See
-				// docs/spec/poly-tenant-and-collateral.md § POLL_RECONCILES_PER_TICK.
+				// https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md § POLL_RECONCILES_PER_TICK.
 				//
 				// `listAllActive` requires an active `poly_wallet_connections` row with
 				// an active `poly_wallet_grants` row, so the reconciler only hands us
@@ -1263,10 +1297,8 @@ function createContainer(): Container {
 									listActivity: async (wallet, params) =>
 										dataApiClient.listActivity(wallet, params),
 									listPositions: async (wallet, conditionId) =>
-										dataApiClient.listUserPositions(wallet, {
-											market: conditionId,
-											sizeThreshold: 0,
-											limit: 500,
+										dataApiClient.listUserPositionsV2(wallet, {
+											conditions: [conditionId],
 										}),
 								},
 								getWalletCashUsdc: async (cashVenue) => {
@@ -1512,23 +1544,47 @@ function createContainer(): Container {
 						// Short caches keep a burst of fills coherent without turning each fill
 						// into another API walk.
 						type PositionSnapshot = Awaited<
-							ReturnType<typeof dataApiClient.listAllUserPositions>
+							ReturnType<typeof dataApiClient.listPositiveValueUserPositions>
 						>;
-						let targetPositionsCache:
-							| { capturedAt: number; positions: PositionSnapshot }
-							| undefined;
-						const getTargetPositions = async (): Promise<PositionSnapshot> => {
-							if (
-								targetPositionsCache &&
-								Date.now() - targetPositionsCache.capturedAt < 10_000
-							) {
-								return targetPositionsCache.positions;
+						// Per-fill hot path: never walk the whole target book (a whale
+						// holds ~39k rows). Each query is one server-filtered request,
+						// and concurrent fills share the in-flight promise for 10s.
+						const targetReadCache = new Map<
+							string,
+							{ capturedAt: number; result: Promise<PositionSnapshot> }
+						>();
+						const readTargetCoalesced = (
+							key: string,
+							read: () => Promise<PositionSnapshot>,
+						): Promise<PositionSnapshot> => {
+							const hit = targetReadCache.get(key);
+							if (hit && Date.now() - hit.capturedAt < 10_000) {
+								return hit.result;
 							}
-							const positions =
-								await dataApiClient.listAllUserPositions(targetWallet);
-							targetPositionsCache = { capturedAt: Date.now(), positions };
-							return positions;
+							const result = read();
+							targetReadCache.set(key, { capturedAt: Date.now(), result });
+							// A failed read must not be served for the rest of the window.
+							result.catch(() => {
+								if (targetReadCache.get(key)?.result === result) {
+									targetReadCache.delete(key);
+								}
+							});
+							return result;
 						};
+						// Value-bearing rows only (`filter_type=CASH`): ~hundreds, one page.
+						const getTargetPositions = (): Promise<PositionSnapshot> =>
+							readTargetCoalesced("value", () =>
+								dataApiClient.listPositiveValueUserPositions(targetWallet),
+							);
+						// Exact condition cohort: one request, `condition=<id>`.
+						const getTargetConditionPositions = (
+							conditionId: string,
+						): Promise<PositionSnapshot> =>
+							readTargetCoalesced(`condition:${conditionId.toLowerCase()}`, () =>
+								dataApiClient.listUserPositionsV2(targetWallet, {
+									conditions: [conditionId],
+								}),
+							);
 						// `OperatorPosition`-shaped: exactly `{asset, size, currentValue}`,
 						// the only fields position_gap and the SELL branch consume. Both
 						// venues can supply all three as facts.
@@ -1681,7 +1737,9 @@ function createContainer(): Container {
 									return executor.getMarketConstraints(tokenId);
 								},
 								getTargetConditionPosition: async (params) => {
-									const positions = await getTargetPositions();
+									const positions = await getTargetConditionPositions(
+										params.conditionId,
+									);
 									return targetConditionPositionFromDataApiPositions(
 										params.conditionId,
 										positions,
@@ -1755,6 +1813,14 @@ function createContainer(): Container {
 							);
 						return exec.cancelOrder.bind(exec);
 					},
+					getOrderFor: async (billing_account_id, mode) => {
+						const exec =
+							await executorFactory.getPolyTradeExecutorForVenue(
+								billing_account_id,
+								mode,
+							);
+						return exec.getOrder.bind(exec);
+					},
 					logger: sweepLogger,
 					metrics: noopMetricsForSweep,
 				});
@@ -1762,6 +1828,12 @@ function createContainer(): Container {
 				if (epoch !== _jobsEpoch) {
 					restingSweepStop();
 					return;
+				}
+				// bug.5057 — never leave a previous handle running un-stopped.
+				try {
+					_restingSweepStop?.();
+				} catch {
+					// Best-effort.
 				}
 				_restingSweepStop = restingSweepStop;
 			} catch (err: unknown) {
@@ -2385,10 +2457,17 @@ function createContainer(): Container {
 	});
 
 	// KnowledgeCapability + EdoCapability for AI tools (require DOLTGRES_URL)
+	let goalMetrics: MetricService | undefined;
 	let knowledgeCapability: KnowledgeCapability;
 	let edoCapability: EdoCapability;
 	let knowledgeContributionService: ContributionService | undefined;
 	let knowledgeStorePort: KnowledgeStorePort | undefined;
+	// story.0033: the work-items `moves` ports over this node's metrics service.
+	// `goalMetrics` and `knowledgeStorePort` are assigned below and read only at call time.
+	const moveMetrics = createMoveMetricPorts(
+		() => goalMetrics,
+		() => knowledgeStorePort,
+	);
 	if (env.DOLTGRES_URL) {
 		const doltgresUrl = env.DOLTGRES_URL;
 		const doltClient = buildDoltgresClient({
@@ -2405,7 +2484,15 @@ function createContainer(): Container {
 		workItemAdapter = new DoltgresPolyWorkItemAdapter(
 			workItemClient,
 			log.child({ component: "doltgres-work-items" }),
-			{ recreateClient: buildWorkItemClient, legacyClient: buildWorkItemClient() },
+			{
+				recreateClient: buildWorkItemClient,
+				legacyClient: buildWorkItemClient(),
+				// task.0086: pins a patch's cites to commits with lock-free reads on the
+				// knowledge pool, never on the writer connection that holds the lock.
+				entryResolver: createDoltgresEntryResolver(doltClient),
+				// story.0033: a `moves` entry pins the metric's latest good observation as its baseline.
+				metricBaseline: moveMetrics.baselines,
+			},
 		);
 		const createKnowledgeBranchClient = () => buildDoltgresClient({
 			connectionString: doltgresUrl,
@@ -2419,7 +2506,37 @@ function createContainer(): Container {
 			sql: doltClient, writerSession: knowledgeWriter,
 		});
 		knowledgeStorePort = knowledgePort;
+		goalMetrics = createGoalMetrics({
+			knowledgeSql: doltClient,
+			observationsSql: serviceDb.$client,
+			environment: env.DEPLOY_ENVIRONMENT ?? "unknown",
+			// Compute receipts and skipped invalid definitions must reach Loki.
+			log: (event) => log.info(event, "metric.event"),
+		});
 		knowledgeCapability = createKnowledgeCapability(knowledgePort);
+		const listGoals =
+			knowledgeCapability.listActiveGoals?.bind(knowledgeCapability);
+		if (listGoals)
+			knowledgeCapability.listActiveGoals = async () => {
+				const goals = await listGoals();
+				return Promise.all(
+					goals.map(async (goal) => {
+						const row = await knowledgePort.getKnowledge(goal.id);
+						// Invalid stored bindings never break the goal list.
+						const parsed = KpiBindingsSchema.safeParse(row?.kpiBindings ?? []);
+						const bindings = parsed.success ? parsed.data : [];
+						return {
+							...goal,
+							kpis:
+								bindings.length && goalMetrics
+									? await goalMetrics.bindings(bindings, {
+											deadline: goal.evaluateAt,
+										})
+									: [],
+						};
+					}),
+				);
+			};
 		const edoResolver = new DoltgresEdoResolverAdapter({
 			sql: doltClient,
 			store: knowledgePort,
@@ -2436,7 +2553,7 @@ function createContainer(): Container {
 		// is only granted to the production GitHub Environment Secret scope, so
 		// candidate-a/preview boot with the hook undefined and never push. v0
 		// invariant: prod is the only writer. Bootstrap: see
-		// docs/runbooks/dolthub-remote-bootstrap.md.
+		// https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/runbooks/dolthub-remote-bootstrap.md.
 		const remoteUrl = env.DOLTHUB_REMOTE_URL;
 		const pushMainOnMerge = remoteUrl
 			? wrapPushSafe(
@@ -2460,7 +2577,7 @@ function createContainer(): Container {
 			// Provenance is stamped by the adapter (`source_type='external'`,
 			// `source_ref='contribution:<id>:<seq>'`), so the provenance gate is
 			// reserved for internal `core__knowledge_write` where the caller
-			// controls those fields. See work/projects/proj.knowledge-syntropy.md.
+			// controls those fields. See https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/work/projects/proj.knowledge-syntropy.md.
 			gates: [shapeGate],
 			...(pushMainOnMerge ? { pushMainOnMerge } : {}),
 		});
@@ -2492,6 +2609,10 @@ function createContainer(): Container {
 	const workItemCapability = createWorkItemCapability({
 		workItemQuery: workItemAdapter,
 		workItemCommand,
+		moveReadings: moveMetrics.readings,
+		// task.0118: first page of an item's citation links, the same read the UI and the route use.
+		links: createCitationLinksPort(() => knowledgeStorePort),
+		log: (event) => log.warn(event, "work.items.envelope_degraded"),
 		backlogWriter: {
 			store: workItemAdapter,
 			principalId: () => {
@@ -2514,7 +2635,20 @@ function createContainer(): Container {
 		vcsCapability: stubVcsCapability,
 		workItemCapability,
 	});
-	const toolSource = createBoundToolSource([...POLY_CORE_TOOL_BUNDLE], toolBindings);
+	const goalProgress = createGoalProgressReader({
+		metrics: () => goalMetrics,
+		knowledge: () => knowledgeStorePort,
+		// Same fallback as createGoalMetrics, so payload environment == observation scope.
+		environment: env.DEPLOY_ENVIRONMENT ?? "unknown",
+	});
+	const metricTools = createGoalMetricTools({
+		metrics: () => goalMetrics,
+		goalProgress,
+	});
+	const toolSource = createBoundToolSource([...POLY_CORE_TOOL_BUNDLE], {
+		...toolBindings,
+		...metricTools.bindings,
+	});
 
 	// Config: rethrow in dev/test for diagnosis, respond_500 in production for safety
 	const config: ContainerConfig = {
@@ -2614,10 +2748,7 @@ function createContainer(): Container {
 
 	// Redis client for run event streaming (ephemeral stream plane)
 	// Per REDIS_IS_STREAM_PLANE: only transient data, no durable state
-	const redisClient = new Redis(env.REDIS_URL, {
-		lazyConnect: true,
-		maxRetriesPerRequest: 3,
-	});
+	const redisClient = createStreamRedisClient(env.REDIS_URL);
 	const runStream = new RedisRunStreamAdapter(redisClient);
 	const nodeStream = new RedisNodeStreamAdapter(redisClient);
 
@@ -2660,6 +2791,8 @@ function createContainer(): Container {
 		scheduleManager,
 		scheduleRunReader,
 		metricsCapability,
+		goalMetrics,
+		goalProgress,
 		webSearchCapability,
 		repoCapability,
 		toolSource,

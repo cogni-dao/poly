@@ -7,7 +7,7 @@
  * Scope: Pure validation shared by finalize, identity-binding, and scheduled reconciliation entrypoints.
  * Invariants: NONPROD_NEVER_TARGETS_PROD, NULL_BLIND_FAIL_CLOSED, DEPLOY_ENVIRONMENT_VALIDATED.
  * Side-effects: none
- * Links: bug.5020, docs/spec/attribution-ledger.md
+ * Links: bug.5020, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @public
  */
 

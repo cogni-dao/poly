@@ -12,7 +12,7 @@
  *   - Trace ID extracted from spanContext (MUST be non-zero when SDK is running)
  * Side-effects: IO (OTel span creation and recording)
  * Notes: SDK initialized in instrumentation.ts, not here.
- * Links: AI_SETUP_SPEC.md, instrumentation.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/ai-setup.md, instrumentation.ts
  * @public
  */
 

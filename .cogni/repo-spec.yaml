@@ -5,7 +5,7 @@
 # regenerate both UUIDs:
 #   node_id:  openssl rand -hex 16 | sed 's/\(.\{8\}\)\(.\{4\}\)\(.\{4\}\)\(.\{4\}\)\(.\{12\}\)/\1-\2-\3-\4-\5/'
 #   scope_id: uuidv5(node_id, "default")
-# See docs/spec/identity-model.md, docs/spec/multi-node-tenancy.md.
+# See https://cognidao.org/knowledge/node-template-identity-model, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/multi-node-tenancy.md.
 
 schema_version: "0.1.4"
 
@@ -89,43 +89,13 @@ deployment:
       visibility: public
       runtime_profile: cogni-node-app-v1
       bindings:
-        # Operator resolves this to the paper-trader sidecar's URL. The app only
-        # routes paper-venue accounts through it. The companion is selected
-        # only for candidate-a and preview by its declaration below.
+        # Operator resolves this to the paper-trader companion's URL. The app routes
+        # paper-venue accounts through it; the companion is selected only for
+        # candidate-a and preview (see `envs` on the paper-trader service below).
         PAPER_SIDECAR_URL: paper-trader
-      # Node-owned secret env the akash lease must map into the app container.
-      # The runtime_profile injects the A1 baseline (AUTH_SECRET, DATABASE_URL,
-      # EVM_RPC_URL, …) automatically — those are NOT listed here (operator #40
-      # pruned them; listing profile keys is redundant). These are the A2 node
-      # secrets the profile does NOT know about: the per-tenant Polymarket
-      # trading-wallet creds + the retained paper-mode compatibility switch. Values are written per-env
-      # via self-serve `POST /nodes/{id}/secrets`; each key resolves from this
-      # node's OpenBao bank (`cogni/<env>/poly/<KEY>`). Execution venue is
-      # resolved per account; paper accounts need no live custody credentials.
-      # NOTE (BRANCH_HEAD_IS_LEASE): akash leases redeploy only when the
-      # deploy/<env>-<node> branch head moves. After writing new secret VALUES,
-      # a fresh source SHA is required to force ArgoCD to redeploy the lease so
-      # the pod re-reads the ESO-synced secret — a same-SHA re-flight is a no-op.
-      secret_refs:
-        - key: PAPER_ENFORCE_MODE
-        - key: POLYGON_RPC_URL
-        - key: PRIVY_USER_WALLETS_APP_ID
-        - key: PRIVY_USER_WALLETS_APP_SECRET
-        - key: PRIVY_USER_WALLETS_SIGNING_KEY
-        - key: POLY_WALLET_AEAD_KEY_ID
-        # bug.5297 — per-lane switch for the trader-observation writer. Values
-        # ALREADY EXIST in all three lanes before this declaration lands
-        # (prod=true, candidate-a=false, preview=false), because
-        # assert-target-substrate verifies a declared key against the bank of
-        # the lane being promoted — declaring with a value missing in ANY
-        # asserted lane is what broke every poly promote in bug.5277.
-        - key: POLY_TRADER_OBSERVATION_WRITER_ENABLED
-        # Substrate-managed (source: agent, auto-generated in OpenBao — never
-        # self-serve set; 403 key_reserved is correct). Declared here so the
-        # operator projects it into the pod: without it the live-CLOB executor
-        # throws WalletAdapterUnconfigured and no mirror poll runs. Required for
-        # prod live trading. Paper accounts use their own real grant and no custody.
-        - key: POLY_WALLET_AEAD_KEY_HEX
+      # Node secrets beyond the runtime profile are declared ONCE in
+      # .cogni/secrets-catalog.yaml; an entry's `workloads: [app]` delivers it to
+      # this service (bug.5254). Never list keys here.
       bind_host: 0.0.0.0
       resources:
         cpu_units: 2
@@ -133,9 +103,10 @@ deployment:
         storage_mi: 4096
     # Paper-trading sidecar (as-built from cogni-poly). FastAPI wrapper over the
     # vendored polymarket-paper-trader; the app's buildPaperOnlyExecutor talks to
-    # it over PAPER_SIDECAR_URL. Private within the allocation; no runtime_profile (not
+    # it over PAPER_SIDECAR_URL. Private (loopback-tier); no runtime_profile (not
     # a cogni-node-app). Gated to the paper-trading envs via `envs` (story.5043):
-    # production excludes this companion, keeping a 1-service akash lease that ships
+    # production runs live-CLOB (PAPER_ENFORCE_MODE=live) and never routes to the
+    # sidecar, so excluding it keeps prod a 1-service akash lease that ships
     # in-place — no lease re-mint (prod is the activity_env and cannot re-mint).
     - name: paper-trader
       artifact:
@@ -151,7 +122,6 @@ deployment:
       # runs. Absent = every env; listing these two excludes production.
       envs: [candidate-a, preview]
       bindings: {}
-      secret_refs: []
       bind_host: 0.0.0.0
       resources:
         cpu_units: 0.5

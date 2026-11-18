@@ -7,7 +7,6 @@
  * Scope: Pure type definitions. Does not contain I/O or adapter dependencies.
  * Invariants: OBSERVATION_IDEMPOTENT (market IDs deterministic), PACKAGES_NO_ENV.
  * Side-effects: none
- * Links: work/items/task.0230.market-data-package.md
  * @public
  */
 

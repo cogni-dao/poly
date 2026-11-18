@@ -13,7 +13,7 @@
  *   - updateSchedule preserves existing state (pause, notes) via previous.state
  *   - describeSchedule extracts input + dbScheduleId from action.args[0]; cron returns null (compiled to calendars by Temporal)
  * Side-effects: IO (Temporal RPC calls)
- * Links: docs/spec/scheduler.md, docs/spec/temporal-patterns.md, ScheduleControlPort
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, https://cognidao.org/knowledge/temporal-workflow-rules, ScheduleControlPort
  * @public
  */
 
@@ -62,6 +62,37 @@ function toTemporalOverlapPolicy(
     default:
       return ScheduleOverlapPolicy.BUFFER_ONE;
   }
+}
+
+/** Route tasks use the existing NodeTaskWorkflow payload; graph requests keep their exact shape. */
+function scheduleArgs(params: CreateScheduleParams) {
+  if (params.workflowType === "NodeTaskWorkflow") {
+    if (
+      !params.graphId.startsWith("task:/api/internal/") ||
+      params.graphId.includes("..") ||
+      params.graphId.includes("?")
+    )
+      throw new Error("invalid_task_route");
+    return {
+      nodeId: params.nodeId,
+      route: params.graphId.slice(5),
+      payload: params.input,
+      scheduleId: params.scheduleId,
+      executionGrantId: params.executionGrantId,
+    };
+  }
+  return {
+    nodeId: params.nodeId,
+    graphId: params.graphId,
+    executionGrantId: params.executionGrantId,
+    input: params.input,
+    runKind: "system_scheduled" as const,
+    triggerSource: "temporal_schedule",
+    triggerRef: params.scheduleId,
+    requestedBy: params.ownerUserId,
+    dbScheduleId: params.dbScheduleId ?? null,
+    temporalScheduleId: params.scheduleId,
+  };
 }
 
 /**
@@ -132,20 +163,7 @@ export class TemporalScheduleControlAdapter implements ScheduleControlPort {
           // Per WORKFLOW_ID_INCLUDES_TIMESTAMP: workflowId includes schedule time
           // Temporal appends timestamp automatically for scheduled workflows
           workflowId: params.scheduleId,
-          args: [
-            {
-              nodeId: params.nodeId,
-              graphId: params.graphId,
-              executionGrantId: params.executionGrantId,
-              input: params.input,
-              runKind: "system_scheduled" as const,
-              triggerSource: "temporal_schedule",
-              triggerRef: params.scheduleId,
-              requestedBy: params.ownerUserId,
-              dbScheduleId: params.dbScheduleId ?? null,
-              temporalScheduleId: params.scheduleId,
-            },
-          ],
+          args: [scheduleArgs(params)],
           taskQueue: params.taskQueueOverride ?? this.config.taskQueue,
         },
         policies: {
@@ -236,20 +254,7 @@ export class TemporalScheduleControlAdapter implements ScheduleControlPort {
           type: "startWorkflow" as const,
           workflowType: params.workflowType ?? GRAPH_RUN_WORKFLOW_TYPE,
           workflowId: params.scheduleId,
-          args: [
-            {
-              nodeId: params.nodeId,
-              graphId: params.graphId,
-              executionGrantId: params.executionGrantId,
-              input: params.input,
-              runKind: "system_scheduled" as const,
-              triggerSource: "temporal_schedule",
-              triggerRef: params.scheduleId,
-              requestedBy: params.ownerUserId,
-              dbScheduleId: params.dbScheduleId ?? null,
-              temporalScheduleId: params.scheduleId,
-            },
-          ],
+          args: [scheduleArgs(params)],
           taskQueue: params.taskQueueOverride ?? this.config.taskQueue,
         },
         policies: {

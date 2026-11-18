@@ -15,7 +15,7 @@
  *   - PAPER_GETORDER_NEVER_NULL — 404 → { status: "not_found" }, never null.
  *   - PACKAGES_NO_ENV — adapter takes no env; fetch impl is constructor-injected.
  * Links: nodes/poly/packages/market-provider/src/adapters/paper/paper.adapter.ts,
- *   work/projects/proj.poly-paper-trading.md
+ *   proj.poly-paper-trading
  * @internal
  */
 

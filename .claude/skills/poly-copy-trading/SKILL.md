@@ -32,7 +32,7 @@ ledger updated + decision row written (placed | skipped | error)
 
 **Invariant order matters.** Flipping INSERT and PLACE means a successful CLOB submit whose ledger row never committed → next poll double-mirrors. Never reorder.
 
-Durable flowchart: [Poly Order And Position Lifecycle § Mirror Decision To Limit Order](../../../docs/spec/poly-copy-trade-execution.md).
+Durable flowchart: [Poly Order And Position Lifecycle § Mirror Decision To Limit Order](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md).
 
 ## Key code landmarks
 
@@ -92,15 +92,15 @@ Durable flowchart: [Poly Order And Position Lifecycle § Mirror Decision To Limi
 
 ## v1 + Phase 4 roadmap pointers
 
-- [task.0323 v1 hardening](../../../work/items/task.0323.poly-copy-trade-v1-hardening.md) — cursor persistence, CTF SELL (wallet-owned, overlaps with `poly-auth-wallets`), status-sync, metrics, alerting. `In Review` at time of writing.
-- [task.0328 sync-truth cache](../../../work/items/task.0328.poly-sync-truth-ledger-cache.md) — DB-as-CLOB-cache with `synced_at` + `/sync-health`. **Done.**
-- [task.0332 shared poller](../../../work/items/task.0332.poly-mirror-shared-poller.md) — replace per-wallet `setInterval` with one poll loop + `TargetSubscriptionRouter`. Blocks Phase 3 multi-tenant scale. `Needs Design`.
-- [task.0322 Phase 4](../../../work/items/task.0322.poly-copy-trade-phase4-design-prep.md) — CLOB WebSocket dual-path ingestion + hot signer + target ranker + counterfactual PnL. `Needs Design`.
+- task.0323 v1 hardening — cursor persistence, CTF SELL (wallet-owned, overlaps with `poly-auth-wallets`), status-sync, metrics, alerting. `In Review` at time of writing.
+- task.0328 sync-truth cache — DB-as-CLOB-cache with `synced_at` + `/sync-health`. **Done.**
+- task.0332 shared poller — replace per-wallet `setInterval` with one poll loop + `TargetSubscriptionRouter`. Blocks Phase 3 multi-tenant scale. `Needs Design`.
+- task.0322 Phase 4 — CLOB WebSocket dual-path ingestion + hot signer + target ranker + counterfactual PnL. `Needs Design`.
 
 ## Active bugs that affect this pipeline
 
 - `bug.0335` historical context — shared-wallet BUY empty reject on candidate-a. Likely wallet balance / allowance / keys; prove current state on candidate before treating this as active.
-- [bug.0329](../../../work/items/bug.0329.poly-sell-neg-risk-empty-reject.md) — SELL on neg_risk market empty reject. Any position opened on neg_risk becomes roach-motel until resolution. Blocks close-position. Root cause: missing CTF approval (see `poly-auth-wallets`).
+- bug.0329 — SELL on neg_risk market empty reject. Any position opened on neg_risk becomes roach-motel until resolution. Blocks close-position. Root cause: missing CTF approval (see `poly-auth-wallets`).
 
 ## Anti-patterns specific to the mirror
 

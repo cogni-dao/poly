@@ -10,7 +10,7 @@
  *   - LEDGER_PORT_IS_WRITE_PATH: All money-movement goes through this port
  *   - ALL_MATH_BIGINT: All monetary amounts are bigint (u128 compatible)
  * Side-effects: none (interface definition only)
- * Links: docs/spec/financial-ledger.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/financial-ledger.md
  * @public
  */
 

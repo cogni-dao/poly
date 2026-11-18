@@ -10,7 +10,7 @@
  *   - STATE_EXTENDS_MESSAGES: All states include messages for conversation tracking
  *   - REDUCER_SEMANTICS: Explicit reducers for list accumulation vs override
  * Side-effects: none
- * Links: LANGGRAPH_AI.md, open-deep-research reference
+ * Links: https://node-template.cognidao.org/knowledge/graph-execution-invariants, open-deep-research reference
  * @public
  */
 

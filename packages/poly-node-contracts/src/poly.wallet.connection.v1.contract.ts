@@ -19,7 +19,7 @@
  *     they run. `trading_ready` is true iff `trading_approvals_ready_at` is set
  *     on that row (task.0355, APPROVALS_BEFORE_PLACE).
  * Side-effects: none
- * Links: docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
  * @public
  */
 

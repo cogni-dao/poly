@@ -39,7 +39,7 @@
  *     derived from it.
  * Side-effects: IO at tool-invocation time (one Postgres transaction per call),
  *   via the feature transport. None at construction.
- * Links: task.1791070967, story.5006, docs/spec/capability-plane.md,
+ * Links: task.1791070967, story.5006, https://poly.cognidao.org/knowledge/capability-plane-contract,
  *   graph-executor.factory.ts
  * @internal
  */

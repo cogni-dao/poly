@@ -7,7 +7,7 @@
  * Scope: Re-exports only. Does not define any logic.
  * Invariants: Only exports stable public interfaces and functions.
  * Side-effects: none
- * Links: docs/spec/attribution-ledger.md, packages/attribution-ledger/
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md, packages/attribution-ledger/
  * @public
  */
 

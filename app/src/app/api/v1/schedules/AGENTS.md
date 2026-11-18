@@ -13,7 +13,7 @@ REST API routes for schedule CRUD operations. Auth-protected endpoints for creat
 
 ## Pointers
 
-- [Scheduler Spec](../../../../../../../docs/spec/scheduler.md)
+- [Scheduler Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md)
 - [Schedule Contracts](../../../../contracts/)
 
 ## Boundaries

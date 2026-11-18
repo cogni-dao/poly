@@ -106,10 +106,11 @@ describe("canonical read inheritance", () => {
     await capability.patch({
       id: item.id,
       expectedRevision: 7,
+      reason: "test change",
       set: { scores: null },
     });
     expect(patch).toHaveBeenCalledWith(
-      { id: item.id, expectedRevision: 7, set: { scores: null } },
+      { id: item.id, expectedRevision: 7, reason: "test change", set: { scores: null } },
       "agent-a",
     );
   });

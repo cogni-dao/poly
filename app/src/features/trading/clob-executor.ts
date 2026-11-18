@@ -11,7 +11,6 @@
  *   - BOUNDED_METRIC_RESULT — the `result` label is one of {ok, rejected, error}.
  *   - TRADING_IS_GENERIC — MUST NOT import from `features/copy-trade/` or `features/wallet-watch/`.
  * Side-effects: logger + metrics calls only (both are caller-supplied sinks; default no-op).
- * Links: work/items/task.0315.poly-copy-trade-prototype.md (moved from `features/copy-trade/` in CP4.3b; original at CP4.2)
  * @public
  */
 

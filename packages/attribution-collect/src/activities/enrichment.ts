@@ -11,7 +11,7 @@
  * - ENRICHER_DRAFT_ONLY: evaluateEpochDraft writes status='draft' only; buildLockedEvaluations returns data without writing.
  * - PROFILE_DISPATCH: enrichers run in profile.enricherRefs order, resolved via attributionPipeline.
  * Side-effects: IO (database via attributionStore)
- * Links: work/items/task.0113.epoch-artifact-pipeline.md, docs/spec/plugin-attribution-pipeline.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/plugin-attribution-pipeline.md
  * @internal
  */
 

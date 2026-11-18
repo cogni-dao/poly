@@ -9,8 +9,8 @@
  * Scope: Poly node only. Cross-node contracts stay in `@cogni/node-contracts`.
  * Invariants: All contracts here are imported only by `nodes/poly/**`.
  * Side-effects: none
- * Links: docs/spec/node-ci-cd-contract.md (node-owned packages),
- *        work/items/task.0421.per-node-package-carveout-standard.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-ci-cd-contract.md,
+ *        task.0421
  * @public
  */
 

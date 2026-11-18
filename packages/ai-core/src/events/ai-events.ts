@@ -12,7 +12,7 @@
  *   - UsageReportEvent carries UsageFact for billing subscriber (never to UI)
  *   - DoneEvent extends RunFinalSummary (optional usage + finishReason, populated by execution layer)
  * Side-effects: none (types only)
- * Links: graph-executor.port.ts, GRAPH_EXECUTION.md, LANGGRAPH_SERVER.md
+ * Links: graph-executor.port.ts, https://node-template.cognidao.org/knowledge/graph-execution-invariants, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/langgraph-server.md
  * @public
  */
 

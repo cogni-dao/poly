@@ -11,7 +11,7 @@
  *   - Second user message after tool call doesn't cause 400/500
  * Side-effects: none
  * Notes: Uses vi.doMock + vi.resetModules to mock dynamic imports. Per TOOL_USE_SPEC.md P0.
- * Links: src/app/api/v1/ai/chat/route.ts, docs/spec/tool-use.md
+ * Links: src/app/api/v1/ai/chat/route.ts, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @public
  */
 

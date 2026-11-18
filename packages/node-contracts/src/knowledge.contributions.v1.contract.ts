@@ -12,11 +12,12 @@
  *   - Server stamps branch edits with source_ref='contribution:<id>:<seq>'
  *   - confidencePct is capped at 30 server-side for principal.kind==='agent'
  * Side-effects: none
- * Links: docs/design/knowledge-contribution-api.md, docs/spec/knowledge-data-plane.md, work/items/task.0425.knowledge-contribution-api.md
+ * Links: https://node-template.cognidao.org/knowledge/knowledge-contribution-flow, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/knowledge-data-plane.md
  * @internal
  */
 
 import {
+  ContributionCitationDiffEntrySchema,
   ContributionCommitRecordSchema,
   ContributionDiffEntrySchema,
   ContributionRecordSchema,
@@ -72,6 +73,10 @@ export type ContributionCommitRecord = z.infer<
 
 export type ContributionDiffEntry = z.infer<typeof ContributionDiffEntrySchema>;
 
+export type ContributionCitationDiffEntry = z.infer<
+  typeof ContributionCitationDiffEntrySchema
+>;
+
 export const ContributionsListResponseSchema = z.object({
   contributions: z.array(ContributionRecordSchema),
 });
@@ -83,6 +88,8 @@ export const ContributionDiffResponseSchema = z.object({
   contributionId: z.string(),
   branch: z.string(),
   entries: z.array(ContributionDiffEntrySchema),
+  /** Every citation edge the contribution adds, removes or re-contexts. */
+  citations: z.array(ContributionCitationDiffEntrySchema),
 });
 export type ContributionDiffResponse = z.infer<
   typeof ContributionDiffResponseSchema

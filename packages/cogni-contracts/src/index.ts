@@ -7,7 +7,7 @@
  * Scope: Constants only; does not include addresses, tx builders, or RPC logic.
  * Invariants: No runtime dependencies; pure constants.
  * Side-effects: none
- * Links: docs/spec/packages-architecture.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md
  * @public
  */
 

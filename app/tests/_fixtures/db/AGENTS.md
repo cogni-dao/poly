@@ -14,7 +14,7 @@ Database fixture helpers for component tests. Provides a service-role (BYPASSRLS
 ## Pointers
 
 - [testcontainers global setup](../../component/setup/testcontainers-postgres.global.ts)
-- [Database RLS Spec](../../../../../docs/spec/database-rls.md): RLS architecture
+- [Database RLS Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md): RLS architecture
 
 ## Boundaries
 

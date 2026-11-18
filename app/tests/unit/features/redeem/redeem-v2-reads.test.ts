@@ -13,14 +13,8 @@ const CONDITION = `0x${"12".repeat(32)}` as `0x${string}`;
 
 function v2OnlyClient() {
   return {
-    listUserPositions: vi.fn(() => {
-      throw new Error("legacy v1 read must not run");
-    }),
-    listAllUserPositions: vi.fn(() => {
-      throw new Error("legacy v1 walk must not run");
-    }),
     listUserPositionsV2: vi.fn(async () => []),
-    listAllUserPositionsV2: vi.fn(async () => []),
+    listAllUserPositions: vi.fn(async () => []),
   };
 }
 
@@ -40,7 +34,6 @@ describe("redemption Data API reads", () => {
     expect(dataApiClient.listUserPositionsV2).toHaveBeenCalledWith(FUNDER, {
       conditions: [CONDITION],
     });
-    expect(dataApiClient.listUserPositions).not.toHaveBeenCalled();
   });
 
   it("uses an unscoped cursor-complete V2 walk for the periodic diff", async () => {
@@ -55,8 +48,7 @@ describe("redemption Data API reads", () => {
       log: { info: vi.fn() } as never,
     });
 
-    expect(dataApiClient.listAllUserPositionsV2).toHaveBeenCalledWith(FUNDER);
-    expect(dataApiClient.listAllUserPositions).not.toHaveBeenCalled();
+    expect(dataApiClient.listAllUserPositions).toHaveBeenCalledWith(FUNDER);
   });
 
   it("uses one unscoped V2 walk per condition-resolution catch-up chunk", async () => {
@@ -85,8 +77,7 @@ describe("redemption Data API reads", () => {
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     });
 
-    expect(dataApiClient.listAllUserPositionsV2).toHaveBeenCalledWith(FUNDER);
-    expect(dataApiClient.listAllUserPositions).not.toHaveBeenCalled();
+    expect(dataApiClient.listAllUserPositions).toHaveBeenCalledWith(FUNDER);
     expect(enqueueForCondition).toHaveBeenCalledWith(CONDITION, []);
   });
 });

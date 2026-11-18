@@ -14,8 +14,8 @@ Pure domain logic with entities, rules, and business invariants. No I/O, time, o
 ## Pointers
 
 - [Root AGENTS.md](../../../../AGENTS.md)
-- [Architecture](../../../../docs/spec/architecture.md)
-- [Billing Evolution](../../../../docs/spec/billing-evolution.md)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
+- [Billing Evolution](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/billing-evolution.md)
 
 ## Boundaries
 

@@ -21,20 +21,23 @@ function port(
 ): PositionGapFillEvidencePort {
 	return {
 		getWalletAddress: vi.fn(async () => wallet),
-		listActivity: vi.fn(async () => [
-			{
-				proxyWallet: wallet,
-				type: "TRADE",
-				timestamp: 1_791_434_872,
-				conditionId,
-				asset: tokenId,
-				side: "BUY",
-				size: 9.3,
-				usdcSize: 0.00976,
-				price: 0.001,
-				transactionHash,
-			},
-		]),
+		listActivity: vi.fn(async () => ({
+			rows: [
+				{
+					proxyWallet: wallet,
+					type: "TRADE",
+					timestamp: 1_791_434_872,
+					conditionId,
+					asset: tokenId,
+					side: "BUY",
+					size: 9.3,
+					usdcSize: 0.00976,
+					price: 0.001,
+					transactionHash,
+				},
+			],
+			nextCursor: null,
+		})),
 		listPositions: vi.fn(async () => [
 			{
 				proxyWallet: wallet,
@@ -95,20 +98,23 @@ describe("reconcilePositionGapFillEvidence", () => {
 
 	it("rejects cross-wallet activity even when token, shares, and economics match", async () => {
 		const evidence = port({
-			listActivity: vi.fn(async () => [
-				{
-					proxyWallet: "0x0000000000000000000000000000000000000001",
-					type: "TRADE",
-					timestamp: 1_791_434_872,
-					conditionId,
-					asset: tokenId,
-					side: "BUY",
-					size: 9.3,
-					usdcSize: 0.00976,
-					price: 0.001,
-					transactionHash,
-				},
-			]),
+			listActivity: vi.fn(async () => ({
+				rows: [
+					{
+						proxyWallet: "0x0000000000000000000000000000000000000001",
+						type: "TRADE",
+						timestamp: 1_791_434_872,
+						conditionId,
+						asset: tokenId,
+						side: "BUY",
+						size: 9.3,
+						usdcSize: 0.00976,
+						price: 0.001,
+						transactionHash,
+					},
+				],
+				nextCursor: null,
+			})),
 		});
 		await expect(
 			reconcilePositionGapFillEvidence({ ...base, port: evidence }),
@@ -123,19 +129,21 @@ describe("reconcilePositionGapFillEvidence", () => {
 			start: 0,
 			end: 2_000_000_000,
 			limit: 100,
-			offset: 0,
 		});
 		const evidence = port({
-			listActivity: vi.fn(async () => [
-				...valid,
-				{
-					proxyWallet: wallet,
-					type: "REDEEM",
-					timestamp: 1_791_434_873,
-					conditionId,
-					asset: tokenId,
-				},
-			]),
+			listActivity: vi.fn(async () => ({
+				rows: [
+					...valid.rows,
+					{
+						proxyWallet: wallet,
+						type: "REDEEM",
+						timestamp: 1_791_434_873,
+						conditionId,
+						asset: tokenId,
+					},
+				],
+				nextCursor: null,
+			})),
 		});
 		await expect(
 			reconcilePositionGapFillEvidence({ ...base, port: evidence }),
@@ -143,5 +151,35 @@ describe("reconcilePositionGapFillEvidence", () => {
 			status: "mismatch",
 			reason: "ambiguous_activity",
 		});
+	});
+
+	it("matches condition ids case-insensitively", async () => {
+		await expect(
+			reconcilePositionGapFillEvidence({
+				...base,
+				conditionId: conditionId.toUpperCase().replace("0X", "0x"),
+				port: port(),
+			}),
+		).resolves.toMatchObject({ status: "verified" });
+	});
+
+	it("walks activity by cursor and fails closed when the window never exhausts", async () => {
+		const evidence = port({
+			listActivity: vi.fn(async () => ({
+				rows: [],
+				nextCursor: "more",
+			})),
+		});
+		await expect(
+			reconcilePositionGapFillEvidence({ ...base, port: evidence }),
+		).resolves.toMatchObject({
+			status: "mismatch",
+			reason: "activity_history_incomplete",
+		});
+		expect(evidence.listActivity).toHaveBeenCalledTimes(5);
+		expect(evidence.listActivity).toHaveBeenLastCalledWith(
+			wallet,
+			expect.objectContaining({ cursor: "more" }),
+		);
 	});
 });

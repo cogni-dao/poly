@@ -13,7 +13,7 @@
  *   - DOMAIN_ID_IS_IMMUTABLE; DELETE refuses baseline and nonempty domains.
  *   - id is short, slug-shaped (alnum, dash, underscore).
  * Side-effects: none
- * Links: docs/spec/knowledge-domain-registry.md
+ * Links: https://node-template.cognidao.org/knowledge/knowledge-domain-management
  * @internal
  */
 

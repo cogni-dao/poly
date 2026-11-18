@@ -44,8 +44,8 @@
  *     per user), so a warm request runs zero pre-cache DB round-trips.
  * Side-effects: IO (DB reads only).
  * Links: nodes/poly/packages/node-contracts/src/poly.wallet.execution.v1.contract.ts,
- *        docs/spec/poly-tenant-and-collateral.md,
- *        work/items/task.0354.poly-trading-hardening-followups.md
+ *        https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md,
+ *        task.0354
  * @public
  */
 

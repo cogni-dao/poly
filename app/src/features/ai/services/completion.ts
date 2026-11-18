@@ -14,7 +14,7 @@
  * - ERROR_NORMALIZATION_ONCE: Connection-time errors caught and normalized via try/catch
  * Side-effects: IO (via ports)
  * Notes: Uses adapter promptHash when available (canonical); fallback hash for error-path only
- * Links: Called by adapters via GraphExecutorPort, uses core domain and ports, ERROR_HANDLING_ARCHITECTURE.md
+ * Links: Called by adapters via GraphExecutorPort, uses core domain and ports, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/error-handling.md
  * @public
  */
 

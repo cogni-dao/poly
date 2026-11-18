@@ -15,7 +15,6 @@
  *     is rendered IN FULL — the bootstrap IS the agent's operating map, so the
  *     git skeleton stays minimal and the Dolt orientation carries the substance.
  * Side-effects: none
- * Links: docs/spec/node-baas-architecture.md
  * @internal
  */
 
@@ -45,11 +44,10 @@ import type {
  * domain expertise) is delivered live from the knowledge hub on top of this.
  */
 export const SESSION_BOOTSTRAP_INVARIANTS: readonly string[] = [
-	"ONE work item + ONE node per session (CI-gated) — it IS your plan. Claim it, write your definition of done as an ordered checklist in `outcome` BEFORE you act, and refine it IN PLACE as rungs land — `outcome` is GET-readable, so a plan or 'path forward' lives THERE, never only in chat. Heartbeat; link your PR; coordination.nextAction is authoritative.",
-	"Recall before you write. Search the hub first — merged (/api/v1/knowledge?domain=) and your own open branch — and refine in place over adding new.",
-	"Ship via PR: same-repo branch → CI green → flight to candidate → merge. The operator is the deploy plane (flight, logs, secrets); code, work, and knowledge live in the node repo + hub. Watch each async gate (CI, flight, deploy) the ONE portable way — see <watch-gate> below.",
-	"Done = validated on candidate, not merged. Flight, exercise the live surface, read your request back from Loki at that SHA, and post a /validate-candidate scorecard — the merge gate.",
-	"Your <slug>-agent-orientation is the operating map: recall it first, refine it as the node changes.",
+	"GROUND. Never act on intuition. Ground every decision in this node's goals, their KPIs and its documented practice: guides, skills, designs and roadmaps. Before any action, read your `<slug>-agent-orientation`, the architect skill it names, and every governing atom those name, in full. If no guide covers the action, write or refine that guide first, in the same work item. A deliberate deviation also refines the guide first. Each work-item edit names the atoms you used.",
+	"FOCUS. ONE work item and ONE node per session. Work only a triaged item: scored, goal-linked, with `moves` or a recorded measurement gap. Pick from the top five by rank, or take the item the CEO named. Every Goal you propose serves one active node goal and names the KPI it moves. Its Done when includes that KPI's reading after release. If no KPI fits, record the gap and propose one through the operator's `metrics-expert` guide first. The item is your plan: claim it and keep its Done when checklist current. The item's status gates the allowed action. Triage new work before anything else.",
+	"PROVE. Ship the smallest change that moves the KPI, the same day. Done is a PASS /validate-candidate scorecard at the exact build SHA. Then read the moved KPI on production after one metric window, against its pinned baseline. Tests are CI hygiene, never proof.",
+	"Ship via PR: branch → CI green → flight to candidate → /validate-candidate → operator merge → promote. Watch each async gate with <watch-gate> below.",
 ];
 
 /**
@@ -247,9 +245,9 @@ export function renderBundleMarkdown(input: RenderBundleInput): string {
 		"",
 		`- Find work: \`GET ${origin}/api/v1/work/items?statuses=needs_implement,needs_design\` — adopt over create.`,
 		`- File one: \`POST ${origin}/api/v1/work/items\` \`{type,title,summary,outcome}\` — \`type\` ∈ task|bug|story|spike|subtask; the server allocates the id, never send one.`,
-		`- Progress: \`PATCH ${origin}/api/v1/work/items/{id}\` \`{"set":{...}}\` — the wrapper is \`set\`, NOT \`patch\`.`,
+		`- Progress: \`PATCH ${origin}/api/v1/work/items/{id}\` \`{"reason":"<why, one line, at most 25 words>","set":{...}}\` — \`reason\` is required (400 without it) and lives in history, never in the item; the wrapper is \`set\`, NOT \`patch\`.`,
 		"- `status` ∈ needs_triage|needs_research|needs_design|needs_implement|needs_closeout|needs_merge|done|blocked|cancelled. There is no `in_progress`.",
-		'- Close with `{"set":{"status":"done"}}` only after the PR merges.',
+		'- Close with `{"reason":"PR merged","set":{"status":"done"}}` only after the PR merges.',
 		`- Machine schemas for the two writes: \`GET ${origin}/.well-known/agent.json\` → \`actions.createWorkItem\` / \`actions.updateWorkItem\`.`,
 		"",
 		"## Recall + contribute",

@@ -93,7 +93,9 @@ describe("renderBundleMarkdown", () => {
 		expect(markdown).toContain(
 			"PATCH https://poly.cognidao.org/api/v1/work/items/{id}",
 		);
-		expect(markdown).toContain('{"set":{...}}');
+		expect(markdown).toContain(
+			'{"reason":"<why, one line, at most 25 words>","set":{...}}',
+		);
 	});
 
 	it("renders the current-node orientation entry IN FULL above the tooling invariants", () => {

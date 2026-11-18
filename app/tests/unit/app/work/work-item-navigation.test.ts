@@ -53,14 +53,25 @@ describe("work-item permalink navigation", () => {
         {
           type: ["task"],
           status: ["needs_implement"],
-          project: ["proj.work"],
           sort: "-priority",
           query: "permalink",
         }
       )
     ).toBe(
-      "/work/items/task.5174?cursor=opaque&type=task&status=needs_implement&project=proj.work&sort=-priority&q=permalink"
+      "/work/items/task.5174?cursor=opaque&type=task&status=needs_implement&sort=-priority&q=permalink"
     );
+  });
+
+  it("carries the rank range and an explicit empty status filter in the URL", () => {
+    expect(
+      workViewHref(undefined, new URLSearchParams("view=board"), {
+        type: [],
+        status: [],
+        sort: "-rankScore",
+        query: "",
+        rankRange: [0.5, undefined],
+      })
+    ).toBe("/work?view=board&status=all&sort=-rankScore&rankMin=0.5&rankMax=");
   });
 
   it("replaces a closed sheet with its preserved list URL", () => {

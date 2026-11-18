@@ -38,7 +38,7 @@
  *     output-equivalent to the legacy full-scan aggregation at all times —
  *     including a wallet whose backfill has not run yet (everything is tail).
  * Side-effects: DB reads/writes via injected client; logs.
- * Links: work/items/task.research-rollup-read-models.md,
+ * Links: https://poly.cognidao.org/work/items/task.1791071006,
  *   src/features/wallet-analysis/server/trader-observation-service.ts,
  *   src/bootstrap/jobs/fill-rollup-backfill.job.ts
  * @public

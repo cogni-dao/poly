@@ -19,13 +19,13 @@
  *     ToolSourcePort per request (userId closed over) and composes it in FRONT of
  *     the module-scoped container source. This is how the capability plane's
  *     internal-agent principal reaches a graph tool; see
- *     ./ai/principal-tool-source and docs/spec/capability-plane.md. NEVER cache
+ *     ./ai/principal-tool-source and https://poly.cognidao.org/knowledge/capability-plane-contract. NEVER cache
  *     or hoist that source.
  *   - NODE_RUNTIME_CATALOG_BOUNDARY: graph sets come from
  *     POLY_NODE_LANGGRAPH_CATALOG (app runtime policy), not from the shared
  *     @cogni/langgraph-graphs base catalog.
  * Side-effects: global (module-scoped McpConnectionCache, cached sandbox provider promise)
- * Links: container.ts, NamespaceGraphRouter, GRAPH_EXECUTION.md, OBSERVABILITY.md, mcp-control-plane.md
+ * Links: container.ts, NamespaceGraphRouter, https://node-template.cognidao.org/knowledge/graph-execution-invariants, https://cognidao.org/knowledge/node-observability-finish-pass, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/mcp-control-plane.md
  * @public
  */
 
@@ -339,7 +339,7 @@ const mcpLog = makeLogger({ component: "mcp-bootstrap" });
  *
  * This is the MVP seam — not the final control plane. Phase 1 replaces
  * `parseMcpConfigFromEnv()` with DB registry reads. The `getSource()` interface
- * stays the same. See docs/spec/mcp-control-plane.md.
+ * stays the same. See https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/mcp-control-plane.md.
  *
  * Invariants:
  *   - MCP_NOT_SINGLETON: Connections have bounded lifetime, not forever cache

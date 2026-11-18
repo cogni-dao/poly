@@ -24,7 +24,7 @@
  *     never the oracle (data-research skill § 5).
  * Side-effects: IO (test database reads)
  * Links: app/tests/component/db/fill-rollup-read-parity.int.test.ts,
- *   work/items/task.research-rollup-read-models.md
+ *   https://poly.cognidao.org/work/items/task.1791071006
  * @internal
  */
 

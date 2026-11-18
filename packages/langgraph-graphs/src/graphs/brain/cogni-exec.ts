@@ -9,7 +9,7 @@
  *   - HELPERS_DO_NOT_IMPORT_CATALOG: Uses makeCogniGraph with explicit toolIds
  *   - NO_CROSSING_THE_STREAMS: Never imports initChatModel or reads env
  * Side-effects: none
- * Links: COGNI_BRAIN_SPEC.md, GRAPH_EXECUTION.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md, https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

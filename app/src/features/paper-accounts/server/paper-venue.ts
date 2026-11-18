@@ -34,7 +34,7 @@
  *     `derivePaperAccountAddress`, used only at provision time) and does not
  *     invent a seed for a row that somehow lacks one.
  * Side-effects: IO (SELECTs).
- * Links: docs/spec/capability-plane.md, migration 0082,
+ * Links: https://poly.cognidao.org/knowledge/capability-plane-contract, migration 0082,
  *   app/src/adapters/server/wallet/privy-poly-trader-wallet.adapter.ts
  *   (the live counterpart of the decision sequence)
  * @public

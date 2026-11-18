@@ -20,6 +20,20 @@ import {
 export const EVENT_NAMES = {
 	...SHARED_EVENT_NAMES,
 	DB_POOL_CONFIGURED: "adapter.db_pool.configured",
+	// Reconciler skipped an account with no buildable executor (bug.5050): one per account per tick.
+	POLY_MIRROR_RECONCILE_ACCOUNT_UNAVAILABLE:
+		"poly.mirror.reconcile.account_unavailable",
+	// Goal metrics (story.0021): refresh dispatch receipt and goals read.
+	METRIC_REFRESH_COMPLETE: "metric.refresh_complete",
+	GOALS_PROGRESS_READ: "goals.progress_read",
+	// Work item expectations read (task.0112): one terminal event per request, no row content.
+	WORK_EXPECTATIONS_READ: "work.expectations.read",
+	// Row history reads (story.0023): one terminal event per read, counts only.
+	WORK_ITEMS_HISTORY_READ: "work.items.history_read",
+	// Bounded work reads (task.0056): one terminal event per /work/summaries or /work/board request.
+	WORK_ITEMS_LIST_COMPLETE: "work.items.list_complete",
+	KNOWLEDGE_HISTORY_READ: "knowledge.history_read",
+	KNOWLEDGE_CONTRIBUTION_DIFF_SUCCESS: "knowledge.contribution.diff_success",
 	// Auth perimeter (proxy): request rejected before reaching any route handler,
 	// so the request-scoped logger never sees it — emitted directly from the proxy.
 	AUTH_PERIMETER_DENIED: "auth.perimeter.denied",
@@ -94,6 +108,7 @@ export const EVENT_NAMES = {
 	POLY_PAPER_OBSERVE: "poly.paper.observe",
 	POLY_PAPER_PROJECT: "poly.paper.project",
 	POLY_POSITION_GAP_V3_RUN_FAILED: "poly.position_gap.v3.run_failed",
+	POLY_POSITION_GAP_V3_RUN_RECOVERED: "poly.position_gap.v3.run_recovered",
 	POLY_POSITION_GAP_PAPER_FILL_EVIDENCE_UNAVAILABLE:
 		"poly.position_gap.v3.paper_fill_evidence_unavailable",
 	POLY_ALGORITHM_ATTEMPT_COMPLETE: "feature.poly_algorithm.attempt.complete",

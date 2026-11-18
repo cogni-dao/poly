@@ -7,7 +7,7 @@
  * Scope: Pure function tests; no I/O. Does not hit network, does not spin up a server.
  * Invariants: Math agrees with spike.0323 research fixtures on the pinned worked example.
  * Side-effects: none
- * Links: docs/design/wallet-analysis-components.md, work/items/task.0329.wallet-analysis-component-extraction.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/design/wallet-analysis-components.md
  * @internal
  */
 

@@ -11,7 +11,7 @@
  *   - TENANT_SCOPED: SET LOCAL app.current_user_id in every transaction
  *   - SOFT_DELETE_DEFAULT: all reads filter deleted_at IS NULL
  * Side-effects: IO (database transactions)
- * Links: docs/spec/thread-persistence.md, ThreadPersistencePort
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/thread-persistence.md, ThreadPersistencePort
  * @public
  */
 

@@ -31,7 +31,6 @@ import { noopLogger, noopMetrics } from "@cogni/poly-market-provider";
 import {
   type PolymarketLeaderboardEntry,
   type PolymarketUserTrade,
-  PolymarketUserTradeSchema,
 } from "@cogni/poly-market-provider/adapters/polymarket";
 import { getSeedDb } from "@tests/_fixtures/db/seed-client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -70,17 +69,22 @@ function boardEntry(
 }
 
 function fakeTrades(wallet: string, count: number): PolymarketUserTrade[] {
-  return Array.from({ length: count }, (_, i) =>
-    PolymarketUserTradeSchema.parse({
-      proxyWallet: wallet,
-      side: "BUY",
-      asset: "asset-1",
-      conditionId: "0xcond",
-      size: 1,
-      price: 0.5,
-      timestamp: 1_700_000_000 + i,
-    })
-  );
+  return Array.from({ length: count }, (_, i) => ({
+    proxyWallet: wallet,
+    side: "BUY" as const,
+    asset: "1",
+    conditionId: `0x${"cd".repeat(32)}`,
+    size: 1,
+    price: 0.5,
+    timestamp: 1_700_000_000 + i,
+    title: "",
+    slug: "",
+    eventSlug: "",
+    icon: "",
+    outcome: "Yes",
+    outcomeIndex: 0,
+    transactionHash: `0x${"ab".repeat(32)}`,
+  }));
 }
 
 /**
@@ -109,7 +113,7 @@ function makeFakeDataApi(config: {
       if (failed) throw new Error("upstream 429");
       return config.entries;
     },
-    listUserActivity: async (
+    listUserTrades: async (
       wallet: string
     ): Promise<PolymarketUserTrade[]> => {
       fake.tradesCalls += 1;

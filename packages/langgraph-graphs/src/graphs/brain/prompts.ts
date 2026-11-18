@@ -9,7 +9,7 @@
  *   - PACKAGES_NO_SRC_IMPORTS: This package cannot import from src/
  *   - GRAPH_OWNS_MESSAGES: Graph defines its own system prompt
  * Side-effects: none
- * Links: COGNI_BRAIN_SPEC.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md
  * @public
  */
 

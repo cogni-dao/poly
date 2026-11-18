@@ -17,7 +17,7 @@
  * - EVALUATION_FINAL_ATOMIC: locked evaluation writes + artifacts_hash + epoch open→review in one transaction (enforced in store).
  * - No RLS in V0 — worker uses service-role connection.
  * Side-effects: none (schema definitions only)
- * Links: docs/spec/attribution-ledger.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @public
  */
 

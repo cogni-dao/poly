@@ -10,7 +10,7 @@
  *   - Rows ordered by `observed_at` DESC. `order_id` null for pending/error rows. `polymarket_profile_url` null on non-live rows.
  * Side-effects: none
  * Notes: Agent-tool placements are NOT in the ledger in v0 (follow-up tracked).
- * Links: work/items/task.0315.poly-copy-trade-prototype.md, docs/spec/poly-copy-trade-execution.md, docs/spec/poly-tenant-and-collateral.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md
  * @public
  */
 

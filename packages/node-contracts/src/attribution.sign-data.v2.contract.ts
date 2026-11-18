@@ -8,7 +8,7 @@
  * The server derives deploymentEnvironment; clients may display and sign it.
  * Invariants: SIGNATURE_SCOPE_BOUND, SIGNATURE_DEPLOYMENT_BOUND.
  * Side-effects: none
- * Links: docs/spec/attribution-ledger.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @public
  */
 

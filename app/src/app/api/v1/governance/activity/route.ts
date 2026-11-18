@@ -9,7 +9,7 @@
  * - AUTH_REQUIRED: Requires authenticated user
  * - SYSTEM_TENANT_SCOPED: Always queries the system principal billing account, never the session user's
  * Side-effects: IO
- * Links: [ActivityFacade](../../../../_facades/ai/activity.server.ts), docs/spec/governance-status-api.md
+ * Links: [ActivityFacade](../../../../_facades/ai/activity.server.ts), https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/governance-status-api.md
  * @public
  */
 

@@ -10,7 +10,7 @@
  *   - STRUCTURED_RESULTS: Returns typed WebSearchResult
  *   - HARD_CAPS_ENFORCED_AT_TOOL_BOUNDARY: maxResults=5 max, title≤120, content≤160
  * Side-effects: IO (HTTP requests to api.tavily.com)
- * Links: TOOL_USE_SPEC.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md
  * @internal
  */
 

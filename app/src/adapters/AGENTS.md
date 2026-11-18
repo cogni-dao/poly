@@ -14,7 +14,7 @@ Infrastructure implementations of ports including server/, worker/, cli/, and te
 ## Pointers
 
 - [Root AGENTS.md](../../../../AGENTS.md)
-- [Architecture](../../../../docs/spec/architecture.md)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
 
 ## Boundaries
 

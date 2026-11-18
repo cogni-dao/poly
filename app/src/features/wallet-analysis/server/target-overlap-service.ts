@@ -26,7 +26,7 @@
  *     surface reports exposure (USDC, markets, positions) and fill volume
  *     only. Net P/L lives on the P/L tab.
  * Side-effects: DB reads only.
- * Links: docs/spec/poly-copy-trade-execution.md, work/items/bug.5020
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/bug.5020
  * @public
  */
 

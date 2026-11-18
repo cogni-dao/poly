@@ -12,7 +12,7 @@
  * - prompt_tokens, completion_tokens, spend are required for usage data
  * - passthrough() allows unknown fields from LiteLLM without breaking
  * Side-effects: none
- * Links: docs/spec/activity-metrics.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/activity-metrics.md
  * @public
  */
 

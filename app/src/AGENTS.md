@@ -14,12 +14,12 @@ Next.js application source implementing hexagonal architecture for a fully web3-
 ## Pointers
 
 - [Root AGENTS.md](../../../AGENTS.md)
-- [Architecture](../../../docs/spec/architecture.md)
-- [Authentication overview](../../../docs/spec/authentication.md)
-- [Accounts design (billing + identity)](../../../docs/spec/accounts-design.md)
-- [Security & auth spec](../../../docs/spec/security-auth.md)
-- [Database architecture](../../../docs/spec/databases.md)
-- [Environment modes](../../../docs/spec/environments.md)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
+- [Authentication overview](https://cognidao.org/knowledge/node-template-identity-model)
+- [Accounts design (billing + identity)](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/accounts-design.md)
+- [Security & auth spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/security-auth.md)
+- [Database architecture](https://cognidao.org/knowledge/node-database-contract)
+- [Environment modes](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/environments.md)
 - [DB schema](./shared/db/schema.ts) - Users, billing accounts, ledger, virtual keys
 - [Auth implementation](auth.ts) - NextAuth.js with SIWE provider
 

@@ -13,9 +13,9 @@ Run lifecycle and orchestration contracts shared between the Next.js app, Tempor
 
 ## Pointers
 
-- [Unified Graph Launch Spec](../../docs/spec/unified-graph-launch.md): Core invariants and schema
-- [Graph Execution Spec](../../docs/spec/graph-execution.md): Execution ports, billing, streaming
-- [Packages Architecture](../../docs/spec/packages-architecture.md): Package boundaries
+- [Unified Graph Launch Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/unified-graph-launch.md): Core invariants and schema
+- [Graph Execution Spec](https://node-template.cognidao.org/knowledge/graph-execution-invariants): Execution ports, billing, streaming
+- [Packages Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md): Package boundaries
 
 ## Boundaries
 

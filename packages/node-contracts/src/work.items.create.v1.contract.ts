@@ -12,10 +12,11 @@
  *   - status defaults to "needs_triage" if not provided
  *   - node defaults to "shared"
  * Side-effects: none
- * Links: /api/v1/work/items route, docs/spec/work-items-port.md, work/items/task.0423.doltgres-work-items-source-of-truth.md
+ * Links: /api/v1/work/items route, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/work-items-port.md
  * @internal
  */
 
+import { WorkItemMovesInputSchema } from "@cogni/work-items";
 import { z } from "zod";
 
 import { WorkItemDtoSchema, WorkItemScoresInputSchema } from "./work.items.list.v1.contract";
@@ -61,7 +62,9 @@ export const workItemsCreateOperation = {
     priority: z.number().int().optional(),
     rank: z.number().int().optional(),
     estimate: z.number().int().optional(),
-        scores: WorkItemScoresInputSchema.nullable().optional(),
+    scores: WorkItemScoresInputSchema.nullable().optional(),
+    // story.0033: a new item names the metrics it moves when it is filed. The server pins each baseline.
+    moves: WorkItemMovesInputSchema.optional(),
     labels: z.array(z.string()).optional(),
     specRefs: z.array(z.string()).optional(),
     assignees: z.array(SubjectRefSchema).optional(),

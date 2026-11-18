@@ -8,7 +8,7 @@
  * Invariants: Single database connection instance; lazy initialization prevents build-time env access
  * Side-effects: IO (database connections) - only on first access
  * Notes: Service-role singleton (BYPASSRLS) lives in drizzle.service-client.ts, NOT here.
- * Links: docs/spec/database-rls.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/database-rls.md
  * @internal
  */
 

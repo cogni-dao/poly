@@ -11,7 +11,7 @@
  *   - AUTO_COMMIT: Every write creates a Doltgres commit automatically.
  *   - CONFIDENCE_DEFAULTS: New entries default to 30% (draft).
  * Side-effects: IO (database write + dolt_commit via capability)
- * Links: docs/spec/knowledge-data-plane.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/knowledge-data-plane.md
  * @public
  */
 

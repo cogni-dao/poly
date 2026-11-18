@@ -7,7 +7,7 @@
  * Scope: Defines PreflightCreditCheckFn and PlatformCreditChecker shapes. Does not contain credit validation logic or database access.
  * Invariants: PURE_LIBRARY — no env vars, no process lifecycle.
  * Side-effects: none
- * Links: docs/spec/packages-architecture.md, src/decorators/preflight-credit-check.decorator.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md, src/decorators/preflight-credit-check.decorator.ts
  * @public
  */
 

@@ -21,6 +21,8 @@ import {
   classifyMissingPositionsWithBalances,
   classifyMissingPositionBalances,
   fetchTraderPositionsPages,
+  positionPageValueFloor,
+  rereadOmittedPositions,
   type MissingCurrentPosition,
 } from "@/features/wallet-analysis/server/trader-observation-service";
 
@@ -33,6 +35,14 @@ function missing(index: number): MissingCurrentPosition {
     lastObservedAt: new Date(0),
   };
 }
+
+const V2_PAGINATION = {
+  has_more: false,
+  limit: 500,
+  offset: 0,
+  next_cursor: null,
+};
+const EMPTY_V2_PAGE = JSON.stringify({ data: [], pagination: V2_PAGINATION });
 
 afterEach(() => {
   vi.useRealTimers();
@@ -80,13 +90,35 @@ describe("omitted-position exact balance authority", () => {
     );
   });
 
-  it("marks a full tenth 500-row Data API page incomplete at 5,000 rows", async () => {
-    const listUserPositions = vi.fn(async () =>
-      Array.from({ length: 500 }, (_value, index) => ({
+  it("reads the complete book for tenant wallets and floors only copy targets (bug.5062)", async () => {
+    expect(positionPageValueFloor({ kind: "cogni_wallet" })).toEqual({});
+    expect(positionPageValueFloor({ kind: "copy_target" })).toEqual({
+      minValueUsdc: 0.000001,
+    });
+    const listUserPositions = vi.fn(async () => ({ rows: [], nextCursor: null }));
+    const client = { listUserPositions } as unknown as PolymarketDataApiClient;
+    const walletAddress = `0x${"a".repeat(40)}`;
+    await fetchTraderPositionsPages({ client, walletAddress, maxPages: 1 });
+    await fetchTraderPositionsPages({
+      client,
+      walletAddress,
+      maxPages: 1,
+      ...positionPageValueFloor({ kind: "copy_target" }),
+    });
+    expect(listUserPositions.mock.calls[0]?.[1]).toMatchObject({ sizeThreshold: 0 });
+    expect(listUserPositions.mock.calls[0]?.[1]).not.toHaveProperty("minValueUsdc");
+    expect(listUserPositions.mock.calls[1]?.[1]).toMatchObject({ minValueUsdc: 0.000001 });
+    expect(listUserPositions.mock.calls[1]?.[1]).not.toHaveProperty("sizeThreshold");
+  });
+
+  it("marks a tenth 500-row Data API page that still has a cursor incomplete at 5,000 rows", async () => {
+    const listUserPositions = vi.fn(async () => ({
+      rows: Array.from({ length: 500 }, (_value, index) => ({
         conditionId: `condition-${index}`,
         asset: String(index),
-      }))
-    );
+      })),
+      nextCursor: "more",
+    }));
     const result = await fetchTraderPositionsPages({
       client: { listUserPositions } as unknown as PolymarketDataApiClient,
       walletAddress: `0x${"a".repeat(40)}`,
@@ -246,22 +278,31 @@ describe("bounded prompt position recovery", () => {
       .mockResolvedValueOnce(new Response("bad", { status: 503 }))
       .mockResolvedValueOnce(
         new Response(
-          JSON.stringify([
-            {
-              proxyWallet: `0x${"a".repeat(40)}`,
-              asset: "1",
-              conditionId: "c",
-              size: 21.14,
-              avgPrice: 0.4,
-              initialValue: 8,
-              currentValue: 0,
-              cashPnl: -8,
-              percentPnl: -100,
-              realizedPnl: 0,
-              curPrice: 0,
-              redeemable: true,
-            },
-          ]),
+          JSON.stringify({
+            data: [
+              {
+                proxy_wallet: `0x${"a".repeat(40)}`,
+                token_id: "1",
+                condition_id: `0x${"c".repeat(64)}`,
+                current_size: 21.14,
+                avg_price: 0.4,
+                entry_cost_usdc: 8,
+                total_cost_usdc: 8,
+                total_size: 21.14,
+                current_value: 0,
+                unrealized_pnl: -8,
+                total_pnl: -8,
+                percent_pnl: -100,
+                realized_pnl: 0,
+                percent_realized_pnl: 0,
+                current_price: 0,
+                outcome_index: 0,
+                status: "REDEEMABLE",
+                redeemable: true,
+              },
+            ],
+            pagination: V2_PAGINATION,
+          }),
           { status: 200 }
         )
       );
@@ -279,10 +320,9 @@ describe("bounded prompt position recovery", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(wait).toHaveBeenCalledWith(1000, undefined);
     const urls = fetch.mock.calls.map(([url]) => new URL(url));
-    expect(urls.map((url) => url.searchParams.get("offset"))).toEqual([
-      "0",
-      "0",
-    ]);
+    expect(urls.every((url) => url.pathname === "/v2/positions")).toBe(true);
+    expect(urls.every((url) => !url.searchParams.has("offset"))).toBe(true);
+    expect(urls.every((url) => !url.searchParams.has("cursor"))).toBe(true);
     expect(urls.every((url) => !url.searchParams.has("redeemable"))).toBe(true);
     expect(budget.dataApiCalls).toBe(2);
   });
@@ -376,6 +416,140 @@ describe("bounded prompt position recovery", () => {
   });
 });
 
+const REREAD_WALLET = `0x${"a".repeat(40)}`;
+const REREAD_CONDITION = `0x${"f".repeat(64)}`;
+// Live-shaped (prod 2026-11-11): fresh loser, REDEEMABLE, current_value 0.
+const REDEEMABLE_LOSER_V2 = {
+  proxy_wallet: REREAD_WALLET,
+  token_id: "100001710342617329821148347814716585093995405628362909007867116106860854034138",
+  condition_id: REREAD_CONDITION,
+  current_size: 5.03,
+  avg_price: 0.3899,
+  entry_cost_usdc: 1.9616,
+  entry_fees_usdc: 0.05983,
+  total_cost_usdc: 2.02143,
+  current_price: 0,
+  current_value: 0,
+  total_size: 5.03,
+  realized_pnl: -0.0599,
+  unrealized_pnl: -1.9616,
+  total_pnl: -2.0215,
+  percent_pnl: -99.995,
+  percent_realized_pnl: -100,
+  status: "REDEEMABLE",
+  redeemable: true,
+  mergeable: false,
+  negative_risk: true,
+  archived: false,
+  outcome: "No",
+  outcome_index: 1,
+};
+
+function omittedRow(
+  conditionId: string,
+  tokenId: string
+): MissingCurrentPosition {
+  return {
+    conditionId,
+    tokenId,
+    shares: 5.03,
+    currentValueUsdc: 1.5,
+    lastObservedAt: new Date(0),
+  };
+}
+
+describe("omitted-position unfiltered re-read (bug.5059)", () => {
+  it("returns the REDEEMABLE zero-value row for an omitted key via an unfiltered condition-scoped read", async () => {
+    const { PolymarketDataApiClient } = await import(
+      "@cogni/poly-market-provider/adapters/polymarket"
+    );
+    const { PositionObservationBudget } = await import(
+      "@/features/wallet-analysis/server/position-observation-control"
+    );
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: [
+              REDEEMABLE_LOSER_V2,
+              // Same condition, token we do not hold: must not be adopted.
+              { ...REDEEMABLE_LOSER_V2, token_id: "999" },
+            ],
+            pagination: V2_PAGINATION,
+          }),
+          { status: 200 }
+        )
+    );
+    const budget = new PositionObservationBudget();
+    const found = await rereadOmittedPositions({
+      client: new PolymarketDataApiClient({ fetch }),
+      wallet: { walletAddress: REREAD_WALLET },
+      omitted: [omittedRow(REREAD_CONDITION, REDEEMABLE_LOSER_V2.token_id)],
+      budget,
+    });
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      conditionId: REREAD_CONDITION,
+      asset: REDEEMABLE_LOSER_V2.token_id,
+      size: 5.03,
+      currentValue: 0,
+      redeemable: true,
+    });
+    const url = new URL((fetch.mock.calls[0] as unknown as [string])[0]);
+    expect(url.searchParams.get("condition")).toBe(REREAD_CONDITION);
+    expect(url.searchParams.get("filter_type")).toBe("TOKENS");
+    expect(url.searchParams.get("filter_amount")).toBe("0");
+    expect(budget.dataApiCalls).toBe(1);
+  });
+
+  it("chunks distinct conditions at 20 per request and leaves absent rows omitted", async () => {
+    const { PositionObservationBudget } = await import(
+      "@/features/wallet-analysis/server/position-observation-control"
+    );
+    const listUserPositionsV2 = vi.fn(async () => []);
+    const omitted = Array.from({ length: 41 }, (_v, i) =>
+      omittedRow(`0x${i.toString(16).padStart(64, "0")}`, String(i))
+    );
+    const found = await rereadOmittedPositions({
+      client: { listUserPositionsV2 } as unknown as PolymarketDataApiClient,
+      wallet: { walletAddress: REREAD_WALLET },
+      omitted,
+      budget: new PositionObservationBudget(),
+    });
+    expect(found).toEqual([]);
+    expect(
+      listUserPositionsV2.mock.calls.map(
+        ([, params]) => (params as { conditions: string[] }).conditions.length
+      )
+    ).toEqual([20, 20, 1]);
+  });
+
+  it("swallows a failed read so the caller falls back to chain authority", async () => {
+    const { PositionObservationBudget } = await import(
+      "@/features/wallet-analysis/server/position-observation-control"
+    );
+    const warn = vi.fn();
+    const found = await rereadOmittedPositions({
+      client: {
+        listUserPositionsV2: vi.fn(async () => {
+          throw new Error("upstream down");
+        }),
+      } as unknown as PolymarketDataApiClient,
+      wallet: { walletAddress: REREAD_WALLET },
+      omitted: [omittedRow(REREAD_CONDITION, "1")],
+      budget: new PositionObservationBudget(),
+      logger: { warn } as never,
+    });
+    expect(found).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "poly.trader.positions.omitted_reread_failed",
+      }),
+      expect.any(String)
+    );
+  });
+});
+
 describe("transport timeout recovery and settlement", () => {
   it("waits for the timed-out HTTP call to settle, then gives its one retry a fresh five-second signal", async () => {
     vi.useFakeTimers();
@@ -400,7 +574,7 @@ describe("transport timeout recovery and settlement", () => {
             );
           });
         expect(signal.aborted).toBe(false);
-        return new Response("[]", { status: 200 });
+        return new Response(EMPTY_V2_PAGE, { status: 200 });
       }
     );
     const budget = new PositionObservationBudget(

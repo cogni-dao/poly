@@ -29,7 +29,6 @@
  *     matches are ranked ahead of unrelated holdings so a large resumed paper
  *     book cannot hide the algorithm positions the dashboard exists to evaluate.
  * Side-effects: DB read only.
- * Links: work/items/task.5007.poly-tenant-current-position-reconciler.md
  * @public
  */
 

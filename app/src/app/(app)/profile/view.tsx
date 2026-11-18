@@ -979,7 +979,7 @@ export function ProfileView(): ReactElement {
               </a>{" "}
               for remote access.{" "}
               <a
-                href="https://github.com/Cogni-DAO/cogni/blob/staging/docs/guides/connect-local-llm.md"
+                href="https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/guides/connect-local-llm.md"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="underline"

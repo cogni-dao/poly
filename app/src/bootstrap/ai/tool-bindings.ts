@@ -10,7 +10,7 @@
  *   - NO_STUB_AT_RUNTIME: All tools have real implementations with I/O
  *   - IO_VIA_ADAPTERS: Capabilities wrap adapter ports from container
  * Side-effects: none
- * Links: TOOL_USE_SPEC.md, container.ts
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md, container.ts
  * @internal
  */
 
@@ -61,6 +61,7 @@ import {
   VCS_MERGE_PR_NAME,
   WEB_SEARCH_NAME,
   WORK_ITEM_QUERY_NAME,
+  WORK_ITEM_READ_NAME,
   WORK_ITEM_TRANSITION_NAME,
 } from "@cogni/ai-tools";
 
@@ -69,6 +70,7 @@ import {
   createGoalListImplementation,
   createKnowledgeSearchImplementation,
   createWorkItemQueryImplementation,
+  createWorkItemReadImplementation,
   createWorkItemTransitionImplementation,
   GOAL_LIST_NAME,
   getCurrentTimeImplementation,
@@ -138,7 +140,7 @@ export function createToolBindings(deps: ToolBindingDeps): ToolBindings {
       knowledgeCapability: deps.knowledgeCapability,
     }) as AnyToolImplementation,
 
-    // EDO hypothesis-loop tools (knowledge-syntropy.md § The Hypothesis Loop)
+    // EDO hypothesis-loop tools (https://node-template.cognidao.org/knowledge/edo-loop-contract)
     // Wired to runtime EdoCapability from the container (createEdoCapability
     // over DoltgresKnowledgeStoreAdapter + DoltgresEdoResolverAdapter).
     [EDO_HYPOTHESIZE_NAME]: createEdoHypothesizeImplementation({
@@ -200,6 +202,11 @@ export function createToolBindings(deps: ToolBindingDeps): ToolBindings {
     }) as AnyToolImplementation,
 
     [WORK_ITEM_QUERY_NAME]: createWorkItemQueryImplementation({
+      workItemCapability: deps.workItemCapability,
+      nodePublicOrigin: deps.nodePublicOrigin,
+    }) as AnyToolImplementation,
+
+    [WORK_ITEM_READ_NAME]: createWorkItemReadImplementation({
       workItemCapability: deps.workItemCapability,
       nodePublicOrigin: deps.nodePublicOrigin,
     }) as AnyToolImplementation,

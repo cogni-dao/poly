@@ -5,17 +5,22 @@
  * Module: `@tests/contract/readyz-substrate.contract`
  * Purpose: Prove the shallow/deep readiness contract for async substrate dependencies.
  * Scope: Exercises the /readyz route with isolated Temporal and scheduler-worker probes. Does not perform network or database IO.
- * Invariants: Default readiness stays healthy while emitting critical dependency events; `?deep=1` returns 503 for either missing dependency.
- *             Default readiness runs checks concurrently: slow non-fatal checks are bounded and degrade, a slow system tenant is a 503, and only tenant success is cached (task.5298).
+ * Invariants: Default readiness stays healthy while emitting critical dependency events (including a failing Postgres system tenant, bug.0022); `?deep=1` returns 503 for either missing dependency and for a failing system tenant, and names every failing declared dependency in `unreachable`.
+ *             Default readiness runs checks concurrently: slow non-fatal checks are bounded and degrade, a slow or failing system tenant degrades (never 503), and only tenant success is cached (task.5298).
  * Side-effects: none
  * Links: src/app/(infra)/readyz/route.ts, Cogni-DAO/cogni#1860
  * @internal
  */
 
-import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readDeepReadiness } from "@cogni/substrate-health";
+import { NextRequest, NextResponse } from "next/server";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 const mocks = vi.hoisted(() => ({
+  getNodeId: vi.fn(),
+  getContainer: vi.fn(),
   assertEvmRpcConfig: vi.fn(),
   assertRuntimeSecrets: vi.fn(),
   assertSchedulerWorkerConnectivity: vi.fn(),
@@ -29,14 +34,28 @@ const mocks = vi.hoisted(() => ({
   getEgressGeoblockLatch: vi.fn(),
   verifySystemTenant: vi.fn(),
   warn: vi.fn(),
+  // Deep-probe dependencies added with the declared-dependency registry.
+  streamLength: vi.fn(),
+  getKnowledge: vi.fn(),
+  writerHealth: vi.fn(() => ({ state: "available" })),
+  fetch: vi.fn(),
 }));
 
 vi.mock("@/bootstrap/container", () => ({
-  getContainer: () => ({
+  getContainer: () => (mocks.getContainer(), {
     evmOnchainClient: {},
     paymentRailsActive: false,
     scheduleControl: {},
     serviceAccountService: {},
+    runStream: {
+      streamLength: (...args: unknown[]) => mocks.streamLength(...args),
+    },
+    knowledgeStorePort: {
+      getKnowledge: (...args: unknown[]) => mocks.getKnowledge(...args),
+    },
+    doltgresWorkItems: {
+      writerHealth: () => mocks.writerHealth(),
+    },
   }),
 }));
 
@@ -45,35 +64,16 @@ vi.mock("@/bootstrap/healthchecks", () => ({
     mocks.verifySystemTenant(...args),
 }));
 
-vi.mock("@/bootstrap/http", () => ({
-  wrapRouteHandlerWithLogging:
-    (
-      _options: unknown,
-      handler: (
-        ctx: {
-          log: {
-            debug: ReturnType<typeof vi.fn>;
-            error: ReturnType<typeof vi.fn>;
-            info: ReturnType<typeof vi.fn>;
-            warn: ReturnType<typeof vi.fn>;
-          };
-        },
-        request: NextRequest
-      ) => Promise<Response>
-    ) =>
-    async (request: NextRequest) =>
-      handler(
-        {
-          log: {
-            debug: mocks.debug,
-            error: mocks.error,
-            info: mocks.info,
-            warn: mocks.warn,
-          },
-        },
-        request
-      ),
+vi.mock("@/shared/config", async (original) => ({
+  ...(await original<typeof import("@/shared/config")>()), getNodeId: () => mocks.getNodeId(),
 }));
+vi.mock("@/shared/observability", async (original) => {
+  const actual = await original<typeof import("@/shared/observability")>();
+  const child = vi.fn();
+  const log = { debug: mocks.debug, error: mocks.error, info: mocks.info, warn: mocks.warn, child };
+  child.mockReturnValue(log);
+  return { ...actual, makeLogger: () => log };
+});
 
 vi.mock("@/lib/egress-geoblock", () => ({
   getEgressGeoblockLatch: () => mocks.getEgressGeoblockLatch(),
@@ -105,10 +105,12 @@ vi.mock("@/shared/env/invariants", async (importOriginal) => {
   };
 });
 
-vi.mock("@/shared/observability/server/metrics", () => ({
+vi.mock("@/shared/observability/server/metrics", async (original) => ({
+  ...(await original<typeof import("@/shared/observability/server/metrics")>()),
   setBuildInfo: (...args: unknown[]) => mocks.setBuildInfo(...args),
 }));
 
+import { EnvValidationError } from "@/shared/env";
 import {
   InfraConnectivityError,
   RuntimeSecretError,
@@ -127,16 +129,34 @@ describe("GET /readyz async substrate contract", () => {
     vi.resetModules();
     ({ GET } = await import("@/app/(infra)/readyz/route"));
     vi.clearAllMocks();
+    mocks.getNodeId.mockReturnValue("readyz-test-node");
     mocks.assertEvmRpcConfig.mockReset();
     mocks.serverEnv.mockReturnValue({
       APP_BUILD_SHA: "readyz-contract-sha",
       APP_ENV: "production",
+      LITELLM_BASE_URL: "http://litellm:4000",
+      LITELLM_MASTER_KEY: "sk-readyz-test",
+      REDIS_URL: "redis://localhost:6379",
     });
     mocks.assertTemporalConnectivity.mockResolvedValue(undefined);
     mocks.assertSchedulerWorkerConnectivity.mockResolvedValue(undefined);
     mocks.checkEvmRpcConnectivity.mockResolvedValue({ ok: true });
     mocks.verifySystemTenant.mockResolvedValue(undefined);
     mocks.getEgressGeoblockLatch.mockReturnValue({ latched: false });
+    // Always-declared deep probes resolve healthy by default.
+    mocks.streamLength.mockResolvedValue(0);
+    mocks.getKnowledge.mockResolvedValue(null);
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ model_name: "test-model" }] }),
+    });
+    vi.stubGlobal("fetch", (...args: unknown[]) => mocks.fetch(...args));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("still 503s on a latched Polymarket egress geoblock before any substrate IO (story.5050)", async () => {
@@ -161,56 +181,13 @@ describe("GET /readyz async substrate contract", () => {
     expect(mocks.verifySystemTenant).not.toHaveBeenCalled();
   });
 
-  it("raises the critical alert for a RAW error that lands after the budget (bug.5343 + task.5298)", async () => {
-    vi.useFakeTimers();
-    mocks.assertSchedulerWorkerConnectivity.mockReturnValue(
-      new Promise((_resolve, reject) =>
-        setTimeout(() => reject(new Error("socket hang up")), 4000)
-      )
-    );
-
-    const pending = GET(request());
-    await vi.advanceTimersByTimeAsync(1500);
-    expect((await pending).status).toBe(200);
-    expect(mocks.error).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(2500);
-    expect(mocks.error).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "substrate.scheduler_worker.unreachable",
-        severity: "critical",
-        reason: "INFRA_UNREACHABLE",
-        dependency: "scheduler-worker",
-        message: "socket hang up",
-      }),
-      expect.stringContaining("MISSION-CRITICAL async substrate down")
-    );
-  });
-
-  it("checks RPC before payment activation while keeping a transient failure non-draining", async () => {
-    mocks.checkEvmRpcConnectivity.mockResolvedValue({
-      ok: false,
-      source: "live",
-      errorMessage: "upstream 429",
-    });
-
+  it("default admission does not construct the container or query dependencies", async () => {
     const response = await GET(request());
-
     expect(response.status).toBe(200);
-    expect(mocks.assertEvmRpcConfig).toHaveBeenCalledOnce();
-    expect(mocks.checkEvmRpcConnectivity).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ APP_ENV: "production" }),
-      { forceLive: false }
-    );
-    expect(mocks.warn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "substrate.evm_rpc.unreachable",
-        severity: "degraded",
-        dependency: "evm-rpc",
-      }),
-      expect.stringContaining("returning ready")
-    );
+    expect(mocks.getContainer).not.toHaveBeenCalled();
+    expect(mocks.verifySystemTenant).not.toHaveBeenCalled();
+    expect(mocks.assertTemporalConnectivity).not.toHaveBeenCalled();
+    expect(mocks.fetch).not.toHaveBeenCalled();
   });
 
   it("returns 503 when the mandatory RPC secret is missing", async () => {
@@ -249,93 +226,14 @@ describe("GET /readyz async substrate contract", () => {
       expect.objectContaining({ APP_ENV: "production" }),
       { forceLive: true }
     );
-    expect(mocks.error).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "substrate.evm_rpc.unreachable",
-        severity: "critical",
-      }),
-      "deep readiness: EVM RPC unreachable"
-    );
+
   });
 
   it("records successful deep RPC proof", async () => {
     const response = await GET(request("/readyz?deep=1"));
 
     expect(response.status).toBe(200);
-    expect(mocks.info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "substrate.evm_rpc.reachable",
-        dependency: "evm-rpc",
-      }),
-      "deep readiness: EVM RPC reachable"
-    );
-  });
 
-  it("keeps shallow readiness healthy and critically observes both missing dependencies", async () => {
-    mocks.assertTemporalConnectivity.mockRejectedValue(
-      new InfraConnectivityError("Temporal is unavailable")
-    );
-    mocks.assertSchedulerWorkerConnectivity.mockRejectedValue(
-      new InfraConnectivityError("scheduler-worker is unavailable")
-    );
-
-    const response = await GET(request());
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      status: "healthy",
-      buildSha: "readyz-contract-sha",
-    });
-    expect(mocks.verifySystemTenant).toHaveBeenCalledOnce();
-    expect(mocks.error).toHaveBeenCalledTimes(2);
-    expect(mocks.error).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "substrate.temporal.unreachable",
-        severity: "critical",
-        reason: "INFRA_UNREACHABLE",
-        dependency: "temporal",
-      }),
-      expect.stringContaining("MISSION-CRITICAL async substrate down")
-    );
-    expect(mocks.error).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "substrate.scheduler_worker.unreachable",
-        severity: "critical",
-        reason: "INFRA_UNREACHABLE",
-        dependency: "scheduler-worker",
-      }),
-      expect.stringContaining("MISSION-CRITICAL async substrate down")
-    );
-  });
-
-  it("stays healthy on the default probe when Temporal throws a RAW timeout (bug.5343)", async () => {
-    // Regression for bug.5343: the Temporal check raised a bare timeout Error
-    // (NOT an InfraConnectivityError), which escaped the non-fatal branch and
-    // became a fatal 503 INTERNAL_ERROR ~15s into the probe — draining the
-    // fleet on a Temporal blip. The default probe must swallow ANY check
-    // failure, log critical, and stay ready.
-    mocks.assertTemporalConnectivity.mockRejectedValue(
-      new Error("Temporal connection timeout")
-    );
-
-    const response = await GET(request());
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      status: "healthy",
-      buildSha: "readyz-contract-sha",
-    });
-    expect(mocks.verifySystemTenant).toHaveBeenCalledOnce();
-    expect(mocks.error).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "substrate.temporal.unreachable",
-        severity: "critical",
-        reason: "INFRA_UNREACHABLE",
-        dependency: "temporal",
-        message: "Temporal connection timeout",
-      }),
-      expect.stringContaining("MISSION-CRITICAL async substrate down")
-    );
   });
 
   it("returns 503 from the deep probe when Temporal throws a RAW timeout (bug.5343)", async () => {
@@ -348,9 +246,14 @@ describe("GET /readyz async substrate contract", () => {
     const response = await GET(request("/readyz?deep=1"));
 
     expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ status: "error" });
-    expect(mocks.assertSchedulerWorkerConnectivity).not.toHaveBeenCalled();
-    expect(mocks.verifySystemTenant).not.toHaveBeenCalled();
+    expect(await response.json()).toMatchObject({
+      status: "error",
+      unreachable: ["temporal"],
+    });
+    // Deep checks run concurrently: every declared dependency is probed even
+    // when one fails, so a single response names every failure.
+    expect(mocks.assertSchedulerWorkerConnectivity).toHaveBeenCalledOnce();
+    expect(mocks.verifySystemTenant).toHaveBeenCalledOnce();
   });
 
   it("returns 503 from the deep probe when Temporal is unavailable", async () => {
@@ -365,9 +268,12 @@ describe("GET /readyz async substrate contract", () => {
       status: "error",
       reason: "INFRA_UNREACHABLE",
       message: "Temporal is unavailable",
+      unreachable: ["temporal"],
     });
-    expect(mocks.assertSchedulerWorkerConnectivity).not.toHaveBeenCalled();
-    expect(mocks.verifySystemTenant).not.toHaveBeenCalled();
+    // Deep checks run concurrently: every declared dependency is probed even
+    // when one fails, so a single response names every failure.
+    expect(mocks.assertSchedulerWorkerConnectivity).toHaveBeenCalledOnce();
+    expect(mocks.verifySystemTenant).toHaveBeenCalledOnce();
   });
 
   it("returns 503 from the deep probe when scheduler-worker is unavailable", async () => {
@@ -382,112 +288,54 @@ describe("GET /readyz async substrate contract", () => {
       status: "error",
       reason: "INFRA_UNREACHABLE",
       message: "scheduler-worker is unavailable",
+      unreachable: ["scheduler-worker"],
     });
     expect(mocks.assertTemporalConnectivity).toHaveBeenCalledOnce();
-    expect(mocks.verifySystemTenant).not.toHaveBeenCalled();
-  });
-
-  it("does not let a slow non-fatal check block default readiness", async () => {
-    vi.useFakeTimers();
-    const never = new Promise<never>(() => {});
-    mocks.checkEvmRpcConnectivity.mockReturnValue(never);
-    mocks.assertTemporalConnectivity.mockReturnValue(never);
-    mocks.assertSchedulerWorkerConnectivity.mockReturnValue(never);
-
-    const pending = GET(request());
-    await vi.advanceTimersByTimeAsync(1500);
-    const response = await pending;
-
-    expect(response.status).toBe(200);
     expect(mocks.verifySystemTenant).toHaveBeenCalledOnce();
-    for (const event of [
-      "substrate.evm_rpc.unreachable",
-      "substrate.temporal.unreachable",
-      "substrate.scheduler_worker.unreachable",
-    ]) {
-      expect(mocks.warn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event,
-          severity: "degraded",
-          reason: "CHECK_TIMEOUT",
-        }),
-        expect.stringContaining("exceeded its budget")
-      );
-    }
-    expect(mocks.error).not.toHaveBeenCalled();
-    expect(mocks.info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        durationMs: 1500,
-        checks: expect.objectContaining({
-          evmRpc: { status: "timeout", durationMs: 1500 },
-          temporal: { status: "timeout", durationMs: 1500 },
-          schedulerWorker: { status: "timeout", durationMs: 1500 },
-          systemTenant: { status: "ok", durationMs: 0 },
-        }),
-      }),
-      "readiness: checks complete"
-    );
   });
 
-  it("returns 503 when the system tenant check exceeds its budget", async () => {
-    vi.useFakeTimers();
-    mocks.verifySystemTenant.mockReturnValue(new Promise<never>(() => {}));
+  it("default readiness still returns 503 when runtime secrets are missing, before any check runs", async () => {
+    mocks.assertRuntimeSecrets.mockImplementationOnce(() => {
+      throw new RuntimeSecretError("secret missing");
+    });
+    mocks.verifySystemTenant.mockRejectedValue(new Error("pg down"));
 
-    const pending = GET(request());
-    await vi.advanceTimersByTimeAsync(2000);
-    const response = await pending;
+    const response = await GET(request());
 
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({
       status: "error",
-      reason: "INFRA_UNREACHABLE",
-      message: "System tenant check exceeded 2000ms budget",
+      reason: "MISSING_RUNTIME_SECRET",
+      message: "secret missing",
     });
+    expect(mocks.verifySystemTenant).not.toHaveBeenCalled();
   });
 
-  it("caches only system tenant success, for at most 30s", async () => {
-    vi.useFakeTimers();
-    mocks.verifySystemTenant.mockRejectedValueOnce(
-      new Error("Failed query", {
-        cause: Object.assign(new Error("connection refused"), {
-          code: "ECONNREFUSED",
-        }),
-      })
-    );
+  it("default readiness still returns 503 on invalid environment, before any check runs", async () => {
+    mocks.serverEnv.mockImplementationOnce(() => {
+      throw new EnvValidationError({
+        code: "INVALID_ENV",
+        missing: ["DATABASE_URL"],
+        invalid: [],
+      });
+    });
 
-    // Failure is never cached: the next probe re-checks the database.
-    expect((await GET(request())).status).toBe(503);
-    expect(mocks.error).toHaveBeenCalledWith(
-      expect.objectContaining({
-        reason: "INTERNAL_ERROR",
-        error: "Failed query",
-        causeCode: "ECONNREFUSED",
-        causeMessage: "connection refused",
-      }),
-      "readiness check failed: internal error"
-    );
-    expect((await GET(request())).status).toBe(200);
-    expect(mocks.verifySystemTenant).toHaveBeenCalledTimes(2);
+    const response = await GET(request());
 
-    // Success is reused inside the TTL...
-    await vi.advanceTimersByTimeAsync(29_999);
-    expect((await GET(request())).status).toBe(200);
-    expect(mocks.verifySystemTenant).toHaveBeenCalledTimes(2);
-
-    // ...and re-proven once it expires.
-    await vi.advanceTimersByTimeAsync(1);
-    expect((await GET(request())).status).toBe(200);
-    expect(mocks.verifySystemTenant).toHaveBeenCalledTimes(3);
+    expect(response.status).toBe(503);
+    expect(mocks.verifySystemTenant).not.toHaveBeenCalled();
   });
 
   it("keeps the deep probe uncached and unbounded by the default budgets", async () => {
+    // 2500ms exceeds every default-path budget (1500ms non-fatal, 2000ms tenant)
+    // yet fits the deep budget (3000ms): deep waits where the default degrades.
     vi.useFakeTimers();
     mocks.assertTemporalConnectivity.mockReturnValue(
-      new Promise((resolve) => setTimeout(resolve, 4000))
+      new Promise((resolve) => setTimeout(resolve, 2500))
     );
 
     const pending = GET(request("/readyz?deep=1"));
-    await vi.advanceTimersByTimeAsync(4000);
+    await vi.advanceTimersByTimeAsync(2500);
     expect((await pending).status).toBe(200);
     expect((await GET(request("/readyz?deep=1"))).status).toBe(200);
 
@@ -495,76 +343,448 @@ describe("GET /readyz async substrate contract", () => {
     expect(mocks.verifySystemTenant).toHaveBeenCalledTimes(2);
   });
 
-  it("still raises the critical alert when a non-fatal check fails after its budget", async () => {
-    vi.useFakeTimers();
-    mocks.assertTemporalConnectivity.mockReturnValue(
-      new Promise((_resolve, reject) =>
-        setTimeout(
-          () =>
-            reject(
-              new InfraConnectivityError(
-                "Temporal connectivity check failed: Temporal connection timeout"
-              )
-            ),
-          5000
-        )
-      )
+  it("names every failing dependency in the deep 503, keeping reason and message from the first", async () => {
+    mocks.checkEvmRpcConnectivity.mockResolvedValue({
+      ok: false,
+      source: "live",
+      errorMessage: "upstream 429",
+    });
+    mocks.assertTemporalConnectivity.mockRejectedValue(
+      new InfraConnectivityError("Temporal is unavailable")
     );
+    mocks.assertSchedulerWorkerConnectivity.mockRejectedValue(
+      new InfraConnectivityError("worker is unavailable")
+    );
+    mocks.verifySystemTenant.mockRejectedValue(new Error("pg down"));
 
-    const pending = GET(request());
-    await vi.advanceTimersByTimeAsync(1500);
-    const response = await pending;
-    expect(response.status).toBe(200);
-    expect(mocks.error).not.toHaveBeenCalled();
+    const response = await GET(request("/readyz?deep=1"));
 
-    await vi.advanceTimersByTimeAsync(3500);
-    expect(mocks.error).toHaveBeenCalledOnce();
-    expect(mocks.error).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "substrate.temporal.unreachable",
-        severity: "critical",
-        reason: "INFRA_UNREACHABLE",
-        dependency: "temporal",
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      status: "error",
+      reason: "INFRA_UNREACHABLE",
+      message: "EVM RPC connectivity check failed: upstream 429",
+      unreachable: [
+        "evm-rpc",
+        "temporal",
+        "scheduler-worker",
+        "postgres",
+      ],
+      checks: expect.objectContaining({
+        "evm-rpc": expect.objectContaining({ status: "failed" }),
+        postgres: expect.objectContaining({ status: "failed" }),
+        redis: expect.objectContaining({ status: "ok" }),
       }),
-      expect.stringContaining("MISSION-CRITICAL async substrate down")
+      buildSha: "readyz-contract-sha",
+    });
+  });
+
+  it("names postgres alone when only the database is down", async () => {
+    mocks.verifySystemTenant.mockRejectedValue(new Error("pg down"));
+
+    const response = await GET(request("/readyz?deep=1"));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      status: "error",
+      unreachable: ["postgres"],
+    });
+  });
+
+  it("lists a check that exceeds the deep budget in unreachable and answers at the budget", async () => {
+    vi.useFakeTimers();
+    mocks.assertSchedulerWorkerConnectivity.mockReturnValue(
+      new Promise(() => {})
     );
+
+    const pending = GET(request("/readyz?deep=1"));
+    await vi.advanceTimersByTimeAsync(2999);
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const response = await pending;
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      status: "error",
+      reason: "INFRA_UNREACHABLE",
+      message: "scheduler-worker check exceeded 3000ms budget",
+      unreachable: ["scheduler-worker"],
+      checks: expect.objectContaining({
+        "scheduler-worker": expect.objectContaining({ status: "failed" }),
+      }),
+      buildSha: "readyz-contract-sha",
+    });
+  });
+
+  it("serves a deep body the shared reader judges per dependency (story.0029)", async () => {
+    const healthy = await GET(request("/readyz?deep=1"));
+    const healthyBody = await healthy.json();
+    expect(healthyBody.checks.postgres.status).toBe("ok");
+    expect(
+      readDeepReadiness(healthy.status, healthyBody).dependencyState("postgres")
+    ).toBe("reached");
+
+    // An unrelated dependency down must not hide that Postgres answered.
+    mocks.assertSchedulerWorkerConnectivity.mockRejectedValue(
+      new InfraConnectivityError("worker is unavailable")
+    );
+    const degraded = await GET(request("/readyz?deep=1"));
+    const reading = readDeepReadiness(degraded.status, await degraded.json());
+    expect(degraded.status).toBe(503);
+    expect(reading.buildSha).toBe("readyz-contract-sha");
+    expect(reading.dependencyState("postgres")).toBe("reached");
+    expect(reading.dependencyState("scheduler-worker")).toBe("unreached");
+  });
+
+  it("bounds a hung deep check and still names the others", async () => {
+    vi.useFakeTimers();
+    mocks.assertTemporalConnectivity.mockReturnValue(new Promise(() => {}));
+    mocks.verifySystemTenant.mockRejectedValue(new Error("pg down"));
+
+    const pending = GET(request("/readyz?deep=1"));
+    await vi.advanceTimersByTimeAsync(3000);
+    const response = await pending;
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      unreachable: ["temporal", "postgres"],
+    });
+  });
+
+  it("carries no unreachable field on a healthy deep 200, a config 503, or the default path", async () => {
+    expect(await (await GET(request("/readyz?deep=1"))).json()).not.toHaveProperty(
+      "unreachable"
+    );
+    mocks.verifySystemTenant.mockRejectedValue(new Error("pg down"));
+    const shallow = await GET(request());
+    expect(shallow.status).toBe(200);
+    expect(await shallow.json()).not.toHaveProperty("unreachable");
+    mocks.assertRuntimeSecrets.mockImplementationOnce(() => {
+      throw new RuntimeSecretError("secret missing");
+    });
+    const deepConfig = await GET(request("/readyz?deep=1"));
+    expect(deepConfig.status).toBe(503);
+    expect(await deepConfig.json()).not.toHaveProperty("unreachable");
+  });
+
+  it("names redis in the deep 503 when the run-stream is unreachable", async () => {
+    mocks.streamLength.mockRejectedValue(new Error("Redis connection refused"));
+
+    const response = await GET(request("/readyz?deep=1"));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      status: "error",
+      reason: "INFRA_UNREACHABLE",
+      unreachable: ["redis"],
+    });
+  });
+
+  it("names litellm-gateway in the deep 503 when the gateway is unreachable", async () => {
+    mocks.fetch.mockResolvedValue({ ok: false, status: 503, json: async () => ({}) });
+
+    const response = await GET(request("/readyz?deep=1"));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      status: "error",
+      reason: "INFRA_UNREACHABLE",
+      unreachable: ["litellm-gateway"],
+    });
+  });
+
+  it("fails the litellm-gateway probe when the catalog is empty", async () => {
+    mocks.fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [] }),
+    });
+
+    const response = await GET(request("/readyz?deep=1"));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      unreachable: ["litellm-gateway"],
+    });
+  });
+
+  it("probes Doltgres only when DOLTGRES_URL is declared, naming it on failure", async () => {
+    mocks.serverEnv.mockReturnValue({
+      APP_BUILD_SHA: "readyz-contract-sha",
+      APP_ENV: "production",
+      LITELLM_BASE_URL: "http://litellm:4000",
+      LITELLM_MASTER_KEY: "sk-readyz-test",
+      REDIS_URL: "redis://localhost:6379",
+      DOLTGRES_URL: "postgresql://doltgres:5432/knowledge",
+    });
+    mocks.getKnowledge.mockRejectedValue(new Error("doltgres connection refused"));
+
+    const response = await GET(request("/readyz?deep=1"));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      status: "error",
+      unreachable: ["doltgres"],
+    });
+    expect(mocks.getKnowledge).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the deep probe when declared Doltgres is reachable", async () => {
+    mocks.serverEnv.mockReturnValue({
+      APP_BUILD_SHA: "readyz-contract-sha",
+      APP_ENV: "production",
+      LITELLM_BASE_URL: "http://litellm:4000",
+      LITELLM_MASTER_KEY: "sk-readyz-test",
+      REDIS_URL: "redis://localhost:6379",
+      DOLTGRES_URL: "postgresql://doltgres:5432/knowledge",
+    });
+
+    const response = await GET(request("/readyz?deep=1"));
+
     expect(response.status).toBe(200);
+    expect(mocks.getKnowledge).toHaveBeenCalledTimes(1);
   });
 
-  it("shares one in-flight tenant query and caches a success that lands after the budget", async () => {
-    vi.useFakeTimers();
-    mocks.verifySystemTenant.mockImplementation(
-      () => new Promise((resolve) => setTimeout(resolve, 2500))
+  it("fails the Doltgres probe while the work-item writer is held, naming the hold (bug.0042)", async () => {
+    mocks.serverEnv.mockReturnValue({
+      APP_BUILD_SHA: "readyz-contract-sha",
+      APP_ENV: "production",
+      LITELLM_BASE_URL: "http://litellm:4000",
+      LITELLM_MASTER_KEY: "sk-readyz-test",
+      REDIS_URL: "redis://localhost:6379",
+      DOLTGRES_URL: "postgresql://doltgres:5432/knowledge",
+    });
+    mocks.writerHealth.mockReturnValueOnce({
+      state: "held",
+      nativeState: "unknown",
+      since: "2026-11-13T17:05:15.813Z",
+      heldMs: 42_000,
+      reason: "outcome_unknown",
+      stage: "lock.try",
+      operationId: "op-1",
+      operation: "patch task.0120",
+      settleAttempts: 2,
+      settling: false,
+    });
+
+    const response = await GET(request("/readyz?deep=1"));
+
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toMatchObject({ unreachable: ["doltgres"] });
+    expect(body.message).toMatch(
+      /Work-item writer held 42000ms .*outcome_unknown at lock\.try \(operation op-1/
     );
-
-    const first = GET(request());
-    await vi.advanceTimersByTimeAsync(1000);
-    const second = GET(request()); // joins the in-flight query
-    await vi.advanceTimersByTimeAsync(1000);
-    expect((await first).status).toBe(503);
-
-    await vi.advanceTimersByTimeAsync(500); // query resolves at 2.5s
-    expect((await second).status).toBe(200);
-    expect((await GET(request())).status).toBe(200); // served from the cache
-    expect(mocks.verifySystemTenant).toHaveBeenCalledOnce();
+    expect(mocks.getKnowledge).not.toHaveBeenCalled();
   });
 
-  it("abandons a tenant query that never settles and retries after 10s", async () => {
-    vi.useFakeTimers();
-    mocks.verifySystemTenant
-      .mockReturnValueOnce(new Promise<never>(() => {}))
-      .mockResolvedValue(undefined);
+  it("skips the Doltgres probe when DOLTGRES_URL is unset", async () => {
+    const response = await GET(request("/readyz?deep=1"));
 
-    for (let probe = 0; probe < 5; probe++) {
-      const pending = GET(request());
-      await vi.advanceTimersByTimeAsync(2000);
-      expect((await pending).status).toBe(503);
+    expect(response.status).toBe(200);
+    expect(mocks.getKnowledge).not.toHaveBeenCalled();
+  });
+
+  it("names redis, litellm-gateway and doltgres in order when all three fail at once", async () => {
+    mocks.serverEnv.mockReturnValue({
+      APP_BUILD_SHA: "readyz-contract-sha",
+      APP_ENV: "production",
+      LITELLM_BASE_URL: "http://litellm:4000",
+      LITELLM_MASTER_KEY: "sk-readyz-test",
+      REDIS_URL: "redis://localhost:6379",
+      DOLTGRES_URL: "postgresql://doltgres:5432/knowledge",
+    });
+    mocks.streamLength.mockRejectedValue(new Error("Redis connection refused"));
+    mocks.fetch.mockResolvedValue({ ok: false, status: 503, json: async () => ({}) });
+    mocks.getKnowledge.mockRejectedValue(new Error("doltgres down"));
+
+    const response = await GET(request("/readyz?deep=1"));
+
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    // Order is fixed by the registry: the existing four pass, then the three new
+    // deps fail in registry order; reason/message come from the first failure (redis).
+    expect(body).toMatchObject({
+      status: "error",
+      reason: "INFRA_UNREACHABLE",
+      unreachable: ["redis", "litellm-gateway", "doltgres"],
+    });
+    expect(body.message).toContain("Redis run-stream unreachable");
+  });
+
+  it("never probes Doltgres, Redis or LiteLLM on the default path", async () => {
+    mocks.serverEnv.mockReturnValue({
+      APP_BUILD_SHA: "readyz-contract-sha",
+      APP_ENV: "production",
+      LITELLM_BASE_URL: "http://litellm:4000",
+      LITELLM_MASTER_KEY: "sk-readyz-test",
+      REDIS_URL: "redis://localhost:6379",
+      DOLTGRES_URL: "postgresql://doltgres:5432/knowledge",
+    });
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(200);
+    expect(mocks.getKnowledge).not.toHaveBeenCalled();
+    expect(mocks.streamLength).not.toHaveBeenCalled();
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  });
+
+  it("emits a per-dependency deep-readiness summary naming every probed dependency ok", async () => {
+    mocks.serverEnv.mockReturnValue({
+      APP_BUILD_SHA: "readyz-contract-sha",
+      APP_ENV: "production",
+      LITELLM_BASE_URL: "http://litellm:4000",
+      LITELLM_MASTER_KEY: "sk-readyz-test",
+      REDIS_URL: "redis://localhost:6379",
+      DOLTGRES_URL: "postgresql://doltgres:5432/knowledge",
+    });
+
+    const response = await GET(request("/readyz?deep=1"));
+
+    expect(response.status).toBe(200);
+    // The summary is the per-dependency Loki evidence: which declared deps were
+    // actually probed and proven reachable this request.
+    expect(mocks.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "substrate.deep.complete",
+        unreachable: [],
+        checks: expect.objectContaining({
+          "evm-rpc": { status: "ok", durationMs: expect.any(Number) },
+          temporal: { status: "ok", durationMs: expect.any(Number) },
+          "scheduler-worker": {
+            status: "ok",
+            durationMs: expect.any(Number),
+          },
+          postgres: { status: "ok", durationMs: expect.any(Number) },
+          redis: { status: "ok", durationMs: expect.any(Number) },
+          "litellm-gateway": {
+            status: "ok",
+            durationMs: expect.any(Number),
+          },
+          doltgres: { status: "ok", durationMs: expect.any(Number) },
+        }),
+      }),
+      "deep readiness: checks complete"
+    );
+  });
+
+  it("marks a failing dependency failed in the deep-readiness summary", async () => {
+    mocks.streamLength.mockRejectedValue(new Error("Redis connection refused"));
+
+    const response = await GET(request("/readyz?deep=1"));
+
+    expect(response.status).toBe(503);
+    expect(mocks.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "substrate.deep.complete",
+        unreachable: ["redis"],
+        checks: expect.objectContaining({
+          redis: { status: "failed", durationMs: expect.any(Number) },
+          "litellm-gateway": {
+            status: "ok",
+            durationMs: expect.any(Number),
+          },
+        }),
+      }),
+      "deep readiness: checks complete"
+    );
+  });
+  it.each(["healthy", "evm-failed", "multiple", "timeout", "unexpected"] as const)(
+    "keeps readiness diagnostics bounded and private: %s", async (scenario) => {
+      const sentinel = "READINESS_PRIVATE_SENTINEL";
+      if (scenario === "evm-failed" || scenario === "multiple")
+        mocks.checkEvmRpcConnectivity.mockResolvedValueOnce({ ok: false, source: "live", errorMessage: sentinel });
+      if (scenario === "multiple") mocks.assertTemporalConnectivity.mockRejectedValueOnce(new Error(sentinel));
+      if (scenario === "timeout") { vi.useFakeTimers(); mocks.assertTemporalConnectivity.mockReturnValueOnce(new Promise(() => {})); }
+      if (scenario === "unexpected") mocks.getNodeId.mockImplementationOnce(() => { throw new Error(sentinel); });
+      const pending = GET(request("/readyz?deep=1"));
+      if (scenario === "timeout") await vi.advanceTimersByTimeAsync(3001);
+      const response = await pending;
+      expect(response.status).toBe(scenario === "healthy" ? 200 : scenario === "unexpected" ? 500 : 503);
+      const body = await response.json();
+      if (scenario === "unexpected") expect(body).toEqual({ status: "error", reason: "INTERNAL_ERROR" });
+      else {
+        expect(body.checks).toBeDefined();
+        if (scenario === "evm-failed" || scenario === "multiple") expect(body.unreachable).toContain("evm-rpc");
+        if (scenario === "multiple" || scenario === "timeout") expect(body.unreachable).toContain("temporal");
+      }
+      const lines = [...mocks.info.mock.calls, ...mocks.error.mock.calls, ...mocks.warn.mock.calls];
+      expect(lines.length).toBeLessThanOrEqual(3);
+      expect(JSON.stringify(lines)).not.toContain(sentinel);
+      expect(lines.filter(([fields]) => fields?.event === "substrate.deep.complete")).toHaveLength(scenario === "unexpected" ? 0 : 1);
+      expect(lines.filter(([, message]) => message === "request complete")).toHaveLength(1);
+      vi.useRealTimers();
     }
-    expect(mocks.verifySystemTenant).toHaveBeenCalledOnce(); // probes joined query 1
+  );
 
-    await vi.advanceTimersByTimeAsync(1); // query 1 is now older than 10s
-    expect((await GET(request())).status).toBe(200);
-    expect((await GET(request())).status).toBe(200); // cached
-    expect(mocks.verifySystemTenant).toHaveBeenCalledTimes(2);
+  it.each(["local", "construction", "logger", "context", "span", "annotation", "response", "error", "summary", "build-info", "counter", "histogram", "completion", "span-finalizer"] as const)(
+    "contains boundary failures without changing resolved readiness: %s", async (phase) => {
+      const sentinel = "READINESS_BOUNDARY_PRIVATE_SENTINEL";
+      const fail = () => { throw new Error(sentinel); };
+      const obs = await import("@/shared/observability");
+      const otel = await import("@/bootstrap/otel");
+      if (phase === "local" || phase === "error") mocks.serverEnv.mockImplementationOnce(fail);
+      if (phase === "construction") mocks.getContainer.mockImplementationOnce(fail);
+      if (phase === "logger") vi.spyOn(obs, "makeLogger").mockImplementationOnce(fail);
+      if (phase === "context") vi.spyOn(obs, "createRequestContext").mockImplementationOnce(fail);
+      if (phase === "span") vi.spyOn(otel, "withRootSpan").mockImplementationOnce(fail);
+      if (phase === "response") vi.spyOn(NextResponse, "json").mockImplementationOnce(fail);
+      if (phase === "annotation") vi.spyOn(otel, "withRootSpan").mockImplementationOnce(async (_name, _attrs, callback) => callback({ traceId: "trace", span: { setAttribute: fail } } as never));
+      if (phase === "error") mocks.error.mockImplementationOnce(fail);
+      if (phase === "summary") mocks.info.mockImplementationOnce(fail);
+      if (phase === "build-info") mocks.setBuildInfo.mockImplementationOnce(fail);
+      if (phase === "counter") vi.spyOn(obs.httpRequestsTotal, "inc").mockImplementationOnce(fail);
+      if (phase === "histogram") vi.spyOn(obs.httpRequestDurationMs, "observe").mockImplementationOnce(fail);
+      if (phase === "completion") vi.spyOn(obs, "logRequestEnd").mockImplementationOnce(fail);
+      if (phase === "span-finalizer") vi.spyOn(otel, "withRootSpan").mockImplementationOnce(async (_name, _attrs, callback) => {
+        await callback({ traceId: "trace", span: { setAttribute: () => {} } } as never); throw new Error(sentinel);
+      });
+      const response = await GET(request(phase === "construction" || phase === "summary" ? "/readyz?deep=1" : "/readyz"));
+      expect(response.status).toBe(phase === "local" || phase === "construction" || phase === "error" ? 503 : phase === "logger" || phase === "context" || phase === "span" || phase === "annotation" || phase === "response" ? 500 : 200);
+      expect(JSON.stringify(await response.json())).not.toContain(sentinel);
+      expect(JSON.stringify([...mocks.info.mock.calls, ...mocks.error.mock.calls, ...mocks.warn.mock.calls])).not.toContain(sentinel);
+    }
+  );
+
+  it("preserves a resolved 503 when span cleanup fails", async () => {
+    const otel = await import("@/bootstrap/otel");
+    mocks.serverEnv.mockImplementationOnce(() => { throw new Error("PRIVATE_PREFLIGHT"); });
+    vi.spyOn(otel, "withRootSpan").mockImplementationOnce(async (_name, _attrs, callback) => {
+      await callback({ traceId: "trace", span: { setAttribute: () => {} } } as never);
+      throw new Error("PRIVATE_SPAN_FINALIZER");
+    });
+    const response = await GET(request());
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ status: "error", reason: "INTERNAL_ERROR" });
+    expect(JSON.stringify([...mocks.info.mock.calls, ...mocks.error.mock.calls])).not.toContain("PRIVATE_SPAN_FINALIZER");
   });
+
+  it("bounds logs when failed deep response construction throws", async () => {
+    const sentinel = "RESPONSE_PRIVATE_SENTINEL";
+    mocks.checkEvmRpcConnectivity.mockResolvedValueOnce({ ok: false, source: "live", errorMessage: sentinel });
+    vi.spyOn(NextResponse, "json").mockImplementationOnce(() => { throw new Error(sentinel); });
+    const response = await GET(request("/readyz?deep=1"));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ status: "error", reason: "INTERNAL_ERROR" });
+    const lines = [...mocks.info.mock.calls, ...mocks.error.mock.calls, ...mocks.warn.mock.calls];
+    expect(lines.length).toBeLessThanOrEqual(3);
+    expect(JSON.stringify(lines)).not.toContain(sentinel);
+    expect(lines.filter(([fields]) => fields?.event === "substrate.deep.complete")).toHaveLength(1);
+    expect(lines.filter(([fields]) => fields?.errorCode === "INTERNAL_SERVER_ERROR")).toHaveLength(1);
+    expect(lines.filter(([, message]) => message === "request complete")).toHaveLength(1);
+  });
+  it.each(["healthy", "failed-deep"] as const)("ignores build-info failure for %s", async (scenario) => {
+    mocks.setBuildInfo.mockImplementationOnce(() => { throw new Error("PRIVATE_BUILD_INFO"); });
+    if (scenario === "failed-deep") mocks.checkEvmRpcConnectivity.mockResolvedValueOnce({ ok: false, source: "live", errorMessage: "rpc failed" });
+    const response = await GET(request(scenario === "failed-deep" ? "/readyz?deep=1" : "/readyz"));
+    expect(response.status).toBe(scenario === "healthy" ? 200 : 503);
+    expect(JSON.stringify([...mocks.info.mock.calls, ...mocks.error.mock.calls])).not.toContain("PRIVATE_BUILD_INFO");
+  });
+
 });

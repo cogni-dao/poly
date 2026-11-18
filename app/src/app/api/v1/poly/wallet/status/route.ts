@@ -14,7 +14,7 @@
  *     connection row exists; `trading_ready` from `trading_approvals_ready_at`.
  *     Privy / decrypt validation happens on `resolve` / `authorizeIntent`, not here.
  * Side-effects: IO (DB reads only).
- * Links: docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-tenant-and-collateral.md, work/items/task.0318
  * @public
  */
 

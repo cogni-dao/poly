@@ -15,7 +15,7 @@
  *     permissive and only the envelope is strict.
  *   - All consumers use z.infer types.
  * Side-effects: none
- * Links: docs/spec/unified-graph-launch.md, docs/spec/scheduler.md, bug.5000,
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/unified-graph-launch.md, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/scheduler.md, bug.5000,
  *   nodes/operator/app/src/app/api/internal/review/*, services/scheduler-worker/src/adapters/review-http.ts
  * @internal
  */

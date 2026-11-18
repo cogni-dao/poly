@@ -13,10 +13,9 @@ Poly-node-scoped Zod route contracts. Carved out of shared `@cogni/node-contract
 
 ## Pointers
 
-- [Node CI/CD Contract](../../../../docs/spec/node-ci-cd-contract.md)
-- [Node Operator Contract](../../../../docs/spec/node-operator-contract.md)
-- [Packages Architecture](../../../../docs/spec/packages-architecture.md)
-- [task.0421 — Per-node package carve-out standard](../../../../work/items/task.0421.per-node-package-carveout-standard.md)
+- [Node CI/CD Contract](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-ci-cd-contract.md)
+- [Node Operator Contract](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/node-operator-contract.md)
+- [Packages Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/packages-architecture.md)
 
 ## Boundaries
 

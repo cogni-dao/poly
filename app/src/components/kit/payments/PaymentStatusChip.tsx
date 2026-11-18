@@ -8,7 +8,7 @@
  * Invariants: Only visible when txHash exists and dialog is closed; clicking reopens dialog.
  * Side-effects: none
  * Notes: Part of refactored payment UI; allows users to close dialog but still monitor payment.
- * Links: docs/spec/payments-design.md, ~/.claude/plans/floating-stirring-trinket.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/payments-design.md
  * @public
  */
 

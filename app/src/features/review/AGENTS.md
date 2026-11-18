@@ -14,8 +14,8 @@ PR review feature: deterministic gate orchestrator evaluates PRs against `.cogni
 ## Pointers
 
 - [Root AGENTS.md](../../../../../AGENTS.md)
-- [Architecture](../../../../../docs/spec/architecture.md)
-- [VCS Integration Spec](../../../../../docs/spec/vcs-integration.md)
+- [Architecture](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/architecture.md)
+- [VCS Integration Spec](https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/vcs-integration.md)
 - [repo-spec package](../../../../../packages/repo-spec/) (gate + rule schema validation)
 - [pr-review graph](../../../../../packages/langgraph-graphs/src/graphs/pr-review/) (LangGraph structured output)
 - **Related:** [../../adapters/server/review/](../../adapters/server/review/) (GitHub API adapters), [../../bootstrap/review-adapter.factory.ts](../../bootstrap/review-adapter.factory.ts) (wiring)

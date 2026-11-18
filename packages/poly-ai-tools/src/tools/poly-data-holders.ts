@@ -7,7 +7,6 @@
  * Scope: Read-only. Core hidden-gem wallet-discovery primitive. Does not place trades, does not load env.
  * Invariants: TOOL_ID_NAMESPACED, EFFECT_READ_ONLY, NO_LANGCHAIN_IMPORT.
  * Side-effects: IO (capability)
- * Links: work/items/task.0386.poly-agent-wallet-research-v0.md
  * @public
  */
 
@@ -25,15 +24,15 @@ export const PolyDataHoldersInputSchema = z.object({
     .number()
     .int()
     .min(1)
-    .max(100)
+    .max(1000)
     .optional()
-    .describe("Max holders to return (1-100, default 20)."),
+    .describe("Max holders per outcome token (1-1000, default 20)."),
 });
 export type PolyDataHoldersInput = z.infer<typeof PolyDataHoldersInputSchema>;
 
 const HolderEntrySchema = z.object({
   proxyWallet: z.string(),
-  outcome: z.string(),
+  asset: z.string(),
   outcomeIndex: z.number(),
   amount: z.number(),
   userName: z.string().nullable(),

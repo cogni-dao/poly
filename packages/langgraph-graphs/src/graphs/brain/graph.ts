@@ -10,7 +10,7 @@
  *   - LLM and tools are injected, not instantiated
  *   - TYPE_TRANSPARENT_RETURN: No explicit return type annotation to preserve CompiledStateGraph for CLI schema extraction
  * Side-effects: none
- * Links: COGNI_BRAIN_SPEC.md, LANGGRAPH_AI.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/cogni-brain.md, https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

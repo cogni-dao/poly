@@ -13,7 +13,7 @@
  * Side-effects: none
  * Notes: P0: agentId === graphId. P1+: agentId becomes stable, may reference multiple assistants per graph.
  *        For providerId='langgraph', server graph_id = graphId suffix after ':'.
- * Links: /api/v1/ai/agents route, GraphPicker component, AGENT_DISCOVERY.md
+ * Links: /api/v1/ai/agents route, GraphPicker component, https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/agent-discovery.md
  * @internal
  */
 

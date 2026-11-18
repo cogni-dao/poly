@@ -26,7 +26,7 @@
  *     Only `losing_outcome` is genuinely terminal — chain payoutNumerator=0
  *     never flips back.
  * Side-effects: none
- * Links: docs/spec/poly-copy-trade-execution.md § Dust-state UI semantics, work/items/task.0388 § Static review Blocker #2, work/items/bug.5040
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/poly-copy-trade-execution.md, work/items/task.0388 § Static review Blocker #2, work/items/bug.5040
  * @public
  */
 

@@ -10,7 +10,7 @@
  *   - TOOL_CONFIG_PROPAGATION: LangChain tool func receives config param for authorization
  *   - Uses ALS context to resolve toolExecFn at invocation time
  * Side-effects: none
- * Links: TOOL_USE_SPEC.md, LANGGRAPH_AI.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/tool-use.md, https://node-template.cognidao.org/knowledge/graph-execution-invariants
  * @public
  */
 

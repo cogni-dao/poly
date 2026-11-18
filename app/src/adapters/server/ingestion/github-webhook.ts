@@ -11,7 +11,7 @@
  * - ACTIVITY_IDEMPOTENT: Deterministic event IDs from source data (same as poll adapter)
  * - INGEST_ALL_FILTER_LATER: Normalizer captures all actionable events; downstream selection decides what's attributable
  * Side-effects: none
- * Links: docs/spec/attribution-ledger.md
+ * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/attribution-ledger.md
  * @internal
  */
 

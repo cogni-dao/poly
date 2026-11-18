@@ -227,30 +227,15 @@ export function buildEconomicPositionProjectionQuery(
         AND lower(s.raw->'economicObservationV1'->>'conditionId') = lower(s.condition_id)
         AND lower(s.raw->'economicObservationV1'->>'wallet') = lower(${params.walletAddress})
       ORDER BY lower(s.condition_id), s.token_id, s.captured_at DESC, s.id
-    ), current_groups AS MATERIALIZED (
+    ), current_ranked AS MATERIALIZED (
+      /* One pass over the wallet's saved current rows: rank each
+         (condition, token) group to choose its row AND detect conflicting
+         saved facts (min <> max fingerprint == count(DISTINCT) > 1), instead
+         of aggregating the table and then joining it back to itself. */
       SELECT
         lower(p.condition_id) AS condition_id,
         p.token_id,
-        (array_agg(p.trader_wallet_id ORDER BY p.last_observed_at DESC,
-          w.updated_at DESC, w.created_at DESC, w.id, p.condition_id))[1]
-          AS chosen_wallet_id,
-        (array_agg(p.condition_id ORDER BY p.last_observed_at DESC,
-          w.updated_at DESC, w.created_at DESC, w.id, p.condition_id))[1]
-          AS chosen_condition_id,
-        count(DISTINCT md5(concat_ws('|',
-          p.shares::text, p.cost_basis_usdc::text, p.current_value_usdc::text,
-          p.avg_price::text, COALESCE(p.raw->>'curPrice', ''),
-          COALESCE(p.raw->>'outcome', ''), COALESCE(p.raw->>'endDate', '')
-        )))::int AS fact_variants
-      FROM poly_trader_current_positions p
-      JOIN wallet_identity w ON w.id = p.trader_wallet_id
-      WHERE p.last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
-      GROUP BY lower(p.condition_id), p.token_id
-    ), current_facts AS MATERIALIZED (
-      SELECT
-        g.condition_id,
-        g.token_id,
-        g.chosen_wallet_id,
+        p.trader_wallet_id AS chosen_wallet_id,
         p.shares,
         p.cost_basis_usdc,
         p.current_value_usdc,
@@ -258,12 +243,31 @@ export function buildEconomicPositionProjectionQuery(
         p.last_observed_at,
         p.first_observed_at,
         p.raw,
-        g.fact_variants > 1 AS current_identity_conflict
-      FROM current_groups g
-      JOIN poly_trader_current_positions p
-        ON p.trader_wallet_id = g.chosen_wallet_id
-       AND p.condition_id = g.chosen_condition_id
-       AND p.token_id = g.token_id
+        min(md5(concat_ws('|',
+          p.shares::text, p.cost_basis_usdc::text, p.current_value_usdc::text,
+          p.avg_price::text, COALESCE(p.raw->>'curPrice', ''),
+          COALESCE(p.raw->>'outcome', ''), COALESCE(p.raw->>'endDate', '')
+        ))) OVER (PARTITION BY lower(p.condition_id), p.token_id)
+        <> max(md5(concat_ws('|',
+          p.shares::text, p.cost_basis_usdc::text, p.current_value_usdc::text,
+          p.avg_price::text, COALESCE(p.raw->>'curPrice', ''),
+          COALESCE(p.raw->>'outcome', ''), COALESCE(p.raw->>'endDate', '')
+        ))) OVER (PARTITION BY lower(p.condition_id), p.token_id)
+          AS current_identity_conflict,
+        row_number() OVER (
+          PARTITION BY lower(p.condition_id), p.token_id
+          ORDER BY p.last_observed_at DESC, w.updated_at DESC, w.created_at DESC,
+            w.id, p.condition_id
+        ) AS group_rank
+      FROM poly_trader_current_positions p
+      JOIN wallet_identity w ON w.id = p.trader_wallet_id
+      WHERE p.last_observed_at <= ${params.capturedAt.toISOString()}::timestamptz
+    ), current_facts AS MATERIALIZED (
+      SELECT condition_id, token_id, chosen_wallet_id, shares, cost_basis_usdc,
+        current_value_usdc, avg_price, last_observed_at, first_observed_at, raw,
+        current_identity_conflict
+      FROM current_ranked
+      WHERE group_rank = 1
     ), driven_keys AS MATERIALIZED (
       SELECT condition_id, token_id FROM origin_keys
       UNION

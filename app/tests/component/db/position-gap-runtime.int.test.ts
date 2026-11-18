@@ -461,7 +461,9 @@ describe("position-gap runtime persistence", () => {
 				...base,
 				inputSnapshot: {
 					...base.inputSnapshot,
-					canonical_input: { version: 2, exact: "collision" },
+					// bug.5051: identity is compared by primary key; the SHA-256 id
+					// already binds canonical_input, so no full-jsonb equality read.
+					input_contract_version: "position-gap-collision-contract",
 				},
 				buys: [],
 				cohortCreations: [],
@@ -1153,8 +1155,16 @@ describe("position-gap runtime persistence", () => {
 			.update(polyPositionGapCohorts)
 			.set({ status: "resolved" })
 			.where(eq(polyPositionGapCohorts.cohortKey, lateCreation.cohortKey));
+		const afterResolve = await new PositionGapRuntimeStore(db).loadCohorts(
+			scope,
+		);
+		// bug.5051: resolved rows are still loaded (they feed allowance sums,
+		// held-share attribution and creation dedupe); only the jsonb is skipped.
+		expect(afterResolve.map((row) => row.cohortKey)).toContain(
+			lateCreation.cohortKey,
+		);
 		const resolvedReplay = projection(
-			await new PositionGapRuntimeStore(db).loadCohorts(scope),
+			afterResolve,
 			[firstPosition, latePosition],
 			5,
 		);
