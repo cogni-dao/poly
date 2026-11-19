@@ -20,18 +20,14 @@ import { type BuildClientOptions, buildClient } from "./build-client";
 export type { BuildClientOptions };
 
 /**
- * Default `max` for the service (jobs/writers) pool. With the read + leader pools
- * this fits the service_poly role ceiling 8 (service 4 + read 2 + leader 1 = 7/8)
- * of the dedicated budget profile (bug.5045). Mirrors the applied env default
- * (`DB_SERVICE_POOL_MAX`) so package and runtime defaults agree.
+ * Fallback `max` for the service (jobs/writers) pool for DIRECT callers (tests, scripts) that
+ * pass no `max`. The app runtime always injects `max` (app/src/adapters/server/db/
+ * drizzle.service-client.ts), where the operator catalog `runtimePoolLimits` is the authority
+ * and the shared-tier default is service 1 + read 1 + leader 1 = 3 (bug.5064).
  */
 export const DEFAULT_SERVICE_POOL_MAX = 4;
 
-/**
- * Default `max` for the service READ pool (smaller: read-only dashboard traffic).
- * Part of the same service_poly budget (service 4 + read 2 + leader 1 = 7/8) of
- * the dedicated budget profile (bug.5045).
- */
+/** Fallback `max` for the service READ pool for direct callers; the app runtime injects `max`. */
 export const DEFAULT_READ_POOL_MAX = 2;
 
 /**
@@ -41,7 +37,7 @@ export const DEFAULT_READ_POOL_MAX = 2;
  * Must NOT be used in the Next.js web runtime (enforced by dependency-cruiser).
  *
  * @param options - Pool tuning; `max` is env-derived at the app layer
- *   (`DB_SERVICE_POOL_MAX`, default 4). See build-client.ts header for backend math.
+ *   (`DB_SERVICE_POOL_MAX` when injected, else the shared-tier default 1). See build-client.ts header for backend math.
  */
 export function createServiceDbClient(
   connectionString: string,
@@ -60,7 +56,7 @@ export function createServiceDbClient(
  * changes for the read path are explicitly out of scope here.
  *
  * @param options - Pool tuning; `max` is env-derived at the app layer
- *   (`DB_READ_POOL_MAX`, default 2). See build-client.ts header for backend math.
+ *   (`DB_READ_POOL_MAX` when injected, else the shared-tier default 1). See build-client.ts header for backend math.
  */
 export function createServiceReadDbClient(
   connectionString: string,
