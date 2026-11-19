@@ -131,7 +131,10 @@ import {
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
 import { getServiceReadDb } from "@/adapters/server/db/drizzle.service-read-client";
 import { DoltgresPolyWorkItemAdapter } from "@/adapters/server/db/doltgres/work-items-adapter";
-import { createJobLeaderLockSession } from "@/adapters/server/db/job-leader-lock.client";
+import {
+	createJobLeaderLockSession,
+	getLeaderLockClientStats,
+} from "@/adapters/server/db/job-leader-lock.client";
 import { ServiceDrizzlePaymentAttemptRepository } from "@/adapters/server/payments/drizzle-payment-attempt.adapter";
 import { SplitTreasurySettlementAdapter } from "@/adapters/server/treasury/split-treasury-settlement.adapter";
 import {
@@ -2381,6 +2384,7 @@ function createContainer(): Container {
 				}),
 			startJobs: startBackgroundJobs,
 			stopJobs: stopBackgroundJobs,
+			getClientStats: getLeaderLockClientStats,
 			logger: log.child({ component: "job-leader-elector" }),
 			instanceId: `${hostname()}#${process.pid}`,
 		});

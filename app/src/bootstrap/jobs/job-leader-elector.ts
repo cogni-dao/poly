@@ -98,6 +98,11 @@ export interface JobLeaderElectorDeps {
 	/** Stop ALL background jobs. Must be safe to call when none are running. */
 	stopJobs: () => void;
 	logger: ElectorLogger;
+	/**
+	 * Optional live-client gauge (bug.5066) merged into every elector log so a
+	 * connection leak is visible: `live` should be 0 or 1, never growing.
+	 */
+	getClientStats?: () => Record<string, unknown>;
 	/** Pod-identifying string for the leader logs (hostname#pid, pod name…). */
 	instanceId: string;
 	retryIntervalMs?: number;
@@ -134,6 +139,15 @@ export function startJobLeaderElector(
 	let ticking = false;
 	let standbyLogged = false;
 
+	/** Gauge snapshot for log lines; never throws. */
+	function stats(): Record<string, unknown> {
+		try {
+			return deps.getClientStats ? { lock_clients: deps.getClientStats() } : {};
+		} catch {
+			return {};
+		}
+	}
+
 	function schedule(ms: number): void {
 		if (stopped) return;
 		timer = setTimeout(() => {
@@ -163,6 +177,7 @@ export function startJobLeaderElector(
 			{
 				event: "jobs.leader_lost",
 				...baseLog,
+				...stats(),
 				reason,
 				err: err instanceof Error ? err.message : err ? String(err) : undefined,
 			},
@@ -194,6 +209,7 @@ export function startJobLeaderElector(
 						{
 							event: "jobs.leader_lock_connect_failed",
 							...baseLog,
+							...stats(),
 							err: err instanceof Error ? err.message : String(err),
 						},
 						"leader-lock connection failed — retrying",
@@ -219,6 +235,7 @@ export function startJobLeaderElector(
 						{
 							event: "jobs.leader_lock_probe_failed",
 							...baseLog,
+							...stats(),
 							err: err instanceof Error ? err.message : String(err),
 						},
 						"standby lock probe failed — recreating session",
@@ -238,7 +255,7 @@ export function startJobLeaderElector(
 					leader = true;
 					standbyLogged = false;
 					deps.logger.info(
-						{ event: "jobs.leader_acquired", ...baseLog },
+						{ event: "jobs.leader_acquired", ...baseLog, ...stats() },
 						"job-runner leadership acquired — starting all background jobs",
 					);
 					try {
@@ -267,6 +284,7 @@ export function startJobLeaderElector(
 						{
 							event: "jobs.leader_standby",
 							...baseLog,
+							...stats(),
 							retry_interval_ms: retryMs,
 						},
 						"another pod holds the job-runner lock — standing by",
