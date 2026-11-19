@@ -64,19 +64,35 @@ describe("DB pool split (task.5014)", { timeout: 30_000 }, () => {
     );
   });
 
-  it("uses default pool sizes (1/4/2) when env vars are unset", async () => {
-    // bug.5045: service+read+leader share role service_poly; defaults fit the
-    // dedicated ceiling (app 4, service 8) so a lane without runtimePoolLimits
-    // can't exhaust a role (service 4 + read 2 + leader 1 = 7/8; app 1/4).
+  it("uses default pool sizes (1/1/1) when no runtimePoolLimits are injected", async () => {
+    // bug.5064: no injected limits (candidate-a/preview, shared tier service role 4):
+    // service 1 + read 1 + leader 1 = 3, one spare.
     Object.assign(process.env, BASE_VALID_ENV);
     delete process.env.DB_POOL_MAX;
     delete process.env.DB_SERVICE_POOL_MAX;
     delete process.env.DB_READ_POOL_MAX;
+    delete process.env.DB_SERVICE_ROLE_BUDGET;
 
     const { resolveAppDb, resolveServiceDb, resolveServiceReadDb } =
       await import("@/bootstrap/container");
 
     expect(resolveAppDb().$client.options.max).toBe(1);
+    expect(resolveServiceDb().$client.options.max).toBe(1);
+    expect(resolveServiceReadDb().$client.options.max).toBe(1);
+  });
+
+  it("honors injected runtimePoolLimits exactly (service 4 / read 2)", async () => {
+    // The operator catalog is the authority: declared values are used as-is.
+    Object.assign(process.env, BASE_VALID_ENV, {
+      DB_SERVICE_POOL_MAX: "4",
+      DB_READ_POOL_MAX: "2",
+    });
+    delete process.env.DB_SERVICE_ROLE_BUDGET;
+
+    const { resolveServiceDb, resolveServiceReadDb } = await import(
+      "@/bootstrap/container"
+    );
+
     expect(resolveServiceDb().$client.options.max).toBe(4);
     expect(resolveServiceReadDb().$client.options.max).toBe(2);
   });

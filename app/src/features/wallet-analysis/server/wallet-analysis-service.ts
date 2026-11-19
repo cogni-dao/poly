@@ -68,6 +68,7 @@ import {
   pickStoredPriceHistoryFidelity,
   readPriceHistoryFromDb,
 } from "./price-history-service";
+import { logSliceFailure } from "./slice-failure";
 import { getTradingWalletPnlHistoryRead } from "./trading-wallet-overview-service";
 
 /** Cache TTL for every slice. Matches design doc 30 s. */
@@ -1550,6 +1551,9 @@ function warning(
   slice: WalletAnalysisWarning["slice"],
   err: unknown
 ): WalletAnalysisWarning {
+  // bug.5064: every caller is a catch block — a swallowed failure (e.g. SQLSTATE
+  // 53300) must still reach Loki as one structured warn.
+  logSliceFailure(slice, err);
   return {
     slice,
     code: "upstream_failed",
