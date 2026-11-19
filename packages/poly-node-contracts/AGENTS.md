@@ -42,6 +42,7 @@ The `poly.*.v1.contract.ts` files re-exported via `src/index.ts`:
 - `poly.copy-trade.orders.v1.contract`
 - `poly.copy-trade.targets.v1.contract`
 - `poly.research-trader-comparison.v1.contract` — `GET /api/v1/poly/research/trader-comparison`; up to three research wallets with Polymarket-native windowed P/L plus saved-observation fill count/notional for the research comparison board.
+- `poly.research-trader-pnl.v1.contract` — `GET /api/v1/poly/research/trader-pnl`; up to three wallets' saved Polymarket-native P/L series, server-downsampled, for the research P/L overlay (bug.5065).
 - `poly.research-report.v1.contract`
 - `poly.research-target-overlap.v1.contract`
 - `poly.sync-health.v1.contract`
