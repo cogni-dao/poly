@@ -18,15 +18,13 @@
  */
 
 import type { Database } from "@cogni/db-client";
-import {
-  createServiceReadDbClient,
-  DEFAULT_READ_POOL_MAX,
-} from "@cogni/db-client/service";
+import { createServiceReadDbClient } from "@cogni/db-client/service";
 
 import { serverEnv } from "@/shared/env";
 
 import {
   logServicePoolConfigured,
+  SHARED_TIER_READ_POOL_MAX,
   resolveServiceRoleBudgetFromEnv,
 } from "./drizzle.service-client";
 
@@ -44,7 +42,7 @@ function createServiceReadDb(): Database {
     });
     logServicePoolConfigured(
       "service_read",
-      env.DB_READ_POOL_MAX ?? DEFAULT_READ_POOL_MAX,
+      env.DB_READ_POOL_MAX ?? SHARED_TIER_READ_POOL_MAX,
       budget
     );
   }

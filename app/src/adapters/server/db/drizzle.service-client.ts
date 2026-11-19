@@ -14,11 +14,7 @@
  */
 
 import type { Database } from "@cogni/db-client";
-import {
-  createServiceDbClient,
-  DEFAULT_READ_POOL_MAX,
-  DEFAULT_SERVICE_POOL_MAX,
-} from "@cogni/db-client/service";
+import { createServiceDbClient } from "@cogni/db-client/service";
 
 import { getNodeId } from "@/shared/config/repoSpec.server";
 import { serverEnv } from "@/shared/env";
@@ -28,6 +24,13 @@ import {
   resolveServiceRoleBudget,
   type ServiceRoleBudget,
 } from "./service-role-budget";
+
+/**
+ * Shared-tier defaults when the operator injects no `runtimePoolLimits`
+ * (`shared-default-v1`: service role 4): service 1 + read 1 + leader 1 = 3, one spare.
+ */
+export const SHARED_TIER_SERVICE_POOL_MAX = 1;
+export const SHARED_TIER_READ_POOL_MAX = 1;
 
 // Lazy service-role connection (BYPASSRLS) for auth, workers, and bootstrap.
 // DATABASE_SERVICE_URL is required in all environments (no fallback).
@@ -45,8 +48,8 @@ let _serviceDb: Database | null = null;
 export function resolveServiceRoleBudgetFromEnv(): ServiceRoleBudget {
   const env = serverEnv();
   return resolveServiceRoleBudget({
-    requestedService: env.DB_SERVICE_POOL_MAX ?? DEFAULT_SERVICE_POOL_MAX,
-    requestedRead: env.DB_READ_POOL_MAX ?? DEFAULT_READ_POOL_MAX,
+    requestedService: env.DB_SERVICE_POOL_MAX ?? SHARED_TIER_SERVICE_POOL_MAX,
+    requestedRead: env.DB_READ_POOL_MAX ?? SHARED_TIER_READ_POOL_MAX,
     injected:
       env.DB_SERVICE_POOL_MAX !== undefined ||
       env.DB_READ_POOL_MAX !== undefined,
@@ -90,7 +93,7 @@ function createServiceDb(): Database {
     });
     logServicePoolConfigured(
       "service",
-      env.DB_SERVICE_POOL_MAX ?? DEFAULT_SERVICE_POOL_MAX,
+      env.DB_SERVICE_POOL_MAX ?? SHARED_TIER_SERVICE_POOL_MAX,
       budget
     );
   }

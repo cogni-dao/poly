@@ -13,8 +13,8 @@
  * Notes — backend math (task.5014, bug.5045):
  *   Each app pod holds THREE postgres-js pools, each with its own `max`:
  *     1. app pool        (app_user, RLS)          — `DB_POOL_MAX`,         default 1, application_name `cogni_template_app`
- *     2. service pool    (app_service, BYPASSRLS) — `DB_SERVICE_POOL_MAX`, default 1, application_name `cogni_service` (background jobs + writers)
- *     3. service-read pool (app_service, BYPASSRLS) — `DB_READ_POOL_MAX`,  default 1,  application_name `cogni_service_read` (dashboard/research reads)
+ *     2. service pool    (app_service, BYPASSRLS) — `DB_SERVICE_POOL_MAX`, shared-tier default 1, application_name `cogni_service` (background jobs + writers)
+ *     3. service-read pool (app_service, BYPASSRLS) — `DB_READ_POOL_MAX`,  shared-tier default 1,  application_name `cogni_service_read` (dashboard/research reads)
  *   Plus ONE dedicated leader-election connection (task.5016) outside these
  *   pools: a `max: 1` postgres-js client pinned via `reserve()` holding the
  *   session-level job-runner advisory lock, application_name

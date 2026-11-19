@@ -20,18 +20,15 @@ import { type BuildClientOptions, buildClient } from "./build-client";
 export type { BuildClientOptions };
 
 /**
- * Default `max` for the service (jobs/writers) pool when the operator injects no
- * `runtimePoolLimits`. The shared tier gives the service role 4 connections
- * (`shared-default-v1`); service 1 + read 1 + leader 1 = 3 leaves one spare
- * (bug.5064). Injected `DB_SERVICE_POOL_MAX` is the authority and is used exactly.
+ * Fallback `max` for the service (jobs/writers) pool for DIRECT callers (tests, scripts) that
+ * pass no `max`. The app runtime always injects `max` (app/src/adapters/server/db/
+ * drizzle.service-client.ts), where the operator catalog `runtimePoolLimits` is the authority
+ * and the shared-tier default is service 1 + read 1 + leader 1 = 3 (bug.5064).
  */
-export const DEFAULT_SERVICE_POOL_MAX = 1;
+export const DEFAULT_SERVICE_POOL_MAX = 4;
 
-/**
- * Default `max` for the service READ pool (read-only dashboard/research traffic) when no
- * `runtimePoolLimits` are injected. Part of the same 1 + 1 + leader 1 = 3 budget.
- */
-export const DEFAULT_READ_POOL_MAX = 1;
+/** Fallback `max` for the service READ pool for direct callers; the app runtime injects `max`. */
+export const DEFAULT_READ_POOL_MAX = 2;
 
 /**
  * Creates a Drizzle database client for the `app_service` role (BYPASSRLS).
@@ -40,7 +37,7 @@ export const DEFAULT_READ_POOL_MAX = 1;
  * Must NOT be used in the Next.js web runtime (enforced by dependency-cruiser).
  *
  * @param options - Pool tuning; `max` is env-derived at the app layer
- *   (`DB_SERVICE_POOL_MAX` when injected, default 1). See build-client.ts header for backend math.
+ *   (`DB_SERVICE_POOL_MAX` when injected, else the shared-tier default 1). See build-client.ts header for backend math.
  */
 export function createServiceDbClient(
   connectionString: string,
@@ -59,7 +56,7 @@ export function createServiceDbClient(
  * changes for the read path are explicitly out of scope here.
  *
  * @param options - Pool tuning; `max` is env-derived at the app layer
- *   (`DB_READ_POOL_MAX`, default 1). See build-client.ts header for backend math.
+ *   (`DB_READ_POOL_MAX` when injected, else the shared-tier default 1). See build-client.ts header for backend math.
  */
 export function createServiceReadDbClient(
   connectionString: string,
