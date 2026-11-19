@@ -60,7 +60,7 @@ const DEFAULT_APPLICATION_NAME = `cogni_job_leader:${PROCESS_TOKEN}`;
 /** Module-level gauge of leader-lock postgres-js clients (bug.5066). */
 const gauge = { opened: 0, closed: 0, strays_reaped: 0 };
 
-export interface LeaderLockClientStats {
+export type LeaderLockClientStats = {
 	/** postgres-js clients created by this module instance. */
 	opened: number;
 	/** Clients whose `end()` settled. */
@@ -69,7 +69,7 @@ export interface LeaderLockClientStats {
 	live: number;
 	/** Backends terminated by the stray sweep — non-zero PROVES a stray leaked. */
 	strays_reaped: number;
-}
+};
 
 export function getLeaderLockClientStats(): LeaderLockClientStats {
 	return { ...gauge, live: gauge.opened - gauge.closed };
