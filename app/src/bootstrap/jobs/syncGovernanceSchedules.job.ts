@@ -208,8 +208,13 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
       paused: result.paused.length,
     };
   } finally {
-    // Release advisory lock on the same connection that acquired it
-    await reservedConn`SELECT pg_advisory_unlock(hashtext('governance_sync'))`;
-    reservedConn.release();
+    // Release advisory lock on the same connection that acquired it. release()
+    // is unconditional (bug.5066): a failed unlock must never strand the
+    // reserved pool connection.
+    try {
+      await reservedConn`SELECT pg_advisory_unlock(hashtext('governance_sync'))`;
+    } finally {
+      reservedConn.release();
+    }
   }
 }

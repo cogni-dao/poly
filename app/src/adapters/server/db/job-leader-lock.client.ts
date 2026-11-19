@@ -22,12 +22,26 @@
  *   - DISPOSE_NEVER_THROWS: teardown (unlock-all, release, end) swallows
  *     errors — a dead connection is the expected teardown path, and the
  *     server already released the lock when the session died.
+ *   - NO_STRAY_BACKENDS (bug.5066): postgres-js 3.4.9 can silently reconnect a
+ *     client AFTER `end()` — `reserve()` leaves its query in the pool queue, so
+ *     when the first connect fails (e.g. 53300 `too many connections`) the
+ *     closed connection's `onclose` re-dials with the stale query and the
+ *     revived socket is owned by nobody (idle_timeout 0, max_lifetime null →
+ *     lives until pod death). Every standby retry during a full role could
+ *     mint one. Defence: (1) failed connect ends with `timeout: 0` so the pool
+ *     queue is drained at once; (2) each session carries a per-process
+ *     `application_name` and, once established, terminates every OTHER backend
+ *     with that exact name (`pg_terminate_backend`, same role → allowed), so a
+ *     stray left by an earlier attempt is reaped by the next one; (3) a
+ *     module-level gauge (`getLeaderLockClientStats`) counts opened/closed
+ *     clients and reaped strays and is logged by the elector.
  * Side-effects: IO (one database connection per created session)
  * Links: work/items/task.5016, src/bootstrap/jobs/job-leader-elector.ts,
  *   packages/db-client/src/build-client.ts (pool backend math)
  * @internal
  */
 
+import { randomBytes } from "node:crypto";
 import postgres from "postgres";
 
 import {
@@ -35,11 +49,39 @@ import {
 	type LeaderLockSession,
 } from "@/bootstrap/jobs/job-leader-elector";
 
+/**
+ * Per-module-instance token: the default `application_name` is unique per
+ * process (and per duplicated module graph), so the stray sweep can never
+ * terminate another pod's legitimate leader connection.
+ */
+const PROCESS_TOKEN = randomBytes(4).toString("hex");
+const DEFAULT_APPLICATION_NAME = `cogni_job_leader:${PROCESS_TOKEN}`;
+
+/** Module-level gauge of leader-lock postgres-js clients (bug.5066). */
+const gauge = { opened: 0, closed: 0, strays_reaped: 0 };
+
+export type LeaderLockClientStats = {
+	/** postgres-js clients created by this module instance. */
+	opened: number;
+	/** Clients whose `end()` settled. */
+	closed: number;
+	/** `opened - closed`: clients this process believes are alive (expected 0 or 1). */
+	live: number;
+	/** Backends terminated by the stray sweep — non-zero PROVES a stray leaked. */
+	strays_reaped: number;
+};
+
+export function getLeaderLockClientStats(): LeaderLockClientStats {
+	return { ...gauge, live: gauge.opened - gauge.closed };
+}
+
 export interface JobLeaderLockSessionOptions {
 	/** Service-role DSN (DATABASE_SERVICE_URL). App-role would also work — the lock is roleless — but jobs are a service concern. */
 	connectionString: string;
 	/**
-	 * `application_name` for pg_stat_activity. Default `cogni_job_leader`.
+	 * `application_name` for pg_stat_activity. Default
+	 * `cogni_job_leader:<per-process token>`. MUST be unique per elector — the
+	 * stray sweep terminates every other backend carrying this exact name.
 	 * Tests override per instance so they can terminate a specific backend.
 	 */
 	applicationName?: string;
@@ -63,6 +105,7 @@ export async function createJobLeaderLockSession(
 	// dispose() skips the unlock statement.
 	let broken = false;
 
+	const applicationName = options.applicationName ?? DEFAULT_APPLICATION_NAME;
 	const sql = postgres(options.connectionString, {
 		max: 1,
 		// Reserved connections are exempt from idle collection, but be explicit:
@@ -75,16 +118,50 @@ export async function createJobLeaderLockSession(
 			broken = true;
 		},
 		connection: {
-			application_name: options.applicationName ?? "cogni_job_leader",
+			application_name: applicationName,
 		},
 	});
+	gauge.opened += 1;
+	/** Count a client closed exactly once, whichever teardown path ends it. */
+	let counted = false;
+	const endClient = async (timeoutSeconds: number): Promise<void> => {
+		try {
+			await sql.end({ timeout: timeoutSeconds });
+		} finally {
+			if (!counted) {
+				counted = true;
+				gauge.closed += 1;
+			}
+		}
+	};
 
 	let reserved: Awaited<ReturnType<typeof sql.reserve>>;
 	try {
 		reserved = await sql.reserve();
 	} catch (err) {
-		await sql.end({ timeout: 5 }).catch(() => {});
+		// timeout 0 → destroy() on the next tick, which drains the pool queue
+		// (incl. reserve()'s stale entry) so postgres-js cannot re-dial.
+		await endClient(0).catch(() => {});
 		throw err;
+	}
+
+	// NO_STRAY_BACKENDS: reap any other backend left by this process's earlier
+	// attempts. Best-effort + bounded — never fails or stalls session creation.
+	try {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const rows = await Promise.race([
+			reserved`SELECT count(*) FILTER (WHERE pg_terminate_backend(pid))::int AS reaped
+				FROM pg_stat_activity
+				WHERE application_name = ${applicationName} AND pid <> pg_backend_pid()`,
+			new Promise<undefined>((resolve) => {
+				timer = setTimeout(() => resolve(undefined), 3_000);
+				timer.unref?.();
+			}),
+		]).finally(() => clearTimeout(timer));
+		const reaped = Number(rows?.[0]?.reaped ?? 0);
+		if (reaped > 0) gauge.strays_reaped += reaped;
+	} catch {
+		// Sweep is advisory; a failure here is the dead-session path tryAcquire handles.
 	}
 
 	/** Bounded await — a half-dead connection must never hang teardown. */
@@ -135,7 +212,7 @@ export async function createJobLeaderLockSession(
 				// Already released/destroyed.
 			}
 			// timeout is seconds: force-close sockets quickly on a dead session.
-			await withTimeout(sql.end({ timeout: 1 }), 3_000);
+			await withTimeout(endClient(1), 3_000);
 		},
 	};
 }
