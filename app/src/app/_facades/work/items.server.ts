@@ -96,8 +96,14 @@ function nextActionForWorkItem(item: WorkItem): string | null {
 			return "/research";
 		case "needs_design":
 			return "/design";
+		case "needs_design_review":
+			return "/review-design";
 		case "needs_implement":
 			return "/implement";
+		case "needs_implementation_review":
+			return "/review-implementation";
+		case "needs_validation":
+			return "/validate-candidate";
 		case "needs_closeout":
 			return "/closeout";
 		case "needs_merge":
