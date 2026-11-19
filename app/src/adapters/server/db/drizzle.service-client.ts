@@ -35,14 +35,7 @@ export const SHARED_TIER_READ_POOL_MAX = 1;
 // Lazy service-role connection (BYPASSRLS) for auth, workers, and bootstrap.
 // DATABASE_SERVICE_URL is required in all environments (no fallback).
 // Read-path service queries use the separate pool in drizzle.service-read-client.ts.
-//
-// PROCESS_WIDE_SINGLETON (bug.5066): the handle lives on `globalThis`, not in a
-// module variable. Next can evaluate this module once per bundle graph
-// (instrumentation vs route handlers) and each copy would otherwise dial its own
-// pool, multiplying the per-pod service_poly budget (service 1 + read 1 + leader 1).
-const processSlots = globalThis as unknown as {
-  __cogniPolyServiceDb?: Database;
-};
+let _serviceDb: Database | null = null;
 
 /**
  * Per-pod service_poly budget (bug.5064): the service pool, the read pool and the
@@ -90,12 +83,12 @@ export function logServicePoolConfigured(
 }
 
 function createServiceDb(): Database {
-  if (!processSlots.__cogniPolyServiceDb) {
+  if (!_serviceDb) {
     const env = serverEnv();
     // Pool budget: declared DB_SERVICE_POOL_MAX when injected, else default 1.
     // Backend math: packages/db-client/src/build-client.ts.
     const budget = resolveServiceRoleBudgetFromEnv();
-    processSlots.__cogniPolyServiceDb = createServiceDbClient(env.DATABASE_SERVICE_URL, {
+    _serviceDb = createServiceDbClient(env.DATABASE_SERVICE_URL, {
       max: budget.serviceMax,
     });
     logServicePoolConfigured(
@@ -104,7 +97,7 @@ function createServiceDb(): Database {
       budget
     );
   }
-  return processSlots.__cogniPolyServiceDb as Database;
+  return _serviceDb;
 }
 
 export const getServiceDb = createServiceDb;

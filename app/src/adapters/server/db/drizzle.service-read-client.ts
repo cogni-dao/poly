@@ -29,18 +29,15 @@ import {
 } from "./drizzle.service-client";
 
 // Lazy service-role READ connection (BYPASSRLS) for dashboard/research read routes.
-// PROCESS_WIDE_SINGLETON (bug.5066): on `globalThis` so duplicated module graphs share one pool.
-const processSlots = globalThis as unknown as {
-  __cogniPolyServiceReadDb?: Database;
-};
+let _serviceReadDb: Database | null = null;
 
 function createServiceReadDb(): Database {
-  if (!processSlots.__cogniPolyServiceReadDb) {
+  if (!_serviceReadDb) {
     const env = serverEnv();
     // Pool budget: declared DB_READ_POOL_MAX when injected, else default 1 (bug.5064).
     // Backend math: packages/db-client/src/build-client.ts.
     const budget = resolveServiceRoleBudgetFromEnv();
-    processSlots.__cogniPolyServiceReadDb = createServiceReadDbClient(env.DATABASE_SERVICE_URL, {
+    _serviceReadDb = createServiceReadDbClient(env.DATABASE_SERVICE_URL, {
       max: budget.readMax,
     });
     logServicePoolConfigured(
@@ -49,7 +46,7 @@ function createServiceReadDb(): Database {
       budget
     );
   }
-  return processSlots.__cogniPolyServiceReadDb as Database;
+  return _serviceReadDb;
 }
 
 export const getServiceReadDb = createServiceReadDb;
