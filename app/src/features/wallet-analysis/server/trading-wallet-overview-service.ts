@@ -55,7 +55,7 @@ const DAY_FIDELITY: Fidelity = "1d";
 /** `1h` rows older than this are pruned by the writer's tick. */
 const HOUR_FIDELITY_RETENTION_DAYS = 35;
 const PNL_READ_LIMIT = 2_000;
-const PNL_FRESHNESS_MS = 10 * 60_000;
+export const PNL_FRESHNESS_MS = 10 * 60_000;
 
 let userPnlClient: PolymarketUserPnlClient | undefined;
 
@@ -282,7 +282,8 @@ export async function pruneOldTradingWalletPnlPoints(
   return { deleted: rowCount };
 }
 
-function readFidelityForInterval(
+/** Stored series per interval: `1h` rows for 1D/1W, `1d` rows for everything longer. */
+export function readFidelityForInterval(
   interval: PolyWalletOverviewInterval
 ): Fidelity {
   switch (interval) {

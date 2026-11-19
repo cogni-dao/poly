@@ -32,6 +32,7 @@ Shared shape `WalletAnalysisData` mirrors the v1 wallet-analysis HTTP contract t
 
 - **Exports:** `WalletAnalysisView`, `WalletAnalysisSurface`, `WalletIdentityHeader`, `StatGrid`, `BalanceBar`, `BalanceOverTimeChart`, `TimeWindowHeader`, `WalletProfitLossCard`, `TradesPerDayChart`, `RecentTradesTable`, `PositionTimelineChart`, `TopMarketsList`, `EdgeHypothesis`, `DistributionsBlock`, `DistributionComparisonBlock`, `TraderComparisonBlock`, `TargetOverlapBlock`, type `WalletAnalysisData` and supporting types (`WalletDistributionsViewMode`, `WalletDistributionsRangeMode`). The `PositionsTable` organism lives at `app/(app)/_components/positions-table/` (next to the sibling `wallets-table/`); consumers import from there directly.
 - **Routes:** none directly; consumed by `/research`, `/research/w/[addr]` (Checkpoint B), and the dashboard drawer (Checkpoint C).
+- **Research P/L overlay (bug.5065):** `server/trader-pnl-service.ts` backs `GET /api/v1/poly/research/trader-pnl` — ONE bounded SQL read of `poly_trader_user_pnl_points` for up to 3 wallets, server-downsampled (<=240 pts/trader), per-wallet warnings instead of drops. The overlay must NOT be fed by `trader-comparison` (its fill-scan budget drops traders whose P/L is already saved).
 - **Files considered API:** `index.ts`, `types/wallet-analysis.ts`.
 
 ## Responsibilities

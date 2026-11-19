@@ -184,6 +184,15 @@ describe("research 'You' wallet wiring (SELF_IS_TRADING_WALLET)", () => {
       String(comparisonKey?.[2]).startsWith(TRADING_WALLET.toLowerCase())
     ).toBe(true);
 
+    // The P/L overlay reads its own series endpoint (bug.5065), same "You"-first roster.
+    const pnlKey = state.capturedQueryKeys.find(
+      (key) => key[0] === "research-trader-pnl"
+    );
+    expect(pnlKey).toBeDefined();
+    expect(String(pnlKey?.[2]).startsWith(TRADING_WALLET.toLowerCase())).toBe(
+      true
+    );
+
     // Distribution comparison probes the trading wallet too.
     expect(
       state.capturedQueryKeys.some(
