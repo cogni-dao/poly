@@ -30,9 +30,16 @@ vi.mock("@/auth", () => ({
 // Perimeter observability — keep this a true unit (no pino/prom-client) and
 // capture the denial event the proxy emits before any route handler runs.
 const mockLoggerInfo = vi.fn();
-vi.mock("@/shared/observability", () => ({
+vi.mock("@/shared/observability", async () => ({
+  createRequestContext: (await import("../../../../packages/node-shared/src/observability/context/factory")).createRequestContext,
 	EVENT_NAMES: { AUTH_PERIMETER_DENIED: "auth.perimeter.denied" },
-	makeLogger: () => ({ info: mockLoggerInfo }),
+	makeLogger: () => {
+    const logger = { info: mockLoggerInfo, warn: vi.fn(), child: () => logger };
+    return logger;
+  },
+  logRequestStart: vi.fn(), logRequestEnd: vi.fn(),
+  httpRequestsTotal: { inc: vi.fn() }, httpRequestDurationMs: { observe: vi.fn() },
+  statusBucket: (status: number) => `${Math.floor(status / 100)}xx`,
 }));
 vi.mock("@/shared/config", () => ({
 	getNodeId: () => "test-node",
@@ -315,4 +322,128 @@ describe("proxy — unmatched routes", () => {
 		// getToken should not be called for non-auth routes
 		expect(mockGetToken).not.toHaveBeenCalled();
 	});
+});
+
+describe("proxy — release qualification service authentication", () => {
+  it("passes the exact proof capability to its own JWT verifier without a browser session", async () => {
+    mockGetToken.mockReset();
+    const result = await proxy(new NextRequest(new URL("/api/v1/deploy/qualification", "http://localhost:3000"), {
+      method: "POST", headers: { authorization: "Bearer service-jwt" },
+    }));
+    expect(result.status).toBe(200);
+    expect(mockGetToken).not.toHaveBeenCalled();
+  });
+  it("does not extend this exception to sibling or nested routes", async () => {
+    mockGetToken.mockResolvedValue(null);
+    for (const path of ["/api/v1/deploy/qualification/other", "/api/v1/deploy/other"]) {
+      expect((await proxy(makeRequest(path))).status).toBe(401);
+    }
+  });
+});
+
+let requestHeaders = new Headers();
+vi.mock("next/headers", () => ({ headers: async () => requestHeaders }));
+vi.mock("@/shared/env/server", () => ({ serverEnv: () => ({ AUTH_SECRET: "purpose-separated-secret-at-least-32-characters" }) }));
+vi.mock("@/lib/auth/server", () => ({ getServerSessionUser: async () => null }));
+describe("paper provision consent actor provenance", () => {
+  it("takes agent kind only from a verified token for the same authenticated principal", async () => {
+    const { resolveRequestActorKind, issueAgentApiKey } = await import("@/app/_lib/auth/request-identity");
+    requestHeaders = new Headers({ authorization: `Bearer ${issueAgentApiKey({ userId: "fixture-owner", displayName: "fixture" })}` });
+    await expect(resolveRequestActorKind("fixture-owner")).resolves.toBe("agent");
+    await expect(resolveRequestActorKind("different-user")).rejects.toThrow("invalid_principal_provenance");
+    requestHeaders = new Headers({ authorization: "Bearer invalid" });
+    await expect(resolveRequestActorKind("fixture-owner")).rejects.toThrow("invalid_principal_provenance");
+    requestHeaders = new Headers();
+    await expect(resolveRequestActorKind("browser-owner")).resolves.toBe("user");
+  });
+});
+
+
+const qualificationAuth = vi.hoisted(() => vi.fn());
+const qualificationRun = vi.hoisted(() => vi.fn());
+vi.mock("@/app/_facades/deploy-qualification.server", () => ({
+  authenticateQualification: qualificationAuth,
+  qualifyDeployment: qualificationRun,
+}));
+
+
+describe("qualification route body admission", () => {
+  beforeEach(() => {
+    qualificationAuth.mockReset();
+    qualificationRun.mockReset();
+    qualificationAuth.mockResolvedValue({ mode: "qualify" });
+    qualificationRun.mockRejectedValue(new Error("feature boundary reached"));
+  });
+  async function post(body: string | ReadableStream<Uint8Array>, headers: Record<string, string> = {}) {
+    const { POST } = await import("@/app/api/v1/deploy/qualification/route");
+    const request = new Request("http://localhost/api/v1/deploy/qualification", {
+      method: "POST", body, duplex: "half",
+      headers: { authorization: "Bearer purpose-token", "content-type": "application/json", ...headers },
+    } as RequestInit);
+    return POST(request as NextRequest);
+  }
+  it.each(["oversized", "slow", "malformed"])("rejects %s input before reading when capability authentication fails", async (kind) => {
+    const { QualificationError } = await import("@/features/deploy-qualification/challenge");
+    qualificationAuth.mockRejectedValue(new QualificationError("qualification_auth_invalid", 401));
+    const pull = vi.fn(), cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({ pull, cancel }, { highWaterMark: 0 });
+    const body = kind === "malformed" ? "{" : stream;
+    const response = await post(body, kind === "oversized" ? { "content-length": "1000000000" } : {});
+    expect(response.status).toBe(401);
+    expect(pull).not.toHaveBeenCalled();
+    if (kind !== "malformed") expect(cancel).toHaveBeenCalledTimes(1);
+    expect(qualificationRun).not.toHaveBeenCalled();
+  });
+  it.each(["{", '{"mode":"qualify","accountId":"foreign"}', '{"mode":"qualify","companionReadiness":{"paper-trader":{"port":9100,"path":"/healthz"}}}', '{"mode":"qualify","companionBootIds":{"paper-trader":"boot-a"}}', '{"mode":"other"}', 'null'])("rejects malformed or non-strict authenticated JSON: %s", async body => {
+    expect((await post(body)).status).toBe(400);
+    expect(qualificationRun).not.toHaveBeenCalled();
+  });
+  it("bounds both declared bytes and streamed bytes without a content length", async () => {
+    expect((await post('{"mode":"qualify"}', { "content-length": "257" })).status).toBe(413);
+    let canceled = false;
+    const stream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new Uint8Array(257)); }, cancel() { canceled = true; } });
+    expect((await post(stream)).status).toBe(413);
+    expect(canceled).toBe(true);
+    expect(qualificationRun).not.toHaveBeenCalled();
+  });
+  it("cancels a slow authenticated stream within the body budget", async () => {
+    let canceled = false;
+    const stream = new ReadableStream<Uint8Array>({ cancel() { canceled = true; } });
+    const start = Date.now();
+    expect((await post(stream)).status).toBe(408);
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(canceled).toBe(true);
+    expect(qualificationRun).not.toHaveBeenCalled();
+  });
+  it("binds the strict body to the signed mode before starting fixture work", async () => {
+    expect((await post('{"mode":"readback"}')).status).toBe(401);
+    expect(qualificationAuth).toHaveBeenCalledExactlyOnceWith("Bearer purpose-token");
+    expect(qualificationRun).not.toHaveBeenCalled();
+  });
+  it("cancels feature work on the whole request deadline", async () => {
+    await import("@/app/api/v1/deploy/qualification/route");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let canceled = false;
+    qualificationRun.mockImplementation((_challenge, signal: AbortSignal) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => { canceled = true; reject(signal.reason); }, { once: true });
+      entered();
+    }));
+    try {
+      const response = post('{"mode":"qualify"}');
+      await started;
+      await vi.advanceTimersByTimeAsync(19000);
+      const result = await response;
+      expect(result.status).toBe(503);
+      expect(await result.json()).toEqual({ error: "qualification_timeout" });
+      expect(canceled).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+  it("passes the authenticated challenge and common remaining deadline to the feature", async () => {
+    await post('{"mode":"qualify"}');
+    expect(qualificationRun).toHaveBeenCalledExactlyOnceWith({ mode: "qualify" }, expect.any(AbortSignal), expect.any(Number));
+    const deadline = qualificationRun.mock.calls[0]?.[2] as number;
+    expect(deadline).toBeLessThanOrEqual(Date.now() + 19000);
+  });
 });

@@ -89,9 +89,9 @@ deployment:
       visibility: public
       runtime_profile: cogni-node-app-v1
       bindings:
-        # Operator resolves this to the paper-trader sidecar's URL. The app only
-        # ROUTES to it when PAPER_ENFORCE_MODE=paper (set per-env, candidate/
-        # preview only); the live builder ignores it, so prod stays live-CLOB.
+        # Operator resolves this to the paper-trader companion's URL. The app routes
+        # paper-venue accounts through it; the companion is selected only for
+        # candidate-a and preview (see `envs` on the paper-trader service below).
         PAPER_SIDECAR_URL: paper-trader
       # Node secrets beyond the runtime profile are declared ONCE in
       # .cogni/secrets-catalog.yaml; an entry's `workloads: [app]` delivers it to

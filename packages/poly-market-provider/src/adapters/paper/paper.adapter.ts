@@ -48,6 +48,8 @@ import {
 const DEFAULT_SIDECAR_BASE_URL = "http://localhost:9100";
 
 export interface PaperAdapterConfig extends MarketProviderConfig {
+  /** Absolute qualification deadline (epoch ms), enforced by the native helper too. */
+  actionDeadlineAt?: number;
   /** Durable account identity carried on every stateful sidecar request. */
   accountId?: string;
   /** Seed used only when the sidecar first opens this account namespace. */
@@ -114,6 +116,7 @@ export class PaperAdapterError extends Error {
 
 /** Request body shape posted to the sidecar's place-order endpoint. */
 const PlaceOrderRequestSchema = z.object({
+  action_deadline_at_ms: z.number().int().positive().optional(),
   account_id: z.string().min(1),
   starting_balance_usdc: z.number().positive(),
   client_order_id: z.string().min(1),
@@ -143,6 +146,7 @@ export class PaperAdapter implements MarketProviderPort {
   private readonly startingBalanceUsdc: number | undefined;
   private readonly readSource: MarketProviderPort | undefined;
   private readonly fetchImpl: typeof fetch;
+  private readonly actionDeadlineAt: number | undefined;
 
   constructor(config: PaperAdapterConfig = {}) {
     this.provider = config.providerIdentity ?? "polymarket";
@@ -150,6 +154,7 @@ export class PaperAdapter implements MarketProviderPort {
       config.sidecarBaseUrl ?? DEFAULT_SIDECAR_BASE_URL
     ).replace(/\/$/, "");
     this.accountId = config.accountId;
+    this.actionDeadlineAt = config.actionDeadlineAt;
     this.startingBalanceUsdc = config.startingBalanceUsdc;
     this.readSource = config.readSource;
     this.fetchImpl =
@@ -174,6 +179,7 @@ export class PaperAdapter implements MarketProviderPort {
     // Sidecar speaks the same shape as our OrderIntent (minus provider — implied
     // by sidecar identity). Strip provider; the rest passes through.
     const parsed = PlaceOrderRequestSchema.safeParse({
+      action_deadline_at_ms: this.actionDeadlineAt,
       client_order_id: intent.client_order_id,
       market_id: intent.market_id,
       token_id:
@@ -248,7 +254,7 @@ export class PaperAdapter implements MarketProviderPort {
   async cancelOrder(orderId: string): Promise<void> {
     const account = this.requirePaperAccount("cancelOrder");
     const response = await this.fetchWithTimeout(
-      `${this.sidecarBaseUrl}/orders/${encodeURIComponent(orderId)}/cancel?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}`,
+      `${this.sidecarBaseUrl}/orders/${encodeURIComponent(orderId)}/cancel?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}${this.actionDeadlineQuery()}`,
       { method: "POST" }
     );
 
@@ -290,7 +296,7 @@ export class PaperAdapter implements MarketProviderPort {
   async getOrder(orderId: string): Promise<GetOrderResult> {
     const account = this.requirePaperAccount("getOrder");
     const response = await this.fetchWithTimeout(
-      `${this.sidecarBaseUrl}/orders/${encodeURIComponent(orderId)}?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}`,
+      `${this.sidecarBaseUrl}/orders/${encodeURIComponent(orderId)}?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}${this.actionDeadlineQuery()}`,
       { method: "GET" }
     );
 
@@ -320,7 +326,7 @@ export class PaperAdapter implements MarketProviderPort {
   async listOpenOrders(): Promise<OrderReceiptSchemaInferred[]> {
     const account = this.requirePaperAccount("listOpenOrders");
     const response = await this.fetchWithTimeout(
-      `${this.sidecarBaseUrl}/orders?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}`,
+      `${this.sidecarBaseUrl}/orders?account_id=${encodeURIComponent(account.accountId)}&starting_balance_usdc=${encodeURIComponent(String(account.startingBalanceUsdc))}${this.actionDeadlineQuery()}`,
       { method: "GET" }
     );
     if (!response.ok) {
@@ -337,6 +343,12 @@ export class PaperAdapter implements MarketProviderPort {
       );
     }
     return z.array(OrderReceiptSchema).parse(await response.json());
+  }
+
+  private actionDeadlineQuery(): string {
+    return this.actionDeadlineAt === undefined
+      ? ""
+      : `&action_deadline_at_ms=${encodeURIComponent(String(this.actionDeadlineAt))}`;
   }
 
   private requirePaperAccount(
@@ -370,7 +382,12 @@ export class PaperAdapter implements MarketProviderPort {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SIDECAR_TIMEOUT_MS);
     try {
-      return await this.fetchImpl(url, { ...init, signal: controller.signal });
+      const request = { ...init, signal: controller.signal };
+      // Timer callbacks may lag synchronous work. Check at the dispatch seam,
+      // independently of the deadline forwarded to native helper admission.
+      if (this.actionDeadlineAt !== undefined && Date.now() >= this.actionDeadlineAt)
+        throw new DOMException("paper action deadline exceeded", "TimeoutError");
+      return await this.fetchImpl(url, request);
     } finally {
       clearTimeout(timer);
     }

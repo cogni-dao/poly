@@ -23,7 +23,7 @@ HTTP API endpoints using Next.js App Router. Contract-validated entry points tha
 ```json
 {
   "layer": "app",
-  "may_import": ["features", "contracts", "shared"],
+  "may_import": ["app/_facades", "app/_lib", "bootstrap/otel", "features", "contracts", "shared"],
   "must_not_import": [
     "adapters/server",
     "adapters/worker",
@@ -34,10 +34,16 @@ HTTP API endpoints using Next.js App Router. Contract-validated entry points tha
 }
 ```
 
+Facades and app helpers bind the HTTP context and lifetime. The bootstrap entry
+point here is telemetry only; resolve native resources through a facade after
+authentication. This makes the API's delivery role explicit without granting
+routes direct adapter, persistence or feature-policy ownership.
+
 ## Public Surface
 
 - **Exports:** none
 - **Routes (if any):**
+  - `/api/v1/deploy/qualification` [POST] — purpose-separated, signed release proof; fixed agent-owned paper fixtures only
   - `/api/auth/[...nextauth]` [GET, POST]
   - `/api/setup/verify` [POST] - DAO formation verification
   - `/api/internal/billing/ingest` [POST] - LiteLLM generic_api callback receiver (bearer auth, Docker-internal only)
