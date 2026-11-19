@@ -11,9 +11,9 @@
  * @internal
  */
 
+import { HistoryOutputSchema as KnowledgeOutputSchema } from "@cogni/knowledge-store/contracts";
 import {
-  knowledgeHistoryOperation,
-  workItemsHistoryOperation,
+  HistoryOutputSchema as WorkItemsOutputSchema,
   workItemsPatchOperation,
 } from "@cogni/node-contracts";
 import { describe, expect, it } from "vitest";
@@ -72,8 +72,8 @@ describe("work.items.patch.v1 reason", () => {
 
 describe("history operations", () => {
   it("work items and knowledge declare one history item shape", () => {
-    expect(z.toJSONSchema(workItemsHistoryOperation.output)).toEqual(
-      z.toJSONSchema(knowledgeHistoryOperation.output)
+    expect(z.toJSONSchema(WorkItemsOutputSchema)).toEqual(
+      z.toJSONSchema(KnowledgeOutputSchema)
     );
   });
 });

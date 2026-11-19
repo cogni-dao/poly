@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from pm_trader.models import Account, Position, Trade
+from pm_trader.deadline import ActionDeadline, execute_schema, sqlite_lifetime, sqlite_transaction
 
 
 SCHEMA_SQL = """\
@@ -62,22 +63,44 @@ CREATE TABLE IF NOT EXISTS market_cache (
 class Database:
     """SQLite database for pm-trader paper trading state."""
 
-    def __init__(self, data_dir: Path) -> None:
+    def __init__(self, data_dir: Path, deadline: ActionDeadline | None = None) -> None:
         self.data_dir = data_dir
         self.db_path = data_dir / "paper.db"
-        self._ensure_dir()
         self._conn: sqlite3.Connection | None = None
+        if deadline is not None:
+            deadline.remaining()
+        self._ensure_dir()
+        if deadline is not None:
+            deadline.remaining()
+            self.open(deadline)
 
     def _ensure_dir(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def conn(self) -> sqlite3.Connection:
+        return self.open()
+
+    def open(self, deadline: ActionDeadline | None = None) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(str(self.db_path))
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA foreign_keys=ON")
+            conn = sqlite3.connect(str(self.db_path), **({"timeout": deadline.remaining()} if deadline is not None else {}))
+            try:
+                conn.row_factory = sqlite3.Row
+                with sqlite_lifetime(conn, deadline):
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    if deadline is not None:
+                        deadline.remaining()
+                    conn.execute("PRAGMA foreign_keys=ON")
+                    if deadline is not None:
+                        deadline.remaining()
+                # A cold bounded open uses a short connect timeout; subsequent
+                # ordinary callers still get sqlite3's normal five seconds.
+                if deadline is not None:
+                    conn.execute("PRAGMA busy_timeout=5000")
+                self._conn = conn
+            except BaseException:
+                conn.close()
+                raise
         return self._conn
 
     def close(self) -> None:
@@ -89,22 +112,26 @@ class Database:
     # Schema
     # ------------------------------------------------------------------
 
-    def init_schema(self) -> None:
+    def init_schema(self, deadline: ActionDeadline | None = None) -> None:
         """Create all tables if they don't exist."""
-        self.conn.executescript(SCHEMA_SQL)
+        execute_schema(self.conn, SCHEMA_SQL, deadline)
 
     # ------------------------------------------------------------------
     # Account
     # ------------------------------------------------------------------
 
-    def init_account(self, balance: float = 10000.0) -> Account:
+    def init_account(self, balance: float = 10000.0, deadline: ActionDeadline | None = None) -> Account:
         """Initialize the paper trading account. Returns the Account."""
-        self.conn.execute(
-            "INSERT OR REPLACE INTO account (id, starting_balance, cash) VALUES (1, ?, ?)",
-            (balance, balance),
-        )
-        self.conn.commit()
-        return self.get_account()
+        with sqlite_transaction(self.conn, deadline):
+            self.conn.execute(
+                "INSERT OR REPLACE INTO account (id, starting_balance, cash) VALUES (1, ?, ?)",
+                (balance, balance),
+            )
+            account = self.get_account()
+            if deadline is not None:
+                deadline.remaining()
+            self.conn.commit()
+        return account
 
     def get_account(self) -> Account | None:
         """Return the account, or None if not initialized."""

@@ -6,7 +6,7 @@
  * Purpose: HTTP endpoints for listing and creating Dolt-backed work items.
  * Scope: Auth-protected GET and POST endpoints. Does not contain business logic.
  * Invariants: VALIDATE_IO, CONTRACTS_ARE_TRUTH
- * Write errors (task.0097): `workItemWriteErrorResponse` from @cogni/work-items answers every write-contract error, `moves` errors included (story.0033); this route keeps only auth, already-exists and backend-unavailable.
+ * Write errors (task.0097): `workItemWriteErrorResponse` from @cogni/work-items answers every write-contract error, `moves` errors included (story.0033); this route keeps only auth, the actor and backend-unavailable. The package route core owns parse, refusals and the terminal work.items.create_* event (bug.0063).
  * Side-effects: IO (HTTP response, Doltgres read/write via port)
  * Links: contracts/work.items.{list,create}.v1.contract
  * @public
@@ -16,7 +16,7 @@ import {
   workItemsCreateOperation,
   workItemsListOperation,
 } from "@cogni/node-contracts";
-import { workItemWriteErrorResponse } from "@cogni/work-items";
+import { handleWorkItemCreate } from "@cogni/work-items";
 import { NextResponse } from "next/server";
 import {
   createWorkItem,
@@ -90,45 +90,23 @@ export const POST = wrapRouteHandlerWithLogging(
     if (!sessionUser) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
-
-    let body: unknown;
-    try {
-      body = await request.json();
-    } catch {
-      return NextResponse.json({ error: "invalid JSON body" }, { status: 400 });
-    }
-
-    const parsed = workItemsCreateOperation.input.safeParse(body);
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: "invalid input", issues: parsed.error.issues },
-        { status: 400 }
-      );
-    }
-
-    try {
-      const created = await createWorkItem(parsed.data, {
-        id: sessionUser.id,
-      });
-      ctx.log.info({ workItemId: created.id }, "work.items.create_success");
-      return NextResponse.json(workItemsCreateOperation.output.parse(created), {
-        status: 201,
-      });
-    } catch (error) {
-      const mapped = workItemWriteErrorResponse(error, "create");
-      if (mapped) {
-        return NextResponse.json(mapped.body, { status: mapped.status });
-      }
-      if (error instanceof WorkItemsBackendNotReadyError) {
-        return NextResponse.json({ error: error.message }, { status: 503 });
-      }
-      if ((error as Error)?.name === "WorkItemAlreadyExistsError") {
-        return NextResponse.json(
-          { error: (error as Error).message },
-          { status: 409 }
-        );
-      }
-      throw error;
-    }
+    // The package owns parse, refusals and the one terminal event (bug.0063); this route keeps auth, the actor and node errors.
+    const result = await handleWorkItemCreate({
+      readJson: () => request.json(),
+      parse: (body) => workItemsCreateOperation.input.safeParse(body),
+      write: (input) => createWorkItem(input, { id: sessionUser.id }),
+      toBody: (created) => workItemsCreateOperation.output.parse(created),
+      mapNodeError: (e) => {
+        if (e instanceof WorkItemsBackendNotReadyError)
+          return {
+            status: 503,
+            errorCode: "backend_unavailable",
+            body: { error: e.message },
+          };
+        return undefined;
+      },
+    });
+    ctx.log.info(result.event, result.event.event);
+    return NextResponse.json(result.body, { status: result.status });
   }
 );
