@@ -477,9 +477,10 @@ class TestFeeSimulation:
         """Simulate a 200bps fee market."""
         markets = _get_binary_markets(engine, limit=20)
 
-        # Monkey-patch fee rate to 200bps
-        original_get_fee_rate = engine.api.get_fee_rate
-        engine.api.get_fee_rate = lambda token_id: 200
+        # Monkey-patch the fee schedule to a 5% taker rate (story.5028)
+        from pm_trader.models import FeeSchedule
+        original_get_fee_rate = engine.api.get_fee_schedule
+        engine.api.get_fee_schedule = lambda condition_id: FeeSchedule(0.05, 1.0)
 
         try:
             for m in markets:
@@ -493,11 +494,11 @@ class TestFeeSimulation:
                     continue
                 t = result.trade
 
-                assert t.fee_rate_bps == 200
-                assert t.fee > 0, "Fee should be non-zero with 200bps"
+                assert t.fee_rate_bps == 500
+                assert t.fee > 0, "Fee should be non-zero with a 5% rate"
 
-                # Fee formula: (200/10000) * min(price, 1-price) * amount_usd
-                expected_fee_approx = 0.02 * min(t.avg_price, 1.0 - t.avg_price) * t.amount_usd
+                # Fee formula: shares * rate * p * (1 - p)
+                expected_fee_approx = 0.05 * t.shares * t.avg_price * (1.0 - t.avg_price)
                 assert t.fee == pytest.approx(expected_fee_approx, rel=0.1)
 
                 # Cash deducted = amount + fee
@@ -507,7 +508,7 @@ class TestFeeSimulation:
                 return
             pytest.skip("No market with sufficient ask liquidity")
         finally:
-            engine.api.get_fee_rate = original_get_fee_rate
+            engine.api.get_fee_schedule = original_get_fee_rate
 
     def test_sell_with_175bps_fee(self, engine: Engine):
         """Simulate a 175bps fee on sell."""
@@ -522,8 +523,9 @@ class TestFeeSimulation:
         if m is None:
             pytest.skip("No position to sell in a liquid market")
 
-        original_get_fee_rate = engine.api.get_fee_rate
-        engine.api.get_fee_rate = lambda token_id: 175
+        from pm_trader.models import FeeSchedule
+        original_get_fee_rate = engine.api.get_fee_schedule
+        engine.api.get_fee_schedule = lambda condition_id: FeeSchedule(0.0175, 1.0)
 
         try:
             pos = engine.db.get_position(m.condition_id, "yes")
@@ -542,7 +544,7 @@ class TestFeeSimulation:
                 cash_before + net, abs=0.01
             )
         finally:
-            engine.api.get_fee_rate = original_get_fee_rate
+            engine.api.get_fee_schedule = original_get_fee_rate
 
     def test_fee_formula_correctness(self, engine: Engine):
         """Verify fee = (bps/10000) * min(price, 1-price) * size."""

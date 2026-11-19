@@ -18,6 +18,7 @@ from pm_trader.db import Database
 from pm_trader.deadline import ActionDeadline
 from pm_trader.models import (
     ApiError,
+    FeeSchedule,
     Market,
     MarketNotFoundError,
     OrderBook,
@@ -255,6 +256,33 @@ class PolymarketClient:
         self._set_cached(cache_key, {"fee_rate_bps": fee_bps})
         return fee_bps
 
+    def get_fee_schedule(self, condition_id: str) -> FeeSchedule | None:
+        """Return the market's taker-fee schedule, or ``None`` if fee-free.
+
+        Cogni-poly local patch (story.5028). Ground truth is
+        ``GET /clob-markets/{conditionId}`` -> ``fd {r, e, to}`` (rate,
+        exponent, taker-only). ``fd: null`` means fees are disabled on the
+        market. The legacy ``/fee-rate`` endpoint is an on/off FLAG (1000 on
+        fee-enabled markets), never a rate, so it is deliberately not used.
+
+        Unsupported / malformed responses raise ``ApiError`` instead of
+        returning a confident zero (paper-venue-parity: unsupported throws).
+        Cached 5 min.
+        """
+        cache_key = f"fee_schedule:{condition_id}"
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return _parse_fee_schedule(cached.get("fd"), condition_id)
+
+        data = self._clob_get(f"/clob-markets/{condition_id}")
+        if not isinstance(data, dict) or "fd" not in data:
+            raise ApiError(
+                f"CLOB /clob-markets/{condition_id} response has no 'fd' fee field"
+            )
+        fee_schedule = _parse_fee_schedule(data["fd"], condition_id)
+        self._set_cached(cache_key, {"fd": data["fd"]})
+        return fee_schedule
+
     def get_tick_size(self, token_id: str) -> float:
         """Fetch the tick size for a token.  Cached 5 min."""
         cache_key = f"tick_size:{token_id}"
@@ -365,6 +393,24 @@ class PolymarketClient:
 # ---------------------------------------------------------------------------
 # Parsing helpers
 # ---------------------------------------------------------------------------
+
+
+def _parse_fee_schedule(fd: object, condition_id: str) -> FeeSchedule | None:
+    """Parse CLOB ``fd {r, e, to}``; ``None`` -> fee-free market."""
+    if fd is None:
+        return None
+    if not isinstance(fd, dict):
+        raise ApiError(f"Malformed fee schedule for {condition_id}: {fd!r}")
+    try:
+        rate = float(fd["r"])
+        exponent = float(fd["e"])
+    except (KeyError, TypeError, ValueError) as e:
+        raise ApiError(f"Malformed fee schedule for {condition_id}: {fd!r}") from e
+    if rate < 0 or exponent <= 0:
+        raise ApiError(f"Out-of-range fee schedule for {condition_id}: {fd!r}")
+    if rate == 0:
+        return None
+    return FeeSchedule(rate=rate, exponent=exponent, taker_only=bool(fd.get("to", True)))
 
 
 def _has_condition_id(data: dict) -> bool:

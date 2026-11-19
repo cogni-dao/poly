@@ -11,6 +11,7 @@ import pytest
 from pm_trader.db import Database
 from pm_trader.engine import Engine
 from pm_trader.models import (
+    FeeSchedule,
     InsufficientBalanceError,
     InvalidOutcomeError,
     Market,
@@ -79,7 +80,7 @@ SAMPLE_BOOK = _make_book(
 )
 
 
-def _mock_api(engine: Engine, market=None, book=None, fee_rate=0):
+def _mock_api(engine: Engine, market=None, book=None, fee_rate=0, fee_schedule=None):
     """Patch the engine's API client methods."""
     m = market or SAMPLE_MARKET
     b = book or SAMPLE_BOOK
@@ -87,6 +88,7 @@ def _mock_api(engine: Engine, market=None, book=None, fee_rate=0):
     engine.api.get_trade_context = MagicMock(return_value=(m, b, fee_rate))
     engine.api.get_order_book = MagicMock(return_value=b)
     engine.api.get_fee_rate = MagicMock(return_value=fee_rate)
+    engine.api.get_fee_schedule = MagicMock(return_value=fee_schedule)
     engine.api.get_midpoint = MagicMock(return_value=0.65)
 
 
@@ -214,13 +216,25 @@ class TestBuy:
         assert result.trade.amount_usd < 100.0
 
     def test_buy_with_fees(self, initialized_engine: Engine):
-        _mock_api(initialized_engine, fee_rate=200)
+        _mock_api(initialized_engine, fee_schedule=FeeSchedule(rate=0.05, exponent=1.0))
         result = initialized_engine.buy("btc", "yes", 100.0)
         assert result.trade.fee > 0
-        assert result.trade.fee_rate_bps == 200
+        assert result.trade.fee_rate_bps == 500
+        # story.5028: fee = C * rate * p * (1 - p) per matched level, taker only.
+        # $100 into asks (0.66 x500 = $330 first level) -> all at 0.66.
+        shares = result.trade.shares
+        assert result.trade.fee == pytest.approx(
+            round(shares * 0.05 * 0.66 * 0.34, 5), abs=1e-5
+        )
+
+    def test_buy_fee_free_market_records_zero_fee(self, initialized_engine: Engine):
+        _mock_api(initialized_engine, fee_schedule=None)
+        result = initialized_engine.buy("btc", "yes", 100.0)
+        assert result.trade.fee == 0.0
+        assert result.trade.fee_rate_bps == 0
 
     def test_buy_deducts_cost_plus_fee(self, initialized_engine: Engine):
-        _mock_api(initialized_engine, fee_rate=200)
+        _mock_api(initialized_engine, fee_schedule=FeeSchedule(rate=0.05, exponent=1.0))
         result = initialized_engine.buy("btc", "yes", 100.0)
         expected_cash = 10_000.0 - result.trade.amount_usd - result.trade.fee
         assert abs(result.account.cash - expected_cash) < 0.01
@@ -292,10 +306,14 @@ class TestSell:
         self._setup_position(initialized_engine)
         pos = initialized_engine.db.get_position("0xabc123", "yes")
 
-        _mock_api(initialized_engine, fee_rate=175)
+        _mock_api(initialized_engine, fee_schedule=FeeSchedule(rate=0.04, exponent=1.0))
         result = initialized_engine.sell("will-bitcoin-hit-100k", "yes", pos.shares / 2)
         assert result.trade.fee > 0
-        assert result.trade.fee_rate_bps == 175
+        assert result.trade.fee_rate_bps == 400
+        # Sell fee is on shares (C), same formula as buys.
+        assert result.trade.fee == pytest.approx(
+            round(result.trade.shares * 0.04 * 0.64 * 0.36, 5), abs=1e-5
+        )
 
     def test_sell_realized_pnl_tracked(self, initialized_engine: Engine):
         self._setup_position(initialized_engine)

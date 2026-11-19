@@ -792,3 +792,56 @@ class TestParseMarketClobTokenIds:
         market = _parse_market(data)
         assert market.tokens[0]["outcome"] == "Yes"
         assert market.tokens[1]["outcome"] == "Outcome1"
+
+
+# ---------------------------------------------------------------------------
+# story.5028 — fee schedule comes from /clob-markets/{conditionId} -> fd
+# ---------------------------------------------------------------------------
+
+
+class TestGetFeeSchedule:
+    COND = "0xabc123"
+
+    def test_parses_fd(self, client: PolymarketClient, httpx_mock):
+        httpx_mock.add_response(
+            url=CLOB_BASE + f"/clob-markets/{self.COND}",
+            json={"fd": {"r": 0.04, "e": 1, "to": True}, "mts": 0.01},
+        )
+        s = client.get_fee_schedule(self.COND)
+        assert s is not None
+        assert (s.rate, s.exponent, s.taker_only) == (0.04, 1.0, True)
+
+    def test_null_fd_is_fee_free(self, client: PolymarketClient, httpx_mock):
+        httpx_mock.add_response(
+            url=CLOB_BASE + f"/clob-markets/{self.COND}", json={"fd": None}
+        )
+        assert client.get_fee_schedule(self.COND) is None
+
+    def test_cached(self, client: PolymarketClient, httpx_mock):
+        httpx_mock.add_response(
+            url=CLOB_BASE + f"/clob-markets/{self.COND}",
+            json={"fd": {"r": 0.05, "e": 1, "to": True}},
+        )
+        a = client.get_fee_schedule(self.COND)
+        b = client.get_fee_schedule(self.COND)
+        assert a == b
+        assert len(httpx_mock.get_requests()) == 1
+
+    def test_missing_fd_key_raises_not_zero(self, client: PolymarketClient, httpx_mock):
+        httpx_mock.add_response(url=CLOB_BASE + f"/clob-markets/{self.COND}", json={})
+        with pytest.raises(ApiError):
+            client.get_fee_schedule(self.COND)
+
+    def test_malformed_fd_raises(self, client: PolymarketClient, httpx_mock):
+        httpx_mock.add_response(
+            url=CLOB_BASE + f"/clob-markets/{self.COND}", json={"fd": {"r": "x"}}
+        )
+        with pytest.raises(ApiError):
+            client.get_fee_schedule(self.COND)
+
+    def test_http_error_raises(self, client: PolymarketClient, httpx_mock):
+        httpx_mock.add_response(
+            url=CLOB_BASE + f"/clob-markets/{self.COND}", status_code=500
+        )
+        with pytest.raises(ApiError):
+            client.get_fee_schedule(self.COND)
