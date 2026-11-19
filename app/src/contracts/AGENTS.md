@@ -37,7 +37,7 @@ Single source of truth for externally callable operations. Each file defines an 
 
 ## Public Surface
 
-- **Exports:** chat.completions.v1 (graph_name optional), ai.chat.v1 (AssistantUiInputSchema, ChatInput, ChatOutput, ChatMessage), ai.agents.v1 (AgentDescriptor, AgentsOutput), ai.models.v1, error.chat.v1, payments.intent.v1, payments.submit.v1, payments.status.v1, payments.credits.confirm.v1, payments.credits.summary.v1, analytics.summary.v1, meta.livez.read.v1, meta.readyz.read.v1, meta.route-manifest.read.v1, schedules.create.v1, schedules.list.v1, schedules.update.v1, schedules.delete.v1, governance.schedules.sync.internal.v1, ai.activity.v1 (ActivityGroupBySchema, ActivityGroupBy), ledger.list-epochs.v1, ledger.epoch-activity.v1, ledger.epoch-user-projections.v1, ledger.epoch-claimants.v1, ledger.epoch-statement.v1, ledger.patch-review-subject-overrides.v1, ledger.get-review-subject-overrides.v1, ledger.delete-review-subject-override.v1, ledger.record-pool-component.v1, ledger.finalize-epoch.v1, users.profile.read.v1, users.profile.update.v1, users.ownership.read.v1, work.items.{list,get,create,patch,delete}.v1; http/router.v1.ts (ts-rest contracts); http/openapi.v1.ts (OpenAPI generation)
+- **Exports:** deploy.qualification.v1 (signed service subject, qualify/readback input and bounded proof response), chat.completions.v1 (graph_name optional), ai.chat.v1 (AssistantUiInputSchema, ChatInput, ChatOutput, ChatMessage), ai.agents.v1 (AgentDescriptor, AgentsOutput), ai.models.v1, error.chat.v1, payments.intent.v1, payments.submit.v1, payments.status.v1, payments.credits.confirm.v1, payments.credits.summary.v1, analytics.summary.v1, meta.livez.read.v1, meta.readyz.read.v1, meta.route-manifest.read.v1, schedules.create.v1, schedules.list.v1, schedules.update.v1, schedules.delete.v1, governance.schedules.sync.internal.v1, ai.activity.v1 (ActivityGroupBySchema, ActivityGroupBy), ledger.list-epochs.v1, ledger.epoch-activity.v1, ledger.epoch-user-projections.v1, ledger.epoch-claimants.v1, ledger.epoch-statement.v1, ledger.patch-review-subject-overrides.v1, ledger.get-review-subject-overrides.v1, ledger.delete-review-subject-override.v1, ledger.record-pool-component.v1, ledger.finalize-epoch.v1, users.profile.read.v1, users.profile.update.v1, users.ownership.read.v1, work.items.{list,get,create,patch,delete}.v1; http/router.v1.ts (ts-rest contracts); http/openapi.v1.ts (OpenAPI generation)
 - **Files considered API:** \*.contract.ts, http/router.v1.ts, http/openapi.v1.ts
 
 ## Ports (optional)
@@ -85,6 +85,7 @@ This prevents drift between routes, facades, services, tests, and UI clients. Th
 ## Standards
 
 - Zod schemas only; export Input/Output TS types via z.infer.
+- Unreleased deploy.qualification.v1 requires signed companionReadiness and companionBootIds and complete response companions observations; no legacy claim fallback.
 - Contract IDs are namespaced and versioned, e.g. `chat.completions.v1`, `admin.accounts.register.v1`.
 - Breaking changes require new version suffix.
 
