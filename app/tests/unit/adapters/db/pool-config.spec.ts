@@ -5,7 +5,7 @@
  * Module: `@tests/unit/adapters/db/pool-config`
  * Purpose: Verify the conservative app default preserves explicit runtime overrides.
  * Scope: Lazy client binding and nonsecret configuration evidence.
- * Invariants: No clamp; pool defaults fit the dedicated role ceilings app 4 / service 8 (bug.5045).
+ * Invariants: App pool is not clamped; injected service/read limits are used exactly, absent ones default to 1/1 (bug.5064).
  * Side-effects: none (mocked factories/logger).
  * @internal
  */
@@ -50,30 +50,39 @@ describe("app runtime pool configuration", () => {
     );
   });
 
-  it("defaults pools to fit role ceilings (1/4/2) and preserves injected settings", () => {
+  it("leaves service/read unset (no injected limits), defaults the pod budget to 3, and carries injected values verbatim", () => {
     const schema = serverSchema.pick({
       DB_POOL_MAX: true,
       DB_SERVICE_POOL_MAX: true,
       DB_READ_POOL_MAX: true,
+      DB_SERVICE_ROLE_BUDGET: true,
     });
+    // bug.5064: absent service/read == "no runtimePoolLimits"; the resolver then uses
+    // service 1 + read 1 + leader 1 = 3 (one spare under the shared-tier role of 4).
     expect(schema.parse({})).toEqual({
       DB_POOL_MAX: 1,
-      DB_SERVICE_POOL_MAX: 4,
-      DB_READ_POOL_MAX: 2,
+      DB_SERVICE_ROLE_BUDGET: 3,
     });
     expect(
       schema.parse({
         DB_POOL_MAX: "",
         DB_SERVICE_POOL_MAX: "",
         DB_READ_POOL_MAX: "",
+        DB_SERVICE_ROLE_BUDGET: "",
       })
-    ).toEqual({ DB_POOL_MAX: 1, DB_SERVICE_POOL_MAX: 4, DB_READ_POOL_MAX: 2 });
+    ).toEqual({ DB_POOL_MAX: 1, DB_SERVICE_ROLE_BUDGET: 3 });
     expect(
       schema.parse({
         DB_POOL_MAX: "3",
         DB_SERVICE_POOL_MAX: "4",
         DB_READ_POOL_MAX: "2",
       })
-    ).toEqual({ DB_POOL_MAX: 3, DB_SERVICE_POOL_MAX: 4, DB_READ_POOL_MAX: 2 });
+    ).toMatchObject({
+      DB_POOL_MAX: 3,
+      DB_SERVICE_POOL_MAX: 4,
+      DB_READ_POOL_MAX: 2,
+    });
+    // The per-pod budget cannot be set below leader + one connection per pool.
+    expect(() => schema.parse({ DB_SERVICE_ROLE_BUDGET: "2" })).toThrow();
   });
 });

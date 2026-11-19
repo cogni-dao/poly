@@ -17,13 +17,14 @@ const mocks = vi.hoisted(() => ({
   verifySystemTenant: vi.fn(),
   loggerConstruction: vi.fn(),
   error: vi.fn(),
+  warn: vi.fn(),
 }));
 
 vi.mock("@/bootstrap/healthchecks", () => ({
   verifySystemTenant: (...args: unknown[]) => mocks.verifySystemTenant(...args),
 }));
 vi.mock("@/shared/observability", () => ({
-  makeLogger: () => { mocks.loggerConstruction(); return { error: mocks.error }; },
+  makeLogger: () => { mocks.loggerConstruction(); return { error: mocks.error, warn: mocks.warn }; },
 }));
 
 import type { ServiceAccountService } from "@/ports";
@@ -143,6 +144,41 @@ describe("boot system-tenant assertion (bug.0022)", () => {
     const pending = startSystemTenantAssertionOnBoot(service, { exit, force: true });
     await expect(pending).rejects.toBe(original);
     expect(startSystemTenantAssertionOnBoot(service, { exit, force: true })).toBe(pending);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it("does not exit or reject when the service role is saturated (53300) — boot continues (bug.5064)", async () => {
+    mocks.verifySystemTenant.mockRejectedValue(
+      Object.assign(new Error('too many connections for role "service_poly"'), {
+        name: "PostgresError",
+        code: "53300",
+      })
+    );
+    const exit = vi.fn();
+
+    await expect(
+      startSystemTenantAssertionOnBoot(service, { exit, force: true })
+    ).resolves.toBeUndefined();
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(mocks.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "startup.system_tenant.deferred_db_capacity",
+        err_code: "53300",
+      }),
+      expect.stringContaining("serving")
+    );
+  });
+
+  it("still exits for a non-capacity DB failure", async () => {
+    mocks.verifySystemTenant.mockRejectedValue(
+      Object.assign(new Error("relation does not exist"), { code: "42P01" })
+    );
+    const exit = vi.fn();
+    await expect(
+      startSystemTenantAssertionOnBoot(service, { exit, force: true })
+    ).rejects.toThrow();
     expect(exit).toHaveBeenCalledExactlyOnceWith(1);
   });
 

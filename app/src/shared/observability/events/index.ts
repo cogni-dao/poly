@@ -20,6 +20,11 @@ import {
 export const EVENT_NAMES = {
 	...SHARED_EVENT_NAMES,
 	DB_POOL_CONFIGURED: "adapter.db_pool.configured",
+	// Wallet-analysis slice failed and was swallowed into a response warning (bug.5064).
+	POLY_WALLET_ANALYSIS_SLICE_FAILED: "poly.wallet_analysis.slice_failed",
+	// Research read refused because Postgres had no connection to give (bug.5064): 503, not 500.
+	POLY_RESEARCH_DB_CAPACITY_UNAVAILABLE:
+		"poly.research.db_capacity_unavailable",
 	// Reconciler skipped an account with no buildable executor (bug.5050): one per account per tick.
 	POLY_MIRROR_RECONCILE_ACCOUNT_UNAVAILABLE:
 		"poly.mirror.reconcile.account_unavailable",

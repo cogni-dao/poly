@@ -97,30 +97,38 @@ export const serverSchema = z.object({
   // app_service role (BYPASSRLS) — used by auth, workers, bootstrap
   DATABASE_SERVICE_URL: z.string().url(),
 
-  // DB pool sizing (task.5014, bug.5045) — per-pool postgres-js `max`, non-secret env.
+  // DB pool sizing (task.5014, bug.5045, bug.5064) — per-pool postgres-js `max`, non-secret env.
   // Three pools per pod: app (RLS, app_poly), service (jobs/writers, service_poly),
   // service-read (dashboard/research reads, service_poly — separate pool so jobs
   // can't starve them). The budget is per Postgres ROLE: app_poly carries the app
   // pool; service_poly carries service + read + the leader connection (task.5016).
-  // Defaults 1 / 4 / 2 + leader 1 = 8 backends per pod fit the dedicated budget
-  // profile's role ceilings (app 4, service 8 → app 1/4, service 4+2+1=7/8), the
-  // same budget production runs via runtimePoolLimits (infra/catalog/poly.yaml).
-  // These defaults are the APPLIED budget on any lane WITHOUT runtimePoolLimits
-  // (candidate-a, preview); production overrides them, so lowering them is inert
-  // there. The old service 10 + read 5 = 15 exceeded the service_poly ceiling 8
-  // and caused SQLSTATE 53300 role exhaustion (bug.5045). Do NOT restore them.
-  // emptyToUndefined: compose passes "" through for unset vars — treat as default.
+  // AUTHORITY: the operator catalog `database.<env>.runtimePoolLimits {app, service,
+  // read}` (hub: database-state-cell-lifecycle). When it is injected, DB_SERVICE_POOL_MAX
+  // and DB_READ_POOL_MAX are used EXACTLY (the pod holds declared service + read + leader).
+  // They are therefore optional here: ABSENT means "no injected limits"
+  // (candidate-a/preview on the shared tier, `shared-default-v1` = 4 service
+  // connections), and the node falls back to defaults service 1 / read 1 + leader 1 = 3,
+  // one spare, bounded by DB_SERVICE_ROLE_BUDGET (default 3). The old defaults 4 + 2 + 1 = 7
+  // exceeded the shared-tier role and caused SQLSTATE 53300 (bug.5064).
+  // emptyToUndefined: compose passes "" through for unset vars — treat as absent.
   DB_POOL_MAX: z.preprocess(
     emptyToUndefined,
     z.coerce.number().int().positive().default(1)
   ),
   DB_SERVICE_POOL_MAX: z.preprocess(
     emptyToUndefined,
-    z.coerce.number().int().positive().default(4)
+    z.coerce.number().int().positive().optional()
   ),
   DB_READ_POOL_MAX: z.preprocess(
     emptyToUndefined,
-    z.coerce.number().int().positive().default(2)
+    z.coerce.number().int().positive().optional()
+  ),
+  // Per-POD ceiling on service_poly backends (service + read + leader) when NO pool
+  // limits are injected. Default 3 = service 1 + read 1 + leader 1, leaving one spare
+  // under the shared-tier service role (4). Minimum 3 (leader + one connection per pool).
+  DB_SERVICE_ROLE_BUDGET: z.preprocess(
+    emptyToUndefined,
+    z.coerce.number().int().min(3).default(3)
   ),
 
   // NextAuth secret (required for JWT signing)
