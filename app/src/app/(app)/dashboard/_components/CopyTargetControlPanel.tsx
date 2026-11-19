@@ -427,6 +427,11 @@ function TargetActiveSwitch({
   );
 }
 
+/** Saved entry floor (null/undefined = off) as an editable string. */
+function formatEntryFloor(value: number | null | undefined): string {
+  return value === null || value === undefined ? "" : String(value);
+}
+
 function TargetPolicyEditor({
   target,
   disabled,
@@ -453,6 +458,9 @@ function TargetPolicyEditor({
   const [mirrorBudget, setMirrorBudget] = useState(
     target?.policy.portfolio_budget.configured_budget_usdc?.toFixed(2) ?? "",
   );
+  const [minEntryPrice, setMinEntryPrice] = useState(
+    formatEntryFloor(target?.policy.min_entry_price),
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -462,19 +470,23 @@ function TargetPolicyEditor({
     setMirrorBudget(
       target?.policy.portfolio_budget.configured_budget_usdc?.toFixed(2) ?? "",
     );
+    setMinEntryPrice(formatEntryFloor(target?.policy.min_entry_price));
     setError(null);
   }, [target]);
 
   const parsedMaxBet = Number.parseFloat(maxBet);
   const parsedMirrorBudget =
     mirrorBudget.trim() === "" ? null : Number.parseFloat(mirrorBudget);
+  const parsedMinEntryPrice =
+    minEntryPrice.trim() === "" ? null : Number.parseFloat(minEntryPrice);
   const changed =
     target &&
     (kind !== target.policy.declared_kind ||
       percentile !== target.policy.mirror_filter_percentile ||
       parsedMaxBet !== target.policy.mirror_max_usdc_per_trade ||
       parsedMirrorBudget !==
-        target.policy.portfolio_budget.configured_budget_usdc);
+        target.policy.portfolio_budget.configured_budget_usdc ||
+      parsedMinEntryPrice !== (target.policy.min_entry_price ?? null));
   const percentileSizing =
     kind === "auto" || kind === "target_percentile_scaled";
   const cappedSizing = percentileSizing || kind === "min_bet";
@@ -497,6 +509,15 @@ function TargetPolicyEditor({
       setError("Budget must be greater than 0");
       return;
     }
+    if (
+      parsedMinEntryPrice !== null &&
+      (!Number.isFinite(parsedMinEntryPrice) ||
+        parsedMinEntryPrice <= 0 ||
+        parsedMinEntryPrice >= 1)
+    ) {
+      setError("Entry floor must be between 0 and 1 (or empty for off)");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -505,6 +526,7 @@ function TargetPolicyEditor({
         mirror_max_usdc_per_trade: parsedMaxBet,
         sizing_policy_kind: kind,
         mirror_capital_budget_usdc: parsedMirrorBudget,
+        min_entry_price: parsedMinEntryPrice,
         expected_mirror_activated_at: target.mirror_activated_at,
       });
     } catch (cause) {
@@ -608,6 +630,22 @@ function TargetPolicyEditor({
                 className="min-w-0 flex-1 bg-transparent text-sm tabular-nums outline-none disabled:opacity-50"
               />
             </span>
+          </label>
+        ) : null}
+        {percentileSizing ? (
+          <label className="flex flex-col gap-1">
+            <span className="text-muted-foreground text-xs uppercase tracking-wide">
+              Min entry price
+            </span>
+            <input
+              inputMode="decimal"
+              aria-label="Min entry price"
+              value={minEntryPrice}
+              placeholder="Off"
+              disabled={disabled || saving}
+              onChange={(event) => setMinEntryPrice(event.target.value)}
+              className="h-9 min-w-0 rounded-md border border-input bg-background px-2 text-sm tabular-nums outline-none placeholder:text-muted-foreground disabled:opacity-50"
+            />
           </label>
         ) : null}
         {kind === "position_gap" ? (

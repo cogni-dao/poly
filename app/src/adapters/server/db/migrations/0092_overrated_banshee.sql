@@ -1,0 +1,2 @@
+ALTER TABLE "poly_copy_trade_targets" ADD COLUMN "min_entry_price" numeric(5, 4);--> statement-breakpoint
+ALTER TABLE "poly_copy_trade_targets" ADD CONSTRAINT "poly_copy_trade_targets_min_entry_price_range" CHECK ("poly_copy_trade_targets"."min_entry_price" IS NULL OR ("poly_copy_trade_targets"."min_entry_price" > 0 AND "poly_copy_trade_targets"."min_entry_price" < 1));

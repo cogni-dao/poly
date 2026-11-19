@@ -161,6 +161,11 @@ export const PolyEffectiveSizingPolicySchema = z.object({
   mirror_filter_percentile: z.number().int(),
   /** Legacy policy ceiling; ignored by position_gap v2. */
   mirror_max_usdc_per_trade: z.number().nonnegative(),
+  /**
+   * story.5028 — saved entry-price floor (0<x<1) for target_percentile_scaled;
+   * null/omitted = off. BUYs priced below it skip `below_entry_price_floor`.
+   */
+  min_entry_price: z.number().gt(0).lt(1).nullable().optional(),
   /** Legacy position_gap v1 range; ignored by v2. */
   target_range_max_usdc: z.number().nonnegative().nullable(),
   /** Legacy position_gap v1 allocation cap; ignored by v2. */

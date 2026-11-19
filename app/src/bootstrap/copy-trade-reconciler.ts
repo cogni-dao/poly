@@ -100,6 +100,9 @@ function policyFingerprint(t: EnumeratedTarget): string {
     t.mirrorCapitalBudgetUsdc === null
       ? "automatic"
       : Number(t.mirrorCapitalBudgetUsdc).toFixed(2),
+    // story.5028 — a floor change must restart the runner so the new sizing
+    // policy (and its config_hash) takes effect; null ⇒ "none" (off).
+    t.minEntryPrice === null ? "none" : Number(t.minEntryPrice).toFixed(4),
     t.positionGapBudgetGroup.positionGapTargetCount,
     Number(t.positionGapBudgetGroup.explicitBudgetTotalUsdc).toFixed(2),
     t.positionGapBudgetGroup.automaticTargetCount,

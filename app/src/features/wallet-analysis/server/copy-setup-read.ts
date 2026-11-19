@@ -82,6 +82,7 @@ type TargetRow = {
   targetRangeMaxUsdc: string | number | null;
   mirrorMaxAllocPerConditionUsdc: string | number | null;
   mirrorCapitalBudgetUsdc: string | number | null;
+  minEntryPrice: string | number | null;
   mirrorActivatedAt: Date;
   createdAt: Date;
   disabledAt: Date | null;
@@ -245,6 +246,7 @@ export async function getCopySetupForAccount(
       mirrorMaxAllocPerConditionUsdc:
         polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
       mirrorCapitalBudgetUsdc: polyCopyTradeTargets.mirrorCapitalBudgetUsdc,
+      minEntryPrice: polyCopyTradeTargets.minEntryPrice,
       mirrorActivatedAt: polyCopyTradeTargets.mirrorActivatedAt,
       createdAt: polyCopyTradeTargets.createdAt,
       disabledAt: polyCopyTradeTargets.disabledAt,
@@ -456,6 +458,7 @@ export async function getCopySetupForAccount(
         implementation_revision: binding.implementationRevision,
         mirror_filter_percentile: row.mirrorFilterPercentile,
         mirror_max_usdc_per_trade: num(row.mirrorMaxUsdcPerTrade),
+        min_entry_price: nullableNum(row.minEntryPrice),
         target_range_max_usdc: rangeMax,
         mirror_max_alloc_per_condition_usdc: allocPerCondition,
 				// Deprecated v1 compatibility field. v2 has no range knobs.

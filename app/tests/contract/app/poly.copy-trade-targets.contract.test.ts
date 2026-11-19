@@ -4,6 +4,7 @@
 import {
   PolyAccountCopySetupResponseSchema,
   PolyPositionGapFillAccountingSchema,
+  polyCopyTradeTargetCreateOperation,
   polyCopyTradeTargetUpdateOperation,
 } from "@cogni/poly-node-contracts";
 import { describe, expect, it } from "vitest";
@@ -44,6 +45,42 @@ describe("copy-target assignment contract", () => {
       }).success,
     ).toBe(true);
   });
+});
+
+describe("min_entry_price (story.5028)", () => {
+  const wallet = "0x2005d16a84ceefa912d4e380cd32e7ff827875ea";
+  const patch = (extra: Record<string, unknown>) =>
+    polyCopyTradeTargetUpdateOperation.input.safeParse({
+      id: targetId,
+      sizing_policy_kind: "target_percentile_scaled",
+      expected_mirror_activated_at: activatedAt,
+      mirror_filter_percentile: 75,
+      mirror_max_usdc_per_trade: 10,
+      ...extra,
+    });
+  const create = (extra: Record<string, unknown>) =>
+    polyCopyTradeTargetCreateOperation.input.safeParse({
+      target_wallet: wallet,
+      ...extra,
+    });
+
+  it.each([0.5, 0.0001, 0.9999, null])("accepts %s on PATCH and create", (v) => {
+    expect(patch({ min_entry_price: v }).success).toBe(true);
+    expect(create({ min_entry_price: v }).success).toBe(true);
+  });
+
+  it("treats omission as valid (field stays optional, default off)", () => {
+    expect(patch({}).success).toBe(true);
+    expect(create({}).success).toBe(true);
+  });
+
+  it.each([0, 1, -0.1, 1.5, 0.12345, Number.NaN, "0.5"])(
+    "rejects %s",
+    (v) => {
+      expect(patch({ min_entry_price: v }).success).toBe(false);
+      expect(create({ min_entry_price: v }).success).toBe(false);
+    },
+  );
 });
 
 describe("copy-setup algorithm identity", () => {

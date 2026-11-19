@@ -76,6 +76,7 @@ function buildTargetView(params: {
   targetRangeMaxUsdc: number | null;
   mirrorMaxAllocPerConditionUsdc: number | null;
   mirrorCapitalBudgetUsdc: number | null;
+  minEntryPrice: number | null;
   mirrorActivatedAt: Date;
   source: "env" | "db";
 }): PolyCopyTradeTarget {
@@ -95,6 +96,7 @@ function buildTargetView(params: {
     target_range_max_usdc: params.targetRangeMaxUsdc,
     mirror_max_alloc_per_condition_usdc: params.mirrorMaxAllocPerConditionUsdc,
     mirror_capital_budget_usdc: params.mirrorCapitalBudgetUsdc,
+    min_entry_price: params.minEntryPrice,
     mirror_activated_at: params.mirrorActivatedAt.toISOString(),
     source: params.source,
   };
@@ -157,6 +159,7 @@ export const POST = wrapRouteHandlerWithLogging(
     const mirrorMaxAllocPerConditionInput =
       parsed.data.mirror_max_alloc_per_condition_usdc;
     const mirrorCapitalBudgetInput = parsed.data.mirror_capital_budget_usdc;
+    const minEntryPriceInput = parsed.data.min_entry_price;
 
     const container = getContainer();
     const account = await container
@@ -196,6 +199,14 @@ export const POST = wrapRouteHandlerWithLogging(
                     : mirrorCapitalBudgetInput.toFixed(2),
               }
             : {}),
+          ...(minEntryPriceInput !== undefined
+            ? {
+                minEntryPrice:
+                  minEntryPriceInput === null
+                    ? null
+                    : minEntryPriceInput.toFixed(4),
+              }
+            : {}),
         })
         // Conflict resolves against the partial unique index
         // `poly_copy_trade_targets_billing_wallet_active_idx` (WHERE disabled_at IS NULL).
@@ -212,6 +223,7 @@ export const POST = wrapRouteHandlerWithLogging(
             polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
           mirror_capital_budget_usdc:
             polyCopyTradeTargets.mirrorCapitalBudgetUsdc,
+          min_entry_price: polyCopyTradeTargets.minEntryPrice,
           mirror_activated_at: polyCopyTradeTargets.mirrorActivatedAt,
         }),
     );
@@ -235,6 +247,7 @@ export const POST = wrapRouteHandlerWithLogging(
               polyCopyTradeTargets.mirrorMaxAllocPerConditionUsdc,
             mirror_capital_budget_usdc:
               polyCopyTradeTargets.mirrorCapitalBudgetUsdc,
+            min_entry_price: polyCopyTradeTargets.minEntryPrice,
             mirror_activated_at: polyCopyTradeTargets.mirrorActivatedAt,
           })
           .from(polyCopyTradeTargets)
@@ -293,6 +306,10 @@ export const POST = wrapRouteHandlerWithLogging(
         inserted.mirror_capital_budget_usdc === null
           ? null
           : Number(inserted.mirror_capital_budget_usdc),
+      minEntryPrice:
+        inserted.min_entry_price === null
+          ? null
+          : Number(inserted.min_entry_price),
       mirrorActivatedAt: inserted.mirror_activated_at,
       source: "db",
     });
