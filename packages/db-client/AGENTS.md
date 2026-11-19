@@ -41,8 +41,8 @@ Database client factory and Drizzle adapter implementations for scheduling and l
 ## Public Surface
 
 - **Exports (root `@cogni/db-client`):**
-  - `createAppDbClient(url)` — client factory for `app_user` role (RLS enforced)
-  - `withTenantScope(db, actorId, fn)` — transaction wrapper setting RLS context
+  - `createAppDbClient(url, options?)` — optional injected connect/statement timeouts; client factory for `app_user` role (RLS enforced)
+  - `withTenantScope(db, actorId, fn, lifetime?)` — transaction wrapper setting RLS context; optional abort/deadline checks and remaining native statement/lock/idle-transaction timeouts (caller owns native client cancellation)
   - `setTenantContext(tx, actorId)` — sets RLS context in existing transaction
   - `Database`, `LoggerLike` — Drizzle client type (includes `$client: Sql` for pool control) and logger interface
   - `DrizzleScheduleUserAdapter`, `DrizzleScheduleWorkerAdapter` — schedule adapters (split by trust boundary)

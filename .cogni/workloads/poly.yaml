@@ -11,6 +11,8 @@ metadata:
   annotations:
     cogni.dev/exclusive: "false"
     cogni.dev/ephemeral-storage: 4Gi
+    cogni.dev/qualification-path: /api/v1/deploy/qualification
+    cogni.dev/qualification-timeout-ms: "20000"
     # story.5141: Poly owns its placement. Polymarket-allowed countries only
     # (https://docs.polymarket.com/api-reference/geoblock). Read by the operator at this source SHA.
     cogni.dev/placement-countries-production: "BG,CZ,FI,NL,PT,UA"
@@ -28,6 +30,16 @@ containers:
       httpGet:
         path: /readyz
         port: 3200
+  paper-trader:
+    image: .
+    resources:
+      requests:
+        cpu: "0.5"
+        memory: 384Mi
+    readinessProbe:
+      httpGet:
+        path: /readyz
+        port: 9100
 service:
   ports:
     web:
