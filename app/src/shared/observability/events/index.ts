@@ -41,6 +41,8 @@ export const EVENT_NAMES = {
 	WORK_ITEMS_CREATE_SUCCESS: "work.items.create_success",
 	WORK_ITEMS_CREATE_REFUSED: "work.items.create_refused",
 	WORK_ITEMS_PATCH_SUCCESS: "work.items.patch_success",
+	// A node run wrote with no run record to name (missing, no kind, or unreadable; task.0133): the write still happens as the actor, with no Run line.
+	WORK_ITEMS_ATTRIBUTION_RUN_MISSING: "work.items.attribution_run_missing",
 	WORK_ITEMS_PATCH_REFUSED: "work.items.patch_refused",
 	KNOWLEDGE_HISTORY_READ: "knowledge.history_read",
 	KNOWLEDGE_CONTRIBUTION_DIFF_SUCCESS: "knowledge.contribution.diff_success",

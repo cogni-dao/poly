@@ -159,12 +159,12 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
     const collaborator = "baseline-collaborator";
     const scores = { goal: { v: 3 }, time: { v: 2 }, unblocks: { v: 3 }, ease: { v: 4, ev: "https://example.org/proof?q=1#section" }, confidence: { v: 3 }, agent: { v: 3 } };
     try {
-      const created = await adapter.create({ id, type: "task", title: "Shared evaluation composition" }, owner);
-      const scored = await adapter.patch({ id, expectedRevision: created.revision, reason: "test change", set: { scores } }, collaborator);
+      const created = await adapter.create({ id, type: "task", title: "Shared evaluation composition" }, { actor: owner });
+      const scored = await adapter.patch({ id, expectedRevision: created.revision, reason: "test change", set: { scores } }, { actor: collaborator });
       expect(scored.scores).toEqual(scores);
-      await expect(adapter.patch({ id, expectedRevision: created.revision, reason: "test change", set: { scores: null } }, collaborator)).rejects.toMatchObject({ name: "WorkItemRevisionConflictError" });
+      await expect(adapter.patch({ id, expectedRevision: created.revision, reason: "test change", set: { scores: null } }, { actor: collaborator })).rejects.toMatchObject({ name: "WorkItemRevisionConflictError" });
       // bug.0019 / bug.5619: the adapter no longer gates on creator; a non-creator may patch any field.
-      const foreign = await adapter.patch({ id, expectedRevision: scored.revision, reason: "test change", set: { title: "Non-creator content" } }, collaborator);
+      const foreign = await adapter.patch({ id, expectedRevision: scored.revision, reason: "test change", set: { title: "Non-creator content" } }, { actor: collaborator });
       expect(foreign.title).toBe("Non-creator content");
       expect(await adapter.get(id)).toMatchObject({ title: "Non-creator content", scores, revision: foreign.revision });
       const claimed = await adapter.claim({ id, runId: "baseline-run", command: "/baseline", principalId: owner });
@@ -179,9 +179,9 @@ describe("Doltgres 0.57.3 work-item acceptance", () => {
       const released = await adapter.release({ id, runId: "baseline-run", principalId: owner });
       expect(released.claimedByRun).toBeUndefined();
       expect(released.scores).toEqual(scores);
-      const cleared = await adapter.patch({ id, expectedRevision: released.revision, reason: "test change", set: { scores: null } }, collaborator);
+      const cleared = await adapter.patch({ id, expectedRevision: released.revision, reason: "test change", set: { scores: null } }, { actor: collaborator });
       expect(cleared.scores).toBeUndefined();
-      await expect(adapter.delete(id, owner)).resolves.toBe(true);
+      await expect(adapter.delete(id, { actor: owner })).resolves.toBe(true);
     } finally {
       await Promise.all(pools.map((pool) => pool.end({ timeout: 0 }).catch(() => undefined)));
     }

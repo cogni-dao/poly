@@ -17,7 +17,7 @@ import type { ScheduleRunReader } from "@cogni/scheduling";
 import { PostgresScheduleRunReader } from "@cogni/scheduling/adapters/postgres";
 import type { ToolSourcePort } from "@cogni/ai-core";
 import type {
-	EdoCapability,
+	EdoCapability as EdoToolCapability,
 	KnowledgeCapability,
 	MetricsCapability,
 	RepoCapability,
@@ -53,6 +53,7 @@ import {
 	type ContributionService,
 	createContributionService,
 	createEdoCapability,
+	type EdoCapability as EdoWriteCapability,
 	createKnowledgeCapability,
 	defaultCanMergeKnowledge,
 	type KnowledgeStorePort,
@@ -104,7 +105,6 @@ import {
 	GITHUB_ADAPTER_VERSION,
 	GitHubWebhookNormalizer,
 	getAppDb,
-	getExecutionScope,
 	LangfuseAdapter,
 	LiteLlmAdapter,
 	type MimirAdapterConfig,
@@ -160,6 +160,7 @@ import { createScheduleCapability } from "@/bootstrap/capabilities/schedule";
 import { stubVcsCapability } from "@/bootstrap/capabilities/vcs";
 import { createWebSearchCapability } from "@/bootstrap/capabilities/web-search";
 import { createCitationLinksPort } from "@/bootstrap/capabilities/citation-links";
+import { bindEdoToolCapability, runAttribution } from "@/bootstrap/write-attribution";
 import { createWorkItemCapability } from "@/bootstrap/capabilities/work-item";
 import { createMoveMetricPorts } from "@/bootstrap/capabilities/work-item-moves";
 import type { RateLimitBypassConfig } from "@/bootstrap/http/wrapPublicRoute";
@@ -295,8 +296,10 @@ export interface Container {
 	knowledgeContributionService: ContributionService | undefined;
 	/** Direct knowledge store port — exposed for the cookie-only browse endpoint. Undefined when DOLTGRES_URL is unset. */
 	knowledgeStorePort: KnowledgeStorePort | undefined;
-	/** EDO hypothesis-loop capability for the langgraph tool bindings AND the bearer-auth REST routes under /api/v1/edo. Always present (stubs throw when DOLTGRES_URL is unset). */
-	edoCapability: EdoCapability;
+	/** EDO hypothesis-loop capability for the bearer-auth REST routes under /api/v1/edo. Every write takes the host-built attribution (task.0133). Always present (stubs throw when DOLTGRES_URL is unset). */
+	edoCapability: EdoWriteCapability;
+	/** The same capability for the langgraph tools: each write is attributed from the run's execution scope (actor and run). */
+	edoToolCapability: EdoToolCapability;
 	/** Thread persistence scoped to a user (RLS enforced) */
 	threadPersistenceForUser(userId: UserId): ThreadPersistencePort;
 	/** Governance status queries (system tenant scope) */
@@ -2459,7 +2462,7 @@ function createContainer(): Container {
 	// KnowledgeCapability + EdoCapability for AI tools (require DOLTGRES_URL)
 	let goalMetrics: MetricService | undefined;
 	let knowledgeCapability: KnowledgeCapability;
-	let edoCapability: EdoCapability;
+	let edoCapability: EdoWriteCapability;
 	let knowledgeContributionService: ContributionService | undefined;
 	let knowledgeStorePort: KnowledgeStorePort | undefined;
 	// story.0033: the work-items `moves` ports over this node's metrics service.
@@ -2615,19 +2618,19 @@ function createContainer(): Container {
 		log: (event) => log.warn(event, "work.items.envelope_degraded"),
 		backlogWriter: {
 			store: workItemAdapter,
-			principalId: () => {
-				const actor = getExecutionScope().actorUserId;
-				if (!actor) throw new Error("Authenticated work-item actor required");
-				return actor;
-			},
+			// ACTING_ACTOR_FOR_WRITES (task.0133): attributed at invocation from the run scope, never at construction.
+			attribution: runAttribution,
 		},
 	});
+
+	// ACTING_ACTOR_FOR_WRITES (task.0133): a tool never builds an attribution; the host binds the run's at each call.
+	const edoToolCapability: EdoToolCapability = bindEdoToolCapability(edoCapability);
 
 	// ToolSource with real implementations (per CAPABILITY_INJECTION)
 	const toolBindings = createToolBindings({
 		nodePublicOrigin: env.APP_BASE_URL,
 		knowledgeCapability,
-		edoCapability,
+		edoCapability: edoToolCapability,
 		metricsCapability,
 		webSearchCapability,
 		repoCapability,
@@ -2799,6 +2802,7 @@ function createContainer(): Container {
 		knowledgeContributionService,
 		knowledgeStorePort,
 		edoCapability,
+		edoToolCapability,
 		threadPersistenceForUser: (userId: UserId) =>
 			new DrizzleThreadPersistenceAdapter(db, userActor(userId)),
 		governanceStatus: new DrizzleGovernanceStatusAdapter(

@@ -8,6 +8,7 @@
  * Invariants:
  *   - ALS_NOT_SHARED: ExecutionScope is app-local, never exported to @cogni/graph-execution-core
  *   - BILLING_SET_BY_LAUNCHER: runInScope is called by the launcher (chat, schedule, webhook)
+ *   - RUN_FIELDS_ARE_HOST_SET (task.0133): `runId` and `runKind` come from the launcher and the run ledger, never from a request or tool argument; a write records them as its run.
  *   - ABORT_CHAT_ONLY: abortSignal is temporary tech debt for browser disconnect, not durable cancellation
  * Side-effects: none (ALS is process-scoped, no I/O)
  * Links: https://github.com/cogni-dao/cogni/blob/2321821e61dd12aa0cf75d235bd668ff65739109/docs/spec/unified-graph-launch.md
@@ -17,6 +18,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { SourceSystem } from "@cogni/ai-core";
+import type { WriteRunKind } from "@cogni/work-items";
 import type { BillingContext, LlmService } from "@/ports";
 
 /**
@@ -29,6 +31,10 @@ export interface ExecutionScope {
   readonly billing: BillingContext;
   /** Actor who initiated this run. Used by tools that need user-scoped operations (e.g., schedule CRUD). */
   readonly actorUserId?: string;
+  /** The run this scope serves, set by the launcher (`runGraphWithScope`); every run write records it as the run (task.0133). */
+  readonly runId?: string;
+  /** The run record's kind (`graph_runs.run_kind`), host-set when the record names one. Absent when the record is missing or unreadable: the write then carries no `Run:` line. */
+  readonly runKind?: WriteRunKind;
   /** Chat-only temporary tech debt — browser disconnect, not durable cancellation. */
   readonly abortSignal?: AbortSignal;
   /** Resolved LlmService for this run (from ModelProviderPort.createLlmService). */

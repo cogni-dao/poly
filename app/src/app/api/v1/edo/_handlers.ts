@@ -35,6 +35,7 @@ import {
 import {
   CitationTargetNotFoundError,
   CitationTypeMismatchError,
+  CommitTextInvalidError,
   ContributionConflictError,
   ContributionForbiddenError,
   ContributionNotFoundError,
@@ -52,6 +53,7 @@ import type { SessionUser } from "@cogni/node-shared";
 import { NextResponse } from "next/server";
 
 import { getContainer } from "@/bootstrap/container";
+import { routeAttribution } from "@/bootstrap/write-attribution";
 
 /**
  * Same auth-source detector used by knowledge/contributions. Bearer agents
@@ -73,6 +75,9 @@ function mapError(e: unknown): NextResponse {
       { status: 503, headers: { "Retry-After": "2" } }
     );
   if (e instanceof HypothesisMissingEvaluateAtError)
+    return NextResponse.json({ error: e.message }, { status: 400 });
+  // An entry id with a line break would forge a commit line: caller input (any other bad attribution is a host defect and stays a 500).
+  if (e instanceof CommitTextInvalidError)
     return NextResponse.json({ error: e.message }, { status: 400 });
   if (e instanceof CitationTargetNotFoundError)
     return NextResponse.json({ error: e.message }, { status: 404 });
@@ -276,7 +281,7 @@ export async function handleHypothesize(
       ...(parsed.data.confidencePct !== undefined
         ? { confidencePct: parsed.data.confidencePct }
         : {}),
-    });
+    }, routeAttribution(sessionUser.id));
     log.info(
       {
         route: "edo.hypothesize",
@@ -376,7 +381,7 @@ export async function handleDecide(
       ...(parsed.data.confidencePct !== undefined
         ? { confidencePct: parsed.data.confidencePct }
         : {}),
-    });
+    }, routeAttribution(sessionUser.id));
     log.info(
       {
         route: "edo.decide",
@@ -544,7 +549,7 @@ export async function handleRecordOutcome(
       ...(parsed.data.confidencePct !== undefined
         ? { confidencePct: parsed.data.confidencePct }
         : {}),
-    });
+    }, routeAttribution(sessionUser.id));
     log.info(
       {
         route: "edo.record_outcome",

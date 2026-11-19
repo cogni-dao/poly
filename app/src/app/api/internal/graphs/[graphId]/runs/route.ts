@@ -612,6 +612,23 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
         accountService,
       });
 
+    // The run record names the run's kind (user_immediate, system_scheduled, system_webhook); every run write records it (task.0133).
+    // An unreadable ledger never fails the run: its writes simply carry no `Run:` line.
+    let ledgerRun: Awaited<
+      ReturnType<typeof container.graphRunRepository.getRunByRunId>
+    > = null;
+    try {
+      ledgerRun = await container.graphRunRepository.getRunByRunId(
+        SYSTEM_ACTOR,
+        runId
+      );
+    } catch (err) {
+      log.warn(
+        { runId, err },
+        "Run record unreadable; the run's writes carry no run kind"
+      );
+    }
+
     // Create graph executor and run
     const executor = createGraphExecutor(executeStream, toUserId(actorUserId));
     const scopedExecutor = createScopedGraphExecutor({
@@ -635,6 +652,7 @@ export const POST = wrapRouteHandlerWithLogging<RouteParams>(
       },
       resolver: container.providerResolver,
       actorId: actorUserId,
+      runKind: ledgerRun?.runKind ?? undefined,
       ...(container.connectionBroker
         ? { broker: container.connectionBroker }
         : {}),

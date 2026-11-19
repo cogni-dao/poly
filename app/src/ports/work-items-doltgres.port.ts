@@ -22,6 +22,7 @@ import type {
   WorkItemWriterHealth,
   WorkQuery,
   WorkSummaryReadOptions,
+  WriteAttribution,
 } from "@cogni/work-items";
 
 export type WorkItemsCreateInput = Parameters<WorkItemCommandPort["create"]>[0];
@@ -68,9 +69,10 @@ export interface WorkItemsDoltgresPort {
     perColumn: number,
     options?: { readonly signal?: AbortSignal },
   ): Promise<WorkBoardColumnPages>;
-  create(input: WorkItemsCreateInput, principalId: string): Promise<WorkItem>;
-  patch(input: WorkItemsPatchInput, principalId: string): Promise<WorkItem>;
-  delete(id: WorkItemId, principalId: string): Promise<boolean>;
+  /** Every write takes the host-built attribution: the actor, and a node run's requester and run (task.0133). */
+  create(input: WorkItemsCreateInput, attribution: WriteAttribution): Promise<WorkItem>;
+  patch(input: WorkItemsPatchInput, attribution: WriteAttribution): Promise<WorkItem>;
+  delete(id: WorkItemId, attribution: WriteAttribution): Promise<boolean>;
   /** Versions of one item, newest first, with their change reasons (task.0052). */
   history?(id: WorkItemId): Promise<HistoryEntry[]>;
   /** In-memory writer state for deep readiness; makes no database call (bug.0042). */

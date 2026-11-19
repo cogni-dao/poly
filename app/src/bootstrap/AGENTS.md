@@ -70,8 +70,8 @@ operator dependency-cruiser rules do not run in this repository.
   - `getTemporalWorkflowClient()` - Process-wide Temporal WorkflowClient singleton (race-safe init, cleaned up by resetContainer)
   - `resolveAiAdapterDeps()` - AI adapter dependencies for factory
   - `createGraphExecutor(completionStreamFn, userId)` - Factory for the static inner GraphExecutorPort router (from `graph-executor.factory.ts`)
-  - `createScopedGraphExecutor({ executor, billing, preflightCheckFn, resolver, actorId, abortSignal?, broker?, commitByoUsage? })` - Per-run wrapper: resolves LlmService from ModelProviderResolverPort, applies billing/preflight/observability/usage-commit decorators, seeds ALS ExecutionScope
-  - `runGraphWithScope({ executor, req, ctx?, billing, llmService, abortSignal? })` - App-local helper that seeds per-run ALS scope with resolved LlmService
+  - `createScopedGraphExecutor({ executor, billing, preflightCheckFn, resolver, actorId, runKind, abortSignal?, broker?, commitByoUsage? })` - Per-run wrapper: resolves LlmService from ModelProviderResolverPort, applies billing/preflight/observability/usage-commit decorators, seeds ALS ExecutionScope
+  - `runGraphWithScope({ executor, req, ctx?, billing, llmService, runKind?, abortSignal? })` - App-local helper that seeds per-run ALS scope with resolved LlmService
   - `createAgentCatalog()`, `listAgentsForApi()` - Discovery factory (from `agent-discovery.ts`)
   - `wrapRouteHandlerWithLogging()` - Route logging wrapper with metrics (from `http/`)
   - `wrapPublicRoute()` - Lazy singleton wrapper for public routes with rate limiting (from `http/`)
