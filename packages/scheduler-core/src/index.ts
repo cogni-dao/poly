@@ -75,6 +75,7 @@ export {
   type GovernanceScheduleSyncDeps,
   type GovernanceScheduleSyncResult,
   governanceScheduleId,
+  isLegacyFlatGovernanceScheduleId,
   isOwnGovernanceScheduleId,
   type LedgerScheduleConfig,
   syncGovernanceSchedules,
