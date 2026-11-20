@@ -51,6 +51,7 @@ import {
 import type { SessionUser } from "@cogni/node-shared";
 import { NextResponse } from "next/server";
 
+import { routeAttribution } from "@/bootstrap/write-attribution";
 import { getContainer } from "@/bootstrap/container";
 
 /**
@@ -255,7 +256,8 @@ export async function handleHypothesize(
   );
   const edo = getContainer().edoCapability;
   try {
-    const entry = await edo.hypothesize({
+    const entry = await edo.hypothesize(
+    {
       id: parsed.data.id,
       domain: parsed.data.domain,
       title: parsed.data.title,
@@ -276,7 +278,9 @@ export async function handleHypothesize(
       ...(parsed.data.confidencePct !== undefined
         ? { confidencePct: parsed.data.confidencePct }
         : {}),
-    });
+    },
+    routeAttribution(sessionUser.id)
+    );
     log.info(
       {
         route: "edo.hypothesize",
@@ -363,7 +367,8 @@ export async function handleDecide(
   );
   const edo = getContainer().edoCapability;
   try {
-    const entry = await edo.decide({
+    const entry = await edo.decide(
+    {
       id: parsed.data.id,
       domain: parsed.data.domain,
       title: parsed.data.title,
@@ -376,7 +381,9 @@ export async function handleDecide(
       ...(parsed.data.confidencePct !== undefined
         ? { confidencePct: parsed.data.confidencePct }
         : {}),
-    });
+    },
+    routeAttribution(sessionUser.id)
+    );
     log.info(
       {
         route: "edo.decide",
@@ -530,7 +537,8 @@ export async function handleRecordOutcome(
   );
   const edo = getContainer().edoCapability;
   try {
-    const result = await edo.recordOutcome({
+    const result = await edo.recordOutcome(
+    {
       id: parsed.data.id,
       domain: parsed.data.domain,
       title: parsed.data.title,
@@ -544,7 +552,9 @@ export async function handleRecordOutcome(
       ...(parsed.data.confidencePct !== undefined
         ? { confidencePct: parsed.data.confidencePct }
         : {}),
-    });
+    },
+    routeAttribution(sessionUser.id)
+    );
     log.info(
       {
         route: "edo.record_outcome",

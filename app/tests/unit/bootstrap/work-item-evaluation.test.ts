@@ -14,7 +14,7 @@ function fixture() {
   const capability = createWorkItemCapability({
     workItemQuery: { list, get: vi.fn().mockResolvedValue(item) } as unknown as WorkItemQueryPort,
     workItemCommand: {} as WorkItemCommandPort,
-    backlogWriter: { store: { patch }, principalId: () => actor },
+    backlogWriter: { store: { patch }, attribution: () => ({ actor }) },
   });
   return { capability, patch, list, setActor: (value: string) => { actor = value; } };
 }
@@ -22,11 +22,11 @@ describe("shared evaluation capability", () => {
   it("forwards scores/CAS and resolves authenticated principal for every call", async () => {
     const f = fixture();
     const first = await f.capability.patch({ id: item.id, expectedRevision: 2, reason: "test change", set: { scores } });
-    expect(f.patch).toHaveBeenLastCalledWith({ id: item.id, expectedRevision: 2, reason: "test change", set: { scores } }, "actor-a");
+    expect(f.patch).toHaveBeenLastCalledWith({ id: item.id, expectedRevision: 2, reason: "test change", set: { scores } }, { actor: "actor-a" });
     expect(first).toMatchObject({ scores, revision: 3, rankScore: rankScore(scores) });
     f.setActor("actor-b");
     await f.capability.patch({ id: item.id, expectedRevision: 3, reason: "test change", set: { scores: null } });
-    expect(f.patch).toHaveBeenLastCalledWith({ id: item.id, expectedRevision: 3, reason: "test change", set: { scores: null } }, "actor-b");
+    expect(f.patch).toHaveBeenLastCalledWith({ id: item.id, expectedRevision: 3, reason: "test change", set: { scores: null } }, { actor: "actor-b" });
   });
   it("forwards the required reason and the cites to the live store (task.0086)", async () => {
     const f = fixture();
@@ -34,12 +34,12 @@ describe("shared evaluation capability", () => {
     await f.capability.patch({ id: item.id, reason: "scope follows the design", cites, set: { rank: 2 } });
     expect(f.patch).toHaveBeenLastCalledWith(
       { id: item.id, reason: "scope follows the design", cites, set: { rank: 2 } },
-      "actor-a",
+      { actor: "actor-a" },
     );
     await f.capability.patch({ id: item.id, reason: "no cites here", set: { rank: 3 } });
     expect(f.patch).toHaveBeenLastCalledWith(
       { id: item.id, reason: "no cites here", set: { rank: 3 } },
-      "actor-a",
+      { actor: "actor-a" },
     );
   });
   it("preserves conflicts and paginated score-bearing readback", async () => {

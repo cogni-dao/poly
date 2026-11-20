@@ -85,7 +85,7 @@ describe("canonical read inheritance", () => {
         listRelations: vi.fn(),
       },
       workItemCommand: {} as WorkItemCommandPort,
-      backlogWriter: { store: { patch }, principalId: () => "agent-a" },
+      backlogWriter: { store: { patch }, attribution: () => ({ actor: "agent-a" }) },
     });
     const output = await createWorkItemQueryImplementation({
       workItemCapability: capability,
@@ -111,7 +111,7 @@ describe("canonical read inheritance", () => {
     });
     expect(patch).toHaveBeenCalledWith(
       { id: item.id, expectedRevision: 7, reason: "test change", set: { scores: null } },
-      "agent-a",
+      { actor: "agent-a" },
     );
   });
   it("carries hypothesis metadata through get/list/search without losing local content", async () => {

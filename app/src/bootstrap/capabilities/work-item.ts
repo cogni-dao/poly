@@ -32,6 +32,7 @@ import type {
   WorkItemQueryPort,
   WorkItemStatus,
   WorkItemType,
+  WriteAttribution,
 } from "@cogni/work-items";
 import type {
   EnvelopeDegradedEvent,
@@ -62,7 +63,7 @@ export interface WorkItemCapabilityDeps {
   readonly log?: ((event: EnvelopeDegradedEvent) => void) | undefined;
   readonly backlogWriter?: {
     readonly store: Pick<WorkItemsDoltgresPort, "patch">;
-    readonly principalId: () => string;
+    readonly attribution: () => WriteAttribution;
   };
 }
 
@@ -206,7 +207,7 @@ export function createWorkItemCapability(
               reason: input.reason,
               ...(input.cites !== undefined && { cites: input.cites }),
             },
-            writer.principalId(),
+            writer.attribution(),
           );
           return toWorkItemInfo(updated);
         } catch (error) {

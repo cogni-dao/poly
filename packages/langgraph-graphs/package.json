@@ -50,8 +50,8 @@
     "zod": "^3.24.1",
     "@cogni/shared-langgraph-graphs": "https://github.com/cogni-dao/node-template/releases/download/langgraph-graphs-v0.9.0/cogni-dao-langgraph-graphs-0.9.0.tgz",
     "@cogni/agent-grants": "https://github.com/cogni-dao/node-template/releases/download/agent-grants-v0.2.0/cogni-dao-agent-grants-0.2.0.tgz",
-    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.17.0/cogni-dao-work-items-0.17.0.tgz",
-    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.21.0/cogni-dao-knowledge-store-0.21.0.tgz"
+    "@cogni-dao/work-items": "https://github.com/cogni-dao/node-template/releases/download/work-items-v0.24.0/cogni-dao-work-items-0.24.0.tgz",
+    "@cogni-dao/knowledge-store": "https://github.com/cogni-dao/node-template/releases/download/knowledge-store-v0.24.0/cogni-dao-knowledge-store-0.24.0.tgz"
   },
   "devDependencies": {
     "@langchain/langgraph-cli": "^1.1.11",
