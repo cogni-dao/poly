@@ -14,6 +14,7 @@
  * @public
  */
 
+import * as fullSchema from "@cogni/db-schema";
 import { toUserId } from "@cogni/ids";
 import {
   COGNI_SYSTEM_BILLING_ACCOUNT_ID,
@@ -22,6 +23,7 @@ import {
 import { syncGovernanceSchedules } from "@cogni/scheduler-core";
 import cronParser from "cron-parser";
 import { and, eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
 import { getServiceDb } from "@/adapters/server/db/drizzle.service-client";
 import { getContainer } from "@/bootstrap/container";
 import { getGovernanceConfig, getNodeId } from "@/shared/config";
@@ -73,16 +75,18 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
   // (session-scoped advisory locks only release on the connection that acquired them).
   const serviceDb = getServiceDb();
   const reservedConn = await serviceDb.$client.reserve();
-  const [lockRow] =
-    await reservedConn`SELECT pg_try_advisory_lock(hashtext('governance_sync')) AS acquired`;
-  const acquired = (lockRow as { acquired: boolean } | undefined)?.acquired;
-  if (!acquired) {
-    reservedConn.release();
-    log.info({}, "Governance sync already running, skipping");
-    return { created: 0, updated: 0, resumed: 0, skipped: 0, paused: 0 };
-  }
-
+  let acquired = false;
   try {
+    const [lockRow] =
+      await reservedConn`SELECT pg_try_advisory_lock(hashtext('governance_sync')) AS acquired`;
+    acquired = (lockRow as { acquired: boolean } | undefined)?.acquired === true;
+    if (!acquired) {
+      log.info({}, "Governance sync already running, skipping");
+      return { created: 0, updated: 0, resumed: 0, skipped: 0, paused: 0 };
+    }
+
+    // The service pool may contain only this lock-holding connection.
+    const lockedDb = drizzle(reservedConn, { schema: fullSchema });
     const config = getGovernanceConfig();
     const systemUserId = toUserId(COGNI_SYSTEM_PRINCIPAL_USER_ID);
 
@@ -99,7 +103,7 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
         const nextRunAt = computeNextRun(params.cron, params.timezone);
 
         // Scope lookup to system tenant to avoid cross-tenant collisions
-        const existingRows = await serviceDb
+        const existingRows = await lockedDb
           .select({ id: schedules.id })
           .from(schedules)
           .where(
@@ -112,7 +116,7 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
         const existing = existingRows[0];
 
         if (existing) {
-          await serviceDb
+          await lockedDb
             .update(schedules)
             .set({
               executionGrantId: params.executionGrantId,
@@ -127,7 +131,7 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
           return existing.id;
         }
 
-        const [row] = await serviceDb
+        const [row] = await lockedDb
           .insert(schedules)
           .values({
             temporalScheduleId: params.temporalScheduleId,
@@ -150,12 +154,12 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
       listGovernanceScheduleIds: () =>
         container.scheduleControl.listScheduleIds("governance:"),
       disableSchedule: async (temporalScheduleId: string) => {
-        // Direct DB update via serviceDb (same pattern as upsertGovernanceScheduleRow).
+        // Direct DB update via the reserved service session (same pattern as upsertGovernanceScheduleRow).
         // Cannot use ScheduleUserPort.updateSchedule here because the adapter
         // passes DB UUID to scheduleControl.pauseSchedule() which expects a
         // Temporal schedule ID — causing a rollback. The Temporal pause is
         // already handled by the sync service's prune step.
-        await serviceDb
+        await lockedDb
           .update(schedules)
           .set({ enabled: false, nextRunAt: null, updatedAt: new Date() })
           .where(
@@ -208,8 +212,12 @@ export async function runGovernanceSchedulesSyncJob(): Promise<GovernanceSchedul
       paused: result.paused.length,
     };
   } finally {
-    // Release advisory lock on the same connection that acquired it
-    await reservedConn`SELECT pg_advisory_unlock(hashtext('governance_sync'))`;
-    reservedConn.release();
+    try {
+      if (acquired) {
+        await reservedConn`SELECT pg_advisory_unlock(hashtext('governance_sync'))`;
+      }
+    } finally {
+      reservedConn.release();
+    }
   }
 }

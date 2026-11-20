@@ -44,7 +44,7 @@ Job modules that wire business logic to the application container for ops-trigge
 
 ## Standards
 
-- Jobs use `pg_advisory_lock` for single-writer safety
+- Jobs use PostgreSQL advisory locks for single-writer safety. While a job reserves a pool session for a lock, all queries against that pool use the reserved session; always release it even if acquisition or unlock fails.
 - Jobs import services from `@cogni/scheduler-core`, not from features
 
 ## Dependencies
