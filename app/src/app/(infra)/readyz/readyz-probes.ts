@@ -332,6 +332,8 @@ export const NON_SUBSTRATE_ALLOWLIST: readonly string[] = [
   "DOLTHUB_REMOTE_URL",
   "PROMETHEUS_REMOTE_WRITE_URL",
   "PROMETHEUS_QUERY_URL",
+  // The operator that mints sandbox push tokens. Not a readiness dependency: an outage only stops git push.
+  "COGNI_OPERATOR_URL",
 ];
 
 /**

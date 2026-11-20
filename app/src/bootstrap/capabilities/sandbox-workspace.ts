@@ -11,6 +11,8 @@
  *   - DERIVED_HOST: origin = SANDBOX_BASE_URL override, else derived from APP_BASE_URL + node slug.
  *   - UNCONFIGURED_IS_NULL: missing token or underivable origin returns null (the tool answers `unavailable`), never a guess.
  *   - RUN_FROM_THE_SCOPE: the run id comes from the execution scope the launcher binds, never from tool params.
+ *   - PUSH_TOKEN_PER_CALL: each call gets a 1-hour, one-repo GH_TOKEN minted by the operator; no GitHub key
+ *     reaches the sandbox lease (sandbox-push-token).
  * Side-effects: logs `adapter.sandbox.tick`
  * Links: services/sandbox/
  * @internal
@@ -27,6 +29,7 @@ import { getExecutionScope } from "@/adapters/server";
 import { getNodeName } from "@/shared/config";
 import type { ServerEnv } from "@/shared/env";
 import { EVENT_NAMES, makeLogger } from "@/shared/observability";
+import { createSandboxPushTokenEnv } from "./sandbox-push-token";
 
 const logger = makeLogger({ component: "SandboxShell" });
 
@@ -50,12 +53,14 @@ export function createSandboxShellCapability(
 ): SandboxShellCapability | null {
   const accessToken = env.SANDBOX_EXECD_TOKEN;
   if (!accessToken) return null;
-  const baseUrl = resolveSandboxWorkspaceOrigin(env, getNodeName());
+  const nodeSlug = getNodeName();
+  const baseUrl = resolveSandboxWorkspaceOrigin(env, nodeSlug);
   if (!baseUrl) return null;
   return composeSandboxShellCapability({
     baseUrl,
     accessToken,
     runId: () => getExecutionScope().runId,
+    callEnv: createSandboxPushTokenEnv(env, nodeSlug),
     onTick: (report) => {
       if ("errorCode" in report) {
         logger.warn(
