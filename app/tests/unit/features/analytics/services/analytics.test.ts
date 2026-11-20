@@ -203,6 +203,32 @@ describe("features/analytics/services/analytics", () => {
       expect(result.summary.errorRatePercent).toBeNull();
     });
 
+    it("rounds extrapolated counter totals to whole counts", async () => {
+      queryRangeSpy.mockResolvedValue({ resultType: "matrix", result: [] });
+      queryInstantSpy.mockResolvedValueOnce({
+        resultType: "vector",
+        result: [{ metric: {}, value: [0, "6645.6067"] }],
+      });
+      queryInstantSpy.mockResolvedValueOnce({
+        resultType: "vector",
+        result: [{ metric: {}, value: [0, "1234.4"] }],
+      });
+      queryInstantSpy.mockResolvedValueOnce({
+        resultType: "vector",
+        result: [{ metric: {}, value: [0, "0.5"] }],
+      });
+
+      const result = await getAnalyticsSummary(mockMetricsQuery, {
+        window: "7d",
+        env: "production",
+        kThreshold: 50,
+      });
+
+      expect(result.summary.totalRequests).toBe(6646);
+      expect(result.summary.totalTokens).toBe(1234);
+      expect(result.summary.errorRatePercent).toBe(0.5);
+    });
+
     it("should return stats when total requests >= K", async () => {
       // Mock denominator (range query) - empty for simplicity
       queryRangeSpy.mockResolvedValue({
@@ -258,7 +284,7 @@ describe("features/analytics/services/analytics", () => {
 
       // Filters should be identical
       expect(denominatorFilters).toBe(requestRateFilters);
-      expect(denominatorFilters).toContain('app="cogni-template"');
+      expect(denominatorFilters).not.toContain("app=");
       expect(denominatorFilters).toContain('env="production"');
       expect(denominatorFilters).toContain('route!="meta.metrics"');
     });
