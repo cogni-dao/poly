@@ -86,6 +86,30 @@ async function isColumnPresent(sql, stmt) {
   return rows.length > 0;
 }
 
+// The same replay safety for a CREATE TABLE / CREATE INDEX whose object is already live (a ledger rewound behind the
+// schema, as in bug.0015's repair): an erroring statement aborts the Dolt branch write, so it is skipped before it runs.
+const CREATE_TABLE = /^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?"?([A-Za-z0-9_]+)"?/i;
+const CREATE_INDEX = /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF NOT EXISTS\s+)?"?([A-Za-z0-9_]+)"?/i;
+
+async function isObjectPresent(sql, stmt) {
+  const text = stmt.replace(/^(?:\s*--[^\n]*\n)+/, "").trimStart();
+  const table = CREATE_TABLE.exec(text);
+  if (table) {
+    const rows = await sql.unsafe(
+      `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ${sqlEscape(table[1])}`
+    );
+    return rows.length > 0;
+  }
+  const index = CREATE_INDEX.exec(text);
+  if (index) {
+    const rows = await sql.unsafe(
+      `SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = ${sqlEscape(index[1])}`
+    );
+    return rows.length > 0;
+  }
+  return false;
+}
+
 /**
  * Apply pending migrations via simple-protocol sql.unsafe — the Doltgres-safe
  * equivalent of `drizzle-orm/postgres-js/migrator`'s `migrate()`. Same journal
@@ -116,6 +140,7 @@ async function applyPending(sql, folder) {
       if (!trimmed) continue;
       try {
         if (await isColumnPresent(sql, trimmed)) continue;
+        if (await isObjectPresent(sql, trimmed)) continue;
         await sql.unsafe(trimmed);
       } catch (err) {
         // Diagnostic only: the branch-mutation wrapper reports an unknown outcome and drops the cause.
