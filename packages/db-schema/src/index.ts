@@ -34,3 +34,8 @@ export {
   metricObservations,
   metricRefreshCursors,
 } from "@cogni-dao/metrics/schema";
+// Agent knowledge-usage tables (story.0061), same package; migrations stay node-local.
+export {
+  knowledgeCitePairs,
+  knowledgeReadDaily,
+} from "@cogni-dao/metrics/schema";
