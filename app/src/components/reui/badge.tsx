@@ -18,7 +18,7 @@ const badgeVariants = cva(
         focus: "bg-focus text-focus-foreground",
         invert: "bg-invert text-invert-foreground",
         "primary-light":
-          "bg-primary/5 border-none text-primary dark:bg-primary/20",
+          "bg-background bg-[linear-gradient(hsl(var(--primary)/0.05),hsl(var(--primary)/0.05))] border-none text-primary dark:bg-[linear-gradient(hsl(var(--primary)/0.2),hsl(var(--primary)/0.2))]",
         "warning-light":
           "bg-warning/10 border-none text-warning dark:bg-warning/20",
         "success-light":
@@ -32,8 +32,7 @@ const badgeVariants = cva(
           "bg-invert/10 border-none text-foreground dark:bg-invert/20",
         "focus-light":
           "bg-focus/10 border-none text-focus-foreground dark:bg-focus/20",
-        "primary-outline":
-          "bg-background border-border text-primary dark:bg-input/30",
+        "primary-outline": "bg-background border-border text-primary",
         "warning-outline":
           "bg-background border-border text-warning dark:bg-input/30",
         "success-outline":
