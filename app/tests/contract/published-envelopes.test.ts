@@ -111,7 +111,7 @@ describe("canonical read inheritance", () => {
     });
     expect(patch).toHaveBeenCalledWith(
       { id: item.id, expectedRevision: 7, reason: "test change", set: { scores: null } },
-      "agent-a",
+      { actor: "agent-a" },
     );
   });
   it("carries hypothesis metadata through get/list/search without losing local content", async () => {
