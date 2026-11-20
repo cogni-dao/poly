@@ -68,7 +68,7 @@ describe("DoltgresPolyWorkItemAdapter cites enforcement (task.0086)", () => {
     const resolve = vi.fn().mockRejectedValue(new EntryUnresolvedError(["no-such-atom-0086"]));
     const { adapter, queries } = build({ resolve });
 
-    await expect(adapter.patch(input, "agent-1")).rejects.toMatchObject({
+    await expect(adapter.patch(input, { actor: "agent-1" })).rejects.toMatchObject({
       name: "EntryUnresolvedError",
       ids: ["no-such-atom-0086"],
     });
@@ -83,7 +83,7 @@ describe("DoltgresPolyWorkItemAdapter cites enforcement (task.0086)", () => {
   it("rejects cites with CitesUnsupportedError before any statement when no resolver is wired", async () => {
     const { adapter, queries } = build();
 
-    await expect(adapter.patch(input, "agent-1")).rejects.toMatchObject({
+    await expect(adapter.patch(input, { actor: "agent-1" })).rejects.toMatchObject({
       name: "CitesUnsupportedError",
     });
     expect(queries).toEqual([]);
@@ -96,7 +96,7 @@ describe("DoltgresPolyWorkItemAdapter cites enforcement (task.0086)", () => {
       .mockResolvedValue([{ id: "no-such-atom-0086", commit: hash, plane: "main" }]);
     const { adapter, queries } = build({ resolve });
 
-    await adapter.patch(input, "agent-1").catch(() => undefined);
+    await adapter.patch(input, { actor: "agent-1" }).catch(() => undefined);
 
     expect(resolve).toHaveBeenCalledTimes(1);
     const commit = queries.find((q) => q.startsWith("SELECT dolt_commit"));

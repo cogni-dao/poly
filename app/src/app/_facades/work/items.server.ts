@@ -18,6 +18,7 @@ import type {
 	WorkItemsCreateInput as ContractCreateInput,
 	WorkItemsPatchInput as ContractPatchInput,
 	WorkItemDto,
+	WorkItemsGetOutput,
 	WorkItemsListInput,
 	WorkItemsListOutput,
 	WorkItemSummariesListInput,
@@ -28,9 +29,11 @@ import type {
 	WorkItem,
 	WorkQuery,
 	WorkSummaryReadOptions,
+	WriteAttribution,
 } from "@cogni/work-items";
 import {
 	composeItemEnvelope,
+	createItemRefPorts,
 	judgeMoveSummaries,
 	toWorkItemDto,
 	toWorkItemId,
@@ -146,9 +149,17 @@ async function withSummaryReadings<T extends { moves?: WorkItemDto["moves"] }>(
 	return judgeMoveSummaries(items, readings, options);
 }
 
-/** Single-item read options; `includeLinks` adds the first page of citation links (`?include=links`). */
+/**
+ * Single-item read options; `includeLinks` adds the first page of citation links, `includeArtifacts` and `includeHistory`
+ * the first page of artifact and history refs, `artifactId` one artifact in full (story.0058).
+ */
 export interface WorkItemReadOptions extends WorkSummaryReadOptions {
 	readonly includeLinks?: boolean;
+	readonly includeArtifacts?: boolean;
+	readonly includeHistory?: boolean;
+	readonly artifactId?: string;
+	/** Set false for a caller that needs only the item (the EDO expectations read). Default: read the latest artifacts. */
+	readonly artifacts?: boolean;
 	/** Set false for a caller that needs only the stored move ids (the EDO expectations read). Default: resolve the chain. */
 	readonly chain?: boolean;
 }
@@ -161,8 +172,9 @@ export interface WorkItemReadOptions extends WorkSummaryReadOptions {
 async function withItemEnvelope(
 	dto: WorkItemDto,
 	options?: WorkItemReadOptions,
-): Promise<WorkItemDto> {
+): Promise<WorkItemsGetOutput> {
 	const container = getContainer();
+	const artifactStore = container.workItemArtifacts?.artifacts;
 	const readings = container.goalMetrics
 		? createMoveMetricPorts(
 				() => container.goalMetrics,
@@ -175,6 +187,15 @@ async function withItemEnvelope(
 		{
 			readings,
 			links: createCitationLinksPort(() => container.knowledgeStorePort),
+			// task.0028: the latest artifact of each kind, without body, one bounded read.
+			artifacts: artifactStore
+				? { latest: (id) => artifactStore.latest(id) }
+				: undefined,
+			// story.0058: refs first, then one read; the same ports the agent tool's capability wires.
+			...createItemRefPorts({
+				artifacts: artifactStore,
+				history: container.doltgresWorkItems,
+			}),
 			log: (event) => container.log.warn(event, "work.items.envelope_degraded"),
 		},
 		options,
@@ -338,7 +359,7 @@ export async function listWorkBoardColumns(
 export async function getWorkItem(
 	id: string,
 	options?: WorkItemReadOptions,
-): Promise<WorkItemDto | null> {
+): Promise<WorkItemsGetOutput | null> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.get(toWorkItemId(id));
@@ -350,14 +371,15 @@ export async function getWorkItem(
 
 export async function createWorkItem(
 	input: ContractCreateInput,
-	sessionUser: { id: string },
+	_sessionUser: { id: string },
+	attribution: WriteAttribution,
 ): Promise<WorkItemDto> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.create(
 			// A null `scores` never reaches the store: it reads as absent.
 			toWorkItemsCreateInput({ ...input, scores: input.scores ?? undefined }),
-			sessionUser.id,
+			attribution,
 		);
 		return await withMoveReadings(toDto(item));
 	} catch (error) {
@@ -367,13 +389,14 @@ export async function createWorkItem(
 
 export async function patchWorkItem(
 	input: ContractPatchInput,
-	sessionUser: { id: string },
+	_sessionUser: { id: string },
+	attribution: WriteAttribution,
 ): Promise<WorkItemDto> {
 	const container = getContainer();
 	try {
 		const item = await container.doltgresWorkItems.patch(
 			toWorkItemsPatchInput(input),
-			sessionUser.id,
+			attribution,
 		);
 		return await withMoveReadings(toDto(item));
 	} catch (error) {

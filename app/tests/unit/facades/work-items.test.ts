@@ -234,7 +234,8 @@ describe("app/_facades/work/items.server", () => {
       await expect(
         createWorkItem(
           { type: "task", title: "Sample task", node: "poly" },
-          { id: "agent-1" }
+          { id: "agent-1" },
+          { actor: "agent-1" }
         )
       ).rejects.toBeInstanceOf(WorkItemsBackendNotReadyError);
     });
@@ -244,13 +245,14 @@ describe("app/_facades/work/items.server", () => {
 
       const result = await createWorkItem(
         { type: "task", title: "Sample task", node: "poly" },
-        { id: "agent-1" }
+        { id: "agent-1" },
+        { actor: "agent-1" }
       );
 
       expect(result.id).toBe("task.0001");
       expect(mockPort.create).toHaveBeenCalledWith(
         { type: "task", title: "Sample task", node: "poly" },
-        "agent-1"
+        { actor: "agent-1" }
       );
     });
 
@@ -262,7 +264,8 @@ describe("app/_facades/work/items.server", () => {
 
       await patchWorkItem(
         { id: "task.0001", reason: "test change", set: { deployVerified: true, blockedBy: null } },
-        { id: "agent-1" }
+        { id: "agent-1" },
+        { actor: "agent-1" }
       );
 
       expect(mockPort.patch).toHaveBeenCalledWith(
@@ -271,7 +274,7 @@ describe("app/_facades/work/items.server", () => {
           reason: "test change",
           set: { deployVerified: true, blockedBy: null },
         },
-        "agent-1"
+        { actor: "agent-1" }
       );
     });
 
@@ -291,7 +294,7 @@ describe("app/_facades/work/items.server", () => {
       it("forwards reason and cites to the Doltgres port", async () => {
         mockPort.patch.mockResolvedValue(SAMPLE_WORK_ITEM);
 
-        await patchWorkItem(input, { id: "agent-1" });
+        await patchWorkItem(input, { id: "agent-1" }, { actor: "agent-1" });
 
         expect(mockPort.patch).toHaveBeenCalledWith(
           {
@@ -300,7 +303,7 @@ describe("app/_facades/work/items.server", () => {
             cites: [{ id: "change-history-design" }],
             set: { title: "t" },
           },
-          "agent-1"
+          { actor: "agent-1" }
         );
       });
 
@@ -308,7 +311,7 @@ describe("app/_facades/work/items.server", () => {
         mockPort.patch.mockRejectedValue(
           foreign("EntryUnresolvedError", "unresolved", { ids: ["a", "b"] })
         );
-        const error = await patchWorkItem(input, { id: "agent-1" }).catch((e) => e);
+        const error = await patchWorkItem(input, { id: "agent-1" }, { actor: "agent-1" }).catch((e) => e);
         expect(workItemWriteErrorResponse(error, "patch")).toMatchObject({
           status: 400,
           errorCode: "cite_unresolved",
@@ -323,7 +326,7 @@ describe("app/_facades/work/items.server", () => {
             field: "moves",
           })
         );
-        const error = await patchWorkItem(input, { id: "agent-1" }).catch((e) => e);
+        const error = await patchWorkItem(input, { id: "agent-1" }, { actor: "agent-1" }).catch((e) => e);
         expect(workItemWriteErrorResponse(error, "patch")?.body).toMatchObject({
           issues: [{ path: ["set", "moves"] }],
         });
@@ -340,7 +343,7 @@ describe("app/_facades/work/items.server", () => {
           ["EntryResolverUnavailableError", {}, 503, "cite_resolver_unavailable"],
         ] as const) {
           mockPort.patch.mockRejectedValue(foreign(name, "boom", extra));
-          const error = await patchWorkItem(input, { id: "agent-1" }).catch(
+          const error = await patchWorkItem(input, { id: "agent-1" }, { actor: "agent-1" }).catch(
             (e) => e
           );
           expect(error.message).toBe("boom");
