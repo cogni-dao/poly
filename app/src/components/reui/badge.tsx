@@ -26,7 +26,7 @@ const badgeVariants = cva(
         "info-light":
           "bg-info/10 border-none text-info-foreground dark:bg-info/20",
         "destructive-light":
-          "bg-destructive/10 border-none text-destructive-foreground dark:bg-destructive/20",
+          "bg-destructive/10 border-none text-destructive",
         "invert-light":
           "bg-invert/10 border-none text-foreground dark:bg-invert/20",
         "focus-light":
@@ -40,7 +40,7 @@ const badgeVariants = cva(
         "info-outline":
           "bg-background border-border text-info-foreground dark:bg-input/30",
         "destructive-outline":
-          "bg-background border-border text-destructive-foreground dark:bg-input/30",
+          "bg-background border-border text-destructive dark:bg-input/30",
         "invert-outline":
           "bg-background border-border text-invert-foreground dark:bg-input/30",
         "focus-outline":
