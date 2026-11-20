@@ -199,8 +199,8 @@
     --primary: 160 65% 28%;
     --primary-foreground: 0 0% 100%;
     --ring: 160 65% 28%;
-    --accent-from: 160 65% 28%;
-    --accent-to: 160 65% 42.5%;
+    --accent-from: 160 65% 26%;
+    --accent-to: 160 65% 28%;
     --accent-glow: 160 65% 34.5%;
     --sidebar-primary: 160 65% 28%;
     --sidebar-primary-foreground: 0 0% 100%;
@@ -213,8 +213,8 @@
     --primary: 160 65% 40%;
     --primary-foreground: 240 10% 3.9%;
     --ring: 160 65% 40%;
-    --accent-from: 160 65% 30%;
-    --accent-to: 160 65% 37%;
+    --accent-from: 160 65% 40%;
+    --accent-to: 160 65% 45%;
     --accent-glow: 160 65% 35%;
     --sidebar-primary: 160 65% 40%;
     --sidebar-primary-foreground: 240 10% 3.9%;

@@ -12,21 +12,22 @@ const badgeVariants = cva(
         outline: "border-border bg-transparent dark:bg-input/32",
         secondary: "bg-secondary text-secondary-foreground",
         info: "bg-info text-white",
-        success: "bg-success text-white",
-        warning: "bg-warning text-white",
+        success: "bg-success text-white dark:text-background",
+        warning: "bg-warning text-white dark:text-background",
         destructive: "bg-destructive text-destructive-foreground",
         focus: "bg-focus text-focus-foreground",
         invert: "bg-invert text-invert-foreground",
         "primary-light":
-          "bg-primary/10 border-none text-primary dark:bg-primary/20",
+          "bg-primary/5 border-none text-primary dark:bg-primary/20",
         "warning-light":
-          "bg-warning/10 border-none text-warning-foreground dark:bg-warning/20",
+          "bg-warning/10 border-none text-warning dark:bg-warning/20",
         "success-light":
-          "bg-success/10 border-none text-success-foreground dark:bg-success/20",
+          "bg-success/10 border-none text-success dark:bg-success/20",
         "info-light":
           "bg-info/10 border-none text-info-foreground dark:bg-info/20",
+        // Keep the semantic tint over an opaque canvas, including parent hover/open states.
         "destructive-light":
-          "bg-destructive/10 border-none text-foreground",
+          "bg-background bg-[linear-gradient(hsl(var(--destructive)/0.1),hsl(var(--destructive)/0.1))] border-none text-destructive",
         "invert-light":
           "bg-invert/10 border-none text-foreground dark:bg-invert/20",
         "focus-light":
@@ -34,13 +35,12 @@ const badgeVariants = cva(
         "primary-outline":
           "bg-background border-border text-primary dark:bg-input/30",
         "warning-outline":
-          "bg-background border-border text-warning-foreground dark:bg-input/30",
+          "bg-background border-border text-warning dark:bg-input/30",
         "success-outline":
-          "bg-background border-border text-success-foreground dark:bg-input/30",
+          "bg-background border-border text-success dark:bg-input/30",
         "info-outline":
           "bg-background border-border text-info-foreground dark:bg-input/30",
-        "destructive-outline":
-          "bg-background border-border text-destructive",
+        "destructive-outline": "bg-background border-border text-destructive",
         "invert-outline":
           "bg-background border-border text-foreground dark:bg-input/30",
         "focus-outline":
@@ -92,4 +92,4 @@ function Badge({
   );
 }
 
-export { Badge, badgeVariants, type BadgeProps };
+export { Badge, type BadgeProps, badgeVariants };
